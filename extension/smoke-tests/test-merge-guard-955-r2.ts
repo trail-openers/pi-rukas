@@ -23,11 +23,7 @@
  */
 
 import { mergesPr } from "../src/bash-command-parser.ts";
-import {
-  extractMergeNumber,
-  mergeVerbArgs,
-  mergeVerbRepo,
-} from "../src/merge-parse.ts";
+import { extractMergeNumber, mergeVerbArgs, mergeVerbRepo } from "../src/merge-parse.ts";
 
 process.env.PI_ENSEMBLE_FORGE = "github";
 
@@ -182,7 +178,26 @@ const DEEP_MERGE = "bash -c \\'(sh -c \\'(gh pr merge 12)\\')\\'";
 // still carries a merge verb) is likewise a merge-with-no-number: refused.
 {
   const bad = 'bash -c "gh pr merge 12';
-  assert(mergesPr(bad) !== undefined, "canary (unparseable): an unterminated-quote merge still matches");
+  assert(
+    mergesPr(bad) !== undefined,
+    "canary (unparseable): an unterminated-quote merge still matches",
+  );
+}
+
+// #955 lens fix 5: unbalanced parens or backticks fail closed.
+{
+  const bad = "(gh pr merge 17";
+  assert(
+    mergesPr(bad) !== undefined,
+    "canary (unbalanced paren): an unbalanced `(` with a merge verb still matches",
+  );
+}
+{
+  const notMerge = 'echo "(" ';
+  assert(
+    mergesPr(notMerge) === undefined,
+    'canary (balanced): `echo "("` is not a merge (no merge verb)',
+  );
 }
 
 // ------------------------------------------------------------ glab --project, /pulls/N, quoted number
@@ -190,13 +205,19 @@ const DEEP_MERGE = "bash -c \\'(sh -c \\'(gh pr merge 12)\\')\\'";
   const a = mergeVerbArgs("glab --project o/r mr merge 7");
   assert(a !== undefined, "glab --project: the verb door matches");
   assert(extractMergeNumber(a ?? "") === 7, "glab --project o/r mr merge 7 → 7");
-  assert(mergeVerbRepo("glab --project o/r mr merge 7") === "o/r", "…and the repo is o/r (--project)");
+  assert(
+    mergeVerbRepo("glab --project o/r mr merge 7") === "o/r",
+    "…and the repo is o/r (--project)",
+  );
 }
 {
   const a = mergeVerbArgs("gh pr merge https://github.com/o/r/pulls/17/merge");
   assert(a !== undefined, "/pulls/N URL: the verb door matches");
   assert(extractMergeNumber(a ?? "") === 17, "…and the number is 17 (/pulls/N)");
-  assert(mergeVerbRepo("gh pr merge https://github.com/o/r/pulls/17/merge") === "o/r", "…and the repo is o/r");
+  assert(
+    mergeVerbRepo("gh pr merge https://github.com/o/r/pulls/17/merge") === "o/r",
+    "…and the repo is o/r",
+  );
 }
 {
   const a = mergeVerbArgs('gh pr merge "17"');

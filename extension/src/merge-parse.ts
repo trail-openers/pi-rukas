@@ -43,7 +43,7 @@
  * the segment-head unwrapping live in merge-tokens.ts / merge-verb-head.ts.
  */
 
-import { rawTokens, shellSegments } from "./merge-tokens.ts";
+import { isValidRepoValue, mergeVerbSpanRegex, rawTokens, shellSegments } from "./merge-tokens.ts";
 import { innerBodies, matchMergeVerb, mergeVerbUnwrapOne } from "./merge-verb-head.ts";
 
 /**
@@ -56,23 +56,50 @@ import { innerBodies, matchMergeVerb, mergeVerbUnwrapOne } from "./merge-verb-he
  * #955 round 2: an unparseable command (a quote never closes, or a merge
  * hidden past the unwrap budget) is treated as a merge with no number (the
  * empty string) — the fallback refusal, never a clean pass.
+ * #955 lens fix 5: an unbalanced `(`/`)` or an odd backtick count in the
+ * raw command, combined with a merge verb somewhere in the text, is
+ * likewise treated as a merge with no number — the same fail-closed
+ * treatment as an unparseable command.
  */
 export function mergeVerbArgs(command: string): string | undefined {
-  return matchMergeVerbTail(command);
+  const tail = matchMergeVerbTail(command);
+  // A `null`-equivalent (empty string) from the tail walk is already
+  // fail-closed. But a command with unbalanced constructs that the tail
+  // walk could not reach (because the segment walker never returned a
+  // segment carrying the verb) still needs the raw-text check below:
+  // an unbalanced `(` or odd backtick count, combined with `pr merge` /
+  // `mr merge` in the raw text, is a merge the guard cannot number.
+  if (tail === undefined) {
+    const hasMergeVerb = /(?:^|\s)(?:pr|mr)\s+merge\b/.test(command);
+    if (hasMergeVerb && hasUnbalancedConstruct(command)) {
+      return "";
+    }
+  }
+  return tail;
 }
 
 /**
  * The forge repo the matched merge verb names: the value of `-R`/`--repo`,
  * or the owner/repo inside a PR/MR URL argument. `undefined` when the
- * command does not merge or names no repo.
+ * command does not merge or names no repo. An INVALID repo value (one that
+ * could be interpolated into a shell exec string and execute arbitrary
+ * commands) is rejected at this boundary — the guard refuses with
+ * "unsafe repo value" and never interpolates it (#955 lens fix 1, HIGH).
  */
 export function mergeVerbRepo(command: string): string | undefined {
   const args = mergeVerbArgs(command);
   if (args === undefined) return undefined;
   const tailRepo = parseArgsAfterVerb(args).repo;
-  if (tailRepo) return tailRepo;
+  if (tailRepo) {
+    if (!isValidRepoValue(tailRepo)) return `unsafe repo value: ${tailRepo}`;
+    return tailRepo;
+  }
   // The repo flag may also sit BEFORE the verb (`gh -R o/r pr merge 17`).
-  return repoFlagBeforeVerb(command);
+  const preRepo = repoFlagBeforeVerb(command);
+  if (preRepo !== undefined && !isValidRepoValue(preRepo)) {
+    return `unsafe repo value: ${preRepo}`;
+  }
+  return preRepo;
 }
 
 /**
@@ -140,11 +167,18 @@ function matchMergeVerbTail(command: string): string | undefined {
     }
     break;
   }
-  const tail = matchSegmentsTail(text, 0);
+  const tail = matchSegmentsTail(text);
   // A `null` tail is the fail-closed signal (unparseable / unbalanced /
   // exhausted budget): the command carries a merge the guard cannot
   // number — return the empty tail (the no-number fallback refusal).
-  return tail === null ? "" : tail;
+  if (tail === null) {
+    // #955 lens fix 5: an unbalanced `(` or odd backtick count in the raw
+    // command, combined with a merge verb somewhere in the raw text, is a
+    // merge the guard cannot number — fail closed.
+    if (hasMergeVerbInRaw(command) && hasUnbalancedConstruct(command)) return "";
+    return "";
+  }
+  return tail;
 }
 
 /**
@@ -158,15 +192,12 @@ function matchMergeVerbTail(command: string): string | undefined {
  * that produced it, so each recursive call operates on a strictly shorter
  * string — no exponential blowup, no throw on pathological input.
  */
-function matchSegmentsTail(text: string, depth: number): string | null | undefined {
+function matchSegmentsTail(text: string): string | null | undefined {
   const segments = shellSegments(text);
   if (segments.length === 0) return null; // the raw text had an unterminated quote
   for (const seg of segments) {
     if (matchMergeVerb(seg) !== undefined) {
-      const m =
-        /(?:^|[\s;&|])(?:\/\S*\/)?(?:gh|glab)(?:\s+(?:-R|--repo|--project)\s+\S+)?\s+(?:pr|mr)\s+merge\b/.exec(
-          seg,
-        );
+      const m = mergeVerbSpanRegex().exec(seg);
       // Fail closed: if the verb matched via matchMergeVerb but the span
       // regex can't locate it (should not happen), the command carries a
       // merge with no readable tail — the no-number fallback.
@@ -175,12 +206,59 @@ function matchSegmentsTail(text: string, depth: number): string | null | undefin
     }
     const bodies = innerBodies(seg);
     for (const body of bodies) {
-      const inner = matchSegmentsTail(body, depth + 1);
+      const inner = matchSegmentsTail(body);
       if (inner === null) return null; // unparseable inner — fail closed
       if (inner !== undefined) return inner; // the inner merge's tail
     }
   }
   return undefined;
+}
+
+/** True when the raw command text contains a merge verb (scan-not-anchor). */
+function hasMergeVerbInRaw(command: string): boolean {
+  return /(?:^|\s)(?:pr|mr)\s+merge\b/.test(command);
+}
+
+/**
+ * Quote-aware scan for unbalanced `(`/`)` or an odd backtick count.
+ * Skips quoted runs (they are data, not shell constructs) and counts
+ * only unquoted parens and backticks. An unbalanced result means the
+ * raw command carries a construct the segment walker could not parse —
+ * the caller fails closed.
+ */
+function hasUnbalancedConstruct(text: string): boolean {
+  let parenDepth = 0;
+  let backtickCount = 0;
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    const ch = text[i] ?? "";
+    if (ch === "'" || ch === '"') {
+      const q = ch;
+      i++;
+      while (i < n) {
+        if (q === '"' && text[i] === "\\" && i + 1 < n) {
+          i += 2;
+          continue;
+        }
+        if (text[i] === q) {
+          i++;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+    if (ch === "\\" && i + 1 < n) {
+      i += 2;
+      continue;
+    }
+    if (ch === "(") parenDepth++;
+    else if (ch === ")") parenDepth--;
+    else if (ch === "`") backtickCount++;
+    i++;
+  }
+  return parenDepth !== 0 || backtickCount % 2 !== 0;
 }
 
 /**

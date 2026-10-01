@@ -13,17 +13,10 @@ import { execSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { mergesPr } from "../src/bash-command-parser.ts";
-import {
-  extractMergeNumber,
-  extractMergeRepo,
-  mergeVerbArgs,
-} from "../src/merge-parse.ts";
+import { extractMergeNumber, extractMergeRepo, mergeVerbArgs } from "../src/merge-parse.ts";
 import { type MergeTarget } from "../src/merge-target.ts";
 import { registerMergeGuard } from "../src/merge-guard.ts";
-import {
-  type LedgerEntry,
-  ledgerPathFor,
-} from "../src/review-ledger.ts";
+import { type LedgerEntry, ledgerPathFor } from "../src/review-ledger.ts";
 
 // The hook reads the forge from PI_ENSEMBLE_FORGE (the detectForge hard
 // override) so the decision matrix below runs offline, without a real remote.
@@ -60,7 +53,10 @@ async function setupLedgerPath() {
   LEDGER_FILE = p;
   // Canary: the ledger must NOT live inside any .git directory — that would
   // clobber the real per-clone review ledger shared by every worktree.
-  assert(!/([/\\])\.git([/\\]|$)/.test(p), "canary: the test ledger is not inside a .git directory");
+  assert(
+    !/([/\\])\.git([/\\]|$)/.test(p),
+    "canary: the test ledger is not inside a .git directory",
+  );
 }
 
 function teardownLedger() {
@@ -135,11 +131,7 @@ for (const cmd of [
   assert(mergesPr(cmd) !== undefined, `canary (subshell): blocked — ${cmd}`);
 }
 
-for (const cmd of [
-  "bash -c 'echo hi'",
-  "bash -c 'gh pr view 17'",
-  'bash -c \'echo "pr merge"\'',
-]) {
+for (const cmd of ["bash -c 'echo hi'", "bash -c 'gh pr view 17'", "bash -c 'echo \"pr merge\"'"]) {
   assert(mergesPr(cmd) === undefined, `allowed (subshell non-merge) — ${cmd}`);
 }
 
@@ -155,7 +147,10 @@ for (const cmd of [
 }
 {
   const a = mergeVerbArgs('bash -lc "cd x && gh pr merge 17"');
-  assert(extractMergeNumber(a ?? "") === 17, "bash -lc: the number is 17 (cd x does not interfere)");
+  assert(
+    extractMergeNumber(a ?? "") === 17,
+    "bash -lc: the number is 17 (cd x does not interfere)",
+  );
 }
 {
   const a = mergeVerbArgs('eval "gh pr merge 17"');
@@ -357,6 +352,56 @@ await setupLedgerPath();
   // A passing ledger allows the subshell merge.
   const r = await hookDecision("bash -c 'gh pr merge 12 --squash'", GOOD_ENTRIES);
   assert(r.block === false, "subshell merge with passing ledger → ALLOWED");
+}
+
+// ------------------------------------------------------------ repo injection (item 1)
+// A malicious repo value must be refused and never interpolated into an
+// exec string. The guard refuses with "unsafe repo value" and zero exec
+// calls contain the bad value.
+
+{
+  const r = await hookDecision('gh pr merge 17 -R "o/r; touch /tmp/x"', []);
+  assert(r.block === true, "repo injection: -R with shell metachar → REFUSED");
+  assert(/unsafe repo value/.test(r.reason ?? ""), "…reason names the unsafe repo value");
+  assert(
+    r.calls.every((c) => !c.includes("o/r; touch")),
+    "…no exec call contains the injected value",
+  );
+}
+{
+  const r = await hookDecision('gh pr merge 17 --repo "o/r;id"', []);
+  assert(r.block === true, 'repo injection: --repo "o/r;id" (quoted) → REFUSED');
+  assert(/unsafe repo value/.test(r.reason ?? ""), "…reason names the unsafe repo value");
+  assert(
+    r.calls.every((c) => !c.includes("o/r;id")),
+    "…no exec call contains the injected value",
+  );
+}
+{
+  const r = await hookDecision('gh pr merge 17 -R "$(id)"', []);
+  assert(r.block === true, "repo injection: -R $(id) → REFUSED");
+  assert(/unsafe repo value/.test(r.reason ?? ""), "…reason names the unsafe repo value");
+  assert(
+    r.calls.every((c) => !c.includes("$(id)")),
+    "…no exec call contains the injected value",
+  );
+}
+{
+  // A valid repo value still passes through.
+  const r = await hookDecision("gh -R o/r pr merge 12", []);
+  assert(
+    r.calls.some((c) => c.includes("-R o/r")),
+    "valid repo o/r still passes through to the gh pr view read",
+  );
+}
+{
+  // A valid GitLab subgroup value still passes through.
+  const r = await hookDecision("glab -R group/sub/proj mr merge 12", []);
+  assert(
+    r.block === true || r.block === false,
+    "valid GitLab subgroup group/sub/proj does not trigger unsafe repo value",
+  );
+  assert(!/unsafe repo value/.test(r.reason ?? ""), "…no unsafe repo refusal for valid subgroup");
 }
 
 teardownLedger();

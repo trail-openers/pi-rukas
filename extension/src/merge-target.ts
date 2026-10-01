@@ -24,6 +24,7 @@
  */
 
 import { type DetectForgeOpts, detectForge } from "./forge-detect.ts";
+import { isValidRepoValue } from "./merge-tokens.ts";
 import { trace } from "./trace.ts";
 
 /**
@@ -128,6 +129,18 @@ async function readGhTarget(
   escapeHatch: string,
   repo?: string,
 ): Promise<MergeTargetResult> {
+  // #955 lens fix 1 (HIGH): the repo value is parsed from the agent's
+  // -R/--repo flag or a PR URL and was previously interpolated directly
+  // into this exec string. An invalid value (e.g. `o/r; touch /tmp/x`)
+  // would execute arbitrary commands. The guard already validates at the
+  // extraction site (merge-parse.ts); this is the defensive second check
+  // before use. A valid repo is `owner/repo` (GitLab: `group/sub/repo`).
+  if (repo !== undefined && !isValidRepoValue(repo)) {
+    return {
+      ok: false,
+      reason: `unsafe repo value: ${repo} — the guard will not interpolate this value into a forge command; set ${escapeHatch} to override`,
+    };
+  }
   // The exact argv the guard shells out to — pinned by the test. `-R` is
   // appended only when the command carried one (existing argv assertions
   // stay byte-identical when no repo is present).
@@ -175,6 +188,15 @@ async function readGlTarget(
   escapeHatch: string,
   repo?: string,
 ): Promise<MergeTargetResult> {
+  // #955 lens fix 1 (HIGH): same defensive repo-value check as
+  // readGhTarget — an invalid repo value is a shell injection and is
+  // refused before it can reach this exec string.
+  if (repo !== undefined && !isValidRepoValue(repo)) {
+    return {
+      ok: false,
+      reason: `unsafe repo value: ${repo} — the guard will not interpolate this value into a forge command; set ${escapeHatch} to override`,
+    };
+  }
   // The repo's canonical glab read shape (forge-commands.ts): --output json.
   const repoFlag = repo ? ` -R ${repo}` : "";
   const cmd = `glab mr view ${prNumber} --output json${repoFlag}`;
@@ -247,6 +269,13 @@ export async function resolvePrNumber(
   const detection = await detectForge(cwd, guardForgeOpts(forgeOpts));
   if (detection.source === "unknown") {
     trace("merge-target: cannot resolve PR number — forge is unknown (fail-closed)");
+    return undefined;
+  }
+  // #955 lens fix 1 (HIGH): same defensive repo-value check as
+  // readGhTarget — an invalid repo value is a shell injection and is
+  // refused before it can reach this exec string.
+  if (repo !== undefined && !isValidRepoValue(repo)) {
+    trace(`merge-target: unsafe repo value: ${repo} — refusing (fail-closed)`);
     return undefined;
   }
   const repoFlag = repo ? ` -R ${repo}` : "";

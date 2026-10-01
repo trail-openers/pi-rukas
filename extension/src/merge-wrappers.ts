@@ -10,6 +10,7 @@
  */
 
 import { rawTokens } from "./merge-tokens.ts";
+import { mergeVerbHeadRegex } from "./merge-tokens.ts";
 
 /**
  * The shell keywords that open a control-flow / compound construct (`if`,
@@ -93,9 +94,7 @@ export function matchMergeVerb(text: string): string | undefined {
     const forge = forgeWord(t);
     if (forge) {
       const rest = [t, ...list.slice(i + 1)].join(" ");
-      const isMerge = new RegExp(
-        `^(?:${forge}|/\\S*/${forge})\\s+(?:-R\\s+\\S+|--repo\\s+\\S+|--project\\s+\\S+)?\\s*(?:pr|mr)\\s+merge(?:\\s|$)`,
-      ).test(rest);
+      const isMerge = mergeVerbHeadRegex(forge).test(rest);
       return isMerge ? forge : undefined;
     }
     // Round-3 (adversarial finding 1): a control-flow / compound-construct

@@ -1,6 +1,6 @@
 import { stripQuotedSegments } from "./bash-command-parser.ts";
 import { mergeVerbArgs } from "./merge-parse.ts";
-import { shellSegments } from "./merge-tokens.ts";
+import { mergeVerbSpanRegex, shellSegments } from "./merge-tokens.ts";
 import { innerBodies, matchMergeVerb } from "./merge-verb-head.ts";
 
 /**
@@ -60,11 +60,10 @@ export function mergesPr(command: string): string | undefined {
   // (and the REST doors below are tried next).
   const innerArgs = mergeVerbArgs(command);
   if (innerArgs !== undefined) {
-    const span = findVerbSpanInSegments(command, 0);
+    const span = findVerbSpanInSegments(command);
     // No span found (unparseable command, or a merge hidden past the
     // unwrap budget): fail closed with a minimal span.
     if (span !== undefined) return span;
-    if (shellSegments(command).length === 0) return "gh pr merge";
     return "gh pr merge";
   }
   // No verb match: fall through to the REST doors below. The REST doors
@@ -131,14 +130,14 @@ function restDoors(texts: string[]): string | undefined {
  * it, so each recursive call operates on a strictly shorter string — no
  * exponential blowup on pathological input.
  */
-function findVerbSpanInSegments(text: string, depth: number): string | undefined {
+function findVerbSpanInSegments(text: string): string | undefined {
   const segments = shellSegments(text);
   if (segments.length === 0) return undefined;
   for (const seg of segments) {
     if (matchMergeVerb(seg) !== undefined) return segmentVerbSpan(seg);
     const bodies = innerBodies(seg);
     for (const body of bodies) {
-      const span = findVerbSpanInSegments(body, depth + 1);
+      const span = findVerbSpanInSegments(body);
       if (span !== undefined) return span;
     }
   }
@@ -152,10 +151,7 @@ function findVerbSpanInSegments(text: string, depth: number): string | undefined
  * the span returned for the refusal text.
  */
 function segmentVerbSpan(seg: string): string | undefined {
-  const m =
-    /(?:^|[\s;&|])(?:\/\S*\/)?(?:gh|glab)(?:\s+(?:-R|--repo|--project)\s+\S+)?\s+(?:pr|mr)\s+merge\b/.exec(
-      seg,
-    );
+  const m = mergeVerbSpanRegex().exec(seg);
   if (!m) return undefined;
   // The match may start with the leading separator/space — the span is
   // the forge word onward, so slice it off and trim.

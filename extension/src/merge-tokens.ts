@@ -106,6 +106,59 @@ export function rawTokens(raw: string): { list: string[]; terminated: boolean } 
 }
 
 /**
+ * The merge-verb-locating regex source — the ONE copy of the pattern that
+ * locates the matched verb span inside a segment (the optional leading
+ * separator, the optionally path-qualified forge word, an optional
+ * `-R`/`--repo`/`--project` value, and the `pr merge` / `mr merge` verb).
+ *
+ * #955 lens fix 4: this pattern was duplicated in three modules
+ * (bash-merge-pr.ts's segmentVerbSpan, merge-parse.ts's matchSegmentsTail
+ * and merge-wrappers.ts). It now lives here — the leaf module of the merge
+ * guard — and the anchored variant is built from this same string at the
+ * one site that needs anchoring (the verb-HEAD test in merge-wrappers.ts).
+ * All consumers share the source, so the pattern can never drift between
+ * the matcher (bash-merges-pr.ts), the argument-tail extractor (merge-
+ * parse.ts) and the verb-head matcher (merge-wrappers.ts).
+ */
+export const MERGE_VERB_SPAN_SRC = String.raw`(?:^|[\s;&|])(?:/\S*\/)?(?:gh|glab)(?:\s+(?:-R|--repo|--project)\s+\S+)?\s+(?:pr|mr)\s+merge\b`;
+
+/** The verb span as a fresh RegExp (re-compiled at every use — stateless). */
+export function mergeVerbSpanRegex(): RegExp {
+  return new RegExp(MERGE_VERB_SPAN_SRC);
+}
+
+/** The anchored verb-source (the verb-HEAD test in merge-wrappers.ts). */
+export function mergeVerbHeadRegex(forge: string): RegExp {
+  return new RegExp(
+    `^(?:${forge}|/\\S*/${forge})\\s+(?:-R\\s+\\S+|--repo\\s+\\S+|--project\\s+\\S+)?\\s*(?:pr|mr)\\s+merge(?:\\s|$)`,
+  );
+}
+
+/**
+ * The strict repo-value pattern: one or more segments of alphanumerics,
+ * dots, underscores and hyphens separated by slashes. GitLab allows
+ * subgroups (`group/sub/project`), so 2+ segments is required (a bare
+ * `owner` without a slash is not a valid repo).
+ *
+ * #955 lens fix 1 (HIGH): the repo value is parsed from the agent's
+ * `-R`/`--repo`/`--project` flags or a PR URL and was interpolated directly
+ * into the exec strings in merge-target.ts. A value like `o/r; touch /tmp/x`
+ * would execute arbitrary commands. The guard validates it here (at the
+ * extraction site in merge-parse.ts) AND defensively in merge-target.ts
+ * before use; an invalid value fails closed — the guard refuses with
+ * "unsafe repo value" and never interpolates it.
+ */
+export const REPO_VALUE_PATTERN = /^[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.-]+)+$/;
+
+/**
+ * Whether a raw repo value is safe to interpolate into a forge exec string.
+ * See `REPO_VALUE_PATTERN` for the pattern and rationale.
+ */
+export function isValidRepoValue(value: string): boolean {
+  return REPO_VALUE_PATTERN.test(value);
+}
+
+/**
  * Strip the outer quotes from a quoted token and unescape double-quote
  * escapes (\" → ", \\ → \). Single-quoted tokens are returned verbatim
  * (no escape sequences in bash single quotes).

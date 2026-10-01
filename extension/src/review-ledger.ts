@@ -66,6 +66,12 @@ interface LedgerFile {
 export type LedgerExecFn = VerifyExecFn;
 
 /**
+ * #955 lens fix 6: tracks which override paths have been traced in this
+ * process (one-time trace per distinct override path).
+ */
+const ledgerOverrideTraced = new Set<string>();
+
+/**
  * The patch id of a branch's changes: the diff from `baseRef` to the branch
  * head, fed through `git patch-id --stable`. The writer and the guard both
  * call this, so the same content always yields the same id (and a new commit
@@ -238,12 +244,9 @@ export async function workingTreePatchId(
 
 /**
  * The shared pass predicates the guard's booleans are computed with.
- *
- * `lensPassed` is the ONE predicate both call sites use: the ledger writer
- * (lens-ledger.ts) stores `lensPassed(verdict, threshold)`, and the driver's
- * verdict threshold (lensBlockedByThreshold, below) applies the same
- * comparison — one function, two call sites, no re-implementation that could
- * drift.
+ * `lensPassed` is the ONE predicate both call sites use — the ledger writer
+ * (lens-ledger.ts) and the driver's verdict threshold (lensBlockedByThreshold
+ * below) apply the same comparison — one function, two call sites.
  */
 
 /**
@@ -284,9 +287,7 @@ export function lensPassed(verdict: string, threshold: string): boolean {
 /**
  * The driver-side twin of `lensPassed`: does this verdict fail AT the given
  * threshold? The ISSUES_FOUND branch of `computeVerdict` (lens-review.ts)
- * applies this exact comparison, and the ledger writer applies `lensPassed`
- * with the SAME resolved threshold — the threshold predicate has one
- * implementation.
+ * and the ledger writer both apply this same comparison.
  */
 export function lensBlockedByThreshold(
   verdict: string,
@@ -299,18 +300,13 @@ export function lensBlockedByThreshold(
  * Resolve the ledger file path for a clone.
  *
  * `git rev-parse --git-common-dir` resolves to the MAIN clone's .git for
- * worktrees (worktrees live under .git/worktrees/… and their common dir
- * points back), so every worktree shares one ledger. Absolute-path: a
- * relative answer (a plain clone at cwd) is anchored on `cwd`.
+ * worktrees, so every worktree shares one ledger. Absolute-path: a relative
+ * answer (a plain clone at cwd) is anchored on `cwd`.
  *
  * `PI_ENSEMBLE_REVIEW_LEDGER_FILE` is an explicit absolute-path override.
  * When set it is returned verbatim and no git call is made. Tests set this
- * to a private temp file so their fixture writes never touch the real
- * per-clone ledger (which concurrent test runs across worktrees would race
- * on and clobber); operators normally do not set it.
- *
- * Injects the git executor (tests stub it) and the file name (tests point
- * the ledger at a fixture without touching git).
+ * to a private temp file so fixture writes never touch the real per-clone
+ * ledger; operators normally do not set it.
  */
 export async function ledgerPathFor(
   execFn: LedgerExecFn,
@@ -321,7 +317,15 @@ export async function ledgerPathFor(
   // authoritative (tests point the ledger at a private temp file so concurrent
   // runs never clobber the real per-clone ledger).
   const override = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE?.trim();
-  if (override) return override;
+  if (override) {
+    // #955 lens fix 6: one-time trace per process so an operator-set
+    // override is visible in the trace log.
+    if (!ledgerOverrideTraced.has(override)) {
+      ledgerOverrideTraced.add(override);
+      trace(`review-ledger: ledger override in effect → ${override}`);
+    }
+    return override;
+  }
   try {
     const { stdout } = await execFn("git rev-parse --git-common-dir", { cwd, maxBuffer: 8 * 1024 });
     const raw = stdout.trim();

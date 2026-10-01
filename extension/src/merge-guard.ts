@@ -148,6 +148,14 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     // tail) because the -R flag can appear BEFORE the verb (`gh -R o/r pr
     // merge 17`). `mergeVerbRepo` handles both positions plus PR-URLs.
     const fromRepo = mergeVerbRepo(command);
+    // #955 lens fix 1 (HIGH): an invalid repo value (e.g. `o/r; touch
+    // /tmp/x`) is a shell injection. The guard refuses and NEVER
+    // interpolates it into any exec string.
+    if (fromRepo?.startsWith("unsafe repo value")) {
+      return block(
+        `merge refused: ${fromRepo} — the guard will not interpolate this value into a forge command; set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override`,
+      );
+    }
     let prNumber: number | undefined;
     if (fromVerb !== undefined) {
       // The verb door matched — parse the number from the argument tail.
