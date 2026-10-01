@@ -137,9 +137,7 @@ export function mergeVerbSpanRegex(): RegExp {
 
 /** The anchored verb-source (the verb-HEAD test in merge-wrappers.ts). */
 export function mergeVerbHeadRegex(): RegExp {
-  return new RegExp(
-    `^(?:gh|glab|/\\S*/(?:gh|glab))\\s+(?:-R\\s+\\S+|--repo\\s+\\S+|--project\\s+\\S+)?\\s*(?:pr|mr)\\s+merge(?:\\s|$)`,
-  );
+  return /^(?:gh|glab|\/\S*\/(?:gh|glab))\s+(?:-R\s+\S+|--repo\s+\S+|--project\s+\S+)?\s*(?:pr|mr)\s+merge(?:\s|$)/;
 }
 
 /**
