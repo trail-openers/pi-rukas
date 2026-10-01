@@ -152,8 +152,11 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     // /tmp/x`) is a shell injection. The guard refuses and NEVER
     // interpolates it into any exec string.
     if (fromRepo?.kind === "unsafe") {
+      // A fixed message — do NOT echo `fromRepo.raw` (it can carry shell
+      // metacharacters the agent typed; echoing it back is itself a
+      // reflection of untrusted input).
       return block(
-        `merge refused: unsafe repo value ${fromRepo.raw} — the guard will not interpolate this value into a forge command; set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override`,
+        "merge refused: unsafe repo value (contains characters outside owner/repo) — the guard will not interpolate this value into a forge command; set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override",
       );
     }
     let prNumber: number | undefined;
