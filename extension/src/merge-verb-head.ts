@@ -62,7 +62,7 @@ export function matchMergeVerb(text: string): string | undefined {
     const t = list[i] ?? "";
     // A quote- or variable-substituted command word is not the bare shape
     // the guard unwraps — no forge word to match, and not a wrapper.
-    if (t[0] === "'" || t[0] === '"' || t[0] === "$" || t === "`") return undefined;
+    if (t[0] === "'" || t[0] === '"' || t[0] === "$" || t === "`" || t[0] === "(") return undefined;
     const forge = forgeWord(t);
     if (forge) {
       // The forge word found: the segment is a merge invocation when the
@@ -75,17 +75,30 @@ export function matchMergeVerb(text: string): string | undefined {
       // is the merge verb; the trailing `(?:\s|$)` ensures `merge` is a
       // whole token (not a prefix of a longer word).
       return new RegExp(
-        `^(?:${forge}|/\\S*/${forge})\\s+(?:-R\\s+\\S+|--repo\\s+\\S+)?\\s*(?:pr|mr)\\s+merge(?:\\s|$)`,
+        `^(?:${forge}|/\\S*/${forge})\\s+(?:-R\\s+\\S+|--repo\\s+\\S+|--project\\s+\\S+)?\\s*(?:pr|mr)\\s+merge(?:\\s|$)`,
       ).test(rest)
         ? forge
         : undefined;
     }
     if (BARE_WRAPPERS.has(t)) {
       i++;
+      // `sudo` takes optional flags (`-u user`, `-E`, etc.) — skip them.
+      if (t === "sudo") {
+        while (i < list.length) {
+          const f = list[i] ?? "";
+          if (f.startsWith("-")) {
+            i++;
+            // `-u` takes a value; other flags are bare.
+            if (f === "-u" || f === "--user") i++;
+            continue;
+          }
+          break;
+        }
+      }
       continue;
     }
     let j = i + 1;
-    if (t === "timeout" || t === "stdbuf") {
+    if (t === "timeout") {
       // `timeout [--signal=X|-s X|-k N|-p|-v …] <duration>` — the duration
       // is the last argument before the command; skip flags then one
       // positional.
@@ -108,6 +121,21 @@ export function matchMergeVerb(text: string): string | undefined {
       // The duration (if any) is the next positional — skip it; the
       // command word follows.
       if (j < list.length && !list[j]?.startsWith("-")) j++;
+      i = j;
+      continue;
+    }
+    if (t === "stdbuf") {
+      // `stdbuf [-oL] <cmd>` — skip flags (no positional); the command
+      // word follows the flags directly.
+      j = i + 1;
+      while (j < list.length) {
+        const f = list[j] ?? "";
+        if (f.startsWith("-")) {
+          j++;
+          continue;
+        }
+        break;
+      }
       i = j;
       continue;
     }
@@ -315,8 +343,9 @@ export function innerBodies(text: string): string[] {
   };
   // Skip a quoted run starting at `i`; returns the index just past the
   // closing quote, or undefined on an unterminated quote.
-  const skipQuote = (i: number): number | undefined => {
-    const q = text[i] ?? "";
+  const skipQuote = (start: number): number | undefined => {
+    const q = text[start] ?? "";
+    let i = start;
     i++;
     while (i < n) {
       if (q === '"' && text[i] === "\\" && i + 1 < n) {

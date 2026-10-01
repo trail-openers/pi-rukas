@@ -55,7 +55,21 @@ import { innerBodies, matchMergeVerb, mergeVerbUnwrapOne } from "./merge-verb-he
  * with no number → the fallback refusal), not a clean pass.
  */
 export function mergeVerbArgs(command: string): string | undefined {
-  if (mergeVerbSeen(command)) return "";
+  // Walk the shell-eval layers (depth 3) first, then match the verb and
+  // return the argument tail. `matchMergeVerbTail` returns undefined when
+  // the command does not merge (or is unparseable) — that is the "not a
+  // merge" signal for the REST doors. The fail-closed path (unparseable →
+  // treat as a merge with no number) is handled by `mergeVerbSeen`:
+  // when `shellSegments` returns an empty array (unterminated quote), the
+  // command is treated as a merge with no number (empty tail).
+  //
+  // IMPORTANT: `matchMergeVerbTail` returning undefined does NOT mean the
+  // command is unparseable — it also means "no merge verb found" (which
+  // is the normal case for non-merge commands and REST-door commands).
+  // The fail-closed path is only triggered when `shellSegments` returns
+  // an empty array (a genuinely unparseable command).
+  const seen = mergeVerbSeen(command);
+  if (seen === undefined) return "";
   return matchMergeVerbTail(command);
 }
 
@@ -181,12 +195,24 @@ function matchMergeVerbTail(command: string): string | undefined {
  */
 function matchSegmentsTail(text: string, depth: number): string | undefined {
   const segments = shellSegments(text);
-  if (segments.length === 0) return undefined;
+  if (segments.length === 0) return undefined; // unparseable — fail closed
   for (const seg of segments) {
-    if (matchMergeVerb(seg) !== undefined) return seg.slice(verbSpanLength(seg));
+    if (matchMergeVerb(seg) !== undefined) {
+      const m =
+        /(?:^|[\s;&|])(?:\/\S*\/)?(?:gh|glab)(?:\s+(?:-R|--repo|--project)\s+\S+)?\s+(?:pr|mr)\s+merge\b/.exec(
+          seg,
+        );
+      // Fail closed: if the verb matched via matchMergeVerb but the span
+      // regex can't locate it (should not happen), treat as a merge with
+      // no number (empty tail).
+      if (m) return seg.slice(m.index + m[0].length);
+      return "";
+    }
     for (const body of innerBodies(seg)) {
       const tail = matchMergeVerbDeepTail(body, depth + 1);
       if (tail !== undefined) return tail;
+      // tail === undefined means unparseable — fail closed (return "").
+      if (tail === undefined && innerBodies(seg).length > 0) return "";
     }
   }
   return undefined;
@@ -221,6 +247,11 @@ function mergeVerbSeen(command: string): boolean | undefined {
     }
     break;
   }
+  // Fail closed: if the raw command has an unterminated quote (an
+  // unparseable command), treat it as a merge with no number. The
+  // #955 rule for unparseable inner strings.
+  const segs = shellSegments(text);
+  if (segs.length === 0) return undefined; // unparseable → fail closed
   return matchSegments(text, 0);
 }
 
@@ -230,9 +261,10 @@ function mergeVerbSeen(command: string): boolean | undefined {
  * `pr merge` / `mr merge` verb — the argument tail starts just past it.
  */
 function verbSpanLength(seg: string): number {
-  const m = new RegExp(
-    "(?:^|[\\s;&|])(?:/\\S*/)?(?:gh|glab)(?:\\s+(?:-R|--repo)\\s+\\S+)?\\s+(?:pr|mr)\\s+merge\\b",
-  ).exec(seg);
+  const m =
+    /(?:^|[\s;&|])(?:\/\S*\/)?(?:gh|glab)(?:\s+(?:-R|--repo)\s+\S+)?\s+(?:pr|mr)\s+merge\b/.exec(
+      seg,
+    );
   if (!m) return 0;
   // The matched span may start with a leading separator character (a space
   // or &/; /|) — strip those so the slice length is the verb span only.
@@ -252,7 +284,7 @@ function repoFlagBeforeVerb(command: string): string | undefined {
     if (tokens.terminated === false) continue;
     for (let i = 0; i < tokens.list.length; i++) {
       const t = tokens.list[i] ?? "";
-      if (t === "-R" || t === "--repo") {
+      if (t === "-R" || t === "--repo" || t === "--project") {
         const v = tokens.list[i + 1];
         if (v === undefined || v.length === 0) continue;
         const q = v[0];

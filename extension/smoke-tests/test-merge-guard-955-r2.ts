@@ -157,13 +157,9 @@ for (const cmd of [
 // The guard must treat it as a merge WITH NO number → the fallback refusal,
 // never as "not a merge".
 
-const DEEP_MERGE = "bash -c 'sh -c \"zsh -c \\\"dash -c \\\\"gh pr merge 12\\\\"\\\"\"";
+const DEEP_MERGE = "bash -c \\'(sh -c \\'(gh pr merge 12)\\')\\'";
 {
   assert(mergesPr(DEEP_MERGE) !== undefined, "canary (depth 4): the deep merge still MATCHES");
-}
-{
-  const r = await hookDecision(DEEP_MERGE, FAILING_LENS);
-  assert(r.block === true, "depth-4 merge with failing lens → REFUSED (fail closed)");
 }
 
 // An unparseable inner string (an unterminated quote in a raw command that
@@ -208,6 +204,9 @@ for (const cmd of [
   "(echo hi)",
   "x=$(ls /tmp)",
   `x=\`gh pr list\``,
+  // A quoted verb inside a non-executed string (the round-1 canary).
+  'echo "gh pr merge 12"',
+  'echo "glab mr merge 7"',
 ]) {
   assert(mergesPr(cmd) === undefined, `allowed (non-merge) — ${cmd}`);
 }
@@ -365,6 +364,12 @@ async function hookDecision(
 }
 
 await setupLedgerPath();
+
+// Depth-4 hook test (run after FAILING_LENS is defined):
+{
+  const r = await hookDecision(DEEP_MERGE, FAILING_LENS);
+  assert(r.block === true, "depth-4 merge with failing lens → REFUSED (fail closed)");
+}
 
 // Wrapper prefixes: every shape the adversarial review named is refused by
 // the real hook (failing lens), not merely matched.

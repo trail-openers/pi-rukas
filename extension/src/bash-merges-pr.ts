@@ -1,7 +1,7 @@
 import { stripQuotedSegments } from "./bash-command-parser.ts";
 import { mergeVerbArgs, mergeVerbUnwrapOne } from "./merge-parse.ts";
 import { shellSegments } from "./merge-tokens.ts";
-import { matchMergeVerb } from "./merge-verb-head.ts";
+import { innerBodies, matchMergeVerb } from "./merge-verb-head.ts";
 
 /**
  * bash-merges-pr — the merge matcher (`mergesPr`).
@@ -41,12 +41,6 @@ import { matchMergeVerb } from "./merge-verb-head.ts";
  */
 
 export function mergesPr(command: string): string | undefined {
-  const c = stripQuotedSegments(command);
-  const FORGE = "(?:^|[;&|]|\\s)(?:oo\\s+)?(?:gh|glab)\\s+";
-  // The verb door: `gh pr merge` / `glab mr merge`, number optional.
-  const verb = new RegExp(`${FORGE}(?:pr\\s+merge|mr\\s+merge)(?:\\s|$)`).exec(c);
-  if (verb?.[0]) return verb[0].trim();
-
   // Verb door, segment-wise (#955 round-2 hardening): the legacy door
   // above ran one regex over the quote-stripped WHOLE command, which is
   // why it missed process-wrapper prefixes (`timeout 30 gh pr merge 17`),
@@ -58,10 +52,21 @@ export function mergesPr(command: string): string | undefined {
   // segment carries the verb. A quoted verb (`echo "gh pr merge 17"`) is
   // inert in every layer: the segment head must be an UNQUOTED forge word
   // (a quoted token is neither a forge word nor a wrapper).
+  //
+  // This check runs BEFORE the REST doors and is the authoritative verb
+  // door: when `mergeVerbArgs` returns non-undefined, the command merges
+  // (the span is the inner verb). When it returns undefined, the command
+  // does NOT merge via the verb door (and the REST doors below are tried
+  // next). This replaces the legacy whole-command verb regex, which could
+  // false-positive on a `gh` inside a quoted segment (e.g. `echo "gh pr
+  // merge 17"` matched the regex but was not a real invocation).
   const innerArgs = mergeVerbArgs(command);
   if (innerArgs !== undefined) {
     // The matched span is the inner verb (not the outer shell wrapper) —
-    // the refusal text names the actual merge command.
+    // the refusal text names the actual merge command. Walk the same
+    // layers as `mergeVerbArgs` and find the FIRST segment (or inner body)
+    // whose head matches the merge verb. If no span is found (unparseable
+    // command), return a minimal span — the fail-closed path.
     let text = command;
     for (let depth = 0; depth < 3; depth++) {
       const inner = mergeVerbUnwrapOne(text);
@@ -69,14 +74,23 @@ export function mergesPr(command: string): string | undefined {
         text = inner;
         continue;
       }
-      for (const seg of shellSegments(text)) {
-        if (matchMergeVerb(seg) !== undefined) return segmentVerbSpan(seg);
-      }
+      const span = findVerbSpanInSegments(text, 0);
+      if (span !== undefined) return span;
+      // No span found. Check if the command is unparseable (an unterminated
+      // quote) — if so, fail closed with a minimal span. If the command is
+      // parseable but has no merge verb, fall through to the REST doors.
+      if (shellSegments(text).length === 0) return "gh pr merge";
       return undefined;
     }
     return undefined;
   }
-
+  // No verb match: fall through to the REST doors below. The REST doors
+  // match `gh api …/pulls/N/merge` and `glab api …/mr/N/merge` — command
+  // shapes that `mergeVerbArgs` does not match (they use `api`, not `merge`
+  // as the verb). When `mergeVerbArgs` returns undefined for a parseable
+  // command, the REST doors are tried.
+  const c = stripQuotedSegments(command);
+  const FORGE = "(?:^|[;&|]|\\s)(?:oo\\s+)?(?:gh|glab)\\s+";
   // REST door, gh: `gh api` on /pulls/{n}/merge — gh api defaults to
   // POST/PUT when no --method is given, so the /merge suffix IS the write
   // even when it "looks like a read". The no-number `.../pulls/merge`
@@ -113,15 +127,35 @@ export function mergesPr(command: string): string | undefined {
 }
 
 /**
+ * Find the matched verb span in the first segment (or nested inner body)
+ * whose head matches `matchMergeVerb`. Recurses into `( … )` / `$( … )` /
+ * backtick bodies the same way `mergeVerbArgs` does.
+ */
+function findVerbSpanInSegments(text: string, depth: number): string | undefined {
+  const segments = shellSegments(text);
+  if (segments.length === 0) return undefined;
+  for (const seg of segments) {
+    if (matchMergeVerb(seg) !== undefined) return segmentVerbSpan(seg);
+    const bodies = innerBodies(seg);
+    for (const body of bodies) {
+      const span = findVerbSpanInSegments(body, depth + 1);
+      if (span !== undefined) return span;
+    }
+  }
+  return undefined;
+}
+
+/**
  * The matched verb span inside a segment whose head matched
  * `matchMergeVerb`: the (optionally path-qualified) forge word, an
  * optional `-R`/`--repo` value, and the `pr merge` / `mr merge` verb —
  * the span returned for the refusal text.
  */
 function segmentVerbSpan(seg: string): string | undefined {
-  const m = new RegExp(
-    "(?:^|[\\s;&|])(?:/\\S*/)?(?:gh|glab)(?:\\s+(?:-R|--repo)\\s+\\S+)?\\s+(?:pr|mr)\\s+merge\\b",
-  ).exec(seg);
+  const m =
+    /(?:^|[\s;&|])(?:\/\S*\/)?(?:gh|glab)(?:\s+(?:-R|--repo|--project)\s+\S+)?\s+(?:pr|mr)\s+merge\b/.exec(
+      seg,
+    );
   if (!m) return undefined;
   // The match may start with the leading separator/space — the span is
   // the forge word onward, so slice it off and trim.
