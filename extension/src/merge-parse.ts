@@ -4,38 +4,24 @@
  * the matched merge verb names.
  *
  * Two defects from the lievo incident (2026-10-01, PR #17) fixed here:
- *
- * 1. The verb door (`gh pr merge …` / `glab mr merge …`) matched a SPAN that
- *    stopped at the whitespace after `merge`, so the PR number was never
- *    inside the matched text — every numbered merge fell back to
- *    current-branch resolution (merge-target.ts `resolvePrNumber`) and
- *    failed closed on a checkout not on the PR branch.
- * 2. A merge wrapped in a subshell (`bash -c '… gh pr merge 17 …'`,
- *    `sh -c "…"`, `eval "…"`) was invisible: stripQuotedSegments DELETES the
- *    quoted -c body, so no merge verb remained to match — a genuine bypass.
+ * 1. The verb door matched a SPAN that stopped at the whitespace after
+ *    `merge`, so the PR number was never inside the matched text — every
+ *    numbered merge fell back to current-branch resolution.
+ * 2. A merge wrapped in a subshell (`bash -c '… gh pr merge 17 …'`) was
+ *    invisible: stripQuotedSegments DELETES the quoted -c body, so no
+ *    merge verb remained to match — a genuine bypass.
  *
  * Design (per the #955 decisions):
- *
- * - Subshell/wrapper unwrapping happens on the RAW command, BEFORE
- *   quote-stripping, and recursively (depth 3): for `bash`/`sh`/`zsh`/
- *   `dash` with `-c` or `-lc`, and for `eval`, the quoted string argument
- *   becomes the new command and the whole matcher re-runs on it. The guard
- *   matches and extracts on the INNERMOST segment that contains the merge
- *   verb.
+ * - Subshell/wrapper unwrapping on the RAW command, recursively (depth 3),
+ *   with unescaping (\" → ") for double-quoted layers. The guard matches
+ *   and extracts on the INNERMOST segment that contains the merge verb.
  * - The PR number / repo are parsed from the arguments AFTER the matched
- *   verb, with a quote-aware tokenizer that skips the values of flags that
- *   take an argument (`-s/--subject`, `-t/--title`, `-b/--body`,
- *   `-F/--body-file`, `--match-head-commit`, `-m/--message`,
- *   `-A/--author-email`, `-R/--repo`). The number is the first bare
- *   positional integer, a `#N`, or a `/pull/N` / `/merge_requests/N` URL.
+ *   verb, with a quote-aware tokenizer that skips flag values. The number
+ *   is the first bare positional integer, a `#N`, or a `/pull/N` URL.
  *   Digits before the verb never count (the `cd /data/3` canary).
- * - The REST doors (`gh api …/pulls/N/merge`, `glab api …/merge_requests/
- *   N/merge`) keep their existing span-based extraction — the endpoint path
- *   already carries the number.
+ * - The REST doors keep their existing span-based extraction.
  *
- * The matcher itself (`mergesPr`) lives in bash-merges-pr.ts and is
- * re-exported from bash-command-parser.ts — both import sites (the issue
- * creation guard, the merge guard) are untouched.
+ * The matcher (`mergesPr`) lives in bash-merges-pr.ts.
  */
 
 /**
@@ -119,7 +105,7 @@ export function extractMergeRepo(args: string): string | undefined {
 // branch of the legacy `mergesPr` matcher (scan-not-anchor, optional `oo`
 // wrapper).
 function mergeVerbRegex(): RegExp {
-  return /(?:^|[;&|]|\s)(?:oo\s+)?(?:gh|glab)(?:\s+-R\s+\S+)?\s+(?:pr\s+merge|mr\s+merge)(?:\s|$)/;
+  return /(?:^|[;&|]|\s)(?:oo\s+)?(?:gh|glab)(?:\s+(?:-R|--repo)\s+\S+)?\s+(?:pr\s+merge|mr\s+merge)(?:\s|$)/;
 }
 
 /**
@@ -129,6 +115,12 @@ function mergeVerbRegex(): RegExp {
 function matchVerbArgs(text: string): string | undefined {
   const m = mergeVerbRegex().exec(text);
   if (!m) return undefined;
+  // Verify the match is not inside a quoted segment: strip quotes and
+  // check the verb is still present. Catches `echo "gh pr merge 17"`
+  // (the regex matches the `gh` inside the double-quoted segment because
+  // the whitespace before it satisfies the `(?:^|[;&|]|\s)` anchor).
+  const stripped = stripForMatch(text);
+  if (!mergeVerbRegex().exec(stripped)) return undefined;
   const span = m[0].trim();
   const idx = text.lastIndexOf(span);
   // The tail is consumed verbatim — the post-verb parser is quote-aware,
@@ -194,7 +186,19 @@ function unwrapShellEval(command: string): string | undefined {
     }
     if (t === "env") {
       i++;
-      while (i < n && /^[A-Za-z_][A-Za-z0-9_]*\s*=/.test(tokens.list[i] ?? "")) i++;
+      // Skip env flags (--null, -i, --, …) and VAR=VAL assignments.
+      while (i < n) {
+        const e = tokens.list[i] ?? "";
+        if (e.startsWith("-")) {
+          i++;
+          continue;
+        }
+        if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(e)) {
+          i++;
+          continue;
+        }
+        break;
+      }
       if (i >= n) return undefined;
       continue; // re-loop: the command word follows the env assignments
     }
@@ -222,16 +226,16 @@ function unwrapShellEval(command: string): string | undefined {
       const arg = tokens.list[j];
       if (arg === undefined) return undefined;
       const aq = arg[0];
-      if (aq !== "'" && aq !== '"') return undefined; // unquoted -c body is not the shape the guard unwraps
-      const inner = arg.slice(1, -1);
+      if (aq !== "'" && aq !== '"' && !arg.startsWith("$'")) return undefined; // unquoted -c body is not the shape the guard unwraps
+      const inner = unquoteArg(arg);
       return inner.length > 0 ? inner : undefined;
     }
     if (t === "eval") {
       const arg = tokens.list[i + 1];
       if (arg === undefined) return undefined;
       const aq = arg[0];
-      if (aq !== "'" && aq !== '"') return undefined;
-      const inner = arg.slice(1, -1);
+      if (aq !== "'" && aq !== '"' && !arg.startsWith("$'")) return undefined;
+      const inner = unquoteArg(arg);
       return inner.length > 0 ? inner : undefined;
     }
     return undefined; // any other first token: this is not a shell-eval command
@@ -240,11 +244,40 @@ function unwrapShellEval(command: string): string | undefined {
 }
 
 /**
+ * Strip the outer quotes from a quoted token and unescape double-quote
+ * escapes (\" → ", \\ → \). Single-quoted tokens are returned verbatim
+ * (no escape sequences in bash single quotes).
+ */
+function unquoteArg(arg: string): string {
+  if (arg.startsWith("$'")) return arg.slice(2, -1);
+  const q = arg[0];
+  if (q === "'") return arg.slice(1, -1);
+  // Double-quoted: unescape \" → " and \\ → \
+  let out = "";
+  for (let i = 1; i < arg.length - 1; i++) {
+    const c = arg[i] ?? "";
+    if (c === "\\" && i + 1 < arg.length - 1) {
+      const next = arg[i + 1] ?? "";
+      if (next === '"' || next === "\\") {
+        out += next;
+        i++;
+        continue;
+      }
+    }
+    out += c;
+  }
+  return out;
+}
+
+/**
  * The raw-command token walk used by `unwrapShellEval` and
  * `parseArgsAfterVerb`: quoted runs are kept as a single token WITH their
  * outer quotes (so the reader can strip them); separators are their own
  * tokens. `terminated` is false when a quote never closes — the caller
  * treats that as "unparseable" (fail-closed upstream).
+ *
+ * Handles single-quoted ('…'), double-quoted ("…" with backslash escapes),
+ * and ANSI-C / anishi-quoted ($'…') strings.
  */
 function rawTokens(raw: string): { list: string[]; terminated: boolean } {
   const list: string[] = [];
@@ -269,6 +302,32 @@ function rawTokens(raw: string): { list: string[]; terminated: boolean } {
     if (ch === ";" || ch === "|") {
       list.push(ch);
       i++;
+      continue;
+    }
+    // Anishi / ANSI-C quoting: $'…'
+    if (ch === "$" && (raw[i + 1] ?? "") === "'") {
+      i += 2;
+      let closed = false;
+      let buf = "";
+      while (i < n) {
+        const c2 = raw[i] ?? "";
+        if (c2 === "\\" && i + 1 < n) {
+          const nx = raw[i + 1] ?? "";
+          buf +=
+            nx === "n" ? "\n" : nx === "t" ? "\t" : nx === "\\" ? "\\" : nx === "'" ? "'" : c2 + nx;
+          i += 2;
+          continue;
+        }
+        if (c2 === "'") {
+          closed = true;
+          i++;
+          break;
+        }
+        buf += c2;
+        i++;
+      }
+      if (!closed) return { list, terminated: false };
+      list.push(`$'${buf}'`);
       continue;
     }
     if (ch === "'" || ch === '"') {
