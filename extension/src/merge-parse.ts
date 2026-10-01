@@ -96,6 +96,17 @@ export function extractMergeNumber(args: string): number | undefined {
   return parseArgsAfterVerb(args).number;
 }
 
+/**
+ * Unwrap ONE shell-eval layer (`bash -c …`, `sh -c …`, `eval …`, with
+ * `env`/`oo` wrappers) to its quoted string argument. Exported so the
+ * merge guard can walk the layers itself when extracting the repo flag
+ * (which can appear before the verb, in the pre-verb portion of the
+ * command).
+ */
+export function mergeVerbUnwrapOne(command: string): string | undefined {
+  return unwrapShellEval(command);
+}
+
 /** The repo (see `mergeVerbRepo`) parsed from post-verb arguments alone. */
 export function extractMergeRepo(args: string): string | undefined {
   return parseArgsAfterVerb(args).repo;
@@ -108,7 +119,7 @@ export function extractMergeRepo(args: string): string | undefined {
 // branch of the legacy `mergesPr` matcher (scan-not-anchor, optional `oo`
 // wrapper).
 function mergeVerbRegex(): RegExp {
-  return /(?:^|[;&|]|\s)(?:oo\s+)?(?:gh|glab)\s+(?:pr\s+merge|mr\s+merge)(?:\s|$)/;
+  return /(?:^|[;&|]|\s)(?:oo\s+)?(?:gh|glab)(?:\s+-R\s+\S+)?\s+(?:pr\s+merge|mr\s+merge)(?:\s|$)/;
 }
 
 /**

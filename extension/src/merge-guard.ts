@@ -86,7 +86,7 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { mergesPr } from "./bash-merges-pr.ts";
-import { extractMergeNumber, extractMergeRepo, mergeVerbArgs } from "./merge-parse.ts";
+import { extractMergeNumber, mergeVerbArgs, mergeVerbUnwrapOne } from "./merge-parse.ts";
 import { type MergeExecFn, isCarveOut, readMergeTarget, resolvePrNumber } from "./merge-target.ts";
 import {
   type LedgerEntry,
@@ -142,8 +142,45 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     // matched span — `extractPrNumber` (span-scoped) still applies there.
     // The `-R`/`--repo` flag (or a PR-URL) names the repo — threaded to the
     // gh/glab reads so the guard resolves the PR in the right repo.
+    //
+    // The repo is extracted from the WHOLE command (not just the post-verb
+    // tail) because the -R flag can appear BEFORE the verb (`gh -R o/r pr
+    // merge 17`).
     const fromVerb = mergeVerbArgs(command);
-    const fromRepo = fromVerb !== undefined ? extractMergeRepo(fromVerb) : undefined;
+    // Extract the repo from the innermost segment that contains the verb.
+    let text = command;
+    let fromRepo: string | undefined;
+    for (let depth = 0; depth < 3; depth++) {
+      const inner = mergeVerbUnwrapOne(text);
+      if (inner !== undefined) {
+        text = inner;
+        continue;
+      }
+      // Parse the whole command (pre-verb -R + post-verb args) for the repo.
+      const repoMatch =
+        /(?:^|[;&|]|\s)(?:oo\s+)?(?:gh|glab)\s+(?:-R\s+\S+\s+)?(?:pr\s+merge|mr\s+merge)/.exec(
+          text,
+        );
+      if (repoMatch) {
+        const rm = /(?:^|[;&|]|\s)(?:oo\s+)?(?:gh|glab)\s+(-R\s+\S+)/.exec(text);
+        if (rm?.[1]) {
+          const parts = rm[1].trim().split(/\s+/);
+          fromRepo = parts[1];
+        }
+        // Also check for a PR-URL in the post-verb tail.
+        if (!fromRepo && fromVerb !== undefined) {
+          const urlRepo =
+            /(?:^|[;&|]|\s)(?:gh|glab)\s+(?:pr\s+merge|mr\s+merge)\s+\S*https?:\/\/[^\s]+/.exec(
+              text,
+            );
+          if (urlRepo) {
+            const urm = /(?:github\.com|gitlab\.com)\/([^/]+)\/([^/]+)/.exec(urlRepo[0]);
+            if (urm?.[1] && urm[2]) fromRepo = `${urm[1]}/${urm[2]}`;
+          }
+        }
+      }
+      break;
+    }
     let prNumber: number | undefined;
     if (fromVerb !== undefined) {
       // The verb door matched — parse the number from the argument tail.
