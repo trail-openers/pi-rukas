@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.74](https://github.com/trail-openers/pi-rukas/compare/v0.12.73...v0.12.74) (2026-10-01)
+
+
+### Bug Fixes
+
+* **spawn:** don't count an in-flight tool call as inactivity ([#953](https://github.com/trail-openers/pi-rukas/issues/953)) ([833efe0](https://github.com/trail-openers/pi-rukas/commit/833efe01001da40e0494ed979d7a2440510af559))
+
 ## [0.12.73](https://github.com/trail-openers/pi-rukas/compare/v0.12.72...v0.12.73) (2026-09-30)
 
 
