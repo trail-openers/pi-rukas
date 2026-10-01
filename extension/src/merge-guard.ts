@@ -134,6 +134,7 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     // through it); production uses execp.
     const execFn: MergeExecFn = opts.execFn ?? execp;
 
+    // Resolve the PR number (from the command or the current branch).
     // Resolve the PR number. The verb door (`gh pr merge …` / `glab mr
     // merge …`) carries the number in the arguments AFTER the matched verb
     // (#955: the legacy span-based extraction only saw the verb itself, so

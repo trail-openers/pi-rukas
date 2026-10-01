@@ -54,6 +54,10 @@ function forgeWord(t: string): string | undefined {
  * fail-closed paths upstream own the refusal).
  */
 export function matchMergeVerb(text: string): string | undefined {
+  // The verb door: `gh pr merge` / `glab mr merge`, number optional.
+  // (#955 round-2: the verb no longer runs as one whole-command regex — it
+  // is matched per segment head here, after stripping wrapper words, so the
+  // number optionality now also holds for wrapped/inner invocations.)
   const tokens = rawTokens(text);
   if (tokens.terminated === false) return undefined;
   const list = tokens.list;
