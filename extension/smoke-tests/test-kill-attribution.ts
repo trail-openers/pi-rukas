@@ -121,8 +121,15 @@ const killed = (over: Partial<DispatchResult>): DispatchResult =>
   const SRC = path.resolve(import.meta.dirname, "..", "src");
   const support = readFileSync(path.join(SRC, "spawn-support.ts"), "utf8");
   assert(
-    /return 25 \* 60_000;/.test(support),
-    "canary: the inactivity budget is unchanged — raising a number to cover a cause you have not identified is the mistake the per-role timers were deleted for",
+    /return 30 \* 60_000;/.test(support),
+    "canary: the inactivity budget is 30 min (was 25, moved by #951 — the in-flight tool-call exemption now covers the ~15-min long-bash gap, so the model-silence budget only has to clear a slow provider turn)",
+  );
+  // #951 — the tool-inactivity bound is a separate knob, 60 min default,
+  // and larger than the model-silence bound (a silent in-flight tool is the
+  // NORMAL shape of a long bash; the tool bound is the backstop for a wedged tool).
+  assert(
+    /return 60 \* 60_000;/.test(support),
+    "canary: the tool-inactivity bound is 60 min (a separate knob from the model-silence budget)",
   );
   const spawn = readFileSync(path.join(SRC, "spawn.ts"), "utf8");
   assert(

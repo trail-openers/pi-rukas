@@ -7,9 +7,12 @@
  * 5s SIGKILL, with the structured cause set BEFORE the kill, so
  * DispatchResult.killCause, lastActivity and the stderr attribution line
  * follow #296's structured-kill contract. killCause priority
- * (resolveKillCause): loop > inactivity > token-budget > timeout > abort —
- * the most specific wins (the #296 invariant; #296's three values are
- * untouched). A budget-killed child that ALSO tripped the wall-clock
+ * (resolveKillCause): loop > inactivity = tool-inactivity > token-budget >
+ * timeout > abort — the most specific wins (the #296 invariant; #296's three
+ * values are untouched). Inactivity and tool-inactivity rank equal: both are
+ * wall-clock silence kills of the same poll (the #951 exemption swaps which
+ * budget is armed, not the kill's nature), so their ordering is irrelevant —
+ * exactly one is set per poll, by construction. A budget-killed child that ALSO tripped the wall-clock
  * backstop is a token-budget kill, not a timeout: the attribution drives
  * retry semantics AND which env override the operator should read, and the
  * budget is the more specific diagnosis of what actually cost the money.
@@ -37,9 +40,11 @@ function killChild(child: ChildProcess): void {
 }
 
 /**
- * #543 — killCause priority: loop > inactivity > token-budget > timeout >
- * abort (the most specific wins — the #296 invariant; #296's three values are
- * untouched).
+ * #543 — killCause priority: loop > inactivity = tool-inactivity >
+ * token-budget > timeout > abort (the most specific wins — the #296
+ * invariant; #296's three values are untouched). The two silence kills rank
+ * equal: same poll, one budget armed at a time (#951), so their relative
+ * order cannot change an outcome.
  *
  * NOTE — ordering of token-budget vs timeout is a deliberate DEVIATION from
  * the literal spec sentence ("loop > inactivity > timeout > abort"): a
@@ -51,12 +56,16 @@ function killChild(child: ChildProcess): void {
 export function resolveKillCause(facts: {
   loopKilled: boolean;
   inactivityKilled: boolean;
+  toolInactivityKilled: boolean;
   timedOut: boolean;
   tokenBudgetKilled: boolean;
   aborted: boolean;
 }): DispatchResult["killCause"] {
   if (facts.loopKilled) return "loop";
+  // #951 — the two silence kills are ranked equal (see module doc): a poll
+  // sets at most one, so the order here cannot matter.
   if (facts.inactivityKilled) return "inactivity";
+  if (facts.toolInactivityKilled) return "tool-inactivity";
   // C1 — token-budget is checked BEFORE timeout: a child killed by its
   // token budget that also outlived the wall-clock backstop is a
   // token-budget kill (see the module doc + the doc comment above).
@@ -166,6 +175,8 @@ export interface CapSessionOpts {
   totalTokens: () => number;
   timedOut: () => boolean;
   inactivityKilled: () => boolean;
+  /** #951 — the in-flight-tool silence kill fired (see resolveKillCause). */
+  toolInactivityKilled: () => boolean;
   aborted: () => boolean;
   capKillGraceMs: number;
   /**
@@ -413,6 +424,7 @@ export function createCapSession(opts: CapSessionOpts): CapSession {
       resolveKillCause({
         loopKilled,
         inactivityKilled: opts.inactivityKilled(),
+        toolInactivityKilled: opts.toolInactivityKilled(),
         timedOut: opts.timedOut(),
         tokenBudgetKilled: tokenBudgetTracker?.killed ?? false,
         aborted: opts.aborted(),

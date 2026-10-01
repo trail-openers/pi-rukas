@@ -50,6 +50,10 @@ refuses these shapes outright — but do not emit them:
 - Credential prompts fail instead of waiting. If a push or fetch asks for
   credentials, report it — do not retry in a loop.
 
+When you run a long command yourself (the full gate, a CI watch), keep it
+under the watchdog: either split it into steps that each print output, or
+keep the wrapper `timeout` below `PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS`.
+
 ## Before Starting Work
 
 **⛔ Code Search Rules — CRITICAL**

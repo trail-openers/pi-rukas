@@ -47,6 +47,11 @@ export function overrideEnvForKillCause(
     case "inactivity":
     case "abort":
       return "PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS";
+    // #951 — the in-flight-tool silence kill: its bound is a SEPARATE knob
+    // (PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS), so the operator is pointed at
+    // the value that actually killed the child.
+    case "tool-inactivity":
+      return "PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS";
   }
 }
 

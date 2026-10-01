@@ -117,15 +117,17 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
     "the handoff still posts the comment and applies the label in-process when the dispatch does not (via the forge adapter, with retry)",
   );
 
-  // And the inactivity watchdog is deliberately UNCHANGED. It fires on 25
-  // minutes of total silence. The structural fixes (#544 dispatch caps +
-  // worktree isolation) remove the contention that made it bite; weakening a
-  // genuine hang detector to accommodate causes we already fixed would be the
-  // wrong repair.
+  // And the inactivity watchdog is deliberately sized for the silence shape
+// it owns. #951 moved the model-silence default 25 → 30 min (the in-flight
+// tool-call exemption now covers the ~15-min long-bash gap this budget once
+// defended) and added the tool-inactivity bound (60 min) for silent tools.
+// The structural fixes (#544 dispatch caps + worktree isolation) remove the
+// contention that made it bite; weakening a genuine hang detector to
+// accommodate causes we already fixed would be the wrong repair.
   const support = readFileSync(path.join(SRC, "spawn-support.ts"), "utf8");
   assert(
-    /return 25 \* 60_000;/.test(support),
-    "the inactivity watchdog stays at 25 min — the slowdown that made it bite is what got fixed",
+    /return 30 \* 60_000;/.test(support),
+    "the inactivity watchdog is at 30 min (was 25, moved by #951) — the slowdown that made it bite is what got fixed",
   );
 }
 

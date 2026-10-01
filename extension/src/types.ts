@@ -98,7 +98,20 @@ export interface DispatchResult {
   // (planDispatchTimeoutMs, default 30 min) expired on the PRIMARY plan
   // dispatch. Set at the plan call site from the expired per-call timeoutMs —
   // resolveKillCause stays a function of the child-process cap facts only.
-  killCause?: "timeout" | "inactivity" | "abort" | "loop" | "token-budget" | "plan-timeout";
+  //
+  // #951 — "tool-inactivity" = a tool call was in flight (a toolCall block
+  // seen, its toolResult not yet arrived) when the child's silence exceeded
+  // the tool-inactivity bound. A sibling of "inactivity": same poll, one
+  // budget active at a time (the tool bound while the in-flight set is
+  // non-empty, the model-silence bound when it is empty).
+  killCause?:
+    | "timeout"
+    | "inactivity"
+    | "abort"
+    | "loop"
+    | "token-budget"
+    | "plan-timeout"
+    | "tool-inactivity";
   /**
    * #298 — set only on the SYNTHESIZED adversarial-loop result (role
    * "adversarial-loop"): "rejected" is a COMPLETED reviewer verdict (must be
@@ -125,7 +138,12 @@ export interface DispatchResult {
   }>;
   /** Total review rounds executed; present when the loop exited with no verdict. */
   roundsExecuted?: number;
-  /** The budget (ms) that expired for killCause "timeout"/"inactivity". */
+  /**
+   * The budget (ms) that expired for killCause "timeout"/"inactivity"/
+   * "tool-inactivity" — the ACTIVE bound, since exactly one budget is
+   * checked per poll (#951: the tool bound while a tool is in flight, the
+   * model-silence bound otherwise).
+   */
   killBudgetMs?: number;
   /**
    * #543 — set when killCause is "loop". The structured trigger evidence the
@@ -219,6 +237,8 @@ export type DispatchFailureCause =
   | "success"
   | "self-killed:timeout"
   | "self-killed:inactivity"
+  /** #951 — a tool call was in flight when the silence exceeded the tool-inactivity bound; retried like inactivity (a genuine hang shape). */
+  | "self-killed:tool-inactivity"
   | "self-killed:abort"
   /** 429 with no parseable delay — conservative pre-#366 handling: halt. */
   | "rate-limited:429"

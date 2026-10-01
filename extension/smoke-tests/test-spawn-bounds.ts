@@ -34,7 +34,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { spawnCap } from "../src/spawn-semaphore.ts";
-import { SPAWN_BACKSTOP_MS, inactivityTimeoutMs, spawnBackstopMs } from "../src/spawn-support.ts";
+import { SPAWN_BACKSTOP_MS, inactivityTimeoutMs, spawnBackstopMs, toolInactivityTimeoutMs } from "../src/spawn-support.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -124,12 +124,25 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
   // to measuring the wrong thing.
   assert(
     withEnv({ PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS: undefined }, () => inactivityTimeoutMs()) ===
-      25 * 60_000,
-    "the inactivity watchdog stays at 25 min of zero stdout — the model-independent signal",
+      30 * 60_000,
+    "the inactivity watchdog is at 30 min of zero stdout (was 25, moved by #951) — the model-independent signal",
   );
   assert(
     inactivityTimeoutMs() < SPAWN_BACKSTOP_MS,
     "canary: liveness fires well before the backstop — otherwise the backstop is the de-facto detector",
+  );
+  // #951 — the tool-inactivity bound is a separate knob, 60 min default,
+  // and larger than the model-silence bound (a silent in-flight tool is the
+  // NORMAL shape of a long bash; the tool bound is the backstop for a wedged tool).
+  assert(
+    withEnv({ PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS: undefined }, () =>
+      toolInactivityTimeoutMs(),
+    ) === 60 * 60_000,
+    "canary: the tool-inactivity bound is 60 min (a separate knob from the model-silence budget)",
+  );
+  assert(
+    toolInactivityTimeoutMs() > inactivityTimeoutMs(),
+    "canary: the tool bound is larger than the model-silence bound — a silent in-flight tool is the normal shape",
   );
 }
 

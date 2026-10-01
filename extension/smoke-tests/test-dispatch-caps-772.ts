@@ -39,6 +39,7 @@ function assert(cond: boolean, msg: string) {
       totalTokens: () => 0,
       timedOut: () => false,
       inactivityKilled: () => false,
+      toolInactivityKilled: () => false,
       aborted: () => false,
       capKillGraceMs: 2000,
       childExited: () => false,

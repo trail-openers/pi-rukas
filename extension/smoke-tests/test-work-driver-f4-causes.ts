@@ -48,6 +48,15 @@ for (const [cause, killCause] of [
   );
 }
 
+// #951 — tool-inactivity self-kill → shouldRetry TRUE, maxRetries 1 (same as inactivity).
+{
+  const cls = classifyFailureCause(mkEvent({ killCause: "tool-inactivity", kind: "dispatch-failed" }));
+  assert(
+    cls.cause === "self-killed:tool-inactivity" && cls.shouldRetry === true && cls.maxRetries === 1,
+    "tool-inactivity → self-killed:tool-inactivity, retries like inactivity",
+  );
+}
+
 // A dispatch-failed with NO structured cause must NOT take the loop branch.
 {
   const cls = classifyFailureCause(
@@ -64,6 +73,8 @@ for (const [cause, killCause] of [
 for (const [cause, killCause] of [
   ["self-killed:loop", "loop"],
   ["self-killed:token-budget", "token-budget"],
+  // #951 — tool-inactivity also needs a defined reason line.
+  ["self-killed:tool-inactivity", "tool-inactivity"],
 ] as const) {
   const cls = classifyFailureCause(mkEvent({ killCause, kind: "dispatch-failed" }));
   const reason = failureCauseReason(mkEvent({ killCause, kind: "dispatch-failed" }));
@@ -96,6 +107,8 @@ for (const [cause, killCause] of [
   for (const [killCause, needle] of [
     ["loop", "looped on"],
     ["token-budget", "token budget"],
+    // #951 — tool-inactivity also needs a WHY line.
+    ["tool-inactivity", "in flight"],
   ] as const) {
     const state = {
       ...base,
@@ -126,6 +139,8 @@ for (const [cause, killCause] of [
 for (const [killCause, needle] of [
   ["loop", "loop detected"],
   ["token-budget", "token budget"],
+  // #951 — tool-inactivity also needs a distinct headline.
+  ["tool-inactivity", "tool-inactivity"],
 ] as const) {
   const report = formatSingleReport(`f4-${killCause}`, "developer", {
     role: "developer",
@@ -159,6 +174,9 @@ for (const [killCause, needle] of [
   for (const [killCause, needle] of [
     ["loop", "PI_ENSEMBLE_DISPATCH_CAPS"],
     ["token-budget", "PI_ENSEMBLE_CAP_KILL_GRACE_MS"],
+    // #951 — tool-inactivity names the tool-inactivity knob, NOT the
+    // model-silence knob.
+    ["tool-inactivity", "PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS"],
   ] as const) {
     const ev = await buildCompletionEvent(ctx, "develop", "developer", "developer", {
       role: "developer",

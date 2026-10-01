@@ -113,6 +113,12 @@ export function describeOutcome(result: DispatchResult): {
   if (result.killCause === "inactivity") {
     return { status: "FAILED (self-killed: inactivity watchdog)", bodyPrefix: null };
   }
+  // #951 — a distinct headline from the model-silence watchdog: this child
+  // had a tool call in flight when it went silent (the tool bound fired), so
+  // the operator can tell a silent model from a silent tool.
+  if (result.killCause === "tool-inactivity") {
+    return { status: "FAILED (self-killed: tool-inactivity watchdog)", bodyPrefix: null };
+  }
   if (result.killCause === "abort") {
     return { status: "FAILED (cancelled: abort signal)", bodyPrefix: null };
   }
