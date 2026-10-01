@@ -78,6 +78,9 @@ for (const cmd of [
   // A forge PATH instead of a bare name.
   "/usr/bin/gh pr merge 17",
   "/opt/homebrew/bin/gh pr merge 17",
+  // A relative forge path (#955 adversarial round 2, finding 2).
+  "./gh pr merge 17",
+  "bin/gh pr merge 17",
   // Chained after another command, still wrapped.
   "cd /data/3 && timeout 30 gh pr merge 17",
   "git status; nohup gh pr merge 17 &",
@@ -240,6 +243,11 @@ for (const cmd of [
   "x=`gh api repos/o/r/pulls/17/merge`",
   "(glab api /projects/o%2Fr/mr/7/merge -f state=merged)",
   "y=$(glab api /projects/o%2Fr/mr/7/merge -f state=merged)",
+  // A repo flag BEFORE `api` on the REST door (#955 adversarial round 2,
+  // finding 1: `gh -R o/r api …/merge` was not matched because the FORGE
+  // regex required `gh` immediately followed by `api`).
+  "gh -R o/r api repos/o/r/pulls/17/merge",
+  "gh --repo o/r api repos/o/r/pulls/17/merge",
 ]) {
   assert(mergesPr(cmd) !== undefined, `canary (REST-in-construct): blocked — ${cmd}`);
 }

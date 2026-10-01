@@ -59,24 +59,12 @@ import { innerBodies, matchMergeVerb, mergeVerbUnwrapOne } from "./merge-verb-he
  * #955 lens fix 5: an unbalanced `(`/`)` or an odd backtick count in the
  * raw command, combined with a merge verb somewhere in the text, is
  * likewise treated as a merge with no number — the same fail-closed
- * treatment as an unparseable command.
+ * treatment as an unparseable command (handled inside matchMergeVerbTail,
+ * which returns the empty-string tail when a null result is combined with
+ * a merge verb in the raw text).
  */
 export function mergeVerbArgs(command: string): string | undefined {
-  const tail = matchMergeVerbTail(command);
-  // The tail walk returns undefined when no segment carries the merge verb,
-  // or an empty string when the command is unparseable (fail-closed). But a
-  // command with unbalanced constructs that the tail walk could not reach
-  // (because the segment walker never returned a segment carrying the verb)
-  // still needs the raw-text check below: an unbalanced `(` or odd backtick
-  // count, combined with `pr merge` / `mr merge` in the raw text, is a merge
-  // the guard cannot number.
-  if (tail === undefined) {
-    const hasMergeVerb = /(?:^|\s)(?:pr|mr)\s+merge\b/.test(command);
-    if (hasMergeVerb && hasUnbalancedConstruct(command)) {
-      return "";
-    }
-  }
-  return tail;
+  return matchMergeVerbTail(command);
 }
 
 /**
@@ -172,14 +160,13 @@ function matchMergeVerbTail(command: string): string | undefined {
   }
   const tail = matchSegmentsTail(text);
   // A `null` tail is the fail-closed signal (unparseable / unbalanced /
-  // exhausted budget): the command carries a merge the guard cannot
-  // number — return the empty tail (the no-number fallback refusal).
+  // exhausted budget). Fail closed ONLY when the raw text carries a merge
+  // verb — an unterminated quote in a NON-merge command (`echo "( hi`)
+  // must NOT trigger the no-number fallback refusal (#955 adversarial
+  // round 1, finding 6).
   if (tail === null) {
-    // #955 lens fix 5: an unbalanced `(` or odd backtick count in the raw
-    // command, combined with a merge verb somewhere in the raw text, is a
-    // merge the guard cannot number — fail closed.
-    if (hasMergeVerbInRaw(command) && hasUnbalancedConstruct(command)) return "";
-    return "";
+    if (hasMergeVerbInRaw(command)) return "";
+    return undefined;
   }
   return tail;
 }
@@ -227,48 +214,6 @@ function matchSegmentsTail(text: string): string | null | undefined {
 /** True when the raw command text contains a merge verb (scan-not-anchor). */
 function hasMergeVerbInRaw(command: string): boolean {
   return /(?:^|\s)(?:pr|mr)\s+merge\b/.test(command);
-}
-
-/**
- * Quote-aware scan for unbalanced `(`/`)` or an odd backtick count.
- * Skips quoted runs (they are data, not shell constructs) and counts
- * only unquoted parens and backticks. An unbalanced result means the
- * raw command carries a construct the segment walker could not parse —
- * the caller fails closed.
- */
-function hasUnbalancedConstruct(text: string): boolean {
-  let parenDepth = 0;
-  let backtickCount = 0;
-  let i = 0;
-  const n = text.length;
-  while (i < n) {
-    const ch = text[i] ?? "";
-    if (ch === "'" || ch === '"') {
-      const q = ch;
-      i++;
-      while (i < n) {
-        if (q === '"' && text[i] === "\\" && i + 1 < n) {
-          i += 2;
-          continue;
-        }
-        if (text[i] === q) {
-          i++;
-          break;
-        }
-        i++;
-      }
-      continue;
-    }
-    if (ch === "\\" && i + 1 < n) {
-      i += 2;
-      continue;
-    }
-    if (ch === "(") parenDepth++;
-    else if (ch === ")") parenDepth--;
-    else if (ch === "`") backtickCount++;
-    i++;
-  }
-  return parenDepth !== 0 || backtickCount % 2 !== 0;
 }
 
 /**

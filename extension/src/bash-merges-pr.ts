@@ -88,8 +88,13 @@ function restDoors(texts: string[]): string | undefined {
     // The forge word, optionally path-qualified (`/usr/bin/gh`), shared with
     // MERGE_VERB_SPAN_SRC via FORGE_PREFIX_SRC (merge-tokens.ts) so the two
     // doors cannot drift (#955 lens round-2: the doors hard-coded a bare
-    // `gh`/`glab` here, so a path-qualified forge bypassed them).
-    const FORGE = `(?:^|[;&|]|\\s)(?:oo\\s+)?${FORGE_PREFIX_SRC}`;
+    // `gh`/`glab` here, so a path-qualified forge bypassed them). The
+    // `\s+` after the forge word is stripped from FORGE_PREFIX_SRC here
+    // because the REST doors need an optional repo flag between the forge
+    // word and `api` (`gh -R o/r api …`) — the same shape the verb door
+    // allows (#955 adversarial round 2, finding 1).
+    const FORGE =
+      "(?:^|[;&|]|\\s)(?:oo\\s+)?(?:/\\S*/)?(?:gh|glab)(?:\\s+(?:-R|--repo|--project)\\s+\\S+)?\\s+";
     // REST door, gh: `gh api` on /pulls/{n}/merge — gh api defaults to
     // POST/PUT when no --method is given, so the /merge suffix IS the write
     // even when it "looks like a read". The no-number `.../pulls/merge`

@@ -54,11 +54,17 @@ const BARE_WRAPPERS = new Set(["command", "builtin", "exec", "nohup", "sudo", "o
 /**
  * The forge command word, normalised: a path ending in `/gh` or `/glab`
  * is the same invocation as the bare name (`/usr/bin/gh pr merge 17`,
- * `/opt/homebrew/bin/gh …`).
+ * `bin/gh pr merge 17`, `./gh pr merge 17`). #955 adversarial round 2,
+ * finding 2: relative forge paths (`./gh`, `bin/gh`) were not matched —
+ * only absolute paths were. The check now uses the basename uniformly,
+ * covering absolute, relative, and bare forms in one test.
  */
 function forgeWord(t: string): string | undefined {
   if (t === "gh" || t === "glab") return t;
-  if (/^\/.*\/(gh|glab)$/.test(t)) return t.split("/").pop();
+  if (t.includes("/")) {
+    const base = t.split("/").pop();
+    if (base === "gh" || base === "glab") return base;
+  }
   return undefined;
 }
 
@@ -83,7 +89,36 @@ export function matchMergeVerb(text: string): string | undefined {
     const t = list[i] ?? "";
     // A quote- or variable-substituted command word is not the bare shape
     // the guard unwraps — no forge word to match, and not a wrapper.
-    if (t[0] === "'" || t[0] === '"' || t[0] === "$" || t === "`" || t[0] === "(") return undefined;
+    if (t[0] === "'" || t[0] === '"' || t[0] === "$" || t === "`") return undefined;
+    // A leading `(` or `)` (subshell delimiter) is not a command word.
+    // `rawTokens` glues an adjacent paren to the next word (`(gh`), so
+    // strip it and re-test the remainder as the command head (#955
+    // adversarial round 1: `(gh pr merge 17` — the paren made `gh` land
+    // inside the first token and the merge read as "not a merge").
+    if (t[0] === "(" || t[0] === ")") {
+      const rest = t.slice(1);
+      if (rest.length === 0) {
+        i++;
+        continue;
+      }
+      const forge = forgeWord(rest);
+      if (forge) {
+        const seg = [rest, ...list.slice(i + 1)].join(" ");
+        const isMerge = mergeVerbHeadRegex().test(seg);
+        return isMerge ? forge : undefined;
+      }
+      i++;
+      continue;
+    }
+    // A VAR=VALUE assignment prefix is transparent — the shell sets the
+    // variable and runs the NEXT token as the command. `FOO=bar gh pr
+    // merge 17` is the same merge as the bare form (#955 adversarial
+    // round 1: the walk returned undefined on the assignment token, so
+    // the merge read as "not a merge").
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) {
+      i++;
+      continue;
+    }
     // The segment head matched a forge word: run the verb regex on the
     // remaining tokens. A non-merge forge command (`gh pr view …`, `glab
     // mr view …`) is a HEAD test that returns undefined — the caller falls
