@@ -475,6 +475,13 @@ for (const cmd of [
   // takes a value token; `exec` is a wrapper.
   "env -u FOO gh pr merge 12",
   "exec gh pr merge 12",
+  // Control-flow / compound-construct shapes (adversarial round-3 finding 1):
+  // the merge must be refused through the real hook, not merely matched.
+  "if true; then gh pr merge 12; fi",
+  "for i in 1; do gh pr merge 12; done",
+  "{ gh pr merge 12; }",
+  "! gh pr merge 12",
+  "function f { gh pr merge 12; }; f",
   // The REST doors in a subshell / substitution (adversarial ISSUES #3).
   "(gh api repos/o/r/pulls/12/merge)",
   "x=$(gh api repos/o/r/pulls/12/merge)",

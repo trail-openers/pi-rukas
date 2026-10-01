@@ -19,6 +19,17 @@
  *   - nested shell eval past the unwrap budget — the caller fails those
  *     closed.
  *
+ * Round-3 (adversarial finding 1): the segment head walk previously bailed
+ * on any token that was not a wrapper, a shell-eval word, or a forge word —
+ * so control-flow / compound-construct shapes (`if …; then gh pr merge 17;
+ * fi`, `for …; do gh pr merge 17; done`, `function f { gh pr merge 17; };
+ * f`, `! gh pr merge 17`, `{ gh pr merge 17; }`) never reached the verb
+ * regex and the merge read as "not a merge". Those tokens are now treated
+ * as transparent (see TRANSPARENT_KEYWORDS): the walk advances past them
+ * until it finds the forge word, because the merge runs in the same shell
+ * with the same credentials. Quoted tokens are checked first and bail, so
+ * a quoted `"if"` argument can never fake the transparent path.
+ *
  * The fix: before matching a segment, strip the leading wrappers REPEATEDLY
  * (bash itself unwraps iteratively: `nohup sudo nice gh …` is all one
  * invocation), so `gh`/`glab` ends up where the verb regex expects it.
@@ -30,6 +41,36 @@
  */
 
 import { rawTokens, unquoteArg } from "./merge-tokens.ts";
+/**
+ * The shell keywords that open a control-flow / compound construct (`if`,
+ * `for`, `while`, `until`, `function`, `select`, `case`) or a compound-list
+ * delimiter (`then`, `do`, `!`, `{`, `}`, `)`). The segment-head matcher
+ * treats every one of them as TRANSPARENT — the merge verb can head any
+ * command of a compound-list (adversarial round 3, finding 1), and bailing
+ * on them was the bypass. Quoted tokens are never transparent (they are
+ * data, checked first by the quote test). `function` is handled separately
+ * because it optionally takes a name token.
+ */
+const TRANSPARENT_KEYWORDS = new Set([
+  "if",
+  "then",
+  "else",
+  "elif",
+  "fi",
+  "for",
+  "in",
+  "do",
+  "done",
+  "while",
+  "until",
+  "select",
+  "case",
+  "esac",
+  "!",
+  "{",
+  "}",
+  ")",
+]);
 
 /**
  * Wrapper words that take NO flags: the next token is the real command.
@@ -72,22 +113,41 @@ export function matchMergeVerb(text: string): string | undefined {
     // A quote- or variable-substituted command word is not the bare shape
     // the guard unwraps — no forge word to match, and not a wrapper.
     if (t[0] === "'" || t[0] === '"' || t[0] === "$" || t === "`" || t[0] === "(") return undefined;
+    // The segment head matched a forge word: run the verb regex on the
+    // remaining tokens. A non-merge forge command (`gh pr view …`, `glab
+    // mr view …`) is a HEAD test that returns undefined — the caller falls
+    // through to the REST doors for this segment. Do NOT advance past the
+    // forge word into the transparent-keyword walk: the forge word IS a
+    // command, and advancing past it would let a non-merge read as a merge
+    // if a verb happened to appear later in the same segment.
     const forge = forgeWord(t);
     if (forge) {
-      // The forge word found: the segment is a merge invocation when the
-      // remaining tokens carry `pr merge` / `mr merge` (the number is
-      // optional; `-R`/`--repo` before the verb is allowed).
       const rest = [t, ...list.slice(i + 1)].join(" ");
-      // The regex is anchored to the START of `rest` (the forge word is the
-      // first token). `(?:-R ...|--repo ...)?` is optional, so the verb
-      // follows the forge word directly (one space). `pr merge` / `mr merge`
-      // is the merge verb; the trailing `(?:\s|$)` ensures `merge` is a
-      // whole token (not a prefix of a longer word).
-      return new RegExp(
+      const isMerge = new RegExp(
         `^(?:${forge}|/\\S*/${forge})\\s+(?:-R\\s+\\S+|--repo\\s+\\S+|--project\\s+\\S+)?\\s*(?:pr|mr)\\s+merge(?:\\s|$)`,
-      ).test(rest)
-        ? forge
-        : undefined;
+      ).test(rest);
+      return isMerge ? forge : undefined;
+    }
+    // Round-3 (adversarial finding 1): a control-flow / compound-construct
+    // token is TRANSPARENT — it does not end the walk. The merge verb can
+    // head any segment of a compound-list command (`if true; then gh pr
+    // merge 17; fi`, `for i in 1; do gh pr merge 17; done`, `function f {
+    // gh pr merge 17; }; f`, `! gh pr merge 17`, `{ gh pr merge 17; }`),
+    // and bailing on any of these tokens was the bypass: the verb door
+    // never fired and the merge read as "not a merge". Advancing over them
+    // mirrors what the shell does — the merge runs in the same shell, with
+    // the same credentials. Quoted tokens already failed the quote test
+    // above, so a quoted `"if"` argument can never fake this path.
+    if (t === "function") {
+      // `function name { … }` or `function { … }` — advance past the name
+      // (if present) so the walk can reach the body's command head.
+      if (i + 1 < list.length && (list[i + 1] ?? "") !== "{") i++;
+      i++;
+      continue;
+    }
+    if (TRANSPARENT_KEYWORDS.has(t)) {
+      i++;
+      continue;
     }
     if (BARE_WRAPPERS.has(t)) {
       i++;

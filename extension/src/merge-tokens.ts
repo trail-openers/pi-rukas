@@ -134,7 +134,12 @@ export function unquoteArg(arg: string): string {
 /**
  * The command's shell segments — the raw substrings between top-level `;`,
  * `&&` and `|` separators (quote-aware: a `|` inside a quoted argument is
- * data, not a separator). Used to match each segment's head against
+ * data, not a separator). A trailing bare `&` (job control, `nohup gh pr
+ * merge 17 &`) terminates the command the same way those separators do — the
+ * following text is a NEW command (or none), so it gets its own segment (the
+ * bare `&` itself is not part of either segment; `parseArgsAfterVerb` trims
+ * a trailing `&` off the verb tail it consumes, so the number still parses
+ * either way). Used to match each segment's head against
  * `merge-verb-head.ts`'s wrapper-stripped command regex, the way the
  * quote-stripped matcher scans the whole command.
  */
@@ -174,6 +179,14 @@ export function shellSegments(command: string): string[] {
       parts.push(cur);
       cur = "";
       i += ch === "&" ? 2 : 1;
+      continue;
+    }
+    // A bare `&` (not `&&`) ends the current command — job control. It is
+    // not part of the command; the next text is its own segment.
+    if (ch === "&") {
+      parts.push(cur);
+      cur = "";
+      i++;
       continue;
     }
     cur += ch;
