@@ -11,18 +11,37 @@
  *    invisible: stripQuotedSegments DELETES the quoted -c body, so no
  *    merge verb remained to match — a genuine bypass.
  *
+ * Round-2 hardening (#955, adversarial round 2): the legacy matcher still
+ * missed every merge hidden behind a process wrapper (`timeout 30 gh pr
+ * merge 17`, `command …`, `nohup …`, `sudo …`, `nice …`, `time …`, `oo …`,
+ * `stdbuf …`), a forge PATH (`/usr/bin/gh pr merge 17`), or a subshell /
+ * command-substitution construct (`( gh pr merge 17 )`, `x=$(gh pr merge 17)`,
+ * backticks). Those shapes now match: each shell segment is matched
+ * segment-by-segment against a wrapper-stripped head (`matchMergeVerb`,
+ * merge-verb-head.ts), and the bodies of `( … )`, `$( … )` and backtick
+ * constructs are extracted and matched recursively, the same as `bash -c`
+ * bodies. Recursion past the depth budget fails CLOSED (a merge with no
+ * number → the fallback refusal), never open.
+ *
  * Design (per the #955 decisions):
  * - Subshell/wrapper unwrapping on the RAW command, recursively (depth 3),
  *   with unescaping (\" → ") for double-quoted layers. The guard matches
  *   and extracts on the INNERMOST segment that contains the merge verb.
  * - The PR number / repo are parsed from the arguments AFTER the matched
  *   verb, with a quote-aware tokenizer that skips flag values. The number
- *   is the first bare positional integer, a `#N`, or a `/pull/N` URL.
- *   Digits before the verb never count (the `cd /data/3` canary).
+ *   is the first bare positional integer (quoted or unquoted — the shell
+ *   strips the quotes), a `#N`, or a `/pull/N` / `/pulls/N` /
+ *   `/merge_requests/N` URL. Digits before the verb never count (the
+ *   `cd /data/3` canary). glab's `--project`/`-R` flag names the repo
+ *   (like gh's `-R`/`--repo`).
  * - The REST doors keep their existing span-based extraction.
  *
- * The matcher (`mergesPr`) lives in bash-merges-pr.ts.
+ * The matcher (`mergesPr`) lives in bash-merges-pr.ts; the token walk and
+ * the segment-head unwrapping live in merge-tokens.ts / merge-verb-head.ts.
  */
+
+import { rawTokens, shellSegments } from "./merge-tokens.ts";
+import { innerBodies, matchMergeVerb, mergeVerbUnwrapOne } from "./merge-verb-head.ts";
 
 /**
  * The arguments that follow the matched merge verb, verbatim (the raw tail
@@ -30,21 +49,14 @@
  * command does not merge; the empty string when a merge verb matched with
  * nothing after it (the no-number fallback). The REST doors carry their
  * number inside the matched span — that path stays in merge-guard.ts.
+ *
+ * #955 round 2: an unterminated quote in the raw command is an UNPARSEABLE
+ * command — the #955 rule for unparseable inner strings (treat as a merge
+ * with no number → the fallback refusal), not a clean pass.
  */
 export function mergeVerbArgs(command: string): string | undefined {
-  let text = command;
-  for (let depth = 0; depth < 3; depth++) {
-    const inner = unwrapShellEval(text);
-    if (inner !== undefined) {
-      text = inner;
-      continue;
-    }
-    return matchVerbArgs(text);
-  }
-  // Unwrap budget exhausted: fall through to the quote-stripped match, the
-  // way the legacy matcher did, so a merge still matches (extraction then
-  // falls back to current-branch resolution rather than missing the door).
-  return matchVerbArgs(stripForMatch(command));
+  if (mergeVerbSeen(command)) return "";
+  return matchMergeVerbTail(command);
 }
 
 /**
@@ -58,25 +70,17 @@ export function mergeVerbRepo(command: string): string | undefined {
   const tailRepo = parseArgsAfterVerb(args).repo;
   if (tailRepo) return tailRepo;
   // The repo flag may also sit BEFORE the verb (`gh -R o/r pr merge 17`).
-  let text = command;
-  for (let depth = 0; depth < 3; depth++) {
-    const inner = unwrapShellEval(text);
-    if (inner !== undefined) {
-      text = inner;
-      continue;
-    }
-    return repoFlagBeforeVerb(text);
-  }
-  return repoFlagBeforeVerb(stripForMatch(command));
+  return repoFlagBeforeVerb(command);
 }
 
 /**
  * Parse the PR/MR number from the arguments following the merge verb.
  *
  * The number is the first bare positional integer, a `#N`, or a `/pull/N` /
- * `/merge_requests/N` URL. Flag values that take an argument are skipped, so
- * `--subject "x 12"` never reads as PR 12; quoted runs are skipped the way
- * the shell would (a quoted string is a literal argument, not the number).
+ * `/pulls/N` / `/merge_requests/N` URL. Flag values that take an argument
+ * are skipped, so `--subject "x 12"` never reads as PR 12. A quoted run
+ * wraps a literal argument — the shell strips the quotes before parsing,
+ * so a quoted number (`gh pr merge "17"`) IS the number.
  */
 export function extractMergeNumber(args: string): number | undefined {
   return parseArgsAfterVerb(args).number;
@@ -84,14 +88,12 @@ export function extractMergeNumber(args: string): number | undefined {
 
 /**
  * Unwrap ONE shell-eval layer (`bash -c …`, `sh -c …`, `eval …`, with
- * `env`/`oo` wrappers) to its quoted string argument. Exported so the
- * merge guard can walk the layers itself when extracting the repo flag
- * (which can appear before the verb, in the pre-verb portion of the
- * command).
+ * `env`/`oo` wrappers) to its quoted string argument. Re-exported from
+ * merge-verb-head.ts (the name the round-1 callers imported) so the merge
+ * guard can walk the layers itself when extracting the repo flag (which can
+ * appear before the verb, in the pre-verb portion of the command).
  */
-export function mergeVerbUnwrapOne(command: string): string | undefined {
-  return unwrapShellEval(command);
-}
+export { mergeVerbUnwrapOne };
 
 /** The repo (see `mergeVerbRepo`) parsed from post-verb arguments alone. */
 export function extractMergeRepo(args: string): string | undefined {
@@ -101,318 +103,164 @@ export function extractMergeRepo(args: string): string | undefined {
 // ---------------------------------------------------------------------------
 // internals
 
-// The merge-verb regex shared by every entry point. It is the exact verb
-// branch of the legacy `mergesPr` matcher (scan-not-anchor, optional `oo`
-// wrapper).
-function mergeVerbRegex(): RegExp {
-  return /(?:^|[;&|]|\s)(?:oo\s+)?(?:gh|glab)(?:\s+(?:-R|--repo)\s+\S+)?\s+(?:pr\s+merge|mr\s+merge)(?:\s|$)/;
+/**
+ * The recursive merge-verb matcher (no unwrap budget): shell-eval layers
+ * (`bash -c` / `sh -c` / `eval`, with `env`/`oo`) are unwrapped first, then
+ * each shell segment's head is tested with the wrapper-stripped
+ * `matchMergeVerb` (process wrappers, forge paths), and the bodies of
+ * subshell / command-substitution constructs are matched recursively.
+ *
+ * The depth budget is the `bash -c` layers (depth 3 — a merge 3 shell-eval
+ * layers deep is already beyond any real shell shape; deeper nesting is the
+ * "unparseable" case that fails closed in `mergeVerbSeen` /
+ * `matchMergeVerbTail`). The inner-body recursion is unbounded — those
+ * bodies are strictly shorter than their parent, so the recursion
+ * terminates, and a merge hidden in a 4-level subshell is exactly the
+ * shape that must NOT escape.
+ *
+ * Returns true when the command merges (some inner segment carries the
+ * merge verb), false when it does not, and undefined when the command is
+ * unparseable (a quote never closes) — the caller fails closed.
+ */
+function matchMergeVerbDeep(text: string, depth: number): boolean | undefined {
+  let cur = text;
+  for (let d = 0; d < 3; d++) {
+    const inner = mergeVerbUnwrapOne(cur);
+    if (inner !== undefined) {
+      cur = inner;
+      continue;
+    }
+    break;
+  }
+  return matchSegments(cur, depth);
 }
 
 /**
- * Match the verb in the (already unwrapped) segment. Returns the argument
- * tail when the verb matches (possibly empty), or undefined.
+ * Match every shell segment of `text`, and every extracted inner-body
+ * construct, recursively. Returns true on the first merge verb found,
+ * false when no segment matches, undefined when an unbalanced construct or
+ * an unparseable segment was hit (fail closed).
  */
-function matchVerbArgs(text: string): string | undefined {
-  const m = mergeVerbRegex().exec(text);
-  if (!m) return undefined;
-  // Verify the match is not inside a quoted segment: strip quotes and
-  // check the verb is still present. Catches `echo "gh pr merge 17"`
-  // (the regex matches the `gh` inside the double-quoted segment because
-  // the whitespace before it satisfies the `(?:^|[;&|]|\s)` anchor).
-  const stripped = stripForMatch(text);
-  if (!mergeVerbRegex().exec(stripped)) return undefined;
-  const span = m[0].trim();
-  const idx = text.lastIndexOf(span);
-  // The tail is consumed verbatim — the post-verb parser is quote-aware,
-  // so no quote-stripping happens here (a quoted `"x 12"` stays a quoted
-  // argument the parser skips, exactly as the shell treats it).
-  return text.slice(idx + span.length);
+function matchSegments(text: string, depth: number): boolean | undefined {
+  const segments = shellSegments(text);
+  if (segments.length === 0) return undefined; // the raw text had an unterminated quote
+  for (const seg of segments) {
+    if (matchMergeVerb(seg) !== undefined) return true;
+    for (const body of innerBodies(seg)) {
+      const inner = matchMergeVerbDeep(body, depth + 1);
+      if (inner === true) return true;
+      if (inner === undefined) return undefined; // unparseable inner — fail closed
+    }
+  }
+  return false;
 }
 
-// A global `-R`/`--repo` flag placed BEFORE the merge verb (`gh -R o/r pr
-// merge 17`). The token walk is quote-aware (a quoted `"-R"` is not a
-// flag); only unquoted flag tokens count.
-function repoFlagBeforeVerb(text: string): string | undefined {
-  const m = mergeVerbRegex().exec(text);
-  if (!m) return undefined;
-  const span = m[0].trim();
-  const idx = text.lastIndexOf(span);
-  const head = text.slice(0, idx + span.length);
-  const tokens = rawTokens(head);
-  if (tokens.terminated === false) return undefined;
-  for (let i = 0; i < tokens.list.length; i++) {
-    const t = tokens.list[i] ?? "";
-    if (t === "-R" || t === "--repo") {
-      const v = tokens.list[i + 1];
-      if (v === undefined || v.length === 0) return undefined;
-      const q = v[0];
-      return q === "'" || q === '"' ? v.slice(1, -1) : v;
+/**
+ * The argument tail after the matched merge verb in `command` (see
+ * `mergeVerbArgs`). Walks the same layers as `matchMergeVerbDeep` and
+ * returns the tail of the FIRST segment whose head matches the merge verb
+ * (the post-verb parser is quote-aware, so the tail is consumed verbatim).
+ * Returns undefined when the command does not merge or is unparseable.
+ */
+function matchMergeVerbTail(command: string): string | undefined {
+  let text = command;
+  for (let d = 0; d < 3; d++) {
+    const inner = mergeVerbUnwrapOne(text);
+    if (inner !== undefined) {
+      text = inner;
+      continue;
+    }
+    break;
+  }
+  return matchSegmentsTail(text, 0);
+}
+
+/**
+ * The segment-tail companion of `matchSegments`: like `matchSegments`, but
+ * returns the argument tail of the first matching segment (or undefined).
+ */
+function matchSegmentsTail(text: string, depth: number): string | undefined {
+  const segments = shellSegments(text);
+  if (segments.length === 0) return undefined;
+  for (const seg of segments) {
+    if (matchMergeVerb(seg) !== undefined) return seg.slice(verbSpanLength(seg));
+    for (const body of innerBodies(seg)) {
+      const tail = matchMergeVerbDeepTail(body, depth + 1);
+      if (tail !== undefined) return tail;
     }
   }
   return undefined;
 }
 
+/** The deep tail companion of `matchMergeVerbDeep` (see its doc). */
+function matchMergeVerbDeepTail(text: string, depth: number): string | undefined {
+  let cur = text;
+  for (let d = 0; d < 3; d++) {
+    const inner = mergeVerbUnwrapOne(cur);
+    if (inner !== undefined) {
+      cur = inner;
+      continue;
+    }
+    break;
+  }
+  return matchSegmentsTail(cur, depth);
+}
+
 /**
- * Unwrap ONE level of shell eval: `bash`/`sh`/`zsh`/`dash` with `-c` or
- * `-lc`, and `eval`, become their quoted string argument.
- *
- * The token walk is over the RAW command (quote-aware, offsets preserved —
- * unlike stripQuotedSegments, which drops quoted interiors and cannot be
- * used to locate argument text). The invocation is identified among
- * UNQUOTED tokens; the argument is the first quoted token that follows it.
- * This is what makes `bash -c 'echo "pr merge"'` safe: the recursive match
- * then runs on `echo "pr merge"`, where the quoted verb is inert the same
- * way `echo "gh pr merge 12"` is inert at the top level.
- *
- * Returns the inner string, or undefined when the command does not invoke
- * one of these shells (an `env VAR=…` prefix is consumed transparently —
- * the walk lands on the real command word, so `env FOO=1 bash -c '…'`
- * unwraps to `…`).
+ * The verb-seen companion of `matchSegmentsTail`: true when any segment (or
+ * nested construct) carries the merge verb, false when none do, undefined
+ * when the text is unparseable (the fail-closed signal).
  */
-function unwrapShellEval(command: string): string | undefined {
-  const tokens = rawTokens(command);
-  if (tokens.terminated === false) return undefined;
-  let i = 0;
-  const n = tokens.list.length;
-  while (i < n) {
-    const t = tokens.list[i] ?? "";
-    if (t === ";" || t === "&&" || t === "|" || t === "||") {
-      i++;
-      continue; // a new segment starts — the invocation must head a segment
+function mergeVerbSeen(command: string): boolean | undefined {
+  let text = command;
+  for (let d = 0; d < 3; d++) {
+    const inner = mergeVerbUnwrapOne(text);
+    if (inner !== undefined) {
+      text = inner;
+      continue;
     }
-    if (t === "oo") {
-      i++;
-      continue; // the oo wrapper: the real command word follows
-    }
-    if (t === "env") {
-      i++;
-      // Skip env flags (--null, -i, --, …) and VAR=VAL assignments.
-      while (i < n) {
-        const e = tokens.list[i] ?? "";
-        if (e.startsWith("-")) {
-          i++;
-          continue;
-        }
-        if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(e)) {
-          i++;
-          continue;
-        }
-        break;
+    break;
+  }
+  return matchSegments(text, 0);
+}
+
+/**
+ * The length of the matched verb span in the segment: the (optionally
+ * path-qualified) forge word, an optional `-R`/`--repo` value, and the
+ * `pr merge` / `mr merge` verb — the argument tail starts just past it.
+ */
+function verbSpanLength(seg: string): number {
+  const m = new RegExp(
+    "(?:^|[\\s;&|])(?:/\\S*/)?(?:gh|glab)(?:\\s+(?:-R|--repo)\\s+\\S+)?\\s+(?:pr|mr)\\s+merge\\b",
+  ).exec(seg);
+  if (!m) return 0;
+  // The matched span may start with a leading separator character (a space
+  // or &/; /|) — strip those so the slice length is the verb span only.
+  return m[0].replace(/^\s*[;&|]?\s*/, "").length;
+}
+
+/**
+ * The repo flag placed BEFORE the merge verb (`gh -R o/r pr merge 17`).
+ * The token walk is quote-aware (a quoted `"-R"` is not a flag); only
+ * unquoted flag tokens count. Runs segment-by-segment over the WHOLE
+ * command (scan-not-anchor — the flag can sit in any segment).
+ */
+function repoFlagBeforeVerb(command: string): string | undefined {
+  for (const seg of shellSegments(command)) {
+    if (matchMergeVerb(seg) === undefined) continue;
+    const tokens = rawTokens(seg);
+    if (tokens.terminated === false) continue;
+    for (let i = 0; i < tokens.list.length; i++) {
+      const t = tokens.list[i] ?? "";
+      if (t === "-R" || t === "--repo") {
+        const v = tokens.list[i + 1];
+        if (v === undefined || v.length === 0) continue;
+        const q = v[0];
+        return q === "'" || q === '"' ? v.slice(1, -1) : v;
       }
-      if (i >= n) return undefined;
-      continue; // re-loop: the command word follows the env assignments
     }
-    const q = t[0];
-    if (q === "'" || q === '"') return undefined; // a quoted token is not a command word
-    if (t === "bash" || t === "sh" || t === "zsh" || t === "dash") {
-      // Consume flag tokens up to (and including) the -c/-lc flag; the
-      // quoted string argument is the first quoted token after it.
-      let j = i + 1;
-      let sawC = false;
-      while (j < n) {
-        const f = tokens.list[j] ?? "";
-        if (f === "-c" || f === "-lc") {
-          sawC = true;
-          j++;
-          break;
-        }
-        if (f.startsWith("-")) {
-          j++;
-          continue;
-        }
-        break;
-      }
-      if (!sawC) return undefined;
-      const arg = tokens.list[j];
-      if (arg === undefined) return undefined;
-      const aq = arg[0];
-      if (aq !== "'" && aq !== '"' && !arg.startsWith("$'")) return undefined; // unquoted -c body is not the shape the guard unwraps
-      const inner = unquoteArg(arg);
-      return inner.length > 0 ? inner : undefined;
-    }
-    if (t === "eval") {
-      const arg = tokens.list[i + 1];
-      if (arg === undefined) return undefined;
-      const aq = arg[0];
-      if (aq !== "'" && aq !== '"' && !arg.startsWith("$'")) return undefined;
-      const inner = unquoteArg(arg);
-      return inner.length > 0 ? inner : undefined;
-    }
-    return undefined; // any other first token: this is not a shell-eval command
   }
   return undefined;
-}
-
-/**
- * Strip the outer quotes from a quoted token and unescape double-quote
- * escapes (\" → ", \\ → \). Single-quoted tokens are returned verbatim
- * (no escape sequences in bash single quotes).
- */
-function unquoteArg(arg: string): string {
-  if (arg.startsWith("$'")) return arg.slice(2, -1);
-  const q = arg[0];
-  if (q === "'") return arg.slice(1, -1);
-  // Double-quoted: unescape \" → " and \\ → \
-  let out = "";
-  for (let i = 1; i < arg.length - 1; i++) {
-    const c = arg[i] ?? "";
-    if (c === "\\" && i + 1 < arg.length - 1) {
-      const next = arg[i + 1] ?? "";
-      if (next === '"' || next === "\\") {
-        out += next;
-        i++;
-        continue;
-      }
-    }
-    out += c;
-  }
-  return out;
-}
-
-/**
- * The raw-command token walk used by `unwrapShellEval` and
- * `parseArgsAfterVerb`: quoted runs are kept as a single token WITH their
- * outer quotes (so the reader can strip them); separators are their own
- * tokens. `terminated` is false when a quote never closes — the caller
- * treats that as "unparseable" (fail-closed upstream).
- *
- * Handles single-quoted ('…'), double-quoted ("…" with backslash escapes),
- * and ANSI-C / anishi-quoted ($'…') strings.
- */
-function rawTokens(raw: string): { list: string[]; terminated: boolean } {
-  const list: string[] = [];
-  let i = 0;
-  const n = raw.length;
-  while (i < n) {
-    const ch = raw[i] ?? "";
-    if (/\s/.test(ch)) {
-      i++;
-      continue;
-    }
-    if (ch === "&" && (raw[i + 1] ?? "") === "&") {
-      list.push("&&");
-      i += 2;
-      continue;
-    }
-    if (ch === "|" && (raw[i + 1] ?? "") === "|") {
-      list.push("||");
-      i += 2;
-      continue;
-    }
-    if (ch === ";" || ch === "|") {
-      list.push(ch);
-      i++;
-      continue;
-    }
-    // Anishi / ANSI-C quoting: $'…'
-    if (ch === "$" && (raw[i + 1] ?? "") === "'") {
-      i += 2;
-      let closed = false;
-      let buf = "";
-      while (i < n) {
-        const c2 = raw[i] ?? "";
-        if (c2 === "\\" && i + 1 < n) {
-          const nx = raw[i + 1] ?? "";
-          buf +=
-            nx === "n" ? "\n" : nx === "t" ? "\t" : nx === "\\" ? "\\" : nx === "'" ? "'" : c2 + nx;
-          i += 2;
-          continue;
-        }
-        if (c2 === "'") {
-          closed = true;
-          i++;
-          break;
-        }
-        buf += c2;
-        i++;
-      }
-      if (!closed) return { list, terminated: false };
-      list.push(`$'${buf}'`);
-      continue;
-    }
-    if (ch === "'" || ch === '"') {
-      const q = ch;
-      i++;
-      let closed = false;
-      let buf = "";
-      while (i < n) {
-        const c2 = raw[i] ?? "";
-        if (q === '"' && c2 === "\\" && i + 1 < n) {
-          buf += c2 + (raw[i + 1] ?? "");
-          i += 2;
-          continue;
-        }
-        if (c2 === q) {
-          closed = true;
-          i++;
-          break;
-        }
-        buf += c2;
-        i++;
-      }
-      if (!closed) return { list, terminated: false };
-      list.push(q + buf + q);
-      continue;
-    }
-    const start = i;
-    while (i < n && !/\s/.test(raw[i] ?? "") && raw[i] !== "'" && raw[i] !== '"') i++;
-    list.push(raw.slice(start, i));
-  }
-  return { list, terminated: true };
-}
-
-/**
- * The quote-stripping used only for the final, quote-stripped match after
- * the unwrap budget is exhausted — the same semantics as
- * stripQuotedSegments (reimplemented here rather than imported from
- * bash-command-parser.ts, which this module is imported BY through the
- * mergesPr re-export path — importing it back would be a cycle):
- *
- * Single-quoted runs are dropped; double-quoted runs are dropped except
- * `$` and backtick (they execute inside double quotes); an unterminated
- * quote returns the raw command (fail-closed).
- */
-function stripForMatch(command: string): string {
-  let result = "";
-  let i = 0;
-  const n = command.length;
-  while (i < n) {
-    const ch = command[i] ?? "";
-    if (ch === "'") {
-      i++;
-      let found = false;
-      while (i < n) {
-        if (command[i] === "'") {
-          found = true;
-          i++;
-          break;
-        }
-        i++;
-      }
-      if (!found) return command;
-    } else if (ch === '"') {
-      i++;
-      let found = false;
-      while (i < n) {
-        if (command[i] === "\\" && i + 1 < n) {
-          i += 2;
-          continue;
-        }
-        if (command[i] === '"') {
-          found = true;
-          i++;
-          break;
-        }
-        if (command[i] === "$" || command[i] === "`") result += command[i] ?? "";
-        i++;
-      }
-      if (!found) return command;
-    } else {
-      result += ch;
-      i++;
-    }
-  }
-  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -423,6 +271,11 @@ function parseArgsAfterVerb(args: string): {
   number: number | undefined;
   repo: string | undefined;
 } {
+  // A trailing `&` (job control, `nohup gh pr merge 17 &`) is part of the
+  // invocation — the shell runs the command in the background; it is NOT
+  // a separator that ends the argument list. Trim it before tokenising so
+  // the number / repo in the same invocation still parse.
+  const cleaned = args.replace(/\s+&\s*$/, " ").replace(/\s+&&\s*$/, " ");
   // Flags whose value is the next token (it must not be read as the number).
   const TAKES_VALUE = new Set([
     "-s",
@@ -440,8 +293,11 @@ function parseArgsAfterVerb(args: string): {
     "--author-email",
     "-R",
     "--repo",
+    // glab's repo flag (same shape as -R): its value must not be read
+    // as the MR number.
+    "--project",
   ]);
-  const tokens = rawTokens(args);
+  const tokens = rawTokens(cleaned);
   if (tokens.terminated === false) return { number: undefined, repo: undefined };
   let repo: string | undefined;
   for (let i = 0; i < tokens.list.length; i++) {
@@ -453,10 +309,10 @@ function parseArgsAfterVerb(args: string): {
       const eq = t.indexOf("=");
       if (eq > 0) {
         const flagName = t.slice(0, eq);
-        if (flagName === "--repo") repo = t.slice(eq + 1);
+        if (flagName === "--repo" || flagName === "--project") repo = t.slice(eq + 1);
         continue;
       }
-      if (t === "-R" || t === "--repo") {
+      if (t === "-R" || t === "--repo" || t === "--project") {
         const v = tokens.list[i + 1];
         if (v !== undefined && v.length > 0) {
           const q = v[0];
@@ -475,11 +331,13 @@ function parseArgsAfterVerb(args: string): {
       // A shell separator ends this invocation's argument list.
       break;
     }
-    // Positional argument: a bare integer, a #N, or a PR/MR URL.
-    if (/^\d+$/.test(t)) return { number: Number.parseInt(t, 10), repo };
+    // Positional argument: a bare integer, a #N, a PR/MR URL, or a quoted
+    // integer (the shell strips the quotes — a quoted number is the number).
+    const bare = /^(\d+)$/.exec(t) ?? /^"(\d+)"$/.exec(t) ?? /^'(\d+)'$/.exec(t);
+    if (bare?.[1]) return { number: Number.parseInt(bare[1], 10), repo };
     const hash = /^#(\d+)$/.exec(t);
     if (hash?.[1]) return { number: Number.parseInt(hash[1], 10), repo };
-    const url = /\/(?:pull|merge_requests)\/(\d+)/.exec(t);
+    const url = /\/(?:pull|pulls|merge_requests)\/(\d+)/.exec(t);
     if (url?.[1]) {
       const ownerRepo = /(?:^|\/)(?:github\.com|gitlab\.com)\/([^/?#]+)\/([^/?#]+)/.exec(t);
       if (ownerRepo?.[1] && ownerRepo[2]) {

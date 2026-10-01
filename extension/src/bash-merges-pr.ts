@@ -1,5 +1,7 @@
 import { stripQuotedSegments } from "./bash-command-parser.ts";
 import { mergeVerbArgs, mergeVerbUnwrapOne } from "./merge-parse.ts";
+import { shellSegments } from "./merge-tokens.ts";
+import { matchMergeVerb } from "./merge-verb-head.ts";
 
 /**
  * bash-merges-pr — the merge matcher (`mergesPr`).
@@ -45,27 +47,21 @@ export function mergesPr(command: string): string | undefined {
   const verb = new RegExp(`${FORGE}(?:pr\\s+merge|mr\\s+merge)(?:\\s|$)`).exec(c);
   if (verb?.[0]) return verb[0].trim();
 
-  // Subshell verb door (#955): the raw command carries a shell-eval
-  // invocation (`bash -c …`, `sh -c …`, `eval …`, with `env`/`oo` wrappers)
-  // whose INNER string contains a merge verb. `mergeVerbArgs` unwraps the
-  // shell-eval layer recursively (depth 3) and matches the verb on the
-  // innermost segment. The matched span returned here is the inner verb
-  // (not the outer shell wrapper) — the refusal text names the actual merge
-  // command.
-  //
-  // The quote-stripping verification applies ONLY to the original command
-  // (to catch a verb that lives inside a top-level quoted segment like
-  // `echo "gh pr merge 17"`). After unwrapping, the inner string IS the
-  // command — quotes in it are literal quoting of sub-arguments, not
-  // evidence the whole thing is quoted data.
+  // Verb door, segment-wise (#955 round-2 hardening): the legacy door
+  // above ran one regex over the quote-stripped WHOLE command, which is
+  // why it missed process-wrapper prefixes (`timeout 30 gh pr merge 17`),
+  // forge paths (`/usr/bin/gh …`), and merges inside `( … )` / `$( … )` /
+  // backtick bodies. Those are matched here: every shell segment's head is
+  // tested with the wrapper-stripped `matchMergeVerb` (merge-verb-head.ts),
+  // and `mergeVerbArgs` — which walks the same layers and recurses into
+  // inner-body constructs — returns a non-undefined tail when any inner
+  // segment carries the verb. A quoted verb (`echo "gh pr merge 17"`) is
+  // inert in every layer: the segment head must be an UNQUOTED forge word
+  // (a quoted token is neither a forge word nor a wrapper).
   const innerArgs = mergeVerbArgs(command);
   if (innerArgs !== undefined) {
-    // Find the innermost segment that carries the verb and return the
-    // matched span from there. `mergeVerbArgs` already verified the verb
-    // is a real (unquoted) invocation — it unwraps shell-eval layers and
-    // only matches on the innermost command segment, where a quoted verb
-    // (`echo "gh pr merge 17"`) is inert because the verb regex requires
-    // the `gh`/`glab` word to be unquoted.
+    // The matched span is the inner verb (not the outer shell wrapper) —
+    // the refusal text names the actual merge command.
     let text = command;
     for (let depth = 0; depth < 3; depth++) {
       const inner = mergeVerbUnwrapOne(text);
@@ -73,11 +69,9 @@ export function mergesPr(command: string): string | undefined {
         text = inner;
         continue;
       }
-      const m =
-        /(?:^|[;&|]|\s)(?:oo\s+)?(?:gh|glab)(?:\s+(?:-R|--repo)\s+\S+)?\s+(?:pr\s+merge|mr\s+merge)(?:\s|$)/.exec(
-          text,
-        );
-      if (m) return m[0].trim();
+      for (const seg of shellSegments(text)) {
+        if (matchMergeVerb(seg) !== undefined) return segmentVerbSpan(seg);
+      }
       return undefined;
     }
     return undefined;
@@ -116,4 +110,20 @@ export function mergesPr(command: string): string | undefined {
     if (!explicitGet && writes) return glabApiMatch[0].trim();
   }
   return undefined;
+}
+
+/**
+ * The matched verb span inside a segment whose head matched
+ * `matchMergeVerb`: the (optionally path-qualified) forge word, an
+ * optional `-R`/`--repo` value, and the `pr merge` / `mr merge` verb —
+ * the span returned for the refusal text.
+ */
+function segmentVerbSpan(seg: string): string | undefined {
+  const m = new RegExp(
+    "(?:^|[\\s;&|])(?:/\\S*/)?(?:gh|glab)(?:\\s+(?:-R|--repo)\\s+\\S+)?\\s+(?:pr|mr)\\s+merge\\b",
+  ).exec(seg);
+  if (!m) return undefined;
+  // The match may start with the leading separator/space — the span is
+  // the forge word onward, so slice it off and trim.
+  return m[0].replace(/^\s*[;&|]?\s*/, "").trim();
 }
