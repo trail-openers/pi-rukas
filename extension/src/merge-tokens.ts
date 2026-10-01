@@ -122,15 +122,23 @@ export function rawTokens(raw: string): { list: string[]; terminated: boolean } 
  */
 export const MERGE_VERB_SPAN_SRC = String.raw`(?:^|[\s;&|])(?:/\S*\/)?(?:gh|glab)(?:\s+(?:-R|--repo|--project)\s+\S+)?\s+(?:pr|mr)\s+merge\b`;
 
+/**
+ * The forge-prefix source — the (optionally path-qualified) forge word
+ * fragment shared by the REST doors in bash-merges-pr.ts. The leading
+ * separator and the `oo` prefix stay in the consumer (they differ between
+ * the verb span and the REST doors).
+ */
+export const FORGE_PREFIX_SRC = String.raw`(?:/\S*\/)?(?:gh|glab)\s+`;
+
 /** The verb span as a fresh RegExp (re-compiled at every use — stateless). */
 export function mergeVerbSpanRegex(): RegExp {
   return new RegExp(MERGE_VERB_SPAN_SRC);
 }
 
 /** The anchored verb-source (the verb-HEAD test in merge-wrappers.ts). */
-export function mergeVerbHeadRegex(forge: string): RegExp {
+export function mergeVerbHeadRegex(): RegExp {
   return new RegExp(
-    `^(?:${forge}|/\\S*/${forge})\\s+(?:-R\\s+\\S+|--repo\\s+\\S+|--project\\s+\\S+)?\\s*(?:pr|mr)\\s+merge(?:\\s|$)`,
+    `^(?:gh|glab|/\\S*/(?:gh|glab))\\s+(?:-R\\s+\\S+|--repo\\s+\\S+|--project\\s+\\S+)?\\s*(?:pr|mr)\\s+merge(?:\\s|$)`,
   );
 }
 

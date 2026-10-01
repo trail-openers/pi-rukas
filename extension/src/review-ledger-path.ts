@@ -5,8 +5,8 @@
  * Owns the single cohesive unit of path resolution: the git-common-dir
  * lookup (one ledger per clone, not per worktree) and the explicit
  * `PI_ENSEMBLE_REVIEW_LEDGER_FILE` override. review-ledger.ts re-exports
- * `ledgerPathFor` so importers are unchanged; this module imports nothing
- * from review-ledger.ts, so there is no import cycle.
+ * `ledgerPathFor` so importers are unchanged; this module only imports a type
+ * from review-ledger.ts (no runtime cycle), so importers are unchanged.
  */
 
 import path from "node:path";

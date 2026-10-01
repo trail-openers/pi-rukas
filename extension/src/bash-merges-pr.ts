@@ -1,6 +1,6 @@
 import { stripQuotedSegments } from "./bash-command-parser.ts";
 import { mergeVerbArgs } from "./merge-parse.ts";
-import { mergeVerbSpanRegex, shellSegments } from "./merge-tokens.ts";
+import { FORGE_PREFIX_SRC, mergeVerbSpanRegex, shellSegments } from "./merge-tokens.ts";
 import { innerBodies, matchMergeVerb } from "./merge-verb-head.ts";
 
 /**
@@ -85,13 +85,22 @@ export function mergesPr(command: string): string | undefined {
 function restDoors(texts: string[]): string | undefined {
   for (const raw of texts) {
     const c = stripQuotedSegments(raw);
-    const FORGE = "(?:^|[;&|]|\\s)(?:oo\\s+)?(?:gh|glab)\\s+";
+    // The forge word, optionally path-qualified (`/usr/bin/gh`), shared with
+    // MERGE_VERB_SPAN_SRC via FORGE_PREFIX_SRC (merge-tokens.ts) so the two
+    // doors cannot drift (#955 lens round-2: the doors hard-coded a bare
+    // `gh`/`glab` here, so a path-qualified forge bypassed them).
+    const FORGE = `(?:^|[;&|]|\\s)(?:oo\\s+)?${FORGE_PREFIX_SRC}`;
     // REST door, gh: `gh api` on /pulls/{n}/merge — gh api defaults to
     // POST/PUT when no --method is given, so the /merge suffix IS the write
     // even when it "looks like a read". The no-number `.../pulls/merge`
     // shape is the same door.
-    const ghApiMatch = new RegExp(`${FORGE}api\\s+(repos/[^\\s]+)`).exec(c);
-    const ghEndpoint = ghApiMatch?.[1] ?? "";
+    // Arbitrary `api` flags (with or without values) before the endpoint
+    // path: `gh api -X PUT repos/o/r/…`, `gh api --method PUT repos/o/r/…`.
+    // The flags are allowed as any non-whitespace tokens between `api` and
+    // the path; the path itself starts with `repos/` (gh) or `projects/`
+    // (glab), which anchors the match.
+    const ghApiMatch = new RegExp(`${FORGE}api\\s+((?:\\S+\\s+)*repos/[^\\s]+)`).exec(c);
+    const ghEndpoint = ghApiMatch?.[1]?.match(/repos\/[^\s]+/)?.[0] ?? "";
     if (ghApiMatch && /\/pulls(?:\/[^\s/?#]+)?\/merge(?:[?&#\s]|$)/.test(ghEndpoint)) {
       const rest = c.slice(ghApiMatch.index);
       // The door is a WRITE unless the command is an explicit GET AND carries
@@ -107,7 +116,7 @@ function restDoors(texts: string[]): string | undefined {
     // default to POST the way gh api does; copying the gh rule here would
     // over-block legitimate reads). Method names are case-insensitive.
     const glabApiMatch = new RegExp(
-      `${FORGE}api\\s+(/projects/[^\\s]+)/(?:mr|merge_requests)(?:/[^\\s/?#]+)?/merge(?:[?&#\\s]|$)`,
+      `${FORGE}api\\s+((?:\\S+\\s+)*?/?projects/[^\\s]+/(?:mr|merge_requests)(?:/[^\\s/?#]+)?/merge(?:[?&#\\s]|$))`,
     ).exec(c);
     if (glabApiMatch?.[0] !== undefined) {
       const rest = c.slice(glabApiMatch.index);

@@ -107,7 +107,7 @@ function teardownLedger() {
   // the pre-verb -R flag.
   const { mergeVerbRepo } = await import("../src/merge-parse.ts");
   assert(
-    mergeVerbRepo("gh -R o/r pr merge 17") === "o/r",
+    mergeVerbRepo("gh -R o/r pr merge 17")?.kind === "repo" && mergeVerbRepo("gh -R o/r pr merge 17")?.repo === "o/r",
     "the repo is o/r from the -R flag (pre-verb)",
   );
 }

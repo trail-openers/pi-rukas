@@ -94,7 +94,7 @@ export function matchMergeVerb(text: string): string | undefined {
     const forge = forgeWord(t);
     if (forge) {
       const rest = [t, ...list.slice(i + 1)].join(" ");
-      const isMerge = mergeVerbHeadRegex(forge).test(rest);
+      const isMerge = mergeVerbHeadRegex().test(rest);
       return isMerge ? forge : undefined;
     }
     // Round-3 (adversarial finding 1): a control-flow / compound-construct

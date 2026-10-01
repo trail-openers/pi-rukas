@@ -151,18 +151,19 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     // #955 lens fix 1 (HIGH): an invalid repo value (e.g. `o/r; touch
     // /tmp/x`) is a shell injection. The guard refuses and NEVER
     // interpolates it into any exec string.
-    if (fromRepo?.startsWith("unsafe repo value")) {
+    if (fromRepo?.kind === "unsafe") {
       return block(
-        `merge refused: ${fromRepo} — the guard will not interpolate this value into a forge command; set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override`,
+        `merge refused: unsafe repo value ${fromRepo.raw} — the guard will not interpolate this value into a forge command; set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override`,
       );
     }
     let prNumber: number | undefined;
+    const repoValue = fromRepo?.kind === "repo" ? fromRepo.repo : undefined;
     if (fromVerb !== undefined) {
       // The verb door matched — parse the number from the argument tail.
       prNumber = extractMergeNumber(fromVerb);
       // No number in the tail → fall back to current-branch resolution.
       if (prNumber === undefined) {
-        prNumber = await resolvePrNumber(execFn, cwd, undefined, undefined, fromRepo);
+        prNumber = await resolvePrNumber(execFn, cwd, undefined, undefined, repoValue);
       }
     } else {
       // No verb door — try the REST-door span extraction (the number is
@@ -171,17 +172,17 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
       if (fromSpan !== undefined) {
         prNumber = fromSpan;
       } else {
-        prNumber = await resolvePrNumber(execFn, cwd, undefined, undefined, fromRepo);
+        prNumber = await resolvePrNumber(execFn, cwd, undefined, undefined, repoValue);
       }
     }
     if (prNumber === undefined) {
       return block(
-        `could not resolve the PR number for \`${merging}\` (parsed number: ${prNumber ?? "none"}; repo: ${fromRepo ?? "none"}; matched span: \`${merging}\`; fallback cwd: ${cwd}) — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
+        `could not resolve the PR number for \`${merging}\` (parsed number: ${prNumber ?? "none"}; repo: ${repoValue ?? "none"}; matched span: \`${merging}\`; fallback cwd: ${cwd}) — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
       );
     }
 
     // Read the merge target (gh/glab). Fail-closed on unreadable.
-    const targetResult = await readMergeTarget(execFn, cwd, prNumber, undefined, fromRepo);
+    const targetResult = await readMergeTarget(execFn, cwd, prNumber, undefined, repoValue);
     if (!targetResult.ok) {
       return block(`merge refused: ${targetResult.reason}`);
     }

@@ -206,7 +206,7 @@ const DEEP_MERGE = "bash -c \\'(sh -c \\'(gh pr merge 12)\\')\\'";
   assert(a !== undefined, "glab --project: the verb door matches");
   assert(extractMergeNumber(a ?? "") === 7, "glab --project o/r mr merge 7 → 7");
   assert(
-    mergeVerbRepo("glab --project o/r mr merge 7") === "o/r",
+    mergeVerbRepo("glab --project o/r mr merge 7")?.kind === "repo" && mergeVerbRepo("glab --project o/r mr merge 7")?.repo === "o/r",
     "…and the repo is o/r (--project)",
   );
 }
@@ -215,7 +215,7 @@ const DEEP_MERGE = "bash -c \\'(sh -c \\'(gh pr merge 12)\\')\\'";
   assert(a !== undefined, "/pulls/N URL: the verb door matches");
   assert(extractMergeNumber(a ?? "") === 17, "…and the number is 17 (/pulls/N)");
   assert(
-    mergeVerbRepo("gh pr merge https://github.com/o/r/pulls/17/merge") === "o/r",
+    mergeVerbRepo("gh pr merge https://github.com/o/r/pulls/17/merge")?.kind === "repo" && mergeVerbRepo("gh pr merge https://github.com/o/r/pulls/17/merge")?.repo === "o/r",
     "…and the repo is o/r",
   );
 }

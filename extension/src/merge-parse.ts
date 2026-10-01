@@ -63,12 +63,13 @@ import { innerBodies, matchMergeVerb, mergeVerbUnwrapOne } from "./merge-verb-he
  */
 export function mergeVerbArgs(command: string): string | undefined {
   const tail = matchMergeVerbTail(command);
-  // A `null`-equivalent (empty string) from the tail walk is already
-  // fail-closed. But a command with unbalanced constructs that the tail
-  // walk could not reach (because the segment walker never returned a
-  // segment carrying the verb) still needs the raw-text check below:
-  // an unbalanced `(` or odd backtick count, combined with `pr merge` /
-  // `mr merge` in the raw text, is a merge the guard cannot number.
+  // The tail walk returns undefined when no segment carries the merge verb,
+  // or an empty string when the command is unparseable (fail-closed). But a
+  // command with unbalanced constructs that the tail walk could not reach
+  // (because the segment walker never returned a segment carrying the verb)
+  // still needs the raw-text check below: an unbalanced `(` or odd backtick
+  // count, combined with `pr merge` / `mr merge` in the raw text, is a merge
+  // the guard cannot number.
   if (tail === undefined) {
     const hasMergeVerb = /(?:^|\s)(?:pr|mr)\s+merge\b/.test(command);
     if (hasMergeVerb && hasUnbalancedConstruct(command)) {
@@ -86,20 +87,22 @@ export function mergeVerbArgs(command: string): string | undefined {
  * commands) is rejected at this boundary — the guard refuses with
  * "unsafe repo value" and never interpolates it (#955 lens fix 1, HIGH).
  */
-export function mergeVerbRepo(command: string): string | undefined {
+export function mergeVerbRepo(
+  command: string,
+): { kind: "repo"; repo: string } | { kind: "unsafe"; raw: string } | undefined {
   const args = mergeVerbArgs(command);
   if (args === undefined) return undefined;
   const tailRepo = parseArgsAfterVerb(args).repo;
   if (tailRepo) {
-    if (!isValidRepoValue(tailRepo)) return `unsafe repo value: ${tailRepo}`;
-    return tailRepo;
+    if (!isValidRepoValue(tailRepo)) return { kind: "unsafe", raw: tailRepo };
+    return { kind: "repo", repo: tailRepo };
   }
   // The repo flag may also sit BEFORE the verb (`gh -R o/r pr merge 17`).
   const preRepo = repoFlagBeforeVerb(command);
   if (preRepo !== undefined && !isValidRepoValue(preRepo)) {
-    return `unsafe repo value: ${preRepo}`;
+    return { kind: "unsafe", raw: preRepo };
   }
-  return preRepo;
+  return preRepo !== undefined ? { kind: "repo", repo: preRepo } : undefined;
 }
 
 /**
@@ -197,11 +200,18 @@ function matchSegmentsTail(text: string): string | null | undefined {
   if (segments.length === 0) return null; // the raw text had an unterminated quote
   for (const seg of segments) {
     if (matchMergeVerb(seg) !== undefined) {
-      const m = mergeVerbSpanRegex().exec(seg);
+      // The span regex expects the forge word at the start (or after a
+      // separator). A subshell segment like `(gh pr merge 17)` starts with
+      // `(` — strip a leading paren so the regex can locate the verb.
+      const probe = seg.startsWith("(") ? seg.slice(1) : seg;
+      const m = mergeVerbSpanRegex().exec(probe);
       // Fail closed: if the verb matched via matchMergeVerb but the span
       // regex can't locate it (should not happen), the command carries a
       // merge with no readable tail — the no-number fallback.
-      if (m) return seg.slice(m.index + m[0].length);
+      if (m) {
+        const offset = seg.startsWith("(") ? 1 : 0;
+        return seg.slice(offset + m.index + m[0].length);
+      }
       return "";
     }
     const bodies = innerBodies(seg);
@@ -323,7 +333,10 @@ function parseArgsAfterVerb(args: string): {
   if (tokens.terminated === false) return { number: undefined, repo: undefined };
   let repo: string | undefined;
   for (let i = 0; i < tokens.list.length; i++) {
-    const t = tokens.list[i] ?? "";
+    let t = tokens.list[i] ?? "";
+    // A trailing `)` (subshell close glued to the token by rawTokens) is
+    // stripped before matching — `17)` is the number 17 in `(gh pr merge 17)`.
+    if (t.endsWith(")") && t.length > 1) t = t.slice(0, -1);
     if (t === "") continue;
     if (t.startsWith("-")) {
       // `--flag=value` form: the value is inside the token and is never a
