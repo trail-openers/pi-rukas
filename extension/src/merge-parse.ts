@@ -177,21 +177,17 @@ function matchSegmentsTail(text: string): string | null | undefined {
   const segments = shellSegments(text);
   if (segments.length === 0) return null; // the raw text had an unterminated quote
   for (const seg of segments) {
-    if (matchMergeVerb(seg) !== undefined) {
-      // The span regex expects the forge word at the start (or after a
-      // separator). A subshell segment like `(gh pr merge 17)` starts with
-      // `(` — strip a leading paren so the regex can locate the verb.
-      const probe = seg.startsWith("(") ? seg.slice(1) : seg;
-      const m = mergeVerbSpanRegex().exec(probe);
-      // Fail closed: if the verb matched via matchMergeVerb but the span
-      // regex can't locate it (should not happen), the command carries a
-      // merge with no readable tail — the no-number fallback.
-      if (m) {
-        const offset = seg.startsWith("(") ? 1 : 0;
-        return seg.slice(offset + m.index + m[0].length);
-      }
-      return "";
-    }
+    // #955 round-4: the whole-command shell-eval unwrap (mergeVerbUnwrapOne
+    // in matchMergeVerbTail) only fires when the shell-eval word starts the
+    // WHOLE command — a shell-eval word in a LATER segment (`cd x && bash -c
+    // "gh pr merge 17"`, `gh pr view 17; eval "gh pr merge 17"`, `exec
+    // bash -c …` after a separator) was missed. `segmentMergeTail` unwraps
+    // per segment and returns the argument tail parsed from the unwrapped
+    // INNER text (matchMergeVerbTail on the inner), which is where the verb
+    // and its arguments actually live. The raw segment's span regex cannot
+    // reach the verb inside the quoted body.
+    const segTail = segmentMergeTail(seg);
+    if (segTail !== undefined) return segTail;
     const bodies = innerBodies(seg);
     for (const body of bodies) {
       const inner = matchSegmentsTail(body);
@@ -200,6 +196,51 @@ function matchSegmentsTail(text: string): string | null | undefined {
     }
   }
   return undefined;
+}
+
+/**
+ * Match a segment's head against the merge verb, or — when the segment
+ * carries a shell-eval wrapper in a LATER segment (`cd x && bash -c "gh pr
+ * merge 17"`, invisible to the whole-command unwrap) — unwrap the segment
+ * via `mergeVerbUnwrapOne` and return the argument tail parsed from the
+ * UNWRAPPED inner text by `matchMergeVerbTail` (the shared 3-layer budget).
+ *
+ * Returns the argument tail (possibly the empty string — the no-number
+ * fallback) when the segment carries the merge verb, or `undefined` when it
+ * does not. The inner text is the authoritative source for the tail: the
+ * raw segment's span regex cannot see the verb inside a quoted `bash -c`
+ * body, so probing the raw segment would lose the PR number and silently
+ * fall back to branch resolution (#955 defect class).
+ *
+ * A quoted body keeps its inert-ness: `cd x && bash -c "echo hi"` unwraps
+ * to `echo hi`, which matches no merge verb — the segment stays a non-merge.
+ */
+function segmentMergeTail(seg: string): string | undefined {
+  if (matchMergeVerb(seg) !== undefined) {
+    // The span regex expects the forge word at the start (or after a
+    // separator). A subshell segment like `(gh pr merge 17)` starts with
+    // `(` — strip a leading paren so the regex can locate the verb.
+    const probe = seg.startsWith("(") ? seg.slice(1) : seg;
+    const m = mergeVerbSpanRegex().exec(probe);
+    // Fail closed: if the verb matched via matchMergeVerb but the span
+    // regex can't locate it (should not happen), the command carries a
+    // merge with no readable tail — the no-number fallback.
+    if (m) {
+      const offset = seg.startsWith("(") ? 1 : 0;
+      return seg.slice(offset + m.index + m[0].length);
+    }
+    return "";
+  }
+  // #955 round-4 per-segment unwrap: the whole-command shell-eval unwrap
+  // (mergeVerbUnwrapOne in matchMergeVerbTail) only fires when the
+  // shell-eval word starts the WHOLE command. Unwrap PER SEGMENT here, at
+  // the same depth budget: the unwrapped inner text is re-entranted through
+  // matchMergeVerbTail (which re-derives the inner's segments and recurses
+  // through innerBodies), so nested layers are still budgeted by the
+  // 3-iteration walk and exhaustion fails closed the same way.
+  const inner = mergeVerbUnwrapOne(seg);
+  if (inner === undefined) return undefined;
+  return matchMergeVerbTail(inner);
 }
 
 /** True when the raw command text contains a merge verb (scan-not-anchor). */

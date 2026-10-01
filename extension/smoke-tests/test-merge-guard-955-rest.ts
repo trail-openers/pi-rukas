@@ -13,6 +13,7 @@
  */
 
 import { mergesPr } from "../src/bash-merges-pr.ts";
+import { extractMergeNumber, mergeVerbArgs } from "../src/merge-parse.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -54,6 +55,28 @@ for (const cmd of [
   assert(mergesPr(cmd) !== undefined, `canary (merge): blocked — ${cmd}`);
 }
 
+// ------------------------------------------------------------ per-segment shell-eval unwrap (#955 round 4)
+// A shell-eval word in a LATER segment (after `;`, `&&`, `|`) was invisible
+// to the whole-command unwrap: `cd x && bash -c "gh pr merge 17"` and all
+// the shapes below now must read as a merge.
+for (const cmd of [
+  'cd x && bash -c "gh pr merge 17"',
+  'gh pr view 17; bash -c "gh pr merge 17"',
+  'cd x && exec bash -c "gh pr merge 17"',
+  'cd x; eval "gh pr merge 17"',
+  'true | sudo bash -c "gh pr merge 17"',
+  'gh pr view 17; exec bash -c "gh pr merge 17"',
+]) {
+  assert(mergesPr(cmd) !== undefined, `canary (merge, per-segment unwrap): blocked — ${cmd}`);
+}
+
+// The PR number must still extract from the per-segment shape: the verb tail
+// comes from the unwrapped inner text, and 17 is the first bare positional.
+assert(
+  extractMergeNumber(mergeVerbArgs('cd x && bash -c "gh pr merge 17"') ?? "") === 17,
+  "canary (number): mergeVerbArgs/extractMergeNumber yield 17 from the per-segment shape",
+);
+
 // ------------------------------------------------------------ REST reads stay open
 for (const cmd of [
   "gh api repos/o/r/pulls/17",
@@ -66,6 +89,15 @@ for (const cmd of [
   // skip must not make a non-merge look like a merge.
   'timeout 30 bash -c "echo hi"',
   'sudo bash -c "gh pr view 17"',
+  // Per-segment unwrap must not make a non-merge segment look like one:
+  // `cd x && bash -c "echo hi"` unwraps the segment to `echo hi` (no merge
+  // verb); `cd x; eval "echo gh pr merge"` unwraps to `echo gh pr merge`,
+  // where a leading `echo` never matches the verb head — the eval body is
+  // inert the same way `echo "gh pr merge 12"` is at the top level. `true
+  // | bash -c "gh pr view 17"` unwraps to a VIEW, not a merge.
+  'cd x && bash -c "echo hi"',
+  'cd x; eval "echo gh pr merge"',
+  'true | bash -c "gh pr view 17"',
 ]) {
   assert(mergesPr(cmd) === undefined, `allowed (non-merge) — ${cmd}`);
 }

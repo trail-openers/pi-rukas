@@ -1,7 +1,27 @@
 import { stripQuotedSegments } from "./bash-command-parser.ts";
 import { mergeVerbArgs } from "./merge-parse.ts";
 import { mergeVerbSpanRegex, shellSegments } from "./merge-tokens.ts";
-import { innerBodies, matchMergeVerb } from "./merge-verb-head.ts";
+import { innerBodies, matchMergeVerb, mergeVerbUnwrapOne } from "./merge-verb-head.ts";
+
+/**
+ * The matched verb span inside a segment, or undefined when the segment does
+ * not carry a merge verb (either directly or via per-segment shell-eval
+ * unwrap). The span is located via `mergeVerbSpanRegex` on the segment (or
+ * its unwrapped inner text) — the same regex the verb door uses, so the
+ * span and the verb match cannot disagree.
+ */
+function segmentSpanOrUnwrapped(seg: string): string | undefined {
+  if (matchMergeVerb(seg) !== undefined) return segmentVerbSpan(seg);
+  // #955 round-4 per-segment unwrap: a shell-eval word in a later segment
+  // (`cd x && bash -c "gh pr merge 17"`) is invisible to the whole-command
+  // unwrap. Unwrap the segment and locate the span in the unwrapped inner
+  // text — the span regex cannot see the verb inside the raw segment's
+  // quoted body.
+  const inner = mergeVerbUnwrapOne(seg);
+  if (inner === undefined) return undefined;
+  if (matchMergeVerb(inner) !== undefined) return segmentVerbSpan(inner) ?? "gh pr merge";
+  return undefined;
+}
 
 /**
  * bash-merges-pr — the merge matcher (`mergesPr`).
@@ -148,11 +168,12 @@ function findVerbSpanInSegments(text: string): string | undefined {
   const segments = shellSegments(text);
   if (segments.length === 0) return undefined;
   for (const seg of segments) {
-    if (matchMergeVerb(seg) !== undefined) return segmentVerbSpan(seg);
+    const span = segmentSpanOrUnwrapped(seg);
+    if (span !== undefined) return span;
     const bodies = innerBodies(seg);
     for (const body of bodies) {
-      const span = findVerbSpanInSegments(body);
-      if (span !== undefined) return span;
+      const inner = findVerbSpanInSegments(body);
+      if (inner !== undefined) return inner;
     }
   }
   return undefined;
