@@ -44,7 +44,7 @@
  */
 
 import { rawTokens, unquoteArg } from "./merge-tokens.ts";
-import { matchMergeVerb } from "./merge-wrappers.ts";
+import { matchMergeVerb, skipLeadingWrappers } from "./merge-wrappers.ts";
 
 export { matchMergeVerb };
 
@@ -63,6 +63,14 @@ export { matchMergeVerb };
  * then runs on `echo "pr merge"`, where the quoted verb is inert the same
  * way `echo "gh pr merge 12"` is inert at the top level.
  *
+ * Leading PROCESS wrappers in front of the shell-eval word are skipped
+ * before the word is identified — `exec bash -c …`, `sudo bash -c …`,
+ * `timeout 30 bash -c …`, `nohup bash -c …`, … are the same invocation as
+ * the bare form, and only recognising the shell-eval word at token 0 left
+ * those merges invisible (#955 lens round 3, PM-verified bypass). The
+ * wrapper vocabulary (and flag/value skipping) is the SAME one
+ * `matchMergeVerb` uses, via `skipLeadingWrappers` in merge-wrappers.ts.
+ *
  * Returns the inner string, or undefined when the command does not invoke
  * one of these shells (an `env VAR=…` prefix is consumed transparently —
  * the walk lands on the real command word, so `env FOO=1 bash -c '…'`
@@ -71,49 +79,70 @@ export { matchMergeVerb };
 export function mergeVerbUnwrapOne(command: string): string | undefined {
   const tokens = rawTokens(command);
   if (tokens.terminated === false) return undefined;
+  const list = tokens.list;
   let i = 0;
-  const n = tokens.list.length;
+  const n = list.length;
   while (i < n) {
-    const t = tokens.list[i] ?? "";
+    const t = list[i] ?? "";
     if (t === ";" || t === "&&" || t === "|" || t === "||") {
       i++;
       continue; // a new segment starts — the invocation must head a segment
     }
-    if (t === "oo") {
-      i++;
-      continue; // the oo wrapper: the real command word follows
-    }
-    if (t === "env") {
-      i++;
-      // Skip env flags (--null, -i, --, -S CMD, …) and VAR=VAL
-      // assignments. `-S` takes a quoted string argument that IS the
-      // command — unwrap to it directly (#955 adversarial round 1:
-      // `env -S "gh pr merge 17"` is the same merge as the bare form).
-      while (i < n) {
-        const e = tokens.list[i] ?? "";
-        if (e.startsWith("-")) {
-          i++;
-          if (e === "-S" || e === "--string") {
-            const s = tokens.list[i];
-            if (s === undefined) return undefined;
-            const sq = s[0];
-            if (sq !== "'" && sq !== '"' && !s.startsWith("$'")) return undefined;
-            const inner = unquoteArg(s);
-            return inner.length > 0 ? inner : undefined;
+    // A quoted token is not a command word.
+    if (t[0] === "'" || t[0] === '"') return undefined;
+    // Process wrappers in front of the shell-eval word (`exec bash -c …`,
+    // `sudo -u x bash -c …`, `timeout 30 bash -c …`, …) are the same
+    // invocation as the bare form — skip them with the shared vocabulary
+    // (`skipLeadingWrappers`, merge-wrappers.ts). It does NOT handle
+    // `env -S "…"` (the quoted command string is the unwrap target, not a
+    // flag value), so `env` is consumed here with its `-S` special case.
+    if (
+      t === "oo" ||
+      t === "env" ||
+      t === "exec" ||
+      t === "sudo" ||
+      t === "command" ||
+      t === "builtin" ||
+      t === "nohup" ||
+      t === "timeout" ||
+      t === "stdbuf" ||
+      t === "nice" ||
+      t === "time"
+    ) {
+      if (t === "env") {
+        // `env [-S "…"] [-u VAR | …] [VAR=…]… <cmd>` — skip flags and
+        // assignments; `-S` takes a quoted string argument that IS the
+        // command — unwrap to it directly (#955 adversarial round 1:
+        // `env -S "gh pr merge 17"` is the same merge as the bare form).
+        i++;
+        while (i < n) {
+          const e = list[i] ?? "";
+          if (e.startsWith("-")) {
+            if (e === "-S" || e === "--string") {
+              const s = list[i + 1];
+              if (s === undefined) return undefined;
+              const sq = s[0];
+              if (sq !== "'" && sq !== '"' && !s.startsWith("$'")) return undefined;
+              const inner = unquoteArg(s);
+              return inner.length > 0 ? inner : undefined;
+            }
+            i++;
+            if (e === "-u" || e === "--unset" || e === "-C" || e === "--chdir") i++;
+            continue;
           }
-          continue;
+          if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(e)) {
+            i++;
+            continue;
+          }
+          break;
         }
-        if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(e)) {
-          i++;
-          continue;
-        }
-        break;
+        if (i >= n) return undefined;
+      } else {
+        i = skipLeadingWrappers(list, i);
       }
       if (i >= n) return undefined;
-      continue; // re-loop: the command word follows the env assignments
+      continue; // re-loop: the command word follows the wrapper
     }
-    const q = t[0];
-    if (q === "'" || q === '"') return undefined; // a quoted token is not a command word
     if (t === "bash" || t === "sh" || t === "zsh" || t === "dash") {
       // Consume flag tokens up to (and including) the -c/-lc flag; the
       // quoted string argument is the first quoted token after it.

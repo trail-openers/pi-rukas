@@ -41,6 +41,15 @@ for (const cmd of [
   'env -S "gh pr merge 17"',
   "(gh pr merge 17",
   "(gh pr merge 17)",
+  // A process wrapper in front of the shell-eval word (#955 lens round 3,
+  // PM-verified bypass: mergeVerbUnwrapOne only recognised the shell-eval
+  // word at token 0): exec, sh, sudo, nohup, timeout, and `command eval`.
+  'exec bash -c "gh pr merge 17"',
+  'exec sh -c "glab mr merge 7"',
+  'sudo bash -c "gh pr merge 17"',
+  'nohup bash -c "gh pr merge 17"',
+  'timeout 30 bash -c "gh pr merge 17"',
+  'command eval "gh pr merge 17"',
 ]) {
   assert(mergesPr(cmd) !== undefined, `canary (merge): blocked — ${cmd}`);
 }
@@ -53,6 +62,10 @@ for (const cmd of [
   'echo "("',
   'echo "( hi',
   "gh pr view 17",
+  // Wrapper before a shell-eval word, but no merge inside: the wrapper
+  // skip must not make a non-merge look like a merge.
+  'timeout 30 bash -c "echo hi"',
+  'sudo bash -c "gh pr view 17"',
 ]) {
   assert(mergesPr(cmd) === undefined, `allowed (non-merge) — ${cmd}`);
 }
