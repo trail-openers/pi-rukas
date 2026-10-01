@@ -38,6 +38,7 @@
 
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { ledgerPathFor } from "./review-ledger-path.ts";
 import { trace } from "./trace.ts";
 import { type VerifyExecFn, detectMainline } from "./work-driver-git.ts";
 
@@ -66,10 +67,11 @@ interface LedgerFile {
 export type LedgerExecFn = VerifyExecFn;
 
 /**
- * #955 lens fix 6: tracks which override paths have been traced in this
- * process (one-time trace per distinct override path).
+ * #955 file-size split: `ledgerPathFor` (and its one-time override trace)
+ * live in review-ledger-path.ts; the re-export below keeps importers
+ * unchanged.
  */
-const ledgerOverrideTraced = new Set<string>();
+export { ledgerPathFor } from "./review-ledger-path.ts";
 
 /**
  * The patch id of a branch's changes: the diff from `baseRef` to the branch
@@ -244,9 +246,12 @@ export async function workingTreePatchId(
 
 /**
  * The shared pass predicates the guard's booleans are computed with.
- * `lensPassed` is the ONE predicate both call sites use — the ledger writer
- * (lens-ledger.ts) and the driver's verdict threshold (lensBlockedByThreshold
- * below) apply the same comparison — one function, two call sites.
+ *
+ * `lensPassed` is the ONE predicate both call sites use: the ledger writer
+ * (lens-ledger.ts) stores `lensPassed(verdict, threshold)`, and the driver's
+ * verdict threshold (lensBlockedByThreshold, below) applies the same
+ * comparison — one function, two call sites, no re-implementation that could
+ * drift.
  */
 
 /**
@@ -287,61 +292,15 @@ export function lensPassed(verdict: string, threshold: string): boolean {
 /**
  * The driver-side twin of `lensPassed`: does this verdict fail AT the given
  * threshold? The ISSUES_FOUND branch of `computeVerdict` (lens-review.ts)
- * and the ledger writer both apply this same comparison.
+ * applies this exact comparison, and the ledger writer applies `lensPassed`
+ * with the SAME resolved threshold — the threshold predicate has one
+ * implementation.
  */
 export function lensBlockedByThreshold(
   verdict: string,
   threshold: import("./lens-review.ts").Severity,
 ): boolean {
   return !lensPassed(verdict, threshold);
-}
-
-/**
- * Resolve the ledger file path for a clone.
- *
- * `git rev-parse --git-common-dir` resolves to the MAIN clone's .git for
- * worktrees, so every worktree shares one ledger. Absolute-path: a relative
- * answer (a plain clone at cwd) is anchored on `cwd`.
- *
- * `PI_ENSEMBLE_REVIEW_LEDGER_FILE` is an explicit absolute-path override.
- * When set it is returned verbatim and no git call is made. Tests set this
- * to a private temp file so fixture writes never touch the real per-clone
- * ledger; operators normally do not set it.
- */
-export async function ledgerPathFor(
-  execFn: LedgerExecFn,
-  cwd: string,
-  fileName = "review-ledger.json",
-): Promise<string | undefined> {
-  // An explicit override short-circuits before any git call: the override is
-  // authoritative (tests point the ledger at a private temp file so concurrent
-  // runs never clobber the real per-clone ledger).
-  const override = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE?.trim();
-  if (override) {
-    // #955 lens fix 6: one-time trace per process so an operator-set
-    // override is visible in the trace log.
-    if (!ledgerOverrideTraced.has(override)) {
-      ledgerOverrideTraced.add(override);
-      trace(`review-ledger: ledger override in effect → ${override}`);
-    }
-    return override;
-  }
-  try {
-    const { stdout } = await execFn("git rev-parse --git-common-dir", { cwd, maxBuffer: 8 * 1024 });
-    const raw = stdout.trim();
-    if (!raw) return undefined;
-    const commonDir = path.isAbsolute(raw) ? raw : path.resolve(cwd, raw);
-    // A worktree's common dir is .git/worktrees/<name>; the SHARED storage
-    // is the main .git — one ledger per clone, not per worktree.
-    const dir =
-      raw.startsWith("worktrees/") && !commonDir.endsWith(".git")
-        ? path.join(commonDir, "..", "..")
-        : commonDir;
-    return path.join(dir, fileName);
-  } catch (err) {
-    trace(`review-ledger: cannot resolve git common dir: ${(err as Error).message}`);
-    return undefined;
-  }
 }
 
 /**
