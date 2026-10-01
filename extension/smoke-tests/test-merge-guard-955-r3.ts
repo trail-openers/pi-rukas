@@ -13,8 +13,9 @@
  * failing lens ledger) — the guard must REFUSE, not merely match.
  */
 
-import { readFileSync, writeFileSync, unlinkSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, unlinkSync, existsSync, rmSync, mkdtempSync } from "node:fs";
 import { execSync } from "node:child_process";
+import os from "node:os";
 import path from "node:path";
 import { type MergeTarget } from "../src/merge-target.ts";
 import { registerMergeGuard } from "../src/merge-guard.ts";
@@ -23,15 +24,11 @@ import { type LedgerEntry, ledgerPathFor } from "../src/review-ledger.ts";
 process.env.PI_ENSEMBLE_FORGE = "github";
 
 let LEDGER_FILE: string | undefined;
-
-async function setupLedgerPath() {
-  const realExec = async (cmd: string) => ({
-    stdout: execSync(cmd, { cwd: import.meta.dirname, encoding: "utf8" }),
-  });
-  const p = await ledgerPathFor(realExec, import.meta.dirname);
-  if (!p) throw new Error("cannot resolve the ledger path for the decision matrix");
-  LEDGER_FILE = p;
-}
+// The temp dir holding the private ledger file; removed at the end of the test
+// so no fixture lingers. The env override is set in setupLedgerPath before the
+// path is resolved so `ledgerPathFor` returns a private temp file instead of
+// the real per-clone ledger under the git common dir.
+let LEDGER_TMP_DIR: string | undefined;
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -39,6 +36,34 @@ function assert(cond: boolean, msg: string) {
   else {
     console.error(`✗ ${msg}`);
     exit = 1;
+  }
+}
+
+async function setupLedgerPath() {
+  LEDGER_TMP_DIR = mkdtempSync(path.join(os.tmpdir(), "pi-ledger-"));
+  const file = path.join(LEDGER_TMP_DIR, "review-ledger.json");
+  // Point the ledger at a private temp file BEFORE resolving the path so
+  // `ledgerPathFor` (the module under test) returns it and never the real
+  // per-clone ledger under the git common dir.
+  process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = file;
+  const realExec = async (cmd: string) => ({
+    stdout: execSync(cmd, { cwd: import.meta.dirname, encoding: "utf8" }),
+  });
+  const p = await ledgerPathFor(realExec, import.meta.dirname);
+  if (!p) throw new Error("cannot resolve the ledger path for the decision matrix");
+  LEDGER_FILE = p;
+  // Canary: the ledger must NOT live inside any .git directory — that would
+  // clobber the real per-clone review ledger shared by every worktree.
+  assert(!/([/\\])\.git([/\\]|$)/.test(p), "canary: the test ledger is not inside a .git directory");
+}
+
+function teardownLedger() {
+  if (LEDGER_TMP_DIR) {
+    try {
+      rmSync(LEDGER_TMP_DIR, { recursive: true, force: true });
+    } catch (err) {
+      console.error(`⚠ could not remove the ledger temp dir: ${(err as Error).message}`);
+    }
   }
 }
 
@@ -244,5 +269,6 @@ for (const cmd of [
   assert(r.block === true, "quoted numeric positional: refused (failing lens)");
 }
 
+teardownLedger();
 console.log(`\nexit ${exit}`);
 process.exit(exit);

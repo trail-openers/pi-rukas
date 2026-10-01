@@ -117,6 +117,8 @@ Check the raw transcript under `~/.pi/agent/ensemble-runs/<date>/` before conclu
 
 **Cause (by design):** The mode-independent merge guard (issue #912) checks the per-clone review ledger before allowing any agent-run PR/MR merge. The ledger lives under the git common dir (`git rev-parse --git-common-dir` + `review-ledger.json`) and is written by `adversarial_loop` and `dispatch_lens_review` at completion. The guard requires:
 
+> **Ledger path override:** `PI_ENSEMBLE_REVIEW_LEDGER_FILE` (an absolute path) makes `ledgerPathFor` return that path verbatim without any git call. Tests set it to a private temp file so their fixture writes never touch the real per-clone ledger (concurrent test runs across worktrees would otherwise race on it and clobber it); operators normally do not set it.
+
 1. The **latest** adversarial entry for the branch to be `passed: true` **and** its `patchId` to match the current `git patch-id` of the branch (a new commit since the review refuses).
 2. The **latest** lens entry for the branch to be `passed: true` (any `patchId` — a passing lens entry may predate a later commit; a later **failing** lens run is what the latest-ness protects against). The lens `passed` boolean follows the project's review threshold (the same bar the driver's verdict used — see `lensBlockedByThreshold` / `lensPassed` in review-ledger.ts).
 

@@ -303,6 +303,12 @@ export function lensBlockedByThreshold(
  * points back), so every worktree shares one ledger. Absolute-path: a
  * relative answer (a plain clone at cwd) is anchored on `cwd`.
  *
+ * `PI_ENSEMBLE_REVIEW_LEDGER_FILE` is an explicit absolute-path override.
+ * When set it is returned verbatim and no git call is made. Tests set this
+ * to a private temp file so their fixture writes never touch the real
+ * per-clone ledger (which concurrent test runs across worktrees would race
+ * on and clobber); operators normally do not set it.
+ *
  * Injects the git executor (tests stub it) and the file name (tests point
  * the ledger at a fixture without touching git).
  */
@@ -311,6 +317,11 @@ export async function ledgerPathFor(
   cwd: string,
   fileName = "review-ledger.json",
 ): Promise<string | undefined> {
+  // An explicit override short-circuits before any git call: the override is
+  // authoritative (tests point the ledger at a private temp file so concurrent
+  // runs never clobber the real per-clone ledger).
+  const override = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE?.trim();
+  if (override) return override;
   try {
     const { stdout } = await execFn("git rev-parse --git-common-dir", { cwd, maxBuffer: 8 * 1024 });
     const raw = stdout.trim();
