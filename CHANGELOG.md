@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.75](https://github.com/trail-openers/pi-rukas/compare/v0.12.74...v0.12.75) (2026-10-01)
+
+
+### Bug Fixes
+
+* **review:** stop lens children running long after concluding ([#956](https://github.com/trail-openers/pi-rukas/issues/956)) ([772961e](https://github.com/trail-openers/pi-rukas/commit/772961ed715360addc94dc94fbd461cae8449ab1))
+
 ## [0.12.74](https://github.com/trail-openers/pi-rukas/compare/v0.12.73...v0.12.74) (2026-10-01)
 
 
