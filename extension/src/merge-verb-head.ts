@@ -85,11 +85,22 @@ export function mergeVerbUnwrapOne(command: string): string | undefined {
     }
     if (t === "env") {
       i++;
-      // Skip env flags (--null, -i, --, …) and VAR=VAL assignments.
+      // Skip env flags (--null, -i, --, -S CMD, …) and VAR=VAL
+      // assignments. `-S` takes a quoted string argument that IS the
+      // command — unwrap to it directly (#955 adversarial round 1:
+      // `env -S "gh pr merge 17"` is the same merge as the bare form).
       while (i < n) {
         const e = tokens.list[i] ?? "";
         if (e.startsWith("-")) {
           i++;
+          if (e === "-S" || e === "--string") {
+            const s = tokens.list[i];
+            if (s === undefined) return undefined;
+            const sq = s[0];
+            if (sq !== "'" && sq !== '"' && !s.startsWith("$'")) return undefined;
+            const inner = unquoteArg(s);
+            return inner.length > 0 ? inner : undefined;
+          }
           continue;
         }
         if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(e)) {
