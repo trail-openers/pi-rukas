@@ -97,6 +97,7 @@ export async function readMergeTarget(
   cwd: string,
   prNumber: number,
   forgeOpts?: DetectForgeOpts,
+  repo?: string,
 ): Promise<MergeTargetResult> {
   const escapeHatch = "PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 (operator-set only)";
 
@@ -115,9 +116,9 @@ export async function readMergeTarget(
     };
   }
   if (detection.forge === "github") {
-    return readGhTarget(execFn, cwd, prNumber, escapeHatch);
+    return readGhTarget(execFn, cwd, prNumber, escapeHatch, repo);
   }
-  return readGlTarget(execFn, cwd, prNumber, escapeHatch);
+  return readGlTarget(execFn, cwd, prNumber, escapeHatch, repo);
 }
 
 async function readGhTarget(
@@ -125,9 +126,13 @@ async function readGhTarget(
   cwd: string,
   prNumber: number,
   escapeHatch: string,
+  repo?: string,
 ): Promise<MergeTargetResult> {
-  // The exact argv the guard shells out to — pinned by the test.
-  const cmd = `gh pr view ${prNumber} --json headRefName,headRefOid,baseRefName,author,labels`;
+  // The exact argv the guard shells out to — pinned by the test. `-R` is
+  // appended only when the command carried one (existing argv assertions
+  // stay byte-identical when no repo is present).
+  const repoFlag = repo ? ` -R ${repo}` : "";
+  const cmd = `gh pr view ${prNumber} --json headRefName,headRefOid,baseRefName,author,labels${repoFlag}`;
   let raw: Record<string, unknown>;
   try {
     const { stdout } = await execFn(cmd, { cwd, maxBuffer: 64 * 1024 });
@@ -168,9 +173,11 @@ async function readGlTarget(
   cwd: string,
   prNumber: number,
   escapeHatch: string,
+  repo?: string,
 ): Promise<MergeTargetResult> {
   // The repo's canonical glab read shape (forge-commands.ts): --output json.
-  const cmd = `glab mr view ${prNumber} --output json`;
+  const repoFlag = repo ? ` -R ${repo}` : "";
+  const cmd = `glab mr view ${prNumber} --output json${repoFlag}`;
   let raw: Record<string, unknown>;
   try {
     const { stdout } = await execFn(cmd, { cwd, maxBuffer: 64 * 1024 });
@@ -228,6 +235,7 @@ export async function resolvePrNumber(
   cwd: string,
   commandNumber: number | undefined,
   forgeOpts?: DetectForgeOpts,
+  repo?: string,
 ): Promise<number | undefined> {
   if (commandNumber !== undefined) return commandNumber;
   // Forge-aware: the PR/MR for the CURRENT branch, read from whichever forge
@@ -241,13 +249,20 @@ export async function resolvePrNumber(
     trace("merge-target: cannot resolve PR number — forge is unknown (fail-closed)");
     return undefined;
   }
+  const repoFlag = repo ? ` -R ${repo}` : "";
   try {
     if (detection.forge === "gitlab") {
-      const { stdout } = await execFn("glab mr view --output json", { cwd, maxBuffer: 8 * 1024 });
+      const { stdout } = await execFn(`glab mr view --output json${repoFlag}`, {
+        cwd,
+        maxBuffer: 8 * 1024,
+      });
       const n = (JSON.parse(stdout) as { iid?: number }).iid;
       return typeof n === "number" ? n : undefined;
     }
-    const { stdout } = await execFn("gh pr view --json number", { cwd, maxBuffer: 8 * 1024 });
+    const { stdout } = await execFn(`gh pr view --json number${repoFlag}`, {
+      cwd,
+      maxBuffer: 8 * 1024,
+    });
     const n = (JSON.parse(stdout) as { number?: number }).number;
     return typeof n === "number" ? n : undefined;
   } catch (err) {

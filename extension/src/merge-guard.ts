@@ -86,6 +86,7 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { mergesPr } from "./bash-merges-pr.ts";
+import { extractMergeNumber, extractMergeRepo, mergeVerbArgs } from "./merge-parse.ts";
 import { type MergeExecFn, isCarveOut, readMergeTarget, resolvePrNumber } from "./merge-target.ts";
 import {
   type LedgerEntry,
@@ -133,16 +134,42 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     // through it); production uses execp.
     const execFn: MergeExecFn = opts.execFn ?? execp;
 
-    // Resolve the PR number (from the command or the current branch).
-    const prNumber = await resolvePrNumberForCommand(execFn, cwd, merging);
+    // Resolve the PR number. The verb door (`gh pr merge …` / `glab mr
+    // merge …`) carries the number in the arguments AFTER the matched verb
+    // (#955: the legacy span-based extraction only saw the verb itself, so
+    // every numbered merge fell back to current-branch resolution). The
+    // REST doors (`gh api …/pulls/N/merge`) carry the number inside the
+    // matched span — `extractPrNumber` (span-scoped) still applies there.
+    // The `-R`/`--repo` flag (or a PR-URL) names the repo — threaded to the
+    // gh/glab reads so the guard resolves the PR in the right repo.
+    const fromVerb = mergeVerbArgs(command);
+    const fromRepo = fromVerb !== undefined ? extractMergeRepo(fromVerb) : undefined;
+    let prNumber: number | undefined;
+    if (fromVerb !== undefined) {
+      // The verb door matched — parse the number from the argument tail.
+      prNumber = extractMergeNumber(fromVerb);
+      // No number in the tail → fall back to current-branch resolution.
+      if (prNumber === undefined) {
+        prNumber = await resolvePrNumber(execFn, cwd, undefined, undefined, fromRepo);
+      }
+    } else {
+      // No verb door — try the REST-door span extraction (the number is
+      // inside the matched endpoint path for those shapes).
+      const fromSpan = extractPrNumber(merging);
+      if (fromSpan !== undefined) {
+        prNumber = fromSpan;
+      } else {
+        prNumber = await resolvePrNumber(execFn, cwd, undefined, undefined, fromRepo);
+      }
+    }
     if (prNumber === undefined) {
       return block(
-        `could not resolve the PR number for \`${merging}\` — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
+        `could not resolve the PR number for \`${merging}\` (parsed number: ${prNumber ?? "none"}; repo: ${fromRepo ?? "none"}; matched span: \`${merging}\`; fallback cwd: ${cwd}) — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
       );
     }
 
     // Read the merge target (gh/glab). Fail-closed on unreadable.
-    const targetResult = await readMergeTarget(execFn, cwd, prNumber);
+    const targetResult = await readMergeTarget(execFn, cwd, prNumber, undefined, fromRepo);
     if (!targetResult.ok) {
       return block(`merge refused: ${targetResult.reason}`);
     }
@@ -256,25 +283,15 @@ function block(reason: string) {
 }
 
 /**
- * Extract the PR number from the matched merge span.
+ * Extract the PR number from the matched REST-door span.
  *
- * `gh pr merge 12` → 12. `gh pr merge` → undefined (resolve via gh pr view).
- * `glab mr merge 7` → 7. The number is read from the matched span ONLY —
- * scoping to the whole command would pick up unrelated numbers (a `cd
- * /data/3 && gh pr merge` extracts `3` from the path) and validate the
- * ledger for the wrong PR.
+ * `gh api repos/o/r/pulls/12/merge` → 12. `glab api /projects/1/mr/7/merge`
+ * → 7. The number is read from the matched span ONLY — the REST endpoint
+ * path carries the number as a path segment. (The verb door is handled by
+ * `mergeVerbArgs` + `extractMergeNumber` in merge-parse.ts — it does NOT
+ * use this function.)
  */
 function extractPrNumber(matched: string): number | undefined {
   const m = /\b(\d+)\b/.exec(matched);
   return m?.[1] ? Number.parseInt(m[1], 10) : undefined;
-}
-
-async function resolvePrNumberForCommand(
-  execFn: MergeExecFn,
-  cwd: string,
-  matchedCommand: string,
-): Promise<number | undefined> {
-  const fromCommand = extractPrNumber(matchedCommand);
-  if (fromCommand !== undefined) return fromCommand;
-  return resolvePrNumber(execFn, cwd, undefined);
 }
