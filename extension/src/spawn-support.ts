@@ -120,10 +120,19 @@ export function spawnBackstopMs(): number {
  */
 const CODE_REVIEW_SPECIALIST_DEFAULT_BUDGET = 8_000_000;
 
+/**
+ * #952 — the env key for a role's token budget override, shared by
+ * `tokenBudgetFor` (which reads it) and the token-budget kill attribution in
+ * spawn-caps.ts (which names it in the operator-facing message). Hyphens in
+ * the role name (code-review-specialist) map to underscores in the env key
+ * (CODE_REVIEW_SPECIALIST) — a hyphenated name is not settable in the shell.
+ */
+export function tokenBudgetEnvKey(role: string): string {
+  return `PI_ENSEMBLE_TOKEN_BUDGET_${role.toUpperCase().replaceAll("-", "_")}`;
+}
+
 export function tokenBudgetFor(role: string): number {
-  // The env key uses underscores (CODE_REVIEW_SPECIALIST), not the hyphens
-  // in the role name (code-review-specialist). `replace` handles both.
-  const envKey = `PI_ENSEMBLE_TOKEN_BUDGET_${role.toUpperCase().replaceAll("-", "_")}`;
+  const envKey = tokenBudgetEnvKey(role);
   const env = process.env[envKey];
   // Set explicitly (including "0" = off, which must beat the default) or
   // non-numeric (off, never NaN): the env value wins.
