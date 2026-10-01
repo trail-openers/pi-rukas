@@ -68,13 +68,29 @@ for (const cmd of [
   "command gh pr merge 17",
   "nohup gh pr merge 17 &",
   "sudo gh pr merge 17",
-  "sudo -u janni gh pr merge 17",
+  "sudo -E -u x gh pr merge 17",
   "nice gh pr merge 17",
   "nice -n 5 gh pr merge 17",
+  "nice -n 10 gh pr merge 17",
   "time gh pr merge 17",
   "time -p gh pr merge 17",
   "env gh pr merge 17",
   "env -i gh pr merge 17",
+  // `env -u FOO` takes a value token — the round-1 skip-all-dashes walk
+  // stopped at `FOO` and the door stayed open (adversarial CRITICAL #1).
+  "env -u FOO gh pr merge 17",
+  "env -u FOO -u BAR gh pr merge 17",
+  // `exec` re-executes the shell's own invocation as the new command —
+  // it is a wrapper, not a command head (adversarial CRITICAL #2).
+  "exec gh pr merge 17",
+  "builtin gh pr merge 17",
+  // `timeout` flag shapes: `-k N`, `--signal=KILL`, `--signal KILL` (the
+  // space-separated `--signal` takes its value token — a `--flag=value`
+  // form keeps the value inside the token).
+  "timeout -k 5 30 gh pr merge 17",
+  "timeout --signal=KILL 30s gh pr merge 17",
+  "timeout --signal KILL 30s gh pr merge 17",
+  "timeout -k 5 30s gh pr merge 17",
   "oo gh pr merge 17",
   "stdbuf -oL gh pr merge 17",
   // Stacked wrappers (bash unwraps iteratively — the guard must too).
@@ -111,6 +127,23 @@ for (const cmd of [
 {
   const a = mergeVerbArgs("nohup gh pr merge 17 &");
   assert(extractMergeNumber(a ?? "") === 17, "nohup gh pr merge 17 & → 17");
+}
+// The value-taking wrapper flags: the number must still be the PR, not a
+// wrapper argument (adversarial CRITICAL #1: `env -u` took its value
+// token into the command-word slot, breaking the door).
+{
+  const a = mergeVerbArgs("env -u FOO gh pr merge 17");
+  assert(a !== undefined, "env -u: the verb tail is present");
+  assert(extractMergeNumber(a ?? "") === 17, "env -u FOO gh pr merge 17 → 17");
+}
+{
+  const a = mergeVerbArgs("exec gh pr merge 17");
+  assert(a !== undefined, "exec: the verb tail is present");
+  assert(extractMergeNumber(a ?? "") === 17, "exec gh pr merge 17 → 17");
+}
+{
+  const a = mergeVerbArgs("timeout --signal KILL 30s gh pr merge 17");
+  assert(extractMergeNumber(a ?? "") === 17, "timeout --signal KILL 30s → 17 (not 30s, not KILL)");
 }
 
 // ------------------------------------------------------------ subshell / substitution
@@ -189,6 +222,59 @@ const DEEP_MERGE = "bash -c \\'(sh -c \\'(gh pr merge 12)\\')\\'";
 {
   const a = mergeVerbArgs("gh pr merge '17'");
   assert(extractMergeNumber(a ?? "") === 17, "gh pr merge '17' → 17 (single-quoted)");
+}
+
+// ------------------------------------------------------------ REST doors in subshells / substitutions
+// A REST-door call inside `( … )` / `$( … )` / backticks is a live merge
+// the guard must catch, fail-closed — the same doctrine the verb door
+// applies to those bodies (adversarial ISSUES #3: the REST doors were
+// not recursing into inner bodies, so `(gh api repos/o/r/pulls/17/merge)`
+// and `x=$(gh api …/pulls/17/merge)` stayed open).
+for (const cmd of [
+  "(gh api repos/o/r/pulls/17/merge)",
+  "x=$(gh api repos/o/r/pulls/17/merge)",
+  "x=`gh api repos/o/r/pulls/17/merge`",
+  "(glab api /projects/o%2Fr/mr/7/merge -f state=merged)",
+  "y=$(glab api /projects/o%2Fr/mr/7/merge -f state=merged)",
+]) {
+  assert(mergesPr(cmd) !== undefined, `canary (REST-in-construct): blocked — ${cmd}`);
+}
+
+// A REST read (no /merge suffix) in a subshell stays open.
+{
+  assert(mergesPr("(gh api repos/o/r/pulls/17)") === undefined, "REST read in subshell: allowed");
+  assert(mergesPr("x=$(gh api repos/o/r/pulls/17)") === undefined, "REST read in $(): allowed");
+}
+
+// ------------------------------------------------------------ performance / robustness
+// A pathological command with many constructs must terminate in O(n) total
+// work (no exponential blowup, no throw). The inner-body recursion is
+// unbounded in depth but TERMINATING: every extracted body is a strict
+// substring of the text that produced it.
+{
+  let nested = "gh pr merge 12";
+  for (let i = 0; i < 50; i++) nested = `$((${nested}))`;
+  const t0 = Date.now();
+  const m = mergesPr(nested);
+  const ms = Date.now() - t0;
+  assert(m !== undefined, "canary (perf): 50-level nested $(...) still matches");
+  assert(ms < 2000, `50-level nested completes in ${ms}ms (< 2000ms, no blowup)`);
+}
+{
+  const big = "echo " + "a".repeat(50_000) + " && gh pr merge 12";
+  const t0 = Date.now();
+  const m = mergesPr(big);
+  const ms = Date.now() - t0;
+  assert(m !== undefined, "canary (perf): 50k-char command still matches");
+  assert(ms < 2000, `50k-char command completes in ${ms}ms (< 2000ms, no blowup)`);
+}
+{
+  const ticks = "echo " + "`x`".repeat(3000) + " && gh pr merge 12";
+  const t0 = Date.now();
+  const m = mergesPr(ticks);
+  const ms = Date.now() - t0;
+  assert(m !== undefined, "canary (perf): 3000 backticks still matches");
+  assert(ms < 2000, `3000 backticks completes in ${ms}ms (< 2000ms, no blowup)`);
 }
 
 // ------------------------------------------------------------ non-merges stay open
@@ -385,6 +471,13 @@ for (const cmd of [
   "x=$(gh pr merge 12)",
   "x=`gh pr merge 12`",
   "glab --project o/r mr merge 12",
+  // The CRITICAL round-2 shapes (adversarial CRITICAL #1 + #2): `env -u`
+  // takes a value token; `exec` is a wrapper.
+  "env -u FOO gh pr merge 12",
+  "exec gh pr merge 12",
+  // The REST doors in a subshell / substitution (adversarial ISSUES #3).
+  "(gh api repos/o/r/pulls/12/merge)",
+  "x=$(gh api repos/o/r/pulls/12/merge)",
 ]) {
   const r = await hookDecision(cmd, FAILING_LENS);
   assert(r.block === true, `refused (failing lens) — ${cmd}`);

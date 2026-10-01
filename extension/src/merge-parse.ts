@@ -14,14 +14,15 @@
  * Round-2 hardening (#955, adversarial round 2): the legacy matcher still
  * missed every merge hidden behind a process wrapper (`timeout 30 gh pr
  * merge 17`, `command …`, `nohup …`, `sudo …`, `nice …`, `time …`, `oo …`,
- * `stdbuf …`), a forge PATH (`/usr/bin/gh pr merge 17`), or a subshell /
- * command-substitution construct (`( gh pr merge 17 )`, `x=$(gh pr merge 17)`,
- * backticks). Those shapes now match: each shell segment is matched
- * segment-by-segment against a wrapper-stripped head (`matchMergeVerb`,
- * merge-verb-head.ts), and the bodies of `( … )`, `$( … )` and backtick
- * constructs are extracted and matched recursively, the same as `bash -c`
- * bodies. Recursion past the depth budget fails CLOSED (a merge with no
- * number → the fallback refusal), never open.
+ * `stdbuf …`, `env -u FOO …`, `exec …`), a forge PATH (`/usr/bin/gh pr
+ * merge 17`), or a subshell / command-substitution construct
+ * (`( gh pr merge 17 )`, `x=$(gh pr merge 17)`, backticks). Those shapes now
+ * match: every shell segment is matched segment-by-segment against the
+ * wrapper-stripped head (`matchMergeVerb`, merge-verb-head.ts), and the
+ * bodies of `( … )`, `$( … )` and backtick constructs are extracted and
+ * matched recursively, the same as `bash -c` bodies. Recursion past the
+ * depth budget fails CLOSED (a merge with no number → the fallback
+ * refusal), never open.
  *
  * Design (per the #955 decisions):
  * - Subshell/wrapper unwrapping on the RAW command, recursively (depth 3),
@@ -34,7 +35,9 @@
  *   `/merge_requests/N` URL. Digits before the verb never count (the
  *   `cd /data/3` canary). glab's `--project`/`-R` flag names the repo
  *   (like gh's `-R`/`--repo`).
- * - The REST doors keep their existing span-based extraction.
+ * - The REST doors (bash-merges-pr.ts) keep their span-based extraction
+ *   and run over the command AND its `( … )` / `$( … )` / backtick
+ *   bodies — a REST-door call in a subshell is a live merge, fail-closed.
  *
  * The matcher (`mergesPr`) lives in bash-merges-pr.ts; the token walk and
  * the segment-head unwrapping live in merge-tokens.ts / merge-verb-head.ts.
@@ -50,26 +53,11 @@ import { innerBodies, matchMergeVerb, mergeVerbUnwrapOne } from "./merge-verb-he
  * nothing after it (the no-number fallback). The REST doors carry their
  * number inside the matched span — that path stays in merge-guard.ts.
  *
- * #955 round 2: an unterminated quote in the raw command is an UNPARSEABLE
- * command — the #955 rule for unparseable inner strings (treat as a merge
- * with no number → the fallback refusal), not a clean pass.
+ * #955 round 2: an unparseable command (a quote never closes, or a merge
+ * hidden past the unwrap budget) is treated as a merge with no number (the
+ * empty string) — the fallback refusal, never a clean pass.
  */
 export function mergeVerbArgs(command: string): string | undefined {
-  // Walk the shell-eval layers (depth 3) first, then match the verb and
-  // return the argument tail. `matchMergeVerbTail` returns undefined when
-  // the command does not merge (or is unparseable) — that is the "not a
-  // merge" signal for the REST doors. The fail-closed path (unparseable →
-  // treat as a merge with no number) is handled by `mergeVerbSeen`:
-  // when `shellSegments` returns an empty array (unterminated quote), the
-  // command is treated as a merge with no number (empty tail).
-  //
-  // IMPORTANT: `matchMergeVerbTail` returning undefined does NOT mean the
-  // command is unparseable — it also means "no merge verb found" (which
-  // is the normal case for non-merge commands and REST-door commands).
-  // The fail-closed path is only triggered when `shellSegments` returns
-  // an empty array (a genuinely unparseable command).
-  const seen = mergeVerbSeen(command);
-  if (seen === undefined) return "";
   return matchMergeVerbTail(command);
 }
 
@@ -118,63 +106,29 @@ export function extractMergeRepo(args: string): string | undefined {
 // internals
 
 /**
- * The recursive merge-verb matcher (no unwrap budget): shell-eval layers
- * (`bash -c` / `sh -c` / `eval`, with `env`/`oo`) are unwrapped first, then
- * each shell segment's head is tested with the wrapper-stripped
- * `matchMergeVerb` (process wrappers, forge paths), and the bodies of
- * subshell / command-substitution constructs are matched recursively.
- *
- * The depth budget is the `bash -c` layers (depth 3 — a merge 3 shell-eval
- * layers deep is already beyond any real shell shape; deeper nesting is the
- * "unparseable" case that fails closed in `mergeVerbSeen` /
- * `matchMergeVerbTail`). The inner-body recursion is unbounded — those
- * bodies are strictly shorter than their parent, so the recursion
- * terminates, and a merge hidden in a 4-level subshell is exactly the
- * shape that must NOT escape.
- *
- * Returns true when the command merges (some inner segment carries the
- * merge verb), false when it does not, and undefined when the command is
- * unparseable (a quote never closes) — the caller fails closed.
- */
-function matchMergeVerbDeep(text: string, depth: number): boolean | undefined {
-  let cur = text;
-  for (let d = 0; d < 3; d++) {
-    const inner = mergeVerbUnwrapOne(cur);
-    if (inner !== undefined) {
-      cur = inner;
-      continue;
-    }
-    break;
-  }
-  return matchSegments(cur, depth);
-}
-
-/**
- * Match every shell segment of `text`, and every extracted inner-body
- * construct, recursively. Returns true on the first merge verb found,
- * false when no segment matches, undefined when an unbalanced construct or
- * an unparseable segment was hit (fail closed).
- */
-function matchSegments(text: string, depth: number): boolean | undefined {
-  const segments = shellSegments(text);
-  if (segments.length === 0) return undefined; // the raw text had an unterminated quote
-  for (const seg of segments) {
-    if (matchMergeVerb(seg) !== undefined) return true;
-    for (const body of innerBodies(seg)) {
-      const inner = matchMergeVerbDeep(body, depth + 1);
-      if (inner === true) return true;
-      if (inner === undefined) return undefined; // unparseable inner — fail closed
-    }
-  }
-  return false;
-}
-
-/**
  * The argument tail after the matched merge verb in `command` (see
- * `mergeVerbArgs`). Walks the same layers as `matchMergeVerbDeep` and
- * returns the tail of the FIRST segment whose head matches the merge verb
- * (the post-verb parser is quote-aware, so the tail is consumed verbatim).
- * Returns undefined when the command does not merge or is unparseable.
+ * `mergeVerbArgs`). Walks the shell-eval layers (depth 3) and then every
+ * shell segment's head against the wrapper-stripped `matchMergeVerb`
+ * (process wrappers, forge paths), recursing into the bodies of subshell /
+ * command-substitution constructs.
+ *
+ * Returns:
+ * - the argument tail of the FIRST segment (or inner body) whose head
+ *   carries the merge verb (possibly the empty string — the no-number
+ *   fallback);
+ * - the empty string when the command is UNPARSEABLE (a quote never
+ *   closes, an unbalanced construct, or a merge hidden past the unwrap
+ *   budget) — the fail-closed signal: a merge with no number, the fallback
+ *   refusal, never a clean pass;
+ * - `undefined` when the command does not merge (or the matched verb has no
+ *   argument tail at all — the same no-number fallback, surfaced as the
+ *   empty tail).
+ *
+ * The inner-body recursion is unbounded in PRACTICE but TERMINATING:
+ * every extracted body is a strict substring of the text that produced it,
+ * so the recursion depth is bounded by the text length — a pathological
+ * command with 3000 backticks terminates in O(n) total work, no throw, no
+ * exponential blowup.
  */
 function matchMergeVerbTail(command: string): string | undefined {
   let text = command;
@@ -186,16 +140,27 @@ function matchMergeVerbTail(command: string): string | undefined {
     }
     break;
   }
-  return matchSegmentsTail(text, 0);
+  const tail = matchSegmentsTail(text, 0);
+  // A `null` tail is the fail-closed signal (unparseable / unbalanced /
+  // exhausted budget): the command carries a merge the guard cannot
+  // number — return the empty tail (the no-number fallback refusal).
+  return tail === null ? "" : tail;
 }
 
 /**
- * The segment-tail companion of `matchSegments`: like `matchSegments`, but
- * returns the argument tail of the first matching segment (or undefined).
+ * Match every shell segment of `text`, and every extracted inner-body
+ * construct, recursively. Returns the argument tail of the FIRST segment
+ * (or inner body) that carries the merge verb, `null` when an unbalanced
+ * construct or an unparseable segment was hit (fail closed), or `undefined`
+ * when no segment matches.
+ *
+ * The recursion terminates: every body is a strict substring of the text
+ * that produced it, so each recursive call operates on a strictly shorter
+ * string — no exponential blowup, no throw on pathological input.
  */
-function matchSegmentsTail(text: string, depth: number): string | undefined {
+function matchSegmentsTail(text: string, depth: number): string | null | undefined {
   const segments = shellSegments(text);
-  if (segments.length === 0) return undefined; // unparseable — fail closed
+  if (segments.length === 0) return null; // the raw text had an unterminated quote
   for (const seg of segments) {
     if (matchMergeVerb(seg) !== undefined) {
       const m =
@@ -203,72 +168,19 @@ function matchSegmentsTail(text: string, depth: number): string | undefined {
           seg,
         );
       // Fail closed: if the verb matched via matchMergeVerb but the span
-      // regex can't locate it (should not happen), treat as a merge with
-      // no number (empty tail).
+      // regex can't locate it (should not happen), the command carries a
+      // merge with no readable tail — the no-number fallback.
       if (m) return seg.slice(m.index + m[0].length);
       return "";
     }
-    for (const body of innerBodies(seg)) {
-      const tail = matchMergeVerbDeepTail(body, depth + 1);
-      if (tail !== undefined) return tail;
-      // tail === undefined means unparseable — fail closed (return "").
-      if (tail === undefined && innerBodies(seg).length > 0) return "";
+    const bodies = innerBodies(seg);
+    for (const body of bodies) {
+      const inner = matchSegmentsTail(body, depth + 1);
+      if (inner === null) return null; // unparseable inner — fail closed
+      if (inner !== undefined) return inner; // the inner merge's tail
     }
   }
   return undefined;
-}
-
-/** The deep tail companion of `matchMergeVerbDeep` (see its doc). */
-function matchMergeVerbDeepTail(text: string, depth: number): string | undefined {
-  let cur = text;
-  for (let d = 0; d < 3; d++) {
-    const inner = mergeVerbUnwrapOne(cur);
-    if (inner !== undefined) {
-      cur = inner;
-      continue;
-    }
-    break;
-  }
-  return matchSegmentsTail(cur, depth);
-}
-
-/**
- * The verb-seen companion of `matchSegmentsTail`: true when any segment (or
- * nested construct) carries the merge verb, false when none do, undefined
- * when the text is unparseable (the fail-closed signal).
- */
-function mergeVerbSeen(command: string): boolean | undefined {
-  let text = command;
-  for (let d = 0; d < 3; d++) {
-    const inner = mergeVerbUnwrapOne(text);
-    if (inner !== undefined) {
-      text = inner;
-      continue;
-    }
-    break;
-  }
-  // Fail closed: if the raw command has an unterminated quote (an
-  // unparseable command), treat it as a merge with no number. The
-  // #955 rule for unparseable inner strings.
-  const segs = shellSegments(text);
-  if (segs.length === 0) return undefined; // unparseable → fail closed
-  return matchSegments(text, 0);
-}
-
-/**
- * The length of the matched verb span in the segment: the (optionally
- * path-qualified) forge word, an optional `-R`/`--repo` value, and the
- * `pr merge` / `mr merge` verb — the argument tail starts just past it.
- */
-function verbSpanLength(seg: string): number {
-  const m =
-    /(?:^|[\s;&|])(?:\/\S*\/)?(?:gh|glab)(?:\s+(?:-R|--repo)\s+\S+)?\s+(?:pr|mr)\s+merge\b/.exec(
-      seg,
-    );
-  if (!m) return 0;
-  // The matched span may start with a leading separator character (a space
-  // or &/; /|) — strip those so the slice length is the verb span only.
-  return m[0].replace(/^\s*[;&|]?\s*/, "").length;
 }
 
 /**

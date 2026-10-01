@@ -31,8 +31,13 @@
 
 import { rawTokens, unquoteArg } from "./merge-tokens.ts";
 
-/** Wrapper words that take NO flags: the next token is the real command. */
-const BARE_WRAPPERS = new Set(["command", "builtin", "nohup", "sudo", "oo"]);
+/**
+ * Wrapper words that take NO flags: the next token is the real command.
+ * `exec` re-executes the shell's own invocation as the new command
+ * (`exec gh pr merge 17` runs the merge identically to the bare form) —
+ * it is a wrapper, not a command head.
+ */
+const BARE_WRAPPERS = new Set(["command", "builtin", "exec", "nohup", "sudo", "oo"]);
 
 /**
  * The forge command word, normalised: a path ending in `/gh` or `/glab`
@@ -103,7 +108,7 @@ export function matchMergeVerb(text: string): string | undefined {
     }
     let j = i + 1;
     if (t === "timeout") {
-      // `timeout [--signal=X|-s X|-k N|-p|-v …] <duration>` — the duration
+      // `timeout [--signal=X|-s X|-k N|-v|-p …] <duration>` — the duration
       // is the last argument before the command; skip flags then one
       // positional.
       j = i + 1;
@@ -114,10 +119,12 @@ export function matchMergeVerb(text: string): string | undefined {
           continue;
         }
         if (f.startsWith("-")) {
-          // A flag: take its value token when it has one (`-s TERM`),
-          // or none (`--signal=TERM`, `-k` is positional too).
+          // A flag: take its value token when the flag takes one —
+          // space-separated (`-s TERM`, `-k 5`) or `--flag=value` (the
+          // value is inside the token, nothing to skip).
           j++;
-          if (f.startsWith("-") && !f.slice(1).startsWith("-") && !f.includes("=")) j++;
+          if (f.startsWith("--") && !f.includes("=")) j++;
+          else if (f.length === 2) j++; // a short flag (`-s`, `-k`) takes a value
           continue;
         }
         break;
@@ -174,12 +181,20 @@ export function matchMergeVerb(text: string): string | undefined {
       continue;
     }
     if (t === "env") {
-      // `env [-i] [VAR=…]… <cmd>` — skip flags and VAR=VAL assignments.
+      // `env [-i | -u VAR | --unset VAR | -C DIR | --chdir DIR | …] [VAR=…]…
+      // <cmd>` — skip flags (skipping the value token of the flags that
+      // take one) and VAR=VAL assignments. `-u`/`--unset` (repeated),
+      // `-C`/`--chdir` and `--ignore-unknown` are the flags whose value
+      // token must not be read as the command word: `env -u FOO gh pr
+      // merge 17` is the merge — walking past `-u` and stopping at `FOO`
+      // (the round-1 skip-all-dashes walk) made `FOO` the "command word"
+      // and the door stayed open.
       j = i + 1;
       while (j < list.length) {
         const e = list[j] ?? "";
         if (e.startsWith("-")) {
           j++;
+          if (e === "-u" || e === "--unset" || e === "-C" || e === "--chdir") j++;
           continue;
         }
         if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(e)) {
