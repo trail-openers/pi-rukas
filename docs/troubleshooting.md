@@ -180,7 +180,9 @@ That number separates two failures a bare cause could not:
 - **`0 line(s)`** — the child never spoke at all. A provider stall, an auth failure, or a bad model id. Nothing was produced, nothing is recoverable, and the problem is upstream of the agent. Raising the watchdog changes nothing.
 - **a large count** — the child worked and then went quiet. A genuine hang, with real output on disk in its worktree worth recovering before you re-run.
 
-The 25-minute budget is deliberately unchanged. Raising a wall-clock number to cover a cause you have not identified is exactly the mistake the six per-role timers were deleted for — each was raised twice, and each time the finding was that the number was too small for a *healthy* child.
+**A `tool-inactivity` kill** is the same watchdog with its in-flight-awareness on: `last output: toolCall in flight: <tool>` means the silence happened *while a tool call was running* — a long bash (a full offline gate, a CI watch) or a tool that genuinely wedged. Its bound is `PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS` (default 60 min), separate from the model-silence budget below; the two knobs disable independently (`0` on one does not touch the other).
+
+The 30-minute model-silence budget (and the 60-minute tool-inactivity bound) are deliberately sized for the silence shape each owns: model turns at the model-silence budget, long tool executions at the tool-inactivity bound. Raising a wall-clock number to cover a cause you have not identified is exactly the mistake the six per-role timers were deleted for — each was raised twice, and each time the finding was that the number was too small for a *healthy* child.
 
 ### Reading a handoff
 
@@ -958,7 +960,8 @@ Two mechanisms, and only one of them is meant to fire in normal operation.
 
 | Mechanism | Default | Env var | What it is for |
 |---|---|---|---|
-| Inactivity watchdog | 25 min of **zero stdout** | `PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS` (`0` disables) | The real hang detector. A healthy child emits an event at every turn/tool boundary, so silence — not slowness — is the signal. |
+| Inactivity watchdog (model silence) | 30 min of **zero stdout** while no tool call is in flight | `PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS` (`0` disables only this watch) | The real hang detector for a stalled model turn. A healthy child emits an event at every turn boundary, so silence — not slowness — is the signal. |
+| Tool-inactivity watchdog | 60 min of **zero stdout** while a tool call is in flight | `PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS` (`0` disables only this watch) | The bound for a silent *tool* — a long bash (the full offline gate, a CI watch) is the normal shape, a wedged tool the bad one. One poll, two budgets: while the in-flight set is non-empty this bound applies, otherwise the model-silence bound. |
 | Runaway backstop | 2 h wall-clock | `PI_ENSEMBLE_SPAWN_TIMEOUT_MS` | Catches a child looping forever while still emitting events, which liveness cannot see. Nothing else should reach it. |
 
 This replaced a table of six per-role wall-clock caps. Those were raised twice — [#296](https://github.com/trail-openers/pi-rukas/issues/296) and [#553](https://github.com/trail-openers/pi-rukas/issues/553) — and both times the finding was the same: the number was too small for a *healthy* child. Provider speed varies by an order of magnitude, so a wall-clock number never means the same thing on two models, and the per-role table had already drifted out of sync with this documentation.

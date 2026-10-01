@@ -31,6 +31,12 @@ const WHY: Record<string, string> = {
     "hit the wall-clock backstop — that only catches runaway loops, so this means the work needs splitting or manual takeover",
   inactivity:
     "produced no output at all for the watchdog window — a genuine hang, or a provider stall that outlasted every retry",
+  // #951 — the in-flight-tool variant: the silence happened WHILE a tool call
+  // was running, so the distinction for the operator is which bound fired
+  // (PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS, not the model-silence knob) and
+  // that a tool — not the model — is what went quiet.
+  "tool-inactivity":
+    "went silent while a tool call was in flight — the tool (not the model) is what stopped answering; the bound is PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS, not the model-silence knob",
   abort: "was cancelled",
   // #543 — the F1 loop detector and F6 token budget are OUR caps, distinct
   // from a wall-clock timeout: a repeating call was detected structurally,

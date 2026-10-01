@@ -93,6 +93,17 @@ async function testFailureCauseTaxonomy() {
     assert(cls.maxRetries === 1, "inactivity → maxRetries=1");
   }
 
+  // #951 — classifyFailureCause: tool-inactivity retries like inactivity
+  // (a tool that never returned is the same hang shape).
+  {
+    const cls = classifyFailureCause(
+      mkEvent({ killCause: "tool-inactivity", kind: "dispatch-failed" }),
+    );
+    assert(cls.cause === "self-killed:tool-inactivity", "tool-inactivity → self-killed:tool-inactivity");
+    assert(cls.shouldRetry === true, "tool-inactivity → shouldRetry=true");
+    assert(cls.maxRetries === 1, "tool-inactivity → maxRetries=1");
+  }
+
   // --- classifyFailureCause: abort never retries ---
   {
     const cls = classifyFailureCause(mkEvent({ killCause: "abort", kind: "dispatch-failed" }));
@@ -231,6 +242,32 @@ async function testFailureCauseTaxonomy() {
     assert(
       !report.includes("terminated mid-stream"),
       "self-kill inactivity does NOT emit terminated mid-stream badge",
+    );
+  }
+
+  // #951 — formatSingleReport: self-killed tool-inactivity
+  {
+    const report = formatSingleReport(
+      "job-2b",
+      "ops",
+      mkResult({
+        ok: false,
+        exitCode: 143,
+        killCause: "tool-inactivity",
+        text: "",
+      }),
+    );
+    assert(
+      report.includes("tool-inactivity"),
+      `self-kill tool-inactivity is tagged distinctly: ${report.split("\n")[0]}`,
+    );
+    assert(
+      !report.includes("FAILED-PROVIDER-ERROR"),
+      "self-kill tool-inactivity is NOT tagged as provider error",
+    );
+    assert(
+      !report.includes("terminated mid-stream"),
+      "self-kill tool-inactivity does NOT emit terminated mid-stream badge",
     );
   }
 

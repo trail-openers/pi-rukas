@@ -28,6 +28,7 @@ import type { PiJsonEvent, SpawnOptions } from "./pi-event-shapes.ts";
 import { emptyRunningState, ingestEvent } from "./progress.ts";
 import { excludeToolsFor } from "./role-tools.ts";
 import { ROLES, type RoleName, isRoleName } from "./roles.ts";
+import { InFlightTools, createInactivityPoll } from "./spawn-inflight.ts";
 import { type CapSession, capKillAttribution, createCapSession } from "./spawn-caps.ts";
 import { collapseEvents } from "./spawn-collapse-events.ts";
 import {
@@ -43,7 +44,6 @@ import {
   buildCwdHint,
   capKillGraceMs,
   getPiInvocation,
-  inactivityTimeoutMs,
   makeRunId,
   reconcileObservedCounts,
   spawnBackstopMs,
@@ -265,13 +265,20 @@ async function spawnSpecialistInner(
 
   // #543 F1/F6 — dispatch caps (loop detector + token budget). The cap
   // session (spawn-caps.ts) owns the per-spawn detector/tracker state, the
-  // grace-window timers and the killCause priority (loop > inactivity >
-  // timeout > token-budget > abort — the most specific wins). Created
+  // grace-window timers and the killCause priority (loop > inactivity =
+  // tool-inactivity > token-budget > timeout > abort — the most specific
+  // wins). Created
   // BEFORE `createInterface` below because the line handler references
   // `caps` on the first stdout line: a `const caps` initialized after the
   // attach would be in the TDZ for any early line (ReferenceError).
   let timedOut = false;
   let inactivityKilled = false;
+  // #951 — the in-flight-tool silence kill: a toolCall's result never
+  // arrived, and the silence outlasted the tool-inactivity bound.
+  let toolInactivityKilled = false;
+  // #951 — the budget that actually fired (set by the inactivity poll's
+  // onKill callback; the active bound, since exactly one is armed per poll).
+  let killedBudgetMs = 0;
   let aborted = false;
   // #543 H1 — grace-window kill race: observed EXITS (exit + 'close') set
   // childExited immediately, before the `once(child, "exit")` await below
@@ -292,6 +299,7 @@ async function spawnSpecialistInner(
     totalTokens: () => runningState.totalTokens,
     timedOut: () => timedOut,
     inactivityKilled: () => inactivityKilled,
+    toolInactivityKilled: () => toolInactivityKilled,
     aborted: () => aborted,
     capKillGraceMs: capKillGraceMs(),
     childExited: () => childExited,
@@ -305,64 +313,29 @@ async function spawnSpecialistInner(
   // Full reasoning in test-kill-attribution.ts.
   let lastActivityKind = "nothing yet";
   let stdoutLines = 0;
+  // #951 — the in-flight tool-call state (spawn-inflight.ts): the watchdog's
+  // silence is a SILENCE, and an in-flight tool is work, not silence. A
+  // toolCall block inside an assistant message_end opens a span; the matching
+  // toolResult closes it (error or not). While the set is non-empty the
+  // tool-inactivity bound applies to the silence; when it is empty the
+  // model-silence bound applies — exactly one budget is armed at any poll.
+  const inFlightTools = new InFlightTools();
   const stdoutRl = createInterface({ input: child.stdout });
+  const lineHandler = createStdoutLineHandler({
+    child: child.stdout!,
+    start,
+    inFlightTools,
+    appendStderr,
+    runningState,
+    caps,
+    onProgress: opts.onProgress,
+    onRawEvent: opts.onRawEvent,
+    willRetryAfter,
+  });
   stdoutRl.on("line", (line) => {
     lastActivityAt = Date.now();
     stdoutLines += 1;
-    const trimmed = line.trim();
-    if (!trimmed) return;
-    lastActivityKind = "unparsed stdout";
-    let parsed: PiJsonEvent | null = null;
-    try {
-      parsed = JSON.parse(trimmed) as PiJsonEvent;
-    } catch {
-      appendStderr(`${trimmed}\n`);
-      return;
-    }
-    // Stream into the running state. ingestEvent returns true only when an
-    // assistant turn completed (the right cadence to surface to the user).
-    // #543 F1 — pass the full block list to the loop detector (ops-role
-    // children are exempt: the cap session returns no observer for them).
-    // #772 — the 5th argument feeds the success-keyed counter with the
-    // toolResult events the streak observer never sees. Without it the
-    // counter's only input is invisible in production: the session eagerly
-    // builds the observer, but nothing routes the event stream to it
-    // (the "second detector that silently does not fire" class — exactly
-    // what the ticket's gap gate condemned).
-    if (
-      ingestEvent(
-        runningState,
-        parsed as Parameters<typeof ingestEvent>[1],
-        start,
-        caps.loopObserver,
-        caps.toolResultObserver,
-      )
-    ) {
-      // #543 F6 — check the token budget on every assistant turn end.
-      caps.tokenBudgetTracker?.check(Date.now());
-      caps.tokenBudgetTracker?.onMessageEnd(Date.now());
-      caps.turnNudge?.(runningState.turns);
-      opts.onProgress?.({ ...runningState, usage: { ...runningState.usage } });
-    }
-    // #839 — raw-event observer for the dispatch deck's live view. Fires
-    // for EVERY parsed child event; the observer (dispatch-deck-live.ts)
-    // keeps only assistant message_end blocks and toolResult messages.
-    opts.onRawEvent?.(parsed);
-    // Retain only the two events collapseEvents actually reads (the latest
-    // agent_end + the latest assistant message_end as fallback). Everything
-    // else is already absorbed by ingestEvent into runningState above, and
-    // dropping the rest keeps per-spawn memory bounded.
-    lastActivityKind = parsed.type ?? "unknown event";
-    if (parsed.type === "agent_end") {
-      lastAgentEnd = parsed;
-      // Not while the child is retrying — see `willRetryAfter`.
-      if (!willRetryAfter(parsed)) completePrompt();
-    } else if (
-      parsed.type === "message_end" &&
-      (parsed as { message?: { role?: string } }).message?.role === "assistant"
-    ) {
-      lastAssistantMessageEnd = parsed;
-    }
+    lastActivityKind = lineHandler(line, lastActivityKind, lastAgentEnd, lastAssistantMessageEnd);
   });
   child.stderr.on("data", (d) => {
     appendStderr(d);
@@ -385,21 +358,25 @@ async function spawnSpecialistInner(
   // Inactivity watchdog (#296): kill only on total stdout silence. Coarse
   // poll — half the budget, clamped to [250ms, 30s] so production budgets
   // poll cheaply and short test budgets still fire promptly.
-  const inactivityMs = inactivityTimeoutMs();
-  const inactivityPoll =
-    inactivityMs > 0
-      ? setInterval(
-          () => {
-            if (Date.now() - lastActivityAt >= inactivityMs) {
-              inactivityKilled = true;
-              child.kill("SIGTERM");
-              setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
-            }
-          },
-          Math.min(30_000, Math.max(250, Math.floor(inactivityMs / 2))),
-        )
-      : undefined;
-  inactivityPoll?.unref();
+  //
+  // #951 — ONE poll, two budgets (spawn-inflight.ts createInactivityPoll):
+  // while the in-flight set is non-empty the tool-inactivity bound applies;
+  // when it is empty the model-silence bound applies. Exactly one budget
+  // is armed at any poll, so there is no both-expired race.
+  const stopInactivityPoll = createInactivityPoll({
+    child,
+    inFlightTools,
+    lastActivityAt: () => lastActivityAt,
+    onKill: (cause, budgetMs, toolNames) => {
+      if (cause === "tool-inactivity") toolInactivityKilled = true;
+      else inactivityKilled = true;
+      // #951 — name the tool(s) that went silent, so the report shows
+      // WHAT is in flight instead of a bare cause. Inactivity kills
+      // keep today's parsed.type behaviour (lastActivityKind above).
+      lastActivityKind = `toolCall in flight: ${toolNames.join(", ")}`;
+      killedBudgetMs = budgetMs;
+    },
+  });
 
   // Propagate Pi's user-cancel (Esc) signal: kill the child so the tool
   // execute promise resolves and Pi un-stuck immediately.
@@ -421,7 +398,7 @@ async function spawnSpecialistInner(
     [exitCode] = (await once(child, "exit")) as [number | null];
   } finally {
     clearTimeout(timeout);
-    if (inactivityPoll) clearInterval(inactivityPoll);
+    stopInactivityPoll();
     caps.cleanup();
     opts.signal?.removeEventListener("abort", onAbort);
     // Best-effort cleanup of the temp prompt file; ignore errors.
@@ -440,7 +417,12 @@ async function spawnSpecialistInner(
     appendStderr(`\n[pi-rukas] killed after ${timeoutMs}ms timeout`);
   }
   if (inactivityKilled) {
-    appendStderr(`\n[pi-rukas] killed after ${inactivityMs}ms inactivity`);
+    appendStderr(`\n[pi-rukas] killed after ${killedBudgetMs}ms inactivity`);
+  }
+  if (toolInactivityKilled) {
+    appendStderr(
+      `\n[pi-rukas] killed after ${killedBudgetMs}ms with a tool call in flight (tool-inactivity)`,
+    );
   }
   if (aborted) {
     appendStderr("\n[pi-rukas] cancelled by user (Esc)");
@@ -467,8 +449,11 @@ async function spawnSpecialistInner(
   // The cap-kill cause + evidence were already resolved above (capKillAttribution,
   // after the stderr lines are appended). The wall-clock budgets for the
   // timeout/inactivity kills are set HERE — only meaningful for those causes.
+  // #951 — each silence kill records the ACTIVE bound (the one the poll
+  // armed), since exactly one budget is checked per poll.
   if (result.killCause === "timeout") result.killBudgetMs = timeoutMs;
-  if (result.killCause === "inactivity") result.killBudgetMs = inactivityMs;
+  if (result.killCause === "inactivity") result.killBudgetMs = killedBudgetMs;
+  if (result.killCause === "tool-inactivity") result.killBudgetMs = killedBudgetMs;
   // A killed child never completed its assignment, whatever its exit code.
   if (result.killCause) {
     result.ok = false;

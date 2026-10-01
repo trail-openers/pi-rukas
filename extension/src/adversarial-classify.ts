@@ -36,6 +36,16 @@ export function classifyDispatchOutcome(r: DispatchResult): {
       headline: "killed by pi-rukas (inactivity watchdog)",
     };
   }
+  // #951 — the in-flight-tool silence kill: same hang shape as inactivity
+  // (a tool that never returned), so it is retried the same way.
+  if (r.killCause === "tool-inactivity") {
+    return {
+      cause: "self-killed:tool-inactivity",
+      shouldRetry: true,
+      maxRetries: 1,
+      headline: "killed by pi-rukas (tool-inactivity watchdog — a tool call never returned)",
+    };
+  }
   if (r.killCause === "abort") {
     return {
       cause: "self-killed:abort",
