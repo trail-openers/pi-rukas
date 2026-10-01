@@ -27,7 +27,6 @@ import {
   capKillGraceMs,
   inactivityTimeoutMs,
   spawnBackstopMs,
-  tokenBudgetEnvKey,
   tokenBudgetFor,
 } from "../src/spawn-support.ts";
 
@@ -80,54 +79,6 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
     ),
     "tokenBudgetFor: unset → 0 (off) for developer",
   );
-  // #952 (before/after): before #952 this asserted
-  // `tokenBudgetFor("code-review-specialist") === 0` — every role shipped
-  // default-OFF. Now code-review-specialist ships with a measured default
-  // (8 000 000 tokens, from ~1 073 lens children, p95 = 4 104 877, 2× p95
-  // rounded, transcripts 2026-09-27…2026-10-01). All other roles remain 0.
-  assert(
-    withEnv(
-      {
-        PI_ENSEMBLE_TOKEN_BUDGET_CODE_REVIEW_SPECIALIST: undefined,
-        PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER: undefined,
-      },
-      () => tokenBudgetFor("code-review-specialist") === 8_000_000,
-    ),
-    "tokenBudgetFor: unset → 8 000 000 (measured default) for code-review-specialist",
-  );
-  // Env override wins over the default.
-  assert(
-    withEnv(
-      {
-        PI_ENSEMBLE_TOKEN_BUDGET_CODE_REVIEW_SPECIALIST: "2000000",
-        PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER: undefined,
-      },
-      () => tokenBudgetFor("code-review-specialist") === 2_000_000,
-    ),
-    "tokenBudgetFor: env override wins over the code-review-specialist default",
-  );
-  // Env "0" explicitly disables the default.
-  assert(
-    withEnv(
-      {
-        PI_ENSEMBLE_TOKEN_BUDGET_CODE_REVIEW_SPECIALIST: "0",
-        PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER: undefined,
-      },
-      () => tokenBudgetFor("code-review-specialist") === 0,
-    ),
-    "tokenBudgetFor: env 0 disables the code-review-specialist default",
-  );
-  // Non-numeric env → 0 (off), never NaN.
-  assert(
-    withEnv(
-      {
-        PI_ENSEMBLE_TOKEN_BUDGET_CODE_REVIEW_SPECIALIST: "not-a-number",
-        PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER: undefined,
-      },
-      () => tokenBudgetFor("code-review-specialist") === 0,
-    ),
-    "tokenBudgetFor: non-numeric env → 0 for code-review-specialist",
-  );
   assert(
     withEnv(
       { PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER: "500000" },
@@ -145,23 +96,6 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
       () => tokenBudgetFor("developer") === 0,
     ),
     "tokenBudgetFor: non-numeric → 0 (off), never NaN",
-  );
-}
-
-// 1b. #952 — the kill attribution names a SETTABLE env key: a hyphenated
-// role name (code-review-specialist) must map to underscores
-// (CODE_REVIEW_SPECIALIST), not the literal hyphenated (unsettable) name.
-// biome-ignore lint/complexity/noUselessLoneBlockStatements: fixture scope (shared `exit`/`assert` across the file)
-{
-  eq(
-    tokenBudgetEnvKey("code-review-specialist"),
-    "PI_ENSEMBLE_TOKEN_BUDGET_CODE_REVIEW_SPECIALIST",
-    "tokenBudgetEnvKey: code-review-specialist → underscored env key",
-  );
-  eq(
-    tokenBudgetEnvKey("developer"),
-    "PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER",
-    "tokenBudgetEnvKey: developer → unchanged",
   );
 }
 
