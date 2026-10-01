@@ -171,7 +171,7 @@ Two independent guards now: the queue refuses to interpret a state file at all w
 A kill now reports the shape of the silence, not just the budget:
 
 ```
-[pi-rukas] killed after 1500000ms inactivity (override: PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS)
+[pi-rukas] killed after 1800000ms inactivity (override: PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS)
   · last output: toolCall 1500s before the kill, after 412 line(s)
 ```
 
