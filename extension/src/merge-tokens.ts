@@ -21,7 +21,15 @@
  * treats that as "unparseable" (fail-closed upstream).
  *
  * Handles single-quoted ('…'), double-quoted ("…" with backslash escapes),
- * and ANSI-C / anishi-quoted ($'…') strings.
+ * and ANSI-C / anishi-quoted ($'…') strings. A backslash OUTSIDE quotes is
+ * a literal character (it does not escape the next character) — the guard's
+ * token model is a structural approximation of bash, not a full shell
+ * evaluator: `\` is data, and the quote that follows it opens a quoted run
+ * the way an unescaped quote would. This is what makes the depth-4 canary
+ * (`bash -c '\\'(sh -c …)'`) fail closed: the `\` is a literal, the `'` opens
+ * a single-quoted run, and the merge verb inside that run is read as a
+ * quoted token — the guard's fail-closed `hasMergeVerbInRaw` scan still
+ * catches the verb in the raw text.
  */
 export function rawTokens(raw: string): { list: string[]; terminated: boolean } {
   const list: string[] = [];

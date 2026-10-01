@@ -11,6 +11,19 @@
 
 import { rawTokens } from "./merge-tokens.ts";
 import { mergeVerbHeadRegex } from "./merge-tokens.ts";
+import { mergeVerbUnwrapOne } from "./merge-verb-head.ts";
+
+/**
+ * True when `text` names a shell-eval invocation (`sh -c …` / `bash -c …` /
+ * `eval …`, with process wrappers) — the direct-head test for a glued-paren
+ * remainder (#955 adversarial round 4, finding 1). Re-uses the full
+ * flag/consumption rules via `mergeVerbUnwrapOne` (the probe does not use
+ * the unwrapped body — only whether the text NAMES a shell-eval
+ * invocation).
+ */
+function mergeVerbUnwrapProbe(text: string): boolean {
+  return mergeVerbUnwrapOne(text) !== undefined;
+}
 
 /**
  * The shell keywords that open a control-flow / compound construct (`if`,
@@ -276,6 +289,24 @@ export function matchMergeVerb(text: string): string | undefined {
         const seg = [rest, ...list.slice(i + 1)].join(" ");
         const isMerge = mergeVerbHeadRegex().test(seg);
         return isMerge ? forge : undefined;
+      }
+      // #955 adversarial round 4 (finding 1): a glued paren whose remainder
+      // is a SHELL-EVAL word (`(sh` — the subshell open glued to a shell
+      // word that is itself an invocation: `(sh -c …`, the depth-4 canary)
+      // re-enters the head test on the remainder, exactly as the forge-word
+      // case above does (the caller's inner-body recursion strips the `(`
+      // and re-enters `matchMergeVerb` on the subshell body; this path makes
+      // the DIRECT head match see it too). A non-shell remainder falls
+      // through to the generic walk as before.
+      if (
+        rest === "sh" ||
+        rest === "bash" ||
+        rest === "zsh" ||
+        rest === "dash" ||
+        rest === "eval"
+      ) {
+        const seg = [rest, ...list.slice(i + 1)].join(" ");
+        return mergeVerbUnwrapProbe(seg) ? rest : undefined;
       }
       i++;
       continue;

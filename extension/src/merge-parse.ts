@@ -3,47 +3,25 @@
  * #955): which raw command merges a PR/MR, and what target (number, repo)
  * the matched merge verb names.
  *
- * Two defects from the lievo incident (2026-10-01, PR #17) fixed here:
- * 1. The verb door matched a SPAN that stopped at the whitespace after
- *    `merge`, so the PR number was never inside the matched text — every
- *    numbered merge fell back to current-branch resolution.
- * 2. A merge wrapped in a subshell (`bash -c '… gh pr merge 17 …'`) was
- *    invisible: stripQuotedSegments DELETES the quoted -c body, so no
- *    merge verb remained to match — a genuine bypass.
- *
- * Round-2 hardening (#955, adversarial round 2): the legacy matcher still
- * missed every merge hidden behind a process wrapper (`timeout 30 gh pr
- * merge 17`, `command …`, `nohup …`, `sudo …`, `nice …`, `time …`, `oo …`,
- * `stdbuf …`, `env -u FOO …`, `exec …`), a forge PATH (`/usr/bin/gh pr
- * merge 17`), or a subshell / command-substitution construct
- * (`( gh pr merge 17 )`, `x=$(gh pr merge 17)`, backticks). Those shapes now
- * match: every shell segment is matched segment-by-segment against the
- * wrapper-stripped head (`matchMergeVerb`, merge-verb-head.ts), and the
- * bodies of `( … )`, `$( … )` and backtick constructs are extracted and
- * matched recursively, the same as `bash -c` bodies. Recursion past the
- * depth budget fails CLOSED (a merge with no number → the fallback
- * refusal), never open.
- *
- * Design (per the #955 decisions):
- * - Subshell/wrapper unwrapping on the RAW command, recursively (depth 3),
- *   with unescaping (\" → ") for double-quoted layers. The guard matches
- *   and extracts on the INNERMOST segment that contains the merge verb.
- * - The PR number / repo are parsed from the arguments AFTER the matched
- *   verb, with a quote-aware tokenizer that skips flag values. The number
- *   is the first bare positional integer (quoted or unquoted — the shell
- *   strips the quotes), a `#N`, or a `/pull/N` / `/pulls/N` /
- *   `/merge_requests/N` URL. Digits before the verb never count (the
- *   `cd /data/3` canary). glab's `--project`/`-R` flag names the repo
- *   (like gh's `-R`/`--repo`).
- * - The REST doors (bash-merges-pr.ts) keep their span-based extraction
- *   and run over the command AND its `( … )` / `$( … )` / backtick
- *   bodies — a REST-door call in a subshell is a live merge, fail-closed.
- *
- * The matcher (`mergesPr`) lives in bash-merges-pr.ts; the token walk and
- * the segment-head unwrapping live in merge-tokens.ts / merge-verb-head.ts.
+ * The verb door matches every shell segment's head against the
+ * wrapper-stripped `matchMergeVerb` (merge-verb-head.ts), recursing into
+ * `( … )` / `$( … )` / backtick bodies and shell-eval layers (depth 3).
+ * Recursion past the budget fails CLOSED (a merge with no number → the
+ * fallback refusal), never open. The PR number / repo are parsed from the
+ * arguments AFTER the matched verb, with a quote-aware tokenizer that
+ * skips flag values. The REST doors (bash-merges-pr.ts) keep their
+ * span-based extraction and run over the command AND its inner-body
+ * constructs. The token walk lives in merge-tokens.ts; the segment-head
+ * unwrapping in merge-verb-head.ts.
  */
 
-import { isValidRepoValue, mergeVerbSpanRegex, rawTokens, shellSegments } from "./merge-tokens.ts";
+import {
+  isValidRepoValue,
+  mergeVerbSpanRegex,
+  rawTokens,
+  shellSegments,
+  unquoteArg,
+} from "./merge-tokens.ts";
 import { innerBodies, matchMergeVerb, mergeVerbUnwrapOne } from "./merge-verb-head.ts";
 export { mergeVerbUnwrapOne };
 
@@ -142,13 +120,21 @@ export function extractMergeRepo(args: string): string | undefined {
  */
 function matchMergeVerbTail(command: string): string | undefined {
   let text = command;
-  for (let d = 0; d < 3; d++) {
+  const layers = 3;
+  let used = 0;
+  while (used < layers) {
     const inner = mergeVerbUnwrapOne(text);
-    if (inner !== undefined) {
-      text = inner;
-      continue;
-    }
-    break;
+    if (inner === undefined) break;
+    text = inner;
+    used++;
+    // #955 adversarial round 4 (finding 1): an unwrapped layer that does not
+    // terminate (an unterminated quote in the inner text — the shell-eval
+    // body is not a valid command) is treated as UNPARSEABLE: the fail-closed
+    // no-number signal, never a match on the malformed inner text. (The
+    // depth-4 canary case: `bash -c '(sh -c '(gh pr merge 12)')'` unwraps to
+    // `(sh -c '(gh pr merge 12)')` — an unterminated single quote — and must
+    // refuse, not extract a tail from the malformed text.)
+    if (rawTokens(text).terminated === false) return "";
   }
   const tail = matchSegmentsTail(text);
   // A `null` tail is the fail-closed signal (unparseable / unbalanced /
@@ -223,13 +209,20 @@ function segmentMergeTail(seg: string): string | undefined {
     // `(` — strip a leading paren so the regex can locate the verb.
     const probe = seg.startsWith("(") ? seg.slice(1) : seg;
     const m = mergeVerbSpanRegex().exec(probe);
-    // Fail closed: if the verb matched via matchMergeVerb but the span
-    // regex can't locate it (should not happen), the command carries a
-    // merge with no readable tail — the no-number fallback.
     if (m) {
       const offset = seg.startsWith("(") ? 1 : 0;
       return seg.slice(offset + m.index + m[0].length);
     }
+    // #955 adversarial round 4 (finding 1): `matchMergeVerb` matched via a
+    // shell-eval invocation (the glued-paren path — `(sh -c …` — the
+    // span regex cannot locate the verb in this form because the forge
+    // word is not present in the segment; the verb lives in the UNWRAPPED
+    // body). Unwrap the segment and return the argument tail parsed from
+    // the inner text, the same way the LATER-segment path does.
+    const inner = mergeVerbUnwrapOne(seg);
+    if (inner !== undefined) return matchMergeVerbTail(inner);
+    // No readable tail (the inner text is malformed) — the fail-closed
+    // no-number signal.
     return "";
   }
   // #955 round-4 per-segment unwrap: the whole-command shell-eval unwrap
@@ -239,14 +232,40 @@ function segmentMergeTail(seg: string): string | undefined {
   // matchMergeVerbTail (which re-derives the inner's segments and recurses
   // through innerBodies), so nested layers are still budgeted by the
   // 3-iteration walk and exhaustion fails closed the same way.
-  const inner = mergeVerbUnwrapOne(seg);
+  const inner = mergeUnwrappedLayerText(seg);
   if (inner === undefined) return undefined;
-  return matchMergeVerbTail(inner);
+  if (inner !== null) return inner;
+  // The unwrapped layer is malformed (an unterminated quote in the inner
+  // text) — the same fail-closed no-number signal as the top level.
+  return "";
 }
 
 /** True when the raw command text contains a merge verb (scan-not-anchor). */
 function hasMergeVerbInRaw(command: string): boolean {
   return /(?:^|\s)(?:pr|mr)\s+merge\b/.test(command);
+}
+
+/**
+ * The per-segment shell-eval unwrap (the LATER-segment path in
+ * `segmentMergeTail`): unwrap one layer via `mergeVerbUnwrapOne` and
+ * re-enter the shared walk on the inner text. The inner text is the
+ * authoritative source for the tail: the raw segment's span regex cannot
+ * see the verb inside a quoted `bash -c` body.
+ *
+ * Returns the argument tail (possibly the empty string — the no-number
+ * fallback) when the inner text carries the merge verb, `undefined` when
+ * the segment is not a shell-eval invocation at all, or `null` when the
+ * segment IS a shell-eval invocation but its inner text does not terminate
+ * (an unterminated quote — the body is not a valid command): the caller
+ * applies the fail-closed no-number signal when the segment carries a
+ * merge verb (#955 adversarial round 4, finding 1 — the whole-command
+ * path's malformed-layer check had no per-segment counterpart).
+ */
+function mergeUnwrappedLayerText(seg: string): string | null | undefined {
+  const inner = mergeVerbUnwrapOne(seg);
+  if (inner === undefined) return undefined;
+  if (rawTokens(inner).terminated === false) return null;
+  return matchMergeVerbTail(inner);
 }
 
 /**
@@ -327,6 +346,11 @@ function repoFlagInTokens(seg: string): string | undefined {
     if (t === "-R" || t === "--repo" || t === "--project") {
       const v = tokens.list[i + 1];
       if (v === undefined || v.length === 0) continue;
+      // #955 adversarial round 4: unquote via `unquoteArg` — a double-quoted
+      // value whose escaped quote closes early (a `\"` inside the value)
+      // leaves a literal `"` in the unquoted form, which the `isValidRepoValue`
+      // boundary check refuses (unsafe, never interpolated). A naive
+      // `v.slice(1, -1)` would keep that escaped quote inside the value and
       const q = v[0];
       const val = q === "'" || q === '"' ? v.slice(1, -1) : v;
       return stripGluedParen(val);
@@ -342,6 +366,14 @@ function repoFlagInTokens(seg: string): string | undefined {
  * `17)` is the number 17 in `(gh pr merge 17)`). Balanced parens inside
  * a repo value are not a repo shape and stay as-is (they fail the
  * `isValidRepoValue` boundary check upstream — refused, never interpolated).
+ */
+/**
+ * Strip a trailing unbalanced `)` from a raw token — the subshell's closing
+ * paren glued to the token by `rawTokens` (the same coping
+ * `parseArgsAfterVerb` applies before matching its tokens, where `17)` is
+ * the number 17 in `(gh pr merge 17)`). Balanced parens inside a value are
+ * not a repo shape and stay as-is (they fail the `isValidRepoValue` boundary
+ * check upstream — refused, never interpolated).
  */
 function stripGluedParen(value: string): string {
   if (value.endsWith(")") && value.length > 1) return value.slice(0, -1);
@@ -394,7 +426,18 @@ function parseArgsAfterVerb(args: string): {
   if (tokens.terminated === false) return { number: undefined, repo: undefined };
   let repo: string | undefined;
   for (let i = 0; i < tokens.list.length; i++) {
-    let t = tokens.list[i] ?? "";
+    const raw = tokens.list[i] ?? "";
+    let t = raw;
+    // #955 adversarial round 4 (finding 1, repo path): a quoted token whose
+    // quote is unbalanced (a value that, in the UNWRAPPED body the tail came
+    // from, is itself a quoted value — `bash -c 'glab --project \"o/r\" mr
+    // merge 7'` tokenises the value as `\"o/r\"`, a double-quoted run whose
+    // escape closes the quote early) is unquoted the way the shell would
+    // unquote it at the top level (`unquoteArg`): the result is the value
+    // the inner command actually carries, and an unbalanced escape is left
+    // as a literal `"`, which the `isValidRepoValue` boundary refuses (the
+    // naive `v.slice(1, -1)` would keep the escape inside the value and
+    // validate it as a repo the guard then interpolated — a false-safe).
     // A trailing `)` (subshell close glued to the token by rawTokens) is
     // stripped before matching — `17)` is the number 17 in `(gh pr merge 17)`.
     if (t.endsWith(")") && t.length > 1) t = t.slice(0, -1);

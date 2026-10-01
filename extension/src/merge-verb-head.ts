@@ -88,6 +88,14 @@ export function mergeVerbUnwrapOne(command: string): string | undefined {
       i++;
       continue; // a new segment starts — the invocation must head a segment
     }
+    // #955 adversarial round 4: a token that starts with a BACKSLASH is a
+    // literal (escaped) character, not a command word — it can never name
+    // a shell. Without this check a leading `\\` in front of a quoted body
+    // (`git commit -m \\'pr merge\''`) would fall through to the wrapper
+    // walk and (the walk landing on the quoted body as the "command") the
+    // quoted body would be unwrapped as if it were a real shell-eval
+    // invocation — the false-positive the reviewer tested.
+    if (t[0] === "\\") return undefined;
     // A quoted token is not a command word.
     if (t[0] === "'" || t[0] === '"') return undefined;
     // Process wrappers in front of the shell-eval word (`exec bash -c …`,

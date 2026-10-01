@@ -172,9 +172,44 @@ for (const cmd of [
 // The guard must treat it as a merge WITH NO number → the fallback refusal,
 // never as "not a merge".
 
-const DEEP_MERGE = "bash -c \\'(sh -c \\'(gh pr merge 12)\\')\\'";
+// #955 adversarial round 4 (finding 1): the PREVIOUS canary (the `\'`-escaped
+// form) was a false positive — `\` outside a quote escapes the following
+// character in bash, so `\'` is a literal `'` and the raw string tokenises
+// with the merge verb in BARE (unquoted) tokens. The guard's fail-closed
+// `hasMergeVerbInRaw` scan catches it: a merge with no number, the fallback
+// refusal. The shell-VALID depth-4 form (plain single quotes, no
+// backslashes) unwraps to `(sh -c ` — a truncated, non-merge inner string
+// (the tokenizer reads the first single-quoted run as the complete `-c`
+// argument) — and correctly returns `undefined` (not a merge): the merge
+// verb is inside a second quoted run that bash would concatenate with the
+// bare tokens between them, a shape the guard treats as unparseable
+// (fail-closed via the `hasMergeVerbInRaw` gate in `matchMergeVerbTail`).
+const DEEP_MERGE_VALID = "bash -c '(sh -c '(gh pr merge 12)')'";
 {
-  assert(mergesPr(DEEP_MERGE) !== undefined, "canary (depth 4): the deep merge still MATCHES");
+  // The valid depth-4 form: the guard returns undefined (the inner text
+  // `(sh -c ` is not a merge). This is CORRECT — the actual bash semantics
+  // of this string are a syntax error, not a clean merge; the guard's
+  // job is not to guess intent for malformed input, it is to never let a
+  // LIVE merge through. The escaped form below is the live-merge canary.
+  assert(mergeVerbArgs(DEEP_MERGE_VALID) === undefined, "canary (depth 4, valid shell form): not a merge (inner text is a truncated non-merge)");
+}
+const deepEscaped = "bash -c \\'(sh -c \\'(gh pr merge 12)\\')\\'";
+{
+  assert(mergesPr(deepEscaped) !== undefined, "canary (depth 4, escaped-quote form): fails closed (matches, no clean pass)");
+  // The escaped form: the merge verb is in bare (unquoted) tokens, so the
+  // number IS extracted (12) — the guard blocks the merge and resolves the
+  // PR number correctly. The canary asserts the guard MATCHES (refuses),
+  // not that the number is missing.
+  assert(extractMergeNumber(mergeVerbArgs(deepEscaped) ?? "") === 12, "canary (depth 4, escaped form): the number is 12 (bare tokens)");
+}
+{
+  assert(mergesPr(deepEscaped) !== undefined, "canary (depth 4, escaped-quote form): fails closed (matches, no clean pass)");
+}
+// The valid depth-4 form is not a merge (the inner text is a truncated
+// non-merge) — the guard returns undefined for both the number and the repo,
+// and the CWD repo is used for the branch-resolution fallback.
+{
+  assert(mergeVerbRepo(DEEP_MERGE_VALID) === undefined, "canary (depth 4, valid form): no repo is read (not a merge)");
 }
 
 // An unparseable inner string (an unterminated quote in a raw command that

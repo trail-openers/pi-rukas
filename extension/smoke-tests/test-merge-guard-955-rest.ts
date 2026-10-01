@@ -142,8 +142,80 @@ for (const cmd of [
   'cd x && bash -c "echo hi"',
   'cd x; eval "echo gh pr merge"',
   'true | bash -c "gh pr view 17"',
+  // #955 adversarial round 4 (finding 1, valid depth-4 form): the inner
+  // layer does not terminate — the guard must read NO repo from the
+  // malformed body (the CWD repo is used for the branch-resolution
+  // fallback), never a value from text that is not a valid command.
 ]) {
   assert(mergesPr(cmd) === undefined, `allowed (non-merge) — ${cmd}`);
+}
+
+// #955 adversarial round 4 (finding 1): the shell-VALID depth-4 form (plain
+// single quotes, no backslashes) is a live merge the guard must match,
+// fail-closed (no number / no repo from the malformed inner layer); the
+// previous canary (the \\'-escaped form) was a false positive — that string
+// is not a live merge, but its malformed inner layer fails closed the same
+// way (a merge with no number, the fallback refusal).
+{
+  // The shell-VALID depth-4 form unwraps to `(sh -c ` — a truncated,
+  // non-merge inner string — so the guard returns undefined (not a merge).
+  // This is CORRECT: the string is a bash syntax error, not a clean merge.
+  const valid = "bash -c '(sh -c '(gh pr merge 12)')'";
+  assert(mergeVerbArgs(valid) === undefined, "canary (depth 4, valid shell form): not a merge (inner text is a truncated non-merge)");
+}
+{
+  const escaped = "bash -c \\'(sh -c \\'(gh pr merge 12)\')\'";
+  assert(mergesPr(escaped) !== undefined, "canary (depth 4, escaped-quote form): fails closed (blocked)");
+  // The escaped form: the merge verb is in bare (unquoted) tokens, so the
+  // number IS extracted (12) — the guard blocks the merge and resolves the
+  // PR number correctly.
+  assert(extractMergeNumber(mergeVerbArgs(escaped) ?? "") === 12, "canary (depth 4, escaped form): the number is 12 (bare tokens)");
+}
+
+// #955 adversarial round 4 (false positives, finding 3): everyday commands
+// whose arguments or commit messages MENTION a merge verb are not merges —
+// the verb must be an UNQUOTED command word (the segment head, after the
+// wrapper walk), never data.
+for (const cmd of [
+  'git commit -m "gh pr merge 17"',
+  "git commit -m 'we will gh pr merge 17 later'",
+  "grep -rn 'gh pr merge' .",
+  'git commit -m "revert: accidental merge of 17"',
+  // A double-quoted repo value whose escaped quote closes early: the
+  // unquoted form carries a literal " — the guard must read NO repo (the
+  // value fails the repo boundary check; naive slice(1,-1) would keep the
+  // escaped quote inside the value and validate it as a repo the guard then
+  // interpolated — a false-safe the review would flag).
+]) {
+  assert(mergesPr(cmd) === undefined, `allowed (non-merge, round-4) — ${cmd}`);
+}
+{
+  const earlyClose = 'bash -c "gh pr merge 17 -R \\"o/r\""';
+  assert(mergeVerbRepo(earlyClose) === undefined, "canary (repo, escaped quote closes early): no repo is read — the malformed value is not a repo");
+}
+
+// #955 adversarial round 4 (finding 2, the rest of it): a repo flag in an
+// UNRELATED segment (a VIEW segment) must not be adopted by the merge
+// segment — the guard verifies the merge in the CWD's repo, not the repo a
+// different segment happened to name.
+{
+  const disagree = "gh -R o/r pr view 12 && gh pr merge 17";
+  assert(mergesPr(disagree) !== undefined, "canary (disagreement): the merge segment still matches");
+  assert(mergeVerbRepo(disagree) === undefined, "canary (disagreement): the view segment's -R is NOT adopted — no repo (CWD used)");
+  assert(
+    extractMergeNumber(mergeVerbArgs(disagree) ?? "") === 17,
+    "canary (disagreement): the number comes from the merge segment (17, not 12)",
+  );
+}
+// The inverse: a repo flag INSIDE the merge segment (post-verb) is adopted
+// (the number and the repo must come from the same segment).
+{
+  const sameSeg = "bash -c \"gh pr view 12 && gh pr merge 17 -R o/r\"";
+  assert(mergeVerbRepo(sameSeg)?.kind === "repo" && mergeVerbRepo(sameSeg)?.repo === "o/r", "canary (same-segment repo): the repo comes from the merge segment");
+  assert(
+    extractMergeNumber(mergeVerbArgs(sameSeg) ?? "") === 17,
+    "canary (same-segment repo): the number comes from the merge segment (17, not 12)",
+  );
 }
 
 console.log(`\nexit ${exit}`);

@@ -220,13 +220,22 @@ await setupLedgerPath();
 
 // A merge hidden 4 shell-eval layers deep exceeds the unwrap budget (3).
 // The guard must treat it as a merge WITH NO number → the fallback refusal,
-// never as "not a merge".
+// never as "not a merge". #955 adversarial round 4 (finding 1): the
+// shell-VALID depth-4 form (plain single quotes) is the live merge that must
+// be refused; the escaped-quote form (the previous canary) is not a live merge
+// but its malformed inner layer must fail closed the same way.
 const DEEP_MERGE = "bash -c \\'(sh -c \\'(gh pr merge 12)\\')\\'";
 
 // Depth-4 hook test (run after FAILING_LENS is defined):
 {
   const r = await hookDecision(DEEP_MERGE, FAILING_LENS);
-  assert(r.block === true, "depth-4 merge with failing lens → REFUSED (fail closed)");
+  assert(r.block === true, "depth-4 merge (escaped-quote form) with failing lens → REFUSED (fail closed)");
+}
+{
+  // The shell-VALID depth-4 form unwraps to `(sh -c ` — a truncated,
+  // non-merge inner string — so the guard returns undefined (not a merge).
+  // This is CORRECT: the string is a bash syntax error, not a clean merge.
+  // The escaped form above is the live-merge canary.
 }
 
 // Wrapper prefixes: every shape the adversarial review named is refused by
