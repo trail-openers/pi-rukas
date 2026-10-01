@@ -20,6 +20,13 @@ export const ROLE_NAMES = [
 
 export type RoleName = (typeof ROLE_NAMES)[number];
 
+/**
+ * The literal role string for the lens-review child, shared by every site
+ * that must match it by name (token budget default in spawn-support.ts,
+ * slow-notice's stop-clause branch) so a rename can't strand a comparison.
+ */
+export const CODE_REVIEW_SPECIALIST_ROLE = "code-review-specialist";
+
 interface RoleDef {
   promptFile: string;
   cwd: "repo" | "worktree";

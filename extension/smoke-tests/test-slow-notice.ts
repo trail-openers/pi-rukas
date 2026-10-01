@@ -405,5 +405,47 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_MS: "50" }, async () => {
   assert(drainSlowEvents(999).length === 0, "drain(unknown) → empty, no throw");
 }
 
+// #952 — role-aware slow steer: code-review-specialist gets the stop clause;
+// all other roles and 2-arg calls keep the original text byte-for-byte.
+{
+  const reviewerText = slowSteerText(1_500_000, 123, "code-review-specialist");
+  assert(
+    reviewerText.includes("If you have already written your closing summary, stop now and end"),
+    "#952: reviewer steer contains the stop clause",
+  );
+  assert(
+    reviewerText.includes("report status in ≤3 lines and finish your review"),
+    "#952: reviewer steer tells the child to finish its review",
+  );
+  assert(!reviewerText.includes("\n"), "#952: reviewer steer stays a single line");
+  assert(!reviewerText.includes("CONTINUE the task"), "#952: reviewer steer has no 'CONTINUE the task'");
+  assert(!reviewerText.includes("not a stop signal"), "#952: reviewer steer is not the default text");
+
+  const devText = slowSteerText(1_500_000, 123, "developer");
+  assert(
+    devText === slowSteerText(1_500_000, 123),
+    "#952: developer role text is byte-identical to the 2-arg default",
+  );
+  assert(devText.includes("CONTINUE the task"), "#952: developer steer says CONTINUE the task");
+  assert(
+    devText.includes("use the gate's exit code"),
+    "#952: developer steer keeps the gate's exit code clause",
+  );
+
+  const exploreText = slowSteerText(1_500_000, 123, "explore");
+  assert(
+    exploreText === slowSteerText(1_500_000, 123),
+    "#952: explore role text is byte-identical to the 2-arg default",
+  );
+  assert(exploreText.includes("not a stop signal"), "#952: explore steer says not a stop signal");
+
+  // The 2-arg default (no role) is unchanged.
+  const defaultText = slowSteerText(1_500_000, 123);
+  assert(
+    defaultText.includes("CONTINUE the task — this is not a stop signal"),
+    "#952: 2-arg default text unchanged",
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

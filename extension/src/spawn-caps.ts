@@ -28,7 +28,7 @@ import type { SteerSource } from "./dispatch-steer.ts";
 import { type LoopDetector, createLoopDetector, loopDetectorEnabled } from "./loop-detector.ts";
 import type { PiContentBlock } from "./pi-event-shapes.ts";
 import type { LoopObserver } from "./progress.ts";
-import { TokenBudgetTracker } from "./spawn-support.ts";
+import { TokenBudgetTracker, tokenBudgetEnvKey } from "./spawn-support.ts";
 import { trace } from "./trace.ts";
 import { turnNudgeEnabled, turnNudgeText, turnNudgeThreshold } from "./turn-nudge.ts";
 import type { DispatchResult } from "./types.ts";
@@ -102,7 +102,7 @@ export function capKillAttribution(
   }
   if (caps.tokenBudgetTracker?.killed) {
     appendStderr(
-      `\n[pi-rukas] killed: token budget exceeded (${totalTokens} tokens used; override: PI_ENSEMBLE_TOKEN_BUDGET_${spec.role.toUpperCase()})`,
+      `\n[pi-rukas] killed: token budget exceeded (${totalTokens} tokens used; override: ${tokenBudgetEnvKey(spec.role)})`,
     );
   }
   const killCause = caps.killCause();

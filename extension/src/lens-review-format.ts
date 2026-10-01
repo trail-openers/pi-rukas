@@ -62,7 +62,9 @@ Do NOT batch multiple findings into a single call — one tool call per finding.
 
 If you find nothing in your lane: do not call the tool. Conclude with a one-sentence summary explaining why the diff is clean from a ${lens.name} perspective.
 
-When you have finished all findings, write a short prose summary as your final reply.`;
+When you have finished all findings, write a short prose summary as your final reply.
+
+After writing your summary, STOP — no further tool calls. Do not re-read files, re-run commands or re-scan the diff; the summary is your terminal output.`;
 }
 
 /**
@@ -185,18 +187,29 @@ export function bySeverityCounts(findings: Finding[]): Record<Severity, number> 
  * at saying nothing, which is the harder case because it looks like success.
  */
 export function lensProducedEvidence(r: LensRunResult): boolean {
-  if (r.findings.length > 0) return true;
-  const summary = r.summary?.trim();
-  if (!summary) return false;
-  // `collapseEvents` substitutes this literal when a child produced only
-  // thinking blocks. It is a placeholder describing the absence of output, not
-  // output — counting it as a summary would let the exact silence this guards
-  // against slip through wearing the right shape.
-  return summary !== NO_TEXT_PLACEHOLDER;
+  return hasReviewEvidence(r.findings, r.summary);
+}
+
+/**
+ * Did a (possibly cap-killed) child produce ANY review evidence — findings
+ * or a non-placeholder closing summary. Shared by `lensProducedEvidence`
+ * and the cap-kill branch in lens-review-child.ts, so a `(thinking content
+ * only - no text output)` placeholder never counts as a summary in either
+ * path.
+ */
+// `collapseEvents` substitutes NO_TEXT_PLACEHOLDER when a child produced only
+// thinking blocks. It is a placeholder describing the absence of output, not
+// output — counting it as a summary would let the exact silence this guards
+// against slip through wearing the right shape.
+export function hasReviewEvidence(findings: unknown[], summary?: string): boolean {
+  if (findings.length > 0) return true;
+  const s = summary?.trim();
+  if (!s) return false;
+  return s !== NO_TEXT_PLACEHOLDER;
 }
 
 /** What `spawn-collapse-events.ts` substitutes for a reply that was all thinking. */
-const NO_TEXT_PLACEHOLDER = "(thinking content only - no text output)";
+export const NO_TEXT_PLACEHOLDER = "(thinking content only - no text output)";
 
 /**
  * Map (findings × lens completion state) to a single verdict.

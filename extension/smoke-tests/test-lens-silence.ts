@@ -108,5 +108,74 @@ const finding = (severity: string): Finding =>
   );
 }
 
+// #952 — cap-killed lens with evidence is NOT blocked → not REVIEW_INCOMPLETE.
+{
+  // Cap-killed with findings: not blocked, verdict not REVIEW_INCOMPLETE.
+  const capKilledWithFindings = [
+    lens({
+      ok: false,
+      killCause: "loop",
+      findings: [finding("MEDIUM")],
+      blocked: false,
+      summary: "partial review — loop detected",
+    }),
+    lens({ lens: "types", summary: "Types check out." }),
+  ];
+  assert(
+    computeVerdict([finding("MEDIUM")], capKilledWithFindings, "MEDIUM") !== "REVIEW_INCOMPLETE",
+    "#952: cap-killed lens WITH findings → NOT REVIEW_INCOMPLETE",
+  );
+  assert(
+    computeVerdict([finding("MEDIUM")], capKilledWithFindings, "MEDIUM") === "ISSUES_FOUND",
+    "#952: cap-killed lens with MEDIUM finding → ISSUES_FOUND",
+  );
+
+  // Cap-killed with only a summary (no findings): not blocked, not INCOMPLETE.
+  const capKilledWithSummary = [
+    lens({
+      ok: false,
+      killCause: "token-budget",
+      findings: [],
+      blocked: false,
+      summary: "Checked the diff; nothing in this lane.",
+    }),
+    lens({ lens: "types", summary: "Types check out." }),
+  ];
+  assert(
+    computeVerdict([], capKilledWithSummary, "MEDIUM") !== "REVIEW_INCOMPLETE",
+    "#952: cap-killed lens WITH non-placeholder summary → NOT REVIEW_INCOMPLETE",
+  );
+  assert(
+    computeVerdict([], capKilledWithSummary, "MEDIUM") === "APPROVED",
+    "#952: cap-killed lens with clean summary → APPROVED",
+  );
+
+  // Cap-killed with neither findings nor summary: still blocked, still INCOMPLETE.
+  const capKilledSilent = [
+    lens({ ok: false, killCause: "loop", findings: [], blocked: true }),
+    lens({ lens: "types", summary: "Types check out." }),
+  ];
+  assert(
+    computeVerdict([], capKilledSilent, "MEDIUM") === "REVIEW_INCOMPLETE",
+    "#952: cap-killed lens with NO evidence → REVIEW_INCOMPLETE",
+  );
+
+  // Cap-killed with only the placeholder summary: still blocked, still INCOMPLETE.
+  const capKilledPlaceholder = [
+    lens({
+      ok: false,
+      killCause: "token-budget",
+      findings: [],
+      blocked: true,
+      summary: "(thinking content only - no text output)",
+    }),
+    lens({ lens: "types", summary: "Types check out." }),
+  ];
+  assert(
+    computeVerdict([], capKilledPlaceholder, "MEDIUM") === "REVIEW_INCOMPLETE",
+    "#952: cap-killed lens with placeholder-only summary → REVIEW_INCOMPLETE",
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);
