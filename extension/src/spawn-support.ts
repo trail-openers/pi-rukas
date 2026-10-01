@@ -121,7 +121,10 @@ export function spawnBackstopMs(): number {
 const CODE_REVIEW_SPECIALIST_DEFAULT_BUDGET = 8_000_000;
 
 export function tokenBudgetFor(role: string): number {
-  const env = process.env[`PI_ENSEMBLE_TOKEN_BUDGET_${role.toUpperCase()}`];
+  // The env key uses underscores (CODE_REVIEW_SPECIALIST), not the hyphens
+  // in the role name (code-review-specialist). `replace` handles both.
+  const envKey = `PI_ENSEMBLE_TOKEN_BUDGET_${role.toUpperCase().replaceAll("-", "_")}`;
+  const env = process.env[envKey];
   // Set explicitly (including "0" = off, which must beat the default) or
   // non-numeric (off, never NaN): the env value wins.
   if (env !== undefined) {
