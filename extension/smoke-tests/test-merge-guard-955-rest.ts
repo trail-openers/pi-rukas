@@ -121,6 +121,53 @@ assert(
   "canary (number, subshell paren): number is 17",
 );
 
+// ------------------------------------------------------------ REST writes nested deep (#955 adversarial round 5)
+// The REST doors must recurse into nested inner-body constructs (the same
+// closure the verb door uses via findVerbSpanInSegments): a merge hidden
+// two levels deep (a substitution inside a substitution, a subshell inside
+// a substitution) is a live merge the guard must catch, fail-closed. The
+// FORGE regex cannot anchor a forge word that follows `$( ` or `( ` in the
+// stripped text, so the doors must be fed the innermost body itself.
+for (const cmd of [
+  "x=$(y=$(gh api repos/o/r/pulls/17/merge))",
+  "x=`y=$(gh api repos/o/r/pulls/17/merge)`",
+  "x=$( (gh api repos/o/r/pulls/17/merge) )",
+  "x=$(y= (glab api /projects/o%2Fr/mr/7/merge -f state=merged))",
+  "x=$( (glab api /projects/o%2Fr/mr/7/merge -f state=merged) )",
+  // glab REST, nested, explicit PUT.
+  "x=$(y=$(glab api /projects/1/mr/12/merge -X PUT))",
+]) {
+  assert(mergesPr(cmd) !== undefined, `canary (REST nested deep): blocked — ${cmd}`);
+}
+
+// A REST READ nested deep stays open (no /merge suffix in the innermost).
+assert(mergesPr("x=$(y=$(gh api repos/o/r/pulls/17))") === undefined, "canary (REST nested deep, read): allowed");
+
+// ------------------------------------------------------------ unbalanced paren REST (#955 adversarial round 5)
+// An unbalanced `(` with a REST door inside is a live merge bash would run
+// (`(gh api repos/o/r/pulls/17/merge` with the close on a later line). The
+// REST door must refuse it (the leading paren is stripped, the same coping
+// matchMergeVerb applies to its glued-paren token) — never read as "not a
+// merge". A balanced paren with no /merge stays open.
+{
+  const bad = "(gh api repos/o/r/pulls/17/merge";
+  assert(mergesPr(bad) !== undefined, "canary (unbalanced paren, REST): an unbalanced `(` with a REST merge still matches");
+}
+{
+  const open = "(gh api repos/o/r/pulls/17)";
+  assert(mergesPr(open) === undefined, "canary (balanced paren, REST read): allowed");
+}
+
+// #955 adversarial round 5 (MINOR #1): the REST-door repo flag is threaded
+// to the guard's reads — `gh -R o/r api …/pulls/N/merge` verifies the PR in
+// o/r, not the CWD's repo. The guard's `restRepoFor` reads the flag over
+// the quote-stripped command and only fires on a repo-shaped value.
+{
+  // The REST door still matches when the repo flag is present (the -R is
+  // threaded to the gh pr view read by merge-guard.ts restRepoFor).
+  assert(mergesPr("gh -R o/r api repos/o/r/pulls/17/merge") !== undefined, "canary (REST -R): the door matches with the repo flag");
+}
+
 // ------------------------------------------------------------ REST reads stay open
 for (const cmd of [
   "gh api repos/o/r/pulls/17",

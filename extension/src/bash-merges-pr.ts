@@ -90,11 +90,31 @@ export function mergesPr(command: string): string | undefined {
   // match `gh api …/pulls/N/merge` and `glab api …/mr/N/merge` — command
   // shapes that `mergeVerbArgs` does not match (they use `api`, not `merge`
   // as the verb). The doors run over the command AND over every `( … )` /
-  // `$( … )` / backtick body: a REST-door call inside a subshell or
-  // substitution (`(gh api repos/o/r/pulls/17/merge)`, `x=$(gh api
-  // repos/o/r/pulls/17/merge)`) is a live merge the guard must catch,
-  // fail-closed — the same doctrine the verb door applies to those bodies.
-  return restDoors([command, ...innerBodies(command)]);
+  // `$( … )` / backtick body AT EVERY DEPTH: a REST-door call inside a
+  // subshell or substitution (`(gh api repos/o/r/pulls/17/merge)`,
+  // `x=$(gh api repos/o/r/pulls/17/merge)`, or two levels deep,
+  // `x=$(y=$(gh api repos/o/r/pulls/17/merge))`) is a live merge the guard
+  // must catch, fail-closed — the same doctrine the verb door applies to
+  // those bodies. `restBodyTexts` flattens the bodies recursively (the
+  // same closure the verb door uses via `matchSegmentsTail`), so a merge
+  // hidden in a body-inside-a-body is not missed by a missing anchor (the
+  // FORGE regex's leading separator set does not include `$` or `(`, so
+  // `gh` after a `$( ` in the stripped text would never anchor).
+  return restDoors(restBodyTexts(command));
+}
+
+/**
+ * The whole command plus the bodies of every subshell / substitution /
+ * backtick construct at EVERY depth — the recursive flatten the REST doors
+ * run over. Every body is a strict substring of the text that produced it,
+ * so the recursion terminates on pathological input (the 50-level-nested
+ * `$(…)` perf canary in test-merge-guard-955-r2.ts exercises this).
+ */
+function restBodyTexts(text: string): string[] {
+  const out = [text];
+  const bodies = innerBodies(text);
+  for (const b of bodies) out.push(...restBodyTexts(b));
+  return out;
 }
 
 /**
@@ -104,7 +124,13 @@ export function mergesPr(command: string): string | undefined {
  */
 function restDoors(texts: string[]): string | undefined {
   for (const raw of texts) {
-    const c = stripQuotedSegments(raw);
+    // A leading unbalanced `(` (an unbalanced paren — `innerBodies` reports
+    // no balanced body for it, so the REST door sees the text whole) is
+    // stripped before the regex, the same coping `matchMergeVerb` applies
+    // to its glued-paren token: `(gh api repos/o/r/pulls/17/merge` is a
+    // live merge the guard must refuse, and the FORGE regex cannot anchor
+    // `gh` after a `(` (the `(` is not in the leading separator set).
+    const c = stripQuotedSegments(raw).replace(/^\s*\(/, "");
     // The forge word, optionally path-qualified (`/usr/bin/gh`) — an
     // inline copy of the forge-word fragment that the verb door keeps in
     // MERGE_VERB_SPAN_SRC (merge-tokens.ts), kept separate (and NOT

@@ -85,9 +85,11 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { stripQuotedSegments } from "./bash-command-parser.ts";
 import { mergesPr } from "./bash-merges-pr.ts";
 import { extractMergeNumber, mergeVerbArgs, mergeVerbRepo } from "./merge-parse.ts";
 import { type MergeExecFn, isCarveOut, readMergeTarget, resolvePrNumber } from "./merge-target.ts";
+import { REPO_VALUE_PATTERN } from "./merge-tokens.ts";
 import {
   type LedgerEntry,
   branchPatchId,
@@ -134,7 +136,6 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     // through it); production uses execp.
     const execFn: MergeExecFn = opts.execFn ?? execp;
 
-    // Resolve the PR number (from the command or the current branch).
     // Resolve the PR number. The verb door (`gh pr merge …` / `glab mr
     // merge …`) carries the number in the arguments AFTER the matched verb
     // (#955: the legacy span-based extraction only saw the verb itself, so
@@ -160,7 +161,17 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
       );
     }
     let prNumber: number | undefined;
-    const repoValue = fromRepo?.kind === "repo" ? fromRepo.repo : undefined;
+    // The repo the guard verifies the PR in. The verb door's -R/--repo (or
+    // PR-URL) value wins when `mergeVerbRepo` yields one. On the REST
+    // doors, `mergeVerbRepo` cannot see the command (they use `api`, not
+    // the merge verb), so the repo flag carried by the REST invocation
+    // (`gh -R o/r api …/pulls/N/merge`) is threaded too — otherwise the
+    // guard would verify the PR in the CWD's repo while the merge writes a
+    // different one (#955 adversarial round 5, MINOR #1). A REST READ never
+    // reaches here (mergesPr returns undefined first), and a verb-door -R
+    // already wins above — the scan is anchored to the repo shape, so it
+    // fires only on the REST door's own flag.
+    const repoValue = fromRepo?.kind === "repo" ? fromRepo.repo : restRepoFor(command);
     if (fromVerb !== undefined) {
       // The verb door matched — parse the number from the argument tail.
       prNumber = extractMergeNumber(fromVerb);
@@ -170,7 +181,9 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
       }
     } else {
       // No verb door — try the REST-door span extraction (the number is
-      // inside the matched endpoint path for those shapes).
+      // inside the matched endpoint path for those shapes). The repo is the
+      // REST door's own -R/--repo flag (see repoValue above), so the
+      // fallback resolves the PR in the same repo the merge writes.
       const fromSpan = extractPrNumber(merging);
       if (fromSpan !== undefined) {
         prNumber = fromSpan;
@@ -184,7 +197,12 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
       );
     }
 
-    // Read the merge target (gh/glab). Fail-closed on unreadable.
+    // Read the merge target (gh/glab). Fail-closed on unreadable. `repo`
+    // is the VERB door's repo (the -R/--repo flag or PR-URL of the matched
+    // merge verb): the REST doors name the repo in the endpoint path (and
+    // glab's `mr view <n>` does not take a `-R` in the same shape), so the
+    // REST path verifies in the CWD's repo — an agent merging via REST from
+    // its CWD is merging its own PR.
     const targetResult = await readMergeTarget(execFn, cwd, prNumber, undefined, repoValue);
     if (!targetResult.ok) {
       return block(`merge refused: ${targetResult.reason}`);
@@ -296,6 +314,31 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
 
 function block(reason: string) {
   return { block: true, reason };
+}
+
+/**
+ * The repo flag carried by a REST-door invocation (`gh -R o/r api
+ * repos/o/r/pulls/17/merge`), scanned over the quote-stripped command —
+ * `mergeVerbRepo` cannot see REST-door commands (they use `api`, not the
+ * merge verb), so without this a REST door's `-R` would verify the PR in
+ * the CWD's repo while the merge writes a different one (#955 adversarial
+ * round 5, MINOR #1). Only the REST doors reach here (the verb door's repo
+ * already wins via `mergeVerbRepo`), and only the repo flag is read (the
+ * number comes from the endpoint path); the value is anchored to the repo
+ * shape (`REPO_VALUE_PATTERN`) so an injected value can never be threaded
+ * into an exec string. A REST READ (`…/pulls/17` without the /merge
+ * suffix) does not merge — `mergesPr` returns undefined before this is
+ * called — so the -R here never fires on a non-merge.
+ */
+function restRepoFor(command: string): string | undefined {
+  const c = stripQuotedSegments(command);
+  // No `\b` before the flag: `-R` / `--repo` begin with a non-word
+  // character, so a leading word-boundary assertion never matches (the
+  // guard would silently read no repo and verify the PR in the CWD's repo).
+  const m = new RegExp(
+    `(?:^|[;&|\\s])(?:-R|--repo)\\s+(${REPO_VALUE_PATTERN.source.slice(1, -1)})`,
+  ).exec(c);
+  return m?.[1];
 }
 
 /**
