@@ -68,11 +68,13 @@ const agents = JSON.parse(readFileSync(AGENTS, "utf8")) as {
 };
 const perm = agents.agent["project-manager"]?.permission ?? {};
 
-// The premise. If this ever becomes "allow", the rest of this file is moot —
-// and the assertion below will say so rather than passing silently.
+// The premise. PM's tool-level catch-all is deny-by-default post-#959 — an
+// unlisted tool is invisible to the model unless explicitly granted. If this
+// ever flips to "allow", every future extension-registered tool ships with
+// PM access by default, which is the opposite of the shape we want.
 assert(
-  perm["*"] === "ask",
-  `canary: PM's default is "${perm["*"]}" — an unlisted tool does NOT fall through to allow`,
+  perm["*"] === "deny",
+  `canary: PM's tool-level default is "${perm["*"]}" — an unlisted tool does NOT fall through to allow`,
 );
 
 {

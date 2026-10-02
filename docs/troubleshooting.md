@@ -369,11 +369,11 @@ Skips the registry pull, builds directly from your checkout. Takes 10-30 minutes
 
 ### `MCP: 0/N servers` — codebase_memory not connected
 
-**Symptom:** Inside `pi-rukas`, the bottom status line shows `MCP: 0/1 servers` (or 0/N). `/mcp` reports no servers connected. Subagents fail any `codebase_memory_*` tool call.
+**Symptom:** Inside `pi-rukas`, the bottom status line shows `MCP: 0/1 servers` (or 0/N). `/mcp` reports no servers connected. Subagents fail any `mcp__codebase_memory__*` tool call.
 
-**Cause:** pi-mcp-adapter reads `~/.config/mcp/mcp.json` (Tier 1). `install.sh` writes this file with the codebase_memory entry, but if you never ran `./install.sh` (or ran it before pi-rukas shipped this wiring), the file is missing or empty.
+**Cause:** Pi 1.0.0's built-in MCP reads `~/.pi/agent/mcp.json` (user-level) and `.pi/mcp.json` (project-level, after trust). `install.sh` writes the `codebase_memory` entry into `~/.pi/agent/mcp.json` with `exposure: "direct"` (the seven read-side tools are declared to the model) and `autoEnableCodemode: false` (so the MCP extension does not auto-activate the codemode built-in when a server with codemode exposure connects). If you never ran `./install.sh` (or ran it before pi-rukas shipped the native-MCP wiring in issue #959), the file is missing or empty.
 
-**Fix:** `cd ~/.config/opencode/pi-rukas && ./install.sh`. Validate with `jq '.mcpServers | keys' ~/.config/mcp/mcp.json` — should list `codebase_memory`. Restart the sandbox.
+**Fix:** `cd ~/projects/pi-rukas && ./install.sh`. Validate with `jq '.mcpServers | keys' ~/.pi/agent/mcp.json` — should list `codebase_memory`. Also confirm no installed extension registers the `/mcp` command (a lingering pi-mcp-adapter would replace the built-in MCP and silently disable it — `install.sh` now removes the adapter from both `~/.pi/agent/npm/node_modules/` and `~/.pi/agent/extensions/` on re-run). Restart Pi.
 
 PR: [#196](https://github.com/trail-openers/pi-rukas/pull/196)
 
@@ -427,7 +427,7 @@ env | grep SOME_DB_URI   # is the var even visible inside?
 
 If empty: the var isn't reaching the sandbox.
 
-**Cause:** Pre-#228 the wrapper only forwarded a curated env subset (`*_API_KEY` / `*_LLM_KEY` patterns + explicit list). Vars referenced in `.pi/mcp.json` env-refs (`${VAR}` / `{env:VAR}`) had to be explicitly listed in `PI_ENSEMBLE_EXTRA_ENV`. pi-mcp-adapter interpolated them against the sandbox's env, got empty strings, spawned `docker run -e DATABASE_URI=""`, and the postgres-mcp container exited on invalid URI.
+**Cause:** Pre-#228 the wrapper only forwarded a curated env subset (`*_API_KEY` / `*_LLM_KEY` patterns + explicit list). Vars referenced in `.pi/mcp.json` env-refs (`${VAR}` / `{env:VAR}`) had to be explicitly listed in `PI_ENSEMBLE_EXTRA_ENV`. Pi's native MCP (or the pi-mcp-adapter on pre-1.0 hosts) interpolated them against the sandbox's env, got empty strings, spawned `docker run -e DATABASE_URI=""`, and the postgres-mcp container exited on invalid URI.
 
 **Fix:** Refresh.
 
@@ -745,7 +745,7 @@ cat ~/.config/mcp/mcp.json        # MCP server config
 
 - Rebuilds the image (cache-fast unless prereqs changed)
 - Refreshes the `~/.local/bin/pi-rukas` symlink
-- Re-writes `~/.config/mcp/mcp.json` with the current codebase-memory-mcp wiring
+- Re-writes `~/.pi/agent/mcp.json` with the current codebase-memory-mcp native-MCP wiring (issue #959: key-level replace of `.mcpServers.codebase_memory`, `exposure: "direct"` for the seven read-side tools, `autoEnableCodemode: false`); also removes any lingering `codebase_memory` key from `~/.config/mcp/mcp.json` and removes any lingering pi-mcp-adapter install
 - Validates that codebase-memory-mcp is reachable on PATH
 
 If after `./install.sh` something still doesn't work, capture:

@@ -134,10 +134,18 @@ export function parseAgentsRestatement(agentsMd: string): { version: string; dat
   return { version: stripRangePrefix(m[1] as string), date: m[2] as string };
 }
 
-/** Bare 0.8x.y Pi version literals in a text blob (the current-claim space; 0.7x.y is historical). */
+/**
+ * Bare Pi version literals in a text blob. Post-#959 the current-claim
+ * space is 1.x (the native-MCP line); 0.8x.y literals survive as
+ * historical/provenance notes (the #578 floor provenance, the pre-#959
+ * pin) and are still tracked by the census so they cannot drift silently.
+ */
 export function piVersionLiterals(text: string): string[] {
   const out = new Set<string>();
+  // 0.8x.y (historical + current-claim space pre-#959)
   for (const m of text.matchAll(/0\.8[0-9]+\.[0-9]+/g)) out.add(m[0] as string);
+  // 1.x.y (current-claim space post-#959)
+  for (const m of text.matchAll(/1\.[0-9]+\.[0-9]+/g)) out.add(m[0] as string);
   return [...out];
 }
 
@@ -185,34 +193,39 @@ export function siteCensus(verifiedV: string): Record<string, string[]> {
     // The AGENTS.md § 4 restatement (+ the date's digits).
     "AGENTS.md": v,
     // The dev pins (lockstep) + this gate's own literals + its fixture.
-    "extension/package.json": ["0.82.0"],
-    // …plus this gate's own canary literals (0.82.1 stale-verified canary, 0.84.3 floor canary,
-    // 0.83.9/0.85.0/0.84.5 numeric-matrix canaries, 0.83.0 --exclude-tools canary, 0.86.0
-    // gitignore-listing canary, 0.87.0 undeclared-literal canary — all in canary strings, all
+    "extension/package.json": ["1.0.0"],
+    // …plus this gate's own canary literals (1.0.0 current floor, 0.84.4
+    // pre-#959 floor canary, 0.82.0 pre-#578 pin canary, 0.99.0 one-sided
+    // co-pin canary, 0.84.3 bug-window canary, 0.83.9/0.85.0/0.84.5 numeric-
+    // matrix canaries, 0.83.0 --exclude-tools canary, 0.86.0 gitignore-listing
+    // canary, 0.87.0 undeclared-literal canary — all in canary strings, all
     // must stay visible to the census).
-    "test-pi-version-drift.ts": ["0.82.0", "0.84.4", "0.99.0", "0.82.1", "0.84.3", "0.83.9", "0.85.0", "0.84.5", "0.83.0", "0.86.0", "0.87.0"],
+    "test-pi-version-drift.ts": ["1.0.0", "0.84.4", "0.99.0", "0.82.0", "0.82.1", "0.84.3", "0.83.9", "0.85.0", "0.84.5", "0.83.0", "0.86.0", "0.87.0"],
     // The preflight floor (MIN_PI_VERSION + the #578 provenance/bug-window notes).
-    "install-preflight.sh": ["0.84.4", "0.84.3"],
+    // Post-#959 the floor is 1.0.0; 0.84.3/0.84.4 survive as historical
+    // provenance (the #578 bug-window note) in the comment block.
+    "install-preflight.sh": ["1.0.0", "0.84.4", "0.84.3"],
     // The install floor on the install line.
-    "README.md": ["0.84.4"],
-    // Floor pin (×2: install line + pi-mcp-adapter comment) + #578 bug-window note.
-    "Dockerfile": ["0.84.4", "0.84.3"],
-    // The canary fixture (one-sided co-pin: 0.99.0 vs 0.84.4).
+    "README.md": ["1.0.0"],
+    // Floor pin (×2: install line + comment) + #578 bug-window note.
+    "Dockerfile": ["1.0.0"],
+    // The canary fixture (one-sided co-pin: 0.99.0 vs 0.84.4 — historical shape).
     "package.json": ["0.99.0", "0.84.4"],
     // test-pi-min-version.ts fakes pi --version output (at-floor / bug-window / matrix).
-    "test-pi-min-version.ts": ["0.84.4", "0.84.3", "0.83.9", "0.85.0", "0.84.5"],
+    // Post-#959 the at-floor is 1.0.0; 0.84.4 is the pre-#959 floor (now below-floor).
+    "test-pi-min-version.ts": ["1.0.0", "0.84.4", "0.84.3", "0.83.9", "0.9.0", "1.0.1", "1.1.0", "0.8.10"],
     // The existing prerequisite-drift gate + its EXCEPTIONS pin + canary comments.
-    "test-prerequisite-drift.ts": ["0.84.4", "0.84.3"],
-    // The Dockerfile-pins gate's canary comment line.
-    "test-dockerfile-pins.ts": ["0.84.4"],
-    // The --exclude-tools rationale (Pi >= 0.83.0).
+    "test-prerequisite-drift.ts": ["1.0.0", "0.84.4", "0.99.0", "0.84.3", "0.84.5"],
+    // The Dockerfile-pins gate's canary comment line (post-#959: 1.0.0 pi pin canary).
+    "test-dockerfile-pins.ts": ["1.0.0"],
+    // The --exclude-tools rationale (Pi >= 0.83.0 — historical, still accurate).
     "spawn-support.ts": ["0.83.0"],
     // A comment referencing the pinned pi-tui d.ts.
     "test-dispatch-deck-interactive.ts": ["0.82.0"],
     // bun.lock resolves the declared pins (lockfile, not a claim — the gate
     // reads the DECLARED pin from package.json; the lock is listed so a
-    // lockstep bump is visible here, not silent).
-    "bun.lock": ["0.82.0", "0.82.1"],
+    // lockstep bump is visible here, not silent). Post-#959: 1.0.0.
+    "bun.lock": ["1.0.0"],
     // No claim: bump examples are relative (~0.XY.Z → ~0.XY.(Z+1)).
     "CONTRIBUTING.md": [],
     // No current-claim literals (historical 0.7x.y only — out of census scope).
@@ -295,9 +308,11 @@ if (verified && pins.codingAgent) {
   assert(fixturePkg.tui === "0.84.4", "canary fixture: pi-tui declared pin parses as 0.84.4");
   // And the census must actually SEE a contradictory literal in a non-site
   // file (proving the surprise path is not passing by silence).
-  assert(piVersionLiterals(read(path.relative(REPO_ROOT, path.join(FIXTURES, "package.json"))))[0] !== "0.0.0.0", "canary: piVersionLiterals runs on raw file text");
+  assert(piVersionLiterals(read(path.relative(REPO_ROOT, path.join(FIXTURES, "package.json")))).length > 0, "canary: piVersionLiterals runs on raw file text");
   const surpriseText = '"pi-coding-agent": "0.87.0"';
   assert(piVersionLiterals(surpriseText).includes("0.87.0"), "canary: an undeclared 0.8x.y literal (0.87.0) is visible to the census — the surprise path is reachable");
+  const surpriseText1x = '"pi-coding-agent": "1.0.0"';
+  assert(piVersionLiterals(surpriseText1x).includes("1.0.0"), "canary: an undeclared 1.x.y literal (1.0.0) is visible to the census — the surprise path is reachable post-#959");
   assert(fixturePkg.codingAgent !== fixturePkg.tui, "canary: one-sided bump IS detected (the lockstep assert above would fail on this fixture)");
 
   // Canary 2 — the range-prefix strip is load-bearing: "~0.82.0" must
@@ -315,14 +330,15 @@ if (verified && pins.codingAgent) {
     parseAgentsRestatement("Last verified against `pi` **0.84.4 (2026-09-21)** — the line above")?.date === "2026-09-21",
     "canary: parseAgentsRestatement extracts version + date from the § 4 restatement",
   );
-  assert(minorDistance("0.84.4", "0.82.0") === 2, "canary: minorDistance counts minors (0.84 vs 0.82 → 2)");
+  assert(minorDistance("1.0.0", "0.82.0") === Infinity, "canary: minorDistance across major boundaries is Infinity (0.82 vs 1.0 — the #959 bump shape)");
+  assert(minorDistance("1.0.0", "1.1.0") === 1, "canary: minorDistance within 1.x counts minors (1.0 vs 1.1 → 1)");
 
   // Canary 4 — the version-order rules fail in both directions: a verified
   // line OLDER than the pin (the drift that got away) and one NEWER than the
   // floor (an unverified claim operators are never guaranteed to have).
-  assert(compareVersions("0.82.1", "0.84.4") === -1, "canary: verified 0.82.1 < pin 0.84.4 → the 'not older' assert would fail");
-  assert(compareVersions("0.84.4", "0.82.0") === 1, "canary: verified 0.84.4 > pin 0.82.0 → the nudge fires and the order assert would fail in the reverse direction");
-  assert(compareVersions("0.99.0", "0.84.4") === 1, "canary: verified 0.99.0 > floor 0.84.4 → the 'not newer than floor' assert would fail");
+  assert(compareVersions("0.82.1", "1.0.0") === -1, "canary: verified 0.82.1 < pin 1.0.0 → the 'not older' assert would fail");
+  assert(compareVersions("1.0.0", "0.82.0") === 1, "canary: verified 1.0.0 > pin 0.82.0 → the nudge fires and the order assert would fail in the reverse direction");
+  assert(compareVersions("1.0.1", "1.0.0") === 1, "canary: verified 1.0.1 > floor 1.0.0 → the 'not newer than floor' assert would fail");
 
   // Canary 5 — the nudge path is non-fatal: drive the date nudge with an
   // injected clock far in the future; the path above only ever warns (no

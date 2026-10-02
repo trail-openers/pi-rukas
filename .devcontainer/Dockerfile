@@ -107,12 +107,16 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 # -----------------------------------------------------------------------------
 
 # Pi (per https://pi.dev/docs/latest/quickstart)
-# Pinned to the install floor 0.84.4 (install-preflight.sh MIN_PI_VERSION).
+# Pinned to the install floor 1.0.0 (install-preflight.sh MIN_PI_VERSION).
 # The floor (install-preflight.sh) and this line are cross-checked by
 # test-prerequisite-drift.ts; the separate "last verified" claim in
 # docs/pi-compatibility.md is cross-checked by test-pi-version-drift.ts —
 # re-run the relevant gate when the built image's pi changes.
-RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.84.4
+# 1.0.0 is the first release with native MCP (mcp.json) and the `-e
+# builtin:mcp` flag that pi-rukas's subagent spawn path relies on (issue
+# #959). The 4-day embargo was overridden for this bump (operator decision
+# 2026-10-02; see extension/bunfig.toml minimumReleaseAgeExcludes).
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.0.0
 
 # ctx7 — current library docs
 RUN npm install -g --ignore-scripts ctx7 || true
@@ -186,50 +190,12 @@ ENV PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:
 # Bring extension deps into the image (no network at runtime needed for `bun install`).
 RUN cd ${PI_ENSEMBLE_DIR}/extension && bun install --frozen-lockfile
 
-# pi-mcp-adapter must be installed as the running user — pi's `pi install`
-# writes under ~/.pi/agent/npm/. This is the user-level install path.
-#
-# Unlike the other `|| true` soft-fails in this image (registry/network
-# hiccups for OPTIONAL tools), the bridge is load-bearing: Pi core has no
-# native MCP, so without pi-mcp-adapter NO MCP server loads in the sandbox
-# — including the codebase_memory entry the install step below writes into
-# ~/.config/mcp/mcp.json. The image is published to GHCR and is the default
-# install path for sandbox users, so a silently-broken image would ship to
-# everyone. `pi install` still tolerates a transient registry hiccup
-# (`|| true`), but the post-install check fails the build when the bridge
-# is genuinely absent. `pi install npm:<pkg>` installs into the flat npm
-# project under ~/.pi/agent/npm/node_modules/ (NOT the extensions/ dir, which
-# is only used for git/local installs); Pi's own package manager then loads
-# it at runtime via the `pi.extensions` manifest in the package's package.json.
-# Verified against pi 0.84.4 (see the "Last verified against" line in
-# docs/pi-compatibility.md — test-pi-version-drift.ts cross-checks this claim
-# against it): `pi install npm:pi-mcp-adapter` + the node_modules layout
-# below. Bumping pi is a deliberate update per AGENTS.md § 4 — re-verify
-# this check when the version changes. (This path literal is the build-side
-# mirror of install.sh §5's bridge check — keep them in sync.)
-# Pinned at 2.32.1 (last confirmed-clean release) per nicobailon/pi-mcp-adapter#547:
-# 2.33.0 pins its @modelcontextprotocol/client+core deps at pkg.pr.new preview-
-# tarball URLs, which npm 12's allow-remote=none default rejects with EALLOWREMOTE
-# (broke every publish-image build 2026-08-26 → 2026-09-11). Re-verify the pin
-# when #547 is resolved upstream. Mirrors the pi @0.84.4 floor-pin doctrine
-# above — asserted in extension/smoke-tests/test-dockerfile-pins.ts.
-RUN pi install npm:pi-mcp-adapter@2.32.1 || true \
-    && test -d "$HOME/.pi/agent/npm/node_modules/pi-mcp-adapter" || { \
-         echo "ERROR: pi-mcp-adapter is missing from the npm layout this image" \
-              "uses (we explicitly run 'pi install npm:pi-mcp-adapter@2.32.1'; the" \
-              "git/local extensions/ layout install.sh also accepts is not a" \
-              "valid install shape here)." >&2; \
-         echo "ERROR: The MCP bridge is required for any MCP server to load in" \
-              "the sandbox (Pi core has no native MCP)." >&2; \
-         echo "ERROR: See the 'pi install' output above — if it was a transient" >&2; \
-         echo "ERROR: network/registry error, retry the image build; otherwise" >&2; \
-         echo "ERROR: file an issue against this repo (or the pi version pin)." >&2; \
-         exit 1; \
-       }
-
 # Build per-role prompts + symlink extension + skills + write the codebase_memory
-# MCP entry into ~/.config/mcp/mcp.json. install.sh is idempotent — safe to
-# also run at container start if a bind-mounted state volume needs re-wiring.
+# MCP entry into ~/.pi/agent/mcp.json (native MCP, issue #959). install.sh is
+# idempotent — safe to also run at container start if a bind-mounted state
+# volume needs re-wiring. It also removes any lingering pi-mcp-adapter install
+# (the adapter's /mcp extension would replace native MCP and silently disable
+# it — see docs/mcp.md → Security notes).
 RUN cd ${PI_ENSEMBLE_DIR} && ./install.sh || true
 
 # Issue #933 (fresh-host EACCES): bake the state mount points into the image

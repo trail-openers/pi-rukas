@@ -14,7 +14,7 @@
 | `~/.pi/agent/ensemble-runs/` | same | bind / volume fallback | Subagent transcripts (`/runs` slash command). |
 | `~/.pi/agent/ensemble-models.json` | same | bind (ro) | pi-rukas per-role model picks. |
 | `~/.pi/agent/models.json` | same | bind (ro) | Pi PROVIDER config (anthropic / openai / trailopeners / halo / etc.). |
-| `~/.config/mcp/mcp.json` | same | bind (ro) | pi-mcp-adapter config (codebase-memory-mcp wiring + your other MCP servers). |
+| `~/.pi/agent/mcp.json` | same | bind (ro) | Pi 1.0.0's native MCP config (codebase-memory-mcp wiring + your other MCP servers). Issue #959 moved the wiring from the adapter-era `~/.config/mcp/mcp.json` to this path; the devcontainer.json bind-mount of `~/.config/mcp` is removed (see docs/mcp.md). |
 | `~/.config/gh/` | same | bind (ro) | gh CLI config (fallback; primary auth is `GH_TOKEN` extracted from `gh auth token` and forwarded as env). |
 | — | `~/.cache/` | named volume `pi-ensemble-cache` | codebase-memory-mcp index, HF model cache. |
 | — | `~/.bun/` | named volume `pi-ensemble-bun-cache` | bun download cache. |

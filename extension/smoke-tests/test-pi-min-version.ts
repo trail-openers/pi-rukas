@@ -104,8 +104,8 @@ assert(
   "install-preflight.sh declares MIN_PI_VERSION (single source of truth)",
 );
 assert(
-  minVersion === "0.84.4",
-  `floor is 0.84.4 per the #578 operator decision (got ${minVersion ?? "none"})`,
+  minVersion === "1.0.0",
+  `floor is 1.0.0 per the #959 operator decision (got ${minVersion ?? "none"})`,
 );
 assert(
   !installSrc.match(/^MIN_PI_VERSION=/m),
@@ -126,24 +126,25 @@ if (minVersion === null) {
 {
   // [faked `pi --version` output, expected status prefix]
   const cases: Array<[string, string]> = [
-    // Below the floor — the #571 incident shape (0.84.3 shipped the bug).
+    // Below the floor — the 0.8x line lacks native MCP + `-e builtin:mcp`
+    // (the #959 shape). 0.84.4 was the pre-#959 floor and is now below-floor.
+    ["0.84.4", "old"],
     ["0.84.3", "old"],
     ["0.83.9", "old"],
     ["0.7.9", "old"],
-    // Numeric (not lexicographic) compare: 0.8.10 < 0.84.4, 0.9.0 > 0.84.4.
-    // Wait: 0.9.0 has minor 9 which is LESS than 84. So 0.9.0 < 0.84.4.
-    // Use 0.85.0 for the above-floor numeric case instead.
+    // Numeric (not lexicographic) compare: 0.9.0 has minor 9 which is LESS
+    // than 0, so 0.9.0 < 1.0.0. Use 1.0.1 for the above-floor numeric case.
     ["0.8.10", "old"],
-    ["0.85.0", "ok"],
-    ["1.0.0", "ok"],
+    ["0.9.0", "old"],
+    ["1.0.1", "ok"],
     // At the floor — exactly MIN_PI_VERSION passes.
     [minVersion, "ok"],
     // Above the floor — new releases are fine; a floor, not an exact pin.
-    ["0.84.5", "ok"],
-    ["0.85.0", "ok"],
+    ["1.0.0", "ok"],
+    ["1.1.0", "ok"],
     // Suffix tolerance: the first whitespace-separated token is the version.
     [`${minVersion} (dev build)`, "ok"],
-    ["0.84.4  ", "ok"],
+    ["1.0.0  ", "ok"],
     // Unparseable output fails CLOSED — never assume latest.
     ["latest", "unparseable"],
     ["garbage", "unparseable"],
@@ -157,14 +158,14 @@ if (minVersion === null) {
   // A below-floor status must NAME the floor and the reason — an upgrade
   // hint that says "upgrade" without the number is the old defect with new
   // words.
-  const below = statusOf("0.84.3");
+  const below = statusOf("0.84.4");
   assert(
     below.includes(minVersion),
     `below-floor message names the floor (${minVersion}): "${below}"`,
   );
   assert(
-    /0\.84\.3/.test(below),
-    "below-floor message records the reason (the 0.84.3 bug): " + below,
+    /1\.0\.0|native MCP|builtin:mcp/.test(below),
+    "below-floor message records the reason (native MCP / -e builtin:mcp): " + below,
   );
 }
 
@@ -215,7 +216,7 @@ if (minVersion === null) {
 
 {
   // Same code path, wrong floor: against a floor of 9.9.9 the at-floor case
-  // 0.84.4 must be REJECTED. If the gate always passed, this would not.
+  // 1.0.0 must be REJECTED. If the gate always passed, this would not.
   const fn = extractFn("pi_preflight_status");
   const parse = extractFn("parse_pi_version");
   const code = `
@@ -228,11 +229,11 @@ if (minVersion === null) {
   `;
   const got = execFileSync("bash", ["-c", code], {
     encoding: "utf8",
-    env: { ...process.env, PI_VER_OVERRIDE: "0.84.4" },
+    env: { ...process.env, PI_VER_OVERRIDE: "1.0.0" },
   }).trim();
   assert(
     got.startsWith("old"),
-    `canary: with floor 9.9.9, pi 0.84.4 is rejected (got "${got}") — a gate never observed to fail is worthless`,
+    `canary: with floor 9.9.9, pi 1.0.0 is rejected (got "${got}") — a gate never observed to fail is worthless`,
   );
 }
 

@@ -17,18 +17,19 @@
 #     here; the README install line and the Dockerfile pin are cross-checked
 #     against it. No other file may hardcode the value.
 #
-# Floor provenance: 0.84.4, decided by the operator 2026-08-29 (#578). It is
-# the first release with the extension-message-order fix; 0.84.3 shipped with
-# a live defect (extension messages inserted mid-tool-sequence, breaking
-# message-order validation) that killed four consecutive /work cycles. The
-# AGENTS.md §5 4-day embargo was deliberately overridden for this one bump
-# because the known-bug window was actively breaking cycles on the author's
-# host; future floor bumps follow the normal embargo.
+# Floor provenance: 1.0.0, decided by the operator 2026-10-02 (issue #959).
+# Pi 1.0.0 (2026-10-01) is the first release of the 1.x line — it adds native
+# MCP (mcp.json, tools named `mcp__<server>__<tool>`) and makes `--no-
+# extensions` also disable built-in extensions, which pi-rukas's subagent
+# spawn path relies on together with `-e builtin:mcp` (see CHILD_ARGS_BASE in
+# spawn-support.ts). The 4-day npm embargo was deliberately overridden for
+# this upgrade (operator decision 2026-10-02; supply-chain check done — see
+# extension/bunfig.toml minimumReleaseAgeExcludes).
 
 set -o allexport
 # The floor. Bump in one place; the drift gate keeps the README + Dockerfile
 # in step.
-MIN_PI_VERSION=0.84.4
+MIN_PI_VERSION=1.0.0
 # The oo (double-o) floor. 0.5.0 is the newest release that cleared the
 # 4-day embargo as of /work time (0.6.0 released 2026-09-10, only 1 day old
 # — pin it after 2026-09-14). See issue #715.
@@ -99,10 +100,10 @@ pi_preflight_status() {
   # no leading zeros, so plain arithmetic expansion is correct and `10#`
   # would be actively wrong — bash `10#84` parses as octal-ish and returns
   # 68, which made 0.9.0 "fail" against floor 0.84.4.
-  local floor_major="${MIN_PI_VERSION%%.*}"          # 0
-  local floor_rest="${MIN_PI_VERSION#*.}"            # 84.4
-  local floor_minor="${floor_rest%%.*}"              # 84
-  local floor_patch="${floor_rest#*.}"               # 4
+  local floor_major="${MIN_PI_VERSION%%.*}"          # 1
+  local floor_rest="${MIN_PI_VERSION#*.}"            # 0.0
+  local floor_minor="${floor_rest%%.*}"              # 0
+  local floor_patch="${floor_rest#*.}"               # 0
 
   if [ "$((10#$PI_VER_MAJOR))" -gt "$floor_major" ]; then
     echo "ok"
@@ -120,7 +121,7 @@ pi_preflight_status() {
     fi
   fi
 
-  echo "old:pi $ver is below the pi-ensemble minimum ${MIN_PI_VERSION} (0.84.3 ships a live bug in extension message ordering, fixed in 0.84.4 — see issue #578)"
+  echo "old:pi $ver is below the pi-ensemble minimum ${MIN_PI_VERSION} (1.0.0 is the first line with native MCP and `-e builtin:mcp` re-enabling under `--no-extensions` — required since issue #959)"
   return 0
 }
 
@@ -208,28 +209,29 @@ oo_floor_ok() {
   [ "$status" = "ok" ]
 }
 
-# Warn (never fail — install.sh is warn-only, never a hard gate) when
-# pi-mcp-adapter is absent from BOTH known install layouts. Lives here next
-# to the other preflight logic so install.sh stays under the 500-line
-# limit; the rationale (Pi core has no native MCP, so without the bridge NO
-# MCP server loads) is documented in the Dockerfile post-install check, and
-# this mirror should stay in sync with it.
+# Migrate (never fail — install.sh is warn-only, never a hard gate) any
+# leftover pi-mcp-adapter out of the two known install layouts. On Pi 1.0+
+# an installed extension that registers /mcp REPLACES native MCP for the
+# whole session, so a lingering adapter would silently disable the mcp.json
+# wiring install.sh writes (see install.sh §6). Native MCP makes the bridge
+# obsolete, and removing it is the migration step — this function is the
+# mirror of the `pi remove pi-mcp-adapter` calls install.sh runs below, and
+# the fallback for hosts where the `pi` binary's remove verb differs (the
+# layouts below cover `pi install npm:<pkg>` and git/local installs).
 #
 # The two layout paths are what actually exist:
-#   $PI_AGENT_DIR/npm/node_modules/  — `pi install npm:<pkg>` layout
-#   $PI_AGENT_DIR/extensions/        — git/local + extension-register layout
-pi_bridge_warn() {
+#   $PI_AGENT_DIR/npm/node_modules/pi-mcp-adapter  — `pi install npm:<pkg>` layout
+#   $PI_AGENT_DIR/extensions/pi-mcp-adapter        — git/local + extension-register layout
+pi_mcp_remove() {
   local pi_agent_dir="${1:-$HOME/.pi/agent}"
-  local ext_dir="$pi_agent_dir/extensions"
-  if [ ! -e "$pi_agent_dir/npm/node_modules/pi-mcp-adapter" ] \
-     && [ ! -e "$ext_dir/pi-mcp-adapter" ]; then
-    echo ""
-    echo "!! pi-mcp-adapter not found in $pi_agent_dir/npm/node_modules/"
-    echo "   (pi install npm: layout) or $ext_dir (git/local layout)"
-    echo "   — Pi core has no native MCP, so without the bridge"
-    echo "   NO MCP server loads (including codebase_memory)."
-    echo "   Install it with: pi install npm:pi-mcp-adapter   (README → Prerequisites)"
-    echo "   and re-run ./install.sh."
-    echo ""
+  local npm_layout="$pi_agent_dir/npm/node_modules/pi-mcp-adapter"
+  local ext_layout="$pi_agent_dir/extensions/pi-mcp-adapter"
+  if [ -e "$npm_layout" ]; then
+    echo "==> Removing legacy pi-mcp-adapter (npm layout): $npm_layout"
+    rm -rf "$npm_layout"
+  fi
+  if [ -e "$ext_layout" ]; then
+    echo "==> Removing legacy pi-mcp-adapter (extensions layout): $ext_layout"
+    rm -rf "$ext_layout"
   fi
 }

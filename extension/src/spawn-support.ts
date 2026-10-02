@@ -409,7 +409,26 @@ export function assertLiveSpawnAllowed(role: string): void {
   );
 }
 
-const CHILD_ARGS_BASE = ["--mode", "rpc", "--no-extensions"] as const;
+/**
+ * Base argv for every spawned subagent.
+ *
+ * `--no-extensions` suppresses auto-discovery of installed extensions in the
+ * child — the load-bearing part of the child-guards isolation story (a child
+ * must NOT inherit arbitrary extensions just because they sit in
+ * ~/.pi/agent/extensions/). Under Pi 1.0.0's semantics this flag ALSO disables
+ * the built-in extensions, including the built-in MCP (issue #959); so we
+ * immediately re-enable just the MCP built-in with `-e builtin:mcp`. The
+ * argument order is load-bearing: `-e builtin:mcp` MUST follow `--no-extensions`
+ * or Pi's CLI parser would consume it as part of the no-extensions flag
+ * (the short alias `-ne` makes a `pi -ne e builtin:mcp`-shape parse
+ * possible, which would silently disable MCP in every child).
+ *
+ * No other built-in is re-enabled (codemode, tool_search) — `autoEnableCodemode:
+ * false` in mcp.json is the additional guard against the MCP extension
+ * auto-activating codemode when a server with codemode exposure connects
+ * (see docs/mcp.md).
+ */
+const CHILD_ARGS_BASE = ["--mode", "rpc", "--no-extensions", "-e", "builtin:mcp"] as const;
 
 /**
  * Build the complete child argument list for spawning a subagent Pi process.
@@ -441,6 +460,9 @@ export function buildChildArgs(
   // `--mode rpc` keeps stdin open for JSON command injection
   // ({type:"prompt"|"steer"|"abort"|"follow_up"}); this is the foundation
   // for dispatch_steer (#152) and all async push-callback flows.
+  // CHILD_ARGS_BASE also carries `-e builtin:mcp` (see its comment above),
+  // so the child's toolset includes the mcp__<server>__<tool> tools the
+  // permission overlay in agents.json grants per role (issue #959).
   args.push("--session", transcriptPath);
   // #926 — the child-guards companion is appended in EVERY mode, independent
   // of subagentGuardEnabled (so PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD does not
