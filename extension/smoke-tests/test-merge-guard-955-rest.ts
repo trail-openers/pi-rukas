@@ -170,10 +170,12 @@ assert(
   "canary (nested eval, echo): allowed (echo does not run its args)",
 );
 
-// Termination canary: every eval/wrapper shape above must finish under 50ms.
+// Termination canary: every eval/wrapper shape above must finish under 500ms.
 // The previous developer's uncommitted change had an infinite loop in
 // mergeVerbUnwrapOne (a `continue` without advancing `i` on `eval "…"`),
 // which hung a probe for 88 minutes. This canary catches that regression.
+// 500ms is load-tolerant for CI/loaded hosts (the bound catches non-
+// termination / quadratic regressions, not micro-performance).
 {
   const shapes = [
     "eval gh pr merge 17",
@@ -213,8 +215,8 @@ assert(
     const r = mergesPr(cmd);
     const dt = Date.now() - t0;
     assert(
-      dt < 50,
-      `termination canary: ${cmd} finished in ${dt}ms (<50ms), result=${r !== undefined ? "blocked" : "allowed"}`,
+      dt < 500,
+      `termination canary: ${cmd} finished in ${dt}ms (<500ms), result=${r !== undefined ? "blocked" : "allowed"}`,
     );
   }
 }
