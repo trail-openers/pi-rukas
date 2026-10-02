@@ -28,15 +28,16 @@
  *   (e) a staleness NUDGE (non-fatal console.warn) when the verified line
  *       lags the declared pin by more than one minor — a prompt to re-run
  *       the live shape tests, never a ceiling;
- *       (f) a site census: every repo file that carries a bare 0.8x.y Pi
- *       version literal — or a 1.x.y literal in a Pi-claim context (a
+ *   (f) a site census: every repo file that carries a bare 0.8x.y Pi
+ *       version literal must be a declared site whose expected-literal
+ *       superset covers what is found — a new unreviewed version claim
+ *       fails the gate instead of drifting silently (the structural reason
+ *       the #787 contradiction survived two minors). Since #959 the census
+ *       also covers 1.x.y literals in a Pi-claim context (a
  *       `pi-coding-agent`/`pi-tui`/`@earendil-works/pi` pin, `MIN_PI_VERSION`,
- *       or the "Last verified against pi" claim line) — must be a declared
- *       site whose expected-literal superset covers what is found; a new unreviewed version claim fails the gate instead of
- *       drifting silently (the structural reason the #787 contradiction
- *       survived two minors). 1.x literals with no Pi-claim context (bun,
- *       biome, oo, ci floors) are NOT claims — the census is a Pi gate and
- *       must not fail on an unrelated tool bump.
+ *       or the "Last verified against pi" claim line); 1.x literals with no
+ *       Pi-claim context (bun, biome, oo, ci floors) are NOT claims — the
+ *       census is a Pi gate and must not fail on an unrelated tool bump.
  *
  * What it deliberately does NOT do:
  *   - enforce dev pin == install floor (that would re-impose the
@@ -139,6 +140,8 @@ export function parseAgentsRestatement(agentsMd: string): { version: string; dat
 }
 
 /**
+ * Bare 0.8x.y Pi version literals in a text blob (the current-claim space; 0.7x.y is historical).
+ *
  * Pi-claim contexts: indexes at which a 1.x version literal starts within
  * 20 chars after a marker naming the Pi package/CLI (pi-coding-agent,
  * pi-tui, @earendil-works/pi, MIN_PI_VERSION, "Last verified against pi").
@@ -188,112 +191,17 @@ export function piVersionLiterals(text: string): string[] {
   return [...out];
 }
 
-/**
- * Every file git considers part of the repo: tracked (`--cached`) plus
- * untracked-but-not-ignored (`--others --exclude-standard`). A plain
- * readdir walk reads git-IGNORED runtime debris that carries historical
- * Pi version literals — one ls-files call gives exactly the right set.
- * Fails loudly if git is unavailable (no silent fallback to readdir).
- */
-export function gitRepoFiles(repoRoot: string): string[] {
-  // -c core.quotepath=false makes the raw-path output explicit: -z already
-  // emits unquoted bytes (verified empirically — quoting only applies to the
-  // non -z textual path), but the flag guards a config-level surprise in the
-  // one place where a quoted path would corrupt the census listing silently.
-  const out = execFileSync("git", ["-c", "core.quotepath=false", "-C", repoRoot, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  return out
-    .split("\0")
-    .filter((f) => f.length > 0)
-    .map((f) => path.join(repoRoot, f));
-}
+// The gitRepoFiles and siteCensus implementations live in
+// ./lib/pi-version-census.ts, moved there verbatim (code, not comments) so
+// this gate file could stay under the 500-line cap while its comments were
+// restored. The lib file is intentionally NOT named test-*.ts — verify-loop.sh
+// runs only test-*.ts as tests; coverage comes through this gate.
+import { gitRepoFiles, siteCensus } from "./lib/pi-version-census.ts";
 
-/**
- * The full site census: every repo file that can carry a Pi version claim,
- * with the expected superset of bare 0.8x.y literals it may hold. Adding a
- * new version-claim site means adding a row here — the gate fails otherwise
- * (a census that only knows a subset of the tree is worse than none).
- */
-export function siteCensus(verifiedV: string): Record<string, string[]> {
-  const v = [verifiedV];
-  return {
-    // The maintained line (version + its date's digits).
-    "docs/pi-compatibility.md": v,
-    // The native-MCP walkthrough's pi-1.0 claim.
-    "docs/mcp.md": [...v, "1.0.0"],
-    // The sandbox bind-mount table + troubleshooting entries that name the
-    // post-#959 config path ("Pi 1.0.0's native MCP").
-    "docs/sandbox.md": [...v, "1.0.0"],
-    "docs/troubleshooting.md": [...v, "1.0.0"],
-    // The audit code-search policy's config-path reference ("Pi 1.0.0's
-    // native MCP config") + the user-global native MCP config path.
-    "docs/audit-code-search-policy.md": [...v, "1.0.0"],
-    // The AGENTS.md § 4 restatement (the "Last verified against pi" claim
-    // line; the §5 embargo comment's 1.2.20 bun floor is not a claim).
-    "AGENTS.md": v,
-    // The dev pins (lockstep; the @earendil-works/pi marker puts the 1.x
-    // pins in a claim context). The other 1.x literals in the file
-    // (1.2.20 bun engines floor, 1.9.0 biome) are not Pi claims.
-    "extension/package.json": ["1.0.0"],
-    // The preflight floor (MIN_PI_VERSION + the #578 provenance/bug-window
-    // note's 0.84.4/0.84.3 literals).
-    "install-preflight.sh": ["1.0.0", "0.84.4", "0.84.3"],
-    // The install floor on the install line (the 1.0.0 pi pin; the 1.2.20
-    // bun floor sits within 20 chars of the "pi-coding-agent@1.0.0"
-    // marker on the same line, so the census sees it as claim-adjacent —
-    // declared here, not a Pi claim, but the window is what it is).
-    "README.md": ["1.0.0", "1.2.20"],
-    // Floor pin on the install line.
-    "Dockerfile": ["1.0.0"],
-    // test-pi-min-version.ts fakes pi --version output (at-floor / below-floor
-    // matrix + numeric-compare cases).
-    "test-pi-min-version.ts": ["1.0.0", "1.0.1", "1.1.0", "0.84.4", "0.84.3", "0.83.9", "0.85.0"],
-    // The prerequisite-drift gate's canary literals (0.8x.y — the
-    // historical claim space, detected unconditionally; its 1.x literals
-    // sit in "Pi 1.0.0's" claim-context strings within the 20-char window).
-    "test-prerequisite-drift.ts": ["0.84.4", "0.84.3", "1.0.0", "1.1.0"],
-    // The Dockerfile-pins gate's canary lines ("Pi 1.0.0's native MCP",
-    // the fixture "@earendil-works/pi-coding-agent@1.0.0" pin).
-    "test-dockerfile-pins.ts": ["1.0.0"],
-    // The live shape test's "Pi 1.0.0's native MCP" doc comments.
-    "test-pi-shape-live.ts": ["1.0.0"],
-    // The --exclude-tools rationale (Pi >= 0.83.0 — historical, still accurate)
-    // + the CHILD_ARGS_BASE doc comment ("Under Pi 1.0.0's semantics").
-    "spawn-support.ts": ["0.83.0", "1.0.0"],
-    // The pi-mcp-adapter-skip doc comment ("On Pi 1.0.0, an installed
-    // extension...").
-    "spawn-extension-forward.ts": ["1.0.0"],
-    // test-pi-version-drift.ts's own canary literals: the 0.8x.y canaries
-    // (detected unconditionally) + the 1.x canaries that sit in
-    // Pi-claim-context strings in this file ("pi-coding-agent": "1.0.0",
-    // "pi 1.0.1", "pi 1.1.0", "Last verified against pi 1.0.0").
-    // Self-census: if this file grows a new canary literal, the list must
-    // grow here too — the gate fails otherwise (a self-census that cannot
-    // see its own declaration is the "census that passes by silence"
-    // failure mode this gate exists to stop).
-    "test-pi-version-drift.ts": ["0.84.4", "0.99.0", "0.82.0", "0.82.1", "0.84.3", "0.83.9", "0.85.0", "0.84.5", "0.83.0", "0.86.0", "0.87.0", "1.0.0", "1.0.1", "1.1.0", "1.2.20"],
-    // bun.lock resolves the declared pins (lockfile, not a claim — the gate
-    // reads the DECLARED pin from package.json). The @earendil-works/pi
-    // package names put the 1.0.0 pins in a Pi-claim context; the typebox
-    // 1.3.27 on the pi-agent-core line is within the 20-char window of the
-    // marker (declared here, not a Pi claim — the window is what it is).
-    "bun.lock": ["1.0.0", "1.3.27"],
-    // The embargo override comment's "the Pi 1.0.0 pin" (claim context via
-    // the "Pi " marker; the 1.2.20 bun floor is outside the window).
-    "bunfig.toml": ["1.0.0"],
-    // The Pi 1.0.0 native-MCP wiring comments + step-6 banner ("Pi 1.0.0's
-    // native MCP" is a claim; the 1.2.20 bun floor is not).
-    "install.sh": ["1.0.0"],
-    // The sandbox wrapper's native-MCP bind-mount comment names the Pi 1.0.0
-    // path (issue #959); the header + mount comment both reference it.
-    "bin/pi-rukas": ["1.0.0"],
-    // 1.0.0 is the native-MCP walkthrough's pi claim (the other 1.x
-    // literals are bun/npm floors, not Pi claims).
-    "CONTRIBUTING.md": ["1.0.0"],
-  };
-}
+// Re-exported so the gate's public surface is unchanged (siteCensus is the
+// census table; gitRepoFiles is the ls-files listing — both documented in
+// their source-of-truth in ./lib/pi-version-census.ts).
+export { gitRepoFiles, siteCensus };
 
 // ---------------------------------------------------------------- the gate
 
@@ -362,13 +270,17 @@ if (verified && pins.codingAgent) {
 // ---------------------------------------------------------------- the gate CAN fail
 
 {
-  // Canary 1 — one-sided co-pin drift: the fixture pins pi-coding-agent
-  // ~0.99.0 but pi-tui ~0.84.4; the mismatch is what the lockstep assert fails on.
+  // Canary 1 — one-sided co-pin drift: the fixture package.json pins
+  // pi-coding-agent ~0.99.0 but pi-tui ~0.84.4. parseDevPins must surface
+  // both, and the mismatch is exactly what the lockstep assert above fails on.
+  // The canary fixture (one-sided co-pin: 0.99.0 vs 0.84.4).
   const fixturePkg = parseDevPins(read(path.relative(REPO_ROOT, path.join(FIXTURES, "package.json"))));
-  assert(fixturePkg.codingAgent === "0.99.0", "canary fixture: pi-coding-agent declared pin parses as 0.99.0");
+  assert(fixturePkg.codingAgent === "0.99.0", "canary fixture: pi-coding-agent declared pin parses as 0.99.0 (tilde stripped deliberately)");
   assert(fixturePkg.tui === "0.84.4", "canary fixture: pi-tui declared pin parses as 0.84.4");
+  // And the census must actually SEE a contradictory literal in a non-site
+  // file (proving the surprise path is not passing by silence).
   assert(piVersionLiterals(read(path.relative(REPO_ROOT, path.join(FIXTURES, "package.json")))).length > 0, "canary: piVersionLiterals runs on raw file text");
-  assert(piVersionLiterals('"pi-coding-agent": "0.87.0"').includes("0.87.0"), "canary: an undeclared 0.8x.y literal (0.87.0) is visible — the surprise path is reachable");
+  assert(piVersionLiterals('"pi-coding-agent": "0.87.0"').includes("0.87.0"), "canary: an undeclared 0.8x.y literal (0.87.0) is visible to the census — the surprise path is reachable");
   assert(piVersionLiterals('"pi-coding-agent": "1.0.0"').includes("1.0.0"), "canary: an undeclared 1.x.y literal (1.0.0) in a Pi-claim context is visible post-#959");
   // The 1.x narrowing: the SAME literal with no Pi marker is NOT a claim.
   assert(piVersionLiterals("bun >= 1.2.20, biome 1.9.0, bun-version: 1.4.0").length === 0, "canary: a 1.x literal with no Pi-claim context is NOT a Pi claim");
@@ -378,40 +290,55 @@ if (verified && pins.codingAgent) {
   // "Pi 1.0.0 native MCP" prose: version 6+ chars past "Pi" — NOT a claim.
   assert(piVersionLiterals("post-#959 (Pi 1.0.0 native MCP), the adapter is REMOVED").length === 0, "canary: 'Pi 1.0.0' prose (version 6+ chars past 'Pi') is NOT detected — the 20-char window holds");
   assert(piVersionLiterals('"@earendil-works/pi-coding-agent": "~1.1.0", "@earendil-works/pi-tui": "~1.0.0"').includes("1.1.0"), "canary: a 1.x bump in a pi-coding-agent pin is a claim");
-  assert(fixturePkg.codingAgent !== fixturePkg.tui, "canary: one-sided bump IS detected");
+  assert(fixturePkg.codingAgent !== fixturePkg.tui, "canary: one-sided bump IS detected (the lockstep assert above would fail on this fixture)");
 
-  // Canary 2 — the range-prefix strip is load-bearing.
-  assert(compareVersions(stripRangePrefix("~0.82.0"), "0.82.0") === 0, "canary: stripRangePrefix makes '~0.82.0' comparable");
-  assert(compareVersions("~0.82.0", "0.82.0") === null, "canary: an unstripped tilde fails closed (null)");
+  // Canary 2 — the range-prefix strip is load-bearing: "~0.82.0" must
+  // compare as 0.82.0, not fail closed as unparseable.
+  assert(compareVersions(stripRangePrefix("~0.82.0"), "0.82.0") === 0, "canary: stripRangePrefix makes '~0.82.0' comparable (== 0.82.0)");
+  assert(compareVersions("~0.82.0", "0.82.0") === null, "canary: an unstripped tilde fails closed (null) — the strip is deliberate, not accidental");
 
-  // Canary 3 — the line parsers fail closed.
-  assert(parseVerifiedLine("no version line here") === null, "canary: parseVerifiedLine fails closed when absent");
+  // Canary 3 — the line parsers fail closed on an absent or malformed line.
+  assert(parseVerifiedLine("no version line here") === null, "canary: parseVerifiedLine fails closed when the line is absent");
   assert(parseVerifiedLine("## Last verified against pi 0.84.4 (2026-09-21)")?.version === "0.84.4", "canary: parseVerifiedLine extracts version + date");
-  assert(parseAgentsRestatement("Last verified against `pi` **0.84.4 (2026-09-21)** — the line above")?.date === "2026-09-21", "canary: parseAgentsRestatement extracts version + date");
-  assert(minorDistance("1.0.0", "0.82.0") === Infinity, "canary: minorDistance across major boundaries is Infinity");
-  assert(minorDistance("1.0.0", "1.1.0") === 1, "canary: minorDistance within 1.x counts minors");
+  assert(
+    parseAgentsRestatement("Last verified against `pi` **0.84.4 (2026-09-21)** — the line above")?.date === "2026-09-21",
+    "canary: parseAgentsRestatement extracts version + date from the § 4 restatement",
+  );
+  // A comment referencing the pinned pi-tui d.ts.
+  // (Post-#959: the cross-major distance across the 0.8x → 1.x bump is Infinity — the pre-#959 pin 0.82.0 vs 1.0.0.)
+  assert(minorDistance("1.0.0", "0.82.0") === Infinity, "canary: minorDistance across major boundaries is Infinity (0.82 vs 1.00) — the cross-major nudge path");
+  assert(minorDistance("0.84.4", "0.82.0") === 2, "canary: minorDistance counts minors (0.84 vs 0.82 → 2)");
 
-  // Canary 4 — the version-order rules fail in both directions.
-  assert(compareVersions("0.82.1", "1.0.0") === -1, "canary: verified 0.82.1 < pin 1.0.0 → 'not older' assert would fail");
-  assert(compareVersions("1.0.0", "0.82.0") === 1, "canary: verified 1.0.0 > pin 0.82.0 → the nudge fires");
-  assert(compareVersions("1.0.1", "1.0.0") === 1, "canary: verified 1.0.1 > floor 1.0.0 → 'not newer than floor' would fail");
+  // Canary 4 — the version-order rules fail in both directions: a verified
+  // line OLDER than the pin (the drift that got away) and one NEWER than the
+  // floor (an unverified claim operators are never guaranteed to have).
+  assert(compareVersions("0.82.1", "1.0.0") === -1, "canary: verified 0.82.1 < pin 1.0.0 → the 'not older' assert would fail");
+  assert(compareVersions("1.0.0", "0.82.0") === 1, "canary: verified 1.0.0 > pin 0.82.0 → the nudge fires and the order assert would fail in the reverse direction");
+  assert(compareVersions("1.0.1", "1.0.0") === 1, "canary: verified 1.0.1 > floor 1.0.0 → the 'not newer than floor' assert would fail");
 
-  // Canary 5 — the nudge path is non-fatal (warn-only by construction).
+  // Canary 5 — the nudge path is non-fatal: drive the date nudge with an
+  // injected clock far in the future; the path above only ever warns (no
+  // assert on it), so an old date can never flip exit by itself.
   process.env.PI_PI_VERSION_DRIFT_NOW = "2099-01-01";
   const far = (Date.parse(process.env.PI_PI_VERSION_DRIFT_NOW) - Date.parse("2026-09-21")) / 86_400_000;
-  assert(Number.isFinite(far) && far > 365, "canary: injected clock (2099) drives the >365-day date-nudge path");
+  assert(Number.isFinite(far) && far > 365, "canary: injected clock (2099) drives the >365-day date-nudge path (warn-only by construction)");
   delete process.env.PI_PI_VERSION_DRIFT_NOW;
 
-  // Canary 6 — the gate does NOT require dev pin == install floor: the
-  // floor parses (the unquoted MIN_PI_VERSION=1.0.0 form must match — the
-  // trailing "? on the quote is what makes the canary non-vacuous) and a
-  // pin differing in major still compares.
+  // Canary 6 — the gate does NOT require dev pin == install floor (that
+  // would re-impose the ceiling #787 removes): a pair differing in major
+  // compares fine, and no assert above ties the two together.
   const floor = read("install-preflight.sh").match(/\bMIN_PI_VERSION="?([0-9][0-9a-z.+-]*)"?/);
   const floorV = floor ? (floor[1] as string) : "";
   assert(floorV !== "", "canary: the install floor (MIN_PI_VERSION) matches its unquoted form");
-  assert(compareVersions("0.99.0", floorV) !== null, `a declared pin different from the install floor (${floorV}) is comparable and legal`);
+  assert(compareVersions("0.99.0", floorV) !== null, `a declared pin different from the install floor (${floorV}) is comparable and legal — the gate never asserts pin == floor`);
 
-  // Canary 7 — the census listing respects .gitignore exactly.
+  // Canary 7 — the census listing respects .gitignore exactly: in a temp
+  // repo, a gitignored file carrying an unknown 0.8x.y literal in the claim
+  // space is excluded, while a tracked file and an UNTRACKED-but-not-ignored
+  // file with the same literal are both included. (This is the shape of the
+  // repoRoot debris that failed every consolidated verify: outputs/ is
+  // gitignored but the old readdir walk read it anyway; and --others must
+  // still surface new untracked claims — the gate is narrowed, not weakened.)
   let tmp: string | null = null;
   try {
     tmp = mkdtempSync(path.join(os.tmpdir(), "pi-drift-census-"));
@@ -422,15 +349,19 @@ if (verified && pins.codingAgent) {
     writeFileSync(path.join(tmp, "outputs/x.md"), "pi 0.86.0 was old\n");
     execFileSync("git", ["add", "-A"], { cwd: tmp });
     execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init"], { cwd: tmp });
+    // Untracked but NOT ignored — a genuinely new version-claim site the census must see.
     writeFileSync(path.join(tmp, "new-claim.md"), "pi 0.86.0 arrived\n");
+    // Non-ASCII name: the census must list it exactly (raw UTF-8, unquoted)
+    // and the absolute path must be readable — a quoted or C-escaped listing
+    // would produce a phantom file the census then fails to read.
     writeFileSync(path.join(tmp, "résumé.md"), "no version literal here\n");
     const listed = gitRepoFiles(tmp).map((p) => path.relative(tmp, p)).sort();
     assert(listed.includes("tracked.md"), "canary: census listing includes the tracked file");
-    assert(!listed.includes("outputs/x.md"), "canary: census listing excludes the gitignored outputs/x.md");
-    assert(listed.includes("new-claim.md"), "canary: census listing includes the untracked-but-not-ignored file");
-    assert(listed.includes("résumé.md"), "canary: census listing includes the untracked non-ASCII file by its exact UTF-8 name");
-    assert(!listed.some((p) => p.startsWith('"')), "canary: no listed path is C-style quoted");
-    assert(readFileSync(path.join(tmp, "résumé.md"), "utf8").includes("no version literal"), "canary: readFileSync of the non-ASCII absolute path succeeds");
+    assert(!listed.includes("outputs/x.md"), "canary: census listing excludes the gitignored outputs/x.md (the repoRoot debris shape)");
+    assert(listed.includes("new-claim.md"), "canary: census listing includes the untracked-but-not-ignored file (the gate is narrowed, not weakened)");
+    assert(listed.includes("résumé.md"), "canary: census listing includes the untracked non-ASCII file by its exact UTF-8 name (raw path, unquoted)");
+    assert(!listed.some((p) => p.startsWith('"')), "canary: no listed path is C-style quoted (a quote would mean the -c/-z raw-path contract broke)");
+    assert(readFileSync(path.join(tmp, "résumé.md"), "utf8").includes("no version literal"), "canary: readFileSync of the listed non-ASCII absolute path succeeds (the path is a real file, not a quoted escape sequence)");
   } catch (e) {
     assert(false, `canary: temp-repo gitignore check errored: ${String(e)}`);
   } finally {
