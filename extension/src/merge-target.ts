@@ -24,7 +24,11 @@
  */
 
 import { type DetectForgeOpts, detectForge } from "./forge-detect.ts";
+import { isValidRepoValue } from "./merge-tokens.ts";
 import { trace } from "./trace.ts";
+
+/** Timeout for the guard's gh/glab exec calls (a network-stalled `gh pr view` must not hang the tool_call hook). */
+const GH_TIMEOUT_MS = 30_000;
 
 /**
  * The forge detection options the guard uses for its own decisions (#926
@@ -97,6 +101,7 @@ export async function readMergeTarget(
   cwd: string,
   prNumber: number,
   forgeOpts?: DetectForgeOpts,
+  repo?: string,
 ): Promise<MergeTargetResult> {
   const escapeHatch = "PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 (operator-set only)";
 
@@ -115,9 +120,9 @@ export async function readMergeTarget(
     };
   }
   if (detection.forge === "github") {
-    return readGhTarget(execFn, cwd, prNumber, escapeHatch);
+    return readGhTarget(execFn, cwd, prNumber, escapeHatch, repo);
   }
-  return readGlTarget(execFn, cwd, prNumber, escapeHatch);
+  return readGlTarget(execFn, cwd, prNumber, escapeHatch, repo);
 }
 
 async function readGhTarget(
@@ -125,12 +130,28 @@ async function readGhTarget(
   cwd: string,
   prNumber: number,
   escapeHatch: string,
+  repo?: string,
 ): Promise<MergeTargetResult> {
-  // The exact argv the guard shells out to — pinned by the test.
-  const cmd = `gh pr view ${prNumber} --json headRefName,headRefOid,baseRefName,author,labels`;
+  // #955 lens fix 1 (HIGH): the repo value is parsed from the agent's
+  // -R/--repo flag or a PR URL and was previously interpolated directly
+  // into this exec string. An invalid value (e.g. `o/r; touch /tmp/x`)
+  // would execute arbitrary commands. The guard already validates at the
+  // extraction site (merge-parse.ts); this is the defensive second check
+  // before use. A valid repo is `owner/repo` (GitLab: `group/sub/repo`).
+  if (repo !== undefined && !isValidRepoValue(repo)) {
+    return {
+      ok: false,
+      reason: `unsafe repo value: ${repo} — the guard will not interpolate this value into a forge command; set ${escapeHatch} to override`,
+    };
+  }
+  // The exact argv the guard shells out to — pinned by the test. `-R` is
+  // appended only when the command carried one (existing argv assertions
+  // stay byte-identical when no repo is present).
+  const repoFlag = repo ? ` -R ${repo}` : "";
+  const cmd = `gh pr view ${prNumber} --json headRefName,headRefOid,baseRefName,author,labels${repoFlag}`;
   let raw: Record<string, unknown>;
   try {
-    const { stdout } = await execFn(cmd, { cwd, maxBuffer: 64 * 1024 });
+    const { stdout } = await execFn(cmd, { cwd, maxBuffer: 64 * 1024, timeout: GH_TIMEOUT_MS });
     raw = JSON.parse(stdout);
   } catch (err) {
     return {
@@ -168,12 +189,23 @@ async function readGlTarget(
   cwd: string,
   prNumber: number,
   escapeHatch: string,
+  repo?: string,
 ): Promise<MergeTargetResult> {
+  // #955 lens fix 1 (HIGH): same defensive repo-value check as
+  // readGhTarget — an invalid repo value is a shell injection and is
+  // refused before it can reach this exec string.
+  if (repo !== undefined && !isValidRepoValue(repo)) {
+    return {
+      ok: false,
+      reason: `unsafe repo value: ${repo} — the guard will not interpolate this value into a forge command; set ${escapeHatch} to override`,
+    };
+  }
   // The repo's canonical glab read shape (forge-commands.ts): --output json.
-  const cmd = `glab mr view ${prNumber} --output json`;
+  const repoFlag = repo ? ` -R ${repo}` : "";
+  const cmd = `glab mr view ${prNumber} --output json${repoFlag}`;
   let raw: Record<string, unknown>;
   try {
-    const { stdout } = await execFn(cmd, { cwd, maxBuffer: 64 * 1024 });
+    const { stdout } = await execFn(cmd, { cwd, maxBuffer: 64 * 1024, timeout: GH_TIMEOUT_MS });
     raw = JSON.parse(stdout);
   } catch (err) {
     return {
@@ -228,6 +260,7 @@ export async function resolvePrNumber(
   cwd: string,
   commandNumber: number | undefined,
   forgeOpts?: DetectForgeOpts,
+  repo?: string,
 ): Promise<number | undefined> {
   if (commandNumber !== undefined) return commandNumber;
   // Forge-aware: the PR/MR for the CURRENT branch, read from whichever forge
@@ -241,13 +274,29 @@ export async function resolvePrNumber(
     trace("merge-target: cannot resolve PR number — forge is unknown (fail-closed)");
     return undefined;
   }
+  // #955 lens fix 1 (HIGH): same defensive repo-value check as
+  // readGhTarget — an invalid repo value is a shell injection and is
+  // refused before it can reach this exec string.
+  if (repo !== undefined && !isValidRepoValue(repo)) {
+    trace(`merge-target: unsafe repo value: ${repo} — refusing (fail-closed)`);
+    return undefined;
+  }
+  const repoFlag = repo ? ` -R ${repo}` : "";
   try {
     if (detection.forge === "gitlab") {
-      const { stdout } = await execFn("glab mr view --output json", { cwd, maxBuffer: 8 * 1024 });
+      const { stdout } = await execFn(`glab mr view --output json${repoFlag}`, {
+        cwd,
+        maxBuffer: 8 * 1024,
+        timeout: GH_TIMEOUT_MS,
+      });
       const n = (JSON.parse(stdout) as { iid?: number }).iid;
       return typeof n === "number" ? n : undefined;
     }
-    const { stdout } = await execFn("gh pr view --json number", { cwd, maxBuffer: 8 * 1024 });
+    const { stdout } = await execFn(`gh pr view --json number${repoFlag}`, {
+      cwd,
+      maxBuffer: 8 * 1024,
+      timeout: GH_TIMEOUT_MS,
+    });
     const n = (JSON.parse(stdout) as { number?: number }).number;
     return typeof n === "number" ? n : undefined;
   } catch (err) {
