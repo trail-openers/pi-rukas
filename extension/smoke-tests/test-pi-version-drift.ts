@@ -139,12 +139,10 @@ export function parseAgentsRestatement(agentsMd: string): { version: string; dat
 }
 
 /**
- * Pi-claim contexts: every index at which a 1.x version literal starts and
- * sits within 20 chars AFTER one of these markers — a `pi-coding-agent`
- * pin, `pi-tui`, an `@earendil-works/pi` package name, `MIN_PI_VERSION`,
- * or the "Last verified against pi" claim line. A version 20+ chars past "Pi 1.0.0's ... semantics" comments is prose,
- * not a claim: the census never declared those sites, so the window is
- * sized to what the repo actually claims, not to arbitrary distance.
+ * Pi-claim contexts: indexes at which a 1.x version literal starts within
+ * 20 chars after a marker naming the Pi package/CLI (pi-coding-agent,
+ * pi-tui, @earendil-works/pi, MIN_PI_VERSION, "Last verified against pi").
+ * A version 20+ chars past "Pi 1.0.0's ... semantics" is prose, not a claim.
  */
 const PI_CLAIM_MARKERS = [
   /pi-coding-agent/i,
@@ -172,33 +170,18 @@ export function piClaimContexts(text: string): number[] {
 }
 
 /**
- * Bare Pi version literals in a text blob. Post-#959 the current-claim
- * space is 1.x (the native-MCP line); 0.8x.y literals survive as
- * historical/provenance notes (the #578 floor provenance, the pre-#959
- * pin) and are still tracked by the census so they cannot drift silently.
- *
- * 1.x literals are returned ONLY when they sit within a few chars of a
- * Pi-claim context (see piClaimContexts) — "Last verified against pi
- * 1.0.0" is a claim, "bun >= 1.2.20" is not, and "Pi 1.0.0's semantics"
- * prose is not (20+ chars from the nearest marker: prose, not a claim).
- * Without the context check every unrelated tool bump (bun, biome, oo,
- * ci) would fail a Pi-drift gate. 0.8x.y literals stay unconditional:
- * the census predates 1.x, the historical 0.8x claims were the original
- * drift surface (#787), and narrowing them would weaken the gate the
- * ticket exists to keep.
+ * Bare Pi version literals in a text blob. 0.8x.y: unconditional (the
+ * historical claim space, pre-#959). 1.x.y: only in a Pi-claim context
+ * (see piClaimContexts) — "Last verified against pi 1.0.0" is a claim,
+ * "bun >= 1.2.20" is not. Without the context check every unrelated
+ * tool bump (bun, biome, oo, ci) would fail a Pi-drift gate.
  */
 export function piVersionLiterals(text: string): string[] {
   const out = new Set<string>();
   const claims = piClaimContexts(text);
   // 0.8x.y (historical + current-claim space pre-#959), unconditional.
-  // The lookbehind excludes digits (a "0.82.0" inside "10.82.0" is not a
-  // version claim) and a leading dot (".82.0" would otherwise match the
-  // tail of "1.0.82.0").
   for (const m of text.matchAll(/(?<![\d.])0\.8[0-9]+\.[0-9]+/g)) out.add(m[0] as string);
-  // 1.x.y (current-claim space post-#959), Pi-claim contexts only. Same
-  // boundary guards: a digit before the "1." ("11.10.0", "21.0.0") or a
-  // dot ("0.1.0") means the match is part of a longer version, not a
-  // standalone Pi claim.
+  // 1.x.y (current-claim space post-#959), Pi-claim contexts only.
   for (const m of text.matchAll(/(?<![\d.])1\.[0-9]+\.[0-9]+/g)) {
     if (claims.includes(m.index as number)) out.add(m[0] as string);
   }
@@ -208,15 +191,9 @@ export function piVersionLiterals(text: string): string[] {
 /**
  * Every file git considers part of the repo: tracked (`--cached`) plus
  * untracked-but-not-ignored (`--others --exclude-standard`). A plain
- * readdir walk reads git-IGNORED runtime debris (outputs/ research
- * artifacts, .pi-subagents/ transcripts) that carries historical Pi version
- * literals — at repoRoot that debris makes the census fail on every
- * consolidated verify even though the debris is not part of the repo. One
- * ls-files call gives exactly the tracked+untracked-not-ignored set; the
- * caller's explicit exclusions (fixtures, etc.) apply on top.
- *
- * Fails loudly (throws) if git is unavailable — a silent fallback to a
- * directory walk would re-admit the ignored debris the gate exists to skip.
+ * readdir walk reads git-IGNORED runtime debris that carries historical
+ * Pi version literals — one ls-files call gives exactly the right set.
+ * Fails loudly if git is unavailable (no silent fallback to readdir).
  */
 export function gitRepoFiles(repoRoot: string): string[] {
   // -c core.quotepath=false makes the raw-path output explicit: -z already
@@ -385,114 +362,75 @@ if (verified && pins.codingAgent) {
 // ---------------------------------------------------------------- the gate CAN fail
 
 {
-  // Canary 1 — one-sided co-pin drift: the fixture package.json pins
-  // pi-coding-agent ~0.99.0 but pi-tui ~0.84.4. parseDevPins must surface
-  // both, and the mismatch is exactly what the lockstep assert above fails on.
+  // Canary 1 — one-sided co-pin drift: the fixture pins pi-coding-agent
+  // ~0.99.0 but pi-tui ~0.84.4; the mismatch is what the lockstep assert fails on.
   const fixturePkg = parseDevPins(read(path.relative(REPO_ROOT, path.join(FIXTURES, "package.json"))));
-  assert(fixturePkg.codingAgent === "0.99.0", "canary fixture: pi-coding-agent declared pin parses as 0.99.0 (tilde stripped deliberately)");
+  assert(fixturePkg.codingAgent === "0.99.0", "canary fixture: pi-coding-agent declared pin parses as 0.99.0");
   assert(fixturePkg.tui === "0.84.4", "canary fixture: pi-tui declared pin parses as 0.84.4");
-  // And the census must actually SEE a contradictory literal in a non-site
-  // file (proving the surprise path is not passing by silence).
   assert(piVersionLiterals(read(path.relative(REPO_ROOT, path.join(FIXTURES, "package.json")))).length > 0, "canary: piVersionLiterals runs on raw file text");
-  const surpriseText = '"pi-coding-agent": "0.87.0"';
-  assert(piVersionLiterals(surpriseText).includes("0.87.0"), "canary: an undeclared 0.8x.y literal (0.87.0) is visible to the census — the surprise path is reachable");
-  const surpriseText1x = '"pi-coding-agent": "1.0.0"';
-  assert(piVersionLiterals(surpriseText1x).includes("1.0.0"), "canary: an undeclared 1.x.y literal (1.0.0) in a Pi-claim context is visible to the census — the surprise path is reachable post-#959");
-  // The 1.x narrowing: the SAME literal with no Pi marker nearby is a
-  // non-claim (a bun/biome/oo floor) and must NOT surface — otherwise an
-  // unrelated tool bump would fail a Pi-drift gate.
-  const nonClaim1x = "bun >= 1.2.20, biome 1.9.0, bun-version: 1.4.0";
-  assert(piVersionLiterals(nonClaim1x).length === 0, "canary: a 1.x literal with no Pi-claim context (bun/biome floor) is NOT a Pi claim — the narrowing holds");
-  // 0.8x.y keeps its pre-#959 unconditional behaviour (the historical
-  // claim space is the original drift surface — narrowing it would
-  // weaken the gate).
-  assert(piVersionLiterals("some tool pinned 0.84.5").includes("0.84.5"), "canary: 0.8x.y literals are still detected without a Pi-claim context (unconditional by design)");
-  // The maintained-claim line shape: "Last verified against pi 1.0.0" is a
-  // claim (the dedicated marker covers it; the generic `pi ` prefix does
-  // NOT — "Pi 1.0.0's semantics" prose must stay invisible).
+  assert(piVersionLiterals('"pi-coding-agent": "0.87.0"').includes("0.87.0"), "canary: an undeclared 0.8x.y literal (0.87.0) is visible — the surprise path is reachable");
+  assert(piVersionLiterals('"pi-coding-agent": "1.0.0"').includes("1.0.0"), "canary: an undeclared 1.x.y literal (1.0.0) in a Pi-claim context is visible post-#959");
+  // The 1.x narrowing: the SAME literal with no Pi marker is NOT a claim.
+  assert(piVersionLiterals("bun >= 1.2.20, biome 1.9.0, bun-version: 1.4.0").length === 0, "canary: a 1.x literal with no Pi-claim context is NOT a Pi claim");
+  // 0.8x.y stays unconditional (the historical claim space, pre-#959).
+  assert(piVersionLiterals("some tool pinned 0.84.5").includes("0.84.5"), "canary: 0.8x.y literals are still detected without a Pi-claim context");
   assert(piVersionLiterals("Last verified against pi 1.0.1 (2026-10-02)").includes("1.0.1"), "canary: the 'Last verified against pi' claim line makes a 1.x literal a claim");
-  // ...but a "pi" 40+ chars before a 1.x literal is prose, not a claim
-  // ("Pi 1.0.0's semantics" comments — the shape the census never
-  // declared; widening the window past 20 chars would flag them all).
-  const prose1x = "post-#959 (Pi 1.0.0 native MCP), the adapter is REMOVED from the image";
-  assert(piVersionLiterals(prose1x).length === 0, "canary: 'Pi 1.0.0' with the version 6+ chars past 'Pi ' (prose, not a claim) is NOT detected — the 20-char window holds");
-  // A one-sided pin bump in a package.json shape is still a claim (the
-  // surprise path must stay reachable for the 1.x line too).
-  assert(piVersionLiterals('"@earendil-works/pi-coding-agent": "~1.1.0", "@earendil-works/pi-tui": "~1.0.0"').includes("1.1.0"), "canary: a 1.x bump in a pi-coding-agent pin is a claim (surprise path reachable)");
-  assert(fixturePkg.codingAgent !== fixturePkg.tui, "canary: one-sided bump IS detected (the lockstep assert above would fail on this fixture)");
+  // "Pi 1.0.0 native MCP" prose: version 6+ chars past "Pi" — NOT a claim.
+  assert(piVersionLiterals("post-#959 (Pi 1.0.0 native MCP), the adapter is REMOVED").length === 0, "canary: 'Pi 1.0.0' prose (version 6+ chars past 'Pi') is NOT detected — the 20-char window holds");
+  assert(piVersionLiterals('"@earendil-works/pi-coding-agent": "~1.1.0", "@earendil-works/pi-tui": "~1.0.0"').includes("1.1.0"), "canary: a 1.x bump in a pi-coding-agent pin is a claim");
+  assert(fixturePkg.codingAgent !== fixturePkg.tui, "canary: one-sided bump IS detected");
 
-  // Canary 2 — the range-prefix strip is load-bearing: "~0.82.0" must
-  // compare as 0.82.0, not fail closed as unparseable.
-  assert(compareVersions(stripRangePrefix("~0.82.0"), "0.82.0") === 0, "canary: stripRangePrefix makes '~0.82.0' comparable (== 0.82.0)");
-  assert(compareVersions("~0.82.0", "0.82.0") === null, "canary: an unstripped tilde fails closed (null) — the strip is deliberate, not accidental");
+  // Canary 2 — the range-prefix strip is load-bearing.
+  assert(compareVersions(stripRangePrefix("~0.82.0"), "0.82.0") === 0, "canary: stripRangePrefix makes '~0.82.0' comparable");
+  assert(compareVersions("~0.82.0", "0.82.0") === null, "canary: an unstripped tilde fails closed (null)");
 
-  // Canary 3 — the line parsers fail closed on an absent or malformed line.
-  assert(parseVerifiedLine("no version line here") === null, "canary: parseVerifiedLine fails closed when the line is absent");
-  assert(
-    parseVerifiedLine("## Last verified against pi 0.84.4 (2026-09-21)")?.version === "0.84.4",
-    "canary: parseVerifiedLine extracts version + date",
-  );
-  assert(
-    parseAgentsRestatement("Last verified against `pi` **0.84.4 (2026-09-21)** — the line above")?.date === "2026-09-21",
-    "canary: parseAgentsRestatement extracts version + date from the § 4 restatement",
-  );
-  assert(minorDistance("1.0.0", "0.82.0") === Infinity, "canary: minorDistance across major boundaries is Infinity (0.82 vs 1.0 — the #959 bump shape)");
-  assert(minorDistance("1.0.0", "1.1.0") === 1, "canary: minorDistance within 1.x counts minors (1.0 vs 1.1 → 1)");
+  // Canary 3 — the line parsers fail closed.
+  assert(parseVerifiedLine("no version line here") === null, "canary: parseVerifiedLine fails closed when absent");
+  assert(parseVerifiedLine("## Last verified against pi 0.84.4 (2026-09-21)")?.version === "0.84.4", "canary: parseVerifiedLine extracts version + date");
+  assert(parseAgentsRestatement("Last verified against `pi` **0.84.4 (2026-09-21)** — the line above")?.date === "2026-09-21", "canary: parseAgentsRestatement extracts version + date");
+  assert(minorDistance("1.0.0", "0.82.0") === Infinity, "canary: minorDistance across major boundaries is Infinity");
+  assert(minorDistance("1.0.0", "1.1.0") === 1, "canary: minorDistance within 1.x counts minors");
 
-  // Canary 4 — the version-order rules fail in both directions: a verified
-  // line OLDER than the pin (the drift that got away) and one NEWER than the
-  // floor (an unverified claim operators are never guaranteed to have).
-  assert(compareVersions("0.82.1", "1.0.0") === -1, "canary: verified 0.82.1 < pin 1.0.0 → the 'not older' assert would fail");
-  assert(compareVersions("1.0.0", "0.82.0") === 1, "canary: verified 1.0.0 > pin 0.82.0 → the nudge fires and the order assert would fail in the reverse direction");
-  assert(compareVersions("1.0.1", "1.0.0") === 1, "canary: verified 1.0.1 > floor 1.0.0 → the 'not newer than floor' assert would fail");
+  // Canary 4 — the version-order rules fail in both directions.
+  assert(compareVersions("0.82.1", "1.0.0") === -1, "canary: verified 0.82.1 < pin 1.0.0 → 'not older' assert would fail");
+  assert(compareVersions("1.0.0", "0.82.0") === 1, "canary: verified 1.0.0 > pin 0.82.0 → the nudge fires");
+  assert(compareVersions("1.0.1", "1.0.0") === 1, "canary: verified 1.0.1 > floor 1.0.0 → 'not newer than floor' would fail");
 
-  // Canary 5 — the nudge path is non-fatal: drive the date nudge with an
-  // injected clock far in the future; the path above only ever warns (no
-  // assert on it), so an old date can never flip exit by itself.
+  // Canary 5 — the nudge path is non-fatal (warn-only by construction).
   process.env.PI_PI_VERSION_DRIFT_NOW = "2099-01-01";
   const far = (Date.parse(process.env.PI_PI_VERSION_DRIFT_NOW) - Date.parse("2026-09-21")) / 86_400_000;
-  assert(Number.isFinite(far) && far > 365, "canary: injected clock (2099) drives the > 365-day date-nudge path (warn-only by construction)");
+  assert(Number.isFinite(far) && far > 365, "canary: injected clock (2099) drives the >365-day date-nudge path");
   delete process.env.PI_PI_VERSION_DRIFT_NOW;
 
-  // Canary 6 — the gate does NOT require dev pin == install floor (that
-  // would re-impose the ceiling #787 removes): a pair differing in major
-  // compares fine, and no assert above ties the two together.
+  // Canary 6 — the gate does NOT require dev pin == install floor: the
+  // floor parses (the unquoted MIN_PI_VERSION=1.0.0 form must match — the
+  // trailing "? on the quote is what makes the canary non-vacuous) and a
+  // pin differing in major still compares.
   const floor = read("install-preflight.sh").match(/\bMIN_PI_VERSION="?([0-9][0-9a-z.+-]*)"?/);
   const floorV = floor ? (floor[1] as string) : "";
-  assert(compareVersions("0.99.0", floorV) !== null, `a declared pin different from the install floor (${floorV}) is comparable and legal — the gate never asserts pin == floor`);
+  assert(floorV !== "", "canary: the install floor (MIN_PI_VERSION) matches its unquoted form");
+  assert(compareVersions("0.99.0", floorV) !== null, `a declared pin different from the install floor (${floorV}) is comparable and legal`);
 
-  // Canary 7 — the census listing respects .gitignore exactly: in a temp
-  // repo, a gitignored file carrying an unknown 0.8x.y literal in the claim
-  // space is excluded, while a tracked file and an UNTRACKED-but-not-ignored
-  // file with the same literal are both included. (This is the shape of the
-  // repoRoot debris that failed every consolidated verify: outputs/ is
-  // gitignored but the old readdir walk read it anyway; and --others must
-  // still surface new untracked claims — the gate is narrowed, not weakened.)
+  // Canary 7 — the census listing respects .gitignore exactly.
   let tmp: string | null = null;
   try {
     tmp = mkdtempSync(path.join(os.tmpdir(), "pi-drift-census-"));
     execFileSync("git", ["init", "-q"], { cwd: tmp });
     writeFileSync(path.join(tmp, "tracked.md"), "no version literal here\n");
     writeFileSync(path.join(tmp, ".gitignore"), "outputs/\n");
-    const outDir = path.join(tmp, "outputs");
-    mkdirSync(outDir);
-    writeFileSync(path.join(outDir, "x.md"), "pi 0.86.0 was old\n");
+    mkdirSync(path.join(tmp, "outputs"));
+    writeFileSync(path.join(tmp, "outputs/x.md"), "pi 0.86.0 was old\n");
     execFileSync("git", ["add", "-A"], { cwd: tmp });
     execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init"], { cwd: tmp });
-    // Untracked but NOT ignored — a genuinely new version-claim site the census must see.
     writeFileSync(path.join(tmp, "new-claim.md"), "pi 0.86.0 arrived\n");
-    // Non-ASCII name: the census must list it exactly (raw UTF-8, unquoted)
-    // and the absolute path must be readable — a quoted or C-escaped listing
-    // would produce a phantom file the census then fails to read.
     writeFileSync(path.join(tmp, "résumé.md"), "no version literal here\n");
     const listed = gitRepoFiles(tmp).map((p) => path.relative(tmp, p)).sort();
     assert(listed.includes("tracked.md"), "canary: census listing includes the tracked file");
-    assert(!listed.includes("outputs/x.md"), "canary: census listing excludes the gitignored outputs/x.md (the repoRoot debris shape)");
-    assert(listed.includes("new-claim.md"), "canary: census listing includes the untracked-but-not-ignored file (the gate is narrowed, not weakened)");
-    assert(listed.includes("résumé.md"), "canary: census listing includes the untracked non-ASCII file by its exact UTF-8 name (raw path, unquoted)");
-    assert(!listed.some((p) => p.startsWith('"')), "canary: no listed path is C-style quoted (a quote would mean the -c/-z raw-path contract broke)");
-    const resumeAbs = path.join(tmp, "résumé.md");
-    assert(readFileSync(resumeAbs, "utf8").includes("no version literal"), "canary: readFileSync of the listed non-ASCII absolute path succeeds (the path is a real file, not a quoted escape sequence)");
+    assert(!listed.includes("outputs/x.md"), "canary: census listing excludes the gitignored outputs/x.md");
+    assert(listed.includes("new-claim.md"), "canary: census listing includes the untracked-but-not-ignored file");
+    assert(listed.includes("résumé.md"), "canary: census listing includes the untracked non-ASCII file by its exact UTF-8 name");
+    assert(!listed.some((p) => p.startsWith('"')), "canary: no listed path is C-style quoted");
+    assert(readFileSync(path.join(tmp, "résumé.md"), "utf8").includes("no version literal"), "canary: readFileSync of the non-ASCII absolute path succeeds");
   } catch (e) {
     assert(false, `canary: temp-repo gitignore check errored: ${String(e)}`);
   } finally {

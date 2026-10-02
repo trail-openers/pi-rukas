@@ -274,8 +274,7 @@ if [ -n "$CBM_BIN" ]; then
       } |
       .autoEnableCodemode = false
     ' "$MCP_CONFIG" > "$tmp" || { rm -f "$tmp"; false; }
-    mv "$tmp" "$MCP_CONFIG"
-    chmod 600 "$MCP_CONFIG"
+    mv "$tmp" "$MCP_CONFIG" && chmod 600 "$MCP_CONFIG"
     echo "    wrote $MCP_CONFIG (server key: codebase_memory; exposure: direct; autoEnableCodemode: false)"
   fi
 
@@ -289,14 +288,13 @@ if [ -n "$CBM_BIN" ]; then
     LEGACY_MCP_CONFIG="$HOME/.config/mcp/mcp.json"
     if [ -f "$LEGACY_MCP_CONFIG" ] && jq empty "$LEGACY_MCP_CONFIG" >/dev/null 2>&1; then
       if [ "$(jq -r '.mcpServers.codebase_memory // empty' "$LEGACY_MCP_CONFIG")" != "" ]; then
-        echo "==> Removing legacy codebase_memory key from $LEGACY_MCP_CONFIG (adapter-era config)"
+        echo "==> Removing legacy codebase_memory key from $LEGACY_MCP_CONFIG"
         tmp="$(mktemp)"
         if ! jq 'del(.mcpServers.codebase_memory)' "$LEGACY_MCP_CONFIG" > "$tmp"; then
           rm -f "$tmp"
           echo "!! legacy migration jq failed — leaving $LEGACY_MCP_CONFIG untouched"
         else
-          mv "$tmp" "$LEGACY_MCP_CONFIG"
-          chmod 600 "$LEGACY_MCP_CONFIG"
+          mv "$tmp" "$LEGACY_MCP_CONFIG" && chmod 600 "$LEGACY_MCP_CONFIG"
         fi
       fi
     fi
