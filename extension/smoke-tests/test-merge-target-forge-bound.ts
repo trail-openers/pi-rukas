@@ -144,5 +144,64 @@ const forgeOpts: DetectForgeOpts = {
   assert(detection.source === "unknown", "control: the source is the fail-closed unknown");
 }
 
+// ---------------------------------------------------------------------------
+// 5. readMergeTarget passes a timeout to the gh exec call.
+// ---------------------------------------------------------------------------
+{
+  const recordedOpts: Array<Record<string, unknown>> = [];
+  const ghExecFn: typeof import("../src/merge-target.ts").MergeExecFn = async (cmd, opts) => {
+    recordedOpts.push({ ...(opts ?? {}) });
+    return { stdout: JSON.stringify({
+      headRefName: "feature/x",
+      headRefOid: "abc123",
+      baseRefName: "main",
+      author: { login: "dev" },
+      labels: [{ name: "l1" }],
+    }) };
+  };
+  // detectForge must return github — stub git to return a github.com remote.
+  const ghGitStub: DetectForgeOpts["execFn"] = async (cmd: string) => {
+    if (cmd === "git config --get remote.origin.url") return { stdout: "https://github.com/owner/repo.git\n" };
+    if (cmd === "git config --get remote.upstream.url") return { stdout: "" };
+    if (cmd === "git remote") return { stdout: "origin\n" };
+    throw new Error(`unexpected exec: ${cmd}`);
+  };
+  const ghOpts: DetectForgeOpts = { execFn: ghGitStub, env: noEnv, forgeConfigContent: "" };
+  const r = await readMergeTarget(ghExecFn, import.meta.dirname, 42, ghOpts);
+  assert(r.ok === true, "#955: readMergeTarget succeeds with a stubbed gh response");
+  assert(recordedOpts.length >= 1, "#955: readMergeTarget called execFn at least once");
+  const ghCallOpts = recordedOpts[0];
+  assert(
+    ghCallOpts && typeof ghCallOpts.timeout === "number" && ghCallOpts.timeout > 0,
+    `#955: readMergeTarget passes a positive timeout to gh exec (got ${JSON.stringify(ghCallOpts?.timeout)})`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 6. resolvePrNumber passes a timeout to the gh exec call.
+// ---------------------------------------------------------------------------
+{
+  const recordedOpts: Array<Record<string, unknown>> = [];
+  const ghExecFn: typeof import("../src/merge-target.ts").MergeExecFn = async (cmd, opts) => {
+    recordedOpts.push({ ...(opts ?? {}) });
+    return { stdout: JSON.stringify({ number: 99 }) };
+  };
+  const ghGitStub: DetectForgeOpts["execFn"] = async (cmd: string) => {
+    if (cmd === "git config --get remote.origin.url") return { stdout: "https://github.com/owner/repo.git\n" };
+    if (cmd === "git config --get remote.upstream.url") return { stdout: "" };
+    if (cmd === "git remote") return { stdout: "origin\n" };
+    throw new Error(`unexpected exec: ${cmd}`);
+  };
+  const ghOpts: DetectForgeOpts = { execFn: ghGitStub, env: noEnv, forgeConfigContent: "" };
+  const n = await resolvePrNumber(ghExecFn, import.meta.dirname, undefined, ghOpts);
+  assert(n === 99, "#955: resolvePrNumber returns the stubbed number");
+  assert(recordedOpts.length >= 1, "#955: resolvePrNumber called execFn at least once");
+  const nOpts = recordedOpts[0];
+  assert(
+    nOpts && typeof nOpts.timeout === "number" && nOpts.timeout > 0,
+    `#955: resolvePrNumber passes a positive timeout to gh exec (got ${JSON.stringify(nOpts?.timeout)})`,
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

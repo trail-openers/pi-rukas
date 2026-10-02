@@ -27,6 +27,9 @@ import { type DetectForgeOpts, detectForge } from "./forge-detect.ts";
 import { isValidRepoValue } from "./merge-tokens.ts";
 import { trace } from "./trace.ts";
 
+/** Timeout for the guard's gh/glab exec calls (a network-stalled `gh pr view` must not hang the tool_call hook). */
+const GH_TIMEOUT_MS = 30_000;
+
 /**
  * The forge detection options the guard uses for its own decisions (#926
  * fix round): `allowProbe: false`. detectForge's default path may fall into
@@ -148,7 +151,7 @@ async function readGhTarget(
   const cmd = `gh pr view ${prNumber} --json headRefName,headRefOid,baseRefName,author,labels${repoFlag}`;
   let raw: Record<string, unknown>;
   try {
-    const { stdout } = await execFn(cmd, { cwd, maxBuffer: 64 * 1024 });
+    const { stdout } = await execFn(cmd, { cwd, maxBuffer: 64 * 1024, timeout: GH_TIMEOUT_MS });
     raw = JSON.parse(stdout);
   } catch (err) {
     return {
@@ -202,7 +205,7 @@ async function readGlTarget(
   const cmd = `glab mr view ${prNumber} --output json${repoFlag}`;
   let raw: Record<string, unknown>;
   try {
-    const { stdout } = await execFn(cmd, { cwd, maxBuffer: 64 * 1024 });
+    const { stdout } = await execFn(cmd, { cwd, maxBuffer: 64 * 1024, timeout: GH_TIMEOUT_MS });
     raw = JSON.parse(stdout);
   } catch (err) {
     return {
@@ -284,6 +287,7 @@ export async function resolvePrNumber(
       const { stdout } = await execFn(`glab mr view --output json${repoFlag}`, {
         cwd,
         maxBuffer: 8 * 1024,
+        timeout: GH_TIMEOUT_MS,
       });
       const n = (JSON.parse(stdout) as { iid?: number }).iid;
       return typeof n === "number" ? n : undefined;
@@ -291,6 +295,7 @@ export async function resolvePrNumber(
     const { stdout } = await execFn(`gh pr view --json number${repoFlag}`, {
       cwd,
       maxBuffer: 8 * 1024,
+      timeout: GH_TIMEOUT_MS,
     });
     const n = (JSON.parse(stdout) as { number?: number }).number;
     return typeof n === "number" ? n : undefined;
