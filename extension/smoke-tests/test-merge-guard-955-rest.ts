@@ -70,6 +70,91 @@ for (const cmd of [
   assert(mergesPr(cmd) !== undefined, `canary (merge, per-segment unwrap): blocked — ${cmd}`);
 }
 
+// ------------------------------------------------------------ unquoted eval is a transparent wrapper (#955 final fix, HIGH, PM-verified)
+// `eval` with an UNQUOTED argument evaluates the next word and its
+// arguments as a command — `eval gh pr merge 17` runs the merge exactly
+// like the bare form, including behind a chain (`cd x && eval …`) or a
+// process wrapper (`sudo eval …`). The quoted case (`eval "gh pr merge
+// 17"`) is handled by `mergeVerbUnwrapOne` (the shell-eval unwrap above),
+// not here.
+for (const cmd of [
+  "eval gh pr merge 17",
+  "cd x && eval gh pr merge 17",
+  "sudo eval gh pr merge 17",
+  "command eval gh pr merge 17",
+]) {
+  assert(mergesPr(cmd) !== undefined, `canary (unquoted eval): blocked — ${cmd}`);
+}
+
+// The number must extract from the unquoted-eval shape: the verb tail comes
+// from the raw segment's post-verb tokens, and 17 is the first bare
+// positional.
+assert(
+  extractMergeNumber(mergeVerbArgs("eval gh pr merge 17")) === 17,
+  "canary (unquoted eval): extractMergeNumber(mergeVerbArgs(...)) === 17",
+);
+
+// Unquoted `eval` on a NON-merge command stays open: the wrapper walk must
+// not make `eval echo hi` / `eval gh pr view 17` look like a merge, and an
+// eval-shaped string inside a commit message is inert data.
+for (const cmd of [
+  "eval echo hi",
+  "eval gh pr view 17",
+  'git commit -m "eval gh pr merge 17"',
+]) {
+  assert(mergesPr(cmd) === undefined, `allowed (unquoted eval, non-merge) — ${cmd}`);
+}
+
+// The quoted-eval wrapper forms must still be caught (the quoted case is
+// owned by mergeVerbUnwrapOne, which the per-segment path calls for every
+// segment head). `command eval "…"` / `sudo eval "…"` are the wrapper-chain
+// forms that only the per-segment path sees (mergeVerbUnwrapOne's own loop
+// skips the wrapper and lands on the quoted eval token).
+for (const cmd of [
+  'command eval "gh pr merge 17"',
+  'sudo eval "gh pr merge 17"',
+]) {
+  assert(mergesPr(cmd) !== undefined, `canary (quoted eval, wrapper chain): blocked — ${cmd}`);
+}
+
+// Termination canary: every eval/wrapper shape above must finish under 50ms.
+// The previous developer's uncommitted change had an infinite loop in
+// mergeVerbUnwrapOne (a `continue` without advancing `i` on `eval "…"`),
+// which hung a probe for 88 minutes. This canary catches that regression.
+{
+  const shapes = [
+    "eval gh pr merge 17",
+    "cd x && eval gh pr merge 17",
+    "sudo eval gh pr merge 17",
+    "command eval gh pr merge 17",
+    'eval "gh pr merge 17"',
+    'cd x; eval "gh pr merge 17"',
+    'command eval "gh pr merge 17"',
+    'sudo eval "gh pr merge 17"',
+    "eval echo hi",
+    "eval gh pr view 17",
+    'git commit -m "eval gh pr merge 17"',
+    'bash -c "eval gh pr merge 17"',
+    'sudo bash -c "eval gh pr merge 17"',
+    'command bash -c "eval gh pr merge 17"',
+    'timeout 30 eval gh pr merge 17',
+    'nice eval gh pr merge 17',
+    'nohup eval gh pr merge 17',
+    'exec eval gh pr merge 17',
+    'eval "echo hi"',
+    "eval",
+  ];
+  for (const cmd of shapes) {
+    const t0 = Date.now();
+    const r = mergesPr(cmd);
+    const dt = Date.now() - t0;
+    assert(
+      dt < 50,
+      `termination canary: ${cmd} finished in ${dt}ms (<50ms), result=${r !== undefined ? "blocked" : "allowed"}`,
+    );
+  }
+}
+
 // The PR number must still extract from the per-segment shape: the verb tail
 // comes from the unwrapped inner text, and 17 is the first bare positional.
 assert(

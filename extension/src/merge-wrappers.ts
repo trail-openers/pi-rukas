@@ -60,9 +60,14 @@ const TRANSPARENT_KEYWORDS = new Set([
  * Wrapper words that take NO flags: the next token is the real command.
  * `exec` re-executes the shell's own invocation as the new command
  * (`exec gh pr merge 17` runs the merge identically to the bare form) —
- * it is a wrapper, not a command head.
+ * it is a wrapper, not a command head. `eval` is here too (#955 final
+ * fix, HIGH, PM-verified): the walk must land on the forge word past
+ * `sudo eval gh pr merge 17`. It only fires when the token AFTER `eval`
+ * is not a forge word (the walk stops at forge words before the wrapper
+ * test), so a quoted `eval "…"` argument still bails the walk the way the
+ * quoted check wants (the quoted case is owned by `mergeVerbUnwrapOne`).
  */
-const BARE_WRAPPERS = new Set(["command", "builtin", "exec", "nohup", "sudo", "oo"]);
+const BARE_WRAPPERS = new Set(["command", "builtin", "exec", "nohup", "sudo", "oo", "eval"]);
 
 /**
  * The forge command word, normalised: a path ending in `/gh` or `/glab`
@@ -129,6 +134,25 @@ export function skipLeadingWrappers(tokens: string[], start: number): number {
       continue;
     }
     if (BARE_WRAPPERS.has(t)) {
+      // `eval` is the ONE wrapper that is also a shell-eval word. With an
+      // UNQUOTED argument (`eval gh pr merge 17`) it is transparent — the
+      // walk advances past it and continues to the forge word (the same
+      // treatment `sudo`/`command`/`exec` get). With a QUOTED argument
+      // (`eval "gh pr merge 17"`) it is a shell-eval word — the walk STOPS
+      // here and lets the caller (`mergeVerbUnwrapOne`) unwrap the quoted
+      // body. Without the stop, the walk would advance past `eval` and land
+      // on the quoted token, which is neither a forge word nor a wrapper —
+      // the guard would read the merge as "not a merge" (the bypass #955
+      // closes). The same check applies to `command eval` / `sudo eval`
+      // (the wrapper chain lands on `eval` the same way).
+      if (t === "eval") {
+        const next = tokens[i + 1] ?? "";
+        if (next !== "" && (next[0] === "'" || next[0] === '"' || next === "$" || next === "`")) {
+          return i; // quoted eval — the caller unwraps the quoted body
+        }
+        i++;
+        continue;
+      }
       i++;
       // `sudo` takes optional flags (`-u user`, `-E`, etc.) — skip them.
       if (t === "sudo") {

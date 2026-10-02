@@ -115,7 +115,8 @@ export function mergeVerbUnwrapOne(command: string): string | undefined {
       t === "timeout" ||
       t === "stdbuf" ||
       t === "nice" ||
-      t === "time"
+      t === "time" ||
+      t === "eval"
     ) {
       if (t === "env") {
         // `env [-S "…"] [-u VAR | …] [VAR=…]… <cmd>` — skip flags and
@@ -146,6 +147,19 @@ export function mergeVerbUnwrapOne(command: string): string | undefined {
         }
         if (i >= n) return undefined;
       } else {
+        // `command`/`sudo`/`nohup`/… are process wrappers — `skipLeadingWrappers`
+        // consumes them and the loop re-tests the landed token. `eval` is the
+        // ONE wrapper that is also a shell-eval word: `skipLeadingWrappers`
+        // treats it transparently ONLY when its argument is unquoted (the
+        // transparent `eval gh pr merge 17` case — the walk advances past
+        // `eval` to the forge word), and stops at `eval` when the argument is
+        // quoted (the `eval "gh pr merge 17"` case — the shell-eval branch
+        // below unwraps the quoted body). The quote-aware handling lives
+        // entirely in `skipLeadingWrappers`; the loop just advances past the
+        // wrapper and re-tests the landed token (the eval branch below
+        // handles the quoted case). The loop always advances — the previous
+        // version used `continue` here, which re-entered the loop without
+        // advancing `i`, spinning forever on `eval "…"` / `command eval "…"`.
         i = skipLeadingWrappers(list, i);
       }
       if (i >= n) return undefined;
