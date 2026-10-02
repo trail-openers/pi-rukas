@@ -9,8 +9,12 @@
  * imports the head match back.
  */
 
-import { rawTokens } from "./merge-tokens.ts";
+import { rawTokens, unquoteArg } from "./merge-tokens.ts";
 import { mergeVerbHeadRegex } from "./merge-tokens.ts";
+// Intentional cycle: merge-verb-head.ts imports `matchMergeVerb` and
+// `skipLeadingWrappers` back from this file. Safe — both directions are
+// function declarations (hoisted, no top-level evaluation across the
+// import boundary), and the cycle predates the #955 hardening.
 import { mergeVerbUnwrapOne } from "./merge-verb-head.ts";
 
 /**
@@ -293,7 +297,15 @@ export function matchMergeVerb(text: string): string | undefined {
   // deliberately defers to the caller) and the forge-word head test.
   let i = 0;
   while (i < list.length) {
-    const t = list[i] ?? "";
+    // The shell removes quotes around a WHOLE word before it executes
+    // (`"gh" pr merge 17`, `gh "pr" merge 17`, `gh pr 'merge' 17` are all
+    // live merges — #955 lens round 6, PM-verified bypass), so every token
+    // is compared unquoted. `unquoteArg` on an unquoted token returns it
+    // unchanged, and a QUOTED STRING that is one token (`"gh pr merge 17"`
+    // as an `echo` argument) stays a single unquoted token whose head is
+    // `gh pr…` — never the bare forge word — so quoted strings in a later
+    // segment stay inert exactly as before (`echo "gh pr merge 17"`).
+    const t = unquoteArg(list[i] ?? "");
     // A quote- or variable-substituted command word is not the bare shape
     // the guard unwraps — no forge word to match, and not a wrapper.
     if (t[0] === "'" || t[0] === '"' || t[0] === "$" || t === "`") return undefined;
@@ -344,7 +356,7 @@ export function matchMergeVerb(text: string): string | undefined {
     // happened to appear later in the same segment.
     const forge = forgeWord(t);
     if (forge) {
-      const rest = [t, ...list.slice(i + 1)].join(" ");
+      const rest = [t, ...list.slice(i + 1).map(unquoteArg)].join(" ");
       const isMerge = mergeVerbHeadRegex().test(rest);
       return isMerge ? forge : undefined;
     }
@@ -360,7 +372,7 @@ export function matchMergeVerb(text: string): string | undefined {
     const landed = list[i] ?? "";
     const landedForge = forgeWord(landed);
     if (landedForge) {
-      const rest = [landedForge, ...list.slice(i + 1)].join(" ");
+      const rest = [landedForge, ...list.slice(i + 1).map(unquoteArg)].join(" ");
       const isMerge = mergeVerbHeadRegex().test(rest);
       return isMerge ? landedForge : undefined;
     }
