@@ -85,9 +85,17 @@ export function extractMergeNumber(args: string): number | undefined {
   return parseArgsAfterVerb(args).number;
 }
 
-/** The repo (see `mergeVerbRepo`) parsed from post-verb arguments alone. */
+/**
+ * The repo parsed from post-verb arguments alone. Returns `undefined` when
+ * the arguments name no repo, or when the value is not a valid repo (an
+ * invalid value — one that could be interpolated into a shell exec string
+ * and execute arbitrary commands — is refused at this boundary, the same
+ * way `mergeVerbRepo` handles unsafe values; #955 lens fix 1, HIGH).
+ */
 export function extractMergeRepo(args: string): string | undefined {
-  return parseArgsAfterVerb(args).repo;
+  const repo = parseArgsAfterVerb(args).repo;
+  if (repo !== undefined && !isValidRepoValue(repo)) return undefined;
+  return repo;
 }
 
 // ---------------------------------------------------------------------------
