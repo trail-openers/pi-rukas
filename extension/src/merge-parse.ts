@@ -25,7 +25,6 @@ import {
   unquoteArg,
 } from "./merge-tokens.ts";
 import { innerBodies, matchMergeVerb, mergeVerbUnwrapOne } from "./merge-verb-head.ts";
-export { mergeVerbUnwrapOne };
 
 /**
  * The arguments that follow the matched merge verb, verbatim (the raw tail
