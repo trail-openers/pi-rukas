@@ -222,21 +222,23 @@ function restDoorTokens(text: string): string | undefined {
     if (endpoint === undefined) continue;
     const all = seg.slice(ci).join(" ");
     if (cmdBase === "gh") {
-      // gh REST door: `gh api` on /pulls/{n}/merge (or the no-number
-      // `.../pulls/merge` shape) — gh api defaults to POST/PUT when no
-      // --method is given, so the /merge suffix IS the write even when it
-      // "looks like a read".
+      // REST door, gh: `gh api` on /pulls/{n}/merge — gh api defaults to
+      // POST/PUT when no --method is given, so the /merge suffix IS the write
+      // even when it "looks like a read". The no-number `.../pulls/merge`
+      // shape is the same door.
+      // The door is a WRITE unless the command is an explicit GET AND carries
+      // no body fields — gh api's `-f`/`-F`/`--field` flags force a PUT
+      // regardless of `--method`, so `--method GET --field x` is still the write.
       if (!/\/pulls(?:\/[^\s/?#]+)?\/merge(?:[?&#]|$)/.test(endpoint)) continue;
       const explicitGet = /(^|\s)(?:--method|-X)\s+get\b/i.test(all);
       const hasBodyFields = /(^|\s)(?:-f|-F|--field)(?:=|\s)/.test(all);
       if (!explicitGet || hasBodyFields) return `${cmd} api ${endpoint}`;
     } else {
-      // glab REST door: `glab api` on /mr/{n}/merge or
-      // /merge_requests/{n}/merge (the repo's canonical shape) —
-      // method-AWARE: blocked only when the command EXPLICITLY writes
-      // (glab api does not default to POST the way gh api does; copying
-      // the gh rule here would over-block legitimate reads). Method names
-      // are case-insensitive.
+      // REST door, glab: `glab api` on /mr/{n}/merge or
+      // /merge_requests/{n}/merge (the repo's canonical shape) — method-AWARE:
+      // blocked only when the command EXPLICITLY writes (glab api does not
+      // default to POST the way gh api does; copying the gh rule here would
+      // over-block legitimate reads). Method names are case-insensitive.
       if (!/\/(?:mr|merge_requests)(?:\/[^\s/?#]+)?\/merge(?:[?&#]|$)/.test(endpoint)) continue;
       const explicitGet = /(^|\s)(?:--method|-X)\s+get\b/i.test(all);
       const writes =
