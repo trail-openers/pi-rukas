@@ -117,6 +117,59 @@ for (const cmd of [
   assert(mergesPr(cmd) !== undefined, `canary (quoted eval, wrapper chain): blocked — ${cmd}`);
 }
 
+// #955 adversarial round 5 (CRITICAL): nested / quoted-wrapper `eval` shapes
+// that are LIVE merges in bash (verified by execution: the merge command runs
+// and its output is captured). The guard must block every one of these — the
+// `eval eval "gh pr merge 17"` family was the bypass: the outer `mergeVerbUnwrapOne`
+// consumed one layer (the outer `eval`), leaving the inner `eval "gh pr merge 17"`
+// as a single quoted token that the per-segment path could not re-enter. The
+// fix makes `mergeVerbUnwrapOne` iterative (it follows the full shell-eval
+// chain in one call), so a merge hidden behind two (or more) eval layers is
+// still seen as a merge and refused.
+for (const cmd of [
+  // Bare `eval eval` — the canonical bypass shape.
+  'eval eval "gh pr merge 17"',
+  'eval eval "glab mr merge 7"',
+  // Deeper nesting: three evals, or an eval whose body is itself an eval.
+  'eval eval eval "gh pr merge 17"',
+  'eval eval "eval gh pr merge 17"',
+  // Quoted wrapper word + quoted body: `eval "eval" "…"`, `eval "sudo" "…"`,
+  // `eval "nice" "…"` — bash concatenates all eval args and re-evaluates,
+  // so `eval "sudo" "gh pr merge 17"` runs `sudo gh pr merge 17` (a live
+  // merge). The guard blocks these (fail-closed: the guard cannot
+  // distinguish a wrapper word that is a no-op from one that is not).
+  'eval "eval" "gh pr merge 17"',
+  'eval "sudo" "gh pr merge 17"',
+  'eval "nice" "gh pr merge 17"',
+  'eval "nohup" "gh pr merge 17"',
+  // Per-segment forms: the merge is in a LATER segment or a construct.
+  'cd x && eval eval "gh pr merge 17"',
+  'x=1; eval eval "gh pr merge 17"',
+  '(eval eval "gh pr merge 17")',
+  'x=$(eval eval "gh pr merge 17")',
+]) {
+  assert(mergesPr(cmd) !== undefined, `canary (nested eval, CRITICAL r5): blocked — ${cmd}`);
+}
+
+// The number must extract from the nested-eval shape (the innermost body is
+// `gh pr merge 17`, and 17 is the first bare positional).
+assert(
+  extractMergeNumber(mergeVerbArgs('eval eval "gh pr merge 17"')) === 17,
+  "canary (nested eval, CRITICAL r5): the number is 17",
+);
+assert(
+  extractMergeNumber(mergeVerbArgs('eval "eval" "gh pr merge 17"')) === 17,
+  "canary (nested eval, quoted wrapper): the number is 17",
+);
+
+// `eval "echo" "gh pr merge 17"` is NOT a live merge (echo prints its args,
+// it does not run them) — the guard allows it. This is the one shape in the
+// nested-eval family where the guard is correct to stay open.
+assert(
+  mergesPr('eval "echo" "gh pr merge 17"') === undefined,
+  "canary (nested eval, echo): allowed (echo does not run its args)",
+);
+
 // Termination canary: every eval/wrapper shape above must finish under 50ms.
 // The previous developer's uncommitted change had an infinite loop in
 // mergeVerbUnwrapOne (a `continue` without advancing `i` on `eval "…"`),
@@ -131,6 +184,17 @@ for (const cmd of [
     'cd x; eval "gh pr merge 17"',
     'command eval "gh pr merge 17"',
     'sudo eval "gh pr merge 17"',
+    // #955 adversarial round 5: the nested-eval family (the CRITICAL bypass
+    // shapes) — the iterative `mergeVerbUnwrapOne` must terminate on these.
+    'eval eval "gh pr merge 17"',
+    'eval eval eval "gh pr merge 17"',
+    'eval "eval" "gh pr merge 17"',
+    'eval "sudo" "gh pr merge 17"',
+    'cd x && eval eval "gh pr merge 17"',
+    'x=1; eval eval "gh pr merge 17"',
+    '(eval eval "gh pr merge 17")',
+    'x=$(eval eval "gh pr merge 17")',
+    "eval " + "eval ".repeat(998) + '"gh pr merge 17"',
     "eval echo hi",
     "eval gh pr view 17",
     'git commit -m "eval gh pr merge 17"',

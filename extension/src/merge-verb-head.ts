@@ -77,6 +77,42 @@ export { matchMergeVerb };
  * unwraps to `…`).
  */
 export function mergeVerbUnwrapOne(command: string): string | undefined {
+  // #955 adversarial round 5 (CRITICAL): unwrap is ITERATIVE — a single call
+  // follows a chain of shell-eval layers (`eval eval "…"`, `eval "sudo" "…"`,
+  // `sudo eval eval "…"`). One layer is one shell-eval invocation; the inner
+  // layer is the unwrapped text of the outer, and each layer is strictly
+  // shorter than the one that produced it (a quoted argument), so the chain
+  // is finite and terminates for any input. The 3-layer budget lives in the
+  // tail path (`matchMergeVerbTail`, merge-parse.ts); this function consumes
+  // however many layers the text actually carries, which is exactly what
+  // bash evaluates (a merge hidden behind two evals is one live merge bash
+  // runs, not three separate ones). `eval` with an unquoted body (`eval gh
+  // pr merge 17`) is NOT an invocation here — it is a transparent wrapper
+  // the tail path's segment walk handles (merge-wrappers.ts); only a QUOTED
+  // body (`eval "…"`) is a shell-eval layer, the way `bash -c "…"` is.
+  let text = command;
+  for (;;) {
+    const unwrapped = unwrapOneLayer(text);
+    if (unwrapped === undefined) return text === command ? undefined : text;
+    text = unwrapped;
+    // Re-loop: `text` is now the unwrapped inner layer. `unwrapOneLayer`
+    // returns undefined when the inner layer is not itself a shell-eval
+    // invocation (e.g. `gh pr merge 17` — the innermost body), at which
+    // point we return the innermost text. The chain is finite because each
+    // layer is a quoted argument strictly shorter than the one that
+    // produced it, so this always terminates.
+  }
+}
+
+/**
+ * Unwrap a SINGLE shell-eval layer (`bash -c …`, `sh -c …`, `eval "…"`,
+ * with `env`/`oo` wrappers) to its quoted string argument, or `undefined`
+ * when `command` does not invoke one of these shells. The single-layer
+ * walk over the raw tokens (quote-aware, offsets preserved) — the body of
+ * what `mergeVerbUnwrapOne` used to be. See `mergeVerbUnwrapOne` for the
+ * iterative chain that composes these into bash's full evaluation.
+ */
+function unwrapOneLayer(command: string): string | undefined {
   const tokens = rawTokens(command);
   if (tokens.terminated === false) return undefined;
   const list = tokens.list;
@@ -190,11 +226,34 @@ export function mergeVerbUnwrapOne(command: string): string | undefined {
       return inner.length > 0 ? inner : undefined;
     }
     if (t === "eval") {
-      const arg = tokens.list[i + 1];
-      if (arg === undefined) return undefined;
-      const aq = arg[0];
-      if (aq !== "'" && aq !== '"' && !arg.startsWith("$'")) return undefined;
-      const inner = unquoteArg(arg);
+      // #955 adversarial round 5 (CRITICAL): `eval` concatenates ALL its
+      // arguments (space-separated) and evaluates the result. The body is
+      // the concatenation of all following tokens in the same segment
+      // (unquoted), not just the first quoted one. `eval "eval" "gh pr
+      // merge 17"` evaluates `eval gh pr merge 17` (the concatenation),
+      // which the iterative outer loop (`mergeVerbUnwrapOne`) then unwraps
+      // one more layer to `gh pr merge 17`. An unquoted single-arg `eval gh
+      // pr merge 17` concatenates to the same string but is NOT a
+      // shell-eval invocation here — it is a transparent wrapper the tail
+      // path's segment walk handles (merge-wrappers.ts); we only unwrap
+      // when at least one arg is quoted (the shell-eval invocation shape).
+      // Quoted args are unquoted via `unquoteArg`; unquoted args are used
+      // verbatim (`unquoteArg` on an unquoted token corrupts it).
+      const args: string[] = [];
+      let anyQuoted = false;
+      for (let k = i + 1; k < n; k++) {
+        const a = tokens.list[k] ?? "";
+        if (a === ";" || a === "&&" || a === "|" || a === "||") break;
+        const q = a[0];
+        if (q === "'" || q === '"' || a.startsWith("$'")) anyQuoted = true;
+        args.push(q === "'" || q === '"' || a.startsWith("$'") ? unquoteArg(a) : a);
+      }
+      if (!anyQuoted) {
+        // No quoted arg — transparent wrapper (the tail path owns this).
+        i++;
+        continue;
+      }
+      const inner = args.join(" ");
       return inner.length > 0 ? inner : undefined;
     }
     return undefined; // any other first token: this is not a shell-eval command
