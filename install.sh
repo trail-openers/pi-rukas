@@ -264,32 +264,27 @@ if [ -n "$CBM_BIN" ]; then
     # .mcpServers.codebase_memory on re-runs so updates to args/exposure
     # propagate without leaving stale fields. Set autoEnableCodemode: false
     # at the top level (idempotent — re-setting is a no-op if already set).
-    tmp="$(mktemp)" && jq --arg cmd "$CBM_BIN" '.mcpServers //= {} | .mcpServers.codebase_memory = {command: $cmd, args: [], exposure: "direct"} | .autoEnableCodemode = false' "$MCP_CONFIG" > "$tmp" || { rm -f "$tmp"; false; }
-    mv "$tmp" "$MCP_CONFIG" && chmod 600 "$MCP_CONFIG"
-    echo "    wrote $MCP_CONFIG (server key: codebase_memory; exposure: direct; autoEnableCodemode: false)"
+    # Tmp lives in $PI_AGENT_DIR (never world-readable /tmp) and is guarded
+    # like the legacy migration: on jq failure the tmp is removed and
+    # $MCP_CONFIG is left untouched, which also blocks the legacy removal
+    # below (it re-checks the native key first).
+    tmp="$(mktemp "$PI_AGENT_DIR/.mcp.json.XXXXXX")" || { echo "!! mktemp failed — $MCP_CONFIG untouched"; exit 1; }
+    if ! jq --arg cmd "$CBM_BIN" '.mcpServers //= {} | .mcpServers.codebase_memory = {command: $cmd, args: [], exposure: "direct"} | .autoEnableCodemode = false' "$MCP_CONFIG" > "$tmp"; then
+      rm -f "$tmp"
+      echo "!! native MCP write failed — $MCP_CONFIG untouched"
+    else
+      mv "$tmp" "$MCP_CONFIG" && chmod 600 "$MCP_CONFIG"
+      echo "    wrote $MCP_CONFIG (server key: codebase_memory; exposure: direct; autoEnableCodemode: false)"
+    fi
   fi
 
   # Migration: remove the codebase_memory key from the legacy
   # ~/.config/mcp/mcp.json if present (the adapter-era config). The adapter
-  # is gone, so this key is a dead second source. Other keys are preserved.
+  # is gone, so this key is a dead second source; other keys are preserved.
   # ONLY after the native merge succeeded: if the native write was skipped
   # (malformed mcp.json) or failed, deleting the legacy key would leave
   # neither config working — the legacy entry stays as the fallback.
-  if jq -e '.mcpServers.codebase_memory' "$MCP_CONFIG" >/dev/null 2>&1; then
-    LEGACY_MCP_CONFIG="$HOME/.config/mcp/mcp.json"
-    if [ -f "$LEGACY_MCP_CONFIG" ] && jq empty "$LEGACY_MCP_CONFIG" >/dev/null 2>&1; then
-      if [ "$(jq -r '.mcpServers.codebase_memory // empty' "$LEGACY_MCP_CONFIG")" != "" ]; then
-        echo "==> Removing legacy codebase_memory key from $LEGACY_MCP_CONFIG"
-        tmp="$(mktemp)"
-        if ! jq 'del(.mcpServers.codebase_memory)' "$LEGACY_MCP_CONFIG" > "$tmp"; then
-          rm -f "$tmp"
-          echo "!! legacy migration jq failed — leaving $LEGACY_MCP_CONFIG untouched"
-        else
-          mv "$tmp" "$LEGACY_MCP_CONFIG" && chmod 600 "$LEGACY_MCP_CONFIG"
-        fi
-      fi
-    fi
-  fi
+  legacy_mcp_migrate "$MCP_CONFIG" "$HOME/.config/mcp/mcp.json"
 else
   cat <<'CBM_HINT'
 ==> codebase-memory-mcp binary not found on \$PATH or at ~/.local/bin/.

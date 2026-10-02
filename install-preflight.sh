@@ -239,3 +239,55 @@ pi_mcp_remove() {
     rm -rf "$ext_layout"
   fi
 }
+
+# Merge the legacy ~/.config/mcp/mcp.json (adapter-era) MCP servers into the
+# native $PI_AGENT_DIR/mcp.json, then delete the codebase_memory key from the
+# legacy file. install.sh calls this AFTER the native codebase_memory write
+# succeeded — on any failure the legacy file is left untouched so the entry
+# is never lost on both sides. Other legacy servers are migrated without
+# overwriting keys already present natively (Pi 1.0 no longer reads the
+# legacy path, so without the migration they would go silently dead).
+# Args: <native-mcp.json> <legacy-mcp.json>. Test seams: LEGACY_MCP_CONFIG / NATIVE_MCP_CONFIG override the paths.
+legacy_mcp_migrate() {
+  local native="${1:-$PI_AGENT_DIR/mcp.json}"
+  local legacy="${2:-$HOME/.config/mcp/mcp.json}"
+  if ! jq -e '.mcpServers.codebase_memory' "$native" >/dev/null 2>&1; then
+    return 0  # native write didn't land — migration deliberately not attempted
+  fi
+  [ -f "$legacy" ] || return 0
+  jq empty "$legacy" >/dev/null 2>&1 || return 0  # malformed legacy — untouched
+  [ -z "$(jq -r '.mcpServers.codebase_memory // empty' "$legacy")" ] && return 0  # nothing to migrate
+  local tmp out="" keys=""
+  tmp="$(mktemp)" || return 1
+  # Merge: legacy servers into native, native keys win (no overwrite);
+  # codebase_memory is dropped from the merged set (the legacy entry is a
+  # dead second source — the authoritative one was just written natively).
+  if ! jq -s --indent 2 '.[1] as $n | ($n.mcpServers // {}) as $nv | ($nv + ((.[0].mcpServers // {}) | del(.codebase_memory)) | del(.codebase_memory)) as $m | $n | .mcpServers = $m' "$legacy" "$native" > "$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    echo "!! legacy MCP merge jq failed — leaving $legacy untouched"
+    return 1
+  fi
+  # Migrated keys = legacy keys minus codebase_memory minus keys already native.
+  keys="$(jq -r -s '.[0] as $l | .[1] as $n | (($l.mcpServers // {}) | keys - ["codebase_memory"]) - ((($n.mcpServers // {}) | keys)) | join(", ")' "$legacy" "$native")" 2>/dev/null || keys=""
+  if [ -n "$keys" ]; then
+    if ! mv "$tmp" "$native"; then
+      echo "!! could not replace $native — $legacy untouched, nothing migrated"
+      return 1
+    fi
+    chmod 600 "$native"
+    echo "==> Migrated legacy MCP servers into $native: $keys"
+  else
+    rm -f "$tmp"
+  fi
+  # Remove the now-dead codebase_memory key from the legacy file (the adapter
+  # is gone, so this key is a dead second source; other keys are preserved).
+  tmp="$(mktemp)" || return 1
+  if ! jq 'del(.mcpServers.codebase_memory)' "$legacy" > "$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    echo "!! legacy migration jq failed — leaving $legacy untouched"
+    return 1
+  fi
+  mv "$tmp" "$legacy" && chmod 600 "$legacy"
+  echo "==> Removed legacy codebase_memory key from $legacy"
+  return 0
+}
