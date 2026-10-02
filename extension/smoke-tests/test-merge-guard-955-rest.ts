@@ -294,6 +294,37 @@ for (const cmd of [
 // A REST READ nested deep stays open (no /merge suffix in the innermost).
 assert(mergesPr("x=$(y=$(gh api repos/o/r/pulls/17))") === undefined, "canary (REST nested deep, read): allowed");
 
+// ------------------------------------------------------------ split-quote REST endpoints (#955 round 1)
+// Bash concatenates adjacent quoted + bare runs into one word, so a REST
+// endpoint split across quote boundaries is a live merge the guard must
+// catch. Without the path-continuation merge in restDoorTokens, the
+// endpoint regex sees only the first fragment and the /merge suffix is
+// lost — a live merge passes the guard (the adversarial CRITICAL finding).
+for (const cmd of [
+  // gh: quoted number in the path, followed by bare /merge.
+  'gh api "repos/o/r/pulls/17"/merge',
+  // gh: bare path prefix, quoted number, bare /merge.
+  'gh api repos/o/r/pulls/"17"/merge',
+  // glab: quoted number in the path, followed by bare /merge.
+  'glab api -X PUT /projects/1/mr/"7"/merge',
+  // glab: bare path prefix, quoted merge suffix.
+  'glab api -X PUT /projects/1/mr/7/"merge"',
+  // gh: the whole endpoint quoted except the /merge suffix.
+  'gh api "repos/o/r/pulls/17"/merge -X PUT',
+]) {
+  assert(mergesPr(cmd) !== undefined, `canary (split-quote REST): blocked — ${cmd}`);
+}
+
+// Split-quote REST reads stay open (no /merge suffix in the merged path).
+assert(
+  mergesPr('gh api repos/o/r/pulls/"17"') === undefined,
+  "canary (split-quote REST read): allowed — no /merge suffix",
+);
+assert(
+  mergesPr('glab api /projects/1/mr/"12"') === undefined,
+  "canary (split-quote glab read): allowed — no /merge suffix",
+);
+
 // ------------------------------------------------------------ unbalanced paren REST (#955 adversarial round 5)
 // An unbalanced `(` with a REST door inside is a live merge bash would run
 // (`(gh api repos/o/r/pulls/17/merge` with the close on a later line). The

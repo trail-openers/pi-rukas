@@ -196,11 +196,44 @@ function restDoorTokens(text: string): string | undefined {
   for (let i = 0; i < n; i++) {
     if (i > 0 && !isSep(unquoteArg(list[i - 1] ?? ""))) continue;
     // The segment's unquoted tokens, up to the next separator.
+    // #955 round 1 fix: bash concatenates adjacent quoted + bare runs into
+    // one word, so a REST endpoint split across quote boundaries
+    // ("repos/o/r/pulls/17"/merge, repos/o/r/pulls/"17"/merge)
+    // arrives as multiple raw tokens. The unquoted forms are merged
+    // below: a token is a path continuation of the previous token when
+    // (a) it starts with `/` (a bare path segment like "/merge"), OR
+    // (b) the previous token ends with `/` and this token does not start
+    //     with `-` (a path value like `17` following `…/pulls/`).
+    // Without this merge, the endpoint regex sees only the first fragment
+    // and the /merge suffix is lost — a live merge passes the guard.
     const seg: string[] = [];
     let j = i;
     while (j < n && !isSep(unquoteArg(list[j] ?? ""))) {
       const s = unquoteArg(list[j] ?? "");
-      if (s !== "") seg.push(s);
+      if (s !== "") {
+        const prev = seg[seg.length - 1];
+        // A token is a path continuation of the previous token when:
+        // (a) the previous token is a path fragment (contains `/` and is
+        //     not a flag) and this token starts with `/` — a bare path
+        //     segment like `/merge` following `…/pulls/17`;
+        // (b) the previous token ends with `/` (a path prefix like
+        //     `…/pulls/`) and this token does not start with `-` — a
+        //     path value like `17` following `…/pulls/`.
+        // The key guard: condition (a) requires the previous token to
+        // already be a path fragment, so `PUT /projects/…` (a flag value
+        // followed by a path) does NOT merge — `PUT` is not a path.
+        const prevIsPath = prev !== undefined && !prev.startsWith("-") && prev.includes("/");
+        const isContinuation =
+          (s.startsWith("/") && prevIsPath) || (prev?.endsWith("/") === true && !s.startsWith("-"));
+        if (isContinuation) {
+          // Path continuation: bash concatenated this quoted/bare run
+          // with the previous word (e.g. "…pulls/17" + "/merge" →
+          // "…pulls/17/merge", or "…/pulls/" + "17" → "…/pulls/17").
+          seg[seg.length - 1] = prev + s;
+        } else {
+          seg.push(s);
+        }
+      }
       j++;
     }
     // The command word: skip the leading wrappers the same way the verb
