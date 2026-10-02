@@ -229,7 +229,7 @@ function restDoorTokens(text: string): string | undefined {
       if (!/\/pulls(?:\/[^\s/?#]+)?\/merge(?:[?&#]|$)/.test(endpoint)) continue;
       const explicitGet = /(^|\s)(?:--method|-X)\s+get\b/i.test(all);
       const hasBodyFields = /(^|\s)(?:-f|-F|--field)(?:=|\s)/.test(all);
-      if (!explicitGet || hasBodyFields) return cmd + " api " + endpoint;
+      if (!explicitGet || hasBodyFields) return `${cmd} api ${endpoint}`;
     } else {
       // glab REST door: `glab api` on /mr/{n}/merge or
       // /merge_requests/{n}/merge (the repo's canonical shape) —
@@ -243,7 +243,7 @@ function restDoorTokens(text: string): string | undefined {
         /(^|\s)(?:-X|-f|-F)\s+(?:put|post)\b/i.test(all) ||
         /(^|\s)--method\s+(?:put|post)\b/i.test(all) ||
         /(^|\s)(?:-f|-F|--field)(?:=|\s)/.test(all);
-      if (!explicitGet && writes) return cmd + " api " + endpoint;
+      if (!explicitGet && writes) return `${cmd} api ${endpoint}`;
     }
   }
   return undefined;

@@ -239,9 +239,10 @@ function segmentMergeTail(seg: string): string | undefined {
     // word (the old raw-text probe did the same slice).
     const probeSeg = seg.startsWith("(") ? seg.slice(1) : seg;
     const probeToks = rawTokens(probeSeg);
-    const probe = probeToks.terminated && probeToks.list.length > 0
-      ? probeToks.list.map(unquoteArg).join(" ")
-      : undefined;
+    const probe =
+      probeToks.terminated && probeToks.list.length > 0
+        ? probeToks.list.map(unquoteArg).join(" ")
+        : undefined;
     if (probe === undefined) return "";
     const m = mergeVerbSpanRegex().exec(probe);
     if (m) {

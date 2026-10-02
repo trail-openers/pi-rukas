@@ -86,9 +86,9 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { stripQuotedSegments } from "./bash-command-parser.ts";
-import { exceedsAnalysisBound } from "./merge-size.ts";
 import { mergesPr } from "./bash-merges-pr.ts";
 import { extractMergeNumber, mergeVerbArgs, mergeVerbRepo } from "./merge-parse.ts";
+import { exceedsAnalysisBound } from "./merge-size.ts";
 import { type MergeExecFn, isCarveOut, readMergeTarget, resolvePrNumber } from "./merge-target.ts";
 import { REPO_VALUE_PATTERN } from "./merge-tokens.ts";
 import {
@@ -141,7 +141,9 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     try {
       merging = mergesPr(command);
     } catch (err) {
-      return block(`merge guard could not analyse this command (${analyseRefusal(err)}) — refusing; split or simplify the command`);
+      return block(
+        `merge guard could not analyse this command (${analyseRefusal(err)}) — refusing; split or simplify the command`,
+      );
     }
     // #955 lens round 6: a merge-bearing command over the size bound is
     // REFUSED explicitly ("too large to analyse") — it must not fall
@@ -178,7 +180,9 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
       // merge 17`). `mergeVerbRepo` handles both positions plus PR-URLs.
       fromRepo = mergeVerbRepo(command);
     } catch (err) {
-      return block(`merge guard could not analyse this command (${analyseRefusal(err)}) — refusing; split or simplify the command`);
+      return block(
+        `merge guard could not analyse this command (${analyseRefusal(err)}) — refusing; split or simplify the command`,
+      );
     }
     // #955 lens fix 1 (HIGH): an invalid repo value (e.g. `o/r; touch
     // /tmp/x`) is a shell injection. The guard refuses and NEVER
@@ -219,7 +223,9 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
         }
       }
     } catch (err) {
-      return block(`merge guard could not analyse this command (${analyseRefusal(err)}) — refusing; split or simplify the command`);
+      return block(
+        `merge guard could not analyse this command (${analyseRefusal(err)}) — refusing; split or simplify the command`,
+      );
     }
     // No number in the tail → fall back to current-branch resolution.
     if (prNumber === undefined) {
