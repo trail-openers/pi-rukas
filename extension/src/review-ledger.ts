@@ -38,6 +38,7 @@
 
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { ledgerPathFor } from "./review-ledger-path.ts";
 import { trace } from "./trace.ts";
 import { type VerifyExecFn, detectMainline } from "./work-driver-git.ts";
 
@@ -64,6 +65,13 @@ interface LedgerFile {
 }
 
 export type LedgerExecFn = VerifyExecFn;
+
+/**
+ * #955 file-size split: `ledgerPathFor` (and its one-time override trace)
+ * live in review-ledger-path.ts; the re-export below keeps importers
+ * unchanged.
+ */
+export { ledgerPathFor } from "./review-ledger-path.ts";
 
 /**
  * The patch id of a branch's changes: the diff from `baseRef` to the branch
@@ -293,40 +301,6 @@ export function lensBlockedByThreshold(
   threshold: import("./lens-review.ts").Severity,
 ): boolean {
   return !lensPassed(verdict, threshold);
-}
-
-/**
- * Resolve the ledger file path for a clone.
- *
- * `git rev-parse --git-common-dir` resolves to the MAIN clone's .git for
- * worktrees (worktrees live under .git/worktrees/… and their common dir
- * points back), so every worktree shares one ledger. Absolute-path: a
- * relative answer (a plain clone at cwd) is anchored on `cwd`.
- *
- * Injects the git executor (tests stub it) and the file name (tests point
- * the ledger at a fixture without touching git).
- */
-export async function ledgerPathFor(
-  execFn: LedgerExecFn,
-  cwd: string,
-  fileName = "review-ledger.json",
-): Promise<string | undefined> {
-  try {
-    const { stdout } = await execFn("git rev-parse --git-common-dir", { cwd, maxBuffer: 8 * 1024 });
-    const raw = stdout.trim();
-    if (!raw) return undefined;
-    const commonDir = path.isAbsolute(raw) ? raw : path.resolve(cwd, raw);
-    // A worktree's common dir is .git/worktrees/<name>; the SHARED storage
-    // is the main .git — one ledger per clone, not per worktree.
-    const dir =
-      raw.startsWith("worktrees/") && !commonDir.endsWith(".git")
-        ? path.join(commonDir, "..", "..")
-        : commonDir;
-    return path.join(dir, fileName);
-  } catch (err) {
-    trace(`review-ledger: cannot resolve git common dir: ${(err as Error).message}`);
-    return undefined;
-  }
 }
 
 /**

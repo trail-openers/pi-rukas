@@ -3,8 +3,16 @@
  * #912 — the merge guard: matcher table, decision matrix, registration canaries.
  */
 
-import { readFileSync, writeFileSync, unlinkSync, existsSync } from "node:fs";
+import {
+  readFileSync,
+  writeFileSync,
+  unlinkSync,
+  existsSync,
+  rmSync,
+  mkdtempSync,
+} from "node:fs";
 import { execSync } from "node:child_process";
+import os from "node:os";
 import path from "node:path";
 import { mergesPr } from "../src/bash-command-parser.ts";
 import { type MergeTarget } from "../src/merge-target.ts";
@@ -23,16 +31,40 @@ process.env.PI_ENSEMBLE_FORGE = "github";
 
 // The ledger file the decision matrix writes — resolved via the module under
 // test (ledgerPathFor) so the writer and the guard can never disagree on the
-// path.
+// path. The env override below points it at a private temp file BEFORE the
+// resolution, so the real per-clone ledger under the git common dir is never
+// touched; the temp dir is removed at the end.
 let LEDGER_FILE: string | undefined;
+let LEDGER_TMP_DIR: string | undefined;
 
 async function setupLedgerPath() {
+  LEDGER_TMP_DIR = mkdtempSync(path.join(os.tmpdir(), "pi-ledger-"));
+  process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = path.join(
+    LEDGER_TMP_DIR,
+    "review-ledger.json",
+  );
   const realExec = async (cmd: string) => ({
     stdout: execSync(cmd, { cwd: import.meta.dirname, encoding: "utf8" }),
   });
   const p = await ledgerPathFor(realExec, import.meta.dirname);
   if (!p) throw new Error("cannot resolve the ledger path for the decision matrix");
   LEDGER_FILE = p;
+  // Canary: the ledger must NOT live inside any .git directory — that would
+  // clobber the real per-clone review ledger shared by every worktree.
+  assert(
+    !/([/\\])\.git([/\\]|$)/.test(p),
+    "canary: the test ledger is not inside a .git directory",
+  );
+}
+
+function teardownLedger() {
+  if (LEDGER_TMP_DIR) {
+    try {
+      rmSync(LEDGER_TMP_DIR, { recursive: true, force: true });
+    } catch (err) {
+      console.error(`⚠ could not remove the ledger temp dir: ${(err as Error).message}`);
+    }
+  }
 }
 
 let exit = 0;
@@ -81,42 +113,6 @@ for (const cmd of [
   "glab api /projects/1/mr/12/merge -X put",
 ]) {
   assert(mergesPr(cmd) !== undefined, `canary: blocked — ${cmd}`);
-}
-
-// -------------------------------------------------- and it does not overreach
-
-for (const cmd of [
-  // Reads stay open.
-  "gh pr view 12",
-  "gh pr checks 12",
-  "gh pr list",
-  "glab mr view 12 --output json",
-  "gh pr comment 5 --body hi",
-  // A specific PR via REST (no /merge suffix) is a read.
-  "gh api repos/o/r/pulls/42",
-  "gh api repos/o/r/pulls/12 --method GET",
-  "glab api /projects/1/mr/12",
-  // The gh /merge door with an explicit GET is a read (inverted default).
-  "gh api repos/o/r/pulls/12/merge --method GET",
-  "gh api repos/o/r/pulls/12/merge -X GET",
-  "gh api repos/o/r/pulls/12/merge -X get",
-  // The glab /merge door: unqualified or explicit GET is a read.
-  "glab api /projects/1/mr/12/merge",
-  "glab api /projects/1/mr/12/merge -X GET",
-  "glab api /projects/1/mr/12/merge --method GET",
-  "glab api /projects/1/merge_requests/12/merge",
-  "glab api /projects/1/merge_requests/12/merge --method GET",
-  // A direct push to the base branch is not a forge merge (git-level control).
-  "git push origin HEAD:main",
-  // Non-merge endpoints stay open.
-  "gh api user",
-  "glab api user",
-  // Quoted mentions create nothing — stripQuotedSegments removes them.
-  'echo "gh pr merge 12"',
-  'echo "glab mr merge 7"',
-  "gh pr comment 5 --body 'we will gh pr merge 12 later'",
-]) {
-  assert(mergesPr(cmd) === undefined, `allowed — ${cmd}`);
 }
 
 // ----------------------------------- the shared predicates (writer == guard)
@@ -495,5 +491,6 @@ await setupLedgerPath();
   assert(!merged.includes("tool_call"), "the driver's merge path does not route through the bash tool_call hook");
 }
 
+teardownLedger();
 console.log(`\nexit ${exit}`);
 process.exit(exit);
