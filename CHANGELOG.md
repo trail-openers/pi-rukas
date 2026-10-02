@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.76](https://github.com/trail-openers/pi-rukas/compare/v0.12.75...v0.12.76) (2026-10-02)
+
+
+### Bug Fixes
+
+* **merge-guard:** parse PR number/repo from merge commands, close wrapper and quoting bypasses ([#960](https://github.com/trail-openers/pi-rukas/issues/960)) ([92505ef](https://github.com/trail-openers/pi-rukas/commit/92505efdc90a0a95e88955e309fe3f02931566ca))
+
 ## [0.12.75](https://github.com/trail-openers/pi-rukas/compare/v0.12.74...v0.12.75) (2026-10-01)
 
 
