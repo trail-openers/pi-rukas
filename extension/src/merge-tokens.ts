@@ -254,3 +254,132 @@ export function shellSegments(command: string): string[] {
   if (closed) parts.push(cur);
   return parts;
 }
+
+/**
+ * Strip a trailing unbalanced `)` from a raw token — the subshell's closing
+ * paren glued to the token by `rawTokens` (the same coping
+ * `parseArgsAfterVerb` applies before matching its tokens, where `17)` is
+ * the number 17 in `(gh pr merge 17)`). Balanced parens inside a value are
+ * not a repo shape and stay as-is (they fail the `isValidRepoValue` boundary
+ * check upstream — refused, never interpolated).
+ */
+export function stripGluedParen(value: string): string {
+  if (value.endsWith(")") && value.length > 1) return value.slice(0, -1);
+  return value;
+}
+
+// ---------------------------------------------------------------------------
+// verb-argument parsing
+
+/**
+ * The PR/MR number and forge repo carried by the post-verb arguments.
+ *
+ * NOTE: an UNTERMINATED token list (a quote never closes) returns
+ * `{ number: undefined, repo: undefined }` — indistinguishable from
+ * numberless args. Callers that need fail-closed semantics must use
+ * `mergeVerbArgs` (which carries the fail-closed empty-string tail signal
+ * for that case), not this function directly.
+ */
+export function parseArgsAfterVerb(args: string): {
+  number: number | undefined;
+  repo: string | undefined;
+} {
+  // A trailing `&` (job control, `nohup gh pr merge 17 &`) is part of the
+  // invocation — the shell runs the command in the background; it is NOT
+  // a separator that ends the argument list. Trim it before tokenising so
+  // the number / repo in the same invocation still parse.
+  const cleaned = args.replace(/\s+&\s*$/, " ").replace(/\s+&&\s*$/, " ");
+  // Flags whose value is the next token (it must not be read as the number).
+  const TAKES_VALUE = new Set([
+    "-s",
+    "--subject",
+    "-t",
+    "--title",
+    "-b",
+    "--body",
+    "-F",
+    "--body-file",
+    "--match-head-commit",
+    "-m",
+    "--message",
+    "-A",
+    "--author-email",
+    "-R",
+    "--repo",
+    // glab's repo flag (same shape as -R): its value must not be read
+    // as the MR number.
+    "--project",
+  ]);
+  const tokens = rawTokens(cleaned);
+  if (tokens.terminated === false) return { number: undefined, repo: undefined };
+  let repo: string | undefined;
+  for (let i = 0; i < tokens.list.length; i++) {
+    const raw = tokens.list[i] ?? "";
+    let t = raw;
+    // #955 adversarial round 4 (finding 1, repo path): a quoted token whose
+    // quote is unbalanced (a value that, in the UNWRAPPED body the tail came
+    // from, is itself a quoted value — `bash -c 'glab --project \"o/r\" mr
+    // merge 7'` tokenises the value as `\"o/r\"`, a double-quoted run whose
+    // escape closes the quote early) is unquoted the way the shell would
+    // unquote it at the top level (`unquoteArg`): the result is the value
+    // the inner command actually carries, and an unbalanced escape is left
+    // as a literal `\"`, which the `isValidRepoValue` boundary refuses (the
+    // naive `v.slice(1, -1)` would keep the escape inside the value and
+    // validate it as a repo the guard then interpolated — a false-safe).
+    // A trailing `)` (subshell close glued to the token by rawTokens) is
+    // stripped before matching — `17)` is the number 17 in `(gh pr merge 17)`.
+    if (t.endsWith(")") && t.length > 1) t = t.slice(0, -1);
+    if (t === "") continue;
+    if (t.startsWith("-")) {
+      // `--flag=value` form: the value is inside the token and is never a
+      // positional number.
+      const eq = t.indexOf("=");
+      if (eq > 0) {
+        const flagName = t.slice(0, eq);
+        if (flagName === "--repo" || flagName === "--project")
+          repo = stripGluedParen(t.slice(eq + 1));
+        continue;
+      }
+      if (t === "-R" || t === "--repo" || t === "--project") {
+        const v = tokens.list[i + 1];
+        if (v !== undefined && v.length > 0) {
+          const q = v[0];
+          repo = stripGluedParen(q === "'" || q === '"' ? v.slice(1, -1) : v);
+          i++;
+        }
+        continue;
+      }
+      if (TAKES_VALUE.has(t)) {
+        i++; // skip the value token
+        continue;
+      }
+      continue;
+    }
+    if (t === ";" || t === "&&" || t === "|" || t === "||") {
+      // A shell separator ends this invocation's argument list.
+      break;
+    }
+    // Positional argument: a bare integer, a #N, a PR/MR URL, or a quoted
+    // integer (the shell strips the quotes — a quoted number is the number).
+    const bare = /^(\d+)$/.exec(t) ?? /^"(\d+)"$/.exec(t) ?? /^'(\d+)'$/.exec(t);
+    if (bare?.[1]) return { number: Number.parseInt(bare[1], 10), repo };
+    const hash = /^#(\d+)$/.exec(t);
+    if (hash?.[1]) return { number: Number.parseInt(hash[1], 10), repo };
+    const url = /\/(?:pull|pulls|merge_requests)\/(\d+)/.exec(t);
+    if (url?.[1]) {
+      const ownerRepo = /(?:^|\/)(?:github\.com|gitlab\.com)\/([^/?#]+)\/([^/?#]+)/.exec(t);
+      if (ownerRepo?.[1] && ownerRepo?.[2]) {
+        const or = `${ownerRepo[1]}/${ownerRepo[2]}`;
+        return { number: Number.parseInt(url[1], 10), repo: or };
+      }
+      return { number: Number.parseInt(url[1], 10), repo };
+    }
+    if (repo === undefined && !t.startsWith("<")) {
+      // A bare `owner/repo` positional (not a number, not a URL) names the
+      // repo the same way -R does.
+      const r = /^[-\w]+\/[-\w.]+$/.exec(t);
+      if (r?.[0]) repo = r[0];
+    }
+  }
+  return { number: undefined, repo };
+}
