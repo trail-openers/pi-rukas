@@ -128,12 +128,16 @@ if (minVersion === null) {
   const cases: Array<[string, string]> = [
     // Below the floor — the 0.8x line lacks native MCP + `-e builtin:mcp`
     // (the #959 shape). 0.84.4 was the pre-#959 floor and is now below-floor.
+    // (Pre-#959: the #571 incident shape — 0.84.3 shipped a live bug in
+    // extension message ordering, fixed in 0.84.4; that is now historical.)
     ["0.84.4", "old"],
     ["0.84.3", "old"],
     ["0.83.9", "old"],
     ["0.7.9", "old"],
     // Numeric (not lexicographic) compare: 0.9.0 has minor 9 which is LESS
     // than 0, so 0.9.0 < 1.0.0. Use 1.0.1 for the above-floor numeric case.
+    // (Pre-#959: 0.8.10 < 0.84.4, 0.9.0 < 0.84.4, 0.85.0 > 0.84.4 — the
+    // same shape with the 0.8x floor.)
     ["0.8.10", "old"],
     ["0.9.0", "old"],
     ["1.0.1", "ok"],
@@ -217,6 +221,7 @@ if (minVersion === null) {
 {
   // Same code path, wrong floor: against a floor of 9.9.9 the at-floor case
   // 1.0.0 must be REJECTED. If the gate always passed, this would not.
+  // (Pre-#959: the at-floor case was 0.84.4.)
   const fn = extractFn("pi_preflight_status");
   const parse = extractFn("parse_pi_version");
   const code = `

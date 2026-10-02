@@ -435,7 +435,7 @@ const CHILD_ARGS_BASE = ["--mode", "rpc", "--no-extensions", "-e", "builtin:mcp"
  * `child-guards extension unavailable at <path>: <reason> — run ./install.sh`
  * on ANY stat failure.
  *
- * Argument order is load-bearing: `--provider` precedes `--model` so Pi
+ * Argument order is load-bearing: `--provider` must precede `--model` so Pi
  * disambiguates against the provider catalog (custom providers need explicit
  * provider IDs); extension `--extension` flags are appended after model flags
  * so Pi resolves the model before extensions can override it.

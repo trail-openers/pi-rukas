@@ -156,6 +156,13 @@ for (const command of gitDiffWithInjectionShouldAsk) {
 // rather than silently failing. The per-tool grants below are explicit and
 // beat the catch-all; an ungranted server's tools fall through to ask. "Allow
 // always" persists per-project ($PWD/.pi/decisions.json).
+//
+// Pre-#959 this section covered the pi-mcp-adapter era: the catch-all used to
+// be `"*": "deny"` (silent-deny of unknown tools, including the `mcp` gateway
+// and per-server direct tools like `fuzu_staging_db_execute_sql` that the
+// adapter surfaced with arbitrary names). The fix flipped it to `"*": "ask"`
+// so any unknown tool prompts. The MCP-gateway allow/ask split (PM `mcp: allow`,
+// specialists `mcp: ask`) is gone — native MCP registers per-tool names instead.
 
 // Native-MCP tool naming (the post-#959 convention: the adapter's
 // `codebase_memory_<tool>` direct-tool names are gone; the native MCP
@@ -310,7 +317,7 @@ assert(fallthrough === "ask", "Issue #168: catch-all `*: ask` fires when no wild
   );
   assert(
     subagentResolved === "allow",
-    "L7: project overlay (developer mcp*: allow) overrides baseline deny — applies in subagents too post-#192",
+    "L7: project overlay (developer mcp*: allow) overrides the baseline explicit deny — applies in subagents too post-#192 (the catch-all is ask, not deny, post-#959)",
   );
 
   // Global overlay also takes effect
@@ -330,7 +337,7 @@ assert(fallthrough === "ask", "Issue #168: catch-all `*: ask` fires when no wild
   );
   assert(
     subagentGlobalResolved === "allow",
-    "L7: global overlay also overrides baseline deny in subagents",
+    "L7: global overlay also overrides the baseline explicit deny in subagents (catch-all is ask, not deny, post-#959)",
   );
 }
 

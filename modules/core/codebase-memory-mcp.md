@@ -1,6 +1,6 @@
 # codebase-memory-mcp: the canonical tool for finding code
 
-**`mcp__codebase_memory__search_code` IS the canonical tool for finding code in this repository.** Use it whenever you need to locate a function, class, route, or pattern in source. It is indexed, sub-millisecond, and pre-approved on your role.
+**`mcp__codebase_memory__search_code`** (pre-#959: `codebase_memory_search_code`) IS the canonical tool for finding code in this repository. Use it whenever you need to locate a function, class, route, or pattern in source. It is indexed, sub-millisecond, and pre-approved on your role.
 
 `rg` and `read` are NOT alternatives for code discovery — they only apply to:
 

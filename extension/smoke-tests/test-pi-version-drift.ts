@@ -218,7 +218,7 @@ export function siteCensus(verifiedV: string): Record<string, string[]> {
     "package.json": ["0.99.0", "0.84.4"],
     // test-pi-min-version.ts fakes pi --version output (at-floor / below-floor
     // matrix + numeric-compare cases).
-    "test-pi-min-version.ts": ["1.0.0", "1.0.1", "1.1.0", "0.84.4", "0.84.3", "0.83.9"],
+    "test-pi-min-version.ts": ["1.0.0", "1.0.1", "1.1.0", "0.84.4", "0.84.3", "0.83.9", "0.85.0"],
     // The prerequisite-drift gate + its EXCEPTIONS pin + canary comments
     // (1.1.0 is the fixture Dockerfile pin, an above-floor canary).
     "test-prerequisite-drift.ts": ["1.0.0", "1.1.0", "0.84.4", "0.84.3"],
