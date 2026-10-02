@@ -76,5 +76,21 @@ const prevOverride = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
   }
 }
 
+// ------------------------------------------------- relative override → resolved against cwd
+{
+  // A relative override path is resolved against the given cwd via
+  // path.resolve (the docs say absolute, but be tolerant).
+  const relOverride = "custom/ledger.json";
+  process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = relOverride;
+  try {
+    const expected = path.resolve(CWD, relOverride);
+    const p = await ledgerPathFor(async () => { throw new Error("should not be called"); }, CWD);
+    assert(p === expected, `relative override → resolved against cwd (${p})`);
+  } finally {
+    if (prevOverride === undefined) delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+    else process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = prevOverride;
+  }
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

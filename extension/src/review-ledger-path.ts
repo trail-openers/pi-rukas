@@ -51,7 +51,11 @@ export async function ledgerPathFor(
       ledgerOverrideTraced.add(override);
       trace(`review-ledger: ledger override in effect → ${override}`);
     }
-    return override;
+    // #955 (perf, LOW a): the docs say the override is an absolute path, but
+    // be tolerant — a relative path is resolved against the given cwd via
+    // path.resolve so it works whether the operator sets it relative or
+    // absolute.
+    return path.isAbsolute(override) ? override : path.resolve(cwd, override);
   }
   try {
     const { stdout } = await execFn("git rev-parse --git-common-dir", { cwd, maxBuffer: 8 * 1024 });

@@ -45,6 +45,14 @@ export { mergeVerbUnwrapOne };
  * a merge verb in the raw text).
  */
 export function mergeVerbArgs(command: string): string | undefined {
+  // #955 (perf): cheap pre-filter. Every guarded shape contains the literal
+  // substring `merge` — the verb door (`pr merge` / `mr merge`), the REST
+  // doors (`…/merge` path segment). A command without that substring cannot
+  // match any door, so return immediately. This is O(n) and skips the
+  // expensive segment walk on the common case (a bash tool call that is not
+  // a merge). Eval-of-variable is out of scope (the guard only sees the raw
+  // command text, not what a variable expands to).
+  if (!command.includes("merge")) return undefined;
   return matchMergeVerbTail(command);
 }
 
@@ -59,6 +67,14 @@ export function mergeVerbArgs(command: string): string | undefined {
 export function mergeVerbRepo(
   command: string,
 ): { kind: "repo"; repo: string } | { kind: "unsafe"; raw: string } | undefined {
+  // #955 (perf): cheap pre-filter. Every guarded shape contains the literal
+  // substring `merge` — the verb door (`pr merge` / `mr merge`), the REST
+  // doors (`…/merge` path segment). A command without that substring cannot
+  // match any door, so return immediately. This is O(n) and skips the
+  // expensive segment walk on the common case (a bash tool call that is not
+  // a merge). Eval-of-variable is out of scope (the guard only sees the raw
+  // command text, not what a variable expands to).
+  if (!command.includes("merge")) return undefined;
   const args = mergeVerbArgs(command);
   if (args === undefined) return undefined;
   const tailRepo = parseArgsAfterVerb(args).repo;
@@ -263,13 +279,16 @@ function hasMergeVerbInRaw(command: string): boolean {
  * see the verb inside a quoted `bash -c` body.
  *
  * Returns the argument tail (possibly the empty string — the no-number
- * fallback) when the inner text carries the merge verb, `undefined` when
- * the segment is not a shell-eval invocation at all, or `null` when the
- * segment IS a shell-eval invocation but its inner text does not terminate
- * (an unterminated quote — the body is not a valid command): the caller
- * applies the fail-closed no-number signal when the segment carries a
- * merge verb (#955 adversarial round 4, finding 1 — the whole-command
- * path's malformed-layer check had no per-segment counterpart).
+ * fallback) when the inner text carries the merge verb, or `undefined`
+ * when the segment is not a shell-eval invocation at all.
+ *
+ * The `null` branch (an unterminated quote in the inner text) is
+ * unreachable in practice: the top-level `hasMergeVerbInRaw` gate in
+ * `matchMergeVerbTail` protects these shapes before the per-segment walk
+ * reaches this function. The `null` return type is kept for the
+ * structural contract (the caller's `=== null` check is the fail-closed
+ * signal), but in practice the caller always sees `undefined` or a
+ * string.
  */
 function mergeUnwrappedLayerText(seg: string): string | null | undefined {
   const inner = mergeVerbUnwrapOne(seg);

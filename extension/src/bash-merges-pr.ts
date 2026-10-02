@@ -4,6 +4,17 @@ import { mergeVerbSpanRegex, shellSegments } from "./merge-tokens.ts";
 import { innerBodies, matchMergeVerb, mergeVerbUnwrapOne } from "./merge-verb-head.ts";
 
 /**
+ * #955 (perf): maximum length (chars) of a merge-bearing command that will
+ * be walked by the expensive segment/innerBody recursion. Commands longer
+ * than this that contain `gh` or `glab` are blocked as too large to analyse
+ * (fail closed) before the walk. 20000 chars is well above any legitimate
+ * merge command (the longest realistic one is a few hundred chars) but well
+ * below the size where the O(depth × length) walk becomes pathological
+ * (a 64k-char nested-substitution command took >10s).
+ */
+const MERGE_COMMAND_SIZE_BOUND = 20000;
+
+/**
  * The matched verb span inside a segment, or undefined when the segment does
  * not carry a merge verb (either directly or via per-segment shell-eval
  * unwrap). The span is located via `mergeVerbSpanRegex` on the segment (or
@@ -60,6 +71,32 @@ function segmentSpanOrUnwrapped(seg: string): string | undefined {
  * command does not merge.
  */
 export function mergesPr(command: string): string | undefined {
+  // #955 (perf): cheap pre-filter. Every guarded shape contains the literal
+  // substring `merge` — the verb door (`pr merge` / `mr merge`), the REST
+  // doors (`…/merge` path segment). A command without that substring cannot
+  // match any door, so return immediately. This is O(n) and skips the
+  // expensive segment walk on the common case (a bash tool call that is not
+  // a merge). Eval-of-variable is out of scope (the guard only sees the raw
+  // command text, not what a variable expands to).
+  if (!command.includes("merge")) return undefined;
+  // #955 (perf): size bound for merge-bearing commands. If the command is
+  // longer than this threshold AND contains `gh` or `glab`, block it as too
+  // large to analyse (fail closed) BEFORE running the expensive walk. The
+  // expensive walk (segment recursion, innerBodies, restBodyTexts) is
+  // O(depth × length) on pathological nested-substitution input, and a
+  // 64k-char merge-bearing command can take >10s. 20000 chars is well above
+  // any legitimate merge command (the longest realistic one is a few hundred
+  // chars) but well below the size where the walk becomes pathological.
+  // A merge-bearing command that does NOT contain `gh` or `glab` (e.g. a
+  // long `git commit -m "…merge…"`) passes the size bound and is walked
+  // normally — the pre-filter already confirmed it carries `merge`, so the
+  // walk will determine whether it is a merge.
+  if (
+    command.length > MERGE_COMMAND_SIZE_BOUND &&
+    (command.includes("gh") || command.includes("glab"))
+  ) {
+    return "gh pr merge";
+  }
   // Verb door, segment-wise (#955 round-2 hardening): the legacy door
   // above ran one regex over the quote-stripped WHOLE command, which is
   // why it missed process-wrapper prefixes (`timeout 30 gh pr merge 17`),
