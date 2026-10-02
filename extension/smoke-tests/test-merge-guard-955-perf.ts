@@ -7,7 +7,7 @@
  *
  *   1. A cheap pre-filter — a command without the literal substring `merge`
  *      returns undefined before the expensive segment walk (O(n) skip).
- *   2. A size bound (MERGE_COMMAND_SIZE_BOUND = 20000) — a merge-bearing
+ *   2. A size bound (MERGE_COMMAND_SIZE_BOUND = 8000, merge-size.ts) — a merge-bearing
  *      command longer than the bound that also contains `gh`/`glab` is
  *      blocked as too large to analyse, BEFORE the O(depth × length) walk
  *      that took >10s on a 64k-char nested-substitution input.
@@ -86,21 +86,47 @@ function teardownLedger() {
 }
 
 // ---------------------------------------------------------------- 2. Size bound
-// A >20000-char command containing `gh pr merge 17` (and `gh`) is blocked
+// A >8000-char command containing `gh pr merge 17` (and `gh`) is blocked
 // as too large to analyse (fail closed) BEFORE the expensive walk, in <100ms.
 {
   const cmd = "gh pr merge 17 --body " + JSON.stringify("x".repeat(25000));
-  assert(cmd.length > 20000, `size-bound: fixture is ${cmd.length} chars (>20000)`);
+  assert(cmd.length > 8000, `size-bound: fixture is ${cmd.length} chars (>8000)`);
   const t0 = performance.now();
   const r = mergesPr(cmd);
   const dt = performance.now() - t0;
   assert(
     r !== undefined,
-    "size-bound: >20000-char merge-bearing command with `gh` → blocked (fail closed)",
+    "size-bound: >8000-char merge-bearing command with `gh` → blocked (fail closed)",
   );
   assert(
     dt < 100,
-    `size-bound: >20000-char merge-bearing command returned in ${dt.toFixed(2)}ms (<100ms)`,
+    `size-bound: >8000-char merge-bearing command returned in ${dt.toFixed(2)}ms (<100ms)`,
+  );
+}
+
+// #955 lens round 6: the lowered bound (8000) must still analyse a nested
+// `$(…)` merge JUST UNDER the bound in bounded time — the walk on a 7.9k
+// nested-substitution command must finish <300ms. The merge sits at the
+// BOTTOM of a 1150-deep substitution chain after a long padding token
+// (a shape the guard must NOT shortcut to the size bound). Measured ~104ms
+// on the test host (7980 chars) — the bound exists for the pathological
+// nested-substitution shapes that run the walk at every depth.
+{
+  const pad = "y".repeat(4510);
+  let cmd = "gh pr merge 17";
+  for (let i = 0; i < 1150; i++) cmd = "$(" + cmd + ")";
+  cmd = "echo " + pad + " " + cmd;
+  assert(cmd.length < 8000, `size-bound (under): fixture is ${cmd.length} chars (<8000)`);
+  const t0 = performance.now();
+  const r = mergesPr(cmd);
+  const dt = performance.now() - t0;
+  assert(
+    r !== undefined,
+    "size-bound (under): 7.9k nested command-substitution merge → blocked (the walk runs)",
+  );
+  assert(
+    dt < 300,
+    `size-bound (under): 7.9k nested command-substitution merge analysed in ${dt.toFixed(2)}ms (<300ms)`,
   );
 }
 

@@ -18,12 +18,12 @@
 import {
   isValidRepoValue,
   mergeVerbSpanRegex,
+  parseArgsAfterVerb,
   rawTokens,
   shellSegments,
   stripGluedParen,
   unquoteArg,
 } from "./merge-tokens.ts";
-import { parseArgsAfterVerb } from "./merge-tokens.ts";
 import { innerBodies, matchMergeVerb, mergeVerbUnwrapOne } from "./merge-verb-head.ts";
 export { mergeVerbUnwrapOne };
 
@@ -45,13 +45,10 @@ export { mergeVerbUnwrapOne };
  * a merge verb in the raw text).
  */
 export function mergeVerbArgs(command: string): string | undefined {
-  // #955 (perf): cheap pre-filter. Every guarded shape contains the literal
-  // substring `merge` — the verb door (`pr merge` / `mr merge`), the REST
-  // doors (`…/merge` path segment). A command without that substring cannot
-  // match any door, so return immediately. This is O(n) and skips the
-  // expensive segment walk on the common case (a bash tool call that is not
-  // a merge). Eval-of-variable is out of scope (the guard only sees the raw
-  // command text, not what a variable expands to).
+  // #955 (perf): the substring pre-filter lives in mergesPr (bash-merges-pr.ts) —
+  // same rationale, shared at the matcher entry. Eval-of-variable is out of
+  // scope (the guard only sees the raw command text, not what a variable
+  // expands to).
   if (!command.includes("merge")) return undefined;
   return matchMergeVerbTail(command);
 }
@@ -67,13 +64,8 @@ export function mergeVerbArgs(command: string): string | undefined {
 export function mergeVerbRepo(
   command: string,
 ): { kind: "repo"; repo: string } | { kind: "unsafe"; raw: string } | undefined {
-  // #955 (perf): cheap pre-filter. Every guarded shape contains the literal
-  // substring `merge` — the verb door (`pr merge` / `mr merge`), the REST
-  // doors (`…/merge` path segment). A command without that substring cannot
-  // match any door, so return immediately. This is O(n) and skips the
-  // expensive segment walk on the common case (a bash tool call that is not
-  // a merge). Eval-of-variable is out of scope (the guard only sees the raw
-  // command text, not what a variable expands to).
+  // #955 (perf): same substring pre-filter as `mergeVerbArgs` (shared
+  // rationale in mergesPr, bash-merges-pr.ts).
   if (!command.includes("merge")) return undefined;
   const args = mergeVerbArgs(command);
   if (args === undefined) return undefined;
@@ -233,11 +225,42 @@ function segmentMergeTail(seg: string): string | undefined {
     // The span regex expects the forge word at the start (or after a
     // separator). A subshell segment like `(gh pr merge 17)` starts with
     // `(` — strip a leading paren so the regex can locate the verb.
-    const probe = seg.startsWith("(") ? seg.slice(1) : seg;
+    // #955 lens round 6: the head walk (matchMergeVerb) now matches on
+    // UNQUOTED tokens (the shell removes quotes around a whole word before
+    // execution — `gh pr "merge" 17`, `"gh" pr merge 17`), while this span
+    // regex runs over the raw text where the quotes are still there. Run
+    // the regex over an unquoted probe (each token unquoted, spacing kept):
+    // the quote-less text the shell actually executes, so the span's start
+    // offset lands on the real verb and the tail extraction below is
+    // unaffected (a whole-word quote adds no characters to the stream).
+    // The probe is the UNQUOTED segment (the head walk matches on unquoted
+    // tokens — the shell removes whole-word quotes before execution), with
+    // a glued leading `(` removed so the span regex can anchor the forge
+    // word (the old raw-text probe did the same slice).
+    const probeSeg = seg.startsWith("(") ? seg.slice(1) : seg;
+    const probeToks = rawTokens(probeSeg);
+    const probe = probeToks.terminated && probeToks.list.length > 0
+      ? probeToks.list.map(unquoteArg).join(" ")
+      : undefined;
+    if (probe === undefined) return "";
     const m = mergeVerbSpanRegex().exec(probe);
     if (m) {
-      const offset = seg.startsWith("(") ? 1 : 0;
-      return seg.slice(offset + m.index + m[0].length);
+      // The tail is the segment after the MATCHED SPAN: the span carries
+      // the optional repo flag (`gh -R o/r pr merge 17` → the tail is
+      // after `merge`, the repo flag out of the number parse). #955 lens
+      // round 6: the probe is the UNQUOTED form (the head walk matches on
+      // unquoted tokens — the shell removes whole-word quotes before
+      // execution), so the span's end is a position in the unquoted text
+      // and the tail is sliced from there (a whole-word quote adds no
+      // tokens, so the unquoted tail is exactly what the number/repo
+      // parser reads; for unquoted commands it is the old tail verbatim).
+      // The tail is sliced from the same unquoted text the span was
+      // located in (a whole-word quote adds no tokens, so the unquoted
+      // tail is exactly what the number/repo parser reads; for unquoted
+      // commands it is the old tail verbatim). A glued closing `)` stays
+      // in the tail — the number/repo parser strips a trailing `)` from a
+      // glued token (`17)` is the number 17 in `(gh pr merge 17)`).
+      return probe.slice(m.index + m[0].length);
     }
     // #955 adversarial round 4 (finding 1): `matchMergeVerb` matched via a
     // shell-eval invocation (the glued-paren path — `(sh -c …` — the
