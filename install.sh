@@ -284,7 +284,10 @@ if [ -n "$CBM_BIN" ]; then
   # ONLY after the native merge succeeded: if the native write was skipped
   # (malformed mcp.json) or failed, deleting the legacy key would leave
   # neither config working — the legacy entry stays as the fallback.
-  legacy_mcp_migrate "$MCP_CONFIG" "$HOME/.config/mcp/mcp.json"
+  # warn-only: a failed migration (return 1) must not abort the install
+  # under set -e — the legacy file is left untouched on every failure path
+  # anyway, so re-running install.sh can pick it up again.
+  legacy_mcp_migrate "$MCP_CONFIG" "$HOME/.config/mcp/mcp.json" || true
 else
   cat <<'CBM_HINT'
 ==> codebase-memory-mcp binary not found on \$PATH or at ~/.local/bin/.

@@ -257,7 +257,7 @@ legacy_mcp_migrate() {
   [ -f "$legacy" ] || return 0
   jq empty "$legacy" >/dev/null 2>&1 || return 0  # malformed legacy — untouched
   [ -z "$(jq -r '.mcpServers.codebase_memory // empty' "$legacy")" ] && return 0  # nothing to migrate
-  local tmp out="" keys=""
+  local tmp keys=""
   tmp="$(mktemp)" || return 1
   # Merge: legacy servers into native, native keys win (no overwrite);
   # codebase_memory is dropped from the merged set (the legacy entry is a
@@ -274,7 +274,9 @@ legacy_mcp_migrate() {
       echo "!! could not replace $native — $legacy untouched, nothing migrated"
       return 1
     fi
-    chmod 600 "$native"
+    # The chmod is guarded: on failure the migration stops HERE, before the
+    # legacy key removal below, so the entry is never lost on both sides.
+    chmod 600 "$native" || { echo "!! chmod 600 $native failed — leaving $legacy untouched"; return 1; }
     echo "==> Migrated legacy MCP servers into $native: $keys"
   else
     rm -f "$tmp"
