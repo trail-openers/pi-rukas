@@ -298,19 +298,15 @@ export function matchMergeVerb(text: string): string | undefined {
   let i = 0;
   while (i < list.length) {
     const raw = list[i] ?? "";
-    // A raw token that starts a QUOTED run is not a command word: a quote
-    // at the start of a word means the whole word is data (an argument),
-    // so the segment is not a merge invocation here. This check MUST run
-    // on the raw token, before unquoting (a quoted run's contents never
-    // start with a quote, so an unquoted test can never see it).
-    // #955 lens round 6: the unquoting below handles the case the shell
-    // actually executes — quotes around a WHOLE word are removed before
-    // execution (`"gh" pr merge 17`, `gh "pr" merge 17`, `gh pr 'merge' 17`
-    // are all live merges, PM-verified bypass) — while a quoted STRING
-    // that is one token (`"gh pr merge 17"` as an `echo` argument) stays a
-    // single unquoted token whose head is `gh pr…`, never the bare forge
-    // word, so quoted strings in a later segment stay inert.
-    if (raw[0] === "'" || raw[0] === '"') return undefined;
+    // #955 lens round 6: the shell removes quotes around a WHOLE word
+    // before it executes (`"gh" pr merge 17`, `gh "pr" merge 17`, `gh pr
+    // 'merge' 17` are all live merges, PM-verified bypass), so the token is
+    // unquoted and compared bare. A quoted STRING that is one token
+    // (`"gh pr merge 17"` as an `echo` argument) stays a single unquoted
+    // token whose head is `gh pr…` — never the bare forge word — so quoted
+    // strings in a later segment stay inert. (No raw-quote pre-check here:
+    // rawTokens keeps whole-word quotes on the token, and bash treats
+    // `"gh"` exactly like `gh` — the quote check would defeat the fix.)
     const t = unquoteArg(raw);
     // A variable-substituted command word is not the bare shape the guard
     // unwraps — no forge word to match, and not a wrapper.

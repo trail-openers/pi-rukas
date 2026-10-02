@@ -210,11 +210,17 @@ function restDoorTokens(text: string): string | undefined {
     const cmd = seg[ci] ?? "";
     const cmdBase = cmd.includes("/") ? (cmd.split("/").pop() ?? "") : cmd;
     if (cmdBase !== "gh" && cmdBase !== "glab") continue;
-    const args = seg.slice(ci + 1);
-    if (args.length === 0 || args[0] !== "api") continue;
+    // The `api` verb: the first token after the command word that is `api`
+    // (the tokens before it are the repo flag + its value — `gh -R o/r api
+    // …`, #955 adversarial round 2 finding 1 — which the old FORGE regex
+    // carried as an optional group and the token walk must skip the same
+    // way).
+    const ai = seg.indexOf("api", ci + 1);
+    if (ai === -1) continue;
+    const args = seg.slice(ai + 1);
     const endpoint = restEndpointToken(args);
     if (endpoint === undefined) continue;
-    const all = [cmd, ...args].join(" ");
+    const all = seg.slice(ci).join(" ");
     if (cmdBase === "gh") {
       // gh REST door: `gh api` on /pulls/{n}/merge (or the no-number
       // `.../pulls/merge` shape) — gh api defaults to POST/PUT when no
@@ -262,9 +268,13 @@ function restEndpointToken(args: string[]): string | undefined {
       // A flag that takes a value: `--method`/`-X` (the token after it is
       // the method), the repo flags, and short flags generally take a
       // value; skip it.
-      const longTakesValue =
-        t === "--method" || t === "-X" || t === "-R" || t === "--repo" || t === "--project";
+      // The long repo/project flags (`--repo`, `--project`) are the
+      // exception: in REST-door form (`gh --repo o/r api …`) they carry
+      // the repo, NOT a flag value, so they must NOT skip the next token
+      // (skipping it would eat the endpoint — the #955 adversarial-round-2
+      // finding-1 shape `gh -R o/r api …` failing to match).
       const shortTakesValue = t.length === 2;
+      const longTakesValue = t === "--method" || t === "-X";
       if (longTakesValue || shortTakesValue) k++;
     }
   }
