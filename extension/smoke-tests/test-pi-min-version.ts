@@ -207,12 +207,24 @@ if (minVersion === null) {
     /unparseable:\*/.test(installSrc),
     "install.sh handles the unparseable status with a fail-closed branch",
   );
-  const upgradeIdx = installSrc.search(
-    /Upgrade with: bun add -g @earendil-works\/pi-coding-agent@\$\{MIN_PI_VERSION\}/,
+  // #959 — the exact upgrade command now lives in install-preflight.sh as
+  // PI_UPGRADE_CMD (npm form, single-sourced next to the floor); install.sh
+  // interpolates it. Assert both halves so the command stays pinned and the
+  // interpolation is not dropped.
+  const cmdMatch = preflightSrc.match(
+    /^PI_UPGRADE_CMD="npm install -g --ignore-scripts @earendil-works\/pi-coding-agent@\$\{MIN_PI_VERSION\}"$/m,
   );
   assert(
-    upgradeIdx !== -1,
-    "install.sh's upgrade hint installs the pinned floor via MIN_PI_VERSION, not a hardcoded value",
+    cmdMatch !== null,
+    "install-preflight.sh declares PI_UPGRADE_CMD — the exact npm upgrade command, pinned via MIN_PI_VERSION",
+  );
+  assert(
+    installSrc.includes("Upgrade with: ${PI_UPGRADE_CMD}"),
+    "install.sh's below-floor branch prints the exact upgrade command (PI_UPGRADE_CMD)",
+  );
+  assert(
+    installSrc.includes("upgrade pi FIRST"),
+    "install.sh's below-floor branch tells the operator to upgrade pi FIRST (transition safety, #959)",
   );
 }
 

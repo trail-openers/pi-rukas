@@ -110,7 +110,8 @@ PI_STATUS="$(pi_preflight_status)"
 case "$PI_STATUS" in
   old:*)
     echo "!! ${PI_STATUS#old:}"
-    echo "   Upgrade with: bun add -g @earendil-works/pi-coding-agent@${MIN_PI_VERSION}"
+    echo "   pi-rukas needs pi ${MIN_PI_VERSION}+ — upgrade pi FIRST (subagents fail to"
+    echo "   start on old pi). Upgrade with: ${PI_UPGRADE_CMD}"
     ;;
   unparseable:*)
     echo "!! pi --version returned unparsable output: '${PI_STATUS#unparseable:}'"

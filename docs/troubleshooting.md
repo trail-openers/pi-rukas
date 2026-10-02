@@ -27,6 +27,27 @@ Symptoms → causes → fixes. Most issues here come from running an older sandb
 
 **Fix:** enable Docker Desktop's **WSL2 integration** (Settings → Resources → Integrations → enable your distro), or run a Docker Engine inside the distro and start its daemon. Verify from inside WSL2: `docker version` shows both client and server, then `./install.sh` again so the image pull succeeds.
 
+## Subagents fail to start after updating pi-rukas
+
+### Symptom
+
+After updating pi-rukas (the 1.0.0-upgrade line, #959), every `dispatch_specialist` fails immediately — children exit at once instead of running.
+
+### Cause
+
+Your global `pi` is below 1.0.0: the new subagent spawn path passes `-e builtin:mcp` (re-enabling the MCP built-in that `--no-extensions` also disables under Pi 1.0.0), and pi < 1.0.0 does not know that flag. `./install.sh`'s preflight refuses the install on old pi and prints the exact upgrade command (`npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.0.0`).
+
+### Fix
+
+Upgrade pi first, then re-run `./install.sh`:
+
+```bash
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.0.0
+./install.sh
+```
+
+PR: [#959](https://github.com/trail-openers/pi-rukas/issues/959)
+
 ## Subagent silently "finished" but the worktree wasn't touched
 
 ### Symptom
