@@ -330,7 +330,8 @@ if (verified && pins.codingAgent) {
   const floor = read("install-preflight.sh").match(/\bMIN_PI_VERSION="?([0-9][0-9a-z.+-]*)"?/);
   const floorV = floor ? (floor[1] as string) : "";
   assert(floorV !== "", "canary: the install floor (MIN_PI_VERSION) matches its unquoted form");
-  assert(compareVersions("0.99.0", floorV) !== null, `a declared pin different from the install floor (${floorV}) is comparable and legal — the gate never asserts pin == floor`);
+  assert(compareVersions("0.99.0", floorV) === -1, `a pin below the install floor (${floorV}) compares as -1 (0.99.0 is below the 1.0.0 floor) — and the gate still never asserts pin == floor`);
+  assert(compareVersions("1.0.1", floorV) === 1, `a 1.x literal above the install floor (${floorV}) compares as 1 (1.0.1 > 1.0.0) — the order rule holds in the forward direction`);
 
   // Canary 7 — the census listing respects .gitignore exactly: in a temp
   // repo, a gitignored file carrying an unknown 0.8x.y literal in the claim
