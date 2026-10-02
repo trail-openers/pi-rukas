@@ -134,6 +134,31 @@ export function mergeVerbSpanRegex(): RegExp {
   return new RegExp(MERGE_VERB_SPAN_SRC);
 }
 
+/**
+ * The construct-nesting depth the merge guard's inner-body walks
+ * (`matchMergeVerbTail` in merge-parse.ts, `restBodyTexts` /
+ * `findVerbSpanInSegments` in bash-merges-pr.ts) recurse to before they
+ * stop descending into nested `( … )` / `$( … )` / backtick bodies and
+ * fail CLOSED (a merge with no number / a minimal span — the fallback
+ * refusal, never a clean pass).
+ *
+ * Why 256: the deepest canary in the offline suite is a 1150-level
+ * `$(…)` chain (test-merge-guard-955-perf.ts), and the walk must analyse
+ * it — so the ceiling must sit far above realistic nesting (a few
+ * levels). The unbounded walk instead recursed one JS frame per level:
+ * a 20000-level nested-substitution command (40k chars, above the
+ * size bound in mergesPr but reachable via `mergeVerbArgs` called
+ * directly, or any future shape under the bound that nests this deep)
+ * overflowed the call stack (RangeError at ~11k frames — every frame
+ * carries a multi-KB closure). 256 is above every realistic merge
+ * command with a wide margin; past the ceiling the walk stops and
+ * returns the fail-closed signal, so NO input — however deep — can
+ * overflow the stack. One shared constant for every inner-body
+ * recursion in the merge guard, so the walks can never drift to
+ * different budgets.
+ */
+export const MAX_CONSTRUCT_DEPTH = 256;
+
 /** The anchored verb-source (the verb-HEAD test in merge-wrappers.ts). */
 export function mergeVerbHeadRegex(): RegExp {
   return /^(?:gh|glab|\S*\/(?:gh|glab))\s+(?:-R\s+\S+|--repo\s+\S+|--project\s+\S+)?\s*(?:pr|mr)\s+merge(?:\s|$)/;
@@ -332,12 +357,26 @@ export function parseArgsAfterVerb(args: string): {
     if (t === "") continue;
     if (t.startsWith("-")) {
       // `--flag=value` form: the value is inside the token and is never a
-      // positional number.
+      // positional number. The repo flags behave IDENTICALLY to the
+      // space-separated form (below): the value is captured verbatim and
+      // any trailing glued `)` is stripped, so the same string reaches the
+      // `isValidRepoValue` boundary check upstream in both forms — an
+      // invalid value is refused there, never interpolated. A quoted value
+      // (`--repo="o/r"`) keeps its inner quotes in the captured string, so
+      // the boundary check refuses it — the same treatment as an unquoted
+      // invalid value. #955 round 14: the eq branch previously skipped the
+      // validity check the space form applies, so `--repo=o/r;id` passed
+      // where `--repo o/r;id` refused.
       const eq = t.indexOf("=");
       if (eq > 0) {
         const flagName = t.slice(0, eq);
-        if (flagName === "--repo" || flagName === "--project")
-          repo = stripGluedParen(t.slice(eq + 1));
+        if (flagName === "--repo" || flagName === "--project") {
+          const val = t.slice(eq + 1);
+          if (val.length > 0) {
+            const q = val[0];
+            repo = stripGluedParen(q === "'" || q === '"' ? val.slice(1, -1) : val);
+          }
+        }
         continue;
       }
       if (t === "-R" || t === "--repo" || t === "--project") {

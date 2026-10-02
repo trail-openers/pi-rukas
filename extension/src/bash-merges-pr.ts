@@ -1,6 +1,12 @@
 import { mergeVerbArgs } from "./merge-parse.ts";
 import { exceedsAnalysisBound } from "./merge-size.ts";
-import { mergeVerbSpanRegex, rawTokens, shellSegments, unquoteArg } from "./merge-tokens.ts";
+import {
+  MAX_CONSTRUCT_DEPTH,
+  mergeVerbSpanRegex,
+  rawTokens,
+  shellSegments,
+  unquoteArg,
+} from "./merge-tokens.ts";
 import { innerBodies, matchMergeVerb, mergeVerbUnwrapOne } from "./merge-verb-head.ts";
 import { skipLeadingWrappers } from "./merge-wrappers.ts";
 
@@ -99,7 +105,7 @@ export function mergesPr(command: string): string | undefined {
   // (and the REST doors below are tried next).
   const innerArgs = mergeVerbArgs(command);
   if (innerArgs !== undefined) {
-    const span = findVerbSpanInSegments(command);
+    const span = findVerbSpanInSegments(command, MAX_CONSTRUCT_DEPTH);
     // No span found (unparseable command, or a merge hidden past the
     // unwrap budget): fail closed with a minimal span.
     if (span !== undefined) return span;
@@ -119,20 +125,30 @@ export function mergesPr(command: string): string | undefined {
   // hidden in a body-inside-a-body is not missed by a missing anchor (the
   // FORGE regex's leading separator set does not include `$` or `(`, so
   // `gh` after a `$( ` in the stripped text would never anchor).
-  return restDoors(restBodyTexts(command));
+  return restDoors(restBodyTexts(command, MAX_CONSTRUCT_DEPTH));
 }
 
 /**
  * The whole command plus the bodies of every subshell / substitution /
- * backtick construct at EVERY depth — the recursive flatten the REST doors
- * run over. Every body is a strict substring of the text that produced it,
- * so the recursion terminates on pathological input (the 50-level-nested
- * `$(…)` perf canary in test-merge-guard-955-r2.ts exercises this).
+ * backtick construct up to `depth` levels (the `MAX_CONSTRUCT_DEPTH`
+ * budget) — the recursive flatten the REST doors run over. The recursion
+ * terminates for any input: every body is a strict substring of the text
+ * that produced it (no exponential blowup), and `depth` decrements per
+ * level — past the ceiling the flatten simply stops descending, which is
+ * a lossless fail-closed signal for the REST doors (a merge hidden past
+ * the ceiling has already been refused by the verb door above, which walks
+ * the same bodies under the same budget and returns its fail-closed
+ * span). The bound is what keeps a 20000-level nested-substitution
+ * command from overflowing the JS call stack; the 50-level-nested `$(…)`
+ * REST canary in test-merge-guard-955-r2.ts sits far under the ceiling
+ * and is analysed unchanged.
  */
-function restBodyTexts(text: string): string[] {
+function restBodyTexts(text: string, depth: number): string[] {
   const out = [text];
   const bodies = innerBodies(text);
-  for (const b of bodies) out.push(...restBodyTexts(b));
+  for (const b of bodies) {
+    out.push(...restBodyTexts(b, depth <= 0 ? 0 : depth - 1));
+  }
   return out;
 }
 
@@ -319,20 +335,27 @@ function restEndpointToken(args: string[]): string | undefined {
 /**
  * Find the matched verb span in the first segment (or nested inner body)
  * whose head matches `matchMergeVerb`. Recurses into `( … )` / `$( … )` /
- * backtick bodies the same way `mergeVerbArgs` does. The recursion
- * terminates: every body is a strict substring of the text that produced
- * it, so each recursive call operates on a strictly shorter string — no
- * exponential blowup on pathological input.
+ * backtick bodies the same way `mergeVerbArgs` does, under the same
+ * `MAX_CONSTRUCT_DEPTH` budget. The recursion terminates and is bounded:
+ * every body is a strict substring of the text that produced it (no
+ * exponential blowup), and `depth` decrements per level — past the ceiling
+ * the walk simply returns undefined (no span). The caller (`mergesPr`)
+ * already knows the verb door matched (it only calls this after
+ * `mergeVerbArgs` returned non-undefined) and fails closed with the
+ * minimal `"gh pr merge"` span when no span is found — including the
+ * past-the-ceiling case — so an undefined return here can never read as
+ * "not a merge".
  */
-function findVerbSpanInSegments(text: string): string | undefined {
+function findVerbSpanInSegments(text: string, depth: number): string | undefined {
   const segments = shellSegments(text);
   if (segments.length === 0) return undefined;
   for (const seg of segments) {
     const span = segmentSpanOrUnwrapped(seg);
     if (span !== undefined) return span;
     const bodies = innerBodies(seg);
+    if (depth <= 0) continue; // budget exhausted — no span (the caller fails closed)
     for (const body of bodies) {
-      const inner = findVerbSpanInSegments(body);
+      const inner = findVerbSpanInSegments(body, depth - 1);
       if (inner !== undefined) return inner;
     }
   }

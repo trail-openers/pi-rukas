@@ -16,6 +16,7 @@
  */
 
 import {
+  MAX_CONSTRUCT_DEPTH,
   isValidRepoValue,
   mergeVerbSpanRegex,
   parseArgsAfterVerb,
@@ -59,6 +60,9 @@ export function mergeVerbArgs(command: string): string | undefined {
  * could be interpolated into a shell exec string and execute arbitrary
  * commands) is rejected at this boundary — the guard refuses with
  * "unsafe repo value" and never interpolates it (#955 lens fix 1, HIGH).
+ * Both the `--repo VALUE` and `--repo=VALUE` forms are validated (the eq
+ * form parses to the same unquoted value, so both reach this check —
+ * #955 round 14).
  */
 export function mergeVerbRepo(
   command: string,
@@ -69,7 +73,13 @@ export function mergeVerbRepo(
   const args = mergeVerbArgs(command);
   if (args === undefined) return undefined;
   const tailRepo = parseArgsAfterVerb(args).repo;
-  if (tailRepo) {
+  if (tailRepo !== undefined) {
+    // A repo value was read (possibly via `--repo=`/`--project=` — the
+    // eq form lands in the same field as the space form). Validate it:
+    // an invalid value fails closed as unsafe (the guard refuses with
+    // "unsafe repo value" and never interpolates it). A VALID value is
+    // the repo. When no repo flag is present, fall through to the
+    // pre-verb flag / URL repo (below).
     if (!isValidRepoValue(tailRepo)) return { kind: "unsafe", raw: tailRepo };
     return { kind: "repo", repo: tailRepo };
   }
@@ -129,11 +139,15 @@ export function extractMergeRepo(args: string): string | undefined {
  *   argument tail at all — the same no-number fallback, surfaced as the
  *   empty tail).
  *
- * The inner-body recursion is unbounded in PRACTICE but TERMINATING:
- * every extracted body is a strict substring of the text that produced it,
- * so the recursion depth is bounded by the text length — a pathological
- * command with 3000 backticks terminates in O(n) total work, no throw, no
- * exponential blowup.
+ * The inner-body recursion is bounded by `MAX_CONSTRUCT_DEPTH`
+ * (merge-tokens.ts): past the ceiling the walk stops descending and
+ * fails closed (the null signal below, gated on `hasMergeVerbInRaw` so a
+ * non-merge command with deep constructs still reads as not-a-merge). The
+ * bound is what keeps a 20000-level nested-substitution command from
+ * overflowing the JS call stack (the old unbounded walk — every frame
+ * carries a multi-KB closure — threw RangeError at ~11k frames on that
+ * input); every body remains a strict substring of the text that produced
+ * it, so the walk is O(n) and terminates for any depth under the ceiling.
  */
 function matchMergeVerbTail(command: string): string | undefined {
   let text = command;
@@ -153,7 +167,7 @@ function matchMergeVerbTail(command: string): string | undefined {
     // refuse, not extract a tail from the malformed text.)
     if (rawTokens(text).terminated === false) return "";
   }
-  const tail = matchSegmentsTail(text);
+  const tail = matchSegmentsTail(text, MAX_CONSTRUCT_DEPTH);
   // A `null` tail is the fail-closed signal (unparseable / unbalanced /
   // exhausted budget). Fail closed ONLY when the raw text carries a merge
   // verb — an unterminated quote in a NON-merge command (`echo "( hi`)
@@ -173,11 +187,16 @@ function matchMergeVerbTail(command: string): string | undefined {
  * construct or an unparseable segment was hit (fail closed), or `undefined`
  * when no segment matches.
  *
- * The recursion terminates: every body is a strict substring of the text
- * that produced it, so each recursive call operates on a strictly shorter
- * string — no exponential blowup, no throw on pathological input.
+ * The recursion terminates and is bounded: every body is a strict
+ * substring of the text that produced it (no exponential blowup), and
+ * `depth` (the remaining budget, capped at `MAX_CONSTRUCT_DEPTH` by the
+ * caller) is decremented per level — past the ceiling the walk stops
+ * descending and fails closed (the null signal), so no input can overflow
+ * the JS stack. The ceiling sits far above the deepest canary (a 1150-
+ * level `$(…)` chain), so realistic and canary-shaped commands analyse
+ * unchanged; only pathologically deep input hits the bound.
  */
-function matchSegmentsTail(text: string): string | null | undefined {
+function matchSegmentsTail(text: string, depth: number): string | null | undefined {
   const segments = shellSegments(text);
   if (segments.length === 0) return null; // the raw text had an unterminated quote
   for (const seg of segments) {
@@ -193,8 +212,9 @@ function matchSegmentsTail(text: string): string | null | undefined {
     const segTail = segmentMergeTail(seg);
     if (segTail !== undefined) return segTail;
     const bodies = innerBodies(seg);
+    if (depth <= 0) return null; // budget exhausted — fail closed (the caller gates on hasMergeVerbInRaw)
     for (const body of bodies) {
-      const inner = matchSegmentsTail(body);
+      const inner = matchSegmentsTail(body, depth - 1);
       if (inner === null) return null; // unparseable inner — fail closed
       if (inner !== undefined) return inner; // the inner merge's tail
     }

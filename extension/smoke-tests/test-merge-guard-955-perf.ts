@@ -28,6 +28,7 @@ import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { mergesPr } from "../src/bash-merges-pr.ts";
+import { mergeVerbArgs, mergeVerbRepo } from "../src/merge-parse.ts";
 import { type MergeTarget } from "../src/merge-target.ts";
 import { registerMergeGuard } from "../src/merge-guard.ts";
 import { type LedgerEntry, ledgerPathFor } from "../src/review-ledger.ts";
@@ -174,7 +175,90 @@ assert(
   "small-shape: `git merge main` → undefined (not a PR merge)",
 );
 
-// ---------------------------------------------------------------- 4. Fail-closed on throw (REAL hook)
+// ---------------------------------------------------------------- 5. Depth bound
+// #955 round 14: the inner-body walks (matchSegmentsTail, restBodyTexts,
+// findVerbSpanInSegments) were unbounded — a 20000-level nested-substitution
+// command overflowed the JS call stack (RangeError). MAX_CONSTRUCT_DEPTH
+// (merge-tokens.ts) now caps the recursion; past the ceiling the walk fails
+// closed (a merge with no number), never throws.
+
+// A 20000-deep paren merge: mergeVerbArgs must return (the empty-string
+// fail-closed tail), not throw; mergesPr must return a span, not throw.
+{
+  const cmd = "(".repeat(20000) + "gh pr merge 17" + ")".repeat(20000);
+  const t0 = performance.now();
+  let args: string | undefined;
+  let threw = false;
+  try {
+    args = mergeVerbArgs(cmd);
+  } catch {
+    threw = true;
+  }
+  const dt = performance.now() - t0;
+  assert(!threw, `depth-bound: 20000-deep paren merge — mergeVerbArgs did not throw`);
+  assert(args !== undefined, `depth-bound: 20000-deep paren merge — mergeVerbArgs returned a tail`);
+  assert(dt < 1500, `depth-bound: 20000-deep paren merge — mergeVerbArgs in ${dt.toFixed(1)}ms (<1500ms)`);
+
+  let span: string | undefined;
+  try {
+    span = mergesPr(cmd);
+  } catch {
+    span = undefined;
+    threw = true;
+  }
+  assert(!threw, `depth-bound: 20000-deep paren merge — mergesPr did not throw`);
+  assert(span !== undefined, `depth-bound: 20000-deep paren merge — mergesPr returned a span`);
+}
+
+// A 70-deep $(… ) merge: still matched (well under the 256 ceiling).
+{
+  let cmd = "gh pr merge 17";
+  for (let i = 0; i < 70; i++) cmd = "$(" + cmd + ")";
+  const args = mergeVerbArgs(cmd);
+  assert(args !== undefined, `depth-bound: 70-deep $(…) merge — mergeVerbArgs returned a tail`);
+}
+
+// A single-level paren: (gh pr merge 17) → number 17.
+{
+  const args = mergeVerbArgs("(gh pr merge 17)");
+  const num = args !== undefined ? Number(args.trim().replace(/\)/g, "")) : undefined;
+  assert(num === 17, `depth-bound: (gh pr merge 17) → number 17`);
+}
+
+// A 20000-deep paren NON-merge: undefined, no throw.
+{
+  const cmd = "(".repeat(20000) + "echo hi" + ")".repeat(20000);
+  let args: string | undefined;
+  let threw = false;
+  try {
+    args = mergeVerbArgs(cmd);
+  } catch {
+    threw = true;
+  }
+  assert(!threw, `depth-bound: 20000-deep non-merge — no throw`);
+  assert(args === undefined, `depth-bound: 20000-deep non-merge — undefined`);
+}
+
+// ---------------------------------------------------------------- 6. Eq-form repo flag
+// #955 round 14: the --repo=VALUE eq branch now unquotes the value the
+// same way the space-separated form does, so both forms reach the same
+// isValidRepoValue boundary check.
+{
+  const r = mergeVerbRepo("gh pr merge --repo=o/r 17");
+  assert(
+    r !== undefined && r.kind === "repo" && r.repo === "o/r",
+    `eq-repo: --repo=o/r → kind "repo", repo "o/r"`,
+  );
+}
+{
+  const r = mergeVerbRepo("gh pr merge --repo o/r 17");
+  assert(
+    r !== undefined && r.kind === "repo" && r.repo === "o/r",
+    `eq-repo: --repo o/r (space form) → kind "repo", repo "o/r"`,
+  );
+}
+
+// ---------------------------------------------------------------- 7. Fail-closed on throw (REAL hook)
 // The hook's try/catch in merge-guard.ts wraps the `mergesPr` call: a throw
 // (RangeError on pathological input) is CATCHED and blocked — fail closed —
 // instead of crashing and passing the command through. No natural input
