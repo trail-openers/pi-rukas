@@ -70,87 +70,78 @@ export function siteCensus(verifiedV: string): Record<string, string[]> {
     // "Last verified against pi" 1.0.0 claim line; the §5 embargo comment's
     // 1.2.20 bun floor is not a claim.)
     "AGENTS.md": v,
-    // The dev pins (lockstep) + this gate's own literals + its fixture.
-    // (The @earendil-works/pi marker puts the 1.x pins in a claim context; the other 1.x
-    // literals in the file — 1.2.20 bun engines floor, 1.9.0 biome — are not Pi claims.)
+    // The dev pins (lockstep; the @earendil-works/pi marker puts the 1.x
+    // pins in a Pi-claim context). The 1.2.20 bun engines floor and the
+    // 1.9.0 biome floor are 1.x literals with no Pi-claim context, so the
+    // detector ignores them — and this row must not declare them.
     "extension/package.json": ["1.0.0"],
-    // …plus this gate's own canary literals (0.82.1 stale-verified canary, 0.84.3 floor canary,
-    // 0.83.9/0.85.0/0.84.5 numeric-matrix canaries, 0.83.0 --exclude-tools canary, 0.86.0
-    // gitignore-listing canary, 0.87.0 undeclared-literal canary — all in canary strings, all
-    // must stay visible to the census).
-    // (Plus the 1.0.1/1.1.0/1.2.20 post-#959 claim-context canaries.)
+    // …plus this gate's own canary literals (0.82.1 stale-verified canary,
+    // 0.84.3 floor canary, 0.83.9/0.85.0/0.84.5 numeric-matrix canaries,
+    // 0.83.0 --exclude-tools canary, 0.86.0 gitignore-listing canary, 0.87.0
+    // undeclared-literal canary — all in canary strings, all must stay
+    // visible to the census; the 1.0.1/1.1.0 canaries sit in the
+    // "pi-coding-agent"/"@earendil-works" claim-context strings, and the
+    // 1.2.20 bun-floor canary string carries no Pi marker, so it is prose
+    // to the detector and is not declared here — the 0.99.0 co-pin canary
+    // is likewise a prose literal).
     // Self-census: if this file grows a new canary literal, the list must
     // grow here too — the gate fails otherwise (a self-census that cannot
     // see its own declaration is the "census that passes by silence"
     // failure mode this gate exists to stop).
-    "test-pi-version-drift.ts": ["0.84.4", "0.99.0", "0.82.0", "0.82.1", "0.84.3", "0.83.9", "0.85.0", "0.84.5", "0.83.0", "0.86.0", "0.87.0", "1.0.0", "1.0.1", "1.1.0", "1.2.20"],
-    // The preflight floor (MIN_PI_VERSION + the #578 provenance/bug-window notes).
-    // (Post-#959: the 0.84.4/0.84.3 bug-window literals + the 1.0.0 floor.)
-    "install-preflight.sh": ["1.0.0", "0.84.4", "0.84.3"],
-    // The install floor on the install line. (Post-#959: the 1.0.0 pi pin; the 1.2.20 bun
-    // floor sits within 20 chars of the "pi-coding-agent@1.0.0" marker — claim-adjacent,
-    // declared here, not a Pi claim, but the window is what it is.)
+    "test-pi-version-drift.ts": ["0.84.4", "0.82.0", "0.87.0", "0.84.5", "0.82.1", "0.86.0", "1.0.0", "1.0.1", "1.1.0"],
+    // The preflight floor (MIN_PI_VERSION = 1.0.0) plus the 0.84.4
+    // bug-window literal in the §4 provenance comment (the 0.84.3 in the §5
+    // embargo comment is 30+ chars from every marker, so it is not a
+    // declared claim).
+    "install-preflight.sh": ["1.0.0", "0.84.4"],
+    // The install floor on the install line ("Bun ≥ 1.2.20 and Node ≥ 22
+    // (Pi's own requirement)") — the 1.2.20 bun floor sits within 20 chars
+    // of the "Pi's" marker, detected as claim-adjacent, declared here.
     "README.md": ["1.0.0", "1.2.20"],
-    // Floor pin (×2: install line + pi-mcp-adapter comment) + #578 bug-window note.
-    // (Pre-#959: the 0.84.4 install-line pin + the 0.84.3 adapter note; post-#959: the 1.0.0
-    // install-line pin + the §4 pi-1.0 reference — the 0.84.4/0.84.3 bug-window literals
-    // moved to the install-preflight.sh row above.)
-    "Dockerfile": ["1.0.0"],
+    // The floor pin on the install line.
+    ".devcontainer/Dockerfile": ["1.0.0"],
     // test-pi-min-version.ts fakes pi --version output (at-floor / bug-window / matrix).
     // (Post-#959: the 0.8x.y literals are the pre-#959 bug-window cases, the 1.x the
     // current-floor matrix + numeric-compare cases.)
-    "test-pi-min-version.ts": ["1.0.0", "1.0.1", "1.1.0", "0.84.4", "0.84.3", "0.83.9", "0.85.0"],
-    // The existing prerequisite-drift gate + its EXCEPTIONS pin + canary comments.
-    // (Post-#959: 0.8x.y — the historical claim space, detected unconditionally; its
-    // 1.x literals sit in "Pi 1.0.0's" claim-context strings within the 20-char window.
-    // The 0.84.4/0.84.3 fixtures moved to the prerequisite-drift fixtures themselves,
-    // exercised by that gate.)
+    "test-pi-min-version.ts": ["0.84.4", "0.84.3", "0.83.9", "0.85.0"],
+    // The existing prerequisite-drift gate + its EXCEPTIONS pin + canary
+    // comments. 0.8x.y is detected unconditionally; the 1.x literals sit in
+    // "Pi 1.0.0's" claim-context strings within the 20-char window. The
+    // 0.84.4/0.84.3 fixtures moved to the prerequisite-drift fixtures
+    // themselves, exercised by that gate.
     "test-prerequisite-drift.ts": ["0.84.4", "0.84.3", "1.0.0", "1.1.0"],
-    // The Dockerfile-pins gate's canary comment line.
-    // (Post-#959: "Pi 1.0.0's native MCP" + the fixture "@earendil-works/pi-coding-agent@1.0.0" pin.)
+    // The Dockerfile-pins gate's canary comment line ("Pi 1.0.0's native
+    // MCP") + the fixture "@earendil-works/pi-coding-agent@1.0.0" pin.
     "test-dockerfile-pins.ts": ["1.0.0"],
-    // The live shape test's "Pi 1.0.0's native MCP" doc comments.
-    "test-pi-shape-live.ts": ["1.0.0"],
-    // The --exclude-tools rationale (Pi >= 0.83.0).
-    // (Post-#959: + the CHILD_ARGS_BASE doc comment "Under Pi 1.0.0's semantics" +
-    // A comment referencing the pinned pi-tui d.ts (0.82.0 pre-#959; the row's 1.0.0 is the §4 reference).) The pinned pi-tui d.ts
-    // comment (0.82.0 pre-#959; the row's 1.0.0 is the §4 reference).
-    "spawn-support.ts": ["0.83.0", "1.0.0"],
+    // The --exclude-tools rationale (0.83.0, detected unconditionally); the
+    // "Under Pi 1.0.0's semantics" CHILD_ARGS_BASE doc comment is 23 chars
+    // past the Pi marker, so the 1.0.0 there is prose, not a detected claim.
+    "spawn-support.ts": ["0.83.0"],
     // The pi-mcp-adapter-skip doc comment ("On Pi 1.0.0, an installed
-    // extension...").
-    "spawn-extension-forward.ts": ["1.0.0"],
-    // The census-table home moved here by #959 (the gate file stays under
-    // the 500-line cap by moving code, not compressing comments). This file
-    // carries the same canary literals as test-pi-version-drift.ts's own
-    // row, so its superset is the same list — a literal added to one table
-    // must be added to both or the census fails (self-census of the census).
-    "pi-version-census.ts": ["0.84.4", "0.99.0", "0.82.0", "0.82.1", "0.84.3", "0.83.9", "0.85.0", "0.84.5", "0.83.0", "0.86.0", "0.87.0", "1.0.0", "1.0.1", "1.1.0", "1.2.20"],
+    // extension...") sits 22 chars past the "Pi" marker — prose, not a
+    // detected claim (the 1.x claim-context canaries live in the
+    // version-drift gate, not here).
+    "spawn-extension-forward.ts": [],
     // bun.lock resolves the declared pins (lockfile, not a claim — the gate
     // reads the DECLARED pin from package.json; the lock is listed so a
     // lockstep bump is visible here, not silent). The @earendil-works/pi
     // package names put the 1.0.0 pins in a Pi-claim context; the typebox
-    // 1.3.27 on the pi-agent-core line is within the 20-char window of the
-    // marker (declared here, not a Pi claim — the window is what it is).
-    "bun.lock": ["1.0.0", "1.3.27"],
-    // The embargo override comment's "the Pi 1.0.0 pin" (claim context via
-    // the "Pi " marker; the 1.2.20 bun floor is outside the window).
-    "bunfig.toml": ["1.0.0"],
-    // The Pi 1.0.0 native-MCP wiring comments + step-6 banner ("Pi 1.0.0's
-    // native MCP" is a claim; the 1.2.20 bun floor is not).
-    "install.sh": ["1.0.0"],
-    // The sandbox wrapper's native-MCP bind-mount comment names the Pi 1.0.0
-    // path (issue #959); the header + mount comment both reference it.
-    "bin/pi-rukas": ["1.0.0"],
-    // No claim: bump examples are relative (~0.XY.Z → ~0.XY.(Z+1)).
-    // No current-claim literals (historical 0.7x.y only — out of census scope).
-    // Post-#959: 1.0.0 is the native-MCP walkthrough's pi claim; the other 1.x literals
-    // are bun/npm floors, not Pi claims.
-    "CONTRIBUTING.md": ["1.0.0"],
+    // 1.3.27 sits outside the 20-char window of the marker, so it is not
+    // declared here.
+    "extension/bun.lock": ["1.0.0"],
+    // No claim: bump examples are relative (~0.XY.Z → ~0.XY.(Z+1)); the
+    // "Pi 1.0.0's native MCP" prose is 23 chars past the marker, so nothing
+    // in the file is a detected claim. (Other 1.x literals — bun, npm and
+    // release-lease floors — are not Pi claims.)
+    "CONTRIBUTING.md": [],
     // The census-table home moved here by #959 (the gate file stays under
-    // the 500-line cap by moving code, not compressing comments). This file
-    // carries the same canary literals as test-pi-version-drift.ts's own
-    // row, so its superset is the same list — a literal added to one table
-    // must be added to both or the census fails (self-census of the census).
-    "pi-version-census.ts": ["0.84.4", "0.99.0", "0.82.0", "0.82.1", "0.84.3", "0.83.9", "0.85.0", "0.84.5", "0.83.0", "0.86.0", "0.87.0", "1.0.0", "1.0.1", "1.1.0", "1.2.20"],
+    // the 500-line cap by moving code, not compressing comments). The
+    // "@earendil-works/pi" marker in its own table literal puts the 1.x
+    // row literals in a claim context; the 0.8x.y entries are the canaries
+    // copied verbatim from the gate's own row (self-census of the census).
+    // Declared literals are exactly the detected set — the gate's census
+    // block proves declared ⊆ detected, so a literal the detector cannot
+    // see is a gate failure, not a silent entry.
+    "pi-version-census.ts": ["0.82.1", "0.84.3", "0.83.9", "0.85.0", "0.84.5", "0.83.0", "0.86.0", "0.87.0", "0.84.4", "0.82.0", "1.0.0"],
   };
 }

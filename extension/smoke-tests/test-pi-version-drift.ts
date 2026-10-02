@@ -397,6 +397,11 @@ if (verified && pins.codingAgent) {
     const unexpected = literals.filter((v) => !allowed.includes(v));
     if (unexpected.length > 0) surprises.push(`${rel}: unexpected ${unexpected.join(", ")}`);
     else declared++;
+    // Declared ⊆ detected: a literal the claim-context detector cannot see
+    // (e.g. a "Pi 1.0.0" prose literal >20 chars from the marker) is a dead
+    // declaration — it would pass the gate by silence. Fail it loudly.
+    const undetectable = allowed.filter((v) => !literals.includes(v));
+    if (undetectable.length > 0) surprises.push(`${rel}: declares ${undetectable.join(", ")} but the detector sees none of them`);
   }
   assert(
     surprises.length === 0,
