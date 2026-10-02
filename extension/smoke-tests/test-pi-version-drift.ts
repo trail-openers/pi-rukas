@@ -28,11 +28,15 @@
  *   (e) a staleness NUDGE (non-fatal console.warn) when the verified line
  *       lags the declared pin by more than one minor — a prompt to re-run
  *       the live shape tests, never a ceiling;
- *   (f) a site census: every repo file that carries a bare 0.8x.y Pi
- *       version literal must be a declared site whose expected-literal
- *       superset covers what is found — a new unreviewed version claim
- *       fails the gate instead of drifting silently (the structural reason
- *       the #787 contradiction survived two minors).
+ *       (f) a site census: every repo file that carries a bare 0.8x.y Pi
+ *       version literal — or a 1.x.y literal in a Pi-claim context (a
+ *       `pi-coding-agent`/`pi-tui`/`@earendil-works/pi` pin, `MIN_PI_VERSION`,
+ *       or the "Last verified against pi" claim line) — must be a declared
+ *       site whose expected-literal superset covers what is found; a new unreviewed version claim fails the gate instead of
+ *       drifting silently (the structural reason the #787 contradiction
+ *       survived two minors). 1.x literals with no Pi-claim context (bun,
+ *       biome, oo, ci floors) are NOT claims — the census is a Pi gate and
+ *       must not fail on an unrelated tool bump.
  *
  * What it deliberately does NOT do:
  *   - enforce dev pin == install floor (that would re-impose the
@@ -135,23 +139,69 @@ export function parseAgentsRestatement(agentsMd: string): { version: string; dat
 }
 
 /**
+ * Pi-claim contexts: every index at which a 1.x version literal starts and
+ * sits within 20 chars AFTER one of these markers — a `pi-coding-agent`
+ * pin, `pi-tui`, an `@earendil-works/pi` package name, `MIN_PI_VERSION`,
+ * or the "Last verified against pi" claim line. A version 20+ chars past "Pi 1.0.0's ... semantics" comments is prose,
+ * not a claim: the census never declared those sites, so the window is
+ * sized to what the repo actually claims, not to arbitrary distance.
+ */
+const PI_CLAIM_MARKERS = [
+  /pi-coding-agent/i,
+  /pi-tui/i,
+  /@earendil-works\/pi/i,
+  /MIN_PI_VERSION/i,
+  /last verified against[\s`*_]*pi/i,
+];
+
+const PI_CLAIM_WINDOW = 20;
+
+export function piClaimContexts(text: string): number[] {
+  const found = new Set<number>();
+  const versionRe = /(?<![\d.])\d+(?:\.\d+)+/g;
+  for (const marker of PI_CLAIM_MARKERS) {
+    for (const m of text.matchAll(new RegExp(marker.source, "gi"))) {
+      const start = m.index as number;
+      const window = text.slice(start + m[0].length, start + m[0].length + PI_CLAIM_WINDOW);
+      for (const v of window.matchAll(versionRe)) {
+        found.add(start + m[0].length + (v.index as number));
+      }
+    }
+  }
+  return [...found].sort((a, b) => a - b);
+}
+
+/**
  * Bare Pi version literals in a text blob. Post-#959 the current-claim
  * space is 1.x (the native-MCP line); 0.8x.y literals survive as
  * historical/provenance notes (the #578 floor provenance, the pre-#959
  * pin) and are still tracked by the census so they cannot drift silently.
+ *
+ * 1.x literals are returned ONLY when they sit within a few chars of a
+ * Pi-claim context (see piClaimContexts) — "Last verified against pi
+ * 1.0.0" is a claim, "bun >= 1.2.20" is not, and "Pi 1.0.0's semantics"
+ * prose is not (20+ chars from the nearest marker: prose, not a claim).
+ * Without the context check every unrelated tool bump (bun, biome, oo,
+ * ci) would fail a Pi-drift gate. 0.8x.y literals stay unconditional:
+ * the census predates 1.x, the historical 0.8x claims were the original
+ * drift surface (#787), and narrowing them would weaken the gate the
+ * ticket exists to keep.
  */
 export function piVersionLiterals(text: string): string[] {
   const out = new Set<string>();
-  // 0.8x.y (historical + current-claim space pre-#959). The lookbehind
-  // excludes digits (a "0.82.0" inside "10.82.0" is not a version claim)
-  // and a leading dot (".82.0" would otherwise match the tail of "1.0.82.0").
+  const claims = piClaimContexts(text);
+  // 0.8x.y (historical + current-claim space pre-#959), unconditional.
+  // The lookbehind excludes digits (a "0.82.0" inside "10.82.0" is not a
+  // version claim) and a leading dot (".82.0" would otherwise match the
+  // tail of "1.0.82.0").
   for (const m of text.matchAll(/(?<![\d.])0\.8[0-9]+\.[0-9]+/g)) out.add(m[0] as string);
-  // 1.x.y (current-claim space post-#959). Same boundary guards: a digit
-  // before the "1." ("11.10.0", "21.0.0") or a dot ("0.1.0") means the
-  // match is part of a longer version, not a standalone Pi claim. Bun and
-  // npm floor literals (>= 11.10.0) would otherwise surface as phantom
-  // "1.10.0" claims in every file that names an npm/bun floor.
-  for (const m of text.matchAll(/(?<![\d.])1\.[0-9]+\.[0-9]+/g)) out.add(m[0] as string);
+  // 1.x.y (current-claim space post-#959), Pi-claim contexts only. Same
+  // boundary guards: a digit before the "1." ("11.10.0", "21.0.0") or a
+  // dot ("0.1.0") means the match is part of a longer version, not a
+  // standalone Pi claim.
+  for (const m of text.matchAll(/(?<![\d.])1\.[0-9]+\.[0-9]+/g)) {
+    if (claims.includes(m.index as number)) out.add(m[0] as string);
+  }
   return [...out];
 }
 
@@ -203,92 +253,68 @@ export function siteCensus(verifiedV: string): Record<string, string[]> {
     // The audit code-search policy's config-path reference ("Pi 1.0.0's
     // native MCP config") + the user-global native MCP config path.
     "docs/audit-code-search-policy.md": [...v, "1.0.0"],
-    // The AGENTS.md § 4 restatement (+ the date's digits + the §5 embargo
-    // comment's 1.2.20 bun floor literal).
-    "AGENTS.md": [...v, "1.2.20"],
-    // The dev pins (lockstep). The other 1.x literals in the file (1.2.20
-    // bun engines floor, 1.9.0 biome) are not Pi claims.
-    "extension/package.json": ["1.0.0", "1.2.20", "1.9.0"],
+    // The AGENTS.md § 4 restatement (the "Last verified against pi" claim
+    // line; the §5 embargo comment's 1.2.20 bun floor is not a claim).
+    "AGENTS.md": v,
+    // The dev pins (lockstep; the @earendil-works/pi marker puts the 1.x
+    // pins in a claim context). The other 1.x literals in the file
+    // (1.2.20 bun engines floor, 1.9.0 biome) are not Pi claims.
+    "extension/package.json": ["1.0.0"],
     // The preflight floor (MIN_PI_VERSION + the #578 provenance/bug-window
     // note's 0.84.4/0.84.3 literals).
     "install-preflight.sh": ["1.0.0", "0.84.4", "0.84.3"],
-    // The install floor on the install line (1.2.20 is the bun floor, not a
-    // Pi claim).
+    // The install floor on the install line (the 1.0.0 pi pin; the 1.2.20
+    // bun floor sits within 20 chars of the "pi-coding-agent@1.0.0"
+    // marker on the same line, so the census sees it as claim-adjacent —
+    // declared here, not a Pi claim, but the window is what it is).
     "README.md": ["1.0.0", "1.2.20"],
     // Floor pin on the install line.
     "Dockerfile": ["1.0.0"],
-    // The canary fixture (one-sided co-pin: 0.99.0 vs 0.84.4 — historical shape).
-    "package.json": ["0.99.0", "0.84.4"],
     // test-pi-min-version.ts fakes pi --version output (at-floor / below-floor
     // matrix + numeric-compare cases).
     "test-pi-min-version.ts": ["1.0.0", "1.0.1", "1.1.0", "0.84.4", "0.84.3", "0.83.9", "0.85.0"],
-    // The prerequisite-drift gate + its EXCEPTIONS pin + canary comments
-    // (1.1.0 is the fixture Dockerfile pin, an above-floor canary).
-    "test-prerequisite-drift.ts": ["1.0.0", "1.1.0", "0.84.4", "0.84.3"],
-    // The Dockerfile-pins gate's canary comment line (post-#959: 1.0.0 pi pin canary).
+    // The prerequisite-drift gate's canary literals (0.8x.y — the
+    // historical claim space, detected unconditionally; its 1.x literals
+    // sit in "Pi 1.0.0's" claim-context strings within the 20-char window).
+    "test-prerequisite-drift.ts": ["0.84.4", "0.84.3", "1.0.0", "1.1.0"],
+    // The Dockerfile-pins gate's canary lines ("Pi 1.0.0's native MCP",
+    // the fixture "@earendil-works/pi-coding-agent@1.0.0" pin).
     "test-dockerfile-pins.ts": ["1.0.0"],
-    // The --exclude-tools rationale (Pi >= 0.83.0 — historical, still accurate)
-    // + the CHILD_ARGS_BASE doc comment that names the 1.0.0 semantics.
-    "spawn-support.ts": ["0.83.0", "1.0.0"],
-    // The pi-mcp-adapter-skip doc comments in spawn-extension-forward.ts name
-    // the 1.0.0 semantics.
-    "spawn-extension-forward.ts": ["1.0.0"],
-    // The live shape test's mcp-prefix doc comment names the 1.0.0 convention.
+    // The live shape test's "Pi 1.0.0's native MCP" doc comments.
     "test-pi-shape-live.ts": ["1.0.0"],
-    // The discover-extensions adapter-skip fixture (package.json version
-    // literal of the legacy adapter, not a Pi claim — declared so the
-    // basename census does not flag it as a Pi version).
-    "test-discover-extensions.ts": ["1.0.0"],
-    // test-pi-version-drift.ts's own canary literals (all the 0.8x.y canaries
-    // plus the 1.x ones).
-    // Self-census: every 1.x literal below lives in this file's own canary
-    // comments and canary inputs (the 0.8x.y canaries are listed explicitly;
-    // the 1.x ones come from the bun.lock declaration line and the npm/bun
-    // floor examples in the piVersionLiterals docs). Adding a version to the
-    // bun.lock line below requires adding it here too — the gate fails
-    // otherwise (a self-census that cannot see its own declaration is the
-    // "census that passes by silence" failure mode this gate exists to stop).
-    "test-pi-version-drift.ts": ["1.0.0", "1.0.1", "1.1.0", "0.84.4", "0.99.0", "0.82.0", "0.82.1", "0.84.3", "0.83.9", "0.85.0", "0.84.5", "0.83.0", "0.86.0", "0.87.0", "1.0.2", "1.0.11", "1.1.1", "1.1.2", "1.1.3", "1.25.2", "1.3.0", "1.3.27", "1.5.1", "1.6.0", "1.9.4", "1.0.82", "1.10.0", "1.2.20", "1.9.0", "1.4.0", "1.3.13", "1.3.12", "1.2.3"],
+    // The --exclude-tools rationale (Pi >= 0.83.0 — historical, still accurate)
+    // + the CHILD_ARGS_BASE doc comment ("Under Pi 1.0.0's semantics").
+    "spawn-support.ts": ["0.83.0", "1.0.0"],
+    // The pi-mcp-adapter-skip doc comment ("On Pi 1.0.0, an installed
+    // extension...").
+    "spawn-extension-forward.ts": ["1.0.0"],
+    // test-pi-version-drift.ts's own canary literals: the 0.8x.y canaries
+    // (detected unconditionally) + the 1.x canaries that sit in
+    // Pi-claim-context strings in this file ("pi-coding-agent": "1.0.0",
+    // "pi 1.0.1", "pi 1.1.0", "Last verified against pi 1.0.0").
+    // Self-census: if this file grows a new canary literal, the list must
+    // grow here too — the gate fails otherwise (a self-census that cannot
+    // see its own declaration is the "census that passes by silence"
+    // failure mode this gate exists to stop).
+    "test-pi-version-drift.ts": ["0.84.4", "0.99.0", "0.82.0", "0.82.1", "0.84.3", "0.83.9", "0.85.0", "0.84.5", "0.83.0", "0.86.0", "0.87.0", "1.0.0", "1.0.1", "1.1.0", "1.2.20"],
     // bun.lock resolves the declared pins (lockfile, not a claim — the gate
-    // reads the DECLARED pin from package.json; the lock is listed so a
-    // lockstep bump is visible here, not silent). 1.x literals are the
-    // transitive @earendil-works + non-Pi dep versions.
-    "bun.lock": ["1.0.0", "1.0.1", "1.0.2", "1.0.11", "1.1.0", "1.1.1", "1.1.2", "1.1.3", "1.25.2", "1.3.0", "1.3.27", "1.5.1", "1.6.0", "1.9.0", "1.9.4"],
-    // The 4-day-embargo config: 1.2.20 is the bun floor, 1.0.0 the Pi pin
-    // name in the override comment (non-Pi and Pi claims, not lockfile noise).
-    "bunfig.toml": ["1.2.20", "1.0.0"],
-    // biome.json's schema URL (1.9.0) is a biome version, not a Pi claim.
-    "biome.json": ["1.9.0"],
-    // bun-version pins in CI (1.4.0 the bun action pin, 1.3.13 the fallback
-    // comment) — bun, not Pi.
-    ".github/workflows/ci.yml": ["1.4.0", "1.3.13"],
-    // release-please.yml's pre-1.0.0 bump note (1.0.0 is the semver
-    // threshold in the comment, not a Pi claim).
-    ".github/workflows/release-please.yml": ["1.0.0"],
-    // Keep a Changelog's own version line in the changelog header.
-    "CHANGELOG.md": ["1.1.0"],
-    // Bun-version comments (bun, not Pi).
-    "test-command-available-path.ts": ["1.3.12"],
-    "test-models.ts": ["1.4.0"],
-    // A dependabot branch name (1.2.3 is a release-please version in the
-    // branch slug, not a Pi claim).
-    "test-merge-guard.ts": ["1.2.3"],
-    // An oo version test case (oo, not Pi).
-    "test-oo-min-version.ts": ["1.0.0"],
-    // Bun-version comment (bun, not Pi).
-    "extension/src/agents-md/check.ts": ["1.3.12"],
-    // The Pi 1.0.0 native-MCP wiring comments + step-6 banner.
+    // reads the DECLARED pin from package.json). The @earendil-works/pi
+    // package names put the 1.0.0 pins in a Pi-claim context; the typebox
+    // 1.3.27 on the pi-agent-core line is within the 20-char window of the
+    // marker (declared here, not a Pi claim — the window is what it is).
+    "bun.lock": ["1.0.0", "1.3.27"],
+    // The embargo override comment's "the Pi 1.0.0 pin" (claim context via
+    // the "Pi " marker; the 1.2.20 bun floor is outside the window).
+    "bunfig.toml": ["1.0.0"],
+    // The Pi 1.0.0 native-MCP wiring comments + step-6 banner ("Pi 1.0.0's
+    // native MCP" is a claim; the 1.2.20 bun floor is not).
     "install.sh": ["1.0.0"],
-    // A rev tag in the python-tdd skill reference (a doc revision, not a Pi
-    // claim).
-    "skill/python-tdd/references/linting-config.md": ["1.10.0"],
     // The sandbox wrapper's native-MCP bind-mount comment names the Pi 1.0.0
     // path (issue #959); the header + mount comment both reference it.
     "bin/pi-rukas": ["1.0.0"],
-    // 1.2.20 is the bun floor (not a Pi claim); 1.0.0 is the native-MCP
-    // walkthrough's pi claim; 1.10.0 is the tail of the npm 11.10.0 engines
-    // floor literal (not a Pi claim).
-    "CONTRIBUTING.md": ["1.2.20", "1.0.0", "1.10.0"],
+    // 1.0.0 is the native-MCP walkthrough's pi claim (the other 1.x
+    // literals are bun/npm floors, not Pi claims).
+    "CONTRIBUTING.md": ["1.0.0"],
   };
 }
 
@@ -371,7 +397,28 @@ if (verified && pins.codingAgent) {
   const surpriseText = '"pi-coding-agent": "0.87.0"';
   assert(piVersionLiterals(surpriseText).includes("0.87.0"), "canary: an undeclared 0.8x.y literal (0.87.0) is visible to the census — the surprise path is reachable");
   const surpriseText1x = '"pi-coding-agent": "1.0.0"';
-  assert(piVersionLiterals(surpriseText1x).includes("1.0.0"), "canary: an undeclared 1.x.y literal (1.0.0) is visible to the census — the surprise path is reachable post-#959");
+  assert(piVersionLiterals(surpriseText1x).includes("1.0.0"), "canary: an undeclared 1.x.y literal (1.0.0) in a Pi-claim context is visible to the census — the surprise path is reachable post-#959");
+  // The 1.x narrowing: the SAME literal with no Pi marker nearby is a
+  // non-claim (a bun/biome/oo floor) and must NOT surface — otherwise an
+  // unrelated tool bump would fail a Pi-drift gate.
+  const nonClaim1x = "bun >= 1.2.20, biome 1.9.0, bun-version: 1.4.0";
+  assert(piVersionLiterals(nonClaim1x).length === 0, "canary: a 1.x literal with no Pi-claim context (bun/biome floor) is NOT a Pi claim — the narrowing holds");
+  // 0.8x.y keeps its pre-#959 unconditional behaviour (the historical
+  // claim space is the original drift surface — narrowing it would
+  // weaken the gate).
+  assert(piVersionLiterals("some tool pinned 0.84.5").includes("0.84.5"), "canary: 0.8x.y literals are still detected without a Pi-claim context (unconditional by design)");
+  // The maintained-claim line shape: "Last verified against pi 1.0.0" is a
+  // claim (the dedicated marker covers it; the generic `pi ` prefix does
+  // NOT — "Pi 1.0.0's semantics" prose must stay invisible).
+  assert(piVersionLiterals("Last verified against pi 1.0.1 (2026-10-02)").includes("1.0.1"), "canary: the 'Last verified against pi' claim line makes a 1.x literal a claim");
+  // ...but a "pi" 40+ chars before a 1.x literal is prose, not a claim
+  // ("Pi 1.0.0's semantics" comments — the shape the census never
+  // declared; widening the window past 20 chars would flag them all).
+  const prose1x = "post-#959 (Pi 1.0.0 native MCP), the adapter is REMOVED from the image";
+  assert(piVersionLiterals(prose1x).length === 0, "canary: 'Pi 1.0.0' with the version 6+ chars past 'Pi ' (prose, not a claim) is NOT detected — the 20-char window holds");
+  // A one-sided pin bump in a package.json shape is still a claim (the
+  // surprise path must stay reachable for the 1.x line too).
+  assert(piVersionLiterals('"@earendil-works/pi-coding-agent": "~1.1.0", "@earendil-works/pi-tui": "~1.0.0"').includes("1.1.0"), "canary: a 1.x bump in a pi-coding-agent pin is a claim (surprise path reachable)");
   assert(fixturePkg.codingAgent !== fixturePkg.tui, "canary: one-sided bump IS detected (the lockstep assert above would fail on this fixture)");
 
   // Canary 2 — the range-prefix strip is load-bearing: "~0.82.0" must
