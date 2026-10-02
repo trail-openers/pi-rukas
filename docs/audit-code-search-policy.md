@@ -339,7 +339,7 @@ If the server is unreachable or queries fail:
 1. **Log the failure clearly**: "codebase-memory-mcp unavailable: <error>"
 2. **Continue without it**: Discovery from docs/config/CI/vipune only.
 3. **Warn in report**: "Standards inference limited to docs/config/CI (codebase-memory-mcp unavailable)"
-4. **Encourage user**: "Check the MCP server at `~/.config/mcp/mcp.json`."
+4. **Encourage user**: "Check the MCP server config at `~/.pi/agent/mcp.json` (Pi 1.0.0's native MCP config)."
 
 Do NOT fail the entire audit due to a code-search server outage.
 
@@ -575,4 +575,4 @@ mcp__codebase_memory__search_code({query: "test fixture setup"})
 - Issue #36: Vipune policy for audit
 - `docs/audit-spec.md` — Full `/audit` specification
 - `modules/core/codebase-memory-mcp.md` — Baseline code-search doctrine (not audit-specific)
-- `~/.config/mcp/mcp.json` — User-global MCP server config (where codebase-memory-mcp is registered)
+- `~/.pi/agent/mcp.json` — User-global native MCP config (where codebase-memory-mcp is registered)

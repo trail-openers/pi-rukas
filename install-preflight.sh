@@ -219,10 +219,9 @@ oo_floor_ok() {
 # an installed extension that registers /mcp REPLACES native MCP for the
 # whole session, so a lingering adapter would silently disable the mcp.json
 # wiring install.sh writes (see install.sh §6). Native MCP makes the bridge
-# obsolete, and removing it is the migration step — this function is the
-# mirror of the `pi remove pi-mcp-adapter` calls install.sh runs below, and
-# the fallback for hosts where the `pi` binary's remove verb differs (the
-# layouts below cover `pi install npm:<pkg>` and git/local installs).
+# obsolete, and removing it is the migration step. The two layout paths below
+# are what `pi install` actually creates on this host (`pi install npm:<pkg>`
+# vs git/local installs); install.sh calls this function to delete them.
 #
 # The two layout paths are what actually exist:
 #   $PI_AGENT_DIR/npm/node_modules/pi-mcp-adapter  — `pi install npm:<pkg>` layout

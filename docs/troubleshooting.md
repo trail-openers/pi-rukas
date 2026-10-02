@@ -757,7 +757,7 @@ Inside the wrapper-spawned container, the same env vars are auto-forwarded by pa
 env | sort                       # what env was forwarded
 mount | grep -v 'cgroup\|proc'   # what was bind-mounted
 ls ~/.pi/agent/                   # what state is visible
-cat ~/.config/mcp/mcp.json        # MCP server config
+cat ~/.pi/agent/mcp.json          # native MCP server config
 ```
 
 ## When in doubt
