@@ -18,7 +18,7 @@ minimumReleaseAge = 345600
 # overriding the 4-day embargo for the Pi packages (Pi is the host we depend
 # on — a compromised Pi would be caught by the operator, not by this gate).
 # Supply-chain check was performed 2026-10-02 (PM-verified, no evidence of
-# compromise). Remove these excludes after 2026-10-05 (4 days post-publish).
+# compromise). Removal tracked in #963 (after 2026-10-05).
 # The list is the transitive @earendil-works set that bun refuses under the
 # embargo (pi-coding-agent + pi-tui pull pi-ai, pi-agent-core, pi-mcp,
 # pi-codemode, pi-telemetry, and chord).

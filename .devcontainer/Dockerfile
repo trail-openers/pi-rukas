@@ -199,6 +199,16 @@ RUN cd ${PI_ENSEMBLE_DIR}/extension && bun install --frozen-lockfile
 # it — see docs/mcp.md → Security notes).
 RUN cd ${PI_ENSEMBLE_DIR} && ./install.sh || true
 
+# Fail the build if pi-mcp-adapter survived the install (both layouts —
+# npm + extensions). A lingering adapter registers /mcp and REPLACES native
+# MCP for the whole session, so its presence in the image would silently
+# disable the mcp.json wiring install.sh just wrote. `|| true` on the install
+# above keeps a network hiccup from killing the build; this check makes the
+# adapter-absence contract a hard build gate.
+RUN test ! -e "$HOME/.pi/agent/npm/node_modules/pi-mcp-adapter" \
+    && test ! -e "$HOME/.pi/agent/extensions/pi-mcp-adapter" \
+    && echo "pi-mcp-adapter absent in both layouts (native MCP active)"
+
 # Issue #933 (fresh-host EACCES): bake the state mount points into the image
 # as vscode-owned so Docker creates NEW named volumes vscode-owned when the
 # launcher falls back to them (bin/pi-rukas build_mounts). When a named volume
