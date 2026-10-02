@@ -413,20 +413,13 @@ export function assertLiveSpawnAllowed(role: string): void {
  * Base argv for every spawned subagent.
  *
  * `--no-extensions` suppresses auto-discovery of installed extensions in the
- * child — the load-bearing part of the child-guards isolation story (a child
- * must NOT inherit arbitrary extensions just because they sit in
- * ~/.pi/agent/extensions/). Under Pi 1.0.0's semantics this flag ALSO disables
- * the built-in extensions, including the built-in MCP (issue #959); so we
- * immediately re-enable just the MCP built-in with `-e builtin:mcp`. The
- * argument order is load-bearing: `-e builtin:mcp` MUST follow `--no-extensions`
- * or Pi's CLI parser would consume it as part of the no-extensions flag
- * (the short alias `-ne` makes a `pi -ne e builtin:mcp`-shape parse
- * possible, which would silently disable MCP in every child).
- *
- * No other built-in is re-enabled (codemode, tool_search) — `autoEnableCodemode:
- * false` in mcp.json is the additional guard against the MCP extension
- * auto-activating codemode when a server with codemode exposure connects
- * (see docs/mcp.md).
+ * child — the load-bearing part of the child-guards isolation story. Under
+ * Pi 1.0.0's semantics this flag ALSO disables built-in extensions (MCP,
+ * issue #959); so we re-enable just the MCP built-in with `-e builtin:mcp`
+ * immediately after it (argument order is load-bearing — the `-ne` short
+ * alias would swallow it otherwise). No other built-in is re-enabled
+ * (codemode, tool_search); `autoEnableCodemode: false` in mcp.json is the
+ * additional guard (docs/mcp.md).
  */
 const CHILD_ARGS_BASE = ["--mode", "rpc", "--no-extensions", "-e", "builtin:mcp"] as const;
 
@@ -442,11 +435,10 @@ const CHILD_ARGS_BASE = ["--mode", "rpc", "--no-extensions", "-e", "builtin:mcp"
  * `child-guards extension unavailable at <path>: <reason> — run ./install.sh`
  * on ANY stat failure.
  *
- * Argument order is load-bearing:
- *   - `--provider` must precede `--model` so Pi disambiguates against the
- *     provider catalog (custom providers need explicit provider IDs).
- *   - Extension `--extension` flags are appended after model flags so Pi
- *     resolves the model before extensions can override it.
+ * Argument order is load-bearing: `--provider` precedes `--model` so Pi
+ * disambiguates against the provider catalog (custom providers need explicit
+ * provider IDs); extension `--extension` flags are appended after model flags
+ * so Pi resolves the model before extensions can override it.
  */
 export function buildChildArgs(
   role: string,

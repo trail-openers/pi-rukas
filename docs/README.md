@@ -45,7 +45,7 @@ Explicit vipune usage policy for `/audit`. This document defines:
 
 ### [audit-code-search-policy.md](audit-code-search-policy.md)
 Code-search (codebase-memory-mcp) usage policy for `/audit`. This document defines:
-- When to use each `codebase_memory_*` tool in each audit phase
+- When to use each `mcp__codebase_memory__*` tool in each audit phase
 - Good vs bad query patterns (concrete code vs meta-questions)
 - Phase 1 discovery queries by category
 - Phase 2 audit pass queries for each pass (including diff-bounded audits via `detect_changes`)

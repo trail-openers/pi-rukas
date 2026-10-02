@@ -12,4 +12,25 @@ minimumReleaseAge = 345600
 # Packages exempt from the age check. Add a name here ONLY when you have a
 # concrete reason to install a fresh release (e.g. urgent security patch you
 # vetted yourself). Keep this list small.
-minimumReleaseAgeExcludes = []
+#
+# The @earendil-works/pi-* packages below are excluded for the Pi 1.0.0 pin
+# bump (issue #959). Operator decision 2026-10-02: upgrade to Pi 1.0.0 now,
+# overriding the 4-day embargo for the Pi packages (Pi is the host we depend
+# on — a compromised Pi would be caught by the operator, not by this gate).
+# Supply-chain check was performed 2026-10-02 (PM-verified, no evidence of
+# compromise). Remove these excludes after 2026-10-05 (4 days post-publish).
+# The list is the transitive @earendil-works set that bun refuses under the
+# embargo (pi-coding-agent + pi-tui pull pi-ai, pi-agent-core, pi-mcp,
+# pi-codemode, pi-protocol, pi-client, pi-telemetry, and chord).
+minimumReleaseAgeExcludes = [
+  "@earendil-works/pi-coding-agent",
+  "@earendil-works/pi-tui",
+  "@earendil-works/pi-ai",
+  "@earendil-works/pi-agent-core",
+  "@earendil-works/pi-mcp",
+  "@earendil-works/pi-codemode",
+  "@earendil-works/pi-protocol",
+  "@earendil-works/pi-client",
+  "@earendil-works/pi-telemetry",
+  "@earendil-works/chord",
+]

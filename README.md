@@ -53,11 +53,10 @@ Required CLIs on `$PATH`. The role prompts assume all of these are installed —
 | `git` ≥ 2.20 | Worktrees, branches, diffs. |
 | Forge CLI (`gh` / `glab`) | Forge issue / PR / CI ops — `gh` for GitHub, `glab` for GitLab. Install at least one; both is fine. |
 | [`vipune`](https://github.com/randomm/vipune) | Cross-session memory (fact + observation patterns). All agents call this. (Cargo from source.) |
-| [`codebase-memory-mcp`](https://github.com/DeusData/codebase-memory-mcp) | Knowledge-graph code indexer exposed as MCP — powers `codebase_memory_search_code` / `trace_path` / `detect_changes` / `get_architecture`. (curl-to-bash install.) |
+| [`codebase-memory-mcp`](https://github.com/DeusData/codebase-memory-mcp) | Knowledge-graph code indexer exposed as MCP — powers `mcp__codebase_memory__search_code` / `mcp__codebase_memory__trace_path` / `mcp__codebase_memory__detect_changes` / `mcp__codebase_memory__get_architecture`. (curl-to-bash install.) |
 | [`oo`](https://github.com/randomm/oo) | Context-efficient wrapper for chatty CLIs (git, gh). (Cargo from source. Pinned to floor `0.5.0`.) |
 | `jq` | Used by `build.sh` to assemble the capability matrix into the PM prompt. |
 | [`parallel-cli`](https://docs.parallel.ai/cli/overview) | Web search / fetch / deep research for the `explore` role. (Homebrew tap.) |
-| [`pi-mcp-adapter`](https://github.com/nicobailon/pi-mcp-adapter) | MCP bridge — **without the bridge no MCP server loads**. Sandbox users are unaffected: the image bakes it in. |
 | [`ctx7`](https://context7.com) | Current third-party library documentation. `ctx7 library <name>` → `ctx7 docs <id> <query>`. Free tier works without login. |
 
 ### Supply-chain setup (recommended one-time before installing)
@@ -78,7 +77,7 @@ Copy-pasteable. All installs use the latest version your package manager allows 
 
 ```bash
 # Pi (per https://pi.dev/docs/latest/quickstart)
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.84.4
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.0.0
 
 # bun (≥ 1.2.20)
 curl -fsSL https://bun.com/install | bash
@@ -92,13 +91,11 @@ brew install git jq gh                                                # macOS (g
 # vipune, oo — cargo from source (Rust toolchain required)
 cargo install vipune && cargo install double-o --version 0.5.0
 
-# pi-mcp-adapter (REQUIRED — Pi core has no native MCP; without the bridge no MCP server loads)
-pi install npm:pi-mcp-adapter
-
 # codebase-memory-mcp (REQUIRED — pi-rukas's code-search doctrine depends on it)
 curl -fsSL https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh | bash
 # Installs the C binary at ~/.local/bin/codebase-memory-mcp (~250 MB); pi-rukas's
-# install.sh registers it with pi-mcp-adapter automatically (see "After install" below).
+# install.sh registers it with Pi 1.0.0's native MCP automatically (see "After
+# install" below).
 
 # parallel-cli
 brew install parallel-web/tap/parallel-cli
@@ -111,8 +108,8 @@ npm install -g --ignore-scripts ctx7
 After install:
 
 - `vipune version` once to initialise `~/.vipune/`.
-- Run pi-rukas's `./install.sh` from this repo. It detects `codebase-memory-mcp` on your `PATH` (or in `~/.local/bin/`) and wires a `codebase_memory` entry into `~/.config/mcp/mcp.json` (the bridge from the [Install commands](#install-commands) block; full walkthrough in [docs/mcp.md](docs/mcp.md)). **You should not have to hand-edit any MCP config** — re-running is safe (idempotent merge). Verify after `pi` restarts with `/mcp` — should list `codebase_memory` with its 7 direct tools (`search_code`, `search_graph`, `trace_path`, `detect_changes`, `get_code_snippet`, `get_architecture`, `query_graph`).
-- One-shot index every project the first time pi opens there: `mcp({tool: "codebase_memory_index_repository", args: '{"repo_path": "."}'})` — `/start` does this on first use; the file watcher keeps it current. Indexed data lives in `~/.cache/codebase-memory-mcp/`.
+- Run pi-rukas's `./install.sh` from this repo. It detects `codebase-memory-mcp` on your `PATH` (or in `~/.local/bin/`) and wires a `codebase_memory` entry into `~/.pi/agent/mcp.json` in Pi 1.0.0's native MCP format (full walkthrough in [docs/mcp.md](docs/mcp.md)). **You should not have to hand-edit any MCP config** — re-running is safe (idempotent merge). Verify after `pi` restarts with `/mcp` — should list `codebase_memory` with its 7 direct tools (`search_code`, `search_graph`, `trace_path`, `detect_changes`, `get_code_snippet`, `get_architecture`, `query_graph`).
+- One-shot index every project the first time pi opens there: `mcp__codebase_memory__index_repository({repo_path: "."})` — `/start` does this on first use; the file watcher keeps it current. Indexed data lives in `~/.cache/codebase-memory-mcp/`.
 
 **Platform.** Supported: macOS and Linux. Native Windows is unsupported (every entrypoint is a bash script, the install is symlink-based, and the sandbox bind-mounts the project at its host absolute path). WSL2 is **expected to work but untested**; sandbox mode additionally needs Docker. Bun ≥ 1.2.20 and Node ≥ 22 (Pi's own requirement) are assumed. You can also defer `ctx7` entirely — the `explore` role tries to call it but everything else works without it.
 
@@ -168,7 +165,7 @@ You probably want a smarter model for the PM and a faster one for the specialist
 
 Run `/ensemble-model` inside Pi to pick interactively from your authenticated provider catalog; add new built-in providers via Pi's `/login` and `pi-rukas` picks them up automatically. A custom OpenAI-compatible provider (self-hosted vLLM, an internal endpoint, any OpenAI Chat-Completions-compatible API) is a one-time registration in `~/.pi/agent/models.json` — see [docs/custom-providers.md](docs/custom-providers.md).
 
-MCP servers ride a bridge extension (Pi has no native MCP; install: `pi install npm:pi-mcp-adapter`) — pi-rukas forwards the bridge to subagents and gates access per role. **2.33.0 of the bridge fails on npm 12+ with `EALLOWREMOTE` upstream ([nicobailon/pi-mcp-adapter#547](https://github.com/nicobailon/pi-mcp-adapter/issues/547)); host-mode installs are left unpinned by design, and sandbox users are unaffected — the image pins 2.32.1.** Full walkthrough: [docs/mcp.md](docs/mcp.md). All configuration — file and path locations plus the full `PI_ENSEMBLE_*` environment variable reference (main, outcome-verification, and sandbox-mode tables) — lives in [docs/configuration.md](docs/configuration.md). All optional; defaults are reasonable for typical use.
+MCP servers are configured natively — Pi 1.0.0 ships built-in MCP that reads `~/.pi/agent/mcp.json` (user-level) and `.pi/mcp.json` (project-level, after trust); there is no bridge extension to install or forward, and subagents get it via the `-e builtin:mcp` flag. pi-rukas gates access per role through the `mcp__<server>__<tool>` names in `agents.json`. Full walkthrough: [docs/mcp.md](docs/mcp.md). All configuration — file and path locations plus the full `PI_ENSEMBLE_*` environment variable reference (main, outcome-verification, and sandbox-mode tables) — lives in [docs/configuration.md](docs/configuration.md). All optional; defaults are reasonable for typical use.
 
 ## Customising the role prompts
 

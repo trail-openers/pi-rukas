@@ -150,87 +150,50 @@ for (const command of gitDiffWithInjectionShouldAsk) {
   );
 }
 
-// === Issue #168 + #959: PM catch-all is deny-by-default for tool-level ===
-// The catch-all flipped from `"*": "ask"` to `"*": "deny"` at the MCP bridge
-// migration (#959). Under native MCP every tool is dynamically-named
-// (`mcp__<server>__<tool>`) and the user's mcp.json controls which servers
-// exist. A new server the operator has NOT reviewed would, under an ask
-// default, prompt on every one of its tools — a rubber-stamp surface. Under
-// deny-by-default the tool is simply invisible to the model unless the
-// operator explicitly grants it (via agents.json edit or a project overlay
-// in `.pi/permissions.json`). `bash.*: ask` is unchanged — the bash
-// subcommand allowlist is per-command and a new command still prompts.
+// === Issue #168: ask-by-default for unknown tools ===
+// PM's catch-all is `"*": "ask"` — unknown tools (including the dynamically-
+// named `mcp__<server>__<tool>` tools of the native MCP, issue #959) prompt
+// rather than silently failing. The per-tool grants below are explicit and
+// beat the catch-all; an ungranted server's tools fall through to ask. "Allow
+// always" persists per-project ($PWD/.pi/decisions.json).
 
-// Native-MCP tool naming (the post-#959 convention).
-const mcpSearchPM = resolveToolPermission(
-  "mcp__codebase_memory__search_code",
-  "project-manager",
-  {},
-  {},
-  agentsConfig,
-);
+// Native-MCP tool naming (the post-#959 convention: the adapter's
+// `codebase_memory_<tool>` direct-tool names are gone; the native MCP
+// registers `mcp__<server>__<tool>` instead).
+const mcpSearchPM = resolveToolPermission("mcp__codebase_memory__search_code", "project-manager", {}, {}, agentsConfig);
 assert(mcpSearchPM === "allow", "PM has explicit mcp__codebase_memory__search_code: allow");
 
-const mcpIndexPM = resolveToolPermission(
-  "mcp__codebase_memory__index_repository",
-  "project-manager",
-  {},
-  {},
-  agentsConfig,
-);
+const mcpIndexPM = resolveToolPermission("mcp__codebase_memory__index_repository", "project-manager", {}, {}, agentsConfig);
 assert(mcpIndexPM === "allow", "PM has explicit mcp__codebase_memory__index_repository: allow (first-run admin call)");
 
 // Per-role subset: ops gets only 3 of the 7 read-side tools (search_code,
 // get_code_snippet, get_architecture) — the ticket's AC asserts the
-// per-role subsets are preserved.
-const mcpQueryOps = resolveToolPermission(
-  "mcp__codebase_memory__query_graph",
-  "ops",
-  {},
-  {},
-  agentsConfig,
-);
+// per-role subsets are preserved. An ungranted tool resolves to ask (the
+// catch-all), not deny — the prompt is the boundary.
+const mcpQueryOps = resolveToolPermission("mcp__codebase_memory__query_graph", "ops", {}, {}, agentsConfig);
 assert(
-  mcpQueryOps === "deny",
-  "#959: ops is NOT granted mcp__codebase_memory__query_graph (per-role subset: search_code, get_code_snippet, get_architecture only)",
+  mcpQueryOps === "ask",
+  "#959: ops is NOT granted mcp__codebase_memory__query_graph (per-role subset: search_code, get_code_snippet, get_architecture only) — falls through to ask",
 );
-const mcpSearchOps = resolveToolPermission(
-  "mcp__codebase_memory__search_code",
-  "ops",
-  {},
-  {},
-  agentsConfig,
-);
+const mcpSearchOps = resolveToolPermission("mcp__codebase_memory__search_code", "ops", {}, {}, agentsConfig);
 assert(mcpSearchOps === "allow", "#959: ops IS granted mcp__codebase_memory__search_code");
 
-// Any unknown mcp__ tool from an unreviewed server denies by default.
-const unknownMcp = resolveToolPermission(
-  "mcp__fuzu_staging_db__execute_sql",
-  "project-manager",
-  {},
-  {},
-  agentsConfig,
-);
-assert(unknownMcp === "deny", "#959: unknown mcp__<server>__<tool> resolves to deny for PM (deny-by-default catch-all)");
+// Any unknown mcp__ tool from a server the operator has not reviewed asks —
+// the prompt is the security boundary, not silent deny.
+const unknownMcp = resolveToolPermission("mcp__fuzu_staging_db__execute_sql", "project-manager", {}, {}, agentsConfig);
+assert(unknownMcp === "ask", "#959: unknown mcp__<server>__<tool> resolves to ask for PM (catch-all = ask)");
 
-// Any non-mcp unknown tool — also deny under the new catch-all.
-const unknownTool = resolveToolPermission(
-  "some_random_tool",
-  "project-manager",
-  {},
-  {},
-  agentsConfig,
-);
-assert(unknownTool === "deny", "#959: any unknown tool resolves to deny for PM (catch-all = deny)");
+// Any unknown tool — the prompt is the security boundary now, not silent deny.
+const unknownTool = resolveToolPermission("some_random_tool", "project-manager", {}, {}, agentsConfig);
+assert(unknownTool === "ask", "Issue #168: any unknown tool resolves to ask for PM (catch-all = ask)");
 
-// Explicit allows still take precedence over the deny catch-all.
+// Explicit allows still take precedence over the catch-all.
 const explicitAllow = resolveToolPermission("read", "project-manager", {}, {}, agentsConfig);
-assert(explicitAllow === "allow", "#959: explicit `read: allow` still beats `*: deny`");
+assert(explicitAllow === "allow", "Issue #168: explicit `read: allow` still beats `*: ask`");
 
-// Explicit denies are still honored (the catch-all being deny makes this
-// redundant but the shape is unchanged).
+// Explicit denies are still honored.
 const explicitDeny = resolveToolPermission("write", "project-manager", {}, {}, agentsConfig);
-assert(explicitDeny === "deny", "#959: explicit `write: deny` still resolves to deny");
+assert(explicitDeny === "deny", "Issue #168: explicit `write: deny` still beats `*: ask`");
 
 // Wildcard precedence (the lookupPermission ordering fix from this PR):
 // longest prefix wins, then `"*"` catch-all. Without the fix, `"*"` matched

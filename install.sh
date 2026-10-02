@@ -28,7 +28,6 @@ done
 ENSEMBLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PI_AGENT_DIR="${PI_AGENT_DIR:-$HOME/.pi/agent}"
 EXT_DIR="$PI_AGENT_DIR/extensions"
-
 # ---- Platform guard (#491) ----------------------------------------------------
 #
 # Supported: macOS and Linux (WSL2 expected to work, untested).
@@ -146,8 +145,8 @@ if ! command -v gh >/dev/null 2>&1 && ! command -v glab >/dev/null 2>&1; then
 fi
 
 # codebase-memory-mcp is not preflighted here — it's an MCP server loaded by
-# pi-mcp-adapter, not a CLI on PATH. See README → Using MCP servers +
-# https://github.com/DeusData/codebase-memory-mcp
+# Pi 1.0.0's native MCP (mcp.json), not a CLI on PATH. See README → Using MCP
+# servers + https://github.com/DeusData/codebase-memory-mcp
 
 if [ ${#missing[@]} -gt 0 ]; then
   echo ""
@@ -223,26 +222,17 @@ pi_mcp_remove "$PI_AGENT_DIR"
 # ---- 6. Register codebase-memory-mcp with Pi 1.0.0 native MCP -----------------
 #
 # codebase-memory-mcp ships its own install script that writes MCP configs
-# for Claude Code / Codex / OpenCode — but NOT for Pi 1.0.0's native MCP
-# (what Pi uses post-#959). Native MCP reads (precedence-ordered):
-# ~/.pi/agent/mcp.json (user-level) and .pi/mcp.json (project-level, after
-# trust). Without an entry, /mcp shows "0/0 servers" and every dispatched
-# subagent fails the first mcp__codebase_memory__* call. We wire it into the
-# user-global config — idempotent, merge-safe, key-level replace of
-# .mcpServers.codebase_memory. Server-key is `codebase_memory` (underscore)
-# so Pi's native naming produces doctrine-matching tool names (mcp__
-# codebase_memory__<tool>); the seven read-side tools are exposed via
-# `exposure: "direct"`. `autoEnableCodemode: false` prevents the MCP
-# built-in from auto-activating the codemode built-in (see docs/mcp.md).
-#
-# PATH-portability: we write the BINARY NAME (not the absolute path) so the
-# same mcp.json works in host AND sandbox contexts (PR #200 shipped absolute
-# paths; the sandbox couldn't spawn the host path).
-#
-# Migration: if a legacy ~/.config/mcp/mcp.json (the pi-mcp-adapter-era
-# config) still has a codebase_memory key, we remove it — the adapter is
-# gone, so the old file is a dead second source that would confuse operators
-# who jq both files. Other keys in the old file are preserved.
+# for Claude Code / Codex / OpenCode — but NOT for Pi 1.0.0's native MCP.
+# Native MCP reads ~/.pi/agent/mcp.json (user-level) and .pi/mcp.json
+# (project-level, after trust). We wire the entry into the user-global config
+# — idempotent, merge-safe, key-level replace of .mcpServers.codebase_memory.
+# The server key is `codebase_memory` (underscore) so Pi's native naming
+# produces doctrine-matching tool names (mcp__codebase_memory__<tool>); the
+# seven read-side tools go through `exposure: "direct"` and
+# `autoEnableCodemode: false` stops the codemode built-in from auto-activating
+# (see docs/mcp.md). PATH-portability: we write the BINARY NAME (not the
+# absolute path) so the same mcp.json works in host AND sandbox contexts
+# (PR #200 shipped absolute paths; the sandbox couldn't spawn the host path).
 CBM_BIN=""
 if command -v codebase-memory-mcp >/dev/null 2>&1; then
   CBM_BIN="codebase-memory-mcp"   # PATH-relative name (see comment above)
@@ -504,6 +494,6 @@ Next steps:
   - Configure subagent models with \`/ensemble-model\`.
   - Inside a project, run /mcp to confirm codebase_memory is connected (7 direct tools).
   - One-shot index per project on first use:
-      mcp({tool: "codebase_memory_index_repository", args: '{"repo_path": "."}'})
+      mcp__codebase_memory__index_repository({repo_path: "."})
     The file watcher keeps it current after that.
 EOF

@@ -141,15 +141,19 @@ subsets — `ops` gets only 3 of the 7: `search_code`, `get_code_snippet`,
 `get_architecture`). PM additionally gets
 `mcp__codebase_memory__index_repository` for the first-run admin call.
 
-PM's tool-level catch-all is `"*": "deny"` (deny-by-default for unknown
-tools), so a new MCP server the operator has not reviewed is simply
-invisible to the model unless explicitly granted. Bash subcommands keep
-their own ask-by-default allowlist (`bash.*: ask`).
+PM's tool-level catch-all is `"*": "ask"` (ask-by-default for unknown
+tools) — so the first call to any tool that is not on an explicit allow- or
+deny-list (an unreviewed server's `mcp__<server>__<tool>`, etc.) prompts
+you: `Allow once / Allow always / Deny once / Deny always`. Choosing
+**"Allow always"** persists the decision to `$PWD/.pi/decisions.json` —
+**per-project**, automatically. Other projects on the host still prompt on
+their first call. No host-wide opt-in by accident. This matches the
+Claude-Code-style permission UX users expect.
 
-Headless mode (no UI) hard-denies every `"ask"` verdict and every unlisted
-tool, so CI/automation is unchanged. Bash commands with injection vectors
-(`&&`, `|`, `$(...)`, redirects) are still hard-denied at the matcher level
-— they never reach the prompt.
+Headless mode (no UI) hard-denies every `"ask"` verdict, so CI/automation is
+unchanged. Bash commands with injection vectors (`&&`, `|`, `$(...)`,
+redirects) are still hard-denied at the matcher level — they never reach the
+prompt.
 
 For finer control (narrower wildcards, host-wide overrides, role overrides),
 the resolver checks three tiers in order — **first match wins, project
@@ -177,7 +181,7 @@ Per-project example — grant every `mcp__safe__*` tool to developer in
 
 Wildcard precedence (`permission-guard.ts:lookupPermission`): exact match →
 longest prefix wildcard → catch-all `"*"`. So
-`"mcp__safe__*": "allow"` beats `"*": "deny"` (the PM catch-all).
+`"mcp__safe__*": "allow"` beats `"*": "ask"` (the PM catch-all).
 
 ### Security notes
 

@@ -142,10 +142,16 @@ export function parseAgentsRestatement(agentsMd: string): { version: string; dat
  */
 export function piVersionLiterals(text: string): string[] {
   const out = new Set<string>();
-  // 0.8x.y (historical + current-claim space pre-#959)
-  for (const m of text.matchAll(/0\.8[0-9]+\.[0-9]+/g)) out.add(m[0] as string);
-  // 1.x.y (current-claim space post-#959)
-  for (const m of text.matchAll(/1\.[0-9]+\.[0-9]+/g)) out.add(m[0] as string);
+  // 0.8x.y (historical + current-claim space pre-#959). The lookbehind
+  // excludes digits (a "0.82.0" inside "10.82.0" is not a version claim)
+  // and a leading dot (".82.0" would otherwise match the tail of "1.0.82.0").
+  for (const m of text.matchAll(/(?<![\d.])0\.8[0-9]+\.[0-9]+/g)) out.add(m[0] as string);
+  // 1.x.y (current-claim space post-#959). Same boundary guards: a digit
+  // before the "1." ("11.10.0", "21.0.0") or a dot ("0.1.0") means the
+  // match is part of a longer version, not a standalone Pi claim. Bun and
+  // npm floor literals (>= 11.10.0) would otherwise surface as phantom
+  // "1.10.0" claims in every file that names an npm/bun floor.
+  for (const m of text.matchAll(/(?<![\d.])1\.[0-9]+\.[0-9]+/g)) out.add(m[0] as string);
   return [...out];
 }
 
@@ -188,48 +194,93 @@ export function siteCensus(verifiedV: string): Record<string, string[]> {
   return {
     // The maintained line (version + its date's digits).
     "docs/pi-compatibility.md": v,
-    // The `pi install` verification claim.
-    "docs/mcp.md": v,
-    // The AGENTS.md § 4 restatement (+ the date's digits).
-    "AGENTS.md": v,
-    // The dev pins (lockstep) + this gate's own literals + its fixture.
-    "extension/package.json": ["1.0.0"],
-    // …plus this gate's own canary literals (1.0.0 current floor, 0.84.4
-    // pre-#959 floor canary, 0.82.0 pre-#578 pin canary, 0.99.0 one-sided
-    // co-pin canary, 0.84.3 bug-window canary, 0.83.9/0.85.0/0.84.5 numeric-
-    // matrix canaries, 0.83.0 --exclude-tools canary, 0.86.0 gitignore-listing
-    // canary, 0.87.0 undeclared-literal canary — all in canary strings, all
-    // must stay visible to the census).
-    "test-pi-version-drift.ts": ["1.0.0", "0.84.4", "0.99.0", "0.82.0", "0.82.1", "0.84.3", "0.83.9", "0.85.0", "0.84.5", "0.83.0", "0.86.0", "0.87.0"],
-    // The preflight floor (MIN_PI_VERSION + the #578 provenance/bug-window notes).
-    // Post-#959 the floor is 1.0.0; 0.84.3/0.84.4 survive as historical
-    // provenance (the #578 bug-window note) in the comment block.
+    // The native-MCP walkthrough's pi-1.0 claim.
+    "docs/mcp.md": [...v, "1.0.0"],
+    // The sandbox bind-mount table + troubleshooting entries that name the
+    // post-#959 config path ("Pi 1.0.0's native MCP").
+    "docs/sandbox.md": [...v, "1.0.0"],
+    "docs/troubleshooting.md": [...v, "1.0.0"],
+    // The AGENTS.md § 4 restatement (+ the date's digits + the §5 embargo
+    // comment's 1.2.20 bun floor literal).
+    "AGENTS.md": [...v, "1.2.20"],
+    // The dev pins (lockstep). The other 1.x literals in the file (1.2.20
+    // bun engines floor, 1.9.0 biome) are not Pi claims.
+    "extension/package.json": ["1.0.0", "1.2.20", "1.9.0"],
+    // The preflight floor (MIN_PI_VERSION + the #578 provenance/bug-window
+    // note's 0.84.4/0.84.3 literals).
     "install-preflight.sh": ["1.0.0", "0.84.4", "0.84.3"],
-    // The install floor on the install line.
-    "README.md": ["1.0.0"],
-    // Floor pin (×2: install line + comment) + #578 bug-window note.
+    // The install floor on the install line (1.2.20 is the bun floor, not a
+    // Pi claim).
+    "README.md": ["1.0.0", "1.2.20"],
+    // Floor pin on the install line.
     "Dockerfile": ["1.0.0"],
     // The canary fixture (one-sided co-pin: 0.99.0 vs 0.84.4 — historical shape).
     "package.json": ["0.99.0", "0.84.4"],
-    // test-pi-min-version.ts fakes pi --version output (at-floor / bug-window / matrix).
-    // Post-#959 the at-floor is 1.0.0; 0.84.4 is the pre-#959 floor (now below-floor).
-    "test-pi-min-version.ts": ["1.0.0", "0.84.4", "0.84.3", "0.83.9", "0.9.0", "1.0.1", "1.1.0", "0.8.10"],
-    // The existing prerequisite-drift gate + its EXCEPTIONS pin + canary comments.
-    "test-prerequisite-drift.ts": ["1.0.0", "0.84.4", "0.99.0", "0.84.3", "0.84.5"],
+    // test-pi-min-version.ts fakes pi --version output (at-floor / below-floor
+    // matrix + numeric-compare cases).
+    "test-pi-min-version.ts": ["1.0.0", "1.0.1", "1.1.0", "0.84.4", "0.84.3", "0.83.9"],
+    // The prerequisite-drift gate + its EXCEPTIONS pin + canary comments
+    // (1.1.0 is the fixture Dockerfile pin, an above-floor canary).
+    "test-prerequisite-drift.ts": ["1.0.0", "1.1.0", "0.84.4", "0.84.3"],
     // The Dockerfile-pins gate's canary comment line (post-#959: 1.0.0 pi pin canary).
     "test-dockerfile-pins.ts": ["1.0.0"],
-    // The --exclude-tools rationale (Pi >= 0.83.0 — historical, still accurate).
-    "spawn-support.ts": ["0.83.0"],
-    // A comment referencing the pinned pi-tui d.ts.
-    "test-dispatch-deck-interactive.ts": ["0.82.0"],
+    // The --exclude-tools rationale (Pi >= 0.83.0 — historical, still accurate)
+    // + the CHILD_ARGS_BASE doc comment that names the 1.0.0 semantics.
+    "spawn-support.ts": ["0.83.0", "1.0.0"],
+    // The pi-mcp-adapter-skip doc comments in spawn-extension-forward.ts name
+    // the 1.0.0 semantics.
+    "spawn-extension-forward.ts": ["1.0.0"],
+    // The live shape test's mcp-prefix doc comment names the 1.0.0 convention.
+    "test-pi-shape-live.ts": ["1.0.0"],
+    // The discover-extensions adapter-skip fixture (package.json version
+    // literal of the legacy adapter, not a Pi claim — declared so the
+    // basename census does not flag it as a Pi version).
+    "test-discover-extensions.ts": ["1.0.0"],
+    // test-pi-version-drift.ts's own canary literals (all the 0.8x.y canaries
+    // plus the 1.x ones).
+    // Self-census: every 1.x literal below lives in this file's own canary
+    // comments and canary inputs (the 0.8x.y canaries are listed explicitly;
+    // the 1.x ones come from the bun.lock declaration line and the npm/bun
+    // floor examples in the piVersionLiterals docs). Adding a version to the
+    // bun.lock line below requires adding it here too — the gate fails
+    // otherwise (a self-census that cannot see its own declaration is the
+    // "census that passes by silence" failure mode this gate exists to stop).
+    "test-pi-version-drift.ts": ["1.0.0", "1.0.1", "1.1.0", "0.84.4", "0.99.0", "0.82.0", "0.82.1", "0.84.3", "0.83.9", "0.85.0", "0.84.5", "0.83.0", "0.86.0", "0.87.0", "1.0.2", "1.0.11", "1.1.1", "1.1.2", "1.1.3", "1.25.2", "1.3.0", "1.3.27", "1.5.1", "1.6.0", "1.9.4", "1.0.82", "1.10.0", "1.2.20", "1.9.0", "1.4.0", "1.3.13", "1.3.12", "1.2.3"],
     // bun.lock resolves the declared pins (lockfile, not a claim — the gate
     // reads the DECLARED pin from package.json; the lock is listed so a
-    // lockstep bump is visible here, not silent). Post-#959: 1.0.0.
-    "bun.lock": ["1.0.0"],
+    // lockstep bump is visible here, not silent). 1.x literals are the
+    // transitive @earendil-works + non-Pi dep versions.
+    "bun.lock": ["1.0.0", "1.0.1", "1.0.2", "1.0.11", "1.1.0", "1.1.1", "1.1.2", "1.1.3", "1.25.2", "1.3.0", "1.3.27", "1.5.1", "1.6.0", "1.9.0", "1.9.4"],
+    // The 4-day-embargo config: 1.2.20 is the bun floor, 1.0.0 the Pi pin
+    // name in the override comment (non-Pi and Pi claims, not lockfile noise).
+    "bunfig.toml": ["1.2.20", "1.0.0"],
+    // biome.json's schema URL (1.9.0) is a biome version, not a Pi claim.
+    "biome.json": ["1.9.0"],
+    // bun-version pins in CI (1.4.0 the bun action pin, 1.3.13 the fallback
+    // comment) — bun, not Pi.
+    ".github/workflows/ci.yml": ["1.4.0", "1.3.13"],
+    // release-please.yml's pre-1.0.0 bump note (1.0.0 is the semver
+    // threshold in the comment, not a Pi claim).
+    ".github/workflows/release-please.yml": ["1.0.0"],
+    // Keep a Changelog's own version line in the changelog header.
+    "CHANGELOG.md": ["1.1.0"],
+    // Bun-version comments (bun, not Pi).
+    "test-command-available-path.ts": ["1.3.12"],
+    "test-models.ts": ["1.4.0"],
+    // A dependabot branch name (1.2.3 is a release-please version in the
+    // branch slug, not a Pi claim).
+    "test-merge-guard.ts": ["1.2.3"],
+    // An oo version test case (oo, not Pi).
+    "test-oo-min-version.ts": ["1.0.0"],
+    // Bun-version comment (bun, not Pi).
+    "extension/src/agents-md/check.ts": ["1.3.12"],
+    // The Pi 1.0.0 native-MCP wiring comments + step-6 banner.
+    "install.sh": ["1.0.0"],
+    // A rev tag in the python-tdd skill reference (a doc revision, not a Pi
+    // claim).
+    "skill/python-tdd/references/linting-config.md": ["1.10.0"],
     // No claim: bump examples are relative (~0.XY.Z → ~0.XY.(Z+1)).
-    "CONTRIBUTING.md": [],
-    // No current-claim literals (historical 0.7x.y only — out of census scope).
-    "install.sh": [],
+    "CONTRIBUTING.md": ["1.2.20"],
   };
 }
 
