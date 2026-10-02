@@ -109,7 +109,7 @@ After install:
 
 - `vipune version` once to initialise `~/.vipune/`.
 - Run pi-rukas's `./install.sh` from this repo. It detects `codebase-memory-mcp` on your `PATH` (or in `~/.local/bin/`) and wires a `codebase_memory` entry into `~/.pi/agent/mcp.json` in Pi 1.0.0's native MCP format (full walkthrough in [docs/mcp.md](docs/mcp.md)). **You should not have to hand-edit any MCP config** — re-running is safe (idempotent merge). Verify after `pi` restarts with `/mcp` — should list `codebase_memory` with its 7 direct tools (`search_code`, `search_graph`, `trace_path`, `detect_changes`, `get_code_snippet`, `get_architecture`, `query_graph`).
-- One-shot index every project the first time pi opens there: `mcp__codebase_memory__index_repository({repo_path: "."})` — `/start` does this on first use; the file watcher keeps it current. Indexed data lives in `~/.cache/codebase-memory-mcp/`.
+- One-shot index every project the first time pi opens there — ask Pi to run `index_repository` on the project root (it is granted to the PM role); `/start` does this on first use. The file watcher keeps the index current. Indexed data lives in `~/.cache/codebase-memory-mcp/`.
 
 **Platform.** Supported: macOS and Linux. Native Windows is unsupported (every entrypoint is a bash script, the install is symlink-based, and the sandbox bind-mounts the project at its host absolute path). WSL2 is **expected to work but untested**; sandbox mode additionally needs Docker. Bun ≥ 1.2.20 and Node ≥ 22 (Pi's own requirement) are assumed. You can also defer `ctx7` entirely — the `explore` role tries to call it but everything else works without it.
 

@@ -309,10 +309,10 @@ mcp__codebase_memory__detect_changes({diff: "<git diff base..HEAD>"})
 `codebase-memory-mcp` is an MCP server with a persistent SQLite knowledge graph at `~/.cache/codebase-memory-mcp/`. The index is per-project; the file watcher keeps it current automatically once initialized.
 
 ```
-# One-time index of a project (PM owns this; allow-listed for PM)
+# One-time index of a project (granted to PM — mcp__codebase_memory__index_repository)
 mcp__codebase_memory__index_repository({repo_path: "/path/to/repo"})
 
-# Check status (allow-listed via mcp proxy)
+# Check status (mcp__codebase_memory__index_status — granted to PM)
 mcp__codebase_memory__index_status({repo_path: "/path/to/repo"})
 ```
 
@@ -321,7 +321,7 @@ mcp__codebase_memory__index_status({repo_path: "/path/to/repo"})
 `/audit` should preflight the index:
 
 1. If `get_architecture({path: "."})` returns nothing, the project is unindexed.
-2. Prompt the user (via the `mcp` proxy `ask` verdict) to run `index_repository`.
+2. Prompt the user to run `mcp__codebase_memory__index_repository` (granted to PM).
 3. If indexing fails, log warning and continue without `mcp__codebase_memory__*` tools.
 4. Mark standards discovery as "code-memory unavailable".
 

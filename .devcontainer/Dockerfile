@@ -182,7 +182,8 @@ ENV PI_ENSEMBLE_DIR=/opt/pi-rukas
 COPY --chown=vscode:vscode . ${PI_ENSEMBLE_DIR}
 
 # Drop to vscode user for state setup — install.sh creates symlinks under
-# ~/.pi/agent/ + writes ~/.config/mcp/mcp.json (in the user's home, not root).
+# ~/.pi/agent/ + writes the codebase_memory MCP entry into ~/.pi/agent/mcp.json
+# (native MCP, user's home, not root).
 USER vscode
 ENV PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     HOME=/home/vscode

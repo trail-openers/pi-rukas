@@ -2,6 +2,8 @@
 
 **`mcp__codebase_memory__search_code`** IS the canonical tool for finding code in this repository. Use it whenever you need to locate a function, class, route, or pattern in source. It is indexed, sub-millisecond, and pre-approved on your role.
 
+> **Shorthand:** throughout this document, `search_code`, `trace_path`, `detect_changes`, etc. refer to the full tool names `mcp__codebase_memory__search_code`, `mcp__codebase_memory__trace_path`, `mcp__codebase_memory__detect_changes`, etc. The `mcp__codebase_memory__` prefix is always implied in prose; use the full name in tool calls.
+
 `rg` and `read` are NOT alternatives for code discovery — they only apply to:
 
 - **`rg`**: regex over text files (configs, docs, log fixtures, files outside the code index)
