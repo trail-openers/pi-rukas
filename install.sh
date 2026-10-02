@@ -273,7 +273,8 @@ if [ -n "$CBM_BIN" ]; then
         exposure: "direct"
       } |
       .autoEnableCodemode = false
-    ' "$MCP_CONFIG" > "$tmp" && mv "$tmp" "$MCP_CONFIG"
+    ' "$MCP_CONFIG" > "$tmp" || { rm -f "$tmp"; false; }
+    mv "$tmp" "$MCP_CONFIG"
     chmod 600 "$MCP_CONFIG"
     echo "    wrote $MCP_CONFIG (server key: codebase_memory; exposure: direct; autoEnableCodemode: false)"
   fi
@@ -281,13 +282,23 @@ if [ -n "$CBM_BIN" ]; then
   # Migration: remove the codebase_memory key from the legacy
   # ~/.config/mcp/mcp.json if present (the adapter-era config). The adapter
   # is gone, so this key is a dead second source. Other keys are preserved.
-  LEGACY_MCP_CONFIG="$HOME/.config/mcp/mcp.json"
-  if [ -f "$LEGACY_MCP_CONFIG" ] && jq empty "$LEGACY_MCP_CONFIG" >/dev/null 2>&1; then
-    if [ "$(jq -r '.mcpServers.codebase_memory // empty' "$LEGACY_MCP_CONFIG")" != "" ]; then
-      echo "==> Removing legacy codebase_memory key from $LEGACY_MCP_CONFIG (adapter-era config)"
-      tmp="$(mktemp)"
-      jq 'del(.mcpServers.codebase_memory)' "$LEGACY_MCP_CONFIG" > "$tmp" && mv "$tmp" "$LEGACY_MCP_CONFIG"
-      chmod 600 "$LEGACY_MCP_CONFIG"
+  # ONLY after the native merge succeeded: if the native write was skipped
+  # (malformed mcp.json) or failed, deleting the legacy key would leave
+  # neither config working — the legacy entry stays as the fallback.
+  if jq -e '.mcpServers.codebase_memory' "$MCP_CONFIG" >/dev/null 2>&1; then
+    LEGACY_MCP_CONFIG="$HOME/.config/mcp/mcp.json"
+    if [ -f "$LEGACY_MCP_CONFIG" ] && jq empty "$LEGACY_MCP_CONFIG" >/dev/null 2>&1; then
+      if [ "$(jq -r '.mcpServers.codebase_memory // empty' "$LEGACY_MCP_CONFIG")" != "" ]; then
+        echo "==> Removing legacy codebase_memory key from $LEGACY_MCP_CONFIG (adapter-era config)"
+        tmp="$(mktemp)"
+        if ! jq 'del(.mcpServers.codebase_memory)' "$LEGACY_MCP_CONFIG" > "$tmp"; then
+          rm -f "$tmp"
+          echo "!! legacy migration jq failed — leaving $LEGACY_MCP_CONFIG untouched"
+        else
+          mv "$tmp" "$LEGACY_MCP_CONFIG"
+          chmod 600 "$LEGACY_MCP_CONFIG"
+        fi
+      fi
     fi
   fi
 else
