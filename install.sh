@@ -264,16 +264,7 @@ if [ -n "$CBM_BIN" ]; then
     # .mcpServers.codebase_memory on re-runs so updates to args/exposure
     # propagate without leaving stale fields. Set autoEnableCodemode: false
     # at the top level (idempotent — re-setting is a no-op if already set).
-    tmp="$(mktemp)"
-    jq --arg cmd "$CBM_BIN" '
-      .mcpServers //= {} |
-      .mcpServers.codebase_memory = {
-        command: $cmd,
-        args: [],
-        exposure: "direct"
-      } |
-      .autoEnableCodemode = false
-    ' "$MCP_CONFIG" > "$tmp" || { rm -f "$tmp"; false; }
+    tmp="$(mktemp)" && jq --arg cmd "$CBM_BIN" '.mcpServers //= {} | .mcpServers.codebase_memory = {command: $cmd, args: [], exposure: "direct"} | .autoEnableCodemode = false' "$MCP_CONFIG" > "$tmp" || { rm -f "$tmp"; false; }
     mv "$tmp" "$MCP_CONFIG" && chmod 600 "$MCP_CONFIG"
     echo "    wrote $MCP_CONFIG (server key: codebase_memory; exposure: direct; autoEnableCodemode: false)"
   fi
