@@ -171,6 +171,7 @@ export function isValidRepoValue(value: string): boolean {
 export function unquoteArg(arg: string): string {
   if (arg.startsWith("$'")) return arg.slice(2, -1);
   const q = arg[0];
+  if (q !== "'" && q !== '"') return arg;
   if (q === "'") return arg.slice(1, -1);
   // Double-quoted: unescape \" → " and \\ → \
   let out = "";

@@ -1,18 +1,8 @@
-import { stripQuotedSegments } from "./bash-command-parser.ts";
 import { mergeVerbArgs } from "./merge-parse.ts";
-import { mergeVerbSpanRegex, shellSegments } from "./merge-tokens.ts";
+import { exceedsAnalysisBound } from "./merge-size.ts";
+import { mergeVerbSpanRegex, rawTokens, shellSegments, unquoteArg } from "./merge-tokens.ts";
 import { innerBodies, matchMergeVerb, mergeVerbUnwrapOne } from "./merge-verb-head.ts";
-
-/**
- * #955 (perf): maximum length (chars) of a merge-bearing command that will
- * be walked by the expensive segment/innerBody recursion. Commands longer
- * than this that contain `gh` or `glab` are blocked as too large to analyse
- * (fail closed) before the walk. 20000 chars is well above any legitimate
- * merge command (the longest realistic one is a few hundred chars) but well
- * below the size where the O(depth × length) walk becomes pathological
- * (a 64k-char nested-substitution command took >10s).
- */
-const MERGE_COMMAND_SIZE_BOUND = 20000;
+import { skipLeadingWrappers } from "./merge-wrappers.ts";
 
 /**
  * The matched verb span inside a segment, or undefined when the segment does
@@ -79,22 +69,14 @@ export function mergesPr(command: string): string | undefined {
   // a merge). Eval-of-variable is out of scope (the guard only sees the raw
   // command text, not what a variable expands to).
   if (!command.includes("merge")) return undefined;
-  // #955 (perf): size bound for merge-bearing commands. If the command is
-  // longer than this threshold AND contains `gh` or `glab`, block it as too
-  // large to analyse (fail closed) BEFORE running the expensive walk. The
-  // expensive walk (segment recursion, innerBodies, restBodyTexts) is
-  // O(depth × length) on pathological nested-substitution input, and a
-  // 64k-char merge-bearing command can take >10s. 20000 chars is well above
-  // any legitimate merge command (the longest realistic one is a few hundred
-  // chars) but well below the size where the walk becomes pathological.
-  // A merge-bearing command that does NOT contain `gh` or `glab` (e.g. a
-  // long `git commit -m "…merge…"`) passes the size bound and is walked
-  // normally — the pre-filter already confirmed it carries `merge`, so the
-  // walk will determine whether it is a merge.
-  if (
-    command.length > MERGE_COMMAND_SIZE_BOUND &&
-    (command.includes("gh") || command.includes("glab"))
-  ) {
+  // #955 (perf): size bound for merge-bearing commands — the constant and
+  // the measured rationale live in merge-size.ts. The guard (merge-guard.ts)
+  // checks `exceedsAnalysisBound` FIRST and refuses such a command with an
+  // explicit "too large to analyse" reason, so this branch is the matcher's
+  // own fail-closed span (a merge with no resolvable number — never a clean
+  // pass) for the same shapes, keeping the matcher honest on its own even
+  // if called outside the hook.
+  if (exceedsAnalysisBound(command)) {
     return "gh pr merge";
   }
   // Verb door, segment-wise (#955 round-2 hardening): the legacy door
@@ -161,59 +143,129 @@ function restBodyTexts(text: string): string[] {
  */
 function restDoors(texts: string[]): string | undefined {
   for (const raw of texts) {
-    // A leading unbalanced `(` (an unbalanced paren — `innerBodies` reports
-    // no balanced body for it, so the REST door sees the text whole) is
-    // stripped before the regex, the same coping `matchMergeVerb` applies
-    // to its glued-paren token: `(gh api repos/o/r/pulls/17/merge` is a
-    // live merge the guard must refuse, and the FORGE regex cannot anchor
-    // `gh` after a `(` (the `(` is not in the leading separator set).
-    const c = stripQuotedSegments(raw).replace(/^\s*\(/, "");
-    // The forge word, optionally path-qualified (`/usr/bin/gh`) — an
-    // inline copy of the forge-word fragment that the verb door keeps in
-    // MERGE_VERB_SPAN_SRC (merge-tokens.ts), kept separate (and NOT
-    // composed from that source) because the REST doors need an OPTIONAL
-    // repo flag between the forge word and `api` (`gh -R o/r api …`) that
-    // the verb span does not carry (#955 adversarial round 2, finding 1).
-    // The leading separator / `oo` prefix differ between the doors, so the
-    // shared fragment never composes into both as-is.
-    const FORGE =
-      "(?:^|[;&|]|\\s)(?:oo\\s+)?(?:/\\S*/)?(?:gh|glab)(?:\\s+(?:-R|--repo|--project)\\s+\\S+)?\\s+";
-    // REST door, gh: `gh api` on /pulls/{n}/merge — gh api defaults to
-    // POST/PUT when no --method is given, so the /merge suffix IS the write
-    // even when it "looks like a read". The no-number `.../pulls/merge`
-    // shape is the same door.
-    // Arbitrary `api` flags (with or without values) before the endpoint
-    // path: `gh api -X PUT repos/o/r/…`, `gh api --method PUT repos/o/r/…`.
-    // The flags are allowed as any non-whitespace tokens between `api` and
-    // the path; the path itself starts with `repos/` (gh) or `projects/`
-    // (glab), which anchors the match.
-    const ghApiMatch = new RegExp(`${FORGE}api\\s+((?:\\S+\\s+)*repos/[^\\s]+)`).exec(c);
-    const ghEndpoint = ghApiMatch?.[1]?.match(/repos\/[^\s]+/)?.[0] ?? "";
-    if (ghApiMatch && /\/pulls(?:\/[^\s/?#]+)?\/merge(?:[?&#\s]|$)/.test(ghEndpoint)) {
-      const rest = c.slice(ghApiMatch.index);
-      // The door is a WRITE unless the command is an explicit GET AND carries
-      // no body fields — gh api's `-f`/`-F`/`--field` flags force a PUT
-      // regardless of `--method`, so `--method GET --field x` is still the write.
-      const explicitGet = /\s(?:--method|-X)\s+get\b/i.test(rest);
-      const hasBodyFields = /\s(?:-f|-F|--field)(?:=|\s)/.test(rest);
-      if (!explicitGet || hasBodyFields) return (ghApiMatch?.[0] ?? "").trim();
+    const hit = restDoorTokens(raw);
+    if (hit !== undefined) return hit;
+  }
+  return undefined;
+}
+
+/**
+ * The REST doors on ONE command text's raw tokens (quote-aware walk, no
+ * quote-stripping — #955 lens round 6: the REST endpoint is matched among
+ * the UNQUOTED tokens, because the shell removes quotes around a whole word
+ * before execution — `gh api -X PUT "repos/o/r/pulls/17/merge"` is a live
+ * merge with the endpoint quoted, and the old `stripQuotedSegments` path
+ * deleted the endpoint before the regex could see it).
+ *
+ * A REST merge is recognised only when a segment's COMMAND WORD (after
+ * `skipLeadingWrappers`, unquoted — the same wrapper vocabulary the verb
+ * door uses, so `oo gh api …` / `timeout 30 gh api …` match) is `gh`/`glab`
+ * and the next unquoted token is `api`. Quoting a whole word is what the
+ * shell does, so the words are unquoted — but a quoted STRING that is one
+ * token (the endpoint of `echo "gh api …/merge"`) is NOT a command word
+ * (the command word is `echo`) and the endpoint scan only runs over the
+ * `api` argument list (from the unquoted `api` token onward), so quoted
+ * non-merge shapes stay inert exactly the way the verb door's quoted shapes
+ * do.
+ *
+ * The existing method/fields logic then applies to the UNQUOTED tokens from
+ * the command word onward: `gh api` defaults to POST/PUT (so the
+ * `/pulls/N/merge` endpoint alone is the write; `--method GET` without
+ * body fields stays a read), `glab api` is method-aware (only an explicit
+ * PUT/POST or a body field is the write).
+ */
+function restDoorTokens(text: string): string | undefined {
+  const tokens = rawTokens(text);
+  if (tokens.terminated === false) return undefined;
+  const list = tokens.list;
+  // A leading unbalanced `(` (an unbalanced paren — `innerBodies` reports
+  // no balanced body for it, so the REST door sees the text whole) is
+  // stripped before matching, the same coping the old quote-stripped path
+  // applied: `(gh api repos/o/r/pulls/17/merge` is a live merge the guard
+  // must refuse. `rawTokens` glues the paren to the next word, so it lands
+  // on the first token (`(gh`) — strip it there.
+  if (list.length > 0) {
+    const first = unquoteArg(list[0] ?? "");
+    if (first.startsWith("(")) {
+      const stripped = first.replace(/^\(/, "");
+      list[0] = stripped.length > 0 ? stripped : "";
     }
-    // REST door, glab: `glab api` on /mr/{n}/merge or
-    // /merge_requests/{n}/merge (the repo's canonical shape) — method-AWARE:
-    // blocked only when the command EXPLICITLY writes (glab api does not
-    // default to POST the way gh api does; copying the gh rule here would
-    // over-block legitimate reads). Method names are case-insensitive.
-    const glabApiMatch = new RegExp(
-      `${FORGE}api\\s+((?:\\S+\\s+)*?/?projects/[^\\s]+/(?:mr|merge_requests)(?:/[^\\s/?#]+)?/merge(?:[?&#\\s]|$))`,
-    ).exec(c);
-    if (glabApiMatch?.[0] !== undefined) {
-      const rest = c.slice(glabApiMatch.index);
-      const explicitGet = /\s(?:--method|-X)\s+get\b/i.test(rest);
+  }
+  const n = list.length;
+  const isSep = (t: string) => t === ";" || t === "&&" || t === "||" || t === "|";
+  for (let i = 0; i < n; i++) {
+    if (i > 0 && !isSep(unquoteArg(list[i - 1] ?? ""))) continue;
+    // The segment's unquoted tokens, up to the next separator.
+    const seg: string[] = [];
+    let j = i;
+    while (j < n && !isSep(unquoteArg(list[j] ?? ""))) {
+      const s = unquoteArg(list[j] ?? "");
+      if (s !== "") seg.push(s);
+      j++;
+    }
+    // The command word: skip the leading wrappers the same way the verb
+    // door does (the walk has already unquoted every token, so
+    // `skipLeadingWrappers` only sees bare words).
+    const ci = skipLeadingWrappers(seg, 0);
+    const cmd = seg[ci] ?? "";
+    const cmdBase = cmd.includes("/") ? (cmd.split("/").pop() ?? "") : cmd;
+    if (cmdBase !== "gh" && cmdBase !== "glab") continue;
+    const args = seg.slice(ci + 1);
+    if (args.length === 0 || args[0] !== "api") continue;
+    const endpoint = restEndpointToken(args);
+    if (endpoint === undefined) continue;
+    const all = [cmd, ...args].join(" ");
+    if (cmdBase === "gh") {
+      // gh REST door: `gh api` on /pulls/{n}/merge (or the no-number
+      // `.../pulls/merge` shape) — gh api defaults to POST/PUT when no
+      // --method is given, so the /merge suffix IS the write even when it
+      // "looks like a read".
+      if (!/\/pulls(?:\/[^\s/?#]+)?\/merge(?:[?&#]|$)/.test(endpoint)) continue;
+      const explicitGet = /(^|\s)(?:--method|-X)\s+get\b/i.test(all);
+      const hasBodyFields = /(^|\s)(?:-f|-F|--field)(?:=|\s)/.test(all);
+      if (!explicitGet || hasBodyFields) return cmd + " api " + endpoint;
+    } else {
+      // glab REST door: `glab api` on /mr/{n}/merge or
+      // /merge_requests/{n}/merge (the repo's canonical shape) —
+      // method-AWARE: blocked only when the command EXPLICITLY writes
+      // (glab api does not default to POST the way gh api does; copying
+      // the gh rule here would over-block legitimate reads). Method names
+      // are case-insensitive.
+      if (!/\/(?:mr|merge_requests)(?:\/[^\s/?#]+)?\/merge(?:[?&#]|$)/.test(endpoint)) continue;
+      const explicitGet = /(^|\s)(?:--method|-X)\s+get\b/i.test(all);
       const writes =
-        /\s(?:-X|-f|-F)\s+(?:put|post)\b/i.test(rest) ||
-        /\s--method\s+(?:put|post)\b/i.test(rest) ||
-        /\s(?:-f|-F|--field)(?:=|\s)/.test(rest);
-      if (!explicitGet && writes) return glabApiMatch[0].trim();
+        /(^|\s)(?:-X|-f|-F)\s+(?:put|post)\b/i.test(all) ||
+        /(^|\s)--method\s+(?:put|post)\b/i.test(all) ||
+        /(^|\s)(?:-f|-F|--field)(?:=|\s)/.test(all);
+      if (!explicitGet && writes) return cmd + " api " + endpoint;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The endpoint token among a forge `api` argument list (the unquoted
+ * tokens after `api`, leading flags skipped): the first token that is a
+ * `repos/…` (gh) or `/…projects/…` (glab) path. `undefined` when the
+ * argument list carries no such token (a non-REST `api` call, or a read on
+ * a different path). A flag that takes a value consumes the token after
+ * it, so a value that merely LOOKS like a path is never read as the
+ * endpoint (`-X repos/o/r/…` — the `-X` value is skipped, the next token
+ * is the real endpoint).
+ */
+function restEndpointToken(args: string[]): string | undefined {
+  for (let k = 0; k < args.length; k++) {
+    const t = args[k] ?? "";
+    if (/^repos\//.test(t)) return t;
+    if (/^\/?.*projects\//.test(t)) return t;
+    if (t.startsWith("-") && !t.includes("=")) {
+      // A flag that takes a value: `--method`/`-X` (the token after it is
+      // the method), the repo flags, and short flags generally take a
+      // value; skip it.
+      const longTakesValue =
+        t === "--method" || t === "-X" || t === "-R" || t === "--repo" || t === "--project";
+      const shortTakesValue = t.length === 2;
+      if (longTakesValue || shortTakesValue) k++;
     }
   }
   return undefined;

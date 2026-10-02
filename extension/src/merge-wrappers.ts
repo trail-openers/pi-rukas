@@ -297,18 +297,24 @@ export function matchMergeVerb(text: string): string | undefined {
   // deliberately defers to the caller) and the forge-word head test.
   let i = 0;
   while (i < list.length) {
-    // The shell removes quotes around a WHOLE word before it executes
-    // (`"gh" pr merge 17`, `gh "pr" merge 17`, `gh pr 'merge' 17` are all
-    // live merges — #955 lens round 6, PM-verified bypass), so every token
-    // is compared unquoted. `unquoteArg` on an unquoted token returns it
-    // unchanged, and a QUOTED STRING that is one token (`"gh pr merge 17"`
-    // as an `echo` argument) stays a single unquoted token whose head is
-    // `gh pr…` — never the bare forge word — so quoted strings in a later
-    // segment stay inert exactly as before (`echo "gh pr merge 17"`).
-    const t = unquoteArg(list[i] ?? "");
-    // A quote- or variable-substituted command word is not the bare shape
-    // the guard unwraps — no forge word to match, and not a wrapper.
-    if (t[0] === "'" || t[0] === '"' || t[0] === "$" || t === "`") return undefined;
+    const raw = list[i] ?? "";
+    // A raw token that starts a QUOTED run is not a command word: a quote
+    // at the start of a word means the whole word is data (an argument),
+    // so the segment is not a merge invocation here. This check MUST run
+    // on the raw token, before unquoting (a quoted run's contents never
+    // start with a quote, so an unquoted test can never see it).
+    // #955 lens round 6: the unquoting below handles the case the shell
+    // actually executes — quotes around a WHOLE word are removed before
+    // execution (`"gh" pr merge 17`, `gh "pr" merge 17`, `gh pr 'merge' 17`
+    // are all live merges, PM-verified bypass) — while a quoted STRING
+    // that is one token (`"gh pr merge 17"` as an `echo` argument) stays a
+    // single unquoted token whose head is `gh pr…`, never the bare forge
+    // word, so quoted strings in a later segment stay inert.
+    if (raw[0] === "'" || raw[0] === '"') return undefined;
+    const t = unquoteArg(raw);
+    // A variable-substituted command word is not the bare shape the guard
+    // unwraps — no forge word to match, and not a wrapper.
+    if (t[0] === "$" || t === "`") return undefined;
     // A leading `(` or `)` (subshell delimiter) is not a command word.
     // `rawTokens` glues an adjacent paren to the next word (`(gh`), so
     // strip it and re-test the remainder as the command head (#955
@@ -322,7 +328,7 @@ export function matchMergeVerb(text: string): string | undefined {
       }
       const forge = forgeWord(rest);
       if (forge) {
-        const seg = [rest, ...list.slice(i + 1)].join(" ");
+        const seg = [rest, ...list.slice(i + 1).map(unquoteArg)].join(" ");
         const isMerge = mergeVerbHeadRegex().test(seg);
         return isMerge ? forge : undefined;
       }
