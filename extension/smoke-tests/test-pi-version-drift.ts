@@ -200,6 +200,9 @@ export function siteCensus(verifiedV: string): Record<string, string[]> {
     // post-#959 config path ("Pi 1.0.0's native MCP").
     "docs/sandbox.md": [...v, "1.0.0"],
     "docs/troubleshooting.md": [...v, "1.0.0"],
+    // The audit code-search policy's config-path reference ("Pi 1.0.0's
+    // native MCP config") + the user-global native MCP config path.
+    "docs/audit-code-search-policy.md": [...v, "1.0.0"],
     // The AGENTS.md § 4 restatement (+ the date's digits + the §5 embargo
     // comment's 1.2.20 bun floor literal).
     "AGENTS.md": [...v, "1.2.20"],
@@ -279,8 +282,13 @@ export function siteCensus(verifiedV: string): Record<string, string[]> {
     // A rev tag in the python-tdd skill reference (a doc revision, not a Pi
     // claim).
     "skill/python-tdd/references/linting-config.md": ["1.10.0"],
-    // No claim: bump examples are relative (~0.XY.Z → ~0.XY.(Z+1)).
-    "CONTRIBUTING.md": ["1.2.20"],
+    // The sandbox wrapper's native-MCP bind-mount comment names the Pi 1.0.0
+    // path (issue #959); the header + mount comment both reference it.
+    "bin/pi-rukas": ["1.0.0"],
+    // 1.2.20 is the bun floor (not a Pi claim); 1.0.0 is the native-MCP
+    // walkthrough's pi claim; 1.10.0 is the tail of the npm 11.10.0 engines
+    // floor literal (not a Pi claim).
+    "CONTRIBUTING.md": ["1.2.20", "1.0.0", "1.10.0"],
   };
 }
 
