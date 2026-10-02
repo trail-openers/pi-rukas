@@ -86,6 +86,7 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { stripQuotedSegments } from "./bash-command-parser.ts";
+import { exceedsAnalysisBound } from "./merge-size.ts";
 import { mergesPr } from "./bash-merges-pr.ts";
 import { extractMergeNumber, mergeVerbArgs, mergeVerbRepo } from "./merge-parse.ts";
 import { type MergeExecFn, isCarveOut, readMergeTarget, resolvePrNumber } from "./merge-target.ts";
@@ -140,8 +141,16 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     try {
       merging = mergesPr(command);
     } catch (err) {
+      return block(`merge guard could not analyse this command (${analyseRefusal(err)}) — refusing; split or simplify the command`);
+    }
+    // #955 lens round 6: a merge-bearing command over the size bound is
+    // REFUSED explicitly ("too large to analyse") — it must not fall
+    // through to current-branch PR resolution, which would verify the
+    // ledger for a different PR than the one the (unanalysable) command
+    // would merge.
+    if (exceedsAnalysisBound(command)) {
       return block(
-        `merge guard could not analyse this command (${(err as Error).constructor.name}: ${(err as Error).message?.slice(0, 100)}) — refusing; split or simplify the command`,
+        "merge refused: command is too large to analyse — the merge guard will not walk a command this large (it could hide a merge behind a long value); split or simplify the command, or set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override",
       );
     }
     if (!merging) return;
@@ -169,9 +178,7 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
       // merge 17`). `mergeVerbRepo` handles both positions plus PR-URLs.
       fromRepo = mergeVerbRepo(command);
     } catch (err) {
-      return block(
-        `merge guard could not analyse this command (${(err as Error).constructor.name}: ${(err as Error).message?.slice(0, 100)}) — refusing; split or simplify the command`,
-      );
+      return block(`merge guard could not analyse this command (${analyseRefusal(err)}) — refusing; split or simplify the command`);
     }
     // #955 lens fix 1 (HIGH): an invalid repo value (e.g. `o/r; touch
     // /tmp/x`) is a shell injection. The guard refuses and NEVER
@@ -212,9 +219,7 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
         }
       }
     } catch (err) {
-      return block(
-        `merge guard could not analyse this command (${(err as Error).constructor.name}: ${(err as Error).message?.slice(0, 100)}) — refusing; split or simplify the command`,
-      );
+      return block(`merge guard could not analyse this command (${analyseRefusal(err)}) — refusing; split or simplify the command`);
     }
     // No number in the tail → fall back to current-branch resolution.
     if (prNumber === undefined) {
@@ -264,7 +269,7 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
       });
     } catch (err) {
       return block(
-        `git fetch failed: ${(err as Error).message?.slice(0, 120)} — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
+        `git fetch failed: ${analyseRefusal(err, 120)} — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
       );
     }
 
@@ -279,7 +284,7 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
       fetchedHead = stdout.trim();
     } catch (err) {
       return block(
-        `could not read ${remote}/${target.headBranch}: ${(err as Error).message?.slice(0, 120)} — the merge guard refuses by default`,
+        `could not read ${remote}/${target.headBranch}: ${analyseRefusal(err, 120)} — the merge guard refuses by default`,
       );
     }
     if (fetchedHead !== target.headOid) {
@@ -343,6 +348,19 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
 
 function block(reason: string) {
   return { block: true, reason };
+}
+
+/**
+ * One message builder for every throw the guard catches (#955 lens round 6).
+ * The catches must not themselves throw: a thrown `null`/`undefined` value
+ * makes `(err as Error).constructor.name` throw OUT of the catch, which
+ * fails the guard OPEN (the command passes). `typeof` narrowing handles
+ * every throwable value — no casts — and `String(err)` renders null and
+ * undefined as the strings `null`/`undefined`.
+ */
+export function analyseRefusal(err: unknown, limit = 100): string {
+  if (err instanceof Error) return `${err.name}: ${err.message.slice(0, limit)}`;
+  return String(err).slice(0, limit);
 }
 
 /**
