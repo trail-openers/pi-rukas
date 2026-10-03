@@ -12,8 +12,11 @@
  *
  * Blocked rows use the EXPECTED (installed + bundled) roster the caller
  * already built — a diff error is a review-level failure, so the blocked
- * rows name the lenses the review would have run. `installBlockRows`
- * (bundled-only) is reserved for the skills-dir problem case.
+ * rows name the lenses the review would have run. The skills-dir problem
+ * case uses `installBlockRowsForRoster` (lens-review-skills.ts) instead,
+ * which derives its rows from the BUNDLED `LENS_ROSTER` (falling back to a
+ * single "LENSES" row when the bundled set is unreadable) and carries the
+ * install-oriented message as `parseError`.
  */
 
 import * as dispatchDeck from "./dispatch-deck.ts";

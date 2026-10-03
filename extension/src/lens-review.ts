@@ -298,7 +298,9 @@ export async function runLensReview(opts: {
     // routed through `installBlockRowsForRoster` so the named-row logic
     // lives in ONE place — the #872 doctrine, preserved here via the
     // #873/#966 guard rather than a second early exit that could drift
-    // back into the empty-`computeVerdict` APPROVED hole). Deck
+    // back into the empty-`computeVerdict` APPROVED hole; the removed #872
+    // early exit was dead code, since this guard already diverts every
+    // empty-roster shape to this single finish exit). Deck
     // bookkeeping (start → bump per row → clear) happens inside
     // `blockedReviewSummary` below, so the operator sees the same
     // one-batch-row-and-bumped-per-lens shape the old `runInstallBlock`
@@ -323,10 +325,6 @@ export async function runLensReview(opts: {
     const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
     return finish(blocked, threshold, opts.cwd, opts.branch);
   }
-  // #966 — the #872 install-block early exit is dead code: the roster-missing
-  // guard above already diverts every empty-roster shape to this single
-  // finish exit. The #872 branch is removed rather than kept as a second
-  // exit that could drift back into the empty-`computeVerdict` APPROVED hole.
   // Persistent batch summary row (#139). Lets the user see "X/6 done"
   // throughout the run even as fast lenses drop out at 0s linger. Registered
   // BEFORE the per-lens entries so its seq sorts first on Pi's footer.
