@@ -104,7 +104,7 @@ export function inlineExplorePrompt(
     // #280 C — guard memories about type-invariant removals; the widening scan
     // writes one per (file, symbol) so the explore agent should look for them.
     "  2b. `vipune search 'invariant-removal <basename>' --memory-type guard --no-hybrid --recency 0.0 --limit 3` for guard memories about recent constraint removals (invariant-removal scan),",
-    "  3. `codebase_memory_search_code({query: '<concept>'})` for existing relevant code.",
+    "  3. `mcp__codebase_memory__search_code({query: '<concept>'})` for existing relevant code.",
     "",
     "Return a STRUCTURED summary the work-driver can route on:",
     ...verdictBlock,
@@ -137,7 +137,7 @@ function intentResolutionBlock(issues: number[]): string {
     "",
     `Whatever shape ${one ? "the issue body takes" : "the issue bodies take"} — a full spec, a paragraph, or one line — work out what is actually being asked, then check whether it is TRUE:`,
     "",
-    "  1. **Against the code.** Do the named symbols and files exist? Does the described behaviour match what the code actually does? Is this already implemented? Use `codebase_memory_search_code` / `trace_path` and read the files.",
+    "  1. **Against the code.** Do the named symbols and files exist? Does the described behaviour match what the code actually does? Is this already implemented? Use `mcp__codebase_memory__search_code` / `mcp__codebase_memory__trace_path` and read the files.",
     "  2. **Against the world.** If a third-party API or library behaviour is referenced, does it exist with that shape? Use `ctx7` or web search.",
     "",
     "A contradiction between the issue and the code is the most valuable thing you can find. Report it — do not quietly work around it.",

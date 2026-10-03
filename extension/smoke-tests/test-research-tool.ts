@@ -227,7 +227,7 @@ async function freshRepo(): Promise<string> {
   );
   const codebasePrompt = seen.find((s) => s.label === "research-codebase")?.prompt ?? "";
   assert(
-    /codebase_memory_search_code/.test(codebasePrompt) &&
+    /mcp__codebase_memory__search_code/.test(codebasePrompt) &&
       /if.*available/i.test(codebasePrompt) &&
       /fall back to grep\/read/i.test(codebasePrompt),
     "codebase tools: codebase angle prompt is conditional (if available / grep-read fallback)",

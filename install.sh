@@ -28,7 +28,6 @@ done
 ENSEMBLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PI_AGENT_DIR="${PI_AGENT_DIR:-$HOME/.pi/agent}"
 EXT_DIR="$PI_AGENT_DIR/extensions"
-
 # ---- Platform guard (#491) ----------------------------------------------------
 #
 # Supported: macOS and Linux (WSL2 expected to work, untested).
@@ -111,7 +110,8 @@ PI_STATUS="$(pi_preflight_status)"
 case "$PI_STATUS" in
   old:*)
     echo "!! ${PI_STATUS#old:}"
-    echo "   Upgrade with: bun add -g @earendil-works/pi-coding-agent@${MIN_PI_VERSION}"
+    echo "   pi-rukas needs pi ${MIN_PI_VERSION}+ — upgrade pi FIRST (subagents fail to"
+    echo "   start on old pi). Upgrade with: ${PI_UPGRADE_CMD}"
     ;;
   unparseable:*)
     echo "!! pi --version returned unparsable output: '${PI_STATUS#unparseable:}'"
@@ -146,8 +146,8 @@ if ! command -v gh >/dev/null 2>&1 && ! command -v glab >/dev/null 2>&1; then
 fi
 
 # codebase-memory-mcp is not preflighted here — it's an MCP server loaded by
-# pi-mcp-adapter, not a CLI on PATH. See README → Using MCP servers +
-# https://github.com/DeusData/codebase-memory-mcp
+# Pi 1.0.0's native MCP (mcp.json), not a CLI on PATH. See README → Using MCP
+# servers + https://github.com/DeusData/codebase-memory-mcp
 
 if [ ${#missing[@]} -gt 0 ]; then
   echo ""
@@ -218,20 +218,21 @@ ext_target="$EXT_DIR/pi-rukas"
 ln -sfn "$ENSEMBLE_DIR/extension" "$ext_target"
 echo "==> Registered extension at $ext_target"
 
-pi_bridge_warn "$PI_AGENT_DIR"
+pi_mcp_remove "$PI_AGENT_DIR"
 
-# ---- 6. Register codebase-memory-mcp with pi-mcp-adapter ---------------------
+# ---- 6. Register codebase-memory-mcp with Pi 1.0.0 native MCP -----------------
 #
 # codebase-memory-mcp ships its own install script that writes MCP configs
-# for Claude Code / Codex / OpenCode — but NOT for pi-mcp-adapter (what Pi
-# uses). pi-mcp-adapter reads (precedence-ordered): ~/.config/mcp/mcp.json,
-# <PI_AGENT_DIR>/mcp.json, .mcp.json, .pi/mcp.json. Without an entry, /mcp
-# shows "0/0 servers" and every dispatched subagent fails the first
-# codebase_memory_* call. We wire it into the user-global config — idempotent,
-# merge-safe. Server-key is `codebase_memory` (underscore) so formatToolName
-# produces doctrine-matching tool names; the seven read-side tools are
-# surfaced via directTools. PATH-portability: we write the BINARY NAME (not
-# the absolute path) so the same mcp.json works in host AND sandbox contexts
+# for Claude Code / Codex / OpenCode — but NOT for Pi 1.0.0's native MCP.
+# Native MCP reads ~/.pi/agent/mcp.json (user-level) and .pi/mcp.json
+# (project-level, after trust). We wire the entry into the user-global config
+# — idempotent, merge-safe, key-level replace of .mcpServers.codebase_memory.
+# The server key is `codebase_memory` (underscore) so Pi's native naming
+# produces doctrine-matching tool names (mcp__codebase_memory__<tool>); the
+# seven read-side tools go through `exposure: "direct"` and
+# `autoEnableCodemode: false` stops the codemode built-in from auto-activating
+# (see docs/mcp.md). PATH-portability: we write the BINARY NAME (not the
+# absolute path) so the same mcp.json works in host AND sandbox contexts
 # (PR #200 shipped absolute paths; the sandbox couldn't spawn the host path).
 CBM_BIN=""
 if command -v codebase-memory-mcp >/dev/null 2>&1; then
@@ -244,11 +245,10 @@ elif [ -x "$HOME/.local/bin/codebase-memory-mcp" ]; then
 fi
 
 if [ -n "$CBM_BIN" ]; then
-  echo "==> Registering codebase-memory-mcp with pi-mcp-adapter"
+  echo "==> Registering codebase-memory-mcp with Pi 1.0.0 native MCP"
   echo "    binary: $CBM_BIN (PATH-resolved at MCP-spawn time; portable across host + sandbox)"
-  MCP_CONFIG_DIR="$HOME/.config/mcp"
-  MCP_CONFIG="$MCP_CONFIG_DIR/mcp.json"
-  mkdir -p "$MCP_CONFIG_DIR"
+  MCP_CONFIG="$PI_AGENT_DIR/mcp.json"
+  mkdir -p "$PI_AGENT_DIR"
 
   if [ ! -f "$MCP_CONFIG" ]; then
     echo '{"mcpServers": {}}' > "$MCP_CONFIG"
@@ -258,31 +258,36 @@ if [ -n "$CBM_BIN" ]; then
   if ! jq empty "$MCP_CONFIG" >/dev/null 2>&1; then
     echo "!! $MCP_CONFIG is not valid JSON — skipping codebase-memory-mcp registration."
     echo "   Fix the file and re-run install.sh, or add the server manually:"
-    echo "     mcpServers.codebase_memory = {command: $CBM_BIN, ...}"
+    echo "     mcpServers.codebase_memory = {command: $CBM_BIN, args: [], exposure: \"direct\"}"
   else
-    # Merge our entry; preserve everything else. Replace our key on re-runs
-    # so updates to args/directTools propagate without leaving stale fields.
-    tmp="$(mktemp)"
-    jq --arg cmd "$CBM_BIN" '
-      .mcpServers //= {} |
-      .mcpServers.codebase_memory = {
-        command: $cmd,
-        args: [],
-        lifecycle: "lazy",
-        directTools: [
-          "search_code",
-          "search_graph",
-          "trace_path",
-          "detect_changes",
-          "get_code_snippet",
-          "get_architecture",
-          "query_graph"
-        ]
-      }
-    ' "$MCP_CONFIG" > "$tmp" && mv "$tmp" "$MCP_CONFIG"
-    chmod 600 "$MCP_CONFIG"
-    echo "    wrote $MCP_CONFIG (server key: codebase_memory; directTools: 7 read-side)"
+    # Merge our entry; preserve everything else. Key-level replace of
+    # .mcpServers.codebase_memory on re-runs so updates to args/exposure
+    # propagate without leaving stale fields. Set autoEnableCodemode: false
+    # at the top level (idempotent — re-setting is a no-op if already set).
+    # Tmp lives in $PI_AGENT_DIR (never world-readable /tmp) and is guarded
+    # like the legacy migration: on jq failure the tmp is removed and
+    # $MCP_CONFIG is left untouched, which also blocks the legacy removal
+    # below (it re-checks the native key first).
+    tmp="$(mktemp "$PI_AGENT_DIR/.mcp.json.XXXXXX")" || { echo "!! mktemp failed — $MCP_CONFIG untouched"; exit 1; }
+    if ! jq --arg cmd "$CBM_BIN" '.mcpServers //= {} | .mcpServers.codebase_memory = {command: $cmd, args: [], exposure: "direct"} | .autoEnableCodemode = false' "$MCP_CONFIG" > "$tmp"; then
+      rm -f "$tmp"
+      echo "!! native MCP write failed — $MCP_CONFIG untouched"
+    else
+      mv "$tmp" "$MCP_CONFIG" && chmod 600 "$MCP_CONFIG"
+      echo "    wrote $MCP_CONFIG (server key: codebase_memory; exposure: direct; autoEnableCodemode: false)"
+    fi
   fi
+
+  # Migration: remove the codebase_memory key from the legacy
+  # ~/.config/mcp/mcp.json if present (the adapter-era config). The adapter
+  # is gone, so this key is a dead second source; other keys are preserved.
+  # ONLY after the native merge succeeded: if the native write was skipped
+  # (malformed mcp.json) or failed, deleting the legacy key would leave
+  # neither config working — the legacy entry stays as the fallback.
+  # warn-only: a failed migration (return 1) must not abort the install
+  # under set -e — the legacy file is left untouched on every failure path
+  # anyway, so re-running install.sh can pick it up again.
+  legacy_mcp_migrate "$MCP_CONFIG" "$HOME/.config/mcp/mcp.json" || true
 else
   cat <<'CBM_HINT'
 ==> codebase-memory-mcp binary not found on \$PATH or at ~/.local/bin/.
@@ -290,7 +295,7 @@ else
     Install per upstream — typical one-liner:
       curl -fsSL https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh | bash
     After installing, re-run ./install.sh from pi-rukas to wire it into
-    pi-mcp-adapter (user-global config at ~/.config/mcp/mcp.json).
+    Pi 1.0.0's native MCP (user-global config at ~/.pi/agent/mcp.json).
 CBM_HINT
 fi
 
@@ -488,6 +493,6 @@ Next steps:
   - Configure subagent models with \`/ensemble-model\`.
   - Inside a project, run /mcp to confirm codebase_memory is connected (7 direct tools).
   - One-shot index per project on first use:
-      mcp({tool: "codebase_memory_index_repository", args: '{"repo_path": "."}'})
+      mcp__codebase_memory__index_repository({repo_path: "."})
     The file watcher keeps it current after that.
 EOF

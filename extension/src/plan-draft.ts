@@ -255,7 +255,7 @@ const REF_RE = /\b[\w./-]+\.(?:ts|tsx|js|rs|go|py|md)\b/g;
  * so the fallback is the DEFAULT path there and the fabricated label shipped.
  */
 export const PROSE_REF_SUFFIX =
-  "suggested path from the angle's prose — NOT confirmed to exist; verify with codebase_memory_search_code before treating it as an existing file, or create it";
+  "suggested path from the angle's prose — NOT confirmed to exist; verify with mcp__codebase_memory__search_code before treating it as an existing file, or create it";
 
 export function draftSpec(
   type: PlanType,

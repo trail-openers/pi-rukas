@@ -80,7 +80,7 @@ export const TEST_SURFACE_FALLBACK = "catalogue the tests near the work area in 
 
 /** The References fallback draftSpec renders when no reference exists. */
 export const REFERENCES_FALLBACK =
-  "run `codebase_memory_search_code` over the descriptor's identifiers during /work";
+  "run `mcp__codebase_memory__search_code` over the descriptor's identifiers during /work";
 
 /** The spike Expected-deliverable fallback. */
 export const SPIKE_DELIVERABLE_FALLBACK = "a decision or proof of concept — not shipped code";

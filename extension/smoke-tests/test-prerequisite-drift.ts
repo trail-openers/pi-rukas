@@ -18,9 +18,9 @@ const FIXTURES = path.resolve(import.meta.dirname, "fixtures", "prerequisite-dri
 
 /** Tools deliberately outside the check, each with the reason. Delete an entry as its issue lands. */
 const EXCEPTIONS: Record<string, string> = {
-  // Pinned per nicobailon/pi-mcp-adapter#547 (npm-12 EALLOWREMOTE); parseDockerInstalls keeps the full name@version token.
-  "pi-mcp-adapter@2.32.1": "MCP bridge, pinned at the last clean release per nicobailon/pi-mcp-adapter#547 (npm-12 EALLOWREMOTE)",
-  // MCP server binary loaded via pi-mcp-adapter, not a PATH CLI. Wired by install.sh step 6. Never a REQUIRED_CLIS entry.
+  // MCP server binary loaded via Pi 1.0.0's native MCP (mcp.json), not a PATH
+  // CLI. Wired by install.sh step 6 into ~/.pi/agent/mcp.json (issue #959).
+  // Never a REQUIRED_CLIS entry.
   "codebase-memory-mcp": "MCP server binary, not a PATH CLI — preflighted by install.sh step 6 instead",
   // In the README (extension runtime) but never in REQUIRED_CLIS: install.sh
   // uses bun/npm, so requiring it on PATH would warn most hosts. #488.
@@ -34,9 +34,9 @@ const EXCEPTIONS: Record<string, string> = {
     "npm package name — installs the `pi` binary already in REQUIRED_CLIS",
   // #578 floor pin on the Dockerfile pi install. parseDockerInstalls keeps the full tagged name;
   // version consistency is asserted separately (parsePiFloors) — this entry keeps the NAME-level
-  // reverse direction from flagging a false drift.
-  "@earendil-works/pi-coding-agent@0.84.4":
-    "npm package name with the #578 floor pin — installs the `pi` binary already in REQUIRED_CLIS",
+  // reverse direction from flagging a false drift. Post-#959 the floor is 1.0.0.
+  "@earendil-works/pi-coding-agent@1.0.0":
+    "npm package name with the #578 floor pin (1.0.0, bumped by #959) — installs the `pi` binary already in REQUIRED_CLIS",
   // cargo installs `double-o`; the binary is `oo` (REQUIRED_CLIS).
   "double-o": "cargo package name — installs the `oo` binary already in REQUIRED_CLIS",
   // npm installs `parallel-web-cli`; the binary is `parallel-cli` (REQUIRED_CLIS).
@@ -381,7 +381,7 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
   // The fixture's pinned pi package name — excepted by the same
   // name-vs-binary reasoning as the real @earendil-works/pi-coding-agent.
   // double-o excepted: cargo package name for the `oo` binary (same as real EXCEPTIONS).
-  const fExceptedSet = new Set(["@earendil-works/pi-coding-agent@0.99.0", "double-o"]);
+  const fExceptedSet = new Set(["@earendil-works/pi-coding-agent@1.1.0", "double-o"]);
   // The fixture install.sh does NOT have the forge OR-gate, so `gh` from
   // the apt-get line is unexplained here — proving the reverse direction
   // correctly flags forge CLIs when the gate is absent.
@@ -434,8 +434,8 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
     "canary: piped curl without a glab marker does not produce a glab entry",
   );
 
-  // Version gate canary: install.sh floor 0.84.4 (fixture preflight),
-  // README 0.84.3 (below floor → must flag), Dockerfile 0.99.0 (above
+  // Version gate canary: install.sh floor 1.0.0 (fixture preflight),
+  // README 0.84.3 (below floor → must flag), Dockerfile 1.1.0 (above
   // floor → must NOT flag). Same exported functions the real check uses.
   const fFloors = parsePiFloors({
     installSh: read(path.relative(REPO_ROOT, path.join(FIXTURES, "install-preflight.sh"))),
@@ -443,16 +443,16 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
     dockerfile: fixtureDocker,
   });
   assert(
-    fFloors.installSh === "0.84.4",
-    `canary fixture: install floor parses as 0.84.4 (got: ${JSON.stringify(fFloors.installSh)})`,
+    fFloors.installSh === "1.0.0",
+    `canary fixture: install floor parses as 1.0.0 (got: ${JSON.stringify(fFloors.installSh)})`,
   );
   assert(
     fFloors.readme === "0.84.3",
     `canary fixture: README pin parses as 0.84.3 (got: ${JSON.stringify(fFloors.readme)})`,
   );
   assert(
-    fFloors.dockerfile === "0.99.0",
-    `canary fixture: Dockerfile pin parses as 0.99.0 (got: ${JSON.stringify(fFloors.dockerfile)})`,
+    fFloors.dockerfile === "1.1.0",
+    `canary fixture: Dockerfile pin parses as 1.1.0 (got: ${JSON.stringify(fFloors.dockerfile)})`,
   );
   const fCmpReadme = compareVersions(fFloors.readme, fFloors.installSh);
   assert(
@@ -472,7 +472,7 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
     "canary: unpinned surfaces parse as empty (the drift the gate flags)",
   );
 
-  // oo canary: fixture preflight floor 0.5.0; README 0.4.4 (below → flagged); Dockerfile 0.99.0 (above → NOT flagged).
+  // oo canary: fixture preflight floor 0.5.0; README 0.4.4 (below → flagged); Dockerfile 1.1.0 (above → NOT flagged).
   const fOoFloors = parseOoFloors({
     installSh: read(path.relative(REPO_ROOT, path.join(FIXTURES, "install-preflight.sh"))),
     readme: fixtureReadme,
@@ -480,7 +480,7 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
   });
   assert(fOoFloors.installSh === "0.5.0", `canary: oo floor parses 0.5.0 (got ${JSON.stringify(fOoFloors.installSh)})`);
   assert(fOoFloors.readme === "0.4.4", `canary: oo README pin parses 0.4.4 (got ${JSON.stringify(fOoFloors.readme)})`);
-  assert(fOoFloors.dockerfile === "0.99.0", `canary: oo Dockerfile pin parses 0.99.0 (got ${JSON.stringify(fOoFloors.dockerfile)})`);
+  assert(fOoFloors.dockerfile === "1.1.0", `canary: oo Dockerfile pin parses 1.1.0 (got ${JSON.stringify(fOoFloors.dockerfile)})`);
   const fOoCmpR = compareVersions(fOoFloors.readme, fOoFloors.installSh);
   assert(fOoCmpR !== null && fOoCmpR < 0, "canary: below-floor oo README pin detected");
   const fOoCmpD = compareVersions(fOoFloors.dockerfile, fOoFloors.installSh);

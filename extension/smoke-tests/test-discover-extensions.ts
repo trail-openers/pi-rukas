@@ -69,6 +69,16 @@ await writePkg(realSrc, {
 });
 await fs.symlink(realSrc, path.join(extDir, "symlinked-bridge"));
 
+// (f) pi-mcp-adapter — must be skipped even if a host has not yet re-run
+// install.sh and the adapter lingers in extensions/ (issue #959). Its /mcp
+// extension registration would replace the built-in MCP and disable native
+// MCP in every child.
+await writePkg(path.join(extDir, "pi-mcp-adapter"), {
+  name: "pi-mcp-adapter",
+  version: "2.32.1",
+  pi: { extensions: ["dist/index.js"] },
+});
+
 // Point discovery at our fake tree.
 const prevAgentDir = process.env.PI_AGENT_DIR;
 const prevDisable = process.env.PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD;
@@ -96,6 +106,9 @@ assert(!hasStray, "directory without package.json is filtered out");
 
 const hasNotPi = result.some((p) => p.endsWith("/not-a-pi-ext"));
 assert(!hasNotPi, "package.json without pi.extensions is filtered out");
+
+const hasAdapter = result.some((p) => p.endsWith("/pi-mcp-adapter"));
+assert(!hasAdapter, "pi-mcp-adapter is filtered out (issue #959: its /mcp registration would replace native MCP)");
 
 // Opt-out env var
 process.env.PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD = "1";

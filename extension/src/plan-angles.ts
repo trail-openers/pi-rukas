@@ -51,12 +51,12 @@ const ANGLES: Record<PlanType, Angle[]> = {
     {
       name: "reproduction-surface",
       build: ({ descriptor }) =>
-        `Determine concrete steps to reproduce this bug: "${descriptor}". Find: the error messages and logs relevant to it (codebase_memory_search_code + git log), environment specifics that matter, flakiness factors, and the existing test cases that should have caught it. Return findings + evidence + confidence + gaps.`,
+        `Determine concrete steps to reproduce this bug: "${descriptor}". Find: the error messages and logs relevant to it (mcp__codebase_memory__search_code + git log), environment specifics that matter, flakiness factors, and the existing test cases that should have caught it. Return findings + evidence + confidence + gaps.`,
     },
     {
       name: "affected-code",
       build: ({ descriptor }) =>
-        `Identify the files, functions and call sites affected by this bug: "${descriptor}". For each, capture the file path plus the function or component name, and why it is in-scope. Do NOT capture exact line numbers — they rot before /work; name the symbol. Use codebase_memory_search_code. Return affected[] + references + gaps.`,
+        `Identify the files, functions and call sites affected by this bug: "${descriptor}". For each, capture the file path plus the function or component name, and why it is in-scope. Do NOT capture exact line numbers — they rot before /work; name the symbol. Use mcp__codebase_memory__search_code. Return affected[] + references + gaps.`,
     },
     {
       name: "test-surface",
@@ -69,7 +69,7 @@ const ANGLES: Record<PlanType, Angle[]> = {
       name: "prior-art",
       build: ({ descriptor, codeIdentifiers }) => {
         if (codeIdentifiers.length === 0) return undefined;
-        return `Look for prior art for this feature: "${descriptor}". Check existing implementations and patterns with codebase_memory_search_code (candidate identifiers: ${codeIdentifiers.join(", ")}). Return priorArt[] (source, summary, reuse opportunity) + conventions[] + gaps.`;
+        return `Look for prior art for this feature: "${descriptor}". Check existing implementations and patterns with mcp__codebase_memory__search_code (candidate identifiers: ${codeIdentifiers.join(", ")}). Return priorArt[] (source, summary, reuse opportunity) + conventions[] + gaps.`;
       },
     },
     {
@@ -169,7 +169,7 @@ const PLAN_REPORTER_PROMPT = [
   "For each structured item you identify, call the `report_plan_item` tool ONCE (one call per item, never batched; never as prose or JSON in your reply — only the tool calls count). Fields:",
   `  - kind: one of ${PLAN_ITEM_KINDS.map((k) => `"${k}"`).join(" | ")}`,
   "  - text: the item — ONE complete, self-contained sentence (two at most), at most ~400 characters. Name symbols and paths; never paste code blocks, diffs or essays — the driver clips longer items and the clipped tail is LOST. No bullet marker, no preamble, no heading.",
-  "GROUNDING: a `reference` kind item is ONLY a path your live tool calls (codebase_memory_search_code, rg, the filesystem) actually returned in THIS session. Never invent or guess a path in place of a reference item; if nothing exists, report the absence as one honest reference item (what you searched for + that no existing code was found) — never invent a path to stand in for it.",
+  "GROUNDING: a `reference` kind item is ONLY a path your live tool calls (mcp__codebase_memory__search_code, rg, the filesystem) actually returned in THIS session. Never invent or guess a path in place of a reference item; if nothing exists, report the absence as one honest reference item (what you searched for + that no existing code was found) — never invent a path to stand in for it.",
   "  - angle: your angle name (omit if not applicable)",
   `Kind meanings: acceptance-criterion = a testable outcome; test-surface-item = an existing test to extend or a missing one to add (file + name); edge-case = a pitfall, failure mode or boundary condition the implementer must handle; sub-issue = one sub-ticket of this EPIC (title + brief scope) — for EPIC type only, and only when your angle's prompt chartered sub-issue emission to you (for epics that is the decomposition-surface angle); ${REFERENCE_KIND_DEFS.reference}; out-of-scope = something this ticket must NOT do. If you found nothing of a kind, do not call it for that kind — EXCEPT the reference kind, whose absence IS one honest item: if you confirmed no existing code, emit exactly ONE reference item stating what you searched for and that no existing code was found (never invent a path to stand in for it)`,
 ].join("\n");

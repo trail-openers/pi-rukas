@@ -73,8 +73,8 @@ function referencesSection(body: string): string {
     "ref-def: the shared definition is substantial",
   );
   assert(
-    /codebase_memory_search_code/.test(REFERENCE_KIND_DEFS.reference),
-    "ref-def: the definition names codebase_memory_search_code as grounding evidence",
+    /mcp__codebase_memory__search_code/.test(REFERENCE_KIND_DEFS.reference),
+    "ref-def: the definition names mcp__codebase_memory__search_code as grounding evidence",
   );
   assert(
     /actually returned/i.test(REFERENCE_KIND_DEFS.reference),
@@ -238,7 +238,7 @@ function referencesSection(body: string): string {
   const absenceRefs = referencesSection(absenceBody);
   assert(
     absenceRefs.includes(
-      "run `codebase_memory_search_code` over the descriptor's identifiers during /work",
+      "run `mcp__codebase_memory__search_code` over the descriptor's identifiers during /work",
     ),
     "absence: zero references + no path tokens renders the honest search-instruction fallback",
   );

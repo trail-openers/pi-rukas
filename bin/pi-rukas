@@ -11,7 +11,7 @@
 #   - $HOME/.pi/agent/ensemble-runs/       → /home/vscode/.pi/agent/ensemble-runs
 #   - $HOME/.pi/agent/sessions/            → /home/vscode/.pi/agent/sessions
 #   - $HOME/.pi/agent/ensemble-models.json → same path (per-role model picks)
-#   - $HOME/.config/mcp/mcp.json           → same path (RO, from host install.sh)
+#   - $HOME/.pi/agent/mcp.json             → same path (RO, native MCP, issue #959)
 #   - $HOME/.config/gh/                    → same path (RO; gh auth — or set GH_TOKEN)
 #
 # Caches (~/.cache, ~/.bun, ~/.cargo, shell history) live in named volumes
@@ -156,12 +156,14 @@ build_mounts() {
     mounts+=(-v "$HOME/.pi/agent/models.json:/home/vscode/.pi/agent/models.json:ro")
   fi
 
-  # mcp.json — bind-mount if present; PR #202 made entries PATH-portable
-  # so the same file works in both host and container contexts. If the
-  # host doesn't have one, the container's baked default (with
-  # codebase_memory wired) takes over.
-  if [ -f "$HOME/.config/mcp/mcp.json" ]; then
-    mounts+=(-v "$HOME/.config/mcp/mcp.json:/home/vscode/.config/mcp/mcp.json:ro")
+  # mcp.json — Pi 1.0.0's native MCP config, bind-mounted if present (issue
+  # #959 moved the wiring from the adapter-era ~/.config/mcp/mcp.json to
+  # ~/.pi/agent/mcp.json; matches the devcontainer.json bind-mount). Entries
+  # are PATH-portable (PR #202) so the same file works in both host and
+  # container contexts. If the host doesn't have one, the container's baked
+  # default (codebase_memory wired) takes over.
+  if [ -f "$HOME/.pi/agent/mcp.json" ]; then
+    mounts+=(-v "$HOME/.pi/agent/mcp.json:/home/vscode/.pi/agent/mcp.json:ro")
   fi
 
   # gh auth — bind-mount fallback for installations configured without a
