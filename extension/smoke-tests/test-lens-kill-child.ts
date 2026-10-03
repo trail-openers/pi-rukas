@@ -24,6 +24,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { mock } from "bun:test";
+import * as dispatchDeck from "../src/dispatch-deck.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -59,6 +60,7 @@ mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
   spawnSpecialist: async () => spawnResponder(),
 }));
 
+const { NO_TEXT_PLACEHOLDER } = await import("../src/lens-review-format.ts");
 const { runLensChild } = await import("../src/lens-review-child.ts");
 const { LENS_ROSTER } = await import("../src/lens-roster.ts");
 
@@ -151,12 +153,15 @@ const childLens = { name: "SECURITY", skill: "code-review-security", precedence:
   assert(r.findings.length === 1, "the finding is kept from a failed child");
 }
 
-// (1c) Failed child, thinking-only output → NOT blocked (#952 genuine summary)
+// (1c) The real shape of a thinking-only failed child: `collapseEvents`
+// substitutes NO_TEXT_PLACEHOLDER into `text`, and the placeholder is a
+// description of the absence of output — not a reviewable summary — so the
+// lens is blocked.
 {
   spawnResponder = () => ({
     role: "code-review-specialist",
     ok: false,
-    text: "I examined the diff carefully and found nothing in this lane.",
+    text: NO_TEXT_PLACEHOLDER,
     thinkingOnly: true,
     toolUses: [],
     ms: 1000,
@@ -172,7 +177,8 @@ const childLens = { name: "SECURITY", skill: "code-review-security", precedence:
     opts: { diff: "d" },
     bumpBatch: () => {},
   });
-  assert(r.blocked === false, "failed child with thinking-only output → NOT blocked (#952)");
+  assert(r.blocked === true, "failed thinking-only child (placeholder text, no findings) → blocked");
+  eq(r.summary, undefined, "the placeholder is not kept as the lens summary");
 }
 
 // (1d) Cap-killed child (loop) with text-only output → NOT blocked (#952 unchanged)
@@ -220,6 +226,48 @@ const childLens = { name: "SECURITY", skill: "code-review-security", precedence:
     bumpBatch: () => {},
   });
   assert(r.blocked === true, "failed child with empty output → blocked");
+}
+
+// (2) #966 — an aborted run (signal aborted BEFORE start) records every lens
+// blocked and leaves NO deck batch entry: the abort check in runLensReview
+// runs before `startPersistentBatch`, so a dangling `code-review-specialist×N`
+// batch row (and its ticker) never exists. Driven through the real
+// `runLensReview` with a stubbed `lensChildFn` — an aborted run must never
+// reach the spawner, and the deck batch snapshot is the observable seam.
+{
+  dispatchDeck.reset();
+  dispatchDeck.startBatchEntry("run-966-2/leftover-batch", { label: "unrelated", size: 1 });
+  const controller = new AbortController();
+  controller.abort();
+  let spawnerCalls = 0;
+  const { runLensReview } = await import("../src/lens-review.ts");
+  const summary = await runLensReview({
+    diff: "d",
+    signal: controller.signal,
+    lensChildFn: async () => {
+      spawnerCalls++;
+      throw new Error("lensChildFn must not be called on an aborted run");
+    },
+  } as never);
+  eq(spawnerCalls, 0, "aborted run never reaches the per-lens spawner");
+  eq(
+    dispatchDeck.batchSnapshot().filter((b) => b.key === "run-966/batch").length,
+    0,
+    "aborted run leaves no `run-966/batch` deck entry (no dangling batch, no running ticker)",
+  );
+  assert(
+    dispatchDeck
+      .batchSnapshot()
+      .some((b) => b.key === "run-966-2/leftover-batch" && b.size === 1 && b.completed === 0),
+    "canary: an unrelated pre-existing deck batch entry is untouched by the abort path",
+  );
+  eq(summary.verdict, "REVIEW_INCOMPLETE", "aborted run → REVIEW_INCOMPLETE (same finish path as all-fail)");
+  assert(
+    summary.lenses.length > 0 &&
+      summary.lenses.every((l) => l.blocked && l.parseError === "aborted before start"),
+    "every lens recorded blocked with `aborted before start`",
+  );
+  dispatchDeck.reset();
 }
 
 childFixture.cleanup();

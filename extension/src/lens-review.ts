@@ -184,8 +184,8 @@ function piSkillsDir(): string {
   return process.env.PI_ENSEMBLE_SKILLS_DIR ?? path.join(os.homedir(), ".pi", "agent", "skills");
 }
 
-/** The ONE exit path: writes the ledger entry and returns the summary. */
 /**
+ * The ONE exit path: writes the ledger entry and returns the summary.
  *
  * #966 — the ledger's `passed` is derived from the RESOLVED verdict (via
  * `lensPassed` inside `writeLensLedgerEntry`), and every run shape that
@@ -276,6 +276,19 @@ export async function runLensReview(opts: {
     const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
     return finish(blocked, threshold, opts.cwd, opts.branch);
   }
+  // #966 — an aborted signal is a user kill: every lens is recorded blocked,
+  // no children are spawned, and the run proceeds to the SAME finish path as
+  // a non-aborted all-fail run — verdict REVIEW_INCOMPLETE, one ledger write,
+  // nothing special. Checked BEFORE `startPersistentBatch` so no deck batch
+  // (and its ticker) is ever registered for a run that cannot start. The
+  // in-loop signal check inside runLensChild still governs children that
+  // were already spawned before an abort arrives mid-fan-out; the normal
+  // fan-out path clears its batch via `clearBatchEntry(batchKey)` below.
+  if (opts.signal?.aborted) {
+    const blockRows = blockedRowsForRoster(roster, "aborted before start");
+    const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
+    return finish(blocked, threshold, opts.cwd, opts.branch);
+  }
   const diff = resolution.diff ?? "";
   const skillsCheck = skillsDirUsable(skillsDir);
   if (skillsCheck !== undefined) {
@@ -308,38 +321,6 @@ export async function runLensReview(opts: {
   // throughout the run even as fast lenses drop out at 0s linger. Registered
   // BEFORE the per-lens entries so its seq sorts first on Pi's footer.
   const { batchKey, bumpBatch } = startPersistentBatch(runId, roster.length);
-  // #966 — an aborted signal is a user kill: every lens that never started
-  // (or started and was killed) is recorded blocked, no children are spawned,
-  // and the run proceeds to the SAME finish path as a non-aborted all-fail
-  // run — verdict REVIEW_INCOMPLETE, one ledger write, nothing special. The
-  // in-loop signal check inside runLensChild still governs children that
-  // were already spawned before the abort arrived.
-  if (opts.signal?.aborted) {
-    const abortedRows = roster.map((e) => ({
-      lens: e.name,
-      ok: false,
-      ms: 0,
-      startMs: Date.now(),
-      findings: [] as Finding[],
-      attempts: 0,
-      blocked: true,
-      parseError: "aborted before start",
-    }));
-    const deduped = dedupeFindings([...(opts.extraFindings ?? [])], roster);
-    return finish(
-      {
-        verdict: computeVerdict(deduped, abortedRows, threshold),
-        totalFindings: deduped.length,
-        bySeverity: bySeverityCounts(deduped),
-        lenses: abortedRows,
-        findings: deduped,
-        usage: undefined,
-      },
-      threshold,
-      opts.cwd,
-      opts.branch,
-    );
-  }
   // #873 — blocked roster entries become blocked lens results (no spawn,
   // the named error as parseError) and feed REVIEW_INCOMPLETE via
   // computeVerdict; healthy entries fan out as before.
