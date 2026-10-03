@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.77](https://github.com/trail-openers/pi-rukas/compare/v0.12.76...v0.12.77) (2026-10-03)
+
+
+### Features
+
+* **pi:** upgrade to Pi 1.0.x with native MCP (replaces pi-mcp-adapter) ([#964](https://github.com/trail-openers/pi-rukas/issues/964)) ([e60134d](https://github.com/trail-openers/pi-rukas/commit/e60134de878be4edb073b2c8f51ef30808fe2259))
+
 ## [0.12.76](https://github.com/trail-openers/pi-rukas/compare/v0.12.75...v0.12.76) (2026-10-02)
 
 
