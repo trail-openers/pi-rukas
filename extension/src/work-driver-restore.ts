@@ -220,13 +220,13 @@ export async function verifiedRestoreRoot(
     );
   }
 
-  // The post-condition: the porcelain read IS the check, and it uses a
-  // fresh `git status --porcelain` subprocess via the injected `execFn`,
-  // NOT a cached or in-memory state — it reflects the ACTUAL on-disk state
-  // after the reset + checkout, not a snapshot from before the restore ran.
-  // Untracked `??` entries and `.worktrees/` scaffolding are not dirt for
-  // this purpose — untracked files are never swept (`git clean` is
-  // forbidden by #750), so they are never counted as a failed restore.
+  // The post-condition: the porcelain read IS the check. Untracked `??`
+  // entries and `.worktrees/` scaffolding are not dirt for this purpose.
+  // The read uses a fresh `git status --porcelain` subprocess via the
+  // injected `execFn`, NOT a cached or in-memory state — it reflects the
+  // ACTUAL on-disk state after the reset + checkout, not a snapshot from
+  // before the restore ran. Untracked files are never swept (`git clean`
+  // is forbidden by #750), so they are never counted as a failed restore.
   let dirt: string[];
   try {
     const { stdout } = await execFn("git status --porcelain", {
