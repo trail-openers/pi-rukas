@@ -106,6 +106,7 @@ function stateFor(
       reviewRound: 0,
       ciRetryCount: 0,
       inFlightJobIds: [],
+      plumbReports: [],
       branchName,
       baseSha,
       worktrees: { "task-a": wt },
