@@ -143,6 +143,12 @@ export interface ConsolidateOutcome {
   /** Committed workstream ids that landed on the branch (cherry-picked or
    * patch-applied). Present when at least one workstream had committed work. */
   workstreams?: string[];
+  /** The verified-restore claim (success only): whether repoRoot was
+   * restored to the checkout it was on before consolidation, or why the
+   * restore failed. Absent when the success path never ran the restore
+   * (the `applied.length === 0` short-circuit, where no checkout switch
+   * happened). */
+  restoreClaim?: string;
   /** Human-readable failure reason (failure only). */
   reason?: string;
 }
@@ -241,6 +247,9 @@ export async function consolidateWorktreesToBranch(
             reason: `no local branch ${branchName} and no baseSha recorded — cannot create the branch without a commit to start from`,
           };
         }
+        // #968 — the `-B` checkout switches repoRoot to the branch; the
+        // success-path restore below (and the failure paths) use plain
+        // `git checkout --force` on the captured originalRef.
         await execFn(
           `git checkout -B ${JSON.stringify(branchName)} ${JSON.stringify(ps.baseSha)}`,
           {
@@ -339,10 +348,28 @@ export async function consolidateWorktreesToBranch(
         // Every worktree had a clean tree and no committed work — the
         // countAheadOfBase precheck above should have caught that, but the
         // operator's branch may already contain the work. Not an error.
+        // #968 — the branch IS checked out at repoRoot here (the checkout
+        // above ran before the orchestrator), so the original checkout is
+        // restored even though nothing was committed. `git checkout --force`
+        // of a BRANCH name (symbolic-ref capture) re-attaches the operator
+        // to their branch — never a detached SHA — when originalRef is one;
+        // a detached-HEAD original (SHA capture) detaches back to that SHA.
+        const restore = await verifiedRestoreRoot(execFn, {
+          repoRoot: ctx.repoRoot,
+          originalRef: originalRef ?? ps.baseSha ?? "HEAD",
+          scratchDir: ctx.scratchDir,
+          label: "handoff consolidation",
+        });
+        const claim = restoreClaim(
+          restore,
+          undefined,
+          "run git status at the repo root",
+        );
         return {
           ok: true as const,
           branchName,
           workstreams: [],
+          restoreClaim: claim,
         };
       }
       // Commit the staged batch. (No push: the branch is local-only at
@@ -366,7 +393,41 @@ export async function consolidateWorktreesToBranch(
           maxBuffer: 256 * 1024,
         });
       }
-      return { ok: true as const, branchName, workstreams: applied };
+      // #968 — the success path used to return here with repoRoot still
+      // checked out on the consolidated branch: the originalRef capture
+      // (#750) existed only to feed the four FAILURE branches. The branch
+      // and its commits stay where the operator pushes them from; the
+      // operator's checkout comes back. Runs INSIDE the integration lock
+      // (like the failure paths) so a sibling cycle's integrate() cannot
+      // race the checkout switch. The claim reuses restoreClaim's existing
+      // shapes: the verified post-condition on success, the loud
+      // "repoRoot was NOT restored: …" on failure, threaded into the
+      // handoff-consolidated event and both renderers.
+      //
+      // Reviewer point, #968: originalRef comes from
+      // `git symbolic-ref --quiet --short HEAD`, which is a BRANCH name
+      // when the operator was attached (the common case) — so this is a
+      // branch checkout, never a detached SHA, in that case. A detached
+      // operator (SHA fallback capture) is restored to that same detached
+      // SHA; a missing capture (originalRef ?? …) degrades to the base
+      // commit rather than skipping the restore.
+      const restore = await verifiedRestoreRoot(execFn, {
+        repoRoot: ctx.repoRoot,
+        originalRef: originalRef ?? ps.baseSha ?? "HEAD",
+        scratchDir: ctx.scratchDir,
+        label: "handoff consolidation",
+      });
+      const claim = restoreClaim(
+        restore,
+        undefined,
+        "run git status at the repo root",
+      );
+      if (!restore.restored) {
+        trace(
+          `handoff-consolidate: restore after success failed: ${restore.detail ?? "unknown"}`,
+        );
+      }
+      return { ok: true as const, branchName, workstreams: applied, restoreClaim: claim };
     });
     if (result.ok) {
       trace(
@@ -383,16 +444,29 @@ export async function consolidateWorktreesToBranch(
     const msg = (err as Error & { stderr?: string }).stderr ?? (err as Error).message ?? "unknown";
     trace(`handoff-consolidate: failed: ${msg.toString().slice(0, 200)}`);
     if (originalRef) {
-      await verifiedRestoreRoot(execFn, {
+      // #968 — the failure path now carries the claim too, so a failed
+      // throw-path restore is as loud as a failed success-path restore
+      // (pre-#968 this call was fire-and-forget: the operator heard about
+      // the consolidation failure but not that their checkout did not come
+      // back). verifiedRestoreRoot never throws, so this cannot lose the
+      // outcome.
+      const restore = await verifiedRestoreRoot(execFn, {
         repoRoot: ctx.repoRoot,
         originalRef,
         scratchDir: ctx.scratchDir,
         label: "handoff consolidation",
-      }).catch((rerr) =>
+      });
+      if (!restore.restored) {
         trace(
-          `handoff-consolidate: restore after failure also failed: ${(rerr as Error).message?.slice(0, 200)}`,
-        ),
+          `handoff-consolidate: restore after failure also failed: ${restore.detail ?? "unknown"}`,
+        );
+      }
+      const claim = restoreClaim(
+        restore,
+        undefined,
+        "run git status at the repo root",
       );
+      return { ok: false, reason: `consolidation failed: ${msg.toString().slice(0, 200)}; ${claim}` };
     }
     return { ok: false, reason: `consolidation failed: ${msg.toString().slice(0, 200)}` };
   }

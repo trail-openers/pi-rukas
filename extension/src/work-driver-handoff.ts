@@ -419,6 +419,12 @@ export async function handoffConsolidateWorktrees(
     at: Date.now(),
     branchName: branch,
     workstreams: result.workstreams ?? [],
+    // #968 — the success path now restores repoRoot to the operator's
+    // original checkout (branch checkout when originalRef is one); the claim
+    // rides in the event so both renderers print the verified post-condition
+    // or the loud not-restored failure. Absent when the restore was not run
+    // (the nothing-applied short-circuit predates the capture on some paths).
+    ...(result.restoreClaim !== undefined ? { restoreClaim: result.restoreClaim } : {}),
   };
 }
 export function parseHandoffCommentUrl(text: string | undefined): string | undefined {
