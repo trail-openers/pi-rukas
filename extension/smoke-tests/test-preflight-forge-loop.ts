@@ -18,10 +18,12 @@
  * the real `gh` / `glab`).
  *
  * The stubbed PATH is built in a temp dir:
- *   - positive case: a stub `gh` binary → "forge" must NOT appear in
- *     missing[] (the operator-reported false positive).
- *   - negative case: a stub `glab` binary only (gh absent) → "forge" must
- *     NOT appear in missing[] either (either binary satisfies the OR gate).
+ *   - positive cases: a stub `gh`, a stub `glab`, or both → "forge" must
+ *     NOT appear in missing[] (the operator-reported false positive).
+ *   - negative case: neither `gh` nor `glab` → missing[] holds NO forge
+ *     entry (the loop skips the pseudo-entry by name), and the dedicated
+ *     "!! Neither gh nor glab found…" block is the single operator-visible
+ *     forge warning.
  *   - canary: an unpatched loop body (no skip) + empty PATH → "forge"
  *     MUST appear exactly once in missing[]. This proves the gate CAN
  *     fail — a regression that re-adds the generic probe (or removes the
@@ -32,7 +34,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { lstatSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -97,67 +99,82 @@ const HARNESS_TOOLS = ["bash", "sh", "printf"];
  *          if the block was not printed (missing[] was empty).
  */
 function runLoop(loopBody: string, stubBinaries: string[]): string[] {
-  const stubDir = mkdtempSync(path.join(tmpdir(), "preflight-forge-loop-"));
-  for (const bin of stubBinaries) {
-    const p = path.join(stubDir, bin);
-    // A minimal executable script — `command -v` only needs +x on PATH.
-    writeFileSync(p, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-  }
-  // Symlink the harness's own coreutils into the stub dir (they resolve via
-  // /usr/bin on this host, so they do NOT defeat the "neither gh nor glab"
-  // negative case). Skipped if the binary is absent from the real system.
-  for (const tool of HARNESS_TOOLS) {
-    try {
-      const real = execFileSync("bash", ["-c", `command -v ${tool} || true`], {
-        encoding: "utf8",
-        env: {
-          PATH: `${stubDir}:/usr/local/bin:/usr/bin:/bin`,
-          HOME: "/tmp",
-          LANG: "C",
-          LC_ALL: "C",
-        },
-      }).trim();
-      if (real) symlinkSync(real, path.join(stubDir, tool));
-    } catch {
-      // absent on this host — the harness only needs what it finds
+  // One parent temp dir per run: stubDir (the stub PATH) and homeDir (the
+  // child's HOME) live inside it, so a single finally removes everything.
+  const parent = mkdtempSync(path.join(tmpdir(), "preflight-forge-loop-"));
+  const stubDir = path.join(parent, "bin");
+  const homeDir = path.join(parent, "home");
+  mkdirSync(stubDir);
+  mkdirSync(homeDir);
+  try {
+    for (const bin of stubBinaries) {
+      const p = path.join(stubDir, bin);
+      // A minimal executable script — `command -v` only needs +x on PATH.
+      writeFileSync(p, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     }
+    // Symlink the harness's own coreutils into the stub dir (they resolve via
+    // /usr/bin on this host, so they do NOT defeat the "neither gh nor glab"
+    // negative case). Skipped if the binary is absent from the real system.
+    for (const tool of HARNESS_TOOLS) {
+      try {
+        const real = execFileSync("bash", ["-c", `command -v ${tool} || true`], {
+          encoding: "utf8",
+          env: {
+            PATH: `${stubDir}:/usr/local/bin:/usr/bin:/bin`,
+            HOME: "/tmp",
+            LANG: "C",
+            LC_ALL: "C",
+          },
+        }).trim();
+        if (real) symlinkSync(real, path.join(stubDir, tool));
+      } catch {
+        // absent on this host — the harness only needs what it finds
+      }
+    }
+    const checkCmd = extractCheckCmd();
+    const clis = extractRequiredClis();
+    // The harness: declare missing[], load check_cmd and REQUIRED_CLIS
+    // verbatim from install.sh, run the loop, then print the missing[]
+    // entries one per line so the TypeScript side can parse them. Bash
+    // `${...}` variables are escaped as `\${...}` in the template literal
+    // below.
+    // install-preflight.sh defines MIN_PI_VERSION / MIN_OO_VERSION; the
+    // harness only needs the array literal to parse, so stub them.
+    const code = [
+      "set -u",
+      "missing=()",
+      "MIN_PI_VERSION=0.0.0",
+      "MIN_OO_VERSION=0.0.0",
+      checkCmd,
+      clis,
+      loopBody,
+      'if [ ${#missing[@]} -gt 0 ]; then',
+      'for m in "${missing[@]}"; do printf \'%s\n\' "$m"; done',
+      "fi",
+      "exit 0",
+      "",
+    ].join("\n");
+    const out = execFileSync("bash", ["-c", code], {
+      encoding: "utf8",
+      // Hermetic env: nothing from process.env (no BASH_ENV, no GLOBIGNORE,
+      // no inherited state). Only the stub dir on PATH, a temp HOME, and a
+      // fixed locale.
+      env: {
+        PATH: stubDir,
+        HOME: homeDir,
+        LANG: "C",
+        LC_ALL: "C",
+      },
+    }).trim();
+    if (!out) return [];
+    return out.split("\n").filter((l) => l.trim() !== "");
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    assert(false, `bash harness crashed (${stubBinaries.length ? stubBinaries.join(",") : "no stubs"}): ${msg}`);
+    return ["<harness crashed>"];
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
   }
-  const checkCmd = extractCheckCmd();
-  const clis = extractRequiredClis();
-  // The harness: declare missing[], load check_cmd and REQUIRED_CLIS verbatim
-  // from install.sh, run the loop, then print the missing[] entries one per
-  // line so the TypeScript side can parse them. Bash `${...}` variables are
-  // escaped as `\${...}` in the template literal below.
-  // install-preflight.sh defines MIN_PI_VERSION / MIN_OO_VERSION; the
-  // harness only needs the array literal to parse, so stub them.
-  const code = [
-    "set -u",
-    "missing=()",
-    "MIN_PI_VERSION=0.0.0",
-    "MIN_OO_VERSION=0.0.0",
-    checkCmd,
-    clis,
-    loopBody,
-    'if [ ${#missing[@]} -gt 0 ]; then',
-    'for m in "${missing[@]}"; do printf \'%s\n\' "$m"; done',
-    "fi",
-    "exit 0",
-    "",
-  ].join("\n");
-  const out = execFileSync("bash", ["-c", code], {
-    encoding: "utf8",
-    // Hermetic env: nothing from process.env (no BASH_ENV, no GLOBIGNORE,
-    // no inherited state). Only the stub dir on PATH, a temp HOME, and a
-    // fixed locale.
-    env: {
-      PATH: stubDir,
-      HOME: mkdtempSync(path.join(tmpdir(), "preflight-forge-home-")),
-      LANG: "C",
-      LC_ALL: "C",
-    },
-  }).trim();
-  if (!out) return [];
-  return out.split("\n").filter((l) => l.trim() !== "");
 }
 
 // ---------------------------------------------- extraction integrity
@@ -183,16 +200,13 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
 {
   const loop = extractLoopBody();
   // The skip must be name-scoped to exactly "forge" — a case statement on
-  // the entry's name, or an explicit [ "$name" != "forge" ] guard. A
-  // hint-keyword match (e.g. on "checked below") or a blanket continue is
-  // the wrong shape: it would silently skip a future real CLI.
-  const nameScoped =
-    /case[^\n]*in[\s\S]*?\sforge\)[\s\S]*?esac/.test(loop) ||
-    /\[\s+"\$?\{?entry[^}]*\}?"\s*!=\s*"forge"\s*\]/.test(loop) ||
-    /\[\s+"\$name"\s*!=\s*"forge"\s*\]/.test(loop);
+  // the entry's name. A hint-keyword match (e.g. on "checked below") or a
+  // blanket continue is the wrong shape: it would silently skip a future
+  // real CLI.
+  const nameScoped = /case[^\n]*in[\s\S]*?forge\)[\s\S]*?esac/.test(loop);
   assert(
     nameScoped,
-    "the loop skip is name-scoped to exactly 'forge' (case or != guard), not a hint-keyword heuristic",
+    "the loop skip is name-scoped to exactly 'forge' (case on the entry name), not a hint-keyword heuristic",
   );
   // The hint-keyword "checked below" must NOT be the skip criterion.
   const hintKeyed = /checked[\s_]?below[\s\S]{0,80}(continue|skip)/.test(loop);
@@ -216,6 +230,31 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
   assert(
     !missing.some((l) => l.startsWith("forge —")),
     "glab on PATH (no gh): 'forge' NOT in missing[]",
+  );
+}
+
+// ---------------------------------------------- positive case: both on PATH
+
+{
+  const missing = runLoop(extractLoopBody(), ["gh", "glab"]);
+  assert(
+    !missing.some((l) => l.startsWith("forge —")),
+    "both gh and glab on PATH: 'forge' NOT in missing[]",
+  );
+}
+
+// ---------------------------------------------- negative case: neither on PATH
+
+{
+  // With the patched loop the pseudo-entry is skipped, so missing[] holds
+  // NO forge entry even when neither binary is present — the dedicated
+  // "!! Neither gh nor glab found…" block is the single operator-visible
+  // forge warning (the canary below proves the generic loop would add a
+  // second one).
+  const missing = runLoop(extractLoopBody(), []);
+  assert(
+    !missing.some((l) => l.startsWith("forge —")),
+    "neither gh nor glab: 'forge' NOT in missing[] (the dedicated dual check is the single source)",
   );
 }
 
@@ -249,12 +288,13 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
 // ---------------------------------------------- no double-report
 
 {
-  // With the patched loop + a stub gh, the dedicated dual check (gh OR glab)
-  // is also satisfied, so "forge" appears zero times total. The canary case
-  // above (unpatched loop, no gh/glab) shows "forge" exactly once in missing[]
-  // — the dual check prints a warning but does NOT append to missing[], so
-  // there is no double-report. Verify the dual check is still present in
-  // install.sh (warn-only, not appending to missing[]).
+  // The dedicated dual check (gh OR glab) is the single operator-visible
+  // forge warning: it is warn-only, and with the patched loop the generic
+  // loop contributes nothing to missing[] for forge — so with neither
+  // binary present the operator sees exactly one warning (the dual check's
+  // echo), and with any forge binary present they see none. Verify the dual
+  // check is still present in install.sh (warn-only, not appending to
+  // missing[]).
   const dual = installSrc.match(
     /if ! command -v gh[^\n]*&&[^\n]*! command -v glab[\s\S]*?^\s*fi\n/m,
   );

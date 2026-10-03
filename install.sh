@@ -130,9 +130,9 @@ esac
 
 for entry in "${REQUIRED_CLIS[@]}"; do
   case "${entry%%:*}" in
-    forge) # pseudo-name (gh or glab, checked below); warn block only prints
-      command -v gh >/dev/null 2>&1 || command -v glab >/dev/null 2>&1 || \
-        check_cmd forge "${entry#*:}"
+    forge) # pseudo-name: skip — the dedicated gh-OR-glab check below is the
+      # single source of the operator-visible forge warning (#967); probing
+      # here would make the warning print twice.
       ;;
     *) check_cmd "${entry%%:*}" "${entry#*:}" ;;
   esac
