@@ -224,7 +224,8 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
 //    `restored: false` shape, not a fabricated one. Tracked is
 //    load-bearing: the post-condition filter excludes untracked `??` lines
 //    by design (#750: `git clean` is forbidden, so untracked dirt is never
-//    a failed restore). The work is still moved (branch created, pick
+//    a failed restore) — a forced test failure must inject TRACKED dirt.
+//    The work is still moved (branch created, pick
 //    staged, commit made), so the "NOT restored" claim comes from the
 //    success path and rides in the rendered handoff (asserted in sections
 //    3-4 below).
@@ -256,6 +257,7 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
     // filter would exclude.
     const dirtFile = join(dir, "tracked.txt");
     let dirtWritten = false;
+    let dirtWriteError: unknown;
     let dirtSurvived = false;
     let checkoutForceCount = 0;
     const stub: ExecFn = async (cmd, opts) => {
@@ -265,10 +267,15 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
         checkoutForceCount += 1;
         // Write the dirt after the FIRST `git checkout --force` (the
         // restore's) so the on-disk file survives and the post-condition
-        // read sees it.
+        // read sees it. A write failure is recorded, not swallowed — the
+        // test's "dirt was written" assertion must fail on its own terms.
         if (!dirtWritten && checkoutForceCount === 1) {
-          writeFileSync(dirtFile, "dirt\n");
-          dirtWritten = true;
+          try {
+            writeFileSync(dirtFile, "dirt\n");
+            dirtWritten = true;
+          } catch (err) {
+            dirtWriteError = err;
+          }
         }
       }
       if (dirtWritten && isRoot && cmd === "git status --porcelain") {
@@ -291,6 +298,10 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
     // post-condition read) means the assertion below would run against a
     // DIFFERENT scenario than the one the test claims to pin — fail hard
     // instead of passing with weaker checks.
+    assert(
+      dirtWriteError === undefined,
+      "#968 forced-restore-failure: the dirt writeFileSync did not throw (write failures fail on their own terms)",
+    );
     assert(dirtWritten, "#968 forced-restore-failure: the stub intercepted `git checkout --force` and wrote the tracked dirt");
     assert(
       dirtSurvived,
