@@ -330,9 +330,18 @@ function assert(cond: boolean, msg: string) {
       g(["rev-parse", "--abbrev-ref", "HEAD"]) === "main",
       "#968 e2e: repoRoot is restored to `main` after a successful consolidation",
     );
+    // The restore's verified post-condition excludes untracked `??` lines
+    // and `.worktrees/` scaffolding (the #750 rule: untracked files are
+    // never swept, so they are never counted as a failed restore) — "clean"
+    // means clean in the same filtered sense, not a byte-empty porcelain.
+    // The raw output legitimately carries `?? .worktrees/` (scaffolding) and
+    // `?? restored-state-…` (the preserve-state capture of this very run).
+    const trackedDirt = g(["status", "--porcelain"])
+      .split("\n")
+      .filter((l) => l.trim() && !l.startsWith("??") && !/^..\s+"?\.worktrees\//.test(l));
     assert(
-      g(["status", "--porcelain"]) === "",
-      "#968 e2e: repoRoot is clean after the successful consolidation + restore",
+      trackedDirt.length === 0,
+      `#968 e2e: repoRoot is clean of tracked dirt after the successful consolidation + restore (got ${JSON.stringify(trackedDirt)})`,
     );
     // The consolidated branch stays in place for the operator to push — the
     // restore must NOT delete it (unlike the merged path's restoreCheckout).

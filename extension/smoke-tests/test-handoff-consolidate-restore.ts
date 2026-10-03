@@ -13,10 +13,12 @@
  * These real-git tests (temp repos only — never the real one) pin:
  *   1. a clean operator branch (`operator-feature`) is restored after a
  *      SUCCESS consolidation, with the feature branch intact ahead of it;
- *   2. a forced restore failure (tracked dirt injected after the preflight
+ *   2. a forced restore failure (TRACKED dirt injected after the preflight
  *      via a stub execFn, so the dirty-repoRoot gate passes, then the
- *      restore's verified post-condition read reports the dirt) leaves the
- *      failure reason carrying the loud "repoRoot was NOT restored" claim;
+ *      restore's verified post-condition read reports the dirt — it is
+ *      tracked because the post-condition filter excludes untracked `??`
+ *      lines by design, which an untracked injection cannot reach) leaves
+ *      the reason carrying the loud "repoRoot was NOT restored" claim;
  *   3. the rendered handoff (chat + markdown) prints the restore claim —
  *      the verified post-condition on success, the NOT-restored failure on
  *      a failed restore — and no longer implies repoRoot is on the branch.
@@ -57,7 +59,12 @@ function buildTempRepo(): { dir: string; wt: string; branchSha: string } {
   g(["init", "-b", "main"]);
   g(["config", "user.name", "t"]);
   g(["config", "user.email", "t@t"]);
-  g(["commit", "--allow-empty", "-m", "base"]);
+  // Create a tracked file so the restore's post-condition read can report
+  // a TRACKED modification (not an untracked file, which the `??` filter
+  // excludes by design).
+  writeFileSync(join(dir, "tracked.txt"), "initial\n");
+  g(["add", "-A"]);
+  g(["commit", "-m", "base"]);
   g(["checkout", "-b", "operator-feature"]);
   g(["worktree", "add", "--detach", wt, "HEAD"]);
   writeFileSync(join(wt, "change.txt"), "content\n");
@@ -197,20 +204,25 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
 }
 
 // ---------------------------------------------------------------------------
-// 2. #968 — forced restore failure: tracked dirt injected after the
-//    preflight via a stub execFn (so the dirty-repoRoot gate passes) must
-//    surface the loud "repoRoot was NOT restored" claim.
+// 2. #968 — forced restore failure: TRACKED dirt injected after the
+//    reset + checkout but before the post-condition read via a stub
+//    execFn (so the dirty-repoRoot gate passes) must surface the loud
+//    "repoRoot was NOT restored" claim.
 //
-//    Mechanism: the dirt file is UNTRACKED at preflight time (written after
-//    the preflight's status read), so the gate passes. The restore then
-//    runs for real: its `git reset --hard` does NOT remove untracked files
-//    (by design — #750: `git clean` is forbidden), and the
-//    `git checkout --force <branch>` also leaves untracked files alone.
-//    The restore's post-condition status read therefore reports the dirt —
-//    the honest `restored: false` shape, not a fabricated one. The work is
-//    still moved (branch created, pick staged, commit made), so the "NOT
-//    restored" claim comes from the success path and rides in the rendered
-//    handoff (asserted in sections 3-4 below).
+//    Mechanism: the root status call sequence is (1) the preflight, (2)
+//    the restore's preserve-state read, (3) the restore's post-condition
+//    read. The stub intercepts the `git checkout --force` command (which
+//    runs between the preserve-state read and the post-condition read)
+//    and, AFTER it completes, writes the TRACKED change.txt to disk. The
+//    on-disk file survives (real git has already run); the post-condition
+//    read (3) then reports the tracked file as dirty — the honest
+//    `restored: false` shape, not a fabricated one. Tracked is
+//    load-bearing: the post-condition filter excludes untracked `??` lines
+//    by design (#750: `git clean` is forbidden, so untracked dirt is never
+//    a failed restore). The work is still moved (branch created, pick
+//    staged, commit made), so the "NOT restored" claim comes from the
+//    success path and rides in the rendered handoff (asserted in sections
+//    3-4 below).
 // ---------------------------------------------------------------------------
 {
   const { dir, wt, branchSha } = buildTempRepo();
@@ -220,41 +232,47 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
       execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
     const state = stateFor(968, branchName, branchSha, wt);
     process.env.PI_ENSEMBLE_FORGE = "none";
-    // The dirt file is an UNTRACKED file written into repoRoot. The
-    // restore's `git reset --hard` does NOT remove untracked files (by
-    // design — #750: `git clean` is forbidden), and `git checkout --force`
-    // leaves them alone too, so the restore's post-condition status read
-    // (the last root status call in the run) sees the dirt on disk — the
-    // honest `restored: false` shape, not a fabricated one.
+    // The stub intercepts the `git checkout --force` command (which runs
+    // between the preserve-state read and the post-condition read) and
+    // modifies the TRACKED tracked.txt on disk after that command completes.
+    // The on-disk file survives (real git has already run); the
+    // post-condition read (the third root status call) reports the tracked
+    // file as dirty — the honest `restored: false` shape.
     //
-    // The preflight's status read is the FIRST root status call; the
-    // restore's status reads are the SECOND (preserve-state) and THIRD
-    // (post-condition). Write the dirt just before the SECOND root status
-    // call (the restore's preserve-state read) so the preflight (which
-    // runs before the restore) sees a clean tree and passes, but the
-    // restore's post-condition read (the third) sees the dirt on disk.
-    const dirtFile = join(dir, "injected-dirt.txt");
+    // NOTE: The consolidation process runs `git checkout` (without
+    // `--force`) to switch to the feature branch BEFORE the restore. The
+    // `git checkout --force` is only used in the restore itself, so we
+    // write the dirt after the FIRST (and only) `git checkout --force`.
+    //
+    // IMPORTANT: We must write to a file that IS TRACKED in the original
+    // checkout (operator-feature). The base commit includes tracked.txt,
+    // so it's tracked on operator-feature. Writing to it makes it a tracked
+    // modification (M), not an untracked file (??), which the post-condition
+    // filter would exclude.
+    const dirtFile = join(dir, "tracked.txt");
     let dirtWritten = false;
     let dirtSurvived = false;
-    let rootStatusCount = 0;
+    let checkoutForceCount = 0;
     const stub: ExecFn = async (cmd, opts) => {
       const isRoot = opts?.cwd === dir;
-      const isStatus = cmd === "git status --porcelain";
-      if (!dirtWritten && isRoot && isStatus) {
-        rootStatusCount += 1;
-        if (rootStatusCount === 2) {
-          // This is the restore's preserve-state read — write the dirt
-          // BEFORE the command runs so the read sees it on disk.
+      const res = await pExec(cmd, { cwd: opts?.cwd, maxBuffer: opts?.maxBuffer });
+      if (isRoot && cmd.startsWith("git checkout --force")) {
+        checkoutForceCount += 1;
+        // Write the dirt after the FIRST `git checkout --force` (the
+        // restore's) so the on-disk file survives and the post-condition
+        // read sees it.
+        if (!dirtWritten && checkoutForceCount === 1) {
           writeFileSync(dirtFile, "dirt\n");
           dirtWritten = true;
         }
       }
-      const res = await pExec(cmd, { cwd: opts?.cwd, maxBuffer: opts?.maxBuffer });
-      if (dirtWritten && isRoot && isStatus && rootStatusCount >= 2) {
-        // The restore's post-condition read (the third root status call) —
-        // mark survived if the dirt file is still on disk after the reset
-        // + checkout (it should be, since neither removes untracked files).
-        dirtSurvived = existsSync(dirtFile);
+      if (dirtWritten && isRoot && cmd === "git status --porcelain") {
+        // The restore's post-condition read — mark survived if the tracked
+        // dirt is still reported (the file is on disk after the reset +
+        // checkout, which have already run).
+        dirtSurvived =
+          res.stdout.split("\n").some((l) => l.trim() && l.includes("tracked.txt")) &&
+          existsSync(dirtFile);
       }
       return res;
     };
@@ -263,11 +281,11 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
       state,
       stub,
     );
-    if (!dirtSurvived) {
+    if (!dirtWritten) {
       // The stub's intercept point has drifted — report the actual
       // outcome instead of asserting on a stale assumption.
       console.log(
-        `  (diagnostic: the restore-verification stub did not fire (dirtWritten=${dirtWritten}, rootStatusCount=${rootStatusCount}); consolidation result: ok=${result.ok} reason=${result.reason ?? "(none)"})`,
+        `  (diagnostic: the restore-verification stub did not fire; consolidation result: ok=${result.ok} reason=${result.reason ?? "(none)"})`,
       );
       assert(
         result.ok === true,
@@ -278,14 +296,30 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
           !result.restoreClaim.startsWith("repoRoot was NOT restored"),
         "#968 forced-restore-failure: (fallback) the claim is the verified-restore one (stub did not fire)",
       );
-    } else {
-      assert(
-        result.ok === false,
-        `#968 forced-restore-failure: consolidation failed (ok=${result.ok}, reason=${result.reason})`,
+    } else if (!dirtSurvived) {
+      // Dirt was written but did not survive to the post-condition read —
+      // the intercept point moved; report the actual outcome.
+      console.log(
+        `  (diagnostic: dirt was injected but the post-condition read did not report it; consolidation result: ok=${result.ok} reason=${result.reason ?? "(none)"})`,
       );
       assert(
-        result.reason !== undefined && result.reason.includes("repoRoot was NOT restored"),
-        `#968 forced-restore-failure: the reason carries the loud not-restored claim (got ${JSON.stringify(result.reason)})`,
+        result.ok === true,
+        "#968 forced-restore-failure: (fallback) consolidation succeeded when the dirt did not survive",
+      );
+      assert(
+        result.restoreClaim !== undefined &&
+          !result.restoreClaim.startsWith("repoRoot was NOT restored"),
+        "#968 forced-restore-failure: (fallback) the claim is the verified-restore one (dirt did not survive)",
+      );
+    } else {
+      assert(
+        result.ok === true,
+        `#968 forced-restore-failure: the success path still completed (ok=${result.ok}, reason=${result.reason ?? "(none)"})`,
+      );
+      assert(
+        result.restoreClaim !== undefined &&
+          result.restoreClaim.startsWith("repoRoot was NOT restored"),
+        `#968 forced-restore-failure: the claim carries the loud not-restored failure (got ${JSON.stringify(result.restoreClaim)})`,
       );
       // The work itself IS on the branch (the success path ran fully up to
       // the commit) — the restore is the only failure. This is what the

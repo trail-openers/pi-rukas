@@ -360,11 +360,7 @@ export async function consolidateWorktreesToBranch(
           scratchDir: ctx.scratchDir,
           label: "handoff consolidation",
         });
-        const claim = restoreClaim(
-          restore,
-          undefined,
-          "run git status at the repo root",
-        );
+        const claim = restoreClaim(restore, undefined, "run git status at the repo root");
         return {
           ok: true as const,
           branchName,
@@ -417,15 +413,9 @@ export async function consolidateWorktreesToBranch(
         scratchDir: ctx.scratchDir,
         label: "handoff consolidation",
       });
-      const claim = restoreClaim(
-        restore,
-        undefined,
-        "run git status at the repo root",
-      );
+      const claim = restoreClaim(restore, undefined, "run git status at the repo root");
       if (!restore.restored) {
-        trace(
-          `handoff-consolidate: restore after success failed: ${restore.detail ?? "unknown"}`,
-        );
+        trace(`handoff-consolidate: restore after success failed: ${restore.detail ?? "unknown"}`);
       }
       return { ok: true as const, branchName, workstreams: applied, restoreClaim: claim };
     });
@@ -461,12 +451,11 @@ export async function consolidateWorktreesToBranch(
           `handoff-consolidate: restore after failure also failed: ${restore.detail ?? "unknown"}`,
         );
       }
-      const claim = restoreClaim(
-        restore,
-        undefined,
-        "run git status at the repo root",
-      );
-      return { ok: false, reason: `consolidation failed: ${msg.toString().slice(0, 200)}; ${claim}` };
+      const claim = restoreClaim(restore, undefined, "run git status at the repo root");
+      return {
+        ok: false,
+        reason: `consolidation failed: ${msg.toString().slice(0, 200)}; ${claim}`,
+      };
     }
     return { ok: false, reason: `consolidation failed: ${msg.toString().slice(0, 200)}` };
   }

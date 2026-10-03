@@ -160,6 +160,11 @@ export async function verifiedRestoreRoot(
   },
 ): Promise<VerifiedRestoreResult> {
   const { repoRoot, originalRef, scratchDir, label } = opts;
+
+  // #750 — capture the root's staged/unstaged/unmerged state to a scratch
+  // file BEFORE anything destructive. The discarded content may be the only
+  // copy of work (in the incident it held a genuinely different
+  // implementation of the same fix); a post-destroy capture would be empty.
   const preservedAt = await preserveDiscardedState(execFn, repoRoot, scratchDir, label);
 
   // Reset index + working tree. `reset --hard` clears both the staged (M) and
@@ -171,6 +176,13 @@ export async function verifiedRestoreRoot(
   } catch (err) {
     trace(`work-driver: ${label} — reset --hard failed: ${(err as Error).message?.slice(0, 160)}`);
   }
+
+  // #968 test seam — the post-condition check (below) runs AFTER this point,
+  // so anything that dirties the TRACKED tree here is reported by that read
+  // as the honest `restored: false` shape (untracked `??` dirt is excluded
+  // by design — #750 — and cannot reach the read). test-handoff-consolidate-restore.ts
+  // section 2 relies on this ordering to force a real restore failure
+  // between the reset and the verification.
 
   // Restore the original checkout.
   try {
@@ -187,17 +199,14 @@ export async function verifiedRestoreRoot(
   // The post-condition: the porcelain read IS the check. Untracked `??`
   // entries and `.worktrees/` scaffolding are not dirt for this purpose —
   // untracked files are never swept (`git clean` is forbidden by #750),
-  // so they are never counted as a failed restore.
+  // so they are never counted as a failed restore. (Consequence: a forced
+  // test failure must inject TRACKED dirt — the `??` filter excludes
+  // untracked files by design.)
   //
   // #968 — the read uses a fresh `git status --porcelain` subprocess via
   // the injected `execFn`, NOT a cached or in-memory state. This is the
   // verified post-condition: it reflects the ACTUAL on-disk state after
   // the reset + checkout, not a snapshot from before the restore ran.
-  // The test harness (test-handoff-consolidate-restore.ts section 2) relies
-  // on this to force a restore failure by injecting an untracked dirt file
-  // before the read: the read is a real subprocess, so it sees the file
-  // on disk, and the dirt is reported — the honest `restored: false`
-  // shape, not a fabricated one.
   let dirt: string[];
   try {
     const { stdout } = await execFn("git status --porcelain", {
