@@ -72,7 +72,7 @@ export function recoveryStepsForCap(
           comment: [
             "1. The work is committed on the local branch (the driver consolidated it before this handoff):",
           ],
-          lines: [`git log --oneline -- ${ps.branchName}`],
+          lines: [`git log --oneline ${ps.branchName}`],
         },
         {
           section: "worktree-work-consolidated",
