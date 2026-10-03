@@ -22,8 +22,8 @@ import {
   lensProducedEvidence,
   renderSummary,
 } from "./lens-review-format.ts";
-import { skillsDirUsable } from "./lens-review-skills.ts";
-import { CLAIM_SCAN, LENS_ROSTER, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
+import { installBlockRowsForRoster, skillsDirUsable } from "./lens-review-skills.ts";
+import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
@@ -294,32 +294,19 @@ export async function runLensReview(opts: {
   if (roster.length === 0) {
     const problem =
       skillsDirUsable(skillsDir) ?? `no usable code-review-* lens skills in ${skillsDir}`;
-    const blockRows = blockedRowsForRoster(roster, problem);
-    // #966 — when the roster is empty (the bundled expected set was
-    // unavailable, e.g. CI without the repo's skill/ dir — the #970
-    // incident), blockedRowsForRoster returns a single generic row
-    // ("LENSES"). Restore the #872 shape: one row per bundled lens so the
-    // six-lens accounting the operator sees matches the review that was
-    // supposed to run. Same verdict either way; the row count is what a
-    // reader counts.
-    const generic = blockRows[0];
-    if (generic !== undefined && blockRows.length === 1 && LENS_ROSTER.length > 0) {
-      const startMs = generic.startMs;
-      const named = [...new Set(LENS_ROSTER.map((e) => e.name))].map(
-        (lens): LensRunResult => ({
-          lens,
-          ok: false,
-          ms: 0,
-          startMs,
-          findings: [],
-          attempts: 0,
-          blocked: true,
-          parseError: problem,
-        }),
-      );
-      const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, named, threshold);
-      return finish(blocked, threshold, opts.cwd, opts.branch);
-    }
+    // #966 — one blocked row per bundled lens (the #872 install-block shape,
+    // routed through `installBlockRowsForRoster` so the named-row logic
+    // lives in ONE place — the #872 doctrine, preserved here via the
+    // #873/#966 guard rather than a second early exit that could drift
+    // back into the empty-`computeVerdict` APPROVED hole). Deck
+    // bookkeeping (start → bump per row → clear) happens inside
+    // `blockedReviewSummary` below, so the operator sees the same
+    // one-batch-row-and-bumped-per-lens shape the old `runInstallBlock`
+    // produced. The LENSES-fallback for an unreadable bundled dir is
+    // inside the helper (same as `blockedRowsForRoster([])`'s single-row
+    // shape, but with the install message as `parseError` rather than a
+    // generic "no usable" fallback).
+    const blockRows = installBlockRowsForRoster(problem);
     const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
     return finish(blocked, threshold, opts.cwd, opts.branch);
   }

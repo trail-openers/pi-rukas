@@ -8,24 +8,22 @@
  * `Promise.all` fan-out — not six times inside `runLensChild` — so the
  * operator sees one message, not six identical parseErrors.
  *
- * `installBlockRows` is the per-lens shape that message produces: one
- * blocked row per BUNDLED lens (derived from `LENS_ROSTER`, deduped), all
- * with `attempts: 0` (no spawn, no retries) and the single install message
- * as `parseError`. Feeds the existing REVIEW_INCOMPLETE path via
- * `computeVerdict`'s `some((r) => r.blocked)`.
- *
- * `runInstallBlock` is the early exit that check drives, moved here from
- * `runLensReview` for the 500-line cap; the verdict math and the ledger
- * write stay on `runLensReview`'s single `finish` path.
+ * #966 — the #872 install-block early exit (`runInstallBlock` + its
+ * `installBlockRows` helper) is now dead code: the empty-roster guard in
+ * `runLensReview` subsumes it (the cases `skillsDirUsable` flags are
+ * exactly the cases where `buildExpectedRoster` returns `[]`), and the
+ * guard produces the same deck bookkeeping (via `blockedReviewSummary`) and
+ * the same blocked rows (via `installBlockRowsForRoster`, below). The
+ * #872 doctrine lives on in this file via `skillsDirUsable`'s docstring
+ * (the install-message rule) and in `installBlockRowsForRoster`'s
+ * docstring (the row shape), so nothing operator-visible is lost.
  */
 
 import { readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import * as dispatchDeck from "./dispatch-deck.ts";
 import { LENS_PREFIX } from "./lens-review-format.ts";
-import type { Finding, LensRunResult } from "./lens-review.ts";
+import type { LensRunResult } from "./lens-review.ts";
 import { LENS_ROSTER } from "./lens-roster.ts";
-import { trace } from "./trace.ts";
 
 /**
  * #872 — the skills dir itself must exist and hold at least one
@@ -64,18 +62,25 @@ export function skillsDirUsable(dir: string): string | undefined {
 }
 
 /**
- * #872/#873 — the install-block rows: when the skills dir is missing,
- * empty, or has no usable `code-review-*` lens skill, the roster is empty
- * and the review must still produce one blocked row per standard lens name
- * so `computeVerdict` sees the block and returns REVIEW_INCOMPLETE. The
- * rows are derived from the BUNDLED `LENS_ROSTER` (names in roster order,
- * deduped) — the roster is data, so a seventh bundled lens gets a row
- * without a code change. If the bundled dir is unreadable at module load
- * (`LENS_ROSTER` is empty) the expected set is unavailable: a single row
- * named "LENSES" carries the problem so the verdict is still
- * REVIEW_INCOMPLETE (traced — the install message alone is the signal).
+ * #872/#873/#966 — the empty-roster blocked rows. When the installed skills
+ * dir resolves to ZERO lenses (missing dir, empty dir, no `code-review-*`
+ * skill — the cases `skillsDirUsable` flags), `buildExpectedRoster` returns
+ * `[]` and the review must still produce blocked rows so `computeVerdict`
+ * sees the block and returns REVIEW_INCOMPLETE (never zero rows → never a
+ * silent APPROVED, the #966 incident).
+ *
+ * The rows are derived from the BUNDLED `LENS_ROSTER` (names in roster
+ * order, deduped) — the roster is data, so a seventh bundled lens gets a
+ * row without a code change. If the bundled dir is unreadable at module
+ * load (`LENS_ROSTER` is empty) the expected set is unavailable: a single
+ * row named "LENSES" carries the problem so the verdict is still
+ * REVIEW_INCOMPLETE (the install message is the operator-visible signal).
+ *
+ * Called from the empty-roster guard in `runLensReview`; the deck
+ * bookkeeping lives in `blockedReviewSummary` (lens-review-diff.ts), which
+ * the guard also invokes.
  */
-export function installBlockRows(problem: string): LensRunResult[] {
+export function installBlockRowsForRoster(problem: string): LensRunResult[] {
   const startMs = Date.now();
   const rows = (names: string[]): LensRunResult[] =>
     names.map((lens) => ({
@@ -89,36 +94,5 @@ export function installBlockRows(problem: string): LensRunResult[] {
       parseError: problem,
     }));
   const names = [...new Set(LENS_ROSTER.map((e) => e.name))];
-  if (names.length > 0) return rows(names);
-  trace(
-    `install block: bundled lens roster unreadable (LENS_ROSTER empty) — single "LENSES" row carries the problem: ${problem}`,
-  );
-  return rows(["LENSES"]);
-}
-
-/**
- * The #872 install-block early exit: the deck bookkeeping (one batch row,
- * bumped once per blocked lens, cleared) plus the per-lens blocked rows.
- * The caller folds the result into its SINGLE EXIT PATH.
- */
-export function runInstallBlock(
-  runId: string,
-  problem: string,
-  extraFindings: Finding[],
-): { lensResults: LensRunResult[]; findings: Finding[] } {
-  const batchKey = `${runId}/batch`;
-  dispatchDeck.startBatchEntry(batchKey, {
-    label: "code-review-specialist×0",
-    size: 0,
-  });
-  const lensResults = installBlockRows(problem);
-  // Bump the batch once per lens so the deck shows the pass as finished,
-  // not stuck, even though no spawn happened — the lens did "complete"
-  // (as a block).
-  for (let i = 1; i <= lensResults.length; i++) {
-    dispatchDeck.updateBatchProgress(batchKey, i);
-  }
-  dispatchDeck.clearBatchEntry(batchKey);
-  const findings = [...extraFindings];
-  return { lensResults, findings };
+  return names.length > 0 ? rows(names) : rows(["LENSES"]);
 }
