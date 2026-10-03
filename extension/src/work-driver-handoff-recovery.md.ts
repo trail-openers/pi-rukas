@@ -193,7 +193,7 @@ export function recoveryCommandsMarkdown(
     const restoreLine = claim ? `# ${claim}` : "# (repoRoot restore not recorded)";
     lines.push(
       isConsolidated
-        ? "# The driver consolidated the workstream work onto the feature branch before this handoff — the branch holds the work; your original checkout was restored."
+        ? "# The driver consolidated the workstream work onto the feature branch before this handoff — the branch holds the work."
         : "# The driver could not consolidate the work (no local branch, or a cherry-pick conflict).",
       restoreLine,
     );

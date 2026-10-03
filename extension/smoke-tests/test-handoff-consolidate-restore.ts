@@ -384,8 +384,20 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
   const chatOk = renderHandoffUserMessage(sOk, REPO, `${REPO}/tmp/issue-968`);
   assert(mdOk.includes(ok), "#968 render: markdown prints the verified-restore claim");
   assert(chatOk.includes(ok), "#968 render: chat prints the verified-restore claim");
+  // The header must not carry its own (unverified) "restored" claim —
+  // the claim line above it is the single statement about the restore
+  // outcome, so the header clause is removed even when the claim line IS
+  // the verified post-condition.
+  assert(
+    !mdOk.includes("original checkout was restored"),
+    "#968 render: markdown header does NOT carry its own restored claim (verified case)",
+  );
+  assert(
+    !chatOk.includes("original checkout was restored"),
+    "#968 render: chat header does NOT carry its own restored claim (verified case)",
+  );
   // (b) the not-restored failure is printed by both surfaces.
-  const bad =
+  const bad=
     "repoRoot was NOT restored: still dirty after reset + checkout: a.txt (discarded state preserved at /tmp/x)";
   const sBad = makeState(bad);
   const mdBad = renderHandoffMarkdown(sBad);
@@ -397,6 +409,16 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
   assert(
     chatBad.includes("repoRoot was NOT restored"),
     "#968 render: chat prints the not-restored failure",
+  );
+  // The header must not claim a restore the claim line below says did NOT
+  // happen.
+  assert(
+    !mdBad.includes("original checkout was restored"),
+    "#968 render: markdown header does NOT claim the restore (not-restored case)",
+  );
+  assert(
+    !chatBad.includes("original checkout was restored"),
+    "#968 render: chat header does NOT claim the restore (not-restored case)",
   );
   // (c) pre-#968 event (no claim) → the not-recorded marker, never a
   //     bare success claim.
@@ -418,6 +440,16 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
   assert(
     !chatOld.includes("repoRoot was verified restored"),
     "#968 render: chat does NOT claim a restore that was not recorded",
+  );
+  // The pre-#968 (no-claim) render must not carry the header's own
+  // restored claim either — only the not-recorded marker.
+  assert(
+    !mdOld.includes("original checkout was restored"),
+    "#968 render: markdown header does NOT claim the restore (pre-#968 no-claim case)",
+  );
+  assert(
+    !chatOld.includes("original checkout was restored"),
+    "#968 render: chat header does NOT claim the restore (pre-#968 no-claim case)",
   );
 }
 

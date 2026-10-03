@@ -355,7 +355,8 @@ export async function consolidateWorktreesToBranch(
         maxBuffer: 64 * 1024,
       });
       // An empty staged diff skips the commit below and falls through to the
-      // restore leg. Every worktree had a clean tree and no committed work — the
+      // restore leg.
+      // Every worktree had a clean tree and no committed work — the
       // countAheadOfBase precheck above should have caught that, but the
       // operator's branch may already contain the work. Not an error.
       if (hasStaged.trim()) {
