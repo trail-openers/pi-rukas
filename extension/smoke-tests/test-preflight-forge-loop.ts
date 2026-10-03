@@ -298,10 +298,12 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
     `canary: unpatched loop + no gh/glab → exactly ONE 'forge — …' in missing[] (got ${forgeLines.length})`,
   );
   // The hint must match the README wording (the drift gate pins it).
+  // The explicit undefined check is the assertion under test (canary — the
+  // hint line must exist, not merely be non-matching); a typeof guard is not
+  // an optional-chain candidate, so no lint suppression is needed.
   const first = forgeLines[0];
   assert(
-    // biome-ignore lint/complexity/useOptionalChain: the explicit undefined guard is the assertion under test (canary — the hint line must exist, not merely be non-matching)
-    first !== undefined &&
+    typeof first === "string" &&
       first.includes("brew install gh (GitHub) or brew install --no-quarantine glab (GitLab)"),
     `canary: the forge hint matches the README dual-install wording (got "${first ?? "none"}")`,
   );
