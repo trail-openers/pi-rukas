@@ -12,8 +12,26 @@ import type {
   LensReviewSummary,
   LensRunResult,
   Severity,
-  Verdict,
 } from "./lens-review.ts";
+
+/**
+ * The overall verdict of a lens review.
+ *
+ * `APPROVED` — only sub-threshold (or no) findings AND all lenses completed
+ * with evidence. `ISSUES_FOUND` — a finding at or above the threshold. `CRITICAL_ISSUES_FOUND` — any
+ * CRITICAL finding; it blocks regardless of the threshold. `REVIEW_INCOMPLETE` — at
+ * least one lens failed all retry attempts, was aborted or produced no
+ * evidence — the review is incomplete and the user/PM must decide whether
+ * to retry the whole pass, override, or halt. Never silently downgrade a
+ * six-pass review to a five-pass one (#3). #966 — this type lives here (the
+ * verdict is computed in `computeVerdict` below, so the definition lives
+ * with it), and lens-review.ts re-exports it for consumers.
+ */
+export type Verdict =
+  | "APPROVED"
+  | "ISSUES_FOUND"
+  | "CRITICAL_ISSUES_FOUND"
+  | "REVIEW_INCOMPLETE";
 import { CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE, type RosterEntry } from "./lens-roster.ts";
 
 export const LENS_PREFIX = "code-review-";

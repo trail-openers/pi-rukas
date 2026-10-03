@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { writeLensLedgerEntry } from "./lens-ledger.ts";
+import type { Verdict } from "./lens-review-format.ts";
 import { capKillSummary } from "./lens-review-capkill.ts";
 import { runLensChild } from "./lens-review-child.ts";
 import {
@@ -55,6 +56,9 @@ export type LensName = string; // deliberately unbounded — the roster is data-
 /** One roster entry — the shape a lens child receives per dispatch (#873:
  * the roster is data, so `LensDef` is the parsed entry type). */
 export type LensDef = RosterEntry;
+/** Re-exported so consumers of this module name the verdict here; the
+ * definition lives in lens-review-format.ts. */
+export type { Verdict } from "./lens-review-format.ts";
 export const LENS_REPORTER_PATH = path.join(__dirname, "lens-reporter.ts");
 
 /**
@@ -72,14 +76,6 @@ export const LENS_REVIEW_DIFF_DESCRIPTION =
   "The full PR/MR diff to review. Fetch it once (e.g. `gh pr diff <N>` or `glab mr diff <N>`) or `git diff main...feature/...` and reuse — do NOT re-fetch per lens. For large diffs, prefer the optional base + head refs (with cwd) so the tool computes `git diff <base>...<head>` itself; when both are given, the string wins.";
 
 export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
-export type Verdict =
-  | "APPROVED"
-  | "ISSUES_FOUND"
-  | "CRITICAL_ISSUES_FOUND"
-  /** At least one lens failed all retry attempts — the review is incomplete
-   * and the user/PM must decide whether to retry the whole pass, override,
-   * or halt. Never silently downgrade a six-pass review to a five-pass one (#3). */
-  | "REVIEW_INCOMPLETE";
 
 /** Max attempts per lens — 1 initial + 3 retries on spawn failure or non-zero
  * exit. Matches the opencode contract. Aborted lenses (user cancel) don't
@@ -188,7 +184,16 @@ function piSkillsDir(): string {
   return process.env.PI_ENSEMBLE_SKILLS_DIR ?? path.join(os.homedir(), ".pi", "agent", "skills");
 }
 
-/** The ONE exit path: writes the ledger entry and returns the summary. */
+/** The ONE exit path: writes the ledger entry and returns the summary.
+ *
+ * #966 — the ledger's `passed` is derived from the RESOLVED verdict (via
+ * `lensPassed` inside `writeLensLedgerEntry`), and every run shape that
+ * fails, aborts or kills its lenses reaches `finish` with a
+ * REVIEW_INCOMPLETE verdict, so the `passed:true` path is protected by
+ * construction: no caller feeds `finish` a passing verdict for an
+ * all-fail/all-abort run, and the "write nothing" path (no branch / no
+ * patchId) is the only silent path that remains.
+ */
 function finish(
   summary: LensReviewSummary,
   threshold: Severity,
