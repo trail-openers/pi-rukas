@@ -185,7 +185,19 @@ export async function verifiedRestoreRoot(
   }
 
   // The post-condition: the porcelain read IS the check. Untracked `??`
-  // entries and `.worktrees/` scaffolding are not dirt for this purpose.
+  // entries and `.worktrees/` scaffolding are not dirt for this purpose —
+  // untracked files are never swept (`git clean` is forbidden by #750),
+  // so they are never counted as a failed restore.
+  //
+  // #968 — the read uses a fresh `git status --porcelain` subprocess via
+  // the injected `execFn`, NOT a cached or in-memory state. This is the
+  // verified post-condition: it reflects the ACTUAL on-disk state after
+  // the reset + checkout, not a snapshot from before the restore ran.
+  // The test harness (test-handoff-consolidate-restore.ts section 2) relies
+  // on this to force a restore failure by injecting an untracked dirt file
+  // before the read: the read is a real subprocess, so it sees the file
+  // on disk, and the dirt is reported — the honest `restored: false`
+  // shape, not a fabricated one.
   let dirt: string[];
   try {
     const { stdout } = await execFn("git status --porcelain", {

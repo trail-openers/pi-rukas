@@ -268,7 +268,7 @@ export function recoveryCommandsChat(
     lines.push(
       "",
       isConsolidated
-        ? "The driver consolidated the workstream work onto the feature branch before this handoff — the branch holds the work; your original checkout was restored:",
+        ? "The driver consolidated the workstream work onto the feature branch before this handoff (the branch holds the work; your original checkout was restored):"
         : "The driver could not consolidate the work (no local branch, or a cherry-pick conflict). The work remains in its worktrees on their detached HEADs:",
       restoreLine,
     );

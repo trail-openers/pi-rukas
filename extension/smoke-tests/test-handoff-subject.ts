@@ -21,6 +21,7 @@ import {
   deriveConsolidationSubject,
   parseConventionalTitle,
 } from "../src/work-driver-handoff-subject.ts";
+import { recoveryStepsForCap } from "../src/work-driver-handoff-recovery.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 
 let exit = 0;
@@ -321,6 +322,76 @@ function assert(cond: boolean, msg: string) {
     assert(
       aheadOnBranch === 1,
       `e2e: exactly one consolidation commit landed on the branch (got ${aheadOnBranch})`,
+    );
+    // #968 — the SUCCESS path must restore repoRoot to the checkout the
+    // operator was on before consolidation (the #966/#967 incident: the
+    // branch was left checked out in repoRoot after a handoff).
+    assert(
+      g(["rev-parse", "--abbrev-ref", "HEAD"]) === "main",
+      "#968 e2e: repoRoot is restored to `main` after a successful consolidation",
+    );
+    assert(
+      g(["status", "--porcelain"]) === "",
+      "#968 e2e: repoRoot is clean after the successful consolidation + restore",
+    );
+    // The consolidated branch stays in place for the operator to push — the
+    // restore must NOT delete it (unlike the merged path's restoreCheckout).
+    assert(
+      result.restoreClaim !== undefined &&
+        !result.restoreClaim.startsWith("repoRoot was NOT restored"),
+      `#968 e2e: the success outcome carries the verified-restore claim (got ${JSON.stringify(result.restoreClaim)})`,
+    );
+    let branchExists = false;
+    try {
+      g(["rev-parse", "--verify", "refs/heads/feature/issue-810"]);
+      branchExists = true;
+    } catch {
+      branchExists = false;
+    }
+    assert(
+      branchExists,
+      "#968 e2e: the consolidated feature branch still exists after the restore",
+    );
+    // The pre-#968 prose implied repoRoot was checked out on the branch —
+    // the recovery text must no longer do that, and the push still works.
+    const { steps } = recoveryStepsForCap({
+      ...state,
+      pipelineState: {
+        ...state.pipelineState,
+        handoffSnapshot: {
+          modifiedFiles: [],
+          unstagedCount: 0,
+          stagedCount: 0,
+          branchExists: true,
+          branchPushed: false,
+          headSha: g(["rev-parse", "--short", "HEAD"]),
+          capturedAt: Date.now(),
+          committedWork: [{ worktreeId: "task-a", path: wt, headSha: g(["rev-parse", "HEAD"], wt), ahead: 1 }],
+        },
+      },
+      eventLog: [
+        ...state.eventLog,
+        {
+          kind: "handoff-consolidated",
+          at: 4,
+          branchName: "feature/issue-810",
+          workstreams: ["task-a"],
+        },
+      ],
+    });
+    const consSteps = steps.filter((s) => s.section === "worktree-work-consolidated");
+    const consText = consSteps.flatMap((s) => [...s.comment, ...s.lines]).join("\n");
+    assert(
+      !consText.includes(".worktrees/"),
+      "#968 e2e: consolidated recovery no longer names worktrees the teardown removed",
+    );
+    assert(
+      consText.includes(`git push -u origin ${"feature/issue-810"}`),
+      "#968 e2e: the consolidated recovery still offers the by-branch push",
+    );
+    assert(
+      !consText.includes("status --porcelain"),
+      "#968 e2e: the consolidated recovery no longer implies the worktree is checked out",
     );
   } finally {
     try {
