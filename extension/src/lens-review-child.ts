@@ -13,7 +13,7 @@ import path from "node:path";
 import type { Writable } from "node:stream";
 import { childHandles, registerChildHandle } from "./async-jobs-registry.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
-import { extractFindings, hasReviewEvidence, lensPromptFor } from "./lens-review-format.ts";
+import { extractFindings, lensPromptFor } from "./lens-review-format.ts";
 import { LENS_REPORTER_PATH, type LensDef } from "./lens-review.ts";
 import type { LensRunResult } from "./lens-review.ts";
 import type { RosterEntry } from "./lens-roster.ts";
@@ -261,12 +261,36 @@ export async function runLensChild(opts: {
   // like any other lens result. The killCause suffix in renderSummary still
   // shows the operator that the lens was cap-killed. Only a cap-killed
   // lens with NO evidence (no findings, no real summary) stays blocked.
+  //
+  // #966 — the evidence rule above is kill-cause aware, for two reasons:
+  //   1. Stderr is not a review summary. `collapseEvents` resolves the
+  //      text as `text || stderr || "(no output)"` — a killed/failed
+  //      child that only emitted stderr carries it in `result.text`, and
+  //      counting that prose as a "closing summary" let an all-failed
+  //      review render as APPROVED (the observed #966 incident: every
+  //      lens row `fail`, verdict APPROVED, a passing ledger entry).
+  //      The `thinkingOnly` flag marks the one case where `result.text`
+  //      is real (all-thinking) output — the #952 "already produced a
+  //      genuine summary" case stays legitimate; a stderr-derived or
+  //      placeholder-only text is evidence only when paired with findings
+  //      (which still count — a finding is a tool call, not text).
+  //   2. A cap kill (loop / token-budget) is a SELF-inflicted mid-turn
+  //      stop of a child that was working — its in-progress prose is the
+  //      partial review #952 preserves. A timeout / inactivity / abort /
+  //      tool-inactivity kill is not: a text-only "summary" from such a
+  //      child is pre-kill narration, and without findings it is not
+  //      evidence — the lens is blocked, never a silent approver.
   if (!result || !result.ok) {
     // #534 — a failed lens still flushes usage from whatever turns
     // completed before it died; count it like any other dispatch-failed.
     const findings = result ? extractFindings(result.toolUses, lens.name).findings : [];
     const summary = result?.text?.trim() || undefined;
-    const hasEvidence = hasReviewEvidence(findings, summary);
+    const capKill = result?.killCause === "loop" || result?.killCause === "token-budget";
+    const textIsReviewOutput =
+      !!summary &&
+      summary !== "(thinking content only - no text output)" &&
+      (result?.thinkingOnly === true || capKill);
+    const hasEvidence = findings.length > 0 || (!!summary && textIsReviewOutput);
     return {
       lens: lens.name,
       ok: false,

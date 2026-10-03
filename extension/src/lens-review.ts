@@ -213,6 +213,12 @@ export async function runLensReview(opts: {
   head?: string;
   signal?: AbortSignal;
   /**
+   * #966 — the per-lens spawner (the real `runLensChild` by default;
+   * tests inject a stub so an all-fail run is drivable offline, the issue's
+   * "start a lens job with stub children" acceptance criterion).
+   */
+  lensChildFn?: typeof import("./lens-review-child.ts").runLensChild;
+  /**
    * Post-change content of files the diff touches, rendered for the prompt.
    * Supplied by the caller because only it knows the branch ref; see
    * `readFileAtBranch`.
@@ -296,9 +302,42 @@ export async function runLensReview(opts: {
   // throughout the run even as fast lenses drop out at 0s linger. Registered
   // BEFORE the per-lens entries so its seq sorts first on Pi's footer.
   const { batchKey, bumpBatch } = startPersistentBatch(runId, roster.length);
+  // #966 — an aborted signal is a user kill: every lens that never started
+  // (or started and was killed) is recorded blocked, no children are spawned,
+  // and the run proceeds to the SAME finish path as a non-aborted all-fail
+  // run — verdict REVIEW_INCOMPLETE, one ledger write, nothing special. The
+  // in-loop signal check inside runLensChild still governs children that
+  // were already spawned before the abort arrived.
+  if (opts.signal?.aborted) {
+    const abortedRows = roster.map((e) => ({
+      lens: e.name,
+      ok: false,
+      ms: 0,
+      startMs: Date.now(),
+      findings: [] as Finding[],
+      attempts: 0,
+      blocked: true,
+      parseError: "aborted before start",
+    }));
+    const deduped = dedupeFindings([...(opts.extraFindings ?? [])], roster);
+    return finish(
+      {
+        verdict: computeVerdict(deduped, abortedRows, threshold),
+        totalFindings: deduped.length,
+        bySeverity: bySeverityCounts(deduped),
+        lenses: abortedRows,
+        findings: deduped,
+        usage: undefined,
+      },
+      threshold,
+      opts.cwd,
+      opts.branch,
+    );
+  }
   // #873 — blocked roster entries become blocked lens results (no spawn,
   // the named error as parseError) and feed REVIEW_INCOMPLETE via
   // computeVerdict; healthy entries fan out as before.
+  const lensChildFn = opts.lensChildFn ?? runLensChild;
   const blocked = roster.filter((e) => e.error !== undefined);
   const healthy = roster.filter((e) => e.error === undefined);
   const blockedResults: LensRunResult[] = blocked.map((e) => ({
@@ -312,7 +351,7 @@ export async function runLensReview(opts: {
     parseError: e.error,
   }));
   const promises = healthy.map((lens) =>
-    runLensChild({
+    lensChildFn({
       lens,
       runId,
       skillsDir,
