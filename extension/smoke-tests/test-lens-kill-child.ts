@@ -86,6 +86,24 @@ function fixtureSkillsDir(name: string): { dir: string; cleanup: () => void } {
   };
 }
 
+// #966 — the aborted-run case must not depend on the host's installed
+// lens skills: a host WITHOUT ~/.pi/agent/skills/code-review-* used to see
+// an EMPTY roster in test (2) below, zero blocked rows, and an APPROVED
+// verdict (the silent-approval this PR closes). Pin the run to the
+// deterministic fixture via the same env var runLensReview reads
+// (piSkillsDir). runLensReview is imported later (post-mock) so the env
+// read at call time sees the pinned value.
+async function withSkillsDir<T>(skillsDir: string, fn: () => Promise<T>): Promise<T> {
+  const priorSkills = process.env.PI_ENSEMBLE_SKILLS_DIR;
+  process.env.PI_ENSEMBLE_SKILLS_DIR = skillsDir;
+  try {
+    return await fn();
+  } finally {
+    if (priorSkills === undefined) delete process.env.PI_ENSEMBLE_SKILLS_DIR;
+    else process.env.PI_ENSEMBLE_SKILLS_DIR = priorSkills;
+  }
+}
+
 const childFixture = fixtureSkillsDir("child");
 const childLens = { name: "SECURITY", skill: "code-review-security", precedence: 10 };
 
@@ -234,6 +252,9 @@ const childLens = { name: "SECURITY", skill: "code-review-security", precedence:
 // batch row (and its ticker) never exists. Driven through the real
 // `runLensReview` with a stubbed `lensChildFn` — an aborted run must never
 // reach the spawner, and the deck batch snapshot is the observable seam.
+// The skills dir is pinned to the fixture (never the host's):
+// withSkillsDir(fix.dir, …) keeps the test green on hosts without installed
+// lens skills, where an empty roster used to yield APPROVED.
 {
   dispatchDeck.reset();
   dispatchDeck.startBatchEntry("run-966-2/leftover-batch", { label: "unrelated", size: 1 });
@@ -241,14 +262,16 @@ const childLens = { name: "SECURITY", skill: "code-review-security", precedence:
   controller.abort();
   let spawnerCalls = 0;
   const { runLensReview } = await import("../src/lens-review.ts");
-  const summary = await runLensReview({
-    diff: "d",
-    signal: controller.signal,
-    lensChildFn: async () => {
-      spawnerCalls++;
-      throw new Error("lensChildFn must not be called on an aborted run");
-    },
-  } as never);
+  const summary = await withSkillsDir(childFixture.dir, async () =>
+    await runLensReview({
+      diff: "d",
+      signal: controller.signal,
+      lensChildFn: async () => {
+        spawnerCalls++;
+        throw new Error("lensChildFn must not be called on an aborted run");
+      },
+    } as never),
+  );
   eq(spawnerCalls, 0, "aborted run never reaches the per-lens spawner");
   eq(
     dispatchDeck.batchSnapshot().filter((b) => b.key === "run-966/batch").length,
@@ -268,6 +291,38 @@ const childLens = { name: "SECURITY", skill: "code-review-security", precedence:
     "every lens recorded blocked with `aborted before start`",
   );
   dispatchDeck.reset();
+}
+
+// (2b) #966 — an empty roster (no installed lens skills) must be
+// REVIEW_INCOMPLETE, never APPROVED: `computeVerdict` over zero lens rows
+// passes every precedence rule, so an empty review used to be a silent
+// approval (the CI failure this branch exists to close). The empty-roster
+// guard in runLensReview blocks every expected lens with the install
+// message; the spawner is never reached.
+{
+  const empty = path.join(mkdtempSync(path.join(os.tmpdir(), "lens966-empty-")), "skills");
+  mkdirSync(empty, { recursive: true });
+  let spawnerCalls = 0;
+  const { runLensReview } = await import("../src/lens-review.ts");
+  const summary = await withSkillsDir(empty, async () =>
+    await runLensReview({
+      diff: "d",
+      lensChildFn: async () => {
+        spawnerCalls++;
+        throw new Error("lensChildFn must not be called on an empty roster");
+      },
+    } as never),
+  );
+  try {
+    eq(summary.verdict, "REVIEW_INCOMPLETE", "empty roster (no lens skills installed) → REVIEW_INCOMPLETE");
+    assert(
+      summary.lenses.length >= 1 && summary.lenses.every((l) => l.blocked),
+      "empty roster records a blocked row (never zero rows → never APPROVED)",
+    );
+    eq(spawnerCalls, 0, "empty roster never reaches the per-lens spawner");
+  } finally {
+    rmSync(empty, { recursive: true, force: true });
+  }
 }
 
 childFixture.cleanup();

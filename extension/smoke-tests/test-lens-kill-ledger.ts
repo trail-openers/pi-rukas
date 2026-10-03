@@ -88,6 +88,35 @@ function fixtureSkillsDir(name: string): { dir: string; cleanup: () => void } {
   };
 }
 
+function emptySkillsDir(name: string): { dir: string; cleanup: () => void } {
+  const dir = path.join(mkdtempSync(path.join(os.tmpdir(), `lens966-${name}-`)), "skills");
+  mkdirSync(dir, { recursive: true });
+  return {
+    dir,
+    cleanup: () => {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {}
+    },
+  };
+}
+
+// #966 — the aborted-run case must not depend on the host's installed
+// lens skills: a host WITHOUT ~/.pi/agent/skills/code-review-* used to see
+// an EMPTY roster here, zero blocked rows, and an APPROVED verdict (the
+// silent-approval this PR closes). Point the run at a deterministic fixture
+// via the same env var runLensReview reads (piSkillsDir).
+async function withSkillsDir<T>(skillsDir: string, fn: () => Promise<T>): Promise<T> {
+  const priorSkills = process.env.PI_ENSEMBLE_SKILLS_DIR;
+  process.env.PI_ENSEMBLE_SKILLS_DIR = skillsDir;
+  try {
+    return await fn();
+  } finally {
+    if (priorSkills === undefined) delete process.env.PI_ENSEMBLE_SKILLS_DIR;
+    else process.env.PI_ENSEMBLE_SKILLS_DIR = priorSkills;
+  }
+}
+
 function setupRepo(): { repo: string; branch: string; cleanup: () => void } {
   const dir = mkdtempSync(path.join(os.tmpdir(), "lens966-repo-"));
   const repo = path.join(dir, "repo");
@@ -270,17 +299,19 @@ const allFail = () => ({
   const ac = new AbortController();
   ac.abort(); // already aborted — killJob's abort shape
   try {
-    const { s, entries } = await withLedgerEnv(fix.dir, ledgerFile, async () => {
-      const s = await runLensReview({
-        diff: "diff --git a/a b/a\n+x",
-        cwd: repo.repo,
-        branch: repo.branch,
-        signal: ac.signal,
-      });
-      await new Promise((r) => setTimeout(r, 100));
-      const entries = waitForLedger(ledgerFile, 5000);
-      return { s, entries };
-    });
+    const { s, entries } = await withSkillsDir(fix.dir, async () =>
+      withLedgerEnv(fix.dir, ledgerFile, async () => {
+        const s = await runLensReview({
+          diff: "diff --git a/a b/a\n+x",
+          cwd: repo.repo,
+          branch: repo.branch,
+          signal: ac.signal,
+        });
+        await new Promise((r) => setTimeout(r, 100));
+        const entries = waitForLedger(ledgerFile, 5000);
+        return { s, entries };
+      }),
+    );
     eq(s.verdict, "REVIEW_INCOMPLETE", "(2c) aborted run → REVIEW_INCOMPLETE");
     assert(s.lenses.length === ALL_SKILLS.length, "(2c) one blocked row per expected lens");
     assert(s.lenses.every((l) => l.blocked), "(2c) every lens row is blocked");
@@ -294,6 +325,46 @@ const allFail = () => ({
     assert(
       entries?.[0]?.detail === "REVIEW_INCOMPLETE",
       "(2c) aborted run's ledger detail is REVIEW_INCOMPLETE (never a passing entry)",
+    );
+  } finally {
+    fix.cleanup();
+    repo.cleanup();
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+}
+
+// (2d) #966 — an empty roster (no installed lens skills) must be
+// REVIEW_INCOMPLETE, never APPROVED: `computeVerdict` over zero lens rows
+// passes every precedence rule, so an empty review used to be a silent
+// approval. The empty-roster guard in runLensReview blocks every expected
+// lens with the install message; the ledger entry is passed:false.
+{
+  const fix = emptySkillsDir("empty");
+  const repo = setupRepo();
+  const ledgerDir = mkdtempSync(path.join(os.tmpdir(), "lens966-ledger-"));
+  const ledgerFile = path.join(ledgerDir, "review-ledger.json");
+  try {
+    const { s, entries } = await withSkillsDir(fix.dir, async () =>
+      withLedgerEnv(fix.dir, ledgerFile, async () => {
+        const s = await runLensReview({
+          diff: "diff --git a/a b/a\n+x",
+          cwd: repo.repo,
+          branch: repo.branch,
+        });
+        await new Promise((r) => setTimeout(r, 100));
+        const entries = waitForLedger(ledgerFile, 5000);
+        return { s, entries };
+      }),
+    );
+    eq(s.verdict, "REVIEW_INCOMPLETE", "(2d) empty roster (no installed lens skills) → REVIEW_INCOMPLETE");
+    assert(
+      s.lenses.length >= 1,
+      "(2d) at least one blocked row (never zero rows → never APPROVED)",
+    );
+    assert(s.lenses.every((l) => l.blocked), "(2d) every lens row is blocked");
+    assert(
+      entries !== null && entries.length === 1 && entries[0].passed === false,
+      "(2d) the empty-roster run writes a passed:false ledger entry",
     );
   } finally {
     fix.cleanup();

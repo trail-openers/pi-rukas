@@ -60,6 +60,24 @@ export async function resolveLensDiff(opts: {
  * REVIEW_INCOMPLETE verdict — the review is incomplete, not approved.
  */
 export function blockedRowsForRoster(roster: RosterEntry[], problem: string): LensRunResult[] {
+  // #966 — an empty roster must NEVER yield zero blocked rows: `computeVerdict`
+  // over zero rows returns APPROVED (the silent-approval this guard closes).
+  // A review whose expected set is unknown (roster unavailable) or empty still
+  // produces one named blocked row so the verdict is REVIEW_INCOMPLETE.
+  if (roster.length === 0) {
+    return [
+      {
+        lens: "LENSES",
+        ok: false,
+        ms: 0,
+        startMs: Date.now(),
+        findings: [],
+        attempts: 0,
+        blocked: true,
+        parseError: problem,
+      },
+    ];
+  }
   return roster.map((e) => ({
     lens: e.name,
     ok: false,

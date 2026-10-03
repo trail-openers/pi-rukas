@@ -22,8 +22,8 @@ import {
   lensProducedEvidence,
   renderSummary,
 } from "./lens-review-format.ts";
-import { runInstallBlock, skillsDirUsable } from "./lens-review-skills.ts";
-import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
+import { skillsDirUsable } from "./lens-review-skills.ts";
+import { CLAIM_SCAN, LENS_ROSTER, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
@@ -276,6 +276,54 @@ export async function runLensReview(opts: {
     const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
     return finish(blocked, threshold, opts.cwd, opts.branch);
   }
+  const diff = resolution.diff ?? "";
+  // #966 — the roster-missing guard: a skills dir that resolves to ZERO
+  // lenses (missing dir, empty dir, no `code-review-*` skill) blocks EVERY
+  // expected lens with the install message — the same finish path as the
+  // all-blocked shapes below. Without this the empty-roster path fell
+  // through to a fan-out over zero healthy lenses and `computeVerdict` saw
+  // zero lens rows, which every rule in the precedence table passes — an
+  // empty review was APPROVED, the silent-approval class #966 exists to
+  // close. `healthy.length === 0` is the precise predicate: a roster that
+  // is non-empty but fully-blocked (every entry carries an error) must NOT
+  // take this path — the fan-out below converts those entries into blocked
+  // rows and `computeVerdict` sees them (the #873 shape). Also subsumes the
+  // dead #872 install-block branch: the cases `skillsDirUsable` flags
+  // (missing dir, empty dir, no `code-review-*` skill) are exactly the
+  // empty-roster cases, so the roster guard IS the single install exit now.
+  const healthy = roster.filter((e) => e.error === undefined);
+  if (roster.length === 0) {
+    const problem =
+      skillsDirUsable(skillsDir) ?? `no usable code-review-* lens skills in ${skillsDir}`;
+    const blockRows = blockedRowsForRoster(roster, problem);
+    // #966 — when the roster is empty (the bundled expected set was
+    // unavailable, e.g. CI without the repo's skill/ dir — the #970
+    // incident), blockedRowsForRoster returns a single generic row
+    // ("LENSES"). Restore the #872 shape: one row per bundled lens so the
+    // six-lens accounting the operator sees matches the review that was
+    // supposed to run. Same verdict either way; the row count is what a
+    // reader counts.
+    const generic = blockRows[0];
+    if (generic !== undefined && blockRows.length === 1 && LENS_ROSTER.length > 0) {
+      const startMs = generic.startMs;
+      const named = [...new Set(LENS_ROSTER.map((e) => e.name))].map(
+        (lens): LensRunResult => ({
+          lens,
+          ok: false,
+          ms: 0,
+          startMs,
+          findings: [],
+          attempts: 0,
+          blocked: true,
+          parseError: problem,
+        }),
+      );
+      const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, named, threshold);
+      return finish(blocked, threshold, opts.cwd, opts.branch);
+    }
+    const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
+    return finish(blocked, threshold, opts.cwd, opts.branch);
+  }
   // #966 — an aborted signal is a user kill: every lens is recorded blocked,
   // no children are spawned, and the run proceeds to the SAME finish path as
   // a non-aborted all-fail run — verdict REVIEW_INCOMPLETE, one ledger write,
@@ -289,34 +337,10 @@ export async function runLensReview(opts: {
     const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
     return finish(blocked, threshold, opts.cwd, opts.branch);
   }
-  const diff = resolution.diff ?? "";
-  const skillsCheck = skillsDirUsable(skillsDir);
-  if (skillsCheck !== undefined) {
-    // #872 — ONE skills-dir check before the fan-out (not per-lens checks):
-    // a missing, empty, or no-`code-review-*`-skill dir blocks ALL lenses
-    // with a single install message and no spawn is ever called. The roster
-    // is empty exactly in those cases, so the two are one check now (#873
-    // moved the "any lens skill present" test onto the parsed roster).
-    // SINGLE EXIT PATH (item 5): the early return is the same `finish(...)`
-    // (the deck bookkeeping lives in `runInstallBlock`, moved to
-    // lens-review-skills.ts for the 500-line cap).
-    const { lensResults, findings } = runInstallBlock(runId, skillsCheck, opts.extraFindings ?? []);
-    const deduped = dedupeFindings(findings, []);
-    return finish(
-      {
-        verdict: computeVerdict(deduped, lensResults, threshold),
-        totalFindings: deduped.length,
-        bySeverity: bySeverityCounts(deduped),
-        lenses: lensResults,
-        findings: deduped,
-        usage: undefined,
-        ...capKillSummary(lensResults),
-      },
-      threshold,
-      opts.cwd,
-      opts.branch,
-    );
-  }
+  // #966 — the #872 install-block early exit is dead code: the roster-missing
+  // guard above already diverts every empty-roster shape to this single
+  // finish exit. The #872 branch is removed rather than kept as a second
+  // exit that could drift back into the empty-`computeVerdict` APPROVED hole.
   // Persistent batch summary row (#139). Lets the user see "X/6 done"
   // throughout the run even as fast lenses drop out at 0s linger. Registered
   // BEFORE the per-lens entries so its seq sorts first on Pi's footer.
@@ -326,7 +350,6 @@ export async function runLensReview(opts: {
   // computeVerdict; healthy entries fan out as before.
   const lensChildFn = opts.lensChildFn ?? runLensChild;
   const blocked = roster.filter((e) => e.error !== undefined);
-  const healthy = roster.filter((e) => e.error === undefined);
   const blockedResults: LensRunResult[] = blocked.map((e) => ({
     lens: e.name,
     ok: false,
