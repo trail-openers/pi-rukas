@@ -59,6 +59,17 @@ function extractCheckCmd(): string {
   return m[0];
 }
 
+/**
+ * The pre-fix (unpatched) loop body: the generic `check_cmd` probe with no
+ * forge skip. Built by concatenation so `${entry%%:*}` / `${entry#*:}` are
+ * not interpolated by the TypeScript template literal. Shared by both
+ * canaries — the negative one (empty PATH) and the positive one (gh on
+ * PATH, which the unpatched loop still reports even though gh exists).
+ */
+function unpatchedLoopBody(): string {
+  return 'for entry in "${REQUIRED_CLIS[@]}"; do\n  check_cmd "${entry%%:*}" "${entry#*:}"\ndone\n';
+}
+
 /** The REQUIRED_CLIS array literal, verbatim (multi-line). */
 function extractRequiredClis(): string {
   const m = installSrc.match(/^REQUIRED_CLIS=\([\s\S]*?^\)\n/m);
@@ -234,6 +245,9 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
   assert(!hintKeyed, "the loop does NOT skip on the 'checked below' hint keyword");
 }
 
+// The positive cases below confirm the operator-visible outcome; the
+// canaries at the bottom prove the skip is load-bearing.
+
 // ---------------------------------------------- positive case: gh on PATH
 
 {
@@ -287,11 +301,7 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
   // suppresses it. If this assert passes, the test is a tautology; if the
   // real loop body has been changed to also not-report forge with an empty
   // PATH, the canary shape is stale and the test is wrong.
-  // Build by concatenation to keep `${entry%%:*}` and `${entry#*:}` from
-  // being interpolated by the TypeScript template literal.
-  const unpatchedLoop = 'for entry in "${REQUIRED_CLIS[@]}"; do\n';
-  const unpatchedBody = '  check_cmd "${entry%%:*}" "${entry#*:}"\ndone\n';
-  const missing = runLoop(unpatchedLoop + unpatchedBody, []);
+  const missing = runLoop(unpatchedLoopBody(), []);
   const forgeLines = missing.filter((l) => l.startsWith("forge —"));
   assert(
     forgeLines.length === 1,
@@ -306,6 +316,23 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
     typeof first === "string" &&
       first.includes("brew install gh (GitHub) or brew install --no-quarantine glab (GitLab)"),
     `canary: the forge hint matches the README dual-install wording (got "${first ?? "none"}")`,
+  );
+}
+
+// ---------------------------------------------- canary: unpatched loop + gh present
+
+{
+  // The discriminating case: run the UNPATCHED loop with a stub `gh` on
+  // PATH. The original bug — the generic loop probes `forge` unconditionally
+  // and reports it even when gh (or glab) is installed. If this case could
+  // not fail against the unpatched loop, the whole test would be a
+  // tautology; it must report exactly one 'forge —' line here, while the
+  // patched loop's gh-only positive case above reports none.
+  const missing = runLoop(unpatchedLoopBody(), ["gh"]);
+  const forgeLines = missing.filter((l) => l.startsWith("forge —"));
+  assert(
+    forgeLines.length === 1,
+    `canary: unpatched loop + gh on PATH → exactly ONE 'forge — …' in missing[] (got ${forgeLines.length})`,
   );
 }
 
