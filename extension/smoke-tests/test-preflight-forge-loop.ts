@@ -256,6 +256,13 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
     !missing.some((l) => l.startsWith("forge —")),
     "gh on PATH: 'forge' NOT in missing[] (no false positive)",
   );
+  // Harness sanity: a genuinely missing CLI (git) IS reported, proving the
+  // harness can emit entries — so the forge-absence result above is not a
+  // vacuous pass (it would pass if the print block silently broke).
+  assert(
+    missing.some((l) => l.startsWith("git —")),
+    "gh on PATH: a genuinely missing CLI (git) IS reported (harness sanity)",
+  );
 }
 
 // ---------------------------------------------- positive case: glab only
@@ -290,6 +297,13 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
   assert(
     !missing.some((l) => l.startsWith("forge —")),
     "neither gh nor glab: 'forge' NOT in missing[] (the dedicated dual check is the single source)",
+  );
+  // Harness sanity: with the stub PATH holding only the harness symlinks, a
+  // genuinely missing CLI (git) IS reported — so the forge-absence result
+  // above is not a vacuous pass if the print block silently broke.
+  assert(
+    missing.some((l) => l.startsWith("git —")),
+    "neither gh nor glab: a genuinely missing CLI (git) IS reported (harness sanity)",
   );
 }
 
