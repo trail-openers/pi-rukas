@@ -18,6 +18,7 @@ import { killDetail } from "./kill-detail.ts";
 import { commitPrDirtyRootStep } from "./work-driver-handoff-commitpr.ts";
 import {
   type RecoveryStep,
+  consolidatedRestoreClaim,
   recoveryStepsForCap,
   requalifyLine,
 } from "./work-driver-handoff-recovery.ts";
@@ -248,13 +249,6 @@ export function recoveryCommandsChat(
   );
   if (worktreeStep) {
     const isConsolidated = worktreeStep.section === "worktree-work-consolidated";
-    const consEvent = state.eventLog
-      .slice()
-      .reverse()
-      .find(
-        (e): e is Extract<WorkEvent, { kind: "handoff-consolidated" }> =>
-          e.kind === "handoff-consolidated",
-      );
     // #968 — the driver restores repoRoot to the operator's original checkout
     // after consolidation, so the prose must not imply the branch is checked
     // out at repoRoot (pre-#968 it said "the branch contains the work" as if
@@ -262,9 +256,8 @@ export function recoveryCommandsChat(
     // restore claim from the consolidation event is printed verbatim — the
     // verified post-condition on success, the loud not-restored failure when
     // the restore did not come back (the operator then runs git status).
-    const restoreLine = consEvent?.restoreClaim
-      ? `  # ${consEvent.restoreClaim}`
-      : "  # (repoRoot restore not recorded)";
+    const claim = consolidatedRestoreClaim(state.eventLog);
+    const restoreLine = claim ? `  # ${claim}` : "  # (repoRoot restore not recorded)";
     lines.push(
       "",
       isConsolidated

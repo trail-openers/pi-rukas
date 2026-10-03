@@ -21,7 +21,6 @@ import {
   deriveConsolidationSubject,
   parseConventionalTitle,
 } from "../src/work-driver-handoff-subject.ts";
-import { recoveryStepsForCap } from "../src/work-driver-handoff-recovery.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 
 let exit = 0;
@@ -361,47 +360,10 @@ function assert(cond: boolean, msg: string) {
       branchExists,
       "#968 e2e: the consolidated feature branch still exists after the restore",
     );
-    // The pre-#968 prose implied repoRoot was checked out on the branch —
-    // the recovery text must no longer do that, and the push still works.
-    const { steps } = recoveryStepsForCap({
-      ...state,
-      pipelineState: {
-        ...state.pipelineState,
-        handoffSnapshot: {
-          modifiedFiles: [],
-          unstagedCount: 0,
-          stagedCount: 0,
-          branchExists: true,
-          branchPushed: false,
-          headSha: g(["rev-parse", "--short", "HEAD"]),
-          capturedAt: Date.now(),
-          committedWork: [{ worktreeId: "task-a", path: wt, headSha: g(["rev-parse", "HEAD"], wt), ahead: 1 }],
-        },
-      },
-      eventLog: [
-        ...state.eventLog,
-        {
-          kind: "handoff-consolidated",
-          at: 4,
-          branchName: "feature/issue-810",
-          workstreams: ["task-a"],
-        },
-      ],
-    });
-    const consSteps = steps.filter((s) => s.section === "worktree-work-consolidated");
-    const consText = consSteps.flatMap((s) => [...s.comment, ...s.lines]).join("\n");
-    assert(
-      !consText.includes(".worktrees/"),
-      "#968 e2e: consolidated recovery no longer names worktrees the teardown removed",
-    );
-    assert(
-      consText.includes(`git push -u origin ${"feature/issue-810"}`),
-      "#968 e2e: the consolidated recovery still offers the by-branch push",
-    );
-    assert(
-      !consText.includes("status --porcelain"),
-      "#968 e2e: the consolidated recovery no longer implies the worktree is checked out",
-    );
+    // The recovery-text assertions (no worktree paths, by-branch push,
+    // no status-implying-a-checkout line) live in test-handoff-consolidate-restore.ts
+    // sections 3-4 against both renderers; this file only pins the real e2e
+    // path above (restore to main, branch survives with its commit).
   } finally {
     try {
       execFileSync("git", ["worktree", "remove", "--force", wt], { cwd: dir });

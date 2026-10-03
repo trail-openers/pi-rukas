@@ -286,57 +286,35 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
       state,
       stub,
     );
-    if (!dirtWritten) {
-      // The stub's intercept point has drifted — report the actual
-      // outcome instead of asserting on a stale assumption.
-      console.log(
-        `  (diagnostic: the restore-verification stub did not fire; consolidation result: ok=${result.ok} reason=${result.reason ?? "(none)"})`,
-      );
-      assert(
-        result.ok === true,
-        "#968 forced-restore-failure: (fallback) consolidation succeeded when the stub did not intercept",
-      );
-      assert(
-        result.restoreClaim !== undefined &&
-          !result.restoreClaim.startsWith("repoRoot was NOT restored"),
-        "#968 forced-restore-failure: (fallback) the claim is the verified-restore one (stub did not fire)",
-      );
-    } else if (!dirtSurvived) {
-      // Dirt was written but did not survive to the post-condition read —
-      // the intercept point moved; report the actual outcome.
-      console.log(
-        `  (diagnostic: dirt was injected but the post-condition read did not report it; consolidation result: ok=${result.ok} reason=${result.reason ?? "(none)"})`,
-      );
-      assert(
-        result.ok === true,
-        "#968 forced-restore-failure: (fallback) consolidation succeeded when the dirt did not survive",
-      );
-      assert(
-        result.restoreClaim !== undefined &&
-          !result.restoreClaim.startsWith("repoRoot was NOT restored"),
-        "#968 forced-restore-failure: (fallback) the claim is the verified-restore one (dirt did not survive)",
-      );
-    } else {
-      assert(
-        result.ok === true,
-        `#968 forced-restore-failure: the success path still completed (ok=${result.ok}, reason=${result.reason ?? "(none)"})`,
-      );
-      assert(
-        result.restoreClaim?.startsWith("repoRoot was NOT restored") === true,
-        `#968 forced-restore-failure: the claim carries the loud not-restored failure (got ${JSON.stringify(result.restoreClaim)})`,
-      );
-      // The work itself IS on the branch (the success path ran fully up to
-      // the commit) — the restore is the only failure. This is what the
-      // rendered handoff then has to say.
-      const ahead = Number.parseInt(
-        g(["rev-list", "--count", "operator-feature..feature/issue-968-restore-fail"]),
-        10,
-      );
-      assert(
-        ahead === 1,
-        `#968 forced-restore-failure: the branch carries the consolidated commit despite the failed restore (got ${ahead})`,
-      );
-    }
+    // The stub's intercept is part of the test, not the system under test:
+    // a drifted intercept (dirt not written, or not surviving to the
+    // post-condition read) means the assertion below would run against a
+    // DIFFERENT scenario than the one the test claims to pin — fail hard
+    // instead of passing with weaker checks.
+    assert(dirtWritten, "#968 forced-restore-failure: the stub intercepted `git checkout --force` and wrote the tracked dirt");
+    assert(
+      dirtSurvived,
+      "#968 forced-restore-failure: the tracked dirt survived to the restore's post-condition read (the intercept did not drift)",
+    );
+    assert(
+      result.ok === true,
+      `#968 forced-restore-failure: the success path still completed (ok=${result.ok}, reason=${result.reason ?? "(none)"})`,
+    );
+    assert(
+      result.restoreClaim?.startsWith("repoRoot was NOT restored") === true,
+      `#968 forced-restore-failure: the claim carries the loud not-restored failure (got ${JSON.stringify(result.restoreClaim)})`,
+    );
+    // The work itself IS on the branch (the success path ran fully up to
+    // the commit) — the restore is the only failure. This is what the
+    // rendered handoff then has to say.
+    const ahead = Number.parseInt(
+      g(["rev-list", "--count", "operator-feature..feature/issue-968-restore-fail"]),
+      10,
+    );
+    assert(
+      ahead === 1,
+      `#968 forced-restore-failure: the branch carries the consolidated commit despite the failed restore (got ${ahead})`,
+    );
   } finally {
     try {
       execFileSync("git", ["worktree", "remove", "--force", wt], { cwd: dir });

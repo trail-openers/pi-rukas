@@ -17,11 +17,14 @@
 import type { ForgeType } from "./forge-detect.ts";
 import { killDetail } from "./kill-detail.ts";
 import { commitPrDirtyRootStep } from "./work-driver-handoff-commitpr.ts";
-import { type RecoveryStep, recoveryStepsForCap } from "./work-driver-handoff-recovery.ts";
+import {
+  type RecoveryStep,
+  consolidatedRestoreClaim,
+  recoveryStepsForCap,
+} from "./work-driver-handoff-recovery.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
 import { mergeHoldToolingNote } from "./work-driver-merge-authority.ts";
 import {
-  type WorkEvent,
   type WorkState,
   filesPresentFromConsolidation,
   missingWorkstreamsFromConsolidation,
@@ -186,16 +189,8 @@ export function recoveryCommandsMarkdown(
     // restore claim from the consolidation event is printed verbatim — the
     // verified post-condition on success, the loud not-restored failure when
     // the restore did not come back (the operator then runs git status).
-    const consEvent = state.eventLog
-      .slice()
-      .reverse()
-      .find(
-        (e): e is Extract<WorkEvent, { kind: "handoff-consolidated" }> =>
-          e.kind === "handoff-consolidated",
-      );
-    const restoreLine = consEvent?.restoreClaim
-      ? `# ${consEvent.restoreClaim}`
-      : "# (repoRoot restore not recorded)";
+    const claim = consolidatedRestoreClaim(state.eventLog);
+    const restoreLine = claim ? `# ${claim}` : "# (repoRoot restore not recorded)";
     lines.push(
       isConsolidated
         ? "# The driver consolidated the workstream work onto the feature branch before this handoff — the branch holds the work; your original checkout was restored."

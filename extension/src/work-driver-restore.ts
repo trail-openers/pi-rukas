@@ -142,18 +142,13 @@ ${staged}
 }
 
 /**
- * #968 — the shared "verified restore + claim" leg for consolidation
- * call sites. The success path of `consolidateWorktreesToBranch` (and its
- * throw path) now restores repoRoot after the commit (pre-#968 only the
- * four failure branches did), and the claim is threaded into the
- * `handoff-consolidated` event and both renderers. This helper is the
- * single implementation of the "restore, then build the claim" shape so
- * the success path, the failure paths, and the throw path all emit the
- * same claim shapes (the verified post-condition on success, the loud
- * "repoRoot was NOT restored: …" on failure). The `trailing` hint is
- * appended after the not-restored failure (the handoff's not-restored
- * variant tells the operator to run git status). `label` identifies the
- * caller in the preserved-state file and the trace lines.
+ * #968 — the shared "verified restore + claim" leg: runs
+ * `verifiedRestoreRoot`, builds the claim via `restoreClaim` (the verified
+ * post-condition on success, the loud "repoRoot was NOT restored: …" on
+ * failure), and traces the failure. `label` identifies the caller in the
+ * preserved-state file and the trace lines; `trailing` is appended after
+ * the not-restored failure (the handoff's variant tells the operator to
+ * run git status).
  */
 export async function verifiedRestoreRootWithClaim(
   execFn: ExecFn,

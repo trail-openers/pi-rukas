@@ -145,11 +145,12 @@ export interface ConsolidateOutcome {
   /** Committed workstream ids that landed on the branch (cherry-picked or
    * patch-applied). Present when at least one workstream had committed work. */
   workstreams?: string[];
-  /** The verified-restore claim (success only): whether repoRoot was
-   * restored to the checkout it was on before consolidation, or why the
-   * restore failed. Absent when the success path never ran the restore
-   * (the `applied.length === 0` short-circuit, where no checkout switch
-   * happened). */
+  /** The verified-restore claim: whether repoRoot was restored to the
+   * checkout it was on before consolidation, or why the restore failed.
+   * Always present when `ok` is true (both success exits run the restore);
+   * absent means a failure outcome or a pre-consolidation early return
+   * (no branch / no worktrees / nothing ahead of the base), or the event
+   * was written before #968. */
   restoreClaim?: string;
   /** Human-readable failure reason (failure only). */
   reason?: string;
@@ -346,30 +347,6 @@ export async function consolidateWorktreesToBranch(
         };
       }
       const applied = [...orch.cherryApplied, ...orch.patchApplied];
-      if (applied.length === 0) {
-        // Every worktree had a clean tree and no committed work — the
-        // countAheadOfBase precheck above should have caught that, but the
-        // operator's branch may already contain the work. Not an error.
-        // #968 — the branch IS checked out at repoRoot here (the checkout
-        // above ran before the orchestrator), so the original checkout is
-        // restored even though nothing was committed. `git checkout --force`
-        // of a BRANCH name (symbolic-ref capture) re-attaches the operator
-        // to their branch — never a detached SHA — when originalRef is one;
-        // a detached-HEAD original (SHA capture) detaches back to that SHA.
-        const { claim } = await verifiedRestoreRootWithClaim(execFn, {
-          repoRoot: ctx.repoRoot,
-          originalRef: originalRef ?? ps.baseSha ?? "HEAD",
-          scratchDir: ctx.scratchDir,
-          label: "handoff consolidation",
-          trailing: "run git status at the repo root",
-        });
-        return {
-          ok: true as const,
-          branchName,
-          workstreams: [],
-          restoreClaim: claim,
-        };
-      }
       // Commit the staged batch. (No push: the branch is local-only at
       // handoff time; the recovery block ends in the push the operator runs.
       // No verify: the work already failed develop's gate — see header.)
@@ -391,24 +368,24 @@ export async function consolidateWorktreesToBranch(
           maxBuffer: 256 * 1024,
         });
       }
-      // #968 — the success path used to return here with repoRoot still
-      // checked out on the consolidated branch: the originalRef capture
-      // (#750) existed only to feed the four failure branches. The branch
-      // and its commits stay where the operator pushes them from; the
-      // operator's checkout comes back. Runs INSIDE the integration lock
+      // #968 — restore the operator's checkout after the branch is done:
+      // pre-#968 the success path returned with repoRoot still on the
+      // consolidated branch (the originalRef capture existed only to feed
+      // the failure branches). The branch and its commits stay where the
+      // operator pushes them from; the operator's checkout comes back.
+      // The restore covers the `applied.length === 0` case too (the
+      // checkout above ran regardless). Runs INSIDE the integration lock
       // (like the failure paths) so a sibling cycle's integrate() cannot
       // race the checkout switch. The claim reuses restoreClaim's existing
       // shapes: the verified post-condition on success, the loud
       // "repoRoot was NOT restored: …" on failure, threaded into the
       // handoff-consolidated event and both renderers.
       //
-      // Reviewer point, #968: originalRef comes from
-      // `git symbolic-ref --quiet --short HEAD`, which is a BRANCH name
-      // when the operator was attached (the common case) — so this is a
-      // branch checkout, never a detached SHA, in that case. A detached
-      // operator (SHA fallback capture) is restored to that same detached
-      // SHA; a missing capture (originalRef ?? …) degrades to the base
-      // commit rather than skipping the restore.
+      // originalRef is a BRANCH name (symbolic-ref capture) when the
+      // operator was attached — so this is a branch checkout, never a
+      // detached SHA — and a SHA for a detached operator, which detaches
+      // back to that same SHA. The `?? ps.baseSha ?? "HEAD"` tiers are
+      // defensive only: originalRef is always set once we are this far.
       const { claim } = await verifiedRestoreRootWithClaim(execFn, {
         repoRoot: ctx.repoRoot,
         originalRef: originalRef ?? ps.baseSha ?? "HEAD",
