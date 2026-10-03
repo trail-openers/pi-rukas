@@ -87,14 +87,11 @@ check_cmd() {
 }
 
 # pi is special-cased: presence is not enough, the installed version must
-# meet the floor (source: install-preflight.sh, #578); the below-floor case
-# is reported separately because it needs an upgrade hint, not an install one.
-#
+# meet the floor (install-preflight.sh, #578) — reported separately.
 # Hard dependencies — install continues but tools will fail at runtime.
-# Single source for the preflight set: each entry is "name:hint". The
-# prerequisite-drift gate (smoke-tests/test-prerequisite-drift.ts) parses
-# this array and cross-checks it against the README Prerequisites section
-# and the .devcontainer/Dockerfile global installs.
+# Single source for the preflight set ("name:hint" entries); the
+# prerequisite-drift gate (test-prerequisite-drift.ts) parses this array
+# and cross-checks it against the README + .devcontainer/Dockerfile.
 REQUIRED_CLIS=(
   "pi:bun add -g @earendil-works/pi-coding-agent@${MIN_PI_VERSION}"
   "git:OS package manager"
@@ -132,14 +129,19 @@ case "$OO_STATUS" in
 esac
 
 for entry in "${REQUIRED_CLIS[@]}"; do
-  check_cmd "${entry%%:*}" "${entry#*:}"
+  # "forge" is a pseudo-name (gh or glab, checked below); the warn block
+  # only prints, so missing[] carries it here when BOTH are absent.
+  if [ "${entry%%:*}" = forge ]; then
+    command -v gh >/dev/null 2>&1 || command -v glab >/dev/null 2>&1 || \
+      check_cmd forge "${entry#*:}"
+  else
+    check_cmd "${entry%%:*}" "${entry#*:}"
+  fi
 done
 
-# Forge CLI — dual-forge support (#608): pi-rukas works against GitHub
-# (gh) or GitLab (glab), so require gh OR glab rather than gh exclusively.
-# The "forge" entry in REQUIRED_CLIS above is a pseudo-name (nothing named
-# `forge` is probed); this is the real check — warn-not-fail, by the same
-# token as the missing[] block below (the user may install the CLI later).
+# Forge CLI — dual-forge support (#608): require gh OR glab. The "forge"
+# entry in REQUIRED_CLIS is a pseudo-name; this is the real check —
+# warn-not-fail, by the same token as the missing[] block below.
 if ! command -v gh >/dev/null 2>&1 && ! command -v glab >/dev/null 2>&1; then
   echo "!! Neither gh nor glab found — forge operations (issues, PRs, CI) will fail at runtime."
   echo "   Install one: brew install gh (GitHub) or brew install --no-quarantine glab (GitLab)"
