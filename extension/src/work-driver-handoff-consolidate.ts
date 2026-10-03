@@ -36,7 +36,6 @@
  *     the bug-2 cleanup, and it removes only worktrees keyed in
  *     `pipelineState.worktrees` that pass the "work provably on the branch"
  *     check. Nothing here ever deletes a worktree.
- *
  * Failure mode: ANY failure (dirty repoRoot, cherry-pick conflict, git
  * error) degrades to `{ ok: false, reason }` WITHOUT aborting the handoff —
  * the renderers then fall back to the accurate per-worktree recovery
@@ -44,7 +43,6 @@
  * worktrees because the work is not (yet) on a branch. Consolidation must
  * never destroy work or block the handoff from completing.
  */
-
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { type ForgeDetection, detectForge } from "./forge-detect.ts";
@@ -54,7 +52,11 @@ import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
 import { reconcileHandoffConsolidateBranch } from "./work-driver-handoff-consolidate-branch.ts";
 import { deriveConsolidationSubject } from "./work-driver-handoff-subject.ts";
 import { withIntegrationLock } from "./work-driver-integrate.ts";
-import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
+import {
+  restoreClaim,
+  verifiedRestoreRoot,
+  verifiedRestoreRootWithClaim,
+} from "./work-driver-restore.ts";
 import type { WorkState } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -354,13 +356,13 @@ export async function consolidateWorktreesToBranch(
         // of a BRANCH name (symbolic-ref capture) re-attaches the operator
         // to their branch — never a detached SHA — when originalRef is one;
         // a detached-HEAD original (SHA capture) detaches back to that SHA.
-        const restore = await verifiedRestoreRoot(execFn, {
+        const { claim } = await verifiedRestoreRootWithClaim(execFn, {
           repoRoot: ctx.repoRoot,
           originalRef: originalRef ?? ps.baseSha ?? "HEAD",
           scratchDir: ctx.scratchDir,
           label: "handoff consolidation",
+          trailing: "run git status at the repo root",
         });
-        const claim = restoreClaim(restore, undefined, "run git status at the repo root");
         return {
           ok: true as const,
           branchName,
@@ -391,7 +393,7 @@ export async function consolidateWorktreesToBranch(
       }
       // #968 — the success path used to return here with repoRoot still
       // checked out on the consolidated branch: the originalRef capture
-      // (#750) existed only to feed the four FAILURE branches. The branch
+      // (#750) existed only to feed the four failure branches. The branch
       // and its commits stay where the operator pushes them from; the
       // operator's checkout comes back. Runs INSIDE the integration lock
       // (like the failure paths) so a sibling cycle's integrate() cannot
@@ -407,16 +409,13 @@ export async function consolidateWorktreesToBranch(
       // operator (SHA fallback capture) is restored to that same detached
       // SHA; a missing capture (originalRef ?? …) degrades to the base
       // commit rather than skipping the restore.
-      const restore = await verifiedRestoreRoot(execFn, {
+      const { claim } = await verifiedRestoreRootWithClaim(execFn, {
         repoRoot: ctx.repoRoot,
         originalRef: originalRef ?? ps.baseSha ?? "HEAD",
         scratchDir: ctx.scratchDir,
         label: "handoff consolidation",
+        trailing: "run git status at the repo root",
       });
-      const claim = restoreClaim(restore, undefined, "run git status at the repo root");
-      if (!restore.restored) {
-        trace(`handoff-consolidate: restore after success failed: ${restore.detail ?? "unknown"}`);
-      }
       return { ok: true as const, branchName, workstreams: applied, restoreClaim: claim };
     });
     if (result.ok) {
@@ -440,18 +439,13 @@ export async function consolidateWorktreesToBranch(
       // the consolidation failure but not that their checkout did not come
       // back). verifiedRestoreRoot never throws, so this cannot lose the
       // outcome.
-      const restore = await verifiedRestoreRoot(execFn, {
+      const { claim } = await verifiedRestoreRootWithClaim(execFn, {
         repoRoot: ctx.repoRoot,
         originalRef,
         scratchDir: ctx.scratchDir,
         label: "handoff consolidation",
+        trailing: "run git status at the repo root",
       });
-      if (!restore.restored) {
-        trace(
-          `handoff-consolidate: restore after failure also failed: ${restore.detail ?? "unknown"}`,
-        );
-      }
-      const claim = restoreClaim(restore, undefined, "run git status at the repo root");
       return {
         ok: false,
         reason: `consolidation failed: ${msg.toString().slice(0, 200)}; ${claim}`,
