@@ -70,6 +70,12 @@ function extractRequiredClis(): string {
  * The `for entry in "${REQUIRED_CLIS[@]}"` loop body, verbatim — from the
  * `for` line through the matching `done`. This is the post-fix shape that
  * carries the skip logic; the test drives it as-is.
+ *
+ * Coupling to install.sh's exact loop and hint text is DELIBERATE: like
+ * test-pi-min-version.ts and test-oo-min-version.ts, this test extracts by
+ * regex, so a reformat of the loop (or its hint string) must update the
+ * test. The behavioural assertions (gh, glab, both, neither, canary) are
+ * the real regression gate.
  */
 function extractLoopBody(): string {
   const m = installSrc.match(/^for entry in "\$\{REQUIRED_CLIS\[@\]\}"; do[\s\S]*?^done\n/m);
@@ -119,6 +125,7 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
       try {
         const real = execFileSync("bash", ["-c", `command -v ${tool} || true`], {
           encoding: "utf8",
+          timeout: 5_000,
           env: {
             PATH: `${stubDir}:/usr/local/bin:/usr/bin:/bin`,
             HOME: "/tmp",
@@ -148,7 +155,7 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
       checkCmd,
       clis,
       loopBody,
-      'if [ ${#missing[@]} -gt 0 ]; then',
+      "if [ ${#missing[@]} -gt 0 ]; then",
       'for m in "${missing[@]}"; do printf \'%s\n\' "$m"; done',
       "fi",
       "exit 0",
@@ -156,6 +163,7 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
     ].join("\n");
     const out = execFileSync("bash", ["-c", code], {
       encoding: "utf8",
+      timeout: 5_000,
       // Hermetic env: nothing from process.env (no BASH_ENV, no GLOBIGNORE,
       // no inherited state). Only the stub dir on PATH, a temp HOME, and a
       // fixed locale.
@@ -170,7 +178,10 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
     return out.split("\n").filter((l) => l.trim() !== "");
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    assert(false, `bash harness crashed (${stubBinaries.length ? stubBinaries.join(",") : "no stubs"}): ${msg}`);
+    assert(
+      false,
+      `bash harness crashed (${stubBinaries.length ? stubBinaries.join(",") : "no stubs"}): ${msg}`,
+    );
     return ["<harness crashed>"];
   } finally {
     rmSync(parent, { recursive: true, force: true });
@@ -178,6 +189,12 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
 }
 
 // ---------------------------------------------- extraction integrity
+//
+// Deliberate coupling: these source-shape assertions match install.sh's
+// exact text (like test-pi-min-version.ts / test-oo-min-version.ts, this
+// test extracts by regex — a reformat of the loop or hint text must
+// update the test). The behavioural assertions below (gh, glab, both,
+// neither, canary) are the real regression gate.
 
 {
   const checkCmd = extractCheckCmd();
