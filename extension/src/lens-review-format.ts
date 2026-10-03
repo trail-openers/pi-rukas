@@ -22,10 +22,9 @@ import type {
  * with evidence. `ISSUES_FOUND` — a finding at or above the threshold.
  * `CRITICAL_ISSUES_FOUND` — any CRITICAL finding; it blocks regardless of the
  * threshold. `REVIEW_INCOMPLETE` — at least one lens failed all retry attempts
- * — the review is incomplete and the user/PM must decide whether to retry the
- * whole pass, override, or halt. Never silently downgrade a six-pass review to
- * a five-pass one (#3). */
- * — the doc line that described `REVIEW_INCOMPLETE` above, kept verbatim.
+ * or was aborted without evidence: the review is incomplete and the user/PM
+ * must decide whether to retry the whole pass, override, or halt — never
+ * silently downgrade a six-pass review to a five-pass one (#3).
  */
 export type Verdict = "APPROVED" | "ISSUES_FOUND" | "CRITICAL_ISSUES_FOUND" | "REVIEW_INCOMPLETE";
 import { CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE, type RosterEntry } from "./lens-roster.ts";

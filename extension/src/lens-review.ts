@@ -14,13 +14,13 @@ import {
 import {
   DEFAULT_REVIEW_THRESHOLD,
   LENS_PREFIX,
+  type Verdict,
   bySeverityCounts,
   computeVerdict,
   dedupeFindings,
   extractFindings,
   lensProducedEvidence,
   renderSummary,
-  type Verdict,
 } from "./lens-review-format.ts";
 import { runInstallBlock, skillsDirUsable } from "./lens-review-skills.ts";
 import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
