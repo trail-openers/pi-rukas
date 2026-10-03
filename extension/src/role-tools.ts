@@ -19,9 +19,10 @@
  * meta-work like "edit project-manager.md".
  *
  * Why exclude-list, not allow-list: Pi keeps adding tools (ctx7,
- * codebase_memory_*, dispatch_*). An exhaustive per-role allow-list would
- * drift the moment Pi or pi-rukas adds a tool. Exclude-list only names
- * what we KNOW should not be on a role — much more stable.
+ * mcp__codebase_memory__* (pre-#959: codebase_memory_*), dispatch_*). An
+ * exhaustive per-role allow-list would drift the moment Pi or pi-rukas adds
+ * a tool. Exclude-list only names what we KNOW should not be on a role —
+ * much more stable.
  *
  * What we exclude per role:
  *

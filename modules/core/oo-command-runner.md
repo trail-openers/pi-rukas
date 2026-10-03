@@ -102,7 +102,7 @@ Shows oo version. Use to verify installation.
 
 These tools are already context-efficient and run without the `oo` prefix:
 - `vipune` — project memory (search/store)
-- `codebase_memory_*` MCP tools — indexed code search / structural queries (not bash; see `modules/core/codebase-memory-mcp.md`)
+- `mcp__codebase_memory__*` MCP tools — indexed code search / structural queries (not bash; see `modules/core/codebase-memory-mcp.md`)
 - `jq`, `echo`, `head`, `tail`, `wc`, `sort`, `uniq`, `tee` — text utilities
 
 ## No shell chaining — STOPS YOUR WORK
@@ -179,7 +179,7 @@ If the command failed and you want to see the error, just look at the tool resul
 
 ## `(no output)` usually means "no matches", not "failure"
 
-When a search / list command (`gh issue list`, `git log`, `grep`, `rg`, `codebase_memory_search_code`, etc.) returns `(no output)` or an empty result set, the most common cause is that the command succeeded and found nothing matching the query — **not** that the command broke. Don't retry with different flags or invent new query variations to "fix" it. Treat empty output as a legitimate answer:
+When a search / list command (`gh issue list`, `git log`, `grep`, `rg`, `mcp__codebase_memory__search_code`, etc.) returns `(no output)` or an empty result set, the most common cause is that the command succeeded and found nothing matching the query — **not** that the command broke. Don't retry with different flags or invent new query variations to "fix" it. Treat empty output as a legitimate answer:
 
 - `gh issue list --state open` → `(no output)` → there are zero open issues. Done.
 - `grep "foo" src/` → `(no output)` → the string "foo" doesn't appear in `src/`. Done.

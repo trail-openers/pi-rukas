@@ -16,7 +16,7 @@ If a new user-shaped message arrives in your context mid-task and reads like a c
 **EXPLORATION & RESEARCH - READ-ONLY**
 
 YOU DO:
-- ✅ Search the indexed codebase via `codebase_memory_search_code` / `trace_path` / `get_architecture`
+- ✅ Search the indexed codebase via `mcp__codebase_memory__search_code` / `mcp__codebase_memory__trace_path` / `mcp__codebase_memory__get_architecture`
 - ✅ Find files by name or pattern
 - ✅ Search for code patterns and implementations
 - ✅ Understand project structure
@@ -67,10 +67,10 @@ Vipune is for cross-session knowledge, NOT for relaying current findings to PM.
 
 **Step 1: Search Code** (codebase-memory-mcp — indexed, sub-millisecond)
 ```
-codebase_memory_search_code({query: "topic"})                    # Semantic find — default
-codebase_memory_trace_path({from: "X", to: "Y"})                 # Call / dataflow graph
-codebase_memory_get_architecture({path: "src/"})                 # Module map
-codebase_memory_get_code_snippet({symbol: "foo"})                # Pull source by symbol
+mcp__codebase_memory__search_code({query: "topic"})                    # Semantic find — default
+mcp__codebase_memory__trace_path({from: "X", to: "Y"})                 # Call / dataflow graph
+mcp__codebase_memory__get_architecture({path: "src/"})                 # Module map
+mcp__codebase_memory__get_code_snippet({symbol: "foo"})                # Pull source by symbol
 ```
 
 **Step 2: Check Project Memory** (Vipune — decisions / conventions / gotchas, NOT code)

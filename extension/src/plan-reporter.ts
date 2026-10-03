@@ -43,7 +43,7 @@ import { Type } from "@sinclair/typebox";
  */
 export const REFERENCE_KIND_DEFS = {
   reference:
-    "reference (a file or pattern whose EXISTENCE you confirmed with a live tool call in THIS session — a path codebase_memory_search_code, rg, or the filesystem actually returned, never a path you merely named or guessed in prose —; if you confirmed nothing, emit exactly ONE reference item stating what you searched for and that no existing code was found)",
+    "reference (a file or pattern whose EXISTENCE you confirmed with a live tool call in THIS session — a path mcp__codebase_memory__search_code, rg, or the filesystem actually returned, never a path you merely named or guessed in prose —; if you confirmed nothing, emit exactly ONE reference item stating what you searched for and that no existing code was found)",
 };
 
 export const PLAN_ITEM_KINDS = [
@@ -66,7 +66,7 @@ export default function (pi: ExtensionAPI) {
     name: "report_plan_item",
     label: "Report Plan Item",
     description:
-      "Report ONE structured item for the plan spec. Call once per item — do not batch. The item's content goes in `text` (the item itself, nothing else); `kind` says which spec section it belongs to. Do NOT emit items as prose lists or JSON in your reply; only these tool calls count. GROUNDING: a `reference` kind item is ONLY a path your live tool calls (codebase_memory_search_code, rg, the filesystem) actually returned in THIS session — never invent or guess one; if nothing exists, report the absence as one honest `reference` item (what you searched for + that no existing code was found) — never invent a path to stand in for it.",
+      "Report ONE structured item for the plan spec. Call once per item — do not batch. The item's content goes in `text` (the item itself, nothing else); `kind` says which spec section it belongs to. Do NOT emit items as prose lists or JSON in your reply; only these tool calls count. GROUNDING: a `reference` kind item is ONLY a path your live tool calls (mcp__codebase_memory__search_code, rg, the filesystem) actually returned in THIS session — never invent or guess one; if nothing exists, report the absence as one honest `reference` item (what you searched for + that no existing code was found) — never invent a path to stand in for it.",
     parameters: Type.Object({
       kind: Type.Union(
         PLAN_ITEM_KINDS.map((k) => Type.Literal(k)),

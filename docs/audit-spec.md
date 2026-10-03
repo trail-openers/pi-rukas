@@ -86,7 +86,7 @@ Build a `DerivedStandards` model that captures the project's intended behavior, 
 | **Configuration** | Build configs, linter rules, CI/CD | Read and parse |
 | **CI/CD pipelines** | Test expectations, check gates | Read workflow files, job definitions |
 | **Memory** | Prior decisions, architecture notes, conventions | `vipune search` before starting |
-| **Representative examples** | Idiomatic patterns, style conventions | `codebase_memory_search_code` queries for concrete implementations |
+| **Representative examples** | Idiomatic patterns, style conventions | `mcp__codebase_memory__search_code` queries for concrete implementations |
 | **Test files** | Testing patterns, coverage expectations | Read `test/`, `__tests__/`, `*test.*` files |
 
 ### DerivedStandards schema
@@ -245,15 +245,15 @@ vipune search "bug" "fix" "workaround" --limit 10
 
 #### Representative examples via codebase-memory-mcp
 
-Use `codebase_memory_search_code` to find concrete implementation examples. Query code directly. See [docs/audit-code-search-policy.md](audit-code-search-policy.md) for the complete code-search usage policy, including query patterns and examples.
+Use `mcp__codebase_memory__search_code` to find concrete implementation examples. Query code directly. See [docs/audit-code-search-policy.md](audit-code-search-policy.md) for the complete code-search usage policy, including query patterns and examples.
 
 ```
 # Examples of high-signal queries
-codebase_memory_search_code({query: "error handling"})
-codebase_memory_search_code({query: "test coverage"})
-codebase_memory_search_code({query: "API endpoint"})
-codebase_memory_search_code({query: "validation"})
-codebase_memory_search_code({query: "transaction"})
+mcp__codebase_memory__search_code({query: "error handling"})
+mcp__codebase_memory__search_code({query: "test coverage"})
+mcp__codebase_memory__search_code({query: "API endpoint"})
+mcp__codebase_memory__search_code({query: "validation"})
+mcp__codebase_memory__search_code({query: "transaction"})
 ```
 
 For each query, collect:
@@ -262,11 +262,11 @@ For each query, collect:
 - Pattern observation (what's typical)
 
 **Avoid low-signal queries** (see [audit-code-search-policy.md](audit-code-search-policy.md#query-patterns-good-vs-bad) for more examples):
-- ❌ `codebase_memory_search_code({query: "project architecture"})` — too meta; use `get_architecture` instead
-- ❌ `codebase_memory_search_code({query: "best practices"})` — no code says this; use `vipune search`
-- ❌ `codebase_memory_search_code({query: "good code"})` — subjective; drop the query
+- ❌ `mcp__codebase_memory__search_code({query: "project architecture"})` — too meta; use `get_architecture` instead
+- ❌ `mcp__codebase_memory__search_code({query: "best practices"})` — no code says this; use `vipune search`
+- ❌ `mcp__codebase_memory__search_code({query: "good code"})` — subjective; drop the query
 
-Use `codebase_memory_get_architecture({path: "..."})` when you need a structural map without inspecting content. Use `codebase_memory_search_graph({entity: "..."})` to walk dependencies.
+Use `mcp__codebase_memory__get_architecture({path: "..."})` when you need a structural map without inspecting content. Use `mcp__codebase_memory__search_graph({entity: "..."})` to walk dependencies.
 
 #### Test files
 
@@ -422,7 +422,7 @@ Find unused, unreferenced, or unreachable code:
 ```typescript
 {
   role: "explore",
-  prompt: "Audit for dead code. Find unused modules, unreferenced functions, unreachable code paths, and deprecated artifacts. Use codebase_memory_search_graph / trace_path to trace references; fall back to search_code for dynamically-referenced symbols. Return findings as Finding objects."
+  prompt: "Audit for dead code. Find unused modules, unreferenced functions, unreachable code paths, and deprecated artifacts. Use mcp__codebase_memory__search_graph / trace_path to trace references; fall back to search_code for dynamically-referenced symbols. Return findings as Finding objects."
 }
 ```
 
@@ -439,7 +439,7 @@ Check architectural invariants:
 ```typescript
 {
   role: "adversarial-developer",
-  prompt: "Audit architecture drift. Check for dependency violations, layer crossings, circular dependencies, and broken abstractions. Use codebase_memory_get_architecture for the module map and codebase_memory_search_graph / trace_path to confirm cross-layer references. Return findings as Finding objects."
+  prompt: "Audit architecture drift. Check for dependency violations, layer crossings, circular dependencies, and broken abstractions. Use mcp__codebase_memory__get_architecture for the module map and mcp__codebase_memory__search_graph / trace_path to confirm cross-layer references. Return findings as Finding objects."
 }
 ```
 
@@ -667,8 +667,8 @@ If vipune search fails:
 - Proceed without memory context
 - Note in report: `"Memory inaccessible: <reason>"`
 
-If the project is unindexed (codebase_memory_get_architecture returns nothing):
-- Prompt the user via the `mcp` proxy to run `codebase_memory_index_repository({repo_path: "."})`
+If the project is unindexed (mcp__codebase_memory__get_architecture returns nothing):
+- Prompt the user to run `mcp__codebase_memory__index_repository({repo_path: "."})`
 - If indexing fails, note in report and skip example / structural discovery
 - Warn user in report: `"codebase-memory-mcp unavailable; standards inference limited to docs/config/CI"`
 

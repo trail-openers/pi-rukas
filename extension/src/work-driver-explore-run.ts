@@ -42,7 +42,7 @@ import { type WorkState, appendEvent, writeDispatchArtifact } from "./workflow-s
  * Dispatches `@explore` with a prompt that:
  *   1. runs `gh issue view N` to get the issue body,
  *   2. discovers vipune memory types and searches relevant context,
- *   3. runs codebase_memory_search_code on key concepts,
+ *   3. runs mcp__codebase_memory__search_code on key concepts,
  *   4. returns a structured summary the driver stores in the event log.
  *
  * The template file lives at `pi-prompts/work/explore.md` (added in the

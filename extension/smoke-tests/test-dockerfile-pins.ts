@@ -1,35 +1,22 @@
 #!/usr/bin/env bun
 /**
- * Dockerfile version-pin gate — #713.
+ * Dockerfile version-pin gate — #713 (inverted by #959).
  *
- * .devcontainer/Dockerfile used to install pi-mcp-adapter unpinned
- * (`pi install npm:pi-mcp-adapter`), so pi-mcp-adapter@2.33.0 (published
- * 2026-09-10, whose @modelcontextprotocol/* deps point at pkg.pr.new
- * preview tarballs) broke every publish-image CI build with EALLOWREMOTE
- * under npm 12 (allow-remote defaults to `none`). The pin is now
- * @2.32.1 (last confirmed-clean release) with a comment citing
- * nicobailon/pi-mcp-adapter#547 directly above the RUN line.
+ * Originally this gate pinned `pi install npm:pi-mcp-adapter@2.32.1` in the
+ * .devcontainer/Dockerfile (the #713 EALLOWREMOTE window: 2.33.0 pinned its
+ * @modelcontextprotocol/* deps at pkg.pr.new preview tarballs that npm 12's
+ * allow-remote=none default rejected).
  *
- * This gate asserts, on the REAL Dockerfile:
- *   1. the executable `pi install npm:pi-mcp-adapter` RUN line carries an
- *      explicit @version suffix — a full-file `includes()` would trivially
- *      pass, because the comment block above the RUN line repeats the
- *      unpinned literal `pi install npm:pi-mcp-adapter` in its
- *      verification notes. The assertion anchors on `pi install npm:`
- *      tokens that are NOT preceded by `#`, and `npm install -g npm@latest`
- *      (the accepted exception at line ~86) must stay invisible.
- *   2. a comment citing `#547` (and the npm-12 allow-remote default)
- *      appears directly ABOVE the RUN line — the window is measured from
- *      the comment to the start of the RUN statement and tolerates the
- *      multi-line shell-continuation recipe that follows.
- *   3. docs/troubleshooting.md's GHCR-pull-failure entry names BOTH the
- *      `denied` and the `unauthorized` daemon error strings between its
- *      heading and the next `###` section.
+ * Post-#959 (Pi 1.0.0 native MCP), the adapter is REMOVED from the image —
+ * Pi's built-in MCP reads mcp.json directly, and an installed extension that
+ * registers `/mcp` would REPLACE the built-in and silently disable native
+ * MCP. This gate now asserts the opposite of what it used to: the adapter
+ * install line must be ABSENT from the Dockerfile, and the pi version must
+ * still be pinned to the install floor (1.0.0, per install-preflight.sh).
  *
  * Proven in both directions (AGENTS.md §12 canary discipline): inline
- * fixture strings with the pin present pass, with the pin removed/reverted
- * to unpinned fail — exercised through the same exported helpers the real
- * check uses.
+ * fixture strings with the adapter present fail (the regression shape),
+ * with the adapter absent pass.
  *
  * Escape hatch: PI_ENSEMBLE_DOCKERFILE_PINS=0.
  */
@@ -55,13 +42,9 @@ function read(rel: string): string {
 }
 
 /**
- * The line number (1-based) of the executable `pi install npm:pi-mcp-adapter…`
- * RUN statement, or -1. Comment lines (`#` first char after trim) are
- * skipped — the Dockerfile's verification notes above the RUN line repeat
- * the unpinned literal and must not count as the install site. The line is
- * the START of the RUN statement; continuation lines (shell `…\` recipes)
- * are not scanned, which also keeps the install token inside the post-install
- * guard's `echo "…'pi install npm:pi-mcp-adapter'…"` text invisible.
+ * The line number (1-based) of an executable `pi install npm:pi-mcp-adapter…`
+ * RUN statement, or -1. Comment lines are skipped. Returns the first match
+ * so a canary fixture can exercise the "adapter present" shape.
  */
 export function findAdapterInstallLine(dockerfile: string): number {
   const lines = dockerfile.split("\n");
@@ -76,40 +59,17 @@ export function findAdapterInstallLine(dockerfile: string): number {
 }
 
 /**
- * The version suffix on the pi-mcp-adapter install line, or "" when the
- * install is unpinned (or absent). Anchored on `pi install npm:` in
- * non-comment lines only, so the comment block and the npm@latest
- * self-update line can never fool this.
+ * The pi version pin in the Dockerfile (`npm install -g … @earendil-works/
+ * pi-coding-agent@<version>`), or "" when unpinned.
  */
-export function adapterInstallVersion(dockerfile: string): string {
-  const line = findAdapterInstallLine(dockerfile);
-  if (line === -1) return "";
-  const t = dockerfile.split("\n")[line - 1].trim();
-  for (const m of t.matchAll(/pi install npm:pi-mcp-adapter@?([\w.-]*)/g)) {
-    if (m[1]) return m[1];
-  }
-  return "";
-}
-
-/**
- * The N lines directly ABOVE the install RUN line, comment lines only,
- * joined. Returns "" when the install line is missing.
- */
-export function linesAboveInstall(dockerfile: string, n: number): string {
-  const line = findAdapterInstallLine(dockerfile);
-  if (line === -1) return "";
-  const lines = dockerfile.split("\n");
-  const out: string[] = [];
-  for (let i = line - 2; i >= 0 && out.length < n; i--) {
-    const t = lines[i].trim();
-    if (t.startsWith("#")) out.push(t);
-  }
-  return out.join("\n");
+export function piVersionInDockerfile(dockerfile: string): string {
+  const m = dockerfile.match(/@earendil-works\/pi-coding-agent@([0-9][0-9a-z.+-]*)/);
+  return m ? (m[1] as string) : "";
 }
 
 /**
  * The troubleshooting.md section for the GHCR pull failure: from the
- * `### … returns \`denied\`` heading to the next `###` heading (exclusive).
+ * `### … returns `denied`` heading to the next `###` heading (exclusive).
  */
 export function ghcrTroubleshootingSection(md: string): string {
   const lines = md.split("\n");
@@ -128,28 +88,20 @@ if (process.env.PI_ENSEMBLE_DOCKERFILE_PINS === "0") {
 
 {
   const dockerfile = read(".devcontainer/Dockerfile");
-  const version = adapterInstallVersion(dockerfile);
+  // The adapter MUST be absent from the Dockerfile (post-#959: native MCP
+  // makes the bridge obsolete, and an installed adapter would silently
+  // disable native MCP by registering /mcp).
+  const adapterLine = findAdapterInstallLine(dockerfile);
   assert(
-    version !== "",
-    `Dockerfile pi-mcp-adapter install is version-pinned (got: ${
-      version === "" ? "unpinned — the #713 EALLOWREMOTE window" : version
-    })`,
+    adapterLine === -1,
+    `Dockerfile does NOT install pi-mcp-adapter (line ${adapterLine === -1 ? "(absent — correct)" : adapterLine}) — Pi 1.0.0's native MCP replaces the bridge (issue #959)`,
   );
-  // 2.32.1 is the last confirmed-clean release; a later version is acceptable
-  // only if it is a confirmed-clean registry release (see #547 tracking).
+  // The pi version must still be pinned (the original #713 concern that
+  // unpinned installs drift to a version that breaks the image build).
+  const piVersion = piVersionInDockerfile(dockerfile);
   assert(
-    version === "2.32.1" || /^2\.(3[3-9]|[4-9][0-9])\.[0-9]+$|^[3-9]\./.test(version),
-    `Dockerfile pi-mcp-adapter pin ${version || "(missing)"} is a confirmed-clean version (2.32.1 or later)`,
-  );
-
-  const citation = linesAboveInstall(dockerfile, 15);
-  assert(
-    citation.includes("#547"),
-    "a comment within the 15 lines directly above the RUN line cites nicobailon/pi-mcp-adapter#547",
-  );
-  assert(
-    /allow-remote|npm 12|npm12|npm-12/i.test(citation),
-    "the #547 citation comment also names the npm-12 allow-remote default (the EALLOWREMOTE mechanism)",
+    piVersion !== "",
+    `Dockerfile pi install is version-pinned (got: ${piVersion === "" ? "unpinned — the #713 EALLOWREMOTE window" : piVersion})`,
   );
 }
 
@@ -157,10 +109,7 @@ if (process.env.PI_ENSEMBLE_DOCKERFILE_PINS === "0") {
   const section = ghcrTroubleshootingSection(read("docs/troubleshooting.md"));
   assert(section.length > 0, "docs/troubleshooting.md has the GHCR pull-failure (denied) entry");
   if (section.length > 0) {
-    assert(
-      /`?denied`?/.test(section),
-      "GHCR troubleshooting entry names the `denied` daemon error string",
-    );
+    assert(/`?denied`?/.test(section), "GHCR troubleshooting entry names the `denied` daemon error string");
     assert(
       /`?unauthorized`?/.test(section),
       "GHCR troubleshooting entry names the `unauthorized` symptom variant (both point at the private-package fix)",
@@ -171,51 +120,45 @@ if (process.env.PI_ENSEMBLE_DOCKERFILE_PINS === "0") {
 // ---------------------------------------------------------------- the gate CAN fail (canaries, AGENTS.md §12)
 
 {
-  const pinnedFixture = [
-    "# Pinned per nicobailon/pi-mcp-adapter#547: 2.33.0 pins its @modelcontextprotocol/*",
-    "# deps at pkg.pr.new tarball URLs, which npm 12's allow-remote=none default",
-    "# rejects with EALLOWREMOTE. 2.32.1 is the last confirmed-clean release.",
+  // Canary 1: a Dockerfile WITH the adapter install must be flagged.
+  const withAdapter = [
+    "# Pinned per nicobailon/pi-mcp-adapter#547 (legacy)",
     "RUN npm install -g npm@latest",
     "RUN pi install npm:pi-mcp-adapter@2.32.1 || true \\",
-    '    && test -d "$HOME/.pi/agent/npm/node_modules/pi-mcp-adapter" || { \\',
-    "         echo \"ERROR: we explicitly run 'pi install npm:pi-mcp-adapter@2.32.1'\" >&2; \\",
-    "         exit 1; \\",
-    "       }",
+    '    && test -d "$HOME/.pi/agent/npm/node_modules/pi-mcp-adapter" || exit 1;',
   ].join("\n");
   assert(
-    adapterInstallVersion(pinnedFixture) === "2.32.1",
-    "canary: fixture with the pin present parses as 2.32.1",
-  );
-  assert(
-    linesAboveInstall(pinnedFixture, 15).includes("#547"),
-    "canary: fixture citation comment is visible in the window above the RUN line",
+    findAdapterInstallLine(withAdapter) !== -1,
+    "canary: a Dockerfile with the adapter install IS detected (the gate's assert would fail on this)",
   );
 
-  const unpinnedFixture = pinnedFixture
-    .replace("npm:pi-mcp-adapter@2.32.1", "npm:pi-mcp-adapter")
-    .replace(
-      "we explicitly run 'pi install npm:pi-mcp-adapter'",
-      "we explicitly run 'pi install npm:pi-mcp-adapter'",
-    );
-  assert(
-    adapterInstallVersion(unpinnedFixture) === "",
-    "canary: fixture with the pin reverted to unpinned parses as empty (the EALLOWREMOTE regression)",
-  );
-
-  const commentOnlyFixture = [
-    "# Verified: pi install npm:pi-mcp-adapter@2.32.1 works on pi 0.84.4",
-    "RUN pi install npm:pi-mcp-adapter || true",
+  // Canary 2: a Dockerfile WITHOUT the adapter must be clean.
+  const withoutAdapter = [
+    "# Pi 1.0.0 (native MCP — no bridge needed, issue #959)",
+    "RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.0.0",
   ].join("\n");
   assert(
-    adapterInstallVersion(commentOnlyFixture) === "",
-    "canary: a comment-only mention of the pin does not count (the install line itself must be pinned)",
+    findAdapterInstallLine(withoutAdapter) === -1,
+    "canary: a Dockerfile without the adapter passes the absence check",
+  );
+  assert(
+    piVersionInDockerfile(withoutAdapter) === "1.0.0",
+    "canary: the pi version pin parses (1.0.0)",
   );
 
-  // The npm@latest self-update line must stay invisible to the pin check.
+  // Canary 3: an unpinned pi install is still flagged (the original #713 concern).
+  const unpinnedPi = "RUN npm install -g @earendil-works/pi-coding-agent";
+  assert(
+    piVersionInDockerfile(unpinnedPi) === "",
+    "canary: an unpinned pi install parses as empty (the EALLOWREMOTE regression shape)",
+  );
+
+  // Canary 4: the npm@latest self-update line must stay invisible to the
+  // adapter-absence check (it is not an adapter install).
   const npmLatestOnly = "RUN apt-get install -y x && npm install -g npm@latest";
   assert(
-    findAdapterInstallLine(npmLatestOnly) === -1 && adapterInstallVersion(npmLatestOnly) === "",
-    "canary: `npm install -g npm@latest` is not treated as the pi-mcp-adapter install site",
+    findAdapterInstallLine(npmLatestOnly) === -1,
+    "canary: `npm install -g npm@latest` is not treated as a pi-mcp-adapter install site",
   );
 }
 

@@ -112,10 +112,18 @@ const prompt = [
 ].join("\n");
 
 // Build the child argv: parent-shaped (pi-ensemble + fixture loaded).
+// `--no-extensions` + `-e builtin:mcp` (issue #959): under Pi 1.0.0 the
+// no-extensions flag also disables built-in extensions, including the built-in
+// MCP; the `-e builtin:mcp` flag re-enables just the MCP built-in so the
+// child's toolset includes the mcp__<server>__<tool> tools the permission
+// overlay in agents.json grants per role (see spawn-support.ts CHILD_ARGS_BASE
+// for the same argument order used in production).
 const childArgs = [
   "--mode",
   "rpc",
   "--no-extensions",
+  "-e",
+  "builtin:mcp",
   "--session",
   sessionPath,
   "--extension",
@@ -349,6 +357,18 @@ for (const tool of EXPECTED_ROSTER) {
     `extension-registered tool present in live child toolset: ${tool}`,
   );
 }
+
+// 5a. Native MCP (issue #959): the child's toolset must contain at least one
+//     mcp__codebase_memory__* tool. The prefix (not an exact name) is what we
+//     assert — Pi 1.0.0's native MCP names tools `mcp__<server>__<tool>` and
+//     the server key in ~/.pi/agent/mcp.json is `codebase_memory` (the
+//     install.sh wiring). This is the load-bearing assertion that proves the
+//     `-e builtin:mcp` flag actually produced a native MCP registration.
+const mcpTools = liveTools.filter((t) => t.startsWith("mcp__codebase_memory__"));
+assert(
+  mcpTools.length >= 1,
+  `native MCP (mcp__codebase_memory__*) present in live child toolset (got ${mcpTools.length}: [${mcpTools.slice(0, 3).join(", ")}])`,
+);
 
 // 5b. Canary: EXPECTED_ROSTER must match extension/src registrations.
 const registered: string[] = [];

@@ -151,64 +151,54 @@ for (const command of gitDiffWithInjectionShouldAsk) {
 }
 
 // === Issue #168: ask-by-default for unknown tools ===
-// PM's catch-all used to be `"*": "deny"` — that silently denied every tool
-// not explicitly allowlisted, including the `mcp` gateway AND per-server
-// direct tools that pi-mcp-adapter surfaces with arbitrary names like
-// `fuzu_staging_db_execute_sql`. There's no way to predict those names
-// (server name comes from the user's MCP config), so any prefix-based
-// allowlist would always miss something. Fix: flip the catch-all to
-// `"*": "ask"` so any unknown tool prompts. "Allow always" persists
-// per-project ($PWD/.pi/decisions.json), so cleanup is one prompt per
-// project per tool.
+// PM's catch-all is `"*": "ask"` — unknown tools (including the dynamically-
+// named `mcp__<server>__<tool>` tools of the native MCP, issue #959) prompt
+// rather than silently failing. The per-tool grants below are explicit and
+// beat the catch-all; an ungranted server's tools fall through to ask. "Allow
+// always" persists per-project ($PWD/.pi/decisions.json).
+//
+// Pre-#959 this section covered the pi-mcp-adapter era: the catch-all used to
+// be `"*": "deny"` (silent-deny of unknown tools, including the `mcp` gateway
+// and per-server direct tools like `fuzu_staging_db_execute_sql` that the
+// adapter surfaced with arbitrary names). The fix flipped it to `"*": "ask"`
+// so any unknown tool prompts. The MCP-gateway allow/ask split (PM `mcp: allow`,
+// specialists `mcp: ask`) is gone — native MCP registers per-tool names instead.
 
-// MCP gateway tool — explicit entries now exist per role (post codebase-memory-mcp
-// adoption). PM owns admin calls so its `mcp` is `allow`; specialists are `ask`.
-const mcpVerdictPM = resolveToolPermission("mcp", "project-manager", {}, {}, agentsConfig);
-assert(mcpVerdictPM === "allow", "PM has explicit `mcp: allow` (owns first-run index_repository)");
+// Native-MCP tool naming (the post-#959 convention: the adapter's
+// `codebase_memory_<tool>` direct-tool names are gone; the native MCP
+// registers `mcp__<server>__<tool>` instead).
+const mcpSearchPM = resolveToolPermission("mcp__codebase_memory__search_code", "project-manager", {}, {}, agentsConfig);
+assert(mcpSearchPM === "allow", "PM has explicit mcp__codebase_memory__search_code: allow");
 
-const mcpVerdictDev = resolveToolPermission("mcp", "developer", {}, {}, agentsConfig);
-assert(mcpVerdictDev === "ask", "Specialists have explicit `mcp: ask` (prompts for admin calls)");
+const mcpIndexPM = resolveToolPermission("mcp__codebase_memory__index_repository", "project-manager", {}, {}, agentsConfig);
+assert(mcpIndexPM === "allow", "PM has explicit mcp__codebase_memory__index_repository: allow (first-run admin call)");
 
-// Per-server direct tools (arbitrary names from user's MCP config).
-const directDbTool = resolveToolPermission(
-  "fuzu_staging_db_execute_sql",
-  "project-manager",
-  {},
-  {},
-  agentsConfig,
-);
+// Per-role subset: ops gets only 3 of the 7 read-side tools (search_code,
+// get_code_snippet, get_architecture) — the ticket's AC asserts the
+// per-role subsets are preserved. An ungranted tool resolves to ask (the
+// catch-all), not deny — the prompt is the boundary.
+const mcpQueryOps = resolveToolPermission("mcp__codebase_memory__query_graph", "ops", {}, {}, agentsConfig);
 assert(
-  directDbTool === "ask",
-  "Issue #168: `fuzu_staging_db_execute_sql` (per-server direct tool) resolves to ask for PM",
+  mcpQueryOps === "ask",
+  "#959: ops is NOT granted mcp__codebase_memory__query_graph (per-role subset: search_code, get_code_snippet, get_architecture only) — falls through to ask",
 );
+const mcpSearchOps = resolveToolPermission("mcp__codebase_memory__search_code", "ops", {}, {}, agentsConfig);
+assert(mcpSearchOps === "allow", "#959: ops IS granted mcp__codebase_memory__search_code");
 
-const mcpUnderscore = resolveToolPermission(
-  "mcp_postgres",
-  "project-manager",
-  {},
-  {},
-  agentsConfig,
-);
-assert(mcpUnderscore === "ask", "Issue #168: `mcp_postgres` resolves to ask for PM");
+// Any unknown mcp__ tool from a server the operator has not reviewed asks —
+// the prompt is the security boundary, not silent deny.
+const unknownMcp = resolveToolPermission("mcp__fuzu_staging_db__execute_sql", "project-manager", {}, {}, agentsConfig);
+assert(unknownMcp === "ask", "#959: unknown mcp__<server>__<tool> resolves to ask for PM (catch-all = ask)");
 
 // Any unknown tool — the prompt is the security boundary now, not silent deny.
-const unknownVerdictPM = resolveToolPermission(
-  "some_random_tool",
-  "project-manager",
-  {},
-  {},
-  agentsConfig,
-);
-assert(
-  unknownVerdictPM === "ask",
-  "Issue #168: any unknown tool resolves to ask for PM (catch-all = ask)",
-);
+const unknownTool = resolveToolPermission("some_random_tool", "project-manager", {}, {}, agentsConfig);
+assert(unknownTool === "ask", "Issue #168: any unknown tool resolves to ask for PM (catch-all = ask)");
 
-// Explicit allows still take precedence over catch-all.
+// Explicit allows still take precedence over the catch-all.
 const explicitAllow = resolveToolPermission("read", "project-manager", {}, {}, agentsConfig);
 assert(explicitAllow === "allow", "Issue #168: explicit `read: allow` still beats `*: ask`");
 
-// Explicit denies still take precedence over catch-all.
+// Explicit denies are still honored.
 const explicitDeny = resolveToolPermission("write", "project-manager", {}, {}, agentsConfig);
 assert(explicitDeny === "deny", "Issue #168: explicit `write: deny` still beats `*: ask`");
 
@@ -327,7 +317,7 @@ assert(fallthrough === "ask", "Issue #168: catch-all `*: ask` fires when no wild
   );
   assert(
     subagentResolved === "allow",
-    "L7: project overlay (developer mcp*: allow) overrides baseline deny — applies in subagents too post-#192",
+    "L7: project overlay (developer mcp*: allow) overrides the baseline explicit deny — applies in subagents too post-#192 (the catch-all is ask, not deny, post-#959)",
   );
 
   // Global overlay also takes effect
@@ -347,7 +337,7 @@ assert(fallthrough === "ask", "Issue #168: catch-all `*: ask` fires when no wild
   );
   assert(
     subagentGlobalResolved === "allow",
-    "L7: global overlay also overrides baseline deny in subagents",
+    "L7: global overlay also overrides the baseline explicit deny in subagents (catch-all is ask, not deny, post-#959)",
   );
 }
 

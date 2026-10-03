@@ -6,6 +6,12 @@
  *
  * Filesystem/env-only: no ExtensionAPI coupling. Split out of spawn.ts
  * (#171); consumed by `spawnSpecialist`.
+ *
+ * Note: this module deliberately does NOT read mcp.json or interact with
+ * Pi's native MCP subsystem. Children get MCP through the `-e builtin:mcp`
+ * flag (see spawn-support.ts CHILD_ARGS_BASE) — no extension forwarding
+ * needed. That is why discoverInstalledExtensions skips pi-mcp-adapter:
+ * the adapter is the legacy bridge that would conflict with the built-in.
  */
 
 import { readFileSync, readdirSync, realpathSync } from "node:fs";
@@ -33,6 +39,17 @@ export function applyUserExtension(childArgs: string[], role: string): void {
 // forwarding ourselves into subagents — otherwise a subagent could call
 // dispatch_specialist and recursively spawn another subagent.
 const PI_ENSEMBLE_PACKAGE_NAME = "@trail-openers/pi-rukas";
+
+// pi-mcp-adapter is an MCP bridge that registers the /mcp extension. On
+// Pi 1.0.0, an installed extension that registers /mcp REPLACES the built-in
+// MCP subsystem for the whole session (docs/mcp.md: "Pi then does not read
+// mcp.json or connect its servers in a session"). Because the built-in MCP
+// is what pi-rukas now uses (see spawn-support.ts CHILD_ARGS_BASE), the
+// adapter is not only obsolete — it actively BREAKS native MCP. So
+// discoverInstalledExtensions must skip it in every case (issue #959), even
+// if a host has not yet re-run install.sh and the adapter lingers in
+// ~/.pi/agent/extensions/.
+const PI_MCP_ADAPTER_PACKAGE_NAME = "pi-mcp-adapter";
 
 /**
  * Resolve the absolute path to pi-rukas's extension directory for the
@@ -70,6 +87,9 @@ export function piEnsembleExtensionPath(): string | undefined {
  *  - Skip entries whose `package.json` has no `pi.extensions` manifest (not
  *    a Pi extension — e.g. stray directories, half-installed packages).
  *  - Skip pi-rukas itself by package name (prevents recursive spawn).
+ *  - Skip pi-mcp-adapter by package name (its /mcp registration replaces
+ *    the built-in MCP, which would disable native MCP in every child —
+ *    see the PI_MCP_ADAPTER_PACKAGE_NAME constant for the full rationale).
  *  - Resolve through `realpathSync` because `~/.pi/agent/extensions/<name>`
  *    is typically a symlink to the source checkout.
  */
@@ -105,6 +125,7 @@ export function discoverInstalledExtensions(role: string): string[] {
 
     if (!pkg.pi?.extensions || pkg.pi.extensions.length === 0) continue;
     if (pkg.name === PI_ENSEMBLE_PACKAGE_NAME) continue;
+    if (pkg.name === PI_MCP_ADAPTER_PACKAGE_NAME) continue;
 
     let resolved: string;
     try {

@@ -58,14 +58,14 @@ keep the wrapper `timeout` below `PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS`.
 
 **⛔ Code Search Rules — CRITICAL**
 
-- ✅ **USE**: `codebase_memory_search_code({query: "..."})` — indexed semantic search; default for "where is X implemented".
-- ✅ **USE**: `codebase_memory_trace_path({from, to})` — call / dataflow graph.
-- ✅ **USE**: `codebase_memory_detect_changes({diff})` — blast radius BEFORE you report a change complete.
+- ✅ **USE**: `mcp__codebase_memory__search_code({query: "..."})` — indexed semantic search; default for "where is X implemented".
+- ✅ **USE**: `mcp__codebase_memory__trace_path({from, to})` — call / dataflow graph.
+- ✅ **USE**: `mcp__codebase_memory__detect_changes({diff})` — blast radius BEFORE you report a change complete.
 - ✅ **USE**: `rg` tool (built-in) — regex over text files (configs, docs, files outside the index).
 - ✅ **USE**: `read` tool — when you already know the file path.
 - ❌ **NEVER**: `rg` / `grep` / `find` as bash commands — denied by design, will fail silently.
 
-Reaching for `rg` / `read` to *discover* what exists in the codebase is the anti-pattern — `codebase_memory_search_code` answers that question in sub-milliseconds and won't dump 50 KB of irrelevant matches into your context. See `modules/core/codebase-memory-mcp.md` for the full doctrine.
+Reaching for `rg` / `read` to *discover* what exists in the codebase is the anti-pattern — `mcp__codebase_memory__search_code` answers that question in sub-milliseconds and won't dump 50 KB of irrelevant matches into your context. See `modules/core/codebase-memory-mcp.md` for the full doctrine.
 
 ## ⛔ Plumbing — route structural decisions back to the spec BEFORE continuing
 
