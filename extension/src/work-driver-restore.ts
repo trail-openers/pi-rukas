@@ -208,13 +208,6 @@ export async function verifiedRestoreRoot(
     trace(`work-driver: ${label} — reset --hard failed: ${(err as Error).message?.slice(0, 160)}`);
   }
 
-  // #968 test seam — the post-condition check (below) runs AFTER this point,
-  // so anything that dirties the TRACKED tree here is reported by that read
-  // as the honest `restored: false` shape (untracked `??` dirt is excluded
-  // by design — #750 — and cannot reach the read). test-handoff-consolidate-restore.ts
-  // section 2 relies on this ordering to force a real restore failure
-  // between the reset and the verification.
-
   // Restore the original checkout.
   try {
     await execFn(`git checkout --force ${JSON.stringify(originalRef)}`, {
@@ -227,17 +220,13 @@ export async function verifiedRestoreRoot(
     );
   }
 
-  // The post-condition: the porcelain read IS the check. Untracked `??`
-  // entries and `.worktrees/` scaffolding are not dirt for this purpose —
-  // untracked files are never swept (`git clean` is forbidden by #750),
-  // so they are never counted as a failed restore. (Consequence: a forced
-  // test failure must inject TRACKED dirt — the `??` filter excludes
-  // untracked files by design.)
-  //
-  // #968 — the read uses a fresh `git status --porcelain` subprocess via
-  // the injected `execFn`, NOT a cached or in-memory state. This is the
-  // verified post-condition: it reflects the ACTUAL on-disk state after
-  // the reset + checkout, not a snapshot from before the restore ran.
+  // The post-condition: the porcelain read IS the check, and it uses a
+  // fresh `git status --porcelain` subprocess via the injected `execFn`,
+  // NOT a cached or in-memory state — it reflects the ACTUAL on-disk state
+  // after the reset + checkout, not a snapshot from before the restore ran.
+  // Untracked `??` entries and `.worktrees/` scaffolding are not dirt for
+  // this purpose — untracked files are never swept (`git clean` is
+  // forbidden by #750), so they are never counted as a failed restore.
   let dirt: string[];
   try {
     const { stdout } = await execFn("git status --porcelain", {
