@@ -107,12 +107,13 @@ const HARNESS_TOOLS = ["bash", "sh", "printf"];
 function runLoop(loopBody: string, stubBinaries: string[]): string[] {
   // One parent temp dir per run: stubDir (the stub PATH) and homeDir (the
   // child's HOME) live inside it, so a single finally removes everything.
-  const parent = mkdtempSync(path.join(tmpdir(), "preflight-forge-loop-"));
-  const stubDir = path.join(parent, "bin");
-  const homeDir = path.join(parent, "home");
-  mkdirSync(stubDir);
-  mkdirSync(homeDir);
+  let parent: string | undefined;
   try {
+    parent = mkdtempSync(path.join(tmpdir(), "preflight-forge-loop-"));
+    const stubDir = path.join(parent, "bin");
+    const homeDir = path.join(parent, "home");
+    mkdirSync(stubDir);
+    mkdirSync(homeDir);
     for (const bin of stubBinaries) {
       const p = path.join(stubDir, bin);
       // A minimal executable script — `command -v` only needs +x on PATH.
@@ -166,7 +167,10 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
       timeout: 5_000,
       // Hermetic env: nothing from process.env (no BASH_ENV, no GLOBIGNORE,
       // no inherited state). Only the stub dir on PATH, a temp HOME, and a
-      // fixed locale.
+      // fixed locale. This test is stricter than test-pi-min-version.ts /
+      // test-oo-min-version.ts on purpose: the stub PATH must be the ONLY
+      // tool source, because an inherited BASH_ENV (or similar) could let
+      // the child reach the real gh/glab.
       env: {
         PATH: stubDir,
         HOME: homeDir,
@@ -184,7 +188,7 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
     );
     return ["<harness crashed>"];
   } finally {
-    rmSync(parent, { recursive: true, force: true });
+    if (parent) rmSync(parent, { recursive: true, force: true });
   }
 }
 
@@ -294,11 +298,12 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
     `canary: unpatched loop + no gh/glab → exactly ONE 'forge — …' in missing[] (got ${forgeLines.length})`,
   );
   // The hint must match the README wording (the drift gate pins it).
+  const first = forgeLines[0];
   assert(
-    forgeLines[0]?.includes(
-      "brew install gh (GitHub) or brew install --no-quarantine glab (GitLab)",
-    ),
-    `canary: the forge hint matches the README dual-install wording (got "${forgeLines[0] ?? "none"}")`,
+    // biome-ignore lint/complexity/useOptionalChain: the explicit undefined guard is the assertion under test (canary — the hint line must exist, not merely be non-matching)
+    first !== undefined &&
+      first.includes("brew install gh (GitHub) or brew install --no-quarantine glab (GitLab)"),
+    `canary: the forge hint matches the README dual-install wording (got "${first ?? "none"}")`,
   );
 }
 
