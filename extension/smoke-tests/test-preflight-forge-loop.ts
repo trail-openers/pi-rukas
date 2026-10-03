@@ -32,7 +32,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -76,14 +76,22 @@ function extractLoopBody(): string {
 }
 
 /**
- * Run the extracted loop in a fresh bash with a stubbed PATH.
+ * Names the harness itself needs on PATH to execute (beyond the tools under
+ * test). These are symlinked from the real system into the stub dir so the
+ * child runs hermetic: PATH is ONLY the stub dir, and every tool it can see
+ * is either a stub or a deliberate symlink.
+ */
+const HARNESS_TOOLS = ["bash", "sh", "printf"];
+
+/**
+ * Run the extracted loop in a fresh bash with a fully hermetic PATH.
  *
  * @param loopBody  the for-loop to execute (post-fix shape, or unpatched
  *                  canary variant).
  * @param stubBinaries  names of stub executables to create in a temp dir
- *                      and put on PATH (in addition to the system PATH for
- *                      bash built-ins; the stub dir is FIRST so `command -v`
- *                      finds the stubs before anything else).
+ *                      and put on PATH (the ONLY tools the child sees are
+ *                      these stubs, `gh`/`glab` when stubbed, and the
+ *                      HARNESS_TOOLS symlinks).
  * @returns the lines of the rendered "Missing dependencies" block (the
  *          `   - <entry>` lines, minus the leading dash), or an empty array
  *          if the block was not printed (missing[] was empty).
@@ -95,19 +103,58 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
     // A minimal executable script — `command -v` only needs +x on PATH.
     writeFileSync(p, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   }
+  // Symlink the harness's own coreutils into the stub dir (they resolve via
+  // /usr/bin on this host, so they do NOT defeat the "neither gh nor glab"
+  // negative case). Skipped if the binary is absent from the real system.
+  for (const tool of HARNESS_TOOLS) {
+    try {
+      const real = execFileSync("bash", ["-c", `command -v ${tool} || true`], {
+        encoding: "utf8",
+        env: {
+          PATH: `${stubDir}:/usr/local/bin:/usr/bin:/bin`,
+          HOME: "/tmp",
+          LANG: "C",
+          LC_ALL: "C",
+        },
+      }).trim();
+      if (real) symlinkSync(real, path.join(stubDir, tool));
+    } catch {
+      // absent on this host — the harness only needs what it finds
+    }
+  }
   const checkCmd = extractCheckCmd();
   const clis = extractRequiredClis();
   // The harness: declare missing[], load check_cmd and REQUIRED_CLIS verbatim
   // from install.sh, run the loop, then print the missing[] entries one per
   // line so the TypeScript side can parse them. Bash `${...}` variables are
-  // escaped as `\${...}` in the template literals below.
+  // escaped as `\${...}` in the template literal below.
   // install-preflight.sh defines MIN_PI_VERSION / MIN_OO_VERSION; the
   // harness only needs the array literal to parse, so stub them.
-  const code = `set -u\nmissing=()\nMIN_PI_VERSION=0.0.0\nMIN_OO_VERSION=0.0.0\n${checkCmd}${clis}${loopBody}if [ \${#missing[@]} -gt 0 ]; then\n`;
-  const code2 = `${code}for m in "\${missing[@]}"; do printf '%s\n' "$m"; done\nfi\nexit 0\n`;
-  const out = execFileSync("bash", ["-c", code2], {
+  const code = [
+    "set -u",
+    "missing=()",
+    "MIN_PI_VERSION=0.0.0",
+    "MIN_OO_VERSION=0.0.0",
+    checkCmd,
+    clis,
+    loopBody,
+    'if [ ${#missing[@]} -gt 0 ]; then',
+    'for m in "${missing[@]}"; do printf \'%s\n\' "$m"; done',
+    "fi",
+    "exit 0",
+    "",
+  ].join("\n");
+  const out = execFileSync("bash", ["-c", code], {
     encoding: "utf8",
-    env: { ...process.env, PATH: `${stubDir}:${process.env.PATH}` },
+    // Hermetic env: nothing from process.env (no BASH_ENV, no GLOBIGNORE,
+    // no inherited state). Only the stub dir on PATH, a temp HOME, and a
+    // fixed locale.
+    env: {
+      PATH: stubDir,
+      HOME: mkdtempSync(path.join(tmpdir(), "preflight-forge-home-")),
+      LANG: "C",
+      LC_ALL: "C",
+    },
   }).trim();
   if (!out) return [];
   return out.split("\n").filter((l) => l.trim() !== "");
