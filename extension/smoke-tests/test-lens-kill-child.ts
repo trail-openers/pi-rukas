@@ -9,7 +9,7 @@
  *   1a. stderr-only text (a kill's "text" fell back to stderr in
  *       collapseEvents) is NOT a summary — blocked.
  *   1b. findings from a failed child DO count (a finding is a tool call).
- *   1c. a thinking-only output is a genuine summary (#952 stays).
+ *   1c. a thinking-only child (text = NO_TEXT_PLACEHOLDER, no findings) is NOT a summary — blocked.
  *   1d. a cap-killed (loop) child's in-progress prose is the partial review
  *       #952 preserves — not blocked.
  *   1e. a failed child with empty output is blocked.

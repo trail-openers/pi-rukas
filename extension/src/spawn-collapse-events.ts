@@ -6,6 +6,7 @@
  * the only caller.
  */
 
+import { NO_TEXT_PLACEHOLDER } from "./lens-review-format.ts";
 import { adapterFor } from "./model-adapters.ts";
 import type { PiContentBlock, PiJsonEvent, PiMessage } from "./pi-event-shapes.ts";
 import type { DispatchResult } from "./types.ts";
@@ -97,9 +98,7 @@ export function collapseEvents(
 
   // Construct the text field. For thinking-only output, use a clear message
   // that distinguishes this case from actual "no output".
-  const resolvedText = thinkingOnly
-    ? "(thinking content only - no text output)"
-    : text || stderr || "(no output)";
+  const resolvedText = thinkingOnly ? NO_TEXT_PLACEHOLDER : text || stderr || "(no output)";
 
   return {
     role,
