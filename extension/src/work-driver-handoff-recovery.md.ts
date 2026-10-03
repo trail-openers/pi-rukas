@@ -17,7 +17,11 @@
 import type { ForgeType } from "./forge-detect.ts";
 import { killDetail } from "./kill-detail.ts";
 import { commitPrDirtyRootStep } from "./work-driver-handoff-commitpr.ts";
-import { type RecoveryStep, recoveryStepsForCap } from "./work-driver-handoff-recovery.ts";
+import {
+  type RecoveryStep,
+  consolidatedRestoreClaim,
+  recoveryStepsForCap,
+} from "./work-driver-handoff-recovery.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
 import { mergeHoldToolingNote } from "./work-driver-merge-authority.ts";
 import {
@@ -178,10 +182,20 @@ export function recoveryCommandsMarkdown(
   );
   if (worktreeStep) {
     const isConsolidated = worktreeStep.section === "worktree-work-consolidated";
+    // #968 — the driver restores repoRoot to the operator's original checkout
+    // after consolidation, so the prose must not imply the branch is checked
+    // out at repoRoot (pre-#968 it said the branch "contains the work" as if
+    // the checkout were on it). The push works by branch name either way; the
+    // restore claim from the consolidation event is printed verbatim — the
+    // verified post-condition on success, the loud not-restored failure when
+    // the restore did not come back (the operator then runs git status).
+    const claim = consolidatedRestoreClaim(state.eventLog);
+    const restoreLine = claim ? `# ${claim}` : "# (repoRoot restore not recorded)";
     lines.push(
       isConsolidated
-        ? "# The driver consolidated the workstream work onto the feature branch before this handoff."
+        ? "# The driver consolidated the workstream work onto the feature branch before this handoff — the branch holds the work."
         : "# The driver could not consolidate the work (no local branch, or a cherry-pick conflict).",
+      restoreLine,
     );
     for (const step of steps) {
       if (step.section === worktreeStep.section) {

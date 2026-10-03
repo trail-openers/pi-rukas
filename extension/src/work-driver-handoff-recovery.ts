@@ -29,6 +29,7 @@
 
 import type { ForgeType } from "./forge-detect.ts";
 import { recoveryStepsForCap } from "./work-driver-handoff-recovery-caps.ts";
+import type { WorkEvent } from "./workflow-state.ts";
 
 // Re-export so the renderers, the forge test and the smoke tests import
 // `recoveryStepsForCap` from this module unchanged.
@@ -99,4 +100,17 @@ export function requalifyLine(
   l = l.replace(/^cat tmp\//, `cat ${scratchDirAbs}/`);
   l = l.replace(/^cat \.pi\//, `cat ${repoRoot}/.pi/`);
   return l;
+}
+
+/** #968 — the restore claim to print in the consolidated-recovery section:
+ * the verified-restore claim or the loud not-restored failure from the most
+ * recent `handoff-consolidated` event, or `undefined` when the event
+ * predates #968 (no claim field). Shared by both handoff renderers (each
+ * adds its own `#` prefix); a backward loop — no slice/reverse copy. */
+export function consolidatedRestoreClaim(eventLog: readonly WorkEvent[]): string | undefined {
+  for (let i = eventLog.length - 1; i >= 0; i--) {
+    const e = eventLog[i];
+    if (e?.kind === "handoff-consolidated") return e.restoreClaim;
+  }
+  return undefined;
 }

@@ -142,6 +142,37 @@ ${staged}
 }
 
 /**
+ * #968 — the shared "verified restore + claim" leg: runs
+ * `verifiedRestoreRoot`, builds the claim via `restoreClaim` (the verified
+ * post-condition on success, the loud "repoRoot was NOT restored: …" on
+ * failure), and traces the failure. `label` identifies the caller in the
+ * preserved-state file and the trace lines; `trailing` is appended after
+ * the not-restored failure (the handoff's variant tells the operator to
+ * run git status).
+ */
+export async function verifiedRestoreRootWithClaim(
+  execFn: ExecFn,
+  opts: {
+    repoRoot: string;
+    /** Where repoRoot's checkout was before the caller touched it. */
+    originalRef: string;
+    /** Where the discarded state is preserved. Must exist or be creatable. */
+    scratchDir: string;
+    /** Label for trace lines and the preserved file (identifies the caller). */
+    label: string;
+    /** The hint appended after the not-restored failure (e.g. "run git status at the repo root"). */
+    trailing?: string;
+  },
+): Promise<{ restore: VerifiedRestoreResult; claim: string }> {
+  const restore = await verifiedRestoreRoot(execFn, opts);
+  const claim = restoreClaim(restore, undefined, opts.trailing);
+  if (!restore.restored) {
+    trace(`work-driver: ${opts.label} — restore failed: ${restore.detail ?? "unknown"}`);
+  }
+  return { restore, claim };
+}
+
+/**
  * Restore repoRoot to `originalRef` after a consolidation abort, and VERIFY
  * it. Never throws: a failed restore is returned as `{ restored: false,
  * detail }` so the caller emits the loud, explicit failure (see
@@ -160,6 +191,11 @@ export async function verifiedRestoreRoot(
   },
 ): Promise<VerifiedRestoreResult> {
   const { repoRoot, originalRef, scratchDir, label } = opts;
+
+  // #750 — capture the root's staged/unstaged/unmerged state to a scratch
+  // file BEFORE anything destructive. The discarded content may be the only
+  // copy of work (in the incident it held a genuinely different
+  // implementation of the same fix); a post-destroy capture would be empty.
   const preservedAt = await preserveDiscardedState(execFn, repoRoot, scratchDir, label);
 
   // Reset index + working tree. `reset --hard` clears both the staged (M) and
@@ -186,6 +222,11 @@ export async function verifiedRestoreRoot(
 
   // The post-condition: the porcelain read IS the check. Untracked `??`
   // entries and `.worktrees/` scaffolding are not dirt for this purpose.
+  // The read uses a fresh `git status --porcelain` subprocess via the
+  // injected `execFn`, NOT a cached or in-memory state — it reflects the
+  // ACTUAL on-disk state after the reset + checkout, not a snapshot from
+  // before the restore ran. Untracked files are never swept (`git clean`
+  // is forbidden by #750), so they are never counted as a failed restore.
   let dirt: string[];
   try {
     const { stdout } = await execFn("git status --porcelain", {

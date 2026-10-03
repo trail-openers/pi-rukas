@@ -1,0 +1,494 @@
+#!/usr/bin/env bun
+/**
+ * #968 — a /work cycle that ends in handoff must leave repoRoot's checkout
+ * where it found it.
+ *
+ * Pre-#968, `consolidateWorktreesToBranch`'s success path checked out the
+ * feature branch in repoRoot (the `git checkout -B <branch> <baseSha>` /
+ * `git checkout <branch>` leg) and returned without ever restoring the
+ * operator's original checkout — `verifiedRestoreRoot` ran only in the
+ * four failure branches. The observed incidents (#966/#967) left the
+ * operator's tree on a branch requiring a different Pi version.
+ *
+ * These real-git tests (temp repos only — never the real one) pin:
+ *   1. a clean operator branch (`operator-feature`) is restored after a
+ *      SUCCESS consolidation, with the feature branch intact ahead of it;
+ *   2. a forced restore failure (TRACKED dirt injected after the preflight
+ *      via a stub execFn, so the dirty-repoRoot gate passes, then the
+ *      restore's verified post-condition read reports the dirt — it is
+ *      tracked because the post-condition filter excludes untracked `??`
+ *      lines by design, which an untracked injection cannot reach) leaves
+ *      the reason carrying the loud "repoRoot was NOT restored" claim;
+ *   3. the rendered handoff (chat + markdown) prints the restore claim —
+ *      the verified post-condition on success, the NOT-restored failure on
+ *      a failed restore — and no longer implies repoRoot is on the branch.
+ */
+
+import { exec, execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { consolidateWorktreesToBranch } from "../src/work-driver-handoff-consolidate.ts";
+import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
+import { renderHandoffUserMessage } from "../src/work-driver-handoff-message.ts";
+import { recoveryStepsForCap } from "../src/work-driver-handoff-recovery.ts";
+import type { WorkEvent, WorkState } from "../src/workflow-state.ts";
+import type { ExecFn } from "../src/worktree.ts";
+
+let exit = 0;
+function assert(cond: boolean, msg: string) {
+  if (cond) console.log(`✓ ${msg}`);
+  else {
+    console.error(`✗ ${msg}`);
+    exit = 1;
+  }
+}
+
+const pExec = promisify(exec);
+
+/** Build a temp repo: main + the operator's branch + a detached worktree
+ * one real commit ahead of the root's HEAD. Returns the root and the
+ * worktree path (the caller owns `git worktree remove` + rmSync). */
+function buildTempRepo(): { dir: string; wt: string; branchSha: string } {
+  const dir = mkdtempSync(join(tmpdir(), "issue968-restore-"));
+  const wt = join(dir, ".worktrees", "issue-968-task-a");
+  mkdirSync(join(dir, ".worktrees"), { recursive: true });
+  const g = (args: string[], cwd: string = dir) =>
+    execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+  g(["init", "-b", "main"]);
+  g(["config", "user.name", "t"]);
+  g(["config", "user.email", "t@t"]);
+  // Create a tracked file so the restore's post-condition read can report
+  // a TRACKED modification (not an untracked file, which the `??` filter
+  // excludes by design).
+  writeFileSync(join(dir, "tracked.txt"), "initial\n");
+  g(["add", "-A"]);
+  g(["commit", "-m", "base"]);
+  g(["checkout", "-b", "operator-feature"]);
+  g(["worktree", "add", "--detach", wt, "HEAD"]);
+  writeFileSync(join(wt, "change.txt"), "content\n");
+  g(["add", "-A"], wt);
+  g(["commit", "-m", "w: real change"], wt);
+  const branchSha = g(["rev-parse", "HEAD"], dir);
+  return { dir, wt, branchSha };
+}
+
+/** The parked-cycle WorkState shape the handoff consolidation consumes. */
+function stateFor(
+  issue: number,
+  branchName: string,
+  baseSha: string,
+  wt: string,
+  extraHeadSha?: string,
+): WorkState {
+  // The fixture carries only the fields the consolidation + handoff renderers
+  // actually read — `WorkState` is the declared type (no `as any`) and the
+  // `cap-hit` event is built as a typed literal so the `verify-failed:develop`
+  // cap is checked against the `WorkCapLiteral` union.
+  const capEvent = {
+    kind: "cap-hit" as const,
+    at: 3,
+    cap: "verify-failed:develop" as const,
+    reviewRound: 0,
+    nextStep: "handoff" as const,
+  };
+  const s: WorkState = {
+    schemaVersion: 1,
+    resumable: false,
+    issue,
+    startedAt: 1,
+    updatedAt: 2,
+    pipelineState: {
+      status: "handoff",
+      currentStep: "handoff",
+      lastCompletedStep: "develop",
+      reviewRound: 0,
+      ciRetryCount: 0,
+      inFlightJobIds: [],
+      plumbReports: [],
+      branchName,
+      baseSha,
+      worktrees: { "task-a": wt },
+    },
+    eventLog: [capEvent],
+  };
+  if (extraHeadSha === undefined) return s;
+  s.pipelineState.handoffSnapshot = {
+    modifiedFiles: [],
+    unstagedCount: 0,
+    stagedCount: 0,
+    branchExists: true,
+    branchPushed: false,
+    headSha: extraHeadSha.slice(0, 8),
+    capturedAt: 1000,
+    committedWork: [
+      {
+        worktreeId: "task-a",
+        path: wt,
+        headSha: extraHeadSha,
+        ahead: 1,
+      },
+    ],
+  };
+  return s;
+}
+
+const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
+
+// ---------------------------------------------------------------------------
+// 1. #968 — SUCCESS consolidation restores repoRoot to the operator's
+//    original branch (NOT `main` — the operator's checkout is
+//    `operator-feature`), leaves it clean of tracked dirt, and keeps the
+//    feature branch with its commit for the operator to push.
+// ---------------------------------------------------------------------------
+{
+  const { dir, wt, branchSha } = buildTempRepo();
+  const branchName = "feature/issue-968-restore";
+  try {
+    const g = (args: string[], cwd: string = dir) =>
+      execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+    const wtHead = g(["rev-parse", "HEAD"], wt);
+    const state = stateFor(968, branchName, branchSha, wt, wtHead);
+    process.env.PI_ENSEMBLE_FORGE = "none";
+    const result = await consolidateWorktreesToBranch(
+      { repoRoot: dir, issue: 968, scratchDir: dir },
+      state,
+    );
+    assert(result.ok, `#968 success: consolidation succeeded (reason=${result.reason})`);
+    // The restore must run INSIDE the integration lock: after the function
+    // returns (lock released), the lockfile is gone from .git/.
+    assert(
+      !existsSync(join(dir, ".git", "pi-rukas-integration.lock")),
+      "#968 success: the integration lock is released after the consolidation (restore ran inside it)",
+    );
+    // repoRoot is back on the operator's ORIGINAL branch.
+    assert(
+      g(["rev-parse", "--abbrev-ref", "HEAD"]) === "operator-feature",
+      "#968 success: repoRoot is restored to the operator's original branch (operator-feature)",
+    );
+    // ...and it is CLEAN of tracked dirt — the restore verified its
+    // post-condition. The restore's own scratch artifact
+    // (`restored-state-*.diff`, written to scratchDir === dir because the
+    // preserve-state capture is best-effort and runs even on a clean
+    // restore) is untracked, and verifiedRestoreRoot excludes untracked
+    // `??` entries from dirt by design (the #750 rule: untracked files are
+    // never swept, so they are never counted as a failed restore).
+    // `.worktrees/` scaffolding is excluded too — the same filter the
+    // restore itself applies.
+    const statusLines = g(["status", "--porcelain"]).split("\n").filter(Boolean);
+    const trackedDirt = statusLines.filter(
+      (l) => !l.startsWith("??") && !/^..\s+"?\.worktrees\//.test(l),
+    );
+    assert(
+      trackedDirt.length === 0,
+      `#968 success: repoRoot is clean of tracked dirt after the consolidation + restore (untracked entries: ${statusLines.filter((l) => l.startsWith("??")).length})`,
+    );
+    // The feature branch survived the restore, with the work on it.
+    const ahead = Number.parseInt(
+      g(["rev-list", "--count", "operator-feature..feature/issue-968-restore"]),
+      10,
+    );
+    assert(
+      ahead === 1,
+      `#968 success: the feature branch still exists with the consolidated commit ahead (got ${ahead})`,
+    );
+    // The claim is the verified post-condition, not the failure shape.
+    assert(
+      result.restoreClaim !== undefined &&
+        !result.restoreClaim.startsWith("repoRoot was NOT restored"),
+      `#968 success: the outcome carries the verified-restore claim (got ${JSON.stringify(result.restoreClaim)})`,
+    );
+  } finally {
+    try {
+      execFileSync("git", ["worktree", "remove", "--force", wt], { cwd: dir });
+    } catch {
+      /* worktree already gone */
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 2. #968 — forced restore failure: TRACKED dirt injected after the
+//    reset + checkout but before the post-condition read via a stub
+//    execFn (so the dirty-repoRoot gate passes) must surface the loud
+//    "repoRoot was NOT restored" claim. The injected file must be TRACKED
+//    (tracked.txt from the base commit): the post-condition filter excludes
+//    untracked `??` lines by design (#750), so untracked dirt would never
+//    read as a failed restore. The work is still moved (branch created,
+//    pick staged, commit made), so the "NOT restored" claim comes from
+//    the success path and rides in the rendered handoff (asserted below).
+// ---------------------------------------------------------------------------
+{
+  const { dir, wt, branchSha } = buildTempRepo();
+  const branchName = "feature/issue-968-restore-fail";
+  try {
+    const g = (args: string[], cwd: string = dir) =>
+      execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+    const state = stateFor(968, branchName, branchSha, wt);
+    process.env.PI_ENSEMBLE_FORGE = "none";
+    const dirtFile = join(dir, "tracked.txt");
+    let dirtWritten = false;
+    let dirtWriteError: unknown;
+    let dirtSurvived = false;
+    let checkoutForceCount = 0;
+    const stub: ExecFn = async (cmd, opts) => {
+      const isRoot = opts?.cwd === dir;
+      const res = await pExec(cmd, { cwd: opts?.cwd, maxBuffer: opts?.maxBuffer });
+      if (isRoot && cmd.startsWith("git checkout --force")) {
+        checkoutForceCount += 1;
+        // Write the dirt after the FIRST `git checkout --force` (the
+        // restore's) so the on-disk file survives and the post-condition
+        // read sees it. A write failure is recorded, not swallowed — the
+        // test's "dirt was written" assertion must fail on its own terms.
+        if (!dirtWritten && checkoutForceCount === 1) {
+          try {
+            writeFileSync(dirtFile, "dirt\n");
+            dirtWritten = true;
+          } catch (err) {
+            dirtWriteError = err;
+          }
+        }
+      }
+      if (dirtWritten && isRoot && cmd === "git status --porcelain") {
+        // The restore's post-condition read — mark survived if the tracked
+        // dirt is still reported (the file is on disk after the reset +
+        // checkout, which have already run).
+        dirtSurvived =
+          res.stdout.split("\n").some((l) => l.trim() && l.includes("tracked.txt")) &&
+          existsSync(dirtFile);
+      }
+      return res;
+    };
+    const result = await consolidateWorktreesToBranch(
+      { repoRoot: dir, issue: 968, scratchDir: dir },
+      state,
+      stub,
+    );
+    // The stub's intercept is part of the test, not the system under test:
+    // a drifted intercept (dirt not written, or not surviving to the
+    // post-condition read) means the assertion below would run against a
+    // DIFFERENT scenario than the one the test claims to pin — fail hard
+    // instead of passing with weaker checks.
+    assert(
+      dirtWriteError === undefined,
+      "#968 forced-restore-failure: the dirt writeFileSync did not throw (write failures fail on their own terms)",
+    );
+    assert(dirtWritten, "#968 forced-restore-failure: the stub intercepted `git checkout --force` and wrote the tracked dirt");
+    assert(
+      dirtSurvived,
+      "#968 forced-restore-failure: the tracked dirt survived to the restore's post-condition read (the intercept did not drift)",
+    );
+    assert(
+      result.ok === true,
+      `#968 forced-restore-failure: the success path still completed (ok=${result.ok}, reason=${result.reason ?? "(none)"})`,
+    );
+    assert(
+      result.restoreClaim?.startsWith("repoRoot was NOT restored") === true,
+      `#968 forced-restore-failure: the claim carries the loud not-restored failure (got ${JSON.stringify(result.restoreClaim)})`,
+    );
+    // The work itself IS on the branch (the success path ran fully up to
+    // the commit) — the restore is the only failure. This is what the
+    // rendered handoff then has to say.
+    const ahead = Number.parseInt(
+      g(["rev-list", "--count", "operator-feature..feature/issue-968-restore-fail"]),
+      10,
+    );
+    assert(
+      ahead === 1,
+      `#968 forced-restore-failure: the branch carries the consolidated commit despite the failed restore (got ${ahead})`,
+    );
+  } finally {
+    try {
+      execFileSync("git", ["worktree", "remove", "--force", wt], { cwd: dir });
+    } catch {
+      /* worktree already gone */
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 3. #968 — the rendered handoff prints the restore claim.
+//    (a) a handoff-consolidated event carrying the verified claim → both
+//        renderers print it;
+//    (b) the event carries the not-restored failure → both renderers
+//        print the "repoRoot was NOT restored" claim;
+//    (c) a pre-#968 event (no claim field) → both renderers print the
+//        not-recorded marker, never a bare success claim.
+// ---------------------------------------------------------------------------
+{
+  const REPO = "/tmp/fake";
+  const wt = `${REPO}/.worktrees/issue-968-task-a`;
+  const headSha = "aabbccddeeff0011223344556677889900112233";
+  const makeState = (claim: string | undefined) => {
+    const s = stateFor(
+      968,
+      "feature/issue-968-restore",
+      "0000000000000000000000000000000000000000",
+      wt,
+      headSha,
+    );
+    const consEvent: Extract<WorkEvent, { kind: "handoff-consolidated" }> = {
+      kind: "handoff-consolidated",
+      at: 4,
+      branchName: "feature/issue-968-restore",
+      workstreams: ["task-a"],
+      ...(claim !== undefined ? { restoreClaim: claim } : {}),
+    };
+    s.eventLog.push(consEvent);
+    s.eventLog.push({
+      kind: "handoff-emitted",
+      at: 5,
+      commentUrl: "https://github.com/acme/repo/issues/968#issuecomment-1",
+      labelApplied: true,
+      handoffBodyPath: `${REPO}/tmp/issue-968/handoff-comment.md`,
+      consolidated: true,
+      consolidatedBranch: "feature/issue-968-restore",
+      consolidatedWorkstreams: ["task-a"],
+    });
+    return s;
+  };
+  // (a) verified-restore claim is printed by both surfaces.
+  const ok = "repoRoot was verified restored";
+  const sOk = makeState(ok);
+  const mdOk = renderHandoffMarkdown(sOk);
+  const chatOk = renderHandoffUserMessage(sOk, REPO, `${REPO}/tmp/issue-968`);
+  assert(mdOk.includes(ok), "#968 render: markdown prints the verified-restore claim");
+  assert(chatOk.includes(ok), "#968 render: chat prints the verified-restore claim");
+  // The header must not carry its own (unverified) "restored" claim —
+  // the claim line above it is the single statement about the restore
+  // outcome, so the header clause is removed even when the claim line IS
+  // the verified post-condition.
+  assert(
+    !mdOk.includes("original checkout was restored"),
+    "#968 render: markdown header does NOT carry its own restored claim (verified case)",
+  );
+  assert(
+    !chatOk.includes("original checkout was restored"),
+    "#968 render: chat header does NOT carry its own restored claim (verified case)",
+  );
+  // (b) the not-restored failure is printed by both surfaces.
+  const bad=
+    "repoRoot was NOT restored: still dirty after reset + checkout: a.txt (discarded state preserved at /tmp/x)";
+  const sBad = makeState(bad);
+  const mdBad = renderHandoffMarkdown(sBad);
+  const chatBad = renderHandoffUserMessage(sBad, REPO, `${REPO}/tmp/issue-968`);
+  assert(
+    mdBad.includes("repoRoot was NOT restored"),
+    "#968 render: markdown prints the not-restored failure",
+  );
+  assert(
+    chatBad.includes("repoRoot was NOT restored"),
+    "#968 render: chat prints the not-restored failure",
+  );
+  // The header must not claim a restore the claim line below says did NOT
+  // happen.
+  assert(
+    !mdBad.includes("original checkout was restored"),
+    "#968 render: markdown header does NOT claim the restore (not-restored case)",
+  );
+  assert(
+    !chatBad.includes("original checkout was restored"),
+    "#968 render: chat header does NOT claim the restore (not-restored case)",
+  );
+  // (c) pre-#968 event (no claim) → the not-recorded marker, never a
+  //     bare success claim.
+  const sOld = makeState(undefined);
+  const mdOld = renderHandoffMarkdown(sOld);
+  const chatOld = renderHandoffUserMessage(sOld, REPO, `${REPO}/tmp/issue-968`);
+  assert(
+    mdOld.includes("(repoRoot restore not recorded)"),
+    "#968 render: markdown prints the not-recorded marker for pre-#968 events",
+  );
+  assert(
+    chatOld.includes("(repoRoot restore not recorded)"),
+    "#968 render: chat prints the not-recorded marker for pre-#968 events",
+  );
+  assert(
+    !mdOld.includes("repoRoot was verified restored"),
+    "#968 render: markdown does NOT claim a restore that was not recorded",
+  );
+  assert(
+    !chatOld.includes("repoRoot was verified restored"),
+    "#968 render: chat does NOT claim a restore that was not recorded",
+  );
+  // The pre-#968 (no-claim) render must not carry the header's own
+  // restored claim either — only the not-recorded marker.
+  assert(
+    !mdOld.includes("original checkout was restored"),
+    "#968 render: markdown header does NOT claim the restore (pre-#968 no-claim case)",
+  );
+  assert(
+    !chatOld.includes("original checkout was restored"),
+    "#968 render: chat header does NOT claim the restore (pre-#968 no-claim case)",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 4. #968 — the recovery text no longer implies repoRoot is checked out
+//    on the branch: no worktree status line in the RECOVERY steps (the
+//    teardown removes the worktrees before the body renders), the
+//    by-branch push stays, and the prose says the branch holds the work.
+// ---------------------------------------------------------------------------
+{
+  const REPO = "/tmp/fake";
+  const wt = `${REPO}/.worktrees/issue-968-task-a`;
+  const headSha = "aabbccddeeff0011223344556677889900112233";
+  const s = stateFor(
+    968,
+    "feature/issue-968-restore",
+    "0000000000000000000000000000000000000000",
+    wt,
+    headSha,
+  );
+  const consEvent: Extract<WorkEvent, { kind: "handoff-consolidated" }> = {
+    kind: "handoff-consolidated",
+    at: 4,
+    branchName: "feature/issue-968-restore",
+    workstreams: ["task-a"],
+    restoreClaim: "repoRoot was verified restored",
+  };
+  s.eventLog.push(consEvent);
+  const { steps } = recoveryStepsForCap(s);
+  const consText = steps
+    .filter((st) => st.section === "worktree-work-consolidated")
+    .flatMap((st) => [...st.comment, ...st.lines])
+    .join("\n");
+  assert(
+    !consText.includes(".worktrees/"),
+    "#968 recovery: no recovery step names a worktree the handoff teardown removed",
+  );
+  assert(
+    consText.includes("git push -u origin feature/issue-968-restore"),
+    "#968 recovery: the by-branch push command remains",
+  );
+  assert(
+    !consText.includes("status --porcelain"),
+    "#968 recovery: no worktree status-implying-a-checkout line",
+  );
+  // The markdown RENDERER's recovery section (not the "Worktree state at
+  // handoff" snapshot section, which legitimately names the worktree path
+  // for the operator's inspection) must not name the torn-down worktree.
+  const md = renderHandoffMarkdown(s);
+  // Extract the recovery section (everything from the first "worktree"
+  // heading that is NOT "Worktree state at handoff").
+  const recoveryStart = md.indexOf("# The driver consolidated");
+  const recoverySection = recoveryStart >= 0 ? md.slice(recoveryStart) : "";
+  assert(recoverySection.length > 0, "#968 render: markdown has the consolidated recovery section");
+  assert(
+    !recoverySection.includes(".worktrees/issue-968-task-a"),
+    "#968 render: markdown recovery section does not name the torn-down worktree",
+  );
+  assert(
+    recoverySection.includes("git push -u origin feature/issue-968-restore"),
+    "#968 render: markdown recovery still offers the by-branch push",
+  );
+}
+
+if (SAVED_FORGE === undefined) process.env.PI_ENSEMBLE_FORGE = undefined;
+else process.env.PI_ENSEMBLE_FORGE = SAVED_FORGE;
+
+console.log(`\nexit ${exit}`);
+process.exit(exit);

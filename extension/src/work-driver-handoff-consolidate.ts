@@ -36,7 +36,6 @@
  *     the bug-2 cleanup, and it removes only worktrees keyed in
  *     `pipelineState.worktrees` that pass the "work provably on the branch"
  *     check. Nothing here ever deletes a worktree.
- *
  * Failure mode: ANY failure (dirty repoRoot, cherry-pick conflict, git
  * error) degrades to `{ ok: false, reason }` WITHOUT aborting the handoff —
  * the renderers then fall back to the accurate per-worktree recovery
@@ -44,7 +43,6 @@
  * worktrees because the work is not (yet) on a branch. Consolidation must
  * never destroy work or block the handoff from completing.
  */
-
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { type ForgeDetection, detectForge } from "./forge-detect.ts";
@@ -54,7 +52,11 @@ import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
 import { reconcileHandoffConsolidateBranch } from "./work-driver-handoff-consolidate-branch.ts";
 import { deriveConsolidationSubject } from "./work-driver-handoff-subject.ts";
 import { withIntegrationLock } from "./work-driver-integrate.ts";
-import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
+import {
+  restoreClaim,
+  verifiedRestoreRoot,
+  verifiedRestoreRootWithClaim,
+} from "./work-driver-restore.ts";
 import type { WorkState } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -143,6 +145,13 @@ export interface ConsolidateOutcome {
   /** Committed workstream ids that landed on the branch (cherry-picked or
    * patch-applied). Present when at least one workstream had committed work. */
   workstreams?: string[];
+  /** The verified-restore claim: whether repoRoot was restored to the
+   * checkout it was on before consolidation, or why the restore failed.
+   * Always present when `ok` is true (both success exits run the restore);
+   * absent means a failure outcome or a pre-consolidation early return
+   * (no branch / no worktrees / nothing ahead of the base), or the event
+   * was written before #968. */
+  restoreClaim?: string;
   /** Human-readable failure reason (failure only). */
   reason?: string;
 }
@@ -241,6 +250,9 @@ export async function consolidateWorktreesToBranch(
             reason: `no local branch ${branchName} and no baseSha recorded — cannot create the branch without a commit to start from`,
           };
         }
+        // #968 — the `-B` checkout switches repoRoot to the branch; the
+        // success-path restore below (and the failure paths) use plain
+        // `git checkout --force` on the captured originalRef.
         await execFn(
           `git checkout -B ${JSON.stringify(branchName)} ${JSON.stringify(ps.baseSha)}`,
           {
@@ -335,16 +347,6 @@ export async function consolidateWorktreesToBranch(
         };
       }
       const applied = [...orch.cherryApplied, ...orch.patchApplied];
-      if (applied.length === 0) {
-        // Every worktree had a clean tree and no committed work — the
-        // countAheadOfBase precheck above should have caught that, but the
-        // operator's branch may already contain the work. Not an error.
-        return {
-          ok: true as const,
-          branchName,
-          workstreams: [],
-        };
-      }
       // Commit the staged batch. (No push: the branch is local-only at
       // handoff time; the recovery block ends in the push the operator runs.
       // No verify: the work already failed develop's gate — see header.)
@@ -352,6 +354,11 @@ export async function consolidateWorktreesToBranch(
         cwd: ctx.repoRoot,
         maxBuffer: 64 * 1024,
       });
+      // An empty staged diff skips the commit below and falls through to the
+      // restore leg.
+      // Every worktree had a clean tree and no committed work — the
+      // countAheadOfBase precheck above should have caught that, but the
+      // operator's branch may already contain the work. Not an error.
       if (hasStaged.trim()) {
         // #810 — real change IS present (non-empty staged diff), so the commit
         // describes the CHANGE, not the driver's housekeeping step. The subject
@@ -366,7 +373,32 @@ export async function consolidateWorktreesToBranch(
           maxBuffer: 256 * 1024,
         });
       }
-      return { ok: true as const, branchName, workstreams: applied };
+      // #968 — restore the operator's checkout after the branch is done:
+      // pre-#968 the success path returned with repoRoot still on the
+      // consolidated branch (the originalRef capture existed only to feed
+      // the failure branches). The branch and its commits stay where the
+      // operator pushes them from; the operator's checkout comes back.
+      // The restore covers the `applied.length === 0` case too (the
+      // checkout above ran regardless). Runs INSIDE the integration lock
+      // (like the failure paths) so a sibling cycle's integrate() cannot
+      // race the checkout switch. The claim reuses restoreClaim's existing
+      // shapes: the verified post-condition on success, the loud
+      // "repoRoot was NOT restored: …" on failure, threaded into the
+      // handoff-consolidated event and both renderers.
+      //
+      // originalRef is a BRANCH name (symbolic-ref capture) when the
+      // operator was attached — so this is a branch checkout, never a
+      // detached SHA — and a SHA for a detached operator, which detaches
+      // back to that same SHA. The `?? ps.baseSha ?? "HEAD"` tiers are
+      // defensive only: originalRef is always set once we are this far.
+      const { claim } = await verifiedRestoreRootWithClaim(execFn, {
+        repoRoot: ctx.repoRoot,
+        originalRef: originalRef ?? ps.baseSha ?? "HEAD",
+        scratchDir: ctx.scratchDir,
+        label: "handoff consolidation",
+        trailing: "run git status at the repo root",
+      });
+      return { ok: true as const, branchName, workstreams: applied, restoreClaim: claim };
     });
     if (result.ok) {
       trace(
@@ -383,16 +415,23 @@ export async function consolidateWorktreesToBranch(
     const msg = (err as Error & { stderr?: string }).stderr ?? (err as Error).message ?? "unknown";
     trace(`handoff-consolidate: failed: ${msg.toString().slice(0, 200)}`);
     if (originalRef) {
-      await verifiedRestoreRoot(execFn, {
+      // #968 — the failure path now carries the claim too, so a failed
+      // throw-path restore is as loud as a failed success-path restore
+      // (pre-#968 this call was fire-and-forget: the operator heard about
+      // the consolidation failure but not that their checkout did not come
+      // back). verifiedRestoreRoot never throws, so this cannot lose the
+      // outcome.
+      const { claim } = await verifiedRestoreRootWithClaim(execFn, {
         repoRoot: ctx.repoRoot,
         originalRef,
         scratchDir: ctx.scratchDir,
         label: "handoff consolidation",
-      }).catch((rerr) =>
-        trace(
-          `handoff-consolidate: restore after failure also failed: ${(rerr as Error).message?.slice(0, 200)}`,
-        ),
-      );
+        trailing: "run git status at the repo root",
+      });
+      return {
+        ok: false,
+        reason: `consolidation failed: ${msg.toString().slice(0, 200)}; ${claim}`,
+      };
     }
     return { ok: false, reason: `consolidation failed: ${msg.toString().slice(0, 200)}` };
   }
