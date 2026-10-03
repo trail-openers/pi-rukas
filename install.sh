@@ -129,14 +129,14 @@ case "$OO_STATUS" in
 esac
 
 for entry in "${REQUIRED_CLIS[@]}"; do
-  # "forge" is a pseudo-name (gh or glab, checked below); the warn block
-  # only prints, so missing[] carries it here when BOTH are absent.
-  if [ "${entry%%:*}" = forge ]; then
-    command -v gh >/dev/null 2>&1 || command -v glab >/dev/null 2>&1 || \
-      check_cmd forge "${entry#*:}"
-  else
-    check_cmd "${entry%%:*}" "${entry#*:}"
-  fi
+  case "${entry%%:*}" in
+    forge) # pseudo-name (gh or glab, checked below); warn block only prints
+      command -v gh >/dev/null 2>&1 || command -v glab >/dev/null 2>&1 || \
+        check_cmd forge "${entry#*:}"
+      continue
+      ;;
+    *) check_cmd "${entry%%:*}" "${entry#*:}" ;;
+  esac
 done
 
 # Forge CLI — dual-forge support (#608): require gh OR glab. The "forge"
