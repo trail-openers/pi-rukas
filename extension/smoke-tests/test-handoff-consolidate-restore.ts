@@ -33,8 +33,8 @@ import { consolidateWorktreesToBranch } from "../src/work-driver-handoff-consoli
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
 import { renderHandoffUserMessage } from "../src/work-driver-handoff-message.ts";
 import { recoveryStepsForCap } from "../src/work-driver-handoff-recovery.ts";
+import type { WorkEvent, WorkState } from "../src/workflow-state.ts";
 import type { ExecFn } from "../src/worktree.ts";
-import type { WorkState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -82,7 +82,18 @@ function stateFor(
   wt: string,
   extraHeadSha?: string,
 ): WorkState {
-  const s = {
+  // The fixture carries only the fields the consolidation + handoff renderers
+  // actually read — `WorkState` is the declared type (no `as any`) and the
+  // `cap-hit` event is built as a typed literal so the `verify-failed:develop`
+  // cap is checked against the `WorkCapLiteral` union.
+  const capEvent = {
+    kind: "cap-hit" as const,
+    at: 3,
+    cap: "verify-failed:develop" as const,
+    reviewRound: 0,
+    nextStep: "handoff" as const,
+  };
+  const s: WorkState = {
     schemaVersion: 1,
     resumable: false,
     issue,
@@ -99,17 +110,8 @@ function stateFor(
       baseSha,
       worktrees: { "task-a": wt },
     },
-    eventLog: [
-      {
-        kind: "cap-hit",
-        at: 3,
-        cap: "verify-failed:develop",
-        reviewRound: 0,
-        nextStep: "handoff",
-      },
-    ],
-    // biome-ignore lint/suspicious/noExplicitAny: partial fixture; the restore paths read a subset
-  } as any;
+    eventLog: [capEvent],
+  };
   if (extraHeadSha === undefined) return s;
   s.pipelineState.handoffSnapshot = {
     modifiedFiles: [],
@@ -182,7 +184,10 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
       `#968 success: repoRoot is clean of tracked dirt after the consolidation + restore (untracked entries: ${statusLines.filter((l) => l.startsWith("??")).length})`,
     );
     // The feature branch survived the restore, with the work on it.
-    const ahead = Number.parseInt(g(["rev-list", "--count", "operator-feature..feature/issue-968-restore"]), 10);
+    const ahead = Number.parseInt(
+      g(["rev-list", "--count", "operator-feature..feature/issue-968-restore"]),
+      10,
+    );
     assert(
       ahead === 1,
       `#968 success: the feature branch still exists with the consolidated commit ahead (got ${ahead})`,
@@ -317,8 +322,7 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
         `#968 forced-restore-failure: the success path still completed (ok=${result.ok}, reason=${result.reason ?? "(none)"})`,
       );
       assert(
-        result.restoreClaim !== undefined &&
-          result.restoreClaim.startsWith("repoRoot was NOT restored"),
+        result.restoreClaim?.startsWith("repoRoot was NOT restored") === true,
         `#968 forced-restore-failure: the claim carries the loud not-restored failure (got ${JSON.stringify(result.restoreClaim)})`,
       );
       // The work itself IS on the branch (the success path ran fully up to
@@ -364,13 +368,14 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
       wt,
       headSha,
     );
-    s.eventLog.push({
+    const consEvent: Extract<WorkEvent, { kind: "handoff-consolidated" }> = {
       kind: "handoff-consolidated",
       at: 4,
       branchName: "feature/issue-968-restore",
       workstreams: ["task-a"],
       ...(claim !== undefined ? { restoreClaim: claim } : {}),
-    });
+    };
+    s.eventLog.push(consEvent);
     s.eventLog.push({
       kind: "handoff-emitted",
       at: 5,
@@ -396,8 +401,14 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
   const sBad = makeState(bad);
   const mdBad = renderHandoffMarkdown(sBad);
   const chatBad = renderHandoffUserMessage(sBad, REPO, `${REPO}/tmp/issue-968`);
-  assert(mdBad.includes("repoRoot was NOT restored"), "#968 render: markdown prints the not-restored failure");
-  assert(chatBad.includes("repoRoot was NOT restored"), "#968 render: chat prints the not-restored failure");
+  assert(
+    mdBad.includes("repoRoot was NOT restored"),
+    "#968 render: markdown prints the not-restored failure",
+  );
+  assert(
+    chatBad.includes("repoRoot was NOT restored"),
+    "#968 render: chat prints the not-restored failure",
+  );
   // (c) pre-#968 event (no claim) → the not-recorded marker, never a
   //     bare success claim.
   const sOld = makeState(undefined);
@@ -438,13 +449,14 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
     wt,
     headSha,
   );
-  s.eventLog.push({
+  const consEvent: Extract<WorkEvent, { kind: "handoff-consolidated" }> = {
     kind: "handoff-consolidated",
     at: 4,
     branchName: "feature/issue-968-restore",
     workstreams: ["task-a"],
     restoreClaim: "repoRoot was verified restored",
-  });
+  };
+  s.eventLog.push(consEvent);
   const { steps } = recoveryStepsForCap(s);
   const consText = steps
     .filter((st) => st.section === "worktree-work-consolidated")
@@ -470,10 +482,7 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
   // heading that is NOT "Worktree state at handoff").
   const recoveryStart = md.indexOf("# The driver consolidated");
   const recoverySection = recoveryStart >= 0 ? md.slice(recoveryStart) : "";
-  assert(
-    recoverySection.length > 0,
-    "#968 render: markdown has the consolidated recovery section",
-  );
+  assert(recoverySection.length > 0, "#968 render: markdown has the consolidated recovery section");
   assert(
     !recoverySection.includes(".worktrees/issue-968-task-a"),
     "#968 render: markdown recovery section does not name the torn-down worktree",
