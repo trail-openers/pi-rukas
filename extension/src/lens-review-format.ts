@@ -27,11 +27,7 @@ import type {
  * verdict is computed in `computeVerdict` below, so the definition lives
  * with it), and lens-review.ts re-exports it for consumers.
  */
-export type Verdict =
-  | "APPROVED"
-  | "ISSUES_FOUND"
-  | "CRITICAL_ISSUES_FOUND"
-  | "REVIEW_INCOMPLETE";
+export type Verdict = "APPROVED" | "ISSUES_FOUND" | "CRITICAL_ISSUES_FOUND" | "REVIEW_INCOMPLETE";
 import { CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE, type RosterEntry } from "./lens-roster.ts";
 
 export const LENS_PREFIX = "code-review-";

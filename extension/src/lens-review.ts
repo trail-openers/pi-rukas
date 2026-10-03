@@ -3,7 +3,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { writeLensLedgerEntry } from "./lens-ledger.ts";
-import type { Verdict } from "./lens-review-format.ts";
 import { capKillSummary } from "./lens-review-capkill.ts";
 import { runLensChild } from "./lens-review-child.ts";
 import {
@@ -21,6 +20,7 @@ import {
   extractFindings,
   lensProducedEvidence,
   renderSummary,
+  type Verdict,
 } from "./lens-review-format.ts";
 import { runInstallBlock, skillsDirUsable } from "./lens-review-skills.ts";
 import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
