@@ -60,20 +60,24 @@ export function recoveryStepsForCap(
           e.kind === "handoff-consolidated",
       );
     if (consEvent) {
+      // #968 — the driver restores repoRoot to the operator's original
+      // checkout after consolidation (the branch is pushed by name, which
+      // does not require a checkout). The worktrees it consolidated from are
+      // torn down by the handoff teardown before this text renders, so no
+      // recovery step may name them — the branch and the state file are
+      // where the work and the record live now.
       steps.push(
         {
           section: "worktree-work-consolidated",
           comment: [
-            "1. The branch now contains the workstream work (consolidated by the driver before this handoff):",
+            "1. The work is committed on the local branch (the driver consolidated it before this handoff):",
           ],
-          lines: [
-            `git -C .worktrees/issue-${issue}-${committedWork[0]?.worktreeId ?? "?"} status --porcelain   # each worktree should be clean (its commits are on the branch now)`,
-          ],
+          lines: [`git log --oneline ${ps.branchName}`],
         },
         {
           section: "worktree-work-consolidated",
           comment: [
-            "2. Push the branch (the local branch was created at handoff time; it is not yet pushed):",
+            "2. Push the branch (the push works by branch name — the local branch was created at handoff time; it is not yet pushed):",
           ],
           lines: [`git push -u origin ${ps.branchName}`],
         },

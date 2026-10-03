@@ -322,6 +322,48 @@ function assert(cond: boolean, msg: string) {
       aheadOnBranch === 1,
       `e2e: exactly one consolidation commit landed on the branch (got ${aheadOnBranch})`,
     );
+    // #968 — the SUCCESS path must restore repoRoot to the checkout the
+    // operator was on before consolidation (the #966/#967 incident: the
+    // branch was left checked out in repoRoot after a handoff).
+    assert(
+      g(["rev-parse", "--abbrev-ref", "HEAD"]) === "main",
+      "#968 e2e: repoRoot is restored to `main` after a successful consolidation",
+    );
+    // The restore's verified post-condition excludes untracked `??` lines
+    // and `.worktrees/` scaffolding (the #750 rule: untracked files are
+    // never swept, so they are never counted as a failed restore) — "clean"
+    // means clean in the same filtered sense, not a byte-empty porcelain.
+    // The raw output legitimately carries `?? .worktrees/` (scaffolding) and
+    // `?? restored-state-…` (the preserve-state capture of this very run).
+    const trackedDirt = g(["status", "--porcelain"])
+      .split("\n")
+      .filter((l) => l.trim() && !l.startsWith("??") && !/^..\s+"?\.worktrees\//.test(l));
+    assert(
+      trackedDirt.length === 0,
+      `#968 e2e: repoRoot is clean of tracked dirt after the successful consolidation + restore (got ${JSON.stringify(trackedDirt)})`,
+    );
+    // The consolidated branch stays in place for the operator to push — the
+    // restore must NOT delete it (unlike the merged path's restoreCheckout).
+    assert(
+      result.restoreClaim !== undefined &&
+        !result.restoreClaim.startsWith("repoRoot was NOT restored"),
+      `#968 e2e: the success outcome carries the verified-restore claim (got ${JSON.stringify(result.restoreClaim)})`,
+    );
+    let branchExists = false;
+    try {
+      g(["rev-parse", "--verify", "refs/heads/feature/issue-810"]);
+      branchExists = true;
+    } catch {
+      branchExists = false;
+    }
+    assert(
+      branchExists,
+      "#968 e2e: the consolidated feature branch still exists after the restore",
+    );
+    // The recovery-text assertions (no worktree paths, by-branch push,
+    // no status-implying-a-checkout line) live in test-handoff-consolidate-restore.ts
+    // sections 3-4 against both renderers; this file only pins the real e2e
+    // path above (restore to main, branch survives with its commit).
   } finally {
     try {
       execFileSync("git", ["worktree", "remove", "--force", wt], { cwd: dir });

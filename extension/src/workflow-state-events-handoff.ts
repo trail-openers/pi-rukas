@@ -69,6 +69,14 @@ export type HandoffConsolidatedEvent = {
   /** #674 — the feature branch the work was consolidated onto. */
   branchName: string;
   workstreams: string[];
+  /**
+   * #968 — the verified-restore claim: whether repoRoot was restored to
+   * the checkout it was on before consolidation, or why the restore failed
+   * (the `restoreClaim` "repoRoot was NOT restored: …" shape). Absent on
+   * events written before #968 — readers must treat absent as "restore not
+   * recorded" and never as "restored".
+   */
+  restoreClaim?: string;
 };
 
 /**
