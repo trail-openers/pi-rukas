@@ -99,19 +99,12 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
   const clis = extractRequiredClis();
   // The harness: declare missing[], load check_cmd and REQUIRED_CLIS verbatim
   // from install.sh, run the loop, then print the missing[] entries one per
-  // line so the TypeScript side can parse them. Build the bash code by string
-  // concatenation to keep `${#missing[@]}` and `"${missing[@]}"` from being
-  // interpolated by the TypeScript template literal.
-  const code =
-    "set -u\nmissing=()\n" +
-    // install-preflight.sh defines these; the harness only needs the array
-    // literal to parse, so stub them with placeholder values.
-    "MIN_PI_VERSION=0.0.0\nMIN_OO_VERSION=0.0.0\n" +
-    checkCmd +
-    clis +
-    loopBody +
-    'if [ ${#missing[@]} -gt 0 ]; then\n';
-  const code2 = code + 'for m in "${missing[@]}"; do printf \'%s\n\' "$m"; done\nfi\nexit 0\n';
+  // line so the TypeScript side can parse them. Bash `${...}` variables are
+  // escaped as `\${...}` in the template literals below.
+  // install-preflight.sh defines MIN_PI_VERSION / MIN_OO_VERSION; the
+  // harness only needs the array literal to parse, so stub them.
+  const code = `set -u\nmissing=()\nMIN_PI_VERSION=0.0.0\nMIN_OO_VERSION=0.0.0\n${checkCmd}${clis}${loopBody}if [ \${#missing[@]} -gt 0 ]; then\n`;
+  const code2 = `${code}for m in "\${missing[@]}"; do printf '%s\n' "$m"; done\nfi\nexit 0\n`;
   const out = execFileSync("bash", ["-c", code2], {
     encoding: "utf8",
     env: { ...process.env, PATH: `${stubDir}:${process.env.PATH}` },
@@ -147,10 +140,9 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
   // hint-keyword match (e.g. on "checked below") or a blanket continue is
   // the wrong shape: it would silently skip a future real CLI.
   const nameScoped =
-    /case[^\n]*forge[^\n]*in[\s\S]*?forge\)[\s\S]*?esac/.test(loop) ||
+    /case[^\n]*in[\s\S]*?\sforge\)[\s\S]*?esac/.test(loop) ||
     /\[\s+"\$?\{?entry[^}]*\}?"\s*!=\s*"forge"\s*\]/.test(loop) ||
-    /\[\s+"\$name"\s*!=\s*"forge"\s*\]/.test(loop) ||
-    /forge\)[\s\S]*?continue/.test(loop);
+    /\[\s+"\$name"\s*!=\s*"forge"\s*\]/.test(loop);
   assert(
     nameScoped,
     "the loop skip is name-scoped to exactly 'forge' (case or != guard), not a hint-keyword heuristic",
@@ -164,14 +156,20 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
 
 {
   const missing = runLoop(extractLoopBody(), ["gh"]);
-  assert(!missing.some((l) => l.startsWith("forge —")), "gh on PATH: 'forge' NOT in missing[] (no false positive)");
+  assert(
+    !missing.some((l) => l.startsWith("forge —")),
+    "gh on PATH: 'forge' NOT in missing[] (no false positive)",
+  );
 }
 
 // ---------------------------------------------- positive case: glab only
 
 {
   const missing = runLoop(extractLoopBody(), ["glab"]);
-  assert(!missing.some((l) => l.startsWith("forge —")), "glab on PATH (no gh): 'forge' NOT in missing[]");
+  assert(
+    !missing.some((l) => l.startsWith("forge —")),
+    "glab on PATH (no gh): 'forge' NOT in missing[]",
+  );
 }
 
 // ---------------------------------------------- canary: unpatched loop
@@ -184,8 +182,7 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
   // PATH, the canary shape is stale and the test is wrong.
   // Build by concatenation to keep `${entry%%:*}` and `${entry#*:}` from
   // being interpolated by the TypeScript template literal.
-  const unpatchedLoop =
-    'for entry in "${REQUIRED_CLIS[@]}"; do\n';
+  const unpatchedLoop = 'for entry in "${REQUIRED_CLIS[@]}"; do\n';
   const unpatchedBody = '  check_cmd "${entry%%:*}" "${entry#*:}"\ndone\n';
   const missing = runLoop(unpatchedLoop + unpatchedBody, []);
   const forgeLines = missing.filter((l) => l.startsWith("forge —"));
@@ -195,7 +192,9 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
   );
   // The hint must match the README wording (the drift gate pins it).
   assert(
-    forgeLines[0]?.includes("brew install gh (GitHub) or brew install --no-quarantine glab (GitLab)"),
+    forgeLines[0]?.includes(
+      "brew install gh (GitHub) or brew install --no-quarantine glab (GitLab)",
+    ),
     `canary: the forge hint matches the README dual-install wording (got "${forgeLines[0] ?? "none"}")`,
   );
 }

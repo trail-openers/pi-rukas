@@ -95,7 +95,7 @@ check_cmd() {
 REQUIRED_CLIS=(
   "pi:bun add -g @earendil-works/pi-coding-agent@${MIN_PI_VERSION}"
   "git:OS package manager"
-  "forge:brew install gh (GitHub) or brew install --no-quarantine glab (GitLab) — checked below" 
+  "forge:brew install gh (GitHub) or brew install --no-quarantine glab (GitLab) — checked below"
   "jq:brew install jq"
   "vipune:cargo install vipune  (https://github.com/randomm/vipune)"
   "oo:cargo install double-o --version ${MIN_OO_VERSION}  (https://github.com/randomm/oo)"
@@ -133,7 +133,6 @@ for entry in "${REQUIRED_CLIS[@]}"; do
     forge) # pseudo-name (gh or glab, checked below); warn block only prints
       command -v gh >/dev/null 2>&1 || command -v glab >/dev/null 2>&1 || \
         check_cmd forge "${entry#*:}"
-      continue
       ;;
     *) check_cmd "${entry%%:*}" "${entry#*:}" ;;
   esac
