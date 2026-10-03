@@ -354,6 +354,11 @@ export async function consolidateWorktreesToBranch(
         cwd: ctx.repoRoot,
         maxBuffer: 64 * 1024,
       });
+      if (!hasStaged.trim()) {
+        // Every worktree had a clean tree and no committed work — the
+        // countAheadOfBase precheck above should have caught that, but the
+        // operator's branch may already contain the work. Not an error.
+      }
       if (hasStaged.trim()) {
         // #810 — real change IS present (non-empty staged diff), so the commit
         // describes the CHANGE, not the driver's housekeeping step. The subject
