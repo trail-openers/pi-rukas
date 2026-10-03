@@ -8,6 +8,15 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.78](https://github.com/trail-openers/pi-rukas/compare/v0.12.77...v0.12.78) (2026-10-03)
+
+
+### Bug Fixes
+
+* **install:** stop reporting the forge pseudo-entry as a missing prerequisite ([#969](https://github.com/trail-openers/pi-rukas/issues/969)) ([6cfe0c2](https://github.com/trail-openers/pi-rukas/commit/6cfe0c2ef6695a69ef0551b0ec137a348efec06c))
+* **review:** a killed or all-failed lens review can no longer report APPROVED or unlock the merge guard ([#970](https://github.com/trail-openers/pi-rukas/issues/970)) ([381c1df](https://github.com/trail-openers/pi-rukas/commit/381c1df9de80b25a62f3b37d9ca6828ebfadcd18))
+* **work:** restore the operator's checkout when a /work handoff consolidates onto the feature branch ([#972](https://github.com/trail-openers/pi-rukas/issues/972)) ([42055f1](https://github.com/trail-openers/pi-rukas/commit/42055f17f0b36006eeb11c9aed38b5ebc7a6addf))
+
 ## [0.12.77](https://github.com/trail-openers/pi-rukas/compare/v0.12.76...v0.12.77) (2026-10-03)
 
 
