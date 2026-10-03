@@ -277,21 +277,20 @@ export async function runLensReview(opts: {
     return finish(blocked, threshold, opts.cwd, opts.branch);
   }
   const diff = resolution.diff ?? "";
-  // #966 — the roster-missing guard: a skills dir that resolves to ZERO
-  // lenses (missing dir, empty dir, no `code-review-*` skill) blocks EVERY
-  // expected lens with the install message — the same finish path as the
-  // all-blocked shapes below. Without this the empty-roster path fell
-  // through to a fan-out over zero healthy lenses and `computeVerdict` saw
-  // zero lens rows, which every rule in the precedence table passes — an
-  // empty review was APPROVED, the silent-approval class #966 exists to
-  // close. `healthy.length === 0` is the precise predicate: a roster that
-  // is non-empty but fully-blocked (every entry carries an error) must NOT
-  // take this path — the fan-out below converts those entries into blocked
-  // rows and `computeVerdict` sees them (the #873 shape). Also subsumes the
-  // dead #872 install-block branch: the cases `skillsDirUsable` flags
-  // (missing dir, empty dir, no `code-review-*` skill) are exactly the
-  // empty-roster cases, so the roster guard IS the single install exit now.
-  const healthy = roster.filter((e) => e.error === undefined);
+  // #966 — the empty-roster guard: a skills dir that resolves to ZERO
+  // lenses (missing dir, empty dir, no `code-review-*` skill, OR an
+  // unreadable bundled expected set — the #970 CI incident where the
+  // review ran with no lens skills installed at all) blocks the review on
+  // the single finish path below. Without this the empty-roster shape fell
+  // through to a fan-out over zero lenses and `computeVerdict` saw zero
+  // rows, which every rule in the precedence table passes — an empty
+  // review was APPROVED, the silent-approval class #966 exists to close.
+  // A roster that is non-empty but fully-blocked (every entry carries an
+  // error) must NOT take this path — the fan-out below converts those
+  // entries into blocked rows and `computeVerdict` sees them (the #873
+  // shape). This also subsumes the dead #872 install-block branch: the
+  // cases `skillsDirUsable` flags are exactly the empty-roster cases, so
+  // this guard IS the single install exit now.
   if (roster.length === 0) {
     const problem =
       skillsDirUsable(skillsDir) ?? `no usable code-review-* lens skills in ${skillsDir}`;
@@ -350,6 +349,7 @@ export async function runLensReview(opts: {
   // computeVerdict; healthy entries fan out as before.
   const lensChildFn = opts.lensChildFn ?? runLensChild;
   const blocked = roster.filter((e) => e.error !== undefined);
+  const healthy = roster.filter((e) => e.error === undefined);
   const blockedResults: LensRunResult[] = blocked.map((e) => ({
     lens: e.name,
     ok: false,
