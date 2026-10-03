@@ -3,16 +3,20 @@
  * #966 — an all-failed or aborted lens review must never render as APPROVED
  * and must never write a passing review-ledger entry.
  *
- * Drives (offline, no real Pi children):
- *   1. runLensChild failed-branch: stderr-only text → blocked; findings count;
- *      thinking-only prose stays legitimate (#952).
- *   2. runLensReview end-to-end (stubbed spawner): all-fail, partial-fail,
- *      and pre-aborted runs → REVIEW_INCOMPLETE + passed:false ledger entry.
- *   3. renderSummary retry-note filter: absent when every lens is blocked.
- *   4. lensPassed(REVIEW_INCOMPLETE, …) === false at every threshold.
+ * Drives runLensReview end-to-end (offline, no real Pi children — spawn.ts
+ * is stubbed BEFORE the lens modules load) with the spawner returning
+ * failed / clean shapes:
+ *   2a. all-fail        → REVIEW_INCOMPLETE + passed:false ledger entry
+ *   2b. partial-fail    → REVIEW_INCOMPLETE + passed:false ledger entry
+ *   2c. pre-aborted     → REVIEW_INCOMPLETE + passed:false ledger entry
+ *   3a. retry note absent when every lens is blocked (incident shape)
+ *   3b. retry note names exactly the lenses that retried AND succeeded
+ *   4.  lensPassed(REVIEW_INCOMPLETE, …) === false at every threshold
  *
  * PI_ENSEMBLE_REVIEW_LEDGER_FILE points at a temp file; the write under test
- * is the REAL writeLensLedgerEntry → appendLedgerEntry path.
+ * is the REAL writeLensLedgerEntry → appendLedgerEntry path. The per-lens
+ * failed-branch evidence rules (stderr vs findings vs thinking-only vs
+ * cap-kill) live in test-lens-kill-child.ts.
  */
 
 import { execSync } from "node:child_process";
@@ -56,7 +60,6 @@ mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
 }));
 
 const { runLensReview } = await import("../src/lens-review.ts");
-const { runLensChild } = await import("../src/lens-review-child.ts");
 const { renderSummary } = await import("../src/lens-review-format.ts");
 const { MAX_LENS_ATTEMPTS } = await import("../src/lens-review.ts");
 type LensRunResult = import("../src/lens-review.ts").LensRunResult;
@@ -146,148 +149,13 @@ async function withLedgerEnv<T>(
   }
 }
 
-const childFixture = fixtureSkillsDir("child");
-const childLens = { name: "SECURITY", skill: "code-review-security", precedence: 10 };
-
-// (1a) Failed child, stderr-only text → blocked (the #966 leak)
-{
-  spawnResponder = () => ({
-    role: "code-review-specialist",
-    ok: false,
-    text: "[pi-rukas] killed after 240000ms inactivity timeout",
-    toolUses: [],
-    ms: 240000,
-    exitCode: 1,
-    killCause: "inactivity" as const,
-  });
-  const r = await runLensChild({
-    lens: childLens,
-    runId: "run-966",
-    skillsDir: childFixture.dir,
-    context: "",
-    roster: [],
-    opts: { diff: "d" },
-    bumpBatch: () => {},
-  });
-  assert(
-    r.blocked === true,
-    "failed child with stderr-only text → blocked (stderr is not a summary)",
-  );
-  eq(r.summary, undefined, "stderr text is not kept as the lens summary");
-  assert(r.findings.length === 0, "no findings invented from a failed child");
-}
-
-// (1b) Failed child WITH findings → not blocked (findings are tool calls, #952)
-{
-  spawnResponder = () => ({
-    role: "code-review-specialist",
-    ok: false,
-    text: "[pi-rukas] killed after 240000ms inactivity timeout",
-    toolUses: [
-      {
-        name: "report_finding",
-        arguments: {
-          severity: "MEDIUM",
-          path: "src/a.ts",
-          line: 3,
-          title: "leak",
-          description: "d",
-          suggestion: "s",
-        },
-      },
-    ],
-    ms: 1000,
-    exitCode: 1,
-    killCause: "inactivity" as const,
-  });
-  const r = await runLensChild({
-    lens: childLens,
-    runId: "run-966",
-    skillsDir: childFixture.dir,
-    context: "",
-    roster: [],
-    opts: { diff: "d" },
-    bumpBatch: () => {},
-  });
-  assert(r.blocked === false, "failed child WITH findings → not blocked (findings count)");
-  assert(r.findings.length === 1, "the finding is kept from a failed child");
-}
-
-// (1c) Failed child, thinking-only output → NOT blocked (#952 genuine summary)
-{
-  spawnResponder = () => ({
-    role: "code-review-specialist",
-    ok: false,
-    text: "I examined the diff carefully and found nothing in this lane.",
-    thinkingOnly: true,
-    toolUses: [],
-    ms: 1000,
-    exitCode: 1,
-    killCause: "inactivity" as const,
-  });
-  const r = await runLensChild({
-    lens: childLens,
-    runId: "run-966",
-    skillsDir: childFixture.dir,
-    context: "",
-    roster: [],
-    opts: { diff: "d" },
-    bumpBatch: () => {},
-  });
-  assert(r.blocked === false, "failed child with thinking-only output → NOT blocked (#952)");
-}
-
-// (1d) Cap-killed child (loop) with text-only output → NOT blocked (#952 unchanged)
-{
-  spawnResponder = () => ({
-    role: "code-review-specialist",
-    ok: false,
-    text: "partial review — loop detected",
-    toolUses: [],
-    ms: 1000,
-    exitCode: 1,
-    killCause: "loop" as const,
-    loopEvidence: { tool: "bash", count: 5 },
-  });
-  const r = await runLensChild({
-    lens: childLens,
-    runId: "run-966",
-    skillsDir: childFixture.dir,
-    context: "",
-    roster: [],
-    opts: { diff: "d" },
-    bumpBatch: () => {},
-  });
-  assert(r.blocked === false, "cap-killed child with prose output → NOT blocked (#952 unchanged)");
-  eq(r.killCause, "loop", "killCause threaded for the cap-kill suffix");
-}
-
-// (1e) Failed child, empty text → blocked
-{
-  spawnResponder = () => ({
-    role: "code-review-specialist",
-    ok: false,
-    text: "",
-    toolUses: [],
-    ms: 1000,
-    exitCode: 1,
-  });
-  const r = await runLensChild({
-    lens: childLens,
-    runId: "run-966",
-    skillsDir: childFixture.dir,
-    context: "",
-    roster: [],
-    opts: { diff: "d" },
-    bumpBatch: () => {},
-  });
-  assert(r.blocked === true, "failed child with empty output → blocked");
-}
-
 const allFail = () => ({
-  role: "code-review-specialist", ok: false,
+  role: "code-review-specialist",
+  ok: false,
   text: "Provider request error: Server requested 86399s retry delay (max: 60s). 429 status code",
-  toolUses: [], ms: 500, exitCode: 1,
+  toolUses: [],
+  ms: 500,
+  exitCode: 1,
 });
 
 // (2a) ALL six lenses fail → REVIEW_INCOMPLETE + passed:false ledger entry
