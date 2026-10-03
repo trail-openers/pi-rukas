@@ -184,13 +184,14 @@ function piSkillsDir(): string {
   return process.env.PI_ENSEMBLE_SKILLS_DIR ?? path.join(os.homedir(), ".pi", "agent", "skills");
 }
 
-/** The ONE exit path: writes the ledger entry and returns the summary.
+/** The ONE exit path: writes the ledger entry and returns the summary. */
+/**
  *
  * #966 — the ledger's `passed` is derived from the RESOLVED verdict (via
  * `lensPassed` inside `writeLensLedgerEntry`), and every run shape that
- * fails, aborts or kills its lenses reaches `finish` with a
+ * fails, aborts or kills its lenses reaches this exit with a
  * REVIEW_INCOMPLETE verdict, so the `passed:true` path is protected by
- * construction: no caller feeds `finish` a passing verdict for an
+ * construction: no caller feeds this exit a passing verdict for an
  * all-fail/all-abort run, and the "write nothing" path (no branch / no
  * patchId) is the only silent path that remains.
  */
