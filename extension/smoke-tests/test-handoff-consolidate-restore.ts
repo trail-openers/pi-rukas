@@ -212,23 +212,12 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
 // 2. #968 — forced restore failure: TRACKED dirt injected after the
 //    reset + checkout but before the post-condition read via a stub
 //    execFn (so the dirty-repoRoot gate passes) must surface the loud
-//    "repoRoot was NOT restored" claim.
-//
-//    Mechanism: the root status call sequence is (1) the preflight, (2)
-//    the restore's preserve-state read, (3) the restore's post-condition
-//    read. The stub intercepts the `git checkout --force` command (which
-//    runs between the preserve-state read and the post-condition read)
-//    and, AFTER it completes, writes the TRACKED change.txt to disk. The
-//    on-disk file survives (real git has already run); the post-condition
-//    read (3) then reports the tracked file as dirty — the honest
-//    `restored: false` shape, not a fabricated one. Tracked is
-//    load-bearing: the post-condition filter excludes untracked `??` lines
-//    by design (#750: `git clean` is forbidden, so untracked dirt is never
-//    a failed restore) — a forced test failure must inject TRACKED dirt.
-//    The work is still moved (branch created, pick
-//    staged, commit made), so the "NOT restored" claim comes from the
-//    success path and rides in the rendered handoff (asserted in sections
-//    3-4 below).
+//    "repoRoot was NOT restored" claim. The injected file must be TRACKED
+//    (tracked.txt from the base commit): the post-condition filter excludes
+//    untracked `??` lines by design (#750), so untracked dirt would never
+//    read as a failed restore. The work is still moved (branch created,
+//    pick staged, commit made), so the "NOT restored" claim comes from
+//    the success path and rides in the rendered handoff (asserted below).
 // ---------------------------------------------------------------------------
 {
   const { dir, wt, branchSha } = buildTempRepo();
@@ -238,23 +227,6 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
       execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
     const state = stateFor(968, branchName, branchSha, wt);
     process.env.PI_ENSEMBLE_FORGE = "none";
-    // The stub intercepts the `git checkout --force` command (which runs
-    // between the preserve-state read and the post-condition read) and
-    // modifies the TRACKED tracked.txt on disk after that command completes.
-    // The on-disk file survives (real git has already run); the
-    // post-condition read (the third root status call) reports the tracked
-    // file as dirty — the honest `restored: false` shape.
-    //
-    // NOTE: The consolidation process runs `git checkout` (without
-    // `--force`) to switch to the feature branch BEFORE the restore. The
-    // `git checkout --force` is only used in the restore itself, so we
-    // write the dirt after the FIRST (and only) `git checkout --force`.
-    //
-    // IMPORTANT: We must write to a file that IS TRACKED in the original
-    // checkout (operator-feature). The base commit includes tracked.txt,
-    // so it's tracked on operator-feature. Writing to it makes it a tracked
-    // modification (M), not an untracked file (??), which the post-condition
-    // filter would exclude.
     const dirtFile = join(dir, "tracked.txt");
     let dirtWritten = false;
     let dirtWriteError: unknown;
