@@ -140,7 +140,14 @@ export function evaluateRoundCapMerge(
   // Condition 2: the verdict must be ISSUES_FOUND. A REVIEW_INCOMPLETE or
   // CRITICAL_ISSUES_FOUND entry is not a "ran out of rounds" signal — it is
   // a "the review did not complete" or "a critical finding is open" signal,
-  // and neither qualifies (the driver's cap applies the same rule).
+  // and neither qualifies (the driver's cap applies the same rule). A
+  // legacy entry with no verdict detail (no `detail`) is also not a
+  // qualifying signal: the rule cannot verify the verdict, so it is not
+  // the deciding one — the guard's strict rule (the original refusal text)
+  // applies instead.
+  if (lens.detail === undefined) {
+    return { applies: false, allowed: false };
+  }
   if (lens.detail !== "ISSUES_FOUND") {
     return {
       applies: true,
