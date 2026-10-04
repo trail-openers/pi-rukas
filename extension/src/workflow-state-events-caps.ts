@@ -148,4 +148,11 @@ export type WorkCapLiteral =
   | "fence-violation:develop"
   // #746 task-b — branch-step early dirty-root block: a stray untracked/
   // modified file at repoRoot BEFORE any develop dispatch. Deliberate park.
-  | "repo-root-residue";
+  | "repo-root-residue"
+  // #973 — the lens review returned the no-review outcome (decision 4: an
+  // empty delta, nothing changed since the last recorded lens run). The
+  // driver treats it as a STOP (a no-review is NOT an approval — never a
+  // fake lens-approved event the nextStep router would trust). Defensively
+  // reached: runLens supplies its own diff, so this cap can only fire
+  // through a `since`-shaped call (e.g. an injected lensReviewFn).
+  | "no-review-outcome";
