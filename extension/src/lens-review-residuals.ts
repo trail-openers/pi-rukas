@@ -144,6 +144,24 @@ async function doPost(
   // (review-ledger.ts branchPatchId, the PR's actual base).
   const remote = await remoteName(execFn, cwd);
   if (!remote) throw new Error("no git remote found (origin/upstream/first)");
+  // #973 review — the patch-id is computed against FRESH refs: the guard
+  // fetches the branch before its own patch-id, so the marker must use the
+  // same refs (a local clone that has not seen the latest push would
+  // compute a stale patch-id and the guard's marker check would fail even
+  // though the post "succeeded" — the disclosure would never match). The
+  // fetch runs first; on a fetch failure nothing is posted and the failure
+  // is reported (fail closed — the caller's catch returns the note).
+  try {
+    await execFn(`git fetch ${remote} ${headBranch} ${baseBranch}`, {
+      cwd,
+      maxBuffer: 64 * 1024,
+      timeout: 30_000,
+    });
+  } catch (err) {
+    throw new Error(
+      `git fetch ${remote} ${headBranch} ${baseBranch} failed: ${(err as Error).message?.slice(0, 200) ?? "unknown error"} — the disclosure was not posted (fail closed; the merge guard will refuse until the disclosure is posted)`,
+    );
+  }
   const patchId = await branchPatchId(
     execFn,
     cwd,
