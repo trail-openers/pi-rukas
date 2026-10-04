@@ -18,6 +18,7 @@ import {
   TARGET,
 } from "./merge-guard-helpers.ts";
 import type { LedgerEntry } from "./merge-guard-helpers.ts";
+import { evaluateRoundCapMerge } from "../src/merge-guard-round-cap.ts";
 
 await setupLedgerPath();
 
@@ -262,6 +263,34 @@ await setupLedgerPath();
       else process.env.PI_ENSEMBLE_LENS_ROUND_CAP_MERGE = prev;
     }
   }
+}
+
+// A malformed ledger row (non-string headSha/detail) must refuse with a
+// named condition — it must NEVER throw (no .slice on a non-string).
+{
+  const malformed = {
+    branch: "feature/x",
+    kind: "lens",
+    patchId: "p1",
+    passed: false,
+    at: 2,
+    detail: 0,
+    hasCritical: false,
+    round: 3,
+    headSha: 42,
+  } as unknown as LedgerEntry;
+  let threw = false;
+  let decision: ReturnType<typeof evaluateRoundCapMerge> | undefined;
+  try {
+    decision = evaluateRoundCapMerge([malformed], "feature/x", "p1", [], "abc123");
+  } catch {
+    threw = true;
+  }
+  assert(!threw, "a malformed row (non-string headSha/detail) does not throw");
+  assert(
+    decision !== undefined && decision.applies === true && decision.allowed === false,
+    "…it is a refusal (not a pass, not 'applies: false')",
+  );
 }
 
 teardownLedger();
