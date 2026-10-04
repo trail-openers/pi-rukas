@@ -45,6 +45,12 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
             "Working directory; defaults to current; also the cwd for `git diff <base>...<head>` when base+head are given.",
         }),
       ),
+      since: Type.Optional(
+        Type.String({
+          description:
+            "#973 — the delta base: a commit ref the review diffs from (`git diff <since>..<head>`). When given, the lenses review ONLY the delta, with the full base...head range as context. The FIRST review on a branch is always a full review; the tool's auto-delta base (the latest lens entry's headSha) applies when `since` is absent and a prior lens entry exists.",
+        }),
+      ),
     }),
     async execute(_id, raw) {
       const params = raw as {
@@ -53,6 +59,7 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
         cwd?: string;
         base?: string;
         head?: string;
+        since?: string;
       };
       const hasDiff = typeof params.diff === "string" && params.diff.length > 0;
       const hasRange = typeof params.base === "string" && typeof params.head === "string";
@@ -75,12 +82,15 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
           // CRITICAL nor INCOMPLETE. INCOMPLETE means at least one lens
           // failed all retries (#3) — the review did NOT actually run every
           // pass, so PM/user must decide whether to retry or override.
+          // #973 — a delta review that found nothing since the last recorded
+          // run returns a deltaReview flag on the summary; the text says so.
+          const text = renderSummary(summary, MAX_LENS_ATTEMPTS);
           return {
             role: "lens-review",
             ok:
               summary.verdict !== "CRITICAL_ISSUES_FOUND" &&
               summary.verdict !== "REVIEW_INCOMPLETE",
-            text: renderSummary(summary, MAX_LENS_ATTEMPTS),
+            text: summary.note ? `${text}\n\n${summary.note}` : text,
             toolUses: [],
             ms: Date.now() - start,
             exitCode: 0,

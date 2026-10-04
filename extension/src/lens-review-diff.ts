@@ -19,12 +19,16 @@
  * install-oriented message as `parseError`.
  */
 
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { bySeverityCounts, computeVerdict, dedupeFindings } from "./lens-review-format.ts";
 import type { LensRunResult, Severity, Verdict } from "./lens-review.ts";
 import type { Finding } from "./lens-review.ts";
 import type { RosterEntry } from "./lens-roster.ts";
-import { computeRangeDiff } from "./review-diff.ts";
+import { computeDeltaDiff, computeRangeDiff } from "./review-diff.ts";
+
+const execFileP = promisify(execFile);
 
 /**
  * Resolve the review's diff from either a pasted string or a ref range.
@@ -55,6 +59,67 @@ export async function resolveLensDiff(opts: {
   return {
     problem: "lens review: no diff supplied (pass `diff`, or both `base` and `head`)",
   };
+}
+
+/**
+ * #973 — the delta review's diff resolution (see `computeDeltaDiff` for the
+ * empty-delta contract).
+ *
+ * The `head` defaults to the current HEAD (the commit the review is run
+ * against); a caller naming an explicit `head` reviews that commit.
+ *
+ * `noReview` is the #973 "empty delta" outcome: `since` IS a valid commit
+ * AND the range `since..head` is empty — nothing changed since the last
+ * recorded lens run, which is the churn the delta path exists to stop. It is
+ * deliberately distinct from an error: the caller returns the no-review
+ * result (no fan-out, no ledger entry) rather than blocking the review or
+ * reading emptiness as an approval (the #384 rule, which applies to a
+ * confirmed-empty FULL diff and is untouched here).
+ */
+export async function resolveDeltaDiff(
+  since: string,
+  head: string | undefined,
+  cwd: string | undefined,
+): Promise<
+  | { noReview: true; since: string; head: string; reason: string }
+  | { noReview: false; since: string; head: string; diff: string; problem?: undefined }
+  | { noReview: false; since: string; head: string; problem: string; diff?: undefined }
+> {
+  const c = cwd ?? process.cwd();
+  let resolvedHead: string;
+  if (head) {
+    resolvedHead = head;
+  } else {
+    // No explicit head: the current HEAD of the cwd's repo (the commit the
+    // review runs against). Resolved before the diff so the no-review
+    // outcome can name it in its reason.
+    try {
+      const { stdout } = await execFileP("git", ["-C", c, "rev-parse", "HEAD"], {
+        maxBuffer: 8 * 1024,
+      });
+      resolvedHead = stdout.trim();
+    } catch (err) {
+      return {
+        noReview: false,
+        since,
+        head: "HEAD",
+        problem: `lens review: cannot resolve the current HEAD in ${c}: ${(err as Error).message?.slice(0, 200) ?? "unknown error"}`,
+      };
+    }
+  }
+  const d = await computeDeltaDiff(c, since, resolvedHead);
+  if (!d.ok) {
+    return { noReview: false, since, head: resolvedHead, problem: `lens review: ${d.reason}`, diff: undefined };
+  }
+  if (d.empty) {
+    return {
+      noReview: true,
+      since,
+      head: resolvedHead,
+      reason: `no changes since ${since.slice(0, 8)} (nothing to review — the delta path exists to stop the churn)`,
+    };
+  }
+  return { noReview: false, since, head: resolvedHead, diff: d.diff, problem: undefined };
 }
 
 /**
