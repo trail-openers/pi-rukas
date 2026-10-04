@@ -139,7 +139,11 @@ export type DeltaDiff =
   | { ok: true; diff: ""; empty: true }
   | { ok: false; reason: string };
 
-export async function computeDeltaDiff(cwd: string, since: string, head: string): Promise<DeltaDiff> {
+export async function computeDeltaDiff(
+  cwd: string,
+  since: string,
+  head: string,
+): Promise<DeltaDiff> {
   for (const ref of [since, head]) {
     if (ref.startsWith("-")) {
       return {

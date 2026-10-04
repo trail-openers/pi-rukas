@@ -380,7 +380,9 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
   return [
     `Code review verdict (${s.lenses.length} lenses): ${s.verdict}`,
     ...(s.deltaReview
-      ? ["Delta review: findings below cover only `git diff " + s.deltaReview.since + ".." + s.deltaReview.head + "` since the last recorded lens run — not the full branch diff."]
+      ? [
+          `Delta review: findings below cover only \`git diff ${s.deltaReview.since}..${s.deltaReview.head}\` since the last recorded lens run — not the full branch diff.`,
+        ]
       : []),
     `Total findings: ${s.totalFindings}  (${sevSummary || "none"})`,
     ...blockedBanner,

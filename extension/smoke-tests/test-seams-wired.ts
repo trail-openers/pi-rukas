@@ -194,6 +194,8 @@ const SEAMS: Seam[] = [
       readLedgerAt: "the never-throwing reader; exercised by test-merge-guard.ts",
       lensBlockedByThreshold:
         "the driver-side threshold predicate; exercised by test-review-ledger.ts",
+      bumpLensRound:
+        "the #973 round counter; wired in appendLedgerEntry (review-ledger.ts) and exercised by test-review-ledger.ts",
     },
     canary: { symbol: "appendLedgerEntry", importer: "adversarial-ledger.ts" },
   },
