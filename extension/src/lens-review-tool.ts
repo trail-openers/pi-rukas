@@ -48,7 +48,7 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
       since: Type.Optional(
         Type.String({
           description:
-            "#973 — the delta base: a commit ref the review diffs from (`git diff <since>..<head>`). When given, the lenses review ONLY the delta, with the full base...head range as context. The FIRST review on a branch is always a full review; the tool's auto-delta base (the latest lens entry's headSha) applies when `since` is absent and a prior lens entry exists.",
+            "#973 — the delta base: a commit ref the review diffs from (`git diff <since>..<head>`). When given, the lenses review ONLY the delta, with the full base...head range as context. The FIRST review on a branch is always a full review; to re-review only what changed since the last recorded lens run, pass that run's headSha (the review records it in the ledger) as `since`. An empty delta (no changes since `since`) is a no-review outcome — no re-review, no ledger entry.",
         }),
       ),
     }),

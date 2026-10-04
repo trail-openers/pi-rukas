@@ -23,12 +23,12 @@
  *     failure (no marker, the guard refuses).
  */
 
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { postLensResidualDisclosure } from "../src/lens-review-residuals.ts";
-import { lensResidualsMarker } from "../src/merge-guard-round-cap.ts";
 import type { LensReviewSummary } from "../src/lens-review.ts";
+import { lensResidualsMarker } from "../src/merge-guard-round-cap.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -40,7 +40,10 @@ function assert(cond: boolean, msg: string) {
 }
 
 /** A minimal summary shape the post reads (verdict + findings). */
-function summary(verdict: string, findings: Array<{ severity: string; path: string; line: number; title: string; lens: string }>): LensReviewSummary {
+function summary(
+  verdict: string,
+  findings: Array<{ severity: string; path: string; line: number; title: string; lens: string }>,
+): LensReviewSummary {
   return {
     verdict: verdict as never,
     totalFindings: findings.length,
@@ -105,7 +108,7 @@ function repoDir(): string {
 {
   const m = lensResidualsMarker("feature/x", "p42");
   assert(
-    m === `<!-- pi-rukas:lens-residuals branch=feature/x patch=p42 -->`,
+    m === "<!-- pi-rukas:lens-residuals branch=feature/x patch=p42 -->",
     "the marker is exactly the hidden HTML comment with branch + patch",
   );
 }
@@ -125,12 +128,18 @@ function repoDir(): string {
       execFn,
     });
     assert(note === "", "a successful post returns no note (nothing to report)");
-    assert(calls.some((c) => c.includes("pr comment 12")), "the post issued a `gh pr comment` call");
+    assert(
+      calls.some((c) => c.includes("pr comment 12")),
+      "the post issued a `gh pr comment` call",
+    );
     // The body the post wrote to the temp file carried the marker (the
     // comment call references the body file; the marker is in the body).
     // The stub does not capture the file content, so assert the comment
     // call happened AND the branch + patch were resolved on the way.
-    assert(calls.some((c) => c.includes("patch-id")), "…after computing the patch-id (the marker's patch)");
+    assert(
+      calls.some((c) => c.includes("patch-id")),
+      "…after computing the patch-id (the marker's patch)",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -149,7 +158,10 @@ function repoDir(): string {
       execFn,
     });
     assert(note === "", "APPROVED returns no note");
-    assert(!calls.some((c) => c.includes("pr comment")), "APPROVED posts NOTHING (design decision 2)");
+    assert(
+      !calls.some((c) => c.includes("pr comment")),
+      "APPROVED posts NOTHING (design decision 2)",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -189,7 +201,10 @@ function repoDir(): string {
       execFn,
     });
     assert(note === "", "CRITICAL_ISSUES_FOUND returns no note");
-    assert(!calls.some((c) => c.includes("pr comment")), "CRITICAL_ISSUES_FOUND posts nothing (the guard refuses on the ledger entry itself)");
+    assert(
+      !calls.some((c) => c.includes("pr comment")),
+      "CRITICAL_ISSUES_FOUND posts nothing (the guard refuses on the ledger entry itself)",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -211,7 +226,12 @@ function repoDir(): string {
     });
     assert(note !== "", "a failed post returns a note");
     assert(/disclosure FAILED/.test(note), "…naming the failure (fail closed)");
-    assert(/cannot post comment/.test(note) || /no open PR/.test(note) || /cannot determine the forge/.test(note), "…carrying the error the post hit");
+    assert(
+      /cannot post comment/.test(note) ||
+        /no open PR/.test(note) ||
+        /cannot determine the forge/.test(note),
+      "…carrying the error the post hit",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -238,7 +258,12 @@ function repoDir(): string {
       execFn,
     });
     assert(note !== "", "no PR number returns a note");
-    assert(/no open PR\/MR/.test(note) || /no PR number/.test(note) || /cannot determine the forge/.test(note), "…naming the missing open PR (no marker posted)");
+    assert(
+      /no open PR\/MR/.test(note) ||
+        /no PR number/.test(note) ||
+        /cannot determine the forge/.test(note),
+      "…naming the missing open PR (no marker posted)",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
