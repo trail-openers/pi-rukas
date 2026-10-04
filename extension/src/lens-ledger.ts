@@ -36,8 +36,9 @@ const execp = promisify(exec);
  * (whether the reviewed verdict carried a CRITICAL finding) and `headSha`
  * (the commit reviewed, resolved when a caller names the branch). The
  * `round` is added by `appendLedgerEntry` (`bumpLensRound`) against the
- * file's previous contents, so the writer does not read the ledger itself
- * — one read site, one writer of the counter.
+ * file's previous contents, so the writer does not read the ledger itself —
+ * `bumpLensRound` in review-ledger.ts is the only read-and-write site of
+ * the counter (the writer never touches it).
  */
 export function writeLensLedgerEntry(
   verdict: string,

@@ -157,6 +157,7 @@ export async function makeHook(env: {
       if (env.failFetch) throw new Error("unable to connect");
       return { stdout: "" };
     }
+    // Remote resolution: origin → upstream → first remote.
     if (cmd.includes("git config --get remote.origin.url")) {
       if (env.remote === "origin") return { stdout: "git@github.com:o/r.git\n" };
       return { stdout: "" };
