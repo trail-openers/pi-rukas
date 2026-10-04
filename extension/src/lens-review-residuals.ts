@@ -102,7 +102,7 @@ async function doPost(
   // empty or does not name a number is "no open PR/MR" (fail closed).
   let prNumber: number | undefined;
   if (detection.forge === "gitlab") {
-    const { stdout } = await execFn(cmds.prListCmd("gitlab", { sourceBranch: branch }), {
+    const { stdout } = await execFn(cmds.prListCmd("gitlab", { sourceBranch: branch, state: "open" }), {
       cwd,
       maxBuffer: 8 * 1024,
       timeout: 30_000,
@@ -111,7 +111,7 @@ async function doPost(
     const first = rows[0];
     prNumber = Array.isArray(rows) && first ? first.iid : undefined;
   } else {
-    const { stdout } = await execFn(cmds.prListCmd("github", { sourceBranch: branch }), {
+    const { stdout } = await execFn(cmds.prListCmd("github", { sourceBranch: branch, state: "open" }), {
       cwd,
       maxBuffer: 8 * 1024,
       timeout: 30_000,
