@@ -296,7 +296,8 @@ await setupLedgerPath();
 // Condition 4 (malformed round): a non-integer `round` (a string or a
 // float that slipped past the loader) must count as round 1 — a `??`-style
 // coercion would let `"3"` through `< 3` and ALLOW the merge. No cast; the
-// guards must refuse, never throw.
+// guards must refuse, never throw. The marker comment (condition 5) is
+// supplied so the round condition is the one under test.
 {
   const good = {
     branch: "feature/x",
@@ -308,8 +309,10 @@ await setupLedgerPath();
     hasCritical: false,
     headSha: "abc123",
   };
-  const badRound = (round: unknown) =>
-    { ...good, round } as unknown as LedgerEntry;
+  const MARKER_COMMENT =
+    "residual findings\n<!-- pi-rukas:lens-residuals branch=feature/x patch=p1 -->";
+  const roundOk = (round: unknown) =>
+    evaluateRoundCapMerge([{ ...good, round }], "feature/x", "p1", [MARKER_COMMENT], "abc123");
   const badRounds: Array<[string, unknown]> = [
     ["\"3\" (a string)", "3"],
     ["true (a boolean)", true],
@@ -319,7 +322,7 @@ await setupLedgerPath();
     let threw = false;
     let decision: ReturnType<typeof evaluateRoundCapMerge> | undefined;
     try {
-      decision = evaluateRoundCapMerge([badRound(value)], "feature/x", "p1", [], "abc123");
+      decision = roundOk(value);
     } catch {
       threw = true;
     }
@@ -328,11 +331,15 @@ await setupLedgerPath();
       decision !== undefined && decision.applies === true && decision.allowed === false,
       `…a malformed round (${label}) is a refusal (never coerced into a pass)`,
     );
+    assert(
+      decision !== undefined && /round 1/.test(decision.failedCondition ?? ""),
+      `…a malformed round (${label}) counts as round 1 (names the round condition)`,
+    );
   }
-  const ok = evaluateRoundCapMerge([badRound(3) as unknown as LedgerEntry], "feature/x", "p1", [], "abc123");
+  const ok = roundOk(3);
   assert(
     ok.applies === true && ok.allowed === true,
-    "an integer round 3 satisfies condition 4 (allowed)",
+    "an integer round 3 satisfies condition 4 (allowed with marker + matching headSha)",
   );
 }
 
