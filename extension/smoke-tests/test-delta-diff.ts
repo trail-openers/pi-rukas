@@ -33,8 +33,8 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { computeDeltaDiff, computeRangeDiff } from "../src/review-diff.ts";
 import { resolveDeltaDiff } from "../src/lens-review-diff.ts";
+import { computeDeltaDiff, computeRangeDiff } from "../src/review-diff.ts";
 
 const execp = promisify(exec);
 
@@ -135,7 +135,10 @@ async function mkRepo(): Promise<{ dir: string; c0: string; c1: string; c2: stri
     });
     const diverged = (await execp("git rev-parse HEAD", { cwd: dir })).stdout.trim();
     const r = await computeDeltaDiff(dir, c1, diverged);
-    assert(r.ok === true, "a two-dot delta over a divergent branch computes (no ancestry required)");
+    assert(
+      r.ok === true,
+      "a two-dot delta over a divergent branch computes (no ancestry required)",
+    );
     assert(r.ok === true && r.empty === false, "...and the diff is non-empty (the divergence)");
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -198,7 +201,10 @@ async function mkRepo(): Promise<{ dir: string; c0: string; c1: string; c2: stri
     const r = await resolveDeltaDiff(c2, c2, dir);
     assert(r.noReview === true, "an empty delta is a no-review (the churn-stopping outcome)");
     assert(r.noReview === true && r.since === c2, "...with the since ref carried through");
-    assert(r.noReview === true && /no changes since/.test(r.reason), "...and the reason names the no-change");
+    assert(
+      r.noReview === true && /no changes since/.test(r.reason),
+      "...and the reason names the no-change",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -226,8 +232,14 @@ async function mkRepo(): Promise<{ dir: string; c0: string; c1: string; c2: stri
   try {
     const r = await resolveDeltaDiff("not-a-real-ref", c2, dir);
     assert(r.noReview === false, "an invalid since is NOT a no-review");
-    assert(r.noReview === false && r.problem !== undefined, "...it is a problem (a block, not an approval)");
-    assert(r.noReview === false && r.problem !== undefined && r.problem.includes("not-a-real-ref"), "...naming the offending ref");
+    assert(
+      r.noReview === false && r.problem !== undefined,
+      "...it is a problem (a block, not an approval)",
+    );
+    assert(
+      r.noReview === false && r.problem !== undefined && r.problem.includes("not-a-real-ref"),
+      "...naming the offending ref",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -21,6 +21,14 @@
  * nothing — an APPROVED run makes the marker moot because the guard's
  * strict rule already passes on that run's passed:true entry.
  *
+ * The post itself routes through the project's canonical comment seam
+ * (forge-comments.ts `postPrComment`, #775) — the same shape the #712
+ * guard's REST/verb doors and the driver's handoff fallback use — rather
+ * than re-deriving a forge-specific argv by hand. The guard reads the
+ * marker back through its own comments read (merge-guard.ts
+ * `readPrCommentBodies`), which is the same shape the adapter's
+ * `prComments` seam lists.
+ *
  * Best-effort by design: every fault (no PR number, no remote, no base
  * ref, patch-id failure, forge post failure) is caught, traced, and
  * reported — never thrown, and never silently swallowed (the caller sees
@@ -28,25 +36,21 @@
  */
 
 import { exec } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { postPrComment } from "./forge-comments.ts";
 import { detectForge } from "./forge-detect.ts";
 import type { LensReviewSummary } from "./lens-review.ts";
 import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
-import { type LedgerEntry, branchPatchId, latestEntry, remoteName } from "./review-ledger.ts";
+import { branchPatchId, remoteName } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
 
 const execp = promisify(exec);
 
 /**
  * Post the residual-findings disclosure for a completed lens review.
- *
- * `findings` is the review's deduped finding list (from the summary). The
- * branch's ledger entries are read from the file the writer just appended
- * to (the write is fire-and-forget, so the caller passes the path; a
- * missing/unreadable file yields no auto-`since` but does not block the
- * post — the marker is about the PR, not the ledger).
  *
  * Returns the text the caller appends to the tool result (empty on
  * success — nothing extra to say; one line naming the failure otherwise).
@@ -55,7 +59,6 @@ export async function postLensResidualDisclosure(opts: {
   summary: LensReviewSummary;
   branch?: string;
   cwd: string;
-  ledgerFile?: string;
   execFn?: typeof execp;
 }): Promise<string> {
   const { summary, branch, cwd } = opts;
@@ -80,12 +83,7 @@ export async function postLensResidualDisclosure(opts: {
 }
 
 async function doPost(
-  opts: {
-    summary: LensReviewSummary;
-    branch?: string;
-    cwd: string;
-    ledgerFile?: string;
-  },
+  opts: { summary: LensReviewSummary; branch?: string; cwd: string; execFn?: typeof execp },
   execFn: typeof execp,
   cwd: string,
   branch: string,
@@ -94,7 +92,7 @@ async function doPost(
   // The PR for the branch (the guard resolves it the same way — the forge
   // CLI on the current branch; the caller runs from the branch's repo).
   const detection = await detectForge(cwd, { allowProbe: false });
-  if (detection.source === "unknown") {
+  if (detection.forge === "unknown") {
     throw new Error(`cannot determine the forge for ${cwd} (no PR number)`);
   }
   let prNumber: number | undefined;
@@ -174,49 +172,30 @@ async function doPost(
     marker,
     "",
   ].join("\n");
-  // Post via a body file (the driver's discloseResidualFindings pattern —
-  // `--body-file` avoids shell-quoting issues with multi-line bodies).
-  const dir = mkdtempSync(path.join("/tmp", "pi-lens-residuals-"));
-  const file = path.join(dir, "residuals.md");
-  writeFileSync(file, body, "utf8");
-  const cmd =
-    detection.forge === "gitlab"
-      ? `glab mr note ${prNumber} --body-file ${JSON.stringify(file)}`
-      : `gh pr comment ${prNumber} --body-file ${JSON.stringify(file)}`;
-  await execFn(cmd, { cwd, maxBuffer: 256 * 1024, timeout: 30_000 });
-  return "";
-}
-
-/**
- * #973 — the auto delta base (design decision 6): the latest lens entry's
- * `headSha` for the branch, when present AND an ancestor of the given ref
- * (the caller passes the head the review will run against). Returns
- * undefined when no entry has a `headSha`, when the sha is not an ancestor
- * of `headRef`, or when the ancestry check fails (fail to the full review).
- */
-export async function autoDeltaSince(
-  entries: LedgerEntry[],
-  branch: string,
-  headRef: string,
-  cwd: string,
-  execFn?: typeof execp,
-): Promise<string | undefined> {
-  const fn = execFn ?? execp;
-  const latest = latestEntry(entries, branch, "lens");
-  const sha = latest?.headSha;
-  if (!sha) return undefined;
+  // Post via the project's canonical comment seam (forge-comments.ts
+  // postPrComment, #775) — the SAME shape the driver's handoff fallback
+  // uses, rather than a forge-specific argv re-derived here. The body file
+  // is written to a temp dir for the lifetime of the post (`--body-file`
+  // avoids shell-quoting issues with multi-line bodies) and removed
+  // afterwards.
+  const dir = mkdtempSync(path.join(tmpdir(), "pi-lens-residuals-"));
   try {
-    // `git merge-base --is-ancestor <sha> <head>` exits 0 when sha is an
-    // ancestor of head. A non-ancestor means the branch was rebased or the
-    // sha is from a divergent history — the delta would be wrong, so the
-    // caller falls back to a full review.
-    await fn(`git merge-base --is-ancestor ${sha} ${headRef}`, {
-      cwd,
-      maxBuffer: 8 * 1024,
-      timeout: 30_000,
-    });
-    return sha;
-  } catch {
-    return undefined;
+    const file = path.join(dir, "residuals.md");
+    writeFileSync(file, body, "utf8");
+    await postPrComment(
+      {
+        forge: detection.forge,
+        run: (cmd, map) =>
+          execFn(cmd, { cwd, maxBuffer: 256 * 1024, timeout: 30_000 }).then(({ stdout }) =>
+            map(stdout),
+          ),
+        withBodyFile: (_prefix, _b, withFile) => withFile(file),
+      },
+      prNumber,
+      body,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
+  return "";
 }

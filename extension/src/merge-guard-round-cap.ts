@@ -58,6 +58,16 @@
  * knows exactly what is missing (re-run the review to advance the round,
  * wait for the marker post to land, re-review after a new commit, …). The
  * guard renders the refusal verbatim.
+ *
+ * ## Threat model (marker authorship)
+ *
+ * The marker check reads every comment on the PR and accepts a marker from
+ * ANY author, including one embedded in a fenced code block — the marker is
+ * branch + patch-anchored, and the PR's own merge must pass every other
+ * guard condition anyway. The threat model is the honest-but-forgetful
+ * agent (a post that failed to land), not an adversary: forge comment
+ * authorship is not a capability the guard models anywhere (no condition
+ * here checks the author), so modelling it here would be theatre.
  */
 
 import { type LedgerEntry, latestEntry } from "./review-ledger.ts";
