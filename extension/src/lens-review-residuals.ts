@@ -40,6 +40,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import * as cmds from "./forge-commands.ts";
 import { postPrComment } from "./forge-comments.ts";
 import { detectForge } from "./forge-detect.ts";
 import type { LensReviewSummary } from "./lens-review.ts";
@@ -95,21 +96,29 @@ async function doPost(
   if (detection.forge === "unknown") {
     throw new Error(`cannot determine the forge for ${cwd} (no PR number)`);
   }
+  // The PR/MR for the BRANCH (the canonical by-source-branch lookup,
+  // forge-commands.ts prListCmd — `glab mr view` with no argument reads the
+  // MR for the CURRENT branch, not necessarily this one). A list that is
+  // empty or does not name a number is "no open PR/MR" (fail closed).
   let prNumber: number | undefined;
   if (detection.forge === "gitlab") {
-    const { stdout } = await execFn("glab mr view --output json", {
+    const { stdout } = await execFn(cmds.prListCmd("gitlab", { sourceBranch: branch }), {
       cwd,
       maxBuffer: 8 * 1024,
       timeout: 30_000,
     });
-    prNumber = (JSON.parse(stdout) as { iid?: number }).iid;
+    const rows = JSON.parse(stdout) as Array<{ iid?: number }>;
+    const first = rows[0];
+    prNumber = Array.isArray(rows) && first ? first.iid : undefined;
   } else {
-    const { stdout } = await execFn("gh pr view --json number", {
+    const { stdout } = await execFn(cmds.prListCmd("github", { sourceBranch: branch }), {
       cwd,
       maxBuffer: 8 * 1024,
       timeout: 30_000,
     });
-    prNumber = (JSON.parse(stdout) as { number?: number }).number;
+    const rows = JSON.parse(stdout) as Array<{ number?: number }>;
+    const first = rows[0];
+    prNumber = Array.isArray(rows) && first ? first.number : undefined;
   }
   if (typeof prNumber !== "number") {
     throw new Error(`no open PR/MR for branch ${branch} (no PR number resolved)`);
@@ -192,28 +201,31 @@ async function doPost(
   ].join("\n");
   // Post via the project's canonical comment seam (forge-comments.ts
   // postPrComment, #775) — the SAME shape the driver's handoff fallback
-  // uses, rather than a forge-specific argv re-derived here. The body file
-  // is written to a temp dir for the lifetime of the post (`--body-file`
-  // avoids shell-quoting issues with multi-line bodies) and removed
-  // afterwards.
-  const dir = mkdtempSync(path.join(tmpdir(), "pi-lens-residuals-"));
-  try {
-    const file = path.join(dir, "residuals.md");
-    writeFileSync(file, body, "utf8");
-    await postPrComment(
-      {
-        forge: detection.forge,
-        run: (cmd, map) =>
-          execFn(cmd, { cwd, maxBuffer: 256 * 1024, timeout: 30_000 }).then(({ stdout }) =>
-            map(stdout),
-          ),
-        withBodyFile: (_prefix, _b, withFile) => withFile(file),
+  // uses. postPrComment's withBodyFile OWNS the body→file lifecycle here:
+  // it writes the body to a fresh temp file, hands the path to the
+  // `--body-file` command (avoids shell-quoting issues with multi-line
+  // bodies), and removes the file afterwards — no local temp-dir
+  // bookkeeping in this module.
+  await postPrComment(
+    {
+      forge: detection.forge,
+      run: (cmd, map) =>
+        execFn(cmd, { cwd, maxBuffer: 256 * 1024, timeout: 30_000 }).then(({ stdout }) =>
+          map(stdout),
+        ),
+      withBodyFile: async (_prefix, b, withFile) => {
+        const dir = mkdtempSync(path.join(tmpdir(), "pi-lens-residuals-"));
+        try {
+          const file = path.join(dir, "residuals.md");
+          writeFileSync(file, b, "utf8");
+          return await withFile(file);
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
       },
-      prNumber,
-      body,
-    );
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+    },
+    prNumber,
+    body,
+  );
   return "";
 }
