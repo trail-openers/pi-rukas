@@ -204,8 +204,14 @@ export function evaluateRoundCapMerge(
   // Condition 4: the round must be >= MAX_REVIEW_ROUNDS (3). A legacy
   // entry without `round` counts as round 1 — never enough (design
   // decision 3). The constant is the driver's (work-driver-context.ts),
-  // not a second independently-tuned number.
-  const round = lens.round ?? 1;
+  // not a second independently-tuned number. A malformed row (a non-integer
+  // `round` that slipped past the loader) counts as round 1 the same way a
+  // missing one does — the `typeof`/`Number.isInteger` guards mean a
+  // string like "3" or a float like 3.5 can never be coerced into a pass
+  // (a `??`-style fallback would let them through `< MAX_REVIEW_ROUNDS`)
+  // and must refuse, never throw (no cast).
+  const round =
+    typeof lens.round === "number" && Number.isInteger(lens.round) ? lens.round : 1;
   if (round < MAX_REVIEW_ROUNDS) {
     return {
       applies: true,
