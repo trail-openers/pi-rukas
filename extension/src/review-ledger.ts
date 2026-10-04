@@ -381,7 +381,18 @@ export async function appendLedgerEntry(
         merged = [];
       }
       try {
-        writeFileSync(tmp, JSON.stringify({ entries: [...merged, entry] }, null, 2), "utf8");
+        // #973 review — the rename-race fallback applies the SAME invariants
+        // as the happy path: dedupe (the merged file may carry stale rows
+        // the happy path would have collapsed) and the round bump (the
+        // merged content may already hold the previous latest lens entry,
+        // whose round the new one must advance — a bare `[...merged, entry]`
+        // would record the same round twice or a round the driver never
+        // spent, and the guard's `round >= 3` check would fire early or
+        // never). A race is rare; it must not quietly write a ledger the
+        // happy path would never write.
+        const deduped = dedupeLatest(merged);
+        deduped.push(bumpLensRound(entry, deduped));
+        writeFileSync(tmp, JSON.stringify({ entries: deduped }, null, 2), "utf8");
         renameSync(tmp, file);
       } catch (err3) {
         trace(`review-ledger: write failed: ${(err3 as Error).message}`);

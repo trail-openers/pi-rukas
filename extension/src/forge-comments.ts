@@ -78,7 +78,7 @@ export async function listPrComments(
  * `{"comments": [...]}` — extract the array. GitLab (notes endpoint)
  * returns a bare JSON array. This helper handles both shapes.
  */
-function extractCommentRows(forge: ForgeType, stdout: string): unknown[] {
+export function extractCommentRows(forge: ForgeType, stdout: string): unknown[] {
   const trimmed = stdout.trim();
   if (!trimmed || !trimmed.startsWith("{")) {
     // GitLab: bare array (or empty).
