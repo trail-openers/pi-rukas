@@ -1,44 +1,45 @@
 /**
  * review-ledger — the per-clone record that a branch's changes were reviewed.
  *
- * #912. Incident (sibling project lievo, 2026-09-27): a PM managing work
+ * #912. The incident (sibling project lievo, 2026-09-27): a PM managing work
  * OUTSIDE the /work driver merged two PRs on a developer's self-report plus
  * green CI — skipping adversarial_loop and dispatch_lens_review. Prompt
- * doctrine demanded both; the prompt layer is what failed. This module is
- * the structural floor: a per-clone ledger the merge guard (merge-guard.ts)
- * reads before any agent-run PR/MR merge.
+ * doctrine demanded both; the prompt layer is what failed. This module is the
+ * structural floor: a per-clone ledger that the merge guard
+ * (merge-guard.ts) reads before any agent-run PR/MR merge.
  *
  * ## What is stored
  *
  * One JSON file under the git COMMON dir (`git rev-parse --git-common-dir`),
- * shared by every worktree of the clone. Each entry is
+ * so every worktree of the clone shares it. Each entry is
  *
  *   { branch, kind: "adversarial" | "lens", patchId, passed, at }
  *
  * The writer stores `passed` — computed by the shared predicates
- * (adversarialPassed / lensPassed, the same functions the driver applies to
- * the verdicts — so writer and guard compute identical patchIds and pass/fail
- * booleans for the same content). The guard trusts the stored boolean; it
- * re-derives nothing.
+ * (adversarialPassed / lensPassed, the same functions the driver itself
+ * applies to the verdicts — so the writer and the guard compute identical
+ * patchIds and identical pass/fail booleans for the same content). The guard
+ * trusts the stored boolean; it re-derives nothing.
  *
  * ## Failure isolation
  *
  * A ledger write is a side effect of a review, never a gate on it. Every
  * fault here — no git dir, detached head without a caller-supplied branch,
  * patch-id failure, an unreadable or corrupt file, a rename race — is
- * swallowed and traced; the review's own result must come back
+ * swallowed and traced. The review's own result must come back
  * byte-identical whether the write ran or threw.
  *
  * ## Concurrency
  *
- * Writes are atomic (temp file in the same directory + rename); just before
- * the rename the file is re-read and merged, so a concurrent writer's entry
- * survives under ours.
+ * Writes are atomic (temp file in the same directory + rename). Just before
+ * the rename the file is re-read and merged: if a concurrent writer added an
+ * entry in the meantime, its entry survives under ours.
  */
 
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { ledgerPathFor } from "./review-ledger-path.ts";
+import { bumpLensRound } from "./review-ledger-round.ts";
 import { trace } from "./trace.ts";
 import { type VerifyExecFn, detectMainline } from "./work-driver-git.ts";
 
@@ -84,9 +85,11 @@ export type LedgerExecFn = VerifyExecFn;
 
 /**
  * #955 file-size split: `ledgerPathFor` (and its one-time override trace)
- * live in review-ledger-path.ts; the re-export keeps importers unchanged.
+ * live in review-ledger-path.ts; the re-export below keeps importers
+ * unchanged.
  */
 export { ledgerPathFor } from "./review-ledger-path.ts";
+export { bumpLensRound } from "./review-ledger-round.ts";
 
 /**
  * The patch id of a branch's changes: the diff from `baseRef` to the branch
@@ -104,6 +107,7 @@ export async function branchPatchId(
   baseRef: string,
 ): Promise<string | undefined> {
   try {
+    // `git patch-id --stable` over the diff of the branch's own commits.
     // Piping here is intentional: patch-id reads the diff from stdin.
     const { stdout } = await execFn(`git diff ${baseRef}..${branchRef} | git patch-id --stable`, {
       cwd,
@@ -140,7 +144,7 @@ export async function remoteName(execFn: LedgerExecFn, cwd: string): Promise<str
       });
       if (stdout.trim()) return name;
     } catch {
-      /* try the next remote */
+      /* try the next */
     }
   }
   try {
@@ -163,7 +167,8 @@ export async function remoteName(execFn: LedgerExecFn, cwd: string): Promise<str
  * properties fall out of that:
  *
  *   - the diff covers what the adversarial loop actually saw (its reviewer
- *     reads the working tree, including uncommitted fixes),
+ *     reads the working tree, including fixes the fix-developer applied but
+ *     has not yet committed),
  *   - when those fixes are later committed UNCHANGED, the id recomputed at
  *     merge time matches the stored one (committing identical content does
  *     not change the content's patch-id).
@@ -171,11 +176,11 @@ export async function remoteName(execFn: LedgerExecFn, cwd: string): Promise<str
  * A PR whose base branch is NOT the mainline will not match: the guard
  * computes its patchId against `<remote>/<PR base>` (merge-guard.ts), the
  * patchId differs, and the mismatch fails closed — the operator re-runs the
- * reviews (see docs/troubleshooting.md).
+ * reviews (see docs/troubleshooting.md → "A merge was refused: review ledger").
  *
- * `untracked` names the untracked files the worktree diff could not cover;
- * the entry is still written for the tracked content, and the warning is
- * returned so the caller traces the gap.
+ * `untracked` names the untracked files the worktree diff could not cover.
+ * The entry is still written for the tracked content, but the warning is
+ * returned so the caller traces it — the gap is visible to the operator.
  */
 export async function workingTreePatchId(
   execFn: LedgerExecFn,
@@ -306,7 +311,8 @@ export function lensPassed(verdict: string, threshold: string): boolean {
  * The driver-side twin of `lensPassed`: does this verdict fail AT the given
  * threshold? The ISSUES_FOUND branch of `computeVerdict` (lens-review.ts)
  * applies this exact comparison, and the ledger writer applies `lensPassed`
- * with the SAME resolved threshold — the predicate has one implementation.
+ * with the SAME resolved threshold — the threshold predicate has one
+ * implementation.
  */
 export function lensBlockedByThreshold(
   verdict: string,
@@ -332,12 +338,13 @@ export async function appendLedgerEntry(
     if (!file) return "no git common dir (not a git worktree)";
     const dir = path.dirname(file);
     if (!existsSync(dir)) {
-      // The common dir of a real clone always exists — a missing one means
-      // something is off; trace and skip.
+      // The common dir of a real clone always exists; a missing one means
+      // something is off — trace and skip, never create git internals.
       return `ledger dir ${dir} does not exist`;
     }
-    // Re-read just before the rename: a concurrent writer may have appended
-    // in the meantime; merging keeps its entry alive.
+    // Re-read immediately before writing: a concurrent writer may have
+    // appended between our first read and this rename; merging keeps its
+    // entry alive.
     let entries: LedgerEntry[] = [];
     try {
       entries = validEntries(readLedgerFile(file).entries);
@@ -345,15 +352,17 @@ export async function appendLedgerEntry(
       entries = [];
     }
     // Bounded file: keep only the latest entry per (branch, kind) — the
-    // guard (latestEntry) reads only the latest anyway.
+    // guard (latestEntry) reads only the latest anyway, so older entries
+    // would be dead weight accumulating one row per review run per clone.
     entries = dedupeLatest(entries);
-    // #973 — a lens write advances the branch's round counter in place: the
-    // dedupe above keeps the previous latest lens entry, so its round (legacy
-    // rows without one count as 1) IS the last recorded round, and the next
-    // is a pure function of the file's previous contents. Older rows for the
-    // same branch are historical — the guard's latestEntry picks the highest
-    // `at` regardless, so a hand-edited or legacy multi-row file still
-    // counts the most recent round.
+    // #973 — a lens write advances the branch's round counter in place:
+    // the dedupe above keeps the previous latest lens entry, so its round
+    // (legacy rows without one count as 1) IS the last recorded round, and
+    // the next is a pure function of the file's previous contents. The
+    // LATEST lens row per branch is what the guard reads; older rows for
+    // the same branch are historical (the guard's latestEntry picks the
+    // highest `at` regardless, so a hand-edited or legacy multi-row file
+    // still counts the most recent round).
     entries.push(bumpLensRound(entry, entries));
     const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
     writeFileSync(tmp, JSON.stringify({ entries }, null, 2), "utf8");
@@ -362,10 +371,12 @@ export async function appendLedgerEntry(
     } catch (err2) {
       // A concurrent writer may have created the file first. Re-read, merge,
       // write once more; if even that races the entry is lost — a ledger miss
-      // fails the merge closed, the safe direction.
+      // fails the merge closed, which is the safe direction.
       let merged: LedgerEntry[] = [];
       try {
-        if (existsSync(file)) merged = JSON.parse(readFileSync(file, "utf8")).entries ?? [];
+        if (existsSync(file)) {
+          merged = JSON.parse(readFileSync(file, "utf8")).entries ?? [];
+        }
       } catch {
         merged = [];
       }
@@ -460,34 +471,6 @@ export function latestEntry(entries: LedgerEntry[], branch: string, kind: Review
     if (!best || e.at >= best.at) best = e;
   }
   return best;
-}
-
-/**
- * #973 — advance the round counter for a lens write: a COMPLETED review
- * (verdict ISSUES_FOUND, APPROVED or CRITICAL_ISSUES_FOUND) runs as the
- * previous latest lens entry's `round` + 1 (legacy entries without `round`
- * count as 1; no previous lens entry is a first run, which is round 1). An
- * INCOMPLETE review (an explicit REVIEW_INCOMPLETE verdict — killed or
- * aborted runs; a legacy row without `detail` still counts as completed,
- * as before) does NOT advance the counter — it carries the previous round
- * unchanged (or is a first run, round 1, when there is no previous entry).
- * Otherwise a killed run wedged between two completed runs would consume a
- * round the driver never spent, and the guard's `round >= 3` cap condition
- * would fire one run early. Adversarial writes and rows for other branches
- * pass through unchanged. The input rows are the deduped contents of the
- * ledger file as re-read immediately before this write, so the number is
- * deterministic in the file's state.
- */
-export function bumpLensRound(entry: LedgerEntry, existing: LedgerEntry[]): LedgerEntry {
-  if (entry.kind !== "lens") return entry;
-  let prev: LedgerEntry | undefined;
-  for (const e of existing) {
-    if (e.branch !== entry.branch || e.kind !== "lens") continue;
-    if (!prev || e.at >= prev.at) prev = e;
-  }
-  const completed = entry.detail !== "REVIEW_INCOMPLETE";
-  const next = completed ? (prev ? (prev.round ?? 1) : 0) + 1 : (prev?.round ?? 1);
-  return { ...entry, round: next };
 }
 
 /** Read + validate the ledger from a resolved path; never throws. */
