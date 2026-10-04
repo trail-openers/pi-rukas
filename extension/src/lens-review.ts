@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -18,12 +17,15 @@ import {
 import {
   DEFAULT_REVIEW_THRESHOLD,
   LENS_PREFIX,
+  type LensReviewSummary,
   type Verdict,
   bySeverityCounts,
   computeVerdict,
   dedupeFindings,
   extractFindings,
+  isSeverity,
   lensProducedEvidence,
+  piSkillsDir,
   renderSummary,
 } from "./lens-review-format.ts";
 import { postLensResidualDisclosure } from "./lens-review-residuals.ts";
@@ -56,6 +58,7 @@ export {
   extractFindings,
   lensProducedEvidence,
   renderSummary,
+  type LensReviewSummary,
 };
 import { aggregateLensUsage } from "./lens-review-usage.ts";
 export type LensName = string; // deliberately unbounded — the roster is data-driven from SKILL.md frontmatter (#873)
@@ -162,65 +165,16 @@ export interface LensRunResult {
   usage?: DispatchUsage;
 }
 
-export interface LensReviewSummary {
-  verdict: Verdict;
-  totalFindings: number;
-  bySeverity: Record<Severity, number>;
-  lenses: LensRunResult[];
-  /** #543 — a dispatch-cap kill (loop / token-budget) hit one of the lens
-   * children; the driver emits the fixed-literal cap-hit from this. */
-  capKill?: DispatchResult["killCause"];
-  /** #543 — the structured trigger evidence for the cap kill, carried
-   * from the killed lens's DispatchResult so the driver can persist it
-   * on `pipelineState.capEvidence` (F4(j)). */
-  capKillEvidence?: { tool: string; count: number } | { budget: number; used: number };
-  /** Deduplicated, precedence-ordered list. */
-  findings: Finding[];
-  /**
-   * #534 — raw sum of `usage` across all six lenses, summed as-is with no
-   * per-lens dedup (matching the retry-double-count-is-accepted rule the
-   * rest of the driver uses). Undefined when every lens was blocked, so
-   * the emission site can distinguish "the review spent nothing" from
-   * "the review spent zero tokens".
-   */
-  usage?: DispatchUsage;
-  /**
-   * #973 — a residual-findings disclosure note, set when the run's verdict is
-   * ISSUES_FOUND and the post of the disclosure to the PR/MR failed (fail
-   * closed — the merge guard then refuses until the disclosure is posted).
-   * Empty/undefined on success; the tool appends it to the summary text.
-   */
-  note?: string;
-  /**
-   * #973 — this review ran against a delta (`git diff <since>..<head>`) rather
-   * than the full branch diff. `auto` marks the automatic delta base (design
-   * decision 6 — `since` defaulted to the latest lens ledger entry's `headSha`)
-   * as distinct from an operator-supplied `since`. The findings it produced are
-   * findings on the DELTA; a later full review still owns the rest of the branch.
-   */
-  deltaReview?: { since: string; head: string; auto?: boolean };
-  /**
-   * #973 — the no-review outcome (decision 4): the delta was empty (nothing
-   * changed since the last recorded lens run), so no review ran at all. The
-   * verdict is kept as APPROVED (the Verdict union is unchanged — it is not a
-   * review outcome) but every consumer MUST branch on this flag: this is NOT
-   * an approval. `renderSummary` renders "NO REVIEW — …" (never "APPROVED"),
-   * the tool result's `ok`/text says so, and the /work driver's
-   * `applyLensVerdict` must not append a `lens-approved` event for it.
-   */
-  noReview?: boolean;
-}
-
-function piSkillsDir(): string {
-  return process.env.PI_ENSEMBLE_SKILLS_DIR ?? path.join(os.homedir(), ".pi", "agent", "skills");
-}
-
 /**
  * The ONE exit path: writes the ledger entry and returns the summary.
- * #966 — `passed` is derived from the RESOLVED verdict (via `lensPassed`
- * inside `writeLensLedgerEntry`); every all-fail/abort/kill shape reaches
- * here with REVIEW_INCOMPLETE, so the passed:true path is protected by
- * construction (no caller feeds it a passing verdict for an all-fail run).
+ *
+ * #966 — the ledger's `passed` is derived from the RESOLVED verdict (via
+ * `lensPassed` inside `writeLensLedgerEntry`), and every run shape that
+ * fails, aborts or kills its lenses reaches this exit with a
+ * REVIEW_INCOMPLETE verdict, so the `passed:true` path is protected by
+ * construction: no caller feeds this exit a passing verdict for an
+ * all-fail/all-abort run, and the "write nothing" path (no branch / no
+ * patchId) is the only silent path that remains.
  */
 async function finish(
   summary: LensReviewSummary,
@@ -254,10 +208,6 @@ async function finish(
   return summary;
 }
 
-export function isSeverity(s: string): s is Severity {
-  return s === "CRITICAL" || s === "HIGH" || s === "MEDIUM" || s === "LOW";
-}
-
 export async function runLensReview(opts: {
   diff?: string;
   context?: string;
@@ -272,8 +222,11 @@ export async function runLensReview(opts: {
   /** #973 — force a full review (the automatic delta base is not consulted;
    * an explicit `since` still wins when given). */
   full?: boolean;
-  /** #966 — the per-lens spawner (the real `runLensChild` by default;
-   * tests inject a stub so an all-fail run is drivable offline). */
+  /**
+   * #966 — the per-lens spawner (the real `runLensChild` by default;
+   * tests inject a stub so an all-fail run is drivable offline, the issue's
+   * "start a lens job with stub children" acceptance criterion).
+   */
   lensChildFn?: typeof import("./lens-review-child.ts").runLensChild;
   /**
    * Post-change content of files the diff touches, rendered for the prompt.
@@ -287,11 +240,17 @@ export async function runLensReview(opts: {
    * `/work` and `/review` through this one path.
    */
   extraFindings?: Finding[];
-  /** #799 — the parent pi for the inner children's slow-run watch. */
+  /** #799 — the parent pi for the inner children's slow-run watch (the PM
+   * notice half; the watch site has no pi of its own). */
   pi?: Pick<import("@earendil-works/pi-coding-agent").ExtensionAPI, "sendUserMessage">;
   /** Blocking bar; defaults to MEDIUM. See `DEFAULT_REVIEW_THRESHOLD`. */
   threshold?: Severity;
-  /** #912 — caller-supplied branch for the review-ledger write (see lens-ledger.ts). */
+  /**
+   * #912 — caller-supplied branch for the review-ledger write (the driver
+   * worktrees are detached, so `git rev-parse --abbrev-ref HEAD` cannot
+   * recover it). When absent the writer recovers the branch from `HEAD`
+   * and skips (traces) on a detached head.
+   */
   branch?: string;
 }): Promise<LensReviewSummary> {
   const runId = makeRunId();
@@ -299,9 +258,21 @@ export async function runLensReview(opts: {
   // The RESOLVED threshold (computed once; both the verdict and the ledger
   // write apply the same bar).
   const threshold = opts.threshold ?? DEFAULT_REVIEW_THRESHOLD;
-  // #873 — the roster is data (see buildExpectedRoster / buildLensRoster):
-  // installed + bundled lens skills, blocked entries for missing/broken ones.
+  // #873 — the roster is data: the INSTALLED skills dir's `code-review-*`
+  // SKILL.md files (precedence in frontmatter), PLUS a blocked entry for
+  // every expected lens (the BUNDLED skill/ dir) that is absent from the
+  // installed dir or has a dangling skill — a lens must never silently
+  // disappear from a six-pass review (five lenses + APPROVED). Blocked
+  // entries (missing/duplicate precedence, unparseable SKILL.md, `name:` ≠
+  // dir, skill not installed) become blocked lens results below →
+  // REVIEW_INCOMPLETE; the review never runs a silently reduced or reordered
+  // roster.
   const roster = buildExpectedRoster(skillsDir);
+  // #859 — ref-range diffs: when `diff` is absent and base+head are present,
+  // the diff is computed ONCE and fed to every lens. An error (invalid ref,
+  // confirmed-empty range, cap overflow, nothing supplied) blocks the whole
+  // review — a computed diff is never silently empty, never an approval
+  // (same rule as #384). Blocked rows use the EXPECTED roster above.
   let delta: { since: string; head: string; auto?: boolean } | undefined;
   let diff = "";
   let context: string;
@@ -380,13 +351,20 @@ export async function runLensReview(opts: {
   if (roster.length === 0) {
     const problem =
       skillsDirUsable(skillsDir) ?? `no usable code-review-* lens skills in ${skillsDir}`;
-    // #966 — one blocked row per bundled lens via
-    // `installBlockRowsForRoster` (named-row logic in ONE place, the #872
-    // doctrine) and the SAME single finish exit the other blocked shapes
-    // use (the LENSES-fallback, deck bookkeeping, etc. — see the helper;
-    // the guard IS the single install exit, since every empty-roster shape
-    // diverts here and never reaches the empty-`computeVerdict` APPROVED
-    // hole). See the guard's comment above for the full shape.
+    // #966 — one blocked row per bundled lens (the #872 install-block shape,
+    // routed through `installBlockRowsForRoster` so the named-row logic
+    // lives in ONE place — the #872 doctrine, preserved here via the
+    // #873/#966 guard rather than a second early exit that could drift
+    // back into the empty-`computeVerdict` APPROVED hole; the removed #872
+    // early exit was dead code, since this guard already diverts every
+    // empty-roster shape to this single finish exit). Deck
+    // bookkeeping (start → bump per row → clear) happens inside
+    // `blockedReviewSummary` below, so the operator sees the same
+    // one-batch-row-and-bumped-per-lens shape the old `runInstallBlock`
+    // produced. The LENSES-fallback for an unreadable bundled dir is
+    // inside the helper (same as `blockedRowsForRoster([])`'s single-row
+    // shape, but with the install message as `parseError` rather than a
+    // generic "no usable" fallback).
     const blocked = blockedReviewSummary(
       runId,
       opts.extraFindings,
@@ -396,9 +374,14 @@ export async function runLensReview(opts: {
     );
     return await finish(blocked, threshold, opts.cwd, opts.branch);
   }
-  // #966 — an aborted signal is a user kill: every lens blocked, no children
-  // spawned, SAME finish path as a non-aborted all-fail run (checked BEFORE the
-  // deck batch registers); runLensChild governs already-spawned children.
+  // #966 — an aborted signal is a user kill: every lens is recorded blocked,
+  // no children are spawned, and the run proceeds to the SAME finish path as
+  // a non-aborted all-fail run — verdict REVIEW_INCOMPLETE, one ledger write,
+  // nothing special. Checked BEFORE `startPersistentBatch` so no deck batch
+  // (and its ticker) is ever registered for a run that cannot start. The
+  // in-loop signal check inside runLensChild still governs children that
+  // were already spawned before an abort arrives mid-fan-out; the normal
+  // fan-out path clears its batch via `clearBatchEntry(batchKey)` below.
   if (opts.signal?.aborted) {
     const blockRows = blockedRowsForRoster(roster, "aborted before start");
     const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
