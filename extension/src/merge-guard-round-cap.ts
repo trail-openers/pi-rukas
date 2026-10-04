@@ -13,69 +13,15 @@
  * a capped-but-merge-worthy hand-managed PR needs a manual operator merge.
  *
  * This module is that alignment, evaluated by the guard (merge-guard.ts)
- * AFTER the adversarial check has already passed. It mirrors
- * * work-driver-lens-cap.ts's constants (MAX_REVIEW_ROUNDS = 3, the
- * ISSUES_FOUND-only condition, the CRITICAL-always-refuses rule) rather than
- * introducing a second independently-tuned number, and it reuses
- * `latestEntry` from review-ledger.ts for the round count (the new `round`
- * field on the latest lens entry, per design decision 3 — the guard only
- * ever consults the latest lens row per branch, so the round lives on the
- * entry, and only that row's round is what the cap counts against).
- *
- * ## The conditions (all must hold for the round-cap path to allow the merge)
- *
- *   1. Escape hatch off: `PI_ENSEMBLE_LENS_ROUND_CAP_MERGE` is not `"0"`
- *      (design decision 7 — the strict latest-entry rule applies otherwise).
- *   2. The latest lens entry's verdict is ISSUES_FOUND (a REVIEW_INCOMPLETE
- *      or CRITICAL_ISSUES_FOUND entry never qualifies — same rule the
- *      driver's cap applies: only a genuine ISSUES_FOUND verdict is a
- *      "ran out of rounds, findings are small" signal).
- *   3. The latest lens entry has `hasCritical === false`. A legacy entry
- *      without the field (pre-#973) cannot satisfy this — conservative
- *      refusal (design decision 3).
- *   4. The latest lens entry's `round >= MAX_REVIEW_ROUNDS` (3). A legacy
- *      entry without `round` counts as round 1 — never enough (design
- *      decision 3; the acceptance criterion's "existing entries count as
- *      rounds but cannot satisfy 'no CRITICAL'" is covered by condition 3,
- *      which is the stricter of the two on a legacy row).
- *   5. The PR/MR carries the disclosure marker (see `lensResidualsMarker`
- *      below), posted by `dispatch_lens_review` when its verdict is
- *      ISSUES_FOUND and an open PR/MR exists (design decision 2). The
- *      marker's `patch=` must equal the guard's current `branchPatchId`
- *      (design decision 1 — the SAME id the guard already computes, against
- *      the PR's actual base branch). A stale marker (a different patch)
- *      fails condition 5 — the findings it disclosed are for an older
- *      patch, not the one about to merge.
- *  6. The latest lens entry's `headSha` equals the PR's CURRENT head commit
- *     (the OID the guard has already fetched and compared against the
- *     PR's `headOid` — the guard passes that value here). A lens review
- *     that reviewed an OLDER commit must not satisfy the cap: the commits
- *     after it are unreviewed by the lens. A legacy entry without `headSha`
- *     (or a stale one) refuses, naming the condition — conservative
- *     refusal, the same rule condition 3 applies to `hasCritical`.
- *
- * The guard's existing strict rule (the latest lens entry must be `passed`)
- * still applies first — the round-cap path is an ADDITIONAL path that allows
- * a merge the strict rule would refuse. `PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE`
- * (the operator escape hatch for the whole guard) is unchanged and is
- * checked before this module is ever reached.
- *
- * ## Refusal naming
- *
- * Every refusal names the specific condition that failed, so the operator
- * knows exactly what is missing (re-run the review to advance the round,
- * wait for the marker post to land, re-review after a new commit, …). The
- * guard renders the refusal verbatim.
- *
- * ## Threat model (marker authorship)
- *
- * The marker check reads every comment on the PR and accepts a marker from
- * ANY author, including one embedded in a fenced code block — the marker is
- * branch + patch-anchored, and the PR's own merge must pass every other
- * guard condition anyway. The threat model is the honest-but-forgetful
- * agent (a post that failed to land), not an adversary: forge comment
- * authorship is not a capability the guard models anywhere (no condition
- * here checks the author), so modelling it here would be theatre.
+ * AFTER the adversarial check has already passed. Its entry point is
+ * `evaluateRoundCapMerge`; the full rule (the conditions, the refusal
+ * naming, the escape hatch) lives in AGENTS.md §1 and in
+ * work-driver-lens-cap.ts's own routing — this module mirrors those
+ * constants rather than introducing a second independently-tuned number.
+ * Marker threat model: the marker check accepts a marker from ANY comment
+ * author — the marker is branch + patch-anchored, and the PR's own merge
+ * must pass every other guard condition anyway (the threat model is the
+ * honest-but-forgetful agent, not an adversary).
  */
 
 import { type LedgerEntry, latestEntry } from "./review-ledger.ts";
@@ -165,19 +111,30 @@ export function evaluateRoundCapMerge(
   // Condition 2: the verdict must be ISSUES_FOUND. A REVIEW_INCOMPLETE or
   // CRITICAL_ISSUES_FOUND entry is not a "ran out of rounds" signal — it is
   // a "the review did not complete" or "a critical finding is open" signal,
-  // and neither qualifies (the driver's cap applies the same rule). A
-  // legacy entry with no verdict detail (no `detail`) is also not a
-  // qualifying signal: the rule cannot verify the verdict, so it is not
-  // the deciding one — the guard's strict rule (the original refusal text)
-  // applies instead.
-  if (lens.detail === undefined) {
-    return { applies: false, allowed: false };
-  }
-  if (lens.detail !== "ISSUES_FOUND") {
+  // and neither qualifies (the driver's cap applies the same rule). A legacy
+  // row with NO `detail` field is not a qualifying signal either — the rule
+  // cannot verify the verdict, so this path is not the deciding one and the
+  // guard's strict rule (the original refusal text) applies instead. A
+  // MALFORMED row (a non-string `detail` that slipped past the loader) is
+  // still a refusal naming the verdict condition, not a silent "not
+  // applicable" — the rule cannot verify it either way, and a corrupted row
+  // must not be waved through. (typeof guard, no cast: a malformed row must
+  // refuse, never throw.)
+  const detail = typeof lens.detail === "string" ? lens.detail : undefined;
+  if (detail === undefined) {
+    if (lens.detail === undefined) return { applies: false, allowed: false };
     return {
       applies: true,
       allowed: false,
-      failedCondition: `the latest lens entry's verdict is ${lens.detail ?? "unknown"}, not ISSUES_FOUND — the round-cap rule applies only to a review that ran out of rounds with small findings outstanding`,
+      failedCondition:
+        "the latest lens entry's verdict is malformed (not a string) — the round-cap rule cannot verify the verdict, so the merge is refused; re-run the review to record a verdict",
+    };
+  }
+  if (detail !== "ISSUES_FOUND") {
+    return {
+      applies: true,
+      allowed: false,
+      failedCondition: `the latest lens entry's verdict is ${detail}, not ISSUES_FOUND — the round-cap rule applies only to a review that ran out of rounds with small findings outstanding`,
     };
   }
   // Condition 3: hasCritical must be false. A legacy entry without the
@@ -221,8 +178,11 @@ export function evaluateRoundCapMerge(
   // commit. A review of an older commit cannot satisfy the cap — the
   // commits after it are unreviewed by the lens. A legacy entry without
   // `headSha` cannot satisfy it either (conservative refusal, the same
-  // rule condition 3 applies to `hasCritical`).
-  if (lens.headSha === undefined) {
+  // rule condition 3 applies to `hasCritical`). A malformed row (a
+  // non-string `headSha`) is treated as ABSENT the same way — it must
+  // refuse, never throw (typeof guard, no .slice on a non-string).
+  const headSha = typeof lens.headSha === "string" ? lens.headSha : undefined;
+  if (headSha === undefined) {
     return {
       applies: true,
       allowed: false,
@@ -230,11 +190,11 @@ export function evaluateRoundCapMerge(
         "the latest lens entry has no headSha (legacy entry) — the round-cap rule cannot verify the review covered the PR's current head; re-run the review to record it",
     };
   }
-  if (lens.headSha !== prHeadOid) {
+  if (headSha !== prHeadOid) {
     return {
       applies: true,
       allowed: false,
-      failedCondition: `the latest lens entry reviewed ${lens.headSha.slice(0, 8)}, not the PR's current head ${prHeadOid.slice(0, 8)} — the branch moved after the review; re-run dispatch_lens_review on the current head`,
+      failedCondition: `the latest lens entry reviewed ${headSha.slice(0, 8)}, not the PR's current head ${prHeadOid.slice(0, 8)} — the branch moved after the review; re-run dispatch_lens_review on the current head`,
     };
   }
   return { applies: true, allowed: true };
