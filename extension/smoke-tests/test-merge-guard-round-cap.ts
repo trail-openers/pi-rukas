@@ -293,6 +293,49 @@ await setupLedgerPath();
   );
 }
 
+// Condition 4 (malformed round): a non-integer `round` (a string or a
+// float that slipped past the loader) must count as round 1 — a `??`-style
+// coercion would let `"3"` through `< 3` and ALLOW the merge. No cast; the
+// guards must refuse, never throw.
+{
+  const good = {
+    branch: "feature/x",
+    kind: "lens",
+    patchId: "p1",
+    passed: false,
+    at: 2,
+    detail: "ISSUES_FOUND",
+    hasCritical: false,
+    headSha: "abc123",
+  };
+  const badRound = (round: unknown) =>
+    { ...good, round } as unknown as LedgerEntry;
+  const badRounds: Array<[string, unknown]> = [
+    ["\"3\" (a string)", "3"],
+    ["true (a boolean)", true],
+    ["3.5 (a non-integer float)", 3.5],
+  ];
+  for (const [label, value] of badRounds) {
+    let threw = false;
+    let decision: ReturnType<typeof evaluateRoundCapMerge> | undefined;
+    try {
+      decision = evaluateRoundCapMerge([badRound(value)], "feature/x", "p1", [], "abc123");
+    } catch {
+      threw = true;
+    }
+    assert(!threw, `a malformed round (${label}) does not throw`);
+    assert(
+      decision !== undefined && decision.applies === true && decision.allowed === false,
+      `…a malformed round (${label}) is a refusal (never coerced into a pass)`,
+    );
+  }
+  const ok = evaluateRoundCapMerge([badRound(3) as unknown as LedgerEntry], "feature/x", "p1", [], "abc123");
+  assert(
+    ok.applies === true && ok.allowed === true,
+    "an integer round 3 satisfies condition 4 (allowed)",
+  );
+}
+
 teardownLedger();
 console.log(`\nexit ${exit}`);
 process.exit(exit);
