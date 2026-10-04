@@ -276,11 +276,17 @@ export async function runLensReview(opts: {
   /** #966 — the per-lens spawner (the real `runLensChild` by default;
    * tests inject a stub so an all-fail run is drivable offline). */
   lensChildFn?: typeof import("./lens-review-child.ts").runLensChild;
-  /** Post-change content of files the diff touches, rendered for the prompt.
-   * Supplied by the caller because only it knows the branch ref. */
+  /**
+   * Post-change content of files the diff touches, rendered for the prompt.
+   * Supplied by the caller because only it knows the branch ref; see
+   * `readFileAtBranch`.
+   */
   evidence?: string;
-  /** Deterministic findings produced without a model — currently `claim-scan`.
-   * They join the lens findings before dedup and verdict. */
+  /**
+   * Deterministic findings produced without a model — currently `claim-scan`.
+   * They join the lens findings before dedup and verdict, so they reach both
+   * `/work` and `/review` through this one path.
+   */
   extraFindings?: Finding[];
   /** #799 — the parent pi for the inner children's slow-run watch (the PM
    * notice half; the watch site has no pi of its own). */
