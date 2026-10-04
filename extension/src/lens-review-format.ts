@@ -306,6 +306,17 @@ function killCauseSuffix(r: LensRunResult): string {
 }
 
 export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): string {
+  // #973 — the no-review outcome (decision 4): the delta was empty, so no
+  // review ran. This is NOT an approval — the summary must say "NO REVIEW",
+  // never "APPROVED" (a no-review outcome looking like an approval is the
+  // #384 silent-approval class in a new shape).
+  if (s.noReview) {
+    return [
+      `NO REVIEW — no changes since the last lens review (${s.deltaReview?.since.slice(0, 8)} at ${s.deltaReview?.head.slice(0, 8)}) — nothing to review, no verdict rendered.`,
+      "",
+      "The branch is unchanged since the last recorded lens run; re-run dispatch_lens_review with `full: true` (or after a new commit) to review the full branch diff.",
+    ].join("\n");
+  }
   const blockedLenses = s.lenses.filter((r) => r.blocked);
   const retriedLenses = s.lenses.filter((r) => !r.blocked && r.attempts > 1);
 

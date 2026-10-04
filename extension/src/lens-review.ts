@@ -199,6 +199,16 @@ export interface LensReviewSummary {
    * findings on the DELTA; a later full review still owns the rest of the branch.
    */
   deltaReview?: { since: string; head: string; auto?: boolean };
+  /**
+   * #973 — the no-review outcome (decision 4): the delta was empty (nothing
+   * changed since the last recorded lens run), so no review ran at all. The
+   * verdict is kept as APPROVED (the Verdict union is unchanged — it is not a
+   * review outcome) but every consumer MUST branch on this flag: this is NOT
+   * an approval. `renderSummary` renders "NO REVIEW — …" (never "APPROVED"),
+   * the tool result's `ok`/text says so, and the /work driver's
+   * `applyLensVerdict` must not append a `lens-approved` event for it.
+   */
+  noReview?: boolean;
 }
 
 function piSkillsDir(): string {
@@ -384,6 +394,11 @@ export async function runLensReview(opts: {
       // #973 — decision 4: nothing changed since the last recorded lens run.
       note: `No changes since the last lens review (${resolved.since.slice(0, 8)}) — no re-review needed (nothing to review).`,
       deltaReview: { since: resolved.since, head: resolved.head },
+      // #973 review — the no-review outcome flag (decision 4): this is NOT
+      // an approval. The verdict stays APPROVED (the Verdict union is
+      // unchanged) but every consumer must branch on `noReview` — the
+      // summary renders "NO REVIEW — …", never "APPROVED".
+      noReview: true,
     };
   }
   // #966 — the empty-roster guard: a skills dir that resolves to ZERO

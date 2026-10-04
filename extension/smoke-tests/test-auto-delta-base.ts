@@ -66,6 +66,7 @@ mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
 const { resolveDeltaSince, resolveReviewDiff } = await import("../src/lens-review-diff.ts");
 const { runLensReview } = await import("../src/lens-review.ts");
 const { LENS_ROSTER } = await import("../src/lens-roster.ts");
+const { renderSummary } = await import("../src/lens-review-format.ts");
 
 // --- fixture: skills dir with all bundled lens skills ---
 function fixtureSkillsDir(name: string): { dir: string; cleanup: () => void } {
@@ -272,6 +273,52 @@ const branch = "feature/work";
       threshold: "MEDIUM",
     });
     assert(d.kind === "noReview", "headSha == HEAD → no-review outcome");
+  } finally {
+    cleanup(r.dir, r.ledgerFile);
+  }
+}
+
+// (4b) no-review outcome at the runLensReview level: the summary carries
+// noReview: true, and renderSummary says "NO REVIEW", never "APPROVED"
+// (a no-review outcome must not look like an approval).
+{
+  const r = await mkRepo();
+  writeLedger(r.ledgerFile, [
+    {
+      branch,
+      kind: "lens",
+      patchId: "p1",
+      passed: true,
+      at: 1000,
+      detail: "APPROVED",
+      hasCritical: false,
+      headSha: r.c2, // == HEAD → auto since == head → empty delta
+      round: 1,
+    },
+  ]);
+  try {
+    const s = await runLensReview({
+      base: "main",
+      head: "feature/work",
+      cwd: r.dir,
+      branch,
+      lensChildFn: async () => {
+        throw new Error("lensChildFn must not be called on a no-review run");
+      },
+    });
+    assert(s.noReview === true, "no-review summary carries noReview: true");
+    assert(
+      s.noReview === true && s.deltaReview?.since === r.c2,
+      "…with the since ref carried on deltaReview",
+    );
+    assert(
+      renderSummary(s, 4).startsWith("NO REVIEW"),
+      "renderSummary says 'NO REVIEW …' for a no-review outcome",
+    );
+    assert(
+      !/verdict.*APPROVED/.test(renderSummary(s, 4)),
+      "…and never prints an APPROVED verdict for it",
+    );
   } finally {
     cleanup(r.dir, r.ledgerFile);
   }
