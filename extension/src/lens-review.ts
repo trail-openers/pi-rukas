@@ -439,12 +439,14 @@ export async function runLensReview(opts: {
   // head is named (the ledger write omits them; a later round-cap check
   // fails closed on the missing field — conservative by design).
   const hasCritical = deduped.some((f) => f.severity === "CRITICAL");
-  // #973 review — `delta.head` is already resolved to a full OID by
-  // resolveDeltaDiff (execFile, no shell); `opts.head` is a caller-supplied
-  // ref, resolved here via execFile with a leading-dash rejection (a ref
-  // beginning with `-` would be parsed by git as an option — argument
-  // injection — and is never a legitimate ref name here, the same rule
-  // `refIsCommit` in review-diff.ts applies).
+  // #973 — the ledger write's headSha (the commit the review actually
+  // covered). The DELTA arm uses `delta.head` — already a full OID by the
+  // time we get here (resolveDeltaDiff resolved it: explicit `head` or the
+  // cwd repo's HEAD, via execFile). The NON-DELTA arm rev-parses
+  // `opts.head ?? "HEAD"` here (a caller-supplied ref, resolved via execFile
+  // with a leading-dash rejection: a ref beginning with `-` would be parsed
+  // by git as an option — argument injection — and is never a legitimate
+  // ref name here, the same rule `refIsCommit` in review-diff.ts applies).
   const reviewHead = delta ? delta.head : (opts.head ?? "HEAD");
   let headSha: string | undefined;
   if (delta) headSha = delta.head || undefined;
@@ -458,7 +460,12 @@ export async function runLensReview(opts: {
         },
       );
       headSha = stdout.trim() || undefined;
-    } catch {
+    } catch (err) {
+      trace(
+        `lens-review: headSha resolution failed for ${reviewHead}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
       headSha = undefined;
     }
   }
