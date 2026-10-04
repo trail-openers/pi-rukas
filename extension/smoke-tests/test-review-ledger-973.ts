@@ -74,6 +74,36 @@ const execp = async (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) =
   // A write for a DIFFERENT branch does not see the other branch's round.
   const otherBranch = bumpLensRound({ ...base, branch: "feature/y", at: 8000 }, [third]);
   assert(otherBranch.round === 1, "a write for a different branch is round 1 for that branch");
+  // #973 fix — ONLY a completed review advances the counter. A killed or
+  // REVIEW_INCOMPLETE run carries the previous round unchanged, so the
+  // exact driver sequence ISSUES_FOUND (r1) → REVIEW_INCOMPLETE (r2) →
+  // ISSUES_FOUND (r3) is what the acceptance test below asserts ends at
+  // round 2 through the FULL write path.
+  const aborted: LedgerEntry = {
+    branch: "feature/x",
+    kind: "lens",
+    patchId: "p2",
+    passed: false,
+    at: 4500,
+    detail: "REVIEW_INCOMPLETE",
+  };
+  const afterAbort = bumpLensRound(aborted, [first, second]);
+  assert(
+    afterAbort.round === 2,
+    "an aborted (REVIEW_INCOMPLETE) write carries the previous round unchanged",
+  );
+  const afterAbortThenDone = bumpLensRound({ ...base, at: 5000 }, [first, second, afterAbort]);
+  assert(
+    afterAbortThenDone.round === 3,
+    "a completed write after an aborted one advances past the aborted round",
+  );
+  // A legacy row with no `detail` still counts as completed (as before
+  // #973) — only an explicit REVIEW_INCOMPLETE does not advance.
+  const afterLegacyNoDetail = bumpLensRound({ ...base, at: 5500 }, [legacy]);
+  assert(
+    afterLegacyNoDetail.round === 2,
+    "a completed write after a legacy (no-detail) entry is round 2 (legacy counted as round 1)",
+  );
   // The dedupe keeps only the latest per (branch, kind) for FRESH writes —
   // but the file may already hold older rows (a legacy write, a hand edit,
   // or the race fallback that re-merges without deduping). The guard's
@@ -175,6 +205,84 @@ const execp = async (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) =
     assert(
       latest3?.hasCritical === undefined,
       "a legacy entry without hasCritical stores no hasCritical (conservative)",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ------------------------------------------- the aborted-does-not-advance sequence
+
+{
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ledger-973-abort-"));
+  const repo = path.join(dir, "repo");
+  execSync(`git init -q -b main ${repo}`, { stdio: "ignore" });
+  execSync(`git -C ${repo} config user.email t@t.t`, { stdio: "ignore" });
+  execSync(`git -C ${repo} config user.name t`, { stdio: "ignore" });
+  writeFileSync(path.join(repo, "base.txt"), "base\n");
+  execSync(`git -C ${repo} add -A`, { stdio: "ignore" });
+  execSync(`git -C ${repo} commit -qm base`, { stdio: "ignore" });
+  const common = execSync(`git -C ${repo} rev-parse --git-common-dir`, {
+    encoding: "utf8",
+  }).trim();
+  const abs = path.isAbsolute(common) ? common : path.resolve(repo, common);
+  const file = path.join(abs, "review-ledger.json");
+  const latestX = (rows: LedgerEntry[]) =>
+    rows
+      .filter((e) => e.kind === "lens" && e.branch === "feature/x")
+      .sort((a, b) => b.at - a.at)[0];
+  try {
+    // The exact sequence the acceptance test names:
+    // ISSUES_FOUND (r1) → REVIEW_INCOMPLETE (r2) → ISSUES_FOUND (r3).
+    const at = Date.now();
+    await appendLedgerEntry(
+      { branch: "feature/x", kind: "lens", patchId: "pa", passed: false, at,
+        detail: "ISSUES_FOUND", hasCritical: false },
+      execp,
+      repo,
+    );
+    await appendLedgerEntry(
+      { branch: "feature/x", kind: "lens", patchId: "pb", passed: false, at: at + 1000,
+        detail: "REVIEW_INCOMPLETE" },
+      execp,
+      repo,
+    );
+    const afterAbort = latestX(readLedgerAt(file));
+    assert(
+      afterAbort?.round === 1,
+      "aborted run carries the previous round (round 1 after an aborted run)",
+    );
+    await appendLedgerEntry(
+      { branch: "feature/x", kind: "lens", patchId: "pc", passed: false, at: at + 2000,
+        detail: "ISSUES_FOUND", hasCritical: false },
+      execp,
+      repo,
+    );
+    const afterThird = latestX(readLedgerAt(file));
+    assert(
+      afterThird?.round === 2,
+      "ISSUES_FOUND (r1) → REVIEW_INCOMPLETE → ISSUES_FOUND ends at round 2, not 3",
+    );
+    // Three COMPLETED runs (an aborted run between them) reach round 3.
+    await appendLedgerEntry(
+      { branch: "feature/x", kind: "lens", patchId: "pd", passed: false, at: at + 3000,
+        detail: "REVIEW_INCOMPLETE" },
+      execp,
+      repo,
+    );
+    assert(
+      latestX(readLedgerAt(file))?.round === 2,
+      "an aborted run between completed runs leaves the count unchanged",
+    );
+    await appendLedgerEntry(
+      { branch: "feature/x", kind: "lens", patchId: "pe", passed: false, at: at + 4000,
+        detail: "ISSUES_FOUND", hasCritical: false },
+      execp,
+      repo,
+    );
+    assert(
+      latestX(readLedgerAt(file))?.round === 3,
+      "three completed runs (with an aborted run between them) reach round 3",
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
