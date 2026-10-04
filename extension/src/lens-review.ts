@@ -305,6 +305,7 @@ export async function runLensReview(opts: {
             opts.base,
             opts.head,
             resolved.delta.since,
+            resolved.delta.auto === true,
           )
         : (opts.context ?? "");
   } else {
