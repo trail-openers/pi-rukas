@@ -29,6 +29,10 @@ await setupLedgerPath();
     passed: true,
     at: 1,
   };
+  // The PR's current head — the guard passes the fetched OID (the TARGET
+  // helper's headOid, so the guard's freshness check passes) to the
+  // round-cap path's condition 6 (the lens entry's headSha must equal it).
+  const PR_HEAD = TARGET.headOid;
   const lens = (over: Partial<LedgerEntry> & { at: number }): LedgerEntry => ({
     branch: "feature/x",
     kind: "lens",
@@ -37,6 +41,7 @@ await setupLedgerPath();
     detail: "ISSUES_FOUND",
     hasCritical: false,
     round: 3,
+    headSha: PR_HEAD,
     ...over,
   });
   const commentsWith = (branch: string, patch: string) =>
@@ -93,6 +98,7 @@ await setupLedgerPath();
       at: 2,
       detail: "ISSUES_FOUND",
       round: 3,
+      headSha: PR_HEAD,
     };
     const r = await hookDecision("gh pr merge 12", [ADV, legacy], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
@@ -126,6 +132,7 @@ await setupLedgerPath();
       at: 2,
       detail: "ISSUES_FOUND",
       hasCritical: false,
+      headSha: PR_HEAD,
     };
     const r = await hookDecision("gh pr merge 12", [ADV, legacyNoRound], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
@@ -183,6 +190,44 @@ await setupLedgerPath();
   {
     const r = await hookDecision("gh pr merge 12", [ADV, lens({ at: 2 })]);
     assert(r.block === true, "round-cap: an unreadable comments read fails closed → refused");
+  }
+  // Condition 6 (headSha): a lens entry that reviewed an OLDER commit than
+  // the PR's current head must not satisfy the cap, even with a fresh marker.
+  {
+    const r = await hookDecision("gh pr merge 12", [ADV, lens({ at: 2, headSha: "0old0old" })], {
+      ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
+    });
+    assert(r.block === true, "round-cap: a lens entry for an old headSha is refused even with a fresh marker");
+    assert(
+      /not the PR's current head/.test(r.reason ?? ""),
+      "…naming the headSha condition (the branch moved after the review)",
+    );
+  }
+  // Condition 6 (headSha): a legacy entry without headSha refuses, naming it.
+  {
+    const legacyHead: LedgerEntry = {
+      branch: "feature/x",
+      kind: "lens",
+      patchId: "p1",
+      passed: false,
+      at: 2,
+      detail: "ISSUES_FOUND",
+      hasCritical: false,
+      round: 3,
+    };
+    const r = await hookDecision("gh pr merge 12", [ADV, legacyHead], {
+      ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
+    });
+    assert(r.block === true, "round-cap: a legacy entry without headSha is refused (conservative)");
+    assert(/no headSha/.test(r.reason ?? ""), "…naming the missing headSha field");
+  }
+  // Condition 6 (headSha): a matching headSha (the guard passes the fetched
+  // head, which for this fixture equals the TARGET's headOid) → allowed.
+  {
+    const r = await hookDecision("gh pr merge 12", [ADV, lens({ at: 2, headSha: TARGET.headOid })], {
+      ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
+    });
+    assert(r.block === false, "round-cap: a matching headSha (== the PR's current head) → allowed");
   }
   // The strict rule still applies when the round-cap path does not apply
   // (latest lens entry passed → allowed via the strict rule, no comments
