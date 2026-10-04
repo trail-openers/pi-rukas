@@ -358,7 +358,12 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     const lens = latestEntry(entries, branch, "lens");
     if (!lens || !lens.passed) {
       const lensComments = await readPrCommentBodies(execFn, cwd, target, prNumber, repoValue);
-      const capDecision = evaluateRoundCapMerge(entries, branch, currentPatchId, lensComments);
+      // #973 review — the round-cap path's headSha check (condition 6) uses
+      // the PR's current head: the fetched OID, which the guard has already
+      // verified equals the PR's `headOid` (a mismatch is the earlier
+      // "stale branch" refusal above). A lens review of an older commit
+      // cannot satisfy the cap.
+      const capDecision = evaluateRoundCapMerge(entries, branch, currentPatchId, lensComments, fetchedHead);
       if (capDecision.applies && capDecision.allowed) {
         trace(
           `merge-guard: PR #${prNumber} ${branch} — round-cap path allows the merge (ISSUES_FOUND, no CRITICAL, round ${lens?.round}, disclosed on the PR)`,

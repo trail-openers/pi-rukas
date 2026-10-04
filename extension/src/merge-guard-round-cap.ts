@@ -46,6 +46,13 @@
  *      the PR's actual base branch). A stale marker (a different patch)
  *      fails condition 5 — the findings it disclosed are for an older
  *      patch, not the one about to merge.
+ *  6. The latest lens entry's `headSha` equals the PR's CURRENT head commit
+ *     (the OID the guard has already fetched and compared against the
+ *     PR's `headOid` — the guard passes that value here). A lens review
+ *     that reviewed an OLDER commit must not satisfy the cap: the commits
+ *     after it are unreviewed by the lens. A legacy entry without `headSha`
+ *     (or a stale one) refuses, naming the condition — conservative
+ *     refusal, the same rule condition 3 applies to `hasCritical`.
  *
  * The guard's existing strict rule (the latest lens entry must be `passed`)
  * still applies first — the round-cap path is an ADDITIONAL path that allows
@@ -127,19 +134,26 @@ export interface RoundCapDecision {
  * fetches them via its own exec call — `gh pr view N --json comments`,
  * design decision 5 — and passes the bodies here; the forge seam is the
  * guard's, not this module's).
+ *
+ * `prHeadOid` is the PR's CURRENT head commit — the value the guard already
+ * fetched and checked against the PR's `headOid` (a mismatch there is an
+ * earlier, stricter refusal in the guard, so reaching this function means
+ * the fetched head IS the PR head). Condition 6 requires the latest lens
+ * entry's `headSha` to equal it (see the module header).
  */
 export function evaluateRoundCapMerge(
   entries: LedgerEntry[],
   branch: string,
   currentPatchId: string,
   lensComments: string[],
+  prHeadOid: string,
 ): RoundCapDecision {
   if (!roundCapMergeEnabled()) {
     return {
       applies: false,
       allowed: false,
       failedCondition:
-        "PI_ENSEMBLE_LENS_ROUND_CAP_MERGE=0 — the round-cap path is disabled; the strict latest-entry rule applies",
+        "PI_ENSEMBLE_LENS_ROUND_CAP_MERGE=0 — the round-cap path is disabled (set PI_ENSEMBLE_LENS_ROUND_CAP_MERGE=1 or unset it to re-enable); the strict latest-entry rule applies",
     };
   }
   const lens = latestEntry(entries, branch, "lens");
@@ -201,6 +215,26 @@ export function evaluateRoundCapMerge(
       allowed: false,
       failedCondition:
         "no disclosure marker for this branch and patch on the PR — dispatch_lens_review posts the residual findings (with the marker) when its verdict is ISSUES_FOUND and the PR is open; a failed post leaves the guard refusing (fail closed)",
+    };
+  }
+  // Condition 6: the lens entry must be tied to the PR's CURRENT head
+  // commit. A review of an older commit cannot satisfy the cap — the
+  // commits after it are unreviewed by the lens. A legacy entry without
+  // `headSha` cannot satisfy it either (conservative refusal, the same
+  // rule condition 3 applies to `hasCritical`).
+  if (lens.headSha === undefined) {
+    return {
+      applies: true,
+      allowed: false,
+      failedCondition:
+        "the latest lens entry has no headSha (legacy entry) — the round-cap rule cannot verify the review covered the PR's current head; re-run the review to record it",
+    };
+  }
+  if (lens.headSha !== prHeadOid) {
+    return {
+      applies: true,
+      allowed: false,
+      failedCondition: `the latest lens entry reviewed ${lens.headSha.slice(0, 8)}, not the PR's current head ${prHeadOid.slice(0, 8)} — the branch moved after the review; re-run dispatch_lens_review on the current head`,
     };
   }
   return { applies: true, allowed: true };
