@@ -19,28 +19,19 @@
  * install-oriented message as `parseError`.
  */
 
-import { exec, execFile } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { bySeverityCounts, computeVerdict, dedupeFindings } from "./lens-review-format.ts";
 import type { LensRunResult, Severity, Verdict } from "./lens-review.ts";
 import type { Finding } from "./lens-review.ts";
+import { execp } from "./lens-exec.ts";
 import type { RosterEntry } from "./lens-roster.ts";
 import { computeDeltaDiff, computeRangeDiff } from "./review-diff.ts";
 import { latestEntry, ledgerPathFor, readLedgerAt } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
-import type { VerifyExecFn } from "./work-driver-git.ts";
 
 const execFileP = promisify(execFile);
-// Shell executor for `git rev-parse --git-common-dir` in resolveDeltaSince
-// (the ledger-path seam takes a `VerifyExecFn`; `encoding: "utf8"` keeps
-// the output plain strings).
-const execp: VerifyExecFn = (cmd, opts) =>
-  new Promise<{ stdout: string; stderr?: string }>((resolve, reject) =>
-    exec(cmd, { ...opts, encoding: "utf8" }, (err, stdout, stderr) =>
-      err ? reject(err) : resolve({ stdout, stderr }),
-    ),
-  );
 /**
  * Resolve the review's diff from either a pasted string or a ref range.
  *
@@ -226,10 +217,6 @@ export async function resolveReviewDiff(opts: {
   head?: string;
   branch?: string;
   cwd?: string;
-  runId: string;
-  roster: RosterEntry[];
-  extraFindings: Finding[] | undefined;
-  threshold: Severity;
 }): Promise<
   | { kind: "ok"; diff: string; delta?: { since: string; head: string; auto?: boolean } }
   | { kind: "blocked"; problem: string }
