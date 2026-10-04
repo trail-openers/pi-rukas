@@ -19,7 +19,7 @@
  */
 
 import { exec } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -46,50 +46,9 @@ function eq(actual: unknown, expected: unknown, msg: string): boolean {
   return false;
 }
 
-// Mock spawn.ts BEFORE the lens modules load (test-lens-kill-child pattern).
-let spawnResponder: () => unknown = () => ({
-  role: "code-review-specialist",
-  ok: true,
-  text: "Checked the diff; nothing in this lane.\n\nSkill Load Status: SUCCESS",
-  toolUses: [],
-  ms: 10,
-  exitCode: 0,
-});
-await import("../src/lens-review-diff.ts"); // ensure module is loaded
-// Mock module via dynamic import to avoid import-order issues.
-const { mock } = await import("bun:test");
-mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
-  makeRunId: () => "run-973-delta",
-  spawnSpecialist: async () => spawnResponder(),
-}));
-
 const { resolveDeltaSince, resolveReviewDiff } = await import("../src/lens-review-diff.ts");
 const { runLensReview } = await import("../src/lens-review.ts");
-const { LENS_ROSTER } = await import("../src/lens-roster.ts");
 const { renderSummary } = await import("../src/lens-review-format.ts");
-
-// --- fixture: skills dir with all bundled lens skills ---
-function fixtureSkillsDir(name: string): { dir: string; cleanup: () => void } {
-  const dir = path.join(mkdtempSync(path.join(os.tmpdir(), `lens973-${name}-`)), "skills");
-  mkdirSync(dir, { recursive: true });
-  let prec = 10;
-  for (const s of LENS_ROSTER) {
-    const skillDir = path.join(dir, s.skill);
-    mkdirSync(skillDir, { recursive: true });
-    writeFileSync(path.join(skillDir, "SKILL.md"), `---\nname: ${s.skill}\nprecedence: ${prec}\n---\n`);
-    prec += 10;
-  }
-  return {
-    dir,
-    cleanup: () => {
-      try {
-        rmSync(dir, { recursive: true, force: true });
-      } catch {}
-    },
-  };
-}
-
-const skillsFixture = fixtureSkillsDir("delta");
 
 // --- repo fixture: origin/main → c0, feature/work → c0 → c1 → c2 ---
 async function mkRepo(): Promise<{
@@ -278,7 +237,9 @@ const branch = "feature/work";
   }
 }
 
-// (4b) no-review outcome at the runLensReview level: the summary carries
+// (4b) no-review outcome at the runLensReview level (the roster is the
+// INSTALLED skills dir, which always resolves in this environment, so the
+// run reaches the fan-out with stubbed lens children): the summary carries
 // noReview: true, and renderSummary says "NO REVIEW", never "APPROVED"
 // (a no-review outcome must not look like an approval).
 {
@@ -401,6 +362,5 @@ const branch = "feature/work";
   }
 }
 
-skillsFixture.cleanup();
 console.log(`\nexit ${exit}`);
 process.exit(exit);
