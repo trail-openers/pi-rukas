@@ -1,6 +1,8 @@
 /**
  * work-driver-lens-fix-commit — #749: committed-work-aware lens-fix
- * detection.
+ * detection. Also the lens-fix's commit + resend-count helpers (moved here
+ * from work-driver-lens.ts for the 500-line gate, AGENTS.md §12; re-exported
+ * from work-driver-lens.ts so importers keep their existing paths).
  *
  * The `!result.committed` branch of runAdversarial and runLensFix's
  * resend path used to answer "did the lens-fix produce a fix" with
@@ -29,6 +31,7 @@
  * duplicate).
  */
 
+import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
 import { withIntegrationLock } from "./work-driver-integrate.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
@@ -307,4 +310,94 @@ export async function detectCommittedFix(
 export function noDiffEvidence(tree: string, branchName: string, count: number | null): string {
   const measured = count === null ? "could not be read (git error)" : `count is ${count}`;
   return `no committed fix: the lens-fix worktree ${tree} has ${count === null ? "no readable" : count} commit(s) ahead of branch ${branchName} (rev-list --count ${branchName}..HEAD ${measured})`;
+}
+
+/** #305 — commit lens-fix changes in the worktree (no empty commit). */
+export async function commitLensFixChanges(
+  cwd: string,
+  round: number,
+  execFn: (
+    cmd: string,
+    opts?: { cwd?: string; maxBuffer?: number; shell?: string },
+  ) => Promise<{ stdout: string; stderr?: string }>,
+): Promise<{ committed: boolean; error?: string; pushed?: boolean }> {
+  // Check if there are any changes (staged + unstaged + untracked), and
+  // capture the porcelain output for path parsing. One git status fork.
+  let status: string;
+  try {
+    const raw = await execFn("git status --porcelain", {
+      cwd,
+      maxBuffer: 64 * 1024,
+    });
+    status = raw.stdout;
+  } catch (err) {
+    const errMsg = `git status failed: ${(err as Error).message?.slice(0, 200)}`;
+    trace(`work-driver: lens-fix round ${round} — ${errMsg}`);
+    return { committed: false, error: errMsg };
+  }
+  if (!status.trim()) {
+    // Clean tree — the committed-work check is done by the CALLER
+    // (runAdversarial) via `detectCommittedFix`. Reaching here with a
+    // clean tree means the caller found no committed fix either.
+    trace(`work-driver: lens-fix round ${round} — working tree clean, skipping commit`);
+    return { committed: false };
+  }
+
+  // Stage + commit.
+  try {
+    // Stage all porcelain paths explicitly (tracked + untracked) rather
+    // than `git add -u`, so new files created by the developer as part
+    // of the fix are committed. Filter out `.pi/` and `tmp/` to avoid
+    // staging driver artefacts like .pi/work-state/<issue>.json and
+    // subagent scratch (#305). Mirrors the stagePorcelainPaths pattern
+    // used by mechanizedCommitPr.
+    const porcelain = status;
+    const paths: string[] = [];
+    for (const line of porcelain.split("\n")) {
+      if (line.trim().length === 0) continue;
+      const entry = line.slice(3);
+      const arrow = entry.indexOf(" -> ");
+      if (arrow >= 0) {
+        paths.push(entry.slice(0, arrow), entry.slice(arrow + 4));
+      } else {
+        paths.push(entry);
+      }
+    }
+    for (const p of paths) {
+      const clean = p.startsWith('"') && p.endsWith('"') ? p.slice(1, -1) : p;
+      // Skip driver artefacts under .pi/ and tmp/
+      if (clean.startsWith(".pi/") || clean.startsWith("tmp/")) {
+        continue;
+      }
+      await execFn(`git add -- ${JSON.stringify(clean)}`, { cwd, maxBuffer: 256 * 1024 });
+    }
+    await execFn(`git commit -q -m 'fix(lens): round ${round} — address lens-review findings'`, {
+      cwd,
+      maxBuffer: 64 * 1024,
+    });
+    trace(`work-driver: lens-fix round ${round} — committed fix`);
+    return { committed: true };
+  } catch (err) {
+    const errMsg = `commit failed: ${(err as Error).message?.slice(0, 200)}`;
+    trace(`work-driver: lens-fix round ${round} — ${errMsg}`);
+    return { committed: false, error: errMsg };
+  }
+}
+
+/** #654 — count lens-fix-empty-resend events after this round's anchor. */
+export function countLensFixEmptyResends(events: readonly unknown[], reviewRound: number): number {
+  const lensIdx = events
+    .map((e, i) => ({ e, i }))
+    .filter(
+      ({ e }) =>
+        (e as { kind?: string }).kind === "lens-issues-found" &&
+        (e as { round?: number }).round === reviewRound,
+    )
+    .at(-1)?.i;
+  if (lensIdx === undefined) return 0;
+  let n = 0;
+  for (let i = lensIdx + 1; i < events.length; i++) {
+    if ((events[i] as { kind?: string }).kind === "lens-fix-empty-resend") n++;
+  }
+  return n;
 }

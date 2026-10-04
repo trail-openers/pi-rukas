@@ -87,8 +87,8 @@ import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { stripQuotedSegments } from "./bash-command-parser.ts";
 import { mergesPr } from "./bash-merges-pr.ts";
-import { extractCommentRows } from "./forge-comments.ts";
 import { prCommentsCmd } from "./forge-commands.ts";
+import { extractCommentRows } from "./forge-comments.ts";
 import { evaluateRoundCapMerge } from "./merge-guard-round-cap.ts";
 import { extractMergeNumber, mergeVerbArgs, mergeVerbRepo } from "./merge-parse.ts";
 import { exceedsAnalysisBound } from "./merge-size.ts";
@@ -365,7 +365,13 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
       // verified equals the PR's `headOid` (a mismatch is the earlier
       // "stale branch" refusal above). A lens review of an older commit
       // cannot satisfy the cap.
-      const capDecision = evaluateRoundCapMerge(entries, branch, currentPatchId, lensComments, fetchedHead);
+      const capDecision = evaluateRoundCapMerge(
+        entries,
+        branch,
+        currentPatchId,
+        lensComments,
+        fetchedHead,
+      );
       if (capDecision.applies && capDecision.allowed) {
         trace(
           `merge-guard: PR #${prNumber} ${branch} — round-cap path allows the merge (ISSUES_FOUND, no CRITICAL, round ${lens?.round}, disclosed on the PR)`,
