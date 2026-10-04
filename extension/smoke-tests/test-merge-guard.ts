@@ -192,6 +192,8 @@ assert(!lensPassed("ISSUES_FOUND", "MEDIUM"), "lens ISSUES_FOUND blocks at the M
 }
 // ------------------------------------------- the carve-outs (item 8)
 {
+  // Carve-outs require a BOT IDENTITY, not a branch shape. The hook
+  // short-circuits after the target read when the bot identity is present.
   const carveTargets: Array<[string, typeof TARGET, boolean]> = [
     ["dependabot[bot] author", { ...TARGET, author: "dependabot[bot]" }, false],
     ["app/dependabot author", { ...TARGET, author: "app/dependabot" }, false],
@@ -265,6 +267,7 @@ assert(!lensPassed("ISSUES_FOUND", "MEDIUM"), "lens ISSUES_FOUND blocks at the M
   const subBlock = readFileSync(path.join(SRC, "subagent-guard-guards.ts"), "utf8");
   const mg = readFileSync(path.join(SRC, "merge-guard.ts"), "utf8");
 
+  // Parent guard: before trust-mode return AND sandbox short-circuit.
   const guardIdx = pg.indexOf("registerMergeGuard(pi)");
   const sandboxIdx = pg.indexOf('if (process.env.PI_ENSEMBLE_SANDBOX_MODE === "1") {');
   const trustIdx = pg.indexOf("isInTrustMode(ctx.hasUI === true)");
@@ -273,12 +276,15 @@ assert(!lensPassed("ISSUES_FOUND", "MEDIUM"), "lens ISSUES_FOUND blocks at the M
     guardIdx < sandboxIdx && guardIdx < trustIdx,
     `registered BEFORE the sandbox short-circuit and the trust-mode return (guard=${guardIdx}, sandbox=${sandboxIdx}, trust=${trustIdx})`,
   );
+  // Subagent guard: before both bypasses (shared block call site here,
+  // guard presence in the block there).
   const subGuardIdx = subSrc.indexOf("registerModeIndependentGuards(pi)");
   const subSandboxIdx = subSrc.indexOf("PI_ENSEMBLE_SANDBOX_MODE");
   const subTrustIdx = subSrc.indexOf("PI_ENSEMBLE_TRUST_MODE");
   assert(subGuardIdx > 0, "canary: subagent path registers the shared guard block");
   assert(subGuardIdx < subSandboxIdx && subGuardIdx < subTrustIdx, "subagent: before both bypasses");
   assert(subBlock.includes("registerMergeGuard(pi)"), "canary: the shared block registers the merge guard");
+  // Role-agnostic, mode-agnostic, escape hatch present.
   assert(
     !/PI_ENSEMBLE_ROLE/.test(mg),
     "canary: the guard is role-agnostic — it fires for PM, explore, ops, developer alike",
@@ -291,6 +297,7 @@ assert(!lensPassed("ISSUES_FOUND", "MEDIUM"), "lens ISSUES_FOUND blocks at the M
     /PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE === "1"/.test(mg),
     "escape hatch: PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 opens the door for a human",
   );
+  // The hook is async and awaits the execs before deciding.
   assert(/async \(event, _ctx\)/.test(mg), "the tool_call handler is async");
   assert(/await readMergeTarget/.test(mg), "…and it awaits the PR read before the ledger check");
   assert(/await branchPatchId/.test(mg), "…and it awaits the patch-id computation before deciding");

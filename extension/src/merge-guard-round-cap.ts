@@ -14,12 +14,13 @@
  *
  * This module is that alignment, evaluated by the guard (merge-guard.ts)
  * AFTER the adversarial check has already passed. It mirrors
- * work-driver-lens-cap.ts's constants (MAX_REVIEW_ROUNDS = 3, the
+ * * work-driver-lens-cap.ts's constants (MAX_REVIEW_ROUNDS = 3, the
  * ISSUES_FOUND-only condition, the CRITICAL-always-refuses rule) rather than
  * introducing a second independently-tuned number, and it reuses
  * `latestEntry` from review-ledger.ts for the round count (the new `round`
- * field on the latest lens entry, per design decision 3 — the file holds at
- * most one lens row per branch, so the round lives on the entry).
+ * field on the latest lens entry, per design decision 3 — the guard only
+ * ever consults the latest lens row per branch, so the round lives on the
+ * entry, and only that row's round is what the cap counts against).
  *
  * ## The conditions (all must hold for the round-cap path to allow the merge)
  *
