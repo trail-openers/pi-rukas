@@ -4,13 +4,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import * as dispatchDeck from "./dispatch-deck.ts";
-import { writeLensLedgerEntry } from "./lens-ledger.ts";
 import { execp } from "./lens-exec.ts";
+import { writeLensLedgerEntry } from "./lens-ledger.ts";
 import { capKillSummary } from "./lens-review-capkill.ts";
 import { runLensChild } from "./lens-review-child.ts";
 import {
   blockedReviewSummary,
   blockedRowsForRoster,
+  buildDeltaFullContext,
   resolveReviewDiff,
   startPersistentBatch,
 } from "./lens-review-diff.ts";
@@ -28,7 +29,6 @@ import {
 import { postLensResidualDisclosure } from "./lens-review-residuals.ts";
 import { installBlockRowsForRoster, skillsDirUsable } from "./lens-review-skills.ts";
 import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
-import { computeRangeDiff } from "./review-diff.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
@@ -217,14 +217,10 @@ function piSkillsDir(): string {
 
 /**
  * The ONE exit path: writes the ledger entry and returns the summary.
- *
- * #966 — the ledger's `passed` is derived from the RESOLVED verdict (via
- * `lensPassed` inside `writeLensLedgerEntry`), and every run shape that
- * fails, aborts or kills its lenses reaches this exit with a
- * REVIEW_INCOMPLETE verdict, so the `passed:true` path is protected by
- * construction: no caller feeds this exit a passing verdict for an
- * all-fail/all-abort run, and the "write nothing" path (no branch / no
- * patchId) is the only silent path that remains.
+ * #966 — `passed` is derived from the RESOLVED verdict (via `lensPassed`
+ * inside `writeLensLedgerEntry`); every all-fail/abort/kill shape reaches
+ * here with REVIEW_INCOMPLETE, so the passed:true path is protected by
+ * construction (no caller feeds it a passing verdict for an all-fail run).
  */
 async function finish(
   summary: LensReviewSummary,
@@ -271,15 +267,7 @@ export async function runLensReview(opts: {
   /** #859 — head ref for the tool-computed diff (with base). */
   head?: string;
   signal?: AbortSignal;
-  /**
-   * #973 — the delta base: the `since` ref (a commit) the review's diff runs
-   * from. An EXPLICIT `since` is used as-is. When absent and a branch is
-   * named, `since` defaults to the branch's latest lens ledger entry's
-   * `headSha` when that SHA is a strict ancestor of the reviewed head
-   * (design decision 6 — the automatic delta base); otherwise the review is
-   * FULL. `full: true` forces a full review. See resolveReviewDiff for the
-   * full contract (empty delta = no-review, not an approval, not a block).
-   */
+  /** #973 — the delta base (see resolveReviewDiff for the full contract). */
   since?: string;
   /** #973 — force a full review (the automatic delta base is not consulted;
    * an explicit `since` still wins when given). */
@@ -290,7 +278,7 @@ export async function runLensReview(opts: {
   /**
    * Post-change content of files the diff touches, rendered for the prompt.
    * Supplied by the caller because only it knows the branch ref; see
-   * `readFileAtBranch`.
+   * `readFileAtBranch` (lens-evidence.ts `buildEvidence`).
    */
   evidence?: string;
   /**
@@ -299,17 +287,11 @@ export async function runLensReview(opts: {
    * `/work` and `/review` through this one path.
    */
   extraFindings?: Finding[];
-  /** #799 — the parent pi for the inner children's slow-run watch (the PM
-   * notice half; the watch site has no pi of its own). */
+  /** #799 — the parent pi for the inner children's slow-run watch. */
   pi?: Pick<import("@earendil-works/pi-coding-agent").ExtensionAPI, "sendUserMessage">;
   /** Blocking bar; defaults to MEDIUM. See `DEFAULT_REVIEW_THRESHOLD`. */
   threshold?: Severity;
-  /**
-   * #912 — caller-supplied branch for the review-ledger write (the driver
-   * worktrees are detached, so `git rev-parse --abbrev-ref HEAD` cannot
-   * recover it). When absent the writer recovers the branch from `HEAD`
-   * and skips (traces) on a detached head.
-   */
+  /** #912 — caller-supplied branch for the review-ledger write (see lens-ledger.ts). */
   branch?: string;
 }): Promise<LensReviewSummary> {
   const runId = makeRunId();
@@ -317,28 +299,12 @@ export async function runLensReview(opts: {
   // The RESOLVED threshold (computed once; both the verdict and the ledger
   // write apply the same bar).
   const threshold = opts.threshold ?? DEFAULT_REVIEW_THRESHOLD;
-  // #873 — the roster is data: the INSTALLED skills dir's `code-review-*`
-  // SKILL.md files (precedence in frontmatter), PLUS a blocked entry for
-  // every expected lens (the BUNDLED skill/ dir) that is absent from the
-  // installed dir or has a dangling skill — a lens must never silently
-  // disappear from a six-pass review (five lenses + APPROVED). Blocked
-  // entries (missing/duplicate precedence, unparseable SKILL.md, `name:` ≠
-  // dir, skill not installed) become blocked lens results below →
-  // REVIEW_INCOMPLETE; the review never runs a silently reduced or reordered
-  // roster.
+  // #873 — the roster is data (see buildExpectedRoster / buildLensRoster):
+  // installed + bundled lens skills, blocked entries for missing/broken ones.
   const roster = buildExpectedRoster(skillsDir);
-  // #859 — ref-range diffs: when `diff` is absent and base+head are present,
-  // the diff is computed ONCE and fed to every lens. An error (invalid ref,
-  // confirmed-empty range, cap overflow, nothing supplied) blocks the whole
-  // review — a computed diff is never silently empty, never an approval
-  // (same rule as #384). Blocked rows use the EXPECTED roster above.
-  // #973 — `since` (a delta base) overrides base+head: the lenses review
-  // ONLY `git diff <since>..<head>`, with the full base...head range
-  // supplied as context for orientation. An empty delta is not a block and
-  // not an approval — it is the no-review outcome (see resolveReviewDiff).
   let delta: { since: string; head: string; auto?: boolean } | undefined;
   let diff = "";
-  let context = opts.context ?? "";
+  let context: string;
   const resolved = await resolveReviewDiff({
     diff: opts.diff,
     since: opts.since,
@@ -356,24 +322,22 @@ export async function runLensReview(opts: {
         head: resolved.delta.head,
         ...(resolved.delta.auto ? { auto: true } : {}),
       };
-      if (opts.base && opts.head) {
-        const full = await computeRangeDiff(opts.cwd ?? process.cwd(), opts.base, opts.head);
-        if (full.ok) {
-          // #973 review — the context is bounded: an unbounded full-branch
-          // diff appended to every lens prompt would blow the child's context
-          // window on large branches. Capped at 100 KB with a truncation
-          // notice (the findings below still cover the delta; this is
-          // orientation only).
-          const FULL_CONTEXT_CAP = 100 * 1024;
-          const fullDiff =
-            full.diff.length > FULL_CONTEXT_CAP
-              ? full.diff.slice(0, FULL_CONTEXT_CAP) +
-                `\n… (truncated — the full branch diff exceeds ${FULL_CONTEXT_CAP} bytes; the findings below cover the delta only)`
-              : full.diff;
-          context += `\n\nFULL BRANCH DIFF (context only — the findings below cover the delta since ${resolved.delta.since} (auto: latest lens ledger headSha)):\n${fullDiff}`;
-        }
-      }
     }
+    // #973 review — a delta review with an explicit base+head appends the
+    // full base...head range as context for orientation, capped at 100 KB
+    // (buildDeltaFullContext: bound + truncation notice).
+    context =
+      resolved.kind === "ok" && resolved.delta && opts.base && opts.head
+        ? await buildDeltaFullContext(
+            opts.context ?? "",
+            opts.cwd,
+            opts.base,
+            opts.head,
+            resolved.delta.since,
+          )
+        : (opts.context ?? "");
+  } else {
+    context = opts.context ?? "";
   }
   if (resolved.kind === "blocked") {
     const blockRows = blockedRowsForRoster(roster, resolved.problem);
@@ -392,12 +356,10 @@ export async function runLensReview(opts: {
       findings: [],
       usage: undefined,
       // #973 — decision 4: nothing changed since the last recorded lens run.
+      // #973 review — noReview: this is NOT an approval (the summary renders
+      // "NO REVIEW — …", never "APPROVED"); every consumer branches on it.
       note: `No changes since the last lens review (${resolved.since.slice(0, 8)}) — no re-review needed (nothing to review).`,
       deltaReview: { since: resolved.since, head: resolved.head },
-      // #973 review — the no-review outcome flag (decision 4): this is NOT
-      // an approval. The verdict stays APPROVED (the Verdict union is
-      // unchanged) but every consumer must branch on `noReview` — the
-      // summary renders "NO REVIEW — …", never "APPROVED".
       noReview: true,
     };
   }
@@ -418,32 +380,25 @@ export async function runLensReview(opts: {
   if (roster.length === 0) {
     const problem =
       skillsDirUsable(skillsDir) ?? `no usable code-review-* lens skills in ${skillsDir}`;
-    // #966 — one blocked row per bundled lens (the #872 install-block shape,
-    // routed through `installBlockRowsForRoster` so the named-row logic
-    // lives in ONE place — the #872 doctrine, preserved here via the
-    // #873/#966 guard rather than a second early exit that could drift
-    // back into the empty-`computeVerdict` APPROVED hole; the removed #872
-    // early exit was dead code, since this guard already diverts every
-    // empty-roster shape to this single finish exit). Deck
-    // bookkeeping (start → bump per row → clear) happens inside
-    // `blockedReviewSummary` below, so the operator sees the same
-    // one-batch-row-and-bumped-per-lens shape the old `runInstallBlock`
-    // produced. The LENSES-fallback for an unreadable bundled dir is
-    // inside the helper (same as `blockedRowsForRoster([])`'s single-row
-    // shape, but with the install message as `parseError` rather than a
-    // generic "no usable" fallback).
-    const blockRows = installBlockRowsForRoster(problem);
-    const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
+    // #966 — one blocked row per bundled lens via
+    // `installBlockRowsForRoster` (named-row logic in ONE place, the #872
+    // doctrine) and the SAME single finish exit the other blocked shapes
+    // use (the LENSES-fallback, deck bookkeeping, etc. — see the helper;
+    // the guard IS the single install exit, since every empty-roster shape
+    // diverts here and never reaches the empty-`computeVerdict` APPROVED
+    // hole). See the guard's comment above for the full shape.
+    const blocked = blockedReviewSummary(
+      runId,
+      opts.extraFindings,
+      roster,
+      installBlockRowsForRoster(problem),
+      threshold,
+    );
     return await finish(blocked, threshold, opts.cwd, opts.branch);
   }
-  // #966 — an aborted signal is a user kill: every lens is recorded blocked,
-  // no children are spawned, and the run proceeds to the SAME finish path as
-  // a non-aborted all-fail run — verdict REVIEW_INCOMPLETE, one ledger write,
-  // nothing special. Checked BEFORE `startPersistentBatch` so no deck batch
-  // (and its ticker) is ever registered for a run that cannot start. The
-  // in-loop signal check inside runLensChild still governs children that
-  // were already spawned before an abort arrives mid-fan-out; the normal
-  // fan-out path clears its batch via `clearBatchEntry(batchKey)` below.
+  // #966 — an aborted signal is a user kill: every lens blocked, no children
+  // spawned, SAME finish path as a non-aborted all-fail run (checked BEFORE the
+  // deck batch registers); runLensChild governs already-spawned children.
   if (opts.signal?.aborted) {
     const blockRows = blockedRowsForRoster(roster, "aborted before start");
     const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
@@ -459,29 +414,33 @@ export async function runLensReview(opts: {
   const lensChildFn = opts.lensChildFn ?? runLensChild;
   const blocked = roster.filter((e) => e.error !== undefined);
   const healthy = roster.filter((e) => e.error === undefined);
-  const blockedResults: LensRunResult[] = blocked.map((e) => ({
-    lens: e.name,
-    ok: false,
-    ms: 0,
-    startMs: Date.now(),
-    findings: [],
-    attempts: 0,
-    blocked: true,
-    parseError: e.error,
-  }));
-  const promises = healthy.map((lens) =>
-    lensChildFn({
-      lens,
-      runId,
-      skillsDir,
-      context,
-      roster,
-      opts: { ...opts, diff: diff ?? "" },
-      bumpBatch,
-      ...(opts.pi ? { pi: opts.pi } : {}),
+  const results = await Promise.all(
+    healthy.map((lens) =>
+      lensChildFn({
+        lens,
+        runId,
+        skillsDir,
+        context,
+        roster,
+        opts: { ...opts, diff: diff ?? "" },
+        bumpBatch,
+        ...(opts.pi ? { pi: opts.pi } : {}),
+      }),
+    ),
+  );
+  const blockedRows = blocked.map(
+    (e): LensRunResult => ({
+      lens: e.name,
+      ok: false,
+      ms: 0,
+      startMs: Date.now(),
+      findings: [],
+      attempts: 0,
+      blocked: true,
+      parseError: e.error ?? "",
     }),
   );
-  const lensResults = [...(await Promise.all(promises)), ...blockedResults];
+  const lensResults = [...results, ...blockedRows];
   dispatchDeck.clearBatchEntry(batchKey);
   // Deterministic findings are merged BEFORE dedup and verdict so they are
   // indistinguishable downstream from a lens's own — same precedence rules,
@@ -504,15 +463,16 @@ export async function runLensReview(opts: {
   // `refIsCommit` in review-diff.ts applies).
   const reviewHead = delta ? delta.head : (opts.head ?? "HEAD");
   let headSha: string | undefined;
-  if (delta) {
-    headSha = delta.head || undefined;
-  } else if (reviewHead.startsWith("-")) {
-    headSha = undefined;
-  } else {
+  if (delta) headSha = delta.head || undefined;
+  else if (!reviewHead.startsWith("-")) {
     try {
-      const { stdout } = await execFileP("git", ["-C", opts.cwd ?? process.cwd(), "rev-parse", reviewHead], {
-        maxBuffer: 8 * 1024,
-      });
+      const { stdout } = await execFileP(
+        "git",
+        ["-C", opts.cwd ?? process.cwd(), "rev-parse", reviewHead],
+        {
+          maxBuffer: 8 * 1024,
+        },
+      );
       headSha = stdout.trim() || undefined;
     } catch {
       headSha = undefined;

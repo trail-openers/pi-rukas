@@ -22,10 +22,10 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as dispatchDeck from "./dispatch-deck.ts";
+import { execp } from "./lens-exec.ts";
 import { bySeverityCounts, computeVerdict, dedupeFindings } from "./lens-review-format.ts";
 import type { LensRunResult, Severity, Verdict } from "./lens-review.ts";
 import type { Finding } from "./lens-review.ts";
-import { execp } from "./lens-exec.ts";
 import type { RosterEntry } from "./lens-roster.ts";
 import { computeDeltaDiff, computeRangeDiff } from "./review-diff.ts";
 import { latestEntry, ledgerPathFor, readLedgerAt } from "./review-ledger.ts";
@@ -335,6 +335,34 @@ export function blockedReviewSummary(
     findings: deduped,
     usage: undefined,
   };
+}
+
+/**
+ * #973 review — the full-branch context for a delta review. When a delta
+ * review is also given an explicit base + head, the full `git diff
+ * <base>...<head>` range is appended to the lens context for orientation.
+ * The context is bounded: an unbounded full-branch diff appended to every
+ * lens prompt would blow the child's context window on large branches, so it
+ * is capped at 100 KB with a truncation notice (the findings below still
+ * cover the delta; this is orientation only). Returns the CONTEXT STRING
+ * (the caller replaces its context with the result) so the truncation
+ * budget applies to the whole context, not just the appended block.
+ */
+export async function buildDeltaFullContext(
+  context: string,
+  cwd: string | undefined,
+  base: string,
+  head: string,
+  since: string,
+): Promise<string> {
+  const full = await computeRangeDiff(cwd ?? process.cwd(), base, head);
+  if (!full.ok) return context;
+  const FULL_CONTEXT_CAP = 100 * 1024;
+  const fullDiff =
+    full.diff.length > FULL_CONTEXT_CAP
+      ? `${full.diff.slice(0, FULL_CONTEXT_CAP)}\n… (truncated — the full branch diff exceeds ${FULL_CONTEXT_CAP} bytes; the findings below cover the delta only)`
+      : full.diff;
+  return `${context}\n\nFULL BRANCH DIFF (context only — the findings below cover the delta since ${since} (auto: latest lens ledger headSha)):\n${fullDiff}`;
 }
 
 /**
