@@ -78,6 +78,9 @@ function makeStub(opts: { failPost?: boolean } = {}) {
     if (cmd.includes("git remote")) {
       return { stdout: "origin\n" };
     }
+    if (cmd.includes("git fetch")) {
+      return { stdout: "" };
+    }
     if (cmd.includes("patch-id")) {
       return { stdout: "p42 0000" };
     }
@@ -231,6 +234,56 @@ function repoDir(): string {
         /no open PR/.test(note) ||
         /cannot determine the forge/.test(note),
       "…carrying the error the post hit",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ------------------------------------------- a failed fetch → note naming it
+
+{
+  const dir = repoDir();
+  try {
+    // A stub whose fetch fails: the disclosure must NOT post (fail closed)
+    // and the note names the fetch failure.
+    const calls: string[] = [];
+    const execFn = async (cmd: string): Promise<{ stdout: string }> => {
+      calls.push(cmd);
+      if (cmd.includes("pr view --json number")) {
+        return { stdout: JSON.stringify({ number: 12 }) };
+      }
+      if (cmd.includes("pr view 12 --json headRefName,baseRefName")) {
+        return { stdout: JSON.stringify({ headRefName: "feature/x", baseRefName: "main" }) };
+      }
+      if (cmd.includes("git config --get remote.origin.url")) {
+        return { stdout: "git@github.com:o/r.git\n" };
+      }
+      if (cmd.includes("git remote")) {
+        return { stdout: "origin\n" };
+      }
+      if (cmd.includes("git fetch")) {
+        throw new Error("unable to connect (stub)");
+      }
+      throw new Error(`unexpected exec: ${cmd}`);
+    };
+    const note = await postLensResidualDisclosure({
+      summary: summary("ISSUES_FOUND", [
+        { severity: "MEDIUM", path: "src/a.ts", line: 10, title: "a finding", lens: "SIMPLICITY" },
+      ]),
+      branch: "feature/x",
+      cwd: dir,
+      execFn,
+    });
+    assert(note !== "", "a failed fetch returns a note");
+    assert(/git fetch/.test(note), "…naming the failed fetch");
+    assert(
+      !calls.some((c) => c.includes("pr comment")),
+      "a failed fetch posts NOTHING (fail closed — the patch-id would use stale refs)",
+    );
+    assert(
+      !calls.some((c) => c.includes("patch-id")),
+      "…and it does not compute a patch-id from stale local refs",
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
