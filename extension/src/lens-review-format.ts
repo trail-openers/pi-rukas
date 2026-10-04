@@ -381,9 +381,9 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
     `Code review verdict (${s.lenses.length} lenses): ${s.verdict}`,
     ...(s.deltaReview
       ? [
-          `Delta review: findings below cover only \`git diff ${s.deltaReview.since}..${s.deltaReview.head}\` since the last recorded lens run — not the full branch diff.`,
+          `Mode: delta review since ${s.deltaReview.since.slice(0, 8)}${s.deltaReview.auto ? " (automatic — the last recorded lens run)" : ""} — findings below cover only \`git diff ${s.deltaReview.since}..${s.deltaReview.head}\` since the last recorded lens run, not the full branch diff.`,
         ]
-      : []),
+      : ["Mode: full review (the whole branch diff)"]),
     `Total findings: ${s.totalFindings}  (${sevSummary || "none"})`,
     ...blockedBanner,
     ...retryNote,
