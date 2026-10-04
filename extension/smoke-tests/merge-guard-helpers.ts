@@ -33,6 +33,9 @@ export async function setupLedgerPath() {
   });
   const p = await ledgerPathFor(realExec, import.meta.dirname);
   if (!p) throw new Error("cannot resolve the ledger path for the decision matrix");
+  // Canary: the ledger must NOT live inside any .git directory — that would
+  // clobber the real per-clone review ledger shared by every worktree.
+  assert(!/([/\\])\.git([/\\]|$)/.test(p), "canary: the test ledger is not inside a .git directory");
   LEDGER_FILE = p;
 }
 
