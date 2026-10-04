@@ -6,13 +6,73 @@
  * lens-review.ts.
  */
 
-import type {
-  Finding,
-  FindingSource,
-  LensReviewSummary,
-  LensRunResult,
-  Severity,
-} from "./lens-review.ts";
+import os from "node:os";
+import path from "node:path";
+import type { Finding, FindingSource, LensRunResult, Severity } from "./lens-review.ts";
+import type { DispatchResult, DispatchUsage } from "./types.ts";
+
+/**
+ * The skills dir for the lens review (the installed `code-review-*` skills).
+ * Moved here from lens-review.ts for the 500-line gate (AGENTS.md §12).
+ */
+export function piSkillsDir(): string {
+  return process.env.PI_ENSEMBLE_SKILLS_DIR ?? path.join(os.homedir(), ".pi", "agent", "skills");
+}
+
+/** Severity type guard. Moved here from lens-review.ts for the 500-line gate. */
+export function isSeverity(s: string): s is Severity {
+  return s === "CRITICAL" || s === "HIGH" || s === "MEDIUM" || s === "LOW";
+}
+
+/** The lens review's summary. Moved here from lens-review.ts for the 500-line gate. */
+export interface LensReviewSummary {
+  verdict: Verdict;
+  totalFindings: number;
+  bySeverity: Record<Severity, number>;
+  lenses: LensRunResult[];
+  /** #543 — a dispatch-cap kill (loop / token-budget) hit one of the lens
+   * children; the driver emits the fixed-literal cap-hit from this. */
+  capKill?: DispatchResult["killCause"];
+  /** #543 — the structured trigger evidence for the cap kill, carried
+   * from the killed lens's DispatchResult so the driver can persist it
+   * on `pipelineState.capEvidence` (F4(j)). */
+  capKillEvidence?: { tool: string; count: number } | { budget: number; used: number };
+  /** Deduplicated, precedence-ordered list. */
+  findings: Finding[];
+  /**
+   * #534 — raw sum of `usage` across all six lenses, summed as-is with no
+   * per-lens dedup (matching the retry-double-count-is-accepted rule the
+   * rest of the driver uses). Undefined when every lens was blocked, so
+   * the emission site can distinguish "the review spent nothing" from
+   * "the review spent zero tokens".
+   */
+  usage?: DispatchUsage;
+  /**
+   * #973 — a residual-findings disclosure note, set when the run's verdict is
+   * ISSUES_FOUND and the post of the disclosure to the PR/MR failed (fail
+   * closed — the merge guard then refuses until the disclosure is posted).
+   * Empty/undefined on success; the tool appends it to the summary text.
+   */
+  note?: string;
+  /**
+   * #973 — this review ran against a delta (`git diff <since>..<head>`) rather
+   * than the full branch diff. `auto` marks the automatic delta base (design
+   * decision 6 — `since` defaulted to the latest lens ledger entry's `headSha`)
+   * as distinct from an operator-supplied `since`. The findings it produced are
+   * findings on the DELTA; a later full review still owns the rest of the branch.
+   */
+  deltaReview?: { since: string; head: string; auto?: boolean };
+  /**
+   * #973 — the no-review outcome (decision 4): the delta was empty (nothing
+   * changed since the last recorded lens run), so no review ran at all. The
+   * verdict is kept as APPROVED (the Verdict union is unchanged — it is not a
+   * review outcome) but every consumer MUST branch on this flag: this is NOT
+   * an approval. `renderSummary` renders "NO REVIEW — …" (never "APPROVED"),
+   * the tool result's `ok`/text says so, and the /work driver's
+   * `applyLensVerdict` must not append a `lens-approved` event for it.
+   */
+  noReview?: boolean;
+}
 
 /**
  * The overall verdict of a lens review. #966 — the type lives with
