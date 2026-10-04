@@ -252,6 +252,27 @@ export async function runLens(
     }
   }
 
+  // #973 review — the no-review outcome must never look like an approval.
+  // runLens supplies its own diff (the merged worktree diff from
+  // readAllMergedDiffs; the empty-diff case skips to lens-approved above),
+  // so a `noReview` summary can only arrive through a `since`-shaped call
+  // (e.g. an injected lensReviewFn). Handle it defensively: route to
+  // handoff (a STOP — never a fake lens-approved event the nextStep router
+  // would trust, and never the round-cap/step-back routing below).
+  if (summary.noReview) {
+    trace(
+      `work-driver: lens-review — no-review outcome (nothing changed since ${summary.deltaReview?.since.slice(0, 8)}) — routing to handoff (a no-review is not an approval)`,
+    );
+    return appendEvent(next, {
+      kind: "cap-hit",
+      at: Date.now(),
+      cap: "no-review-outcome",
+      reviewRound: round,
+      nextStep: "handoff",
+      evidence: `lens review returned a no-review outcome (no changes since ${summary.deltaReview?.since ?? "the last recorded lens run"}) — a no-review is not an approval; re-run the review with an explicit diff after a new commit`,
+    });
+  }
+
   next = await applyLensVerdict(summary, jobId, round, ctx, next);
 
   // #280 §B — round-1 seam escalation: detectRepeatSeam fires, route to

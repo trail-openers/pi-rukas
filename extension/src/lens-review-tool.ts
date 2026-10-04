@@ -54,7 +54,7 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
       full: Type.Optional(
         Type.Boolean({
           description:
-            "#973 — force a full review: the automatic delta base (the latest lens ledger entry's headSha) is not consulted. An explicit `since` still wins when given.",
+            "#973 — force a full review: the automatic delta base (the latest lens ledger entry's headSha) is not consulted. An explicit `since` still wins when given. An explicit base + head (with no `since`) is ALWAYS a full review — the automatic delta base only applies to a bare branch/cwd review.",
         }),
       ),
     }),
@@ -91,10 +91,15 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
           // pass, so PM/user must decide whether to retry or override.
           // #973 — a delta review that found nothing since the last recorded
           // run returns a deltaReview flag on the summary; the text says so.
+          // #973 review — the no-review outcome (decision 4) is NOT an
+          // approval: `ok` is false and the text says "NO REVIEW" (the
+          // verdict on the summary stays APPROVED because the Verdict union
+          // is unchanged, but the tool result must never look like a pass).
           const text = renderSummary(summary, MAX_LENS_ATTEMPTS);
           return {
             role: "lens-review",
             ok:
+              !summary.noReview &&
               summary.verdict !== "CRITICAL_ISSUES_FOUND" &&
               summary.verdict !== "REVIEW_INCOMPLETE",
             text: summary.note ? `${text}\n\n${summary.note}` : text,
