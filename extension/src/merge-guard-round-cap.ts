@@ -210,8 +210,7 @@ export function evaluateRoundCapMerge(
   // string like "3" or a float like 3.5 can never be coerced into a pass
   // (a `??`-style fallback would let them through `< MAX_REVIEW_ROUNDS`)
   // and must refuse, never throw (no cast).
-  const round =
-    typeof lens.round === "number" && Number.isInteger(lens.round) ? lens.round : 1;
+  const round = typeof lens.round === "number" && Number.isInteger(lens.round) ? lens.round : 1;
   if (round < MAX_REVIEW_ROUNDS) {
     return {
       applies: true,
