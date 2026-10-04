@@ -1,10 +1,11 @@
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { writeLensLedgerEntry } from "./lens-ledger.ts";
+import { execp } from "./lens-exec.ts";
 import { capKillSummary } from "./lens-review-capkill.ts";
 import { runLensChild } from "./lens-review-child.ts";
 import {
@@ -32,7 +33,7 @@ import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
 
-const execp = promisify(exec);
+const execFileP = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
@@ -336,10 +337,6 @@ export async function runLensReview(opts: {
     head: opts.head,
     branch: opts.branch,
     cwd: opts.cwd,
-    runId,
-    roster,
-    extraFindings: opts.extraFindings,
-    threshold,
   });
   if (resolved.kind === "ok") {
     diff = resolved.diff ?? "";
@@ -352,7 +349,18 @@ export async function runLensReview(opts: {
       if (opts.base && opts.head) {
         const full = await computeRangeDiff(opts.cwd ?? process.cwd(), opts.base, opts.head);
         if (full.ok) {
-          context += `\n\nFULL BRANCH DIFF (context only — the findings below cover the delta since ${resolved.delta.since} (auto: latest lens ledger headSha)):\n${full.diff}`;
+          // #973 review — the context is bounded: an unbounded full-branch
+          // diff appended to every lens prompt would blow the child's context
+          // window on large branches. Capped at 100 KB with a truncation
+          // notice (the findings below still cover the delta; this is
+          // orientation only).
+          const FULL_CONTEXT_CAP = 100 * 1024;
+          const fullDiff =
+            full.diff.length > FULL_CONTEXT_CAP
+              ? full.diff.slice(0, FULL_CONTEXT_CAP) +
+                `\n… (truncated — the full branch diff exceeds ${FULL_CONTEXT_CAP} bytes; the findings below cover the delta only)`
+              : full.diff;
+          context += `\n\nFULL BRANCH DIFF (context only — the findings below cover the delta since ${resolved.delta.since} (auto: latest lens ledger headSha)):\n${fullDiff}`;
         }
       }
     }
@@ -473,16 +481,27 @@ export async function runLensReview(opts: {
   // head is named (the ledger write omits them; a later round-cap check
   // fails closed on the missing field — conservative by design).
   const hasCritical = deduped.some((f) => f.severity === "CRITICAL");
+  // #973 review — `delta.head` is already resolved to a full OID by
+  // resolveDeltaDiff (execFile, no shell); `opts.head` is a caller-supplied
+  // ref, resolved here via execFile with a leading-dash rejection (a ref
+  // beginning with `-` would be parsed by git as an option — argument
+  // injection — and is never a legitimate ref name here, the same rule
+  // `refIsCommit` in review-diff.ts applies).
   const reviewHead = delta ? delta.head : (opts.head ?? "HEAD");
   let headSha: string | undefined;
-  try {
-    const { stdout } = await execp(`git rev-parse ${reviewHead}`, {
-      cwd: opts.cwd ?? process.cwd(),
-      maxBuffer: 8 * 1024,
-    });
-    headSha = stdout.trim() || undefined;
-  } catch {
+  if (delta) {
+    headSha = delta.head || undefined;
+  } else if (reviewHead.startsWith("-")) {
     headSha = undefined;
+  } else {
+    try {
+      const { stdout } = await execFileP("git", ["-C", opts.cwd ?? process.cwd(), "rev-parse", reviewHead], {
+        maxBuffer: 8 * 1024,
+      });
+      headSha = stdout.trim() || undefined;
+    } catch {
+      headSha = undefined;
+    }
   }
   return finish(
     {
