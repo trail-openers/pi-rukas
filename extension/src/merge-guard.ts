@@ -359,11 +359,17 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
         );
         return;
       }
-      const reason = capDecision.applies
-        ? capDecision.failedCondition ?? "the round-cap conditions are not met"
-        : `no passing lens review on file for branch \`${branch}\` (latest: ${lens ? `passed=${lens.passed}` : "none"}) — run dispatch_lens_review and let it complete before merging`;
+      if (capDecision.applies) {
+        return block(
+          `merge refused: ${capDecision.failedCondition ?? "the round-cap conditions are not met"} — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
+        );
+      }
+      // The round-cap path does not apply (no entry, or a passing entry the
+      // strict rule should have allowed — unreachable here, or a legacy
+      // entry without a verdict detail): the strict rule's original refusal
+      // text, with the branch named for the operator.
       return block(
-        `merge refused: ${reason} — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
+        `no passing lens review on file for branch \`${branch}\` (latest: ${lens ? `passed=${lens.passed}` : "none"}) — run dispatch_lens_review and let it complete before merging`,
       );
     }
 

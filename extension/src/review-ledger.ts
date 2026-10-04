@@ -356,8 +356,11 @@ export async function appendLedgerEntry(
     // #973 — a lens write advances the branch's round counter in place:
     // the dedupe above keeps the previous latest lens entry, so its round
     // (legacy rows without one count as 1) IS the last recorded round, and
-    // the next is a pure function of the file's previous contents — a
-    // concurrent writer of the same shape computes the same number.
+    // the next is a pure function of the file's previous contents. The
+    // LATEST lens row per branch is what the guard reads; older rows for
+    // the same branch are historical (the guard's latestEntry picks the
+    // highest `at` regardless, so a hand-edited or legacy multi-row file
+    // still counts the most recent round).
     entries.push(bumpLensRound(entry, entries));
     const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
     writeFileSync(tmp, JSON.stringify({ entries }, null, 2), "utf8");

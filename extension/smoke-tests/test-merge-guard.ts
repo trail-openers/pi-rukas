@@ -33,7 +33,9 @@ process.env.PI_ENSEMBLE_FORGE = "github";
 // test (ledgerPathFor) so the writer and the guard can never disagree on the
 // path. The env override below points it at a private temp file BEFORE the
 // resolution, so the real per-clone ledger under the git common dir is never
-// touched; the temp dir is removed at the end.
+// touched; the temp dir is removed at the end. The round-cap block below
+// (appended after the canaries) also relies on the override, so it runs
+// BEFORE the teardown.
 let LEDGER_FILE: string | undefined;
 let LEDGER_TMP_DIR: string | undefined;
 
@@ -232,6 +234,16 @@ async function makeHook(env: {
         return { stdout: JSON.stringify({ number: t.prNumber }) };
       }
       if (env.failGh) throw new Error("gh: not found");
+      if (cmd.includes("--json comments")) {
+        if (env.ghComments === undefined) {
+          // No comments stubbed → the comments read is unreadable (fail
+          // closed): the disclosure marker cannot be verified, so the
+          // round-cap path refuses and the guard falls back to the strict
+          // rule's refusal.
+          throw new Error("gh: comments not stubbed");
+        }
+        return { stdout: env.ghComments };
+      }
       return ghView;
     }
     if (cmd.includes("git fetch")) {
@@ -276,6 +288,7 @@ async function hookDecision(
     failFetch?: boolean;
     ledgerCommonDir?: string;
     remote?: string;
+    ghComments?: string;
   } = {},
 ) {
   const env = {
@@ -287,6 +300,7 @@ async function hookDecision(
     ledgerCommonDir: opts.ledgerCommonDir ?? (LEDGER_FILE ? path.dirname(LEDGER_FILE) : ""),
     calls: [] as string[],
     remote: opts.remote ?? "origin",
+    ghComments: opts.ghComments,
   };
   const handler = await makeHook(env);
   const r = await withLedger(entries, () =>
@@ -489,6 +503,196 @@ await setupLedgerPath();
   assert(/import \{ exec \} from "node:child_process"/.test(merged), "canary: mechanizedMerge merges via in-process exec");
   assert(/execp\(|forge\.prMerge\(|forge\.prView\(/.test(merged), "…executing gh directly in-process");
   assert(!merged.includes("tool_call"), "the driver's merge path does not route through the bash tool_call hook");
+}
+
+// ------------------------------------------------- the #973 round-cap path
+// The guard's strict rule (latest lens entry passed) is refused; the
+// round-cap path is then consulted. Each condition below is exercised in
+// turn: every failing condition produces a refusal naming it, and all
+// conditions met allows the merge. CRITICAL never allows; a legacy entry
+// (no hasCritical) never satisfies the no-CRITICAL condition; a stale
+// marker (different patch) is a refusal; the escape hatch restores the
+// strict rule.
+//
+// The comments stub is the guard's comment read (design decision 5 — the
+// guard's own exec call, `gh pr view N --json comments`). A `ghComments`
+// stub of `undefined` makes the read throw (fail closed → no marker →
+// refusal), which is the shape the "no comments on the PR" cases use.
+
+{
+  const ADV = {
+    branch: "feature/x",
+    kind: "adversarial" as const,
+    patchId: "p1",
+    passed: true,
+    at: 1,
+  };
+  const lens = (over: Partial<LedgerEntry> & { at: number }): LedgerEntry => ({
+    branch: "feature/x",
+    kind: "lens",
+    patchId: "p1",
+    passed: false,
+    detail: "ISSUES_FOUND",
+    hasCritical: false,
+    round: 3,
+    ...over,
+  });
+  const commentsWith = (branch: string, patch: string) =>
+    JSON.stringify({
+      comments: [
+        {
+          body:
+            `residual findings\n<!-- pi-rukas:lens-residuals branch=${branch} patch=${patch} -->`,
+        },
+      ],
+    });
+  const NO_COMMENTS = JSON.stringify({ comments: [] });
+  const MARKER_BRANCH = "feature/x";
+  const MARKER_PATCH = "p1";
+
+  // All conditions met → allowed (the strict rule refuses; the round-cap
+  // path allows).
+  {
+    const r = await hookDecision("gh pr merge 12", [ADV, lens({ at: 2 })], {
+      ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
+    });
+    assert(r.block === false, "round-cap: all conditions met → merge allowed");
+    assert(
+      r.calls.some((c) => c.includes("--json comments")),
+      "…the guard read the PR's comments for the marker",
+    );
+  }
+  // Condition 1 (verdict): the latest lens entry is not ISSUES_FOUND.
+  {
+    const r = await hookDecision("gh pr merge 12", [ADV, lens({ at: 2, detail: "REVIEW_INCOMPLETE" })], {
+      ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
+    });
+    assert(r.block === true, "round-cap: a REVIEW_INCOMPLETE entry is not ISSUES_FOUND → refused");
+    assert(/not ISSUES_FOUND/.test(r.reason ?? ""), "…naming the verdict condition");
+  }
+  // Condition 1 (verdict): CRITICAL_ISSUES_FOUND never allows, even with a
+  // marker (the round-cap rule mirrors the driver's cap: CRITICAL always
+  // refuses).
+  {
+    const r = await hookDecision("gh pr merge 12", [ADV, lens({ at: 2, detail: "CRITICAL_ISSUES_FOUND", hasCritical: true, round: 5 })], {
+      ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
+    });
+    assert(r.block === true, "round-cap: CRITICAL_ISSUES_FOUND is never allowed");
+    assert(/not ISSUES_FOUND/.test(r.reason ?? ""), "…naming the verdict condition");
+  }
+  // Condition 3: hasCritical is missing (legacy entry) → refused, naming it.
+  {
+    const legacy = {
+      branch: "feature/x",
+      kind: "lens" as const,
+      patchId: "p1",
+      passed: false,
+      at: 2,
+      detail: "ISSUES_FOUND",
+      round: 3,
+    };
+    const r = await hookDecision("gh pr merge 12", [ADV, legacy], {
+      ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
+    });
+    assert(r.block === true, "round-cap: a legacy entry without hasCritical cannot satisfy no-CRITICAL");
+    assert(/hasCritical/.test(r.reason ?? ""), "…naming the missing hasCritical field");
+  }
+  // Condition 3: hasCritical is true → refused.
+  {
+    const r = await hookDecision("gh pr merge 12", [ADV, lens({ at: 2, hasCritical: true })], {
+      ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
+    });
+    assert(r.block === true, "round-cap: hasCritical=true → refused");
+    assert(/hasCritical/.test(r.reason ?? ""), "…naming the hasCritical condition");
+  }
+  // Condition 4: round below 3 → refused, naming the round.
+  {
+    const r = await hookDecision("gh pr merge 12", [ADV, lens({ at: 2, round: 2 })], {
+      ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
+    });
+    assert(r.block === true, "round-cap: round 2 < 3 → refused");
+    assert(/round 2/.test(r.reason ?? ""), "…naming the round condition");
+  }
+  // Condition 4: a legacy entry without `round` counts as round 1 → refused.
+  {
+    const legacyNoRound = {
+      branch: "feature/x",
+      kind: "lens" as const,
+      patchId: "p1",
+      passed: false,
+      at: 2,
+      detail: "ISSUES_FOUND",
+      hasCritical: false,
+    };
+    const r = await hookDecision("gh pr merge 12", [ADV, legacyNoRound], {
+      ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
+    });
+    assert(r.block === true, "round-cap: a legacy entry without `round` counts as round 1 → refused");
+    assert(/round 1/.test(r.reason ?? ""), "…naming the round condition");
+  }
+  // Condition 5: no marker comment → refused, naming the disclosure.
+  {
+    const r = await hookDecision("gh pr merge 12", [ADV, lens({ at: 2 })], {
+      ghComments: NO_COMMENTS,
+    });
+    assert(r.block === true, "round-cap: no disclosure marker on the PR → refused");
+    assert(/no disclosure marker/.test(r.reason ?? ""), "…naming the disclosure condition");
+  }
+  // Condition 5: a marker for a STALE patch → refused (the marker's patch
+  // must equal the guard's current patch-id).
+  {
+    const r = await hookDecision("gh pr merge 12", [ADV, lens({ at: 2 })], {
+      ghComments: commentsWith(MARKER_BRANCH, "pOLD"),
+    });
+    assert(r.block === true, "round-cap: a marker for a stale patch → refused");
+    assert(/no disclosure marker/.test(r.reason ?? ""), "…naming the disclosure condition");
+  }
+  // Condition 5: a marker for a DIFFERENT branch → refused.
+  {
+    const r = await hookDecision("gh pr merge 12", [ADV, lens({ at: 2 })], {
+      ghComments: commentsWith("feature/other", MARKER_PATCH),
+    });
+    assert(r.block === true, "round-cap: a marker for a different branch → refused");
+    assert(/no disclosure marker/.test(r.reason ?? ""), "…naming the disclosure condition");
+  }
+  // The comments read is unreadable (no stub) → fail closed → refused.
+  {
+    const r = await hookDecision("gh pr merge 12", [ADV, lens({ at: 2 })]);
+    assert(r.block === true, "round-cap: an unreadable comments read fails closed → refused");
+  }
+  // The strict rule still applies when the round-cap path does not apply
+  // (latest lens entry passed → allowed via the strict rule, no comments
+  // read needed).
+  {
+    const r = await hookDecision("gh pr merge 12", [
+      ADV,
+      { branch: "feature/x", kind: "lens", patchId: "p1", passed: true, at: 2 },
+    ]);
+    assert(r.block === false, "strict rule: a passing lens entry is still allowed (round-cap not consulted)");
+    assert(
+      !r.calls.some((c) => c.includes("--json comments")),
+      "…the strict path does not read the comments",
+    );
+  }
+  // Escape hatch: PI_ENSEMBLE_LENS_ROUND_CAP_MERGE=0 disables the round-cap
+  // path only → the strict rule's refusal applies.
+  {
+    const prev = process.env.PI_ENSEMBLE_LENS_ROUND_CAP_MERGE;
+    process.env.PI_ENSEMBLE_LENS_ROUND_CAP_MERGE = "0";
+    try {
+      const r = await hookDecision("gh pr merge 12", [ADV, lens({ at: 2 })], {
+        ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
+      });
+      assert(r.block === true, "escape hatch: PI_ENSEMBLE_LENS_ROUND_CAP_MERGE=0 restores the strict rule");
+      assert(
+        /no passing lens review on file/.test(r.reason ?? ""),
+        "…the strict rule's refusal text applies",
+      );
+    } finally {
+      if (prev === undefined) delete process.env.PI_ENSEMBLE_LENS_ROUND_CAP_MERGE;
+      else process.env.PI_ENSEMBLE_LENS_ROUND_CAP_MERGE = prev;
+    }
+  }
 }
 
 teardownLedger();
