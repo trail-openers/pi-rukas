@@ -231,7 +231,7 @@ export async function runLensReview(opts: {
   /**
    * Post-change content of files the diff touches, rendered for the prompt.
    * Supplied by the caller because only it knows the branch ref; see
-   * `readFileAtBranch` (lens-evidence.ts `buildEvidence`).
+   * `readFileAtBranch`.
    */
   evidence?: string;
   /**
