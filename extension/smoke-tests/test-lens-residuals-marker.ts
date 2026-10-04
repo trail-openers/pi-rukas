@@ -63,7 +63,7 @@ function makeStub(opts: { failPost?: boolean } = {}) {
   const calls: string[] = [];
   const execFn = async (cmd: string): Promise<{ stdout: string }> => {
     calls.push(cmd);
-    if (cmd.includes("pr list --head feature/x")) {
+    if (cmd.includes("pr list --state open --head feature/x")) {
       return { stdout: JSON.stringify([{ number: 12 }]) };
     }
     if (cmd.includes("pr view 12 --json headRefName,baseRefName")) {
@@ -250,7 +250,7 @@ function repoDir(): string {
     const calls: string[] = [];
     const execFn = async (cmd: string): Promise<{ stdout: string }> => {
       calls.push(cmd);
-      if (cmd.includes("pr list --head feature/x")) {
+      if (cmd.includes("pr list --state open --head feature/x")) {
         return { stdout: JSON.stringify([{ number: 12 }]) };
       }
       if (cmd.includes("pr view 12 --json headRefName,baseRefName")) {
@@ -297,7 +297,7 @@ function repoDir(): string {
   try {
     // A stub that returns no PR number (the PR is not open).
     const execFn = async (cmd: string): Promise<{ stdout: string }> => {
-      if (cmd.includes("pr list --head feature/x")) {
+      if (cmd.includes("pr list --state open --head feature/x")) {
         return { stdout: JSON.stringify([]) };
       }
       throw new Error(`unexpected exec: ${cmd}`);
