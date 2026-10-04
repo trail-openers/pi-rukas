@@ -58,6 +58,22 @@ export interface LedgerEntry {
   at: number;
   /** One line of what the review concluded, for the operator's audit. */
   detail?: string;
+  /** #973 — lens entries only: the branch-scoped round number this review
+   * ran as (the previous latest lens entry's round + 1; a legacy entry
+   * without `round` counts as round 1). Stored because the per-(branch, kind)
+   * dedupe below keeps only ONE lens row per branch, so the round must live
+   * on the entry, not in the file. */
+  round?: number;
+  /** #973 — lens entries only: whether the reviewed verdict carried a
+   * CRITICAL finding. The round-cap merge rule (merge-guard-round-cap.ts)
+   * requires `hasCritical === false` on the latest lens entry; a legacy
+   * entry without this field cannot satisfy it (conservative refusal). */
+  hasCritical?: boolean;
+  /** #973 — lens entries only: the commit hash reviewed. Two consumers:
+   * the delta-review auto-base (the `since` of a follow-up review defaults
+   * to the latest lens entry's `headSha` when it is an ancestor of HEAD) and
+   * the disclosure marker's provenance. */
+  headSha?: string;
 }
 
 interface LedgerFile {
@@ -337,7 +353,12 @@ export async function appendLedgerEntry(
     // guard (latestEntry) reads only the latest anyway, so older entries
     // would be dead weight accumulating one row per review run per clone.
     entries = dedupeLatest(entries);
-    entries.push(entry);
+    // #973 — a lens write advances the branch's round counter in place:
+    // the dedupe above keeps the previous latest lens entry, so its round
+    // (legacy rows without one count as 1) IS the last recorded round, and
+    // the next is a pure function of the file's previous contents — a
+    // concurrent writer of the same shape computes the same number.
+    entries.push(bumpLensRound(entry, entries));
     const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
     writeFileSync(tmp, JSON.stringify({ entries }, null, 2), "utf8");
     try {
@@ -445,6 +466,28 @@ export function latestEntry(entries: LedgerEntry[], branch: string, kind: Review
     if (!best || e.at >= best.at) best = e;
   }
   return best;
+}
+
+/**
+ * #973 — advance the round counter for a lens write: the previous latest
+ * lens entry's `round` + 1 (legacy entries without `round` count as 1; no
+ * previous lens entry is a first run, which is round 1). Adversarial writes
+ * and rows for other branches pass through unchanged. The input rows are the
+ * deduped contents of the ledger file as re-read immediately before this
+ * write, so the number is deterministic in the file's state.
+ */
+export function bumpLensRound(
+  entry: LedgerEntry,
+  existing: LedgerEntry[],
+): LedgerEntry {
+  if (entry.kind !== "lens") return entry;
+  let prev: LedgerEntry | undefined;
+  for (const e of existing) {
+    if (e.branch !== entry.branch || e.kind !== "lens") continue;
+    if (!prev || e.at >= prev.at) prev = e;
+  }
+  const next = (prev ? (prev.round ?? 1) : 0) + 1;
+  return { ...entry, round: next };
 }
 
 /** Read + validate the ledger from a resolved path; never throws. */

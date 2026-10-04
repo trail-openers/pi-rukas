@@ -31,12 +31,21 @@ const execp = promisify(exec);
  * Write a lens-review entry to the review ledger. Fire-and-forget: the
  * caller does not await this; the function is safe to call after the
  * verdict is computed.
+ *
+ * #973 — the entry carries the round-cap rule's inputs: `hasCritical`
+ * (whether the reviewed verdict carried a CRITICAL finding) and `headSha`
+ * (the commit reviewed, resolved when a caller names the branch). The
+ * `round` is added by `appendLedgerEntry` (`bumpLensRound`) against the
+ * file's previous contents, so the writer does not read the ledger itself
+ * — one read site, one writer of the counter.
  */
 export function writeLensLedgerEntry(
   verdict: string,
   threshold: string,
   cwd: string | undefined,
   branch?: string,
+  hasCritical?: boolean,
+  headSha?: string,
 ): void {
   const write = async () => {
     const c = cwd ?? process.cwd();
@@ -70,6 +79,8 @@ export function writeLensLedgerEntry(
       passed: lensPassed(verdict, threshold),
       at: Date.now(),
       detail: verdict,
+      ...(hasCritical !== undefined ? { hasCritical } : {}),
+      ...(headSha ? { headSha } : {}),
     };
     await appendLedgerEntry(entry, execp, c);
   };

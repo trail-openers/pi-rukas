@@ -89,8 +89,9 @@ import { stripQuotedSegments } from "./bash-command-parser.ts";
 import { mergesPr } from "./bash-merges-pr.ts";
 import { extractMergeNumber, mergeVerbArgs, mergeVerbRepo } from "./merge-parse.ts";
 import { exceedsAnalysisBound } from "./merge-size.ts";
-import { type MergeExecFn, isCarveOut, readMergeTarget, resolvePrNumber } from "./merge-target.ts";
+import { type MergeExecFn, type MergeTarget, isCarveOut, readMergeTarget, resolvePrNumber } from "./merge-target.ts";
 import { REPO_VALUE_PATTERN } from "./merge-tokens.ts";
+import { evaluateRoundCapMerge } from "./merge-guard-round-cap.ts";
 import {
   type LedgerEntry,
   branchPatchId,
@@ -340,11 +341,29 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
       );
     }
 
-    // Lens: latest entry must be passed (any patchId).
+    // Lens: the strict rule first — the LATEST entry must be `passed`
+    // (any patchId). When it refuses, the #973 round-cap path is consulted:
+    // an ISSUES_FOUND entry with no CRITICAL, >= 3 rounds, an approving
+    // adversarial review (already checked above), and the residual findings
+    // disclosed on the PR (marker + matching patch) allows the merge — the
+    // same rule AGENTS.md §1 and work-driver-lens-cap.ts apply to the
+    // driver's own cycles. A refusal from either path names the failed
+    // condition (see evaluateRoundCapMerge for the full matrix).
     const lens = latestEntry(entries, branch, "lens");
     if (!lens || !lens.passed) {
+      const lensComments = await readPrCommentBodies(execFn, cwd, target, prNumber, repoValue);
+      const capDecision = evaluateRoundCapMerge(entries, branch, currentPatchId, lensComments);
+      if (capDecision.applies && capDecision.allowed) {
+        trace(
+          `merge-guard: PR #${prNumber} ${branch} — round-cap path allows the merge (ISSUES_FOUND, no CRITICAL, round ${lens?.round}, disclosed on the PR)`,
+        );
+        return;
+      }
+      const reason = capDecision.applies
+        ? capDecision.failedCondition ?? "the round-cap conditions are not met"
+        : `no passing lens review on file for branch \`${branch}\` (latest: ${lens ? `passed=${lens.passed}` : "none"}) — run dispatch_lens_review and let it complete before merging`;
       return block(
-        `no passing lens review on file for branch \`${branch}\` (latest: ${lens ? `passed=${lens.passed}` : "none"}) — run dispatch_lens_review and let it complete before merging`,
+        `merge refused: ${reason} — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
       );
     }
 
@@ -354,6 +373,46 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
 
 function block(reason: string) {
   return { block: true, reason };
+}
+
+/**
+ * #973 — the PR/MR comment bodies the round-cap path's disclosure check
+ * reads (design decision 5: the guard's own exec call through the injectable
+ * `execFn`, no new forge seam). `gh pr view N --json comments` (GitHub) /
+ * `glab mr view N --output json` (GitLab, the notes array). Every fault is
+ * fail-closed: an unreadable comments list returns [] (the marker check
+ * fails, the merge is refused) — the disclosure is a condition, and a
+ * missing condition is a refusal, never a pass.
+ */
+async function readPrCommentBodies(
+  execFn: MergeExecFn,
+  cwd: string,
+  target: MergeTarget,
+  prNumber: number,
+  repoValue: string | undefined,
+): Promise<string[]> {
+  const repoFlag = repoValue ? ` -R ${repoValue}` : "";
+  try {
+    if (target.forge === "github") {
+      const { stdout } = await execFn(
+        `gh pr view ${prNumber} --json comments${repoFlag}`,
+        { cwd, maxBuffer: 1024 * 1024, timeout: EXEC_TIMEOUT_MS },
+      );
+      const raw = JSON.parse(stdout) as { comments?: Array<{ body?: unknown }> };
+      return (raw.comments ?? [])
+        .map((c) => (typeof c.body === "string" ? c.body : ""));
+    }
+    const { stdout } = await execFn(`glab mr view ${prNumber} --output json${repoFlag}`, {
+      cwd,
+      maxBuffer: 1024 * 1024,
+      timeout: EXEC_TIMEOUT_MS,
+    });
+    const raw = JSON.parse(stdout) as { notes?: Array<{ body?: unknown }> };
+    return (raw.notes ?? []).map((n) => (typeof n.body === "string" ? n.body : ""));
+  } catch (err) {
+    trace(`merge-guard: comment read failed: ${(err as Error).message?.slice(0, 120)}`);
+    return [];
+  }
 }
 
 /**

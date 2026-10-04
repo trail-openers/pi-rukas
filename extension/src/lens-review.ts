@@ -1,13 +1,17 @@
 import os from "node:os";
 import path from "node:path";
+import { exec } from "node:child_process";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { writeLensLedgerEntry } from "./lens-ledger.ts";
+import { postLensResidualDisclosure } from "./lens-review-residuals.ts";
 import { capKillSummary } from "./lens-review-capkill.ts";
 import { runLensChild } from "./lens-review-child.ts";
 import {
   blockedReviewSummary,
   blockedRowsForRoster,
+  resolveDeltaDiff,
   resolveLensDiff,
   startPersistentBatch,
 } from "./lens-review-diff.ts";
@@ -28,6 +32,9 @@ import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
 
+import { computeRangeDiff } from "./review-diff.ts";
+
+const execp = promisify(exec);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
@@ -178,6 +185,21 @@ export interface LensReviewSummary {
    * "the review spent zero tokens".
    */
   usage?: DispatchUsage;
+  /**
+   * #973 — a residual-findings disclosure note, set when the run's verdict is
+   * ISSUES_FOUND and the post of the disclosure to the PR/MR failed (fail
+   * closed — the merge guard then refuses until the disclosure is posted).
+   * Empty/undefined on success; the tool appends it to the summary text.
+   */
+  note?: string;
+  /**
+   * #973 — this review ran against a delta (`git diff <since>..<head>`) rather
+   * than the full branch diff. Rendered into the operator summary (see
+   * `renderSummary`) so a delta pass is never mistaken for a whole-branch
+   * approval: the findings it produced are findings on the DELTA, and a
+   * later full review still owns the rest of the branch.
+   */
+  deltaReview?: { since: string; head: string };
 }
 
 function piSkillsDir(): string {
@@ -195,13 +217,35 @@ function piSkillsDir(): string {
  * all-fail/all-abort run, and the "write nothing" path (no branch / no
  * patchId) is the only silent path that remains.
  */
-function finish(
+async function finish(
   summary: LensReviewSummary,
   threshold: Severity,
   cwd: string | undefined,
   branch: string | undefined,
-): LensReviewSummary {
-  void writeLensLedgerEntry(summary.verdict, threshold, cwd, branch);
+  ledger: { hasCritical?: boolean; headSha?: string } = {},
+): Promise<LensReviewSummary> {
+  void writeLensLedgerEntry(
+    summary.verdict,
+    threshold,
+    cwd,
+    branch,
+    ledger.hasCritical,
+    ledger.headSha,
+  );
+  // #973 — the residual-findings disclosure: posted ONLY when the verdict is
+  // ISSUES_FOUND AND the branch's PR/MR resolves (see postLensResidual
+  // for the trigger, the marker, and the fail-closed semantics). Awaited so
+  // the tool result reports a failed post (the guard then refuses — fail
+  // closed) before the summary is returned to the async job — the post is
+  // best-effort but its failure must be VISIBLE in the tool result, and the
+  // job's text is read once the summary resolves.
+  if (summary.verdict === "ISSUES_FOUND" && branch) {
+    summary.note = await postLensResidualDisclosure({
+      summary,
+      branch,
+      cwd: cwd ?? process.cwd(),
+    });
+  }
   return summary;
 }
 
@@ -218,6 +262,18 @@ export async function runLensReview(opts: {
   /** #859 — head ref for the tool-computed diff (with base). */
   head?: string;
   signal?: AbortSignal;
+  /**
+   * #973 — the delta base: the `since` ref (a commit) the review's diff runs
+   * from. When present, the lenses review ONLY `git diff <since>..<head>`
+   * (head = `opts.head` or, absent head, the current HEAD) instead of the
+   * full base...head range, with the full-branch diff supplied as `context`
+   * for orientation. A `since` that is not a commit, or whose delta is
+   * empty, does not run a review (see resolveDeltaDiff in
+   * lens-review-diff.ts) — it is neither an approval nor a block. The FIRST
+   * review on a branch is always a full review: the caller supplies `since`
+   * only from a prior recorded lens entry (or an explicit operator ref).
+   */
+  since?: string;
   /**
    * #966 — the per-lens spawner (the real `runLensChild` by default;
    * tests inject a stub so an all-fail run is drivable offline, the issue's
@@ -251,7 +307,7 @@ export async function runLensReview(opts: {
 }): Promise<LensReviewSummary> {
   const runId = makeRunId();
   const skillsDir = piSkillsDir();
-  const context = opts.context ?? "";
+  let context = opts.context ?? "";
   // The RESOLVED threshold (computed once; both the verdict and the ledger
   // write apply the same bar).
   const threshold = opts.threshold ?? DEFAULT_REVIEW_THRESHOLD;
@@ -270,13 +326,57 @@ export async function runLensReview(opts: {
   // confirmed-empty range, cap overflow, nothing supplied) blocks the whole
   // review — a computed diff is never silently empty, never an approval
   // (same rule as #384). Blocked rows use the EXPECTED roster above.
-  const resolution = await resolveLensDiff(opts);
-  if (resolution.problem) {
-    const blockRows = blockedRowsForRoster(roster, resolution.problem);
-    const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
-    return finish(blocked, threshold, opts.cwd, opts.branch);
+  // #973 — `since` (a delta base) overrides base+head: the lenses review
+  // ONLY `git diff <since>..<head>`, with the full base...head range
+  // supplied as context for orientation. An empty delta is not a block and
+  // not an approval — it is the no-review outcome (see resolveDeltaDiff).
+  // The context string is built here, before the roster checks below, so
+  // the delta path is not coupled to the diff-string path that follows.
+  let delta: { since: string; head: string } | undefined;
+  let diff = "";
+  const hasDiffString = typeof opts.diff === "string" && opts.diff.length > 0;
+  if (hasDiffString) {
+    diff = opts.diff as string;
+  } else if (opts.since) {
+    const d = await resolveDeltaDiff(opts.since, opts.head, opts.cwd);
+    if (d.noReview) {
+      trace(
+        `lens-review: delta review skipped — no changes since ${opts.since} (${d.reason})`,
+      );
+      return {
+        verdict: "APPROVED",
+        totalFindings: 0,
+        bySeverity: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 },
+        lenses: [],
+        findings: [],
+        usage: undefined,
+        deltaReview: { since: d.since, head: d.head },
+      };
+    }
+    if (d.problem) {
+      const blockRows = blockedRowsForRoster(roster, d.problem);
+      const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
+      return finish(blocked, threshold, opts.cwd, opts.branch, {
+        hasCritical: false,
+      });
+    }
+    delta = { since: d.since, head: d.head };
+    diff = d.diff ?? "";
+    if (opts.base && opts.head) {
+      const full = await computeRangeDiff(opts.cwd ?? process.cwd(), opts.base, opts.head);
+      if (full.ok) {
+        context += `\n\nFULL BRANCH DIFF (context only — the findings below cover the delta since ${d.since}):\n${full.diff}`;
+      }
+    }
+  } else {
+    const resolution = await resolveLensDiff(opts);
+    if (resolution.problem) {
+      const blockRows = blockedRowsForRoster(roster, resolution.problem);
+      const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
+      return await finish(blocked, threshold, opts.cwd, opts.branch);
+    }
+    diff = resolution.diff ?? "";
   }
-  const diff = resolution.diff ?? "";
   // #966 — the empty-roster guard: a skills dir that resolves to ZERO
   // lenses (missing dir, empty dir, no `code-review-*` skill, OR an
   // unreadable bundled expected set — the #970 CI incident where the
@@ -310,7 +410,7 @@ export async function runLensReview(opts: {
     // generic "no usable" fallback).
     const blockRows = installBlockRowsForRoster(problem);
     const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
-    return finish(blocked, threshold, opts.cwd, opts.branch);
+    return await finish(blocked, threshold, opts.cwd, opts.branch);
   }
   // #966 — an aborted signal is a user kill: every lens is recorded blocked,
   // no children are spawned, and the run proceeds to the SAME finish path as
@@ -323,7 +423,7 @@ export async function runLensReview(opts: {
   if (opts.signal?.aborted) {
     const blockRows = blockedRowsForRoster(roster, "aborted before start");
     const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
-    return finish(blocked, threshold, opts.cwd, opts.branch);
+    return await finish(blocked, threshold, opts.cwd, opts.branch);
   }
   // Persistent batch summary row (#139). Lets the user see "X/6 done"
   // throughout the run even as fast lenses drop out at 0s linger. Registered
@@ -365,6 +465,24 @@ export async function runLensReview(opts: {
   const all = [...lensResults.flatMap((r) => r.findings), ...(opts.extraFindings ?? [])];
   const deduped = dedupeFindings(all, roster);
   const verdict = computeVerdict(deduped, lensResults, threshold);
+  // #973 — the round-cap rule's inputs for the ledger write: hasCritical from
+  // the deduped findings, headSha from the ref the review actually covered
+  // (the delta's head when this was a delta run, otherwise opts.head or
+  // HEAD). Both are undefined on the full-review path when no head is named
+  // (the ledger write simply omits them, and a later round-cap check fails
+  // closed on the missing field — conservative by design).
+  const hasCritical = deduped.some((f) => f.severity === "CRITICAL");
+  const reviewHead = delta ? delta.head : opts.head ?? "HEAD";
+  let headSha: string | undefined;
+  try {
+    const { stdout } = await execp(`git rev-parse ${reviewHead}`, {
+      cwd: opts.cwd ?? process.cwd(),
+      maxBuffer: 8 * 1024,
+    });
+    headSha = stdout.trim() || undefined;
+  } catch {
+    headSha = undefined;
+  }
   return finish(
     {
       verdict,
@@ -377,9 +495,11 @@ export async function runLensReview(opts: {
       // budget) is surfaced on the summary so the driver emits the fixed-literal
       // cap-hit (F4g) instead of a silent 1-of-6 loss.
       ...capKillSummary(lensResults),
+      ...(delta ? { deltaReview: { since: delta.since, head: delta.head } } : {}),
     },
     threshold,
     opts.cwd,
     opts.branch,
+    { hasCritical, headSha },
   );
 }
