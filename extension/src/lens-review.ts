@@ -1,11 +1,10 @@
+import { exec } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { writeLensLedgerEntry } from "./lens-ledger.ts";
-import { postLensResidualDisclosure } from "./lens-review-residuals.ts";
 import { capKillSummary } from "./lens-review-capkill.ts";
 import { runLensChild } from "./lens-review-child.ts";
 import {
@@ -26,6 +25,7 @@ import {
   lensProducedEvidence,
   renderSummary,
 } from "./lens-review-format.ts";
+import { postLensResidualDisclosure } from "./lens-review-residuals.ts";
 import { installBlockRowsForRoster, skillsDirUsable } from "./lens-review-skills.ts";
 import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
 import { makeRunId } from "./spawn.ts";
@@ -318,8 +318,8 @@ export async function runLensReview(opts: {
   // disappear from a six-pass review (five lenses + APPROVED). Blocked
   // entries (missing/duplicate precedence, unparseable SKILL.md, `name:` ≠
   // dir, skill not installed) become blocked lens results below →
-  // REVIEW_INCOMPLETE; the review never runs a silently reduced or reordered
-  // roster.
+  // REVIEW_INCOMPLETE; the review never runs a silently reduced or
+  // reordered roster.
   const roster = buildExpectedRoster(skillsDir);
   // #859 — ref-range diffs: when `diff` is absent and base+head are present,
   // the diff is computed ONCE and fed to every lens. An error (invalid ref,
@@ -340,9 +340,7 @@ export async function runLensReview(opts: {
   } else if (opts.since) {
     const d = await resolveDeltaDiff(opts.since, opts.head, opts.cwd);
     if (d.noReview) {
-      trace(
-        `lens-review: delta review skipped — no changes since ${opts.since} (${d.reason})`,
-      );
+      trace(`lens-review: delta review skipped — no changes since ${opts.since} (${d.reason})`);
       return {
         verdict: "APPROVED",
         totalFindings: 0,
@@ -356,9 +354,7 @@ export async function runLensReview(opts: {
     if (d.problem) {
       const blockRows = blockedRowsForRoster(roster, d.problem);
       const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
-      return finish(blocked, threshold, opts.cwd, opts.branch, {
-        hasCritical: false,
-      });
+      return finish(blocked, threshold, opts.cwd, opts.branch, { hasCritical: false });
     }
     delta = { since: d.since, head: d.head };
     diff = d.diff ?? "";
@@ -379,9 +375,9 @@ export async function runLensReview(opts: {
   }
   // #966 — the empty-roster guard: a skills dir that resolves to ZERO
   // lenses (missing dir, empty dir, no `code-review-*` skill, OR an
-  // unreadable bundled expected set — the #970 CI incident where the
-  // review ran with no lens skills installed at all) blocks the review on
-  // the single finish path below. Without this the empty-roster shape fell
+  // unreadable bundled expected set — the #970 CI incident where the review
+  // ran with no lens skills installed at all) blocks the review on the
+  // single finish path below. Without this the empty-roster shape fell
   // through to a fan-out over zero lenses and `computeVerdict` saw zero
   // rows, which every rule in the precedence table passes — an empty
   // review was APPROVED, the silent-approval class #966 exists to close.
@@ -414,12 +410,12 @@ export async function runLensReview(opts: {
   }
   // #966 — an aborted signal is a user kill: every lens is recorded blocked,
   // no children are spawned, and the run proceeds to the SAME finish path as
-  // a non-aborted all-fail run — verdict REVIEW_INCOMPLETE, one ledger write,
-  // nothing special. Checked BEFORE `startPersistentBatch` so no deck batch
-  // (and its ticker) is ever registered for a run that cannot start. The
-  // in-loop signal check inside runLensChild still governs children that
-  // were already spawned before an abort arrives mid-fan-out; the normal
-  // fan-out path clears its batch via `clearBatchEntry(batchKey)` below.
+  // a non-aborted all-fail run — verdict REVIEW_INCOMPLETE, one ledger
+  // write, nothing special. Checked before `startPersistentBatch` so no deck
+  // batch (and its ticker) is ever registered for a run that cannot start.
+  // The in-loop signal check inside runLensChild still governs children
+  // already spawned before an abort arrives mid-fan-out; the normal fan-out
+  // path clears its batch via `clearBatchEntry(batchKey)` below.
   if (opts.signal?.aborted) {
     const blockRows = blockedRowsForRoster(roster, "aborted before start");
     const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
@@ -427,11 +423,11 @@ export async function runLensReview(opts: {
   }
   // Persistent batch summary row (#139). Lets the user see "X/6 done"
   // throughout the run even as fast lenses drop out at 0s linger. Registered
-  // BEFORE the per-lens entries so its seq sorts first on Pi's footer.
+  // before the per-lens entries so its seq sorts first on Pi's footer.
   const { batchKey, bumpBatch } = startPersistentBatch(runId, roster.length);
-  // #873 — blocked roster entries become blocked lens results (no spawn,
-  // the named error as parseError) and feed REVIEW_INCOMPLETE via
-  // computeVerdict; healthy entries fan out as before.
+  // #873 — blocked roster entries become blocked lens results (no spawn, the
+  // named error as parseError) and feed REVIEW_INCOMPLETE via computeVerdict;
+  // healthy entries fan out as before.
   const lensChildFn = opts.lensChildFn ?? runLensChild;
   const blocked = roster.filter((e) => e.error !== undefined);
   const healthy = roster.filter((e) => e.error === undefined);
@@ -465,14 +461,14 @@ export async function runLensReview(opts: {
   const all = [...lensResults.flatMap((r) => r.findings), ...(opts.extraFindings ?? [])];
   const deduped = dedupeFindings(all, roster);
   const verdict = computeVerdict(deduped, lensResults, threshold);
-  // #973 — the round-cap rule's inputs for the ledger write: hasCritical from
-  // the deduped findings, headSha from the ref the review actually covered
-  // (the delta's head when this was a delta run, otherwise opts.head or
-  // HEAD). Both are undefined on the full-review path when no head is named
-  // (the ledger write simply omits them, and a later round-cap check fails
-  // closed on the missing field — conservative by design).
+  // #973 — the round-cap rule's inputs for the ledger write: hasCritical
+  // from the deduped findings, headSha from the ref the review actually
+  // covered (the delta's head when this was a delta run, otherwise
+  // opts.head or HEAD). Both are undefined on the full-review path when no
+  // head is named (the ledger write omits them; a later round-cap check
+  // fails closed on the missing field — conservative by design).
   const hasCritical = deduped.some((f) => f.severity === "CRITICAL");
-  const reviewHead = delta ? delta.head : opts.head ?? "HEAD";
+  const reviewHead = delta ? delta.head : (opts.head ?? "HEAD");
   let headSha: string | undefined;
   try {
     const { stdout } = await execp(`git rev-parse ${reviewHead}`, {
@@ -491,9 +487,6 @@ export async function runLensReview(opts: {
       lenses: lensResults,
       findings: deduped,
       usage: aggregateLensUsage(lensResults),
-      // #543 — a dispatch-cap kill on any lens child (loop detector / token
-      // budget) is surfaced on the summary so the driver emits the fixed-literal
-      // cap-hit (F4g) instead of a silent 1-of-6 loss.
       ...capKillSummary(lensResults),
       ...(delta ? { deltaReview: { since: delta.since, head: delta.head } } : {}),
     },

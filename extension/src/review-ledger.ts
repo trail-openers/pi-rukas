@@ -479,10 +479,7 @@ export function latestEntry(entries: LedgerEntry[], branch: string, kind: Review
  * deduped contents of the ledger file as re-read immediately before this
  * write, so the number is deterministic in the file's state.
  */
-export function bumpLensRound(
-  entry: LedgerEntry,
-  existing: LedgerEntry[],
-): LedgerEntry {
+export function bumpLensRound(entry: LedgerEntry, existing: LedgerEntry[]): LedgerEntry {
   if (entry.kind !== "lens") return entry;
   let prev: LedgerEntry | undefined;
   for (const e of existing) {

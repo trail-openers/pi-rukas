@@ -87,11 +87,17 @@ import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { stripQuotedSegments } from "./bash-command-parser.ts";
 import { mergesPr } from "./bash-merges-pr.ts";
+import { evaluateRoundCapMerge } from "./merge-guard-round-cap.ts";
 import { extractMergeNumber, mergeVerbArgs, mergeVerbRepo } from "./merge-parse.ts";
 import { exceedsAnalysisBound } from "./merge-size.ts";
-import { type MergeExecFn, type MergeTarget, isCarveOut, readMergeTarget, resolvePrNumber } from "./merge-target.ts";
+import {
+  type MergeExecFn,
+  type MergeTarget,
+  isCarveOut,
+  readMergeTarget,
+  resolvePrNumber,
+} from "./merge-target.ts";
 import { REPO_VALUE_PATTERN } from "./merge-tokens.ts";
-import { evaluateRoundCapMerge } from "./merge-guard-round-cap.ts";
 import {
   type LedgerEntry,
   branchPatchId,
@@ -400,13 +406,13 @@ async function readPrCommentBodies(
   const repoFlag = repoValue ? ` -R ${repoValue}` : "";
   try {
     if (target.forge === "github") {
-      const { stdout } = await execFn(
-        `gh pr view ${prNumber} --json comments${repoFlag}`,
-        { cwd, maxBuffer: 1024 * 1024, timeout: EXEC_TIMEOUT_MS },
-      );
+      const { stdout } = await execFn(`gh pr view ${prNumber} --json comments${repoFlag}`, {
+        cwd,
+        maxBuffer: 1024 * 1024,
+        timeout: EXEC_TIMEOUT_MS,
+      });
       const raw = JSON.parse(stdout) as { comments?: Array<{ body?: unknown }> };
-      return (raw.comments ?? [])
-        .map((c) => (typeof c.body === "string" ? c.body : ""));
+      return (raw.comments ?? []).map((c) => (typeof c.body === "string" ? c.body : ""));
     }
     const { stdout } = await execFn(`glab mr view ${prNumber} --output json${repoFlag}`, {
       cwd,

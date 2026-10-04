@@ -109,7 +109,13 @@ export async function resolveDeltaDiff(
   }
   const d = await computeDeltaDiff(c, since, resolvedHead);
   if (!d.ok) {
-    return { noReview: false, since, head: resolvedHead, problem: `lens review: ${d.reason}`, diff: undefined };
+    return {
+      noReview: false,
+      since,
+      head: resolvedHead,
+      problem: `lens review: ${d.reason}`,
+      diff: undefined,
+    };
   }
   if (d.empty) {
     return {

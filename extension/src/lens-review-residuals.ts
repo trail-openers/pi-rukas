@@ -28,13 +28,13 @@
  */
 
 import { exec } from "node:child_process";
-import { promisify } from "node:util";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { promisify } from "node:util";
 import { detectForge } from "./forge-detect.ts";
-import { type LedgerEntry, branchPatchId, latestEntry, remoteName } from "./review-ledger.ts";
-import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
 import type { LensReviewSummary } from "./lens-review.ts";
+import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
+import { type LedgerEntry, branchPatchId, latestEntry, remoteName } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
 
 const execp = promisify(exec);
@@ -99,14 +99,14 @@ async function doPost(
   }
   let prNumber: number | undefined;
   if (detection.forge === "gitlab") {
-    const { stdout } = await execFn(`glab mr view --output json`, {
+    const { stdout } = await execFn("glab mr view --output json", {
       cwd,
       maxBuffer: 8 * 1024,
       timeout: 30_000,
     });
     prNumber = (JSON.parse(stdout) as { iid?: number }).iid;
   } else {
-    const { stdout } = await execFn(`gh pr view --json number`, {
+    const { stdout } = await execFn("gh pr view --json number", {
       cwd,
       maxBuffer: 8 * 1024,
       timeout: 30_000,
@@ -130,10 +130,11 @@ async function doPost(
     headBranch = raw.source_branch;
     baseBranch = raw.target_branch;
   } else {
-    const { stdout } = await execFn(
-      `gh pr view ${prNumber} --json headRefName,baseRefName`,
-      { cwd, maxBuffer: 64 * 1024, timeout: 30_000 },
-    );
+    const { stdout } = await execFn(`gh pr view ${prNumber} --json headRefName,baseRefName`, {
+      cwd,
+      maxBuffer: 64 * 1024,
+      timeout: 30_000,
+    });
     const raw = JSON.parse(stdout) as { headRefName?: string; baseRefName?: string };
     headBranch = raw.headRefName;
     baseBranch = raw.baseRefName;
@@ -145,7 +146,12 @@ async function doPost(
   // (review-ledger.ts branchPatchId, the PR's actual base).
   const remote = await remoteName(execFn, cwd);
   if (!remote) throw new Error("no git remote found (origin/upstream/first)");
-  const patchId = await branchPatchId(execFn, cwd, `${remote}/${headBranch}`, `${remote}/${baseBranch}`);
+  const patchId = await branchPatchId(
+    execFn,
+    cwd,
+    `${remote}/${headBranch}`,
+    `${remote}/${baseBranch}`,
+  );
   if (!patchId) {
     throw new Error(`could not compute the patch-id for ${headBranch} against ${baseBranch}`);
   }
@@ -156,17 +162,17 @@ async function doPost(
     (f) => `- [${f.severity}] ${f.path}:${f.line ?? "?"} — ${f.title} (${f.lens})`,
   );
   const body = [
-    `## Six-pass review — residual findings (round disclosure)`,
-    ``,
+    "## Six-pass review — residual findings (round disclosure)",
+    "",
     `The lens review verdict is **${summary.verdict}**; nothing listed here has been fixed.`,
-    `None is CRITICAL and the adversarial gate passed the diff, so a round-capped`,
-    `review may carry these forward — but they are recorded here so a merge is never`,
-    `silent about them. Decide them before merging.`,
-    ``,
+    "None is CRITICAL and the adversarial gate passed the diff, so a round-capped",
+    "review may carry these forward — but they are recorded here so a merge is never",
+    "silent about them. Decide them before merging.",
+    "",
     ...lines,
-    ``,
+    "",
     marker,
-    ``,
+    "",
   ].join("\n");
   // Post via a body file (the driver's discloseResidualFindings pattern —
   // `--body-file` avoids shell-quoting issues with multi-line bodies).
