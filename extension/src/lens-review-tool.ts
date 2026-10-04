@@ -48,7 +48,13 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
       since: Type.Optional(
         Type.String({
           description:
-            "#973 — the delta base: a commit ref the review diffs from (`git diff <since>..<head>`). When given, the lenses review ONLY the delta, with the full base...head range as context. The FIRST review on a branch is always a full review; to re-review only what changed since the last recorded lens run, pass that run's headSha (the review records it in the ledger) as `since`. An empty delta (no changes since `since`) is a no-review outcome — no re-review, no ledger entry.",
+            "#973 — the delta base: a commit ref the review diffs from (`git diff <since>..<head>`). When given, the lenses review ONLY the delta, with the full base...head range as context. Without it, the delta base DEFAULTS to this branch's latest lens ledger entry's headSha when that SHA is an ancestor of HEAD (an automatic delta review); the first review on a branch (no ledger entry) is always a full review. An empty delta (no changes since the base) is a no-review outcome — no re-review, no ledger entry. Pass `full: true` to force a full review.",
+        }),
+      ),
+      full: Type.Optional(
+        Type.Boolean({
+          description:
+            "#973 — force a full review: the automatic delta base (the latest lens ledger entry's headSha) is not consulted. An explicit `since` still wins when given.",
         }),
       ),
     }),
@@ -60,6 +66,7 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
         base?: string;
         head?: string;
         since?: string;
+        full?: boolean;
       };
       const hasDiff = typeof params.diff === "string" && params.diff.length > 0;
       const hasRange = typeof params.base === "string" && typeof params.head === "string";

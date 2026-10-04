@@ -10,8 +10,7 @@ import { runLensChild } from "./lens-review-child.ts";
 import {
   blockedReviewSummary,
   blockedRowsForRoster,
-  resolveDeltaDiff,
-  resolveLensDiff,
+  resolveReviewDiff,
   startPersistentBatch,
 } from "./lens-review-diff.ts";
 import {
@@ -193,12 +192,12 @@ export interface LensReviewSummary {
   note?: string;
   /**
    * #973 — this review ran against a delta (`git diff <since>..<head>`) rather
-   * than the full branch diff. Rendered into the operator summary (see
-   * `renderSummary`) so a delta pass is never mistaken for a whole-branch
-   * approval: the findings it produced are findings on the DELTA, and a
-   * later full review still owns the rest of the branch.
+   * than the full branch diff. `auto` marks the automatic delta base (design
+   * decision 6 — `since` defaulted to the latest lens ledger entry's `headSha`)
+   * as distinct from an operator-supplied `since`. The findings it produced are
+   * findings on the DELTA; a later full review still owns the rest of the branch.
    */
-  deltaReview?: { since: string; head: string };
+  deltaReview?: { since: string; head: string; auto?: boolean };
 }
 
 function piSkillsDir(): string {
@@ -263,33 +262,25 @@ export async function runLensReview(opts: {
   signal?: AbortSignal;
   /**
    * #973 — the delta base: the `since` ref (a commit) the review's diff runs
-   * from. When present, the lenses review ONLY `git diff <since>..<head>`
-   * (head = `opts.head` or, absent head, the current HEAD) instead of the
-   * full base...head range, with the full-branch diff supplied as `context`
-   * for orientation. A `since` that is not a commit, or whose delta is
-   * empty, does not run a review (see resolveDeltaDiff in
-   * lens-review-diff.ts) — it is neither an approval nor a block. The FIRST
-   * review on a branch is always a full review: the caller supplies `since`
-   * only from a prior recorded lens entry (or an explicit operator ref).
+   * from. An EXPLICIT `since` is used as-is. When absent and a branch is
+   * named, `since` defaults to the branch's latest lens ledger entry's
+   * `headSha` when that SHA is a strict ancestor of the reviewed head
+   * (design decision 6 — the automatic delta base); otherwise the review is
+   * FULL. `full: true` forces a full review. See resolveReviewDiff for the
+   * full contract (empty delta = no-review, not an approval, not a block).
    */
   since?: string;
-  /**
-   * #966 — the per-lens spawner (the real `runLensChild` by default;
-   * tests inject a stub so an all-fail run is drivable offline, the issue's
-   * "start a lens job with stub children" acceptance criterion).
-   */
+  /** #973 — force a full review (the automatic delta base is not consulted;
+   * an explicit `since` still wins when given). */
+  full?: boolean;
+  /** #966 — the per-lens spawner (the real `runLensChild` by default;
+   * tests inject a stub so an all-fail run is drivable offline). */
   lensChildFn?: typeof import("./lens-review-child.ts").runLensChild;
-  /**
-   * Post-change content of files the diff touches, rendered for the prompt.
-   * Supplied by the caller because only it knows the branch ref; see
-   * `readFileAtBranch`.
-   */
+  /** Post-change content of files the diff touches, rendered for the prompt.
+   * Supplied by the caller because only it knows the branch ref. */
   evidence?: string;
-  /**
-   * Deterministic findings produced without a model — currently `claim-scan`.
-   * They join the lens findings before dedup and verdict, so they reach both
-   * `/work` and `/review` through this one path.
-   */
+  /** Deterministic findings produced without a model — currently `claim-scan`.
+   * They join the lens findings before dedup and verdict. */
   extraFindings?: Finding[];
   /** #799 — the parent pi for the inner children's slow-run watch (the PM
    * notice half; the watch site has no pi of its own). */
@@ -306,7 +297,6 @@ export async function runLensReview(opts: {
 }): Promise<LensReviewSummary> {
   const runId = makeRunId();
   const skillsDir = piSkillsDir();
-  let context = opts.context ?? "";
   // The RESOLVED threshold (computed once; both the verdict and the ledger
   // write apply the same bar).
   const threshold = opts.threshold ?? DEFAULT_REVIEW_THRESHOLD;
@@ -328,49 +318,59 @@ export async function runLensReview(opts: {
   // #973 — `since` (a delta base) overrides base+head: the lenses review
   // ONLY `git diff <since>..<head>`, with the full base...head range
   // supplied as context for orientation. An empty delta is not a block and
-  // not an approval — it is the no-review outcome (see resolveDeltaDiff).
-  // The context string is built here, before the roster checks below, so
-  // the delta path is not coupled to the diff-string path that follows.
-  let delta: { since: string; head: string } | undefined;
+  // not an approval — it is the no-review outcome (see resolveReviewDiff).
+  let delta: { since: string; head: string; auto?: boolean } | undefined;
   let diff = "";
-  const hasDiffString = typeof opts.diff === "string" && opts.diff.length > 0;
-  if (hasDiffString) {
-    diff = opts.diff as string;
-  } else if (opts.since) {
-    const d = await resolveDeltaDiff(opts.since, opts.head, opts.cwd);
-    if (d.noReview) {
-      trace(`lens-review: delta review skipped — no changes since ${opts.since} (${d.reason})`);
-      return {
-        verdict: "APPROVED",
-        totalFindings: 0,
-        bySeverity: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 },
-        lenses: [],
-        findings: [],
-        usage: undefined,
-        deltaReview: { since: d.since, head: d.head },
+  let context = opts.context ?? "";
+  const resolved = await resolveReviewDiff({
+    diff: opts.diff,
+    since: opts.since,
+    full: opts.full,
+    base: opts.base,
+    head: opts.head,
+    branch: opts.branch,
+    cwd: opts.cwd,
+    runId,
+    roster,
+    extraFindings: opts.extraFindings,
+    threshold,
+  });
+  if (resolved.kind === "ok") {
+    diff = resolved.diff ?? "";
+    if (resolved.delta) {
+      delta = {
+        since: resolved.delta.since,
+        head: resolved.delta.head,
+        ...(resolved.delta.auto ? { auto: true } : {}),
       };
-    }
-    if (d.problem) {
-      const blockRows = blockedRowsForRoster(roster, d.problem);
-      const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
-      return finish(blocked, threshold, opts.cwd, opts.branch, { hasCritical: false });
-    }
-    delta = { since: d.since, head: d.head };
-    diff = d.diff ?? "";
-    if (opts.base && opts.head) {
-      const full = await computeRangeDiff(opts.cwd ?? process.cwd(), opts.base, opts.head);
-      if (full.ok) {
-        context += `\n\nFULL BRANCH DIFF (context only — the findings below cover the delta since ${d.since}):\n${full.diff}`;
+      if (opts.base && opts.head) {
+        const full = await computeRangeDiff(opts.cwd ?? process.cwd(), opts.base, opts.head);
+        if (full.ok) {
+          context += `\n\nFULL BRANCH DIFF (context only — the findings below cover the delta since ${resolved.delta.since} (auto: latest lens ledger headSha)):\n${full.diff}`;
+        }
       }
     }
-  } else {
-    const resolution = await resolveLensDiff(opts);
-    if (resolution.problem) {
-      const blockRows = blockedRowsForRoster(roster, resolution.problem);
-      const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
-      return await finish(blocked, threshold, opts.cwd, opts.branch);
-    }
-    diff = resolution.diff ?? "";
+  }
+  if (resolved.kind === "blocked") {
+    const blockRows = blockedRowsForRoster(roster, resolved.problem);
+    const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
+    return await finish(blocked, threshold, opts.cwd, opts.branch, { hasCritical: false });
+  }
+  if (resolved.kind === "noReview") {
+    trace(
+      `lens-review: delta review skipped — no changes since ${resolved.since} (${resolved.reason})`,
+    );
+    return {
+      verdict: "APPROVED",
+      totalFindings: 0,
+      bySeverity: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 },
+      lenses: [],
+      findings: [],
+      usage: undefined,
+      // #973 — decision 4: nothing changed since the last recorded lens run.
+      note: `No changes since the last lens review (${resolved.since.slice(0, 8)}) — no re-review needed (nothing to review).`,
+      deltaReview: { since: resolved.since, head: resolved.head },
+    };
   }
   // #966 — the empty-roster guard: a skills dir that resolves to ZERO
   // lenses (missing dir, empty dir, no `code-review-*` skill, OR an
