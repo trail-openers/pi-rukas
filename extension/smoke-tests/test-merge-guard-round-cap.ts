@@ -133,6 +133,27 @@ await setupLedgerPath();
     assert(r.block === true, "round-cap: a legacy entry without `round` counts as round 1 → refused");
     assert(/round 1/.test(r.reason ?? ""), "…naming the round condition");
   }
+  // Condition 4 (aborted runs do not advance the round): the exact
+  // ISSUES_FOUND (r1) → REVIEW_INCOMPLETE (r2) → ISSUES_FOUND (r3) sequence
+  // ends at round 2 (the aborted run carried round 1 unchanged), so the
+  // guard refuses — the cap requires three COMPLETED runs.
+  {
+    const abortedSeq: LedgerEntry = {
+      branch: "feature/x",
+      kind: "lens",
+      patchId: "p1",
+      passed: false,
+      at: 2,
+      detail: "ISSUES_FOUND",
+      hasCritical: false,
+      round: 2,
+    };
+    const r = await hookDecision("gh pr merge 12", [ADV, abortedSeq], {
+      ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
+    });
+    assert(r.block === true, "round-cap: an aborted run wedged in the sequence ends at round 2 → refused");
+    assert(/round 2/.test(r.reason ?? ""), "…naming the round condition");
+  }
   // Condition 5: no marker comment → refused, naming the disclosure.
   {
     const r = await hookDecision("gh pr merge 12", [ADV, lens({ at: 2 })], {
