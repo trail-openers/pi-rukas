@@ -28,7 +28,17 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -187,7 +197,10 @@ function invokeHelp(
     const rSelf = invokeHelp(wrapper, 10_000, self);
     assert(rSelf.exitCode !== 0, "e: self-referencing symlink exits non-zero");
     assert(rSelf.stderr.includes("symlink cycle"), "e: failure message names the symlink cycle");
-    assert(!rSelf.stderr.includes("timeout"), "e: loop terminates via the hop guard, not the timeout");
+    assert(
+      !rSelf.stderr.includes("timeout"),
+      "e: loop terminates via the hop guard, not the timeout",
+    );
 
     // Positive: a valid 30-hop chain resolves without tripping the guard
     const shim = path.join(d, "shim");
@@ -216,7 +229,7 @@ function invokeHelp(
     // hardcoded here — independent of bin/pi-rukas's current content — so a
     // future resolver refactor cannot silently invalidate the canary.
     const shim =
-      "#!/usr/bin/env bash\nset -euo pipefail\nsource \"${BASH_SOURCE[0]%/*}/lib-pi-rukas-shell.sh\"\necho ok\n";
+      '#!/usr/bin/env bash\nset -euo pipefail\nsource "${BASH_SOURCE[0]%/*}/lib-pi-rukas-shell.sh"\necho ok\n';
 
     // Helper-less dir: contains the helper (so the positive control works)
     // but the symlink to the shim lives in a separate dir without one.
@@ -229,7 +242,10 @@ function invokeHelp(
 
     // Positive control: direct invocation finds the helper next to the shim.
     const direct = invokeHelp(shimPath);
-    assert(direct.exitCode === 0, "canary: pre-fix shim invoked directly exits 0 (positive control)");
+    assert(
+      direct.exitCode === 0,
+      "canary: pre-fix shim invoked directly exits 0 (positive control)",
+    );
 
     // Negative: symlink from a helper-less dir — BASH_SOURCE[0] is the link,
     // so the source line resolves the helper next to the link, not the shim.
@@ -263,20 +279,15 @@ function liveResolverWrapper(): string {
   const end = lines.findIndex((l) => l.trimEnd().endsWith("esac; done"));
   if (start === -1 || end === -1 || end < start) {
     throw new Error(
-      `live resolver block not found in bin/pi-rukas (start=${start}, end=${end}) — ` +
-        "the resolver loop moved; update this test deliberately",
+      `live resolver block not found in bin/pi-rukas (start=${start}, end=${end}) — the resolver loop moved; update this test deliberately`,
     );
   }
   const block = lines.slice(start, end + 1);
-  const substituted = block.map((l, i) =>
-    i === 0 ? l.replace('"${BASH_SOURCE[0]}"', '"$1"') : l,
-  );
-  return [
-    "#!/usr/bin/env bash",
-    "set -euo pipefail",
-    ...substituted,
-    "echo resolved:$_link",
-  ].join("\n") + "\n";
+  const substituted = block.map((l, i) => (i === 0 ? l.replace('"${BASH_SOURCE[0]}"', '"$1"') : l));
+  const body = ["#!/usr/bin/env bash", "set -euo pipefail", ...substituted, "echo resolved:$_link"]
+    .join("\n")
+    .concat("\n");
+  return body;
 }
 
 console.log(`\nexit ${exit}`);
