@@ -18,7 +18,7 @@
 # any extractAttributedTail call site uses — emitting as many names as fit
 # plus `…and <m> more` for the rest.
 #
-# #827 — the driver's 800-char window is marker-anchored and keeps only what
+# #827: the driver's 800-char window is marker-anchored and keeps only what
 # comes at/after the LAST `FAILED:` marker. With per-test output first and
 # the summary last (the ordering contract above), a failing test's real `✗`
 # assertion lines sat thousands of chars BEFORE the summary and were elided
