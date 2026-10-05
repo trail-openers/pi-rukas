@@ -398,14 +398,14 @@ line 36: /Users/you/.local/bin/lib-pi-rukas-shell.sh: No such file or directory
 
 **Cause:** `install.sh` symlinks only `bin/pi-rukas` into `~/.local/bin` — the helper `bin/lib-pi-rukas-shell.sh` (a real file in this repo's `bin/` directory, sourced by `bin/pi-rukas`) is not linked. The pre-fix source line (`source "${BASH_SOURCE[0]%/*}/lib-pi-rukas-shell.sh"`) resolved the helper relative to the **unresolved** `BASH_SOURCE[0]`, so via a symlink it looked for the helper next to the link (e.g. `~/.local/bin/`) instead of next to the real script. Under `set -euo pipefail` the failed `source` aborts the script on line 36 before any command runs.
 
-**Fix:** Pull the latest pi-rukas and re-run `./install.sh`. The script now resolves its own real directory once near the top — following any chain of symlinks (absolute or relative targets, builtins + `readlink` + `cd -P`, macOS-portable) — and sources the helper from that resolved directory; `ensure_image` / `rebuild` reuse the same resolution instead of ad-hoc `readlink -f` blocks. Covered by `extension/smoke-tests/test-pi-rukas-symlink.ts` (a file in this repo's `extension/smoke-tests/` directory) — absolute symlink, two-level relative chain, direct invocation, and a canary proving the pre-fix line still fails.
+**Fix:** Pull the latest pi-rukas and re-run `./install.sh`. The script now resolves its own real directory once near the top — following any chain of symlinks (absolute or relative targets, builtins + `readlink` + `cd -P`, macOS-portable) — and sources the helper from that resolved directory; `ensure_image` / `rebuild` reuse the same resolution instead of ad-hoc `readlink -f` blocks. Covered by the offline smoke test `extension/smoke-tests/test-pi-rukas-symlink.ts` — absolute symlink, two-level relative chain, direct invocation, and a canary proving the pre-fix line still fails.
 
 ```bash
 cd ~/projects/pi-rukas && git pull && ./install.sh
 pi-rukas --help   # exits 0, no "No such file or directory"
 ```
 
-**Stopgap note:** if you added a workaround symlink at `local/bin/lib-pi-rukas-shell.sh` (i.e. `~/.local/bin/lib-pi-rukas-shell.sh`, pointing at the repo's `bin/lib-pi-rukas-shell.sh`) to mask this failure, it can be deleted once the fix is installed — the script no longer needs the helper next to the link:
+**Stopgap note:** if you added a workaround symlink in your home directory at `~/.local/bin/lib-pi-rukas-shell.sh` (a link to the repo's `bin/lib-pi-rukas-shell.sh`) to mask this failure, it can be deleted once the fix is installed — the script no longer needs the helper next to the link:
 
 ```bash
 rm ~/.local/bin/lib-pi-rukas-shell.sh
@@ -728,15 +728,7 @@ PR: [#217](https://github.com/trail-openers/pi-rukas/pull/217)
 
 ### `pi-rukas --help` (or any subcommand) fails with "No such file or directory" via `~/.local/bin/pi-rukas`
 
-**Symptom:** `pi-rukas --help` — and in fact every subcommand — fails with `line 36: ~/.local/bin/lib-pi-rukas-shell.sh: No such file or directory`, exit 1, when invoked through the `~/.local/bin/pi-rukas` symlink that `install.sh` creates. The same invocation works from the repo path (`<repo>/bin/pi-rukas --help`).
-
-**Cause:** `install.sh` symlinks only `bin/pi-rukas` into `~/.local/bin` and never its helper `bin/lib-pi-rukas-shell.sh` (split out in [#939](https://github.com/trail-openers/pi-rukas/issues/939) when `bin/pi-rukas` hit the 500-line limit). Pre-#978 the script sourced the helper as `${BASH_SOURCE[0]%/*}/lib-pi-rukas-shell.sh` — i.e. relative to the *symlink's* directory (`~/.local/bin`), where the helper does not exist, and `set -euo pipefail` aborted every invocation at the source line before any subcommand could run.
-
-**Fix:** run `./install.sh` to pick up the fixed wrapper. `bin/pi-rukas` now resolves its own real directory once near the top — through any chain of symlinks, with relative targets resolved against each link's own directory, using only bash builtins + `readlink` (no `-f`, macOS-portable) + `cd -P`/`pwd` — and sources the helper from that resolved directory. Verify: `pi-rukas --help` exits 0 via the `~/.local/bin` link (the repro in [#978](https://github.com/trail-openers/pi-rukas/issues/978) is now covered by an offline smoke test that runs `pi-rukas --help` through a one-level absolute symlink, a two-level chain with a relative-target intermediate link, and direct invocation — each from a directory lacking the helper).
-
-**Stopgap cleanup:** if you worked around this by creating `~/.local/bin/lib-pi-rukas-shell.sh` yourself (a symlink to the repo's helper), it is no longer needed — once the fixed wrapper is installed you can delete it (`rm ~/.local/bin/lib-pi-rukas-shell.sh`).
-
-PR: [#978](https://github.com/trail-openers/pi-rukas/issues/978)
+See the [Sandbox launch](#sandbox-launch) section — `pi-rukas --help` (or any subcommand) fails: `line N: <dir>/lib-pi-rukas-shell.sh: No such file or directory`. Same failure mode; the canonical entry there carries the cause, fix and stopgap cleanup.
 
 ### `pi-rukas prune` warning about volumes "in use"
 

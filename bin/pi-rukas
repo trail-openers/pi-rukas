@@ -27,8 +27,7 @@
 #   stop          Stop the running container for this project
 #   prune         Remove named volumes (DESTROYS sandbox caches — vipune/runs/
 #                 sessions stay safe because they're bind-mounted from host)
-#   logs          Tail container logs
-#   status        Show whether a container is running for this project
+#   logs          Tail container logs (status: list containers)
 #   --help        Show this help
 
 set -euo pipefail
@@ -36,8 +35,9 @@ set -euo pipefail
 # Resolve this script's real dir, following any symlink chain (relative → link's own dir).
 _link="${BASH_SOURCE[0]}"; while [ -L "$_link" ]; do _tgt="$(readlink "$_link")" || { echo "pi-rukas: failed to resolve symlink chain at $_link" >&2; exit 1; }
   case "$_tgt" in /*) _link="$_tgt" ;; *) _link="$(cd "$(dirname "$_link")" && pwd -P)/$_tgt" ;; esac; done
-PI_RUKAS_DIR="$(cd "$(dirname "$_link")" && pwd -P)"; REPO_DIR="$(dirname "$PI_RUKAS_DIR")"
-source "$PI_RUKAS_DIR/lib-pi-rukas-shell.sh"
+PI_RUKAS_DIR="$(cd "$(dirname "$_link")" && pwd -P)"; REPO_DIR="$(dirname "$PI_RUKAS_DIR")"; helper="$PI_RUKAS_DIR/lib-pi-rukas-shell.sh"
+[ -f "$helper" ] || { echo "pi-rukas: helper not found at $helper (repo checkout incomplete?)" >&2; exit 1; }
+source "$helper"
 
 IMAGE="${PI_ENSEMBLE_IMAGE:-ghcr.io/trail-openers/pi-rukas:latest}"
 PROJECT_ROOT="$(cd "$(pwd)" && pwd -P)"

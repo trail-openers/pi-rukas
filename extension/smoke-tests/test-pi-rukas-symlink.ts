@@ -63,19 +63,24 @@ function invokeHelp(target: string): { exitCode: number; stderr: string; stdout:
     });
     return { exitCode: 0, stdout, stderr: "" };
   } catch (e: unknown) {
-    const err = e as {
-      status?: number;
-      stderr?: string;
-      stdout?: string;
-      message?: string;
-    };
-    const spawnFailed = err.status === undefined;
+    // Narrow with type guards — the cast is confined to the minimal shape read
+    // (same convention as test-os-guard.ts); the `??` coercions below are
+    // load-bearing, since the guarded fields are optional but the return type
+    // is non-optional.
+    const isRecord = (v: unknown): v is Record<string, unknown> =>
+      typeof v === "object" && v !== null;
+    const err = isRecord(e) ? e : { message: String(e) };
+    const status = typeof err.status === "number" ? err.status : undefined;
+    const stderr = typeof err.stderr === "string" ? err.stderr : undefined;
+    const stdout = typeof err.stdout === "string" ? err.stdout : undefined;
+    const message = typeof err.message === "string" ? err.message : undefined;
+    const spawnFailed = status === undefined;
     return {
-      exitCode: err.status ?? 1,
-      stdout: err.stdout ?? "",
+      exitCode: status ?? 1,
+      stdout: stdout ?? "",
       stderr: spawnFailed
-        ? `spawn failed (err.status undefined): ${err.message ?? String(e)}`
-        : (err.stderr ?? ""),
+        ? `spawn failed (no exit status): ${message ?? String(e)}`
+        : (stderr ?? ""),
     };
   }
 }
@@ -158,38 +163,37 @@ function invokeHelp(target: string): { exitCode: number; stderr: string; stdout:
     // The pre-fix line is the source using BASH_SOURCE[0] directly.
     // We need to find the current source line and replace the entire resolver block.
     // The resolver block starts with the comment line and ends at the source line.
-    const fixedSourceLine = 'source "$PI_RUKAS_DIR/lib-pi-rukas-shell.sh"';
+    const fixedSourceLine = 'source "$helper"';
     const preFixLine = 'source "${BASH_SOURCE[0]%/*}/lib-pi-rukas-shell.sh"';
-    if (content.includes(fixedSourceLine)) {
-      // Remove the resolver comment + loop lines and the PI_RUKAS_DIR/REPO_DIR line,
-      // then replace the source line with the pre-fix version.
-      const lines = content.split("\n");
-      const out: string[] = [];
-      let inResolver = false;
-      for (const line of lines) {
-        if (line.includes("# Resolve this script's real dir")) {
-          inResolver = true;
-          out.push(preFixLine);
-          continue;
-        }
-        if (inResolver) {
-          if (line.includes(fixedSourceLine)) {
-            inResolver = false;
-            continue; // skip the fixed source line; preFixLine already emitted
-          }
-          // Skip resolver body lines (_link, case, PI_RUKAS_DIR/REPO_DIR)
-          continue;
-        }
-        out.push(line);
+    // The copy is of the current (fixed) bin/pi-rukas, so the fixed line is
+    // always present; fail loudly rather than guessing a mutation strategy.
+    assert(
+      content.includes(fixedSourceLine),
+      "canary: fixed source line present in the staged copy",
+    );
+    // Remove the resolver comment + loop lines and the PI_RUKAS_DIR/REPO_DIR line,
+    // then replace the source line with the pre-fix version.
+    const lines = content.split("\n");
+    const out: string[] = [];
+    let inResolver = false;
+    for (const line of lines) {
+      if (line.includes("# Resolve this script's real dir")) {
+        inResolver = true;
+        out.push(preFixLine);
+        continue;
       }
-      writeFileSync(path.join(tmpBin, "pi-rukas"), out.join("\n"));
-      chmodSync(path.join(tmpBin, "pi-rukas"), 0o755);
-    } else {
-      // Fallback: just replace the source line if the resolver structure is different.
-      const mutated = content.replace(fixedSourceLine, preFixLine);
-      writeFileSync(path.join(tmpBin, "pi-rukas"), mutated);
-      chmodSync(path.join(tmpBin, "pi-rukas"), 0o755);
+      if (inResolver) {
+        if (line.includes(fixedSourceLine)) {
+          inResolver = false;
+          continue; // skip the fixed source line; preFixLine already emitted
+        }
+        // Skip resolver body lines (_link, case, PI_RUKAS_DIR/REPO_DIR)
+        continue;
+      }
+      out.push(line);
     }
+    writeFileSync(path.join(tmpBin, "pi-rukas"), out.join("\n"));
+    chmodSync(path.join(tmpBin, "pi-rukas"), 0o755);
 
     // Now create a symlink in a DIFFERENT dir that does NOT contain the helper.
     const invokeDir = path.join(d, "invoke");
