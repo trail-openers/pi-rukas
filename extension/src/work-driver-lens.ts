@@ -16,7 +16,14 @@ import type { DriverContext } from "./work-driver-context.ts";
 import { readAllMergedDiffs } from "./work-driver-diff.ts";
 import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
 import { lensCapKillEvent, lensTimingsOf } from "./work-driver-lens-capkill.ts";
-import { countCommittedAhead, noDiffEvidence } from "./work-driver-lens-fix-commit.ts";
+import {
+  countCommittedAhead,
+  countLensFixEmptyResends,
+  noDiffEvidence,
+} from "./work-driver-lens-fix-commit.ts";
+// Re-export: moved into work-driver-lens-fix-commit.ts for the 500-line gate
+// (AGENTS.md §12) — importers (work-driver-adversarial.ts) keep their path.
+export { commitLensFixChanges, countLensFixEmptyResends } from "./work-driver-lens-fix-commit.ts";
 import { applyLensVerdict } from "./work-driver-lens-verdicts.ts";
 import { parsePrNumber, runSingleDispatch } from "./work-driver-merged.ts";
 import { DOCTRINE_FILES, type DoctrineDoc, judgePolicy } from "./work-driver-policy.ts";
@@ -252,6 +259,27 @@ export async function runLens(
     }
   }
 
+  // #973 review — the no-review outcome must never look like an approval.
+  // runLens supplies its own diff (the merged worktree diff from
+  // readAllMergedDiffs; the empty-diff case skips to lens-approved above),
+  // so a `noReview` summary can only arrive through a `since`-shaped call
+  // (e.g. an injected lensReviewFn). Handle it defensively: route to
+  // handoff (a STOP — never a fake lens-approved event the nextStep router
+  // would trust, and never the round-cap/step-back routing below).
+  if (summary.noReview) {
+    trace(
+      `work-driver: lens-review — no-review outcome (nothing changed since ${summary.deltaReview?.since.slice(0, 8)}) — routing to handoff (a no-review is not an approval)`,
+    );
+    return appendEvent(next, {
+      kind: "cap-hit",
+      at: Date.now(),
+      cap: "no-review-outcome",
+      reviewRound: round,
+      nextStep: "handoff",
+      evidence: `lens review returned a no-review outcome (no changes since ${summary.deltaReview?.since ?? "the last recorded lens run"}) — a no-review is not an approval; re-run the review with an explicit diff after a new commit`,
+    });
+  }
+
   next = await applyLensVerdict(summary, jobId, round, ctx, next);
 
   // #280 §B — round-1 seam escalation: detectRepeatSeam fires, route to
@@ -285,97 +313,6 @@ export async function runLens(
 
   return next;
 }
-
-/** #305 — commit lens-fix changes in the worktree (no empty commit). */
-export async function commitLensFixChanges(
-  cwd: string,
-  round: number,
-  execFn: (
-    cmd: string,
-    opts?: { cwd?: string; maxBuffer?: number; shell?: string },
-  ) => Promise<{ stdout: string; stderr?: string }>,
-): Promise<{ committed: boolean; error?: string; pushed?: boolean }> {
-  // Check if there are any changes (staged + unstaged + untracked), and
-  // capture the porcelain output for path parsing. One git status fork.
-  let status: string;
-  try {
-    const raw = await execFn("git status --porcelain", {
-      cwd,
-      maxBuffer: 64 * 1024,
-    });
-    status = raw.stdout;
-  } catch (err) {
-    const errMsg = `git status failed: ${(err as Error).message?.slice(0, 200)}`;
-    trace(`work-driver: lens-fix round ${round} — ${errMsg}`);
-    return { committed: false, error: errMsg };
-  }
-  if (!status.trim()) {
-    // Clean tree — the committed-work check is done by the CALLER
-    // (runAdversarial) via `detectCommittedFix`. Reaching here with a
-    // clean tree means the caller found no committed fix either.
-    trace(`work-driver: lens-fix round ${round} — working tree clean, skipping commit`);
-    return { committed: false };
-  }
-
-  // Stage + commit.
-  try {
-    // Stage all porcelain paths explicitly (tracked + untracked) rather
-    // than `git add -u`, so new files created by the developer as part
-    // of the fix are committed. Filter out `.pi/` and `tmp/` to avoid
-    // staging driver artefacts like .pi/work-state/<issue>.json and
-    // subagent scratch (#305). Mirrors the stagePorcelainPaths pattern
-    // used by mechanizedCommitPr.
-    const porcelain = status;
-    const paths: string[] = [];
-    for (const line of porcelain.split("\n")) {
-      if (line.trim().length === 0) continue;
-      const entry = line.slice(3);
-      const arrow = entry.indexOf(" -> ");
-      if (arrow >= 0) {
-        paths.push(entry.slice(0, arrow), entry.slice(arrow + 4));
-      } else {
-        paths.push(entry);
-      }
-    }
-    for (const p of paths) {
-      const clean = p.startsWith('"') && p.endsWith('"') ? p.slice(1, -1) : p;
-      // Skip driver artefacts under .pi/ and tmp/
-      if (clean.startsWith(".pi/") || clean.startsWith("tmp/")) {
-        continue;
-      }
-      await execFn(`git add -- ${JSON.stringify(clean)}`, { cwd, maxBuffer: 256 * 1024 });
-    }
-    await execFn(`git commit -q -m 'fix(lens): round ${round} — address lens-review findings'`, {
-      cwd,
-      maxBuffer: 64 * 1024,
-    });
-    trace(`work-driver: lens-fix round ${round} — committed fix`);
-    return { committed: true };
-  } catch (err) {
-    const errMsg = `commit failed: ${(err as Error).message?.slice(0, 200)}`;
-    trace(`work-driver: lens-fix round ${round} — ${errMsg}`);
-    return { committed: false, error: errMsg };
-  }
-}
-
-/** #654 — count lens-fix-empty-resend events after this round's anchor. */
-export function countLensFixEmptyResends(events: readonly unknown[], reviewRound: number): number {
-  const lensIdx = events
-    .map((e, i) => ({ e, i }))
-    .filter(
-      ({ e }) =>
-        (e as { kind?: string }).kind === "lens-issues-found" &&
-        (e as { round?: number }).round === reviewRound,
-    )
-    .at(-1)?.i;
-  if (lensIdx === undefined) return 0;
-  let n = 0;
-  for (let i = lensIdx + 1; i < events.length; i++) {
-    if ((events[i] as { kind?: string }).kind === "lens-fix-empty-resend") n++;
-  }
-  return n;
-}
-
 export async function runLensFix(
   ctx: DriverContext,
   state: WorkState,

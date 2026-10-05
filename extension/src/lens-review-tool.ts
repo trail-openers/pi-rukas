@@ -45,6 +45,18 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
             "Working directory; defaults to current; also the cwd for `git diff <base>...<head>` when base+head are given.",
         }),
       ),
+      since: Type.Optional(
+        Type.String({
+          description:
+            "#973 — the delta base: a commit ref the review diffs from (`git diff <since>..<head>`). When given, the lenses review ONLY the delta, with the full base...head range as context. Without it, the delta base DEFAULTS to this branch's latest lens ledger entry's headSha when that SHA is an ancestor of HEAD (an automatic delta review); the first review on a branch (no ledger entry) is always a full review. An empty delta (no changes since the base) is a no-review outcome — no re-review, no ledger entry. Pass `full: true` to force a full review.",
+        }),
+      ),
+      full: Type.Optional(
+        Type.Boolean({
+          description:
+            "#973 — force a full review: the automatic delta base (the latest lens ledger entry's headSha) is not consulted. An explicit `since` still wins when given. An explicit base + head (with no `since`) is ALWAYS a full review — the automatic delta base only applies to a bare branch/cwd review.",
+        }),
+      ),
     }),
     async execute(_id, raw) {
       const params = raw as {
@@ -53,6 +65,8 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
         cwd?: string;
         base?: string;
         head?: string;
+        since?: string;
+        full?: boolean;
       };
       const hasDiff = typeof params.diff === "string" && params.diff.length > 0;
       const hasRange = typeof params.base === "string" && typeof params.head === "string";
@@ -75,12 +89,20 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
           // CRITICAL nor INCOMPLETE. INCOMPLETE means at least one lens
           // failed all retries (#3) — the review did NOT actually run every
           // pass, so PM/user must decide whether to retry or override.
+          // #973 — a delta review that found nothing since the last recorded
+          // run returns a deltaReview flag on the summary; the text says so.
+          // #973 review — the no-review outcome (decision 4) is NOT an
+          // approval: `ok` is false and the text says "NO REVIEW" (the
+          // verdict on the summary stays APPROVED because the Verdict union
+          // is unchanged, but the tool result must never look like a pass).
+          const text = renderSummary(summary, MAX_LENS_ATTEMPTS);
           return {
             role: "lens-review",
             ok:
+              !summary.noReview &&
               summary.verdict !== "CRITICAL_ISSUES_FOUND" &&
               summary.verdict !== "REVIEW_INCOMPLETE",
-            text: renderSummary(summary, MAX_LENS_ATTEMPTS),
+            text: summary.note ? `${text}\n\n${summary.note}` : text,
             toolUses: [],
             ms: Date.now() - start,
             exitCode: 0,

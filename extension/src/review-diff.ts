@@ -115,3 +115,64 @@ export async function computeRangeDiff(
   }
   return { ok: true, diff: stdout };
 }
+
+/**
+ * #973 — a delta diff: `git diff <since>..<head>` (TWO-dot, exactly what
+ * changed since `since`), with the same ref validation, cap and injection
+ * guard as `computeRangeDiff`.
+ *
+ * Emptiness means something different here than in `computeRangeDiff`, and
+ * the distinction is load-bearing: an empty FULL diff is still an error
+ * (#384 — a value nobody may mistake for "nothing to review", i.e. an
+ * approval), but an empty DELTA range is the normal outcome of a follow-up
+ * review on an unchanged branch — the churn the delta path exists to stop.
+ * It returns `{ ok: true, empty: true }`, and the caller turns that into
+ * the no-review outcome (no re-review, no ledger entry) rather than
+ * faking findings or failing the cycle.
+ *
+ * The two-dot form is deliberate and different from `computeRangeDiff`'s
+ * three-dot: a delta is "what changed since this commit", which is exactly
+ * `git diff since..head`, not a merge-base diff.
+ */
+export type DeltaDiff =
+  | { ok: true; diff: string; empty: false }
+  | { ok: true; diff: ""; empty: true }
+  | { ok: false; reason: string };
+
+export async function computeDeltaDiff(
+  cwd: string,
+  since: string,
+  head: string,
+): Promise<DeltaDiff> {
+  for (const ref of [since, head]) {
+    if (ref.startsWith("-")) {
+      return {
+        ok: false,
+        reason: `ref "${ref}" is rejected: ref names must not start with '-'`,
+      };
+    }
+    if (!(await refIsCommit(cwd, ref))) {
+      return refError(ref, new Error("not a valid commit ref (rev-parse --verify failed)"));
+    }
+  }
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileP("git", ["-C", cwd, "diff", `${since}..${head}`], {
+      maxBuffer: DIFF_MAX_BUFFER,
+    }));
+  } catch (err) {
+    const stderr = (err as Error & { stderr?: string })?.stderr ?? "";
+    if (diffOverflow(stderr)) {
+      return {
+        ok: false,
+        reason: `git diff ${since}..${head} exceeded the ${DIFF_MAX_BUFFER} byte cap`,
+      };
+    }
+    return {
+      ok: false,
+      reason: `git diff ${since}..${head} failed: ${((err as Error)?.message ?? String(err)).slice(0, 200)}`,
+    };
+  }
+  if (!stdout.trim()) return { ok: true, diff: "", empty: true };
+  return { ok: true, diff: stdout, empty: false };
+}

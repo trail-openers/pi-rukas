@@ -3,78 +3,31 @@
  * #912 — the merge guard: matcher table, decision matrix, registration canaries.
  */
 
-import {
-  readFileSync,
-  writeFileSync,
-  unlinkSync,
-  existsSync,
-  rmSync,
-  mkdtempSync,
-} from "node:fs";
-import { execSync } from "node:child_process";
-import os from "node:os";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { mergesPr } from "../src/bash-command-parser.ts";
-import { type MergeTarget } from "../src/merge-target.ts";
-import { registerMergeGuard } from "../src/merge-guard.ts";
 import {
-  type LedgerEntry,
+  assert,
+  exit,
+  setupLedgerPath,
+  teardownLedger,
+  hookDecision,
+  withLedger,
+  TARGET,
+  GOOD_ENTRIES,
   adversarialPassed,
-  ledgerPathFor,
-  latestEntry,
   lensPassed,
-} from "../src/review-ledger.ts";
+  latestEntry,
+} from "./merge-guard-helpers.ts";
+import type { LedgerEntry } from "./merge-guard-helpers.ts";
 
-// The hook reads the forge from PI_ENSEMBLE_FORGE (the detectForge hard
-// override) so the decision matrix below runs offline, without a real remote.
-process.env.PI_ENSEMBLE_FORGE = "github";
+await setupLedgerPath();
 
 // The ledger file the decision matrix writes — resolved via the module under
 // test (ledgerPathFor) so the writer and the guard can never disagree on the
 // path. The env override below points it at a private temp file BEFORE the
 // resolution, so the real per-clone ledger under the git common dir is never
 // touched; the temp dir is removed at the end.
-let LEDGER_FILE: string | undefined;
-let LEDGER_TMP_DIR: string | undefined;
-
-async function setupLedgerPath() {
-  LEDGER_TMP_DIR = mkdtempSync(path.join(os.tmpdir(), "pi-ledger-"));
-  process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = path.join(
-    LEDGER_TMP_DIR,
-    "review-ledger.json",
-  );
-  const realExec = async (cmd: string) => ({
-    stdout: execSync(cmd, { cwd: import.meta.dirname, encoding: "utf8" }),
-  });
-  const p = await ledgerPathFor(realExec, import.meta.dirname);
-  if (!p) throw new Error("cannot resolve the ledger path for the decision matrix");
-  LEDGER_FILE = p;
-  // Canary: the ledger must NOT live inside any .git directory — that would
-  // clobber the real per-clone review ledger shared by every worktree.
-  assert(
-    !/([/\\])\.git([/\\]|$)/.test(p),
-    "canary: the test ledger is not inside a .git directory",
-  );
-}
-
-function teardownLedger() {
-  if (LEDGER_TMP_DIR) {
-    try {
-      rmSync(LEDGER_TMP_DIR, { recursive: true, force: true });
-    } catch (err) {
-      console.error(`⚠ could not remove the ledger temp dir: ${(err as Error).message}`);
-    }
-  }
-}
-
-let exit = 0;
-function assert(cond: boolean, msg: string) {
-  if (cond) console.log(`✓ ${msg}`);
-  else {
-    console.error(`✗ ${msg}`);
-    exit = 1;
-  }
-}
 
 // ------------------------------------------------------------ it catches
 
@@ -164,157 +117,10 @@ assert(!lensPassed("ISSUES_FOUND", "MEDIUM"), "lens ISSUES_FOUND blocks at the M
 
 // ------------------------------------------------- the guard decision matrix
 // Driven through the REAL hook via `opts.execFn`.
-
-/** Save/restore the shared ledger around a row so the matrix is side-effect-free. */
-async function withLedger(entries: LedgerEntry[], fn: () => Promise<unknown>) {
-  const file = LEDGER_FILE;
-  if (!file) throw new Error("ledger path not resolved — call setupLedgerPath() first");
-  const saved = (() => {
-    try {
-      return readFileSync(file, "utf8");
-    } catch {
-      return null;
-    }
-  })();
-  try {
-    writeFileSync(file, JSON.stringify({ entries }, null, 2), "utf8");
-  } catch (err) {
-    throw new Error(`cannot write test ledger at ${file}: ${(err as Error).message}`);
-  }
-  const done = () => {
-    try {
-      if (saved === null) {
-        if (existsSync(file)) unlinkSync(file);
-      } else {
-        writeFileSync(file, saved, "utf8");
-      }
-    } catch (err) {
-      console.error(`⚠ could not restore the ledger at ${file}: ${(err as Error).message}`);
-    }
-  };
-  try {
-    return await fn();
-  } finally {
-    done();
-  }
-}
-
-/** Register the real guard on a fake pi and drive it through `opts.execFn`. */
-async function makeHook(env: {
-  target: MergeTarget;
-  currentPatchId: string;
-  fetchedHead: string;
-  calls: string[];
-  failFetch?: boolean;
-  failGh?: boolean;
-  ledgerCommonDir?: string;
-}): Promise<(event: unknown, ctx: unknown) => Promise<unknown>> {
-  let handler: ((event: unknown, ctx: unknown) => Promise<unknown>) | undefined;
-  const fakePi = {
-    on: (name: string, fn: (event: unknown, ctx: unknown) => Promise<unknown>) => {
-      if (name === "tool_call") handler = fn;
-    },
-  } as never;
-  const t = env.target;
-  const ghView = {
-    stdout: JSON.stringify({
-      headRefName: t.headBranch,
-      headRefOid: t.headOid,
-      baseRefName: t.baseBranch,
-      author: { login: t.author },
-      labels: t.labels.map((n) => ({ name: n })),
-    }),
-  };
-  const execFn = async (cmd: string): Promise<{ stdout: string }> => {
-    env.calls.push(cmd);
-    if (cmd.includes("gh pr view")) {
-      if (cmd.includes("--json number")) {
-        return { stdout: JSON.stringify({ number: t.prNumber }) };
-      }
-      if (env.failGh) throw new Error("gh: not found");
-      return ghView;
-    }
-    if (cmd.includes("git fetch")) {
-      if (env.failFetch) throw new Error("unable to connect");
-      return { stdout: "" };
-    }
-    // Remote resolution: origin → upstream → first remote.
-    if (cmd.includes("git config --get remote.origin.url")) {
-      if (env.remote === "origin") return { stdout: "git@github.com:o/r.git\n" };
-      return { stdout: "" };
-    }
-    if (cmd.includes("git config --get remote.upstream.url")) {
-      if (env.remote === "upstream") return { stdout: "git@github.com:o/r.git\n" };
-      return { stdout: "" };
-    }
-    if (cmd.includes("git config --get remote.")) {
-      return { stdout: "" };
-    }
-    if (cmd.includes("git remote")) {
-      return { stdout: env.remote + "\n" };
-    }
-    if (cmd.includes(`rev-parse ${env.remote}/`)) return { stdout: env.fetchedHead };
-    if (cmd.includes("patch-id")) return { stdout: `${env.currentPatchId} 0000` };
-    if (cmd.includes("git-common-dir")) {
-      return { stdout: env.ledgerCommonDir ?? "" };
-    }
-    throw new Error(`unexpected exec: ${cmd}`);
-  };
-  registerMergeGuard(fakePi, { execFn });
-  if (!handler) throw new Error("the merge guard did not register a tool_call handler");
-  return handler;
-}
-
-async function hookDecision(
-  command: string,
-  entries: LedgerEntry[],
-  opts: {
-    target?: MergeTarget;
-    patchId?: string;
-    fetchedHead?: string;
-    failGh?: boolean;
-    failFetch?: boolean;
-    ledgerCommonDir?: string;
-    remote?: string;
-  } = {},
-) {
-  const env = {
-    target: opts.target ?? TARGET,
-    currentPatchId: opts.patchId ?? "p1",
-    fetchedHead: opts.fetchedHead ?? "abc123",
-    failGh: opts.failGh,
-    failFetch: opts.failFetch,
-    ledgerCommonDir: opts.ledgerCommonDir ?? (LEDGER_FILE ? path.dirname(LEDGER_FILE) : ""),
-    calls: [] as string[],
-    remote: opts.remote ?? "origin",
-  };
-  const handler = await makeHook(env);
-  const r = await withLedger(entries, () =>
-    handler({ toolName: "bash", input: { command } }, undefined as never),
-  );
-  return {
-    block: r?.block === true,
-    reason: (r as { reason?: string } | undefined)?.reason,
-    calls: env.calls,
-  };
-}
-
-const TARGET: MergeTarget = {
-  forge: "github",
-  prNumber: 12,
-  headBranch: "feature/x",
-  headOid: "abc123",
-  baseBranch: "main",
-  author: "janni",
-  labels: [],
-};
-
-const GOOD_ENTRIES: LedgerEntry[] = [
-  { branch: "feature/x", kind: "adversarial", patchId: "p1", passed: true, at: 1 },
-  { branch: "feature/x", kind: "lens", patchId: "p1", passed: true, at: 2 },
-];
-
-await setupLedgerPath();
+//
+// Lens: latest entry must be passed (any patchId). The #973 round-cap path
+// is a sibling test (test-merge-guard-round-cap.ts) that exercises the
+// conditions below when the strict rule refuses.
 
 {
   // No ledger entries → refused; the hook issues the pinned argv on the way.
@@ -388,12 +194,24 @@ await setupLedgerPath();
 {
   // Carve-outs require a BOT IDENTITY, not a branch shape. The hook
   // short-circuits after the target read when the bot identity is present.
-  const carveTargets: Array<[string, MergeTarget, boolean]> = [
+  const carveTargets: Array<[string, typeof TARGET, boolean]> = [
     ["dependabot[bot] author", { ...TARGET, author: "dependabot[bot]" }, false],
     ["app/dependabot author", { ...TARGET, author: "app/dependabot" }, false],
-    ["dependabot/ branch alone", { ...TARGET, headBranch: "dependabot/npm-and-yarn/foo-1.2.3" }, true],
-    ["release-please branch + label", { ...TARGET, headBranch: "release-please--branches--main", labels: ["autorelease: pending"] }, false],
-    ["release-please branch + bot author", { ...TARGET, headBranch: "release-please--branches--main", author: "release-please[bot]" }, false],
+    [
+      "dependabot/ branch alone",
+      { ...TARGET, headBranch: "dependabot/npm-and-yarn/foo-1.2.3" },
+      true,
+    ],
+    [
+      "release-please branch + label",
+      { ...TARGET, headBranch: "release-please--branches--main", labels: ["autorelease: pending"] },
+      false,
+    ],
+    [
+      "release-please branch + bot author",
+      { ...TARGET, headBranch: "release-please--branches--main", author: "release-please[bot]" },
+      false,
+    ],
     ["release-please branch alone", { ...TARGET, headBranch: "release-please--branches--main" }, true],
   ];
   for (const [label, target, expectBlock] of carveTargets) {
@@ -401,7 +219,10 @@ await setupLedgerPath();
     if (expectBlock) assert(r.block === true, `carve-out: ${label} is NOT a carve-out (bot ID required)`);
     else {
       assert(r.block === false, `carve-out: ${label} allowed`);
-      assert(!r.calls.some((c) => c.includes("patch-id")), `carve-out: ${label} does not reach the ledger check`);
+      assert(
+        !r.calls.some((c) => c.includes("patch-id")),
+        `carve-out: ${label} does not reach the ledger check`,
+      );
     }
   }
 }

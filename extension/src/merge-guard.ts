@@ -87,9 +87,18 @@ import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { stripQuotedSegments } from "./bash-command-parser.ts";
 import { mergesPr } from "./bash-merges-pr.ts";
+import { prCommentsCmd } from "./forge-commands.ts";
+import { extractCommentRows } from "./forge-comments.ts";
+import { evaluateRoundCapMerge } from "./merge-guard-round-cap.ts";
 import { extractMergeNumber, mergeVerbArgs, mergeVerbRepo } from "./merge-parse.ts";
 import { exceedsAnalysisBound } from "./merge-size.ts";
-import { type MergeExecFn, isCarveOut, readMergeTarget, resolvePrNumber } from "./merge-target.ts";
+import {
+  type MergeExecFn,
+  type MergeTarget,
+  isCarveOut,
+  readMergeTarget,
+  resolvePrNumber,
+} from "./merge-target.ts";
 import { REPO_VALUE_PATTERN } from "./merge-tokens.ts";
 import {
   type LedgerEntry,
@@ -340,9 +349,44 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
       );
     }
 
-    // Lens: latest entry must be passed (any patchId).
+    // Lens: the strict rule first — the LATEST entry must be `passed`
+    // (any patchId). When it refuses, the #973 round-cap path is consulted:
+    // an ISSUES_FOUND entry with no CRITICAL, >= 3 rounds, an approving
+    // adversarial review (already checked above), and the residual findings
+    // disclosed on the PR (marker + matching patch) allows the merge — the
+    // same rule AGENTS.md §1 and work-driver-lens-cap.ts apply to the
+    // driver's own cycles. A refusal from either path names the failed
+    // condition (see evaluateRoundCapMerge for the full matrix).
     const lens = latestEntry(entries, branch, "lens");
     if (!lens || !lens.passed) {
+      const lensComments = await readPrCommentBodies(execFn, cwd, target, prNumber, repoValue);
+      // #973 review — the round-cap path's headSha check (condition 6) uses
+      // the PR's current head: the fetched OID, which the guard has already
+      // verified equals the PR's `headOid` (a mismatch is the earlier
+      // "stale branch" refusal above). A lens review of an older commit
+      // cannot satisfy the cap.
+      const capDecision = evaluateRoundCapMerge(
+        entries,
+        branch,
+        currentPatchId,
+        lensComments,
+        fetchedHead,
+      );
+      if (capDecision.applies && capDecision.allowed) {
+        trace(
+          `merge-guard: PR #${prNumber} ${branch} — round-cap path allows the merge (ISSUES_FOUND, no CRITICAL, round ${lens?.round}, disclosed on the PR)`,
+        );
+        return;
+      }
+      if (capDecision.applies) {
+        return block(
+          `merge refused: ${capDecision.failedCondition ?? "the round-cap conditions are not met"} — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
+        );
+      }
+      // The round-cap path does not apply (no entry, or a passing entry the
+      // strict rule should have allowed — unreachable here, or a legacy
+      // entry without a verdict detail): the strict rule's original refusal
+      // text, with the branch named for the operator.
       return block(
         `no passing lens review on file for branch \`${branch}\` (latest: ${lens ? `passed=${lens.passed}` : "none"}) — run dispatch_lens_review and let it complete before merging`,
       );
@@ -354,6 +398,45 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
 
 function block(reason: string) {
   return { block: true, reason };
+}
+
+/**
+ * #973 — the PR/MR comment bodies the round-cap path's disclosure check
+ * reads (design decision 5: the guard's own exec call through the injectable
+ * `execFn`, no new forge seam). The command is the CANONICAL seam
+ * `prCommentsCmd` (forge-commands.ts — the same shape the `prComments`
+ * adapter seam and the residual-disclosure post use: `gh pr view N
+ * --json comments` on GitHub, the MR's `notes` endpoint on GitLab), so the
+ * round-cap path works on GitLab too (a `glab mr view N --output json` read
+ * has no `notes` field at all — the GitLab branch of the old hand-rolled
+ * read could never find the marker). Every fault is fail-closed: an
+ * unreadable comments list returns [] (the marker check fails, the merge is
+ * refused) — the disclosure is a condition, and a missing condition is a
+ * refusal, never a pass.
+ */
+async function readPrCommentBodies(
+  execFn: MergeExecFn,
+  cwd: string,
+  target: MergeTarget,
+  prNumber: number,
+  repoValue: string | undefined,
+): Promise<string[]> {
+  const repoFlag = repoValue ? ` -R ${repoValue}` : "";
+  try {
+    const { stdout } = await execFn(prCommentsCmd(target.forge, prNumber) + repoFlag, {
+      cwd,
+      maxBuffer: 1024 * 1024,
+      timeout: EXEC_TIMEOUT_MS,
+    });
+    return extractCommentRows(target.forge, stdout).map((row) => {
+      const o = row as Record<string, unknown>;
+      const body = o.body;
+      return typeof body === "string" ? body : "";
+    });
+  } catch (err) {
+    trace(`merge-guard: comment read failed: ${(err as Error).message?.slice(0, 120)}`);
+    return [];
+  }
 }
 
 /**
