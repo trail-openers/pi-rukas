@@ -726,10 +726,6 @@ PR: [#217](https://github.com/trail-openers/pi-rukas/pull/217)
 
 ## State + caches
 
-### `pi-rukas --help` (or any subcommand) fails with "No such file or directory" via `~/.local/bin/pi-rukas`
-
-See the [Sandbox launch](#sandbox-launch) section — `pi-rukas --help` (or any subcommand) fails: `line N: <dir>/lib-pi-rukas-shell.sh: No such file or directory`. Same failure mode; the canonical entry there carries the cause, fix and stopgap cleanup.
-
 ### `pi-rukas prune` warning about volumes "in use"
 
 **Symptom:** Running `pi-rukas prune` errors with `volume is in use` for `pi-ensemble-cache` etc. (volume names keep the historical `pi-ensemble-` prefix for backwards compatibility).

@@ -8,19 +8,18 @@
  * to the unresolved BASH_SOURCE[0], so any symlink invocation aborts at
  * that line with "No such file or directory".
  *
- * This test proves the resolver fix works for:
- *   (a) one-level absolute symlink
- *   (b) two-level chain with a relative-target intermediate link
- *   (c) direct invocation (no symlink)
- *   (d) two-link cycle (a→b, b→a) — bounded loop, exits non-zero with
- *       "symlink cycle" in stderr (timeout-guarded at 10s)
- *   (e) self-referencing symlink (c→c) — same, via the LIVE resolver bytes
- *       extracted from bin/pi-rukas
- *
- * Plus a canary: a self-contained hardcoded pre-fix shim (no string-scanning
- * of the live bin/pi-rukas) that fails when invoked via symlink from a
- * helper-less directory — and works when invoked directly, proving the
- * failure is attributable to the symlink, not the shim.
+ * Blocks run in this order:
+ *   1. one-level absolute symlink (live bin/pi-rukas)
+ *   2. two-level chain with a relative-target intermediate link
+ *   3. direct invocation (no symlink)
+ *   4. two-link cycle (a→b, b→a) — bounded loop, exits non-zero with
+ *      "symlink cycle" in stderr (timeout-guarded at 10s), via the LIVE
+ *      resolver bytes extracted from bin/pi-rukas; the same block also
+ *      covers the self-referencing symlink (c→c) and a 30-hop positive chain
+ *   5. canary — a self-contained hardcoded pre-fix shim (no string-scanning
+ *      of the live bin/pi-rukas) that fails when invoked via symlink from a
+ *      helper-less directory — and works when invoked directly, proving the
+ *      failure is attributable to the symlink, not the shim.
  *
  * All invocations use `--help` (exits 0 without docker/network).
  * Temp dirs are created under `os.tmpdir()` and realpathSync'd where the
@@ -300,8 +299,13 @@ function liveResolverWrapper(): string {
       `duplicate symlink-resolver marker in bin/pi-rukas (opens=${opens.length}, closes=${closes.length}) — update the script and this test deliberately`,
     );
   }
-  const [start] = opens;
-  const [end] = closes;
+  const start = opens[0];
+  const end = closes[0];
+  if (start === undefined || end === undefined) {
+    throw new Error(
+      "symlink-resolver marker missing in bin/pi-rukas — update the script and this test deliberately",
+    );
+  }
   if (end < start) {
     throw new Error(
       `symlink-resolver markers out of order in bin/pi-rukas (open=${start}, close=${end}) — update the script and this test deliberately`,
