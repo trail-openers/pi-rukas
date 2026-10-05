@@ -14,6 +14,8 @@
  *   (c) direct invocation (no symlink)
  *   (d) two-link cycle (a→b, b→a) — bounded loop, exits non-zero with
  *       "symlink cycle" in stderr (timeout-guarded at 10s)
+ *   (e) self-referencing symlink (c→c) — same, via the LIVE resolver bytes
+ *       extracted from bin/pi-rukas
  *
  * Plus a canary: a self-contained hardcoded pre-fix shim (no string-scanning
  * of the live bin/pi-rukas) that fails when invoked via symlink from a
@@ -26,7 +28,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -51,19 +53,22 @@ function assert(cond: boolean, msg: string) {
 function invokeHelp(
   target: string,
   timeoutMs = 0,
+  ...args: string[]
 ): { exitCode: number; stderr: string; stdout: string } {
+  // No extra args → --help (exits 0 without docker/network).
+  const argv = args.length === 0 ? ["--help"] : args;
   try {
-    const stdout = execFileSync("bash", [target, "--help"], {
+    const stdout = execFileSync("bash", [target, ...argv], {
       encoding: "utf8",
       stdio: "pipe",
       ...(timeoutMs > 0 ? { timeout: timeoutMs } : {}),
     });
     return { exitCode: 0, stdout, stderr: "" };
   } catch (e: unknown) {
-    // Narrow with type guards — the cast is confined to the minimal shape read
-    // (same convention as test-os-guard.ts); the `??` coercions below are
-    // load-bearing, since the guarded fields are optional but the return type
-    // is non-optional.
+    // Narrow with type guards — the narrowing is confined to the minimal
+    // shape read (same convention as test-os-guard.ts); the `??` coercions
+    // below are load-bearing, since the guarded fields are optional but the
+    // return type is non-optional.
     const isRecord = (v: unknown): v is Record<string, unknown> =>
       typeof v === "object" && v !== null;
     const err = isRecord(e) ? e : { message: String(e) };
@@ -78,32 +83,6 @@ function invokeHelp(
       stderr: spawnFailed
         ? `spawn failed (no exit status): ${message ?? String(e)}`
         : (stderr ?? ""),
-    };
-  }
-}
-
-/**
- * Invoke a bash script with args via execFileSync.
- * Returns { exitCode, stderr }.
- */
-function execFileSyncSafe(
-  script: string,
-  ...args: string[]
-): { exitCode: number; stderr: string } {
-  try {
-    execFileSync("bash", [script, ...args], { encoding: "utf8", stdio: "pipe", timeout: 10_000 });
-    return { exitCode: 0, stderr: "" };
-  } catch (e: unknown) {
-    const isRecord = (v: unknown): v is Record<string, unknown> =>
-      typeof v === "object" && v !== null;
-    const err = isRecord(e) ? e : { message: String(e) };
-    const status = typeof err.status === "number" ? err.status : undefined;
-    const stderr = typeof err.stderr === "string" ? err.stderr : undefined;
-    const message = typeof err.message === "string" ? err.message : undefined;
-    const spawnFailed = status === undefined;
-    return {
-      exitCode: status ?? 1,
-      stderr: spawnFailed ? `spawn failed: ${message ?? String(e)}` : (stderr ?? ""),
     };
   }
 }
@@ -184,18 +163,8 @@ function execFileSyncSafe(
     // the starting path. This isolates the guard from bash's own stat
     // limitation on cyclic paths.
     const wrapper = path.join(d, "wrap.sh");
-    const resolverLines = [
-      "#!/usr/bin/env bash",
-      "set -euo pipefail",
-      "_link=\"$1\"; _hops=0",
-      "while [ -L \"$_link\" ]; do",
-      "  _hops=$(( _hops + 1 )); [ \"$_hops\" -le 40 ] || { echo \"pi-rukas: symlink cycle near $_link\" >&2; exit 1; }",
-      "  _tgt=\"$(readlink \"$_link\")\" || { echo \"pi-rukas: failed to resolve symlink chain at $_link\" >&2; exit 1; }",
-      "  case \"$_tgt\" in /*) _link=\"$_tgt\" ;; *) _link=\"$(cd \"$(dirname \"$_link\")\" && pwd -P)/$_tgt\" ;; esac",
-      "done",
-      "echo resolved:$_link",
-    ];
-    writeFileSync(wrapper, resolverLines.join("\n"));
+    const resolved = liveResolverWrapper();
+    writeFileSync(wrapper, resolved);
     chmodSync(wrapper, 0o755);
 
     // Two-link cycle: a → b, b → a
@@ -204,9 +173,21 @@ function execFileSyncSafe(
     symlinkSync(b, a);
     symlinkSync(a, b);
 
-    const r = execFileSyncSafe(wrapper, a);
+    const r = invokeHelp(wrapper, 10_000, a);
     assert(r.exitCode !== 0, "d: resolver loop on a two-link cycle exits non-zero");
     assert(r.stderr.includes("symlink cycle"), "d: failure message names the symlink cycle");
+
+    // Self-referencing symlink: c → c. Same isolation rationale as the
+    // two-link case above: on macOS bash cannot stat a bare symlink cycle
+    // (ENAMETOOLONG), so the wrapper is handed the link as $1 and runs the
+    // live resolver's own loop on it. The loop must terminate on the hop
+    // guard (exit 1) well inside the 10s timeout.
+    const self = path.join(d, "self");
+    symlinkSync("self", self);
+    const rSelf = invokeHelp(wrapper, 10_000, self);
+    assert(rSelf.exitCode !== 0, "e: self-referencing symlink exits non-zero");
+    assert(rSelf.stderr.includes("symlink cycle"), "e: failure message names the symlink cycle");
+    assert(!rSelf.stderr.includes("timeout"), "e: loop terminates via the hop guard, not the timeout");
 
     // Positive: a valid 30-hop chain resolves without tripping the guard
     const shim = path.join(d, "shim");
@@ -217,7 +198,7 @@ function execFileSyncSafe(
       symlinkSync(prev, next);
       prev = next;
     }
-    const r2 = execFileSyncSafe(wrapper, prev);
+    const r2 = invokeHelp(wrapper, 0, prev);
     assert(r2.exitCode === 0, "d: 30-hop chain resolves without tripping the guard");
   } finally {
     rmSync(d, { recursive: true, force: true });
@@ -265,6 +246,37 @@ function execFileSyncSafe(
   } finally {
     rmSync(d, { recursive: true, force: true });
   }
+}
+
+/**
+ * Build the (d)-case wrapper from the LIVE bytes of bin/pi-rukas: the
+ * resolver block from the `_link="${BASH_SOURCE[0]}"` line through the
+ * `esac; done` line, with the first line's `${BASH_SOURCE[0]}` substituted
+ * by `$1` so the wrapper receives the path under test as its argument.
+ * Fails loudly if the block can no longer be found — a resolver refactor
+ * that moves or rewrites the loop must update this test deliberately.
+ */
+function liveResolverWrapper(): string {
+  const bin = readFileSync(SCRIPT, "utf8");
+  const lines = bin.split("\n");
+  const start = lines.findIndex((l) => l.includes('_link="${BASH_SOURCE[0]}"'));
+  const end = lines.findIndex((l) => l.trimEnd().endsWith("esac; done"));
+  if (start === -1 || end === -1 || end < start) {
+    throw new Error(
+      `live resolver block not found in bin/pi-rukas (start=${start}, end=${end}) — ` +
+        "the resolver loop moved; update this test deliberately",
+    );
+  }
+  const block = lines.slice(start, end + 1);
+  const substituted = block.map((l, i) =>
+    i === 0 ? l.replace('"${BASH_SOURCE[0]}"', '"$1"') : l,
+  );
+  return [
+    "#!/usr/bin/env bash",
+    "set -euo pipefail",
+    ...substituted,
+    "echo resolved:$_link",
+  ].join("\n") + "\n";
 }
 
 console.log(`\nexit ${exit}`);
