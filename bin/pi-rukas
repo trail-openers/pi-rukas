@@ -32,11 +32,13 @@
 
 set -euo pipefail
 
+# >>> symlink-resolver (extracted verbatim by extension/smoke-tests/test-pi-rukas-symlink.ts)
 # Resolve this script's real dir, following any symlink chain (relative → link's own dir).
 _link="${BASH_SOURCE[0]}"; _hops=0; while [ -L "$_link" ]; do
   _hops=$(( _hops + 1 )); [ "$_hops" -le 40 ] || { echo "pi-rukas: symlink cycle near $_link" >&2; exit 1; }
   _tgt="$(readlink "$_link")" || { echo "pi-rukas: failed to resolve symlink chain at $_link" >&2; exit 1; }
   case "$_tgt" in /*) _link="$_tgt" ;; *) _link="$(cd "$(dirname "$_link")" && pwd -P)/$_tgt" ;; esac; done
+# <<< symlink-resolver
 PI_RUKAS_DIR="$(cd "$(dirname "$_link")" && pwd -P)"; REPO_DIR="$(dirname "$PI_RUKAS_DIR")"; helper="$PI_RUKAS_DIR/lib-pi-rukas-shell.sh"
 [ -f "$helper" ] || { echo "pi-rukas: helper not found at $helper (repo checkout incomplete?)" >&2; exit 1; }
 source "$helper"

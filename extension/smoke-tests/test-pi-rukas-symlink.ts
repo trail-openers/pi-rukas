@@ -80,7 +80,7 @@ function invokeHelp(
     // below are load-bearing, since the guarded fields are optional but the
     // return type is non-optional.
     const isRecord = (v: unknown): v is Record<string, unknown> =>
-      typeof v === "object" && v !== null;
+      typeof v === "object" && v !== null && !Array.isArray(v);
     const err = isRecord(e) ? e : { message: String(e) };
     const status = typeof err.status === "number" ? err.status : undefined;
     const stderr = typeof err.stderr === "string" ? err.stderr : undefined;
@@ -265,25 +265,66 @@ function invokeHelp(
 }
 
 /**
- * Build the (d)-case wrapper from the LIVE bytes of bin/pi-rukas: the
- * resolver block from the `_link="${BASH_SOURCE[0]}"` line through the
- * `esac; done` line, with the first line's `${BASH_SOURCE[0]}` substituted
- * by `$1` so the wrapper receives the path under test as its argument.
- * Fails loudly if the block can no longer be found — a resolver refactor
- * that moves or rewrites the loop must update this test deliberately.
+ * Build the (d)-case wrapper from the LIVE bytes of bin/pi-rukas.
+ *
+ * The explicit contract: bin/pi-rukas wraps the resolver loop in
+ * `# >>> symlink-resolver` / `# <<< symlink-resolver` marker lines. This
+ * test extracts the lines strictly BETWEEN the two markers and fails loudly
+ * if either marker is missing, duplicated, or out of order — a resolver
+ * refactor that moves or rewrites the loop must update the markers
+ * (and this test) deliberately.
+ *
+ * The extracted block must contain `while [ -L` and `readlink` (the live
+ * resolver loop, not a rewrite) and its first line's `${BASH_SOURCE[0]}`
+ * is substituted by `$1` so the wrapper receives the path under test as its
+ * argument.
  */
 function liveResolverWrapper(): string {
+  const OPEN_MARKER = "# >>> symlink-resolver";
+  const CLOSE_MARKER = "# <<< symlink-resolver";
   const bin = readFileSync(SCRIPT, "utf8");
   const lines = bin.split("\n");
-  const start = lines.findIndex((l) => l.includes('_link="${BASH_SOURCE[0]}"'));
-  const end = lines.findIndex((l) => l.trimEnd().endsWith("esac; done"));
-  if (start === -1 || end === -1 || end < start) {
+  const opens = lines
+    .map((l, i) => (l.trimStart().startsWith(OPEN_MARKER) ? i : -1))
+    .filter((i) => i !== -1);
+  const closes = lines
+    .map((l, i) => (l.trimStart().startsWith(CLOSE_MARKER) ? i : -1))
+    .filter((i) => i !== -1);
+  if (opens.length === 0 || closes.length === 0) {
     throw new Error(
-      `live resolver block not found in bin/pi-rukas (start=${start}, end=${end}) — the resolver loop moved; update this test deliberately`,
+      `symlink-resolver marker missing in bin/pi-rukas (opens=${opens.length}, closes=${closes.length}) — update the script and this test deliberately`,
     );
   }
-  const block = lines.slice(start, end + 1);
-  const substituted = block.map((l, i) => (i === 0 ? l.replace('"${BASH_SOURCE[0]}"', '"$1"') : l));
+  if (opens.length > 1 || closes.length > 1) {
+    throw new Error(
+      `duplicate symlink-resolver marker in bin/pi-rukas (opens=${opens.length}, closes=${closes.length}) — update the script and this test deliberately`,
+    );
+  }
+  const [start] = opens;
+  const [end] = closes;
+  if (end < start) {
+    throw new Error(
+      `symlink-resolver markers out of order in bin/pi-rukas (open=${start}, close=${end}) — update the script and this test deliberately`,
+    );
+  }
+  const block = lines.slice(start + 1, end);
+  const joined = block.join("\n");
+  if (!joined.includes('_link="${BASH_SOURCE[0]}"')) {
+    throw new Error(
+      'symlink-resolver block missing the _link="${BASH_SOURCE[0]}" line — update the script and this test deliberately',
+    );
+  }
+  if (!joined.includes("while [ -L")) {
+    throw new Error(
+      "symlink-resolver block missing 'while [ -L' — the resolver loop moved or was rewritten; update the script and this test deliberately",
+    );
+  }
+  if (!joined.includes("readlink")) {
+    throw new Error(
+      "symlink-resolver block missing readlink — the resolver loop moved or was rewritten; update the script and this test deliberately",
+    );
+  }
+  const substituted = block.map((l) => l.replace('_link="${BASH_SOURCE[0]}"', '_link="$1"'));
   const body = ["#!/usr/bin/env bash", "set -euo pipefail", ...substituted, "echo resolved:$_link"]
     .join("\n")
     .concat("\n");
