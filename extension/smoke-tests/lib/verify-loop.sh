@@ -96,9 +96,12 @@ if [ "${#names[@]}" -gt 0 ]; then
   # every consumer's window (the #772 shape). Repeating them here, inside the
   # window, is what makes the tail name the actual assertion; the per-test
   # output above remains the full first occurrence, this is a bounded echo.
-  # The bound (first 3 ✗ lines per test, each truncated to 200 chars) is
-  # sized so the echo plus the summary above still fits that 800-char window
-  # for any number of failing tests. Only `✗` lines qualify — warnings (`!`
+  # The bound (first 3 ✗ lines per test, each truncated to 200 chars) keeps
+  # a single failing test's echo inside that 800-char window; with several
+  # failing tests the consumer (extractAttributedTail) keeps the summary
+  # marker line plus the LAST part of the echo, eliding the middle — so at
+  # least the last failing test's assertion lines are guaranteed in the
+  # tail. Only `✗` lines qualify — warnings (`!`
   # lines) and other output are intentionally excluded.
   for capfile in "${_extra_captures[@]}"; do
     cap=0
