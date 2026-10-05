@@ -259,6 +259,15 @@ export function explainCap(
       const evidence = hit?.evidence ?? "(no holder recorded)";
       return `commit-pr's ops fallback worked in the wrong tree: after the dispatch, the integration branch is held by a worktree that is NOT the driver-owned integrate worktree — ${evidence}. The driver's post-dispatch branch-holder audit halted the cycle BEFORE the PR-verification gates, so no PR was validated from the wrong tree (the #841 defect: #841's ops child checked its branch out inside #844's worktree). The driver-owned integrate worktree is preserved for inspection; inspect the offending holder, move the branch back, and re-run`;
     }
+    case "no-review-outcome": {
+      // #973 — the lens review found nothing to review (an empty delta: the
+      // branch is unchanged since the last recorded lens run). A no-review is
+      // NOT an approval: the driver parked instead of recording a fake
+      // lens-approved event the nextStep router would trust.
+      const hit = lastCapHit(state, "no-review-outcome");
+      const ev = hit?.evidence ?? "(no detail recorded)";
+      return `the lens review returned a no-review outcome — ${ev}. Nothing changed since the last recorded lens run, so there was nothing to re-review; the cycle parked rather than treating the absence of a review as an approval. Re-run the review (with an explicit diff, or \`full: true\`) after a new commit lands on the branch`;
+    }
   }
   // #844 — a local branch of the resolved name holds commits the freshly
   // fetched origin/<mainline> does not. Deliberate halt: only a human can

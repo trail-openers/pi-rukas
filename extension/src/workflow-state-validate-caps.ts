@@ -75,4 +75,8 @@ export const CAP_HIT_FIXED_LITERALS: readonly unknown[] = [
   "adversarial-infra-failure",
   "loop-detected",
   "token-budget",
+  // #973 — the lens review produced no review outcome (all lens dispatches
+  // failed) without a delta to review: a deliberate park terminalized as a
+  // handoff, emitted by work-driver-lens.ts.
+  "no-review-outcome",
 ];
