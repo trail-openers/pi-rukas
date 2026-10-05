@@ -34,7 +34,7 @@
 set -euo pipefail
 
 # Resolve this script's real dir, following any symlink chain (relative → link's own dir).
-_link="${BASH_SOURCE[0]}"; while [ -L "$_link" ]; do _tgt="$(readlink "$_link")"
+_link="${BASH_SOURCE[0]}"; while [ -L "$_link" ]; do _tgt="$(readlink "$_link")" || { echo "pi-rukas: failed to resolve symlink chain at $_link" >&2; exit 1; }
   case "$_tgt" in /*) _link="$_tgt" ;; *) _link="$(cd "$(dirname "$_link")" && pwd -P)/$_tgt" ;; esac; done
 PI_RUKAS_DIR="$(cd "$(dirname "$_link")" && pwd -P)"; REPO_DIR="$(dirname "$PI_RUKAS_DIR")"
 source "$PI_RUKAS_DIR/lib-pi-rukas-shell.sh"

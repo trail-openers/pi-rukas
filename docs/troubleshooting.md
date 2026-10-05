@@ -396,16 +396,16 @@ Skips the registry pull, builds directly from your checkout. Takes 10-30 minutes
 line 36: /Users/you/.local/bin/lib-pi-rukas-shell.sh: No such file or directory
 ```
 
-**Cause:** `install.sh` symlinks only `bin/pi-rukas` into `~/.local/bin` — the helper `bin/lib-pi-rukas-shell.sh` is not linked. The pre-fix source line (`source "${BASH_SOURCE[0]%/*}/lib-pi-rukas-shell.sh"`) resolved the helper relative to the **unresolved** `BASH_SOURCE[0]`, so via a symlink it looked for the helper next to the link (e.g. `~/.local/bin/`) instead of next to the real script. Under `set -euo pipefail` the failed `source` aborts the script on line 36 before any command runs.
+**Cause:** `install.sh` symlinks only `bin/pi-rukas` into `~/.local/bin` — the helper `bin/lib-pi-rukas-shell.sh` (a real file in this repo's `bin/` directory, sourced by `bin/pi-rukas`) is not linked. The pre-fix source line (`source "${BASH_SOURCE[0]%/*}/lib-pi-rukas-shell.sh"`) resolved the helper relative to the **unresolved** `BASH_SOURCE[0]`, so via a symlink it looked for the helper next to the link (e.g. `~/.local/bin/`) instead of next to the real script. Under `set -euo pipefail` the failed `source` aborts the script on line 36 before any command runs.
 
-**Fix:** Pull the latest pi-rukas and re-run `./install.sh`. The script now resolves its own real directory once near the top — following any chain of symlinks (absolute or relative targets, builtins + `readlink` + `cd -P`, macOS-portable) — and sources the helper from that resolved directory; `ensure_image` / `rebuild` reuse the same resolution instead of ad-hoc `readlink -f` blocks. Covered by `extension/smoke-tests/test-pi-rukas-symlink.ts` (absolute symlink, two-level relative chain, direct invocation, and a canary proving the pre-fix line still fails).
+**Fix:** Pull the latest pi-rukas and re-run `./install.sh`. The script now resolves its own real directory once near the top — following any chain of symlinks (absolute or relative targets, builtins + `readlink` + `cd -P`, macOS-portable) — and sources the helper from that resolved directory; `ensure_image` / `rebuild` reuse the same resolution instead of ad-hoc `readlink -f` blocks. Covered by `extension/smoke-tests/test-pi-rukas-symlink.ts` (a file in this repo's `extension/smoke-tests/` directory) — absolute symlink, two-level relative chain, direct invocation, and a canary proving the pre-fix line still fails.
 
 ```bash
 cd ~/projects/pi-rukas && git pull && ./install.sh
 pi-rukas --help   # exits 0, no "No such file or directory"
 ```
 
-**Stopgap note:** if you added a workaround symlink `~/.local/bin/lib-pi-rukas-shell.sh` (pointing at the repo's `bin/lib-pi-rukas-shell.sh`) to mask this failure, it can be deleted once the fix is installed — the script no longer needs the helper next to the link:
+**Stopgap note:** if you added a workaround symlink at `local/bin/lib-pi-rukas-shell.sh` (i.e. `~/.local/bin/lib-pi-rukas-shell.sh`, pointing at the repo's `bin/lib-pi-rukas-shell.sh`) to mask this failure, it can be deleted once the fix is installed — the script no longer needs the helper next to the link:
 
 ```bash
 rm ~/.local/bin/lib-pi-rukas-shell.sh

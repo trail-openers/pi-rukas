@@ -18,22 +18,22 @@
  * from a helper-less directory.
  *
  * All invocations use `--help` (exits 0 without docker/network).
- * All temp dirs are realpathSync'd (macOS /tmp → /private/tmp).
+ * Temp dirs are created under `os.tmpdir()` and realpathSync'd where the
+ * assertion needs canonical paths (macOS /tmp → /private/tmp).
  */
 
 import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   copyFileSync,
-  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -63,11 +63,19 @@ function invokeHelp(target: string): { exitCode: number; stderr: string; stdout:
     });
     return { exitCode: 0, stdout, stderr: "" };
   } catch (e: unknown) {
-    const err = e as { status?: number; stderr?: string; stdout?: string };
+    const err = e as {
+      status?: number;
+      stderr?: string;
+      stdout?: string;
+      message?: string;
+    };
+    const spawnFailed = err.status === undefined;
     return {
       exitCode: err.status ?? 1,
       stdout: err.stdout ?? "",
-      stderr: err.stderr ?? "",
+      stderr: spawnFailed
+        ? `spawn failed (err.status undefined): ${err.message ?? String(e)}`
+        : (err.stderr ?? ""),
     };
   }
 }
@@ -83,7 +91,10 @@ function invokeHelp(target: string): { exitCode: number; stderr: string; stdout:
     symlinkSync(SCRIPT, link);
     const r = invokeHelp(link);
     assert(r.exitCode === 0, "a: one-level absolute symlink exits 0");
-    assert(!r.stderr.includes("No such file or directory"), "a: no 'No such file or directory' in stderr");
+    assert(
+      !r.stderr.includes("No such file or directory"),
+      "a: no 'No such file or directory' in stderr",
+    );
   } finally {
     rmSync(d, { recursive: true, force: true });
   }
@@ -106,7 +117,10 @@ function invokeHelp(target: string): { exitCode: number; stderr: string; stdout:
     symlinkSync("pi-rukas-alias", link);
     const r = invokeHelp(link);
     assert(r.exitCode === 0, "b: two-level chain with relative intermediate exits 0");
-    assert(!r.stderr.includes("No such file or directory"), "b: no 'No such file or directory' in stderr");
+    assert(
+      !r.stderr.includes("No such file or directory"),
+      "b: no 'No such file or directory' in stderr",
+    );
   } finally {
     rmSync(d, { recursive: true, force: true });
   }
@@ -119,7 +133,10 @@ function invokeHelp(target: string): { exitCode: number; stderr: string; stdout:
 {
   const r = invokeHelp(SCRIPT);
   assert(r.exitCode === 0, "c: direct bin/pi-rukas --help exits 0");
-  assert(!r.stderr.includes("No such file or directory"), "c: no 'No such file or directory' in stderr");
+  assert(
+    !r.stderr.includes("No such file or directory"),
+    "c: no 'No such file or directory' in stderr",
+  );
 }
 
 // ---------------------------------------------------------------------------
