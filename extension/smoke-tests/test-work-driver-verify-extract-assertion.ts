@@ -151,5 +151,106 @@ FAILED: smoke-tests/test-repo-root-residue-poisoning.ts
   assert(a === "✗ expected 5 got 6", `case 12 (marker→assertion): the ✗ line under the marker is returned (got: ${JSON.stringify(a)})`);
 }
 
+// --- Case 13 (#827 new-tail-shape, #772 shape): the smoke loop's output when
+// the fix (a) repeats the failing test's `✗` lines bounded under/after the
+// final summary. The #772 failure: test-loop-detector.ts at 667 lines, the
+// real `✗` assertion thousands of chars before the final `FAILED: <n> test(s)
+// — ...` summary. After the fix, the bounded `✗` lines sit INSIDE the
+// 800-char window. The extractor must return the first real `✗` line, not the
+// summary, and the summary must still list the failing file.
+{
+  const summaryLine =
+    "FAILED: 1 test(s) — extension/smoke-tests/test-file-size-limit.ts";
+  // The #772 shape: the failing test's per-test output emitted first, then
+  // (post-fix) the repeated bounded `✗` lines, then the final summary last.
+  // The pre-fix defect: the `✗` lines were thousands of chars before the
+  // summary, so the 800-char tail was summary-only. Post-fix: the `✗` lines
+  // are repeated after the summary, inside the window.
+  const tail = `FAILED: extension/smoke-tests/test-file-size-limit.ts
+✗ extension/smoke-tests/test-loop-detector.ts: 667 lines (exceeds 500-line hard limit)
+✗ extension/smoke-tests/test-dispatch-caps.ts: 528 lines (exceeds 500-line hard limit)
+${summaryLine}\n✗ extension/smoke-tests/test-loop-detector.ts: 667 lines (exceeds 500-line hard limit)`;
+  const a = extractSpecificAssertion(tail);
+  assert(
+    a === "✗ extension/smoke-tests/test-loop-detector.ts: 667 lines (exceeds 500-line hard limit)",
+    `case 13 (#827 #772 shape): the first real ✗ line is named, not the summary (got: ${JSON.stringify(a)})`,
+  );
+  assert(!a.includes("test(s) —"), "case 13 (#827 #772 shape): the summary is NOT the assertion");
+  assert(!a.startsWith("FAILED:"), "case 13 (#827 #772 shape): never a FAILED: marker");
+}
+
+// --- Case 14 (#827 new-tail-shape, multi-failure): the smoke loop's output
+// when TWO tests fail and the fix repeats each failing test's bounded `✗`
+// lines under/after the final summary. The extractor must return the FIRST
+// real `✗` line; the summary must list ALL failing files. The 800-char
+// bound is preserved: the repeated lines are bounded (first 3 per test) so
+// the tail + summary still fits.
+{
+  const summaryLine =
+    "FAILED: 2 test(s) — extension/smoke-tests/test-alpha.ts, extension/smoke-tests/test-beta.ts";
+  const tail = `FAILED: extension/smoke-tests/test-alpha.ts
+✗ alpha assertion: expected 0 got 2
+FAILED: extension/smoke-tests/test-beta.ts
+✗ beta assertion: expected 1 got 9
+${summaryLine}\n✗ alpha assertion: expected 0 got 2\n✗ beta assertion: expected 1 got 9`;
+  const a = extractSpecificAssertion(tail);
+  assert(
+    a === "✗ alpha assertion: expected 0 got 2",
+    `case 14 (#827 multi-failure): the FIRST real ✗ line wins (got: ${JSON.stringify(a)})`,
+  );
+  assert(a === "✗ alpha assertion: expected 0 got 2", "case 14 (#827 multi-failure): first assertion is alpha's");
+  assert(!a.includes("2 test(s) —"), "case 14 (#827 multi-failure): the summary count is NOT the assertion");
+}
+
+// --- Case 15 (#827 new-tail-shape, secret-shaped ✗ line): a `✗` line that
+// contains credential material must be skipped in favour of the next
+// qualifying line. The extracted assertion reaches a GitHub comment, so
+// secrets must never be selected — even in the new tail shape where
+// repeated `✗` lines sit after the summary. The secret-shape guard
+// (LOOKS_LIKE_SECRET) matches `api_key`, `access_token`, `bearer`,
+// `password`, `passwd`, `secret_key` followed by `:`/`=` and 8+ chars.
+{
+  const summaryLine = "FAILED: 1 test(s) — extension/smoke-tests/test-auth.ts";
+  const secretLine = "✗ response body: api_key = a9f2k3j8f2j9f2j9f2j9f2";
+  const tail = `FAILED: extension/smoke-tests/test-auth.ts
+${secretLine}
+${summaryLine}\n${secretLine}\n✗ auth check failed: expected 200 got 401`;
+  const a = extractSpecificAssertion(tail);
+  assert(
+    a === "✗ auth check failed: expected 200 got 401",
+    `case 15 (#827 secret ✗): a secret-shaped ✗ line is skipped; the next qualifying line is returned (got: ${JSON.stringify(a)})`,
+  );
+  assert(!/api_key/i.test(a), "case 15 (#827 secret ✗): the returned line carries no api_key token");
+}
+
+// --- Case 16 (#827 new-tail-shape, tsc/biome chain-stage failure — no
+// FAILED marker): the chain-stage shape (no smoke marker) must remain
+// unchanged. The extractor still returns the compiler/linter error line;
+// the fix does not alter this path.
+{
+  const tail = `src/work-driver-foo.ts:42:10
+error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
+  Type 'string' is not comparable to type 'number'.`;
+  const a = extractSpecificAssertion(tail);
+  assert(
+    a === "error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.",
+    `case 16 (#827 tsc unchanged): chain-stage tsc failure still returns the compiler error (got: ${JSON.stringify(a)})`,
+  );
+}
+
+// --- Case 17 (#827 new-tail-shape, biome chain-stage failure — no FAILED
+// marker): same as case 16 but for the biome shape. The fix does not alter
+// the no-marker path.
+{
+  const tail = `Checked 239 files in 66ms.
+✗ use single quotes (style/useTemplate)
+    --> src/biome-test.ts:10:5`;
+  const a = extractSpecificAssertion(tail);
+  assert(
+    a === "✗ use single quotes (style/useTemplate)",
+    `case 17 (#827 biome unchanged): chain-stage biome failure still returns the ✗ assertion (got: ${JSON.stringify(a)})`,
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);
