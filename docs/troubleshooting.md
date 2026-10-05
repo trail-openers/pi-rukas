@@ -388,6 +388,31 @@ Skips the registry pull, builds directly from your checkout. Takes 10-30 minutes
 
 ## Sandbox launch
 
+### `pi-rukas --help` (or any subcommand) fails: `line N: <dir>/lib-pi-rukas-shell.sh: No such file or directory`
+
+**Symptom:** Invoking `pi-rukas` through a symlink — e.g. the `~/.local/bin/pi-rukas` link that `install.sh` creates, or any other link to `bin/pi-rukas` — fails immediately for **every** subcommand including `--help`:
+
+```
+line 36: /Users/you/.local/bin/lib-pi-rukas-shell.sh: No such file or directory
+```
+
+**Cause:** `install.sh` symlinks only `bin/pi-rukas` into `~/.local/bin` — the helper `bin/lib-pi-rukas-shell.sh` (a real file in this repo's `bin/` directory, sourced by `bin/pi-rukas`) is not linked. The pre-fix source line (`source "${BASH_SOURCE[0]%/*}/lib-pi-rukas-shell.sh"`) resolved the helper relative to the **unresolved** `BASH_SOURCE[0]`, so via a symlink it looked for the helper next to the link (e.g. `~/.local/bin/`) instead of next to the real script. Under `set -euo pipefail` the failed `source` aborts the script on line 36 before any command runs.
+
+**Fix:** Pull the latest pi-rukas and re-run `./install.sh`. The script now resolves its own real directory once near the top — following any chain of symlinks (absolute or relative targets, builtins + `readlink` + `cd -P`, macOS-portable) — and sources the helper from that resolved directory; `ensure_image` / `rebuild` reuse the same resolution instead of ad-hoc `readlink -f` blocks. Covered by the offline smoke test `extension/smoke-tests/test-pi-rukas-symlink.ts` — absolute symlink, two-level relative chain, direct invocation, and a canary proving the pre-fix line still fails.
+
+```bash
+cd ~/projects/pi-rukas && git pull && ./install.sh
+pi-rukas --help   # exits 0, no "No such file or directory"
+```
+
+**Stopgap note:** if you added a workaround symlink in your home directory at `~/.local/bin/lib-pi-rukas-shell.sh` (a link to the repo's `bin/lib-pi-rukas-shell.sh`) to mask this failure, it can be deleted once the fix is installed — the script no longer needs the helper next to the link:
+
+```bash
+rm ~/.local/bin/lib-pi-rukas-shell.sh
+```
+
+Issue: [#978](https://github.com/trail-openers/pi-rukas/issues/978)
+
 ### `MCP: 0/N servers` — codebase_memory not connected
 
 **Symptom:** Inside `pi-rukas`, the bottom status line shows `MCP: 0/1 servers` (or 0/N). `/mcp` reports no servers connected. Subagents fail any `mcp__codebase_memory__*` tool call.

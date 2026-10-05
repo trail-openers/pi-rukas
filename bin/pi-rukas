@@ -27,13 +27,21 @@
 #   stop          Stop the running container for this project
 #   prune         Remove named volumes (DESTROYS sandbox caches — vipune/runs/
 #                 sessions stay safe because they're bind-mounted from host)
-#   logs          Tail container logs
-#   status        Show whether a container is running for this project
+#   logs          Tail container logs (status: list containers)
 #   --help        Show this help
 
 set -euo pipefail
 
-source "${BASH_SOURCE[0]%/*}/lib-pi-rukas-shell.sh"
+# >>> symlink-resolver (extracted verbatim by extension/smoke-tests/test-pi-rukas-symlink.ts)
+# Resolve this script's real dir, following any symlink chain (relative → link's own dir).
+_link="${BASH_SOURCE[0]}"; _hops=0; while [ -L "$_link" ]; do
+  _hops=$(( _hops + 1 )); [ "$_hops" -le 40 ] || { echo "pi-rukas: symlink cycle near $_link" >&2; exit 1; }
+  _tgt="$(readlink "$_link")" || { echo "pi-rukas: failed to resolve symlink chain at $_link" >&2; exit 1; }
+  case "$_tgt" in /*) _link="$_tgt" ;; *) _link="$(cd "$(dirname "$_link")" && pwd -P)/$_tgt" ;; esac; done
+# <<< symlink-resolver
+PI_RUKAS_DIR="$(cd "$(dirname "$_link")" && pwd -P)"; REPO_DIR="$(dirname "$PI_RUKAS_DIR")"; helper="$PI_RUKAS_DIR/lib-pi-rukas-shell.sh"
+[ -f "$helper" ] || { echo "pi-rukas: helper not found at $helper (repo checkout incomplete?)" >&2; exit 1; }
+source "$helper"
 
 IMAGE="${PI_ENSEMBLE_IMAGE:-ghcr.io/trail-openers/pi-rukas:latest}"
 PROJECT_ROOT="$(cd "$(pwd)" && pwd -P)"
@@ -88,9 +96,7 @@ ensure_image() {
     return
   fi
   echo "==> Pull failed. Falling back to local build from pi-rukas repo..."
-  local repo_dir
-  repo_dir="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$0")")/.." && pwd)"
-  docker build -t "$IMAGE" -f "$repo_dir/.devcontainer/Dockerfile" "$repo_dir"
+  docker build -t "$IMAGE" -f "$REPO_DIR/.devcontainer/Dockerfile" "$REPO_DIR"
 }
 
 build_mounts() {
@@ -120,9 +126,7 @@ build_mounts() {
     mounts+=(-v pi-ensemble-vipune:/home/vscode/.vipune)
   fi
 
-  # ensemble-runs transcripts — same pattern. /runs slash command browses
-  # these, so persisting them across container restarts is the user
-  # expectation regardless of host state.
+  # ensemble-runs transcripts — same pattern; /runs browses these.
   if [ -d "$HOME/.pi/agent/ensemble-runs" ]; then
     mounts+=(-v "$HOME/.pi/agent/ensemble-runs:/home/vscode/.pi/agent/ensemble-runs")
   else
@@ -132,8 +136,8 @@ build_mounts() {
   # Pi sessions — `pi -r` reads these. NOTE: Pi scopes sessions by absolute
   # project path, and the same project can live at different paths on host
   # vs. in the container — so host and sandbox sessions live in DIFFERENT
-  # sub-buckets and don't cross-resume. Within each mode: `pi -r` / `pi-rukas -r`
-  # finds previous sessions for the same project.
+  # sub-buckets and don't cross-resume. Within each mode: `pi -r` / `pi-rukas`
+  # -r finds previous sessions for the same project.
   if [ -d "$HOME/.pi/agent/sessions" ]; then
     mounts+=(-v "$HOME/.pi/agent/sessions:/home/vscode/.pi/agent/sessions")
   else
@@ -143,7 +147,7 @@ build_mounts() {
   # ensemble-models.json — per-role model picks. Bound RW (not :ro) so
   # /ensemble-model inside the sandbox can update picks and persist them
   # back to the host (symmetric with the sessions/ bind from PR #206).
-  # Only bound if present on host; otherwise the container uses its defaults.
+  # Only bound if present; else the container uses its baked-in defaults.
   if [ -f "$HOME/.pi/agent/ensemble-models.json" ]; then
     mounts+=(-v "$HOME/.pi/agent/ensemble-models.json:/home/vscode/.pi/agent/ensemble-models.json")
   fi
@@ -159,9 +163,8 @@ build_mounts() {
   # mcp.json — Pi 1.0.0's native MCP config, bind-mounted if present (issue
   # #959 moved the wiring from the adapter-era ~/.config/mcp/mcp.json to
   # ~/.pi/agent/mcp.json; matches the devcontainer.json bind-mount). Entries
-  # are PATH-portable (PR #202) so the same file works in both host and
-  # container contexts. If the host doesn't have one, the container's baked
-  # default (codebase_memory wired) takes over.
+  # are PATH-portable (PR #202). Without one, the container's baked default
+  # (codebase_memory wired) takes over.
   if [ -f "$HOME/.pi/agent/mcp.json" ]; then
     mounts+=(-v "$HOME/.pi/agent/mcp.json:/home/vscode/.pi/agent/mcp.json:ro")
   fi
@@ -191,26 +194,25 @@ build_mounts() {
     mounts+=(-v "$dir:$dir:ro")
   done
 
-  # Host docker socket — bind-mounted by default so docker-based MCP servers
-  # in .pi/mcp.json work transparently (spawned MCPs are SIBLING containers
-  # visible in the host's `docker ps`). Opt out with PI_ENSEMBLE_NO_DOCKER_SOCKET=1.
+  # Host docker socket — bind-mounted so docker-based MCP servers in
+  # .pi/mcp.json work transparently (spawned MCPs are sibling containers
+  # visible in `docker ps`). Opt out with PI_ENSEMBLE_NO_DOCKER_SOCKET=1.
   # SECURITY: the socket grants root-equivalent host access, weakening the
-  # container fence. Consistent with the trust-mode philosophy (#215): the
-  # user is the trust authority. See AGENTS.md "Permission model".
+  # container fence. Consistent with the trust-mode philosophy (#215):
+  # the user is the trust authority. See AGENTS.md "Permission model".
   if [ "${PI_ENSEMBLE_NO_DOCKER_SOCKET-}" = "1" ]; then
     :  # explicit opt-out — keep the tighter sandbox
   elif [ -S /var/run/docker.sock ]; then
     mounts+=(-v "/var/run/docker.sock:/var/run/docker.sock")
   fi
 
-  # SSH credentials — bind-mount ~/.ssh/ RO AND forward the host's
-  # SSH_AUTH_SOCK so `ssh remote-host` uses the same identities as host-mode
-  # pi. Opt out with PI_ENSEMBLE_NO_SSH=1. Trade-offs: known_hosts updates
-  # from inside don't persist to host (fix on host with
-  # `ssh -o StrictHostKeyChecking=accept-new ...`); on-disk keys without an
-  # agent may hit StrictModes failures from the host-vs-vscode UID mismatch
-  # (macOS 501 vs 1000) — workaround: start an ssh-agent on host
-  # (`eval $(ssh-agent) && ssh-add <key>`) before launching pi-rukas.
+  # SSH credentials — bind-mount ~/.ssh/ RO AND forward SSH_AUTH_SOCK so
+  # `ssh` uses the same identities as host-mode pi. Opt out with
+  # PI_ENSEMBLE_NO_SSH=1. Trade-offs: known_hosts updates from inside don't
+  # persist to host (fix on host with `ssh -o StrictHostKeyChecking=accept-new`
+  # ...); on-disk keys without an agent may hit StrictModes failures from the
+  # host-vs-vscode UID mismatch (macOS 501 vs 1000) — start an ssh-agent on
+  # host (`eval $(ssh-agent) && ssh-add <key>`) before launching pi-rukas.
   if [ "${PI_ENSEMBLE_NO_SSH-}" = "1" ]; then
     :
   else
@@ -283,18 +285,17 @@ build_env() {
     [[ -z "$value" ]] && continue
     envs+=(-e "$var=$value")
   done < <(env -0)
-  # PI_ENSEMBLE_EXTRA_ENV is now a no-op (wholesale forwarding makes it
+  # PI_ENSEMBLE_EXTRA_ENV is a no-op (wholesale forwarding makes it
   # redundant). Kept tolerant: if a user has it set in their shell rc from
-  # pre-#228 days, the listed vars are forwarded by the wholesale loop above
-  # anyway — no breakage.
+  # pre-#228 days, the listed vars are forwarded by the wholesale loop
+  # above anyway — no breakage.
 
   # gh auth: if the user has gh installed and authenticated on host, extract
   # the token and forward as GH_TOKEN. This handles the common macOS case
   # where `gh auth login` stores the token in Keychain (not on disk at
-  # ~/.config/gh/hosts.yml), making the bind-mount-alone strategy
-  # insufficient. `gh auth token` works regardless of where the token
-  # lives. Skip silently if gh isn't installed or no token is configured —
-  # user can `gh auth login -h github.com` inside the container in that case.
+  # ~/.config/gh/hosts.yml). `gh auth token` works regardless of where the
+  # token lives. Skip silently if gh is absent or unconfigured — `gh auth
+  # login -h github.com` inside the container works as a fallback.
   if [ -z "${GH_TOKEN-}" ] && [ -z "${GITHUB_TOKEN-}" ] && command -v gh >/dev/null 2>&1; then
     if gh_tok="$(gh auth token 2>/dev/null)" && [ -n "$gh_tok" ]; then
       envs+=(-e "GH_TOKEN=$gh_tok")
@@ -317,9 +318,9 @@ build_env() {
   # Additional allowed roots — sandbox-fs-guard treats paths under these as
   # in-bounds in addition to the workspace root. Wrapper sets this to the
   # same list of image-dirs build_mounts bind-mounts, so drag-and-dropped
-  # images from $HOME/Downloads etc. work without blanket-allowing all FS
-  # access. Mirrors PI_ENSEMBLE_IMAGE_DIRS / EXTRA_IMAGE_DIRS so the
-  # mount-list and guard-allow-list stay in sync.
+  # images from $HOME/Downloads etc. work without blanket FS access. Mirrors
+  # PI_ENSEMBLE_IMAGE_DIRS / EXTRA_IMAGE_DIRS so mount-list and guard
+  # allow-list stay in sync.
   local default_image_dirs="$HOME/Downloads:$HOME/Desktop:$HOME/Pictures"
   local guard_roots="${PI_ENSEMBLE_IMAGE_DIRS:-$default_image_dirs}"
   if [ -n "${PI_ENSEMBLE_EXTRA_IMAGE_DIRS-}" ]; then
@@ -435,9 +436,7 @@ cmd_shell() {
 
 cmd_rebuild() {
   require_docker
-  local repo_dir
-  repo_dir="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$0")")/.." && pwd)"
-  docker build -t "$IMAGE" -f "$repo_dir/.devcontainer/Dockerfile" "$repo_dir"
+  docker build -t "$IMAGE" -f "$REPO_DIR/.devcontainer/Dockerfile" "$REPO_DIR"
 }
 
 cmd_stop() {
