@@ -21,6 +21,9 @@
  *      still name the real ✗ assertion and the failing test file (the full
  *      pipeline: verify-loop.sh → extractAttributedTail →
  *      extractSpecificAssertion → classifyConsolidatedVerifyFailure).
+ *      fixture-2.ts, passed first in the loop, is a deliberately-passing
+ *      control: its output must not be echoed (only failing tests' ✗ lines
+ *      are repeated after the summary).
  *   7. #827 multi-failure: two failing tests, one with two ✗ lines — the
  *      FIRST real ✗ is the specific assertion and the summary names all
  *      failing files within the 800-char bound.

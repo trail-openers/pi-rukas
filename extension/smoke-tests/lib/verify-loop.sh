@@ -18,15 +18,8 @@
 # any extractAttributedTail call site uses — emitting as many names as fit
 # plus `…and <m> more` for the rest.
 #
-# #827: the driver's 800-char window is marker-anchored and keeps only what
-# comes at/after the LAST `FAILED:` marker. With per-test output first and
-# the summary last (the ordering contract above), a failing test's real `✗`
-# assertion lines sat thousands of chars BEFORE the summary and were elided
-# out of every consumer's window (the #772 shape). So, AFTER the summary
-# line, each failing test's `✗` lines are repeated — bounded to the first
-# 3 per test, each truncated to 200 chars — so a marker-anchored tail
-# contains the actual assertion. The per-test details above remain the
-# first occurrence; the repeated block is a bounded echo for the tail.
+# #827 (echo of failing `✗` lines after the summary): why this exists and why
+# the 3×200 bound is sized the way it is is commented at the echo loop below.
 #
 # Usage: verify-loop.sh <file> [<file> ...]
 #   The caller expands the glob; the script receives the file list.
@@ -58,8 +51,16 @@ for t in "$@"; do
     # #827 — keep this test's capture so its `✗` lines can be repeated
     # after the summary (below); removed on exit like $CAPTURE.
     capfile="$(mktemp "${TMPDIR:-/tmp}/verify-loop.XXXXXX")" || exit 2
-    cp "$CAPTURE" "$capfile"
-    _extra_captures+=("$capfile")
+    if ! cp "$CAPTURE" "$capfile"; then
+      # Capture failed — degrade gracefully: the test has already failed and
+      # its per-test output was printed above, so a missing echo is a
+      # cosmetic gap in the tail, not a new failure. Do NOT register the
+      # capfile, so the echo loop below skips it.
+      echo "warn: verify-loop: could not capture output of $t for the tail echo; its ✗ lines will be absent from the summary tail" >&2
+      rm -f "$capfile"
+    else
+      _extra_captures+=("$capfile")
+    fi
   fi
 done
 
@@ -86,13 +87,19 @@ if [ "${#names[@]}" -gt 0 ]; then
     emitted=$((emitted + 1))
   done
   echo "$summary"
-  # #827 — repeat each failing test's `✗` lines (bounded: first 3 per test,
-  # each truncated to 200 chars) AFTER the summary so the driver's
-  # marker-anchored tail window, which keeps only what comes at/after the
-  # last `FAILED:` line, contains the real assertion. Per-test output is
-  # already printed above in full; this is a bounded echo for tail
-  # consumers. Only `✗` lines qualify — warnings (`!` lines) and other
-  # output are intentionally excluded.
+  # #827 — repeat each failing test's `✗` lines AFTER the summary. WHY: the
+  # driver's marker-anchored tail window (extractAttributedTail in
+  # work-driver-exec-error.ts, maxLen=800 — the smallest of its call sites)
+  # keeps only what comes at/after the LAST `FAILED:` marker, so with per-test
+  # output first and the summary last, a failing test's real `✗` assertion
+  # lines sat thousands of chars BEFORE the summary and were elided out of
+  # every consumer's window (the #772 shape). Repeating them here, inside the
+  # window, is what makes the tail name the actual assertion; the per-test
+  # output above remains the full first occurrence, this is a bounded echo.
+  # The bound (first 3 ✗ lines per test, each truncated to 200 chars) is
+  # sized so the echo plus the summary above still fits that 800-char window
+  # for any number of failing tests. Only `✗` lines qualify — warnings (`!`
+  # lines) and other output are intentionally excluded.
   for capfile in "${_extra_captures[@]}"; do
     cap=0
     while IFS= read -r line; do

@@ -198,7 +198,7 @@ ${summaryLine}\n✗ alpha assertion: expected 0 got 2\n✗ beta assertion: expec
     a === "✗ alpha assertion: expected 0 got 2",
     `case 14 (#827 multi-failure): the FIRST real ✗ line wins (got: ${JSON.stringify(a)})`,
   );
-  assert(a === "✗ alpha assertion: expected 0 got 2", "case 14 (#827 multi-failure): first assertion is alpha's");
+  assert(a !== "✗ beta assertion: expected 1 got 9", "case 14 (#827 multi-failure): the chosen assertion is alpha's, not beta's");
   assert(!a.includes("2 test(s) —"), "case 14 (#827 multi-failure): the summary count is NOT the assertion");
 }
 
