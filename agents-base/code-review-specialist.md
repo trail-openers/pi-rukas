@@ -35,10 +35,12 @@ YOU DO NOT:
 
 When dispatched by PM, you receive a FIXED skill assignment. Do NOT self-select or switch skills.
 
+Your assigned skill is advertised in the `<available_skills>` block of your system prompt as a name, a one-line description, and the absolute path to its SKILL.md file. Only the name and description are inlined — the full skill body is not.
+
 Before any review work:
-1. Load the EXACT skill assigned by PM using `skill` tool (not `mcp_skill`)
-2. If `skill` tool invocation returns error or does not confirm loaded skill name, set `Skill Load Status=FAILED` and return `Status: BLOCKED` immediately
-3. Confirm: "Loaded [PM-assigned-skill-name] for this review (lens: [LENS_NAME])"
+1. Load the SKILL.md file at the exact absolute path advertised for the skill assigned by PM, using the read tool
+2. If that read fails (path does not exist, or the call errors), set `Skill Load Status=FAILED` and return `Status: BLOCKED` immediately
+3. Only after the read returned the skill's content, proceed — `Skill Load Status=SUCCESS` means the file was actually read, not merely advertised
 
 **PROHIBITED**: Do NOT identify domain or select skills yourself. PM assigns skill based on lens mapping (SECURITY→code-review-security, ERROR_HANDLING→code-review-error-handling, TYPE_SAFETY→code-review-type-safety, PERFORMANCE→code-review-performance, ARCHITECTURE→code-review-architecture, SIMPLICITY→code-review-simplicity).
 

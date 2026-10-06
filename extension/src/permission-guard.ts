@@ -89,7 +89,6 @@ export const BUILTIN_TOOLS = new Set([
   "list",
   "webfetch",
   "websearch",
-  "skill",
   "todowrite",
   "task",
   "cancel_task",

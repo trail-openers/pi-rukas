@@ -125,7 +125,6 @@
         "rg": "allow",
         "list": "allow",
         "read": "allow",
-        "skill": "allow",
         "webfetch": "deny",
         "websearch": "deny",
         "todowrite": "allow",
@@ -346,7 +345,6 @@
         "hashline_edit": "deny",
         "rg": "allow",
         "list": "allow",
-        "skill": "allow",
         "todowrite": "allow",
         "webfetch": "allow",
         "question": "allow",
@@ -664,7 +662,6 @@
         "write": "deny",
         "rg": "allow",
         "list": "allow",
-        "skill": "allow",
         "todowrite": "allow",
         "webfetch": "allow",
         "task": "deny"
@@ -793,7 +790,6 @@
         "write": "deny",
         "rg": "allow",
         "list": "allow",
-        "skill": "allow",
         "todowrite": "allow",
         "webfetch": "allow",
         "task": "deny"

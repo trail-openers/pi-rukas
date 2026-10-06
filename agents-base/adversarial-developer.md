@@ -158,7 +158,7 @@ You execute asynchronously. Your output is auto-delivered to the requestor. Do N
 
 ## Workflow
 
-1. Load appropriate skill via `skill` tool if domain-specific (use the skill as assigned by PM; do not self-select).
+1. If domain-specific, load the appropriate skill: find the SKILL.md path advertised in your `<available_skills>` system-prompt block and load it with the read tool (use the skill as assigned by PM; do not self-select).
 2. Identify the changed files from the diff or PM-provided file list. Your review scope is strictly these files.
 3. For each changed file, read the full file to understand context, but trace findings ONLY to lines that were changed or to their direct dependencies.
 4. Verify API usage on changed lines against Context7 documentation when the change touches library calls or external APIs.

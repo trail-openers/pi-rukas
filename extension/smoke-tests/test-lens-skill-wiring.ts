@@ -96,6 +96,7 @@ const { runLensReview } = await import("../src/lens-review.ts");
 const { LENS_ROSTER } = await import("../src/lens-roster.ts");
 const { skillsDirUsable } = await import("../src/lens-review-skills.ts");
 const { readEnumMarker } = await import("../src/reply-markers.ts");
+const { lensPromptFor } = await import("../src/lens-review-format.ts");
 
 const SIX_SKILLS = LENS_ROSTER.map((l) => l.skill);
 const MISSING_SKILL = "code-review-security";
@@ -455,6 +456,42 @@ const CLEAN_SUMMARY =
     ),
     "SUCCESS",
     "(h) a reply quoting the rule and ending with a real SUCCESS marker parses SUCCESS",
+  );
+}
+
+/* (i) #995 — the composed lens prompt (lensPromptFor output) explicitly
+ * instructs the child to `read` the skill file at the given absolute path.
+ */
+{
+  const fakePath = "/tmp/skills/code-review-security";
+  const lensEntry = LENS_ROSTER[0] as never as { name: string; skill: string };
+  const withPath = lensPromptFor(lensEntry, "diff --git a/a b/a", "ctx", undefined, [], fakePath);
+  assert(
+    withPath.includes("use the `read` tool to load your assigned skill file"),
+    "(i) prompt with skillPath instructs the child to use the `read` tool",
+  );
+  assert(
+    withPath.includes(fakePath),
+    "(i) the absolute skill path is embedded in the read instruction",
+  );
+  assert(
+    withPath.includes("NOT inlined in your context"),
+    "(i) prompt states the skill file is NOT inlined in context",
+  );
+  assert(
+    withPath.includes("Skill Load Status: SUCCESS"),
+    "(i) prompt defines SUCCESS = read succeeded",
+  );
+  assert(
+    withPath.includes("Skill Load Status: FAILED"),
+    "(i) prompt defines FAILED = read failed",
+  );
+  // Without skillPath: no read section (byte-identical to pre-#995).
+  const withoutPath = lensPromptFor(lensEntry, "diff --git a/a b/a", "ctx", undefined, []);
+  assert(
+    !withoutPath.includes("use the `read` tool to load your assigned skill file") &&
+      !withoutPath.includes("NOT inlined in your context"),
+    "(i) prompt without skillPath has no read instruction (byte-identical to pre-#995)",
   );
 }
 
