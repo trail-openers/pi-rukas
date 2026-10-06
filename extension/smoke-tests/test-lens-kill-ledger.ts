@@ -23,7 +23,9 @@
  * write applies. The REAL writeLensLedgerEntry → appendLedgerEntry file-write
  * path is covered in test-review-ledger.ts. The per-lens failed-branch
  * evidence rules (stderr vs findings vs thinking-only vs cap-kill) live in
- * test-lens-kill-child.ts.
+ * test-lens-kill-child.ts. The retry-note / blocked-banner rendering
+ * assertions (3a/3b and the per-case "no retry note" checks) live in
+ * test-lens-retry-note.ts.
  */
 import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
