@@ -24,9 +24,9 @@
  * validation (the issue's spec clarification).
  */
 
-import { initialState } from "../src/workflow-state.ts";
-import { KNOWN_EVENT_KINDS, validateDiscriminants } from "../src/workflow-state-validate.ts";
 import type { WorkEvent } from "../src/workflow-state-events.ts";
+import { KNOWN_EVENT_KINDS, validateDiscriminants } from "../src/workflow-state-validate.ts";
+import { initialState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -202,26 +202,15 @@ const unionKinds = new Set<string>(everyKindEvent.map((e) => e.kind));
   assert(findings.length === 0, "validateDiscriminants returns zero findings overall");
 }
 
-// 2. Reverse: no tuple entry without a matching union member. A typo'd kind
-// in the tuple would silently stop validating real events (accepting a
-// kind that no union member can produce); the same drift the forward guard
-// catches, the other way.
-{
-  const orphans = (KNOWN_EVENT_KINDS as readonly unknown[]).filter(
-    (k) => typeof k === "string" && !unionKinds.has(k),
-  );
-  assert(
-    orphans.length === 0,
-    `every KNOWN_EVENT_KINDS entry is a WorkEvent kind (orphans: ${orphans.join(", ")})`,
-  );
-  // And the two sets have equal size, so a union member the fixture table
-  // forgot (type-check would catch it at compile time, this is the runtime
-  // backstop) is impossible.
-  assert(
-    (KNOWN_EVENT_KINDS as readonly unknown[]).length === unionKinds.size,
-    `KNOWN_EVENT_KINDS (${(KNOWN_EVENT_KINDS as readonly unknown[]).length} entries) has exactly the union's ${unionKinds.size} kinds`,
-  );
-}
+// 2. Reverse: the tuple has exactly the union's kinds — no more (a typo'd
+// entry that no union member can produce would stop validating real events,
+// the same drift the forward guard catches, the other way), no fewer (a
+// union member the tuple omitted is the #986 bug itself; type-check catches
+// a missing fixture at compile time, this is the runtime backstop).
+assert(
+  (KNOWN_EVENT_KINDS as readonly unknown[]).length === unionKinds.size,
+  `KNOWN_EVENT_KINDS (${(KNOWN_EVENT_KINDS as readonly unknown[]).length} entries) has exactly the union's ${unionKinds.size} kinds (no typos, no omissions)`,
+);
 
 // 3. Resume-shaped: the #981 incident — a RUNNING state file whose eventLog
 // carries the four driver-emitted kinds the pre-fix tuple omitted. The

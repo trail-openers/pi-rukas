@@ -11,7 +11,7 @@
  * kind must still load (a parked cycle's history has to stay observable).
  */
 
-import type { WorkStep } from "./workflow-state-events.ts";
+import type { WorkEventKind, WorkStep } from "./workflow-state-events.ts";
 import { WORK_STATE_SCHEMA_VERSION, WORK_STEPS } from "./workflow-state-schema.ts";
 import { CAP_HIT_FIXED_LITERALS } from "./workflow-state-validate-caps.ts";
 
@@ -20,7 +20,7 @@ import { CAP_HIT_FIXED_LITERALS } from "./workflow-state-validate-caps.ts";
  * tuple exists only so the validator can test membership (types are erased
  * at runtime).
  */
-export const KNOWN_EVENT_KINDS: readonly unknown[] = [
+export const KNOWN_EVENT_KINDS: readonly WorkEventKind[] = [
   "step-started",
   "dispatch-started",
   "dispatch-completed",
@@ -50,11 +50,24 @@ export const KNOWN_EVENT_KINDS: readonly unknown[] = [
   "verify-full-status",
   // #782 — the consolidated-verify gate's single-retry recovery marker.
   "verify-flake-recovered",
+  // #558 — the branch step's worktree provisioning record (the driver writes
+  // it when it symlinks dependencies into a fresh worktree). Absent from the
+  // tuple, a cycle that crashed after provisioning refused to resume.
+  "worktree-provisioned",
   "widening-scan",
   "memory-write",
   "memory-inject",
   // #741 — the converge gate's one-shot corrective dispatch marker.
   "converge-redispatch",
+  // #625 — the develop step's safety-net commit record (the driver writes it
+  // when it commits a workstream's in-scope work on a cap/failure exit).
+  "safety-net-commit",
+  // #674 — the handoff consolidation record (the driver writes it when it
+  // consolidates parallel workstreams into a single handoff).
+  "handoff-consolidated",
+  // #735 — the branch step's leftover-worktree handling record (the driver
+  // writes it when it adopts or removes a stale .worktrees/ entry).
+  "worktree-leftover-handled",
   // #849 — the develop fence recovery marker (discarded SHA + owners).
   "fence-recovery-started",
   // #844 — the branch step's stale-local-branch reset record (old + new tip).
@@ -389,7 +402,7 @@ export function validateDiscriminants(state: unknown): string[] {
         out.push(`eventLog[${i}] is not an object`);
         return;
       }
-      if (!KNOWN_EVENT_KINDS.includes(e.kind)) {
+      if (!(KNOWN_EVENT_KINDS as readonly unknown[]).includes(e.kind)) {
         out.push(`eventLog[${i}].kind has unknown value ${JSON.stringify(e.kind)}`);
         return; // an unrecognised kind's other fields are not worth parsing
       }
