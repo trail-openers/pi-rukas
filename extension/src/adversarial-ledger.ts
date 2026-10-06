@@ -16,8 +16,7 @@
  * committed unchanged, the id the guard recomputes at merge time matches.
  */
 
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
+import { resolveReviewBranch } from "./review-branch.ts";
 import {
   type LedgerEntry,
   adversarialPassed,
@@ -27,7 +26,7 @@ import {
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 
-const execp = promisify(exec);
+import { execp } from "./lens-exec.ts";
 
 /**
  * Write an adversarial-review entry to the review ledger. Fire-and-forget:
@@ -36,23 +35,23 @@ const execp = promisify(exec);
  */
 export function writeAdversarialLedgerEntry(
   result: DispatchResult,
-  params: { workCwd?: string; branch?: string },
+  params: { workCwd?: string; branch?: string; head?: string; resolvedBranch?: string },
 ): void {
   const write = async () => {
     const c = params.workCwd ?? process.cwd();
-    let branch = params.branch;
-    if (!branch) {
-      try {
-        const { stdout } = await execp("git rev-parse --abbrev-ref HEAD", {
-          cwd: c,
-          maxBuffer: 8 * 1024,
-        });
-        const head = stdout.trim();
-        if (head && head !== "HEAD") branch = head; // detached HEAD → skip
-      } catch {
-        branch = undefined;
-      }
-    }
+    // #980 — the branch comes from the SHARED resolver (review-branch.ts:
+    // explicit `branch` → branch-named `head` → rev-parse) — the same one
+    // the lens review and the residual poster use — so all three key on the
+    // same branch string by construction. `head` is threaded in (the tool
+    // path's diff ref may name the branch even when `branch` is absent) so
+    // the write resolves identically to the note built in `buildLedgerNote`.
+    // #988 — the loop threads in the branch its note resolved (buildLedgerNote
+    // resolves ONCE, up front, with the same args + cwd); self-resolution is
+    // the fallback for direct callers that did not resolve.
+    const branch =
+      params.resolvedBranch ??
+      (await resolveReviewBranch({ branch: params.branch, head: params.head, cwd: c }, execp))
+        .branch;
     if (!branch) {
       trace("adversarial: ledger write skipped — no branch (detached head, no caller branch)");
       return;

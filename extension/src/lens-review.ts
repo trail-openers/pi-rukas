@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { execp } from "./lens-exec.ts";
-import { writeLensLedgerEntry } from "./lens-ledger.ts";
+import { resolveLensReviewBranch } from "./lens-review-branch-resolve.ts";
 import { capKillSummary } from "./lens-review-capkill.ts";
 import { runLensChild } from "./lens-review-child.ts";
 import {
@@ -14,10 +14,12 @@ import {
   resolveReviewDiff,
   startPersistentBatch,
 } from "./lens-review-diff.ts";
+import { finishLensReview } from "./lens-review-finish.ts";
 import {
   DEFAULT_REVIEW_THRESHOLD,
   LENS_PREFIX,
   type LensReviewSummary,
+  type Severity,
   type Verdict,
   bySeverityCounts,
   computeVerdict,
@@ -28,7 +30,6 @@ import {
   piSkillsDir,
   renderSummary,
 } from "./lens-review-format.ts";
-import { postLensResidualDisclosure } from "./lens-review-residuals.ts";
 import { installBlockRowsForRoster, skillsDirUsable } from "./lens-review-skills.ts";
 import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
 import { makeRunId } from "./spawn.ts";
@@ -67,7 +68,7 @@ export type LensName = string; // deliberately unbounded — the roster is data-
 export type LensDef = RosterEntry;
 /** Re-exported so consumers of this module name the verdict here; the
  * definition lives in lens-review-format.ts. */
-export type { Verdict } from "./lens-review-format.ts";
+export type { Verdict, Severity } from "./lens-review-format.ts";
 export const LENS_REPORTER_PATH = path.join(__dirname, "lens-reporter.ts");
 
 /**
@@ -83,8 +84,6 @@ export const LENS_REPORTER_PATH = path.join(__dirname, "lens-reporter.ts");
  */
 export const LENS_REVIEW_DIFF_DESCRIPTION =
   "The full PR/MR diff to review. Fetch it once (e.g. `gh pr diff <N>` or `glab mr diff <N>`) or `git diff main...feature/...` and reuse — do NOT re-fetch per lens. For large diffs, prefer the optional base + head refs (with cwd) so the tool computes `git diff <base>...<head>` itself; when both are given, the string wins.";
-
-export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
 
 /** Max attempts per lens — 1 initial + 3 retries on spawn failure or non-zero
  * exit. Matches the opencode contract. Aborted lenses (user cancel) don't
@@ -165,49 +164,6 @@ export interface LensRunResult {
   usage?: DispatchUsage;
 }
 
-/**
- * The ONE exit path: writes the ledger entry and returns the summary.
- *
- * #966 — the ledger's `passed` is derived from the RESOLVED verdict (via
- * `lensPassed` inside `writeLensLedgerEntry`), and every run shape that
- * fails, aborts or kills its lenses reaches this exit with a
- * REVIEW_INCOMPLETE verdict, so the `passed:true` path is protected by
- * construction: no caller feeds this exit a passing verdict for an
- * all-fail/all-abort run, and the "write nothing" path (no branch / no
- * patchId) is the only silent path that remains.
- */
-async function finish(
-  summary: LensReviewSummary,
-  threshold: Severity,
-  cwd: string | undefined,
-  branch: string | undefined,
-  ledger: { hasCritical?: boolean; headSha?: string } = {},
-): Promise<LensReviewSummary> {
-  void writeLensLedgerEntry(
-    summary.verdict,
-    threshold,
-    cwd,
-    branch,
-    ledger.hasCritical,
-    ledger.headSha,
-  );
-  // #973 — the residual-findings disclosure: posted ONLY when the verdict is
-  // ISSUES_FOUND AND the branch's PR/MR resolves (see postLensResidual
-  // for the trigger, the marker, and the fail-closed semantics). Awaited so
-  // the tool result reports a failed post (the guard then refuses — fail
-  // closed) before the summary is returned to the async job — the post is
-  // best-effort but its failure must be VISIBLE in the tool result, and the
-  // job's text is read once the summary resolves.
-  if (summary.verdict === "ISSUES_FOUND" && branch) {
-    summary.note = await postLensResidualDisclosure({
-      summary,
-      branch,
-      cwd: cwd ?? process.cwd(),
-    });
-  }
-  return summary;
-}
-
 export async function runLensReview(opts: {
   diff?: string;
   context?: string;
@@ -258,6 +214,15 @@ export async function runLensReview(opts: {
   // The RESOLVED threshold (computed once; both the verdict and the ledger
   // write apply the same bar).
   const threshold = opts.threshold ?? DEFAULT_REVIEW_THRESHOLD;
+  // #980 — the ONE branch resolution for this run (shared helper,
+  // review-branch.ts): explicit `branch` → a branch-named `head` ref →
+  // `git rev-parse --abbrev-ref HEAD`. Every exit path (all five `finish`
+  // calls and the noReview early return) keys the ledger write and the
+  // residual-disclosure post on THIS SAME value, and the not-recorded /
+  // not-posted note is derived from the same resolution outcome. Computed
+  // here — synchronously before the fan-out — so the note can never lie
+  // about a fire-and-forget write's outcome.
+  const { branch: branchResolved } = await resolveLensReviewBranch(opts);
   // #873 — the roster is data: the INSTALLED skills dir's `code-review-*`
   // SKILL.md files (precedence in frontmatter), PLUS a blocked entry for
   // every expected lens (the BUNDLED skill/ dir) that is absent from the
@@ -314,12 +279,21 @@ export async function runLensReview(opts: {
   if (resolved.kind === "blocked") {
     const blockRows = blockedRowsForRoster(roster, resolved.problem);
     const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
-    return await finish(blocked, threshold, opts.cwd, opts.branch, { hasCritical: false });
+    return await finishLensReview(blocked, threshold, opts.cwd, branchResolved, {
+      hasCritical: false,
+      head: opts.head,
+    });
   }
   if (resolved.kind === "noReview") {
     trace(
       `lens-review: delta review skipped — no changes since ${resolved.since} (${resolved.reason})`,
     );
+    // #980 — the noReview path bypasses `finish()`'s ledger write and
+    // #973 disclosure post, so there is nothing this run could record — the
+    // generic NOT_RECORDED_NOTE is deliberately NOT appended (only
+    // runLensReview's normal paths record, and 5b's not-posted note
+    // covers them).
+    const noReviewNote = `No changes since the last lens review (${resolved.since.slice(0, 8)}) — no re-review needed (nothing to review).`;
     return {
       verdict: "APPROVED",
       totalFindings: 0,
@@ -330,7 +304,7 @@ export async function runLensReview(opts: {
       // #973 — decision 4: nothing changed since the last recorded lens run.
       // #973 review — noReview: this is NOT an approval (the summary renders
       // "NO REVIEW — …", never "APPROVED"); every consumer branches on it.
-      note: `No changes since the last lens review (${resolved.since.slice(0, 8)}) — no re-review needed (nothing to review).`,
+      note: noReviewNote,
       deltaReview: { since: resolved.since, head: resolved.head },
       noReview: true,
     };
@@ -373,7 +347,7 @@ export async function runLensReview(opts: {
       installBlockRowsForRoster(problem),
       threshold,
     );
-    return await finish(blocked, threshold, opts.cwd, opts.branch);
+    return await finishLensReview(blocked, threshold, opts.cwd, branchResolved);
   }
   // #966 — an aborted signal is a user kill: every lens is recorded blocked,
   // no children are spawned, and the run proceeds to the SAME finish path as
@@ -386,7 +360,7 @@ export async function runLensReview(opts: {
   if (opts.signal?.aborted) {
     const blockRows = blockedRowsForRoster(roster, "aborted before start");
     const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
-    return await finish(blocked, threshold, opts.cwd, opts.branch);
+    return await finishLensReview(blocked, threshold, opts.cwd, branchResolved);
   }
   // Persistent batch summary row (#139). Lets the user see "X/6 done"
   // throughout the run even as fast lenses drop out at 0s linger. Registered
@@ -469,7 +443,7 @@ export async function runLensReview(opts: {
       headSha = undefined;
     }
   }
-  return finish(
+  return finishLensReview(
     {
       verdict,
       totalFindings: deduped.length,
@@ -485,7 +459,7 @@ export async function runLensReview(opts: {
     },
     threshold,
     opts.cwd,
-    opts.branch,
-    { hasCritical, headSha },
+    branchResolved,
+    { hasCritical, headSha, head: opts.head },
   );
 }

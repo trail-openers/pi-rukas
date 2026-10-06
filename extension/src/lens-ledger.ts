@@ -15,8 +15,7 @@
  * was decided with.
  */
 
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
+import { resolveReviewBranch } from "./review-branch.ts";
 import {
   type LedgerEntry,
   appendLedgerEntry,
@@ -25,7 +24,7 @@ import {
 } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
 
-const execp = promisify(exec);
+import { execp } from "./lens-exec.ts";
 
 /**
  * Write a lens-review entry to the review ledger. Fire-and-forget: the
@@ -47,22 +46,21 @@ export function writeLensLedgerEntry(
   branch?: string,
   hasCritical?: boolean,
   headSha?: string,
+  head?: string,
+  /** #988 — the branch ALREADY resolved by `runLensReview` (threaded by the
+   * finish path) — the write skips its own re-resolution when present. */
+  resolvedBranch?: string,
 ): void {
   const write = async () => {
     const c = cwd ?? process.cwd();
-    let b = branch;
-    if (!b) {
-      try {
-        const { stdout } = await execp("git rev-parse --abbrev-ref HEAD", {
-          cwd: c,
-          maxBuffer: 8 * 1024,
-        });
-        const head = stdout.trim();
-        if (head && head !== "HEAD") b = head;
-      } catch {
-        b = undefined;
-      }
-    }
+    // #980 — the branch comes from the SHARED resolver (review-branch.ts:
+    // explicit `branch` → branch-named `head` → rev-parse) — the same one
+    // the lens review and the residual poster use — so all three key on the
+    // same branch string by construction.
+    // #988 — the finish path threads in `runLensReview`'s ONE resolution
+    // (same args + cwd, computed before the fan-out); self-resolution is
+    // the fallback for direct callers that did not resolve.
+    const b = resolvedBranch ?? (await resolveReviewBranch({ branch, head, cwd: c }, execp)).branch;
     if (!b) {
       trace("lens-review: ledger write skipped — no branch (detached head, no caller branch)");
       return;
