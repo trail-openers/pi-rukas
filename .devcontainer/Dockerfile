@@ -114,8 +114,10 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 # re-run the relevant gate when the built image's pi changes.
 # 1.0.0 is the first release with native MCP (mcp.json) and the `-e
 # builtin:mcp` flag that pi-rukas's subagent spawn path relies on (issue
-# #959). The 4-day embargo was overridden for this bump (operator decision
-# 2026-10-02; see extension/bunfig.toml minimumReleaseAgeExcludes).
+# #959). The 4-day npm embargo was temporarily overridden for this upgrade
+# (operator decision 2026-10-02; supply-chain check done); the override
+# lived in extension/bunfig.toml minimumReleaseAgeExcludes and was removed
+# in #963 once the embargo lifted.
 RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.0.0
 
 # ctx7 — current library docs
