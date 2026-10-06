@@ -205,8 +205,14 @@ const unionKinds = new Set<string>(everyKindEvent.map((e) => e.kind));
 // 2. Reverse: the tuple has exactly the union's kinds — no more (a typo'd
 // entry that no union member can produce would stop validating real events,
 // the same drift the forward guard catches, the other way), no fewer (a
-// union member the tuple omitted is the #986 bug itself; type-check catches
-// a missing fixture at compile time, this is the runtime backstop).
+// union member the tuple omitted is the #986 bug itself). NOTE: this
+// comparison is against the TEST's own fixture set — if a new WorkEvent
+// member is forgotten in BOTH the tuple and the fixtures, 38 == 38 passes
+// here and nothing does (the smoke tests are not type-checked by
+// extension/tsconfig.json). Compile-time completeness of the tuple itself
+// is enforced by the #986 exhaustiveness assertion in
+// src/workflow-state-validate.ts (`[MissingEventKinds] extends [never]`);
+// this check is the runtime backstop for stale/typo'd entries.
 assert(
   (KNOWN_EVENT_KINDS as readonly unknown[]).length === unionKinds.size,
   `KNOWN_EVENT_KINDS (${(KNOWN_EVENT_KINDS as readonly unknown[]).length} entries) has exactly the union's ${unionKinds.size} kinds (no typos, no omissions)`,

@@ -11,7 +11,7 @@
  * kind must still load (a parked cycle's history has to stay observable).
  */
 
-import type { WorkEventKind, WorkStep } from "./workflow-state-events.ts";
+import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
 import { WORK_STATE_SCHEMA_VERSION, WORK_STEPS } from "./workflow-state-schema.ts";
 import { CAP_HIT_FIXED_LITERALS } from "./workflow-state-validate-caps.ts";
 
@@ -19,8 +19,18 @@ import { CAP_HIT_FIXED_LITERALS } from "./workflow-state-validate-caps.ts";
  * Known event kinds. The union type is the source of the vocabulary; this
  * tuple exists only so the validator can test membership (types are erased
  * at runtime).
+ *
+ * #986 — literal tuple + compile-time exhaustiveness assertion. The old
+ * `readonly WorkEventKind[]` annotation proved each entry was a valid kind
+ * but NOT that the list was complete: a developer adding a new member to
+ * the `WorkEvent` union and forgetting it in this tuple produced a silent
+ * resume refusal ("eventLog[N].kind has unknown value") that no offline
+ * gate caught (the smoke test's reverse check compared the tuple length to
+ * its OWN fixture set, and smoke tests are not type-checked by
+ * extension/tsconfig.json). The assertion below makes tsc fail — naming
+ * the missing kind — when any union member is absent here.
  */
-export const KNOWN_EVENT_KINDS: readonly WorkEventKind[] = [
+export const KNOWN_EVENT_KINDS = [
   "step-started",
   "dispatch-started",
   "dispatch-completed",
@@ -80,7 +90,19 @@ export const KNOWN_EVENT_KINDS: readonly WorkEventKind[] = [
   // dispatch-completed). A state file written by a newer driver must
   // resume on an older one's reader without halting on an unknown kind.
   "dispatch-slow",
-];
+] as const;
+
+// #986 — compile-time exhaustiveness. If the `WorkEvent` union gains a kind
+// not listed above, `MissingEventKinds` becomes that literal and the
+// `[MissingEventKinds] extends [never]` constraint fails with a tsc error
+// naming the kind (e.g. `Type '"lens-issues-found"' is not assignable to
+// type 'never'`). A plain `extends` would not fire: the conditional is
+// evaluated against a naked `never`, and `never extends [never]` is true,
+// so wrapping both sides in tuples is what makes an empty missing-set and a
+// non-empty one diverge.
+type MissingEventKinds = Exclude<WorkEvent["kind"], (typeof KNOWN_EVENT_KINDS)[number]>;
+const _eventKindExhaustive: [MissingEventKinds] extends [never] ? true : MissingEventKinds = true;
+void _eventKindExhaustive;
 
 /** `pipelineState.status` vocabulary. */
 export const KNOWN_STATUSES: readonly unknown[] = ["running", "merged", "handoff", "aborted"];
