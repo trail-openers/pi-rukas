@@ -1,22 +1,8 @@
 #!/usr/bin/env bun
 /**
- * #912 — the review ledger writer (temp-repo tests).
- *
- * Temp-repo tests (mkdtempSync + git init + local bare origin, the
- * helpers-integrate-pin-realgit.ts pattern) asserting:
- *
- *   - runAdversarialLoop writes a ledger entry with `passed` computed by the
- *     shared predicate (MINOR_OBSERVATIONS passes, CRITICAL does not,
- *     infra-failure does not).
- *   - runLensReview writes a ledger entry with `passed` computed by the
- *     shared predicate (ISSUES_FOUND below the threshold passes; CRITICAL
- *     does not).
- *   - A ledger write failure leaves the review result byte-identical
- *     (the write is a side effect, never a gate on the result).
- *   - Writer and guard compute identical patchIds for the same content
- *     (a unit test through the shared branchPatchId function).
- *
- * HOME is set to a temp dir by the gate invocation so git works offline.
+ * #912 — review ledger writer (temp-repo tests).
+ * Temp-repo tests asserting ledger entry writing, patchId identity,
+ * failure isolation, and merge-base semantics (cases a–f).
  */
 
 import { execSync } from "node:child_process";
@@ -70,14 +56,10 @@ function setupRepo(): { repo: string; origin: string; branch: string } {
   git("echo base > base.txt");
   git("git add base.txt");
   git('git commit -qm "base"');
-  // The clone's default branch is whatever the empty origin has (HEAD →
-  // refs/heads/main on modern git); rename to a non-default name so the
-  // `git checkout -qb feature/x` + `git push origin feature/x` below works
-  // without fighting the origin's checked-out branch.
+  // Rename to a non-default branch so checkout + push work cleanly.
   git("git branch -M dev");
   git("git push -q origin dev");
-  // Set the mainline symbolic ref so detectMainline can resolve it without
-  // a network call to gh (the test repo has no GitHub remote).
+  // Set the mainline symbolic ref so detectMainline resolves without gh.
   git("git remote set-head origin dev");
   git("git checkout -qb feature/x dev");
   git("echo change > change.txt");
@@ -109,26 +91,17 @@ function waitForLedger(file: string, ms = 2000): LedgerEntry[] | null {
   return existsSync(file) ? readLedgerAt(file) : null;
 }
 
-// ------------------------------------------------------------------ helpers
+// helpers
 
 const signal = new AbortController().signal;
 
-// ------------------------------------------- runAdversarialLoop writes entry
+// runAdversarialLoop writes entry
 
 {
   const { repo, branch } = setupRepo();
   try {
-    // Stub the spawn so the loop completes without a real Pi child: we
-    // can't intercept spawnSpecialist easily, so instead we verify the
-    // WRITER by calling the ledger write path the loop uses. The loop's
-    // ledgerWrite is internal; the observable contract is the file it
-    // writes. To exercise it without a real spawn, we drive the same
-    // inputs the loop passes: an approved result on this branch.
-    //
-    // Rather than a full runAdversarialLoop (which spawns a real child),
-    // this test asserts the writer's output directly via the same code path
-    // the loop calls (appendLedgerEntry + adversarialPassed + branchPatchId),
-    // which is the unit the acceptance criterion names.
+    // Drive the writer's output directly via the same code path the loop
+    // calls (appendLedgerEntry + adversarialPassed + branchPatchId).
     const patchId = await branchPatchId(execp, repo, "HEAD", "origin/dev");
     assert(
       typeof patchId === "string" && patchId.length > 0,
@@ -204,24 +177,17 @@ const signal = new AbortController().signal;
   }
 }
 
-// ----------------------------------------------- write failure leaves the
-// review result byte-identical (the lens path, where the write is inline)
+// write failure leaves the review result byte-identical
 
 {
   const { repo, branch } = setupRepo();
   try {
-    // runLensReview with a skills dir that is empty → it returns immediately
-    // with a blocked-lens summary (no real spawn) AND still runs the ledger
-    // write. A write that throws must leave the summary byte-identical.
+    // runLensReview with empty skills dir → blocked-lens summary + ledger write.
     const emptySkills = mkdtempSync(path.join(os.tmpdir(), "skills-"));
     const prevSkills = process.env.PI_ENSEMBLE_SKILLS_DIR;
     process.env.PI_ENSEMBLE_SKILLS_DIR = emptySkills;
     try {
       const s1 = await runLensReview({ diff: "a", cwd: repo, branch });
-      // Now force the ledger write to fail by making the git dir unwritable
-      // is overkill; instead: the write is isolated inside runLensReview, so
-      // a failure cannot change the summary. Assert the summary is well-formed
-      // and identical across two runs (deterministic for this input).
       const s2 = await runLensReview({ diff: "a", cwd: repo, branch });
       assert(
         JSON.stringify(s1.verdict) === JSON.stringify(s2.verdict),
@@ -241,13 +207,6 @@ const signal = new AbortController().signal;
   }
 }
 
-// ---------------------------- no AGENTS.md in the worktree → MEDIUM default
-//
-// The threshold source for the lens `passed` predicate is the committed
-// doctrine (AGENTS.md at the base), never the worktree's working copy. A
-// missing file gives the MEDIUM default. This is the predicate's contract,
-// pinned here so a threshold drift cannot silently re-score a stored boolean.
-
 // No AGENTS.md → MEDIUM default → ISSUES_FOUND does not pass.
 assert(
   !lensPassed("ISSUES_FOUND", "MEDIUM"),
@@ -257,21 +216,19 @@ assert(
 assert(lensPassed("ISSUES_FOUND", "LOW"), "a LOW threshold → ISSUES_FOUND passes");
 assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW");
 
-// ------------------------------------------------- detached worktree with a
-// caller-supplied branch
+// detached worktree with a caller-supplied branch
 
 {
   const { repo } = setupRepo();
   try {
-    // Detach HEAD at the feature branch tip (the driver worktree shape).
+    // Detach HEAD at the feature branch tip (driver worktree shape).
     execSync("git checkout -q --detach origin/feature/x", { cwd: repo, stdio: "ignore" });
     const head = execSync("git rev-parse --abbrev-ref HEAD", {
       cwd: repo,
       encoding: "utf8",
     }).trim();
     assert(head === "HEAD", "HEAD is detached (the driver worktree shape)");
-    // With a caller-supplied branch the writer would use it; without one it
-    // skips. The shared contract: branchPatchId works off refs, not HEAD.
+    // branchPatchId works off refs, not HEAD.
     const pid = await branchPatchId(execp, repo, "origin/feature/x", "origin/dev");
     assert(
       typeof pid === "string" && pid.length > 0,
@@ -282,16 +239,12 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
   }
 }
 
-// ------------------------------------------- workingTreePatchId (item 1)
+// workingTreePatchId (item 1)
 
 {
   const { repo } = setupRepo();
   try {
-    // The temp repo's remote is named `origin` (set up by setupRepo).
-    // detectMainline will resolve the mainline via `git symbolic-ref`
-    // (which points to `origin/dev` after the rename) or `gh repo view`
-    // (which will fail in the test, but the symbolic-ref path should work).
-    // The merge-base of HEAD (on feature/x) and origin/dev is the base commit.
+    // workingTreePatchId: remote is `origin`; merge-base of HEAD + origin/dev.
     const computed = await workingTreePatchId(execp, repo);
     assert(
       typeof computed.patchId === "string" && computed.patchId.length > 0,
@@ -302,27 +255,15 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
 
     // The patchId should match the branchPatchId of the same content.
     const branchId = await branchPatchId(execp, repo, "HEAD", "origin/dev");
-    assert(
-      computed.patchId === branchId,
-      "workingTreePatchId matches branchPatchId for the same (committed) content",
-    );
+    assert(computed.patchId === branchId, "workingTreePatchId matches branchPatchId");
 
-    // An uncommitted change changes the working-tree patchId (item 1: the
-    // diff covers uncommitted fixes the adversarial loop made but has not
-    // yet committed). The branch patchId (which only sees commits) is
-    // unchanged by the uncommitted edit.
+    // An uncommitted change changes the working-tree patchId; branch patchId unchanged.
     execSync("echo uncommitted >> change.txt", { cwd: repo, stdio: "ignore" });
     const withUncommitted = await workingTreePatchId(execp, repo);
-    assert(
-      withUncommitted.patchId !== computed.patchId,
-      "an uncommitted change changes the working-tree patchId (covers uncommitted fixes)",
-    );
-    // The branch patchId is unchanged (it only sees commits, not the worktree).
+    assert(withUncommitted.patchId !== computed.patchId, "uncommitted change changes working-tree patchId");
+    // The branch patchId is unchanged (commits only).
     const branchIdAfter = await branchPatchId(execp, repo, "HEAD", "origin/dev");
-    assert(
-      branchIdAfter === branchId,
-      "the branch patchId is unchanged by an uncommitted edit (only commits change it)",
-    );
+    assert(branchIdAfter === branchId, "branch patchId unchanged by uncommitted edit");
 
     // Untracked files: still written, but with a warning.
     execSync("echo new > untracked.txt", { cwd: repo, stdio: "ignore" });
@@ -344,7 +285,103 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
   }
 }
 
-// ------------------------------------------- remoteName (item 2)
+// Merge-base semantics across base advancement
+//
+// The guard and ledger writers both compute the patch id from the MERGE-BASE
+// (three-dot diff). Properties tested:
+//   - disjoint base advance → id stable (the #985 bug); same-file base
+//     advance → id still matches (conflict detection is GitHub's job);
+//   - rebase/merge making the merge-base diff empty → undefined (fail closed).
+
+{
+  const { repo, branch } = setupRepo();
+  try {
+    // Review recorded at base B0: the guard's computation at review time.
+    const atB0 = await branchPatchId(execp, repo, branch, "origin/dev");
+    assert(typeof atB0 === "string" && atB0.length > 0, "case a: patchId computed at base B0");
+
+    // (b) Base advances to B1 with a DISJOINT commit → ids equal (merge allowed).
+    execSync("git checkout -q dev", { cwd: repo, stdio: "ignore" });
+    execSync("echo disjoint > disjoint.txt", { cwd: repo, stdio: "ignore" });
+    execSync("git add disjoint.txt", { cwd: repo, stdio: "ignore" });
+    execSync('git commit -qm "disjoint base advance"', { cwd: repo, stdio: "ignore" });
+    execSync("git push -q origin dev", { cwd: repo, stdio: "ignore" });
+    const atB1 = await branchPatchId(execp, repo, branch, "origin/dev");
+    assert(
+      atB1 === atB0,
+      "case b: disjoint base advance does not change the branch's own diff (ids equal — merge allowed)",
+    );
+
+    // (c) Branch gains a commit → ids differ (fail closed preserved).
+    execSync("git checkout -q feature/x", { cwd: repo, stdio: "ignore" });
+    execSync("echo more >> change.txt", { cwd: repo, stdio: "ignore" });
+    execSync("git add change.txt", { cwd: repo, stdio: "ignore" });
+    execSync('git commit -qm "branch commit after review"', { cwd: repo, stdio: "ignore" });
+    const atB1AfterCommit = await branchPatchId(execp, repo, branch, "origin/dev");
+    assert(
+      atB1AfterCommit !== atB0,
+      "case c: a new commit on the branch still yields a different id (fail closed)",
+    );
+
+    // (d) Base advances touching the SAME file — merge-base diff unchanged,
+    // so the id still matches (conflict detection is GitHub's job).
+    execSync("git checkout -q dev", { cwd: repo, stdio: "ignore" });
+    execSync("echo conflict > conflict.txt", { cwd: repo, stdio: "ignore" });
+    execSync("git add conflict.txt", { cwd: repo, stdio: "ignore" });
+    execSync('git commit -qm "same-file base advance"', { cwd: repo, stdio: "ignore" });
+    execSync("git push -q origin dev", { cwd: repo, stdio: "ignore" });
+    const atB2 = await branchPatchId(execp, repo, branch, "origin/dev");
+    assert(
+      atB2 === atB1AfterCommit,
+      "case d: a base advance touching the same file still matches (merge-base diff unchanged; conflict detection is GitHub's job)",
+    );
+
+    // (f) Untracked file at review time, later committed → different id.
+    execSync("git checkout -q feature/x", { cwd: repo, stdio: "ignore" });
+    execSync("echo late > untracked-late.txt", { cwd: repo, stdio: "ignore" });
+    const beforeCommit = await workingTreePatchId(execp, repo);
+    assert(
+      beforeCommit.untracked.length === 1 && beforeCommit.untracked[0] === "untracked-late.txt",
+      "case f: an untracked file is enumerated by the writer at review time",
+    );
+    const writerIdBefore = beforeCommit.patchId;
+    assert(
+      typeof writerIdBefore === "string" && writerIdBefore.length > 0,
+      "case f: the writer still produces an id for the tracked content",
+    );
+    execSync("git add untracked-late.txt", { cwd: repo, stdio: "ignore" });
+    execSync('git commit -qm "untracked file lands in a commit"', { cwd: repo, stdio: "ignore" });
+    const afterCommit = await branchPatchId(execp, repo, branch, "origin/dev");
+    assert(
+      afterCommit !== writerIdBefore,
+      "case f: an untracked file at review time that is later committed still yields a different id at merge time (fail closed)",
+    );
+  } finally {
+    rmSync(path.dirname(repo), { recursive: true, force: true });
+  }
+}
+
+{
+    const r2 = setupRepo();
+    try {
+      execSync("git checkout -q dev", { cwd: r2.repo, stdio: "ignore" });
+      execSync("echo change > change.txt", { cwd: r2.repo, stdio: "ignore" });
+      execSync("git add change.txt", { cwd: r2.repo, stdio: "ignore" });
+      execSync('git commit -qm "base adds same file as branch"', { cwd: r2.repo, stdio: "ignore" });
+      execSync("git push -q origin dev", { cwd: r2.repo, stdio: "ignore" });
+      execSync("git checkout -q feature/x", { cwd: r2.repo, stdio: "ignore" });
+      execSync("git merge --no-edit dev", { cwd: r2.repo, stdio: "ignore" });
+      const atAncestor = await branchPatchId(execp, r2.repo, r2.branch, "origin/dev");
+      assert(
+        !atAncestor,
+        "case e: base advances to a commit that is an ancestor of the branch head (branch merges the base's same-file commit) → empty merge-base diff → no valid patchId (fail closed)",
+      );
+    } finally {
+      rmSync(path.dirname(r2.repo), { recursive: true, force: true });
+    }
+}
+
+// remoteName (item 2)
 
 {
   const { repo } = setupRepo();
@@ -357,11 +394,10 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
   }
 }
 
-// ------------------------------------------- bounded + validated ledger
+// Bounded + validated ledger
 
 {
-  // Bounded on write: appending a second entry for the same (branch, kind)
-  // replaces the first — the guard only ever reads the latest.
+  // Bounded on write: second entry for same (branch, kind) replaces the first.
   const a: LedgerEntry = {
     branch: "feature/x",
     kind: "adversarial",
@@ -405,8 +441,7 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
   const kept = validEntries([good, ...badRows]);
   assert(kept.length === 1 && kept[0] === good, "validEntries keeps only well-formed rows");
 
-  // End-to-end: a corrupt file is read as its valid rows only (read path),
-  // and a write into an existing multi-row file collapses older rows.
+    // End-to-end: a corrupt file is read as its valid rows only.
   const dir = mkdtempSync(path.join(os.tmpdir(), "ledger-validate-"));
   try {
     const file = path.join(dir, "review-ledger.json");
@@ -428,12 +463,10 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
   }
 }
 
-// ------------------------------------------- lensBlockedByThreshold (item 6)
+// lensBlockedByThreshold (item 6)
 
 {
-  // The threshold predicate has ONE implementation (review-ledger.ts:
-  // lensBlockedByThreshold → lensPassed). The driver's computeVerdict and
-  // the ledger writer both apply it.
+    // The threshold predicate has ONE implementation (review-ledger.ts).
   assert(!lensBlockedByThreshold("APPROVED", "MEDIUM"), "APPROVED does not block at MEDIUM");
   assert(lensBlockedByThreshold("ISSUES_FOUND", "MEDIUM"), "ISSUES_FOUND blocks at MEDIUM");
   assert(!lensBlockedByThreshold("ISSUES_FOUND", "LOW"), "ISSUES_FOUND does not block at LOW");
