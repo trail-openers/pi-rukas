@@ -189,7 +189,7 @@ try {
   // later spawn in the same process).
   process.env.PATH = savedPath;
   if (savedInactivity) process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = savedInactivity;
-  else process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = undefined;
+  else delete process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS;
   rmSync(fakeDir, { recursive: true, force: true });
 }
 

@@ -208,7 +208,7 @@ const docs = (text: string, file = "AGENTS.md"): DoctrineDoc[] => [{ file, text 
     docs("Agents may merge."),
   );
   assert(!off.permitted, "PI_ENSEMBLE_POLICY_JUDGE=0 denies rather than falling back to a guess");
-  if (prev === undefined) process.env.PI_ENSEMBLE_POLICY_JUDGE = undefined;
+  if (prev === undefined) delete process.env.PI_ENSEMBLE_POLICY_JUDGE;
   else process.env.PI_ENSEMBLE_POLICY_JUDGE = prev;
 }
 

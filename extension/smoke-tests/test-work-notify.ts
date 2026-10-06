@@ -37,12 +37,12 @@ function assert(cond: boolean, msg: string) {
 
 const withCmd = async <T>(cmd: string | undefined, fn: () => Promise<T>): Promise<T> => {
   const prev = process.env.PI_ENSEMBLE_NOTIFY_CMD;
-  if (cmd === undefined) process.env.PI_ENSEMBLE_NOTIFY_CMD = undefined;
+  if (cmd === undefined) delete process.env.PI_ENSEMBLE_NOTIFY_CMD;
   else process.env.PI_ENSEMBLE_NOTIFY_CMD = cmd;
   try {
     return await fn();
   } finally {
-    if (prev === undefined) process.env.PI_ENSEMBLE_NOTIFY_CMD = undefined;
+    if (prev === undefined) delete process.env.PI_ENSEMBLE_NOTIFY_CMD;
     else process.env.PI_ENSEMBLE_NOTIFY_CMD = prev;
   }
 };

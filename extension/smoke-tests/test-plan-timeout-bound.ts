@@ -123,12 +123,12 @@ function stateWithWorkstream(state: WorkState): WorkState {
 {
   const withEnv = <T>(v: string | undefined, fn: () => T): T => {
     const prev = process.env.PI_ENSEMBLE_PLAN_TIMEOUT_MS;
-    if (v === undefined) process.env.PI_ENSEMBLE_PLAN_TIMEOUT_MS = undefined;
+    if (v === undefined) delete process.env.PI_ENSEMBLE_PLAN_TIMEOUT_MS;
     else process.env.PI_ENSEMBLE_PLAN_TIMEOUT_MS = v;
     try {
       return fn();
     } finally {
-      if (prev === undefined) process.env.PI_ENSEMBLE_PLAN_TIMEOUT_MS = undefined;
+      if (prev === undefined) delete process.env.PI_ENSEMBLE_PLAN_TIMEOUT_MS;
       else process.env.PI_ENSEMBLE_PLAN_TIMEOUT_MS = prev;
     }
   };
@@ -189,7 +189,7 @@ function stateWithWorkstream(state: WorkState): WorkState {
         "the env override reaches the primary dispatch (PI_ENSEMBLE_PLAN_TIMEOUT_MS=900000)",
       );
     } finally {
-      process.env.PI_ENSEMBLE_PLAN_TIMEOUT_MS = undefined;
+      delete process.env.PI_ENSEMBLE_PLAN_TIMEOUT_MS;
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
