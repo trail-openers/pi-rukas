@@ -50,9 +50,10 @@ async function finish(
   branch: string | undefined,
   ledger: { hasCritical?: boolean; headSha?: string; head?: string } = {},
 ): Promise<LensFinishResult> {
-  // #984 — the fire-and-forget write's promise is captured (not discarded)
-  // and returned as `ledgerWrite`; see `writeLensLedgerEntry` for the
-  // contract (the #984 test seam).
+  // #984 — the fire-and-forget write is intentionally NOT awaited here (#912
+  // fire-and-forget; the summary must never be gated on the ledger write). The
+  // promise is returned as `ledgerWrite` only so tests can await it (the
+  // deterministic-await seam); see `writeLensLedgerEntry` for the contract.
   const ledgerWrite = writeLensLedgerEntry(
     summary.verdict,
     threshold,

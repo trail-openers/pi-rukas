@@ -465,15 +465,23 @@ const allFail = () => ({
   };
   const r = await finishLensReview(blockedSummary, "MEDIUM", repo.repo, repo.branch, { hasCritical: false });
   eq(r.summary.verdict, "REVIEW_INCOMPLETE", "(2e) finish returns REVIEW_INCOMPLETE");
+  // Snapshot the summary SYNCHRONOUSLY before the await — the two sides of
+  // the byte-identity assert must be independent (a shared r.summary on both
+  // sides would compare the value against itself).
+  const beforeJson = JSON.stringify(r.summary);
   // Await the ledger write — the seam the issue's deterministic-await option
   // requires. It must not throw (the catch(trace) inside writeLensLedgerEntry
-  // swallows every failure) and must not change the already-resolved summary.
+  // swallows every failure).
   await r.ledgerWrite;
-  // The summary is byte-identical across the await (the #912 rule — the
-  // ledger write is a side effect, never a gate on the result).
+  // The summary is byte-identical before and after the await (the #912 rule
+  // — the ledger write is a side effect, never a gate on the result).
+  assert(
+    JSON.stringify(r.summary) === beforeJson,
+    "(2e) the summary is byte-identical across the ledger-write await — summary changed across the ledger-write await",
+  );
   assert(
     JSON.stringify(r.summary) === JSON.stringify({ ...blockedSummary, note: r.summary.note }),
-    "(2e) the summary is byte-identical across the ledgerWrite await",
+    "(2e) the summary still matches the blocked shape plus the finish note",
   );
   fix.cleanup();
   repo.cleanup();

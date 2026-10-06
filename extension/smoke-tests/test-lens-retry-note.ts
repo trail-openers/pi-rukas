@@ -137,10 +137,6 @@ function setupRepo(): { repo: string; branch: string; cleanup: () => void } {
   };
 }
 
-// The local waitForLedger helper has been replaced by the shared
-// lib/wait-for-ledger.ts helper (imported at the top); the previous local
-// copy had a fixed 3000 ms budget, which is the flake #984 is fixing.
-
 async function withLedgerEnv<T>(
   skillsDir: string,
   ledgerFile: string,

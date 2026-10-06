@@ -38,12 +38,8 @@ const LEDGER_WAIT_BUDGET_MS = 30_000;
 
 /**
  * Poll `file` until it appears and parses (returning its entries), or the
- * budget expires. A partial write (existsSync true but the file is not yet
- * parseable — the tmp file mid-rename, or a torn JSON) keeps the poll going;
- * the count of such silent read failures is included in the deadline
- * re-raise's message so a long string of them is diagnosable. The final read
- * after the deadline uses the same direct parse, so a genuinely corrupt file
- * is a test failure (the re-raise), not a silent null.
+ * budget expires. A partial write keeps the poll going; a file that is still
+ * unreadable at the deadline is a test failure (re-raised), not a silent null.
  */
 export function waitForLedger(
   file: string,
@@ -51,7 +47,7 @@ export function waitForLedger(
 ): LedgerEntry[] | null {
   const read = (): LedgerEntry[] => {
     const parsed = JSON.parse(readFileSync(file, "utf8"));
-    if (typeof parsed !== "object" || parsed === null || !Array.isArray(parsed?.entries)) {
+    if (!Array.isArray((parsed as { entries?: unknown } | null)?.entries)) {
       throw new SyntaxError(
         "malformed ledger file (expected an object with an entries array)",
       );
@@ -65,23 +61,18 @@ export function waitForLedger(
       try {
         return read();
       } catch {
-        // The file exists but does not parse yet — mid-rename, or a torn
-        // write. Count it so the deadline re-raise below is diagnosable,
-        // then keep polling (the rename is atomic; the next tick sees the
-        // complete file).
+        // Not parseable yet (mid-rename/torn write) — count it for the
+        // deadline re-raise and keep polling (the rename is atomic).
         silentReads += 1;
       }
     }
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
   }
   if (!existsSync(file)) return null;
-  // Deadline reached with the file present: re-raise the read/parse error
-  // (carrying the silentReads count) so a genuinely corrupt file is a test
-  // failure, not a silent null.
   try {
     return read();
   } catch (err) {
-    const e = err as Error & { code?: string };
+    const e = err as Error;
     throw new Error(
       `waitForLedger: ledger file ${file} unreadable after ${budgetMs}ms budget ` +
         `(${silentReads} silent mid-poll read failure(s)): ${e.message}`,
