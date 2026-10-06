@@ -226,7 +226,7 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
       "the in-chat message reports the posted comment URL",
     );
   } finally {
-    process.env.PI_ENSEMBLE_HANDOFF_POST_RETRY_BACKOFF_MS = undefined;
+    delete process.env.PI_ENSEMBLE_HANDOFF_POST_RETRY_BACKOFF_MS;
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -270,7 +270,7 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
     );
     assert(addCalls.length === 2, "forge.labelAdd called exactly TWICE (1 fail + 1 success)");
   } finally {
-    process.env.PI_ENSEMBLE_HANDOFF_POST_RETRY_BACKOFF_MS = undefined;
+    delete process.env.PI_ENSEMBLE_HANDOFF_POST_RETRY_BACKOFF_MS;
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -323,7 +323,7 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
       "the banner carries the verbatim manual gh commands",
     );
   } finally {
-    process.env.PI_ENSEMBLE_HANDOFF_POST_RETRY_BACKOFF_MS = undefined;
+    delete process.env.PI_ENSEMBLE_HANDOFF_POST_RETRY_BACKOFF_MS;
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -384,8 +384,8 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
     const commentCalls = calls.filter((c) => c.method === "issueComment");
     assert(commentCalls.length === 1, "single-attempt mode: issueComment called exactly ONCE");
   } finally {
-    process.env.PI_ENSEMBLE_HANDOFF_POST_RETRY = undefined;
-    process.env.PI_ENSEMBLE_HANDOFF_POST_RETRY_BACKOFF_MS = undefined;
+    delete process.env.PI_ENSEMBLE_HANDOFF_POST_RETRY;
+    delete process.env.PI_ENSEMBLE_HANDOFF_POST_RETRY_BACKOFF_MS;
   }
 }
 
@@ -418,7 +418,7 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
       `backoff is linear + full-jitter (slept [${sleeps.join(", ")}] = 100 then 200)`,
     );
   } finally {
-    process.env.PI_ENSEMBLE_HANDOFF_POST_RETRY_BACKOFF_MS = undefined;
+    delete process.env.PI_ENSEMBLE_HANDOFF_POST_RETRY_BACKOFF_MS;
   }
 }
 

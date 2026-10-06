@@ -91,12 +91,12 @@ function fakeTime(): Ticks {
 
 const withEnv = async (key: string, value: string | undefined, fn: () => Promise<void>) => {
   const prev = process.env[key];
-  if (value === undefined) process.env[key] = undefined;
+  if (value === undefined) delete process.env[key];
   else process.env[key] = value;
   try {
     await fn();
   } finally {
-    if (prev === undefined) process.env[key] = undefined;
+    if (prev === undefined) delete process.env[key];
     else process.env[key] = prev;
   }
 };
@@ -293,7 +293,7 @@ await withEnv("PI_ENSEMBLE_STEP_NOTICE_MS", "0", async () => {
   const clock = fakeTime();
   const sent: Notification[] = [];
   const prev = process.env.PI_ENSEMBLE_NOTIFY_CMD;
-  process.env.PI_ENSEMBLE_NOTIFY_CMD = undefined;
+  delete process.env.PI_ENSEMBLE_NOTIFY_CMD;
   try {
     const p: StepNoticeParams = {
       state: mkState(),
@@ -309,7 +309,7 @@ await withEnv("PI_ENSEMBLE_STEP_NOTICE_MS", "0", async () => {
     cancel();
     assert(sent.length === 0, "hook unset → notice inert (byte-identical to pre-#799)");
   } finally {
-    if (prev === undefined) process.env.PI_ENSEMBLE_NOTIFY_CMD = undefined;
+    if (prev === undefined) delete process.env.PI_ENSEMBLE_NOTIFY_CMD;
     else process.env.PI_ENSEMBLE_NOTIFY_CMD = prev;
   }
 }
@@ -411,7 +411,7 @@ async function runWithRecorder(
       "job-799",
     );
   } finally {
-    if (prev === undefined) process.env.PI_ENSEMBLE_NOTIFY_CMD = undefined;
+    if (prev === undefined) delete process.env.PI_ENSEMBLE_NOTIFY_CMD;
     else process.env.PI_ENSEMBLE_NOTIFY_CMD = prev;
   }
   return existsSync(out) ? readFileSync(out, "utf8") : "";
@@ -461,7 +461,7 @@ await withEnv("PI_ENSEMBLE_STEP_NOTICE_MS", "150", async () => {
       "job-799",
     );
   } finally {
-    if (prev === undefined) process.env.PI_ENSEMBLE_NOTIFY_CMD = undefined;
+    if (prev === undefined) delete process.env.PI_ENSEMBLE_NOTIFY_CMD;
     else process.env.PI_ENSEMBLE_NOTIFY_CMD = prev;
   }
   assert(true, "W3: a broken hook did not throw and the step completed (no exception reached here)");

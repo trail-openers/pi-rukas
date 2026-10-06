@@ -100,7 +100,7 @@ async function withSkillsDir<T>(skillsDir: string, fn: () => Promise<T>): Promis
   try {
     return await fn();
   } finally {
-    if (priorSkills === undefined) process.env.PI_ENSEMBLE_SKILLS_DIR = undefined;
+    if (priorSkills === undefined) delete process.env.PI_ENSEMBLE_SKILLS_DIR;
     else process.env.PI_ENSEMBLE_SKILLS_DIR = priorSkills;
   }
 }
@@ -159,9 +159,9 @@ async function withLedgerEnv<T>(
   try {
     return await fn();
   } finally {
-    if (priorSkills === undefined) process.env.PI_ENSEMBLE_SKILLS_DIR = undefined;
+    if (priorSkills === undefined) delete process.env.PI_ENSEMBLE_SKILLS_DIR;
     else process.env.PI_ENSEMBLE_SKILLS_DIR = priorSkills;
-    if (priorLedger === undefined) process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = undefined;
+    if (priorLedger === undefined) delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
     else process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = priorLedger;
   }
 }

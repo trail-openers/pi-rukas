@@ -102,7 +102,7 @@ function assert(cond: boolean, msg: string) {
     );
     assert(session.killCause() === "loop", "#772: killCause is loop");
   } finally {
-    process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS = undefined;
+    delete process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS;
     delete process.env.PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER;
     session?.cleanup();
   }

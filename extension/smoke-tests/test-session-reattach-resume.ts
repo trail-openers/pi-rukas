@@ -41,7 +41,7 @@ function assert(cond: boolean, msg: string) {
 // Test 1: flag off → resolveReattach returns re-dispatch
 // ---------------------------------------------------------------------------
 {
-  process.env.PI_ENSEMBLE_SESSION_REATTACH = undefined;
+  delete process.env.PI_ENSEMBLE_SESSION_REATTACH;
   const state = initialState(123);
   const verdict = classifyRunningState({
     ...state,
@@ -279,7 +279,7 @@ function assert(cond: boolean, msg: string) {
 }
 
 // Restore the env for the rest of the suite.
-process.env.PI_ENSEMBLE_SESSION_REATTACH = undefined;
+delete process.env.PI_ENSEMBLE_SESSION_REATTACH;
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

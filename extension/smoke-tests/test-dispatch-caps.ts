@@ -368,7 +368,7 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
     eq(child.killed, [], "H1: no kill signal sent to a self-exiting child");
     assert(session.killCause() === undefined, "H1: killCause stays undefined (ok=true semantics)");
   } finally {
-    process.env.PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER = undefined;
+    delete process.env.PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER;
     session.cleanup();
   }
 }
@@ -403,7 +403,7 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
     });
   } finally {
     globalThis.setInterval = origSetInterval;
-    process.env.PI_ENSEMBLE_DISPATCH_CAPS = undefined;
+    delete process.env.PI_ENSEMBLE_DISPATCH_CAPS;
   }
   assert(session.loopObserver === undefined, "H2: master switch off → no loop observer");
   assert(
@@ -475,7 +475,7 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
     eq(child.killed, [], "spawn#6: no kill signal after the distinct message_end");
     session.cleanup();
   } finally {
-    process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS = undefined;
+    delete process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS;
     session?.cleanup();
   }
 }

@@ -66,18 +66,18 @@ const toolResultLine =
 function restoreEnv() {
   process.env.PATH = savedPath;
   if (savedInactivity !== undefined) process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = savedInactivity;
-  else process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = undefined;
+  else delete process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS;
   if (savedToolInactivity !== undefined)
     process.env.PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS = savedToolInactivity;
-  else process.env.PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS = undefined;
+  else delete process.env.PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS;
   if (savedSpawnTimeout !== undefined) process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = savedSpawnTimeout;
-  else process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = undefined;
+  else delete process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS;
   if (savedDispatchCaps !== undefined) process.env.PI_ENSEMBLE_DISPATCH_CAPS = savedDispatchCaps;
-  else process.env.PI_ENSEMBLE_DISPATCH_CAPS = undefined;
+  else delete process.env.PI_ENSEMBLE_DISPATCH_CAPS;
   if (savedCapGrace !== undefined) process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS = savedCapGrace;
-  else process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS = undefined;
+  else delete process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS;
   if (savedStale !== undefined) process.env.PI_ENSEMBLE_STALE_THRESHOLD_MS = savedStale;
-  else process.env.PI_ENSEMBLE_STALE_THRESHOLD_MS = undefined;
+  else delete process.env.PI_ENSEMBLE_STALE_THRESHOLD_MS;
 }
 
 try {

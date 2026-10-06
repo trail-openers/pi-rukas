@@ -112,7 +112,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   );
 
   if (saved !== undefined) process.env.PI_ENSEMBLE_ADVERSARIAL_PHASE_BUDGET_MS = saved;
-  else process.env.PI_ENSEMBLE_ADVERSARIAL_PHASE_BUDGET_MS = undefined;
+  else delete process.env.PI_ENSEMBLE_ADVERSARIAL_PHASE_BUDGET_MS;
 }
 
 // ============================================================================

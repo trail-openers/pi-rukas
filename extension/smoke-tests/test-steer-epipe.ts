@@ -191,7 +191,7 @@ await (async () => {
       clearParentExtensionApiForTesting();
     }
   } finally {
-    if (prevMs === undefined) process.env.PI_ENSEMBLE_SLOW_NOTICE_MS = undefined;
+    if (prevMs === undefined) delete process.env.PI_ENSEMBLE_SLOW_NOTICE_MS;
     else process.env.PI_ENSEMBLE_SLOW_NOTICE_MS = prevMs;
   }
 })();

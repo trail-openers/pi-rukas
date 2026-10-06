@@ -232,7 +232,7 @@ const signal = new AbortController().signal;
         "empty skills dir → blocked lenses → REVIEW_INCOMPLETE (the write is orthogonal)",
       );
     } finally {
-      if (prevSkills === undefined) process.env.PI_ENSEMBLE_SKILLS_DIR = undefined;
+      if (prevSkills === undefined) delete process.env.PI_ENSEMBLE_SKILLS_DIR;
       else process.env.PI_ENSEMBLE_SKILLS_DIR = prevSkills;
       rmSync(emptySkills, { recursive: true, force: true });
     }

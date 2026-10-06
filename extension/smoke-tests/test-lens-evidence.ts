@@ -168,7 +168,7 @@ const LENS_SECURITY = EVIDENCE_ROSTER.find((e) => e.name === "SECURITY")!;
     (await buildEvidence(repo, "feature/x", diff)) === undefined,
     "PI_ENSEMBLE_LENS_EVIDENCE=0 disables supply",
   );
-  if (prev === undefined) process.env.PI_ENSEMBLE_LENS_EVIDENCE = undefined;
+  if (prev === undefined) delete process.env.PI_ENSEMBLE_LENS_EVIDENCE;
   else process.env.PI_ENSEMBLE_LENS_EVIDENCE = prev;
 }
 
@@ -297,7 +297,7 @@ const docs = (text: string): DoctrineDoc[] => [{ file: "AGENTS.md", text }];
       "MEDIUM",
     "a nonsense override is ignored rather than obeyed",
   );
-  if (prev === undefined) process.env.PI_ENSEMBLE_REVIEW_THRESHOLD = undefined;
+  if (prev === undefined) delete process.env.PI_ENSEMBLE_REVIEW_THRESHOLD;
   else process.env.PI_ENSEMBLE_REVIEW_THRESHOLD = prev;
 }
 

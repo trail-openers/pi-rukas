@@ -439,7 +439,7 @@ async function runDriverCase(
     );
     assert(r.spec === undefined, "driver-legacy: no normalisedSpec — offload fallback scoped to intent path");
   } finally {
-    process.env.PI_ENSEMBLE_INTENT = undefined;
+    delete process.env.PI_ENSEMBLE_INTENT;
   }
 }
 

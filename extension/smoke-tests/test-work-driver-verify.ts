@@ -363,7 +363,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       // (F5 consolidation tests now live in test-work-driver-verify-consolidation.ts)
     }
   } finally {
-    if (prevVerify === undefined) process.env.PI_ENSEMBLE_VERIFY = undefined;
+    if (prevVerify === undefined) delete process.env.PI_ENSEMBLE_VERIFY;
     else process.env.PI_ENSEMBLE_VERIFY = prevVerify;
     // Restore the top-of-file default for any code that runs after.
     process.env.PI_ENSEMBLE_VERIFY = "0";

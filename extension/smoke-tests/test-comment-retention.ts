@@ -407,13 +407,13 @@ const PATHS = ["src"];
       rmSync(dir, { recursive: true, force: true });
     }
   } finally {
-    if (prevVerify === undefined) process.env.PI_ENSEMBLE_VERIFY = undefined;
+    if (prevVerify === undefined) delete process.env.PI_ENSEMBLE_VERIFY;
     else process.env.PI_ENSEMBLE_VERIFY = prevVerify;
-    if (prevRet === undefined) process.env.PI_ENSEMBLE_COMMENT_RETENTION = undefined;
+    if (prevRet === undefined) delete process.env.PI_ENSEMBLE_COMMENT_RETENTION;
     else process.env.PI_ENSEMBLE_COMMENT_RETENTION = prevRet;
-    if (prevRatchet === undefined) process.env.PI_ENSEMBLE_SKIP_RATCHET = undefined;
+    if (prevRatchet === undefined) delete process.env.PI_ENSEMBLE_SKIP_RATCHET;
     else process.env.PI_ENSEMBLE_SKIP_RATCHET = prevRatchet;
-    if (prevSmoke === undefined) process.env.PI_ENSEMBLE_SMOKE = undefined;
+    if (prevSmoke === undefined) delete process.env.PI_ENSEMBLE_SMOKE;
     else process.env.PI_ENSEMBLE_SMOKE = prevSmoke;
   }
 }

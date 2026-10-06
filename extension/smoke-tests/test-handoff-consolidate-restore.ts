@@ -487,7 +487,7 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
   );
 }
 
-if (SAVED_FORGE === undefined) process.env.PI_ENSEMBLE_FORGE = undefined;
+if (SAVED_FORGE === undefined) delete process.env.PI_ENSEMBLE_FORGE;
 else process.env.PI_ENSEMBLE_FORGE = SAVED_FORGE;
 
 console.log(`\nexit ${exit}`);
