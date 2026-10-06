@@ -122,6 +122,7 @@ export async function runLensChild(opts: {
     runOpts.evidence,
     roster,
     runOpts.priorFindings,
+    skillPath,
   );
   const tag = lens.name.toLowerCase().replaceAll("_", "-");
   // Per-lens deck key. The dispatch deck (#117) is now the single live
