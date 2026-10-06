@@ -18,34 +18,24 @@
  * failed-branch evidence rules (stderr vs findings vs thinking-only vs
  * cap-kill) live in test-lens-kill-child.ts.
  */
-
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { mock } from "bun:test";
-
 let exit = 0;
 function assert(cond: boolean, msg: string) {
   if (cond) console.log(`✓ ${msg}`);
-  else {
-    console.error(`✗ ${msg}`);
-    exit = 1;
-  }
+  else { console.error(`✗ ${msg}`); exit = 1; }
 }
 function eq(actual: unknown, expected: unknown, msg: string): boolean {
   const a = JSON.stringify(actual);
   const e = JSON.stringify(expected);
-  if (a === e) {
-    console.log(`✓ ${msg}`);
-    return true;
-  }
-  console.error(`✗ ${msg}\n    actual:   ${a}\n    expected: ${e}`);
-  exit = 1;
-  return false;
+  if (a === e) console.log(`✓ ${msg}`);
+  else { console.error(`✗ ${msg}\n    actual:   ${a}\n    expected: ${e}`); exit = 1; }
+  return a === e;
 }
-
-// Mock must be installed BEFORE the lens modules are imported (test-lens-skill-wiring pattern).
+// Mock must be installed BEFORE the lens modules are imported.
 let spawnResponder: () => unknown = () => ({
   role: "code-review-specialist",
   ok: true,
@@ -58,16 +48,26 @@ mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
   makeRunId: () => "run-966",
   spawnSpecialist: async () => spawnResponder(),
 }));
-
 const { runLensReview } = await import("../src/lens-review.ts");
 const { renderSummary } = await import("../src/lens-review-format.ts");
 const { MAX_LENS_ATTEMPTS } = await import("../src/lens-review.ts");
 type LensRunResult = import("../src/lens-review.ts").LensRunResult;
 const { LENS_ROSTER } = await import("../src/lens-roster.ts");
-const { readLedgerAt, lensPassed } = await import("../src/review-ledger.ts");
-
+const { lensPassed, validEntries } = await import("../src/review-ledger.ts");
+type LedgerEntry = import("../src/review-ledger.ts").LedgerEntry;
+// #980 — the fire-and-forget ledger write is DETERMINISTIC here: the shared
+// append seam is mocked to record its payload, and the assertions read the
+// recorded payload instead of sleep-and-polling a real file.
+const realReviewLedger = await import("../src/review-ledger.ts");
+let recordedLedgerWrites: Array<{ entries: unknown[] }> = [];
+mock.module(new URL("../src/review-ledger.ts", import.meta.url).href, () => ({
+  ...realReviewLedger,
+  appendLedgerEntry: async (entry: unknown) => {
+    recordedLedgerWrites.push({ entries: [entry] });
+    return undefined;
+  },
+}));
 const ALL_SKILLS = LENS_ROSTER.map((l) => l.skill);
-
 function fixtureSkillsDir(name: string): { dir: string; cleanup: () => void } {
   const dir = path.join(mkdtempSync(path.join(os.tmpdir(), `lens966-${name}-`)), "skills");
   mkdirSync(dir, { recursive: true });
@@ -87,7 +87,6 @@ function fixtureSkillsDir(name: string): { dir: string; cleanup: () => void } {
     },
   };
 }
-
 function emptySkillsDir(name: string): { dir: string; cleanup: () => void } {
   const dir = path.join(mkdtempSync(path.join(os.tmpdir(), `lens966-${name}-`)), "skills");
   mkdirSync(dir, { recursive: true });
@@ -100,12 +99,9 @@ function emptySkillsDir(name: string): { dir: string; cleanup: () => void } {
     },
   };
 }
-
 // #966 — the aborted-run case must not depend on the host's installed
-// lens skills: a host WITHOUT ~/.pi/agent/skills/code-review-* used to see
-// an EMPTY roster here, zero blocked rows, and an APPROVED verdict (the
-// silent-approval this PR closes). Point the run at a deterministic fixture
-// via the same env var runLensReview reads (piSkillsDir).
+// lens skills (the silent-approval this PR closes). Point the run at a
+// deterministic fixture via the same env var runLensReview reads (piSkillsDir).
 async function withSkillsDir<T>(skillsDir: string, fn: () => Promise<T>): Promise<T> {
   const priorSkills = process.env.PI_ENSEMBLE_SKILLS_DIR;
   process.env.PI_ENSEMBLE_SKILLS_DIR = skillsDir;
@@ -116,7 +112,6 @@ async function withSkillsDir<T>(skillsDir: string, fn: () => Promise<T>): Promis
     else process.env.PI_ENSEMBLE_SKILLS_DIR = priorSkills;
   }
 }
-
 function setupRepo(): { repo: string; branch: string; cleanup: () => void } {
   const dir = mkdtempSync(path.join(os.tmpdir(), "lens966-repo-"));
   const repo = path.join(dir, "repo");
@@ -137,47 +132,29 @@ function setupRepo(): { repo: string; branch: string; cleanup: () => void } {
   git("git add change.txt");
   git('git commit -qm "change"');
   git("git push -q origin feature/x");
-  return {
-    repo,
-    branch: "feature/x",
-    cleanup: () => rmSync(dir, { recursive: true, force: true }),
-  };
+  return { repo, branch: "feature/x", cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
-
-function waitForLedger(file: string, ms = 3000) {
-  const deadline = Date.now() + ms;
-  while (Date.now() < deadline) {
-    if (existsSync(file)) {
-      try {
-        return readLedgerAt(file);
-      } catch {
-        /* partial write — keep waiting */
-      }
-    }
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
-  }
-  return existsSync(file) ? readLedgerAt(file) : null;
-}
-
-async function withLedgerEnv<T>(
-  skillsDir: string,
-  ledgerFile: string,
-  fn: () => Promise<T>,
-): Promise<T> {
+async function withLedgerEnv<T>(skillsDir: string, fn: () => Promise<T>): Promise<T> {
   const priorSkills = process.env.PI_ENSEMBLE_SKILLS_DIR;
-  const priorLedger = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
   process.env.PI_ENSEMBLE_SKILLS_DIR = skillsDir;
-  process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = ledgerFile;
+  recordedLedgerWrites = [];
   try {
     return await fn();
   } finally {
     if (priorSkills === undefined) delete process.env.PI_ENSEMBLE_SKILLS_DIR;
     else process.env.PI_ENSEMBLE_SKILLS_DIR = priorSkills;
-    if (priorLedger === undefined) delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
-    else process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = priorLedger;
   }
 }
-
+/**
+ * The recorded ledger write's entries, run through the SAME `validEntries`
+ * validation the real write applies (a corrupt row is dropped by both, so
+ * the recorded shape and the written shape agree). `null` = no write was
+ * recorded (the "no ledger entry written" assertion).
+ */
+function recordedEntries(): LedgerEntry[] | null {
+  if (recordedLedgerWrites.length === 0) return null;
+  return validEntries(recordedLedgerWrites.flatMap((w) => w.entries));
+}
 const allFail = () => ({
   role: "code-review-specialist",
   ok: false,
@@ -186,26 +163,20 @@ const allFail = () => ({
   ms: 500,
   exitCode: 1,
 });
-
 // (2a) ALL six lenses fail → REVIEW_INCOMPLETE + passed:false ledger entry
 {
   const fix = fixtureSkillsDir("allfail");
   const repo = setupRepo();
-  const ledgerDir = mkdtempSync(path.join(os.tmpdir(), "lens966-ledger-"));
-  const ledgerFile = path.join(ledgerDir, "review-ledger.json");
   spawnResponder = allFail;
   try {
-    const { s, entries } = await withLedgerEnv(fix.dir, ledgerFile, async () => {
-      const s = await runLensReview({
+    const s = await withLedgerEnv(fix.dir, async () =>
+      runLensReview({
         diff: "diff --git a/a b/a\n+x",
         cwd: repo.repo,
         branch: repo.branch,
-      });
-
-      await new Promise((r) => setTimeout(r, 100));
-      const entries = waitForLedger(ledgerFile, 5000);
-      return { s, entries };
-    });
+      }),
+    );
+    const entries = recordedEntries();
     eq(s.verdict, "REVIEW_INCOMPLETE", "(2a) all six lenses fail → REVIEW_INCOMPLETE");
     assert(s.lenses.every((l) => l.blocked), "(2a) every lens is blocked");
     const rendered = renderSummary(s, MAX_LENS_ATTEMPTS);
@@ -229,18 +200,14 @@ const allFail = () => ({
   } finally {
     fix.cleanup();
     repo.cleanup();
-    rmSync(ledgerDir, { recursive: true, force: true });
   }
 }
-
 // (2b) One lens missing from skills dir → blocked pre-spawn; five clean → REVIEW_INCOMPLETE
 {
   const fix = fixtureSkillsDir("partial");
   const { rmSync: rm1 } = await import("node:fs");
   rm1(path.join(fix.dir, "code-review-security"), { recursive: true, force: true });
   const repo = setupRepo();
-  const ledgerDir = mkdtempSync(path.join(os.tmpdir(), "lens966-ledger-"));
-  const ledgerFile = path.join(ledgerDir, "review-ledger.json");
   spawnResponder = () => ({
     role: "code-review-specialist",
     ok: true,
@@ -250,16 +217,14 @@ const allFail = () => ({
     exitCode: 0,
   });
   try {
-    const { s, entries } = await withLedgerEnv(fix.dir, ledgerFile, async () => {
-      const s = await runLensReview({
+    const s = await withLedgerEnv(fix.dir, async () =>
+      runLensReview({
         diff: "diff --git a/a b/a\n+x",
         cwd: repo.repo,
         branch: repo.branch,
-      });
-      await new Promise((r) => setTimeout(r, 100));
-      const entries = waitForLedger(ledgerFile, 5000);
-      return { s, entries };
-    });
+      }),
+    );
+    const entries = recordedEntries();
     eq(
       s.verdict,
       "REVIEW_INCOMPLETE",
@@ -286,32 +251,26 @@ const allFail = () => ({
   } finally {
     fix.cleanup();
     repo.cleanup();
-    rmSync(ledgerDir, { recursive: true, force: true });
   }
 }
-
 // (2c) Pre-aborted signal (dispatch_kill shape) → REVIEW_INCOMPLETE + passed:false ledger
 {
   const fix = fixtureSkillsDir("abort");
   const repo = setupRepo();
-  const ledgerDir = mkdtempSync(path.join(os.tmpdir(), "lens966-ledger-"));
-  const ledgerFile = path.join(ledgerDir, "review-ledger.json");
   const ac = new AbortController();
   ac.abort(); // already aborted — killJob's abort shape
   try {
-    const { s, entries } = await withSkillsDir(fix.dir, async () =>
-      withLedgerEnv(fix.dir, ledgerFile, async () => {
-        const s = await runLensReview({
+    const s = await withSkillsDir(fix.dir, async () =>
+      withLedgerEnv(fix.dir, async () =>
+        runLensReview({
           diff: "diff --git a/a b/a\n+x",
           cwd: repo.repo,
           branch: repo.branch,
           signal: ac.signal,
-        });
-        await new Promise((r) => setTimeout(r, 100));
-        const entries = waitForLedger(ledgerFile, 5000);
-        return { s, entries };
-      }),
+        }),
+      ),
     );
+    const entries = recordedEntries();
     eq(s.verdict, "REVIEW_INCOMPLETE", "(2c) aborted run → REVIEW_INCOMPLETE");
     assert(s.lenses.length === ALL_SKILLS.length, "(2c) one blocked row per expected lens");
     assert(s.lenses.every((l) => l.blocked), "(2c) every lens row is blocked");
@@ -329,10 +288,8 @@ const allFail = () => ({
   } finally {
     fix.cleanup();
     repo.cleanup();
-    rmSync(ledgerDir, { recursive: true, force: true });
   }
 }
-
 // (2d) #966 — an empty roster (no installed lens skills) must be
 // REVIEW_INCOMPLETE, never APPROVED: `computeVerdict` over zero lens rows
 // passes every precedence rule, so an empty review used to be a silent
@@ -341,21 +298,17 @@ const allFail = () => ({
 {
   const fix = emptySkillsDir("empty");
   const repo = setupRepo();
-  const ledgerDir = mkdtempSync(path.join(os.tmpdir(), "lens966-ledger-"));
-  const ledgerFile = path.join(ledgerDir, "review-ledger.json");
   try {
-    const { s, entries } = await withSkillsDir(fix.dir, async () =>
-      withLedgerEnv(fix.dir, ledgerFile, async () => {
-        const s = await runLensReview({
+    const s = await withSkillsDir(fix.dir, async () =>
+      withLedgerEnv(fix.dir, async () =>
+        runLensReview({
           diff: "diff --git a/a b/a\n+x",
           cwd: repo.repo,
           branch: repo.branch,
-        });
-        await new Promise((r) => setTimeout(r, 100));
-        const entries = waitForLedger(ledgerFile, 5000);
-        return { s, entries };
-      }),
+        }),
+      ),
     );
+    const entries = recordedEntries();
     eq(s.verdict, "REVIEW_INCOMPLETE", "(2d) empty roster (no installed lens skills) → REVIEW_INCOMPLETE");
     assert(
       s.lenses.length >= 1,
@@ -369,10 +322,111 @@ const allFail = () => ({
   } finally {
     fix.cleanup();
     repo.cleanup();
-    rmSync(ledgerDir, { recursive: true, force: true });
   }
 }
-
+// #980 — tool-path branch resolution: `dispatch_lens_review` never supplies
+// `opts.branch`; the shared resolver (review-branch.ts) recovers the branch
+// from HEAD (or from a branch-named `head`) and `finish()` keys both the
+// ledger write and the residual-disclosure post on that resolved value.
+// (5a) Tool path, no branch, cwd on a named branch → ledger entry is written
+// under the HEAD-resolved branch (the real writeLensLedgerEntry path, with
+// the writer mocked to record the payload — deterministic, no sleep+poll).
+{
+  const fix = fixtureSkillsDir("toolpath-named");
+  const repo = setupRepo();
+  try {
+    const s = await withLedgerEnv(fix.dir, async () =>
+      runLensReview({
+        diff: "diff --git a/a b/a\n+x",
+        cwd: repo.repo,
+        // NO branch — the tool path's shape (lensChildFn stub keeps it
+        // offline; the roster comes from the fixture skills dir).
+        lensChildFn: async () => ({
+          lens: "SIMPLICITY",
+          ok: true,
+          ms: 10,
+          startMs: 0,
+          findings: [],
+          summary: "Checked the diff; nothing in this lane.",
+          attempts: 1,
+          blocked: false,
+        }) as unknown as LensRunResult,
+      }),
+    );
+    const entries = recordedEntries();
+    eq(
+      s.verdict,
+      "APPROVED",
+      "(5a) tool path (no branch, named-branch checkout) → APPROVED (clean review)",
+    );
+    assert(
+      entries !== null && entries.length === 1,
+      "(5a) exactly one ledger entry written (the tool path resolves the branch from HEAD)",
+    );
+    assert(
+      entries?.[0]?.branch === "feature/x",
+      "(5a) the ledger entry is keyed on the HEAD-resolved branch `feature/x`",
+    );
+  } finally {
+    fix.cleanup();
+    repo.cleanup();
+  }
+}
+// (5b) Tool path, no branch, detached HEAD, no branch-named head → the
+// summary carries the VISIBLE "disclosure NOT posted" note on ISSUES_FOUND
+// (the pre-#980 silent skip), and no ledger entry is written.
+{
+  const fix = fixtureSkillsDir("toolpath-detached");
+  const repo = setupRepo();
+  execSync("git checkout -q --detach HEAD", { cwd: repo.repo, stdio: "ignore" });
+  try {
+    const s = await withLedgerEnv(fix.dir, async () =>
+      runLensReview({
+        diff: "diff --git a/a b/a\n+x",
+        cwd: repo.repo,
+        lensChildFn: async () => ({
+          lens: "SIMPLICITY",
+          ok: true,
+          ms: 10,
+          startMs: 0,
+          findings: [
+            {
+              severity: "MEDIUM" as const,
+              path: "src/a.ts",
+              line: 10,
+              title: "a finding",
+              lens: "SIMPLICITY",
+            },
+          ],
+          summary: "Found one issue.",
+          attempts: 1,
+          blocked: false,
+        }) as unknown as LensRunResult,
+      }),
+    );
+    const entries = recordedEntries();
+    eq(s.verdict, "ISSUES_FOUND", "(5b) tool path, detached HEAD → ISSUES_FOUND");
+    assert(
+      typeof s.note === "string" && s.note.length > 0,
+      "(5b) the summary carries the VISIBLE not-posted note (never a silent skip)",
+    );
+    assert(
+      /NOT posted/.test(s.note ?? ""),
+      "(5b) the note says the disclosure was NOT posted",
+    );
+    assert(
+      /merge guard/.test(s.note ?? ""),
+      "(5b) the note names the merge guard refusal",
+    );
+    assert(
+      entries === null || entries.length === 0,
+      "(5b) no ledger entry written (no branch resolvable)",
+    );
+  } finally {
+    fix.cleanup();
+    repo.cleanup();
+  }
+}
 const row = (name: string, over: Partial<LensRunResult>): LensRunResult =>
   ({
     lens: name,
@@ -384,7 +438,6 @@ const row = (name: string, over: Partial<LensRunResult>): LensRunResult =>
     blocked: false,
     ...over,
   }) as unknown as LensRunResult;
-
 {
   const incidentShape: LensRunResult[] = ALL_SKILLS.map((s) =>
     row(s, { ok: false, blocked: true, attempts: 2, parseError: "attempt 2/4: exit 1" }),
@@ -405,7 +458,6 @@ const row = (name: string, over: Partial<LensRunResult>): LensRunResult =>
   );
   assert(incident.includes("REVIEW INCOMPLETE"), "(3a) the blocked banner is present");
 }
-
 {
   const oneRetried = ALL_SKILLS.map((s) => row(s, { attempts: s === "code-review-security" ? 2 : 1 }));
   const ok = renderSummary(
@@ -423,7 +475,6 @@ const row = (name: string, over: Partial<LensRunResult>): LensRunResult =>
     "(3b) retry note names exactly the lens that retried AND succeeded (ok, not blocked)",
   );
 }
-
 {
   for (const th of ["LOW", "MEDIUM", "HIGH", "CRITICAL"] as const) {
     assert(
@@ -433,6 +484,5 @@ const row = (name: string, over: Partial<LensRunResult>): LensRunResult =>
   }
   assert(lensPassed("APPROVED", "MEDIUM") === true, "(4) APPROVED still passes (control)");
 }
-
 console.log(`\nexit ${exit}`);
 process.exit(exit);
