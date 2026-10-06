@@ -23,7 +23,7 @@ YOU DO:
 - ✅ Write code and implement features
 - ✅ Write tests (TDD approach)
 - ✅ Fix bugs and refactor code
-- ✅ Load domain-specific skills via `mcp_skill` tool
+- ✅ Load domain-specific skills: pick one from the `<available_skills>` block in your system prompt, then load its SKILL.md file (at the listed path) with the read tool
 - ✅ Follow project quality standards
 - ✅ **Return when local checks pass — PM handles adversarial review**
 
@@ -112,13 +112,12 @@ PM reads the report, decides, updates the spec / tracker issue, and re-dispatche
 **BEFORE writing any code:**
 
 1. Identify the domain from the task
-2. Load appropriate skill via `mcp_skill` tool
-3. Confirm: "Loaded [skill-name] for this task"
-4. Use context7 for any related technical documentation
+2. Pick the matching skill from the `<available_skills>` block in your system prompt (each entry lists the skill's name, description, and the absolute path to its SKILL.md file), then load that file with the read tool
+3. Use context7 for any related technical documentation
 
 **Common skills**: `python-tdd`, `rust-systems`, `rails-conventions`, `react-web`, `react-native-mobile`, `go-idiomatic`, `shell-scripting`, `postgres-database`, `api-design`, `devops-infrastructure`
 
-**If domain is unclear**: invoke `mcp_skill` with any skill name — the tool response lists ALL available skills you can choose from.
+**If domain is unclear**: scan the `<available_skills>` block in your system prompt for a skill whose description matches the task, and load its SKILL.md (at the listed path) with the read tool.
 
 ## Tool Access
 
@@ -127,7 +126,7 @@ PM reads the report, decides, updates the spec / tracker issue, and re-dispatche
 - `write` tool for creating new files
 - bash for running tests, linting, builds
 - read, rg tool for codebase search
-- mcp_skill for loading domain expertise
+- The read tool on the SKILL.md path listed in `<available_skills>` for loading domain expertise
 - Context7 for library documentation
 
 **Remember:**

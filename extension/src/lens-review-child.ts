@@ -109,7 +109,7 @@ export async function runLensChild(opts: {
       };
     }
   }
-  const prompt = lensPromptFor(lens, runOpts.diff, context, runOpts.evidence, roster);
+  const prompt = lensPromptFor(lens, runOpts.diff, context, runOpts.evidence, roster, skillPath);
   const tag = lens.name.toLowerCase().replaceAll("_", "-");
   // Per-lens deck key. The dispatch deck (#117) is now the single live
   // surface — there used to be a parallel onUpdate callback rendering an

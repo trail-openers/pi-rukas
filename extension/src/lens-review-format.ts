@@ -103,6 +103,7 @@ export function lensPromptFor(
   context: string,
   evidence?: string,
   roster: RosterEntry[] = [],
+  skillPath?: string,
 ): string {
   // The other-lenses list is derived from the FULL roster — every other
   // lens in the configured roster, including blocked ones (a blocked lens
@@ -112,8 +113,23 @@ export function lensPromptFor(
   const others = roster.filter((e) => e.name !== lens.name).map((e) => e.name.toLowerCase());
   const laneList =
     others.length > 0 ? others.join(" / ") : "the other review lenses (each has its own reviewer)";
-  return `You are running the **${lens.name}** review lens.
+  // #995 — the skill file is advertised by Pi's --skill flag but NOT inlined
+  // into the child's context; the child must explicitly `read` it. When
+  // skillPath is provided (the production path in lens-review-child.ts), the
+  // prompt carries an absolute-path instruction and the #882 Skill Load
+  // Status semantics (SUCCESS = read returned content, FAILED = read
+  // failed). When absent (pure-function tests) the section is omitted so
+  // the prompt stays byte-identical to pre-#995 output.
+  const skillInstruction = skillPath
+    ? `
+Before you begin reviewing, use the \`read\` tool to load your assigned skill file:
 
+  \`${skillPath}\`
+
+The skill file is NOT inlined in your context — you must read it explicitly. If the read succeeds (you see the skill's content), set \`Skill Load Status: SUCCESS\` in your final reply. If the read fails for any reason (file not found, permission error), set \`Skill Load Status: FAILED\` in your final reply and do NOT proceed with the review — a blocked lens is better than an unguided one.
+`
+    : "";
+  return `You are running the **${lens.name}** review lens.${skillInstruction}
 Scope discipline — only flag issues that belong to **${lens.name}**. Do NOT report findings that belong to other lenses (${laneList} have separate reviewers; trust them with their own lanes).
 
 Context for this PR: ${context || "(no extra context)"}
