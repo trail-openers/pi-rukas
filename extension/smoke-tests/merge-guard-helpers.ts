@@ -173,6 +173,12 @@ export async function makeHook(env: {
       return { stdout: env.remote + "\n" };
     }
     if (cmd.includes(`rev-parse ${env.remote}/`)) return { stdout: env.fetchedHead };
+    // #985 — branchPatchId resolves the merge-base first (three-dot
+    // semantics). A real repo returns the shared-ancestor SHA; the mock
+    // returns a fixed SHA so the patch-id diff runs. An empty stdout would
+    // make branchPatchId fail closed (undefined) and every merge-refusal
+    // case would fail with the wrong reason.
+    if (cmd.includes("git merge-base")) return { stdout: "mb00000000000000000000000000000000000000\n" };
     if (cmd.includes("patch-id")) return { stdout: `${env.currentPatchId} 0000` };
     if (cmd.includes("git-common-dir")) {
       return { stdout: env.ledgerCommonDir ?? "" };

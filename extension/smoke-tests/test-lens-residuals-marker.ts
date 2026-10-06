@@ -81,6 +81,11 @@ function makeStub(opts: { failPost?: boolean } = {}) {
     if (cmd.includes("git fetch")) {
       return { stdout: "" };
     }
+    // #985 — branchPatchId resolves the merge-base first (three-dot
+    // semantics); the stub returns a fixed SHA so the patch-id diff runs.
+    if (cmd.includes("git merge-base")) {
+      return { stdout: "mb00000000000000000000000000000000000000\n" };
+    }
     if (cmd.includes("patch-id")) {
       return { stdout: "p42 0000" };
     }

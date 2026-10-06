@@ -257,6 +257,9 @@ async function makeHook(env: {
       return { stdout: env.remote + "\n" };
     }
     if (cmd.includes(`rev-parse ${env.remote}/`)) return { stdout: env.fetchedHead };
+    // #985 — branchPatchId resolves the merge-base first (three-dot
+    // semantics); the mock returns a fixed SHA so the patch-id diff runs.
+    if (cmd.includes("git merge-base")) return { stdout: "mb00000000000000000000000000000000000000\n" };
     if (cmd.includes("patch-id")) return { stdout: `${env.currentPatchId} 0000` };
     if (cmd.includes("git-common-dir")) {
       return { stdout: env.ledgerCommonDir ?? "" };

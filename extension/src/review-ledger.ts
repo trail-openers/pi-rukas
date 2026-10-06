@@ -5,8 +5,8 @@
  * OUTSIDE the /work driver merged two PRs on a developer's self-report plus
  * green CI — skipping adversarial_loop and dispatch_lens_review. Prompt
  * doctrine demanded both; the prompt layer is what failed. This module is the
- * structural floor: a per-clone ledger that the merge guard
- * (merge-guard.ts) reads before any agent-run PR/MR merge.
+ * structural floor: a per-clone ledger that the merge guard (merge-guard.ts)
+ * reads before any agent-run PR/MR merge.
  *
  * ## What is stored
  *
@@ -80,7 +80,6 @@ export interface LedgerEntry {
 interface LedgerFile {
   entries: LedgerEntry[];
 }
-
 export type LedgerExecFn = VerifyExecFn;
 
 /**
@@ -92,10 +91,18 @@ export { ledgerPathFor } from "./review-ledger-path.ts";
 export { bumpLensRound } from "./review-ledger-round.ts";
 
 /**
- * The patch id of a branch's changes: the diff from `baseRef` to the branch
- * head, fed through `git patch-id --stable`. The writer and the guard both
- * call this, so the same content always yields the same id (and a new commit
- * always changes it).
+ * The patch id of a branch's changes: the diff from the MERGE-BASE of
+ * `baseRef` and the branch head to the branch head, fed through
+ * `git patch-id --stable`. The writer and the guard both call this, so the
+ * same content always yields the same id (and a new commit always changes
+ * it).
+ *
+ * #985 — merge-base semantics, not two-dot (base tip): the old form
+ * (`git diff <base>..<branch>`) diffed against the base's TIP, so a base
+ * that advanced after the branch was cut absorbed the base's new commits
+ * into the diff and the id changed. Diffing from the merge-base instead
+ * excludes the base's own new commits, keeping the id stable under base
+ * advancement. Fails closed: an unresolvable merge-base returns undefined.
  *
  * Returns undefined when the diff is empty or patch-id fails — the caller
  * decides the fail-closed meaning.
@@ -107,13 +114,20 @@ export async function branchPatchId(
   baseRef: string,
 ): Promise<string | undefined> {
   try {
-    // `git patch-id --stable` over the diff of the branch's own commits.
-    // Piping here is intentional: patch-id reads the diff from stdin.
-    const { stdout } = await execFn(`git diff ${baseRef}..${branchRef} | git patch-id --stable`, {
+    // #985 — resolve the merge-base first; the diff runs from there, so the
+    // base's own commits never enter the id. Empty merge-base → undefined.
+    const { stdout: mbOut } = await execFn(`git merge-base ${baseRef} ${branchRef}`, {
+      cwd,
+      maxBuffer: 8 * 1024,
+    });
+    const mergeBase = mbOut.trim();
+    if (!mergeBase) return undefined;
+    // `git patch-id --stable` over merge-base → branch head.
+    const { stdout } = await execFn(`git diff ${mergeBase} ${branchRef} | git patch-id --stable`, {
       cwd,
       maxBuffer: 1024 * 1024,
     });
-    return parsePatchId(stdout, `${baseRef}..${branchRef}`);
+    return parsePatchId(stdout, `${baseRef}...${branchRef} (mb ${mergeBase.slice(0, 8)})`);
   } catch (err) {
     trace(`review-ledger: patch-id failed for ${branchRef}: ${(err as Error).message}`);
     return undefined;
@@ -263,13 +277,9 @@ export async function workingTreePatchId(
 }
 
 /**
- * The shared pass predicates the guard's booleans are computed with.
- *
- * `lensPassed` is the ONE predicate both call sites use: the ledger writer
- * (lens-ledger.ts) stores `lensPassed(verdict, threshold)`, and the driver's
- * verdict threshold (lensBlockedByThreshold, below) applies the same
- * comparison — one function, two call sites, no re-implementation that could
- * drift.
+ * The shared pass predicates. `lensPassed` is the ONE predicate both the
+ * ledger writer and the driver's verdict threshold apply — one function,
+ * two call sites, no re-implementation that could drift.
  */
 
 /**
@@ -309,10 +319,7 @@ export function lensPassed(verdict: string, threshold: string): boolean {
 
 /**
  * The driver-side twin of `lensPassed`: does this verdict fail AT the given
- * threshold? The ISSUES_FOUND branch of `computeVerdict` (lens-review.ts)
- * applies this exact comparison, and the ledger writer applies `lensPassed`
- * with the SAME resolved threshold — the threshold predicate has one
- * implementation.
+ * threshold? One implementation for both the driver and the ledger writer.
  */
 export function lensBlockedByThreshold(
   verdict: string,
@@ -454,8 +461,7 @@ function safeJson(v: unknown): string {
 
 /**
  * Keep only the latest entry per (branch, kind) — the guard reads only the
- * latest, so older rows are never consulted. Stable on `at` ties (later in
- * file order wins, matching `latestEntry`'s `>=`).
+ * latest. Stable on `at` ties (later in file order wins).
  */
 export function dedupeLatest(entries: LedgerEntry[]): LedgerEntry[] {
   const byKey = new Map<string, LedgerEntry>();
@@ -470,10 +476,8 @@ export function dedupeLatest(entries: LedgerEntry[]): LedgerEntry[] {
 /**
  * The LATEST entry per kind for a branch (max `at`), or undefined.
  *
- * Adversarial: the guard requires the latest to be `passed` AND its patchId
- * to equal the current one. Lens: the latest must be `passed` (any patchId
- * — a passing lens entry may predate a later commit; a later FAILING lens
- * run is what the latest-ness protects against).
+ * Adversarial: latest must be `passed` AND patchId must match. Lens: latest
+ * must be `passed` (any patchId).
  */
 export function latestEntry(entries: LedgerEntry[], branch: string, kind: ReviewKind) {
   let best: LedgerEntry | undefined;

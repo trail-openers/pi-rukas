@@ -11,10 +11,9 @@
  *   - runLensReview writes a ledger entry with `passed` computed by the
  *     shared predicate (ISSUES_FOUND below the threshold passes; CRITICAL
  *     does not).
- *   - A ledger write failure leaves the review result byte-identical
- *     (the write is a side effect, never a gate on the result).
- *   - Writer and guard compute identical patchIds for the same content
- *     (a unit test through the shared branchPatchId function).
+ *   - A ledger write failure leaves the review result byte-identical.
+ *   - Writer and guard compute identical patchIds for the same content.
+ *   - #985: branchPatchId is stable under base-branch advancement.
  *
  * HOME is set to a temp dir by the gate invocation so git works offline.
  */
@@ -338,6 +337,42 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
     assert(
       typeof withUntracked.patchId === "string" && withUntracked.patchId.length > 0,
       "the entry is still written (patchId present) when untracked files exist",
+    );
+  } finally {
+    rmSync(path.dirname(repo), { recursive: true, force: true });
+  }
+}
+
+// #985 — branchPatchId is stable under base-branch advancement
+
+{
+  const { repo } = setupRepo();
+  try {
+    const git = (cmd: string) => execSync(cmd, { cwd: repo, stdio: "ignore" });
+    const idBefore = await branchPatchId(execp, repo, "feature/x", "origin/dev");
+    assert(
+      typeof idBefore === "string" && idBefore.length > 0,
+      "#985: branchPatchId computes an id before base advancement",
+    );
+    // Advance the base branch: add a commit to dev and push.
+    git("git checkout -q dev");
+    git("echo base2 > base2.txt");
+    git("git add base2.txt");
+    git('git commit -qm "base advancement"');
+    git("git push -q origin dev");
+    git("git checkout -q feature/x");
+    const idAfter = await branchPatchId(execp, repo, "feature/x", "origin/dev");
+    assert(
+      idAfter === idBefore,
+      "#985: branchPatchId is STABLE when the base branch advances (merge-base semantics)",
+    );
+    git("echo branch2 > branch2.txt");
+    git("git add branch2.txt");
+    git('git commit -qm "branch advancement"');
+    const idBranchAdv = await branchPatchId(execp, repo, "feature/x", "origin/dev");
+    assert(
+      idBranchAdv !== idAfter,
+      "#985: branchPatchId still changes when the branch's own commits change",
     );
   } finally {
     rmSync(path.dirname(repo), { recursive: true, force: true });
