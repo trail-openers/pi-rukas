@@ -4,9 +4,8 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { execp } from "./lens-exec.ts";
-import { capKillSummary } from "./lens-review-capkill.ts";
 import { resolveLensReviewBranch } from "./lens-review-branch-resolve.ts";
-import { finishLensReview } from "./lens-review-finish.ts";
+import { capKillSummary } from "./lens-review-capkill.ts";
 import { runLensChild } from "./lens-review-child.ts";
 import {
   blockedReviewSummary,
@@ -15,6 +14,7 @@ import {
   resolveReviewDiff,
   startPersistentBatch,
 } from "./lens-review-diff.ts";
+import { finishLensReview } from "./lens-review-finish.ts";
 import {
   DEFAULT_REVIEW_THRESHOLD,
   LENS_PREFIX,

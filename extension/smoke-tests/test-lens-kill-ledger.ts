@@ -1,28 +1,16 @@
 #!/usr/bin/env bun
 /**
  * #966 — an all-failed or aborted lens review must never render as APPROVED
- * and must never write a passing review-ledger entry.
+ * and must never write a passing review-ledger entry. #980 — tool-path
+ * branch resolution: the #980 shared resolver recovers the branch from HEAD
+ * (or a branch-named `head`) and `finishLensReview` keys the ledger write and
+ * residual-disclosure post on that resolved value.
  *
- * Drives runLensReview end-to-end (offline, no real Pi children — spawn.ts
- * is stubbed BEFORE the lens modules load) with the spawner returning
- * failed / clean shapes:
- *   2a. all-fail        → REVIEW_INCOMPLETE + passed:false ledger entry
- *   2b. partial-fail    → REVIEW_INCOMPLETE + passed:false ledger entry
- *   2c. pre-aborted     → REVIEW_INCOMPLETE + passed:false ledger entry
- *   2d. empty roster    → REVIEW_INCOMPLETE (the #966 silent-approval hole)
- *   5a. tool path (no branch, named-branch checkout) → ledger entry under
- *       the HEAD-resolved branch (the #980 shared resolver)
- *   5b. tool path (no branch, detached HEAD) → VISIBLE not-posted note on
- *       ISSUES_FOUND, no ledger entry (the #980 never-silent contract)
- *   3a. retry note absent when every lens is blocked (incident shape)
- *   3b. retry note names exactly the lenses that retried AND succeeded
- *   4.  lensPassed(REVIEW_INCOMPLETE, …) === false at every threshold
- *
- * The ledger write is deterministic here: `mock.module` intercepts the
- * review-ledger `appendLedgerEntry` seam BEFORE the lens modules load, so
- * the fire-and-forget write records its payload instead of touching a file
- * (no sleep-and-poll). The per-lens failed-branch evidence rules (stderr vs
- * findings vs thinking-only vs cap-kill) live in test-lens-kill-child.ts.
+ * Drives runLensReview end-to-end (offline, spawn.ts stubbed BEFORE the
+ * lens modules load). The ledger write is deterministic: `mock.module`
+ * intercepts the `appendLedgerEntry` seam before the lens modules load, so
+ * the fire-and-forget write records its payload instead of touching a file.
+ * Per-lens failed-branch evidence rules live in test-lens-kill-child.ts.
  */
 import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -57,47 +45,21 @@ mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
   makeRunId: () => "run-966",
   spawnSpecialist: async () => spawnResponder(),
 }));
-// #980 — the fire-and-forget ledger write is DETERMINISTIC here: the shared
-// append seam is mocked to record its payload, and the assertions read the
-// recorded payload instead of sleep-and-polling a real file.
 let recordedLedgerWrites: unknown[] = [];
-// #980 — the fire-and-forget ledger write is DETERMINISTIC here: the shared
-// append seam is mocked to record its payload, and the assertions read the
-// recorded payload instead of sleep-and-polling a real file. Bun's
-// `mock.module` factory must define every export with an INLINE value —
-// referencing the real module's namespace (e.g. `realRL.lensPassed`) breaks
-// the mock for consumers that import the module AFTER registration (verified
-// empirically). The stubs below are the minimal inline shapes the code under
-// test actually calls.
+// Bun's `mock.module` factory must define every export with an INLINE value
+// (referencing the real module's namespace breaks the mock — verified).
 mock.module(new URL("../src/review-ledger.ts", import.meta.url).href, () => ({
   appendLedgerEntry: async (entry: unknown) => {
     recordedLedgerWrites.push(entry);
     return undefined;
   },
-  // The writer calls `workingTreePatchId(execp, cwd)` to compute the patchId
-  // it stores. The stub returns a deterministic id (the test asserts on
-  // `typeof patchId === 'string' && length > 0`, not the actual value).
   workingTreePatchId: async () => ({ patchId: "test-patch-id-0000", warning: undefined }),
-  // The writer calls `lensPassed(verdict, threshold)` to compute the `passed`
-  // boolean. The stub mirrors the real predicate (lens-ledger.ts calls it
-  // with the same args the test asserts on).
-  lensPassed: (verdict: string, threshold: string) =>
-    verdict === "APPROVED" || (verdict === "ISSUES_FOUND" && threshold === "LOW"),
-  // The remaining exports are not called by the code under test in this
-  // test (lens-review-diff.ts uses `latestEntry` and `ledgerPathFor` for
-  // the delta-base resolution, which only fires when `since`/`full` are
-  // supplied — none of these cases do). They are stubbed as no-ops so
-  // bun's module system is satisfied.
-  adversarialPassed: () => false,
-  branchPatchId: async () => undefined,
-  bumpLensRound: (e: unknown) => e,
-  dedupeLatest: (e: unknown[]) => e,
-  latestEntry: () => undefined,
-  ledgerPathFor: async () => undefined,
-  lensBlockedByThreshold: () => true,
-  readLedgerAt: () => [],
-  readLedgerFile: () => ({ entries: [] }),
-  remoteName: async () => undefined,
+  lensPassed: (v: string, t: string) => v === "APPROVED" || (v === "ISSUES_FOUND" && t === "LOW"),
+  adversarialPassed: () => false, branchPatchId: async () => undefined,
+  bumpLensRound: (e: unknown) => e, dedupeLatest: (e: unknown[]) => e,
+  latestEntry: () => undefined, ledgerPathFor: async () => undefined,
+  lensBlockedByThreshold: () => true, readLedgerAt: () => [],
+  readLedgerFile: () => ({ entries: [] }), remoteName: async () => undefined,
   validEntries: (e: unknown[]) => e,
 }));
 // Static imports — evaluated AFTER both mock registrations, so they pick up
