@@ -18,15 +18,13 @@ import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { AdversarialVerdict, DispatchFailureCause, DispatchResult } from "./types.ts";
 import { ADVERSARIAL_TRANSIENT_MAX_RETRIES, isRateLimit429Msg } from "./types.ts";
-
 const MAX_ROUNDS = 3;
 
 /**
  * Wall-clock budget for all retry attempts in a single adversarial phase.
  * When elapsed time reaches this limit no further retries start, preventing
- * a repeated watchdog kill from consuming its full attempt budget.
- * Set 0 to disable. Override: PI_ENSEMBLE_ADVERSARIAL_PHASE_BUDGET_MS.
- * Default: 30 min.
+ * a repeated watchdog kill from consuming its full attempt budget. Set 0 to
+ * disable. Override: PI_ENSEMBLE_ADVERSARIAL_PHASE_BUDGET_MS. Default: 30 min.
  */
 export function adversarialPhaseBudgetMs(): number {
   const env = Number(process.env.PI_ENSEMBLE_ADVERSARIAL_PHASE_BUDGET_MS);
@@ -35,13 +33,12 @@ export function adversarialPhaseBudgetMs(): number {
 }
 
 /**
- * Async adversarial gate.
- *
- * The orchestrator does sequential rounds internally (adversarial → developer
- * fix → re-adversarial, up to 3 rounds). From the PM's POV the whole saga is
- * one async dispatch: tool returns a job handle immediately, and one consolidated
- * report ("APPROVED after round N" or "REJECTED after 3 rounds") arrives as a
- * [ensemble:async] user message when the loop terminates.
+ * Async adversarial gate. The orchestrator does sequential rounds internally
+ * (adversarial → developer fix → re-adversarial, up to 3 rounds). From the
+ * PM's POV the whole saga is one async dispatch: tool returns a job handle
+ * immediately, and one consolidated report ("APPROVED after round N" or
+ * "REJECTED after 3 rounds") arrives as a [ensemble:async] user message when
+ * the loop terminates.
  */
 export function registerAdversarialTool(pi: ExtensionAPI) {
   pi.registerTool({
@@ -53,7 +50,7 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
       diff: Type.Optional(
         Type.String({
           description:
-            "Current diff to review (git diff output). Optional when base+head are given — then the diff is computed from the ref range; when both are given, this string wins (traced).",
+            "Current diff to review (git diff output). Optional when base+head are given — then the diff is computed from the ref range; when both are given, this string wins.",
         }),
       ),
       context: Type.String({
@@ -157,18 +154,16 @@ export async function runAdversarialLoop(
   const start = Date.now();
   const runId = makeRunId();
   const rounds: Array<{ round: number; verdict: AdversarialVerdict; ms: number }> = [];
-  // #859 — failed re-reads of the ref range on rounds 2+: the loop keeps the
-  // previous diff (never abandons a round), but the final result must say so.
+  // #859 — failed re-reads on rounds 2+: the loop keeps the previous diff (never
+  // abandons a round), but the final result must say so.
   const diffRereadNotes: string[] = [];
   const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
   let lastTranscript: string | undefined;
   let lastModel: string | undefined;
 
-  // #980 — resolve the branch ONCE, before the loop (shared helper):
-  // explicit `branch` → a branch-named `head` ref → `git rev-parse
-  // --abbrev-ref HEAD`. The VISIBLE not-recorded note (when unresolvable)
-  // is threaded into every tool-path result; `ledgerWrite` keys the entry
-  // on the SAME resolved branch.
+  // #980 — resolve the branch ONCE before the loop (shared helper: explicit
+  // `branch` → branch-named `head` ref → rev-parse). The VISIBLE not-recorded
+  // note is threaded into every tool-path result; `ledgerWrite` keys on the SAME branch.
   const ledgerNote = await buildLedgerNote({
     branch: params.branch,
     head: params.head,
@@ -179,6 +174,7 @@ export async function runAdversarialLoop(
     writeAdversarialLedgerEntry(result, {
       workCwd: params.workCwd,
       branch: params.branch,
+      head: params.head,
     });
     return ledgerNote.withLedgerNote(result);
   };
@@ -194,18 +190,33 @@ export async function runAdversarialLoop(
   // count > 0 does NOT change the verdict. Without a range: `not-run`. Early
   // exits (empty-diff skip, errors) never pay for the check.
   const commentsLineNow = () => buildCommentsLine(range, params.workCwd ?? process.cwd());
-  const infraCtx = {
-    start,
-    usage,
-    lastTranscript,
-    lastModel,
+  // #980 fix — getters read LIVE values (accumulate runs before every
+  // infraFailureResult call), so infra failures carry the current transcript path and model.
+  const infraCtx: {
+    start: number;
+    usage: DispatchResult["usage"];
+    lastTranscript: string | undefined;
+    lastModel: string | undefined;
+    toRoundRecords: (rounds: never[]) => DispatchResult["adversarialRounds"];
+  } = {
+    get start() {
+      return start;
+    },
+    get usage() {
+      return usage;
+    },
+    get lastTranscript() {
+      return lastTranscript;
+    },
+    get lastModel() {
+      return lastModel;
+    },
     toRoundRecords,
   };
 
   // #859 — resolve the diff: a pasted string wins over a ref range (traced);
   // with no string, base+head compute the range in workCwd (else the process
-  // cwd). An error (invalid ref naming the ref, confirmed-empty range, cap
-  // overflow) is returned AS the result — never a fallback to an empty
+  // cwd). An error is returned AS the result — never a fallback to an empty
   // string, which the loop would review as "nothing to change" and approve.
   let diff: string;
   let getDiff = params.getDiff;
@@ -244,8 +255,7 @@ export async function runAdversarialLoop(
       const r = await rangeDiffFn(cwd, range.base, range.head);
       if (!r.ok) {
         // #859 — a re-read failure is no longer a silent "" (which the loop
-        // would ignore and review the STALE diff on). Name it, and let the
-        // caller record it in the final result.
+        // would ignore and review the STALE diff on). Name it; the caller records it.
         trace(
           `adversarial: diff re-read failed for range ${range.base}...${range.head}: ${r.reason} — reviewing the previous diff`,
         );
@@ -277,11 +287,9 @@ export async function runAdversarialLoop(
   };
 
   /**
-   * Run one phase (adversarial review or developer fix), threading dispatch-deck
-   * lifecycle and onProgress so the deck shows whichever phase is running now.
-   * Also registers the inner spawn as the orchestrator's `activeChild` so PM
-   * can `dispatch_peek` / `dispatch_steer` against the loop's jobId and reach
-   * the currently-running inner child transparently.
+   * Run one phase, threading dispatch-deck lifecycle and onProgress so the deck
+   * shows whichever phase is running now. Also registers the inner spawn as the
+   * orchestrator's `activeChild` so PM can peek/steer against the loop's jobId.
    */
   const runPhase = async (
     role: "adversarial-developer" | "developer",
@@ -337,8 +345,8 @@ export async function runAdversarialLoop(
   };
 
   // Re-read before every review. `fetchDiff` used to run once, before the loop,
-  // so rounds 2 and 3 were prompted with pre-fix material and the reviewer had
-  // to notice the staleness itself.
+  // so rounds 2 and 3 were prompted with pre-fix material and the reviewer had to
+  // notice the staleness itself.
   const priorFindings: string[] = [];
 
   for (let round = 1; round <= MAX_ROUNDS; round++) {
@@ -379,7 +387,6 @@ export async function runAdversarialLoop(
 
     const verdict = parseVerdict(adv.text);
     rounds.push({ round, verdict, ms: adv.ms });
-
     const action = decideLoopAction(verdict.status, round, MAX_ROUNDS, verdict.verdictParsed);
     if (action === "incomplete") {
       // Out of rounds with no readable verdict on the last one. Nothing was
@@ -397,9 +404,8 @@ export async function runAdversarialLoop(
       );
     }
     if (action === "pass") {
-      // `PASSED WITH FINDINGS` rather than `APPROVED` when something is still
-      // outstanding: the operator (and the lens gate) must be able to tell the
-      // two apart, and `commit-pr` carries the findings into the PR body.
+      // `PASSED WITH FINDINGS` vs `APPROVED` — the operator must tell the two
+      // apart; `commit-pr` carries the findings into the PR body.
       const clean = verdict.status === "APPROVED";
       const notePrefix = diffRereadNotes.length ? `${diffRereadNotes.join("\n")}\n\n` : "";
       const commentsLine = await commentsLineNow();
@@ -473,7 +479,6 @@ export async function runAdversarialLoop(
   });
   return ledgerWrite(r);
 }
-
 function toRoundRecords(
   rounds: Array<{ round: number; verdict: AdversarialVerdict; ms: number }>,
 ): DispatchResult["adversarialRounds"] {
@@ -483,17 +488,13 @@ function toRoundRecords(
     verdictParsed: r.verdict.verdictParsed !== false,
   }));
 }
-
-/**
- * One line of what a round objected to, for the next round's fixer.
- *
- * The full text is the reviewer's entire reply — narration included — and
- * replaying all of it every round would crowd out the round's actual findings.
- */
 function summariseFindings(findings: string): string {
-  const line = findings
-    .split("\n")
-    .map((l) => l.trim())
-    .find((l) => /^(?:[-*\d]|###?\s)/.test(l) && l.length > 12);
-  return (line ?? findings.trim().split("\n")[0] ?? "(no detail)").slice(0, 200);
+  return (
+    findings
+      .split("\n")
+      .map((l) => l.trim())
+      .find((l) => /^(?:[-*\d]|###?\s)/.test(l) && l.length > 12) ??
+    findings.trim().split("\n")[0] ??
+    "(no detail)"
+  ).slice(0, 200);
 }

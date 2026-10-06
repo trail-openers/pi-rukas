@@ -19,6 +19,7 @@ import {
   DEFAULT_REVIEW_THRESHOLD,
   LENS_PREFIX,
   type LensReviewSummary,
+  type Severity,
   type Verdict,
   bySeverityCounts,
   computeVerdict,
@@ -67,7 +68,7 @@ export type LensName = string; // deliberately unbounded — the roster is data-
 export type LensDef = RosterEntry;
 /** Re-exported so consumers of this module name the verdict here; the
  * definition lives in lens-review-format.ts. */
-export type { Verdict } from "./lens-review-format.ts";
+export type { Verdict, Severity } from "./lens-review-format.ts";
 export const LENS_REPORTER_PATH = path.join(__dirname, "lens-reporter.ts");
 
 /**
@@ -83,8 +84,6 @@ export const LENS_REPORTER_PATH = path.join(__dirname, "lens-reporter.ts");
  */
 export const LENS_REVIEW_DIFF_DESCRIPTION =
   "The full PR/MR diff to review. Fetch it once (e.g. `gh pr diff <N>` or `glab mr diff <N>`) or `git diff main...feature/...` and reuse — do NOT re-fetch per lens. For large diffs, prefer the optional base + head refs (with cwd) so the tool computes `git diff <base>...<head>` itself; when both are given, the string wins.";
-
-export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
 
 /** Max attempts per lens — 1 initial + 3 retries on spawn failure or non-zero
  * exit. Matches the opencode contract. Aborted lenses (user cancel) don't

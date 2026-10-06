@@ -12,6 +12,12 @@
  * marker key on the SAME branch string by construction; when it is undefined
  * the ledger write skips (traced) and the summary carries the VISIBLE
  * "disclosure NOT posted" note instead of the pre-#980 silent skip.
+ *
+ * #966 — the ledger's `passed` is derived from the RESOLVED verdict (via
+ * `lensPassed` inside `writeLensLedgerEntry`), and every run shape that fails,
+ * aborts or kills its lenses reaches this exit with a REVIEW_INCOMPLETE
+ * verdict, so the `passed:true` path is protected by construction: no caller
+ * feeds this exit a passing verdict for an all-fail/all-abort run.
  */
 
 import { writeLensLedgerEntry } from "./lens-ledger.ts";

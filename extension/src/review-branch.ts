@@ -82,7 +82,7 @@ export async function resolveReviewBranch(
   // keyed on, so resolution degrades to rev-parse rather than guessing.
   if (opts.head?.trim() && !opts.head.trim().startsWith("-")) {
     const headRef = opts.head.trim();
-    if (await isBranchRef(execFn, cwd, undefined, headRef)) {
+    if (await isBranchRef(execFn, cwd, headRef)) {
       // The resolved branch is the LOCAL name. `isBranchRef` checks
       // `refs/heads/<headRef>` first (the full ref — a `feature/x` branch
       // is a single local branch), then `refs/remotes/<remote>/<name>`
@@ -115,16 +115,6 @@ export async function resolveReviewBranch(
   return { branch: undefined, source: "none" };
 }
 
-/**
- * Split a `<remote>/<name>`-shaped ref into `{ remote, name }`. A ref
- * without a slash is a plain local name (`remote` undefined).
- */
-function normaliseRef(ref: string): { remote: string | undefined; name: string } {
-  const i = ref.indexOf("/");
-  if (i <= 0) return { remote: undefined, name: ref };
-  return { remote: ref.slice(0, i), name: ref.slice(i + 1) };
-}
-
 /** Does `ref` (a full `refs/...` name) exist in the repo? Never throws. */
 async function checkRef(execFn: VerifyExecFn, cwd: string, ref: string): Promise<boolean> {
   try {
@@ -142,12 +132,7 @@ async function checkRef(execFn: VerifyExecFn, cwd: string, ref: string): Promise
  * an unreadable ref namespace (non-repo cwd) simply means "not a branch
  * here" and resolution degrades to rev-parse.
  */
-async function isBranchRef(
-  execFn: VerifyExecFn,
-  cwd: string,
-  _candidate: { remote: string | undefined; name: string } | undefined,
-  original: string,
-): Promise<boolean> {
+async function isBranchRef(execFn: VerifyExecFn, cwd: string, original: string): Promise<boolean> {
   // Local branch (full ref) always tried first — `feature/x` is a local
   // branch with a slash, not a remote called `feature` with branch `x`.
   if (await checkRef(execFn, cwd, `refs/heads/${original}`)) return true;

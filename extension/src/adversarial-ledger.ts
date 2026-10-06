@@ -35,15 +35,19 @@ import { execp } from "./lens-exec.ts";
  */
 export function writeAdversarialLedgerEntry(
   result: DispatchResult,
-  params: { workCwd?: string; branch?: string },
+  params: { workCwd?: string; branch?: string; head?: string },
 ): void {
   const write = async () => {
     const c = params.workCwd ?? process.cwd();
     // #980 — the branch comes from the SHARED resolver (review-branch.ts:
     // explicit `branch` → branch-named `head` → rev-parse) — the same one
     // the lens review and the residual poster use — so all three key on the
-    // same branch string by construction.
-    const branch = (await resolveReviewBranch({ branch: params.branch, cwd: c }, execp)).branch;
+    // same branch string by construction. `head` is threaded in (the tool
+    // path's diff ref may name the branch even when `branch` is absent) so
+    // the write resolves identically to the note built in `buildLedgerNote`.
+    const branch = (
+      await resolveReviewBranch({ branch: params.branch, head: params.head, cwd: c }, execp)
+    ).branch;
     if (!branch) {
       trace("adversarial: ledger write skipped — no branch (detached head, no caller branch)");
       return;
