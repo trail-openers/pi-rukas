@@ -17,7 +17,10 @@
  * `lensPassed` inside `writeLensLedgerEntry`), and every run shape that fails,
  * aborts or kills its lenses reaches this exit with a REVIEW_INCOMPLETE
  * verdict, so the `passed:true` path is protected by construction: no caller
- * feeds this exit a passing verdict for an all-fail/all-abort run.
+ * feeds this exit a passing verdict for an all-fail/all-abort run. The only
+ * remaining path that writes nothing is the unresolvable-branch skip (the
+ * "not recorded" note makes it VISIBLE where the pre-#980 skip was silent),
+ * and the disclosure note is the one visible path in place of a post.
  */
 
 import { writeLensLedgerEntry } from "./lens-ledger.ts";

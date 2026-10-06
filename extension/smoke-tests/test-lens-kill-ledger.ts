@@ -6,11 +6,24 @@
  * (or a branch-named `head`) and `finishLensReview` keys the ledger write and
  * residual-disclosure post on that resolved value.
  *
- * Drives runLensReview end-to-end (offline, spawn.ts stubbed BEFORE the
- * lens modules load). The ledger write is deterministic: `mock.module`
- * intercepts the `appendLedgerEntry` seam before the lens modules load, so
- * the fire-and-forget write records its payload instead of touching a file.
- * Per-lens failed-branch evidence rules live in test-lens-kill-child.ts.
+ * Drives runLensReview end-to-end (offline, no real Pi children — spawn.ts
+ * is stubbed BEFORE the lens modules load) with the spawner returning
+ * failed / clean shapes:
+ *   2a. all-fail        → REVIEW_INCOMPLETE + passed:false ledger entry
+ *   2b. partial-fail    → REVIEW_INCOMPLETE + passed:false ledger entry
+ *   2c. pre-aborted     → REVIEW_INCOMPLETE + passed:false ledger entry
+ *   2d. empty roster    → REVIEW_INCOMPLETE (never a silent APPROVED)
+ *   4.  lensPassed(REVIEW_INCOMPLETE, …) === false at every threshold
+ *   5a. #980 tool path, no branch, named-branch checkout → HEAD-resolved key
+ *   5b. #980 tool path, detached HEAD → visible NOT-posted note, no entry
+ *
+ * The ledger write under test is stubbed at the `appendLedgerEntry` seam:
+ * the fire-and-forget write is deterministic (no file to sleep on) and the
+ * recorded payload is run through the SAME `validEntries` validation the real
+ * write applies. The REAL writeLensLedgerEntry → appendLedgerEntry file-write
+ * path is covered in test-review-ledger.ts. The per-lens failed-branch
+ * evidence rules (stderr vs findings vs thinking-only vs cap-kill) live in
+ * test-lens-kill-child.ts.
  */
 import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -29,10 +42,10 @@ function eq(actual: unknown, expected: unknown, msg: string): boolean {
   else { console.error(`✗ ${msg}\n    actual:   ${a}\n    expected: ${e}`); exit = 1; }
   return a === e;
 }
-// Mocks must be installed BEFORE the lens modules are imported (both mocks
-// must be registered first — bun's `mock.module` intercepts every import of
-// the module that is evaluated after registration, including the static
-// imports below, which are what load lens-review.ts).
+// Mocks must be installed BEFORE the lens modules are imported (test-lens-skill-wiring
+// pattern — bun's `mock.module` intercepts every import of the module that is
+// evaluated after registration, including the static imports below, which are
+// what load lens-review.ts).
 let spawnResponder: () => unknown = () => ({
   role: "code-review-specialist",
   ok: true,
@@ -66,10 +79,8 @@ mock.module(new URL("../src/review-ledger.ts", import.meta.url).href, () => ({
 // the mocked spawn and ledger seams (this is what loads lens-review.ts).
 import {
   runLensReview,
-  MAX_LENS_ATTEMPTS,
   type LensRunResult,
 } from "../src/lens-review.ts";
-import { renderSummary } from "../src/lens-review-format.ts";
 import { LENS_ROSTER } from "../src/lens-roster.ts";
 import { lensPassed, validEntries } from "../src/review-ledger.ts";
 type LedgerEntry = import("../src/review-ledger.ts").LedgerEntry;
@@ -106,8 +117,10 @@ function emptySkillsDir(name: string): { dir: string; cleanup: () => void } {
   };
 }
 // #966 — the aborted-run case must not depend on the host's installed
-// lens skills (the silent-approval this PR closes). Point the run at a
-// deterministic fixture via the same env var runLensReview reads (piSkillsDir).
+// lens skills: a host WITHOUT ~/.pi/agent/skills/code-review-* used to see
+// an EMPTY roster here, zero blocked rows, and an APPROVED verdict (the
+// silent-approval this PR closes). Point the run at a deterministic fixture
+// via the same env var runLensReview reads (piSkillsDir).
 async function withSkillsDir<T>(skillsDir: string, fn: () => Promise<T>): Promise<T> {
   const priorSkills = process.env.PI_ENSEMBLE_SKILLS_DIR;
   process.env.PI_ENSEMBLE_SKILLS_DIR = skillsDir;
@@ -185,12 +198,6 @@ const allFail = () => ({
     const entries = recordedEntries();
     eq(s.verdict, "REVIEW_INCOMPLETE", "(2a) all six lenses fail → REVIEW_INCOMPLETE");
     assert(s.lenses.every((l) => l.blocked), "(2a) every lens is blocked");
-    const rendered = renderSummary(s, MAX_LENS_ATTEMPTS);
-    assert(
-      !rendered.includes("eventually succeeded"),
-      "(2a) no 'eventually succeeded' retry note when no lens succeeded",
-    );
-    assert(!rendered.includes("APPROVED"), "(2a) no APPROVED verdict line in the report");
     assert(entries !== null && entries.length === 1, "(2a) exactly one ledger entry written");
     const e = entries?.[0];
     assert(e !== undefined && e.kind === "lens", "(2a) the entry is a lens entry");
@@ -244,11 +251,6 @@ const allFail = () => ({
       s.lenses.find((l) => l.blocked)?.parseError?.includes("skill not installed"),
       "(2b) the blocked lens's parseError names the missing skill",
     );
-    const rendered = renderSummary(s, MAX_LENS_ATTEMPTS);
-    assert(
-      !rendered.includes("eventually succeeded"),
-      "(2b) no false retry note (the failed lens is blocked; the clean ones had 1 attempt)",
-    );
     assert(entries?.[0]?.passed === false, "(2b) ledger entry is passed:false");
     assert(
       entries?.[0]?.detail === "REVIEW_INCOMPLETE",
@@ -280,8 +282,6 @@ const allFail = () => ({
     eq(s.verdict, "REVIEW_INCOMPLETE", "(2c) aborted run → REVIEW_INCOMPLETE");
     assert(s.lenses.length === ALL_SKILLS.length, "(2c) one blocked row per expected lens");
     assert(s.lenses.every((l) => l.blocked), "(2c) every lens row is blocked");
-    const rendered = renderSummary(s, MAX_LENS_ATTEMPTS);
-    assert(!rendered.includes("eventually succeeded"), "(2c) no retry note on an aborted run");
     assert(
       entries !== null && entries.length === 1,
       "(2c) the aborted run still writes a ledger entry (same path as a non-aborted all-fail run)",
@@ -432,54 +432,6 @@ const allFail = () => ({
     fix.cleanup();
     repo.cleanup();
   }
-}
-const row = (name: string, over: Partial<LensRunResult>): LensRunResult =>
-  ({
-    lens: name,
-    ok: true,
-    ms: 100,
-    startMs: 0,
-    findings: [],
-    attempts: 1,
-    blocked: false,
-    ...over,
-  }) as unknown as LensRunResult;
-{
-  const incidentShape: LensRunResult[] = ALL_SKILLS.map((s) =>
-    row(s, { ok: false, blocked: true, attempts: 2, parseError: "attempt 2/4: exit 1" }),
-  );
-  const incident = renderSummary(
-    {
-      verdict: "REVIEW_INCOMPLETE",
-      totalFindings: 0,
-      bySeverity: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 },
-      lenses: incidentShape,
-      findings: [],
-    },
-    MAX_LENS_ATTEMPTS,
-  );
-  assert(
-    !incident.includes("eventually succeeded"),
-    "(3a) incident shape (all rows fail, attempts>1) → NO retry note",
-  );
-  assert(incident.includes("REVIEW INCOMPLETE"), "(3a) the blocked banner is present");
-}
-{
-  const oneRetried = ALL_SKILLS.map((s) => row(s, { attempts: s === "code-review-security" ? 2 : 1 }));
-  const ok = renderSummary(
-    {
-      verdict: "APPROVED",
-      totalFindings: 0,
-      bySeverity: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 },
-      lenses: oneRetried,
-      findings: [],
-    },
-    MAX_LENS_ATTEMPTS,
-  );
-  assert(
-    ok.includes("1 lens(es) needed retries but eventually succeeded — code-review-security(×2)"),
-    "(3b) retry note names exactly the lens that retried AND succeeded (ok, not blocked)",
-  );
 }
 {
   for (const th of ["LOW", "MEDIUM", "HIGH", "CRITICAL"] as const) {

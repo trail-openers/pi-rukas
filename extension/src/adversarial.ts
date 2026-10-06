@@ -4,7 +4,7 @@ import { classifyDispatchOutcome } from "./adversarial-classify.ts";
 import { buildLedgerNote } from "./adversarial-ledger-note.ts";
 import { writeAdversarialLedgerEntry } from "./adversarial-ledger.ts";
 import { buildAdversarialPrompt, buildFixPrompt } from "./adversarial-prompts.ts";
-import { infraFailureResult, runPhaseWithInfraRetry } from "./adversarial-retry.ts";
+import { type InfraCtx, infraFailureResult, runPhaseWithInfraRetry } from "./adversarial-retry.ts";
 import { decideLoopAction, parseVerdict, synthesizeResult } from "./adversarial-verdict.ts";
 import { childHandles, registerChildHandle } from "./async-jobs-registry.ts";
 import { markOrchestrator, setOrchestratorActiveChild, startJob } from "./async-jobs.ts";
@@ -21,9 +21,9 @@ import { ADVERSARIAL_TRANSIENT_MAX_RETRIES, isRateLimit429Msg } from "./types.ts
 const MAX_ROUNDS = 3;
 
 /**
- * Wall-clock budget for all retry attempts in a single adversarial phase.
- * When elapsed time reaches this limit no further retries start, preventing
- * a repeated watchdog kill from consuming its full attempt budget. Set 0 to
+ * Wall-clock budget for all retry attempts in a single adversarial phase. When
+ * elapsed time reaches this limit no further retries start, preventing a
+ * repeated watchdog kill from consuming its full attempt budget. Set 0 to
  * disable. Override: PI_ENSEMBLE_ADVERSARIAL_PHASE_BUDGET_MS. Default: 30 min.
  */
 export function adversarialPhaseBudgetMs(): number {
@@ -33,19 +33,18 @@ export function adversarialPhaseBudgetMs(): number {
 }
 
 /**
- * Async adversarial gate. The orchestrator does sequential rounds internally
- * (adversarial → developer fix → re-adversarial, up to 3 rounds). From the
- * PM's POV the whole saga is one async dispatch: tool returns a job handle
- * immediately, and one consolidated report ("APPROVED after round N" or
- * "REJECTED after 3 rounds") arrives as a [ensemble:async] user message when
- * the loop terminates.
+ * Async adversarial gate: the orchestrator does sequential rounds internally
+ * (adversarial → developer fix → re-adversarial, up to 3 rounds). From the PM's
+ * POV the whole saga is one async dispatch: a job handle returns immediately,
+ * and one consolidated report ("APPROVED after round N" or "REJECTED after 3
+ * rounds") arrives as an [ensemble:async] user message when the loop ends.
  */
 export function registerAdversarialTool(pi: ExtensionAPI) {
   pi.registerTool({
     name: "adversarial_loop",
     label: "Adversarial Loop",
     description:
-      "Run the mandatory adversarial gate as an async job: adversarial review → developer fix → re-review, up to 3 rounds. Returns a job handle immediately. The final verdict (APPROVED or REJECTED + findings) arrives as a [ensemble:async] user message. End your turn after dispatching.",
+      "Async adversarial gate: review → developer fix → re-review, up to 3 rounds. Returns a job handle immediately; the final verdict (APPROVED or REJECTED + findings) arrives as an [ensemble:async] message. End your turn after dispatching.",
     parameters: Type.Object({
       diff: Type.Optional(
         Type.String({
@@ -59,7 +58,7 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
       base: Type.Optional(
         Type.String({
           description:
-            "With head: ref for the diff the tool computes itself as `git diff <base>...<head>` (three-dot, merge-base) in workCwd — preferred over pasting a large diff.",
+            "With head: ref for the diff computed as `git diff <base>...<head>` (three-dot, merge-base) in workCwd — preferred over pasting a large diff.",
         }),
       ),
       head: Type.Optional(
@@ -71,7 +70,7 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
       workCwd: Type.Optional(
         Type.String({
           description:
-            "Worktree or repo path where developer should apply fixes; also the cwd for `git diff <base>...<head>` (defaults to the process cwd).",
+            "Worktree/repo path where developer applies fixes and `git diff <base>...<head>` runs (defaults to process cwd).",
         }),
       ),
     }),
@@ -108,15 +107,13 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
 
 /**
  * Run the 3-round adversarial loop directly. Exported so the work-driver can
- * call it without going through the tool-registration layer (PR1 of the
- * workflow-graph compilation). The legacy `adversarial_loop` tool wraps this
- * with `startJob` + steer-back for PM-driven flows; the driver wraps it with
- * `startJob({ ownerKind: "driver", skipDeck: true })` so the result resolves
- * via promise instead of as an [ensemble:async] steer.
+ * call it without the tool-registration layer (PR1 workflow-graph compilation).
+ * The `adversarial_loop` tool wraps this with `startJob` + steer-back; the
+ * driver wraps it with `startJob({ ownerKind: "driver", skipDeck: true })` so
+ * the result resolves via promise instead of as an [ensemble:async] steer.
  *
- * `orchestratorJobId` should be the jobId of the wrapping job that hosts this
- * loop — used to publish active-child state for dispatch_peek / dispatch_steer
- * to resolve into the currently-running inner spawn.
+ * `orchestratorJobId` is the wrapping job's id, used to publish active-child
+ * state for dispatch_peek / dispatch_steer to resolve into the running child.
  */
 export async function runAdversarialLoop(
   params: {
@@ -134,10 +131,9 @@ export async function runAdversarialLoop(
     /** The issue this diff is meant to satisfy (#278). Optional: older state files have none. */
     issueBody?: string;
     /** #799 — the slow-run recorder for this loop's inner children (each
-     * threshold crossing of a review / fix round appends dispatch-slow). */
+     * threshold crossing of a review / fix round appends dispatch-slow), and
+     * the parent pi for their slow-run watch (the PM notice half). */
     onSlow?: OnSlowCallback;
-    /** #799 — the parent pi for the inner children's slow-run watch (the PM
-     * notice half; the watch site has no pi of its own). */
     pi?: ExtensionAPI;
     /** #912 — caller-supplied branch for the review-ledger write (the driver
      * worktrees are detached, so `git rev-parse --abbrev-ref HEAD` cannot
@@ -155,7 +151,8 @@ export async function runAdversarialLoop(
   const runId = makeRunId();
   const rounds: Array<{ round: number; verdict: AdversarialVerdict; ms: number }> = [];
   // #859 — failed re-reads on rounds 2+: the loop keeps the previous diff (never
-  // abandons a round), but the final result must say so.
+  // abandons a round); the loop itself never reviews the STALE diff on a
+  // failed re-read, and the final result must say so.
   const diffRereadNotes: string[] = [];
   const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
   let lastTranscript: string | undefined;
@@ -184,21 +181,15 @@ export async function runAdversarialLoop(
 
   // #948 — the comment-retention line, computed lazily at FINAL synthesis
   // (both the pass and the reject path). When the loop has a ref range, the
-  // check runs in workCwd against base...head with a real ExecFn and appends
-  // a `comments: lost=<n>` line (plus up to 20 lines) to the FINAL text —
-  // reflecting the post-fix tree, since round 2+ re-reads the range. A lost
-  // count > 0 does NOT change the verdict. Without a range: `not-run`. Early
-  // exits (empty-diff skip, errors) never pay for the check.
+  // check runs in workCwd against base...head with a real ExecFn and appends a
+  // `comments: lost=<n>` line (plus up to 20 lines) to the FINAL text —
+  // reflecting the post-fix tree (round 2+ re-reads the range). A lost count
+  // > 0 does NOT change the verdict. Without a range: `not-run`; early exits
+  // never pay for the check.
   const commentsLineNow = () => buildCommentsLine(range, params.workCwd ?? process.cwd());
   // #980 fix — getters read LIVE values (accumulate runs before every
   // infraFailureResult call), so infra failures carry the current transcript path and model.
-  const infraCtx: {
-    start: number;
-    usage: DispatchResult["usage"];
-    lastTranscript: string | undefined;
-    lastModel: string | undefined;
-    toRoundRecords: (rounds: never[]) => DispatchResult["adversarialRounds"];
-  } = {
+  const infraCtx: InfraCtx = {
     get start() {
       return start;
     },
@@ -216,7 +207,8 @@ export async function runAdversarialLoop(
 
   // #859 — resolve the diff: a pasted string wins over a ref range (traced);
   // with no string, base+head compute the range in workCwd (else the process
-  // cwd). An error is returned AS the result — never a fallback to an empty
+  // cwd). An error (invalid ref naming the ref, confirmed-empty range, cap
+  // overflow) is returned AS the result — never a fallback to an empty
   // string, which the loop would review as "nothing to change" and approve.
   let diff: string;
   let getDiff = params.getDiff;
@@ -255,7 +247,8 @@ export async function runAdversarialLoop(
       const r = await rangeDiffFn(cwd, range.base, range.head);
       if (!r.ok) {
         // #859 — a re-read failure is no longer a silent "" (which the loop
-        // would ignore and review the STALE diff on). Name it; the caller records it.
+        // would ignore and review the STALE diff on). Name it in the trace;
+        // the caller surfaces it in the final result.
         trace(
           `adversarial: diff re-read failed for range ${range.base}...${range.head}: ${r.reason} — reviewing the previous diff`,
         );
@@ -289,7 +282,8 @@ export async function runAdversarialLoop(
   /**
    * Run one phase, threading dispatch-deck lifecycle and onProgress so the deck
    * shows whichever phase is running now. Also registers the inner spawn as the
-   * orchestrator's `activeChild` so PM can peek/steer against the loop's jobId.
+   * orchestrator's `activeChild` so PM can `dispatch_peek` / `dispatch_steer`
+   * against the loop's jobId and reach the currently-running inner child.
    */
   const runPhase = async (
     role: "adversarial-developer" | "developer",
@@ -404,8 +398,9 @@ export async function runAdversarialLoop(
       );
     }
     if (action === "pass") {
-      // `PASSED WITH FINDINGS` vs `APPROVED` — the operator must tell the two
-      // apart; `commit-pr` carries the findings into the PR body.
+      // `PASSED WITH FINDINGS` rather than `APPROVED` when something is still
+      // outstanding — the operator (and the lens gate) must tell the two apart;
+      // `commit-pr` carries the findings into the PR body.
       const clean = verdict.status === "APPROVED";
       const notePrefix = diffRereadNotes.length ? `${diffRereadNotes.join("\n")}\n\n` : "";
       const commentsLine = await commentsLineNow();
@@ -488,6 +483,11 @@ function toRoundRecords(
     verdictParsed: r.verdict.verdictParsed !== false,
   }));
 }
+/**
+ * One line of what a round objected to, for the next round's fixer. The full
+ * text is the reviewer's entire reply (narration included); replaying it all
+ * every round would crowd out the round's actual findings.
+ */
 function summariseFindings(findings: string): string {
   return (
     findings
