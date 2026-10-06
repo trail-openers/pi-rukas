@@ -21,6 +21,11 @@ import { NOT_RECORDED_NOTE, resolveReviewBranch } from "./review-branch.ts";
 import type { DispatchResult } from "./types.ts";
 
 export interface LedgerNoteHelpers {
+  /** The branch the loop's ledger write and note are keyed on — the SAME
+   * shared resolution (explicit `branch` → branch-named `head` → rev-parse);
+   * undefined when nothing resolved. Threaded into the ledger write (#988)
+   * so it does not re-resolve. */
+  branch: string | undefined;
   /** The "not recorded" note, or undefined when the branch resolved. */
   ledgerNote: string | undefined;
   /** Thread the note into a result's text at every return (all seven exits
@@ -46,5 +51,5 @@ export async function buildLedgerNote(opts: {
   const ledgerNote = resolution.branch ? undefined : NOT_RECORDED_NOTE;
   const withLedgerNote = (r: DispatchResult): DispatchResult =>
     ledgerNote ? { ...r, text: `${r.text}\n\n${ledgerNote}` } : r;
-  return { ledgerNote, withLedgerNote };
+  return { branch: resolution.branch, ledgerNote, withLedgerNote };
 }

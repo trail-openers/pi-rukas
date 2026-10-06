@@ -92,10 +92,7 @@ function setupRepo(): { repo: string; cleanup: () => void } {
   const { repo, cleanup } = setupRepo();
   try {
     execSync("git checkout -q --detach HEAD", { cwd: repo, stdio: "ignore" });
-    const r = await resolveReviewBranch(
-      { branch: "feature/x", head: "dev", cwd: repo },
-      execp,
-    );
+    const r = await resolveReviewBranch({ branch: "feature/x", head: "dev", cwd: repo }, execp);
     eq(r.branch, "feature/x", "(1) explicit branch wins over head and rev-parse");
     eq(r.source, "explicit", "(1) the source is `explicit`");
   } finally {
@@ -196,6 +193,43 @@ function setupRepo(): { repo: string; cleanup: () => void } {
     eq(r.source, "none", "(5) the source is `none`");
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ------------------- (6) a TIMEOUT-shaped exec failure degrades like any other
+// The stub rejects with a timeout-shaped error (node's exec kills the child
+// with a `Timeout`-named error + a `cmd` field — the shape lens-exec.ts
+// produces); resolution must fall through exactly like a plain failure:
+// step 2 → rev-parse, and rev-parse timeout → undefined. Never throws, never
+// hangs, never special-cased.
+
+{
+  const timeoutErr = () => {
+    const err = new Error(
+      "Timeout: git show-ref --verify --quiet refs/heads/feature/x (timeout 30000ms)",
+    ) as Error & { code: string; killed: boolean; cmd: string };
+    err.code = "ETIMEDOUT";
+    err.killed = true;
+    err.cmd = "git show-ref --verify --quiet refs/heads/feature/x";
+    return err;
+  };
+  const timeoutExec = async (cmd: string, _opts?: { cwd?: string; maxBuffer?: number }) =>
+    Promise.reject(timeoutErr());
+  try {
+    const { repo, cleanup } = setupRepo();
+    try {
+      // The stub rejects EVERY git call (show-ref probes AND rev-parse),
+      // so a timeout everywhere degrades all the way to undefined — the
+      // same fall-through shape as a plain exec failure (never throws, never
+      // hangs, never special-cased).
+      const r = await resolveReviewBranch({ head: "feature/x", cwd: repo }, timeoutExec);
+      eq(r.branch, undefined, "(6) a timeout in the git probes degrades to undefined");
+      eq(r.source, "none", "(6) the source is `none` (timeout is not special-cased)");
+    } finally {
+      cleanup();
+    }
+  } catch (err) {
+    eq(false, true, `(6) resolveReviewBranch must never throw (got ${err})`);
   }
 }
 

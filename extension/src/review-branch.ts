@@ -38,8 +38,16 @@
  * step or undefined, never throws into the review.
  */
 
+import { shq } from "./forge-commands.ts";
 import { trace } from "./trace.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
+
+/** #988 — every git exec in this module is bounded (matching
+ * lens-review-residuals.ts); an unbounded shell exec would hang the review
+ * for the process lifetime. A timeout degrades exactly like any other
+ * exec failure below (fall through / false / undefined) — it is never
+ * retried or surfaced. */
+const GIT_TIMEOUT_MS = 30_000;
 
 export interface ResolveReviewBranchResult {
   /** The resolved branch, or undefined when nothing branch-shaped is
@@ -82,14 +90,13 @@ export async function resolveReviewBranch(
   // keyed on, so resolution degrades to rev-parse rather than guessing.
   if (opts.head?.trim() && !opts.head.trim().startsWith("-")) {
     const headRef = opts.head.trim();
-    if (await isBranchRef(execFn, cwd, headRef)) {
-      // The resolved branch is the LOCAL name. `isBranchRef` checks
-      // `refs/heads/<headRef>` first (the full ref — a `feature/x` branch
-      // is a single local branch), then `refs/remotes/<remote>/<name>`
-      // (the remote-tracking form — `origin/feature/x` → `feature/x`).
-      const existsLocal = await checkRef(execFn, cwd, `refs/heads/${headRef}`);
-      const i = headRef.indexOf("/");
-      const localName = existsLocal ? headRef : i > 0 ? headRef.slice(i + 1) : headRef;
+    const branchRef = await isBranchRef(execFn, cwd, headRef);
+    if (branchRef) {
+      // The resolved branch is the LOCAL name: `localName` is the branch's
+      // full name for a local hit, or the ref with the leading
+      // `<remote>/` prefix stripped for a remote-tracking hit
+      // (`origin/feature/x` → `feature/x`).
+      const localName = branchRef.localName ?? headRef.slice(headRef.indexOf("/") + 1);
       trace(`review-branch: resolved ${headRef} → ${localName}`);
       return { branch: localName, source: "head" };
     }
@@ -102,6 +109,7 @@ export async function resolveReviewBranch(
     const { stdout } = await execFn("git rev-parse --abbrev-ref HEAD", {
       cwd,
       maxBuffer: 8 * 1024,
+      timeout: GIT_TIMEOUT_MS,
     });
     const head = stdout.trim();
     if (head && head !== "HEAD") return { branch: head, source: "rev-parse" };
@@ -118,7 +126,14 @@ export async function resolveReviewBranch(
 /** Does `ref` (a full `refs/...` name) exist in the repo? Never throws. */
 async function checkRef(execFn: VerifyExecFn, cwd: string, ref: string): Promise<boolean> {
   try {
-    await execFn(`git show-ref --verify --quiet ${ref}`, { cwd, maxBuffer: 8 * 1024 });
+    // #988 — the ref is caller-supplied (opts.head); shq (forge-commands.ts,
+    // the project's existing quoting helper) keeps it out of shell
+    // expansion. A timeout degrades to `false` like any other exec failure.
+    await execFn(`git show-ref --verify --quiet ${shq(ref)}`, {
+      cwd,
+      maxBuffer: 8 * 1024,
+      timeout: GIT_TIMEOUT_MS,
+    });
     return true;
   } catch {
     return false;
@@ -131,18 +146,29 @@ async function checkRef(execFn: VerifyExecFn, cwd: string, ref: string): Promise
  * (`origin/feature/x` → `refs/remotes/origin/feature/x`)? Never throws:
  * an unreadable ref namespace (non-repo cwd) simply means "not a branch
  * here" and resolution degrades to rev-parse.
+ *
+ * #988 — the result carries the LOCAL name so the caller does not re-probe
+ * `refs/heads/<original>`: `localName` is the branch's full name for a
+ * local hit, and the `<remote>/`-prefixed input for a remote hit (the
+ * caller strips the prefix — the only shape a remote hit has, so the
+ * stripped name is always derivable on that arm).
  */
-async function isBranchRef(execFn: VerifyExecFn, cwd: string, original: string): Promise<boolean> {
+async function isBranchRef(
+  execFn: VerifyExecFn,
+  cwd: string,
+  original: string,
+): Promise<{ isLocal: boolean; localName?: string } | null> {
   // Local branch (full ref) always tried first — `feature/x` is a local
   // branch with a slash, not a remote called `feature` with branch `x`.
-  if (await checkRef(execFn, cwd, `refs/heads/${original}`)) return true;
+  if (await checkRef(execFn, cwd, `refs/heads/${original}`))
+    return { isLocal: true, localName: original };
   // Remote-tracking form: `<remote>/<name>` where the full ref is the
   // original (so `origin/feature/x` → `refs/remotes/origin/feature/x`).
   const i = original.indexOf("/");
   if (i > 0) {
     const remote = original.slice(0, i);
     const name = original.slice(i + 1);
-    if (await checkRef(execFn, cwd, `refs/remotes/${remote}/${name}`)) return true;
+    if (await checkRef(execFn, cwd, `refs/remotes/${remote}/${name}`)) return { isLocal: false };
   }
-  return false;
+  return null;
 }

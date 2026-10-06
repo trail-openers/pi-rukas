@@ -43,6 +43,9 @@ async function finish(
     ledger.hasCritical,
     ledger.headSha,
     ledger.head,
+    // #988 — the finish path IS `runLensReview`'s single resolution site;
+    // thread it so the fire-and-forget write does not re-resolve.
+    branch,
   );
   // #973 — the residual-findings disclosure: posted ONLY when the verdict is
   // ISSUES_FOUND AND the branch's PR/MR resolves (see postLensResidual for

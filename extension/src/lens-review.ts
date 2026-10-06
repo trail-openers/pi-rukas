@@ -288,10 +288,11 @@ export async function runLensReview(opts: {
     trace(
       `lens-review: delta review skipped — no changes since ${resolved.since} (${resolved.reason})`,
     );
-    // #980 — the noReview path bypasses `finish()`, so the not-recorded
-    // note is set HERE (the spec clarification's explicit call-out). It
-    // fires only when the branch could not be resolved — the review would
-    // otherwise have been recorded had there been changes.
+    // #980 — the noReview path bypasses `finish()`'s ledger write and
+    // #973 disclosure post, so there is nothing this run could record — the
+    // generic NOT_RECORDED_NOTE is deliberately NOT appended (only
+    // runLensReview's normal paths record, and 5b's not-posted note
+    // covers them).
     const noReviewNote = `No changes since the last lens review (${resolved.since.slice(0, 8)}) — no re-review needed (nothing to review).`;
     return {
       verdict: "APPROVED",
@@ -303,7 +304,7 @@ export async function runLensReview(opts: {
       // #973 — decision 4: nothing changed since the last recorded lens run.
       // #973 review — noReview: this is NOT an approval (the summary renders
       // "NO REVIEW — …", never "APPROVED"); every consumer branches on it.
-      note: notRecorded ? `${noReviewNote}\n\n${notRecorded}` : noReviewNote,
+      note: noReviewNote,
       deltaReview: { since: resolved.since, head: resolved.head },
       noReview: true,
     };

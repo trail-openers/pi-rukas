@@ -161,7 +161,7 @@ export async function runAdversarialLoop(
   // #980 — resolve the branch ONCE before the loop (shared helper: explicit
   // `branch` → branch-named `head` ref → rev-parse). The VISIBLE not-recorded
   // note is threaded into every tool-path result; `ledgerWrite` keys on the SAME branch.
-  const ledgerNote = await buildLedgerNote({
+  const { branch: branchResolved, withLedgerNote } = await buildLedgerNote({
     branch: params.branch,
     head: params.head,
     workCwd: params.workCwd,
@@ -170,10 +170,13 @@ export async function runAdversarialLoop(
   const ledgerWrite = (result: DispatchResult): DispatchResult => {
     writeAdversarialLedgerEntry(result, {
       workCwd: params.workCwd,
+      // #988 — thread the branch the note resolved (same shared resolution,
+      // same args + cwd) so the write does not re-resolve.
+      resolvedBranch: branchResolved,
       branch: params.branch,
       head: params.head,
     });
-    return ledgerNote.withLedgerNote(result);
+    return withLedgerNote(result);
   };
 
   // #859 — resolve the ref range (used by both the diff and the comment check).
@@ -187,23 +190,17 @@ export async function runAdversarialLoop(
   // > 0 does NOT change the verdict. Without a range: `not-run`; early exits
   // never pay for the check.
   const commentsLineNow = () => buildCommentsLine(range, params.workCwd ?? process.cwd());
-  // #980 fix — getters read LIVE values (accumulate runs before every
-  // infraFailureResult call), so infra failures carry the current transcript path and model.
-  const infraCtx: InfraCtx = {
-    get start() {
-      return start;
-    },
-    get usage() {
-      return usage;
-    },
-    get lastTranscript() {
-      return lastTranscript;
-    },
-    get lastModel() {
-      return lastModel;
-    },
+  // #980 fix — the infra-failure result must carry the values ACCUMULATED up
+  // to this point (the transcript/model of the round that just failed), so
+  // they are read at CALL time through this snapshot rather than captured
+  // once at loop entry (a pre-loop snapshot would be stale on rounds 2+).
+  const infraCtxNow = (): InfraCtx => ({
+    start,
+    usage,
+    lastTranscript,
+    lastModel,
     toRoundRecords,
-  };
+  });
 
   // #859 — resolve the diff: a pasted string wins over a ref range (traced);
   // with no string, base+head compute the range in workCwd (else the process
@@ -376,7 +373,7 @@ export async function runAdversarialLoop(
     );
     const advCls = classifyDispatchOutcome(adv);
     if (advCls.cause !== "success") {
-      return ledgerWrite(infraFailureResult(round, "review", adv, advCls, infraCtx));
+      return ledgerWrite(infraFailureResult(round, "review", adv, advCls, infraCtxNow()));
     }
 
     const verdict = parseVerdict(adv.text);
@@ -393,7 +390,7 @@ export async function runAdversarialLoop(
           "review",
           adv,
           { ...advCls, headline: "produced no readable VERDICT marker on the final round" },
-          infraCtx,
+          infraCtxNow(),
         ),
       );
     }
@@ -442,7 +439,7 @@ export async function runAdversarialLoop(
     );
     const fixCls = classifyDispatchOutcome(fix);
     if (fixCls.cause !== "success") {
-      return ledgerWrite(infraFailureResult(round, "fix", fix, fixCls, infraCtx));
+      return ledgerWrite(infraFailureResult(round, "fix", fix, fixCls, infraCtxNow()));
     }
   }
 

@@ -47,6 +47,9 @@ export function writeLensLedgerEntry(
   hasCritical?: boolean,
   headSha?: string,
   head?: string,
+  /** #988 — the branch ALREADY resolved by `runLensReview` (threaded by the
+   * finish path) — the write skips its own re-resolution when present. */
+  resolvedBranch?: string,
 ): void {
   const write = async () => {
     const c = cwd ?? process.cwd();
@@ -54,7 +57,10 @@ export function writeLensLedgerEntry(
     // explicit `branch` → branch-named `head` → rev-parse) — the same one
     // the lens review and the residual poster use — so all three key on the
     // same branch string by construction.
-    const b = (await resolveReviewBranch({ branch, head, cwd: c }, execp)).branch;
+    // #988 — the finish path threads in `runLensReview`'s ONE resolution
+    // (same args + cwd, computed before the fan-out); self-resolution is
+    // the fallback for direct callers that did not resolve.
+    const b = resolvedBranch ?? (await resolveReviewBranch({ branch, head, cwd: c }, execp)).branch;
     if (!b) {
       trace("lens-review: ledger write skipped — no branch (detached head, no caller branch)");
       return;
