@@ -436,18 +436,12 @@ const allFail = () => ({
     repo.cleanup();
   }
 }
-// #984 — the deterministic-await contract: `finishLensReview` returns
-// `{ summary, ledgerWrite }`; awaiting `ledgerWrite` is the test-only seam
-// that lets an offline test read the ledger file after the run WITHOUT
-// changing the production contract (runLensReview discards the promise and
-// returns only the summary, so the "ledger write never gates the review
-// result" rule is preserved). The case below drives `finishLensReview`
-// directly with a REVIEW_INCOMPLETE summary and asserts that: (1) the
-// summary resolves WITHOUT awaiting `ledgerWrite` (independence), and
-// (2) awaiting `ledgerWrite` does not change the summary (byte-identical
-// contract, the #912 "never a gate on it" rule — the summary is resolved
-// at the same wall-clock moment as the pre-#984 `void` form, because the
-// await seam is a separate side-channel, not the return path).
+// #984 — the deterministic-await seam: `finishLensReview` returns
+// `{ summary, ledgerWrite }`; awaiting `ledgerWrite` lets an offline test
+// read the ledger file after the run. The case below asserts that the
+// summary is byte-identical before and after awaiting `ledgerWrite`.
+// Resolution-independence (the summary resolving without the write) is a
+// structural property of `finishLensReview`, not something this case proves.
 {
   const fix = fixtureSkillsDir("deterministic");
   const repo = setupRepo();

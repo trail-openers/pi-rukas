@@ -22,18 +22,9 @@
  * "not recorded" note makes it VISIBLE where the pre-#980 skip was silent),
  * and the disclosure note is the one visible path in place of a post.
  *
- * #984 — `finishLensReview` returns a `{ summary, ledgerWrite }` tuple so a
- * test can AWAIT the ledger write deterministically without changing the
- * production contract: production callers (`runLensReview`) discard
- * `ledgerWrite` and return only the summary, so the "ledger write never
- * gates the review result" rule (#912) is preserved — the await seam is a
- * separate side-channel, not the summary's return path. A caller that wants
- * the write to be deterministic (e.g. an offline test that reads the file
- * after the run) can await `ledgerWrite`; the summary is still returned at
- * the same wall-clock moment as before (the write is kicked off before the
- * ISSUES_FOUND post, exactly as in the pre-#984 `void` form, and the await
- * in `finish` below only joins it AFTER the post has been awaited — the
- * ordering of side effects is unchanged, the seam is merely exposed).
+ * #984 — `finishLensReview` returns a `{ summary, ledgerWrite }` tuple: the
+ * `ledgerWrite` promise is the test-only await seam for the fire-and-forget
+ * write (see `writeLensLedgerEntry` — the promise is the #984 test seam).
  */
 
 import { writeLensLedgerEntry } from "./lens-ledger.ts";
@@ -43,13 +34,9 @@ import type { Severity } from "./lens-review.ts";
 
 /**
  * The result of the single `finishLensReview` exit. `summary` is the
- * LensReviewSummary (byte-identical to the pre-#984 shape — no Promise
- * field is added to it, so the JSON-serialisation paths in
- * async-jobs/dispatch-deck are untouched). `ledgerWrite` is the
- * fire-and-forget write's promise; awaiting it is safe (the internal
- * `catch(trace)` in `writeLensLedgerEntry` already swallows failures) and
- * is the deterministic seam for offline tests that need the ledger file
- * to exist before asserting on its contents.
+ * LensReviewSummary (byte-identical to the pre-#984 shape). `ledgerWrite`
+ * is the fire-and-forget write's promise (the #984 test seam — see
+ * `writeLensLedgerEntry`); awaiting it is safe.
  */
 export type LensFinishResult = {
   summary: LensReviewSummary;
@@ -64,10 +51,8 @@ async function finish(
   ledger: { hasCritical?: boolean; headSha?: string; head?: string } = {},
 ): Promise<LensFinishResult> {
   // #984 — the fire-and-forget write's promise is captured (not discarded)
-  // and returned as `ledgerWrite`; production callers destructure and drop
-  // it, so the fire-and-forget contract is unchanged (the `catch(trace)`
-  // inside `writeLensLedgerEntry` still swallows every failure, so this
-  // promise cannot reject).
+  // and returned as `ledgerWrite`; see `writeLensLedgerEntry` for the
+  // contract (the #984 test seam).
   const ledgerWrite = writeLensLedgerEntry(
     summary.verdict,
     threshold,
