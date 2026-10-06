@@ -95,7 +95,6 @@ export const BUILTIN_TOOLS = new Set([
   "cancel_task",
   "list_tasks",
   "check_task",
-  "question",
 ]);
 
 // Helper: lookup a tool in permission entries, exact match first then wildcard.

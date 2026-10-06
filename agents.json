@@ -129,7 +129,6 @@
         "webfetch": "deny",
         "websearch": "deny",
         "todowrite": "allow",
-        "question": "allow",
         "taskctl": "allow",
         "cancel_task": "allow",
         "list_tasks": "allow",
@@ -349,7 +348,6 @@
         "skill": "allow",
         "todowrite": "allow",
         "webfetch": "allow",
-        "question": "allow",
         "task": {
           "*": "deny"
         }
