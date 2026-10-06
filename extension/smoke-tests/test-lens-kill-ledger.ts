@@ -1,5 +1,4 @@
 #!/usr/bin/env bun
-import { mock } from "bun:test";
 /**
  * #966 — an all-failed or aborted lens review must never render as APPROVED
  * and must never write a passing review-ledger entry. #980 — tool-path
@@ -32,22 +31,17 @@ import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { mock } from "bun:test";
 let exit = 0;
 function assert(cond: boolean, msg: string) {
   if (cond) console.log(`✓ ${msg}`);
-  else {
-    console.error(`✗ ${msg}`);
-    exit = 1;
-  }
+  else { console.error(`✗ ${msg}`); exit = 1; }
 }
 function eq(actual: unknown, expected: unknown, msg: string): boolean {
   const a = JSON.stringify(actual);
   const e = JSON.stringify(expected);
   if (a === e) console.log(`✓ ${msg}`);
-  else {
-    console.error(`✗ ${msg}\n    actual:   ${a}\n    expected: ${e}`);
-    exit = 1;
-  }
+  else { console.error(`✗ ${msg}\n    actual:   ${a}\n    expected: ${e}`); exit = 1; }
   return a === e;
 }
 // Mocks must be installed BEFORE the lens modules are imported (test-lens-skill-wiring
@@ -76,21 +70,19 @@ mock.module(new URL("../src/review-ledger.ts", import.meta.url).href, () => ({
   },
   workingTreePatchId: async () => ({ patchId: "test-patch-id-0000", warning: undefined }),
   lensPassed: (v: string, t: string) => v === "APPROVED" || (v === "ISSUES_FOUND" && t === "LOW"),
-  adversarialPassed: () => false,
-  branchPatchId: async () => undefined,
-  bumpLensRound: (e: unknown) => e,
-  dedupeLatest: (e: unknown[]) => e,
-  latestEntry: () => undefined,
-  ledgerPathFor: async () => undefined,
-  lensBlockedByThreshold: () => true,
-  readLedgerAt: () => [],
-  readLedgerFile: () => ({ entries: [] }),
-  remoteName: async () => undefined,
+  adversarialPassed: () => false, branchPatchId: async () => undefined,
+  bumpLensRound: (e: unknown) => e, dedupeLatest: (e: unknown[]) => e,
+  latestEntry: () => undefined, ledgerPathFor: async () => undefined,
+  lensBlockedByThreshold: () => true, readLedgerAt: () => [],
+  readLedgerFile: () => ({ entries: [] }), remoteName: async () => undefined,
   validEntries: (e: unknown[]) => e,
 }));
 // Static imports — evaluated AFTER both mock registrations, so they pick up
 // the mocked spawn and ledger seams (this is what loads lens-review.ts).
-import { type LensRunResult, runLensReview } from "../src/lens-review.ts";
+import {
+  runLensReview,
+  type LensRunResult,
+} from "../src/lens-review.ts";
 import { LENS_ROSTER } from "../src/lens-roster.ts";
 import { lensPassed, validEntries } from "../src/review-ledger.ts";
 type LedgerEntry = import("../src/review-ledger.ts").LedgerEntry;
@@ -161,11 +153,7 @@ function setupRepo(): { repo: string; branch: string; cleanup: () => void } {
   git("git add change.txt");
   git('git commit -qm "change"');
   git("git push -q origin feature/x");
-  return {
-    repo,
-    branch: "feature/x",
-    cleanup: () => rmSync(dir, { recursive: true, force: true }),
-  };
+  return { repo, branch: "feature/x", cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 async function withLedgerEnv<T>(skillsDir: string, fn: () => Promise<T>): Promise<T> {
   const priorSkills = process.env.PI_ENSEMBLE_SKILLS_DIR;
@@ -196,7 +184,6 @@ const allFail = () => ({
   ms: 500,
   exitCode: 1,
 });
-
 // (2a) ALL six lenses fail → REVIEW_INCOMPLETE + passed:false ledger entry
 {
   const fix = fixtureSkillsDir("allfail");
@@ -212,10 +199,7 @@ const allFail = () => ({
     );
     const entries = recordedEntries();
     eq(s.verdict, "REVIEW_INCOMPLETE", "(2a) all six lenses fail → REVIEW_INCOMPLETE");
-    assert(
-      s.lenses.every((l) => l.blocked),
-      "(2a) every lens is blocked",
-    );
+    assert(s.lenses.every((l) => l.blocked), "(2a) every lens is blocked");
     assert(entries !== null && entries.length === 1, "(2a) exactly one ledger entry written");
     const e = entries?.[0];
     assert(e !== undefined && e.kind === "lens", "(2a) the entry is a lens entry");
@@ -270,7 +254,10 @@ const allFail = () => ({
       "(2b) the blocked lens's parseError names the missing skill",
     );
     assert(entries?.[0]?.passed === false, "(2b) ledger entry is passed:false");
-    assert(entries?.[0]?.detail === "REVIEW_INCOMPLETE", "(2b) ledger detail is REVIEW_INCOMPLETE");
+    assert(
+      entries?.[0]?.detail === "REVIEW_INCOMPLETE",
+      "(2b) ledger detail is REVIEW_INCOMPLETE",
+    );
   } finally {
     fix.cleanup();
     repo.cleanup();
@@ -296,10 +283,7 @@ const allFail = () => ({
     const entries = recordedEntries();
     eq(s.verdict, "REVIEW_INCOMPLETE", "(2c) aborted run → REVIEW_INCOMPLETE");
     assert(s.lenses.length === ALL_SKILLS.length, "(2c) one blocked row per expected lens");
-    assert(
-      s.lenses.every((l) => l.blocked),
-      "(2c) every lens row is blocked",
-    );
+    assert(s.lenses.every((l) => l.blocked), "(2c) every lens row is blocked");
     assert(
       entries !== null && entries.length === 1,
       "(2c) the aborted run still writes a ledger entry (same path as a non-aborted all-fail run)",
@@ -333,19 +317,12 @@ const allFail = () => ({
       ),
     );
     const entries = recordedEntries();
-    eq(
-      s.verdict,
-      "REVIEW_INCOMPLETE",
-      "(2d) empty roster (no installed lens skills) → REVIEW_INCOMPLETE",
-    );
+    eq(s.verdict, "REVIEW_INCOMPLETE", "(2d) empty roster (no installed lens skills) → REVIEW_INCOMPLETE");
     assert(
       s.lenses.length >= 1,
       "(2d) at least one blocked row (never zero rows → never APPROVED)",
     );
-    assert(
-      s.lenses.every((l) => l.blocked),
-      "(2d) every lens row is blocked",
-    );
+    assert(s.lenses.every((l) => l.blocked), "(2d) every lens row is blocked");
     assert(
       entries !== null && entries.length === 1 && entries[0].passed === false,
       "(2d) the empty-roster run writes a passed:false ledger entry",
@@ -371,17 +348,16 @@ const allFail = () => ({
         cwd: repo.repo,
         // NO branch — the tool path's shape (lensChildFn stub keeps it
         // offline; the roster comes from the fixture skills dir).
-        lensChildFn: async () =>
-          ({
-            lens: "SIMPLICITY",
-            ok: true,
-            ms: 10,
-            startMs: 0,
-            findings: [],
-            summary: "Checked the diff; nothing in this lane.",
-            attempts: 1,
-            blocked: false,
-          }) as unknown as LensRunResult,
+        lensChildFn: async () => ({
+          lens: "SIMPLICITY",
+          ok: true,
+          ms: 10,
+          startMs: 0,
+          findings: [],
+          summary: "Checked the diff; nothing in this lane.",
+          attempts: 1,
+          blocked: false,
+        }) as unknown as LensRunResult,
       }),
     );
     const entries = recordedEntries();
@@ -416,25 +392,24 @@ const allFail = () => ({
       runLensReview({
         diff: "diff --git a/a b/a\n+x",
         cwd: repo.repo,
-        lensChildFn: async () =>
-          ({
-            lens: "SIMPLICITY",
-            ok: true,
-            ms: 10,
-            startMs: 0,
-            findings: [
-              {
-                severity: "MEDIUM" as const,
-                path: "src/a.ts",
-                line: 10,
-                title: "a finding",
-                lens: "SIMPLICITY",
-              },
-            ],
-            summary: "Found one issue.",
-            attempts: 1,
-            blocked: false,
-          }) as unknown as LensRunResult,
+        lensChildFn: async () => ({
+          lens: "SIMPLICITY",
+          ok: true,
+          ms: 10,
+          startMs: 0,
+          findings: [
+            {
+              severity: "MEDIUM" as const,
+              path: "src/a.ts",
+              line: 10,
+              title: "a finding",
+              lens: "SIMPLICITY",
+            },
+          ],
+          summary: "Found one issue.",
+          attempts: 1,
+          blocked: false,
+        }) as unknown as LensRunResult,
       }),
     );
     const entries = recordedEntries();
@@ -443,8 +418,14 @@ const allFail = () => ({
       typeof s.note === "string" && s.note.length > 0,
       "(5b) the summary carries the VISIBLE not-posted note (never a silent skip)",
     );
-    assert(/NOT posted/.test(s.note ?? ""), "(5b) the note says the disclosure was NOT posted");
-    assert(/merge guard/.test(s.note ?? ""), "(5b) the note names the merge guard refusal");
+    assert(
+      /NOT posted/.test(s.note ?? ""),
+      "(5b) the note says the disclosure was NOT posted",
+    );
+    assert(
+      /merge guard/.test(s.note ?? ""),
+      "(5b) the note names the merge guard refusal",
+    );
     assert(
       entries === null || entries.length === 0,
       "(5b) no ledger entry written (no branch resolvable)",
@@ -454,12 +435,14 @@ const allFail = () => ({
     repo.cleanup();
   }
 }
-for (const th of ["LOW", "MEDIUM", "HIGH", "CRITICAL"] as const) {
-  assert(
-    lensPassed("REVIEW_INCOMPLETE", th) === false,
-    `(4) lensPassed(REVIEW_INCOMPLETE, ${th}) === false — the guard can never pass an incomplete review`,
-  );
+{
+  for (const th of ["LOW", "MEDIUM", "HIGH", "CRITICAL"] as const) {
+    assert(
+      lensPassed("REVIEW_INCOMPLETE", th) === false,
+      `(4) lensPassed(REVIEW_INCOMPLETE, ${th}) === false — the guard can never pass an incomplete review`,
+    );
+  }
+  assert(lensPassed("APPROVED", "MEDIUM") === true, "(4) APPROVED still passes (control)");
 }
-assert(lensPassed("APPROVED", "MEDIUM") === true, "(4) APPROVED still passes (control)");
 console.log(`\nexit ${exit}`);
 process.exit(exit);
