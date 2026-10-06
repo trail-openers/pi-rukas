@@ -465,9 +465,10 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
   const { repo } = setupRepo();
   const lf = ledgerFile(repo);
   try {
-    // The ledger file does not exist. A short 500 ms budget means the
-    // poll burns at most 500 ms (not the 30 s default) and returns null
-    // on the negative path — the writer skipped, so no entry is expected.
+    // The ledger file does not exist and no writer is invoked: the short
+    // 500 ms budget exercises the helper's `return null` path on a short
+    // budget (the detached-head writer-skip is what produces it in
+    // production; here the file is simply never written).
     const result = waitForLedger(lf, 500);
     assert(
       result === null,

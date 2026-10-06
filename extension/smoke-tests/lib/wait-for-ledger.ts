@@ -31,6 +31,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { validEntries } from "../../src/review-ledger.ts";
 import type { LedgerEntry } from "../../src/review-ledger.ts";
 
 /** Default budget for "an entry is expected" — 30 s, the issue's floor. */
@@ -52,7 +53,7 @@ export function waitForLedger(
         "malformed ledger file (expected an object with an entries array)",
       );
     }
-    return (parsed as { entries: unknown[] }).entries as LedgerEntry[];
+    return validEntries((parsed as { entries: unknown[] }).entries);
   };
   const deadline = Date.now() + budgetMs;
   let silentReads = 0;

@@ -17,15 +17,11 @@
  *   5a. #980 tool path, no branch, named-branch checkout → HEAD-resolved key
  *   5b. #980 tool path, detached HEAD → visible NOT-posted note, no entry
  *
- * The ledger write under test is stubbed at the `appendLedgerEntry` seam:
- * the fire-and-forget write is deterministic (no file to sleep on) and the
- * recorded payload is run through the SAME `validEntries` validation the real
- * write applies. The REAL writeLensLedgerEntry → appendLedgerEntry file-write
- * path is covered in test-review-ledger.ts. The per-lens failed-branch
- * evidence rules (stderr vs findings vs thinking-only vs cap-kill) live in
- * test-lens-kill-child.ts. The retry-note / blocked-banner rendering
- * assertions (3a/3b and the per-case "no retry note" checks) live in
- * test-lens-retry-note.ts.
+ * The ledger write under test is stubbed at the `appendLedgerEntry` seam
+ * (deterministic; the payload runs through the SAME `validEntries`
+ * validation the real write applies). The real file-write path is covered
+ * in test-review-ledger.ts; per-lens evidence rules in test-lens-kill-child.ts;
+ * retry-note / blocked-banner assertions in test-lens-retry-note.ts.
  */
 import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -464,27 +460,31 @@ const allFail = () => ({
     findings: [],
   };
   const r = await finishLensReview(blockedSummary, "MEDIUM", repo.repo, repo.branch, { hasCritical: false });
-  eq(r.summary.verdict, "REVIEW_INCOMPLETE", "(2e) finish returns REVIEW_INCOMPLETE");
-  // Snapshot the summary SYNCHRONOUSLY before the await — the two sides of
-  // the byte-identity assert must be independent (a shared r.summary on both
-  // sides would compare the value against itself).
-  const beforeJson = JSON.stringify(r.summary);
-  // Await the ledger write — the seam the issue's deterministic-await option
-  // requires. It must not throw (the catch(trace) inside writeLensLedgerEntry
-  // swallows every failure).
-  await r.ledgerWrite;
-  // The summary is byte-identical before and after the await (the #912 rule
-  // — the ledger write is a side effect, never a gate on the result).
-  assert(
-    JSON.stringify(r.summary) === beforeJson,
-    "(2e) the summary is byte-identical across the ledger-write await — summary changed across the ledger-write await",
-  );
-  assert(
-    JSON.stringify(r.summary) === JSON.stringify({ ...blockedSummary, note: r.summary.note }),
-    "(2e) the summary still matches the blocked shape plus the finish note",
-  );
-  fix.cleanup();
-  repo.cleanup();
+  try {
+    eq(r.summary.verdict, "REVIEW_INCOMPLETE", "(2e) finish returns REVIEW_INCOMPLETE");
+    // Snapshot the summary SYNCHRONOUSLY before the await — the two sides
+    // must be independent (a shared r.summary on both sides would compare
+    // the value against itself).
+    const beforeJson = JSON.stringify(r.summary);
+    // Await the ledger write — the seam the issue's deterministic-await option
+    // requires; writeLensLedgerEntry swallows failures via catch(trace).
+    await r.ledgerWrite;
+    // The #912 rule — the ledger write is a side effect, never a gate.
+    assert(
+      JSON.stringify(r.summary) === beforeJson,
+      "(2e) the summary is byte-identical across the ledger-write await — summary changed across the ledger-write await",
+    );
+    assert(
+      JSON.stringify(r.summary) === JSON.stringify({ ...blockedSummary, note: r.summary.note }),
+      "(2e) the summary still matches the blocked shape plus the finish note",
+    );
+    // #973 — the disclosure note fires ONLY on ISSUES_FOUND; this run is
+    // REVIEW_INCOMPLETE, so no note is set (finish's single note site).
+    assert(r.summary.note === undefined, "(2e) a non-ISSUES_FOUND run carries no note");
+  } finally {
+    fix.cleanup();
+    repo.cleanup();
+  }
 }
 
 {

@@ -150,8 +150,8 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   // LOAD_TOLERANCE_CEILING_MS is a generous load-tolerance bound: it absorbs
   // driver overhead (state I/O, diff ops, transient-retry classification) on
   // loaded hosts. It is NOT the regression detector — the exact
-  // `loopCalls === MAX_OUTER_CALLS` assertion (plus the elapsed floor via
-  // CALL_DELAY_MS) is the real signal.
+  // `loopCalls === MAX_OUTER_CALLS` assertion is the real signal; this bound
+  // only absorbs host load.
   const LOAD_TOLERANCE_CEILING_MS = 10_000; // 10 s, generous load-tolerance bound
 
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-357-t8-"));
