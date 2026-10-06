@@ -18,6 +18,7 @@ import { registerModelPicker } from "./model-picker.ts";
 import { registerPermissionGuard } from "./permission-guard.ts";
 import { registerPlanTool } from "./plan-tool.ts";
 import { setPmActive } from "./pm-active.ts";
+import { registerQuestionTool } from "./question-tool.ts";
 import { registerResearchTool } from "./research-tool.ts";
 import { warnIfRetryConfigTooLow } from "./retry-config-check.ts";
 import { registerCheckReviewCapTool } from "./review-cap.ts";
@@ -50,6 +51,10 @@ export default async function (pi: ExtensionAPI) {
   // The whole retry story assumes a provider's `retry-after` is honoured. That
   // depends on a setting pi-rukas does not own, so say so when it is not.
   void warnIfRetryConfigTooLow();
+  // #987 — the `question` tool the PM prompt and agents.json reference.
+  // Parent-only by construction: subagent mode returns above, before any
+  // tools are registered.
+  registerQuestionTool(pi);
   registerDispatchTools(pi);
   registerDispatchStatusTool(pi);
   registerDispatchPeekTool(pi);
