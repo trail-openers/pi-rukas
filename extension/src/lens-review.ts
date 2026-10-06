@@ -222,7 +222,7 @@ export async function runLensReview(opts: {
   // not-posted note is derived from the same resolution outcome. Computed
   // here — synchronously before the fan-out — so the note can never lie
   // about a fire-and-forget write's outcome.
-  const { branch: branchResolved, notRecorded } = await resolveLensReviewBranch(opts);
+  const { branch: branchResolved } = await resolveLensReviewBranch(opts);
   // #873 — the roster is data: the INSTALLED skills dir's `code-review-*`
   // SKILL.md files (precedence in frontmatter), PLUS a blocked entry for
   // every expected lens (the BUNDLED skill/ dir) that is absent from the

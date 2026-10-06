@@ -26,8 +26,6 @@ export interface LedgerNoteHelpers {
    * undefined when nothing resolved. Threaded into the ledger write (#988)
    * so it does not re-resolve. */
   branch: string | undefined;
-  /** The "not recorded" note, or undefined when the branch resolved. */
-  ledgerNote: string | undefined;
   /** Thread the note into a result's text at every return (all seven exits
    * share the same wording; a no-op when the branch resolved). */
   withLedgerNote: (r: DispatchResult) => DispatchResult;
@@ -51,5 +49,5 @@ export async function buildLedgerNote(opts: {
   const ledgerNote = resolution.branch ? undefined : NOT_RECORDED_NOTE;
   const withLedgerNote = (r: DispatchResult): DispatchResult =>
     ledgerNote ? { ...r, text: `${r.text}\n\n${ledgerNote}` } : r;
-  return { branch: resolution.branch, ledgerNote, withLedgerNote };
+  return { branch: resolution.branch, withLedgerNote };
 }
