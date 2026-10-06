@@ -16,19 +16,22 @@ import { WORK_STATE_SCHEMA_VERSION, WORK_STEPS } from "./workflow-state-schema.t
 import { CAP_HIT_FIXED_LITERALS } from "./workflow-state-validate-caps.ts";
 
 /**
- * Known event kinds. The union type is the source of the vocabulary; this
- * tuple exists only so the validator can test membership (types are erased
- * at runtime).
+ * Known event kinds — a literal `as const` tuple (narrower than the
+ * pre-#986 `readonly WorkEventKind[]`, which proved each entry was a valid
+ * kind but not that the list was complete — the silent-resume-refusal bug
+ * this issue fixes). Consumed at runtime by `validateDiscriminants` for
+ * `eventLog[].kind` membership. Value-level consumers that need the wider
+ * `readonly unknown[]` shape (e.g. for `.includes`) should cast:
+ * `(KNOWN_EVENT_KINDS as readonly unknown[])` — the literal tuple type is
+ * intentionally not widened here.
  *
- * #986 — literal tuple + compile-time exhaustiveness assertion. The old
- * `readonly WorkEventKind[]` annotation proved each entry was a valid kind
- * but NOT that the list was complete: a developer adding a new member to
- * the `WorkEvent` union and forgetting it in this tuple produced a silent
- * resume refusal ("eventLog[N].kind has unknown value") that no offline
- * gate caught (the smoke test's reverse check compared the tuple length to
- * its OWN fixture set, and smoke tests are not type-checked by
- * extension/tsconfig.json). The assertion below makes tsc fail — naming
- * the missing kind — when any union member is absent here.
+ * The compile-time exhaustiveness assertion below (`[MissingEventKinds]
+ * extends [never]`) makes tsc fail, naming the missing kind, if any
+ * `WorkEvent` union member is added without also being listed here — the
+ * src-side half of the guard; the smoke test in
+ * smoke-tests/test-work-event-kinds-completeness.ts is the offline runtime
+ * half (it is not type-checked by extension/tsconfig.json, so the
+ * src-side assertion is the authoritative guard).
  */
 export const KNOWN_EVENT_KINDS = [
   "step-started",

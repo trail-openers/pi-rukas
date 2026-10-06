@@ -9,19 +9,29 @@
  * kind has unknown value").
  *
  * The guard is the offline runtime form the issue mandates:
- *   1. Forward — one minimal, well-formed event of EVERY WorkEvent kind
- *      passes validateDiscriminants with zero "unknown value" findings.
+ *   1. Forward — one FULL, well-typed instance of EVERY WorkEvent kind
+ *      passes validateDiscriminants with ZERO findings at all (not just
+ *      zero "unknown value" findings).
  *      Fails on the pre-fix tuple (one finding per missing kind, naming the
  *      exact value).
+ *      The zero-findings assertion is a full validateDiscriminants
+ *      regression over every kind — not kind-level only: it rejects any
+ *      finding of any discriminant on any fixture. Per-kind FIELD validation
+ *      was deliberately NOT added to the validator itself (the issue's spec
+ *      clarification); this test only exercises the existing field checks.
+ *      Note: smoke tests are NOT type-checked by extension/tsconfig.json
+ *      (its include covers only the src tree); completeness of the tuple
+ *      against the union is enforced by the src-side compile-time
+ *      exhaustiveness assertion in src/workflow-state-validate.ts, which
+ *      tsc DOES check.
  *   2. Reverse — every tuple entry must be a WorkEvent kind (checked here
- *      against the union-derived set; a stale tuple entry — a typo'd kind
- *      with no union member — would stop validating real events instead of
- *      failing loudly).
+ *      against the fixture-derived set; a stale tuple entry — a typo'd kind
+ *      with no fixture — would stop validating real events instead of
+ *      failing loudly). A true OMISSION (a union member absent from both
+ *      the tuple and the fixtures) is NOT caught by this check; it is
+ *      caught by the src-side compile-time assertion (item 1's note).
  *   3. Resume-shaped — a RUNNING state file whose eventLog carries the four
  *      incident kinds validates clean (the #981 incident shape).
- *
- * Kind-level only: the validator is not extended with per-kind field
- * validation (the issue's spec clarification).
  */
 
 import type { WorkEvent } from "../src/workflow-state-events.ts";
@@ -37,10 +47,41 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-// Minimal well-formed instance of every WorkEvent union member. Typed as
+// Full, well-typed instance of every WorkEvent union member. Typed as
 // the union itself — a union change that drops or renames a kind (or
 // changes a required field) fails the type-check, which is the optional
 // compile-time half of the guard.
+
+// The four kinds the pre-fix KNOWN_EVENT_KINDS tuple omitted — the live
+// bug of #986: worktree-provisioned (#558, 8b226a5), safety-net-commit
+// (#625, b8af99d), handoff-consolidated (#674, handoff fragment),
+// worktree-leftover-handled (#730 emitter, issue #735). Shared by the
+// all-kinds array (via spread) and the resume-shaped loop below.
+const incidentKindEvents: WorkEvent[] = [
+  {
+    kind: "worktree-provisioned",
+    at: 1,
+    worktreeId: "default",
+    worktreePath: "/wt",
+    outcome: "symlink",
+  },
+  {
+    kind: "safety-net-commit",
+    at: 1,
+    workstreamId: "default",
+    worktreePath: "/wt",
+    commitSha: "abc",
+    filesCommitted: 2,
+  },
+  {
+    kind: "handoff-consolidated",
+    at: 1,
+    branchName: "feature/x",
+    workstreams: ["default"],
+  },
+  { kind: "worktree-leftover-handled", at: 1, path: "/wt", action: "adopt", refs: [] },
+];
+
 const everyKindEvent: WorkEvent[] = [
   { kind: "step-started", step: "explore", at: 1 },
   { kind: "adversarial-approved", at: 1, jobId: "j1", rounds: 1 },
@@ -144,27 +185,9 @@ const everyKindEvent: WorkEvent[] = [
     emptyBrief: false,
     ids: ["m1"],
   },
-  // #558 / #625 / #674 / #735 — the four kinds the pre-fix tuple omitted
-  // (the #986 bug): worktree-provisioned (8b226a5), safety-net-commit
-  // (b8af99d), handoff-consolidated (see handoff fragment),
-  // worktree-leftover-handled (#730 emitter, issue #735).
-  {
-    kind: "worktree-provisioned",
-    at: 1,
-    worktreeId: "default",
-    worktreePath: "/wt",
-    outcome: "ok",
-  },
-  {
-    kind: "safety-net-commit",
-    at: 1,
-    workstreamId: "default",
-    worktreePath: "/wt",
-    commitSha: "abc",
-    filesCommitted: 2,
-  },
+  // The four #986 incident kinds (shared constant above).
+  ...incidentKindEvents,
   { kind: "branch-reset", at: 1, branch: "feature/x", oldSha: "a", newSha: "b" },
-  { kind: "worktree-leftover-handled", at: 1, path: "/wt", action: "adopt", refs: [] },
   {
     kind: "dispatch-slow",
     at: 1,
@@ -182,10 +205,11 @@ const everyKindEvent: WorkEvent[] = [
 // The union-derived kind set: the source of truth both directions check
 // against (derived, never a second hand-maintained list).
 const unionKinds = new Set<string>(everyKindEvent.map((e) => e.kind));
-
-// 1. Forward: one event of EVERY union kind passes the validator with no
-// "unknown value" finding. Pre-fix tuple: the four missing kinds each
-// produce exactly `eventLog[i].kind has unknown value "<kind>"`.
+// 1. Forward: one FULL, well-typed instance of EVERY union kind passes the
+// validator with ZERO findings of any kind (not just "unknown value") —
+// a full validateDiscriminants regression over the fixture set. Pre-fix
+// tuple: the four missing kinds each produce exactly
+// `eventLog[i].kind has unknown value "<kind>"`.
 {
   const findings = validateDiscriminants({
     ...initialState(986, 1000),
@@ -196,26 +220,27 @@ const unionKinds = new Set<string>(everyKindEvent.map((e) => e.kind));
     unknownFindings.length === 0,
     `every WorkEvent kind validates clean (got ${unknownFindings.length} unknown-kind finding(s): ${unknownFindings.join("; ")})`,
   );
-  // No other finding either — the fixtures are well-formed by construction
-  // and the guard is kind-level only, so a clean result is the full
-  // acceptance, not just "no unknown-value findings".
-  assert(findings.length === 0, "validateDiscriminants returns zero findings overall");
+  // Zero findings of ANY kind overall — not just "no unknown-value
+  // findings": the fixtures are full, well-typed instances, so every
+  // discriminant the validator checks (kind, step, cap-hit fields) must
+  // validate clean, not merely be an unknown-value pass.
+  assert(findings.length === 0, "validateDiscriminants returns zero findings of any kind overall");
 }
 
-// 2. Reverse: the tuple has exactly the union's kinds — no more (a typo'd
-// entry that no union member can produce would stop validating real events,
-// the same drift the forward guard catches, the other way), no fewer (a
-// union member the tuple omitted is the #986 bug itself). NOTE: this
-// comparison is against the TEST's own fixture set — if a new WorkEvent
-// member is forgotten in BOTH the tuple and the fixtures, 38 == 38 passes
-// here and nothing does (the smoke tests are not type-checked by
-// extension/tsconfig.json). Compile-time completeness of the tuple itself
-// is enforced by the #986 exhaustiveness assertion in
-// src/workflow-state-validate.ts (`[MissingEventKinds] extends [never]`);
-// this check is the runtime backstop for stale/typo'd entries.
+// 2. Reverse: the tuple has exactly the fixture set's kinds — no more (a
+// stale/typo'd entry that no fixture can produce would stop validating real
+// events, the same drift the forward guard catches, the other way), no fewer
+// (a fixture kind the tuple omitted is the #986 bug itself). NOTE: this is a
+// STALE-ENTRY BACKSTOP relative to this test's fixture set — a true OMISSION
+// (a new WorkEvent member missing from BOTH the tuple and the fixtures)
+// passes here and is caught instead by the src-side compile-time assertion.
+// The smoke tests are not type-checked by extension/tsconfig.json;
+// completeness of the tuple against the WorkEvent union is enforced by the
+// #986 exhaustiveness assertion in src/workflow-state-validate.ts
+// (`[MissingEventKinds] extends [never]`), which tsc does check.
 assert(
   (KNOWN_EVENT_KINDS as readonly unknown[]).length === unionKinds.size,
-  `KNOWN_EVENT_KINDS (${(KNOWN_EVENT_KINDS as readonly unknown[]).length} entries) has exactly the union's ${unionKinds.size} kinds (no typos, no omissions)`,
+  `KNOWN_EVENT_KINDS (${(KNOWN_EVENT_KINDS as readonly unknown[]).length} entries) has exactly the fixture set's ${unionKinds.size} kinds (stale-entry backstop; omissions are caught by the src-side tsc assertion)`,
 );
 
 // 3. Resume-shaped: the #981 incident — a RUNNING state file whose eventLog
@@ -223,38 +248,8 @@ assert(
 // validator fires only on the resume path (status "running"), so this is
 // the shape that actually refused to resume.
 {
-  const incidentKinds: Array<[string, object]> = [
-    [
-      "worktree-provisioned",
-      {
-        kind: "worktree-provisioned",
-        at: 1,
-        worktreeId: "default",
-        worktreePath: "/wt",
-        outcome: "ok",
-      },
-    ],
-    [
-      "safety-net-commit",
-      {
-        kind: "safety-net-commit",
-        at: 1,
-        workstreamId: "default",
-        worktreePath: "/wt",
-        commitSha: "abc",
-        filesCommitted: 2,
-      },
-    ],
-    [
-      "handoff-consolidated",
-      { kind: "handoff-consolidated", at: 1, branchName: "feature/x", workstreams: ["default"] },
-    ],
-    [
-      "worktree-leftover-handled",
-      { kind: "worktree-leftover-handled", at: 1, path: "/wt", action: "adopt", refs: [] },
-    ],
-  ];
-  for (const [name, ev] of incidentKinds) {
+  for (const ev of incidentKindEvents) {
+    const name = ev.kind;
     const running = {
       ...initialState(986, 1000),
       eventLog: [ev],
