@@ -361,7 +361,7 @@ function fakeResult(role: string, text = "done", ok = true): DispatchResult {
     dispatchDeck.batchSnapshot().length === 0,
     "quiet: release on an absent header is a no-op",
   );
-  process.env.PI_ENSEMBLE_QUIET_STATUS = undefined;
+  delete process.env.PI_ENSEMBLE_QUIET_STATUS;
   dispatchDeck.startEntry("q-2", {
     label: "#55 explore · explore",
     role: "explore",

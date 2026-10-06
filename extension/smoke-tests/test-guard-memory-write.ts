@@ -153,7 +153,7 @@ function assert(cond: boolean, msg: string) {
     );
     assert(calls.length === 0, "no writeFn calls when env is '0'");
   } finally {
-    if (original === undefined) process.env.PI_ENSEMBLE_INVARIANT_MEMORY = undefined;
+    if (original === undefined) delete process.env.PI_ENSEMBLE_INVARIANT_MEMORY;
     else process.env.PI_ENSEMBLE_INVARIANT_MEMORY = original;
   }
 }

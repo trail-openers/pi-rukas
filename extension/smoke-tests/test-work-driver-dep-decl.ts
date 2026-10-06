@@ -212,7 +212,7 @@ function assert(cond: boolean, msg: string) {
       "fold: depends-on of folded workstream is not silently preserved",
     );
   } finally {
-    if (prev === undefined) process.env.PI_ENSEMBLE_MAX_WORKSTREAMS = undefined;
+    if (prev === undefined) delete process.env.PI_ENSEMBLE_MAX_WORKSTREAMS;
     else process.env.PI_ENSEMBLE_MAX_WORKSTREAMS = prev;
   }
 }

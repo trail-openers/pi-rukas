@@ -131,7 +131,7 @@ console.log("=== test-sandbox-fs-guard-boundary summary ===\n");
       "PR #207: separator boundary respected — sibling-with-prefix is NOT inside root",
     );
   } finally {
-    if (prev === undefined) process.env.PI_ENSEMBLE_WORKSPACE_ROOT = undefined;
+    if (prev === undefined) delete process.env.PI_ENSEMBLE_WORKSPACE_ROOT;
     else process.env.PI_ENSEMBLE_WORKSPACE_ROOT = prev;
     rmSync(root, { recursive: true, force: true });
     rmSync(sibling, { recursive: true, force: true });
@@ -192,9 +192,9 @@ console.log("=== test-sandbox-fs-guard-boundary summary ===\n");
       "PR #213: clearing PI_ENSEMBLE_ALLOWED_ROOTS reverts to workspace-only",
     );
   } finally {
-    if (prevWs === undefined) process.env.PI_ENSEMBLE_WORKSPACE_ROOT = undefined;
+    if (prevWs === undefined) delete process.env.PI_ENSEMBLE_WORKSPACE_ROOT;
     else process.env.PI_ENSEMBLE_WORKSPACE_ROOT = prevWs;
-    if (prevAllowed === undefined) process.env.PI_ENSEMBLE_ALLOWED_ROOTS = undefined;
+    if (prevAllowed === undefined) delete process.env.PI_ENSEMBLE_ALLOWED_ROOTS;
     else process.env.PI_ENSEMBLE_ALLOWED_ROOTS = prevAllowed;
     rmSync(workspace, { recursive: true, force: true });
     rmSync(downloads, { recursive: true, force: true });

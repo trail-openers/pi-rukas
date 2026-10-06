@@ -71,7 +71,7 @@ const withEnv = async (env: Record<string, string | undefined>, fn: () => Promis
   const prev: Record<string, string | undefined> = {};
   for (const [k, v] of Object.entries(env)) {
     prev[k] = process.env[k];
-    if (v === undefined) process.env[k] = undefined;
+    if (v === undefined) delete process.env[k];
     else process.env[k] = v;
   }
   try {

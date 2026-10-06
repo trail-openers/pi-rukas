@@ -309,7 +309,7 @@ function assert(cond: boolean, msg: string) {
       { repoRoot: dir, issue: 810, scratchDir: dir },
       state,
     );
-    if (saved === undefined) process.env.PI_ENSEMBLE_FORGE = undefined;
+    if (saved === undefined) delete process.env.PI_ENSEMBLE_FORGE;
     else process.env.PI_ENSEMBLE_FORGE = saved;
     assert(result.ok, `e2e: consolidation succeeds on the real repo (reason=${result.reason})`);
     let aheadOnBranch = -1;

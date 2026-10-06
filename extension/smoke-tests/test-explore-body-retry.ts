@@ -258,7 +258,7 @@ async function capOf(dir: string, issue: number): Promise<string | undefined> {
       "escape hatch still parks on an empty body",
     );
   } finally {
-    process.env.PI_ENSEMBLE_TRANSIENT_RETRY = undefined;
+    delete process.env.PI_ENSEMBLE_TRANSIENT_RETRY;
     rmSync(dir, { recursive: true, force: true });
   }
 }

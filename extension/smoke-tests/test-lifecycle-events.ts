@@ -302,7 +302,7 @@ const KINDS = ALL_SHAPES.map((d) => d.kind);
   emitCompleted("muted", "developer", "developer", 1000, 100);
   assert(entries.length === 0, "quiet env var prevents appendEntry");
   assert(sentMessages.length === 0, "quiet env var prevents sendMessage");
-  process.env.PI_ENSEMBLE_QUIET_LIFECYCLE = undefined;
+  delete process.env.PI_ENSEMBLE_QUIET_LIFECYCLE;
   emitDispatched("audible", "developer", "developer");
   assert(entries.length === 1, "emits resume when env var unset");
   detach();
