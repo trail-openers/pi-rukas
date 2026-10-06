@@ -11,16 +11,29 @@
  * kind must still load (a parked cycle's history has to stay observable).
  */
 
-import type { WorkStep } from "./workflow-state-events.ts";
+import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
 import { WORK_STATE_SCHEMA_VERSION, WORK_STEPS } from "./workflow-state-schema.ts";
 import { CAP_HIT_FIXED_LITERALS } from "./workflow-state-validate-caps.ts";
 
 /**
- * Known event kinds. The union type is the source of the vocabulary; this
- * tuple exists only so the validator can test membership (types are erased
- * at runtime).
+ * Known event kinds — a literal `as const` tuple (narrower than the
+ * pre-#986 `readonly WorkEventKind[]`, which proved each entry was a valid
+ * kind but not that the list was complete — the silent-resume-refusal bug
+ * this issue fixes). Consumed at runtime by `validateDiscriminants` for
+ * `eventLog[].kind` membership. Value-level consumers that need the wider
+ * `readonly unknown[]` shape (e.g. for `.includes`) should cast:
+ * `(KNOWN_EVENT_KINDS as readonly unknown[])` — the literal tuple type is
+ * intentionally not widened here.
+ *
+ * The compile-time exhaustiveness assertion below (`[MissingEventKinds]
+ * extends [never]`) makes tsc fail, naming the missing kind, if any
+ * `WorkEvent` union member is added without also being listed here — the
+ * src-side half of the guard; the smoke test in
+ * smoke-tests/test-work-event-kinds-completeness.ts is the offline runtime
+ * half (it is not type-checked by extension/tsconfig.json, so the
+ * src-side assertion is the authoritative guard).
  */
-export const KNOWN_EVENT_KINDS: readonly unknown[] = [
+export const KNOWN_EVENT_KINDS = [
   "step-started",
   "dispatch-started",
   "dispatch-completed",
@@ -50,11 +63,24 @@ export const KNOWN_EVENT_KINDS: readonly unknown[] = [
   "verify-full-status",
   // #782 — the consolidated-verify gate's single-retry recovery marker.
   "verify-flake-recovered",
+  // #558 — the branch step's worktree provisioning record (the driver writes
+  // it when it symlinks dependencies into a fresh worktree). Absent from the
+  // tuple, a cycle that crashed after provisioning refused to resume.
+  "worktree-provisioned",
   "widening-scan",
   "memory-write",
   "memory-inject",
   // #741 — the converge gate's one-shot corrective dispatch marker.
   "converge-redispatch",
+  // #625 — the develop step's safety-net commit record (the driver writes it
+  // when it commits a workstream's in-scope work on a cap/failure exit).
+  "safety-net-commit",
+  // #674 — the handoff consolidation record (the driver writes it when it
+  // consolidates parallel workstreams into a single handoff).
+  "handoff-consolidated",
+  // #735 — the branch step's leftover-worktree handling record (the driver
+  // writes it when it adopts or removes a stale .worktrees/ entry).
+  "worktree-leftover-handled",
   // #849 — the develop fence recovery marker (discarded SHA + owners).
   "fence-recovery-started",
   // #844 — the branch step's stale-local-branch reset record (old + new tip).
@@ -67,7 +93,19 @@ export const KNOWN_EVENT_KINDS: readonly unknown[] = [
   // dispatch-completed). A state file written by a newer driver must
   // resume on an older one's reader without halting on an unknown kind.
   "dispatch-slow",
-];
+] as const;
+
+// #986 — compile-time exhaustiveness. If the `WorkEvent` union gains a kind
+// not listed above, `MissingEventKinds` becomes that literal and the
+// `[MissingEventKinds] extends [never]` constraint fails with a tsc error
+// naming the kind (e.g. `Type '"lens-issues-found"' is not assignable to
+// type 'never'`). A plain `extends` would not fire: the conditional is
+// evaluated against a naked `never`, and `never extends [never]` is true,
+// so wrapping both sides in tuples is what makes an empty missing-set and a
+// non-empty one diverge.
+type MissingEventKinds = Exclude<WorkEvent["kind"], (typeof KNOWN_EVENT_KINDS)[number]>;
+const _eventKindExhaustive: [MissingEventKinds] extends [never] ? true : MissingEventKinds = true;
+void _eventKindExhaustive;
 
 /** `pipelineState.status` vocabulary. */
 export const KNOWN_STATUSES: readonly unknown[] = ["running", "merged", "handoff", "aborted"];
@@ -389,7 +427,7 @@ export function validateDiscriminants(state: unknown): string[] {
         out.push(`eventLog[${i}] is not an object`);
         return;
       }
-      if (!KNOWN_EVENT_KINDS.includes(e.kind)) {
+      if (!(KNOWN_EVENT_KINDS as readonly unknown[]).includes(e.kind)) {
         out.push(`eventLog[${i}].kind has unknown value ${JSON.stringify(e.kind)}`);
         return; // an unrecognised kind's other fields are not worth parsing
       }
