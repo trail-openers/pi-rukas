@@ -147,12 +147,15 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   // Maximum expected outer calls = inner budget (ADVERSARIAL_PER_WS_MAX_RETRIES
   // = 2 retries + 1 initial = 3) + RETRY_ONCE outer pass (1 call) = 4.
   const MAX_OUTER_CALLS = ADVERSARIAL_PER_WS_MAX_RETRIES + 2; // 4
-  // #984 — the fixed 10 s ceiling is load tolerance: it absorbs driver
-  // overhead (state I/O, diff ops, transient-retry classification) on loaded
-  // hosts that exhausted the pre-#984 1000 ms budget. The regression signal
-  // for call-count changes is the exact `loopCalls === MAX_OUTER_CALLS`
-  // assertion below, not the ceiling.
-  const TIMING_CEILING_MS = 10_000; // 10 s, 10× the pre-#984 1000 ms budget
+  // The timing ceiling is a load-tolerance floor, not a regression detector:
+  // the exact `loopCalls === MAX_OUTER_CALLS` assertion is the real signal.
+  // The ceiling absorbs driver overhead (state I/O, diff ops, transient-retry
+  // classification) on loaded hosts that exhausted the pre-#984 1000 ms
+  // budget. A single-iteration hang is NOT caught by the ceiling alone —
+  // it is caught by the early stall check below (2× CALL_DELAY_MS), which
+  // fails fast on a hung iteration rather than waiting the full 10 s.
+  const TIMING_CEILING_MS = 10_000; // 10 s, load-tolerance floor
+  const EARLY_STALL_CHECK_MS = 2 * CALL_DELAY_MS; // 200 ms = 2× expected per-iteration cost
 
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-357-t8-"));
   try {
@@ -222,13 +225,27 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       `#357 T8: inactivity kill consumed exactly ${MAX_OUTER_CALLS} outer calls (inner fanout ${ADVERSARIAL_PER_WS_MAX_RETRIES} retries + RETRY_ONCE), got ${loopCalls}`,
     );
 
-    // Elapsed-time assertion: bound is proportional to MAX_OUTER_CALLS ×
-    // CALL_DELAY_MS. A surprise extra retry would push elapsed past
-    // TIMING_CEILING_MS, catching budget-exhaustion regressions that
-    // increase the call count beyond MAX_OUTER_CALLS.
+    // Early stall check: a single hung iteration (a `setTimeout` that never
+    // fires, an unhandled rejection, a stalled state write) would not be
+    // caught by the ceiling alone (it only fires after 10 s) or by the
+    // call-count assertion (it only sees that the 4th call did not return,
+    // and even that is async). This check fails fast: after 2× CALL_DELAY_MS
+    // of elapsed time, if fewer than 2 calls have completed the loop has
+    // stalled on an early iteration.
+    const stallElapsed = Date.now() - startMs;
+    if (stallElapsed >= EARLY_STALL_CHECK_MS && loopCalls < 2) {
+      assert(
+        false,
+        `#357 T8: early stall detected — only ${loopCalls} outer call(s) completed after ${stallElapsed}ms (expected ≥2 after ${EARLY_STALL_CHECK_MS}ms); a single iteration appears to have hung`,
+      );
+    }
+
+    // Elapsed-time assertion: the ceiling is a load-tolerance floor, not a
+    // regression detector (the `loopCalls === MAX_OUTER_CALLS` assertion is
+    // the real signal). The ceiling absorbs driver overhead on loaded hosts.
     assert(
       elapsed < TIMING_CEILING_MS,
-      `#357 T8: elapsed ${elapsed}ms is within the timing ceiling ${TIMING_CEILING_MS}ms (${MAX_OUTER_CALLS} calls × ${CALL_DELAY_MS}ms + headroom)`,
+      `#357 T8: elapsed ${elapsed}ms is within the load-tolerance ceiling ${TIMING_CEILING_MS}ms (${MAX_OUTER_CALLS} calls × ${CALL_DELAY_MS}ms + headroom)`,
     );
 
     // Correctness: an inactivity kill is NOT a review rejection.

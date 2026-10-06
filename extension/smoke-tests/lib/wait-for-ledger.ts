@@ -50,9 +50,13 @@ export function waitForLedger(
   budgetMs: number = LEDGER_WAIT_BUDGET_MS,
 ): LedgerEntry[] | null {
   const read = (): LedgerEntry[] => {
-    const parsed = JSON.parse(readFileSync(file, "utf8")) as { entries?: unknown };
-    const entries = Array.isArray(parsed?.entries) ? parsed.entries : [];
-    return entries as LedgerEntry[];
+    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    if (typeof parsed !== "object" || parsed === null || !Array.isArray(parsed?.entries)) {
+      throw new SyntaxError(
+        "malformed ledger file (expected an object with an entries array)",
+      );
+    }
+    return (parsed as { entries: unknown[] }).entries as LedgerEntry[];
   };
   const deadline = Date.now() + budgetMs;
   let silentReads = 0;

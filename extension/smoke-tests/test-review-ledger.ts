@@ -453,5 +453,30 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
   }
 }
 
+// ----------------------------- no entry expected (negative assertion)
+//
+// The detached-head / no-branch-resolved case: the writer skips (the
+// branch is unresolvable, so `writeLensLedgerEntry` does not write), and
+// the helper's short-budget path returns null quickly. This exercises
+// the `budgetMs` parameter and the `return null` branch, which are
+// otherwise dead surface (no caller passes a short budget).
+
+{
+  const { repo } = setupRepo();
+  const lf = ledgerFile(repo);
+  try {
+    // The ledger file does not exist. A short 500 ms budget means the
+    // poll burns at most 500 ms (not the 30 s default) and returns null
+    // on the negative path — the writer skipped, so no entry is expected.
+    const result = waitForLedger(lf, 500);
+    assert(
+      result === null,
+      "negative assertion: no ledger entry expected → returns null on a short budget",
+    );
+  } finally {
+    rmSync(path.dirname(repo), { recursive: true, force: true });
+  }
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);
