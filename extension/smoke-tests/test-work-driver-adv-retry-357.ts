@@ -147,12 +147,13 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   // Maximum expected outer calls = inner budget (ADVERSARIAL_PER_WS_MAX_RETRIES
   // = 2 retries + 1 initial = 3) + RETRY_ONCE outer pass (1 call) = 4.
   const MAX_OUTER_CALLS = ADVERSARIAL_PER_WS_MAX_RETRIES + 2; // 4
-  // LOAD_TOLERANCE_CEILING_MS is a generous load-tolerance bound: it absorbs
-  // driver overhead (state I/O, diff ops, transient-retry classification) on
-  // loaded hosts. It is NOT the regression detector — the exact
-  // `loopCalls === MAX_OUTER_CALLS` assertion is the real signal; this bound
-  // only absorbs host load.
-  const LOAD_TOLERANCE_CEILING_MS = 10_000; // 10 s, generous load-tolerance bound
+  // LOAD_TOLERANCE_CEILING_MS is a load-tolerance bound proportional to the
+  // attempt count: (MAX_OUTER_CALLS + 1) × CALL_DELAY_MS covers the expected
+  // wall-clock cost, and the +5 s absorbs host load (state I/O, diff ops,
+  // transient-retry classification) on loaded hosts. It is NOT the regression
+  // detector — the exact `loopCalls === MAX_OUTER_CALLS` assertion is the real
+  // signal; this bound only absorbs host load.
+  const LOAD_TOLERANCE_CEILING_MS = (MAX_OUTER_CALLS + 1) * CALL_DELAY_MS + 5_000; // ≈5.5 s, proportional load-tolerance bound
 
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-357-t8-"));
   try {
@@ -222,12 +223,13 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       `#357 T8: inactivity kill consumed exactly ${MAX_OUTER_CALLS} outer calls (inner fanout ${ADVERSARIAL_PER_WS_MAX_RETRIES} retries + RETRY_ONCE), got ${loopCalls}`,
     );
 
-    // Elapsed-time assertion: a generous load-tolerance bound, not a
-    // regression detector (the `loopCalls === MAX_OUTER_CALLS` assertion is
-    // the real signal). It absorbs driver overhead on loaded hosts.
+    // Elapsed-time assertion: a load-tolerance bound scaled to the attempt
+    // count (plus fixed host-load headroom), not a regression detector (the
+    // `loopCalls === MAX_OUTER_CALLS` assertion is the real signal). It
+    // absorbs driver overhead on loaded hosts.
     assert(
       elapsed < LOAD_TOLERANCE_CEILING_MS,
-      `#357 T8: elapsed ${elapsed}ms is within the generous load-tolerance bound ${LOAD_TOLERANCE_CEILING_MS}ms`,
+      `#357 T8: elapsed ${elapsed}ms is within the load-tolerance bound ${LOAD_TOLERANCE_CEILING_MS}ms (scales with ${MAX_OUTER_CALLS} attempts + 5 s host-load headroom)`,
     );
 
     // Correctness: an inactivity kill is NOT a review rejection.
