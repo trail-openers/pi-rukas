@@ -8,8 +8,14 @@
 
 import os from "node:os";
 import path from "node:path";
-import type { Finding, FindingSource, LensRunResult, Severity } from "./lens-review.ts";
+import type { Finding, FindingSource, LensRunResult } from "./lens-review.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
+
+/** The finding's severity level. Owned here (the pure leaf both the format
+ * module and the lens-review module use), so the `lens-review-format.ts →
+ * lens-review.ts` import no longer carries it (#980 — the cycle was left
+ * type-only but the split that broke it is real now). */
+export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
 
 /**
  * The skills dir for the lens review (the installed `code-review-*` skills).
