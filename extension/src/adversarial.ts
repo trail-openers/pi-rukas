@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { classifyDispatchOutcome } from "./adversarial-classify.ts";
+import { buildLedgerNote } from "./adversarial-ledger-note.ts";
 import { writeAdversarialLedgerEntry } from "./adversarial-ledger.ts";
 import { buildAdversarialPrompt, buildFixPrompt } from "./adversarial-prompts.ts";
 import { infraFailureResult, runPhaseWithInfraRetry } from "./adversarial-retry.ts";
@@ -163,7 +164,24 @@ export async function runAdversarialLoop(
   let lastTranscript: string | undefined;
   let lastModel: string | undefined;
 
-  const ledgerWrite = (result: DispatchResult) => writeAdversarialLedgerEntry(result, params);
+  // #980 — resolve the branch ONCE, before the loop (shared helper):
+  // explicit `branch` → a branch-named `head` ref → `git rev-parse
+  // --abbrev-ref HEAD`. The VISIBLE not-recorded note (when unresolvable)
+  // is threaded into every tool-path result; `ledgerWrite` keys the entry
+  // on the SAME resolved branch.
+  const ledgerNote = await buildLedgerNote({
+    branch: params.branch,
+    head: params.head,
+    workCwd: params.workCwd,
+  });
+
+  const ledgerWrite = (result: DispatchResult): DispatchResult => {
+    writeAdversarialLedgerEntry(result, {
+      workCwd: params.workCwd,
+      branch: params.branch,
+    });
+    return ledgerNote.withLedgerNote(result);
+  };
 
   // #859 — resolve the ref range (used by both the diff and the comment check).
   const range = params.base && params.head ? { base: params.base, head: params.head } : null;
@@ -176,6 +194,13 @@ export async function runAdversarialLoop(
   // count > 0 does NOT change the verdict. Without a range: `not-run`. Early
   // exits (empty-diff skip, errors) never pay for the check.
   const commentsLineNow = () => buildCommentsLine(range, params.workCwd ?? process.cwd());
+  const infraCtx = {
+    start,
+    usage,
+    lastTranscript,
+    lastModel,
+    toRoundRecords,
+  };
 
   // #859 — resolve the diff: a pasted string wins over a ref range (traced);
   // with no string, base+head compute the range in workCwd (else the process
@@ -184,6 +209,18 @@ export async function runAdversarialLoop(
   // string, which the loop would review as "nothing to change" and approve.
   let diff: string;
   let getDiff = params.getDiff;
+  const noDiffResult = (text: string): DispatchResult =>
+    ledgerWrite(
+      synthesizeResult({
+        ok: false,
+        loopOutcome: "rejected",
+        text,
+        ms: Date.now() - start,
+        usage,
+        transcriptPath: lastTranscript,
+        model: lastModel,
+      }),
+    );
   if (params.diff && range) {
     trace(
       `adversarial: diff string supplied alongside base=${range.base} head=${range.head} — the diff string wins`,
@@ -196,17 +233,9 @@ export async function runAdversarialLoop(
     // Round 1 uses the diff computed once here at tool entry.
     const initial = await rangeDiffFn(cwd, range.base, range.head);
     if (!initial.ok) {
-      const r = synthesizeResult({
-        ok: false,
-        loopOutcome: "rejected",
-        text: `Adversarial loop could not compute the diff for ${range.base}...${range.head}: ${initial.reason}`,
-        ms: Date.now() - start,
-        usage,
-        transcriptPath: lastTranscript,
-        model: lastModel,
-      });
-      ledgerWrite(r);
-      return r;
+      return noDiffResult(
+        `Adversarial loop could not compute the diff for ${range.base}...${range.head}: ${initial.reason}`,
+      );
     }
     diff = initial.diff;
     // Rounds 2+ re-compute the SAME range, so a fix round's changes are
@@ -225,17 +254,9 @@ export async function runAdversarialLoop(
       return r.diff;
     };
   } else {
-    const r = synthesizeResult({
-      ok: false,
-      loopOutcome: "rejected",
-      text: "Adversarial loop: provide `diff`, or both `base` and `head` (with `workCwd`) — nothing to review was supplied.",
-      ms: Date.now() - start,
-      usage,
-      transcriptPath: lastTranscript,
-      model: lastModel,
-    });
-    ledgerWrite(r);
-    return r;
+    return noDiffResult(
+      "Adversarial loop: provide `diff`, or both `base` and `head` (with `workCwd`) — nothing to review was supplied.",
+    );
   }
 
   // Mark this job as orchestrator-shaped so dispatch_peek / dispatch_steer
@@ -353,15 +374,7 @@ export async function runAdversarialLoop(
     );
     const advCls = classifyDispatchOutcome(adv);
     if (advCls.cause !== "success") {
-      const r = infraFailureResult(round, "review", adv, advCls, {
-        start,
-        usage,
-        lastTranscript,
-        lastModel,
-        toRoundRecords,
-      });
-      ledgerWrite(r);
-      return r;
+      return ledgerWrite(infraFailureResult(round, "review", adv, advCls, infraCtx));
     }
 
     const verdict = parseVerdict(adv.text);
@@ -373,18 +386,15 @@ export async function runAdversarialLoop(
       // reviewed, so this is not an approval and not a rejection — it is the
       // same "no verdict exists" case the infra path already reports, and the
       // step router already knows to retry it once.
-      const r = infraFailureResult(
-        round,
-        "review",
-        adv,
-        {
-          ...advCls,
-          headline: "produced no readable VERDICT marker on the final round",
-        },
-        { start, usage, lastTranscript, lastModel, toRoundRecords },
+      return ledgerWrite(
+        infraFailureResult(
+          round,
+          "review",
+          adv,
+          { ...advCls, headline: "produced no readable VERDICT marker on the final round" },
+          infraCtx,
+        ),
       );
-      ledgerWrite(r);
-      return r;
     }
     if (action === "pass") {
       // `PASSED WITH FINDINGS` rather than `APPROVED` when something is still
@@ -407,8 +417,7 @@ export async function runAdversarialLoop(
         model: lastModel,
         adversarialRounds: toRoundRecords(rounds),
       });
-      ledgerWrite(r);
-      return r;
+      return ledgerWrite(r);
     }
     if (action === "reject") break;
 
@@ -432,15 +441,7 @@ export async function runAdversarialLoop(
     );
     const fixCls = classifyDispatchOutcome(fix);
     if (fixCls.cause !== "success") {
-      const r = infraFailureResult(round, "fix", fix, fixCls, {
-        start,
-        usage,
-        lastTranscript,
-        lastModel,
-        toRoundRecords,
-      });
-      ledgerWrite(r);
-      return r;
+      return ledgerWrite(infraFailureResult(round, "fix", fix, fixCls, infraCtx));
     }
   }
 
@@ -470,8 +471,7 @@ export async function runAdversarialLoop(
     model: lastModel,
     adversarialRounds: toRoundRecords(rounds),
   });
-  ledgerWrite(r);
-  return r;
+  return ledgerWrite(r);
 }
 
 function toRoundRecords(

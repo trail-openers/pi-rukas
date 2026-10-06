@@ -24,7 +24,7 @@ async function finish(
   threshold: Severity,
   cwd: string | undefined,
   branch: string | undefined,
-  ledger: { hasCritical?: boolean; headSha?: string } = {},
+  ledger: { hasCritical?: boolean; headSha?: string; head?: string } = {},
 ): Promise<LensReviewSummary> {
   void writeLensLedgerEntry(
     summary.verdict,
@@ -33,6 +33,7 @@ async function finish(
     branch,
     ledger.hasCritical,
     ledger.headSha,
+    ledger.head,
   );
   // #973 — the residual-findings disclosure: posted ONLY when the verdict is
   // ISSUES_FOUND AND the branch's PR/MR resolves (see postLensResidual for

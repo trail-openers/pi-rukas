@@ -9,17 +9,23 @@
  *   2a. all-fail        → REVIEW_INCOMPLETE + passed:false ledger entry
  *   2b. partial-fail    → REVIEW_INCOMPLETE + passed:false ledger entry
  *   2c. pre-aborted     → REVIEW_INCOMPLETE + passed:false ledger entry
+ *   2d. empty roster    → REVIEW_INCOMPLETE (the #966 silent-approval hole)
+ *   5a. tool path (no branch, named-branch checkout) → ledger entry under
+ *       the HEAD-resolved branch (the #980 shared resolver)
+ *   5b. tool path (no branch, detached HEAD) → VISIBLE not-posted note on
+ *       ISSUES_FOUND, no ledger entry (the #980 never-silent contract)
  *   3a. retry note absent when every lens is blocked (incident shape)
  *   3b. retry note names exactly the lenses that retried AND succeeded
  *   4.  lensPassed(REVIEW_INCOMPLETE, …) === false at every threshold
  *
- * PI_ENSEMBLE_REVIEW_LEDGER_FILE points at a temp file; the write under test
- * is the REAL writeLensLedgerEntry → appendLedgerEntry path. The per-lens
- * failed-branch evidence rules (stderr vs findings vs thinking-only vs
- * cap-kill) live in test-lens-kill-child.ts.
+ * The ledger write is deterministic here: `mock.module` intercepts the
+ * review-ledger `appendLedgerEntry` seam BEFORE the lens modules load, so
+ * the fire-and-forget write records its payload instead of touching a file
+ * (no sleep-and-poll). The per-lens failed-branch evidence rules (stderr vs
+ * findings vs thinking-only vs cap-kill) live in test-lens-kill-child.ts.
  */
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { mock } from "bun:test";
@@ -35,7 +41,10 @@ function eq(actual: unknown, expected: unknown, msg: string): boolean {
   else { console.error(`✗ ${msg}\n    actual:   ${a}\n    expected: ${e}`); exit = 1; }
   return a === e;
 }
-// Mock must be installed BEFORE the lens modules are imported.
+// Mocks must be installed BEFORE the lens modules are imported (both mocks
+// must be registered first — bun's `mock.module` intercepts every import of
+// the module that is evaluated after registration, including the static
+// imports below, which are what load lens-review.ts).
 let spawnResponder: () => unknown = () => ({
   role: "code-review-specialist",
   ok: true,
@@ -48,25 +57,60 @@ mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
   makeRunId: () => "run-966",
   spawnSpecialist: async () => spawnResponder(),
 }));
-const { runLensReview } = await import("../src/lens-review.ts");
-const { renderSummary } = await import("../src/lens-review-format.ts");
-const { MAX_LENS_ATTEMPTS } = await import("../src/lens-review.ts");
-type LensRunResult = import("../src/lens-review.ts").LensRunResult;
-const { LENS_ROSTER } = await import("../src/lens-roster.ts");
-const { lensPassed, validEntries } = await import("../src/review-ledger.ts");
-type LedgerEntry = import("../src/review-ledger.ts").LedgerEntry;
 // #980 — the fire-and-forget ledger write is DETERMINISTIC here: the shared
 // append seam is mocked to record its payload, and the assertions read the
 // recorded payload instead of sleep-and-polling a real file.
-const realReviewLedger = await import("../src/review-ledger.ts");
-let recordedLedgerWrites: Array<{ entries: unknown[] }> = [];
+let recordedLedgerWrites: unknown[] = [];
+// #980 — the fire-and-forget ledger write is DETERMINISTIC here: the shared
+// append seam is mocked to record its payload, and the assertions read the
+// recorded payload instead of sleep-and-polling a real file. Bun's
+// `mock.module` factory must define every export with an INLINE value —
+// referencing the real module's namespace (e.g. `realRL.lensPassed`) breaks
+// the mock for consumers that import the module AFTER registration (verified
+// empirically). The stubs below are the minimal inline shapes the code under
+// test actually calls.
 mock.module(new URL("../src/review-ledger.ts", import.meta.url).href, () => ({
-  ...realReviewLedger,
   appendLedgerEntry: async (entry: unknown) => {
-    recordedLedgerWrites.push({ entries: [entry] });
+    recordedLedgerWrites.push(entry);
     return undefined;
   },
+  // The writer calls `workingTreePatchId(execp, cwd)` to compute the patchId
+  // it stores. The stub returns a deterministic id (the test asserts on
+  // `typeof patchId === 'string' && length > 0`, not the actual value).
+  workingTreePatchId: async () => ({ patchId: "test-patch-id-0000", warning: undefined }),
+  // The writer calls `lensPassed(verdict, threshold)` to compute the `passed`
+  // boolean. The stub mirrors the real predicate (lens-ledger.ts calls it
+  // with the same args the test asserts on).
+  lensPassed: (verdict: string, threshold: string) =>
+    verdict === "APPROVED" || (verdict === "ISSUES_FOUND" && threshold === "LOW"),
+  // The remaining exports are not called by the code under test in this
+  // test (lens-review-diff.ts uses `latestEntry` and `ledgerPathFor` for
+  // the delta-base resolution, which only fires when `since`/`full` are
+  // supplied — none of these cases do). They are stubbed as no-ops so
+  // bun's module system is satisfied.
+  adversarialPassed: () => false,
+  branchPatchId: async () => undefined,
+  bumpLensRound: (e: unknown) => e,
+  dedupeLatest: (e: unknown[]) => e,
+  latestEntry: () => undefined,
+  ledgerPathFor: async () => undefined,
+  lensBlockedByThreshold: () => true,
+  readLedgerAt: () => [],
+  readLedgerFile: () => ({ entries: [] }),
+  remoteName: async () => undefined,
+  validEntries: (e: unknown[]) => e,
 }));
+// Static imports — evaluated AFTER both mock registrations, so they pick up
+// the mocked spawn and ledger seams (this is what loads lens-review.ts).
+import {
+  runLensReview,
+  MAX_LENS_ATTEMPTS,
+  type LensRunResult,
+} from "../src/lens-review.ts";
+import { renderSummary } from "../src/lens-review-format.ts";
+import { LENS_ROSTER } from "../src/lens-roster.ts";
+import { lensPassed, validEntries } from "../src/review-ledger.ts";
+type LedgerEntry = import("../src/review-ledger.ts").LedgerEntry;
 const ALL_SKILLS = LENS_ROSTER.map((l) => l.skill);
 function fixtureSkillsDir(name: string): { dir: string; cleanup: () => void } {
   const dir = path.join(mkdtempSync(path.join(os.tmpdir(), `lens966-${name}-`)), "skills");
@@ -153,7 +197,7 @@ async function withLedgerEnv<T>(skillsDir: string, fn: () => Promise<T>): Promis
  */
 function recordedEntries(): LedgerEntry[] | null {
   if (recordedLedgerWrites.length === 0) return null;
-  return validEntries(recordedLedgerWrites.flatMap((w) => w.entries));
+  return validEntries(recordedLedgerWrites);
 }
 const allFail = () => ({
   role: "code-review-specialist",
@@ -283,7 +327,7 @@ const allFail = () => ({
     assert(entries?.[0]?.passed === false, "(2c) aborted run's ledger entry is passed:false");
     assert(
       entries?.[0]?.detail === "REVIEW_INCOMPLETE",
-      "(2c) aborted run's ledger detail is REVIEW_INCOMPLETE (never a passing entry)",
+      "(2c) the aborted run's ledger detail is REVIEW_INCOMPLETE (never a passing entry)",
     );
   } finally {
     fix.cleanup();
@@ -326,11 +370,10 @@ const allFail = () => ({
 }
 // #980 — tool-path branch resolution: `dispatch_lens_review` never supplies
 // `opts.branch`; the shared resolver (review-branch.ts) recovers the branch
-// from HEAD (or from a branch-named `head`) and `finish()` keys both the
-// ledger write and the residual-disclosure post on that resolved value.
+// from HEAD (or from a branch-named `head`) and `finishLensReview` keys both
+// the ledger write and the residual-disclosure post on that resolved value.
 // (5a) Tool path, no branch, cwd on a named branch → ledger entry is written
-// under the HEAD-resolved branch (the real writeLensLedgerEntry path, with
-// the writer mocked to record the payload — deterministic, no sleep+poll).
+// under the HEAD-resolved branch (mocked seam, deterministic — no sleep+poll).
 {
   const fix = fixtureSkillsDir("toolpath-named");
   const repo = setupRepo();
@@ -374,7 +417,8 @@ const allFail = () => ({
 }
 // (5b) Tool path, no branch, detached HEAD, no branch-named head → the
 // summary carries the VISIBLE "disclosure NOT posted" note on ISSUES_FOUND
-// (the pre-#980 silent skip), and no ledger entry is written.
+// (the pre-#980 silent skip is now a visible note), and no ledger entry is
+// written (nothing to record without a branch).
 {
   const fix = fixtureSkillsDir("toolpath-detached");
   const repo = setupRepo();
