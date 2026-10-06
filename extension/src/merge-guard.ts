@@ -17,9 +17,11 @@
  *   3. Resolve the merge target: `gh pr view N --json …` (or `glab mr view
  *      N --output json`). A missing/unreadable `gh` AND `glab` both refuse.
  *   4. Carve-out: release-please / dependabot identities pass through.
- *   5. Fetch the branch: `git fetch <remote> <headRef>` where `<remote>` is
- *      resolved like forge detection (`origin` → `upstream` → first remote;
- *      no remote → refuse) — fail-closed on error.
+ *   5. Fetch the branch AND the base: `git fetch <remote> <headRef>` and
+ *      `git fetch <remote> <baseRef>` where `<remote>` is resolved like forge
+ *      detection (`origin` → `upstream` → first remote; no remote → refuse) —
+ *      fail-closed on error. Both refs must be fresh because the patch-id
+ *      (step 7) is computed from their merge-base.
  *   6. Head OID check: the fetched head must equal the PR's `headOid`.
  *      A mismatch means the branch moved after the PR was opened; refuse.
  *      This is a FRESHNESS gate: it confirms the branch is where the PR
@@ -275,9 +277,18 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
       );
     }
 
-    // Fetch the branch. Fail-closed on error.
+    // Fetch the branch AND the base. Fail-closed on error. Both refs must
+    // be fresh because `branchPatchId` computes the merge-base of the two —
+    // a stale local `<remote>/<baseBranch>` yields a wrong (stale) merge-base
+    // and therefore a wrong patch-id, which either incorrectly refuses a
+    // passing review or, worse, allows a merge with an outdated id.
     try {
       await execFn(`git fetch ${remote} ${target.headBranch}`, {
+        cwd,
+        maxBuffer: 64 * 1024,
+        timeout: EXEC_TIMEOUT_MS,
+      });
+      await execFn(`git fetch ${remote} ${target.baseBranch}`, {
         cwd,
         maxBuffer: 64 * 1024,
         timeout: EXEC_TIMEOUT_MS,
