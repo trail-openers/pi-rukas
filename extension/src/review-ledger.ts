@@ -92,10 +92,23 @@ export { ledgerPathFor } from "./review-ledger-path.ts";
 export { bumpLensRound } from "./review-ledger-round.ts";
 
 /**
- * The patch id of a branch's changes: the diff from `baseRef` to the branch
- * head, fed through `git patch-id --stable`. The writer and the guard both
- * call this, so the same content always yields the same id (and a new commit
- * always changes it).
+ * The patch id of a branch's changes: the THREE-dot diff (merge-base of
+ * `branchRef` and `baseRef` → branch head), fed through `git patch-id
+ * --stable`. The writer (workingTreePatchId) and the guard both compute from
+ * the MERGE-BASE of the branch head and the base ref, so a base that ADVANCES
+ * with disjoint commits does not change the branch's own diff — the id is
+ * stable across base advancement, and a new commit (or a rebase that changes
+ * the diff) still changes it. `git diff a...b` is git's canonical
+ * merge-base form; if the merge-base cannot be resolved the command fails
+ * and we return undefined (fail closed — a missing/unresolvable merge-base
+ * must refuse, not silently fall back to the two-dot form).
+ *
+ * Note: `baseRef` is the PR's ACTUAL base branch (the guard and the #973
+ * residual poster resolve it from the PR's `baseRefName`), while the
+ * writers (`workingTreePatchId`) resolve it against the MAINLINE via
+ * `detectMainline`. A PR whose base is not the mainline therefore fails
+ * closed by patchId mismatch — see docs/troubleshooting.md → "The patchId
+ * base" for why that is deliberate.
  *
  * Returns undefined when the diff is empty or patch-id fails — the caller
  * decides the fail-closed meaning.
@@ -107,13 +120,18 @@ export async function branchPatchId(
   baseRef: string,
 ): Promise<string | undefined> {
   try {
-    // `git patch-id --stable` over the diff of the branch's own commits.
+    // `git diff <base>...<branch>` = diff from the MERGE-BASE of the two
+    // refs to the branch head — the same base semantics the writers use
+    // (workingTreePatchId diffs from `git merge-base HEAD <mainline>`).
+    // The three-dot form lets git resolve the merge-base; a branch whose
+    // changes are fully contained by a base advance yields an empty diff
+    // here, and parsePatchId drops that to undefined (fail closed).
     // Piping here is intentional: patch-id reads the diff from stdin.
-    const { stdout } = await execFn(`git diff ${baseRef}..${branchRef} | git patch-id --stable`, {
+    const { stdout } = await execFn(`git diff ${baseRef}...${branchRef} | git patch-id --stable`, {
       cwd,
       maxBuffer: 1024 * 1024,
     });
-    return parsePatchId(stdout, `${baseRef}..${branchRef}`);
+    return parsePatchId(stdout, `${baseRef}...${branchRef}`);
   } catch (err) {
     trace(`review-ledger: patch-id failed for ${branchRef}: ${(err as Error).message}`);
     return undefined;
