@@ -27,9 +27,16 @@ import { trace } from "./trace.ts";
 import { execp } from "./lens-exec.ts";
 
 /**
- * Write a lens-review entry to the review ledger. Fire-and-forget: the
- * caller does not await this; the function is safe to call after the
- * verdict is computed.
+ * Write a lens-review entry to the review ledger. Fire-and-forget in
+ * PRODUCTION: callers (runLensReview's single finish path) may discard the
+ * returned promise — the internal `catch(trace)` below swallows every
+ * failure, so the promise cannot reject and an un-awaited caller is safe.
+ * The promise is returned (not `void`) so a test can AWAIT the write
+ * deterministically without changing the production contract (#984):
+ * the await seam is a separate side-channel (returned promise), not the
+ * summary's return path, so the "ledger write never gates the review
+ * result" rule (#912) is preserved — the summary is still resolved at the
+ * same wall-clock moment as the pre-#984 `void` form.
  *
  * #973 — the entry carries the round-cap rule's inputs: `hasCritical`
  * (whether the reviewed verdict carried a CRITICAL finding) and `headSha`
@@ -50,7 +57,7 @@ export function writeLensLedgerEntry(
   /** #988 — the branch ALREADY resolved by `runLensReview` (threaded by the
    * finish path) — the write skips its own re-resolution when present. */
   resolvedBranch?: string,
-): void {
+): Promise<void> {
   const write = async () => {
     const c = cwd ?? process.cwd();
     // #980 — the branch comes from the SHARED resolver (review-branch.ts:
@@ -83,5 +90,11 @@ export function writeLensLedgerEntry(
     };
     await appendLedgerEntry(entry, execp, c);
   };
-  write().catch((err) => trace(`lens-review: ledger write failed: ${(err as Error).message}`));
+  // The catch is load-bearing for the fire-and-forget contract: the
+  // returned promise MUST resolve (never reject) so an un-awaited caller
+  // cannot leak an unhandled rejection. Tests that await it can rely on
+  // the same guarantee.
+  return write().catch((err) =>
+    trace(`lens-review: ledger write failed: ${(err as Error).message}`),
+  );
 }

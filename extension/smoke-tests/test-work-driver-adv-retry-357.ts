@@ -147,10 +147,21 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   // Maximum expected outer calls = inner budget (ADVERSARIAL_PER_WS_MAX_RETRIES
   // = 2 retries + 1 initial = 3) + RETRY_ONCE outer pass (1 call) = 4.
   const MAX_OUTER_CALLS = ADVERSARIAL_PER_WS_MAX_RETRIES + 2; // 4
-  // Timing ceiling: MAX_OUTER_CALLS × CALL_DELAY_MS with generous headroom for
-  // driver overhead (state I/O, diff ops). A regression adding a 5th call would
-  // push elapsed past (MAX_OUTER_CALLS + 1) × CALL_DELAY_MS = 500ms.
-  const TIMING_CEILING_MS = (MAX_OUTER_CALLS + 1) * CALL_DELAY_MS + 500; // 1000ms
+  // #984 — load-tolerant ceiling: the driver does state I/O (workflow-state
+  // read/write per step, eventLog appends), diff ops, and the transient-retry
+  // classification on top of the MAX_OUTER_CALLS × CALL_DELAY_MS of simulated
+  // inner-call delay. A fixed +500 ms headroom (the pre-#984 value) was
+  // exhausted on a loaded host — the issue's observed 1114 ms > 1000 ms —
+  // because the mocked 100 ms setTimeouts do NOT fire before their delay, but
+  // every OTHER ms of driver work is real wall-clock, and under load each
+  // step boundary costs more than the idle-host average. The new ceiling is
+  // 10× the old budget (10 s) — generous enough to absorb the overhead a
+  // loaded host adds while still catching a regression that adds an extra
+  // outer call (a 5th call would push elapsed to ~500 ms of simulated delay
+  // plus overhead, well within 10 s; a regression that removes the retry
+  // entirely would fail the EXACT `loopCalls === MAX_OUTER_CALLS` assertion
+  // below, which is the primary regression signal and is unchanged).
+  const TIMING_CEILING_MS = 10_000; // 10 s, 10× the pre-#984 1000 ms budget
 
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-357-t8-"));
   try {

@@ -4,14 +4,14 @@
  * gate).
  *
  * `runLensReview` routes EVERY run shape through `finishLensReview`: it
- * writes the ledger entry (fire-and-forget — the write is a side effect,
- * never a gate on the result) and, on the one verdict that needs a post
- * (ISSUES_FOUND), posts the #973 residual-findings disclosure. #980 — the
- * branch arrives ALREADY RESOLVED (the shared `resolveReviewBranch` outcome
- * computed once in `runLensReview`), so the ledger write and the disclosure
- * marker key on the SAME branch string by construction; when it is undefined
- * the ledger write skips (traced) and the summary carries the VISIBLE
- * "disclosure NOT posted" note instead of the pre-#980 silent skip.
+ * writes the ledger entry (fire-and-forget in production — the write is a
+ * side effect, never a gate on the result) and, on the one verdict that
+ * needs a post (ISSUES_FOUND), posts the #973 residual-findings disclosure.
+ * #980 — the branch arrives ALREADY RESOLVED (the shared `resolveReviewBranch`
+ * outcome computed once in `runLensReview`), so the ledger write and the
+ * disclosure marker key on the SAME branch string by construction; when it
+ * is undefined the ledger write skips (traced) and the summary carries the
+ * VISIBLE "disclosure NOT posted" note instead of the pre-#980 silent skip.
  *
  * #966 — the ledger's `passed` is derived from the RESOLVED verdict (via
  * `lensPassed` inside `writeLensLedgerEntry`), and every run shape that fails,
@@ -21,6 +21,19 @@
  * remaining path that writes nothing is the unresolvable-branch skip (the
  * "not recorded" note makes it VISIBLE where the pre-#980 skip was silent),
  * and the disclosure note is the one visible path in place of a post.
+ *
+ * #984 — `finishLensReview` returns a `{ summary, ledgerWrite }` tuple so a
+ * test can AWAIT the ledger write deterministically without changing the
+ * production contract: production callers (`runLensReview`) discard
+ * `ledgerWrite` and return only the summary, so the "ledger write never
+ * gates the review result" rule (#912) is preserved — the await seam is a
+ * separate side-channel, not the summary's return path. A caller that wants
+ * the write to be deterministic (e.g. an offline test that reads the file
+ * after the run) can await `ledgerWrite`; the summary is still returned at
+ * the same wall-clock moment as before (the write is kicked off before the
+ * ISSUES_FOUND post, exactly as in the pre-#984 `void` form, and the await
+ * in `finish` below only joins it AFTER the post has been awaited — the
+ * ordering of side effects is unchanged, the seam is merely exposed).
  */
 
 import { writeLensLedgerEntry } from "./lens-ledger.ts";
@@ -28,14 +41,34 @@ import type { LensReviewSummary } from "./lens-review-format.ts";
 import { postLensResidualDisclosure } from "./lens-review-residuals.ts";
 import type { Severity } from "./lens-review.ts";
 
+/**
+ * The result of the single `finishLensReview` exit. `summary` is the
+ * LensReviewSummary (byte-identical to the pre-#984 shape — no Promise
+ * field is added to it, so the JSON-serialisation paths in
+ * async-jobs/dispatch-deck are untouched). `ledgerWrite` is the
+ * fire-and-forget write's promise; awaiting it is safe (the internal
+ * `catch(trace)` in `writeLensLedgerEntry` already swallows failures) and
+ * is the deterministic seam for offline tests that need the ledger file
+ * to exist before asserting on its contents.
+ */
+export type LensFinishResult = {
+  summary: LensReviewSummary;
+  ledgerWrite: Promise<void>;
+};
+
 async function finish(
   summary: LensReviewSummary,
   threshold: Severity,
   cwd: string | undefined,
   branch: string | undefined,
   ledger: { hasCritical?: boolean; headSha?: string; head?: string } = {},
-): Promise<LensReviewSummary> {
-  void writeLensLedgerEntry(
+): Promise<LensFinishResult> {
+  // #984 — the fire-and-forget write's promise is captured (not discarded)
+  // and returned as `ledgerWrite`; production callers destructure and drop
+  // it, so the fire-and-forget contract is unchanged (the `catch(trace)`
+  // inside `writeLensLedgerEntry` still swallows every failure, so this
+  // promise cannot reject).
+  const ledgerWrite = writeLensLedgerEntry(
     summary.verdict,
     threshold,
     cwd,
@@ -67,7 +100,7 @@ async function finish(
         "Residual-findings disclosure NOT posted — no branch could be resolved for this review (detached head with no `branch` argument and no branch-named `head`), so no open PR/MR could be looked up. The merge guard's round-cap path will refuse until the marker is posted on the PR — run the review with an explicit `branch` (or on the branch's own checkout) and re-run.";
     }
   }
-  return summary;
+  return { summary, ledgerWrite };
 }
 
 /** The ONE exit path — see the module header. */

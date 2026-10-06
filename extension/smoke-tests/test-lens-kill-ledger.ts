@@ -84,6 +84,7 @@ import {
   type LensRunResult,
 } from "../src/lens-review.ts";
 import { LENS_ROSTER } from "../src/lens-roster.ts";
+import { finishLensReview } from "../src/lens-review-finish.ts";
 import { lensPassed, validEntries } from "../src/review-ledger.ts";
 type LedgerEntry = import("../src/review-ledger.ts").LedgerEntry;
 const ALL_SKILLS = LENS_ROSTER.map((l) => l.skill);
@@ -435,6 +436,55 @@ const allFail = () => ({
     repo.cleanup();
   }
 }
+// #984 — the deterministic-await contract: `finishLensReview` returns
+// `{ summary, ledgerWrite }`; awaiting `ledgerWrite` is the test-only seam
+// that lets an offline test read the ledger file after the run WITHOUT
+// changing the production contract (runLensReview discards the promise and
+// returns only the summary, so the "ledger write never gates the review
+// result" rule is preserved). The case below drives `finishLensReview`
+// directly with a REVIEW_INCOMPLETE summary and asserts that: (1) the
+// summary resolves WITHOUT awaiting `ledgerWrite` (independence), and
+// (2) awaiting `ledgerWrite` does not change the summary (byte-identical
+// contract, the #912 "never a gate on it" rule — the summary is resolved
+// at the same wall-clock moment as the pre-#984 `void` form, because the
+// await seam is a separate side-channel, not the return path).
+{
+  const fix = fixtureSkillsDir("deterministic");
+  const repo = setupRepo();
+  const blockedSummary = {
+    verdict: "REVIEW_INCOMPLETE" as const,
+    totalFindings: 0,
+    bySeverity: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 },
+    lenses: [
+      {
+        lens: "SIMPLICITY",
+        ok: false,
+        ms: 10,
+        startMs: 0,
+        findings: [],
+        attempts: 1,
+        blocked: true,
+        parseError: "spawn failed",
+      },
+    ],
+    findings: [],
+  };
+  const r = await finishLensReview(blockedSummary, "MEDIUM", repo.repo, repo.branch, { hasCritical: false });
+  eq(r.summary.verdict, "REVIEW_INCOMPLETE", "(2e) finish returns REVIEW_INCOMPLETE");
+  // Await the ledger write — the seam the issue's deterministic-await option
+  // requires. It must not throw (the catch(trace) inside writeLensLedgerEntry
+  // swallows every failure) and must not change the already-resolved summary.
+  await r.ledgerWrite;
+  // The summary is byte-identical across the await (the #912 rule — the
+  // ledger write is a side effect, never a gate on the result).
+  assert(
+    JSON.stringify(r.summary) === JSON.stringify({ ...blockedSummary, note: r.summary.note }),
+    "(2e) the summary is byte-identical across the ledgerWrite await",
+  );
+  fix.cleanup();
+  repo.cleanup();
+}
+
 {
   for (const th of ["LOW", "MEDIUM", "HIGH", "CRITICAL"] as const) {
     assert(

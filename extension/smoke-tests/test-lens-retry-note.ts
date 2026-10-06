@@ -24,9 +24,14 @@
 
 import { mock } from "bun:test";
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+// #984 — the shared helper (lib/wait-for-ledger.ts) with a generous 30 s
+// budget, so a loaded host has headroom for the writer's two git subprocess
+// hops; the poll returns as soon as the file appears (the passing path stays
+// fast) and a partial write keeps the poll going.
+import { waitForLedger } from "./lib/wait-for-ledger.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -132,20 +137,9 @@ function setupRepo(): { repo: string; branch: string; cleanup: () => void } {
   };
 }
 
-function waitForLedger(file: string, ms = 3000) {
-  const deadline = Date.now() + ms;
-  while (Date.now() < deadline) {
-    if (existsSync(file)) {
-      try {
-        return readLedgerAt(file);
-      } catch {
-        /* partial write — keep waiting */
-      }
-    }
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
-  }
-  return existsSync(file) ? readLedgerAt(file) : null;
-}
+// The local waitForLedger helper has been replaced by the shared
+// lib/wait-for-ledger.ts helper (imported at the top); the previous local
+// copy had a fixed 3000 ms budget, which is the flake #984 is fixing.
 
 async function withLedgerEnv<T>(
   skillsDir: string,

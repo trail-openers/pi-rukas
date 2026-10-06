@@ -279,10 +279,14 @@ export async function runLensReview(opts: {
   if (resolved.kind === "blocked") {
     const blockRows = blockedRowsForRoster(roster, resolved.problem);
     const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
-    return await finishLensReview(blocked, threshold, opts.cwd, branchResolved, {
-      hasCritical: false,
-      head: opts.head,
-    });
+    // #984 — the ledger write's promise is discarded (fire-and-forget in
+    // production; the await seam is for tests, not for the driver).
+    return (
+      await finishLensReview(blocked, threshold, opts.cwd, branchResolved, {
+        hasCritical: false,
+        head: opts.head,
+      })
+    ).summary;
   }
   if (resolved.kind === "noReview") {
     trace(
@@ -347,7 +351,7 @@ export async function runLensReview(opts: {
       installBlockRowsForRoster(problem),
       threshold,
     );
-    return await finishLensReview(blocked, threshold, opts.cwd, branchResolved);
+    return (await finishLensReview(blocked, threshold, opts.cwd, branchResolved)).summary;
   }
   // #966 — an aborted signal is a user kill: every lens is recorded blocked,
   // no children are spawned, and the run proceeds to the SAME finish path as
@@ -360,7 +364,7 @@ export async function runLensReview(opts: {
   if (opts.signal?.aborted) {
     const blockRows = blockedRowsForRoster(roster, "aborted before start");
     const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
-    return await finishLensReview(blocked, threshold, opts.cwd, branchResolved);
+    return (await finishLensReview(blocked, threshold, opts.cwd, branchResolved)).summary;
   }
   // Persistent batch summary row (#139). Lets the user see "X/6 done"
   // throughout the run even as fast lenses drop out at 0s linger. Registered
@@ -443,23 +447,27 @@ export async function runLensReview(opts: {
       headSha = undefined;
     }
   }
-  return finishLensReview(
-    {
-      verdict,
-      totalFindings: deduped.length,
-      bySeverity: bySeverityCounts(deduped),
-      lenses: lensResults,
-      findings: deduped,
-      usage: aggregateLensUsage(lensResults),
-      // #543 — a dispatch-cap kill on any lens child (loop detector / token
-      // budget) is surfaced on the summary so the driver emits the fixed-literal
-      // cap-hit (F4g) instead of a silent 1-of-6 loss.
-      ...capKillSummary(lensResults),
-      ...(delta ? { deltaReview: { since: delta.since, head: delta.head } } : {}),
-    },
-    threshold,
-    opts.cwd,
-    branchResolved,
-    { hasCritical, headSha, head: opts.head },
-  );
+  // #984 — the ledger write's promise is discarded (fire-and-forget in
+  // production; the await seam is for tests, not for the driver).
+  return (
+    await finishLensReview(
+      {
+        verdict,
+        totalFindings: deduped.length,
+        bySeverity: bySeverityCounts(deduped),
+        lenses: lensResults,
+        findings: deduped,
+        usage: aggregateLensUsage(lensResults),
+        // #543 — a dispatch-cap kill on any lens child (loop detector / token
+        // budget) is surfaced on the summary so the driver emits the fixed-literal
+        // cap-hit (F4g) instead of a silent 1-of-6 loss.
+        ...capKillSummary(lensResults),
+        ...(delta ? { deltaReview: { since: delta.since, head: delta.head } } : {}),
+      },
+      threshold,
+      opts.cwd,
+      branchResolved,
+      { hasCritical, headSha, head: opts.head },
+    )
+  ).summary;
 }
