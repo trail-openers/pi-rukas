@@ -45,8 +45,13 @@ function isNonePlaceholder(q: string): boolean {
   if (rest === "") return true;
   // Only trailing punctuation ("None.", "None,", "None.)")
   if (/^[\.,)\]]+$/.test(rest)) return true;
-  // Em-dash explanation: "None — the mechanism is confirmed"
-  if (/^—/.test(rest)) return true;
+  // Em-dash explanation — but only for `none`/`nothing`/`n/a`, where the
+  // keyword is unambiguously a placeholder. `No — explanation` is ambiguous:
+  // it can be a genuine question ("No — I need to know which config wins"),
+  // and discounting it would let the #397 override flip a real park to
+  // proceed-with-assumptions. The original pre-#996 regex treated "No …" as
+  // blocking, and we preserve that for `no`.
+  if ((m[1] ?? "").toLowerCase() !== "no" && /^—/.test(rest)) return true;
   // Fixed phrase "blocking": "None blocking", "Nothing blocking", "None blocking. …"
   if (/^blocking\b/i.test(rest)) return true;
   // Fixed phrase "open questions": "No open questions"

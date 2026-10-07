@@ -253,6 +253,7 @@ const spec = (marker: "dash" | "numbered") => {
     "Nothing in the issue says which config wins.",
     "No tests currently cover the rollback path; add one?",
     "(none of the endpoints are idempotent; patch which first?)",
+    "No — the spec contradicts the issue body",
   ];
 
   for (const q of blocking) {
