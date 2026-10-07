@@ -207,28 +207,8 @@ function stateWithArtifact(dir: string, body: string): WorkState {
       "",
     ].join("\n");
     let calls = 0;
-    const ctx = mkCtx(dir, async () => {
-      calls += 1;
-      // First call: the primary is killed (empty text → parseWorkstreams
-      // returns {}). Second: the corrective succeeds.
-      return calls === 1
-        ? mkResult("")
-        : mkResult(correctivePlan);
-    });
-    // The primary must be killed to trigger the kill path: set PI_ENSEMBLE_
-    // PLAN_TIMEOUT_MS to 1 so the first dispatch "times out" (the test
-    // dispatch returns immediately, but planTimeoutKill checks
-    // result.killCause === "timeout" — the stub doesn't set that, so we
-    // need a different approach). Actually the kill path requires
-    // result.killCause === "timeout", which the stub doesn't produce. So
-    // this test exercises the SHAPE that matters: when the primary
-    // produces NO workstreams (empty reply), the corrective fires (via
-    // planTimeoutCorrective, not via the quality gate), and the
-    // dropped-edge check must not fire because firstPlanWorkstreams is
-    // undefined (the kill path leaves it unset).
-    //
-    // To exercise the kill path, the stub must return a result with
-    // killCause: "timeout".
+    // The primary is stubbed as a timeout kill (`killCause: "timeout"`) so
+    // the kill path runs and leaves `firstPlanWorkstreams` unset.
     const killResult: DispatchResult = {
       role: "explore",
       ok: false,
@@ -244,8 +224,6 @@ function stateWithArtifact(dir: string, body: string): WorkState {
       calls += 1;
       return calls === 1 ? killResult : mkResult(correctivePlan);
     });
-    // Override the plan timeout so planTimeoutKill fires on the stub's
-    // killCause: "timeout" result.
     const prevEnv = process.env.PI_ENSEMBLE_PLAN_TIMEOUT_MS;
     process.env.PI_ENSEMBLE_PLAN_TIMEOUT_MS = "60000";
     let next: WorkState;

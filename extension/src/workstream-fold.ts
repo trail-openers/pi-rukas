@@ -76,12 +76,13 @@ export function foldTwo(a: Workstream, b: Workstream): Workstream {
   const mergedOutOfScope = [...new Set([...a.outOfScope, ...b.outOfScope])].filter(
     (p) => !inScope.has(p),
   );
-  const mergedDeps = new Set<string>();
   // #1005 — symmetric: drop BOTH merged ids from BOTH halves' dependsOn
   // (the doc's "minus the two merged ids" — the pre-#1005 asymmetry kept
   // b.id in a's own dependsOn, so a self-reference survived the fold).
-  for (const d of a.dependsOn ?? []) if (d !== b.id && d !== a.id) mergedDeps.add(d);
-  for (const d of b.dependsOn ?? []) if (d !== b.id && d !== a.id) mergedDeps.add(d);
+  const mergedDeps = new Set<string>();
+  for (const d of [...(a.dependsOn ?? []), ...(b.dependsOn ?? [])]) {
+    if (d !== a.id && d !== b.id) mergedDeps.add(d);
+  }
   return {
     id: a.id,
     scope: `${a.scope} (+merged: ${b.id})`,

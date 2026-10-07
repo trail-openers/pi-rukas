@@ -172,13 +172,12 @@ function couplingReason(a: CouplingWorkstream, b: CouplingWorkstream): string | 
  * grep never ran — rule 3 was unreachable in production. The fix is to
  * pass `repoRoot` and use it as the grep's cwd).
  *
- * `worktrees` is retained for API compatibility with tests that point the
- * grep at a temp dir per workstream: when the map names a workstream's
- * tree (and it exists on disk), the grep for that half runs there. At plan
- * time the map is empty, so both halves resolve to `repoRoot` — the
- * production shape. When `repoRoot` is also absent (a test that only
- * exercises rules 1–2), rule 3 is skipped rather than pointed at a
- * directory it cannot see.
+ * `worktrees` (test-only override; production callers never pass it):
+ * when the map names a workstream's tree (and it exists on disk), the grep
+ * for that half runs there instead of in `repoRoot`. At plan time the map
+ * is empty, so both halves resolve to `repoRoot` — the production shape.
+ * When `repoRoot` is also absent (a test that only exercises rules 1–2),
+ * rule 3 is skipped rather than pointed at a directory it cannot see.
  */
 export async function mergeCoupledWorkstreams(
   workstreams: Record<string, CouplingWorkstream>,
@@ -197,25 +196,21 @@ export async function mergeCoupledWorkstreams(
   // #1005 — rule 3 needs a directory the planner's paths resolve in. At
   // plan time (the only place the merge runs in production) the worktrees
   // map is EMPTY (the branch step populates it later), so the declared
-  // paths resolve at the cycle's base commit, which is `repoRoot`. The
-  // per-workstream map is consulted first (retained for tests that point
-  // the grep at a temp dir); when it names no tree — the production shape
-  // — the grep runs in `repoRoot`. When neither is available (a test that
-  // only exercises rules 1–2) rule 3 is skipped for the pair.
+  // paths resolve at the cycle's base commit, which is `repoRoot`.
+  // Resolve the repoRoot fallback ONCE (stat once, trace the absent-repoRoot
+  // skip once); the per-workstream map (test-only override) is consulted
+  // per pair. When neither is available, rule 3 is skipped for the pair.
+  const repoRootRef =
+    repoRoot && existsSync(repoRoot) ? { path: repoRoot, label: "repoRoot" } : undefined;
+  if (repoRoot && !repoRootRef) {
+    trace(
+      `work-driver: plan coupling rule 3 — repoRoot absent (${repoRoot}); skipping the symbol grep`,
+    );
+  }
   const treeOf = (id: string): CouplingTreeRef | undefined => {
     const wt = worktrees?.[id];
-    if (wt && existsSync(wt)) {
-      return { path: wt, label: id };
-    }
-    if (repoRoot && existsSync(repoRoot)) {
-      return { path: repoRoot, label: "repoRoot" };
-    }
-    if (repoRoot) {
-      trace(
-        `work-driver: plan coupling rule 3 — repoRoot absent (${repoRoot}); skipping the symbol grep`,
-      );
-    }
-    return undefined;
+    if (wt && existsSync(wt)) return { path: wt, label: id };
+    return repoRootRef;
   };
 
   // Find coupled pairs; record each (absorbed workstream, reason) PAIR and
