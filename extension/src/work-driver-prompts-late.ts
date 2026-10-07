@@ -116,9 +116,7 @@ export function inlineCommitPrPrompt(
   // (see the operatorActionsSectionOf contract); both the multi-worktree
   // and the N=1 flows below splice it into the gh pr create recipe.
   const operatorActions = operatorActionsSectionOf(normalisedSpec);
-  // #1006 — the TL;DR section goes at the TOP of the PR body in all three
-  // shapes (N=1, multi-worktree, ops-fallback). The shared builder renders
-  // identical text in the mechanized path (work-driver-commit.ts) and here.
+  // #1006 — TL;DR section goes at the TOP of the PR body in all three shapes.
   const tldr = tldrSectionOf(normalisedSpec);
   const bodySections = [
     tldr,

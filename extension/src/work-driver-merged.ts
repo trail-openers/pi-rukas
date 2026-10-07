@@ -299,7 +299,12 @@ export async function runMerged(
   if (mergeSucceeded) {
     try {
       const execFnTldr = ctx.verifyExecFn ?? execp;
-      const forge = await forgeForCycle(ctx, execFnTldr);
+      // #1006 — per-call 45 s timeout (same deadline as the explore body
+      // fetch); the TLDR edit is non-blocking, but an unbounded forge call
+      // could stall the merged step past a stuck network connection.
+      const forge = await forgeForCycle(ctx, execFnTldr, new Map(), {
+        execOpts: { timeout: 45_000 },
+      });
       if (forge) {
         const tldrNotes = await editIssueTldrs(forge, state);
         for (const note of tldrNotes) {
