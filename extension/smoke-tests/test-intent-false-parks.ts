@@ -192,8 +192,7 @@ const spec = (marker: "dash" | "numbered") => {
   /** Build a spec that is complete (intent, deliverables, AC, confirmed evidence)
    *  but whose open-questions field contains the given question texts. */
   const withOpenQuestions = (questions: string[]): string => {
-    const qLines =
-      questions.length > 0 ? questions.map((q) => `- ${q}`).join("\n") : "(empty)";
+    const qLines = questions.length > 0 ? questions.map((q) => `- ${q}`).join("\n") : "(empty)";
     return [
       "INTENT-VERDICT: proceed",
       "",
@@ -247,6 +246,13 @@ const spec = (marker: "dash" | "numbered") => {
     "Which non-nullable type?",
     "Which config file wins?",
     "How should we handle edge X?",
+    // #996 adversarial review: genuine questions beginning with "No"/"Nothing"
+    // must remain blocking. The pre-fix regex discounted these as placeholders,
+    // letting the #397 override flip a real park to proceed-with-assumptions.
+    "No single owner for X; who decides?",
+    "Nothing in the issue says which config wins.",
+    "No tests currently cover the rollback path; add one?",
+    "(none of the endpoints are idempotent; patch which first?)",
   ];
 
   for (const q of blocking) {
@@ -318,10 +324,7 @@ const spec = (marker: "dash" | "numbered") => {
       "",
     ].join("\n"),
   );
-  assert(
-    unverifiedEvidence !== undefined,
-    "#378 pin: unverified-evidence reply parses to a spec",
-  );
+  assert(unverifiedEvidence !== undefined, "#378 pin: unverified-evidence reply parses to a spec");
   if (unverifiedEvidence) {
     assert(
       unverifiedEvidence.evidence.some((e) => e.verdict === "unverifiable"),
@@ -349,10 +352,7 @@ const spec = (marker: "dash" | "numbered") => {
       "",
     ].join("\n"),
   );
-  assert(
-    noDeliverables !== undefined,
-    "#378 pin: no-deliverables reply parses to a spec",
-  );
+  assert(noDeliverables !== undefined, "#378 pin: no-deliverables reply parses to a spec");
   if (noDeliverables) {
     assert(
       noDeliverables.deliverables.length === 0,
