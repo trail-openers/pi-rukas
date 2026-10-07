@@ -7,6 +7,17 @@
  * share one implementation (the 500-line gate: the round-cap matrix is a
  * sibling file, and the shared harness lives here rather than being
  * duplicated).
+ *
+ * #985 — the stub contract for the patch-id exec: the guard issues
+ * `git diff <remote>/<base>...<remote>/<head> | git patch-id --stable`
+ * (THREE-dot, merge-base semantics — matching the ledger writers, so an
+ * advancing base does not invalidate a passing review), and the stub
+ * matches on `patch-id`, which holds for the three-dot form without pinning
+ * the dot count. The exact argv IS asserted — three-dot, not two-dot — in
+ * test-merge-guard.ts (the guard) and test-lens-residuals-marker.ts (the
+ * #973 poster, which computes the same id for its marker). Do not loosen
+ * the stub to a different match, and do not change the asserted argv
+ * without the matching call-site change.
  */
 
 import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";

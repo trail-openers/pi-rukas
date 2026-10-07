@@ -143,6 +143,21 @@ function repoDir(): string {
       calls.some((c) => c.includes("patch-id")),
       "…after computing the patch-id (the marker's patch)",
     );
+    // The marker's patch must use the SAME id the guard computes (design
+    // decision 1) — the three-dot, merge-base form against the PR's actual
+    // base. A two-dot (base-tip) form would diverge from the guard's id as
+    // soon as the base advances, and the guard's marker check would fail
+    // even though the post "succeeded" (the disclosure would never match).
+    assert(
+      calls.some(
+        (c) => c.includes("git diff origin/main...origin/feature/x") && c.includes("patch-id"),
+      ),
+      "…computed over the PR's actual base with merge-base (three-dot) semantics",
+    );
+    assert(
+      !calls.some((c) => c.includes("git diff origin/main..origin/")),
+      "…not the two-dot base-tip form (guard and marker must compute the same id)",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
