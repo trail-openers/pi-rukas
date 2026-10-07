@@ -55,7 +55,9 @@ export async function execp(
     // through). The encoding stays utf8: the argv callers (rule-3 grep) are
     // text by construction.
     if (rest.shell) {
-      trace(`work-driver: execp argv form ignores opts.shell (${rest.shell}) — execFile has no shell`);
+      trace(
+        `work-driver: execp argv form ignores opts.shell (${rest.shell}) — execFile has no shell`,
+      );
     }
     const r = await execFileP(cmd, argv, {
       cwd: rest.cwd,

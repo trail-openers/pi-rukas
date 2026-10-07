@@ -294,6 +294,31 @@ const ws = (e: Record<string, Partial<CouplingWorkstream>>): Record<string, Coup
       rC.changed === false,
       "rule 3 (production): the missing evil path yields no coupling (grep fails closed)",
     );
+
+    // Case D (multi-file coverage): the shared symbol is referenced in
+    // b.paths[1], not b.paths[0]. Confirms rule 3's grep (`-e <name> --`
+    // with every declared file as a positional argument) searches ALL of
+    // the workstream's declared files, so a cross-reference in any of them
+    // — not just the first — produces the merge that lets both workstreams
+    // pass their gates.
+    writeFileSync(path.join(dirB, "src/delta.ts"), "export function delta() {}\n");
+    writeFileSync(path.join(dirB, "src/epsilon.ts"), "import { alpha } from './alpha';\n");
+    const rD = await mergeCoupledWorkstreams(
+      ws({
+        a: { paths: ["src/alpha.ts"], outOfScope: [] },
+        b: { paths: ["src/delta.ts", "src/epsilon.ts"], outOfScope: [] },
+      }),
+      prodExecFn,
+      { a: dirA, b: dirB },
+    );
+    assert(
+      rD.changed === true,
+      `rule 3 (production): a symbol referenced in b.paths[1] IS detected (got changed=${rD.changed})`,
+    );
+    assert(
+      rD.merges[0]?.reason?.includes("alpha") ?? false,
+      `rule 3 (production): the reason names the shared symbol (got: ${rD.merges[0]?.reason})`,
+    );
   } finally {
     rmSync(dirA, { recursive: true, force: true });
     rmSync(dirB, { recursive: true, force: true });
