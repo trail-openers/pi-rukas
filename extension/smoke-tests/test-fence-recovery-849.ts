@@ -180,14 +180,16 @@ async function setup3WS(
     Date.now(),
     "job-849-clean",
   );
-  // A fence-recovery-started event is recorded for B.
+  // A fence-recovery-started event is recorded. The merged workstream's id is
+  // the OWNER's id (c; the violator b is absorbed into c), so the event names
+  // c as the merged workstream and b as the absorbed owner.
   const rec = after.eventLog.find((e) => e.kind === "fence-recovery-started");
   assert(
     rec !== undefined &&
       rec.kind === "fence-recovery-started" &&
-      rec.workstreamId === "b" &&
-      rec.owners.includes("c"),
-    `#849 case 1: a fence-recovery-started event is recorded for b with owner c (got: ${JSON.stringify(rec)})`,
+      rec.workstreamId === "c" &&
+      rec.owners.includes("b"),
+    `#849 case 1 (merged as c): a fence-recovery-started event is recorded for the merged workstream c, naming the absorbed violator b (got: ${JSON.stringify(rec)})`,
   );
   // The discarded SHA is recorded (a 40-char hex SHA; it is the violator's
   // HEAD at recovery time — the fixture may have committed between the
@@ -199,15 +201,15 @@ async function setup3WS(
       /^[0-9a-f]{40}$/.test(rec.discardedSha),
     `#849 case 1: the discarded SHA is recorded (got: ${rec && rec.kind === "fence-recovery-started" ? rec.discardedSha : "n/a"})`,
   );
-  // ONLY B is re-dispatched (the recovery dispatch) — the fan-out dispatches
-  // a, b, c; the recovery re-dispatches b. Total: 4 dispatches, of which
-  // exactly 1 is the recovery (cwd = wt.b AFTER the reset).
-  const recoveryCalls = calls.filter((c) =>
-    (c.prompt ?? "").includes("FENCE RECOVERY RE-DISPATCH"),
-  );
+  // #1005 — the merged workstream's id is the OWNER's id (c; the violator b
+  // is absorbed into c). The re-dispatch prompt names the merged id (c), and
+  // the re-dispatch runs in the violator's worktree (wt.b), which was rebased
+  // to c's tip. Exactly ONE re-dispatch (the merge-and-retry; the fan-out's
+  // a/b/c dispatches carry the developer prompt, not the merge prompt).
+  const recoveryCalls = calls.filter((c) => (c.prompt ?? "").includes("FENCE MERGE-AND-RETRY"));
   assert(
     recoveryCalls.length === 1 && recoveryCalls[0].cwd === wt.b,
-    `#849 case 1: ONLY b is re-dispatched (the recovery prompt, cwd=b's worktree) (got ${recoveryCalls.length} recovery call(s))`,
+    `#849 case 1 (merged as c): ONLY the merged workstream is re-dispatched, in the violator's worktree (got ${recoveryCalls.length} recovery call(s))`,
   );
   // B's worktree HEAD contains C's commit (reset to the owner's tip, then the
   // recovery commit on top). `merge-base --is-ancestor cSha bHead` exits 0

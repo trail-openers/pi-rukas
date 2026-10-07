@@ -131,6 +131,12 @@ try {
   }
 
   // --------------------------------------------------------------- case 2
+  // #1005 — per-worktree fails, consolidated passes → NOT ok. The consolidated
+  // pass does NOT excuse the per-worktree defect (the #669 downgrade is
+  // reversed: a workstream that fails in its OWN tree must block, even when
+  // the combined tree passes). The passing consolidated run is still
+  // recorded in notes (the evidence that the combination is not the cause
+  // is preserved; the per-worktree defect is not excused).
   // Per-worktree verify FAILS, consolidated verify PASSES (the #645 shape).
   {
     const f = await fixture("cross-dep", ["a", "b"], {
@@ -164,12 +170,12 @@ try {
     };
     const gate = await verifyStepOutcome(ctx, s, "develop");
     assert(
-      gate.ok,
-      `#669 case 2: per-worktree fails but consolidated passes → OK (got failures: ${gate.failures.join("; ")})`,
+      !gate.ok,
+      `#1005 (reverses #669 case 2): per-worktree fails, consolidated passes → NOT ok (the combined pass does not excuse the per-worktree defect; got failures: ${gate.failures.join("; ")})`,
     );
     assert(
       gate.notes.some((n) => /consolidated verify passed/.test(n)),
-      "#669 case 2: the passing consolidated run is recorded in notes as the verdict",
+      "#1005 case 2: the passing consolidated run is still recorded in notes (evidence the combination is not the cause)",
     );
   }
 
@@ -359,7 +365,10 @@ try {
     const f = await fixture("777-n1-invariant", ["default"], {
       "single.ts": "export const x = 1;\n",
     });
-    writeFileSync(path.join(f.worktrees.default, "single.ts"), "export const x = 1;\nexport const y = 2;\n");
+    writeFileSync(
+      path.join(f.worktrees.default, "single.ts"),
+      "export const x = 1;\nexport const y = 2;\n",
+    );
     await commitIn(f.worktrees.default, "task-default: add y");
     writeFileSync(
       path.join(f.repo, ".pi", "verify-cmd"),
@@ -415,9 +424,13 @@ try {
       },
     };
     s.eventLog.push({
-      kind: "cap-hit", at: 1, cap: "consolidated-verify-consolidation-created",
-      reviewRound: 0, nextStep: "handoff",
-      evidence: "[consolidation-created] verify command `tsc` failed — specific assertion: ✗ export already declared — workstream combination a + b",
+      kind: "cap-hit",
+      at: 1,
+      cap: "consolidated-verify-consolidation-created",
+      reviewRound: 0,
+      nextStep: "handoff",
+      evidence:
+        "[consolidation-created] verify command `tsc` failed — specific assertion: ✗ export already declared — workstream combination a + b",
     });
     const text = explainCap("consolidated-verify-consolidation-created", s);
     assert(
@@ -492,7 +505,10 @@ try {
     evidence: "patch-apply failed for workstream 'b': already exists",
   });
   const text = explainCap("consolidated-verify-conflict", s);
-  assert(/decomposition is incoherent/.test(text), "#669 cap: explainCap names the decomposition error");
+  assert(
+    /decomposition is incoherent/.test(text),
+    "#669 cap: explainCap names the decomposition error",
+  );
   assert(/re-split|non-overlapping/.test(text), "#669 cap: the recovery names re-splitting");
 }
 

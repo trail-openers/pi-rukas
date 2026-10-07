@@ -72,7 +72,10 @@ async function fixture(name: string): Promise<{ repo: string; baseSha: string }>
 type Call = { role: string; cwd?: string; prompt?: string };
 
 /** A recording dispatch. `onRecovery` fires only when the prompt is the
- * fence-recovery prompt (the re-dispatch), with the worktree's cwd. */
+ * fence merge-and-retry prompt (the re-dispatch), with the worktree's cwd.
+ * #1005 — the prompt changed from "FENCE RECOVERY RE-DISPATCH" (the #849
+ * re-dispatch) to "FENCE MERGE-AND-RETRY" (the merge-and-retry); the
+ * discriminator is the merge prompt. */
 function recordingDispatch(
   calls: Call[],
   onRecovery?: (cwd: string) => Promise<void>,
@@ -82,7 +85,7 @@ function recordingDispatch(
     spec: { role: string; cwd?: string; prompt?: string },
   ): Promise<DispatchResult> => {
     calls.push({ role: spec.role, cwd: spec.cwd, prompt: spec.prompt });
-    const isRecovery = (spec.prompt ?? "").includes("FENCE RECOVERY RE-DISPATCH");
+    const isRecovery = (spec.prompt ?? "").includes("FENCE MERGE-AND-RETRY");
     if (isRecovery && onRecovery && spec.cwd) await onRecovery(spec.cwd);
     return {
       role: spec.role,
@@ -227,14 +230,13 @@ function discardedShaOf(after: WorkState): string | undefined {
     discardedSha === bSha,
     `#849 case 2: the first violation's commit was discarded and recorded (bSha ${bSha.slice(0, 8)} on the fence-recovery-started event) (got: ${discardedSha})`,
   );
-  // Exactly ONE re-dispatch (the recovery; the second violation is never
-  // re-developed).
-  const recoveryCalls = calls.filter((c) =>
-    (c.prompt ?? "").includes("FENCE RECOVERY RE-DISPATCH"),
-  );
+  // Exactly ONE re-dispatch (the merge-and-retry; the second violation is
+  // never re-developed). #1005 — the prompt is the merge prompt (the merged
+  // workstream's id is the owner c; the violator b is absorbed into c).
+  const recoveryCalls = calls.filter((c) => (c.prompt ?? "").includes("FENCE MERGE-AND-RETRY"));
   assert(
     recoveryCalls.length === 1 && recoveryCalls[0].cwd === wt.b,
-    `#849 case 2: exactly ONE re-dispatch (got ${recoveryCalls.length})`,
+    `#849 case 2 (merged as c): exactly ONE re-dispatch, in the violator's worktree (got ${recoveryCalls.length})`,
   );
   // The park: the fence cap, with evidence naming BOTH attempts.
   const caps = after.eventLog.filter(
@@ -254,18 +256,16 @@ function discardedShaOf(after: WorkState): string | undefined {
     ev.includes("a-file.txt") && ev.includes("a"),
     `#849 case 2: the evidence names the SECOND attempt (a-file.txt, declared by a) (got: ${ev.slice(0, 200)})`,
   );
-  // The re-run's fence record is persisted (the second violation, attributed
-  // to A).
+  // The re-run's fence record is persisted. #1005 — the re-violation is
+  // attributed to the MERGED workstream (the owner id, c) touching a-file.txt
+  // (declared by a). The old record (b→c-file.txt, declared by c) is
+  // superseded by the re-run's record.
   const reRunRecords = after.pipelineState.verifyEvidence?.fenceViolations ?? [];
   assert(
     reRunRecords.some(
-      (r) =>
-        r.workstreamId === "b" &&
-        r.file === "a-file.txt" &&
-        r.kind === "sibling-declared" &&
-        r.declaredById === "a",
+      (r) => r.file === "a-file.txt" && r.kind === "sibling-declared" && r.declaredById === "a",
     ),
-    `#849 case 2: the re-run's fence record names b→a-file.txt (declared by a) (got: ${JSON.stringify(reRunRecords)})`,
+    `#849 case 2 (merged as c): the re-run's fence record names the merged workstream touching a-file.txt (declared by a) (got: ${JSON.stringify(reRunRecords)})`,
   );
 }
 
@@ -418,15 +418,19 @@ function discardedShaOf(after: WorkState): string | undefined {
     ev.includes(bSha) && ev.includes("a-file.txt") && ev.includes("a"),
     `#849 case 4: the evidence names BOTH attempts (got: ${ev.slice(0, 200)})`,
   );
-  // B's verdict is NOT restored to ok (the re-violation stands).
-  const conv = [...after.eventLog].reverse().find(
-    (e): e is Extract<WorkEvent, { kind: "branches-converged" }> =>
-      e.kind === "branches-converged" && e.step === "develop",
-  );
-  const bVerdict = conv?.verdicts.find((v) => v.id === "b");
+  // The merged workstream (c) is NOT restored to ok (the re-violation
+  // stands). #1005 — the merged id is the owner c; the violator b is
+  // absorbed into c, so the verdict is on c, not b.
+  const conv = [...after.eventLog]
+    .reverse()
+    .find(
+      (e): e is Extract<WorkEvent, { kind: "branches-converged" }> =>
+        e.kind === "branches-converged" && e.step === "develop",
+    );
+  const cVerdict = conv?.verdicts.find((v) => v.id === "c");
   assert(
-    bVerdict?.ok === false,
-    `#849 case 4: b's final verdict is NOT ok (the re-violation stands) (got: ${JSON.stringify(conv?.verdicts)})`,
+    cVerdict?.ok === false,
+    `#849 case 4 (merged as c): the merged workstream c's final verdict is NOT ok (the re-violation stands) (got: ${JSON.stringify(conv?.verdicts)})`,
   );
 }
 

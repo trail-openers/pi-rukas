@@ -171,7 +171,24 @@ export function planQualityReason(
   findingsCount: number,
 ): PlanQualityReason | undefined {
   const ids = Object.keys(workstreams);
-  if (findingsCount >= 3 && ids.length === 1) return "under-decomposed";
+  // #1005 — the findings-count rule for a single workstream is gone: the
+  // driver no longer steers the planner toward MORE workstreams (the split
+  // pressure is what put coupled halves — a type change and its consumers —
+  // in separate worktrees that could not each pass the quality gates), and a
+  // findings count is not evidence about file-set independence. The rule that
+  // actually protects the per-workstream invariant, `overlapping-paths` below,
+  // catches the coupled halves the count rule was a proxy for. The
+  // `under-decomposed` literal + steer remain for the empty-paths precedence
+  // shape: a single workstream with an EMPTY paths list cannot be judged by
+  // file-set comparison, and the count is the only signal left for that shape.
+  // A non-empty single workstream never fires it.
+  if (
+    findingsCount >= 3 &&
+    ids.length === 1 &&
+    ids.every((id) => (workstreams[id]?.paths.length ?? 0) === 0)
+  ) {
+    return "under-decomposed";
+  }
   if (ids.length > 0 && ids.some((id) => (workstreams[id]?.paths.length ?? 0) === 0))
     return "empty-paths";
   if (findPathCollisions(workstreams).length > 0) return "overlapping-paths";
@@ -313,10 +330,8 @@ export function correctivePlanSteer(
     return [
       "## Corrective re-dispatch",
       "",
-      `Your previous plan produced ${workstreamCount} workstream(s) for an issue body containing ${findingsCount} enumerated findings.`,
-      "That is under-decomposed. Two findings share a workstream ONLY when they require edits to THE SAME FILES —",
-      "conceptual relatedness is not a reason. Re-plan: map each finding to its own workstream unless the file sets",
-      "genuinely overlap, and list anything you are deliberately not doing under `Deferred:`.",
+      `Your previous plan produced ${workstreamCount} workstream(s) for an issue body containing ${findingsCount} enumerated findings, and the workstream(s) declared no paths.`,
+      "Re-plan: give every workstream a non-empty `paths:` and list anything you are deliberately not doing under `Deferred:`. Do NOT split work just to raise the workstream count — workstreams that share a file or a compile/runtime dependency are ONE workstream (the consumer cannot build without the producer's commit); only genuinely independent file sets get their own workstream.",
     ].join("\n");
   }
   if (reason === "invalid-dependency") {

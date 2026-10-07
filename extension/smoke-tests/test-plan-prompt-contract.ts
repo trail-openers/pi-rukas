@@ -340,9 +340,17 @@ function assert(cond: boolean, msg: string) {
     "plan-prompt: the out-of-scope line is still there",
   );
   assert(/ENUMERATE/.test(p), "plan-prompt: the enumerate-first doctrine is still there");
+  // #1005 — the split bias is removed: a workstream that cannot build without
+  // its sibling's commit is the failure #933/#996 measured (0/5 and 1/5
+  // workstreams passing their own gate), so the prompt must no longer steer
+  // the planner toward more workstreams.
   assert(
-    /Bias toward MORE workstreams/i.test(p),
-    "plan-prompt: the more-workstreams bias is still there",
+    !/Bias toward MORE workstreams/i.test(p),
+    "plan-prompt: the more-workstreams bias is GONE (#1005)",
+  );
+  assert(
+    /ONE workstream, not two|must not share a file/i.test(p),
+    "plan-prompt: coupled work (shared files / compile dependency) is one workstream",
   );
 }
 

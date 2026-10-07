@@ -124,6 +124,17 @@ export async function runVerifyCommandGate(opts: {
       );
     }
   }
+  // #1005 — per-worktree failures are the verdict when the consolidated run
+  // cannot run (no valid baseSha or nothing to combine); otherwise the
+  // CONSOLIDATED tree is the verdict AND the per-worktree failures are kept
+  // as failures too — a workstream that fails in its OWN tree must block,
+  // even when the combined tree passes (#1005 reverses the #669 downgrade:
+  // a combined run that passes does not excuse a workstream that fails on
+  // its own). #782's single bounded flake re-run is caller-gated (every
+  // per-worktree verify passed + a genuine N>1 consolidation) and happens
+  // inside runConsolidatedVerify. #794 threads `workstreamBaseShas` into
+  // the consolidated run so a stacked workstream's OWN range is picked
+  // against its dependency's tip (no ancestor replay — the #775 shape).
   // #750 — the develop gate reads the CONSOLIDATED tree, not the isolated
   // worktrees: a per-worktree verify cannot see a file a sibling's commit
   // supplies (or deletes), and the #750 regression proves the combined
@@ -388,12 +399,22 @@ export async function runVerifyCommandGate(opts: {
       }
     }
   }
-  // Aggregation: a consolidated PASS downgrades per-worktree failures
-  // to evidence; a consolidated FAILURE keeps them as failures.
-  if (cons.status === "passed") {
-    for (const f of perWorktreeVerifyFailures) notes.push(`per-worktree verify (evidence) — ${f}`);
-  } else {
+  // Aggregation: a consolidated FAILURE keeps per-worktree failures as
+  // failures. A consolidated PASS does NOT downgrade them (#1005 reverses
+  // the #669 downgrade): a workstream that fails in its OWN tree must block,
+  // even when the combined tree passes — a combined run that passes does not
+  // excuse a workstream that fails on its own (the #933/#996 shape: 0/5 and
+  // 1/5 workstreams passing their own gate, the split halves coupled). The
+  // per-worktree failure is kept as a failure AND the passing consolidated
+  // run is still noted (the evidence that the combination is not the cause
+  // is preserved in the note; the per-worktree defect is not excused).
+  if (perWorktreeVerifyFailures.length > 0) {
     failures.push(...perWorktreeVerifyFailures);
+    for (const f of perWorktreeVerifyFailures) {
+      notes.push(
+        `per-worktree verify (evidence; still a failure — the consolidated pass does not excuse a per-worktree defect, #1005) — ${f}`,
+      );
+    }
   }
 }
 

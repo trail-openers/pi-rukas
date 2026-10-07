@@ -21,6 +21,7 @@ import type { DispatchResult } from "./types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { checkAndRegisterClaims, crossGroupConflictsEnabled } from "./work-driver-path-claims.ts";
+import { mergeCoupledWorkstreams } from "./work-driver-plan-coupling.ts";
 // #679 — the CANONICAL planQualityReason / correctivePlanSteer / steer builders
 // live in work-driver-plan-helpers.ts; this module re-exports them so existing
 // importers (smoke tests, cross-module consumers) keep their paths. The stale
@@ -280,6 +281,28 @@ export async function runPlan(
     }
   }
 
+  // #1005 — the coupling merge runs BEFORE the plan-quality gate: when the
+  // planner split coupled work (a type change and its consumers, declared
+  // `depends-on` or sharing files), the driver merges the halves before the
+  // gate sees the plan. This is the deterministic backstop for the split
+  // pressure the prompt no longer carries — the gate's `overlapping-paths`
+  // reason only catches the file-overlap shape; the `depends-on` and
+  // symbol-reference shapes are caught here, before a single developer is
+  // dispatched. The merge is the same shape the MAX_WORKSTREAMS fold uses:
+  // union of paths/outOfScope, scope annotated, dependsOn re-pointed.
+  if (Object.keys(workstreams).length > 1) {
+    const coupling = await mergeCoupledWorkstreams(
+      workstreams as Record<string, import("./work-driver-plan-coupling.ts").CouplingWorkstream>,
+      ctx.verifyExecFn,
+      next.pipelineState.baseSha,
+    );
+    if (coupling.changed) {
+      for (const m of coupling.merges) {
+        trace(`work-driver: plan coupling merge — ${m.from} → ${m.into} (${m.reason})`);
+      }
+      workstreams = coupling.workstreams as typeof workstreams;
+    }
+  }
   // #571 — cross-group claim check. Detect path overlaps with sibling cycles
   // BEFORE registering. Parking early costs one plan dispatch, not a full
   // develop/adversarial/commit-pr burn. Extracted to a helper (line budget).
