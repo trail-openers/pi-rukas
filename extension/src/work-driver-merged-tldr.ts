@@ -57,18 +57,29 @@ export async function editIssueTldrs(forge: Forge, state: WorkState): Promise<st
   for (const n of issues) {
     try {
       const current = await forge.issueView(n);
-      const currentBody = current.body ?? "";
-      const newBody = prependTldr(currentBody, tldr);
-      if (newBody === currentBody) {
+      const rawBody = current.body ?? "";
+      const sanitisedBody = rawBody
+        .replace(/<[^>]+>/g, "")
+        .replace(/!\[[^\]]*\]\([^)]*\)/g, "[image]");
+      const newBody = prependTldr(sanitisedBody, tldr);
+      if (newBody === sanitisedBody) {
         // Idempotent: the body already has a TL;DR — nothing to write.
         trace(`work-driver: issue #${n} already has a TL;DR — skipping issueEdit`);
+        continue;
+      }
+      const BODY_CAP = 60_000;
+      if (newBody.length > BODY_CAP) {
+        trace(
+          `work-driver: issue #${n} body too large (${newBody.length} chars) — TL;DR edit skipped`,
+        );
+        notes.push(`issue #${n} body too large (${newBody.length} chars) — TL;DR edit skipped`);
         continue;
       }
       // Note: a truncated forge read would produce a truncated write; a real
       // guard would need a second read or conditional-update API (not
       // implemented).
       await forge.issueEdit(n, newBody);
-      trace(`work-driver: prepended TL;DR to issue #${n} (body length: ${currentBody.length})`);
+      trace(`work-driver: prepended TL;DR to issue #${n} (body length: ${sanitisedBody.length})`);
     } catch (err) {
       const msg = (err as Error).message?.slice(0, 200) ?? "unknown error";
       trace(`work-driver: TL;DR edit for issue #${n} failed: ${msg}`);
