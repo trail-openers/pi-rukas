@@ -36,6 +36,8 @@ Safe > Unsafe
 
 ## Ownership Patterns
 
+For the full pattern library — ownership, borrowing, lifetimes, error handling, concurrency, and unsafe patterns — read `references/patterns.md` before writing or reviewing non-trivial Rust.
+
 ```rust
 // YES: Simple, clear ownership
 fn process(data: Vec<u8>) -> String {
