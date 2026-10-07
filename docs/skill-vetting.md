@@ -25,5 +25,5 @@ To remove a skill:
 
 1. Delete `skill/<name>/`.
 2. Remove any references to it in the prompt sources (`agents-base/`, `modules/`, `pi-prompts/`) — `test-skill-name-surface.ts` also checks that every referenced skill name resolves to an existing `skill/<name>/SKILL.md`, so a dangling reference fails the offline gate.
-3. If it was a symlinked third-party skill, the `install.sh` symlink loop picks up the deletion on the next install (`ln -sfn` won't recreate a removed target, but a stale `~/.pi/agent/skills/<name>` link may remain — remove it manually).
+3. If it was a symlinked third-party skill, the `install.sh` symlink loop simply skips the missing directory (no `ln -sfn` call), so a stale `~/.pi/agent/skills/<name>` link remains — remove it manually.
 4. Note the retirement in the PR (reason + date). No backfill of provenance is required for removal.

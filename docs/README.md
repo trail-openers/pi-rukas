@@ -19,6 +19,9 @@ MCP bridge walkthrough: installing `pi-mcp-adapter`, the 4-tier server config, `
 ### [custom-providers.md](custom-providers.md)
 Adding a custom OpenAI-compatible provider: registering it in `~/.pi/agent/models.json`, compat flags, storing the API key, and the three usage modes (main agent, per-project, subagents).
 
+### [skill-vetting.md](skill-vetting.md)
+Vetting checklist for vendoring third-party agent skills into `skill/` and the process for retiring one: provenance + SHA pin, licence, prompt-injection review, frontmatter rules, and the `test-skill-name-surface.ts` gate.
+
 ## `/audit` Command Documentation
 
 ### [audit-spec.md](audit-spec.md)
