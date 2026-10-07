@@ -12,24 +12,36 @@
  * `sibling-declared` fence violation):
  *   1. For each (violator, owner) pair, merge the two workstreams (owner
  *      keeps its id; violator is absorbed) — the same shape as the
- *      MAX_WORKSTREAMS fold and the plan-time coupling merge.
+ *      MAX_WORKSTREAMS fold and the plan-time coupling merge (the shared
+ *      fold in workstream-fold.ts).
  *   2. Rebase the violator's worktree to the owner's post-commit tip (the
  *      #849 reset). A git failure parks with the `fence-violation:develop`
  *      cap, naming the merge (ZERO re-dispatch).
  *   3. Re-dispatch ONLY the merged workstreams, once each, with the
  *      merge-retry prompt (the prompt names the merge and tells the
  *      developer both halves are now their scope).
+ *
+ * The owner's ORIGINAL worktree is deliberately left in place (the merged
+ * workstream reuses the VIOLATOR's worktree, rebased to the owner's tip —
+ * the owner's tree is only read, never written). This is intentional: the
+ * owner's tree is the base the merged work builds on, and moving or deleting
+ * it would break the owner's own committed work. The merged workstream's
+ * effective base is the owner's post-commit SHA (the `workstreamBaseShas`
+ * update below records it).
  */
 import { siblingDeclaredViolators } from "./work-develop-fence-recovery.ts";
 import { FENCE_VIOLATION_CAP } from "./work-develop-fence-recovery.ts";
 import { buildCompletionEvent } from "./work-driver-completion-event.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
-import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
+import type { Workstream } from "./workflow-state-schema.ts";
+import type { WorkEvent, WorkState } from "./workflow-state.ts";
+import { appendEvent } from "./workflow-state.ts";
+import { foldWorkstream } from "./workstream-fold.ts";
 import { gitErrorDetail } from "./worktree.ts";
 import type { ExecFn } from "./worktree.ts";
 
-type WS = NonNullable<WorkState["pipelineState"]["workstreams"]>[string];
+type WSMap = Record<string, Workstream>;
 
 /**
  * #1005 — the re-dispatch prompt for the MERGED workstream. Names the merge
@@ -45,8 +57,8 @@ export function mergeRetryPrompt(
 ): string {
   const files = violated
     .filter((v): v is Extract<FenceViolationRecord, { kind: "sibling-declared" }> => {
-      const sib = v as Extract<FenceViolationRecord, { kind: "sibling-declared" }>;
-      return halves.includes(sib.workstreamId) || halves.includes(sib.declaredById);
+      if (v.kind !== "sibling-declared") return false;
+      return halves.includes(v.workstreamId) || halves.includes(v.declaredById);
     })
     .map((v) => {
       const sib = v as Extract<FenceViolationRecord, { kind: "sibling-declared" }>;
@@ -113,13 +125,17 @@ export async function runMergePrep(
   // Merge each (violator, owner) pair. The owner is the declaring sibling
   // (from the fence records). Multiple violators may share an owner; each
   // pair is merged independently.
-  let workstreams: Record<string, WS | undefined> = { ...wsIn };
+  let workstreams: WSMap = { ...wsIn };
   const worktrees = { ...stateIn.pipelineState.worktrees };
   const workstreamBaseShas = { ...(stateIn.pipelineState.workstreamBaseShas ?? {}) };
   const discardedShas: string[] = [];
   const mergedIds: string[] = []; // the post-merge ids (owner ids)
   const merges: Array<{ into: string; from: string }> = [];
   let next = stateIn;
+  // #1005 — park builds from `next`, which is kept in sync with
+  // `stateRef.current` after every successful iteration. The pre-#1005
+  // code persisted to `next`/`stateRef.current` only after the loop, so a
+  // mid-loop park lost every merge recorded up to that point.
   const park = (evidence: string): { state: WorkState; outcome: MergePrepOutcome } => {
     const st = appendEvent(next, fenceCapHit(next, evidence));
     stateRef.current = st;
@@ -145,8 +161,12 @@ export async function runMergePrep(
         `merge-and-retry refused — ${violator} touched its own declared file (self-fence, not a sibling-declared merge shape)`,
       );
     }
-    // Merge the pair (owner keeps its id).
-    workstreams = mergeWorkstreams(workstreams, owner, violator);
+    // Merge the pair (owner keeps its id). The shared fold (workstream-fold.ts)
+    // reads the absorbed workstream from the CURRENT map (the violator is
+    // still there at this point in the loop — it is deleted by the fold
+    // itself), and the merge is recorded on a fence-recovery-started event
+    // BEFORE the rebase, so a mid-loop park preserves the merge.
+    workstreams = foldWorkstream(workstreams, owner, violator, workstreams[violator] as Workstream);
     merges.push({ into: owner, from: violator });
     mergedIds.push(owner);
     // Rebase the violator's worktree to the owner's post-commit tip.
@@ -211,23 +231,24 @@ export async function runMergePrep(
       owners: [violator],
       ...(violatorSha ? { discardedSha: violatorSha } : {}),
     });
+    // Drop the absorbed workstream from the worktrees map (its id is gone).
+    delete worktrees[violator];
+    delete workstreamBaseShas[violator];
+    // Persist the merged workstreams + updated maps after EACH successful
+    // iteration (the pre-#1005 code persisted only after the loop, so a
+    // mid-loop park lost earlier merges). `next` and `stateRef.current`
+    // are kept in sync so a park in the next iteration sees this merge.
+    next = {
+      ...next,
+      pipelineState: {
+        ...next.pipelineState,
+        worktrees: { ...worktrees },
+        workstreamBaseShas: { ...workstreamBaseShas },
+        workstreams: workstreams,
+      },
+    };
+    stateRef.current = next;
   }
-  // Drop the absorbed workstreams from the worktrees map (their id is gone).
-  for (const m of merges) {
-    delete worktrees[m.from];
-    delete workstreamBaseShas[m.from];
-  }
-  // Persist the merged workstreams + updated maps.
-  next = {
-    ...next,
-    pipelineState: {
-      ...next.pipelineState,
-      worktrees,
-      workstreamBaseShas,
-      workstreams: workstreams as NonNullable<WorkState["pipelineState"]["workstreams"]>,
-    },
-  };
-  stateRef.current = next;
   // Re-dispatch ONLY the merged workstreams, once each, with the merge-retry
   // prompt. The new ids are the owner ids (the absorbed violators are gone).
   for (const mergedId of mergedIds) {
@@ -265,9 +286,14 @@ export async function runMergePrep(
         `developer[${mergedId}]`,
         res,
       );
-      stateRef.current = appendEvent(stateRef.current, completionEvent);
+      // #1005 — the re-dispatch's completion event is appended to `next`
+      // (the local variable that `park` builds from) as well as
+      // `stateRef.current`, so a park in a later re-dispatch iteration
+      // sees this re-dispatch's events.
+      next = appendEvent(next, completionEvent);
+      stateRef.current = next;
       if (ids.length > 1) {
-        stateRef.current = appendEvent(stateRef.current, {
+        next = appendEvent(next, {
           kind: "branch-completed",
           step: "develop",
           workstreamId: mergedId,
@@ -275,6 +301,7 @@ export async function runMergePrep(
           ms: Date.now() - startedAt,
           at: Date.now(),
         });
+        stateRef.current = next;
       }
     } catch (err) {
       const errMsg = (err as Error).message?.slice(0, 200) ?? "unknown error";
@@ -287,58 +314,6 @@ export async function runMergePrep(
     state: stateRef.current,
     outcome: { parked: false, mergedIds, merges, discardedShas },
   };
-}
-
-/**
- * #1005 — merge two coupled workstreams into one (same shape as the MAX_WORKSTREAMS
- * fold and the plan-time coupling merge). Returns the merged map with `from`
- * absorbed into `into` (the owner is the declaring sibling — the producer
- * keeps its id; the consumer is folded into it). `dependsOn` edges that
- * pointed at the absorbed id are re-pointed. The absorbed workstream's
- * `dependsOn` (minus the two merged ids) is preserved on the merged one.
- */
-export function mergeWorkstreams(
-  workstreams: Record<string, WS | undefined>,
-  into: string,
-  from: string,
-): Record<string, WS | undefined> {
-  const merged: Record<string, WS | undefined> = { ...workstreams };
-  const a = merged[into];
-  const b = merged[from];
-  if (!a || !b) return merged;
-  const mergedDeps = new Set<string>();
-  for (const d of a.dependsOn ?? []) if (d !== from && d !== into) mergedDeps.add(d);
-  for (const d of b.dependsOn ?? []) if (d !== from && d !== into) mergedDeps.add(d);
-  // Re-point edges pointing at the absorbed id.
-  for (const [otherId, otherWs] of Object.entries(merged)) {
-    if (otherId === into) continue;
-    if (!otherWs) continue;
-    const deps = otherWs.dependsOn;
-    if (deps?.includes(from)) {
-      const updated = [...new Set([...deps].map((d) => (d === from ? into : d)))];
-      const otherCopy: WS = {
-        id: otherWs.id,
-        scope: otherWs.scope,
-        paths: otherWs.paths,
-        outOfScope: otherWs.outOfScope,
-      };
-      if (otherWs.dependsOn) otherCopy.dependsOn = updated;
-      if (otherWs.integrationTest) otherCopy.integrationTest = otherWs.integrationTest;
-      merged[otherId] = otherCopy;
-    }
-  }
-  const mergedWs: WS = {
-    id: a.id,
-    scope: `${a.scope} (+merged: ${from})`,
-    paths: [...new Set([...a.paths, ...b.paths])],
-    outOfScope: [...new Set([...a.outOfScope, ...b.outOfScope])],
-  };
-  if (mergedDeps.size > 0) mergedWs.dependsOn = [...mergedDeps];
-  const it = a.integrationTest ?? b.integrationTest;
-  if (it) mergedWs.integrationTest = it;
-  merged[into] = mergedWs;
-  delete merged[from];
-  return merged;
 }
 
 /** #1005 — the cap-hit for a merge-and-retry park/handoff (same cap as #849;

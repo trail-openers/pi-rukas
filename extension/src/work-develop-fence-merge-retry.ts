@@ -69,11 +69,6 @@ import { appendEvent } from "./workflow-state.ts";
 // keep their import path.
 export { mergeRetryPrompt } from "./work-develop-fence-merge.ts";
 
-// #1005 — re-exported so the flow half (the re-run's second-failure cap hit)
-// keeps its import path even though the cap hit now lives in
-// work-develop-fence-recovery.ts (the #849 flow half is gone).
-export { fenceViolationCapHit, FENCE_VIOLATION_CAP } from "./work-develop-fence-recovery.ts";
-
 /**
  * #1005 — the full merge-and-retry flow. `runMergeRetryFlow` is the entry
  * point called from runDevelopTopological when the gate records a
@@ -114,35 +109,26 @@ export async function runMergeRetryFlow(
   // entry of its own. The surviving entry carries the HONEST verdict:
   // restored to ok:true ONLY when the re-run gate ran, gate2.ok is true,
   // AND no blocking fence record names the merged workstream; otherwise
-  // it is (or stays) ok:false.
+  // it is (or stays) ok:false. The re-keyed verdicts are RETURNED (the
+  // pre-#1005 code mutated the input array in place as a hidden output);
+  // the caller uses the returned value.
   const reRanClean = gate2.ok && blockingSecond.every((r) => !mergedIds.includes(r.workstreamId));
   const absorbedSet = new Set(merges.map((m) => m.from));
   const rekeyed = verdicts
     .filter((v) => !absorbedSet.has(v.id))
     .map((v) => (mergedIds.includes(v.id) ? { id: v.id, ok: reRanClean } : v));
-  verdicts.length = 0;
-  verdicts.push(...rekeyed);
   if (blockingSecond.length > 0 && ids.length > 1) {
     const flipped2 = applyFenceVerdicts(
-      verdicts.map((v) => ({ ...v })),
+      rekeyed.map((v) => ({ ...v })),
       rereRunRecords,
     );
-    const changed2 = flipped2.some((v, i) => {
-      const o = verdicts[i];
-      return o === undefined || o.ok !== v.ok || o.reason !== v.reason;
-    });
-    if (changed2) {
-      next = replaceDevelopConvergedVerdicts(next, flipped2);
-      for (let i = 0; i < verdicts.length; i++) {
-        const f = flipped2[i];
-        if (f) verdicts[i] = { ...f };
-      }
-    }
+    next = replaceDevelopConvergedVerdicts(next, flipped2);
+  } else {
+    next = replaceDevelopConvergedVerdicts(
+      next,
+      rekeyed.map((v) => ({ ...v })),
+    );
   }
-  next = replaceDevelopConvergedVerdicts(
-    next,
-    verdicts.map((v) => ({ ...v })),
-  );
   // The PARK decision keys on the re-run's fence RECORDS. A second
   // violation (or a verify failure) after the merge hands off — the
   // #1005 acceptance criterion: the handoff names the MERGE.

@@ -205,11 +205,14 @@ function assert(cond: boolean, msg: string) {
       ids.length === 2,
       "fold: 3 workstreams folded to ceiling of 2",
     );
-    // The folded workstream's depends-on is not preserved (it's dropped during fold)
+    // The folded workstream's depends-on IS preserved by the shared fold
+    // (workstream-fold.ts: union of dependsOn minus the two merged ids).
+    // c depends on a; c is folded into b; the merged workstream (b) keeps
+    // the depends-on edge to a (a is not the merged id, so the edge survives).
     const last = parsed[ids[1] ?? ""];
     assert(
-      last?.dependsOn === undefined || last?.dependsOn?.length === 0,
-      "fold: depends-on of folded workstream is not silently preserved",
+      last?.dependsOn?.includes("a") === true,
+      `fold: depends-on of folded workstream IS preserved by the shared fold (got: ${JSON.stringify(last?.dependsOn)})`,
     );
   } finally {
     if (prev === undefined) delete process.env.PI_ENSEMBLE_MAX_WORKSTREAMS;

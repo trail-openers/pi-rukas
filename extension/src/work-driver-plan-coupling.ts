@@ -24,43 +24,36 @@
  *      explicit case: the planner said "B builds on A", which means B cannot
  *      pass its own gate without A's commit.
  *
- *   3. A symbol defined in one workstream's files is referenced in the
- *      other's (driver-native grep via `rg`; no new dependencies). This is
- *      the implicit case: the planner did not declare a dependency, but the
- *      code says the two halves are coupled. The grep is run once per
- *      workstream pair, over the union of both workstreams' paths, looking
- *      for a symbol name (exported function/type/class) that appears in both
- *      sets. A false positive here (a shared utility name that is genuinely
- *      independent) is harmless — the merge is the safe direction, and the
- *      acceptance criterion "genuinely separate work is still split" is
- *      protected by requiring the symbol to appear in BOTH workstreams'
+ *   3. A symbol from one workstream's files is referenced in the other's
+ *      (driver-native grep via `grep -l -w`, argv form — the planner's
+ *      paths are data, never shell arguments). This is the implicit case:
+ *      the planner did not declare a dependency, but the code says the two
+ *      halves are coupled. A false positive (a shared utility name that is
+ *      genuinely independent) is harmless — the merge is the safe direction,
+ *      and the acceptance criterion "genuinely separate work is still split"
+ *      is protected by requiring the symbol to appear in BOTH workstreams'
  *      files, not just one.
  *
- * The merge is the same shape `PI_ENSEMBLE_MAX_WORKSTREAMS` uses in
- * work-driver-plan-workstreams.ts:116-124 (union of paths/outOfScope,
- * scope annotated). `dependsOn` edges that pointed into the merged workstream
- * are re-pointed to the merged id; the merged workstream's own `dependsOn`
- * list is the union of both halves' lists minus any self-references.
+ * The merge reuses the shared fold (workstream-fold.ts, the same helper the
+ * MAX_WORKSTREAMS ceiling fold and the develop fence merge-and-retry use):
+ * union of paths, union of outOfScope MINUS the merged paths (the absorbed
+ * half's files are now the merged workstream's own scope — keeping them in
+ * the fence would self-fence it), scope annotated, dependsOn re-pointed.
  *
  * The function is idempotent: running it twice on the same input returns the
  * same output (a second pass finds no more coupled pairs to merge).
  */
 
 import { trace } from "./trace.ts";
+import type { Workstream } from "./workflow-state-schema.ts";
+import { foldWorkstream } from "./workstream-fold.ts";
 
 /**
- * The workstream shape the coupling check inspects. Same as
- * `PlanQualityWorkstream` (work-driver-plan-helpers.ts) but read-only: the
- * function does not mutate the input, it returns a new record.
+ * The workstream shape the coupling check inspects — `Workstream` (the
+ * schema type), so the merge result is a `Record<string, Workstream>` and
+ * the callers keep their types without a cast that hides field loss.
  */
-export interface CouplingWorkstream {
-  id: string;
-  scope: string;
-  paths: string[];
-  outOfScope: string[];
-  dependsOn?: string[];
-  integrationTest?: string;
-}
+export type CouplingWorkstream = Workstream;
 
 /**
  * The result of a coupling pass: the merged workstreams map and a list of
@@ -81,6 +74,12 @@ export interface CouplingResult {
   changed: boolean;
 }
 
+/** #1005 — the argv-form grep seam (planner-controlled paths, no shell). */
+type GrepExecFn = (
+  cmd: string,
+  opts?: { cwd?: string; timeout?: number; maxBuffer?: number; argv?: string[] },
+) => Promise<{ stdout: string; stderr?: string }>;
+
 /**
  * Jaccard overlap of two path sets (same measure as grouping R2 in
  * work-driver-grouping.ts:271). Returns 0 when either set is empty.
@@ -96,8 +95,9 @@ function jaccard(a: Set<string>, b: Set<string>): number {
 }
 
 /**
- * Determine whether two workstreams are coupled. Returns a reason string
- * when coupled, undefined when independent.
+ * Determine whether two workstreams are coupled by rules 1–2. Returns a
+ * reason string when coupled, undefined when independent (rule 3, which
+ * needs the exec seam, is checked in `mergeCoupledWorkstreams`).
  */
 function couplingReason(a: CouplingWorkstream, b: CouplingWorkstream): string | undefined {
   // Rule 1 — file overlap (Jaccard ≥ 0.5).
@@ -107,21 +107,27 @@ function couplingReason(a: CouplingWorkstream, b: CouplingWorkstream): string | 
   if (j >= 0.5) {
     return `file overlap (jaccard=${j.toFixed(2)} ≥ 0.5): shared files — the two halves would be developed in separate worktrees that cannot see each other's commits`;
   }
-  // Rule 2 — explicit depends-on edge in either direction.
-  if ((a.dependsOn ?? []).includes(b.id) || (b.dependsOn ?? []).includes(a.id)) {
-    return `explicit depends-on edge: ${[...(a.dependsOn ?? []), ...(b.dependsOn ?? [])].join(", ")} — one workstream is declared to build on the other, so it cannot pass its own gate without the other's commit`;
+  // Rule 2 — the explicit depends-on edge. The reason names the ACTUAL
+  // directed edge (a → b or b → a), not every dependsOn entry in the
+  // two-workstream union (the pre-#1005 wording printed both halves'
+  // complete dependsOn lists, so a pair coupled by a→b read as
+  // "a, b, c" when a also depended on c).
+  const edge: [string, string] | undefined = (a.dependsOn ?? []).includes(b.id)
+    ? [a.id, b.id]
+    : (b.dependsOn ?? []).includes(a.id)
+      ? [b.id, a.id]
+      : undefined;
+  if (edge) {
+    return `explicit depends-on edge: ${edge[0]} → ${edge[1]} — one workstream is declared to build on the other, so it cannot pass its own gate without the other's commit`;
   }
-  // Rule 3 — symbol cross-reference is handled in the async wrapper
-  // `mergeCoupledWorkstreams` (it needs execFn for the grep); the
-  // synchronous path covers rules 1 and 2 only.
   return undefined;
 }
 
 /**
  * #1005 — run the coupling check over the workstreams map. Merges coupled
- * pairs into a single workstream (same shape as the MAX_WORKSTREAMS fold in
- * work-driver-plan-workstreams.ts:116-124): union of paths and outOfScope,
- * scope annotated with the absorbed id, dependsOn re-pointed.
+ * pairs into a single workstream (the shared fold in workstream-fold.ts:
+ * union of paths, outOfScope union minus the merged paths, scope annotated,
+ * dependsOn re-pointed).
  *
  * The merge is one-pass: after merging A into B, the pass continues with the
  * remaining workstreams. This is safe because the merge is idempotent — a
@@ -133,10 +139,7 @@ function couplingReason(a: CouplingWorkstream, b: CouplingWorkstream): string | 
  */
 export async function mergeCoupledWorkstreams(
   workstreams: Record<string, CouplingWorkstream>,
-  execFn?: (
-    cmd: string,
-    opts?: { cwd?: string; maxBuffer?: number },
-  ) => Promise<{ stdout: string }>,
+  execFn?: GrepExecFn,
 ): Promise<CouplingResult> {
   // Start with a copy; the input is not mutated.
   const ws: Record<string, CouplingWorkstream> = {};
@@ -146,14 +149,22 @@ export async function mergeCoupledWorkstreams(
   const merges: CouplingResult["merges"] = [];
   const ids = Object.keys(ws);
 
-  // Find coupled pairs and merge them. We iterate over all pairs; when a
-  // merge is made, the absorbed id is removed from ws and the pair loop
-  // continues with the next pair. The loop is safe because the absorbed
-  // id is removed before the next pair is checked. `coupled` tracks every
-  // pair already merged so a later pass over the same union does not double
-  // merge (the merge itself is applied AFTER the pair loop, keyed on
-  // `toMerge`).
-  const toMerge: Array<{ into: string; from: string; reason: string }> = [];
+  // Find coupled pairs; record each (absorbed workstream, reason) PAIR and
+  // keep the absorbed half out of later pair checks. The folds themselves
+  // are applied AFTER the pair loop (one fold per merge), so the pair loop
+  // never reads a workstream that a fold already deleted: the absorbed
+  // value is captured in the pair (the pre-#1005 apply-loop re-read it from
+  // the original input after deleting it from the working copy — the M5
+  // shape), and a fold reads the surviving half from the CURRENT map, so
+  // chained folds (a absorbs b, then c folds into the union) compose
+  // correctly.
+  let wsMap: Record<string, CouplingWorkstream> = ws;
+  const toMerge: Array<{
+    into: string;
+    from: string;
+    absorbed: CouplingWorkstream;
+    reason: string;
+  }> = [];
   const mergedIds = new Set<string>();
   for (let i = 0; i < ids.length; i++) {
     const aId = ids[i] as string;
@@ -167,18 +178,13 @@ export async function mergeCoupledWorkstreams(
       // Rule 1 and 2 (synchronous).
       let reason: string | undefined = couplingReason(a, b);
       // Rule 3 — symbol cross-reference (async). Only runs when execFn is
-      // available. The grep looks for a symbol (exported identifier) that
-      // appears in files declared by BOTH workstreams. We use a simple
-      // heuristic: extract the basenames of both path sets, then grep for
-      // each basename (minus extension) in the other's files. A hit in
-      // both directions means the two workstreams share a symbol.
+      // available and rules 1–2 did not already couple the pair.
       if (!reason && execFn) {
         reason = await symbolCrossReference(a, b, execFn);
       }
       if (reason) {
-        toMerge.push({ into: aId, from: bId, reason });
+        toMerge.push({ into: aId, from: bId, absorbed: b, reason });
         mergedIds.add(bId);
-        // Remove b from the map; the merge will fold b into a.
         delete ws[bId];
         trace(`work-driver: plan coupling — merged ${bId} into ${aId}: ${reason}`);
       }
@@ -189,59 +195,47 @@ export async function mergeCoupledWorkstreams(
     return { workstreams: ws, merges: [], changed: false };
   }
 
-  // Apply the merges: fold each `from` into `into`. The `from` workstream
-  // was deleted from `ws` during the pair loop, so read it from the
-  // ORIGINAL input (`workstreams`) — the copy in `ws` no longer exists.
+  // Apply the folds (the shared helper: union, fence minus merged paths,
+  // scope annotation, dependsOn re-point of the surviving half AND of every
+  // sibling that depended on the absorbed half). Each fold returns a NEW
+  // map; the fold reads the surviving half from the CURRENT map, so chained
+  // folds (a absorbs b, then c folds into the union) compose correctly.
   for (const m of toMerge) {
-    const into = ws[m.into];
-    const from = workstreams[m.from];
-    if (!into || !from) continue;
-    // Union of paths and outOfScope (same shape as the MAX_WORKSTREAMS fold).
-    const mergedPaths = [...new Set([...into.paths, ...from.paths])];
-    const mergedOutOfScope = [...new Set([...into.outOfScope, ...from.outOfScope])];
-    // Re-point dependsOn edges that pointed to the absorbed workstream.
-    const mergedDeps = new Set<string>();
-    for (const d of into.dependsOn ?? []) if (d !== m.from && d !== m.into) mergedDeps.add(d);
-    for (const d of from.dependsOn ?? []) if (d !== m.from && d !== m.into) mergedDeps.add(d);
-    // Any other workstream that depended on `from` now depends on `into`.
-    for (const [otherId, otherWs] of Object.entries(ws)) {
-      if (otherId === m.into) continue;
-      const deps = otherWs.dependsOn;
-      if (deps?.includes(m.from)) {
-        const updated = [...deps].map((d) => (d === m.from ? m.into : d));
-        ws[otherId] = { ...otherWs, dependsOn: [...new Set(updated)] };
-      }
-    }
-    // Update the integration test: keep the one that references the merged
-    // scope (prefer the `into` workstream's).
-    const integrationTest = into.integrationTest ?? from.integrationTest;
-    ws[m.into] = {
-      ...into,
-      paths: mergedPaths,
-      outOfScope: mergedOutOfScope,
-      scope: `${into.scope} (+merged: ${from.id})`,
-      dependsOn: mergedDeps.size > 0 ? [...mergedDeps] : undefined,
-      ...(integrationTest ? { integrationTest } : {}),
-    };
+    wsMap = foldWorkstream(wsMap, m.into, m.from, m.absorbed);
   }
 
-  return { workstreams: ws, merges: toMerge, changed: true };
+  return {
+    workstreams: wsMap,
+    merges: toMerge.map(({ into, from, reason }) => ({ into, from, reason })),
+    changed: true,
+  };
 }
 
 /**
- * Rule 3 — symbol cross-reference check. Greps for each workstream's
- * path basenames (minus extension) in the other workstream's declared files.
- * A hit means the two workstreams share a symbol and are coupled.
+ * Rule 3 — symbol cross-reference check. For each symbol name (a
+ * workstream's path basenames, minus extension), greps the OTHER
+ * workstream's declared files for a word-boundary occurrence:
+ * `grep -l -w <name> <files…>`. A hit means the two workstreams share a
+ * symbol and are coupled.
  *
- * The grep is bounded: at most 10 files per workstream are checked (the
- * first 10 declared paths), and the search is case-sensitive for the
- * symbol name. A false positive (a common name like `init` or `config`)
- * is harmless — the merge is the safe direction.
+ * The grep is ARGV-FORM (the `argv` seam on the exec function): the paths
+ * are planner-controlled data, and a shell-built command would re-parse
+ * them — a path containing `$(…)`, backticks or `;` would execute inside
+ * the shell instead of being passed to grep verbatim (the H1 finding). In
+ * argv form each path is ONE argument, passed to grep as-is; nothing is
+ * evaluated.
+ *
+ * Bounded: at most 10 names and 10 files per workstream (the first 10
+ * declared paths), word-boundary case-sensitive, 30-second timeout per
+ * call (an unbounded grep over a huge worktree would otherwise hang the
+ * plan step), and every failure is traced (an invisible rule-3 grep was
+ * the M-timeout/LOW finding: a failing grep used to vanish in an empty
+ * catch, indistinguishable from "no coupling").
  */
 async function symbolCrossReference(
   a: CouplingWorkstream,
   b: CouplingWorkstream,
-  execFn: (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) => Promise<{ stdout: string }>,
+  execFn: GrepExecFn,
 ): Promise<string | undefined> {
   const basenames = (paths: string[]): string[] =>
     paths
@@ -255,47 +249,45 @@ async function symbolCrossReference(
   const aNames = basenames(a.paths);
   const bNames = basenames(b.paths);
 
+  const grepFor = async (
+    name: string,
+    files: string[],
+    definer: string,
+    referenced: string,
+  ): Promise<string | undefined> => {
+    if (files.length === 0) return undefined;
+    try {
+      const { stdout } = await execFn("grep", {
+        argv: ["-l", "-w", "--", name, ...files],
+        maxBuffer: 64 * 1024,
+        timeout: 30_000,
+      });
+      if (stdout.trim().length > 0) {
+        return `symbol cross-reference: '${name}' (defined in ${definer}) is referenced in ${referenced}'s files`;
+      }
+      return undefined;
+    } catch (err) {
+      // grep failed (file not found, timeout, missing binary) — not
+      // evidence of coupling, but it is no longer invisible: the trace
+      // line is what the operator sees in the transcript (the pre-#1005
+      // catch was empty).
+      trace(
+        `work-driver: plan coupling rule 3 grep failed for '${name}' in ${referenced}'s files: ${(err as Error).message?.slice(0, 120)}`,
+      );
+      return undefined;
+    }
+  };
+
   // Check: does any symbol from A appear in B's files, or vice versa?
-  // We grep for the symbol name as a word in the other workstream's files.
   for (const name of aNames) {
     if (bNames.includes(name)) continue; // same file in both — that's rule 1
-    const bFiles = b.paths.slice(0, 10).join(" ");
-    if (!bFiles) continue;
-    try {
-      // Use grep -l to check if any of B's files contain the symbol name
-      // as a word (bounded to avoid huge output).
-      const filesArg = b.paths
-        .slice(0, 10)
-        .map((f) => JSON.stringify(f))
-        .join(" ");
-      const { stdout } = await execFn(
-        `grep -l -w ${JSON.stringify(name)} ${filesArg} 2>/dev/null || true`,
-        { maxBuffer: 64 * 1024 },
-      );
-      if (stdout.trim().length > 0) {
-        return `symbol cross-reference: '${name}' (defined in ${a.id}) is referenced in ${b.id}'s files`;
-      }
-    } catch {
-      // grep failed (file not found, etc.) — not evidence of coupling.
-    }
+    const hit = await grepFor(name, b.paths.slice(0, 10), a.id, b.id);
+    if (hit) return hit;
   }
   for (const name of bNames) {
     if (aNames.includes(name)) continue;
-    try {
-      const filesArg = a.paths
-        .slice(0, 10)
-        .map((f) => JSON.stringify(f))
-        .join(" ");
-      const { stdout } = await execFn(
-        `grep -l -w ${JSON.stringify(name)} ${filesArg} 2>/dev/null || true`,
-        { maxBuffer: 64 * 1024 },
-      );
-      if (stdout.trim().length > 0) {
-        return `symbol cross-reference: '${name}' (defined in ${b.id}) is referenced in ${a.id}'s files`;
-      }
-    } catch {
-      // grep failed — not evidence of coupling.
-    }
+    const hit = await grepFor(name, a.paths.slice(0, 10), b.id, a.id);
+    if (hit) return hit;
   }
   return undefined;
 }

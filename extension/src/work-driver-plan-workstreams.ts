@@ -8,6 +8,8 @@
 
 import { trace } from "./trace.ts";
 import { extractListField, sliceMarkdownSection } from "./work-driver-plan-parse.ts";
+import type { Workstream } from "./workflow-state-schema.ts";
+import { foldTwo } from "./workstream-fold.ts";
 
 /**
  * Parse the explore-style reply for a fenced `## Workstreams` block.
@@ -104,17 +106,22 @@ export function parseWorkstreams(text: string): Record<
     // #290 — ceiling. Each workstream becomes a worktree AND a developer
     // child, so M is a direct multiplier on process count; parallel groups
     // multiply it again. The prompt now deliberately biases toward MORE
-    // workstreams, which makes an unbounded M actively dangerous rather than
-    // merely untidy. Excess FOLDS into the last kept workstream — union of
-    // paths, scope annotated — so the work is never silently dropped, which
-    // is the failure mode a hard truncation would introduce.
+    // workstreams, which makes an unbounded M actively dangerous rather
+    // than merely untidy. Excess FOLDS into the last kept workstream — the
+    // shared fold (workstream-fold.ts): union of paths, outOfScope union
+    // minus the merged paths, scope annotated — so the work is never
+    // silently dropped, which is the failure mode a hard truncation would
+    // introduce.
     if (Object.keys(out).length >= maxWorkstreams()) {
       const lastId = Object.keys(out)[Object.keys(out).length - 1];
-      const last = lastId ? out[lastId] : undefined;
+      if (!lastId) continue;
+      const last = out[lastId];
       if (last) {
-        last.paths = [...new Set([...last.paths, ...entry.paths])];
-        last.outOfScope = [...new Set([...last.outOfScope, ...entry.outOfScope])];
-        last.scope = `${last.scope} (+folded: ${entry.id})`;
+        const folded = foldTwo(last, entry);
+        // The ceiling fold's annotation is `+folded:` (the coupling merge's
+        // `+merged:` is the other site's wording).
+        folded.scope = `${last.scope} (+folded: ${entry.id})`;
+        out[lastId] = folded;
         trace(`work-driver: plan exceeded MAX_WORKSTREAMS — folded '${entry.id}' into '${lastId}'`);
       }
       continue;

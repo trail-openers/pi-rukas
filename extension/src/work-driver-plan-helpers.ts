@@ -149,6 +149,7 @@ import {
   findPathCollisions,
   findTestSubjectSplits,
 } from "./work-driver-plan-paths.ts";
+import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 
 /**
  * #679 — the workstream shape the plan-quality rules inspect.
@@ -191,6 +192,24 @@ export function planQualityReason(
   }
   if (ids.length > 0 && ids.some((id) => (workstreams[id]?.paths.length ?? 0) === 0))
     return "empty-paths";
+  // #1005 — path shape validation: a declared path must be a plain
+  // repo-relative path. A shell metacharacter inside a path is not merely
+  // an aesthetic defect: the plan-time coupling merge's rule-3 grep
+  // builds a shell command out of these paths, and a `$(…)` / backtick /
+  // `;` inside one would execute in that shell (H1). A `..`-traversing or
+  // absolute path is a scope the fence and the consolidation checks cannot
+  // verify (they compare these strings as-is). The check runs on the
+  // NORMALISED path (trailing-parenthetical annotations stripped — real
+  // state files carry "src/foo.ts (new)" shapes, which are prose, not
+  // shell): a legitimate annotation never trips the rule.
+  if (
+    ids.some((id) =>
+      (workstreams[id]?.paths ?? []).some(
+        (p) => !isPlainRepoRelativePath(normaliseDeclaredPath(p) ?? p),
+      ),
+    )
+  )
+    return "invalid-path";
   if (findPathCollisions(workstreams).length > 0) return "overlapping-paths";
   // #679 case 2(a) — a self `depends-on` (a workstream declaring itself as
   // its own dependency) is an INVALID reference, not a cycle: cycle
@@ -308,6 +327,17 @@ export function correctivePlanSteer(
       "merging is what the overlap fix is for; preserving the file boundary and dropping the dependency",
       "edge leaves the two halves semantically coupled but structurally independent, which is the",
       "worse outcome of the two.",
+    ].join("\n");
+  }
+  if (reason === "invalid-path") {
+    return [
+      "## Corrective re-dispatch",
+      "",
+      "Your previous plan declared a path that is not a plain repo-relative path (it contains a",
+      "shell metacharacter, starts with `/`, or has a `..` segment). Every declared path must be a",
+      "plain repo-relative path (e.g. `src/foo.ts` or `src/foo`) — no shell metacharacters, no",
+      "absolute paths, no `..` traversal. Re-plan with every `paths:` entry as a plain",
+      "repo-relative path.",
     ].join("\n");
   }
   // #849 — dropped-dependencies is a RECORDED reason, not a re-dispatch
@@ -431,4 +461,24 @@ export function countEnumeratedFindings(body: string): number {
     if (/^\s*(?:\d+[.)]\s+\S|[-*]\s+\[[ xX]\]\s*\S)/.test(line)) n += 1;
   }
   return n;
+}
+
+/**
+ * #1005 — a declared path is a plain repo-relative path when it has no
+ * shell metacharacter, no leading `/`, and no `..` segment. The check is
+ * deliberately conservative (rejects what is clearly dangerous; does not
+ * try to be a full path grammar): the fence and the consolidation checks
+ * compare these strings as-is, so a `..`-traversing or absolute path is
+ * not a scope the driver can verify.
+ */
+function isPlainRepoRelativePath(p: string): boolean {
+  const trimmed = p.trim();
+  if (trimmed.length === 0) return false;
+  // Shell metacharacters that would execute in a shell-built command.
+  if (/[`$;&|<>(){}\\\"'\s]/.test(trimmed)) return false;
+  // Absolute path (leading /).
+  if (trimmed.startsWith("/")) return false;
+  // .. traversal (as a segment, not inside a filename like "a..b.ts").
+  if (trimmed.split("/").includes("..")) return false;
+  return true;
 }

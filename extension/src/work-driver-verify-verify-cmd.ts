@@ -3,10 +3,9 @@
  * verify (per-worktree run + consolidated run + classification), extracted
  * from work-driver-verify-develop.ts by #794 (500-line gate).
  *
- * #669/#750/#782 semantics live here unchanged: the per-worktree failures
- * are the verdict when the consolidated run cannot run (no valid baseSha or
- * nothing to combine); otherwise the CONSOLIDATED tree is the verdict and
- * per-worktree failures downgrade to notes on a consolidated pass. #782's
+ * #669/#750/#782 semantics live here, with one #1005 change: per-worktree
+ * failures are UNCONDITIONALLY kept as failures (the pre-#1005 downgrade of
+ * per-worktree failures to notes on a consolidated pass is gone). #782's
  * single bounded flake re-run is caller-gated (every per-worktree verify
  * passed + a genuine N>1 consolidation) and happens inside
  * runConsolidatedVerify. #794 threads `workstreamBaseShas` into the
@@ -109,10 +108,10 @@ export async function runVerifyCommandGate(opts: {
       // A verify command that fails for want of `node_modules` reports the
       // same shape as one that fails on a real defect; development happens
       // in a fresh worktree, so this is the likelier of the two when it
-      // matches — say so rather than implying the diff is at fault. The
-      // consolidated run below decides whether this is a genuine per-
-      // worktree defect (kept as a failure) or a cross-worktree artifact
-      // (downgraded to evidence).
+      // matches — say so rather than implying the diff is at fault. #1005 —
+      // per-worktree failures are kept as failures unconditionally (the
+      // pre-#1005 downgrade to evidence on a consolidated pass is gone);
+      // the consolidated run below adds its own verdict on top.
       const output = `${e.stdout ?? ""}\n${e.stderr ?? ""}\n${e.message ?? ""}`;
       const depsHint = looksLikeMissingDeps(output) ? provisionDepsHint(state, cwd) : "";
       perWorktreeVerifyFailures.push(
