@@ -169,11 +169,24 @@ const ws = (n: number, paths?: string[]) =>
     Array.from({ length: n }, (_, i) => [`t${i}`, { paths: paths ?? [`src/t${i}.ts`] }]),
   );
 
+// #1005 — the single-workstream findings-count rule only fires for the
+// empty-paths precedence shape (a workstream with NO declared paths cannot be
+// judged by file-set comparison). A non-empty single workstream is legitimate
+// regardless of the findings count: the split pressure it existed to catch
+// (coupled halves in separate worktrees) is caught by overlapping-paths and
+// the coupling merge, and a findings count is not evidence of independence.
 assert(
-  planQualityReason(ws(1), 6) === "under-decomposed",
-  "6 findings collapsed into 1 workstream → under-decomposed (the #604 shape)",
+  planQualityReason(ws(1), 6) === undefined,
+  "6 findings in one NON-EMPTY workstream is legitimate — the #1005 count bias is gone",
 );
-assert(planQualityReason(ws(1), 3) === "under-decomposed", "the threshold is 3 findings");
+assert(
+  planQualityReason(ws(1, []), 6) === "under-decomposed",
+  "6 findings in one EMPTY-path workstream still fires (the empty-paths precedence shape)",
+);
+assert(
+  planQualityReason(ws(1, []), 3) === "under-decomposed",
+  "the threshold is 3 findings (for the empty-path shape)",
+);
 assert(
   planQualityReason(ws(1), 2) === undefined,
   "2 findings in 1 workstream is legitimate — no re-dispatch",
@@ -190,10 +203,11 @@ assert(
   planQualityReason({}, 6) === undefined,
   "an unparseable plan (zero workstreams) is handled by the default-workstream fallback, not this gate",
 );
-// Precedence: under-decomposition is the more serious diagnosis.
+// Precedence: the empty-path single-workstream shape wins over a non-empty
+// sibling's paths — the count rule is the only diagnosis for the empty shape.
 assert(
   planQualityReason(ws(1, []), 6) === "under-decomposed",
-  "when both rules fire, under-decomposed wins — it is the structural problem",
+  "an EMPTY single workstream with 3+ findings → under-decomposed (the precedence shape)",
 );
 
 // ------------------------------------------------------- corrective steer
@@ -201,8 +215,12 @@ assert(
 {
   const s = correctivePlanSteer("under-decomposed", 6, 1);
   assert(/6 enumerated findings/.test(s), "the steer quotes the actual counts back");
-  assert(/THE SAME FILES/.test(s), "the steer restates the only legitimate independence criterion");
+  assert(/non-empty `paths:`/.test(s), "the steer requires every workstream to declare paths");
   assert(/Deferred:/.test(s), "the steer requires deliberate omissions be declared");
+  assert(
+    !/share a workstream ONLY when/.test(s),
+    "#1005: the steer no longer pushes toward more workstreams",
+  );
 }
 {
   const s = correctivePlanSteer("empty-paths", 0, 3);
@@ -264,7 +282,8 @@ assert(
       "PI_ENSEMBLE_MAX_WORKSTREAMS tunes the ceiling",
     );
   } finally {
-    if (prev === undefined) delete process.env.PI_ENSEMBLE_MAX_WORKSTREAMS;
+    if (prev === undefined)
+      (process.env as Record<string, string | undefined>).PI_ENSEMBLE_MAX_WORKSTREAMS = undefined;
     else process.env.PI_ENSEMBLE_MAX_WORKSTREAMS = prev;
   }
 }
@@ -286,7 +305,19 @@ assert(
     !/Bias toward SINGLE-WORKSTREAM/i.test(p),
     "the old 'bias toward SINGLE-WORKSTREAM' instruction is GONE — it was the inversion of this doctrine",
   );
-  assert(/Bias toward MORE workstreams/i.test(p), "the prompt now biases toward more workstreams");
+  // #1005 — the "bias toward MORE workstreams" steering is also gone: the
+  // split pressure is what put coupled halves (a type change and its
+  // consumers) in separate worktrees that could not each pass the quality
+  // gates. The prompt now states the opposite invariant: coupled work is
+  // ONE workstream.
+  assert(
+    !/Bias toward MORE workstreams/i.test(p),
+    "#1005: the prompt no longer biases toward more workstreams",
+  );
+  assert(
+    /ONE workstream, not two/i.test(p),
+    "#1005: the prompt says coupled work is one workstream",
+  );
   assert(/ENUMERATE/.test(p), "the prompt requires enumerating findings before deciding");
   assert(
     /Deferred:/.test(p),

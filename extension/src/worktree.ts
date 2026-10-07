@@ -24,10 +24,17 @@ import { type ProvisionResult, provisionWorktree } from "./worktree-provision.ts
 export type { ProvisionResult } from "./worktree-provision.ts";
 export { salvageUncommittedWork, salvageDirtyWorktree } from "./worktree-salvage.ts";
 
-/** Shell executor, matching `DriverContext.verifyExecFn`. */
+/** Shell executor, matching `DriverContext.verifyExecFn`. The optional
+ * `argv` form (#1005) runs the command without a shell re-parse: `cmd`
+ * is the executable, `argv` its arguments, and a planner-controlled
+ * path arrives as ONE argument — never through `sh -c`, where it would
+ * be re-parsed and `$(…)`, backticks or `;` inside the data would
+ * execute. Implementations that do not honour `argv` are the caller's
+ * risk; the driver's production executors (work-driver-verify.ts and
+ * lens-exec.ts) both honour it via `execFile`. */
 export type ExecFn = (
   cmd: string,
-  opts?: { cwd?: string; timeout?: number; maxBuffer?: number; shell?: string },
+  opts?: { cwd?: string; timeout?: number; maxBuffer?: number; shell?: string; argv?: string[] },
 ) => Promise<{ stdout: string; stderr?: string }>;
 
 /** Worktrees live under `<repoRoot>/.worktrees/<name>`. */

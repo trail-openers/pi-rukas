@@ -229,6 +229,12 @@ export interface DriverContext {
    * executor used by verifyStepOutcome (git status / rev-list, the
    * project's verify command, gh pr view). Production callers omit
    * this; the default is `execp`. Mirrors `issueBodyFetcherFn`.
+   *
+   * `opts.argv` (#1005): when present, the executor runs the command in
+   * argv form (no shell re-parse) — `cmd` is the executable and
+   * `argv` its arguments. The coupling grep (rule 3) uses it because the
+   * file list is planner-controlled: a shell-built command would
+   * re-parse `$(…)`/backticks/`;` inside a path.
    */
   verifyExecFn?: (
     cmd: string,
@@ -237,6 +243,7 @@ export interface DriverContext {
       timeout?: number;
       maxBuffer?: number;
       shell?: string;
+      argv?: string[];
     },
   ) => Promise<{ stdout: string; stderr?: string }>;
   /**

@@ -8,7 +8,7 @@
  * dependent-workstream runner live in work-develop-run.ts.
  */
 import { trace } from "./trace.ts";
-import { runFenceRecoveryFlow } from "./work-develop-fence-recovery-run.ts";
+import { runMergeRetryFlow } from "./work-develop-fence-merge-retry.ts";
 import { siblingDeclaredViolators } from "./work-develop-fence-recovery.ts";
 import {
   applyFenceVerdicts,
@@ -333,17 +333,18 @@ async function runDevelopTopological(
         next = replaceDevelopConvergedVerdicts(next, flipped);
       }
     }
-    // #849 — the fence recovery: when the gate recorded a BLOCKING
-    // sibling-declared violation (and no issue-fenced one, which still blocks
-    // as today), the driver recovers the violator(s) instead of parking —
-    // inject the dependsOn edges, discard the violator's commit (recording
-    // its SHA), re-dispatch ONLY the violator(s) once from the owners'
-    // post-commit tree, and re-run the fence + verify gates (the full flow
-    // lives in work-develop-fence-recovery-run.ts). A cycle parks with zero
-    // re-dispatch; a second violation parks with both attempts' evidence.
-    // `issue-fenced` and `undeclared` records never recover: the condition is
-    // exactly "sibling-declared only". The gate runs on `stateRef.current`
-    // (the flip above wrote the verdicts there), not the local `next`.
+    // #1005 — the fence merge-and-retry (replaces the #849 fence recovery,
+    // which re-ran the same split and failed the same way every time): when
+    // the gate recorded a BLOCKING sibling-declared violation (and no
+    // issue-fenced one, which still blocks as today), the driver MERGES the
+    // coupled workstreams (owner keeps its id; violator absorbed), re-dispatches
+    // ONCE on the merged one, and re-runs the fence + verify gates (the full
+    // flow lives in work-develop-fence-merge.ts / work-develop-fence-
+    // merge-retry.ts). A second failure after merging hands off, naming the
+    // merge. `issue-fenced` and `undeclared` records never merge: the
+    // condition is exactly "sibling-declared only". The gate runs on
+    // `stateRef.current` (the flip above wrote the verdicts there), not the
+    // local `next`.
     const recoverableFence =
       gate.fenceViolations !== undefined &&
       siblingDeclaredViolators(gate.fenceViolations).length > 0 &&
@@ -367,7 +368,11 @@ async function runDevelopTopological(
         },
       };
       stateRef.current = next;
-      next = await runFenceRecoveryFlow(ctx, next, stateRef, ids, verdicts, execFn, dispatch);
+      // #1005 — the merge-and-retry (replaces the #849 fence recovery, which
+      // re-ran the same split and failed the same way every time): merge the
+      // coupled workstreams, re-dispatch ONCE on the merged one, re-run the
+      // gates. A second failure after merging hands off (naming the merge).
+      next = await runMergeRetryFlow(ctx, next, stateRef, ids, verdicts, execFn, dispatch);
       return endStep(next);
     }
     if (gate.ok) {

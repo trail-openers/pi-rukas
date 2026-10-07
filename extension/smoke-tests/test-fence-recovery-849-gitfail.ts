@@ -29,7 +29,7 @@ import { promisify } from "node:util";
 import type { DispatchResult } from "../src/types.ts";
 import { runDevelopTopological } from "../src/work-develop-topological.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import { initialState, type WorkState } from "../src/workflow-state.ts";
+import { type WorkState, initialState } from "../src/workflow-state.ts";
 import type { ExecFn } from "../src/worktree.ts";
 
 const execFileP = promisify(execFile);
@@ -99,7 +99,7 @@ function recordingDispatch(calls: Call[]): NonNullable<DriverContext["dispatchFn
 function failingResetExec(): ExecFn {
   return async (cmd, o) => {
     if (cmd.includes("git reset --hard")) {
-      const err = new Error("Command failed: git reset --hard \"<sha>\"") as Error & {
+      const err = new Error('Command failed: git reset --hard "<sha>"') as Error & {
         stderr: string;
       };
       err.stderr = "fatal: unable to write new index";
