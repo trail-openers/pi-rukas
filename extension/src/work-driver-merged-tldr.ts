@@ -13,8 +13,6 @@
  *
  * The forge seam (`forge.issueView` + `forge.issueEdit`) is the single
  * entry point for both GitHub and GitLab; no raw `gh`/`glab` calls.
-<<<<<<< HEAD
-=======
  *
  * ## Forge timeout
  *
@@ -22,7 +20,6 @@
  * per-call timeout (the same deadline `work-driver-explore.ts` uses for
  * its issue-body fetch), so `forge.issueView` / `forge.issueEdit` cannot
  * hang the merged step past that bound.
->>>>>>> dc9af52 (fix(work): address lens review MEDIUM findings (dead code, timeout, file size))
  */
 
 import type { Forge } from "./forge.ts";
@@ -67,12 +64,9 @@ export async function editIssueTldrs(forge: Forge, state: WorkState): Promise<st
         trace(`work-driver: issue #${n} already has a TL;DR — skipping issueEdit`);
         continue;
       }
-<<<<<<< HEAD
-=======
       // Note: a truncated forge read would produce a truncated write; a real
       // guard would need a second read or conditional-update API (not
       // implemented).
->>>>>>> dc9af52 (fix(work): address lens review MEDIUM findings (dead code, timeout, file size))
       await forge.issueEdit(n, newBody);
       trace(`work-driver: prepended TL;DR to issue #${n} (body length: ${currentBody.length})`);
     } catch (err) {

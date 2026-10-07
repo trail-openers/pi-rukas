@@ -293,6 +293,7 @@ export async function mechanizedCommitPr(
     const tldr = tldrSectionOf(ps.normalisedSpec);
     const prBody = [
       tldr,
+      "",
       "Automated by pi-rukas /work driver (mechanized commit-pr).",
       "",
       ...fixesLines,
