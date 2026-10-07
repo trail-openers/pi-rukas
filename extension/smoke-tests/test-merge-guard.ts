@@ -138,10 +138,18 @@ assert(!lensPassed("ISSUES_FOUND", "MEDIUM"), "lens ISSUES_FOUND blocks at the M
     "…after fetching the head branch",
   );
   assert(
+    r.calls.some((c) => c.includes("git fetch origin main")),
+    "…after fetching the base branch (the patch-id's merge-base needs fresh refs)",
+  );
+  assert(
     r.calls.some(
-      (c) => c.includes("git diff origin/main..origin/feature/x") && c.includes("patch-id"),
+      (c) => c.includes("git diff origin/main...origin/feature/x") && c.includes("patch-id"),
     ),
-    "…after computing the patch-id over the PR's actual base",
+    "…after computing the patch-id over the PR's actual base (three-dot: merge-base semantics, matching the ledger writers)",
+  );
+  assert(
+    !r.calls.some((c) => c.includes("git diff origin/main..origin/")),
+    "…not the two-dot base-tip form (that shape diverges from the writers once the base advances)",
   );
 }
 {
