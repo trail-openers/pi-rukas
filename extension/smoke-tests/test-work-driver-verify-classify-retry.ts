@@ -389,7 +389,16 @@ async function main() {
       `case 12 (shared assertion, re-run passes): 2 consolidated runs (got: ${r.consolidatedCalls})`,
     );
     assert(r.recovered, "case 12: onVerifyFlakeRecovered was called");
-    assert(r.failures.length === 0, `case 12: no failures (recovered) (got: ${r.failures.length})`);
+    // #1005 — per-worktree failures are NOT downgraded to notes even when
+    // the consolidated run recovers (the #669 downgrade is reversed: a
+    // workstream that fails in its OWN tree must block, even when the
+    // combined tree passes). The flake recovery records the re-run; the
+    // per-worktree failure is kept as a failure (the note records the
+    // recovery, but the failure stands).
+    assert(
+      r.failures.length === 1,
+      `case 12: the per-worktree failure is kept as a failure (#1005 reverses the #669 downgrade) (got: ${r.failures.length})`,
+    );
     // #826 — the recovery note must record the per-worktree failure evidence
     // and the shared/not-shared outcome (previously dropped).
     assert(

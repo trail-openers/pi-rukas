@@ -70,6 +70,8 @@ try {
       ...s.pipelineState,
       baseSha,
       worktrees: { a: wtA, b: wtB },
+      // #849/#1005 — the workstream ids the merged workstream keeps (the
+      // merged id is the OWNER's id, a; the violator b is absorbed into a).
       workstreams,
     },
   };
@@ -101,37 +103,39 @@ try {
       : [];
   const b = verdicts.find((v) => v.id === "b");
   const a = verdicts.find((v) => v.id === "a");
-  // #849 — the fence recovery: a sibling-declared violation (b annexed a's
-  // file) now RECOVERS instead of parking. The driver injects the b→a
-  // dependsOn edge, discards b's commit, and re-dispatches b from a's
-  // post-commit tree. The re-run is clean (the injected edge makes a-file.txt
-  // dependency-owned, so the re-introduced file is exempt from the fence),
-  // and b's verdict is restored to ok:true. The recovery is recorded on a
-  // fence-recovery-started event (evidence of the discard).
+  // #1005 — the fence recovery is now a MERGE-AND-RETRY (the #849
+  // re-dispatch-of-the-violator-alone flow is replaced by the merge:
+  // a sibling-declared violation (b annexed a's file) merges the two
+  // coupled workstreams, re-dispatches ONCE on the merged one (the owner a
+  // keeps its id; the violator b is absorbed), and re-runs the gates. The
+  // re-run is clean, so the merged workstream a's verdict is restored to
+  // ok:true. The recovery is recorded on a fence-recovery-started event
+  // (evidence of the discard), naming the merged workstream (a) and the
+  // absorbed violator (b).
   const recoveryEvent = result.eventLog.find((e) => e.kind === "fence-recovery-started");
   assert(
     recoveryEvent !== undefined &&
       recoveryEvent.kind === "fence-recovery-started" &&
-      recoveryEvent.workstreamId === "b",
-    `#849 persisted: a fence-recovery-started event records b's recovery (got: ${recoveryEvent ? recoveryEvent.kind : "none"})`,
+      recoveryEvent.workstreamId === "a" &&
+      recoveryEvent.owners.includes("b"),
+    `#1005 persisted: a fence-recovery-started event records the merged workstream a (with the absorbed violator b) (got: ${recoveryEvent ? JSON.stringify(recoveryEvent) : "none"})`,
   );
   assert(
     b?.ok === true,
-    `#849 persisted: b's verdict is restored to ok (the recovery re-run was clean) (got: ${JSON.stringify(verdicts)})`,
-  );
-  assert(
-    a?.ok === true,
-    `#849 persisted: the clean workstream keeps ok:true (got: ${JSON.stringify(verdicts)})`,
+    `#1005 persisted: the merged workstream a's verdict is restored to ok (the merge re-run was clean; the verdicts array is re-keyed to the merged id) (got: ${JSON.stringify(verdicts)})`,
   );
 
-  // #849 — the persisted event carries the RESTORED verdict (b ok:true, a
-  // ok:true), reflecting the recovery's clean re-run. The recovery is a
-  // deliberate #849 behaviour change: a sibling-declared violation no longer
-  // parks but recovers (single re-dispatch from the owner's post-commit
-  // tree), and a clean re-run restores the violator's verdict.
+  // #1005 — the persisted event carries the RESTORED verdict (the merge
+  // re-run was clean). The merge-and-retry is a deliberate #1005 behaviour
+  // change: a sibling-declared violation no longer re-dispatches the
+  // violator alone (the #849 flow) but merges the two coupled workstreams
+  // and re-runs the merged one, and a clean re-run restores the merged
+  // workstream's verdict. The verdicts array is re-keyed to the merged id
+  // (a) after the merge, so the surviving entry is the merged workstream's
+  // verdict.
   assert(
-    b?.ok === true && a?.ok === true,
-    `#849 persisted: the persisted event carries the RESTORED verdict (the recovery re-run was clean) (got: ${JSON.stringify(verdicts)})`,
+    b?.ok === true,
+    `#1005 persisted: the persisted event carries the RESTORED verdict (the merge re-run was clean) (got: ${JSON.stringify(verdicts)})`,
   );
 
   // No-evidence path — N>1, no worktree evidence: branches-converged is still
