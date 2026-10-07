@@ -69,6 +69,11 @@ import { appendEvent } from "./workflow-state.ts";
 // keep their import path.
 export { mergeRetryPrompt } from "./work-develop-fence-merge.ts";
 
+// #1005 — re-exported so the flow half (the re-run's second-failure cap hit)
+// keeps its import path even though the cap hit now lives in
+// work-develop-fence-recovery.ts (the #849 flow half is gone).
+export { fenceViolationCapHit, FENCE_VIOLATION_CAP } from "./work-develop-fence-recovery.ts";
+
 /**
  * #1005 — the full merge-and-retry flow. `runMergeRetryFlow` is the entry
  * point called from runDevelopTopological when the gate records a
@@ -104,28 +109,19 @@ export async function runMergeRetryFlow(
   const blockingSecond = rereRunRecords.filter(
     (f) => f.kind === "sibling-declared" || f.kind === "issue-fenced",
   );
-  // The RESTORE is honest: a merged workstream returns to ok:true ONLY when
-  // the re-run gate ran, gate2.ok is true, AND no blocking fence record
-  // names it; otherwise it stays ok:false.
-  const mergedSet = new Set(mergedIds);
-  const reRanClean = gate2.ok && blockingSecond.every((r) => !mergedSet.has(r.workstreamId));
-  if (reRanClean) {
-    for (let i = 0; i < verdicts.length; i++) {
-      const v = verdicts[i];
-      if (!v) continue;
-      if (mergedSet.has(v.id) && v.ok === false) {
-        verdicts[i] = { id: v.id, ok: true };
-      }
-    }
-  } else {
-    for (let i = 0; i < verdicts.length; i++) {
-      const v = verdicts[i];
-      if (!v) continue;
-      if (mergedSet.has(v.id) && v.ok !== false) {
-        verdicts[i] = { id: v.id, ok: false };
-      }
-    }
-  }
+  // #1005 — the verdicts array is RE-KEYED to the post-merge workstream
+  // map: the owner id (a) survives, the absorbed violator id (b) has no
+  // entry of its own. The surviving entry carries the HONEST verdict:
+  // restored to ok:true ONLY when the re-run gate ran, gate2.ok is true,
+  // AND no blocking fence record names the merged workstream; otherwise
+  // it is (or stays) ok:false.
+  const reRanClean = gate2.ok && blockingSecond.every((r) => !mergedIds.includes(r.workstreamId));
+  const absorbedSet = new Set(merges.map((m) => m.from));
+  const rekeyed = verdicts
+    .filter((v) => !absorbedSet.has(v.id))
+    .map((v) => (mergedIds.includes(v.id) ? { id: v.id, ok: reRanClean } : v));
+  verdicts.length = 0;
+  verdicts.push(...rekeyed);
   if (blockingSecond.length > 0 && ids.length > 1) {
     const flipped2 = applyFenceVerdicts(
       verdicts.map((v) => ({ ...v })),

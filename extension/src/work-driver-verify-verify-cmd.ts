@@ -357,8 +357,12 @@ export async function runVerifyCommandGate(opts: {
     // nothing to record structurally).
     if (cons.logPath !== undefined) onConsolidatedLogPath?.(cons.logPath);
   } else {
+    // #1005 — per-worktree failures still BLOCK (the aggregation below keeps
+    // them as failures); this note records the PASSING combined run as
+    // evidence only — it shows the combination is not the cause, but a
+    // workstream that fails in its OWN tree is not excused.
     notes.push(
-      `consolidated verify passed — workstreams ${cons.applied.join(", ")} combined in one tree passed \`${cmd}\`; per-worktree verify failures are recorded as evidence, not failures, because the combined tree is the verdict for cross-worktree artifacts`,
+      `consolidated verify passed — workstreams ${cons.applied.join(", ")} combined in one tree passed \`${cmd}\`; the passing combined run is recorded as evidence only — per-worktree verify failures STILL BLOCK (a workstream that fails in its own tree must block, #1005)`,
     );
     // #841 — on a RECOVERED pass (run1 failed, run2 passed), the run1 log
     // is the only record of the transient failure and the operator needs

@@ -232,7 +232,10 @@ async function setup3WS(
     capHit === undefined,
     `#849 case 1: the clean re-run proceeds — NO cap-hit (got: ${capHit ? capHit.kind : "none"})`,
   );
-  // The recovered verdict: b is ok (the re-run passed).
+  // #1005 — the recovered verdict: the SURVIVING merged workstream's id is
+  // the owner's (c); the absorbed violator (b) is re-keyed away — its id is
+  // no longer a workstream, so the converged verdicts carry no entry for b
+  // and a single entry for c. The clean re-run restores c to ok:true.
   const conv = [...after.eventLog]
     .reverse()
     .find(
@@ -243,10 +246,11 @@ async function setup3WS(
         { kind: "branches-converged" }
       > => e.kind === "branches-converged" && e.step === "develop",
     );
+  const cVerdict = conv?.verdicts.find((v) => v.id === "c");
   const bVerdict = conv?.verdicts.find((v) => v.id === "b");
   assert(
-    bVerdict?.ok === true,
-    `#849 case 1: b's final verdict is ok (the recovery re-run passed) (got: ${JSON.stringify(conv?.verdicts)})`,
+    cVerdict?.ok === true && bVerdict === undefined,
+    `#849 case 1: the merged workstream c's verdict is ok (the re-run passed) and the absorbed id b is no longer a workstream (got: ${JSON.stringify(conv?.verdicts)})`,
   );
 }
 

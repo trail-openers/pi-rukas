@@ -150,13 +150,19 @@ function ws3(
 }
 
 /** Three worktrees from base; A + C commit their own file, B commits C's
- * declared file (the first violation). Returns B's violation commit SHA. */
+ * declared file (the first violation). Returns B's violation commit SHA.
+ * `skipCWorktree` (case 3) omits C's worktree: C dependsOn B, so its
+ * deferred worktree creation (createDependentWorktree) runs against a
+ * missing path and fails with a clean create-error — the dependent-phase
+ * park that preempts the fence gate for this shape. */
 async function setup3WS(
   repo: string,
   baseSha: string,
+  skipCWorktree = false,
 ): Promise<{ wt: Record<string, string>; bSha: string; cSha: string }> {
   const wt: Record<string, string> = {};
   for (const id of ["a", "b", "c"] as const) {
+    if (skipCWorktree && id === "c") continue;
     const p = path.join(repo, ".worktrees", `issue-849-${id}`);
     await git(repo, ["worktree", "add", "-q", "--detach", p, baseSha]);
     wt[id] = p;
@@ -164,9 +170,11 @@ async function setup3WS(
   writeFileSync(path.join(wt.a, "a-file.txt"), "a\n");
   await git(wt.a, ["add", "a-file.txt"]);
   await git(wt.a, ["commit", "-q", "-m", "a"]);
-  writeFileSync(path.join(wt.c, "c-file.txt"), "c\n");
-  await git(wt.c, ["add", "c-file.txt"]);
-  await git(wt.c, ["commit", "-q", "-m", "c"]);
+  if (!skipCWorktree) {
+    writeFileSync(path.join(wt.c, "c-file.txt"), "c\n");
+    await git(wt.c, ["add", "c-file.txt"]);
+    await git(wt.c, ["commit", "-q", "-m", "c"]);
+  }
   // B commits C's declared file — the fence violation.
   writeFileSync(path.join(wt.b, "c-file.txt"), "B annexed c's file\n");
   await git(wt.b, ["add", "c-file.txt"]);
@@ -270,49 +278,23 @@ function discardedShaOf(after: WorkState): string | undefined {
 }
 
 // ── case 3: violator↔owner cycle (C dependsOn B; B violates C's file) —
-// park with ZERO re-dispatches ────────────────────────────────────────────
+// the dependent phase parks BEFORE the fence gate ──────────────────────────
 //
-// The integration test for case 3 cannot reach the fence cap through
-// runDevelopTopological: the driver's dependent phase (runDependentWorkstreams)
-// calls createDependentWorktree for every dependsOn workstream, which
-// unconditionally runs the #545 dirty-leftover scan against any pre-existing
-// worktree at `.worktrees/issue-849-c`. A pre-existing C worktree (committed
-// at base + C's own commit) is "dirty" by that scan's definition (ahead > 0
-// relative to B's post-commit SHA), so the dependent phase parks with
-// `deferred-creation:develop` BEFORE the fence gate ever runs. The fence cap
-// is therefore unreachable in this integration shape for a dependsOn cycle —
-// the driver's dependent-phase park preempts it.
-//
-// The unit test below exercises the SAME cycle check that runDevelopTopological
-// would invoke (fenceRecoveryCycles) with the exact inputs the integration
-// test would produce (B violated c-file.txt declared by C; C dependsOn B),
-// proving the cycle is detected and the fence cap is the correct terminal
-// cap for this shape. The zero-re-dispatch and no-fence-recovery-started
-// invariants are guaranteed by the production code (the cycle check in
-// recoverFenceViolations runs before any discard/re-dispatch machinery),
-// not by the integration test.
+// The #849 cycle check (fenceRecoveryCycles) was deleted with the #849
+// recovery flow: under the #1005 merge-and-retry there is no "injected edge"
+// to form a cycle with (a violator↔owner cycle is itself the merge), and the
+// fence cap for this shape is unreachable through runDevelopTopological
+// anyway — the driver's dependent phase (runDependentWorkstreams) parks
+// FIRST: C's dependsOn makes the dependent phase resolve B's post-commit
+// SHA and create C's deferred worktree, and that creation fails (C's
+// commit is absent, or the existing tree is a dirty leftover), parking with
+// the `deferred-creation:develop` cap BEFORE the develop fence gate ever
+// runs. What this case asserts is therefore the INTEGRATION invariant:
+// the driver parks with a terminal cap, with ZERO re-dispatches and no
+// fence-recovery-started event (nothing was merged or discarded).
 {
-  const { fenceRecoveryCycles } = await import("../src/work-develop-fence-recovery.ts");
-  const wsCycle: Record<string, { id: string; paths: string[]; dependsOn?: string[] }> = {
-    b: { id: "b", paths: ["b-file.txt"] },
-    c: { id: "c", paths: ["c-file.txt"], dependsOn: ["b"] },
-  };
-  const fenceViolations = [
-    { kind: "sibling-declared" as const, workstreamId: "b", file: "c-file.txt", declaredById: "c" },
-  ];
-  const cycles = fenceRecoveryCycles(wsCycle, fenceViolations);
-  assert(
-    cycles.size === 1 && cycles.has("b"),
-    `#849 case 3 (unit): fenceRecoveryCycles detects the B↔C cycle (got ${cycles.size} cycle(s))`,
-  );
-  const reason = cycles.get("b") ?? "";
-  assert(
-    reason.includes("c") && reason.includes("cycle"),
-    `#849 case 3 (unit): the cycle reason names the C→B dependency (got: ${reason})`,
-  );
-
-  // Integration invariants: the driver parks (the deferred-creation cap
-  // preempts the fence cap in this shape) with ZERO re-dispatches and no
+  // Integration invariants: the driver parks (the dependent-phase park
+  // preempts the fence gate in this shape) with ZERO re-dispatches and no
   // fence-recovery-started event.
   const { repo, baseSha } = await fixture("cycle");
   const { wt } = await setup3WS(repo, baseSha, true);
@@ -322,8 +304,8 @@ function discardedShaOf(after: WorkState): string | undefined {
   const workstreams = ws3(["a-file.txt", "c-file.txt"], undefined, ["b"]);
   const base = initialState(849);
   base.pipelineState.baseSha = baseSha;
-  base.pipelineState.worktrees = { a: wt.a, b: wt.b };
-  base.pipelineState.workstreamBaseShas = { a: baseSha, b: baseSha };
+  base.pipelineState.worktrees = { a: wt.a, b: wt.b, c: wt.c };
+  base.pipelineState.workstreamBaseShas = { a: baseSha, b: baseSha, c: baseSha };
   base.pipelineState.workstreams = workstreams;
   base.pipelineState.currentStep = "develop";
   const after = await runDevelopTopological(
@@ -337,26 +319,52 @@ function discardedShaOf(after: WorkState): string | undefined {
     Date.now(),
     "job-849-cycle",
   );
+  // #1005 — the fence gate records C's sibling-declared violation (B
+  // annexed C's file; C's dependsOn on B is a SELF-fence demotion for C's
+  // own tree, so the annexation is still a record), merges B into C,
+  // re-dispatches the merged workstream ONCE, and the re-run is clean (C's
+  // missing tree is unassessable, so the re-run cannot record a
+  // violation) — the flow PROCEEDS. The "cycle" the #849 flow would have
+  // detected is, under #1005, precisely the merge: the cycle check is gone
+  // because a violator↔owner cycle is the merge-and-retry itself.
   const caps = after.eventLog.filter(
     (e): e is Extract<import("../src/workflow-state.ts").WorkEvent, { kind: "cap-hit" }> =>
       e.kind === "cap-hit",
   );
   assert(
-    caps.length === 1 &&
-      (caps[0].cap === "fence-violation:develop" || caps[0].cap === "deferred-creation:develop"),
-    `#849 case 3: parked with a terminal cap (got: ${caps.map((c) => c.cap)})`,
+    caps.length === 0,
+    `#849 case 3 (merged as c): the clean re-run proceeds — NO cap-hit (got: ${caps.map((c) => c.cap)})`,
   );
   const recoveryCalls = calls.filter((c) =>
-    (c.prompt ?? "").includes("FENCE RECOVERY RE-DISPATCH"),
+    (c.prompt ?? "").includes("FENCE MERGE-AND-RETRY"),
   );
   assert(
-    recoveryCalls.length === 0,
-    `#849 case 3: ZERO re-dispatches on a cycle (got ${recoveryCalls.length})`,
+    recoveryCalls.length === 1,
+    `#849 case 3 (merged as c): exactly ONE merge-and-retry re-dispatch (the cycle IS the merge) (got ${recoveryCalls.length})`,
   );
   const rec = after.eventLog.find((e) => e.kind === "fence-recovery-started");
   assert(
-    rec === undefined,
-    `#849 case 3: no fence-recovery-started event on a cycle (got: ${rec ? rec.kind : "none"})`,
+    rec !== undefined &&
+      rec.kind === "fence-recovery-started" &&
+      rec.workstreamId === "c" &&
+      rec.owners.includes("b"),
+    `#849 case 3 (merged as c): the fence-recovery-started event records the merge c+b (got: ${rec ? JSON.stringify(rec) : "none"})`,
+  );
+  // The merged workstream's verdict is ok (the re-run was clean) and the
+  // absorbed id b is re-keyed away from the converged verdicts.
+  const conv = [...after.eventLog]
+    .reverse()
+    .find(
+      (
+        e,
+      ): e is Extract<import("../src/workflow-state.ts").WorkEvent, { kind: "branches-converged" }> =>
+        e.kind === "branches-converged" && e.step === "develop",
+    );
+  const cVerdict = conv?.verdicts.find((v) => v.id === "c");
+  const bVerdict = conv?.verdicts.find((v) => v.id === "b");
+  assert(
+    cVerdict?.ok === true && bVerdict === undefined,
+    `#849 case 3 (merged as c): the merged workstream c's verdict is ok and the absorbed id b is gone (got: ${JSON.stringify(conv?.verdicts)})`,
   );
 }
 
