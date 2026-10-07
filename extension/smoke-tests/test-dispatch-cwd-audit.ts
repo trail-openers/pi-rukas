@@ -287,6 +287,7 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
     "work-driver-explore-run.ts": 1, // runExplore (the integration-point read, no cwd)
     "work-driver-commit-fallback.ts": 1, // #861 — the ops-fallback commit-pr dispatch, pinned to the integrate worktree (cwd: integratePath)
     "work-develop-fence-recovery-run.ts": 1, // #849 — the fence recovery's single re-dispatch, pinned to the violator's worktree (cwd: the recovered workstream's worktree)
+    "work-develop-fence-merge.ts": 1, // #1005 — the merge-and-retry's single re-dispatch of the MERGED workstream, pinned to the violator's (now merged) worktree (cwd: the merged workstream's worktree)
   };
   // The /plan and /research drivers' seams — outside the /work driver's
   // scope for this audit (their own cwd hygiene is a separate concern).
@@ -353,6 +354,27 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
   assert(
     /integrateWorktreePath\(ctx\.repoRoot,\s*ctx\.issue\)/.test(commit),
     "canary: the fallback's cwd resolves to the -integrate worktree, not repoRoot",
+  );
+}
+
+// ------------------------------------------- merge-and-retry: the #1005 re-dispatch is pinned
+
+{
+  // #1005 — the fence merge-and-retry's re-dispatch (the live incident: the
+  // merge's re-dispatch ran the developer with the process.cwd() fallback =
+  // repoRoot, and a killed developer's files at the root blocked the next
+  // cycle's branch step) is pinned to the merged workstream's worktree — the
+  // violator's tree, rebased to the owner's tip (the same path the merge
+  // rebased). The re-dispatch reads the worktree from the merged worktree
+  // map (`worktrees[mergedId]`) and threads it onto the spec as `cwd`.
+  const merge = read("work-develop-fence-merge.ts");
+  assert(
+    /cwd:\s*wt/.test(merge),
+    "canary: the merge-and-retry re-dispatch carries an explicit cwd (the merged workstream's worktree — the tree the merge rebased), not the process.cwd() fallback",
+  );
+  assert(
+    /const wt = worktrees\[mergedId\];/.test(merge),
+    "canary: the re-dispatch's cwd resolves to the merged workstream's worktree (worktrees[mergedId]) — the violator's tree, rebased to the owner's tip",
   );
 }
 

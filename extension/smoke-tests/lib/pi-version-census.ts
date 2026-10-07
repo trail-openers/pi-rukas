@@ -16,6 +16,7 @@
 
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import fs from "node:fs";
 
 /**
  * Every file git considers part of the repo: tracked (`--cached`) plus
@@ -42,7 +43,14 @@ export function gitRepoFiles(repoRoot: string): string[] {
   return out
     .split("\0")
     .filter((f) => f.length > 0)
-    .map((f) => path.join(repoRoot, f));
+    .map((f) => path.join(repoRoot, f))
+    .filter((f) => {
+      try {
+        return fs.statSync(f).isFile();
+      } catch {
+        return false; // deleted-but-not-committed — not part of the working tree
+      }
+    });
 }
 
 /**

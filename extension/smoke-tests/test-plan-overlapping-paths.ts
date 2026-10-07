@@ -22,10 +22,10 @@
  * more code and a worse outcome.
  */
 
+import { findDroppedDependencyEdges } from "../src/work-driver-plan-helpers.ts";
 // #679 — import from the canonical module (the stale duplicate copy in
 // work-driver-plan-helpers.ts was deleted; work-driver-plan.ts re-exports it).
 import { correctivePlanSteer, planQualityReason } from "../src/work-driver-plan.ts";
-import { findDroppedDependencyEdges } from "../src/work-driver-plan-helpers.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -39,7 +39,8 @@ function assert(cond: boolean, msg: string) {
 const ws = (paths: Record<string, string[]>) =>
   Object.fromEntries(Object.entries(paths).map(([id, p]) => [id, { paths: p }]));
 
-// A findings count that does not itself trigger "under-decomposed" for N>=2.
+// A findings count that does not itself trigger "under-decomposed" for N>=2
+// (or for the empty single-workstream shape; #1005 removed the count bias).
 const OK_FINDINGS = 2;
 
 // ------------------------------------------------------------- the collision
@@ -54,7 +55,7 @@ const OK_FINDINGS = 2;
     `canary: two workstreams declaring src/b.ts is caught at plan time (got ${reason}) — it used to surface as a git apply failure at commit-pr`,
   );
 }
-
+// biome-ignore lint/complexity/noUselessLoneBlockStatements: grouped test section
 {
   // Directory containment is overlap: a developer told to own `src/foo` and one
   // told to own `src/foo/bar.ts` are editing the same file.
@@ -69,7 +70,7 @@ const OK_FINDINGS = 2;
     "...in either order",
   );
 }
-
+// biome-ignore lint/complexity/noUselessLoneBlockStatements: grouped test section
 {
   // The planner writes prose, not `git` output. `normaliseDeclaredPath` already
   // handles that for the consolidation gate; the same rule applies here or the
@@ -82,7 +83,7 @@ const OK_FINDINGS = 2;
 }
 
 // --------------------------------------------------------------- not overlap
-
+// biome-ignore lint/complexity/noUselessLoneBlockStatements: grouped test section
 {
   assert(
     planQualityReason(ws({ a: ["src/a.ts"], b: ["src/b.ts"] }), OK_FINDINGS) === undefined,
@@ -100,11 +101,15 @@ const OK_FINDINGS = 2;
 }
 
 // ------------------------------------------- the pre-existing reasons survive
-
+// biome-ignore lint/complexity/noUselessLoneBlockStatements: grouped test section
 {
   assert(
-    planQualityReason(ws({ default: ["src/a.ts"] }), 5) === "under-decomposed",
-    "under-decomposed still fires",
+    planQualityReason(ws({ default: ["src/a.ts"] }), 5) === undefined,
+    "#1005: a non-empty single workstream is legitimate — the count bias is gone",
+  );
+  assert(
+    planQualityReason(ws({ default: [] }), 5) === "under-decomposed",
+    "...but the empty-path single-workstream shape still fires",
   );
   assert(
     planQualityReason(ws({ a: ["src/a.ts"], b: [] }), OK_FINDINGS) === "empty-paths",
@@ -136,7 +141,7 @@ const OK_FINDINGS = 2;
     "canary: no 'undefined' leaks into the steer when details are supplied",
   );
 }
-
+// biome-ignore lint/complexity/noUselessLoneBlockStatements: grouped test section
 {
   // The other reasons must still render without collision details.
   for (const r of [

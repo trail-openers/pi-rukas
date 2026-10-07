@@ -9,13 +9,31 @@
  * closure over `exec`.
  */
 
-import { exec } from "node:child_process";
+import { exec, execFile } from "node:child_process";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 
-/** The ONE shell executor the lens review's git reads go through. */
-export const execp: VerifyExecFn = (cmd, opts) =>
-  new Promise<{ stdout: string; stderr?: string }>((resolve, reject) =>
-    exec(cmd, { ...opts, encoding: "utf8" }, (err, stdout, stderr) =>
+/** The ONE shell executor the lens review's git reads go through.
+ * #1005 — argv form: when `opts.argv` is present, `cmd` is the executable
+ * and `argv` its arguments, run via execFile (no shell re-parse). When
+ * absent, the classic shell path runs. */
+export const execp: VerifyExecFn = (cmd, opts) => {
+  const { argv, ...rest } = (opts ?? undefined) as {
+    argv?: string[];
+    cwd?: string;
+    timeout?: number;
+    maxBuffer?: number;
+    shell?: string;
+  };
+  if (argv) {
+    return new Promise<{ stdout: string; stderr?: string }>((resolve, reject) =>
+      execFile(cmd, argv, { ...rest, encoding: "utf8" }, (err, stdout, stderr) =>
+        err ? reject(err) : resolve({ stdout, stderr }),
+      ),
+    );
+  }
+  return new Promise<{ stdout: string; stderr?: string }>((resolve, reject) =>
+    exec(cmd, { ...rest, encoding: "utf8" }, (err, stdout, stderr) =>
       err ? reject(err) : resolve({ stdout, stderr }),
     ),
   );
+};

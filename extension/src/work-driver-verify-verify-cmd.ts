@@ -3,10 +3,9 @@
  * verify (per-worktree run + consolidated run + classification), extracted
  * from work-driver-verify-develop.ts by #794 (500-line gate).
  *
- * #669/#750/#782 semantics live here unchanged: the per-worktree failures
- * are the verdict when the consolidated run cannot run (no valid baseSha or
- * nothing to combine); otherwise the CONSOLIDATED tree is the verdict and
- * per-worktree failures downgrade to notes on a consolidated pass. #782's
+ * #669/#750/#782 semantics live here, with one #1005 change: per-worktree
+ * failures are UNCONDITIONALLY kept as failures (the pre-#1005 downgrade of
+ * per-worktree failures to notes on a consolidated pass is gone). #782's
  * single bounded flake re-run is caller-gated (every per-worktree verify
  * passed + a genuine N>1 consolidation) and happens inside
  * runConsolidatedVerify. #794 threads `workstreamBaseShas` into the
@@ -109,10 +108,10 @@ export async function runVerifyCommandGate(opts: {
       // A verify command that fails for want of `node_modules` reports the
       // same shape as one that fails on a real defect; development happens
       // in a fresh worktree, so this is the likelier of the two when it
-      // matches — say so rather than implying the diff is at fault. The
-      // consolidated run below decides whether this is a genuine per-
-      // worktree defect (kept as a failure) or a cross-worktree artifact
-      // (downgraded to evidence).
+      // matches — say so rather than implying the diff is at fault. #1005 —
+      // per-worktree failures are kept as failures unconditionally (the
+      // pre-#1005 downgrade to evidence on a consolidated pass is gone);
+      // the consolidated run below adds its own verdict on top.
       const output = `${e.stdout ?? ""}\n${e.stderr ?? ""}\n${e.message ?? ""}`;
       const depsHint = looksLikeMissingDeps(output) ? provisionDepsHint(state, cwd) : "";
       perWorktreeVerifyFailures.push(
@@ -124,6 +123,17 @@ export async function runVerifyCommandGate(opts: {
       );
     }
   }
+  // #1005 — per-worktree failures are the verdict when the consolidated run
+  // cannot run (no valid baseSha or nothing to combine); otherwise the
+  // CONSOLIDATED tree is the verdict AND the per-worktree failures are kept
+  // as failures too — a workstream that fails in its OWN tree must block,
+  // even when the combined tree passes (#1005 reverses the #669 downgrade:
+  // a combined run that passes does not excuse a workstream that fails on
+  // its own). #782's single bounded flake re-run is caller-gated (every
+  // per-worktree verify passed + a genuine N>1 consolidation) and happens
+  // inside runConsolidatedVerify. #794 threads `workstreamBaseShas` into
+  // the consolidated run so a stacked workstream's OWN range is picked
+  // against its dependency's tip (no ancestor replay — the #775 shape).
   // #750 — the develop gate reads the CONSOLIDATED tree, not the isolated
   // worktrees: a per-worktree verify cannot see a file a sibling's commit
   // supplies (or deletes), and the #750 regression proves the combined
@@ -346,8 +356,12 @@ export async function runVerifyCommandGate(opts: {
     // nothing to record structurally).
     if (cons.logPath !== undefined) onConsolidatedLogPath?.(cons.logPath);
   } else {
+    // #1005 — per-worktree failures still BLOCK (the aggregation below keeps
+    // them as failures); this note records the PASSING combined run as
+    // evidence only — it shows the combination is not the cause, but a
+    // workstream that fails in its OWN tree is not excused.
     notes.push(
-      `consolidated verify passed — workstreams ${cons.applied.join(", ")} combined in one tree passed \`${cmd}\`; per-worktree verify failures are recorded as evidence, not failures, because the combined tree is the verdict for cross-worktree artifacts`,
+      `consolidated verify passed — workstreams ${cons.applied.join(", ")} combined in one tree passed \`${cmd}\`; the passing combined run is recorded as evidence only — per-worktree verify failures STILL BLOCK (a workstream that fails in its own tree must block, #1005)`,
     );
     // #841 — on a RECOVERED pass (run1 failed, run2 passed), the run1 log
     // is the only record of the transient failure and the operator needs
@@ -388,12 +402,22 @@ export async function runVerifyCommandGate(opts: {
       }
     }
   }
-  // Aggregation: a consolidated PASS downgrades per-worktree failures
-  // to evidence; a consolidated FAILURE keeps them as failures.
-  if (cons.status === "passed") {
-    for (const f of perWorktreeVerifyFailures) notes.push(`per-worktree verify (evidence) — ${f}`);
-  } else {
+  // Aggregation: a consolidated FAILURE keeps per-worktree failures as
+  // failures. A consolidated PASS does NOT downgrade them (#1005 reverses
+  // the #669 downgrade): a workstream that fails in its OWN tree must block,
+  // even when the combined tree passes — a combined run that passes does not
+  // excuse a workstream that fails on its own (the #933/#996 shape: 0/5 and
+  // 1/5 workstreams passing their own gate, the split halves coupled). The
+  // per-worktree failure is kept as a failure AND the passing consolidated
+  // run is still noted (the evidence that the combination is not the cause
+  // is preserved in the note; the per-worktree defect is not excused).
+  if (perWorktreeVerifyFailures.length > 0) {
     failures.push(...perWorktreeVerifyFailures);
+    for (const f of perWorktreeVerifyFailures) {
+      notes.push(
+        `per-worktree verify (evidence; still a failure — the consolidated pass does not excuse a per-worktree defect, #1005) — ${f}`,
+      );
+    }
   }
 }
 

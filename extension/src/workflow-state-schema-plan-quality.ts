@@ -23,6 +23,16 @@ export type PlanQualityReason =
   // naming a consolidated-tree test exercising both halves. Deliberately
   // disjoint from overlapping-paths, which fires on the SAME file.
   | "interdependent-no-integration-test"
+  // #1005 — a declared path is not a plain repo-relative path: a shell
+  // metacharacter (`$(…)`, backtick, `;`, `&`, `|`, `<`, `>`, space, quote)
+  // or an absolute / `..`-traversing path. The plan-time coupling merge's
+  // rule-3 grep used to build a shell command out of these paths — a
+  // metacharacter inside one would execute in that shell (H1); the fence
+  // and the consolidation checks compare these paths as strings, so a
+  // `..`-traversing or absolute path is not a scope the driver can verify.
+  // The corrective steer tells the planner to re-declare the path as a
+  // plain repo-relative path.
+  | "invalid-path"
   // #849 — the one-shot corrective re-plan (triggered by the first plan's
   // overlapping-paths) dropped a dependsOn edge the first plan had, without
   // merging the two workstreams into one. The cycle CONTINUES with the

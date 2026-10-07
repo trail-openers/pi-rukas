@@ -21,6 +21,8 @@ import type { DispatchResult } from "./types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { checkAndRegisterClaims, crossGroupConflictsEnabled } from "./work-driver-path-claims.ts";
+import { mergeCoupledWorkstreams } from "./work-driver-plan-coupling.ts";
+import { execp } from "./work-driver-verify.ts";
 // #679 — the CANONICAL planQualityReason / correctivePlanSteer / steer builders
 // live in work-driver-plan-helpers.ts; this module re-exports them so existing
 // importers (smoke tests, cross-module consumers) keep their paths. The stale
@@ -152,6 +154,27 @@ export async function runPlan(
   // Parse workstreams out of the reply. Failure or N=0 collapses to
   // `default` — never blocks the cycle.
   let workstreams = parseWorkstreams(result.text ?? "");
+  // #1005 — the first plan's RAW workstreams (before the coupling merge),
+  // held aside for the #849 dropped-edge check. The dropped-edge check
+  // compares the first plan's RAW map (the depends-on edges as the planner
+  // declared them) against the corrective's RAW map.
+  const firstPlanRaw = workstreams;
+  let redispatched = false;
+  // #849/#1005 — the first plan's workstreams (and their dependsOn edges),
+  // held aside for the dropped-edge check. Set ONLY when the quality gate
+  // fires on the primary's plan (the #849 pre-#1005 shape): the
+  // kill-triggered corrective is a recovery path with no parsed first plan
+  // to compare against (the primary was killed mid-stream and produced no
+  // structured output), so there is nothing its re-plan could have dropped.
+  // A partial parse of the killed primary (the pre-#1005 defect: the
+  // variable was set to `firstPlanRaw` at declaration, so the kill path
+  // fed the #849 check a map that was never a real first plan) is not a
+  // legitimate comparison target and is not passed to it.
+  let firstPlanWorkstreams: typeof workstreams | undefined;
+  // #1005 — the corrective's RAW workstreams (before its own coupling
+  // merge), held aside for the #849 dropped-edge check.
+  let correctiveRawWorkstreams: typeof workstreams | undefined;
+  let droppedEdges: { from: string; to: string }[] | undefined;
 
   const spec = next.pipelineState.normalisedSpec;
   // #792 — count only the deliverables that are expected to produce a diff.
@@ -175,19 +198,6 @@ export async function runPlan(
   // `**E.**`) seen, because bolded letters are invisible to it. A correctly
   // planned single-workstream issue therefore triggered a corrective
   // re-dispatch essentially every time.
-  const reason = planQualityReason(workstreams, findingsCount);
-  // #849 — the FIRST plan's workstreams (and their dependsOn edges), held
-  // aside so the quality-triggered corrective below can be checked against
-  // them. The kill/timeout corrective intentionally does NOT set it: that
-  // corrective is a recovery path with no parsed first plan to compare
-  // against (the primary was killed mid-stream and never produced structured
-  // output), so there is nothing its re-plan could have dropped.
-  let firstPlanWorkstreams: typeof workstreams | undefined;
-  // #849 — set when the quality-triggered corrective re-plan dropped a
-  // dependsOn edge the first plan had (without merging the pair into one
-  // workstream); carried into the single planQuality write at the return.
-  let droppedEdges: { from: string; to: string }[] | undefined;
-  let redispatched = false;
   // #754 — a primary killed at the step's own bound gets the one-shot
   // corrective re-dispatch below (the kill-triggered half of it).
   if (planKill) {
@@ -207,10 +217,52 @@ export async function runPlan(
       redispatched = true;
     }
   }
+  // #1005 — the coupling merge is a NO-OP on a single-workstream plan (no
+  // pair to check), so the kill-triggered corrective is unaffected by the
+  // #1005 reordering. The gate and the corrective steer reason about the
+  // POST-MERGE plan (which, for a single workstream, is the same as the
+  // pre-merge plan).
+  // #1005 — the coupling merge's rule-3 grep (argv form) needs a real
+  // executor. `ctx.verifyExecFn` is test-only (undefined in production),
+  // so fall back to the production `execp` (which honours `opts.argv` via
+  // execFile — see work-driver-verify.ts). The merge runs at plan time,
+  // before the branch step, so the declared paths exist at the cycle's
+  // base commit — `repoRoot` — and the grep runs there (`repoRoot` is
+  // passed as the 4th arg; the empty pre-branch worktrees map is still
+  // threaded for API compatibility, but no longer the grep's only cwd
+  // source — the #1005 adversarial finding was that rule 3 was
+  // unreachable because the empty map left the grep without a cwd).
+  const planExecFn = ctx.verifyExecFn ?? execp;
+  const runCouplingMerge = async (ws: typeof workstreams): Promise<typeof workstreams> => {
+    if (Object.keys(ws).length <= 1) return ws;
+    const coupling = await mergeCoupledWorkstreams(
+      ws,
+      planExecFn,
+      next.pipelineState.worktrees,
+      ctx.repoRoot,
+    );
+    if (coupling.changed) {
+      for (const m of coupling.merges) {
+        trace(`work-driver: plan coupling merge — ${m.from} → ${m.into} (${m.reason})`);
+      }
+      return coupling.workstreams;
+    }
+    return ws;
+  };
+  workstreams = await runCouplingMerge(workstreams);
+  // #290 — deterministic plan-quality gate (arithmetic, not judgment).
+  // #378 — count DELIVERABLES from the resolved spec, not enumerated markdown.
+  const reason = planQualityReason(workstreams, findingsCount);
   // #754 — the kill-triggered corrective already spent this cycle's one-shot
   // corrective budget; the quality gate below must not spend it a second time.
   if (!planKill && planQualityEnabled() && reason) {
-    firstPlanWorkstreams = workstreams;
+    // #849 — the first plan's RAW workstreams, held aside for the dropped-edge
+    // check. Set here (the quality gate firing on the primary's plan) so the
+    // kill-triggered corrective path leaves it undefined (pre-#1005 shape).
+    // The RAW map (before the coupling merge) is what the dropped-edge check
+    // needs: it compares the first plan's declared depends-on edges against
+    // the corrective's declared edges.
+    firstPlanWorkstreams = firstPlanRaw;
     trace(`work-driver: plan quality — ${reason}, re-dispatching once`);
     const steer =
       reason === "test-subject-split"
@@ -251,27 +303,38 @@ export async function runPlan(
       // Second result is final — including when it is no better. One retry,
       // never a loop; a plan step that can re-dispatch on its own verdict is
       // a plan step that can spin.
-      if (Object.keys(reparsed).length > 0) workstreams = reparsed;
+      if (Object.keys(reparsed).length > 0) {
+        workstreams = reparsed;
+        correctiveRawWorkstreams = reparsed; // #1005 — the corrective's RAW map
+      }
       redispatched = true;
+      // #1005 — the coupling merge runs AGAIN on the corrective plan: the
+      // corrective re-plan is free to merge the colliding workstreams (that
+      // is the overlap fix), but it is also free to split coupled work AGAIN
+      // (re-splitting the pair the first merge joined, or introducing a new
+      // depends-on edge between previously-disjoint halves). The merge must
+      // see the corrective's workstreams, not just the first plan's. Cheap:
+      // a depends-on edge (rule 2) short-circuits the grep, so the common
+      // re-split shape costs no exec calls.
+      workstreams = await runCouplingMerge(workstreams);
     }
   }
   // #849 — the one-shot corrective re-plan is free to MERGE the colliding
-  // workstreams (that is the overlap fix), but it is not free to silently drop
-  // a dependsOn edge the first plan had: on the #814 cycle the corrective
-  // re-plan made the paths disjoint and dropped every dependency, leaving four
-  // semantically-coupled workstreams running in parallel from one baseSha.
-  // There is no second re-dispatch (#754's one-shot rule); the cycle
-  // CONTINUES with the corrective plan and the drop is RECORDED as
-  // `dropped-dependencies` (a PlanQualityReason) at the single planQuality
-  // write in the return below (the edges ride along as droppedEdges),
-  // surfaced through the same `pipelineState.planQuality.reason` channel as
-  // every other reason so the operator sees it. The match is id-priority
-  // (same ids still connected) with a path-set signature fallback for
-  // renamed workstreams, and a merged pair (both endpoints now in one
-  // workstream) never flags — see findDroppedDependencyEdges for the full
-  // rule.
+  // workstreams (the overlap fix) but not to silently drop a dependsOn edge
+  // the first plan had. The match is id-priority with a path-set signature
+  // fallback for renamed workstreams; a merged pair never flags.
+  // See findDroppedDependencyEdges for the full rule.
   if (firstPlanWorkstreams && redispatched) {
-    const dropped = findDroppedDependencyEdges(firstPlanWorkstreams, workstreams);
+    // #1005 — the dropped-edge check compares the FIRST plan's RAW
+    // workstreams (held aside before the coupling merge) against the
+    // corrective's RAW workstreams. The corrective's own coupling merge
+    // (in the re-dispatch block above) has already run, so `workstreams` is
+    // the POST-MERGE map; the corrective's RAW map is needed for the edge
+    // check. Use the corrective's parsed workstreams (before its merge).
+    const dropped = findDroppedDependencyEdges(
+      firstPlanWorkstreams,
+      correctiveRawWorkstreams ?? workstreams,
+    );
     if (dropped.length > 0) {
       droppedEdges = dropped;
       trace(
