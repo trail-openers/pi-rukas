@@ -171,5 +171,200 @@ const spec = (marker: "dash" | "numbered") => {
   }
 }
 
+// ============ #996: blockingQuestions "none"-placeholder matrix ============
+//
+// The #984 bug: the resolver's open-question bullet was
+// `- (none — the residual-gap MEDIUM items are resolved by the acceptance
+// criteria above; the LOW items are implementer details)` — a parenthesised
+// "none" with a long dash-explanation. `blockingQuestions` must see through
+// leading parens (and any mix of whitespace, bold, and backtick markers)
+// to the "none" / "n/a" token.
+//
+// This matrix tests the ACTUAL production function via `specIsComplete`
+// (which calls `blockingQuestions` internally) — NOT an inline regex copy —
+// so the test stays honest if the implementation changes.
+//
+// A spec that is complete except for its open-questions field: if the open
+// questions are placeholders, `specIsComplete` must return true. If they are
+// genuine questions, `specIsComplete` must return false.
+
+{
+  /** Build a spec that is complete (intent, deliverables, AC, confirmed evidence)
+   *  but whose open-questions field contains the given question texts. */
+  const withOpenQuestions = (questions: string[]): string => {
+    const qLines =
+      questions.length > 0 ? questions.map((q) => `- ${q}`).join("\n") : "(empty)";
+    return [
+      "INTENT-VERDICT: proceed",
+      "",
+      "## Spec",
+      "",
+      "### Intent",
+      "Do the thing in src/a.ts.",
+      "",
+      "### Deliverables",
+      "- d1: change it [paths: src/a.ts]",
+      "",
+      "### Acceptance criteria",
+      "- it works",
+      "",
+      "### Evidence",
+      "- the change is correct — src/a.ts:1 — **confirmed**",
+      "",
+      "### Open questions",
+      qLines,
+      "",
+    ].join("\n");
+  };
+
+  const nonBlocking = [
+    "(none)",
+    "None",
+    "(none — long explanation text)",
+    "N/A",
+    "**None**",
+    "**None** — the mechanism is confirmed",
+    "(None blocking.)",
+    "No open questions",
+    "Nothing blocking",
+    "(none — the residual-gap MEDIUM items are resolved by the acceptance criteria above; the LOW items are implementer details)",
+    "None blocking.",
+    "None blocking. All 5 locations are identified and verified.",
+  ];
+
+  for (const q of nonBlocking) {
+    const parsed = parseNormalisedSpec(withOpenQuestions([q]));
+    assert(parsed !== undefined, `placeholder matrix: "${q.slice(0, 50)}…" reply parses`);
+    if (parsed) {
+      assert(
+        specIsComplete(parsed),
+        `placeholder matrix: "${q.slice(0, 50)}…" is NON-blocking (specIsComplete=true)`,
+      );
+    }
+  }
+
+  const blocking = [
+    "Which non-nullable type?",
+    "Which config file wins?",
+    "How should we handle edge X?",
+  ];
+
+  for (const q of blocking) {
+    const parsed = parseNormalisedSpec(withOpenQuestions([q]));
+    assert(parsed !== undefined, `blocking matrix: "${q}" reply parses`);
+    if (parsed) {
+      assert(
+        !specIsComplete(parsed),
+        `blocking matrix: "${q}" is still BLOCKING (specIsComplete=false) — the word "none" mid-sentence or a genuine question must not be discounted`,
+      );
+    }
+  }
+}
+
+// ============ #996: #378 pin — no verdict + incomplete spec still parks ===
+//
+// The #397 override (a complete spec refuting an `underspecified` park) must
+// stay narrow. Three shapes of incomplete spec — no evidence at all, evidence
+// without a confirmed row, and no deliverables — must still park when the
+// resolver omitted its verdict token. The driver may not build from a spec
+// that is not grounded, and this is what keeps "silence is not permission"
+// true on the proceed side of the fence.
+
+{
+  const noEvidence = parseNormalisedSpec(
+    [
+      "## Spec",
+      "",
+      "### Intent",
+      "Do the thing.",
+      "",
+      "### Deliverables",
+      "- d1: do it [paths: src/a.ts]",
+      "",
+      "### Acceptance criteria",
+      "- it works",
+      "",
+    ].join("\n"),
+  );
+  assert(noEvidence !== undefined, "#378 pin: no-evidence reply parses to a spec");
+  if (noEvidence) {
+    assert(
+      noEvidence.verdict === "park" && noEvidence.parkReasonSource === "default",
+      "#378 pin: no verdict token → the #378 default park",
+    );
+    assert(!specIsComplete(noEvidence), "#378 pin: no evidence → specIsComplete is false");
+    const reconciled = reconcileVerdict(noEvidence);
+    assert(
+      reconciled.verdict === "park",
+      "#378 pin: no-verdict + NO EVIDENCE still parks — the override does not fire without confirmed grounding",
+    );
+  }
+
+  const unverifiedEvidence = parseNormalisedSpec(
+    [
+      "## Spec",
+      "",
+      "### Intent",
+      "Do the thing.",
+      "",
+      "### Deliverables",
+      "- d1: do it [paths: src/a.ts]",
+      "",
+      "### Acceptance criteria",
+      "- it works",
+      "",
+      "### Evidence",
+      "- the claim — src/a.ts:1 — unverifiable",
+      "",
+    ].join("\n"),
+  );
+  assert(
+    unverifiedEvidence !== undefined,
+    "#378 pin: unverified-evidence reply parses to a spec",
+  );
+  if (unverifiedEvidence) {
+    assert(
+      unverifiedEvidence.evidence.some((e) => e.verdict === "unverifiable"),
+      "#378 pin: the row parses as unverifiable (not accidentally confirmed)",
+    );
+    const reconciled = reconcileVerdict(unverifiedEvidence);
+    assert(
+      reconciled.verdict === "park",
+      "#378 pin: no-verdict + UNVERIFIED evidence still parks — only confirmed rows count",
+    );
+  }
+
+  const noDeliverables = parseNormalisedSpec(
+    [
+      "## Spec",
+      "",
+      "### Intent",
+      "Do the thing.",
+      "",
+      "### Acceptance criteria",
+      "- it works",
+      "",
+      "### Evidence",
+      "- the claim — src/a.ts:1 — confirmed",
+      "",
+    ].join("\n"),
+  );
+  assert(
+    noDeliverables !== undefined,
+    "#378 pin: no-deliverables reply parses to a spec",
+  );
+  if (noDeliverables) {
+    assert(
+      noDeliverables.deliverables.length === 0,
+      "#378 pin: zero deliverables parsed (the spec names nothing to build)",
+    );
+    const reconciled = reconcileVerdict(noDeliverables);
+    assert(
+      reconciled.verdict === "park",
+      "#378 pin: no-verdict + NO DELIVERABLES still parks — confirmed evidence alone is not a spec",
+    );
+  }
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

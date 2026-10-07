@@ -284,9 +284,18 @@ function parseEvidence(section: string | undefined): SpecEvidence[] {
     const tok = last.match(/^\**\s*(confirmed|contradicted)\b/)?.[1];
     const verdict: SpecEvidence["verdict"] =
       tok === "confirmed" || tok === "contradicted" ? tok : "unverifiable";
+    const emDashSource = (parts.length > 2 ? parts[1] : "")?.trim() ?? "";
+    // #996 — when no em-dash-separated source is present (the canonical
+    // `claim — source — confirmed` form has it; the #984 shape does not),
+    // a parenthesised `(source)` inside the claim carries the source. This
+    // keeps `source` non-empty for the parenthesised-source shape without
+    // touching the em-dash case, where `source` was already correct.
+    const parenSource = emDashSource
+      ? ""
+      : ((parts[0] ?? line).match(/\(([^()]+)\)/)?.[1]?.trim() ?? "");
     return {
       claim: (parts[0] ?? line).trim(),
-      source: (parts.length > 2 ? parts[1] : "")?.trim() ?? "",
+      source: emDashSource || parenSource,
       verdict,
     };
   });
@@ -308,8 +317,23 @@ function parseEvidence(section: string | undefined): SpecEvidence[] {
  * evidence` rather than emitting an empty section. Counting that as a blocking
  * question is how a fully-resolved spec looks unresolved.
  */
+/**
+ * Whether an open-question bullet reads as a "nothing blocking" placeholder.
+ *
+ * Resolvers wrap this in markdown: bold, backticks, and — load-bearing for
+ * #996 — a leading paren when the question is a single bullet with a
+ * trailing explanation, e.g. `(none — the residual-gap MEDIUM items are
+ * resolved by the acceptance criteria above; the LOW items are implementer
+ * details)`. The prior character class `\s*_\`` did not include `(`, so that
+ * one shape was counted as a blocking question and `specIsComplete` (and
+ * therefore the #397 override) failed on an otherwise complete spec.
+ */
+function isNonePlaceholder(q: string): boolean {
+  return /^[\s*_`(`]*(none|no|nothing|n\/a)\b/i.test(q);
+}
+
 function blockingQuestions(qs: string[]): string[] {
-  return qs.filter((q) => !/^[\s*_`]*(none|n\/a)\b/i.test(q));
+  return qs.filter((q) => !isNonePlaceholder(q));
 }
 
 /**
@@ -363,29 +387,10 @@ const OVERRIDE_ASSUMPTION = {
 
 export function reconcileVerdict(spec: NormalisedSpec): NormalisedSpec {
   if (spec.verdict === "park") {
-    // #397 — `underspecified` is the ONE park reason a complete spec refutes
-    // on its face, and it is also the value the parser synthesises when the
-    // resolver omits its verdict token entirely. A cycle on #337 produced two
-    // deliverables, three acceptance criteria and seven confirmed evidence
-    // rows, then told the operator the issue "does not say enough to build
-    // from". The other four reasons are all compatible with a complete spec —
-    // already-implemented, too-large, premise-unsound and contradicted-by-code
-    // must still park, so the override stays deliberately narrow.
-    //
-    // #404 — narrower still: the reason must have been STATED, not synthesised.
-    // `underspecified` is also what the parser invents when the token does not
-    // parse, and a resolver really did emit `### PARK-REASON` / heading-form
-    // `already-implemented`. Overriding an invented value let the driver build
-    // work the resolver had said was already done, and attach the assumption
-    // below as a confident justification for doing it.
-    //
-    // The override therefore needs BOTH provenances, not just one:
-    //
-    //   INTENT-VERDICT | PARK-REASON      | override a complete spec?
-    //   absent         | absent           | YES — the resolver said nothing (#337)
-    //   `park`         | `underspecified` | YES — it contradicts itself; the spec wins (#397)
-    //   `park`         | unparseable      | NO  — it DID say park (#404)
-    //   any            | any other reason | NO  — never in scope
+    // The override needs BOTH provenances (a complete spec plus either a
+    // verdict nobody stated — #337 — or a self-contradicting `park` +
+    // `underspecified` — #397). A `park` the resolver actually stated with a
+    // non-`underspecified` reason, or any other reason, is never overridable.
     const refutable =
       spec.parkReason === "underspecified" &&
       (spec.verdictSource === "default" || spec.parkReasonSource === "parsed");
