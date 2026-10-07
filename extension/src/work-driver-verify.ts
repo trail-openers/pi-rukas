@@ -12,7 +12,7 @@
  *   - commit-pr branch + verifyConsolidation remain here.
  */
 
-import { exec } from "node:child_process";
+import { exec, execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { promisify } from "node:util";
 import { trace } from "./trace.ts";
@@ -27,7 +27,51 @@ export { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 export { judgePrIdentity, verifyStepOutcome } from "./work-driver-verify-pr17.ts";
 export type { PrView } from "./work-driver-verify-pr17.ts";
 
-const execp = promisify(exec);
+const execFileP = promisify(execFile);
+
+/**
+ * #1005 — the production executor for the verify gate. When `opts.argv` is
+ * present (argv form), it runs `cmd` as the executable with `argv` as the
+ * arguments, via `execFile` (no shell re-parse) — this is how the coupling
+ * merge's rule-3 grep passes planner-controlled paths verbatim, so a path
+ * containing `$(…)`, backticks or `;` is data, never a shell command. When
+ * `opts.argv` is absent the classic shell path (promisify(exec)) runs.
+ */
+export async function execp(
+  cmd: string,
+  opts?: {
+    cwd?: string;
+    timeout?: number;
+    maxBuffer?: number;
+    shell?: string;
+    encoding?: BufferEncoding | "buffer";
+    argv?: string[];
+  },
+): Promise<{ stdout: string; stderr?: string }> {
+  const { argv, ...rest } = opts ?? {};
+  if (argv) {
+    // execFile takes no shell — an explicit one cannot be honoured, so say
+    // so rather than dropping it silently (the classic path would pass it
+    // through). The encoding stays utf8: the argv callers (rule-3 grep) are
+    // text by construction.
+    if (rest.shell) {
+      trace(`work-driver: execp argv form ignores opts.shell (${rest.shell}) — execFile has no shell`);
+    }
+    const r = await execFileP(cmd, argv, {
+      cwd: rest.cwd,
+      timeout: rest.timeout,
+      maxBuffer: rest.maxBuffer,
+      encoding: "utf8",
+    });
+    return { stdout: r.stdout as string, stderr: (r.stderr as string) ?? undefined };
+  }
+  const { stdout, stderr } = await promisify(exec)(cmd, {
+    cwd: rest.cwd,
+    timeout: rest.timeout,
+    maxBuffer: rest.maxBuffer,
+  });
+  return { stdout, stderr };
+}
 
 const VALID_SHA_RE = /^[0-9a-f]{40}$/;
 

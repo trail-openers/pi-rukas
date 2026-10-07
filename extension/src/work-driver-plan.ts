@@ -22,6 +22,7 @@ import type { DriverContext } from "./work-driver-context.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { checkAndRegisterClaims, crossGroupConflictsEnabled } from "./work-driver-path-claims.ts";
 import { mergeCoupledWorkstreams } from "./work-driver-plan-coupling.ts";
+import { execp } from "./work-driver-verify.ts";
 // #679 — the CANONICAL planQualityReason / correctivePlanSteer / steer builders
 // live in work-driver-plan-helpers.ts; this module re-exports them so existing
 // importers (smoke tests, cross-module consumers) keep their paths. The stale
@@ -213,8 +214,20 @@ export async function runPlan(
   // #1005 reordering. The gate and the corrective steer reason about the
   // POST-MERGE plan (which, for a single workstream, is the same as the
   // pre-merge plan).
+  // #1005 — the coupling merge's rule-3 grep (argv form) needs a real
+  // executor. `ctx.verifyExecFn` is test-only (undefined in production),
+  // so fall back to the production `execp` (which honours `opts.argv` via
+  // execFile — see work-driver-verify.ts). The worktree map threads the
+  // cycle's `pipelineState.worktrees` (populated by the branch step; empty
+  // pre-branch, in which case rule 3 is skipped rather than pointed at a
+  // directory it cannot see — the #1005 cwd finding).
+  const planExecFn = ctx.verifyExecFn ?? execp;
   if (Object.keys(workstreams).length > 1) {
-    const coupling = await mergeCoupledWorkstreams(workstreams, ctx.verifyExecFn);
+    const coupling = await mergeCoupledWorkstreams(
+      workstreams,
+      planExecFn,
+      next.pipelineState.worktrees,
+    );
     if (coupling.changed) {
       for (const m of coupling.merges) {
         trace(`work-driver: plan coupling merge — ${m.from} → ${m.into} (${m.reason})`);
@@ -285,7 +298,11 @@ export async function runPlan(
       // a depends-on edge (rule 2) short-circuits the grep, so the common
       // re-split shape costs no exec calls.
       if (Object.keys(workstreams).length > 1) {
-        const coupling = await mergeCoupledWorkstreams(workstreams, ctx.verifyExecFn);
+        const coupling = await mergeCoupledWorkstreams(
+          workstreams,
+          planExecFn,
+          next.pipelineState.worktrees,
+        );
         if (coupling.changed) {
           for (const m of coupling.merges) {
             trace(

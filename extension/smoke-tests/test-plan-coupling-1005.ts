@@ -126,36 +126,57 @@ const ws = (e: Record<string, Partial<CouplingWorkstream>>): Record<string, Coup
   // the symbol grep → merged by rule 3. The stub records the argv it was
   // called with: the path must arrive as ONE verbatim element (the H1
   // finding — a shell-built command would re-parse `$(…)`/backticks/`;`).
-  const recorded: Array<{ cmd: string; argv?: string[] }> = [];
-  const execFn: NonNullable<Parameters<typeof mergeCoupledWorkstreams>[1]> = async (cmd, opts) => {
-    recorded.push({ cmd, argv: opts?.argv });
-    return { stdout: "src/alpha.ts\n" };
-  };
-  const evilPath = "src/$(touch /tmp/pwned1005).ts";
-  const result = await mergeCoupledWorkstreams(
-    ws({
-      a: { paths: ["src/alpha.ts"], outOfScope: [] },
-      b: { paths: [evilPath], outOfScope: [] },
-    }),
-    execFn,
-  );
-  assert(result.changed === true, "rule 3: disjoint paths, exec stub returns a hit → merged");
-  assert(result.merges.length === 1, "rule 3: one merge recorded");
-  // H1 — the argv form: the path is passed verbatim as ONE argv element,
-  // and the command is `grep` (argv form, no shell).
-  assert(
-    recorded.length > 0 && recorded[0]?.cmd === "grep",
-    `rule 3: the grep runs in argv form (cmd=argv[0], got: ${recorded[0]?.cmd})`,
-  );
-  const allArgs = recorded.flatMap((r) => r.argv ?? []);
-  assert(
-    allArgs.includes(evilPath),
-    `rule 3: the path with $(…) arrives verbatim as one argv element (argv: ${JSON.stringify(allArgs)})`,
-  );
-  assert(
-    !allArgs.some((a) => a.includes("touch /tmp/pwned1005") && a !== evilPath),
-    "rule 3: nothing is shell-interpolated (the $(…) payload is data, not a command)",
-  );
+  // The `worktrees` map (3rd arg) is what threads the grep's cwd in
+  // production; the stub's cwd is asserted below (the #1005 cwd finding).
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const path = await import("node:path");
+  const stubDir = mkdtempSync(path.join(tmpdir(), "coupling-rule3-stub-"));
+  try {
+    const recorded: Array<{ cmd: string; argv?: string[]; cwd?: string }> = [];
+    const execFn: NonNullable<Parameters<typeof mergeCoupledWorkstreams>[1]> = async (
+      cmd,
+      opts,
+    ) => {
+      recorded.push({ cmd, argv: opts?.argv, cwd: opts?.cwd });
+      return { stdout: "src/alpha.ts\n" };
+    };
+    const evilPath = "src/$(touch /tmp/pwned1005).ts";
+    const result = await mergeCoupledWorkstreams(
+      ws({
+        a: { paths: ["src/alpha.ts"], outOfScope: [] },
+        b: { paths: [evilPath], outOfScope: [] },
+      }),
+      execFn,
+      { a: stubDir, b: stubDir },
+    );
+    assert(result.changed === true, "rule 3: disjoint paths, exec stub returns a hit → merged");
+    assert(result.merges.length === 1, "rule 3: one merge recorded");
+    // H1 — the argv form: the path is passed verbatim as ONE argv element,
+    // and the command is `grep` (argv form, no shell).
+    assert(
+      recorded.length > 0 && recorded[0]?.cmd === "grep",
+      `rule 3: the grep runs in argv form (cmd=argv[0], got: ${recorded[0]?.cmd})`,
+    );
+    const allArgs = recorded.flatMap((r) => r.argv ?? []);
+    assert(
+      allArgs.includes(evilPath),
+      `rule 3: the path with $(…) arrives verbatim as one argv element (argv: ${JSON.stringify(allArgs)})`,
+    );
+    assert(
+      !allArgs.some((a) => a.includes("touch /tmp/pwned1005") && a !== evilPath),
+      "rule 3: nothing is shell-interpolated (the $(…) payload is data, not a command)",
+    );
+    // #1005 cwd finding — the grep is pointed at the workstream's tree via
+    // the worktrees map, never the process cwd. Every call carries the
+    // tree path as `cwd`.
+    assert(
+      recorded.every((r) => r.cwd === stubDir),
+      `rule 3: the grep runs in the workstream's tree (cwd: ${recorded[0]?.cwd})`,
+    );
+  } finally {
+    rmSync(stubDir, { recursive: true, force: true });
+  }
 }
 
 {
@@ -174,6 +195,109 @@ const ws = (e: Record<string, Partial<CouplingWorkstream>>): Record<string, Coup
     Object.keys(result.workstreams).length === 2,
     "rule 3 (negative): both workstreams remain",
   );
+}
+
+// ── Rule 3 with the PRODUCTION executor (H1 fix + cwd fix verification) ───
+{
+  // The production executor (work-driver-verify.ts execp) honours argv via
+  // execFile. This test exercises the REAL call shape: mergeCoupledWorkstreams
+  // + execp + the worktrees map (3rd arg) — no wrapper that injects a cwd
+  // the production call site does not supply (that wrapper is what masked
+  // the #1005 cwd finding: the test passed against a temp dir it injected,
+  // while production's cwd-less grep never resolved the worktree-relative
+  // paths and rule 3 silently never fired).
+  const { mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const path = await import("node:path");
+  // Two separate temp dirs: one per workstream. The planner's paths are
+  // relative to each workstream's own tree; the grep must run there.
+  const dirA = mkdtempSync(path.join(tmpdir(), "coupling-prod-a-"));
+  const dirB = mkdtempSync(path.join(tmpdir(), "coupling-prod-b-"));
+  try {
+    mkdirSync(path.join(dirA, "src"), { recursive: true });
+    mkdirSync(path.join(dirB, "src"), { recursive: true });
+    // Workstream A declares src/alpha.ts; workstream B declares src/beta.ts,
+    // which references alpha. The shared symbol is what rule 3 detects.
+    writeFileSync(path.join(dirA, "src/alpha.ts"), "export function alpha() {}\n");
+    writeFileSync(path.join(dirB, "src/beta.ts"), "import { alpha } from './alpha';\n");
+
+    const { execp } = await import("../src/work-driver-verify.ts");
+    // The production call shape — NO cwd-injecting wrapper. The worktrees
+    // map (3rd arg) is what points the grep at each tree; this is exactly
+    // what work-driver-plan.ts now passes (next.pipelineState.worktrees).
+    const prodExecFn: NonNullable<Parameters<typeof mergeCoupledWorkstreams>[1]> = (
+      cmd,
+      opts,
+    ) => execp(cmd, opts);
+
+    // Case A: shared symbol alpha between alpha.ts and beta.ts → MERGED.
+    const rA = await mergeCoupledWorkstreams(
+      ws({
+        a: { paths: ["src/alpha.ts"], outOfScope: [] },
+        b: { paths: ["src/beta.ts"], outOfScope: [] },
+      }),
+      prodExecFn,
+      { a: dirA, b: dirB },
+    );
+    assert(
+      rA.changed === true,
+      `rule 3 (production): shared symbol detected via production execp + worktrees map (got changed=${rA.changed})`,
+    );
+    assert(
+      rA.merges[0]?.reason?.includes("alpha") ?? false,
+      `rule 3 (production): the reason names the shared symbol (got: ${rA.merges[0]?.reason})`,
+    );
+
+    // Case B (the #1005 cwd finding, regression): the SAME files with NO
+    // worktrees map. The coupling module now skips rule 3 when it cannot
+    // resolve a tree (a cwd-less grep runs in the process directory, where
+    // worktree-relative paths do not exist — the pre-fix silent no-op).
+    // The pair must NOT be merged: no rules 1/2 evidence either, so the
+    // result is unchanged. This is the production shape the adversarial
+    // finding described; the fix makes it a visible skip, not a silent
+    // miss that looked like "no coupling".
+    const rB = await mergeCoupledWorkstreams(
+      ws({
+        a: { paths: ["src/alpha.ts"], outOfScope: [] },
+        b: { paths: ["src/beta.ts"], outOfScope: [] },
+      }),
+      prodExecFn,
+      undefined,
+    );
+    assert(
+      rB.changed === false,
+      "rule 3 (no worktrees map): rule 3 is skipped, not a silent no-op (pre-fix: the cwd-less grep never resolved the paths)",
+    );
+
+    // Case C: a $(…) payload in a path must NOT be executed. The file does
+    // not exist so grep fails (exit 2) — in argv form the $(…) is one
+    // literal string to grep. If the executor used the shell, the payload
+    // would run and the marker file would exist.
+    const evilName = "$(touch /tmp/pwned-prod-exec1005)";
+    const evilPath = `src/${evilName}.ts`;
+    writeFileSync(path.join(dirB, "src/gamma.ts"), "export function gamma() {}\n");
+    const marker = "/tmp/pwned-prod-exec1005";
+    if (existsSync(marker)) rmSync(marker, { force: true });
+    const rC = await mergeCoupledWorkstreams(
+      ws({
+        a: { paths: ["src/alpha.ts"], outOfScope: [] },
+        b: { paths: [evilPath, "src/gamma.ts"], outOfScope: [] },
+      }),
+      prodExecFn,
+      { a: dirA, b: dirB },
+    );
+    assert(
+      !existsSync(marker),
+      `rule 3 (production): the $(…) payload was NOT executed (marker ${marker} does not exist)`,
+    );
+    assert(
+      rC.changed === false,
+      "rule 3 (production): the missing evil path yields no coupling (grep fails closed)",
+    );
+  } finally {
+    rmSync(dirA, { recursive: true, force: true });
+    rmSync(dirB, { recursive: true, force: true });
+  }
 }
 
 // ── Genuinely separate workstreams are NOT merged ──────────────────────

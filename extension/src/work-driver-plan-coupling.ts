@@ -44,6 +44,7 @@
  * same output (a second pass finds no more coupled pairs to merge).
  */
 
+import { existsSync } from "node:fs";
 import { trace } from "./trace.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
 import { foldWorkstream } from "./workstream-fold.ts";
@@ -72,6 +73,22 @@ export interface CouplingResult {
   }>;
   /** True when at least one merge was performed. */
   changed: boolean;
+}
+
+/**
+ * #1005 — where rule 3's grep resolves the planner's declared paths. The
+ * planner's `paths` are relative to the tree the workstreams will be
+ * developed in — the cycle's worktree once the branch step has recorded
+ * `ps.worktrees`, and `repoRoot` until then (which is what the grep sees
+ * before a worktree exists). Passed from the caller (work-driver-plan.ts)
+ * rather than derived inside, because the worktree map is per-workstream
+ * and can legitimately name different trees per pair.
+ */
+export interface CouplingTreeRef {
+  /** Directory the grep runs in. Absolute (worktree path / repo root). */
+  path: string;
+  /** Human-readable id for the trace line (worktree id or "repoRoot"). */
+  label: string;
 }
 
 /** #1005 — the argv-form grep seam (planner-controlled paths, no shell). */
@@ -136,10 +153,21 @@ function couplingReason(a: CouplingWorkstream, b: CouplingWorkstream): string | 
  * `execFn` is the driver's exec function (for the symbol grep, rule 3).
  * When it is undefined (e.g. a test that only exercises rules 1 and 2),
  * rule 3 is skipped.
+ *
+ * `worktrees` is the cycle's worktree map (`pipelineState.worktrees`,
+ * key = workstream id, `default` = last-resort cwd) — rule 3's grep runs in
+ * the tree the workstream's paths are relative to (the #1005 finding: a
+ * grep with no cwd runs in the pi-rukas process directory, where
+ * worktree-relative paths do not exist, and rule 3 silently never fired).
+ * When undefined (a test that only exercises rules 1–2, or an absent
+ * `default` entry) rule 3 is skipped rather than pointed at a directory it
+ * cannot see — a silent no-op is exactly the defect this map exists to
+ * fix.
  */
 export async function mergeCoupledWorkstreams(
   workstreams: Record<string, CouplingWorkstream>,
   execFn?: GrepExecFn,
+  worktrees?: Record<string, string>,
 ): Promise<CouplingResult> {
   // Start with a copy; the input is not mutated.
   const ws: Record<string, CouplingWorkstream> = {};
@@ -148,6 +176,26 @@ export async function mergeCoupledWorkstreams(
   }
   const merges: CouplingResult["merges"] = [];
   const ids = Object.keys(ws);
+
+  // #1005 — rule 3 needs a directory the planner's paths resolve in. The
+  // worktrees map (populated by the branch step, key = workstream id) names
+  // each workstream's tree; `default` covers the N=1 degenerate case and the
+  // cycle's last-resort cwd. When the map is absent or empty (plan ran
+  // before a branch step, a legacy state file, or a test that only
+  // exercises rules 1–2) rule 3 is skipped for the pair — a grep with no
+  // cwd runs in the process directory, where worktree-relative paths do
+  // not exist, and silently does nothing (the #1005 finding).
+  const treeOf = (id: string): CouplingTreeRef | undefined => {
+    const p = worktrees?.[id] ?? worktrees?.default;
+    if (!p) return undefined;
+    if (!existsSync(p)) {
+      trace(
+        `work-driver: plan coupling rule 3 — worktree for '${id}' absent (${p}); skipping the symbol grep`,
+      );
+      return undefined;
+    }
+    return { path: p, label: worktrees?.[id] ? id : "repoRoot" };
+  };
 
   // Find coupled pairs; record each (absorbed workstream, reason) PAIR and
   // keep the absorbed half out of later pair checks. The folds themselves
@@ -178,9 +226,18 @@ export async function mergeCoupledWorkstreams(
       // Rule 1 and 2 (synchronous).
       let reason: string | undefined = couplingReason(a, b);
       // Rule 3 — symbol cross-reference (async). Only runs when execFn is
-      // available and rules 1–2 did not already couple the pair.
+      // available and rules 1–2 did not already couple the pair. Each half
+      // greps against ITS OWN tree: the planner's paths are relative to the
+      // tree the workstream will be developed in, and running the grep in
+      // the process cwd (the #1005 adversarial finding — rule 3 never fired
+      // in production because worktree-relative paths don't exist from
+      // repoRoot's process cwd) is what a missing cwd does.
       if (!reason && execFn) {
-        reason = await symbolCrossReference(a, b, execFn);
+        const aTree = treeOf(aId);
+        const bTree = treeOf(bId);
+        if (aTree && bTree) {
+          reason = await symbolCrossReference(a, b, aTree, bTree, execFn);
+        }
       }
       if (reason) {
         toMerge.push({ into: aId, from: bId, absorbed: b, reason });
@@ -235,6 +292,8 @@ export async function mergeCoupledWorkstreams(
 async function symbolCrossReference(
   a: CouplingWorkstream,
   b: CouplingWorkstream,
+  aTree: CouplingTreeRef,
+  bTree: CouplingTreeRef,
   execFn: GrepExecFn,
 ): Promise<string | undefined> {
   const basenames = (paths: string[]): string[] =>
@@ -252,13 +311,25 @@ async function symbolCrossReference(
   const grepFor = async (
     name: string,
     files: string[],
+    tree: CouplingTreeRef,
     definer: string,
     referenced: string,
   ): Promise<string | undefined> => {
     if (files.length === 0) return undefined;
     try {
+      // `cwd` is load-bearing: the planner's paths are relative to the
+      // workstream's own tree, and the grep must resolve them there
+      // (the #1005 finding — without it the grep runs in the pi-rukas
+      // process cwd, where worktree-relative paths do not exist, and rule 3
+      // silently never fires).
+      // The pattern is a single `-e` option so grep keeps consuming all
+      // positional arguments as FILES (with `-- name files…`, only the
+      // first file is searched — the rest are parsed as more patterns, and
+      // a consumer referencing a symbol in b.paths[1] would never be
+      // detected).
       const { stdout } = await execFn("grep", {
-        argv: ["-l", "-w", "--", name, ...files],
+        argv: ["-l", "-w", "-e", name, "--", ...files],
+        cwd: tree.path,
         maxBuffer: 64 * 1024,
         timeout: 30_000,
       });
@@ -270,23 +341,25 @@ async function symbolCrossReference(
       // grep failed (file not found, timeout, missing binary) — not
       // evidence of coupling, but it is no longer invisible: the trace
       // line is what the operator sees in the transcript (the pre-#1005
-      // catch was empty).
+      // catch was empty). The tree label names WHERE it ran, so a wrong-
+      // cwd failure reads as one, not as "no coupling".
       trace(
-        `work-driver: plan coupling rule 3 grep failed for '${name}' in ${referenced}'s files: ${(err as Error).message?.slice(0, 120)}`,
+        `work-driver: plan coupling rule 3 grep failed for '${name}' in ${referenced}'s files (cwd: ${tree.label} ${tree.path}): ${(err as Error).message?.slice(0, 120)}`,
       );
       return undefined;
     }
   };
 
-  // Check: does any symbol from A appear in B's files, or vice versa?
+  // Check: does any symbol from A appear in B's files (grep in B's tree),
+  // or vice versa?
   for (const name of aNames) {
     if (bNames.includes(name)) continue; // same file in both — that's rule 1
-    const hit = await grepFor(name, b.paths.slice(0, 10), a.id, b.id);
+    const hit = await grepFor(name, b.paths.slice(0, 10), bTree, a.id, b.id);
     if (hit) return hit;
   }
   for (const name of bNames) {
     if (aNames.includes(name)) continue;
-    const hit = await grepFor(name, a.paths.slice(0, 10), b.id, a.id);
+    const hit = await grepFor(name, a.paths.slice(0, 10), aTree, b.id, a.id);
     if (hit) return hit;
   }
   return undefined;

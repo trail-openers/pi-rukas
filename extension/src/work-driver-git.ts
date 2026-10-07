@@ -30,6 +30,11 @@ export type VerifyExecFn = (
     timeout?: number;
     maxBuffer?: number;
     shell?: string;
+    // #1005 — argv form: when present, `cmd` is the executable and `argv`
+    // its arguments, run via execFile (no shell re-parse). The coupling
+    // merge's rule-3 grep uses this so planner-controlled paths arrive
+    // verbatim.
+    argv?: string[];
   },
 ) => Promise<{ stdout: string; stderr?: string }>;
 
