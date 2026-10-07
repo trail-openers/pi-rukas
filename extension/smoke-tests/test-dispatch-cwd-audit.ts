@@ -357,5 +357,26 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
   );
 }
 
+// ------------------------------------------- merge-and-retry: the #1005 re-dispatch is pinned
+
+{
+  // #1005 — the fence merge-and-retry's re-dispatch (the live incident: the
+  // merge's re-dispatch ran the developer with the process.cwd() fallback =
+  // repoRoot, and a killed developer's files at the root blocked the next
+  // cycle's branch step) is pinned to the merged workstream's worktree — the
+  // violator's tree, rebased to the owner's tip (the same path the merge
+  // rebased). The re-dispatch reads the worktree from the merged worktree
+  // map (`worktrees[mergedId]`) and threads it onto the spec as `cwd`.
+  const merge = read("work-develop-fence-merge.ts");
+  assert(
+    /cwd:\s*wt/.test(merge),
+    "canary: the merge-and-retry re-dispatch carries an explicit cwd (the merged workstream's worktree — the tree the merge rebased), not the process.cwd() fallback",
+  );
+  assert(
+    /const wt = worktrees\[mergedId\];/.test(merge),
+    "canary: the re-dispatch's cwd resolves to the merged workstream's worktree (worktrees[mergedId]) — the violator's tree, rebased to the owner's tip",
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

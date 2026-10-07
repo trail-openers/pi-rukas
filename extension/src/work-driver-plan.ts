@@ -294,7 +294,6 @@ export async function runPlan(
     const coupling = await mergeCoupledWorkstreams(
       workstreams as Record<string, import("./work-driver-plan-coupling.ts").CouplingWorkstream>,
       ctx.verifyExecFn,
-      next.pipelineState.baseSha,
     );
     if (coupling.changed) {
       for (const m of coupling.merges) {

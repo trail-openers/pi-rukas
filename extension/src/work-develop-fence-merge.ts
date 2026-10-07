@@ -153,8 +153,11 @@ export async function runMergePrep(
     const violatorWt = worktrees[violator];
     const ownerWt = worktrees[owner];
     if (typeof violatorWt !== "string" || typeof ownerWt !== "string") {
+      // The missing path is the VIOLATOR's worktree (the violator's tree is
+      // the merged workstream's tree after the merge; the owner's tree is
+      // only needed to read its tip). Name the violator, not the owner.
       return park(
-        `merge-and-retry aborted — no worktree recorded for ${typeof violatorWt === "string" ? owner : violator} (the merge cannot be applied)`,
+        `merge-and-retry aborted — no worktree recorded for violator ${violator} (the merged workstream's worktree cannot be prepared)`,
       );
     }
     let ownerSha = "";
@@ -243,6 +246,12 @@ export async function runMergePrep(
     const prompt = mergeRetryPrompt(mergedId, halves, violatedRecords);
     const startedAt = Date.now();
     try {
+      // #1005 — the re-dispatch is pinned to the merged workstream's worktree
+      // (the violator's tree, rebased to the owner's tip — the same path the
+      // merge rebased). Without the explicit cwd the child falls back to the
+      // Pi process directory (repoRoot) and writes the merged work to the main
+      // checkout — the live #1005 incident (a killed developer's files blocked
+      // the next cycle's branch step).
       const res = await dispatch(
         ctx.pi,
         { role: "developer", prompt, cwd: wt },

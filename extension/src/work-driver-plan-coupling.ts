@@ -130,9 +130,6 @@ function couplingReason(a: CouplingWorkstream, b: CouplingWorkstream): string | 
  * `execFn` is the driver's exec function (for the symbol grep, rule 3).
  * When it is undefined (e.g. a test that only exercises rules 1 and 2),
  * rule 3 is skipped.
- *
- * `baseSha` is the cycle's base SHA (the grep runs in the base worktree,
- * i.e. the repo root — the files at base are what the planner saw).
  */
 export async function mergeCoupledWorkstreams(
   workstreams: Record<string, CouplingWorkstream>,
@@ -140,9 +137,7 @@ export async function mergeCoupledWorkstreams(
     cmd: string,
     opts?: { cwd?: string; maxBuffer?: number },
   ) => Promise<{ stdout: string }>,
-  baseSha?: string,
 ): Promise<CouplingResult> {
-  void baseSha; // reserved for future use (the grep runs in the repo root)
   // Start with a copy; the input is not mutated.
   const ws: Record<string, CouplingWorkstream> = {};
   for (const [id, w] of Object.entries(workstreams)) {

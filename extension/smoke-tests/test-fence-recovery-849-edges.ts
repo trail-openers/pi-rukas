@@ -221,12 +221,8 @@ function capsOf(events: WorkEvent[]): Array<Extract<WorkEvent, { kind: "cap-hit"
   // owner (c) and the worktree; the violator (b) is named in the merge
   // shape (the pair is c+b).
   assert(
-    ev.includes("owner c") || ev.includes("c+b") || /c/.test(ev),
-    `#849 edge case 1 (merged as c): the evidence names the owner (c) (got: ${ev.slice(0, 300)})`,
-  );
-  assert(
-    ev.includes("rev-parse"),
-    `#849 edge case 1: the evidence names the failing read (rev-parse) (got: ${ev.slice(0, 300)})`,
+    ev.includes("owner c") && ev.includes("rev-parse"),
+    `#849 edge case 1 (merged as c): the evidence names the owner (c) and the failing rev-parse (got: ${ev.slice(0, 300)})`,
   );
   const recoveryCalls = calls.filter((c) => (c.prompt ?? "").includes("FENCE MERGE-AND-RETRY"));
   assert(
