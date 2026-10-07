@@ -74,7 +74,7 @@ export async function editIssueTldrs(forge: Forge, state: WorkState): Promise<st
       // implemented).
 >>>>>>> dc9af52 (fix(work): address lens review MEDIUM findings (dead code, timeout, file size))
       await forge.issueEdit(n, newBody);
-      trace(`work-driver: prepended TL;DR to issue #${n}`);
+      trace(`work-driver: prepended TL;DR to issue #${n} (body length: ${currentBody.length})`);
     } catch (err) {
       const msg = (err as Error).message?.slice(0, 200) ?? "unknown error";
       trace(`work-driver: TL;DR edit for issue #${n} failed: ${msg}`);
