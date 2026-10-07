@@ -1,0 +1,113 @@
+I'm starting by reviewing the full issue context and searching through the knowledge base to understand the relevant code.
+
+
+
+
+
+Task complete: /work issue #984 Step 1 (reconnaissance + intent resolution)
+
+## Workstreams
+
+- **WS-1: Make the ledger-wait deterministic (or generously-budgeted) in `test-lens-kill-ledger.ts`**
+  - Change `writeLensLedgerEntry` in `extension/src/lens-ledger.ts` (line 43) to return the inner write `Promise<void>` (currently `write().catch(trace(...))` returning void — minimal change: `return write().catch(...)` or `return write().catch(...) as Promise<void>`). Production caller at `lens-review.ts:186` (`void writeLensLedgerEntry(...)`) already swallows — no semantics change.
+  - In `extension/src/lens-review.ts` `finish()` (~line 179), store the returned promise in a module-level map keyed by something test-addressable (e.g., per-test handle `__lensLedgerPending` or a test-only export `awaitLensLedgerWrite()`), so `runLensReview`'s summary resolves FIRST and the promise is available to tests separately. **Do NOT put the promise on `LensReviewSummary`** — that breaks `JSON.stringify` (formatSingleReport, dispatch-deck) and the byte-identical contract test in `test-review-ledger.ts` (~line 208).
+  - Update `test-lens-kill-ledger.ts` cases (2a)-(2d): (a) remove any pre-existing `ledgerFile` (and stray `*.tmp-*`) before each `runLensReview` call — each case uses a fresh `mkdtempSync` dir today, but the criterion requires it; (b) either await the deterministic handle, or replace `waitForLedger(ledgerFile, 5000)` with a `≥30 s` budget. Null-return must still be a test FAILURE for cases where an entry IS expected (per residual-gap MEDIUM).
+  - Add a new case: "summary resolves independently of the ledger file" — i.e., the await seam does NOT gate the summary (byte-identical contract, per residual-gap HIGH).
+  - Add a new case: plant a stale ledger file (with pre-existing entries) before the run; assert the fresh entry lands on top (appendLedgerEntry's dedupeLatest by `max(at)`).
+  - Optional (implementer's call): lift the shared `waitForLedger` helper into `extension/smoke-tests/lib/poll-ledger.ts` (non-test-named, following `lib/poll-until-killed.ts` precedent) so `test-lens-kill-ledger.ts` and `test-review-ledger.ts:97` share one ≥30s budget.
+  - [paths: extension/src/lens-ledger.ts, extension/src/lens-review.ts, extension/smoke-tests/test-lens-kill-ledger.ts, extension/smoke-tests/test-review-ledger.ts]
+
+- **WS-2: Make T8's timing ceiling load-tolerant in `test-work-driver-adv-retry-357.ts`**
+  - Keep the EXACT `loopCalls === MAX_OUTER_CALLS` (4) assertion — that is the primary regression signal.
+  - Change `TIMING_CEILING_MS = 1000` to a multi-second bound (e.g., `≥10s` or scale with `MAX_OUTER_CALLS × CALL_DELAY_MS` with a large multiplier) so 1114 ms observations don't trip it.
+  - Optionally also assert a FLOOR `elapsed >= MAX_OUTER_CALLS × CALL_DELAY_MS` (400 ms) — setTimeouts cannot fire early, so the floor is deterministic. The ceiling must remain as an upper bound per the acceptance criterion; a floor-only fix violates the criterion.
+  - [paths: extension/smoke-tests/test-work-driver-adv-retry-357.ts]
+
+- **WS-3: Verify + offline gates**
+  - `bun run build` (prompt rebuild) — no prompt changes expected but the gate demands it.
+  - `cd extension && bunx tsc --noEmit && bun run check` — type + biome clean.
+  - `cd extension && bash smoke-tests/lib/verify-loop.sh smoke-tests/test-*.ts` — full offline suite.
+  - Preserve `test-seams-wired.ts` canary: `appendLedgerEntry` must remain imported by `adversarial-ledger.ts` (no rename/move).
+  - [no-diff: evidence via §1 gates: `cd extension && bunx tsc --noEmit && bun run check && bash smoke-tests/lib/verify-loop.sh smoke-tests/test-*.ts` all green]
+
+## Prior decisions
+
+- **#912 (fire-and-forget invariant)** — the ledger write MUST remain a fire-and-forget side effect; "a ledger write is a side effect of a review, never a gate on it". The fix must not make `finish()` await the write promise before returning. If the deterministic-await path is chosen, the seam MUST be a separate test-only export or trailing side-channel, not the summary return path. The byte-identical contract test in `test-review-ledger.ts` must stay green. (source: issue body + AGENTS.md §1 + lens-ledger.ts module doc)
+- **#966 (no passing verdict for all-fail/aborted)** — the invariant "no caller feeds `finish` a passing verdict for an all-fail/aborted run" must remain intact. (source: issue edge-case bullet)
+- **#973 (residual-findings disclosure)** — `postLensResidualDisclosure` is already awaited for ISSUES_FOUND and must stay awaited (not affected by this fix, but do not re-order). (source: lens-review.ts:202)
+- **#807 (bounded one-shot verify retry)** — the verify gate already has a documented flake-retry mechanism; this issue does NOT ask for another retry layer, it asks to make the assertions themselves robust. (source: issue prior-context bullet)
+- **#846 precedent** — `lib/poll-until-killed.ts` is the precedent for non-test-named shared helpers in `smoke-tests/lib/` (referenced for the optional shared-helper lift). (source: issue test-surface bullet)
+- **vipune** — no prior guards or memories found about this flake, the ledger-write path, or the T8 timing test. Two recent observations (skill-loading measurement, project state at v0.12.78 / #983) are context-only, not decision-relevant.
+
+## Touchpoints
+
+- `extension/smoke-tests/test-lens-kill-ledger.ts` — 439 lines; `waitForLedger` (147-160), `withLedgerEnv` (162-179), four cases (2a-2d) each calling `waitForLedger(ledgerFile, 5000)`. **Primary fix target.**
+- `extension/src/lens-ledger.ts` — `writeLensLedgerEntry` (43-89); returns void, internally `write().catch(trace)`. **Minimal change: return the promise.**
+- `extension/src/lens-review.ts` — `finish()` (179-209) calls `void writeLensLedgerEntry(...)` at line 186; single exit path for all blocked/aborted/empty-roster outcomes. **Needs a test-visible seam for the write promise.**
+- `extension/smoke-tests/test-work-driver-adv-retry-357.ts` — T8 block (~lines 119-252); `CALL_DELAY_MS=100`, `MAX_OUTER_CALLS=4`, `TIMING_CEILING_MS=1000`. **Secondary fix target (ceiling only).**
+- `extension/smoke-tests/test-review-ledger.ts` — duplicate `waitForLedger` (97-110, default 2000 ms); byte-identical contract test (~line 208) must stay green.
+- `extension/src/review-ledger-path.ts` — `ledgerPathFor` (36-58) honours `PI_ENSEMBLE_REVIEW_LEDGER_FILE` override; no change needed.
+- `extension/src/review-ledger.ts` — `appendLedgerEntry` (shared atomic writer); **do not rename/move** (test-seams-wired.ts canary).
+- `extension/smoke-tests/lib/` — optional location for shared `waitForLedger` helper.
+
+## Spec
+
+### Intent
+Make the fire-and-forget ledger-write wait in `test-lens-kill-ledger.ts` robust against host load (without weakening the (2a)-(2d) assertions) and make T8's 1000 ms timing ceiling in `test-work-driver-adv-retry-357.ts` load-tolerant (while keeping the exact `loopCalls === 4` assertion), so the consolidated verify gate stops parking unrelated /work cycles on a loaded dev host.
+
+### Deliverables
+- D1: Make `writeLensLedgerEntry` in `extension/src/lens-ledger.ts` return the inner write promise (currently `write().catch(trace)` returning void) so tests can await it deterministically; the production caller at `lens-review.ts:186` (`void writeLensLedgerEntry(...)`) keeps swallowing — fire-and-forget semantics unchanged. [paths: extension/src/lens-ledger.ts]
+- D2: Expose a test-visible seam in `extension/src/lens-review.ts` `finish()` for the returned write promise (e.g., a test-only export like `awaitLensLedgerWriteForRun(runId)` or a module-level `__lensLedgerPending` handle) so `runLensReview`'s summary resolves FIRST and the ledger file is awaitable AFTER — NOT by adding a Promise field to `LensReviewSummary` (breaks JSON.stringify + the byte-identical contract test). [paths: extension/src/lens-review.ts]
+- D3: Update `extension/smoke-tests/test-lens-kill-ledger.ts` cases (2a)-(2d): (a) remove any pre-existing `ledgerFile` + stray `*.tmp-*` before each `runLensReview` call; (b) either await the deterministic handle OR replace `waitForLedger(ledgerFile, 5000)` with a `≥30 s` budget; (c) a null return on an expected-entry case MUST be a test failure (not a skip). [paths: extension/smoke-tests/test-lens-kill-ledger.ts]
+- D4: Add a new case to `test-lens-kill-ledger.ts` asserting the summary resolves INDEPENDENTLY of the ledger file (byte-identical contract — the await seam does not gate the result). [paths: extension/smoke-tests/test-lens-kill-ledger.ts]
+- D5: Add a new case to `test-lens-kill-ledger.ts` planting a stale ledger file (with pre-existing entries) before the run; assert the fresh entry lands on top (appendLedgerEntry's dedupeLatest by max at). [paths: extension/smoke-tests/test-lens-kill-ledger.ts]
+- D6: In `test-work-driver-adv-retry-357.ts` T8, raise `TIMING_CEILING_MS` from 1000 ms to a multi-second bound (e.g., ≥10 s or scale with `MAX_OUTER_CALLS × CALL_DELAY_MS` with a large multiplier); keep the EXACT `loopCalls === MAX_OUTER_CALLS` (4) assertion. Optionally add a floor `elapsed >= MAX_OUTER_CALLS × CALL_DELAY_MS` (400 ms, deterministic since setTimeouts cannot fire early). [paths: extension/smoke-tests/test-work-driver-adv-retry-357.ts]
+- D7: (Optional, implementer's call) Lift the shared `waitForLedger` helper into `extension/smoke-tests/lib/poll-ledger.ts` (non-test-named, `#846` precedent) so `test-lens-kill-ledger.ts` and `test-review-ledger.ts` share one ≥30 s budget + stale-file cleanup. [paths: extension/smoke-tests/lib/poll-ledger.ts, extension/smoke-tests/test-lens-kill-ledger.ts, extension/smoke-tests/test-review-ledger.ts]
+
+### Acceptance criteria
+- The ledger assertions in `test-lens-kill-ledger.ts` no longer depend on a fixed short wall-clock budget: the write is either awaited deterministically (via the D1/D2 seam) or polled with a `≥30 s` budget that returns as soon as the file appears — the passing path stays fast.
+- Each of the four cases (2a)-(2d) removes any pre-existing `ledgerFile` + stray `*.tmp-*` before `runLensReview`.
+- A null return on an expected-entry case is a test FAILURE (not a skip / silent pass).
+- T8's `TIMING_CEILING_MS` is load-tolerant (multi-second bound); the EXACT `loopCalls === 4` assertion is unchanged.
+- The byte-identical contract test in `test-review-ledger.ts` (two consecutive `runLensReview` calls, summary compared with `JSON.stringify` on verdict) stays green.
+- The `test-seams-wired.ts` canary (appendLedgerEntry imported by adversarial-ledger.ts) stays green.
+- No assertion is weakened or removed: both tests still fail if the ledger entry is missing/wrong OR if retries do not wait (count + floor).
+- Offline gates pass: `cd extension && bunx tsc --noEmit && bun run check && bash smoke-tests/lib/verify-loop.sh smoke-tests/test-*.ts` all green.
+- The fire-and-forget contract holds: production `finish()` does NOT await the write promise before returning; the `void writeLensLedgerEntry` call site at `lens-review.ts:186` still swallows failures.
+- The `#966` invariant holds: no caller feeds `finish` a passing verdict for an all-fail/aborted run.
+
+### Out of scope
+- Changing the review ledger format (`LedgerEntry` shape, `appendLedgerEntry` dedupe/round-bump semantics, or the merge guard in `merge-guard.ts`).
+- Making production ledger writes synchronous (unless the minimal deterministic fix justifies it — it doesn't; the D1/D2 approach keeps fire-and-forget).
+- Changing the review ledger format or the merge guard (per issue body "Out of scope").
+- Renaming/moving `appendLedgerEntry` or the `writeLensLedgerEntry` entry point in a way that breaks the `test-seams-wired.ts` canary.
+- Adding another flake-retry layer (the #807 mechanism already exists; this issue is about making the assertions robust, not retrying them).
+- Changing `postLensResidualDisclosure`'s await semantics (already awaited for ISSUES_FOUND, must stay so).
+- Changing `PI_ENSEMBLE_REVIEW_LEDGER_FILE` override behaviour in `ledgerPathFor`.
+- Changing T8's `mkdtempSync` prefix or environment isolation (not the source of the flake).
+
+### Assumptions
+- The D1/D2 deterministic-await approach is the better fix (vs. ≥30 s budget) because it's structurally correct (no wall-clock dependence) and keeps the passing path fast. The ≥30 s budget is the fallback if the seam proves too invasive — either satisfies the acceptance criteria. Defensible default: prefer the minimal production change (return a promise from `writeLensLedgerEntry`, no new public API surface on `LensReviewSummary`).
+- The test-only seam in `finish()` is implemented as a module-level handle (e.g., `let __lensLedgerPending: Promise<void> | null = null`) that tests can `await` directly — NOT a new exported function with a run-id argument (simpler, no new public API). Defensible default: minimal surface area.
+- The T8 ceiling fix raises `TIMING_CEILING_MS` to a fixed multi-second constant (e.g., `10_000` ms) rather than scaling with `MAX_OUTER_CALLS` — simpler, and the exact-count assertion is the real regression detector. Defensible default: the ceiling is a safety net, the count is the signal.
+- D7 (shared helper lift) is optional; if the implementer keeps the helpers local, both files get the ≥30 s budget independently. Defensible default: don't add a shared module unless the duplication is actively painful.
+
+### Open questions
+- (none — the residual-gap MEDIUM items are resolved by the acceptance criteria above; the LOW items are implementer details)
+
+### Evidence
+- `writeLensLedgerEntry` returns void, internally `write().catch(trace(...))` — confirmed (extension/src/lens-ledger.ts:43-89, read this session).
+- `finish()` at lens-review.ts:186 calls `void writeLensLedgerEntry(...)` fire-and-forget — confirmed (extension/src/lens-review.ts:179-209, read this session).
+- `finish()` is the single exit path for all blocked/aborted/empty-roster outcomes; called from `runLensReview` — confirmed (extension/src/lens-review.ts:179-209).
+- Four cases (2a)-(2d) each call `waitForLedger(ledgerFile, 5000)` after a 100 ms post-completion sleep — confirmed (extension/smoke-tests/test-lens-kill-ledger.ts:147-160, 200-330, read this session).
+- `waitForLedger` uses `Atomics.wait` on a 20 ms sleep, polls `existsSync` + `readLedgerAt` with partial-write retry — confirmed (extension/smoke-tests/test-lens-kill-ledger.ts:147-160).
+- T8: `CALL_DELAY_MS=100`, `MAX_OUTER_CALLS=4`, `TIMING_CEILING_MS=1000`, asserts `loopCalls === 4` EXACTLY and `elapsed < 1000 ms` — confirmed (extension/smoke-tests/test-work-driver-adv-retry-357.ts:119-252, read this session).
+- `postLensResidualDisclosure` is already awaited for ISSUES_FOUND and must stay so — confirmed (extension/src/lens-review.ts:202, extension/src/lens-review-residuals.ts:59-84, read this session).
+- `test-seams-wired.ts` canary: `appendLedgerEntry` imported by `adversarial-ledger.ts` — confirmed (issue reference; not read this session but referenced in issue).
+- `lib/poll-until-killed.ts` exists as the #846 precedent for non-test-named helpers — confirmed (extension/smoke-tests/lib/ listing, read this session).
+- The byte-identical contract test in `test-review-ledger.ts` (~line 208) exists and must stay green — confirmed by issue reference (not read this session; line number is approximate per residual-gap LOW).
+- The `#912` fire-and-forget invariant is documented in `lens-ledger.ts` module doc — confirmed (issue reference; not read this session).
+
+## Rationale
+
+The intent is clear, grounded, and the fix is well-scoped. The flake is structural (fixed 5 s budget vs. a fire-and-forget two-subprocess write chain), not a bug in the assertions — so the fix is to make the wait deterministic (preferred) or generously-budgeted, plus make T8's 1000 ms ceiling load-tolerant. Both files are confirmed to exist with the described structure; no contradiction between issue and code. The main design decision (D1/D2 seam shape) has a defensible default (module-level handle, no new public API, no Promise on the summary), and the residual-gap HIGH is resolved by explicitly stating the adjudication rule in the acceptance criteria. No park needed — the issue is specific, the code matches the description, and the fix is one small production change (return a promise) + test updates.

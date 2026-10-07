@@ -33,6 +33,7 @@ import {
   loadBearingContradictions,
   supportingContradictions,
 } from "./work-driver-intent-criticality.ts";
+import { blockingQuestions } from "./work-driver-intent-questions.ts";
 import { sliceSpecField, sliceSpecSectionH2OrH3 } from "./work-driver-intent-spec-slice.ts";
 import { sliceMarkdownSection } from "./work-driver-plan.ts";
 
@@ -284,9 +285,18 @@ function parseEvidence(section: string | undefined): SpecEvidence[] {
     const tok = last.match(/^\**\s*(confirmed|contradicted)\b/)?.[1];
     const verdict: SpecEvidence["verdict"] =
       tok === "confirmed" || tok === "contradicted" ? tok : "unverifiable";
+    const emDashSource = (parts.length > 2 ? parts[1] : "")?.trim() ?? "";
+    // #996 — when no em-dash-separated source is present (the canonical
+    // `claim — source — confirmed` form has it; the #984 shape does not),
+    // a parenthesised `(source)` inside the claim carries the source. This
+    // keeps `source` non-empty for the parenthesised-source shape without
+    // touching the em-dash case, where `source` was already correct.
+    const parenSource = emDashSource
+      ? ""
+      : ((parts[0] ?? line).match(/\(([^()]+)\)/)?.[1]?.trim() ?? "");
     return {
       claim: (parts[0] ?? line).trim(),
-      source: (parts.length > 2 ? parts[1] : "")?.trim() ?? "",
+      source: emDashSource || parenSource,
       verdict,
     };
   });
@@ -301,17 +311,6 @@ function parseEvidence(section: string | undefined): SpecEvidence[] {
  * this step produces, and ignoring it is how a confidently-wrong bug report
  * gets built.
  */
-/**
- * An open question that reads as an explicit "nothing blocking" is not one.
- *
- * Resolvers write `- **None blocking** — mechanism is confirmed with executed
- * evidence` rather than emitting an empty section. Counting that as a blocking
- * question is how a fully-resolved spec looks unresolved.
- */
-function blockingQuestions(qs: string[]): string[] {
-  return qs.filter((q) => !/^[\s*_`]*(none|n\/a)\b/i.test(q));
-}
-
 /**
  * Does this spec, on its own terms, determine what to build?
  *

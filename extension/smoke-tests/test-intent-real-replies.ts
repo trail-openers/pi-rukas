@@ -46,6 +46,8 @@ function assert(cond: boolean, msg: string) {
 const reply = readFileSync(FIXTURE, "utf8");
 const FIXTURE_826 = path.join(__dirname, "fixtures", "explore-replies", "826.txt");
 const reply826 = readFileSync(FIXTURE_826, "utf8");
+const FIXTURE_984 = path.join(__dirname, "fixtures", "explore-replies", "984.txt");
+const reply984 = readFileSync(FIXTURE_984, "utf8");
 
 // Anti-vacuity: the fixture must still be the raw thing, or everything below
 // is theatre.
@@ -227,6 +229,90 @@ if (parsed) {
     assert(
       resolved826.verdict === "proceed-with-assumptions",
       "reconcileVerdict promotes to proceed-with-assumptions (the assumptions section is non-empty) — the cycle proceeds to plan, not a cap-hit",
+    );
+  }
+}
+
+// ============================================================================
+// #996 — the shape a real resolver wrote on /work 984, which parked as
+// `underspecified` despite a complete, fully-confirmed spec.
+//
+// The live artifact (.pi/work-state/984/muwnboi9-7qq2da-explore.txt) carries
+// a complete `## Spec` — intent, 7 deliverables, 10 acceptance criteria,
+// 11 confirmed evidence rows — with **no** `INTENT-VERDICT`/`PARK-REASON`
+// token (correctly a default-park per #378), a parenthesised
+// `(none — …)` open question that `blockingQuestions` counted as blocking
+// before #996, and `— confirmed (…)` evidence rows (verdict last, source in
+// a trailing parenthetical) that the canonical em-dash shape does not cover.
+// The #397 override path therefore failed on the open question and the
+// driver parked an issue its own resolver had fully resolved.
+//
+// If this fixture is ever "tidied" — an `INTENT-VERDICT` line added, the
+// paren dropped from the open question, the evidence rows rewritten into
+// the canonical em-dash shape — this section stops testing anything.
+// ============================================================================
+
+{
+  // Anti-vacuity: the fixture must still be the raw shape, or everything
+  // below is theatre.
+  assert(
+    !reply984.includes("INTENT-VERDICT"),
+    "the 984 fixture has NO INTENT-VERDICT token — the default-park is the #378 behaviour, not a parse miss",
+  );
+  assert(
+    reply984.includes("(none —"),
+    "the 984 fixture's open question is the parenthesised `(none — …)` placeholder — the shape `blockingQuestions` miscounted as blocking",
+  );
+  const evidenceLines984 = (reply984.match(/^\s*[-*]\s+.*\b(confirmed|contradicted)\b/gim) ?? [])
+    .length;
+  assert(
+    evidenceLines984 >= 11,
+    `the 984 fixture carries the raw evidence rows (found ${evidenceLines984}, need ≥11) — a trimmed excerpt would stop exercising the parser at all`,
+  );
+
+  const parsed984 = parseNormalisedSpec(reply984);
+  assert(parsed984 !== undefined, "the 984 reply parses into a normalised spec");
+
+  if (parsed984) {
+    assert(parsed984.intent.length > 0, "the intent parses from the `### Intent` subsection");
+    assert(parsed984.deliverables.length === 7, "all 7 deliverables are derived");
+    assert(parsed984.acceptanceCriteria.length === 10, "all 10 acceptance criteria are derived");
+    assert(
+      parsed984.evidence.length >= 11,
+      "all 11 evidence rows are parsed",
+    );
+    assert(
+      parsed984.evidence.every((e) => e.verdict === "confirmed"),
+      "every 984 evidence row parses as CONFIRMED — the verdict-last `— confirmed (…)` shape (no second em-dash source) is not downgraded",
+    );
+    assert(
+      parsed984.evidence.some((e) => e.source.length > 0),
+      "at least one row carries a non-empty source (the parenthesised `(source)` shape #996 added)",
+    );
+    assert(
+      parsed984.openQuestions.length === 1 &&
+        parsed984.openQuestions[0]?.includes("(none —") === true,
+      "the single open question is the raw `(none — …)` placeholder",
+    );
+
+    // The parser's own park here is the #378 default, not a resolver diagnosis.
+    assert(
+      parsed984.verdict === "park" && parsed984.parkReasonSource === "default",
+      "with no verdict token the park is the #378 default (parkReasonSource `default`) — not a resolver-stated park",
+    );
+
+    const resolved984 = reconcileVerdict(parsed984);
+    assert(
+      resolved984.verdict === "proceed-with-assumptions",
+      "it resolves to proceed-with-assumptions — before #996 the parenthesised `(none — …)` question failed `specIsComplete` and this parked as `underspecified`",
+    );
+    assert(
+      resolved984.parkReasonSource === undefined && resolved984.verdictSource === undefined,
+      "the override did NOT stay a default park — the default-provenance fields are gone from the resolved spec",
+    );
+    assert(
+      specIsComplete(parsed984),
+      "specIsComplete: the parenthesised `(none — …)` placeholder is not a blocking question, and the confirmed-evidence conjunct holds",
     );
   }
 }

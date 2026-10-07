@@ -297,6 +297,62 @@ Add a retry.
   );
 }
 
+// --------------------------- #996: evidence shapes as resolvers actually write them
+
+// (1) Canonical: `claim — source — confirmed` (two em-dashes, source middle).
+// (2) #984: source in a parenthetical, verdict last without a second em-dash.
+// Before #996 shape (2) parsed with source = "" — the parenthesised source is
+// real executed evidence and must be recorded where the operator can see it.
+
+{
+  const canonical = resolve(
+    "INTENT-VERDICT: proceed\n\n## Spec\n\n### Intent\nx\n\n### Evidence\n- the token is the default — gh pr view — **confirmed**\n",
+  );
+  assert(canonical !== undefined, "#996 evidence (1): canonical reply parses");
+  assert(
+    canonical?.evidence[0]?.verdict === "confirmed",
+    "#996 evidence (1): canonical `claim — source — confirmed` parses as confirmed",
+  );
+  assert(
+    (canonical?.evidence[0]?.source ?? "").length > 0,
+    "#996 evidence (1): the em-dash-separated source is captured non-empty",
+  );
+}
+{
+  const paren = resolve(
+    "INTENT-VERDICT: proceed\n\n## Spec\n\n### Intent\nx\n\n### Evidence\n- `writeLensLedgerEntry` returns void (extension/src/lens-ledger.ts:43-89, read this session) — confirmed\n",
+  );
+  assert(paren !== undefined, "#996 evidence (2): #984-shape reply parses");
+  assert(
+    paren?.evidence[0]?.verdict === "confirmed",
+    "#996 evidence (2): verdict-last `… — confirmed` (no second em-dash) still parses as confirmed",
+  );
+  assert(
+    (paren?.evidence[0]?.source ?? "").length > 0,
+    "#996 evidence (2): the parenthesised `(source)` is captured — the #996 addition",
+  );
+  assert(
+    /lens-ledger\.ts/.test(paren?.evidence[0]?.source ?? ""),
+    "#996 evidence (2): the captured source is the parenthesised file:line, not the verdict",
+  );
+}
+// And the negative pin: a line with no source of any kind stays source-less
+// — the paren extraction only fires when a parenthetical is actually present.
+{
+  const bare = resolve(
+    "INTENT-VERDICT: proceed\n\n## Spec\n\n### Intent\nx\n\n### Evidence\n- it is true — confirmed\n",
+  );
+  assert(bare !== undefined, "#996 evidence (3): source-less reply parses");
+  assert(
+    (bare?.evidence[0]?.source ?? "").length === 0,
+    "#996 evidence (3): no em-dash source and no parenthetical → empty source (nothing invented)",
+  );
+  assert(
+    bare?.evidence[0]?.verdict === "confirmed",
+    "#996 evidence (3): the verdict is still parsed — an empty source must not downgrade the row",
+  );
+}
+
 // --------------------------- #397: a complete spec refutes `underspecified`
 
 const COMPLETE = (parkReason: string) =>
