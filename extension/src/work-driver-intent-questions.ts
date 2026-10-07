@@ -8,6 +8,13 @@
  */
 
 /**
+ * An open question that reads as an explicit "nothing blocking" is not one.
+ *
+ * Resolvers write `- **None blocking** — mechanism is confirmed with executed
+ * evidence` rather than emitting an empty section. Counting that as a blocking
+ * question is how a fully-resolved spec looks unresolved.
+ */
+/**
  * Whether an open-question bullet reads as a "nothing blocking" placeholder.
  *
  * A true placeholder is the keyword *as the answer*, not the keyword as the
