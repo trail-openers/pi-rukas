@@ -3,21 +3,21 @@
  * #849 — the fence recovery's two park shapes, driven through the REAL
  * runDevelopTopological in a live temp git repo (case 1's shape):
  *
- * Case 2 (second violation) — B's RE-DISPATCH violates a file declared by a
+ * Case 2 (second violation) — B's MERGE-AND-RETRY violates a file declared by a
  * DIFFERENT sibling (a-file.txt, declared by A), one that is NOT among B's
  * injected dependencies (the injection only added B→C for the first
  * violation). The re-run's fence gate records the fresh sibling-declared hit
  * (a-file.txt is not dependency-owned: B has no dependsOn edge to A), and
  * the driver parks with the `fence-violation:develop` cap. The evidence names
  * BOTH attempts — the first via the fence-recovery-started event's discarded
- * SHA, the second via the re-run's record — and exactly ONE re-dispatch
- * happened (the recovery re-dispatch; the second violation is never
+ * SHA, the second via the re-run's record — and exactly ONE merge-and-retry
+ * happened (the merge-and-retry; the second violation is never
  * re-developed).
  *
  * Case 3 (violator↔owner cycle) — C dependsOn B (the plan declared C→B) and
  * B violates C's file. The injected B→C edge would form a dependency cycle,
  * so the cycle check parks BEFORE any recovery machinery: the
- * `fence-violation:develop` cap with ZERO re-dispatches and no
+ * `fence-violation:develop` cap with ZERO merge-and-retries and no
  * fence-recovery-started event (nothing was discarded).
  */
 
@@ -72,9 +72,9 @@ async function fixture(name: string): Promise<{ repo: string; baseSha: string }>
 type Call = { role: string; cwd?: string; prompt?: string };
 
 /** A recording dispatch. `onRecovery` fires only when the prompt is the
- * fence merge-and-retry prompt (the re-dispatch), with the worktree's cwd.
+ * fence merge-and-retry prompt (the merge-and-retry), with the worktree's cwd.
  * #1005 — the prompt changed from "FENCE RECOVERY RE-DISPATCH" (the #849
- * re-dispatch) to "FENCE MERGE-AND-RETRY" (the merge-and-retry); the
+ * recovery) to "FENCE MERGE-AND-RETRY" (the merge-and-retry); the
  * discriminator is the merge prompt. */
 function recordingDispatch(
   calls: Call[],
@@ -198,7 +198,7 @@ function discardedShaOf(after: WorkState): string | undefined {
   const { repo, baseSha } = await fixture("reviolated");
   const { wt, bSha } = await setup3WS(repo, baseSha);
   const calls: Call[] = [];
-  // The stub: B's re-dispatch commits its in-scope file (b-file.txt) AND
+  // The stub: B's merge-and-retry commits its in-scope file (b-file.txt) AND
   // re-violates a-file.txt (declared by A — NOT in B's injected deps, which
   // only gained B→C from the first violation). The re-run's fence gate
   // records the fresh sibling-declared hit (a-file.txt is not
@@ -238,13 +238,13 @@ function discardedShaOf(after: WorkState): string | undefined {
     discardedSha === bSha,
     `#849 case 2: the first violation's commit was discarded and recorded (bSha ${bSha.slice(0, 8)} on the fence-recovery-started event) (got: ${discardedSha})`,
   );
-  // Exactly ONE re-dispatch (the merge-and-retry; the second violation is
+  // Exactly ONE merge-and-retry (the merge-and-retry; the second violation is
   // never re-developed). #1005 — the prompt is the merge prompt (the merged
   // workstream's id is the owner c; the violator b is absorbed into c).
   const recoveryCalls = calls.filter((c) => (c.prompt ?? "").includes("FENCE MERGE-AND-RETRY"));
   assert(
     recoveryCalls.length === 1 && recoveryCalls[0].cwd === wt.b,
-    `#849 case 2 (merged as c): exactly ONE re-dispatch, in the violator's worktree (got ${recoveryCalls.length})`,
+    `#849 case 2 (merged as c): exactly ONE merge-and-retry, in the violator's worktree (got ${recoveryCalls.length})`,
   );
   // The park: the fence cap, with evidence naming BOTH attempts.
   const caps = after.eventLog.filter(
@@ -290,11 +290,11 @@ function discardedShaOf(after: WorkState): string | undefined {
 // commit is absent, or the existing tree is a dirty leftover), parking with
 // the `deferred-creation:develop` cap BEFORE the develop fence gate ever
 // runs. What this case asserts is therefore the INTEGRATION invariant:
-// the driver parks with a terminal cap, with ZERO re-dispatches and no
+// the driver parks with a terminal cap, with ZERO merge-and-retries and no
 // fence-recovery-started event (nothing was merged or discarded).
 {
   // Integration invariants: the driver parks (the dependent-phase park
-  // preempts the fence gate in this shape) with ZERO re-dispatches and no
+  // preempts the fence gate in this shape) with ZERO merge-and-retries and no
   // fence-recovery-started event.
   const { repo, baseSha } = await fixture("cycle");
   const { wt } = await setup3WS(repo, baseSha, true);
@@ -322,7 +322,7 @@ function discardedShaOf(after: WorkState): string | undefined {
   // #1005 — the fence gate records C's sibling-declared violation (B
   // annexed C's file; C's dependsOn on B is a SELF-fence demotion for C's
   // own tree, so the annexation is still a record), merges B into C,
-  // re-dispatches the merged workstream ONCE, and the re-run is clean (C's
+  // merge-and-retries the merged workstream ONCE, and the re-run is clean (C's
   // missing tree is unassessable, so the re-run cannot record a
   // violation) — the flow PROCEEDS. The "cycle" the #849 flow would have
   // detected is, under #1005, precisely the merge: the cycle check is gone

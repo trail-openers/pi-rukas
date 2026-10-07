@@ -13,6 +13,7 @@ import {
   type CouplingWorkstream,
   mergeCoupledWorkstreams,
 } from "../src/work-driver-plan-coupling.ts";
+import { foldTwo } from "../src/workstream-fold.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -223,8 +224,11 @@ const ws = (e: Record<string, Partial<CouplingWorkstream>>): Record<string, Coup
 
     const { execp } = await import("../src/work-driver-verify.ts");
     // The production call shape — NO cwd-injecting wrapper. The worktrees
-    // map (3rd arg) is what points the grep at each tree; this is exactly
-    // what work-driver-plan.ts now passes (next.pipelineState.worktrees).
+    // map (3rd arg) points the grep at each tree when it names one; at
+    // plan time the map is EMPTY and the grep falls back to repoRoot
+    // (4th arg) — the shape runPlan actually passes. The per-worktree tree
+    // map (dirA/dirB) is retained here to exercise the per-workstream
+    // override (the API-compat path for tests).
     const prodExecFn: NonNullable<Parameters<typeof mergeCoupledWorkstreams>[1]> = (
       cmd,
       opts,
@@ -248,14 +252,15 @@ const ws = (e: Record<string, Partial<CouplingWorkstream>>): Record<string, Coup
       `rule 3 (production): the reason names the shared symbol (got: ${rA.merges[0]?.reason})`,
     );
 
-    // Case B (the #1005 cwd finding, regression): the SAME files with NO
-    // worktrees map. The coupling module now skips rule 3 when it cannot
-    // resolve a tree (a cwd-less grep runs in the process directory, where
-    // worktree-relative paths do not exist — the pre-fix silent no-op).
+    // Case B (the #1005 adversarial finding, regression): the SAME files
+    // with NO worktrees map AND NO repoRoot. The coupling module skips
+    // rule 3 when it cannot resolve a tree (a cwd-less grep would run in
+    // the process directory, where the declared paths do not exist — the
+    // pre-fix silent no-op that made rule 3 unreachable in production).
     // The pair must NOT be merged: no rules 1/2 evidence either, so the
-    // result is unchanged. This is the production shape the adversarial
-    // finding described; the fix makes it a visible skip, not a silent
-    // miss that looked like "no coupling".
+    // result is unchanged. This is the shape the adversarial finding
+    // described (the empty worktrees map with no fallback); the fix makes
+    // it a visible skip, not a silent miss that looked like "no coupling".
     const rB = await mergeCoupledWorkstreams(
       ws({
         a: { paths: ["src/alpha.ts"], outOfScope: [] },
@@ -263,10 +268,11 @@ const ws = (e: Record<string, Partial<CouplingWorkstream>>): Record<string, Coup
       }),
       prodExecFn,
       undefined,
+      undefined,
     );
     assert(
       rB.changed === false,
-      "rule 3 (no worktrees map): rule 3 is skipped, not a silent no-op (pre-fix: the cwd-less grep never resolved the paths)",
+      "rule 3 (no worktrees map, no repoRoot): rule 3 is skipped, not a silent no-op (pre-fix: the cwd-less grep never resolved the paths)",
     );
 
     // Case C: a $(…) payload in a path must NOT be executed. The file does
@@ -323,6 +329,109 @@ const ws = (e: Record<string, Partial<CouplingWorkstream>>): Record<string, Coup
     rmSync(dirA, { recursive: true, force: true });
     rmSync(dirB, { recursive: true, force: true });
   }
+}
+
+// ── Rule 3 with the PRODUCTION call shape (empty worktrees map + repoRoot) ──
+// This is the shape runPlan actually uses: the coupling merge runs at plan
+// time, BEFORE the branch step, so `pipelineState.worktrees` is an EMPTY
+// object. The declared paths exist at the cycle's base commit, which is
+// `repoRoot`. Rule 3's grep must resolve in `repoRoot` — the #1005
+// adversarial finding was that rule 3 was unreachable in production
+// because the empty worktrees map (with no repoRoot fallback) left the
+// grep without a cwd.
+{
+  const { mkdtempSync, writeFileSync, rmSync, mkdirSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const path = await import("node:path");
+  // A single temp dir standing in for repoRoot (the base commit checkout).
+  // The planner's paths are relative to it; the grep must run there.
+  const repoRoot = mkdtempSync(path.join(tmpdir(), "coupling-planshape-"));
+  try {
+    mkdirSync(path.join(repoRoot, "src"), { recursive: true });
+    // Workstream A declares src/alpha.ts; workstream B declares src/beta.ts,
+    // which references alpha. Disjoint file sets (rule 1 cannot fire), no
+    // depends-on (rule 2 cannot fire) — rule 3 is the only rule that can
+    // couple them, and it must fire with an EMPTY worktrees map + repoRoot.
+    writeFileSync(path.join(repoRoot, "src/alpha.ts"), "export function alpha() {}\n");
+    writeFileSync(path.join(repoRoot, "src/beta.ts"), "import { alpha } from './alpha';\n");
+
+    const { execp } = await import("../src/work-driver-verify.ts");
+    const prodExecFn: NonNullable<Parameters<typeof mergeCoupledWorkstreams>[1]> = (
+      cmd,
+      opts,
+    ) => execp(cmd, opts);
+
+    // The EXACT shape runPlan uses: empty worktrees map + repoRoot (4th arg).
+    const rPlan = await mergeCoupledWorkstreams(
+      ws({
+        a: { paths: ["src/alpha.ts"], outOfScope: [] },
+        b: { paths: ["src/beta.ts"], outOfScope: [] },
+      }),
+      prodExecFn,
+      {}, // empty — the pre-branch production shape
+      repoRoot,
+    );
+    assert(
+      rPlan.changed === true,
+      `rule 3 (plan shape): empty worktrees map + repoRoot → grep resolves in repoRoot → shared symbol detected (got changed=${rPlan.changed})`,
+    );
+    assert(
+      rPlan.merges[0]?.reason?.includes("alpha") ?? false,
+      `rule 3 (plan shape): the reason names the shared symbol (got: ${rPlan.merges[0]?.reason})`,
+    );
+
+    // Negative: the same files, but repoRoot does NOT contain them (the
+    // grep finds nothing) → no merge. Proves the grep actually runs in
+    // repoRoot (a grep in the process cwd would fail the same way, but
+    // this pairs with the positive case to confirm the path is repoRoot).
+    const emptyDir = mkdtempSync(path.join(tmpdir(), "coupling-planshape-empty-"));
+    try {
+      const rEmpty = await mergeCoupledWorkstreams(
+        ws({
+          a: { paths: ["src/alpha.ts"], outOfScope: [] },
+          b: { paths: ["src/beta.ts"], outOfScope: [] },
+        }),
+        prodExecFn,
+        {},
+        emptyDir,
+      );
+      assert(
+        rEmpty.changed === false,
+        "rule 3 (plan shape, negative): empty repoRoot → grep finds nothing → no merge",
+      );
+    } finally {
+      rmSync(emptyDir, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+}
+
+// ── foldTwo symmetry: both merged ids dropped from both halves ─────────
+// #1005 — the pre-#1005 foldTwo was asymmetric: `d !== b.id` for a's list,
+// `d !== b.id && d !== a.id` for b's — so a's self-ref survived. The doc
+// says "minus the two merged ids"; the fix drops BOTH ids from BOTH halves.
+{
+  const merged = foldTwo(
+    { id: "a", scope: "A", paths: ["src/a.ts"], outOfScope: [], dependsOn: ["b"] },
+    { id: "b", scope: "B", paths: ["src/b.ts"], outOfScope: [], dependsOn: ["a"] },
+  );
+  assert(
+    merged.dependsOn === undefined || merged.dependsOn.length === 0,
+    `foldTwo symmetry: mutual a↔b → both ids dropped (got: ${JSON.stringify(merged.dependsOn)})`,
+  );
+  const merged2 = foldTwo(
+    { id: "a", scope: "A", paths: ["src/a.ts"], outOfScope: [], dependsOn: ["c", "b"] },
+    { id: "b", scope: "B", paths: ["src/b.ts"], outOfScope: [], dependsOn: ["a"] },
+  );
+  assert(
+    merged2.dependsOn?.includes("c") === true,
+    "foldTwo symmetry: a's external dep (c) survives the fold",
+  );
+  assert(
+    !merged2.dependsOn?.includes("a") && !merged2.dependsOn?.includes("b"),
+    "foldTwo symmetry: a (self) and b (absorbed) ids are both dropped",
+  );
 }
 
 // ── Genuinely separate workstreams are NOT merged ──────────────────────

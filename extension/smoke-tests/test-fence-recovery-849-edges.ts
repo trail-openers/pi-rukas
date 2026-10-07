@@ -77,8 +77,8 @@ async function fixture(name: string): Promise<{ repo: string; baseSha: string }>
 
 type Call = { role: string; cwd?: string; prompt?: string };
 
-/** A recording dispatch. `onRecovery` fires only for the fence-recovery
- * re-dispatch prompt (the re-dispatch), with the worktree's cwd. */
+/** A recording dispatch. `onRecovery` fires only for the fence merge-and-retry
+ * prompt (the merge-and-retry), with the worktree's cwd. */
 function recordingDispatch(
   calls: Call[],
   onRecovery?: (cwd: string) => Promise<void>,
@@ -167,7 +167,7 @@ function capsOf(events: WorkEvent[]): Array<Extract<WorkEvent, { kind: "cap-hit"
 }
 
 // ── case 1: owner rev-parse failure — park with the fence cap, ZERO
-// re-dispatches, evidence names the violator AND the owner, no
+// merge-and-retries, evidence names the violator AND the owner, no
 // fence-recovery-started event, the violator's HEAD unchanged ───────────
 {
   const { repo, baseSha } = await fixture("ownerrev");
@@ -227,7 +227,7 @@ function capsOf(events: WorkEvent[]): Array<Extract<WorkEvent, { kind: "cap-hit"
   const recoveryCalls = calls.filter((c) => (c.prompt ?? "").includes("FENCE MERGE-AND-RETRY"));
   assert(
     recoveryCalls.length === 0,
-    `#849 edge case 1: ZERO re-dispatches when the owner's SHA cannot be read (got ${recoveryCalls.length})`,
+    `#849 edge case 1: ZERO merge-and-retries when the owner's SHA cannot be read (got ${recoveryCalls.length})`,
   );
   const rec = after.eventLog.find((e) => e.kind === "fence-recovery-started");
   assert(
@@ -252,7 +252,7 @@ function capsOf(events: WorkEvent[]): Array<Extract<WorkEvent, { kind: "cap-hit"
 // ── case 2: clean re-run + failing verify — the fence cap (the #1005
 // merge-and-retry's second-failure handoff; the verify failure is the second
 // failure, so the handoff names the merge). The fence-recovery-started event
-// exists, exactly one re-dispatch (the merge prompt, in the violator's
+// exists, exactly one merge-and-retry (the merge prompt, in the violator's
 // worktree), and the merged workstream's verdict stays ok:false ─────────
 {
   const { repo, baseSha } = await fixture("verifyfail");
@@ -262,7 +262,7 @@ function capsOf(events: WorkEvent[]): Array<Extract<WorkEvent, { kind: "cap-hit"
   // stateful on a `gate2` flag: it passes `verify-cmd` through while gate 1
   // (the first develop verify) runs — the fixture has no .pi/verify-cmd yet,
   // so gate 1 discovers no verify command and its sole failure is the fence,
-  // which recovers. After the re-dispatch (onRecovery sets `gate2`), the
+  // which recovers. After the merge-and-retry (onRecovery sets `gate2`), the
   // stub fails `verify-cmd` so gate 2 (the re-run) reports a verify failure.
   const gate2 = { value: false };
   const stubExec: ExecFn = async (cmd, o) => {
@@ -294,7 +294,7 @@ function capsOf(events: WorkEvent[]): Array<Extract<WorkEvent, { kind: "cap-hit"
   // Install the stub: gate 1 (the first develop verify) discovers no verify
   // command (the fixture has no .pi/verify-cmd yet) and fails only on the
   // fence (which recovers). Gate 2 (the re-run) discovers the verify
-  // command (the re-dispatch's onCall wrote .pi/verify-cmd) and the stub's
+  // command (the merge-and-retry's onCall wrote .pi/verify-cmd) and the stub's
   // `verify-cmd` failure is the re-run's verify failure.
   (ctx as unknown as { verifyExecFn: ExecFn }).verifyExecFn = stubExec;
   const base = initialState(849);
@@ -323,7 +323,7 @@ function capsOf(events: WorkEvent[]): Array<Extract<WorkEvent, { kind: "cap-hit"
     `#849 edge case 2 (merged as c): a clean re-run with a failing verify hands off with the FENCE cap (the merge is named in the evidence) (got: ${caps.map((c) => c.cap)})`,
   );
   // The re-run's fence gate: the merged workstream (c) is the workstream the
-  // re-dispatch ran in. The re-dispatch committed only b-file.txt (in-scope
+  // merge-and-retry ran in. The merge-and-retry committed only b-file.txt (in-scope
   // for the merged workstream), so the re-run's fence gate is clean for c
   // (no blocking record names c). The first attempt's record (b→c-file.txt)
   // is the stashed verifyEvidence, not the re-run's.
@@ -332,7 +332,7 @@ function capsOf(events: WorkEvent[]): Array<Extract<WorkEvent, { kind: "cap-hit"
   );
   assert(
     reRunFenceRecords.length === 0,
-    `#849 edge case 2 (merged as c): the re-run's fence gate recorded no blocking violation for the merged workstream (the re-dispatch was clean) (got: ${JSON.stringify(after.pipelineState.verifyEvidence?.fenceViolations)})`,
+    `#849 edge case 2 (merged as c): the re-run's fence gate recorded no blocking violation for the merged workstream (the merge-and-retry was clean) (got: ${JSON.stringify(after.pipelineState.verifyEvidence?.fenceViolations)})`,
   );
   // The discard completed: the fence-recovery-started event exists (this is
   // the path case 5 does not exercise — its stub failed the reset itself).
@@ -347,12 +347,12 @@ function capsOf(events: WorkEvent[]): Array<Extract<WorkEvent, { kind: "cap-hit"
       /^[0-9a-f]{40}$/.test(rec.discardedSha ?? ""),
     `#849 edge case 2 (merged as c): a fence-recovery-started event exists, naming the merged workstream c and the absorbed violator b (got: ${rec ? JSON.stringify(rec) : "none"})`,
   );
-  // Exactly one re-dispatch (the merge-and-retry; the verify failure is never
+  // Exactly one merge-and-retry (the merge-and-retry; the verify failure is never
   // re-developed). #1005 — the prompt is the merge prompt.
   const recoveryCalls = calls.filter((c) => (c.prompt ?? "").includes("FENCE MERGE-AND-RETRY"));
   assert(
     recoveryCalls.length === 1 && recoveryCalls[0].cwd === wt.b,
-    `#849 edge case 2 (merged as c): exactly ONE re-dispatch, in the violator's worktree (the recovery) (got ${recoveryCalls.length})`,
+    `#849 edge case 2 (merged as c): exactly ONE merge-and-retry, in the violator's worktree (the recovery) (got ${recoveryCalls.length})`,
   );
   // The honest-restore rule: the merged workstream returns to ok:true ONLY
   // when the re-run gate passed. The re-run gate did NOT pass (the verify
@@ -369,7 +369,7 @@ function capsOf(events: WorkEvent[]): Array<Extract<WorkEvent, { kind: "cap-hit"
     `#849 edge case 2 (merged as c): the merged workstream c's final verdict stays ok:false (the re-run gate failed) (got: ${JSON.stringify(conv?.verdicts)})`,
   );
   // The discarded commit is no longer the violator's HEAD (the reset ran);
-  // the re-dispatch's clean commit sits on top of the owner's tip.
+  // the merge-and-retry's clean commit sits on top of the owner's tip.
   const bHead = await gitOut(wt.b, ["rev-parse", "HEAD"]);
   // #1005 — the merged workstream's base is the owner's tip (workstreamBaseShas
   // is keyed by the merged id, the owner c — the violator b's entry was

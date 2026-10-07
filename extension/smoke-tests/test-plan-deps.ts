@@ -179,5 +179,99 @@ function stateWithArtifact(dir: string, body: string): WorkState {
   }
 }
 
+// #1005 kill-path regression: a kill-triggered corrective must NOT feed a
+// partial map to the dropped-edge check. Pre-#1005: firstPlanWorkstreams
+// was set to firstPlanRaw at declaration, so the killed primary's partial
+// map (parsed from a killed child's empty report) was passed to the
+// dropped-edge check. Post-#1005: firstPlanWorkstreams is set ONLY when
+// the quality gate fires on the primary's plan, so the kill path leaves it
+// undefined and the dropped-edge check does not fire.
+//
+// The shape: primary plan is killed (timeout, no structured output →
+// parseWorkstreams returns {}). The corrective re-plans successfully with
+// two workstreams that have a depends-on edge. The dropped-edge check must
+// NOT fire (firstPlanWorkstreams is undefined) — the corrective's edge is
+// not a "drop" because there was no first plan to drop it from.
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "plan-kill-path-"));
+  try {
+    const correctivePlan = [
+      "## Workstreams",
+      "",
+      "### task-a — the fix",
+      "- paths: src/a.ts",
+      "",
+      "### task-b — the dependent",
+      "- paths: src/b.ts",
+      "- depends-on: task-a",
+      "",
+    ].join("\n");
+    let calls = 0;
+    const ctx = mkCtx(dir, async () => {
+      calls += 1;
+      // First call: the primary is killed (empty text → parseWorkstreams
+      // returns {}). Second: the corrective succeeds.
+      return calls === 1
+        ? mkResult("")
+        : mkResult(correctivePlan);
+    });
+    // The primary must be killed to trigger the kill path: set PI_ENSEMBLE_
+    // PLAN_TIMEOUT_MS to 1 so the first dispatch "times out" (the test
+    // dispatch returns immediately, but planTimeoutKill checks
+    // result.killCause === "timeout" — the stub doesn't set that, so we
+    // need a different approach). Actually the kill path requires
+    // result.killCause === "timeout", which the stub doesn't produce. So
+    // this test exercises the SHAPE that matters: when the primary
+    // produces NO workstreams (empty reply), the corrective fires (via
+    // planTimeoutCorrective, not via the quality gate), and the
+    // dropped-edge check must not fire because firstPlanWorkstreams is
+    // undefined (the kill path leaves it unset).
+    //
+    // To exercise the kill path, the stub must return a result with
+    // killCause: "timeout".
+    const killResult: DispatchResult = {
+      role: "explore",
+      ok: false,
+      text: "",
+      toolUses: [],
+      ms: 10,
+      exitCode: 143,
+      transcriptPath: "/tmp/stub-plan-kill-transcript.json",
+      killCause: "timeout",
+      killBudgetMs: 60_000,
+    };
+    const killCtx = mkCtx(dir, async () => {
+      calls += 1;
+      return calls === 1 ? killResult : mkResult(correctivePlan);
+    });
+    // Override the plan timeout so planTimeoutKill fires on the stub's
+    // killCause: "timeout" result.
+    const prevEnv = process.env.PI_ENSEMBLE_PLAN_TIMEOUT_MS;
+    process.env.PI_ENSEMBLE_PLAN_TIMEOUT_MS = "60000";
+    let next: WorkState;
+    try {
+      next = await runPlan(killCtx, stateWithArtifact(dir, "1. a\n2. b\n"), 1_000_000);
+    } finally {
+      if (prevEnv === undefined) delete process.env.PI_ENSEMBLE_PLAN_TIMEOUT_MS;
+      else process.env.PI_ENSEMBLE_PLAN_TIMEOUT_MS = prevEnv;
+    }
+    assert(calls === 2, "kill path: the primary kill triggers exactly one corrective re-dispatch");
+    assert(
+      next.pipelineState.planQuality?.droppedEdges === undefined,
+      "kill path: no droppedEdges (firstPlanWorkstreams is undefined on the kill path — the corrective's edge is not a 'drop')",
+    );
+    assert(
+      next.pipelineState.planQuality?.reason === undefined,
+      "kill path: no quality reason recorded (the corrective plan has no quality issue)",
+    );
+    assert(
+      Object.keys(next.pipelineState.workstreams ?? {}).length === 1,
+      "kill path: the coupling merge merges task-b into task-a (depends-on rule) → one workstream",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 console.log(exit === 0 ? "\nAll plan-deps assertions passed." : "\nFAILURES above.");
 process.exit(exit);

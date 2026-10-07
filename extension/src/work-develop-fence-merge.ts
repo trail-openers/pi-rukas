@@ -166,7 +166,17 @@ export async function runMergePrep(
     // still there at this point in the loop — it is deleted by the fold
     // itself), and the merge is recorded on a fence-recovery-started event
     // BEFORE the rebase, so a mid-loop park preserves the merge.
-    workstreams = foldWorkstream(workstreams, owner, violator, workstreams[violator] as Workstream);
+    const violatorWs = workstreams[violator];
+    if (!violatorWs) {
+      // The fence record named a violator id that has no workstream entry
+      // (a stale record, or a map that already absorbed it) — same shape as
+      // the missing-owner refusal above: park rather than cast a missing
+      // value and fold it into the owner.
+      return park(
+        `merge-and-retry refused — violator ${violator} has no workstream entry (no workstream to merge into ${owner})`,
+      );
+    }
+    workstreams = foldWorkstream(workstreams, owner, violator, violatorWs);
     merges.push({ into: owner, from: violator });
     mergedIds.push(owner);
     // Rebase the violator's worktree to the owner's post-commit tip.

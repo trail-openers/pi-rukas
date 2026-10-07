@@ -109,9 +109,10 @@ export async function runMergeRetryFlow(
   // entry of its own. The surviving entry carries the HONEST verdict:
   // restored to ok:true ONLY when the re-run gate ran, gate2.ok is true,
   // AND no blocking fence record names the merged workstream; otherwise
-  // it is (or stays) ok:false. The re-keyed verdicts are RETURNED (the
-  // pre-#1005 code mutated the input array in place as a hidden output);
-  // the caller uses the returned value.
+  // it is (or stays) ok:false. The re-keyed verdicts are a NEW array (the
+  // pre-#1005 code mutated the input array in place as a hidden output); the
+  // input is not mutated here — the re-keyed array is persisted via
+  // replaceDevelopConvergedVerdicts below.
   const reRanClean = gate2.ok && blockingSecond.every((r) => !mergedIds.includes(r.workstreamId));
   const absorbedSet = new Set(merges.map((m) => m.from));
   const rekeyed = verdicts

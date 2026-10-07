@@ -52,8 +52,9 @@ export async function execp(
   if (argv) {
     // execFile takes no shell — an explicit one cannot be honoured, so say
     // so rather than dropping it silently (the classic path would pass it
-    // through). The encoding stays utf8: the argv callers (rule-3 grep) are
-    // text by construction.
+    // through). Honour `encoding` when the caller names one (defaults to
+    // utf8 — the argv callers, e.g. the coupling merge's rule-3 grep, are
+    // text by construction).
     if (rest.shell) {
       trace(
         `work-driver: execp argv form ignores opts.shell (${rest.shell}) — execFile has no shell`,
@@ -63,9 +64,12 @@ export async function execp(
       cwd: rest.cwd,
       timeout: rest.timeout,
       maxBuffer: rest.maxBuffer,
-      encoding: "utf8",
+      encoding: rest.encoding ?? "utf8",
     });
-    return { stdout: r.stdout as string, stderr: (r.stderr as string) ?? undefined };
+    return {
+      stdout: r.stdout as string,
+      stderr: rest.encoding === "buffer" ? undefined : ((r.stderr as string) ?? undefined),
+    };
   }
   const { stdout, stderr } = await promisify(exec)(cmd, {
     cwd: rest.cwd,

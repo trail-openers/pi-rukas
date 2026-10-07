@@ -28,11 +28,16 @@
  *      (driver-native grep via `grep -l -w`, argv form — the planner's
  *      paths are data, never shell arguments). This is the implicit case:
  *      the planner did not declare a dependency, but the code says the two
- *      halves are coupled. A false positive (a shared utility name that is
- *      genuinely independent) is harmless — the merge is the safe direction,
- *      and the acceptance criterion "genuinely separate work is still split"
- *      is protected by requiring the symbol to appear in BOTH workstreams'
- *      files, not just one.
+ *      halves are coupled. The grep runs in `repoRoot` (the caller passes
+ *      it; the merge runs at plan time, before the branch step, so the
+ *      declared paths exist there at the base commit — the #1005
+ *      adversarial finding was that rule 3 was unreachable in production
+ *      because the caller passed the empty pre-branch worktrees map and no
+ *      fallback). A false positive (a shared utility name that is
+ *      genuinely independent) is harmless — the merge is the safe
+ *      direction, and the acceptance criterion "genuinely separate work is
+ *      still split" is protected by requiring the symbol to appear in BOTH
+ *      workstreams' files, not just one.
  *
  * The merge reuses the shared fold (workstream-fold.ts, the same helper the
  * MAX_WORKSTREAMS ceiling fold and the develop fence merge-and-retry use):
@@ -76,13 +81,18 @@ export interface CouplingResult {
 }
 
 /**
- * #1005 — where rule 3's grep resolves the planner's declared paths. The
- * planner's `paths` are relative to the tree the workstreams will be
- * developed in — the cycle's worktree once the branch step has recorded
- * `ps.worktrees`, and `repoRoot` until then (which is what the grep sees
- * before a worktree exists). Passed from the caller (work-driver-plan.ts)
- * rather than derived inside, because the worktree map is per-workstream
- * and can legitimately name different trees per pair.
+ * #1005 — where rule 3's grep resolves the planner's declared paths. At
+ * plan time (the only place the merge runs in production — `runPlan` in
+ * work-driver-plan.ts calls the merge BEFORE the branch step creates any
+ * worktree) the declared paths exist at the cycle's base commit, which is
+ * `repoRoot`. The merge therefore runs the grep with `repoRoot` as cwd;
+ * `repoRoot` is passed by the caller (the merge module does not know the
+ * cycle's root) and is the tree for every pair.
+ *
+ * The per-workstream `worktrees` map is consulted first (retained for
+ * tests that point the grep at a temp dir per workstream); when it names
+ * no tree — the production shape at plan time — the grep runs in
+ * `repoRoot`.
  */
 export interface CouplingTreeRef {
   /** Directory the grep runs in. Absolute (worktree path / repo root). */
@@ -154,20 +164,27 @@ function couplingReason(a: CouplingWorkstream, b: CouplingWorkstream): string | 
  * When it is undefined (e.g. a test that only exercises rules 1 and 2),
  * rule 3 is skipped.
  *
- * `worktrees` is the cycle's worktree map (`pipelineState.worktrees`,
- * key = workstream id, `default` = last-resort cwd) — rule 3's grep runs in
- * the tree the workstream's paths are relative to (the #1005 finding: a
- * grep with no cwd runs in the pi-rukas process directory, where
- * worktree-relative paths do not exist, and rule 3 silently never fired).
- * When undefined (a test that only exercises rules 1–2, or an absent
- * `default` entry) rule 3 is skipped rather than pointed at a directory it
- * cannot see — a silent no-op is exactly the defect this map exists to
- * fix.
+ * `repoRoot` is the directory the planner's declared paths are relative to
+ * at plan time — the merge runs before the branch step, so the paths exist
+ * at the cycle's base commit, which is `repoRoot`. Rule 3's grep runs there
+ * (the #1005 adversarial finding: `runPlan` passed the empty pre-branch
+ * worktrees map and no fallback, so `treeOf` returned undefined and the
+ * grep never ran — rule 3 was unreachable in production. The fix is to
+ * pass `repoRoot` and use it as the grep's cwd).
+ *
+ * `worktrees` is retained for API compatibility with tests that point the
+ * grep at a temp dir per workstream: when the map names a workstream's
+ * tree (and it exists on disk), the grep for that half runs there. At plan
+ * time the map is empty, so both halves resolve to `repoRoot` — the
+ * production shape. When `repoRoot` is also absent (a test that only
+ * exercises rules 1–2), rule 3 is skipped rather than pointed at a
+ * directory it cannot see.
  */
 export async function mergeCoupledWorkstreams(
   workstreams: Record<string, CouplingWorkstream>,
   execFn?: GrepExecFn,
   worktrees?: Record<string, string>,
+  repoRoot?: string,
 ): Promise<CouplingResult> {
   // Start with a copy; the input is not mutated.
   const ws: Record<string, CouplingWorkstream> = {};
@@ -177,24 +194,28 @@ export async function mergeCoupledWorkstreams(
   const merges: CouplingResult["merges"] = [];
   const ids = Object.keys(ws);
 
-  // #1005 — rule 3 needs a directory the planner's paths resolve in. The
-  // worktrees map (populated by the branch step, key = workstream id) names
-  // each workstream's tree; `default` covers the N=1 degenerate case and the
-  // cycle's last-resort cwd. When the map is absent or empty (plan ran
-  // before a branch step, a legacy state file, or a test that only
-  // exercises rules 1–2) rule 3 is skipped for the pair — a grep with no
-  // cwd runs in the process directory, where worktree-relative paths do
-  // not exist, and silently does nothing (the #1005 finding).
+  // #1005 — rule 3 needs a directory the planner's paths resolve in. At
+  // plan time (the only place the merge runs in production) the worktrees
+  // map is EMPTY (the branch step populates it later), so the declared
+  // paths resolve at the cycle's base commit, which is `repoRoot`. The
+  // per-workstream map is consulted first (retained for tests that point
+  // the grep at a temp dir); when it names no tree — the production shape
+  // — the grep runs in `repoRoot`. When neither is available (a test that
+  // only exercises rules 1–2) rule 3 is skipped for the pair.
   const treeOf = (id: string): CouplingTreeRef | undefined => {
-    const p = worktrees?.[id] ?? worktrees?.default;
-    if (!p) return undefined;
-    if (!existsSync(p)) {
-      trace(
-        `work-driver: plan coupling rule 3 — worktree for '${id}' absent (${p}); skipping the symbol grep`,
-      );
-      return undefined;
+    const wt = worktrees?.[id];
+    if (wt && existsSync(wt)) {
+      return { path: wt, label: id };
     }
-    return { path: p, label: worktrees?.[id] ? id : "repoRoot" };
+    if (repoRoot && existsSync(repoRoot)) {
+      return { path: repoRoot, label: "repoRoot" };
+    }
+    if (repoRoot) {
+      trace(
+        `work-driver: plan coupling rule 3 — repoRoot absent (${repoRoot}); skipping the symbol grep`,
+      );
+    }
+    return undefined;
   };
 
   // Find coupled pairs; record each (absorbed workstream, reason) PAIR and
@@ -226,12 +247,12 @@ export async function mergeCoupledWorkstreams(
       // Rule 1 and 2 (synchronous).
       let reason: string | undefined = couplingReason(a, b);
       // Rule 3 — symbol cross-reference (async). Only runs when execFn is
-      // available and rules 1–2 did not already couple the pair. Each half
-      // greps against ITS OWN tree: the planner's paths are relative to the
-      // tree the workstream will be developed in, and running the grep in
-      // the process cwd (the #1005 adversarial finding — rule 3 never fired
-      // in production because worktree-relative paths don't exist from
-      // repoRoot's process cwd) is what a missing cwd does.
+      // available and rules 1–2 did not already couple the pair. At plan
+      // time both halves resolve to `repoRoot` (the worktrees map is empty
+      // until the branch step), where the declared paths exist at the base
+      // commit (the #1005 adversarial finding — rule 3 was unreachable
+      // because the empty map left the grep without a cwd; the fix points
+      // it at repoRoot).
       if (!reason && execFn) {
         const aTree = treeOf(aId);
         const bTree = treeOf(bId);
@@ -317,11 +338,11 @@ async function symbolCrossReference(
   ): Promise<string | undefined> => {
     if (files.length === 0) return undefined;
     try {
-      // `cwd` is load-bearing: the planner's paths are relative to the
-      // workstream's own tree, and the grep must resolve them there
-      // (the #1005 finding — without it the grep runs in the pi-rukas
-      // process cwd, where worktree-relative paths do not exist, and rule 3
-      // silently never fires).
+      // `cwd` is load-bearing: the planner's paths are repo-relative and
+      // the grep must resolve them in the tree that actually contains
+      // them — at plan time, `repoRoot` (the #1005 adversarial finding:
+      // without a resolvable cwd the grep had nowhere to run and rule 3
+      // was unreachable in production).
       // The pattern is a single `-e` option so grep keeps consuming all
       // positional arguments as FILES (with `-- name files…`, only the
       // first file is searched — the rest are parsed as more patterns, and
