@@ -292,7 +292,7 @@ When a dispatch targets a worktree (developer fixing a branch, code-review-speci
 - cache as `bash:exact:<sha256>` entries that never wildcard,
 - and re-prompt the user forever as worktree paths and inner commands shift.
 
-Applies to `dispatch_specialist`, every `specs[]` member in `dispatch_parallel`, the `workCwd` field of `adversarial_loop`, and the `cwd` field of `dispatch_lens_review`. **One absolute path, one extra line in the spec.** This is also the cwd both review tools use for the `git diff <base>...<head>` computation when you pass the optional `base` + `head` refs instead of a pasted `diff` string — with large diffs the ref range is the preferred form (the tool computes the diff itself; a pasted string still works and wins if both are given).
+Applies to `dispatch_specialist`, every `specs[]` member in `dispatch_parallel`, the `workCwd` field of `adversarial_loop`, and the `cwd` field of `dispatch_lens_review`. **One absolute path, one extra line in the spec.** This is a blanket rule for worktree-bound implementation work in general — `/work`-driven cycles, hand-managed branches, and `/do`-driven or `/start`-driven work included. It is not limited to the four dispatch types it names. This is also the cwd both review tools use for the `git diff <base>...<head>` computation when you pass the optional `base` + `head` refs instead of a pasted `diff` string — with large diffs the ref range is the preferred form (the tool computes the diff itself; a pasted string still works and wins if both are given).
 
 **Mandatory pattern:**
 
