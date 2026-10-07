@@ -189,7 +189,7 @@ export const TLDR_HEADING = "## TL;DR";
  * `   ## TL;DR` is still a TL;DR heading).
  */
 export function hasTldrSection(body: string): boolean {
-  return /^\s*##\s+TL;?DR\b/m.test(body);
+  return /^\s*##\s+TL;?DR\b/im.test(body);
 }
 
 /**
@@ -219,7 +219,6 @@ export function tldrSectionOf(spec: PipelineStateNormalisedSpec | undefined): st
   let text = lead;
   if (text.length > cap) text = `${text.slice(0, cap - 1)}\u2026`;
   else {
-    const rest = cap - text.length - 1; // ", " is 2 chars + ellipsis room
     if (desc.length > 0) {
       const joined = `${text} ${desc}`;
       if (joined.length <= cap) {

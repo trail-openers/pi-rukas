@@ -305,7 +305,7 @@ export async function mechanizedCommitPr(
       renderLensFindingsSection(state.eventLog),
     ]
       .filter((l) => l !== "")
-      .join("\n");
+      .join("\n\n");
     const prBodyFile = path.join(scratchDir(ctx.repoRoot, ctx.issue), "mech-pr-body.md");
     await fs.mkdir(path.dirname(prBodyFile), { recursive: true });
     await fs.writeFile(prBodyFile, prBody, "utf8");

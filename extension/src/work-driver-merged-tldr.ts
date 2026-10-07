@@ -43,9 +43,12 @@ import type { WorkState } from "./workflow-state.ts";
  * or was a no-op). The caller (runMerged) appends each note as a
  * plumb-report event.
  *
- * A failure on ANY issue does NOT stop the loop — the remaining issues
- * are still attempted, and the failure is recorded in the notes.
+ * A failure on ANY issue does NOT stop the work — the issues are edited
+ * concurrently, and each failure is recorded in the notes.
  */
+
+const BODY_CAP = 60_000;
+
 export async function editIssueTldrs(forge: Forge, state: WorkState): Promise<string[]> {
   const spec = state.pipelineState.normalisedSpec;
   const tldr = tldrSectionOf(spec);
@@ -54,35 +57,36 @@ export async function editIssueTldrs(forge: Forge, state: WorkState): Promise<st
   const issues = activeIssuesOf(state);
   const notes: string[] = [];
 
-  for (const n of issues) {
-    try {
-      const current = await forge.issueView(n);
-      const currentBody = current.body ?? "";
-      const newBody = prependTldr(currentBody, tldr);
-      if (newBody === currentBody) {
-        // Idempotent: the body already has a TL;DR — nothing to write.
-        trace(`work-driver: issue #${n} already has a TL;DR — skipping issueEdit`);
-        continue;
+  await Promise.allSettled(
+    issues.map(async (n) => {
+      try {
+        const current = await forge.issueView(n);
+        const currentBody = current.body ?? "";
+        const newBody = prependTldr(currentBody, tldr);
+        if (newBody === currentBody) {
+          // Idempotent: the body already has a TL;DR — nothing to write.
+          trace(`work-driver: issue #${n} already has a TL;DR — skipping issueEdit`);
+          return;
+        }
+        if (newBody.length > BODY_CAP) {
+          trace(
+            `work-driver: issue #${n} body too large (${newBody.length} chars) — TL;DR edit skipped`,
+          );
+          notes.push(`issue #${n} body too large (${newBody.length} chars) — TL;DR edit skipped`);
+          return;
+        }
+        // Note: a truncated forge read would produce a truncated write; a real
+        // guard would need a second read or conditional-update API (not
+        // implemented).
+        await forge.issueEdit(n, newBody);
+        trace(`work-driver: prepended TL;DR to issue #${n} (body length: ${currentBody.length})`);
+      } catch (err) {
+        const msg = (err as Error).message?.slice(0, 200) ?? "unknown error";
+        trace(`work-driver: TL;DR edit for issue #${n} failed: ${msg}`);
+        notes.push(`issueEdit for issue #${n} failed: ${msg}`);
       }
-      const BODY_CAP = 60_000;
-      if (newBody.length > BODY_CAP) {
-        trace(
-          `work-driver: issue #${n} body too large (${newBody.length} chars) — TL;DR edit skipped`,
-        );
-        notes.push(`issue #${n} body too large (${newBody.length} chars) — TL;DR edit skipped`);
-        continue;
-      }
-      // Note: a truncated forge read would produce a truncated write; a real
-      // guard would need a second read or conditional-update API (not
-      // implemented).
-      await forge.issueEdit(n, newBody);
-      trace(`work-driver: prepended TL;DR to issue #${n} (body length: ${currentBody.length})`);
-    } catch (err) {
-      const msg = (err as Error).message?.slice(0, 200) ?? "unknown error";
-      trace(`work-driver: TL;DR edit for issue #${n} failed: ${msg}`);
-      notes.push(`issueEdit for issue #${n} failed: ${msg}`);
-    }
-  }
+    }),
+  );
 
   return notes;
 }
