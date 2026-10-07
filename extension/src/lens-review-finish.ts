@@ -4,14 +4,14 @@
  * gate).
  *
  * `runLensReview` routes EVERY run shape through `finishLensReview`: it
- * writes the ledger entry (fire-and-forget — the write is a side effect,
- * never a gate on the result) and, on the one verdict that needs a post
- * (ISSUES_FOUND), posts the #973 residual-findings disclosure. #980 — the
- * branch arrives ALREADY RESOLVED (the shared `resolveReviewBranch` outcome
- * computed once in `runLensReview`), so the ledger write and the disclosure
- * marker key on the SAME branch string by construction; when it is undefined
- * the ledger write skips (traced) and the summary carries the VISIBLE
- * "disclosure NOT posted" note instead of the pre-#980 silent skip.
+ * writes the ledger entry (fire-and-forget in production — the write is a
+ * side effect, never a gate on the result) and, on the one verdict that
+ * needs a post (ISSUES_FOUND), posts the #973 residual-findings disclosure.
+ * #980 — the branch arrives ALREADY RESOLVED (the shared `resolveReviewBranch`
+ * outcome computed once in `runLensReview`), so the ledger write and the
+ * disclosure marker key on the SAME branch string by construction; when it
+ * is undefined the ledger write skips (traced) and the summary carries the
+ * VISIBLE "disclosure NOT posted" note instead of the pre-#980 silent skip.
  *
  * #966 — the ledger's `passed` is derived from the RESOLVED verdict (via
  * `lensPassed` inside `writeLensLedgerEntry`), and every run shape that fails,
@@ -21,6 +21,10 @@
  * remaining path that writes nothing is the unresolvable-branch skip (the
  * "not recorded" note makes it VISIBLE where the pre-#980 skip was silent),
  * and the disclosure note is the one visible path in place of a post.
+ *
+ * #984 — `finishLensReview` returns a `{ summary, ledgerWrite }` tuple: the
+ * `ledgerWrite` promise is the test-only await seam for the fire-and-forget
+ * write (see `writeLensLedgerEntry` — the promise is the #984 test seam).
  */
 
 import { writeLensLedgerEntry } from "./lens-ledger.ts";
@@ -28,14 +32,29 @@ import type { LensReviewSummary } from "./lens-review-format.ts";
 import { postLensResidualDisclosure } from "./lens-review-residuals.ts";
 import type { Severity } from "./lens-review.ts";
 
+/**
+ * The result of the single `finishLensReview` exit. `summary` is the
+ * LensReviewSummary (byte-identical to the pre-#984 shape). `ledgerWrite`
+ * is the fire-and-forget write's promise (the #984 test seam — see
+ * `writeLensLedgerEntry`); awaiting it is safe.
+ */
+export type LensFinishResult = {
+  summary: LensReviewSummary;
+  ledgerWrite: Promise<void>;
+};
+
 async function finish(
   summary: LensReviewSummary,
   threshold: Severity,
   cwd: string | undefined,
   branch: string | undefined,
   ledger: { hasCritical?: boolean; headSha?: string; head?: string } = {},
-): Promise<LensReviewSummary> {
-  void writeLensLedgerEntry(
+): Promise<LensFinishResult> {
+  // #984 — the fire-and-forget write is intentionally NOT awaited here (#912
+  // fire-and-forget; the summary must never be gated on the ledger write). The
+  // promise is returned as `ledgerWrite` only so tests can await it (the
+  // deterministic-await seam); see `writeLensLedgerEntry` for the contract.
+  const ledgerWrite = writeLensLedgerEntry(
     summary.verdict,
     threshold,
     cwd,
@@ -67,7 +86,7 @@ async function finish(
         "Residual-findings disclosure NOT posted — no branch could be resolved for this review (detached head with no `branch` argument and no branch-named `head`), so no open PR/MR could be looked up. The merge guard's round-cap path will refuse until the marker is posted on the PR — run the review with an explicit `branch` (or on the branch's own checkout) and re-run.";
     }
   }
-  return summary;
+  return { summary, ledgerWrite };
 }
 
 /** The ONE exit path — see the module header. */

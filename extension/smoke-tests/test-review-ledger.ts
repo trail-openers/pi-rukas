@@ -20,9 +20,17 @@
  */
 
 import { execSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+// #984 — the shared helper (lib/wait-for-ledger.ts) with a generous 30 s
+// budget, so a loaded host has headroom for the writer's two git subprocess
+// hops; the poll returns as soon as the file appears (the passing path stays
+// fast) and a partial write keeps the poll going. This replaces the local
+// waitForLedger copy that had a fixed 2000 ms budget (the flake #984 fixes
+// is the same flake the issue's descriptor names: a fixed short wall-clock
+// budget against a fire-and-forget two-subprocess write chain).
+import { waitForLedger } from "./lib/wait-for-ledger.ts";
 import { runLensReview } from "../src/lens-review.ts";
 import {
   type LedgerEntry,
@@ -92,22 +100,6 @@ const ledgerFile = (repo: string) => {
   const abs = path.isAbsolute(common) ? common : path.resolve(repo, common);
   return path.join(abs, "review-ledger.json");
 };
-
-/** Wait for an async ledger write to land (the writer is fire-and-forget). */
-function waitForLedger(file: string, ms = 2000): LedgerEntry[] | null {
-  const deadline = Date.now() + ms;
-  while (Date.now() < deadline) {
-    if (existsSync(file)) {
-      try {
-        return readLedgerAt(file);
-      } catch {
-        /* partial write — keep waiting */
-      }
-    }
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
-  }
-  return existsSync(file) ? readLedgerAt(file) : null;
-}
 
 // ------------------------------------------------------------------ helpers
 
@@ -458,6 +450,32 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
         `lensBlockedByThreshold(${verdict}, ${th}) === !lensPassed(${verdict}, ${th})`,
       );
     }
+  }
+}
+
+// ----------------------------- no entry expected (negative assertion)
+//
+// The detached-head / no-branch-resolved case: the writer skips (the
+// branch is unresolvable, so `writeLensLedgerEntry` does not write), and
+// the helper's short-budget path returns null quickly. This exercises
+// the `budgetMs` parameter and the `return null` branch, which are
+// otherwise dead surface (no caller passes a short budget).
+
+{
+  const { repo } = setupRepo();
+  const lf = ledgerFile(repo);
+  try {
+    // The ledger file does not exist and no writer is invoked: the short
+    // 500 ms budget exercises the helper's `return null` path on a short
+    // budget (the detached-head writer-skip is what produces it in
+    // production; here the file is simply never written).
+    const result = waitForLedger(lf, 500);
+    assert(
+      result === null,
+      "negative assertion: no ledger entry expected → returns null on a short budget",
+    );
+  } finally {
+    rmSync(path.dirname(repo), { recursive: true, force: true });
   }
 }
 
