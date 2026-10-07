@@ -65,6 +65,8 @@ var ErrNotFound = errors.New("not found")
 
 ## Concurrency
 
+For the full pattern library — proverbs, interface patterns, error handling, concurrency, testing, and performance idioms — read `references/patterns.md` before writing or reviewing non-trivial Go code.
+
 ```go
 // Channels for coordination
 func process(ctx context.Context, items <-chan Item) <-chan Result

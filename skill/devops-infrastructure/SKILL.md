@@ -62,6 +62,8 @@ jobs:
         run: docker build -t myapp:${{ github.sha }} .
 ```
 
+For the full pipeline pattern — image registry setup, permissions, Docker layer caching, and a production deployment stage — read `references/ci-cd.md` before designing a CI/CD pipeline from scratch.
+
 ## Docker Best Practices
 
 ```dockerfile
