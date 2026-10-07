@@ -58,6 +58,7 @@ import {
   companionLinesOf,
   fixesLinesOf,
   operatorActionsSectionOf,
+  tldrSectionOf,
 } from "./work-driver-pr-body-definition.ts";
 import { findOpenPrForBranch } from "./work-driver-pr-preflight.ts";
 import { renderLensFindingsSection } from "./work-driver-pr-sections.ts";
@@ -286,7 +287,12 @@ export async function mechanizedCommitPr(
     // surface as a DISTINCT PR-body section, not vanish from the record and
     // not be misrendered under the assumptions heading.
     const operatorActions = operatorActionsSectionOf(ps.normalisedSpec);
+    // #1006 — the TL;DR section is at the TOP of the PR body, before the
+    // "Automated by" line and before `Fixes #N`. It is the first thing a
+    // reviewer sees. Empty when the spec has no usable source.
+    const tldr = tldrSectionOf(ps.normalisedSpec);
     const prBody = [
+      tldr,
       "Automated by pi-rukas /work driver (mechanized commit-pr).",
       "",
       ...fixesLines,

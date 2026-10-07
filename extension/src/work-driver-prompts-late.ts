@@ -5,10 +5,10 @@ import {
   companionLinesOf,
   fixesLinesOf,
   operatorActionsSectionOf,
+  tldrSectionOf,
 } from "./work-driver-pr-body-definition.ts";
 import { renderLensFindingsSection } from "./work-driver-pr-sections.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
-
 /**
  * /work driver — inline prompt builders for the late pipeline steps.
  *
@@ -20,7 +20,6 @@ import type { Workstream } from "./workflow-state-schema.ts";
  * #171) — these are called directly by the corresponding `run<Step>`
  * handlers in work-driver.ts.
  */
-
 /**
  * Boilerplate appended to every inline prompt. Tells the subagent where
  * the project-local scratch dir is so they don't drop diffs, screenshots,
@@ -117,7 +116,12 @@ export function inlineCommitPrPrompt(
   // (see the operatorActionsSectionOf contract); both the multi-worktree
   // and the N=1 flows below splice it into the gh pr create recipe.
   const operatorActions = operatorActionsSectionOf(normalisedSpec);
+  // #1006 — the TL;DR section goes at the TOP of the PR body in all three
+  // shapes (N=1, multi-worktree, ops-fallback). The shared builder renders
+  // identical text in the mechanized path (work-driver-commit.ts) and here.
+  const tldr = tldrSectionOf(normalisedSpec);
   const bodySections = [
+    tldr,
     assumptionsBlock,
     carriedFindings,
     operatorActions,

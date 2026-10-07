@@ -170,6 +170,82 @@ export function planFindingsCount(spec: PipelineStateNormalisedSpec | undefined)
   return spec.deliverables.filter((d) => d.noDiff !== true).length;
 }
 
+// ── #1006 — TL;DR section ─────────────────────────────────────────────────────
+
+/**
+ * #1006 — the TL;DR heading constant. Used as the idempotency anchor for
+ * the issue-body edit: a body that already contains a line matching
+ * `/^##\s+TL;?DR/m` is NOT edited again (no double-prepend).
+ */
+export const TLDR_HEADING = "## TL;DR";
+
+/**
+ * #1006 — detect whether a body already carries a TL;DR section.
+ * Anchored on the heading text (case-sensitive `## TL;DR` or the variant
+ * `## TLDR`), not on arbitrary marker comments — so a prior hand-written
+ * TLDR with the same heading is recognised and the edit is a no-op.
+ *
+ * Tolerates leading whitespace (a table-of-contents line like
+ * `   ## TL;DR` is still a TL;DR heading).
+ */
+export function hasTldrSection(body: string): boolean {
+  return /^\s*##\s+TL;?DR\b/m.test(body);
+}
+
+/**
+ * #1006 — derive a short plain-language TL;DR from the normalised spec.
+ *
+ * Source: driver-side deterministic derivation (no LLM dispatch).
+ *   - First sentence of `spec.intent` (the one-sentence "what this does")
+ *   - The first deliverable description (the most important change)
+ *   - Both are clipped to keep the total ≤ 400 chars.
+ *
+ * Returns `""` when `spec` is absent, has no intent, or has no deliverables
+ * (the module's established empty-string contract: an empty section is
+ * filtered out by `mechanizedCommitPr`'s `.filter((l) => l !== "")` and by
+ * the `inlineCommitPrPrompt`'s `bodySections` filter).
+ */
+export function tldrSectionOf(spec: PipelineStateNormalisedSpec | undefined): string {
+  if (!spec || !spec.intent || spec.intent.trim() === "") return "";
+  const intent = spec.intent.trim();
+  // First sentence (up to the first period followed by whitespace or end).
+  const firstSentence = intent.match(/^(.+?)(?:\.(?:\s|$)|\s*\.{2,})/)?.[1]?.trim();
+  const lead = (firstSentence && firstSentence.length > 10 ? firstSentence : intent).trim();
+  const deliverables = spec.deliverables.filter((d) => d.description?.trim());
+  if (deliverables.length === 0) return "";
+  const desc = (deliverables[0]?.description ?? "").trim();
+  // Build the text, capped at 400 chars total.
+  const cap = 400;
+  let text = lead;
+  if (text.length > cap) text = `${text.slice(0, cap - 1)}\u2026`;
+  else {
+    const rest = cap - text.length - 1; // ", " is 2 chars + ellipsis room
+    if (desc.length > 0) {
+      const joined = `${text} ${desc}`;
+      if (joined.length <= cap) {
+        text = joined;
+      } else {
+        text = `${text.slice(0, Math.max(0, cap - 1))}\u2026`;
+      }
+    }
+  }
+  return `${TLDR_HEADING}\n\n${text}`;
+}
+
+/**
+ * #1006 — build the full new body for an issue: the TL;DR section
+ * prepended above the existing body. `existingBody` is the CURRENT body
+ * (read live from the forge, not a cached snapshot), so concurrent user
+ * edits are preserved.
+ *
+ * If the body already carries a TL;DR heading, returns `existingBody`
+ * unchanged (idempotency: no second block is prepended).
+ */
+export function prependTldr(existingBody: string, tldr: string): string {
+  if (tldr === "" || hasTldrSection(existingBody)) return existingBody;
+  return `${tldr}\n\n${existingBody}`;
+}
+
 // #507 — clip a PR title to a code-unit budget at a word boundary.
 // Budget 64 (not 72): GitHub squash-merge appends ` (#<N>)`.
 export function clipTitle(raw: string, budget: number): string {

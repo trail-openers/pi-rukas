@@ -318,11 +318,24 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         "the PR title is NEVER the raw 'Bug: …' issue title",
       );
       // Fixes #N stays in the body, not the title.
+      // #1006 — the TL;DR section is at the TOP of the PR body (before Fixes #N),
+      // rendered from the shared tldrSectionOf builder. The issue-818 e2e has
+      // no normalisedSpec (the explore dispatch doesn't return a spec artifact),
+      // so the TLDR section is absent — the body starts with the "Automated by"
+      // line. This assertion verifies the TLDR is NOT present when the spec is
+      // absent (the empty-string contract).
       const prBodyFile = path.join(dir, "tmp", `issue-${818}`, "mech-pr-body.md");
       const fs = await import("node:fs");
       if (fs.existsSync(prBodyFile)) {
         const body = fs.readFileSync(prBodyFile, "utf8");
         assert(body.includes("Fixes #818"), "the PR body still carries Fixes #818");
+        // The TLDR section is absent when no normalisedSpec was recorded
+        // (the explore dispatch in this fixture returns a simple VERDICT,
+        // not a ## Spec block). The body must start with the "Automated by" line.
+        assert(
+          body.startsWith("Automated by pi-rukas"),
+          "no TLDR section when spec is absent — body starts with 'Automated by'",
+        );
       } else {
         assert(false, "the PR body file was written (scratchDir mech-pr-body.md)");
       }
