@@ -41,6 +41,8 @@ CREATE INDEX idx_users_metadata ON users USING GIN(metadata);
 
 ## Query Optimization
 
+Read `references/sql-commands.md` for the ready-to-use SQL for performance analysis, index management, and maintenance before optimizing queries in an existing system.
+
 ```sql
 -- Always check query plans
 EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
@@ -77,6 +79,8 @@ ALTER TABLE users ADD COLUMN phone VARCHAR(20);
 ```
 
 ## Aurora PostgreSQL
+
+Read `references/aurora-aws.md` for Aurora cluster, Serverless v2, Global Database, and monitoring details before designing or tuning an Aurora deployment.
 
 ```sql
 -- Use Aurora read replicas for read scaling

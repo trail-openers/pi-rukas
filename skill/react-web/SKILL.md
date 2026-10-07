@@ -36,6 +36,8 @@ Large app-wide state? → Zustand (small) or Redux Toolkit (large)
 
 ## Component Patterns
 
+For advanced component techniques — render props, compound components, slots, and hooks composition — read `references/patterns.md` before designing new component APIs.
+
 ```tsx
 // YES: Small, typed, focused
 interface ButtonProps {
