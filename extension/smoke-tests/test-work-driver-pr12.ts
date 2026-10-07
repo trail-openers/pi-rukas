@@ -15,6 +15,7 @@
  *       d. no parse AND no artifact → the existing no-signal cap-hit.
  *       e. a stale spec.txt from a prior cycle is deleted before dispatch,
  *          so a fresh cycle cannot restore a dead decision.
+ *   - #996 artifact-shadow invariant: see test-intent-artifact-shadow-996.ts
  *
  * No real Pi spawn; dispatchFn is mocked.
  */
