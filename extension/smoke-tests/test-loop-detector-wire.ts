@@ -432,6 +432,13 @@ await fixture772r();
   );
   chmodSync(join(fakeDir, "pi"), 0o755);
   process.env.PATH = `${fakeDir}:${savedPath}`;
+  // #1017 — the offline gate (verify-loop.sh) exports
+  // PI_ENSEMBLE_FORBID_LIVE_SPAWN=1 for every offline test, and the guard
+  // fires before the fork, so even the fake-`pi`-on-PATH child below would
+  // fail on it. It costs no tokens (the `pi` on PATH is a shell script), so
+  // this case opts out of the guard locally — the same escape hatch the
+  // `*-live.ts` tests use for real children.
+  process.env.PI_ENSEMBLE_ALLOW_LIVE_SPAWN = "1";
   process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "0";
   process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS = "0";
   try {
@@ -450,6 +457,7 @@ await fixture772r();
     );
   } finally {
     process.env.PATH = savedPath ?? "";
+    process.env.PI_ENSEMBLE_ALLOW_LIVE_SPAWN = "";
     process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = savedInactivity ?? "";
     process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS = savedGrace ?? "";
   }

@@ -28,6 +28,16 @@
 
 set -u
 
+# #1017 — forbid live spawns in every offline test. Any offline test that
+# reaches the real spawn path (spawnSpecialist) fails loudly in ~5s with the
+# FORBID_LIVE_SPAWN error naming the role and the injection point, instead of
+# silently burning real model tokens and stalling the suite. Live tests
+# (*-live.ts) are skipped before this matters, and a test that needs a (fake)
+# child sets PI_ENSEMBLE_ALLOW_LIVE_SPAWN=1 locally. The canary
+# (test-verify-loop.ts case 8 + fixture-spawn-env.ts) proves this export
+# reaches the child env.
+export PI_ENSEMBLE_FORBID_LIVE_SPAWN=1
+
 if [ "$#" -eq 0 ]; then
   echo "usage: verify-loop.sh <file> ..." >&2
   exit 2

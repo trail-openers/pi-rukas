@@ -59,6 +59,13 @@ function writeFakePi(trapTerm = false) {
 }
 
 process.env.PATH = `${fakeDir}:${savedPath}`;
+// #1017 — the offline gate (verify-loop.sh) exports
+// PI_ENSEMBLE_FORBID_LIVE_SPAWN=1 for every offline test, and the guard fires
+// before the fork, so even the fake-`pi`-on-PATH children below would fail on
+// it. They cost no tokens (the `pi` on PATH is a shell script), so this test
+// opts out of the guard locally — the same escape hatch the `*-live.ts`
+// tests use for real children.
+process.env.PI_ENSEMBLE_ALLOW_LIVE_SPAWN = "1";
 process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "0"; // abort tests: pure abort path
 
 // Tests 1–2 run against the fake `pi` with the inactivity watchdog disabled —
@@ -188,6 +195,7 @@ try {
   // (a stub `pi` in the parent's PATH would shadow the real binary for any
   // later spawn in the same process).
   process.env.PATH = savedPath;
+  process.env.PI_ENSEMBLE_ALLOW_LIVE_SPAWN = "";
   if (savedInactivity) process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = savedInactivity;
   else delete process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS;
   rmSync(fakeDir, { recursive: true, force: true });

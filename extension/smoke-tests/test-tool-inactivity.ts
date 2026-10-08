@@ -38,6 +38,13 @@ const savedCapGrace = process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS;
 const savedStale = process.env.PI_ENSEMBLE_STALE_THRESHOLD_MS;
 
 process.env.PATH = `${fakeDir}:${savedPath}`;
+// #1017 — the offline gate (verify-loop.sh) exports
+// PI_ENSEMBLE_FORBID_LIVE_SPAWN=1 for every offline test, and the guard fires
+// before the fork, so even the fake-`pi`-on-PATH children below would fail on
+// it. They cost no tokens (the `pi` on PATH is a shell script), so this test
+// opts out of the guard locally — the same escape hatch the `*-live.ts`
+// tests use for real children.
+process.env.PI_ENSEMBLE_ALLOW_LIVE_SPAWN = "1";
 process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = "300000"; // 5-min wall-clock cap, far above all case bounds
 process.env.PI_ENSEMBLE_DISPATCH_CAPS = "0"; // caps off: the subject is the watchdog
 process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS = "0";
@@ -65,6 +72,7 @@ const toolResultLine =
 /** Restore the process-wide env even when a case above throws. */
 function restoreEnv() {
   process.env.PATH = savedPath;
+  process.env.PI_ENSEMBLE_ALLOW_LIVE_SPAWN = "";
   if (savedInactivity !== undefined) process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = savedInactivity;
   else delete process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS;
   if (savedToolInactivity !== undefined)

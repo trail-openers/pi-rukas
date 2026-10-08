@@ -1,6 +1,12 @@
 #!/usr/bin/env bun
-// Direct smoke test of spawnSpecialist — bypasses parent Pi.
-// Run from extension/ dir:  bun run smoke-tests/test-spawn.ts
+// #1017 — live spawn test: spawns a REAL `pi` child (PONG round-trip).
+// Renamed from test-spawn.ts to `*-live.ts` so the offline gate
+// (verify-loop.sh) excludes it — the gate now exports
+// PI_ENSEMBLE_FORBID_LIVE_SPAWN=1 for every offline test, and a live
+// test globbed into the offline suite would fail on the guard (or, worse,
+// burn real tokens on every gate run). The `*-live.ts` suffix is the
+// established exclusion convention (test-live-suffix-convention.ts canary).
+// Run from extension/ dir:  bun run smoke-tests/test-spawn-live.ts
 
 import { spawnSpecialist } from "../src/spawn.ts";
 
