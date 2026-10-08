@@ -24,7 +24,7 @@ import { preflightChildGuards } from "./child-guards.ts";
 import { type ResolvedModelChoice, resolveModel } from "./models.ts";
 import { type BrokerHandle, startBroker } from "./permission-broker.ts";
 import { isParentInTrustMode, makeBrokerDeps } from "./permission-guard.ts";
-import { getPiInvocation } from "./pi-binary-resolve.ts";
+import { getPiInvocation, getPiResolutionInfo } from "./pi-binary-resolve.ts";
 import type { PiJsonEvent, SpawnOptions } from "./pi-event-shapes.ts";
 import { emptyRunningState, ingestEvent } from "./progress.ts";
 import { excludeToolsFor } from "./role-tools.ts";
@@ -60,6 +60,14 @@ import { vipuneChildEnv } from "./vipune.ts";
 // because smoke tests assert on the argument ORDER, which is load-bearing.
 export { buildChildArgs, buildCwdHint, makeRunId };
 
+// #1019 — kick the version probe on first spawn (fire-and-forget; never awaited).
+let piResolutionProbeStarted = false;
+function kickPiResolutionProbe(): void {
+  if (piResolutionProbeStarted) return;
+  piResolutionProbeStarted = true;
+  getPiResolutionInfo().catch(() => {});
+}
+
 /**
  * Spawn one specialist child, bounded by the global spawn semaphore.
  *
@@ -83,6 +91,8 @@ async function spawnSpecialistInner(
   assertLiveSpawnAllowed(spec.role);
 
   const role = ROLES[spec.role];
+  // First spawn in this process: kick the version probe (fire-and-forget).
+  kickPiResolutionProbe();
   const systemPrompt = await fs.readFile(role.promptFile, "utf8");
   const cwd = spec.cwd ?? process.cwd();
 

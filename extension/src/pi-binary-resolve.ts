@@ -7,6 +7,10 @@
  *   2. The bin of the locally installed @earendil-works/pi-coding-agent package
  *   3. `pi` on PATH (always warns)
  *
+ * Setting PI_ENSEMBLE_PI_BIN executes THAT binary as the child pi — the
+ * X_OK check below validates usability only, never trust. Use it for an
+ * install you intend to run; it is not an integrity gate.
+ *
  * Inside a Pi process (argv[1] matches the Pi CLI path), the existing
  * argv[1] reuse stays first — no behaviour change for interactive sessions.
  *
@@ -79,6 +83,15 @@ export function resolvePackageBin(
     if (!binEntry) return null;
     const binPath = path.resolve(path.dirname(packageJsonPath), binEntry);
     if (!existsSync(binPath)) return null;
+    // A bin entry escaping the package directory is a hostile or broken
+    // package.json — never execute it (traced so the skip is auditable).
+    const pkgDir = path.dirname(packageJsonPath);
+    if (!binPath.startsWith(pkgDir + path.sep)) {
+      trace(
+        `pi-binary-resolve: package bin ${binPath} resolves outside the package directory — rejected`,
+      );
+      return null;
+    }
     // Verify executable bit
     accessSync(binPath, constants.X_OK);
     return binPath;
@@ -112,6 +125,11 @@ interface SyncResolution {
 }
 
 let cachedSync: SyncResolution | null = null;
+
+// Memoized resolvePackageBin() result (the default-package branch). The
+// injected-path overload is deliberately unmemoized — tests call it with
+// fixture paths and must not see a cached default.
+let defaultPackageBinCache: string | null | undefined;
 
 /**
  * Resolve the pi binary path and source synchronously. Cached per process.
@@ -169,8 +187,11 @@ export function resolvePiBinarySync(): SyncResolution {
     return cachedSync;
   }
 
-  // 3. Package bin — silently skip if not installed.
-  const pkgBin = resolvePackageBin();
+  // 3. Package bin — silently skip if not installed. Memoized per process.
+  if (defaultPackageBinCache === undefined) {
+    defaultPackageBinCache = resolvePackageBin();
+  }
+  const pkgBin = defaultPackageBinCache;
   if (pkgBin) {
     cachedSync = { path: pkgBin, source: "package", command: pkgBin };
     return cachedSync;
@@ -187,6 +208,7 @@ export function resolvePiBinarySync(): SyncResolution {
 export function _resetPiBinaryCache(): void {
   cachedSync = null;
   versionPromise = null;
+  defaultPackageBinCache = undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -200,39 +222,42 @@ let versionPromise: Promise<{ version: string | null; probeTimedOut?: boolean }>
  * Times out after 3 s (returns version: null, probeTimedOut: true).
  * Never throws — unparseable output yields version: null.
  */
-export function probePiVersion(
-  cmd?: string,
-  script?: string,
-): Promise<{ version: string | null; probeTimedOut?: boolean }> {
+export function probePiVersion(): Promise<{ version: string | null; probeTimedOut?: boolean }> {
   if (versionPromise) return versionPromise;
 
   versionPromise = new Promise((resolve) => {
     const resolved = cachedSync ?? resolvePiBinarySync();
-    const spawnCmd = cmd ?? resolved.command;
-    const spawnArgs = script
-      ? [script, "--version"]
-      : resolved.script
-        ? [resolved.script, "--version"]
-        : ["--version"];
+    const spawnArgs = resolved.script ? [resolved.script, "--version"] : ["--version"];
 
-    const child = cpSpawn(spawnCmd, spawnArgs, {
+    const child = cpSpawn(resolved.command, spawnArgs, {
       stdio: ["ignore", "pipe", "pipe"],
       shell: false,
     });
 
     let stdout = "";
+    let stdoutBytes = 0;
     let settled = false;
 
     const timer = setTimeout(() => {
       if (!settled) {
         settled = true;
+        // Destroy the pipes in addition to killing the process: a grandchild
+        // that keeps the write ends open would otherwise pin the process
+        // handle (and our buffered stdout) past the kill.
         child.kill("SIGKILL");
+        child.stdout?.destroy();
+        child.stderr?.destroy();
         resolve({ version: null, probeTimedOut: true });
       }
     }, 3000);
 
     child.stdout?.on("data", (d: Buffer) => {
-      stdout += d.toString("utf8");
+      // Cap the accumulator — `pi --version` prints one short line, anything
+      // larger is not a version and is not worth retaining in memory.
+      if (stdoutBytes < 4096) {
+        stdout += d.toString("utf8");
+        stdoutBytes += d.length;
+      }
     });
 
     child.on("error", () => {
@@ -263,8 +288,14 @@ export function probePiVersion(
  * Get the full pi binary resolution info (path, source, version).
  *
  * The path and source are resolved synchronously (cached). The version probe
- * runs asynchronously once and is cached. This function awaits the probe but
- * never blocks a spawn — callers should fire-and-forget when latency matters.
+ * runs asynchronously once and is cached, and it can wait up to 3 s (its
+ * timeout) before resolving.
+ *
+ * ⚠ Spawn paths must NEVER await this. `spawnSpecialist` resolves the binary
+ * with `resolvePiBinarySync()` only (zero I/O beyond the cached resolution) —
+ * the probe exists to surface the PATH-source / older-than-verified warnings,
+ * which the first spawn of a process triggers fire-and-forget. Awaiting here
+ * would hold the spawn path for up to 3 s against a hung `--version` probe.
  *
  * Emits a single trace line with the resolved path, source, and version.
  * Warns (trace) when:
@@ -287,6 +318,11 @@ export async function getPiResolutionInfo(): Promise<PiBinaryResolution> {
   trace(`pi-binary-resolve: path=${result.path} source=${result.source} version=${versionStr}`);
 
   if (result.source === "path") {
+    // The PATH-source warning is operational, not a debug detail — a hijacked
+    // or mismatched `pi` on PATH should be visible without PI_ENSEMBLE_DEBUG=1.
+    console.warn(
+      "[pi-rukas] pi-binary-resolve: WARNING — pi resolved from PATH, no integrity check performed",
+    );
     trace("pi-binary-resolve: WARNING — resolved from PATH, no integrity check performed");
   }
 
@@ -309,7 +345,8 @@ export async function getPiResolutionInfo(): Promise<PiBinaryResolution> {
 
 /**
  * Compare two semver-like strings. Returns true when `a` is older than `b`.
- * Handles major.minor.patch with optional pre-release/build suffixes.
+ * Only the major.minor.patch numeric prefix is compared; pre-release/build
+ * suffixes (e.g. "2.1.3-beta.1") are ignored.
  */
 export function isVersionOlder(a: string, b: string): boolean {
   const pa = a.match(/^(\d+)\.(\d+)(?:\.(\d+))?/);
@@ -330,7 +367,8 @@ let verifiedVersionCache: string | null | undefined;
 
 /**
  * Read the "Last verified against pi X.Y.Z" version from docs/pi-compatibility.md.
- * Uses the same regex as test-pi-version-drift.ts (parseVerifiedLine).
+ * Uses the shared parseVerifiedLine parser (single source, also used by
+ * test-pi-version-drift.ts).
  * Returns null when the file or line is not found.
  */
 function getVerifiedVersion(): string | null {
@@ -338,14 +376,28 @@ function getVerifiedVersion(): string | null {
   try {
     const compatPath = path.resolve(import.meta.dirname, "..", "..", "docs", "pi-compatibility.md");
     const doc = readFileSync(compatPath, "utf8");
-    const m = doc.match(
-      /## Last verified against pi\s+([0-9][0-9a-z.+-]*)\s+\((\d{4}-\d{2}-\d{2})\)/,
-    );
-    verifiedVersionCache = m ? (m[1] as string) : null;
+    verifiedVersionCache = parseVerifiedLine(doc)?.version ?? null;
   } catch {
     verifiedVersionCache = null;
   }
   return verifiedVersionCache;
+}
+
+// ---------------------------------------------------------------------------
+// Shared "Last verified against pi X.Y.Z (YYYY-MM-DD)" parser
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse the maintained "## Last verified against pi X.Y.Z (YYYY-MM-DD)" line
+ * from docs/pi-compatibility.md content. Single source of the regex — also
+ * imported by smoke-tests/test-pi-version-drift.ts so the two can never drift.
+ */
+export function parseVerifiedLine(doc: string): { version: string; date: string } | null {
+  const m = doc.match(
+    /## Last verified against pi\s+([0-9][0-9a-z.+-]*)\s+\((\d{4}-\d{2}-\d{2})\)/,
+  );
+  if (!m) return null;
+  return { version: m[1] as string, date: m[2] as string };
 }
 
 /**
