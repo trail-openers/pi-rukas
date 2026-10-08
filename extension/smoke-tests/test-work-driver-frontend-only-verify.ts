@@ -25,7 +25,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import { pathsAreFrontendOnly } from "../src/work-driver-verify-cmd.ts";
+import { DEFAULT_FRONTEND_GLOBS, pathsAreFrontendOnly } from "../src/work-driver-verify-cmd.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
 
@@ -48,23 +48,22 @@ function makeFakePi(): { pi: ExtensionAPI } {
   };
 }
 
-const DEFAULT_GLOBS = [".css", ".html", ".svg", ".woff", ".woff2", ".ttf", ".otf"];
 const prevGlobs = process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS;
 
 try {
   // ---------------------------------------------------------------- unit —
   // pure classifier: closed-world, extension-only, no fs/git.
   {
-    assert(pathsAreFrontendOnly(["src/ui/hero.css"], DEFAULT_GLOBS) === true, "classifier: all-CSS → true");
-    assert(pathsAreFrontendOnly(["a.css", "b.html", "c.woff2"], DEFAULT_GLOBS) === true, "classifier: mixed frontend types → true");
-    assert(pathsAreFrontendOnly(["src/app.ts"], DEFAULT_GLOBS) === false, "classifier: a .ts file → false");
-    assert(pathsAreFrontendOnly(["a.css", "b.ts"], DEFAULT_GLOBS) === false, "classifier: CSS + TS mixed → false");
-    assert(pathsAreFrontendOnly(["docs/readme.md"], DEFAULT_GLOBS) === false, "classifier: .md-only → false");
-    assert(pathsAreFrontendOnly(["Makefile"], DEFAULT_GLOBS) === false, "classifier: no-dot path → false");
+    assert(pathsAreFrontendOnly(["src/ui/hero.css"], DEFAULT_FRONTEND_GLOBS) === true, "classifier: all-CSS → true");
+    assert(pathsAreFrontendOnly(["a.css", "b.html", "c.woff2"], DEFAULT_FRONTEND_GLOBS) === true, "classifier: mixed frontend types → true");
+    assert(pathsAreFrontendOnly(["src/app.ts"], DEFAULT_FRONTEND_GLOBS) === false, "classifier: a .ts file → false");
+    assert(pathsAreFrontendOnly(["a.css", "b.ts"], DEFAULT_FRONTEND_GLOBS) === false, "classifier: CSS + TS mixed → false");
+    assert(pathsAreFrontendOnly(["docs/readme.md"], DEFAULT_FRONTEND_GLOBS) === false, "classifier: .md-only → false");
+    assert(pathsAreFrontendOnly(["Makefile"], DEFAULT_FRONTEND_GLOBS) === false, "classifier: no-dot path → false");
     assert(pathsAreFrontendOnly(["a.css"], []) === false, "classifier: empty glob list → false");
-    assert(pathsAreFrontendOnly([], DEFAULT_GLOBS) === false, "classifier: empty path list → false (no evidence)");
-    assert(pathsAreFrontendOnly(["acss"], DEFAULT_GLOBS) === false, "classifier: extension without dot boundary (a.css ≠ acss) → false");
-    assert(pathsAreFrontendOnly(["src/Hero.CSS"], DEFAULT_GLOBS) === true, "classifier: extension match is case-insensitive");
+    assert(pathsAreFrontendOnly([], DEFAULT_FRONTEND_GLOBS) === false, "classifier: empty path list → false (no evidence)");
+    assert(pathsAreFrontendOnly(["acss"], DEFAULT_FRONTEND_GLOBS) === false, "classifier: extension without dot boundary (a.css ≠ acss) → false");
+    assert(pathsAreFrontendOnly(["src/Hero.CSS"], DEFAULT_FRONTEND_GLOBS) === true, "classifier: extension match is case-insensitive");
   }
 
   // ---------------------------------------------------------------- helper —
@@ -101,14 +100,18 @@ try {
     verifyExecFn: exec,
   });
 
-  const stateFor = (worktrees: Record<string, string>, workstreams: Record<string, unknown>) => {
+  const stateFor = (
+    worktrees: Record<string, string>,
+    workstreams: Record<string, unknown>,
+    baseShaOverride?: string,
+  ) => {
     const st = initialState(1012, 1000);
     return {
       ...st,
       pipelineState: {
         ...st.pipelineState,
         branchName: "feature/issue-1012",
-        baseSha: "a".repeat(40),
+        baseSha: baseShaOverride ?? "a".repeat(40),
         worktrees,
         workstreams: workstreams as never,
       },
@@ -325,20 +328,24 @@ try {
       await git(repo, ["worktree", "add", "--detach", wt, baseSha]);
       for (const f of files) writeFileSync(path.join(wt, f), "change\n");
       const commands: string[] = [];
-      const gitArgs = (cmd: string) => {
-        if (cmd === "git status --porcelain") return ["status", "--porcelain"];
-        if (cmd.startsWith("git diff --name-only ")) return ["diff", "--name-only", cmd.split(" ")[2]];
-        if (cmd.startsWith("git rev-list --count ")) return ["rev-list", "--count", cmd.split(" ")[3]];
-        return null;
-      };
       const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
         if (cmd === "cargo check --quiet") {
           commands.push(cmd);
           return { stdout: "" };
         }
-        const args = gitArgs(cmd);
-        if (args) {
-          const { stdout } = await execFileP("git", args, { cwd: o?.cwd, maxBuffer: 8 * 1024 * 1024 });
+        // Match specific git subcommands the driver issues (not positional parsing).
+        if (cmd === "git status --porcelain") {
+          const { stdout } = await execFileP("git", ["status", "--porcelain"], { cwd: o?.cwd });
+          return { stdout };
+        }
+        if (cmd.startsWith("git diff --name-only ")) {
+          const range = cmd.slice("git diff --name-only ".length).trim();
+          const { stdout } = await execFileP("git", ["diff", "--name-only", range], { cwd: o?.cwd, maxBuffer: 8 * 1024 * 1024 });
+          return { stdout };
+        }
+        if (cmd.startsWith("git rev-list --count ")) {
+          const range = cmd.slice("git rev-list --count ".length).trim();
+          const { stdout } = await execFileP("git", ["rev-list", "--count", range], { cwd: o?.cwd, maxBuffer: 64 * 1024 });
           return { stdout };
         }
         // Consolidated-verify git machinery — real git. Every other command
@@ -360,23 +367,8 @@ try {
         }
         return { stdout: "" };
       };
-      const ctx: DriverContext = {
-        pi: makeFakePi().pi,
-        repoRoot: repo,
-        issue: 1012,
-        verifyExecFn: exec,
-      };
-      const st = initialState(1012, 1000);
-      const s = {
-        ...st,
-        pipelineState: {
-          ...st.pipelineState,
-          branchName: "feature/issue-1012",
-          baseSha,
-          worktrees: { default: wt },
-          workstreams: { default: { id: "default", scope: id, paths: [], outOfScope: [] } },
-        },
-      };
+      const ctx = ctxFor(repo, exec);
+      const s = stateFor({ default: wt }, { default: ws(id, id) }, baseSha);
       const gate = await verifyStepOutcome(ctx, s, "develop");
       await git(repo, ["worktree", "remove", "--force", wt]);
       return { gate, commands };

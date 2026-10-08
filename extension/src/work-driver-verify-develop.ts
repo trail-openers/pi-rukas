@@ -97,6 +97,12 @@ export async function verifyDevelopOutcome(
   // of baseSha); when > 0 and changedWorktrees is empty, the per-worktree
   // failures already explain the issue — skip the empty-diff message.
   let uncommittedOnlyCount = 0;
+  // #1012 — set to true when any per-worktree git read (status or diff) threw.
+  // The frontend-only skip must not fire on a partial union: a CSS-only union
+  // from the surviving worktree(s) is not evidence when one worktree's diff
+  // is missing. The flag is passed to shouldSkipVerifyForFrontendOnly which
+  // forces skip:false and records a note naming the incomplete union.
+  let gitReadFailedAnyWorktree = false;
   // #679 (task-evidence) — workstream ids whose declared paths are entirely
   // non-source (docs-only), EXEMPT from the "uncommitted but no commit"
   // failure (uncommitted work is a legitimate non-source deliverable) and
@@ -146,6 +152,7 @@ export async function verifyDevelopOutcome(
       if (ownSet) for (const file of statusPaths) ownSet.add(normaliseScopePath(file));
     } catch (err) {
       notes.push(`git status failed in ${id} (${(err as Error).message?.slice(0, 100)})`);
+      gitReadFailedAnyWorktree = true;
     }
     // #725 — diff against THIS workstream's effective base, not the cycle-
     // global baseSha: a dependent's worktree is created from its dependency's
@@ -181,6 +188,7 @@ export async function verifyDevelopOutcome(
         if (ownSet) for (const file of diffPaths) ownSet.add(normaliseScopePath(file));
       } catch {
         // Same as above — an absent baseSha in this worktree is not evidence.
+        gitReadFailedAnyWorktree = true;
       }
     }
     if (assessed) assessedCount++;
@@ -329,9 +337,15 @@ export async function verifyDevelopOutcome(
     // shouldSkipVerifyForFrontendOnly (work-driver-verify-cmd.ts) uses
     // fs.access (async) to check for an explicit .pi/verify-cmd — consistent
     // with verifyCmdFor's own file-access pattern (no sync fs in this gate).
-    const skipDecision = await shouldSkipVerifyForFrontendOnly(ctx.repoRoot, touchedPaths);
+    const skipDecision = await shouldSkipVerifyForFrontendOnly(
+      ctx.repoRoot,
+      touchedPaths,
+      gitReadFailedAnyWorktree,
+    );
     if (skipDecision.skip) {
       notes.push(skipDecision.reason ?? "frontend-only skip");
+    } else if (skipDecision.reason) {
+      notes.push(skipDecision.reason);
     } else {
       // #794 — the per-worktree loop + consolidated run + classification is
       // extracted to work-driver-verify-verify-cmd.ts (500-line gate); the

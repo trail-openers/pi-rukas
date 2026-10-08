@@ -125,10 +125,30 @@ export function frontendGlobs(): string[] {
  * no git — the glob list is a plain parameter so the caller owns the config.
  * An empty path list returns false: no paths is no evidence, and a
  * classification failure must never skip a check.
+ *
+ * Deliberately decoupled from `isSourcePath`: the falsily-green check uses
+ * `isSourcePath` (manifest-aware — a `.ts` file is "source" in a JS repo),
+ * while the frontend-only verify-skip uses this glob list (operator-
+ * configurable, manifest-unaware — a `.ts` file is "not frontend"). The two
+ * predicates are NOT expected to agree on the same path: a `.css` file is
+ * "not source" under both, but a `.ts` file is "source" under `isSourcePath`
+ * and "not frontend" under this list, and that divergence is correct.
+ * An operator who sets `PI_ENSEMBLE_FRONTEND_ONLY_GLOBS` to include a source
+ * extension (e.g. `.ts`) is making a deliberate choice to skip the verify
+ * chain for TypeScript changes; the falsily-green check will still treat
+ * `.ts` as source in its own context.
  */
 export function pathsAreFrontendOnly(paths: string[], globs: string[]): boolean {
+  return pathsAreFrontendOnlySet(paths, new Set(globs));
+}
+
+/**
+ * #1012 — internal: accepts a pre-built Set to avoid rebuilding it in a
+ * per-path or per-call loop. Callers that iterate paths in a loop (per-
+ * workstream classification) can build the Set once and pass it through.
+ */
+export function pathsAreFrontendOnlySet(paths: string[], globSet: Set<string>): boolean {
   if (paths.length === 0) return false;
-  const globSet = new Set(globs);
   return paths.every((p) => {
     const low = p.toLowerCase();
     const dot = low.lastIndexOf(".");
@@ -156,7 +176,15 @@ export function pathsAreFrontendOnly(paths: string[], globs: string[]): boolean 
 export async function shouldSkipVerifyForFrontendOnly(
   repoRoot: string,
   touchedPaths: string[],
+  gitFailedAnyWorktree = false,
 ): Promise<{ skip: boolean; reason?: string }> {
+  if (gitFailedAnyWorktree) {
+    return {
+      skip: false,
+      reason:
+        "frontend-only skip suppressed: a git read failed in one or more worktrees, so the touched-path union is incomplete — treating the diff as not frontend-only",
+    };
+  }
   const hasExplicit = await fs
     .access(path.join(repoRoot, ".pi", "verify-cmd"), fs.constants.F_OK)
     .then(() => true)
