@@ -178,5 +178,30 @@ function hangTestEnv(caseId: string): { env: Record<string, string>; token: stri
   assert(!assertion.startsWith("FAILED:"), "case 10: the assertion is not the summary marker");
 }
 
+// --- Case 11: exit-124 disambiguation (round-1 adversarial finding). A test
+// that exits 124 of its own accord is NOT a timeout: the loop must report it
+// as a plain `FAILED: <file>` without the "(timed out after <N>s)" suffix.
+// The disambiguation marker (the `✗ timed out after <N>s` line) is prepended
+// only by the watchdog, so a self-exit-124 test never gets it — the loop must
+// not emit the cosmetic "timed out" suffix on the raw exit code alone.
+{
+  const { status, stdout } = runLoopEnv([path.join(FIXTURES, "fixture-exit124.ts")], {});
+  assert(status !== 0, "case 11: exit non-zero when a test exits 124 of its own accord");
+  const failedLines = stdout.split("\n").filter((l) => l.startsWith("FAILED: "));
+  const perTest = failedLines.find((l) => l.includes("fixture-exit124.ts"));
+  assert(
+    perTest !== undefined,
+    `case 11: the per-test FAILED marker names the file (got: ${JSON.stringify(perTest)})`,
+  );
+  assert(
+    perTest !== undefined && !perTest.includes("(timed out"),
+    `case 11: the exit-124 test is NOT misattributed as a timeout (got: ${JSON.stringify(perTest)})`,
+  );
+  assert(
+    !stdout.includes("✗ timed out after"),
+    "case 11: the ✗ timed out line is absent (the watchdog did not fire)",
+  );
+}
+
 console.log(exit === 0 ? "\nAll verify-loop timeout checks passed." : "\nFAILED");
 process.exit(exit);

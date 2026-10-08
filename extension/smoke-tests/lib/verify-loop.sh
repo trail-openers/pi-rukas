@@ -53,13 +53,15 @@ export PI_ENSEMBLE_FORBID_LIVE_SPAWN=1
 #     by a BFS `pgrep -P` walk.
 #   * SIGTERM first, SIGKILL only for survivors, after a 2s grace: a test
 #     with cleanup handlers gets a chance to exit cleanly.
-#   * Exit code 124 is the conventional "timed out" sentinel; the test's
-#     partial output is kept (partial-output contract) and a
-#     `✗ timed out after <N>s` line is prepended to the capture so the #827
-#     echo and extractSpecificAssertion name it as the specific assertion.
-#     A test that itself exits 124 is told apart: it is a timeout only if
-#     the `✗ timed out` line was added by this watchdog (the loop checks
-#     rc=124 from run_test_with_timeout, never the raw child exit code).
+#   * The watchdog fires at the bound and returns its OWN sentinel (214),
+#     deliberately distinct from 124 — the conventional "timed out" code that
+#     a test can exit on its own. Because the sentinel is 214, the per-test
+#     "(timed out after <N>s)" suffix is emitted only for a true watchdog
+#     kill, never for a coincidental self-exit-124 test (the round-1
+#     finding: the old code keying the suffix on `rc -eq 124` misattributed
+#     those). The `✗ timed out after <N>s` line the watchdog prepends to the
+#     capture is what the #827 echo and extractSpecificAssertion name as the
+#     specific assertion; a self-exit-124 test gets neither.
 #   * The bound must be a positive integer; anything else falls back to 300
 #     with a warning so the silent default is visible.
 
@@ -168,13 +170,18 @@ run_test_with_timeout() {
       if [ "$((SECONDS - start))" -ge "$bound" ]; then
         kill_process_tree "$pid"
         wait "$pid" 2>/dev/null
-        # NB: the timeout path returns 124 on purpose — the test's own wait
-        # status (whatever the SIGTERM/SIGKILL left behind) is intentionally
-        # replaced by the conventional 124 timeout sentinel; the
-        # `✗ timed out after <N>s` line prepended to the capture is what
-        # tells the two apart in the output.
+        # NB: the timeout path returns 214 on purpose (not 124) — the test's
+        # own wait status (whatever the SIGTERM/SIGKILL left behind) is
+        # intentionally replaced by the sentinel, and 214 is chosen BECAUSE
+        # it is distinct from 124: a test that itself exits 124 (the
+        # conventional "timed out" code) returns through the normal path
+        # below and gets no timeout marker, so the cosmetic "(timed out)"
+        # suffix is emitted only for a true watchdog kill, never for a
+        # coincidental self-exit-124. The `✗ timed out after <N>s` line
+        # prepended to the capture is what the #827 echo /
+        # extractSpecificAssertion surface as the specific assertion.
         prepend_timeout_line "$bound"
-        return 124
+        return 214
       fi
     else
       break
@@ -213,7 +220,7 @@ for t in "$@"; do
     cat "$CAPTURE"
   else
     names+=("$t")
-    if [ "$rc" -eq 124 ]; then
+    if [ "$rc" -eq 214 ]; then
       echo "FAILED: $t (timed out after ${VERIFY_TEST_TIMEOUT_S}s)"
       cat "$CAPTURE"
     else
