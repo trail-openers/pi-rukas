@@ -25,6 +25,20 @@
 #   The caller expands the glob; the script receives the file list.
 #   Live tests (suffix -live.ts) are skipped, matching the legacy
 #   `case "$t" in *-live.ts) continue;; esac` exclusion.
+#
+#   #1014 — per-test timeout: each test is bounded at
+#   ${PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S:-300} seconds. A test still running
+#   at/after the bound is a timeout: it is killed (whole process tree —
+#   not just the top-level bun, which would leave orphaned descendants),
+#   its partial output is printed, and it is marked
+#   `FAILED: <file> (timed out after <N>s)` with a `✗ timed out after
+#   <N>s` line in the capture (which the #827 echo loop and the driver's
+#   extractSpecificAssertion pick up as the specific assertion). The loop
+#   continues to the next test. The env var must be a positive integer;
+#   anything else falls back to 300 with a warning.
+#   The bound is measured in 1s-resolution wall-clock (bash SECONDS / date
+#   +%s) with a 1s poll — no GNU `timeout`, no `wait -n`, no process-group
+#   API, so it is identical on bash 3.2 (macOS) and 5.x (Linux).
 
 set -u
 
@@ -37,6 +51,93 @@ set -u
 # (test-verify-loop.ts case 8 + fixture-spawn-env.ts) proves this export
 # reaches the child env.
 export PI_ENSEMBLE_FORBID_LIVE_SPAWN=1
+
+# #1014 — read the per-test bound once per loop run. Must be a positive
+# integer; anything else falls back to 300 (the value the marker and the
+# operator both expect) with a warning so the silent default is visible.
+if [[ "${PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S:-}" =~ ^[1-9][0-9]*$ ]]; then
+  VERIFY_TEST_TIMEOUT_S="$PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S"
+else
+  if [ -n "${PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S:-}" ]; then
+    echo "warn: verify-loop: PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S must be a positive integer; got '${PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S}', falling back to 300" >&2
+  fi
+  VERIFY_TEST_TIMEOUT_S=300
+fi
+
+# #1014 — run one test under the per-test timeout watchdog.
+# POSIX-portable (bash 3.2, no GNU timeout / wait -n): the test runs in the
+# background; a poll loop (1s ticks, SECONDS) counts wall-clock until the
+# bound; a timed-out test is killed by walking its descendant tree (a bare
+# `kill <pid>` would orphan bun's children — `bun run` forks a child for the
+# script, and a test can spawn grandchildren too, e.g. a spawned `sleep`),
+# SIGTERM first, SIGKILL for any survivor, after a 2s grace. The test's
+# output is captured to $CAPTURE (partial output on timeout, per the
+# partial-output contract) and the exit code is recorded so the caller
+# treats a timeout exactly like any other non-zero exit. Returns: the test's
+# exit code, or 124 (the conventional timeout sentinel) if the bound fired.
+run_test_with_timeout() {
+  local bound="$1" t="$2" pid=0 start elapsed rc=0 k q kids to_kill
+  start=$SECONDS
+  bun run "$t" >"$CAPTURE" 2>&1 &
+  pid=$!
+  # Poll loop: 1s ticks, wall-clock via SECONDS. The bound is enforced at
+  # the first tick where elapsed >= bound, so a test that exits just before
+  # the bound completes normally; one still running at the bound is a
+  # timeout. (A test finishing at 299s with bound 300 passes; at 300 it is
+  # a timeout — the resolved decision is "at or after the bound".)
+  while :; do
+    if kill -0 "$pid" 2>/dev/null; then
+      elapsed=$((SECONDS - start))
+      if [ "$elapsed" -ge "$bound" ]; then
+        to_kill=""
+        q="$pid"
+        # BFS the descendant tree of the hung test so every child and
+        # grandchild is killed, not just the top-level bun. On macOS bash 3.2
+        # there is no process-group kill (no setsid); on Linux the test runs
+        # in its own process group so killing the group would be cleaner, but
+        # walking the tree via pgrep -P works on both. Each level's children
+        # become the next BFS frontier (a single pid at a time — bun `run`
+        # forks one child for the script, and a test can spawn further
+        # descendants, e.g. a spawned `sleep`).
+        while [ -n "$q" ]; do
+          kids="$(pgrep -P "$q" 2>/dev/null)"
+          if [ -n "$kids" ]; then
+            to_kill="$to_kill $kids"
+            q="$kids"
+          else
+            q=""
+          fi
+        done
+        # Include the test itself (BFS above starts at its children).
+        to_kill="$pid $to_kill"
+        for k in $to_kill; do kill -TERM "$k" 2>/dev/null; done
+        sleep 2
+        for k in $to_kill; do
+          if kill -0 "$k" 2>/dev/null; then kill -KILL "$k" 2>/dev/null; fi
+        done
+        wait "$pid" 2>/dev/null
+        rc=124
+        # The `✗ timed out after <N>s` line goes at the FRONT of the
+        # capture so extractSpecificAssertion names it (per the resolved
+        # decision: the timeout line is the specific assertion, placed
+        # before any pre-existing ✗ lines the test may have printed before
+        # hanging). Partial output the test emitted before the kill stays
+        # after it, satisfying the partial-output contract.
+        {
+          echo "✗ timed out after ${bound}s"
+          cat "$CAPTURE" 2>/dev/null
+        } >"$CAPTURE.tmp" 2>/dev/null && mv "$CAPTURE.tmp" "$CAPTURE" 2>/dev/null
+        return "$rc"
+      fi
+    else
+      break
+    fi
+    sleep 1
+  done
+  wait "$pid" 2>/dev/null
+  rc=$?
+  return "$rc"
+}
 
 if [ "$#" -eq 0 ]; then
   echo "usage: verify-loop.sh <file> ..." >&2
@@ -52,12 +153,26 @@ _extra_captures=()
 names=()
 for t in "$@"; do
   case "$t" in *-live.ts) continue;; esac
-  if bun run "$t" >"$CAPTURE" 2>&1; then
+  rc=0
+  run_test_with_timeout "$VERIFY_TEST_TIMEOUT_S" "$t"
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
     cat "$CAPTURE"
   else
     names+=("$t")
-    echo "FAILED: $t"
-    cat "$CAPTURE"
+    if [ "$rc" -eq 124 ]; then
+      # #1014 — the test hit the per-test bound. The marker stays a plain
+      # `FAILED: <file> ...` line (extractAttributedTail's
+      # /^FAILED: .+$/gm last-marker anchoring keeps working unchanged);
+      # the `✗ timed out after <N>s` line is already at the front of the
+      # capture (written by run_test_with_timeout) so it is the specific
+      # assertion.
+      echo "FAILED: $t (timed out after ${VERIFY_TEST_TIMEOUT_S}s)"
+      cat "$CAPTURE"
+    else
+      echo "FAILED: $t"
+      cat "$CAPTURE"
+    fi
     # #827 — keep this test's capture so its `✗` lines can be repeated
     # after the summary (below); removed on exit like $CAPTURE.
     capfile="$(mktemp "${TMPDIR:-/tmp}/verify-loop.XXXXXX")" || exit 2
