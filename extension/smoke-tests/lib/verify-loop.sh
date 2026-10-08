@@ -38,6 +38,169 @@ set -u
 # reaches the child env.
 export PI_ENSEMBLE_FORBID_LIVE_SPAWN=1
 
+# --- #1014 — per-test timeout watchdog.
+#
+# Each test is bounded at ${PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S:-300} seconds.
+#
+# Design (portability-first, no GNU tools):
+#   * No `timeout` (GNU coreutils), no `wait -n` (bash 4.3+), no
+#     process-group kill (no setsid on macOS): the test runs in the
+#     background, a 0.1s poll loop counts wall-clock (bash SECONDS,
+#     second resolution) until the bound, identical on bash 3.2 (macOS)
+#     and 5.x (Linux).
+#   * On timeout the whole descendant tree is killed — a bare `kill <pid>`
+#     would orphan bun's children (`bun run` forks a child for the script,
+#     and a test can spawn grandchildren, e.g. a `sleep`). The tree is found
+#     by a BFS `pgrep -P` walk.
+#   * SIGTERM first, SIGKILL only for survivors, after a 2s grace: a test
+#     with cleanup handlers gets a chance to exit cleanly.
+#   * The watchdog fires at the bound and returns its OWN sentinel (214),
+#     deliberately distinct from 124 — the conventional "timed out" code that
+#     a test can exit on its own. Because the sentinel is 214, the per-test
+#     "(timed out after <N>s)" suffix is emitted only for a true watchdog
+#     kill, never for a coincidental self-exit-124 test (the round-1
+#     finding: the old code keying the suffix on `rc -eq 124` misattributed
+#     those). The `✗ timed out after <N>s` line the watchdog prepends to the
+#     capture is what the #827 echo and extractSpecificAssertion name as the
+#     specific assertion; a self-exit-124 test gets neither.
+#   * The bound must be a positive integer; anything else falls back to 300
+#     with a warning so the silent default is visible.
+
+if [[ "${PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S:-}" =~ ^[1-9][0-9]*$ ]]; then
+  VERIFY_TEST_TIMEOUT_S="$PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S"
+else
+  if [ -n "${PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S:-}" ]; then
+    echo "warn: verify-loop: PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S must be a positive integer; got '${PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S}', falling back to 300" >&2
+  fi
+  VERIFY_TEST_TIMEOUT_S=300
+fi
+
+# Descendant-tree kill: SIGTERM, 2s grace, SIGKILL survivors. Without pgrep
+# only the top-level test process can be killed (descendants are orphaned).
+# The BFS tracks visited PIDs so each is walked once (a pid re-appearing in
+# two parents' child lists would otherwise be re-added).
+# After the grace, SIGKILL goes to EVERY collected pid unconditionally — the
+# kill -0 pre-check is a trap: a zombie satisfies kill -0, but so would a
+# pid that died between the check and the kill, and a pid recycled into an
+# unrelated process would make the check say "no, it's alive" for the wrong
+# reason. SIGKILL to a dead or zombie pid is a harmless no-op.
+# Then wait (bounded ≤5s) until no collected pid is alive; a pid whose exit
+# we cannot reap ourselves is still visible in `ps` as a zombie to its new
+# parent, so polling on liveness here is the right check — and survivors are
+# named so a leak is diagnosable, not silently dropped.
+kill_process_tree() {
+  local root_pid="$1" queue current_pid child_pids pids_to_kill visited alive_count waited
+  pids_to_kill="$root_pid"
+  visited="$root_pid"
+  queue="$root_pid"
+  while [ -n "$queue" ]; do
+    child_pids=""
+    for current_pid in $queue; do
+      child_pids="$child_pids $(pgrep -P "$current_pid" 2>/dev/null)"
+    done
+    child_pids="${child_pids# }"
+    # Prune pids already collected (visited) so each is walked exactly once.
+    local fresh_child
+    fresh_child=""
+    for child_pid in $child_pids; do
+      case " $visited " in
+        *" $child_pid "*) : ;;
+        *) fresh_child="$fresh_child $child_pid" ;;
+      esac
+    done
+    fresh_child="${fresh_child# }"
+    if [ -n "$fresh_child" ]; then
+      pids_to_kill="$pids_to_kill $fresh_child"
+      visited="$visited $fresh_child"
+      queue="$fresh_child"
+    else
+      queue=""
+    fi
+  done
+  for current_pid in $pids_to_kill; do kill -TERM "$current_pid" 2>/dev/null; done
+  sleep 2
+  for current_pid in $pids_to_kill; do kill -KILL "$current_pid" 2>/dev/null; done
+  # Bounded wait (≤5s, 0.1s polls) for the whole tree to actually die; name
+  # survivors so a leaked descendant is visible in the output.
+  waited=0
+  while [ "$waited" -lt 50 ]; do
+    alive_count=0
+    for current_pid in $pids_to_kill; do
+      if kill -0 "$current_pid" 2>/dev/null; then alive_count=$((alive_count + 1)); fi
+    done
+    if [ "$alive_count" -eq 0 ]; then return 0; fi
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  local survivors=""
+  for current_pid in $pids_to_kill; do
+    if kill -0 "$current_pid" 2>/dev/null; then survivors="$survivors $current_pid"; fi
+  done
+  if [ -n "$survivors" ]; then
+    echo "warn: verify-loop: still alive after SIGKILL: ${survivors# }" >&2
+  fi
+}
+
+# Prepend the `✗ timed out after <N>s` line to the capture (front, so
+# extractSpecificAssertion names it; partial output stays after it).
+prepend_timeout_line() {
+  local bound="$1"
+  {
+    echo "✗ timed out after ${bound}s"
+    cat "$CAPTURE" 2>/dev/null
+  } >"$CAPTURE.tmp" 2>/dev/null && mv "$CAPTURE.tmp" "$CAPTURE" 2>/dev/null || {
+    rm -f "$CAPTURE.tmp"
+    echo "warn: verify-loop: could not prepend the timeout line to the capture of this test" >&2
+  }
+}
+
+# Run one test under the watchdog. Returns the test's exit code, or 214 (the
+# watchdog's own sentinel, distinct from a test that exits 124 itself) if the
+# bound fired.
+run_test_with_timeout() {
+  local bound="$1" t="$2" pid=0 start rc=0
+  start=$SECONDS
+  bun run "$t" >"$CAPTURE" 2>&1 &
+  pid=$!
+  # Poll every 0.1s (sleep 0.1 works on macOS and GNU coreutils), comparing
+  # elapsed wall-clock via SECONDS (second resolution — the bound is still
+  # honoured to the second, the fast poll only removes the 1s latency that
+  # previously added ~1s to every fast test). bash 3.2 safe: no associative
+  # arrays, no wait -n, fractional sleep only.
+  while :; do
+    if kill -0 "$pid" 2>/dev/null; then
+      if [ "$((SECONDS - start))" -ge "$bound" ]; then
+        kill_process_tree "$pid"
+        wait "$pid" 2>/dev/null
+        # NB: the timeout path returns 214 on purpose (not 124) — the test's
+        # own wait status (whatever the SIGTERM/SIGKILL left behind) is
+        # intentionally replaced by the sentinel, and 214 is chosen BECAUSE
+        # it is distinct from 124: a test that itself exits 124 (the
+        # conventional "timed out" code) returns through the normal path
+        # below and gets no timeout marker, so the cosmetic "(timed out)"
+        # suffix is emitted only for a true watchdog kill, never for a
+        # coincidental self-exit-124. The `✗ timed out after <N>s` line
+        # prepended to the capture is what the #827 echo /
+        # extractSpecificAssertion surface as the specific assertion.
+        prepend_timeout_line "$bound"
+        return 214
+      fi
+    else
+      break
+    fi
+    sleep 0.1
+  done
+  wait "$pid" 2>/dev/null
+  rc=$?
+  return "$rc"
+}
+
+# pgrep powers the descendant kill; without it only the top-level test
+# process would be killed (descendants orphaned). Warn, do not fail.
+if ! command -v pgrep >/dev/null 2>&1; then
+  echo "warn: verify-loop: pgrep not found — on timeout only the top-level test process will be killed (descendants may be orphaned)" >&2
+fi
+
 if [ "$#" -eq 0 ]; then
   echo "usage: verify-loop.sh <file> ..." >&2
   exit 2
@@ -52,12 +215,20 @@ _extra_captures=()
 names=()
 for t in "$@"; do
   case "$t" in *-live.ts) continue;; esac
-  if bun run "$t" >"$CAPTURE" 2>&1; then
+  rc=0
+  run_test_with_timeout "$VERIFY_TEST_TIMEOUT_S" "$t"
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
     cat "$CAPTURE"
   else
     names+=("$t")
-    echo "FAILED: $t"
-    cat "$CAPTURE"
+    if [ "$rc" -eq 214 ]; then
+      echo "FAILED: $t (timed out after ${VERIFY_TEST_TIMEOUT_S}s)"
+      cat "$CAPTURE"
+    else
+      echo "FAILED: $t"
+      cat "$CAPTURE"
+    fi
     # #827 — keep this test's capture so its `✗` lines can be repeated
     # after the summary (below); removed on exit like $CAPTURE.
     capfile="$(mktemp "${TMPDIR:-/tmp}/verify-loop.XXXXXX")" || exit 2
