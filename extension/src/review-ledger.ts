@@ -59,21 +59,17 @@ export interface LedgerEntry {
   at: number;
   /** One line of what the review concluded, for the operator's audit. */
   detail?: string;
-  /** #973 — lens entries only: the branch-scoped round number this review
-   * ran as (the previous latest lens entry's round + 1; a legacy entry
-   * without `round` counts as round 1). Stored because the per-(branch, kind)
-   * dedupe below keeps only ONE lens row per branch, so the round must live
-   * on the entry, not in the file. */
+  /** #973 — the branch-scoped round number (previous latest + 1; legacy
+   * without `round` counts as 1). Lives on the entry because the per-(branch,
+   * kind) dedupe keeps only ONE lens row per branch. */
   round?: number;
-  /** #973 — lens entries only: whether the reviewed verdict carried a
-   * CRITICAL finding. The round-cap merge rule (merge-guard-round-cap.ts)
-   * requires `hasCritical === false` on the latest lens entry; a legacy
-   * entry without this field cannot satisfy it (conservative refusal). */
+  /** #973 — whether the reviewed verdict carried a CRITICAL finding. The
+   * round-cap rule requires `hasCritical === false`; legacy entries without
+   * the field cannot satisfy it (conservative refusal). */
   hasCritical?: boolean;
-  /** #973 — lens entries only: the commit hash reviewed. Two consumers:
-   * the delta-review auto-base (the `since` of a follow-up review defaults
-   * to the latest lens entry's `headSha` when it is an ancestor of HEAD) and
-   * the disclosure marker's provenance. */
+  /** #973 — lens/adversarial entries: the commit hash reviewed (40-char
+   * SHA; a non-SHA value is treated as malformed by the guard and the
+   * auto-delta base). */
   headSha?: string;
 }
 
@@ -441,6 +437,15 @@ export function validEntries(entries: unknown[]): LedgerEntry[] {
     }
   }
   return ok;
+}
+
+/**
+ * #1039 — true when the value is a full 40-char lowercase-hex commit SHA.
+ * A branch name or abbreviated OID (pre-#1039 legacy entry) is treated as
+ * UNKNOWN — never matched by string equality against a PR head OID.
+ */
+export function isFullCommitSha(value: string): boolean {
+  return /^[0-9a-f]{40}$/.test(value);
 }
 
 /** One line, for the trace: a never-throwing JSON stringify. */

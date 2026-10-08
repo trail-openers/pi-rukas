@@ -276,6 +276,46 @@ export async function runLensReview(opts: {
   } else {
     context = opts.context ?? "";
   }
+  // #1039 — resolve the headSha ONCE, before any early return, so every
+  // ledger write (blocked, empty-roster, aborted, normal) carries the
+  // resolved 40-char SHA. The delta arm's head is already a full SHA
+  // (resolveDeltaDiff resolved it via `--verify <head>^{commit}`); the
+  // non-delta arm resolves `opts.head ?? "HEAD"` here with the same shape.
+  // An unresolvable ref leaves headSha undefined (the ledger write omits
+  // it; the round-cap check fails closed — conservative by design).
+  let headSha: string | undefined;
+  if (resolved.kind === "ok" && resolved.delta) {
+    headSha = resolved.delta.head || undefined;
+  } else if (resolved.kind === "ok") {
+    const reviewHead = opts.head ?? "HEAD";
+    if (!reviewHead.startsWith("-")) {
+      try {
+        const { stdout } = await execFileP(
+          "git",
+          [
+            "-C",
+            opts.cwd ?? process.cwd(),
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            `${reviewHead}^{commit}`,
+          ],
+          { maxBuffer: 8 * 1024 },
+        );
+        headSha = stdout.trim() || undefined;
+      } catch (err) {
+        trace(
+          `lens-review: headSha resolution failed for ${reviewHead}: ${
+            err instanceof Error ? err.message : String(err)
+          } — no headSha stored (the ledger write omits it; the round-cap check fails closed)`,
+        );
+        headSha = undefined;
+      }
+    }
+  } else {
+    // blocked or noReview: no headSha (no commit was reviewed).
+    headSha = undefined;
+  }
   if (resolved.kind === "blocked") {
     const blockRows = blockedRowsForRoster(roster, resolved.problem);
     const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
@@ -284,6 +324,7 @@ export async function runLensReview(opts: {
     return (
       await finishLensReview(blocked, threshold, opts.cwd, branchResolved, {
         hasCritical: false,
+        headSha,
         head: opts.head,
       })
     ).summary;
@@ -351,7 +392,13 @@ export async function runLensReview(opts: {
       installBlockRowsForRoster(problem),
       threshold,
     );
-    return (await finishLensReview(blocked, threshold, opts.cwd, branchResolved)).summary;
+    return (
+      await finishLensReview(blocked, threshold, opts.cwd, branchResolved, {
+        hasCritical: false,
+        headSha,
+        head: opts.head,
+      })
+    ).summary;
   }
   // #966 — an aborted signal is a user kill: every lens is recorded blocked,
   // no children are spawned, and the run proceeds to the SAME finish path as
@@ -364,7 +411,13 @@ export async function runLensReview(opts: {
   if (opts.signal?.aborted) {
     const blockRows = blockedRowsForRoster(roster, "aborted before start");
     const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
-    return (await finishLensReview(blocked, threshold, opts.cwd, branchResolved)).summary;
+    return (
+      await finishLensReview(blocked, threshold, opts.cwd, branchResolved, {
+        hasCritical: false,
+        headSha,
+        head: opts.head,
+      })
+    ).summary;
   }
   // Persistent batch summary row (#139). Lets the user see "X/6 done"
   // throughout the run even as fast lenses drop out at 0s linger. Registered
@@ -417,36 +470,8 @@ export async function runLensReview(opts: {
   // head is named (the ledger write omits them; a later round-cap check
   // fails closed on the missing field — conservative by design).
   const hasCritical = deduped.some((f) => f.severity === "CRITICAL");
-  // #973 — the ledger write's headSha (the commit the review actually
-  // covered). The DELTA arm uses `delta.head` — already a full OID by the
-  // time we get here (resolveDeltaDiff resolved it: explicit `head` or the
-  // cwd repo's HEAD, via execFile). The NON-DELTA arm rev-parses
-  // `opts.head ?? "HEAD"` here (a caller-supplied ref, resolved via execFile
-  // with a leading-dash rejection: a ref beginning with `-` would be parsed
-  // by git as an option — argument injection — and is never a legitimate
-  // ref name here, the same rule `refIsCommit` in review-diff.ts applies).
-  const reviewHead = delta ? delta.head : (opts.head ?? "HEAD");
-  let headSha: string | undefined;
-  if (delta) headSha = delta.head || undefined;
-  else if (!reviewHead.startsWith("-")) {
-    try {
-      const { stdout } = await execFileP(
-        "git",
-        ["-C", opts.cwd ?? process.cwd(), "rev-parse", reviewHead],
-        {
-          maxBuffer: 8 * 1024,
-        },
-      );
-      headSha = stdout.trim() || undefined;
-    } catch (err) {
-      trace(
-        `lens-review: headSha resolution failed for ${reviewHead}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-      headSha = undefined;
-    }
-  }
+  // #1039 — headSha was resolved once, before any early return (see the
+  // block above). The ledger write carries it through to all paths.
   // #984 — the ledger write's promise is discarded (fire-and-forget in
   // production; the await seam is for tests, not for the driver).
   return (

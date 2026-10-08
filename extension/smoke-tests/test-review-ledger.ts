@@ -1,37 +1,19 @@
 #!/usr/bin/env bun
 /**
- * #912 — the review ledger writer (temp-repo tests).
- *
- * Temp-repo tests (mkdtempSync + git init + local bare origin, the
- * helpers-integrate-pin-realgit.ts pattern) asserting:
- *
- *   - runAdversarialLoop writes a ledger entry with `passed` computed by the
- *     shared predicate (MINOR_OBSERVATIONS passes, CRITICAL does not,
- *     infra-failure does not).
- *   - runLensReview writes a ledger entry with `passed` computed by the
- *     shared predicate (ISSUES_FOUND below the threshold passes; CRITICAL
- *     does not).
- *   - A ledger write failure leaves the review result byte-identical
- *     (the write is a side effect, never a gate on the result).
- *   - Writer and guard compute identical patchIds for the same content
- *     (a unit test through the shared branchPatchId function).
- *
- * HOME is set to a temp dir by the gate invocation so git works offline.
+ * #912/#1039 — the review ledger writer (temp-repo tests): writer
+ * patchId/passed correctness, write-failure isolation, and headSha
+ * resolution (branch-name → 40-char SHA; unresolvable → omitted).
  */
 
 import { execSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-// #984 — the shared helper (lib/wait-for-ledger.ts) with a generous 30 s
-// budget, so a loaded host has headroom for the writer's two git subprocess
-// hops; the poll returns as soon as the file appears (the passing path stays
-// fast) and a partial write keeps the poll going. This replaces the local
-// waitForLedger copy that had a fixed 2000 ms budget (the flake #984 fixes
-// is the same flake the issue's descriptor names: a fixed short wall-clock
-// budget against a fire-and-forget two-subprocess write chain).
+// #984 — the shared helper with a 30 s budget for the fire-and-forget write.
 import { waitForLedger } from "./lib/wait-for-ledger.ts";
 import { runLensReview } from "../src/lens-review.ts";
+import { writeAdversarialLedgerEntry } from "../src/adversarial-ledger.ts";
+import { isFullCommitSha } from "../src/review-ledger.ts";
 import {
   type LedgerEntry,
   adversarialPassed,
@@ -78,14 +60,8 @@ function setupRepo(): { repo: string; origin: string; branch: string } {
   git("echo base > base.txt");
   git("git add base.txt");
   git('git commit -qm "base"');
-  // The clone's default branch is whatever the empty origin has (HEAD →
-  // refs/heads/main on modern git); rename to a non-default name so the
-  // `git checkout -qb feature/x` + `git push origin feature/x` below works
-  // without fighting the origin's checked-out branch.
   git("git branch -M dev");
   git("git push -q origin dev");
-  // Set the mainline symbolic ref so detectMainline can resolve it without
-  // a network call to gh (the test repo has no GitHub remote).
   git("git remote set-head origin dev");
   git("git checkout -qb feature/x dev");
   git("echo change > change.txt");
@@ -110,17 +86,7 @@ const signal = new AbortController().signal;
 {
   const { repo, branch } = setupRepo();
   try {
-    // Stub the spawn so the loop completes without a real Pi child: we
-    // can't intercept spawnSpecialist easily, so instead we verify the
-    // WRITER by calling the ledger write path the loop uses. The loop's
-    // ledgerWrite is internal; the observable contract is the file it
-    // writes. To exercise it without a real spawn, we drive the same
-    // inputs the loop passes: an approved result on this branch.
-    //
-    // Rather than a full runAdversarialLoop (which spawns a real child),
-    // this test asserts the writer's output directly via the same code path
-    // the loop calls (appendLedgerEntry + adversarialPassed + branchPatchId),
-    // which is the unit the acceptance criterion names.
+    // Drive the same inputs the loop passes via the shared writer path.
     const patchId = await branchPatchId(execp, repo, "HEAD", "origin/dev");
     assert(
       typeof patchId === "string" && patchId.length > 0,
@@ -474,6 +440,53 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
       result === null,
       "negative assertion: no ledger entry expected → returns null on a short budget",
     );
+  } finally {
+    rmSync(path.dirname(repo), { recursive: true, force: true });
+  }
+}
+
+// ------------------------------------------- #1039 — headSha resolution
+
+{
+  const { repo, branch } = setupRepo();
+  try {
+    const expectedSha = execSync("git rev-parse feature/x", { cwd: repo, encoding: "utf8" }).trim();
+    assert(isFullCommitSha(expectedSha), "the expected SHA is a 40-char OID");
+    const emptySkills = mkdtempSync(path.join(os.tmpdir(), "skills-"));
+    const prevSkills = process.env.PI_ENSEMBLE_SKILLS_DIR;
+    process.env.PI_ENSEMBLE_SKILLS_DIR = emptySkills;
+    try {
+      // Branch-name head → stored headSha is the resolved 40-char SHA.
+      await runLensReview({ diff: "a", cwd: repo, branch, head: branch });
+      await new Promise((r) => setTimeout(r, 200));
+      let entries = waitForLedger(ledgerFile(repo));
+      let e = entries?.find((x) => x.kind === "lens" && x.branch === branch);
+      assert(e?.headSha === expectedSha, "branch-name head → stored headSha is the resolved SHA");
+      assert(isFullCommitSha(e?.headSha ?? ""), "…matches /^[0-9a-f]{40}$/");
+
+      // Unresolvable head → entry written WITHOUT headSha.
+      await runLensReview({ diff: "a", cwd: repo, branch, head: "nonexistent-ref-1039" });
+      await new Promise((r) => setTimeout(r, 200));
+      entries = waitForLedger(ledgerFile(repo));
+      const allLens = (entries ?? []).filter((x) => x.kind === "lens" && x.branch === branch);
+      e = allLens.sort((a, b) => b.at - a.at)[0]; // latest by at
+      assert(e?.headSha === undefined, "unresolvable head → no headSha stored");
+
+      // Adversarial writer also stores headSha.
+      writeAdversarialLedgerEntry(
+        { ok: true, loopOutcome: "approved" } as never,
+        { workCwd: repo, branch, head: branch },
+      );
+      await new Promise((r) => setTimeout(r, 200));
+      entries = waitForLedger(ledgerFile(repo));
+      const adv = entries?.find((x) => x.kind === "adversarial" && x.branch === branch);
+      assert(adv?.headSha === expectedSha, "adversarial writer stores the resolved headSha");
+      assert(isFullCommitSha(adv?.headSha ?? ""), "adversarial headSha is a 40-char OID");
+    } finally {
+      if (prevSkills === undefined) delete process.env.PI_ENSEMBLE_SKILLS_DIR;
+      else process.env.PI_ENSEMBLE_SKILLS_DIR = prevSkills;
+      rmSync(emptySkills, { recursive: true, force: true });
+    }
   } finally {
     rmSync(path.dirname(repo), { recursive: true, force: true });
   }
