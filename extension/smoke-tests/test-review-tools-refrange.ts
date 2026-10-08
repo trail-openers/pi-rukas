@@ -78,10 +78,13 @@ mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
     };
   },
 }));
-// Deck and orchestrator bookkeeping are not under test here. The deck module
-// imports pi-tui, so mock it (spreading the real module keeps every named
-// export other importers expect); the orchestrator registry mock no-ops the
-// job-table lookups. Same pattern as test-adversarial-range-recompute.ts.
+// #1017 — these mocks are load-bearing, not decorative: adversarial.ts and
+// lens-review.ts / lens-review-child.ts / lens-review-diff.ts (all imported
+// below) import dispatch-deck.ts and async-jobs-registry.ts, which pull in
+// the deck (pi-tui) and live child-handle bookkeeping. Spreading the real
+// modules keeps every named export other importers expect; only the
+// side-effecting entries (deck UI calls, job-table lookups) are no-op'd.
+// Same pattern as test-adversarial-range-recompute.ts.
 const realDeck = await import("../src/dispatch-deck.ts");
 mock.module(new URL("../src/dispatch-deck.ts", import.meta.url).href, () => ({
   ...realDeck,
@@ -100,6 +103,21 @@ mock.module(new URL("../src/async-jobs-registry.ts", import.meta.url).href, () =
   setOrchestratorActiveChild: () => {},
   markOrchestrator: () => {},
 }));
+
+// #1017 — save/restore idiom (same shape as withSkillsDir in
+// test-lens-kill-child.ts): save the prior value, restore it — delete only
+// if it was unset — so a caller that itself set PI_ENSEMBLE_SKILLS_DIR is
+// not clobbered.
+async function withSkillsDir<T>(skillsDir: string, fn: () => Promise<T>): Promise<T> {
+  const priorSkills = process.env.PI_ENSEMBLE_SKILLS_DIR;
+  process.env.PI_ENSEMBLE_SKILLS_DIR = skillsDir;
+  try {
+    return await fn();
+  } finally {
+    if (priorSkills === undefined) delete process.env.PI_ENSEMBLE_SKILLS_DIR;
+    else process.env.PI_ENSEMBLE_SKILLS_DIR = priorSkills;
+  }
+}
 
 const { registerAdversarialTool, runAdversarialLoop } = await import("../src/adversarial.ts");
 const { computeRangeDiff } = await import("../src/review-diff.ts");
@@ -275,65 +293,71 @@ registerAdversarialTool(fakePi().pi); // warm any module init
 
 // ============================================================ 6. diff + base/head → diff wins (lens tool path)
 
-{
+await (async () => {
+  // #1017 — pin the installed-skills dir to the REPO's own bundled skill/
+  // dir (which ships all six code-review-* lenses), the same host-independent
+  // override test-lens-roster.ts / test-lens-kill-child.ts use via
+  // PI_ENSEMBLE_SKILLS_DIR: on a CI runner ~/.pi/agent/skills has no
+  // code-review-* skills, buildExpectedRoster would mark every lens blocked,
+  // and the lensChildFn stub below would never be called.
+  // This file lives in extension/smoke-tests/, so ../../ is the repo root
+  // where the bundled skill/ dir lives (not a parent-of-repo path).
+  // runLensReview is imported BEFORE pinning the skills dir (post-mock
+  // import order matters, as in test-lens-kill-child.ts).
+  const pinnedSkillsDir = path.resolve(new URL("../../skill", import.meta.url).pathname);
   const { dir, head, base } = await mkRepoWithBranch();
   try {
-    const { pi, tools } = fakePi();
-    const { registerLensReviewTool } = await import("../src/lens-review-tool.ts");
-    registerLensReviewTool(pi);
-    const lens = tools.get("dispatch_lens_review")!;
-    void lens; // the tool registration is exercised in the tool-schema tests;
-    // here we drive the same seam the tool uses (runLensReview) directly.
     const { runLensReview } = await import("../src/lens-review.ts");
-    // #1017 — pin the installed-skills dir to the REPO's own bundled skill/
-    // dir (which ships all six code-review-* lenses), the same host-
-    // independent override test-lens-roster.ts / test-lens-kill-child.ts use
-    // via PI_ENSEMBLE_SKILLS_DIR: on a CI runner ~/.pi/agent/skills has no
-    // code-review-* skills, buildExpectedRoster would mark every lens
-    // blocked, and the lensChildFn stub below would never be called.
-    process.env.PI_ENSEMBLE_SKILLS_DIR = path.resolve(
-      new URL("../../skill", import.meta.url).pathname,
-    );
-    // Use a sentinel that would NOT appear in the real range diff: if the
+    await withSkillsDir(pinnedSkillsDir, async () => {
+      const { pi, tools } = fakePi();
+      const { registerLensReviewTool } = await import("../src/lens-review-tool.ts");
+      registerLensReviewTool(pi);
+      const lens = tools.get("dispatch_lens_review")!;
+      void lens; // the tool registration is exercised in the tool-schema tests;
+      // here we drive the same seam the tool uses (runLensReview) directly.
+      // Use a sentinel that would NOT appear in the real range diff: if the
     // range won over the string, the lens children would receive the range
     // text and none of them would see the sentinel.
     const sentinel = "SENTINEL_DIFF_WINS_MARKER";
     const lensDiffs: string[] = [];
-    const res = await runLensReview({
-      diff: sentinel,
-      context: "both supplied",
-      base: base,
-      head: head,
-      cwd: dir,
-      // #1017 — the stub replaces the 6-lens real fan-out: it records the
-      // diff each lens child is handed (runLensReview passes the RESOLVED
-      // diff into every lens's opts) and returns a clean, no-findings
-      // result — no child is ever forked.
-      lensChildFn: async (childOpts) => {
-        lensDiffs.push(childOpts.opts.diff);
-        return {
-          lens: childOpts.lens.name,
-          ok: true,
-          ms: 0,
-          startMs: Date.now(),
-          findings: [],
-          attempts: 1,
-          blocked: false,
-          summary: "clean",
-        };
-      },
+      const res = await runLensReview({
+        diff: sentinel,
+        context: "both supplied",
+        base: base,
+        head: head,
+        cwd: dir,
+        // #1017 — the stub replaces the 6-lens real fan-out: it records the
+        // diff each lens child is handed (runLensReview passes the RESOLVED
+        // diff into every lens's opts) and returns a clean, no-findings
+        // result — no child is ever forked.
+        lensChildFn: async (childOpts) => {
+          lensDiffs.push(childOpts.opts.diff);
+          return {
+            lens: childOpts.lens.name,
+            ok: true,
+            ms: 0,
+            startMs: Date.now(),
+            findings: [],
+            attempts: 1,
+            blocked: false,
+            summary: "clean",
+          };
+        },
+      });
+      assert(lensDiffs.length > 0, "lens fan-out ran (at least one lens child received the diff)");
+      assert(
+        lensDiffs.every((d) => d === sentinel),
+        "diff wins: EVERY lens child received the sentinel string (not the range diff)",
+      );
+      assert(res !== null, "runLensReview with both diff and base/head resolves (diff wins)");
     });
-    assert(lensDiffs.length > 0, "lens fan-out ran (at least one lens child received the diff)");
-    assert(
-      lensDiffs.every((d) => d === sentinel),
-      "diff wins: EVERY lens child received the sentinel string (not the range diff)",
-    );
-    assert(res !== null, "runLensReview with both diff and base/head resolves (diff wins)");
   } finally {
-    delete process.env.PI_ENSEMBLE_SKILLS_DIR;
     rmSync(dir, { recursive: true, force: true });
   }
-}
+})().catch((e: unknown) => {
+  console.error("section 6 failed:", e);
+  process.exit(1);
+});
 
 // ============================================================ 7. existing string-diff callers unchanged
 
