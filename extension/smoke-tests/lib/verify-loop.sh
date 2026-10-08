@@ -45,8 +45,9 @@ export PI_ENSEMBLE_FORBID_LIVE_SPAWN=1
 # Design (portability-first, no GNU tools):
 #   * No `timeout` (GNU coreutils), no `wait -n` (bash 4.3+), no
 #     process-group kill (no setsid on macOS): the test runs in the
-#     background, a 1s poll loop counts wall-clock (bash SECONDS) until the
-#     bound, identical on bash 3.2 (macOS) and 5.x (Linux).
+#     background, a 0.1s poll loop counts wall-clock (bash SECONDS,
+#     second resolution) until the bound, identical on bash 3.2 (macOS)
+#     and 5.x (Linux).
 #   * On timeout the whole descendant tree is killed — a bare `kill <pid>`
 #     would orphan bun's children (`bun run` forks a child for the script,
 #     and a test can spawn grandchildren, e.g. a `sleep`). The tree is found
@@ -153,8 +154,9 @@ prepend_timeout_line() {
   }
 }
 
-# Run one test under the watchdog. Returns the test's exit code, or 124 if
-# the bound fired.
+# Run one test under the watchdog. Returns the test's exit code, or 214 (the
+# watchdog's own sentinel, distinct from a test that exits 124 itself) if the
+# bound fired.
 run_test_with_timeout() {
   local bound="$1" t="$2" pid=0 start rc=0
   start=$SECONDS
