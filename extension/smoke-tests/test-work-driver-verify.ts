@@ -60,10 +60,9 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
 // PR17 — the outcome-verification gate is disabled globally here; dedicated
 // gate tests re-enable it with an injected verifyExecFn.
 process.env.PI_ENSEMBLE_VERIFY = "0";
-// #1012 — the develop gate tests below deliberately exercise the verify
-// command with source (.ts) paths. Frontend-only classification would
-// silently skip the derived chain and break those tests; disable the gate
-// for the duration of this file. The #1012-specific tests live in
+// #1012 — empty glob list disables frontend-only classification (the .ts
+// paths in these tests are not in the default list either, but an empty
+// list is the explicit "off" switch). The #1012-specific tests live in
 // test-work-driver-frontend-only-verify.ts.
 process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
 

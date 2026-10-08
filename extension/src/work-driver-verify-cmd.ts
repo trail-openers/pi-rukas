@@ -88,26 +88,88 @@ export async function declaredPathsHaveSource(
 }
 
 /**
+ * #1012 — default frontend-only glob list.
+ */
+export const DEFAULT_FRONTEND_GLOBS = [".css", ".html", ".svg", ".woff", ".woff2", ".ttf", ".otf"];
+
+/**
+ * #1012 — resolve the `PI_ENSEMBLE_FRONTEND_ONLY_GLOBS` env var into a glob
+ * list.
+ *
+ * Semantics:
+ *   - unset (undefined) → default list (`.css`, `.html`, …).
+ *   - empty string (`""`) → empty list, i.e. frontend-only skip is DISABLED
+ *     (no extension ever matches, `pathsAreFrontendOnly` returns false).
+ *   - non-empty → the operator's comma-separated list.
+ *
+ * `""` means "disable" — matching the idiom the test suite has used to
+ * turn the gate off (an empty glob list makes `pathsAreFrontendOnly` return
+ * false for every path).
+ */
+export function frontendGlobs(): string[] {
+  const raw = process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS;
+  if (raw === undefined) return DEFAULT_FRONTEND_GLOBS;
+  return raw
+    .split(",")
+    .map((g) => g.trim())
+    .filter(Boolean);
+}
+
+/**
  * #1012 — does the change set contain ONLY frontend file types?
  *
  * Pure, closed-world classifier: returns true IFF `paths` is non-empty AND
  * every path's extension — the part after its last dot, lower-cased — appears
  * in `globs`. A path with no dot (e.g. `Makefile`) or a leading dot (e.g.
  * `.css`) has no extension and never matches. No manifest awareness, no fs,
- * no git — the glob list is a plain parameter so the caller (which reads
- * `PI_ENSEMBLE_FRONTEND_ONLY_GLOBS` at call time) owns the config. An empty
- * path list returns false: no paths is no evidence, and a classification
- * failure must never skip a check.
+ * no git — the glob list is a plain parameter so the caller owns the config.
+ * An empty path list returns false: no paths is no evidence, and a
+ * classification failure must never skip a check.
  */
 export function pathsAreFrontendOnly(paths: string[], globs: string[]): boolean {
   if (paths.length === 0) return false;
+  const globSet = new Set(globs);
   return paths.every((p) => {
     const low = p.toLowerCase();
     const dot = low.lastIndexOf(".");
     if (dot <= 0) return false;
     const ext = low.slice(dot);
-    return globs.includes(ext);
+    return globSet.has(ext);
   });
+}
+
+/**
+ * #1012 — should the develop gate skip the DERIVED verify chain for a
+ * frontend-only diff?
+ *
+ * The skip is derived-only: an explicit `.pi/verify-cmd` is operator intent
+ * and ALWAYS runs (same philosophy as `PI_ENSEMBLE_VERIFY=0`: explicit
+ * intent beats auto-detection). The check is async (uses `fs.access`) to
+ * stay consistent with the gate's file-access pattern (no sync fs calls in
+ * the otherwise-async gate) and to degrade gracefully on EACCES/ENOTDIR
+ * (treated as "no explicit file" → skip, matching `verifyCmdFor`'s own
+ * `fs.access` pattern).
+ *
+ * Returns `{ skip: true, reason }` when the caller should skip, or
+ * `{ skip: false }` when the full chain should run.
+ */
+export async function shouldSkipVerifyForFrontendOnly(
+  repoRoot: string,
+  touchedPaths: string[],
+): Promise<{ skip: boolean; reason?: string }> {
+  const hasExplicit = await fs
+    .access(path.join(repoRoot, ".pi", "verify-cmd"), fs.constants.F_OK)
+    .then(() => true)
+    .catch(() => false);
+  if (hasExplicit) return { skip: false };
+  if (pathsAreFrontendOnly(touchedPaths, frontendGlobs())) {
+    return {
+      skip: true,
+      reason:
+        "frontend-only diff (all changed paths match the frontend globs) — derived verify command skipped (set .pi/verify-cmd to force it)",
+    };
+  }
+  return { skip: false };
 }
 
 /**

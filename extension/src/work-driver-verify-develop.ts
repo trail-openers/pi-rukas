@@ -9,8 +9,6 @@
  * normaliser, tolerance) live in work-driver-verify-develop-helpers.ts.
  */
 
-import { existsSync } from "node:fs";
-import path from "node:path";
 import { COMMENT_RETENTION_PATHS } from "./comment-retention.ts";
 import { runConsolidatedVerify } from "./work-driver-consolidated-verify.ts";
 import type { DriverContext } from "./work-driver-context.ts";
@@ -26,7 +24,7 @@ import { runScopeFanoutGate } from "./work-driver-scope-fanout.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import {
   declaredPathsHaveSource,
-  pathsAreFrontendOnly,
+  shouldSkipVerifyForFrontendOnly,
   verifyCmdFor,
 } from "./work-driver-verify-cmd.ts";
 import {
@@ -317,7 +315,7 @@ export async function verifyDevelopOutcome(
     notes.push(
       "no verify command discoverable (.pi/verify-cmd, package.json scripts, Cargo.toml) — diff evidence only",
     );
-  } else if (
+  } else {
     // #1012 — frontend-only diffs skip the DERIVED verify chain (package.json
     // scripts, Cargo.toml cargo check): a CSS-only change must not trigger a
     // backend build. The skip is derived-only — an explicit .pi/verify-cmd is
@@ -328,43 +326,37 @@ export async function verifyDevelopOutcome(
     // readable) or any non-frontend path falls back to the full chain — a
     // classification failure never skips a check. The skip-ratchet, smoke and
     // comment-retention gates below are unaffected and run unconditionally.
-    !existsSync(path.join(ctx.repoRoot, ".pi", "verify-cmd")) &&
-    pathsAreFrontendOnly(
-      touchedPaths,
-      process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS
-        ? process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS.split(",")
-            .map((g) => g.trim())
-            .filter(Boolean)
-        : [".css", ".html", ".svg", ".woff", ".woff2", ".ttf", ".otf"],
-    )
-  ) {
-    notes.push(
-      "frontend-only diff (all changed paths match the frontend globs) — derived verify command skipped (set .pi/verify-cmd to force it)",
-    );
-  } else {
-    // #794 — the per-worktree loop + consolidated run + classification is
-    // extracted to work-driver-verify-verify-cmd.ts (500-line gate); the
-    // failure messages, the flake-retry precondition and the aggregation
-    // semantics all live there unchanged.
-    await runVerifyCommandGate({
-      execFn,
-      cmd,
-      ctx,
-      state,
-      worktrees,
-      baseSha,
-      changedWorktrees,
-      workstreamBaseShas,
-      failures,
-      notes,
-      onVerifyFlakeRecovered,
-      // #814 — the fence records the gate just wrote (the scope gate runs
-      // before the consolidated verify) — so a conflict the fence already
-      // recorded is attributed, not re-diagnosed as an incoherent
-      // decomposition.
-      ...(fenceViolations !== undefined ? { fenceViolations } : {}),
-      ...(onConsolidatedLogPath !== undefined ? { onConsolidatedLogPath } : {}),
-    });
+    // shouldSkipVerifyForFrontendOnly (work-driver-verify-cmd.ts) uses
+    // fs.access (async) to check for an explicit .pi/verify-cmd — consistent
+    // with verifyCmdFor's own file-access pattern (no sync fs in this gate).
+    const skipDecision = await shouldSkipVerifyForFrontendOnly(ctx.repoRoot, touchedPaths);
+    if (skipDecision.skip) {
+      notes.push(skipDecision.reason ?? "frontend-only skip");
+    } else {
+      // #794 — the per-worktree loop + consolidated run + classification is
+      // extracted to work-driver-verify-verify-cmd.ts (500-line gate); the
+      // failure messages, the flake-retry precondition and the aggregation
+      // semantics all live there unchanged.
+      await runVerifyCommandGate({
+        execFn,
+        cmd,
+        ctx,
+        state,
+        worktrees,
+        baseSha,
+        changedWorktrees,
+        workstreamBaseShas,
+        failures,
+        notes,
+        onVerifyFlakeRecovered,
+        // #814 — the fence records the gate just wrote (the scope gate runs
+        // before the consolidated verify) — so a conflict the fence already
+        // recorded is attributed, not re-diagnosed as an incoherent
+        // decomposition.
+        ...(fenceViolations !== undefined ? { fenceViolations } : {}),
+        ...(onConsolidatedLogPath !== undefined ? { onConsolidatedLogPath } : {}),
+      });
+    }
   }
 
   // --- Skip-ratchet gate (PR277) + product smoke gate (PR277) ---

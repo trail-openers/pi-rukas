@@ -20,9 +20,8 @@ import { initialState } from "../src/workflow-state.ts";
 
 const execFileP = promisify(execFile);
 
-// #1012 — these live-git tests use .ts/.sh source paths and explicit
-// .pi/verify-cmd; disable frontend-only classification for this file and
-// its importers.
+// #1012 — empty glob list disables frontend-only classification (also
+// for files that import this module).
 process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
 
 export const realExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {

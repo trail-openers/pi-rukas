@@ -45,8 +45,7 @@ function makeFakePi(): { pi: ExtensionAPI; sent: string[] } {
 }
 
 process.env.PI_ENSEMBLE_VERIFY = "1";
-// #1012 — these tests use source paths; disable frontend-only classification
-// for the duration of this file.
+// #1012 — empty glob list disables frontend-only classification.
 process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
 
 {
