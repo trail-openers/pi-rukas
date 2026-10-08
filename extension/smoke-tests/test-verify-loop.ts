@@ -32,19 +32,19 @@
  *      prints the guard; under the loop it is "1" and ALLOW is unset; run
  *      directly by bun it is unset) — so an offline test that reaches the
  *      real spawn path fails loudly instead of burning tokens.
+ *
+ * The #1014 per-test timeout cases (9, 10) live in test-verify-loop-timeout.ts
+ * (same fixtures, same consumer path, split to stay under the 500-line limit).
+ * Shared helpers (runLoop, runPipeline, runLoopEnv) live in verify-loop-lib.ts.
  */
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import {
-  NO_SPECIFIC_ASSERTION,
-  classifyConsolidatedVerifyFailure,
-  consolidatedFailureMessage,
-  extractSpecificAssertion,
-} from "../src/work-driver-consolidation-classify.ts";
+import { NO_SPECIFIC_ASSERTION } from "../src/work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "../src/work-driver-exec-error.ts";
+import { runLoop, runPipeline } from "./verify-loop-lib.ts";
 
 const __dirname = path.dirname(new URL(import.meta.url).pathname);
 const FIXTURES = path.join(__dirname, "fixtures", "verify-loop");
@@ -57,14 +57,6 @@ function assert(cond: boolean, msg: string) {
     console.error(`✗ ${msg}`);
     exit = 1;
   }
-}
-
-function runLoop(files: string[]): { status: number; stdout: string } {
-  const result = spawnSync("bash", [SCRIPT, ...files], {
-    cwd: path.join(__dirname, ".."),
-    encoding: "utf-8",
-  });
-  return { status: result.status ?? -1, stdout: result.stdout };
 }
 
 // --- Case 1: 5 fixtures, 1/3/5 fail ---
@@ -178,34 +170,6 @@ function runLoop(files: string[]): { status: number; stdout: string } {
     !stdout.includes("FAILED:"),
     "case 5: no summary marker on a run where only a live file was skipped",
   );
-}
-
-// --- #827 shared pipeline: verify-loop output → 800-char attributed tail →
-// specific assertion → consolidated-verify classification. Both new cases go
-// through the FULL consumer path so a regression at any seam (loop echo,
-// tail window, extractor, classifier) fails here.
-function runPipeline(files: string[]): {
-  stdout: string;
-  tail: string;
-  attributed: boolean;
-  assertion: string;
-  verdict: ReturnType<typeof classifyConsolidatedVerifyFailure>;
-  message: string;
-} {
-  const { stdout } = runLoop(files);
-  const { tail, attributed } = extractAttributedTail(stdout, 800);
-  const assertion = extractSpecificAssertion(tail);
-  // N>1 with no per-worktree failures — the consolidated-failure consumer
-  // shape, so the size-cap trivial-fix branch is reachable in case 6.
-  const verdict = classifyConsolidatedVerifyFailure(2, ["a", "b"], tail, {});
-  return {
-    stdout,
-    tail,
-    attributed,
-    assertion,
-    verdict,
-    message: consolidatedFailureMessage(verdict, "bun run check"),
-  };
 }
 
 // --- Case 6: #772 shape — the failing test's ✗ lines sit thousands of
@@ -365,7 +329,9 @@ function runPipeline(files: string[]): {
   // must NOT (a test setting ALLOW locally is its own business, but the
   // gate must not be the one that sets it).
   const { status, stdout } = runLoop([fixture]);
-  const loopLines = stdout.split("\n").filter((l) => l.startsWith("GUARD=") || l.startsWith("ALLOW="));
+  const loopLines = stdout
+    .split("\n")
+    .filter((l) => l.startsWith("GUARD=") || l.startsWith("ALLOW="));
   assert(
     loopLines.includes("GUARD=1"),
     `case 8 (loop): verify-loop.sh exports PI_ENSEMBLE_FORBID_LIVE_SPAWN=1 into the child (got: ${JSON.stringify(loopLines)})`,
