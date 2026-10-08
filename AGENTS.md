@@ -606,7 +606,7 @@ CLI flags and event shapes change between Pi minor versions. The dev pins in `ex
 | Apply format | `cd extension && bunx biome format --write src/` |
 | All offline smoke tests | (see § 1 pre-push) |
 | Single offline smoke test | `cd extension && bun run smoke-tests/<test>.ts` |
-| Live spawn test (real tokens) | `cd extension && bun run smoke-tests/test-spawn.ts` |
+| Live spawn test (real tokens) | `cd extension && bun run smoke-tests/test-spawn-live.ts` |
 | Live lens review (real tokens) | `cd extension && bun run smoke-tests/test-lens-review-live.ts` |
 | View Pi compat surface | `grep -r 'pi.sendUserMessage\|toolCall\|message_end' extension/src/` |
 | Check current model lineup before referencing | WebSearch for "current frontier LLMs <year>" — training data is stale |
