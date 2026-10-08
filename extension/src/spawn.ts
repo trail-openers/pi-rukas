@@ -24,6 +24,7 @@ import { preflightChildGuards } from "./child-guards.ts";
 import { type ResolvedModelChoice, resolveModel } from "./models.ts";
 import { type BrokerHandle, startBroker } from "./permission-broker.ts";
 import { isParentInTrustMode, makeBrokerDeps } from "./permission-guard.ts";
+import { getPiInvocation } from "./pi-binary-resolve.ts";
 import type { PiJsonEvent, SpawnOptions } from "./pi-event-shapes.ts";
 import { emptyRunningState, ingestEvent } from "./progress.ts";
 import { excludeToolsFor } from "./role-tools.ts";
@@ -43,7 +44,6 @@ import {
   buildChildArgs,
   buildCwdHint,
   capKillGraceMs,
-  getPiInvocation,
   makeRunId,
   reconcileObservedCounts,
   spawnBackstopMs,
