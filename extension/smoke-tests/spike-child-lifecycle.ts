@@ -34,9 +34,9 @@
  * still reflects the shared group.
  *
  * Run (macOS local):
- *     cd extension && bun run smoke-tests/spike-child-lifecycle.ts
+ *     cd extension && bun run smoke-tests/test-child-lifecycle.ts
  * Run (Linux, sandbox image):
- *     bun run smoke-tests/spike-child-lifecycle.ts   # same path
+ *     bun run smoke-tests/test-child-lifecycle.ts   # same path
  *
  * Each scenario takes a few seconds; the whole run is ~30s. Output is
  * pasted into EPIC #1018's body by ops — do not interpret `ps` exit codes
@@ -57,73 +57,50 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * `ps`-based survival probe. Returns null when the pid is gone (ps exits
- * non-zero) or a row of its current process attributes when it is alive.
+ * A `ps`-based survival probe. Three outcomes:
+ *
+ *   - `row`    — the pid is listed by the kernel (child alive).
+ *   - `gone`   — `ps -p` exited 1 with no output: the pid does not exist.
+ *   - `error`  — the probe itself failed (timeout, non-zero exit for any
+ *                other reason, parse failure). This is NOT "child died" —
+ *                a 300s sleeper that merely outran the 2s probe window, or a
+ *                transient `ps` hiccup, must not be reported as "DEAD",
+ *                because that is the exact opposite of the finding this
+ *                spike exists to establish.
  *
  * We deliberately do NOT rely on `waitpid` (this process is not the child's
  * parent — the child's parent is the *dead* parent, so `waitpid` would just
  * say ECHILD). `ps -p` is the OS-level ground truth: if the kernel still
  * lists the pid, the child survived the parent's death.
  */
-function probe(pid: number): { ppid: number; pgid: number; stat: string } | null {
+type ProbeResult =
+  | { kind: "row"; ppid: number; pgid: number; stat: string }
+  | { kind: "gone" }
+  | { kind: "error"; reason: string };
+
+function probe(pid: number): ProbeResult {
+  let out: string;
   try {
-    const out = execSync(`ps -p ${pid} -o ppid=,pgid=,stat=`, {
+    out = execSync(`ps -p ${pid} -o ppid=,pgid=,stat=`, {
       encoding: "utf8",
       timeout: 2_000,
       stdio: ["ignore", "pipe", "pipe"],
-    })
-      .trim();
-    if (!out) return null;
-    const [ppid, pgid, stat] = out.split(/\s+/);
-    return { ppid: Number(ppid), pgid: Number(pgid), stat: stat ?? "?" };
-  } catch {
-    // ps exits 1 when the pid does not exist → child is dead.
-    return null;
+    });
+  } catch (e) {
+    // execSync rejects on any non-zero exit (and on its own failures). Distinguish
+    // "ps exited 1, no output" (pid not found → gone) from every other failure,
+    // which means the PROBE failed, not the child. The thrown error carries a
+    // `code` (the child's exit code) and empty `stdout` on the not-found path.
+    const code = e instanceof Error && "code" in e ? (e as { code?: number }).code : undefined;
+    const stdout = e instanceof Error && "stdout" in e ? (e as { stdout?: string }).stdout : "";
+    if (code === 1 && (stdout ?? "").trim() === "") return { kind: "gone" };
+    const msg = e instanceof Error ? e.message : String(e);
+    return { kind: "error", reason: msg.split("\n")[0] };
   }
-}
-
-/**
- * Wait until the child emits its `FAKEPI_PID <n>` line (proof it started) or
- * the timeout fires. The fake child sleeps for SECONDS, so "started" is
- * stable — we are not racing a short-lived process.
- */
-function waitChildReady(child: { pid: number | undefined }, out: { value: string }, ms: number): Promise<void> {
-  const deadline = Date.now() + ms;
-  return new Promise((resolve) => {
-    const tick = () => {
-      if (/FAKEPI_PID \d+/.test(out.value)) return resolve();
-      if (Date.now() > deadline) return resolve(); // give up; child still reported below
-      setTimeout(tick, 50);
-    };
-    tick();
-  });
-}
-
-/**
- * Spawn the fake-`pi` child with EXACTLY the spawn.ts option shape and return
- * its pid. We mirror spawn.ts:184-192 byte-for-byte on the options that matter
- * to the OS: shell:false, stdio pipes, and NO detached flag (so the child
- * inherits the parent's process group — the crux of the S1 question).
- */
-function spawnFakePi(fakePi: string, out: { value: string }): { pid: number } {
-  const child = spawn(fakePi, [], {
-    shell: false,
-    stdio: ["pipe", "pipe", "pipe"],
-    // env is intentionally INHERITED — we do not override it, matching
-    // spawn.ts which passes childEnv but never unsets PATH, so the shebang
-    // `#!/usr/bin/env bash` resolves exactly as in production.
-  });
-  child.stdout?.on("data", (d: Buffer) => {
-    out.value += d.toString();
-  });
-  // Swallow stderr; the fake child only ever prints its pid + a sleep loop.
-  child.stderr?.resume();
-  // If the child errors (e.g. missing fake binary) record it; we do not want
-  // an unhandled 'error' event to crash the probe.
-  child.on("error", () => {
-    /* reported via probe() == null */
-  });
-  return { pid: child.pid ?? -1 };
+  const text = out.trim();
+  if (!text) return { kind: "gone" };
+  const [ppid, pgid, stat] = text.split(/\s+/);
+  return { kind: "row", ppid: Number(ppid), pgid: Number(pgid), stat: stat ?? "?" };
 }
 
 /**
@@ -141,9 +118,10 @@ const child = spawn(${JSON.stringify(fakePi)}, [], {
   shell: false,
   stdio: ["pipe", "pipe", "pipe"],
 });
+let childErr: unknown = null;
 child.stdout?.on("data", (d: Buffer) => { out.value += d.toString(); });
 child.stderr?.resume();
-child.on("error", () => {});
+child.on("error", (e: unknown) => { childErr = e; });
 await new Promise((resolve) => {
   const deadline = Date.now() + 3000;
   const tick = () => {
@@ -155,6 +133,12 @@ await new Promise((resolve) => {
 });
 console.log("PARENT_PID " + process.pid);
 console.log("CHILD_PID " + (child.pid ?? -1));
+if (childErr) {
+  const code = childErr && typeof childErr === "object" && "code" in childErr
+    ? String((childErr as { code?: unknown }).code ?? "")
+    : "";
+  console.log("CHILD_SPAWN_ERR " + (code || "unknown"));
+}
 const mode = ${JSON.stringify(mode)};
 if (mode === "term") {
   process.kill(process.pid, "SIGTERM");
@@ -176,7 +160,9 @@ async function main(): Promise<void> {
   console.log(`platform: ${platform}`);
   console.log(`probe pid: ${process.pid}`);
   console.log("spawn options (mirroring extension/src/spawn.ts:184-192):");
-  console.log('  spawn(fakePi, [], { shell: false, stdio: ["pipe","pipe","pipe"] })  // no detached flag');
+  console.log(
+    '  spawn(fakePi, [], { shell: false, stdio: ["pipe","pipe","pipe"] })  // no detached flag',
+  );
   console.log("");
 
   // Build the fake `pi` binary: prints its own pid, then sleeps long enough
@@ -201,6 +187,7 @@ async function main(): Promise<void> {
     fs.writeFileSync(parentPath, parentSrc);
 
     const out = { value: "" };
+    let parentErr: unknown = null;
     // The probe's own child is the PARENT process. We spawn it, read its
     // stdout to learn the grandchild (fake-pi) pid, then let the parent die
     // on its own. We do NOT kill the parent here — the parent self-terminates
@@ -213,7 +200,11 @@ async function main(): Promise<void> {
       out.value += d.toString();
     });
     parent.stderr?.resume();
-    parent.on("error", () => {});
+    // An unhandled 'error' event here would crash the probe; capture it so
+    // the cause (ENOENT on the bun binary, EACCES, …) survives to report.
+    parent.on("error", (e: unknown) => {
+      parentErr = e;
+    });
 
     // Wait for the parent to report both pids (it does this after the fake
     // child is ready, immediately before self-terminating).
@@ -226,28 +217,48 @@ async function main(): Promise<void> {
 
     const parentPid = /PARENT_PID (\d+)/.exec(out.value)?.[1] ?? "?";
     const childPid = /CHILD_PID (\d+)/.exec(out.value)?.[1] ?? "?";
+    const childSpawnErr = /CHILD_SPAWN_ERR (\S+)/.exec(out.value)?.[1] ?? "";
 
     // Give the OS a beat to reparent / reap, then probe the CHILD.
     await sleep(700);
-    const before = childPid !== "?" ? Number(childPid) : -1;
-    const after = childPid !== "?" ? probe(Number(childPid)) : null;
+    const after = childPid !== "?" ? probe(Number(childPid)) : { kind: "gone" as const };
 
     // Also check the parent pid is really gone (sanity: the parent died).
-    const parentGone = parentPid !== "?" && probe(Number(parentPid)) === null;
+    const parentProbe = parentPid !== "?" ? probe(Number(parentPid)) : { kind: "gone" as const };
+    const parentGone = parentProbe.kind === "gone";
 
     console.log(`${label}  [parent died by: ${how}]`);
-    console.log(`  parent pid: ${parentPid}  (gone after death: ${parentGone ? "yes" : "NO (still listed)"})`);
+    console.log(
+      `  parent pid: ${parentPid}  (gone after death: ${parentGone ? "yes" : "NO (still listed)"})`,
+    );
     console.log(`  child  pid: ${childPid}`);
-    if (after) {
-      console.log(`  child after parent death: ALIVE  (ppid=${after.ppid}, pgid=${after.pgid}, stat=${after.stat})`);
-      console.log(`    → child SURVIVED parent ${label} — orphaned, re-parented to pid ${after.ppid}`);
-    } else {
-      console.log(`  child after parent death: DEAD (ps: no such process)`);
+    if (childSpawnErr) {
+      console.log(
+        `  !! child spawn error in parent: ${childSpawnErr} (fakepi missing/unexecutable?)`,
+      );
+    }
+    if (parentErr) {
+      console.log(
+        `  !! parent spawn error: ${parentErr instanceof Error ? parentErr.message : String(parentErr)}`,
+      );
+    }
+    if (after.kind === "row") {
+      console.log(
+        `  child after parent death: ALIVE  (ppid=${after.ppid}, pgid=${after.pgid}, stat=${after.stat})`,
+      );
+      console.log(
+        `    → child SURVIVED parent ${label} — orphaned, re-parented to pid ${after.ppid}`,
+      );
+    } else if (after.kind === "gone") {
+      console.log("  child after parent death: DEAD (ps: no such process)");
       console.log(`    → child DIED with parent ${label}`);
+    } else {
+      console.log(`  child after parent death: UNKNOWN (probe failed: ${after.reason})`);
+      console.log(`    → the probe itself failed; the child's fate is NOT established by this run`);
     }
     // Best-effort cleanup: kill the surviving child so we don't leak a
     // 300s sleeper between scenarios.
-    if (after) {
+    if (after.kind === "row") {
       try {
         process.kill(Number(childPid), "SIGKILL");
       } catch {
@@ -262,8 +273,9 @@ async function main(): Promise<void> {
   console.log("For each death mode, read the `child after parent death:` line above.");
   console.log("ALIVE + ppid=1 (Linux) or ppid=<launchd> (macOS) = orphaned, NOT killed.");
   console.log("DEAD = the kernel reaped the child when the parent died.");
+  console.log("UNKNOWN = the probe itself failed — do not read this as a finding.");
   console.log("");
-  console.log("NOTE: a non-Pi parent never registers pi.on(\"session_shutdown\"), so");
+  console.log('NOTE: a non-Pi parent never registers pi.on("session_shutdown"), so');
   console.log("killAllJobs (async-jobs-lifecycle.ts) is never wired up and never runs.");
   console.log("The only kill path that would fire is an explicit child.kill() — the");
   console.log("question this spike feeds into the EPIC #1018 S4 decision.");

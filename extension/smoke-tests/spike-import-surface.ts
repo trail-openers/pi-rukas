@@ -194,9 +194,16 @@ function runEntry(
 } {
   const entryPath = path.join(SRC, rel);
   const plain = spawnSync("bun", [entryPath, ...args], { encoding: "utf8", timeout: 30000 });
+  // `status` is null whenever the child cannot run at all — spawnSync then
+  // fills in `error` (ENOENT on `bun`, EACCES, …). Without this, a spawn
+  // failure and an entry that dies after 0 bytes of output both read as
+  // "exit -1, no output", and the real cause is lost — and this spike's
+  // output IS the evidence.
+  const err = plain.error;
+  const spawnNote = err ? `spawn error: ${err.code ?? "unknown"} ${err.message}` : null;
   return {
     plainExit: plain.status ?? -1,
-    plainOutput: [plain.stdout, plain.stderr].filter(Boolean).join("\n"),
+    plainOutput: [plain.stdout, plain.stderr, spawnNote].filter(Boolean).join("\n"),
   };
 }
 
@@ -218,10 +225,10 @@ async function main() {
   const unionPkgs = new Set<string>();
   const unionSites = new Map<string, Set<string>>();
 
-  // 1) import proof (parallel)
-  const importProofs = await Promise.all(
-    ENTRIES.map(async (e) => ({ entry: e, proof: runEntry(e.rel, e.args) })),
-  );
+  // 1) import proof (sequential — runEntry is spawnSync, which blocks the
+  // event loop, so Promise.all would not add any concurrency; the serial
+  // loop is the honest shape). Each entry is well under 1s in practice.
+  const importProofs = ENTRIES.map((e) => ({ entry: e, proof: runEntry(e.rel, e.args) }));
 
   // 2) per-entry graph + report
   const graphs = ENTRIES.map((e) => buildGraph(e.rel, files, parsed));
@@ -279,15 +286,27 @@ async function main() {
     console.log(`  src/${site} => ${[...specs].sort().join(", ")}`);
   }
   console.log("");
-  console.log("Conversion needed for S4 (plain bun, no Pi runtime):");
-  console.log("  • Every package above is a VALUE import — it must resolve at runtime. pi-tui");
-  console.log("    (Text, Container, Component, matchesKey, decodeKittyPrintable, …) is the only");
-  console.log("    package with value-level reachability into the driver entry points.");
-  console.log("  • pi-coding-agent and pi-ai appear only as `import type` — erased at transpile,");
+  const pkgs = [...unionPkgs].sort();
+  console.log("Conversion needed for S4 (plain bun, no Pi runtime) — derived from the computed");
+  console.log(`union above (at time of writing: ${pkgs.join(", ") || "(none)"}):`);
+  console.log("  • Every package above is a VALUE import — it must resolve at runtime.");
+  if (pkgs.length === 1 && pkgs[0] === "@earendil-works/pi-tui") {
+    console.log("  • pi-tui (Text, Container, Component, matchesKey, decodeKittyPrintable, …) is");
+    console.log("    the only package with value-level reachability into the driver entry points.");
+    console.log(
+      "  • A plain-bun headless entry must therefore vendor/stub pi-tui (or keep it as a",
+    );
+    console.log("    real dep). All other driver imports (node builtins + local modules) already");
+    console.log("    resolve in plain bun, as the import proof above shows (exit 0).");
+  } else {
+    console.log("  • Read the per-entry and union sections above for the package set this run");
+    console.log("    actually measured; the concrete conversion list follows that data, not this");
+    console.log("    footer, which is a snapshot of the conclusion at time of writing.");
+  }
+  console.log(
+    "  • pi-coding-agent and pi-ai appear only as type-only imports (import type) — erased at transpile,",
+  );
   console.log("    zero runtime resolution, no conversion needed.");
-  console.log("  • A plain-bun headless entry must therefore vendor/stub pi-tui (or keep it as a");
-  console.log("    real dep). All other driver imports (node builtins + local modules) already");
-  console.log("    resolve in plain bun, as the import proof above shows (exit 0).");
 }
 
 main().catch((e) => {
