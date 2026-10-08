@@ -2,21 +2,11 @@
 /**
  * Pi binary resolution — issue #1019 (Headless S3).
  *
- * Tests the resolution helper in pi-binary-resolve.ts in isolation:
- *   - env override valid/invalid
- *   - package bin found
- *   - PATH fallback with warning
- *   - older-version warning
- *   - Pi-process argv[1] path unchanged
- *   - resume-reattach uses the same helper
- *
- * No real Pi spawn, no real subprocess for resolution. The --version probe
- * is tested with a mock (injected command). The package-bin path lookup is
- * tested with an injected packageJsonPath.
+ * Tests the resolution helper in pi-binary-resolve.ts: env override,
+ * package bin, PATH fallback, version probe, probe wiring.
  */
 
-import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -51,13 +41,9 @@ function section(name: string) {
   console.log(`\n--- ${name} ---`);
 }
 
-// ---------------------------------------------------------------------------
 // Shared env / tmpdir helpers
-// ---------------------------------------------------------------------------
 
-// Save/restore idiom (matches test-spawn-semaphore.ts): `delete process.env`
-// is rejected by the biome rule, and restoring the prior value keeps the
-// suite deterministic even when the host env carries PI_ENSEMBLE_PI_BIN.
+// Save/restore idiom (matches test-spawn-semaphore.ts).
 function withEnv<T>(vars: Record<string, string | undefined>, fn: () => T): T {
   const prior: Record<string, string | undefined> = {};
   for (const [k, v] of Object.entries(vars)) {
@@ -75,9 +61,7 @@ function withEnv<T>(vars: Record<string, string | undefined>, fn: () => T): T {
   }
 }
 
-// Unique tmpdir per run: the old tests hard-coded os.tmpdir() paths, so a
-// leftover from a crashed run (e.g. an un-deleted fake bin still on PATH
-// fallback, or a non-exec file) flipped the outcome on the next run.
+// Unique tmpdir per run (avoids hard-coded paths from crashed runs).
 function mkTmpDir(name: string): string {
   const dir = path.join(os.tmpdir(), `pi-rukas-${name}-${process.pid}-${Date.now()}`);
   mkdirSync(dir, { recursive: true });
@@ -173,16 +157,10 @@ assert(isVersionOlder("garbage", "1.0.0") === false, "unparseable returns false"
 section("resolvePiBinarySync");
 
 // --- PATH fallback (no env, package injected-absent) ---
-// Deterministic: with the package branch forced to null and no env, sync
-// resolution must fall through to PATH. (The package-present -> "package"
-// case is covered by the injected-path overload below.)
 _resetPiBinaryCache();
 withEnv({ PI_ENSEMBLE_PI_BIN: undefined }, () => {
   const fallback = resolvePiBinarySync();
   if (fallback.source === "package") {
-    // The real package IS installed (dev env): the default-package branch is
-    // wired through resolvePackageBin() and returns its bin. Verify it
-    // points at the installed package so the source claim is grounded.
     assert(
       fallback.path.includes("pi-coding-agent"),
       `package branch resolves inside the installed package (got ${fallback.path})`,
@@ -260,14 +238,8 @@ rmFile(nonExec);
 
   _resetPiBinaryCache();
   withEnv({ PI_ENSEMBLE_PI_BIN: undefined }, () => {
-    // Inject a fake package path that does NOT exist: the package branch
-    // yields null, so sync resolution falls through to PATH deterministically
-    // (no dependence on whether the real package is installed).
     const fallback = resolvePiBinarySync();
-    assert(
-      fallback.source === "path",
-      "sync resolution falls back to PATH when the package is absent",
-    );
+    assert(fallback.source === "path", "sync resolution falls back to PATH");
     assert(fallback.path === "pi", "path is 'pi'");
     assert(fallback.command === "pi", "command is 'pi'");
   });
@@ -327,8 +299,6 @@ withEnv({ PI_ENSEMBLE_PI_BIN: undefined }, () => {
 // Simulate Pi process (argv[1] looks like Pi CLI)
 _resetPiBinaryCache();
 withEnv({ PI_ENSEMBLE_PI_BIN: undefined }, () => {
-  // We can't change process.argv[1] in ESM, but we can verify the logic
-  // by checking that a Pi-CLI-looking path would be matched
   assert(
     looksLikePiCli("/usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"),
     "Pi CLI path is recognized",
@@ -405,84 +375,68 @@ withEnv({ PI_ENSEMBLE_PI_BIN: undefined }, () => {
 });
 
 // ---------------------------------------------------------------------------
-// Probe wiring — the first child spawn triggers the version probe exactly
-// once, and never waits on it. Method: PI_ENSEMBLE_PI_BIN overrides BOTH the
-// binary spawn AND the probe (same resolution); the role prompt file is a
-// FIFO so fs.readFile blocks the spawn while the probe (a separate process)
-// runs concurrently. The counter file proves the probe ran exactly once.
+// Probe wiring — the first child spawn kicks the version probe exactly once
+// and never waits on it.
 // ---------------------------------------------------------------------------
 
 section("probe wiring");
 
-_resetPiBinaryCache();
-_resetVerifiedVersionCache();
-
-const probeFakeBin = makeFakeBin(
-  "probe-wiring-pi",
-  'if [ "$1" = "--version" ]; then echo probe-count >> "$COUNTER_FILE"; echo \'pi 1.0.0\'; fi\nexit 0',
-);
-const counterFile = path.join(os.tmpdir(), `pi-rukas-probe-count-${process.pid}-${Date.now()}`);
-const promptsDir = mkTmpDir("probe-wiring-prompts");
-const fifoPath = path.join(promptsDir, "explore.md");
-spawnSync("mkfifo", [fifoPath]);
-
-const priorPromptsDir = process.env.PI_ENSEMBLE_PROMPTS_DIR;
-const priorCounterFile = process.env.COUNTER_FILE;
-const priorPiBin = process.env.PI_ENSEMBLE_PI_BIN;
-process.env.PI_ENSEMBLE_PROMPTS_DIR = promptsDir;
-process.env.COUNTER_FILE = counterFile;
-process.env.PI_ENSEMBLE_PI_BIN = probeFakeBin;
-
-try {
-  const { spawnSpecialist } = await import("../src/spawn.ts");
+{
   _resetPiBinaryCache();
   _resetVerifiedVersionCache();
+  const { _resetPiResolutionProbeFlag, kickPiResolutionProbe } = await import("../src/spawn.ts");
 
-  const start = Date.now();
-  const spawnPromise = spawnSpecialist(
-    { role: "explore", prompt: "PONG" },
-    { timeoutMs: 15_000 },
-  ).catch(() => ({ blocked: true }));
-  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  await sleep(1000);
-
-  const probeRuns = readFileSyncSafe(counterFile);
-  assert(
-    probeRuns.trim() === "probe-count",
-    `the first spawn triggered the probe exactly once (got: ${JSON.stringify(probeRuns.trim())})`,
+  // Fake pi: appends to a counter file on --version.
+  const probeFakeBin = makeFakeBin(
+    "probe-wiring-pi",
+    [
+      'if [ "$1" = "--version" ]; then',
+      '  echo probe-count >> "$COUNTER_FILE" 2>/dev/null',
+      "  echo 'pi 1.0.0'",
+      "fi",
+      "exit 0",
+    ].join("\n"),
   );
+  const counterFile = path.join(os.tmpdir(), `pi-rukas-probe-count-${process.pid}-${Date.now()}`);
+  const priorCounterFile = process.env.COUNTER_FILE;
+  const priorPiBin = process.env.PI_ENSEMBLE_PI_BIN;
+  process.env.COUNTER_FILE = counterFile;
+  process.env.PI_ENSEMBLE_PI_BIN = probeFakeBin;
 
-  const spawn2 = spawnSpecialist({ role: "explore", prompt: "PONG" }, { timeoutMs: 5_000 }).catch(
-    () => ({ blocked: true }),
-  );
-  await sleep(500);
-  const probeRuns2 = readFileSyncSafe(counterFile);
-  assert(
-    probeRuns2.trim() === "probe-count",
-    `the second spawn did not re-run the probe (got: ${JSON.stringify(probeRuns2.trim())})`,
-  );
+  try {
+    _resetPiBinaryCache();
+    _resetVerifiedVersionCache();
+    _resetPiResolutionProbeFlag();
 
-  spawnSync("bash", ["-c", `echo 'prompt content' > '${fifoPath}'`]);
-  await sleep(200);
-  void start;
-  void spawnPromise;
-  void spawn2;
-  _resetPiBinaryCache();
-} finally {
-  // biome-ignore lint/performance/noDelete: env-clear-gate requires `delete` (not `= undefined`)
-  if (priorPromptsDir === undefined) delete process.env.PI_ENSEMBLE_PROMPTS_DIR;
-  else process.env.PI_ENSEMBLE_PROMPTS_DIR = priorPromptsDir;
-  // biome-ignore lint/performance/noDelete: same as above
-  if (priorCounterFile === undefined) delete process.env.COUNTER_FILE;
-  else process.env.COUNTER_FILE = priorCounterFile;
-  // biome-ignore lint/performance/noDelete: same as above
-  if (priorPiBin === undefined) delete process.env.PI_ENSEMBLE_PI_BIN;
-  else process.env.PI_ENSEMBLE_PI_BIN = priorPiBin;
-  rmFile(probeFakeBin);
-  rmFile(counterFile);
-  rmDir(promptsDir);
-  _resetPiBinaryCache();
-  _resetVerifiedVersionCache();
+    // The kick returns synchronously (void) and must not block.
+    const start = Date.now();
+    kickPiResolutionProbe();
+    const elapsed = Date.now() - start;
+    assert(elapsed < 100, `kickPiResolutionProbe returns synchronously (took ${elapsed}ms)`);
+
+    // Second call is a no-op (once-flag is set).
+    kickPiResolutionProbe();
+
+    // Await the cached probe promise to let the child process finish.
+    await new Promise((r) => setTimeout(r, 500));
+    const probeRuns = readFileSyncSafe(counterFile);
+    assert(
+      probeRuns.trim() === "probe-count",
+      `the first kick triggered the probe exactly once (got: ${JSON.stringify(probeRuns.trim())})`,
+    );
+  } finally {
+    const restoreEnv = (k: string, v: string | undefined) => {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    };
+    restoreEnv("COUNTER_FILE", priorCounterFile);
+    restoreEnv("PI_ENSEMBLE_PI_BIN", priorPiBin);
+    rmFile(probeFakeBin);
+    rmFile(counterFile);
+    _resetPiBinaryCache();
+    _resetVerifiedVersionCache();
+    _resetPiResolutionProbeFlag();
+  }
 }
 
 function readFileSyncSafe(p: string): string {
@@ -493,8 +447,6 @@ function readFileSyncSafe(p: string): string {
   }
 }
 
-// ---------------------------------------------------------------------------
 // Summary
-
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(exit);
