@@ -130,7 +130,18 @@ export function resolvePiBinarySync(): SyncResolution {
 
   const currentScript = process.argv[1];
 
+  /*
+   * Resolve the pi binary. When this code runs inside a pi process (the
+   * extension is loaded), argv[1] is Pi's CLI entry script and we re-invoke the
+   * SAME pi build (avoids PATH ambiguity, matches Pi's own subagent example).
+   * When this code runs outside Pi (smoke tests under `bun run`), argv[1] is the
+   * test file and we'd recursively spawn ourselves — guard against that by only
+   * trusting argv[1] when it looks like a Pi CLI entrypoint.
+   */
+
   // 1. Pi process: argv[1] is the Pi CLI entrypoint.
+  // Fallback order when argv[1] is not a Pi CLI entrypoint:
+  // PI_ENSEMBLE_PI_BIN → package bin → PATH.
   if (looksLikePiCli(currentScript)) {
     cachedSync = {
       path: currentScript as string,
