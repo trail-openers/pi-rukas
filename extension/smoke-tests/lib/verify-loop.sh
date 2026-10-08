@@ -74,9 +74,21 @@ fi
 
 # Descendant-tree kill: SIGTERM, 2s grace, SIGKILL survivors. Without pgrep
 # only the top-level test process can be killed (descendants are orphaned).
+# The BFS tracks visited PIDs so each is walked once (a pid re-appearing in
+# two parents' child lists would otherwise be re-added).
+# After the grace, SIGKILL goes to EVERY collected pid unconditionally — the
+# kill -0 pre-check is a trap: a zombie satisfies kill -0, but so would a
+# pid that died between the check and the kill, and a pid recycled into an
+# unrelated process would make the check say "no, it's alive" for the wrong
+# reason. SIGKILL to a dead or zombie pid is a harmless no-op.
+# Then wait (bounded ≤5s) until no collected pid is alive; a pid whose exit
+# we cannot reap ourselves is still visible in `ps` as a zombie to its new
+# parent, so polling on liveness here is the right check — and survivors are
+# named so a leak is diagnosable, not silently dropped.
 kill_process_tree() {
-  local root_pid="$1" queue current_pid child_pids pids_to_kill
+  local root_pid="$1" queue current_pid child_pids pids_to_kill visited alive_count waited
   pids_to_kill="$root_pid"
+  visited="$root_pid"
   queue="$root_pid"
   while [ -n "$queue" ]; do
     child_pids=""
@@ -84,18 +96,46 @@ kill_process_tree() {
       child_pids="$child_pids $(pgrep -P "$current_pid" 2>/dev/null)"
     done
     child_pids="${child_pids# }"
-    if [ -n "$child_pids" ]; then
-      pids_to_kill="$pids_to_kill $child_pids"
-      queue="$child_pids"
+    # Prune pids already collected (visited) so each is walked exactly once.
+    local fresh_child
+    fresh_child=""
+    for child_pid in $child_pids; do
+      case " $visited " in
+        *" $child_pid "*) : ;;
+        *) fresh_child="$fresh_child $child_pid" ;;
+      esac
+    done
+    fresh_child="${fresh_child# }"
+    if [ -n "$fresh_child" ]; then
+      pids_to_kill="$pids_to_kill $fresh_child"
+      visited="$visited $fresh_child"
+      queue="$fresh_child"
     else
       queue=""
     fi
   done
   for current_pid in $pids_to_kill; do kill -TERM "$current_pid" 2>/dev/null; done
   sleep 2
-  for current_pid in $pids_to_kill; do
-    if kill -0 "$current_pid" 2>/dev/null; then kill -KILL "$current_pid" 2>/dev/null; fi
+  for current_pid in $pids_to_kill; do kill -KILL "$current_pid" 2>/dev/null; done
+  # Bounded wait (≤5s, 0.1s polls) for the whole tree to actually die; name
+  # survivors so a leaked descendant is visible in the output.
+  waited=0
+  while [ "$waited" -lt 50 ]; do
+    alive_count=0
+    for current_pid in $pids_to_kill; do
+      if kill -0 "$current_pid" 2>/dev/null; then alive_count=$((alive_count + 1)); fi
+    done
+    if [ "$alive_count" -eq 0 ]; then return 0; fi
+    sleep 0.1
+    waited=$((waited + 1))
   done
+  local survivors=""
+  for current_pid in $pids_to_kill; do
+    if kill -0 "$current_pid" 2>/dev/null; then survivors="$survivors $current_pid"; fi
+  done
+  if [ -n "$survivors" ]; then
+    echo "warn: verify-loop: still alive after SIGKILL: ${survivors# }" >&2
+  fi
 }
 
 # Prepend the `✗ timed out after <N>s` line to the capture (front, so
@@ -105,7 +145,10 @@ prepend_timeout_line() {
   {
     echo "✗ timed out after ${bound}s"
     cat "$CAPTURE" 2>/dev/null
-  } >"$CAPTURE.tmp" 2>/dev/null && mv "$CAPTURE.tmp" "$CAPTURE" 2>/dev/null
+  } >"$CAPTURE.tmp" 2>/dev/null && mv "$CAPTURE.tmp" "$CAPTURE" 2>/dev/null || {
+    rm -f "$CAPTURE.tmp"
+    echo "warn: verify-loop: could not prepend the timeout line to the capture of this test" >&2
+  }
 }
 
 # Run one test under the watchdog. Returns the test's exit code, or 124 if
@@ -115,18 +158,28 @@ run_test_with_timeout() {
   start=$SECONDS
   bun run "$t" >"$CAPTURE" 2>&1 &
   pid=$!
+  # Poll every 0.1s (sleep 0.1 works on macOS and GNU coreutils), comparing
+  # elapsed wall-clock via SECONDS (second resolution — the bound is still
+  # honoured to the second, the fast poll only removes the 1s latency that
+  # previously added ~1s to every fast test). bash 3.2 safe: no associative
+  # arrays, no wait -n, fractional sleep only.
   while :; do
     if kill -0 "$pid" 2>/dev/null; then
       if [ "$((SECONDS - start))" -ge "$bound" ]; then
         kill_process_tree "$pid"
         wait "$pid" 2>/dev/null
+        # NB: the timeout path returns 124 on purpose — the test's own wait
+        # status (whatever the SIGTERM/SIGKILL left behind) is intentionally
+        # replaced by the conventional 124 timeout sentinel; the
+        # `✗ timed out after <N>s` line prepended to the capture is what
+        # tells the two apart in the output.
         prepend_timeout_line "$bound"
         return 124
       fi
     else
       break
     fi
-    sleep 1
+    sleep 0.1
   done
   wait "$pid" 2>/dev/null
   rc=$?

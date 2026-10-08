@@ -45,11 +45,10 @@ export function runLoopEnv(
   return { status: r.status ?? -1, stdout: r.stdout };
 }
 
-// #827 shared pipeline: verify-loop output → 800-char attributed tail →
-// specific assertion → consolidated-verify classification. Both the
-// #772-shape (case 6) and multi-failure (case 7) cases go through the FULL
-// consumer path so a regression at any seam (loop echo, tail window,
-// extractor, classifier) fails there.
+// --- #827 shared pipeline: verify-loop output → 800-char attributed tail →
+// specific assertion → consolidated-verify classification. Both new cases go
+// through the FULL consumer path so a regression at any seam (loop echo,
+// tail window, extractor, classifier) fails here.
 export function runPipeline(files: string[]): {
   stdout: string;
   tail: string;
