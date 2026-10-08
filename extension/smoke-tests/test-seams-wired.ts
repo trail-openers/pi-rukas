@@ -225,16 +225,26 @@ const SEAMS: Seam[] = [
       looksLikePiCli: "shared Pi CLI path predicate; exercised by test-pi-binary-resolve.ts",
       parsePiVersion: "the --version output parser; exercised by test-pi-binary-resolve.ts",
       isVersionOlder: "the version comparator; exercised by test-pi-binary-resolve.ts",
-      getPiInvocation: "called by work-driver-resume-reattach.ts as well; exercised by test-pi-binary-resolve.ts",
-      resolvePackageBin: "the injected-path overload is test-asserted; the default branch is wired via resolvePiBinarySync",
-      resolvePiBinarySync: "the sync resolver; wired via getPiInvocation and kickPiResolutionProbe; also directly test-asserted",
-      probePiVersion: "the async probe; wired via getPiResolutionInfo (kickPiResolutionProbe); also directly test-asserted",
-      parseVerifiedLine: "the shared verified-line parser; exercised by test-pi-version-drift.ts (imported from here)",
+      getPiInvocation:
+        "called by work-driver-resume-reattach.ts as well; exercised by test-pi-binary-resolve.ts",
+      resolvePackageBin:
+        "the injected-path overload is test-asserted; the default branch is wired via resolvePiBinarySync",
+      resolvePiBinarySync:
+        "the sync resolver; wired via getPiInvocation and kickPiResolutionProbe; also directly test-asserted",
+      getPiResolutionInfo:
+        "the full resolution + probe; called by kickPiResolutionProbe in this module; also directly test-asserted",
+      probePiVersion:
+        "the async probe; wired via getPiResolutionInfo (kickPiResolutionProbe); also directly test-asserted",
+      kickPiResolutionProbe:
+        "the fire-and-forget kick; imported and called by spawn.ts (first spawn); also directly test-asserted",
+      _resetPiResolutionProbeFlag:
+        "test-only once-flag reset; exercised by test-pi-binary-resolve.ts",
+      parseVerifiedLine:
+        "the shared verified-line parser; exercised by test-pi-version-drift.ts (imported from here)",
       _resetPiBinaryCache: "test-only cache reset; exercised by test-pi-binary-resolve.ts",
-      _resetVerifiedVersionCache:
-        "test-only cache reset; exercised by test-pi-binary-resolve.ts",
+      _resetVerifiedVersionCache: "test-only cache reset; exercised by test-pi-binary-resolve.ts",
     },
-    canary: { symbol: "getPiResolutionInfo", importer: "spawn.ts" },
+    canary: { symbol: "kickPiResolutionProbe", importer: "spawn.ts" },
   },
 ];
 

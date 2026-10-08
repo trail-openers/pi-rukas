@@ -6,16 +6,18 @@
  * package bin, PATH fallback, version probe, probe wiring.
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 import {
   _resetPiBinaryCache,
+  _resetPiResolutionProbeFlag,
   _resetVerifiedVersionCache,
   getPiInvocation,
   getPiResolutionInfo,
   isVersionOlder,
+  kickPiResolutionProbe,
   looksLikePiCli,
   parsePiVersion,
   resolvePackageBin,
@@ -149,6 +151,15 @@ assert(isVersionOlder("0.9.0", "0.9.1") === true, "0.9.0 < 0.9.1");
 assert(isVersionOlder("2.0.0", "1.9.9") === false, "2.0.0 > 1.9.9");
 assert(isVersionOlder("1.0", "1.0.1") === true, "1.0 < 1.0.1");
 assert(isVersionOlder("garbage", "1.0.0") === false, "unparseable returns false");
+
+// Range prefixes must be stripped before caching (getVerifiedVersion strips
+// /^^[~^><=]+/), so isVersionOlder always compares plain versions.
+{
+  const raw = "~0.99.9";
+  const stripped = raw.replace(/^[~^><=]+/, "");
+  assert(stripped === "0.99.9", "range prefix stripped from parsed version");
+  assert(isVersionOlder(stripped, "1.0.0") === true, "stripped version compares as older");
+}
 
 // ---------------------------------------------------------------------------
 // resolvePiBinarySync — resolution order
@@ -382,11 +393,6 @@ withEnv({ PI_ENSEMBLE_PI_BIN: undefined }, () => {
 section("probe wiring");
 
 {
-  _resetPiBinaryCache();
-  _resetVerifiedVersionCache();
-  const { _resetPiResolutionProbeFlag, kickPiResolutionProbe } = await import("../src/spawn.ts");
-
-  // Fake pi: appends to a counter file on --version.
   const probeFakeBin = makeFakeBin(
     "probe-wiring-pi",
     [
@@ -398,12 +404,8 @@ section("probe wiring");
     ].join("\n"),
   );
   const counterFile = path.join(os.tmpdir(), `pi-rukas-probe-count-${process.pid}-${Date.now()}`);
-  const priorCounterFile = process.env.COUNTER_FILE;
-  const priorPiBin = process.env.PI_ENSEMBLE_PI_BIN;
-  process.env.COUNTER_FILE = counterFile;
-  process.env.PI_ENSEMBLE_PI_BIN = probeFakeBin;
 
-  try {
+  withEnv({ PI_ENSEMBLE_PI_BIN: probeFakeBin, COUNTER_FILE: counterFile }, async () => {
     _resetPiBinaryCache();
     _resetVerifiedVersionCache();
     _resetPiResolutionProbeFlag();
@@ -417,26 +419,26 @@ section("probe wiring");
     // Second call is a no-op (once-flag is set).
     kickPiResolutionProbe();
 
-    // Await the cached probe promise to let the child process finish.
-    await new Promise((r) => setTimeout(r, 500));
-    const probeRuns = readFileSyncSafe(counterFile);
+    // Await the cached probe (getPiResolutionInfo reuses the same promise)
+    // and fall back to a bounded (≤3s) poll of the counter file.
+    await getPiResolutionInfo();
+    let probeRuns = readFileSyncSafe(counterFile);
+    const pollStart = Date.now();
+    while (probeRuns.trim() === "" && Date.now() - pollStart < 3000) {
+      await new Promise((r) => setTimeout(r, 100));
+      probeRuns = readFileSyncSafe(counterFile);
+    }
     assert(
       probeRuns.trim() === "probe-count",
       `the first kick triggered the probe exactly once (got: ${JSON.stringify(probeRuns.trim())})`,
     );
-  } finally {
-    const restoreEnv = (k: string, v: string | undefined) => {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    };
-    restoreEnv("COUNTER_FILE", priorCounterFile);
-    restoreEnv("PI_ENSEMBLE_PI_BIN", priorPiBin);
-    rmFile(probeFakeBin);
-    rmFile(counterFile);
-    _resetPiBinaryCache();
-    _resetVerifiedVersionCache();
-    _resetPiResolutionProbeFlag();
-  }
+  });
+
+  rmFile(probeFakeBin);
+  rmFile(counterFile);
+  _resetPiBinaryCache();
+  _resetVerifiedVersionCache();
+  _resetPiResolutionProbeFlag();
 }
 
 function readFileSyncSafe(p: string): string {

@@ -126,13 +126,9 @@ interface SyncResolution {
 
 let cachedSync: SyncResolution | null = null;
 
-// Memoized resolvePackageBin() result (the default-package branch). The
-// injected-path overload is deliberately unmemoized — tests call it with
-// fixture paths and must not see a cached default.
-let defaultPackageBinCache: string | null | undefined;
-
 /**
- * Resolve the pi binary path and source synchronously. Cached per process.
+ * Resolve the pi binary path and source synchronously. Cached per process;
+ * a handful of stat/read syscalls per process (memoized after the first call).
  *
  * Resolution order:
  *   - Inside a Pi process: argv[1] (existing behaviour, unchanged)
@@ -175,9 +171,6 @@ export function resolvePiBinarySync(): SyncResolution {
   if (envBin) {
     try {
       accessSync(envBin, constants.X_OK);
-      if (!existsSync(envBin)) {
-        throw new Error("not found");
-      }
     } catch {
       throw new Error(
         `PI_ENSEMBLE_PI_BIN is set to "${envBin}" but it is not an existing executable. Fix or unset the env var. Never falling through to other resolution branches.`,
@@ -187,11 +180,11 @@ export function resolvePiBinarySync(): SyncResolution {
     return cachedSync;
   }
 
-  // 3. Package bin — silently skip if not installed. Memoized per process.
-  if (defaultPackageBinCache === undefined) {
-    defaultPackageBinCache = resolvePackageBin();
-  }
-  const pkgBin = defaultPackageBinCache;
+  // 3. Package bin — silently skip if not installed.
+  // (Only reached when cachedSync is null, so resolvePackageBin runs at most
+  // once per process here; the injected-path overload stays unmemoized for
+  // test fixture paths.)
+  const pkgBin = resolvePackageBin();
   if (pkgBin) {
     cachedSync = { path: pkgBin, source: "package", command: pkgBin };
     return cachedSync;
@@ -208,7 +201,8 @@ export function resolvePiBinarySync(): SyncResolution {
 export function _resetPiBinaryCache(): void {
   cachedSync = null;
   versionPromise = null;
-  defaultPackageBinCache = undefined;
+  probeErrorAttempts = 0;
+  piResolutionProbeStarted = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -216,6 +210,11 @@ export function _resetPiBinaryCache(): void {
 // ---------------------------------------------------------------------------
 
 let versionPromise: Promise<{ version: string | null; probeTimedOut?: boolean }> | null = null;
+
+// A spawn `error` (child failed to start) drops the cached promise so the
+// next call can re-probe; timeouts stay cached. Bounded to 2 attempts per
+// process — the failure mode is a broken binary path, which retrying won't fix.
+let probeErrorAttempts = 0;
 
 /**
  * Run `pi --version` on the resolved binary and cache the result.
@@ -230,7 +229,7 @@ export function probePiVersion(): Promise<{ version: string | null; probeTimedOu
     const spawnArgs = resolved.script ? [resolved.script, "--version"] : ["--version"];
 
     const child = cpSpawn(resolved.command, spawnArgs, {
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["ignore", "pipe", "ignore"],
       shell: false,
     });
 
@@ -246,7 +245,6 @@ export function probePiVersion(): Promise<{ version: string | null; probeTimedOu
         // handle (and our buffered stdout) past the kill.
         child.kill("SIGKILL");
         child.stdout?.destroy();
-        child.stderr?.destroy();
         resolve({ version: null, probeTimedOut: true });
       }
     }, 3000);
@@ -264,6 +262,12 @@ export function probePiVersion(): Promise<{ version: string | null; probeTimedOu
       if (!settled) {
         settled = true;
         clearTimeout(timer);
+        // Spawn failure (bad binary path): drop the cached promise so the
+        // next call can re-probe, up to 2 attempts per process.
+        if (probeErrorAttempts < 2) {
+          probeErrorAttempts++;
+          versionPromise = null;
+        }
         resolve({ version: null });
       }
     });
@@ -278,6 +282,28 @@ export function probePiVersion(): Promise<{ version: string | null; probeTimedOu
   });
 
   return versionPromise;
+}
+
+// ---------------------------------------------------------------------------
+// Probe lifecycle (spawn-kicked, fire-and-forget)
+// ---------------------------------------------------------------------------
+
+// #1019 — kick the version probe on first spawn (fire-and-forget; never
+// awaited). The flag + kick live here (with the probe they guard) rather than
+// in spawn.ts so the probe lifecycle stays inside this module.
+let piResolutionProbeStarted = false;
+
+export function kickPiResolutionProbe(): void {
+  if (piResolutionProbeStarted) return;
+  piResolutionProbeStarted = true;
+  getPiResolutionInfo().catch(() => {});
+}
+
+/**
+ * Test seam to reset the once-flag between runs.
+ */
+export function _resetPiResolutionProbeFlag(): void {
+  piResolutionProbeStarted = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -376,7 +402,10 @@ function getVerifiedVersion(): string | null {
   try {
     const compatPath = path.resolve(import.meta.dirname, "..", "..", "docs", "pi-compatibility.md");
     const doc = readFileSync(compatPath, "utf8");
-    verifiedVersionCache = parseVerifiedLine(doc)?.version ?? null;
+    const parsed = parseVerifiedLine(doc)?.version ?? null;
+    // Strip a leading range prefix (~, ^, >, <, =) so isVersionOlder always
+    // compares plain versions.
+    verifiedVersionCache = parsed ? parsed.replace(/^[~^><=]+/, "") : null;
   } catch {
     verifiedVersionCache = null;
   }

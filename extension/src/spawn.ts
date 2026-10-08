@@ -24,7 +24,7 @@ import { preflightChildGuards } from "./child-guards.ts";
 import { type ResolvedModelChoice, resolveModel } from "./models.ts";
 import { type BrokerHandle, startBroker } from "./permission-broker.ts";
 import { isParentInTrustMode, makeBrokerDeps } from "./permission-guard.ts";
-import { getPiInvocation, getPiResolutionInfo } from "./pi-binary-resolve.ts";
+import { getPiInvocation, kickPiResolutionProbe } from "./pi-binary-resolve.ts";
 import type { PiJsonEvent, SpawnOptions } from "./pi-event-shapes.ts";
 import { emptyRunningState, ingestEvent } from "./progress.ts";
 import { excludeToolsFor } from "./role-tools.ts";
@@ -59,19 +59,6 @@ import { vipuneChildEnv } from "./vipune.ts";
 // invocation plumbing, which that module already holds. Re-exported here
 // because smoke tests assert on the argument ORDER, which is load-bearing.
 export { buildChildArgs, buildCwdHint, makeRunId };
-
-// #1019 — kick the version probe on first spawn (fire-and-forget; never awaited).
-// _resetPiResolutionProbeFlag: test seam to reset the once-flag between runs.
-let piResolutionProbeStarted = false;
-export function _resetPiResolutionProbeFlag(): void {
-  piResolutionProbeStarted = false;
-}
-
-export function kickPiResolutionProbe(): void {
-  if (piResolutionProbeStarted) return;
-  piResolutionProbeStarted = true;
-  getPiResolutionInfo().catch(() => {});
-}
 
 /**
  * Spawn one specialist child, bounded by the global spawn semaphore.
