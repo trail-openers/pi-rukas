@@ -285,6 +285,15 @@ registerAdversarialTool(fakePi().pi); // warm any module init
     void lens; // the tool registration is exercised in the tool-schema tests;
     // here we drive the same seam the tool uses (runLensReview) directly.
     const { runLensReview } = await import("../src/lens-review.ts");
+    // #1017 — pin the installed-skills dir to the REPO's own bundled skill/
+    // dir (which ships all six code-review-* lenses), the same host-
+    // independent override test-lens-roster.ts / test-lens-kill-child.ts use
+    // via PI_ENSEMBLE_SKILLS_DIR: on a CI runner ~/.pi/agent/skills has no
+    // code-review-* skills, buildExpectedRoster would mark every lens
+    // blocked, and the lensChildFn stub below would never be called.
+    process.env.PI_ENSEMBLE_SKILLS_DIR = path.resolve(
+      new URL("../../skill", import.meta.url).pathname,
+    );
     // Use a sentinel that would NOT appear in the real range diff: if the
     // range won over the string, the lens children would receive the range
     // text and none of them would see the sentinel.
@@ -321,6 +330,7 @@ registerAdversarialTool(fakePi().pi); // warm any module init
     );
     assert(res !== null, "runLensReview with both diff and base/head resolves (diff wins)");
   } finally {
+    delete process.env.PI_ENSEMBLE_SKILLS_DIR;
     rmSync(dir, { recursive: true, force: true });
   }
 }
