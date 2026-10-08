@@ -304,9 +304,9 @@ const PATHS = ["src"];
     try {
       const lostComment = "// the comment the developer deleted";
       const fakeExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-        if (cmd === "git status --porcelain") return { stdout: "M src/app.ts\n" };
+        if (cmd === "git status --porcelain") return { stdout: "M src/app.css\n" };
         if (cmd.startsWith("git rev-list --count")) return { stdout: "1\n" };
-        if (cmd.startsWith("git diff --name-only")) return { stdout: "src/app.ts\n" };
+        if (cmd.startsWith("git diff --name-only")) return { stdout: "src/app.css\n" };
         // comment-retention uses a THREE-dot range (baseRef...HEAD); the other
         // gates use `git diff ${baseRef} -U0`. Disambiguate on the ellipsis.
         if (cmd.includes("..."))
@@ -345,9 +345,9 @@ const PATHS = ["src"];
       // (ii) clean diff → passes (both directions).
       {
         const cleanExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-          if (cmd === "git status --porcelain") return { stdout: "M src/app.ts\n" };
+          if (cmd === "git status --porcelain") return { stdout: "M src/app.css\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "1\n" };
-          if (cmd.startsWith("git diff --name-only")) return { stdout: "src/app.ts\n" };
+          if (cmd.startsWith("git diff --name-only")) return { stdout: "src/app.css\n" };
           if (cmd.includes("..."))
             return { stdout: `--- a/src/app.ts\n+++ b/src/app.ts\n+function add(a,b){return a+b;}\n` };
           if (cmd.startsWith("git rev-list --count ") && !cmd.includes("-- "))

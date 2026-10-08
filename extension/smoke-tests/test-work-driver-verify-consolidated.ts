@@ -20,6 +20,11 @@ import { initialState } from "../src/workflow-state.ts";
 
 const execFileP = promisify(execFile);
 
+// #1012 — these live-git tests use .ts/.sh source paths and explicit
+// .pi/verify-cmd; disable frontend-only classification for this file and
+// its importers.
+process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
+
 export const realExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
   try {
     const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {

@@ -45,6 +45,9 @@ function makeFakePi(): { pi: ExtensionAPI; sent: string[] } {
 }
 
 process.env.PI_ENSEMBLE_VERIFY = "1";
+// #1012 — these tests use source paths; disable frontend-only classification
+// for the duration of this file.
+process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
 
 {
   const fs = await import("node:fs/promises");

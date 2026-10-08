@@ -37,6 +37,9 @@ function makeFakePi(): { pi: ExtensionAPI; sent: string[] } {
 }
 
 process.env.PI_ENSEMBLE_VERIFY = "1";
+// #1012 — these tests use .ts paths; disable frontend-only classification
+// for the duration of this file.
+process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
 process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
 

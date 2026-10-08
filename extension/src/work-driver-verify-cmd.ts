@@ -88,6 +88,29 @@ export async function declaredPathsHaveSource(
 }
 
 /**
+ * #1012 — does the change set contain ONLY frontend file types?
+ *
+ * Pure, closed-world classifier: returns true IFF `paths` is non-empty AND
+ * every path's extension — the part after its last dot, lower-cased — appears
+ * in `globs`. A path with no dot (e.g. `Makefile`) or a leading dot (e.g.
+ * `.css`) has no extension and never matches. No manifest awareness, no fs,
+ * no git — the glob list is a plain parameter so the caller (which reads
+ * `PI_ENSEMBLE_FRONTEND_ONLY_GLOBS` at call time) owns the config. An empty
+ * path list returns false: no paths is no evidence, and a classification
+ * failure must never skip a check.
+ */
+export function pathsAreFrontendOnly(paths: string[], globs: string[]): boolean {
+  if (paths.length === 0) return false;
+  return paths.every((p) => {
+    const low = p.toLowerCase();
+    const dot = low.lastIndexOf(".");
+    if (dot <= 0) return false;
+    const ext = low.slice(dot);
+    return globs.includes(ext);
+  });
+}
+
+/**
  * PR17 — Discover the project's verify command (typecheck/test) for the
  * driver-side outcome-verification gate.
  *

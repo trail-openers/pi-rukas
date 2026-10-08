@@ -101,7 +101,7 @@ try {
   // the absent global baseSha the pre-fix guard tested.
   {
     const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-      if (cmd === "git status --porcelain") return { stdout: " M src/foo.ts\n" };
+      if (cmd === "git status --porcelain") return { stdout: " M src/foo.css\n" };
       if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
       if (cmd.startsWith("git diff --name-only")) return { stdout: "" };
       return { stdout: "" };
@@ -126,7 +126,7 @@ try {
   // message that pins wording).
   {
     const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-      if (cmd === "git status --porcelain") return { stdout: " M src/foo.ts\n" };
+      if (cmd === "git status --porcelain") return { stdout: " M src/foo.css\n" };
       if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
       if (cmd.startsWith("git diff --name-only")) return { stdout: "" };
       return { stdout: "" };

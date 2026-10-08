@@ -9,6 +9,8 @@
  * normaliser, tolerance) live in work-driver-verify-develop-helpers.ts.
  */
 
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { COMMENT_RETENTION_PATHS } from "./comment-retention.ts";
 import { runConsolidatedVerify } from "./work-driver-consolidated-verify.ts";
 import type { DriverContext } from "./work-driver-context.ts";
@@ -22,7 +24,11 @@ import {
 import { runFalsilyGreenCheck } from "./work-driver-falsily-green.ts";
 import { runScopeFanoutGate } from "./work-driver-scope-fanout.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
-import { declaredPathsHaveSource, verifyCmdFor } from "./work-driver-verify-cmd.ts";
+import {
+  declaredPathsHaveSource,
+  pathsAreFrontendOnly,
+  verifyCmdFor,
+} from "./work-driver-verify-cmd.ts";
 import {
   runCommentRetentionGate,
   runSkipRatchetGate,
@@ -311,6 +317,30 @@ export async function verifyDevelopOutcome(
     notes.push(
       "no verify command discoverable (.pi/verify-cmd, package.json scripts, Cargo.toml) — diff evidence only",
     );
+  } else if (
+    // #1012 — frontend-only diffs skip the DERIVED verify chain (package.json
+    // scripts, Cargo.toml cargo check): a CSS-only change must not trigger a
+    // backend build. The skip is derived-only — an explicit .pi/verify-cmd is
+    // operator intent and ALWAYS runs (same philosophy as PI_ENSEMBLE_VERIFY=0:
+    // explicit intent beats auto-detection). Classification uses the CUMULATIVE
+    // union of all worktrees' changed paths (porcelain + diff), already
+    // normalised by porcelainPaths/diff parsing; an empty union (nothing
+    // readable) or any non-frontend path falls back to the full chain — a
+    // classification failure never skips a check. The skip-ratchet, smoke and
+    // comment-retention gates below are unaffected and run unconditionally.
+    !existsSync(path.join(ctx.repoRoot, ".pi", "verify-cmd")) &&
+    pathsAreFrontendOnly(
+      touchedPaths,
+      process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS
+        ? process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS.split(",")
+            .map((g) => g.trim())
+            .filter(Boolean)
+        : [".css", ".html", ".svg", ".woff", ".woff2", ".ttf", ".otf"],
+    )
+  ) {
+    notes.push(
+      "frontend-only diff (all changed paths match the frontend globs) — derived verify command skipped (set .pi/verify-cmd to force it)",
+    );
   } else {
     // #794 — the per-worktree loop + consolidated run + classification is
     // extracted to work-driver-verify-verify-cmd.ts (500-line gate); the
@@ -341,6 +371,9 @@ export async function verifyDevelopOutcome(
   // #451 — extracted to work-driver-verify-develop-gates.ts (AGENTS.md §12
   // file-size cap). The #782 flake-retry logic above pushed this file past
   // the 500-line limit; the two independent post-verify gates move there.
+  // #1012 — these gates run UNCONDITIONALLY: the frontend-only skip above
+  // gates only the verifyCmdFor → runVerifyCommandGate chain, never the
+  // ratchet/smoke/comment-retention checks.
   await runSkipRatchetGate(execFn, ctx.repoRoot, baseSha, changedWorktrees, failures, notes);
   // #948 — comment-retention gate. Threaded like runFalsilyGreenCheck: per
   // worktree, against that workstream's effective base.
