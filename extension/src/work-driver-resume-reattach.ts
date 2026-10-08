@@ -11,6 +11,7 @@
 import { spawn } from "node:child_process";
 import { notifyAgent } from "./agent-message.ts";
 import { emitStepCompleted } from "./lifecycle-events.ts";
+import { getPiInvocation, looksLikePiCli } from "./pi-binary-resolve.ts";
 import { attachStdinErrorGuard } from "./stdin-guard.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
@@ -83,11 +84,6 @@ export async function attemptReattach(
 ): Promise<ReattachResult | { reattach: false }> {
   const resumePromptText = reattachPrompt(step, role);
   const childArgs = ["--mode", "rpc", "--no-extensions", "--session", transcriptPath];
-  const currentScript = process.argv[1];
-  const looksLikePiCli =
-    currentScript &&
-    !currentScript.startsWith("/$bunfs/") &&
-    /pi-coding-agent.*\/(dist\/(?:cli\.)?c?js|mjs)$/i.test(currentScript);
   const childEnv: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (v !== undefined) childEnv[k] = v;
@@ -111,20 +107,9 @@ async function realSpawnReattach(
   resumePromptText: string,
   grantMs: number,
 ): Promise<ReattachResult | { reattach: false }> {
-  const currentScript = process.argv[1];
-  const looksLikePiCli =
-    currentScript &&
-    !currentScript.startsWith("/$bunfs/") &&
-    /pi-coding-agent.*\/(dist\/(?:cli\.)?c?js|mjs)$/i.test(currentScript);
-  let command: string;
-  let args: string[];
-  if (looksLikePiCli) {
-    command = process.execPath;
-    args = [currentScript, ...childArgs];
-  } else {
-    command = "pi";
-    args = childArgs;
-  }
+  const invocation = getPiInvocation(childArgs);
+  const command = invocation.command;
+  const args = invocation.args;
 
   const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], env: childEnv });
   // #932 — universal EPIPE backstop (stdin-guard.ts): the resume prompt is

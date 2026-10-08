@@ -60,6 +60,12 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+// #1019 — the shared "Last verified against pi" parser now lives in
+// pi-binary-resolve.ts (which needs it for the version warning); the drift
+// gate imports it so the regex exists in exactly one place. Re-exported so
+// the gate's public surface is unchanged.
+import { parseVerifiedLine } from "../src/pi-binary-resolve.ts";
+export { parseVerifiedLine };
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const FIXTURES = path.resolve(import.meta.dirname, "fixtures", "prerequisite-drift");
@@ -123,13 +129,6 @@ export function parseDevPins(pkgJson: string): { codingAgent: string; tui: strin
   const m = pkgJson.match(/"@earendil-works\/pi-coding-agent":\s*"([^"]+)"/);
   const t = pkgJson.match(/"@earendil-works\/pi-tui":\s*"([^"]+)"/);
   return { codingAgent: m ? stripRangePrefix(m[1] as string) : "", tui: t ? stripRangePrefix(t[1] as string) : "" };
-}
-
-/** The maintained "## Last verified against pi X.Y.Z (YYYY-MM-DD)" line in docs/pi-compatibility.md. */
-export function parseVerifiedLine(doc: string): { version: string; date: string } | null {
-  const m = doc.match(/## Last verified against pi\s+([0-9][0-9a-z.+-]*)\s+\((\d{4}-\d{2}-\d{2})\)/);
-  if (!m) return null;
-  return { version: stripRangePrefix(m[1] as string), date: m[2] as string };
 }
 
 /** The restating "Last verified against `pi` **X.Y.Z (YYYY-MM-DD)**" line in AGENTS.md § 4. */
