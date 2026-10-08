@@ -10,6 +10,19 @@
  * test-dispatch-schema.ts, so they exercise the actual schema + resolution
  * + diff computation without spawning a Pi child.
  *
+ * #1017 — this file makes NO real spawn. setupSpawnGuard() sets
+ * PI_ENSEMBLE_FORBID_LIVE_SPAWN=1 (the offline gate now exports it too —
+ * see verify-loop.sh — so a regression that re-opens the spawn path fails
+ * loudly instead of silently burning model tokens); the two sections that
+ * reached the real spawn path are stubbed:
+ *   - section 6 (runLensReview) through the existing `lensChildFn` seam,
+ *     capturing the diff each lens child receives so "the sentinel wins"
+ *     is asserted on what the lens ACTUALLY saw, not on "did not error";
+ *   - section 7 (runAdversarialLoop) through the established
+ *     `mock.module("../src/spawn.ts")` pattern (test-adversarial-range-
+ *     recompute.ts), capturing the review prompt so the string diff is
+ *     asserted verbatim.
+ *
  * Covers (the acceptance criteria):
  *   - dispatch_lens_review {base, head, cwd} computes the range and the
  *     SAME diff text reaches every lens (via the diff-fan-out seam);
@@ -17,9 +30,9 @@
  *     fix round (round 2 sees the fix's new content);
  *   - an invalid ref / empty range / leading '-' / neither-supplied → a
  *     clear error, never an APPROVED verdict;
- *   - diff + base/head supplied together → the diff string wins.
+ *   - diff + base/head supplied together → the diff string wins;
  *   - existing string-diff callers are unchanged (runAdversarialLoop with a
- *     plain `diff` string still works end-to-end).
+ *     plain `diff` string still works end-to-end, diff delivered verbatim).
  */
 
 import { exec } from "node:child_process";
@@ -27,8 +40,69 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { registerAdversarialTool, runAdversarialLoop } from "../src/adversarial.ts";
-import { computeRangeDiff } from "../src/review-diff.ts";
+import { mock } from "bun:test";
+
+import { setupSpawnGuard } from "./test-helpers.ts";
+
+// #1017 — forbid live spawns for the whole file. The offline gate
+// (verify-loop.sh) now exports PI_ENSEMBLE_FORBID_LIVE_SPAWN=1 for every
+// offline test; this makes the guarantee local to the file, so the test
+// also passes when run directly (`bun smoke-tests/test-review-tools-
+// refrange.ts`) with no gate in front.
+setupSpawnGuard();
+
+/**
+ * Stub the spawn seam before any src module is imported (the pattern
+ * established by test-adversarial-range-recompute.ts): the mock factory
+ * installs before `../src/adversarial.ts` is loaded, so its `spawnSpecialist`
+ * import resolves to the stub. The stub records every call (role, tag,
+ * prompt) and returns a module-level responder's result (or a default
+ * successful no-findings reply) — no real child is ever forked.
+ */
+type SpawnSpec = { role: string; prompt: string; cwd?: string };
+type SpawnOpts = { tag?: string };
+const spawnCalls: Array<{ role: string; tag: string; prompt: string }> = [];
+let spawnResponder: ((spec: SpawnSpec) => unknown) | null = null;
+mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
+  makeRunId: () => "run-refrange",
+  spawnSpecialist: async (spec: SpawnSpec, opts?: SpawnOpts) => {
+    spawnCalls.push({ role: spec.role, tag: opts?.tag ?? "", prompt: spec.prompt });
+    if (spawnResponder) return spawnResponder(spec);
+    return {
+      role: spec.role,
+      ok: true,
+      text: "VERDICT: APPROVED",
+      toolUses: [],
+      ms: 10,
+      exitCode: 0,
+    };
+  },
+}));
+// Deck and orchestrator bookkeeping are not under test here. The deck module
+// imports pi-tui, so mock it (spreading the real module keeps every named
+// export other importers expect); the orchestrator registry mock no-ops the
+// job-table lookups. Same pattern as test-adversarial-range-recompute.ts.
+const realDeck = await import("../src/dispatch-deck.ts");
+mock.module(new URL("../src/dispatch-deck.ts", import.meta.url).href, () => ({
+  ...realDeck,
+  startEntry: () => {},
+  updateEntry: () => {},
+  clearEntry: () => {},
+  startBatchEntry: () => {},
+  updateBatchProgress: () => {},
+  clearBatchEntry: () => {},
+}));
+const realRegistry = await import("../src/async-jobs-registry.ts");
+mock.module(new URL("../src/async-jobs-registry.ts", import.meta.url).href, () => ({
+  ...realRegistry,
+  childHandles: new Map(),
+  registerChildHandle: () => {},
+  setOrchestratorActiveChild: () => {},
+  markOrchestrator: () => {},
+}));
+
+const { registerAdversarialTool, runAdversarialLoop } = await import("../src/adversarial.ts");
+const { computeRangeDiff } = await import("../src/review-diff.ts");
 
 const execp = promisify(exec);
 
@@ -208,32 +282,44 @@ registerAdversarialTool(fakePi().pi); // warm any module init
     const { registerLensReviewTool } = await import("../src/lens-review-tool.ts");
     registerLensReviewTool(pi);
     const lens = tools.get("dispatch_lens_review")!;
-    // We can't easily intercept the diff the lens children receive without
-    // a spawn mock, but we CAN assert the resolution rule at the seam the
-    // tool uses: runLensReview with both a diff string and base/head must
-    // use the string. The "diff wins" is verified by giving a sentinel
-    // string diff and checking the range computation is NOT the source.
-    // The cleanest assertion: when both are present, the tool passes the
-    // string through (the diff string is what runLensReview sees).
+    void lens; // the tool registration is exercised in the tool-schema tests;
+    // here we drive the same seam the tool uses (runLensReview) directly.
     const { runLensReview } = await import("../src/lens-review.ts");
-    // Use a sentinel that would NOT appear in the real range diff.
+    // Use a sentinel that would NOT appear in the real range diff: if the
+    // range won over the string, the lens children would receive the range
+    // text and none of them would see the sentinel.
     const sentinel = "SENTINEL_DIFF_WINS_MARKER";
+    const lensDiffs: string[] = [];
     const res = await runLensReview({
       diff: sentinel,
       context: "both supplied",
       base: base,
       head: head,
       cwd: dir,
-    }).catch(() => null);
-    // The lens children would each receive the sentinel (diff wins). We can't
-    // read their prompts here without a spawn mock, so we assert the seam:
-    // the tool's own resolution keeps the string. The range seam is the
-    // alternative — verify that the string is retained, not overwritten.
+      // #1017 — the stub replaces the 6-lens real fan-out: it records the
+      // diff each lens child is handed (runLensReview passes the RESOLVED
+      // diff into every lens's opts) and returns a clean, no-findings
+      // result — no child is ever forked.
+      lensChildFn: async (childOpts) => {
+        lensDiffs.push(childOpts.opts.diff);
+        return {
+          lens: childOpts.lens.name,
+          ok: true,
+          ms: 0,
+          startMs: Date.now(),
+          findings: [],
+          attempts: 1,
+          blocked: false,
+          summary: "clean",
+        };
+      },
+    });
+    assert(lensDiffs.length > 0, "lens fan-out ran (at least one lens child received the diff)");
+    assert(
+      lensDiffs.every((d) => d === sentinel),
+      "diff wins: EVERY lens child received the sentinel string (not the range diff)",
+    );
     assert(res !== null, "runLensReview with both diff and base/head resolves (diff wins)");
-    // The definitive diff-wins proof: the range would NOT contain the sentinel,
-    // so if the sentinel were NOT used the lenses would see the range text.
-    // We assert via the only observable: the tool did not error out (it used
-    // the valid sentinel string, not an invalid range).
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -243,19 +329,27 @@ registerAdversarialTool(fakePi().pi); // warm any module init
 
 {
   // runAdversarialLoop with a plain `diff` string (no base/head) still works.
-  // We assert the diff-resolution picks the string and the loop runs.
+  // #1017 — the spawn seam is the mock installed at the top of the file: the
+  // review phase's prompt is captured, so the string diff is asserted
+  // VERBATIM on what the reviewer child would have been prompted with (the
+  // old assertion `r !== null` passed whether or not the spawn happened —
+  // it proved nothing about the diff).
   try {
     const stringDiff = "diff --git a/base.txt b/base.txt\n+hello";
-    // Without a spawn mock the loop will attempt a real spawn and fail/timeout.
-    // Instead assert the resolution directly: with a diff string and no
-    // base/head, computeRangeDiff is never consulted.
+    spawnCalls.length = 0;
     const r = await runAdversarialLoop(
       { diff: stringDiff, context: "string-only" },
       new AbortController().signal,
       "job-str",
       computeRangeDiff,
-    ).catch(() => null);
-    assert(r !== null, "string-diff-only runAdversarialLoop resolves (existing caller path intact)");
+    );
+    const reviewCalls = spawnCalls.filter((c) => c.role === "adversarial-developer");
+    assert(reviewCalls.length >= 1, "the loop dispatched a review round");
+    assert(
+      reviewCalls.every((c) => c.prompt.includes(stringDiff)),
+      "string-diff callers unchanged: the reviewer's prompt carries the string diff VERBATIM",
+    );
+    assert(r.ok === true, "string-diff-only runAdversarialLoop resolves (existing caller path intact)");
   } finally {
     // nothing to clean up (no scratch repo for this case)
   }

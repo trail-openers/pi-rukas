@@ -27,6 +27,11 @@
  *   7. #827 multi-failure: two failing tests, one with two ✗ lines — the
  *      FIRST real ✗ is the specific assertion and the summary names all
  *      failing files within the 800-char bound.
+ *   8. #1017 spawn-guard canary: verify-loop.sh exports
+ *      PI_ENSEMBLE_FORBID_LIVE_SPAWN=1 into the child test env (the fixture
+ *      prints the guard; under the loop it is "1" and ALLOW is unset; run
+ *      directly by bun it is unset) — so an offline test that reaches the
+ *      real spawn path fails loudly instead of burning tokens.
  */
 
 import { spawnSync } from "node:child_process";
@@ -326,6 +331,50 @@ function runPipeline(files: string[]): {
     message.includes("✗"),
     "case 7 (multi-failure): the failure message names a real ✗ assertion, not absence",
   );
+}
+
+// --- Case 8: #1017 spawn-guard canary — verify-loop.sh must export
+// PI_ENSEMBLE_FORBID_LIVE_SPAWN=1 into every offline test's env. The
+// fixture prints the guard as the child sees it; under the loop it is "1"
+// (and the ALLOW bypass is NOT set), run directly by bun it is unset —
+// proving the loop is what sets it, not the ambient environment.
+{
+  const fixture = path.join(FIXTURES, "fixture-spawn-env.ts");
+
+  // Direct invocation: no gate → the guard is ABSENT. Delete the gate's
+  // export from the inherited env first: a direct `bun run` inherits the
+  // ambient environment, which under the offline gate already carries the
+  // export — deleting it proves the fixture's "unset" reading is the absence
+  // itself, not a leftover the gate set. (An empty string would not do: bun
+  // leaves an "" entry in process.env where the gate's "1" used to be.)
+  const directEnv = { ...process.env };
+  delete directEnv.PI_ENSEMBLE_FORBID_LIVE_SPAWN;
+  delete directEnv.PI_ENSEMBLE_ALLOW_LIVE_SPAWN;
+  const direct = spawnSync("bun", ["run", fixture], {
+    cwd: path.join(__dirname, ".."),
+    encoding: "utf-8",
+    env: directEnv,
+  });
+  const directLines = (direct.stdout ?? "").split("\n");
+  assert(
+    directLines.includes("GUARD=(unset)"),
+    `case 8 (direct): the guard is unset outside the gate (got: ${JSON.stringify(directLines)})`,
+  );
+
+  // Under the loop: the export must reach the child, and the ALLOW bypass
+  // must NOT (a test setting ALLOW locally is its own business, but the
+  // gate must not be the one that sets it).
+  const { status, stdout } = runLoop([fixture]);
+  const loopLines = stdout.split("\n").filter((l) => l.startsWith("GUARD=") || l.startsWith("ALLOW="));
+  assert(
+    loopLines.includes("GUARD=1"),
+    `case 8 (loop): verify-loop.sh exports PI_ENSEMBLE_FORBID_LIVE_SPAWN=1 into the child (got: ${JSON.stringify(loopLines)})`,
+  );
+  assert(
+    loopLines.includes("ALLOW=(unset)"),
+    `case 8 (loop): the gate does NOT set the PI_ENSEMBLE_ALLOW_LIVE_SPAWN bypass (got: ${JSON.stringify(loopLines)})`,
+  );
+  assert(status === 0, "case 8 (loop): the canary fixture itself passes under the gate");
 }
 
 console.log(exit === 0 ? "\nAll verify-loop checks passed." : "\nFAILED");
