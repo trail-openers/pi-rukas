@@ -6,16 +6,14 @@
 //
 // The loop kills the whole process tree of the hung test, so the fixture
 // also spawns a long-lived child (sleep) that must die with it — the
-// "no orphan" case in test-verify-loop.ts checks for exactly this.
+// "no orphan" case in test-verify-loop-timeout.ts checks for exactly this.
 //
-// FIXTURE_HANG_TOKEN (run-unique, set by test-verify-loop.ts) is baked into
-// the child's command line so the orphan check can look for it by pattern
-// rather than by pid — the fixture writes its own child's pid to
-// FIXTURE_HANG_PID_FILE so the test can also check it directly, but the
-// token is the reliable cross-check (ps output can elide args).
+// FIXTURE_HANG_TOKEN (run-unique, set by test-verify-loop-timeout.ts) is
+// baked into the child's command line so the orphan check can look for it
+// by pattern rather than by pid (ps output can elide args, and the
+// watchdog does not expose the child's pid).
 
 import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
 
 console.log("fixture-hang: starting, will hang until killed");
 console.log("fixture-hang: pid", process.pid);
@@ -25,14 +23,7 @@ const hangSeconds = parseInt(process.env.FIXTURE_HANG_S ?? "300", 10);
 
 // Spawn a long-lived child with the run-unique token in its command line
 // so the no-orphan test can find it after the kill.
-const child = spawn("sleep", [String(hangSeconds), token], { stdio: "ignore" });
-if (process.env.FIXTURE_HANG_PID_FILE) {
-  try {
-    writeFileSync(process.env.FIXTURE_HANG_PID_FILE, String(child.pid));
-  } catch {
-    // best-effort — the token check is the load-bearing assertion
-  }
-}
+spawn("sleep", [String(hangSeconds), token], { stdio: "ignore" });
 
 // Keep alive indefinitely. The verify-loop watchdog must kill us.
 setInterval(() => {}, 1000);

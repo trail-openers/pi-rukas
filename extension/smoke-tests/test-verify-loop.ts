@@ -32,22 +32,19 @@
  *      prints the guard; under the loop it is "1" and ALLOW is unset; run
  *      directly by bun it is unset) — so an offline test that reaches the
  *      real spawn path fails loudly instead of burning tokens.
- *   9. #1014 timeout: hanging fixture (low override) → marker + ✗ line +
- *       partial output + summary, loop continues, exactly-once, no orphan,
- *       and the timeout-only pipeline yields attributed: true.
+ *
+ * The #1014 per-test timeout cases (9, 10) live in test-verify-loop-timeout.ts
+ * (same fixtures, same consumer path, split to stay under the 500-line limit).
+ * Shared helpers (runLoop, runPipeline, runLoopEnv) live in verify-loop-lib.ts.
  */
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import {
-  NO_SPECIFIC_ASSERTION,
-  classifyConsolidatedVerifyFailure,
-  consolidatedFailureMessage,
-  extractSpecificAssertion,
-} from "../src/work-driver-consolidation-classify.ts";
+import { NO_SPECIFIC_ASSERTION } from "../src/work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "../src/work-driver-exec-error.ts";
+import { runLoop, runPipeline } from "./verify-loop-lib.ts";
 
 const __dirname = path.dirname(new URL(import.meta.url).pathname);
 const FIXTURES = path.join(__dirname, "fixtures", "verify-loop");
@@ -60,37 +57,6 @@ function assert(cond: boolean, msg: string) {
     console.error(`✗ ${msg}`);
     exit = 1;
   }
-}
-
-function runLoop(files: string[]): { status: number; stdout: string } {
-  const result = spawnSync("bash", [SCRIPT, ...files], {
-    cwd: path.join(__dirname, ".."),
-    encoding: "utf-8",
-  });
-  return { status: result.status ?? -1, stdout: result.stdout };
-}
-
-// #1014 — run the loop with an env override (low PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S).
-function runLoopEnv(
-  files: string[],
-  env: Record<string, string>,
-): { status: number; stdout: string } {
-  const r = spawnSync("bash", [SCRIPT, ...files], {
-    cwd: path.join(__dirname, ".."),
-    encoding: "utf-8",
-    env: { ...process.env, ...env },
-  });
-  return { status: r.status ?? -1, stdout: r.stdout };
-}
-
-// #1014 — full consumer path with env override.
-function pipelineEnv(
-  files: string[],
-  env: Record<string, string>,
-): { tail: string; attributed: boolean; assertion: string } {
-  const { stdout } = runLoopEnv(files, env);
-  const { tail, attributed } = extractAttributedTail(stdout, 800);
-  return { tail, attributed, assertion: extractSpecificAssertion(tail) };
 }
 
 // --- Case 1: 5 fixtures, 1/3/5 fail ---
@@ -179,7 +145,9 @@ function pipelineEnv(
 
 // --- Case 5: live-exclusion canary ---
 {
-  // A *-live.ts file that, if executed, writes a sentinel and exits 1.
+  // A *-live.ts file that, if ever executed, writes a sentinel and exits 1.
+  // If the exclusion line in verify-loop.sh is ever removed, the fixture runs,
+  // the sentinel appears, and the fixture lands in the failure summary.
   const sentinel = path.join(mkdtempSync(path.join(tmpdir(), "verify-loop-live-")), "sentinel");
   rmSync(sentinel, { force: true });
 
@@ -204,32 +172,11 @@ function pipelineEnv(
   );
 }
 
-// --- #827 shared pipeline: loop output → tail → assertion → classification.
-function runPipeline(files: string[]): {
-  stdout: string;
-  tail: string;
-  attributed: boolean;
-  assertion: string;
-  verdict: ReturnType<typeof classifyConsolidatedVerifyFailure>;
-  message: string;
-} {
-  const { stdout } = runLoop(files);
-  const { tail, attributed } = extractAttributedTail(stdout, 800);
-  const assertion = extractSpecificAssertion(tail);
-  // N>1 no per-worktree failures — the consolidated-failure consumer shape.
-  const verdict = classifyConsolidatedVerifyFailure(2, ["a", "b"], tail, {});
-  return {
-    stdout,
-    tail,
-    attributed,
-    assertion,
-    verdict,
-    message: consolidatedFailureMessage(verdict, "bun run check"),
-  };
-}
-
-// --- Case 6: #772 shape — the failing test's ✗ lines sit far above the
-// summary; the 800-char tail must name the real ✗ assertion.
+// --- Case 6: #772 shape — the failing test's ✗ lines sit thousands of
+// chars before the final summary (fixture-shape-772 emits a ~6 KB table
+// before its ✗ lines; the verbose fixture adds more distance in a
+// second failing test). The 800-char marker-anchored tail must name the
+// real ✗ assertion, and the failing test file must survive in the report.
 {
   const scratch = mkdtempSync(path.join(tmpdir(), "verify-loop-772-"));
   const bigFixture = path.join(scratch, "fixture-shape-772.ts");
@@ -350,13 +297,20 @@ function runPipeline(files: string[]): {
   );
 }
 
-// --- Case 8: #1017 spawn-guard canary — verify-loop.sh exports the guard
-// into every offline test's child env.
+// --- Case 8: #1017 spawn-guard canary — verify-loop.sh must export
+// PI_ENSEMBLE_FORBID_LIVE_SPAWN=1 into every offline test's env. The
+// fixture prints the guard as the child sees it; under the loop it is "1"
+// (and the ALLOW bypass is NOT set), run directly by bun it is unset —
+// proving the loop is what sets it, not the ambient environment.
 {
   const fixture = path.join(FIXTURES, "fixture-spawn-env.ts");
 
-  // Direct invocation: delete the guard export from the inherited env so the
-  // "unset" reading is the absence itself, not a leftover the gate set.
+  // Direct invocation: no gate → the guard is ABSENT. Delete the gate's
+  // export from the inherited env first: a direct `bun run` inherits the
+  // ambient environment, which under the offline gate already carries the
+  // export — deleting it proves the fixture's "unset" reading is the absence
+  // itself, not a leftover the gate set. (An empty string would not do: bun
+  // leaves an "" entry in process.env where the gate's "1" used to be.)
   const directEnv = { ...process.env };
   delete directEnv.PI_ENSEMBLE_FORBID_LIVE_SPAWN;
   delete directEnv.PI_ENSEMBLE_ALLOW_LIVE_SPAWN;
@@ -375,7 +329,9 @@ function runPipeline(files: string[]): {
   // must NOT (a test setting ALLOW locally is its own business, but the
   // gate must not be the one that sets it).
   const { status, stdout } = runLoop([fixture]);
-  const loopLines = stdout.split("\n").filter((l) => l.startsWith("GUARD=") || l.startsWith("ALLOW="));
+  const loopLines = stdout
+    .split("\n")
+    .filter((l) => l.startsWith("GUARD=") || l.startsWith("ALLOW="));
   assert(
     loopLines.includes("GUARD=1"),
     `case 8 (loop): verify-loop.sh exports PI_ENSEMBLE_FORBID_LIVE_SPAWN=1 into the child (got: ${JSON.stringify(loopLines)})`,
@@ -385,112 +341,6 @@ function runPipeline(files: string[]): {
     `case 8 (loop): the gate does NOT set the PI_ENSEMBLE_ALLOW_LIVE_SPAWN bypass (got: ${JSON.stringify(loopLines)})`,
   );
   assert(status === 0, "case 8 (loop): the canary fixture itself passes under the gate");
-}
-
-// #1014 timeout cases: PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S=2, hanging fixture
-// spawns a `sleep` child with a run-unique token (FIXTURE_HANG_TOKEN).
-// --- Case 9: timeout reporting + continue-after-timeout.
-{
-  const t0 = Date.now();
-  const token = `hang-c9-${process.pid}-${Date.now()}`;
-  const counterFile = path.join(tmpdir(), `verify-loop-hang-counter-${process.pid}`);
-  rmSync(counterFile, { force: true });
-  try {
-    const { status, stdout } = runLoopEnv(
-      [
-        path.join(FIXTURES, "fixture-hang-counter.ts"),
-        path.join(FIXTURES, "fixture-1.ts"),
-        path.join(FIXTURES, "allpass-a.ts"),
-      ],
-      {
-        PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S: "2",
-        FIXTURE_HANG_TOKEN: token,
-        FIXTURE_COUNTER_FILE: counterFile,
-      },
-    );
-    const elapsed = (Date.now() - t0) / 1000;
-    const lines = stdout.trim().split("\n");
-    const lastLine = lines[lines.length - 1];
-
-    // (a) timeout reported
-    assert(status !== 0, "case 9: exit non-zero when a test times out");
-    assert(
-      stdout.includes("fixture-hang-counter.ts (timed out after 2s)"),
-      "case 9: per-test marker names the file + (timed out after 2s)",
-    );
-    assert(
-      stdout.includes("✗ timed out after 2s"),
-      "case 9: the ✗ timed out after <N>s line is present",
-    );
-    assert(
-      stdout.includes("fixture-hang-counter: starting, will hang until killed"),
-      "case 9: the timed-out test's partial output is printed",
-    );
-    // (b) remaining tests still run
-    assert(
-      stdout.includes("fixture-1: assertion failed: expected 200, got 404"),
-      "case 9: the remaining failing fixture still ran and reported",
-    );
-    assert(stdout.includes("allpass-a: ok"), "case 9: the remaining passing fixture still ran");
-    // summary counts + names
-    const summaryLines = lines.filter((l) => l.startsWith("FAILED: ") && l.includes("test(s)"));
-    const summaryLine = summaryLines[summaryLines.length - 1];
-    assert(
-      summaryLine !== undefined && summaryLine.startsWith("FAILED: 2 test(s) —"),
-      `case 9: the summary counts the two failures (timeout + fixture-1) (got: ${JSON.stringify(summaryLine)})`,
-    );
-    assert(
-      (summaryLine ?? "").includes("fixture-hang-counter.ts") && (summaryLine ?? "").includes("fixture-1.ts"),
-      "case 9: the summary names the timed-out and the other failing fixture",
-    );
-    assert(
-      !(summaryLine ?? "").includes("allpass-a.ts"),
-      "case 9: the summary does not name the passing fixture",
-    );
-    // wall-clock bound
-    assert(
-      elapsed <= 12,
-      `case 9: the run stays bounded despite the hang (${elapsed.toFixed(1)}s <= 12s)`,
-    );
-    // (c) exactly-once
-    const invocations = readFileSync(counterFile, "utf-8")
-      .split("\n")
-      .filter((l) => l.trim());
-    assert(
-      invocations.length === 1,
-      `case 9: the hung fixture ran exactly once (got ${invocations.length} invocations)`,
-    );
-
-    // (d) no orphan — the fixture spawned a `sleep` child with the token in
-    // its args. After the watchdog kill, no live process carries the token.
-    spawnSync("sleep", ["1"]);
-    const ps = spawnSync("ps", ["-o", "command", "-x"], { encoding: "utf-8" });
-    const survivors = (ps.stdout ?? "").split("\n").filter((l) => l.includes(token) && !l.includes("ps -o"));
-    assert(
-      survivors.length === 0,
-      `case 9: no orphaned process with the token remains (found ${survivors.length})`,
-    );
-  } finally {
-    rmSync(counterFile, { force: true });
-  }
-}
-
-// --- Case 10: timeout-only pipeline. A single hanging fixture (low bound)
-// through the full consumer path must yield attributed: true and the
-// `✗ timed out after <N>s` line as the specific assertion.
-{
-  const token = `hang-c10-${process.pid}-${Date.now()}`;
-  const { tail, attributed, assertion } = pipelineEnv(
-    [path.join(FIXTURES, "fixture-hang.ts")],
-    { PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S: "2", FIXTURE_HANG_TOKEN: token },
-  );
-  assert(attributed, "case 10: tail is attributed (anchored on the FAILED marker)");
-  assert(
-    assertion === "✗ timed out after 2s",
-    `case 10: the specific assertion is the timeout line (got: ${JSON.stringify(assertion)})`,
-  );
-  assert(assertion !== NO_SPECIFIC_ASSERTION, "case 10: NOT honest-absence");
-  assert(!assertion.startsWith("FAILED:"), "case 10: the assertion is not the summary marker");
 }
 
 console.log(exit === 0 ? "\nAll verify-loop checks passed." : "\nFAILED");

@@ -25,20 +25,6 @@
 #   The caller expands the glob; the script receives the file list.
 #   Live tests (suffix -live.ts) are skipped, matching the legacy
 #   `case "$t" in *-live.ts) continue;; esac` exclusion.
-#
-#   #1014 — per-test timeout: each test is bounded at
-#   ${PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S:-300} seconds. A test still running
-#   at/after the bound is a timeout: it is killed (whole process tree —
-#   not just the top-level bun, which would leave orphaned descendants),
-#   its partial output is printed, and it is marked
-#   `FAILED: <file> (timed out after <N>s)` with a `✗ timed out after
-#   <N>s` line in the capture (which the #827 echo loop and the driver's
-#   extractSpecificAssertion pick up as the specific assertion). The loop
-#   continues to the next test. The env var must be a positive integer;
-#   anything else falls back to 300 with a warning.
-#   The bound is measured in 1s-resolution wall-clock (bash SECONDS / date
-#   +%s) with a 1s poll — no GNU `timeout`, no `wait -n`, no process-group
-#   API, so it is identical on bash 3.2 (macOS) and 5.x (Linux).
 
 set -u
 
@@ -52,9 +38,31 @@ set -u
 # reaches the child env.
 export PI_ENSEMBLE_FORBID_LIVE_SPAWN=1
 
-# #1014 — read the per-test bound once per loop run. Must be a positive
-# integer; anything else falls back to 300 (the value the marker and the
-# operator both expect) with a warning so the silent default is visible.
+# --- #1014 — per-test timeout watchdog.
+#
+# Each test is bounded at ${PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S:-300} seconds.
+#
+# Design (portability-first, no GNU tools):
+#   * No `timeout` (GNU coreutils), no `wait -n` (bash 4.3+), no
+#     process-group kill (no setsid on macOS): the test runs in the
+#     background, a 1s poll loop counts wall-clock (bash SECONDS) until the
+#     bound, identical on bash 3.2 (macOS) and 5.x (Linux).
+#   * On timeout the whole descendant tree is killed — a bare `kill <pid>`
+#     would orphan bun's children (`bun run` forks a child for the script,
+#     and a test can spawn grandchildren, e.g. a `sleep`). The tree is found
+#     by a BFS `pgrep -P` walk.
+#   * SIGTERM first, SIGKILL only for survivors, after a 2s grace: a test
+#     with cleanup handlers gets a chance to exit cleanly.
+#   * Exit code 124 is the conventional "timed out" sentinel; the test's
+#     partial output is kept (partial-output contract) and a
+#     `✗ timed out after <N>s` line is prepended to the capture so the #827
+#     echo and extractSpecificAssertion name it as the specific assertion.
+#     A test that itself exits 124 is told apart: it is a timeout only if
+#     the `✗ timed out` line was added by this watchdog (the loop checks
+#     rc=124 from run_test_with_timeout, never the raw child exit code).
+#   * The bound must be a positive integer; anything else falls back to 300
+#     with a warning so the silent default is visible.
+
 if [[ "${PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S:-}" =~ ^[1-9][0-9]*$ ]]; then
   VERIFY_TEST_TIMEOUT_S="$PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S"
 else
@@ -64,70 +72,56 @@ else
   VERIFY_TEST_TIMEOUT_S=300
 fi
 
-# #1014 — run one test under the per-test timeout watchdog.
-# POSIX-portable (bash 3.2, no GNU timeout / wait -n): the test runs in the
-# background; a poll loop (1s ticks, SECONDS) counts wall-clock until the
-# bound; a timed-out test is killed by walking its descendant tree (a bare
-# `kill <pid>` would orphan bun's children — `bun run` forks a child for the
-# script, and a test can spawn grandchildren too, e.g. a spawned `sleep`),
-# SIGTERM first, SIGKILL for any survivor, after a 2s grace. The test's
-# output is captured to $CAPTURE (partial output on timeout, per the
-# partial-output contract) and the exit code is recorded so the caller
-# treats a timeout exactly like any other non-zero exit. Returns: the test's
-# exit code, or 124 (the conventional timeout sentinel) if the bound fired.
+# Descendant-tree kill: SIGTERM, 2s grace, SIGKILL survivors. Without pgrep
+# only the top-level test process can be killed (descendants are orphaned).
+kill_process_tree() {
+  local root_pid="$1" queue current_pid child_pids pids_to_kill
+  pids_to_kill="$root_pid"
+  queue="$root_pid"
+  while [ -n "$queue" ]; do
+    child_pids=""
+    for current_pid in $queue; do
+      child_pids="$child_pids $(pgrep -P "$current_pid" 2>/dev/null)"
+    done
+    child_pids="${child_pids# }"
+    if [ -n "$child_pids" ]; then
+      pids_to_kill="$pids_to_kill $child_pids"
+      queue="$child_pids"
+    else
+      queue=""
+    fi
+  done
+  for current_pid in $pids_to_kill; do kill -TERM "$current_pid" 2>/dev/null; done
+  sleep 2
+  for current_pid in $pids_to_kill; do
+    if kill -0 "$current_pid" 2>/dev/null; then kill -KILL "$current_pid" 2>/dev/null; fi
+  done
+}
+
+# Prepend the `✗ timed out after <N>s` line to the capture (front, so
+# extractSpecificAssertion names it; partial output stays after it).
+prepend_timeout_line() {
+  local bound="$1"
+  {
+    echo "✗ timed out after ${bound}s"
+    cat "$CAPTURE" 2>/dev/null
+  } >"$CAPTURE.tmp" 2>/dev/null && mv "$CAPTURE.tmp" "$CAPTURE" 2>/dev/null
+}
+
+# Run one test under the watchdog. Returns the test's exit code, or 124 if
+# the bound fired.
 run_test_with_timeout() {
-  local bound="$1" t="$2" pid=0 start elapsed rc=0 k q kids to_kill
+  local bound="$1" t="$2" pid=0 start rc=0
   start=$SECONDS
   bun run "$t" >"$CAPTURE" 2>&1 &
   pid=$!
-  # Poll loop: 1s ticks, wall-clock via SECONDS. The bound is enforced at
-  # the first tick where elapsed >= bound, so a test that exits just before
-  # the bound completes normally; one still running at the bound is a
-  # timeout. (A test finishing at 299s with bound 300 passes; at 300 it is
-  # a timeout — the resolved decision is "at or after the bound".)
   while :; do
     if kill -0 "$pid" 2>/dev/null; then
-      elapsed=$((SECONDS - start))
-      if [ "$elapsed" -ge "$bound" ]; then
-        to_kill=""
-        q="$pid"
-        # BFS the descendant tree of the hung test so every child and
-        # grandchild is killed, not just the top-level bun. On macOS bash 3.2
-        # there is no process-group kill (no setsid); on Linux the test runs
-        # in its own process group so killing the group would be cleaner, but
-        # walking the tree via pgrep -P works on both. Each level's children
-        # become the next BFS frontier (a single pid at a time — bun `run`
-        # forks one child for the script, and a test can spawn further
-        # descendants, e.g. a spawned `sleep`).
-        while [ -n "$q" ]; do
-          kids="$(pgrep -P "$q" 2>/dev/null)"
-          if [ -n "$kids" ]; then
-            to_kill="$to_kill $kids"
-            q="$kids"
-          else
-            q=""
-          fi
-        done
-        # Include the test itself (BFS above starts at its children).
-        to_kill="$pid $to_kill"
-        for k in $to_kill; do kill -TERM "$k" 2>/dev/null; done
-        sleep 2
-        for k in $to_kill; do
-          if kill -0 "$k" 2>/dev/null; then kill -KILL "$k" 2>/dev/null; fi
-        done
+      if [ "$((SECONDS - start))" -ge "$bound" ]; then
+        kill_process_tree "$pid"
         wait "$pid" 2>/dev/null
-        rc=124
-        # The `✗ timed out after <N>s` line goes at the FRONT of the
-        # capture so extractSpecificAssertion names it (per the resolved
-        # decision: the timeout line is the specific assertion, placed
-        # before any pre-existing ✗ lines the test may have printed before
-        # hanging). Partial output the test emitted before the kill stays
-        # after it, satisfying the partial-output contract.
-        {
-          echo "✗ timed out after ${bound}s"
-          cat "$CAPTURE" 2>/dev/null
-        } >"$CAPTURE.tmp" 2>/dev/null && mv "$CAPTURE.tmp" "$CAPTURE" 2>/dev/null
-        return "$rc"
+        prepend_timeout_line "$bound"
+        return 124
       fi
     else
       break
@@ -138,6 +132,12 @@ run_test_with_timeout() {
   rc=$?
   return "$rc"
 }
+
+# pgrep powers the descendant kill; without it only the top-level test
+# process would be killed (descendants orphaned). Warn, do not fail.
+if ! command -v pgrep >/dev/null 2>&1; then
+  echo "warn: verify-loop: pgrep not found — on timeout only the top-level test process will be killed (descendants may be orphaned)" >&2
+fi
 
 if [ "$#" -eq 0 ]; then
   echo "usage: verify-loop.sh <file> ..." >&2
@@ -161,12 +161,6 @@ for t in "$@"; do
   else
     names+=("$t")
     if [ "$rc" -eq 124 ]; then
-      # #1014 — the test hit the per-test bound. The marker stays a plain
-      # `FAILED: <file> ...` line (extractAttributedTail's
-      # /^FAILED: .+$/gm last-marker anchoring keeps working unchanged);
-      # the `✗ timed out after <N>s` line is already at the front of the
-      # capture (written by run_test_with_timeout) so it is the specific
-      # assertion.
       echo "FAILED: $t (timed out after ${VERIFY_TEST_TIMEOUT_S}s)"
       cat "$CAPTURE"
     else
