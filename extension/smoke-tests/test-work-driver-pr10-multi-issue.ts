@@ -339,5 +339,46 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   );
 }
 
+// ---------------------------------------------------------------------------
+// #1006 — the TL;DR section is present in the commit-pr fallback prompt
+// when the normalisedSpec is populated (the dual-consumer invariant:
+// the same tldrSectionOf builder renders identical text in the mechanized
+// path and the LLM-ops fallback prompt). Tested via a direct call to
+// inlineCommitPrPrompt (not the full driver pipeline) so the spec format
+// is controlled and the assertion is precise.
+// ---------------------------------------------------------------------------
+{
+  const { inlineCommitPrPrompt } = await import("../src/work-driver-prompts-late.ts");
+  const spec = {
+    intent: "Fix the race condition in the dispatch loop.",
+    deliverables: [{ id: "d1", description: "A fix in work-driver.ts", paths: [] }],
+    acceptanceCriteria: ["The race is eliminated"],
+    outOfScope: [],
+    assumptions: [],
+    openQuestions: [],
+    evidence: [],
+    verdict: "proceed" as const,
+    rationale: "test",
+  };
+  const prompt = inlineCommitPrPrompt(
+    [990],
+    [],
+    { default: "/tmp/wt" },
+    { default: { id: "default", scope: "fix it", paths: ["src/foo.ts"], outOfScope: [] } },
+    "feature/issue-990",
+    spec,
+    [],
+    "/tmp/scratch",
+  );
+  assert(
+    prompt.includes("## TL;DR"),
+    "tldr-prompt: the commit-pr fallback prompt carries the ## TL;DR section",
+  );
+  assert(
+    prompt.includes("Fix the race condition"),
+    "tldr-prompt: the TLDR text is the intent (plain-language, from the spec)",
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

@@ -173,28 +173,8 @@ export function makeRunId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/**
- * Resolve the pi binary. When this code runs inside a pi process (the
- * extension is loaded), argv[1] is Pi's CLI entry script and we re-invoke the
- * SAME pi build (avoids PATH ambiguity, matches Pi's own subagent example).
- *
- * When this code runs outside Pi (smoke tests under `bun run`), argv[1] is the
- * test file and we'd recursively spawn ourselves — guard against that by only
- * trusting argv[1] when it looks like a Pi CLI entrypoint.
- */
-export function getPiInvocation(args: string[]): { command: string; args: string[] } {
-  const currentScript = process.argv[1];
-  const looksLikePiCli =
-    currentScript &&
-    !currentScript.startsWith("/$bunfs/") &&
-    /pi-coding-agent.*\/(dist\/)?cli\.(js|cjs|mjs)$/i.test(currentScript);
-  if (looksLikePiCli) {
-    return { command: process.execPath, args: [currentScript, ...args] };
-  }
-  // Fall back to `pi` on PATH — works for smoke tests and any other context
-  // where argv[1] isn't a Pi CLI script.
-  return { command: "pi", args };
-}
+// getPiInvocation moved to pi-binary-resolve.ts (#1019) — explicit
+// resolution order: argv → env → package → path, with version probing.
 
 /**
  * Is the child about to retry this failure itself?

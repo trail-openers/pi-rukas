@@ -24,6 +24,7 @@ import { preflightChildGuards } from "./child-guards.ts";
 import { type ResolvedModelChoice, resolveModel } from "./models.ts";
 import { type BrokerHandle, startBroker } from "./permission-broker.ts";
 import { isParentInTrustMode, makeBrokerDeps } from "./permission-guard.ts";
+import { getPiInvocation, kickPiResolutionProbe } from "./pi-binary-resolve.ts";
 import type { PiJsonEvent, SpawnOptions } from "./pi-event-shapes.ts";
 import { emptyRunningState, ingestEvent } from "./progress.ts";
 import { excludeToolsFor } from "./role-tools.ts";
@@ -43,7 +44,6 @@ import {
   buildChildArgs,
   buildCwdHint,
   capKillGraceMs,
-  getPiInvocation,
   makeRunId,
   reconcileObservedCounts,
   spawnBackstopMs,
@@ -83,32 +83,29 @@ async function spawnSpecialistInner(
   assertLiveSpawnAllowed(spec.role);
 
   const role = ROLES[spec.role];
+  // First spawn in this process: kick the version probe (fire-and-forget).
+  kickPiResolutionProbe();
   const systemPrompt = await fs.readFile(role.promptFile, "utf8");
   const cwd = spec.cwd ?? process.cwd();
 
   // Write role prompt to a temp file; Pi's --append-system-prompt accepts a
-  // file path and appends file contents to its default safety prompt. This
-  // both keeps Pi's tool-use guidance intact and avoids stuffing 15K through
-  // argv.
+  // file path and appends file contents to its default safety prompt.
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-rukas-"));
   const tmpPromptFile = path.join(tmpDir, `${spec.role}.md`);
   await fs.writeFile(tmpPromptFile, systemPrompt);
 
-  // Per-child transcript path. Pi will write its native session JSON here so
-  // the user can inspect/replay the child's full event log post-hoc.
+  // Per-child transcript path. Pi will write its native session JSON here.
   // #573 — accept a caller-supplied runId (derived by the driver BEFORE spawn
-  // so crash-resume can locate the surviving session file). spawn.ts mints a
-  // new runId when absent — default behaviour unchanged.
+  // so crash-resume can locate the surviving session file).
   const runId = opts.runId ?? makeRunId();
   const transcriptPath = transcriptPathFor(spec.role, runId, opts.seq, opts.tag);
   await fs.mkdir(path.dirname(transcriptPath), { recursive: true });
 
-  // Resolve which model this child should run on (spec > role env > global env > Pi default)
+  // Resolve which model this child should run on (spec > role env > global env > Pi default).
   const modelChoice = resolveModel(spec.role, spec.model);
 
-  // Subagent-permission plumbing: per-spawn Unix socket + broker.
-  //
-  // The subagent's pi-rukas (forwarded below via --extension and gated by
+  // Subagent-permission plumbing: per-spawn Unix socket + broker. The
+  // subagent's pi-rukas (forwarded below via --extension and gated by
   // PI_ENSEMBLE_SUBAGENT_MODE=1) escalates `ask` verdicts over this socket.
   // The parent broker prompts the user via ctx.ui.select, caches via the
   // existing decisions.json plumbing, and replies on the socket. Both the
