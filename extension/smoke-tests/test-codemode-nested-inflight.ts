@@ -42,7 +42,7 @@ function nestedStartEvent(
     toolName,
     args: args ?? { command: "echo hello" },
     parentToolCallId,
-  } as PiJsonEvent;
+  };
 }
 
 /** Fixture: a tool_execution_end event for the same nested call. */
@@ -59,7 +59,7 @@ function nestedEndEvent(
     result: "hello",
     isError,
     parentToolCallId,
-  } as PiJsonEvent;
+  };
 }
 
 /** Fixture: a top-level toolCall block inside an assistant message_end. */
@@ -70,7 +70,7 @@ function assistantToolCallEnd(toolCallId: string, toolName: string): PiJsonEvent
       role: "assistant",
       content: [{ type: "toolCall", id: toolCallId, name: toolName, arguments: {} }],
     },
-  } as PiJsonEvent;
+  };
 }
 
 /** Fixture: a toolResult message closing a top-level span. */
@@ -83,7 +83,7 @@ function toolResultEvent(toolCallId: string, toolName: string): PiJsonEvent {
       toolName,
       content: [{ type: "text", text: "done" }],
     },
-  } as PiJsonEvent;
+  };
 }
 
 // ============================================================
@@ -164,7 +164,7 @@ function toolResultEvent(toolCallId: string, toolName: string): PiJsonEvent {
 // ============================================================
 {
   const inflight = new InFlightTools();
-  inflight.observe({ type: "tool_execution_start", toolName: "bash" } as PiJsonEvent);
+  inflight.observe({ type: "tool_execution_start", toolName: "bash" });
   assert(!inflight.active, "4a: tool_execution_start without toolCallId does not open a span");
 }
 
@@ -174,7 +174,7 @@ function toolResultEvent(toolCallId: string, toolName: string): PiJsonEvent {
 {
   const inflight = new InFlightTools();
   inflight.observe(assistantToolCallEnd("call_1", "bash"));
-  inflight.observe({ type: "tool_execution_end", toolName: "bash" } as PiJsonEvent);
+  inflight.observe({ type: "tool_execution_end", toolName: "bash" });
   assert(inflight.active, "5a: tool_execution_end without toolCallId does not close the span");
 }
 
@@ -280,7 +280,7 @@ function toolResultEvent(toolCallId: string, toolName: string): PiJsonEvent {
   startBuffer(key);
   try {
     const buf: LiveEvent[] = [];
-    const added = pushEvent(key, buf, { type: "tool_execution_start", toolCallId: "x/0" } as PiJsonEvent);
+    const added = pushEvent(key, buf, { type: "tool_execution_start", toolCallId: "x/0" });
     assert(!added, "9a: tool_execution_start without toolName is not stored");
     assert(buf.length === 0, "9b: buffer remains empty");
   } finally {
@@ -296,7 +296,7 @@ function topLevelStartEvent(toolCallId: string, toolName: string, args?: unknown
     toolCallId,
     toolName,
     args: args ?? {},
-  } as PiJsonEvent;
+  };
 }
 
 // ============================================================
@@ -379,53 +379,6 @@ function topLevelStartEvent(toolCallId: string, toolName: string, args?: unknown
   assert(
     inflight.toolNames().length === 2,
     `12c: the nested call opens its own distinct span (got ${inflight.toolNames().length})`,
-  );
-}
-
-// ============================================================
-// 13. InFlightTools: an orphaned nested span (no tool_execution_end —
-//     the child died mid-tool) is closed by the PARENT's toolResult
-// ============================================================
-{
-  const inflight = new InFlightTools();
-  inflight.observe(assistantToolCallEnd("call_top", "codemode"));
-  inflight.observe(nestedStartEvent("call_top/0", "bash", "call_top"));
-  inflight.observe(nestedStartEvent("call_top/1", "read", "call_top"));
-  assert(
-    inflight.toolNames().length === 3,
-    `13a: three spans open (top + 2 nested), got ${inflight.toolNames().length}`,
-  );
-
-  // One nested call finishes normally.
-  inflight.observe(nestedEndEvent("call_top/0", "bash", "call_top"));
-  assert(
-    inflight.toolNames().length === 2,
-    `13b: one nested closed, two remain (got ${inflight.toolNames().length})`,
-  );
-
-  // call_top/1 never gets its tool_execution_end (the stream was cut),
-  // but the parent's toolResult arrives: the orphan must be closed with
-  // the parent, or the tool-inactivity budget stays armed forever.
-  inflight.observe(toolResultEvent("call_top", "codemode"));
-  assert(
-    !inflight.active,
-    "13c: the parent's toolResult closes the orphaned nested span too",
-  );
-  assert(inflight.size === 0, "13d: the open set is empty");
-
-  // A sibling's result must NOT close this parent's orphan (the prefix
-  // match is exact, `P/` only). Two parents are open, each with an orphan;
-  // `call_a`'s result arrives: only `call_a` and its orphan close.
-  const inflight2 = new InFlightTools();
-  inflight2.observe(assistantToolCallEnd("call_a", "codemode"));
-  inflight2.observe(nestedStartEvent("call_a/0", "bash", "call_a"));
-  inflight2.observe(assistantToolCallEnd("call_ab", "codemode"));
-  inflight2.observe(nestedStartEvent("call_ab/0", "bash", "call_ab"));
-  inflight2.observe(toolResultEvent("call_a", "codemode"));
-  assert(inflight2.active, "13e: the sibling parent's spans survive call_a's result");
-  assert(
-    inflight2.toolNames().length === 2,
-    `13f: call_ab and its orphan remain (got ${inflight2.toolNames().length})`,
   );
 }
 

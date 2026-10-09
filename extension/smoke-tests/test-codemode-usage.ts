@@ -55,14 +55,11 @@ const approx = (a: number, b: number) => Math.abs(a - b) < 1e-9;
   assert(approx(u.cacheWrite, EXPECTED_TOTALS.cacheWrite), `collapseEvents cacheWrite = ${u.cacheWrite} (expected ${EXPECTED_TOTALS.cacheWrite})`);
   assert(approx(u.cost, EXPECTED_TOTALS.cost), `collapseEvents cost = ${u.cost} (expected ${EXPECTED_TOTALS.cost})`);
   assert(u.turns === EXPECTED_TOTALS.turns, `collapseEvents turns = ${u.turns} (expected ${EXPECTED_TOTALS.turns} — toolResult must not inflate turn count)`);
-
-  // Not a doubled or one-sided figure: a double count would be 2× the true
-  // sum, and each figure alone is a distinct constant (2000 / 1000 / 500 for
-  // this fixture).
-  assert(u.input !== 2 * EXPECTED_TOTALS.input, "total input is NOT 2x the expected sum (double count)");
-  assert(u.input !== 2000, "total input is NOT 2x assistant-only (2000)");
-  assert(u.input !== 1000, "total input is NOT assistant-only (1000)");
-  assert(u.input !== 500, "total input is NOT toolResult-only (500)");
+  // The sum-equality asserts above are the load-bearing no-double-count
+  // check: a double count (2× the sum) or a one-sided figure
+  // (assistant-only / toolResult-only) would each land on a different
+  // constant than the true sum, so the approx-equalities alone catch
+  // both.
 }
 
 // --- collapseEvents: toolResult with NO usage (empty/errored codemode call) --

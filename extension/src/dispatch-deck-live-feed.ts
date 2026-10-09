@@ -1,13 +1,13 @@
 /**
  * The live buffer's FEED PATH (#1032 split from dispatch-deck-live.ts when
  * that file hit the 500-line cap): `feedRawEvent` and `pushEvent`, the
- * per-event normalisation of a raw child event into a `LiveEvent`, and the
- * per-job char-bound enforcement (`trimToBound`).
+ * per-event normalisation of a raw child event into a `LiveEvent`.
  *
- * The ring-buffer state (the buffers, the per-key running sizes, the append
- * subscribers) lives in dispatch-deck-live-state.ts, which both this module
- * and dispatch-deck-live.ts import — they never import each other (the
- * main module re-exports the feed functions, one direction only).
+ * The ring-buffer state (the buffers, the per-key running sizes, the
+ * char-bound enforcement `trimToBound`, the append subscribers) lives in
+ * dispatch-deck-live-state.ts, which both this module and
+ * dispatch-deck-live.ts import — they never import each other (the main
+ * module re-exports the feed functions, one direction only).
  *
  * A top-level tool call is surfaced by the assistant message's `toolCall`
  * content block — the `tool_execution_start` that Pi emits for it is the
@@ -30,6 +30,7 @@ import {
   buffers,
   eventSize,
   notifyAppend,
+  trimToBound,
 } from "./dispatch-deck-live-state.ts";
 import type { LiveEvent } from "./dispatch-deck-live-state.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
@@ -167,32 +168,4 @@ export function pushEvent(key: string, buf: LiveEvent[], event: PiJsonEvent): bo
     return trimToBound(key, buf);
   }
   return added;
-}
-
-/**
- * Enforce the per-job char bound AFTER a push: evict OLDEST-first
- * (`buf.shift()` — acceptable: the buffer is bounded in size) until the
- * RUNNING total (maintained per key by `feedRawEvent`, so no re-summing)
- * is within `LIVE_BUFFER_MAX_CHARS` — a live view must show the RECENT
- * activity, so the just-pushed event is never the first casualty. The
- * `buf.length > 1` guard keeps a lone oversized event ALONE and untruncated
- * (evicting it would empty the buffer — the bound caps the TOTAL across
- * events, never a lone event). Nothing "sticks": a >512 KB event — a large
- * file read — survives only until the next event arrives, at which point
- * it is the OLDEST and the first to be evicted.
- *
- * Exported (not private): dispatch-deck-live.ts `appendOperatorSteer`
- * pushes through the SAME bound as the feed path (#1032 split).
- */
-export function trimToBound(key: string, buf: LiveEvent[]): boolean {
-  if (buf.length === 0) return false;
-  // Evict oldest-first, but never evict down to zero events — a lone
-  // oversized event is retained alone (see above).
-  let total = bufferSizes.get(key) ?? 0;
-  while (total > LIVE_BUFFER_MAX_CHARS && buf.length > 1) {
-    const oldest = buf.shift();
-    if (oldest) total -= eventSize(oldest);
-  }
-  bufferSizes.set(key, total);
-  return true;
 }

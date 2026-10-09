@@ -54,7 +54,9 @@ export class InFlightTools {
     // message-bearing, so they are handled before the `msg` check below.
     // A nested span opens on tool_execution_start and closes on
     // tool_execution_end — the same open/close contract as top-level
-    // toolCall/toolResult pairs.
+    // toolCall/toolResult pairs. A nested span always closes on its own
+    // tool_execution_end (Pi emits it in a finally, before the parent
+    // toolResult); a span orphaned by a dying child dies with the spawn.
     if (event.type === "tool_execution_start") {
       if (event.toolCallId) this.open.set(event.toolCallId, event.toolName ?? "unknown");
       return;
@@ -69,20 +71,6 @@ export class InFlightTools {
       // A toolResult closes its span whether or not it is an error — a
       // failed tool that reported is no longer in flight.
       if (msg.toolCallId) this.open.delete(msg.toolCallId);
-      // A nested span (opened on tool_execution_start) whose
-      // tool_execution_end never arrived — the child died mid-tool, the
-      // stream was cut — would otherwise keep the tool-inactivity budget
-      // armed forever. The parent's toolResult proves the caller's tool
-      // finished, so every still-open nested span of the parent is over:
-      // close each open span whose parentToolCallId is this id, falling
-      // back to the id prefix (Pi's nested ids are `<callerId>/<n>` —
-      // verified in pi-coding-agent's nested-tool-calls).
-      if (msg.toolCallId) {
-        for (const id of [...this.open.keys()]) {
-          if (!id.startsWith(`${msg.toolCallId}/`)) continue;
-          this.open.delete(id);
-        }
-      }
       return;
     }
     if (msg.role === "assistant" && msg.content) {

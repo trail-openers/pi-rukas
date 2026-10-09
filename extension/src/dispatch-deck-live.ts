@@ -49,9 +49,15 @@
  * quiet gate that KEPT.
  *
  * The shared ring-buffer state (LiveEvent, the buffers map, the per-key
- * running sizes, `LIVE_BUFFER_MAX_CHARS`, the append subscribers) lives in
- * dispatch-deck-live-state.ts, shared with the feed path — the re-exports
- * below keep every existing import path working unchanged.
+ * running sizes, `LIVE_BUFFER_MAX_CHARS`, the char-bound enforcement
+ * `trimToBound`, the append subscribers) lives in
+ * dispatch-deck-live-state.ts; the FEED PATH (`feedRawEvent` / `pushEvent`)
+ * lives in dispatch-deck-live-feed.ts. This module is the RE-EXPORT FACING
+ * for both (the re-exports below keep every existing import path working
+ * unchanged); the feed module never imports this one, and this module never
+ * imports it except for the one-way re-export of `feedRawEvent` /
+ * `pushEvent` — the shared state below stays the one-directional seam
+ * neither of the two needs to import the other for.
  *
  * Out of scope: /runs integration (#836); pause/skip/retry controls;
  * lens-review and adversarial children, which own their deck entries
@@ -59,7 +65,6 @@
  */
 
 import { sanitizeForStorage, sanitizeText } from "./dispatch-deck-line.ts";
-import { trimToBound } from "./dispatch-deck-live-feed.ts";
 import type { LiveEvent } from "./dispatch-deck-live-state.ts";
 import {
   LIVE_BUFFER_MAX_CHARS,
@@ -68,6 +73,7 @@ import {
   buffers,
   eventSize,
   notifyAppend,
+  trimToBound,
 } from "./dispatch-deck-live-state.ts";
 import { clearViewScroll } from "./dispatch-deck-live-view-component.ts";
 
@@ -87,6 +93,7 @@ export {
   eventSize,
   onBufferAppend,
   notifyAppend,
+  trimToBound,
 } from "./dispatch-deck-live-state.ts";
 export type { LiveEvent } from "./dispatch-deck-live-state.ts";
 
