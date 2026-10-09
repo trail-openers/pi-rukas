@@ -30,7 +30,7 @@ import {
 } from "./lens-review-format.ts";
 import { installBlockRowsForRoster, skillsDirUsable } from "./lens-review-skills.ts";
 import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
-import { resolveHeadSha } from "./review-head-sha.ts";
+import { isFullCommitSha, resolveHeadSha } from "./review-head-sha.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
@@ -276,15 +276,26 @@ export async function runLensReview(opts: {
   }
   // #1039 — resolve the headSha ONCE, before any early return, so every
   // ledger write (blocked, empty-roster, aborted, normal) carries the
-  // resolved 40-char SHA. The delta arm's head is already a full SHA
-  // (resolveDeltaDiff resolved it via `--verify <head>^{commit}`), so the
-  // shared resolver is skipped there; the non-delta arm goes through the
-  // shared `resolveHeadSha` (review-head-sha.ts) for `opts.head ?? "HEAD"`.
-  // An unresolvable ref leaves headSha undefined (the ledger write omits
-  // it; the round-cap check fails closed — conservative by design).
+  // resolved 40-char SHA. The delta arm's head is normally already a full
+  // SHA (resolveDeltaDiff resolves it via the shared resolver), but the
+  // resolver can fall back to the raw caller ref on a git failure — and a
+  // raw ref must never reach the ledger (it is matched by string equality
+  // against a PR head OID, and a branch name there corrupts the round-cap
+  // comparison). The shape check keeps the invariant on every path; a
+  // non-SHA delta head leaves headSha undefined (the ledger write omits
+  // it; the round-cap check fails closed — conservative by design). The
+  // non-delta arm goes through the shared `resolveHeadSha` (review-head-sha.ts)
+  // for `opts.head ?? "HEAD"`; an unresolvable ref leaves headSha undefined
+  // there too.
   let headSha: string | undefined;
   if (resolved.kind === "ok" && resolved.delta) {
-    headSha = resolved.delta.head || undefined;
+    if (isFullCommitSha(resolved.delta.head)) {
+      headSha = resolved.delta.head;
+    } else {
+      trace(
+        `lens-review: delta head ${resolved.delta.head.slice(0, 40)} is not a 40-char SHA — headSha omitted (the round-cap check fails closed on the absent field)`,
+      );
+    }
   } else if (resolved.kind === "ok") {
     headSha = await resolveHeadSha(opts.cwd ?? process.cwd(), opts.head ?? "HEAD", execp);
   } else {
