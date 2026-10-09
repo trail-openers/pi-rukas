@@ -24,6 +24,9 @@
  *   3. the scan is proved in both directions (AGENTS.md §12): a deliberately
  *      unisolated fixture IS named, an isolated one is not, the tree is clean,
  *      and the gate still carries the export.
+ *
+ * The scan is name-based, so an aliased import of a writer seam would evade
+ * it; runtime isolation is the primary mechanism.
  */
 
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
