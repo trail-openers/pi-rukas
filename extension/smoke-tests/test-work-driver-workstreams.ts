@@ -12,10 +12,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseWorktreesBlock } from "../src/work-driver-branch-develop.ts";
+import { gitIn, makeBaseWorktrees } from "./lib/git-worktree-fixture.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { parseWorkstreams } from "../src/work-driver-plan.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
-import { readState, writeState } from "../src/workflow-state.ts";
+import { type WorkEvent, readState, writeState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -268,6 +269,7 @@ branch: feature/issue-553-fix
         plumbReports: [],
         status: "running" as const,
         branchName: "feature/issue-700-multi",
+        workstreamBaseShas: {} as Record<string, string>,
       },
       eventLog: [
         // Minimum prior events so the loop doesn't trip on inconsistency
@@ -275,6 +277,8 @@ branch: feature/issue-553-fix
       ],
     };
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    const baseShas = await makeBaseWorktrees(dir, ["task-a", "task-b", "task-c"]);
+    Object.assign(state.pipelineState.workstreamBaseShas, baseShas);
     await writeState(dir, state);
 
     const seenCwds: string[] = [];
@@ -300,6 +304,7 @@ branch: feature/issue-553-fix
         if (spec.role !== "developer") {
           throw new Error("smoke: halting after develop fanout");
         }
+        gitIn(spec.cwd ?? dir, ["commit", "--allow-empty", "-qm", `work ${opts?.label}`]);
         return mkResult({
           role: "developer",
           text: `mock developer output for ${opts?.label}`,
@@ -348,9 +353,11 @@ branch: feature/issue-553-fix
     const after = await readState(dir, 700);
     const kinds = (after?.eventLog ?? []).map((e) => e.kind);
     assert(kinds.includes("branches-fanned-out"), "multi-workstream: branches-fanned-out emitted");
-    const branchCompletions = (after?.eventLog ?? []).filter(
-      (e) => e.kind === "branch-completed" && e.step === "develop",
-    );
+    const isBranchCompleted = (
+      e: WorkEvent,
+    ): e is Extract<WorkEvent, { kind: "branch-completed" }> =>
+      e.kind === "branch-completed" && e.step === "develop";
+    const branchCompletions = (after?.eventLog ?? []).filter(isBranchCompleted);
     assert(
       branchCompletions.length === 4,
       "multi-workstream: 4 branch-completed events (3 branches + task-b's retry, append-only)",
@@ -362,19 +369,13 @@ branch: feature/issue-553-fix
 
     // Partial failure: task-b's branch-completed has ok=false, others ok=true.
     const verdictsByWorkstream = Object.fromEntries(
-      branchCompletions.map((e) => [
-        (e as Extract<typeof e, { kind: "branch-completed" }>).workstreamId,
-        (e as Extract<typeof e, { kind: "branch-completed" }>).ok,
-      ]),
+      branchCompletions.map((e) => [e.workstreamId, e.ok]),
     );
     assert(verdictsByWorkstream["task-a"] === true, "task-a: success recorded");
     // The latest task-b event is the retry's green result.
-    const taskBLatest = branchCompletions.filter(
-      (e) => (e as Extract<typeof e, { kind: "branch-completed" }>).workstreamId === "task-b",
-    );
+    const taskBLatest = branchCompletions.filter((e) => e.workstreamId === "task-b");
     assert(
-      taskBLatest.length === 2 &&
-        (taskBLatest[0] as Extract<typeof e, { kind: "branch-completed" }>).ok === false,
+      taskBLatest.length === 2 && taskBLatest[0]?.ok === false,
       "task-b: first failure recorded before the selective retry",
     );
     assert(verdictsByWorkstream["task-b"] === true, "task-b: retry recorded green");

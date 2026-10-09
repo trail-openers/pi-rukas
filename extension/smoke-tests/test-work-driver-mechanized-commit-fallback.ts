@@ -143,7 +143,7 @@ const mkDispatchFn =
             if (/-task-[abc]$/.test(cwd)) return { stdout: " M src/x.rs\n" };
             return { stdout: "" };
           }
-          if (cmd.startsWith("git rev-list --count base123")) return { stdout: "0\n" };
+          if (cmd.startsWith("git rev-list --count base123")) return { stdout: "1\n" };
           if (cmd.startsWith("git rev-list --count origin/")) return { stdout: "1\n" };
           if (cmd.startsWith("git add -- ")) return { stdout: "" };
           if (cmd.startsWith("git diff --cached")) return { stdout: "diff --git a/x b/x\n+new\n" };
@@ -250,7 +250,7 @@ const mkDispatchFn =
             if (/-task-[abc]$/.test(cwd)) return { stdout: " M src/x.rs\n" };
             return { stdout: "" };
           }
-          if (cmd.startsWith("git rev-list --count base123")) return { stdout: "0\n" };
+          if (cmd.startsWith("git rev-list --count base123")) return { stdout: "1\n" };
           if (cmd.startsWith("git rev-list --count origin/")) return { stdout: "1\n" };
           if (cmd.startsWith("git add -- ")) return { stdout: "" };
           if (cmd.startsWith("git diff --cached"))
@@ -334,7 +334,7 @@ const mkDispatchFn =
             if (cwd.endsWith("/wta") || cwd.endsWith("/wtc")) return { stdout: " M src/x.rs\n" };
             return { stdout: "" };
           }
-          if (cmd.startsWith("git rev-list --count base123")) return { stdout: "0\n" };
+          if (cmd.startsWith("git rev-list --count base123")) return { stdout: "1\n" };
           if (cmd.startsWith("git rev-list --count origin/")) return { stdout: "1\n" };
           if (cmd.startsWith("git add -- ")) return { stdout: "" };
           if (cmd.startsWith("git diff --cached")) return { stdout: "diff --git a/x b/x\n+new\n" };
@@ -413,7 +413,7 @@ const mkDispatchFn =
             if (cwd !== dir && worktreeAdds >= 3) return { stdout: " M src/x.rs\n" };
             return { stdout: "" };
           }
-          if (cmd.startsWith("git rev-list --count base123")) return { stdout: "0\n" };
+          if (cmd.startsWith("git rev-list --count base123")) return { stdout: "1\n" };
           if (cmd.startsWith("git rev-list --count origin/")) return { stdout: "1\n" };
           if (cmd.startsWith("git add -- ")) return { stdout: "" };
           if (cmd.startsWith("git diff --cached")) return { stdout: "diff --git a/x b/x\n+new\n" };

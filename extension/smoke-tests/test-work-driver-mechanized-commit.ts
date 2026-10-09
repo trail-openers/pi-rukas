@@ -113,7 +113,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           // the generic base123 handler because `..HEAD` extends past the
           // closing quote — `startsWith("...base123")` matches but returns 0.
           if (cmd.includes('"base123"..HEAD')) return { stdout: "1\n" };
-          if (cmd.startsWith("git rev-list --count base123")) return { stdout: "0\n" };
+          if (cmd.startsWith("git rev-list --count base123")) return { stdout: "1\n" };
           if (cmd.startsWith("git rev-list --count origin/")) return { stdout: "1\n" };
           if (cmd.startsWith("git add -- ")) return { stdout: "" };
           if (cmd.startsWith("git diff --cached"))

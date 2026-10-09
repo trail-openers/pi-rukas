@@ -33,6 +33,12 @@ export interface VerdictLine {
    * (`  ${text}`): `task-a: ok` or `task-a: FAIL — fence violation: src/main.rs (declared by task-d)`.
    */
   text: string;
+  /** The workstream id (structured — renderers must not parse `text`). */
+  id: string;
+  /** The failure reason, when the verdict carries one. */
+  reason?: string;
+  /** branch-completed events for this workstream in the current develop step (#1016). */
+  attempts: number;
 }
 
 /** One raw verdict before the id/ok/reason → line-text mapping. */
@@ -42,11 +48,31 @@ interface RawVerdict {
   reason?: string;
 }
 
-function toLine({ id, ok, reason }: RawVerdict): VerdictLine {
+/** Plain rendering of one verdict (no retry annotation). */
+export function verdictLine(v: RawVerdict, attempts = 0): VerdictLine {
+  const { id, ok, reason } = v;
   return {
     ok,
+    id,
+    reason,
+    attempts,
     text: ok ? `${id}: ok` : reason ? `${id}: FAIL — ${reason}` : `${id}: FAIL`,
   };
+}
+
+/** #1016 — branch-completed count per workstream since the last develop step-started. */
+function developAttemptCounts(state: WorkState): Map<string, number> {
+  let start = 0;
+  state.eventLog.forEach((e, i) => {
+    if (e.kind === "step-started" && e.step === "develop") start = i + 1;
+  });
+  const counts = new Map<string, number>();
+  for (const e of state.eventLog.slice(start)) {
+    if (e.kind === "branch-completed") {
+      counts.set(e.workstreamId, (counts.get(e.workstreamId) ?? 0) + 1);
+    }
+  }
+  return counts;
 }
 
 /**
@@ -77,5 +103,6 @@ export function developVerdictLines(state: WorkState): VerdictLine[] {
           // branch-completed carries no structured `reason` field — its `error`
           // tail (truncated at the event) is the fallback attribution.
           .map((e) => ({ id: e.workstreamId, ok: e.ok, reason: e.ok ? undefined : e.error }));
-  return raw.map(toLine);
+  const attempts = developAttemptCounts(state);
+  return raw.map((v) => verdictLine(v, attempts.get(v.id) ?? 0));
 }

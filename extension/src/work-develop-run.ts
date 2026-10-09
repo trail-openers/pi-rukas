@@ -66,8 +66,8 @@ export interface DevelopRunState {
   /** Per-branch events (completion, speculative, branch-completed, dispatch-failed). */
   branchEvents: WorkEvent[];
   /** #1016 — persists a `branch-completed` as its workstream finishes (the
-   *  crash-resume record). Absent → the event is batched into `branchEvents`. */
-  emitBranchCompleted?: (ev: WorkEvent) => void;
+   *  crash-resume record). */
+  emitBranchCompleted: (ev: WorkEvent) => void;
   /** The current state (mutated by appendEvent for memory-inject events). */
   stateRef: { current: WorkState };
 }
@@ -145,10 +145,7 @@ export function makeRunOneWorkstream(
     // work-driver-verify-develop.ts reads `workstream.paths` from state,
     // never the prompt text.
     // #1016 — per-completion persistence when the caller wires it.
-    const emitCompleted = (ev: WorkEvent): void => {
-      if (s.emitBranchCompleted) s.emitBranchCompleted(ev);
-      else s.branchEvents.push(ev);
-    };
+    const emitCompleted = (ev: WorkEvent): void => s.emitBranchCompleted(ev);
     const isParallel = ids.length > 1 && id !== "default";
     const siblingWorkstreams = isParallel
       ? ids

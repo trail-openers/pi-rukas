@@ -15,7 +15,15 @@ import {
   describeSiblingFenceViolations,
   replaceDevelopConvergedVerdicts,
 } from "./work-develop-fence-verdicts.ts";
-import { makeBranchCompletedPersister, runIndependentFanout } from "./work-develop-retry.ts";
+import { refuseMissingWorktrees } from "./work-develop-missing-worktree.ts";
+import {
+  commitsAheadOfBase,
+  makeBranchCompletedPersister,
+  resetWorktreeToBase,
+  runIndependentFanout,
+  trustedPreservedGreens,
+  withPersistNotes,
+} from "./work-develop-retry.ts";
 import {
   type DevelopRunState,
   makeRunOneWorkstream,
@@ -80,7 +88,8 @@ async function runDevelopTopological(
   }
   const { independent, dependentOrdered } = topologicalDispatchOrder(ids, dependsOnMap);
   const stateRef = { current: next };
-  const persister = makeBranchCompletedPersister(ctx.repoRoot, stateRef);
+  const persistNotes: string[] = [];
+  const persister = makeBranchCompletedPersister(ctx.repoRoot, stateRef, persistNotes);
   // #753 — per-workstream completion timestamps + a shared map of WHY each
   // failed-or-skipped workstream failed (the cascade event names the workstream
   // that ACTUALLY failed; a cascade is distinguishable from a legitimate skip).
@@ -142,34 +151,14 @@ async function runDevelopTopological(
   // createDependentWorktree in the dependent phase, which already fails the
   // workstream on a creation failure).
   const missingWorktree = independent.filter((id) => typeof worktrees[id] !== "string");
-  if (missingWorktree.length > 0) {
-    for (const id of missingWorktree) {
-      const err = `no worktree recorded for workstream ${id} (worktrees map has no entry) — dispatch refused rather than falling back to repoRoot`;
-      branchEvents.push({
-        kind: "dispatch-failed",
-        step: "develop",
-        role: "developer",
-        jobId: "unknown",
-        label: ids.length > 1 ? `developer[${id}]` : "developer",
-        ms: 0,
-        at: Date.now(),
-        errorTail: err.slice(0, 200),
-      });
-      branchEvents.push({
-        kind: "branch-completed",
-        step: "develop",
-        workstreamId: id,
-        ok: false,
-        ms: 0,
-        at: Date.now(),
-        error: err,
-      });
-      verdicts.push({ id, ok: false });
-      failedOrSkipped.add(id);
-      if (failureSource[id] === undefined) failureSource[id] = "failed";
-      trace(`work-driver: develop refused for ${id} — ${err}`);
-    }
-  }
+  refuseMissingWorktrees({
+    missing: missingWorktree,
+    multi: ids.length > 1,
+    branchEvents,
+    verdicts,
+    failedOrSkipped,
+    failureSource,
+  });
   // #753 — the worktrees that exist as part of THIS cycle, keyed by workstream
   // id. Seeded from pipelineState (the branch step's creations) so the #545
   // same-issue dirty scan in the dependent phase treats this cycle's own
@@ -181,42 +170,35 @@ async function runDevelopTopological(
 
   // #746 — every dispatched independent now has a worktree (the missing ones
   // failed above); the lookup can no longer fall back to ctx.repoRoot.
-  const independentResults = await runIndependentFanout({
+  // #1016 — a green with no commits ahead of its base is failed inside runAt,
+  // so the retry and the verdicts see the same truth. The fan-out returns the
+  // final verdict list, which replaces the shared array before dependents run.
+  const fanout = await runIndependentFanout({
     independent,
     preserved,
     skip: missingWorktree,
-    runAt: (id) => runOneWorkstream(id, worktrees[id] as string),
-    verdicts,
+    runAt: async (id) => {
+      const cwd = worktrees[id] as string;
+      const r = await runOneWorkstream(id, cwd);
+      if (!r.ok) return { id, ok: false };
+      const base = workstreamBaseShas[id] ?? globalBaseSha;
+      return (await commitsAheadOfBase(execFn, cwd, base))
+        ? r
+        : { id, ok: false, reason: "no commits ahead of base" };
+    },
+    resetFor: (id) =>
+      resetWorktreeToBase(execFn, worktrees[id] as string, workstreamBaseShas[id] ?? globalBaseSha),
+    verdicts: [...verdicts],
     multi: ids.length > 1,
   });
-  for (const r of independentResults) {
+  verdicts.splice(0, verdicts.length, ...fanout.verdicts);
+  for (const r of fanout.results) {
     if (!r.ok) failedOrSkipped.add(r.id);
   }
   // #753 — populate the dep-completion map: dependents wait on their DIRECT
   // dependency, so record the resolved fan-out time for every independent
   // workstream; the dependent phase records its own completion as it goes.
   for (const id of independent) depCompletedAtMap[id] = independentCompletedAt;
-  for (const id of independent) {
-    // #746 — a missing worktree was already failed (dispatch refused); it
-    // cannot be evidence-checked (there is no tree), and is already in
-    // failedOrSkipped, so skip it.
-    if (typeof worktrees[id] !== "string") continue;
-    const cwd = worktrees[id];
-    const base = workstreamBaseShas[id] ?? globalBaseSha;
-    if (typeof base === "string" && /^[0-9a-f]{40}$/.test(base)) {
-      try {
-        const { stdout } = await execFn(`git rev-list --count ${base}..HEAD`, {
-          cwd,
-          maxBuffer: 64 * 1024,
-        });
-        if (Number.parseInt(stdout.trim(), 10) === 0) failedOrSkipped.add(id);
-      } catch {
-        failedOrSkipped.add(id); // unresolvable → treat as blocked (fail-safe)
-      }
-    } else {
-      failedOrSkipped.add(id); // no valid base → treat as blocked (fail-safe)
-    }
-  }
   const wtResult = await runDependentWorkstreams(
     ctx,
     dependentOrdered,
@@ -263,9 +245,8 @@ async function runDevelopTopological(
         workstreamBaseShas: { ...workstreamBaseShas, ...next.pipelineState.workstreamBaseShas },
       },
     };
-    return endStep(next);
+    return endStep(withPersistNotes(next, persistNotes));
   }
-  void independentResults;
   // The state ref above is the memory-inject appends' shared state; the slow
   // events the developer children recorded are collected in the driver's
   // pending buffer and drained at the step boundary (routeStepOutcome).
@@ -279,6 +260,7 @@ async function runDevelopTopological(
       workstreamBaseShas: { ...workstreamBaseShas, ...next.pipelineState.workstreamBaseShas },
     },
   };
+  next = withPersistNotes(next, persistNotes);
   // #849 — the fence recovery reads `stateRef.current` (the shared ref the
   // memory-inject events and the gate operate on); keep it in sync with the
   // local `next` (the branchEvents + worktrees merge just applied).
