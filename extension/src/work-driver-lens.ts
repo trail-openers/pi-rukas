@@ -20,6 +20,7 @@ import {
   countCommittedAhead,
   countLensFixEmptyResends,
   noDiffEvidence,
+  repositionLensFixWorktree,
 } from "./work-driver-lens-fix-commit.ts";
 // Re-export: moved into work-driver-lens-fix-commit.ts for the 500-line gate
 // (AGENTS.md §12) — importers (work-driver-adversarial.ts) keep their path.
@@ -402,6 +403,35 @@ export async function runLensFix(
         scratchHygieneSection(scratchDir(ctx.repoRoot, ctx.issue)),
       ].join("\n")
     : inlineLensFixPrompt(findings, scratchDir(ctx.repoRoot, ctx.issue));
+
+  // #981 (task-a) — reposition the lens-fix worktree to the branch's
+  // current tip before the fix dispatch. The worktree was created at
+  // the branch's HEAD when the cycle started, but the branch may have
+  // advanced since (the developer committed, or a previous lens-fix
+  // round cherry-picked a fix). Without repositioning, the fixer sees
+  // a stale snapshot and the cherry-pick during integration conflicts
+  // on lines the fixer has not seen. The reposition is best-effort:
+  // a failure does not block the dispatch, it just means the fixer
+  // may see a stale base.
+  const tree = lensWorktree(ctx, state);
+  const branchName = state.pipelineState.branchName;
+  if (branchName && tree !== ctx.repoRoot) {
+    const execFn =
+      ctx.verifyExecFn ??
+      ((cmd: string, opts?: { cwd?: string; maxBuffer?: number }) =>
+        new Promise<{ stdout: string; stderr?: string }>((resolve, reject) =>
+          exec(cmd, { cwd: opts?.cwd, maxBuffer: opts?.maxBuffer }, (err, stdout, stderr) =>
+            err ? reject(Object.assign(err, { stderr })) : resolve({ stdout, stderr }),
+          ),
+        ));
+    const repositioned = await repositionLensFixWorktree(execFn, tree, branchName);
+    if (!repositioned) {
+      trace(
+        `work-driver: lens-fix reposition failed for ${tree} (branch ${branchName}) — proceeding with the worktree as-is`,
+      );
+    }
+  }
+
   return runSingleDispatch(
     ctx,
     next,

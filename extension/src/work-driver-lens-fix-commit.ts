@@ -73,6 +73,61 @@ export async function countCommittedAhead(
 }
 
 /**
+ * #981 (task-a) — reposition the lens-fix worktree to the branch's current
+ * tip so the developer's diff is based on the latest code.
+ *
+ * The worktree is created at the branch's HEAD when the cycle starts,
+ * but the branch may have advanced since (the developer committed, or
+ * a previous lens-fix round cherry-picked a fix). The fixer must see
+ * the current code, not a stale snapshot, or the cherry-pick during
+ * integration will conflict on lines the fixer has not seen.
+ *
+ * Uses `git merge --ff-only <branch>` to fast-forward the worktree's
+ * HEAD to the branch tip. This is safe because:
+ * - the worktree is detached (created with `--detach`), so it has no
+ *   local branch to conflict with;
+ * - a fast-forward is a no-op when the worktree is already at the tip;
+ * - if the worktree has diverged (should not happen — it's detached and
+ *   we just committed the fix there), the fast-forward fails and the
+ *   caller treats it as a non-conflict failure (the fixer's commit is
+ *   lost, but the worktree was not dirty, so nothing is corrupted).
+ *
+ * Returns `true` when the worktree is now at the branch tip, `false`
+ * when it could not be moved (the caller proceeds anyway — the
+ * reposition is a best-effort improvement, not a gate).
+ */
+export async function repositionLensFixWorktree(
+  execFn: ExecFn,
+  tree: string,
+  branchName: string,
+): Promise<boolean> {
+  try {
+    // Fast-forward the worktree's HEAD to the branch tip. The worktree is
+    // detached, so there is no branch to conflict with. A no-op when
+    // already at the tip.
+    await execFn(`git merge --ff-only "refs/heads/${branchName}"`, {
+      cwd: tree,
+      maxBuffer: 64 * 1024,
+    });
+    return true;
+  } catch {
+    // Try the remote ref in case the local branch is stale.
+    try {
+      await execFn(`git merge --ff-only "refs/remotes/origin/${branchName}"`, {
+        cwd: tree,
+        maxBuffer: 64 * 1024,
+      });
+      return true;
+    } catch {
+      // Could not reposition — the worktree stays where it is. The fixer
+      // will see the stale base, and the cherry-pick may conflict, but
+      // the reposition is best-effort, not a gate.
+      return false;
+    }
+  }
+}
+
+/**
  * The name-set of `git diff <branchHead> HEAD --name-only` in `tree`, or
  * undefined when the diff could not be read. An EMPTY name-set means the
  * work is content-identical to the branch head (already on the branch); a
@@ -192,12 +247,20 @@ export async function landCommittedFix(
           scratchDir: scratch,
           label: "lens-fix-integration",
         });
+        // #981 (task-a) — a true conflict names the worktree in the error
+        // so the operator knows where to run `git status` to see the
+        // conflicted files. A patch-apply failure is not a conflict — the
+        // error text alone tells the story.
+        const conflictNote =
+          orch._conflict === "conflict"
+            ? ` Run \`git -C ${tree} status\` to see the conflicted files, resolve them, commit, and re-run.`
+            : "";
         const causeMsg =
           orch._conflict === "conflict"
             ? "cherry-pick conflict — the batch was aborted"
             : `patch-apply failed for the lens-fix worktree: ${orch._applyConflict?.reason ?? "unknown"}`;
         throw new Error(
-          `${causeMsg}. ${restoreClaim(restore, "", MANUAL_REPAIR_HINT)} The fix's commits remain in the worktree ${tree}.`,
+          `${causeMsg}. ${restoreClaim(restore, "", MANUAL_REPAIR_HINT)} The fix's commits remain in the worktree ${tree}.${conflictNote}`,
         );
       }
       // #749 — the tree-hash dedup skip means the content is already on the
