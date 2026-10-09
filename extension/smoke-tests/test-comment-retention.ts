@@ -147,7 +147,6 @@ async function rg(
 
   // (d3) #1017 exact shape: 2-line comment reworded + body changed in the same
   // hunk → replaced (2 lines), zero lost (condition (a) fires hunk-locally).
-
   await rg(
     "(d3)",
     `// the doc for f, line one\n// the doc for f, line two\nfunction f() {\n  return 1;\n}\n`,
