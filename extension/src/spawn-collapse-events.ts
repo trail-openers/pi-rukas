@@ -9,6 +9,7 @@
 import { NO_TEXT_PLACEHOLDER } from "./lens-review-format.ts";
 import { adapterFor } from "./model-adapters.ts";
 import type { PiContentBlock, PiJsonEvent, PiMessage } from "./pi-event-shapes.ts";
+import { addUsage } from "./progress.ts";
 import type { DispatchResult } from "./types.ts";
 
 export function collapseEvents(
@@ -50,20 +51,14 @@ export function collapseEvents(
   // assistant turns in this transcript — the parent's assistant `message_end`
   // only carries the model call that ISSUED the codemode script, not the
   // nested calls it executed — so the toolResult message's `usage` field is
-  // the only record of that spend. We add it here, separately from the
-  // assistant-message loop below, so:
-  //   - a toolResult with no `usage` (an empty or errored codemode call)
-  //     contributes 0, and
-  //   - the same field is never also re-counted from any other message, so
-  //     the total is assistant usage + toolResult usage, exactly once each.
+  // the only record of that spend. It is added through the SAME `addUsage`
+  // helper as the assistant loop below, so the live and replay paths
+  // cannot drift: a toolResult with no `usage` contributes 0, and the
+  // total is assistant usage + toolResult usage, exactly once each.
   for (const msg of messages) {
     if (msg.role !== "toolResult") continue;
     if (!msg.usage) continue;
-    usage.input += msg.usage.input ?? 0;
-    usage.output += msg.usage.output ?? 0;
-    usage.cacheRead += msg.usage.cacheRead ?? 0;
-    usage.cacheWrite += msg.usage.cacheWrite ?? 0;
-    usage.cost += msg.usage.cost?.total ?? 0;
+    addUsage(usage, msg.usage, {});
   }
 
   for (const msg of messages) {
@@ -72,13 +67,7 @@ export function collapseEvents(
     if (msg.model && !model) model = msg.model;
     if (msg.provider && !provider) provider = msg.provider;
     if (msg.api && !api) api = msg.api;
-    if (msg.usage) {
-      usage.input += msg.usage.input ?? 0;
-      usage.output += msg.usage.output ?? 0;
-      usage.cacheRead += msg.usage.cacheRead ?? 0;
-      usage.cacheWrite += msg.usage.cacheWrite ?? 0;
-      usage.cost += msg.usage.cost?.total ?? 0;
-    }
+    if (msg.usage) addUsage(usage, msg.usage, {});
     // Per-message model adapter: handles quirks specific to the LLM family
     // that emitted this message (e.g. GLM's "None" placeholder text blocks).
     // Default adapter is no-op, so unknown models pass through unchanged.

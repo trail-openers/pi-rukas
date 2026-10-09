@@ -12,8 +12,37 @@
  * updating roughly once per child turn.
  */
 
-import type { PiContentBlock } from "./pi-event-shapes.ts";
+import type { PiContentBlock, PiUsage } from "./pi-event-shapes.ts";
 import type { DispatchUsage } from "./types.ts";
+
+/**
+ * #1032 — shared usage accumulation, one implementation for the two paths
+ * that must agree (the live ingest path and the collapseEvents replay path):
+ * add `u` to the running totals `acc`, plus `tokens = input + output +
+ * cacheRead + cacheWrite` for the cumulative token budget. Both paths sum
+ * assistant usage and toolResult usage (the #1032 nested-codemode spend)
+ * through this, exactly once each.
+ */
+export function addUsage(
+  acc: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    cost: number;
+  },
+  u: PiUsage,
+  tokens: { totalTokens?: number },
+): number {
+  acc.input += u.input ?? 0;
+  acc.output += u.output ?? 0;
+  acc.cacheRead += u.cacheRead ?? 0;
+  acc.cacheWrite += u.cacheWrite ?? 0;
+  acc.cost += u.cost?.total ?? 0;
+  const added = (u.input ?? 0) + (u.output ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0);
+  if (tokens.totalTokens !== undefined) tokens.totalTokens += added;
+  return added;
+}
 
 export interface RunningState {
   /** Role label (e.g. "developer", "code-review-specialist"). */
@@ -362,17 +391,7 @@ export function ingestEvent(
     // token-budget quantity (`totalTokens`) is separate from turn
     // accounting (see `collapseEvents`'s same invariant).
     if (msg.usage) {
-      state.usage.input += msg.usage.input ?? 0;
-      state.usage.output += msg.usage.output ?? 0;
-      state.usage.cacheRead += msg.usage.cacheRead ?? 0;
-      state.usage.cacheWrite += msg.usage.cacheWrite ?? 0;
-      state.usage.cost += msg.usage.cost?.total ?? 0;
-      state.usage.turns = state.turns;
-      state.totalTokens +=
-        (msg.usage.input ?? 0) +
-        (msg.usage.output ?? 0) +
-        (msg.usage.cacheRead ?? 0) +
-        (msg.usage.cacheWrite ?? 0);
+      addUsage(state.usage, msg.usage, state);
     }
     if (toolResultObserver) {
       const tr = toolResultFields(msg);
@@ -384,18 +403,8 @@ export function ingestEvent(
   state.turns += 1;
   if (msg.model && !state.model) state.model = msg.model;
   if (msg.usage) {
-    state.usage.input += msg.usage.input ?? 0;
-    state.usage.output += msg.usage.output ?? 0;
-    state.usage.cacheRead += msg.usage.cacheRead ?? 0;
-    state.usage.cacheWrite += msg.usage.cacheWrite ?? 0;
-    state.usage.cost += msg.usage.cost?.total ?? 0;
+    addUsage(state.usage, msg.usage, state);
     state.usage.turns = state.turns;
-    // #543 F6 — running cumulative total, the token-budget quantity.
-    state.totalTokens +=
-      (msg.usage.input ?? 0) +
-      (msg.usage.output ?? 0) +
-      (msg.usage.cacheRead ?? 0) +
-      (msg.usage.cacheWrite ?? 0);
   }
   // Find the latest tool call name + assistant text in this turn.
   let latestToolName: string | undefined;

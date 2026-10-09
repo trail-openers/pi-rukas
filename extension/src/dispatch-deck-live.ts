@@ -53,7 +53,7 @@
  * directly and get no buffer (their rows offer steer only).
  */
 
-import { NEWLINE_SEP, sanitizeText } from "./dispatch-deck-line.ts";
+import { sanitizeForStorage, sanitizeText } from "./dispatch-deck-line.ts";
 import { clearViewScroll } from "./dispatch-deck-live-view-component.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { trace } from "./trace.ts";
@@ -83,25 +83,44 @@ export {
 // =============================================================================
 
 /**
- * A normalised unit of a child's recent activity. Stored strings are
- * sanitised at FEED time (issue #927): control-char/ANSI-stripped, newlines
- * collapsed to ` ⏎ `. UNTRUNCATED (#916). Renderers must width-bound via
- * `toTerminalLine` but must not assume raw newlines or control characters.
- * `thinking` blocks store their raw character count as `text`.
+ * A normalised unit of a child's recent activity.
+ *
+ * The stored strings are sanitised at FEED time (issue #927): every
+ * `text` / `args` / `name` field is control-char/ANSI-stripped, with
+ * newlines collapsed to the ` ⏎ ` separator (dispatch-deck-line.ts
+ * `NEWLINE_SEP`) — but UNTRUNCATED (#916). Renderers must still
+ * width-bound via `toTerminalLine`, but must not assume raw newlines or
+ * control characters here.
+ *
+ * `thinking` blocks (`{kind:"thinking"}`) are stored with their raw
+ * character count as `text` (#916: the view renders `▸ thinking (N chars)`
+ * with N = raw char count, not the post-wrap rendered size).
  */
 export type LiveEvent =
   | { kind: "text"; text: string }
   | { kind: "toolCall"; name: string; args: string }
   | { kind: "toolResult"; name: string; text: string; isError: boolean }
   | { kind: "thinking"; text: string }
-  /** #915 — operator steer from the agent view's input line. Rendered as `you → <label>: <text>`. */
+  /**
+   * #915 — an operator steer sent from the agent view's input line.
+   * Distinct from the child's own events: rendered as
+   * `you → <label>: <text>` so the conversation reads in order. Stored
+   * UNTRUNCATED like every other event and counted within the per-job
+   * byte bound.
+   */
   | { kind: "operatorSteer"; label: string; text: string; at: number };
 
 /**
  * The per-job bound, measured on the stored string length in UTF-16 code
- * units. Bounded queue: when the total exceeds the bound, OLDEST events are
- * evicted first (the buffer keeps the most RECENT activity). A single event
- * larger than the bound is kept ALONE and untruncated.
+ * units (the `.text` field for text/thinking, the full JSON string for
+ * toolCall args) — #916, replacing the 200-event ring cap and the feed-time
+ * character truncation. The buffer behaves as a bounded queue: when the
+ * total exceeds the bound, the OLDEST events are evicted until the total
+ * fits — the buffer keeps the most RECENT activity (that is what a live
+ * view is for; eviction of the just-pushed event would freeze the view on
+ * stale output once the bound is reached). A single event whose own size
+ * exceeds the bound is kept ALONE and untruncated (the bound caps the
+ * TOTAL across multiple events, never a lone event — PM decision, #916).
  */
 export const LIVE_BUFFER_MAX_CHARS = 512 * 1024;
 
@@ -153,24 +172,13 @@ export function getBuffer(key: string): LiveEvent[] {
 }
 
 /**
- * #915 — record an operator steer sent from the agent view's input line
- * as an `operatorSteer` event, so the view's transcript shows
- * `you → <label>: <text>` in order with the child's own events.
- *
- * The label is taken at call time (the deck entry's label while the job is
- * running; the caller passes a fallback for a settled job) and is sanitised
- * here — labels flow from untrusted child output, and the rendered line
- * must never desync the overlay. The steer text is stored UNTRUNCATED
- * (the echo is operator input, exempt from the child-truncation limits —
- * only the per-job byte bound applies) but with newlines collapsed to the
- * ` ⏎ ` separator, so the echo renders as one wrapped logical line like
- * every other text event. Sanitisation is idempotent.
- *
- * The push goes through the SAME bound as feedRawEvent (LIVE_BUFFER_MAX_CHARS
- * — `trimToBound` evicts oldest-first) and triggers the SAME append
- * subscribers (`onBufferAppend`), so the open view re-renders immediately.
- * A key with no buffer (view closed, job long settled) is a no-op — there
- * is no surface left to show the echo on.
+ * #915 — record an operator steer from the agent view's input line as an
+ * `operatorSteer` event, rendered as `you → <label>: <text>`. Label is
+ * sanitised (flows from untrusted child output). Steer text is UNTRUNCATED
+ * (operator input, exempt from child-truncation) but newlines collapsed to
+ * ` ⏎ ` so it renders as one wrapped logical line. The push goes through
+ * the SAME bound as feedRawEvent and triggers the SAME append subscribers.
+ * A key with no buffer is a no-op.
  */
 export function appendOperatorSteer(key: string, label: string, text: string): void {
   const buf = buffers.get(key);
@@ -178,7 +186,7 @@ export function appendOperatorSteer(key: string, label: string, text: string): v
   const ev: LiveEvent = {
     kind: "operatorSteer",
     label: sanitizeText(label),
-    text: sanitizeText(text).replace(/\n+/g, NEWLINE_SEP),
+    text: sanitizeForStorage(text),
     at: Date.now(),
   };
   buf.push(ev);
@@ -375,17 +383,23 @@ export function feedRawEvent(key: string, event: PiJsonEvent): void {
  * kept — only the length truncation was removed.
  */
 export function pushEvent(key: string, buf: LiveEvent[], event: PiJsonEvent): boolean {
-  // #1032 — nested tool calls (codemode scripts via ctx.executeTool) emit
-  // flat tool_execution_start events (no message field). Surface them as
-  // toolCall entries with a ↳ prefix so the live view shows the nested
-  // call in order with the parent. tool_execution_end is not surfaced
-  // here — the toolResult message that follows already shows the result.
+  // #1032 — nested tool calls (codemode scripts) emit flat
+  // tool_execution_start events. Surface as toolCall with ↳ prefix.
+  // Args sanitised at feed time like every sibling branch (#927);
+  // stringify wrapped in try/catch (circular/BigInt would throw).
   if (event.type === "tool_execution_start" && event.toolName) {
+    let rawArgs = "";
+    if (event.args !== undefined && event.args !== null) {
+      try {
+        rawArgs = JSON.stringify(event.args) ?? "";
+      } catch {
+        rawArgs = "[unserialisable args]";
+      }
+    }
     const ev: LiveEvent = {
       kind: "toolCall",
       name: sanitizeText(`↳ ${event.toolName}`),
-      args:
-        event.args === undefined || event.args === null ? "" : (JSON.stringify(event.args) ?? ""),
+      args: sanitizeForStorage(rawArgs),
     };
     buf.push(ev);
     bufferSizes.set(key, (bufferSizes.get(key) ?? 0) + eventSize(ev));
@@ -402,19 +416,14 @@ export function pushEvent(key: string, buf: LiveEvent[], event: PiJsonEvent): bo
       .map((b) => b.text as string)
       .join("");
     if (!resultText) return false;
-    // #839 — the tool-result identity fields live on the MESSAGE (pi-ai
-    // `ToolResultMessage`), not on the event; no cast needed. The result
-    // text is untrusted child output — sanitise + collapse to ONE logical
-    // line at feed time (newlines → the ` ⏎ ` separator, C0/ANSI stripped,
-    // tabs → spaces) so the overlay can never desync pi-tui's line
-    // accounting (issue #927: raw newlines / control chars from tool
-    // results ghosted the overlay over the main chat and polluted the
-    // scrollback on every 1 s re-render).
+    // #839 — result text is untrusted child output; sanitised at feed
+    // time (C0/ANSI stripped, newlines → ` ⏎ `) so the overlay can
+    // never desync pi-tui's line accounting (#927).
     const name = msg.toolName;
     const ev: LiveEvent = {
       kind: "toolResult",
       name: name ? sanitizeText(name) : "unknown",
-      text: sanitizeText(resultText).replace(/\n+/g, NEWLINE_SEP),
+      text: sanitizeForStorage(resultText),
       isError: msg.isError === true,
     };
     buf.push(ev);
@@ -427,7 +436,7 @@ export function pushEvent(key: string, buf: LiveEvent[], event: PiJsonEvent): bo
     if (block.type === "text" && typeof block.text === "string" && block.text.length > 0) {
       const ev: LiveEvent = {
         kind: "text",
-        text: sanitizeText(block.text).replace(/\n+/g, NEWLINE_SEP),
+        text: sanitizeForStorage(block.text),
       };
       buf.push(ev);
       total += eventSize(ev);
@@ -437,26 +446,25 @@ export function pushEvent(key: string, buf: LiveEvent[], event: PiJsonEvent): bo
       typeof block.thinking === "string" &&
       block.thinking.length > 0
     ) {
-      // #916 — thinking blocks were silently dropped before; store them as
-      // their own variant so the view can render `▸ thinking (N chars)`.
+      // #916 — thinking blocks stored as their own variant; view renders `▸ thinking (N chars)`.
       const ev: LiveEvent = {
         kind: "thinking",
-        text: sanitizeText(block.thinking).replace(/\n+/g, NEWLINE_SEP),
+        text: sanitizeForStorage(block.thinking),
       };
       buf.push(ev);
       total += eventSize(ev);
       added = true;
     } else if (block.type === "toolCall" && block.name) {
-      // #916 — store the FULL JSON of the arguments (previously the 50-char
-      // extractToolHint preview); the view renders it in full.
+      // #916 — FULL JSON of arguments (previously 50-char extractToolHint preview).
       const ev: LiveEvent = {
         kind: "toolCall",
         name: sanitizeText(block.name),
-        // block.arguments comes from JSON.parse of the child's event stream, so it cannot be circular or contain BigInt — stringify cannot throw here.
-        args:
+        // block.arguments is from JSON.parse — cannot be circular/BigInt.
+        args: sanitizeForStorage(
           block.arguments === undefined || block.arguments === null
             ? ""
             : (JSON.stringify(block.arguments) ?? ""),
+        ),
       };
       buf.push(ev);
       total += eventSize(ev);
@@ -471,16 +479,10 @@ export function pushEvent(key: string, buf: LiveEvent[], event: PiJsonEvent): bo
 }
 
 /**
- * Enforce the per-job char bound AFTER a push: evict OLDEST-first
- * (`buf.shift()` — acceptable: the buffer is bounded in size) until the
- * RUNNING total (maintained per key by `feedRawEvent`, so no re-summing)
- * is within `LIVE_BUFFER_MAX_CHARS` — a live view must show the RECENT
- * activity, so the just-pushed event is never the first casualty. The
- * `buf.length > 1` guard keeps a lone oversized event ALONE and untruncated
- * (evicting it would empty the buffer — the bound caps the TOTAL across
- * events, never a lone event). Nothing "sticks": a >512 KB event — a large
- * file read — survives only until the next event arrives, at which point
- * it is the OLDEST and the first to be evicted.
+ * Enforce the per-job char bound after a push: evict OLDEST-first until
+ * the running total fits `LIVE_BUFFER_MAX_CHARS`. The `buf.length > 1`
+ * guard keeps a lone oversized event alone (the bound caps the TOTAL
+ * across events, never a lone event — PM decision, #916).
  */
 function trimToBound(key: string, buf: LiveEvent[]): boolean {
   if (buf.length === 0) return false;

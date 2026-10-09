@@ -207,7 +207,56 @@ function toolResultEvent(toolCallId: string, toolName: string): PiJsonEvent {
 }
 
 // ============================================================
-// 7. Deck: tool_execution_end is NOT surfaced (the toolResult message
+// 7. Deck: nested args are sanitised at feed time (ESC stripped, newlines
+//    collapsed) — the stored-string invariant (#927) holds for the nested
+//    branch too
+// ============================================================
+{
+  const key = "test-nested-deck-sanitise";
+  startBuffer(key);
+  try {
+    const buf: LiveEvent[] = [];
+    const esc = String.fromCharCode(27);
+    const hostileArgs = {
+      command: "echo hi\nworld\n\nmore", // raw newlines in the value
+      note: esc + "[31mred text" + esc + "[0m", // raw ANSI CSI escapes
+    };
+    pushEvent(key, buf, nestedStartEvent("call_top/1", "bash", "call_top", hostileArgs));
+    assert(buf.length === 1, `7c: one event stored for the hostile-args nested call (got ${buf.length})`);
+    if (buf.length === 1 && buf[0].kind === "toolCall") {
+      // JSON.stringify escapes control chars: \n → \\n, ESC → \\u001b.
+      // sanitizeForStorage strips actual control chars (none remain) and
+      // collapses actual newlines (none remain) — the JSON-escaped text
+      // is printable and passes through unchanged. The key invariant:
+      // no raw control character survives into the stored string.
+      assert(
+        !buf[0].args.includes("\n"),
+        "7d: stored args contain no raw newline byte",
+      );
+      assert(
+        !buf[0].args.includes(String.fromCharCode(27)),
+        "7e: stored args contain no raw ESC byte",
+      );
+      // The payload content is preserved (sanitisation is idempotent on
+      // already-escaped JSON).
+      assert(
+        buf[0].args.includes("red text"),
+        "7f: the payload text survives sanitisation",
+      );
+      assert(
+        buf[0].args.includes("echo hi"),
+        "7g: the command text survives sanitisation",
+      );
+    } else {
+      assert(false, "7h: the hostile-args nested call was stored as a toolCall");
+    }
+  } finally {
+    dropBuffer(key);
+  }
+}
+
+// ============================================================
+// 8. Deck: tool_execution_end is NOT surfaced (the toolResult message
 //    that follows already shows the result)
 // ============================================================
 {
@@ -224,7 +273,7 @@ function toolResultEvent(toolCallId: string, toolName: string): PiJsonEvent {
 }
 
 // ============================================================
-// 8. Deck: tool_execution_start without toolName is not surfaced
+// 9. Deck: tool_execution_start without toolName is not surfaced
 // ============================================================
 {
   const key = "test-nested-deck-noname";
@@ -240,7 +289,7 @@ function toolResultEvent(toolCallId: string, toolName: string): PiJsonEvent {
 }
 
 // ============================================================
-// 9. Deck: buffer lifecycle is clean (no leak)
+// 10. Deck: buffer lifecycle is clean (no leak)
 // ============================================================
 {
   const before = bufferCount();

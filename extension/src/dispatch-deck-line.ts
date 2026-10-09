@@ -173,3 +173,15 @@ export function toTerminalLines(text: string, width: number): string[] {
 export function collapseToSpaces(text: string): string {
   return sanitizeText(text).replaceAll(/\s+/g, " ").trim();
 }
+
+/**
+ * The LIVE-BUFFER feed-time sanitisation, shared by every storage site in
+ * dispatch-deck-live.ts (#1032): control-char/ANSI strip + newline collapse
+ * to the ` ⏎ ` separator. The stored-string invariant ("sanitised at feed
+ * time") is only true if every site uses the same transformation — the
+ * nested `tool_execution_start` branch drifted (raw `JSON.stringify`, no
+ * sanitisation), so the helper now lives here rather than being inlined.
+ */
+export function sanitizeForStorage(text: string): string {
+  return sanitizeText(text).replace(/\n+/g, NEWLINE_SEP);
+}
