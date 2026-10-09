@@ -1,53 +1,14 @@
 #!/usr/bin/env bun
 /**
- * #1071 — the review-ledger lock: the O_EXCL lockfile that serialises
- * appendLedgerEntry's read → dedupe → bumpLensRound → write-temp → rename
- * window so two concurrent writers on one clone (an adversarial_loop
- * finishing while a dispatch_lens_review finishes, or two Pi sessions on the
- * same clone) no longer lose a row.
- *
- * The lock (review-ledger-lock.ts) is colocated with the ledger file (named
- * from the resolved ledger path, honouring PI_ENSEMBLE_REVIEW_LEDGER_FILE),
- * holds {pid, at, holder}, and degrades to a no-op release on a past-deadline
- * wait or a non-EEXIST open error — the caller then falls through to the
- * existing unlocked write + mergeAfterRace fallback, which preserves the
- * other writer's row (the fallback re-reads before its rename).
- *
- * Four sections:
- *   1. lock lifecycle — present-while-held, removed-on-release, stale-swept,
- *      unparseable-treated-stale, past-deadline-degrades-to-no-op, and the
- *      default constants match the issue's "≈5 s wait / ≈30 s stale" spec.
- *   2. the two-process race regression — two bun children each call
- *      appendLedgerEntry against a shared PI_ENSEMBLE_REVIEW_LEDGER_FILE
- *      temp file. The race straddles the read/rename gap via the test-only
- *      injection point setLedgerCriticalSectionHookForTests (the child
- *      script sets a ~150 ms await hook between readLedgerFile and
- *      renameSync). Without the lock, both children read an empty file,
- *      both write their own row, and the second's rename silently drops
- *      the first's row. With the lock, the second child waits for the
- *      first's critical section to release, then re-reads (the first's row
- *      is present), dedupes, bumps, and writes — both rows survive.
- *
- *   3. the in-process Promise.all supplement — two concurrent
- *      appendLedgerEntry calls for different branches against a shared
- *      temp-file ledger; both rows must survive.
- *
- *   4. event-loop non-blocking proof — while a held lock forces a
- *      contended (async) acquire into its poll loop, a concurrent
- *      setTimeout(…, 10) callback in the SAME process must still fire
- *      before the acquire gives up: a synchronous (Atomics.wait) sleep
- *      would stop the whole event loop for the poll and the timer would
- *      never fire inside the wait window.
- *
- * FAIL-WITHOUT-LOCK PROOF: with the lock temporarily bypassed (the
- * children's ~150 ms critical-section hook in place and the
- * acquireLedgerLock call removed from review-ledger.ts), the two-process
- * race in section 2 loses one row: both children read an empty file, both
- * write their own row, and the second's rename silently drops the first's.
- * This is the #1071 symptom. With the lock in place, the second child
- * waits for the first's release, re-reads, and both rows survive. The proof
- * is documented here; running it requires temporarily bypassing the lock
- * (see the issue's acceptance criteria).
+ * #1071 — the review-ledger lock: proves appendLedgerEntry's
+ * read→transform→rename window is serialised so two concurrent writers on
+ * one clone no longer lose a row. The lock contract lives in
+ * review-ledger-lock.ts's header; this file proves it with four sections:
+ * (1) lock lifecycle (held/removed/stale-swept/degraded no-op + default
+ * constants), (2) the two-process race regression (both rows survive; one is
+ * lost without the lock — see the fail-without-lock note there), (3) an
+ * in-process Promise.all supplement, and (4) an event-loop non-blocking
+ * proof for the async acquire poll loop.
  */
 
 import { spawn } from "node:child_process";

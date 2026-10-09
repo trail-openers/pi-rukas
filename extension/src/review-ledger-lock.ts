@@ -50,15 +50,21 @@ export interface LedgerLockOptions {
   now?: () => number;
 }
 
-// #1071 test-only hook: a function appendLedgerEntry awaits between the
-// ledger read and the rename (the widened critical section). Production code
-// never sets it (undefined → no-op); only a spawned test child that imports
-// this module and injects its own ~150 ms await sets it, which lets the
-// two-process race (test-review-ledger-lock.ts) straddle the read/rename gap
-// deterministically without an env-var read in the production write path.
+// ACCEPTED, PERMANENT test seam (a deliberate cost accepted in the #1071
+// review): a function appendLedgerEntry awaits between the ledger read and
+// the rename (the widened critical section). Never set in production
+// (undefined → no-op); only a spawned test child that imports this module
+// and injects its own ~150 ms await sets it, which lets the two-process
+// race (test-review-ledger-lock.ts) straddle the read/rename gap
+// deterministically. Chosen over an env-var read in the write path (#1071
+// review): production code pays an undefined check, not an fs/env read.
 let criticalSectionHook: (() => Promise<void> | void) | undefined;
 
-/** Test-only: set the between-read/rename hook. `undefined` clears it. */
+/**
+ * Permanent test seam (accepted, #1071 review): set the between-read/rename
+ * hook. Never set in production — it stays undefined there and the await is
+ * a no-op. `undefined` clears it.
+ */
 export function setLedgerCriticalSectionHookForTests(fn?: () => Promise<void> | void): void {
   criticalSectionHook = fn;
 }
@@ -90,7 +96,7 @@ export async function acquireLedgerLock(
   const now = opts.now ?? Date.now;
   const lock = ledgerLockPath(ledgerFile);
   const deadline = now() + waitMs;
-  let holder = `${process.pid}:${Date.now()}`;
+  let holder: string;
 
   const noOpRelease = (): void => undefined;
 
