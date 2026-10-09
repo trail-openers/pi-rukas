@@ -1,11 +1,10 @@
 /** work-driver-lens — Step 7 (lens review) + Step 7f (lens-fix) handlers. */
 
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
 import { carriedAdversarialFindings } from "./adversarial-findings.ts";
 import { detectRepeatSeam } from "./detect-repeat-seam.ts";
 import { type WideningFinding, scanTypeWidening } from "./invariant-scan.ts";
 import { buildEvidence, runClaimScan } from "./lens-evidence.ts";
+import { execp } from "./lens-exec.ts";
 import { runLensReview } from "./lens-review.ts";
 import { appendGuardWriteEvents, runGuardMemoryWrites } from "./lens-vipune-write.ts";
 import { writeFindings } from "./memory-write.ts";
@@ -15,6 +14,7 @@ import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { readAllMergedDiffs } from "./work-driver-diff.ts";
 import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
+import { cachedIssueTitle } from "./work-driver-integrate.ts";
 import { lensCapKillEvent, lensTimingsOf } from "./work-driver-lens-capkill.ts";
 import {
   countCommittedAhead,
@@ -36,8 +36,6 @@ import { inlineLensFixPrompt, scratchHygieneSection } from "./work-driver-prompt
 import { scratchDir } from "./work-driver-workspace.ts";
 import { withUsage } from "./workflow-state-events-usage.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
-
-const execp = promisify(exec);
 
 export async function runLens(
   ctx: DriverContext,
@@ -425,18 +423,15 @@ export async function runLensFix(
   const tree = lensWorktree(ctx, state);
   const branchName = state.pipelineState.branchName;
   if (branchName && tree !== ctx.repoRoot) {
-    const execFn =
-      ctx.verifyExecFn ??
-      ((cmd: string, opts?: { cwd?: string; maxBuffer?: number }) =>
-        new Promise<{ stdout: string; stderr?: string }>((resolve, reject) =>
-          exec(cmd, { cwd: opts?.cwd, maxBuffer: opts?.maxBuffer }, (err, stdout, stderr) =>
-            err ? reject(Object.assign(err, { stderr })) : resolve({ stdout, stderr }),
-          ),
-        ));
-    const rep = await repositionLensFixWorktree(execFn, tree, branchName, [ctx.issue], undefined);
+    // #981 lens MEDIUM: use the module's shared argv-capable executor (the
+    // inline exec wrapper above did not honour opts.argv, so the gate's
+    // argv-form git calls would have gone through a shell re-parse).
+    const execFn: import("./worktree.ts").ExecFn = ctx.verifyExecFn ?? execp;
+    const issueTitle = await cachedIssueTitle(state);
+    const rep = await repositionLensFixWorktree(execFn, tree, branchName, [ctx.issue], issueTitle);
     if (rep.kind === "already-at-tip" || rep.kind === "repositioned") {
       trace(
-        `work-driver: lens-fix reposition ${rep.kind} for ${tree} (branch ${branchName}) — dispatching fixer onto the verified tip`,
+        `work-driver: lens-fix reposition ${rep.kind}${rep.kind === "repositioned" && rep.landedViaCherry ? " (landedViaCherry)" : ""} for ${tree} (branch ${branchName}) — dispatching fixer onto the verified tip`,
       );
     } else {
       // Park: the base is not trustworthy. Build the cap-hit (routed to

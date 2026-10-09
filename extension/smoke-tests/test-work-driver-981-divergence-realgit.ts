@@ -37,7 +37,16 @@ function assert(cond: boolean, msg: string) {
 /** Real shell exec, matching the driver's ExecFn contract. */
 // `sh -c`, matching promisify(exec)'s default. NOT a login shell: `-l` sources
 // profile files that may cd, which would silently run git somewhere else.
+// Honours the argv form (cmd = executable, argv = arguments — #1005) for the
+// reposition gate's argv-form git calls.
 const realExec: ExecFn = async (cmd, o) => {
+  if (o?.argv) {
+    const { stdout } = await execFileP(cmd, o.argv, {
+      cwd: o.cwd,
+      maxBuffer: o.maxBuffer ?? 8 * 1024 * 1024,
+    });
+    return { stdout };
+  }
   const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
     cwd: o?.cwd,
     maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
@@ -93,23 +102,46 @@ const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
     const tip1 = (await git(repo5, ["rev-parse", "HEAD"])).stdout.trim();
     assert(tip1 !== s5.baseSha, "981 G: branch tip moved past base (divergence shape)");
 
-    // Worktree back to old base + round-1 (stale shape).
+    // Worktree back to old base + round-1 (stale shape): the worktree now
+    // holds the previous round's fix commit, which reached the branch as a
+    // DIFFERENT (patch-applied) commit with the same patch — the NORMAL
+    // #981 round-2+ shape. The branch was advanced via `git apply --3way`
+    // (not `git cherry-pick`), so the worktree commit and the branch commit
+    // are patch-equivalent but have DIFFERENT SHAs (the committer/date/
+    // parent differ). `git cherry` detects this via patch-id.
     await git(wt5, ["checkout", "-q", "--detach", s5.baseSha]);
     const r1Sha = (await git(wt5, ["rev-parse", "HEAD"])).stdout.trim();
     await git(wt5, ["merge", "--ff-only", "-q", r1Sha]);
+    const preCherrySha = (await git(wt5, ["rev-parse", "HEAD"])).stdout.trim();
+    const branchTipPre = (await git(repo5, ["rev-parse", s5.branchName])).stdout.trim();
+    assert(
+      preCherrySha !== branchTipPre,
+      "981 G: worktree SHA differs from branch tip (patch-applied, not cherry-pick)",
+    );
 
-    // Round 2: commit in stale worktree.
+    // Reposition succeeds: every worktree commit has a patch-equivalent on
+    // the tip (landed via cherry or patch-applied), so the gate moves the
+    // clean tree to the tip instead of parking (previously this case parked
+    // as `diverged`).
+    const rep = await repositionLensFixWorktree(realExec, wt5, s5.branchName, [981], "981 round-2");
+    assert(
+      rep.kind === "repositioned",
+      `981 G: reposition guard moved the worktree to the tip (got ${rep.kind}${
+        rep.kind === "repositioned" ? ` landedViaCherry=${rep.landedViaCherry}` : ""
+      })`,
+    );
+    const repHead = (await git(wt5, ["rev-parse", "HEAD"])).stdout.trim();
+    const branchTipNow = (await git(repo5, ["rev-parse", s5.branchName])).stdout.trim();
+    assert(repHead === branchTipNow, "981 G: worktree HEAD is the branch tip after reposition");
+
+    // Round 2: commit in the repositioned worktree (now at the branch tip).
     writeFileSync(path.join(wt5, "note.txt"), "alpha\nbeta\n");
     await git(wt5, ["add", "."]);
     await git(wt5, ["commit", "-q", "-m", "fix(lens): round 2"]);
     const r2Sha = (await git(wt5, ["rev-parse", "HEAD"])).stdout.trim();
     assert(r2Sha.length === 40, "981 G: round-2 commit captured");
 
-    // Reposition fails (worktree diverged from branch tip).
-    const rep = await repositionLensFixWorktree(realExec, wt5, s5.branchName, [981], "981 round-2");
-    assert(rep.kind === "diverged" || rep.kind === "unlanded", `981 G: reposition guard detected unsafe state (${rep.kind})`);
-
-    // Round-2 integration: dedup skips round-1, lands only round-2.
+    // Round-2 integration: lands cleanly onto the branch (no conflict).
     const f2 = await integrate(realExec, {
       repoRoot: repo5,
       branchName: s5.branchName,
@@ -135,7 +167,9 @@ const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
         .filter((l) => l.trim());
       assert(dirty.length === 0, `981 G: repoRoot clean after round-2`);
     }
-    console.log("✓ 981 G: round-2 lens-fix divergence test passed");
+    // The cherry-landed move traced the SHA it moved from.
+    assert(rep.fromSha === preCherrySha, "981 G: reposition result traces the moved-from SHA");
+    console.log("✓ 981 G: round-2 lens-fix cherry-landed reposition test passed");
   } finally {
     rmSync(root5, { recursive: true, force: true });
   }
@@ -221,6 +255,123 @@ const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
     console.log("✓ 981b: pick-range regression test passed");
   } finally {
     rmSync(root6, { recursive: true, force: true });
+  }
+}
+
+// ---- I: #981 — unlanded work in the worktree (r1 NOT on the branch) ------
+// The worktree holds base+r1 where r1 is genuinely un-landed (not on the
+// branch — no patch-equivalent on the tip). The gate must park (unlanded)
+// and back up the worktree to a ref; nothing moves.
+{
+  const rootI = mkdtempSync(path.join(tmpdir(), "pi-ens-981i-"));
+  const originI = path.join(rootI, "origin.git");
+  const repoI = path.join(rootI, "repo");
+  const scratchI = path.join(rootI, "scratch");
+  mkdirSync(scratchI, { recursive: true });
+
+  try {
+    await execFileP("git", ["init", "--bare", "--initial-branch=main", originI]);
+    await execFileP("git", ["init", "--initial-branch=main", repoI]);
+    await git(repoI, ["config", "user.email", "t@example.com"]);
+    await git(repoI, ["config", "user.name", "T"]);
+    writeFileSync(path.join(repoI, "docs.txt"), "line1\nline2\nline3\n");
+    await git(repoI, ["add", "."]);
+    await git(repoI, ["commit", "-q", "-m", "base"]);
+    await git(repoI, ["remote", "add", "origin", originI]);
+    await git(repoI, ["push", "-q", "-u", "origin", "main"]);
+
+    const sI = await mechanizedBranchSetup(realExec, repoI, 981, [981], [], "981 unlanded");
+    const wtI = sI.worktrees.default ?? "";
+
+    // Create + push the branch (mirror G: the branch must exist on the
+    // remote for the gate to resolve its tip).
+    await git(repoI, ["checkout", "-q", "-b", sI.branchName]);
+    await git(repoI, ["push", "-q", "origin", sI.branchName]);
+
+    // Commit r1 in the worktree, then advance the branch with a DIFFERENT
+    // commit (so the worktree's r1 is NOT on the branch — no patch-
+    // equivalent exists on the tip).
+    writeFileSync(path.join(wtI, "docs.txt"), "line1\nline2\nline3\nunlanded r1\n");
+    await git(wtI, ["add", "."]);
+    await git(wtI, ["commit", "-q", "-m", "fix(lens): round 1"]);
+    const r1Sha = (await git(wtI, ["rev-parse", "HEAD"])).stdout.trim();
+
+    // Advance the branch with a different commit (not a cherry-pick of r1).
+    writeFileSync(path.join(repoI, "note.txt"), "note content\n");
+    await git(repoI, ["add", "."]);
+    await git(repoI, ["commit", "-q", "-m", "advance branch"]);
+    await git(repoI, ["push", "-q", "origin", sI.branchName]);
+
+    // Reposition should park as unlanded (r1 is NOT on the branch).
+    const repI = await repositionLensFixWorktree(realExec, wtI, sI.branchName, [981], "981 unlanded");
+    assert(
+      repI.kind === "unlanded" || repI.kind === "diverged",
+      `981 I: reposition guard detected unlanded work (got ${repI.kind})`,
+    );
+    assert(
+      repI.kind === "unlanded" || repI.kind === "diverged" ? repI.backupRef !== undefined : false,
+      "981 I: unlanded worktree has a backup ref",
+    );
+    // The worktree is NOT moved (still at r1).
+    const wtHeadI = (await git(wtI, ["rev-parse", "HEAD"])).stdout.trim();
+    assert(wtHeadI === r1Sha, "981 I: worktree was not moved (still at r1)");
+    console.log("✓ 981 I: unlanded worktree test passed");
+  } finally {
+    rmSync(rootI, { recursive: true, force: true });
+  }
+}
+
+// ---- J: #981 — local branch ref ahead of stale origin ref ------------------
+// The local branch ref is ahead of the origin ref (a local commit has not
+// been pushed). Tip selection must take the local ref (the descendant).
+{
+  const rootJ = mkdtempSync(path.join(tmpdir(), "pi-ens-981j-"));
+  const originJ = path.join(rootJ, "origin.git");
+  const repoJ = path.join(rootJ, "repo");
+  const scratchJ = path.join(rootJ, "scratch");
+  mkdirSync(scratchJ, { recursive: true });
+
+  try {
+    await execFileP("git", ["init", "--bare", "--initial-branch=main", originJ]);
+    await execFileP("git", ["init", "--initial-branch=main", repoJ]);
+    await git(repoJ, ["config", "user.email", "t@example.com"]);
+    await git(repoJ, ["config", "user.name", "T"]);
+    writeFileSync(path.join(repoJ, "docs.txt"), "line1\n");
+    await git(repoJ, ["add", "."]);
+    await git(repoJ, ["commit", "-q", "-m", "base"]);
+    await git(repoJ, ["remote", "add", "origin", originJ]);
+    await git(repoJ, ["push", "-q", "-u", "origin", "main"]);
+
+    const sJ = await mechanizedBranchSetup(realExec, repoJ, 981, [981], [], "981 local-tip");
+    const wtJ = sJ.worktrees.default ?? "";
+
+    // Create + push the branch (mirror G: the branch must exist on the
+    // remote for the gate to resolve its tip).
+    await git(repoJ, ["checkout", "-q", "-b", sJ.branchName]);
+    await git(repoJ, ["push", "-q", "origin", sJ.branchName]);
+
+    // Commit on the local branch (not pushed to origin).
+    writeFileSync(path.join(repoJ, "docs.txt"), "line1\nlocal advance\n");
+    await git(repoJ, ["add", "."]);
+    await git(repoJ, ["commit", "-q", "-m", "local advance"]);
+    const localTip = (await git(repoJ, ["rev-parse", sJ.branchName])).stdout.trim();
+    const originTip = (await git(repoJ, ["rev-parse", `origin/${sJ.branchName}`])).stdout.trim();
+    assert(localTip !== originTip, "981 J: local ref is ahead of origin ref");
+
+    // Move the worktree back to the old base.
+    await git(wtJ, ["checkout", "-q", "--detach", sJ.baseSha]);
+
+    // Reposition should use the local tip (the descendant of origin tip).
+    const repJ = await repositionLensFixWorktree(realExec, wtJ, sJ.branchName, [981], "981 local-tip");
+    assert(
+      repJ.kind === "repositioned" && !repJ.landedViaCherry,
+      `981 J: reposition uses the local (ahead) tip (got ${repJ.kind})`,
+    );
+    const wtHeadJ = (await git(wtJ, ["rev-parse", "HEAD"])).stdout.trim();
+    assert(wtHeadJ === localTip, "981 J: worktree is at the local tip after reposition");
+    console.log("✓ 981 J: local-branch-ahead-of-origin test passed");
+  } finally {
+    rmSync(rootJ, { recursive: true, force: true });
   }
 }
 

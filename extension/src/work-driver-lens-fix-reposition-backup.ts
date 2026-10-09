@@ -32,9 +32,15 @@ export async function backupLensFixTree(
   const ts = new Date().toISOString().replace(/[.:-]/g, "-").slice(0, 19);
   const ref = `refs/pi-rukas/lens-fix-backup/${slug}/${ts}`;
   try {
-    const { stdout } = await execFn("git rev-parse HEAD", { cwd: tree, maxBuffer: 64 * 1024 });
+    // #981 lens MEDIUM: argv form — the branch slug (and issue title) is
+    // data, not a shell command; the argv form prevents a shell re-parse.
+    const { stdout } = await execFn("git", {
+      cwd: tree,
+      maxBuffer: 64 * 1024,
+      argv: ["rev-parse", "HEAD"],
+    });
     const sha = stdout.trim();
-    await execFn(`git update-ref ${JSON.stringify(ref)} ${JSON.stringify(sha)}`, { cwd: tree });
+    await execFn("git", { cwd: tree, argv: ["update-ref", ref, sha] });
     trace(`lens-fix-reposition: backed up worktree to ${ref} (${sha.slice(0, 12)})`);
     return ref;
   } catch (e) {
@@ -54,9 +60,10 @@ export async function enumerateUnlanded(
   tipSha: string,
 ): Promise<string[]> {
   try {
-    const { stdout } = await execFn(`git rev-list ${JSON.stringify(tipSha)}..HEAD`, {
+    const { stdout } = await execFn("git", {
       cwd: tree,
       maxBuffer: 64 * 1024,
+      argv: ["rev-list", `${tipSha}..HEAD`],
     });
     return stdout
       .trim()

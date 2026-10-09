@@ -2,7 +2,7 @@
 // #981 task-b — repositionLensFixWorktree: the fix dispatch moves the lens-fix
 // worktree to the branch tip. The guard returns a discriminated union; only
 // `already-at-tip` and `repositioned` are safe to dispatch on.
-import { exec } from "node:child_process";
+import { exec, execFile } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -46,8 +46,21 @@ function assert(cond: boolean, msg: string) {
       cwd: root,
     });
 
-    const repositionExec = (cmd: string, o?: { cwd?: string }) =>
-      execp(cmd, { cwd: o?.cwd ?? root, shell: "/bin/bash" }) as Promise<{ stdout: string }>;
+    // The gate's git calls use the argv form (no shell re-parse) — the test
+    // executor must honour it, mirroring lens-exec.ts's execp contract.
+    // The argv form is `cmd = executable, argv = arguments` (see #1005 in
+    // work-driver-verify.ts and lens-exec.ts).
+    const repositionExec = async (cmd: string, o?: { cwd?: string; argv?: string[] }) => {
+      if (o?.argv) {
+        const { stdout } = await new Promise<{ stdout: string }>((resolve, reject) =>
+          execFile(cmd, o.argv!, { cwd: o.cwd ?? root, encoding: "utf8" }, (err, so) =>
+            err ? reject(err) : resolve({ stdout: so }),
+          ),
+        );
+        return { stdout };
+      }
+      return (await execp(cmd, { cwd: o?.cwd ?? root, shell: "/bin/bash" })) as { stdout: string };
+    };
 
     // Case 1: the worktree is at the branch tip (the common case — the
     // fixer started from the tip). The reposition returns already-at-tip.

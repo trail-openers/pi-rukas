@@ -13,6 +13,30 @@
  * rather than dispatching a fix onto a base it cannot trust. An unlanded /
  * diverged tree is moved to a backup ref first so nothing is destroyed.
  *
+ * Tip selection (documented): the driver's own worktrees are detached and
+ * the branch ref in the worktree is often absent, so the tip is resolved
+ * from BOTH `refs/heads/<branch>` and `refs/remotes/origin/<branch>` after
+ * the fetch. If only one exists, that one is the tip. If both exist, the
+ * NEWER one is taken — when one is an ancestor of the other, the
+ * descendant is the newer (a local commit that has not been pushed yet, or
+ * a remote commit not yet pulled, are both "ahead" of the other ref in the
+ * ancestor direction); if the two refs have genuinely diverged (neither is
+ * an ancestor of the other), the gate cannot know which ref the integration
+ * step will apply against, so it returns `diverged` and parks.
+ *
+ * The `git cherry` landed-check (#981 normal case): in round 2+ the lens
+ * worktree typically holds the previous round's fix commit, which reached
+ * the branch as a DIFFERENT commit (cherry-picked, same patch). Those
+ * commits are already landed, so the worktree must be MOVED to the tip,
+ * not parked. `git cherry <tip> <tree>` prints one line per worktree
+ * commit: `-` when a patch-equivalent exists on the tip (landed), `+`
+ * when it does not (genuinely un-landed). If every line is `-` (or the
+ * output is empty — the worktree has no commits beyond the tip) the work
+ * is already on the branch and the worktree is checked out at the tip.
+ *
+ * All git commands run through the `ExecFn` argv form (no shell re-parse of
+ * branch names / SHAs — the LLM MEDIUM of the #981 review).
+ *
  * Split from work-driver-lens-fix-commit.ts for the AGENTS.md §12 500-line
  * gate. The small backup + enumeration helpers live in
  * work-driver-lens-fix-reposition-backup.ts.
@@ -31,6 +55,15 @@ import type { ExecFn } from "./worktree.ts";
  *   fast-forwarded to the tip. This is the #978 shape (branch advanced by a
  *   round-1 cherry-pick, tree still at the old base) and is the safe
  *   fast-forward path only.
+ * - `repositioned` with `landedViaCherry: true` — the tree is NOT a strict
+ *   ancestor of the tip (it holds commits the tip does not contain by
+ *   identity) BUT `git cherry` shows every one of those worktree commits
+ *   has a patch-equivalent on the tip (the NORMAL #981 case: the previous
+ *   round's fix was cherry-picked onto the branch as a different commit).
+ *   The worktree's work is already on the branch, so the clean tree is
+ *   checked out at the tip and the round-2+ fix is safe to dispatch. No
+ *   backup ref is created (the commits are already reachable from the
+ *   branch). `fromSha` records where the tree moved from.
  * - `dirty` — uncommitted changes present; the fixer is NOT dispatched
  *   (it would build on a half-edited tree). Nothing was moved or stashed.
  * - `unlanded` — the worktree is clean and BEHIND the tip but holds commits
@@ -39,15 +72,16 @@ import type { ExecFn } from "./worktree.ts";
  *   moved to a backup ref and the cycle parks. `backupRef` names it.
  * - `diverged` — the worktree holds commits the tip does not and is NOT
  *   behind it either (the tip is not an ancestor of the tree): the tree and
- *   the branch have genuinely split. The tree is moved to a backup ref and
- *   the cycle parks. `backupRef` names it.
+ *   the branch have genuinely split — or the local and remote branch refs
+ *   diverged from each other during tip selection. The tree is moved to a
+ *   backup ref and the cycle parks. `backupRef` names it.
  * - `git-failed` — a git probe or the backup ref itself failed; detail
  *   carries the git output. `backupRef` is present when the backup was
  *   created before the failure.
  */
 export type RepositionResult =
   | { kind: "already-at-tip"; tipSha: string }
-  | { kind: "repositioned"; fromSha: string; tipSha: string }
+  | { kind: "repositioned"; fromSha: string; tipSha: string; landedViaCherry?: boolean }
   | { kind: "dirty"; detail: string }
   | { kind: "unlanded"; detail: string; backupRef?: string; aheadShas?: string[] }
   | { kind: "diverged"; detail: string; backupRef?: string; aheadShas?: string[] }
@@ -55,17 +89,121 @@ export type RepositionResult =
 
 const TRACE_PREFIX = "lens-fix-reposition";
 
+/** Resolve one rev to a SHA (trimmed), or undefined when the read failed. */
+async function revToSha(execFn: ExecFn, tree: string, rev: string): Promise<string | undefined> {
+  try {
+    const { stdout } = await execFn("git", {
+      cwd: tree,
+      maxBuffer: 64 * 1024,
+      argv: ["rev-parse", "--verify", rev],
+    });
+    const sha = stdout.trim();
+    return sha || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** True when `a` is an ancestor of `b` (inclusive of a === b). */
+async function isAncestor(execFn: ExecFn, tree: string, a: string, b: string): Promise<boolean> {
+  try {
+    await execFn("git", {
+      cwd: tree,
+      argv: ["merge-base", "--is-ancestor", a, b],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * #981 — the tip of `branchName` in `tree`, resolved from the local and
+ * remote refs. Returns `{ ok: true, tipSha }`, `{ ok: false, kind:
+ * "git-failed" }` when neither ref is readable, or `{ ok: false, kind:
+ * "diverged" }` when the two refs exist and have split (neither is an
+ * ancestor of the other). See the module header for the documented rule.
+ */
+async function resolveBranchTip(
+  execFn: ExecFn,
+  tree: string,
+  branchName: string,
+): Promise<
+  { ok: true; tipSha: string } | { ok: false; kind: "git-failed" | "diverged"; detail: string }
+> {
+  const local = await revToSha(execFn, tree, `refs/heads/${branchName}`);
+  const remote = await revToSha(execFn, tree, `refs/remotes/origin/${branchName}`);
+  if (local === undefined && remote === undefined) {
+    return {
+      ok: false,
+      kind: "git-failed",
+      detail: `could not resolve refs/heads/${branchName} or refs/remotes/origin/${branchName} (tip unknown)`,
+    };
+  }
+  if (local === undefined || remote === undefined) {
+    const onlyRef = local ?? remote;
+    if (onlyRef === undefined) {
+      return {
+        ok: false,
+        kind: "git-failed",
+        detail: `could not resolve refs/heads/${branchName} or refs/remotes/origin/${branchName} (tip unknown)`,
+      };
+    }
+    return { ok: true, tipSha: onlyRef };
+  }
+  if (local === remote) return { ok: true, tipSha: local };
+  const localIsAncestorOfRemote = await isAncestor(execFn, tree, local, remote);
+  const remoteIsAncestorOfLocal = await isAncestor(execFn, tree, remote, local);
+  if (localIsAncestorOfRemote) return { ok: true, tipSha: remote };
+  if (remoteIsAncestorOfLocal) return { ok: true, tipSha: local };
+  return {
+    ok: false,
+    kind: "diverged",
+    detail: `branch tip ambiguous — local ref ${local.slice(0, 12)} and origin/${branchName} ${remote.slice(0, 12)} have diverged (neither is an ancestor of the other)`,
+  };
+}
+
+/**
+ * #981 — the `git cherry <tipSha> <treeSha>` output, or undefined when the
+ * command failed. Each line marks one worktree commit beyond the tip:
+ * `-` = a patch-equivalent exists on the tip (landed), `+` = genuinely
+ * un-landed.
+ */
+async function cherryLines(
+  execFn: ExecFn,
+  tree: string,
+  tipSha: string,
+  treeSha: string,
+): Promise<string[] | undefined> {
+  try {
+    const { stdout } = await execFn("git", {
+      cwd: tree,
+      maxBuffer: 64 * 1024,
+      argv: ["cherry", tipSha, treeSha],
+    });
+    return stdout
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * #981 — move the lens-fix worktree onto the freshly-fetched branch tip
  * BEFORE the round-2+ fixer dispatch. See {@link RepositionResult} for the
  * outcome kinds; only the two success kinds are safe to dispatch on.
  *
  * The guard is deliberately conservative: it fast-forwards ONLY a CLEAN
- * worktree that is strictly BEHIND the tip. Anything else — a dirty tree,
- * or a clean tree whose history does not sit below the tip (round-1 work
- * unlanded, or true divergence) — moves the tree to a backup ref (when it
- * can) and returns a failure kind so the caller parks rather than
- * dispatching a fix onto a base it cannot trust.
+ * worktree that is strictly BEHIND the tip, and it moves a CLEAN worktree
+ * that is NOT behind the tip ONLY when `git cherry` proves every commit it
+ * holds is already on the branch by patch-equivalence (the normal #981
+ * round-2+ shape). Anything else — a dirty tree, a clean tree holding
+ * commits with no patch-equivalent on the branch, or a branch-tip pair
+ * that has split — moves the tree to a backup ref (when it can) and
+ * returns a failure kind so the caller parks rather than dispatching a fix
+ * onto a base it cannot trust.
  */
 export async function repositionLensFixWorktree(
   execFn: ExecFn,
@@ -74,25 +212,29 @@ export async function repositionLensFixWorktree(
   issues: number[],
   issueTitle: string | undefined,
 ): Promise<RepositionResult> {
-  // 1. Fetch the branch tip. A fetch failure means the tip cannot be
-  //    trusted; park rather than guess. `git fetch` writes to stderr on
-  //    success, so the absence of a throw is the success signal.
-  let tipSha: string;
+  // 1. Fetch the branch, then resolve the tip from the local + remote
+  //    refs (documented tip selection, module header). A fetch failure or
+  //    an unresolvable tip means the base cannot be trusted; park rather
+  //    than guess.
   try {
-    await execFn(`git fetch origin ${JSON.stringify(branchName)} --quiet`, {
+    await execFn("git", {
       cwd: tree,
       maxBuffer: 64 * 1024,
+      argv: ["fetch", "origin", branchName, "--quiet"],
     });
-    const tip = await execFn(
-      `git rev-parse --verify ${JSON.stringify(`origin/${branchName}`)}`, // #919: branch name is data
-      { cwd: tree, maxBuffer: 64 * 1024 },
-    );
-    tipSha = tip.stdout.trim();
   } catch (e) {
-    const detail = `could not fetch/resolve origin/${branchName} (tip unknown): ${e}`;
+    const detail = `could not fetch origin/${branchName}: ${e}`;
     trace(`${TRACE_PREFIX}: ${detail}`);
     return { kind: "git-failed", detail };
   }
+  const tip = await resolveBranchTip(execFn, tree, branchName);
+  if (!tip.ok) {
+    trace(`${TRACE_PREFIX}: ${tip.kind}: ${tip.detail}`);
+    return tip.kind === "diverged"
+      ? { kind: "diverged", detail: tip.detail }
+      : { kind: "git-failed", detail: tip.detail };
+  }
+  const tipSha = tip.tipSha;
 
   // 2. Dirty check — a worktree with uncommitted changes is never moved
   //    (moving HEAD under an in-flight fix would lose or corrupt it), and
@@ -118,8 +260,10 @@ export async function repositionLensFixWorktree(
 
   // 3. Where is the worktree relative to the tip? A clean tree at the tip
   //    is the no-op; a clean tree strictly BEHIND it is the repositionable
-  //    shape. Anything else (the tree holds commits the tip does not) is a
-  //    guard failure — back up the tree and park.
+  //    shape. Anything else (the tree holds commits the tip does not) is
+  //    either the normal #981 shape (every such commit has a patch-
+  //    equivalent on the tip — `git cherry` all `-`) or a guard failure —
+  //    back up the tree and park.
   let treeSha: string;
   try {
     const hp = await execFn("git rev-parse HEAD", { cwd: tree, maxBuffer: 64 * 1024 });
@@ -137,25 +281,18 @@ export async function repositionLensFixWorktree(
   // Strict-ancestor test in the fast-forward direction: if the tree IS an
   // ancestor of the tip, the tree is strictly behind it and a
   // `git merge --ff-only` is safe. If it is NOT, the tree holds commits the
-  // tip does not (unlanded or diverged) — a fast-forward would destroy
-  // that work, so back it up and park.
-  let treeIsAncestorOfTip: boolean;
-  try {
-    await execFn(
-      `git merge-base --is-ancestor ${JSON.stringify(treeSha)} ${JSON.stringify(tipSha)}`,
-      { cwd: tree },
-    );
-    treeIsAncestorOfTip = true;
-  } catch {
-    treeIsAncestorOfTip = false;
-  }
-
+  // tip does not — the normal #981 case is a cherry-picked previous-round
+  // fix (patch-equivalent on the branch), which the `git cherry` check
+  // below detects and repositions; anything with a `+` line is un-landed
+  // or diverged and must park.
+  const treeIsAncestorOfTip = await isAncestor(execFn, tree, treeSha, tipSha);
   if (treeIsAncestorOfTip) {
     // Clean fast-forward: the tree is strictly behind the tip.
     try {
-      await execFn(`git merge --ff-only --quiet ${JSON.stringify(tipSha)}`, {
+      await execFn("git", {
         cwd: tree,
         maxBuffer: 64 * 1024,
+        argv: ["merge", "--ff-only", "--quiet", tipSha],
       });
       const hp2 = await execFn("git rev-parse HEAD", { cwd: tree, maxBuffer: 64 * 1024 });
       const newSha = hp2.stdout.trim();
@@ -176,27 +313,82 @@ export async function repositionLensFixWorktree(
   }
 
   // The tree is NOT an ancestor of the tip: it holds commits the branch
-  // does not. Distinguish unlanded (tip is an ancestor of the tree — the
-  // tree is ahead) from true divergence (neither is an ancestor of the
-  // other). Both are guard failures; back up the tree and park.
-  let tipIsAncestorOfTree: boolean;
-  try {
-    await execFn(
-      `git merge-base --is-ancestor ${JSON.stringify(tipSha)} ${JSON.stringify(treeSha)}`,
-      { cwd: tree },
-    );
-    tipIsAncestorOfTree = true;
-  } catch {
-    tipIsAncestorOfTree = false;
+  // does not contain by identity. The NORMAL #981 round-2+ case: the
+  // previous round's fix commit reached the branch as a DIFFERENT
+  // (cherry-picked) commit with the same patch. `git cherry <tip> <tree>`
+  // marks each such worktree commit `-` when a patch-equivalent exists on
+  // the tip and `+` otherwise. All `-` (or empty — no commits beyond the
+  // tip) means the work is already on the branch: move the clean tree to
+  // the tip. Any `+` means genuinely un-landed work: back up and park.
+  const lines = await cherryLines(execFn, tree, tipSha, treeSha);
+  if (lines !== undefined) {
+    const plusShas = lines
+      .filter((l) => l.startsWith("+"))
+      .map((l) => l.slice(1).trim())
+      .filter(Boolean);
+    const minusShas = lines
+      .filter((l) => l.startsWith("-"))
+      .map((l) => l.slice(1).trim())
+      .filter(Boolean);
+    if (plusShas.length === 0) {
+      // Landed via cherry: every worktree commit beyond the tip has a
+      // patch-equivalent on the tip. No backup ref — those commits are
+      // already reachable from the branch. Trace the moved-from SHA.
+      try {
+        await execFn("git", {
+          cwd: tree,
+          maxBuffer: 64 * 1024,
+          argv: ["checkout", "--detach", "--quiet", tipSha],
+        });
+        const hp2 = await execFn("git rev-parse HEAD", { cwd: tree, maxBuffer: 64 * 1024 });
+        const newSha = hp2.stdout.trim();
+        if (newSha !== tipSha) {
+          const detail = `checkout to the tip did not land on the tip (expected ${tipSha.slice(0, 12)}, got ${newSha.slice(0, 12)})`;
+          trace(`${TRACE_PREFIX}: ${detail}`);
+          return { kind: "git-failed", detail };
+        }
+        trace(
+          `${TRACE_PREFIX}: repositioned (landedViaCherry) ${treeSha.slice(0, 12)} -> ${newSha.slice(0, 12)} — ${minusShas.length} worktree commit(s) already on the branch by patch-equivalence: ${minusShas.join(", ") || "(none beyond the tip)"}`,
+        );
+        return { kind: "repositioned", fromSha: treeSha, tipSha, landedViaCherry: true };
+      } catch (e) {
+        trace(`${TRACE_PREFIX}: checkout to tip failed: ${e}`);
+        return {
+          kind: "git-failed",
+          detail: `git checkout --detach ${tipSha.slice(0, 12)} failed: ${e}`,
+        };
+      }
+    }
+
+    // Genuinely un-landed work (`+` lines). Distinguish unlanded (tip is
+    // an ancestor of the tree — the tree is ahead) from true divergence
+    // (neither is an ancestor of the other). Both are guard failures; back
+    // up the tree and park.
+    const tipIsAncestorOfTree = await isAncestor(execFn, tree, tipSha, treeSha);
+    const backupRef = await backupLensFixTree(execFn, tree, branchName, issues, issueTitle);
+    const aheadShas =
+      plusShas.length > 0 ? plusShas : await enumerateUnlanded(execFn, tree, tipSha);
+    const kind: "unlanded" | "diverged" = tipIsAncestorOfTree ? "unlanded" : "diverged";
+    const detail =
+      kind === "unlanded"
+        ? `worktree holds ${aheadShas.length} commit(s) the branch tip ${tipSha.slice(0, 12)} does not (previous-round work unlanded): ${aheadShas.join(", ") || "(unreadable)"}`
+        : `worktree has diverged from the branch tip ${tipSha.slice(0, 12)} — the tree holds commits the branch does not: ${aheadShas.join(", ") || "(unreadable)"}`;
+    trace(`${TRACE_PREFIX}: ${kind}: ${detail}`);
+    return {
+      kind,
+      detail,
+      ...(backupRef ? { backupRef } : {}),
+      aheadShas,
+    };
   }
 
+  // `git cherry` itself failed — treat the tree as untrustworthy: back it
+  // up and park (conservative — we cannot prove the work is landed).
   const backupRef = await backupLensFixTree(execFn, tree, branchName, issues, issueTitle);
   const aheadShas = await enumerateUnlanded(execFn, tree, tipSha);
+  const tipIsAncestorOfTree = await isAncestor(execFn, tree, tipSha, treeSha);
   const kind: "unlanded" | "diverged" = tipIsAncestorOfTree ? "unlanded" : "diverged";
-  const detail =
-    kind === "unlanded"
-      ? `worktree holds ${aheadShas.length} commit(s) the branch tip ${tipSha.slice(0, 12)} does not (previous-round work unlanded): ${aheadShas.join(", ") || "(unreadable)"}`
-      : `worktree has diverged from the branch tip ${tipSha.slice(0, 12)} — the tree holds commits the branch does not: ${aheadShas.join(", ") || "(unreadable)"}`;
+  const detail = `git cherry could not be run against tip ${tipSha.slice(0, 12)} — treating ${aheadShas.length} ahead commit(s) as unverified: ${aheadShas.join(", ") || "(unreadable)"}`;
   trace(`${TRACE_PREFIX}: ${kind}: ${detail}`);
   return {
     kind,
