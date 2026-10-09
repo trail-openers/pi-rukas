@@ -11,6 +11,7 @@ import { trace } from "./trace.ts";
  * merge-base / ff-merge) does not.
  */
 import { branchSlug } from "./work-driver-branch-mechanized.ts";
+import type { RepositionResult } from "./work-driver-lens-fix-reposition-gate.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
@@ -73,4 +74,44 @@ export async function enumerateUnlanded(
   } catch {
     return [];
   }
+}
+
+/**
+ * #981 — the cherry-failed fallback: `git cherry` itself failed against
+ * the tip, so the tree is untrustworthy — back it up and park as
+ * `unlanded` (the tip is an ancestor of the tree) or `diverged` (it is
+ * not). Lives here with the other backup helpers (the gate's 500-line
+ * limit); it is the terminal branch of
+ * {@link repositionLensFixWorktree}'s fallback path.
+ */
+export async function parkCherryFailedTree(
+  execFn: ExecFn,
+  tree: string,
+  branchName: string,
+  issues: number[],
+  issueTitle: string | undefined,
+  tipSha: string,
+): Promise<RepositionResult> {
+  const backupRef = await backupLensFixTree(execFn, tree, branchName, issues, issueTitle);
+  const aheadShas = await enumerateUnlanded(execFn, tree, tipSha);
+  let tipIsAncestorOfTree = false;
+  try {
+    await execFn("git", {
+      cwd: tree,
+      argv: ["merge-base", "--is-ancestor", tipSha, "HEAD"],
+    });
+    tipIsAncestorOfTree = true;
+  } catch {
+    // not an ancestor (or the read failed) — the conservative reading is
+    // diverged, which parks identically.
+  }
+  const kind: "unlanded" | "diverged" = tipIsAncestorOfTree ? "unlanded" : "diverged";
+  const detail = `git cherry could not be run against tip ${tipSha.slice(0, 12)} — treating ${aheadShas.length} ahead commit(s) as unverified: ${aheadShas.join(", ") || "(unreadable)"}`;
+  trace(`lens-fix-reposition: ${kind}: ${detail}`);
+  return {
+    kind,
+    detail,
+    ...(backupRef ? { backupRef } : {}),
+    aheadShas,
+  };
 }

@@ -27,7 +27,11 @@
  * Split from work-driver-lens-fix-commit.ts for the 500-line gate.
  */
 import { trace } from "./trace.ts";
-import { backupLensFixTree, enumerateUnlanded } from "./work-driver-lens-fix-reposition-backup.ts";
+import {
+  backupLensFixTree,
+  enumerateUnlanded,
+  parkCherryFailedTree,
+} from "./work-driver-lens-fix-reposition-backup.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
@@ -48,6 +52,9 @@ import type { ExecFn } from "./worktree.ts";
  * - `diverged` — holds commits the tip does not and is NOT behind it
  *   either (or local/remote refs diverged during tip selection). Moved to
  *   backup ref; parks.
+ * - `diverged` with `backupRef` undefined — the cherry path wanted to
+ *   move the tree but the backup ref could not be created; the tree is NOT
+ *   moved (fail closed) and the caller parks.
  * - `git-failed` — a git probe or the backup ref failed.
  */
 export type RepositionResult =
@@ -395,10 +402,8 @@ export async function repositionLensFixWorktree(
       if (allNonEmpty === true) {
         // Landed via cherry: every worktree commit beyond the tip is a
         // NON-EMPTY commit with a patch-equivalent on the tip. Back up the
-        // tree BEFORE the checkout (the fast-forward path never destroys
-        // work, so it needs no backup; the cherry path does a detach
-        // checkout, which orphans the old HEAD). `fromSha` records where
-        // the tree moved from.
+        // tree BEFORE the detach checkout (which orphans the old HEAD),
+        // then move. `fromSha` records where the tree moved from.
         const cherryBackupRef = await backupLensFixTree(
           execFn,
           tree,
@@ -406,6 +411,15 @@ export async function repositionLensFixWorktree(
           issues,
           issueTitle,
         );
+        if (cherryBackupRef === undefined) {
+          // Fail closed: without the backup ref the detach checkout would
+          // orphan the old HEAD with no way back, so the tree must NOT
+          // move. Park via the diverged kind (no `backupRef` recorded).
+          const detail =
+            "backup ref could not be created; refusing to move a tree that is not a fast-forward";
+          trace(`${TRACE_PREFIX}: ${detail}`);
+          return { kind: "diverged", detail };
+        }
         try {
           await execFn("git", {
             cwd: tree,
@@ -481,16 +495,5 @@ export async function repositionLensFixWorktree(
 
   // `git cherry` itself failed — treat the tree as untrustworthy: back it
   // up and park (conservative — we cannot prove the work is landed).
-  const backupRef = await backupLensFixTree(execFn, tree, branchName, issues, issueTitle);
-  const aheadShas = await enumerateUnlanded(execFn, tree, tipSha);
-  const tipIsAncestorOfTree = await isAncestor(execFn, tree, tipSha, treeSha);
-  const kind: "unlanded" | "diverged" = tipIsAncestorOfTree ? "unlanded" : "diverged";
-  const detail = `git cherry could not be run against tip ${tipSha.slice(0, 12)} — treating ${aheadShas.length} ahead commit(s) as unverified: ${aheadShas.join(", ") || "(unreadable)"}`;
-  trace(`${TRACE_PREFIX}: ${kind}: ${detail}`);
-  return {
-    kind,
-    detail,
-    ...(backupRef ? { backupRef } : {}),
-    aheadShas,
-  };
+  return parkCherryFailedTree(execFn, tree, branchName, issues, issueTitle, tipSha);
 }

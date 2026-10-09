@@ -3,10 +3,9 @@
  * Smoke test for the /work driver, split out of test-work-driver.ts
  * (#171, AGENTS.md §12 file-size limit).
  *
- * Covers Issue #305 §48b/49 (adversarial receives lens-fix diff before
- * commit; N>1 workstream lens-fix commit) and #492 §49b (a diff EXISTS
- * but staging fails → the cap-hit carries the integration-failure
- * classification and a plumb-report).
+ * Covers: Issue #305 sections 48b/49: adversarial receives lens-fix diff before commit + N>1 workstream lens-fix commit.
+ * Plus #492 section 49b: when a diff EXISTS but staging fails, the cap-hit
+ * carries the integration-failure classification and a plumb-report is surfaced.
  *
  * No real Pi spawn happens; all dispatchCore calls are mocked.
  */
@@ -161,10 +160,7 @@ setupSpawnGuard();
     await writeState(root, s);
 
     // The real git executor, with `git add` made to fail inside the
-    // worktree — staging returns 0 even though a diff exists. The round-2+
-    // reposition gate runs pre-dispatch in the argv form (`cmd="git"`,
-    // `opts.argv`), so the mock honours `argv` via `execFile` (no shell
-    // re-parse).
+    // worktree — staging returns 0 even though a diff exists.
     type EO = { cwd?: string; maxBuffer?: number; argv?: string[] };
     const { execFile } = await import("node:child_process");
     const execFileP = promisify(execFile);

@@ -158,6 +158,63 @@ function assert(cond: boolean, msg: string) {
       "981 reposition: a dirty worktree is not moved",
     );
 
+    // Case 5: cherry-landed path, but the backup ref creation fails
+    // (`git update-ref` rejects). The gate must park (diverged, no backup
+    // ref) and the tree HEAD must be UNCHANGED — the old worktree commit is
+    // still there (not orphaned by a detach checkout).
+    await execp(`git checkout -q --detach ${JSON.stringify(baseSha)}`, { cwd: wt });
+    const wtHeadBefore = (await execp("git rev-parse HEAD", { cwd: wt })).stdout.trim();
+    const tipShaBefore = (await execp("git rev-parse feature/lens-repos", { cwd: root }))
+      .stdout.trim();
+    await execp("git checkout -q --detach HEAD~0", { cwd: wt, shell: "/bin/bash" });
+    writeFileSync(path.join(wt, "c.txt"), "three\ncherry case\n");
+    await execp("git add . && git commit -q -m 'cherry case work'", { cwd: wt, shell: "/bin/bash" });
+    const fixCommitSha = (await execp("git rev-parse HEAD", { cwd: wt })).stdout.trim();
+    // Land the fix on the branch as a cherry-pick (the normal #981 shape),
+    // so the worktree is NOT an ancestor of the tip and every cherry line
+    // is `-`.
+    await execp(`git cherry-pick ${JSON.stringify(fixCommitSha)}`, { cwd: root, shell: "/bin/bash" });
+    await execp("git push -q origin feature/lens-repos", { cwd: root });
+    const tipShaAfter = (await execp("git rev-parse feature/lens-repos", { cwd: root }))
+      .stdout.trim();
+    assert(
+      tipShaAfter !== tipShaBefore,
+      "981 reposition (backup fail): the cherry-pick advanced the branch tip",
+    );
+    // The worktree is still on the ORIGINAL fix commit (a patch-equivalent
+    // of the cherry-pick, not the cherry-pick itself) — this is the #981
+    // normal shape the gate must reposition.
+    const execBackupFail = async (cmd: string, o?: { cwd?: string; argv?: string[] }) => {
+      if (o?.argv && o.argv[0] === "update-ref") {
+        throw new Error("simulated backup ref failure (git update-ref refused)");
+      }
+      return repositionExec(cmd, o);
+    };
+    const r5 = await repositionLensFixWorktree(
+      execBackupFail,
+      wt,
+      "feature/lens-repos",
+      [981],
+      "reposition test",
+    );
+    assert(
+      r5.kind === "diverged",
+      `981 reposition: cherry path with a failed backup ref parks (got ${r5.kind})`,
+    );
+    assert(
+      r5.kind === "diverged" && r5.detail.includes("backup ref could not be created"),
+      "981 reposition: the park detail names the failed backup ref",
+    );
+    assert(
+      r5.kind === "diverged" && r5.backupRef === undefined,
+      "981 reposition: no backup ref is recorded when creation failed",
+    );
+    const wtHeadAfter5 = (await execp("git rev-parse HEAD", { cwd: wt })).stdout.trim();
+    assert(
+      wtHeadAfter5 === fixCommitSha && wtHeadAfter5 !== wtHeadBefore,
+      "981 reposition: the tree HEAD is unchanged when the backup ref fails",
+    );
+
     console.log("✓ 981 reposition test passed");
   } finally {
     rmSync(dir, { recursive: true, force: true });
