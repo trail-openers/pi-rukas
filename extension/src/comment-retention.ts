@@ -348,8 +348,8 @@ export async function findLostComments(
         block.push(c.raw);
         i++;
       }
-      // Nearest following removed non-comment line in THIS hunk (the
-      // annotation-code line for the code-deleted exemption; hunk-local).
+      // Nearest following removed non-comment line (the exemption's code line).
+      // Since #1040 this search is hunk-local: it never crosses a hunk boundary.
       let followIdx = -1;
       for (let j = i; j < removed.length; j++) {
         const c = removed[j];
@@ -358,9 +358,10 @@ export async function findLostComments(
           break;
         }
       }
-      // Code-deleted exemption (fires first, keeps #1019 / #948 case (c)):
-      // the nearest following removed code line's text does NOT reappear at
-      // head — the code the comment documented was deleted too.
+      // Exemption: the nearest following removed code line's text does NOT
+      // reappear at head — the code the comment documented was deleted too.
+      // Since #1040 such a block is reported as replaced (not exempt) when its
+      // hunk also adds a comment line. (Code-deleted exemption, keeps #1019 / #948 case (c).)
       if (followIdx >= 0) {
         const follow = removed[followIdx]?.raw;
         if (follow?.trim() && !presentAtHead(follow)) {
@@ -386,7 +387,7 @@ export async function findLostComments(
         replaced.push(...block.map((l) => l.trim()));
         continue;
       }
-      // Otherwise a comment line is lost iff its trimmed text is not retained
+      // Otherwise a comment line is lost iff its trimmed text is not retained.
       // (verbatim or substring) anywhere under `paths` at head. An added
       // comment with the annotated code unchanged does NOT make the drop a
       // replacement (that keeps the #1019 true positive).

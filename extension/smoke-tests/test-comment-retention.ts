@@ -7,8 +7,8 @@
  * the #1040 replacement rule (#1017 shape → replaced note, #1019 shape →
  * lost, mixed hunk). The develop-gate wiring (fake ExecFn through
  * `verifyStepOutcome`) proves the lossy diff fails and the replaced-only diff
- * passes. Deliberately NOT named `*-live.ts` (that suffix spawns Pi children
- * and is excluded from the pre-push gate).
+ * passes. Deliberately NOT named `*-live.ts` (that suffix spawns Pi children and is
+ * excluded from the pre-push gate). This costs nothing but a few git forks.
  */
 
 import { execFile } from "node:child_process";
@@ -365,6 +365,8 @@ async function rg(
       const lostComment = "// the comment the developer deleted";
       const diffBody = (diff: string, grep: string) =>
         `--- a/src/app.ts\n+++ b/src/app.ts\n${diff}`;
+      // A fake execFn whose `git diff base...HEAD -- src` returns a removed
+      // comment and a head-tree read that does NOT contain it.
       // (i) lossy diff → gate fails with the lost-line evidence.
       const fakeExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
         const p = prefix(cmd);
