@@ -6,23 +6,27 @@
  * package bin, PATH fallback, version probe, probe wiring.
  */
 
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { parseVerifiedLine } from "../src/pi-doc-parsing.ts";
 import {
   _resetPiBinaryCache,
-  _resetPiResolutionProbeFlag,
-  _resetVerifiedVersionCache,
   getPiInvocation,
-  getPiResolutionInfo,
-  isVersionOlder,
-  kickPiResolutionProbe,
   looksLikePiCli,
   parsePiVersion,
   resolvePackageBin,
   resolvePiBinarySync,
 } from "../src/pi-binary-resolve.ts";
+import {
+  _resetPiVersionProbe,
+  getPiResolutionInfo,
+  getVerifiedVersion,
+  isVersionOlder,
+  kickPiResolutionProbe,
+  probePiVersion,
+} from "../src/pi-version-probe.ts";
 
 let exit = 0;
 let passed = 0;
@@ -155,10 +159,14 @@ assert(isVersionOlder("garbage", "1.0.0") === false, "unparseable returns false"
 // Range prefixes must be stripped before caching (getVerifiedVersion strips
 // /^^[~^><=]+/), so isVersionOlder always compares plain versions.
 {
-  const raw = "~0.99.9";
-  const stripped = raw.replace(/^[~^><=]+/, "");
-  assert(stripped === "0.99.9", "range prefix stripped from parsed version");
-  assert(isVersionOlder(stripped, "1.0.0") === true, "stripped version compares as older");
+  // Real seam: getVerifiedVersion reads docs/pi-compatibility.md and must return
+  // the plain version (range prefix stripped), comparable by isVersionOlder.
+  _resetPiVersionProbe();
+  const verified = getVerifiedVersion();
+  const doc = readFileSync(path.resolve(import.meta.dirname, "..", "..", "docs", "pi-compatibility.md"), "utf8");
+  const docVerified = parseVerifiedLine(doc)?.version.replace(/^[~^><=]+/, "");
+  assert(verified !== null && verified === docVerified, `getVerifiedVersion strips the range prefix (got ${verified})`);
+  assert(isVersionOlder("0.0.1", verified as string), "verified version is comparable");
 }
 
 // ---------------------------------------------------------------------------
@@ -291,6 +299,46 @@ rmFile(nonExec);
   rmDir(outsideBin);
 }
 
+// Symlink inside the package dir pointing outside is rejected (realpath check)
+{
+  const tmpDir4 = mkTmpDir("pi-resolve-test-pkg4");
+  const outside4 = mkTmpDir("pi-resolve-test-outer4");
+  const target4 = path.join(outside4, "evil.js");
+  writeFileSync(target4, "#!/usr/bin/env node\n", { mode: 0o755 });
+  symlinkSync(target4, path.join(tmpDir4, "cli.js"));
+  writeFileSync(path.join(tmpDir4, "package.json"), JSON.stringify({ bin: "cli.js" }));
+  assert(resolvePackageBin(path.join(tmpDir4, "package.json")) === null, "rejects a symlink escaping the package directory");
+  rmDir(tmpDir4);
+  rmDir(outside4);
+}
+
+// Broken symlink bin is rejected without throwing
+{
+  const tmpDir5 = mkTmpDir("pi-resolve-test-pkg5");
+  symlinkSync(path.join(tmpDir5, "gone.js"), path.join(tmpDir5, "cli.js"));
+  writeFileSync(path.join(tmpDir5, "package.json"), JSON.stringify({ bin: "cli.js" }));
+  assert(resolvePackageBin(path.join(tmpDir5, "package.json")) === null, "rejects a broken symlink bin");
+  rmDir(tmpDir5);
+}
+
+// Spawn failure (a directory passes X_OK but cannot be spawned) warns visibly
+{
+  _resetPiBinaryCache();
+  _resetPiVersionProbe();
+  const dir = mkTmpDir("pi-resolve-test-unrunnable");
+  const warnings: string[] = [];
+  const origWarn = console.warn;
+  console.warn = (...args: unknown[]) => void warnings.push(args.map(String).join(" "));
+  try {
+    const probe = await withEnv({ PI_ENSEMBLE_PI_BIN: dir }, () => probePiVersion());
+    assert(probe.version === null && warnings.some((w) => w.includes(dir)), "spawn failure warns, naming the command");
+  } finally {
+    console.warn = origWarn;
+    _resetPiVersionProbe();
+    rmDir(dir);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // getPiInvocation — backward-compatible interface
 // ---------------------------------------------------------------------------
@@ -325,7 +373,7 @@ section("getPiResolutionInfo");
 // Use a fake pi binary that responds to --version
 {
   _resetPiBinaryCache();
-  _resetVerifiedVersionCache();
+  _resetPiVersionProbe();
 
   const fakeBin = makeFakeBin(
     "fake-pi-ver",
@@ -346,7 +394,7 @@ section("getPiResolutionInfo");
 // Version probe with a non-responsive binary (timeout path)
 {
   _resetPiBinaryCache();
-  _resetVerifiedVersionCache();
+  _resetPiVersionProbe();
 
   const slowBin = makeFakeBin("slow-pi", "sleep 5");
   const start = Date.now();
@@ -362,7 +410,7 @@ section("getPiResolutionInfo");
 // Unparseable version output
 {
   _resetPiBinaryCache();
-  _resetVerifiedVersionCache();
+  _resetPiVersionProbe();
 
   const garbageBin = makeFakeBin("garbage-pi", "echo 'I am not a version'");
   const info = withEnv({ PI_ENSEMBLE_PI_BIN: garbageBin }, () => getPiResolutionInfo());
@@ -407,8 +455,7 @@ section("probe wiring");
 
   withEnv({ PI_ENSEMBLE_PI_BIN: probeFakeBin, COUNTER_FILE: counterFile }, async () => {
     _resetPiBinaryCache();
-    _resetVerifiedVersionCache();
-    _resetPiResolutionProbeFlag();
+    _resetPiVersionProbe();
 
     // The kick returns synchronously (void) and must not block.
     const start = Date.now();
@@ -437,8 +484,7 @@ section("probe wiring");
   rmFile(probeFakeBin);
   rmFile(counterFile);
   _resetPiBinaryCache();
-  _resetVerifiedVersionCache();
-  _resetPiResolutionProbeFlag();
+  _resetPiVersionProbe();
 }
 
 function readFileSyncSafe(p: string): string {
