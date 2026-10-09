@@ -43,17 +43,25 @@ This is NOT the deterministic state machine that `/work` runs. Pick the steps th
 
 2. **Decompose mentally.** Is this one well-bounded chunk of work, or genuinely-independent parallel workstreams? Most `/do` invocations are single-shot. Multi-workstream is the exception; reach for it only if you'd otherwise dispatch the same developer twice in sequence.
 
-3. **Dispatch developer(s).** Pass scope + out-of-scope explicitly in the prompt — the developer doesn't have the issue-body anchor that `/work` provides, so YOU are the source of truth on what's in vs out.
+3. **Create the worktree.** Before any implementation dispatch, create a detached worktree so the developer's edits never land at the repo root. The path is `.worktrees/do-slug` where `slug` is the same short-slug used for scratch (derived from the request, e.g. `do-fix-typo`). From the repo root, run:
 
-4. **Adversarial-gate the diff.** Run `adversarial_loop` against the resulting `git diff HEAD`. If it REJECTS, re-dispatch developer with the findings. Three rounds max — if still REJECTED after round 3, surface the diff + findings to the user and let them decide.
+```
+git worktree add --detach .worktrees/do-slug main
+```
 
-5. **Lens review.** For non-trivial diffs, dispatch `dispatch_lens_review` against the PR diff. Fix-loop on findings via re-dispatch developer with the lens output, then re-gate the fixes through `adversarial_loop`.
+(replacing `do-slug` with the actual slug and `main` with the target base ref). The `--detach` flag keeps the worktree from claiming a branch, matching the `/work` convention and the `sweepBranchHolders` invariant. A same-slug collision surfaces as git's own `already exists` error (the #545 issue-prefix guard matches `issue-N` names only, not `do-` names). Note: the `/do` path uses raw `git worktree add`, not the driver's `worktreeCreate`, so the #475 dirty guard does not apply here. If the target path already exists and is dirty, `git worktree add` will refuse — inspect the existing worktree manually before removing it (do NOT force-remove without checking for uncommitted work). Treat the refusal as a real signal — do not work around it. **Thread the absolute worktree path as `cwd` into every dispatch in the cycle**: `dispatch_specialist`, every `specs[]` member in `dispatch_parallel`, the `workCwd` field of `adversarial_loop`, and the `cwd` field of `dispatch_lens_review`. Omitting `cwd` on any of them silently regresses to the process cwd (repo root) — the exact regression this step prevents. On a clean `/do` (all gates passed, work integrated), remove the worktree via `git worktree remove` plus the absolute path; on failure, keep it and name the path in the final report (matching `/work` handoff behaviour).
 
-6. **Merge.** PR, CI and merge go through `ops`, and only after BOTH `adversarial_loop` AND `dispatch_lens_review` have passed with all CRITICAL/HIGH findings fixed — hand-managed work gets the same gates as `/work`, and a developer's self-report plus CI is NOT a pass. The only carve-out: a release-please/Dependabot follow-up on a one-off direct-to-main change may skip the full PR cycle (extremely rare); name the carve-out explicitly when you take it. If the work is genuinely issue-driven and deserves the full step machine, use `/work` instead — `start_work_driver` runs it.
+4. **Dispatch developer(s).** Pass scope + out-of-scope explicitly in the prompt — the developer doesn't have the issue-body anchor that `/work` provides, so YOU are the source of truth on what's in vs out.
 
-7. **CI watch (optional).** If the project has CI and a PR was opened, dispatch `ops` to watch it and report back — per forge: GitHub: `gh run watch`, GitLab: poll `glab ci status` (or the latest pipeline via `glab ci view`) until a terminal state (`success`, `failed`, `canceled`, `skipped` or `manual`).
+5. **Adversarial-gate the diff.** Run `adversarial_loop` against the resulting `git diff HEAD`. If it REJECTS, re-dispatch developer with the findings. Three rounds max — if still REJECTED after round 3, surface the diff + findings to the user and let them decide.
 
-8. **Report back.** Concise summary of what was done. PR URL if one was opened. Open questions if any.
+6. **Lens review.** For non-trivial diffs, dispatch `dispatch_lens_review` against the worktree diff (the worktree's `git diff` against the base, since the PR does not exist until the merge step). Fix-loop on findings via re-dispatch developer with the lens output, then re-gate the fixes through `adversarial_loop`.
+
+7. **Merge.** PR, CI and merge go through `ops`, and only after BOTH `adversarial_loop` AND `dispatch_lens_review` have passed with all CRITICAL/HIGH findings fixed — hand-managed work gets the same gates as `/work`, and a developer's self-report plus CI is NOT a pass. The only carve-out: a release-please/Dependabot follow-up on a one-off direct-to-main change may skip the full PR cycle (extremely rare); name the carve-out explicitly when you take it. If the work is genuinely issue-driven and deserves the full step machine, use `/work` instead — `start_work_driver` runs it.
+
+8. **CI watch (optional).** If the project has CI and a PR was opened, dispatch `ops` to watch it and report back — per forge: GitHub: `gh run watch`, GitLab: poll `glab ci status` (or the latest pipeline via `glab ci view`) until a terminal state (`success`, `failed`, `canceled`, `skipped` or `manual`).
+
+9. **Report back.** Concise summary of what was done. PR URL if one was opened. Open questions if any.
 
 ## Differences from /work
 

@@ -57,6 +57,36 @@ for (const manifestName of readdirSync(MANIFESTS).filter((name) => name.endsWith
       ),
       "project-manager: the gate sentence is in the Development Workflow section",
     );
+    // #1007 — the worktree-bound-dispatch fence must name all four dispatch
+    // types with their cwd/workCwd parameters, so a future regression that
+    // drops the fence fails the gate rather than surfacing as feature work
+    // landing at root.
+    const worktreeSection = prompt.match(
+      /Worktree-bound dispatches[\s\S]*?(?=\n###?\s)/,
+    );
+    assert(
+      worktreeSection !== null,
+      "project-manager: built prompt contains the worktree-bound-dispatch section",
+    );
+    if (worktreeSection) {
+      const section = worktreeSection[0];
+      const fourDispatches = [
+        "dispatch_specialist",
+        "dispatch_parallel",
+        "adversarial_loop",
+        "dispatch_lens_review",
+      ];
+      for (const tool of fourDispatches) {
+        assert(
+          section.includes(tool),
+          `project-manager: worktree-bound-dispatch section names ${tool}`,
+        );
+      }
+      assert(
+        section.includes("workCwd"),
+        "project-manager: worktree-bound-dispatch section names workCwd",
+      );
+    }
   }
 
   for (const line of readFileSync(manifestPath, "utf8").split("\n")) {
