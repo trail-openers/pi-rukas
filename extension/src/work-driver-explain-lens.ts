@@ -6,6 +6,7 @@
  * bodies of work-driver-explain.ts.
  */
 
+import { inlineCodeSafe } from "./work-driver-conflict-evidence.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 type Cap = Extract<WorkEvent, { kind: "cap-hit" }>["cap"];
@@ -70,8 +71,12 @@ export function explainLens(cap: Cap, state: WorkState): string {
         );
       const worktree = hit?.lensWorktreePath ?? state.pipelineState.worktrees?.default;
       const cause = hit?.evidence ?? "(no detail recorded)";
-      const where = worktree
-        ? `The worktree inspected was \`${worktree}\` (\`git -C ${worktree} status\`).`
+      // #981 — the worktree path is interpolated into a backtick code span
+      // below; a backtick or newline in it would break the span, so it is
+      // sanitised via inlineCodeSafe (the worktree path is untrusted data).
+      const safeWorktree = worktree ? inlineCodeSafe(worktree) : undefined;
+      const where = safeWorktree
+        ? `The worktree inspected was \`${safeWorktree}\` (\`git -C ${safeWorktree} status\`).`
         : "The inspected worktree path was not recorded.";
       const ref = hit?.restoredToRef;
       const backup = ref

@@ -14,6 +14,21 @@
 import type { ExecFn } from "./worktree.ts";
 
 /**
+ * #981 — neutralise a path for inline interpolation into a code span in
+ * operator-facing text (a PR body, handoff, or park evidence). Strips
+ * backticks (a backtick in the data would close the span and re-open
+ * markdown interpretation of the remainder) and replaces CR/LF with a
+ * visible marker (a newline would truncate a one-line string). Paths are
+ * untrusted data (`git ls-files -u` output, `git rev-parse`-derived worktree
+ * paths); the same helper serves both the rendered conflict path and the
+ * repoRoot / worktree path interpolated into the `git -C <path> …` command
+ * spans that tell the operator which command to run.
+ */
+export function inlineCodeSafe(p: string): string {
+  return p.replace(/`/g, "").replace(/[\r\n]+/g, "⏎");
+}
+
+/**
  * #981 — render one operator-facing conflict path safely: in a code span
  * (the note lands in markdown — PR body, handoff, park evidence), with the
  * literal path's backticks stripped (a backtick in the data would close the
@@ -22,7 +37,7 @@ import type { ExecFn } from "./worktree.ts";
  * one-line evidence string). `git ls-files -u` path data is untrusted.
  */
 export function renderConflictPath(p: string): string {
-  return `\`${p.replace(/`/g, "").replace(/[\r\n]/g, "⏎")}\``;
+  return `\`${inlineCodeSafe(p)}\``;
 }
 
 export interface ConflictEvidence {
@@ -53,8 +68,13 @@ export async function collectConflictEvidence(
     return { paths: [], note: "" };
   }
 
-  // The conflicting file paths from repoRoot's index.
-  let paths: string[] = [];
+  // The conflicting file paths from repoRoot's index. Distinguish a read
+  // FAILURE (ls-files errored — the index may be corrupt or git unavailable)
+  // from an EMPTY result (the command succeeded and reported nothing — the
+  // unmerged state may already be resolved, so the operator confirms with
+  // `git status` instead of assuming a conflict to resolve).
+  let paths: string[];
+  let lsFilesFailed = false;
   try {
     const { stdout: unmerged } = await execFn("git ls-files -u", {
       cwd: repoRoot,
@@ -69,7 +89,8 @@ export async function collectConflictEvidence(
       ),
     ];
   } catch {
-    // Could not read unmerged paths — the error text is still useful.
+    lsFilesFailed = true;
+    paths = [];
   }
   // Render each path safely for the operator-facing note (backtick / CR /
   // LF neutralised — see renderConflictPath). The raw paths array stays
@@ -105,10 +126,17 @@ export async function collectConflictEvidence(
     // Could not read branch tip.
   }
 
-  const note =
+  // #981 — repoRoot is interpolated into a backtick command span below; a
+  // backtick or newline in the path would break the span, so it is
+  // sanitised via inlineCodeSafe.
+  const safeRepoRoot = inlineCodeSafe(repoRoot);
+  const pathsClause =
     paths.length > 0
-      ? `Conflicting paths: ${rendered}. Fix commit's parent: ${fixParent ?? "unreadable"} | Branch tip: ${branchTip ?? "unreadable"}. Run \`git -C ${repoRoot} status\` to see the conflicted files, resolve them, commit, and re-run.`
-      : `Conflicting paths: (unreadable — run git ls-files -u in the repository root). Fix commit's parent: ${fixParent ?? "unreadable"} | Branch tip: ${branchTip ?? "unreadable"}. Run \`git -C ${repoRoot} status\` to see the conflicted files, resolve them, commit, and re-run.`;
+      ? `Conflicting paths: ${rendered}.`
+      : lsFilesFailed
+        ? "Conflicting paths: (unreadable — git ls-files -u failed; run it in the repository root to see which files are in conflict)."
+        : "Conflicting paths: (no unmerged paths in the index — the conflict may already be resolved; run git status to confirm).";
+  const note = `${pathsClause} Fix commit's parent: ${fixParent ?? "unreadable"} | Branch tip: ${branchTip ?? "unreadable"}. Run \`git -C ${safeRepoRoot} status\` to see the conflicted files, resolve them, commit, and re-run.`;
 
   return { paths, fixParent, branchTip, note };
 }

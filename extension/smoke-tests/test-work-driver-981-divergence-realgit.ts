@@ -126,7 +126,7 @@ const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
     assert(
       rep.kind === "repositioned",
       `981 G: reposition guard moved the worktree to the tip (got ${rep.kind}${
-        rep.kind === "repositioned" ? ` landedViaCherry=${rep.landedViaCherry}` : ""
+        rep.kind === "repositioned" ? ` movedByPatchEquivalence=${rep.movedByPatchEquivalence}` : ""
       })`,
     );
     const repHead = (await git(wt5, ["rev-parse", "HEAD"])).stdout.trim();
@@ -379,7 +379,7 @@ const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
       "981 local-tip",
     );
     assert(
-      repJ.kind === "repositioned" && !repJ.landedViaCherry,
+      repJ.kind === "repositioned" && !repJ.movedByPatchEquivalence,
       `981 J: reposition uses the local (ahead) tip (got ${repJ.kind})`,
     );
     const wtHeadJ = (await git(wtJ, ["rev-parse", "HEAD"])).stdout.trim();
