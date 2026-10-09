@@ -8,6 +8,34 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.79](https://github.com/trail-openers/pi-rukas/compare/v0.12.78...v0.12.79) (2026-10-09)
+
+
+### Features
+
+* **pm:** register question tool from pi example ([#987](https://github.com/trail-openers/pi-rukas/issues/987)) ([#991](https://github.com/trail-openers/pi-rukas/issues/991)) ([ac98314](https://github.com/trail-openers/pi-rukas/commit/ac98314a812802337b9e4280ca5ed4cdb178baf5))
+* **review:** round-cap merge rule for hand-managed PRs, residual disclosure and delta lens reviews ([#975](https://github.com/trail-openers/pi-rukas/issues/975)) ([5b301d4](https://github.com/trail-openers/pi-rukas/commit/5b301d4c165277a475780c2c547dc8064eab5541))
+* **spawn:** resolve the child pi binary explicitly and report its version ([#1035](https://github.com/trail-openers/pi-rukas/issues/1035)) ([22335d9](https://github.com/trail-openers/pi-rukas/commit/22335d928554d65a460c45ca114be7195cebdad2))
+* **work:** add TL;DR section to PR and issue bodies on cycle completion ([#1009](https://github.com/trail-openers/pi-rukas/issues/1009)) ([1480d2c](https://github.com/trail-openers/pi-rukas/commit/1480d2cf3f05c36978877c876aa3da863f76f277))
+* **work:** Deterministic failure digests for pi-rukas (epic… ([#1050](https://github.com/trail-openers/pi-rukas/issues/1050)) ([37a5c76](https://github.com/trail-openers/pi-rukas/commit/37a5c766442fcfe788014bfe6f1ee3b158817ff9))
+* **work:** wire worktree-bound-dispatch doctrine into /do ([#1010](https://github.com/trail-openers/pi-rukas/issues/1010)) ([ca4a74f](https://github.com/trail-openers/pi-rukas/commit/ca4a74f9b3f1088efd86681b2b9b89affa959cf9))
+
+
+### Bug Fixes
+
+* **review:** resolve the review branch on the tool path and say when a review is not recorded ([#988](https://github.com/trail-openers/pi-rukas/issues/988)) ([dd8adce](https://github.com/trail-openers/pi-rukas/commit/dd8adcef63fd11e87bd6745f7e320dc581cf98d0))
+* **review:** store the resolved commit SHA in the review ledger ([#1048](https://github.com/trail-openers/pi-rukas/issues/1048)) ([edf2c44](https://github.com/trail-openers/pi-rukas/commit/edf2c44e7c446638115bf1b6c5af33295dca1a41))
+* **test:** bound each offline smoke test with a per-test timeout ([#1037](https://github.com/trail-openers/pi-rukas/issues/1037)) ([ef6aaff](https://github.com/trail-openers/pi-rukas/commit/ef6aaffc59b7f190aea7bbd1c56385c1c5333a3d))
+* **test:** stop offline smoke tests spawning real Pi children ([#1034](https://github.com/trail-openers/pi-rukas/issues/1034)) ([825b049](https://github.com/trail-openers/pi-rukas/commit/825b049b2f4695d0456b4916353f695f195da61e))
+* **work:** bin/pi-rukas fails when invoked through the… ([#979](https://github.com/trail-openers/pi-rukas/issues/979)) ([e0175ad](https://github.com/trail-openers/pi-rukas/commit/e0175ad634c4be00752db1bc251b1ba258fd06c7))
+* **work:** extension/smoke-tests/test-lens-kill-ledger.ts is… ([#999](https://github.com/trail-openers/pi-rukas/issues/999)) ([be162db](https://github.com/trail-openers/pi-rukas/commit/be162dbeb6a4275fccbf2fe91a614db5b7daecbd))
+* **work:** name the real failing assertion in the verify tail ([#982](https://github.com/trail-openers/pi-rukas/issues/982)) ([0128b84](https://github.com/trail-openers/pi-rukas/commit/0128b84198af845d372db00f788e481437579045))
+* **work:** only split an issue into workstreams that pass gates alone ([#1011](https://github.com/trail-openers/pi-rukas/issues/1011)) ([d541b84](https://github.com/trail-openers/pi-rukas/commit/d541b844e1996a02c07dc30abd7ec627ba6ac905))
+* **work:** resume cycles whose state contains provisioning, safety-net, handoff and leftover events ([#990](https://github.com/trail-openers/pi-rukas/issues/990)) ([980995f](https://github.com/trail-openers/pi-rukas/commit/980995f317cc1ed291bd138d320dfb76d2a33bbc))
+* **work:** Six skills ship references/ files their SKILL.md… ([#1001](https://github.com/trail-openers/pi-rukas/issues/1001)) ([b0ba367](https://github.com/trail-openers/pi-rukas/commit/b0ba3673b19153ad99d88bad5c7b84973bd8b46a)), closes [#994](https://github.com/trail-openers/pi-rukas/issues/994)
+* **work:** stop the intent gate parking a complete spec as underspecified ([#1004](https://github.com/trail-openers/pi-rukas/issues/1004)) ([0d44b21](https://github.com/trail-openers/pi-rukas/commit/0d44b211676d2666127f271878bf55d8ce4c45b6))
+* **work:** Three offline smoke tests fail on a Bun 1.4.2 host… ([#998](https://github.com/trail-openers/pi-rukas/issues/998)) ([9d3caff](https://github.com/trail-openers/pi-rukas/commit/9d3caff7a4237d4af9bc82b0603a7e6e1efd8691)), closes [#997](https://github.com/trail-openers/pi-rukas/issues/997)
+
 ## [0.12.78](https://github.com/trail-openers/pi-rukas/compare/v0.12.77...v0.12.78) (2026-10-03)
 
 
