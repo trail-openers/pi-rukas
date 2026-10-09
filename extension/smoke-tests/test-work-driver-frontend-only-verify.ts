@@ -132,6 +132,10 @@ try {
     const gate = await verifyStepOutcome(ctx, s, "develop");
     assert(gate.ok, "#1013: CSS-only diff with unset env var → ok (full chain ran)");
     assert(
+      r.commands.some((c) => c === "cargo check --quiet"),
+      "#1013: cargo check WAS executed when env var is unset (full chain ran, no skip)",
+    );
+    assert(
       gate.notes.some((n) => /frontend-only skip not enabled/.test(n)),
       "#1013: note indicates skip is not enabled when env var is unset",
     );
@@ -152,6 +156,10 @@ try {
     const s = stateFor({ default: r.dir }, { default: ws("default", "css-only") });
     const gate = await verifyStepOutcome(ctx, s, "develop");
     assert(gate.ok, "#1013: CSS-only diff with empty env var → ok (full chain ran)");
+    assert(
+      r.commands.some((c) => c === "cargo check --quiet"),
+      "#1013: cargo check WAS executed when env var is empty (full chain ran, no skip)",
+    );
     assert(
       gate.notes.some((n) => /frontend-only skip not enabled/.test(n)),
       "#1013: note indicates skip is not enabled when env var is empty",

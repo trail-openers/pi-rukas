@@ -344,9 +344,11 @@ export async function verifyDevelopOutcome(
     );
     if (skipDecision.skip) {
       notes.push(skipDecision.reason ?? "frontend-only skip");
-    } else if (skipDecision.reason) {
-      notes.push(skipDecision.reason);
     } else {
+      // #1012 — a non-skip `reason` is diagnostic (git-failure suppression,
+      // probe error, opt-in disabled): record it but still run the gate.
+      // Only an actual skip suppresses the derived chain.
+      if (skipDecision.reason) notes.push(skipDecision.reason);
       // #794 — the per-worktree loop + consolidated run + classification is
       // extracted to work-driver-verify-verify-cmd.ts (500-line gate); the
       // failure messages, the flake-retry precondition and the aggregation
