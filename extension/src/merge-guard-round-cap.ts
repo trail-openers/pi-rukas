@@ -51,8 +51,9 @@
  *     PR's `headOid` — the guard passes that value here). A lens review
  *     that reviewed an OLDER commit must not satisfy the cap: the commits
  *     after it are unreviewed by the lens. A legacy entry without `headSha`
- *     (or a stale one) refuses, naming the condition — conservative
- *     refusal, the same rule condition 3 applies to `hasCritical`.
+ *     refuses, naming the condition — conservative refusal, the same rule
+ *     condition 3 applies to `hasCritical`. A non-SHA `headSha` (malformed
+ *     entry) is refused by the `isFullCommitSha` shape check (#1039).
  *
  * The guard's existing strict rule (the latest lens entry must be `passed`)
  * still applies first — the round-cap path is an ADDITIONAL path that allows
@@ -78,6 +79,7 @@
  * here checks the author), so modelling it here would be theatre.
  */
 
+import { isFullCommitSha } from "./review-head-sha.ts";
 import { type LedgerEntry, latestEntry } from "./review-ledger.ts";
 import { MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 
@@ -247,6 +249,19 @@ export function evaluateRoundCapMerge(
       allowed: false,
       failedCondition:
         "the latest lens entry has no headSha (legacy entry) — the round-cap rule cannot verify the review covered the PR's current head; re-run the review to record it",
+    };
+  }
+  // #1039 — a stored headSha that is not a 40-char SHA (a branch name
+  // from a pre-#1039 entry, an abbreviated OID, or any other non-SHA
+  // string) is MALFORMED: it is never matched by string equality against
+  // the PR head OID (which IS a 40-char SHA). Three distinct refusal
+  // states: (1) no headSha (legacy), (2) non-SHA headSha (malformed),
+  // (3) SHA mismatch (branch moved).
+  if (!isFullCommitSha(headSha)) {
+    return {
+      applies: true,
+      allowed: false,
+      failedCondition: `the latest lens entry's headSha "${headSha.slice(0, 20)}" is malformed (not a 40-char commit SHA) — the entry is unreadable; re-run dispatch_lens_review to record a valid entry`,
     };
   }
   if (headSha !== prHeadOid) {
