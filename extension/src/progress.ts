@@ -12,7 +12,8 @@
  * updating roughly once per child turn.
  */
 
-import type { PiContentBlock } from "./pi-event-shapes.ts";
+import type { PiContentBlock, PiUsage } from "./pi-event-shapes.ts";
+import { addUsage } from "./pi-usage.ts";
 import type { DispatchUsage } from "./types.ts";
 
 export interface RunningState {
@@ -200,13 +201,7 @@ interface ProgressEvent {
       name?: string;
       arguments?: unknown;
     }>;
-    usage?: {
-      input?: number;
-      output?: number;
-      cacheRead?: number;
-      cacheWrite?: number;
-      cost?: { total?: number };
-    };
+    usage?: PiUsage;
     model?: string;
   };
 }
@@ -350,6 +345,21 @@ export function ingestEvent(
   // streak counter cannot see — message_end fires BEFORE the tool runs,
   // so the success-keyed counter needs the actual result.
   if (msg && msg.role === "toolResult") {
+    // #1032 — a toolResult message can carry the SUMMED usage of the
+    // nested (codemode) tool calls the parent call executed (Pi's
+    // `combineUsage` stamps it onto the parent's toolResult message — the
+    // only place that spend is recorded, since the nested calls never
+    // surface as their own assistant turns). Add it to the running
+    // totals BEFORE the early return below, so the live path (this) and
+    // the replay path (collapseEvents) agree — both now sum assistant
+    // usage + toolResult usage, exactly once each. `turns` is deliberately
+    // NOT incremented: a toolResult is not an assistant turn, and the
+    // token-budget quantity (`totalTokens`) is separate from turn
+    // accounting (see `collapseEvents`'s same invariant).
+    if (msg.usage) {
+      addUsage(state.usage, msg.usage, state);
+      // `turns` is only counted for assistant messages.
+    }
     if (toolResultObserver) {
       const tr = toolResultFields(msg);
       toolResultObserver(tr.toolName, tr.toolCallId, tr.resultText, tr.isError);
@@ -360,18 +370,8 @@ export function ingestEvent(
   state.turns += 1;
   if (msg.model && !state.model) state.model = msg.model;
   if (msg.usage) {
-    state.usage.input += msg.usage.input ?? 0;
-    state.usage.output += msg.usage.output ?? 0;
-    state.usage.cacheRead += msg.usage.cacheRead ?? 0;
-    state.usage.cacheWrite += msg.usage.cacheWrite ?? 0;
-    state.usage.cost += msg.usage.cost?.total ?? 0;
+    addUsage(state.usage, msg.usage, state);
     state.usage.turns = state.turns;
-    // #543 F6 — running cumulative total, the token-budget quantity.
-    state.totalTokens +=
-      (msg.usage.input ?? 0) +
-      (msg.usage.output ?? 0) +
-      (msg.usage.cacheRead ?? 0) +
-      (msg.usage.cacheWrite ?? 0);
   }
   // Find the latest tool call name + assistant text in this turn.
   let latestToolName: string | undefined;
