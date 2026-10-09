@@ -1,11 +1,10 @@
 /** work-driver-lens — Step 7 (lens review) + Step 7f (lens-fix) handlers. */
 
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
 import { carriedAdversarialFindings } from "./adversarial-findings.ts";
 import { detectRepeatSeam } from "./detect-repeat-seam.ts";
 import { type WideningFinding, scanTypeWidening } from "./invariant-scan.ts";
 import { buildEvidence, runClaimScan } from "./lens-evidence.ts";
+import { execp } from "./lens-exec.ts";
 import { runLensReview } from "./lens-review.ts";
 import { appendGuardWriteEvents, runGuardMemoryWrites } from "./lens-vipune-write.ts";
 import { writeFindings } from "./memory-write.ts";
@@ -15,15 +14,22 @@ import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { readAllMergedDiffs } from "./work-driver-diff.ts";
 import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
+import { cachedIssueTitle } from "./work-driver-integrate.ts";
 import { lensCapKillEvent, lensTimingsOf } from "./work-driver-lens-capkill.ts";
 import {
   countCommittedAhead,
   countLensFixEmptyResends,
   noDiffEvidence,
 } from "./work-driver-lens-fix-commit.ts";
+import {
+  type RepositionResult,
+  repositionLensFixWorktree,
+} from "./work-driver-lens-fix-reposition-gate.ts";
+import type { ExecFn } from "./worktree.ts";
 // Re-export: moved into work-driver-lens-fix-commit.ts for the 500-line gate
 // (AGENTS.md §12) — importers (work-driver-adversarial.ts) keep their path.
 export { commitLensFixChanges, countLensFixEmptyResends } from "./work-driver-lens-fix-commit.ts";
+import { parkLensFixReposition } from "./work-driver-lens-fix-reposition-park.ts";
 import { applyLensVerdict } from "./work-driver-lens-verdicts.ts";
 import { parsePrNumber, runSingleDispatch } from "./work-driver-merged.ts";
 import { DOCTRINE_FILES, type DoctrineDoc, judgePolicy } from "./work-driver-policy.ts";
@@ -31,8 +37,6 @@ import { inlineLensFixPrompt, scratchHygieneSection } from "./work-driver-prompt
 import { scratchDir } from "./work-driver-workspace.ts";
 import { withUsage } from "./workflow-state-events-usage.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
-
-const execp = promisify(exec);
 
 export async function runLens(
   ctx: DriverContext,
@@ -313,6 +317,7 @@ export async function runLens(
 
   return next;
 }
+
 export async function runLensFix(
   ctx: DriverContext,
   state: WorkState,
@@ -330,6 +335,10 @@ export async function runLensFix(
   // before re-flagging identical findings at escalating severity.
   const resends = countLensFixEmptyResends(state.eventLog, state.pipelineState.reviewRound);
   const fixTree = lensWorktree(ctx, state);
+  // #981 — hoisted: the round-2+ reposition gate below also needs the
+  // branch name; a single read of pipelineState keeps both call sites in
+  // step (there were two inner declarations before the gate landed).
+  const branchName = state.pipelineState.branchName;
   let next = state;
   if (resends > 0) {
     // The worktree was already established clean by the #492 inspection in
@@ -360,7 +369,6 @@ export async function runLensFix(
       );
     } else {
       // Clean tree. Check committed work before declaring "no fix".
-      const branchName = state.pipelineState.branchName;
       let committedCount: number | undefined;
       if (branchName) {
         const execFn = ctx.verifyExecFn ?? execp;
@@ -402,6 +410,43 @@ export async function runLensFix(
         scratchHygieneSection(scratchDir(ctx.repoRoot, ctx.issue)),
       ].join("\n")
     : inlineLensFixPrompt(findings, scratchDir(ctx.repoRoot, ctx.issue));
+
+  // #981 (task-b) — reposition the lens-fix worktree to the branch's
+  // current tip BEFORE the fix dispatch. The worktree was created at the
+  // branch's HEAD when the cycle started, but the branch may have advanced
+  // since (a previous lens-fix round cherry-picked a fix). Without
+  // repositioning, a round-2+ fixer sees a stale snapshot and produces a
+  // divergent fix that does not integrate cleanly (the #978 shape).
+  //
+  // Unlike task-a's best-effort reposition, this guard is a GATE: the
+  // fixer is dispatched ONLY when the worktree is verified at the branch
+  // tip (`already-at-tip` / `repositioned`). A dirty tree, a tree holding
+  // unlanded round-1 work, or a diverged tree parks the cycle (a
+  // `lens-fix-reposition` cap-hit) — dispatching a fix onto any of those
+  // bases would build on code the branch does not have.
+  if (branchName && fixTree !== ctx.repoRoot) {
+    // `tree !== ctx.repoRoot`: legacy state without worktrees falls back to
+    // repoRoot; the reposition gate only makes sense for a separate worktree.
+    const execFn: ExecFn = ctx.verifyExecFn ?? execp;
+    const issueTitle = await cachedIssueTitle(state);
+    const rep = await repositionLensFixWorktree(
+      execFn,
+      fixTree,
+      branchName,
+      [ctx.issue],
+      issueTitle,
+    );
+    if (rep.kind === "already-at-tip" || rep.kind === "repositioned") {
+      trace(
+        `work-driver: lens-fix reposition ${rep.kind}${rep.kind === "repositioned" && rep.movedByPatchEquivalence ? " (movedByPatchEquivalence)" : ""} for ${fixTree} (branch ${branchName}) — dispatching fixer onto the verified tip`,
+      );
+    } else {
+      // Park: the base is not trustworthy. Build the cap-hit (routed to
+      // `handoff` by nextStep) and return WITHOUT dispatching the fixer.
+      return parkLensFixReposition(ctx, state, now, fixTree, rep);
+    }
+  }
+
   return runSingleDispatch(
     ctx,
     next,

@@ -237,6 +237,13 @@ export function explainCap(
       return explainConsolidation(cap, state);
     case "lens-fix-not-integrated":
       return explainLens(cap, state);
+    case "lens-fix-reposition":
+      // #981 — same lens family as the other two caps above; the case
+      // bodies live in explainLens (the file-size split), so this delegates
+      // the same way. Without this case the switch fell through to the
+      // generic `step failed: lens-fix-reposition` fallback — a specific
+      // guard with a specific sentence, rendered as an unnamed step.
+      return explainLens(cap, state);
     case "fence-violation:develop": {
       // #849 — the develop fence's terminal park. A recovery round was
       // attempted (the violator's commit discarded, the violator re-dispatched

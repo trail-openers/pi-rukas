@@ -33,6 +33,7 @@
 
 import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
+import { collectConflictEvidence } from "./work-driver-conflict-evidence.ts";
 import { withIntegrationLock } from "./work-driver-integrate.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
@@ -192,13 +193,20 @@ export async function landCommittedFix(
           scratchDir: scratch,
           label: "lens-fix-integration",
         });
+        const evidence = await collectConflictEvidence(
+          execFn,
+          ctx.repoRoot,
+          tree,
+          orch._conflict === "conflict",
+        );
+        // #981 — the conflict paths lead the error so a downstream 200-char
+        // truncation (the caller's msg.slice(0, 200)) keeps the operator-
+        // actionable part: WHICH files conflict, not the restore claim.
         const causeMsg =
           orch._conflict === "conflict"
-            ? "cherry-pick conflict — the batch was aborted"
-            : `patch-apply failed for the lens-fix worktree: ${orch._applyConflict?.reason ?? "unknown"}`;
-        throw new Error(
-          `${causeMsg}. ${restoreClaim(restore, "", MANUAL_REPAIR_HINT)} The fix's commits remain in the worktree ${tree}.`,
-        );
+            ? `cherry-pick conflict — the batch was aborted. ${evidence.note} ${restoreClaim(restore, "", MANUAL_REPAIR_HINT)} The fix's commits remain in the worktree ${tree}.`
+            : `patch-apply failed for the lens-fix worktree: ${orch._applyConflict?.reason ?? "unknown"}. ${restoreClaim(restore, "", MANUAL_REPAIR_HINT)} The fix's commits remain in the worktree ${tree}.${evidence.note}`;
+        throw new Error(causeMsg);
       }
       // #749 — the tree-hash dedup skip means the content is already on the
       // branch (not a failure); the caller re-reviews. A genuine no-op —

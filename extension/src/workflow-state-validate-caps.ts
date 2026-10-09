@@ -79,4 +79,8 @@ export const CAP_HIT_FIXED_LITERALS: readonly unknown[] = [
   // failed) without a delta to review: a deliberate park terminalized as a
   // handoff, emitted by work-driver-lens.ts.
   "no-review-outcome",
+  // #981 — the round-2 lens-fix reposition guard halted: the worktree is
+  // dirty, round-1 work is unlanded, or the tree diverged from the branch
+  // tip. A deliberate park terminalized as a handoff.
+  "lens-fix-reposition",
 ];
