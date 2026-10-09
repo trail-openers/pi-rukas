@@ -23,6 +23,10 @@ import { execSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+// #1039 — the temp-repo helpers moved to lib/review-ledger-test-helpers.ts
+// (still re-exported from here for backward compatibility; the headSha suite
+// imports them from lib/ directly so it does not execute this file's body).
+import { ledgerFile, setupRepo } from "./lib/review-ledger-test-helpers.ts";
 // #984 — the shared helper (lib/wait-for-ledger.ts) with a generous 30 s
 // budget, so a loaded host has headroom for the writer's two git subprocess
 // hops; the poll returns as soon as the file appears (the passing path stays
@@ -31,10 +35,6 @@ import path from "node:path";
 // is the same flake the issue's descriptor names: a fixed short wall-clock
 // budget against a fire-and-forget two-subprocess write chain).
 import { waitForLedger } from "./lib/wait-for-ledger.ts";
-// #1039 — the temp-repo helpers moved to lib/review-ledger-test-helpers.ts
-// (still re-exported from here for backward compatibility; the headSha suite
-// imports them from lib/ directly so it does not execute this file's body).
-import { setupRepo, ledgerFile } from "./lib/review-ledger-test-helpers.ts";
 export { setupRepo, ledgerFile } from "./lib/review-ledger-test-helpers.ts";
 import { runLensReview } from "../src/lens-review.ts";
 import {
@@ -291,7 +291,7 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
       "untracked files are enumerated",
     );
     assert(
-      withUntracked.warning !== undefined && withUntracked.warning.includes("untracked"),
+      withUntracked.warning?.includes("untracked"),
       "a warning is returned when untracked files exist",
     );
     assert(
@@ -342,6 +342,24 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
     "dedupeLatest keeps the higher `at` regardless of order",
   );
 
+  // #1071 — the at-tie invariant the acceptance criterion pins: two rows for
+  // the same (branch, kind) with EQUAL `at` collapse to the LATER one in
+  // file order (dedupeLatest's `>=` comparison), in BOTH input orders. This
+  // is the winner a two-concurrent-writer race leaves behind (the guard's
+  // latestEntry picks by `>=` too, so the dedupe and the guard agree).
+  const tie: LedgerEntry = { ...a, patchId: "ptie" };
+  const tie2: LedgerEntry = { ...a, patchId: "ptie2" };
+  const tieAB = dedupeLatest([tie, tie2]);
+  assert(
+    tieAB.length === 1 && tieAB[0] === tie2,
+    "dedupeLatest at-tie: the LATER row in file order wins",
+  );
+  const tieBA = dedupeLatest([tie2, tie]);
+  assert(
+    tieBA.length === 1 && tieBA[0] === tie,
+    "dedupeLatest at-tie: the later-in-file winner is order-consistent (the guard's >= matches)",
+  );
+
   // Distinct (branch, kind) keys both survive.
   const other: LedgerEntry = { ...a, kind: "lens" };
   const otherBranch: LedgerEntry = { ...a, branch: "feature/y" };
@@ -354,7 +372,7 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
     { branch: "", kind: "lens", patchId: "p", passed: true, at: 1 }, // empty branch
     { branch: "f", kind: "both", patchId: "p", passed: true, at: 1 }, // bad kind
     { branch: "f", kind: "lens", patchId: 42, passed: true, at: 1 }, // non-string patchId
-    { branch: "f", kind: "lens", patchId: "p", passed: true, at: NaN }, // NaN at
+    { branch: "f", kind: "lens", patchId: "p", passed: true, at: Number.NaN }, // NaN at
     { branch: "f", kind: "lens", patchId: "p", passed: "yes", at: 1 }, // non-boolean passed
     { branch: "f", kind: "lens", patchId: "p", passed: true }, // missing at
     null,
@@ -389,34 +407,27 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
 
 // ------------------------------------------- lensBlockedByThreshold (item 6)
 
-{
-  // The threshold predicate has ONE implementation (review-ledger.ts:
-  // lensBlockedByThreshold → lensPassed). The driver's computeVerdict and
-  // the ledger writer both apply it.
-  assert(!lensBlockedByThreshold("APPROVED", "MEDIUM"), "APPROVED does not block at MEDIUM");
-  assert(lensBlockedByThreshold("ISSUES_FOUND", "MEDIUM"), "ISSUES_FOUND blocks at MEDIUM");
-  assert(!lensBlockedByThreshold("ISSUES_FOUND", "LOW"), "ISSUES_FOUND does not block at LOW");
-  assert(
-    lensBlockedByThreshold("CRITICAL_ISSUES_FOUND", "LOW"),
-    "CRITICAL blocks at every threshold",
-  );
-  assert(
-    lensBlockedByThreshold("REVIEW_INCOMPLETE", "LOW"),
-    "REVIEW_INCOMPLETE blocks at every threshold",
-  );
-  // The predicate is the inverse of lensPassed.
-  for (const verdict of [
-    "APPROVED",
-    "ISSUES_FOUND",
-    "CRITICAL_ISSUES_FOUND",
-    "REVIEW_INCOMPLETE",
-  ]) {
-    for (const th of ["LOW", "MEDIUM", "HIGH", "CRITICAL"]) {
-      assert(
-        lensBlockedByThreshold(verdict, th as never) === !lensPassed(verdict, th),
-        `lensBlockedByThreshold(${verdict}, ${th}) === !lensPassed(${verdict}, ${th})`,
-      );
-    }
+// The threshold predicate has ONE implementation (review-ledger.ts:
+// lensBlockedByThreshold → lensPassed). The driver's computeVerdict and
+// the ledger writer both apply it.
+assert(!lensBlockedByThreshold("APPROVED", "MEDIUM"), "APPROVED does not block at MEDIUM");
+assert(lensBlockedByThreshold("ISSUES_FOUND", "MEDIUM"), "ISSUES_FOUND blocks at MEDIUM");
+assert(!lensBlockedByThreshold("ISSUES_FOUND", "LOW"), "ISSUES_FOUND does not block at LOW");
+assert(
+  lensBlockedByThreshold("CRITICAL_ISSUES_FOUND", "LOW"),
+  "CRITICAL blocks at every threshold",
+);
+assert(
+  lensBlockedByThreshold("REVIEW_INCOMPLETE", "LOW"),
+  "REVIEW_INCOMPLETE blocks at every threshold",
+);
+// The predicate is the inverse of lensPassed.
+for (const verdict of ["APPROVED", "ISSUES_FOUND", "CRITICAL_ISSUES_FOUND", "REVIEW_INCOMPLETE"]) {
+  for (const th of ["LOW", "MEDIUM", "HIGH", "CRITICAL"]) {
+    assert(
+      lensBlockedByThreshold(verdict, th as never) === !lensPassed(verdict, th),
+      `lensBlockedByThreshold(${verdict}, ${th}) === !lensPassed(${verdict}, ${th})`,
+    );
   }
 }
 
