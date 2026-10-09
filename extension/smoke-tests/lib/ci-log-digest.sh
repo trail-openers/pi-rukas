@@ -26,15 +26,20 @@
 # at the first non-indented line, so detail from one ✗ block is never carried
 # into the next ✗'s block. A ✓ line is never a detail line, even when indented.
 #
-# Shared marker anchors (enforced part of the digest-filter contract, #1028):
-# this script, verify-loop.sh's --digest branch, and its #827 tail echo keep
-# the SAME line-start marker anchors (✗ / FAILED: / ##[error] / error: above
-# — line-start match, not substring). Indented-detail attribution is
+# Shared digest-filter contract (the enforced, pinned part, #1028): the only
+# shared, pinned contract is the ✗ line-start anchor — verify-loop.sh's
+# --digest branch anchors only on `✗ `, while its #827 tail keeps
+# ✗-containing lines via `grep -F "✗"` (so a line containing ✗ anywhere, not
+# only at line start, is kept there). Everything else is implementation-local:
+# this script additionally keeps ##[error] / error: / FAILED: marker lines
+# (not part of the shared contract), and indented-detail attribution is
 # deliberately NOT part of the shared contract and allowed to differ: the
 # #827 tail is bounded (first 3 ✗ lines per test, 200 chars each) for the
 # 800-char extractAttributedTail window, the digests are unbounded, and
 # verify-loop.sh's --digest branch attributes detail to ✗ markers only while
-# this script attributes it to any kept anchor.
+# this script attributes it to any kept anchor. The summary `FAILED: N test(s)`
+# line and the `P:/F:` tally are global lines that follow all per-test blocks
+# in the --digest output.
 #
 # The filter itself is pinned by test-ci-log-digest.ts, which runs this
 # script against a recorded fixture and asserts the invariants; the TS

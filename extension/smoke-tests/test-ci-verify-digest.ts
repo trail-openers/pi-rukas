@@ -77,6 +77,7 @@ function runDigest(
   const result = spawnSync("bash", [SCRIPT, "--digest", ...files], {
     cwd: path.join(__dirname, ".."),
     encoding: "utf-8",
+    timeout: 120000,
   });
   if (result.error) {
     return {
@@ -104,7 +105,7 @@ function runDigest(
   );
   const lines = digest.stdout.trim().split("\n");
   assert(
-    lines[lines.length - 2]?.startsWith("FAILED: 2 test(s) —"),
+    (lines[lines.length - 2] ?? "").startsWith("FAILED: 2 test(s) —"),
     `case 1 (digest): second-to-last line is the summary marker with count 2 (got: ${JSON.stringify(lines[lines.length - 2])})`,
   );
   assert(
@@ -221,7 +222,7 @@ function runDigest(
   const i1 = lines.findIndex((l) => l.includes("first assertion: expected 'alpha'"));
   const i2 = lines.findIndex((l) => l.includes("second assertion: expected 0 failures"));
   assert(
-    i1 !== -1 && i1 + 1 < lines.length && lines[i1 + 1].startsWith("  at checkAlpha"),
+    i1 !== -1 && i1 + 1 < lines.length && (lines[i1 + 1] ?? "").startsWith("  at checkAlpha"),
     `case 5 (digest): the indented 'at checkAlpha' detail line immediately follows its ✗ (✗1 at ${i1})`,
   );
   assert(

@@ -21,16 +21,20 @@
 # #827 (echo of failing `✗` lines after the summary): why this exists and why
 # the 3×200 bound is sized the way it is is commented at the echo loop below.
 #
-# Shared marker anchors (enforced part of the digest-filter contract, #1028):
-# both the --digest branch, the #827 tail echo, and lib/ci-log-digest.sh keep
-# the SAME line-start marker anchors — `✗ `, `##[error]`, `FAILED:`, `error:`
-# (line-start match, not substring; a ✓ line containing "error" mid-text is
-# dropped). Indented-detail attribution is deliberately NOT part of the shared
-# contract and allowed to differ across implementations: the #827 tail is
-# bounded (first 3 ✗ lines per test, 200 chars each) for the 800-char
-extractAttributedTail window, the --digest branch and ci-log-digest.sh keep
-# the full indented detail, and the two attribute detail to slightly different
-# marker sets (✗ only vs all four anchors).
+# Shared digest-filter contract (the enforced, pinned part, #1028): the only
+# shared, pinned contract is the ✗ line-start anchor — the --digest branch
+# anchors only on `✗ ` (with the indented detail lines that follow a kept ✗),
+# while the #827 tail keeps ✗-containing lines via `grep -F "✗"` (so a line
+# containing ✗ anywhere, not only at line start, is kept there).
+# Everything else is implementation-local: ci-log-digest.sh additionally keeps
+# ##[error] / error: / FAILED: marker lines (not part of the shared contract),
+# and indented-detail attribution is deliberately NOT part of the shared
+# contract and allowed to differ: the #827 tail is bounded (first 3 ✗ lines
+# per test, 200 chars each) for the 800-char extractAttributedTail window,
+# the digests are unbounded, and verify-loop.sh's --digest branch attributes
+# detail to ✗ markers only while ci-log-digest.sh attributes it to any kept
+# anchor. The summary `FAILED: N test(s)` line and the `P:/F:` tally are
+# global lines that follow all per-test blocks in the --digest output.
 #
 # Usage:
 #   verify-loop.sh <file> [<file> ...]           — normal mode

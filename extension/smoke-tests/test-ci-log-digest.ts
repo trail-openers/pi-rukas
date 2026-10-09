@@ -59,12 +59,20 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-function runDigest(fixturePath: string): { status: number; stdout: string } {
+function runDigest(fixturePath: string): { status: number; stdout: string; envError: string | null } {
   const result = spawnSync("bash", [DIGEST_SCRIPT, fixturePath], {
     cwd: path.join(__dirname, ".."),
     encoding: "utf-8",
+    timeout: 120000,
   });
-  return { status: result.status ?? -1, stdout: result.stdout ?? "" };
+  if (result.error) {
+    return {
+      status: -1,
+      stdout: "",
+      envError: `failed to spawn bash: ${result.error.message}`,
+    };
+  }
+  return { status: result.status ?? -1, stdout: result.stdout ?? "", envError: null };
 }
 
 // Read the fixture and compute the expected kept/dropped lines.
@@ -130,7 +138,13 @@ function computeExpected(lines: string[]): string[] {
 }
 
 const expectedLines = computeExpected(fixtureLines);
-const { status, stdout } = runDigest(FIXTURE);
+const digestResult = runDigest(FIXTURE);
+const status = digestResult.status;
+const stdout = digestResult.stdout;
+assert(
+  digestResult.envError === null,
+  `digest helper: environment OK — bash spawned (no spawn error${digestResult.envError ? `: ${digestResult.envError}` : ""})`,
+);
 const digestLines = stdout.replace(/^\n+|\n+$/g, "").split("\n");
 
 // --- Case 1: exit code is 0 (recipe completed successfully) ---
@@ -268,6 +282,7 @@ assert(
   const r = spawnSync("bash", [DIGEST_SCRIPT, missing], {
     cwd: path.join(__dirname, ".."),
     encoding: "utf-8",
+    timeout: 120000,
   });
   assert(r.status === 2, `case 13: nonexistent input path exits 2 (got ${r.status})`);
   assert(
@@ -310,6 +325,7 @@ assert(
     const ciDigest = spawnSync("bash", [DIGEST_SCRIPT, logPath], {
       cwd: path.join(__dirname, ".."),
       encoding: "utf-8",
+      timeout: 120000,
     });
 
     // verify-loop.sh --digest: run a tiny fixture that prints the same output and exits 1.
@@ -321,6 +337,7 @@ assert(
     const loopDigest = spawnSync("bash", [VERIFY_LOOP, "--digest", fixturePath], {
       cwd: path.join(__dirname, ".."),
       encoding: "utf-8",
+      timeout: 120000,
     });
 
     // Extract marker lines from each digest. Both digests use a strict
