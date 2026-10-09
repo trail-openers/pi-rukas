@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // #981 task-b — repositionLensFixWorktree: the fix dispatch moves the lens-fix
-// worktree to the branch tip (best-effort; fails on divergence).
+// worktree to the branch tip (fetch-first; best-effort, fails on divergence).
 import { exec } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -55,35 +55,32 @@ function assert(cond: boolean, msg: string) {
 
     // Case 2: the worktree has DIVERGED from the branch tip (the fixer
     // committed work on a different base than the branch, AND the branch
-    // tip advanced via a commit in repoRoot). The local ref points at the
-    // NEWER branch tip, so `git merge --ff-only refs/heads/<branch>` fails.
-    // The remote ref still points at the OLD branch tip (the worktree's
-    // base), so the fallback SUCCEEDS as a no-op fast-forward.
+    // tip advanced via a commit in repoRoot). The worktree and the branch
+    // have diverged (both are 1 commit ahead of baseSha but different
+    // commits), so the reposition correctly fails.
     await execp(`git checkout -q --detach ${JSON.stringify(baseSha)}`, { cwd: wt });
     writeFileSync(path.join(wt, "c.txt"), "three\n");
     await execp("git add . && git commit -q -m 'fixer work'", { cwd: wt, shell: "/bin/bash" });
-    // Advance the branch tip in repoRoot so the local ref points at a newer
-    // commit than the worktree's base (the remote ref still points at the
-    // old base — the remote was last pushed before this commit).
+    // Advance the branch tip in repoRoot (diverges from the worktree's
+    // "fixer work" commit).
     writeFileSync(path.join(root, "b.txt"), "two\nbr advance\n");
     await execp("git add . && git commit -q -m 'br advance'", { cwd: root, shell: "/bin/bash" });
     const r2 = await repositionLensFixWorktree(repositionExec, wt, "feature/lens-repos");
-    // The reposition succeeds via the stale remote ref (a no-op ff — the
-    // worktree is already at the remote's commit). The worktree does NOT
-    // advance past the local branch tip (the remote ref is stale).
+    // The worktree has diverged from the branch tip — the reposition
+    // correctly fails (a diverged worktree cannot be fast-forwarded).
     assert(
-      r2 === true,
-      "981 reposition: a diverged worktree repositions via the stale remote ref (no-op ff)",
+      r2 === false,
+      "981 reposition: a diverged worktree fails to reposition (cannot ff across divergence)",
     );
     const wtLog = (await execp("git log --oneline -1", { cwd: wt })).stdout.trim();
     assert(
       wtLog.includes("fixer work"),
-      "981 reposition: the worktree's fixer work survived the reposition",
+      "981 reposition: the worktree's fixer work is unchanged after the failed reposition",
     );
 
     // Case 3: the worktree is at the old base (the branch has advanced via
-    // a prior lens-fix round integration). The reposition fast-forwards to
-    // the new tip.
+    // a prior lens-fix round integration and been pushed). The reposition
+    // fetches the current remote tip and fast-forwards the worktree to it.
     await execp(`git checkout -q --detach ${JSON.stringify(baseSha)}`, { cwd: wt });
     await execp("git push -q -u origin feature/lens-repos", { cwd: root });
     const r3 = await repositionLensFixWorktree(repositionExec, wt, "feature/lens-repos");

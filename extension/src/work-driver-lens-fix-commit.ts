@@ -82,48 +82,97 @@ export async function countCommittedAhead(
  * the current code, not a stale snapshot, or the cherry-pick during
  * integration will conflict on lines the fixer has not seen.
  *
- * Uses `git merge --ff-only <branch>` to fast-forward the worktree's
- * HEAD to the branch tip. This is safe because:
- * - the worktree is detached (created with `--detach`), so it has no
- *   local branch to conflict with;
- * - a fast-forward is a no-op when the worktree is already at the tip;
- * - if the worktree has diverged (should not happen — it's detached and
- *   we just committed the fix there), the fast-forward fails and the
- *   caller treats it as a non-conflict failure (the fixer's commit is
- *   lost, but the worktree was not dirty, so nothing is corrupted).
+ * Steps:
+ * 1. `git fetch origin <branch>` — update the local remote-tracking ref
+ *    so `refs/remotes/origin/<branch>` reflects the remote's current tip.
+ *    A fetch failure (offline, remote gone) is non-fatal: the local ref
+ *    may still be current (the `integrate()` push updates it in-process).
+ * 2. `git merge --ff-only refs/remotes/origin/<branch>` — fast-forward
+ *    the detached worktree to the remote tip. The remote-tracking ref is
+ *    the authoritative source after a fetch.
+ * 3. Fallback to `git merge --ff-only refs/heads/<branch>` if the remote
+ *    ref is absent (no remote configured, or the fetch failed).
  *
- * Returns `true` when the worktree is now at the branch tip, `false`
- * when it could not be moved (the caller proceeds anyway — the
- * reposition is a best-effort improvement, not a gate).
+ * Returns `true` when the worktree was moved (or was already) at the
+ * branch tip after the operation, `false` when the worktree has
+ * diverged from the branch tip (a real conflict — the caller proceeds
+ * anyway; the reposition is best-effort, not a gate).
  */
 export async function repositionLensFixWorktree(
   execFn: ExecFn,
   tree: string,
   branchName: string,
 ): Promise<boolean> {
+  // Step 1: fetch to update the remote-tracking ref. Non-fatal — the
+  // local ref may be current even if the fetch fails (offline, or the
+  // branch was pushed in-process by a prior integration step).
   try {
-    // Fast-forward the worktree's HEAD to the branch tip. The worktree is
-    // detached, so there is no branch to conflict with. A no-op when
-    // already at the tip.
-    await execFn(`git merge --ff-only "refs/heads/${branchName}"`, {
+    await execFn(`git fetch origin "${branchName}"`, {
       cwd: tree,
       maxBuffer: 64 * 1024,
     });
-    return true;
   } catch {
-    // Try the remote ref in case the local branch is stale.
+    // Fetch failed — proceed with whatever refs are locally available.
+  }
+  // Step 2: fast-forward to the remote-tracking ref (authoritative after
+  // a successful fetch). The worktree is detached, so there is no local
+  // branch to conflict with.
+  let merged = false;
+  try {
+    await execFn(`git merge --ff-only "refs/remotes/origin/${branchName}"`, {
+      cwd: tree,
+      maxBuffer: 64 * 1024,
+    });
+    merged = true;
+  } catch {
+    // Step 3: fallback to the local branch ref (the remote ref may be
+    // absent if the fetch failed or no remote is configured).
     try {
-      await execFn(`git merge --ff-only "refs/remotes/origin/${branchName}"`, {
+      await execFn(`git merge --ff-only "refs/heads/${branchName}"`, {
         cwd: tree,
         maxBuffer: 64 * 1024,
       });
-      return true;
+      merged = true;
     } catch {
-      // Could not reposition — the worktree stays where it is. The fixer
-      // will see the stale base, and the cherry-pick may conflict, but
-      // the reposition is best-effort, not a gate.
-      return false;
+      // Could not reposition — the worktree has diverged from the branch
+      // tip or the ref is unreadable.
     }
+  }
+  // The merge can succeed with "Already up to date" even when the worktree
+  // is NOT at the branch tip (e.g., the remote ref points to an ancestor
+  // of the worktree's HEAD, or the worktree has diverged). Verify the
+  // worktree is actually at the branch tip.
+  if (!merged) return false;
+  try {
+    const { stdout: wtHead } = await execFn("git rev-parse HEAD", {
+      cwd: tree,
+      maxBuffer: 64 * 1024,
+    });
+    let branchTipSha: string | undefined;
+    try {
+      const { stdout: tip } = await execFn(`git rev-parse "refs/remotes/origin/${branchName}"`, {
+        cwd: tree,
+        maxBuffer: 64 * 1024,
+      });
+      branchTipSha = tip.trim();
+    } catch {
+      try {
+        const { stdout: tip } = await execFn(`git rev-parse "refs/heads/${branchName}"`, {
+          cwd: tree,
+          maxBuffer: 64 * 1024,
+        });
+        branchTipSha = tip.trim();
+      } catch {
+        // Could not read the branch tip — assume the reposition succeeded
+        // (the merge did not fail).
+        return true;
+      }
+    }
+    return wtHead.trim() === branchTipSha;
+  } catch {
+    // Could not verify — assume the reposition succeeded (the merge did
+    // not fail).
+    return true;
   }
 }
 
@@ -247,13 +296,58 @@ export async function landCommittedFix(
           scratchDir: scratch,
           label: "lens-fix-integration",
         });
-        // #981 (task-a) — a true conflict names the worktree in the error
-        // so the operator knows where to run `git status` to see the
-        // conflicted files. A patch-apply failure is not a conflict — the
-        // error text alone tells the story.
+        // #981 (task-a) — collect the conflicting file paths from
+        // repoRoot's index (the cherry-pick runs at repoRoot, not in the
+        // fixer's worktree) and the two base SHAs for the handoff.
+        let conflictPaths: string[] = [];
+        if (orch._conflict === "conflict") {
+          try {
+            const { stdout: unmerged } = await execFn("git ls-files -u", {
+              cwd: ctx.repoRoot,
+              maxBuffer: 64 * 1024,
+            });
+            conflictPaths = [
+              ...new Set(
+                unmerged
+                  .split("\n")
+                  .map((l) => l.trim().split("\t").pop() ?? l.trim())
+                  .filter(Boolean),
+              ),
+            ];
+          } catch {
+            // Could not read unmerged paths — the error text is still useful.
+          }
+        }
+        // The two base SHAs: the worktree's base (where the fix was built)
+        // and the branch tip it was being applied to.
+        let worktreeBase: string | undefined;
+        let branchTip: string | undefined;
+        try {
+          const { stdout: wtBase } = await execFn("git rev-parse HEAD~1", {
+            cwd: tree,
+            maxBuffer: 64 * 1024,
+          });
+          worktreeBase = wtBase.trim().slice(0, 8);
+        } catch {
+          // Worktree has no parent commit (single-commit worktree).
+        }
+        try {
+          const { stdout: tip } = await execFn("git rev-parse HEAD", {
+            cwd: ctx.repoRoot,
+            maxBuffer: 64 * 1024,
+          });
+          branchTip = tip.trim().slice(0, 8);
+        } catch {
+          // Could not read branch tip.
+        }
         const conflictNote =
           orch._conflict === "conflict"
-            ? ` Run \`git -C ${tree} status\` to see the conflicted files, resolve them, commit, and re-run.`
+            ? [
+                "",
+                `Conflicting paths: ${conflictPaths.length > 0 ? conflictPaths.join(", ") : "(unreadable — run git ls-files -u in the repository root)"}`,
+                `Worktree base: ${worktreeBase ?? "unreadable"} | Branch tip: ${branchTip ?? "unreadable"}`,
+                `Run \`git -C ${ctx.repoRoot} status\` to see the conflicted files, resolve them, commit, and re-run.`,
+              ].join(" ")
             : "";
         const causeMsg =
           orch._conflict === "conflict"
