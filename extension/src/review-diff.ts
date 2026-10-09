@@ -23,6 +23,8 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { execp } from "./lens-exec.ts";
+import { resolveHeadSha } from "./review-head-sha.ts";
 
 const execFileP = promisify(execFile);
 
@@ -41,24 +43,16 @@ function refError(ref: string, err: unknown): { ok: false; reason: string } {
 }
 
 /**
- * Resolve a ref name to a commit. Returns false when `git rev-parse
- * --verify --quiet <ref>^{commit}` exits non-zero — i.e. the ref is not
- * a revision (or a revision of something other than a commit), whatever
- * the reason. A refname starting with `-` is rejected up front: the
- * value is never shell-interpolated (execFile), but a leading dash
- * would be parsed by git as an option (argument injection), and such a
- * name is never a legitimate ref here.
+ * Resolve a ref name to a commit. Returns false when the shared resolver
+ * (review-head-sha.ts) cannot resolve it to a commit — i.e. the ref is not
+ * a revision (or a revision of something other than a commit), whatever the
+ * reason. A refname starting with `-` is rejected up front by the resolver:
+ * the value is never shell-interpolated (execFile), but a leading dash would
+ * be parsed by git as an option (argument injection), and such a name is
+ * never a legitimate ref here.
  */
 async function refIsCommit(cwd: string, ref: string): Promise<boolean> {
-  if (ref.startsWith("-")) return false;
-  try {
-    await execFileP("git", ["-C", cwd, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`], {
-      maxBuffer: 64 * 1024,
-    });
-    return true;
-  } catch {
-    return false;
-  }
+  return (await resolveHeadSha(cwd, ref, execp)) !== undefined;
 }
 
 /**

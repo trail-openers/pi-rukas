@@ -30,10 +30,17 @@ await setupLedgerPath();
     passed: true,
     at: 1,
   };
-  // The PR's current head — the guard passes the fetched OID (the TARGET
-  // helper's headOid, so the guard's freshness check passes) to the
-  // round-cap path's condition 6 (the lens entry's headSha must equal it).
-  const PR_HEAD = TARGET.headOid;
+  // The PR's current head — a 40-char SHA (the guard's round-cap path
+  // shape-checks headSha against /^[0-9a-f]{40}$/; the TARGET helper's
+  // headOid is a 6-char test fixture that the guard's own freshness check
+  // accepts, but the round-cap path needs a full OID for the shape check).
+  // We override the target's headOid and the stub's fetchedHead to this
+  // value in every hookDecision call so the guard's freshness check passes
+  // and the round-cap shape check sees a valid OID.
+  const PR_HEAD = "a".repeat(40);
+  const TARGET_OVERRIDE = { ...TARGET, headOid: PR_HEAD };
+  const hook = (cmd: string, entries: LedgerEntry[], opts: Parameters<typeof hookDecision>[2] = {}) =>
+    hookDecision(cmd, entries, { fetchedHead: PR_HEAD, target: TARGET_OVERRIDE, ...opts });
   const lens = (over: Partial<LedgerEntry> & { at: number }): LedgerEntry => ({
     branch: "feature/x",
     kind: "lens",
@@ -60,7 +67,7 @@ await setupLedgerPath();
   // All conditions met → allowed (the strict rule refuses; the round-cap
   // path allows).
   {
-    const r = await hookDecision("gh pr merge 12", [ADV, lens({ at: 2 })], {
+    const r = await hook("gh pr merge 12", [ADV, lens({ at: 2 })], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
     assert(r.block === false, "round-cap: all conditions met → merge allowed");
@@ -71,7 +78,7 @@ await setupLedgerPath();
   }
   // Condition 1 (verdict): the latest lens entry is not ISSUES_FOUND.
   {
-    const r = await hookDecision("gh pr merge 12", [ADV, lens({ at: 2, detail: "REVIEW_INCOMPLETE" })], {
+    const r = await hook("gh pr merge 12", [ADV, lens({ at: 2, detail: "REVIEW_INCOMPLETE" })], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
     assert(r.block === true, "round-cap: a REVIEW_INCOMPLETE entry is not ISSUES_FOUND → refused");
@@ -81,7 +88,7 @@ await setupLedgerPath();
   // marker (the round-cap rule mirrors the driver's cap: CRITICAL always
   // refuses).
   {
-    const r = await hookDecision(
+    const r = await hook(
       "gh pr merge 12",
       [ADV, lens({ at: 2, detail: "CRITICAL_ISSUES_FOUND", hasCritical: true, round: 5 })],
       { ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH) },
@@ -101,7 +108,7 @@ await setupLedgerPath();
       round: 3,
       headSha: PR_HEAD,
     };
-    const r = await hookDecision("gh pr merge 12", [ADV, legacy], {
+    const r = await hook("gh pr merge 12", [ADV, legacy], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
     assert(r.block === true, "round-cap: a legacy entry without hasCritical cannot satisfy no-CRITICAL");
@@ -109,7 +116,7 @@ await setupLedgerPath();
   }
   // Condition 3: hasCritical is true → refused.
   {
-    const r = await hookDecision("gh pr merge 12", [ADV, lens({ at: 2, hasCritical: true })], {
+    const r = await hook("gh pr merge 12", [ADV, lens({ at: 2, hasCritical: true })], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
     assert(r.block === true, "round-cap: hasCritical=true → refused");
@@ -117,7 +124,7 @@ await setupLedgerPath();
   }
   // Condition 4: round below 3 → refused, naming the round.
   {
-    const r = await hookDecision("gh pr merge 12", [ADV, lens({ at: 2, round: 2 })], {
+    const r = await hook("gh pr merge 12", [ADV, lens({ at: 2, round: 2 })], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
     assert(r.block === true, "round-cap: round 2 < 3 → refused");
@@ -135,7 +142,7 @@ await setupLedgerPath();
       hasCritical: false,
       headSha: PR_HEAD,
     };
-    const r = await hookDecision("gh pr merge 12", [ADV, legacyNoRound], {
+    const r = await hook("gh pr merge 12", [ADV, legacyNoRound], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
     assert(r.block === true, "round-cap: a legacy entry without `round` counts as round 1 → refused");
@@ -156,7 +163,7 @@ await setupLedgerPath();
       hasCritical: false,
       round: 2,
     };
-    const r = await hookDecision("gh pr merge 12", [ADV, abortedSeq], {
+    const r = await hook("gh pr merge 12", [ADV, abortedSeq], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
     assert(r.block === true, "round-cap: an aborted run wedged in the sequence ends at round 2 → refused");
@@ -164,7 +171,7 @@ await setupLedgerPath();
   }
   // Condition 5: no marker comment → refused, naming the disclosure.
   {
-    const r = await hookDecision("gh pr merge 12", [ADV, lens({ at: 2 })], {
+    const r = await hook("gh pr merge 12", [ADV, lens({ at: 2 })], {
       ghComments: NO_COMMENTS,
     });
     assert(r.block === true, "round-cap: no disclosure marker on the PR → refused");
@@ -173,7 +180,7 @@ await setupLedgerPath();
   // Condition 5: a marker for a STALE patch → refused (the marker's patch
   // must equal the guard's current patch-id).
   {
-    const r = await hookDecision("gh pr merge 12", [ADV, lens({ at: 2 })], {
+    const r = await hook("gh pr merge 12", [ADV, lens({ at: 2 })], {
       ghComments: commentsWith(MARKER_BRANCH, "pOLD"),
     });
     assert(r.block === true, "round-cap: a marker for a stale patch → refused");
@@ -181,7 +188,7 @@ await setupLedgerPath();
   }
   // Condition 5: a marker for a DIFFERENT branch → refused.
   {
-    const r = await hookDecision("gh pr merge 12", [ADV, lens({ at: 2 })], {
+    const r = await hook("gh pr merge 12", [ADV, lens({ at: 2 })], {
       ghComments: commentsWith("feature/other", MARKER_PATCH),
     });
     assert(r.block === true, "round-cap: a marker for a different branch → refused");
@@ -189,13 +196,15 @@ await setupLedgerPath();
   }
   // The comments read is unreadable (no stub) → fail closed → refused.
   {
-    const r = await hookDecision("gh pr merge 12", [ADV, lens({ at: 2 })]);
+    const r = await hook("gh pr merge 12", [ADV, lens({ at: 2 })]);
     assert(r.block === true, "round-cap: an unreadable comments read fails closed → refused");
   }
   // Condition 6 (headSha): a lens entry that reviewed an OLDER commit than
   // the PR's current head must not satisfy the cap, even with a fresh marker.
+  // The headSha is a valid 40-char SHA that differs from PR_HEAD.
   {
-    const r = await hookDecision("gh pr merge 12", [ADV, lens({ at: 2, headSha: "0old0old" })], {
+    const otherSha = "b".repeat(40);
+    const r = await hook("gh pr merge 12", [ADV, lens({ at: 2, headSha: otherSha })], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
     assert(r.block === true, "round-cap: a lens entry for an old headSha is refused even with a fresh marker");
@@ -216,16 +225,81 @@ await setupLedgerPath();
       hasCritical: false,
       round: 3,
     };
-    const r = await hookDecision("gh pr merge 12", [ADV, legacyHead], {
+    const r = await hook("gh pr merge 12", [ADV, legacyHead], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
     assert(r.block === true, "round-cap: a legacy entry without headSha is refused (conservative)");
     assert(/no headSha/.test(r.reason ?? ""), "…naming the missing headSha field");
   }
-  // Condition 6 (headSha): a matching headSha (the guard passes the fetched
-  // head, which for this fixture equals the TARGET's headOid) → allowed.
+  // #1039 — Condition 6 (headSha): a MALFORMED headSha (a branch name, not
+  // a 40-char SHA) must be refused with a "malformed" message — distinct
+  // from "no headSha" and "branch moved". Even when the branch name
+  // string-equals the PR head branch, it must NOT be treated as a match.
   {
-    const r = await hookDecision("gh pr merge 12", [ADV, lens({ at: 2, headSha: TARGET.headOid })], {
+    const malformedSha: LedgerEntry = {
+      branch: "feature/x",
+      kind: "lens",
+      patchId: "p1",
+      passed: false,
+      at: 2,
+      detail: "ISSUES_FOUND",
+      hasCritical: false,
+      round: 3,
+      headSha: "feature/x", // a branch name, not a SHA
+    };
+    const r = await hook("gh pr merge 12", [ADV, malformedSha], {
+      ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
+    });
+    assert(r.block === true, "round-cap: a branch-name headSha is refused (malformed entry)");
+    assert(/malformed/.test(r.reason ?? ""), "…naming the entry as MALFORMED (not 'branch moved')");
+    assert(!/branch moved/.test(r.reason ?? ""), "…NOT the 'branch moved' message");
+  }
+  // #1039 — Condition 6 (headSha): a non-matching branch name (different
+  // from the PR head branch) is also malformed — proving no string match.
+  {
+    const malformedSha2: LedgerEntry = {
+      branch: "feature/x",
+      kind: "lens",
+      patchId: "p1",
+      passed: false,
+      at: 2,
+      detail: "ISSUES_FOUND",
+      hasCritical: false,
+      round: 3,
+      headSha: "feature/other", // a different branch name
+    };
+    const r = await hook("gh pr merge 12", [ADV, malformedSha2], {
+      ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
+    });
+    assert(r.block === true, "round-cap: a non-matching branch-name headSha is refused (malformed)");
+    assert(/malformed/.test(r.reason ?? ""), "…naming the entry as MALFORMED");
+  }
+  // #1039 — Condition 6 (headSha): a short/abbreviated OID (8 hex chars)
+  // is also not a 40-char SHA → malformed.
+  {
+    const shortSha: LedgerEntry = {
+      branch: "feature/x",
+      kind: "lens",
+      patchId: "p1",
+      passed: false,
+      at: 2,
+      detail: "ISSUES_FOUND",
+      hasCritical: false,
+      round: 3,
+      headSha: "abc12345", // 8 hex chars — not 40
+    };
+    const r = await hook("gh pr merge 12", [ADV, shortSha], {
+      ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
+    });
+    assert(r.block === true, "round-cap: an abbreviated OID headSha is refused (malformed)");
+    assert(/malformed/.test(r.reason ?? ""), "…naming the entry as MALFORMED");
+  }
+  // Condition 6 (headSha): a matching headSha (a 40-char SHA equal to the
+  // guard's prHeadOid) → allowed. The `hook` helper already overrides
+  // fetchedHead and target to use PR_HEAD (a 40-char SHA), so the shape
+  // check and the comparison both see valid OIDs.
+  {
+    const r = await hook("gh pr merge 12", [ADV, lens({ at: 2 })], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
     assert(r.block === false, "round-cap: a matching headSha (== the PR's current head) → allowed");
@@ -234,7 +308,7 @@ await setupLedgerPath();
   // (latest lens entry passed → allowed via the strict rule, no comments
   // read needed).
   {
-    const r = await hookDecision("gh pr merge 12", [
+    const r = await hook("gh pr merge 12", [
       ADV,
       { branch: "feature/x", kind: "lens", patchId: "p1", passed: true, at: 2 },
     ]);
@@ -250,7 +324,7 @@ await setupLedgerPath();
     const prev = process.env.PI_ENSEMBLE_LENS_ROUND_CAP_MERGE;
     process.env.PI_ENSEMBLE_LENS_ROUND_CAP_MERGE = "0";
     try {
-      const r = await hookDecision("gh pr merge 12", [ADV, lens({ at: 2 })], {
+      const r = await hook("gh pr merge 12", [ADV, lens({ at: 2 })], {
         ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
       });
       assert(r.block === true, "escape hatch: PI_ENSEMBLE_LENS_ROUND_CAP_MERGE=0 restores the strict rule");
@@ -307,12 +381,13 @@ await setupLedgerPath();
     at: 2,
     detail: "ISSUES_FOUND",
     hasCritical: false,
-    headSha: "abc123",
+    headSha: "a".repeat(40),
   };
   const MARKER_COMMENT =
     "residual findings\n<!-- pi-rukas:lens-residuals branch=feature/x patch=p1 -->";
+  const validSha = "a".repeat(40);
   const roundOk = (round: unknown) =>
-    evaluateRoundCapMerge([{ ...good, round }], "feature/x", "p1", [MARKER_COMMENT], "abc123");
+    evaluateRoundCapMerge([{ ...good, round }], "feature/x", "p1", [MARKER_COMMENT], validSha);
   const badRounds: Array<[string, unknown]> = [
     ["\"3\" (a string)", "3"],
     ["true (a boolean)", true],

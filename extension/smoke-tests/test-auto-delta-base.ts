@@ -322,6 +322,32 @@ const branch = "feature/work";
   }
 }
 
+// (#1039) Legacy entry whose headSha is a branch name (non-SHA) → full
+// review (treated as unknown, never matched by string or passed to git
+// as a commit ref).
+{
+  const r = await mkRepo();
+  writeLedger(r.ledgerFile, [
+    {
+      branch,
+      kind: "lens",
+      patchId: "p1",
+      passed: true,
+      at: 1000,
+      detail: "APPROVED",
+      hasCritical: false,
+      headSha: branch, // a branch name, not a 40-char SHA (pre-#1039 legacy)
+      round: 1,
+    },
+  ]);
+  try {
+    const since = await resolveDeltaSince(branch, undefined, r.dir);
+    eq(since, undefined, "legacy branch-name headSha → no auto since (full review, not delta)");
+  } finally {
+    cleanup(r.dir, r.ledgerFile);
+  }
+}
+
 // (6) Explicit since → that range
 {
   const r = await mkRepo();

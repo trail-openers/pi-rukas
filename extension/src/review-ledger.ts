@@ -73,7 +73,9 @@ export interface LedgerEntry {
   /** #973 — lens entries only: the commit hash reviewed. Two consumers:
    * the delta-review auto-base (the `since` of a follow-up review defaults
    * to the latest lens entry's `headSha` when it is an ancestor of HEAD) and
-   * the disclosure marker's provenance. */
+   * the disclosure marker's provenance. Always a resolved 40-char SHA when
+   * present (#1039); absent when the head could not be resolved; a non-SHA
+   * value is malformed and refused by the round-cap path. */
   headSha?: string;
 }
 

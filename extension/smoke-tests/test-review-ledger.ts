@@ -31,6 +31,11 @@ import path from "node:path";
 // is the same flake the issue's descriptor names: a fixed short wall-clock
 // budget against a fire-and-forget two-subprocess write chain).
 import { waitForLedger } from "./lib/wait-for-ledger.ts";
+// #1039 — the temp-repo helpers moved to lib/review-ledger-test-helpers.ts
+// (still re-exported from here for backward compatibility; the headSha suite
+// imports them from lib/ directly so it does not execute this file's body).
+import { setupRepo, ledgerFile } from "./lib/review-ledger-test-helpers.ts";
+export { setupRepo, ledgerFile } from "./lib/review-ledger-test-helpers.ts";
 import { runLensReview } from "../src/lens-review.ts";
 import {
   type LedgerEntry,
@@ -48,7 +53,7 @@ import {
 } from "../src/review-ledger.ts";
 
 let exit = 0;
-function assert(cond: boolean, msg: string) {
+export function assert(cond: boolean, msg: string) {
   if (cond) console.log(`✓ ${msg}`);
   else {
     console.error(`✗ ${msg}`);
@@ -56,7 +61,7 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const execp = async (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) => {
+export const execp = async (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) => {
   const r = execSync(cmd, {
     cwd: opts?.cwd,
     maxBuffer: opts?.maxBuffer ?? 1024 * 1024,
@@ -65,45 +70,7 @@ const execp = async (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) =
   return { stdout: r, stderr: "" };
 };
 
-/** Set up a temp repo with a local bare origin + a feature branch. */
-function setupRepo(): { repo: string; origin: string; branch: string } {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "ledger-"));
-  const repo = path.join(dir, "repo");
-  const origin = path.join(dir, "origin.git");
-  execSync(`git init -q ${origin}`, { stdio: "ignore" });
-  execSync(`git clone -q ${origin} ${repo}`, { stdio: "ignore" });
-  const git = (cmd: string) => execSync(cmd, { cwd: repo, stdio: "ignore" });
-  git("git config user.email t@t.t");
-  git("git config user.name t");
-  git("echo base > base.txt");
-  git("git add base.txt");
-  git('git commit -qm "base"');
-  // The clone's default branch is whatever the empty origin has (HEAD →
-  // refs/heads/main on modern git); rename to a non-default name so the
-  // `git checkout -qb feature/x` + `git push origin feature/x` below works
-  // without fighting the origin's checked-out branch.
-  git("git branch -M dev");
-  git("git push -q origin dev");
-  // Set the mainline symbolic ref so detectMainline can resolve it without
-  // a network call to gh (the test repo has no GitHub remote).
-  git("git remote set-head origin dev");
-  git("git checkout -qb feature/x dev");
-  git("echo change > change.txt");
-  git("git add change.txt");
-  git('git commit -qm "change"');
-  git("git push -q origin feature/x");
-  return { repo, origin, branch: "feature/x" };
-}
-
-const ledgerFile = (repo: string) => {
-  const common = execSync("git rev-parse --git-common-dir", { cwd: repo, encoding: "utf8" }).trim();
-  const abs = path.isAbsolute(common) ? common : path.resolve(repo, common);
-  return path.join(abs, "review-ledger.json");
-};
-
 // ------------------------------------------------------------------ helpers
-
-const signal = new AbortController().signal;
 
 // ------------------------------------------- runAdversarialLoop writes entry
 

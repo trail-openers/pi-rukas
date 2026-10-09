@@ -133,6 +133,13 @@ const execp = async (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) =
   const abs = path.isAbsolute(common) ? common : path.resolve(repo, common);
   const file = path.join(abs, "review-ledger.json");
   try {
+    // #1039 — the headSha fixtures are real repo OIDs (the commit the test
+    // repo's HEAD points to), not arbitrary short strings. The low-level
+    // appendLedgerEntry stores whatever headSha is passed (validation lives
+    // at the writer level, not here), so the fixture value only matters
+    // for the round-counter assertions that follow.
+    const commitSha = execSync(`git -C ${repo} rev-parse HEAD`, { encoding: "utf8" }).trim();
+    const secondSha = commitSha; // same commit; the round counter is the test target
     const at = Date.now();
     const e1 = await appendLedgerEntry(
       {
@@ -143,7 +150,7 @@ const execp = async (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) =
         at,
         detail: "ISSUES_FOUND",
         hasCritical: false,
-        headSha: "abc123",
+        headSha: commitSha,
       },
       execp,
       repo,
@@ -153,7 +160,7 @@ const execp = async (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) =
     assert(entries1.length === 1, "the ledger holds one lens entry after the first write");
     assert(entries1[0]?.round === 1, "the first lens entry is round 1");
     assert(entries1[0]?.hasCritical === false, "the stored hasCritical is false");
-    assert(entries1[0]?.headSha === "abc123", "the stored headSha is the commit reviewed");
+    assert(entries1[0]?.headSha === commitSha, "the stored headSha is the commit reviewed");
     // A second write advances the round.
     const e2 = await appendLedgerEntry(
       {
@@ -164,7 +171,7 @@ const execp = async (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) =
         at: at + 1000,
         detail: "ISSUES_FOUND",
         hasCritical: false,
-        headSha: "def456",
+        headSha: secondSha,
       },
       execp,
       repo,
@@ -178,7 +185,7 @@ const execp = async (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) =
       .filter((e) => e.kind === "lens" && e.branch === "feature/x")
       .sort((a, b) => b.at - a.at)[0];
     assert(latest2?.round === 2, "the second lens entry (latest by at) is round 2");
-    assert(latest2?.headSha === "def456", "the second entry's headSha is the newer commit");
+    assert(latest2?.headSha === secondSha, "the second entry's headSha is the newer commit");
     // A legacy entry (no hasCritical, no round) written first, then a new
     // entry: the new entry's round is 3 (the legacy counted as round 1).
     const e3 = await appendLedgerEntry(
