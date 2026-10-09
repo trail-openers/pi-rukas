@@ -70,13 +70,13 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         };
         const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
           calls.push(cmd);
-          if (cmd === "git rev-parse HEAD") return { stdout: "base123\n" };
+          if (cmd === "git rev-parse HEAD") return { stdout: "1111111111111111111111111111111111111111\n" };
           if (cmd === "git rev-parse --abbrev-ref HEAD") return { stdout: "feature/issue-994\n" };
           // #393 — mechanized branch setup is now unconditional (the knob that
           // skipped it is gone), so the stub must answer its commands too or
           // the branch step falls back and emits a plumb-report that this
           // fixture's "mechanized path completed cleanly" assertion then trips on.
-          if (cmd.startsWith("git rev-parse ")) return { stdout: "base123\n" };
+          if (cmd.startsWith("git rev-parse ")) return { stdout: "1111111111111111111111111111111111111111\n" };
           if (cmd.startsWith("git fetch origin")) return { stdout: "" };
           // #475 — the pre-remove guard (`inspectWorktreeForLoss`) checks for
           // unrecoverable work before force-removing a same-path worktree.
@@ -108,12 +108,12 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
             if (cwd.endsWith("-task-c")) return { stdout: "?? src/c.rs\n" };
             return { stdout: "" };
           }
-          // #585 — orchestrator: `git rev-list --count "base123"..HEAD`
+          // #585 — orchestrator: `git rev-list --count "1111111111111111111111111111111111111111"..HEAD`
           // (JSON.stringify wraps only the SHA, not the range). Must precede
-          // the generic base123 handler because `..HEAD` extends past the
-          // closing quote — `startsWith("...base123")` matches but returns 0.
-          if (cmd.includes('"base123"..HEAD')) return { stdout: "1\n" };
-          if (cmd.startsWith("git rev-list --count base123")) return { stdout: "1\n" };
+          // the generic 1111111111111111111111111111111111111111 handler because `..HEAD` extends past the
+          // closing quote — `startsWith("...1111111111111111111111111111111111111111")` matches but returns 0.
+          if (cmd.includes('"1111111111111111111111111111111111111111"..HEAD')) return { stdout: "1\n" };
+          if (cmd.startsWith("git rev-list --count 1111111111111111111111111111111111111111")) return { stdout: "1\n" };
           if (cmd.startsWith("git rev-list --count origin/")) return { stdout: "1\n" };
           if (cmd.startsWith("git add -- ")) return { stdout: "" };
           if (cmd.startsWith("git diff --cached"))

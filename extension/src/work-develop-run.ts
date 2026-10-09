@@ -144,7 +144,7 @@ export function makeRunOneWorkstream(
     // This is INFORMATIONAL ONLY — the scope-fanout gate in
     // work-driver-verify-develop.ts reads `workstream.paths` from state,
     // never the prompt text.
-    // #1016 — per-completion persistence when the caller wires it.
+    // #1016 — per-completion persistence: every develop caller supplies emitBranchCompleted.
     const emitCompleted = (ev: WorkEvent): void => s.emitBranchCompleted(ev);
     const isParallel = ids.length > 1 && id !== "default";
     const siblingWorkstreams = isParallel

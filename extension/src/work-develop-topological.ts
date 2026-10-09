@@ -8,6 +8,7 @@
  * dependent-workstream runner live in work-develop-run.ts.
  */
 import { trace } from "./trace.ts";
+import { boundJoinFailures } from "./work-develop-cap-evidence.ts";
 import { runMergeRetryFlow } from "./work-develop-fence-merge-retry.ts";
 import { siblingDeclaredViolators } from "./work-develop-fence-recovery.ts";
 import {
@@ -17,11 +18,11 @@ import {
 } from "./work-develop-fence-verdicts.ts";
 import { refuseMissingWorktrees } from "./work-develop-missing-worktree.ts";
 import {
-  commitsAheadOfBase,
+  type PreservedGreens,
+  greenCountsAsWork,
   makeBranchCompletedPersister,
   resetWorktreeToBase,
   runIndependentFanout,
-  trustedPreservedGreens,
   withPersistNotes,
 } from "./work-develop-retry.ts";
 import {
@@ -32,34 +33,12 @@ import {
 import type { DriverContext } from "./work-driver-context.ts";
 import { runConvergeGateHandler } from "./work-driver-converge-gate.ts";
 import { topologicalDispatchOrder } from "./work-driver-dep-scheduler.ts";
-import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import { clearDispatch } from "./work-driver-resume.ts";
 import { applySafetyNet, hasAnyWorktreeEvidence } from "./work-driver-safety-net.ts";
 import { armStepNotice } from "./work-driver-step-notice.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
-
-// #841 — per-failure / joined-evidence bounds for the cap-hit evidence
-// field. A failure string is already an 800-char attributed tail; a
-// fanout with several failures joined unboundedly produced multi-KB
-// evidence. Bound each failure and the join itself, with a truncation
-// marker so the operator knows the evidence is bounded.
-const CAP_EVIDENCE_PER_FAILURE_MAX = 800;
-const CAP_EVIDENCE_TOTAL_MAX = 4000;
-const CAP_EVIDENCE_TRUNCATED = " … (truncated)";
-
-/** #841 — bound a single failure string before it is joined into evidence. */
-function boundFailure(f: string): string {
-  return extractAttributedTail(f, CAP_EVIDENCE_PER_FAILURE_MAX).tail || f.slice(-800);
-}
-
-/** #841 — join bounded failures, capping the total with a truncation marker. */
-function boundJoinFailures(failures: string[]): string {
-  const joined = failures.map(boundFailure).join(" | ");
-  if (joined.length <= CAP_EVIDENCE_TOTAL_MAX) return joined;
-  return joined.slice(0, CAP_EVIDENCE_TOTAL_MAX) + CAP_EVIDENCE_TRUNCATED;
-}
 
 /**
  * #679 — topological-dispatch core of runDevelop (see work-develop-run.ts).
@@ -74,13 +53,13 @@ async function runDevelopTopological(
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
   now: number,
   jobId: string,
-  preserved: ReadonlySet<string> = new Set<string>(),
+  preserved: PreservedGreens = { kept: new Set<string>(), notes: [] },
 ): Promise<WorkState> {
   void now;
   const begun = { jobId };
   let next = initialState;
   const scratchAbs = scratchDir(ctx.repoRoot, ctx.issue);
-  const verdicts: Array<{ id: string; ok: boolean; reason?: string }> = [];
+  let verdicts: Array<{ id: string; ok: boolean; reason?: string }> = [];
   const branchEvents: WorkEvent[] = [];
   const dependsOnMap: Record<string, string[]> = {};
   for (const [id, ws] of Object.entries(workstreams)) {
@@ -88,7 +67,7 @@ async function runDevelopTopological(
   }
   const { independent, dependentOrdered } = topologicalDispatchOrder(ids, dependsOnMap);
   const stateRef = { current: next };
-  const persistNotes: string[] = [];
+  const persistNotes: string[] = [...preserved.notes];
   const persister = makeBranchCompletedPersister(ctx.repoRoot, stateRef, persistNotes);
   // #753 — per-workstream completion timestamps + a shared map of WHY each
   // failed-or-skipped workstream failed (the cascade event names the workstream
@@ -109,7 +88,11 @@ async function runDevelopTopological(
     // #838 — the develop dispatch's deck tag: the workstream id when N>1
     // (per-workstream rows), "default" for the single-workstream shape.
     deckTagFor: (id) => (ids.length > 1 ? id : "default"),
-    verdicts,
+    // A getter: the fan-out replaces the verdict list, and dependents must push
+    // into the current one.
+    get verdicts() {
+      return verdicts;
+    },
     branchEvents: branchEvents as WorkEvent[],
     stateRef,
   });
@@ -173,27 +156,39 @@ async function runDevelopTopological(
   // #1016 — a green with no commits ahead of its base is failed inside runAt,
   // so the retry and the verdicts see the same truth. The fan-out returns the
   // final verdict list, which replaces the shared array before dependents run.
-  const fanout = await runIndependentFanout({
+  verdicts = await runIndependentFanout({
     independent,
-    preserved,
+    preserved: preserved.kept,
     skip: missingWorktree,
     runAt: async (id) => {
       const cwd = worktrees[id] as string;
       const r = await runOneWorkstream(id, cwd);
       if (!r.ok) return { id, ok: false };
       const base = workstreamBaseShas[id] ?? globalBaseSha;
-      return (await commitsAheadOfBase(execFn, cwd, base))
-        ? r
-        : { id, ok: false, reason: "no commits ahead of base" };
+      const green = await greenCountsAsWork(execFn, cwd, base, id);
+      if (green.note !== undefined) persistNotes.push(green.note);
+      if (green.counts) return r;
+      // Persist the downgrade: the log (and any crash-resume) must not keep the
+      // ok:true that runOneWorkstream already emitted for a commitless green.
+      const reason = "no commits ahead of base";
+      persister.emit({
+        kind: "branch-completed",
+        step: "develop",
+        workstreamId: id,
+        ok: false,
+        ms: 0,
+        at: Date.now(),
+        error: reason,
+      });
+      return { id, ok: false, reason };
     },
     resetFor: (id) =>
       resetWorktreeToBase(execFn, worktrees[id] as string, workstreamBaseShas[id] ?? globalBaseSha),
-    verdicts: [...verdicts],
+    verdicts,
     multi: ids.length > 1,
   });
-  verdicts.splice(0, verdicts.length, ...fanout.verdicts);
-  for (const r of fanout.results) {
-    if (!r.ok) failedOrSkipped.add(r.id);
+  for (const v of verdicts) {
+    if (!v.ok) failedOrSkipped.add(v.id);
   }
   // #753 — populate the dep-completion map: dependents wait on their DIRECT
   // dependency, so record the resolved fan-out time for every independent
@@ -242,7 +237,10 @@ async function runDevelopTopological(
       pipelineState: {
         ...next.pipelineState,
         worktrees,
-        workstreamBaseShas: { ...workstreamBaseShas, ...next.pipelineState.workstreamBaseShas },
+        workstreamBaseShas: {
+          ...workstreamBaseShas,
+          ...next.pipelineState.workstreamBaseShas,
+        },
       },
     };
     return endStep(withPersistNotes(next, persistNotes));
@@ -257,7 +255,10 @@ async function runDevelopTopological(
     pipelineState: {
       ...next.pipelineState,
       worktrees,
-      workstreamBaseShas: { ...workstreamBaseShas, ...next.pipelineState.workstreamBaseShas },
+      workstreamBaseShas: {
+        ...workstreamBaseShas,
+        ...next.pipelineState.workstreamBaseShas,
+      },
     },
   };
   next = withPersistNotes(next, persistNotes);

@@ -70,7 +70,11 @@ export async function runBranch(
     if (existing) {
       const withPr: WorkState = {
         ...state,
-        pipelineState: { ...state.pipelineState, currentStep: "branch", existingPr: existing },
+        pipelineState: {
+          ...state.pipelineState,
+          currentStep: "branch",
+          existingPr: existing,
+        },
       };
       return appendEvent(withPr, {
         kind: "cap-hit",
@@ -129,7 +133,10 @@ export async function runBranch(
             `work-driver: branch step halted — local branch ${aheadErr.branchName} is ${aheadLabel === "unknown" ? "an unknown number of" : `${aheadLabel}`} commit(s) ahead of the fetched base; nothing was reset`,
           );
           const started = appendEvent(
-            { ...state, pipelineState: { ...state.pipelineState, currentStep: "branch" } },
+            {
+              ...state,
+              pipelineState: { ...state.pipelineState, currentStep: "branch" },
+            },
             { kind: "step-started", step: "branch", at: now },
           );
           return appendEvent(started, {
@@ -157,7 +164,10 @@ export async function runBranch(
         });
       }
       const started = appendEvent(
-        { ...baseState, pipelineState: { ...baseState.pipelineState, currentStep: "branch" } },
+        {
+          ...baseState,
+          pipelineState: { ...baseState.pipelineState, currentStep: "branch" },
+        },
         { kind: "step-started", step: "branch", at: now },
       );
       // Via the shared builder (work-driver-events.ts): unique jobId —
@@ -215,7 +225,10 @@ export async function runBranch(
       if (err instanceof DirtyWorktreeError) {
         trace(`work-driver: branch step refused — dirty worktree: ${err.message?.slice(0, 300)}`);
         const started = appendEvent(
-          { ...state, pipelineState: { ...state.pipelineState, currentStep: "branch" } },
+          {
+            ...state,
+            pipelineState: { ...state.pipelineState, currentStep: "branch" },
+          },
           { kind: "step-started", step: "branch", at: now },
         );
         // #545 — salvage the dirty worktrees this cycle ALREADY knows about
@@ -356,8 +369,10 @@ export async function runDevelop(
     worktrees: state.pipelineState.worktrees ?? {},
     baseFor: (id) => state.pipelineState.workstreamBaseShas?.[id] ?? state.pipelineState.baseSha,
   });
-  if (preserved.size > 0) {
-    trace(`work-driver: develop resumed — keeping green workstreams ${[...preserved].join(", ")}`);
+  if (preserved.kept.size > 0) {
+    trace(
+      `work-driver: develop resumed — keeping green workstreams ${[...preserved.kept].join(", ")}`,
+    );
   }
   return runDevelopTopological(
     ctx,
