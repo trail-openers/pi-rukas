@@ -2,11 +2,28 @@
  * comment-retention-hunks — pure diff parsing and per-hunk classification for
  * the comment-retention gate (#948, #1040; follow-up fix on main).
  *
+ * RETENTION: a comment line removed between base and head is retained when its
+ * trimmed text reappears verbatim under the scoped paths at head, or as the
+ * trailing part of a head line (a comment moved to the end of a code line).
+ * Comment lines with no word characters (`/**`, ` *`, `*\/`, `//`) carry no
+ * wording and are ignored entirely: neither lost nor counted as retained.
+ *
+ * REPLACEMENT: a removed comment block is REPLACED (a note, never a failure)
+ * when either
+ *  (a) it is reworded IN PLACE — the block and one or more added comment lines
+ *      form one contiguous change run in the diff (no unchanged context line
+ *      between them), whatever the word overlap; or
+ *  (b) the annotated code (the old-file line right after the block) was removed
+ *      or changed in this hunk AND the block's wording carries (≥3 words, ≥60%
+ *      of the non-stop words shared) into one run of added comment lines.
+ * An unrelated comment added elsewhere in the hunk never replaces a comment
+ * whose annotated code is unchanged; boilerplate overlap alone never carries.
+ *
  * `parseHunks` turns a unified diff into hunks, each keyed to its REAL file
  * (a deleted file's `+++ /dev/null` is resolved from its `--- a/…` header) and
- * holding the ordered body lines (context / removed / added). A header that
- * cannot be parsed is an error, never silently skipped (a trailing CR from a
- * CRLF file is tolerated; any other malformed header fails closed).
+ * holding the ordered body lines (context / removed / added). A trailing CR
+ * (CRLF diff) is stripped from every line before matching. A header that
+ * still cannot be parsed is an error, never silently skipped.
  *
  * A comment documents the code line immediately after it in the OLD file (its
  * annotated line), not the surrounding function body: a body edit alone never
@@ -17,12 +34,8 @@
  *  - Annotated code = the code line(s) immediately after the removed comment
  *    block in the OLD file, with no unchanged context line in between. If the
  *    next old-file line is unchanged context, the annotated code is unchanged.
- *  - Exempt: the annotated code was removed and is gone at head (no new
- *    comment in the hunk).
- *  - Replaced (a note, not a failure): the hunk adds a comment line AND either
- *    (a) the annotated code was removed/changed in this hunk, or (b) the
- *    block's wording was carried into an added comment in this hunk (≥3
- *    distinct words, ≥60% of them shared).
+ *  - Exempt: the annotated code is gone at head and the hunk adds nothing
+ *    (a pure deletion of the comment together with its code).
  *  - Otherwise each block line is lost unless its trimmed text reappears under
  *    the scoped paths at head.
  */
@@ -78,16 +91,32 @@ const STAR_BARE_RE = /^\*(\*)?$/;
 const SQL_LUA_COMMENT_RE = /^--(\s|$)/;
 const STAR_PROSE_RE = /^\*(\*\/?)?\s\S/;
 
-/** A whole-line comment: `//`, block open/close, or a block-continuation star line. */
+/**
+ * A whole-line comment: a double-slash line, a block-open line, a block-close
+ * line, or a block-continuation star line.
+ *
+ * `inBlock` is `true` when the previous line was also a comment (we are
+ * inside a block comment). A prose `* text` line is a comment only when
+ * `inBlock` is true; a bare `*` or `**` is always a comment (block closer).
+ * This stops an arithmetic continuation (` * b;` after `const y = a`) from
+ * being misread as a JSDoc continuation.
+ */
 export function isCommentLine(raw: string, inBlock: boolean): boolean {
   const t = raw.trim();
   if (t.startsWith("//") || t.startsWith("/*")) return true;
+  // A jsdoc closer on its own line is always part of the comment block.
+  if (t === "*/" || t === "**/") return true;
   if (SQL_LUA_COMMENT_RE.test(t)) return true;
   if (t.startsWith("*")) {
     if (STAR_BARE_RE.test(t)) return true;
     return inBlock && STAR_PROSE_RE.test(t);
   }
-  return t.endsWith("*/") && t.length > 2;
+  return t.endsWith("*/") && t.length > 2; // closing of a block comment
+}
+
+/** Does the text carry any word character (not just markers / punctuation)? */
+function hasWord(s: string): boolean {
+  return /[\p{L}\p{N}]/u.test(s);
 }
 
 /** Lowercased word tokens, punctuation collapsed. */
@@ -123,9 +152,10 @@ export function parseHunks(diff: string): ParseResult {
     removed: false,
   };
   for (let n = 0; n < lines.length; n++) {
-    const line = lines[n] ?? "";
+    // A CRLF diff carries a trailing CR on every line: strip it before matching.
+    const line = (lines[n] ?? "").replace(/\r$/, "");
     if (line.startsWith("@@")) {
-      const m = HUNK_HEADER_RE.exec(line.replace(/\r$/, ""));
+      const m = HUNK_HEADER_RE.exec(line);
       if (!m) {
         return {
           ok: false,
@@ -176,10 +206,13 @@ export function parseHunks(diff: string): ParseResult {
  * elsewhere in the hunk cannot launder a lost comment.
  */
 function wordingCarried(block: string[], addedRuns: string[][]): boolean {
+  // Count real words (≥3) but measure overlap on non-stop words, so boilerplate
+  // alone never carries and a one-content-word comment can still be carried.
+  if (new Set(wordsOf(block.join(" "))).size < CARRY_MIN_WORDS) return false;
   const words = new Set(wordsOf(block.join(" ")).filter((w) => !CARRY_STOP.has(w)));
-  if (words.size < CARRY_MIN_WORDS) return false;
+  if (words.size === 0) return false;
   return addedRuns.some((run) => {
-    const added = new Set(wordsOf(run.join(" ")).filter((w) => !CARRY_STOP.has(w)));
+    const added = new Set(wordsOf(run.join(" ")));
     let shared = 0;
     for (const w of words) if (added.has(w)) shared++;
     return shared / words.size >= CARRY_RATIO;
@@ -189,10 +222,27 @@ function wordingCarried(block: string[], addedRuns: string[][]): boolean {
 /** Classify one hunk's removed comment blocks. */
 export function classifyHunk(hunk: Hunk, presentAtHead: (text: string) => boolean): HunkVerdict {
   const verdict: HunkVerdict = { lost: [], replaced: [], exempt: 0 };
+  // Contiguous change runs: a run is broken by an unchanged context line only.
+  // A removed comment and an added comment in the same run were reworded in place.
+  const changeRunOf = new Map<BodyLine, number>();
+  const runsWithAddedComment = new Set<number>();
   const addedRuns: string[][] = [];
+  let changeRun = 0;
+  let inChange = false;
   let run: string[] | null = null;
   for (const l of hunk.lines) {
+    if (l.kind === "context") {
+      inChange = false;
+      run = null;
+      continue;
+    }
+    if (!inChange) {
+      changeRun++;
+      inChange = true;
+    }
+    changeRunOf.set(l, changeRun);
     if (l.kind === "added" && l.isComment) {
+      runsWithAddedComment.add(changeRun);
       if (!run) {
         run = [];
         addedRuns.push(run);
@@ -200,10 +250,7 @@ export function classifyHunk(hunk: Hunk, presentAtHead: (text: string) => boolea
       run.push(l.raw.trim());
     } else run = null;
   }
-  const addedCode = new Set(
-    hunk.lines.filter((l) => l.kind === "added" && !l.isComment).map((l) => l.raw.trim()),
-  );
-  const hasAddedComment = addedRuns.length > 0;
+  const hunkAddsNothing = !hunk.lines.some((l) => l.kind === "added");
   // The OLD file's view of this hunk: context and removed lines, in order.
   const old = hunk.lines.filter((l) => l.kind !== "added");
   let i = 0;
@@ -213,32 +260,40 @@ export function classifyHunk(hunk: Hunk, presentAtHead: (text: string) => boolea
       i++;
       continue;
     }
-    const block: string[] = [];
+    const block: BodyLine[] = [];
     let next = old[i];
     while (next && next.kind === "removed" && next.isComment) {
-      block.push(next.raw);
+      block.push(next);
       i++;
       next = old[i];
     }
+    // Word-less markers (`/**`, ` *`, `*/`, `//`) carry no wording: ignored.
+    const lines = block.map((l) => l.raw.trim()).filter(hasWord);
+    if (lines.length === 0) continue;
     // Annotated code: the next non-blank old-file line, if it is a removed code
-    // line (unchanged blank context lines are skipped). Unchanged non-blank
-    // context there means the documented code is unchanged.
+    // line (blank lines between are skipped). Unchanged non-blank context there
+    // means the documented code is unchanged.
     let j = i;
-    while (old[j]?.kind === "context" && (old[j]?.raw ?? "").trim() === "") j++;
+    while (old[j] && (old[j]?.raw ?? "").trim() === "") j++;
     const annotated = old[j];
     const follow =
       annotated && annotated.kind === "removed" && !annotated.isComment ? annotated.raw.trim() : "";
-    if (follow && !presentAtHead(follow)) {
-      if (hasAddedComment) verdict.replaced.push(...block.map((l) => l.trim()));
-      else verdict.exempt += block.length;
+    // (a) reworded in place: the block shares a change run with added comment lines.
+    if (block.some((l) => runsWithAddedComment.has(changeRunOf.get(l) ?? -1))) {
+      verdict.replaced.push(...lines);
       continue;
     }
-    const codeChanged = follow !== "" && !addedCode.has(follow);
-    if (hasAddedComment && (codeChanged || wordingCarried(block, addedRuns))) {
-      verdict.replaced.push(...block.map((l) => l.trim()));
+    // (b) the annotated code changed AND the wording carried into an added comment.
+    if (follow !== "" && wordingCarried(lines, addedRuns)) {
+      verdict.replaced.push(...lines);
       continue;
     }
-    for (const l of block) if (!presentAtHead(l)) verdict.lost.push(l.trim());
+    // Pure deletion: the annotated code is gone and the hunk adds nothing.
+    if (follow && !presentAtHead(follow) && hunkAddsNothing) {
+      verdict.exempt += lines.length;
+      continue;
+    }
+    for (const l of lines) if (!presentAtHead(l)) verdict.lost.push(l);
   }
   return verdict;
 }

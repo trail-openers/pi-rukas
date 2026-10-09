@@ -4,9 +4,16 @@
  * Developers repeatedly delete or compress pre-existing comments to get
  * under the 500-line file cap. This module finds comment lines REMOVED between
  * base and head whose text does not reappear under `paths` at head, and
- * classifies each removed block as lost, replaced (a note) or exempt. The
- * per-hunk rules live in comment-retention-hunks.ts; this module runs the git
- * reads, the orchestration and the report formatting.
+ * classifies each removed block as lost, replaced (a note) or exempt.
+ *
+ * Retention: a removed comment line survives when its trimmed text reappears
+ * verbatim (or as the trailing part of a head line) under `paths`. Lines with
+ * no word characters (`/**`, ` *`, `*\/`, `//`) are ignored.
+ * Replacement: a block reworded in place (one contiguous change run with an
+ * added comment) or whose annotated code changed while its wording carried
+ * into an added comment is a note, never a loss. Exemption: a comment deleted
+ * together with its annotated code, in a hunk that adds nothing. Full rules
+ * live in comment-retention-hunks.ts.
  *
  * `paths` scopes ALL operations (the diff, the head-tree read).
  *
@@ -17,7 +24,7 @@
 
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
-import { classifyHunk, parseHunks } from "./comment-retention-hunks.ts";
+import { classifyHunk, parseHunks, wordsOf } from "./comment-retention-hunks.ts";
 import { trace } from "./trace.ts";
 import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import type { ExecFn } from "./worktree.ts";
@@ -65,16 +72,25 @@ export type LostCommentResult =
   | { ok: true; lost: string[]; replaced: string[]; exempt: number }
   | { ok: false; reason: string };
 
+/** The exit code of a child-process failure, or undefined for any other value. */
+function execExitCode(err: unknown): unknown {
+  return typeof err === "object" && err !== null && "code" in err
+    ? (err as { code?: unknown }).code
+    : undefined;
+}
+
 /**
  * Read every file under `paths` at `ref` (one `git grep -e ""` read) and return
- * the trimmed line contents. Returns `undefined` when the read itself fails.
+ * the set of trimmed line contents. Returns `undefined` when the read itself
+ * fails. `git grep` exits 1 when nothing matches: that is an empty head tree
+ * under `paths` only when the ref resolves; otherwise the read is unreadable.
  */
 async function readLinesAtRef(
   execFn: ExecFn,
   cwd: string,
   ref: string,
   paths: string[],
-): Promise<string[] | undefined> {
+): Promise<Set<string> | undefined> {
   const pathArg = paths.join(" ");
   try {
     const { stdout } = await execFn(`git grep -e "" ${ref} -- ${pathArg}`, {
@@ -82,7 +98,7 @@ async function readLinesAtRef(
       timeout: verifyTimeoutMs(),
       maxBuffer: 64 * 1024 * 1024,
     });
-    const out: string[] = [];
+    const out = new Set<string>();
     for (const line of stdout.split("\n")) {
       // `git grep -e "" <ref> -- <paths>` emits `ref:file:line`; the line
       // content is what follows the SECOND colon.
@@ -90,17 +106,29 @@ async function readLinesAtRef(
       if (first < 0) continue;
       const second = line.indexOf(":", first + 1);
       if (second < 0) continue;
-      out.push(line.slice(second + 1).trim());
+      out.add(line.slice(second + 1).trim());
     }
     return out;
   } catch (err) {
-    // `git grep` exits 1 when nothing matches: an empty head tree under paths
-    // (every in-scope file deleted), not an infra failure.
-    if ((err as { code?: unknown }).code === 1) return [];
+    if (execExitCode(err) === 1 && (await refResolves(execFn, cwd, ref))) return new Set<string>();
     trace(
       `comment-retention: readLinesAtRef failed at ${ref}: ${(err as Error).message?.slice(0, 120) ?? "error"}`,
     );
     return undefined;
+  }
+}
+
+/** Does `ref` resolve to a commit? Any error counts as unresolved. */
+async function refResolves(execFn: ExecFn, cwd: string, ref: string): Promise<boolean> {
+  try {
+    await execFn(`git rev-parse --verify "${ref}^{commit}"`, {
+      cwd,
+      timeout: verifyTimeoutMs(),
+      maxBuffer: 1 * 1024 * 1024,
+    });
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -112,7 +140,15 @@ async function confirmEmptyDiff(
   headRef: string,
   pathArg: string,
 ): Promise<LostCommentResult> {
-  let changedInRange = -1;
+  // #384 pattern — establish empty POSITIVELY. An empty diff under the
+  // pathspec is legitimate (no changes under paths), but a truncated or
+  // mis-invoked read could also yield one; cross-check the range scoped to
+  // THE SAME validated paths (a mis-invocation that makes the diff read
+  // empty usually affects the pathspec, and an unscoped range would count
+  // out-of-scope commits and skip the gate with a misleading note) and,
+  // if the scoped range is non-empty, report it rather than silently
+  // passing as "nothing lost".
+  let changedInRange = Number.NaN;
   try {
     const { stdout } = await execFn(`git rev-list --count ${baseRef}..${headRef} -- ${pathArg}`, {
       cwd,
@@ -121,7 +157,7 @@ async function confirmEmptyDiff(
     });
     changedInRange = Number.parseInt(stdout.trim(), 10);
   } catch {
-    changedInRange = -1; // unreadable — note, not pass
+    changedInRange = Number.NaN; // unreadable — note, not pass
   }
   if (Number.isNaN(changedInRange)) {
     return {
@@ -141,7 +177,8 @@ async function confirmEmptyDiff(
 /**
  * Find comment lines removed between base and head that are not retained and
  * not exempt or replaced. Uses a normal-context diff (not `-U0`) so comment
- * blocks stay in one hunk. Reads the head tree under `paths` ONCE.
+ * blocks stay in one hunk. Reads the head tree under `paths` ONCE, and only
+ * when a hunk actually removed a comment line.
  */
 export async function findLostComments(
   execFn: ExecFn,
@@ -183,14 +220,19 @@ export async function findLostComments(
   const parsed = parseHunks(diff);
   if (!parsed.ok) return { ok: false, reason: parsed.reason };
 
-  const headList = await readLinesAtRef(execFn, cwd, headRef, paths);
-  if (headList === undefined) {
+  // Nothing removed a comment: nothing can be lost, so skip the head-tree read.
+  const removedComment = parsed.hunks.some((h) =>
+    h.lines.some((l) => l.kind === "removed" && l.isComment),
+  );
+  if (!removedComment) return { ok: true, lost: [], replaced: [], exempt: 0 };
+
+  const headSet = await readLinesAtRef(execFn, cwd, headRef, paths);
+  if (headSet === undefined) {
     return {
       ok: false,
       reason: `could not read head tree at ${headRef} under ${pathArg}`,
     };
   }
-  const headSet = new Set(headList);
   // Retained = the trimmed line reappears verbatim, or as the trailing part of
   // a head line (a comment moved to the end of a code line). A comment that
   // merely prefixes a longer comment at head is NOT retained.
@@ -201,7 +243,8 @@ export async function findLostComments(
     // Trailing-part retention needs a word-bearing tail: `}`, `*/` or `/**`
     // must not be "retained" by any head line that happens to end in them.
     if (!/[\p{L}\p{N}]/u.test(t)) return false;
-    return headList.some((l) => l.endsWith(t));
+    // Trailing-part retention needs real words: `}` or `*/` must not match.
+    return wordsOf(t).length >= 2 && [...headSet].some((l) => l.endsWith(t));
   };
 
   const lost: string[] = [];
@@ -262,7 +305,10 @@ export function formatReportLine(res: RetentionCounts): string {
 
 /**
  * #948 — compute the comment-retention report line for the adversarial loop.
- * Without a range the check cannot run; a git/ref error degrades to `not-run`.
+ * With a ref range, runs the check in `cwd` against `range.base`...`range.head`
+ * (a real `ExecFn`); a git/ref error degrades to `not-run` (infra errors are
+ * never a failure here — the /work develop gate is what fails on lost
+ * comments). Without a range, the check cannot run (no base ref).
  */
 export async function buildCommentsLine(
   range: { base: string; head: string } | null,
