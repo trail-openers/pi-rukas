@@ -63,14 +63,9 @@ const OO_SWEEP_FILES = [
 ];
 // Matches `oo` used as a command-prefix wrapper: "oo git", "oo gh", "oo cargo",
 // "oo npm", "oo bun", "oo pnpm", "oo yarn", "oo pytest", "oo glab", etc.
-// The regex is built fresh on every call from the literal below, and is
-// deliberately NOT flagged `g`, so no `lastIndex` state exists to leak between
-// the sweep and the canary below. (It must stay a literal, not a string, on
-// Bun 1.4.x: `new RegExp("\\w")` is silently re-decoded and stops matching
-// word boundaries. A non-`g` regex is stateless by spec — a `g` regex here
-// would expose the Bun 1.4.x regression where `RegExp.prototype.test` returns
-// `false` on every second call of the same `g` regex, so the canary below
-// would intermittently report 1/2 instead of 2/2.)
+// A fresh non-global regex is created per use because a shared `g`-flagged
+// regex is stateful (`lastIndex`), so reusing one across the sweep and the
+// canary below would make every second `test()` miss.
 function ooPrefixRe() {
   return /(?<!\w)oo\s+(?:git|gh|glab|npm|cargo|bun|pnpm|yarn|pytest|go|uv|npx|ruff|recall|help|patterns|learn|forget)\b/;
 }
