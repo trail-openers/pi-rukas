@@ -105,7 +105,7 @@ function assertOoSweep(lines: string[], rel: string) {
   for (const anchor of anchors) {
     assert(
       lines.some((l) => l.includes(anchor)),
-      `${rel}: OO_SWEEP_EXEMPT anchor found (a missing anchor means the exemption is stale)`,
+      `${rel}: OO_SWEEP_EXEMPT anchor still present (a missing anchor means the exemption is stale)`,
     );
   }
 }
@@ -251,6 +251,28 @@ for (const manifestName of readdirSync(MANIFESTS).filter((name) => name.endsWith
     heading === "# Codemode",
     "modules/core/codemode.md first heading is exactly '# Codemode'",
   );
+}
+
+// #1031 — the two script paths the codemode module names must exist, and
+// verify-loop.sh must actually support the `--digest` mode the module
+// describes, so the module can't reference tools that drift away.
+for (const rel of [
+  "extension/smoke-tests/lib/verify-loop.sh",
+  "extension/smoke-tests/lib/ci-log-digest.sh",
+]) {
+  let content = "";
+  try {
+    content = readFileSync(path.join(ROOT, rel), "utf8");
+  } catch {
+    assert(false, `${rel}: file exists (named by modules/core/codemode.md)`);
+    continue;
+  }
+  if (rel.endsWith("verify-loop.sh")) {
+    assert(
+      content.includes("--digest"),
+      "extension/smoke-tests/lib/verify-loop.sh supports the `--digest` mode named by the codemode module",
+    );
+  }
 }
 
 console.log(`\nexit ${exit}`);
