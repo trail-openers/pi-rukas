@@ -52,6 +52,8 @@ export function makeExecFn(): ExecFn {
 export const COMMENT_RETENTION_PATHS = ["extension/src", "extension/smoke-tests", "agents-base"];
 
 const VALID_SHA_RE = /^[0-9a-f]{40}$/;
+/** `@@ -a[,b] +c[,d] @@` — the old/new line counts that bound a hunk body. */
+const HUNK_HEADER_RE = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/;
 /** Strict refname allowlist (no leading `-`) for non-SHA refs. */
 const VALID_REFNAME_RE = /^[A-Za-z0-9._/-]+$/;
 
@@ -85,6 +87,8 @@ export type LostCommentResult =
 // also a comment (we are inside a block). An arithmetic continuation (` * b;`
 // after `const y = a`) has a non-comment predecessor and is NOT a comment.
 const STAR_BARE_RE = /^\*(\*)?$/;
+/** SQL / Lua line comment: `-- text` (the space or EOL keeps `--x` operators out). */
+const SQL_LUA_COMMENT_RE = /^--(\s|$)/;
 const STAR_PROSE_RE = /^\*(\*\/?)?\s\S/;
 
 /**
@@ -100,11 +104,21 @@ const STAR_PROSE_RE = /^\*(\*\/?)?\s\S/;
 function isCommentLine(raw: string, inBlock: boolean): boolean {
   const t = raw.trim();
   if (t.startsWith("//") || t.startsWith("/*")) return true;
+  if (SQL_LUA_COMMENT_RE.test(t)) return true;
   if (t.startsWith("*")) {
     if (STAR_BARE_RE.test(t)) return true;
     return inBlock && STAR_PROSE_RE.test(t);
   }
   return t.endsWith("*/") && t.length > 2; // closing of a block comment
+}
+
+/** A comment's text without its markers, for same-hunk wording matching. */
+function commentCore(s: string): string {
+  return s
+    .trim()
+    .replace(/^(\/\/+|\/\*+|\*+\/?)\s*/, "")
+    .replace(/\s*\*\/$/, "")
+    .trim();
 }
 
 /**
@@ -260,7 +274,7 @@ export async function findLostComments(
   // is gone (deleted or changed). `presentAtHead` is used only for the
   // verbatim-retention check and the code-deleted exemption, not for (a).
   type HunkState = {
-    addedComments: number;
+    addedCommentTexts: string[];
     lastRemoved: { raw: string; isComment: boolean }[];
     addedCodeLines: Set<string>;
   };
@@ -270,15 +284,23 @@ export async function findLostComments(
   let hunkSeq = 0;
   let curHunkKey: string | null = null;
   let inBlock = false;
-  const diffLines = diff.split("\n");
-  for (let index = 0; index < diffLines.length; index++) {
-    const line = diffLines[index] ?? "";
+  // A `---` / `+++` line is a file header only OUTSIDE a hunk body. Inside one,
+  // a removed SQL/Lua `-- x` line is `--- x` and is content. The body ends
+  // once the @@ header's old/new line counts are consumed.
+  let inBody = false;
+  let oldLeft = 0;
+  let newLeft = 0;
+  for (const line of diff.split("\n")) {
     if (line.startsWith("@@")) {
       hunkSeq++;
+      const m = HUNK_HEADER_RE.exec(line);
+      oldLeft = m ? Number(m[1] ?? 1) : 0;
+      newLeft = m ? Number(m[2] ?? 1) : 0;
+      inBody = oldLeft > 0 || newLeft > 0;
       curHunkKey = curFile !== null ? hunkKeyOf(curFile, hunkSeq) : null;
       if (curHunkKey !== null) {
         hunkStates.set(curHunkKey, {
-          addedComments: 0,
+          addedCommentTexts: [],
           lastRemoved: [],
           addedCodeLines: new Set<string>(),
         });
@@ -286,44 +308,36 @@ export async function findLostComments(
       inBlock = false; // block state does not span a hunk boundary
       continue;
     }
-    if (line.startsWith("+++ ")) {
-      const p = line.slice(4).trim().split("\t")[0];
-      curFile = p ?? "?";
-      hunkSeq = 0;
-      continue;
-    }
-    // A `---` header (the old path, right before its `+++` pair) — never
-    // content, never an annotated code line. It can only appear where the
-    // next line is a `+++ ` header, so we detect it by looking ahead.
-    if (line.startsWith("---")) {
-      const next = diffLines[index + 1];
-      if (next?.startsWith("+++ ")) continue; // file header — skip
-      // Otherwise it is a removed line whose content starts with `--`.
-    }
-    if (!line.startsWith("-")) {
-      if (line.startsWith("+") && curHunkKey !== null) {
-        const raw = line.slice(1);
-        const st = hunkStates.get(curHunkKey);
-        if (st) {
-          const prevIsComment =
-            st.lastRemoved.length > 0 && st.lastRemoved.at(-1)?.isComment === true;
-          if (isCommentLine(raw, prevIsComment)) {
-            st.addedComments++;
-          } else {
-            st.addedCodeLines.add(raw.trim());
-          }
-        }
+    if (!inBody) {
+      // `diff --git`, index, `---` / `+++` headers, blank lines: never content.
+      if (line.startsWith("+++ ")) {
+        curFile = line.slice(4).trim().split("\t")[0] ?? "?";
+        hunkSeq = 0;
       }
       continue;
     }
+    const kind = line.charAt(0);
+    if (kind === "\\") continue; // "\ No newline at end of file"
+    if (kind === "+") newLeft--;
+    else if (kind === "-") oldLeft--;
+    else {
+      oldLeft--;
+      newLeft--;
+    }
+    if (oldLeft <= 0 && newLeft <= 0) inBody = false;
+    const st = curHunkKey !== null ? hunkStates.get(curHunkKey) : undefined;
+    if (!st) continue;
+    if (kind === "+") {
+      const raw = line.slice(1);
+      const prevIsComment = st.lastRemoved.at(-1)?.isComment === true;
+      if (isCommentLine(raw, prevIsComment)) st.addedCommentTexts.push(raw.trim());
+      else st.addedCodeLines.add(raw.trim());
+      continue;
+    }
+    if (kind !== "-") continue; // context line
     const raw = line.slice(1);
     const isComment = isCommentLine(raw, inBlock);
-    if (curHunkKey !== null) {
-      const st = hunkStates.get(curHunkKey);
-      if (st) {
-        st.lastRemoved.push({ raw, isComment });
-      }
-    }
+    st.lastRemoved.push({ raw, isComment });
     inBlock = isComment;
   }
 
@@ -332,7 +346,7 @@ export async function findLostComments(
   let exempt = 0;
   for (const [file, hunk] of hunkStates.entries()) {
     const removed = hunk.lastRemoved;
-    const hunkHasAddedComment = hunk.addedComments > 0;
+    const hunkHasAddedComment = hunk.addedCommentTexts.length > 0;
     let i = 0;
     while (i < removed.length) {
       const cur = removed[i];
@@ -383,7 +397,16 @@ export async function findLostComments(
           if (!follow?.trim()) return false;
           return !hunk.addedCodeLines.has(follow.trim());
         })();
-      if (hunkHasAddedComment && blockCodeChanged) {
+      // (b') the block's wording was carried into a comment added in this
+      // hunk (the #1040 same-hunk rewording). Checked BEFORE presentAtHead so
+      // the substring fallback cannot claim it as "retained" instead.
+      const wordingCarried = block.some((l) => {
+        const core = commentCore(l);
+        return (
+          core.length >= 6 && hunk.addedCommentTexts.some((a) => commentCore(a).includes(core))
+        );
+      });
+      if (hunkHasAddedComment && (blockCodeChanged || wordingCarried)) {
         replaced.push(...block.map((l) => l.trim()));
         continue;
       }
@@ -414,7 +437,7 @@ export function formatLostComments(lost: string[], exempt: number, replaced = 0)
   const more = lost.length - shown.length;
   const lines = shown.map((l) => `    ${l}`).join("\n");
   const tail = more > 0 ? `\n    … and ${more} more` : "";
-  return `comment-retention: ${lost.length} pre-existing comment line(s) deleted without reappearing (replaced: ${replaced}, exempt: ${exempt})\n${lines}${tail}`;
+  return `comment-retention: ${lost.length} lost, ${replaced} replaced (exempt: ${exempt})\n${lines}${tail}`;
 }
 
 /** Build the note row for comments that were replaced, not lost. */

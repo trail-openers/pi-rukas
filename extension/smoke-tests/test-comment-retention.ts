@@ -278,7 +278,7 @@ async function rg(
     assert(res.ok === true && res.lost.length === 1 && res.replaced.length === 1, "real-git (h1): one lost + one replaced");
     if (res.ok) {
       const failureRow = formatLostComments(res.lost, res.exempt, res.replaced.length);
-      assert(failureRow.includes("comment to keep") && !failureRow.includes("comment replaced") && failureRow.includes("replaced: 1"),
+      assert(failureRow.includes("comment to keep") && !failureRow.includes("comment replaced") && failureRow.includes("1 replaced"),
         "real-git (h1): failure row lists only the lost line + replaced count");
       const noteRow = formatReplacedComments(res.replaced);
       assert(noteRow.includes("comment replaced") && !noteRow.includes("comment to keep"),
