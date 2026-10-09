@@ -15,6 +15,10 @@ const ROOT = path.resolve(import.meta.dirname, "..", "..");
 const MANIFESTS = path.join(ROOT, "manifests");
 const PROMPTS = path.join(ROOT, "dist", "prompts", "standard");
 const BUILD = path.join(ROOT, "build.sh");
+const CODEMODE_MODULE = "modules/core/codemode.md";
+
+// Epic #1026 sub-issue 3: the codemode module is capped at 60 lines so the
+// built prompts stay lean (the module ships to all six roles).
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -36,12 +40,94 @@ execFileSync("bash", [BUILD], {
   stdio: "ignore",
 });
 
+// Epic #1026 sub-issue 3 — the codemode gate, independent of the per-manifest
+// loop below (which reads the SOURCE file, so the cap is unaffected by the
+// PI_ENSEMBLE_BASE/PROMPTS_DIR overrides that build.sh receives).
+const codemodeSource = readFileSync(path.join(ROOT, CODEMODE_MODULE), "utf8");
+const codemodeLines = codemodeSource.split("\n").length;
+assert(codemodeLines <= 60, `modules/core/codemode.md is <= 60 lines (${codemodeLines})`);
+const codemodeHeading = codemodeSource.match(/^#{1,6} .+$/m)?.[0];
+assert(codemodeHeading !== undefined, "modules/core/codemode.md has a markdown heading");
+
+// Epic #1026 sub-issue 3 — the doc sweep: no source doc file still prescribes
+// the `oo` prefix as a command wrapper. The allowlist entries in agents.json
+// (and the allowlist block build.sh renders from them) still carry `oo`-prefixed
+// patterns until sub-issue 5 retires the guard, so this gate targets the
+// prescriptive prose in the role/agent/workflow docs, not the allowlist.
+const OO_SWEEP_FILES = [
+  "agents-base/project-manager.md",
+  "agents-base/developer.md",
+  "agents-base/ops.md",
+  "agents-base/explore.md",
+  "agents-base/adversarial-developer.md",
+  "agents-base/code-review-specialist.md",
+  "pi-prompts/start.md",
+  "modules/workflows/parallel-worktrees.md",
+  "modules/workflows/issue-workflow.md",
+  "modules/core/async-tasks.md",
+  "modules/core/bash-final-reminders.md",
+];
+// Matches `oo` used as a command-prefix wrapper: "oo git", "oo gh", "oo cargo",
+// "oo npm", "oo bun", "oo pnpm", "oo yarn", "oo pytest", "oo glab", etc.
+// Does NOT match: "oo" in prose about the external oo project, or anti-pattern
+// mentions like "not `oo gh api`" (the negation form is checked separately).
+const ooPrefixRe = /\b oo\s+(?:git|gh|glab|npm|cargo|bun|pnpm|yarn|pytest|go|uv|npx|ruff|recall|help|patterns|learn|forget)\b/g;
+for (const rel of OO_SWEEP_FILES) {
+  const p = path.join(ROOT, rel);
+  let src = "";
+  try {
+    src = readFileSync(p, "utf8");
+  } catch {
+    assert(false, `${rel}: file exists (required for doc sweep)`);
+    continue;
+  }
+  const lines = src.split("\n");
+  const violations: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // Strip anti-pattern / negation contexts: lines that explicitly say NOT to
+    // use oo, or that contrast bare vs oo ("not `oo gh api`"), are allowed.
+    const isNegation =
+      /do\s+not\b.*\b oo\b/i.test(line) ||
+      /\bnot\s+`?oo\b/i.test(line) ||
+      /\bno\s+`?oo\b/i.test(line) ||
+      /\bnever\s+.*\b oo\b/i.test(line);
+    if (isNegation) continue;
+    // Check for the oo command-prefix pattern
+    const matches = line.match(ooPrefixRe);
+    if (matches) {
+      violations.push(`  line ${i + 1}: ${line.trim().slice(0, 120)}`);
+    }
+  }
+  assert(
+    violations.length === 0,
+    violations.length === 0
+      ? `${rel}: no oo command-prefix prescriptions remain`
+      : `${rel}: ${violations.length} line(s) still prescribe oo command prefix:\n${violations.join("\n")}`,
+  );
+}
+
 for (const manifestName of readdirSync(MANIFESTS).filter((name) => name.endsWith(".manifest"))) {
   const role = manifestName.replace(/\.manifest$/, "");
   const manifestPath = path.join(MANIFESTS, manifestName);
+  const manifestLines = readFileSync(manifestPath, "utf8").split("\n");
+  assert(
+    manifestLines.includes(CODEMODE_MODULE),
+    `${role}: manifest references modules/core/codemode.md (replaces oo-command-runner.md)`,
+  );
+  assert(
+    !manifestLines.includes("modules/core/oo-command-runner.md"),
+    `${role}: manifest no longer references modules/core/oo-command-runner.md`,
+  );
   const promptPath = path.join(PROMPTS, `${role}.md`);
   const prompt = readFileSync(promptPath, "utf8");
   const promptLines = new Set(prompt.split("\n"));
+  if (codemodeHeading !== undefined) {
+    assert(
+      promptLines.has(codemodeHeading),
+      `${role}: assembled prompt contains the codemode heading (${codemodeHeading})`,
+    );
+  }
 
   // #911 — content check (not just heading presence): the PM prompt must
   // carry the hand-managed-work gate sentence in the Development Workflow
@@ -89,7 +175,7 @@ for (const manifestName of readdirSync(MANIFESTS).filter((name) => name.endsWith
     }
   }
 
-  for (const line of readFileSync(manifestPath, "utf8").split("\n")) {
+  for (const line of manifestLines) {
     const modulePath = line.trim();
     if (!modulePath || modulePath.startsWith("#")) continue;
 

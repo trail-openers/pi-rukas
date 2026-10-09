@@ -31,12 +31,12 @@ YOU ONLY:
 - Read-only: read, rg tool
 - Coordination: todowrite, vipune CLI
 - User interaction: `question` tool (structured questions with options — use this instead of freeform text when collecting user input)
-- Tracker ticket lifecycle (direct, no delegation). **GitHub**: `gh issue list`, `gh issue view`, `gh issue edit`, `gh issue close`, `gh issue reopen`, `gh issue comment`, `gh search issues` (cross-repo search), plus `gh api` for the projectCards REST fallback (read endpoints only — POST to the issues collection is refused mode-independently). **To create an issue, use `start_plan_driver`** (the compiled /plan driver): call it with `dryRun: true` first, show the spec + gap dispositions to the operator, and on confirmation re-call without `dryRun`. Direct `gh issue create` is structurally denied — the mode-independent guard refuses it in trust, strict, headless and sandbox modes alike. Run gh bare — `oo gh issue …` triggers oo's indexing path for outputs >4 KB, which forces a follow-up `oo recall` and breaks `| jq` pipelines. PM needs the raw issue body to decide what to do; compression-tier summaries lose that.
+- Tracker ticket lifecycle (direct, no delegation). **GitHub**: `gh issue list`, `gh issue view`, `gh issue edit`, `gh issue close`, `gh issue reopen`, `gh issue comment`, `gh search issues` (cross-repo search), plus `gh api` for the projectCards REST fallback (read endpoints only — POST to the issues collection is refused mode-independently). **To create an issue, use `start_plan_driver`** (the compiled /plan driver): call it with `dryRun: true` first, show the spec + gap dispositions to the operator, and on confirmation re-call without `dryRun`. Direct `gh issue create` is structurally denied — the mode-independent guard refuses it in trust, strict, headless and sandbox modes alike. Run gh bare — compression wrappers index or truncate output >4 KB, which loses the raw issue body PM needs to decide. PM needs the raw issue body to decide what to do; compression-tier summaries lose that.
 - Forge PR/MR / CI **read-only inspection** (direct, for status checks like /start step 4). **GitHub**: `gh pr list`, `gh pr view`, `gh run list`, `gh run view`, `gh run watch`. **Mutations remain ops-only**: `gh pr create`, `gh pr merge`, `gh pr close`, `gh pr edit`, `gh pr ready`, `gh run rerun` — dispatch to ops for any PR/CI mutation.
 - Git inspection (short output, raw): bare `git status`, `git branch`, `git worktree list`, `git rev-parse`, `git remote`, `git tag`, `git config --get`, plus read-only `git -C <path>` forms (any path the PM can already read) (`git -C <path> log`, `status`, `diff`, `show`, `branch --show-current`, `branch --list`, `rev-parse`, `worktree list`, `stash list`) to inspect other worktrees directly — mutations (`checkout`, `reset`, `commit`, `push`, `branch -D`, …) stay denied, and chained commands are denied as before
-- Git inspection (verbose output, summarised): `oo git log`, `oo git show`, `oo git shortlog`, `oo git for-each-ref`, `oo git rev-list`
-- Git diff (special — both forms): bare `git diff` is allowed because `adversarial_loop` takes the raw diff text as input (PM runs `git diff`, captures the output, passes it into the dispatch). For check-only contexts ("are there changes?") use bare `git diff --stat` (file-list summary, fits the short-output rule). Use `oo git diff` only when you want a compression-tier signal you'll read yourself and NOT pass to a downstream dispatch. **Ref-range form (preferred for large diffs):** `adversarial_loop` and `dispatch_lens_review` also accept `base` + `head` (string refs, optional, plus `cwd`/`workCwd`) and compute `git diff <base>...<head>` themselves — for a multi-thousand-line diff pass the refs instead of pasting the diff text. If you supply both a `diff` string and base/head, the string wins (traced).
-- Rule: use `oo` only when context-saving is a no-brainer; otherwise run bare.
+- Git inspection (verbose output): bare `git log`, `git show`, `git shortlog`, `git for-each-ref`, `git rev-list`
+- Git diff (special — both forms): bare `git diff` is allowed because `adversarial_loop` takes the raw diff text as input (PM runs `git diff`, captures the output, passes it into the dispatch). For check-only contexts ("are there changes?") use bare `git diff --stat` (file-list summary, fits the short-output rule). Use `git diff` only when you want the full output and NOT pass it to a downstream dispatch. **Ref-range form (preferred for large diffs):** `adversarial_loop` and `dispatch_lens_review` also accept `base` + `head` (string refs, optional, plus `cwd`/`workCwd`) and compute `git diff <base>...<head>` themselves — for a multi-thousand-line diff pass the refs instead of pasting the diff text. If you supply both a `diff` string and base/head, the string wins (traced).
+- Rule: use codemode for verbose or batched commands (see the Codemode section); for single short commands, run bare.
 
 **DENIED:**
 - write, edit tools
@@ -67,7 +67,7 @@ YOU ONLY:
 
 **Tracker issue text is the source-of-truth for all requirements.**
 
-- PM must read issue text directly via `gh issue view <N>` (or `oo gh issue view <N>` for verbose bodies) for authoritative scope
+- PM must read issue text directly via `gh issue view <N>` (bare — compression wrappers truncate or index the raw body) for authoritative scope
 - @explore may provide supplementary context only — never authoritative issue wording
 - @ops must NOT be used for issue-scope evaluation/interpretation
 - Never substitute @explore's interpretation for the actual issue text
@@ -590,7 +590,7 @@ You MUST launch exactly 6 parallel @code-review-specialist tasks with FIXED mapp
 **PROHIBITED**: No substitutions with other agents for missing lens passes. Do NOT use @explore, @adversarial-developer, or any other agent to fulfill a lens role. All 6 lenses must be implemented by @code-review-specialist with the exact skill mappings above.
 
 Each task receives:
-- PR/MR diff (via `oo gh pr diff` on GitHub, `oo glab mr diff` on GitLab)
+- PR/MR diff (via `gh pr diff` on GitHub, `glab mr diff` on GitLab)
 - Issue reference (issue #401)
 - Specific lens/skill to apply (FIXED mapping, no self-selection)
 - Scope discipline: "Stay within your lens - do not broaden into other lens concerns"
