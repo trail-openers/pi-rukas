@@ -88,27 +88,23 @@ export async function declaredPathsHaveSource(
 }
 
 /**
- * #1012 — default frontend-only glob list.
- */
-export const DEFAULT_FRONTEND_GLOBS = [".css", ".html", ".svg", ".woff", ".woff2", ".ttf", ".otf"];
-
-/**
- * #1012 — resolve the `PI_ENSEMBLE_FRONTEND_ONLY_GLOBS` env var into a glob
+ * #1013 — resolve the `PI_ENSEMBLE_FRONTEND_ONLY_GLOBS` env var into a glob
  * list.
  *
- * Semantics:
- *   - unset (undefined) → default list (`.css`, `.html`, …).
- *   - empty string (`""`) → empty list, i.e. frontend-only skip is DISABLED
- *     (no extension ever matches, `pathsAreFrontendOnly` returns false).
- *   - non-empty → the operator's comma-separated list.
+ * Semantics (opt-in, #1013):
+ *   - unset (undefined) or empty string (`""`) → `undefined`, i.e. the
+ *     frontend-only skip is DISABLED and the full verification chain always
+ *     runs.
+ *   - non-empty → the operator's comma-separated list; the skip may fire
+ *     when every touched path's extension is in this list.
  *
- * `""` means "disable" — matching the idiom the test suite has used to
- * turn the gate off (an empty glob list makes `pathsAreFrontendOnly` return
- * false for every path).
+ * There is no built-in default: a project that wants the skip must set the
+ * env var explicitly. `docs/configuration.md` suggests a typical list
+ * (`.css,.html,.svg,.woff,.woff2,.ttf,.otf`) but the code does not use it.
  */
-export function frontendGlobs(): string[] {
+export function frontendGlobs(): string[] | undefined {
   const raw = process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS;
-  if (raw === undefined) return DEFAULT_FRONTEND_GLOBS;
+  if (!raw || raw.trim() === "") return undefined;
   return raw
     .split(",")
     .map((g) => g.trim())
@@ -167,6 +163,12 @@ export function pathsAreFrontendOnly(paths: string[], globs: string[]): boolean 
  * the git-failure suppression path — a gate that cannot confirm the file is
  * absent must not skip a check.
  *
+ * **Opt-in (#1013):** the skip only fires when the operator has explicitly
+ * set `PI_ENSEMBLE_FRONTEND_ONLY_GLOBS` to a non-empty value. When the env
+ * var is unset or empty, `frontendGlobs()` returns `undefined` and the
+ * full verification chain always runs — there is no automatic frontend-only
+ * skip by default.
+ *
  * Returns `{ skip: true, reason }` when the caller should skip, or
  * `{ skip: false }` when the full chain should run.
  */
@@ -200,11 +202,18 @@ export async function shouldSkipVerifyForFrontendOnly(
   if (probeError) {
     return { skip: false, reason: `could not probe .pi/verify-cmd (${probeError})` };
   }
-  if (pathsAreFrontendOnly(touchedPaths, frontendGlobs())) {
+  const globs = frontendGlobs();
+  if (!globs) {
+    return {
+      skip: false,
+      reason: "frontend-only skip not enabled (set PI_ENSEMBLE_FRONTEND_ONLY_GLOBS)",
+    };
+  }
+  if (pathsAreFrontendOnly(touchedPaths, globs)) {
     return {
       skip: true,
       reason:
-        "frontend-only diff (all changed paths match the frontend globs) — derived verify command skipped (set .pi/verify-cmd to force it)",
+        "frontend-only diff (all changed paths match PI_ENSEMBLE_FRONTEND_ONLY_GLOBS) — derived verify command skipped (set .pi/verify-cmd to force it)",
     };
   }
   return { skip: false };

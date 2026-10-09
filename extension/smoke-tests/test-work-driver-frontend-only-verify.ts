@@ -25,7 +25,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import { DEFAULT_FRONTEND_GLOBS, pathsAreFrontendOnly } from "../src/work-driver-verify-cmd.ts";
+import { pathsAreFrontendOnly } from "../src/work-driver-verify-cmd.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
 
@@ -53,17 +53,18 @@ const prevGlobs = process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS;
 try {
   // ---------------------------------------------------------------- unit —
   // pure classifier: closed-world, extension-only, no fs/git.
+  const GLOBS = [".css", ".html", ".svg", ".woff", ".woff2", ".ttf", ".otf"];
   {
-    assert(pathsAreFrontendOnly(["src/ui/hero.css"], DEFAULT_FRONTEND_GLOBS) === true, "classifier: all-CSS → true");
-    assert(pathsAreFrontendOnly(["a.css", "b.html", "c.woff2"], DEFAULT_FRONTEND_GLOBS) === true, "classifier: mixed frontend types → true");
-    assert(pathsAreFrontendOnly(["src/app.ts"], DEFAULT_FRONTEND_GLOBS) === false, "classifier: a .ts file → false");
-    assert(pathsAreFrontendOnly(["a.css", "b.ts"], DEFAULT_FRONTEND_GLOBS) === false, "classifier: CSS + TS mixed → false");
-    assert(pathsAreFrontendOnly(["docs/readme.md"], DEFAULT_FRONTEND_GLOBS) === false, "classifier: .md-only → false");
-    assert(pathsAreFrontendOnly(["Makefile"], DEFAULT_FRONTEND_GLOBS) === false, "classifier: no-dot path → false");
+    assert(pathsAreFrontendOnly(["src/ui/hero.css"], GLOBS) === true, "classifier: all-CSS → true");
+    assert(pathsAreFrontendOnly(["a.css", "b.html", "c.woff2"], GLOBS) === true, "classifier: mixed frontend types → true");
+    assert(pathsAreFrontendOnly(["src/app.ts"], GLOBS) === false, "classifier: a .ts file → false");
+    assert(pathsAreFrontendOnly(["a.css", "b.ts"], GLOBS) === false, "classifier: CSS + TS mixed → false");
+    assert(pathsAreFrontendOnly(["docs/readme.md"], GLOBS) === false, "classifier: .md-only → false");
+    assert(pathsAreFrontendOnly(["Makefile"], GLOBS) === false, "classifier: no-dot path → false");
     assert(pathsAreFrontendOnly(["a.css"], []) === false, "classifier: empty glob list → false");
-    assert(pathsAreFrontendOnly([], DEFAULT_FRONTEND_GLOBS) === false, "classifier: empty path list → false (no evidence)");
-    assert(pathsAreFrontendOnly(["acss"], DEFAULT_FRONTEND_GLOBS) === false, "classifier: extension without dot boundary (a.css ≠ acss) → false");
-    assert(pathsAreFrontendOnly(["src/Hero.CSS"], DEFAULT_FRONTEND_GLOBS) === true, "classifier: extension match is case-insensitive");
+    assert(pathsAreFrontendOnly([], GLOBS) === false, "classifier: empty path list → false (no evidence)");
+    assert(pathsAreFrontendOnly(["acss"], GLOBS) === false, "classifier: extension without dot boundary (a.css ≠ acss) → false");
+    assert(pathsAreFrontendOnly(["src/Hero.CSS"], GLOBS) === true, "classifier: extension match is case-insensitive");
   }
 
   // ---------------------------------------------------------------- helper —
@@ -120,11 +121,53 @@ try {
 
   const ws = (id: string, scope: string) => ({ id, scope, paths: [], outOfScope: [] });
 
-  // ---------------------------------------------------------------- skip fires
-  // A CSS-only diff in a Rust repo: the derived `cargo check --quiet` must
-  // NOT run; the skip is recorded in notes.
+  // ---------------------------------------------------------------- opt-in unset
+  // #1013: when PI_ENSEMBLE_FRONTEND_ONLY_GLOBS is unset, no skip fires —
+  // the full chain always runs even on a CSS-only diff.
   {
     Reflect.deleteProperty(process.env, "PI_ENSEMBLE_FRONTEND_ONLY_GLOBS");
+    const r = makeFakeRepo(" M src/ui/hero.css\n", ["src/ui/hero.css"], { rust: true });
+    const ctx = ctxFor(r.dir, r.exec);
+    const s = stateFor({ default: r.dir }, { default: ws("default", "css-only") });
+    const gate = await verifyStepOutcome(ctx, s, "develop");
+    assert(gate.ok, "#1013: CSS-only diff with unset env var → ok (full chain ran)");
+    assert(
+      gate.notes.some((n) => /frontend-only skip not enabled/.test(n)),
+      "#1013: note indicates skip is not enabled when env var is unset",
+    );
+    assert(
+      !gate.notes.some((n) => /frontend-only diff/.test(n)),
+      "#1013: no skip-fired note when env var is unset",
+    );
+    rmSync(r.dir, { recursive: true, force: true });
+  }
+
+  // ---------------------------------------------------------------- opt-in empty
+  // #1013: when PI_ENSEMBLE_FRONTEND_ONLY_GLOBS is empty, no skip fires —
+  // the full chain always runs even on a CSS-only diff.
+  {
+    process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
+    const r = makeFakeRepo(" M src/ui/hero.css\n", ["src/ui/hero.css"], { rust: true });
+    const ctx = ctxFor(r.dir, r.exec);
+    const s = stateFor({ default: r.dir }, { default: ws("default", "css-only") });
+    const gate = await verifyStepOutcome(ctx, s, "develop");
+    assert(gate.ok, "#1013: CSS-only diff with empty env var → ok (full chain ran)");
+    assert(
+      gate.notes.some((n) => /frontend-only skip not enabled/.test(n)),
+      "#1013: note indicates skip is not enabled when env var is empty",
+    );
+    assert(
+      !gate.notes.some((n) => /frontend-only diff/.test(n)),
+      "#1013: no skip-fired note when env var is empty",
+    );
+    rmSync(r.dir, { recursive: true, force: true });
+  }
+
+  // ---------------------------------------------------------------- skip fires
+  // A CSS-only diff in a Rust repo with PI_ENSEMBLE_FRONTEND_ONLY_GLOBS set:
+  // the derived `cargo check --quiet` must NOT run; the skip is recorded in notes.
+  {
+    process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = ".css,.html,.svg,.woff,.woff2,.ttf,.otf";
     const r = makeFakeRepo(" M src/ui/hero.css\n", ["src/ui/hero.css"], { rust: true });
     const ctx = ctxFor(r.dir, r.exec);
     const s = stateFor({ default: r.dir }, { default: ws("default", "css-only") });
@@ -171,6 +214,7 @@ try {
   // Mixed (CSS + TS), .md-only and .rb-only diffs all run the derived
   // command unchanged — no behaviour change for non-frontend work.
   {
+    process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = ".css,.html,.svg,.woff,.woff2,.ttf,.otf";
     const mixed = makeFakeRepo(" M src/ui/hero.css\n M src/app.ts\n", ["src/ui/hero.css", "src/app.ts"], {
       rust: true,
     });
@@ -195,12 +239,22 @@ try {
     assert(g3.ok, "#1012: .rb-only diff → ok (full chain ran)");
     assert(rb.commands.includes("npm run test"), "#1012: .rb (unlisted extension) ran the derived chain");
     rmSync(rb.dir, { recursive: true, force: true });
+
+    // Unset env var: even a .rb diff runs the full chain (no skip fired).
+    Reflect.deleteProperty(process.env, "PI_ENSEMBLE_FRONTEND_ONLY_GLOBS");
+    const rb2 = makeFakeRepo(" M src/lib.rb\n", ["src/lib.rb"], {
+      pkg: { scripts: { test: "true" } },
+    });
+    const g3b = await verifyStepOutcome(ctxFor(rb2.dir, rb2.exec), stateFor({ default: rb2.dir }, { default: ws("default", "rb") }), "develop");
+    assert(g3b.ok, "#1013: .rb-only diff with unset env var → ok (full chain ran)");
+    rmSync(rb2.dir, { recursive: true, force: true });
   }
 
   // ---------------------------------------------------------------- cumulative
   // union: one CSS worktree + one TS worktree must NOT skip — the skip
   // decision is made once over the union of all worktrees' paths.
   {
+    process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = ".css,.html,.svg,.woff,.woff2,.ttf,.otf";
     const dir = mkdtempSync(path.join(tmpdir(), "pi-ens-1012-multi-"));
     const wtA = path.join(dir, "wt-a");
     const wtB = path.join(dir, "wt-b");
@@ -232,6 +286,7 @@ try {
   // skip-ratchet and smoke gates still run and can still FAIL the step when
   // the diff is frontend-only.
   {
+    process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = ".css,.html,.svg,.woff,.woff2,.ttf,.otf";
     const r = makeFakeRepo(" M src/ui/hero.css\n", ["src/ui/hero.css"], { rust: true });
     // The ratchet reads `git diff ${base} -U0` — route the marker-laden diff
     // there (distinct from the --name-only form handled by the base fake).
@@ -251,6 +306,7 @@ try {
     rmSync(r.dir, { recursive: true, force: true });
   }
   {
+    process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = ".css,.html,.svg,.woff,.woff2,.ttf,.otf";
     const dir = mkdtempSync(path.join(tmpdir(), "pi-ens-1012-smoke-"));
     mkdirSync(path.join(dir, ".pi"), { recursive: true });
     writeFileSync(path.join(dir, ".pi", "smoke-cmd"), "smoke-run\n");
@@ -295,13 +351,14 @@ try {
   }
 
   // ---------------------------------------------------------------- live-git integration
-  // Real git: a CSS-only uncommitted change in a Rust+TS hybrid repo skips
-  // cargo check; adding a .ts file runs it. Uses a real bare-origin fixture
-  // so the path-accumulation loop sees genuine git output (uncommitted
-  // changes show in `git status --porcelain`, which the classifier consumes
-  // directly). The worktree stays uncommitted so the rev-list count is 0
-  // and no consolidation runs (the skip is about the per-worktree verify
-  // command, not the consolidated one).
+  // Real git: with PI_ENSEMBLE_FRONTEND_ONLY_GLOBS set, a CSS-only uncommitted
+  // change in a Rust+TS hybrid repo skips cargo check; adding a .ts file runs
+  // it. Without the env var, the full chain always runs.
+  // Uses a real bare-origin fixture so the path-accumulation loop sees genuine
+  // git output (uncommitted changes show in `git status --porcelain`, which
+  // the classifier consumes directly). The worktree stays uncommitted so the
+  // rev-list count is 0 and no consolidation runs (the skip is about the
+  // per-worktree verify command, not the consolidated one).
   {
     const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
     const scratch = mkdtempSync(path.join(tmpdir(), "pi-ens-1012-live-"));
@@ -322,6 +379,9 @@ try {
     await git(repo, ["remote", "add", "origin", originDir]);
     await git(repo, ["push", "-q", "-u", "origin", "main"]);
     const baseSha = (await git(repo, ["rev-parse", "HEAD"])).stdout.trim();
+
+    // Set the env var so the skip is opt-in enabled for the skip tests.
+    process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = ".css,.html,.svg,.woff,.woff2,.ttf,.otf";
 
     const runCase = async (id: string, files: string[]) => {
       const wt = path.join(scratch, `wt-${id}`);
