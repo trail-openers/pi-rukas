@@ -69,8 +69,7 @@ export async function runCommentRetentionGate(
       notes.push(`comment-retention: diff unavailable in ${cwd} (${res.reason}) — gate skipped`);
       continue;
     }
-    if (res.lost.length > 0)
-      failures.push(formatLostComments(res.lost, res.exempt, res.replaced.length));
+    if (res.lost.length > 0) failures.push(formatLostComments(res));
     if (res.replaced.length > 0) notes.push(formatReplacedComments(res.replaced));
   }
 }
@@ -171,7 +170,11 @@ export async function runSmokeGate(
         maxBuffer: 4 * 1024 * 1024,
       });
     } catch (err) {
-      const e = err as Error & { stdout?: string; stderr?: string; killed?: boolean };
+      const e = err as Error & {
+        stdout?: string;
+        stderr?: string;
+        killed?: boolean;
+      };
       failures.push(
         formatExecError(
           e,
