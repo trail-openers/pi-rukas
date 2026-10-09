@@ -18,6 +18,7 @@ import type { DriverContext } from "./work-driver-context.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
+import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { detectMainline, restoreCheckout } from "./work-driver-git.ts";
 import { withIntegrationLock } from "./work-driver-integrate.ts";
 import {
@@ -27,6 +28,7 @@ import {
   resolveMergeAuthority,
 } from "./work-driver-merge-authority.ts";
 import { type MergeMethod, mechanizedMerge } from "./work-driver-merged-mechanized.ts";
+import { editIssueTldrs } from "./work-driver-merged-tldr.ts";
 import { releaseClaim } from "./work-driver-path-claims.ts";
 import { DOCTRINE_FILES, type DoctrineDoc, judgePolicy } from "./work-driver-policy.ts";
 import { inlineMergePrompt } from "./work-driver-prompts-late.ts";
@@ -288,6 +290,37 @@ export async function runMerged(
   let mergeCommit: string | undefined;
   if (!mechResult.ok) {
     mergeCommit = parseMergeCommit(last.summary);
+  }
+
+  // #1006 — prepend a TL;DR section to each active issue's body. The
+  // merge succeeded; this is the "upon completion" moment. A failed
+  // issueEdit does NOT flip the step outcome: the notes are recorded as
+  // plumb-reports and the cycle continues to `merged` regardless.
+  if (mergeSucceeded) {
+    try {
+      const execFnTldr = ctx.verifyExecFn ?? execp;
+      // #1006 — per-call 45 s timeout (same deadline as the explore body
+      // fetch); the TLDR edit is non-blocking, but an unbounded forge call
+      // could stall the merged step past a stuck network connection.
+      const forge = await forgeForCycle(ctx, execFnTldr, new Map(), {
+        execOpts: { timeout: 45_000 },
+      });
+      if (forge) {
+        const tldrNotes = await editIssueTldrs(forge, state);
+        for (const note of tldrNotes) {
+          next = appendEvent(next, {
+            kind: "plumb-report",
+            at: Date.now(),
+            step: "merged",
+            role: "driver",
+            body: `TL;DR issue edit: ${note}`,
+          });
+        }
+      }
+    } catch (err) {
+      // A TL;DR edit failure must never block the merged step.
+      trace(`work-driver: TL;DR issue edit failed: ${(err as Error).message?.slice(0, 200)}`);
+    }
   }
 
   // Restore checkout to mainline BEFORE persisting state (routeStepOutcome).
