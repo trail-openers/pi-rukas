@@ -265,8 +265,8 @@ function toolResultEvent(toolCallId: string, toolName: string): PiJsonEvent {
   try {
     const buf: LiveEvent[] = [];
     const added = pushEvent(key, buf, nestedEndEvent("call_top/0", "bash", "call_top"));
-    assert(!added, "7a: tool_execution_end does not add an event to the buffer");
-    assert(buf.length === 0, "7b: buffer remains empty after tool_execution_end");
+    assert(!added, "8a: tool_execution_end does not add an event to the buffer");
+    assert(buf.length === 0, "8b: buffer remains empty after tool_execution_end");
   } finally {
     dropBuffer(key);
   }
@@ -281,8 +281,8 @@ function toolResultEvent(toolCallId: string, toolName: string): PiJsonEvent {
   try {
     const buf: LiveEvent[] = [];
     const added = pushEvent(key, buf, { type: "tool_execution_start", toolCallId: "x/0" } as PiJsonEvent);
-    assert(!added, "8a: tool_execution_start without toolName is not stored");
-    assert(buf.length === 0, "8b: buffer remains empty");
+    assert(!added, "9a: tool_execution_start without toolName is not stored");
+    assert(buf.length === 0, "9b: buffer remains empty");
   } finally {
     dropBuffer(key);
   }
@@ -309,7 +309,7 @@ function topLevelStartEvent(toolCallId: string, toolName: string, args?: unknown
   const buf: LiveEvent[] = [];
   pushEvent(key, buf, nestedStartEvent("x/0", "bash", "x"));
   dropBuffer(key);
-  assert(bufferCount() === before, "9a: buffer count returns to baseline after dropBuffer");
+  assert(bufferCount() === before, "10a: buffer count returns to baseline after dropBuffer");
 }
 
 // ============================================================
@@ -379,6 +379,53 @@ function topLevelStartEvent(toolCallId: string, toolName: string, args?: unknown
   assert(
     inflight.toolNames().length === 2,
     `12c: the nested call opens its own distinct span (got ${inflight.toolNames().length})`,
+  );
+}
+
+// ============================================================
+// 13. InFlightTools: an orphaned nested span (no tool_execution_end —
+//     the child died mid-tool) is closed by the PARENT's toolResult
+// ============================================================
+{
+  const inflight = new InFlightTools();
+  inflight.observe(assistantToolCallEnd("call_top", "codemode"));
+  inflight.observe(nestedStartEvent("call_top/0", "bash", "call_top"));
+  inflight.observe(nestedStartEvent("call_top/1", "read", "call_top"));
+  assert(
+    inflight.toolNames().length === 3,
+    `13a: three spans open (top + 2 nested), got ${inflight.toolNames().length}`,
+  );
+
+  // One nested call finishes normally.
+  inflight.observe(nestedEndEvent("call_top/0", "bash", "call_top"));
+  assert(
+    inflight.toolNames().length === 2,
+    `13b: one nested closed, two remain (got ${inflight.toolNames().length})`,
+  );
+
+  // call_top/1 never gets its tool_execution_end (the stream was cut),
+  // but the parent's toolResult arrives: the orphan must be closed with
+  // the parent, or the tool-inactivity budget stays armed forever.
+  inflight.observe(toolResultEvent("call_top", "codemode"));
+  assert(
+    !inflight.active,
+    "13c: the parent's toolResult closes the orphaned nested span too",
+  );
+  assert(inflight.size === 0, "13d: the open set is empty");
+
+  // A sibling's result must NOT close this parent's orphan (the prefix
+  // match is exact, `P/` only). Two parents are open, each with an orphan;
+  // `call_a`'s result arrives: only `call_a` and its orphan close.
+  const inflight2 = new InFlightTools();
+  inflight2.observe(assistantToolCallEnd("call_a", "codemode"));
+  inflight2.observe(nestedStartEvent("call_a/0", "bash", "call_a"));
+  inflight2.observe(assistantToolCallEnd("call_ab", "codemode"));
+  inflight2.observe(nestedStartEvent("call_ab/0", "bash", "call_ab"));
+  inflight2.observe(toolResultEvent("call_a", "codemode"));
+  assert(inflight2.active, "13e: the sibling parent's spans survive call_a's result");
+  assert(
+    inflight2.toolNames().length === 2,
+    `13f: call_ab and its orphan remain (got ${inflight2.toolNames().length})`,
   );
 }
 

@@ -28,11 +28,6 @@ export function collapseEvents(
   if (messages.length === 0 && lastAssistantMessageEnd?.message) {
     messages = [lastAssistantMessageEnd.message];
   }
-  // #1032 — toolResult usage summation (below) requires the full message
-  // list; the assistant-only fallback above cannot carry a toolResult, so it
-  // contributes nothing here (an assistant message_end carries no nested
-  // codemode usage — that only ever lands on the parent toolResult message,
-  // which is only present in a full agent_end transcript).
 
   const textParts: string[] = [];
   const toolUses: PiContentBlock[] = [];
@@ -45,16 +40,10 @@ export function collapseEvents(
   let hasText = false;
 
   // #1032 — Pi stamps the SUMMED usage of every nested (codemode) tool call
-  // onto the model-issued call's OWN toolResult message (agent-session
-  // `combineUsage`; see `NestedCallSummary.usage` in pi's
-  // `nested-tool-calls.d.ts`). Those nested calls are NOT visible as
-  // assistant turns in this transcript — the parent's assistant `message_end`
-  // only carries the model call that ISSUED the codemode script, not the
-  // nested calls it executed — so the toolResult message's `usage` field is
-  // the only record of that spend. It is added through the SAME `addUsage`
-  // helper as the assistant loop below, so the live and replay paths
-  // cannot drift: a toolResult with no `usage` contributes 0, and the
-  // total is assistant usage + toolResult usage, exactly once each.
+  // onto the parent call's OWN toolResult message (see `NestedCallSummary`
+  // in pi's `nested-tool-calls.d.ts`); that `usage` field is the only
+  // record of that spend, so it is summed here, once, through the same
+  // `addUsage` helper the assistant loop below uses.
   for (const msg of messages) {
     if (msg.role !== "toolResult") continue;
     if (!msg.usage) continue;

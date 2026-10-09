@@ -13,7 +13,8 @@
  * result). Multiple concurrent toolCall blocks in one assistant turn are
  * each tracked, so one toolResult never closes a sibling's span (a boolean
  * would — exactly the early-fire shape #772's #543 notes warned about).
- * Top-level calls are still derived from message shapes; nested codemode calls carry their own tool_execution_start/end events (#1032).
+ * Top-level calls are still derived from message shapes; nested codemode
+ * calls carry their own tool_execution_start/end events (#1032).
  *
  * The state is a per-spawn Set of open toolCall ids. It dies with the spawn
  * (a killed child never receives its toolResult, and a module-level map
@@ -68,6 +69,20 @@ export class InFlightTools {
       // A toolResult closes its span whether or not it is an error — a
       // failed tool that reported is no longer in flight.
       if (msg.toolCallId) this.open.delete(msg.toolCallId);
+      // A nested span (opened on tool_execution_start) whose
+      // tool_execution_end never arrived — the child died mid-tool, the
+      // stream was cut — would otherwise keep the tool-inactivity budget
+      // armed forever. The parent's toolResult proves the caller's tool
+      // finished, so every still-open nested span of the parent is over:
+      // close each open span whose parentToolCallId is this id, falling
+      // back to the id prefix (Pi's nested ids are `<callerId>/<n>` —
+      // verified in pi-coding-agent's nested-tool-calls).
+      if (msg.toolCallId) {
+        for (const id of [...this.open.keys()]) {
+          if (!id.startsWith(`${msg.toolCallId}/`)) continue;
+          this.open.delete(id);
+        }
+      }
       return;
     }
     if (msg.role === "assistant" && msg.content) {

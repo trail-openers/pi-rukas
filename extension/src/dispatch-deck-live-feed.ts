@@ -19,6 +19,10 @@
  * too would double-render every tool call in the deck.
  */
 
+// =============================================================================
+// Feed path
+// =============================================================================
+
 import { sanitizeForStorage, sanitizeText } from "./dispatch-deck-line.ts";
 import {
   LIVE_BUFFER_MAX_CHARS,
@@ -41,7 +45,7 @@ import type { PiJsonEvent } from "./pi-event-shapes.ts";
 function stringifyArgs(x: unknown): string {
   if (x === undefined || x === null) return "";
   try {
-    return JSON.stringify(x) ?? "";
+    return JSON.stringify(x);
   } catch {
     return "[unserialisable args]";
   }

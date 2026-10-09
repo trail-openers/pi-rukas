@@ -90,10 +90,6 @@ export {
 } from "./dispatch-deck-live-state.ts";
 export type { LiveEvent } from "./dispatch-deck-live-state.ts";
 
-// =============================================================================
-// Ring buffer
-// =============================================================================
-
 /**
  * The live-view theme — the component receives it from the caller
  * (dispatch-deck-live-view.ts builds it from the pi-tui theme).
@@ -113,14 +109,6 @@ export {
   getViewScrollState,
   openLiveView,
 } from "./dispatch-deck-live-view.ts";
-
-// =============================================================================
-// Feed path
-// =============================================================================
-
-// =============================================================================
-// Append notifications (#916)
-// =============================================================================
 
 /** The settle outcome recorded for the header (async-jobs calls markSettled). */
 export type SettleStatus = "running" | "finished" | "failed" | "killed";

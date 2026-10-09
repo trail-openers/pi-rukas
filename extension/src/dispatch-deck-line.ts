@@ -178,10 +178,9 @@ export function collapseToSpaces(text: string): string {
  * The LIVE-BUFFER feed-time sanitisation, shared by the live-buffer
  * storage sites (dispatch-deck-live.ts and its feed module,
  * dispatch-deck-live-feed.ts; #1032): control-char/ANSI strip + newline
- * collapse to the ` ⏎ ` separator. The stored-string invariant ("sanitised
- * at feed time") is only true if every site uses the same transformation —
- * the nested `tool_execution_start` branch drifted (raw `JSON.stringify`,
- * no sanitisation), so the helper now lives here rather than being inlined.
+ * collapse to the ` ⏎ ` separator. The nested `tool_execution_start`
+ * branch drifted from it (raw `JSON.stringify`, no sanitisation), so the
+ * helper now lives here rather than being inlined.
  */
 export function sanitizeForStorage(text: string): string {
   return sanitizeText(text).replace(/\n+/g, NEWLINE_SEP);
