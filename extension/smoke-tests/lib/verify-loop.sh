@@ -21,15 +21,16 @@
 # #827 (echo of failing `✗` lines after the summary): why this exists and why
 # the 3×200 bound is sized the way it is is commented at the echo loop below.
 #
-# Shared digest-filter contract (#1028), used by both the --digest branch
-# and the #827 tail echo: a line is kept when it is a failure marker (a `✗`
-# marker at line start) AND its following indented detail lines, where
-# "indented" means leading whitespace and the attribution stops at the first
-# non-indented line. Normal mode's #827 tail implements this via a bounded
-# grep (first 3 ✗ lines per test, 200 chars each) for the 800-char
-# extractAttributedTail window; digest mode's --digest branch implements it
-# as an unbounded per-line state machine (every ✗ line + full indented
-# detail). Both implementations must keep the same anchor semantics.
+# Shared marker anchors (enforced part of the digest-filter contract, #1028):
+# both the --digest branch, the #827 tail echo, and lib/ci-log-digest.sh keep
+# the SAME line-start marker anchors — `✗ `, `##[error]`, `FAILED:`, `error:`
+# (line-start match, not substring; a ✓ line containing "error" mid-text is
+# dropped). Indented-detail attribution is deliberately NOT part of the shared
+# contract and allowed to differ across implementations: the #827 tail is
+# bounded (first 3 ✗ lines per test, 200 chars each) for the 800-char
+extractAttributedTail window, the --digest branch and ci-log-digest.sh keep
+# the full indented detail, and the two attribute detail to slightly different
+# marker sets (✗ only vs all four anchors).
 #
 # Usage:
 #   verify-loop.sh <file> [<file> ...]           — normal mode

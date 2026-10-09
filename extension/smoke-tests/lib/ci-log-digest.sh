@@ -26,11 +26,21 @@
 # at the first non-indented line, so detail from one ✗ block is never carried
 # into the next ✗'s block. A ✓ line is never a detail line, even when indented.
 #
-# This is the SINGLE source of truth for the digest filter. The test
-# (test-ci-log-digest.ts) runs this script against a recorded fixture and
-# asserts the invariants; the TS reference in that test mirrors this rule
-# (same two-character "first char is space-or-tab" test) and the byte-equality
-# assertion keeps them in lockstep.
+# Shared marker anchors (enforced part of the digest-filter contract, #1028):
+# this script, verify-loop.sh's --digest branch, and its #827 tail echo keep
+# the SAME line-start marker anchors (✗ / FAILED: / ##[error] / error: above
+# — line-start match, not substring). Indented-detail attribution is
+# deliberately NOT part of the shared contract and allowed to differ: the
+# #827 tail is bounded (first 3 ✗ lines per test, 200 chars each) for the
+# 800-char extractAttributedTail window, the digests are unbounded, and
+# verify-loop.sh's --digest branch attributes detail to ✗ markers only while
+# this script attributes it to any kept anchor.
+#
+# The filter itself is pinned by test-ci-log-digest.ts, which runs this
+# script against a recorded fixture and asserts the invariants; the TS
+# reference in that test mirrors this rule (same two-character "first char is
+# space-or-tab" test) and the byte-equality assertion keeps them in
+# lockstep.
 
 set -u
 if [ "$#" -ne 1 ]; then
@@ -41,10 +51,6 @@ if [ ! -f "$1" ] || [ ! -r "$1" ]; then
   echo "ci-log-digest: cannot read input: $1" >&2
   exit 2
 fi
-input="$(cat "$1")" || {
-  echo "ci-log-digest: cannot read input: $1" >&2
-  exit 2
-}
 TAB="$(printf '\t')"
 state=idle
 while IFS= read -r raw || [ -n "$raw" ]; do
@@ -85,4 +91,4 @@ while IFS= read -r raw || [ -n "$raw" ]; do
       state=idle
     fi
   fi
-done <<< "$input"
+done < "$1"

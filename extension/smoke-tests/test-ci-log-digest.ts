@@ -33,15 +33,22 @@
  *   13. Unreadable input: a nonexistent path is exit 2 with the stderr
  *       message and NO stdout — distinct from "no failures" (which exits 0
  *       with empty stdout).
+ *   14. Cross-check with verify-loop.sh --digest: for the same failing test
+ *       output, the MARKER lines (not detail lines) kept by ci-log-digest.sh
+ *       equal the marker lines kept by the --digest branch — the shared
+ *       marker-anchor contract pinned by both scripts' headers.
  */
 
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 const __dirname = path.dirname(new URL(import.meta.url).pathname);
 const FIXTURE = path.join(__dirname, "fixtures", "ci-log", "run-log-failed.txt");
 const DIGEST_SCRIPT = path.join(__dirname, "lib", "ci-log-digest.sh");
+const VERIFY_LOOP = path.join(__dirname, "lib", "verify-loop.sh");
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -271,6 +278,94 @@ assert(
     (r.stdout ?? "").trim() === "",
     `case 13: no stdout on unreadable input (got: ${JSON.stringify(r.stdout ?? "")})`,
   );
+}
+
+// --- Case 14: cross-check — shared marker anchors (ci-log-digest.sh vs --digest) ---
+// For the same failing test output, the MARKER lines (not detail lines) kept
+// by ci-log-digest.sh must equal the marker lines kept by verify-loop.sh
+// --digest. The fixture contains only ✗ markers (the shared anchor both
+// scripts enforce) plus indented detail and noise, so both scripts are
+// expected to keep the same marker lines.
+{
+  const scratchDir = mkdtempSync(path.join(os.tmpdir(), "digest-crosscheck-"));
+  try {
+    // The raw failing output (no job/step/timestamp prefix). The ✗ lines are
+    // NOT indented (line-start anchor) so both digests keep them; indented
+    // detail lines are kept by both as well (attribution differs slightly but
+    // the marker lines — the subject of this cross-check — are identical).
+    const rawOutput = [
+      "  ✓ test-alpha.ts: 12 passed",
+      "✗ test-cross-a.ts: 2 failed",
+      "  at foo (test-cross-a.ts:1:1)",
+      "  at bar (test-cross-a.ts:2:2)",
+      "✗ test-cross-b.ts: 1 failed",
+      "  at baz (test-cross-b.ts:3:3)",
+      "  ✓ test-epsilon.ts: 5 passed",
+      "  some noise line",
+    ].join("\n");
+
+    // ci-log-digest.sh: feed the raw output (no prefix) as a log file.
+    const logPath = path.join(scratchDir, "raw-output.log");
+    writeFileSync(logPath, rawOutput);
+    const ciDigest = spawnSync("bash", [DIGEST_SCRIPT, logPath], {
+      cwd: path.join(__dirname, ".."),
+      encoding: "utf-8",
+    });
+
+    // verify-loop.sh --digest: run a tiny fixture that prints the same output and exits 1.
+    const fixturePath = path.join(scratchDir, "fixture-crosscheck.ts");
+    writeFileSync(
+      fixturePath,
+      rawOutput.split("\n").map((l) => `console.log(${JSON.stringify(l)});`).join("\n") + "\nprocess.exit(1);\n",
+    );
+    const loopDigest = spawnSync("bash", [VERIFY_LOOP, "--digest", fixturePath], {
+      cwd: path.join(__dirname, ".."),
+      encoding: "utf-8",
+    });
+
+    // Extract marker lines from each digest. Both digests use a strict
+    // line-start anchor (no leading-whitespace tolerance) for the ✗ marker,
+    // so compare on the raw line.
+    const isSharedMarker = (line: string): boolean =>
+      line.startsWith("✗ ") || line.startsWith("##[error]") || line.startsWith("FAILED:") || line.startsWith("error:");
+    const ciMarkers = (ciDigest.stdout ?? "")
+      .split("\n")
+      .filter((l) => isSharedMarker(l));
+    const loopMarkers = (loopDigest.stdout ?? "")
+      .split("\n")
+      .filter((l) => isSharedMarker(l))
+      // The digest branch also emits a "FAILED: <file>" per-failure marker
+      // and a "FAILED: N test(s) — …" summary line; strip both (they are
+      // summary markers, not markers derived from the test's own output —
+      // the cross-check compares markers derived from the test's own output).
+      .filter((l) => !l.startsWith("FAILED: "));
+
+    assert(
+      ciDigest.status === 0,
+      `case 14: ci-log-digest.sh exits 0 on prefix-free input (got ${ciDigest.status})`,
+    );
+    assert(
+      loopDigest.status === 1,
+      `case 14: verify-loop.sh --digest exits 1 on failing fixture (got ${loopDigest.status})`,
+    );
+    assert(
+      ciMarkers.length > 0,
+      `case 14: ci-log-digest.sh kept at least one marker line (got ${ciMarkers.length})`,
+    );
+    assert(
+      ciMarkers.length === loopMarkers.length,
+      `case 14: same number of marker lines kept by both digests (ci=${ciMarkers.length}, loop=${loopMarkers.length})`,
+    );
+    const mismatches = ciMarkers
+      .map((l, i) => (l === loopMarkers[i] ? null : `pos ${i}: ci='${l}' loop='${loopMarkers[i]}'`))
+      .filter((x): x is string => x !== null);
+    assert(
+      mismatches.length === 0,
+      `case 14: marker lines are identical across both digests${mismatches.length ? ` — ${mismatches.join("; ")}` : ""}`,
+    );
+  } finally {
+    rmSync(scratchDir, { recursive: true, force: true });
+  }
 }
 
 console.log(exit === 0 ? "\nAll CI-log digest checks passed." : "\nFAILED");

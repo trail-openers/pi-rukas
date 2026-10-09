@@ -69,6 +69,8 @@ function assert(cond: boolean, msg: string) {
 // (missing binary, EACCES, …) as `error` with `status: null` rather than as
 // a non-zero exit code, so without this check a broken environment would
 // read as "the digest failed" instead of "we could not run bash at all".
+//
+// @returns {status, stdout} are meaningful only when envError is null.
 function runDigest(
   files: string[],
 ): { status: number; stdout: string; envError: string | null } {
