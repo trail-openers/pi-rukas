@@ -1316,7 +1316,7 @@ A handoff's numbered options are keyed on which cap fired. Caps that halt **befo
 
 Before #398, `intent-park` had no branch in either renderer and inherited a block written for `developer-timeout` — so a cycle that never created a branch was told to run `git push -u origin (branch not captured)`, with the display placeholder inside a copy-pasteable command.
 
-Recovery commands are also **never chained**. They arrive in the Pi chat, and per `modules/core/oo-command-runner.md` the permission matcher cannot wildcard a chained shape, so every unique `a && b` re-prompts you. One command per line.
+Recovery commands are also **never chained**. They arrive in the Pi chat, and the permission matcher cannot wildcard a chained shape, so every unique `a && b` re-prompts you. One command per line.
 
 ### Merge authority — why `/work` opened a PR and stopped
 

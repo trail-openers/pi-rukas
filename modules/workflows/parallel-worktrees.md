@@ -62,9 +62,9 @@ The dangerous failure pattern:
 When dispatching @ops to operate on a worktree, always use `git -C` syntax:
 
 ```bash
-oo git -C .worktrees/issue-N add src/path/to/file.rs
-oo git -C .worktrees/issue-N commit -m "feat(scope): description"
-oo git -C .worktrees/issue-N push origin feature/issue-N
+git -C .worktrees/issue-N add src/path/to/file.rs
+git -C .worktrees/issue-N commit -m "feat(scope): description"
+git -C .worktrees/issue-N push origin feature/issue-N
 ```
 
 Do NOT use `cd .worktrees/issue-N && git ...` — this is fragile and error-prone.

@@ -2,16 +2,14 @@
  * oo-rewrite-guard — the silent rewrite of bare verbose-runner bash commands
  * to their `oo`-prefixed form for developer + ops subagents.
  *
- * The doctrine (modules/core/oo-command-runner.md, agents-base/developer.md)
- * makes the `oo` prefix mandatory for 12 verbose runners, but on the bash
- * tool's argument string that rule is pure prose: the only structural
- * enforcement layer (spawn.ts --exclude-tools / role-tools.ts) can remove
- * NAMED tools, not a bash-string distinction like `pytest` vs `oo pytest`.
- * Prose tool-preference is the least reliable enforcement mechanism in the
- * literature, so this hook enforces it deterministically: a bare 12-item
- * command at the START of the quote-stripped command string is rewritten
- * in-place to `oo <cmd>` in event.input.command, which Pi documents as
- * mutable — later tool_call handlers (the legacy subagent guard's verdict
+ * The guard silently rewrites the 12 bare verbose-runner prefixes (listed in
+ * OO_PREFIXES below) to their `oo`-prefixed form in trust/sandbox mode; the
+ * rewrite is an equivalence, not a requirement — the prefix is no longer
+ * mandatory doctrine, so the rewritten and the bare form are both legitimate
+ * commands and this hook only normalizes them. It does so deterministically:
+ * a bare 12-item command at the START of the quote-stripped command string is
+ * rewritten in-place to `oo <cmd>` in event.input.command, which Pi documents
+ * as mutable — later tool_call handlers (the legacy subagent guard's verdict
  * handler) see the rewritten string, so in trust/sandbox mode a bare
  * `cargo test` routes through the existing `oo cargo test*` allow row
  * instead of relying on the model remembering the prefix.
@@ -65,8 +63,7 @@ import { BASH_COMMAND_INJECTION_CHARS, stripQuotedSegments } from "./bash-comman
 import { trace } from "./trace.ts";
 
 /**
- * The 12 bare verbose-runner commands the doctrine mandates the `oo` prefix
- * for (modules/core/oo-command-runner.md lines 7-11 — including the
+ * The 12 bare verbose-runner prefixes this guard rewrites (including the
  * corrected `bun run build`, not the non-existent `bun build`). Each entry
  * is the full bare token sequence as it appears at the START of a command.
  */

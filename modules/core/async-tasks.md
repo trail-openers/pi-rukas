@@ -88,8 +88,8 @@ Issue #264 → .worktrees/issue-264
 ```bash
 # Check for potential conflicts
 vipune search "who is working on" --limit 10  # Check project memory
-oo git branch -a                               # Check active branches
-oo git worktree list                           # Check existing worktrees
+git branch -a                                  # Check active branches
+git worktree list                              # Check existing worktrees
 ```
 
 **Red Flags (use worktrees if any apply):**
