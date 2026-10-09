@@ -13,7 +13,7 @@ import path from "node:path";
 import { waitForLedger } from "./lib/wait-for-ledger.ts";
 import { runLensReview } from "../src/lens-review.ts";
 import { writeAdversarialLedgerEntry } from "../src/adversarial-ledger.ts";
-import { isFullCommitSha } from "../src/review-ledger.ts";
+import { isFullCommitSha } from "../src/review-head-sha.ts";
 import {
   type LedgerEntry,
   adversarialPassed,
@@ -303,7 +303,6 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
 }
 
 // ------------------------------------------- remoteName (item 2)
-
 {
   const { repo } = setupRepo();
   try {
@@ -420,13 +419,11 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
 }
 
 // ----------------------------- no entry expected (negative assertion)
-//
 // The detached-head / no-branch-resolved case: the writer skips (the
 // branch is unresolvable, so `writeLensLedgerEntry` does not write), and
 // the helper's short-budget path returns null quickly. This exercises
 // the `budgetMs` parameter and the `return null` branch, which are
 // otherwise dead surface (no caller passes a short budget).
-
 {
   const { repo } = setupRepo();
   const lf = ledgerFile(repo);
@@ -446,7 +443,6 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
 }
 
 // ------------------------------------------- #1039 — headSha resolution
-
 {
   const { repo, branch } = setupRepo();
   try {
@@ -474,7 +470,15 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
 
       // Adversarial writer also stores headSha.
       writeAdversarialLedgerEntry(
-        { ok: true, loopOutcome: "approved" } as never,
+        {
+          role: "adversarial",
+          ok: true,
+          text: "",
+          toolUses: [],
+          ms: 0,
+          exitCode: 0,
+          loopOutcome: "approved",
+        },
         { workCwd: repo, branch, head: branch },
       );
       await new Promise((r) => setTimeout(r, 200));

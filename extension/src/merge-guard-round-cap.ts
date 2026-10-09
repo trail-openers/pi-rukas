@@ -51,8 +51,9 @@
  *     PR's `headOid` — the guard passes that value here). A lens review
  *     that reviewed an OLDER commit must not satisfy the cap: the commits
  *     after it are unreviewed by the lens. A legacy entry without `headSha`
- *     (or a stale one) refuses, naming the condition — conservative
- *     refusal, the same rule condition 3 applies to `hasCritical`.
+ *     refuses, naming the condition — conservative refusal, the same rule
+ *     condition 3 applies to `hasCritical`. A non-SHA `headSha` (malformed
+ *     entry) is refused by the `isFullCommitSha` shape check (#1039).
  *
  * The guard's existing strict rule (the latest lens entry must be `passed`)
  * still applies first — the round-cap path is an ADDITIONAL path that allows
@@ -78,7 +79,8 @@
  * here checks the author), so modelling it here would be theatre.
  */
 
-import { type LedgerEntry, isFullCommitSha, latestEntry } from "./review-ledger.ts";
+import { isFullCommitSha } from "./review-head-sha.ts";
+import { type LedgerEntry, latestEntry } from "./review-ledger.ts";
 import { MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 
 /**

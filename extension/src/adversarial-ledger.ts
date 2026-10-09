@@ -17,6 +17,7 @@
  */
 
 import { resolveReviewBranch } from "./review-branch.ts";
+import { resolveHeadSha } from "./review-head-sha.ts";
 import {
   type LedgerEntry,
   adversarialPassed,
@@ -26,11 +27,7 @@ import {
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { execp } from "./lens-exec.ts";
-
-const execFileP = promisify(execFile);
 
 /**
  * Write an adversarial-review entry to the review ledger. Fire-and-forget:
@@ -66,31 +63,15 @@ export function writeAdversarialLedgerEntry(
     const computed = await workingTreePatchId(execp, c);
     if (computed.warning) trace(`adversarial: ${computed.warning}`);
     if (!computed.patchId) return;
-    // #1039 — resolve the head to a full 40-char SHA (the same rule the
-    // lens writer applies: `git rev-parse --verify <head>^{commit}`).
-    // The adversarial writer takes `head` for branch resolution; now it
-    // also uses it (or HEAD) for the headSha field. An unresolvable head
-    // leaves headSha undefined (omitted from the entry) — the write
-    // succeeds without the field, matching the lens writer's behaviour.
+    // #1039 — resolve the head to a full 40-char SHA via the shared
+    // resolver (review-head-sha.ts — the same one the lens writer and the
+    // diff resolvers use). The adversarial writer takes `head` for branch
+    // resolution; now it also uses it (or HEAD) for the headSha field. An
+    // unresolvable head leaves headSha undefined (omitted from the entry) —
+    // the write succeeds without the field, matching the lens writer's
+    // behaviour.
     const headRef = params.head ?? "HEAD";
-    let headSha: string | undefined;
-    if (!headRef.startsWith("-")) {
-      try {
-        const { stdout } = await execFileP(
-          "git",
-          ["-C", c, "rev-parse", "--verify", "--quiet", `${headRef}^{commit}`],
-          { maxBuffer: 8 * 1024 },
-        );
-        headSha = stdout.trim() || undefined;
-      } catch (err) {
-        trace(
-          `adversarial: headSha resolution failed for ${headRef}: ${
-            err instanceof Error ? err.message : String(err)
-          } — no headSha stored`,
-        );
-        headSha = undefined;
-      }
-    }
+    const headSha = await resolveHeadSha(c, headRef, execp);
     const entry: LedgerEntry = {
       branch,
       kind: "adversarial",

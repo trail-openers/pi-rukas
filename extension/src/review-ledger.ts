@@ -4,9 +4,9 @@
  * #912. The incident (sibling project lievo, 2026-09-27): a PM managing work
  * OUTSIDE the /work driver merged two PRs on a developer's self-report plus
  * green CI — skipping adversarial_loop and dispatch_lens_review. Prompt
- * doctrine demanded both; the prompt layer is what failed. This module is
- * the structural floor: a per-clone ledger the merge guard (merge-guard.ts)
- * reads before any agent-run PR/MR merge.
+ * doctrine demanded both; the prompt layer is what failed. This module is the
+ * structural floor: a per-clone ledger that the merge guard
+ * (merge-guard.ts) reads before any agent-run PR/MR merge.
  *
  * ## What is stored
  *
@@ -38,6 +38,7 @@
 
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
+export { isFullCommitSha } from "./review-head-sha.ts";
 import { ledgerPathFor } from "./review-ledger-path.ts";
 import { bumpLensRound } from "./review-ledger-round.ts";
 import { trace } from "./trace.ts";
@@ -59,20 +60,23 @@ export interface LedgerEntry {
   at: number;
   /** One line of what the review concluded, for the operator's audit. */
   detail?: string;
-  /** #973 — lens entries only: the branch-scoped round (previous latest + 1;
-   * a legacy entry without `round` counts as 1). Stored on the entry because
-   * the per-(branch, kind) dedupe below keeps only ONE lens row per branch. */
+  /** #973 — lens entries only: the branch-scoped round number this review
+   * ran as (the previous latest lens entry's round + 1; a legacy entry
+   * without `round` counts as round 1). Stored because the per-(branch, kind)
+   * dedupe below keeps only ONE lens row per branch, so the round must live
+   * on the entry, not in the file. */
   round?: number;
-  /** #973 — lens entries only: whether the reviewed verdict carried a CRITICAL
-   * finding. The round-cap rule (merge-guard-round-cap.ts) requires
-   * `hasCritical === false`; a legacy entry without the field cannot satisfy
-   * it (conservative refusal). */
+  /** #973 — lens entries only: whether the reviewed verdict carried a
+   * CRITICAL finding. The round-cap merge rule (merge-guard-round-cap.ts)
+   * requires `hasCritical === false` on the latest lens entry; a legacy
+   * entry without this field cannot satisfy it (conservative refusal). */
   hasCritical?: boolean;
-  /** #973 — lens entries only: the commit hash reviewed — always a resolved
-   * 40-char SHA (#1039; a non-SHA value is treated as malformed). Consumers:
-   * the delta-review auto-base (follow-up `since` defaults to the latest
-   * lens entry's `headSha` when it is an ancestor of HEAD) and the disclosure
-   * marker's provenance. */
+  /** #973 — lens entries only: the commit hash reviewed. Two consumers:
+   * the delta-review auto-base (the `since` of a follow-up review defaults
+   * to the latest lens entry's `headSha` when it is an ancestor of HEAD) and
+   * the disclosure marker's provenance. Always a resolved 40-char SHA when
+   * present (#1039); absent when the head could not be resolved; a non-SHA
+   * value is malformed and refused by the round-cap path. */
   headSha?: string;
 }
 
@@ -81,6 +85,7 @@ interface LedgerFile {
 }
 
 export type LedgerExecFn = VerifyExecFn;
+
 /**
  * #955 file-size split: `ledgerPathFor` (and its one-time override trace)
  * live in review-ledger-path.ts; the re-export below keeps importers
@@ -441,14 +446,6 @@ export function validEntries(entries: unknown[]): LedgerEntry[] {
   return ok;
 }
 
-/**
- * #1039 — true when the value is a full 40-char lowercase-hex commit SHA.
- * A branch name or abbreviated OID (pre-#1039 legacy entry) is treated as
- * UNKNOWN — never matched by string equality against a PR head OID.
- */
-export function isFullCommitSha(value: string): boolean {
-  return /^[0-9a-f]{40}$/.test(value);
-}
 /** One line, for the trace: a never-throwing JSON stringify. */
 function safeJson(v: unknown): string {
   try {

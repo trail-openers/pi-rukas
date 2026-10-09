@@ -28,7 +28,8 @@ import type { LensRunResult, Severity, Verdict } from "./lens-review.ts";
 import type { Finding } from "./lens-review.ts";
 import type { RosterEntry } from "./lens-roster.ts";
 import { computeDeltaDiff, computeRangeDiff } from "./review-diff.ts";
-import { isFullCommitSha, latestEntry, ledgerPathFor, readLedgerAt } from "./review-ledger.ts";
+import { isFullCommitSha, resolveHeadSha } from "./review-head-sha.ts";
+import { latestEntry, ledgerPathFor, readLedgerAt } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
 
 const execFileP = promisify(execFile);
@@ -165,12 +166,15 @@ export async function resolveDeltaDiff(
   const c = cwd ?? process.cwd();
   let resolvedHead: string;
   if (head) {
-    // #1039 — resolve the caller's head ref to a full 40-char SHA. A branch
-    // name (e.g. "feature/x") is a valid ref to git but is NOT a 40-char
-    // SHA; storing it as headSha in the ledger corrupts the merge guard's
-    // round-cap comparison (which expects an OID) and the auto-delta base.
-    // `--verify <ref>^{commit}` rejects non-commit objects (tags pointing
-    // at trees) and argument-injection refs (leading dash).
+    // #1039 — resolve the caller's head ref to a full 40-char SHA via the
+    // shared resolver (review-head-sha.ts). A branch name (e.g.
+    // "feature/x") is a valid ref to git but is NOT a 40-char SHA; storing
+    // it as headSha in the ledger corrupts the merge guard's round-cap
+    // comparison (which expects an OID) and the auto-delta base. The
+    // resolver rejects non-commit objects (tags pointing at trees) and
+    // argument-injection refs (leading dash); a leading dash is surfaced
+    // explicitly below — computeDeltaDiff's own ref check still produces
+    // the named error, but only after it rejects it.
     if (head.startsWith("-")) {
       return {
         noReview: false,
@@ -179,19 +183,7 @@ export async function resolveDeltaDiff(
         problem: `lens review: head ref "${head}" is rejected: ref names must not start with '-'`,
       };
     }
-    try {
-      const { stdout } = await execFileP(
-        "git",
-        ["-C", c, "rev-parse", "--verify", "--quiet", `${head}^{commit}`],
-        { maxBuffer: 8 * 1024 },
-      );
-      resolvedHead = stdout.trim();
-    } catch {
-      // The ref is not a commit (or the name is not valid): fall through
-      // to the raw string so computeDeltaDiff's own refIsCommit check
-      // produces the named error.
-      resolvedHead = head;
-    }
+    resolvedHead = (await resolveHeadSha(c, head, execp)) ?? head;
   } else {
     // No explicit head: the current HEAD of the cwd's repo (the commit the
     // review runs against). Resolved before the diff so the no-review
