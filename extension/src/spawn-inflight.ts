@@ -13,6 +13,8 @@
  * result). Multiple concurrent toolCall blocks in one assistant turn are
  * each tracked, so one toolResult never closes a sibling's span (a boolean
  * would — exactly the early-fire shape #772's #543 notes warned about).
+ * Top-level calls are still derived from message shapes; nested codemode
+ * calls carry their own tool_execution_start/end events (#1032).
  *
  * The state is a per-spawn Set of open toolCall ids. It dies with the spawn
  * (a killed child never receives its toolResult, and a module-level map
@@ -46,6 +48,21 @@ export class InFlightTools {
 
   /** Process one parsed child event against the in-flight state. */
   observe(event: PiJsonEvent): void {
+    // This open/delete covers BOTH call shapes: top-level calls, whose
+    // flat events carry the same toolCallId as the toolCall block (so
+    // the set/delete here is idempotent with the message-path close
+    // below), and nested codemode calls (ctx.executeTool), whose
+    // <callerId>/<n> ids never surface in a message. A span always
+    // closes on its own tool_execution_end; an orphan dies with the
+    // spawn.
+    if (event.type === "tool_execution_start") {
+      if (event.toolCallId) this.open.set(event.toolCallId, event.toolName ?? "unknown");
+      return;
+    }
+    if (event.type === "tool_execution_end") {
+      if (event.toolCallId) this.open.delete(event.toolCallId);
+      return;
+    }
     const msg = event.message;
     if (!msg) return;
     if (msg.role === "toolResult") {

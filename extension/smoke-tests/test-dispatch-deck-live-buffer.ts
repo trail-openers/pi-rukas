@@ -13,6 +13,7 @@
 import {
   LIVE_BUFFER_MAX_CHARS,
   bufferCount,
+  bufferSizes,
   dropBuffer,
   feedRawEvent,
   getBuffer,
@@ -277,6 +278,10 @@ function resetBuffers(keys: string[]): void {
   assert(!threw, "f4: throwing subscriber is caught (no throw escapes)");
   assert(getBuffer("f1").length === 3, "f5: feed continued past the throwing subscriber");
   dropBuffer("f1");
+  // f5b: dropBuffer also deletes the key's bufferSizes entry — no
+  // per-key bookkeeping outlives the buffer (the sizes map is what
+  // trimToBound maintains and reads on every push/evict).
+  assert(!bufferSizes.has("f1"), "f5b: the bufferSizes entry is gone after dropBuffer");
   // f6: dropBuffer deletes the key's appendSubscribers entry (clear then
   // delete) — no per-key bookkeeping (subscribers, entryCleared, viewOpen,
   // settle status, size total) outlives the buffer.

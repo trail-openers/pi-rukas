@@ -9,6 +9,7 @@
 import { NO_TEXT_PLACEHOLDER } from "./lens-review-format.ts";
 import { adapterFor } from "./model-adapters.ts";
 import type { PiContentBlock, PiJsonEvent, PiMessage } from "./pi-event-shapes.ts";
+import { addUsage } from "./pi-usage.ts";
 import type { DispatchResult } from "./types.ts";
 
 export function collapseEvents(
@@ -38,19 +39,24 @@ export function collapseEvents(
   let hasThinking = false;
   let hasText = false;
 
+  // #1032 — Pi stamps the SUMMED usage of every nested (codemode) tool call
+  // onto the parent call's OWN toolResult message (see `NestedCallSummary`
+  // in pi's `nested-tool-calls.d.ts`); that `usage` field is the only
+  // record of that spend, so it is summed here, once, through the same
+  // `addUsage` helper the assistant loop below uses.
+  for (const msg of messages) {
+    if (msg.role !== "toolResult") continue;
+    if (!msg.usage) continue;
+    addUsage(usage, msg.usage, {});
+  }
+
   for (const msg of messages) {
     if (msg.role !== "assistant") continue;
     turns++;
     if (msg.model && !model) model = msg.model;
     if (msg.provider && !provider) provider = msg.provider;
     if (msg.api && !api) api = msg.api;
-    if (msg.usage) {
-      usage.input += msg.usage.input ?? 0;
-      usage.output += msg.usage.output ?? 0;
-      usage.cacheRead += msg.usage.cacheRead ?? 0;
-      usage.cacheWrite += msg.usage.cacheWrite ?? 0;
-      usage.cost += msg.usage.cost?.total ?? 0;
-    }
+    if (msg.usage) addUsage(usage, msg.usage, {});
     // Per-message model adapter: handles quirks specific to the LLM family
     // that emitted this message (e.g. GLM's "None" placeholder text blocks).
     // Default adapter is no-op, so unknown models pass through unchanged.

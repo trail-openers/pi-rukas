@@ -48,15 +48,54 @@
  * roster). The widget suppression in dispatch-deck.ts `renderNow` is the
  * quiet gate that KEPT.
  *
+ * The shared ring-buffer state (LiveEvent, the buffers map, the per-key
+ * running sizes, `LIVE_BUFFER_MAX_CHARS`, the char-bound enforcement
+ * `trimToBound`, the append subscribers) lives in
+ * dispatch-deck-live-state.ts; the FEED PATH (`feedRawEvent` / `pushEvent`)
+ * lives in dispatch-deck-live-feed.ts. This module is the RE-EXPORT FACING
+ * for both (the re-exports below keep every existing import path working
+ * unchanged); the feed module never imports this one, and this module never
+ * imports it except for the one-way re-export of `feedRawEvent` /
+ * `pushEvent` — the shared state below stays the one-directional seam
+ * neither of the two needs to import the other for.
+ *
  * Out of scope: /runs integration (#836); pause/skip/retry controls;
  * lens-review and adversarial children, which own their deck entries
  * directly and get no buffer (their rows offer steer only).
  */
 
-import { NEWLINE_SEP, sanitizeText } from "./dispatch-deck-line.ts";
+import { sanitizeForStorage, sanitizeText } from "./dispatch-deck-line.ts";
+import type { LiveEvent } from "./dispatch-deck-live-state.ts";
+import {
+  LIVE_BUFFER_MAX_CHARS,
+  appendSubscribers,
+  bufferSizes,
+  buffers,
+  eventSize,
+  notifyAppend,
+  trimToBound,
+} from "./dispatch-deck-live-state.ts";
 import { clearViewScroll } from "./dispatch-deck-live-view-component.ts";
-import type { PiJsonEvent } from "./pi-event-shapes.ts";
-import { trace } from "./trace.ts";
+
+// #1032 — the feed path (feedRawEvent / pushEvent) moved to
+// dispatch-deck-live-feed.ts when this file hit the 500-line cap; the
+// re-exports below keep the existing import paths working unchanged.
+export { feedRawEvent, pushEvent } from "./dispatch-deck-live-feed.ts";
+
+// #1032 — the shared ring-buffer state moved to
+// dispatch-deck-live-state.ts (so the feed module and this one no longer
+// import each other); the re-exports below keep the existing import paths
+// working unchanged.
+export {
+  LIVE_BUFFER_MAX_CHARS,
+  buffers,
+  bufferSizes,
+  eventSize,
+  onBufferAppend,
+  notifyAppend,
+  trimToBound,
+} from "./dispatch-deck-live-state.ts";
+export type { LiveEvent } from "./dispatch-deck-live-state.ts";
 
 /**
  * The live-view theme — the component receives it from the caller
@@ -78,59 +117,8 @@ export {
   openLiveView,
 } from "./dispatch-deck-live-view.ts";
 
-// =============================================================================
-// Ring buffer
-// =============================================================================
-
-/**
- * A normalised unit of a child's recent activity.
- *
- * The stored strings are sanitised at FEED time (issue #927): every
- * `text` / `args` / `name` field is control-char/ANSI-stripped, with
- * newlines collapsed to the ` ⏎ ` separator (dispatch-deck-line.ts
- * `NEWLINE_SEP`) — but UNTRUNCATED (#916). Renderers must still
- * width-bound via `toTerminalLine`, but must not assume raw newlines or
- * control characters here.
- *
- * `thinking` blocks (`{kind:"thinking"}`) are stored with their raw
- * character count as `text` (#916: the view renders `▸ thinking (N chars)`
- * with N = raw char count, not the post-wrap rendered size).
- */
-export type LiveEvent =
-  | { kind: "text"; text: string }
-  | { kind: "toolCall"; name: string; args: string }
-  | { kind: "toolResult"; name: string; text: string; isError: boolean }
-  | { kind: "thinking"; text: string }
-  /**
-   * #915 — an operator steer sent from the agent view's input line.
-   * Distinct from the child's own events: rendered as
-   * `you → <label>: <text>` so the conversation reads in order. Stored
-   * UNTRUNCATED like every other event and counted within the per-job
-   * byte bound.
-   */
-  | { kind: "operatorSteer"; label: string; text: string; at: number };
-
-/**
- * The per-job bound, measured on the stored string length in UTF-16 code
- * units (the `.text` field for text/thinking, the full JSON string for
- * toolCall args) — #916, replacing the 200-event ring cap and the feed-time
- * character truncation. The buffer behaves as a bounded queue: when the
- * total exceeds the bound, the OLDEST events are evicted until the total
- * fits — the buffer keeps the most RECENT activity (that is what a live
- * view is for; eviction of the just-pushed event would freeze the view on
- * stale output once the bound is reached). A single event whose own size
- * exceeds the bound is kept ALONE and untruncated (the bound caps the
- * TOTAL across multiple events, never a lone event — PM decision, #916).
- */
-export const LIVE_BUFFER_MAX_CHARS = 512 * 1024;
-
 /** The settle outcome recorded for the header (async-jobs calls markSettled). */
 export type SettleStatus = "running" | "finished" | "failed" | "killed";
-
-// Exported for the quiet-mode gate test (agent-list.ts block 8) — the
-// buffer map is the load-bearing fact the test reads to prove the
-// `startBuffer` gate moved (a quiet session's buffer IS created).
-export const buffers = new Map<string, LiveEvent[]>();
 
 /** Settle outcomes recorded by markSettled (read by the view header). */
 const settledStatuses = new Map<string, SettleStatus>();
@@ -140,29 +128,6 @@ const viewsOpen = new Set<string>();
 
 /** True while the deck entry has been cleared but the view is still open. */
 const entryCleared = new Set<string>();
-
-/** Append subscribers per key (#916: the overlay re-renders on feed). */
-const appendSubscribers = new Map<string, Set<() => void>>();
-
-/** Running stored size per buffer (key → sum of eventSize), kept in sync
- *  on push/evict so trimToBound never re-sums the buffer. */
-const bufferSizes = new Map<string, number>();
-
-/** The raw stored size of one event, in characters of the stored text. */
-function eventSize(ev: LiveEvent): number {
-  switch (ev.kind) {
-    case "text":
-      return ev.text.length;
-    case "toolCall":
-      return ev.args.length;
-    case "toolResult":
-      return ev.text.length;
-    case "thinking":
-      return ev.text.length;
-    case "operatorSteer":
-      return ev.text.length;
-  }
-}
 
 /**
  * The buffer contents (a copy — the caller may mutate the array).
@@ -197,7 +162,7 @@ export function appendOperatorSteer(key: string, label: string, text: string): v
   const ev: LiveEvent = {
     kind: "operatorSteer",
     label: sanitizeText(label),
-    text: sanitizeText(text).replace(/\n+/g, NEWLINE_SEP),
+    text: sanitizeForStorage(text),
     at: Date.now(),
   };
   buf.push(ev);
@@ -290,43 +255,6 @@ export function getStatus(key: string): SettleStatus {
 }
 
 // =============================================================================
-// Append notifications (#916)
-// =============================================================================
-
-/**
- * Subscribe to appends for the key's buffer. Returns an unsubscribe.
- * `cb` is invoked AFTER the event is stored; a throwing subscriber is
- * caught and traced (it can never break the feed path).
- */
-export function onBufferAppend(key: string, cb: () => void): () => void {
-  let subs = appendSubscribers.get(key);
-  if (!subs) {
-    subs = new Set();
-    appendSubscribers.set(key, subs);
-  }
-  subs.add(cb);
-  return () => {
-    subs.delete(cb);
-    if (subs.size === 0) appendSubscribers.delete(key);
-  };
-}
-
-/** Notify the key's append subscribers (called from feedRawEvent). */
-function notifyAppend(key: string): void {
-  const subs = appendSubscribers.get(key);
-  if (!subs) return;
-  for (const cb of subs) {
-    try {
-      cb();
-    } catch (err) {
-      trace(
-        `dispatch-deck-live: onBufferAppend subscriber threw for ${key}: ${(err as Error).message}`,
-      );
-    }
-  }
-}
-
-// =============================================================================
 // View-open bookkeeping (#916)
 // =============================================================================
 
@@ -365,135 +293,4 @@ export function markViewClosed(key: string): void {
 export function releaseOnEntryClear(key: string): void {
   if (viewsOpen.has(key)) entryCleared.add(key);
   else dropBuffer(key);
-}
-
-// =============================================================================
-// Feed path
-// =============================================================================
-
-/**
- * Feed one parsed child event into the job's ring buffer. Events the
- * overlay cannot show (non-assistant / non-toolResult messages, empty
- * content) are dropped silently. A feed for a key with no buffer (quiet
- * mode, or a lens/adversarial child) is a no-op.
- */
-export function feedRawEvent(key: string, event: PiJsonEvent): void {
-  const buf = buffers.get(key);
-  if (!buf) return;
-  const added = pushEvent(key, buf, event);
-  if (added) notifyAppend(key);
-}
-
-/**
- * Push a parsed event onto a buffer (module helper, exported for the
- * feed-path test). Returns true when at least one event was stored.
- *
- * Storage is UNTRUNCATED (#916): the only bound is the per-job char cap
- * (`LIVE_BUFFER_MAX_CHARS`), enforced AFTER the push by evicting oldest
- * events first. Sanitisation (control chars, ANSI, newline collapse) is
- * kept — only the length truncation was removed.
- */
-export function pushEvent(key: string, buf: LiveEvent[], event: PiJsonEvent): boolean {
-  if (event.type !== "message" && event.type !== "message_end") return false;
-  const msg = event.message;
-  if (!msg) return false;
-  let added = false;
-  let total = bufferSizes.get(key) ?? 0;
-  if (msg.role === "toolResult") {
-    const resultText = (msg.content ?? [])
-      .filter((b) => b.type === "text" && typeof b.text === "string" && b.text.length > 0)
-      .map((b) => b.text as string)
-      .join("");
-    if (!resultText) return false;
-    // #839 — the tool-result identity fields live on the MESSAGE (pi-ai
-    // `ToolResultMessage`), not on the event; no cast needed. The result
-    // text is untrusted child output — sanitise + collapse to ONE logical
-    // line at feed time (newlines → the ` ⏎ ` separator, C0/ANSI stripped,
-    // tabs → spaces) so the overlay can never desync pi-tui's line
-    // accounting (issue #927: raw newlines / control chars from tool
-    // results ghosted the overlay over the main chat and polluted the
-    // scrollback on every 1 s re-render).
-    const name = msg.toolName;
-    const ev: LiveEvent = {
-      kind: "toolResult",
-      name: name ? sanitizeText(name) : "unknown",
-      text: sanitizeText(resultText).replace(/\n+/g, NEWLINE_SEP),
-      isError: msg.isError === true,
-    };
-    buf.push(ev);
-    total += eventSize(ev);
-    added = true;
-    return trimToBound(key, buf);
-  }
-  if (msg.role !== "assistant") return false;
-  for (const block of msg.content ?? []) {
-    if (block.type === "text" && typeof block.text === "string" && block.text.length > 0) {
-      const ev: LiveEvent = {
-        kind: "text",
-        text: sanitizeText(block.text).replace(/\n+/g, NEWLINE_SEP),
-      };
-      buf.push(ev);
-      total += eventSize(ev);
-      added = true;
-    } else if (
-      block.type === "thinking" &&
-      typeof block.thinking === "string" &&
-      block.thinking.length > 0
-    ) {
-      // #916 — thinking blocks were silently dropped before; store them as
-      // their own variant so the view can render `▸ thinking (N chars)`.
-      const ev: LiveEvent = {
-        kind: "thinking",
-        text: sanitizeText(block.thinking).replace(/\n+/g, NEWLINE_SEP),
-      };
-      buf.push(ev);
-      total += eventSize(ev);
-      added = true;
-    } else if (block.type === "toolCall" && block.name) {
-      // #916 — store the FULL JSON of the arguments (previously the 50-char
-      // extractToolHint preview); the view renders it in full.
-      const ev: LiveEvent = {
-        kind: "toolCall",
-        name: sanitizeText(block.name),
-        // block.arguments comes from JSON.parse of the child's event stream, so it cannot be circular or contain BigInt — stringify cannot throw here.
-        args:
-          block.arguments === undefined || block.arguments === null
-            ? ""
-            : (JSON.stringify(block.arguments) ?? ""),
-      };
-      buf.push(ev);
-      total += eventSize(ev);
-      added = true;
-    }
-  }
-  if (added) {
-    bufferSizes.set(key, total);
-    return trimToBound(key, buf);
-  }
-  return added;
-}
-
-/**
- * Enforce the per-job char bound AFTER a push: evict OLDEST-first
- * (`buf.shift()` — acceptable: the buffer is bounded in size) until the
- * RUNNING total (maintained per key by `feedRawEvent`, so no re-summing)
- * is within `LIVE_BUFFER_MAX_CHARS` — a live view must show the RECENT
- * activity, so the just-pushed event is never the first casualty. The
- * `buf.length > 1` guard keeps a lone oversized event ALONE and untruncated
- * (evicting it would empty the buffer — the bound caps the TOTAL across
- * events, never a lone event). Nothing "sticks": a >512 KB event — a large
- * file read — survives only until the next event arrives, at which point
- * it is the OLDEST and the first to be evicted.
- */
-function trimToBound(key: string, buf: LiveEvent[]): boolean {
-  if (buf.length === 0) return false;
-  // Evict oldest-first, but never evict down to zero events — a lone
-  // oversized event is retained alone (see above).
-  let total = bufferSizes.get(key) ?? 0;
-  while (total > LIVE_BUFFER_MAX_CHARS && buf.length > 1) {
-    const oldest = buf.shift();
-    if (oldest) total -= eventSize(oldest);
-  }
-  bufferSizes.set(key, total);
-  return true;
 }
