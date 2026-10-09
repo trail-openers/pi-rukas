@@ -206,7 +206,8 @@ branch: feature/issue-553-fix
   ].join("\n");
   const parsed = parseWorkstreams(depBlock);
   assert(
-    (parsed["task-b"]?.dependsOn ?? []).length === 1 && parsed["task-b"]?.dependsOn?.[0] === "task-a",
+    (parsed["task-b"]?.dependsOn ?? []).length === 1 &&
+      parsed["task-b"]?.dependsOn?.[0] === "task-a",
     "#679: `- depends-on: task-a` parsed into dependsOn array",
   );
   assert(
@@ -310,7 +311,18 @@ branch: feature/issue-553-fix
     // Three developer dispatches fired, one per workstream, each with the
     // correct per-worktree cwd.
     const developerLabels = seenLabels.filter((l) => l.startsWith("developer["));
-    assert(developerLabels.length === 3, "multi-workstream: 3 developer dispatches fired");
+    // #1016 — task-b fails once, so exactly ONE selective re-dispatch of it:
+    // 4 developer dispatches (a, b, c, then b again); a and c never re-run.
+    assert(
+      developerLabels.length === 4,
+      "multi-workstream: 3 developer dispatches + 1 selective retry",
+    );
+    assert(
+      developerLabels.filter((l) => l === "developer[task-b]").length === 2 &&
+        developerLabels.filter((l) => l === "developer[task-a]").length === 1 &&
+        developerLabels.filter((l) => l === "developer[task-c]").length === 1,
+      "multi-workstream: only the failed workstream (task-b) is re-dispatched",
+    );
     assert(
       developerLabels.includes("developer[task-a]") &&
         developerLabels.includes("developer[task-b]") &&
@@ -336,10 +348,12 @@ branch: feature/issue-553-fix
     const after = await readState(dir, 700);
     const kinds = (after?.eventLog ?? []).map((e) => e.kind);
     assert(kinds.includes("branches-fanned-out"), "multi-workstream: branches-fanned-out emitted");
-    const branchCompletions = (after?.eventLog ?? []).filter((e) => e.kind === "branch-completed");
+    const branchCompletions = (after?.eventLog ?? []).filter(
+      (e) => e.kind === "branch-completed" && e.step === "develop",
+    );
     assert(
-      branchCompletions.length === 3,
-      "multi-workstream: 3 branch-completed events (one per branch)",
+      branchCompletions.length === 4,
+      "multi-workstream: 4 branch-completed events (3 branches + task-b's retry, append-only)",
     );
     assert(
       kinds.includes("branches-converged"),
@@ -354,10 +368,16 @@ branch: feature/issue-553-fix
       ]),
     );
     assert(verdictsByWorkstream["task-a"] === true, "task-a: success recorded");
-    assert(
-      verdictsByWorkstream["task-b"] === false,
-      "task-b: failure recorded (partial-failure aggregate)",
+    // The latest task-b event is the retry's green result.
+    const taskBLatest = branchCompletions.filter(
+      (e) => (e as Extract<typeof e, { kind: "branch-completed" }>).workstreamId === "task-b",
     );
+    assert(
+      taskBLatest.length === 2 &&
+        (taskBLatest[0] as Extract<typeof e, { kind: "branch-completed" }>).ok === false,
+      "task-b: first failure recorded before the selective retry",
+    );
+    assert(verdictsByWorkstream["task-b"] === true, "task-b: retry recorded green");
     assert(
       verdictsByWorkstream["task-c"] === true,
       "task-c: success recorded (NOT aborted by task-b failure)",
@@ -368,8 +388,8 @@ branch: feature/issue-553-fix
     assert(converged !== undefined, "branches-converged is present");
     if (converged?.kind === "branches-converged") {
       assert(
-        converged.verdicts.filter((v) => v.ok).length === 2,
-        "branches-converged verdicts: 2 of 3 ok (partial failure aggregate)",
+        converged.verdicts.filter((v) => v.ok).length === 3,
+        "branches-converged verdicts: 3 of 3 ok after the selective retry",
       );
     }
   } finally {
@@ -396,7 +416,9 @@ branch: feature/issue-553-fix
   const { independent, dependentOrdered } = topologicalDispatchOrder(ids, dependsOnMap);
   assert(independent.length === 1 && independent[0] === "task-a", "#679: task-a is independent");
   assert(
-    dependentOrdered.length === 2 && dependentOrdered[0] === "task-b" && dependentOrdered[1] === "task-c",
+    dependentOrdered.length === 2 &&
+      dependentOrdered[0] === "task-b" &&
+      dependentOrdered[1] === "task-c",
     "#679: topological order is task-b → task-c (C waits on B which waits on A)",
   );
 
@@ -412,7 +434,10 @@ branch: feature/issue-553-fix
   assert(noSkips.size === 0, "#679: no skips when no dependency failed");
 
   // The N=1 default path: no depends-on, all independent.
-  const { independent: solo, dependentOrdered: soloDep } = topologicalDispatchOrder(["default"], {});
+  const { independent: solo, dependentOrdered: soloDep } = topologicalDispatchOrder(
+    ["default"],
+    {},
+  );
   assert(solo.length === 1 && solo[0] === "default", "#679: N=1 default is independent");
   assert(soloDep.length === 0, "#679: N=1 default has no dependent workstreams");
 }

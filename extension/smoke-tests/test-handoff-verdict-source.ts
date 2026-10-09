@@ -82,7 +82,10 @@ const chat = renderHandoffUserMessage(s, REPO, `${REPO}/tmp/issue-848`);
 // The explain "Why" sentence names the count: 1/2 failed (task-a fence-flipped).
 const tag = /(\d)\/(\d) workstream branches failed/.exec(md);
 assert(!!tag, "markdown: the explain sentence carries an 'N/M workstream branches failed' count");
-assert(!!tag && tag[1] === "1" && tag[2] === "2", `markdown: the explain count is 1/2, not 0/2 (got ${tag?.[0] ?? "none"})`);
+assert(
+  !!tag && tag[1] === "1" && tag[2] === "2",
+  `markdown: the explain count is 1/2, not 0/2 (got ${tag?.[0] ?? "none"})`,
+);
 
 // And it must AGREE with the handoff section on the same fence-flipped fixture.
 assert(
@@ -90,7 +93,8 @@ assert(
   "markdown: the verdict section shows the fence-flipped task-a FAIL and task-b ok",
 );
 assert(
-  chat.includes(`Workstream verdicts (develop fanout, 1/2 ok):`) && chat.includes(`task-a: FAIL — ${FENCE}`),
+  chat.includes(`Workstream verdicts (develop fanout, 1/2 ok):`) &&
+    chat.includes(`task-a: FAIL — ${FENCE}`),
   "chat: the verdict section + 1/2-ok header agree with the explain count",
 );
 const flippedInMd = md.includes(`task-a: FAIL — ${FENCE}`);
@@ -98,6 +102,45 @@ const flippedInChat = chat.includes(`task-a: FAIL — ${FENCE}`);
 assert(
   flippedInMd === flippedInChat && flippedInMd,
   "both surfaces agree on the flipped line (non-vacuity guard)",
+);
+
+// #1016 — second failure: task-a is retried and fails again, task-b (green,
+// preserved) is kept. Both renderers must name the kept and failed workstreams.
+const SECOND = "developer exited non-zero";
+const second: WorkState = {
+  ...s,
+  eventLog: [
+    {
+      kind: "branch-completed",
+      step: "develop",
+      workstreamId: "task-a",
+      ok: false,
+      ms: 1,
+      at: 3,
+      error: SECOND,
+    },
+    { kind: "branch-completed", step: "develop", workstreamId: "task-b", ok: true, ms: 1, at: 4 },
+    {
+      kind: "branch-completed",
+      step: "develop",
+      workstreamId: "task-a",
+      ok: false,
+      ms: 1,
+      at: 5,
+      error: SECOND,
+    },
+    { kind: "cap-hit", at: 6, cap: "step-failed:develop", reviewRound: 0, nextStep: "handoff" },
+  ],
+};
+const md2 = renderHandoffMarkdown(second, REPO);
+const chat2 = renderHandoffUserMessage(second, REPO, `${REPO}/tmp/issue-848`);
+assert(
+  md2.includes("- task-b: kept (ok)") && md2.includes(`- task-a: FAIL after retry — ${SECOND}`),
+  "markdown: second failure names kept task-b and FAIL-after-retry task-a",
+);
+assert(
+  chat2.includes("task-b: kept (ok)") && chat2.includes(`task-a: FAIL after retry — ${SECOND}`),
+  "chat: second failure names kept task-b and FAIL-after-retry task-a",
 );
 
 console.log(`\nexit ${exit}`);

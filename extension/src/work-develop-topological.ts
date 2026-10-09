@@ -15,6 +15,7 @@ import {
   describeSiblingFenceViolations,
   replaceDevelopConvergedVerdicts,
 } from "./work-develop-fence-verdicts.ts";
+import { makeBranchCompletedPersister, runIndependentFanout } from "./work-develop-retry.ts";
 import {
   type DevelopRunState,
   makeRunOneWorkstream,
@@ -29,7 +30,7 @@ import { applySafetyNet, hasAnyWorktreeEvidence } from "./work-driver-safety-net
 import { armStepNotice } from "./work-driver-step-notice.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
-import { type WorkEvent, type WorkState, appendEvent, writeState } from "./workflow-state.ts";
+import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 
 // #841 — per-failure / joined-evidence bounds for the cap-hit evidence
 // field. A failure string is already an 800-char attributed tail; a
@@ -65,6 +66,7 @@ async function runDevelopTopological(
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
   now: number,
   jobId: string,
+  preserved: ReadonlySet<string> = new Set<string>(),
 ): Promise<WorkState> {
   void now;
   const begun = { jobId };
@@ -78,6 +80,7 @@ async function runDevelopTopological(
   }
   const { independent, dependentOrdered } = topologicalDispatchOrder(ids, dependsOnMap);
   const stateRef = { current: next };
+  const persister = makeBranchCompletedPersister(ctx.repoRoot, stateRef);
   // #753 — per-workstream completion timestamps + a shared map of WHY each
   // failed-or-skipped workstream failed (the cascade event names the workstream
   // that ACTUALLY failed; a cascade is distinguishable from a legitimate skip).
@@ -91,6 +94,7 @@ async function runDevelopTopological(
     activeIssues,
     scratchAbs,
     workstreams: workstreams as DevelopRunState["workstreams"],
+    emitBranchCompleted: persister.emit,
     ids,
     dispatch,
     // #838 — the develop dispatch's deck tag: the workstream id when N>1
@@ -177,10 +181,14 @@ async function runDevelopTopological(
 
   // #746 — every dispatched independent now has a worktree (the missing ones
   // failed above); the lookup can no longer fall back to ctx.repoRoot.
-  const dispatchedIndependents = independent.filter((id) => !missingWorktree.includes(id));
-  const independentResults = await Promise.all(
-    dispatchedIndependents.map((id) => runOneWorkstream(id, worktrees[id] as string)),
-  );
+  const independentResults = await runIndependentFanout({
+    independent,
+    preserved,
+    skip: missingWorktree,
+    runAt: (id) => runOneWorkstream(id, worktrees[id] as string),
+    verdicts,
+    multi: ids.length > 1,
+  });
   for (const r of independentResults) {
     if (!r.ok) failedOrSkipped.add(r.id);
   }
@@ -225,6 +233,7 @@ async function runDevelopTopological(
     runOneWorkstream,
     { stateRef, inCycleWorktrees, depCompletedAtMap, failureSource },
   );
+  await persister.flush();
   worktrees = wtResult.worktrees;
   workstreamBaseShas = wtResult.workstreamBaseShas;
   next = stateRef.current;

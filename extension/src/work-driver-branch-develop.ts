@@ -20,6 +20,7 @@ import { cachedIssueTitle } from "./work-driver-integrate.ts";
 import { findOpenPrForIssue, prPreflightEnabled } from "./work-driver-pr-preflight.ts";
 import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 
+import { greenWorkstreamsFromInterruptedDevelop } from "./work-develop-greens.ts";
 import { runDevelopTopological } from "./work-develop-topological.ts";
 import { salvageKnownDirtyWorktrees } from "./work-driver-branch-salvage.ts";
 import { applySafetyNet, hasAnyWorktreeEvidence } from "./work-driver-safety-net.ts";
@@ -346,6 +347,12 @@ export async function runDevelop(
     Date.now(),
   );
   next = begun.state;
+  // #1016 — crash-resume: workstreams that finished green before the crash
+  // keep their worktree and commits; only the rest are re-dispatched.
+  const preserved = greenWorkstreamsFromInterruptedDevelop(state);
+  if (preserved.size > 0) {
+    trace(`work-driver: develop resumed — keeping green workstreams ${[...preserved].join(", ")}`);
+  }
   return runDevelopTopological(
     ctx,
     next,
@@ -356,5 +363,6 @@ export async function runDevelop(
     execFn,
     now,
     begun.jobId,
+    preserved,
   );
 }
