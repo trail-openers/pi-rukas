@@ -56,7 +56,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -97,10 +97,15 @@ const EXPECTED_ROSTER = [
   "start_work_driver",
   "start_plan_driver",
   "start_research_driver",
+  "question",
 ] as const;
 
 // Codemode flag for this child. `PI_ENSEMBLE_CHILD_CODEMODE` defaults to ON
 // (the issue's production default); `=0` reproduces the pre-change argv.
+// Presence/absence of `codemode` in subagent children (developer, ops, …)
+// is asserted in test-codemode-reviewer-rejection.ts — this child is
+// project-manager-shaped (the full pi-rukas extension is loaded), so
+// codemode is not expected in its roster.
 // NOTE: test-pi-shape-live.ts loads the FULL pi-rukas extension (--extension
 // extDir), whose setActiveTools filters to the role's allowed tools. Codemode
 // is NOT in the project-manager role's allow list (agents.json), so the
@@ -111,6 +116,13 @@ const EXPECTED_ROSTER = [
 // shape assertions (the PONG and roster checks below), and so that a future
 // role that DOES allow codemode (e.g. a reviewer role) can be tested here.
 const codemodeEnabled = process.env.PI_ENSEMBLE_CHILD_CODEMODE !== "0";
+
+// Provider/model for the live child, same convention as the sibling live
+// tests (e.g. test-codemode-reviewer-rejection.ts): pass --provider/--model
+// when PI_ENSEMBLE_LIVE_PROVIDER / PI_ENSEMBLE_LIVE_MODEL are set, otherwise
+// inherit the host default. A dead host default otherwise poisons this test.
+const liveProvider = process.env.PI_ENSEMBLE_LIVE_PROVIDER;
+const liveModel = process.env.PI_ENSEMBLE_LIVE_MODEL;
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fixturePath = path.join(here, "fixtures", "shape-live-roster-reporter.ts");
@@ -133,7 +145,7 @@ const prompt = [
 // no-extensions flag also disables built-in extensions, including the built-in
 // MCP; the `-e builtin:mcp` flag re-enables just the MCP built-in so the
 // child's toolset includes the mcp__<server>__<tool> tools the permission
-// overlay in agents.json grants per role (see spawn-support.ts CHILD_ARGS_BASE
+// overlay in agents.json grants per role (see spawn-support.ts childArgsBase()
 // for the same argument order used in production).
 const childArgs = [
   "--mode",
@@ -153,12 +165,25 @@ childArgs.push(
   "--extension",
   fixturePath,
 );
+if (liveProvider) {
+  childArgs.push("--provider", liveProvider);
+}
+if (liveModel) {
+  childArgs.push("--model", liveModel);
+}
 
 console.log(`[test] spawning child: pi ${childArgs.join(" ")}`);
 const child = spawn("pi", childArgs, {
   cwd: worktreeRoot,
   stdio: ["pipe", "pipe", "pipe"],
   env: { ...process.env },
+});
+
+// A missing `pi` binary would otherwise hang the whole test until the 120s
+// backstop fires; fail fast with the spawn error instead.
+let spawnError: Error | null = null;
+child.on("error", (err) => {
+  spawnError = err;
 });
 
 let stdout = "";
@@ -198,6 +223,11 @@ const exitCode = await new Promise<number | null>((resolve) => {
 
 const ms = Date.now() - start;
 console.log(`[test] child exited in ${ms}ms, code=${exitCode}`);
+
+if (spawnError) {
+  console.error(`✗ failed to spawn pi: ${spawnError.message}`);
+  process.exit(1);
+}
 
 if (stderr && stderr.length > 0) {
   console.log(`[test] child stderr (last 1000): ${stderr.slice(-1000)}`);

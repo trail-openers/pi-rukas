@@ -35,7 +35,7 @@ After updating pi-rukas (the 1.0.0-upgrade line, #959), every `dispatch_speciali
 
 ### Cause
 
-Your global `pi` is below 1.0.0: the new subagent spawn path passes `-e builtin:mcp` (re-enabling the MCP built-in that `--no-extensions` also disables under Pi 1.0.0), and pi < 1.0.0 does not know that flag. `./install.sh`'s preflight refuses the install on old pi and prints the exact upgrade command (`npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.0.0`).
+Your global `pi` is below 1.0.0: the new subagent spawn path passes `-e builtin:mcp` (and, unless `PI_ENSEMBLE_CHILD_CODEMODE=0`, `-e builtin:codemode`, issue #1030 — re-enabling the MCP built-in that `--no-extensions` also disables under Pi 1.0.0), and pi < 1.0.0 does not know those flags. `./install.sh`'s preflight refuses the install on old pi and prints the exact upgrade command (`npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.0.0`).
 
 ### Fix
 

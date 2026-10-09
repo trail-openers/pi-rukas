@@ -279,6 +279,7 @@ delete process.env.PI_ENSEMBLE_ALLOW_DESTRUCTIVE_GIT;
   const seam = readFileSync(join(SRC, "child-codemode.ts"), "utf8");
   const companion = readFileSync(join(SRC, "child-guards.ts"), "utf8");
   const strict = readFileSync(join(SRC, "permission-subagent-guard.ts"), "utf8");
+  const spawnSupport = readFileSync(join(SRC, "spawn-support.ts"), "utf8");
   assert(
     /PI_ENSEMBLE_CHILD_CODEMODE/.test(seam),
     "canary: the flag is read in child-codemode.ts (the single seam)",
@@ -308,6 +309,21 @@ delete process.env.PI_ENSEMBLE_ALLOW_DESTRUCTIVE_GIT;
   assert(
     !/PI_ENSEMBLE_CHILD_CODEMODE/.test(strict),
     "canary: the strict path does NOT read PI_ENSEMBLE_CHILD_CODEMODE itself (single seam)",
+  );
+  // The argv side (spawn-support.ts) also reads the flag through the seam —
+  // a local copy there (one that treated "false" differently from "0") would
+  // make PI_ENSEMBLE_CHILD_CODEMODE=false argv-off but activation-on. The
+  // canary forbids a *local reader*: a declaration plus an env read in the
+  // same file (a comment naming the flag is not a reader — the doc block
+  // documents the escape hatch, and that documentation is the contract).
+  assert(
+    /childCodemodeEnabled\s*\(\s*\)/.test(spawnSupport),
+    "canary: spawn-support.ts calls childCodemodeEnabled() (the single seam, no local copy)",
+  );
+  assert(
+    !(/function\s+childCodemodeEnabled/.test(spawnSupport) &&
+      /PI_ENSEMBLE_CHILD_CODEMODE\s*[\]=]/.test(spawnSupport)),
+    "canary: spawn-support.ts has no local childCodemodeEnabled that reads the flag itself (single seam)",
   );
   // The seam does an APPEND, not a replace — the call is [..active, "codemode"].
   assert(

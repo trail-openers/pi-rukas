@@ -115,7 +115,7 @@ const prompt = [
 // ONLY path to the sentinel file is through the codemode script's
 // tools.write — which is what we are proving gets rejected. This mirrors
 // what spawnSpecialist produces for a reviewer role once the codemode argv
-// change (task-a) lands: CHILD_ARGS_BASE + -e builtin:codemode +
+// change (task-a) lands: childArgsBase() + -e builtin:codemode +
 // --exclude-tools write,edit,multiedit + the companion extension. The
 // --tools restriction is a test-only addition (production does not
 // restrict to codemode+fixture; it relies on the role's exclude list).
@@ -157,6 +157,13 @@ child.stderr?.on("data", (d: Buffer) => {
   stderr += d.toString();
 });
 
+// A missing `pi` binary would otherwise hang the whole test until the
+// backstop fires; fail fast with the spawn error instead.
+let spawnError: Error | null = null;
+child.on("error", (err) => {
+  spawnError = err;
+});
+
 // Send the prompt via stdin RPC.
 child.stdin?.write(`${JSON.stringify({ type: "prompt", message: prompt })}\n`);
 
@@ -182,6 +189,13 @@ const exitCode = await new Promise<number | null>((resolve) => {
 
 const ms = Date.now() - start;
 console.log(`[test] child exited in ${ms}ms, code=${exitCode}`);
+
+// A missing `pi` binary would otherwise hang the whole test until the
+// backstop fires; fail fast with the spawn error instead.
+if (spawnError) {
+  console.error(`✗ failed to spawn pi: ${spawnError.message}`);
+  process.exit(1);
+}
 
 if (stderr && stderr.length > 0) {
   console.log(`[test] child stderr (last 1000): ${stderr.slice(-1000)}`);

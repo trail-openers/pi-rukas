@@ -17,9 +17,19 @@
  * loadout. A replace built from anything less than the current set drops
  * the `mcp__codebase_memory__*` tools and every other tool the session
  * holds. So the current set (`getActiveTools()`) plus `codemode` is written
- * back. `--exclude-tools` still applies (excluded tools are removed from
- * the registry, so they are absent from `getActiveTools()` already and
- * unreachable from codemode scripts).
+ * back.
+ *
+ * Defence-in-depth — reviewer write/edit exclusion through codemode: it
+ * holds because Pi's `executeCodemode` (pi-coding-agent `src/core/agent.ts`)
+ * builds its `sandboxTools` from `getCodemodeCallableTools(ctx.tools)` — the
+ * codemode sandbox exposes only callable tools and routes calls through the
+ * same `executeTool` + `tool_call` hooks as a direct call. `--exclude-tools` removes the tool from the session registry, so an excluded
+ * `write`/`edit` is absent from `getCodemodeCallableTools` and unreachable
+ * from scripts (verified against the installed Pi by
+ * `extension/smoke-tests/test-codemode-reviewer-rejection.ts`, the live
+ * canary to run on every Pi version bump — it is on the Pi-bump checklist
+ * in AGENTS.md §4). The exclusion therefore survives the codemode path
+ * without any extra gate on this side.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
