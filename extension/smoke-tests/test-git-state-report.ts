@@ -61,6 +61,16 @@ function mkRepo(withCommit = true): string {
   assert(Buffer.byteLength(line) <= 300, `line ≤300 bytes (got ${Buffer.byteLength(line)})`);
 }
 
+// 2b. long names: the "+N more" suffix survives the 300-byte budget
+{
+  const dir = mkRepo();
+  for (let i = 0; i < 7; i++) writeFileSync(join(dir, `${"a".repeat(80)}${i}.txt`), "x");
+  const line = await gitStateLine(dir);
+  assert(line.includes("7 uncommitted/untracked"), `long names: count kept (got: ${line})`);
+  assert(/\+\d+ more\)/.test(line), `long names: +N more kept (got: ${line})`);
+  assert(Buffer.byteLength(line) <= 300, `long names: ≤300 bytes (got ${Buffer.byteLength(line)})`);
+}
+
 // 3. unpushed with upstream
 {
   const bare = mkdtempSync(join(tmpdir(), "git-state-bare-"));
@@ -159,10 +169,12 @@ function mkRepo(withCommit = true): string {
   );
 }
 
-// 7b. no cwd → unverified, never process.cwd()
+// 7b. no cwd → unverified; the dispatch path resolves process.cwd() before reaching here
 {
   const line = await gitStateLine(undefined);
   assert(line === `${PREFIX} unverified (no cwd)`, `no cwd is unverified (got: ${line})`);
+  const own = await gitStateLine(process.cwd());
+  assert(!own.includes("no cwd"), `process cwd yields a real state (got: ${own})`);
 }
 
 // 7c. hostile filename: one bounded, JSON-quoted line — no embedded newline

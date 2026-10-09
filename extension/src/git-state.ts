@@ -98,6 +98,24 @@ function capBytes(line: string): string {
   return `${out}...`;
 }
 
+function lineFor(count: number, listed: string[], unpushed: string): string {
+  const more = count - listed.length;
+  const list = listed.join(", ") + (more > 0 ? `${listed.length ? ", " : ""}+${more} more` : "");
+  const tree = count === 0 ? "clean" : `${count} uncommitted/untracked (${list})`;
+  return `${PREFIX} ${tree}${unpushed ? `; ${unpushed}` : ""}`;
+}
+
+/** Lists as many of the first MAX_LISTED paths as fit the byte budget; the "+N more" suffix is always kept. */
+function boundedLine(entries: string[], unpushed: string): string {
+  const listed: string[] = [];
+  for (const entry of entries.slice(0, MAX_LISTED)) {
+    const next = [...listed, porcelainPath(entry)];
+    if (Buffer.byteLength(lineFor(entries.length, next, unpushed)) > MAX_LINE_BYTES) break;
+    listed.push(next[next.length - 1] as string);
+  }
+  return lineFor(entries.length, listed, unpushed);
+}
+
 /**
  * The one git-state line for a dispatch cwd, e.g.
  *   "git state (at report time): clean"
@@ -118,16 +136,7 @@ async function reportLine(cwd: string | undefined, run: GitRunner): Promise<stri
     });
     const entries = status.split("\n").filter((l) => l.length > 0);
     const unpushed = await unpushedClause(run, cwd);
-    const tree =
-      entries.length === 0
-        ? "clean"
-        : `${entries.length} uncommitted/untracked (${entries
-            .slice(0, MAX_LISTED)
-            .map(porcelainPath)
-            .join(
-              ", ",
-            )}${entries.length > MAX_LISTED ? `, +${entries.length - MAX_LISTED} more` : ""})`;
-    return capBytes(`${PREFIX} ${tree}${unpushed ? `; ${unpushed}` : ""}`);
+    return capBytes(boundedLine(entries, unpushed));
   } catch (err) {
     const reason = err instanceof Unverified ? err.reason : reasonOf(err);
     return `${PREFIX} unverified (${reason})`;

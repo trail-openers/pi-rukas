@@ -166,7 +166,7 @@ export function registerDispatchTools(pi: ExtensionAPI) {
       const { jobId } = startJob(pi, {
         label: spec.role,
         role: spec.role,
-        cwd: spec.cwd,
+        cwd: spec.cwd ?? process.cwd(),
         work: (signal, hooks) =>
           withProviderBackoff(
             (sig) =>
@@ -236,7 +236,7 @@ export function registerDispatchTools(pi: ExtensionAPI) {
           return {
             label: displayLabel,
             role: spec.role,
-            cwd: spec.cwd,
+            cwd: spec.cwd ?? process.cwd(),
             work: (signal, hooks) =>
               withProviderBackoff(
                 (sig) =>
