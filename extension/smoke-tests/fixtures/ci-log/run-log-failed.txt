@@ -1,0 +1,26 @@
+run	step	2026-01-01T00:00:00Z	Setting up runner
+run	step	2026-01-01T00:00:01Z	Running in /home/runner/work/pi-rukas/pi-rukas
+run	step	2026-01-01T00:00:02Z	  Git checkout completed in 3.2s
+run	step	2026-01-01T00:00:05Z	  Installing dependencies...
+run	step	2026-01-01T00:00:30Z	  bun install completed in 25.1s
+run	step	2026-01-01T00:00:31Z	  Running typecheck...
+run	step	2026-01-01T00:00:35Z	  ✓ typecheck: 0 errors
+run	step	2026-01-01T00:00:36Z	  Running lint...
+run	step	2026-01-01T00:00:40Z	  ✓ lint: 0 warnings, 0 errors
+run	step	2026-01-01T00:00:41Z	  Running smoke tests...
+run	step	2026-01-01T00:00:42Z	  ✓ test-alpha.ts: 12 passed
+run	step	2026-01-01T00:00:43Z	  ✓ test-beta.ts: 8 passed
+run	step	2026-01-01T00:00:44Z	  ✗ test-gamma.ts: 3 failed
+run	step	2026-01-01T00:00:44Z	    at checkAlpha (test-gamma.ts:12:7)
+run	step	2026-01-01T00:00:44Z	    at checkBeta (test-gamma.ts:24:3)
+run	step	2026-01-01T00:00:44Z	  ✗ test-delta.ts: 1 failed
+run	step	2026-01-01T00:00:45Z	    at Object.<anonymous> (test-delta.ts:42:11)
+run	step	2026-01-01T00:00:45Z	  ✓ test-epsilon.ts: 5 passed
+run	step	2026-01-01T00:00:45Z	  ##[error] The smoke test run failed: 2 test(s) — test-gamma.ts, test-delta.ts
+run	step	2026-01-01T00:00:46Z	  ✓ error handling: assertion passed (no error was raised)
+run	step	2026-01-01T00:00:46Z	  error: expected 200, got 404
+run	step	2026-01-01T00:00:46Z	    at fetchAndCompare (test-gamma.ts:12:7)
+run	step	2026-01-01T00:00:47Z	  The error was caught and handled gracefully
+run	step	2026-01-01T00:00:47Z	  ✓ no error handling: assertion passed
+run	step	2026-01-01T00:00:48Z	  ##[error] Process completed with exit code 1
+run	step	2026-01-01T00:00:48Z	  Failed with 2 test(s) in 6.2s
