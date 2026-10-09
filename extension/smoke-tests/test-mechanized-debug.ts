@@ -30,7 +30,7 @@ async function main() {
       if (cmd === "git rev-parse --abbrev-ref HEAD") return { stdout: "feature/issue-994\n" };
       if (cmd === "git rev-parse HEAD" && o?.cwd && o.cwd.endsWith("-task-a"))
         return { stdout: "aaa111aaa111aaa111aaa111aaa111aaa111aa\n" };
-      if (cmd.startsWith("git rev-parse ")) return { stdout: "base123\n" };
+      if (cmd.startsWith("git rev-parse ")) return { stdout: "1111111111111111111111111111111111111111\n" };
       if (cmd.startsWith("git fetch origin")) return { stdout: "" };
       if (cmd.startsWith("git worktree add")) return { stdout: "" };
       if (cmd.startsWith("git worktree remove")) return { stdout: "" };
@@ -41,7 +41,7 @@ async function main() {
         if (cwd.endsWith("-task-a")) return { stdout: " M src/a.rs\n" };
         return { stdout: "" };
       }
-      if (cmd.startsWith("git rev-list --count base123")) return { stdout: "1\n" };
+      if (cmd.startsWith("git rev-list --count 1111111111111111111111111111111111111111")) return { stdout: "1\n" };
       if (cmd.startsWith("git cherry-pick")) return { stdout: "" };
       if (cmd.startsWith("git cat-file -p"))
         return { stdout: "tree head1deadbeefdeadbeefdeadbeefdeadbeef\nauthor T\n" };

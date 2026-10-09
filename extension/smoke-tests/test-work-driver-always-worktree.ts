@@ -233,13 +233,13 @@ assert(
     if (cmd.startsWith("git fetch")) throw new Error("Permission denied (publickey)");
     if (cmd.includes("--verify --quiet")) {
       const isOrigin = cmd.includes("origin/main");
-      return { stdout: isOrigin ? "\n" : "localbase123\n" };
+      return { stdout: isOrigin ? "\n" : "local1111111111111111111111111111111111111111\n" };
     }
     return { stdout: "" };
   };
   const out2 = await mechanizedBranchSetup(execFn2, REPO, 533, [533], [], "fetch down");
   assert(
-    out2.baseSha === "localbase123",
+    out2.baseSha === "local1111111111111111111111111111111111111111",
     "a failed fetch with an unresolvable origin ref falls back to the LOCAL mainline ref — the mechanized path survives instead of handing the branch step to the (unprovisioned) ops fallback",
   );
   void calls2;

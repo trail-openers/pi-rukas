@@ -223,9 +223,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       };
       const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
         calls.push(cmd);
-        if (cmd === "git rev-parse HEAD") return { stdout: "base123\n" };
+        if (cmd === "git rev-parse HEAD") return { stdout: "1111111111111111111111111111111111111111\n" };
         if (cmd === "git rev-parse --abbrev-ref HEAD") return { stdout: "feature/issue-818\n" };
-        if (cmd.startsWith("git rev-parse ")) return { stdout: "base123\n" };
+        if (cmd.startsWith("git rev-parse ")) return { stdout: "1111111111111111111111111111111111111111\n" };
         if (cmd.startsWith("git fetch origin")) return { stdout: "" };
         if (cmd.startsWith("git worktree remove")) return { stdout: "" };
         if (cmd.startsWith("git worktree add")) return { stdout: "" };
@@ -238,8 +238,8 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           if (cwd.endsWith("-task-c")) return { stdout: "?? src/c.rs\n" };
           return { stdout: "" };
         }
-        if (cmd.includes('"base123"..HEAD')) return { stdout: "1\n" };
-        if (cmd.startsWith("git rev-list --count base123")) return { stdout: "0\n" };
+        if (cmd.includes('"1111111111111111111111111111111111111111"..HEAD')) return { stdout: "1\n" };
+        if (cmd.startsWith("git rev-list --count 1111111111111111111111111111111111111111")) return { stdout: "1\n" };
         if (cmd.startsWith("git rev-list --count origin/")) return { stdout: "1\n" };
         if (cmd.startsWith("git add -- ")) return { stdout: "" };
         if (cmd.startsWith("git diff --cached"))

@@ -12,10 +12,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseWorktreesBlock } from "../src/work-driver-branch-develop.ts";
+import { gitIn, makeBaseWorktrees } from "./lib/git-worktree-fixture.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { parseWorkstreams } from "../src/work-driver-plan.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
-import { readState, writeState } from "../src/workflow-state.ts";
+import { type WorkEvent, readState, writeState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -206,7 +207,8 @@ branch: feature/issue-553-fix
   ].join("\n");
   const parsed = parseWorkstreams(depBlock);
   assert(
-    (parsed["task-b"]?.dependsOn ?? []).length === 1 && parsed["task-b"]?.dependsOn?.[0] === "task-a",
+    (parsed["task-b"]?.dependsOn ?? []).length === 1 &&
+      parsed["task-b"]?.dependsOn?.[0] === "task-a",
     "#679: `- depends-on: task-a` parsed into dependsOn array",
   );
   assert(
@@ -267,6 +269,7 @@ branch: feature/issue-553-fix
         plumbReports: [],
         status: "running" as const,
         branchName: "feature/issue-700-multi",
+        workstreamBaseShas: {} as Record<string, string>,
       },
       eventLog: [
         // Minimum prior events so the loop doesn't trip on inconsistency
@@ -274,6 +277,8 @@ branch: feature/issue-553-fix
       ],
     };
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    const baseShas = await makeBaseWorktrees(dir, ["task-a", "task-b", "task-c"]);
+    Object.assign(state.pipelineState.workstreamBaseShas, baseShas);
     await writeState(dir, state);
 
     const seenCwds: string[] = [];
@@ -299,6 +304,7 @@ branch: feature/issue-553-fix
         if (spec.role !== "developer") {
           throw new Error("smoke: halting after develop fanout");
         }
+        gitIn(spec.cwd ?? dir, ["commit", "--allow-empty", "-qm", `work ${opts?.label}`]);
         return mkResult({
           role: "developer",
           text: `mock developer output for ${opts?.label}`,
@@ -310,7 +316,18 @@ branch: feature/issue-553-fix
     // Three developer dispatches fired, one per workstream, each with the
     // correct per-worktree cwd.
     const developerLabels = seenLabels.filter((l) => l.startsWith("developer["));
-    assert(developerLabels.length === 3, "multi-workstream: 3 developer dispatches fired");
+    // #1016 — task-b fails once, so exactly ONE selective re-dispatch of it:
+    // 4 developer dispatches (a, b, c, then b again); a and c never re-run.
+    assert(
+      developerLabels.length === 4,
+      "multi-workstream: 3 developer dispatches + 1 selective retry",
+    );
+    assert(
+      developerLabels.filter((l) => l === "developer[task-b]").length === 2 &&
+        developerLabels.filter((l) => l === "developer[task-a]").length === 1 &&
+        developerLabels.filter((l) => l === "developer[task-c]").length === 1,
+      "multi-workstream: only the failed workstream (task-b) is re-dispatched",
+    );
     assert(
       developerLabels.includes("developer[task-a]") &&
         developerLabels.includes("developer[task-b]") &&
@@ -336,10 +353,14 @@ branch: feature/issue-553-fix
     const after = await readState(dir, 700);
     const kinds = (after?.eventLog ?? []).map((e) => e.kind);
     assert(kinds.includes("branches-fanned-out"), "multi-workstream: branches-fanned-out emitted");
-    const branchCompletions = (after?.eventLog ?? []).filter((e) => e.kind === "branch-completed");
+    const isBranchCompleted = (
+      e: WorkEvent,
+    ): e is Extract<WorkEvent, { kind: "branch-completed" }> =>
+      e.kind === "branch-completed" && e.step === "develop";
+    const branchCompletions = (after?.eventLog ?? []).filter(isBranchCompleted);
     assert(
-      branchCompletions.length === 3,
-      "multi-workstream: 3 branch-completed events (one per branch)",
+      branchCompletions.length === 4,
+      "multi-workstream: 4 branch-completed events (3 branches + task-b's retry, append-only)",
     );
     assert(
       kinds.includes("branches-converged"),
@@ -348,16 +369,16 @@ branch: feature/issue-553-fix
 
     // Partial failure: task-b's branch-completed has ok=false, others ok=true.
     const verdictsByWorkstream = Object.fromEntries(
-      branchCompletions.map((e) => [
-        (e as Extract<typeof e, { kind: "branch-completed" }>).workstreamId,
-        (e as Extract<typeof e, { kind: "branch-completed" }>).ok,
-      ]),
+      branchCompletions.map((e) => [e.workstreamId, e.ok]),
     );
     assert(verdictsByWorkstream["task-a"] === true, "task-a: success recorded");
+    // The latest task-b event is the retry's green result.
+    const taskBLatest = branchCompletions.filter((e) => e.workstreamId === "task-b");
     assert(
-      verdictsByWorkstream["task-b"] === false,
-      "task-b: failure recorded (partial-failure aggregate)",
+      taskBLatest.length === 2 && taskBLatest[0]?.ok === false,
+      "task-b: first failure recorded before the selective retry",
     );
+    assert(verdictsByWorkstream["task-b"] === true, "task-b: retry recorded green");
     assert(
       verdictsByWorkstream["task-c"] === true,
       "task-c: success recorded (NOT aborted by task-b failure)",
@@ -368,8 +389,8 @@ branch: feature/issue-553-fix
     assert(converged !== undefined, "branches-converged is present");
     if (converged?.kind === "branches-converged") {
       assert(
-        converged.verdicts.filter((v) => v.ok).length === 2,
-        "branches-converged verdicts: 2 of 3 ok (partial failure aggregate)",
+        converged.verdicts.filter((v) => v.ok).length === 3,
+        "branches-converged verdicts: 3 of 3 ok after the selective retry",
       );
     }
   } finally {
@@ -396,7 +417,9 @@ branch: feature/issue-553-fix
   const { independent, dependentOrdered } = topologicalDispatchOrder(ids, dependsOnMap);
   assert(independent.length === 1 && independent[0] === "task-a", "#679: task-a is independent");
   assert(
-    dependentOrdered.length === 2 && dependentOrdered[0] === "task-b" && dependentOrdered[1] === "task-c",
+    dependentOrdered.length === 2 &&
+      dependentOrdered[0] === "task-b" &&
+      dependentOrdered[1] === "task-c",
     "#679: topological order is task-b → task-c (C waits on B which waits on A)",
   );
 
@@ -412,7 +435,10 @@ branch: feature/issue-553-fix
   assert(noSkips.size === 0, "#679: no skips when no dependency failed");
 
   // The N=1 default path: no depends-on, all independent.
-  const { independent: solo, dependentOrdered: soloDep } = topologicalDispatchOrder(["default"], {});
+  const { independent: solo, dependentOrdered: soloDep } = topologicalDispatchOrder(
+    ["default"],
+    {},
+  );
   assert(solo.length === 1 && solo[0] === "default", "#679: N=1 default is independent");
   assert(soloDep.length === 0, "#679: N=1 default has no dependent workstreams");
 }
