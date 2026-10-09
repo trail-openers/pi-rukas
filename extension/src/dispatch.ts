@@ -39,7 +39,9 @@ const MAX_PARALLEL = 10;
 // one; strip it explicitly before the spec reaches spawnSpecialist.
 export function stripModelOverride(spec: DispatchSpec): DispatchSpec {
   if ("model" in spec) {
-    const { model: _discarded, ...rest } = spec as DispatchSpec & { model?: unknown };
+    const { model: _discarded, ...rest } = spec as DispatchSpec & {
+      model?: unknown;
+    };
     return rest as DispatchSpec;
   }
   return spec;
@@ -151,7 +153,9 @@ export function registerDispatchTools(pi: ExtensionAPI) {
       "Spawn EXACTLY ONE specialist (developer, ops, explore, adversarial-developer, code-review-specialist) and return a job handle immediately. **Use this whenever you need a single subagent.** If you need TWO OR MORE subagents to run simultaneously, use `dispatch_parallel` instead — never use `dispatch_parallel` with a single spec. The final report arrives later as a user message starting with `[ensemble:async]`. End your turn after dispatching unless you have other independent work to do.",
     parameters: Type.Object({
       role: Type.String({ description: roleDesc }),
-      prompt: Type.String({ description: "Task description for the specialist." }),
+      prompt: Type.String({
+        description: "Task description for the specialist.",
+      }),
       cwd: Type.Optional(
         Type.String({
           description: "Working directory; defaults to current cwd.",
@@ -166,6 +170,7 @@ export function registerDispatchTools(pi: ExtensionAPI) {
       const { jobId } = startJob(pi, {
         label: spec.role,
         role: spec.role,
+        cwd: spec.cwd ?? process.cwd(),
         work: (signal, hooks) =>
           withProviderBackoff(
             (sig) =>
@@ -235,6 +240,7 @@ export function registerDispatchTools(pi: ExtensionAPI) {
           return {
             label: displayLabel,
             role: spec.role,
+            cwd: spec.cwd ?? process.cwd(),
             work: (signal, hooks) =>
               withProviderBackoff(
                 (sig) =>

@@ -8,11 +8,17 @@ import {
   jobs,
   newJobId,
 } from "./async-jobs-registry.ts";
-import { type BatchReportInput, formatBatchReport, totalTokens } from "./async-jobs-report.ts";
+import {
+  type BatchReportInput,
+  formatBatchReport,
+  isDevOrOpsLabel,
+  totalTokens,
+} from "./async-jobs-report.ts";
 import { makeSlowWatch } from "./async-jobs-slow.ts";
 import type { WorkHooks } from "./async-jobs.ts";
 import * as live from "./dispatch-deck-live.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
+import { gitStateLine } from "./git-state.ts";
 import * as lifecycle from "./lifecycle-events.ts";
 import * as sessionAutosave from "./session-autosave.ts";
 import { feedSlowProgress } from "./slow-notice.ts";
@@ -24,8 +30,34 @@ interface StartBatchInput {
   members: Array<{
     label: string;
     role: string;
+    /** #1015 — resolved member cwd; the developer/ops member's git-state line runs here. */
+    cwd?: string;
     work: (signal: AbortSignal, hooks: WorkHooks) => Promise<DispatchResult>;
   }>;
+}
+
+/**
+ * #1015 — computes the git-state line for each developer/ops member (against its own
+ * cwd; failed members and reviewers get none), then delivers the one batch steer.
+ */
+async function deliverBatchReport(
+  pi: ExtensionAPI,
+  head: { batchLabel: string; batchId: string; startedAt: number },
+  memberResults: BatchReportInput["members"],
+  memberCwd: Map<string, string | undefined>,
+): Promise<void> {
+  const lines = new Map<string, string>();
+  await Promise.all(
+    memberResults.map(async (m) => {
+      if ("failed" in m.result || !isDevOrOpsLabel(m.label)) return;
+      lines.set(m.jobId, await gitStateLine(memberCwd.get(m.jobId) ?? process.cwd()));
+    }),
+  );
+  const members = memberResults.map((m) => ({
+    ...m,
+    gitLine: lines.get(m.jobId),
+  }));
+  deliverReport(pi, formatBatchReport({ ...head, members }));
 }
 
 /**
@@ -77,6 +109,7 @@ export function startBatch(
 
   const memberJobIds: string[] = [];
   const memberResults: BatchReportInput["members"] = [];
+  const memberCwd = new Map<string, string | undefined>();
 
   for (const m of input.members) {
     const jobId = newJobId();
@@ -94,8 +127,13 @@ export function startBatch(
       batchId,
     };
     jobs.set(jobId, memberState);
+    memberCwd.set(jobId, m.cwd);
 
-    dispatchDeck.startEntry(jobId, { label: m.label, role: m.role, batchKey: batchId });
+    dispatchDeck.startEntry(jobId, {
+      label: m.label,
+      role: m.role,
+      batchKey: batchId,
+    });
     live.startBuffer(jobId);
     sessionAutosave.recordDispatch(m.role);
     // #799/#907 — batch members get the same watch + span feed as single
@@ -161,15 +199,18 @@ export function startBatch(
           } else {
             lifecycle.emitCompleted(batchId, input.batchLabel, input.batchLabel, batchMs, tokens);
           }
-          const report = formatBatchReport({
-            batchLabel: input.batchLabel,
-            batchId,
-            startedAt,
-            members: memberResults,
-          });
-          deliverReport(pi, report);
-          trace(
-            `async batch ${batchId} (${input.batchLabel}) finished in ${Date.now() - startedAt}ms`,
+          void deliverBatchReport(
+            pi,
+            { batchLabel: input.batchLabel, batchId, startedAt },
+            memberResults,
+            memberCwd,
+          ).then(
+            () =>
+              trace(
+                `async batch ${batchId} (${input.batchLabel}) finished in ${Date.now() - startedAt}ms`,
+              ),
+            (err: unknown) =>
+              trace(`async batch ${batchId} (${input.batchLabel}) report failed: ${String(err)}`),
           );
         }
       });

@@ -10,10 +10,16 @@ import {
   jobs,
   newJobId,
 } from "./async-jobs-registry.ts";
-import { formatFailReport, formatSingleReport, totalTokens } from "./async-jobs-report.ts";
+import {
+  formatFailReport,
+  formatSingleReport,
+  isDevOrOpsLabel,
+  totalTokens,
+} from "./async-jobs-report.ts";
 import { makeSlowWatch } from "./async-jobs-slow.ts";
 import * as live from "./dispatch-deck-live.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
+import { gitStateLine } from "./git-state.ts";
 import * as lifecycle from "./lifecycle-events.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import type { RunningState } from "./progress.ts";
@@ -96,6 +102,9 @@ export interface WorkHooks {
 interface StartJobInput {
   /** Human-readable subagent label (role + optional tag, e.g. "code-review-specialist[security]"). */
   label: string;
+  /** #1015 — resolved dispatch cwd (`spec.cwd ?? process.cwd()`); the developer/ops
+   * report's git-state line is computed against it, never process.cwd(). */
+  cwd?: string;
   /** Role name for telemetry. */
   role: string;
   /**
@@ -288,8 +297,13 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
       // state machine. Posting a steer too would inject a duplicate
       // [ensemble:async] message into PM's session and confuse the next turn.
       if (ownerKind === "pm") {
-        const report = formatSingleReport(jobId, input.label, result);
-        deliverReport(pi, report);
+        const deliver = (gitLine?: string) =>
+          deliverReport(pi, formatSingleReport(jobId, input.label, result, gitLine));
+        if (isDevOrOpsLabel(input.label)) {
+          void gitStateLine(input.cwd ?? process.cwd()).then(deliver);
+        } else {
+          deliver();
+        }
       }
       trace(`async job ${jobId} (${input.label}, owner=${ownerKind}) finished in ${result.ms}ms`);
       return result;
