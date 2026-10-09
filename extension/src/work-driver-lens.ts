@@ -25,6 +25,7 @@ import {
   type RepositionResult,
   repositionLensFixWorktree,
 } from "./work-driver-lens-fix-reposition-gate.ts";
+import type { ExecFn } from "./worktree.ts";
 // Re-export: moved into work-driver-lens-fix-commit.ts for the 500-line gate
 // (AGENTS.md §12) — importers (work-driver-adversarial.ts) keep their path.
 export { commitLensFixChanges, countLensFixEmptyResends } from "./work-driver-lens-fix-commit.ts";
@@ -420,23 +421,27 @@ export async function runLensFix(
   // unlanded round-1 work, or a diverged tree parks the cycle (a
   // `lens-fix-reposition` cap-hit) — dispatching a fix onto any of those
   // bases would build on code the branch does not have.
-  const tree = lensWorktree(ctx, state);
   const branchName = state.pipelineState.branchName;
-  if (branchName && tree !== ctx.repoRoot) {
-    // #981 lens MEDIUM: use the module's shared argv-capable executor (the
-    // inline exec wrapper above did not honour opts.argv, so the gate's
-    // argv-form git calls would have gone through a shell re-parse).
-    const execFn: import("./worktree.ts").ExecFn = ctx.verifyExecFn ?? execp;
+  if (branchName && fixTree !== ctx.repoRoot) {
+    // `tree !== ctx.repoRoot`: legacy state without worktrees falls back to
+    // repoRoot; the reposition gate only makes sense for a separate worktree.
+    const execFn: ExecFn = ctx.verifyExecFn ?? execp;
     const issueTitle = await cachedIssueTitle(state);
-    const rep = await repositionLensFixWorktree(execFn, tree, branchName, [ctx.issue], issueTitle);
+    const rep = await repositionLensFixWorktree(
+      execFn,
+      fixTree,
+      branchName,
+      [ctx.issue],
+      issueTitle,
+    );
     if (rep.kind === "already-at-tip" || rep.kind === "repositioned") {
       trace(
-        `work-driver: lens-fix reposition ${rep.kind}${rep.kind === "repositioned" && rep.landedViaCherry ? " (landedViaCherry)" : ""} for ${tree} (branch ${branchName}) — dispatching fixer onto the verified tip`,
+        `work-driver: lens-fix reposition ${rep.kind}${rep.kind === "repositioned" && rep.landedViaCherry ? " (landedViaCherry)" : ""} for ${fixTree} (branch ${branchName}) — dispatching fixer onto the verified tip`,
       );
     } else {
       // Park: the base is not trustworthy. Build the cap-hit (routed to
       // `handoff` by nextStep) and return WITHOUT dispatching the fixer.
-      return parkLensFixReposition(ctx, state, now, tree, rep);
+      return parkLensFixReposition(ctx, state, now, fixTree, rep);
     }
   }
 
