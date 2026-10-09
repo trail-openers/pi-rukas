@@ -48,15 +48,13 @@ export class InFlightTools {
 
   /** Process one parsed child event against the in-flight state. */
   observe(event: PiJsonEvent): void {
-    // Nested tool calls (codemode scripts via ctx.executeTool) emit flat
-    // tool_execution_start / tool_execution_end events with their own
-    // toolCallId ("<callerId>/<n>") and a parentToolCallId. They are not
-    // message-bearing, so they are handled before the `msg` check below.
-    // A nested span opens on tool_execution_start and closes on
-    // tool_execution_end — the same open/close contract as top-level
-    // toolCall/toolResult pairs. A nested span always closes on its own
-    // tool_execution_end (Pi emits it in a finally, before the parent
-    // toolResult); a span orphaned by a dying child dies with the spawn.
+    // This open/delete covers BOTH call shapes: top-level calls, whose
+    // flat events carry the same toolCallId as the toolCall block (so
+    // the set/delete here is idempotent with the message-path close
+    // below), and nested codemode calls (ctx.executeTool), whose
+    // <callerId>/<n> ids never surface in a message. A span always
+    // closes on its own tool_execution_end; an orphan dies with the
+    // spawn.
     if (event.type === "tool_execution_start") {
       if (event.toolCallId) this.open.set(event.toolCallId, event.toolName ?? "unknown");
       return;

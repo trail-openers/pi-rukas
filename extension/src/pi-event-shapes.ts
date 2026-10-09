@@ -175,7 +175,10 @@ export interface PiJsonEvent {
   /**
    * Present on `tool_execution_*` events when the call is nested (made by a
    * tool via `ctx.executeTool()`, e.g. a codemode script). Identifies the
-   * parent tool call that issued it.
+   * parent tool call that issued it. All of these flat fields (toolCallId,
+   * toolName, args, parentToolCallId, result, isError) are set only on flat
+   * `tool_execution_*` events — read them only after checking `event.type`
+   * (message-level ids live on `message`).
    */
   parentToolCallId?: string;
   /** Present on `tool_execution_end` — the tool's result payload. */

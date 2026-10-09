@@ -65,7 +65,14 @@ const approx = (a: number, b: number) => Math.abs(a - b) < 1e-9;
 // --- collapseEvents: toolResult with NO usage (empty/errored codemode call) --
 
 {
-  const result = collapseEvents(toolResultNoUsage, null, "developer", 0, 0, "");
+  const result = collapseEvents(
+    { type: "agent_end", messages: [assistantMessage, toolResultNoUsage] },
+    null,
+    "developer",
+    0,
+    0,
+    "",
+  );
   const u = result.usage;
 
   assert(approx(u.input, EXPECTED_TOTALS_NO_USAGE.input), "no-usage toolResult: input = assistant only");
@@ -118,19 +125,7 @@ const approx = (a: number, b: number) => Math.abs(a - b) < 1e-9;
     { type: "message_end", message: assistantMessage },
     start,
   );
-  ingestEvent(
-    state,
-    {
-      type: "message_end",
-      message: {
-        role: "toolResult",
-        toolName: "codemode",
-        toolCallId: "call_codemode_1",
-        content: [{ type: "text", text: "" }],
-      },
-    },
-    start,
-  );
+  ingestEvent(state, { type: "message_end", message: toolResultNoUsage }, start);
 
   const u = state.usage;
   assert(approx(u.input, EXPECTED_TOTALS_NO_USAGE.input), "no-usage toolResult (ingestEvent): input = assistant only");

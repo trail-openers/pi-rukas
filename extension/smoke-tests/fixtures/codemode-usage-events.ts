@@ -16,10 +16,13 @@
  * "assistant"` (the old behaviour) silently dropped this spend.
  */
 
-import type { PiJsonEvent } from "../../src/pi-event-shapes.ts";
+import type {
+  PiJsonEvent,
+  PiMessage,
+} from "../../src/pi-event-shapes.ts";
 
 /** The assistant message: the model call that ISSUED the codemode script. */
-export const assistantMessage: PiJsonEvent["message"] & { role: "assistant" } = {
+export const assistantMessage: PiMessage & { role: "assistant" } = {
   role: "assistant",
   model: "test-model",
   usage: { input: 1000, output: 200, cacheRead: 50, cacheWrite: 5, cost: { total: 0.01 } },
@@ -32,7 +35,7 @@ export const assistantMessage: PiJsonEvent["message"] & { role: "assistant" } = 
  * is the only record of the nested spend — it is NOT double-counted from
  * anywhere else in the transcript.
  */
-export const toolResultMessage: PiJsonEvent["message"] & { role: "toolResult" } = {
+export const toolResultMessage: PiMessage & { role: "toolResult" } = {
   role: "toolResult",
   toolName: "codemode",
   toolCallId: "call_codemode_1",
@@ -51,21 +54,15 @@ export const codemodeUsageAgentEnd: PiJsonEvent = {
 };
 
 /**
- * A toolResult with NO usage — an empty or errored codemode call. The
- * summation must tolerate this shape (contribute 0, not throw, not
+ * A toolResult message with NO usage — an empty or errored codemode call.
+ * The summation must tolerate this shape (contribute 0, not throw, not
  * default to a bogus non-zero figure).
  */
-export const toolResultNoUsage: PiJsonEvent = {
-  type: "agent_end",
-  messages: [
-    assistantMessage,
-    {
-      role: "toolResult",
-      toolName: "codemode",
-      toolCallId: "call_codemode_1",
-      content: [{ type: "text", text: "" }],
-    },
-  ],
+export const toolResultNoUsage: PiMessage & { role: "toolResult" } = {
+  role: "toolResult",
+  toolName: "codemode",
+  toolCallId: "call_codemode_1",
+  content: [{ type: "text", text: "" }],
 };
 
 /** Expected totals: assistant + toolResult, summed field-by-field. */

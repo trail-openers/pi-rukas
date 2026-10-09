@@ -358,12 +358,7 @@ export function ingestEvent(
     // accounting (see `collapseEvents`'s same invariant).
     if (msg.usage) {
       addUsage(state.usage, msg.usage, state);
-      // #1032 — a toolResult is not an assistant turn, but `usage.turns`
-      // is the running-turn invariant the view reads (`usage.turns ===
-      // turns` after every event); addUsage doesn't touch it, so sync it
-      // here (no-op: it already equals state.turns — turns is only
-      // incremented in the assistant branch below).
-      state.usage.turns = state.turns;
+      // `turns` is only counted for assistant messages.
     }
     if (toolResultObserver) {
       const tr = toolResultFields(msg);

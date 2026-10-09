@@ -25,7 +25,6 @@
 
 import { sanitizeForStorage, sanitizeText } from "./dispatch-deck-line.ts";
 import {
-  LIVE_BUFFER_MAX_CHARS,
   bufferSizes,
   buffers,
   eventSize,
