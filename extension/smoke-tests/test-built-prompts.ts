@@ -63,26 +63,39 @@ const OO_SWEEP_FILES = [
 ];
 // Matches `oo` used as a command-prefix wrapper: "oo git", "oo gh", "oo cargo",
 // "oo npm", "oo bun", "oo pnpm", "oo yarn", "oo pytest", "oo glab", etc.
-const ooPrefixRe = /(?<!\w)oo\s+(?:git|gh|glab|npm|cargo|bun|pnpm|yarn|pytest|go|uv|npx|ruff|recall|help|patterns|learn|forget)\b/g;
-// Explicit, exact-line exemptions for lines that legitimately mention `oo` as a
-// command prefix. Every entry is asserted to still exist below, so a stale
-// exemption (file rewritten or line removed) fails the gate instead of rotting.
+// The regex is built fresh on every call from the literal below, and is
+// deliberately NOT flagged `g`, so no `lastIndex` state exists to leak between
+// the sweep and the canary below. (It must stay a literal, not a string, on
+// Bun 1.4.x: `new RegExp("\\w")` is silently re-decoded and stops matching
+// word boundaries. A non-`g` regex is stateless by spec — a `g` regex here
+// would expose the Bun 1.4.x regression where `RegExp.prototype.test` returns
+// `false` on every second call of the same `g` regex, so the canary below
+// would intermittently report 1/2 instead of 2/2.)
+function ooPrefixRe() {
+  return /(?<!\w)oo\s+(?:git|gh|glab|npm|cargo|bun|pnpm|yarn|pytest|go|uv|npx|ruff|recall|help|patterns|learn|forget)\b/;
+}
+// Explicit, anchor-based exemptions: a swept line is exempt iff it contains one
+// of its file's anchor substrings. Anchors are short and stable, so a reword of
+// the surrounding sentence does not silently drop the exemption — and each
+// anchor is asserted to still be present below, so a stale exemption (file
+// rewritten) fails the gate instead of rotting.
 const OO_SWEEP_EXEMPT: Record<string, string[]> = {
   "agents-base/developer.md": [
     // the rewrite-guard paragraph explains the trust/sandbox rewrite and, until
     // #1029 adds bare runner rows, names the `oo`-prefixed form as the only
     // allowlisted one for strict/headless mode
-    "- **Keep check output out of the report** — verbose runners (`cargo test`, `bun test`, `npm test`, `pytest`, …) emit 50+ lines of per-test noise that bloats the dispatch report PM reads. Prefer codemode (when registered in your toolset) to run the checks and return only failures, or bound the output with the native limiting flags. For single short commands, a plain bash call is simpler. A bare command starting with one of these runners may still be silently rewritten to its `oo`-prefixed form for developer/ops subagents in trust/sandbox mode by the pi-rukas extension (`oo-rewrite-guard`) — a rewritten command is equivalent, so neither form is required of you. In strict or headless mode there is no rewrite: until the allowlist gains bare runner rows (#1029), the allowlisted form of a verbose runner is the `oo`-prefixed one (for example `oo cargo test`, `oo bun test`).",
+    "the allowlisted form of a verbose runner is the `oo`-prefixed one",
   ],
 };
 function assertOoSweep(lines: string[], rel: string) {
-  const exemptLines = OO_SWEEP_EXEMPT[rel] ?? [];
+  const anchors = OO_SWEEP_EXEMPT[rel] ?? [];
+  const isExempt = (line: string) => anchors.some((a) => line.includes(a));
+  const re = ooPrefixRe(); // fresh per file, so lastIndex can't leak forward
   const violations: string[] = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    if (exemptLines.includes(line)) continue;
-    const matches = line.match(ooPrefixRe);
-    if (matches) {
+    if (isExempt(line)) continue;
+    if (re.test(line)) {
       violations.push(`  line ${i + 1}: ${line.trim().slice(0, 120)}`);
     }
   }
@@ -92,12 +105,12 @@ function assertOoSweep(lines: string[], rel: string) {
       ? `${rel}: no oo command-prefix prescriptions remain`
       : `${rel}: ${violations.length} line(s) still prescribe oo command prefix:\n${violations.join("\n")}`,
   );
-  // Every exemption must still exist in the file — a stale exemption is a gate
-  // that no longer covers anything and must fail loudly.
-  for (const exempt of exemptLines) {
+  // Every anchor must still be present in the file — a missing anchor means the
+  // exemption is stale (it no longer matches anything) and must fail loudly.
+  for (const anchor of anchors) {
     assert(
-      lines.includes(exempt),
-      `${rel}: exempt line still present (stale OO_SWEEP_EXEMPT entry)`,
+      lines.some((l) => l.includes(anchor)),
+      `${rel}: OO_SWEEP_EXEMPT anchor found (a missing anchor means the exemption is stale)`,
     );
   }
 }
@@ -108,9 +121,8 @@ function assertOoSweep(lines: string[], rel: string) {
     "Run the suite with `oo cargo test` to keep the report short.",
     "Run the suite with `oo bun test` to keep the report short.",
   ];
-  const badViolations = fixture.filter(
-    (l) => (OO_SWEEP_EXEMPT["fixture"] ?? []).includes(l) === false && l.match(ooPrefixRe),
-  );
+  const canaryRe = ooPrefixRe(); // fresh regex, independent of the sweep above
+  const badViolations = fixture.filter((l) => canaryRe.test(l));
   assert(
     badViolations.length === 2,
     `oo sweep canary: fixture line(s) reporting a prescriptive oo-prefix (${badViolations.length}/2)`,
@@ -214,14 +226,10 @@ for (const manifestName of readdirSync(MANIFESTS).filter((name) => name.endsWith
   }
 
   // #1031 — the codemode module replaces the retired oo-command-runner module:
-  // it must appear in every role's manifest, and no manifest or assembled
-  // prompt may still reference the old module. Reuses the manifest content
-  // already read above.
+  // it must appear in every role's manifest (asserted above via
+  // manifestLines.includes), and no manifest or assembled prompt may still
+  // reference the old module.
   const manifest = manifestLines.join("\n");
-  assert(
-    manifest.split("\n").some((l) => l.trim() === "modules/core/codemode.md"),
-    `${role}: manifest references modules/core/codemode.md`,
-  );
   assert(
     !manifest.includes("oo-command-runner"),
     `${role}: manifest no longer references oo-command-runner`,
