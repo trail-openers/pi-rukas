@@ -2,8 +2,7 @@
  * oo-rewrite-guard — the silent rewrite of bare verbose-runner bash commands
  * to their `oo`-prefixed form for developer + ops subagents.
  *
- * The doctrine (modules/core/oo-command-runner.md, agents-base/developer.md)
- * makes the `oo` prefix mandatory for 12 verbose runners, but on the bash
+ * The doctrine (agents-base/developer.md) makes the `oo` prefix mandatory for 12 verbose runners, but on the bash
  * tool's argument string that rule is pure prose: the only structural
  * enforcement layer (spawn.ts --exclude-tools / role-tools.ts) can remove
  * NAMED tools, not a bash-string distinction like `pytest` vs `oo pytest`.
@@ -66,7 +65,7 @@ import { trace } from "./trace.ts";
 
 /**
  * The 12 bare verbose-runner commands the doctrine mandates the `oo` prefix
- * for (modules/core/oo-command-runner.md lines 7-11 — including the
+ * for (the 12-item mandatory list in agents-base/developer.md — including the
  * corrected `bun run build`, not the non-existent `bun build`). Each entry
  * is the full bare token sequence as it appears at the START of a command.
  */

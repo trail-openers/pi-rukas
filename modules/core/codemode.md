@@ -9,7 +9,7 @@ Prefer native limiting flags first (`git log --oneline -n 10`, `--stat`, `--onel
 - You have several INDEPENDENT reads or searches (file contents, greps, status queries): batch them in one script with `Promise.allSettled` / parallel calls and return only the signal you need.
 - You are running checks (build, test, lint, typecheck): run them in one script and return only failures (and the verdict), not the full transcripts.
 - A single command would emit large output you only partially need: filter it inside the script.
-- The offline verify loop supports a `--digest` mode (`bash smoke-tests/lib/verify-loop.sh --digest smoke-tests/test-*.ts`) that compresses full-suite runs to failures + exit code; use it when available rather than piping raw output. The same digest logic is available as `extension/smoke-tests/lib/ci-log-digest.sh`, which digests `gh run view <id> --log-failed` output saved to a file (`bash extension/smoke-tests/lib/ci-log-digest.sh <file>`), not generic logs.
+- In the pi-rukas repo: the offline verify loop supports a `--digest` mode (`bash extension/smoke-tests/lib/verify-loop.sh --digest ...`) that compresses full-suite runs to failures + exit code, and the same digest logic is available as `extension/smoke-tests/lib/ci-log-digest.sh`, which digests `gh run view <id> --log-failed` output saved to a file (`bash extension/smoke-tests/lib/ci-log-digest.sh <file>`), not generic logs; use them when working in that repo rather than piping raw output.
 
 ## Don't use it when
 

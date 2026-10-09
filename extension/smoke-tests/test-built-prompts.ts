@@ -63,31 +63,24 @@ const OO_SWEEP_FILES = [
 ];
 // Matches `oo` used as a command-prefix wrapper: "oo git", "oo gh", "oo cargo",
 // "oo npm", "oo bun", "oo pnpm", "oo yarn", "oo pytest", "oo glab", etc.
-// Does NOT match: "oo" in prose about the external oo project, or anti-pattern
-// mentions like "not `oo gh api`" (the negation form is checked separately).
-const ooPrefixRe = /\b oo\s+(?:git|gh|glab|npm|cargo|bun|pnpm|yarn|pytest|go|uv|npx|ruff|recall|help|patterns|learn|forget)\b/g;
-for (const rel of OO_SWEEP_FILES) {
-  const p = path.join(ROOT, rel);
-  let src = "";
-  try {
-    src = readFileSync(p, "utf8");
-  } catch {
-    assert(false, `${rel}: file exists (required for doc sweep)`);
-    continue;
-  }
-  const lines = src.split("\n");
+const ooPrefixRe = /(?<!\w)oo\s+(?:git|gh|glab|npm|cargo|bun|pnpm|yarn|pytest|go|uv|npx|ruff|recall|help|patterns|learn|forget)\b/g;
+// Explicit, exact-line exemptions for lines that legitimately mention `oo` as a
+// command prefix. Every entry is asserted to still exist below, so a stale
+// exemption (file rewritten or line removed) fails the gate instead of rotting.
+const OO_SWEEP_EXEMPT: Record<string, string[]> = {
+  "agents-base/developer.md": [
+    // the rewrite-guard paragraph explains the trust/sandbox rewrite and, until
+    // #1029 adds bare runner rows, names the `oo`-prefixed form as the only
+    // allowlisted one for strict/headless mode
+    "- **Keep check output out of the report** — verbose runners (`cargo test`, `bun test`, `npm test`, `pytest`, …) emit 50+ lines of per-test noise that bloats the dispatch report PM reads. Prefer codemode (when registered in your toolset) to run the checks and return only failures, or bound the output with the native limiting flags. For single short commands, a plain bash call is simpler. A bare command starting with one of these runners may still be silently rewritten to its `oo`-prefixed form for developer/ops subagents in trust/sandbox mode by the pi-rukas extension (`oo-rewrite-guard`) — a rewritten command is equivalent, so neither form is required of you. In strict or headless mode there is no rewrite: until the allowlist gains bare runner rows (#1029), the allowlisted form of a verbose runner is the `oo`-prefixed one (for example `oo cargo test`, `oo bun test`).",
+  ],
+};
+function assertOoSweep(lines: string[], rel: string) {
+  const exemptLines = OO_SWEEP_EXEMPT[rel] ?? [];
   const violations: string[] = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    // Strip anti-pattern / negation contexts: lines that explicitly say NOT to
-    // use oo, or that contrast bare vs oo ("not `oo gh api`"), are allowed.
-    const isNegation =
-      /do\s+not\b.*\b oo\b/i.test(line) ||
-      /\bnot\s+`?oo\b/i.test(line) ||
-      /\bno\s+`?oo\b/i.test(line) ||
-      /\bnever\s+.*\b oo\b/i.test(line);
-    if (isNegation) continue;
-    // Check for the oo command-prefix pattern
+    if (exemptLines.includes(line)) continue;
     const matches = line.match(ooPrefixRe);
     if (matches) {
       violations.push(`  line ${i + 1}: ${line.trim().slice(0, 120)}`);
@@ -99,6 +92,40 @@ for (const rel of OO_SWEEP_FILES) {
       ? `${rel}: no oo command-prefix prescriptions remain`
       : `${rel}: ${violations.length} line(s) still prescribe oo command prefix:\n${violations.join("\n")}`,
   );
+  // Every exemption must still exist in the file — a stale exemption is a gate
+  // that no longer covers anything and must fail loudly.
+  for (const exempt of exemptLines) {
+    assert(
+      lines.includes(exempt),
+      `${rel}: exempt line still present (stale OO_SWEEP_EXEMPT entry)`,
+    );
+  }
+}
+// Prove the gate can fail: an in-test fixture with a prescriptive `oo`-prefixed
+// runner line must be reported (and an exempted one must not be).
+{
+  const fixture = [
+    "Run the suite with `oo cargo test` to keep the report short.",
+    "Run the suite with `oo bun test` to keep the report short.",
+  ];
+  const badViolations = fixture.filter(
+    (l) => (OO_SWEEP_EXEMPT["fixture"] ?? []).includes(l) === false && l.match(ooPrefixRe),
+  );
+  assert(
+    badViolations.length === 2,
+    `oo sweep canary: fixture line(s) reporting a prescriptive oo-prefix (${badViolations.length}/2)`,
+  );
+}
+for (const rel of OO_SWEEP_FILES) {
+  const p = path.join(ROOT, rel);
+  let src = "";
+  try {
+    src = readFileSync(p, "utf8");
+  } catch {
+    assert(false, `${rel}: file exists (required for doc sweep)`);
+    continue;
+  }
+  assertOoSweep(src.split("\n"), rel);
 }
 
 for (const manifestName of readdirSync(MANIFESTS).filter((name) => name.endsWith(".manifest"))) {
@@ -188,8 +215,9 @@ for (const manifestName of readdirSync(MANIFESTS).filter((name) => name.endsWith
 
   // #1031 — the codemode module replaces the retired oo-command-runner module:
   // it must appear in every role's manifest, and no manifest or assembled
-  // prompt may still reference the old module.
-  const manifest = readFileSync(manifestPath, "utf8");
+  // prompt may still reference the old module. Reuses the manifest content
+  // already read above.
+  const manifest = manifestLines.join("\n");
   assert(
     manifest.split("\n").some((l) => l.trim() === "modules/core/codemode.md"),
     `${role}: manifest references modules/core/codemode.md`,
