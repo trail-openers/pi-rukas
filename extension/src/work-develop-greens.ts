@@ -9,23 +9,26 @@
  * interrupted develop qualifies: the step must still be `develop` with an
  * unresolved dispatch marker. A cycle at any other boundary gets full re-entry.
  */
-import type { WorkState } from "./workflow-state.ts";
+import type { WorkEvent, WorkState } from "./workflow-state.ts";
+
+/** #1016 — the events after the last develop step-started (the whole log when
+ *  there is none). Shared by the crash-resume greens and the handoff's per-
+ *  workstream attempt counts, so both read the same window. */
+export function eventsSinceDevelopStart(state: WorkState): WorkEvent[] {
+  const log = state.eventLog;
+  for (let i = log.length - 1; i >= 0; i--) {
+    const e = log[i];
+    if (e?.kind === "step-started" && e.step === "develop") return log.slice(i + 1);
+  }
+  return [...log];
+}
 
 export function greenWorkstreamsFromInterruptedDevelop(state: WorkState): Set<string> {
   const green = new Set<string>();
   if (state.pipelineState.currentStep !== "develop") return green;
   if (state.pipelineState.inFlightJobIds.length === 0) return green;
-  const log = state.eventLog;
-  let start = -1;
-  for (let i = log.length - 1; i >= 0; i--) {
-    const e = log[i];
-    if (e?.kind === "step-started" && e.step === "develop") {
-      start = i;
-      break;
-    }
-  }
   const latest = new Map<string, boolean>();
-  for (const e of log.slice(start + 1)) {
+  for (const e of eventsSinceDevelopStart(state)) {
     if (e.kind === "branch-completed") latest.set(e.workstreamId, e.ok);
   }
   for (const [id, ok] of latest) if (ok) green.add(id);

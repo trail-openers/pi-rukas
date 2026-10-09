@@ -20,7 +20,11 @@ function assert(cond: boolean, msg: string) {
       schemaVersion: 1,
       issue: 1,
       updatedAt: 0,
-      pipelineState: { currentStep: "develop", inFlightJobIds: ["j1"], ...over },
+      pipelineState: {
+        currentStep: "develop",
+        inFlightJobIds: ["j1"],
+        ...over,
+      },
       eventLog: [],
     }) as unknown as WorkState;
   const bc = (id: string, ok: boolean): WorkEvent => ({
@@ -58,28 +62,122 @@ function assert(cond: boolean, msg: string) {
   );
 }
 
+import type { DriverContext } from "../src/work-driver-context.ts";
+
+type ExecFn = NonNullable<DriverContext["verifyExecFn"]>;
+const SHA = "a".repeat(40);
+
+/** A recording stub: every git command seen, answering rev-list with `count`. */
+const stubExec =
+  (count: string, calls: string[]): ExecFn =>
+  async (cmd) => {
+    calls.push(cmd);
+    return {
+      stdout: cmd.startsWith("git rev-list") ? `${count}\n` : "",
+      stderr: "",
+    };
+  };
+
 {
-  // Finding 1: a crash-resume green with no commit ahead of base is NOT kept
-  // and is re-dispatched; a green with commits is kept and never re-run.
-  const { trustedGreens, runIndependentFanout } = await import("../src/work-develop-retry.ts");
-  const trusted = await trustedGreens(new Set(["task-a", "task-x"]), async (id) => id === "task-a");
-  assert([...trusted].join() === "task-a", "#1016: falsely-ok task-x (no commits) is not trusted");
+  // Crash-resume greens and the sha-only / tri-state rules, with no git at all.
+  const { trustedPreservedGreens, resetWorktreeToBase, runIndependentFanout, commitsAheadOfBase } =
+    await import("../src/work-develop-retry.ts");
+  const boom: ExecFn = async () => {
+    throw new Error("fatal: bad object");
+  };
+  const unreadable = await commitsAheadOfBase(boom, "/w", SHA);
+  assert("unreadable" in unreadable, "#1016: a git error is an unreadable check, not zero commits");
+  const zero = await commitsAheadOfBase(stubExec("0", []), "/w", SHA);
+  assert(
+    "commits" in zero && zero.commits === 0,
+    "#1016: zero is reported as zero only when git returned 0",
+  );
+
+  // Finding 1: an unreadable check never untrusts a green — it is kept, and a
+  // handoff note names the workstream and the git error.
+  const kept = await trustedPreservedGreens(new Set(["task-x"]), {
+    execFn: boom,
+    worktrees: { "task-x": "/w" },
+    baseFor: () => SHA,
+  });
+  assert(kept.kept.has("task-x"), "#1016: an unreadable check keeps the preserved green");
+  assert(
+    kept.notes.length === 1 &&
+      /task-x/.test(kept.notes[0] ?? "") &&
+      /fatal: bad object/.test(kept.notes[0] ?? ""),
+    "#1016: the kept-unreadable note names the workstream and the git error",
+  );
+  const zeroCommits = await trustedPreservedGreens(new Set(["task-x"]), {
+    execFn: stubExec("0", []),
+    worktrees: { "task-x": "/w" },
+    baseFor: () => SHA,
+  });
+  assert(zeroCommits.kept.size === 0, "#1016: a green with zero commits (git said 0) is not kept");
+
+  // Finding 2: the reset accepts ONLY a 40-hex sha; nothing reaches git otherwise.
+  for (const bad of ["-x", "--hard", "main", "abc123", `${SHA}\n`]) {
+    const calls: string[] = [];
+    const refused = await resetWorktreeToBase(stubExec("0", calls), "/w", bad).then(
+      () => false,
+      (err: Error) => /40-hex/.test(err.message),
+    );
+    assert(
+      refused && calls.length === 0,
+      `#1016: reset refuses base ${JSON.stringify(bad)} before git`,
+    );
+  }
+  // Finding 2: a worktree with commits ahead is never reset, and an unreadable
+  // check is never a licence to reset.
+  const ahead: string[] = [];
+  const aheadRefused = await resetWorktreeToBase(stubExec("2", ahead), "/w", SHA).then(
+    () => false,
+    (err: Error) => /2 commit\(s\) ahead/.test(err.message),
+  );
+  assert(
+    aheadRefused && !ahead.some((c) => c.startsWith("git reset")),
+    "#1016: a worktree with commits ahead of base is never reset",
+  );
+  const unreadableRefused = await resetWorktreeToBase(boom, "/w", SHA).then(
+    () => false,
+    (err: Error) => /unreadable/.test(err.message),
+  );
+  assert(unreadableRefused, "#1016: an unreadable commit check refuses the reset");
+
+  // Finding 3: a zero-commit reset is reset --hard + clean -fd, with no stash.
+  const seen: string[] = [];
+  await resetWorktreeToBase(stubExec("0", seen), "/w", SHA);
+  assert(
+    seen.includes(`git reset --hard ${SHA}`) &&
+      seen.includes("git clean -fd") &&
+      !seen.some((c) => c.includes("stash")),
+    "#1016: the reset is git reset --hard <sha> + git clean -fd, never a stash",
+  );
+
+  // The retry: a failed workstream with commits ahead fails with its reason and
+  // is not re-run; the green is kept.
   const calls: string[] = [];
-  await runIndependentFanout({
+  const res = await runIndependentFanout({
     independent: ["task-a", "task-x"],
-    preserved: trusted,
+    preserved: new Set(["task-a"]),
     skip: [],
     runAt: async (id) => {
       calls.push(id);
-      return { id, ok: true };
+      return { id, ok: false };
     },
-    resetFor: async () => {},
+    resetFor: (id) => resetWorktreeToBase(stubExec("1", []), `/w/${id}`, SHA),
     verdicts: [],
     multi: true,
   });
   assert(
-    calls.join() === "task-x",
-    "#1016: only the untrusted workstream is dispatched; trusted green task-a is never re-run",
+    calls.join() === "task-x" && res.some((v) => v.id === "task-a" && v.ok),
+    "#1016: a kept green is never re-run, and a reset refusal fails its workstream",
+  );
+  const refusedVerdict = res.find((v) => v.id === "task-x");
+  assert(
+    refusedVerdict !== undefined &&
+      !refusedVerdict.ok &&
+      /ahead of base/.test(refusedVerdict.reason ?? ""),
+    "#1016: the refused workstream's verdict carries the named reason",
   );
 }
 
@@ -113,14 +211,18 @@ function assert(cond: boolean, msg: string) {
   git(dirA, ["commit", "--allow-empty", "-qm", "work"]);
   const headA = git(dirA, ["rev-parse", "HEAD"]);
   // Test shim: the real shell exec, typed to the driver's verifyExecFn seam.
-  const execFn = promisify(exec) as never;
+  const shell = promisify(exec);
+  const execFn: ExecFn = async (cmd, opts) => {
+    const r = await shell(cmd, opts);
+    return { stdout: String(r.stdout), stderr: String(r.stderr) };
+  };
   const kept = await trustedPreservedGreens(new Set(["a", "b"]), {
     execFn,
     worktrees: { a: dirA, b: dirB },
     baseFor: () => base,
   });
   assert(
-    [...kept].join() === "a",
+    [...kept.kept].join() === "a",
     "#1016: falsely-ok b (no commit ahead of base) is not preserved; a is",
   );
 
@@ -144,22 +246,17 @@ function assert(cond: boolean, msg: string) {
   assert(!calls.includes("a"), "#1016: green workstream a is never re-dispatched");
   assert(calls.filter((c) => c === "b").length === 2, "#1016: failed b is re-run exactly once");
   assert(
-    res.results.every((r) => r.ok),
-    "#1016: after the one retry, b is green",
-  );
-  assert(
-    res.verdicts.length === 2 && res.verdicts.every((v) => v.ok),
+    res.length === 2 && res.every((v) => v.ok),
     "#1016: the returned verdicts carry a (kept) and b (retried green)",
   );
 
-  // Retry hygiene: partial edits from the failed attempt are gone after reset.
+  // Retry hygiene: a zero-commit failed workstream's uncommitted edits are gone
+  // after the reset, and no stash entry is left behind.
+  const baseB = git(dirB, ["rev-parse", "HEAD"]);
   await fs.writeFile(path.join(dirB, "partial.txt"), "half-written");
   await fs.writeFile(path.join(dirB, "README.md"), "tracked edit");
-  git(dirB, ["add", "README.md"]);
-  git(dirB, ["commit", "-qm", "tracked"]);
-  const baseB = git(dirB, ["rev-parse", "HEAD~1"]);
-  await fs.writeFile(path.join(dirB, "README.md"), "dirty edit");
   await resetWorktreeToBase(execFn, dirB, baseB);
+  assert(git(dirB, ["stash", "list"]) === "", "#1016: the retry reset leaves no stash entry");
   const leftover = await fs.stat(path.join(dirB, "partial.txt")).then(
     () => true,
     () => false,
@@ -168,6 +265,17 @@ function assert(cond: boolean, msg: string) {
   assert(
     git(dirB, ["rev-parse", "HEAD"]) === baseB,
     "#1016: the failed worktree is reset to its base SHA",
+  );
+  // A worktree with a commit ahead of base is never reset: HEAD and the commit survive.
+  git(dirB, ["commit", "--allow-empty", "-qm", "committed work"]);
+  const headB = git(dirB, ["rev-parse", "HEAD"]);
+  const aheadRefused = await resetWorktreeToBase(execFn, dirB, baseB).then(
+    () => false,
+    () => true,
+  );
+  assert(
+    aheadRefused && git(dirB, ["rev-parse", "HEAD"]) === headB,
+    "#1016: a real worktree with a commit ahead of base is not reset",
   );
 
   // A throwing retry becomes a failed verdict; the green's verdict survives.
@@ -185,8 +293,8 @@ function assert(cond: boolean, msg: string) {
     },
   });
   assert(
-    thrown.verdicts.some((v) => v.id === "a" && v.ok) &&
-      thrown.verdicts.some((v) => v.id === "b" && !v.ok && /retry exploded/.test(v.reason ?? "")),
+    thrown.some((v) => v.id === "a" && v.ok) &&
+      thrown.some((v) => v.id === "b" && !v.ok && /retry exploded/.test(v.reason ?? "")),
     "#1016: a throwing retry becomes {id, ok:false, reason}; the green verdict survives",
   );
   await fs.rm(dir, { recursive: true, force: true });

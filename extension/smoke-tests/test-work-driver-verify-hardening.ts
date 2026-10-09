@@ -182,7 +182,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           recursive: true,
         });
         const hollowExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-          if (cmd === "git rev-parse HEAD") return { stdout: "base123\n" };
+          if (cmd === "git rev-parse HEAD") return { stdout: "1111111111111111111111111111111111111111\n" };
           if (cmd === "git status --porcelain") return { stdout: "" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
@@ -239,7 +239,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           recursive: true,
         });
         const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-          if (cmd === "git rev-parse HEAD") return { stdout: "base123\n" };
+          if (cmd === "git rev-parse HEAD") return { stdout: "1111111111111111111111111111111111111111\n" };
           if (cmd === "git status --porcelain") return { stdout: " M src/lib.rs\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
@@ -309,7 +309,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           recursive: true,
         });
         const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-          if (cmd === "git rev-parse HEAD") return { stdout: "base123\n" };
+          if (cmd === "git rev-parse HEAD") return { stdout: "1111111111111111111111111111111111111111\n" };
           if (cmd === "git status --porcelain") return { stdout: " M src/lib.rs\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "2\n" };
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
