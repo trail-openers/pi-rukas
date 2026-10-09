@@ -14,6 +14,7 @@
  */
 
 import { mock } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,6 +31,11 @@ import type { PiContentBlock } from "../src/pi-event-shapes.ts";
 import { createCapSession } from "../src/spawn-caps.ts";
 import { capKillGraceMs } from "../src/spawn-support.ts";
 import { pollUntilKilled } from "./lib/poll-until-killed.ts";
+import { isolateLedger } from "./lib/review-ledger-test-helpers.ts";
+
+// #1069 — isolate before any src import: the loop detector's steer callback
+// path must not write to the main clone's .git ledger (worktree common dir).
+isolateLedger();
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

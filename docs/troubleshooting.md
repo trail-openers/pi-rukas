@@ -163,6 +163,21 @@ This is the structural floor for the incident where a PM merged two PRs on a dev
 
 PR: [#912](https://github.com/trail-openers/pi-rukas/issues/912)
 
+### A merge was refused: latest lens passed=false / REVIEW_INCOMPLETE although the review reported APPROVED
+
+**Symptom:** `gh pr merge` is refused because the branch's latest lens entry says `passed: false, detail: "REVIEW_INCOMPLETE", round: 1` — but the hand-run `dispatch_lens_review` you just completed reported `APPROVED`. Inspecting `.git/review-ledger.json` shows the genuine entry is missing or shadowed by a `REVIEW_INCOMPLETE` row written at a nearly-identical timestamp (12–17 ms apart, same `patchId` / `headSha`).
+
+**Cause (#1069):** Two independent writers could race on the same ledger file. The primary one was the offline smoke suite itself: tests that drive `runLensReview` / `runAdversarialLoop` with `process.cwd()` (the real worktree, not a temp repo) write their fixture rows through the same `appendLedgerEntry` path the tool uses. Because `review-ledger-path.ts` maps every worktree of the clone to the MAIN clone's `.git`, the fixture rows land in the real per-clone ledger — a `REVIEW_INCOMPLETE` row for the branch under test that shadows the genuine entry a few ms later. The secondary one was the `appendLedgerEntry` rename-race fallback: when a concurrent writer won the rename, the loser's fallback re-read the file (now containing the winner's row) and — pre-#1069 — deduped BEFORE pushing the new entry, so both rows survived for the same `(branch, kind)` and the round counter duplicated.
+
+**Fix (shipped):**
+
+1. Every smoke test that can reach `appendLedgerEntry` (directly or via `runLensReview` / `finishLensReview` / `writeLensLedgerEntry` / `runAdversarialLoop` / the lens tool) now self-isolates the ledger via `PI_ENSEMBLE_REVIEW_LEDGER_FILE` (a per-test temp file), a temp git-repo cwd, or a mocked `appendLedgerEntry`. `test-ledger-isolation.ts` enforces this statically and names any non-isolated file as a failure.
+2. The race-fallback merge step is extracted into a pure, fs-free helper (`mergeAfterRace` in `review-ledger-merge.ts`) — push the bumped entry first, then dedupe — and is unit-tested directly without mocking `node:fs`.
+
+**Recovery for an existing corrupted ledger:** re-run the lens review on the branch (`dispatch_lens_review` with `base origin/main` + `head <branch>`). The new entry (with a fresh `at`) becomes the latest and the stale `REVIEW_INCOMPLETE` row is shadowed. If you also see duplicate rows for the same `(branch, kind)` (the pre-fix race-fallback symptom), delete the older row from `.git/review-ledger.json` by hand, then re-run the review.
+
+PR: [#1069](https://github.com/trail-openers/pi-rukas/issues/1069)
+
 ### `commit-pr-incomplete-consolidation` — check the plan's `paths:` first
 
 Before assuming a workstream's work is genuinely missing, look at how the plan declared its paths. A qualified declaration — `src/config/data.rs (lines 21-44, function body only)` — used to be split on the inner comma into two fragments with unbalanced parentheses, which nothing downstream could normalise back into a path.
