@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { startBatch, startJob } from "../src/async-jobs.ts";
+import { UNTRUSTED_NAMES_MARKER } from "../src/git-state.ts";
 import type { DispatchResult } from "../src/types.ts";
 
 let exit = 0;
@@ -85,7 +86,7 @@ async function waitFor(inbox: unknown[], n: number) {
   await waitFor(inbox, 1);
   assert(inbox.length === 1, "startJob delivers one report");
   assert(
-    inbox[0]?.content.includes('1 uncommitted/untracked (untrusted names): "zz-dirty-marker.txt"'),
+    inbox[0]?.content.includes(`1 uncommitted/untracked ${UNTRUSTED_NAMES_MARKER}: "zz-dirty-marker.txt"`),
     `developer line computed from dispatch cwd (got: ${inbox[0]?.content.slice(0, 400)})`,
   );
 }
@@ -117,7 +118,7 @@ async function waitFor(inbox: unknown[], n: number) {
         ok: false,
         exitCode: 1,
         killCause: "inactivity",
-      } as Partial<DispatchResult>),
+      }),
   });
   await waitFor(inbox, 1);
   assert(
@@ -161,7 +162,7 @@ async function waitFor(inbox: unknown[], n: number) {
             ok: false,
             exitCode: 1,
             killCause: "inactivity",
-          } as Partial<DispatchResult>),
+          }),
       },
     ],
   });
@@ -175,7 +176,7 @@ async function waitFor(inbox: unknown[], n: number) {
   assert(inbox.length === 1, "batch delivers one consolidated report");
   assert(
     section("developer[dirty]").includes(
-      '1 uncommitted/untracked (untrusted names): "zz-dirty-marker.txt"',
+      `1 uncommitted/untracked ${UNTRUSTED_NAMES_MARKER}: "zz-dirty-marker.txt"`,
     ),
     "dirty developer section carries its own line",
   );
@@ -188,6 +189,44 @@ async function waitFor(inbox: unknown[], n: number) {
     section("ops").includes("zz-dirty-marker.txt"),
     "killed ops section still carries the line",
   );
+}
+
+// 5. a throwing git-line producer: the single report is still delivered, exactly once, unannotated.
+{
+  const dir = mkRepo(true);
+  const { pi, inbox } = makePi();
+  startJob(pi, {
+    label: "developer",
+    role: "developer",
+    cwd: dir,
+    gitLineFor: async () => {
+      throw new Error("git-line formatter exploded");
+    },
+    work: async () => result("developer"),
+  });
+  await waitFor(inbox, 1);
+  await new Promise((r) => setTimeout(r, 100));
+  assert(inbox.length === 1, `single job: throwing git line delivers exactly one report (got ${inbox.length})`);
+  assert(!inbox[0]?.content.includes("git state"), "single job: fallback report is unannotated");
+}
+
+// 6. same for a batch: one consolidated report, unannotated, never duplicated.
+{
+  const dir = mkRepo(true);
+  const { pi, inbox } = makePi();
+  startBatch(pi, {
+    batchLabel: "git-batch-throw",
+    gitLineFor: async () => {
+      throw new Error("git-line formatter exploded");
+    },
+    members: [
+      { label: "developer[a]", role: "developer", cwd: dir, work: async () => result("developer") },
+    ],
+  });
+  await waitFor(inbox, 1);
+  await new Promise((r) => setTimeout(r, 100));
+  assert(inbox.length === 1, `batch: throwing git line delivers exactly one report (got ${inbox.length})`);
+  assert(!inbox[0]?.content.includes("git state"), "batch: fallback report is unannotated");
 }
 
 process.exit(exit);

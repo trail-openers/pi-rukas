@@ -18,7 +18,7 @@ import { makeSlowWatch } from "./async-jobs-slow.ts";
 import type { WorkHooks } from "./async-jobs.ts";
 import * as live from "./dispatch-deck-live.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
-import { gitStateLine } from "./git-state.ts";
+import { type GitLineFor, gitStateLine } from "./git-state.ts";
 import * as lifecycle from "./lifecycle-events.ts";
 import * as sessionAutosave from "./session-autosave.ts";
 import { feedSlowProgress } from "./slow-notice.ts";
@@ -27,6 +27,8 @@ import type { DispatchResult } from "./types.ts";
 
 interface StartBatchInput {
   batchLabel: string;
+  /** Test seam for the git-state line; defaults to gitStateLine. */
+  gitLineFor?: GitLineFor;
   members: Array<{
     label: string;
     role: string;
@@ -45,19 +47,32 @@ async function deliverBatchReport(
   head: { batchLabel: string; batchId: string; startedAt: number },
   memberResults: BatchReportInput["members"],
   gitMembers: Map<string, string | undefined>,
+  gitLineFor: GitLineFor,
 ): Promise<void> {
-  const lines = new Map<string, string>();
-  await Promise.all(
-    memberResults.map(async (m) => {
-      if ("failed" in m.result || !gitMembers.has(m.jobId)) return;
-      lines.set(m.jobId, await gitStateLine(gitMembers.get(m.jobId)));
-    }),
-  );
-  const members = memberResults.map((m) => ({
-    ...m,
-    gitLine: lines.get(m.jobId),
-  }));
-  deliverReport(pi, formatBatchReport({ ...head, members }));
+  // Exactly one delivery: `delivered` is set only after a successful send, so the
+  // unannotated fallback runs only when the annotated attempt threw before sending.
+  let delivered = false;
+  const send = (lines?: Map<string, string>) => {
+    const members = memberResults.map((m) => ({
+      ...m,
+      gitLine: lines?.get(m.jobId),
+    }));
+    deliverReport(pi, formatBatchReport({ ...head, members }));
+    delivered = true;
+  };
+  try {
+    const lines = new Map<string, string>();
+    await Promise.all(
+      memberResults.map(async (m) => {
+        if ("failed" in m.result || !gitMembers.has(m.jobId)) return;
+        lines.set(m.jobId, await Promise.resolve().then(() => gitLineFor(gitMembers.get(m.jobId))));
+      }),
+    );
+    send(lines);
+  } catch (err) {
+    trace(`async batch ${head.batchId} git-state report failed: ${String(err)}`);
+    if (!delivered) send();
+  }
 }
 
 /**
@@ -206,6 +221,7 @@ export function startBatch(
             { batchLabel: input.batchLabel, batchId, startedAt },
             memberResults,
             gitMembers,
+            input.gitLineFor ?? gitStateLine,
           ).then(
             () =>
               trace(

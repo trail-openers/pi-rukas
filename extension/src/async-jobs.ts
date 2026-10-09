@@ -19,7 +19,7 @@ import {
 import { makeSlowWatch } from "./async-jobs-slow.ts";
 import * as live from "./dispatch-deck-live.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
-import { gitStateLine } from "./git-state.ts";
+import { type GitLineFor, gitStateLine } from "./git-state.ts";
 import * as lifecycle from "./lifecycle-events.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import type { RunningState } from "./progress.ts";
@@ -105,6 +105,8 @@ interface StartJobInput {
   /** #1015 — resolved dispatch cwd; the developer/ops report's git-state line is computed
    * against it. Absent → the line reads "unverified (no cwd)", never process.cwd(). */
   cwd?: string;
+  /** Test seam for the git-state line; defaults to gitStateLine. */
+  gitLineFor?: GitLineFor;
   /** Role name for telemetry. */
   role: string;
   /**
@@ -297,11 +299,22 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
       // state machine. Posting a steer too would inject a duplicate
       // [ensemble:async] message into PM's session and confuse the next turn.
       if (ownerKind === "pm") {
-        const deliver = (gitLine?: string) =>
+        let delivered = false;
+        const deliver = (gitLine?: string) => {
           deliverReport(pi, formatSingleReport(jobId, input.label, result, gitLine));
+          delivered = true;
+        };
         if (reportsGitState(input.role)) {
-          // gitStateLine never rejects, so the report is delivered exactly once, annotated.
-          void gitStateLine(input.cwd).then(deliver);
+          // The annotated report is preferred; if the git line or its formatting throws,
+          // the unannotated report is delivered instead — exactly once (`delivered`).
+          void Promise.resolve()
+            .then(() => (input.gitLineFor ?? gitStateLine)(input.cwd))
+            .then((line) => deliver(line))
+            .catch((err: unknown) => {
+              trace(`async job ${jobId} git-state report failed: ${String(err)}`);
+              if (!delivered) deliver();
+            })
+            .catch((err: unknown) => trace(`async job ${jobId} report failed: ${String(err)}`));
         } else {
           deliver();
         }

@@ -163,7 +163,7 @@ export function registerDispatchTools(pi: ExtensionAPI) {
       // we discard any agent-supplied `model` before constructing the spec.
       // Model choice is user-authority-only (see issue #92).
       const spec = stripModelOverride(params as DispatchSpec);
-      // #1015 — resolved once; the child and the report's git-state line share it.
+      // #1015 — the report's git-state line runs here; the child still gets spec unchanged.
       const cwd = spec.cwd ?? process.cwd();
       const { jobId } = startJob(pi, {
         label: spec.role,
@@ -172,15 +172,12 @@ export function registerDispatchTools(pi: ExtensionAPI) {
         work: (signal, hooks) =>
           withProviderBackoff(
             (sig) =>
-              spawnSpecialist(
-                { ...spec, cwd },
-                {
-                  signal: sig,
-                  onProgress: hooks.onProgress,
-                  onRawEvent: hooks.onRawEvent,
-                  onStdin: hooks.onStdin,
-                },
-              ),
+              spawnSpecialist(spec, {
+                signal: sig,
+                onProgress: hooks.onProgress,
+                onRawEvent: hooks.onRawEvent,
+                onStdin: hooks.onStdin,
+              }),
             { signal, onRetry: (n) => traceRetry(spec.role, n) },
           ),
       });
@@ -238,7 +235,7 @@ export function registerDispatchTools(pi: ExtensionAPI) {
           // The deck row shows `<role>[<tag>]` so the user can tell members apart.
           const tag = spec.label?.trim() || `#${i + 1}`;
           const displayLabel = `${spec.role}[${tag}]`;
-          // #1015 — per-member resolved cwd, shared by the child and the report.
+          // #1015 — per-member resolved cwd for the report's git-state line.
           const cwd = spec.cwd ?? process.cwd();
           return {
             label: displayLabel,
@@ -247,18 +244,15 @@ export function registerDispatchTools(pi: ExtensionAPI) {
             work: (signal, hooks) =>
               withProviderBackoff(
                 (sig) =>
-                  spawnSpecialist(
-                    { ...spec, cwd },
-                    {
-                      runId,
-                      seq: i,
-                      tag,
-                      signal: sig,
-                      onProgress: hooks.onProgress,
-                      onRawEvent: hooks.onRawEvent,
-                      onStdin: hooks.onStdin,
-                    },
-                  ),
+                  spawnSpecialist(spec, {
+                    runId,
+                    seq: i,
+                    tag,
+                    signal: sig,
+                    onProgress: hooks.onProgress,
+                    onRawEvent: hooks.onRawEvent,
+                    onStdin: hooks.onStdin,
+                  }),
                 { signal, onRetry: (n) => traceRetry(displayLabel, n) },
               ),
           };

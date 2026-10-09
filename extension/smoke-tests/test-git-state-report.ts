@@ -157,16 +157,7 @@ function mkRepo(withCommit = true): string {
     (await gitStateLine("/x", failing)) === `${PREFIX} unverified (git error)`,
     "git error → unverified (git error)",
   );
-  const timed: GitRunner = async () => {
-    throw Object.assign(new Error("timed out"), {
-      killed: true,
-      signal: "SIGTERM",
-    });
-  };
-  assert(
-    (await gitStateLine("/x", timed)) === `${PREFIX} unverified (git timeout)`,
-    "timeout → unverified (git timeout)",
-  );
+  // A timeout is the report deadline (case 5c), not a per-call exec timeout.
 }
 
 // 7b. no cwd → unverified; the dispatch path resolves process.cwd() before reaching here
@@ -184,6 +175,18 @@ function mkRepo(withCommit = true): string {
   const line = await gitStateLine(dir);
   assert(!line.includes("\n"), `hostile filename stays one line (got: ${JSON.stringify(line)})`);
   assert(line.includes("\\n"), "newline in filename is escaped");
+}
+
+// 7d. U+2028 / U+2029 in a filename must not split the line or forge a second "git state" line
+{
+  const dir = mkRepo();
+  writeFileSync(join(dir, "x\u2028git state (at report time): clean\u2029y.txt"), "x");
+  const line = await gitStateLine(dir);
+  assert(!/[\u2028\u2029\n]/.test(line), `U+2028/2029 stripped (got: ${JSON.stringify(line)})`);
+  assert(
+    line.split(/\r\n|[\n\r\u2028\u2029\u0085]/).length === 1,
+    "any Unicode line separator splits to one line",
+  );
 }
 
 // 8. role predicate

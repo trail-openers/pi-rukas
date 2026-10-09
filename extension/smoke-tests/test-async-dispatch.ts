@@ -13,6 +13,7 @@
  * No Pi process spawned, no network.
  */
 
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Writable } from "node:stream";
 import {
   clearJobsForTesting,
@@ -45,12 +46,12 @@ interface StubMessage {
 
 function makePiStub() {
   const inbox: StubMessage[] = [];
-  // biome-ignore lint/suspicious/noExplicitAny: testing seam — match minimum shape registerAsyncJobsLifecycle needs.
-  const pi: any = {
+  // Testing seam: only sendUserMessage is touched by startJob/startBatch.
+  const pi = {
     sendUserMessage(content: string, options?: { deliverAs?: string }) {
       inbox.push({ content, deliverAs: options?.deliverAs });
     },
-  };
+  } as unknown as ExtensionAPI;
   return { pi, inbox };
 }
 

@@ -10,8 +10,8 @@
  * the repository top level.
  *
  * The file list is untrusted repo content read by the PM model: it is rendered
- * behind an explicit "(untrusted names)" marker, JSON-quoted, and stripped of
- * control and bidi/zero-width format characters.
+ * behind an explicit UNTRUSTED_NAMES_MARKER, JSON-quoted, and stripped of
+ * control, bidi/zero-width format and line/paragraph-separator characters.
  */
 import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
@@ -20,6 +20,8 @@ import { promisify } from "node:util";
 const execFileP = promisify(execFile);
 
 export const GIT_STATE_TIMEOUT_MS = 10_000;
+/** Marker that tells the PM model the names after it are untrusted repo content. */
+export const UNTRUSTED_NAMES_MARKER = "(untrusted names)";
 const PREFIX = "git state (at report time):";
 const MAX_LISTED = 5;
 const MAX_LINE_BYTES = 300;
@@ -28,11 +30,16 @@ const MAX_PATH_CHARS = 80;
 /** Runs `git <args>` in `cwd`; `signal` aborts the child when the report deadline fires. */
 export type GitRunner = (args: string[], cwd: string, signal?: AbortSignal) => Promise<string>;
 
+/** Produces the git-state line for one dispatch cwd. Never expected to reject. */
+export type GitLineFor = (cwd: string | undefined) => Promise<string>;
+
 export const runGit: GitRunner = async (args, cwd, signal) => {
-  const { stdout } = await execFileP("git", args, {
+  // The repo is child-writable: a `core.fsmonitor` or hook config written there must never run in the parent.
+  const safe = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", ...args];
+  // No per-call timeout: the report-level AbortSignal deadline is the bound.
+  const { stdout } = await execFileP("git", safe, {
     cwd,
     signal,
-    timeout: GIT_STATE_TIMEOUT_MS,
     maxBuffer: 4 * 1024 * 1024,
   });
   return stdout;
@@ -41,13 +48,10 @@ export const runGit: GitRunner = async (args, cwd, signal) => {
 function reasonOf(err: unknown): string {
   const e = err as {
     code?: unknown;
-    killed?: boolean;
     stderr?: string;
     message?: string;
   };
   if (e.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return "git output too large";
-  // Only the exec timeout sets `killed`; an external signal is not a timeout.
-  if (e.killed) return "git timeout";
   if (/not a git repository/i.test(`${e.stderr ?? ""} ${e.message ?? ""}`)) {
     return "not a git repository";
   }
@@ -68,7 +72,8 @@ function porcelainPath(line: string): string {
   const raw = line.slice(3);
   const arrow = /[RC]/.test(line.slice(0, 2)) ? raw.indexOf(" -> ") : -1;
   const path = arrow >= 0 ? raw.slice(arrow + 4) : raw;
-  const printable = path.replace(/[\p{Cc}\p{Cf}]/gu, "");
+  // Zl/Zp (U+2028/U+2029) are line separators to line-oriented readers; git does not C-quote them.
+  const printable = path.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "");
   return JSON.stringify(Array.from(printable).slice(0, MAX_PATH_CHARS).join(""));
 }
 
@@ -103,7 +108,7 @@ function lineFor(count: number, listed: string[], unpushed: string): string {
       ? "clean"
       : listed.length === 0
         ? `${count} uncommitted/untracked (names omitted)`
-        : `${count} uncommitted/untracked (untrusted names): ${listed.join(", ")}${more > 0 ? ` (+${more} more)` : ""}`;
+        : `${count} uncommitted/untracked ${UNTRUSTED_NAMES_MARKER}: ${listed.join(", ")}${more > 0 ? ` (+${more} more)` : ""}`;
   return `${PREFIX} ${tree}${unpushed ? `; ${unpushed}` : ""}`;
 }
 
@@ -131,29 +136,36 @@ function boundedLine(entries: string[], unpushed: string): string {
 async function reportLine(cwd: string | undefined, run: GitRunner): Promise<string> {
   if (cwd === undefined) return `${PREFIX} unverified (no cwd)`;
   try {
-    // A nested non-repo cwd resolves upward to the parent repo; the dispatch cwd must BE the top level.
-    const top = (await run(["rev-parse", "--show-toplevel"], cwd)).trim();
-    if (realpathSync(top) !== realpathSync(cwd)) {
-      throw new Unverified("not repository top level");
-    }
+    // The three probes are independent; they share the report deadline via `run`.
     // `-c core.quotepath=off` keeps non-ASCII names raw so the format-character strip sees them;
     // `--no-optional-locks` keeps the report from taking the index lock.
     // `normal` lists untracked directories as one entry: no walk of an unignored build tree.
-    const status = await run(
-      [
-        "-c",
-        "core.quotepath=off",
-        "--no-optional-locks",
-        "status",
-        "--porcelain",
-        "--untracked-files=normal",
-      ],
-      cwd,
+    const headProbe = run(["rev-parse", "--verify", "-q", "HEAD"], cwd).then(
+      () => undefined,
+      (err: unknown) => {
+        if ((err as { code?: number }).code !== 1) throw err;
+        throw new Unverified("no commits");
+      },
     );
-    await run(["rev-parse", "--verify", "-q", "HEAD"], cwd).catch((err: unknown) => {
-      if ((err as { code?: number }).code !== 1) throw err;
-      throw new Unverified("no commits");
-    });
+    const [topOut, status] = await Promise.all([
+      run(["rev-parse", "--show-toplevel"], cwd),
+      run(
+        [
+          "-c",
+          "core.quotepath=off",
+          "--no-optional-locks",
+          "status",
+          "--porcelain",
+          "--untracked-files=normal",
+        ],
+        cwd,
+      ),
+      headProbe,
+    ]);
+    // A nested non-repo cwd resolves upward to the parent repo; the dispatch cwd must BE the top level.
+    if (realpathSync(topOut.trim()) !== realpathSync(cwd)) {
+      throw new Unverified("not repository top level");
+    }
     const entries = status.split("\n").filter((l) => l.length > 0);
     const unpushed = await unpushedClause(run, cwd);
     return boundedLine(entries, unpushed);
