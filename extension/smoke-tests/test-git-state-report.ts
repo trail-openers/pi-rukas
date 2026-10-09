@@ -6,7 +6,7 @@
  * a timeout must read "unverified (<reason>)" — never "clean".
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { reportsGitState } from "../src/async-jobs-report.ts";
@@ -127,7 +127,7 @@ function mkRepo(withCommit = true): string {
   mkdirSync(sub);
   const line = await gitStateLine(sub);
   assert(
-    line === `${PREFIX} unverified (not a git repository)`,
+    line === `${PREFIX} unverified (not repository top level)`,
     `nested non-repo is unverified (got: ${line})`,
   );
 }
@@ -198,6 +198,55 @@ for (const r of ["explore", "code-review-specialist", "adversarial-developer", "
 {
   const out = await runGit(["rev-parse", "--is-inside-work-tree"], mkRepo());
   assert(out.trim() === "true", "runGit runs real git in cwd");
+}
+
+// 10. untracked name containing " -> " is a plain name, not a rename
+{
+  const dir = mkRepo();
+  writeFileSync(join(dir, "a -> b.txt"), "x");
+  const line = await gitStateLine(dir);
+  assert(
+    line.includes('1 uncommitted/untracked (untrusted names): "\\"a -> b.txt\\""'),
+    `arrow name kept whole (got: ${line})`,
+  );
+}
+
+// 11. bidi override in a filename is stripped
+{
+  const dir = mkRepo();
+  writeFileSync(join(dir, "x\u202Eevil.txt"), "x");
+  const line = await gitStateLine(dir);
+  assert(!line.includes("\u202E"), `bidi control stripped (got: ${JSON.stringify(line)})`);
+  assert(line.includes('"xevil.txt"'), "bidi-stripped name still listed");
+}
+
+// 12. a garbage count from git is unverified, never zero
+{
+  const top = realpathSync(mkRepo());
+  const garbage: GitRunner = async (args) => {
+    if (args.includes("--show-toplevel")) return `${top}\n`;
+    if (args.includes("rev-list")) return "2x\n";
+    return "";
+  };
+  assert(
+    (await gitStateLine(top, garbage)) === `${PREFIX} unverified (git error)`,
+    "garbage count → unverified (git error)",
+  );
+}
+
+// 13. the deadline aborts the git call still running, and no later call starts
+{
+  const dir = mkRepo();
+  const top = realpathSync(dir);
+  let seen: AbortSignal | undefined;
+  const hungAfterTop: GitRunner = async (args, _cwd, signal) => {
+    if (args.includes("--show-toplevel")) return `${top}\n`;
+    seen = signal;
+    return new Promise<string>(() => undefined);
+  };
+  const line = await gitStateLine(top, hungAfterTop);
+  assert(line === `${PREFIX} unverified (git timeout)`, `deadline → git timeout (got: ${line})`);
+  assert(seen?.aborted === true, "deadline aborts the in-flight git call");
 }
 
 process.exit(exit);

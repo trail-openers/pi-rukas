@@ -26,7 +26,6 @@ import {
   startBatch,
   startJob,
 } from "../src/async-jobs.ts";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as dispatchDeck from "../src/dispatch-deck.ts";
 import type { DispatchResult } from "../src/types.ts";
 
@@ -46,12 +45,12 @@ interface StubMessage {
 
 function makePiStub() {
   const inbox: StubMessage[] = [];
-  // Minimal ExtensionAPI double: registerAsyncJobsLifecycle needs only sendUserMessage.
-  const pi = {
+  // biome-ignore lint/suspicious/noExplicitAny: testing seam — match minimum shape registerAsyncJobsLifecycle needs.
+  const pi: any = {
     sendUserMessage(content: string, options?: { deliverAs?: string }) {
       inbox.push({ content, deliverAs: options?.deliverAs });
     },
-  } as unknown as ExtensionAPI;
+  };
   return { pi, inbox };
 }
 

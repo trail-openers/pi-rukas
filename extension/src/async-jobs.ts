@@ -300,12 +300,8 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
         const deliver = (gitLine?: string) =>
           deliverReport(pi, formatSingleReport(jobId, input.label, result, gitLine));
         if (reportsGitState(input.role)) {
-          // gitStateLine never rejects; the fallback delivers the report unannotated if it ever does.
-          void gitStateLine(input.cwd)
-            .then(deliver, () => deliver())
-            .catch((err: unknown) =>
-              trace(`async job ${jobId} report delivery failed: ${String(err)}`),
-            );
+          // gitStateLine never rejects, so the report is delivered exactly once, annotated.
+          void gitStateLine(input.cwd).then(deliver);
         } else {
           deliver();
         }

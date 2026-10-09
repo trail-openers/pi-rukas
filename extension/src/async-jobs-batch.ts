@@ -49,9 +49,8 @@ async function deliverBatchReport(
   const lines = new Map<string, string>();
   await Promise.all(
     memberResults.map(async (m) => {
-      const cwd = gitMembers.get(m.jobId);
       if ("failed" in m.result || !gitMembers.has(m.jobId)) return;
-      lines.set(m.jobId, await gitStateLine(cwd));
+      lines.set(m.jobId, await gitStateLine(gitMembers.get(m.jobId)));
     }),
   );
   const members = memberResults.map((m) => ({
@@ -201,34 +200,20 @@ export function startBatch(
           } else {
             lifecycle.emitCompleted(batchId, input.batchLabel, input.batchLabel, batchMs, tokens);
           }
+          // Single delivery: deliverBatchReport is the batch's only steer.
           void deliverBatchReport(
             pi,
             { batchLabel: input.batchLabel, batchId, startedAt },
             memberResults,
             gitMembers,
-          )
-            .then(
-              () =>
-                trace(
-                  `async batch ${batchId} (${input.batchLabel}) finished in ${Date.now() - startedAt}ms`,
-                ),
-              (err: unknown) => {
-                trace(`async batch ${batchId} (${input.batchLabel}) report failed: ${String(err)}`);
-                // Fall back to the batch report without git-state lines so the parent still hears back.
-                deliverReport(
-                  pi,
-                  formatBatchReport({
-                    batchLabel: input.batchLabel,
-                    batchId,
-                    startedAt,
-                    members: memberResults,
-                  }),
-                );
-              },
-            )
-            .catch((err: unknown) =>
-              trace(`async batch ${batchId} fallback delivery failed: ${String(err)}`),
-            );
+          ).then(
+            () =>
+              trace(
+                `async batch ${batchId} (${input.batchLabel}) finished in ${Date.now() - startedAt}ms`,
+              ),
+            (err: unknown) =>
+              trace(`async batch ${batchId} (${input.batchLabel}) report failed: ${String(err)}`),
+          );
         }
       });
   }

@@ -8,6 +8,10 @@
  * (non-repo cwd, nested non-repo cwd, git error, 10s whole-report timeout, no
  * commits) yields "unverified (<reason>)" — never "clean". The dispatch cwd must be
  * the repository top level.
+ *
+ * The file list is untrusted repo content read by the PM model: it is rendered
+ * behind an explicit "(untrusted names)" marker, JSON-quoted, and stripped of
+ * control and bidi/zero-width format characters.
  */
 import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
@@ -21,12 +25,13 @@ const MAX_LISTED = 5;
 const MAX_LINE_BYTES = 300;
 const MAX_PATH_CHARS = 80;
 
-/** Runs `git <args>` in `cwd`; resolves stdout, rejects on any failure. */
-export type GitRunner = (args: string[], cwd: string) => Promise<string>;
+/** Runs `git <args>` in `cwd`; `signal` aborts the child when the report deadline fires. */
+export type GitRunner = (args: string[], cwd: string, signal?: AbortSignal) => Promise<string>;
 
-export const runGit: GitRunner = async (args, cwd) => {
+export const runGit: GitRunner = async (args, cwd, signal) => {
   const { stdout } = await execFileP("git", args, {
     cwd,
+    signal,
     timeout: GIT_STATE_TIMEOUT_MS,
     maxBuffer: 4 * 1024 * 1024,
   });
@@ -35,11 +40,12 @@ export const runGit: GitRunner = async (args, cwd) => {
 
 function reasonOf(err: unknown): string {
   const e = err as {
+    code?: unknown;
     killed?: boolean;
-    signal?: string | null;
     stderr?: string;
     message?: string;
   };
+  if (e.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return "git output too large";
   // Only the exec timeout sets `killed`; an external signal is not a timeout.
   if (e.killed) return "git timeout";
   if (/not a git repository/i.test(`${e.stderr ?? ""} ${e.message ?? ""}`)) {
@@ -54,18 +60,23 @@ class Unverified extends Error {
   }
 }
 
-/** Path of a `git status --porcelain` line; renames keep the new path. */
+/**
+ * Path of a `git status --porcelain` line. Only R (rename) and C (copy) entries
+ * carry `ORIG -> NEW`; any other entry's name may itself contain " -> ".
+ */
 function porcelainPath(line: string): string {
   const raw = line.slice(3);
-  const arrow = raw.indexOf(" -> ");
+  const arrow = /[RC]/.test(line.slice(0, 2)) ? raw.indexOf(" -> ") : -1;
   const path = arrow >= 0 ? raw.slice(arrow + 4) : raw;
-  // Untrusted (PR-controlled) filenames: drop control characters (C0/C1, incl. newline and ESC), bound the length per path, then JSON-quote so the path is marked as data.
-  const printable = path.replace(/\p{Cc}/gu, "");
+  const printable = path.replace(/[\p{Cc}\p{Cf}]/gu, "");
   return JSON.stringify(Array.from(printable).slice(0, MAX_PATH_CHARS).join(""));
 }
 
+/** A count from git must be a plain non-negative integer; anything else is unverified, never zero. */
 function countOf(out: string): number {
-  return Number.parseInt(out.trim(), 10) || 0;
+  const text = out.trim();
+  if (!/^\d+$/.test(text)) throw new Unverified("git error");
+  return Number(text);
 }
 
 async function unpushedClause(run: GitRunner, cwd: string): Promise<string> {
@@ -85,28 +96,22 @@ async function unpushedClause(run: GitRunner, cwd: string): Promise<string> {
   return local > 0 ? `no upstream, ${local} commit(s) not on any remote` : "";
 }
 
-function capBytes(line: string): string {
-  if (Buffer.byteLength(line) <= MAX_LINE_BYTES) return line;
-  // Accumulate by code point so a surrogate pair is never split.
-  let out = "";
-  let bytes = 0;
-  for (const ch of line) {
-    const b = Buffer.byteLength(ch);
-    if (bytes + b > MAX_LINE_BYTES - 3) break;
-    out += ch;
-    bytes += b;
-  }
-  return `${out}...`;
-}
-
 function lineFor(count: number, listed: string[], unpushed: string): string {
   const more = count - listed.length;
-  const list = listed.join(", ") + (more > 0 ? `${listed.length ? ", " : ""}+${more} more` : "");
-  const tree = count === 0 ? "clean" : `${count} uncommitted/untracked (${list})`;
+  const tree =
+    count === 0
+      ? "clean"
+      : listed.length === 0
+        ? `${count} uncommitted/untracked (names omitted)`
+        : `${count} uncommitted/untracked (untrusted names): ${listed.join(", ")}${more > 0 ? ` (+${more} more)` : ""}`;
   return `${PREFIX} ${tree}${unpushed ? `; ${unpushed}` : ""}`;
 }
 
-/** Lists as many of the first MAX_LISTED paths as fit the byte budget; the "+N more" suffix is always kept. */
+/**
+ * Lists as many of the first MAX_LISTED paths as fit the byte budget. The count
+ * and the "+N more" suffix are always kept; a line that cannot name any path says
+ * "names omitted", so the result is always within MAX_LINE_BYTES.
+ */
 function boundedLine(entries: string[], unpushed: string): string {
   const listed: string[] = [];
   for (const entry of entries.slice(0, MAX_LISTED)) {
@@ -120,7 +125,7 @@ function boundedLine(entries: string[], unpushed: string): string {
 /**
  * The one git-state line for a dispatch cwd, e.g.
  *   "git state (at report time): clean"
- *   "git state (at report time): 7 uncommitted/untracked (a, b, c, d, e, +2 more); 1 commit(s) ahead of upstream"
+ *   "git state (at report time): 7 uncommitted/untracked (untrusted names): \"a\", \"b\" (+5 more); 1 commit(s) ahead of upstream"
  *   "git state (at report time): unverified (not a git repository)"
  */
 async function reportLine(cwd: string | undefined, run: GitRunner): Promise<string> {
@@ -128,16 +133,30 @@ async function reportLine(cwd: string | undefined, run: GitRunner): Promise<stri
   try {
     // A nested non-repo cwd resolves upward to the parent repo; the dispatch cwd must BE the top level.
     const top = (await run(["rev-parse", "--show-toplevel"], cwd)).trim();
-    if (realpathSync(top) !== realpathSync(cwd)) throw new Unverified("not a git repository");
+    if (realpathSync(top) !== realpathSync(cwd)) {
+      throw new Unverified("not repository top level");
+    }
+    // `-c core.quotepath=off` keeps non-ASCII names raw so the format-character strip sees them;
+    // `--no-optional-locks` keeps the report from taking the index lock.
     // `normal` lists untracked directories as one entry: no walk of an unignored build tree.
-    const status = await run(["status", "--porcelain", "--untracked-files=normal"], cwd);
+    const status = await run(
+      [
+        "-c",
+        "core.quotepath=off",
+        "--no-optional-locks",
+        "status",
+        "--porcelain",
+        "--untracked-files=normal",
+      ],
+      cwd,
+    );
     await run(["rev-parse", "--verify", "-q", "HEAD"], cwd).catch((err: unknown) => {
       if ((err as { code?: number }).code !== 1) throw err;
       throw new Unverified("no commits");
     });
     const entries = status.split("\n").filter((l) => l.length > 0);
     const unpushed = await unpushedClause(run, cwd);
-    return capBytes(boundedLine(entries, unpushed));
+    return boundedLine(entries, unpushed);
   } catch (err) {
     const reason = err instanceof Unverified ? err.reason : reasonOf(err);
     return `${PREFIX} unverified (${reason})`;
@@ -146,16 +165,26 @@ async function reportLine(cwd: string | undefined, run: GitRunner): Promise<stri
 
 /**
  * #1015 — the whole report is bounded by ONE deadline (GIT_STATE_TIMEOUT_MS), not per git call:
- * a hung repo must not delay the steer by several timeouts in sequence.
+ * a hung repo must not delay the steer by several timeouts in sequence. At the deadline the
+ * shared AbortSignal kills any git child still running and every later git call is refused.
+ * Never rejects.
  */
 export async function gitStateLine(
   cwd: string | undefined,
-  run: GitRunner = runGit,
+  runner: GitRunner = runGit,
 ): Promise<string> {
+  const ctl = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<string>((resolve) => {
-    timer = setTimeout(() => resolve(`${PREFIX} unverified (git timeout)`), GIT_STATE_TIMEOUT_MS);
+    timer = setTimeout(() => {
+      ctl.abort();
+      resolve(`${PREFIX} unverified (git timeout)`);
+    }, GIT_STATE_TIMEOUT_MS);
   });
+  const run: GitRunner = (args, dir) =>
+    ctl.signal.aborted
+      ? Promise.reject(new Unverified("git timeout"))
+      : runner(args, dir, ctl.signal);
   try {
     return await Promise.race([reportLine(cwd, run), deadline]);
   } finally {

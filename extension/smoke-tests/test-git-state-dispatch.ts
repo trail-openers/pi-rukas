@@ -10,8 +10,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startBatch, startJob } from "../src/async-jobs.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { startBatch, startJob } from "../src/async-jobs.ts";
 import type { DispatchResult } from "../src/types.ts";
 
 let exit = 0;
@@ -62,7 +62,7 @@ function result(role: string, extra: Partial<DispatchResult> = {}): DispatchResu
     },
     transcriptPath: "/tmp/fake.json",
     ...extra,
-  } as DispatchResult;
+  };
 }
 
 async function waitFor(inbox: unknown[], n: number) {
@@ -85,7 +85,7 @@ async function waitFor(inbox: unknown[], n: number) {
   await waitFor(inbox, 1);
   assert(inbox.length === 1, "startJob delivers one report");
   assert(
-    inbox[0]?.content.includes('1 uncommitted/untracked ("zz-dirty-marker.txt")'),
+    inbox[0]?.content.includes('1 uncommitted/untracked (untrusted names): "zz-dirty-marker.txt"'),
     `developer line computed from dispatch cwd (got: ${inbox[0]?.content.slice(0, 400)})`,
   );
 }
@@ -174,7 +174,9 @@ async function waitFor(inbox: unknown[], n: number) {
   };
   assert(inbox.length === 1, "batch delivers one consolidated report");
   assert(
-    section("developer[dirty]").includes('1 uncommitted/untracked ("zz-dirty-marker.txt")'),
+    section("developer[dirty]").includes(
+      '1 uncommitted/untracked (untrusted names): "zz-dirty-marker.txt"',
+    ),
     "dirty developer section carries its own line",
   );
   assert(
