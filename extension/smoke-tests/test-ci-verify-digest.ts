@@ -32,6 +32,12 @@
  *      normal mode does NOT apply; the `✓ ... error ...` trap line is absent
  *      even though it contains the substring "error"; detail from one ✗
  *      block is not carried into the next.
+ *   6. Shared digest-filter contract (the mechanical cross-check the prose
+ *      contract in verify-loop.sh's header describes): the same fixture
+ *      output is fed through BOTH implementations — the --digest state
+ *      machine (full indented detail) and the #827 bounded tail (grep for ✗)
+ *      — and the two must agree on which ✗ marker lines are kept, line for
+ *      line.
  *
  * Shared helpers (runLoop, runPipeline) live in verify-loop-lib.ts; the
  * --digest argv variant is local to this file because the lib's runLoop is
@@ -59,18 +65,25 @@ function assert(cond: boolean, msg: string) {
 // take extra argv; this thin wrapper is the digest variant of the same
 // helper, same cwd and spawn shape, plus the flag as argv[0]).
 //
-// `NonNullable<typeof result>` narrows spawnSync's result to its success
-// shape (status is number | null, stdout is string | null | Buffer under
-// encoding: "utf-8"); the test relies on the wrapper's own `{ status:
-// number; stdout: string }` return type, so the coercion here is a
-// deliberate narrowing rather than an `any` escape hatch.
-function runDigest(files: string[]): { status: number; stdout: string } {
+// `error` is checked explicitly: spawnSync reports a failure to spawn bash
+// (missing binary, EACCES, …) as `error` with `status: null` rather than as
+// a non-zero exit code, so without this check a broken environment would
+// read as "the digest failed" instead of "we could not run bash at all".
+function runDigest(
+  files: string[],
+): { status: number; stdout: string; envError: string | null } {
   const result = spawnSync("bash", [SCRIPT, "--digest", ...files], {
     cwd: path.join(__dirname, ".."),
     encoding: "utf-8",
   });
-  const r = result as NonNullable<typeof result>;
-  return { status: r.status ?? -1, stdout: r.stdout };
+  if (result.error) {
+    return {
+      status: -1,
+      stdout: "",
+      envError: `failed to spawn bash: ${result.error.message}`,
+    };
+  }
+  return { status: result.status ?? -1, stdout: result.stdout ?? "", envError: null };
 }
 
 // --- Case 1: mixed fail/pass — parity + invariants ---
@@ -79,7 +92,10 @@ function runDigest(files: string[]): { status: number; stdout: string } {
   const files = [f(1), f(2), f(3)];
   const normal = runLoop(files);
   const digest = runDigest(files);
-
+  assert(
+    digest.envError === null,
+    `case 1 (digest): environment OK — bash spawned (no spawn error${digest.envError ? `: ${digest.envError}` : ""})`,
+  );
   assert(
     digest.status === normal.status && digest.status !== 0,
     `case 1 (digest): exit code matches normal mode (${digest.status} vs ${normal.status}), non-zero on failure`,
@@ -229,6 +245,61 @@ function runDigest(files: string[]): { status: number; stdout: string } {
   assert(
     !digest.stdout.includes("✓ happy path") && !digest.stdout.includes("✓ edge case"),
     "case 5 (digest): the other ✓ lines in the noise fixture are absent",
+  );
+}
+
+// --- Case 6: shared digest-filter contract — the two implementations agree ---
+//
+// The prose contract in verify-loop.sh's header ("Shared digest-filter
+// contract (#1028)") says the --digest state machine and the #827 tail
+// implement the same anchor semantics. This case makes that mechanical: the
+// same fixture output is fed through both — --digest (unbounded ✗ + indented
+// detail) and normal mode's #827 bounded tail (grep -F ✗, first 3, 200
+// chars each) — and the kept ✗ marker lines must be identical in both.
+// (The #827 tail only greps ✗ lines, so the comparison is on ✗ lines.)
+{
+  const files = [
+    path.join(FIXTURES, "fixture-multi.ts"),
+    path.join(FIXTURES, "fixture-check-noise.ts"),
+  ];
+  const normal = runLoop(files);
+  const digest = runDigest(files);
+  assert(
+    normal.status !== 0 && digest.envError === null && digest.status !== 0,
+    "case 6: both runs executed (normal non-zero, digest spawned)",
+  );
+
+  // Digest side: every ✗ line of every failing test, in execution order.
+  const digestX = digest.stdout
+    .split("\n")
+    .filter((l) => l.startsWith("✗ "));
+
+  // #827 side: the bounded tail is everything after the last `FAILED:` line
+  // in the normal-mode output (where the ✗ echoes live). The #827 loop
+  // truncates each ✗ line to 200 chars (prefix 199 + '…'), so the digest
+  // side is truncated to the same 200 chars before comparing — a digest ✗
+  // line of exactly 200 chars matches its own 199+… truncation.
+  const normalStdout = normal.stdout;
+  const lastMarker = normalStdout.lastIndexOf("FAILED: ");
+  const tail = lastMarker === -1 ? "" : normalStdout.slice(lastMarker);
+  const tailX = tail
+    .split("\n")
+    .filter((l) => l.startsWith("✗ "))
+    .map((l) => (l.length > 200 ? l.slice(0, 199) + "…" : l));
+  const digestXTrunc = digestX.map((l) =>
+    l.length > 200 ? l.slice(0, 199) + "…" : l,
+  );
+
+  assert(
+    digestX.length === tailX.length,
+    `case 6: both filters keep the same NUMBER of ✗ marker lines (digest ${digestX.length}, #827 tail ${tailX.length})`,
+  );
+  const mismatches = digestXTrunc
+    .map((l, i) => ({ digest: l, tail: tailX[i] }))
+    .filter((p) => p.digest !== p.tail);
+  assert(
+    mismatches.length === 0,
+    `case 6: both filters keep the same ✗ lines, in order (mismatches: ${mismatches.length}${mismatches.length ? ` — ${JSON.stringify(mismatches[0])}` : ""})`,
   );
 }
 

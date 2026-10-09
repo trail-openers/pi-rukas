@@ -40,10 +40,12 @@
 #
 # Digest mode (--digest): prints ONLY the failure detail — per-failure
 # markers, each failing test's ✗ lines with their indented detail lines, the
-# summary marker, and a pass/fail tally line (P: <pass-count>  F: <fail-count>).
-# No ✓ lines, no passing tests' output. Exit codes are identical to normal
-# mode (0 all-pass, 1 any failure, 2 usage error), so the gate can switch call
-# sites to --digest without a separate exit-code path.
+# summary marker, and a pass/fail tally line (P: <pass-count>  F:
+# <fail-count>). P counts every non-live test that was not a failure — i.e.
+# the passing tests (live tests are skipped and count toward neither P nor
+# F). No ✓ lines, no passing tests' output. Exit codes are identical to
+# normal mode (0 all-pass, 1 any failure, 2 usage error), so the gate can
+# switch call sites to --digest without a separate exit-code path.
 # The #827 echo of the first 3 ✗ lines (truncated to 200 chars) does NOT
 # apply in digest mode — the digest prints EVERY ✗ line and its indented
 # detail, because the 3×200 bound was sized for the 800-char
@@ -285,9 +287,9 @@ for t in "$@"; do
       rm -f "$capfile"
       # Push a placeholder so the digest loop's names/_extra_captures index
       # pairing stays aligned; the digest emits the FAILED: marker with no
-      # detail for this test. The #827 echo loop skips empty entries via its
-      # own -f check below (grep on a missing file is a no-op after || true
-      # only if the file exists; an empty string entry is guarded here).
+      # detail for this test. An empty entry makes the #827 echo loop's
+      # `grep -F -- "✗" ""` error out on an invalid file name; `|| true`
+      # swallows that error, so an empty entry simply yields no lines.
       _extra_captures+=("")
     else
       _extra_captures+=("$capfile")

@@ -30,6 +30,9 @@
  *   10. The script output matches the TS reference implementation exactly.
  *   11. The digest is compact (< 728 B, the epic's measured ceiling).
  *   12. All 5 failure markers are present (✗×2, ##[error]×2, error:×1).
+ *   13. Unreadable input: a nonexistent path is exit 2 with the stderr
+ *       message and NO stdout — distinct from "no failures" (which exits 0
+ *       with empty stdout).
  */
 
 import { spawnSync } from "node:child_process";
@@ -248,6 +251,27 @@ assert(
   markerCount === 5,
   `case 12: all 5 failure markers are present (✗×${xMarkLines.length}, ##[error]×${errorTagLines.length}, error:×${errorColonLines.length})`,
 );
+
+// --- Case 13: unreadable input → exit 2 + stderr message, no stdout ---
+// A missing/unreadable input must be distinguishable from "no failures"
+// (which exits 0 with empty stdout): the script exits 2 with an explicit
+// stderr message and prints nothing.
+{
+  const missing = path.join(__dirname, "does-not-exist-ci-log-1028.txt");
+  const r = spawnSync("bash", [DIGEST_SCRIPT, missing], {
+    cwd: path.join(__dirname, ".."),
+    encoding: "utf-8",
+  });
+  assert(r.status === 2, `case 13: nonexistent input path exits 2 (got ${r.status})`);
+  assert(
+    (r.stderr ?? "").includes("ci-log-digest: cannot read input: "),
+    `case 13: stderr names the input (got: ${JSON.stringify(r.stderr ?? "")})`,
+  );
+  assert(
+    (r.stdout ?? "").trim() === "",
+    `case 13: no stdout on unreadable input (got: ${JSON.stringify(r.stdout ?? "")})`,
+  );
+}
 
 console.log(exit === 0 ? "\nAll CI-log digest checks passed." : "\nFAILED");
 process.exit(exit);

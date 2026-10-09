@@ -6,6 +6,20 @@
 # drops every other line — including ✓ lines that happen to contain the word
 # "error" (the anchor is a line-start match, not a substring search).
 #
+# The filter is anchored: each keep pattern matches at the start of the
+# stripped content (after the job/step/timestamp prefix). A ✓ line that
+# contains "error" mid-text is dropped because the pattern is a line-start
+# match, not a substring search.
+#
+# The script trims leading whitespace from the stripped content for marker
+# detection, then prints the original (untrimmed) line. This handles the 2-space
+# indent that CI logs add after the timestamp prefix while keeping the anchor
+# at the start of the logical line (after leading whitespace).
+#
+# Indented detail lines are only kept if they are NOT markers themselves AND
+# do NOT start with ✓ (a check-mark line is never a detail line, even if
+# indented). This prevents ✓ lines from leaking into the digest as "detail".
+#
 # Indented-detail attribution: a line is "indented detail" when it IMMEDIATELY
 # follows a kept marker line AND its first character is a space or a tab
 # (leading whitespace of any length, of either kind). The attribution stops
@@ -18,9 +32,20 @@
 # (same two-character "first char is space-or-tab" test) and the byte-equality
 # assertion keeps them in lockstep.
 
-TAB="$(printf '\t')"
 set -u
-input="$(cat "$1")"
+if [ "$#" -ne 1 ]; then
+  echo "ci-log-digest: usage: ci-log-digest.sh <logfile>" >&2
+  exit 2
+fi
+if [ ! -f "$1" ] || [ ! -r "$1" ]; then
+  echo "ci-log-digest: cannot read input: $1" >&2
+  exit 2
+fi
+input="$(cat "$1")" || {
+  echo "ci-log-digest: cannot read input: $1" >&2
+  exit 2
+}
+TAB="$(printf '\t')"
 state=idle
 while IFS= read -r raw || [ -n "$raw" ]; do
   content="$raw"
@@ -44,17 +69,7 @@ while IFS= read -r raw || [ -n "$raw" ]; do
       # length of either kind). Kept only if it is not itself a marker and
       # not a ✓ line (a check-mark line is never detail, even when indented).
       case "$content" in
-        " "*)
-          case "$trimmed" in
-            "✗ "*) : ;;
-            "✓ "*) : ;;
-            "##[error]"*) : ;;
-            "FAILED:"*) : ;;
-            "error:"*) : ;;
-            *) echo "$content";;
-          esac
-        ;;
-        "${TAB}"*)
+        " "* | "${TAB}"*)
           case "$trimmed" in
             "✗ "*) : ;;
             "✓ "*) : ;;
