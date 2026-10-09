@@ -6,9 +6,9 @@
  * no-op.
  *
  * The invariant: activation APPENDS `codemode` to the current active tool
- * set — never replaces it. A replace would drop the `mcp__codebase_memory__*`
+ * set — never replaces it. A replace would drop the `mcp__codebase_memory__*
  * tools (measured: `--tools …,codemode` activates codemode but removes ALL
- * 17 codebase-memory MCP tools). The shared seam is enableChildCodemode
+ * 14 codebase-memory MCP tools). The shared seam is enableChildCodemode
  * (child-codemode.ts); the two call sites are child-guards.ts's
  * `session_start` (trust-mode children) and permission-subagent-guard.ts's
  * `registerSubagentGuard` (strict/headless children — the companion no-ops
@@ -22,7 +22,7 @@
  *
  *   1. registerChildGuards (trust mode — no SUBAGENT_MODE): session_start
  *      records `setActiveTools(original + "codemode")` — append, set intact
- *      (all 17 mcp tools present, in their original relative order).
+ *      (all 14 mcp tools present, in their original relative order).
  *   2. registerChildGuards under PI_ENSEMBLE_CHILD_CODEMODE=0: NO
  *      `setActiveTools` call is recorded at all (flag off → no-op).
  *   3. PI_ENSEMBLE_SUBAGENT_MODE=1: the companion registers NO
@@ -47,9 +47,9 @@ import { registerSubagentGuard } from "../src/permission-subagent-guard.ts";
 import { enableChildCodemode } from "../src/child-codemode.ts";
 
 // The roster shape of a real child: the built-in MCP tools (codebase-memory,
-// 17 tools in the reference environment) plus the core tools. This is the
-// exact set a replace-variant would drop — so the assert below must see it
-// intact.
+// 14 tools in the reference environment — the exact list in BASE_ROSTER
+// below) plus the core tools. This is the exact set a replace-variant
+// would drop — so the assert below must see it intact.
 const BASE_ROSTER = [
   "bash",
   "read",

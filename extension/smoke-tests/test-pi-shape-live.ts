@@ -56,7 +56,8 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, rmSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -129,9 +130,10 @@ const fixturePath = path.join(here, "fixtures", "shape-live-roster-reporter.ts")
 const extSrcDir = path.join(here, "..", "src");
 const extDir = path.resolve(here, "..");
 const worktreeRoot = path.resolve(here, "..", "..");
-const sessionDir = "/tmp/pi-ensemble-live-shape";
-mkdirSync(sessionDir, { recursive: true });
-const sessionPath = path.join(sessionDir, `pi-shape-live-${process.pid}-${Date.now()}.json`);
+// The session transcript lives in a per-run temp dir that this test removes
+// in its finally block — the test must not leak transcripts across runs.
+const sessionDir = path.join(os.tmpdir(), `pi-ensemble-live-shape-${process.pid}-${Date.now()}`);
+const sessionPath = path.join(sessionDir, `pi-shape-live-${process.pid}.json`);
 
 const prompt = [
   "You are running a deterministic shape test. Follow EXACTLY:",
@@ -470,6 +472,14 @@ assert(
   `last assistant text contains PONG (actual: "${lastText.slice(0, 60)}")`,
 );
 
-console.log(`\n[test] session: ${sessionPath}`);
+// Clean up after itself: the session transcript dir is removed
+// unconditionally (the test's only persistent artefact).
+try {
+  rmSync(sessionDir, { recursive: true, force: true });
+} catch {
+  /* best effort — the dir is under os.tmpdir() */
+}
+
+console.log(`\n[test] session: ${sessionPath} (removed after the run)`);
 console.log(`\nexit ${exit}`);
 process.exit(exit);
