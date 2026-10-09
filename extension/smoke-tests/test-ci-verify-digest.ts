@@ -58,12 +58,19 @@ function assert(cond: boolean, msg: string) {
 // #1028 — run verify-loop.sh in --digest mode (the lib's runLoop does not
 // take extra argv; this thin wrapper is the digest variant of the same
 // helper, same cwd and spawn shape, plus the flag as argv[0]).
+//
+// `NonNullable<typeof result>` narrows spawnSync's result to its success
+// shape (status is number | null, stdout is string | null | Buffer under
+// encoding: "utf-8"); the test relies on the wrapper's own `{ status:
+// number; stdout: string }` return type, so the coercion here is a
+// deliberate narrowing rather than an `any` escape hatch.
 function runDigest(files: string[]): { status: number; stdout: string } {
   const result = spawnSync("bash", [SCRIPT, "--digest", ...files], {
     cwd: path.join(__dirname, ".."),
     encoding: "utf-8",
   });
-  return { status: result.status ?? -1, stdout: result.stdout };
+  const r = result as NonNullable<typeof result>;
+  return { status: r.status ?? -1, stdout: r.stdout };
 }
 
 // --- Case 1: mixed fail/pass — parity + invariants ---
@@ -79,12 +86,12 @@ function runDigest(files: string[]): { status: number; stdout: string } {
   );
   const lines = digest.stdout.trim().split("\n");
   assert(
-    lines[lines.length - 1]?.startsWith("FAILED: 2 test(s) —"),
-    `case 1 (digest): last line is the summary marker with count 2 (got: ${JSON.stringify(lines[lines.length - 1])})`,
+    lines[lines.length - 2]?.startsWith("FAILED: 2 test(s) —"),
+    `case 1 (digest): second-to-last line is the summary marker with count 2 (got: ${JSON.stringify(lines[lines.length - 2])})`,
   );
   assert(
-    digest.stdout.includes("FAILED: " + f(1)) && digest.stdout.includes("FAILED: " + f(3)),
-    "case 1 (digest): per-failure markers name both failing files",
+    lines[lines.length - 1] === "P: 1  F: 2",
+    `case 1 (digest): last line is the pass/fail tally P: 1  F: 2 (got: ${JSON.stringify(lines[lines.length - 1])})`,
   );
   assert(
     digest.stdout.includes("FAILED: " + f(1)) && digest.stdout.includes("FAILED: " + f(3)),
@@ -134,13 +141,18 @@ function runDigest(files: string[]): { status: number; stdout: string } {
     digest.stdout.includes("FAILED: " + f(5)),
     "case 3 (digest): TAIL failure (fixture-5) survives in the digest via its FAILED: marker",
   );
-  const lastLine = digest.stdout.trim().split("\n").at(-1) ?? "";
+  const lastLine = digest.stdout.trim().split("\n").at(-2) ?? "";
   assert(
     lastLine.startsWith("FAILED: 3 test(s) —") &&
       lastLine.includes("fixture-1.ts") &&
       lastLine.includes("fixture-3.ts") &&
       lastLine.includes("fixture-5.ts"),
     `case 3 (digest): the summary names all three planted failures (got: ${JSON.stringify(lastLine)})`,
+  );
+  const lines3 = digest.stdout.trim().split("\n");
+  assert(
+    lines3[lines3.length - 1] === "P: 2  F: 3",
+    `case 3 (digest): pass/fail tally line is P: 2  F: 3 (got: ${JSON.stringify(lines3[lines3.length - 1])})`,
   );
 }
 
@@ -158,8 +170,12 @@ function runDigest(files: string[]): { status: number; stdout: string } {
     "case 4 (digest): a failure with NO ✗ line is still attributed by its FAILED: marker",
   );
   assert(
-    (digest.stdout.trim().split("\n").at(-1) ?? "").startsWith("FAILED: 1 test(s) —"),
-    "case 4 (digest): the summary marker is present and last for a thrown-error failure",
+    (digest.stdout.trim().split("\n").at(-2) ?? "").startsWith("FAILED: 1 test(s) —"),
+    "case 4 (digest): the summary marker is present (second-to-last) for a thrown-error failure",
+  );
+  assert(
+    (digest.stdout.trim().split("\n").at(-1) ?? "") === "P: 0  F: 1",
+    "case 4 (digest): the pass/fail tally line is P: 0  F: 1",
   );
 }
 

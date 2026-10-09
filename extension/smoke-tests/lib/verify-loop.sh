@@ -21,6 +21,16 @@
 # #827 (echo of failing `✗` lines after the summary): why this exists and why
 # the 3×200 bound is sized the way it is is commented at the echo loop below.
 #
+# Shared digest-filter contract (#1028), used by both the --digest branch
+# and the #827 tail echo: a line is kept when it is a failure marker (a `✗`
+# marker at line start) AND its following indented detail lines, where
+# "indented" means leading whitespace and the attribution stops at the first
+# non-indented line. Normal mode's #827 tail implements this via a bounded
+# grep (first 3 ✗ lines per test, 200 chars each) for the 800-char
+# extractAttributedTail window; digest mode's --digest branch implements it
+# as an unbounded per-line state machine (every ✗ line + full indented
+# detail). Both implementations must keep the same anchor semantics.
+#
 # Usage:
 #   verify-loop.sh <file> [<file> ...]           — normal mode
 #   verify-loop.sh --digest <file> [<file> ...] — #1028 digest mode
@@ -29,14 +39,18 @@
 # per-failure `FAILED: <file>` marker and a final summary line.
 #
 # Digest mode (--digest): prints ONLY the failure detail — per-failure
-# markers, each failing test's ✗ lines with their indented detail lines, and
-# the summary marker. No ✓ lines, no passing tests' output. Exit codes are
-# identical to normal mode (0 all-pass, 1 any failure, 2 usage error), so the
-# gate can switch call sites to --digest without a separate exit-code path.
+# markers, each failing test's ✗ lines with their indented detail lines, the
+# summary marker, and a pass/fail tally line (P: <pass-count>  F: <fail-count>).
+# No ✓ lines, no passing tests' output. Exit codes are identical to normal
+# mode (0 all-pass, 1 any failure, 2 usage error), so the gate can switch call
+# sites to --digest without a separate exit-code path.
 # The #827 echo of the first 3 ✗ lines (truncated to 200 chars) does NOT
 # apply in digest mode — the digest prints EVERY ✗ line and its indented
 # detail, because the 3×200 bound was sized for the 800-char
 # extractAttributedTail window, not for a full digest.
+#
+# Digest mode prints NOTHING on all-pass (exit 0). Callers must distinguish
+# pass from no-output by exit code (0 = pass), not by stdout presence.
 #
 # The caller expands the glob; the script receives the file list.
 # Live tests (suffix -live.ts) are skipped in both modes, matching the legacy
@@ -237,8 +251,10 @@ trap 'rm -f "$CAPTURE" ${_extra_captures[*]:-}' EXIT
 _extra_captures=()
 
 names=()
+total=0
 for t in "$@"; do
   case "$t" in *-live.ts) continue;; esac
+  total=$((total + 1))
   rc=0
   run_test_with_timeout "$VERIFY_TEST_TIMEOUT_S" "$t"
   rc=$?
@@ -267,6 +283,12 @@ for t in "$@"; do
       # capfile, so the echo loop below skips it.
       echo "warn: verify-loop: could not capture output of $t for the tail echo; its ✗ lines will be absent from the summary tail" >&2
       rm -f "$capfile"
+      # Push a placeholder so the digest loop's names/_extra_captures index
+      # pairing stays aligned; the digest emits the FAILED: marker with no
+      # detail for this test. The #827 echo loop skips empty entries via its
+      # own -f check below (grep on a missing file is a no-op after || true
+      # only if the file exists; an empty string entry is guarded here).
+      _extra_captures+=("")
     else
       _extra_captures+=("$capfile")
     fi
@@ -300,6 +322,17 @@ if [ "${#names[@]}" -gt 0 ]; then
     # #1028 — digest mode: emit per-failure markers, every ✗ line with its
     # indented detail, then the summary. The 3×200 bound from normal mode's
     # #827 echo does NOT apply here — the digest is the full failure detail.
+    # names and _extra_captures are pushed in lockstep (a cp failure pushes an
+    # empty placeholder), so index $i of each array is the same test.
+    # Filter contract (shared with the #827 tail, see header): a line is
+    # kept when it is a `✗` marker at line start, or when it is an indented
+    # detail line (leading whitespace) following a kept ✗ marker; the
+    # indented-detail attribution stops at the first non-indented line.
+    # Pass/fail counts + exit code are printed below: `FAILED:` is the
+    # canonical failure-count marker (extractAttributedTail anchors on it),
+    # the `P`/`F` tally is the pass/fail summary the acceptance criteria
+    # name, and the exit code (0 all-pass / 1 any failure) is identical to
+    # normal mode.
     for i in "${!names[@]}"; do
       echo "FAILED: ${names[$i]}"
       capfile="${_extra_captures[$i]:-}"
@@ -325,6 +358,7 @@ if [ "${#names[@]}" -gt 0 ]; then
       fi
     done
     echo "$summary"
+    echo "P: $((total - ${#names[@]}))  F: ${#names[@]}"
     exit 1
   fi
 
