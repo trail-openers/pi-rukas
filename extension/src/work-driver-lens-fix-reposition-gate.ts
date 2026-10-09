@@ -27,6 +27,7 @@
  * Split from work-driver-lens-fix-commit.ts for the 500-line gate.
  */
 import { trace } from "./trace.ts";
+import { inlineCodeSafe } from "./work-driver-conflict-evidence.ts";
 import {
   backupLensFixTree,
   enumerateUnlanded,
@@ -130,16 +131,21 @@ export async function repositionLensFixWorktree(
       argv: ["fetch", "origin", branchName, "--quiet"],
     });
   } catch (e) {
-    const detail = `could not fetch origin/${branchName}: ${e}`;
+    // #981 LOW: branchName is operator-supplied data; route it through
+    // inlineCodeSafe (a backtick or newline would break the markdown span
+    // the handoff renders the detail into).
+    const detail = `could not fetch origin/${inlineCodeSafe(branchName)}: ${e}`;
     trace(`${TRACE_PREFIX}: ${detail}`);
     return { kind: "git-failed", detail };
   }
   const tip = await resolveBranchTip(execFn, tree, branchName);
   if (!tip.ok) {
-    trace(`${TRACE_PREFIX}: ${tip.kind}: ${tip.detail}`);
-    return tip.kind === "diverged"
-      ? { kind: "diverged", detail: tip.detail }
-      : { kind: "git-failed", detail: tip.detail };
+    // #981 LOW: branchName is operator-supplied data interpolated into the
+    // detail; route it through inlineCodeSafe (a backtick or newline would
+    // break the markdown span the handoff renders it into).
+    const detail = tip.detail.replaceAll(`${branchName}`, inlineCodeSafe(branchName));
+    trace(`${TRACE_PREFIX}: ${tip.kind}: ${detail}`);
+    return tip.kind === "diverged" ? { kind: "diverged", detail } : { kind: "git-failed", detail };
   }
   const tipSha = tip.tipSha;
 
@@ -164,7 +170,10 @@ export async function repositionLensFixWorktree(
       .split("\n")
       .map((l) => l.trim())
       .filter(Boolean);
-    const detail = `worktree has uncommitted changes: ${paths.join(", ")}`;
+    // #981 LOW: porcelain paths are operator-supplied data; route them
+    // through inlineCodeSafe (a backtick or newline in a path would break
+    // the markdown span the handoff renders the detail into).
+    const detail = `worktree has uncommitted changes: ${paths.map((p) => inlineCodeSafe(p)).join(", ")}`;
     trace(`${TRACE_PREFIX}: ${detail}`);
     return { kind: "dirty", detail };
   }
@@ -200,8 +209,18 @@ export async function repositionLensFixWorktree(
   // fix (patch-equivalent on the branch), which the `git cherry` check
   // below detects and repositions; anything with a `+` line is un-landed
   // or diverged and must park.
+  // #981: `isAncestor` distinguishes "git says no" (exit 1 → false) from
+  // "git could not answer" (any other failure → { error }). The fast-forward
+  // move requires a POSITIVE ancestry proof; an unreadable probe must not
+  // fall through to the cherry path (which would move the tree on a base it
+  // never verified), so it parks as `git-failed` with the git error — fail
+  // closed, the tree is never moved.
   const treeIsAncestorOfTip = await isAncestor(execFn, tree, treeSha, tipSha);
-  if (treeIsAncestorOfTip) {
+  if ("error" in treeIsAncestorOfTip) {
+    trace(`${TRACE_PREFIX}: git-failed (ancestry probe): ${treeIsAncestorOfTip.error}`);
+    return { kind: "git-failed", detail: treeIsAncestorOfTip.error };
+  }
+  if (treeIsAncestorOfTip.isAncestor) {
     // Clean fast-forward: the tree is strictly behind the tip.
     try {
       await execFn("git", {
@@ -329,13 +348,19 @@ export async function repositionLensFixWorktree(
     // range (empty commit). Distinguish unlanded (tip is an ancestor of
     // the tree — the tree is ahead) from true divergence (neither is an
     // ancestor of the other). Both are guard failures; back up the tree
-    // and park.
+    // and park. An ancestry PROBE that git failed on is neither — it
+    // parks as `git-failed` (fail closed: the tree is not moved) rather
+    // than guessing `diverged`.
     const tipIsAncestorOfTree = await isAncestor(execFn, tree, tipSha, treeSha);
+    if ("error" in tipIsAncestorOfTree) {
+      trace(`${TRACE_PREFIX}: git-failed (ancestry probe): ${tipIsAncestorOfTree.error}`);
+      return { kind: "git-failed", detail: tipIsAncestorOfTree.error };
+    }
     const backupRef = await backupLensFixTree(execFn, tree, branchName, issues, issueTitle);
     const backupRefName = backupRef.ref;
     const aheadShas =
       plusShas.length > 0 ? plusShas : await enumerateUnlanded(execFn, tree, tipSha);
-    const kind: "unlanded" | "diverged" = tipIsAncestorOfTree ? "unlanded" : "diverged";
+    const kind: "unlanded" | "diverged" = tipIsAncestorOfTree.isAncestor ? "unlanded" : "diverged";
     const detail =
       kind === "unlanded"
         ? `worktree holds ${aheadShas.length} commit(s) the branch tip ${tipSha.slice(0, 12)} does not (previous-round work unlanded): ${aheadShas.join(", ") || "(unreadable)"}`

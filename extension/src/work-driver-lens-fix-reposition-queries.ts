@@ -7,7 +7,7 @@
  *
  * All git commands run through the `ExecFn` argv form (no shell re-parse).
  */
-import type { ExecFn } from "./worktree.ts";
+import { type ExecFn, gitErrorDetail } from "./worktree.ts";
 
 /** Resolve one rev to a SHA (trimmed), or undefined when the read failed. */
 export async function revToSha(
@@ -28,21 +28,51 @@ export async function revToSha(
   }
 }
 
-/** True when `a` is an ancestor of `b` (inclusive of a === b). */
+/**
+ * The three-way result of a `git merge-base --is-ancestor a b` probe.
+ *
+ * - `isAncestor: true` — the probe succeeded (a === b counts).
+ * - `isAncestor: false` — the probe ran and exit code 1 says `a` is
+ *   definitively NOT an ancestor of `b` (behind or diverged).
+ * - `error` — git failed for a reason OTHER than "not an ancestor" (a
+ *   bad ref, a corrupt repo, a missing object — exit 128 or anything else).
+ *   The caller must treat this as an unreadable probe, NOT as a proven
+ *   non-ancestry: treating a git error as "diverged" would park the cycle
+ *   with the wrong reason, and (worse) a caller that trusts a false
+ *   `isAncestor` could move a tree on a base it never verified.
+ */
+export type AncestryResult = { isAncestor: boolean } | { error: string };
+
+/**
+ * Test whether `a` is an ancestor of `b` (inclusive of a === b),
+ * distinguishing "git says no" (exit 1) from "git could not answer" (any
+ * other failure). The latter surfaces as `{ error }` so the caller can
+ * route to `git-failed` with the git error in the detail instead of
+ * guessing `diverged` / `unlanded`.
+ */
 export async function isAncestor(
   execFn: ExecFn,
   tree: string,
   a: string,
   b: string,
-): Promise<boolean> {
+): Promise<AncestryResult> {
   try {
     await execFn("git", {
       cwd: tree,
       argv: ["merge-base", "--is-ancestor", a, b],
     });
-    return true;
-  } catch {
-    return false;
+    return { isAncestor: true };
+  } catch (e) {
+    // `git merge-base --is-ancestor` exits 1 for a definitive non-ancestor
+    // and 0 for an ancestor (exit 0 resolves above). Any other failure — a
+    // bad ref, a missing object, a corrupt repo (exit 128) — is an
+    // unreadable probe, not a proven non-ancestry; return it as an error
+    // so the caller can park as `git-failed` rather than guess.
+    const code = (e as Error & { code?: number | string })?.code;
+    if (code === 1 || code === "1") return { isAncestor: false };
+    return {
+      error: `git merge-base --is-ancestor ${a.slice(0, 12)} ${b.slice(0, 12)} failed: ${gitErrorDetail(e)}`,
+    };
   }
 }
 
@@ -86,8 +116,19 @@ export async function resolveBranchTip(
   if (local === remote) return { ok: true, tipSha: local };
   const localIsAncestorOfRemote = await isAncestor(execFn, tree, local, remote);
   const remoteIsAncestorOfLocal = await isAncestor(execFn, tree, remote, local);
-  if (localIsAncestorOfRemote) return { ok: true, tipSha: remote };
-  if (remoteIsAncestorOfLocal) return { ok: true, tipSha: local };
+  // A git error on EITHER probe means the tip cannot be resolved with the
+  // confidence a checkout depends on — park as `git-failed` (never as
+  // `diverged`, which would claim a proven non-ancestry the probe could
+  // not establish). Only a clean read of both probes may conclude the
+  // refs have diverged.
+  if ("error" in localIsAncestorOfRemote) {
+    return { ok: false, kind: "git-failed", detail: localIsAncestorOfRemote.error };
+  }
+  if ("error" in remoteIsAncestorOfLocal) {
+    return { ok: false, kind: "git-failed", detail: remoteIsAncestorOfLocal.error };
+  }
+  if (localIsAncestorOfRemote.isAncestor) return { ok: true, tipSha: remote };
+  if (remoteIsAncestorOfLocal.isAncestor) return { ok: true, tipSha: local };
   return {
     ok: false,
     kind: "diverged",

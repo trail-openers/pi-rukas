@@ -8,6 +8,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { repositionLensFixWorktree } from "../src/work-driver-lens-fix-reposition-gate.ts";
+import { parkLensFixReposition } from "../src/work-driver-lens-fix-reposition-park.ts";
+import { initialState } from "../src/workflow-state.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
 
 const execp = promisify(exec);
 
@@ -215,7 +218,115 @@ function assert(cond: boolean, msg: string) {
       "981 reposition: the tree HEAD is unchanged when the backup ref fails",
     );
 
-    console.log("✓ 981 reposition test passed");
+    // Task 1 (MEDIUM): a `git-failed` result that CARRIES a `backupRef`
+    // (the cherry path made a backup ref, then the checkout failed) must
+    // record `restoredToRef` on the cap-hit — previously only `unlanded` /
+    // `diverged` results did, so the ref was lost. Verify the park helper
+    // keeps it for a git-failed result.
+    const parkDir = mkdtempSync(path.join(tmpdir(), "work-driver-lens-park-"));
+    try {
+      const ctx = { pi: {}, repoRoot: parkDir, issue: 981 } as unknown as DriverContext;
+      const state = initialState(981, Date.now());
+      const parkNow = Date.now();
+      const gitFailedWithRef = {
+        kind: "git-failed",
+        detail: "git checkout --detach <tip> failed: simulated",
+        backupRef: "refs/pi-rukas/lens-fix-backup/slug/2026-01-01T00-00-00",
+      } as const;
+      const parked = await parkLensFixReposition(ctx, state, parkNow, "/tmp/wt", {
+        kind: gitFailedWithRef.kind,
+        detail: gitFailedWithRef.detail,
+        backupRef: gitFailedWithRef.backupRef,
+      });
+      const capHit = [...parked.eventLog]
+        .reverse()
+        .find((e) => e.kind === "cap-hit" && e.cap === "lens-fix-reposition");
+      assert(
+        capHit !== undefined,
+        "981 park: a git-failed result with backupRef produces a lens-fix-reposition cap-hit",
+      );
+      assert(
+        capHit?.restoredToRef === gitFailedWithRef.backupRef,
+        `981 park: the cap-hit's restoredToRef equals the git-failed backupRef (got ${String(capHit?.restoredToRef)})`,
+      );
+    } finally {
+      rmSync(parkDir, { recursive: true, force: true });
+    }
+
+    // Task 2 (MEDIUM): `isAncestor` must distinguish "not an ancestor" (exit
+    // 1 → false) from a git failure (e.g. a bad ref → exit 128). A merge-base
+    // failure must NOT be read as `diverged` / `unlanded` — it must surface as
+    // `git-failed` with the git error, and the tree must NOT move. Simulate a
+    // `git merge-base` that fails with a non-1 exit code by pointing the worktree
+    // at a ref that does not resolve.
+    const badRefDir = mkdtempSync(path.join(tmpdir(), "work-driver-lens-badref-"));
+    try {
+      const origin = path.join(badRefDir, "origin.git");
+      const root = path.join(badRefDir, "root");
+      const wt = path.join(badRefDir, "wt");
+      await execp("git init -q --bare --initial-branch=main origin.git", { cwd: badRefDir });
+      await execp("git init -q --initial-branch=main root", { cwd: badRefDir });
+      await execp('git config user.email "t@t" && git config user.name "T"', {
+        cwd: root,
+        shell: "/bin/bash",
+      });
+      writeFileSync(path.join(root, "a.txt"), "one\n");
+      await execp("git add . && git commit -q -m base", { cwd: root, shell: "/bin/bash" });
+      const baseSha2 = (await execp("git rev-parse HEAD", { cwd: root })).stdout.trim();
+      await execp(`git remote add origin ${JSON.stringify(origin)} && git push -q -u origin main`, {
+        cwd: root,
+      });
+      await execp(
+        `git checkout -qb feature/lens-badref && git push -q -u origin feature/lens-badref`,
+        { cwd: root },
+      );
+      // Create the worktree at the OLD base, then advance the branch tip in
+      // repoRoot so the worktree is BEHIND the tip. That forces the gate past
+      // the `already-at-tip` early return and onto the ancestry probe.
+      await execp(`git worktree add --detach ${JSON.stringify(wt)} ${JSON.stringify(baseSha2)}`, {
+        cwd: root,
+      });
+      writeFileSync(path.join(root, "a.txt"), "one\nadvance\n");
+      await execp("git add . && git commit -q -m advance", { cwd: root, shell: "/bin/bash" });
+      await execp("git push -q origin feature/lens-badref", { cwd: root });
+      // The executor intercepts ANY `git merge-base --is-ancestor` call and
+      // rejects with a non-1 code (simulating exit 128 — a git failure, not a
+      // proven non-ancestry). The gate must route to `git-failed`, not
+      // `diverged`, and must NOT move the tree (fail closed).
+      const wtHeadBefore = (await execp("git rev-parse HEAD", { cwd: wt })).stdout.trim();
+      assert(wtHeadBefore === baseSha2, "981 reposition: the worktree starts at the old base (behind the tip)");
+      const mergeBaseFails = async (cmd: string, o?: { cwd?: string; argv?: string[] }) => {
+        if (o?.argv && o.argv[0] === "merge-base") {
+          const err = new Error("simulated git merge-base failure (exit 128)") as Error & { code?: number };
+          err.code = 128;
+          throw err;
+        }
+        return repositionExec(cmd, o);
+      };
+      const rBad = await repositionLensFixWorktree(
+        mergeBaseFails,
+        wt,
+        "feature/lens-badref",
+        [981],
+        "reposition test",
+      );
+      assert(
+        rBad.kind === "git-failed",
+        `981 reposition: a merge-base git failure (exit 128) routes to git-failed, not diverged (got ${rBad.kind})`,
+      );
+      assert(
+        "detail" in rBad && rBad.detail.includes("merge-base"),
+        "981 reposition: the git-failed detail names the merge-base probe failure",
+      );
+      const wtHeadAfterBad = (await execp("git rev-parse HEAD", { cwd: wt })).stdout.trim();
+      assert(
+        wtHeadAfterBad === wtHeadBefore,
+        "981 reposition: the tree is NOT moved when merge-base fails (fail closed)",
+      );
+      console.log("✓ 981 reposition test passed");
+    } finally {
+      rmSync(badRefDir, { recursive: true, force: true });
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

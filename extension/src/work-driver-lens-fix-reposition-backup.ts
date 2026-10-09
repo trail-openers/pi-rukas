@@ -12,6 +12,7 @@ import { trace } from "./trace.ts";
  */
 import { branchSlug } from "./work-driver-branch-mechanized.ts";
 import type { RepositionResult } from "./work-driver-lens-fix-reposition-gate.ts";
+import { isAncestor } from "./work-driver-lens-fix-reposition-queries.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
@@ -106,26 +107,29 @@ export async function parkCherryFailedTree(
   tipSha: string,
 ): Promise<RepositionResult> {
   const backup = await backupLensFixTree(execFn, tree, branchName, issues, issueTitle);
-  const backupRef = backup.ref;
   const aheadShas = await enumerateUnlanded(execFn, tree, tipSha);
-  let tipIsAncestorOfTree = false;
-  try {
-    await execFn("git", {
-      cwd: tree,
-      argv: ["merge-base", "--is-ancestor", tipSha, "HEAD"],
-    });
-    tipIsAncestorOfTree = true;
-  } catch {
-    // not an ancestor (or the read failed) — the conservative reading is
-    // diverged, which parks identically.
+  // #981: the ancestry probe must distinguish "git says not an ancestor"
+  // (exit 1 → diverged) from "git could not answer" (any other failure →
+  // git-failed, fail closed). A git error used to be read as `diverged`,
+  // which parked the tree with the wrong reason and no git error in the
+  // detail; it now parks as `git-failed` with the error.
+  const ancestry = await isAncestor(execFn, tree, tipSha, "HEAD");
+  if ("error" in ancestry) {
+    const detail = `git cherry could not be run against tip ${tipSha.slice(0, 12)} AND the ancestry probe failed — treating the tree as unverified: ${aheadShas.join(", ") || "(unreadable)"}${backup.ref === undefined && backup.error ? ` (backup ref could not be created: ${backup.error})` : ""}`;
+    trace(`lens-fix-reposition: git-failed: ${detail}`);
+    return {
+      kind: "git-failed",
+      detail,
+      ...(backup.ref ? { backupRef: backup.ref } : {}),
+    };
   }
-  const kind: "unlanded" | "diverged" = tipIsAncestorOfTree ? "unlanded" : "diverged";
+  const kind: "unlanded" | "diverged" = ancestry.isAncestor ? "unlanded" : "diverged";
   const detail = `git cherry could not be run against tip ${tipSha.slice(0, 12)} — treating ${aheadShas.length} ahead commit(s) as unverified: ${aheadShas.join(", ") || "(unreadable)"}${backup.ref === undefined && backup.error ? ` (backup ref could not be created: ${backup.error})` : ""}`;
   trace(`lens-fix-reposition: ${kind}: ${detail}`);
   return {
     kind,
     detail,
-    ...(backupRef ? { backupRef } : {}),
+    ...(backup.ref ? { backupRef: backup.ref } : {}),
     aheadShas,
   };
 }

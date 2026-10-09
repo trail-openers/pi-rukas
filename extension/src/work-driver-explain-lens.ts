@@ -62,7 +62,10 @@ export function explainLens(cap: Cap, state: WorkState): string {
       // onto a base it could not verify: a dirty worktree, round-1 work that
       // never landed on the branch, or a worktree that diverged from the
       // branch tip. The kind + git detail ride on the cap's evidence; a
-      // backup ref (unlanded / diverged) rides on `restoredToRef`.
+      // backup ref (unlanded / diverged / git-failed) rides on
+      // `restoredToRef` — a `git-failed` result (e.g. the cherry path made
+      // a backup ref, then the checkout failed) keeps it too, because it is
+      // the only way to recover the tree.
       const hit = [...state.eventLog]
         .reverse()
         .find(
@@ -80,7 +83,7 @@ export function explainLens(cap: Cap, state: WorkState): string {
         : "The inspected worktree path was not recorded.";
       const ref = hit?.restoredToRef;
       const backup = ref
-        ? ` The divergent/unlanded work is preserved at ref \`${ref}\` (\`git show ${ref}\`) — nothing was discarded.`
+        ? ` The worktree's pre-move state is preserved at ref \`${ref}\` (\`git show ${ref}\`) — nothing was discarded; if the park was a \`git-failed\` (e.g. the backup succeeded but the checkout that followed did not), restore the tree from it with \`git checkout ${ref}\` before re-running.`
         : "";
       return `the lens-fix reposition guard could not establish the correct base for the next round: ${cause}. ${where}${backup} The cycle halted rather than dispatching a fix onto a stale or diverged worktree, because a fix built there would not integrate cleanly (the #978 shape: round 2 built on the old base while the branch advanced by round 1). Inspect the worktree and the evidence above — commit or clean uncommitted work, land the missing commit on the branch, or restore from the backup ref — then re-run the cycle`;
     }

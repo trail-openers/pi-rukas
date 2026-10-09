@@ -29,7 +29,12 @@ export async function parkLensFixReposition(
   fixTree: string,
   rep: Extract<RepositionResult, { detail: string }>,
 ): Promise<WorkState> {
-  const backupRef = rep.kind === "unlanded" || rep.kind === "diverged" ? rep.backupRef : undefined;
+  // #981: record the backup ref for EVERY failure kind that carries one —
+  // not just unlanded / diverged. A `git-failed` result (e.g. the cherry
+  // path made a backup ref, then the checkout failed) must not lose it: the
+  // operator needs the ref to recover the tree. `backupRef` is present on
+  // the unlanded / diverged / git-failed variants of RepositionResult.
+  const backupRef = "backupRef" in rep ? rep.backupRef : undefined;
   const evidence = `${rep.kind}: ${rep.detail}${backupRef ? ` (backed up to ${backupRef})` : ""}`;
   trace(`work-driver: lens-fix reposition guard parked the cycle — ${evidence}`);
   let next: WorkState = appendEvent(state, {
