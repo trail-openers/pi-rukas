@@ -49,10 +49,9 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { dedupeLatest } from "./review-ledger-core.ts";
-import { acquireLedgerLock } from "./review-ledger-lock.ts";
+import { acquireLedgerLock, sleepSync, testDelayReadMs } from "./review-ledger-lock.ts";
 import { mergeAfterRace } from "./review-ledger-merge.ts";
-import { ledgerPathFor } from "./review-ledger-path.ts";
-import { latestEntry, readLedgerAt, readLedgerFile, validEntries } from "./review-ledger-read.ts";
+import { ledgerPathFor, remoteName } from "./review-ledger-path.ts";
 import { bumpLensRound } from "./review-ledger-round.ts";
 import { trace } from "./trace.ts";
 import { type VerifyExecFn, detectMainline } from "./work-driver-git.ts";
@@ -108,12 +107,7 @@ export { ledgerPathFor } from "./review-ledger-path.ts";
 export { bumpLensRound } from "./review-ledger-round.ts";
 export { dedupeLatest } from "./review-ledger-core.ts";
 export { mergeAfterRace } from "./review-ledger-merge.ts";
-export {
-  readLedgerFile,
-  validEntries,
-  latestEntry,
-  readLedgerAt,
-} from "./review-ledger-read.ts";
+export { remoteName } from "./review-ledger-path.ts";
 
 /**
  * The patch id of a branch's changes: the diff from `baseRef` to the branch
@@ -149,34 +143,6 @@ function parsePatchId(stdout: string, label: string): string | undefined {
   const id = stdout.trim().split(/\s+/)[0]?.trim();
   if (!id) trace(`review-ledger: patch-id was empty for ${label}`);
   return id;
-}
-
-/**
- * The remote the forge detection resolves against: `origin` → `upstream` →
- * the first remote in `git remote` order — the same precedence as
- * `detectForge` (forge-detect.ts). The guard and the ledger writers both
- * call this, so a repo whose remote is NOT named `origin` resolves the same
- * ref on both sides of the patchId comparison. Returns undefined when the
- * repo has no remotes — the callers fail closed.
- */
-export async function remoteName(execFn: LedgerExecFn, cwd: string): Promise<string | undefined> {
-  for (const name of ["origin", "upstream"]) {
-    try {
-      const { stdout } = await execFn(`git config --get remote.${name}.url`, {
-        cwd,
-        maxBuffer: 64 * 1024,
-      });
-      if (stdout.trim()) return name;
-    } catch {
-      /* try the next */
-    }
-  }
-  try {
-    const { stdout } = await execFn("git remote", { cwd, maxBuffer: 64 * 1024 });
-    return stdout.trim().split("\n")[0]?.trim() || undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /**
@@ -346,34 +312,6 @@ export function lensBlockedByThreshold(
 }
 
 /**
- * #1071 — test-only hook: a delay injected between the critical section's
- * read and its rename, so a two-process race can straddle the read/rename
- * gap deterministically (see test-review-ledger-lock.ts). Production code
- * never sets this; it is read from the process env so a child process can
- * set it in its own env without importing the test file. The hook is
- * deliberately a no-op in production (env var absent → 0 ms).
- */
-function testDelayReadMs(): number {
-  const v = process.env.PI_ENSEMBLE_REVIEW_LEDGER_DELAY_READ_MS;
-  if (!v) return 0;
-  const ms = Number(v);
-  return Number.isFinite(ms) && ms > 0 ? ms : 0;
-}
-
-/** A bounded synchronous sleep (the test-only delay hook uses this). */
-function sleepSync(ms: number): void {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
-    void Atomics.wait(
-      new Int32Array(new SharedArrayBuffer(4)),
-      0,
-      0,
-      Math.max(1, end - Date.now()),
-    );
-  }
-}
-
-/**
  * Append an entry to the ledger. Atomic + merge-tolerant (see module docs).
  *
  * Returns a short human-readable reason on every no-op so the caller can
@@ -436,10 +374,13 @@ export async function appendLedgerEntry(
       try {
         renameSync(tmp, file);
       } catch (err2) {
-        // A concurrent writer may have created the file first (expected in
-        // the degraded, lock-timed-out path). Re-read, merge, write once
-        // more; if even that races the entry is lost — a ledger miss fails
-        // the merge closed, which is the safe direction.
+        // A concurrent writer may have created the file first. Re-read, merge,
+        // write once more; if even that races the entry is lost — a ledger miss
+        // fails the merge closed, which is the safe direction.
+        // #1071 — the lock (review-ledger-lock.ts) makes this fallback rare;
+        // it remains for the lock's degraded path (a past-deadline wait or a
+        // non-EEXIST open error returns a no-op release and the write runs
+        // unlocked).
         let merged: LedgerEntry[] = [];
         try {
           if (existsSync(file)) {
@@ -449,15 +390,14 @@ export async function appendLedgerEntry(
           merged = [];
         }
         try {
-          // #973 review — the rename-race fallback applies the SAME
-          // invariants as the happy path: the round bump (the merged content
-          // may already hold the previous latest lens entry, whose round the
-          // new one must advance) and the dedupe (the merged file may carry
-          // stale rows). The merge step is a pure helper
-          // (review-ledger-merge.ts) so the ordering — push the bumped entry
-          // FIRST, then dedupe, the #1069 fix — is unit-testable without
-          // mocking node:fs. A race is rare; it must not quietly write a
-          // ledger the happy path would never write.
+          // #973 review — the rename-race fallback applies the SAME invariants
+          // as the happy path: the round bump (the merged content may already
+          // hold the previous latest lens entry, whose round the new one must
+          // advance) and the dedupe (the merged file may carry stale rows).
+          // The merge step is a pure helper (review-ledger-merge.ts) so the
+          // ordering — push the bumped entry FIRST, then dedupe, the #1069
+          // fix — is unit-testable without mocking node:fs. A race is rare; it
+          // must not quietly write a ledger the happy path would never write.
           const deduped = mergeAfterRace(merged, entry);
           writeFileSync(tmp, JSON.stringify({ entries: deduped }, null, 2), "utf8");
           renameSync(tmp, file);
@@ -476,4 +416,74 @@ export async function appendLedgerEntry(
   }
 }
 
-/** A bounded synchronous sleep (the test-only delay hook uses this). */
+/** Read the raw ledger (no git involved — the path is supplied). */
+export function readLedgerFile(file: string): LedgerFile {
+  const raw = readFileSync(file, "utf8");
+  const parsed = JSON.parse(raw) as { entries?: unknown };
+  if (!parsed || !Array.isArray(parsed.entries)) return { entries: [] };
+  return { entries: validEntries(parsed.entries) };
+}
+
+/**
+ * Validate an untrusted row before the ledger trusts it: `branch` must be
+ * a non-empty string, `kind` one of the two review kinds, `patchId` a
+ * string, `at` a finite number, `passed` a boolean. Anything else is
+ * dropped (and traced) — a corrupt row must not satisfy or shadow a
+ * genuine one.
+ */
+export function validEntries(entries: unknown[]): LedgerEntry[] {
+  const ok: LedgerEntry[] = [];
+  for (const e of entries) {
+    if (
+      e &&
+      typeof e === "object" &&
+      typeof (e as LedgerEntry).branch === "string" &&
+      (e as LedgerEntry).branch.length > 0 &&
+      ((e as LedgerEntry).kind === "adversarial" || (e as LedgerEntry).kind === "lens") &&
+      typeof (e as LedgerEntry).patchId === "string" &&
+      typeof (e as LedgerEntry).at === "number" &&
+      Number.isFinite((e as LedgerEntry).at) &&
+      typeof (e as LedgerEntry).passed === "boolean"
+    ) {
+      ok.push(e as LedgerEntry);
+    } else {
+      trace(`review-ledger: dropped invalid ledger entry: ${safeJson(e)}`);
+    }
+  }
+  return ok;
+}
+
+/** One line, for the trace: a never-throwing JSON stringify. */
+function safeJson(v: unknown): string {
+  try {
+    return JSON.stringify(v) ?? "undefined";
+  } catch {
+    return "<unserialisable>";
+  }
+}
+
+/**
+ * The LATEST entry per kind for a branch (max `at`), or undefined.
+ *
+ * Adversarial: the guard requires the latest to be `passed` AND its patchId
+ * to equal the current one. Lens: the latest must be `passed` (any patchId
+ * — a passing lens entry may predate a later commit; a later FAILING lens
+ * run is what the latest-ness protects against).
+ */
+export function latestEntry(entries: LedgerEntry[], branch: string, kind: ReviewKind) {
+  let best: LedgerEntry | undefined;
+  for (const e of entries) {
+    if (e.branch !== branch || e.kind !== kind) continue;
+    if (!best || e.at >= best.at) best = e;
+  }
+  return best;
+}
+
+/** Read + validate the ledger from a resolved path; never throws. */
+export function readLedgerAt(file: string): LedgerEntry[] {
+  try {
+    return readLedgerFile(file).entries;
+  } catch {
+    return [];
+  }
+}

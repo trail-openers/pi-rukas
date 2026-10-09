@@ -217,15 +217,6 @@ const SEAMS: Seam[] = [
     canary: { symbol: "acquireLedgerLock", importer: "review-ledger.ts" },
   },
   {
-    // #955/#1071 — the read-side helpers extracted from review-ledger.ts so
-    // it stays under the 500-line limit after the lock wrapping. The
-    // re-exports in review-ledger.ts keep existing importers unchanged.
-    file: "review-ledger-read.ts",
-    pending: {},
-    testOnly: {},
-    canary: { symbol: "readLedgerAt", importer: "merge-guard.ts" },
-  },
-  {
     // #912 — the merge target reader (gh/glab) + carve-out predicate.
     // Wired into merge-guard.ts (the guard's decision path).
     file: "merge-target.ts",

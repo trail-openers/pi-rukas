@@ -74,3 +74,31 @@ export async function ledgerPathFor(
     return undefined;
   }
 }
+
+/**
+ * The remote the forge detection resolves against: `origin` → `upstream` →
+ * the first remote in `git remote` order — the same precedence as
+ * `detectForge` (forge-detect.ts). The guard and the ledger writers both
+ * call this, so a repo whose remote is NOT named `origin` resolves the same
+ * ref on both sides of the patchId comparison. Returns undefined when the
+ * repo has no remotes — the callers fail closed.
+ */
+export async function remoteName(execFn: LedgerExecFn, cwd: string): Promise<string | undefined> {
+  for (const name of ["origin", "upstream"]) {
+    try {
+      const { stdout } = await execFn(`git config --get remote.${name}.url`, {
+        cwd,
+        maxBuffer: 64 * 1024,
+      });
+      if (stdout.trim()) return name;
+    } catch {
+      /* try the next */
+    }
+  }
+  try {
+    const { stdout } = await execFn("git remote", { cwd, maxBuffer: 64 * 1024 });
+    return stdout.trim().split("\n")[0]?.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}

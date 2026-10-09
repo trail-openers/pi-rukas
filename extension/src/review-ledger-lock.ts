@@ -57,6 +57,34 @@ export function ledgerLockPath(ledgerFile: string): string {
 }
 
 /**
+ * #1071 — test-only hook: a delay injected between the critical section's
+ * read and its rename, so a two-process race can straddle the read/rename
+ * gap deterministically (see test-review-ledger-lock.ts). Production code
+ * never sets this; it is read from the process env so a child process can
+ * set it in its own env without importing the test file. The hook is
+ * deliberately a no-op in production (env var absent → 0 ms).
+ */
+export function testDelayReadMs(): number {
+  const v = process.env.PI_ENSEMBLE_REVIEW_LEDGER_DELAY_READ_MS;
+  if (!v) return 0;
+  const ms = Number(v);
+  return Number.isFinite(ms) && ms > 0 ? ms : 0;
+}
+
+/** A bounded synchronous sleep (the test-only delay hook uses this). */
+export function sleepSync(ms: number): void {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    void Atomics.wait(
+      new Int32Array(new SharedArrayBuffer(4)),
+      0,
+      0,
+      Math.max(1, end - Date.now()),
+    );
+  }
+}
+
+/**
  * Acquire the review-ledger lock for the critical section spanning
  * read → dedupe → bumpLensRound → write-temp → rename. Returns a release
  * function. Never throws: every fault path traces and returns a no-op
