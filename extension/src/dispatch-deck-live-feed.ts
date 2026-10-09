@@ -86,7 +86,7 @@ export function pushEvent(key: string, buf: LiveEvent[], event: PiJsonEvent): bo
     if (!event.parentToolCallId) return false;
     const ev: LiveEvent = {
       kind: "toolCall",
-      name: sanitizeText(`↳ ${event.toolName}`),
+      name: sanitizeForStorage(`↳ ${event.toolName}`),
       args: sanitizeForStorage(stringifyArgs(event.args)),
     };
     buf.push(ev);

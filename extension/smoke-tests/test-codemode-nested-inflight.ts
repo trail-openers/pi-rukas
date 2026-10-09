@@ -195,6 +195,19 @@ function toolResultEvent(toolCallId: string, toolName: string): PiJsonEvent {
           buf[0].name === "↳ bash",
           `6c: name is '↳ bash' (got '${buf[0].name}')`,
         );
+        // #1032 — the name is stored via sanitizeForStorage (newline-collapsed),
+        // like every other storage site: a raw \n in toolName must not survive
+        // into the buffer (issue #927 desync shape).
+        pushEvent(
+          key,
+          buf,
+          nestedStartEvent("call_top/9", "bash\nhostile", "call_top", { command: "ls" }),
+        );
+        assert(buf.length === 2, `6f: second nested call stored (got ${buf.length})`);
+        assert(
+          !buf[1].name.includes("\n"),
+          `6g: stored nested name contains no raw newline (got '${buf[1].name}')`,
+        );
         assert(
           buf[0].args === JSON.stringify({ command: "ls -la" }),
           "6d: args is the JSON-stringified arguments",
