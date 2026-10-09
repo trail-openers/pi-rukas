@@ -70,6 +70,15 @@ const read = (f: string) =>
     uses.length >= 2,
     `canary: the review and the fix resolve the same tree (${uses.length} call sites) — they disagreed, which is the whole defect`,
   );
+  // Anchor the canary on the dispatch's "lens-fix" role string / jobId, not
+  // on a comment (which can be reworded without changing behaviour).
+  const dispatchCall = lens.match(
+    /runSingleDispatch\([\s\S]*?"lens-fix"[\s\S]*?cwd:\s*lensWorktree\(ctx, state\)/,
+  );
+  assert(
+    dispatchCall !== null,
+    "canary: the lens-fix dispatch (anchored on the 'lens-fix' role string) passes a cwd",
+  );
 }
 
 // ------------------------- the steps that belong at the integration point

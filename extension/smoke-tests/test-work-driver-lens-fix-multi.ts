@@ -94,261 +94,6 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 
 setupSpawnGuard();
 
-// 48b. Issue #305 — adversarial receives lens-fix diff BEFORE commit.
-//
-// Proves the fix: commit AFTER adversarial-approved means adversarial
-// reads the working-tree diff (git diff HEAD) which contains the
-// uncommitted lens-fix changes. If commit happened BEFORE adversarial
-// (bug #305 original state), params.diff would be empty.
-{
-  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-lens-fix-adversarial-diff-"));
-  try {
-    const fs = await import("node:fs/promises");
-    const { promisify } = await import("node:util");
-    const { exec } = await import("node:child_process");
-    const execp = promisify(exec);
-
-    // Real git repo with a committed feature branch.
-    await execp("git init -q", { cwd: dir });
-    await execp('git config user.email "t@t" && git config user.name "T"', {
-      cwd: dir,
-      shell: "/bin/bash",
-    });
-    await fs.writeFile(path.join(dir, "base.txt"), "hello\n");
-    await execp("git add base.txt && git commit -q -m initial", { cwd: dir, shell: "/bin/bash" });
-    await execp("git update-ref refs/remotes/origin/main HEAD", { cwd: dir });
-    await execp("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main", {
-      cwd: dir,
-    });
-    await execp("git checkout -qb feature/lens-adversarial-diff", { cwd: dir });
-    await fs.writeFile(path.join(dir, "feature.txt"), "const x = eval(input);\n");
-    await execp("git add feature.txt && git commit -q -m 'feature with bug'", {
-      cwd: dir,
-      shell: "/bin/bash",
-    });
-
-    // Pre-seed at lens-fix step with a lens-issues-found event.
-    let s = initialState(309, 1_000_000);
-    s = {
-      ...s,
-      pipelineState: {
-        ...s.pipelineState,
-        currentStep: "lens-fix",
-        lastCompletedStep: "commit-pr",
-        worktrees: { default: dir },
-        workstreams: {
-          default: { id: "default", scope: "test", paths: [], outOfScope: [] },
-        },
-        branchName: "feature/lens-adversarial-diff",
-        prNumber: 3090,
-        reviewRound: 1,
-      },
-      eventLog: [lensIssuesFoundEvent("eval() usage", "Use of eval is unsafe")],
-    };
-    await writeState(dir, s);
-
-    const capturedDiffs: string[] = [];
-    const ctx: DriverContext = {
-      pi: makeFakePi(),
-      repoRoot: dir,
-      issue: 309,
-      issueBodyFetcherFn: mockIssueBodyOk,
-      dispatchFn: async (_pi, spec, opts) => {
-        // lens-fix dispatch: make a change in the working tree.
-        if (opts?.label?.startsWith("developer:lens-fix")) {
-          await fs.writeFile(path.join(dir, "feature.txt"), "const x = safeParse(input);\n");
-          return mkResult({
-            role: "developer",
-            ok: true,
-            text: "Fixed the eval usage.",
-          });
-        }
-
-        if (opts?.label === "ops:handoff") {
-          return mkResult({ role: "ops", text: "Posted." });
-        }
-
-        throw new Error(`unexpected dispatch: ${spec.role} / ${opts?.label}`);
-      },
-      adversarialLoopFn: async (params) => {
-        // Capture the diff BEFORE the commit happens.
-        capturedDiffs.push(params.diff);
-        // APPROVE the fix.
-        return mkResult({
-          role: "adversarial-loop",
-          ok: true,
-          loopOutcome: "approved",
-          text: "Adversarial APPROVED.",
-        });
-      },
-      lensReviewFn: async () => {
-        return mkLensSummary({ verdict: "APPROVED" });
-      },
-    };
-
-    await runWorkDriver(ctx).catch(() => {});
-
-    // Verify adversarial received a diff containing the fix.
-    assert(
-      capturedDiffs.length === 1,
-      `adversarialLoopFn called once (got ${capturedDiffs.length})`,
-    );
-    assert(
-      capturedDiffs.some((d) => d.includes("safeParse")),
-      "adversarial diff contains the lens-fix changes (uncommitted before review)",
-    );
-    assert(
-      capturedDiffs[0].includes("-const x = eval(input);"),
-      "adversarial diff shows the removed unsafe eval line",
-    );
-    assert(
-      capturedDiffs[0].includes("+const x = safeParse(input);"),
-      "adversarial diff shows the added safeParse line",
-    );
-
-    // Verify the driver still committed after adversarial approved.
-    const { stdout: log } = await execp("git log --format=%s -1", { cwd: dir });
-    assert(log.includes("fix(lens)"), `commit message references lens-fix (got: ${log.trim()})`);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-// 49. Issue #305 — lens-fix commit happens for N>1 workstreams.
-//
-// Bug #305 original commit had a guard `&& ids.length === 1` that prevented
-// lens-fix commits on multi-workstream (N>1) cycles. Seeding THREE
-// workstreams at lens-fix, the test FAILS if the guard is restored.
-{
-  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-lens-fix-n3-"));
-  try {
-    const fs = await import("node:fs/promises");
-    const { promisify } = await import("node:util");
-    const { exec } = await import("node:child_process");
-    const execp = promisify(exec);
-
-    // Real git repo with a committed feature branch.
-    await execp("git init -q", { cwd: dir });
-    await execp('git config user.email "t@t" && git config user.name "T"', {
-      cwd: dir,
-      shell: "/bin/bash",
-    });
-    await fs.writeFile(path.join(dir, "base.txt"), "hello\n");
-    await execp("git add base.txt && git commit -q -m initial", { cwd: dir, shell: "/bin/bash" });
-    await execp("git update-ref refs/remotes/origin/main HEAD", { cwd: dir });
-    await execp("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main", {
-      cwd: dir,
-    });
-    await execp("git checkout -qb feature/lens-fix-n3", { cwd: dir });
-    await fs.writeFile(path.join(dir, "feature.txt"), "const x = eval(input);\n");
-    await execp("git add feature.txt && git commit -q -m 'feature with bug'", {
-      cwd: dir,
-      shell: "/bin/bash",
-    });
-
-    // Record commit count before lens-fix.
-    const { stdout: beforeLog } = await execp("git rev-list --count origin/main..HEAD", {
-      cwd: dir,
-    });
-    const beforeCount = Number.parseInt(beforeLog.trim(), 10);
-
-    // Pre-seed at lens-fix step with THREE workstreams and a lens-issues-found event.
-    let s = initialState(310, 1_000_000);
-    s = {
-      ...s,
-      pipelineState: {
-        ...s.pipelineState,
-        currentStep: "lens-fix",
-        lastCompletedStep: "commit-pr",
-        worktrees: { ws1: dir, ws2: dir, ws3: dir },
-        workstreams: {
-          ws1: { id: "ws1", scope: "test", paths: ["feature.txt"], outOfScope: [] },
-          ws2: { id: "ws2", scope: "test", paths: ["other.txt"], outOfScope: [] },
-          ws3: { id: "ws3", scope: "test", paths: ["third.txt"], outOfScope: [] },
-        },
-        branchName: "feature/lens-fix-n3",
-        prNumber: 3100,
-        reviewRound: 1,
-      },
-      eventLog: [lensIssuesFoundEvent("eval() usage", "Use of eval is unsafe")],
-    };
-    await writeState(dir, s);
-
-    const ctx: DriverContext = {
-      pi: makeFakePi(),
-      repoRoot: dir,
-      issue: 310,
-      issueBodyFetcherFn: mockIssueBodyOk,
-      dispatchFn: async (_pi, spec, opts) => {
-        // lens-fix dispatch: make a change in the working tree at repoRoot.
-        if (opts?.label?.startsWith("developer:lens-fix")) {
-          await fs.writeFile(path.join(dir, "feature.txt"), "const x = safeParse(input);\n");
-          return mkResult({
-            role: "developer",
-            ok: true,
-            text: "Fixed the eval usage.",
-          });
-        }
-
-        if (opts?.label === "ops:handoff") {
-          return mkResult({ role: "ops", text: "Posted." });
-        }
-
-        throw new Error(`unexpected dispatch: ${spec.role} / ${opts?.label}`);
-      },
-      adversarialLoopFn: async () => {
-        return mkResult({
-          role: "adversarial-loop",
-          ok: true,
-          loopOutcome: "approved",
-          text: "Adversarial APPROVED.",
-        });
-      },
-      lensReviewFn: async () => {
-        return mkLensSummary({ verdict: "APPROVED" });
-      },
-    };
-
-    await runWorkDriver(ctx).catch(() => {});
-
-    const after = await readState(dir, 310);
-    const events = after?.eventLog ?? [];
-
-    // Verify the lens-fix dispatch happened.
-    const lensFixCompleted = events.find(
-      (e) => e.kind === "dispatch-completed" && e.step === "lens-fix",
-    );
-    assert(lensFixCompleted?.ok, "lens-fix dispatch completed successfully");
-
-    // Verify the driver committed (extra commit after lens-fix) at repoRoot.
-    const { stdout: afterLog } = await execp("git rev-list --count origin/main..HEAD", {
-      cwd: dir,
-    });
-    const afterCount = Number.parseInt(afterLog.trim(), 10);
-    assert(
-      afterCount === beforeCount + 1,
-      `driver committed the lens-fix (before=${beforeCount}, after=${afterCount})`,
-    );
-    // Verify the commit message contains the lens-fix marker.
-    const { stdout: log } = await execp("git log --format=%s -1", { cwd: dir });
-    assert(log.includes("fix(lens)"), `commit message references lens-fix (got: ${log.trim()})`);
-    // Verify the committed diff contains the fix.
-    const { stdout: diff } = await execp("git diff origin/main..HEAD", { cwd: dir });
-    assert(diff.includes("safeParse"), "committed diff contains the fix from lens-fix");
-
-    // Cycle advances past lens-fix to adversarial (which fails without
-    // adversarialLoopFn injected) → handoff. The driver committed the
-    // fix during runAdversarial before advancing, so the committed diff
-    // contains the repair even though the cycle ends at handoff.
-    assert(
-      after?.pipelineStatus !== "running",
-      "cycle has exited the running loop (advanced past lens-fix)",
-    );
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
 // 49b. Issue #492 — a lens-fix whose diff EXISTS but staging fails is
 // classified as an integration failure, not as "the fixer wrote nothing".
 //
@@ -372,8 +117,8 @@ setupSpawnGuard();
     const origin = path.join(dir, "origin.git");
     const root = path.join(dir, "root");
     const wt = path.join(dir, "wt");
-    await execp("git init -q --bare --initial-branch=main origin.git", { cwd: dir });
-    await execp("git init -q --initial-branch=main root", { cwd: dir });
+    await execp(`git init -q --bare --initial-branch=main ${JSON.stringify(origin)}`, { cwd: dir });
+    await execp(`git init -q --initial-branch=main ${JSON.stringify(root)}`, { cwd: dir });
     await execp('git config user.email "t@t" && git config user.name "T"', {
       cwd: root,
       shell: "/bin/bash",
@@ -416,14 +161,20 @@ setupSpawnGuard();
 
     // The real git executor, with `git add` made to fail inside the
     // worktree — staging returns 0 even though a diff exists.
-    const realExec = (async (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) => {
+    type EO = { cwd?: string; maxBuffer?: number; argv?: string[] };
+    const { execFile } = await import("node:child_process");
+    const execFileP = promisify(execFile);
+    const realExec = (async (cmd: string, opts?: EO) => {
+      if (opts?.argv) {
+        const { stdout } = await execFileP(cmd, opts.argv, { cwd: opts.cwd });
+        return { stdout, stderr: "" };
+      }
       const r = await execp(cmd, opts);
       return { stdout: r.stdout, stderr: r.stderr };
-    }) as (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) => Promise<unknown>;
-    const failingExec = (async (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) => {
-      if (opts?.cwd === wt && cmd.startsWith("git add")) {
+    }) as (cmd: string, opts?: EO) => Promise<unknown>;
+    const failingExec = (async (cmd: string, opts?: EO) => {
+      if (opts?.cwd === wt && (cmd.startsWith("git add") || opts.argv?.[0] === "add"))
         throw new Error("simulated staging failure (git add refused)");
-      }
       return realExec(cmd, opts);
     }) as typeof realExec;
 

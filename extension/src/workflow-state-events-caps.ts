@@ -155,4 +155,12 @@ export type WorkCapLiteral =
   // fake lens-approved event the nextStep router would trust). Defensively
   // reached: runLens supplies its own diff, so this cap can only fire
   // through a `since`-shaped call (e.g. an injected lensReviewFn).
-  | "no-review-outcome";
+  | "no-review-outcome"
+  // #981 — the round-2 lens-fix reposition guard could not establish the
+  // correct base for the next round: the fix worktree is dirty, round-1
+  // work never landed on the branch, or the worktree holds commits that
+  // diverged from the branch tip. The driver halted the fix loop so the
+  // stale tree is inspected and repaired, never re-dispatched. The detail
+  // (kind + git evidence) rides on the cap's evidence; the backup ref for
+  // an unlanded/diverged tree rides on the `restoredToRef` field.
+  | "lens-fix-reposition";

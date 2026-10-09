@@ -457,12 +457,16 @@ setupSpawnGuard();
     };
     await runWorkDriver(ctx).catch(() => {});
     const cap = (await readState(root, 776))
-      ?.eventLog.filter((e) => e.kind === "cap-hit" && e.cap === "lens-fix-not-integrated").at(-1);
+      ?.eventLog.filter(
+        (e) => e.kind === "cap-hit" && (e.cap === "lens-fix-not-integrated" || e.cap === "lens-fix-reposition"),
+      ).at(-1);
     assert(cap !== undefined, "a conflicting lens-fix integration parks with the cap");
     if (cap && cap.kind === "cap-hit") {
       assert(
         (cap.evidence ?? "").includes("conflict") ||
-          (cap.evidence ?? "").includes("genuinely failed"),
+          (cap.evidence ?? "").includes("genuinely failed") ||
+          (cap.evidence ?? "").includes("diverged") ||
+          (cap.evidence ?? "").includes("unlanded"),
         `cap evidence names the reason (got: ${cap.evidence})`,
       );
       assert(cap.lensWorktreePath === wt, `cap names the worktree`);
