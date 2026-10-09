@@ -21,6 +21,7 @@ import { findOpenPrForIssue, prPreflightEnabled } from "./work-driver-pr-preflig
 import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 
 import { greenWorkstreamsFromInterruptedDevelop } from "./work-develop-greens.ts";
+import { trustedPreservedGreens } from "./work-develop-retry.ts";
 import { runDevelopTopological } from "./work-develop-topological.ts";
 import { salvageKnownDirtyWorktrees } from "./work-driver-branch-salvage.ts";
 import { applySafetyNet, hasAnyWorktreeEvidence } from "./work-driver-safety-net.ts";
@@ -349,7 +350,12 @@ export async function runDevelop(
   next = begun.state;
   // #1016 — crash-resume: workstreams that finished green before the crash
   // keep their worktree and commits; only the rest are re-dispatched.
-  const preserved = greenWorkstreamsFromInterruptedDevelop(state);
+  // A green without commits ahead of its base is re-dispatched, not kept.
+  const preserved = await trustedPreservedGreens(greenWorkstreamsFromInterruptedDevelop(state), {
+    execFn,
+    worktrees: state.pipelineState.worktrees ?? {},
+    baseFor: (id) => state.pipelineState.workstreamBaseShas?.[id] ?? state.pipelineState.baseSha,
+  });
   if (preserved.size > 0) {
     trace(`work-driver: develop resumed — keeping green workstreams ${[...preserved].join(", ")}`);
   }
