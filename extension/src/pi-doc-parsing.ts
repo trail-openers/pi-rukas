@@ -7,9 +7,15 @@
  * smoke-tests/test-pi-version-drift.ts (drift gate). Pure; no I/O.
  */
 
+// ---------------------------------------------------------------------------
+// Shared "Last verified against pi X.Y.Z (YYYY-MM-DD)" parser
+// ---------------------------------------------------------------------------
+
 /**
  * Parse the maintained "## Last verified against pi X.Y.Z (YYYY-MM-DD)" line
- * from docs/pi-compatibility.md content. Returns null when absent.
+ * from docs/pi-compatibility.md content. Single source of the regex — also
+ * imported by smoke-tests/test-pi-version-drift.ts so the two can never drift.
+ * Returns null when absent.
  */
 export function parseVerifiedLine(doc: string): { version: string; date: string } | null {
   const m = doc.match(

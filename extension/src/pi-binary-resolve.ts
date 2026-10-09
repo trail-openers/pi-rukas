@@ -5,7 +5,8 @@
  * Resolution order (outside a Pi process):
  *   1. PI_ENSEMBLE_PI_BIN env var (must be an existing executable, else fail)
  *   2. The bin of the locally installed @earendil-works/pi-coding-agent package
- *   3. `pi` on PATH (always warns, once per process, at resolution time)
+ *   3. `pi` on PATH (always warns)
+ *      (#1038: the warning is emitted once per process, at resolution time)
  *
  * Setting PI_ENSEMBLE_PI_BIN executes THAT binary as the child pi — the
  * X_OK check below validates usability only, never trust. Use it for an
@@ -14,8 +15,10 @@
  * Inside a Pi process (argv[1] matches the Pi CLI path), the existing
  * argv[1] reuse stays first — no behaviour change for interactive sessions.
  *
- * The path + source resolve synchronously and are cached per process. The
- * `pi --version` probe lives in pi-version-probe.ts (async, never on a spawn path).
+ * The path + source resolve synchronously and are cached per process.
+ * The `pi --version` probe is async, runs once, is cached, times out after
+ * 3 s (version null, probeTimedOut: true), and never blocks a spawn.
+ * (#1038: the probe lives in pi-version-probe.ts, still never on a spawn path.)
  */
 
 import { constants, accessSync, existsSync, readFileSync, realpathSync } from "node:fs";
@@ -63,9 +66,13 @@ export function parsePiVersion(output: string): string | null {
 
 /**
  * Resolve the bin of the locally installed @earendil-works/pi-coding-agent
- * package. Returns the absolute path to the CLI entry, or null when the package
- * is not installed or the bin escapes the package directory (checked on REALPATHS,
- * so a symlink inside the package pointing outside is rejected). Never throws.
+ * package. Uses fs directly (no require.resolve) so it's testable in isolation
+ * via the injected packageJsonPath parameter.
+ *
+ * Returns the resolved absolute path to the CLI entry, or null when the package
+ * is not installed. Never throws.
+ * (#1038: it also returns null when the bin escapes the package directory, checked
+ * on REALPATHS, so a symlink inside the package pointing outside is rejected.)
  */
 export function resolvePackageBin(
   packageJsonPath: string = defaultPackageJsonPath(),
@@ -82,8 +89,9 @@ export function resolvePackageBin(
     // existsSync is false for a broken symlink, so realpathSync below only runs
     // on a target that exists.
     if (!existsSync(binPath)) return null;
-    // A bin escaping the package directory is a hostile or broken package.json,
-    // or a symlink planted inside it — never execute it (traced so the skip is auditable).
+    // A bin entry escaping the package directory is a hostile or broken
+    // package.json — never execute it (traced so the skip is auditable).
+    // (#1038: a symlink planted inside the package is caught by the realpath check.)
     const realBin = realpathSync(binPath);
     const realPkgDir = realpathSync(pkgDir);
     if (!realBin.startsWith(realPkgDir + path.sep)) {
@@ -106,6 +114,8 @@ export function resolvePackageBin(
  * is one level up from src/.
  */
 function defaultPackageJsonPath(): string {
+  // In ESM, import.meta.dirname gives the source file's directory.
+  // The package.json is at extension/package.json (one level up from src/).
   return path.resolve(import.meta.dirname, "..", "package.json");
 }
 
@@ -125,7 +135,8 @@ export interface SyncResolution {
 let cachedSync: SyncResolution | null = null;
 
 /**
- * Resolve the pi binary path and source synchronously. Cached per process.
+ * Resolve the pi binary path and source synchronously. Cached per process;
+ * a handful of stat/read syscalls per process (memoized after the first call).
  *
  * Resolution order:
  *   - Inside a Pi process: argv[1] (existing behaviour, unchanged)
@@ -142,13 +153,17 @@ export function resolvePiBinarySync(): SyncResolution {
   const currentScript = process.argv[1];
 
   /*
-   * When this code runs inside a pi process (the extension is loaded), argv[1]
-   * is Pi's CLI entry script and we re-invoke the SAME pi build. When it runs
-   * outside Pi (smoke tests under `bun run`), argv[1] is the test file — only
-   * trust argv[1] when it looks like a Pi CLI entrypoint.
+   * Resolve the pi binary. When this code runs inside a pi process (the
+   * extension is loaded), argv[1] is Pi's CLI entry script and we re-invoke the
+   * SAME pi build (avoids PATH ambiguity, matches Pi's own subagent example).
+   * When this code runs outside Pi (smoke tests under `bun run`), argv[1] is the
+   * test file and we'd recursively spawn ourselves — guard against that by only
+   * trusting argv[1] when it looks like a Pi CLI entrypoint.
    */
 
   // 1. Pi process: argv[1] is the Pi CLI entrypoint.
+  // Fallback order when argv[1] is not a Pi CLI entrypoint:
+  // PI_ENSEMBLE_PI_BIN → package bin → PATH.
   if (looksLikePiCli(currentScript)) {
     cachedSync = {
       path: currentScript as string,
@@ -174,13 +189,19 @@ export function resolvePiBinarySync(): SyncResolution {
   }
 
   // 3. Package bin — silently skip if not installed.
+  // (Only reached when cachedSync is null, so resolvePackageBin runs at most
+  // once per process here; the injected-path overload stays unmemoized for
+  // test fixture paths.)
   const pkgBin = resolvePackageBin();
   if (pkgBin) {
     cachedSync = { path: pkgBin, source: "package", command: pkgBin };
     return cachedSync;
   }
 
-  // 4. PATH fallback. Warned here, once per process (cachedSync guards repeats),
+  // 4. PATH fallback.
+  // The PATH-source warning is operational, not a debug detail — a hijacked
+  // or mismatched `pi` on PATH should be visible without PI_ENSEMBLE_DEBUG=1.
+  // Warned here, once per process (cachedSync guards repeats),
   // so it is visible even if the async version probe never completes.
   console.warn(
     "[pi-rukas] pi-binary-resolve: WARNING — pi resolved from PATH, no integrity check performed",
@@ -190,8 +211,8 @@ export function resolvePiBinarySync(): SyncResolution {
 }
 
 /**
- * Reset the synchronous resolution cache. Exported for tests only.
- * Probe state is reset by _resetPiVersionProbe in pi-version-probe.ts.
+ * Reset the process-level cache. Exported for tests only.
+ * (#1038: probe state is reset by _resetPiVersionProbe in pi-version-probe.ts.)
  */
 export function _resetPiBinaryCache(): void {
   cachedSync = null;
@@ -202,9 +223,11 @@ export function _resetPiBinaryCache(): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve the pi binary for spawning, backed by the explicit resolution order
- * (argv → env → package → path). No behaviour change for children spawned from
- * an interactive Pi session (source === "argv").
+ * Resolve the pi binary for spawning. Same interface as the old
+ * getPiInvocation in spawn-support.ts, but now backed by the explicit
+ * resolution order (argv → env → package → path).
+ * No behaviour change for children spawned from an interactive Pi session
+ * (source === "argv" → same command + args as before).
  */
 export function getPiInvocation(args: string[]): { command: string; args: string[] } {
   const resolved = resolvePiBinarySync();

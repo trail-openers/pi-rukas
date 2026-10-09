@@ -240,7 +240,9 @@ const SEAMS: Seam[] = [
     pending: {},
     testOnly: {
       // Pure/low-level helpers asserted directly by test-pi-binary-resolve.ts
-      // or used by the wired exports above.
+      // or used by the wired exports above. resolvePackageBin's injected-path
+      // overload is called directly by tests (unmemoized by design); the
+      // default-package branch is wired through resolvePiBinarySync.
       looksLikePiCli: "shared Pi CLI path predicate; exercised by test-pi-binary-resolve.ts",
       parsePiVersion: "the --version output parser; exercised by test-pi-binary-resolve.ts",
       resolvePackageBin:
