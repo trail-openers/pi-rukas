@@ -16,6 +16,7 @@
 import { type Socket, createConnection } from "node:net";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { discardsUncommittedWork, rejectsInteractiveGit } from "./bash-command-parser.ts";
+import { enableChildCodemode } from "./child-codemode.ts";
 import { registerOoRewriteGuard } from "./oo-rewrite-guard.ts";
 import type { PermissionRequest } from "./permission-broker.ts";
 import { loadAgentsJson, loadGlobalConfig, loadProjectConfig } from "./permission-config.ts";
@@ -24,6 +25,12 @@ import { registerModeIndependentGuards } from "./subagent-guard-guards.ts";
 import { trace } from "./trace.ts";
 
 export function registerSubagentGuard(pi: ExtensionAPI): void {
+  // #1030 — strict/headless children activate codemode HERE (the companion
+  // no-ops entirely under PI_ENSEMBLE_SUBAGENT_MODE=1), so every child
+  // appends `codemode` to the active tool set exactly once in every mode.
+  pi.on("session_start", () => {
+    enableChildCodemode(pi);
+  });
   registerModeIndependentGuards(pi);
   // #716 — same registration site, same reasoning: the "mandatory oo" rule
   // for verbose runners (pytest, cargo test, bun test, …) is pure prose on the

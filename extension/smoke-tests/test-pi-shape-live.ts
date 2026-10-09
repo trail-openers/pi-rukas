@@ -33,6 +33,10 @@
  *      (#571 detection gap). Registry presence is separately proven by the
  *      fact that the fixture's own registered tool is callable (3a/4).
  *   6. Assistant message has `model` field — used by collapseEvents
+ *   7. Codemode roster check (#1030 / epic #1026) — the child's active
+ *      toolset includes `codemode` when PI_ENSEMBLE_CHILD_CODEMODE is on
+ *      (default) and excludes it when =0. The default PONG shape and the
+ *      rest of the roster are unchanged either way.
  *
  * Cost: one short child spawn (two assistant turns + one no-op tool call)
  * — roughly the same wall-clock/token envelope as the previous PONG-only
@@ -95,6 +99,19 @@ const EXPECTED_ROSTER = [
   "start_research_driver",
 ] as const;
 
+// Codemode flag for this child. `PI_ENSEMBLE_CHILD_CODEMODE` defaults to ON
+// (the issue's production default); `=0` reproduces the pre-change argv.
+// NOTE: test-pi-shape-live.ts loads the FULL pi-rukas extension (--extension
+// extDir), whose setActiveTools filters to the role's allowed tools. Codemode
+// is NOT in the project-manager role's allow list (agents.json), so the
+// extension strips it even when the flag is present. The codemode roster
+// check therefore lives in test-codemode-reviewer-rejection.ts (which does
+// NOT load the full extension and can prove the flag's effect on the raw
+// toolset). This flag is kept here so the argv is shape-correct for the
+// shape assertions (the PONG and roster checks below), and so that a future
+// role that DOES allow codemode (e.g. a reviewer role) can be tested here.
+const codemodeEnabled = process.env.PI_ENSEMBLE_CHILD_CODEMODE !== "0";
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fixturePath = path.join(here, "fixtures", "shape-live-roster-reporter.ts");
 const extSrcDir = path.join(here, "..", "src");
@@ -124,13 +141,18 @@ const childArgs = [
   "--no-extensions",
   "-e",
   "builtin:mcp",
+];
+if (codemodeEnabled) {
+  childArgs.push("-e", "builtin:codemode");
+}
+childArgs.push(
   "--session",
   sessionPath,
   "--extension",
   extDir,
   "--extension",
   fixturePath,
-];
+);
 
 console.log(`[test] spawning child: pi ${childArgs.join(" ")}`);
 const child = spawn("pi", childArgs, {
@@ -357,6 +379,15 @@ for (const tool of EXPECTED_ROSTER) {
     `extension-registered tool present in live child toolset: ${tool}`,
   );
 }
+
+// 5c. Codemode roster check — the dedicated test-codemode-reviewer-rejection.ts
+//     handles the codemode presence/absence assertion (it spawns a child
+//     WITHOUT the full pi-rukas extension, so the raw -e builtin:codemode
+//     flag is visible in the active toolset). This child loads the full
+//     extension (--extension extDir), whose setActiveTools strips codemode
+//     for the project-manager role (not in agents.json allow list), so
+//     codemode would be absent regardless of the flag. No assertion here;
+//     the flag is applied to the argv above for shape-correctness only.
 
 // 5a. Native MCP (issue #959): the child's toolset must contain at least one
 //     mcp__codebase_memory__* tool. The prefix (not an exact name) is what we

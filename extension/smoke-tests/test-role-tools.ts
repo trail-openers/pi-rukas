@@ -107,6 +107,34 @@ const TEST_MODEL: ResolvedModelChoice = {
   assert(args.includes("--no-extensions"), "child argv contains --no-extensions");
 }
 
+// 5b. #1030 — builtin:mcp is re-enabled (unchanged), and builtin:codemode is
+//     present by default (PI_ENSEMBLE_CHILD_CODEMODE unset or "1").
+{
+  delete process.env.PI_ENSEMBLE_CHILD_CODEMODE;
+  const args = buildChildArgs("developer", TEST_PROMPT, TEST_TRANSCRIPT, TEST_MODEL, false);
+  const mcpIdx = args.indexOf("builtin:mcp");
+  assert(
+    mcpIdx !== -1 && args[mcpIdx - 1] === "-e",
+    "child argv re-enables builtin:mcp (flag order: -e builtin:mcp)",
+  );
+  const cmIdx = args.indexOf("builtin:codemode");
+  assert(
+    cmIdx !== -1 && args[cmIdx - 1] === "-e",
+    "child argv re-enables builtin:codemode by default (flag order: -e builtin:codemode)",
+  );
+}
+
+// 5c. #1030 — PI_ENSEMBLE_CHILD_CODEMODE=0 omits builtin:codemode.
+{
+  process.env.PI_ENSEMBLE_CHILD_CODEMODE = "0";
+  const args = buildChildArgs("developer", TEST_PROMPT, TEST_TRANSCRIPT, TEST_MODEL, false);
+  assert(
+    !args.includes("builtin:codemode"),
+    "child argv omits builtin:codemode when PI_ENSEMBLE_CHILD_CODEMODE=0",
+  );
+  delete process.env.PI_ENSEMBLE_CHILD_CODEMODE;
+}
+
 // 6. extraArgs are appended.
 {
   const args = buildChildArgs("developer", TEST_PROMPT, TEST_TRANSCRIPT, TEST_MODEL, false, [

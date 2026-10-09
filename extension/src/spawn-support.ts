@@ -254,18 +254,25 @@ export function assertLiveSpawnAllowed(role: string): void {
 }
 
 /**
- * Base argv for every spawned subagent.
- *
- * `--no-extensions` suppresses auto-discovery of installed extensions in the
- * child — the load-bearing part of the child-guards isolation story. Under
- * Pi 1.0.0's semantics this flag ALSO disables built-in extensions (MCP,
- * issue #959); so we re-enable just the MCP built-in with `-e builtin:mcp`
- * immediately after it (argument order is load-bearing — the `-ne` short
- * alias would swallow it otherwise). No other built-in is re-enabled
- * (codemode, tool_search); `autoEnableCodemode: false` in mcp.json is the
- * additional guard (docs/mcp.md).
+ * Whether the child argv should re-enable the codemode built-in via
+ * `-e builtin:codemode`. Default on; `PI_ENSEMBLE_CHILD_CODEMODE=0`
+ * restores the pre-change behaviour (no codemode in the child).
  */
-const CHILD_ARGS_BASE = ["--mode", "rpc", "--no-extensions", "-e", "builtin:mcp"] as const;
+function childCodemodeEnabled(): boolean {
+  const v = process.env.PI_ENSEMBLE_CHILD_CODEMODE;
+  if (v === undefined || v === "" || v === "1") return true;
+  return !(v === "0" || v.toLowerCase() === "false");
+}
+
+/**
+ * Base argv for every spawned subagent. Computed at call time (not a module
+ * constant) because the codemode flag depends on environment.
+ */
+function childArgsBase(): string[] {
+  const args = ["--mode", "rpc", "--no-extensions", "-e", "builtin:mcp"];
+  if (childCodemodeEnabled()) args.push("-e", "builtin:codemode");
+  return args;
+}
 
 /**
  * Build the complete child argument list for spawning a subagent Pi process.
@@ -293,13 +300,14 @@ export function buildChildArgs(
   subagentGuardEnabled: boolean,
   extraArgs?: string[],
 ): string[] {
-  const args: string[] = [...CHILD_ARGS_BASE];
+  const args: string[] = childArgsBase();
   // `--mode rpc` keeps stdin open for JSON command injection
   // ({type:"prompt"|"steer"|"abort"|"follow_up"}); this is the foundation
   // for dispatch_steer (#152) and all async push-callback flows.
-  // CHILD_ARGS_BASE also carries `-e builtin:mcp` (see its comment above),
-  // so the child's toolset includes the mcp__<server>__<tool> tools the
-  // permission overlay in agents.json grants per role (issue #959).
+  // childArgsBase also carries `-e builtin:mcp` (and optionally
+  // `-e builtin:codemode`), so the child's toolset includes the
+  // mcp__<server>__<tool> tools the permission overlay in agents.json
+  // grants per role (issue #959).
   args.push("--session", transcriptPath);
   // #926 — the child-guards companion is appended in EVERY mode, independent
   // of subagentGuardEnabled (so PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD does not
