@@ -51,6 +51,25 @@ import { setupSpawnGuard } from "./test-helpers.ts";
 // refrange.ts`) with no gate in front.
 setupSpawnGuard();
 
+// #1069 — self-isolate from the REAL per-clone review ledger. Sections 6
+// (runLensReview) and 7 (runAdversarialLoop) drive the real review entry
+// points, whose fire-and-forget ledger writes run against process.cwd(); in
+// a worktree of this clone that is the main clone's .git — the suite would
+// overwrite the branch's genuine passing entry. The verify-loop gate exports
+// the override for the whole suite; this keeps the test isolated when run
+// individually (`bun run`), honouring an already-set value (the gate's).
+if (process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE === undefined) {
+  const isoDir = mkdtempSync(path.join(tmpdir(), "ledger-iso-"));
+  process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = path.join(isoDir, "review-ledger.json");
+  process.on("exit", () => {
+    try {
+      rmSync(isoDir, { recursive: true, force: true });
+    } catch {
+      // cleanup is best-effort
+    }
+  });
+}
+
 /**
  * Stub the spawn seam before any src module is imported (the pattern
  * established by test-adversarial-range-recompute.ts): the mock factory

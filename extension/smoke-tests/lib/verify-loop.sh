@@ -75,6 +75,24 @@ set -u
 # reaches the child env.
 export PI_ENSEMBLE_FORBID_LIVE_SPAWN=1
 
+# #1069 — the per-clone review ledger lives under the git common dir, and a
+# worktree's common dir resolves to the main clone's .git. Every test that
+# calls a ledger writer seam (runLensReview / runAdversarialLoop /
+# appendLedgerEntry / writeLensLedgerEntry / writeAdversarialLedgerEntry /
+# finishLensReview) must self-isolate via ONE of:
+#   - an explicit `PI_ENSEMBLE_REVIEW_LEDGER_FILE=<abs-temp>` set at the top
+#     of the test file (honouring an already-set value, e.g. an operator's),
+#   - a temp git repo as the write cwd (the writer keys its file on the
+#     common dir of the CWD it is given, so the write lands in the temp dir),
+#   - a mocked `appendLedgerEntry` (the file mocks the seam before importing
+#     the lens modules, so the real writer never runs).
+# `test-ledger-isolation.ts` enforces this statically: it scans every
+# `smoke-tests/test-*.ts` and fails naming any file that calls a seam without
+# an isolation marker. The gate does NOT export the override globally — the
+# ledger tests (test-review-ledger*.ts, test-review-ledger-973.ts) use temp
+# repos and their writer must write to the temp repo's git dir, not a shared
+# env-var path.
+
 # --- #1014 — per-test timeout watchdog.
 #
 # Each test is bounded at ${PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S:-300} seconds.
@@ -254,8 +272,15 @@ fi
 # Single-execution capture (DECISION 3): every test runs exactly once; its
 # output is captured to a temp file that is removed on every exit path.
 CAPTURE="$(mktemp "${TMPDIR:-/tmp}/verify-loop.XXXXXX")" || exit 2
-trap 'rm -f "$CAPTURE" ${_extra_captures[*]:-}' EXIT
+# One trap cleans everything on every exit path: the per-test capture, the
+# #1028/​#827 failure captures, and the #1069 ledger temp dir (empty when an
+# operator-supplied override was honoured).
 _extra_captures=()
+_extra_cleanup() {
+  rm -f "$CAPTURE" ${_extra_captures[*]:-}
+  if [ -n "${_ledger_tmp_dir:-}" ]; then rm -rf "${_ledger_tmp_dir}"; fi
+}
+trap '_extra_cleanup' EXIT
 
 names=()
 total=0

@@ -16,6 +16,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { mock } from "bun:test";
+import { isolateLedger } from "./lib/review-ledger-test-helpers.ts";
+
+// #1069 — isolate before any src import: the real runLensReview write must
+// land in a temp file, not the main clone's .git (worktree common dir).
+isolateLedger();
 
 let exit = 0;
 function assert(cond: boolean, msg: string): boolean {
