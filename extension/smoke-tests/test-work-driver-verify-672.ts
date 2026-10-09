@@ -37,6 +37,8 @@ function makeFakePi(): { pi: ExtensionAPI; sent: string[] } {
 }
 
 process.env.PI_ENSEMBLE_VERIFY = "1";
+// #1012 — empty glob list disables frontend-only classification.
+process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
 process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
 

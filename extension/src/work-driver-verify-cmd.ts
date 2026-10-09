@@ -88,6 +88,138 @@ export async function declaredPathsHaveSource(
 }
 
 /**
+ * #1013 — resolve the `PI_ENSEMBLE_FRONTEND_ONLY_GLOBS` env var into a glob
+ * list.
+ *
+ * Semantics (opt-in, #1013):
+ *   - unset (undefined) or empty string (`""`) → `undefined`, i.e. the
+ *     frontend-only skip is DISABLED and the full verification chain always
+ *     runs.
+ *   - non-empty → the operator's comma-separated list; the skip may fire
+ *     when every touched path's extension is in this list.
+ *
+ * There is no built-in default: a project that wants the skip must set the
+ * env var explicitly. `docs/configuration.md` suggests a typical list
+ * (`.css,.html,.svg,.woff,.woff2,.ttf,.otf`) but the code does not use it.
+ */
+export function frontendGlobs(): string[] | undefined {
+  const raw = process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS;
+  if (!raw || raw.trim() === "") return undefined;
+  return raw
+    .split(",")
+    .map((g) => g.trim())
+    .filter(Boolean);
+}
+
+/**
+ * #1012 — does the change set contain ONLY frontend file types?
+ *
+ * Pure, closed-world classifier: returns true IFF `paths` is non-empty AND
+ * every path's extension — the part after its last dot, lower-cased — appears
+ * in `globs`. A path with no dot (e.g. `Makefile`) or a leading dot (e.g.
+ * `.css`) has no extension and never matches. No manifest awareness, no fs,
+ * no git — the glob list is a plain parameter so the caller owns the config.
+ * An empty path list returns false: no paths is no evidence, and a
+ * classification failure must never skip a check.
+ *
+ * Deliberately decoupled from `isSourcePath`: the falsily-green check uses
+ * `isSourcePath` (manifest-aware — a `.ts` file is "source" in a JS repo),
+ * while the frontend-only verify-skip uses this glob list (operator-
+ * configurable, manifest-unaware — a `.ts` file is "not frontend"). The two
+ * predicates are NOT expected to agree on the same path: a `.css` file is
+ * "not source" under both, but a `.ts` file is "source" under `isSourcePath`
+ * and "not frontend" under this list, and that divergence is correct.
+ * An operator who sets `PI_ENSEMBLE_FRONTEND_ONLY_GLOBS` to include a source
+ * extension (e.g. `.ts`) is making a deliberate choice to skip the verify
+ * chain for TypeScript changes; the falsily-green check will still treat
+ * `.ts` as source in its own context.
+ */
+export function pathsAreFrontendOnly(paths: string[], globs: string[]): boolean {
+  if (paths.length === 0) return false;
+  const globSet = new Set(globs);
+  return paths.every((p) => {
+    const low = p.toLowerCase();
+    const dot = low.lastIndexOf(".");
+    if (dot <= 0) return false;
+    const ext = low.slice(dot);
+    return globSet.has(ext);
+  });
+}
+
+/**
+ * #1012 — should the develop gate skip the DERIVED verify chain for a
+ * frontend-only diff?
+ *
+ * The skip is derived-only: an explicit `.pi/verify-cmd` is operator intent
+ * and ALWAYS runs (same philosophy as `PI_ENSEMBLE_VERIFY=0`: explicit
+ * intent beats auto-detection). The check is async (uses `fs.access`) to
+ * stay consistent with the gate's file-access pattern (no sync fs calls in
+ * the otherwise-async gate).
+ *
+ * The `.pi/verify-cmd` probe fails closed: only ENOENT/ENOTDIR are treated
+ * as "no explicit file" (the skip may proceed). Any other access error
+ * (EACCES, EIO, transient NFS hiccup, …) suppresses the skip and returns
+ * `{ skip: false, reason: "could not probe .pi/verify-cmd (…)" }`, matching
+ * the git-failure suppression path — a gate that cannot confirm the file is
+ * absent must not skip a check.
+ *
+ * **Opt-in (#1013):** the skip only fires when the operator has explicitly
+ * set `PI_ENSEMBLE_FRONTEND_ONLY_GLOBS` to a non-empty value. When the env
+ * var is unset or empty, `frontendGlobs()` returns `undefined` and the
+ * full verification chain always runs — there is no automatic frontend-only
+ * skip by default.
+ *
+ * Returns `{ skip: true, reason }` when the caller should skip, or
+ * `{ skip: false }` when the full chain should run.
+ */
+export async function shouldSkipVerifyForFrontendOnly(
+  repoRoot: string,
+  touchedPaths: string[],
+  gitFailedAnyWorktree = false,
+): Promise<{ skip: boolean; reason?: string }> {
+  if (gitFailedAnyWorktree) {
+    return {
+      skip: false,
+      reason:
+        "frontend-only skip suppressed: a git read failed in one or more worktrees, so the touched-path union is incomplete — treating the diff as not frontend-only",
+    };
+  }
+  let hasExplicit: boolean;
+  let probeError: string | undefined;
+  try {
+    await fs.access(path.join(repoRoot, ".pi", "verify-cmd"), fs.constants.F_OK);
+    hasExplicit = true;
+  } catch (e: unknown) {
+    const code = (e as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      hasExplicit = false;
+    } else {
+      probeError = code ?? String(e);
+      hasExplicit = false;
+    }
+  }
+  if (hasExplicit) return { skip: false };
+  if (probeError) {
+    return { skip: false, reason: `could not probe .pi/verify-cmd (${probeError})` };
+  }
+  const globs = frontendGlobs();
+  if (!globs) {
+    return {
+      skip: false,
+      reason: "frontend-only skip not enabled (set PI_ENSEMBLE_FRONTEND_ONLY_GLOBS)",
+    };
+  }
+  if (pathsAreFrontendOnly(touchedPaths, globs)) {
+    return {
+      skip: true,
+      reason:
+        "frontend-only diff (all changed paths match PI_ENSEMBLE_FRONTEND_ONLY_GLOBS) — derived verify command skipped (set .pi/verify-cmd to force it)",
+    };
+  }
+  return { skip: false };
+}
+
+/**
  * PR17 — Discover the project's verify command (typecheck/test) for the
  * driver-side outcome-verification gate.
  *
