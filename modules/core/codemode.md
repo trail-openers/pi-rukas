@@ -8,7 +8,7 @@ Codemode is a scriptable tool available in this session (enabled for all pi-ruka
 - You are running checks (build, test, lint, typecheck): run them in one script and return only failures (and the verdict), not the full transcripts.
 - A single command would emit large output you only partially need: filter it inside the script.
 - Prefer native limiting flags first (`git log --oneline -n 10`, `--stat`, `--oneline`, `--json` / `--jq` for gh/glab) before reaching for codemode.
-- The offline verify loop supports a `--digest` mode (sub-issue #1026-4) that compresses full-suite runs; use it when available rather than piping raw output.
+- The offline verify loop supports a `--digest` mode (`bash smoke-tests/lib/verify-loop.sh --digest smoke-tests/test-*.ts`) that compresses full-suite runs to failures + exit code; use it when available rather than piping raw output. The same digest logic is available as `extension/smoke-tests/lib/ci-log-digest.sh` for ad-hoc log digestion.
 
 ## Don't use it when
 

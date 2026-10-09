@@ -40,14 +40,8 @@ execFileSync("bash", [BUILD], {
   stdio: "ignore",
 });
 
-// Epic #1026 sub-issue 3 — the codemode gate, independent of the per-manifest
-// loop below (which reads the SOURCE file, so the cap is unaffected by the
-// PI_ENSEMBLE_BASE/PROMPTS_DIR overrides that build.sh receives).
-const codemodeSource = readFileSync(path.join(ROOT, CODEMODE_MODULE), "utf8");
-const codemodeLines = codemodeSource.split("\n").length;
-assert(codemodeLines <= 60, `modules/core/codemode.md is <= 60 lines (${codemodeLines})`);
-const codemodeHeading = codemodeSource.match(/^#{1,6} .+$/m)?.[0];
-assert(codemodeHeading !== undefined, "modules/core/codemode.md has a markdown heading");
+// #1031 — codemode module heading, asserted per-manifest below.
+const codemodeHeading = readFileSync(path.join(ROOT, CODEMODE_MODULE), "utf8").match(/^#{1,6} .+$/m)?.[0];
 
 // Epic #1026 sub-issue 3 — the doc sweep: no source doc file still prescribes
 // the `oo` prefix as a command wrapper. The allowlist entries in agents.json
@@ -213,9 +207,8 @@ for (const manifestName of readdirSync(MANIFESTS).filter((name) => name.endsWith
 // #1031 — the codemode module's token budget: the ≤60-line cap is asserted on
 // the SOURCE file (build.sh concatenates agents-base + module bodies, so the
 // assembled prompt is far larger than 60 lines regardless).
-const CODEMODE_MODULE = path.join(ROOT, "modules", "core", "codemode.md");
 {
-  const source = readFileSync(CODEMODE_MODULE, "utf8");
+  const source = readFileSync(path.join(ROOT, CODEMODE_MODULE), "utf8");
   const lineCount = source.split("\n").length;
   assert(
     lineCount <= 60,
