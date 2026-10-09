@@ -2,37 +2,53 @@
 /**
  * Issue #1028 — CI-log digest recipe for `gh run view <run-id> --log-failed`.
  *
- * A deterministic failure digest for CI logs: strips the
- * `job<TAB>step<TAB>timestamp<TAB>` line prefix, keeps ✗ / FAILED: /
- * ##[error] / error lines plus their following indented detail lines,
- * and drops every other line — including ✓ lines that happen to contain
- * the word "error" (the anchor must be at line start, not a substring match).
+ * Exercises the standalone digest recipe (lib/ci-log-digest.sh) against a
+ * committed recorded fixture (fixtures/ci-log/run-log-failed.txt) that mimics
+ * the output shape of `gh run view <run-id> --log-failed`.
  *
- * The recipe is exercised against a committed recorded fixture
- * (fixtures/ci-log/run-log-failed.txt) that mimics the output shape of
- * `gh run view <run-id> --log-failed`.
+ * The recipe strips the `job<TAB>step<TAB>timestamp<TAB>` line prefix, keeps
+ * ✗ / FAILED: / ##[error] / error: lines plus their following indented detail
+ * lines, and drops every other line — including ✓ lines that happen to contain
+ * the word "error" (the anchor is a line-start match, not a substring search).
+ *
+ * The TS reference below mirrors the recipe's filter exactly (same
+ * line-start marker anchor; same "indented" = first char is space-or-tab
+ * test) and case 10 asserts byte-equality between the two implementations,
+ * so a future edit to the script is forced to mirror the reference (or vice
+ * versa) or the suite fails.
  *
  * Cases:
- *   1. ✗ lines survive the digest (both the test-gamma and test-delta failures).
- *   2. ##[error] lines survive (both the smoke-test failure and the exit-code line).
- *   3. error: lines survive (the `error: expected 200, got 404` line).
- *   4. Indented detail lines following a kept marker survive.
- *   5. ✓ lines are DROPPED — including ✓ lines that contain the word "error".
- *   6. The `job<TAB>step<TAB>timestamp<TAB>` prefix is stripped from every line.
- *   7. Non-marker, non-detail lines are dropped (setup, install, etc.).
- *   8. The indented-detail attribution stops at the first non-indented line.
- *   9. The bash recipe output matches the TypeScript reference implementation.
- *   10. The digest is compact (well under the 728 B measured in the epic).
- *   11. All 5 failure markers are present (✗ × 2, ##[error] × 2, error: × 1).
+ *   1. Recipe exits 0.
+ *   2. ✗ lines survive (both test-gamma and test-delta failures).
+ *   3. ##[error] lines survive (smoke-test failure + exit-code line).
+ *   4. error: lines survive (`error: expected 200, got 404`).
+ *   5. Indented detail lines following a kept marker survive.
+ *   6. NO ✓ lines appear — including ✓ lines containing "error" (anchor).
+ *   7. The ✓ ... "error" ... trap lines are ABSENT.
+ *   8. The job\tstep\ttimestamp prefix is stripped from every line.
+ *   9. Non-marker, non-detail lines are dropped (setup, install, etc.).
+ *   10. The script output matches the TS reference implementation exactly.
+ *   11. The digest is compact (< 728 B, the epic's measured ceiling).
+ *   12. All 5 failure markers are present (✗×2, ##[error]×2, error:×1).
+ *   13. Unreadable input: a nonexistent path is exit 2 with the stderr
+ *       message and NO stdout — distinct from "no failures" (which exits 0
+ *       with empty stdout).
+ *   14. Cross-check with verify-loop.sh --digest: for the same failing test
+ *       output, the MARKER lines (not detail lines) kept by ci-log-digest.sh
+ *       equal the marker lines kept by the --digest branch — the shared
+ *       marker-anchor contract pinned by both scripts' headers.
  */
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 const __dirname = path.dirname(new URL(import.meta.url).pathname);
 const FIXTURE = path.join(__dirname, "fixtures", "ci-log", "run-log-failed.txt");
+const DIGEST_SCRIPT = path.join(__dirname, "lib", "ci-log-digest.sh");
+const VERIFY_LOOP = path.join(__dirname, "lib", "verify-loop.sh");
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -43,97 +59,20 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-// --- The CI-log digest recipe ---
-//
-// A small bash script that reads a CI log (from a file arg) and prints the
-// digest. The filter is anchored: each keep pattern matches at the start of
-// the stripped content (after the job/step/timestamp prefix). A ✓ line that
-// contains "error" mid-text is dropped because the pattern is a line-start
-// match, not a substring search.
-//
-// The recipe trims leading whitespace from the stripped content for marker
-// detection, then prints the original (untrimmed) line. This handles the 2-space
-// indent that CI logs add after the timestamp prefix while keeping the anchor
-// at the start of the logical line (after leading whitespace).
-//
-// Indented detail lines are only kept if they are NOT markers themselves AND
-// do NOT start with ✓ (a check-mark line is never a detail line, even if
-// indented). This prevents ✓ lines from leaking into the digest as "detail".
-//
-// The recipe is written to a temp file and executed via `bash <file>` to
-// avoid template-literal escaping issues with bash parameter expansions.
-
-const DIGEST_SCRIPT_SOURCE = [
-  "TAB=$(printf '\\t')",
-  "set -u",
-  'input=""',
-  'if [ "$#" -ge 1 ]; then',
-  '  input="$(cat "$1")"',
-  "else",
-  '  input="$(cat)"',
-  "fi",
-  "state=idle",
-  "while IFS= read -r raw || [ -n \"$raw\" ]; do",
-  '  content="$raw"',
-  '  content="${content#*${TAB}}"',
-  '  content="${content#*${TAB}}"',
-  '  content="${content#*${TAB}}"',
-  '  trimmed="${content#"${content%%[![:space:]]*}"}"',
-  "  is_marker=0",
-  '  case "$trimmed" in',
-  '    "✗ "*) is_marker=1 ;;',
-  '    "##[error]"*) is_marker=1 ;;',
-  '    "FAILED:"*) is_marker=1 ;;',
-  '    "error:"*) is_marker=1 ;;',
-  "  esac",
-  '  if [ "$is_marker" -eq 1 ]; then',
-  '    echo "$content"',
-  "    state=detail",
-  "  else",
-  '    if [ "$state" = "detail" ]; then',
-  '      case "$content" in',
-  '        " "*)',
-  '          case "$trimmed" in',
-  '            "✗ "*) : ;;',
-  '            "✓ "*) : ;;',
-  '            "##[error]"*) : ;;',
-  '            "FAILED:"*) : ;;',
-  '            "error:"*) : ;;',
-  '            *) echo "$content";;',
-  "          esac",
-  "        ;;",
-  '        "${TAB}"*)',
-  '          case "$trimmed" in',
-  '            "✗ "*) : ;;',
-  '            "✓ "*) : ;;',
-  '            "##[error]"*) : ;;',
-  '            "FAILED:"*) : ;;',
-  '            "error:"*) : ;;',
-  '            *) echo "$content";;',
-  "          esac",
-  "        ;;",
-  "        *) state=idle;;",
-  "      esac",
-  "    else",
-  "      state=idle",
-  "    fi",
-  "  fi",
-  'done <<< "$input"',
-].join("\n");
-
-function runDigest(fixturePath: string): { status: number; stdout: string } {
-  const scratchDir = mkdtempSync(path.join(tmpdir(), "ci-log-digest-"));
-  const scriptPath = path.join(scratchDir, "digest.sh");
-  try {
-    writeFileSync(scriptPath, DIGEST_SCRIPT_SOURCE, "utf-8");
-    const result = spawnSync("bash", [scriptPath, fixturePath], {
-      cwd: path.join(__dirname, ".."),
-      encoding: "utf-8",
-    });
-    return { status: result.status ?? -1, stdout: result.stdout };
-  } finally {
-    rmSync(scratchDir, { recursive: true, force: true });
+function runDigest(fixturePath: string): { status: number; stdout: string; envError: string | null } {
+  const result = spawnSync("bash", [DIGEST_SCRIPT, fixturePath], {
+    cwd: path.join(__dirname, ".."),
+    encoding: "utf-8",
+    timeout: 120000,
+  });
+  if (result.error) {
+    return {
+      status: -1,
+      stdout: "",
+      envError: `failed to spawn bash: ${result.error.message}`,
+    };
   }
+  return { status: result.status ?? -1, stdout: result.stdout ?? "", envError: null };
 }
 
 // Read the fixture and compute the expected kept/dropped lines.
@@ -152,12 +91,14 @@ function stripPrefix(line: string): string {
   return c;
 }
 
-// Compute expected output by applying the same filter logic in TypeScript.
-// This is the reference implementation the bash recipe must match.
-// The marker check trims leading whitespace then checks if the trimmed
-// content starts with a marker pattern. The original (untrimmed) line is
-// printed. Indented detail lines are only kept if NOT markers themselves
-// and do NOT start with ✓.
+// TypeScript reference mirroring lib/ci-log-digest.sh. Shared contract with
+// the script: "indented" means a line whose first character is a space or a
+// tab (leading whitespace of any length of either kind) — the same
+// two-character test the bash globs `" "*` and `"${TAB}"*` use. The marker
+// check trims leading whitespace, then matches at the start of the content
+// (line-start anchor, not substring). Indented detail lines are kept only
+// when they are NOT markers themselves and do NOT start with ✓ (a check-mark
+// line is never detail, even when indented).
 function isMarkerLine(content: string): boolean {
   const trimmed = content.trimStart();
   return (
@@ -197,7 +138,13 @@ function computeExpected(lines: string[]): string[] {
 }
 
 const expectedLines = computeExpected(fixtureLines);
-const { status, stdout } = runDigest(FIXTURE);
+const digestResult = runDigest(FIXTURE);
+const status = digestResult.status;
+const stdout = digestResult.stdout;
+assert(
+  digestResult.envError === null,
+  `digest helper: environment OK — bash spawned (no spawn error${digestResult.envError ? `: ${digestResult.envError}` : ""})`,
+);
 const digestLines = stdout.replace(/^\n+|\n+$/g, "").split("\n");
 
 // --- Case 1: exit code is 0 (recipe completed successfully) ---
@@ -246,7 +193,6 @@ assert(
 
 // --- Case 5: indented detail lines survive ---
 const detailLines = digestLines.filter((l) => {
-  const trimmed = l.trimStart();
   return l.startsWith("  ") && !isMarkerLine(l) && !isCheckMarkLine(l);
 });
 assert(
@@ -311,7 +257,7 @@ const expected = expectedLines.join("\n");
 const actual = stdout.replace(/^\n+|\n+$/g, "");
 assert(
   actual === expected,
-  `case 10: bash recipe output matches the reference implementation exactly (${digestLines.length} lines)`,
+  `case 10: script output matches the reference implementation exactly (${digestLines.length} lines)`,
 );
 
 // --- Case 11: the digest is compact ---
@@ -326,6 +272,118 @@ assert(
   markerCount === 5,
   `case 12: all 5 failure markers are present (✗×${xMarkLines.length}, ##[error]×${errorTagLines.length}, error:×${errorColonLines.length})`,
 );
+
+// --- Case 13: unreadable input → exit 2 + stderr message, no stdout ---
+// A missing/unreadable input must be distinguishable from "no failures"
+// (which exits 0 with empty stdout): the script exits 2 with an explicit
+// stderr message and prints nothing.
+{
+  const missing = path.join(__dirname, "does-not-exist-ci-log-1028.txt");
+  const r = spawnSync("bash", [DIGEST_SCRIPT, missing], {
+    cwd: path.join(__dirname, ".."),
+    encoding: "utf-8",
+    timeout: 120000,
+  });
+  assert(r.status === 2, `case 13: nonexistent input path exits 2 (got ${r.status})`);
+  assert(
+    (r.stderr ?? "").includes("ci-log-digest: cannot read input: "),
+    `case 13: stderr names the input (got: ${JSON.stringify(r.stderr ?? "")})`,
+  );
+  assert(
+    (r.stdout ?? "").trim() === "",
+    `case 13: no stdout on unreadable input (got: ${JSON.stringify(r.stdout ?? "")})`,
+  );
+}
+
+// --- Case 14: cross-check — shared marker anchors (ci-log-digest.sh vs --digest) ---
+// For the same failing test output, the MARKER lines (not detail lines) kept
+// by ci-log-digest.sh must equal the marker lines kept by verify-loop.sh
+// --digest. The fixture contains only ✗ markers (the shared anchor both
+// scripts enforce) plus indented detail and noise, so both scripts are
+// expected to keep the same marker lines.
+{
+  const scratchDir = mkdtempSync(path.join(os.tmpdir(), "digest-crosscheck-"));
+  try {
+    // The raw failing output (no job/step/timestamp prefix). The ✗ lines are
+    // NOT indented (line-start anchor) so both digests keep them; indented
+    // detail lines are kept by both as well (attribution differs slightly but
+    // the marker lines — the subject of this cross-check — are identical).
+    const rawOutput = [
+      "  ✓ test-alpha.ts: 12 passed",
+      "✗ test-cross-a.ts: 2 failed",
+      "  at foo (test-cross-a.ts:1:1)",
+      "  at bar (test-cross-a.ts:2:2)",
+      "✗ test-cross-b.ts: 1 failed",
+      "  at baz (test-cross-b.ts:3:3)",
+      "  ✓ test-epsilon.ts: 5 passed",
+      "  some noise line",
+    ].join("\n");
+
+    // ci-log-digest.sh: feed the raw output (no prefix) as a log file.
+    const logPath = path.join(scratchDir, "raw-output.log");
+    writeFileSync(logPath, rawOutput);
+    const ciDigest = spawnSync("bash", [DIGEST_SCRIPT, logPath], {
+      cwd: path.join(__dirname, ".."),
+      encoding: "utf-8",
+      timeout: 120000,
+    });
+
+    // verify-loop.sh --digest: run a tiny fixture that prints the same output and exits 1.
+    const fixturePath = path.join(scratchDir, "fixture-crosscheck.ts");
+    writeFileSync(
+      fixturePath,
+      rawOutput.split("\n").map((l) => `console.log(${JSON.stringify(l)});`).join("\n") + "\nprocess.exit(1);\n",
+    );
+    const loopDigest = spawnSync("bash", [VERIFY_LOOP, "--digest", fixturePath], {
+      cwd: path.join(__dirname, ".."),
+      encoding: "utf-8",
+      timeout: 120000,
+    });
+
+    // Extract marker lines from each digest. Both digests use a strict
+    // line-start anchor (no leading-whitespace tolerance) for the ✗ marker,
+    // so compare on the raw line.
+    const isSharedMarker = (line: string): boolean =>
+      line.startsWith("✗ ") || line.startsWith("##[error]") || line.startsWith("FAILED:") || line.startsWith("error:");
+    const ciMarkers = (ciDigest.stdout ?? "")
+      .split("\n")
+      .filter((l) => isSharedMarker(l));
+    const loopMarkers = (loopDigest.stdout ?? "")
+      .split("\n")
+      .filter((l) => isSharedMarker(l))
+      // The digest branch also emits a "FAILED: <file>" per-failure marker
+      // and a "FAILED: N test(s) — …" summary line; strip both (they are
+      // summary markers, not markers derived from the test's own output —
+      // the cross-check compares markers derived from the test's own output).
+      .filter((l) => !l.startsWith("FAILED: "));
+
+    assert(
+      ciDigest.status === 0,
+      `case 14: ci-log-digest.sh exits 0 on prefix-free input (got ${ciDigest.status})`,
+    );
+    assert(
+      loopDigest.status === 1,
+      `case 14: verify-loop.sh --digest exits 1 on failing fixture (got ${loopDigest.status})`,
+    );
+    assert(
+      ciMarkers.length > 0,
+      `case 14: ci-log-digest.sh kept at least one marker line (got ${ciMarkers.length})`,
+    );
+    assert(
+      ciMarkers.length === loopMarkers.length,
+      `case 14: same number of marker lines kept by both digests (ci=${ciMarkers.length}, loop=${loopMarkers.length})`,
+    );
+    const mismatches = ciMarkers
+      .map((l, i) => (l === loopMarkers[i] ? null : `pos ${i}: ci='${l}' loop='${loopMarkers[i]}'`))
+      .filter((x): x is string => x !== null);
+    assert(
+      mismatches.length === 0,
+      `case 14: marker lines are identical across both digests${mismatches.length ? ` — ${mismatches.join("; ")}` : ""}`,
+    );
+  } finally {
+    rmSync(scratchDir, { recursive: true, force: true });
+  }
+}
 
 console.log(exit === 0 ? "\nAll CI-log digest checks passed." : "\nFAILED");
 process.exit(exit);

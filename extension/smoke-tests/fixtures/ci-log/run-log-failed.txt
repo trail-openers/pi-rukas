@@ -1,8 +1,7 @@
 run	step	2026-01-01T00:00:00Z	Setting up runner
 run	step	2026-01-01T00:00:01Z	Running in /home/runner/work/pi-rukas/pi-rukas
-run	step	2026-01-01T00:00:02Z	  Git checkout completed in 3.2s
 run	step	2026-01-01T00:00:05Z	  Installing dependencies...
-run	step	2026-01-01T00:00:30Z	  bun install completed in 25.1s
+run	step	2026-01-01T00:00:30Z	  bun install completed
 run	step	2026-01-01T00:00:31Z	  Running typecheck...
 run	step	2026-01-01T00:00:35Z	  ✓ typecheck: 0 errors
 run	step	2026-01-01T00:00:36Z	  Running lint...
@@ -23,4 +22,4 @@ run	step	2026-01-01T00:00:46Z	    at fetchAndCompare (test-gamma.ts:12:7)
 run	step	2026-01-01T00:00:47Z	  The error was caught and handled gracefully
 run	step	2026-01-01T00:00:47Z	  ✓ no error handling: assertion passed
 run	step	2026-01-01T00:00:48Z	  ##[error] Process completed with exit code 1
-run	step	2026-01-01T00:00:48Z	  Failed with 2 test(s) in 6.2s
+run	step	2026-01-01T00:00:48Z	  Failed with 2 test(s)
