@@ -9,15 +9,19 @@
  */
 import { type ExecFn, gitErrorDetail } from "./worktree.ts";
 
+// #981 fix-round — bound every git call. 30s for the local reads (the same
+// bound review-branch.ts uses for its git probes); the gate's `git fetch`
+// uses FETCH_TIMEOUT_MS below (the sharedFetch value from
+// work-driver-branch-mechanized.ts — network-bound, same maxBuffer rationale).
+export const GIT_TIMEOUT_MS = 30_000;
+export const FETCH_TIMEOUT_MS = 300_000;
+
 /** Resolve one rev to a SHA (trimmed), or undefined when the read failed. */
-export async function revToSha(
-  execFn: ExecFn,
-  tree: string,
-  rev: string,
-): Promise<string | undefined> {
+async function revToSha(execFn: ExecFn, tree: string, rev: string): Promise<string | undefined> {
   try {
     const { stdout } = await execFn("git", {
       cwd: tree,
+      timeout: GIT_TIMEOUT_MS,
       maxBuffer: 64 * 1024,
       argv: ["rev-parse", "--verify", rev],
     });
@@ -59,6 +63,7 @@ export async function isAncestor(
   try {
     await execFn("git", {
       cwd: tree,
+      timeout: GIT_TIMEOUT_MS,
       argv: ["merge-base", "--is-ancestor", a, b],
     });
     return { isAncestor: true };
@@ -151,6 +156,7 @@ export async function cherryLines(
   try {
     const { stdout } = await execFn("git", {
       cwd: tree,
+      timeout: GIT_TIMEOUT_MS,
       maxBuffer: 64 * 1024,
       argv: ["cherry", tipSha, treeSha],
     });
@@ -186,6 +192,7 @@ export async function rangeAllNonEmpty(
   try {
     const { stdout } = await execFn("git", {
       cwd: tree,
+      timeout: GIT_TIMEOUT_MS,
       maxBuffer: 64 * 1024,
       argv: ["rev-list", `${tipSha}..${treeSha}`],
     });
@@ -202,6 +209,7 @@ export async function rangeAllNonEmpty(
     try {
       await execFn("git", {
         cwd: tree,
+        timeout: GIT_TIMEOUT_MS,
         argv: ["diff", "--quiet", "--exit-code", `${sha}^`, sha],
       });
       empty = true;

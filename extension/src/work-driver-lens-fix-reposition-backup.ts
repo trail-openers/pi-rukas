@@ -12,7 +12,7 @@ import { trace } from "./trace.ts";
  */
 import { branchSlug } from "./work-driver-branch-mechanized.ts";
 import type { RepositionResult } from "./work-driver-lens-fix-reposition-gate.ts";
-import { isAncestor } from "./work-driver-lens-fix-reposition-queries.ts";
+import { GIT_TIMEOUT_MS, isAncestor } from "./work-driver-lens-fix-reposition-queries.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
@@ -40,11 +40,12 @@ export async function backupLensFixTree(
     // data, not a shell command; the argv form prevents a shell re-parse.
     const { stdout } = await execFn("git", {
       cwd: tree,
+      timeout: GIT_TIMEOUT_MS,
       maxBuffer: 64 * 1024,
       argv: ["rev-parse", "HEAD"],
     });
     const sha = stdout.trim();
-    await execFn("git", { cwd: tree, argv: ["update-ref", ref, sha] });
+    await execFn("git", { cwd: tree, timeout: GIT_TIMEOUT_MS, argv: ["update-ref", ref, sha] });
     trace(`lens-fix-reposition: backed up worktree to ${ref} (${sha.slice(0, 12)})`);
     return { ref };
   } catch (e) {
@@ -77,6 +78,7 @@ export async function enumerateUnlanded(
   try {
     const { stdout } = await execFn("git", {
       cwd: tree,
+      timeout: GIT_TIMEOUT_MS,
       maxBuffer: 64 * 1024,
       argv: ["rev-list", `${tipSha}..HEAD`],
     });

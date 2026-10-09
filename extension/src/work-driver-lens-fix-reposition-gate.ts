@@ -34,11 +34,12 @@ import {
   parkCherryFailedTree,
 } from "./work-driver-lens-fix-reposition-backup.ts";
 import {
+  FETCH_TIMEOUT_MS,
+  GIT_TIMEOUT_MS,
   cherryLines,
   isAncestor,
   rangeAllNonEmpty,
   resolveBranchTip,
-  revToSha,
 } from "./work-driver-lens-fix-reposition-queries.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -125,6 +126,7 @@ export async function repositionLensFixWorktree(
     // need it.
     await execFn("git", {
       cwd: tree,
+      timeout: FETCH_TIMEOUT_MS,
       // Match sharedFetch (work-driver-branch-mechanized.ts): the fetch's
       // pack output scales with branch history, not a fixed 64 KiB.
       maxBuffer: 1024 * 1024,
@@ -157,6 +159,7 @@ export async function repositionLensFixWorktree(
   try {
     const st = await execFn("git", {
       cwd: tree,
+      timeout: GIT_TIMEOUT_MS,
       maxBuffer: 64 * 1024,
       argv: ["status", "--porcelain"],
     });
@@ -188,6 +191,7 @@ export async function repositionLensFixWorktree(
   try {
     const hp = await execFn("git", {
       cwd: tree,
+      timeout: GIT_TIMEOUT_MS,
       maxBuffer: 64 * 1024,
       argv: ["rev-parse", "HEAD"],
     });
@@ -225,11 +229,13 @@ export async function repositionLensFixWorktree(
     try {
       await execFn("git", {
         cwd: tree,
+        timeout: GIT_TIMEOUT_MS,
         maxBuffer: 64 * 1024,
         argv: ["merge", "--ff-only", "--quiet", tipSha],
       });
       const hp2 = await execFn("git", {
         cwd: tree,
+        timeout: GIT_TIMEOUT_MS,
         maxBuffer: 64 * 1024,
         argv: ["rev-parse", "HEAD"],
       });
@@ -297,11 +303,13 @@ export async function repositionLensFixWorktree(
         try {
           await execFn("git", {
             cwd: tree,
+            timeout: GIT_TIMEOUT_MS,
             maxBuffer: 64 * 1024,
             argv: ["checkout", "--detach", "--quiet", tipSha],
           });
           const hp2 = await execFn("git", {
             cwd: tree,
+            timeout: GIT_TIMEOUT_MS,
             maxBuffer: 64 * 1024,
             argv: ["rev-parse", "HEAD"],
           });

@@ -83,7 +83,7 @@ export function explainLens(cap: Cap, state: WorkState): string {
         : "The inspected worktree path was not recorded.";
       const ref = hit?.restoredToRef;
       const backup = ref
-        ? ` The worktree's pre-move state is preserved at ref \`${ref}\` (\`git show ${ref}\`) — nothing was discarded; if the park was a \`git-failed\` (e.g. the backup succeeded but the checkout that followed did not), restore the tree from it with \`git checkout ${ref}\` before re-running.`
+        ? ` The backup ref \`${ref}\` points at the worktree's pre-move HEAD (taken before the move / failed checkout) — restoring it (\`git checkout ${ref}\`) returns the tree to the exact state the guard refused to discard, so nothing was lost to the park. Before re-running, inspect the evidence above and decide whether to restore from the backup, commit the unlanded work onto the branch, or clean the tree.`
         : "";
       return `the lens-fix reposition guard could not establish the correct base for the next round: ${cause}. ${where}${backup} The cycle halted rather than dispatching a fix onto a stale or diverged worktree, because a fix built there would not integrate cleanly (the #978 shape: round 2 built on the old base while the branch advanced by round 1). Inspect the worktree and the evidence above — commit or clean uncommitted work, land the missing commit on the branch, or restore from the backup ref — then re-run the cycle`;
     }

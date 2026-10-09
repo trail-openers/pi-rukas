@@ -323,6 +323,43 @@ function assert(cond: boolean, msg: string) {
         wtHeadAfterBad === wtHeadBefore,
         "981 reposition: the tree is NOT moved when merge-base fails (fail closed)",
       );
+
+      // Task 3 (MEDIUM): a merge-base call that dies like a TIMEOUT (killed
+      // by its wall-clock bound — no exit code, a signal) is also NOT a
+      // proven non-ancestry. `isAncestor` must surface it as `git-failed`
+      // (any failure that is not a clean exit-1 is an error), and the tree
+      // must not move — fail closed.
+      const wtHeadBeforeTo = (await execp("git rev-parse HEAD", { cwd: wt })).stdout.trim();
+      const mergeBaseTimesOut = async (cmd: string, o?: { cwd?: string; argv?: string[] }) => {
+        if (o?.argv && o.argv[0] === "merge-base") {
+          const err = new Error("simulated merge-base timeout (killed by its bound)") as Error & {
+            code: number | null;
+            killed?: boolean;
+            signal?: string;
+          };
+          err.code = null;
+          err.killed = true;
+          err.signal = "SIGTERM";
+          throw err;
+        }
+        return repositionExec(cmd, o);
+      };
+      const rTo = await repositionLensFixWorktree(
+        mergeBaseTimesOut,
+        wt,
+        "feature/lens-badref",
+        [981],
+        "reposition test",
+      );
+      assert(
+        rTo.kind === "git-failed",
+        `981 reposition: a merge-base timeout (killed, no exit code) routes to git-failed (got ${rTo.kind})`,
+      );
+      const wtHeadAfterTo = (await execp("git rev-parse HEAD", { cwd: wt })).stdout.trim();
+      assert(
+        wtHeadAfterTo === wtHeadBeforeTo,
+        "981 reposition: the tree is NOT moved when merge-base times out (fail closed)",
+      );
       console.log("✓ 981 reposition test passed");
     } finally {
       rmSync(badRefDir, { recursive: true, force: true });
