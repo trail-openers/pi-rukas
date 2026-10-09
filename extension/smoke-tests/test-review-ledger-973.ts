@@ -19,6 +19,7 @@ import {
   appendLedgerEntry,
   bumpLensRound,
   dedupeLatest,
+  mergeAfterRace,
   readLedgerAt,
 } from "../src/review-ledger.ts";
 
@@ -294,6 +295,124 @@ const execp = async (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) =
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+// ------------------------------------------- the race-fallback merge step (#1069)
+//
+// The happy path renames tmp → file. A concurrent winner's rename between
+// our writeFileSync and our renameSync makes ours throw, and the fallback
+// re-reads (winner's rows, possibly including the loser's stale row from an
+// earlier race), merges the new entry in, and rewrites. Pre-#1069 the
+// fallback did dedupe-then-push: with the loser's prior write in the
+// re-read file, both rows survived for the same (branch, kind) — the
+// duplicate pair #1069 observed. The merge step is a pure helper
+// (`mergeAfterRace` in review-ledger-merge.ts) — no fs, no git, no time —
+// so it is tested here directly, without mocking node:fs.
+{
+  const at = 1_000_000;
+  const winnerRow: LedgerEntry = {
+    branch: "feature/x",
+    kind: "lens",
+    patchId: "pwin",
+    passed: false,
+    at: at + 100,
+    detail: "ISSUES_FOUND",
+    hasCritical: false,
+    round: 1,
+  };
+  const loserRow: LedgerEntry = {
+    branch: "feature/x",
+    kind: "lens",
+    patchId: "plose",
+    passed: false,
+    at: at + 200,
+    detail: "REVIEW_INCOMPLETE",
+    round: 1,
+  };
+  const newEntry: LedgerEntry = {
+    branch: "feature/x",
+    kind: "lens",
+    patchId: "pnew",
+    passed: true,
+    at: at + 300,
+    detail: "APPROVED",
+    hasCritical: false,
+  };
+  // The re-read file holds the winner's round-1 row AND the loser's stale
+  // REVIEW_INCOMPLETE row (the #1069 shape: a previous rename race left the
+  // loser's row in the file). The merge must collapse BOTH to one row —
+  // the new entry, at the correct round.
+  const merged = mergeAfterRace([winnerRow, loserRow], newEntry);
+  const rows = merged.filter((e) => e.branch === "feature/x" && e.kind === "lens");
+  assert(
+    rows.length === 1,
+    `race merge: ONE lens row per (branch, kind) after the merge (got ${rows.length} — the pre-#1069 dedupe-then-push kept the stale rows and the new one)`,
+  );
+  assert(
+    rows[0]?.patchId === "pnew" && rows[0]?.at === at + 300,
+    "race merge: the surviving row is the NEW entry (latest by at), not the winner's or the loser's stale row",
+  );
+  assert(
+    rows[0]?.round === 2,
+    "race merge: the round advances off the re-read file's prior completed round (1 → 2), not a duplicate of round 1",
+  );
+  assert(
+    rows[0]?.passed === true && rows[0]?.detail === "APPROVED",
+    "race merge: the surviving row carries the NEW entry's verdict, not the stale rows' REVIEW_INCOMPLETE",
+  );
+  // The merge must not disturb rows for other (branch, kind) pairs.
+  const otherBranch: LedgerEntry = {
+    branch: "feature/y",
+    kind: "lens",
+    patchId: "py",
+    passed: true,
+    at: at + 50,
+    detail: "APPROVED",
+    round: 3,
+  };
+  const otherKind: LedgerEntry = {
+    branch: "feature/x",
+    kind: "adversarial",
+    patchId: "pa",
+    passed: true,
+    at: at + 60,
+  };
+  const mixed = mergeAfterRace([otherBranch, otherKind, winnerRow], newEntry);
+  assert(
+    mixed.length === 3,
+    `race merge: rows for other branches/kinds survive (got ${mixed.length} — expected 3)`,
+  );
+  assert(
+    mixed.some((e) => e.branch === "feature/y" && e.round === 3) &&
+      mixed.some((e) => e.branch === "feature/x" && e.kind === "adversarial" && e.patchId === "pa"),
+    "race merge: the unrelated rows are byte-preserved (branch feature/y round 3, feature/x adversarial)",
+  );
+  // A completed run after a stale REVIEW_INCOMPLETE row: the new entry's
+  // round advances off the LATEST row's round (the REVIEW_INCOMPLETE row
+  // carried the previous round, so the bump is off that, not a restart).
+  const staleIncomplete: LedgerEntry = {
+    branch: "feature/x",
+    kind: "lens",
+    patchId: "pinc",
+    passed: false,
+    at: at + 400,
+    detail: "REVIEW_INCOMPLETE",
+    round: 2,
+  };
+  const nextCompleted: LedgerEntry = {
+    branch: "feature/x",
+    kind: "lens",
+    patchId: "pc2",
+    passed: false,
+    at: at + 500,
+    detail: "ISSUES_FOUND",
+    hasCritical: false,
+  };
+  const afterIncomplete = mergeAfterRace([staleIncomplete], nextCompleted);
+  assert(
+    afterIncomplete.length === 1 && afterIncomplete[0]?.round === 3,
+    "race merge: a completed review after a stale REVIEW_INCOMPLETE row advances the round (2 → 3)",
+  );
 }
 
 console.log(`\nexit ${exit}`);

@@ -427,10 +427,15 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
 // the helper's short-budget path returns null quickly. This exercises
 // the `budgetMs` parameter and the `return null` branch, which are
 // otherwise dead surface (no caller passes a short budget).
+//
+// Uses a FRESH temp file path (not the gate's shared env-var override),
+// because the negative assertion requires the file to not exist — the
+// shared override may carry entries from earlier cases in this file.
 
 {
   const { repo } = setupRepo();
-  const lf = ledgerFile(repo);
+  const negDir = mkdtempSync(path.join(os.tmpdir(), "ledger-neg-"));
+  const lf = path.join(negDir, "review-ledger.json");
   try {
     // The ledger file does not exist and no writer is invoked: the short
     // 500 ms budget exercises the helper's `return null` path on a short
@@ -442,6 +447,7 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
       "negative assertion: no ledger entry expected → returns null on a short budget",
     );
   } finally {
+    rmSync(negDir, { recursive: true, force: true });
     rmSync(path.dirname(repo), { recursive: true, force: true });
   }
 }

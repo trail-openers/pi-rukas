@@ -14,7 +14,6 @@
  *   (i) installed fixture has only 5 of the 6 bundled lenses → 6 rows,
  *       the missing one blocked, verdict never APPROVED
  */
-
 import {
   cpSync,
   mkdtempSync,
@@ -34,7 +33,10 @@ import {
   CLAIM_SCAN_PRECEDENCE,
 } from "../src/lens-roster.ts";
 import { dedupeFindings } from "../src/lens-review-format.ts";
+import { isolateLedger } from "./lib/review-ledger-test-helpers.ts"; // #1069 ledger isolation
 
+// #1069 — isolate before any src import: the real runLensReview write must land in a temp file.
+isolateLedger();
 const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const REPO_SKILLS = path.join(REPO_ROOT, "skill");
 const SEVEN_SKILLS = [
@@ -93,7 +95,6 @@ function setSkillsDir(v: string | undefined): () => void {
     else process.env.PI_ENSEMBLE_SKILLS_DIR = prior;
   };
 }
-
 /** A SKILL.md with a unique precedence, for adding a lens to a fixture. */
 function addSkill(dir: string, skill: string, precedence: number | string, name?: string) {
   const skillDir = path.join(dir, skill);
@@ -495,6 +496,5 @@ function checkProseList(repoRoot: string): string[] {
     "(h) the CLAIM_SCAN pseudo-lens is NEGATIVE_INFINITY, not a fixed -1",
   );
 }
-
 console.log(`\nexit ${exit}`);
 process.exit(exit);

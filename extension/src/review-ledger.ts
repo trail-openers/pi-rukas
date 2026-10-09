@@ -38,6 +38,8 @@
 
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { dedupeLatest } from "./review-ledger-core.ts";
+import { mergeAfterRace } from "./review-ledger-merge.ts";
 import { ledgerPathFor } from "./review-ledger-path.ts";
 import { bumpLensRound } from "./review-ledger-round.ts";
 import { trace } from "./trace.ts";
@@ -92,6 +94,8 @@ export type LedgerExecFn = VerifyExecFn;
  */
 export { ledgerPathFor } from "./review-ledger-path.ts";
 export { bumpLensRound } from "./review-ledger-round.ts";
+export { dedupeLatest } from "./review-ledger-core.ts";
+export { mergeAfterRace } from "./review-ledger-merge.ts";
 
 /**
  * The patch id of a branch's changes: the diff from `baseRef` to the branch
@@ -384,16 +388,14 @@ export async function appendLedgerEntry(
       }
       try {
         // #973 review — the rename-race fallback applies the SAME invariants
-        // as the happy path: dedupe (the merged file may carry stale rows
-        // the happy path would have collapsed) and the round bump (the
-        // merged content may already hold the previous latest lens entry,
-        // whose round the new one must advance — a bare `[...merged, entry]`
-        // would record the same round twice or a round the driver never
-        // spent, and the guard's `round >= 3` check would fire early or
-        // never). A race is rare; it must not quietly write a ledger the
-        // happy path would never write.
-        const deduped = dedupeLatest(merged);
-        deduped.push(bumpLensRound(entry, deduped));
+        // as the happy path: the round bump (the merged content may already
+        // hold the previous latest lens entry, whose round the new one must
+        // advance) and the dedupe (the merged file may carry stale rows).
+        // The merge step is a pure helper (review-ledger-merge.ts) so the
+        // ordering — push the bumped entry FIRST, then dedupe, the #1069
+        // fix — is unit-testable without mocking node:fs. A race is rare; it
+        // must not quietly write a ledger the happy path would never write.
+        const deduped = mergeAfterRace(merged, entry);
         writeFileSync(tmp, JSON.stringify({ entries: deduped }, null, 2), "utf8");
         renameSync(tmp, file);
       } catch (err3) {
@@ -452,21 +454,6 @@ function safeJson(v: unknown): string {
   } catch {
     return "<unserialisable>";
   }
-}
-
-/**
- * Keep only the latest entry per (branch, kind) — the guard reads only the
- * latest, so older rows are never consulted. Stable on `at` ties (later in
- * file order wins, matching `latestEntry`'s `>=`).
- */
-export function dedupeLatest(entries: LedgerEntry[]): LedgerEntry[] {
-  const byKey = new Map<string, LedgerEntry>();
-  for (const e of entries) {
-    const key = `${e.branch}\u0000${e.kind}`;
-    const prev = byKey.get(key);
-    if (!prev || e.at >= prev.at) byKey.set(key, e);
-  }
-  return [...byKey.values()];
 }
 
 /**

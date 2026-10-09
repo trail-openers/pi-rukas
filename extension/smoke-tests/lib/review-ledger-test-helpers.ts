@@ -9,12 +9,44 @@
  *
  * Intentionally NOT named `test-*.ts` — CI's smoke-tests glob must not
  * self-execute this (same shape as lib/wait-for-ledger.ts, #984).
+ *
+ * #1069 — `isolateLedger` self-isolates the caller from the REAL per-clone
+ * review ledger. Tests that drive the real runLensReview / runAdversarialLoop
+ * with process.cwd() (the actual repo, not a temp repo) must call it so the
+ * writer's fire-and-forget ledger write lands in a private temp file, not the
+ * main clone's .git (a worktree's common dir resolves to the main clone). The
+ * ledger tests (test-review-ledger*.ts) do NOT call it — they use temp repos
+ * and their writer must write to the temp repo's git dir, which the git-path
+ * resolution (no env override) provides. Importing this module does NOT
+ * self-isolate (the import-time side effect would break the temp-repo ledger
+ * tests by setting the env override).
  */
 
 import { execSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+
+/**
+ * Self-isolate from the REAL per-clone review ledger (idempotent). Sets
+ * `PI_ENSEMBLE_REVIEW_LEDGER_FILE` to a private temp file so any subsequent
+ * `appendLedgerEntry` call in this process writes there, not to the main
+ * clone's .git. The temp dir is removed on process exit (best-effort).
+ * Honours an already-set value (e.g. the operator's or a prior call).
+ */
+export function isolateLedger(): void {
+  if (process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE === undefined) {
+    const isoDir = mkdtempSync(path.join(os.tmpdir(), "ledger-iso-"));
+    process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = path.join(isoDir, "review-ledger.json");
+    process.on("exit", () => {
+      try {
+        rmSync(isoDir, { recursive: true, force: true });
+      } catch {
+        // cleanup is best-effort
+      }
+    });
+  }
+}
 
 /** Set up a temp repo with a local bare origin + a feature branch. */
 export function setupRepo(): { repo: string; origin: string; branch: string } {
