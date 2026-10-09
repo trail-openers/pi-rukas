@@ -5,7 +5,12 @@
  * `parseHunks` turns a unified diff into hunks, each keyed to its REAL file
  * (a deleted file's `+++ /dev/null` is resolved from its `--- a/…` header) and
  * holding the ordered body lines (context / removed / added). A header that
- * cannot be parsed (e.g. CRLF) is an error, never silently skipped.
+ * cannot be parsed is an error, never silently skipped (a trailing CR from a
+ * CRLF file is tolerated; any other malformed header fails closed).
+ *
+ * A comment documents the code line immediately after it in the OLD file (its
+ * annotated line), not the surrounding function body: a body edit alone never
+ * licenses rewording a comment above an unchanged annotated line.
  *
  * `classifyHunk` decides, for one hunk, which removed comment blocks are
  * lost, replaced or exempt:
@@ -25,6 +30,31 @@
 const HUNK_HEADER_RE = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@(?: .*)?$/;
 const CARRY_MIN_WORDS = 3;
 const CARRY_RATIO = 0.6;
+/** Boilerplate that carries no meaning; never counts toward wording carry. */
+const CARRY_STOP = new Set([
+  "a",
+  "an",
+  "and",
+  "or",
+  "the",
+  "of",
+  "to",
+  "in",
+  "on",
+  "for",
+  "is",
+  "it",
+  "this",
+  "that",
+  "see",
+  "doc",
+  "docs",
+  "todo",
+  "fix",
+  "note",
+  "more",
+  "info",
+]);
 
 export type BodyLine = {
   kind: "context" | "removed" | "added";
@@ -85,11 +115,17 @@ export function parseHunks(diff: string): ParseResult {
   let inBody = false;
   let oldLeft = 0;
   let newLeft = 0;
-  let prevComment = false;
+  // Block continuity is tracked per kind: an added line's predecessor is the
+  // previous added line, not an interleaved removed one.
+  let prev: Record<BodyLine["kind"], boolean> = {
+    context: false,
+    added: false,
+    removed: false,
+  };
   for (let n = 0; n < lines.length; n++) {
     const line = lines[n] ?? "";
     if (line.startsWith("@@")) {
-      const m = HUNK_HEADER_RE.exec(line);
+      const m = HUNK_HEADER_RE.exec(line.replace(/\r$/, ""));
       if (!m) {
         return {
           ok: false,
@@ -101,7 +137,7 @@ export function parseHunks(diff: string): ParseResult {
       inBody = oldLeft > 0 || newLeft > 0;
       cur = { file, lines: [] };
       hunks.push(cur);
-      prevComment = false;
+      prev = { context: false, added: false, removed: false };
       continue;
     }
     // `---` / `+++` are file headers only OUTSIDE a hunk body: inside one, a
@@ -126,19 +162,24 @@ export function parseHunks(diff: string): ParseResult {
     if (oldLeft <= 0 && newLeft <= 0) inBody = false;
     if (!cur) continue;
     const raw = line.slice(1);
-    const isComment = isCommentLine(raw, prevComment);
-    prevComment = isComment;
+    const isComment = isCommentLine(raw, prev[kind]);
+    prev[kind] = isComment;
+    if (kind === "context") prev.added = prev.removed = isComment;
     cur.lines.push({ kind, raw, isComment });
   }
   return { ok: true, hunks };
 }
 
-/** Did the block's wording survive into an added comment of this hunk? */
-function wordingCarried(block: string[], addedComments: string[]): boolean {
-  const words = new Set(wordsOf(block.join(" ")));
+/**
+ * Did the block's wording survive into one contiguous run of added comment
+ * lines? Runs (not the whole hunk) are the unit, so an unrelated comment added
+ * elsewhere in the hunk cannot launder a lost comment.
+ */
+function wordingCarried(block: string[], addedRuns: string[][]): boolean {
+  const words = new Set(wordsOf(block.join(" ")).filter((w) => !CARRY_STOP.has(w)));
   if (words.size < CARRY_MIN_WORDS) return false;
-  return addedComments.some((a) => {
-    const added = new Set(wordsOf(a));
+  return addedRuns.some((run) => {
+    const added = new Set(wordsOf(run.join(" ")).filter((w) => !CARRY_STOP.has(w)));
     let shared = 0;
     for (const w of words) if (added.has(w)) shared++;
     return shared / words.size >= CARRY_RATIO;
@@ -148,13 +189,21 @@ function wordingCarried(block: string[], addedComments: string[]): boolean {
 /** Classify one hunk's removed comment blocks. */
 export function classifyHunk(hunk: Hunk, presentAtHead: (text: string) => boolean): HunkVerdict {
   const verdict: HunkVerdict = { lost: [], replaced: [], exempt: 0 };
-  const addedComments = hunk.lines
-    .filter((l) => l.kind === "added" && l.isComment)
-    .map((l) => l.raw.trim());
+  const addedRuns: string[][] = [];
+  let run: string[] | null = null;
+  for (const l of hunk.lines) {
+    if (l.kind === "added" && l.isComment) {
+      if (!run) {
+        run = [];
+        addedRuns.push(run);
+      }
+      run.push(l.raw.trim());
+    } else run = null;
+  }
   const addedCode = new Set(
     hunk.lines.filter((l) => l.kind === "added" && !l.isComment).map((l) => l.raw.trim()),
   );
-  const hasAddedComment = addedComments.length > 0;
+  const hasAddedComment = addedRuns.length > 0;
   // The OLD file's view of this hunk: context and removed lines, in order.
   const old = hunk.lines.filter((l) => l.kind !== "added");
   let i = 0;
@@ -171,16 +220,21 @@ export function classifyHunk(hunk: Hunk, presentAtHead: (text: string) => boolea
       i++;
       next = old[i];
     }
-    // Annotated code: the next old-file line, if it is a removed code line.
-    // Unchanged context there means the documented code is unchanged.
-    const follow = next && next.kind === "removed" && !next.isComment ? next.raw.trim() : "";
+    // Annotated code: the next non-blank old-file line, if it is a removed code
+    // line (unchanged blank context lines are skipped). Unchanged non-blank
+    // context there means the documented code is unchanged.
+    let j = i;
+    while (old[j]?.kind === "context" && (old[j]?.raw ?? "").trim() === "") j++;
+    const annotated = old[j];
+    const follow =
+      annotated && annotated.kind === "removed" && !annotated.isComment ? annotated.raw.trim() : "";
     if (follow && !presentAtHead(follow)) {
       if (hasAddedComment) verdict.replaced.push(...block.map((l) => l.trim()));
       else verdict.exempt += block.length;
       continue;
     }
     const codeChanged = follow !== "" && !addedCode.has(follow);
-    if (hasAddedComment && (codeChanged || wordingCarried(block, addedComments))) {
+    if (hasAddedComment && (codeChanged || wordingCarried(block, addedRuns))) {
       verdict.replaced.push(...block.map((l) => l.trim()));
       continue;
     }

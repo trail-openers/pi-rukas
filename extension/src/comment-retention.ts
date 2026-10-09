@@ -198,6 +198,9 @@ export async function findLostComments(
     const t = text.trim();
     if (!t) return false;
     if (headSet.has(t)) return true;
+    // Trailing-part retention needs a word-bearing tail: `}`, `*/` or `/**`
+    // must not be "retained" by any head line that happens to end in them.
+    if (!/[\p{L}\p{N}]/u.test(t)) return false;
     return headList.some((l) => l.endsWith(t));
   };
 
