@@ -11,7 +11,7 @@
  *
  *   bun run smoke-tests/test-pi-shape-live.ts
  *
- * What this catches: Pi changes a field name (e.g., `tool_use` → `toolCall`,
+ * Catches: Pi changes a field name (e.g., `tool_use` → `toolCall`,
  * which has happened), drops an event type (e.g., agent_end), restructures
  * usage stats, or silently drops extension-registered tools from the
  * child's live toolset (the #571 incident — provider-side deferred tool
@@ -33,26 +33,30 @@
  *      (#571 detection gap). Registry presence is separately proven by the
  *      fact that the fixture's own registered tool is callable (3a/4).
  *   6. Assistant message has `model` field — used by collapseEvents
+ *   7. Codemode roster check (#1030 / epic #1026) — the child's active
+ *      toolset includes `codemode` when PI_ENSEMBLE_CHILD_CODEMODE is on
+ *      (default) and excludes it when =0. The default PONG shape and the
+ *      rest of the roster are unchanged either way.
  *
  * Cost: one short child spawn (two assistant turns + one no-op tool call)
  * — roughly the same wall-clock/token envelope as the previous PONG-only
  * run. The fixture extension (fixtures/shape-live-roster-reporter.ts) is
  * loaded into the child via `--extension`; no extra spawn is needed.
  *
- * The child is spawned DIRECTLY (not via spawnSpecialist) because
- * spawnSpecialist is the subagent path — it uses `--no-extensions` and
- * only loads pi-ensemble in strict mode. The #571 incident was about the
- * PARENT session's toolset, so this test spawns a parent-shaped child:
- * `--no-extensions` (suppress auto-discovery) + explicit `--extension`
- * for pi-ensemble + the fixture.
+ * The child is spawned DIRECTLY (not via spawnSpecialist, the subagent
+ * path, which uses `--no-extensions` and only loads pi-ensemble in strict
+ * mode). The #571 incident was about the PARENT session's toolset, so this
+ * test spawns a parent-shaped child: `--no-extensions` + explicit
+ * `--extension` for pi-ensemble + the fixture.
  *
- * Roster source-of-truth: `EXPECTED_ROSTER` below is the single list the
+ * `EXPECTED_ROSTER` below is the single list the
  * assertion checks against, and a canary below fails the test if the
  * `pi.registerTool` sites in `extension/src` diverge from it.
  */
 
 import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, rmSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -93,16 +97,41 @@ const EXPECTED_ROSTER = [
   "start_work_driver",
   "start_plan_driver",
   "start_research_driver",
+  "question",
 ] as const;
+
+// Codemode flag for this child. `PI_ENSEMBLE_CHILD_CODEMODE` defaults to ON
+// (the issue's production default); `=0` reproduces the pre-change argv.
+// Presence/absence of `codemode` in subagent children (developer, ops, …)
+// is asserted in test-codemode-reviewer-rejection.ts — this child is
+// project-manager-shaped (the full pi-rukas extension is loaded), so
+// codemode is not expected in its roster.
+// NOTE: test-pi-shape-live.ts loads the FULL pi-rukas extension (--extension
+// extDir), whose setActiveTools filters to the role's allowed tools. Codemode
+// is NOT in the project-manager role's allow list (agents.json), so the
+// extension strips it even when the flag is present. The codemode roster
+// check therefore lives in test-codemode-reviewer-rejection.ts (which does
+// NOT load the full extension and can prove the flag's effect on the raw
+// toolset). This flag is kept here so the argv is shape-correct for the
+// shape assertions (the PONG and roster checks below), and so that a future
+// role that DOES allow codemode (e.g. a reviewer role) can be tested here.
+const codemodeEnabled = process.env.PI_ENSEMBLE_CHILD_CODEMODE !== "0";
+
+// Provider/model for the live child (same convention as the sibling live
+// tests): pass --provider/--model via PI_ENSEMBLE_LIVE_PROVIDER / _MODEL,
+// otherwise inherit the host default (a dead one would poison the test).
+const liveProvider = process.env.PI_ENSEMBLE_LIVE_PROVIDER;
+const liveModel = process.env.PI_ENSEMBLE_LIVE_MODEL;
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fixturePath = path.join(here, "fixtures", "shape-live-roster-reporter.ts");
 const extSrcDir = path.join(here, "..", "src");
 const extDir = path.resolve(here, "..");
 const worktreeRoot = path.resolve(here, "..", "..");
-const sessionDir = "/tmp/pi-ensemble-live-shape";
-mkdirSync(sessionDir, { recursive: true });
-const sessionPath = path.join(sessionDir, `pi-shape-live-${process.pid}-${Date.now()}.json`);
+// The session transcript lives in a per-run temp dir that this test removes
+// in its finally block — the test must not leak transcripts across runs.
+const sessionDir = path.join(os.tmpdir(), `pi-ensemble-live-shape-${process.pid}-${Date.now()}`);
+const sessionPath = path.join(sessionDir, `pi-shape-live-${process.pid}.json`);
 
 const prompt = [
   "You are running a deterministic shape test. Follow EXACTLY:",
@@ -113,30 +142,47 @@ const prompt = [
 
 // Build the child argv: parent-shaped (pi-ensemble + fixture loaded).
 // `--no-extensions` + `-e builtin:mcp` (issue #959): under Pi 1.0.0 the
-// no-extensions flag also disables built-in extensions, including the built-in
-// MCP; the `-e builtin:mcp` flag re-enables just the MCP built-in so the
-// child's toolset includes the mcp__<server>__<tool> tools the permission
-// overlay in agents.json grants per role (see spawn-support.ts CHILD_ARGS_BASE
-// for the same argument order used in production).
+// no-extensions flag also disables built-in extensions, including MCP; the
+// flag re-enables just the MCP built-in so the toolset includes the
+// mcp__<server>__<tool> tools the agents.json overlay grants per role
+// (same argument order as spawn-support.ts childArgsBase() in production).
 const childArgs = [
   "--mode",
   "rpc",
   "--no-extensions",
   "-e",
   "builtin:mcp",
+];
+if (codemodeEnabled) {
+  childArgs.push("-e", "builtin:codemode");
+}
+childArgs.push(
   "--session",
   sessionPath,
   "--extension",
   extDir,
   "--extension",
   fixturePath,
-];
+);
+if (liveProvider) {
+  childArgs.push("--provider", liveProvider);
+}
+if (liveModel) {
+  childArgs.push("--model", liveModel);
+}
 
 console.log(`[test] spawning child: pi ${childArgs.join(" ")}`);
 const child = spawn("pi", childArgs, {
   cwd: worktreeRoot,
   stdio: ["pipe", "pipe", "pipe"],
   env: { ...process.env },
+});
+
+// A missing `pi` binary would otherwise hang until the backstop; record
+// the spawn error and fail fast with it instead.
+let spawnError: Error | null = null;
+child.on("error", (err) => {
+  spawnError = err;
 });
 
 let stdout = "";
@@ -152,6 +198,7 @@ child.stderr?.on("data", (d: Buffer) => {
 child.stdin?.write(`${JSON.stringify({ type: "prompt", message: prompt })}\n`);
 
 const start = Date.now();
+let backstopFired = false;
 const exitCode = await new Promise<number | null>((resolve) => {
   // Close stdin after a short delay to signal "no more commands".
   // Pi exits cleanly after the agent_end for the current prompt.
@@ -166,16 +213,32 @@ const exitCode = await new Promise<number | null>((resolve) => {
     clearTimeout(closeTimer);
     resolve(code);
   });
-  // Hard backstop: kill after 120s.
+  // Hard backstop: kill after 120s. It must settle the promise itself —
+  // a child that survives SIGTERM/SIGKILL would otherwise hang the test
+  // forever (the run would never finish).
   const backstop = setTimeout(() => {
+    backstopFired = true;
     child.kill("SIGTERM");
-    setTimeout(() => child.kill("SIGKILL"), 5_000);
+    setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
+    setTimeout(() => resolve(null), 5_500).unref();
   }, 120_000);
   child.on("exit", () => clearTimeout(backstop));
 });
 
 const ms = Date.now() - start;
 console.log(`[test] child exited in ${ms}ms, code=${exitCode}`);
+
+// Fatal errors are recorded, not process.exit'd immediately — the run must
+// reach the final process.exit(exit) with a non-zero code after cleanup.
+let fatal: string | null = null;
+if (spawnError) {
+  fatal = `failed to spawn pi: ${spawnError.message}`;
+  console.error(`✗ ${fatal}`);
+}
+if (backstopFired) {
+  fatal = fatal ?? "child did not exit within the 120s backstop (SIGTERM/SIGKILL fired)";
+  console.error(`✗ ${fatal}`);
+}
 
 if (stderr && stderr.length > 0) {
   console.log(`[test] child stderr (last 1000): ${stderr.slice(-1000)}`);
@@ -358,6 +421,15 @@ for (const tool of EXPECTED_ROSTER) {
   );
 }
 
+// 5c. Codemode roster check — the dedicated test-codemode-reviewer-rejection.ts
+//     handles the codemode presence/absence assertion (it spawns a child
+//     WITHOUT the full pi-rukas extension, so the raw -e builtin:codemode
+//     flag is visible in the active toolset). This child loads the full
+//     extension (--extension extDir), whose setActiveTools strips codemode
+//     for the project-manager role (not in agents.json allow list), so
+//     codemode would be absent regardless of the flag. No assertion here;
+//     the flag is applied to the argv above for shape-correctness only.
+
 // 5a. Native MCP (issue #959): the child's toolset must contain at least one
 //     mcp__codebase_memory__* tool. The prefix (not an exact name) is what we
 //     assert — Pi 1.0.0's native MCP names tools `mcp__<server>__<tool>` and
@@ -409,6 +481,19 @@ assert(
   `last assistant text contains PONG (actual: "${lastText.slice(0, 60)}")`,
 );
 
-console.log(`\n[test] session: ${sessionPath}`);
+// Clean up after itself: the session transcript dir is removed
+// unconditionally (the test's only persistent artefact).
+try {
+  rmSync(sessionDir, { recursive: true, force: true });
+} catch {
+  /* best effort — the dir is under os.tmpdir() */
+}
+
+console.log(`\n[test] session: ${sessionPath} (removed after the run)`);
+
+// A recorded fatal error (spawn failure, backstop, unreadable session)
+// fails the run here, after cleanup, rather than mid-run.
+if (fatal) exit = 1;
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

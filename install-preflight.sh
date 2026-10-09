@@ -20,7 +20,7 @@
 # Floor provenance: 1.0.0, decided by the operator 2026-10-02 (issue #959).
 # Pi 1.0.0 (2026-10-01) is the first release of the 1.x line — native MCP
 # (mcp.json) plus `--no-extensions` also disabling built-in extensions, which
-# the subagent spawn path compensates for with `-e builtin:mcp` (CHILD_ARGS_BASE
+# the subagent spawn path compensates for with `-e builtin:mcp` (childArgsBase()
 # in spawn-support.ts). The 4-day npm embargo was temporarily overridden for
 # this upgrade (operator decision 2026-10-02; supply-chain check done); the
 # override lived in extension/bunfig.toml minimumReleaseAgeExcludes and was

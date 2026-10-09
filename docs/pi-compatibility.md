@@ -1,6 +1,6 @@
 # Pi compatibility
 
-pi-rukas depends on Pi's CLI flags, JSON event stream shape, and `ExtensionAPI` surface. Since 1.0.0, `--no-extensions` also disables built-in extensions (including the built-in MCP), which pi-rukas compensates for by passing `-e builtin:mcp` to every subagent spawn (see `extension/src/spawn-support.ts` `CHILD_ARGS_BASE`).
+pi-rukas depends on Pi's CLI flags, JSON event stream shape, and `ExtensionAPI` surface. Since 1.0.0, `--no-extensions` also disables built-in extensions (including the built-in MCP), which pi-rukas compensates for by passing `-e builtin:mcp` (and, unless `PI_ENSEMBLE_CHILD_CODEMODE=0`, `-e builtin:codemode`, issue #1030) to every subagent spawn (see `extension/src/spawn-support.ts` `childArgsBase()`).
 
 ## Last verified against pi 1.0.0 (2026-10-02)
 

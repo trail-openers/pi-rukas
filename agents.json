@@ -348,6 +348,7 @@
         "list": "allow",
         "skill": "allow",
         "todowrite": "allow",
+        "codemode": "allow",
         "webfetch": "allow",
         "question": "allow",
         "task": {
@@ -559,6 +560,7 @@
         "read": "allow",
         "webfetch": "deny",
         "todowrite": "allow",
+        "codemode": "allow",
         "task": "deny",
         "parallel-search_web_search_preview": "deny",
         "parallel-search_web_fetch": "deny",
@@ -666,6 +668,7 @@
         "list": "allow",
         "skill": "allow",
         "todowrite": "allow",
+        "codemode": "allow",
         "webfetch": "allow",
         "task": "deny"
       }
@@ -795,6 +798,7 @@
         "list": "allow",
         "skill": "allow",
         "todowrite": "allow",
+        "codemode": "allow",
         "webfetch": "allow",
         "task": "deny"
       }
@@ -897,7 +901,8 @@
         "task": {
           "*": "deny"
         },
-        "webfetch": "deny"
+        "webfetch": "deny",
+        "codemode": "allow"
       }
     }
   }

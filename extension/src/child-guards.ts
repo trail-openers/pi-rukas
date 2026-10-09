@@ -27,6 +27,13 @@
  * export NO-OPS when `PI_ENSEMBLE_SUBAGENT_MODE === "1"`. A child therefore
  * has exactly one set of guard hooks in every mode.
  *
+ * Codemode activation (#1030): for trust-mode children this file's
+ * `session_start` handler appends `codemode` to the active tool set (via
+ * enableChildCodemode in child-codemode.ts, shared with the strict path in
+ * permission-subagent-guard.ts, which owns it under
+ * PI_ENSEMBLE_SUBAGENT_MODE=1 — every child activates it exactly once).
+ * The child-codemode flag makes both sides no-op.
+ *
  * A missing file must fail the dispatch with a named error, never produce a
  * silently unguarded child — hence the preflight stat in spawn.ts
  * (spawnSpecialistInner, the #893 reporter-preflight.ts pattern).
@@ -36,6 +43,7 @@ import { statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { enableChildCodemode } from "./child-codemode.ts";
 import { registerModeIndependentGuards } from "./subagent-guard-guards.ts";
 import { trace } from "./trace.ts";
 
@@ -96,6 +104,15 @@ export default function registerChildGuards(pi: ExtensionAPI): void {
     );
     return;
   }
+  // #1030 — the companion is the codemode activation site for trust-mode
+  // children (the default). It deliberately runs ONLY when the guards are
+  // registered below: under PI_ENSEMBLE_SUBAGENT_MODE=1 the strict path
+  // (registerSubagentGuard in permission-subagent-guard.ts) performs the same
+  // append instead, so every child activates codemode exactly once in every
+  // mode — never here AND there.
+  pi.on("session_start", () => {
+    enableChildCodemode(pi);
+  });
   // The shared block is the single list of the three mode-independent guards;
   // registerPmBashGuard stays parent-only (it is not in the block). All three
   // fire before any trust/sandbox bypass by construction.
