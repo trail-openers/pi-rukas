@@ -226,7 +226,7 @@ When encountering code issues (test failures, lint errors):
 
 When you encounter something that deserves a tracker issue (a bug, a gap, a follow-up ticket):
 
-1. **STOP** - Do not file it. Never run `gh issue create` / `gh issue edit` (GitHub) or `glab issue create` / `glab api` issue mutations (GitLab), and note that your `oo gh api*` / `oo glab api*` grants also reach the REST issue-collection endpoints (`POST /repos/{owner}/{repo}/issues` on GitHub, `POST /projects/:id/issues` on GitLab) — those paths are off-limits too.
+1. **STOP** - Do not file it. Never run `gh issue create` / `gh issue edit` (GitHub) or `glab issue create` / `glab api` issue mutations (GitLab), and note that your `gh api*` / `glab api*` grants also reach the REST issue-collection endpoints (`POST /repos/{owner}/{repo}/issues` on GitHub, `POST /projects/:id/issues` on GitLab) — those paths are off-limits too.
 2. **REPORT** - Put the finding in your final message to PM (one paragraph: what, where, suggested title).
 3. **LET PM FILE** - PM owns issue creation and decides whether, when, and how the ticket gets filed.
 4. **CONTINUE** - Finish the git/gh/CI operations you were asked to do.

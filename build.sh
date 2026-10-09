@@ -223,13 +223,15 @@ EOF
 
        ([
          fmt_group("git (bare)"; $allow_groups.git),
-         fmt_group("git (via oo — preferred for verbose output)"; $allow_groups.oo_git),
+
+         fmt_group("git (verbose)"; $allow_groups.oo_git),
          fmt_group("gh (bare)"; $allow_groups.gh),
-         fmt_group("gh (via oo)"; $allow_groups.oo_gh),
+         fmt_group("gh (verbose)"; $allow_groups.oo_gh),
          fmt_group("build tools (npm/yarn/pnpm/bun/cargo/go/etc.)"; $allow_groups.build),
          fmt_group("filesystem / text utilities"; $allow_groups.fs),
          fmt_group("container / deploy / ssh"; $allow_groups.container),
-         fmt_group("project memory / oo helpers"; $allow_groups.project_memory),
+
+         fmt_group("project memory / helpers"; $allow_groups.project_memory),
          fmt_group("project scripts"; $allow_groups.shell),
          fmt_group("other"; $allow_groups.other)
        ] | map(select(. != "")) | join("\n")) as $bash_allow_block |
@@ -240,7 +242,8 @@ EOF
 
        (if ($perm.bash["*"] // "deny") == "deny" then "deny-all + allowlist" else "allow-all" end) as $bash_default |
 
-       "**Tools:** \($tools)\n\n**MCP:** \($mcp_display)\n\n**Bash policy: `\($bash_default)`** — anything not on the list below resolves to `ask`. Stick to the allow-list.\n\n### Bash / search hygiene rules (READ FIRST)\n\n1. **To find code, call `mcp__codebase_memory__search_code`.** It IS the canonical tool for code discovery in this repository — indexed, sub-millisecond, structural. Use `mcp__codebase_memory__trace_path` for callers/callees, `mcp__codebase_memory__detect_changes` for diff blast radius, `mcp__codebase_memory__get_architecture` for the module map. `rg` is ONLY for regex over text files; `read` is ONLY for loading a known file path. These are not substitutes — defaulting to `rg` or `read` to discover what exists in the codebase is wrong.\n2. **Use `oo`-wrapped commands** for git / gh / npm / cargo / bun / pnpm. Examples: `oo git commit -m …`, `oo gh pr view 123`, `oo npm install`, `oo cargo build`. Bare `git commit`, `gh pr view`, `npm install`, `cargo build` are NOT on the allow-list.\n3. **Do NOT `cd <path> && <cmd>`.** You are already in the right working directory. To target a different dir use the tool flag: `git -C <path>`, `cargo --manifest-path <path>`, `npm --prefix <path>`.\n4. **Do NOT chain or pipe.** No `&&`, `|`, `;`, `>`, `<`, `$(…)`, backticks. Run each command as a separate tool call. To filter output: run the producer, read its result, then call the consumer with the extracted value.\n\n### Allow-listed bash patterns (grouped by category)\n\n\($bash_allow_block)\($bash_deny_block)\n"
+
+       "**Tools:** \($tools)\n\n**MCP:** \($mcp_display)\n\n**Bash policy: `\($bash_default)`** — anything not on the list below resolves to `ask`. Stick to the allow-list.\n\n### Bash / search hygiene rules (READ FIRST)\n\n1. **To find code, call `mcp__codebase_memory__search_code`.** It IS the canonical tool for code discovery in this repository — indexed, sub-millisecond, structural. Use `mcp__codebase_memory__trace_path` for callers/callees, `mcp__codebase_memory__detect_changes` for diff blast radius, `mcp__codebase_memory__get_architecture` for the module map. `rg` is ONLY for regex over text files; `read` is ONLY for loading a known file path. These are not substitutes — defaulting to `rg` or `read` to discover what exists in the codebase is wrong.\n2. **Prefer codemode for verbose or batched commands** — use a codemode script for test suites, builds, or any command that would produce 50+ lines of output (the script runs the command, collects only the failure lines, and returns the digest — not the full transcript). For single short commands, a plain bash call is simpler.\n3. **Do NOT `cd <path> && <cmd>`.** You are already in the right working directory. To target a different dir use the tool flag: `git -C <path>`, `cargo --manifest-path <path>`, `npm --prefix <path>`.\n4. **Do NOT chain or pipe.** No `&&`, `|`, `;`, `>`, `<`, `$(…)`, backticks. Run each command as a separate tool call. To filter output: run the producer, read its result, then call the consumer with the extracted value.\n\n### Allow-listed bash patterns (grouped by category)\n\n\($bash_allow_block)\($bash_deny_block)\n"
      ' "$config_file" >> "$temp_capabilities" || {
        echo "ERROR: Failed to parse config file with jq for agent $AGENT_NAME"
       rm -f "$temp_capabilities"

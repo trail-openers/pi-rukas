@@ -2,7 +2,7 @@ agents-base/ops.md
 modules/core/tool-preferences.md
 modules/core/vipune-light.md
 modules/core/output-standards.md
-modules/core/oo-command-runner.md
+modules/core/codemode.md
 modules/workflows/git-workflow.md
 modules/workflows/ci-monitoring.md
 modules/domains/scope-boundaries.md
