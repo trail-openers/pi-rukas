@@ -1,14 +1,13 @@
 #!/usr/bin/env bun
 /**
- * #948/#1040 — comment-retention gate.
+ * #948/#1040 — comment-retention gate (companion: test-comment-retention-hunks.ts).
  *
  * Real-git scratch repos exercise `findLostComments` (lost / moved-verbatim /
- * deleted-with-code exempt / reworded / block / 25-lost truncation) including
- * the #1040 replacement rule (#1017 shape → replaced note, #1019 shape →
- * lost, mixed hunk). The develop-gate wiring (fake ExecFn through
- * `verifyStepOutcome`) proves the lossy diff fails and the replaced-only diff
- * passes. Deliberately NOT named `*-live.ts` (that suffix spawns Pi children and is
- * excluded from the pre-push gate). This costs nothing but a few git forks.
+ * deleted-with-code exempt / block / 25-lost truncation) plus the replacement
+ * shapes (#1017 → replaced, #1019 → lost, mixed hunk). The develop-gate wiring
+ * (fake ExecFn through `verifyStepOutcome`) proves the lossy diff fails and the
+ * replaced-only diff passes. Deliberately NOT named `*-live.ts` (that suffix spawns
+ * Pi children and is excluded from the pre-push gate). Costs only git forks.
  */
 
 import { execFile } from "node:child_process";
@@ -137,8 +136,7 @@ async function rg(
     (res) => res.lost.length === 1 && res.lost[0] === "// original wording here",
   );
 
-  // (d2) reworded comment + code changed + new comment in same hunk → replaced
-  // (note, not failure). The #1017 shape.
+  // (d2) reworded comment + code changed + new comment in same hunk → replaced (note, not failure). #1017 shape.
   await rg(
     "(d2)",
     `// original wording here\nfunction f() {\n  return 1;\n}\n`,
@@ -149,6 +147,7 @@ async function rg(
 
   // (d3) #1017 exact shape: 2-line comment reworded + body changed in the same
   // hunk → replaced (2 lines), zero lost (condition (a) fires hunk-locally).
+
   await rg(
     "(d3)",
     `// the doc for f, line one\n// the doc for f, line two\nfunction f() {\n  return 1;\n}\n`,
@@ -214,8 +213,8 @@ async function rg(
   }
 
   // (g) arithmetic continuation: `const y = a\n * b;` — the ` * b;` line
-  // follows a non-comment line, so it is NOT a comment. The real comment is
-  // exempt (its code `const y = a` is also deleted). Result: nothing is lost.
+  // follows a non-comment line, so it is NOT a comment; the real comment is
+  // exempt (its code is also deleted). Result: nothing is lost.
   await rg(
     "(g)",
     `const x = 5;\n// a real comment here\nconst y = a\n * b;\nconst z = 9;\n`,
@@ -225,17 +224,11 @@ async function rg(
   );
 
   // (h0) an empty scoped diff with a non-empty UNSCOPED range: the head
-  // commit touches only a file OUTSIDE paths, so no in-scope comment can be
+  // commit touches only a file OUTSIDE paths (a `makeRepo` head commit
+  // re-adds the base file, keeping it in scope), so no in-scope comment can be
   // lost — the gate must pass cleanly (ok:true, lost 0) with NO skip note.
   {
-    const dirH0 = mkdtempSync(path.join(tmpdir(), "pi-ens-comment-"));
-    await execFileP("git", ["init", "-q", "-b", "main"], { cwd: dirH0 });
-    await git(dirH0, ["config", "user.email", "t@example.com"]);
-    await git(dirH0, ["config", "user.name", "T"]);
-    mkdirSync(path.join(dirH0, "src"), { recursive: true });
-    writeFileSync(path.join(dirH0, "src/app.ts"), `// an in-scope comment at base\nfunction a() {\n  return 1;\n}\n`);
-    await git(dirH0, ["add", "src"]);
-    await git(dirH0, ["commit", "-q", "-m", "base"]);
+    const dirH0 = await makeRepo(`// an in-scope comment at base\nfunction a() {\n  return 1;\n}\n`);
     mkdirSync(path.join(dirH0, "out-of-scope"), { recursive: true });
     writeFileSync(path.join(dirH0, "out-of-scope/other.txt"), "noise\n");
     await git(dirH0, ["add", "-A"]);
