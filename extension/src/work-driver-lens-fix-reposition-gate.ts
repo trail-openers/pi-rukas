@@ -267,7 +267,9 @@ export async function repositionLensFixWorktree(
   try {
     await execFn("git", {
       cwd: tree,
-      maxBuffer: 64 * 1024,
+      // Match sharedFetch (work-driver-branch-mechanized.ts): the fetch's
+      // pack output scales with branch history, not a fixed 64 KiB.
+      maxBuffer: 1024 * 1024,
       argv: ["fetch", "origin", branchName, "--quiet"],
     });
   } catch (e) {
@@ -404,19 +406,15 @@ export async function repositionLensFixWorktree(
         // NON-EMPTY commit with a patch-equivalent on the tip. Back up the
         // tree BEFORE the detach checkout (which orphans the old HEAD),
         // then move. `fromSha` records where the tree moved from.
-        const cherryBackupRef = await backupLensFixTree(
-          execFn,
-          tree,
-          branchName,
-          issues,
-          issueTitle,
-        );
+        const cherryBackup = await backupLensFixTree(execFn, tree, branchName, issues, issueTitle);
+        const cherryBackupRef = cherryBackup.ref;
         if (cherryBackupRef === undefined) {
           // Fail closed: without the backup ref the detach checkout would
           // orphan the old HEAD with no way back, so the tree must NOT
           // move. Park via the diverged kind (no `backupRef` recorded).
-          const detail =
-            "backup ref could not be created; refusing to move a tree that is not a fast-forward";
+          // The backup helper's git error rides in the detail (first line,
+          // ≤200 chars) so the operator knows WHY the ref was not created.
+          const detail = `backup ref could not be created (${cherryBackup.error ?? "git error"}); refusing to move a tree that is not a fast-forward`;
           trace(`${TRACE_PREFIX}: ${detail}`);
           return { kind: "diverged", detail };
         }
@@ -477,6 +475,7 @@ export async function repositionLensFixWorktree(
     // and park.
     const tipIsAncestorOfTree = await isAncestor(execFn, tree, tipSha, treeSha);
     const backupRef = await backupLensFixTree(execFn, tree, branchName, issues, issueTitle);
+    const backupRefName = backupRef.ref;
     const aheadShas =
       plusShas.length > 0 ? plusShas : await enumerateUnlanded(execFn, tree, tipSha);
     const kind: "unlanded" | "diverged" = tipIsAncestorOfTree ? "unlanded" : "diverged";
@@ -488,7 +487,7 @@ export async function repositionLensFixWorktree(
     return {
       kind,
       detail,
-      ...(backupRef ? { backupRef } : {}),
+      ...(backupRefName ? { backupRef: backupRefName } : {}),
       aheadShas,
     };
   }

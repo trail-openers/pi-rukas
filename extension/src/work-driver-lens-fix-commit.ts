@@ -4,20 +4,26 @@
  * from work-driver-lens.ts for the 500-line gate, AGENTS.md §12; re-exported
  * from work-driver-lens.ts so importers keep their existing paths).
  *
- * The `!result.committed` branch of runAdversarial and runLensFix's resend
- * path used to answer "did the lens-fix produce a fix" with `git status
- * --porcelain` — a check that can only ever observe UNCOMMITTED changes.
- * A lens-fix developer that commits its work makes the tree clean and is
- * invisible to the check: the driver parks `lens-fix-not-integrated` with
- * evidence "git status --porcelain … was empty" while the fix sits stranded
- * in the worktree on no branch (issue #745's live incident).
+ * The `!result.committed` branch of runAdversarial and runLensFix's
+ * resend path used to answer "did the lens-fix produce a fix" with
+ * `git status --porcelain` — a check that can only ever observe
+ * UNCOMMITTED changes. A lens-fix developer that commits its work (what a
+ * developer asked to fix findings ordinarily does) makes the tree clean and
+ * is invisible to the check: the driver parks `lens-fix-not-integrated`
+ * with evidence "git status --porcelain … was empty" while the fix sits
+ * stranded in the worktree on no branch (issue #745's live incident).
  *
  * The correct measurement is committed work:
  *   - `git rev-list --count <branchHead>..HEAD` in the worktree counts the
- *     commits the fixer produced beyond what the feature branch holds.
+ *     commits the fixer produced beyond what the feature branch holds —
+ *     the no-baseSha followup path never cherrypicks, so the count is the
+ *     fix.
  *   - `git diff <branchHead> HEAD --name-only` (a non-empty name-set) is
  *     the "is the content already on the branch" test: identical trees
- *     yield an empty diff, so a clean count alone is not enough.
+ *     yield an empty diff, so a clean count alone is not enough — a fix
+ *     whose content the branch already carries needs no landing, while a
+ *     fix the branch lacks must be landed or parked with evidence naming
+ *     the commit that exists and the branch that lacks it.
  *
  * Staging a followup's committed work onto the branch reuses the same
  * machinery commit-pr uses (`orchestrateCherryPick` with the cycle's
@@ -193,13 +199,14 @@ export async function landCommittedFix(
           tree,
           orch._conflict === "conflict",
         );
+        // #981 — the conflict paths lead the error so a downstream 200-char
+        // truncation (the caller's msg.slice(0, 200)) keeps the operator-
+        // actionable part: WHICH files conflict, not the restore claim.
         const causeMsg =
           orch._conflict === "conflict"
-            ? "cherry-pick conflict — the batch was aborted"
-            : `patch-apply failed for the lens-fix worktree: ${orch._applyConflict?.reason ?? "unknown"}`;
-        throw new Error(
-          `${causeMsg}. ${restoreClaim(restore, "", MANUAL_REPAIR_HINT)} The fix's commits remain in the worktree ${tree}.${evidence.note}`,
-        );
+            ? `cherry-pick conflict — the batch was aborted. ${evidence.note} ${restoreClaim(restore, "", MANUAL_REPAIR_HINT)} The fix's commits remain in the worktree ${tree}.`
+            : `patch-apply failed for the lens-fix worktree: ${orch._applyConflict?.reason ?? "unknown"}. ${restoreClaim(restore, "", MANUAL_REPAIR_HINT)} The fix's commits remain in the worktree ${tree}.${evidence.note}`;
+        throw new Error(causeMsg);
       }
       // #749 — the tree-hash dedup skip means the content is already on the
       // branch (not a failure); the caller re-reviews. A genuine no-op —

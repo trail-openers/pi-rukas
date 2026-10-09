@@ -45,14 +45,19 @@ function mkResult(overrides: Partial<DispatchResult> = {}): DispatchResult {
   };
 }
 
-function lensIssuesFoundEvent(title: string, suggestion: string): WorkflowEvent {
+// A lens-issues-found event (findings is a JSON string on the event — the
+// driver appends it to the fix prompt verbatim; an object here would
+// silently JSON-stringify a different shape downstream).
+function lensIssuesFoundEvent(title: string, description: string) {
   return {
-    kind: "lens-issues-found",
+    kind: "lens-issues-found" as const,
     at: 1_000_000,
     jobId: "stub-lens",
     round: 1,
-    verdict: "ISSUES_FOUND",
-    findings: [{ path: "feature.txt", line: 1, severity: "MEDIUM", title, suggestion }],
+    findings: JSON.stringify([
+      { lens: "SECURITY", severity: "MEDIUM", path: "feature.txt", line: 1, title, description },
+    ]),
+    verdict: "ISSUES_FOUND" as const,
   };
 }
 

@@ -13,6 +13,18 @@
  */
 import type { ExecFn } from "./worktree.ts";
 
+/**
+ * #981 — render one operator-facing conflict path safely: in a code span
+ * (the note lands in markdown — PR body, handoff, park evidence), with the
+ * literal path's backticks stripped (a backtick in the data would close the
+ * span and re-open markdown interpretation of the remainder) and CR/LF
+ * replaced with a visible marker (a newline in the path would truncate a
+ * one-line evidence string). `git ls-files -u` path data is untrusted.
+ */
+export function renderConflictPath(p: string): string {
+  return `\`${p.replace(/`/g, "").replace(/[\r\n]/g, "⏎")}\``;
+}
+
 export interface ConflictEvidence {
   /** The conflicting file paths, or empty when the read failed. */
   paths: string[];
@@ -59,6 +71,10 @@ export async function collectConflictEvidence(
   } catch {
     // Could not read unmerged paths — the error text is still useful.
   }
+  // Render each path safely for the operator-facing note (backtick / CR /
+  // LF neutralised — see renderConflictPath). The raw paths array stays
+  // unrendered for programmatic consumers.
+  const rendered = paths.map(renderConflictPath).join(", ");
 
   // The fix commit's parent — `HEAD~1` in the worktree is the parent of the
   // fix commit, i.e. the base the fixer built on. It is NOT the worktree's
@@ -91,7 +107,7 @@ export async function collectConflictEvidence(
 
   const note =
     paths.length > 0
-      ? `Conflicting paths: ${paths.join(", ")}. Fix commit's parent: ${fixParent ?? "unreadable"} | Branch tip: ${branchTip ?? "unreadable"}. Run \`git -C ${repoRoot} status\` to see the conflicted files, resolve them, commit, and re-run.`
+      ? `Conflicting paths: ${rendered}. Fix commit's parent: ${fixParent ?? "unreadable"} | Branch tip: ${branchTip ?? "unreadable"}. Run \`git -C ${repoRoot} status\` to see the conflicted files, resolve them, commit, and re-run.`
       : `Conflicting paths: (unreadable — run git ls-files -u in the repository root). Fix commit's parent: ${fixParent ?? "unreadable"} | Branch tip: ${branchTip ?? "unreadable"}. Run \`git -C ${repoRoot} status\` to see the conflicted files, resolve them, commit, and re-run.`;
 
   return { paths, fixParent, branchTip, note };

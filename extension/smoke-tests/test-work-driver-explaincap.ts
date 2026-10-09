@@ -18,7 +18,7 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-{
+function runExplainCapCanaries() {
   // (i) explainCap renders a defined (non-undefined) trigger line from
   // capEvidence for both caps. The switch is NOT compile-exhaustive, so the
   // canary is the gate: a missing case returns the fallback "step failed: ..."
@@ -55,7 +55,40 @@ function assert(cond: boolean, msg: string) {
       `explainCap(${cap}) renders the trigger evidence (${needle})`,
     );
   }
+
+  // #981 — `lens-fix-reposition` must render its SPECIFIC sentence, not the
+  // generic `step failed: …` fallback. The switch is not compile-exhaustive
+  // (new caps land in the `cap-hit` union but a missing case here silently
+  // falls to the fallback), so this is the canary for the reposition guard:
+  // without the case the line reads "step failed: lens-fix-reposition" and
+  // the operator loses the guard's explanation entirely.
+  {
+    let s981 = initialState(981, 1_000_000);
+    s981 = { ...s981, pipelineState: { ...s981.pipelineState, currentStep: "handoff" } };
+    s981 = appendEvent(s981, {
+      kind: "cap-hit",
+      at: 2,
+      cap: "lens-fix-reposition",
+      reviewRound: 2,
+      nextStep: "handoff",
+      evidence:
+        "diverged: worktree has diverged from the branch tip 01234567 — the tree holds commits the branch does not: aaa1111",
+      lensWorktreePath: "/tmp/wt-981",
+    } as Parameters<typeof appendEvent>[1]);
+    const line = explainCap("lens-fix-reposition", s981);
+    assert(
+      typeof line === "string" &&
+        line.includes("lens-fix reposition guard could not establish the correct base"),
+      "explainCap(lens-fix-reposition) renders the specific reposition sentence",
+    );
+    assert(
+      !line.startsWith("step failed:"),
+      "explainCap(lens-fix-reposition) does NOT fall to the generic 'step failed' fallback",
+    );
+  }
 }
+
+runExplainCapCanaries();
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

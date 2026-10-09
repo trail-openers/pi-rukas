@@ -18,9 +18,11 @@ import type { ExecFn } from "./worktree.ts";
  * #981 — move the worktree's current HEAD to a backup ref so unlanded /
  * divergent commits are preserved but never dispatched on. The ref is
  * namespaced per branch slug + timestamp so a later round does not clobber
- * an earlier backup. Returns the ref name, or undefined when the backup
+ * an earlier backup. Returns the ref name, or `undefined` when the backup
  * could not be created (the caller still parks — the backup is a safety
- * net, not the gate).
+ * net, not the gate), plus the git error's first line when creation failed
+ * (surfaced in the park detail — a silent backup failure left the operator
+ * no way to tell which git call died).
  */
 export async function backupLensFixTree(
   execFn: ExecFn,
@@ -28,7 +30,7 @@ export async function backupLensFixTree(
   branchName: string,
   issues: number[],
   issueTitle: string | undefined,
-): Promise<string | undefined> {
+): Promise<{ ref?: string; error?: string }> {
   const slug = branchSlug(issues, issueTitle).replace(/^feature\//, "");
   const ts = new Date().toISOString().replace(/[.:-]/g, "-").slice(0, 19);
   const ref = `refs/pi-rukas/lens-fix-backup/${slug}/${ts}`;
@@ -43,10 +45,21 @@ export async function backupLensFixTree(
     const sha = stdout.trim();
     await execFn("git", { cwd: tree, argv: ["update-ref", ref, sha] });
     trace(`lens-fix-reposition: backed up worktree to ${ref} (${sha.slice(0, 12)})`);
-    return ref;
+    return { ref };
   } catch (e) {
-    trace(`lens-fix-reposition: backup ref creation failed: ${e}`);
-    return undefined;
+    // Surface the git error's first line (≤200 chars) so the caller's park
+    // detail can name WHY the backup failed — the ref itself was never
+    // created, so only the error is carried (never a bogus ref).
+    const first = (
+      (e as Error & { stderr?: string }).stderr ??
+      (e as Error).message ??
+      "unknown error"
+    )
+      .toString()
+      .split("\n")[0];
+    const raw = (first ?? "unknown error").slice(0, 200);
+    trace(`lens-fix-reposition: backup ref creation failed: ${raw}`);
+    return { ref: undefined, error: raw };
   }
 }
 
@@ -92,7 +105,8 @@ export async function parkCherryFailedTree(
   issueTitle: string | undefined,
   tipSha: string,
 ): Promise<RepositionResult> {
-  const backupRef = await backupLensFixTree(execFn, tree, branchName, issues, issueTitle);
+  const backup = await backupLensFixTree(execFn, tree, branchName, issues, issueTitle);
+  const backupRef = backup.ref;
   const aheadShas = await enumerateUnlanded(execFn, tree, tipSha);
   let tipIsAncestorOfTree = false;
   try {
@@ -106,7 +120,7 @@ export async function parkCherryFailedTree(
     // diverged, which parks identically.
   }
   const kind: "unlanded" | "diverged" = tipIsAncestorOfTree ? "unlanded" : "diverged";
-  const detail = `git cherry could not be run against tip ${tipSha.slice(0, 12)} — treating ${aheadShas.length} ahead commit(s) as unverified: ${aheadShas.join(", ") || "(unreadable)"}`;
+  const detail = `git cherry could not be run against tip ${tipSha.slice(0, 12)} — treating ${aheadShas.length} ahead commit(s) as unverified: ${aheadShas.join(", ") || "(unreadable)"}${backup.ref === undefined && backup.error ? ` (backup ref could not be created: ${backup.error})` : ""}`;
   trace(`lens-fix-reposition: ${kind}: ${detail}`);
   return {
     kind,

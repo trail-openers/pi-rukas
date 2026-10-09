@@ -335,6 +335,10 @@ export async function runLensFix(
   // before re-flagging identical findings at escalating severity.
   const resends = countLensFixEmptyResends(state.eventLog, state.pipelineState.reviewRound);
   const fixTree = lensWorktree(ctx, state);
+  // #981 — hoisted: the round-2+ reposition gate below also needs the
+  // branch name; a single read of pipelineState keeps both call sites in
+  // step (there were two inner declarations before the gate landed).
+  const branchName = state.pipelineState.branchName;
   let next = state;
   if (resends > 0) {
     // The worktree was already established clean by the #492 inspection in
@@ -365,7 +369,6 @@ export async function runLensFix(
       );
     } else {
       // Clean tree. Check committed work before declaring "no fix".
-      const branchName = state.pipelineState.branchName;
       let committedCount: number | undefined;
       if (branchName) {
         const execFn = ctx.verifyExecFn ?? execp;
@@ -421,7 +424,6 @@ export async function runLensFix(
   // unlanded round-1 work, or a diverged tree parks the cycle (a
   // `lens-fix-reposition` cap-hit) — dispatching a fix onto any of those
   // bases would build on code the branch does not have.
-  const branchName = state.pipelineState.branchName;
   if (branchName && fixTree !== ctx.repoRoot) {
     // `tree !== ctx.repoRoot`: legacy state without worktrees falls back to
     // repoRoot; the reposition gate only makes sense for a separate worktree.

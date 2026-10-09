@@ -12,14 +12,13 @@
  */
 
 import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { mechanizedBranchSetup } from "../src/work-driver-branch-mechanized.ts";
-import { repositionLensFixWorktree } from "../src/work-driver-lens-fix-reposition-gate.ts";
 import { integrate } from "../src/work-driver-integrate.ts";
+import { repositionLensFixWorktree } from "../src/work-driver-lens-fix-reposition-gate.ts";
 import type { ExecFn } from "../src/worktree.ts";
 
 const execFileP = promisify(execFile);
@@ -152,20 +151,22 @@ const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
       commitBody: "b2",
       mode: "followup",
     });
-    assert(f2.ok && !f2.empty, `981 G: round-2 integration landed cleanly`);
+    assert(f2.ok && !f2.empty, "981 G: round-2 integration landed cleanly");
     if (f2.ok && !f2.empty) {
       assert(
         (await git(repo5, ["show", "HEAD:note.txt"])).stdout.includes("beta"),
         "981 G: round-2 content on branch tip",
       );
-      const ahead = (await git(repo5, ["rev-list", "--count", `${s5.baseSha}..HEAD`])).stdout.trim();
+      const ahead = (
+        await git(repo5, ["rev-list", "--count", `${s5.baseSha}..HEAD`])
+      ).stdout.trim();
       assert(ahead === "2", `981 G: branch has exactly r1+r2 (got ${ahead} — r1 NOT re-picked)`);
       const ref = (await git(repo5, ["symbolic-ref", "--quiet", "--short", "HEAD"])).stdout.trim();
       assert(ref === s5.branchName, `981 G: repoRoot on feature branch (got '${ref}')`);
       const dirty = (await git(repo5, ["status", "--porcelain"])).stdout
         .split("\n")
         .filter((l) => l.trim());
-      assert(dirty.length === 0, `981 G: repoRoot clean after round-2`);
+      assert(dirty.length === 0, "981 G: repoRoot clean after round-2");
     }
     // The cherry-landed move traced the SHA it moved from.
     assert(rep.fromSha === preCherrySha, "981 G: reposition result traces the moved-from SHA");
@@ -238,9 +239,11 @@ const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
       commitBody: "b2",
       mode: "followup",
     });
-    assert(f2.ok && !f2.empty, `981b: round-2 integration landed`);
+    assert(f2.ok && !f2.empty, "981b: round-2 integration landed");
     if (f2.ok && !f2.empty) {
-      const ahead = (await git(repo6, ["rev-list", "--count", `${s6.baseSha}..HEAD`])).stdout.trim();
+      const ahead = (
+        await git(repo6, ["rev-list", "--count", `${s6.baseSha}..HEAD`])
+      ).stdout.trim();
       assert(ahead === "2", `981b: branch has exactly r1+r2 (got ${ahead} — r1 dedup-skipped)`);
       const docs = (await git(repo6, ["show", "HEAD:docs.txt"])).stdout;
       assert(
@@ -303,7 +306,13 @@ const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
     await git(repoI, ["push", "-q", "origin", sI.branchName]);
 
     // Reposition should park as unlanded (r1 is NOT on the branch).
-    const repI = await repositionLensFixWorktree(realExec, wtI, sI.branchName, [981], "981 unlanded");
+    const repI = await repositionLensFixWorktree(
+      realExec,
+      wtI,
+      sI.branchName,
+      [981],
+      "981 unlanded",
+    );
     assert(
       repI.kind === "unlanded" || repI.kind === "diverged",
       `981 I: reposition guard detected unlanded work (got ${repI.kind})`,
@@ -362,7 +371,13 @@ const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
     await git(wtJ, ["checkout", "-q", "--detach", sJ.baseSha]);
 
     // Reposition should use the local tip (the descendant of origin tip).
-    const repJ = await repositionLensFixWorktree(realExec, wtJ, sJ.branchName, [981], "981 local-tip");
+    const repJ = await repositionLensFixWorktree(
+      realExec,
+      wtJ,
+      sJ.branchName,
+      [981],
+      "981 local-tip",
+    );
     assert(
       repJ.kind === "repositioned" && !repJ.landedViaCherry,
       `981 J: reposition uses the local (ahead) tip (got ${repJ.kind})`,
