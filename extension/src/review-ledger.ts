@@ -4,9 +4,9 @@
  * #912. The incident (sibling project lievo, 2026-09-27): a PM managing work
  * OUTSIDE the /work driver merged two PRs on a developer's self-report plus
  * green CI — skipping adversarial_loop and dispatch_lens_review. Prompt
- * doctrine demanded both; the prompt layer is what failed. This module is the
- * structural floor: a per-clone ledger that the merge guard
- * (merge-guard.ts) reads before any agent-run PR/MR merge.
+ * doctrine demanded both; the prompt layer is what failed. This module is
+ * the structural floor: a per-clone ledger the merge guard (merge-guard.ts)
+ * reads before any agent-run PR/MR merge.
  *
  * ## What is stored
  *
@@ -59,17 +59,20 @@ export interface LedgerEntry {
   at: number;
   /** One line of what the review concluded, for the operator's audit. */
   detail?: string;
-  /** #973 — the branch-scoped round number (previous latest + 1; legacy
-   * without `round` counts as 1). Lives on the entry because the per-(branch,
-   * kind) dedupe keeps only ONE lens row per branch. */
+  /** #973 — lens entries only: the branch-scoped round (previous latest + 1;
+   * a legacy entry without `round` counts as 1). Stored on the entry because
+   * the per-(branch, kind) dedupe below keeps only ONE lens row per branch. */
   round?: number;
-  /** #973 — whether the reviewed verdict carried a CRITICAL finding. The
-   * round-cap rule requires `hasCritical === false`; legacy entries without
-   * the field cannot satisfy it (conservative refusal). */
+  /** #973 — lens entries only: whether the reviewed verdict carried a CRITICAL
+   * finding. The round-cap rule (merge-guard-round-cap.ts) requires
+   * `hasCritical === false`; a legacy entry without the field cannot satisfy
+   * it (conservative refusal). */
   hasCritical?: boolean;
-  /** #973 — lens/adversarial entries: the commit hash reviewed (40-char
-   * SHA; a non-SHA value is treated as malformed by the guard and the
-   * auto-delta base). */
+  /** #973 — lens entries only: the commit hash reviewed — always a resolved
+   * 40-char SHA (#1039; a non-SHA value is treated as malformed). Consumers:
+   * the delta-review auto-base (follow-up `since` defaults to the latest
+   * lens entry's `headSha` when it is an ancestor of HEAD) and the disclosure
+   * marker's provenance. */
   headSha?: string;
 }
 
@@ -78,7 +81,6 @@ interface LedgerFile {
 }
 
 export type LedgerExecFn = VerifyExecFn;
-
 /**
  * #955 file-size split: `ledgerPathFor` (and its one-time override trace)
  * live in review-ledger-path.ts; the re-export below keeps importers
@@ -447,7 +449,6 @@ export function validEntries(entries: unknown[]): LedgerEntry[] {
 export function isFullCommitSha(value: string): boolean {
   return /^[0-9a-f]{40}$/.test(value);
 }
-
 /** One line, for the trace: a never-throwing JSON stringify. */
 function safeJson(v: unknown): string {
   try {
