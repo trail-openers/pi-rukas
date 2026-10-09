@@ -21,10 +21,26 @@
 # #827 (echo of failing `✗` lines after the summary): why this exists and why
 # the 3×200 bound is sized the way it is is commented at the echo loop below.
 #
-# Usage: verify-loop.sh <file> [<file> ...]
-#   The caller expands the glob; the script receives the file list.
-#   Live tests (suffix -live.ts) are skipped, matching the legacy
-#   `case "$t" in *-live.ts) continue;; esac` exclusion.
+# Usage:
+#   verify-loop.sh <file> [<file> ...]           — normal mode
+#   verify-loop.sh --digest <file> [<file> ...] — #1028 digest mode
+#
+# Normal mode: runs every test once, prints each test's full output plus a
+# per-failure `FAILED: <file>` marker and a final summary line.
+#
+# Digest mode (--digest): prints ONLY the failure detail — per-failure
+# markers, each failing test's ✗ lines with their indented detail lines, and
+# the summary marker. No ✓ lines, no passing tests' output. Exit codes are
+# identical to normal mode (0 all-pass, 1 any failure, 2 usage error), so the
+# gate can switch call sites to --digest without a separate exit-code path.
+# The #827 echo of the first 3 ✗ lines (truncated to 200 chars) does NOT
+# apply in digest mode — the digest prints EVERY ✗ line and its indented
+# detail, because the 3×200 bound was sized for the 800-char
+# extractAttributedTail window, not for a full digest.
+#
+# The caller expands the glob; the script receives the file list.
+# Live tests (suffix -live.ts) are skipped in both modes, matching the legacy
+# `case "$t" in *-live.ts) continue;; esac` exclusion.
 
 set -u
 
@@ -201,8 +217,16 @@ if ! command -v pgrep >/dev/null 2>&1; then
   echo "warn: verify-loop: pgrep not found — on timeout only the top-level test process will be killed (descendants may be orphaned)" >&2
 fi
 
+# --- #1028 — parse --digest flag (must come before the usage check so that
+# a bare `--digest` with no files is still a usage error).
+DIGEST=0
+if [ "$#" -gt 0 ] && [ "$1" = "--digest" ]; then
+  DIGEST=1
+  shift
+fi
+
 if [ "$#" -eq 0 ]; then
-  echo "usage: verify-loop.sh <file> ..." >&2
+  echo "usage: verify-loop.sh [--digest] <file> ..." >&2
   exit 2
 fi
 
@@ -219,18 +243,22 @@ for t in "$@"; do
   run_test_with_timeout "$VERIFY_TEST_TIMEOUT_S" "$t"
   rc=$?
   if [ "$rc" -eq 0 ]; then
-    cat "$CAPTURE"
+    if [ "$DIGEST" -eq 0 ]; then
+      cat "$CAPTURE"
+    fi
   else
     names+=("$t")
-    if [ "$rc" -eq 214 ]; then
-      echo "FAILED: $t (timed out after ${VERIFY_TEST_TIMEOUT_S}s)"
-      cat "$CAPTURE"
-    else
-      echo "FAILED: $t"
+    if [ "$DIGEST" -eq 0 ]; then
+      if [ "$rc" -eq 214 ]; then
+        echo "FAILED: $t (timed out after ${VERIFY_TEST_TIMEOUT_S}s)"
+      else
+        echo "FAILED: $t"
+      fi
       cat "$CAPTURE"
     fi
     # #827 — keep this test's capture so its `✗` lines can be repeated
-    # after the summary (below); removed on exit like $CAPTURE.
+    # after the summary (below); removed on exit like $CAPTURE. Also used
+    # by #1028 digest mode to emit ✗ lines + indented detail.
     capfile="$(mktemp "${TMPDIR:-/tmp}/verify-loop.XXXXXX")" || exit 2
     if ! cp "$CAPTURE" "$capfile"; then
       # Capture failed — degrade gracefully: the test has already failed and
@@ -267,6 +295,39 @@ if [ "${#names[@]}" -gt 0 ]; then
     summary="$summary$sep$name"
     emitted=$((emitted + 1))
   done
+
+  if [ "$DIGEST" -eq 1 ]; then
+    # #1028 — digest mode: emit per-failure markers, every ✗ line with its
+    # indented detail, then the summary. The 3×200 bound from normal mode's
+    # #827 echo does NOT apply here — the digest is the full failure detail.
+    for i in "${!names[@]}"; do
+      echo "FAILED: ${names[$i]}"
+      capfile="${_extra_captures[$i]:-}"
+      if [ -n "$capfile" ] && [ -f "$capfile" ]; then
+        in_block=0
+        while IFS= read -r line; do
+          if [[ "$line" == "✗ "* ]]; then
+            echo "$line"
+            in_block=1
+            continue
+          fi
+          if [ "$in_block" -eq 1 ]; then
+            # Indented detail lines belong to the most recent ✗ block.
+            if [[ "$line" =~ ^[[:space:]]+ ]]; then
+              echo "$line"
+              continue
+            else
+              in_block=0
+            fi
+          fi
+          # Everything else (✓ lines, noise, passing output) is dropped.
+        done < "$capfile"
+      fi
+    done
+    echo "$summary"
+    exit 1
+  fi
+
   echo "$summary"
   # #827 — repeat each failing test's `✗` lines AFTER the summary. WHY: the
   # driver's marker-anchored tail window (extractAttributedTail in
