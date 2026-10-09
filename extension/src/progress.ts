@@ -350,6 +350,30 @@ export function ingestEvent(
   // streak counter cannot see — message_end fires BEFORE the tool runs,
   // so the success-keyed counter needs the actual result.
   if (msg && msg.role === "toolResult") {
+    // #1032 — a toolResult message can carry the SUMMED usage of the
+    // nested (codemode) tool calls the parent call executed (Pi's
+    // `combineUsage` stamps it onto the parent's toolResult message — the
+    // only place that spend is recorded, since the nested calls never
+    // surface as their own assistant turns). Add it to the running
+    // totals BEFORE the early return below, so the live path (this) and
+    // the replay path (collapseEvents) agree — both now sum assistant
+    // usage + toolResult usage, exactly once each. `turns` is deliberately
+    // NOT incremented: a toolResult is not an assistant turn, and the
+    // token-budget quantity (`totalTokens`) is separate from turn
+    // accounting (see `collapseEvents`'s same invariant).
+    if (msg.usage) {
+      state.usage.input += msg.usage.input ?? 0;
+      state.usage.output += msg.usage.output ?? 0;
+      state.usage.cacheRead += msg.usage.cacheRead ?? 0;
+      state.usage.cacheWrite += msg.usage.cacheWrite ?? 0;
+      state.usage.cost += msg.usage.cost?.total ?? 0;
+      state.usage.turns = state.turns;
+      state.totalTokens +=
+        (msg.usage.input ?? 0) +
+        (msg.usage.output ?? 0) +
+        (msg.usage.cacheRead ?? 0) +
+        (msg.usage.cacheWrite ?? 0);
+    }
     if (toolResultObserver) {
       const tr = toolResultFields(msg);
       toolResultObserver(tr.toolName, tr.toolCallId, tr.resultText, tr.isError);

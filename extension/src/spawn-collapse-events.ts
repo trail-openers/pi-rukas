@@ -27,6 +27,11 @@ export function collapseEvents(
   if (messages.length === 0 && lastAssistantMessageEnd?.message) {
     messages = [lastAssistantMessageEnd.message];
   }
+  // #1032 — toolResult usage summation (below) requires the full message
+  // list; the assistant-only fallback above cannot carry a toolResult, so it
+  // contributes nothing here (an assistant message_end carries no nested
+  // codemode usage — that only ever lands on the parent toolResult message,
+  // which is only present in a full agent_end transcript).
 
   const textParts: string[] = [];
   const toolUses: PiContentBlock[] = [];
@@ -37,6 +42,29 @@ export function collapseEvents(
   let api: string | undefined;
   let hasThinking = false;
   let hasText = false;
+
+  // #1032 — Pi stamps the SUMMED usage of every nested (codemode) tool call
+  // onto the model-issued call's OWN toolResult message (agent-session
+  // `combineUsage`; see `NestedCallSummary.usage` in pi's
+  // `nested-tool-calls.d.ts`). Those nested calls are NOT visible as
+  // assistant turns in this transcript — the parent's assistant `message_end`
+  // only carries the model call that ISSUED the codemode script, not the
+  // nested calls it executed — so the toolResult message's `usage` field is
+  // the only record of that spend. We add it here, separately from the
+  // assistant-message loop below, so:
+  //   - a toolResult with no `usage` (an empty or errored codemode call)
+  //     contributes 0, and
+  //   - the same field is never also re-counted from any other message, so
+  //     the total is assistant usage + toolResult usage, exactly once each.
+  for (const msg of messages) {
+    if (msg.role !== "toolResult") continue;
+    if (!msg.usage) continue;
+    usage.input += msg.usage.input ?? 0;
+    usage.output += msg.usage.output ?? 0;
+    usage.cacheRead += msg.usage.cacheRead ?? 0;
+    usage.cacheWrite += msg.usage.cacheWrite ?? 0;
+    usage.cost += msg.usage.cost?.total ?? 0;
+  }
 
   for (const msg of messages) {
     if (msg.role !== "assistant") continue;
