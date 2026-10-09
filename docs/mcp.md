@@ -4,8 +4,10 @@ Pi 1.0.0 ships **native MCP** as a built-in extension. There is no bridge
 extension to install or forward to subagents — Pi reads `mcp.json`
 directly. pi-rukas's job is to gate access per role and to make sure the
 subagent spawn path keeps native MCP enabled (see
-`extension/src/spawn-support.ts` `CHILD_ARGS_BASE`, which passes
-`--no-extensions -e builtin:mcp`).
+`extension/src/spawn-support.ts` `childArgsBase()`, which passes
+`--no-extensions -e builtin:mcp` — and, unless `PI_ENSEMBLE_CHILD_CODEMODE=0`,
+`-e builtin:codemode`, which the child-guards companion activates on
+`session_start` via `child-codemode.ts`, issue #1030).
 
 Two independent layers are at play:
 
@@ -188,17 +190,18 @@ longest prefix wildcard → catch-all `"*"`. So
 - Read-only guarantees for database access must come from the MCP server's
   own credentials (restricted DB user, read-only role). pi-rukas gates *who
   can call the tool*, not *what the tool can do*.
-- Subagents are spawned with `--no-extensions -e builtin:mcp`, so
-  pi-rukas's permission interceptor does NOT run inside them (the
-  `--no-extensions` flag suppresses user-installed extensions, including
-  the pi-rukas guard itself). Only role prompts constrain MCP use in a
-  child. If you don't want a role calling MCP, omit the grant from the
+- Subagents are spawned with `--no-extensions -e builtin:mcp` (plus
+  `-e builtin:codemode` unless `PI_ENSEMBLE_CHILD_CODEMODE=0`, issue #1030),
+  so pi-rukas's permission interceptor does NOT run inside them in trust
+  mode (the `--no-extensions` flag suppresses user-installed extensions,
+  including the pi-rukas guard itself). Only role prompts constrain MCP use
+  in a child. If you don't want a role calling MCP, omit the grant from the
   role's prompt doctrine and from any project/global overlay; the subagent
   simply won't have a reason to call it.
 - `PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD=1` opts out of auto-forwarding
   user-installed extensions entirely (subagents inherit nothing — disables
   pi-claude-auth, etc.). It does NOT disable native MCP: the `-e
-  builtin:mcp` flag in `CHILD_ARGS_BASE` is independent of this env var,
+  builtin:mcp` flag in `childArgsBase()` is independent of this env var,
   because MCP is no longer an extension but a built-in. `PI_ENSEMBLE_USER_EXTENSION`
   is likewise independent.
 - **An installed extension that registers `/mcp` (e.g. a lingering

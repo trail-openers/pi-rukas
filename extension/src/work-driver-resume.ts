@@ -137,7 +137,7 @@ export function resolveReattach(
 /**
  * The child arg suffix for a re-attach spawn: `--session <transcriptPath>`.
  *
- * `--mode rpc` is already on every child (CHILD_ARGS_BASE), so a re-attach is
+ * `--mode rpc` is already on every child (childArgsBase()), so a re-attach is
  * the same spawn with the SAME `--session` path (Pi resumes the existing
  * session file) instead of a fresh transcript path. Exported as a pure
  * function so the offline test asserts the args array without spawning.

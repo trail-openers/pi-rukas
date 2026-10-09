@@ -11,6 +11,7 @@
 import os from "node:os";
 import path from "node:path";
 import type { Writable } from "node:stream";
+import { childCodemodeEnabled } from "./child-codemode.ts";
 import { childGuardsArgs } from "./child-guards.ts";
 import type { ResolvedModelChoice } from "./models.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
@@ -225,10 +226,7 @@ export function reconcileObservedCounts(
   }
 }
 
-/** Injection point a test should have used, per role. */ const INJECTION_NAMES: Record<
-  string,
-  string
-> = {
+const INJECTION_NAMES: Record<string, string> = {
   "code-review-specialist": "lensReviewFn",
   "adversarial-developer": "adversarialLoopFn",
 };
@@ -254,7 +252,8 @@ export function assertLiveSpawnAllowed(role: string): void {
 }
 
 /**
- * Base argv for every spawned subagent.
+ * Base argv for every spawned subagent. Computed at call time (not a module
+ * constant) because the codemode flag depends on environment.
  *
  * `--no-extensions` suppresses auto-discovery of installed extensions in the
  * child — the load-bearing part of the child-guards isolation story. Under
@@ -262,10 +261,17 @@ export function assertLiveSpawnAllowed(role: string): void {
  * issue #959); so we re-enable just the MCP built-in with `-e builtin:mcp`
  * immediately after it (argument order is load-bearing — the `-ne` short
  * alias would swallow it otherwise). No other built-in is re-enabled
- * (codemode, tool_search); `autoEnableCodemode: false` in mcp.json is the
- * additional guard (docs/mcp.md).
+ * (tool_search); `autoEnableCodemode: false` in mcp.json is the additional
+ * guard (docs/mcp.md). The codemode exception: unless
+ * `PI_ENSEMBLE_CHILD_CODEMODE=0`, `childArgsBase` also appends
+ * `-e builtin:codemode` (below), and the child-guards companion then
+ * activates it on session_start (child-codemode.ts, issue #1030).
  */
-const CHILD_ARGS_BASE = ["--mode", "rpc", "--no-extensions", "-e", "builtin:mcp"] as const;
+function childArgsBase(): string[] {
+  const args = ["--mode", "rpc", "--no-extensions", "-e", "builtin:mcp"];
+  if (childCodemodeEnabled()) args.push("-e", "builtin:codemode");
+  return args;
+}
 
 /**
  * Build the complete child argument list for spawning a subagent Pi process.
@@ -293,13 +299,16 @@ export function buildChildArgs(
   subagentGuardEnabled: boolean,
   extraArgs?: string[],
 ): string[] {
-  const args: string[] = [...CHILD_ARGS_BASE];
+  const args: string[] = childArgsBase();
   // `--mode rpc` keeps stdin open for JSON command injection
   // ({type:"prompt"|"steer"|"abort"|"follow_up"}); this is the foundation
   // for dispatch_steer (#152) and all async push-callback flows.
-  // CHILD_ARGS_BASE also carries `-e builtin:mcp` (see its comment above),
+  // childArgsBase() also carries `-e builtin:mcp` (see its comment above),
   // so the child's toolset includes the mcp__<server>__<tool> tools the
   // permission overlay in agents.json grants per role (issue #959).
+  // Additionally, unless PI_ENSEMBLE_CHILD_CODEMODE=0, childArgsBase()
+  // appends `-e builtin:codemode`, and child-guards then activates codemode
+  // on session_start via child-codemode.ts (issue #1030).
   args.push("--session", transcriptPath);
   // #926 — the child-guards companion is appended in EVERY mode, independent
   // of subagentGuardEnabled (so PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD does not

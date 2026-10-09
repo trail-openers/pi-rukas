@@ -122,7 +122,7 @@ export function siteCensus(verifiedV: string): Record<string, string[]> {
     // MCP") + the fixture "@earendil-works/pi-coding-agent@1.0.0" pin.
     "test-dockerfile-pins.ts": ["1.0.0"],
     // The --exclude-tools rationale (0.83.0, detected unconditionally); the
-    // "Under Pi 1.0.0's semantics" CHILD_ARGS_BASE doc comment is 23 chars
+    // "Under Pi 1.0.0's semantics" childArgsBase() doc comment is 23 chars
     // past the Pi marker, so the 1.0.0 there is prose, not a detected claim.
     "spawn-support.ts": ["0.83.0"],
     // The pi-mcp-adapter-skip doc comment ("On Pi 1.0.0, an installed

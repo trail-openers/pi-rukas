@@ -9,7 +9,7 @@
  *
  * Note: this module deliberately does NOT read mcp.json or interact with
  * Pi's native MCP subsystem. Children get MCP through the `-e builtin:mcp`
- * flag (see spawn-support.ts CHILD_ARGS_BASE) — no extension forwarding
+ * flag (see spawn-support.ts childArgsBase()) — no extension forwarding
  * needed. That is why discoverInstalledExtensions skips pi-mcp-adapter:
  * the adapter is the legacy bridge that would conflict with the built-in.
  */
@@ -44,7 +44,7 @@ const PI_ENSEMBLE_PACKAGE_NAME = "@trail-openers/pi-rukas";
 // Pi 1.0.0, an installed extension that registers /mcp REPLACES the built-in
 // MCP subsystem for the whole session (docs/mcp.md: "Pi then does not read
 // mcp.json or connect its servers in a session"). Because the built-in MCP
-// is what pi-rukas now uses (see spawn-support.ts CHILD_ARGS_BASE), the
+// is what pi-rukas now uses (see spawn-support.ts childArgsBase()), the
 // adapter is not only obsolete — it actively BREAKS native MCP. So
 // discoverInstalledExtensions must skip it in every case (issue #959), even
 // if a host has not yet re-run install.sh and the adapter lingers in
