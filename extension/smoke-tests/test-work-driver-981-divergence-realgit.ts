@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { mechanizedBranchSetup } from "../src/work-driver-branch-mechanized.ts";
-import { repositionLensFixWorktree } from "../src/work-driver-lens-fix-commit.ts";
+import { repositionLensFixWorktree } from "../src/work-driver-lens-fix-reposition-gate.ts";
 import { integrate } from "../src/work-driver-integrate.ts";
 import type { ExecFn } from "../src/worktree.ts";
 
@@ -106,8 +106,8 @@ const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
     assert(r2Sha.length === 40, "981 G: round-2 commit captured");
 
     // Reposition fails (worktree diverged from branch tip).
-    const rep = await repositionLensFixWorktree(realExec, wt5, s5.branchName);
-    assert(rep === false, "981 G: reposition fails best-effort (diverged worktree)");
+    const rep = await repositionLensFixWorktree(realExec, wt5, s5.branchName, [981], "981 round-2");
+    assert(rep.kind === "diverged" || rep.kind === "unlanded", `981 G: reposition guard detected unsafe state (${rep.kind})`);
 
     // Round-2 integration: dedup skips round-1, lands only round-2.
     const f2 = await integrate(realExec, {

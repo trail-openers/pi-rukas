@@ -1,12 +1,13 @@
 #!/usr/bin/env bun
 // #981 task-b — repositionLensFixWorktree: the fix dispatch moves the lens-fix
-// worktree to the branch tip (fetch-first; best-effort, fails on divergence).
+// worktree to the branch tip. The guard returns a discriminated union; only
+// `already-at-tip` and `repositioned` are safe to dispatch on.
 import { exec } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { repositionLensFixWorktree } from "../src/work-driver-lens-fix-commit.ts";
+import { repositionLensFixWorktree } from "../src/work-driver-lens-fix-reposition-gate.ts";
 
 const execp = promisify(exec);
 
@@ -49,15 +50,23 @@ function assert(cond: boolean, msg: string) {
       execp(cmd, { cwd: o?.cwd ?? root, shell: "/bin/bash" }) as Promise<{ stdout: string }>;
 
     // Case 1: the worktree is at the branch tip (the common case — the
-    // fixer started from the tip). The reposition is a no-op fast-forward.
-    const r1 = await repositionLensFixWorktree(repositionExec, wt, "feature/lens-repos");
-    assert(r1 === true, "981 reposition: a worktree at the branch tip repositions (no-op ff)");
+    // fixer started from the tip). The reposition returns already-at-tip.
+    const r1 = await repositionLensFixWorktree(
+      repositionExec,
+      wt,
+      "feature/lens-repos",
+      [981],
+      "reposition test",
+    );
+    assert(
+      r1.kind === "already-at-tip",
+      `981 reposition: a worktree at the branch tip is already-at-tip (got ${r1.kind})`,
+    );
 
     // Case 2: the worktree has DIVERGED from the branch tip (the fixer
     // committed work on a different base than the branch, AND the branch
-    // tip advanced via a commit in repoRoot). The worktree and the branch
-    // have diverged (both are 1 commit ahead of baseSha but different
-    // commits), so the reposition correctly fails.
+    // tip advanced via a commit in repoRoot). The guard returns diverged
+    // and the worktree is backed up.
     await execp(`git checkout -q --detach ${JSON.stringify(baseSha)}`, { cwd: wt });
     writeFileSync(path.join(wt, "c.txt"), "three\n");
     await execp("git add . && git commit -q -m 'fixer work'", { cwd: wt, shell: "/bin/bash" });
@@ -65,28 +74,43 @@ function assert(cond: boolean, msg: string) {
     // "fixer work" commit).
     writeFileSync(path.join(root, "b.txt"), "two\nbr advance\n");
     await execp("git add . && git commit -q -m 'br advance'", { cwd: root, shell: "/bin/bash" });
-    const r2 = await repositionLensFixWorktree(repositionExec, wt, "feature/lens-repos");
-    // The worktree has diverged from the branch tip — the reposition
-    // correctly fails (a diverged worktree cannot be fast-forwarded).
-    assert(
-      r2 === false,
-      "981 reposition: a diverged worktree fails to reposition (cannot ff across divergence)",
+    await execp("git push -q origin feature/lens-repos", { cwd: root });
+    const r2 = await repositionLensFixWorktree(
+      repositionExec,
+      wt,
+      "feature/lens-repos",
+      [981],
+      "reposition test",
     );
+    assert(
+      r2.kind === "diverged",
+      `981 reposition: a diverged worktree returns diverged (got ${r2.kind})`,
+    );
+    assert(
+      r2.kind === "diverged" && r2.backupRef !== undefined,
+      "981 reposition: a diverged worktree has a backup ref",
+    );
+    // The worktree's fixer work is still at HEAD (not destroyed).
     const wtLog = (await execp("git log --oneline -1", { cwd: wt })).stdout.trim();
     assert(
       wtLog.includes("fixer work"),
-      "981 reposition: the worktree's fixer work is unchanged after the failed reposition",
+      "981 reposition: the worktree's fixer work is unchanged after the diverged guard",
     );
 
     // Case 3: the worktree is at the old base (the branch has advanced via
-    // a prior lens-fix round integration and been pushed). The reposition
-    // fetches the current remote tip and fast-forwards the worktree to it.
+    // a prior lens-fix round integration and been pushed). The guard
+    // fast-forwards the worktree to the current remote tip.
     await execp(`git checkout -q --detach ${JSON.stringify(baseSha)}`, { cwd: wt });
-    await execp("git push -q -u origin feature/lens-repos", { cwd: root });
-    const r3 = await repositionLensFixWorktree(repositionExec, wt, "feature/lens-repos");
+    const r3 = await repositionLensFixWorktree(
+      repositionExec,
+      wt,
+      "feature/lens-repos",
+      [981],
+      "reposition test",
+    );
     assert(
-      r3 === true,
-      "981 reposition: a worktree at the old base repositions to the advanced branch tip (ff)",
+      r3.kind === "repositioned",
+      `981 reposition: a worktree at the old base repositions to the advanced branch tip (got ${r3.kind})`,
     );
     const wtHeadAfter = (await execp("git rev-parse HEAD", { cwd: wt })).stdout.trim();
     const branchTip = (await execp("git rev-parse feature/lens-repos", { cwd: root })).stdout.trim();
@@ -98,6 +122,27 @@ function assert(cond: boolean, msg: string) {
     assert(
       wtB.includes("br advance"),
       "981 reposition: the worktree sees the branch's new content",
+    );
+
+    // Case 4: dirty worktree — the guard returns dirty without moving.
+    await execp("git checkout -q --detach", { cwd: wt });
+    writeFileSync(path.join(wt, "dirty.txt"), "dirty\n");
+    const r4 = await repositionLensFixWorktree(
+      repositionExec,
+      wt,
+      "feature/lens-repos",
+      [981],
+      "reposition test",
+    );
+    assert(
+      r4.kind === "dirty",
+      `981 reposition: a dirty worktree returns dirty (got ${r4.kind})`,
+    );
+    // The worktree HEAD is unchanged (still at where case 3 left it).
+    const wtHeadDirty = (await execp("git rev-parse HEAD", { cwd: wt })).stdout.trim();
+    assert(
+      wtHeadDirty === branchTip,
+      "981 reposition: a dirty worktree is not moved",
     );
 
     console.log("✓ 981 reposition test passed");

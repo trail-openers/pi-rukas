@@ -56,6 +56,29 @@ export function explainLens(cap: Cap, state: WorkState): string {
           : `the repoRoot condition was not recorded (this cycle predates #797) — run \`git status\` in the repository root before re-running; a dirty root will abort the next cycle's branch step.`;
       return `the lens-fix round did not reach the branch — ${cause}. ${where} ${rootCondition} The cycle halted rather than reviewing again, because the next round would have re-read an unchanged branch and re-reported the identical findings until the round cap fired, which is what burned whole review budgets on already-solved defects. If the fix is still on disk, commit and push it there and re-run; if nothing exists, the findings were likely false positives and should be adjudicated before re-running`;
     }
+    case "lens-fix-reposition": {
+      // #981 — the round-2 reposition guard refused to dispatch the fixer
+      // onto a base it could not verify: a dirty worktree, round-1 work that
+      // never landed on the branch, or a worktree that diverged from the
+      // branch tip. The kind + git detail ride on the cap's evidence; a
+      // backup ref (unlanded / diverged) rides on `restoredToRef`.
+      const hit = [...state.eventLog]
+        .reverse()
+        .find(
+          (e): e is Extract<WorkEvent, { kind: "cap-hit" }> =>
+            e.kind === "cap-hit" && e.cap === "lens-fix-reposition",
+        );
+      const worktree = hit?.lensWorktreePath ?? state.pipelineState.worktrees?.default;
+      const cause = hit?.evidence ?? "(no detail recorded)";
+      const where = worktree
+        ? `The worktree inspected was \`${worktree}\` (\`git -C ${worktree} status\`).`
+        : "The inspected worktree path was not recorded.";
+      const ref = hit?.restoredToRef;
+      const backup = ref
+        ? ` The divergent/unlanded work is preserved at ref \`${ref}\` (\`git show ${ref}\`) — nothing was discarded.`
+        : "";
+      return `the lens-fix reposition guard could not establish the correct base for the next round: ${cause}. ${where}${backup} The cycle halted rather than dispatching a fix onto a stale or diverged worktree, because a fix built there would not integrate cleanly (the #978 shape: round 2 built on the old base while the branch advanced by round 1). Inspect the worktree and the evidence above — commit or clean uncommitted work, land the missing commit on the branch, or restore from the backup ref — then re-run the cycle`;
+    }
     default:
       return `unhandled lens cap: ${cap}`;
   }

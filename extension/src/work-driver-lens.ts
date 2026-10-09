@@ -20,11 +20,15 @@ import {
   countCommittedAhead,
   countLensFixEmptyResends,
   noDiffEvidence,
-  repositionLensFixWorktree,
 } from "./work-driver-lens-fix-commit.ts";
+import {
+  type RepositionResult,
+  repositionLensFixWorktree,
+} from "./work-driver-lens-fix-reposition-gate.ts";
 // Re-export: moved into work-driver-lens-fix-commit.ts for the 500-line gate
 // (AGENTS.md §12) — importers (work-driver-adversarial.ts) keep their path.
 export { commitLensFixChanges, countLensFixEmptyResends } from "./work-driver-lens-fix-commit.ts";
+import { parkLensFixReposition } from "./work-driver-lens-fix-reposition-park.ts";
 import { applyLensVerdict } from "./work-driver-lens-verdicts.ts";
 import { parsePrNumber, runSingleDispatch } from "./work-driver-merged.ts";
 import { DOCTRINE_FILES, type DoctrineDoc, judgePolicy } from "./work-driver-policy.ts";
@@ -314,6 +318,7 @@ export async function runLens(
 
   return next;
 }
+
 export async function runLensFix(
   ctx: DriverContext,
   state: WorkState,
@@ -404,15 +409,19 @@ export async function runLensFix(
       ].join("\n")
     : inlineLensFixPrompt(findings, scratchDir(ctx.repoRoot, ctx.issue));
 
-  // #981 (task-a) — reposition the lens-fix worktree to the branch's
-  // current tip before the fix dispatch. The worktree was created at
-  // the branch's HEAD when the cycle started, but the branch may have
-  // advanced since (the developer committed, or a previous lens-fix
-  // round cherry-picked a fix). Without repositioning, the fixer sees
-  // a stale snapshot and the cherry-pick during integration conflicts
-  // on lines the fixer has not seen. The reposition is best-effort:
-  // a failure does not block the dispatch, it just means the fixer
-  // may see a stale base.
+  // #981 (task-b) — reposition the lens-fix worktree to the branch's
+  // current tip BEFORE the fix dispatch. The worktree was created at the
+  // branch's HEAD when the cycle started, but the branch may have advanced
+  // since (a previous lens-fix round cherry-picked a fix). Without
+  // repositioning, a round-2+ fixer sees a stale snapshot and produces a
+  // divergent fix that does not integrate cleanly (the #978 shape).
+  //
+  // Unlike task-a's best-effort reposition, this guard is a GATE: the
+  // fixer is dispatched ONLY when the worktree is verified at the branch
+  // tip (`already-at-tip` / `repositioned`). A dirty tree, a tree holding
+  // unlanded round-1 work, or a diverged tree parks the cycle (a
+  // `lens-fix-reposition` cap-hit) — dispatching a fix onto any of those
+  // bases would build on code the branch does not have.
   const tree = lensWorktree(ctx, state);
   const branchName = state.pipelineState.branchName;
   if (branchName && tree !== ctx.repoRoot) {
@@ -424,11 +433,15 @@ export async function runLensFix(
             err ? reject(Object.assign(err, { stderr })) : resolve({ stdout, stderr }),
           ),
         ));
-    const repositioned = await repositionLensFixWorktree(execFn, tree, branchName);
-    if (!repositioned) {
+    const rep = await repositionLensFixWorktree(execFn, tree, branchName, [ctx.issue], undefined);
+    if (rep.kind === "already-at-tip" || rep.kind === "repositioned") {
       trace(
-        `work-driver: lens-fix reposition failed for ${tree} (branch ${branchName}) — proceeding with the worktree as-is`,
+        `work-driver: lens-fix reposition ${rep.kind} for ${tree} (branch ${branchName}) — dispatching fixer onto the verified tip`,
       );
+    } else {
+      // Park: the base is not trustworthy. Build the cap-hit (routed to
+      // `handoff` by nextStep) and return WITHOUT dispatching the fixer.
+      return parkLensFixReposition(ctx, state, now, tree, rep);
     }
   }
 
