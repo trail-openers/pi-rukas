@@ -54,9 +54,14 @@
  */
 
 import { sanitizeForStorage, sanitizeText } from "./dispatch-deck-line.ts";
+import { trimToBound } from "./dispatch-deck-live-feed.ts";
 import { clearViewScroll } from "./dispatch-deck-live-view-component.ts";
-import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { trace } from "./trace.ts";
+
+// #1032 — the feed path (feedRawEvent / pushEvent) moved to
+// dispatch-deck-live-feed.ts when this file hit the 500-line cap; the
+// re-exports below keep the existing import paths working unchanged.
+export { feedRawEvent, pushEvent } from "./dispatch-deck-live-feed.ts";
 
 /**
  * The live-view theme — the component receives it from the caller
@@ -144,12 +149,13 @@ const entryCleared = new Set<string>();
 /** Append subscribers per key (#916: the overlay re-renders on feed). */
 const appendSubscribers = new Map<string, Set<() => void>>();
 
-/** Running stored size per buffer (key → sum of eventSize), kept in sync
- *  on push/evict so trimToBound never re-sums the buffer. */
-const bufferSizes = new Map<string, number>();
+// Exported (not private): dispatch-deck-live-feed.ts mutates the running
+// total on push/evict so trimToBound never re-sums the buffer.
+export const bufferSizes = new Map<string, number>();
 
-/** The raw stored size of one event, in characters of the stored text. */
-function eventSize(ev: LiveEvent): number {
+/** The raw stored size of one event, in characters of the stored text.
+ *  Exported for the feed module (same file split, #1032). */
+export function eventSize(ev: LiveEvent): number {
   switch (ev.kind) {
     case "text":
       return ev.text.length;
@@ -172,13 +178,24 @@ export function getBuffer(key: string): LiveEvent[] {
 }
 
 /**
- * #915 — record an operator steer from the agent view's input line as an
- * `operatorSteer` event, rendered as `you → <label>: <text>`. Label is
- * sanitised (flows from untrusted child output). Steer text is UNTRUNCATED
- * (operator input, exempt from child-truncation) but newlines collapsed to
- * ` ⏎ ` so it renders as one wrapped logical line. The push goes through
- * the SAME bound as feedRawEvent and triggers the SAME append subscribers.
- * A key with no buffer is a no-op.
+ * #915 — record an operator steer sent from the agent view's input line
+ * as an `operatorSteer` event, so the view's transcript shows
+ * `you → <label>: <text>` in order with the child's own events.
+ *
+ * The label is taken at call time (the deck entry's label while the job is
+ * running; the caller passes a fallback for a settled job) and is sanitised
+ * here — labels flow from untrusted child output, and the rendered line
+ * must never desync the overlay. The steer text is stored UNTRUNCATED
+ * (the echo is operator input, exempt from the child-truncation limits —
+ * only the per-job byte bound applies) but with newlines collapsed to the
+ * ` ⏎ ` separator, so the echo renders as one wrapped logical line like
+ * every other text event. Sanitisation is idempotent.
+ *
+ * The push goes through the SAME bound as feedRawEvent (LIVE_BUFFER_MAX_CHARS
+ * — `trimToBound` evicts oldest-first) and triggers the SAME append
+ * subscribers (`onBufferAppend`), so the open view re-renders immediately.
+ * A key with no buffer (view closed, job long settled) is a no-op — there
+ * is no surface left to show the echo on.
  */
 export function appendOperatorSteer(key: string, label: string, text: string): void {
   const buf = buffers.get(key);
@@ -192,7 +209,8 @@ export function appendOperatorSteer(key: string, label: string, text: string): v
   buf.push(ev);
   // Same bookkeeping as pushEvent: the running total is maintained per key
   // so trimToBound never re-sums the buffer (it evicts oldest-first within
-  // the per-job LIVE_BUFFER_MAX_CHARS bound).
+  // the per-job LIVE_BUFFER_MAX_CHARS bound); the bound is enforced via the
+  // same feed-path seam as pushEvent itself (dispatch-deck-live-feed.ts).
   bufferSizes.set(key, (bufferSizes.get(key) ?? 0) + eventSize(ev));
   trimToBound(key, buf);
   notifyAppend(key);
@@ -300,8 +318,9 @@ export function onBufferAppend(key: string, cb: () => void): () => void {
   };
 }
 
-/** Notify the key's append subscribers (called from feedRawEvent). */
-function notifyAppend(key: string): void {
+/** Notify the key's append subscribers (called from feedRawEvent).
+ *  Exported for the feed module (same file split, #1032). */
+export function notifyAppend(key: string): void {
   const subs = appendSubscribers.get(key);
   if (!subs) return;
   for (const cb of subs) {
@@ -354,145 +373,4 @@ export function markViewClosed(key: string): void {
 export function releaseOnEntryClear(key: string): void {
   if (viewsOpen.has(key)) entryCleared.add(key);
   else dropBuffer(key);
-}
-
-// =============================================================================
-// Feed path
-// =============================================================================
-
-/**
- * Feed one parsed child event into the job's ring buffer. Events the
- * overlay cannot show (non-assistant / non-toolResult messages, empty
- * content) are dropped silently. A feed for a key with no buffer (quiet
- * mode, or a lens/adversarial child) is a no-op.
- */
-export function feedRawEvent(key: string, event: PiJsonEvent): void {
-  const buf = buffers.get(key);
-  if (!buf) return;
-  const added = pushEvent(key, buf, event);
-  if (added) notifyAppend(key);
-}
-
-/**
- * Push a parsed event onto a buffer (module helper, exported for the
- * feed-path test). Returns true when at least one event was stored.
- *
- * Storage is UNTRUNCATED (#916): the only bound is the per-job char cap
- * (`LIVE_BUFFER_MAX_CHARS`), enforced AFTER the push by evicting oldest
- * events first. Sanitisation (control chars, ANSI, newline collapse) is
- * kept — only the length truncation was removed.
- */
-export function pushEvent(key: string, buf: LiveEvent[], event: PiJsonEvent): boolean {
-  // #1032 — nested tool calls (codemode scripts) emit flat
-  // tool_execution_start events. Surface as toolCall with ↳ prefix.
-  // Args sanitised at feed time like every sibling branch (#927);
-  // stringify wrapped in try/catch (circular/BigInt would throw).
-  if (event.type === "tool_execution_start" && event.toolName) {
-    let rawArgs = "";
-    if (event.args !== undefined && event.args !== null) {
-      try {
-        rawArgs = JSON.stringify(event.args) ?? "";
-      } catch {
-        rawArgs = "[unserialisable args]";
-      }
-    }
-    const ev: LiveEvent = {
-      kind: "toolCall",
-      name: sanitizeText(`↳ ${event.toolName}`),
-      args: sanitizeForStorage(rawArgs),
-    };
-    buf.push(ev);
-    bufferSizes.set(key, (bufferSizes.get(key) ?? 0) + eventSize(ev));
-    return trimToBound(key, buf);
-  }
-  if (event.type !== "message" && event.type !== "message_end") return false;
-  const msg = event.message;
-  if (!msg) return false;
-  let added = false;
-  let total = bufferSizes.get(key) ?? 0;
-  if (msg.role === "toolResult") {
-    const resultText = (msg.content ?? [])
-      .filter((b) => b.type === "text" && typeof b.text === "string" && b.text.length > 0)
-      .map((b) => b.text as string)
-      .join("");
-    if (!resultText) return false;
-    // #839 — result text is untrusted child output; sanitised at feed
-    // time (C0/ANSI stripped, newlines → ` ⏎ `) so the overlay can
-    // never desync pi-tui's line accounting (#927).
-    const name = msg.toolName;
-    const ev: LiveEvent = {
-      kind: "toolResult",
-      name: name ? sanitizeText(name) : "unknown",
-      text: sanitizeForStorage(resultText),
-      isError: msg.isError === true,
-    };
-    buf.push(ev);
-    total += eventSize(ev);
-    added = true;
-    return trimToBound(key, buf);
-  }
-  if (msg.role !== "assistant") return false;
-  for (const block of msg.content ?? []) {
-    if (block.type === "text" && typeof block.text === "string" && block.text.length > 0) {
-      const ev: LiveEvent = {
-        kind: "text",
-        text: sanitizeForStorage(block.text),
-      };
-      buf.push(ev);
-      total += eventSize(ev);
-      added = true;
-    } else if (
-      block.type === "thinking" &&
-      typeof block.thinking === "string" &&
-      block.thinking.length > 0
-    ) {
-      // #916 — thinking blocks stored as their own variant; view renders `▸ thinking (N chars)`.
-      const ev: LiveEvent = {
-        kind: "thinking",
-        text: sanitizeForStorage(block.thinking),
-      };
-      buf.push(ev);
-      total += eventSize(ev);
-      added = true;
-    } else if (block.type === "toolCall" && block.name) {
-      // #916 — FULL JSON of arguments (previously 50-char extractToolHint preview).
-      const ev: LiveEvent = {
-        kind: "toolCall",
-        name: sanitizeText(block.name),
-        // block.arguments is from JSON.parse — cannot be circular/BigInt.
-        args: sanitizeForStorage(
-          block.arguments === undefined || block.arguments === null
-            ? ""
-            : (JSON.stringify(block.arguments) ?? ""),
-        ),
-      };
-      buf.push(ev);
-      total += eventSize(ev);
-      added = true;
-    }
-  }
-  if (added) {
-    bufferSizes.set(key, total);
-    return trimToBound(key, buf);
-  }
-  return added;
-}
-
-/**
- * Enforce the per-job char bound after a push: evict OLDEST-first until
- * the running total fits `LIVE_BUFFER_MAX_CHARS`. The `buf.length > 1`
- * guard keeps a lone oversized event alone (the bound caps the TOTAL
- * across events, never a lone event — PM decision, #916).
- */
-function trimToBound(key: string, buf: LiveEvent[]): boolean {
-  if (buf.length === 0) return false;
-  // Evict oldest-first, but never evict down to zero events — a lone
-  // oversized event is retained alone (see above).
-  let total = bufferSizes.get(key) ?? 0;
-  while (total > LIVE_BUFFER_MAX_CHARS && buf.length > 1) {
-    const oldest = buf.shift();
-    if (oldest) total -= eventSize(oldest);
-  }
-  bufferSizes.set(key, total);
-  return true;
 }

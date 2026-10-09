@@ -288,6 +288,17 @@ function toolResultEvent(toolCallId: string, toolName: string): PiJsonEvent {
   }
 }
 
+/** Fixture: a TOP-LEVEL tool_execution_start (Pi's agent-loop emits it
+ * without parentToolCallId for every model-issued call). */
+function topLevelStartEvent(toolCallId: string, toolName: string, args?: unknown): PiJsonEvent {
+  return {
+    type: "tool_execution_start",
+    toolCallId,
+    toolName,
+    args: args ?? {},
+  } as PiJsonEvent;
+}
+
 // ============================================================
 // 10. Deck: buffer lifecycle is clean (no leak)
 // ============================================================
@@ -299,6 +310,76 @@ function toolResultEvent(toolCallId: string, toolName: string): PiJsonEvent {
   pushEvent(key, buf, nestedStartEvent("x/0", "bash", "x"));
   dropBuffer(key);
   assert(bufferCount() === before, "9a: buffer count returns to baseline after dropBuffer");
+}
+
+// ============================================================
+// 11. Deck: NO double-count — a top-level tool call appears exactly once
+//     (the assistant message's toolCall block); its flat
+//     tool_execution_start (no parentToolCallId) adds NOTHING.
+// ============================================================
+{
+  const key = "test-nested-deck-top-level";
+  startBuffer(key);
+  try {
+    const buf: LiveEvent[] = [];
+    // Pi's event order for a top-level call: the assistant message_end
+    // (which carries the toolCall block) precedes the tool_execution_start.
+    pushEvent(key, buf, assistantToolCallEnd("call_top", "codemode"));
+    pushEvent(
+      key,
+      buf,
+      topLevelStartEvent("call_top", "codemode", { script: "...", model: "..." }),
+    );
+    assert(
+      buf.length === 1,
+      `11a: the top-level call appears exactly once (got ${buf.length} — the flat event would have made two)`,
+    );
+    if (buf.length === 1) {
+      assert(buf[0].kind === "toolCall", "11b: stored as a toolCall variant");
+      if (buf[0].kind === "toolCall") {
+        assert(
+          buf[0].name === "codemode",
+          `11c: it is the assistant-block entry, no ↳ prefix (got '${buf[0].name}')`,
+        );
+      }
+    }
+    // And a bare top-level start with no assistant block at all adds no
+    // entry — top-level events are never the record; the block is.
+    const buf2: LiveEvent[] = [];
+    const added = pushEvent(key, buf2, topLevelStartEvent("call_other", "bash", { command: "ls" }));
+    assert(!added, "11d: a lone top-level tool_execution_start adds no entry");
+    assert(buf2.length === 0, "11e: buffer remains empty for a lone top-level start");
+  } finally {
+    dropBuffer(key);
+  }
+}
+
+// ============================================================
+// 12. InFlightTools: no double-count — a top-level call's flat
+//     tool_execution_start must not open a SECOND span alongside the
+//     assistant toolCall block's span.
+// ============================================================
+{
+  const inflight = new InFlightTools();
+  inflight.observe(assistantToolCallEnd("call_top", "codemode"));
+  inflight.observe(topLevelStartEvent("call_top", "codemode", { script: "..." }));
+  assert(
+    inflight.toolNames().length === 1,
+    `12a: the top-level call has exactly one span, not two (got ${inflight.toolNames().length})`,
+  );
+  assert(
+    inflight.toolNames()[0] === "codemode",
+    "12b: the span is the toolCall block's 'codemode' entry",
+  );
+
+  // A nested start with an UNKNOWN parent still opens its own span (the
+  // flat event is the only record of a nested call — the parent span is a
+  // different id).
+  inflight.observe(nestedStartEvent("call_top/0", "bash", "call_top"));
+  assert(
+    inflight.toolNames().length === 2,
+    `12c: the nested call opens its own distinct span (got ${inflight.toolNames().length})`,
+  );
 }
 
 console.log(`\nexit ${exit}`);
