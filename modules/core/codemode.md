@@ -31,4 +31,4 @@ return { dirty: st.value?.output.trim().split("\n").filter(Boolean).length ?? "E
 
 - Permission guards still apply to every tool call the script makes — codemode does not bypass them.
 - Reviewer roles (explore, adversarial-developer, code-review-specialist) still have write/edit excluded; the exclusion holds through codemode.
-- Every `tools.bash` call inside a script is checked like a direct bash call (the same allowlist and no-chaining rules). Put one command per `tools.bash` call and combine results in JavaScript — never chain shell commands with `&&`, `|` or `;`.
+- Each `tools.bash` call inside a script goes through the same permission check as a direct bash call (in strict or headless mode that includes the role's allowlist and the no-chaining rule; in trust mode nothing is checked). Either way, put one command per `tools.bash` call and combine results in JavaScript rather than chaining shell commands with `&&`, `|` or `;`.
