@@ -13,6 +13,7 @@
  * No Pi process spawned, no network.
  */
 
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Writable } from "node:stream";
 import {
   clearJobsForTesting,
@@ -45,12 +46,12 @@ interface StubMessage {
 
 function makePiStub() {
   const inbox: StubMessage[] = [];
-  // biome-ignore lint/suspicious/noExplicitAny: testing seam — match minimum shape registerAsyncJobsLifecycle needs.
-  const pi: any = {
+  // Testing seam: only sendUserMessage is touched by startJob/startBatch.
+  const pi = {
     sendUserMessage(content: string, options?: { deliverAs?: string }) {
       inbox.push({ content, deliverAs: options?.deliverAs });
     },
-  };
+  } as unknown as ExtensionAPI;
   return { pi, inbox };
 }
 
@@ -62,7 +63,14 @@ function fakeResult(role: string, text: string, ok = true, ms = 100): DispatchRe
     toolUses: [],
     ms,
     exitCode: ok ? 0 : 1,
-    usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, cost: 0.001, turns: 1 },
+    usage: {
+      input: 100,
+      output: 50,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0.001,
+      turns: 1,
+    },
     transcriptPath: `/tmp/fake-${role}.json`,
   };
 }
@@ -91,8 +99,11 @@ async function nextTick() {
   assert(typeof jobId === "string" && jobId.length > 5, "jobId looks well-formed");
   assert(inbox.length === 0, "no steer delivered yet (work still running)");
 
-  // Wait for work to settle + steer to fire
-  await new Promise((r) => setTimeout(r, 100));
+  // Wait for work to settle + steer to fire. #1015 — a developer report runs
+  // git (status/rev-list) before the steer, so poll rather than sleep a fixed 100ms.
+  for (let i = 0; i < 100 && inbox.length === 0; i++) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
   assert(inbox.length === 1, `exactly ONE steer delivered (got ${inbox.length})`);
   const msg = inbox[0];
   assert(msg.deliverAs === "steer", `deliverAs === "steer" (got ${msg.deliverAs})`);
@@ -108,7 +119,9 @@ async function nextTick() {
   // finished developer report now carries adds ~270, so the bound is 450
   // (402 measured).
   const envelopeBytes = msg.content.length - FAKE_TEXT.length;
-  assert(envelopeBytes < 450, `envelope <450 bytes (got ${envelopeBytes})`);
+  // #1015 — a developer report also carries the git-state line (<=300 bytes),
+  // so the bound is raised from 450 to 750 to admit it.
+  assert(envelopeBytes < 750, `envelope <750 bytes (got ${envelopeBytes})`);
 }
 
 // ---------------------------------------------------------------------------
@@ -323,8 +336,16 @@ async function nextTick() {
     startBatch(pi, {
       batchLabel: "overflow-batch",
       members: [
-        { label: "m1", role: "developer", work: () => new Promise(() => undefined) },
-        { label: "m2", role: "developer", work: () => new Promise(() => undefined) },
+        {
+          label: "m1",
+          role: "developer",
+          work: () => new Promise(() => undefined),
+        },
+        {
+          label: "m2",
+          role: "developer",
+          work: () => new Promise(() => undefined),
+        },
       ],
     });
   } catch (err) {
