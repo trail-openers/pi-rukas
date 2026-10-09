@@ -191,6 +191,42 @@ for (const manifestName of readdirSync(MANIFESTS).filter((name) => name.endsWith
       );
     }
   }
+
+  // #1031 — the codemode module replaces the retired oo-command-runner module:
+  // it must appear in every role's manifest, and no manifest or assembled
+  // prompt may still reference the old module.
+  const manifest = readFileSync(manifestPath, "utf8");
+  assert(
+    manifest.split("\n").some((l) => l.trim() === "modules/core/codemode.md"),
+    `${role}: manifest references modules/core/codemode.md`,
+  );
+  assert(
+    !manifest.includes("oo-command-runner"),
+    `${role}: manifest no longer references oo-command-runner`,
+  );
+  assert(
+    !prompt.includes("oo-command-runner"),
+    `${role}: assembled prompt contains no oo-command-runner reference`,
+  );
+}
+
+// #1031 — the codemode module's token budget: the ≤60-line cap is asserted on
+// the SOURCE file (build.sh concatenates agents-base + module bodies, so the
+// assembled prompt is far larger than 60 lines regardless).
+const CODEMODE_MODULE = path.join(ROOT, "modules", "core", "codemode.md");
+{
+  const source = readFileSync(CODEMODE_MODULE, "utf8");
+  const lineCount = source.split("\n").length;
+  assert(
+    lineCount <= 60,
+    `modules/core/codemode.md is within the 60-line cap (currently ${lineCount} lines)`,
+  );
+  const heading = source.match(/^#{1,6} .+$/m)?.[0];
+  assert(heading !== undefined, "modules/core/codemode.md has a markdown heading");
+  assert(
+    heading === "# Codemode",
+    "modules/core/codemode.md first heading is exactly '# Codemode'",
+  );
 }
 
 console.log(`\nexit ${exit}`);

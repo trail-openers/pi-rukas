@@ -1,22 +1,22 @@
 # Codemode
 
-Subagent children run with Pi's **codemode** tool: one script per tool call, executed in a sandbox that exposes this session's callable tools as `tools.<name>`. When a command would burn context, use it.
+Codemode is a scriptable tool available in this session (enabled for all pi-rukas subagents). Use it wherever it saves tokens — it is not the default for every command.
 
-## When to use
+## Use it when
 
-- **Batch independent reads/searches.** One script with `Promise.allSettled` beats N separate tool calls (each call costs a round trip and a result block).
-- **Run checks, return only failures.** A suite that emits hundreds of lines? The script runs it, collects the ✗ lines with their indented detail, and returns the digest (exit code included) — not the full transcript.
-- **Filter large outputs.** Read the full thing in the script, return the lines that matter.
-- **Use native limiting flags directly** — most commands need no script at all: `git log --oneline -10`, `git diff --stat`, `gh issue list --limit N --json number,title`.
+- You have several INDEPENDENT reads or searches (file contents, greps, status queries): batch them in one script with `Promise.allSettled` / parallel calls and return only the signal you need.
+- You are running checks (build, test, lint, typecheck): run them in one script and return only failures (and the verdict), not the full transcripts.
+- A single command would emit large output you only partially need: filter it inside the script.
+- Prefer native limiting flags first (`git log --oneline -n 10`, `--stat`, `--oneline`, `--json` / `--jq` for gh/glab) before reaching for codemode.
+- The offline verify loop supports a `--digest` mode (sub-issue #1026-4) that compresses full-suite runs; use it when available rather than piping raw output.
 
-## When not to
+## Don't use it when
 
-- A single small command with small output — a plain bash call is simpler.
-- Steps that need inspection between them — if step 2 depends on reading step 1's result, run them as separate calls.
+- A single small command suffices (`git status`, `git branch --show-current`) — the script is more tokens than it saves.
+- Steps need inspection between them (decide-then-act loops; the answer to call N changes how you call N+1).
 
-## Script notes
+## Constraints that still apply inside scripts
 
-- One codemode call = one tool call, so the **no-shell-chaining rule does not apply inside scripts** — `&&`, pipes, and multi-line JS are fine in the script body; the permission matcher only sees the call itself.
-- Guards still apply to every `tools.*` call inside the script: excluded tools (reviewer write/edit) are absent from the sandbox, and each nested call passes through the same tool_call hooks.
-- The output you `return` is the only result the transcript sees — return verdicts, not transcripts.
-- Verifying the offline suite? Run `bash smoke-tests/lib/verify-loop.sh --digest smoke-tests/test-*.ts` (or `oo` with it — see the injected allowlist rules above) and return the digest it prints.
+- Permission guards still apply to every tool call the script makes — codemode does not bypass them.
+- Reviewer roles (explore, adversarial-developer, code-review-specialist) still have write/edit excluded; the exclusion holds through codemode.
+- The `cd <path> && …` and no-chaining rules apply to BASH tool calls only. A codemode script is one tool call; the permission guard's chain matcher never sees its body.
