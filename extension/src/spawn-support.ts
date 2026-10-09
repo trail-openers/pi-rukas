@@ -258,6 +258,21 @@ export function assertLiveSpawnAllowed(role: string): void {
  * `-e builtin:codemode`. Default on; `PI_ENSEMBLE_CHILD_CODEMODE=0`
  * restores the pre-change behaviour (no codemode in the child).
  */
+/**
+ * Base argv for every spawned subagent.
+ *
+ * `--no-extensions` suppresses auto-discovery of installed extensions in the
+ * child — the load-bearing part of the child-guards isolation story. Under
+ * Pi 1.0.0's semantics this flag ALSO disables built-in extensions (MCP,
+ * issue #959); so we re-enable just the MCP built-in with `-e builtin:mcp`
+ * immediately after it (argument order is load-bearing — the `-ne` short
+ * alias would swallow it otherwise). No other built-in is re-enabled
+ * (codemode, tool_search); `autoEnableCodemode: false` in mcp.json is the
+ * additional guard (docs/mcp.md). The codemode exception: unless
+ * `PI_ENSEMBLE_CHILD_CODEMODE=0`, `childArgsBase` also appends
+ * `-e builtin:codemode` (below), and the child-guards companion then
+ * activates it on session_start (child-codemode.ts, issue #1030).
+ */
 function childCodemodeEnabled(): boolean {
   const v = process.env.PI_ENSEMBLE_CHILD_CODEMODE;
   if (v === undefined || v === "" || v === "1") return true;
@@ -304,10 +319,12 @@ export function buildChildArgs(
   // `--mode rpc` keeps stdin open for JSON command injection
   // ({type:"prompt"|"steer"|"abort"|"follow_up"}); this is the foundation
   // for dispatch_steer (#152) and all async push-callback flows.
-  // childArgsBase also carries `-e builtin:mcp` (and optionally
-  // `-e builtin:codemode`), so the child's toolset includes the
-  // mcp__<server>__<tool> tools the permission overlay in agents.json
-  // grants per role (issue #959).
+  // CHILD_ARGS_BASE also carries `-e builtin:mcp` (see its comment above),
+  // so the child's toolset includes the mcp__<server>__<tool> tools the
+  // permission overlay in agents.json grants per role (issue #959).
+  // Additionally, unless PI_ENSEMBLE_CHILD_CODEMODE=0, childArgsBase()
+  // appends `-e builtin:codemode`, and child-guards then activates codemode
+  // on session_start via child-codemode.ts (issue #1030).
   args.push("--session", transcriptPath);
   // #926 — the child-guards companion is appended in EVERY mode, independent
   // of subagentGuardEnabled (so PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD does not
