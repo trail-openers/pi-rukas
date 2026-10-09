@@ -11,7 +11,7 @@
  *
  *   bun run smoke-tests/test-pi-shape-live.ts
  *
- * What this catches: Pi changes a field name (e.g., `tool_use` → `toolCall`,
+ * Catches: Pi changes a field name (e.g., `tool_use` → `toolCall`,
  * which has happened), drops an event type (e.g., agent_end), restructures
  * usage stats, or silently drops extension-registered tools from the
  * child's live toolset (the #571 incident — provider-side deferred tool
@@ -43,14 +43,13 @@
  * run. The fixture extension (fixtures/shape-live-roster-reporter.ts) is
  * loaded into the child via `--extension`; no extra spawn is needed.
  *
- * The child is spawned DIRECTLY (not via spawnSpecialist) because
- * spawnSpecialist is the subagent path — it uses `--no-extensions` and
- * only loads pi-ensemble in strict mode. The #571 incident was about the
- * PARENT session's toolset, so this test spawns a parent-shaped child:
- * `--no-extensions` (suppress auto-discovery) + explicit `--extension`
- * for pi-ensemble + the fixture.
+ * The child is spawned DIRECTLY (not via spawnSpecialist, the subagent
+ * path, which uses `--no-extensions` and only loads pi-ensemble in strict
+ * mode). The #571 incident was about the PARENT session's toolset, so this
+ * test spawns a parent-shaped child: `--no-extensions` + explicit
+ * `--extension` for pi-ensemble + the fixture.
  *
- * Roster source-of-truth: `EXPECTED_ROSTER` below is the single list the
+ * `EXPECTED_ROSTER` below is the single list the
  * assertion checks against, and a canary below fails the test if the
  * `pi.registerTool` sites in `extension/src` diverge from it.
  */
@@ -118,10 +117,9 @@ const EXPECTED_ROSTER = [
 // role that DOES allow codemode (e.g. a reviewer role) can be tested here.
 const codemodeEnabled = process.env.PI_ENSEMBLE_CHILD_CODEMODE !== "0";
 
-// Provider/model for the live child, same convention as the sibling live
-// tests (e.g. test-codemode-reviewer-rejection.ts): pass --provider/--model
-// when PI_ENSEMBLE_LIVE_PROVIDER / PI_ENSEMBLE_LIVE_MODEL are set, otherwise
-// inherit the host default. A dead host default otherwise poisons this test.
+// Provider/model for the live child (same convention as the sibling live
+// tests): pass --provider/--model via PI_ENSEMBLE_LIVE_PROVIDER / _MODEL,
+// otherwise inherit the host default (a dead one would poison the test).
 const liveProvider = process.env.PI_ENSEMBLE_LIVE_PROVIDER;
 const liveModel = process.env.PI_ENSEMBLE_LIVE_MODEL;
 
@@ -144,11 +142,10 @@ const prompt = [
 
 // Build the child argv: parent-shaped (pi-ensemble + fixture loaded).
 // `--no-extensions` + `-e builtin:mcp` (issue #959): under Pi 1.0.0 the
-// no-extensions flag also disables built-in extensions, including the built-in
-// MCP; the `-e builtin:mcp` flag re-enables just the MCP built-in so the
-// child's toolset includes the mcp__<server>__<tool> tools the permission
-// overlay in agents.json grants per role (see spawn-support.ts childArgsBase()
-// for the same argument order used in production).
+// no-extensions flag also disables built-in extensions, including MCP; the
+// flag re-enables just the MCP built-in so the toolset includes the
+// mcp__<server>__<tool> tools the agents.json overlay grants per role
+// (same argument order as spawn-support.ts childArgsBase() in production).
 const childArgs = [
   "--mode",
   "rpc",
@@ -181,8 +178,8 @@ const child = spawn("pi", childArgs, {
   env: { ...process.env },
 });
 
-// A missing `pi` binary would otherwise hang the whole test until the 120s
-// backstop fires; fail fast with the spawn error instead.
+// A missing `pi` binary would otherwise hang until the backstop; record
+// the spawn error and fail fast with it instead.
 let spawnError: Error | null = null;
 child.on("error", (err) => {
   spawnError = err;
@@ -201,6 +198,7 @@ child.stderr?.on("data", (d: Buffer) => {
 child.stdin?.write(`${JSON.stringify({ type: "prompt", message: prompt })}\n`);
 
 const start = Date.now();
+let backstopFired = false;
 const exitCode = await new Promise<number | null>((resolve) => {
   // Close stdin after a short delay to signal "no more commands".
   // Pi exits cleanly after the agent_end for the current prompt.
@@ -215,10 +213,14 @@ const exitCode = await new Promise<number | null>((resolve) => {
     clearTimeout(closeTimer);
     resolve(code);
   });
-  // Hard backstop: kill after 120s.
+  // Hard backstop: kill after 120s. It must settle the promise itself —
+  // a child that survives SIGTERM/SIGKILL would otherwise hang the test
+  // forever (the run would never finish).
   const backstop = setTimeout(() => {
+    backstopFired = true;
     child.kill("SIGTERM");
-    setTimeout(() => child.kill("SIGKILL"), 5_000);
+    setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
+    setTimeout(() => resolve(null), 5_500).unref();
   }, 120_000);
   child.on("exit", () => clearTimeout(backstop));
 });
@@ -226,9 +228,16 @@ const exitCode = await new Promise<number | null>((resolve) => {
 const ms = Date.now() - start;
 console.log(`[test] child exited in ${ms}ms, code=${exitCode}`);
 
+// Fatal errors are recorded, not process.exit'd immediately — the run must
+// reach the final process.exit(exit) with a non-zero code after cleanup.
+let fatal: string | null = null;
 if (spawnError) {
-  console.error(`✗ failed to spawn pi: ${spawnError.message}`);
-  process.exit(1);
+  fatal = `failed to spawn pi: ${spawnError.message}`;
+  console.error(`✗ ${fatal}`);
+}
+if (backstopFired) {
+  fatal = fatal ?? "child did not exit within the 120s backstop (SIGTERM/SIGKILL fired)";
+  console.error(`✗ ${fatal}`);
 }
 
 if (stderr && stderr.length > 0) {
@@ -481,5 +490,10 @@ try {
 }
 
 console.log(`\n[test] session: ${sessionPath} (removed after the run)`);
+
+// A recorded fatal error (spawn failure, backstop, unreadable session)
+// fails the run here, after cleanup, rather than mid-run.
+if (fatal) exit = 1;
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

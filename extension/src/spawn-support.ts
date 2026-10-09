@@ -261,8 +261,8 @@ export function assertLiveSpawnAllowed(role: string): void {
  * issue #959); so we re-enable just the MCP built-in with `-e builtin:mcp`
  * immediately after it (argument order is load-bearing — the `-ne` short
  * alias would swallow it otherwise). No other built-in is re-enabled
- * (codemode, tool_search); `autoEnableCodemode: false` in mcp.json is the
- * additional guard (docs/mcp.md). The codemode exception: unless
+ * (tool_search); `autoEnableCodemode: false` in mcp.json is the additional
+ * guard (docs/mcp.md). The codemode exception: unless
  * `PI_ENSEMBLE_CHILD_CODEMODE=0`, `childArgsBase` also appends
  * `-e builtin:codemode` (below), and the child-guards companion then
  * activates it on session_start (child-codemode.ts, issue #1030).

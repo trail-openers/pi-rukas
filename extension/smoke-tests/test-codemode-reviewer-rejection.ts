@@ -151,7 +151,9 @@ function childArgvFor(opts: { exclude: boolean; sessionPath: string }): string[]
 
 interface ArmResult {
   exitCode: number | null;
+  backstopFired: boolean;
   spawnError: Error | null;
+  fatal: string | null;
   stderr: string;
   stdoutEvents: AnyEvent[];
   events: AnyEvent[];
@@ -186,6 +188,7 @@ async function runArm(label: string, opts: { exclude: boolean; sessionPath: stri
   child.stdin?.write(`${JSON.stringify({ type: "prompt", message: armPrompt(opts.exclude) })}\n`);
 
   const start = Date.now();
+  let backstopFired = false;
   const exitCode = await new Promise<number | null>((resolve) => {
     const closeTimer = setTimeout(() => {
       try {
@@ -198,17 +201,25 @@ async function runArm(label: string, opts: { exclude: boolean; sessionPath: stri
       clearTimeout(closeTimer);
       resolve(code);
     });
+    // The backstop must settle the promise itself: if the child survives
+    // SIGTERM and SIGKILL (or never exits at all), waiting only on the
+    // `exit` event would hang the test and skip the finally cleanup.
     const backstop = setTimeout(() => {
+      backstopFired = true;
       child.kill("SIGTERM");
-      setTimeout(() => child.kill("SIGKILL"), 5_000);
+      setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
+      setTimeout(() => resolve(null), 5_500).unref();
     }, 140_000);
     child.on("exit", () => clearTimeout(backstop));
   });
   console.log(`[test] ${label} child exited in ${Date.now() - start}ms, code=${exitCode}`);
 
+  // Fatal errors are recorded, never process.exit'd here: the caller's
+  // finally block removes workDir, and process.exit would skip it.
+  let fatal: string | null = null;
   if (spawnError) {
-    console.error(`✗ failed to spawn pi (${label}): ${spawnError.message}`);
-    process.exit(1);
+    fatal = `failed to spawn pi (${label}): ${spawnError.message}`;
+    console.error(`✗ ${fatal}`);
   }
 
   if (stderr && stderr.length > 0) {
@@ -236,15 +247,15 @@ async function runArm(label: string, opts: { exclude: boolean; sessionPath: stri
       .filter((l) => l.trim().length > 0)
       .map((l) => JSON.parse(l));
   } catch (err) {
-    console.error(`✗ could not read session file (${label}): ${(err as Error).message}`);
-    process.exit(1);
+    fatal = `could not read session file (${label}): ${(err as Error).message}`;
+    console.error(`✗ ${fatal}`);
   }
 
   console.log(
     `[test] ${label}: session has ${events.length} events, stdout has ${stdoutEvents.length} events`,
   );
 
-  return { exitCode, spawnError: null, stderr, stdoutEvents, events };
+  return { exitCode, backstopFired, fatal, spawnError: null, stderr, stdoutEvents, events };
 }
 
 // The codemode script body is identical in both arms — the ONLY
@@ -299,6 +310,14 @@ try {
 
   const excludeResult = await runArm("exclusion", { exclude: true, sessionPath: excludeSessionPath });
   const sentinelExclude = path.join(workDir, "sentinel.txt");
+
+  // A backstop that had to fire means the child did not exit on its own —
+  // the arm produced no trustworthy signal, fail the test explicitly.
+  assert(
+    !excludeResult.backstopFired,
+    "[exclusion] child exited on its own (the 140s backstop did not have to fire)",
+  );
+  if (excludeResult.fatal) assert(false, `[exclusion] fatal: ${excludeResult.fatal}`);
 
   // 0. Child exited cleanly.
   assert(excludeResult.exitCode === 0, "[exclusion] child exit code is 0");
@@ -422,6 +441,12 @@ try {
   // fail is worthless — fail the whole test.
   const controlResult = await runArm("control", { exclude: false, sessionPath: controlSessionPath });
   const sentinelControl = path.join(workDir, "sentinel.txt");
+
+  assert(
+    !controlResult.backstopFired,
+    "[control] child exited on its own (the 140s backstop did not have to fire)",
+  );
+  if (controlResult.fatal) assert(false, `[control] fatal: ${controlResult.fatal}`);
 
   assert(controlResult.exitCode === 0, "[control] child exit code is 0");
 

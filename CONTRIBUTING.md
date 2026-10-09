@@ -135,7 +135,7 @@ The PM role's allowlist is the reference implementation of this rule
 **MCP-backed tools** (for tools that can't safely be CLI-wrapped, e.g., database servers):
 
 - Define the MCP server in `~/.pi/agent/mcp.json` (user-level) or `.pi/mcp.json` (project-level) under `mcpServers` — Pi 1.0.0's native MCP reads these directly; there is no bridge extension to install
-- Subagents get native MCP via the `-e builtin:mcp` flag in `CHILD_ARGS_BASE` (see `extension/src/spawn-support.ts`), not via extension forwarding — a lingering `pi-mcp-adapter` would replace the built-in MCP and silently disable it, so `discoverInstalledExtensions` skips it (issue #959)
+- Subagents get native MCP via the `-e builtin:mcp` flag in `childArgsBase()` (see `extension/src/spawn-support.ts`), not via extension forwarding — a lingering `pi-mcp-adapter` would replace the built-in MCP and silently disable it, so `discoverInstalledExtensions` skips it (issue #959)
 - For user-installed extensions outside MCP, `PI_ENSEMBLE_USER_EXTENSION=/abs/path` or `npm:<pkg>` is appended on top of the auto-forward list (independent of MCP)
 - Add the tool name or pattern with verdict to `agents.json` under `agent.<role>.permission` using the native `mcp__<server>__<tool>` naming (e.g., `"mcp__postgres__query": "allow"`)
 - `extension/src/permission-guard.ts` enforces at runtime in the **top-level session only** (interceptor on every tool call). Subagents run with `--no-extensions -e builtin:mcp`, so pi-rukas's own enforcement is not loaded inside them — the role's system prompt is the only thing keeping each subagent in its lane. Hard confinement comes from MCP server-side credentials or Pi's built-in checks, not pi-rukas.
