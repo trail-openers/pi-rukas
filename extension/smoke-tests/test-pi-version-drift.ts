@@ -60,12 +60,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-// #1019 — the shared "Last verified against pi" parser now lives in
-// pi-binary-resolve.ts (which needs it for the version warning); the drift
-// gate imports it so the regex exists in exactly one place. Re-exported so
-// the gate's public surface is unchanged.
-import { parseVerifiedLine } from "../src/pi-binary-resolve.ts";
-export { parseVerifiedLine };
+// The shared "Last verified against pi" parser (#1019, split #1038): the drift
+// gate imports it directly so the regex exists in exactly one place.
+import { parseVerifiedLine } from "../src/pi-doc-parsing.ts";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const FIXTURES = path.resolve(import.meta.dirname, "fixtures", "prerequisite-drift");
