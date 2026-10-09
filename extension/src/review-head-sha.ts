@@ -59,7 +59,7 @@ export async function resolveHeadSha(
     return stdout.trim() || undefined;
   } catch (err) {
     trace(
-      `review-head-sha: resolution failed for ${ref}: ${
+      `review-head-sha: resolution failed for ${JSON.stringify(ref.slice(0, 64))}: ${
         err instanceof Error ? err.message : String(err)
       }`,
     );

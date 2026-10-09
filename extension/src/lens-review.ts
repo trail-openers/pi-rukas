@@ -1,7 +1,5 @@
-import { execFile } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { execp } from "./lens-exec.ts";
 import { resolveLensReviewBranch } from "./lens-review-branch-resolve.ts";
@@ -32,11 +30,11 @@ import {
 } from "./lens-review-format.ts";
 import { installBlockRowsForRoster, skillsDirUsable } from "./lens-review-skills.ts";
 import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
+import { resolveHeadSha } from "./review-head-sha.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
 
-const execFileP = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
@@ -279,39 +277,16 @@ export async function runLensReview(opts: {
   // #1039 — resolve the headSha ONCE, before any early return, so every
   // ledger write (blocked, empty-roster, aborted, normal) carries the
   // resolved 40-char SHA. The delta arm's head is already a full SHA
-  // (resolveDeltaDiff resolved it via `--verify <head>^{commit}`); the
-  // non-delta arm resolves `opts.head ?? "HEAD"` here with the same shape.
+  // (resolveDeltaDiff resolved it via `--verify <head>^{commit}`), so the
+  // shared resolver is skipped there; the non-delta arm goes through the
+  // shared `resolveHeadSha` (review-head-sha.ts) for `opts.head ?? "HEAD"`.
   // An unresolvable ref leaves headSha undefined (the ledger write omits
   // it; the round-cap check fails closed — conservative by design).
   let headSha: string | undefined;
   if (resolved.kind === "ok" && resolved.delta) {
     headSha = resolved.delta.head || undefined;
   } else if (resolved.kind === "ok") {
-    const reviewHead = opts.head ?? "HEAD";
-    if (!reviewHead.startsWith("-")) {
-      try {
-        const { stdout } = await execFileP(
-          "git",
-          [
-            "-C",
-            opts.cwd ?? process.cwd(),
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            `${reviewHead}^{commit}`,
-          ],
-          { maxBuffer: 8 * 1024 },
-        );
-        headSha = stdout.trim() || undefined;
-      } catch (err) {
-        trace(
-          `lens-review: headSha resolution failed for ${reviewHead}: ${
-            err instanceof Error ? err.message : String(err)
-          } — no headSha stored (the ledger write omits it; the round-cap check fails closed)`,
-        );
-        headSha = undefined;
-      }
-    }
+    headSha = await resolveHeadSha(opts.cwd ?? process.cwd(), opts.head ?? "HEAD", execp);
   } else {
     // blocked or noReview: no headSha (no commit was reviewed).
     headSha = undefined;

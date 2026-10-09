@@ -38,7 +38,6 @@
 
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
-export { isFullCommitSha } from "./review-head-sha.ts";
 import { ledgerPathFor } from "./review-ledger-path.ts";
 import { bumpLensRound } from "./review-ledger-round.ts";
 import { trace } from "./trace.ts";
