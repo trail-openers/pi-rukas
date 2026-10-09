@@ -50,38 +50,27 @@ export interface LedgerLockOptions {
   now?: () => number;
 }
 
+// #1071 test-only hook: a function appendLedgerEntry awaits between the
+// ledger read and the rename (the widened critical section). Production code
+// never sets it (undefined → no-op); only a spawned test child that imports
+// this module and injects its own ~150 ms await sets it, which lets the
+// two-process race (test-review-ledger-lock.ts) straddle the read/rename gap
+// deterministically without an env-var read in the production write path.
+let criticalSectionHook: (() => Promise<void> | void) | undefined;
+
+/** Test-only: set the between-read/rename hook. `undefined` clears it. */
+export function setLedgerCriticalSectionHookForTests(fn?: () => Promise<void> | void): void {
+  criticalSectionHook = fn;
+}
+
+export async function runLedgerCriticalSectionHook(): Promise<void> {
+  if (criticalSectionHook) await criticalSectionHook();
+}
+
 /** The lockfile path, colocated with the ledger file (the resolved path, so
  * the `PI_ENSEMBLE_REVIEW_LEDGER_FILE` override's parent dir gets the lock). */
 export function ledgerLockPath(ledgerFile: string): string {
   return `${ledgerFile}.lock`;
-}
-
-/**
- * #1071 — test-only hook: a delay injected between the critical section's
- * read and its rename, so a two-process race can straddle the read/rename
- * gap deterministically (see test-review-ledger-lock.ts). Production code
- * never sets this; it is read from the process env so a child process can
- * set it in its own env without importing the test file. The hook is
- * deliberately a no-op in production (env var absent → 0 ms).
- */
-export function testDelayReadMs(): number {
-  const v = process.env.PI_ENSEMBLE_REVIEW_LEDGER_DELAY_READ_MS;
-  if (!v) return 0;
-  const ms = Number(v);
-  return Number.isFinite(ms) && ms > 0 ? ms : 0;
-}
-
-/** A bounded synchronous sleep (the test-only delay hook uses this). */
-export function sleepSync(ms: number): void {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
-    void Atomics.wait(
-      new Int32Array(new SharedArrayBuffer(4)),
-      0,
-      0,
-      Math.max(1, end - Date.now()),
-    );
-  }
 }
 
 /**
@@ -91,7 +80,10 @@ export function sleepSync(ms: number): void {
  * release, so the caller degrades to the unlocked write + mergeAfterRace
  * fallback rather than blocking or surfacing an error.
  */
-export function acquireLedgerLock(ledgerFile: string, opts: LedgerLockOptions = {}): () => void {
+export async function acquireLedgerLock(
+  ledgerFile: string,
+  opts: LedgerLockOptions = {},
+): Promise<() => void> {
   const waitMs = opts.waitMs ?? LEDGER_LOCK_WAIT_MS;
   const staleMs = opts.staleMs ?? LEDGER_LOCK_STALE_MS;
   const pollMs = opts.pollMs ?? LEDGER_LOCK_POLL_MS;
@@ -115,7 +107,7 @@ export function acquireLedgerLock(ledgerFile: string, opts: LedgerLockOptions = 
       } finally {
         closeSync(fh);
       }
-      return () => releaseIfOurs(lock, holder, now, staleMs);
+      return () => releaseIfOurs(lock, holder);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
         // Cannot create the lock at all (read-only dir, EACCES, ENOSPC).
@@ -136,7 +128,12 @@ export function acquireLedgerLock(ledgerFile: string, opts: LedgerLockOptions = 
           );
           return noOpRelease;
         }
-        sleep(pollMs);
+        // Async wait (not Atomics.wait): a synchronous sleep here would stop
+        // the whole process's event loop for the poll, starving timers and
+        // I/O callbacks in every part of the process for the duration of a
+        // contended acquire. An awaited setTimeout yields back to the loop
+        // between polls, so the wait is bounded AND non-blocking.
+        await new Promise((r) => setTimeout(r, pollMs));
       }
       // We swept a stale lock; retry the open (the sweep is best-effort —
       // another writer may have created a fresh lock since).
@@ -183,7 +180,7 @@ function sweepIfStale(lock: string, now: () => number, staleMs: number): boolean
  * A successor that swept a stale lock and created a fresh one is never
  * deleted (its `holder` differs). Never throws.
  */
-function releaseIfOurs(lock: string, holder: string, now: () => number, staleMs: number): void {
+function releaseIfOurs(lock: string, holder: string): void {
   try {
     if (!existsSync(lock)) return;
     const raw = readFileSync(lock, "utf8");
@@ -193,39 +190,17 @@ function releaseIfOurs(lock: string, holder: string, now: () => number, staleMs:
     } catch {
       parsed = null;
     }
+    // Only remove the lock when its holder token is OURS. A successor that
+    // swept a stale lock and created a fresh one is never deleted (its
+    // `holder` differs); sweeping a stale lock is acquire's job.
     if (parsed && parsed.holder === holder) {
       try {
         unlinkSync(lock);
       } catch {
         // Already gone (swept or released); nothing to do.
       }
-      return;
     }
-    // Not ours (a successor's lock). If it is fresh, leave it; if it is
-    // stale, sweep it so the next acquire does not wait on a dead holder.
-    if (parsed && typeof parsed.holder === "string" && parsed.holder !== holder) {
-      if (sweepIfStale(lock, now, staleMs)) {
-        // Swept; we hold nothing now, so do not attempt a second remove.
-      }
-      return;
-    }
-    // Unparseable (or no holder): treat as stale and sweep.
-    sweepIfStale(lock, now, staleMs);
   } catch {
     // Never throws: a lock release failure must not surface to the caller.
-  }
-}
-
-/** A bounded, interruptible-enough sleep (the poll between lock probes). */
-function sleep(ms: number): void {
-  // Synchronous poll; the critical section is short, so a busy-wait-free
-  // synchronous sleep keeps the acquire path non-async (the caller is in an
-  // async fn but the lock API is deliberately synchronous so it wraps a
-  // synchronous critical section without threading a promise through it).
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
-    // A plain spin is acceptable for a 50 ms poll; the alternative (Atomics
-    // + SharedArrayBuffer) adds no value here and complicates the API.
-    void Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
   }
 }

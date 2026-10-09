@@ -13,37 +13,41 @@
  * existing unlocked write + mergeAfterRace fallback, which preserves the
  * other writer's row (the fallback re-reads before its rename).
  *
- * Three sections:
+ * Four sections:
  *   1. lock lifecycle — present-while-held, removed-on-release, stale-swept,
  *      unparseable-treated-stale, past-deadline-degrades-to-no-op, and the
  *      default constants match the issue's "≈5 s wait / ≈30 s stale" spec.
  *   2. the two-process race regression — two bun children each call
  *      appendLedgerEntry against a shared PI_ENSEMBLE_REVIEW_LEDGER_FILE
- *      temp file. The race straddles the read/rename gap via a test-only
- *      env var (PI_ENSEMBLE_REVIEW_LEDGER_DELAY_READ_MS) that injects a
- *      delay INSIDE the critical section, between readLedgerFile and
- *      renameSync (see testDelayReadMs in review-ledger.ts). Without the
- *      lock, both children read an empty file, both write their own row,
- *      and the second's rename silently drops the first's row. With the
- *      lock, the second child waits for the first's critical section to
- *      release, then re-reads (the first's row is present), dedupes,
- *      bumps, and writes — both rows survive. The env var is passed
- *      explicitly via the spawn options so both children see the same
- *      value; the parent never sets it in its own env.
+ *      temp file. The race straddles the read/rename gap via the test-only
+ *      injection point setLedgerCriticalSectionHookForTests (the child
+ *      script sets a ~150 ms await hook between readLedgerFile and
+ *      renameSync). Without the lock, both children read an empty file,
+ *      both write their own row, and the second's rename silently drops
+ *      the first's row. With the lock, the second child waits for the
+ *      first's critical section to release, then re-reads (the first's row
+ *      is present), dedupes, bumps, and writes — both rows survive.
  *
  *   3. the in-process Promise.all supplement — two concurrent
  *      appendLedgerEntry calls for different branches against a shared
  *      temp-file ledger; both rows must survive.
  *
+ *   4. event-loop non-blocking proof — while a held lock forces a
+ *      contended (async) acquire into its poll loop, a concurrent
+ *      setTimeout(…, 10) callback in the SAME process must still fire
+ *      before the acquire gives up: a synchronous (Atomics.wait) sleep
+ *      would stop the whole event loop for the poll and the timer would
+ *      never fire inside the wait window.
+ *
  * FAIL-WITHOUT-LOCK PROOF: with the lock temporarily bypassed (the
- * PI_ENSEMBLE_REVIEW_LEDGER_DELAY_READ_MS env var set to 150 ms and the
- * lock's acquireLedgerLock call removed from review-ledger.ts), the
- * two-process race in section 2 loses one row: both children read an empty
- * file, both write their own row, and the second's rename silently drops
- * the first's. This is the #1071 symptom. With the lock in place, the
- * second child waits for the first's release, re-reads, and both rows
- * survive. The proof is documented here; running it requires temporarily
- * bypassing the lock (see the issue's acceptance criteria).
+ * children's ~150 ms critical-section hook in place and the
+ * acquireLedgerLock call removed from review-ledger.ts), the two-process
+ * race in section 2 loses one row: both children read an empty file, both
+ * write their own row, and the second's rename silently drops the first's.
+ * This is the #1071 symptom. With the lock in place, the second child
+ * waits for the first's release, re-reads, and both rows survive. The proof
+ * is documented here; running it requires temporarily bypassing the lock
+ * (see the issue's acceptance criteria).
  */
 
 import { spawn } from "node:child_process";
@@ -83,7 +87,7 @@ function assert(cond: boolean, msg: string) {
     );
 
     // present while held, removed on release.
-    const release = acquireLedgerLock(ledger, { waitMs: 50, pollMs: 5 });
+    const release = await acquireLedgerLock(ledger, { waitMs: 50, pollMs: 5 });
     assert(existsSync(lock), "the lockfile exists while held");
     release();
     assert(!existsSync(lock), "the lockfile is removed on release");
@@ -91,11 +95,11 @@ function assert(cond: boolean, msg: string) {
     // A FRESH (non-stale) held lock is NOT swept by a second acquire — the
     // second acquire waits (bounded) then degrades to a no-op release.
     {
-      const r1 = acquireLedgerLock(ledger, { waitMs: 50, pollMs: 5 });
+      const r1 = await acquireLedgerLock(ledger, { waitMs: 50, pollMs: 5 });
       const started = Date.now();
       // A second acquire with a short wait times out (the first holds the
       // lock fresh), degrading to a no-op release.
-      const r2 = acquireLedgerLock(ledger, { waitMs: 30, pollMs: 5 });
+      const r2 = await acquireLedgerLock(ledger, { waitMs: 30, pollMs: 5 });
       const elapsed = Date.now() - started;
       assert(
         elapsed >= 20,
@@ -110,7 +114,7 @@ function assert(cond: boolean, msg: string) {
     {
       const staleAt = Date.now() - 60_000; // 60 s old, past the 30 s default
       writeFileSync(lock, JSON.stringify({ pid: 999999, at: staleAt, holder: "999999:x" }));
-      const release = acquireLedgerLock(ledger, { waitMs: 50, pollMs: 5 });
+      const release = await acquireLedgerLock(ledger, { waitMs: 50, pollMs: 5 });
       const parsed = JSON.parse(readFileSync(lock, "utf8")) as { pid: number };
       assert(parsed.pid === process.pid, "a stale lockfile is swept and re-acquired (our pid)");
       release();
@@ -120,7 +124,7 @@ function assert(cond: boolean, msg: string) {
     // An UNPARSEABLE lockfile is treated as stale (swept and re-acquired).
     {
       writeFileSync(lock, "not json at all");
-      const release = acquireLedgerLock(ledger, { waitMs: 50, pollMs: 5 });
+      const release = await acquireLedgerLock(ledger, { waitMs: 50, pollMs: 5 });
       const parsed = JSON.parse(readFileSync(lock, "utf8")) as { pid: number };
       assert(
         parsed.pid === process.pid,
@@ -133,11 +137,11 @@ function assert(cond: boolean, msg: string) {
     // caller falls through to the unlocked write + mergeAfterRace). The
     // degraded path never throws and never blocks long.
     {
-      const r1 = acquireLedgerLock(ledger, { waitMs: 200, pollMs: 5 });
+      const r1 = await acquireLedgerLock(ledger, { waitMs: 200, pollMs: 5 });
       let threw = false;
       let degraded: (() => void) | undefined;
       try {
-        degraded = acquireLedgerLock(ledger, { waitMs: 30, pollMs: 5 });
+        degraded = await acquireLedgerLock(ledger, { waitMs: 30, pollMs: 5 });
       } catch (e) {
         threw = true;
       }
@@ -173,19 +177,18 @@ function assert(cond: boolean, msg: string) {
 //
 // Two bun children each call the REAL appendLedgerEntry (imported from the
 // module, not mocked) against a shared PI_ENSEMBLE_REVIEW_LEDGER_FILE temp
-// file. The race straddles the read/rename gap via a test-only env var
-// (PI_ENSEMBLE_REVIEW_LEDGER_DELAY_READ_MS) that injects a delay INSIDE
-// the critical section, between readLedgerFile and renameSync. Without
-// the lock, both children read an empty file, both write their own row,
-// and the second's rename silently drops the first's row (the #1071
-// symptom). With the lock, the second child waits for the first's
-// release, re-reads (the first's row is present), dedupes, bumps, and
-// writes — both rows survive.
+// file. The race straddles the read/rename gap via the test-only injection
+// point setLedgerCriticalSectionHookForTests (review-ledger-lock.ts): the
+// child script sets a ~150 ms await hook between readLedgerFile and
+// renameSync (production never sets it — undefined → no-op). Without the
+// lock, both children read an empty file, both write their own row, and the
+// second's rename silently drops the first's row (the #1071 symptom). With
+// the lock, the second waits for the first's release, re-reads, and both
+// rows survive.
 //
-// The env var is passed explicitly via the spawn options (env: {
-// PI_ENSEMBLE_REVIEW_LEDGER_FILE: ledger,
-// PI_ENSEMBLE_REVIEW_LEDGER_DELAY_READ_MS: "150" }) so both children see
-// the same value; the parent never sets it in its own env.
+// Only PI_ENSEMBLE_REVIEW_LEDGER_FILE is passed via the spawn env (so both
+// children resolve the same ledger path); the delay hook is set inside the
+// child, so it needs no env variable.
 // ===========================================================
 
 {
@@ -194,13 +197,18 @@ function assert(cond: boolean, msg: string) {
   const childScript = path.join(dir, "child.ts");
   try {
     // The child imports the REAL appendLedgerEntry and writes ONE entry for
-    // the branch named by the first CLI arg. The env vars
-    // PI_ENSEMBLE_REVIEW_LEDGER_FILE and
-    // PI_ENSEMBLE_REVIEW_LEDGER_DELAY_READ_MS are passed explicitly via
-    // the spawn options.
+    // the branch named by the first CLI arg. It sets the test-only
+    // critical-section hook (a ~150 ms await between the ledger read and
+    // the rename) BEFORE calling appendLedgerEntry, so the race straddles
+    // the gap deterministically. Only PI_ENSEMBLE_REVIEW_LEDGER_FILE is
+    // passed via the spawn env.
     writeFileSync(
       childScript,
       `import { appendLedgerEntry } from "${path.join(import.meta.dir, "..", "src", "review-ledger.ts").replace(/\\/g, "/")}";
+import { setLedgerCriticalSectionHookForTests } from "${path.join(import.meta.dir, "..", "src", "review-ledger-lock.ts").replace(/\\/g, "/")}";
+setLedgerCriticalSectionHookForTests(async () => {
+  await new Promise((r) => setTimeout(r, 150));
+});
 const branch = process.argv[2];
 const at = Number(process.argv[3]);
 const r = await appendLedgerEntry(
@@ -222,7 +230,7 @@ process.exit(0);
     );
 
     // Two children spawned CONCURRENTLY (not sequentially), each with a
-    // 150 ms delay INSIDE the critical section (between read and rename).
+    // 150 ms hook INSIDE the critical section (between read and rename).
     // Without the lock, both read an empty file, both write their own row,
     // and the second's rename silently drops the first's row. With the
     // lock, the second waits for the first's release, re-reads, and both
@@ -232,7 +240,6 @@ process.exit(0);
       const childEnv = {
         ...process.env,
         PI_ENSEMBLE_REVIEW_LEDGER_FILE: ledger,
-        PI_ENSEMBLE_REVIEW_LEDGER_DELAY_READ_MS: "150",
       };
       const p1 = new Promise<void>((resolve) => {
         const c = spawn("bun", [childScript, "feature/a", String(at)], {
@@ -315,6 +322,49 @@ process.exit(0);
   } finally {
     if (prevLedger === undefined) delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
     else process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = prevLedger;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ===========================================================
+// 4. event-loop non-blocking proof
+//
+// While a held lock forces a contended (async) acquire into its poll loop,
+// a concurrent setTimeout(…, 10) callback in the SAME process must still
+// fire before the acquire gives up. A synchronous (Atomics.wait) sleep in
+// the poll would stop the whole event loop for the poll — the timer could
+// not fire inside the wait window. An awaited setTimeout yields back to
+// the loop, so the timer fires while the acquire is still waiting.
+// ===========================================================
+
+{
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ledger-el-"));
+  const ledger = path.join(dir, "review-ledger.json");
+  const lock = ledgerLockPath(ledger);
+  try {
+    // A held FRESH lock: the contended acquire below cannot create the
+    // lockfile (EEXIST) and enters its bounded async poll loop.
+    const r1 = await acquireLedgerLock(ledger, { waitMs: 300, pollMs: 10 });
+    let timerFired = false;
+    const timer = setTimeout(() => {
+      timerFired = true;
+    }, 10);
+    const started = Date.now();
+    const r2 = await acquireLedgerLock(ledger, { waitMs: 100, pollMs: 10 });
+    const elapsed = Date.now() - started;
+    assert(
+      timerFired,
+      "event loop not blocked: a concurrent 10 ms setTimeout fired while the contended acquire was waiting",
+    );
+    assert(
+      elapsed >= 80,
+      `the contended acquire actually waited (not instant) — ${elapsed}ms, so the timer firing is not a trivial ordering`,
+    );
+    r2(); // degraded no-op release; safe
+    r1();
+    clearTimeout(timer);
+    assert(!existsSync(lock), "the held lock is removed on its own release");
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }

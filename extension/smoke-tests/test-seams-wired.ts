@@ -213,6 +213,10 @@ const SEAMS: Seam[] = [
         "the default stale window (≈30 s); exercised by test-review-ledger-lock.ts",
       ledgerLockPath:
         "the lockfile path (colocated with the ledger file); exercised by test-review-ledger-lock.ts",
+      runLedgerCriticalSectionHook:
+        "the between-read/rename test hook await; wired in appendLedgerEntry (review-ledger.ts), exercised by test-review-ledger-lock.ts",
+      setLedgerCriticalSectionHookForTests:
+        "the test-only setter for the critical-section hook; exercised by test-review-ledger-lock.ts (its child script)",
     },
     canary: { symbol: "acquireLedgerLock", importer: "review-ledger.ts" },
   },

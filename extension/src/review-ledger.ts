@@ -49,7 +49,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { dedupeLatest } from "./review-ledger-core.ts";
-import { acquireLedgerLock, sleepSync, testDelayReadMs } from "./review-ledger-lock.ts";
+import { acquireLedgerLock, runLedgerCriticalSectionHook } from "./review-ledger-lock.ts";
 import { mergeAfterRace } from "./review-ledger-merge.ts";
 import { ledgerPathFor, remoteName } from "./review-ledger-path.ts";
 import { bumpLensRound } from "./review-ledger-round.ts";
@@ -340,7 +340,7 @@ export async function appendLedgerEntry(
     // below still runs unlocked and the rename-catch's mergeAfterRace
     // fallback preserves the other writer's row — the lock is the fast
     // path, the fallback is the safety net.
-    const release = acquireLedgerLock(file);
+    const release = await acquireLedgerLock(file);
     try {
       // Re-read immediately before writing: a concurrent writer may have
       // appended between our first read and this rename; merging keeps its
@@ -364,11 +364,12 @@ export async function appendLedgerEntry(
       // highest `at` regardless, so a hand-edited or legacy multi-row file
       // still counts the most recent round).
       entries.push(bumpLensRound(entry, entries));
-      // #1071 test-only hook: widen the read/rename gap so a two-process
-      // race (test-review-ledger-lock.ts) straddles it deterministically.
-      // No-op in production (env var absent).
-      const delayMs = testDelayReadMs();
-      if (delayMs > 0) sleepSync(delayMs);
+      // #1071 test-only hook: a two-process race (test-review-ledger-lock.ts)
+      // straddles the read/rename gap deterministically by injecting a hook
+      // (setLedgerCriticalSectionHookForTests) that awaits here. No-op in
+      // production (the hook is undefined); the production write path has no
+      // env-var test hook of its own.
+      await runLedgerCriticalSectionHook();
       const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
       writeFileSync(tmp, JSON.stringify({ entries }, null, 2), "utf8");
       try {
