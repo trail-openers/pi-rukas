@@ -122,7 +122,7 @@ async function mkCommittedWorktree(): Promise<{ root: string; wt: string; baseSh
         },
       };
       const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-        if (cmd === "git status --porcelain") return { stdout: " M src/foo.ts\n" };
+        if (cmd === "git status --porcelain") return { stdout: " M src/foo.css\n" };
         if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
         return { stdout: "" };
       };
@@ -190,7 +190,7 @@ async function mkCommittedWorktree(): Promise<{ root: string; wt: string; baseSh
         },
       };
       const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-        if (cmd === "git status --porcelain") return { stdout: " M src/foo.ts\n" };
+        if (cmd === "git status --porcelain") return { stdout: " M src/foo.css\n" };
         return { stdout: "" };
       };
       const failures: string[] = [];

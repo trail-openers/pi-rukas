@@ -111,7 +111,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
               },
             };
             const execWithSkipMarkers: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-              if (cmd === "git status --porcelain") return { stdout: "M src/test.ts\n" };
+              if (cmd === "git status --porcelain") return { stdout: "M src/test.css\n" };
               if (cmd.includes("verify-cmd")) return { stdout: "ok\n" };
               if (cmd.startsWith("git diff")) {
                 return {
@@ -157,7 +157,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
             const execWithNetZeroMarkers: NonNullable<DriverContext["verifyExecFn"]> = async (
               cmd,
             ) => {
-              if (cmd === "git status --porcelain") return { stdout: "M src/test.ts\n" };
+              if (cmd === "git status --porcelain") return { stdout: "M src/test.css\n" };
               if (cmd.includes("verify-cmd")) return { stdout: "ok\n" };
               if (cmd.startsWith("git diff")) {
                 return { stdout: '+it.skip("new");\n-#[ignore]\n' };
@@ -178,7 +178,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
             );
             // Also verify net-negative (more removals than additions) does not fail
             const execWithNetNegative: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-              if (cmd === "git status --porcelain") return { stdout: "M src/test.ts\n" };
+              if (cmd === "git status --porcelain") return { stdout: "M src/test.css\n" };
               if (cmd.includes("verify-cmd")) return { stdout: "ok\n" };
               if (cmd.startsWith("git diff")) {
                 return { stdout: '+it.skip("new");\n-#[ignore]\n-it.skip("old");\n' };
@@ -220,7 +220,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
             const execWithFalsePositives: NonNullable<DriverContext["verifyExecFn"]> = async (
               cmd,
             ) => {
-              if (cmd === "git status --porcelain") return { stdout: "M src/docs.ts\n" };
+              if (cmd === "git status --porcelain") return { stdout: "M src/docs.css\n" };
               if (cmd.includes("verify-cmd")) return { stdout: "ok\n" };
               if (cmd.startsWith("git diff")) {
                 return {
@@ -264,7 +264,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
             const execWithMultipleMarkers: NonNullable<DriverContext["verifyExecFn"]> = async (
               cmd,
             ) => {
-              if (cmd === "git status --porcelain") return { stdout: "M src/test.ts\n" };
+              if (cmd === "git status --porcelain") return { stdout: "M src/test.css\n" };
               if (cmd.includes("verify-cmd")) return { stdout: "ok\n" };
               if (cmd.startsWith("git diff")) {
                 return {
@@ -311,7 +311,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
               },
             };
             const execFailingSmoke: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-              if (cmd === "git status --porcelain") return { stdout: "M src/main.ts\n" };
+              if (cmd === "git status --porcelain") return { stdout: "M src/main.css\n" };
               if (cmd.startsWith("git diff")) return { stdout: "+new code\n" };
               if (cmd.includes("run smoke")) {
                 throw new Error("Smoke failed: assertion error\n    at test/e2e/smoke.test.ts:42");
@@ -356,7 +356,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
               issue: 1006,
               issueBodyFetcherFn: () => ({ stdout: "adding feature" }),
               verifyExecFn: async (cmd) => {
-                if (cmd === "git status --porcelain") return { stdout: "M src/main.ts\n" };
+                if (cmd === "git status --porcelain") return { stdout: "M src/main.css\n" };
                 if (cmd.includes("verify-cmd")) return { stdout: "ok\n" };
                 if (cmd.startsWith("git diff")) return { stdout: "+new code\n" };
                 return { stdout: "" };
@@ -394,7 +394,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
                 },
               };
               const execSmokeDisabled: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-                if (cmd === "git status --porcelain") return { stdout: "M src/main.ts\n" };
+                if (cmd === "git status --porcelain") return { stdout: "M src/main.css\n" };
                 if (cmd.includes("verify-cmd")) return { stdout: "ok\n" };
                 if (cmd.startsWith("git diff")) return { stdout: "+new code\n" }; // No skip markers, so ratchet won't fail
                 if (cmd.includes("run smoke")) throw new Error("Smoke failed"); // Smoke fails but is disabled
@@ -436,7 +436,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
               const execRatchetDisabled: NonNullable<DriverContext["verifyExecFn"]> = async (
                 cmd,
               ) => {
-                if (cmd === "git status --porcelain") return { stdout: "M src/test.ts\n" };
+                if (cmd === "git status --porcelain") return { stdout: "M src/test.css\n" };
                 if (cmd.includes("verify-cmd")) return { stdout: "ok\n" };
                 if (cmd.startsWith("git diff"))
                   return { stdout: '-it("deleted test");\n+#[ignore]\n+it.skip("test");\n' }; // Both ratchets disabled

@@ -20,6 +20,10 @@ import { initialState } from "../src/workflow-state.ts";
 
 const execFileP = promisify(execFile);
 
+// #1012 — empty glob list disables frontend-only classification (also
+// for files that import this module).
+process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
+
 export const realExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
   try {
     const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {

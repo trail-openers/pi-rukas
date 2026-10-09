@@ -56,7 +56,7 @@ try {
     issue: 1010,
     issueBodyFetcherFn: () => ({ stdout: "smoke cwd test" }),
     verifyExecFn: async (cmd, opts) => {
-      if (cmd === "git status --porcelain") return { stdout: "M src/app.ts\n" };
+      if (cmd === "git status --porcelain") return { stdout: "M src/app.css\n" };
       if (cmd.includes("verify-cmd")) return { stdout: "ok\n" };
       if (cmd.startsWith("git diff")) return { stdout: "+new code\n" };
       if (cmd.includes("run smoke")) {

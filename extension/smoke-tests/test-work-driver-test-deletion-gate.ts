@@ -47,7 +47,7 @@ async function runGate(diff: string, issue: number) {
       issue,
       issueBodyFetcherFn: () => ({ stdout: "test-deletion ratchet" }),
       verifyExecFn: async (command) => {
-        if (command === "git status --porcelain") return { stdout: "M src/tests.ts\n" };
+        if (command === "git status --porcelain") return { stdout: "M src/tests.css\n" };
         if (command.startsWith("git diff")) return { stdout: diff };
         return { stdout: "" };
       },

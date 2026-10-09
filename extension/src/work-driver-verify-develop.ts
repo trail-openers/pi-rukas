@@ -22,7 +22,11 @@ import {
 import { runFalsilyGreenCheck } from "./work-driver-falsily-green.ts";
 import { runScopeFanoutGate } from "./work-driver-scope-fanout.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
-import { declaredPathsHaveSource, verifyCmdFor } from "./work-driver-verify-cmd.ts";
+import {
+  declaredPathsHaveSource,
+  shouldSkipVerifyForFrontendOnly,
+  verifyCmdFor,
+} from "./work-driver-verify-cmd.ts";
 import {
   runCommentRetentionGate,
   runSkipRatchetGate,
@@ -93,6 +97,12 @@ export async function verifyDevelopOutcome(
   // of baseSha); when > 0 and changedWorktrees is empty, the per-worktree
   // failures already explain the issue — skip the empty-diff message.
   let uncommittedOnlyCount = 0;
+  // #1012 — set to true when any per-worktree git read (status or diff) threw.
+  // The frontend-only skip must not fire on a partial union: a CSS-only union
+  // from the surviving worktree(s) is not evidence when one worktree's diff
+  // is missing. The flag is passed to shouldSkipVerifyForFrontendOnly which
+  // forces skip:false and records a note naming the incomplete union.
+  let gitReadFailedAnyWorktree = false;
   // #679 (task-evidence) — workstream ids whose declared paths are entirely
   // non-source (docs-only), EXEMPT from the "uncommitted but no commit"
   // failure (uncommitted work is a legitimate non-source deliverable) and
@@ -142,6 +152,7 @@ export async function verifyDevelopOutcome(
       if (ownSet) for (const file of statusPaths) ownSet.add(normaliseScopePath(file));
     } catch (err) {
       notes.push(`git status failed in ${id} (${(err as Error).message?.slice(0, 100)})`);
+      gitReadFailedAnyWorktree = true;
     }
     // #725 — diff against THIS workstream's effective base, not the cycle-
     // global baseSha: a dependent's worktree is created from its dependency's
@@ -177,6 +188,7 @@ export async function verifyDevelopOutcome(
         if (ownSet) for (const file of diffPaths) ownSet.add(normaliseScopePath(file));
       } catch {
         // Same as above — an absent baseSha in this worktree is not evidence.
+        gitReadFailedAnyWorktree = true;
       }
     }
     if (assessed) assessedCount++;
@@ -312,35 +324,64 @@ export async function verifyDevelopOutcome(
       "no verify command discoverable (.pi/verify-cmd, package.json scripts, Cargo.toml) — diff evidence only",
     );
   } else {
-    // #794 — the per-worktree loop + consolidated run + classification is
-    // extracted to work-driver-verify-verify-cmd.ts (500-line gate); the
-    // failure messages, the flake-retry precondition and the aggregation
-    // semantics all live there unchanged.
-    await runVerifyCommandGate({
-      execFn,
-      cmd,
-      ctx,
-      state,
-      worktrees,
-      baseSha,
-      changedWorktrees,
-      workstreamBaseShas,
-      failures,
-      notes,
-      onVerifyFlakeRecovered,
-      // #814 — the fence records the gate just wrote (the scope gate runs
-      // before the consolidated verify) — so a conflict the fence already
-      // recorded is attributed, not re-diagnosed as an incoherent
-      // decomposition.
-      ...(fenceViolations !== undefined ? { fenceViolations } : {}),
-      ...(onConsolidatedLogPath !== undefined ? { onConsolidatedLogPath } : {}),
-    });
+    // #1012 — frontend-only diffs skip the DERIVED verify chain (package.json
+    // scripts, Cargo.toml cargo check): a CSS-only change must not trigger a
+    // backend build. The skip is derived-only — an explicit .pi/verify-cmd is
+    // operator intent and ALWAYS runs (same philosophy as PI_ENSEMBLE_VERIFY=0:
+    // explicit intent beats auto-detection). Classification uses the CUMULATIVE
+    // union of all worktrees' changed paths (porcelain + diff), already
+    // normalised by porcelainPaths/diff parsing; an empty union (nothing
+    // readable) or any non-frontend path falls back to the full chain — a
+    // classification failure never skips a check. The skip-ratchet, smoke and
+    // comment-retention gates below are unaffected and run unconditionally.
+    // shouldSkipVerifyForFrontendOnly (work-driver-verify-cmd.ts) uses
+    // fs.access (async) to check for an explicit .pi/verify-cmd — consistent
+    // with verifyCmdFor's own file-access pattern (no sync fs in this gate).
+    const skipDecision = await shouldSkipVerifyForFrontendOnly(
+      ctx.repoRoot,
+      touchedPaths,
+      gitReadFailedAnyWorktree,
+    );
+    if (skipDecision.skip) {
+      notes.push(skipDecision.reason ?? "frontend-only skip");
+    } else {
+      // #1012 — a non-skip `reason` is diagnostic (git-failure suppression,
+      // probe error, opt-in disabled): record it but still run the gate.
+      // Only an actual skip suppresses the derived chain.
+      if (skipDecision.reason) notes.push(skipDecision.reason);
+      // #794 — the per-worktree loop + consolidated run + classification is
+      // extracted to work-driver-verify-verify-cmd.ts (500-line gate); the
+      // failure messages, the flake-retry precondition and the aggregation
+      // semantics all live there unchanged.
+      await runVerifyCommandGate({
+        execFn,
+        cmd,
+        ctx,
+        state,
+        worktrees,
+        baseSha,
+        changedWorktrees,
+        workstreamBaseShas,
+        failures,
+        notes,
+        onVerifyFlakeRecovered,
+        // #814 — the fence records the gate just wrote (the scope gate runs
+        // before the consolidated verify) — so a conflict the fence already
+        // recorded is attributed, not re-diagnosed as an incoherent
+        // decomposition.
+        ...(fenceViolations !== undefined ? { fenceViolations } : {}),
+        ...(onConsolidatedLogPath !== undefined ? { onConsolidatedLogPath } : {}),
+      });
+    }
   }
 
   // --- Skip-ratchet gate (PR277) + product smoke gate (PR277) ---
   // #451 — extracted to work-driver-verify-develop-gates.ts (AGENTS.md §12
   // file-size cap). The #782 flake-retry logic above pushed this file past
   // the 500-line limit; the two independent post-verify gates move there.
+  // #1012 — these gates run UNCONDITIONALLY: the frontend-only skip above
+  // gates only the verifyCmdFor → runVerifyCommandGate chain, never the
+  // ratchet/smoke/comment-retention checks.
   await runSkipRatchetGate(execFn, ctx.repoRoot, baseSha, changedWorktrees, failures, notes);
   // #948 — comment-retention gate. Threaded like runFalsilyGreenCheck: per
   // worktree, against that workstream's effective base.
