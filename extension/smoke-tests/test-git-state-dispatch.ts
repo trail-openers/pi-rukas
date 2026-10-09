@@ -11,6 +11,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startBatch, startJob } from "../src/async-jobs.ts";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { DispatchResult } from "../src/types.ts";
 
 let exit = 0;
@@ -32,15 +33,14 @@ function mkRepo(dirty: boolean): string {
   return dir;
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: testing seam — minimum pi shape.
+/** Minimal ExtensionAPI double: the only member startJob/startBatch touch here is sendUserMessage. */
 function makePi() {
   const inbox: Array<{ content: string; deliverAs?: string }> = [];
-  // biome-ignore lint/suspicious/noExplicitAny: testing seam
-  const pi: any = {
+  const pi = {
     sendUserMessage(content: string, options?: { deliverAs?: string }) {
       inbox.push({ content, deliverAs: options?.deliverAs });
     },
-  };
+  } as unknown as ExtensionAPI;
   return { pi, inbox };
 }
 

@@ -59,8 +59,9 @@ function porcelainPath(line: string): string {
   const raw = line.slice(3);
   const arrow = raw.indexOf(" -> ");
   const path = arrow >= 0 ? raw.slice(arrow + 4) : raw;
-  // Untrusted (PR-controlled) filenames: JSON-quote (escapes newlines/control chars, marks it as data) and bound the length.
-  return JSON.stringify(Array.from(path).slice(0, MAX_PATH_CHARS).join(""));
+  // Untrusted (PR-controlled) filenames: drop control characters (C0/C1, incl. newline and ESC), bound the length per path, then JSON-quote so the path is marked as data.
+  const printable = path.replace(/\p{Cc}/gu, "");
+  return JSON.stringify(Array.from(printable).slice(0, MAX_PATH_CHARS).join(""));
 }
 
 function countOf(out: string): number {

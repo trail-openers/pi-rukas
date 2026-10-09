@@ -37,12 +37,7 @@ function fmtTokens(n: number | undefined): string {
  * cost from the token count if needed.
  */
 function fmtUsage(result: {
-  usage?: {
-    input: number;
-    output: number;
-    cacheRead: number;
-    cacheWrite: number;
-  };
+  usage?: { input: number; output: number; cacheRead: number; cacheWrite: number };
   model?: string;
   provider?: string;
 }): string {
@@ -116,19 +111,13 @@ export function describeOutcome(result: DispatchResult): {
     };
   }
   if (result.killCause === "inactivity") {
-    return {
-      status: "FAILED (self-killed: inactivity watchdog)",
-      bodyPrefix: null,
-    };
+    return { status: "FAILED (self-killed: inactivity watchdog)", bodyPrefix: null };
   }
   // #951 — a distinct headline from the model-silence watchdog: this child
   // had a tool call in flight when it went silent (the tool bound fired), so
   // the operator can tell a silent model from a silent tool.
   if (result.killCause === "tool-inactivity") {
-    return {
-      status: "FAILED (self-killed: tool-inactivity watchdog)",
-      bodyPrefix: null,
-    };
+    return { status: "FAILED (self-killed: tool-inactivity watchdog)", bodyPrefix: null };
   }
   if (result.killCause === "abort") {
     return { status: "FAILED (cancelled: abort signal)", bodyPrefix: null };
@@ -155,10 +144,7 @@ export function describeOutcome(result: DispatchResult): {
     };
   }
   if (result.killCause === "token-budget") {
-    return {
-      status: "FAILED (self-killed: token budget crossed)",
-      bodyPrefix: null,
-    };
+    return { status: "FAILED (self-killed: token budget crossed)", bodyPrefix: null };
   }
   // #754 — the plan step's own bound expired. Distinct from the generic
   // wall-clock timeout headline: the bound is on planning, not on the work.
@@ -194,10 +180,7 @@ export function describeOutcome(result: DispatchResult): {
     };
   }
   if (result.ok) return { status: "finished", bodyPrefix: null };
-  return {
-    status: `FAILED (exit ${result.exitCode ?? "?"})`,
-    bodyPrefix: null,
-  };
+  return { status: `FAILED (exit ${result.exitCode ?? "?"})`, bodyPrefix: null };
 }
 
 /**

@@ -166,6 +166,8 @@ export function registerDispatchTools(pi: ExtensionAPI) {
       const { jobId } = startJob(pi, {
         label: spec.role,
         role: spec.role,
+        // #1015 — the resolved dispatch cwd (same expression spawn.ts uses for the
+        // child) so the report's git-state line inspects the tree the child worked in.
         cwd: spec.cwd ?? process.cwd(),
         work: (signal, hooks) =>
           withProviderBackoff(
@@ -236,6 +238,7 @@ export function registerDispatchTools(pi: ExtensionAPI) {
           return {
             label: displayLabel,
             role: spec.role,
+            // #1015 — per-member resolved cwd, as in the single-dispatch path above.
             cwd: spec.cwd ?? process.cwd(),
             work: (signal, hooks) =>
               withProviderBackoff(
