@@ -139,16 +139,8 @@ export function frontendGlobs(): string[] {
  * `.ts` as source in its own context.
  */
 export function pathsAreFrontendOnly(paths: string[], globs: string[]): boolean {
-  return pathsAreFrontendOnlySet(paths, new Set(globs));
-}
-
-/**
- * #1012 — internal: accepts a pre-built Set to avoid rebuilding it in a
- * per-path or per-call loop. Callers that iterate paths in a loop (per-
- * workstream classification) can build the Set once and pass it through.
- */
-export function pathsAreFrontendOnlySet(paths: string[], globSet: Set<string>): boolean {
   if (paths.length === 0) return false;
+  const globSet = new Set(globs);
   return paths.every((p) => {
     const low = p.toLowerCase();
     const dot = low.lastIndexOf(".");
@@ -166,9 +158,14 @@ export function pathsAreFrontendOnlySet(paths: string[], globSet: Set<string>): 
  * and ALWAYS runs (same philosophy as `PI_ENSEMBLE_VERIFY=0`: explicit
  * intent beats auto-detection). The check is async (uses `fs.access`) to
  * stay consistent with the gate's file-access pattern (no sync fs calls in
- * the otherwise-async gate) and to degrade gracefully on EACCES/ENOTDIR
- * (treated as "no explicit file" → skip, matching `verifyCmdFor`'s own
- * `fs.access` pattern).
+ * the otherwise-async gate).
+ *
+ * The `.pi/verify-cmd` probe fails closed: only ENOENT/ENOTDIR are treated
+ * as "no explicit file" (the skip may proceed). Any other access error
+ * (EACCES, EIO, transient NFS hiccup, …) suppresses the skip and returns
+ * `{ skip: false, reason: "could not probe .pi/verify-cmd (…)" }`, matching
+ * the git-failure suppression path — a gate that cannot confirm the file is
+ * absent must not skip a check.
  *
  * Returns `{ skip: true, reason }` when the caller should skip, or
  * `{ skip: false }` when the full chain should run.
@@ -185,11 +182,24 @@ export async function shouldSkipVerifyForFrontendOnly(
         "frontend-only skip suppressed: a git read failed in one or more worktrees, so the touched-path union is incomplete — treating the diff as not frontend-only",
     };
   }
-  const hasExplicit = await fs
-    .access(path.join(repoRoot, ".pi", "verify-cmd"), fs.constants.F_OK)
-    .then(() => true)
-    .catch(() => false);
+  let hasExplicit: boolean;
+  let probeError: string | undefined;
+  try {
+    await fs.access(path.join(repoRoot, ".pi", "verify-cmd"), fs.constants.F_OK);
+    hasExplicit = true;
+  } catch (e: unknown) {
+    const code = (e as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      hasExplicit = false;
+    } else {
+      probeError = code ?? String(e);
+      hasExplicit = false;
+    }
+  }
   if (hasExplicit) return { skip: false };
+  if (probeError) {
+    return { skip: false, reason: `could not probe .pi/verify-cmd (${probeError})` };
+  }
   if (pathsAreFrontendOnly(touchedPaths, frontendGlobs())) {
     return {
       skip: true,
