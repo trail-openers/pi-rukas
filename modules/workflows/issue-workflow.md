@@ -43,7 +43,7 @@ PM creates issues exclusively via the `start_plan_driver` tool. It runs the five
 
 ## GitHub Issue Command Reference (bare `gh`)
 
-All issue mutations run as bare `gh` commands (run `gh` bare — compression wrappers index or truncate output >4 KB, which loses the raw issue body PM needs to decide). Mutation verbs (`create`, `edit`, `close`, `reopen`) are **PM-only** per the role split above; read verbs (`view`, `list`, `comment`) are shared.
+All issue mutations run as bare `gh` commands (raw output — a compressed or indexed summary loses the issue body PM needs to decide). Mutation verbs (`create`, `edit`, `close`, `reopen`) are **PM-only** per the role split above; read verbs (`view`, `list`, `comment`) are shared.
 
 **Comment on an issue:**
 
@@ -97,7 +97,7 @@ Use `gh issue view` for reading issue content. If it fails with `repository.issu
 
 ### Single Issue Fallback
 
-Two separate bare tool calls — no command substitution, no pipe. Pipelines and `$(…)` shapes break the `oo` runner (its indexing path replaces JSON with a recall-hint line) and can prompt the permission matcher, which cannot wildcard chained shapes — the two-step shape keeps every call clean and the raw output readable.
+Two separate bare tool calls — no command substitution, no pipe. Pipelines and `$(…)` shapes can prompt the permission matcher, which cannot wildcard chained shapes — the two-step shape keeps every call clean and the raw output readable.
 
 1. Derive `{owner}` and `{repo}` from the remote URL (read the URL, then extract the owner and repo segments yourself):
 
@@ -105,7 +105,7 @@ Two separate bare tool calls — no command substitution, no pipe. Pipelines and
    git remote get-url origin
    ```
 
-2. Fetch the issue with the REST endpoint (run bare — bare returns the full JSON, which you then read directly):
+2. Fetch the issue with the REST endpoint (run bare — it returns the full JSON, which you then read directly):
 
    ```bash
    gh api repos/{owner}/{repo}/issues/{number}

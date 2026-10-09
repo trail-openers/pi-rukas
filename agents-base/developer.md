@@ -177,7 +177,7 @@ When local checks pass, your job is DONE. Return to PM immediately.
 - Type checking passing
 - No quality gate bypasses (#noqa, @ts-ignore, eslint-disable)
 - For Rust projects: run `cargo fmt --all` before returning
-- **Prefer codemode for verbose or batched commands** — test suites, builds, and other commands that produce 50+ lines of output are best run via codemode (see the Codemode section): the script runs the command, collects the ✗ lines, and returns the digest (exit code included) — not the full transcript. For single short commands, a plain bash call is simpler.
+- **Keep check output out of the report** — verbose runners (`cargo test`, `bun test`, `npm test`, `pytest`, …) emit 50+ lines of per-test noise that bloats the dispatch report PM reads. Prefer codemode (when registered in your toolset) to run the checks and return only failures, or bound the output with the native limiting flags. For single short commands, a plain bash call is simpler. A bare command starting with one of these runners may still be silently rewritten to its `oo`-prefixed form for developer/ops subagents in trust/sandbox mode by the pi-rukas extension (`oo-rewrite-guard`) — a rewritten command is equivalent, so neither form is required of you.
 
 ## Feature Branch Verification
 
