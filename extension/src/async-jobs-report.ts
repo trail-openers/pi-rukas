@@ -264,6 +264,11 @@ export const GATE_LINE =
  */
 export const GATE_LINE_TRUNCATED = `First verify the on-disk state (the report may be truncated); then: ${GATE_LINE}`;
 
+/** #1015 — the roles whose reports carry the harness git-state line. Decided once, from the role, at the dispatch call site. */
+export function reportsGitState(role: string): boolean {
+  return role === "developer" || role === "ops";
+}
+
 function isDeveloperLabel(label: string): boolean {
   return label === "developer" || label.startsWith("developer[");
 }
@@ -277,7 +282,12 @@ function isFinishedDeveloper(label: string, result: DispatchResult): boolean {
   return isDeveloperLabel(label) && describeOutcome(result).status === "finished";
 }
 
-export function formatSingleReport(jobId: string, label: string, result: DispatchResult): string {
+export function formatSingleReport(
+  jobId: string,
+  label: string,
+  result: DispatchResult,
+  gitLine?: string,
+): string {
   const turns = result.usage?.turns ?? 0;
   const elapsed = fmtElapsed(result.ms);
   // Five-way status: killCause (#296) is checked first — pi-rukas's own
@@ -314,7 +324,7 @@ export function formatSingleReport(jobId: string, label: string, result: Dispatc
       : result.ok
         ? "---\nYou started this async dispatch earlier. Continue the workflow."
         : `---\n(See /runs for full transcript at ${result.transcriptPath ?? "ensemble-runs/"}.)`;
-  return `${head}\n\n${body}\n\n${footer}`;
+  return `${head}\n\n${body}\n\n${gitLine ? `${gitLine}\n\n` : ""}${footer}`;
 }
 
 export function formatFailReport(jobId: string, label: string, err: Error): string {
@@ -335,6 +345,8 @@ export interface BatchReportInput {
     jobId: string;
     label: string;
     result: DispatchResult | { failed: true; error: string };
+    /** #1015 — pre-computed git-state line for developer/ops members. */
+    gitLine?: string;
   }>;
 }
 
@@ -370,7 +382,8 @@ export function formatBatchReport(input: BatchReportInput): string {
       text !== "" &&
       isTruncatedNarration(text, turns);
     const badge = truncated ? truncationBadge(m.result) : "";
-    return `=== ${m.label} (job ${m.jobId}) — ${status} · ${turns} turns · ${elapsed}${fmtObservedWork(m.result)}${fmtUsage(m.result)}${badge} ===\n${body}`;
+    const gitTail = m.gitLine ? `\n${m.gitLine}` : "";
+    return `=== ${m.label} (job ${m.jobId}) — ${status} · ${turns} turns · ${elapsed}${fmtObservedWork(m.result)}${fmtUsage(m.result)}${badge} ===\n${body}${gitTail}`;
   });
   // #911 — the gate line appears at most once in the shared footer: any
   // developer member that actually finished ("finished" via the shared
