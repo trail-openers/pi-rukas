@@ -50,7 +50,7 @@ async function deliverBatchReport(
   await Promise.all(
     memberResults.map(async (m) => {
       if ("failed" in m.result || !isDevOrOpsLabel(m.label)) return;
-      lines.set(m.jobId, await gitStateLine(memberCwd.get(m.jobId) ?? process.cwd()));
+      lines.set(m.jobId, await gitStateLine(memberCwd.get(m.jobId)));
     }),
   );
   const members = memberResults.map((m) => ({
@@ -209,8 +209,19 @@ export function startBatch(
               trace(
                 `async batch ${batchId} (${input.batchLabel}) finished in ${Date.now() - startedAt}ms`,
               ),
-            (err: unknown) =>
-              trace(`async batch ${batchId} (${input.batchLabel}) report failed: ${String(err)}`),
+            (err: unknown) => {
+              trace(`async batch ${batchId} (${input.batchLabel}) report failed: ${String(err)}`);
+              // Fall back to the batch report without git-state lines so the parent still hears back.
+              deliverReport(
+                pi,
+                formatBatchReport({
+                  batchLabel: input.batchLabel,
+                  batchId,
+                  startedAt,
+                  members: memberResults,
+                }),
+              );
+            },
           );
         }
       });

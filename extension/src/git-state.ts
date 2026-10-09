@@ -40,7 +40,8 @@ function reasonOf(err: unknown): string {
     stderr?: string;
     message?: string;
   };
-  if (e.killed || e.signal) return "git timeout";
+  // Only the exec timeout sets `killed`; an external signal is not a timeout.
+  if (e.killed) return "git timeout";
   if (/not a git repository/i.test(`${e.stderr ?? ""} ${e.message ?? ""}`)) {
     return "not a git repository";
   }
@@ -58,8 +59,8 @@ function porcelainPath(line: string): string {
   const raw = line.slice(3);
   const arrow = raw.indexOf(" -> ");
   const path = arrow >= 0 ? raw.slice(arrow + 4) : raw;
-  // Untrusted (PR-controlled) filenames: bound each one so a long name cannot crowd the line.
-  return Array.from(path).slice(0, MAX_PATH_CHARS).join("");
+  // Untrusted (PR-controlled) filenames: JSON-quote (escapes newlines/control chars, marks it as data) and bound the length.
+  return JSON.stringify(Array.from(path).slice(0, MAX_PATH_CHARS).join(""));
 }
 
 function countOf(out: string): number {
@@ -67,10 +68,11 @@ function countOf(out: string): number {
 }
 
 async function unpushedClause(run: GitRunner, cwd: string): Promise<string> {
+  // `rev-parse -q` exits 1 for a missing upstream; any other failure is a real error.
   const hasUpstream = await run(["rev-parse", "--verify", "-q", "@{u}"], cwd).then(
     () => true,
     (err: unknown) => {
-      if (reasonOf(err) === "git timeout") throw err;
+      if ((err as { code?: number }).code !== 1) throw err;
       return false;
     },
   );
@@ -84,10 +86,16 @@ async function unpushedClause(run: GitRunner, cwd: string): Promise<string> {
 
 function capBytes(line: string): string {
   if (Buffer.byteLength(line) <= MAX_LINE_BYTES) return line;
-  // Iterate by code point so a surrogate pair is never split.
-  const chars = Array.from(line);
-  while (chars.length > 0 && Buffer.byteLength(chars.join("")) > MAX_LINE_BYTES - 3) chars.pop();
-  return `${chars.join("")}...`;
+  // Accumulate by code point so a surrogate pair is never split.
+  let out = "";
+  let bytes = 0;
+  for (const ch of line) {
+    const b = Buffer.byteLength(ch);
+    if (bytes + b > MAX_LINE_BYTES - 3) break;
+    out += ch;
+    bytes += b;
+  }
+  return `${out}...`;
 }
 
 /**
@@ -96,14 +104,16 @@ function capBytes(line: string): string {
  *   "git state (at report time): 7 uncommitted/untracked (a, b, c, d, e, +2 more); 1 commit(s) ahead of upstream"
  *   "git state (at report time): unverified (not a git repository)"
  */
-async function reportLine(cwd: string, run: GitRunner): Promise<string> {
+async function reportLine(cwd: string | undefined, run: GitRunner): Promise<string> {
+  if (cwd === undefined) return `${PREFIX} unverified (no cwd)`;
   try {
     // A nested non-repo cwd resolves upward to the parent repo; the dispatch cwd must BE the top level.
     const top = (await run(["rev-parse", "--show-toplevel"], cwd)).trim();
     if (realpathSync(top) !== realpathSync(cwd)) throw new Unverified("not a git repository");
-    const status = await run(["status", "--porcelain", "--untracked-files=all"], cwd);
+    // `normal` lists untracked directories as one entry: no walk of an unignored build tree.
+    const status = await run(["status", "--porcelain", "--untracked-files=normal"], cwd);
     await run(["rev-parse", "--verify", "-q", "HEAD"], cwd).catch((err: unknown) => {
-      if (reasonOf(err) === "git timeout") throw err;
+      if ((err as { code?: number }).code !== 1) throw err;
       throw new Unverified("no commits");
     });
     const entries = status.split("\n").filter((l) => l.length > 0);
@@ -128,7 +138,10 @@ async function reportLine(cwd: string, run: GitRunner): Promise<string> {
  * #1015 — the whole report is bounded by ONE deadline (GIT_STATE_TIMEOUT_MS), not per git call:
  * a hung repo must not delay the steer by several timeouts in sequence.
  */
-export async function gitStateLine(cwd: string, run: GitRunner = runGit): Promise<string> {
+export async function gitStateLine(
+  cwd: string | undefined,
+  run: GitRunner = runGit,
+): Promise<string> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<string>((resolve) => {
     timer = setTimeout(() => resolve(`${PREFIX} unverified (git timeout)`), GIT_STATE_TIMEOUT_MS);

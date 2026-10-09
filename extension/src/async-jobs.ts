@@ -102,8 +102,8 @@ export interface WorkHooks {
 interface StartJobInput {
   /** Human-readable subagent label (role + optional tag, e.g. "code-review-specialist[security]"). */
   label: string;
-  /** #1015 — resolved dispatch cwd (`spec.cwd ?? process.cwd()`); the developer/ops
-   * report's git-state line is computed against it, never process.cwd(). */
+  /** #1015 — resolved dispatch cwd; the developer/ops report's git-state line is computed
+   * against it. Absent → the line reads "unverified (no cwd)", never process.cwd(). */
   cwd?: string;
   /** Role name for telemetry. */
   role: string;
@@ -300,7 +300,12 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
         const deliver = (gitLine?: string) =>
           deliverReport(pi, formatSingleReport(jobId, input.label, result, gitLine));
         if (isDevOrOpsLabel(input.label)) {
-          void gitStateLine(input.cwd ?? process.cwd()).then(deliver);
+          // gitStateLine never rejects; the fallback delivers the report unannotated if it ever does.
+          void gitStateLine(input.cwd)
+            .then(deliver, () => deliver())
+            .catch((err: unknown) =>
+              trace(`async job ${jobId} report delivery failed: ${String(err)}`),
+            );
         } else {
           deliver();
         }
