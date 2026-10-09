@@ -191,6 +191,66 @@ async function cherryLines(
 }
 
 /**
+ * #981 — `true` when EVERY commit in the `tipSha..treeSha` range is a
+ * non-empty patch (its tree differs from its parent's tree). `git cherry`
+ * marks commits by PATCH-EQUIVALENCE via patch-id, and its contract only
+ * covers non-empty patches — every empty commit produces the SAME (empty)
+ * patch-id, so an all-`-` cherry result can be a false positive when the
+ * range contains an empty worktree commit that collides with an unrelated
+ * empty commit on the tip. An empty worktree commit (or a real fix riding
+ * on one) has no non-empty patch to land, so such a range is treated as
+ * UNVERIFIED — the caller backs the tree up and parks rather than moving
+ * it to the tip. `undefined` when the emptiness read itself fails (the
+ * caller also treats that as unverified — fail closed).
+ */
+async function rangeAllNonEmpty(
+  execFn: ExecFn,
+  tree: string,
+  tipSha: string,
+  treeSha: string,
+): Promise<boolean | undefined> {
+  let shas: string[];
+  try {
+    const { stdout } = await execFn("git", {
+      cwd: tree,
+      maxBuffer: 64 * 1024,
+      argv: ["rev-list", `${tipSha}..${treeSha}`],
+    });
+    shas = stdout
+      .trim()
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+  } catch {
+    return undefined;
+  }
+  for (const sha of shas) {
+    let empty: boolean;
+    try {
+      await execFn("git", {
+        cwd: tree,
+        argv: ["diff", "--quiet", "--exit-code", `${sha}^`, sha],
+      });
+      empty = true;
+    } catch (e) {
+      // `git diff --quiet --exit-code` exits 1 on a non-empty diff (the
+      // ExecFn rejects on any non-zero exit), so the reject IS the
+      // non-empty signal. A missing parent (the root commit) rejects with
+      // a different error, but a root commit can never fall inside a
+      // `tipSha..treeSha` range — the tip is always at or above it.
+      const err = e as Error & { code?: number | string };
+      const code = typeof err.code === "number" ? err.code : Number(err.code);
+      if (code !== 1) {
+        return undefined;
+      }
+      empty = false;
+    }
+    if (empty) return false;
+  }
+  return true;
+}
+
+/**
  * #981 — move the lens-fix worktree onto the freshly-fetched branch tip
  * BEFORE the round-2+ fixer dispatch. See {@link RepositionResult} for the
  * outcome kinds; only the two success kinds are safe to dispatch on.
@@ -320,6 +380,13 @@ export async function repositionLensFixWorktree(
   // the tip and `+` otherwise. All `-` (or empty — no commits beyond the
   // tip) means the work is already on the branch: move the clean tree to
   // the tip. Any `+` means genuinely un-landed work: back up and park.
+  //
+  // `rangeAllNonEmpty` guards the all-`-` path against `git cherry`'s
+  // empty-patch-id collision: its contract covers only NON-EMPTY patches,
+  // and every empty commit produces the same (empty) patch-id, so an all-`-`
+  // result can be a false positive when the worktree's range holds an empty
+  // commit (or a real fix riding on one). Such work is NOT on the branch,
+  // so an empty range commit falls through to the backup-and-park path.
   const lines = await cherryLines(execFn, tree, tipSha, treeSha);
   if (lines !== undefined) {
     const plusShas = lines
@@ -331,39 +398,52 @@ export async function repositionLensFixWorktree(
       .map((l) => l.slice(1).trim())
       .filter(Boolean);
     if (plusShas.length === 0) {
-      // Landed via cherry: every worktree commit beyond the tip has a
-      // patch-equivalent on the tip. No backup ref — those commits are
-      // already reachable from the branch. Trace the moved-from SHA.
-      try {
-        await execFn("git", {
-          cwd: tree,
-          maxBuffer: 64 * 1024,
-          argv: ["checkout", "--detach", "--quiet", tipSha],
-        });
-        const hp2 = await execFn("git rev-parse HEAD", { cwd: tree, maxBuffer: 64 * 1024 });
-        const newSha = hp2.stdout.trim();
-        if (newSha !== tipSha) {
-          const detail = `checkout to the tip did not land on the tip (expected ${tipSha.slice(0, 12)}, got ${newSha.slice(0, 12)})`;
-          trace(`${TRACE_PREFIX}: ${detail}`);
-          return { kind: "git-failed", detail };
+      const allNonEmpty = await rangeAllNonEmpty(execFn, tree, tipSha, treeSha);
+      if (allNonEmpty === true) {
+        // Landed via cherry: every worktree commit beyond the tip is a
+        // NON-EMPTY commit with a patch-equivalent on the tip. No backup
+        // ref — those commits are already reachable from the branch. Trace
+        // the moved-from SHA.
+        try {
+          await execFn("git", {
+            cwd: tree,
+            maxBuffer: 64 * 1024,
+            argv: ["checkout", "--detach", "--quiet", tipSha],
+          });
+          const hp2 = await execFn("git rev-parse HEAD", { cwd: tree, maxBuffer: 64 * 1024 });
+          const newSha = hp2.stdout.trim();
+          if (newSha !== tipSha) {
+            const detail = `checkout to the tip did not land on the tip (expected ${tipSha.slice(0, 12)}, got ${newSha.slice(0, 12)})`;
+            trace(`${TRACE_PREFIX}: ${detail}`);
+            return { kind: "git-failed", detail };
+          }
+          trace(
+            `${TRACE_PREFIX}: repositioned (landedViaCherry) ${treeSha.slice(0, 12)} -> ${newSha.slice(0, 12)} — ${minusShas.length} worktree commit(s) already on the branch by patch-equivalence: ${minusShas.join(", ") || "(none beyond the tip)"}`,
+          );
+          return { kind: "repositioned", fromSha: treeSha, tipSha, landedViaCherry: true };
+        } catch (e) {
+          trace(`${TRACE_PREFIX}: checkout to tip failed: ${e}`);
+          return {
+            kind: "git-failed",
+            detail: `git checkout --detach ${tipSha.slice(0, 12)} failed: ${e}`,
+          };
         }
-        trace(
-          `${TRACE_PREFIX}: repositioned (landedViaCherry) ${treeSha.slice(0, 12)} -> ${newSha.slice(0, 12)} — ${minusShas.length} worktree commit(s) already on the branch by patch-equivalence: ${minusShas.join(", ") || "(none beyond the tip)"}`,
-        );
-        return { kind: "repositioned", fromSha: treeSha, tipSha, landedViaCherry: true };
-      } catch (e) {
-        trace(`${TRACE_PREFIX}: checkout to tip failed: ${e}`);
-        return {
-          kind: "git-failed",
-          detail: `git checkout --detach ${tipSha.slice(0, 12)} failed: ${e}`,
-        };
       }
+      // all-`-` but the range contains an empty commit (or the emptiness
+      // read failed): the cherry result is UNVERIFIED. Fall through to the
+      // backup-and-park path below — do NOT move the tree to the tip, and
+      // do NOT skip the backup (the all-`-` no-backup rationale does not
+      // apply to unverifiable ranges).
+      trace(
+        `${TRACE_PREFIX}: cherry result all-\`-\` but the range ${tipSha.slice(0, 12)}..${treeSha.slice(0, 12)} contains an empty commit (or the emptiness read failed) — treating as unverified, backing up and parking`,
+      );
     }
 
-    // Genuinely un-landed work (`+` lines). Distinguish unlanded (tip is
-    // an ancestor of the tree — the tree is ahead) from true divergence
-    // (neither is an ancestor of the other). Both are guard failures; back
-    // up the tree and park.
+    // Genuinely un-landed work (`+` lines), or an unverifiable all-`-`
+    // range (empty commit). Distinguish unlanded (tip is an ancestor of
+    // the tree — the tree is ahead) from true divergence (neither is an
+    // ancestor of the other). Both are guard failures; back up the tree
+    // and park.
     const tipIsAncestorOfTree = await isAncestor(execFn, tree, tipSha, treeSha);
     const backupRef = await backupLensFixTree(execFn, tree, branchName, issues, issueTitle);
     const aheadShas =

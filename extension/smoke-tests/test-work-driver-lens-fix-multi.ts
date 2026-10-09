@@ -3,9 +3,10 @@
  * Smoke test for the /work driver, split out of test-work-driver.ts
  * (#171, AGENTS.md §12 file-size limit).
  *
- * Covers: Issue #305 sections 48b/49: adversarial receives lens-fix diff before commit + N>1 workstream lens-fix commit.
- * Plus #492 section 49b: when a diff EXISTS but staging fails, the cap-hit
- * carries the integration-failure classification and a plumb-report is surfaced.
+ * Covers Issue #305 §48b/49 (adversarial receives lens-fix diff before
+ * commit; N>1 workstream lens-fix commit) and #492 §49b (a diff EXISTS
+ * but staging fails → the cap-hit carries the integration-failure
+ * classification and a plumb-report).
  *
  * No real Pi spawn happens; all dispatchCore calls are mocked.
  */
@@ -96,10 +97,10 @@ setupSpawnGuard();
 
 // 48b. Issue #305 — adversarial receives lens-fix diff BEFORE commit.
 //
-// Proves the fix: commit AFTER adversarial-approved means adversarial
-// reads the working-tree diff (git diff HEAD) which contains the
-// uncommitted lens-fix changes. If commit happened BEFORE adversarial
-// (bug #305 original state), params.diff would be empty.
+// The fix: commit AFTER adversarial-approved means adversarial reads the
+// working-tree diff (git diff HEAD) which contains the uncommitted
+// lens-fix changes. If commit happened BEFORE adversarial (bug #305
+// original state), params.diff would be empty.
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-lens-fix-adversarial-diff-"));
   try {
@@ -336,10 +337,9 @@ setupSpawnGuard();
     const { stdout: diff } = await execp("git diff origin/main..HEAD", { cwd: dir });
     assert(diff.includes("safeParse"), "committed diff contains the fix from lens-fix");
 
-    // Cycle advances past lens-fix to adversarial (which fails without
-    // adversarialLoopFn injected) → handoff. The driver committed the
-    // fix during runAdversarial before advancing, so the committed diff
-    // contains the repair even though the cycle ends at handoff.
+    // The driver committed the fix during runAdversarial before advancing,
+    // so the committed diff contains the repair even though the cycle ends
+    // at handoff (no adversarialLoopFn injected for this section).
     assert(
       after?.pipelineStatus !== "running",
       "cycle has exited the running loop (advanced past lens-fix)",
@@ -351,12 +351,9 @@ setupSpawnGuard();
 
 // 49b. Issue #492 — a lens-fix whose diff EXISTS but staging fails is
 // classified as an integration failure, not as "the fixer wrote nothing".
-//
-// The two causes require opposite responses: no-diff means the findings
-// may be false positives (adjudicate them); an integration failure means a
-// structural problem and the fix is still in the worktree. Pre-#492 both
-// parked with the same cap and no evidence. Fails `git add` in the worktree
-// so staging returns 0 with a diff present.
+// The two causes need opposite responses: no-diff may be false positives
+// (adjudicate); integration failure is structural and the fix is in-tree.
+// Fails `git add` so staging returns 0 with a diff present.
 {
   __resetIntegrationLock();
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-lens-stage-fail-"));
@@ -372,8 +369,8 @@ setupSpawnGuard();
     const origin = path.join(dir, "origin.git");
     const root = path.join(dir, "root");
     const wt = path.join(dir, "wt");
-    await execp("git init -q --bare --initial-branch=main origin.git", { cwd: dir });
-    await execp("git init -q --initial-branch=main root", { cwd: dir });
+    await execp(`git init -q --bare --initial-branch=main ${JSON.stringify(origin)}`, { cwd: dir });
+    await execp(`git init -q --initial-branch=main ${JSON.stringify(root)}`, { cwd: dir });
     await execp('git config user.email "t@t" && git config user.name "T"', {
       cwd: root,
       shell: "/bin/bash",
@@ -394,18 +391,14 @@ setupSpawnGuard();
     });
     await execp("git push -q -u origin feature/lens-stage-fail", { cwd: root });
     await execp(`git worktree add --detach ${JSON.stringify(wt)} HEAD`, { cwd: root });
-
-    let s = initialState(493, 1_000_000);
-    s = {
+    let s = initialState(493, 1_000_000);    s = {
       ...s,
       pipelineState: {
         ...s.pipelineState,
         currentStep: "lens-fix",
         lastCompletedStep: "commit-pr",
         worktrees: { default: wt },
-        workstreams: {
-          default: { id: "default", scope: "test", paths: [], outOfScope: [] },
-        },
+        workstreams: { default: { id: "default", scope: "test", paths: [], outOfScope: [] } },
         branchName: "feature/lens-stage-fail",
         prNumber: 4930,
         reviewRound: 1,
@@ -414,16 +407,24 @@ setupSpawnGuard();
     };
     await writeState(root, s);
 
-    // The real git executor, with `git add` made to fail inside the
-    // worktree — staging returns 0 even though a diff exists.
-    const realExec = (async (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) => {
+    // Real git executor with `git add` failing in the worktree (staging
+    // returns 0 though a diff exists). The round-2+ reposition gate runs
+    // pre-dispatch in the argv form (`cmd="git"`, `opts.argv`), so the
+    // mock honours `argv` via `execFile` (no shell re-parse).
+    type EO = { cwd?: string; maxBuffer?: number; argv?: string[] };
+    const { execFile } = await import("node:child_process");
+    const execFileP = promisify(execFile);
+    const realExec = (async (cmd: string, opts?: EO) => {
+      if (opts?.argv) {
+        const { stdout } = await execFileP(cmd, opts.argv, { cwd: opts.cwd });
+        return { stdout, stderr: "" };
+      }
       const r = await execp(cmd, opts);
       return { stdout: r.stdout, stderr: r.stderr };
-    }) as (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) => Promise<unknown>;
-    const failingExec = (async (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) => {
-      if (opts?.cwd === wt && cmd.startsWith("git add")) {
+    }) as (cmd: string, opts?: EO) => Promise<unknown>;
+    const failingExec = (async (cmd: string, opts?: EO) => {
+      if (opts?.cwd === wt && (cmd.startsWith("git add") || opts.argv?.[0] === "add"))
         throw new Error("simulated staging failure (git add refused)");
-      }
       return realExec(cmd, opts);
     }) as typeof realExec;
 
