@@ -85,7 +85,7 @@ async function waitFor(inbox: unknown[], n: number) {
   await waitFor(inbox, 1);
   assert(inbox.length === 1, "startJob delivers one report");
   assert(
-    inbox[0]?.content.includes("1 uncommitted/untracked (zz-dirty-marker.txt)"),
+    inbox[0]?.content.includes('1 uncommitted/untracked ("zz-dirty-marker.txt")'),
     `developer line computed from dispatch cwd (got: ${inbox[0]?.content.slice(0, 400)})`,
   );
 }
@@ -174,7 +174,7 @@ async function waitFor(inbox: unknown[], n: number) {
   };
   assert(inbox.length === 1, "batch delivers one consolidated report");
   assert(
-    section("developer[dirty]").includes("1 uncommitted/untracked (zz-dirty-marker.txt)"),
+    section("developer[dirty]").includes('1 uncommitted/untracked ("zz-dirty-marker.txt")'),
     "dirty developer section carries its own line",
   );
   assert(

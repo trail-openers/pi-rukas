@@ -9,7 +9,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isDevOrOpsLabel } from "../src/async-jobs-report.ts";
+import { reportsGitState } from "../src/async-jobs-report.ts";
 import { type GitRunner, gitStateLine, runGit } from "../src/git-state.ts";
 
 let exit = 0;
@@ -174,18 +174,12 @@ function mkRepo(withCommit = true): string {
   assert(line.includes('\\n'), "newline in filename is escaped");
 }
 
-// 8. label predicate
-for (const l of ["developer", "developer[task-A]", "ops", "ops[x]"]) {
-  assert(isDevOrOpsLabel(l), `${l} gets the line`);
+// 8. role predicate
+for (const r of ["developer", "ops"]) {
+  assert(reportsGitState(r), `${r} gets the line`);
 }
-for (const l of [
-  "explore",
-  "code-review-specialist[security]",
-  "adversarial-developer",
-  "dispatch_parallel",
-  "developerx",
-]) {
-  assert(!isDevOrOpsLabel(l), `${l} gets no line`);
+for (const r of ["explore", "code-review-specialist", "adversarial-developer", "developerx"]) {
+  assert(!reportsGitState(r), `${r} gets no line`);
 }
 
 // 9. runGit is the production runner (sanity: works on a real repo)

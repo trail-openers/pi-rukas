@@ -13,7 +13,7 @@ import {
 import {
   formatFailReport,
   formatSingleReport,
-  isDevOrOpsLabel,
+  reportsGitState,
   totalTokens,
 } from "./async-jobs-report.ts";
 import { makeSlowWatch } from "./async-jobs-slow.ts";
@@ -299,7 +299,7 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
       if (ownerKind === "pm") {
         const deliver = (gitLine?: string) =>
           deliverReport(pi, formatSingleReport(jobId, input.label, result, gitLine));
-        if (isDevOrOpsLabel(input.label)) {
+        if (reportsGitState(input.role)) {
           // gitStateLine never rejects; the fallback delivers the report unannotated if it ever does.
           void gitStateLine(input.cwd)
             .then(deliver, () => deliver())

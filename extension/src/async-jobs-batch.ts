@@ -11,7 +11,7 @@ import {
 import {
   type BatchReportInput,
   formatBatchReport,
-  isDevOrOpsLabel,
+  reportsGitState,
   totalTokens,
 } from "./async-jobs-report.ts";
 import { makeSlowWatch } from "./async-jobs-slow.ts";
@@ -44,13 +44,14 @@ async function deliverBatchReport(
   pi: ExtensionAPI,
   head: { batchLabel: string; batchId: string; startedAt: number },
   memberResults: BatchReportInput["members"],
-  memberCwd: Map<string, string | undefined>,
+  gitMembers: Map<string, string | undefined>,
 ): Promise<void> {
   const lines = new Map<string, string>();
   await Promise.all(
     memberResults.map(async (m) => {
-      if ("failed" in m.result || !isDevOrOpsLabel(m.label)) return;
-      lines.set(m.jobId, await gitStateLine(memberCwd.get(m.jobId)));
+      const cwd = gitMembers.get(m.jobId);
+      if ("failed" in m.result || !gitMembers.has(m.jobId)) return;
+      lines.set(m.jobId, await gitStateLine(cwd));
     }),
   );
   const members = memberResults.map((m) => ({
@@ -109,7 +110,8 @@ export function startBatch(
 
   const memberJobIds: string[] = [];
   const memberResults: BatchReportInput["members"] = [];
-  const memberCwd = new Map<string, string | undefined>();
+  // #1015 — developer/ops members only, keyed by jobId, value = dispatch cwd.
+  const gitMembers = new Map<string, string | undefined>();
 
   for (const m of input.members) {
     const jobId = newJobId();
@@ -127,7 +129,7 @@ export function startBatch(
       batchId,
     };
     jobs.set(jobId, memberState);
-    memberCwd.set(jobId, m.cwd);
+    if (reportsGitState(m.role)) gitMembers.set(jobId, m.cwd);
 
     dispatchDeck.startEntry(jobId, {
       label: m.label,
@@ -203,26 +205,30 @@ export function startBatch(
             pi,
             { batchLabel: input.batchLabel, batchId, startedAt },
             memberResults,
-            memberCwd,
-          ).then(
-            () =>
-              trace(
-                `async batch ${batchId} (${input.batchLabel}) finished in ${Date.now() - startedAt}ms`,
-              ),
-            (err: unknown) => {
-              trace(`async batch ${batchId} (${input.batchLabel}) report failed: ${String(err)}`);
-              // Fall back to the batch report without git-state lines so the parent still hears back.
-              deliverReport(
-                pi,
-                formatBatchReport({
-                  batchLabel: input.batchLabel,
-                  batchId,
-                  startedAt,
-                  members: memberResults,
-                }),
-              );
-            },
-          );
+            gitMembers,
+          )
+            .then(
+              () =>
+                trace(
+                  `async batch ${batchId} (${input.batchLabel}) finished in ${Date.now() - startedAt}ms`,
+                ),
+              (err: unknown) => {
+                trace(`async batch ${batchId} (${input.batchLabel}) report failed: ${String(err)}`);
+                // Fall back to the batch report without git-state lines so the parent still hears back.
+                deliverReport(
+                  pi,
+                  formatBatchReport({
+                    batchLabel: input.batchLabel,
+                    batchId,
+                    startedAt,
+                    members: memberResults,
+                  }),
+                );
+              },
+            )
+            .catch((err: unknown) =>
+              trace(`async batch ${batchId} fallback delivery failed: ${String(err)}`),
+            );
         }
       });
   }

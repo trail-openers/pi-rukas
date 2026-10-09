@@ -281,9 +281,9 @@ export const GATE_LINE =
  */
 export const GATE_LINE_TRUNCATED = `First verify the on-disk state (the report may be truncated); then: ${GATE_LINE}`;
 
-/** #1015 — the labels whose reports carry the harness git-state line (developer/ops, incl. `[tag]`). */
-export function isDevOrOpsLabel(label: string): boolean {
-  return /^(developer|ops)(\[|$)/.test(label);
+/** #1015 — the roles whose reports carry the harness git-state line. Decided once, from the role, at the dispatch call site. */
+export function reportsGitState(role: string): boolean {
+  return role === "developer" || role === "ops";
 }
 
 function isDeveloperLabel(label: string): boolean {
