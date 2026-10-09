@@ -13,6 +13,7 @@
  * result). Multiple concurrent toolCall blocks in one assistant turn are
  * each tracked, so one toolResult never closes a sibling's span (a boolean
  * would — exactly the early-fire shape #772's #543 notes warned about).
+ * Top-level calls are still derived from message shapes; nested codemode calls carry their own tool_execution_start/end events (#1032).
  *
  * The state is a per-spawn Set of open toolCall ids. It dies with the spawn
  * (a killed child never receives its toolResult, and a module-level map

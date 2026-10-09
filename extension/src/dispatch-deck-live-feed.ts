@@ -5,9 +5,9 @@
  * per-job char-bound enforcement (`trimToBound`).
  *
  * The ring-buffer state (the buffers, the per-key running sizes, the append
- * subscribers) and its lifecycle (`startBuffer` / `dropBuffer` / …) stay in
- * dispatch-deck-live.ts; this module imports that state via the seams the
- * main module exports, so the public import paths are unchanged.
+ * subscribers) lives in dispatch-deck-live-state.ts, which both this module
+ * and dispatch-deck-live.ts import — they never import each other (the
+ * main module re-exports the feed functions, one direction only).
  *
  * A top-level tool call is surfaced by the assistant message's `toolCall`
  * content block — the `tool_execution_start` that Pi emits for it is the
@@ -20,15 +20,32 @@
  */
 
 import { sanitizeForStorage, sanitizeText } from "./dispatch-deck-line.ts";
-import type { LiveEvent } from "./dispatch-deck-live.ts";
 import {
   LIVE_BUFFER_MAX_CHARS,
   bufferSizes,
   buffers,
   eventSize,
   notifyAppend,
-} from "./dispatch-deck-live.ts";
+} from "./dispatch-deck-live-state.ts";
+import type { LiveEvent } from "./dispatch-deck-live-state.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
+
+/**
+ * #1032 — the ONE serialiser for tool-call args in the feed path. The two
+ * branches (the nested `tool_execution_start` branch and the assistant
+ * `toolCall` block branch) used to stringify args two different ways
+ * (a try/catch fallback here, a `JSON.stringify(...) ?? ""` there with a
+ * dead `??`); this helper replaces both: "" for undefined/null, a
+ * try/catch fallback that can never leave the buffer holding a non-string.
+ */
+function stringifyArgs(x: unknown): string {
+  if (x === undefined || x === null) return "";
+  try {
+    return JSON.stringify(x) ?? "";
+  } catch {
+    return "[unserialisable args]";
+  }
+}
 
 /**
  * Feed one parsed child event into the job's ring buffer. Events the
@@ -62,18 +79,10 @@ export function pushEvent(key: string, buf: LiveEvent[], event: PiJsonEvent): bo
   // Args sanitised at feed time like every sibling branch (#927).
   if (event.type === "tool_execution_start" && event.toolName) {
     if (!event.parentToolCallId) return false;
-    let rawArgs = "";
-    if (event.args !== undefined && event.args !== null) {
-      try {
-        rawArgs = JSON.stringify(event.args) ?? "";
-      } catch {
-        rawArgs = "[unserialisable args]";
-      }
-    }
     const ev: LiveEvent = {
       kind: "toolCall",
       name: sanitizeText(`↳ ${event.toolName}`),
-      args: sanitizeForStorage(rawArgs),
+      args: sanitizeForStorage(stringifyArgs(event.args)),
     };
     buf.push(ev);
     bufferSizes.set(key, (bufferSizes.get(key) ?? 0) + eventSize(ev));
@@ -141,10 +150,8 @@ export function pushEvent(key: string, buf: LiveEvent[], event: PiJsonEvent): bo
         kind: "toolCall",
         name: sanitizeText(block.name),
         // block.arguments comes from JSON.parse of the child's event stream, so it cannot be circular or contain BigInt — stringify cannot throw here.
-        args:
-          block.arguments === undefined || block.arguments === null
-            ? ""
-            : (JSON.stringify(block.arguments) ?? ""),
+        // Still routed through stringifyArgs + sanitizeForStorage: the "sanitised at feed time" invariant must hold at every storage site (#1032).
+        args: sanitizeForStorage(stringifyArgs(block.arguments)),
       };
       buf.push(ev);
       total += eventSize(ev);

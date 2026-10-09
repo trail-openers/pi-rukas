@@ -24,13 +24,7 @@ import type { DispatchUsage } from "./types.ts";
  * through this, exactly once each.
  */
 export function addUsage(
-  acc: {
-    input: number;
-    output: number;
-    cacheRead: number;
-    cacheWrite: number;
-    cost: number;
-  },
+  acc: Omit<DispatchUsage, "turns">,
   u: PiUsage,
   tokens: { totalTokens?: number },
 ): number {
@@ -39,6 +33,7 @@ export function addUsage(
   acc.cacheRead += u.cacheRead ?? 0;
   acc.cacheWrite += u.cacheWrite ?? 0;
   acc.cost += u.cost?.total ?? 0;
+  // #543 F6 — running cumulative total, the token-budget quantity.
   const added = (u.input ?? 0) + (u.output ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0);
   if (tokens.totalTokens !== undefined) tokens.totalTokens += added;
   return added;

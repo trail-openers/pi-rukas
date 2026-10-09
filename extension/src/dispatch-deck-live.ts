@@ -48,6 +48,11 @@
  * roster). The widget suppression in dispatch-deck.ts `renderNow` is the
  * quiet gate that KEPT.
  *
+ * The shared ring-buffer state (LiveEvent, the buffers map, the per-key
+ * running sizes, `LIVE_BUFFER_MAX_CHARS`, the append subscribers) lives in
+ * dispatch-deck-live-state.ts, shared with the feed path — the re-exports
+ * below keep every existing import path working unchanged.
+ *
  * Out of scope: /runs integration (#836); pause/skip/retry controls;
  * lens-review and adversarial children, which own their deck entries
  * directly and get no buffer (their rows offer steer only).
@@ -55,13 +60,39 @@
 
 import { sanitizeForStorage, sanitizeText } from "./dispatch-deck-line.ts";
 import { trimToBound } from "./dispatch-deck-live-feed.ts";
+import type { LiveEvent } from "./dispatch-deck-live-state.ts";
+import {
+  LIVE_BUFFER_MAX_CHARS,
+  appendSubscribers,
+  bufferSizes,
+  buffers,
+  eventSize,
+  notifyAppend,
+} from "./dispatch-deck-live-state.ts";
 import { clearViewScroll } from "./dispatch-deck-live-view-component.ts";
-import { trace } from "./trace.ts";
 
 // #1032 — the feed path (feedRawEvent / pushEvent) moved to
 // dispatch-deck-live-feed.ts when this file hit the 500-line cap; the
 // re-exports below keep the existing import paths working unchanged.
 export { feedRawEvent, pushEvent } from "./dispatch-deck-live-feed.ts";
+
+// #1032 — the shared ring-buffer state moved to
+// dispatch-deck-live-state.ts (so the feed module and this one no longer
+// import each other); the re-exports below keep the existing import paths
+// working unchanged.
+export {
+  LIVE_BUFFER_MAX_CHARS,
+  buffers,
+  bufferSizes,
+  eventSize,
+  onBufferAppend,
+  notifyAppend,
+} from "./dispatch-deck-live-state.ts";
+export type { LiveEvent } from "./dispatch-deck-live-state.ts";
+
+// =============================================================================
+// Ring buffer
+// =============================================================================
 
 /**
  * The live-view theme — the component receives it from the caller
@@ -84,58 +115,15 @@ export {
 } from "./dispatch-deck-live-view.ts";
 
 // =============================================================================
-// Ring buffer
+// Feed path
 // =============================================================================
 
-/**
- * A normalised unit of a child's recent activity.
- *
- * The stored strings are sanitised at FEED time (issue #927): every
- * `text` / `args` / `name` field is control-char/ANSI-stripped, with
- * newlines collapsed to the ` ⏎ ` separator (dispatch-deck-line.ts
- * `NEWLINE_SEP`) — but UNTRUNCATED (#916). Renderers must still
- * width-bound via `toTerminalLine`, but must not assume raw newlines or
- * control characters here.
- *
- * `thinking` blocks (`{kind:"thinking"}`) are stored with their raw
- * character count as `text` (#916: the view renders `▸ thinking (N chars)`
- * with N = raw char count, not the post-wrap rendered size).
- */
-export type LiveEvent =
-  | { kind: "text"; text: string }
-  | { kind: "toolCall"; name: string; args: string }
-  | { kind: "toolResult"; name: string; text: string; isError: boolean }
-  | { kind: "thinking"; text: string }
-  /**
-   * #915 — an operator steer sent from the agent view's input line.
-   * Distinct from the child's own events: rendered as
-   * `you → <label>: <text>` so the conversation reads in order. Stored
-   * UNTRUNCATED like every other event and counted within the per-job
-   * byte bound.
-   */
-  | { kind: "operatorSteer"; label: string; text: string; at: number };
-
-/**
- * The per-job bound, measured on the stored string length in UTF-16 code
- * units (the `.text` field for text/thinking, the full JSON string for
- * toolCall args) — #916, replacing the 200-event ring cap and the feed-time
- * character truncation. The buffer behaves as a bounded queue: when the
- * total exceeds the bound, the OLDEST events are evicted until the total
- * fits — the buffer keeps the most RECENT activity (that is what a live
- * view is for; eviction of the just-pushed event would freeze the view on
- * stale output once the bound is reached). A single event whose own size
- * exceeds the bound is kept ALONE and untruncated (the bound caps the
- * TOTAL across multiple events, never a lone event — PM decision, #916).
- */
-export const LIVE_BUFFER_MAX_CHARS = 512 * 1024;
+// =============================================================================
+// Append notifications (#916)
+// =============================================================================
 
 /** The settle outcome recorded for the header (async-jobs calls markSettled). */
 export type SettleStatus = "running" | "finished" | "failed" | "killed";
-
-// Exported for the quiet-mode gate test (agent-list.ts block 8) — the
-// buffer map is the load-bearing fact the test reads to prove the
-// `startBuffer` gate moved (a quiet session's buffer IS created).
-export const buffers = new Map<string, LiveEvent[]>();
 
 /** Settle outcomes recorded by markSettled (read by the view header). */
 const settledStatuses = new Map<string, SettleStatus>();
@@ -145,30 +133,6 @@ const viewsOpen = new Set<string>();
 
 /** True while the deck entry has been cleared but the view is still open. */
 const entryCleared = new Set<string>();
-
-/** Append subscribers per key (#916: the overlay re-renders on feed). */
-const appendSubscribers = new Map<string, Set<() => void>>();
-
-// Exported (not private): dispatch-deck-live-feed.ts mutates the running
-// total on push/evict so trimToBound never re-sums the buffer.
-export const bufferSizes = new Map<string, number>();
-
-/** The raw stored size of one event, in characters of the stored text.
- *  Exported for the feed module (same file split, #1032). */
-export function eventSize(ev: LiveEvent): number {
-  switch (ev.kind) {
-    case "text":
-      return ev.text.length;
-    case "toolCall":
-      return ev.args.length;
-    case "toolResult":
-      return ev.text.length;
-    case "thinking":
-      return ev.text.length;
-    case "operatorSteer":
-      return ev.text.length;
-  }
-}
 
 /**
  * The buffer contents (a copy — the caller may mutate the array).
@@ -209,8 +173,7 @@ export function appendOperatorSteer(key: string, label: string, text: string): v
   buf.push(ev);
   // Same bookkeeping as pushEvent: the running total is maintained per key
   // so trimToBound never re-sums the buffer (it evicts oldest-first within
-  // the per-job LIVE_BUFFER_MAX_CHARS bound); the bound is enforced via the
-  // same feed-path seam as pushEvent itself (dispatch-deck-live-feed.ts).
+  // the per-job LIVE_BUFFER_MAX_CHARS bound).
   bufferSizes.set(key, (bufferSizes.get(key) ?? 0) + eventSize(ev));
   trimToBound(key, buf);
   notifyAppend(key);
@@ -294,44 +257,6 @@ export function markSettled(key: string, status: Exclude<SettleStatus, "running"
 /** The recorded status for the key — "running" until markSettled. */
 export function getStatus(key: string): SettleStatus {
   return settledStatuses.get(key) ?? "running";
-}
-
-// =============================================================================
-// Append notifications (#916)
-// =============================================================================
-
-/**
- * Subscribe to appends for the key's buffer. Returns an unsubscribe.
- * `cb` is invoked AFTER the event is stored; a throwing subscriber is
- * caught and traced (it can never break the feed path).
- */
-export function onBufferAppend(key: string, cb: () => void): () => void {
-  let subs = appendSubscribers.get(key);
-  if (!subs) {
-    subs = new Set();
-    appendSubscribers.set(key, subs);
-  }
-  subs.add(cb);
-  return () => {
-    subs.delete(cb);
-    if (subs.size === 0) appendSubscribers.delete(key);
-  };
-}
-
-/** Notify the key's append subscribers (called from feedRawEvent).
- *  Exported for the feed module (same file split, #1032). */
-export function notifyAppend(key: string): void {
-  const subs = appendSubscribers.get(key);
-  if (!subs) return;
-  for (const cb of subs) {
-    try {
-      cb();
-    } catch (err) {
-      trace(
-        `dispatch-deck-live: onBufferAppend subscriber threw for ${key}: ${(err as Error).message}`,
-      );
-    }
-  }
 }
 
 // =============================================================================
