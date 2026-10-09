@@ -83,44 +83,25 @@ export {
 // =============================================================================
 
 /**
- * A normalised unit of a child's recent activity.
- *
- * The stored strings are sanitised at FEED time (issue #927): every
- * `text` / `args` / `name` field is control-char/ANSI-stripped, with
- * newlines collapsed to the ` ⏎ ` separator (dispatch-deck-line.ts
- * `NEWLINE_SEP`) — but UNTRUNCATED (#916). Renderers must still
- * width-bound via `toTerminalLine`, but must not assume raw newlines or
- * control characters here.
- *
- * `thinking` blocks (`{kind:"thinking"}`) are stored with their raw
- * character count as `text` (#916: the view renders `▸ thinking (N chars)`
- * with N = raw char count, not the post-wrap rendered size).
+ * A normalised unit of a child's recent activity. Stored strings are
+ * sanitised at FEED time (issue #927): control-char/ANSI-stripped, newlines
+ * collapsed to ` ⏎ `. UNTRUNCATED (#916). Renderers must width-bound via
+ * `toTerminalLine` but must not assume raw newlines or control characters.
+ * `thinking` blocks store their raw character count as `text`.
  */
 export type LiveEvent =
   | { kind: "text"; text: string }
   | { kind: "toolCall"; name: string; args: string }
   | { kind: "toolResult"; name: string; text: string; isError: boolean }
   | { kind: "thinking"; text: string }
-  /**
-   * #915 — an operator steer sent from the agent view's input line.
-   * Distinct from the child's own events: rendered as
-   * `you → <label>: <text>` so the conversation reads in order. Stored
-   * UNTRUNCATED like every other event and counted within the per-job
-   * byte bound.
-   */
+  /** #915 — operator steer from the agent view's input line. Rendered as `you → <label>: <text>`. */
   | { kind: "operatorSteer"; label: string; text: string; at: number };
 
 /**
  * The per-job bound, measured on the stored string length in UTF-16 code
- * units (the `.text` field for text/thinking, the full JSON string for
- * toolCall args) — #916, replacing the 200-event ring cap and the feed-time
- * character truncation. The buffer behaves as a bounded queue: when the
- * total exceeds the bound, the OLDEST events are evicted until the total
- * fits — the buffer keeps the most RECENT activity (that is what a live
- * view is for; eviction of the just-pushed event would freeze the view on
- * stale output once the bound is reached). A single event whose own size
- * exceeds the bound is kept ALONE and untruncated (the bound caps the
- * TOTAL across multiple events, never a lone event — PM decision, #916).
+ * units. Bounded queue: when the total exceeds the bound, OLDEST events are
+ * evicted first (the buffer keeps the most RECENT activity). A single event
+ * larger than the bound is kept ALONE and untruncated.
  */
 export const LIVE_BUFFER_MAX_CHARS = 512 * 1024;
 
@@ -394,6 +375,22 @@ export function feedRawEvent(key: string, event: PiJsonEvent): void {
  * kept — only the length truncation was removed.
  */
 export function pushEvent(key: string, buf: LiveEvent[], event: PiJsonEvent): boolean {
+  // #1032 — nested tool calls (codemode scripts via ctx.executeTool) emit
+  // flat tool_execution_start events (no message field). Surface them as
+  // toolCall entries with a ↳ prefix so the live view shows the nested
+  // call in order with the parent. tool_execution_end is not surfaced
+  // here — the toolResult message that follows already shows the result.
+  if (event.type === "tool_execution_start" && event.toolName) {
+    const ev: LiveEvent = {
+      kind: "toolCall",
+      name: sanitizeText(`↳ ${event.toolName}`),
+      args:
+        event.args === undefined || event.args === null ? "" : (JSON.stringify(event.args) ?? ""),
+    };
+    buf.push(ev);
+    bufferSizes.set(key, (bufferSizes.get(key) ?? 0) + eventSize(ev));
+    return trimToBound(key, buf);
+  }
   if (event.type !== "message" && event.type !== "message_end") return false;
   const msg = event.message;
   if (!msg) return false;

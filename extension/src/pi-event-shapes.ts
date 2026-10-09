@@ -162,6 +162,26 @@ export interface PiJsonEvent {
    * moment it was about to recover. See `willRetryAfter` in spawn.ts.
    */
   willRetry?: boolean;
+  /**
+   * Present on `tool_execution_start` / `tool_execution_end` / `tool_execution_update`
+   * events (flat events, not message-bearing). The unique id of the tool call —
+   * for nested (codemode) calls the id is `<callerId>/<n>`.
+   */
+  toolCallId?: string;
+  /** Present on `tool_execution_*` events — the tool name being executed. */
+  toolName?: string;
+  /** Present on `tool_execution_start` / `tool_execution_update` — the call's arguments. */
+  args?: unknown;
+  /**
+   * Present on `tool_execution_*` events when the call is nested (made by a
+   * tool via `ctx.executeTool()`, e.g. a codemode script). Identifies the
+   * parent tool call that issued it.
+   */
+  parentToolCallId?: string;
+  /** Present on `tool_execution_end` — the tool's result payload. */
+  result?: unknown;
+  /** Present on `tool_execution_end` — true when the tool reported an error. */
+  isError?: boolean;
 }
 
 export interface ExtensionPackageJson {
