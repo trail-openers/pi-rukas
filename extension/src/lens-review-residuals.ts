@@ -59,6 +59,7 @@ const execp = promisify(exec);
 export async function postLensResidualDisclosure(opts: {
   summary: LensReviewSummary;
   branch?: string;
+  pr?: number;
   cwd: string;
   execFn?: typeof execp;
 }): Promise<string> {
@@ -69,8 +70,13 @@ export async function postLensResidualDisclosure(opts: {
   // strict rule passes; REVIEW_INCOMPLETE / CRITICAL_ISSUES_FOUND — the
   // guard refuses on the ledger entry itself).
   if (summary.verdict !== "ISSUES_FOUND") return "";
-  if (!branch) {
-    trace("lens-residuals: no branch — cannot resolve the open PR; disclosure skipped");
+  // A branch is required to resolve the PR (or an explicit `pr` number is
+  // used directly). Without either, the disclosure is skipped (fail
+  // closed — the guard refuses).
+  if (!branch && !opts.pr) {
+    trace(
+      "lens-residuals: no branch and no PR number — cannot resolve the open PR; disclosure skipped",
+    );
     return "";
   }
   const run = doPost(opts, execFn, cwd, branch);
@@ -84,73 +90,119 @@ export async function postLensResidualDisclosure(opts: {
 }
 
 async function doPost(
-  opts: { summary: LensReviewSummary; branch?: string; cwd: string; execFn?: typeof execp },
+  opts: {
+    summary: LensReviewSummary;
+    branch?: string;
+    pr?: number;
+    cwd: string;
+    execFn?: typeof execp;
+  },
   execFn: typeof execp,
   cwd: string,
-  branch: string,
+  branch: string | undefined,
 ): Promise<string> {
   const { summary } = opts;
-  // The PR for the branch (the guard resolves it the same way — the forge
-  // CLI on the current branch; the caller runs from the branch's repo).
-  const detection = await detectForge(cwd, { allowProbe: false });
-  if (detection.forge === "unknown") {
-    throw new Error(`cannot determine the forge for ${cwd} (no PR number)`);
+  // Resolve the PR number: explicit `pr` param → branch lookup via forge CLI.
+  let prNumber: number | undefined = opts.pr;
+  if (prNumber === undefined) {
+    // The PR for the branch (the guard resolves it the same way — the forge
+    // CLI on the current branch; the caller runs from the branch's repo).
+    const detection = await detectForge(cwd, { allowProbe: false });
+    if (detection.forge === "unknown") {
+      throw new Error(`cannot determine the forge for ${cwd} (no PR number)`);
+    }
+    // The PR/MR for the BRANCH (the canonical by-source-branch lookup,
+    // forge-commands.ts prListCmd — `glab mr view` with no argument reads the
+    // MR for the CURRENT branch, not necessarily this one). A list that is
+    // empty or does not name a number is "no open PR/MR" (fail closed).
+    if (detection.forge === "gitlab") {
+      const { stdout } = await execFn(
+        cmds.prListCmd("gitlab", { sourceBranch: branch, state: "open" }),
+        {
+          cwd,
+          maxBuffer: 8 * 1024,
+          timeout: 30_000,
+        },
+      );
+      const rows = JSON.parse(stdout) as Array<{ iid?: number }>;
+      const first = rows[0];
+      prNumber = Array.isArray(rows) && first ? first.iid : undefined;
+    } else {
+      const { stdout } = await execFn(
+        cmds.prListCmd("github", { sourceBranch: branch, state: "open" }),
+        {
+          cwd,
+          maxBuffer: 8 * 1024,
+          timeout: 30_000,
+        },
+      );
+      const rows = JSON.parse(stdout) as Array<{ number?: number }>;
+      const first = rows[0];
+      prNumber = Array.isArray(rows) && first ? first.number : undefined;
+    }
+    if (typeof prNumber !== "number") {
+      throw new Error(`no open PR/MR for branch ${branch} (no PR number resolved)`);
+    }
   }
-  // The PR/MR for the BRANCH (the canonical by-source-branch lookup,
-  // forge-commands.ts prListCmd — `glab mr view` with no argument reads the
-  // MR for the CURRENT branch, not necessarily this one). A list that is
-  // empty or does not name a number is "no open PR/MR" (fail closed).
-  let prNumber: number | undefined;
-  if (detection.forge === "gitlab") {
-    const { stdout } = await execFn(
-      cmds.prListCmd("gitlab", { sourceBranch: branch, state: "open" }),
-      {
-        cwd,
-        maxBuffer: 8 * 1024,
-        timeout: 30_000,
-      },
-    );
-    const rows = JSON.parse(stdout) as Array<{ iid?: number }>;
-    const first = rows[0];
-    prNumber = Array.isArray(rows) && first ? first.iid : undefined;
-  } else {
-    const { stdout } = await execFn(
-      cmds.prListCmd("github", { sourceBranch: branch, state: "open" }),
-      {
-        cwd,
-        maxBuffer: 8 * 1024,
-        timeout: 30_000,
-      },
-    );
-    const rows = JSON.parse(stdout) as Array<{ number?: number }>;
-    const first = rows[0];
-    prNumber = Array.isArray(rows) && first ? first.number : undefined;
-  }
-  if (typeof prNumber !== "number") {
-    throw new Error(`no open PR/MR for branch ${branch} (no PR number resolved)`);
-  }
-  // The PR's identity (base branch) — the SAME read the guard uses for its
-  // target, so the patch-id base is the PR's ACTUAL base (design decision 1).
+  // The PR's identity (base + head branch) — the SAME read the guard uses
+  // for its target, so the patch-id base is the PR's ACTUAL base (design
+  // decision 1). The `branch=` in the marker is the PR's `headRefName`
+  // (remote prefix stripped), NOT the caller's resolved branch — the guard
+  // compares the marker's branch against the PR's headRefName, so the
+  // marker must carry the same value the guard will see.
   let baseBranch: string | undefined;
   let headBranch: string | undefined;
-  if (detection.forge === "gitlab") {
-    const { stdout } = await execFn(`glab mr view ${prNumber} --output json`, {
-      cwd,
-      maxBuffer: 64 * 1024,
-      timeout: 30_000,
-    });
-    const raw = JSON.parse(stdout) as { source_branch?: string; target_branch?: string };
-    headBranch = raw.source_branch;
-    baseBranch = raw.target_branch;
+  if (opts.pr !== undefined) {
+    // When the PR was supplied explicitly, detect the forge for the view.
+    const detection = await detectForge(cwd, { allowProbe: false });
+    if (detection.forge === "unknown") {
+      throw new Error(`cannot determine the forge for ${cwd} (no PR number)`);
+    }
+    if (detection.forge === "gitlab") {
+      const { stdout } = await execFn(`glab mr view ${prNumber} --output json`, {
+        cwd,
+        maxBuffer: 64 * 1024,
+        timeout: 30_000,
+      });
+      const raw = JSON.parse(stdout) as { source_branch?: string; target_branch?: string };
+      headBranch = raw.source_branch;
+      baseBranch = raw.target_branch;
+    } else {
+      const { stdout } = await execFn(`gh pr view ${prNumber} --json headRefName,baseRefName`, {
+        cwd,
+        maxBuffer: 64 * 1024,
+        timeout: 30_000,
+      });
+      const raw = JSON.parse(stdout) as { headRefName?: string; baseRefName?: string };
+      headBranch = raw.headRefName;
+      baseBranch = raw.baseRefName;
+    }
   } else {
-    const { stdout } = await execFn(`gh pr view ${prNumber} --json headRefName,baseRefName`, {
-      cwd,
-      maxBuffer: 64 * 1024,
-      timeout: 30_000,
-    });
-    const raw = JSON.parse(stdout) as { headRefName?: string; baseRefName?: string };
-    headBranch = raw.headRefName;
-    baseBranch = raw.baseRefName;
+    // The PR was resolved via the branch lookup above; detect forge and
+    // fetch the PR's identity.
+    const detection = await detectForge(cwd, { allowProbe: false });
+    if (detection.forge === "unknown") {
+      throw new Error(`cannot determine the forge for ${cwd} (no PR number)`);
+    }
+    if (detection.forge === "gitlab") {
+      const { stdout } = await execFn(`glab mr view ${prNumber} --output json`, {
+        cwd,
+        maxBuffer: 64 * 1024,
+        timeout: 30_000,
+      });
+      const raw = JSON.parse(stdout) as { source_branch?: string; target_branch?: string };
+      headBranch = raw.source_branch;
+      baseBranch = raw.target_branch;
+    } else {
+      const { stdout } = await execFn(`gh pr view ${prNumber} --json headRefName,baseRefName`, {
+        cwd,
+        maxBuffer: 64 * 1024,
+        timeout: 30_000,
+      });
+      const raw = JSON.parse(stdout) as { headRefName?: string; baseRefName?: string };
+      headBranch = raw.headRefName;
+      baseBranch = raw.baseRefName;
+    }
   }
   if (!headBranch || !baseBranch) {
     throw new Error(`PR #${prNumber} returned no head/base branch names`);
@@ -186,9 +238,11 @@ async function doPost(
   if (!patchId) {
     throw new Error(`could not compute the patch-id for ${headBranch} against ${baseBranch}`);
   }
-  // The marker + the findings body (severity, path:line, title — the
-  // operator-readable list; the marker line is hidden in the render).
-  const marker = lensResidualsMarker(headBranch, patchId);
+  // The marker uses the PR's headRefName (stripped of remote prefix) — the
+  // guard compares the marker's branch against the PR's headRefName, so the
+  // marker must carry the SAME value the guard will see.
+  const markerBranch = headBranch.replace(/^\/?[^/]+\//, "");
+  const marker = lensResidualsMarker(markerBranch, patchId);
   const lines = summary.findings.map(
     (f) => `- [${f.severity}] ${f.path}:${f.line ?? "?"} — ${f.title} (${f.lens})`,
   );
@@ -212,6 +266,10 @@ async function doPost(
   // `--body-file` command (avoids shell-quoting issues with multi-line
   // bodies), and removes the file afterwards — no local temp-dir
   // bookkeeping in this module.
+  const detection = await detectForge(cwd, { allowProbe: false });
+  if (detection.forge === "unknown") {
+    throw new Error(`cannot determine the forge for ${cwd} (no forge for comment post)`);
+  }
   await postPrComment(
     {
       forge: detection.forge,

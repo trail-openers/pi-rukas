@@ -119,20 +119,12 @@ export interface LensRunResult {
   lens: LensName;
   ok: boolean;
   ms: number;
-  /**
-   * #456 — wall-clock when this lens's dispatch began. Persisted via
-   * `dispatch-completed.lensTimings`; sequential startMs across a pass are
-   * the fingerprint of spawn-semaphore queueing (cap 1), distinct from a
-   * slow-by-contamination pass.
-   */
+  /** #456 — dispatch start wall-clock (sequential startMs = spawn-semaphore queueing fingerprint). */
   startMs: number;
   findings: Finding[];
   model?: string;
   transcriptPath?: string;
-  /** #543 — the dispatch-cap kill cause when the lens child was cap-killed
-   * (loop detector / token budget). A cap-killed lens is NOT retried: an
-   * SIGTERM'd looped child is a non-zero exit, and without this guard the
-   * retry below would undo the kill up to MAX_LENS_ATTEMPTS times. */
+  /** #543 — dispatch-cap kill cause (loop / token-budget); cap-killed lenses are NOT retried. */
   killCause?: DispatchResult["killCause"];
   /** #543 — the F1 streak evidence at a loop kill, threaded so the
    * driver's capEvidence write has the tool + count to render. */
@@ -199,13 +191,11 @@ export async function runLensReview(opts: {
   pi?: Pick<import("@earendil-works/pi-coding-agent").ExtensionAPI, "sendUserMessage">;
   /** Blocking bar; defaults to MEDIUM. See `DEFAULT_REVIEW_THRESHOLD`. */
   threshold?: Severity;
-  /**
-   * #912 — caller-supplied branch for the review-ledger write (the driver
-   * worktrees are detached, so `git rev-parse --abbrev-ref HEAD` cannot
-   * recover it). When absent the writer recovers the branch from `HEAD`
-   * and skips (traces) on a detached head.
-   */
+  /** #912 — caller-supplied branch for the ledger write (detached worktrees
+   * can't recover it via rev-parse). When absent, skips (traces). */
   branch?: string;
+  /** #973 — the PR/MR number for the residual-findings disclosure post. */
+  pr?: number;
 }): Promise<LensReviewSummary> {
   const runId = makeRunId();
   const skillsDir = piSkillsDir();
@@ -245,7 +235,7 @@ export async function runLensReview(opts: {
     full: opts.full,
     base: opts.base,
     head: opts.head,
-    branch: opts.branch,
+    branch: branchResolved,
     cwd: opts.cwd,
   });
   if (resolved.kind === "ok") {
@@ -308,11 +298,18 @@ export async function runLensReview(opts: {
     // #984 — the ledger write's promise is discarded (fire-and-forget in
     // production; the await seam is for tests, not for the driver).
     return (
-      await finishLensReview(blocked, threshold, opts.cwd, branchResolved, {
-        hasCritical: false,
-        headSha,
-        head: opts.head,
-      })
+      await finishLensReview(
+        blocked,
+        threshold,
+        opts.cwd,
+        branchResolved,
+        {
+          hasCritical: false,
+          headSha,
+          head: opts.head,
+        },
+        opts.pr,
+      )
     ).summary;
   }
   if (resolved.kind === "noReview") {
@@ -379,11 +376,18 @@ export async function runLensReview(opts: {
       threshold,
     );
     return (
-      await finishLensReview(blocked, threshold, opts.cwd, branchResolved, {
-        hasCritical: false,
-        headSha,
-        head: opts.head,
-      })
+      await finishLensReview(
+        blocked,
+        threshold,
+        opts.cwd,
+        branchResolved,
+        {
+          hasCritical: false,
+          headSha,
+          head: opts.head,
+        },
+        opts.pr,
+      )
     ).summary;
   }
   // #966 — an aborted signal is a user kill: every lens is recorded blocked,
@@ -398,11 +402,18 @@ export async function runLensReview(opts: {
     const blockRows = blockedRowsForRoster(roster, "aborted before start");
     const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
     return (
-      await finishLensReview(blocked, threshold, opts.cwd, branchResolved, {
-        hasCritical: false,
-        headSha,
-        head: opts.head,
-      })
+      await finishLensReview(
+        blocked,
+        threshold,
+        opts.cwd,
+        branchResolved,
+        {
+          hasCritical: false,
+          headSha,
+          head: opts.head,
+        },
+        opts.pr,
+      )
     ).summary;
   }
   // Persistent batch summary row (#139). Lets the user see "X/6 done"
@@ -479,6 +490,7 @@ export async function runLensReview(opts: {
       opts.cwd,
       branchResolved,
       { hasCritical, headSha, head: opts.head },
+      opts.pr,
     )
   ).summary;
 }
