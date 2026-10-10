@@ -51,6 +51,8 @@
  * temporarily removing one bare row from an in-memory copy.
  */
 
+// oo-residue:exempt — this file names the retired oo mechanism to assert its absence
+
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
@@ -108,7 +110,10 @@ function ooPrefixKeys(doc: AgentsJson): string[] {
   const firstRole = Object.keys(clone.agent)[0];
   if (clone.agent[firstRole].permission.bash) {
     (clone.agent[firstRole].permission.bash as Record<string, string>)["oo git log *"] = "allow";
-    assert(ooPrefixKeys(clone).length === 1, "(a) canary: an injected `oo git log *` key IS detected");
+    assert(
+      ooPrefixKeys(clone).some((h) => h.includes("oo git log *")),
+      "(a) canary: an injected `oo git log *` key IS detected",
+    );
   } else {
     assert(false, "(a) canary: no role has a bash block to inject into");
   }
@@ -154,13 +159,10 @@ function isCatchallNarrowed(role: string, bare: string): boolean {
 // cannot pass over an empty set.
 {
   const total = Object.values(fixture).reduce((n, v) => n + v.length, 0);
-  assert(total === 166, `fixture lists 166 removed oo-prefixed entries (found ${total})`);
-  if (total !== 166) {
-    // Show which roles' counts differ so the failure is diagnostic instead of
-    // just a total-mismatch. Expected per-role = 166 split per fixture role.
-    const perRole = Object.entries(fixture).map(([role, entries]) => `${role}=${entries.length}`);
-    console.error(`  per-role counts: ${perRole.join(", ")}`);
-  }
+  const perRole = Object.entries(fixture)
+    .map(([role, entries]) => `${role}=${entries.length}`)
+    .join(", ");
+  assert(total === 166, `fixture lists 166 removed oo-prefixed entries (found ${total}; ${perRole})`);
   let allOo = true;
   for (const role of Object.keys(fixture)) {
     for (const entry of fixture[role]) {

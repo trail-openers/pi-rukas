@@ -20,6 +20,8 @@
  * vacuously even if do.md currently has few (or zero) CLI spans.
  */
 
+// oo-residue:exempt — this file names the retired oo mechanism to assert its absence
+
 import fs from "node:fs/promises";
 import path from "node:path";
 

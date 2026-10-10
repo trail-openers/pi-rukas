@@ -97,6 +97,9 @@ function scanObjects(raw: string): ObjectScan[] {
     }
     i++;
   }
+  if (stack.length > 0) {
+    throw new Error(`malformed JSON: ${stack.length} unclosed object(s)`);
+  }
   return objects;
 }
 
@@ -140,6 +143,16 @@ function duplicateKeys(raw: string): Map<string, number> {
     goodDupes.size === 0,
     `canary: clean fixture reports no duplicates (found ${goodDupes.size})`,
   );
+
+  // Canary: an unclosed object MUST be reported as malformed JSON.
+  const unclosed = '{ "a": "allow", "b": { "c": 1 } ';
+  let threw = false;
+  try {
+    duplicateKeys(unclosed);
+  } catch (e) {
+    threw = e instanceof Error && e.message.includes("unclosed object");
+  }
+  assert(threw, "canary: an unclosed object IS reported as malformed JSON");
 }
 
 console.log(exit === 0 ? "\nAll duplicate-key checks passed." : "\nFAILED");
