@@ -142,10 +142,9 @@ function covered(role: string, bare: string): boolean {
   return coveredIn(agents.agent[role]?.permission?.bash, bare);
 }
 
-// Exemption: explore's `oo-git` catch-all was deliberately not replaced by
-// a bare `git *` (see the (d) check below): explore is a read-only role and
-// the catch-all would grant write verbs in strict mode. Its read-only verbs
-// are covered by the explicit rows; only the catch-all form itself is exempt.
+// Exemption: explore is a read-only role and the catch-all would grant git
+// write verbs (commit/push/reset/rebase) in strict mode, so its git access is
+// the explicit verb rows enumerated in its block instead.
 function isCatchallNarrowed(role: string, bare: string): boolean {
   return role === "explore" && bare === "git *";
 }
