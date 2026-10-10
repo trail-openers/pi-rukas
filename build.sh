@@ -220,9 +220,9 @@ EOF
          if ($items | length) == 0 then "" else "- **\($name):** \($items | join(", "))" end;
 
        ([
-         fmt_group("git (bare)"; $allow_groups.git),
+         fmt_group("git"; $allow_groups.git),
 
-         fmt_group("gh (bare)"; $allow_groups.gh),
+         fmt_group("gh"; $allow_groups.gh),
          fmt_group("build tools (npm/yarn/pnpm/bun/cargo/go/etc.)"; $allow_groups.build),
          fmt_group("filesystem / text utilities"; $allow_groups.fs),
          fmt_group("container / deploy / ssh"; $allow_groups.container),
