@@ -7,12 +7,13 @@
  *
  * - `readPrCommentBodies` (#973): the PR/MR comment bodies the round-cap
  *   path's disclosure check reads (the guard's own exec call through the
- *   injectable `execFn`, no new forge seam).
- * - The strict-rule / not-evaluated refusal texts for the lens branch
- *   (#1000): the `applies: false` fall-through must distinguish "the
- *   round-cap path was not evaluated" from the `applies: true` path, where
- *   the rule WAS evaluated and a specific condition N failed (that refusal
- *   names the condition verbatim).
+ *   injectable `execFn`, no new forge seam). Refuses a malformed repo
+ *   value or PR number up front (fail closed → []).
+ * - `lensNotEvaluatedRefusal` (#1000): the refusal text the `applies: false`
+ *   fall-through must use — "the round-cap path was not evaluated" —
+ *   distinct from the `applies: true` path, where the rule WAS evaluated
+ *   and a specific condition N failed (that refusal names the condition
+ *   verbatim).
  */
 
 import { prCommentsCmd } from "./forge-commands.ts";
@@ -53,6 +54,16 @@ export async function readPrCommentBodies(
   // refused), never a post or a pass.
   if (repoValue !== undefined && !isValidRepoValue(repoValue)) {
     trace(`merge-guard: invalid repo value ${repoValue} — comment read refused (fail closed)`);
+    return [];
+  }
+  // Same shape for the PR number (fail closed): a non-integer or non-
+  // positive value (NaN, 0, negative — a number the forge would interpolate
+  // into `gh pr view <N>` / the MR notes endpoint as-is) is refused before
+  // any exec — [] means the marker check fails and the merge is refused,
+  // never a post or a pass. (A caller with a valid PR number already
+  // resolved it through readGhTarget, which validates the same shape.)
+  if (!Number.isInteger(prNumber) || prNumber <= 0) {
+    trace(`merge-guard: invalid PR number ${prNumber} — comment read refused (fail closed)`);
     return [];
   }
   const repoFlag = repoValue ? ` -R ${repoValue}` : "";

@@ -386,14 +386,7 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
       // strict rule should have allowed — unreachable here, or a legacy
       // entry without a verdict detail): the strict rule's original refusal
       // text, with the branch named for the operator.
-      //
-      // #1000: the round-cap path was consulted but refused to apply
-      // (`applies: false`). The refusal names THAT ("the round-cap path
-      // was not evaluated") and the verdict state, distinct from the
-      // `applies: true` path above, where the rule WAS evaluated and a
-      // specific condition N failed (that refusal names the condition
-      // verbatim — AGENTS.md §1).
-      return lensNotEvaluatedRefusal(branch, lens);
+      return lensNotEvaluatedRefusal(branch, lens); // #1000 — "the round-cap path was not evaluated" (see lensNotEvaluatedRefusal)
     }
 
     trace(`merge-guard: PR #${prNumber} ${branch} — adversarial + lens both pass, merge allowed`);

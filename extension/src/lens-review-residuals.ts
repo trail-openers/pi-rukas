@@ -104,7 +104,11 @@ export async function postLensResidualDisclosure(opts: {
     );
     return "";
   }
-  const run = doPost(opts, execFn, cwd, branch ?? `pr-${opts.pr}`);
+  // The lookup-skip is derived from `pr !== undefined` (the branch-lookup
+  // path inside doPost does the `prNumber === undefined` check); the real
+  // `branch` — which may be undefined on the explicit-pr path — is passed
+  // through so no sentinel string ever reaches the branch-lookup path.
+  const run = doPost(opts, execFn, cwd, branch);
   try {
     return await run;
   } catch (err) {
@@ -134,7 +138,10 @@ async function doPost(
   if (detection.forge === "unknown") {
     throw new Error(`cannot determine the forge for ${cwd} (no PR number)`);
   }
-  // Resolve the PR number: explicit `pr` param → branch lookup via forge CLI.
+  // Resolve the PR number: explicit `pr` param → branch lookup via forge CLI
+  // (the branch lookup only runs when no explicit `pr` was supplied — that
+  // is the lookup-skip, derived from `opts.pr === undefined`, not from a
+  // sentinel branch string).
   let prNumber: number | undefined = opts.pr;
   if (prNumber === undefined) {
     // The PR for the branch (the guard resolves it the same way — the forge
@@ -207,6 +214,25 @@ async function doPost(
   if (!headBranch || !baseBranch) {
     throw new Error(`PR #${prNumber} returned no head/base branch names`);
   }
+  // SECURITY (fail closed) — BOTH refs from the identity read are validated
+  // against GIT_REF_SAFE BEFORE any command (the `git fetch` below, the
+  // patch-id read, the marker) uses either one: a baseRefName containing a
+  // shell metacharacter (`;`, `$()`, a space, …) would otherwise be
+  // interpolated into the shell `git fetch ${remote} ${headBranch}
+  // ${baseBranch}` and execute arbitrary commands — nothing is fetched or
+  // posted on a failure, and the caller's catch returns the refusal note
+  // (the guard then refuses the merge, as with every other fault here).
+  // The headRefName check moved here from the marker construction: it is
+  // the SAME ref that feeds the fetch, so it is covered by this single
+  // check (and both refs must hold before any exec touches either).
+  if (!GIT_REF_SAFE.test(headBranch) || !GIT_REF_SAFE.test(baseBranch)) {
+    trace(
+      `lens-residuals: head/base branch names not git-ref-safe (head=${JSON.stringify(headBranch)}, base=${JSON.stringify(baseBranch)}) — disclosure refused (fail closed)`,
+    );
+    throw new Error(
+      `the PR's head/base branch name is not git-ref-safe (head=${JSON.stringify(headBranch)}, base=${JSON.stringify(baseBranch)}) — disclosure not posted (fail closed; the merge guard refuses until the disclosure is posted)`,
+    );
+  }
   // The remote + the patch-id — the SAME computation the guard applies
   // (review-ledger.ts branchPatchId, the PR's actual base).
   const remote = await remoteName(execFn, cwd);
@@ -241,14 +267,9 @@ async function doPost(
   // The marker + the findings body (severity, path:line, title — the
   // operator-readable list; the marker line is hidden in the render).
   // The marker uses the PR's headRefName AS-IS (already a bare branch name
-  // — see the identity read above; stripping a path segment from it would
-  // post a marker the guard's `lensResidualsMarker(target.headBranch, patchId)`
-  // can never match).
-  if (!GIT_REF_SAFE.test(headBranch)) {
-    throw new Error(
-      `the PR's headRefName ${JSON.stringify(headBranch)} is not a git-ref-safe branch name — the disclosure was not posted (fail closed; the merge guard will refuse until the disclosure is posted)`,
-    );
-  }
+  // — validated git-ref-safe above, before the fetch; stripping a path
+  // segment from it would post a marker the guard's
+  // `lensResidualsMarker(target.headBranch, patchId)` can never match).
   const marker = lensResidualsMarker(headBranch, patchId);
   const lines = summary.findings.map(
     (f) => `- [${f.severity}] ${f.path}:${f.line ?? "?"} — ${f.title} (${f.lens})`,

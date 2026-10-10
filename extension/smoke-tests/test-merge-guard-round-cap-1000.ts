@@ -104,6 +104,11 @@ await setupLedgerPath();
       const ok = await readPrCommentBodies(fn, dir, T, 12, "o/r");
       assert(ok.length === 0 && calls.length === 1, "a valid repo value still reaches the exec");
       assert(calls[0].includes("-R o/r"), "…with the repo flag appended to the comments command");
+      // #1000 — a malformed PR number (fail closed, mirroring the repo-value
+      // check): non-integer and non-positive values are refused before any
+      // exec → [] (the marker check fails, the merge is refused).
+      const badPr = await readPrCommentBodies(fn, dir, T, NaN, "o/r");
+      assert(badPr.length === 0 && calls.length === 1, "an invalid PR number (NaN) returns [] with NO new exec");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

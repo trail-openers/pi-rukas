@@ -309,5 +309,57 @@ for (const badPr of [7.5, NaN]) {
   }
 }
 
+// ------------------------------------------- #1000 — SECURITY (fail closed):
+// a baseRefName containing `;` (a shell metacharacter) → NO fetch exec is
+// ever issued, and the note names the refusal. The refs from the identity
+// read are interpolated into the shell `git fetch ${remote} ${head} ${base}`
+// command, so an unvalidated baseRefName would execute arbitrary commands —
+// both refs must be validated BEFORE any exec touches either one.
+
+{
+  const dir = repoDir();
+  try {
+    const calls: string[] = [];
+    const execFn = async (cmd: string): Promise<{ stdout: string }> => {
+      calls.push(cmd);
+      if (cmd.includes("pr list --state open")) return { stdout: JSON.stringify([{ number: 12 }]) };
+      if (cmd.includes("pr view 12 --json headRefName,baseRefName")) {
+        // A baseRefName that is NOT git-ref-safe: `;` would terminate the
+        // fetch command and start a second one (`git fetch origin main; …`).
+        return {
+          stdout: JSON.stringify({ headRefName: "feature/x", baseRefName: "main; rm -rf /" }),
+        };
+      }
+      // Everything else (fetch, patch-id, pr comment, remote) is a leak —
+      // for a bad baseRefName it must never be reached.
+      if (cmd.includes("git fetch")) {
+        throw new Error("a git fetch MUST NOT run for an unsafe baseRefName (nothing fetched — fail closed)");
+      }
+      if (cmd.includes("patch-id")) {
+        throw new Error("patch-id MUST NOT run for an unsafe baseRefName");
+      }
+      if (cmd.includes("pr comment")) {
+        throw new Error("pr comment MUST NOT run for an unsafe baseRefName");
+      }
+      throw new Error(`unexpected exec: ${cmd}`);
+    };
+    const note = await postLensResidualDisclosure({
+      summary: ISSUES,
+      branch: "feature/x",
+      cwd: dir,
+      execFn,
+    });
+    assert(note !== "", "an unsafe baseRefName returns a note (fail closed)");
+    assert(/git-ref-safe/.test(note), "…naming the git-ref-safe refusal");
+    assert(!calls.some((c) => c.includes("git fetch")), "NO fetch exec was issued (nothing fetched)");
+    assert(
+      !calls.some((c) => c.includes("patch-id") || c.includes("pr comment")),
+      "…and nothing else (no patch-id, no post)",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);
