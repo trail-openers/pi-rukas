@@ -4,6 +4,7 @@
  * for Steps 1-4: explore, plan, branch, develop, speculative-explore.
  * Split out of work-driver.ts per AGENTS.md §12 module-size hygiene (#171).
  */
+import { inlineBranchPrompt } from "./work-driver-prompts-branch.ts";
 import { scratchHygieneSection } from "./work-driver-prompts-late.ts";
 
 /**
@@ -191,6 +192,11 @@ function intentResolutionBlock(issues: number[]): string {
   ].join("\n");
 }
 
+// #171 (split hygiene): inlineBranchPrompt moved to work-driver-prompts-branch.ts
+// so this file stays under the 500-line gate — re-exported here unchanged so
+// existing imports keep working.
+export { inlineBranchPrompt };
+
 /**
  * Step 2 (plan) prompt. PR3: asks for `## Workstreams`; single-workstream
  * issues return one `### default` entry (or zero, which the driver synthesises).
@@ -232,74 +238,6 @@ export function inlinePlanPrompt(issues: number[], scratchDirAbs: string): strin
     "  - `integration-test: <path>` — the consolidated-tree test that exercises this workstream TOGETHER with the workstream(s) it depends on. REQUIRED (plan-quality rejection otherwise) when two workstreams are interdependent through DIFFERENT files — i.e. one declares `depends-on: <other>` with a disjoint file set, or one's test file exercises the other's file. The line is a DECLARATION only: the develop step does not execute it; it exists so the plan records that integration coverage was required.",
     scratchHygieneSection(scratchDirAbs),
   ].join("\n");
-}
-
-export function inlineBranchPrompt(
-  issues: number[],
-  workstreamIds: string[],
-  scratchDirAbs: string,
-  /**
-   * #844 — the driver-fetched base SHA. When present the prompt names this
-   * EXACT SHA instead of "the fresh mainline tip" so ops builds the branch
-   * from the same commit the driver then verifies against (the merge-base
-   * check in runBranchViaOpsDispatch). The ops-fallback path fires after a
-   * failed fetch, so the call site may omit it — the prompt then keeps the
-   * pre-#844 "fresh mainline tip" shape.
-   */
-  baseSha?: string,
-): string {
-  const multi = workstreamIds.length > 1;
-  const multiIssue = issues.length > 1;
-  const primary = issues[0] ?? 0;
-  const headline = multiIssue ? `issues #${issues.join(", #")}` : `issue #${primary}`;
-  const branchHint = multiIssue
-    ? `feature/issues-${issues.join("-")}-<brief-description>`
-    : `feature/issue-${primary}-<brief-description>`;
-  const worktreePrefix = multiIssue
-    ? `.worktrees/issues-${issues.join("-")}`
-    : `.worktrees/issue-${primary}`;
-  const lines = [
-    `/work ${headline} — Step 3 (Setup). Create the feature branch under the safety preconditions below.`,
-    "",
-    "  1. Identify the mainline branch (default `main`; detect via `git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@'`).",
-    "  2. Verify clean working tree (`git status --porcelain` must be empty). If dirty, ABORT and surface the failure verbatim — do NOT branch off uncommitted work.",
-    "  3. Fetch + fast-forward mainline (`git fetch origin && git checkout <mainline> && git pull --ff-only origin <mainline>`). If --ff-only fails, ABORT.",
-    ...(baseSha
-      ? [
-          `  4. Create branch \`${branchHint}\` from the driver-fetched base SHA \`${baseSha}\`. Verify with \`git rev-parse \`${branchHint}\`\` that the branch sits exactly at that SHA — the driver verifies this after your reply and HALTS the cycle with a cap on any mismatch.`,
-          `     If a local branch of the target name already exists, do NOT build on its tip: it may be stale. Use \`git branch -f \`${branchHint}\` \`${baseSha}\`\` to create it at the base SHA, or report the conflict verbatim.`,
-        ]
-      : [`  4. Create branch \`${branchHint}\` from the fresh mainline tip.`]),
-    "  5. End your reply with a single line `branch: <branch-name>` so the driver can capture it.",
-  ];
-  if (multi) {
-    lines.push(
-      "",
-      `  6. **Multi-workstream cycle** — Step 2 decomposed the active issue${multiIssue ? "s" : ""} into ${workstreamIds.length} workstreams (${workstreamIds.join(", ")}). Create one git worktree per workstream off the feature branch:`,
-      "",
-      ...workstreamIds.map(
-        (id) =>
-          `       git worktree add ${worktreePrefix}-${id} ${branchHint.replace("<brief-description>", "<brief>")}`,
-      ),
-      "",
-      "  7. End your reply with an additional fenced `## Worktrees` block mapping each workstream id to its absolute path:",
-      "",
-      "       ```markdown",
-      "       ## Worktrees",
-      "",
-      ...workstreamIds.map((id) => `       - ${id}: <absolute-path-to-worktree>`),
-      "       ```",
-      "",
-      "       Use `git rev-parse --show-toplevel` from inside each worktree to get the absolute path. The driver parses this block to wire up Step 4's per-workstream developer dispatches.",
-    );
-  } else {
-    lines.push(
-      "",
-      "Single-workstream cycle — do NOT create worktrees. The driver records the repo root as the `default` workstream's path automatically.",
-    );
-  }
-  lines.push(scratchHygieneSection(scratchDirAbs));
-  return lines.join("\n");
 }
 
 export function inlineDevelopPrompt(
@@ -348,12 +286,7 @@ export function inlineDevelopPrompt(
    * existing call.
    */
   verifyCmd?: string,
-  /**
-   * #1078 — the path to the driver-cached issue body artifact (written by
-   * the explore step). When present, the prompt points the developer at
-   * this file instead of re-fetching via `gh issue view`. Absent when the
-   * artifact write failed (degrades to the re-fetch instruction).
-   */
+  /** #1078 — path to the driver-cached issue body artifact; the prompt points at it instead of re-fetching. */
   issueBodyArtifactPath?: string,
 ): string {
   // PR11 — multi-issue cycles must show the developer the ACTIVE issues
@@ -423,8 +356,6 @@ export function inlineDevelopPrompt(
   const verifyLine = verifyCmd
     ? `Before committing, run the project's verify command — \`${verifyCmd}\` — and make it pass in your worktree; this is the exact command the verify gate will run, so the two cannot diverge. Fix formatting or lint output by RUNNING the formatter/linter, never by hand-guessing.`
     : "This project has no discoverable verify command, so there is no project-level check to run before committing — rely on the change being correct and complete.";
-  // #1078 — the worktree is on a detached HEAD at the base commit, not
-  // "the current branch" (which doesn't exist on a detached HEAD).
   lines.push(
     `  1. ${fetchInstr}`,
     "  2. Implement the change end-to-end. Your worktree is on a detached HEAD at the base commit — that is correct. Commit your work there; the driver moves the commits to the feature branch during Step 6 consolidation.",
