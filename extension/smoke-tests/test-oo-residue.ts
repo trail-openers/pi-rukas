@@ -155,6 +155,14 @@ for (const root of SCAN_ROOTS) {
 // Dedup (a file listed under a single root once is enough).
 const files = Array.from(new Set(allFiles));
 
+// Whole-file exemption: the `oo-residue:exempt` sentinel ONLY applies to files
+// under extension/smoke-tests/ (where a test legitimately names the retired
+// mechanism to assert its absence). The same sentinel in any other path (docs,
+// source, prompts) must NOT exempt the file.
+function isFileExempt(rel: string, text: string): boolean {
+  return text.includes("oo-residue:exempt") && rel.startsWith("extension/smoke-tests/");
+}
+
 function scanFile(rel: string): string[] {
   const abs = path.join(ROOT, rel);
   let text = "";
@@ -169,7 +177,7 @@ function scanFile(rel: string): string[] {
   const violations: string[] = [];
   const lineAnchors = EXEMPT[rel] ?? [];
   const pathExempt = rel in EXEMPT_REASON;
-  const fileExempt = text.includes("oo-residue:exempt");
+  const fileExempt = isFileExempt(rel, text);
   const lineIsExempt = (line: string) =>
     line.includes("oo-residue:exempt") || lineAnchors.some((s) => line.includes(s));
   for (let i = 0; i < lines.length; i++) {
@@ -249,6 +257,25 @@ for (const [rel, subs] of Object.entries(EXEMPT)) {
     `at least one sentry-exempt file exists (found ${sentryFiles.length})`,
   );
 }
+// Canary: the `oo-residue:exempt` sentinel is scoped to extension/smoke-tests/.
+// The same marker in a file outside that directory must NOT exempt it — the
+// file is still scanned and its residual `oo` mentions are still reported.
+{
+  const violations = scanText("docs/x.md", `\n${"oo-residue:exempt"}\nRun the suite with \`oo cargo test\`.\n`);
+  assert(
+    violations.length > 0,
+    `canary: the sentinel in a non-smoke-test path (docs/x.md) does NOT exempt the file (got ${violations.length} hit(s))`,
+  );
+  const exemptViolations = scanText(
+    "extension/smoke-tests/other-test.ts",
+    `\n${SENTRY}\nRun the suite with \`oo cargo test\`.\n`,
+  );
+  assert(
+    exemptViolations.length === 0,
+    "canary: the sentinel in a smoke-test path DOES exempt the file",
+  );
+}
+
 // Path-exempted data files must exist and still carry their evidence data.
 for (const [rel, { reason, evidence }] of Object.entries(EXEMPT_REASON)) {
   let text = "";
@@ -261,6 +288,28 @@ for (const [rel, { reason, evidence }] of Object.entries(EXEMPT_REASON)) {
   for (const s of evidence) {
     assert(text.includes(s), `path-exempt evidence still present in ${rel}: ${JSON.stringify(s)}`);
   }
+}
+
+// Shared line-by-line scan over in-memory text (same pattern set as
+// scanFile, no exemptions except the whole-file sentinel). Lets canaries
+// exercise the scan without touching the filesystem.
+function scanText(rel: string, text: string): string[] {
+  const lines = text.split("\n");
+  const violations: string[] = [];
+  const fileExempt = isFileExempt(rel, text);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (fileExempt) continue;
+    for (const { name, re } of PATTERNS) {
+      re.lastIndex = 0;
+      const m = re.exec(line);
+      if (m) {
+        violations.push(`${rel}:${i + 1} [${name}] ${line.trim().slice(0, 120)}`);
+        break; // one violation per line is enough
+      }
+    }
+  }
+  return violations;
 }
 
 // Canary: an in-memory line that prescribes oo MUST be flagged. One helper
@@ -292,9 +341,15 @@ function anyPatternMatches(line: string): boolean {
     standalone.re.test("`oo` is gone"),
     "canary: the standalone pattern itself flags a backticked `oo`",
   );
+  standalone.re.lastIndex = 0;
   assert(
-    anyPatternMatches("The `oo` prefix is retired; run the runner bare."),
+    standalone.re.test("The `oo` prefix is retired; run the runner bare."),
     "canary: a standalone `oo` prose mention IS flagged",
+  );
+  standalone.re.lastIndex = 0;
+  assert(
+    !standalone.re.test("too many loops in the group"),
+    "canary: the standalone pattern does NOT flag too/loop/group",
   );
 
   // Standalone-token negative: `too` / `loop` / `foo` are NOT flagged.
