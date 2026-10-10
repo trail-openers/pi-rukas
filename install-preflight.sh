@@ -36,9 +36,6 @@ MIN_PI_VERSION=1.0.0
 # npm form (not bun): the operator's global pi was installed via npm per
 # the README, and `--ignore-scripts` is the documented supply-chain form.
 PI_UPGRADE_CMD="npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${MIN_PI_VERSION}"
-# The oo (double-o) floor. 0.5.0 is the newest release that cleared the
-# 4-day embargo as of /work time (0.6.0 released 2026-09-10, only 1 day old
-# — pin it after 2026-09-14). See issue #715.
 set +o allexport
 
 # Parse the MAJOR.MINOR.PATCH prefix of a `pi --version` output into three
