@@ -33,6 +33,8 @@
  * test adds no lines to install.sh.
  */
 
+// oo-residue:exempt — this file names the retired oo mechanism to assert its absence
+
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

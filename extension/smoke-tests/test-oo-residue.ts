@@ -24,11 +24,12 @@
  *     `OO_VER_OVERRIDE` (the install/version/guard/module symbols this ticket
  *     deletes)
  *
- * Exemption list (the ONLY allowed residual mentions). These are files that
- * must NAME the removed mechanism in order to ASSERT IT IS GONE — a negative
- * gate. Each entry is keyed by file + exact substring and is asserted to still
- * be present, so a stale exemption (the anchor line is rewritten away) fails
- * the gate rather than rotting silently.
+ * Exemptions (the ONLY allowed residual mentions). These are files that must
+ * NAME the removed mechanism in order to ASSERT IT IS GONE — a negative gate.
+ * Three forms, all asserted non-stale below: SENTRY files (a whole file
+ * marked with a sentinel comment), LINE-ANCHORED files (only lines containing
+ * an exact anchor are skipped), and PATH-EXEMPTED data files (JSON fixtures
+ * that cannot hold a comment, exempted by path with a recorded reason).
  */
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -93,61 +94,40 @@ const SCAN_ROOTS = [
 const NEVER_SCAN = new Set([path.join("docs", "CHANGELOG.md"), "CHANGELOG.md"]);
 const SELF = path.join("extension", "smoke-tests", "test-oo-residue.ts");
 
-// The allowed residuals: file (relative path) → exact substring that MUST
-// still be present on an exempt line. A line in an exempt file is skipped
-// ONLY when it contains one of the file's exempt substrings; any line
-// without a matching anchor is still scanned. Each anchor is asserted to
-// still be present at the bottom, so a stale exemption fails loudly.
+// Whole-file exemption marker. A test file that must name the retired
+// mechanism in many places (to prove the gate catches it) carries this line
+// instead of a long anchor list; the gate asserts the sentry is present in
+// every file that carries it, so removing the sentry re-arms the scan rather
+// than rotting silently.
+const SENTRY =
+  "// oo-residue:exempt — this file names the retired oo mechanism to assert its absence";
+
+// Line-anchored exemptions: file (relative path) → exact substrings. A line
+// in one of these files is skipped ONLY when it contains one of the anchors;
+// any other line is scanned. Kept for files that need only one or two exempt
+// lines. Each anchor is asserted to still be present below, so a stale
+// exemption fails loudly.
 //
-//   - the parity fixture (test-agents-json-no-oo.ts) lists every removed
-//     `oo …` allow key as data about the removal — it must name the token
-//     to prove bare-coverage; the test file's canaries inject an `oo` key
-//     and match the `oo ` prefix of the fixture entries.
 //   - fixtures/issues/341.json is a VERBATIM copy of the historical GitHub
 //     issue body the merge-guard tests load; it is data about a past
 //     allowlist state, not a prescription, and must not be reworded.
 const EXEMPT: Record<string, string[]> = {
-  "extension/smoke-tests/fixtures/agents-json-removed-oo-entries.json": [
-    '"oo ',
-  ],
-  "extension/smoke-tests/test-agents-json-no-oo.ts": [
-    "oo git log *",
-    'startsWith("oo ")',
-    "drop \"oo \"",
-    "`oo` retirement",
-    "`oo X …` entry",
-    "an `oo` entry with no bare",
-    "`oo <subcommand>`",
-    "fake `oo` key",
-    "retired `oo` binary",
-    "a fake `oo` key",
-    "removed-oo-entries.json",
-    "begins with `oo `",
-    "`oo` prefix is gone",
-    "begin with `oo ` (word",
-    "OO_PREFIX_RE",
-    "zero bash keys begin",
-    "removed `oo` entry",
-    "the fixture is non-trivial",
-    "166 removed oo-prefixed",
-    "every listed entry is `oo …`",
-    "keeps a bare equivalent",
-  ],
-  "extension/smoke-tests/test-built-prompts.ts": [
-    "oo-command-runner",
-  ],
   "extension/smoke-tests/fixtures/issues/341.json": [
     "blanket allow",
     "blanket oo gh api*",
   ],
-  "extension/smoke-tests/test-do-prompt.ts": [
-    "vipune, oo, cd",
-    "no `oo` — retired",
-  ],
-  "extension/smoke-tests/test-preflight-forge-loop.ts": [
-    "contains the oo entry",
-    "no `oo` — retired",
-  ],
+};
+
+// Path-exempted data files that cannot hold a comment (JSON fixtures): exempt
+// the whole file by path, with the reason recorded here so the exemption is
+// visible. The gate asserts each file still exists and its data is still
+// there.
+const EXEMPT_REASON: Record<string, { reason: string; evidence: string[] }> = {
+  "extension/smoke-tests/fixtures/agents-json-removed-oo-entries.json": {
+    reason:
+      "frozen parity fixture: lists every removed `oo …` allow key as data about the removal; test-agents-json-no-oo.ts matches the `oo ` prefix of its entries to prove bare-coverage. JSON cannot hold a sentry comment, so it is exempted by path.",
+    evidence: ['"oo '],
+  },
 };
 
 function collectFiles(abs: string, rel: string): string[] {
@@ -175,30 +155,26 @@ for (const root of SCAN_ROOTS) {
 // Dedup (a file listed under a single root once is enough).
 const files = Array.from(new Set(allFiles));
 
-// Build a "is this line exempt" predicate per file. A line is exempt only if it
-// contains one of the file's exempt substrings AND (for the fixture) the whole
-// file is in EXEMPT_FILES.
-function isExemptFile(rel: string): boolean {
-  return rel in EXEMPT;
-}
-
 function scanFile(rel: string): string[] {
   const abs = path.join(ROOT, rel);
   let text = "";
   try {
     text = readFileSync(abs, "utf8");
   } catch {
-    return [`${rel}: unreadable`];
+    // An I/O failure is not a content violation — report it as such so the
+    // operator does not chase a phantom `oo` prescription.
+    return [`${rel}: could not be read (I/O error)`];
   }
   const lines = text.split("\n");
   const violations: string[] = [];
-  const fileExempt = isExemptFile(rel);
-  const exemptSubs = EXEMPT[rel] ?? [];
+  const lineAnchors = EXEMPT[rel] ?? [];
+  const pathExempt = rel in EXEMPT_REASON;
+  const fileExempt = text.includes("oo-residue:exempt");
   const lineIsExempt = (line: string) =>
-    exemptSubs.length > 0 && exemptSubs.some((s) => line.includes(s));
+    line.includes("oo-residue:exempt") || lineAnchors.some((s) => line.includes(s));
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    if (fileExempt && lineIsExempt(line)) continue;
+    if (fileExempt || pathExempt || lineIsExempt(line)) continue;
     for (const { name, re } of PATTERNS) {
       re.lastIndex = 0;
       const m = re.exec(line);
@@ -212,8 +188,12 @@ function scanFile(rel: string): string[] {
 }
 
 const allViolations: string[] = [];
+let ioErrors = 0;
 for (const rel of files) {
-  allViolations.push(...scanFile(rel));
+  for (const v of scanFile(rel)) {
+    if (v.endsWith("could not be read (I/O error)")) ioErrors++;
+    allViolations.push(v);
+  }
 }
 
 assert(
@@ -223,76 +203,103 @@ assert(
 if (allViolations.length) {
   console.error(allViolations.join("\n"));
 }
+if (ioErrors > 0) {
+  console.error(`  ${ioErrors} file(s) could not be read — these are I/O errors, not content violations`);
+}
 
-// Assert the exemptions are not stale: every exempt substring must still be
-// present in its file. A missing anchor means the negative gate was rewritten
-// away and the exemption is now covering nothing.
+// Assert the exemptions are not stale.
+//
+// Line-anchored: every anchor must still be present in its file. A missing
+// anchor means the negative gate was rewritten away and the exemption is now
+// covering nothing.
 for (const [rel, subs] of Object.entries(EXEMPT)) {
   const abs = path.join(ROOT, rel);
   let text = "";
   try {
     text = readFileSync(abs, "utf8");
   } catch {
-    assert(false, `exemption file missing: ${rel}`);
+    assert(false, `exemption file could not be read (I/O error): ${rel}`);
     continue;
   }
   for (const s of subs) {
     assert(text.includes(s), `exemption anchor still present in ${rel}: ${JSON.stringify(s)}`);
   }
 }
-// The parity fixture must exist and be non-empty (it is what test-agents-json
-// -no-oo.ts proves bare-coverage against).
+// Sentry files: every file that carries the `oo-residue:exempt` marker must
+// carry the full sentry line intact. Removing the sentry from a file re-arms
+// the scan (its residual mentions become violations again) — that is the
+// intended behaviour, so the sentry itself is asserted here.
 {
-  const fp = path.join(ROOT, "extension", "smoke-tests", "fixtures", "agents-json-removed-oo-entries.json");
-  let ok = false;
-  try {
-    const t = readFileSync(fp, "utf8");
-    ok = t.trim().length > 2 && t.includes('"oo ');
-  } catch {
-    ok = false;
+  const sentryFiles: string[] = [];
+  for (const rel of files) {
+    let text = "";
+    try {
+      text = readFileSync(path.join(ROOT, rel), "utf8");
+    } catch {
+      continue;
+    }
+    if (text.includes("oo-residue:exempt")) sentryFiles.push(rel);
   }
-  assert(ok, "exemption: the parity fixture lists removed `oo` entries");
+  for (const rel of sentryFiles) {
+    const text = readFileSync(path.join(ROOT, rel), "utf8");
+    assert(text.includes(SENTRY), `sentry line intact in ${rel}`);
+  }
+  assert(
+    sentryFiles.length > 0,
+    `at least one sentry-exempt file exists (found ${sentryFiles.length})`,
+  );
+}
+// Path-exempted data files must exist and still carry their evidence data.
+for (const [rel, { reason, evidence }] of Object.entries(EXEMPT_REASON)) {
+  let text = "";
+  try {
+    text = readFileSync(path.join(ROOT, rel), "utf8");
+  } catch {
+    assert(false, `path-exempt file could not be read (I/O error): ${rel} (${reason})`);
+    continue;
+  }
+  for (const s of evidence) {
+    assert(text.includes(s), `path-exempt evidence still present in ${rel}: ${JSON.stringify(s)}`);
+  }
 }
 
-// Canary: an in-memory line that prescribes oo MUST be flagged.
+// Canary: an in-memory line that prescribes oo MUST be flagged. One helper
+// is shared by every canary so a canary cannot drift onto a different pattern
+// set than the scan itself.
+function anyPatternMatches(line: string): boolean {
+  for (const { re } of PATTERNS) {
+    re.lastIndex = 0;
+    if (re.test(line)) return true;
+  }
+  return false;
+}
 {
-  const canary = 'Run the suite with `oo cargo test` to keep the report short.';
-  let hit = false;
-  for (const { re } of PATTERNS) {
-    re.lastIndex = 0;
-    if (re.test(canary)) {
-      hit = true;
-      break;
-    }
-  }
-  assert(hit, "canary: a prescriptive `oo cargo test` line IS flagged");
-
-  const canary2 = 'Run the suite with `git log` to see the recent commits.';
-  let hit2 = false;
-  for (const { re } of PATTERNS) {
-    re.lastIndex = 0;
-    if (re.test(canary2)) {
-      hit2 = true;
-      break;
-    }
-  }
-  assert(!hit2, "canary: a bare `git log` line is NOT flagged (word boundary holds)");
+  assert(
+    anyPatternMatches("Run the suite with `oo cargo test` to keep the report short."),
+    "canary: a prescriptive `oo cargo test` line IS flagged",
+  );
+  assert(
+    !anyPatternMatches("Run the suite with `git log` to see the recent commits."),
+    "canary: a bare `git log` line is NOT flagged (word boundary holds)",
+  );
 
   // Standalone-token canary: a prose mention of the `oo` binary (no runner)
-  // must be caught by the standalone pattern.
-  const canary3 = "The `oo` prefix is retired; run the runner bare.";
-  const standRe = /(?<![\w-])oo(?![\w-])/g;
-  standRe.lastIndex = 0;
+  // must be caught — the SAME regex object the scan uses, so the canary and
+  // the scan cannot diverge.
+  const standalone = PATTERNS.find((p) => p.name === "oo (standalone)")!;
+  standalone.re.lastIndex = 0;
   assert(
-    standRe.test(canary3),
+    standalone.re.test("`oo` is gone"),
+    "canary: the standalone pattern itself flags a backticked `oo`",
+  );
+  assert(
+    anyPatternMatches("The `oo` prefix is retired; run the runner bare."),
     "canary: a standalone `oo` prose mention IS flagged",
   );
 
   // Standalone-token negative: `too` / `loop` / `foo` are NOT flagged.
   for (const word of ["too", "loop", "foo", "group"]) {
-    const re = /(?<![\w-])oo(?![\w-])/g;
-    re.lastIndex = 0;
-    assert(!re.test(word), `canary: '${word}' is NOT flagged (lookarounds hold)`);
+    assert(!anyPatternMatches(word), `canary: '${word}' is NOT flagged (lookarounds hold)`);
   }
 }
 

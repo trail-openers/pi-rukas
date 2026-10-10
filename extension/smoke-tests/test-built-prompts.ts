@@ -7,6 +7,8 @@
  * judgement, so this test must not be read as semantic prompt verification.
  */
 
+// oo-residue:exempt — this file names the retired oo mechanism to assert its absence
+
 import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
