@@ -348,6 +348,13 @@ export function inlineDevelopPrompt(
    * existing call.
    */
   verifyCmd?: string,
+  /**
+   * #1078 — the path to the driver-cached issue body artifact (written by
+   * the explore step). When present, the prompt points the developer at
+   * this file instead of re-fetching via `gh issue view`. Absent when the
+   * artifact write failed (degrades to the re-fetch instruction).
+   */
+  issueBodyArtifactPath?: string,
 ): string {
   // PR11 — multi-issue cycles must show the developer the ACTIVE issues
   // (NEEDS_WORK subset after explore), not the primary cycle issue. The
@@ -403,16 +410,21 @@ export function inlineDevelopPrompt(
       );
     }
   }
-  const fetchInstr =
-    issues.length === 1
+  // #1078 — the driver already fetched the issue body in Step 1 and cached
+  // it to disk. Point the developer at that file instead of re-fetching.
+  const fetchInstr = issueBodyArtifactPath
+    ? `Read the issue body (acceptance criteria, DoD) from the driver-cached file: \`cat ${issueBodyArtifactPath}\`. Do NOT re-fetch via \`gh issue view\` — the driver already did that in Step 1.`
+    : issues.length === 1
       ? `\`gh issue view ${issues[0]}\` to re-fetch the issue body (acceptance criteria, DoD).`
       : `Re-fetch each active issue body — run \`gh issue view <N>\` for each of: ${issues.map((n) => `#${n}`).join(", ")}.`;
   const verifyLine = verifyCmd
     ? `Before committing, run the project's verify command — \`${verifyCmd}\` — and make it pass in your worktree; this is the exact command the verify gate will run, so the two cannot diverge. Fix formatting or lint output by RUNNING the formatter/linter, never by hand-guessing.`
     : "This project has no discoverable verify command, so there is no project-level check to run before committing — rely on the change being correct and complete.";
+  // #1078 — the worktree is on a detached HEAD at the base commit, not
+  // "the current branch" (which doesn't exist on a detached HEAD).
   lines.push(
     `  1. ${fetchInstr}`,
-    "  2. Implement the change end-to-end in the current branch.",
+    "  2. Implement the change end-to-end. Your worktree is on a detached HEAD at the base commit — that is correct. Commit your work there; the driver moves the commits to the feature branch during Step 6 consolidation.",
     `  3. ${verifyLine}`,
     // #543 F5 — the driver's checkpoint commits the worktree at the natural
     // seams the child made during its run, so a cap kill never leaves only
@@ -423,7 +435,9 @@ export function inlineDevelopPrompt(
     // Make the exact commands explicit so smaller models don't drift off the
     // commit step under long-context constraint decay (issue #622 covers the
     // mechanical safety net as defense-in-depth).
-    '  4. Commit your work in the worktree at natural seams (a clean build, a passing test suite): run `git add -A` followed by `git commit -m "<type>(scope): concise subject"`. The verify gate REJECTS uncommitted-only work — no commit ahead of base SHA means the develop step fails. Do NOT push — the driver owns the branch and ops owns the push in Step 6.',
+    // #1078 — commit subject follows the project's convention, not a fixed
+    // <type>(scope): shape (a project's AGENTS.md may set a different style).
+    '  4. Commit your work in the worktree at natural seams (a clean build, a passing test suite): run `git add -A` followed by `git commit -m "<concise subject — follow the project\'s commit convention from AGENTS.md, or <type>(scope): description>"`. The verify gate REJECTS uncommitted-only work — no commit ahead of base SHA means the develop step fails. Do NOT push — the driver owns the branch and ops owns the push in Step 6.',
     "  5. End your reply with a `## Touched files` section listing every file you changed and a one-line `## Summary`.",
     "",
     "Discourage drive-by edits; only touch files in scope.",
