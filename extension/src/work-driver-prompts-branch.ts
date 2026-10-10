@@ -1,9 +1,8 @@
 import { scratchHygieneSection } from "./work-driver-prompts-late.ts";
 
 /**
- * Step 3 (branch) prompt builder. Moved from work-driver-prompts-early.ts
- * (which re-exports it) so that file stays under the 500-line size gate —
- * body unchanged.
+ * Step 3 (branch) prompt builder — the inline prompt the driver sends to
+ * ops when the mechanized branch setup path is not taken.
  */
 export function inlineBranchPrompt(
   issues: number[],
