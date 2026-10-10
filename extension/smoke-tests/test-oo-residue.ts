@@ -103,9 +103,6 @@ const SELF = path.join("extension", "smoke-tests", "test-oo-residue.ts");
 //     `oo …` allow key as data about the removal — it must name the token
 //     to prove bare-coverage; the test file's canaries inject an `oo` key
 //     and match the `oo ` prefix of the fixture entries.
-//   - test-built-prompts.ts carries the doc-sweep that asserts no prompt
-//     still prescribes `oo <runner>`; its canary fixture + regex-comment
-//     lines + the `oo-command-runner` negative assertion must name the token.
 //   - fixtures/issues/341.json is a VERBATIM copy of the historical GitHub
 //     issue body the merge-guard tests load; it is data about a past
 //     allowlist state, not a prescription, and must not be reworded.
@@ -137,27 +134,12 @@ const EXEMPT: Record<string, string[]> = {
     "keeps a bare equivalent",
   ],
   "extension/smoke-tests/test-built-prompts.ts": [
-    "oo cargo test",
-    "oo bun test",
     "oo-command-runner",
-    'command-prefix wrapper: "oo git"',
-    '"oo npm", "oo bun"',
-    '`oo`-prefixed',
-    "`oo` prefix",
-    "prescriptive `oo`-prefixed",
-    "prescriptive `oo`-prefix",
-    "`oo` used as a command-prefix",
-    "no oo command-prefix",
-    "still prescribe oo command prefix",
-    "oo sweep canary",
-    "oo-prefix",
-    "oo\\s+",
   ],
   "extension/smoke-tests/fixtures/issues/341.json": [
     "blanket allow",
     "blanket oo gh api*",
   ],
-  "extension/smoke-tests/test-permission-guard.ts": ["oo-wrapped"],
   "extension/smoke-tests/test-do-prompt.ts": [
     "vipune, oo, cd",
     "no `oo` — retired",
