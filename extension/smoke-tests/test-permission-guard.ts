@@ -301,7 +301,7 @@ for (const command of bareGitAllowed) {
 }
 
 // Verbose-output git commands are allowed for PM via the bare `git *` pattern
-const ooGitAllowed = [
+const bareGitVerboseAllowed = [
   "git log --oneline -10",
   "git diff HEAD~1",
   "git show HEAD",
@@ -309,7 +309,7 @@ const ooGitAllowed = [
   "git rev-list --count HEAD",
   "git for-each-ref refs/heads",
 ];
-for (const command of ooGitAllowed) {
+for (const command of bareGitVerboseAllowed) {
   const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
   assert(v === "allow", `Issue #96: \`${command}\` is allowed for project-manager`);
 }
