@@ -283,5 +283,31 @@ function repoDir(): string {
   }
 }
 
+// ------------------------------------------- #1000 — invalid explicit pr
+// (7.5, NaN): NOT posted (fail closed), the note names the refusal
+
+for (const badPr of [7.5, NaN]) {
+  const dir = repoDir();
+  try {
+    const stub = stubForBranch("feature/issue-1-x");
+    const note = await postLensResidualDisclosure({
+      summary: ISSUES,
+      pr: badPr,
+      cwd: dir,
+      execFn: stub.execFn,
+    });
+    assert(
+      note === "residual disclosure NOT posted — invalid PR number",
+      `an invalid pr (${String(badPr)}) returns the fail-closed invalid-PR note`,
+    );
+    assert(
+      !stub.calls.some((c) => c.includes("pr comment") || c.includes("pr view")),
+      `…and NOTHING is posted (no forge calls at all for pr=${String(badPr)})`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

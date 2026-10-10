@@ -18,6 +18,7 @@
 import { prCommentsCmd } from "./forge-commands.ts";
 import { extractCommentRows } from "./forge-comments.ts";
 import type { MergeExecFn, MergeTarget } from "./merge-target.ts";
+import { isValidRepoValue } from "./merge-tokens.ts";
 import type { LedgerEntry } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
 
@@ -45,6 +46,15 @@ export async function readPrCommentBodies(
   prNumber: number,
   repoValue: string | undefined,
 ): Promise<string[]> {
+  // Defensive second check mirroring readGhTarget (#955 lens fix 1): the
+  // repo value is agent-derived (the `-R` flag or a PR URL) and is
+  // interpolated into this exec string; an invalid value is a refusal
+  // (fail closed — [] means the marker check fails and the merge is
+  // refused), never a post or a pass.
+  if (repoValue !== undefined && !isValidRepoValue(repoValue)) {
+    trace(`merge-guard: invalid repo value ${repoValue} — comment read refused (fail closed)`);
+    return [];
+  }
   const repoFlag = repoValue ? ` -R ${repoValue}` : "";
   try {
     const { stdout } = await execFn(prCommentsCmd(target.forge, prNumber) + repoFlag, {

@@ -9,7 +9,11 @@
  * the escape hatch restores the strict rule.
  */
 
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { evaluateRoundCapMerge } from "../src/merge-guard-round-cap.ts";
+import { readPrCommentBodies } from "../src/merge-guard-reads.ts";
 import {
   assert,
   exit,
@@ -132,16 +136,7 @@ await setupLedgerPath();
   }
   // Condition 4: a legacy entry without `round` counts as round 1 → refused.
   {
-    const legacyNoRound: LedgerEntry = {
-      branch: "feature/x",
-      kind: "lens",
-      patchId: "p1",
-      passed: false,
-      at: 2,
-      detail: "ISSUES_FOUND",
-      hasCritical: false,
-      headSha: PR_HEAD,
-    };
+    const legacyNoRound = { ...lens({ at: 2 }), round: undefined } as unknown as LedgerEntry;
     const r = await hook("gh pr merge 12", [ADV, legacyNoRound], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
@@ -199,6 +194,36 @@ await setupLedgerPath();
     const r = await hook("gh pr merge 12", [ADV, lens({ at: 2 })]);
     assert(r.block === true, "round-cap: an unreadable comments read fails closed → refused");
   }
+  // #1000 — readPrCommentBodies' defensive repo-value check (mirroring
+  // readGhTarget's #955 boundary): an invalid repo value returns [] with NO
+  // exec (never interpolated); a valid value still reaches the exec with -R.
+  {
+    const dir = mkdtempSync(path.join(tmpdir(), "pi-rc-repo-"));
+    try {
+      const calls: string[] = [];
+      const fn = async (cmd: string): Promise<{ stdout: string }> => {
+        calls.push(cmd);
+        return { stdout: NO_COMMENTS };
+      };
+      const T = {
+        forge: "github",
+        prNumber: 12,
+        headBranch: "feature/x",
+        headOid: PR_HEAD,
+        baseBranch: "main",
+        author: "janni",
+        labels: [],
+      } as never;
+      const bodies = await readPrCommentBodies(fn, dir, T, 12, `o/r;id`);
+      assert(bodies.length === 0, "readPrCommentBodies: an invalid repo value returns [] (fail closed)");
+      assert(calls.length === 0, "…with NO exec call (the value is never interpolated)");
+      const ok = await readPrCommentBodies(fn, dir, T, 12, "o/r");
+      assert(ok.length === 0 && calls.length === 1, "a valid repo value still reaches the exec");
+      assert(calls[0].includes("-R o/r"), "…with the repo flag appended to the comments command");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
   // Condition 6 (headSha): a lens entry that reviewed an OLDER commit than
   // the PR's current head must not satisfy the cap, even with a fresh marker.
   // The headSha is a valid 40-char SHA that differs from PR_HEAD.
@@ -215,16 +240,7 @@ await setupLedgerPath();
   }
   // Condition 6 (headSha): a legacy entry without headSha refuses, naming it.
   {
-    const legacyHead: LedgerEntry = {
-      branch: "feature/x",
-      kind: "lens",
-      patchId: "p1",
-      passed: false,
-      at: 2,
-      detail: "ISSUES_FOUND",
-      hasCritical: false,
-      round: 3,
-    };
+    const legacyHead = { ...lens({ at: 2 }), headSha: undefined } as unknown as LedgerEntry;
     const r = await hook("gh pr merge 12", [ADV, legacyHead], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
@@ -235,64 +251,37 @@ await setupLedgerPath();
   // a 40-char SHA) must be refused with a "malformed" message — distinct
   // from "no headSha" and "branch moved". Even when the branch name
   // string-equals the PR head branch, it must NOT be treated as a match.
+  const malformedLens = (headSha: string): LedgerEntry => ({
+    branch: "feature/x",
+    kind: "lens",
+    patchId: "p1",
+    passed: false,
+    at: 2,
+    detail: "ISSUES_FOUND",
+    hasCritical: false,
+    round: 3,
+    headSha,
+  });
   {
-    const malformedSha: LedgerEntry = {
-      branch: "feature/x",
-      kind: "lens",
-      patchId: "p1",
-      passed: false,
-      at: 2,
-      detail: "ISSUES_FOUND",
-      hasCritical: false,
-      round: 3,
-      headSha: "feature/x", // a branch name, not a SHA
-    };
-    const r = await hook("gh pr merge 12", [ADV, malformedSha], {
+    const r = await hook("gh pr merge 12", [ADV, malformedLens("feature/x")], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
     assert(r.block === true, "round-cap: a branch-name headSha is refused (malformed entry)");
     assert(/malformed/.test(r.reason ?? ""), "…naming the entry as MALFORMED (not 'branch moved')");
     assert(!/branch moved/.test(r.reason ?? ""), "…NOT the 'branch moved' message");
   }
-  // #1039 — Condition 6 (headSha): a non-matching branch name (different
-  // from the PR head branch) is also malformed — proving no string match.
-  {
-    const malformedSha2: LedgerEntry = {
-      branch: "feature/x",
-      kind: "lens",
-      patchId: "p1",
-      passed: false,
-      at: 2,
-      detail: "ISSUES_FOUND",
-      hasCritical: false,
-      round: 3,
-      headSha: "feature/other", // a different branch name
-    };
-    const r = await hook("gh pr merge 12", [ADV, malformedSha2], {
+  // A non-matching branch name (different from the PR head branch) is also
+  // malformed — proving no string match; a short (8-hex) OID is malformed
+  // too (not 40 chars).
+  for (const [label, sha] of [
+    ["a non-matching branch-name", "feature/other"],
+    ["an abbreviated OID (8 hex)", "abc12345"],
+  ]) {
+    const r = await hook("gh pr merge 12", [ADV, malformedLens(sha)], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
-    assert(r.block === true, "round-cap: a non-matching branch-name headSha is refused (malformed)");
-    assert(/malformed/.test(r.reason ?? ""), "…naming the entry as MALFORMED");
-  }
-  // #1039 — Condition 6 (headSha): a short/abbreviated OID (8 hex chars)
-  // is also not a 40-char SHA → malformed.
-  {
-    const shortSha: LedgerEntry = {
-      branch: "feature/x",
-      kind: "lens",
-      patchId: "p1",
-      passed: false,
-      at: 2,
-      detail: "ISSUES_FOUND",
-      hasCritical: false,
-      round: 3,
-      headSha: "abc12345", // 8 hex chars — not 40
-    };
-    const r = await hook("gh pr merge 12", [ADV, shortSha], {
-      ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
-    });
-    assert(r.block === true, "round-cap: an abbreviated OID headSha is refused (malformed)");
-    assert(/malformed/.test(r.reason ?? ""), "…naming the entry as MALFORMED");
+    assert(r.block === true, `round-cap: ${label} headSha is refused (malformed)`);
+    assert(/malformed/.test(r.reason ?? ""), `…naming the entry as MALFORMED (${label})`);
   }
   // Condition 6 (headSha): a matching headSha (a 40-char SHA equal to the
   // guard's prHeadOid) → allowed. The `hook` helper already overrides

@@ -84,6 +84,23 @@ export async function postLensResidualDisclosure(opts: {
   // A branch is required to resolve the PR (or an explicit `pr` number is
   // used directly). Without either, the disclosure is skipped (fail
   // closed — the guard refuses).
+  // A branch is required to resolve the PR (or an explicit `pr` number is
+  // used directly). Without either, the disclosure is skipped (fail
+  // closed — the guard refuses).
+  // #1000 — an explicit `pr` is interpolated into the forge's identity and
+  // comment commands (`gh pr view <pr> --json ...`, `gh pr comment <pr>`),
+  // so a non-integer or non-positive value (a float like 7.5, NaN, 0 or a
+  // negative) would either hit a bogus PR or fail the forge with an opaque
+  // error: refuse up front (fail closed, same shape as the other refusals
+  // — nothing is posted, the note names the refusal). Checked BEFORE the
+  // no-branch-and-no-pr skip because a `pr: NaN` is falsy and would
+  // otherwise be treated as "no PR number at all" (a silent skip) instead
+  // of the explicit invalid-input refusal it is. The branch-lookup path's
+  // resolved number is forge-supplied and integer by construction.
+  if (opts.pr !== undefined && (!Number.isInteger(opts.pr) || opts.pr <= 0)) {
+    trace(`lens-residuals: invalid PR number ${opts.pr} — disclosure skipped (fail closed)`);
+    return "residual disclosure NOT posted — invalid PR number";
+  }
   if (!branch && !opts.pr) {
     trace(
       "lens-residuals: no branch and no PR number — cannot resolve the open PR; disclosure skipped",
