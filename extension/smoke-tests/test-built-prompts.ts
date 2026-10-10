@@ -69,20 +69,11 @@ const OO_SWEEP_FILES = [
 function ooPrefixRe() {
   return /(?<!\w)oo\s+(?:git|gh|glab|npm|cargo|bun|pnpm|yarn|pytest|go|uv|npx|ruff|recall|help|patterns|learn|forget)\b/;
 }
-// Explicit, anchor-based exemptions: a swept line is exempt iff it contains one
-// of its file's anchor substrings. Anchors are short and stable, so a reword of
-// the surrounding sentence does not silently drop the exemption — and each
-// anchor is asserted to still be present below, so a stale exemption (file
-// rewritten) fails the gate instead of rotting.
-const OO_SWEEP_EXEMPT: Record<string, string[]> = {};
 function assertOoSweep(lines: string[], rel: string) {
-  const anchors = OO_SWEEP_EXEMPT[rel] ?? [];
-  const isExempt = (line: string) => anchors.some((a) => line.includes(a));
   const re = ooPrefixRe(); // fresh per file, so lastIndex can't leak forward
   const violations: string[] = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    if (isExempt(line)) continue;
     if (re.test(line)) {
       violations.push(`  line ${i + 1}: ${line.trim().slice(0, 120)}`);
     }
@@ -93,14 +84,6 @@ function assertOoSweep(lines: string[], rel: string) {
       ? `${rel}: no oo command-prefix prescriptions remain`
       : `${rel}: ${violations.length} line(s) still prescribe oo command prefix:\n${violations.join("\n")}`,
   );
-  // Every anchor must still be present in the file — a missing anchor means the
-  // exemption is stale (it no longer matches anything) and must fail loudly.
-  for (const anchor of anchors) {
-    assert(
-      lines.some((l) => l.includes(anchor)),
-      `${rel}: OO_SWEEP_EXEMPT anchor still present (a missing anchor means the exemption is stale)`,
-    );
-  }
 }
 // Prove the gate can fail: an in-test fixture with a prescriptive `oo`-prefixed
 // runner line must be reported (and an exempted one must not be).

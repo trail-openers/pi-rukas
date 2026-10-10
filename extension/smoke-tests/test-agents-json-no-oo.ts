@@ -29,6 +29,22 @@
  *     reachable only through the retired `oo` binary in the developer role;
  *     their bare forms were never allowed standalone (no bare row existed
  *     before the retirement), so dropping them changes no strict-mode grant.
+ *   - the explore role's catch-all `oo-git` entry (the retired
+ *     retired prefixed git catch-all): the bare equivalent is
+ *     deliberately ABSENT. explore is a read-only role; its block enumerates
+ *     the read-only git verbs (blame, cat-file, check-ignore, config --get,
+ *     describe, diff, log, ls-files, ls-remote, ls-tree, merge-base,
+ *     name-rev, reflog, remote, rev-list, rev-parse, shortlog, show, stash
+ *     list, status, symbolic-ref, tag, worktree list) as explicit rows, and
+ *     the catch-all is dropped rather than replaced because a bare `git *`
+ *     allow row would grant the WRITE verbs (commit, push, reset, rebase)
+ *     in strict mode. Same shape as the image-wrapper exemption: an
+ *     intentional narrowing, not a loss.
+ *
+ * Also asserted: (d) explore, code-review-specialist and adversarial-
+ * developer have NO `git *` catch-all and no `git push*` / `git reset*` /
+ * `git rebase*` / `git commit*` allow rows — the read-only roles stay
+ * read-only in strict mode.
  *
  * The test is canaried in both directions: (a) is proven to fail by injecting
  * a fake `oo` key into an in-memory copy, and (b) is proven to fail by
@@ -40,7 +56,7 @@ import path from "node:path";
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 const AGENTS_PATH = path.join(ROOT, "agents.json");
-const FIXTURE_PATH = path.join(ROOT, "extension", "smoke-tests", "fixtures", "agents-json-removed-oo-entries.json"); // (oo = the retired prefix)
+const FIXTURE_PATH = path.join(ROOT, "extension", "smoke-tests", "fixtures", "agents-json-removed-oo-entries.json");
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -50,6 +66,13 @@ function assert(cond: boolean, msg: string) {
     exit = 1;
   }
 }
+
+// (d) — the three read-only roles must carry no catch-all git grant and no
+// allow row for a git write verb. `git *` would allow every git subcommand
+// including push/commit/reset/rebase in strict mode; the bare-write-verb
+// rows below would allow that verb even without the catch-all.
+const READONLY_ROLES = ["explore", "code-review-specialist", "adversarial-developer"];
+const GIT_WRITE_RE = /^git (push|reset|rebase|commit)/;
 
 // (a) — word-boundary: no allow/deny key begins with `oo `.
 const OO_PREFIX_RE = /^oo /;
@@ -100,19 +123,31 @@ const agents = JSON.parse(readFileSync(AGENTS_PATH, "utf8")) as AgentsJson;
 
 // Does the bash map allow the bare pattern `bare`? An allow key covers it
 // when equal, or when it is a strict word-boundary prefix wildcard (`… *` or
-// `…*`).
+// `…*`). Shared by the coverage loop and the (b) canary.
+function coversKey(key: string, verdict: string, bare: string): boolean {
+  if (verdict !== "allow") return false;
+  if (key === bare) return true;
+  return key.endsWith("*") && key.length > 1 && bare.startsWith(key.slice(0, -1));
+}
+
 function coveredIn(bash: Record<string, string> | undefined, bare: string): boolean {
   if (!bash) return false;
   for (const [key, verdict] of Object.entries(bash)) {
-    if (verdict !== "allow") continue;
-    if (key === bare) return true;
-    if (key.endsWith("*") && key.length > 1 && bare.startsWith(key.slice(0, -1))) return true;
+    if (coversKey(key, verdict, bare)) return true;
   }
   return false;
 }
 
 function covered(role: string, bare: string): boolean {
   return coveredIn(agents.agent[role]?.permission?.bash, bare);
+}
+
+// Exemption: explore's `oo-git` catch-all was deliberately not replaced by
+// a bare `git *` (see the (d) check below): explore is a read-only role and
+// the catch-all would grant write verbs in strict mode. Its read-only verbs
+// are covered by the explicit rows; only the catch-all form itself is exempt.
+function isCatchallNarrowed(role: string, bare: string): boolean {
+  return role === "explore" && bare === "git *";
 }
 
 // The frozen fixture must still describe reality: every listed entry was an
@@ -148,6 +183,7 @@ function covered(role: string, bare: string): boolean {
       const first = bare.split(" ", 1)[0];
       if (OOBINARY_ONLY.has(first)) continue; // exempt: OO-binary-only
       if (role === "developer" && DEV_ONLY_IMAGE_WRAPPERS.has(first.replace(/\*$/, ""))) continue; // exempt
+      if (isCatchallNarrowed(role, bare)) continue; // exempt: read-only narrowing
       if (!covered(role, bare)) missing.push(`${role}: ${entry} -> bare ${JSON.stringify(bare)}`);
     }
   }
@@ -174,13 +210,50 @@ function covered(role: string, bare: string): boolean {
     const cloneBash = { ...(agents.agent[sampleRole]?.permission?.bash ?? {}) } as Record<string, string>;
     // Remove the specific covering row so coverage fails.
     for (const [key, verdict] of Object.entries(cloneBash)) {
-      if (verdict !== "allow") continue;
-      if (key === bare || (key.endsWith("*") && key.length > 1 && bare.startsWith(key.slice(0, -1)))) {
-        delete cloneBash[key];
-      }
+      if (coversKey(key, verdict, bare)) delete cloneBash[key];
     }
     assert(!coveredIn(cloneBash, bare), `(b) canary: removing the bare row for \`${sampleEntry}\` drops its coverage`);
   }
+}
+
+// (d) — read-only roles carry no git catch-all and no git write-verb allows.
+{
+  const widening: string[] = [];
+  for (const role of READONLY_ROLES) {
+    const bash = agents.agent[role]?.permission?.bash;
+    if (!bash) {
+      widening.push(`${role}: role missing from current agents.json`);
+      continue;
+    }
+    for (const [key, verdict] of Object.entries(bash)) {
+      if (verdict !== "allow") continue;
+      if (key === "git *" || GIT_WRITE_RE.test(key)) {
+        widening.push(`${role}: ${JSON.stringify(key)} (allow)`);
+      }
+    }
+  }
+  assert(
+    widening.length === 0,
+    `read-only roles (${READONLY_ROLES.join(", ")}): no \`git *\` catch-all and no git write-verb allows (${widening.length} found)`,
+  );
+  if (widening.length) console.error(widening.map((w) => `  ${w}`).join("\n"));
+
+  // Canary for (d): the check must fire when a write-verb row is present.
+  const probeBash: Record<string, string> = { "git *": "allow", "git status*": "allow" };
+  const probeHits = Object.entries(probeBash).filter(
+    ([key, verdict]) => verdict === "allow" && (key === "git *" || GIT_WRITE_RE.test(key)),
+  );
+  assert(probeHits.length === 1, "(d) canary: an injected `git *` allow row IS detected");
+  const probeBash2: Record<string, string> = { "git commit*": "allow", "git status*": "allow" };
+  const probeHits2 = Object.entries(probeBash2).filter(
+    ([key, verdict]) => verdict === "allow" && (key === "git *" || GIT_WRITE_RE.test(key)),
+  );
+  assert(probeHits2.length === 1, "(d) canary: an injected `git commit*` allow row IS detected");
+  const probeBash3: Record<string, string> = { "git status*": "allow", "git log*": "allow" };
+  const probeHits3 = Object.entries(probeBash3).filter(
+    ([key, verdict]) => verdict === "allow" && (key === "git *" || GIT_WRITE_RE.test(key)),
+  );
+  assert(probeHits3.length === 0, "(d) canary: read-only rows (status/log) are NOT flagged");
 }
 
 // (c) — the retired image wrappers must not reappear as BARE grants in any
