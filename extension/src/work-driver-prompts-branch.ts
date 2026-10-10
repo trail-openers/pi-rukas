@@ -71,5 +71,3 @@ export function inlineBranchPrompt(
   lines.push(scratchHygieneSection(scratchDirAbs));
   return lines.join("\n");
 }
-
-// #1078 — split out from work-driver-prompts-early.ts to stay under the 500-line gate.
