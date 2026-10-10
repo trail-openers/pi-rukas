@@ -121,6 +121,12 @@ function covered(role: string, bare: string): boolean {
 {
   const total = Object.values(fixture).reduce((n, v) => n + v.length, 0);
   assert(total === 166, `fixture lists 166 removed oo-prefixed entries (found ${total})`);
+  if (total !== 166) {
+    // Show which roles' counts differ so the failure is diagnostic instead of
+    // just a total-mismatch. Expected per-role = 166 split per fixture role.
+    const perRole = Object.entries(fixture).map(([role, entries]) => `${role}=${entries.length}`);
+    console.error(`  per-role counts: ${perRole.join(", ")}`);
+  }
   let allOo = true;
   for (const role of Object.keys(fixture)) {
     for (const entry of fixture[role]) {
