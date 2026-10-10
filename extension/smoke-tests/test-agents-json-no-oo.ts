@@ -98,10 +98,10 @@ const DEV_ONLY_IMAGE_WRAPPERS = new Set(["animate", "compare", "composite", "con
 const fixture = JSON.parse(readFileSync(FIXTURE_PATH, "utf8")) as Record<string, string[]>;
 const agents = JSON.parse(readFileSync(AGENTS_PATH, "utf8")) as AgentsJson;
 
-// Does role `role` allow the bare pattern `bare`? An allow key covers it when
-// equal, or when it is a strict word-boundary prefix wildcard (`… *` or `…*`).
-function covered(role: string, bare: string): boolean {
-  const bash = agents.agent[role]?.permission?.bash;
+// Does the bash map allow the bare pattern `bare`? An allow key covers it
+// when equal, or when it is a strict word-boundary prefix wildcard (`… *` or
+// `…*`).
+function coveredIn(bash: Record<string, string> | undefined, bare: string): boolean {
   if (!bash) return false;
   for (const [key, verdict] of Object.entries(bash)) {
     if (verdict !== "allow") continue;
@@ -109,6 +109,10 @@ function covered(role: string, bare: string): boolean {
     if (key.endsWith("*") && key.length > 1 && bare.startsWith(key.slice(0, -1))) return true;
   }
   return false;
+}
+
+function covered(role: string, bare: string): boolean {
+  return coveredIn(agents.agent[role]?.permission?.bash, bare);
 }
 
 // The frozen fixture must still describe reality: every listed entry was an
@@ -137,7 +141,7 @@ function covered(role: string, bare: string): boolean {
       const bare = entry.slice(3); // drop "oo "
       const first = bare.split(" ", 1)[0];
       if (OOBINARY_ONLY.has(first)) continue; // exempt: OO-binary-only
-      if (role === "developer" && DEV_ONLY_IMAGE_WRAPPERS.has(first)) continue; // exempt
+      if (role === "developer" && DEV_ONLY_IMAGE_WRAPPERS.has(first.replace(/\*$/, ""))) continue; // exempt
       if (!covered(role, bare)) missing.push(`${role}: ${entry} -> bare ${JSON.stringify(bare)}`);
     }
   }
@@ -149,17 +153,19 @@ function covered(role: string, bare: string): boolean {
 
   // Canary for (b): prove the coverage check actually bites. Pick one real
   // non-exempt entry, remove its covering bare row from an in-memory copy, and
-  // confirm the (now missing) coverage is reported.
+  // confirm the (now missing) coverage is reported — reusing coveredIn on the
+  // mutated bash map instead of an inline re-implementation.
   const sampleRole = "ops";
   const sampleEntry = (fixture[sampleRole] ?? []).find((e) => {
     const bare = e.slice(3);
     const first = bare.split(" ", 1)[0];
-    return !OOBINARY_ONLY.has(first) && !DEV_ONLY_IMAGE_WRAPPERS.has(first) && covered(sampleRole, bare);
+    const bareFirst = first.replace(/\*$/, "");
+    return !OOBINARY_ONLY.has(first) && !DEV_ONLY_IMAGE_WRAPPERS.has(bareFirst) && covered(sampleRole, bare);
   });
   assert(sampleEntry !== undefined, "(b) canary: found a non-exempt ops entry to probe");
   if (sampleEntry) {
     const bare = sampleEntry.slice(3);
-    const cloneBash = { ...agents.agent[sampleRole].permission.bash } as Record<string, string>;
+    const cloneBash = { ...(agents.agent[sampleRole]?.permission?.bash ?? {}) } as Record<string, string>;
     // Remove the specific covering row so coverage fails.
     for (const [key, verdict] of Object.entries(cloneBash)) {
       if (verdict !== "allow") continue;
@@ -167,18 +173,31 @@ function covered(role: string, bare: string): boolean {
         delete cloneBash[key];
       }
     }
-    const clone: AgentsJson = JSON.parse(JSON.stringify(agents));
-    clone.agent[sampleRole].permission.bash = cloneBash;
-    const stillCovered = (() => {
-      for (const [key, verdict] of Object.entries(clone.agent[sampleRole].permission.bash)) {
-        if (verdict !== "allow") continue;
-        if (key === bare) return true;
-        if (key.endsWith("*") && key.length > 1 && bare.startsWith(key.slice(0, -1))) return true;
-      }
-      return false;
-    })();
-    assert(stillCovered === false, `(b) canary: removing the bare row for \`${sampleEntry}\` drops its coverage`);
+    assert(!coveredIn(cloneBash, bare), `(b) canary: removing the bare row for \`${sampleEntry}\` drops its coverage`);
   }
+}
+
+// (c) — the retired image wrappers must not reappear as BARE grants in any
+// role. `oo convert*` was only reachable through the retired `oo` binary; a
+// bare `convert*` row matches ANY `convert` on PATH, so reinstating them as
+// bare rows is a net widening of the developer role's grants.
+{
+  const widening: string[] = [];
+  for (const [role, spec] of Object.entries(agents.agent)) {
+    const bash = spec.permission?.bash;
+    if (!bash) continue;
+    for (const key of Object.keys(bash)) {
+      const first = key.split(" ", 1)[0];
+      if (first.endsWith("*") && DEV_ONLY_IMAGE_WRAPPERS.has(first.slice(0, -1))) {
+        widening.push(`${role}: ${JSON.stringify(key)}`);
+      }
+    }
+  }
+  assert(
+    widening.length === 0,
+    `no bare image-wrapper grants (animate/compare/composite/conjure/convert/display/stream) in any role (${widening.length} found)`,
+  );
+  if (widening.length) console.error(widening.map((w) => `  ${w}`).join("\n"));
 }
 
 console.log(exit === 0 ? "\nAll agents.json retirement checks passed." : "\nFAILED");
