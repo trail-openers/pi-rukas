@@ -68,11 +68,10 @@ for (const cmd of [
   "git -C /x rev-parse HEAD",
   "git -C /x worktree list",
   "git -C /x stash list",
-  // oo-wrapped reads (the wrapper is part of the pattern — matchBashSubcommand
-  // matches on the raw command, so the allowlist carries BOTH shapes).
-  "oo git log --oneline",
-  "oo git diff HEAD",
-  "oo git show 4b8",
+  // git reads via the bare `git *` pattern.
+  "git log --oneline",
+  "git diff HEAD",
+  "git show 4b8",
   // gh reads.
   "gh issue list --limit 15",
   "gh issue view 600",
@@ -178,7 +177,7 @@ for (const cmd of [
   // Mutations the incident actually ran.
   "git commit -m 'fix: x'",
   "git push origin main",
-  "oo git push origin x",
+  "git push origin x",
   "gh pr create --title x",
   "gh pr merge 123",
   "gh pr close 123",
@@ -397,7 +396,7 @@ else process.env.PI_ENSEMBLE_SANDBOX_MODE = prevSandbox;
   // representative command through the guard's own matcher.
   const samples: Array<[string, string]> = [
     ["git status*", "git status --porcelain"],
-    ["oo git log *", "oo git log --oneline"],
+    ["git log *", "git log --oneline"],
     ["gh pr view*", "gh pr view 42"],
     ["vipune search *", "vipune search 'x'"],
     ["which*", "which bun"],

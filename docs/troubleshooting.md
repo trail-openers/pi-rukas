@@ -190,7 +190,7 @@ If the cap fires for real, the recovery commands now match what the driver itsel
 
 Deliberate, and it holds regardless of trust level. A validation subagent once "cleaned up scratch commits" with `git checkout`, wiped an uncommitted deliverable, and then "restored" it by re-applying an older patch — silently reverting two reviewed defect fixes. It was caught only because a diffstat line count looked wrong.
 
-Nothing stopped it at any layer: trust mode (the default on an interactive host) and sandbox mode (the default in a container) both bypass gating entirely, and under strict opt-in the `oo git *` catch-all in `agents.json` allowed it explicitly. So the refusal sits ahead of all three.
+Nothing stopped it at any layer: trust mode (the default on an interactive host) and sandbox mode (the default in a container) both bypass gating entirely, and under strict opt-in the `git *` catch-all in `agents.json` allowed it explicitly. So the refusal sits ahead of all three.
 
 The distinction: the permission layers answer *"may this role run git?"* — yes. This answers *"may anything destroy work nobody has captured yet?"* — no. The container fence and the operator's trust both protect the **host**; neither protects the developer's own diff.
 

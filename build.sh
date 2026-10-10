@@ -196,24 +196,22 @@ EOF
        def group_by_prefix($keys):
          {
            git: ($keys | map(select(startswith("git ") or startswith("git status") or startswith("git branch") or startswith("git log") or startswith("git diff") or startswith("git config") or startswith("git remote") or startswith("git tag") or startswith("git worktree") or startswith("git rev-") or startswith("git merge-") or startswith("git -C "))) | sort),
-           oo_git: ($keys | map(select(startswith("oo git"))) | sort),
            gh: ($keys | map(select(startswith("gh "))) | sort),
-           oo_gh: ($keys | map(select(startswith("oo gh"))) | sort),
-           build: ($keys | map(select(startswith("npm") or startswith("yarn") or startswith("pnpm") or startswith("bun ") or startswith("cargo") or startswith("go test") or startswith("rustc") or startswith("node ") or startswith("corepack") or startswith("volta") or startswith("fnm ") or startswith("ruff") or startswith("pytest") or startswith("uv ") or startswith("oo npm") or startswith("oo yarn") or startswith("oo pnpm") or startswith("oo bun") or startswith("oo cargo") or startswith("oo go ") or startswith("oo uv ") or startswith("oo npx") or startswith("oo ruff"))) | sort),
+           build: ($keys | map(select(startswith("npm") or startswith("yarn") or startswith("pnpm") or startswith("bun ") or startswith("cargo") or startswith("go test") or startswith("rustc") or startswith("node ") or startswith("corepack") or startswith("volta") or startswith("fnm ") or startswith("ruff") or startswith("pytest") or startswith("uv "))) | sort),
            fs: ($keys | map(select(. == "ls*" or . == "cp *" or . == "mv *" or . == "rm *" or . == "mkdir*" or . == "chmod*" or . == "tar*" or . == "tee*" or . == "cut*" or . == "head*" or . == "tail*" or . == "wc*" or . == "sort*" or . == "uniq*" or . == "grep *" or . == "which*" or . == "echo*" or . == "jq*" or . == "xargs*" or . == "uuidgen*")) | sort),
            container: ($keys | map(select(startswith("docker") or startswith("podman") or startswith("kamal") or startswith("hcloud") or startswith("ssh ") or startswith("xattr") or startswith("codesign"))) | sort),
-           project_memory: ($keys | map(select(startswith("vipune") or startswith("kide") or startswith("apfel") or startswith("ctx7") or startswith("oo recall") or startswith("oo help") or startswith("oo patterns") or startswith("oo learn") or startswith("oo forget"))) | sort),
+           project_memory: ($keys | map(select(startswith("vipune") or startswith("kide") or startswith("apfel") or startswith("ctx7"))) | sort),
            shell: ($keys | map(select(startswith("./") or . == "ls*" or startswith("export "))) | sort | unique),
            other: ($keys | map(select(
              (startswith("git ") or startswith("git status") or startswith("git branch") or startswith("git log") or startswith("git diff") or startswith("git config") or startswith("git remote") or startswith("git tag") or startswith("git worktree") or startswith("git rev-") or startswith("git merge-") or startswith("git -C ")) | not
-           ) | select(startswith("oo git") | not) | select(startswith("gh ") | not) | select(startswith("oo gh") | not) | select(
-             (startswith("npm") or startswith("yarn") or startswith("pnpm") or startswith("bun ") or startswith("cargo") or startswith("go test") or startswith("rustc") or startswith("node ") or startswith("corepack") or startswith("volta") or startswith("fnm ") or startswith("ruff") or startswith("pytest") or startswith("uv ") or startswith("oo npm") or startswith("oo yarn") or startswith("oo pnpm") or startswith("oo bun") or startswith("oo cargo") or startswith("oo go ") or startswith("oo uv ") or startswith("oo npx") or startswith("oo ruff")) | not
+           ) | select(startswith("gh ") | not) | select(
+             (startswith("npm") or startswith("yarn") or startswith("pnpm") or startswith("bun ") or startswith("cargo") or startswith("go test") or startswith("rustc") or startswith("node ") or startswith("corepack") or startswith("volta") or startswith("fnm ") or startswith("ruff") or startswith("pytest") or startswith("uv ")) | not
            ) | select(
              (. == "ls*" or . == "cp *" or . == "mv *" or . == "rm *" or . == "mkdir*" or . == "chmod*" or . == "tar*" or . == "tee*" or . == "cut*" or . == "head*" or . == "tail*" or . == "wc*" or . == "sort*" or . == "uniq*" or . == "grep *" or . == "which*" or . == "echo*" or . == "jq*" or . == "xargs*" or . == "uuidgen*") | not
            ) | select(
              (startswith("docker") or startswith("podman") or startswith("kamal") or startswith("hcloud") or startswith("ssh ") or startswith("xattr") or startswith("codesign")) | not
            ) | select(
-             (startswith("vipune") or startswith("kide") or startswith("apfel") or startswith("ctx7") or startswith("oo recall") or startswith("oo help") or startswith("oo patterns") or startswith("oo learn") or startswith("oo forget")) | not
+             (startswith("vipune") or startswith("kide") or startswith("apfel") or startswith("ctx7")) | not
            ) | select(startswith("./") | not) | select(startswith("export ") | not)) | sort)
          };
 
@@ -224,9 +222,7 @@ EOF
        ([
          fmt_group("git (bare)"; $allow_groups.git),
 
-         fmt_group("git (verbose)"; $allow_groups.oo_git),
          fmt_group("gh (bare)"; $allow_groups.gh),
-         fmt_group("gh (verbose)"; $allow_groups.oo_gh),
          fmt_group("build tools (npm/yarn/pnpm/bun/cargo/go/etc.)"; $allow_groups.build),
          fmt_group("filesystem / text utilities"; $allow_groups.fs),
          fmt_group("container / deploy / ssh"; $allow_groups.container),

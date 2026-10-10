@@ -114,7 +114,6 @@ for (const command of commandSubstitutionShouldAsk) {
 // === Issue #112 tests: PM bare `git diff` for adversarial_loop input ===
 // Bare `git diff` is allowed because adversarial_loop takes the raw diff text
 // as a parameter — PM runs the diff, captures stdout, passes to the dispatch.
-// `oo git diff *` stays available for compression-tier reads PM does itself.
 
 const gitDiffShouldAllow = [
   "git diff",

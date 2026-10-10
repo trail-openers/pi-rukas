@@ -54,7 +54,7 @@ const defaultAgentsConfig = {
         "*": "deny",
         "vipune *": "allow",
         "vipune add *": "allow",
-        "oo git status*": "allow",
+        "git status*": "allow",
         "echo*": "allow",
       },
       read: "allow",
@@ -91,7 +91,7 @@ assert(
     emptyConfig,
     emptyConfig,
     defaultAgentsConfig,
-    "oo git status --short",
+    "git status --short",
   ) === "allow",
   "nested allowlist: legacy 'pattern*' form (no space) still matches",
 );
@@ -192,9 +192,7 @@ assert(
 );
 // End-to-end: with the real config loaded, common bash commands declared in
 // agents.json should resolve to "allow" without ever touching the cache.
-// PM has bare `git status*` not `oo git status*` per the bare-vs-oo doctrine
-// (bare for content-need / short output; oo for verbose-wrap). Subagent
-// roles like developer/ops carry the oo-wrapped variant.
+// All roles carry the bare command forms.
 assert(
   resolveToolPermission(
     "bash",

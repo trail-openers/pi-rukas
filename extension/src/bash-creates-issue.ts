@@ -12,8 +12,8 @@ import { stripQuotedSegments } from "./bash-command-parser.ts";
  * self-judged triviality test that used to gate creation had no oracle. The
  * shapes must all be caught, on the same scan-not-anchor + strip-quoted terms:
  *
- *   - `gh issue create …` / `glab issue create …` (with or without the `oo`
- *     prefix, chained after `cd x && …` or any other command),
+ *   - `gh issue create …` / `glab issue create …` (chained after
+ *     `cd x && …` or any other command),
  *   - `gh api repos/{o}/{r}/issues` — gh api defaults to POST when body
  *     fields (`-f`) are present, so a "read" that isn't actually a read is a
  *     second door into issue creation. Blocked unless the command EXPLICITLY
@@ -32,7 +32,7 @@ import { stripQuotedSegments } from "./bash-command-parser.ts";
  */
 export function createsIssue(command: string): string | undefined {
   const c = stripQuotedSegments(command);
-  const FORGE = "(?:^|[;&|]|\\s)(?:oo\\s+)?(?:gh|glab)\\s+";
+  const FORGE = "(?:^|[;&|]|\\s)(?:gh|glab)\\s+";
   const issueCreate = new RegExp(`${FORGE}issue\\s+create(?:\\s|$)`).exec(c);
   if (issueCreate?.[0]) return issueCreate[0].trim();
   // REST door, gh: `gh api` on the issues COLLECTION (`repos/{o}/{r}/issues`).

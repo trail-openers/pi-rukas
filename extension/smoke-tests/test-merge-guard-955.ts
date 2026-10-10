@@ -79,8 +79,8 @@ function teardownLedger() {
   assert(extractMergeNumber(a ?? "") === 17, "gh pr merge 17 → 17");
 }
 {
-  const a = mergeVerbArgs('oo gh pr merge 17 --squash --subject "x 12" --body "y"');
-  assert(a !== undefined, "oo gh pr merge 17 --squash --subject … matches");
+  const a = mergeVerbArgs('gh pr merge 17 --squash --subject "x 12" --body "y"');
+  assert(a !== undefined, "gh pr merge 17 --squash --subject … matches");
   assert(
     extractMergeNumber(a ?? "") === 17,
     "the number is 17, not the 12 inside the --subject flag value",

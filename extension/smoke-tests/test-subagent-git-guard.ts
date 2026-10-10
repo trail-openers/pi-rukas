@@ -12,7 +12,7 @@
  *   - trust mode (the default on an interactive host) returns before any
  *     gating,
  *   - sandbox mode (the default in a container) returns before any gating,
- *   - and under strict opt-in the `oo git *` catch-all in agents.json allows
+ *   - and under strict opt-in the `git *` catch-all in agents.json allows
  *     it explicitly for developer, explore and ops.
  *
  * So the refusal cannot live in the allowlist, and it cannot live after the
@@ -52,7 +52,6 @@ for (const cmd of [
   // The shapes that actually appear in agent output.
   "cd /repo/.worktrees/issue-686-task-a && git checkout .",
   "git -C /repo/.worktrees/issue-686-task-a reset --hard",
-  "oo git checkout -- .",
   "npm test; git checkout .",
   "git status && git clean -fdx",
 ]) {
@@ -165,7 +164,6 @@ for (const cmd of [
   "git rebase -i HEAD~3",
   "git rebase --interactive main",
   "git -C /repo rebase -i",
-  "oo git rebase -i",
   "cd /repo && git rebase --interactive",
   "git rebase -i origin/main",
   // Bare commit: opens $EDITOR.

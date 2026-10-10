@@ -41,7 +41,7 @@ export const CI_WATCH_SHAPES: readonly { cmd: string; description: string }[] = 
  * Classifier — is this bash command a CI-watch command?
  *
  * Accepts exactly the four shapes in `CI_WATCH_SHAPES`, tolerant of flag
- * order and of leading shell wrappers (`oo `, `timeout <N>[smh]? ` with
+ * order and of leading shell wrappers (`timeout <N>[smh]? ` with
  * optional flags such as `-k 5`, `env VAR=… `, `nice `) in any combination
  * and order:
  *   - `gh pr checks … --watch`   - `gh run watch`
@@ -53,10 +53,6 @@ export const CI_WATCH_SHAPES: readonly { cmd: string; description: string }[] = 
 export function isCiWatchCommand(raw: string): boolean {
   let cmd = raw;
   for (;;) {
-    if (cmd.startsWith("oo ")) {
-      cmd = cmd.slice(3).trimStart();
-      continue;
-    }
     const m = cmd.match(/^timeout(?:\s+-\S+(?:\s+\S+)?)*\s+\d+[smh]?\s+/i);
     if (m) {
       cmd = cmd.slice(m[0].length).trimStart();

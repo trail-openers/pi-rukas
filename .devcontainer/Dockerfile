@@ -127,11 +127,6 @@ RUN npm install -g --ignore-scripts ctx7 || true
 RUN cargo install vipune \
     && install -m 0755 /usr/local/cargo/bin/vipune /usr/local/bin/vipune
 
-# oo (double-o) — context-efficient wrapper for chatty CLIs
-# Pinned to the install floor 0.5.0 (install-preflight.sh MIN_OO_VERSION, #715).
-RUN cargo install double-o --version 0.5.0 \
-    && install -m 0755 /usr/local/cargo/bin/oo /usr/local/bin/oo
-
 # codebase-memory-mcp — knowledge-graph code indexer (ships as a static binary)
 # The upstream installer auto-detects arch and drops to ~/.local/bin/. We
 # install as root then move to /usr/local/bin so it's on PATH for any user.

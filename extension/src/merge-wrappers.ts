@@ -71,7 +71,7 @@ const TRANSPARENT_KEYWORDS = new Set([
  * test), so a quoted `eval "…"` argument still bails the walk the way the
  * quoted check wants (the quoted case is owned by `mergeVerbUnwrapOne`).
  */
-const BARE_WRAPPERS = new Set(["command", "builtin", "exec", "nohup", "sudo", "oo", "eval"]);
+const BARE_WRAPPERS = new Set(["command", "builtin", "exec", "nohup", "sudo", "eval"]);
 
 /**
  * The forge command word, normalised: a path ending in `/gh` or `/glab`

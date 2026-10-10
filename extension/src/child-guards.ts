@@ -16,10 +16,7 @@
  * PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD. It calls the shared block
  * (registerModeIndependentGuards in subagent-guard-guards.ts), which is the
  * single list of the three mode-independent guards — never the parent-only
- * ones (registerPmBashGuard stays where it is). The #716 oo-rewrite guard is
- * NOT in the shared block: it is registered by the strict/headless path in
- * permission-subagent-guard.ts, right after the shared block call, and stays
- * out of trust-mode children (see the call site there).
+ * ones (registerPmBashGuard stays where it is).
  *
  * No double registration in strict/headless: there the full pi-rukas
  * extension is ALSO forwarded with PI_ENSEMBLE_SUBAGENT_MODE=1 (index.ts →
@@ -116,13 +113,6 @@ export default function registerChildGuards(pi: ExtensionAPI): void {
   // The shared block is the single list of the three mode-independent guards;
   // registerPmBashGuard stays parent-only (it is not in the block). All three
   // fire before any trust/sandbox bypass by construction.
-  //
-  // registerOoRewriteGuard (#716) is deliberately NOT registered here. The
-  // strict/headless path registers it in permission-subagent-guard.ts, right
-  // after its own registerModeIndependentGuards call; the companion also
-  // loads into every trust-mode child, and adding the oo-rewrite there would
-  // be a behaviour change outside #926's scope. See the call site in
-  // permission-subagent-guard.ts.
   registerModeIndependentGuards(failClosedPi(pi));
   trace("child-guards: registered the mode-independent guards for this child");
 }

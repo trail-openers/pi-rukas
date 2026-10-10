@@ -222,7 +222,7 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
   assert(clis.includes('"git:'), "REQUIRED_CLIS retains the git entry");
   assert(clis.includes('"jq:'), "REQUIRED_CLIS retains the jq entry");
   assert(clis.includes('"vipune:'), "REQUIRED_CLIS retains the vipune entry");
-  assert(clis.includes('"oo:'), "REQUIRED_CLIS retains the oo entry");
+  assert(!clis.includes('"oo:'), "REQUIRED_CLIS no longer contains the oo entry (retired in #1029)");
   assert(clis.includes('"parallel-cli:'), "REQUIRED_CLIS retains the parallel-cli entry");
   assert(clis.includes('"ctx7:'), "REQUIRED_CLIS retains the ctx7 entry");
 }

@@ -70,7 +70,6 @@ for (const cmd of [
   "timeout --signal=KILL 30s gh pr merge 17",
   "timeout --signal KILL 30s gh pr merge 17",
   "timeout -k 5 30s gh pr merge 17",
-  "oo gh pr merge 17",
   "stdbuf -oL gh pr merge 17",
   // Stacked wrappers (bash unwraps iteratively — the guard must too).
   "nohup sudo gh pr merge 17",
@@ -333,7 +332,6 @@ for (const cmd of [
   "nice -n 5 glab mr view 3",
   "sudo gh pr list",
   "time gh pr checks 12",
-  "oo gh pr list",
   "(echo hi)",
   "x=$(ls /tmp)",
   `x=\`gh pr list\``,
