@@ -29,11 +29,11 @@ import {
   renderSummary,
 } from "./lens-review-format.ts";
 import { installBlockRowsForRoster, skillsDirUsable } from "./lens-review-skills.ts";
+import type { Finding, LensRunResult } from "./lens-review-types.ts";
 import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
 import { isFullCommitSha, resolveHeadSha } from "./review-head-sha.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
-import type { DispatchResult, DispatchUsage } from "./types.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -66,7 +66,16 @@ export type LensDef = RosterEntry;
 /** Re-exported so consumers of this module name the verdict here; the
  * definition lives in lens-review-format.ts. */
 export type { Verdict, Severity } from "./lens-review-format.ts";
-export type LensName = string; // deliberately unbounded — the roster is data-driven from SKILL.md frontmatter (#873)
+/** Re-exported from lens-review-types.ts (#1000: the per-lens result shape
+ * moved there so this file stays under the 500-line limit while keeping its
+ * origin/main jsdoc comments verbatim). No consumer import path changes. */
+export type {
+  Finding,
+  FindingSource,
+  LensName,
+  LensRunResult,
+  RawFinding,
+} from "./lens-review-types.ts";
 export const LENS_REPORTER_PATH = path.join(__dirname, "lens-reporter.ts");
 
 /**
@@ -92,67 +101,6 @@ export { MAX_LENS_ATTEMPTS };
 /** Backoff between retries (ms). Small fixed delay — these failures are
  * usually transient (process spawn pressure, provider-side rate limits). */
 const LENS_RETRY_BACKOFF_MS = 1000;
-
-export interface RawFinding {
-  severity: string;
-  path: string;
-  line?: number;
-  title: string;
-  description?: string;
-  suggestion?: string;
-}
-
-/**
- * Where a finding came from. Not every finding comes from a lens: `CLAIM_SCAN`
- * is deterministic and model-free (see `claim-scan.ts`). Labelling its output
- * as a lens's would be a false attribution in the operator's summary — the
- * exact defect class this scan exists to catch.
- */
-export type FindingSource = LensName | "CLAIM_SCAN";
-
-export interface Finding extends RawFinding {
-  severity: Severity;
-  lens: FindingSource;
-}
-
-export interface LensRunResult {
-  lens: LensName;
-  ok: boolean;
-  ms: number;
-  /** #456 — wall-clock when this lens's dispatch began (persisted via
-   * dispatch-completed.lensTimings; sequential startMs across a pass are the
-   * fingerprint of spawn-semaphore queueing, cap 1). */
-  startMs: number;
-  findings: Finding[];
-  model?: string;
-  transcriptPath?: string;
-  /** #543 — the dispatch-cap kill cause when the lens child was cap-killed
-   * (loop detector / token budget). A cap-killed lens is NOT retried: an
-   * SIGTERM'd looped child is a non-zero exit, and without this guard the
-   * retry below would undo the kill up to MAX_LENS_ATTEMPTS times. */
-  killCause?: DispatchResult["killCause"];
-  /** #543 — F1 loop-kill evidence (tool + count) for capEvidence; F6
-   * token-budget kill evidence (budget/used) threaded for the same reason. */
-  loopEvidence?: { tool: string; count: number };
-  tokenBudget?: { budget: number; used: number };
-  /** Set when the child failed to spawn or returned non-zero. */
-  parseError?: string;
-  /** Number of spawn attempts made for this lens (1 = no retries; up to
-   * MAX_LENS_ATTEMPTS on transient failures). #3. */
-  attempts: number;
-  /** True when ALL attempts failed — the lens contributes no findings and
-   * the overall verdict is REVIEW_INCOMPLETE. #3. */
-  blocked: boolean;
-  /**
-   * The child's closing prose. The lens prompt asks for it explicitly, and it
-   * is the only evidence that a lens which reported no findings actually
-   * looked — see `lensProducedEvidence`.
-   */
-  summary?: string;
-  /** #534 — child's tokens/cost for the cycle total (was discarded pre-#534;
-   * carried so the driver can fold the six-lens pass's spend into the total). */
-  usage?: DispatchUsage;
-}
 
 export async function runLensReview(opts: {
   diff?: string;

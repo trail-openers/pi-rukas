@@ -322,5 +322,84 @@ function repoDir(): string {
   }
 }
 
+// ------------------------------------------- explicit pr param → used directly
+
+{
+  const dir = repoDir();
+  try {
+    // A stub that would return a DIFFERENT PR (77) if the branch lookup ran
+    // (the PR for the STALE `branch` param), but the explicit `pr: 12` must
+    // be used directly — the identity read is against `pr` alone, and the
+    // marker's branch comes from the open PR's correct headRefName.
+    const calls: string[] = [];
+    const execFn = async (cmd: string): Promise<{ stdout: string }> => {
+      calls.push(cmd);
+      if (cmd.includes("pr list --state open --head feature/x")) {
+        // If the code wrongly falls through to the branch lookup, it would
+        // resolve PR 77 (the PR for the stale branch) and the marker's
+        // branch would be `feature/stale` — the asserts below catch that.
+        return { stdout: JSON.stringify([{ number: 77 }]) };
+      }
+      if (cmd.includes("pr view 12 --json headRefName,baseRefName")) {
+        return { stdout: JSON.stringify({ headRefName: "feature/x", baseRefName: "main" }) };
+      }
+      if (cmd.includes("pr view 77 --json headRefName,baseRefName")) {
+        return { stdout: JSON.stringify({ headRefName: "feature/stale", baseRefName: "main" }) };
+      }
+      if (cmd.includes("git config --get remote.origin.url")) {
+        return { stdout: "git@github.com:o/r.git\n" };
+      }
+      if (cmd.includes("git config --get remote.upstream.url")) {
+        return { stdout: "git@github.com:o/r.git\n" };
+      }
+      if (cmd.includes("git remote")) {
+        return { stdout: "origin\n" };
+      }
+      if (cmd.includes("git fetch")) {
+        return { stdout: "" };
+      }
+      if (cmd.includes("patch-id")) {
+        return { stdout: "p42 0000" };
+      }
+      if (cmd.includes("pr comment")) {
+        return { stdout: "" };
+      }
+      throw new Error(`unexpected exec: ${cmd}`);
+    };
+    const note = await postLensResidualDisclosure({
+      summary: summary("ISSUES_FOUND", [
+        { severity: "MEDIUM", path: "src/a.ts", line: 10, title: "a finding", lens: "SIMPLICITY" },
+      ]),
+      branch: "feature/stale",
+      pr: 12,
+      cwd: dir,
+      execFn,
+    });
+    assert(note === "", "an explicit pr + successful post returns no note");
+    assert(
+      !calls.some((c) => c.includes("pr list --state open")),
+      "the explicit pr skips the branch→PR list lookup entirely",
+    );
+    assert(
+      calls.some((c) => c.includes("pr view 12 --json headRefName,baseRefName")),
+      "…and the identity read is against the explicit pr (12), not the branch's PR",
+    );
+    assert(
+      !calls.some((c) => c.includes("pr view 77")),
+      "…the branch's PR (77) is never consulted (the stale branch is ignored)",
+    );
+    assert(
+      calls.some((c) => c.includes("git fetch origin feature/x main")),
+      "…and the patch-id base/head come from the open PR's refs (feature/x), not the stale branch",
+    );
+    assert(
+      calls.some((c) => c.includes("pr comment 12")),
+      "the post issues a `gh pr comment` call against the explicit pr",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

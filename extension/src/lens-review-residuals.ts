@@ -152,41 +152,11 @@ async function doPost(
   // value the guard will see.
   let baseBranch: string | undefined;
   let headBranch: string | undefined;
-  if (opts.pr !== undefined) {
-    // When the PR was supplied explicitly, detect the forge for the view.
+  {
     const detection = await detectForge(cwd, { allowProbe: false });
     if (detection.forge === "unknown") {
       throw new Error(`cannot determine the forge for ${cwd} (no PR number)`);
     }
-    if (detection.forge === "gitlab") {
-      const { stdout } = await execFn(`glab mr view ${prNumber} --output json`, {
-        cwd,
-        maxBuffer: 64 * 1024,
-        timeout: 30_000,
-      });
-      const raw = JSON.parse(stdout) as { source_branch?: string; target_branch?: string };
-      headBranch = raw.source_branch;
-      baseBranch = raw.target_branch;
-    } else {
-      const { stdout } = await execFn(`gh pr view ${prNumber} --json headRefName,baseRefName`, {
-        cwd,
-        maxBuffer: 64 * 1024,
-        timeout: 30_000,
-      });
-      const raw = JSON.parse(stdout) as { headRefName?: string; baseRefName?: string };
-      headBranch = raw.headRefName;
-      baseBranch = raw.baseRefName;
-    }
-  } else {
-    // The PR for the branch (the guard resolves it the same way — the forge
-    // CLI on the current branch; the caller runs from the branch's repo).
-    const detection = await detectForge(cwd, { allowProbe: false });
-    if (detection.forge === "unknown") {
-      throw new Error(`cannot determine the forge for ${cwd} (no PR number)`);
-    }
-    // The PR's identity (base + head branch) — the SAME read the guard uses
-    // for its target, so the patch-id base is the PR's ACTUAL base (design
-    // decision 1).
     if (detection.forge === "gitlab") {
       const { stdout } = await execFn(`glab mr view ${prNumber} --output json`, {
         cwd,
