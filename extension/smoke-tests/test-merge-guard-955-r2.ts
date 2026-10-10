@@ -5,7 +5,7 @@
  *
  * The round-1 fix (test-merge-guard-955.ts) covered post-verb number
  * extraction, subshell (bash -c) unwrapping and the -R passthrough. Round 2
- * adds: process-wrapper prefixes (timeout/command/nohup/sudo/nice/time/oo/
+ * adds: process-wrapper prefixes (timeout/command/nohup/sudo/nice/time/
  * stdbuf), forge paths (/usr/bin/gh), live subshell / backtick bodies
  * (( … ), backtick command lines), fail-closed depth exhaustion, glab
  * --project, /pulls/N URLs and quoted numeric positionals.

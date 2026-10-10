@@ -54,7 +54,6 @@ Required CLIs on `$PATH`. The role prompts assume all of these are installed —
 | Forge CLI (`gh` / `glab`) | Forge issue / PR / CI ops — `gh` for GitHub, `glab` for GitLab. Install at least one; both is fine. |
 | [`vipune`](https://github.com/randomm/vipune) | Cross-session memory (fact + observation patterns). All agents call this. (Cargo from source.) |
 | [`codebase-memory-mcp`](https://github.com/DeusData/codebase-memory-mcp) | Knowledge-graph code indexer exposed as MCP — powers `mcp__codebase_memory__search_code` / `mcp__codebase_memory__trace_path` / `mcp__codebase_memory__detect_changes` / `mcp__codebase_memory__get_architecture`. (curl-to-bash install.) |
-| [`oo`](https://github.com/randomm/oo) | Context-efficient wrapper for chatty CLIs (git, gh). (Cargo from source. Pinned to floor `0.5.0`.) |
 | `jq` | Used by `build.sh` to assemble the capability matrix into the PM prompt. |
 | [`parallel-cli`](https://docs.parallel.ai/cli/overview) | Web search / fetch / deep research for the `explore` role. (Homebrew tap.) |
 | [`ctx7`](https://context7.com) | Current third-party library documentation. `ctx7 library <name>` → `ctx7 docs <id> <query>`. Free tier works without login. |

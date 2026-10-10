@@ -17,7 +17,7 @@ Symptoms → causes → fixes. Most issues here come from running an older sandb
 
 **Verification (the "expected to work" bar).** WSL2 is upgraded from "expected to work" to "supported" only once someone records a clean run: `./install.sh` completes, one sandbox image pull succeeds, one subagent dispatch runs, and `/mcp` shows the `codebase_memory` server. Record the configuration — repo location (`/home/...` vs `/mnt/c/...`, which interacts with the absolute-path mount premise) and the Docker variant.
 
-**Note on the prerequisites:** several tools have no native-Windows install path, which is part of why the platform is unsupported — `codebase-memory-mcp` installs by curl-to-bash, `parallel-cli` by a Homebrew tap, and `vipune` / `oo` by cargo from source. Under WSL2 (a Linux kernel running inside a Windows VM) all of these install normally.
+**Note on the prerequisites:** several tools have no native-Windows install path, which is part of why the platform is unsupported — `codebase-memory-mcp` installs by curl-to-bash, `parallel-cli` by a Homebrew tap, and `vipune` by cargo from source. Under WSL2 (a Linux kernel running inside a Windows VM) all of these install normally.
 
 ### `docker` / the sandbox image is unreachable from inside WSL2
 

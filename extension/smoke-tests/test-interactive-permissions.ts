@@ -304,7 +304,7 @@ assert(extractCommandPrefix("cmd1 && cmd2") === "cmd1", "extractCommandPrefix st
 assert(extractCommandPrefix("cmd1 || cmd2") === "cmd1", "extractCommandPrefix stops at ||");
 
 // === #78: smarter extractCommandPrefix ===
-// Wrapper-strip + multi-subcommand handling + oo-recursion + triple-level.
+// Wrapper-strip + multi-subcommand handling + triple-level.
 assert(
   extractCommandPrefix('vipune add "lorem ipsum dolor"') === "vipune add",
   "quoted argument transparent; vipune is multi-subcommand → 2 tokens",

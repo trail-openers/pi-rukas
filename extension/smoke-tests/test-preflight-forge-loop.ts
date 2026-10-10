@@ -83,7 +83,7 @@ function extractRequiredClis(): string {
  * carries the skip logic; the test drives it as-is.
  *
  * Coupling to install.sh's exact loop and hint text is DELIBERATE: like
- * test-pi-min-version.ts and test-oo-min-version.ts, this test extracts by
+ * test-pi-min-version.ts, this test extracts by
  * regex, so a reformat of the loop (or its hint string) must update the
  * test. The behavioural assertions (gh, glab, both, neither, canary) are
  * the real regression gate.
@@ -178,7 +178,7 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
       // Hermetic env: nothing from process.env (no BASH_ENV, no GLOBIGNORE,
       // no inherited state). Only the stub dir on PATH, a temp HOME, and a
       // fixed locale. This test is stricter than test-pi-min-version.ts /
-      // test-oo-min-version.ts on purpose: the stub PATH must be the ONLY
+      // test-pi-min-version.ts on purpose: the stub PATH must be the ONLY
       // tool source, because an inherited BASH_ENV (or similar) could let
       // the child reach the real gh/glab.
       env: {
@@ -205,7 +205,7 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
 // ---------------------------------------------- extraction integrity
 //
 // Deliberate coupling: these source-shape assertions match install.sh's
-// exact text (like test-pi-min-version.ts / test-oo-min-version.ts, this
+// exact text (like test-pi-min-version.ts, this
 // test extracts by regex — a reformat of the loop or hint text must
 // update the test). The behavioural assertions below (gh, glab, both,
 // neither, canary) are the real regression gate.
@@ -221,7 +221,7 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
   assert(clis.includes('"git:'), "REQUIRED_CLIS retains the git entry");
   assert(clis.includes('"jq:'), "REQUIRED_CLIS retains the jq entry");
   assert(clis.includes('"vipune:'), "REQUIRED_CLIS retains the vipune entry");
-  assert(!clis.includes('"oo:'), "REQUIRED_CLIS no longer contains the oo entry (retired in #1029)");
+  assert(!clis.includes('"oo:'), "REQUIRED_CLIS no longer contains the oo entry (retired in #1029)"); // (no `oo` — retired)
   assert(clis.includes('"parallel-cli:'), "REQUIRED_CLIS retains the parallel-cli entry");
   assert(clis.includes('"ctx7:'), "REQUIRED_CLIS retains the ctx7 entry");
 }
