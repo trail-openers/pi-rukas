@@ -178,18 +178,7 @@ export function makeRunOneWorkstream(
         ids: brief.hits.map((h: { id: string }) => h.id),
       });
 
-      // #1078 — thread the driver-cached issue body paths so the developer
-      // reads the file(s) instead of re-fetching via gh. The artifacts may be
-      // gone by develop time (scratch cleared on --restart/resume, eviction
-      // between explore and develop) — fall back to the re-fetch line. A
-      // multi-issue cycle caches one file per ACTIVE issue (work-driver
-      // explore-run.ts), each as `issue-body-<N>.txt` under the PRIMARY
-      // issue's state dir — including for the primary, so the bare legacy
-      // `issue-body.txt` file is never written in multi-issue mode. Only the
-      // primary is tracked in state, so derive the sibling names from the
-      // primary's directory for every NON-PRIMARY active issue and thread ALL
-      // of them — otherwise the prompt would point at the primary alone and
-      // forbid re-fetching the rest.
+      // #1078: siblings are written as issue-body-<N>.txt in the primary's dir by the explore writer (work-driver-explore-run.ts) but not tracked in state — derive and existence-check each.
       const artifact = s.stateRef.current.pipelineState.issueBodyArtifact;
       const artifactPaths: string[] = [];
       if (artifact) {
