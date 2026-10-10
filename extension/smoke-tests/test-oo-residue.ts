@@ -166,8 +166,6 @@ const EXEMPT: Record<string, string[]> = {
     "contains the oo entry",
     "no `oo` — retired",
   ],
-  "AGENTS.md": ["bare-vs-`oo`"],
-  "pi-prompts/agents-md.md": ["randomm/oo AGENTS.md"],
 };
 
 function collectFiles(abs: string, rel: string): string[] {
