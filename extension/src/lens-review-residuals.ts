@@ -84,9 +84,6 @@ export async function postLensResidualDisclosure(opts: {
   // A branch is required to resolve the PR (or an explicit `pr` number is
   // used directly). Without either, the disclosure is skipped (fail
   // closed — the guard refuses).
-  // A branch is required to resolve the PR (or an explicit `pr` number is
-  // used directly). Without either, the disclosure is skipped (fail
-  // closed — the guard refuses).
   // #1000 — an explicit `pr` is interpolated into the forge's identity and
   // comment commands (`gh pr view <pr> --json ...`, `gh pr comment <pr>`),
   // so a non-integer or non-positive value (a float like 7.5, NaN, 0 or a

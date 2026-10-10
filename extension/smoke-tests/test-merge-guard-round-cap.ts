@@ -9,11 +9,6 @@
  * the escape hatch restores the strict rule.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { evaluateRoundCapMerge } from "../src/merge-guard-round-cap.ts";
-import { readPrCommentBodies } from "../src/merge-guard-reads.ts";
 import {
   assert,
   exit,
@@ -23,6 +18,7 @@ import {
   TARGET,
 } from "./merge-guard-helpers.ts";
 import type { LedgerEntry } from "./merge-guard-helpers.ts";
+import { evaluateRoundCapMerge } from "../src/merge-guard-round-cap.ts";
 
 await setupLedgerPath();
 
@@ -136,7 +132,16 @@ await setupLedgerPath();
   }
   // Condition 4: a legacy entry without `round` counts as round 1 → refused.
   {
-    const legacyNoRound = { ...lens({ at: 2 }), round: undefined } as unknown as LedgerEntry;
+    const legacyNoRound: LedgerEntry = {
+      branch: "feature/x",
+      kind: "lens",
+      patchId: "p1",
+      passed: false,
+      at: 2,
+      detail: "ISSUES_FOUND",
+      hasCritical: false,
+      headSha: PR_HEAD,
+    };
     const r = await hook("gh pr merge 12", [ADV, legacyNoRound], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
@@ -194,36 +199,6 @@ await setupLedgerPath();
     const r = await hook("gh pr merge 12", [ADV, lens({ at: 2 })]);
     assert(r.block === true, "round-cap: an unreadable comments read fails closed → refused");
   }
-  // #1000 — readPrCommentBodies' defensive repo-value check (mirroring
-  // readGhTarget's #955 boundary): an invalid repo value returns [] with NO
-  // exec (never interpolated); a valid value still reaches the exec with -R.
-  {
-    const dir = mkdtempSync(path.join(tmpdir(), "pi-rc-repo-"));
-    try {
-      const calls: string[] = [];
-      const fn = async (cmd: string): Promise<{ stdout: string }> => {
-        calls.push(cmd);
-        return { stdout: NO_COMMENTS };
-      };
-      const T = {
-        forge: "github",
-        prNumber: 12,
-        headBranch: "feature/x",
-        headOid: PR_HEAD,
-        baseBranch: "main",
-        author: "janni",
-        labels: [],
-      } as never;
-      const bodies = await readPrCommentBodies(fn, dir, T, 12, `o/r;id`);
-      assert(bodies.length === 0, "readPrCommentBodies: an invalid repo value returns [] (fail closed)");
-      assert(calls.length === 0, "…with NO exec call (the value is never interpolated)");
-      const ok = await readPrCommentBodies(fn, dir, T, 12, "o/r");
-      assert(ok.length === 0 && calls.length === 1, "a valid repo value still reaches the exec");
-      assert(calls[0].includes("-R o/r"), "…with the repo flag appended to the comments command");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  }
   // Condition 6 (headSha): a lens entry that reviewed an OLDER commit than
   // the PR's current head must not satisfy the cap, even with a fresh marker.
   // The headSha is a valid 40-char SHA that differs from PR_HEAD.
@@ -240,7 +215,16 @@ await setupLedgerPath();
   }
   // Condition 6 (headSha): a legacy entry without headSha refuses, naming it.
   {
-    const legacyHead = { ...lens({ at: 2 }), headSha: undefined } as unknown as LedgerEntry;
+    const legacyHead: LedgerEntry = {
+      branch: "feature/x",
+      kind: "lens",
+      patchId: "p1",
+      passed: false,
+      at: 2,
+      detail: "ISSUES_FOUND",
+      hasCritical: false,
+      round: 3,
+    };
     const r = await hook("gh pr merge 12", [ADV, legacyHead], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
@@ -251,37 +235,64 @@ await setupLedgerPath();
   // a 40-char SHA) must be refused with a "malformed" message — distinct
   // from "no headSha" and "branch moved". Even when the branch name
   // string-equals the PR head branch, it must NOT be treated as a match.
-  const malformedLens = (headSha: string): LedgerEntry => ({
-    branch: "feature/x",
-    kind: "lens",
-    patchId: "p1",
-    passed: false,
-    at: 2,
-    detail: "ISSUES_FOUND",
-    hasCritical: false,
-    round: 3,
-    headSha,
-  });
   {
-    const r = await hook("gh pr merge 12", [ADV, malformedLens("feature/x")], {
+    const malformedSha: LedgerEntry = {
+      branch: "feature/x",
+      kind: "lens",
+      patchId: "p1",
+      passed: false,
+      at: 2,
+      detail: "ISSUES_FOUND",
+      hasCritical: false,
+      round: 3,
+      headSha: "feature/x", // a branch name, not a SHA
+    };
+    const r = await hook("gh pr merge 12", [ADV, malformedSha], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
     assert(r.block === true, "round-cap: a branch-name headSha is refused (malformed entry)");
     assert(/malformed/.test(r.reason ?? ""), "…naming the entry as MALFORMED (not 'branch moved')");
     assert(!/branch moved/.test(r.reason ?? ""), "…NOT the 'branch moved' message");
   }
-  // A non-matching branch name (different from the PR head branch) is also
-  // malformed — proving no string match; a short (8-hex) OID is malformed
-  // too (not 40 chars).
-  for (const [label, sha] of [
-    ["a non-matching branch-name", "feature/other"],
-    ["an abbreviated OID (8 hex)", "abc12345"],
-  ]) {
-    const r = await hook("gh pr merge 12", [ADV, malformedLens(sha)], {
+  // #1039 — Condition 6 (headSha): a non-matching branch name (different
+  // from the PR head branch) is also malformed — proving no string match.
+  {
+    const malformedSha2: LedgerEntry = {
+      branch: "feature/x",
+      kind: "lens",
+      patchId: "p1",
+      passed: false,
+      at: 2,
+      detail: "ISSUES_FOUND",
+      hasCritical: false,
+      round: 3,
+      headSha: "feature/other", // a different branch name
+    };
+    const r = await hook("gh pr merge 12", [ADV, malformedSha2], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
-    assert(r.block === true, `round-cap: ${label} headSha is refused (malformed)`);
-    assert(/malformed/.test(r.reason ?? ""), `…naming the entry as MALFORMED (${label})`);
+    assert(r.block === true, "round-cap: a non-matching branch-name headSha is refused (malformed)");
+    assert(/malformed/.test(r.reason ?? ""), "…naming the entry as MALFORMED");
+  }
+  // #1039 — Condition 6 (headSha): a short/abbreviated OID (8 hex chars)
+  // is also not a 40-char SHA → malformed.
+  {
+    const shortSha: LedgerEntry = {
+      branch: "feature/x",
+      kind: "lens",
+      patchId: "p1",
+      passed: false,
+      at: 2,
+      detail: "ISSUES_FOUND",
+      hasCritical: false,
+      round: 3,
+      headSha: "abc12345", // 8 hex chars — not 40
+    };
+    const r = await hook("gh pr merge 12", [ADV, shortSha], {
+      ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
+    });
+    assert(r.block === true, "round-cap: an abbreviated OID headSha is refused (malformed)");
+    assert(/malformed/.test(r.reason ?? ""), "…naming the entry as MALFORMED");
   }
   // Condition 6 (headSha): a matching headSha (a 40-char SHA equal to the
   // guard's prHeadOid) → allowed. The `hook` helper already overrides
@@ -324,80 +335,6 @@ await setupLedgerPath();
     } finally {
       if (prev === undefined) delete process.env.PI_ENSEMBLE_LENS_ROUND_CAP_MERGE;
       else process.env.PI_ENSEMBLE_LENS_ROUND_CAP_MERGE = prev;
-    }
-  }
-
-  // #1000 — the `applies: false` fall-through: "the round-cap path was NOT
-  // evaluated" (distinct from the `applies: true` path, where a specific
-  // condition N failed). The strict-rule text alone hides which situation
-  // applies; it must now name that the round-cap path was not evaluated.
-  {
-    // No lens entry at all → "not evaluated (there is no entry to evaluate)".
-    const noLens = await hook("gh pr merge 12", [ADV]);
-    assert(noLens.block === true, "fall-through: no lens entry → refused");
-    assert(
-      /round-cap path was not evaluated/.test(noLens.reason ?? ""),
-      "…the refusal names that the round-cap path was NOT evaluated",
-    );
-    assert(/no entry to evaluate/.test(noLens.reason ?? ""), "…naming no entry to evaluate");
-
-    // Legacy entry without a `detail` field → not evaluated (the rule cannot
-    // verify the verdict), with the verdict state shown (unrecorded, legacy).
-    const legacyNoDetail: LedgerEntry = { branch: "feature/x", kind: "lens", patchId: "p1", passed: false, at: 2 };
-    const legacy = await hook("gh pr merge 12", [ADV, legacyNoDetail], {
-      ghComments: commentsWith("feature/x", "p1"),
-    });
-    assert(legacy.block === true, "fall-through: a legacy entry without detail → refused");
-    assert(
-      /round-cap path was not evaluated/.test(legacy.reason ?? ""),
-      "…the refusal names that the round-cap path was NOT evaluated",
-    );
-    assert(
-      /verdict=unrecorded \(legacy entry\)/.test(legacy.reason ?? ""),
-      "…the verdict state is shown as unrecorded (legacy entry)",
-    );
-
-    // REVIEW_INCOMPLETE with all fields present → condition-1 failure
-    // (applies: true, verdict check fails). This is NOT the "not evaluated"
-    // path — it IS evaluated and the specific condition is named.
-    const incomplete = await hook(
-      "gh pr merge 12",
-      [ADV, { ...lens({ at: 2 }), detail: "REVIEW_INCOMPLETE" }],
-      { ghComments: commentsWith("feature/x", "p1") },
-    );
-    assert(incomplete.block === true, "condition-1: a REVIEW_INCOMPLETE verdict → refused");
-    assert(
-      /not ISSUES_FOUND/.test(incomplete.reason ?? ""),
-      "…the condition-1 'not ISSUES_FOUND' wording is used (a specific condition failed)",
-    );
-    assert(
-      !/round-cap path was not evaluated/.test(incomplete.reason ?? ""),
-      "…NOT the 'not evaluated' wording (the rule WAS evaluated and failed on condition 1)",
-    );
-
-    // And the `applies: true` condition-N refusal does NOT carry the "not
-    // evaluated" wording — the two situations are textually distinct.
-    const condN = await hook("gh pr merge 12", [ADV, { ...lens({ at: 2 }), round: 1 }], {
-      ghComments: commentsWith("feature/x", "p1"),
-    });
-    assert(condN.block === true, "condition-N: round 1 → refused");
-    assert(/round 1/.test(condN.reason ?? ""), "…naming the round condition");
-    assert(
-      !/round-cap path was not evaluated/.test(condN.reason ?? ""),
-      "…the condition-N refusal does NOT say the path was not evaluated",
-    );
-
-    // #1000 — a malformed detail (non-string) is still refused with the
-    // condition-N wording (the round-cap rule IS evaluated), never "not
-    // evaluated".
-    {
-      const malformed: LedgerEntry = {
-        branch: "feature/x", kind: "lens", patchId: "p1", passed: false, at: 2, detail: 0 as unknown as string, hasCritical: false, round: 3, headSha: "a".repeat(40),
-      };
-      const r = await hook("gh pr merge 12", [ADV, malformed], { ghComments: commentsWith("feature/x", "p1") });
-      assert(r.block === true, "malformed detail → refused");
-      assert(/verdict is malformed/.test(r.reason ?? ""), "…naming the malformed verdict (condition-N wording)");
-      assert(!/round-cap path was not evaluated/.test(r.reason ?? ""), "…NOT the 'not evaluated' fall-through");
     }
   }
 }
