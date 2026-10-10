@@ -32,11 +32,16 @@ const ws = {
   outOfScope: ["extension/src/work-develop-run.ts"],
 };
 
-const ARTIFACT = "/home/user/.pi/work-state/1078-1079/issue-body.txt";
+const primary = "/home/user/.pi/work-state/1078/issue-body.txt";
+const secondary = "/home/user/.pi/work-state/1078/issue-body-1079.txt";
 
 // ---------------------------------------------------- 1. Multi-issue, path present
 
 {
+  // The driver caches one file per active issue: the primary under the
+  // legacy `issue-body` name, the rest as `issue-body-<N>` siblings in the
+  // same directory. The caller threads ALL of them, so the prompt must name
+  // every issue's file — not just the primary's.
   const prompt = inlineDevelopPrompt(
     [1078, 1079],
     "/tmp/scratch",
@@ -46,12 +51,16 @@ const ARTIFACT = "/home/user/.pi/work-state/1078-1079/issue-body.txt";
     undefined,
     undefined,
     undefined,
-    ARTIFACT,
+    [primary, secondary],
   );
   // generic artifact-present properties (path rendered, cat instructed, re-fetch forbidden) are asserted for single-issue in test-develop-prompt-scope.ts
   assert(
     !/gh issue view 1078/.test(prompt) && !/gh issue view 1079/.test(prompt),
     "multi-issue: NO per-issue `gh issue view <N>` line survives — the artifact path replaces the whole loop",
+  );
+  assert(
+    prompt.includes(`cat ${primary}`) && prompt.includes(`cat ${secondary}`),
+    "multi-issue: BOTH issues' cached files are named — the secondary issue's body stays reachable even though re-fetching is forbidden",
   );
 }
 
@@ -78,7 +87,7 @@ const ARTIFACT = "/home/user/.pi/work-state/1078-1079/issue-body.txt";
     "multi-issue: the specific issue numbers are named so the developer knows which to fetch",
   );
   assert(
-    !prompt.includes(ARTIFACT),
+    !prompt.includes(primary) && !prompt.includes(secondary),
     "multi-issue: no fabricated artifact path when none was threaded",
   );
 }

@@ -178,27 +178,37 @@ export function makeRunOneWorkstream(
         ids: brief.hits.map((h: { id: string }) => h.id),
       });
 
-      // #1078 — thread the driver-cached issue body path so the developer
-      // reads the file instead of re-fetching via gh. The artifact may be
+      // #1078 — thread the driver-cached issue body paths so the developer
+      // reads the file(s) instead of re-fetching via gh. The artifacts may be
       // gone by develop time (scratch cleared on --restart/resume, eviction
-      // between explore and develop) — fall back to the re-fetch line.
+      // between explore and develop) — fall back to the re-fetch line. A
+      // multi-issue cycle caches one file per active issue (the primary under
+      // the legacy `issue-body` name, the rest as `issue-body-<N>` siblings);
+      // only the primary is tracked in state, so derive the siblings from the
+      // primary's directory and thread ALL of them — otherwise the prompt
+      // would point at the primary alone and forbid re-fetching the rest.
       const artifact = s.stateRef.current.pipelineState.issueBodyArtifact;
-      let artifactPresent = false;
+      const artifactPaths: string[] = [];
       if (artifact) {
-        try {
-          artifactPresent = fs.existsSync(artifact);
-        } catch {
-          // stat failure (EACCES/ENOTDIR) → treat as absent; degrades to
-          // the re-fetch fallback instead of killing the workstream.
-          artifactPresent = false;
+        const candidates = [artifact];
+        if (activeIssues.length > 1) {
+          for (const n of activeIssues) {
+            candidates.push(path.join(path.dirname(artifact), `issue-body-${n}.txt`));
+          }
+        }
+        // fs.existsSync returns false (never throws) on any stat failure, so
+        // a path that is gone or unreadable simply degrades to the re-fetch
+        // line for that issue.
+        for (const candidate of candidates) {
+          if (fs.existsSync(candidate)) artifactPaths.push(candidate);
         }
       }
-      if (artifact && !artifactPresent) {
+      if (artifact && artifactPaths.length === 0) {
         trace(
           `work-driver: issue body artifact missing at develop time, falling back to re-fetch: ${artifact}`,
         );
       }
-      const issueBodyArtifactPath = artifactPresent ? artifact : undefined;
+      const issueBodyArtifactPath = artifactPaths.length > 0 ? artifactPaths : undefined;
       const [developerSettled, speculativeSettled] = await Promise.allSettled([
         dispatch(
           ctx.pi,

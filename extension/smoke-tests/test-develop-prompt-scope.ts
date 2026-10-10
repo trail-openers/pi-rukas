@@ -292,7 +292,7 @@ const BRIEF = "Prior memory: #394 calibrated the retrieval floor; do not re-deri
     BRIEF,
     undefined,
     undefined,
-    ARTIFACT_PATH,
+    [ARTIFACT_PATH],
   );
   assert(
     prompt.includes(ARTIFACT_PATH),
