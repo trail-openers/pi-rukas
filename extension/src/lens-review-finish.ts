@@ -49,6 +49,7 @@ async function finish(
   cwd: string | undefined,
   branch: string | undefined,
   ledger: { hasCritical?: boolean; headSha?: string; head?: string } = {},
+  pr?: number,
 ): Promise<LensFinishResult> {
   // #984 — the fire-and-forget write is intentionally NOT awaited here (#912
   // fire-and-forget; the summary must never be gated on the ledger write). The
@@ -75,10 +76,11 @@ async function finish(
   // the post silently (the tool result was byte-identical to a successful
   // run). The note fires ONLY on ISSUES_FOUND (design decision 2).
   if (summary.verdict === "ISSUES_FOUND") {
-    if (branch) {
+    if (branch || pr) {
       summary.note = await postLensResidualDisclosure({
         summary,
         branch,
+        pr,
         cwd: cwd ?? process.cwd(),
       });
     } else {

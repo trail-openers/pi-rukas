@@ -57,6 +57,12 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
             "#973 — force a full review: the automatic delta base (the latest lens ledger entry's headSha) is not consulted. An explicit `since` still wins when given. An explicit base + head (with no `since`) is ALWAYS a full review — the automatic delta base only applies to a bare branch/cwd review.",
         }),
       ),
+      pr: Type.Optional(
+        Type.Number({
+          description:
+            "Open PR/MR number for the branch (optional; auto-detected when omitted). When given, the residual-findings disclosure posts to this PR directly without resolving the branch's open PR.",
+        }),
+      ),
     }),
     async execute(_id, raw) {
       const params = raw as {
@@ -67,6 +73,7 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
         head?: string;
         since?: string;
         full?: boolean;
+        pr?: number;
       };
       const hasDiff = typeof params.diff === "string" && params.diff.length > 0;
       const hasRange = typeof params.base === "string" && typeof params.head === "string";

@@ -16,7 +16,6 @@ import type { DispatchResult, DispatchUsage } from "./types.ts";
  * lens-review.ts` import no longer carries it (#980 — the cycle was left
  * type-only but the split that broke it is real now). */
 export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
-
 /**
  * The skills dir for the lens review (the installed `code-review-*` skills).
  * Moved here from lens-review.ts for the 500-line gate (AGENTS.md §12).
