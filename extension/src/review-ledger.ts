@@ -31,16 +31,27 @@
  *
  * ## Concurrency
  *
- * Writes are atomic (temp file in the same directory + rename). Just before
- * the rename the file is re-read and merged: if a concurrent writer added an
- * entry in the meantime, its entry survives under ours.
+ * The whole read → transform → rename window runs under the per-clone
+ * review-ledger lock (review-ledger-lock.ts): an O_EXCL lockfile colocated
+ * with the ledger file, ≈5 s bounded wait, ≈30 s stale window. Two
+ * near-simultaneous writers on one clone (an adversarial_loop finishing while
+ * a dispatch_lens_review finishes, or two Pi sessions on the same clone) are
+ * serialised, so neither rename drops the other's row.
+ *
+ * The lock's degraded path (a past-deadline wait or a non-EEXIST open
+ * error) traces and returns a no-op release, and the write still runs
+ * unlocked: the rename-catch fallback re-reads the file immediately before
+ * its rename and merges via mergeAfterRace, so the other writer's row
+ * survives even on that path (a ledger miss would fail the merge closed, so
+ * the fallback is the safety net and the lock is the fast path).
  */
 
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { dedupeLatest } from "./review-ledger-core.ts";
+import { acquireLedgerLock, runLedgerCriticalSectionHook } from "./review-ledger-lock.ts";
 import { mergeAfterRace } from "./review-ledger-merge.ts";
-import { ledgerPathFor } from "./review-ledger-path.ts";
+import { ledgerPathFor, remoteName } from "./review-ledger-path.ts";
 import { bumpLensRound } from "./review-ledger-round.ts";
 import { trace } from "./trace.ts";
 import { type VerifyExecFn, detectMainline } from "./work-driver-git.ts";
@@ -96,6 +107,7 @@ export { ledgerPathFor } from "./review-ledger-path.ts";
 export { bumpLensRound } from "./review-ledger-round.ts";
 export { dedupeLatest } from "./review-ledger-core.ts";
 export { mergeAfterRace } from "./review-ledger-merge.ts";
+export { remoteName } from "./review-ledger-path.ts";
 
 /**
  * The patch id of a branch's changes: the diff from `baseRef` to the branch
@@ -131,34 +143,6 @@ function parsePatchId(stdout: string, label: string): string | undefined {
   const id = stdout.trim().split(/\s+/)[0]?.trim();
   if (!id) trace(`review-ledger: patch-id was empty for ${label}`);
   return id;
-}
-
-/**
- * The remote the forge detection resolves against: `origin` → `upstream` →
- * the first remote in `git remote` order — the same precedence as
- * `detectForge` (forge-detect.ts). The guard and the ledger writers both
- * call this, so a repo whose remote is NOT named `origin` resolves the same
- * ref on both sides of the patchId comparison. Returns undefined when the
- * repo has no remotes — the callers fail closed.
- */
-export async function remoteName(execFn: LedgerExecFn, cwd: string): Promise<string | undefined> {
-  for (const name of ["origin", "upstream"]) {
-    try {
-      const { stdout } = await execFn(`git config --get remote.${name}.url`, {
-        cwd,
-        maxBuffer: 64 * 1024,
-      });
-      if (stdout.trim()) return name;
-    } catch {
-      /* try the next */
-    }
-  }
-  try {
-    const { stdout } = await execFn("git remote", { cwd, maxBuffer: 64 * 1024 });
-    return stdout.trim().split("\n")[0]?.trim() || undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /**
@@ -348,62 +332,85 @@ export async function appendLedgerEntry(
       // something is off — trace and skip, never create git internals.
       return `ledger dir ${dir} does not exist`;
     }
-    // Re-read immediately before writing: a concurrent writer may have
-    // appended between our first read and this rename; merging keeps its
-    // entry alive.
-    let entries: LedgerEntry[] = [];
+    // #1071 — the whole read → transform → rename window runs under the
+    // ledger lock (review-ledger-lock.ts): two concurrent writers on one
+    // clone no longer interleave across the read, because each holds the
+    // lock for the duration of its critical section. The lock's degraded
+    // path (timeout / non-EEXIST) returns a no-op release, so the code
+    // below still runs unlocked and the rename-catch's mergeAfterRace
+    // fallback preserves the other writer's row — the lock is the fast
+    // path, the fallback is the safety net.
+    const release = await acquireLedgerLock(file);
     try {
-      entries = validEntries(readLedgerFile(file).entries);
-    } catch {
-      entries = [];
-    }
-    // Bounded file: keep only the latest entry per (branch, kind) — the
-    // guard (latestEntry) reads only the latest anyway, so older entries
-    // would be dead weight accumulating one row per review run per clone.
-    entries = dedupeLatest(entries);
-    // #973 — a lens write advances the branch's round counter in place:
-    // the dedupe above keeps the previous latest lens entry, so its round
-    // (legacy rows without one count as 1) IS the last recorded round, and
-    // the next is a pure function of the file's previous contents. The
-    // LATEST lens row per branch is what the guard reads; older rows for
-    // the same branch are historical (the guard's latestEntry picks the
-    // highest `at` regardless, so a hand-edited or legacy multi-row file
-    // still counts the most recent round).
-    entries.push(bumpLensRound(entry, entries));
-    const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-    writeFileSync(tmp, JSON.stringify({ entries }, null, 2), "utf8");
-    try {
-      renameSync(tmp, file);
-    } catch (err2) {
-      // A concurrent writer may have created the file first. Re-read, merge,
-      // write once more; if even that races the entry is lost — a ledger miss
-      // fails the merge closed, which is the safe direction.
-      let merged: LedgerEntry[] = [];
+      // Re-read immediately before writing: a concurrent writer may have
+      // appended between our first read and this rename; merging keeps its
+      // entry alive.
+      let entries: LedgerEntry[] = [];
       try {
-        if (existsSync(file)) {
-          merged = JSON.parse(readFileSync(file, "utf8")).entries ?? [];
-        }
+        entries = validEntries(readLedgerFile(file).entries);
       } catch {
-        merged = [];
+        entries = [];
       }
+      // Bounded file: keep only the latest entry per (branch, kind) — the
+      // guard (latestEntry) reads only the latest anyway, so older entries
+      // would be dead weight accumulating one row per review run per clone.
+      entries = dedupeLatest(entries);
+      // #973 — a lens write advances the branch's round counter in place:
+      // the dedupe above keeps the previous latest lens entry, so its round
+      // (legacy rows without one count as 1) IS the last recorded round, and
+      // the next is a pure function of the file's previous contents. The
+      // LATEST lens row per branch is what the guard reads; older rows for
+      // the same branch are historical (the guard's latestEntry picks the
+      // highest `at` regardless, so a hand-edited or legacy multi-row file
+      // still counts the most recent round).
+      entries.push(bumpLensRound(entry, entries));
+      // #1071 test-only hook: a two-process race (test-review-ledger-lock.ts)
+      // straddles the read/rename gap deterministically by injecting a hook
+      // (setLedgerCriticalSectionHookForTests) that awaits here. No-op in
+      // production (the hook is undefined); the production write path has no
+      // env-var test hook of its own.
+      await runLedgerCriticalSectionHook();
+      const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+      writeFileSync(tmp, JSON.stringify({ entries }, null, 2), "utf8");
       try {
-        // #973 review — the rename-race fallback applies the SAME invariants
-        // as the happy path: the round bump (the merged content may already
-        // hold the previous latest lens entry, whose round the new one must
-        // advance) and the dedupe (the merged file may carry stale rows).
-        // The merge step is a pure helper (review-ledger-merge.ts) so the
-        // ordering — push the bumped entry FIRST, then dedupe, the #1069
-        // fix — is unit-testable without mocking node:fs. A race is rare; it
-        // must not quietly write a ledger the happy path would never write.
-        const deduped = mergeAfterRace(merged, entry);
-        writeFileSync(tmp, JSON.stringify({ entries: deduped }, null, 2), "utf8");
         renameSync(tmp, file);
-      } catch (err3) {
-        trace(`review-ledger: write failed: ${(err3 as Error).message}`);
-        return `ledger write failed: ${(err3 as Error).message}`;
+      } catch (err2) {
+        // A concurrent writer may have created the file first. Re-read, merge,
+        // write once more; if even that races the entry is lost — a ledger miss
+        // fails the merge closed, which is the safe direction.
+        // #1071 — the lock (review-ledger-lock.ts) makes this fallback rare;
+        // it remains for the lock's degraded path (a past-deadline wait or a
+        // non-EEXIST open error returns a no-op release and the write runs
+        // unlocked).
+        let merged: LedgerEntry[] = [];
+        try {
+          if (existsSync(file)) {
+            merged = JSON.parse(readFileSync(file, "utf8")).entries ?? [];
+          }
+        } catch {
+          merged = [];
+        }
+        try {
+          // #973 review — the rename-race fallback applies the SAME invariants
+          // as the happy path: the round bump (the merged content may already
+          // hold the previous latest lens entry, whose round the new one must
+          // advance) and the dedupe (the merged file may carry stale rows).
+          // The merge step is a pure helper (review-ledger-merge.ts) so the
+          // ordering — push the bumped entry FIRST, then dedupe, the #1069
+          // fix — is unit-testable without mocking node:fs. A race is rare; it
+          // must not quietly write a ledger the happy path would never write.
+          const deduped = mergeAfterRace(merged, entry);
+          writeFileSync(tmp, JSON.stringify({ entries: deduped }, null, 2), "utf8");
+          renameSync(tmp, file);
+        } catch (err3) {
+          trace(`review-ledger: write failed: ${(err3 as Error).message}`);
+          return `ledger write failed: ${(err3 as Error).message}`;
+        }
       }
+      return undefined;
+    } finally {
+      release();
     }
-    return undefined;
   } catch (err) {
     trace(`review-ledger: append failed: ${(err as Error).message}`);
     return `ledger append failed: ${(err as Error).message}`;

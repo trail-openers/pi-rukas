@@ -200,6 +200,27 @@ const SEAMS: Seam[] = [
     canary: { symbol: "appendLedgerEntry", importer: "adversarial-ledger.ts" },
   },
   {
+    // #1071 — the per-clone review-ledger lock (O_EXCL lockfile colocated
+    // with the ledger file). Wired into appendLedgerEntry (review-ledger.ts)
+    // so the read → transform → rename window is serialised across
+    // concurrent writers on the same clone.
+    file: "review-ledger-lock.ts",
+    pending: {},
+    testOnly: {
+      LEDGER_LOCK_WAIT_MS:
+        "the default bounded wait (≈5 s); exercised by test-review-ledger-lock.ts",
+      LEDGER_LOCK_STALE_MS:
+        "the default stale window (≈30 s); exercised by test-review-ledger-lock.ts",
+      ledgerLockPath:
+        "the lockfile path (colocated with the ledger file); exercised by test-review-ledger-lock.ts",
+      runLedgerCriticalSectionHook:
+        "ACCEPTED, PERMANENT test seam: a no-op await in appendLedgerEntry (undefined in production) that lets the two-process race test widen the read→rename window deterministically; chosen over an env-var read in the write path (#1071 review); exercised by test-review-ledger-lock.ts",
+      setLedgerCriticalSectionHookForTests:
+        "ACCEPTED, PERMANENT test seam (same hook's setter): never set in production; exercised by test-review-ledger-lock.ts (its child script)",
+    },
+    canary: { symbol: "acquireLedgerLock", importer: "review-ledger.ts" },
+  },
+  {
     // #912 — the merge target reader (gh/glab) + carve-out predicate.
     // Wired into merge-guard.ts (the guard's decision path).
     file: "merge-target.ts",

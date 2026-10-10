@@ -45,7 +45,6 @@ import {
   dedupeLatest,
   lensBlockedByThreshold,
   lensPassed,
-  readLedgerAt,
   readLedgerFile,
   remoteName,
   validEntries,
@@ -340,6 +339,24 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
   assert(
     deduped2.length === 1 && deduped2[0] === b,
     "dedupeLatest keeps the higher `at` regardless of order",
+  );
+
+  // #1071 — the at-tie invariant the acceptance criterion pins: two rows for
+  // the same (branch, kind) with EQUAL `at` collapse to the LATER one in
+  // file order (dedupeLatest's `>=` comparison), in BOTH input orders. This
+  // is the winner a two-concurrent-writer race leaves behind (the guard's
+  // latestEntry picks by `>=` too, so the dedupe and the guard agree).
+  const tie: LedgerEntry = { ...a, patchId: "ptie" };
+  const tie2: LedgerEntry = { ...a, patchId: "ptie2" };
+  const tieAB = dedupeLatest([tie, tie2]);
+  assert(
+    tieAB.length === 1 && tieAB[0] === tie2,
+    "dedupeLatest at-tie: the LATER row in file order wins",
+  );
+  const tieBA = dedupeLatest([tie2, tie]);
+  assert(
+    tieBA.length === 1 && tieBA[0] === tie,
+    "dedupeLatest at-tie: the later-in-file winner is order-consistent (the guard's >= matches)",
   );
 
   // Distinct (branch, kind) keys both survive.
