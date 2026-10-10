@@ -157,13 +157,12 @@ function runLoop(loopBody: string, stubBinaries: string[]): string[] {
     // entries one per line so the TypeScript side can parse them. Bash
     // `${...}` variables are escaped as `\${...}` in the template literal
     // below.
-    // install-preflight.sh defines MIN_PI_VERSION / MIN_OO_VERSION; the
-    // harness only needs the array literal to parse, so stub them.
+    // install-preflight.sh defines MIN_PI_VERSION; the harness only needs the
+    // array literal to parse, so stub it.
     const code = [
       "set -u",
       "missing=()",
       "MIN_PI_VERSION=0.0.0",
-      "MIN_OO_VERSION=0.0.0",
       checkCmd,
       clis,
       loopBody,
