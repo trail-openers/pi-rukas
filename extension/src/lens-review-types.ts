@@ -50,12 +50,10 @@ export interface LensRunResult {
   findings: Finding[];
   model?: string;
   transcriptPath?: string;
-  /**
-   * #543 — the dispatch-cap kill cause when the lens child was cap-killed
+  /** #543 — the dispatch-cap kill cause when the lens child was cap-killed
    * (loop detector / token budget). A cap-killed lens is NOT retried: an
    * SIGTERM'd looped child is a non-zero exit, and without this guard the
-   * retry below would undo the kill up to MAX_LENS_ATTEMPTS times.
-   */
+   * retry below would undo the kill up to MAX_LENS_ATTEMPTS times. */
   killCause?: DispatchResult["killCause"];
   /** #543 — the F1 streak evidence at a loop kill, threaded so the
    * driver's capEvidence write has the tool + count to render. */
