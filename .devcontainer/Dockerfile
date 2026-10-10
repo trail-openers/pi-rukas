@@ -92,7 +92,7 @@ RUN curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash \
     && bun --version
 
 # -----------------------------------------------------------------------------
-# 4. Rust toolchain (system-wide) — needed for vipune + oo
+# 4. Rust toolchain (system-wide) — needed for vipune
 # -----------------------------------------------------------------------------
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
