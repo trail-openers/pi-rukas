@@ -358,7 +358,7 @@ PR: [#215](https://github.com/trail-openers/pi-rukas/pull/215)
 
 ### `./install.sh` takes 10+ minutes (cold local build)
 
-**Symptom:** Running `./install.sh` on a fresh host (or after `docker system prune`) takes 10-30 minutes. Output shows `cargo install vipune`, `cargo install double-o`, `npm install -g ...`, the Rust toolchain compiling.
+**Symptom:** Running `./install.sh` on a fresh host (or after `docker system prune`) takes 10-30 minutes. Output shows `cargo install vipune`, `npm install -g ...`, the Rust toolchain compiling.
 
 **Cause:** You're on an `install.sh` from before #219 — pre-#219 the script always built the image locally. Post-#219 it pulls a pre-built multi-arch image from `ghcr.io/trail-openers/pi-rukas:latest` (built + published on every merge to main).
 
