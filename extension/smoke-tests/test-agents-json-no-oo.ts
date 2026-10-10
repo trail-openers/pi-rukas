@@ -40,6 +40,16 @@
  *     allow row would grant the WRITE verbs (commit, push, reset, rebase)
  *     in strict mode. Same shape as the image-wrapper exemption: an
  *     intentional narrowing, not a loss.
+ *   - the ops role's catch-all `oo git *` entry: like explore's, the bare
+ *     `git *` catch-all is deliberately ABSENT. ops is the git role; its block
+ *     enumerates every git verb ops routinely runs (status, branch, log,
+ *     show, diff, remote, rev-list, rev-parse, add, commit, push, fetch,
+ *     pull, merge, rebase, reset, revert, rm, checkout, stash, tag,
+ *     cherry-pick, worktree, submodule, -C, blame, cat-file, check-ignore,
+ *     config --get, describe, for-each-ref, ls-files, ls-remote, ls-tree,
+ *     merge-base, name-rev, reflog, shortlog, symbolic-ref) as explicit rows.
+ *     A `git *` row would also grant novel/mis-spelled subcommands silently;
+ *     the explicit list keeps anything unlisted falling to `*": "ask`.
  *
  * Also asserted: (d) explore, code-review-specialist and adversarial-
  * developer have NO `git *` catch-all and no `git push*` / `git reset*` /
@@ -121,7 +131,12 @@ function ooPrefixKeys(doc: AgentsJson): string[] {
 
 // (b) — bare-equivalent coverage for every removed `oo` entry.
 const OOBINARY_ONLY = new Set(["recall", "help", "patterns", "learn", "forget", "init", "version"]);
-const DEV_ONLY_IMAGE_WRAPPERS = new Set(["animate", "compare", "composite", "conjure", "convert", "display", "stream"]);
+// The seven ImageMagick-style wrappers plus identify/import: reachable only
+// through the retired `oo` binary in the developer role; their bare forms were
+// never allowed standalone (no bare row existed before the retirement), so
+// dropping them changes no strict-mode grant — and a bare `import*` row would
+// match ANY `import` on PATH (e.g. a package-manager import), a widening.
+const DEV_ONLY_IMAGE_WRAPPERS = new Set(["animate", "compare", "composite", "conjure", "convert", "display", "identify", "import", "stream"]);
 
 const fixture = JSON.parse(readFileSync(FIXTURE_PATH, "utf8")) as Record<string, string[]>;
 const agents = JSON.parse(readFileSync(AGENTS_PATH, "utf8")) as AgentsJson;
@@ -149,9 +164,12 @@ function covered(role: string, bare: string): boolean {
 
 // Exemption: explore is a read-only role and the catch-all would grant git
 // write verbs (commit/push/reset/rebase) in strict mode, so its git access is
-// the explicit verb rows enumerated in its block instead.
+// the explicit verb rows enumerated in its block instead. ops is the git
+// role and its catch-all is narrowed the same way: the block enumerates every
+// git verb ops routinely needs (see the ops rows in agents.json), and
+// anything unlisted falls to `*": "ask` instead of being silently allowed.
 function isCatchallNarrowed(role: string, bare: string): boolean {
-  return role === "explore" && bare === "git *";
+  return (role === "explore" || role === "ops") && bare === "git *";
 }
 
 // The frozen fixture must still describe reality: every listed entry was an
@@ -275,7 +293,7 @@ function isCatchallNarrowed(role: string, bare: string): boolean {
   }
   assert(
     widening.length === 0,
-    `no bare image-wrapper grants (animate/compare/composite/conjure/convert/display/stream) in any role (${widening.length} found)`,
+    `no bare image-wrapper grants (animate/compare/composite/conjure/convert/display/identify/import/stream) in any role (${widening.length} found)`,
   );
   if (widening.length) console.error(widening.map((w) => `  ${w}`).join("\n"));
 }

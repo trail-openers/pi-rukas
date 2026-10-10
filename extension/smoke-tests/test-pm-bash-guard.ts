@@ -396,7 +396,7 @@ else process.env.PI_ENSEMBLE_SANDBOX_MODE = prevSandbox;
   // representative command through the guard's own matcher.
   const samples: Array<[string, string]> = [
     ["git status*", "git status --porcelain"],
-    ["git log *", "git log --oneline"],
+    ["git log*", "git log --oneline"],
     ["gh pr view*", "gh pr view 42"],
     ["vipune search *", "vipune search 'x'"],
     ["which*", "which bun"],
