@@ -357,7 +357,8 @@ export function inlineDevelopPrompt(
   let fetchInstr: string;
   if (issueBodyArtifactPaths && issueBodyArtifactPaths.length > 0) {
     const cats = issueBodyArtifactPaths.map((p) => `\`cat ${p}\``).join(", ");
-    fetchInstr = `Read ${issueBodyArtifactPaths.length === 1 ? "the issue body" : "each active issue body"} (acceptance criteria, DoD) from the driver-cached file${issueBodyArtifactPaths.length === 1 ? "" : "s"}: ${cats}. Do NOT re-fetch via \`gh issue view\` — the driver already did that in Step 1.`;
+    const single = issueBodyArtifactPaths.length === 1;
+    fetchInstr = `Read ${single ? "the issue body" : "each active issue body"} (acceptance criteria, DoD) from the driver-cached file${single ? "" : "s"}: ${cats}. Do NOT re-fetch via \`gh issue view\` — the driver already did that in Step 1.`;
   } else if (issues.length === 1) {
     fetchInstr = `\`gh issue view ${issues[0]}\` to re-fetch the issue body (acceptance criteria, DoD).`;
   } else {
