@@ -51,6 +51,17 @@ import { trace } from "./trace.ts";
 const execp = promisify(exec);
 
 /**
+ * The git-ref-safe character allowlist the marker's `branch=` value must
+ * satisfy before it is interpolated into the HTML-comment marker: letters,
+ * digits, `/`, `.`, `_`, `-` — exactly what a branch name may carry in
+ * practice, and nothing that could terminate the marker comment early
+ * (`>` + `-` + `>`) or smuggle a second marker into the post. A failing
+ * value is a refusal (fail closed — the guard then refuses the merge),
+ * never a post.
+ */
+const GIT_REF_SAFE = /^[A-Za-z0-9/._-]+$/;
+
+/**
  * Post the residual-findings disclosure for a completed lens review.
  *
  * Returns the text the caller appends to the tool result (empty on
@@ -59,6 +70,7 @@ const execp = promisify(exec);
 export async function postLensResidualDisclosure(opts: {
   summary: LensReviewSummary;
   branch?: string;
+  pr?: number;
   cwd: string;
   execFn?: typeof execp;
 }): Promise<string> {
@@ -69,10 +81,33 @@ export async function postLensResidualDisclosure(opts: {
   // strict rule passes; REVIEW_INCOMPLETE / CRITICAL_ISSUES_FOUND — the
   // guard refuses on the ledger entry itself).
   if (summary.verdict !== "ISSUES_FOUND") return "";
-  if (!branch) {
-    trace("lens-residuals: no branch — cannot resolve the open PR; disclosure skipped");
+  // A branch is required to resolve the PR (or an explicit `pr` number is
+  // used directly). Without either, the disclosure is skipped (fail
+  // closed — the guard refuses).
+  // #1000 — an explicit `pr` is interpolated into the forge's identity and
+  // comment commands (`gh pr view <pr> --json ...`, `gh pr comment <pr>`),
+  // so a non-integer or non-positive value (a float like 7.5, NaN, 0 or a
+  // negative) would either hit a bogus PR or fail the forge with an opaque
+  // error: refuse up front (fail closed, same shape as the other refusals
+  // — nothing is posted, the note names the refusal). Checked BEFORE the
+  // no-branch-and-no-pr skip because a `pr: NaN` is falsy and would
+  // otherwise be treated as "no PR number at all" (a silent skip) instead
+  // of the explicit invalid-input refusal it is. The branch-lookup path's
+  // resolved number is forge-supplied and integer by construction.
+  if (opts.pr !== undefined && (!Number.isInteger(opts.pr) || opts.pr <= 0)) {
+    trace(`lens-residuals: invalid PR number ${opts.pr} — disclosure skipped (fail closed)`);
+    return "residual disclosure NOT posted — invalid PR number";
+  }
+  if (!branch && !opts.pr) {
+    trace(
+      "lens-residuals: no branch and no PR number — cannot resolve the open PR; disclosure skipped",
+    );
     return "";
   }
+  // The lookup-skip is derived from `pr !== undefined` (the branch-lookup
+  // path inside doPost does the `prNumber === undefined` check); the real
+  // `branch` — which may be undefined on the explicit-pr path — is passed
+  // through so no sentinel string ever reaches the branch-lookup path.
   const run = doPost(opts, execFn, cwd, branch);
   try {
     return await run;
@@ -84,53 +119,77 @@ export async function postLensResidualDisclosure(opts: {
 }
 
 async function doPost(
-  opts: { summary: LensReviewSummary; branch?: string; cwd: string; execFn?: typeof execp },
+  opts: {
+    summary: LensReviewSummary;
+    branch?: string;
+    pr?: number;
+    cwd: string;
+    execFn?: typeof execp;
+  },
   execFn: typeof execp,
   cwd: string,
-  branch: string,
+  branch: string | undefined,
 ): Promise<string> {
   const { summary } = opts;
-  // The PR for the branch (the guard resolves it the same way — the forge
-  // CLI on the current branch; the caller runs from the branch's repo).
+  // The forge is resolved ONCE here and reused for the PR-number lookup, the
+  // identity read and the comment post (three identical detectForge calls
+  // was the old shape — three identical 30s-capable reads for one answer).
   const detection = await detectForge(cwd, { allowProbe: false });
   if (detection.forge === "unknown") {
     throw new Error(`cannot determine the forge for ${cwd} (no PR number)`);
   }
-  // The PR/MR for the BRANCH (the canonical by-source-branch lookup,
-  // forge-commands.ts prListCmd — `glab mr view` with no argument reads the
-  // MR for the CURRENT branch, not necessarily this one). A list that is
-  // empty or does not name a number is "no open PR/MR" (fail closed).
-  let prNumber: number | undefined;
-  if (detection.forge === "gitlab") {
-    const { stdout } = await execFn(
-      cmds.prListCmd("gitlab", { sourceBranch: branch, state: "open" }),
-      {
-        cwd,
-        maxBuffer: 8 * 1024,
-        timeout: 30_000,
-      },
-    );
-    const rows = JSON.parse(stdout) as Array<{ iid?: number }>;
-    const first = rows[0];
-    prNumber = Array.isArray(rows) && first ? first.iid : undefined;
-  } else {
-    const { stdout } = await execFn(
-      cmds.prListCmd("github", { sourceBranch: branch, state: "open" }),
-      {
-        cwd,
-        maxBuffer: 8 * 1024,
-        timeout: 30_000,
-      },
-    );
-    const rows = JSON.parse(stdout) as Array<{ number?: number }>;
-    const first = rows[0];
-    prNumber = Array.isArray(rows) && first ? first.number : undefined;
-  }
-  if (typeof prNumber !== "number") {
-    throw new Error(`no open PR/MR for branch ${branch} (no PR number resolved)`);
+  // Resolve the PR number: explicit `pr` param → branch lookup via forge CLI
+  // (the branch lookup only runs when no explicit `pr` was supplied — that
+  // is the lookup-skip, derived from `opts.pr === undefined`, not from a
+  // sentinel branch string).
+  let prNumber: number | undefined = opts.pr;
+  if (prNumber === undefined) {
+    // The PR for the branch (the guard resolves it the same way — the forge
+    // CLI on the current branch; the caller runs from the branch's repo).
+    if (detection.forge === "gitlab") {
+      // The PR/MR for the BRANCH (the canonical by-source-branch lookup,
+      // forge-commands.ts prListCmd — `glab mr view` with no argument reads the
+      // MR for the CURRENT branch, not necessarily this one). A list that is
+      // empty or does not name a number is "no open PR/MR" (fail closed).
+      const { stdout } = await execFn(
+        cmds.prListCmd("gitlab", { sourceBranch: branch, state: "open" }),
+        {
+          cwd,
+          maxBuffer: 8 * 1024,
+          timeout: 30_000,
+        },
+      );
+      const rows = JSON.parse(stdout) as Array<{ iid?: number }>;
+      const first = rows[0];
+      prNumber = Array.isArray(rows) && first ? first.iid : undefined;
+    } else {
+      const { stdout } = await execFn(
+        cmds.prListCmd("github", { sourceBranch: branch, state: "open" }),
+        {
+          cwd,
+          maxBuffer: 8 * 1024,
+          timeout: 30_000,
+        },
+      );
+      const rows = JSON.parse(stdout) as Array<{ number?: number }>;
+      const first = rows[0];
+      prNumber = Array.isArray(rows) && first ? first.number : undefined;
+    }
+    if (typeof prNumber !== "number") {
+      throw new Error(`no open PR/MR for branch ${branch} (no PR number resolved)`);
+    }
   }
   // The PR's identity (base branch) — the SAME read the guard uses for its
   // target, so the patch-id base is the PR's ACTUAL base (design decision 1).
+  // The marker's `branch=` is the PR's headRefName, NOT the caller's resolved
+  // branch — the guard compares the marker's branch against the PR's
+  // headRefName, so the marker must carry the same value the guard will see.
+  // headRefName (gh) / source_branch (glab) is ALREADY the bare branch name
+  // — there is no remote prefix to strip (and stripping one path segment
+  // would leave the marker carrying `x` for a branch named `feature/x`).
+  // (a branch named `feature/x` must stay `feature/x` in the marker or the
+  // guard's `lensResidualsMarker(target.headBranch, patchId)` match can
+  // never succeed).
   let baseBranch: string | undefined;
   let headBranch: string | undefined;
   if (detection.forge === "gitlab") {
@@ -154,6 +213,25 @@ async function doPost(
   }
   if (!headBranch || !baseBranch) {
     throw new Error(`PR #${prNumber} returned no head/base branch names`);
+  }
+  // SECURITY (fail closed) — BOTH refs from the identity read are validated
+  // against GIT_REF_SAFE BEFORE any command (the `git fetch` below, the
+  // patch-id read, the marker) uses either one: a baseRefName containing a
+  // shell metacharacter (`;`, `$()`, a space, …) would otherwise be
+  // interpolated into the shell `git fetch ${remote} ${headBranch}
+  // ${baseBranch}` and execute arbitrary commands — nothing is fetched or
+  // posted on a failure, and the caller's catch returns the refusal note
+  // (the guard then refuses the merge, as with every other fault here).
+  // The headRefName check moved here from the marker construction: it is
+  // the SAME ref that feeds the fetch, so it is covered by this single
+  // check (and both refs must hold before any exec touches either).
+  if (!GIT_REF_SAFE.test(headBranch) || !GIT_REF_SAFE.test(baseBranch)) {
+    trace(
+      `lens-residuals: head/base branch names not git-ref-safe (head=${JSON.stringify(headBranch)}, base=${JSON.stringify(baseBranch)}) — disclosure refused (fail closed)`,
+    );
+    throw new Error(
+      `the PR's head/base branch name is not git-ref-safe (head=${JSON.stringify(headBranch)}, base=${JSON.stringify(baseBranch)}) — disclosure not posted (fail closed; the merge guard refuses until the disclosure is posted)`,
+    );
   }
   // The remote + the patch-id — the SAME computation the guard applies
   // (review-ledger.ts branchPatchId, the PR's actual base).
@@ -188,6 +266,10 @@ async function doPost(
   }
   // The marker + the findings body (severity, path:line, title — the
   // operator-readable list; the marker line is hidden in the render).
+  // The marker uses the PR's headRefName AS-IS (already a bare branch name
+  // — validated git-ref-safe above, before the fetch; stripping a path
+  // segment from it would post a marker the guard's
+  // `lensResidualsMarker(target.headBranch, patchId)` can never match).
   const marker = lensResidualsMarker(headBranch, patchId);
   const lines = summary.findings.map(
     (f) => `- [${f.severity}] ${f.path}:${f.line ?? "?"} — ${f.title} (${f.lens})`,
@@ -211,7 +293,8 @@ async function doPost(
   // it writes the body to a fresh temp file, hands the path to the
   // `--body-file` command (avoids shell-quoting issues with multi-line
   // bodies), and removes the file afterwards — no local temp-dir
-  // bookkeeping in this module.
+  // bookkeeping in this module. The detection above is reused (resolved
+  // once at the top of this function).
   await postPrComment(
     {
       forge: detection.forge,

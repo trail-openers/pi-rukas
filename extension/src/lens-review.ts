@@ -29,11 +29,11 @@ import {
   renderSummary,
 } from "./lens-review-format.ts";
 import { installBlockRowsForRoster, skillsDirUsable } from "./lens-review-skills.ts";
+import type { Finding, LensRunResult } from "./lens-review-types.ts";
 import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
 import { isFullCommitSha, resolveHeadSha } from "./review-head-sha.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
-import type { DispatchResult, DispatchUsage } from "./types.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -60,13 +60,22 @@ export {
   type LensReviewSummary,
 };
 import { aggregateLensUsage } from "./lens-review-usage.ts";
-export type LensName = string; // deliberately unbounded — the roster is data-driven from SKILL.md frontmatter (#873)
 /** One roster entry — the shape a lens child receives per dispatch (#873:
  * the roster is data, so `LensDef` is the parsed entry type). */
 export type LensDef = RosterEntry;
 /** Re-exported so consumers of this module name the verdict here; the
  * definition lives in lens-review-format.ts. */
 export type { Verdict, Severity } from "./lens-review-format.ts";
+/** Re-exported from lens-review-types.ts (#1000: the per-lens result shape
+ * moved there so this file stays under the 500-line limit while keeping its
+ * origin/main jsdoc comments verbatim). No consumer import path changes. */
+export type {
+  Finding,
+  FindingSource,
+  LensName,
+  LensRunResult,
+  RawFinding,
+} from "./lens-review-types.ts";
 export const LENS_REPORTER_PATH = path.join(__dirname, "lens-reporter.ts");
 
 /**
@@ -92,75 +101,6 @@ export { MAX_LENS_ATTEMPTS };
 /** Backoff between retries (ms). Small fixed delay — these failures are
  * usually transient (process spawn pressure, provider-side rate limits). */
 const LENS_RETRY_BACKOFF_MS = 1000;
-
-export interface RawFinding {
-  severity: string;
-  path: string;
-  line?: number;
-  title: string;
-  description?: string;
-  suggestion?: string;
-}
-
-/**
- * Where a finding came from. Not every finding comes from a lens: `CLAIM_SCAN`
- * is deterministic and model-free (see `claim-scan.ts`). Labelling its output
- * as a lens's would be a false attribution in the operator's summary — the
- * exact defect class this scan exists to catch.
- */
-export type FindingSource = LensName | "CLAIM_SCAN";
-
-export interface Finding extends RawFinding {
-  severity: Severity;
-  lens: FindingSource;
-}
-
-export interface LensRunResult {
-  lens: LensName;
-  ok: boolean;
-  ms: number;
-  /**
-   * #456 — wall-clock when this lens's dispatch began. Persisted via
-   * `dispatch-completed.lensTimings`; sequential startMs across a pass are
-   * the fingerprint of spawn-semaphore queueing (cap 1), distinct from a
-   * slow-by-contamination pass.
-   */
-  startMs: number;
-  findings: Finding[];
-  model?: string;
-  transcriptPath?: string;
-  /** #543 — the dispatch-cap kill cause when the lens child was cap-killed
-   * (loop detector / token budget). A cap-killed lens is NOT retried: an
-   * SIGTERM'd looped child is a non-zero exit, and without this guard the
-   * retry below would undo the kill up to MAX_LENS_ATTEMPTS times. */
-  killCause?: DispatchResult["killCause"];
-  /** #543 — the F1 streak evidence at a loop kill, threaded so the
-   * driver's capEvidence write has the tool + count to render. */
-  loopEvidence?: { tool: string; count: number };
-  /** #543 — the F6 budget + used tokens at a token-budget kill, threaded
-   * for the same reason. */
-  tokenBudget?: { budget: number; used: number };
-  /** Set when the child failed to spawn or returned non-zero. */
-  parseError?: string;
-  /** Number of spawn attempts made for this lens (1 = no retries; up to
-   * MAX_LENS_ATTEMPTS on transient failures). #3. */
-  attempts: number;
-  /** True when ALL attempts failed — the lens contributes no findings and
-   * the overall verdict is REVIEW_INCOMPLETE. #3. */
-  blocked: boolean;
-  /**
-   * The child's closing prose. The lens prompt asks for it explicitly, and it
-   * is the only evidence that a lens which reported no findings actually
-   * looked — see `lensProducedEvidence`.
-   */
-  summary?: string;
-  /**
-   * #534 — the child's tokens/cost. Previously discarded (the per-lens
-   * `result.usage` was dropped here); carried so the driver can fold the
-   * six-lens pass's spend into the cycle total at the emission point.
-   */
-  usage?: DispatchUsage;
-}
 
 export async function runLensReview(opts: {
   diff?: string;
@@ -206,6 +146,8 @@ export async function runLensReview(opts: {
    * and skips (traces) on a detached head.
    */
   branch?: string;
+  /** #973 — the PR/MR number for the residual-findings disclosure post. */
+  pr?: number;
 }): Promise<LensReviewSummary> {
   const runId = makeRunId();
   const skillsDir = piSkillsDir();
@@ -245,7 +187,7 @@ export async function runLensReview(opts: {
     full: opts.full,
     base: opts.base,
     head: opts.head,
-    branch: opts.branch,
+    branch: branchResolved,
     cwd: opts.cwd,
   });
   if (resolved.kind === "ok") {
@@ -302,18 +244,33 @@ export async function runLensReview(opts: {
     // blocked or noReview: no headSha (no commit was reviewed).
     headSha = undefined;
   }
+  // #1000 — the single finish path for every exit of this run: the identical
+  // `finishLensReview(...)` call (threshold, cwd, the ONE resolved branch,
+  // the resolved headSha, the caller's head ref, and the #973 residual-
+  // disclosure `pr`) at every return site, so the ledger write and the
+  // disclosure post can never drift from a copy that was missed in a
+  // refactor. `hasCritical` is per-site (the blocked exits carry no
+  // findings; the normal exit carries the deduped findings' bar).
+  const finishWith = async (
+    s: LensReviewSummary,
+    hasCritical = false,
+  ): Promise<LensReviewSummary> =>
+    (
+      await finishLensReview(
+        s,
+        threshold,
+        opts.cwd,
+        branchResolved,
+        { hasCritical, headSha, head: opts.head },
+        opts.pr,
+      )
+    ).summary;
   if (resolved.kind === "blocked") {
     const blockRows = blockedRowsForRoster(roster, resolved.problem);
     const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
     // #984 — the ledger write's promise is discarded (fire-and-forget in
     // production; the await seam is for tests, not for the driver).
-    return (
-      await finishLensReview(blocked, threshold, opts.cwd, branchResolved, {
-        hasCritical: false,
-        headSha,
-        head: opts.head,
-      })
-    ).summary;
+    return finishWith(blocked);
   }
   if (resolved.kind === "noReview") {
     trace(
@@ -378,13 +335,7 @@ export async function runLensReview(opts: {
       installBlockRowsForRoster(problem),
       threshold,
     );
-    return (
-      await finishLensReview(blocked, threshold, opts.cwd, branchResolved, {
-        hasCritical: false,
-        headSha,
-        head: opts.head,
-      })
-    ).summary;
+    return finishWith(blocked);
   }
   // #966 — an aborted signal is a user kill: every lens is recorded blocked,
   // no children are spawned, and the run proceeds to the SAME finish path as
@@ -396,14 +347,9 @@ export async function runLensReview(opts: {
   // fan-out path clears its batch via `clearBatchEntry(batchKey)` below.
   if (opts.signal?.aborted) {
     const blockRows = blockedRowsForRoster(roster, "aborted before start");
-    const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
-    return (
-      await finishLensReview(blocked, threshold, opts.cwd, branchResolved, {
-        hasCritical: false,
-        headSha,
-        head: opts.head,
-      })
-    ).summary;
+    return finishWith(
+      blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold),
+    );
   }
   // Persistent batch summary row (#139). Lets the user see "X/6 done"
   // throughout the run even as fast lenses drop out at 0s linger. Registered
@@ -460,25 +406,20 @@ export async function runLensReview(opts: {
   // block above). The ledger write carries it through to all paths.
   // #984 — the ledger write's promise is discarded (fire-and-forget in
   // production; the await seam is for tests, not for the driver).
-  return (
-    await finishLensReview(
-      {
-        verdict,
-        totalFindings: deduped.length,
-        bySeverity: bySeverityCounts(deduped),
-        lenses: lensResults,
-        findings: deduped,
-        usage: aggregateLensUsage(lensResults),
-        // #543 — a dispatch-cap kill on any lens child (loop detector / token
-        // budget) is surfaced on the summary so the driver emits the fixed-literal
-        // cap-hit (F4g) instead of a silent 1-of-6 loss.
-        ...capKillSummary(lensResults),
-        ...(delta ? { deltaReview: { since: delta.since, head: delta.head } } : {}),
-      },
-      threshold,
-      opts.cwd,
-      branchResolved,
-      { hasCritical, headSha, head: opts.head },
-    )
-  ).summary;
+  return finishWith(
+    {
+      verdict,
+      totalFindings: deduped.length,
+      bySeverity: bySeverityCounts(deduped),
+      lenses: lensResults,
+      findings: deduped,
+      usage: aggregateLensUsage(lensResults),
+      // #543 — a dispatch-cap kill on any lens child (loop detector / token
+      // budget) is surfaced on the summary so the driver emits the fixed-literal
+      // cap-hit (F4g) instead of a silent 1-of-6 loss.
+      ...capKillSummary(lensResults),
+      ...(delta ? { deltaReview: { since: delta.since, head: delta.head } } : {}),
+    },
+    hasCritical,
+  );
 }
