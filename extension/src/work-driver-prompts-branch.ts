@@ -71,4 +71,3 @@ export function inlineBranchPrompt(
   lines.push(scratchHygieneSection(scratchDirAbs));
   return lines.join("\n");
 }
-// #1078

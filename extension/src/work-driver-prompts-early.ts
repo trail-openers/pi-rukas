@@ -4,7 +4,6 @@
  * for Steps 1-4: explore, plan, branch, develop, speculative-explore.
  * Split out of work-driver.ts per AGENTS.md §12 module-size hygiene (#171).
  */
-import { inlineBranchPrompt } from "./work-driver-prompts-branch.ts";
 import { scratchHygieneSection } from "./work-driver-prompts-late.ts";
 
 /**
@@ -191,11 +190,6 @@ function intentResolutionBlock(issues: number[]): string {
     "A no-diff deliverable is NOT a workstream candidate — it must not appear in the `## Workstreams` block (it has no paths, so it would fail the empty-paths plan-quality check).",
   ].join("\n");
 }
-
-// #171 (split hygiene): inlineBranchPrompt moved to work-driver-prompts-branch.ts
-// so this file stays under the 500-line gate — re-exported here unchanged so
-// existing imports keep working.
-export { inlineBranchPrompt };
 
 /**
  * Step 2 (plan) prompt. PR3: asks for `## Workstreams`; single-workstream

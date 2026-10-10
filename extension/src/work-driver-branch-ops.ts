@@ -43,7 +43,7 @@ import { parseBranchName } from "./work-driver-diff.ts";
 import { resolvedTheMainline } from "./work-driver-git.ts";
 import { buildCompletionEvent, runSingleDispatch } from "./work-driver-merged.ts";
 import { sliceMarkdownSection } from "./work-driver-plan.ts";
-import { inlineBranchPrompt } from "./work-driver-prompts-early.ts";
+import { inlineBranchPrompt } from "./work-driver-prompts-branch.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
