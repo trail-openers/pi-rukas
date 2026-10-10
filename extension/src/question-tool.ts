@@ -34,6 +34,9 @@ interface QuestionDetails {
   options: string[];
   answer: string | null;
   wasCustom?: boolean;
+  /** RPC mode: the question was recorded, the answer arrives as the next message. */
+  deferred?: boolean;
+  optionDetails?: { label: string; description: string }[];
 }
 
 // Options with labels and optional descriptions
@@ -48,6 +51,25 @@ const QuestionParams = Type.Object({
   question: Type.String({ description: "The question to ask the user" }),
   options: Type.Array(OptionSchema, { description: "Options for the user to choose from" }),
 });
+
+export const DEFERRED_QUESTION_TEXT =
+  "Question recorded for the operator. This session has no terminal, so the answer cannot arrive inside this tool call. End your turn now and call no other tool: the operator's answer arrives as the next user message.";
+
+/**
+ * The result of a question nobody can answer inside the tool call. An RPC
+ * client reads `details` from the tool's end event, shows the question where
+ * its operator is, and sends the answer as the next prompt.
+ */
+export function deferredQuestionResult(question: string, options: OptionWithDesc[]) {
+  const details: QuestionDetails = {
+    question,
+    options: options.map((o) => o.label),
+    answer: null,
+    deferred: true,
+    optionDetails: options.map((o) => ({ label: o.label, description: o.description ?? "" })),
+  };
+  return { content: [{ type: "text" as const, text: DEFERRED_QUESTION_TEXT }], details };
+}
 
 export function registerQuestionTool(pi: ExtensionAPI) {
   pi.registerTool({
@@ -65,6 +87,9 @@ export function registerQuestionTool(pi: ExtensionAPI) {
       const options: OptionWithDesc[] = Array.isArray(params.options)
         ? params.options.filter((o): o is OptionWithDesc => typeof o?.label === "string")
         : [];
+      if (ctx.mode === "rpc") {
+        return deferredQuestionResult(params.question ?? "", options);
+      }
       if (ctx.mode !== "tui") {
         return {
           content: [
@@ -310,6 +335,9 @@ export function registerQuestionTool(pi: ExtensionAPI) {
         return new Text(text.text, 0, 0);
       }
 
+      if (details.deferred) {
+        return new Text(theme.fg("muted", "Asked; the answer arrives as the next message"), 0, 0);
+      }
       if (details.answer === null) {
         return new Text(theme.fg("warning", "Cancelled"), 0, 0);
       }

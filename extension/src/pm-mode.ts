@@ -37,6 +37,15 @@ export function armPmMode(): void {
   pmModeActive = true;
 }
 
+/**
+ * Re-enter PM mode for a session that was reopened. The one-shot doctrine is
+ * not queued again: a reopened session is past its first turn, where a live
+ * session has only the sticky preamble too.
+ */
+export function restorePmMode(): void {
+  pmModeActive = true;
+}
+
 export function isPmModeActive(): boolean {
   return pmModeActive;
 }
