@@ -289,12 +289,11 @@ export function inlineDevelopPrompt(
   /**
    * #1078 — paths to the driver-cached issue body artifact(s); the prompt
    * points at the file(s) instead of re-fetching via gh. A multi-issue cycle
-   * caches one file per active issue (primary under the legacy `issue-body`
-   * name, the rest as `issue-body-<N>` siblings in the same directory); the
-   * caller threads all of them so every named issue's body stays reachable
-   * even though re-fetching is forbidden.
+   * caches one file per active issue (each as `issue-body-<N>.txt` under the
+   * primary issue's state dir); the caller threads all of them so every
+   * named issue's body stays reachable even though re-fetching is forbidden.
    */
-  issueBodyArtifactPath?: string[],
+  issueBodyArtifactPaths?: string[],
 ): string {
   // PR11 — multi-issue cycles must show the developer the ACTIVE issues
   // (NEEDS_WORK subset after explore), not the primary cycle issue. The
@@ -356,12 +355,9 @@ export function inlineDevelopPrompt(
   // per active issue) — the primary is cached in state, the siblings are not,
   // and the "do not re-fetch" line below forbids fetching them back.
   let fetchInstr: string;
-  if (issueBodyArtifactPath && issueBodyArtifactPath.length > 0) {
-    const cats = issueBodyArtifactPath.map((p) => `\`cat ${p}\``).join(", ");
-    fetchInstr =
-      issueBodyArtifactPath.length === 1
-        ? `Read the issue body (acceptance criteria, DoD) from the driver-cached file: \`cat ${issueBodyArtifactPath[0]}\`. Do NOT re-fetch via \`gh issue view\` — the driver already did that in Step 1.`
-        : `Read each active issue body (acceptance criteria, DoD) from the driver-cached files: ${cats}. Do NOT re-fetch via \`gh issue view\` — the driver already did that in Step 1.`;
+  if (issueBodyArtifactPaths && issueBodyArtifactPaths.length > 0) {
+    const cats = issueBodyArtifactPaths.map((p) => `\`cat ${p}\``).join(", ");
+    fetchInstr = `Read ${issueBodyArtifactPaths.length === 1 ? "the issue body" : "each active issue body"} (acceptance criteria, DoD) from the driver-cached file${issueBodyArtifactPaths.length === 1 ? "" : "s"}: ${cats}. Do NOT re-fetch via \`gh issue view\` — the driver already did that in Step 1.`;
   } else if (issues.length === 1) {
     fetchInstr = `\`gh issue view ${issues[0]}\` to re-fetch the issue body (acceptance criteria, DoD).`;
   } else {

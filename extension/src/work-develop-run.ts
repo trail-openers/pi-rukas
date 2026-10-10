@@ -182,17 +182,26 @@ export function makeRunOneWorkstream(
       // reads the file(s) instead of re-fetching via gh. The artifacts may be
       // gone by develop time (scratch cleared on --restart/resume, eviction
       // between explore and develop) — fall back to the re-fetch line. A
-      // multi-issue cycle caches one file per active issue (the primary under
-      // the legacy `issue-body` name, the rest as `issue-body-<N>` siblings);
-      // only the primary is tracked in state, so derive the siblings from the
-      // primary's directory and thread ALL of them — otherwise the prompt
-      // would point at the primary alone and forbid re-fetching the rest.
+      // multi-issue cycle caches one file per ACTIVE issue (work-driver
+      // explore-run.ts), each as `issue-body-<N>.txt` under the PRIMARY
+      // issue's state dir — including for the primary, so the bare legacy
+      // `issue-body.txt` file is never written in multi-issue mode. Only the
+      // primary is tracked in state, so derive the sibling names from the
+      // primary's directory for every NON-PRIMARY active issue and thread ALL
+      // of them — otherwise the prompt would point at the primary alone and
+      // forbid re-fetching the rest.
       const artifact = s.stateRef.current.pipelineState.issueBodyArtifact;
       const artifactPaths: string[] = [];
       if (artifact) {
         const candidates = [artifact];
         if (activeIssues.length > 1) {
+          // The explore writer names every active issue `issue-body-<N>.txt`
+          // in the primary's dir; the primary's state-tracked file may still
+          // carry the legacy bare name (single-issue cycles, resumed state),
+          // so `artifact` itself is the primary's candidate — skip it here
+          // instead of deriving a phantom `issue-body-<primary>.txt`.
           for (const n of activeIssues) {
+            if (n === ctx.issue) continue;
             candidates.push(path.join(path.dirname(artifact), `issue-body-${n}.txt`));
           }
         }
@@ -208,7 +217,10 @@ export function makeRunOneWorkstream(
           `work-driver: issue body artifact missing at develop time, falling back to re-fetch: ${artifact}`,
         );
       }
-      const issueBodyArtifactPath = artifactPaths.length > 0 ? artifactPaths : undefined;
+      // An empty array (artifact tracked but all files gone) is a meaningful
+      // "checked, none present" state; the prompt guard treats it as absent
+      // and falls back to the re-fetch line.
+      const issueBodyArtifactPaths = artifactPaths;
       const [developerSettled, speculativeSettled] = await Promise.allSettled([
         dispatch(
           ctx.pi,
@@ -223,7 +235,7 @@ export function makeRunOneWorkstream(
               brief.text,
               siblingWorkstreams,
               verifyCmd,
-              issueBodyArtifactPath,
+              issueBodyArtifactPaths,
             ),
             cwd,
           },
