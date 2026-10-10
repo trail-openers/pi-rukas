@@ -5,7 +5,7 @@ import { openAgentListWithReturn } from "./agent-list-nav.ts";
 import { registerAgentsMdTools } from "./agents-md-tool.ts";
 import { setParentExtensionApi } from "./async-jobs-registry.ts";
 import { registerAsyncJobsLifecycle } from "./async-jobs.ts";
-import { registerCommands } from "./commands.ts";
+import { registerCommands, stripPmTools } from "./commands.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { registerDispatchPeekTool } from "./dispatch-peek.ts";
 import { registerDispatchStatusTool } from "./dispatch-status.ts";
@@ -18,6 +18,7 @@ import { registerModelPicker } from "./model-picker.ts";
 import { registerPermissionGuard } from "./permission-guard.ts";
 import { registerPlanTool } from "./plan-tool.ts";
 import { setPmActive } from "./pm-active.ts";
+import { registerPmModePersistence } from "./pm-mode-persist.ts";
 import { registerQuestionTool } from "./question-tool.ts";
 import { registerResearchTool } from "./research-tool.ts";
 import { warnIfRetryConfigTooLow } from "./retry-config-check.ts";
@@ -55,6 +56,8 @@ export default async function (pi: ExtensionAPI) {
   // Parent-only by construction: subagent mode returns above, before any
   // tools are registered.
   registerQuestionTool(pi);
+  // A reopened session goes back into PM mode, tools stripped, as it was.
+  registerPmModePersistence(pi, () => stripPmTools(pi));
   registerDispatchTools(pi);
   registerDispatchStatusTool(pi);
   registerDispatchPeekTool(pi);
