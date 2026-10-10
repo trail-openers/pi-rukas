@@ -5,7 +5,7 @@
  * The gate compares SETS (not counts) so docs may reflow freely.
  *
  * Directions: forward (REQUIRED_CLIS → README), reverse (Dockerfile → REQUIRED_CLIS/EXCEPTIONS),
- * OR gates (forge CLI gh/glab), version floors (pi #578, oo #715).
+ * OR gates (forge CLI gh/glab), version floors (pi #578).
  * Proven in both directions via static fixtures (canary). Escape hatch: PI_ENSEMBLE_PREREQ_DRIFT=0.
  */
 
@@ -37,8 +37,6 @@ const EXCEPTIONS: Record<string, string> = {
   // reverse direction from flagging a false drift. Post-#959 the floor is 1.0.0.
   "@earendil-works/pi-coding-agent@1.0.0":
     "npm package name with the #578 floor pin (1.0.0, bumped by #959) — installs the `pi` binary already in REQUIRED_CLIS",
-  // cargo installs `double-o`; the binary is `oo` (REQUIRED_CLIS).
-  "double-o": "cargo package name — installs the `oo` binary already in REQUIRED_CLIS",
   // npm installs `parallel-web-cli`; the binary is `parallel-cli` (REQUIRED_CLIS).
   "parallel-web-cli":
     "npm package name — installs the `parallel-cli` binary already in REQUIRED_CLIS",
@@ -153,20 +151,6 @@ export function parsePiFloors(sources: {
   const m = sources.installSh.match(/\bMIN_PI_VERSION="?([0-9][0-9a-z.+-]*)"?/);
   const r = sources.readme.match(/@earendil-works\/pi-coding-agent@([0-9][0-9a-z.+-]*)/);
   const d = sources.dockerfile.match(/@earendil-works\/pi-coding-agent@([0-9][0-9a-z.+-]*)/);
-  return { installSh: m ? m[1] : "", readme: r ? r[1] : "", dockerfile: d ? d[1] : "" };
-}
-
-/**
- * oo version floors declared by each install surface (same contract as parsePiFloors).
- */
-export function parseOoFloors(s: {
-  installSh: string;
-  readme: string;
-  dockerfile: string;
-}): { installSh: string; readme: string; dockerfile: string } {
-  const m = s.installSh.match(/\bMIN_OO_VERSION="?([0-9][0-9a-z.+-]*)"?/);
-  const r = s.readme.match(/cargo install double-o --version ([0-9][0-9a-z.+-]*)/);
-  const d = s.dockerfile.match(/cargo install double-o --version ([0-9][0-9a-z.+-]*)/);
   return { installSh: m ? m[1] : "", readme: r ? r[1] : "", dockerfile: d ? d[1] : "" };
 }
 
@@ -332,23 +316,6 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
       }`,
     );
   }
-
-  // oo version-floor consistency (#715): same shape as the pi floor gate.
-  const ooFloors = parseOoFloors({
-    installSh: installShFloors.join("\n"),
-    readme: read("README.md"),
-    dockerfile: read(".devcontainer/Dockerfile"),
-  });
-  if (existsSync(preflightPath))
-    assert(ooFloors.installSh !== "", "install-preflight.sh declares MIN_OO_VERSION (unpinned — the #715 known-gap window is why this gate exists)");
-  assert(ooFloors.readme !== "", "README oo install line pins a version (unpinned — pin --version <floor>)");
-  assert(ooFloors.dockerfile !== "", "Dockerfile oo global install pins a version (unpinned — pin --version <floor>)");
-  if (ooFloors.installSh && ooFloors.readme && ooFloors.dockerfile) {
-    const ooCmp = compareVersions(ooFloors.readme, ooFloors.installSh);
-    assert(ooCmp !== null && ooCmp >= 0, `README oo pin ${ooFloors.readme} ≥ floor ${ooFloors.installSh}${ooCmp === null ? " (unparseable)" : ooCmp < 0 ? " (below floor)" : ""}`);
-    const ooCmpD = compareVersions(ooFloors.dockerfile, ooFloors.installSh);
-    assert(ooCmpD !== null && ooCmpD >= 0, `Dockerfile oo pin ${ooFloors.dockerfile} ≥ floor ${ooFloors.installSh}${ooCmpD === null ? " (unparseable)" : ooCmpD < 0 ? " (below floor)" : ""}`);
-  }
 }
 
 // ---------------------------------------------------------------- the gate CAN fail
@@ -380,8 +347,7 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
   const fRequiredSet = new Set(fRequired);
   // The fixture's pinned pi package name — excepted by the same
   // name-vs-binary reasoning as the real @earendil-works/pi-coding-agent.
-  // double-o excepted: cargo package name for the `oo` binary (same as real EXCEPTIONS).
-  const fExceptedSet = new Set(["@earendil-works/pi-coding-agent@1.1.0", "double-o"]);
+  const fExceptedSet = new Set(["@earendil-works/pi-coding-agent@1.1.0"]);
   // The fixture install.sh does NOT have the forge OR-gate, so `gh` from
   // the apt-get line is unexplained here — proving the reverse direction
   // correctly flags forge CLIs when the gate is absent.
@@ -472,21 +438,6 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
     "canary: unpinned surfaces parse as empty (the drift the gate flags)",
   );
 
-  // oo canary: fixture preflight floor 0.5.0; README 0.4.4 (below → flagged); Dockerfile 1.1.0 (above → NOT flagged).
-  const fOoFloors = parseOoFloors({
-    installSh: read(path.relative(REPO_ROOT, path.join(FIXTURES, "install-preflight.sh"))),
-    readme: fixtureReadme,
-    dockerfile: fixtureDocker,
-  });
-  assert(fOoFloors.installSh === "0.5.0", `canary: oo floor parses 0.5.0 (got ${JSON.stringify(fOoFloors.installSh)})`);
-  assert(fOoFloors.readme === "0.4.4", `canary: oo README pin parses 0.4.4 (got ${JSON.stringify(fOoFloors.readme)})`);
-  assert(fOoFloors.dockerfile === "1.1.0", `canary: oo Dockerfile pin parses 1.1.0 (got ${JSON.stringify(fOoFloors.dockerfile)})`);
-  const fOoCmpR = compareVersions(fOoFloors.readme, fOoFloors.installSh);
-  assert(fOoCmpR !== null && fOoCmpR < 0, "canary: below-floor oo README pin detected");
-  const fOoCmpD = compareVersions(fOoFloors.dockerfile, fOoFloors.installSh);
-  assert(fOoCmpD !== null && fOoCmpD > 0, "canary: above-floor oo Dockerfile pin detected");
-  const fOoUnpinned = parseOoFloors({ installSh: fixtureInstall, readme: "", dockerfile: "" });
-  assert(fOoUnpinned.readme === "" && fOoUnpinned.dockerfile === "" && fOoUnpinned.installSh === "", "canary: unpinned oo surfaces parse empty");
   // compareVersions edge cases: equal versions are 0; non-dotted input is null (never silently 0).
   assert(compareVersions("0.84.4", "0.84.4") === 0, "canary: equal versions compare 0");
   assert(

@@ -73,9 +73,9 @@ assert(key5 === expectedKey5, "decisionKey handles null args");
 
 // === extractCommandPrefix tests ===
 
-// Test: extractCommandPrefix("oo gh pr diff 53") returns "oo gh pr"
-const prefix1 = extractCommandPrefix("oo gh pr diff 53");
-assert(prefix1 === "oo gh pr", "extractCommandPrefix extracts oo gh pr from 'oo gh pr diff 53'");
+// Test: extractCommandPrefix("gh pr diff 53") returns "gh pr"
+const prefix1 = extractCommandPrefix("gh pr diff 53");
+assert(prefix1 === "gh pr", "extractCommandPrefix extracts gh pr from 'gh pr diff 53'");
 
 // Test: extractCommandPrefix("git status --porcelain") returns "git status"
 const prefix2 = extractCommandPrefix("git status --porcelain");
@@ -337,14 +337,6 @@ assert(
 assert(
   extractCommandPrefix("cargo run --release") === "cargo run",
   "cargo run with no script falls back to 2 tokens (no third clean token)",
-);
-assert(
-  extractCommandPrefix("oo git status --short") === "oo git status",
-  "oo recurses into inner tool (git → 2 tokens) → 3 total",
-);
-assert(
-  extractCommandPrefix("oo gh issue view 63") === "oo gh issue",
-  "oo gh issue view → oo gh issue (3 tokens)",
 );
 assert(
   extractCommandPrefix("myrandomtool foo bar baz") === "myrandomtool",

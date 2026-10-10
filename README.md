@@ -88,8 +88,8 @@ brew install git jq gh                                                # macOS (g
 # glab — GitLab forge CLI: brew install --no-quarantine glab (macOS); see
 # https://gitlab.com/gitlab-org/cli for the Linux one-liner.
 
-# vipune, oo — cargo from source (Rust toolchain required)
-cargo install vipune && cargo install double-o --version 0.5.0
+# vipune — cargo from source (Rust toolchain required)
+cargo install vipune
 
 # codebase-memory-mcp (REQUIRED — pi-rukas's code-search doctrine depends on it)
 curl -fsSL https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh | bash

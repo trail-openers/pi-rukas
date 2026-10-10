@@ -33,7 +33,7 @@ export function registerModeIndependentGuards(pi: ExtensionAPI): void {
   // stay byte-identical.
   registerIssueCreationGuard(pi);
   // #912 — same mode-independence for the merge door: an ops subagent
-  // holding an `oo gh pr merge*` grant could merge on a developer's
+  // holding an `gh pr merge*` grant could merge on a developer's
   // self-report plus CI in trust/sandbox mode. The review ledger is the
   // structural floor; the guard fires before every bypass.
   registerMergeGuard(pi);

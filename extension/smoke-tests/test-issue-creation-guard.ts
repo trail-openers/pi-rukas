@@ -8,8 +8,6 @@
  * `createsIssue` predicate here. The predicate has four bypass shapes
  * that each actually appeared (or were one `&&` away):
  *
- *   - the `oo` prefix (ops holds an `oo gh …` / `oo glab …` grants; PM runs
- *     both bare),
  *   - chained commands (`cd x && gh issue create`),
  *   - the gh REST door: `gh api repos/o/r/issues` — gh api DEFAULTS TO POST
  *     when body fields are passed, so a "read" without `--method GET` is a
@@ -43,7 +41,6 @@ for (const cmd of [
   // The plain verb, with the shapes agents actually emit.
   "gh issue create --title t",
   "gh issue create --title 'fix: x' --body-file tmp/body.md",
-  "oo gh issue create -t x",
   // Chained commands — the predicate scans, it does not anchor.
   "cd x && gh issue create --title t",
   "gh issue list && gh issue create --title t",
@@ -51,12 +48,10 @@ for (const cmd of [
   // The REST door: POST to the issues COLLECTION (gh api's default when body
   // fields are present).
   "gh api repos/o/r/issues -f title=x -f body=y",
-  "oo gh api repos/o/r/issues -f title=t",
   "curl x; gh api repos/o/r/issues -f title=t",
-  // The glab verb door — same four shapes as gh (bare, oo, chained, quoted
+  // The glab verb door — same shapes as gh (bare, chained, quoted
   // arguments).
   "glab issue create --title t",
-  "oo glab issue create -t x",
   "cd x && glab issue create --title t",
   "glab issue list; glab issue create --title t",
   // The glab REST door — blocked only when the command EXPLICITLY posts: an
@@ -64,7 +59,6 @@ for (const cmd of [
   // into a write). Unlike gh api, glab api does NOT default to POST.
   "glab api /projects/123/issues -X POST -f title=x",
   "glab api /projects/123/issues --method POST -f title=x",
-  "oo glab api /projects/123/issues -f title=t",
   "curl x; glab api /projects/123/issues -F body=y",
   "glab api /projects/123/issues --field title=x",
 ]) {

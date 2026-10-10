@@ -4,7 +4,7 @@
  *
  * Time the child has an in-flight CI-watch tool call (bash command matching
  * `gh pr checks … --watch` / `gh run watch` / `glab ci status --live` /
- * `glab ci view`, tolerant of leading `oo`/`timeout`/`env`/`nice`
+ * `glab ci view`, tolerant of leading `timeout`/`env`/`nice`
  * wrappers) does not count toward the elapsed threshold: the notice is
  * DELAYED, never suppressed. Both the progress-driven check
  * (feedSlowProgress) and the timer-driven check (tickElapsed) use the
@@ -112,10 +112,10 @@ const closeSpan = (feed: Feed | undefined, id: string, isError = false): void =>
   feed?.({ type: "message_end", message: { role: "toolResult", toolName: "bash", toolCallId: id, isError } });
 
 // --------------------------------------------------------- 1. the classifier
-// Accepts the four CI-watch shapes (tolerant of the `oo` prefix and flag
-// order); rejects the near-misses (plain `gh pr checks N` without
-// --watch, `gh run list`, `gh api …`) and every shell-wrapped or chained
-// variant except the allowed wrappers.
+// Accepts the four CI-watch shapes (tolerant of flag order); rejects the
+// near-misses (plain `gh pr checks N` without --watch, `gh run list`,
+// `gh api …`) and every shell-wrapped or chained variant except the allowed
+// wrappers.
 {
   const accepted = [
     "gh pr checks 12 --watch",
@@ -124,18 +124,13 @@ const closeSpan = (feed: Feed | undefined, id: string, isError = false): void =>
     "gh run watch 999",
     "glab ci status --live",
     "glab ci view",
-    "oo gh pr checks 12 --watch",
-    "oo gh run watch 999",
-    "oo glab ci view",
     "timeout 1800 gh pr checks 906 --watch",
     "timeout 600 gh run watch 123",
     "timeout 10m gh run watch",
     "timeout -k 5 1800 gh pr checks 12 --watch",
-    "oo timeout 600 gh run watch 123",
     "env FOO=bar gh pr checks 12 --watch",
     "nice gh run watch 999",
     "timeout 60s glab ci status --live",
-    "oo env X=1 gh pr checks 12 --watch",
   ];
   for (const cmd of accepted) assert(isCiWatchCommand(cmd) === true, `accepts ${JSON.stringify(cmd)}`);
   const rejected = [
@@ -147,7 +142,7 @@ const closeSpan = (feed: Feed | undefined, id: string, isError = false): void =>
     "gh run watch | tee log",
     "gh pr checks 12 && gh pr checks 13 --watch",
     "timeout 60 gh pr checks 12",
-    "oo sleep 10",
+    "sleep 10",
     "echo gh run watch",
     "watch -n 5 gh run watch",
     "bash -c 'gh run watch'",

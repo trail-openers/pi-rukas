@@ -303,11 +303,8 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
 //    registerIssueCreationGuard, registerDestructiveGitGuard} is the shared
 //    block's contents (subagent-guard-guards.ts); the companion calls that
 //    block (no direct guard calls, no duplicates), and the explicit
-//    exclusions {registerPmBashGuard, registerOoRewriteGuard} are NOT
-//    registered by the companion — the strict/headless path registers
-//    oo-rewrite in permission-subagent-guard.ts, right after its own shared
-//    block call (pinned in test-oo-rewrite-guard.ts). Fails in both
-//    directions.
+//    exclusion {registerPmBashGuard} is NOT registered by the companion —
+//    it is parent-only. Fails in both directions.
 // ============================================================
 {
   const SRC = path.resolve(import.meta.dirname, "..", "src");
@@ -340,11 +337,11 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
       `canary: the shared block registers ${name}(pi)`,
     );
   }
-  const notInShared = ["registerPmBashGuard", "registerOoRewriteGuard"];
+  const notInShared = ["registerPmBashGuard"];
   for (const name of notInShared) {
     assert(
       !new RegExp(`(^|[^\\w])${name}\\s*\\(pi\\)`).test(shared),
-      `canary: the shared block does NOT register ${name} (oo-rewrite: strict path only; pm-bash: parent-only)`,
+      `canary: the shared block does NOT register ${name} (pm-bash: parent-only)`,
     );
   }
   // The companion never registers the exclusions either.

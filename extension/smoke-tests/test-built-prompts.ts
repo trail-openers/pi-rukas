@@ -43,105 +43,13 @@ execFileSync("bash", [BUILD], {
 // #1031 — codemode module heading, asserted per-manifest below.
 const codemodeHeading = readFileSync(path.join(ROOT, CODEMODE_MODULE), "utf8").match(/^#{1,6} .+$/m)?.[0];
 
-// Epic #1026 sub-issue 3 — the doc sweep: no source doc file still prescribes
-// the `oo` prefix as a command wrapper. The allowlist entries in agents.json
-// (and the allowlist block build.sh renders from them) still carry `oo`-prefixed
-// patterns until sub-issue 5 retires the guard, so this gate targets the
-// prescriptive prose in the role/agent/workflow docs, not the allowlist.
-const OO_SWEEP_FILES = [
-  "agents-base/project-manager.md",
-  "agents-base/developer.md",
-  "agents-base/ops.md",
-  "agents-base/explore.md",
-  "agents-base/adversarial-developer.md",
-  "agents-base/code-review-specialist.md",
-  "pi-prompts/start.md",
-  "modules/workflows/parallel-worktrees.md",
-  "modules/workflows/issue-workflow.md",
-  "modules/core/async-tasks.md",
-  "modules/core/bash-final-reminders.md",
-];
-// Matches `oo` used as a command-prefix wrapper: "oo git", "oo gh", "oo cargo",
-// "oo npm", "oo bun", "oo pnpm", "oo yarn", "oo pytest", "oo glab", etc.
-// A fresh non-global regex is created per use because a shared `g`-flagged
-// regex is stateful (`lastIndex`), so reusing one across the sweep and the
-// canary below would make every second `test()` miss.
-function ooPrefixRe() {
-  return /(?<!\w)oo\s+(?:git|gh|glab|npm|cargo|bun|pnpm|yarn|pytest|go|uv|npx|ruff|recall|help|patterns|learn|forget)\b/;
-}
-// Explicit, anchor-based exemptions: a swept line is exempt iff it contains one
-// of its file's anchor substrings. Anchors are short and stable, so a reword of
-// the surrounding sentence does not silently drop the exemption — and each
-// anchor is asserted to still be present below, so a stale exemption (file
-// rewritten) fails the gate instead of rotting.
-const OO_SWEEP_EXEMPT: Record<string, string[]> = {
-  "agents-base/developer.md": [
-    // the rewrite-guard paragraph explains the trust/sandbox rewrite and, until
-    // #1029 adds bare runner rows, names the `oo`-prefixed form as the only
-    // allowlisted one for strict/headless mode
-    "the allowlisted form of a verbose runner is the `oo`-prefixed one",
-  ],
-};
-function assertOoSweep(lines: string[], rel: string) {
-  const anchors = OO_SWEEP_EXEMPT[rel] ?? [];
-  const isExempt = (line: string) => anchors.some((a) => line.includes(a));
-  const re = ooPrefixRe(); // fresh per file, so lastIndex can't leak forward
-  const violations: string[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (isExempt(line)) continue;
-    if (re.test(line)) {
-      violations.push(`  line ${i + 1}: ${line.trim().slice(0, 120)}`);
-    }
-  }
-  assert(
-    violations.length === 0,
-    violations.length === 0
-      ? `${rel}: no oo command-prefix prescriptions remain`
-      : `${rel}: ${violations.length} line(s) still prescribe oo command prefix:\n${violations.join("\n")}`,
-  );
-  // Every anchor must still be present in the file — a missing anchor means the
-  // exemption is stale (it no longer matches anything) and must fail loudly.
-  for (const anchor of anchors) {
-    assert(
-      lines.some((l) => l.includes(anchor)),
-      `${rel}: OO_SWEEP_EXEMPT anchor still present (a missing anchor means the exemption is stale)`,
-    );
-  }
-}
-// Prove the gate can fail: an in-test fixture with a prescriptive `oo`-prefixed
-// runner line must be reported (and an exempted one must not be).
-{
-  const fixture = [
-    "Run the suite with `oo cargo test` to keep the report short.",
-    "Run the suite with `oo bun test` to keep the report short.",
-  ];
-  const canaryRe = ooPrefixRe(); // fresh regex, independent of the sweep above
-  const badViolations = fixture.filter((l) => canaryRe.test(l));
-  assert(
-    badViolations.length === 2,
-    `oo sweep canary: fixture line(s) reporting a prescriptive oo-prefix (${badViolations.length}/2)`,
-  );
-}
-for (const rel of OO_SWEEP_FILES) {
-  const p = path.join(ROOT, rel);
-  let src = "";
-  try {
-    src = readFileSync(p, "utf8");
-  } catch {
-    assert(false, `${rel}: file exists (required for doc sweep)`);
-    continue;
-  }
-  assertOoSweep(src.split("\n"), rel);
-}
-
 for (const manifestName of readdirSync(MANIFESTS).filter((name) => name.endsWith(".manifest"))) {
   const role = manifestName.replace(/\.manifest$/, "");
   const manifestPath = path.join(MANIFESTS, manifestName);
   const manifestLines = readFileSync(manifestPath, "utf8").split("\n");
   assert(
     manifestLines.includes(CODEMODE_MODULE),
-    `${role}: manifest references modules/core/codemode.md (replaces oo-command-runner.md)`,
+    `${role}: manifest references modules/core/codemode.md`,
   );
   assert(
     !manifestLines.includes("modules/core/oo-command-runner.md"),
