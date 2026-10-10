@@ -330,7 +330,6 @@
         "mcp__codebase_memory__get_architecture": "allow",
         "bash": {
           "*": "ask",
-          "git *": "allow",
           "docker *": "allow",
           "ssh *": "allow",
           "which*": "allow",
@@ -373,6 +372,8 @@
           "git cherry-pick*": "allow",
           "git worktree*": "allow",
           "git -C *": "allow",
+          "git apply*": "allow",
+          "git update-ref*": "allow",
           "git submodule*": "allow",
           "gh issue list*": "allow",
           "gh pr list*": "allow",
