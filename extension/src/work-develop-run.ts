@@ -183,7 +183,16 @@ export function makeRunOneWorkstream(
       // gone by develop time (scratch cleared on --restart/resume, eviction
       // between explore and develop) — fall back to the re-fetch line.
       const artifact = s.stateRef.current.pipelineState.issueBodyArtifact;
-      const artifactPresent = !!artifact && fs.existsSync(artifact);
+      let artifactPresent = false;
+      if (artifact) {
+        try {
+          artifactPresent = fs.existsSync(artifact);
+        } catch {
+          // stat failure (EACCES/ENOTDIR) → treat as absent; degrades to
+          // the re-fetch fallback instead of killing the workstream.
+          artifactPresent = false;
+        }
+      }
       if (artifact && !artifactPresent) {
         trace(
           `work-driver: issue body artifact missing at develop time, falling back to re-fetch: ${artifact}`,
