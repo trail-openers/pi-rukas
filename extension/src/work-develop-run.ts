@@ -178,6 +178,18 @@ export function makeRunOneWorkstream(
         ids: brief.hits.map((h: { id: string }) => h.id),
       });
 
+      // #1078 — thread the driver-cached issue body path so the developer
+      // reads the file instead of re-fetching via gh. The artifact may be
+      // gone by develop time (scratch cleared on --restart/resume, eviction
+      // between explore and develop) — fall back to the re-fetch line.
+      const artifact = s.stateRef.current.pipelineState.issueBodyArtifact;
+      const artifactPresent = !!artifact && fs.existsSync(artifact);
+      if (artifact && !artifactPresent) {
+        trace(
+          `work-driver: issue body artifact missing at develop time, falling back to re-fetch: ${artifact}`,
+        );
+      }
+      const issueBodyArtifactPath = artifactPresent ? artifact : undefined;
       const [developerSettled, speculativeSettled] = await Promise.allSettled([
         dispatch(
           ctx.pi,
@@ -192,19 +204,7 @@ export function makeRunOneWorkstream(
               brief.text,
               siblingWorkstreams,
               verifyCmd,
-              // #1078 — thread the driver-cached issue body path so the
-              // developer reads the file instead of re-fetching via gh.
-              // The artifact may be gone by develop time (scratch cleared on
-              // --restart/resume, eviction between explore and develop) —
-              // pass undefined so the prompt degrades to the re-fetch line.
-              (() => {
-                const art = s.stateRef.current.pipelineState.issueBodyArtifact;
-                if (art && !fs.existsSync(art)) {
-                  trace(`work-driver: issue body artifact missing at develop time, falling back to re-fetch: ${art}`);
-                  return undefined;
-                }
-                return art;
-              })(),
+              issueBodyArtifactPath,
             ),
             cwd,
           },
