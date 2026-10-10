@@ -55,6 +55,11 @@ const PATTERNS: { name: string; re: RegExp }[] = [
     re:
       /(?<![\w-])oo\s+(?:git|gh|glab|npm|cargo|bun|pnpm|yarn|pytest|go|uv|npx|ruff|recall|help|patterns|learn|forget|init|version)\b/g,
   },
+  // The standalone token: `too`/`loop`/`group`/`foo` never match (lookarounds
+  // on both sides); backtick-wrapped mentions ("`oo` prefix") and bare prose
+  // mentions ("oo is retired") are caught. The runner pattern owns `oo <runner>`;
+  // this catches everything else that names the binary.
+  { name: "oo (standalone)", re: /(?<![\w-])oo(?![\w-])/g },
   { name: '"oo ', re: /"oo /g },
   { name: "double-o", re: /(?<![\w-])double-o(?![\w-])/g },
   { name: "MIN_OO", re: /MIN_OO/g },
@@ -112,6 +117,24 @@ const EXEMPT: Record<string, string[]> = {
     "oo git log *",
     'startsWith("oo ")',
     "drop \"oo \"",
+    "`oo` retirement",
+    "`oo X …` entry",
+    "an `oo` entry with no bare",
+    "`oo <subcommand>`",
+    "fake `oo` key",
+    "retired `oo` binary",
+    "a fake `oo` key",
+    "removed-oo-entries.json",
+    "begins with `oo `",
+    "`oo` prefix is gone",
+    "begin with `oo ` (word",
+    "OO_PREFIX_RE",
+    "zero bash keys begin",
+    "removed `oo` entry",
+    "the fixture is non-trivial",
+    "166 removed oo-prefixed",
+    "every listed entry is `oo …`",
+    "keeps a bare equivalent",
   ],
   "extension/smoke-tests/test-built-prompts.ts": [
     "oo cargo test",
@@ -119,11 +142,32 @@ const EXEMPT: Record<string, string[]> = {
     "oo-command-runner",
     'command-prefix wrapper: "oo git"',
     '"oo npm", "oo bun"',
+    '`oo`-prefixed',
+    "`oo` prefix",
+    "prescriptive `oo`-prefixed",
+    "prescriptive `oo`-prefix",
+    "`oo` used as a command-prefix",
+    "no oo command-prefix",
+    "still prescribe oo command prefix",
+    "oo sweep canary",
+    "oo-prefix",
+    "oo\\s+",
   ],
   "extension/smoke-tests/fixtures/issues/341.json": [
     "blanket allow",
     "blanket oo gh api*",
   ],
+  "extension/smoke-tests/test-permission-guard.ts": ["oo-wrapped"],
+  "extension/smoke-tests/test-do-prompt.ts": [
+    "vipune, oo, cd",
+    "no `oo` — retired",
+  ],
+  "extension/smoke-tests/test-preflight-forge-loop.ts": [
+    "contains the oo entry",
+    "no `oo` — retired",
+  ],
+  "AGENTS.md": ["bare-vs-`oo`"],
+  "pi-prompts/agents-md.md": ["randomm/oo AGENTS.md"],
 };
 
 function collectFiles(abs: string, rel: string): string[] {
@@ -253,6 +297,23 @@ for (const [rel, subs] of Object.entries(EXEMPT)) {
     }
   }
   assert(!hit2, "canary: a bare `git log` line is NOT flagged (word boundary holds)");
+
+  // Standalone-token canary: a prose mention of the `oo` binary (no runner)
+  // must be caught by the standalone pattern.
+  const canary3 = "The `oo` prefix is retired; run the runner bare.";
+  const standRe = /(?<![\w-])oo(?![\w-])/g;
+  standRe.lastIndex = 0;
+  assert(
+    standRe.test(canary3),
+    "canary: a standalone `oo` prose mention IS flagged",
+  );
+
+  // Standalone-token negative: `too` / `loop` / `foo` are NOT flagged.
+  for (const word of ["too", "loop", "foo", "group"]) {
+    const re = /(?<![\w-])oo(?![\w-])/g;
+    re.lastIndex = 0;
+    assert(!re.test(word), `canary: '${word}' is NOT flagged (lookarounds hold)`);
+  }
 }
 
 console.log(exit === 0 ? "\nAll oo-residue checks passed." : "\nFAILED");

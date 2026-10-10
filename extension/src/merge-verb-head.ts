@@ -3,7 +3,7 @@
  * door (#955, round-2 hardening).
  *
  * The legacy matcher ran one regex over the quote-stripped WHOLE command
- * (with a bare `oo\s+` wrapper). It saw a command only after the shell
+ * (no wrapper). It saw a command only after the shell
  * evaluator — and the shapes below all survive quote-stripping intact, so
  * they bypassed the guard (adversarial round 2 of #955, confirmed by
  * execution):

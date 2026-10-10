@@ -42,8 +42,8 @@ function segmentSpanOrUnwrapped(seg: string): string | undefined {
  *
  * The doors (all on the QUOTE-STRIPPED command, scan-not-anchor):
  *
- *   - `gh pr merge …` / `glab mr merge …` (with or without the `oo`
- *     prefix, chained after `cd x && …` or any other command, `timeout` /
+ *   - `gh pr merge …` / `glab mr merge …` (chained after
+ *     `cd x && …` or any other command, `timeout` /
  *     `nice` / `env` wrappers),
  *   - `gh pr merge` with NO number — the CLI resolves the PR from the
  *     current branch; the guard resolves it via `gh pr view --json number`

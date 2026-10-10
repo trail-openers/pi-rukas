@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * #1029 — the agents.json half of the oo retirement: the allowlist keeps
+ * #1029 — the agents.json half of the `oo` retirement: the allowlist keeps
  * working once the `oo` prefix is gone.
  *
  *   (a) Zero bash-allow/deny keys in agents.json begin with `oo ` (word
@@ -21,7 +21,7 @@
  * by `git *`; `npm run lint*` by `npm *`).
  *
  * Exemptions — an `oo` entry with no bare equivalent is allowed to be gone:
- *   - the oo-BINARY-ONLY subcommands: recall, help, patterns, learn, forget,
+ *   - the OO-BINARY-ONLY subcommands: recall, help, patterns, learn, forget,
  *     init, version. They only exist as `oo <subcommand>` (the bare words are
  *     not meaningful standalone grants), so they are deleted outright.
  *   - the developer-only image wrappers: animate, compare, composite,
@@ -40,7 +40,7 @@ import path from "node:path";
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 const AGENTS_PATH = path.join(ROOT, "agents.json");
-const FIXTURE_PATH = path.join(ROOT, "extension", "smoke-tests", "fixtures", "agents-json-removed-oo-entries.json");
+const FIXTURE_PATH = path.join(ROOT, "extension", "smoke-tests", "fixtures", "agents-json-removed-oo-entries.json"); // (oo = the retired prefix)
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -116,7 +116,7 @@ function covered(role: string, bare: string): boolean {
 // cannot pass over an empty set.
 {
   const total = Object.values(fixture).reduce((n, v) => n + v.length, 0);
-  assert(total === 166, `fixture lists 166 removed oo entries (found ${total})`);
+  assert(total === 166, `fixture lists 166 removed oo-prefixed entries (found ${total})`);
   let allOo = true;
   for (const role of Object.keys(fixture)) {
     for (const entry of fixture[role]) {
@@ -136,7 +136,7 @@ function covered(role: string, bare: string): boolean {
     for (const entry of entries) {
       const bare = entry.slice(3); // drop "oo "
       const first = bare.split(" ", 1)[0];
-      if (OOBINARY_ONLY.has(first)) continue; // exempt: oo-binary-only
+      if (OOBINARY_ONLY.has(first)) continue; // exempt: OO-binary-only
       if (role === "developer" && DEV_ONLY_IMAGE_WRAPPERS.has(first)) continue; // exempt
       if (!covered(role, bare)) missing.push(`${role}: ${entry} -> bare ${JSON.stringify(bare)}`);
     }
@@ -181,5 +181,5 @@ function covered(role: string, bare: string): boolean {
   }
 }
 
-console.log(exit === 0 ? "\nAll agents.json oo-retirement checks passed." : "\nFAILED");
+console.log(exit === 0 ? "\nAll agents.json retirement checks passed." : "\nFAILED");
 process.exit(exit);

@@ -36,7 +36,7 @@ function assert(cond: boolean, msg: string) {
 }
 
 const FORBIDDEN = /&&|\|\||;|\||>|`|\$\(/;
-const CLI_FIRST_WORD = /^(git|gh|glab|bun|vipune|oo|cd|timeout)\s/;
+const CLI_FIRST_WORD = /^(git|gh|glab|bun|vipune|cd|timeout)\s/; // (no `oo` — retired in #1029)
 
 /**
  * Extract every inline backticked span from a string, then keep the ones that
