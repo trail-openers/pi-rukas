@@ -382,13 +382,17 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
           `merge refused: ${capDecision.failedCondition ?? "the round-cap conditions are not met"} — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
         );
       }
-      // The round-cap path does not apply: either there is no lens entry
-      // at all (nothing to evaluate), or the latest entry's verdict the
-      // round-cap rule cannot verify (a legacy row without a `detail` field,
-      // or a non-ISSUES_FOUND verdict — the rule applies ONLY to an
-      // ISSUES_FOUND latest entry). Distinguish that from the `applies: true`
-      // path above, where the rule WAS evaluated and a specific condition N
-      // failed (that refusal names the condition verbatim — AGENTS.md §1).
+      // The round-cap path does not apply (no entry, or a passing entry the
+      // strict rule should have allowed — unreachable here, or a legacy
+      // entry without a verdict detail): the strict rule's original refusal
+      // text, with the branch named for the operator.
+      //
+      // #1000: the round-cap path was consulted but refused to apply
+      // (`applies: false`). The refusal names THAT ("the round-cap path
+      // was not evaluated") and the verdict state, distinct from the
+      // `applies: true` path above, where the rule WAS evaluated and a
+      // specific condition N failed (that refusal names the condition
+      // verbatim — AGENTS.md §1).
       return lensNotEvaluatedRefusal(branch, lens);
     }
 

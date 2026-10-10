@@ -144,12 +144,12 @@ async function doPost(
       throw new Error(`no open PR/MR for branch ${branch} (no PR number resolved)`);
     }
   }
-  // The PR's identity (base + head branch) — the SAME read the guard uses
-  // for its target, so the patch-id base is the PR's ACTUAL base (design
-  // decision 1). The `branch=` in the marker is the PR's `headRefName`
-  // (remote prefix stripped), NOT the caller's resolved branch — the guard
-  // compares the marker's branch against the PR's headRefName, so the
-  // marker must carry the same value the guard will see.
+  // The PR's identity (base branch) — the SAME read the guard uses for its
+  // target, so the patch-id base is the PR's ACTUAL base (design decision 1).
+  // The marker's `branch=` is the PR's headRefName (remote prefix stripped),
+  // NOT the caller's resolved branch — the guard compares the marker's
+  // branch against the PR's headRefName, so the marker must carry the same
+  // value the guard will see.
   let baseBranch: string | undefined;
   let headBranch: string | undefined;
   if (opts.pr !== undefined) {
@@ -178,12 +178,15 @@ async function doPost(
       baseBranch = raw.baseRefName;
     }
   } else {
-    // The PR was resolved via the branch lookup above; detect forge and
-    // fetch the PR's identity.
+    // The PR for the branch (the guard resolves it the same way — the forge
+    // CLI on the current branch; the caller runs from the branch's repo).
     const detection = await detectForge(cwd, { allowProbe: false });
     if (detection.forge === "unknown") {
       throw new Error(`cannot determine the forge for ${cwd} (no PR number)`);
     }
+    // The PR's identity (base + head branch) — the SAME read the guard uses
+    // for its target, so the patch-id base is the PR's ACTUAL base (design
+    // decision 1).
     if (detection.forge === "gitlab") {
       const { stdout } = await execFn(`glab mr view ${prNumber} --output json`, {
         cwd,
@@ -238,6 +241,8 @@ async function doPost(
   if (!patchId) {
     throw new Error(`could not compute the patch-id for ${headBranch} against ${baseBranch}`);
   }
+  // The marker + the findings body (severity, path:line, title — the
+  // operator-readable list; the marker line is hidden in the render).
   // The marker uses the PR's headRefName (stripped of remote prefix) — the
   // guard compares the marker's branch against the PR's headRefName, so the
   // marker must carry the SAME value the guard will see.

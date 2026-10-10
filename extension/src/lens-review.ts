@@ -60,13 +60,13 @@ export {
   type LensReviewSummary,
 };
 import { aggregateLensUsage } from "./lens-review-usage.ts";
-export type LensName = string; // deliberately unbounded — the roster is data-driven from SKILL.md frontmatter (#873)
 /** One roster entry — the shape a lens child receives per dispatch (#873:
  * the roster is data, so `LensDef` is the parsed entry type). */
 export type LensDef = RosterEntry;
 /** Re-exported so consumers of this module name the verdict here; the
  * definition lives in lens-review-format.ts. */
 export type { Verdict, Severity } from "./lens-review-format.ts";
+export type LensName = string; // deliberately unbounded — the roster is data-driven from SKILL.md frontmatter (#873)
 export const LENS_REPORTER_PATH = path.join(__dirname, "lens-reporter.ts");
 
 /**
@@ -119,18 +119,21 @@ export interface LensRunResult {
   lens: LensName;
   ok: boolean;
   ms: number;
-  /** #456 — dispatch start wall-clock (sequential startMs = spawn-semaphore queueing fingerprint). */
+  /** #456 — wall-clock when this lens's dispatch began (persisted via
+   * dispatch-completed.lensTimings; sequential startMs across a pass are the
+   * fingerprint of spawn-semaphore queueing, cap 1). */
   startMs: number;
   findings: Finding[];
   model?: string;
   transcriptPath?: string;
-  /** #543 — dispatch-cap kill cause (loop / token-budget); cap-killed lenses are NOT retried. */
+  /** #543 — the dispatch-cap kill cause when the lens child was cap-killed
+   * (loop detector / token budget). A cap-killed lens is NOT retried: an
+   * SIGTERM'd looped child is a non-zero exit, and without this guard the
+   * retry below would undo the kill up to MAX_LENS_ATTEMPTS times. */
   killCause?: DispatchResult["killCause"];
-  /** #543 — the F1 streak evidence at a loop kill, threaded so the
-   * driver's capEvidence write has the tool + count to render. */
+  /** #543 — F1 loop-kill evidence (tool + count) for capEvidence; F6
+   * token-budget kill evidence (budget/used) threaded for the same reason. */
   loopEvidence?: { tool: string; count: number };
-  /** #543 — the F6 budget + used tokens at a token-budget kill, threaded
-   * for the same reason. */
   tokenBudget?: { budget: number; used: number };
   /** Set when the child failed to spawn or returned non-zero. */
   parseError?: string;
@@ -146,11 +149,8 @@ export interface LensRunResult {
    * looked — see `lensProducedEvidence`.
    */
   summary?: string;
-  /**
-   * #534 — the child's tokens/cost. Previously discarded (the per-lens
-   * `result.usage` was dropped here); carried so the driver can fold the
-   * six-lens pass's spend into the cycle total at the emission point.
-   */
+  /** #534 — child's tokens/cost for the cycle total (was discarded pre-#534;
+   * carried so the driver can fold the six-lens pass's spend into the total). */
   usage?: DispatchUsage;
 }
 
@@ -191,8 +191,12 @@ export async function runLensReview(opts: {
   pi?: Pick<import("@earendil-works/pi-coding-agent").ExtensionAPI, "sendUserMessage">;
   /** Blocking bar; defaults to MEDIUM. See `DEFAULT_REVIEW_THRESHOLD`. */
   threshold?: Severity;
-  /** #912 — caller-supplied branch for the ledger write (detached worktrees
-   * can't recover it via rev-parse). When absent, skips (traces). */
+  /**
+   * #912 — caller-supplied branch for the review-ledger write (the driver
+   * worktrees are detached, so `git rev-parse --abbrev-ref HEAD` cannot
+   * recover it). When absent the writer recovers the branch from `HEAD`
+   * and skips (traces) on a detached head.
+   */
   branch?: string;
   /** #973 — the PR/MR number for the residual-findings disclosure post. */
   pr?: number;
