@@ -412,11 +412,14 @@ export function inlineDevelopPrompt(
   }
   // #1078 — the driver already fetched the issue body in Step 1 and cached
   // it to disk. Point the developer at that file instead of re-fetching.
-  const fetchInstr = issueBodyArtifactPath
-    ? `Read the issue body (acceptance criteria, DoD) from the driver-cached file: \`cat ${issueBodyArtifactPath}\`. Do NOT re-fetch via \`gh issue view\` — the driver already did that in Step 1.`
-    : issues.length === 1
-      ? `\`gh issue view ${issues[0]}\` to re-fetch the issue body (acceptance criteria, DoD).`
-      : `Re-fetch each active issue body — run \`gh issue view <N>\` for each of: ${issues.map((n) => `#${n}`).join(", ")}.`;
+  let fetchInstr: string;
+  if (issueBodyArtifactPath) {
+    fetchInstr = `Read the issue body (acceptance criteria, DoD) from the driver-cached file: \`cat ${issueBodyArtifactPath}\`. Do NOT re-fetch via \`gh issue view\` — the driver already did that in Step 1.`;
+  } else if (issues.length === 1) {
+    fetchInstr = `\`gh issue view ${issues[0]}\` to re-fetch the issue body (acceptance criteria, DoD).`;
+  } else {
+    fetchInstr = `Re-fetch each active issue body — run \`gh issue view <N>\` for each of: ${issues.map((n) => `#${n}`).join(", ")}.`;
+  }
   const verifyLine = verifyCmd
     ? `Before committing, run the project's verify command — \`${verifyCmd}\` — and make it pass in your worktree; this is the exact command the verify gate will run, so the two cannot diverge. Fix formatting or lint output by RUNNING the formatter/linter, never by hand-guessing.`
     : "This project has no discoverable verify command, so there is no project-level check to run before committing — rely on the change being correct and complete.";
