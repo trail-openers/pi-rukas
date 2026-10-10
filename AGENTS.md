@@ -227,7 +227,7 @@ This is real doctrine, not a hint. The PM exists to orchestrate; specialists exi
 
 PM can use `read`, `vipune`, `gh issue view`, and read-only `git status/diff/log/branch`. PM CANNOT use `edit`, `write`, or arbitrary bash.
 
-For PM behaviour rules (allowed tools, bash allowlist, bare-vs-`oo`, ticket lifecycle, subagent model-routing constraints), see `agents-base/project-manager.md` + `modules/core/*.md` — those are baked into the PM role prompt by `bun run build` and reach every PM session at runtime. This file (AGENTS.md) is loaded only when an agent's cwd is inside pi-rukas; runtime PM doctrine belongs in the role prompt, not here.
+For PM behaviour rules (allowed tools, bash allowlist, ticket lifecycle, subagent model-routing constraints), see `agents-base/project-manager.md` + `modules/core/*.md` — those are baked into the PM role prompt by `bun run build` and reach every PM session at runtime. This file (AGENTS.md) is loaded only when an agent's cwd is inside pi-rukas; runtime PM doctrine belongs in the role prompt, not here.
 
 **Role identity at the permission layer** (issue #104): the parent Pi session resolves to role `project-manager` directly — `permission-guard.ts` falls back to `"project-manager"` when `PI_ENSEMBLE_ROLE` is unset. There is no separate `default` role. Subagents get `developer` / `ops` / `explore` / `code-review-specialist` / `adversarial-developer` via `spawn.ts` setting `PI_ENSEMBLE_ROLE`. Six roles total; the parent is always one of them (project-manager).
 

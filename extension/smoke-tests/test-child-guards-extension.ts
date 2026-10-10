@@ -7,17 +7,16 @@
  * full pi-rukas extension, which spawn.ts forwarded to children only in
  * strict/headless mode. A trust-mode child got none of them.
  *
- * The companion registers EXACTLY those three (in that order), NOT the #716
- * oo-rewrite guard that the shared block also carries for strict/headless
- * children: activating oo-rewrite inside trust-mode children would be a
- * behaviour change outside #926's scope.
+ * The companion registers EXACTLY those three (in that order) and nothing
+ * else, so a trust-mode child gets the mode-independent guards without any
+ * parent-only hook leaking in.
  *
  * Loads the companion's DEFAULT EXPORT into a fake pi and asserts:
  *
  *   1. Loading with no PI_ENSEMBLE_SUBAGENT_MODE registers THREE tool_call
  *      hooks (destructive-git, issue-creation, merge — the three
  *      mode-independent guards, same order as the subagent path's shared
- *      block minus the deliberately-excluded oo-rewrite) and no
+ *      block) and no
  *      tools/commands; driving
  *      them through a stubbed exec refuses `gh pr merge 5 --squash` (no
  *      ledger → refused) and `gh issue create -t x`, and ignores
@@ -135,8 +134,7 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
 
 // ============================================================
 // 1. Loading with no SUBAGENT_MODE: exactly THREE tool_call hooks (the
-//    three mode-independent guards; oo-rewrite deliberately excluded), no
-//    tools, no commands.
+//    three mode-independent guards), no tools, no commands.
 // ============================================================
 {
   const fake = makeFakePi();
@@ -144,7 +142,7 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
   const n = fake.handlers["tool_call"]?.length ?? 0;
   assert(
     n === 3,
-    `registers exactly 3 tool_call hooks (the three mode-independent guards, oo-rewrite excluded; got ${n})`,
+    `registers exactly 3 tool_call hooks (the three mode-independent guards; got ${n})`,
   );
   assert(fake.registeredTools.length === 0, "registers no tools (hook-only companion)");
   assert(fake.registeredCommands.length === 0, "registers no commands");
@@ -303,11 +301,8 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
 //    registerIssueCreationGuard, registerDestructiveGitGuard} is the shared
 //    block's contents (subagent-guard-guards.ts); the companion calls that
 //    block (no direct guard calls, no duplicates), and the explicit
-//    exclusions {registerPmBashGuard, registerOoRewriteGuard} are NOT
-//    registered by the companion — the strict/headless path registers
-//    oo-rewrite in permission-subagent-guard.ts, right after its own shared
-//    block call (pinned in test-oo-rewrite-guard.ts). Fails in both
-//    directions.
+//    exclusion {registerPmBashGuard} is NOT registered by the companion —
+//    it is parent-only. Fails in both directions.
 // ============================================================
 {
   const SRC = path.resolve(import.meta.dirname, "..", "src");
@@ -340,11 +335,11 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
       `canary: the shared block registers ${name}(pi)`,
     );
   }
-  const notInShared = ["registerPmBashGuard", "registerOoRewriteGuard"];
+  const notInShared = ["registerPmBashGuard"];
   for (const name of notInShared) {
     assert(
       !new RegExp(`(^|[^\\w])${name}\\s*\\(pi\\)`).test(shared),
-      `canary: the shared block does NOT register ${name} (oo-rewrite: strict path only; pm-bash: parent-only)`,
+      `canary: the shared block does NOT register ${name} (pm-bash: parent-only)`,
     );
   }
   // The companion never registers the exclusions either.

@@ -17,7 +17,7 @@ Symptoms → causes → fixes. Most issues here come from running an older sandb
 
 **Verification (the "expected to work" bar).** WSL2 is upgraded from "expected to work" to "supported" only once someone records a clean run: `./install.sh` completes, one sandbox image pull succeeds, one subagent dispatch runs, and `/mcp` shows the `codebase_memory` server. Record the configuration — repo location (`/home/...` vs `/mnt/c/...`, which interacts with the absolute-path mount premise) and the Docker variant.
 
-**Note on the prerequisites:** several tools have no native-Windows install path, which is part of why the platform is unsupported — `codebase-memory-mcp` installs by curl-to-bash, `parallel-cli` by a Homebrew tap, and `vipune` / `oo` by cargo from source. Under WSL2 (a Linux kernel running inside a Windows VM) all of these install normally.
+**Note on the prerequisites:** several tools have no native-Windows install path, which is part of why the platform is unsupported — `codebase-memory-mcp` installs by curl-to-bash, `parallel-cli` by a Homebrew tap, and `vipune` by cargo from source. Under WSL2 (a Linux kernel running inside a Windows VM) all of these install normally.
 
 ### `docker` / the sandbox image is unreachable from inside WSL2
 
@@ -190,7 +190,7 @@ If the cap fires for real, the recovery commands now match what the driver itsel
 
 Deliberate, and it holds regardless of trust level. A validation subagent once "cleaned up scratch commits" with `git checkout`, wiped an uncommitted deliverable, and then "restored" it by re-applying an older patch — silently reverting two reviewed defect fixes. It was caught only because a diffstat line count looked wrong.
 
-Nothing stopped it at any layer: trust mode (the default on an interactive host) and sandbox mode (the default in a container) both bypass gating entirely, and under strict opt-in the `oo git *` catch-all in `agents.json` allowed it explicitly. So the refusal sits ahead of all three.
+Nothing stopped it at any layer: trust mode (the default on an interactive host) and sandbox mode (the default in a container) both bypass gating entirely, and under strict opt-in the `git *` catch-all in `agents.json` allowed it explicitly. So the refusal sits ahead of all three.
 
 The distinction: the permission layers answer *"may this role run git?"* — yes. This answers *"may anything destroy work nobody has captured yet?"* — no. The container fence and the operator's trust both protect the **host**; neither protects the developer's own diff.
 
@@ -358,7 +358,7 @@ PR: [#215](https://github.com/trail-openers/pi-rukas/pull/215)
 
 ### `./install.sh` takes 10+ minutes (cold local build)
 
-**Symptom:** Running `./install.sh` on a fresh host (or after `docker system prune`) takes 10-30 minutes. Output shows `cargo install vipune`, `cargo install double-o`, `npm install -g ...`, the Rust toolchain compiling.
+**Symptom:** Running `./install.sh` on a fresh host (or after `docker system prune`) takes 10-30 minutes. Output shows `cargo install vipune`, `npm install -g ...`, the Rust toolchain compiling.
 
 **Cause:** You're on an `install.sh` from before #219 — pre-#219 the script always built the image locally. Post-#219 it pulls a pre-built multi-arch image from `ghcr.io/trail-openers/pi-rukas:latest` (built + published on every merge to main).
 

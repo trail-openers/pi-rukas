@@ -8,5 +8,4 @@
 
 set -o allexport
 MIN_PI_VERSION=1.0.0
-MIN_OO_VERSION=0.5.0
 set +o allexport

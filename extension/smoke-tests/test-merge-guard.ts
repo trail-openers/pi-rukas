@@ -35,8 +35,6 @@ for (const cmd of [
   // The plain verb, with the shapes agents actually emit.
   "gh pr merge 12 --squash",
   "glab mr merge 12",
-  "oo gh pr merge 12 --squash",
-  "oo glab mr merge 7",
   // Wrappers + chains — the predicate scans, it does not anchor.
   "timeout 60 gh pr merge 12",
   "cd x && gh pr merge 12",

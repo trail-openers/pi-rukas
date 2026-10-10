@@ -13,7 +13,7 @@ cd pi-rukas
 ```
 
 The installer runs preflight checks for required CLIs (`pi`, `bun`, `git`,
-`gh`, `vipune`, `oo`, `jq`) — if any are missing you'll get a named list
+`gh`, `vipune`, `jq`) — if any are missing you'll get a named list
 with install hints. `codebase-memory-mcp` is installed separately as an MCP
 server (see README → Prerequisites / Using MCP servers). See README →
 Prerequisites for the full table.
@@ -81,7 +81,7 @@ There is no `default` role. The parent Pi session is *always* `project-manager` 
 - Add to the 'Tool Access' section in `agents-base/<role>.md`
 - Run `bun run build` to regenerate role-specific prompts
 
-Examples: `vipune`, `ctx7`, `gh`, `oo`, `parallel-cli`, `jq`, `sqlite3 -readonly`.
+Examples: `vipune`, `ctx7`, `gh`, `parallel-cli`, `jq`, `sqlite3 -readonly`.
 
 #### Bash subcommand permission patterns
 
@@ -94,7 +94,7 @@ wins. Pattern grammar:
 |---|---|---|
 | `"vipune *"` (trailing ` *`) | word-boundary prefix | `vipune`, `vipune search foo`, `vipune add "x"` |
 | `"which*"` (trailing `*`, no space) | loose prefix | `which`, `which python`, `whichever` |
-| `"oo init"` (no wildcard) | exact match | `oo init` only |
+| `"vipune init"` (no wildcard) | exact match | `vipune init` only |
 | `"*"` (catch-all) | fallback when no other pattern matches | anything not matched above |
 
 Verdict values: `"allow"`, `"deny"`, `"ask"`. Most specific (longest) pattern
@@ -114,23 +114,11 @@ The extractor knows about a small set of process wrappers (`timeout`, `time`,
 `nice -n N`, `nohup`, `stdbuf`, `command`, `builtin`, `exec`, `env`) and
 leading `KEY=value` env-var assignments — these are stripped before the prefix
 is taken, so `timeout 30 npm test` is permitted by `"npm test *"`. Multi-level
-CLI tools like `git`, `npm`, `cargo`, `oo`, `gh` produce 2-3 token prefixes
-(`git commit`, `oo gh issue`).
+CLI tools like `git`, `npm`, `cargo`, `gh` produce 2-3 token prefixes
+(`git commit`, `gh issue`).
 
-**Bare-vs-`oo` doctrine** (issue #96): when adding bash entries for a new
-command, choose ONE canonical form per command — don't redundantly grant both
-bare and `oo`-wrapped variants. Rule of thumb:
-
-- **Bare** for short or action-required raw output: `git status`, `git
-  branch`, `git rev-parse`, `git config --get`, `vipune`, single-line reads.
-- **`oo` wrapper** for verbose output the agent only needs as a summary:
-  `oo git log`, `oo git diff`, `oo cargo test`, `oo gh issue list`,
-  multi-line / multi-KB output.
-- `oo` is a context-saver, not a security boundary — never use it to "soft
-  deny" something. If a command should be denied, deny it.
-
-The PM role's allowlist is the reference implementation of this rule
-(`agents.json` `agent.project-manager.permission.bash`).
+**Bare command doctrine**: when adding bash entries for a new command, grant
+the bare command form. If a command should be denied, deny it — no wrapper-based "soft deny".
 
 **MCP-backed tools** (for tools that can't safely be CLI-wrapped, e.g., database servers):
 

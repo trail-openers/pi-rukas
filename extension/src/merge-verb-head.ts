@@ -3,14 +3,14 @@
  * door (#955, round-2 hardening).
  *
  * The legacy matcher ran one regex over the quote-stripped WHOLE command
- * (with a bare `oo\s+` wrapper). It saw a command only after the shell
+ * (no wrapper). It saw a command only after the shell
  * evaluator — and the shapes below all survive quote-stripping intact, so
  * they bypassed the guard (adversarial round 2 of #955, confirmed by
  * execution):
  *
  *   - process-wrapper prefixes: `timeout 30 gh pr merge 17`, `command gh
- *     pr merge 17`, `nohup … &`, `sudo …`, `nice …`, `time …`, `oo …`
- *     (bare), `env -i …`, `stdbuf -oL …`;
+ *     pr merge 17`, `nohup … &`, `sudo …`, `nice …`, `time …`,
+ *     `env -i …`, `stdbuf -oL …`;
  *   - a forge path instead of a bare name: `/usr/bin/gh pr merge 17`;
  *   - a command word inside a subshell or command substitution — that is
  *     handled by the caller, which extracts the `( … )` / `$( … )` / backtick
@@ -37,7 +37,7 @@
  * The wrapper-stripping head match lives in merge-wrappers.ts (moved from
  * here after this file breached the 500-line §12 limit); the wrappers are
  * the same set `stripLeadingWrappers` in bash-command-parser.ts skips for
- * allowlist prefix extraction (extended with `oo` and `sudo`, which have
+ * allowlist prefix extraction (extended with `sudo`, which has
  * no flags at all), re-implemented over the raw tokens because that module
  * is imported BY this module's caller (bash-merges-pr.ts) — importing it
  * back would be a cycle.
@@ -50,7 +50,7 @@ export { matchMergeVerb };
 
 /**
  * Unwrap ONE shell-eval layer (`bash -c …`, `sh -c …`, `eval …`, with
- * `env`/`oo` wrappers) to its quoted string argument. Exported so the
+ * `env` wrappers) to its quoted string argument. Exported so the
  * merge guard can walk the layers itself when extracting the repo flag
  * (which can appear before the verb, in the pre-verb portion of the
  * command).
@@ -106,7 +106,7 @@ export function mergeVerbUnwrapOne(command: string): string | undefined {
 
 /**
  * Unwrap a SINGLE shell-eval layer (`bash -c …`, `sh -c …`, `eval "…"`,
- * with `env`/`oo` wrappers) to its quoted string argument, or `undefined`
+ * with `env` wrappers) to its quoted string argument, or `undefined`
  * when `command` does not invoke one of these shells. The single-layer
  * walk over the raw tokens (quote-aware, offsets preserved) — the body of
  * what `mergeVerbUnwrapOne` used to be. See `mergeVerbUnwrapOne` for the
@@ -148,7 +148,6 @@ function unwrapOneLayer(command: string): string | undefined {
     // returning the same `i` (the quoted case) would re-enter the loop
     // without advancing, spinning forever.
     if (
-      t === "oo" ||
       t === "env" ||
       t === "exec" ||
       t === "sudo" ||

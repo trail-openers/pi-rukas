@@ -36,7 +36,7 @@
  *       also covers 1.x.y literals in a Pi-claim context (a
  *       `pi-coding-agent`/`pi-tui`/`@earendil-works/pi` pin, `MIN_PI_VERSION`,
  *       or the "Last verified against pi" claim line); 1.x literals with no
- *       Pi-claim context (bun, biome, oo, ci floors) are NOT claims — the
+ *       Pi-claim context (bun, biome, ci floors) are NOT claims — the
  *       census is a Pi gate and must not fail on an unrelated tool bump.
  *
  * What it deliberately does NOT do:
@@ -176,7 +176,7 @@ export function piClaimContexts(text: string): number[] {
  * historical claim space, pre-#959). 1.x.y: only in a Pi-claim context
  * (see piClaimContexts) — "Last verified against pi 1.0.0" is a claim,
  * "bun >= 1.2.20" is not. Without the context check every unrelated
- * tool bump (bun, biome, oo, ci) would fail a Pi-drift gate.
+ * tool bump (bun, biome, ci) would fail a Pi-drift gate.
  */
 export function piVersionLiterals(text: string): string[] {
   const out = new Set<string>();

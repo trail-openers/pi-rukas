@@ -99,8 +99,7 @@ the /agents-md flow.
 Use `dispatch_specialist` with `role: "explore"` (structurally denied
 write/edit via role-tools). The prompt should demand **dense, specific**
 facts — exact shell lines, not narrative, plus the project's ACTUAL testing
-setup. Reference the `oo/AGENTS.md` quality bar: exact command lines, no
-filler.
+setup. Reference the AGENTS.md quality bar: exact command lines, no filler.
 
 The dispatch prompt must include:
 

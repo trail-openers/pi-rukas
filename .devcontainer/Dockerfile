@@ -92,7 +92,7 @@ RUN curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash \
     && bun --version
 
 # -----------------------------------------------------------------------------
-# 4. Rust toolchain (system-wide) — needed for vipune + oo
+# 4. Rust toolchain (system-wide) — needed for vipune
 # -----------------------------------------------------------------------------
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
@@ -126,11 +126,6 @@ RUN npm install -g --ignore-scripts ctx7 || true
 # vipune — cross-session memory
 RUN cargo install vipune \
     && install -m 0755 /usr/local/cargo/bin/vipune /usr/local/bin/vipune
-
-# oo (double-o) — context-efficient wrapper for chatty CLIs
-# Pinned to the install floor 0.5.0 (install-preflight.sh MIN_OO_VERSION, #715).
-RUN cargo install double-o --version 0.5.0 \
-    && install -m 0755 /usr/local/cargo/bin/oo /usr/local/bin/oo
 
 # codebase-memory-mcp — knowledge-graph code indexer (ships as a static binary)
 # The upstream installer auto-detects arch and drops to ~/.local/bin/. We

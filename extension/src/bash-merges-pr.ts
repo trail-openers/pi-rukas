@@ -37,13 +37,13 @@ function segmentSpanOrUnwrapped(seg: string): string | undefined {
  *
  * #912 — the merge guard (merge-guard.ts) calls this ahead of every
  * trust/sandbox bypass, exactly like `createsIssue`: ops holds an
- * `oo gh pr merge*` / `oo glab mr merge*` grant in agents.json, and in
+ * `gh pr merge*` / `glab mr merge*` grant in agents.json, and in
  * trust/sandbox mode nothing else checks it.
  *
  * The doors (all on the QUOTE-STRIPPED command, scan-not-anchor):
  *
- *   - `gh pr merge …` / `glab mr merge …` (with or without the `oo`
- *     prefix, chained after `cd x && …` or any other command, `timeout` /
+ *   - `gh pr merge …` / `glab mr merge …` (chained after
+ *     `cd x && …` or any other command, `timeout` /
  *     `nice` / `env` wrappers),
  *   - `gh pr merge` with NO number — the CLI resolves the PR from the
  *     current branch; the guard resolves it via `gh pr view --json number`
@@ -175,7 +175,7 @@ function restDoors(texts: string[]): string | undefined {
  *
  * A REST merge is recognised only when a segment's COMMAND WORD (after
  * `skipLeadingWrappers`, unquoted — the same wrapper vocabulary the verb
- * door uses, so `oo gh api …` / `timeout 30 gh api …` match) is `gh`/`glab`
+ * door uses, so `gh api …` / `timeout 30 gh api …` match) is `gh`/`glab`
  * and the next unquoted token is `api`. Quoting a whole word is what the
  * shell does, so the words are unquoted — but a quoted STRING that is one
  * token (the endpoint of `echo "gh api …/merge"`) is NOT a command word

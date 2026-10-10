@@ -300,37 +300,18 @@ for (const command of bareGitAllowed) {
   assert(v === "allow", `Issue #96: bare \`${command}\` is allowed for project-manager`);
 }
 
-// Verbose-output git commands still require oo wrapper
-const ooGitAllowed = [
-  "oo git log --oneline -10",
-  "oo git diff HEAD~1",
-  "oo git show HEAD",
-  "oo git shortlog -sn",
-  "oo git rev-list --count HEAD",
-  "oo git for-each-ref refs/heads",
+// Verbose-output git commands are allowed for PM via the bare `git *` pattern
+const bareGitVerboseAllowed = [
+  "git log --oneline -10",
+  "git diff HEAD~1",
+  "git show HEAD",
+  "git shortlog -sn",
+  "git rev-list --count HEAD",
+  "git for-each-ref refs/heads",
 ];
-for (const command of ooGitAllowed) {
+for (const command of bareGitVerboseAllowed) {
   const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
   assert(v === "allow", `Issue #96: \`${command}\` is allowed for project-manager`);
-}
-
-// Now-redundant oo-wrapped variants of short commands are NOT in the allowlist
-// (forces the bare canonical pattern). Bash catch-all migrated from `deny`
-// to `ask` (closing #169's gap on the nested bash block) — these prompt the
-// user rather than hard-denying. The bare canonical form is still the
-// recommended idiom; the prompt is the safety net for novel inputs.
-const ooGitAsked = [
-  "oo git status",
-  "oo git branch --show-current",
-  "oo git worktree list",
-  "oo git rev-parse HEAD",
-];
-for (const command of ooGitAsked) {
-  const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
-  assert(
-    v === "ask",
-    `Issue #96: \`${command}\` prompts the user for project-manager (use bare form to skip prompt)`,
-  );
 }
 
 // Write/mutation bash now prompts the user instead of hard-denying. Defense
@@ -347,7 +328,7 @@ for (const command of bashAsked) {
 // role="default" finds no role config → falls through to "ask" (not "allow").
 // Parent Pi sessions now resolve to project-manager directly via the
 // permission-guard fallback.
-for (const command of ["git status", "git branch", "oo git log"]) {
+for (const command of ["git status", "git branch", "git log"]) {
   const v = resolveToolPermission("bash", "default", {}, {}, agentsConfig, command);
   assert(
     v === "ask",
@@ -356,7 +337,6 @@ for (const command of ["git status", "git branch", "oo git log"]) {
 }
 
 // === Issue #99 tests: PM ticket lifecycle direct via gh ===
-// Bare gh for ticket CRUD (oo wrapping breaks gh issue / gh api | jq usage).
 
 const ghIssueAllowed = [
   // #598 — `gh issue create` is no longer in this list: it is now denied for
@@ -414,20 +394,17 @@ for (const command of ghOpsAsked) {
 
 // === Issue #341 tests: ops GitHub permissions ===
 const opsPermissionCases: Array<[string, "allow" | "ask"]> = [
-  ["oo gh api repos/randomm/pi-ensemble/issues/341", "ask"],
-  ["oo gh api repos/randomm/pi-ensemble/pulls/42", "ask"],
-  ["oo gh api repos/randomm/pi-ensemble/actions/runs/12345", "ask"],
-  ["oo gh pr close 42", "allow"],
-  ["oo gh pr merge 42", "allow"],
-  ["oo gh issue list --state open", "allow"],
-  ["oo gh pr list --state open", "allow"],
-  ["oo gh run list --branch main --limit 3", "allow"],
-  ["oo gh run view 12345", "allow"],
-  ["oo gh run watch 12345", "allow"],
+  ["gh api repos/randomm/pi-ensemble/issues/341", "ask"],
+  ["gh api repos/randomm/pi-ensemble/pulls/42", "ask"],
+  ["gh api repos/randomm/pi-ensemble/actions/runs/12345", "ask"],
+  ["gh pr close 42", "allow"],
+  ["gh pr merge 42", "allow"],
+  ["gh issue list --state open", "allow"],
+  ["gh pr list --state open", "allow"],
   ["gh run list --branch main --limit 3", "allow"],
   ["gh run view 12345", "allow"],
   ["gh run watch 12345", "allow"],
-  ["oo gh repo view randomm/pi-ensemble", "ask"],
+  ["gh repo view randomm/pi-ensemble", "ask"],
 ];
 for (const [command, expected] of opsPermissionCases) {
   const v = resolveToolPermission("bash", "ops", {}, {}, agentsConfig, command);

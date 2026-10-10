@@ -128,8 +128,6 @@ const COMMAND_WRAPPERS = new Set([
 // Multi-subcommand CLI tools: take 2 tokens (e.g. `git commit`, `npm test`).
 // These are tools where the first token alone is too broad to be a useful
 // "Allow always" scope — `git *` would also allow `git push --force`.
-// `oo` is included because it wraps other tools; extractCommandPrefix detects
-// that case and recurses into the inner tool's prefix.
 const MULTI_SUBCOMMAND_TOOLS = new Set([
   "git",
   "gh",
@@ -145,7 +143,6 @@ const MULTI_SUBCOMMAND_TOOLS = new Set([
   "pi",
   "ctx7",
   "kubectl",
-  "oo",
 ]);
 
 // Three-token run-style invocations where the third token is the script name
@@ -197,11 +194,11 @@ export function tokenizeForPrefix(command: string): string[] {
   return tokens;
 }
 
-// Git invocation prefix used by the working-tree predicates below: an
-// optional `oo` wrapper, `git`, optional `-C <path>`, then whitespace. The
-// predicates SCAN for this (not anchor it) so chained shapes
-// (`cd x && git …`) and `git -C <path> …` are all caught.
-const GIT = "(?:^|[;&|]|\\s)(?:oo\\s+)?git(?:\\s+-C\\s+\\S+)*\\s+";
+// Git invocation prefix used by the working-tree predicates below:
+// `git`, optional `-C <path>`, then whitespace. The predicates SCAN for this
+// (not anchor it) so chained shapes (`cd x && git …`) and `git -C <path> …`
+// are all caught.
+const GIT = "(?:^|[;&|]|\\s)git(?:\\s+-C\\s+\\S+)*\\s+";
 
 // Strip leading process-wrapper tokens and KEY=value env-var assignments.
 // Returns the remaining tokens — the "real" command after unwrapping.
@@ -277,12 +274,6 @@ export function extractCommandPrefix(command: string): string {
   }
   const t2 = cleanTokens[1] ?? "";
   if (t2 === "") return t1;
-  // Recursive case: `oo <tool>` where the inner tool is itself multi-level.
-  // Drives `oo git status` → `oo git status`, `oo gh issue view` → `oo gh issue`.
-  if (t1 === "oo" && MULTI_SUBCOMMAND_TOOLS.has(t2)) {
-    const innerPrefix = extractCommandPrefix(cleanTokens.slice(1).join(" "));
-    return `oo ${innerPrefix}`;
-  }
   // Three-token run-style invocations.
   if (TRIPLE_LEVEL_PAIRS.has(`${t1} ${t2}`) && cleanTokens.length >= 3) {
     const t3 = cleanTokens[2] ?? "";
@@ -363,7 +354,7 @@ export function matchBashSubcommand(
  * only because a diffstat line count looked wrong.
  * Nothing anywhere stopped it. Gating is bypassed in trust mode (the default
  * on an interactive host), bypassed in sandbox mode, and explicitly allowed
- * even under strict opt-in by the `oo git *` catch-all in agents.json. So this
+ * even under strict opt-in by the `git *` catch-all in agents.json. So this
  * refusal cannot live in the allowlist — like `isDestructiveMemoryWrite`, it
  * sits ahead of it and holds regardless.
  * Deliberately conservative: a false positive makes an agent pick another

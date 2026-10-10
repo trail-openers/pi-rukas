@@ -113,8 +113,8 @@ assert(
   );
 }
 
-// The `oo` prefix and `cd` rule are load-bearing conventions in this file;
-// a step that violates them fails the same silent way.
+// The `cd` rule is a load-bearing convention in this file;
+// a step that violates it fails the same silent way.
 assert(
   !commandBullets.some((c) => /^cd\s/.test(c)),
   "no /start command starts with `cd` — Pi's bash tool already runs in the project cwd",
