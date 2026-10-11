@@ -320,7 +320,7 @@ export function draftSpec(
   // count cap applies to BOTH branches (round 9: an unterminated block
   // swallowed trailing prose unbounded); operator text stays unclipped (D2).
   // #1087: operator text is never capped or clipped; only angle items are capped.
-  const opTestSurface = capOperatorItems(directives.testSurface ?? []);
+  const opTestSurface = capOperatorItems(dedupeByNormalised(directives.testSurface ?? []));
   const testSurface =
     sectionBullets(
       opTestSurface.items.length > 0
@@ -349,7 +349,7 @@ export function draftSpec(
   // D3 fix: edge cases come from the "edge-case" kind across ALL angles (the
   // old filter matched a nonexistent "risk-surface" angle name). Operator
   // pitfalls take precedence.
-  const opPitfalls = capOperatorItems(directives.pitfalls);
+  const opPitfalls = capOperatorItems(dedupeByNormalised(directives.pitfalls));
   const edgeItems = [
     ...opPitfalls.items,
     ...itemsByKind(findings, "edge-case")

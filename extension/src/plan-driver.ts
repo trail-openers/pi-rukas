@@ -327,10 +327,8 @@ export async function runPlanPipeline(
     });
   }
 
-  // Phase 4 — gap gate: bug/feature/epic only. Chore/spike are
-  // low-blast-radius and their gate is the deterministic validation above —
-  // no env knob (operator decision 2026-09-09: fewer knobs, better
-  // defaults; this also removes run-to-run gate variance for those types).
+  // Phase 4 — gap gate: bug/feature/epic only; chore/spike rely on the
+  // deterministic validation above (operator decision 2026-09-09, no env knob).
   const gapGateEnabled = type !== "chore" && type !== "spike";
   let gaps: PlanGap[] = [];
   let capHit = false;
@@ -365,8 +363,7 @@ export async function runPlanPipeline(
             : gapGateVerifyPrompt(body, lastCarried),
         GAP_GATE_MAX_ITERATIONS,
         (blocking: PlanGap[]) => {
-          // PR #640: resolve destinations here, splice in draftSpec (single site).
-          // Catch is WIDE: covers destination-resolution + re-draft; cause preserves stack.
+          // PR #640: destination resolution + re-draft (single splice site); wide catch.
           let computed: ResolvedDecision[] = [];
           let writebackMap: Map<string, string[]> | null = null;
           let writtenOutcomes: { applied: boolean; heading: string }[] = [];
@@ -390,6 +387,7 @@ export async function runPlanPipeline(
               writebackMap,
               chosenBudget,
             );
+            if (redraft.operatorOmitted.length) throw new Error("redraft truncated operator items");
             // Re-draft RETURN: marked decisions (writtenBack from the splice,
             // not predicted). Body/title re-assigned for round 2.
             ({ title, body } = redraft);
@@ -420,9 +418,7 @@ export async function runPlanPipeline(
     rawUnparsedHead = loopResult.rawUnparsedHead;
   }
 
-  // D2: when the cap routed to filing, the spec that gets filed carries the
-  // residual disclosure. Append it HERE, before fileIssue, so the single
-  // filing pass below sees the final body.
+  // D2: the filed spec carries the residual disclosure (appended before filing).
   const finalBody =
     residualForDisclosure.length > 0
       ? `${body}\n\n${residualGapsSection(residualForDisclosure)}`

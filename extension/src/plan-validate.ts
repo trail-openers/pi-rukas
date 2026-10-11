@@ -107,10 +107,6 @@ export const AC_FALLBACK =
 /** The Sub-issues fallback draftSpec renders when no decomposition exists. */
 export const SUB_ISSUES_FALLBACK = "(decomposition not available)";
 
-/** The Test-surface fallback (single-sourced here so the validator's scan
- * cannot silently drift from what draftSpec renders — same rule as
- * AC_FALLBACK). */
-
 /**
  * The Test-surface status draftSpec renders when neither the operator nor the
  * investigation produced a test-surface item (#1087). An explicit status, not

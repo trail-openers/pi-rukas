@@ -48,9 +48,10 @@ function angle(name: string, kind: string, texts: string[]): AngleFindings {
   };
 }
 
-function section(body: string, heading: string, next: string): string {
+/** Section text from `## heading` to `## next`, or to end-of-body when `next` is omitted. */
+function section(body: string, heading: string, next?: string): string {
   const start = body.indexOf(`## ${heading}`);
-  const end = body.indexOf(`## ${next}`, start + 1);
+  const end = next === undefined ? -1 : body.indexOf(`## ${next}`, start + 1);
   return start < 0 ? "" : body.slice(start, end < 0 ? undefined : end);
 }
 
@@ -181,7 +182,7 @@ function renders(sec: string, item: string): boolean {
     [],
   );
   const sub = section(r.body, "Sub-issues", "Operator decomposition");
-  const opDec = section(r.body, "Operator decomposition", "Context"); // no following section → to end
+  const opDec = section(r.body, "Operator decomposition");
   assert(
     !sub.includes("split by surface") &&
       opDec.includes("- split by surface") &&
@@ -330,7 +331,7 @@ function renders(sec: string, item: string): boolean {
       { ...NO_DIRS, decomposition: ["split by surface", "split by layer"] },
       [],
     );
-    const dec = section(r.body, "Operator decomposition", "Context");
+    const dec = section(r.body, "Operator decomposition");
     assert(
       dec.includes("- split by surface") && dec.includes("- split by layer"),
       `decomposition: ${type} keeps its operator DECOMPOSITION items verbatim`,
@@ -403,6 +404,19 @@ function renders(sec: string, item: string): boolean {
     ),
   );
   assert("result" in fitted && fitted.compacted === false, "short operator ACs: fits at stage 0");
+}
+
+{
+  // Duplicates are removed BEFORE the ceiling: 101 raw lines with 2 duplicates
+  // is 99 unique items, which fits and must not halt as truncated.
+  const raw = Array.from({ length: OPERATOR_ITEM_CEILING + 1 }, (_, i) => `pit ${i}`);
+  raw[50] = raw[1] ?? "";
+  raw[60] = raw[2] ?? "";
+  const r = draftSpec("feature", "d", [], [], [], [], 0, { ...NO_DIRS, pitfalls: raw }, []);
+  assert(
+    r.operatorOmitted.length === 0,
+    "dedupe before ceiling: 101 lines with 2 duplicates (99 unique) are not truncated",
+  );
 }
 
 if (exit === 0) console.log("\n✓ test-plan-operator-render: all assertions passed");
