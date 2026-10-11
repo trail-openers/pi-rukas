@@ -42,12 +42,7 @@ function issueSection(issueBody: string | undefined): string {
   return `\n\nWhat this change was asked to do — judge the diff against THIS, not against generic code quality. A diff that works but violates a stated constraint is a finding:\n\n${body}`;
 }
 
-/**
- * Reviewer instruction for the comment DATA block (#1040). Shared with the
- * six-lens context builder so every reviewer judges removals the same way.
- */
-export const COMMENT_JUDGEMENT_PROSE =
-  "Judge each removal listed above. LEGITIMATE: the code the comment described was removed or rewritten, or the comment was replaced by an equivalent. LOSS: the comment still documents code that exists at head, or it carried a constraint or rationale nothing else records. Report an unjustified loss as an ISSUES finding; do not report a legitimate removal. If the check was NOT CHECKED, review the comment changes in the diff yourself.";
+import { COMMENT_JUDGEMENT_PROSE } from "./comment-evidence.ts";
 
 export function buildAdversarialPrompt(opts: {
   diff: string;

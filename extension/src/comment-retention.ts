@@ -30,8 +30,9 @@ import { trace } from "./trace.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
- * A real shell `ExecFn` built on `promisify(exec)`. The driver's gates use an
- * injected `ExecFn`; this one is the production default.
+ * A real shell `ExecFn` built on `promisify(exec)`, for callers (the adversarial
+ * round and the lens review) that have no injected seam. The driver's gates use
+ * an injected `ExecFn` instead; this one is the production default.
  */
 export function makeExecFn(): ExecFn {
   const execp = promisify(exec);
@@ -46,8 +47,8 @@ export function makeExecFn(): ExecFn {
 /** The paths the diff / existence / exemption searches are scoped to. */
 export const COMMENT_RETENTION_PATHS = ["extension/src", "extension/smoke-tests", "agents-base"];
 
-/** Fallback per-git-call timeout for callers that do not pass one. */
-const DEFAULT_TIMEOUT_MS = 10 * 60_000;
+/** Per-git-call timeout when the caller does not pass one. */
+export const DEFAULT_COMMENT_TIMEOUT_MS = 10 * 60_000;
 
 const VALID_SHA_RE = /^[0-9a-f]{40}$/;
 /** Strict refname allowlist (no leading `-`) for non-SHA refs. */
@@ -82,10 +83,12 @@ function execExitCode(err: unknown): unknown {
 }
 
 /**
- * Read every file under `paths` at `ref` (one `git grep -e ""` read) and return
- * the set of trimmed line contents. Returns `undefined` when the read itself
- * fails. `git grep` exits 1 when nothing matches: that is an empty head tree
- * under `paths` only when the ref resolves; otherwise the read is unreadable.
+ * Read every file under `paths` at `ref` (one `git grep -e ""` read, not N
+ * per-file greps) and return the line contents present at that ref as a trimmed
+ * set (for the O(1) exact lookup). Returns `undefined` when the read itself
+ * fails (an infra error; callers render NOT CHECKED). `git grep` exits 1 when
+ * nothing matches: that is an empty head tree under `paths` only when the ref
+ * resolves; otherwise the read is unreadable.
  */
 async function readLinesAtRef(
   execFn: ExecFn,
@@ -121,7 +124,7 @@ async function readLinesAtRef(
     if (execExitCode(err) === 1 && (!ref || (await refResolves(execFn, cwd, ref, timeoutMs))))
       return new Set<string>();
     trace(
-      `comment-retention: readLinesAtRef failed at ${ref ?? "the worktree"}: ${(err as Error).message?.slice(0, 120) ?? "error"}`,
+      `comment-retention: readLinesAtRef failed at ${ref ?? "the worktree"}: ${errText(err).slice(0, 120)}`,
     );
     return undefined;
   }
@@ -185,50 +188,71 @@ async function confirmEmptyDiff(
   return { ok: true, lost: [], exempt: 0 };
 }
 
+/** Message of a caught value, whatever it is (an `Error`, a string, or junk). */
+export function errText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /**
- * Find comment lines removed between base and head that are neither retained
- * nor exempt. Uses a normal-context diff (not `-U0`) so comment blocks stay in
- * one hunk. Reads the head tree under `paths` ONCE, and only when a hunk
- * actually removed a comment line.
+ * Find comment lines removed between base and head that are not retained
+ * (their trimmed text reappears under `paths` at head) and not exempt (their
+ * nearest following removed code line is also gone). Two inputs: a range
+ * (`baseRef`..`headRef`, the develop gate and the lens review), or a diff STRING
+ * (the adversarial round), with `headRef` undefined meaning the WORKING TREE
+ * (the uncommitted /work diff). Uses a normal-context diff (not `-U0`) so
+ * multi-line comment blocks stay in one hunk. Reads the head tree under `paths`
+ * ONCE and searches in memory. `paths` scopes ALL THREE operations (the diff,
+ * the "still exists at head" search, and the exemption's code-reappearance
+ * check). Every ref and path is validated here, once, before any shell
+ * interpolation. Returns `ok: false` on a validation failure; callers that need
+ * a guarantee against exceptions use `checkComments`.
  */
 export async function findLostComments(
   execFn: ExecFn,
   cwd: string,
-  baseRef: string,
-  headRef: string,
+  baseRef: string | undefined,
+  headRef: string | undefined,
   paths: string[],
-  timeoutMs: number = DEFAULT_TIMEOUT_MS,
+  timeoutMs: number = DEFAULT_COMMENT_TIMEOUT_MS,
+  diff?: string,
 ): Promise<LostCommentResult> {
-  if (!isSafeRef(baseRef) || !isSafeRef(headRef)) {
-    return {
-      ok: false,
-      reason: `unsafe ref (${baseRef} / ${headRef}) — refusing shell interpolation`,
-    };
+  if (baseRef === undefined && diff === undefined) {
+    return { ok: false, reason: "no base ref or diff to check" };
+  }
+  if (baseRef !== undefined && !isSafeRef(baseRef)) {
+    return { ok: false, reason: `unsafe ref (${baseRef}) — refusing shell interpolation` };
+  }
+  if (headRef !== undefined && !isSafeRef(headRef)) {
+    return { ok: false, reason: `unsafe ref (${headRef}) — refusing shell interpolation` };
   }
   if (!isSafePathList(paths)) {
-    return {
-      ok: false,
-      reason: `unsafe path — refusing shell interpolation (${paths.join(", ").slice(0, 80)})`,
-    };
+    return { ok: false, reason: "unsafe path — refusing shell interpolation" };
+  }
+  if (diff !== undefined) {
+    if (!diff.trim()) return { ok: true, lost: [], exempt: 0 };
+    return classifyDiff(execFn, cwd, diff, headRef, paths, timeoutMs);
+  }
+  // Range mode: both ends are required. (`baseRef` is defined by the guard above.)
+  if (baseRef === undefined || headRef === undefined) {
+    return { ok: false, reason: "range check needs both a base and a head ref" };
   }
   const pathArg = paths.join(" ");
-
-  let diff: string;
+  let rangeDiff: string;
+  // 1. The diff (normal context, so comment blocks stay contiguous).
   try {
     const { stdout } = await execFn(`git diff ${baseRef}...${headRef} -- ${pathArg}`, {
       cwd,
       timeout: timeoutMs,
       maxBuffer: 16 * 1024 * 1024,
     });
-    diff = stdout;
+    rangeDiff = stdout;
   } catch (err) {
-    return {
-      ok: false,
-      reason: `git diff failed: ${(err as Error).message?.slice(0, 120) ?? "error"}`,
-    };
+    return { ok: false, reason: `git diff failed: ${errText(err).slice(0, 120)}` };
   }
-  if (!diff.trim()) return confirmEmptyDiff(execFn, cwd, baseRef, headRef, pathArg, timeoutMs);
-  return classifyDiff(execFn, cwd, diff, headRef, paths, timeoutMs);
+  if (!rangeDiff.trim()) {
+    return confirmEmptyDiff(execFn, cwd, baseRef, headRef, pathArg, timeoutMs);
+  }
+  return classifyDiff(execFn, cwd, rangeDiff, headRef, paths, timeoutMs);
 }
 
 /**
@@ -252,6 +276,7 @@ async function classifyDiff(
   );
   if (!removedComment) return { ok: true, lost: [], exempt: 0 };
 
+  // 2. Read the head tree under paths ONCE and search in memory.
   const headSet = await readLinesAtRef(execFn, cwd, headRef, paths, timeoutMs);
   if (headSet === undefined) {
     return {
@@ -259,8 +284,7 @@ async function classifyDiff(
       reason: `could not read head tree at ${headRef ?? "the worktree"} under ${paths.join(" ")}`,
     };
   }
-  // Built ONCE per check, not per lookup: the trailing-part scan walks it.
-  const headLines = [...headSet];
+  const headByLastToken = indexByLastToken(headSet);
   // Retained = the trimmed line reappears verbatim, or as the trailing part of
   // a head line (a comment moved to the end of a code line). A comment that
   // merely prefixes a longer comment at head is NOT retained.
@@ -270,8 +294,10 @@ async function classifyDiff(
     if (headSet.has(t)) return true;
     // Trailing-part retention needs a word-bearing tail: `}`, `*/` or `/**`
     // must not be "retained" by any head line that happens to end in them.
-    if (!hasWord(t)) return false;
-    return wordsOf(t).length >= 2 && headLines.some((l) => l.endsWith(t));
+    if (!hasWord(t) || wordsOf(t).length < 2) return false;
+    // A head line ending with `t` ends with `t`'s last token, so only those
+    // lines are candidates. Index built once above, not scanned per lookup.
+    return (headByLastToken.get(lastToken(t)) ?? []).some((l) => l.endsWith(t));
   };
 
   const lost: LostComment[] = [];
@@ -284,45 +310,41 @@ async function classifyDiff(
   return { ok: true, lost, exempt };
 }
 
-/**
- * Evidence for a diff STRING (the /work adversarial diff has no base...head
- * range to re-derive). Refs and paths are validated as in findLostComments.
- */
-export async function lostCommentsFromDiff(
-  execFn: ExecFn,
-  cwd: string,
-  diff: string,
-  headRef: string | undefined,
-  paths: string[],
-  timeoutMs: number = DEFAULT_TIMEOUT_MS,
-): Promise<LostCommentResult> {
-  if (headRef !== undefined && !isSafeRef(headRef)) {
-    return { ok: false, reason: `unsafe ref (${headRef}) — refusing shell interpolation` };
+/** The last whitespace-separated token of a (trimmed) line. */
+function lastToken(s: string): string {
+  return s.split(/\s/).pop() ?? "";
+}
+
+/** Head lines grouped by their last token: the only candidates a trailing-part lookup needs. */
+function indexByLastToken(lines: Set<string>): Map<string, string[]> {
+  const index = new Map<string, string[]>();
+  for (const l of lines) {
+    const k = lastToken(l);
+    const bucket = index.get(k);
+    if (bucket) bucket.push(l);
+    else index.set(k, [l]);
   }
-  if (!isSafePathList(paths)) {
-    return { ok: false, reason: "unsafe path — refusing shell interpolation" };
-  }
-  if (!diff.trim()) return { ok: true, lost: [], exempt: 0 };
-  return classifyDiff(execFn, cwd, diff, headRef, paths, timeoutMs);
+  return index;
 }
 
 /**
  * Never throws: any exception becomes `ok: false`, so a crashed check is shown
  * to the reviewers as NOT CHECKED rather than as a clean diff.
  */
-export async function checkDiffComments(
-  diff: string,
-  headRef: string | undefined,
+export async function checkComments(
+  execFn: ExecFn,
   cwd: string,
+  baseRef: string | undefined,
+  headRef: string | undefined,
+  paths: string[],
   timeoutMs: number,
-  execFn: ExecFn = makeExecFn(),
-  paths: string[] = COMMENT_RETENTION_PATHS,
+  diff?: string,
 ): Promise<LostCommentResult> {
   try {
-    return await lostCommentsFromDiff(execFn, cwd, diff, headRef, paths, timeoutMs);
+    return await findLostComments(execFn, cwd, baseRef, headRef, paths, timeoutMs, diff);
   } catch (err) {
-    const reason = (err as Error).message?.slice(0, 120) || "error";
-    trace(`comment-retention: checkDiffComments failed: ${reason}`);
+    const reason = errText(err).slice(0, 120) || "error";
+    trace(`comment-retention: check threw: ${reason}`);
     return { ok: false, reason: `check threw: ${reason}` };
   }
 }

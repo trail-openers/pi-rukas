@@ -276,8 +276,8 @@ function assert(cond: boolean, msg: string) {
     ),
   );
   assert(
-    line.startsWith("comments: not-run"),
-    "report (13): unreadable range → not-run, never a pass",
+    line.startsWith("comments: NOT CHECKED"),
+    "report (13): unreadable range → NOT CHECKED, never a pass",
   );
 }
 

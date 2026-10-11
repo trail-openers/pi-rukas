@@ -1,7 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { classifyDispatchOutcome } from "./adversarial-classify.ts";
-import { roundCommentCheck } from "./adversarial-comments.ts";
 import { buildLedgerNote } from "./adversarial-ledger-note.ts";
 import { writeAdversarialLedgerEntry } from "./adversarial-ledger.ts";
 import { buildAdversarialPrompt, buildFixPrompt } from "./adversarial-prompts.ts";
@@ -9,7 +8,7 @@ import { type InfraCtx, infraFailureResult, runPhaseWithInfraRetry } from "./adv
 import { decideLoopAction, parseVerdict, synthesizeResult } from "./adversarial-verdict.ts";
 import { childHandles, registerChildHandle } from "./async-jobs-registry.ts";
 import { markOrchestrator, setOrchestratorActiveChild, startJob } from "./async-jobs.ts";
-import { formatReportLine, renderCommentEvidence } from "./comment-evidence.ts";
+import { formatReportLine, renderCommentEvidence, roundComments } from "./comment-evidence.ts";
 import type { LostCommentResult } from "./comment-retention.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
@@ -122,6 +121,7 @@ export async function runAdversarialLoop(
     /** Optional when `base` + `head` are present (computed from the ref
      * range). When both `diff` and base/head are given, the string wins. */
     diff?: string;
+    /** #1040 — git timeout for the comment-loss check (the driver passes verifyTimeoutMs()). */ commentTimeoutMs?: number;
     /** #859 — the base ref the tool computes the diff from (with head). */
     base?: string;
     /** #859 — the head ref the tool computes the diff from (with base). */
@@ -358,7 +358,7 @@ export async function runAdversarialLoop(
         );
       }
     }
-    lastComments = await roundCommentCheck(diff, params.head, params.workCwd);
+    lastComments = await roundComments(diff, params.head, params.workCwd, params.commentTimeoutMs);
     const adv = await runPhaseWithInfraRetry(
       "adversarial-developer",
       `round${round}-review`,

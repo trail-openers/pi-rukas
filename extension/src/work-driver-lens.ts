@@ -1,6 +1,7 @@
 /** work-driver-lens — Step 7 (lens review) + Step 7f (lens-fix) handlers. */
 
 import { carriedAdversarialFindings } from "./adversarial-findings.ts";
+import { lensCommentBlock } from "./comment-evidence.ts";
 import { detectRepeatSeam } from "./detect-repeat-seam.ts";
 import { type WideningFinding, scanTypeWidening } from "./invariant-scan.ts";
 import { buildEvidence, runClaimScan } from "./lens-evidence.ts";
@@ -25,11 +26,11 @@ import {
   type RepositionResult,
   repositionLensFixWorktree,
 } from "./work-driver-lens-fix-reposition-gate.ts";
+import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import type { ExecFn } from "./worktree.ts";
 // Re-export: moved into work-driver-lens-fix-commit.ts for the 500-line gate
 // (AGENTS.md §12) — importers (work-driver-adversarial.ts) keep their path.
 export { commitLensFixChanges, countLensFixEmptyResends } from "./work-driver-lens-fix-commit.ts";
-import { lensCommentContext } from "./work-driver-lens-comments.ts";
 import { parkLensFixReposition } from "./work-driver-lens-fix-reposition-park.ts";
 import { applyLensVerdict } from "./work-driver-lens-verdicts.ts";
 import { parsePrNumber, runSingleDispatch } from "./work-driver-merged.ts";
@@ -122,7 +123,12 @@ export async function runLens(
   }
   // #1040 — comments the branch removed, for the SIMPLICITY lens (documentation)
   // to weigh. Lost comments never failed the develop step; this is their review.
-  context += await lensCommentContext(lensWorktree(ctx, state), ps.baseSha, ps.branchName);
+  context += await lensCommentBlock(
+    lensWorktree(ctx, state),
+    ps.baseSha,
+    ps.branchName,
+    verifyTimeoutMs(),
+  );
   if (wideningScanEnabled && widenings.length > 0) {
     const findingsSummary = widenings
       .map(

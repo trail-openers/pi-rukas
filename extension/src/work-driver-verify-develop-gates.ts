@@ -11,11 +11,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { formatLostComments } from "./comment-evidence.ts";
-import {
-  COMMENT_RETENTION_PATHS,
-  commentRetentionEnabled,
-  findLostComments,
-} from "./comment-retention.ts";
+import { checkComments, commentRetentionEnabled } from "./comment-retention.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import {
   TEST_BLOCK_MARKERS,
@@ -37,16 +33,17 @@ function isValidSha(s: string | undefined) {
 }
 
 /**
- * The #948 comment-retention gate. A removed comment line whose text does not
- * survive under `paths` at the workstream's head is LOST — recorded as a NOTE
- * listing each line (with the added comment lines of its hunk as context) for
- * the adversarial reviewer and the six-lens review to judge (#1040). Lost
- * comments never fail the develop step. Runs PER-WORKTREE against each
- * workstream's effective base, mirroring `runFalsilyGreenCheck`. A git error or
- * an unreadable tree degrades to a NOTE. `PI_ENSEMBLE_COMMENT_RETENTION=0`
- * disables the check and emits a note instead.
+ * The #948 comment-loss check, as evidence for the reviewers (#1040). A removed
+ * comment line whose trimmed text does not reappear under `paths` at the
+ * workstream's head is "lost" (the developer deleted it to shrink the file):
+ * listed in a NOTE (with the added comment lines of its hunk as context) for the
+ * adversarial reviewer and the six-lens review to judge. It never fails the
+ * develop step and cannot throw. Runs PER-WORKTREE against each workstream's
+ * effective base, mirroring `runFalsilyGreenCheck`. A git error or an unreadable
+ * tree reads `NOT CHECKED (<reason>)` (infra errors are never failures).
+ * `PI_ENSEMBLE_COMMENT_RETENTION=0` disables the check and emits a note instead.
  */
-export async function runCommentRetentionGate(
+export async function collectCommentEvidence(
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
   effectiveBaseFor: (wsId: string) => string | undefined,
   worktrees: Map<string, string>,
@@ -54,15 +51,18 @@ export async function runCommentRetentionGate(
   notes: string[],
 ): Promise<void> {
   if (!commentRetentionEnabled()) {
-    notes.push("PI_ENSEMBLE_COMMENT_RETENTION=0 — comment-retention gate disabled");
+    notes.push("comment-retention: NOT CHECKED (PI_ENSEMBLE_COMMENT_RETENTION=0)");
     return;
   }
   for (const [id, cwd] of worktrees) {
     const baseRef = effectiveBaseFor(id);
-    if (!baseRef) continue; // no base ref → cannot diff; skip this worktree
-    const res = await findLostComments(execFn, cwd, baseRef, "HEAD", paths, verifyTimeoutMs());
+    if (!baseRef) {
+      notes.push(`comment-retention: NOT CHECKED (no base ref for workstream ${id}) in ${cwd}`);
+      continue;
+    }
+    const res = await checkComments(execFn, cwd, baseRef, "HEAD", paths, verifyTimeoutMs());
     if (!res.ok) {
-      notes.push(`comment-retention: diff unavailable in ${cwd} (${res.reason}) — gate skipped`);
+      notes.push(`comment-retention: NOT CHECKED (${res.reason}) in ${cwd}`);
       continue;
     }
     if (res.lost.length > 0) notes.push(formatLostComments(res));

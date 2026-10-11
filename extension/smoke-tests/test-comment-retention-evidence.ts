@@ -64,9 +64,10 @@ mock.module(new URL("../src/async-jobs-registry.ts", import.meta.url).href, () =
 }));
 
 const { runAdversarialLoop } = await import("../src/adversarial.ts");
-const { checkDiffComments } = await import("../src/comment-retention.ts");
+const { checkComments, makeExecFn } = await import("../src/comment-retention.ts");
+const exec = makeExecFn();
 const { renderCommentEvidence } = await import("../src/comment-evidence.ts");
-const { lensCommentContext } = await import("../src/work-driver-lens-comments.ts");
+const { lensCommentBlock } = await import("../src/comment-evidence.ts");
 
 const dir = mkdtempSync(path.join(os.tmpdir(), "ev-1040-"));
 const git = (...args: string[]) =>
@@ -124,7 +125,7 @@ try {
 
   // Helper edges: an empty or clean diff yields no section.
   assert(
-    renderCommentEvidence(await checkDiffComments("", undefined, dir, 5000)) === "",
+    renderCommentEvidence(await checkComments(exec, dir, undefined, undefined, ["src"], 5000, "")) === "",
     "empty diff → no section",
   );
 
@@ -150,15 +151,16 @@ try {
   );
 
   // (e) a check that throws is NOT CHECKED, not clean. A non-array `paths`
-  // makes the validator throw inside checkDiffComments.
+  // makes the validator throw inside checkComments.
   const badPaths: unknown = null;
-  const thrown = await checkDiffComments(
-    diff,
-    undefined,
+  const thrown = await checkComments(
+    exec,
     dir,
-    5000,
+    undefined,
     undefined,
     badPaths as string[],
+    5000,
+    diff,
   );
   assert(
     !thrown.ok && renderCommentEvidence(thrown).includes("NOT CHECKED (check threw"),
@@ -166,7 +168,7 @@ try {
   );
 
   // (f) the lens context: no baseSha → NOT CHECKED, never silence.
-  const lensMissing = await lensCommentContext(dir, undefined, "feature/x");
+  const lensMissing = await lensCommentBlock(dir, undefined, "feature/x", 5000);
   assert(
     lensMissing.includes("NOT CHECKED (missing baseSha or branchName)"),
     "(f) lens without baseSha → NOT CHECKED, never silence",

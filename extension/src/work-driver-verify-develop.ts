@@ -28,7 +28,7 @@ import {
   verifyCmdFor,
 } from "./work-driver-verify-cmd.ts";
 import {
-  runCommentRetentionGate,
+  collectCommentEvidence,
   runSkipRatchetGate,
   runSmokeGate,
 } from "./work-driver-verify-develop-gates.ts";
@@ -385,7 +385,7 @@ export async function verifyDevelopOutcome(
   await runSkipRatchetGate(execFn, ctx.repoRoot, baseSha, changedWorktrees, failures, notes);
   // #948 — comment-retention gate. Threaded like runFalsilyGreenCheck: per
   // worktree, against that workstream's effective base.
-  await runCommentRetentionGate(
+  await collectCommentEvidence(
     execFn,
     effectiveBaseFor,
     new Map(Object.entries(worktrees)),

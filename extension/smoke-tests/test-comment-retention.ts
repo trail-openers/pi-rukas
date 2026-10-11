@@ -21,7 +21,7 @@ import path from "node:path";
 import { formatLostComments, formatReportLine } from "../src/comment-evidence.ts";
 import { findLostComments } from "../src/comment-retention.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import { runCommentRetentionGate } from "../src/work-driver-verify-develop-gates.ts";
+import { collectCommentEvidence } from "../src/work-driver-verify-develop-gates.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
 import {
@@ -236,7 +236,7 @@ async function developGate(
     );
     const failures: string[] = [];
     const notes: string[] = [];
-    await runCommentRetentionGate(
+    await collectCommentEvidence(
       realExec,
       () => base,
       new Map<string, string>([["default", dirH0]]),
