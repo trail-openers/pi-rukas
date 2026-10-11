@@ -67,7 +67,7 @@ import { trace } from "./trace.ts";
  * corrected `bun run build`, not the non-existent `bun build`). Each entry
  * is the full bare token sequence as it appears at the START of a command.
  */
-const OO_PREFIXES = [
+export const OO_PREFIXES = [
   "pytest",
   "cargo test",
   "cargo clippy",
