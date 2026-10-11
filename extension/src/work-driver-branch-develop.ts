@@ -12,6 +12,7 @@ import { trace } from "./trace.ts";
 import { BranchAheadError, mechanizedBranchSetup } from "./work-driver-branch-mechanized.ts";
 import { parseWorktreesBlock, runBranchViaOpsDispatch } from "./work-driver-branch-ops.ts";
 import { runBranchResiduePass } from "./work-driver-branch-residue.ts";
+import { recordCycleStartRef } from "./work-driver-git.ts";
 
 export { parseWorktreesBlock };
 import type { DriverContext } from "./work-driver-context.ts";
@@ -49,9 +50,13 @@ const execp = promisify(exec);
  */
 export async function runBranch(
   ctx: DriverContext,
-  incoming: WorkState,
+  incomingRaw: WorkState,
   now: number,
 ): Promise<WorkState> {
+  // #1093 — stamp the checkout the cycle started on BEFORE the residue pass,
+  // mechanized setup or ops fallback can move repoRoot. Written once; a resumed
+  // cycle keeps the ref its first run captured.
+  const incoming = await recordCycleStartRef(ctx.verifyExecFn ?? execp, ctx.repoRoot, incomingRaw);
   const workstreamIds = Object.keys(incoming.pipelineState.workstreams ?? {});
   // Reassigned only when the mechanized path falls back, to carry its
   // plumb-report into the ops dispatch below.

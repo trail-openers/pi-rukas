@@ -412,6 +412,15 @@ export interface PipelineState {
    */
   baseSha?: string;
   /**
+   * #1093 — the ref repoRoot held when the cycle began: the branch name, or
+   * the SHA when the operator was detached. Stamped once by the branch step,
+   * BEFORE anything can move the checkout (a resumed cycle keeps it). Every
+   * restore returns the operator's checkout here — not to mainline, and not
+   * to whatever the cycle left checked out. Absent on pre-#1093 state files;
+   * restore paths then fall back to their previous targets.
+   */
+  startRef?: string;
+  /**
    * #453 — per-workstream applied SHAs for crash-safe resume. Maps
    * workstream id → SHA cherry-picked onto the integration branch; updated as
    * each lands. On crash-resume, matching id+sha entries are skipped. Absent

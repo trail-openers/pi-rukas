@@ -173,6 +173,56 @@ export async function verifiedRestoreRootWithClaim(
 }
 
 /**
+ * #1093 — the non-forcing restore for a SUCCESSFUL consolidation: check
+ * `ref` out at repoRoot with a plain `git checkout` (no reset, no --force).
+ * A refusal leaves the tree exactly as it is and returns `restored: false`
+ * with the exact command the operator runs by hand. The post-condition read
+ * is the same as `verifiedRestoreRoot`'s, so "restored" is only ever claimed
+ * when the checkout succeeded and no tracked dirt remains.
+ */
+export async function restoreRootToRef(
+  execFn: ExecFn,
+  opts: { repoRoot: string; ref: string; label: string },
+): Promise<VerifiedRestoreResult> {
+  const { repoRoot, ref, label } = opts;
+  const cmd = `git checkout ${JSON.stringify(ref)}`;
+  try {
+    await execFn(cmd, { cwd: repoRoot, maxBuffer: 256 * 1024 });
+  } catch (err) {
+    const msg = (err as Error).message?.slice(0, 160);
+    trace(`work-driver: ${label} \u2014 ${cmd} refused: ${msg}`);
+    return {
+      restored: false,
+      detail: `${cmd} refused (${msg}); the tree was left as it is \u2014 run \`${cmd}\` at the repo root once it is clean`,
+    };
+  }
+  try {
+    const { stdout } = await execFn("git status --porcelain", {
+      cwd: repoRoot,
+      maxBuffer: 1024 * 1024,
+    });
+    const dirt = stdout
+      .split("\n")
+      .filter((l) => l.trim() && !l.startsWith("??") && !/^..\s+"?\.worktrees\//.test(l));
+    if (dirt.length > 0) {
+      return {
+        restored: false,
+        detail: `${cmd} succeeded but tracked changes remain (${dirt
+          .slice(0, 5)
+          .map((l) => l.slice(3))
+          .join(", ")}); nothing was reset \u2014 run \`git status\` at the repo root`,
+      };
+    }
+  } catch (err) {
+    return {
+      restored: false,
+      detail: `could not verify the tree after ${cmd} (${(err as Error).message?.slice(0, 160)})`,
+    };
+  }
+  return { restored: true };
+}
+
+/**
  * Restore repoRoot to `originalRef` after a consolidation abort, and VERIFY
  * it. Never throws: a failed restore is returned as `{ restored: false,
  * detail }` so the caller emits the loud, explicit failure (see

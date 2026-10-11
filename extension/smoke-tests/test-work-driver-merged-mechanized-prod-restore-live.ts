@@ -103,6 +103,10 @@ try {
   git(`update-ref refs/remotes/${mainline} ${git("rev-parse HEAD")}`);
   git(`symbolic-ref refs/remotes/origin/HEAD refs/remotes/${mainline}`);
 
+  // The local branch the cycle STARTED on (the clone's default branch) —
+  // the start ref the restore must return to (#1093).
+  const startRef = git("rev-parse --abbrev-ref HEAD");
+
   // The cycle's feature branch: a divergent commit, checked out — the
   // checkout state a real merge leaves behind.
   const featureBranch = "feature/issue-476-live";
@@ -118,6 +122,10 @@ try {
     lastCompletedStep: "ci",
     branchName: featureBranch,
     prNumber,
+    // #1093 — the restore must return to the start ref recorded when the
+    // cycle began (here the clone's default branch). A feature-branch or
+    // detached start is covered by test-work-driver-restore-start-ref.ts.
+    startRef,
   };
   const state = s as WorkState;
 
@@ -149,8 +157,8 @@ try {
   // feature branch back to the mainline.
   const headAfter = git("rev-parse --abbrev-ref HEAD");
   assert(
-    headAfter === mainline,
-    `#476 live: restoration moved the checkout from feature branch to mainline (HEAD=${headAfter})`,
+    headAfter === startRef,
+    `#476 live: restoration returned the checkout from the feature branch to the cycle-start ref (HEAD=${headAfter}, startRef=${startRef})`,
   );
 
   // branch -d refused (divergent commit — the live stand-in for the

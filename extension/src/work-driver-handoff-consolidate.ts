@@ -49,11 +49,13 @@ import { type ForgeDetection, detectForge } from "./forge-detect.ts";
 import { createForge } from "./forge.ts";
 import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
+import { captureCycleStartRef } from "./work-driver-git.ts";
 import { reconcileHandoffConsolidateBranch } from "./work-driver-handoff-consolidate-branch.ts";
 import { deriveConsolidationSubject } from "./work-driver-handoff-subject.ts";
 import { withIntegrationLock } from "./work-driver-integrate.ts";
 import {
   restoreClaim,
+  restoreRootToRef,
   verifiedRestoreRoot,
   verifiedRestoreRootWithClaim,
 } from "./work-driver-restore.ts";
@@ -220,19 +222,10 @@ export async function consolidateWorktreesToBranch(
             .join(", ")}`,
         };
       }
-      originalRef = await execFn("git symbolic-ref --quiet --short HEAD", {
-        cwd: ctx.repoRoot,
-        maxBuffer: 64 * 1024,
-      })
-        .then((r) => r.stdout.trim())
-        .catch(async () =>
-          (
-            await execFn("git rev-parse HEAD", {
-              cwd: ctx.repoRoot,
-              maxBuffer: 64 * 1024,
-            })
-          ).stdout.trim(),
-        );
+      // #1093 — the cycle-start ref the branch step recorded wins. Capturing
+      // here would read whatever the branch step left checked out (the feature
+      // branch), which restored the operator's root to the wrong branch.
+      originalRef = ps.startRef ?? (await captureCycleStartRef(execFn, ctx.repoRoot));
       // #844 — PM decision 1: the single-predicate stale-branch
       // reconciliation for the follow-up mode (a plain `git checkout
       // <branch>` below would cherry-pick onto whatever tip the existing
@@ -391,13 +384,14 @@ export async function consolidateWorktreesToBranch(
       // detached SHA — and a SHA for a detached operator, which detaches
       // back to that same SHA. The `?? ps.baseSha ?? "HEAD"` tiers are
       // defensive only: originalRef is always set once we are this far.
-      const { claim } = await verifiedRestoreRootWithClaim(execFn, {
+      // #1093 — the success path never forces: a refused checkout leaves the
+      // tree alone and the claim carries the exact command to run by hand.
+      const restore = await restoreRootToRef(execFn, {
         repoRoot: ctx.repoRoot,
-        originalRef: originalRef ?? ps.baseSha ?? "HEAD",
-        scratchDir: ctx.scratchDir,
+        ref: originalRef ?? ps.baseSha ?? "HEAD",
         label: "handoff consolidation",
-        trailing: "run git status at the repo root",
       });
+      const claim = restoreClaim(restore, undefined, "run git status at the repo root");
       return { ok: true as const, branchName, workstreams: applied, restoreClaim: claim };
     });
     if (result.ok) {
