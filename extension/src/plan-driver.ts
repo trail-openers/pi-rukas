@@ -327,8 +327,10 @@ export async function runPlanPipeline(
     });
   }
 
-  // Phase 4 — gap gate: bug/feature/epic only; chore/spike rely on the
-  // deterministic validation above (operator decision 2026-09-09, no env knob).
+  // Phase 4 — gap gate: bug/feature/epic only. Chore/spike are
+  // low-blast-radius and their gate is the deterministic validation above —
+  // no env knob (operator decision 2026-09-09: fewer knobs, better
+  // defaults; this also removes run-to-run gate variance for those types).
   const gapGateEnabled = type !== "chore" && type !== "spike";
   let gaps: PlanGap[] = [];
   let capHit = false;
