@@ -309,12 +309,7 @@ export interface GapGateLoopResult {
 export type GapGateDispatch = (
   spec: { role: string; prompt: string },
   opts?: { label: string },
-) => Promise<{
-  ok: boolean;
-  errorStop?: unknown;
-  text: string;
-  toolUses: unknown[];
-}>;
+) => Promise<{ ok: boolean; errorStop?: unknown; text: string; toolUses: unknown[] }>;
 
 export async function runGapGateLoop(
   dispatch: GapGateDispatch,

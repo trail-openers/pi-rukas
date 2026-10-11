@@ -256,6 +256,21 @@ assert(
   "an entry past the 2h expiry misses and re-runs the barrier",
 );
 
+// ------------------------------------------------------------- schema-drifted entry is a miss
+
+await newCache();
+installDispatch([GAP_HIGH]);
+await pipeline({ dryRun: true });
+await mutateEntry((e) => {
+  e.barrier.neverClaimDisclosure = undefined; // JSON drops it on write
+});
+installDispatch([GAP_HIGH]);
+const drifted = await pipeline();
+assert(
+  log.explore > 0 && drifted.investigationReused === undefined,
+  "an entry missing a barrier field is a miss, not a crash",
+);
+
 // ------------------------------------------------------------- cached duplicate-risk HIGH halts
 
 await newCache();

@@ -452,7 +452,7 @@ export async function runPlanPipeline(
     await writeInvestigationCache(gitState.cacheDir, cacheInputs, {
       inventory: inv,
       barrier,
-      gaps: [...residualForDisclosure, ...resolvedGaps],
+      gaps: resolvedGaps,
     });
   }
 

@@ -100,12 +100,7 @@ export function registerPlanTool(pi: ExtensionAPI) {
       };
       if (!params.descriptor || params.descriptor.trim().length === 0) {
         return {
-          content: [
-            {
-              type: "text",
-              text: "start_plan_driver requires a non-empty descriptor.",
-            },
-          ],
+          content: [{ type: "text", text: "start_plan_driver requires a non-empty descriptor." }],
           details: { started: false },
         };
       }

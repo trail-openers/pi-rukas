@@ -121,6 +121,11 @@ function isEntry(x: unknown): x is InvestigationCacheEntry {
     typeof e.inventory === "object" &&
     !!e.barrier &&
     Array.isArray(e.barrier.findings) &&
+    Array.isArray(e.barrier.neverClaimDisclosure) &&
+    (e.barrier.duplicateRisk === undefined ||
+      (typeof e.barrier.duplicateRisk === "object" &&
+        typeof e.barrier.duplicateRisk.level === "string" &&
+        typeof e.barrier.duplicateRisk.rationale === "string")) &&
     Array.isArray(e.gaps)
   );
 }
