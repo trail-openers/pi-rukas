@@ -62,10 +62,10 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 // #1019 — the shared "Last verified against pi" parser now lives in
 // pi-binary-resolve.ts (which needs it for the version warning); the drift
-// gate imports it so the regex exists in exactly one place. Re-exported so
-// the gate's public surface is unchanged.
-import { parseVerifiedLine } from "../src/pi-binary-resolve.ts";
-export { parseVerifiedLine };
+// gate imports it so the regex exists in exactly one place.
+// (#1038: the parser moved to pi-doc-parsing.ts, so the version warning and
+// this gate share it without a pi-binary-resolve ↔ probe import cycle.)
+import { parseVerifiedLine } from "../src/pi-doc-parsing.ts";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const FIXTURES = path.resolve(import.meta.dirname, "fixtures", "prerequisite-drift");

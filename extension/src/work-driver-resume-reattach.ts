@@ -11,7 +11,7 @@
 import { spawn } from "node:child_process";
 import { notifyAgent } from "./agent-message.ts";
 import { emitStepCompleted } from "./lifecycle-events.ts";
-import { getPiInvocation, looksLikePiCli } from "./pi-binary-resolve.ts";
+import { getPiInvocation } from "./pi-binary-resolve.ts";
 import { attachStdinErrorGuard } from "./stdin-guard.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";

@@ -245,27 +245,37 @@ const SEAMS: Seam[] = [
       // default-package branch is wired through resolvePiBinarySync.
       looksLikePiCli: "shared Pi CLI path predicate; exercised by test-pi-binary-resolve.ts",
       parsePiVersion: "the --version output parser; exercised by test-pi-binary-resolve.ts",
-      isVersionOlder: "the version comparator; exercised by test-pi-binary-resolve.ts",
-      getPiInvocation:
-        "called by work-driver-resume-reattach.ts as well; exercised by test-pi-binary-resolve.ts",
       resolvePackageBin:
         "the injected-path overload is test-asserted; the default branch is wired via resolvePiBinarySync",
       resolvePiBinarySync:
-        "the sync resolver; wired via getPiInvocation and kickPiResolutionProbe; also directly test-asserted",
-      getPiResolutionInfo:
-        "the full resolution + probe; called by kickPiResolutionProbe in this module; also directly test-asserted",
-      probePiVersion:
-        "the async probe; wired via getPiResolutionInfo (kickPiResolutionProbe); also directly test-asserted",
-      kickPiResolutionProbe:
-        "the fire-and-forget kick; imported and called by spawn.ts (first spawn); also directly test-asserted",
-      _resetPiResolutionProbeFlag:
-        "test-only once-flag reset; exercised by test-pi-binary-resolve.ts",
-      parseVerifiedLine:
-        "the shared verified-line parser; exercised by test-pi-version-drift.ts (imported from here)",
-      _resetPiBinaryCache: "test-only cache reset; exercised by test-pi-binary-resolve.ts",
-      _resetVerifiedVersionCache: "test-only cache reset; exercised by test-pi-binary-resolve.ts",
+        "the sync resolver; wired via getPiInvocation; also directly test-asserted",
+    },
+    canary: { symbol: "getPiInvocation", importer: "work-driver-resume-reattach.ts" },
+  },
+  {
+    // #1038 — the version probe split out of pi-binary-resolve.ts. The fire-and-
+    // forget kick stays wired from spawn.ts (first spawn in a process).
+    file: "pi-version-probe.ts",
+    pending: {},
+    testOnly: {
+      probePiVersion: "the async probe; wired via getPiResolutionInfo; also directly test-asserted",
+      getPiResolutionInfo: "the full resolution + probe; also directly test-asserted",
+      isVersionOlder: "the version comparator; exercised by test-pi-binary-resolve.ts",
+      _resetPiVersionProbe:
+        "composed test-only reset (probe + binary cache); exercised by test-pi-binary-hardening.ts",
+      getVerifiedVersion:
+        "the doc-derived verified version; exercised by test-pi-binary-resolve.ts",
     },
     canary: { symbol: "kickPiResolutionProbe", importer: "spawn.ts" },
+  },
+  {
+    // The shared verified-line parser, imported by the version probe and the drift gate.
+    file: "pi-doc-parsing.ts",
+    pending: {},
+    testOnly: {
+      parseVerifiedLine: "the shared verified-line parser; exercised by test-pi-version-drift.ts",
+    },
+    canary: { symbol: "parseVerifiedLine", importer: "pi-version-probe.ts" },
   },
 ];
 
