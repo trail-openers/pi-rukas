@@ -143,8 +143,8 @@ export async function runPlanPipeline(
   // authority (D2) — come FIRST; vipune snapshots are the droppable tail.
   // #1043 — a filing run whose inputs and git HEAD match a confirmed dry run
   // reuses that dry run's inventory + investigation barrier (within the expiry).
-  // A dry run never reads the cache: it is the thing being confirmed. On a miss
-  // the gap gate is seeded with the prior dry run's gaps as settled.
+  // A dry run never reads the cache: it is the thing being confirmed. The gap
+  // gate is ALWAYS re-run, seeded with the prior dry run's gaps as settled.
   const gitState = await resolvePlanGitState(repoRoot);
   const cacheInputs = gitState ? { descriptor, context, type, head: gitState.head } : undefined;
   const reused =
@@ -152,7 +152,7 @@ export async function runPlanPipeline(
       ? await readInvestigationCache(gitState.cacheDir, cacheInputs)
       : undefined;
   const settled: PlanGap[] =
-    gitState && cacheInputs && !reused ? await readSettledGaps(gitState.cacheDir, cacheInputs) : [];
+    gitState && cacheInputs ? await readSettledGaps(gitState.cacheDir, cacheInputs) : [];
 
   const inv = reused
     ? reused.cached.inventory

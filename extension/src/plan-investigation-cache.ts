@@ -10,9 +10,12 @@
  * expiry, reuses them. Drafting, validation and the gap gate ALWAYS re-run —
  * the gate verdict is the part whose freshness matters most.
  *
- * The same file also carries the dry run's gap-gate findings. On a cache MISS
- * the gate is seeded with them as "already settled" (plan-gaps.ts), so a
- * re-review does not re-raise what the operator already saw.
+ * The same file also carries the dry run's gap-gate findings. The gate is
+ * seeded with them as "already settled" (plan-gaps.ts) on hit and miss alike,
+ * so a re-review does not re-raise what the operator already saw.
+ *
+ * Staleness is keyed on git HEAD only. Uncommitted working-tree edits are NOT
+ * part of the key; the result says so (plan-tool.ts).
  *
  * Storage: one file per lineage (descriptor + context + type) under the clone's
  * git common dir (`<common-dir>/pi-plan-cache/`), so it is never tracked. The

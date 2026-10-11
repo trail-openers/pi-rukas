@@ -5,8 +5,8 @@
  * A confirmed dry run reuses its inventory + investigation barrier when the
  * descriptor, context, type and git HEAD are unchanged and the entry is
  * inside the expiry. Drafting, validation and the gap gate ALWAYS re-run;
- * the gate is seeded with the prior dry run's gaps as "already settled" on a
- * miss. Covered: hit reuse, HEAD / context / type / expiry misses, the key's
+ * the gate is seeded with the prior dry run's gaps as "already settled".
+ * Covered: hit reuse, HEAD / context / type / expiry misses, the key's
  * sensitivity to each input, a cached duplicate-risk HIGH still halting, a
  * halted dry run writing nothing, and the reuse statement in the rendered
  * result.
@@ -169,7 +169,10 @@ assert(
   "confirming run reports the reuse with the dry run's age",
 );
 assert(conf.filed, "confirming run files the reviewed spec");
-assert(!gatePrompts.some((p) => p.includes("ALREADY SETTLED")), "a cache hit never seeds the gate");
+assert(
+  (gatePrompts[0] ?? "").includes("ALREADY SETTLED"),
+  "a cache hit seeds the gate with the dry run's settled gaps",
+);
 assert(conf.spec.includes("the tool registers"), "drafted body is built from the cached findings");
 assert(!conf.timings?.some((t) => t.phase === "inventory"), "inventory is not re-run on a hit");
 assert(forgeStub.created.length >= 1, "filing still goes through the forge");
@@ -319,6 +322,10 @@ assert((await cacheFiles()).length === 0, "a halted dry run writes no cache entr
   assert(
     hit.text.includes("INVESTIGATION REUSED"),
     "a reused investigation is stated in the rendered result",
+  );
+  assert(
+    hit.text.includes("working tree was NOT compared"),
+    "a reused investigation states that the working tree was not compared",
   );
   assert(
     hit.details.investigationReused !== undefined,
