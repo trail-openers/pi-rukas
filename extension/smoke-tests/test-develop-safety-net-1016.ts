@@ -99,18 +99,22 @@ try {
     multi: true,
     runAt: async (id) => ({ id, ok: id === "task-a" }),
     // A second save needs its own path: the first patch exists, and a save never overwrites.
-    resetFor: (id) =>
-      resetWorktreeToBase(execFn, wt(id), shas[id], {
+    resetFor: async (id) => ({
+      attempt: 2,
+      patch: await resetWorktreeToBase(execFn, wt(id), shas[id], {
         repoRoot: dir,
         patchPath: path.join(dir, "tmp", "issue-1", `retry-${id}-2.patch`),
       }),
+    }),
     notes,
   });
   const c = res.find((v) => v.id === "task-c");
   assert(c !== undefined && !c.ok, "#1016: task-c's retry runs and its second failure stands");
   assert(
     notes.some(
-      (n) => n.startsWith("task-c: partial work saved to") && n.includes("retry-task-c-2.patch"),
+      (n) =>
+        n.startsWith("task-c: retry attempt 2: partial work saved to") &&
+        n.includes("retry-task-c-2.patch"),
     ),
     "#1016: the handoff note names the saved patch path",
   );

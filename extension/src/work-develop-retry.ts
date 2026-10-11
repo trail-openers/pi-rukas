@@ -18,11 +18,12 @@ import {
   commitsAheadOfBase,
   errText,
   isValidBaseSha,
+  nextRetryAttempt,
   resetWorktreeToBase,
   retryPatchPath,
   runGit,
 } from "./work-develop-git.ts";
-import { GREEN_DOWNGRADE } from "./work-develop-greens.ts";
+import { downgradeReason } from "./work-develop-greens.ts";
 import type { RawVerdict } from "./work-develop-verdict-source.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 import { appendEvent, writeState } from "./workflow-state.ts";
@@ -105,11 +106,13 @@ export function withPersistNotes(state: WorkState, notes: string[]): WorkState {
 }
 
 /** #1016 — persist a commitless green's downgrade. The log (and any crash-resume)
- *  must not keep the ok:true that runOneWorkstream already emitted for it. */
+ *  must not keep the ok:true that runOneWorkstream already emitted for it. The
+ *  typed `downgrade` flag is the representation; the reason text comes from
+ *  `downgradeReason(detail)`. */
 export function recordDowngrade(
   persister: { emit: (ev: WorkEvent) => void },
   id: string,
-  reason: string,
+  detail?: string,
 ): void {
   persister.emit({
     kind: "branch-completed",
@@ -118,7 +121,7 @@ export function recordDowngrade(
     ok: false,
     ms: 0,
     at: Date.now(),
-    error: reason,
+    error: downgradeReason(detail),
     downgrade: true,
   });
 }
@@ -128,23 +131,21 @@ export function recordDowngrade(
  *  attempt alike. An invalid base or an unreadable check fails it: nothing is
  *  trusted without a readable commit count. A failed preserved green is
  *  re-run, not kept. The develop step runs the #622 safety net per worktree
- *  BEFORE this check, so a developer's uncommitted edits are already commits. */
+ *  BEFORE this check, so a developer's uncommitted edits are already commits.
+ *  `detail` is set only when the check could not be read (see downgradeReason). */
 export async function greenCountsAsWork(
   execFn: ExecFn,
   cwd: string,
   base: string | undefined,
-): Promise<{ counts: boolean; reason?: string }> {
+): Promise<{ counts: boolean; detail?: string }> {
   if (!isValidBaseSha(base)) {
-    return { counts: false, reason: `${GREEN_DOWNGRADE}: no valid base sha` };
+    return { counts: false, detail: "no valid base sha" };
   }
   const ahead = await commitsAheadOfBase(runGit(execFn), cwd, base);
   if ("unreadable" in ahead) {
-    return {
-      counts: false,
-      reason: `${GREEN_DOWNGRADE}: commit check unreadable — ${ahead.unreadable}`,
-    };
+    return { counts: false, detail: `commit check unreadable — ${ahead.unreadable}` };
   }
-  return ahead.commits > 0 ? { counts: true } : { counts: false, reason: GREEN_DOWNGRADE };
+  return ahead.commits > 0 ? { counts: true } : { counts: false };
 }
 
 /** #1016 — the crash-resume greens that still count as work. A preserved green
@@ -167,35 +168,39 @@ export async function trustedPreservedGreens(
     }
     const r = await greenCountsAsWork(ctx.execFn, cwd, ctx.baseFor(id));
     if (r.counts) out.kept.add(id);
-    else out.notes.push(`${id}: preserved green not kept — ${r.reason}`);
+    else out.notes.push(`${id}: preserved green not kept — ${downgradeReason(r.detail)}`);
   }
   return out;
 }
 
+/** #1016 — what a retry's reset reports: the attempt number it saved under and
+ *  the patch path when partial work was saved (undefined when there was none). */
+export interface ResetOutcome {
+  attempt: number;
+  patch?: string;
+}
+
 /** #1016 — the retry's reset for one workstream: saves its partial work to
- *  `<scratchAbs>/retry-<id>-1.patch`, then resets (fail closed: a refused save
- *  or reset rejects, and that workstream is not re-run). */
+ *  `<scratchAbs>/retry-<id>-<attempt>.patch`, where the attempt is the next
+ *  free number in the scratch dir, then resets (fail closed: a refused save or
+ *  reset rejects, and that workstream is not re-run). */
 export function retryResetFor(args: {
   execFn: ExecFn;
   repoRoot: string;
   scratchAbs: string;
   cwdFor: (id: string) => string | undefined;
   baseFor: (id: string) => string | undefined;
-}): (id: string) => Promise<string | undefined> {
-  return (id) => {
+}): (id: string) => Promise<ResetOutcome> {
+  return async (id) => {
     const cwd = args.cwdFor(id);
-    if (typeof cwd !== "string") return Promise.reject(new Error(`${id}: no worktree to reset`));
-    let patchPath: string;
-    try {
-      // A fresh stamp: a later pass in the same cycle never collides with this save.
-      patchPath = retryPatchPath(args.scratchAbs, id, Date.now());
-    } catch (err) {
-      return Promise.reject(err);
-    }
-    return resetWorktreeToBase(runGit(args.execFn), cwd, args.baseFor(id), {
+    if (typeof cwd !== "string") throw new Error(`${id}: no worktree to reset`);
+    const attempt = await nextRetryAttempt(args.scratchAbs, id);
+    const patchPath = retryPatchPath(args.scratchAbs, id, attempt);
+    const patch = await resetWorktreeToBase(runGit(args.execFn), cwd, args.baseFor(id), {
       repoRoot: args.repoRoot,
       patchPath,
     });
+    return { attempt, patch };
   };
 }
 
@@ -204,14 +209,15 @@ export function retryResetFor(args: {
  *  worktree reset. Workstreams in `skip` (no worktree) were already failed by
  *  the caller. `verdicts` is the pre-fan-out snapshot and is NOT mutated; the
  *  return value is the complete final verdict list, which the caller adopts
- *  as-is. `resetFor` returns the saved-patch path when partial work was saved;
- *  each saved patch is recorded in `notes`. */
+ *  as-is. `resetFor` reports the attempt and the saved patch (when partial work
+ *  was saved); each save is recorded in `notes`. Resets run one at a time; the
+ *  retry dispatches then run in parallel. */
 export async function runIndependentFanout(args: {
   independent: string[];
   preserved: ReadonlySet<string>;
   skip: string[];
   runAt: (id: string) => Promise<FanoutVerdict>;
-  resetFor: (id: string) => Promise<string | undefined>;
+  resetFor: (id: string) => Promise<ResetOutcome>;
   verdicts: readonly FanoutVerdict[];
   multi: boolean;
   notes?: string[];
@@ -242,18 +248,20 @@ export async function runIndependentFanout(args: {
     // uncontended. A reset that refuses (commits ahead, unreadable check, bad
     // base, path outside .worktrees, unsaved work) fails that workstream with
     // its named reason and is not re-run.
-    const retried: FanoutVerdict[] = [];
+    const resetOk: string[] = [];
     for (const id of failed) {
       try {
-        const patch = await resetFor(id);
+        const { attempt, patch } = await resetFor(id);
         if (patch !== undefined) {
-          notes?.push(`${id}: partial work saved to ${patch} before the retry reset`);
+          notes?.push(`${id}: retry attempt ${attempt}: partial work saved to ${patch}`);
         }
-        retried.push(await runSafely(id));
+        resetOk.push(id);
       } catch (err) {
-        retried.push({ id, ok: false, reason: errText(err) });
+        finals.set(id, { id, ok: false, reason: errText(err) });
       }
     }
+    // The retry dispatches start together: each is independent once its reset is done.
+    const retried = await Promise.all(resetOk.map(runSafely));
     for (const v of retried) finals.set(v.id, v);
   }
   const dispatched = new Set(toDispatch);

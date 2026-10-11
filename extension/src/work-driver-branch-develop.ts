@@ -10,6 +10,9 @@ import { trace } from "./trace.ts";
 import { BranchAheadError, mechanizedBranchSetup } from "./work-driver-branch-mechanized.ts";
 import { parseWorktreesBlock, runBranchViaOpsDispatch } from "./work-driver-branch-ops.ts";
 import { runBranchResiduePass } from "./work-driver-branch-residue.ts";
+// #1016 — the argv-honouring executor: the develop path passes `argv` to every
+// git call, and a shell-only exec would run bare `git` and read every check as
+// unreadable (fail closed on every workstream).
 import { execp } from "./work-driver-verify.ts";
 
 export { parseWorktreesBlock };
@@ -33,10 +36,6 @@ import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import { makeWorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 import { DirtyWorktreeError, gitErrorDetail } from "./worktree.ts";
-
-// #1016 — the argv-honouring executor: the develop path passes `argv` to every
-// git call, and a shell-only exec would run bare `git` and read every check as
-// unreadable (fail closed on every workstream).
 
 /**
  * Step 3 — Setup: ops creates the feature branch + worktrees.

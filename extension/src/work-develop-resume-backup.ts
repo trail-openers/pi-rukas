@@ -14,6 +14,7 @@ import {
   type ExecFn,
   errText,
   isValidBaseSha,
+  nextRetryAttempt,
   retryPatchPath,
   runGit,
   savePartialWork,
@@ -55,8 +56,9 @@ export async function backupInterruptedWorktrees(args: {
       continue;
     }
     try {
-      // A fresh stamp per resume: a second resume never collides with the first.
-      const patchPath = retryPatchPath(args.scratchAbs, id, Date.now());
+      // The next free attempt number: a second resume never collides with the first.
+      const attempt = await nextRetryAttempt(args.scratchAbs, id);
+      const patchPath = retryPatchPath(args.scratchAbs, id, attempt);
       out.saved[id] = await savePartialWork(git, cwd, base, work, patchPath);
       trace(`work-driver: resumed ${id}: uncommitted work saved to ${out.saved[id]}`);
     } catch (err) {

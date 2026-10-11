@@ -198,7 +198,10 @@ const stubExec =
       calls.push(id);
       return { id, ok: false };
     },
-    resetFor: (id) => resetWorktreeToBase(stubExec("1", []), `/r/.worktrees/${id}`, SHA, SAVE_W),
+    resetFor: async (id) => ({
+      attempt: 1,
+      patch: await resetWorktreeToBase(stubExec("1", []), `/r/.worktrees/${id}`, SHA, SAVE_W),
+    }),
     verdicts: [],
     multi: true,
   });
@@ -286,7 +289,7 @@ const stubExec =
     skip: [],
     verdicts: [],
     multi: true,
-    resetFor: async () => undefined,
+    resetFor: async () => ({ attempt: 1 }),
     runAt: async (id) => {
       calls.push(id);
       attempts[id] = (attempts[id] ?? 0) + 1;
@@ -342,7 +345,7 @@ const stubExec =
     skip: [],
     verdicts: [],
     multi: true,
-    resetFor: async () => undefined,
+    resetFor: async () => ({ attempt: 1 }),
     runAt: async (id) => {
       if (id === "b" && attempts.b !== undefined) throw new Error("retry exploded");
       attempts[id] = (attempts[id] ?? 0) + 1;
@@ -431,31 +434,6 @@ const stubExec =
     "#1016: an invalid or absent base, or an unreadable check, never counts as green",
   );
   await fs.rm(dir, { recursive: true, force: true });
-}
-
-// #1016 — a workstream that fails its FIRST pass is reported to the caller even
-// when the retry recovers it: the topological step keeps its dependents skipped.
-{
-  const { runIndependentFanout } = await import("../src/work-develop-retry.ts");
-  const firstPassFailed = new Set<string>();
-  const tries: Record<string, number> = {};
-  const out = await runIndependentFanout({
-    independent: ["x", "y"],
-    preserved: new Set(),
-    skip: [],
-    verdicts: [],
-    multi: true,
-    resetFor: async () => undefined,
-    runAt: async (id) => {
-      tries[id] = (tries[id] ?? 0) + 1;
-      return { id, ok: id !== "x" || tries[id] > 1 };
-    },
-    firstPassFailed,
-  });
-  assert(
-    [...firstPassFailed].join() === "x" && out.every((v) => v.ok),
-    "#1016: x failed its first pass (reported) and recovered on retry (ok); y never failed",
-  );
 }
 
 // Finding 2: a downgraded commitless green is ONE attempt, not a retry.

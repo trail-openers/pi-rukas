@@ -16,6 +16,12 @@ import type { WorkEvent, WorkState } from "./workflow-state.ts";
  *  the attempt's verdict, so attempt counting skips these events. */
 export const GREEN_DOWNGRADE = "no commits ahead of base";
 
+/** #1016 — the ONE rendering of a downgrade's reason: the constant, plus the
+ *  detail when the check could not be read or had no valid base. The event's
+ *  `error` and the in-memory verdict both come from here. */
+export const downgradeReason = (detail?: string): string =>
+  detail === undefined ? GREEN_DOWNGRADE : `${GREEN_DOWNGRADE}: ${detail}`;
+
 /** #1016 — the events after the last develop step-started (the whole log when
  *  there is none). Shared by the crash-resume greens and the handoff's per-
  *  workstream attempt counts, so both read the same window. */

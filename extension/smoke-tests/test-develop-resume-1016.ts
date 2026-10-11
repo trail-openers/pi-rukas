@@ -69,7 +69,10 @@ try {
   gitIn(wt("task-a"), ["add", "a.txt"]);
   gitIn(wt("task-a"), ["commit", "-qm", "task-a work"]);
   const aHead = gitIn(wt("task-a"), ["rev-parse", "HEAD"]);
-  writeFileSync(path.join(wt("task-b"), "partial-b.txt"), "half-written by the crashed developer\n");
+  writeFileSync(
+    path.join(wt("task-b"), "partial-b.txt"),
+    "half-written by the crashed developer\n",
+  );
 
   const state = {
     schemaVersion: 1,
@@ -125,7 +128,8 @@ try {
         return {
           taskBPersisted: true,
           taskAKept: ev.some(
-            (e) => e.kind === "branch-completed" && e.workstreamId === "task-a" && e.resumed === true,
+            (e) =>
+              e.kind === "branch-completed" && e.workstreamId === "task-a" && e.resumed === true,
           ),
         };
       }
@@ -154,19 +158,29 @@ try {
   await runWorkDriver(ctx);
 
   // ── selective resume ────────────────────────────────────────────────────
-  assert(!labels.includes("developer[task-a]"), "resume: the kept green task-a is never re-dispatched");
   assert(
-    labels.filter((l) => l === "developer[task-b]").length === 1 && labels.includes("developer[task-c]"),
+    !labels.includes("developer[task-a]"),
+    "resume: the kept green task-a is never re-dispatched",
+  );
+  assert(
+    labels.filter((l) => l === "developer[task-b]").length === 1 &&
+      labels.includes("developer[task-c]"),
     "resume: task-b (failed) and task-c (never ran) are each dispatched once",
   );
-  assert(gitIn(wt("task-a"), ["rev-parse", "HEAD"]) === aHead, "resume: task-a's HEAD is unchanged");
+  assert(
+    gitIn(wt("task-a"), ["rev-parse", "HEAD"]) === aHead,
+    "resume: task-a's HEAD is unchanged",
+  );
 
   // ── partial work saved before re-dispatch ──────────────────────────────
   const scratch = path.join(dir, "tmp", `issue-${ISSUE}`);
   const patches = existsSync(scratch)
     ? readdirSync(scratch).filter((n) => /^retry-task-b-\d+\.patch$/.test(n))
     : [];
-  assert(patches.length === 1, "resume: task-b's uncommitted work is saved to a patch before re-dispatch");
+  assert(
+    patches.length === 1,
+    "resume: task-b's uncommitted work is saved to a patch before re-dispatch",
+  );
   const patchPath = path.join(scratch, patches[0] ?? "missing.patch");
   assert(
     patches.length === 1 &&
@@ -185,7 +199,10 @@ try {
 
   // ── per-completion persistence and the second-crash window ─────────────
   assert(midFanOut.taskBPersisted, "mid-fan-out: task-b's completion is on disk while task-c runs");
-  assert(midFanOut.taskAKept, "mid-fan-out: kept green task-a is re-recorded at the start of the resumed window");
+  assert(
+    midFanOut.taskAKept,
+    "mid-fan-out: kept green task-a is re-recorded at the start of the resumed window",
+  );
   const after = await readState(dir, ISSUE);
   const secondCrash = after
     ? ({

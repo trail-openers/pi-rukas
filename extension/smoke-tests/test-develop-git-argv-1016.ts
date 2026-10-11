@@ -16,6 +16,7 @@ import {
   stagePaths,
   worktreeStatus,
 } from "../src/work-develop-git.ts";
+import { GREEN_DOWNGRADE } from "../src/work-develop-greens.ts";
 import { recordDowngrade, runIndependentFanout } from "../src/work-develop-retry.ts";
 import { safetyNetWorktree } from "../src/work-driver-safety-net.ts";
 import { execp } from "../src/work-driver-verify.ts";
@@ -49,7 +50,12 @@ try {
   gitIn(wt("fail-ws"), ["commit", "-qm", "track .pi/verify-cmd"]);
   const trackedBase = gitIn(wt("fail-ws"), ["rev-parse", "HEAD"]);
   await writeFile(path.join(wt("fail-ws"), ".pi", "verify-cmd"), "edited by developer\n");
-  const patch = await resetWorktreeToBase(runGit(execFn), wt("fail-ws"), trackedBase, save("fail-ws"));
+  const patch = await resetWorktreeToBase(
+    runGit(execFn),
+    wt("fail-ws"),
+    trackedBase,
+    save("fail-ws"),
+  );
   assert(patch !== undefined, "#1016: a tracked .pi/ edit counts as work to save");
   assert(
     (await readFile(patch ?? "", "utf8")).includes("+edited by developer"),
@@ -94,7 +100,13 @@ try {
     paths.includes("ä.ts") && paths.includes("my file.ts"),
     "#1016: status -z returns ä.ts and a spaced name verbatim",
   );
-  const named = await safetyNetWorktree("names-ws", wt("names-ws"), shas["names-ws"] ?? "", execFn, []);
+  const named = await safetyNetWorktree(
+    "names-ws",
+    wt("names-ws"),
+    shas["names-ws"] ?? "",
+    execFn,
+    [],
+  );
   assert(named?.kind === "safety-net-commit", "#1016: the non-ASCII/spaced names are committed");
 
   // 4. Patch files are never overwritten; ids and paths are validated.
@@ -114,7 +126,9 @@ try {
   }
   assert(badId, "#1016: a workstream id outside [A-Za-z0-9._-] is refused");
   assert(
-    retryPatchPath(path.join(dir, "tmp"), "task.a-1", 2).startsWith(path.join(dir, "tmp") + path.sep),
+    retryPatchPath(path.join(dir, "tmp"), "task.a-1", 2).startsWith(
+      path.join(dir, "tmp") + path.sep,
+    ),
     "#1016: a valid id resolves inside the scratch dir",
   );
 
@@ -126,16 +140,18 @@ try {
     verdicts: [],
     multi: false,
     runAt: async (id) => ({ id, ok: false, reason: "developer exploded" }),
-    resetFor: async () => undefined,
+    resetFor: async () => ({ attempt: 1 }),
   });
   assert(fanout[0]?.reason === "developer exploded", "#1016: the first-pass reason is kept");
 
   // 6. A downgrade is typed, not inferred from an error prefix.
   const emitted: WorkEvent[] = [];
-  recordDowngrade({ emit: (e) => emitted.push(e) }, "x", "no commits ahead of base");
+  recordDowngrade({ emit: (e) => emitted.push(e) }, "x");
   assert(
-    emitted[0]?.kind === "branch-completed" && emitted[0].downgrade === true,
-    "#1016: recordDowngrade writes a typed downgrade flag",
+    emitted[0]?.kind === "branch-completed" &&
+      emitted[0].downgrade === true &&
+      emitted[0].error === GREEN_DOWNGRADE,
+    "#1016: recordDowngrade writes a typed downgrade flag and the reason derived from it",
   );
 
   // 6b. Untracked driver files under .pi/ and tmp/ survive the reset (clean -e),
@@ -156,16 +172,23 @@ try {
     repoRoot: dir,
     patchPath: keepPatch,
   });
-  assert(savedKeep === keepPatch, "#1016: the tracked edit is saved while untracked driver files are excluded");
   assert(
-    existsSync(path.join(kw, ".pi", "local.txt")) && existsSync(path.join(kw, "tmp", "scratch.txt")),
+    savedKeep === keepPatch,
+    "#1016: the tracked edit is saved while untracked driver files are excluded",
+  );
+  assert(
+    existsSync(path.join(kw, ".pi", "local.txt")) &&
+      existsSync(path.join(kw, "tmp", "scratch.txt")),
     "#1016: untracked .pi/ and tmp/ driver files survive the reset",
   );
   assert(
     !(await readFile(keepPatch, "utf8")).includes("local.txt"),
     "#1016: untracked driver files are not in the saved patch",
   );
-  assert(gitIn(kw, ["show", "HEAD:src.txt"]) === "base", "#1016: the tracked file is reset to base");
+  assert(
+    gitIn(kw, ["show", "HEAD:src.txt"]) === "base",
+    "#1016: the tracked file is reset to base",
+  );
   const reapply = path.join(dir, ".worktrees", "keep-reapply");
   gitIn(kw, ["worktree", "add", "--detach", reapply, keepBase]);
   gitIn(reapply, ["apply", "--binary", keepPatch]);
@@ -176,22 +199,24 @@ try {
 
   // 7. GitExec fake: argv only, one add per ≤500 chunk, and no commit after a failed add.
   const calls: string[][] = [];
+  // The subcommand follows the global `--literal-pathspecs` option.
+  const subOf = (a: string[]) => a.find((x) => !x.startsWith("--literal-pathspecs"));
   const fake: GitExec = async (args) => {
     calls.push(args);
-    if (args[0] === "add" && args.includes("bad.ts")) throw new Error("add refused");
+    if (subOf(args) === "add" && args.includes("bad.ts")) throw new Error("add refused");
     return { stdout: "" };
   };
   const many = Array.from({ length: 1200 }, (_, i) => `f${i}.ts`);
   await stagePaths(fake, "/w", many);
   assert(
-    calls.length === 3 && calls.every((c) => c[0] === "add"),
+    calls.length === 3 && calls.every((c) => subOf(c) === "add"),
     "#1016: 1200 paths stage in 3 argv chunks, no per-file spawns",
   );
   // The safety net over the same fake: one dirty path, whose add fails.
   const seen: string[][] = [];
   const stub = (async (_cmd: string, o: { argv: string[]; cwd: string }) => {
     seen.push(o.argv);
-    const [sub] = o.argv;
+    const sub = subOf(o.argv);
     if (sub === "status") return { stdout: "?? bad.ts\0" };
     if (sub === "rev-list") return { stdout: "0\n" };
     if (sub === "add") throw new Error("add refused");
@@ -205,10 +230,13 @@ try {
     "#1016: a failed add is recorded as a note with the git error",
   );
   assert(
-    !seen.some((a) => a[0] === "commit"),
+    !seen.some((a) => subOf(a) === "commit"),
     "#1016: no git commit is attempted after a failed add",
   );
-  assert(seen.every((a) => Array.isArray(a) && a.length > 0), "#1016: every call is argv");
+  assert(
+    seen.every((a) => Array.isArray(a) && a.length > 0),
+    "#1016: every call is argv",
+  );
 } finally {
   await rm(dir, { recursive: true, force: true });
 }

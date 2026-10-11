@@ -114,7 +114,13 @@ export async function hasAnyWorktreeEvidence(
     // move to the next worktree rather than conservatively bailing (a worktree
     // whose base can't be resolved and that is clean has no evidence here).
     const ahead = await commitsAheadOfBase(runGit(execFn), cwd, effectiveBase);
-    if ("commits" in ahead && ahead.commits > 0) return true;
+    // An unreadable count is treated as evidence (conservative), mirroring the
+    // status branch above: a gate is never suppressed on an unknown state.
+    if (!("commits" in ahead)) {
+      trace(`work-driver: develop evidence check conservative for ${wsId} — ${ahead.unreadable}`);
+      return true;
+    }
+    if (ahead.commits > 0) return true;
   }
   // No worktree had uncommitted changes or commits ahead of its base. The
   // fanout produced nothing — there is no diff evidence to gate on, so both
@@ -190,13 +196,16 @@ export async function safetyNetWorktree(
     notes.push(note);
     return undefined;
   }
+  // The commit names its paths explicitly, so a `.pi/` or `tmp/` file that was
+  // already in the index (staged by someone else) is never swept into it.
   try {
     // Commit with driver-attributed message so the operator can tell
     // this from a developer's seam commit.
     const commitMsg = `wip: driver safety-net commit for ${wsId}`;
-    await git(["commit", "-q", "--no-verify", "-m", commitMsg], { cwd, maxBuffer: 64 * 1024 });
-    const { stdout: shaOut } = await git(["rev-parse", "HEAD"], { cwd, maxBuffer: 64 * 1024 });
-    commitSha = shaOut.trim();
+    await git(
+      ["--literal-pathspecs", "commit", "-q", "--no-verify", "-m", commitMsg, "--", ...workPaths],
+      { cwd, maxBuffer: 256 * 1024 },
+    );
   } catch (err) {
     const note = `${wsId}: safety net commit failed — ${errText(err)}`;
     trace(`work-driver: ${note}`);
@@ -204,6 +213,17 @@ export async function safetyNetWorktree(
     // The tree is still dirty and nothing was committed; the verify gate will
     // produce the same failure as before the safety net.
     return undefined;
+  }
+  // The commit has landed. A failed read of its sha must not hide it: the
+  // event then names HEAD, and the note says the sha was not read.
+  try {
+    const { stdout: shaOut } = await git(["rev-parse", "HEAD"], { cwd, maxBuffer: 64 * 1024 });
+    commitSha = shaOut.trim();
+  } catch (err) {
+    commitSha = "HEAD";
+    const note = `${wsId}: safety net committed, but the commit sha could not be read — ${errText(err)}`;
+    trace(`work-driver: ${note}`);
+    notes.push(note);
   }
 
   if (commitSha) {
@@ -226,11 +246,14 @@ export async function safetyNetWorktree(
  * #622 — Apply the mechanical auto-commit safety net after all developer
  * dispatches complete.
  *
- * For each worktree, checks:
- *   1. `git status --porcelain` — if empty, skip (AC3: no changes = nothing to commit).
- *   2. `git rev-list --count baseSha..HEAD` — if > 0, skip (AC2: already committed).
- *   3. Otherwise: stage the porcelain paths (excluding `.pi/` and `tmp/`)
- *      and commit with a driver-attributed message.
+ * For each worktree (every step is an argv call through the develop git transport):
+ *   1. `git status --porcelain -z` — no commit-eligible path → skip (AC3).
+ *   2. `git rev-list --count <effectiveBase>..HEAD` — > 0 → skip (AC2); an
+ *      unreadable count skips too (an unknown state is never committed).
+ *   3. `git --literal-pathspecs add -- <paths>` (chunked), excluding `.pi/` and `tmp/`.
+ *   4. `git --literal-pathspecs commit -m <driver message> -- <paths>`, naming the
+ *      same paths so nothing else in the index rides along.
+ *   5. `git rev-parse HEAD` for the event's sha; a failed read is noted, not hidden.
  *
  * Returns the (possibly updated) WorkState with a `safety-net-commit` event
  * appended for each worktree the safety net fired on, and any skip notes

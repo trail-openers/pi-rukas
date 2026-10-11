@@ -15,7 +15,7 @@
  * discards anything and refuses to touch a worktree outside `.worktrees/`.
  */
 import { realpathSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import type { DriverContext } from "./work-driver-context.ts";
 
@@ -170,14 +170,40 @@ export function retryPatchPath(scratchAbs: string, id: string, attempt: number):
   return p;
 }
 
+/** The next free attempt number for a workstream's retry patch: one past the
+ *  highest `retry-<id>-N.patch` already in `scratchAbs` (1 when there is none).
+ *  A second re-entry for the same id therefore writes `-2`, never `-1` again. */
+export async function nextRetryAttempt(scratchAbs: string, id: string): Promise<number> {
+  if (!WORKSTREAM_ID_RE.test(id)) {
+    throw new Error(`refusing patch path: workstream id ${JSON.stringify(id)} is not a plain name`);
+  }
+  let names: string[];
+  try {
+    names = await readdir(resolve(scratchAbs));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return 1;
+    throw err;
+  }
+  // Only `.` is special in a workstream id that passed WORKSTREAM_ID_RE.
+  const re = new RegExp(`^retry-${id.replace(/\./g, "\\.")}-(\\d+)\\.patch$`);
+  let max = 0;
+  for (const n of names) {
+    const m = re.exec(n);
+    if (m?.[1] !== undefined) max = Math.max(max, Number(m[1]));
+  }
+  return max + 1;
+}
+
 /** Git accepts a long argv, but a fan-out's path list is chunked anyway. */
 const STAGE_CHUNK = 500;
 
-/** Stage `paths` with `git add -- <paths>`, one call per ≤500-path chunk. Any
- *  failing chunk throws, so the caller never commits a partial stage. */
+/** Stage `paths` with `git --literal-pathspecs add -- <paths>`, one call per
+ *  ≤500-path chunk. Literal pathspecs stop git from globbing a name like
+ *  `c[1].ts` or `*` into other files. Any failing chunk throws, so the caller
+ *  never commits a partial stage. */
 export async function stagePaths(git: GitExec, cwd: string, paths: string[]): Promise<void> {
   for (let i = 0; i < paths.length; i += STAGE_CHUNK) {
-    await git(["add", "--", ...paths.slice(i, i + STAGE_CHUNK)], {
+    await git(["--literal-pathspecs", "add", "--", ...paths.slice(i, i + STAGE_CHUNK)], {
       cwd,
       maxBuffer: 256 * 1024,
     });
