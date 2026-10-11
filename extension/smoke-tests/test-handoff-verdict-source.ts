@@ -109,7 +109,11 @@ assert(
 const SECOND = "developer exited non-zero";
 const second: WorkState = {
   ...s,
+  // task-b's green is preserved from BEFORE the last develop step-started (a
+  // crash-resume keeps it, #1016), so this step never re-ran it: "kept (ok)".
   eventLog: [
+    { kind: "branch-completed", step: "develop", workstreamId: "task-b", ok: true, ms: 1, at: 2 },
+    { kind: "step-started", step: "develop", at: 2.5 },
     {
       kind: "branch-completed",
       step: "develop",
@@ -119,7 +123,6 @@ const second: WorkState = {
       at: 3,
       error: SECOND,
     },
-    { kind: "branch-completed", step: "develop", workstreamId: "task-b", ok: true, ms: 1, at: 4 },
     {
       kind: "branch-completed",
       step: "develop",
@@ -135,11 +138,11 @@ const second: WorkState = {
 const md2 = renderHandoffMarkdown(second, REPO);
 const chat2 = renderHandoffUserMessage(second, REPO, `${REPO}/tmp/issue-848`);
 assert(
-  md2.includes("- task-b: ok") && !md2.includes("task-b: kept") && md2.includes(`- task-a: FAIL after retry — ${SECOND}`),
+  md2.includes("- task-b: kept (ok)") && md2.includes(`- task-a: FAIL after retry — ${SECOND}`),
   "markdown: second failure names kept task-b and FAIL-after-retry task-a",
 );
 assert(
-  chat2.includes("task-b: ok") && !chat2.includes("task-b: kept") && chat2.includes(`task-a: FAIL after retry — ${SECOND}`),
+  chat2.includes("task-b: kept (ok)") && chat2.includes(`task-a: FAIL after retry — ${SECOND}`),
   "chat: second failure names kept task-b and FAIL-after-retry task-a",
 );
 

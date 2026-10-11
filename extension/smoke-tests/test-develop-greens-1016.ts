@@ -355,6 +355,31 @@ const stubExec =
     cPatch.includes("edit.txt") && !(await exists(path.join(dirC, "edit.txt"))),
     "#1016: an unsaved edit is written to the patch, then reset",
   );
+  git(dirC, ["apply", "--binary", cSaved ?? ""]);
+  assert(
+    (await fs.readFile(path.join(dirC, "edit.txt"), "utf8")) === "uncommitted",
+    "#1016: the saved patch re-applies the untracked file with its content",
+  );
+  // A TRACKED edit under .pi/ is work too: it is saved, then the reset restores the base.
+  const dirD = await mkRepo("d");
+  await fs.mkdir(path.join(dirD, ".pi"), { recursive: true });
+  await fs.writeFile(path.join(dirD, ".pi", "verify-cmd"), "old\n");
+  git(dirD, ["add", "-f", ".pi/verify-cmd"]);
+  git(dirD, ["commit", "-qm", "track pi"]);
+  const baseD = git(dirD, ["rev-parse", "HEAD"]);
+  await fs.writeFile(path.join(dirD, ".pi", "verify-cmd"), "edited\n");
+  const dSaved = await resetWorktreeToBase(execFn, dirD, baseD, save("d"));
+  const dPatch = await fs.readFile(dSaved ?? "", "utf8").catch(() => "");
+  assert(dPatch.includes("+edited"), "#1016: a tracked .pi/ edit is saved to the patch before reset");
+  assert(
+    (await fs.readFile(path.join(dirD, ".pi", "verify-cmd"), "utf8")) === "old\n",
+    "#1016: the reset restores the tracked .pi/ file to its base content",
+  );
+  git(dirD, ["apply", "--binary", dSaved ?? ""]);
+  assert(
+    (await fs.readFile(path.join(dirD, ".pi", "verify-cmd"), "utf8")) === "edited\n",
+    "#1016: the saved tracked .pi/ patch re-applies the edit",
+  );
   const outside = await resetWorktreeToBase(execFn, dir, baseC, save("o")).then(
     () => false,
     (err: Error) => /not inside/.test(err.message),

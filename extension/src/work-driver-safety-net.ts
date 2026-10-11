@@ -46,8 +46,8 @@ import {
   type ExecFn,
   commitsAheadOfBase,
   errText,
+  isDriverArtefact,
   isValidBaseSha,
-  workPathsOf,
   worktreeStatus,
 } from "./work-develop-git.ts";
 import { withPersistNotes } from "./work-develop-retry.ts";
@@ -146,7 +146,7 @@ export async function safetyNetWorktree(
     notes.push(note);
     return undefined;
   }
-  const workPaths = workPathsOf(status);
+  const workPaths = status.filter((p) => !isDriverArtefact(p));
 
   // (AC3) Clean tree (or artefacts only) → nothing to commit → skip.
   if (workPaths.length === 0) {

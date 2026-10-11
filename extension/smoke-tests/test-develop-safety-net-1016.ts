@@ -109,11 +109,14 @@ try {
     const wx = path.join(dir2, ".worktrees", "task-x");
     await writeFile(path.join(wx, "$(touch pwned)"), "x");
     await writeFile(path.join(wx, "`touch pwned2`"), "x");
+    // #1016 — a non-ASCII name is C-quoted by plain porcelain; -z must keep it whole.
+    await writeFile(path.join(wx, "café.txt"), "x");
     const ev = await safetyNetWorktree("task-x", wx, shas2["task-x"] ?? "", execFn, []);
     assert(ev?.kind === "safety-net-commit", "#1016: the injection-named files are committed");
-    const names = gitIn(wx, ["ls-tree", "--name-only", "HEAD"]);
+    // -z: ls-tree would C-quote the non-ASCII name and hide the literal bytes.
+    const names = gitIn(wx, ["ls-tree", "-z", "--name-only", "HEAD"]).split("\0").join("\n");
     assert(
-      names.includes("$(touch pwned)") && names.includes("`touch pwned2`"),
+      names.includes("$(touch pwned)") && names.includes("`touch pwned2`") && names.includes("café.txt"),
       "#1016: the files are committed under their literal names",
     );
     assert(
