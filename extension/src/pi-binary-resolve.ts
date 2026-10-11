@@ -68,13 +68,12 @@ export function parsePiVersion(output: string): string | null {
 
 /**
  * Resolve the bin of the locally installed @earendil-works/pi-coding-agent
- * package. Uses fs directly (no require.resolve) so it's testable in isolation
- * via the injected packageJsonPath parameter.
+ * package, read from the package.json at packageJsonPath (injectable for tests;
+ * fs is used directly, not require.resolve).
  *
- * Returns the resolved absolute path to the CLI entry, or null when the package
- * is not installed. Never throws.
- * Returns null when the bin's realpath escapes the package directory, so a
- * symlink inside the package pointing outside is rejected.
+ * Returns the absolute path to the CLI entry, or null when the package is absent,
+ * the bin is missing or not executable, or its realpath escapes the package
+ * directory (a symlink pointing outside is rejected). Never throws.
  */
 export function resolvePackageBin(
   packageJsonPath: string = defaultPackageJsonPath(),
@@ -145,19 +144,26 @@ interface SyncResolution {
   command: string;
   /** The script argument (when source is argv) or undefined. */
   script?: string;
+  /**
+   * Set only on the first uncached PATH resolution. The cache never holds it, so
+   * later calls return no warning. Callers emit it via reportResolutionWarning.
+   */
+  warning?: string;
 }
 
 let cachedSync: SyncResolution | null = null;
 
-type WarningReporter = (message: string) => void;
-let pathWarningReporter: WarningReporter = (message) => console.warn(message);
-
 /**
- * Replace the sink for the PATH-fallback warning. Tests inject a recorder; the
- * default writes to stderr. Resolution itself never writes directly.
+ * Emit a resolution's warning on stderr. Fail-open: a throwing sink never breaks
+ * the caller. Only the first resolution carries a warning, so this is once per process.
  */
-export function setPathWarningReporter(reporter: WarningReporter): void {
-  pathWarningReporter = reporter;
+export function reportResolutionWarning(resolution: { warning?: string }): void {
+  if (!resolution.warning) return;
+  try {
+    console.warn(resolution.warning);
+  } catch {
+    // Fail-open by design: a warning must never break resolution.
+  }
 }
 
 /**
@@ -168,7 +174,7 @@ export function setPathWarningReporter(reporter: WarningReporter): void {
  *   - Inside a Pi process: argv[1]
  *   - PI_ENSEMBLE_PI_BIN (fails with a named error if invalid)
  *   - Package bin (silently skipped if not installed)
- *   - PATH fallback (warns once per process, here at resolution time)
+ *   - PATH fallback (carries a warning on the first resolution only)
  *
  * @throws When PI_ENSEMBLE_PI_BIN is set but the path is not an existing
  *         executable file. Never falls through to other branches in that case.
@@ -224,16 +230,15 @@ export function resolvePiBinarySync(): SyncResolution {
     return cachedSync;
   }
 
-  // 4. PATH fallback.
-  // The PATH-source warning is operational, not a debug detail — a hijacked
-  // or mismatched `pi` on PATH should be visible without PI_ENSEMBLE_DEBUG=1.
-  // Reported here, once per process (cachedSync guards repeats), so it is visible
-  // even if the async version probe never completes. Not moved into the probe.
-  pathWarningReporter(
-    "[pi-rukas] pi-binary-resolve: WARNING — pi resolved from PATH, no integrity check performed",
-  );
+  // 4. PATH fallback. Operational, not debug: a hijacked or mismatched `pi` on
+  // PATH must be visible without PI_ENSEMBLE_DEBUG=1. The warning is returned as
+  // data; the cache stores the resolution without it, so it is reported once.
   cachedSync = { path: "pi", source: "path", command: "pi" };
-  return cachedSync;
+  return {
+    ...cachedSync,
+    warning:
+      "[pi-rukas] pi-binary-resolve: WARNING — pi resolved from PATH, no integrity check performed",
+  };
 }
 
 /**
@@ -257,6 +262,7 @@ export function _resetPiBinaryCache(): void {
  */
 export function getPiInvocation(args: string[]): { command: string; args: string[] } {
   const resolved = resolvePiBinarySync();
+  reportResolutionWarning(resolved);
   if (resolved.source === "argv" && resolved.script) {
     return { command: resolved.command, args: [resolved.script, ...args] };
   }

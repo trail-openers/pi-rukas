@@ -249,8 +249,8 @@ const SEAMS: Seam[] = [
         "the injected-path overload is test-asserted; the default branch is wired via resolvePiBinarySync",
       resolvePiBinarySync:
         "the sync resolver; wired via getPiInvocation; also directly test-asserted",
-      setPathWarningReporter:
-        "injects the PATH-warning sink; exercised by test-pi-binary-hardening.ts (child process)",
+      reportResolutionWarning:
+        "emits the PATH warning returned as data; exercised by test-pi-binary-hardening.ts (child process)",
     },
     canary: { symbol: "getPiInvocation", importer: "work-driver-resume-reattach.ts" },
   },

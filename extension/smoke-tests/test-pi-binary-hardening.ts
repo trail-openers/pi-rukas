@@ -160,6 +160,7 @@ section("version probe lifecycle");
       cap.warnings.length === 1,
       `one-shot probe: spawn-failure warning emitted once (got ${cap.warnings.length})`,
     );
+    assert(/\bE[A-Z]+: /.test(cap.warnings[0] ?? ""), "spawn-failure warning names the errno code");
   } finally {
     cap.restore();
     _resetPiVersionProbe();
@@ -169,11 +170,11 @@ section("version probe lifecycle");
 
 section("PATH warning");
 
-// The PATH warning fires exactly once at resolution time (#1038). Run in a
-// child process over a copy of src/ with no pi package, so the PATH branch is
-// reached deterministically (the real install ships a package bin that
-// short-circuits it). The child injects a recording reporter that prints to
-// stdout, so the count does not depend on stderr.
+// The PATH warning is returned as data on the first uncached resolution only
+// (#1038). Run in a child process over a copy of src/ with no pi package, so the
+// PATH branch is reached deterministically (the real install ships a package bin
+// that short-circuits it). The child counts the warnings it receives across
+// repeated resolution, so the count does not depend on stderr.
 {
   const root = mkTmpDir("hard-pathwarn");
   cpSync(path.resolve(import.meta.dirname, "..", "src"), path.join(root, "src"), {
@@ -181,7 +182,7 @@ section("PATH warning");
   });
   writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "no-pi" }));
   const modUrl = path.join(root, "src", "pi-binary-resolve.ts");
-  const script = `const m = await import(${JSON.stringify(modUrl)});\nm.setPathWarningReporter((msg) => console.log("REPORTED " + msg));\nconst a = m.resolvePiBinarySync(); m.resolvePiBinarySync(); m.resolvePiBinarySync();\nconsole.log("SOURCE " + a.source);`;
+  const script = `const m = await import(${JSON.stringify(modUrl)});\nconst rs = [m.resolvePiBinarySync(), m.resolvePiBinarySync(), m.resolvePiBinarySync()];\nconsole.log("REPORTED " + rs.filter((r) => r.warning).length);\nconsole.log("WARNING " + (rs[0].warning ?? ""));\nconsole.log("SOURCE " + rs[0].source);`;
   const env = Object.fromEntries(
     Object.entries(process.env).filter(
       (e): e is [string, string] => e[0] !== "PI_ENSEMBLE_PI_BIN" && e[1] !== undefined,
@@ -189,11 +190,11 @@ section("PATH warning");
   );
   const r = spawnSync(process.execPath, ["-e", script], { env, encoding: "utf8" });
   const out = r.stdout ?? "";
-  const pathWarns = out.split("REPORTED ").length - 1;
+  const pathWarns = Number(/REPORTED (\d+)/.exec(out)?.[1] ?? "-1");
   assert(out.includes("SOURCE path"), `child resolves via PATH (stdout: ${out.trim()})`);
   assert(
-    pathWarns === 1 && out.includes("resolved from PATH"),
-    `PATH warning reported exactly once across repeated resolution (got ${pathWarns})`,
+    pathWarns === 1 && out.includes("WARNING ") && out.includes("resolved from PATH"),
+    `PATH warning returned on exactly one of three resolutions (got ${pathWarns})`,
   );
   rmDir(root);
 }

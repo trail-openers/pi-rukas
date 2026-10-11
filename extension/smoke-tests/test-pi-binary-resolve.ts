@@ -401,7 +401,11 @@ _resetPiVersionProbe();
 withEnv({ PI_ENSEMBLE_PI_BIN: undefined }, () => {
   const first = resolvePiBinarySync();
   const second = resolvePiBinarySync();
-  assert(first === second, "same object returned on second call (cached)");
+  assert(
+    first.path === second.path && first.source === second.source,
+    "same resolution returned on second call (cached)",
+  );
+  assert(second.warning === undefined, "cached call carries no PATH warning (reported once)");
 });
 
 // ---------------------------------------------------------------------------

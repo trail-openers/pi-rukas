@@ -9,7 +9,9 @@
  * Retry model (#1038): ONE-SHOT. A probe that fails to spawn — including a
  * synchronous throw from binary resolution — is cached as `{ version: null }` and
  * reported once on stderr; it is not re-run, because the failure mode is a broken
- * binary path that a retry will not repair.
+ * binary path that a retry will not repair. Consequence: a spawn failure
+ * suppresses the version check for the rest of the process lifetime; the one
+ * stderr warning (naming the command and errno code) is the only signal.
  */
 
 import { spawn as cpSpawn } from "node:child_process";
@@ -19,6 +21,7 @@ import {
   type PiBinaryResolution,
   _resetPiBinaryCache,
   parsePiVersion,
+  reportResolutionWarning,
   resolvePiBinarySync,
 } from "./pi-binary-resolve.ts";
 import { parseVerifiedLine } from "./pi-doc-parsing.ts";
@@ -33,6 +36,20 @@ let verifiedVersionCache: string | null | undefined;
 // ---------------------------------------------------------------------------
 // Async version probe (cached, 3 s timeout)
 // ---------------------------------------------------------------------------
+
+/** Describe a spawn/resolution error, prefixing the errno code when there is one. */
+function errorDetail(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? `${code}: ${message}` : message;
+}
+
+/** The one-shot spawn-failure warning, shared by both failure sites. */
+function warnUnrunnable(command: string, msg: string): void {
+  console.warn(
+    `[pi-rukas] pi-version-probe: WARNING — could not run "${command}" for --version: ${msg}`,
+  );
+}
 
 /**
  * Run `pi --version` on the resolved binary and cache the result.
@@ -49,6 +66,7 @@ export function probePiVersion(): Promise<ProbeResult> {
     let command = process.env.PI_ENSEMBLE_PI_BIN || "pi";
     try {
       const resolved = resolvePiBinarySync();
+      reportResolutionWarning(resolved);
       command = resolved.command;
       const spawnArgs = resolved.script ? [resolved.script, "--version"] : ["--version"];
 
@@ -88,9 +106,7 @@ export function probePiVersion(): Promise<ProbeResult> {
           clearTimeout(timer);
           // Spawn failure (bad binary path). Operational, not debug: a binary that
           // cannot be spawned must be visible. One-shot: the probe is not re-run.
-          console.warn(
-            `[pi-rukas] pi-version-probe: WARNING — could not run "${command}" for --version: ${err.message}`,
-          );
+          warnUnrunnable(command, errorDetail(err));
           resolve({ version: null });
         }
       });
@@ -106,10 +122,7 @@ export function probePiVersion(): Promise<ProbeResult> {
       // Synchronous failure before or during spawn (e.g. PI_ENSEMBLE_PI_BIN names
       // a missing binary). Resolve, never reject: a rejected promise would be
       // cached forever and every later caller would see the same rejection.
-      const msg = err instanceof Error ? err.message : String(err);
-      console.warn(
-        `[pi-rukas] pi-version-probe: WARNING — could not run "${command}" for --version: ${msg}`,
-      );
+      warnUnrunnable(command, errorDetail(err));
       resolve({ version: null });
     }
   });
@@ -136,10 +149,12 @@ export function probePiVersion(): Promise<ProbeResult> {
  *
  * Emits a single trace line with the resolved path, source, and version.
  * Warns (trace) when version is older than the "Last verified against pi X.Y.Z"
- * line. (The PATH-source warning is emitted once in resolvePiBinarySync, not here.)
+ * line. (The PATH-source warning is returned by resolvePiBinarySync and emitted
+ * by its caller; it is never re-emitted here.)
  */
 export async function getPiResolutionInfo(): Promise<PiBinaryResolution> {
   const sync = resolvePiBinarySync();
+  reportResolutionWarning(sync);
   const probe = await probePiVersion();
 
   const result: PiBinaryResolution = {
