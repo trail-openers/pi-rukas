@@ -309,6 +309,7 @@ export async function runPlanPipeline(
     operatorSupplied: !!context?.trim(),
     pinnedSubIssues,
     forbiddenPhrases: directives.neverClaim,
+    operatorOmitted: fitted.result.operatorOmitted,
   });
   if (!draftCheck.ok) {
     trace(`plan-driver: draft validation failed — ${draftCheck.problems.join("; ")}`);

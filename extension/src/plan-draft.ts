@@ -26,6 +26,7 @@ import { EPIC_SUB_ISSUE_DEPTH_LIMIT, type PlanType, planTitle } from "./plan-typ
 import {
   AC_FALLBACK,
   OPERATOR_DECOMPOSITION_HEADING,
+  type OperatorOmission,
   REFERENCES_FALLBACK,
   type RenderBudget,
   SPIKE_DELIVERABLE_FALLBACK,
@@ -34,7 +35,10 @@ import {
   capOperatorItems,
   clipItem,
   clipRef,
+  dedupeByNormalised,
+  normalisedTextKey,
   omissionNote,
+  operatorOmissions,
 } from "./plan-validate.ts";
 import {
   type ResolvedDecision,
@@ -109,44 +113,12 @@ export function extractPlanItems(toolUses: unknown[], angleName: string): PlanIt
 // parseOperatorDirectives + OperatorDirectives live in plan-directives.ts
 // (the operator's trusted typed channel); re-exported for existing consumers.
 import type { OperatorDirectives } from "./plan-directives.ts";
-export {
-  type OperatorDirectives,
-  parseOperatorDirectives,
-} from "./plan-directives.ts";
+export { type OperatorDirectives, parseOperatorDirectives } from "./plan-directives.ts";
 export { parseOperatorDirectivesWithLines } from "./plan-directives.ts";
 
-/**
- * Normalised-text key for de-duplication (#858): lowercase, collapse
- * whitespace, strip trailing punctuation. Case/whitespace-modulo duplicates
- * ("Offline tests with stubs" / "offline tests with stubs.") collapse; the
- * exact-`.trim()` Set alone would let a case-differing pair both render.
- */
-export function normalisedTextKey(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/[.,;:!?)]+$/, "")
-    .trim();
-}
-
-/**
- * First-occurrence-wins de-duplication on normalised text (#858). The
- * operator's own line wins over a specialist item that restates it.
- */
-export function dedupeByNormalised(items: string[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const s of items) {
-    const t = s.trim();
-    if (!t) continue;
-    const k = normalisedTextKey(t);
-    if (!k || seen.has(k)) continue;
-    seen.add(k);
-    out.push(t);
-  }
-  return out;
-}
+// The #858 normalised-text de-dup helpers live in plan-validate.ts (the
+// 500-line seam); re-exported for existing consumers.
+export { dedupeByNormalised, normalisedTextKey } from "./plan-validate.ts";
 
 function sectionBullets(items: string[], fallback: string): string {
   // #858: normalised de-dup (case/whitespace/trailing-punctuation equality),
@@ -284,7 +256,12 @@ export function draftSpec(
   // (operator authority, D2) — they count toward the budget and the
   // tooLarge halt covers the extreme.
   budget?: RenderBudget,
-): { title: string; body: string; resolvedDecisions: ResolvedDecision[] } {
+): {
+  title: string;
+  body: string;
+  resolvedDecisions: ResolvedDecision[];
+  operatorOmitted: OperatorOmission[];
+} {
   const title = planTitle(descriptor, type);
   const cap = budget?.maxItemsPerSection ?? SECTION_MAX_ITEMS;
   const clip = (s: string) => clipItem(s, budget?.itemClipChars ?? 400);
@@ -401,7 +378,7 @@ export function draftSpec(
     type === "epic" && depth < EPIC_SUB_ISSUE_DEPTH_LIMIT
       ? `\n## Sub-issues\n\n${
           epicSubIssues(findings, clip).join("\n") || `- ${SUB_ISSUES_FALLBACK}`
-        }\n${opDecompositionSection}`
+        }\n`
       : "";
 
   const oosAll = [
@@ -468,7 +445,7 @@ ${edgeCases}
 ## Out of scope
 
 ${oos}
-${subIssues}${depthLimit}`;
+${subIssues}${opDecompositionSection}${depthLimit}`;
 
   // PR #640: single splice site (the dead onCorrective splice is gone).
   // Splice → collapse → render Open Questions from marked decisions →
@@ -483,5 +460,12 @@ ${subIssues}${depthLimit}`;
     `## Open Questions\n\n${openQ}\n`,
   );
 
-  return { title, body: finalBody, resolvedDecisions: markedDecisions };
+  // #1087: truncated operator channels as data; filing paths halt on this, not the body.
+  const operatorOmitted = operatorOmissions({
+    [type === "spike" ? "Expected deliverable" : "Acceptance criteria"]: opAc,
+    "Test surface": opTestSurface,
+    "Edge cases & pitfalls": opPitfalls,
+    [OPERATOR_DECOMPOSITION_HEADING]: opDecomposition,
+  });
+  return { title, body: finalBody, resolvedDecisions: markedDecisions, operatorOmitted };
 }

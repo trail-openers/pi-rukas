@@ -46,6 +46,39 @@ export function normalisePhrase(t: string): string {
 }
 
 /**
+ * Normalised-text key for de-duplication (#858): lowercase, collapse
+ * whitespace, strip trailing punctuation. Case/whitespace-modulo duplicates
+ * ("Offline tests with stubs" / "offline tests with stubs.") collapse; the
+ * exact-`.trim()` Set alone would let a case-differing pair both render.
+ */
+export function normalisedTextKey(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[.,;:!?)]+$/, "")
+    .trim();
+}
+
+/**
+ * First-occurrence-wins de-duplication on normalised text (#858). The
+ * operator's own line wins over a specialist item that restates it.
+ */
+export function dedupeByNormalised(items: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const s of items) {
+    const t = s.trim();
+    if (!t) continue;
+    const k = normalisedTextKey(t);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    out.push(t);
+  }
+  return out;
+}
+
+/**
  * #677: a forbidden-phrase scan over a body, EXCLUDING the Prior-context
  * inventory section — that section re-renders the operator context verbatim
  * and would always match a phrase the operator themselves declared
@@ -73,6 +106,10 @@ export const AC_FALLBACK =
 
 /** The Sub-issues fallback draftSpec renders when no decomposition exists. */
 export const SUB_ISSUES_FALLBACK = "(decomposition not available)";
+
+/** The Test-surface fallback (single-sourced here so the validator's scan
+ * cannot silently drift from what draftSpec renders — same rule as
+ * AC_FALLBACK). */
 
 /**
  * The Test-surface status draftSpec renders when neither the operator nor the
@@ -140,6 +177,12 @@ export interface ValidateOpts {
    * verbatim and always matches by construction).
    */
   forbiddenPhrases?: string[];
+  /**
+   * #1087: operator channels that exceeded OPERATOR_ITEM_CEILING, as data from
+   * draftSpec. A non-empty list halts validation — the filed spec would be
+   * missing operator-supplied items.
+   */
+  operatorOmitted?: OperatorOmission[];
 }
 
 export function validateDraft(
@@ -162,9 +205,11 @@ export function validateDraft(
   }
   // #1087 review: an operator list past the ceiling is a truncated authority
   // channel — halt rather than file a spec missing operator-supplied items.
-  if (body.includes(OMISSION_PHRASE)) {
+  // Decided from the omission DATA, never by searching the rendered body.
+  if (opts.operatorOmitted && opts.operatorOmitted.length > 0) {
+    const where = opts.operatorOmitted.map((o) => `${o.omitted} in ${o.section}`).join(", ");
     problems.push(
-      `operator-supplied items were truncated past the ceiling of ${OPERATOR_ITEM_CEILING} — the operator's block is too large to file faithfully; split the descriptor or reduce the block`,
+      `operator-supplied items were truncated past the ceiling of ${OPERATOR_ITEM_CEILING} (${where}) — the operator's block is too large to file faithfully; split the descriptor or reduce the block`,
     );
   }
   if (type === "bug" || type === "feature") {
@@ -285,6 +330,23 @@ export function omissionNote(capped: CappedItems): string {
   return capped.omitted > 0
     ? `\n_… ${capped.omitted} ${OMISSION_PHRASE} (ceiling ${OPERATOR_ITEM_CEILING}; an unterminated or oversized operator block)_\n`
     : "";
+}
+
+/** One operator channel that exceeded the ceiling: the rendered section and how many items were dropped. */
+export interface OperatorOmission {
+  section: string;
+  omitted: number;
+}
+
+/**
+ * The truncated channels among `channels` (section label → capped result), as
+ * data. Carried through draftSpec's result so every filing path decides on the
+ * count, not on whether the rendered body happens to contain the status text.
+ */
+export function operatorOmissions(channels: Record<string, CappedItems>): OperatorOmission[] {
+  return Object.entries(channels)
+    .filter(([, c]) => c.omitted > 0)
+    .map(([section, c]) => ({ section, omitted: c.omitted }));
 }
 
 /**

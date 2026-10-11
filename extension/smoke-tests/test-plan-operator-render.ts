@@ -278,9 +278,64 @@ function renders(sec: string, item: string): boolean {
     "ceiling: the omission is stated in the body, not silent",
   );
   assert(
-    !validateDraft("feature", r.body, 0).ok,
+    !validateDraft("feature", r.body, 0, { operatorOmitted: r.operatorOmitted }).ok,
     "ceiling: a truncated operator list halts validation (not filed missing items)",
   );
+  assert(
+    r.operatorOmitted.length === 1 &&
+      r.operatorOmitted[0]?.section === "Acceptance criteria" &&
+      r.operatorOmitted[0]?.omitted === 5,
+    "ceiling: the truncation is carried as data (section + count), not only as body text",
+  );
+}
+
+{
+  // #1087 step 2: the halt is decided by the omission DATA. Operator text that
+  // happens to contain the omission phrase verbatim is content, not truncation.
+  const phrase = "5 further operator item(s) omitted";
+  const r = draftSpec(
+    "feature",
+    "d",
+    [],
+    [],
+    [],
+    [],
+    0,
+    { ...NO_DIRS, acceptanceCriteria: [`the status line reads: ${phrase}`] },
+    [],
+  );
+  assert(r.body.includes(phrase), "verbatim phrase: the operator text is rendered as written");
+  assert(
+    r.operatorOmitted.length === 0 &&
+      validateDraft("feature", r.body, 0, {
+        operatorOmitted: r.operatorOmitted,
+      }).ok,
+    "verbatim phrase: operator text containing the omission phrase does NOT halt",
+  );
+}
+
+{
+  // #1087 step 1: the operator DECOMPOSITION block renders for every type, and
+  // its items survive verbatim (feature and spike, not only epic).
+  const types = ["feature", "spike"] as const;
+  for (const type of types) {
+    const r = draftSpec(
+      type,
+      "d",
+      [],
+      [],
+      [],
+      [],
+      0,
+      { ...NO_DIRS, decomposition: ["split by surface", "split by layer"] },
+      [],
+    );
+    const dec = section(r.body, "Operator decomposition", "Context");
+    assert(
+      dec.includes("- split by surface") && dec.includes("- split by layer"),
+      `decomposition: ${type} keeps its operator DECOMPOSITION items verbatim`,
+    );
+  }
 }
 
 {
