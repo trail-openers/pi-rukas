@@ -78,8 +78,8 @@ export const SUB_ISSUES_FALLBACK = "(decomposition not available)";
  * The Test-surface status draftSpec renders when neither the operator nor the
  * investigation produced a test-surface item (#1087). An explicit status, not
  * an instruction: the filed body states the fact instead of reading as an
- * unfilled placeholder. Single-sourced here so the validator's scan cannot
- * silently drift from what draftSpec renders.
+ * unfilled placeholder. Single-sourced here (the original rule, AC_FALLBACK's
+ * sibling: the validator's scan cannot silently drift from what draftSpec renders).
  */
 export const TEST_SURFACE_FALLBACK = "no test-surface items were produced";
 

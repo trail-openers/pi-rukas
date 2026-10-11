@@ -207,9 +207,12 @@ export function parseOperatorDirectivesWithLines(
       continue;
     }
     if (!target) {
-      // Outside an open block: nothing is typed. Bullets here belong to an
-      // unrecognised heading (e.g. `Decisions:`) and must stay in the filed
-      // inventory — consuming them silently dropped operator content (#1087).
+      // Outside an open block: a bulleted line is a typed-block line the
+      // parser consumes (it never becomes an item — same as before, now
+      // visible to the inventory exclusion).
+      // #1087: superseded — outside an open block nothing is typed, so bullets
+      // under an unrecognised heading (e.g. `Decisions:`) stay in the filed
+      // inventory instead of being consumed and silently dropped.
       continue;
     }
     if (LABEL_RE.test(line)) {

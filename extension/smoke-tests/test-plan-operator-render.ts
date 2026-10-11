@@ -277,6 +277,30 @@ function renders(sec: string, item: string): boolean {
     ac.includes("5 further operator item(s) omitted"),
     "ceiling: the omission is stated in the body, not silent",
   );
+  assert(
+    !validateDraft("feature", r.body, 0).ok,
+    "ceiling: a truncated operator list halts validation (not filed missing items)",
+  );
+}
+
+{
+  // A spike has no AC section to pair a suggested block with: angle criteria
+  // beside operator items must not render a Suggested additional criteria block.
+  const r = draftSpec(
+    "spike",
+    "d",
+    [angle("scoping", "acceptance-criterion", ["angle spike criterion"])],
+    [],
+    [],
+    [],
+    0,
+    { ...NO_DIRS, acceptanceCriteria: ["operator spike deliverable"] },
+    [],
+  );
+  assert(
+    !r.body.includes("## Suggested additional criteria"),
+    "spike: no Suggested additional criteria block is rendered",
+  );
 }
 
 {

@@ -307,6 +307,11 @@ export function draftSpec(
       ? angleLines.join("\n")
       : "- (no code-named investigation angles ran for this descriptor)";
 
+  // Acceptance criteria — operator directives first, then structured items
+  // from ALL angles (D1: the Test surface section no longer double-uses
+  // lines). #858: de-duplicated on normalised text across BOTH sources
+  // (first occurrence wins — an operator line beats an angle item that
+  // restates it modulo case/whitespace/punctuation).
   // #1087: operator items are authority, so the investigation cap never
   // applies to them — they are bounded only by capOperatorItems (plan-validate)
   // and the tooLarge halt. An unterminated block (round 9) swallowed trailing
@@ -334,8 +339,10 @@ export function draftSpec(
       : "";
 
   // An operator TEST SURFACE directive REPLACES the angle items (unlike
-  // ACs, which prepend) — "exactly: none" must not be diluted (C2). Operator
-  // text is never capped or clipped (D2, #1087); only angle items are capped.
+  // ACs, which prepend) — "exactly: none" must not be diluted (C2). The
+  // count cap applies to BOTH branches (round 9: an unterminated block
+  // swallowed trailing prose unbounded); operator text stays unclipped (D2).
+  // #1087: operator text is never capped or clipped; only angle items are capped.
   const opTestSurface = capOperatorItems(directives.testSurface ?? []);
   const testSurface =
     sectionBullets(
