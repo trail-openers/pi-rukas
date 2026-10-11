@@ -232,17 +232,19 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
     let dirtWritten = false;
     let dirtWriteError: unknown;
     let dirtSurvived = false;
-    let checkoutForceCount = 0;
+    let restoreCheckoutCount = 0;
+    // #1093 — the success-path restore is a plain `git checkout "<ref>"`.
+    const restoreCmd = 'git checkout "operator-feature"';
     const stub: ExecFn = async (cmd, opts) => {
       const isRoot = opts?.cwd === dir;
       const res = await pExec(cmd, { cwd: opts?.cwd, maxBuffer: opts?.maxBuffer });
-      if (isRoot && cmd.startsWith("git checkout --force")) {
-        checkoutForceCount += 1;
-        // Write the dirt after the FIRST `git checkout --force` (the
-        // restore's) so the on-disk file survives and the post-condition
-        // read sees it. A write failure is recorded, not swallowed — the
-        // test's "dirt was written" assertion must fail on its own terms.
-        if (!dirtWritten && checkoutForceCount === 1) {
+      if (isRoot && cmd === restoreCmd) {
+        restoreCheckoutCount += 1;
+        // Write the dirt after the FIRST restore checkout so the on-disk file
+        // survives and the post-condition read sees it. A write failure is
+        // recorded, not swallowed — the test's "dirt was written" assertion
+        // must fail on its own terms.
+        if (!dirtWritten && restoreCheckoutCount === 1) {
           try {
             writeFileSync(dirtFile, "dirt\n");
             dirtWritten = true;
@@ -275,7 +277,10 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
       dirtWriteError === undefined,
       "#968 forced-restore-failure: the dirt writeFileSync did not throw (write failures fail on their own terms)",
     );
-    assert(dirtWritten, "#968 forced-restore-failure: the stub intercepted `git checkout --force` and wrote the tracked dirt");
+    assert(
+      dirtWritten,
+      "#968 forced-restore-failure: the stub intercepted the restore checkout and wrote the tracked dirt",
+    );
     assert(
       dirtSurvived,
       "#968 forced-restore-failure: the tracked dirt survived to the restore's post-condition read (the intercept did not drift)",
@@ -370,7 +375,7 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
     "#968 render: chat header does NOT carry its own restored claim (verified case)",
   );
   // (b) the not-restored failure is printed by both surfaces.
-  const bad=
+  const bad =
     "repoRoot was NOT restored: still dirty after reset + checkout: a.txt (discarded state preserved at /tmp/x)";
   const sBad = makeState(bad);
   const mdBad = renderHandoffMarkdown(sBad);
