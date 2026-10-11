@@ -65,6 +65,9 @@ export function fmtEvent(e: WorkEvent): string {
       }${e.note ? ` · ${e.note}` : ""}`;
     case "dispatch-started":
       return `  dispatch-started · ${e.step} · ${e.label}`;
+    case "explore-retried":
+      // #1094 — the one automatic explore re-dispatch after a reply with no `## Spec`.
+      return `  explore-retried · no \`## Spec\` in reply${e.verdictParsed ? " (verdict present)" : ""} · first ${e.firstJobId}`;
     case "dispatch-completed":
       return `  dispatch-completed · ${e.step} · ${e.label} · ${fmtElapsed(e.ms)}`;
     case "dispatch-failed":

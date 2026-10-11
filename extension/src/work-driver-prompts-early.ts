@@ -106,16 +106,31 @@ export function inlineExplorePrompt(
     "  2b. `vipune search 'invariant-removal <basename>' --memory-type guard --no-hybrid --recency 0.0 --limit 3` for guard memories about recent constraint removals (invariant-removal scan),",
     "  3. `mcp__codebase_memory__search_code({query: '<concept>'})` for existing relevant code.",
     "",
-    "Return a STRUCTURED summary the work-driver can route on:",
-    ...verdictBlock,
-    "  - parallel-workstream candidates (heading: `## Workstreams`),",
-    "  - relevant prior decisions (heading: `## Prior decisions`),",
-    "  - touchpoint files (heading: `## Touchpoints`).",
-    "",
+    // #1094 — the intent path returns ONE spec (the `## Spec` block below).
+    // The legacy headings were listed here too, and a model answering in that
+    // shape produced a reply with no `## Spec` — the driver then parked.
+    ...(useLegacyVerdict
+      ? [
+          "Return a STRUCTURED summary the work-driver can route on:",
+          ...verdictBlock,
+          "  - parallel-workstream candidates (heading: `## Workstreams`),",
+          "  - relevant prior decisions (heading: `## Prior decisions`),",
+          "  - touchpoint files (heading: `## Touchpoints`).",
+          "",
+        ]
+      : []),
     verdictDoctrine,
     useLegacyVerdict ? "" : intentResolutionBlock(issues),
     bodyBlock,
     scratchHygieneSection(scratchDirAbs),
+    // #1094 — the last thing the model reads, after the issue body. Without a
+    // `## Spec` heading the cycle parks, so say so where it will be read.
+    ...(useLegacyVerdict
+      ? []
+      : [
+          "",
+          "Your reply MUST contain the `INTENT-VERDICT:` line and a `## Spec` block (inline, or in a scratch file you cite); a reply without them is retried once, then the cycle parks.",
+        ]),
     // #397 — drop the block the gate above suppressed, so removing a protocol
     // does not leave a stray blank line where it used to be.
   ]

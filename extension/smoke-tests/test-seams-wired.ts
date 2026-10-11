@@ -136,7 +136,7 @@ const SEAMS: Seam[] = [
       markDispatchStarted:
         "resume plumbing — write-ahead dispatch-started; exercised by test-resume.ts",
     },
-    canary: { symbol: "beginDispatch", importer: "work-driver-explore-run.ts" },
+    canary: { symbol: "beginDispatch", importer: "work-driver-explore-dispatch.ts" },
   },
   {
     // #594 — spec artifact validation, precedence, and file operations.
@@ -152,7 +152,7 @@ const SEAMS: Seam[] = [
       exploreSpecArtifactPath:
         "#594 — artifact path helper; called by test-work-driver-pr12.ts and internally by readSpecArtifact/deleteSpecArtifact",
     },
-    canary: { symbol: "resolveIntentVerdict", importer: "work-driver-explore-run.ts" },
+    canary: { symbol: "resolveIntentVerdict", importer: "work-driver-explore-dispatch.ts" },
   },
   {
     // #750 — the shared verified-restore helper for consolidation abort

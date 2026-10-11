@@ -74,6 +74,16 @@ export type WorkEvent =
       round?: number;
     }
   | AdversarialEventFragment
+  /** #1094 — explore re-dispatched once after a completed reply had no `## Spec`. */
+  | {
+      kind: "explore-retried";
+      step: "explore";
+      at: number;
+      /** Whether the unreadable reply still carried an `INTENT-VERDICT:` token. */
+      verdictParsed: boolean;
+      /** The job id of the attempt that produced the unreadable reply. */
+      firstJobId: string;
+    }
   | {
       kind: "dispatch-started";
       step: WorkStep;
