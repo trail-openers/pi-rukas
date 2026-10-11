@@ -284,8 +284,8 @@ const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
 }
 
 {
-  // Operator testSurface count cap: 21 directive items render as 20 (the
-  // section cap) — an unbounded leak can no longer flood the filed body.
+  // #1087: operator testSurface items are NEVER count-capped — all 21 render;
+  // the cap bounds investigation-derived items only.
   const many = Array.from({ length: 21 }, (_, i) => `operator test item ${i}`);
   const capped = draftSpec(
     "feature",
@@ -303,8 +303,8 @@ const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
     capped.body.indexOf("## Edge cases"),
   );
   assert(
-    ts.includes("operator test item 19") && !ts.includes("operator test item 20"),
-    "cap: operator TEST SURFACE items are count-capped at the section cap (20)",
+    ts.includes("operator test item 19") && ts.includes("operator test item 20"),
+    "cap: operator TEST SURFACE items are uncapped (all 21 render, #1087)",
   );
   assert(
     !ts.includes("…"),

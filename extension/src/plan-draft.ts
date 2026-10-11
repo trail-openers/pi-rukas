@@ -301,26 +301,34 @@ export function draftSpec(
       ? angleLines.join("\n")
       : "- (no code-named investigation angles ran for this descriptor)";
 
-  // Acceptance criteria — operator directives first, then structured items
-  // from ALL angles (D1: the Test surface section no longer double-uses
-  // lines). #858: de-duplicated on normalised text across BOTH sources
-  // (first occurrence wins — an operator line beats an angle item that
-  // restates it modulo case/whitespace/punctuation).
-  const acItems = dedupeByNormalised([
-    ...directives.acceptanceCriteria,
-    ...itemsByKind(findings, "acceptance-criterion").map((i) => clip(i.text)),
-  ]).slice(0, cap);
+  // #1087: operator items are authority and are NEVER count-capped — the
+  // cap bounds investigation-derived items only. When the operator supplied
+  // ACCEPTANCE CRITERIA they ARE the section; angle-derived criteria (often
+  // paraphrases of the operator's own) move under a separate heading instead
+  // of sitting beside them. #858: de-duplicated on normalised text (first
+  // occurrence wins).
+  const opAc = dedupeByNormalised(directives.acceptanceCriteria);
+  const angleAc = itemsByKind(findings, "acceptance-criterion").map((i) => clip(i.text));
+  const acItems = opAc.length > 0 ? opAc : dedupeByNormalised(angleAc).slice(0, cap);
+  const suggestedAc =
+    opAc.length > 0
+      ? dedupeByNormalised([...opAc, ...angleAc]).slice(opAc.length, opAc.length + cap)
+      : [];
+  const suggestedSection =
+    suggestedAc.length > 0
+      ? `\n## Suggested additional criteria\n\n${suggestedAc.map((s) => `- ${s}`).join("\n")}\n`
+      : "";
 
   // An operator TEST SURFACE directive REPLACES the angle items (unlike
-  // ACs, which prepend) — "exactly: none" must not be diluted (C2). The
-  // count cap applies to BOTH branches (round 9: an unterminated block
-  // swallowed trailing prose unbounded); operator text stays unclipped (D2).
+  // ACs, which prepend) — "exactly: none" must not be diluted (C2). Operator
+  // text is never capped or clipped (D2, #1087); only angle items are capped.
   const opTestSurface = directives.testSurface ?? [];
   const testSurface = sectionBullets(
-    (opTestSurface.length > 0
+    opTestSurface.length > 0
       ? opTestSurface
-      : itemsByKind(findings, "test-surface-item").map((i) => clip(i.text))
-    ).slice(0, cap),
+      : itemsByKind(findings, "test-surface-item")
+          .map((i) => clip(i.text))
+          .slice(0, cap),
     TEST_SURFACE_FALLBACK,
   );
 
@@ -344,8 +352,10 @@ export function draftSpec(
   // pitfalls take precedence.
   const edgeItems = [
     ...directives.pitfalls,
-    ...itemsByKind(findings, "edge-case").map((i) => clip(i.text)),
-  ].slice(0, cap);
+    ...itemsByKind(findings, "edge-case")
+      .map((i) => clip(i.text))
+      .slice(0, cap),
+  ];
   const edgeCases = sectionBullets(edgeItems, "none surfaced by the investigation angles");
 
   const depthLimit = depth >= EPIC_SUB_ISSUE_DEPTH_LIMIT ? `\n${DEPTH_LIMIT_NOTE}\n` : "";
@@ -354,11 +364,19 @@ export function draftSpec(
   // survive compaction); only the per-item TEXT clips — epicSubIssues
   // clips before decorating so the checkbox prefix and the
   // "(sub-issue N, from angle)" attribution survive every budget stage.
+  // #1087: an operator DECOMPOSITION block renders under its own sub-heading
+  // so the angle-derived sub-issue list (what validateDraft counts) stays
+  // distinct from the operator's constraints.
+  const opDecomposition = dedupeByNormalised(directives.decomposition ?? []);
   const subIssues =
     type === "epic" && depth < EPIC_SUB_ISSUE_DEPTH_LIMIT
       ? `\n## Sub-issues\n\n${
           epicSubIssues(findings, clip).join("\n") || `- ${SUB_ISSUES_FALLBACK}`
-        }\n`
+        }\n${
+          opDecomposition.length > 0
+            ? `\n### Operator decomposition\n\n${opDecomposition.map((s) => `- ${s}`).join("\n")}\n`
+            : ""
+        }`
       : "";
 
   const oosAll = [
@@ -378,8 +396,9 @@ export function draftSpec(
             ...findings
               .filter((x) => x.name === "scoping" && x.ok)
               .flatMap((x) => x.toolUses)
-              .map((i) => clip(i.text)),
-          ].slice(0, cap),
+              .map((i) => clip(i.text))
+              .slice(0, cap),
+          ],
           SPIKE_DELIVERABLE_FALLBACK,
         )}\n`
       : `## Acceptance criteria\n\n${sectionBullets(acItems, AC_FALLBACK)}\n`;
@@ -404,7 +423,7 @@ ${ctx}
 
 ${techContext}
 
-${acSection}
+${acSection}${suggestedSection}
 ## References
 
 ${references}

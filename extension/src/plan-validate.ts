@@ -74,10 +74,14 @@ export const AC_FALLBACK =
 /** The Sub-issues fallback draftSpec renders when no decomposition exists. */
 export const SUB_ISSUES_FALLBACK = "(decomposition not available)";
 
-/** The Test-surface fallback (single-sourced here so the validator's scan
- * cannot silently drift from what draftSpec renders — same rule as
- * AC_FALLBACK). */
-export const TEST_SURFACE_FALLBACK = "catalogue the tests near the work area in Phase 2";
+/**
+ * The Test-surface status draftSpec renders when neither the operator nor the
+ * investigation produced a test-surface item (#1087). An explicit status, not
+ * an instruction: the filed body states the fact instead of reading as an
+ * unfilled placeholder. Single-sourced here so the validator's scan cannot
+ * silently drift from what draftSpec renders.
+ */
+export const TEST_SURFACE_FALLBACK = "no test-surface items were produced";
 
 /** The References fallback draftSpec renders when no reference exists. */
 export const REFERENCES_FALLBACK =
@@ -156,7 +160,9 @@ export function validateDraft(
     }
   }
   if (type === "epic" && depth < EPIC_SUB_ISSUE_DEPTH_LIMIT) {
-    const sub = sliceSection(body, "Sub-issues");
+    // Only the angle-derived list counts: an "### Operator decomposition"
+    // sub-heading (#1087) carries the operator's constraints, not sub-issues.
+    const sub = sliceSection(body, "Sub-issues")?.split(/^### /m)[0];
     if (!sub || sub.includes(SUB_ISSUES_FALLBACK)) {
       problems.push(
         "the epic has no sub-issue decomposition — the decomposition-surface angle produced no sub-issue items",
@@ -190,7 +196,7 @@ export function validateDraft(
     const ts = sliceSection(body, "Test surface");
     if (ts?.includes(TEST_SURFACE_FALLBACK)) {
       problems.push(
-        "the spike's Test surface section is the fallback placeholder despite operator-supplied context — state the intended test surface via a TEST SURFACE block in the context param",
+        "the spike's Test surface section reports no test-surface items despite operator-supplied context — state the intended test surface via a TEST SURFACE block in the context param",
       );
     }
   }
