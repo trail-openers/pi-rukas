@@ -17,16 +17,18 @@
  * drafted and reviewed, and filing it does not depend on the tree.
  */
 import type { MechanicalInventory } from "./plan-draft.ts";
+import { haltResult } from "./plan-driver-halt.ts";
 import { type FilingFailure, fileIssue, getPlanForge, planForgeFor } from "./plan-filing.ts";
 import type { InvestigationResult } from "./plan-investigate.ts";
 import {
   type CacheInputs,
   type PlanGitState,
-  consumeInvestigationCache,
   claimFileableDryRun,
+  concurrentFilingOf,
+  consumeInvestigationCache,
   writeInvestigationCache,
 } from "./plan-investigation-cache.ts";
-import type { PlanGap, PlanPhaseTiming, PlanResult } from "./plan-types.ts";
+import { type PlanGap, type PlanPhaseTiming, type PlanResult, planTitle } from "./plan-types.ts";
 
 /** What a finished pipeline run hands the cache: its inputs' outputs and verdict. */
 export interface SettleRun {
@@ -39,6 +41,7 @@ export interface SettleRun {
   title: string;
   spec: string;
   priorContext: { source: string; fact: string }[];
+  failedAngles?: { name: string; detail: string }[];
 }
 
 /**
@@ -63,6 +66,7 @@ export async function settlePlanCache(
         title: run.title,
         spec: run.spec,
         priorContext: run.priorContext,
+        failedAngles: run.failedAngles,
       },
     });
   } else if (run.issueUrl) {
@@ -81,8 +85,25 @@ export async function fileReviewedDryRun(
   finishTimings: () => PlanPhaseTiming[],
 ): Promise<PlanResult | undefined> {
   const claimed = await claimFileableDryRun(cacheDir, inputs);
-  if (!claimed) return undefined;
-  const { title, spec, priorContext } = claimed.reviewed;
+  if (!claimed) {
+    // A miss runs the pipeline. An identical confirm that is already filing (or
+    // just filed) must NOT: the pipeline would re-investigate and could file a
+    // second issue before the first one is visible to its duplicate check.
+    const busy = await concurrentFilingOf(cacheDir, inputs);
+    if (!busy) return undefined;
+    const detail = busy.url
+      ? `an identical confirm filed this dry run as ${busy.url} moments ago — refusing a second copy`
+      : "an identical confirm is already filing this dry run — refusing a concurrent second copy; re-call once it has finished";
+    return haltResult({
+      type: inputs.type,
+      title: planTitle(inputs.descriptor, inputs.type),
+      spec: `(not filed — ${detail})`,
+      priorContext: [],
+      failure: { reason: "filing-in-progress", detail },
+      timings: finishTimings(),
+    });
+  }
+  const { title, spec, priorContext, failedAngles } = claimed.reviewed;
   // A throw from the forge releases the claim before propagating.
   const { url, failure } = await fileIssue(
     title,
@@ -93,7 +114,7 @@ export async function fileReviewedDryRun(
     throw err;
   });
   // Consume only once the forge answered: a failed filing keeps the entry.
-  if (url) await claimed.commit();
+  if (url) await claimed.commit(url);
   else await claimed.release();
   return {
     type: inputs.type,
@@ -101,6 +122,7 @@ export async function fileReviewedDryRun(
     spec,
     gaps: claimed.gaps,
     priorContext,
+    failedAngles: failedAngles && failedAngles.length > 0 ? failedAngles : undefined,
     filed: !!url,
     issueUrl: url,
     filingFailure: failure,

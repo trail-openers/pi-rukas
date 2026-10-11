@@ -50,7 +50,8 @@ export interface FilingFailure {
     | "draft-invalid"
     | "duplicate-risk"
     | "review-unparseable"
-    | "body-too-large";
+    | "body-too-large"
+    | "filing-in-progress";
   detail?: string;
 }
 

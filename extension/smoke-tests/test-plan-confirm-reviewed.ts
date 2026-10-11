@@ -14,6 +14,7 @@
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileReviewedDryRun } from "../src/plan-confirm.ts";
 import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
 import { claimFileableDryRun, setPlanGitStateFn } from "../src/plan-investigation-cache.ts";
 import { type RegisteredPlanTool, registerPlanTool } from "../src/plan-tool.ts";
@@ -144,13 +145,11 @@ assert(filed?.title === dry.title, "(e) the filed title is the dry run's title")
 installDispatch(GAP_HIGH);
 const repeat = await pipeline();
 assert(
-  repeat.filedFromDryRun === undefined,
-  "a repeat confirm after filing is not a verbatim re-file",
+  !repeat.filed && repeat.filingFailure?.reason === "filing-in-progress",
+  "a repeat confirm within the filed-marker window is refused, not re-filed",
 );
-assert(
-  log.explore > 0,
-  "a repeat confirm after filing runs the pipeline (duplicate check applies)",
-);
+assert(log.explore === 0, "the refused repeat runs no investigation");
+assert(forgeStub.created.length === 1, "the repeat files nothing: still exactly one issue");
 
 // ------------------------------------------------------------- the claim is exclusive
 
@@ -168,6 +167,34 @@ await first?.release();
 assert(
   (await claimFileableDryRun(cacheDir, claimInputs)) !== undefined,
   "a released claim restores the entry",
+);
+
+// ------------------------------------------------------------- the race: a miss while an identical confirm is filing
+
+await newCache();
+installDispatch(GAP_HIGH);
+await pipeline({ dryRun: true });
+const raceInputs = { descriptor: DESC, type: "feature" as const, head };
+const held = await claimFileableDryRun(cacheDir, raceInputs);
+installDispatch(GAP_HIGH);
+const raced = await fileReviewedDryRun(cacheDir, raceInputs, REPO, () => []);
+assert(
+  !!raced && !raced.filed && raced.filingFailure?.reason === "filing-in-progress",
+  "a confirm that misses a claim held by an identical in-flight confirm is refused",
+);
+assert(
+  log.explore === 0 && forgeStub.created.length === 0,
+  "the refused race runs no pipeline and files nothing",
+);
+await held?.release();
+
+const won = await claimFileableDryRun(cacheDir, raceInputs);
+await won?.commit("https://example.test/issues/9");
+const late = await fileReviewedDryRun(cacheDir, raceInputs, REPO, () => []);
+assert(
+  late?.filingFailure?.reason === "filing-in-progress" &&
+    (late.filingFailure.detail ?? "").includes("example.test/issues/9"),
+  "a confirm arriving just after a filing is refused and names the filed URL",
 );
 
 // ------------------------------------------------------------- rendered statement

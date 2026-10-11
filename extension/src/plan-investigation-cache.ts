@@ -46,6 +46,13 @@ const execFileP = promisify(execFile);
 /** Bounded expiry: a dry run older than this is not reused (2 hours). */
 export const INVESTIGATION_CACHE_TTL_MS = 2 * 60 * 60_000;
 
+/**
+ * How long a claim (an in-flight filing) or a filed-marker (a filing that just
+ * completed) refuses a concurrent identical confirm. Filing is seconds; a claim
+ * older than this is a crash leftover and no longer counts.
+ */
+export const RECENT_FILING_WINDOW_MS = 10 * 60_000;
+
 export interface CacheInputs {
   descriptor: string;
   context?: string;
@@ -73,6 +80,8 @@ export interface ReviewedDryRun {
   title: string;
   spec: string;
   priorContext: { source: string; fact: string }[];
+  /** Angles that failed in the dry run — disclosed again on a verbatim filing. */
+  failedAngles?: { name: string; detail: string }[];
 }
 
 interface InvestigationCacheEntry extends CachedInvestigation {
@@ -164,6 +173,7 @@ function isReviewed(x: unknown): x is ReviewedDryRun {
     typeof r.title === "string" &&
     typeof r.spec === "string" &&
     Array.isArray(r.priorContext) &&
+    (r.failedAngles === undefined || Array.isArray(r.failedAngles)) &&
     // A fileable entry must carry something to file.
     (!r.fileable || (r.title.trim().length > 0 && r.spec.trim().length > 0))
   );
@@ -206,10 +216,25 @@ export interface ClaimedDryRun {
   reviewed: ReviewedDryRun;
   gaps: PlanGap[];
   ageMs: number;
-  /** Filing succeeded: the claimed entry is dropped for good. */
-  commit(): Promise<void>;
+  /**
+   * Filing succeeded: leave a short-lived filed-marker (so a concurrent identical
+   * confirm is refused, not re-run) and drop the claim.
+   */
+  commit(url: string): Promise<void>;
   /** Filing failed: the entry is restored so a retry can file the same bytes. */
   release(): Promise<void>;
+}
+
+/** Filed-marker path for an entry file (`<lineage>.filed`, not `.json`, so readers skip it). */
+const markerOf = (file: string): string => file.replace(/\.json$/, ".filed");
+
+/**
+ * Put a claimed entry back. `link` never overwrites: a fresher dry run that
+ * wrote the entry while this claim was held wins, and the older bytes are dropped.
+ */
+async function restoreClaim(claim: string, file: string): Promise<void> {
+  await fs.link(claim, file).catch(() => undefined);
+  await fs.rm(claim, { force: true }).catch(() => undefined);
 }
 
 /**
@@ -240,16 +265,53 @@ export async function claimFileableDryRun(
     ageMs < 0 ||
     ageMs > INVESTIGATION_CACHE_TTL_MS
   ) {
-    await fs.rename(claim, file).catch(() => undefined);
+    await restoreClaim(claim, file);
     return undefined;
   }
   return {
     reviewed: entry.reviewed,
     gaps: entry.gaps,
     ageMs,
-    commit: () => fs.rm(claim, { force: true }).catch(() => undefined),
-    release: () => fs.rename(claim, file).catch(() => undefined),
+    commit: async (url) => {
+      // Marker first: there is never a moment with neither claim nor marker.
+      await fs.writeFile(markerOf(file), JSON.stringify({ at: Date.now(), url })).catch(() => {});
+      await fs.rm(claim, { force: true }).catch(() => undefined);
+    },
+    release: () => restoreClaim(claim, file),
   };
+}
+
+/**
+ * Whether an identical confirm is already filing this lineage, or filed it a
+ * moment ago. A caller whose claim missed must consult this before running the
+ * full pipeline: a miss there re-investigates and can file a second issue while
+ * the first is still in flight. Undefined for a plain miss.
+ */
+export async function concurrentFilingOf(
+  cacheDir: string,
+  inputs: CacheInputs,
+  now: number = Date.now(),
+): Promise<{ url?: string } | undefined> {
+  const file = entryFile(cacheDir, inputs);
+  const marker = await fs
+    .readFile(markerOf(file), "utf8")
+    .then((t) => JSON.parse(t) as { at?: unknown; url?: unknown })
+    .catch(() => undefined);
+  if (
+    marker &&
+    typeof marker.at === "number" &&
+    Math.abs(now - marker.at) <= RECENT_FILING_WINDOW_MS
+  ) {
+    return { url: typeof marker.url === "string" ? marker.url : undefined };
+  }
+  const prefix = `${path.basename(file)}.`;
+  const names = await fs.readdir(cacheDir).catch(() => [] as string[]);
+  for (const name of names) {
+    if (!name.startsWith(prefix) || !name.endsWith(".claim")) continue;
+    const st = await fs.stat(path.join(cacheDir, name)).catch(() => undefined);
+    if (st && now - st.mtimeMs <= RECENT_FILING_WINDOW_MS) return {};
+  }
+  return undefined;
 }
 
 /**
@@ -297,8 +359,25 @@ export async function writeInvestigationCache(
     await fs.writeFile(tmp, JSON.stringify(entry));
     await fs.rename(tmp, file);
   } catch (err) {
+    await fs.rm(tmp, { force: true }).catch(() => undefined);
     trace(
       `plan-investigation-cache: write failed — dry run not cached (${(err as Error).message})`,
     );
+    return;
+  }
+  await sweepStale(cacheDir, now);
+}
+
+/**
+ * Remove expired entries and crash leftovers (stale claims, markers, temp files)
+ * so the per-clone cache directory cannot grow without bound.
+ */
+async function sweepStale(cacheDir: string, now: number): Promise<void> {
+  const names = await fs.readdir(cacheDir).catch(() => [] as string[]);
+  for (const name of names) {
+    const limit = name.endsWith(".json") ? INVESTIGATION_CACHE_TTL_MS : RECENT_FILING_WINDOW_MS;
+    const p = path.join(cacheDir, name);
+    const st = await fs.stat(p).catch(() => undefined);
+    if (st && now - st.mtimeMs > limit) await fs.rm(p, { force: true }).catch(() => undefined);
   }
 }

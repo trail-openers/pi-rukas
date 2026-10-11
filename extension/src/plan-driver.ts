@@ -446,6 +446,7 @@ export async function runPlanPipeline(
     title,
     spec: finalBody,
     priorContext: inventoryContext.slice(0, 15),
+    failedAngles,
   });
 
   // #633: report BOTH how many angles were dispatched and how many produced
