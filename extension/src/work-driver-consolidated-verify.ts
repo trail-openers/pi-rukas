@@ -189,7 +189,7 @@ export async function runConsolidatedVerifyUnlocked(
   // builder (the not-restored variant carries the preserved-diff location and
   // the still-dirty detail — the loud failure, never a bare "restored").
   const restoreClaimFor = (r: VerifiedRestoreResult) =>
-    restoreClaim(r, "the batch was aborted and");
+    restoreClaim(r, { label: "the batch was aborted and" });
   try {
     // Preflight — same as integrate(): repoRoot must be clean before we
     // touch its checkout, or a dirty root would carry operator residue

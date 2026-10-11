@@ -99,11 +99,12 @@ function mergeGateGreen(cmd: string): { stdout: string } | undefined {
 
 function mkExecFull(calls: string[], branch: string, throwFirstView: boolean): VerifyExecFn {
   let vc = 0;
-  return async (cmd: string) => {
-    calls.push(cmd);
-    const green = mergeGateGreen(cmd);
+  return async (cmd: string, opts?: { argv?: string[] }) => {
+    const line = opts?.argv ? [cmd, ...opts.argv].join(" ") : cmd;
+    calls.push(line);
+    const green = mergeGateGreen(line);
     if (green) return green;
-    if (cmd.includes("gh pr view")) {
+    if (line.includes("gh pr view")) {
       vc++;
       if (throwFirstView && vc === 1)
         return Promise.reject(Object.assign(new Error("not merged"), { stderr: "not merged" }));

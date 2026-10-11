@@ -347,7 +347,13 @@ export async function runMerged(
         // sibling group mid-integrate would find itself moved onto it and
         // commit there, so this takes the same lock as integration.
         const restorationNotes = await withIntegrationLock(ctx.repoRoot, () =>
-          restoreCheckout(ctx.repoRoot, mainline, state.pipelineState.branchName, execFn, startRef),
+          restoreCheckout({
+            repoRoot: ctx.repoRoot,
+            mainline,
+            mergedBranch: state.pipelineState.branchName,
+            execFn,
+            startRef,
+          }),
         );
         for (const note of restorationNotes) {
           // Log restoration notes (informational — not errors).

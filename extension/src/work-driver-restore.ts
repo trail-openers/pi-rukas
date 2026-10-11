@@ -46,6 +46,53 @@ import path from "node:path";
 import { trace } from "./trace.ts";
 import type { ExecFn } from "./worktree.ts";
 
+/** A full commit SHA: the only ref form a detached start can produce. */
+const FULL_SHA = /^[0-9a-f]{40}$/;
+/** A name a restore may pass to git: no shell metacharacters, no leading `-`. */
+const PLAIN_REF = /^[A-Za-z0-9_][A-Za-z0-9._/-]*$/;
+
+/**
+ * #1093 — why `ref` may not be checked out, or `undefined` when it may. A
+ * 40-hex SHA, or a plain name that `git check-ref-format --branch` accepts.
+ * Refused before git sees it: anything with shell or option syntax (`$(…)`,
+ * backticks, a leading `-`). Callers pass the ref through argv, so this is a
+ * second, validity check, not the only thing standing between a ref and sh.
+ */
+export async function restoreRefProblem(
+  execFn: ExecFn,
+  repoRoot: string,
+  ref: string,
+): Promise<string | undefined> {
+  if (FULL_SHA.test(ref)) return undefined;
+  if (!PLAIN_REF.test(ref)) return `"${ref}" contains characters a restore will not check out`;
+  try {
+    await execFn("git", {
+      cwd: repoRoot,
+      maxBuffer: 64 * 1024,
+      argv: ["check-ref-format", "--branch", ref],
+    });
+    return undefined;
+  } catch (err) {
+    return `"${ref}" is not a valid branch name (${(err as Error).message?.slice(0, 120)})`;
+  }
+}
+
+/**
+ * The tracked dirt at repoRoot (`git status --porcelain`, minus untracked `??`
+ * entries and `.worktrees/` scaffolding). The single post-condition read every
+ * restore verifies against. Throws when git cannot be read.
+ */
+async function trackedDirt(execFn: ExecFn, repoRoot: string): Promise<string[]> {
+  const { stdout } = await execFn("git", {
+    cwd: repoRoot,
+    maxBuffer: 1024 * 1024,
+    argv: ["status", "--porcelain"],
+  });
+  return stdout
+    .split("\n")
+    .filter((l) => l.trim() && !l.startsWith("??") && !/^..\s+"?\.worktrees\//.test(l));
+}
+
 /** The verified post-condition of a restore attempt. */
 export interface VerifiedRestoreResult {
   /** True only when `git status --porcelain` at repoRoot was empty of
@@ -73,9 +120,9 @@ export interface VerifiedRestoreResult {
  */
 export function restoreClaim(
   r: VerifiedRestoreResult | undefined,
-  label?: string,
-  trailing?: string,
+  opts: { label?: string; trailing?: string } = {},
 ): string {
+  const { label, trailing } = opts;
   if (r === undefined) return "the batch was aborted";
   if (r.restored) {
     const restored = "repoRoot was verified restored";
@@ -99,17 +146,20 @@ async function preserveDiscardedState(
   label: string,
 ): Promise<string | undefined> {
   try {
-    const { stdout: status } = await execFn("git status --porcelain", {
+    const { stdout: status } = await execFn("git", {
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
+      argv: ["status", "--porcelain"],
     });
-    const { stdout: unstaged } = await execFn("git diff", {
+    const { stdout: unstaged } = await execFn("git", {
       cwd: repoRoot,
       maxBuffer: 8 * 1024 * 1024,
+      argv: ["diff"],
     });
-    const { stdout: staged } = await execFn("git diff --cached", {
+    const { stdout: staged } = await execFn("git", {
       cwd: repoRoot,
       maxBuffer: 8 * 1024 * 1024,
+      argv: ["diff", "--cached"],
     });
     if (!status.trim() && !unstaged.trim() && !staged.trim()) return undefined;
     fs.mkdirSync(scratchDir, { recursive: true });
@@ -119,7 +169,7 @@ async function preserveDiscardedState(
     );
     const body = `# #750 — repoRoot state discarded by a consolidation restore
 # label: ${label}
-# captured before: git reset --hard && git checkout --force
+# captured before the restore's reset and checkout
 
 --- status (git status --porcelain) ---
 ${status}
@@ -142,34 +192,27 @@ ${staged}
 }
 
 /**
- * #968 — the shared "verified restore + claim" leg: runs
- * `verifiedRestoreRoot`, builds the claim via `restoreClaim` (the verified
- * post-condition on success, the loud "repoRoot was NOT restored: …" on
- * failure), and traces the failure. `label` identifies the caller in the
- * preserved-state file and the trace lines; `trailing` is appended after
- * the not-restored failure (the handoff's variant tells the operator to
- * run git status).
+ * #1093 — the non-forcing restore for an ABORT path (conflict, apply-conflict,
+ * throw). The discarded state is preserved first, exactly as the forced helper
+ * does. Then `git reset` (mixed) clears the index — the conflict's staged and
+ * unmerged entries — WITHOUT touching the working tree, and the checkout is a
+ * plain `restoreRootToRef`. Never `--hard`, never `--force`: when git refuses
+ * the checkout the tree is left as it is and the detail carries the exact
+ * command to run by hand. Never throws.
  */
-export async function verifiedRestoreRootWithClaim(
+export async function restoreRootToRefPreserving(
   execFn: ExecFn,
-  opts: {
-    repoRoot: string;
-    /** Where repoRoot's checkout was before the caller touched it. */
-    originalRef: string;
-    /** Where the discarded state is preserved. Must exist or be creatable. */
-    scratchDir: string;
-    /** Label for trace lines and the preserved file (identifies the caller). */
-    label: string;
-    /** The hint appended after the not-restored failure (e.g. "run git status at the repo root"). */
-    trailing?: string;
-  },
-): Promise<{ restore: VerifiedRestoreResult; claim: string }> {
-  const restore = await verifiedRestoreRoot(execFn, opts);
-  const claim = restoreClaim(restore, undefined, opts.trailing);
-  if (!restore.restored) {
-    trace(`work-driver: ${opts.label} — restore failed: ${restore.detail ?? "unknown"}`);
+  opts: { repoRoot: string; ref: string; scratchDir: string; label: string },
+): Promise<VerifiedRestoreResult> {
+  const { repoRoot, ref, scratchDir, label } = opts;
+  const preservedAt = await preserveDiscardedState(execFn, repoRoot, scratchDir, label);
+  try {
+    await execFn("git", { cwd: repoRoot, maxBuffer: 256 * 1024, argv: ["reset"] });
+  } catch (err) {
+    trace(`work-driver: ${label} — index reset failed: ${(err as Error).message?.slice(0, 160)}`);
   }
-  return { restore, claim };
+  const restore = await restoreRootToRef(execFn, { repoRoot, ref, label });
+  return { ...restore, preservedAt };
 }
 
 /**
@@ -185,9 +228,16 @@ export async function restoreRootToRef(
   opts: { repoRoot: string; ref: string; label: string },
 ): Promise<VerifiedRestoreResult> {
   const { repoRoot, ref, label } = opts;
-  const cmd = `git checkout ${JSON.stringify(ref)}`;
+  // The ref is validated first, so showing it verbatim as the operator's
+  // command is safe.
+  const cmd = `git checkout ${ref}`;
+  const problem = await restoreRefProblem(execFn, repoRoot, ref);
+  if (problem !== undefined) {
+    trace(`work-driver: ${label}: ${cmd} not attempted: ${problem}`);
+    return { restored: false, detail: `not checked out: ${problem}; the tree was left as it is` };
+  }
   try {
-    await execFn(cmd, { cwd: repoRoot, maxBuffer: 256 * 1024 });
+    await execFn("git", { cwd: repoRoot, maxBuffer: 256 * 1024, argv: ["checkout", ref] });
   } catch (err) {
     const msg = (err as Error).message?.slice(0, 160);
     trace(`work-driver: ${label} \u2014 ${cmd} refused: ${msg}`);
@@ -197,13 +247,7 @@ export async function restoreRootToRef(
     };
   }
   try {
-    const { stdout } = await execFn("git status --porcelain", {
-      cwd: repoRoot,
-      maxBuffer: 1024 * 1024,
-    });
-    const dirt = stdout
-      .split("\n")
-      .filter((l) => l.trim() && !l.startsWith("??") && !/^..\s+"?\.worktrees\//.test(l));
+    const dirt = await trackedDirt(execFn, repoRoot);
     if (dirt.length > 0) {
       return {
         restored: false,

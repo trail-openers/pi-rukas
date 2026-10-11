@@ -11,6 +11,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "./trace.ts";
+import { restoreRefProblem, restoreRootToRef } from "./work-driver-restore.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 /**
@@ -19,10 +20,12 @@ import type { WorkState } from "./workflow-state.ts";
  * (NOT an arg array) because the existing exec-based callers format
  * shell commands directly.
  *
- * SECURITY NOTE: any future extension accepting dynamic branch or repo
- * names must NOT interpolate them raw into the shell string — use
- * JSON.stringify for proper quoting, or prefer execFile-style arg arrays
- * when possible.
+ * SECURITY NOTE: any extension accepting dynamic branch or repo names must
+ * NOT interpolate them raw into the shell string — use shellDoubleQuote
+ * (escapes `$`, backtick, `\`, `"`), or prefer execFile-style arg arrays
+ * when possible. JSON.stringify is NOT sufficient: it leaves `$` and backtick
+ * live inside the double quotes that /bin/sh expands. The restore path (#1093)
+ * uses the argv form throughout, with refs validated by restoreRefProblem.
  */
 export type VerifyExecFn = (
   cmd: string,
@@ -140,28 +143,46 @@ export async function detectMainline(
  * never exceptions. The only path that propagates is an unexpected throw
  * from the caller-provided execFn itself (e.g. an exec option rejection).
  */
-export async function restoreCheckout(
-  repoRoot: string,
-  mainline: string | undefined,
-  mergedBranch: string | undefined,
-  execFn: VerifyExecFn,
-  startRef?: string,
-): Promise<string[]> {
+export async function restoreCheckout(opts: {
+  repoRoot: string;
+  mainline: string | undefined;
+  mergedBranch: string | undefined;
+  execFn: VerifyExecFn;
+  /** The cycle-start ref (#1093); absent for pre-#1093 state. */
+  startRef?: string;
+}): Promise<string[]> {
+  const { repoRoot, mainline, mergedBranch, execFn, startRef } = opts;
   const notes: string[] = [];
 
-  // 1. Fetch origin --prune.
+  // 1. Fetch origin --prune. Every git command here is argv-form (#1093): a
+  // ref is data, never shell text.
   try {
-    await execFn("git fetch origin --prune", {
+    await execFn("git", {
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
+      argv: ["fetch", "origin", "--prune"],
     });
   } catch (err) {
     notes.push(`git fetch origin --prune failed: ${(err as Error).message?.slice(0, 200)}`);
     // Continue — subsequent steps may still work with stale refs.
   }
 
-  // 2. The restore target: the cycle-start ref when recorded, else mainline.
-  const target = startRef ?? mainline;
+  // 2. The restore target: the cycle-start ref when it is usable, else
+  // mainline. An unusable ref (#1093: not a SHA, not a name git accepts) is
+  // never checked out; the note says why and that mainline was used instead.
+  let target = mainline;
+  if (startRef === undefined) {
+    notes.push(
+      `no cycle start ref was recorded; restoring to mainline${mainline ? ` ${mainline}` : ""} instead`,
+    );
+  } else {
+    const problem = await restoreRefProblem(execFn, repoRoot, startRef);
+    if (problem === undefined) target = startRef;
+    else
+      notes.push(
+        `cycle start ref not used (${problem}); restoring to mainline${mainline ? ` ${mainline}` : ""} instead`,
+      );
+  }
   if (!target) {
     notes.push(
       "restoreCheckout called without mainline or startRef — skipping checkout restoration",
@@ -169,37 +190,23 @@ export async function restoreCheckout(
     return notes;
   }
   const onMainline = target === mainline;
-  const checkoutCmd = `git checkout ${JSON.stringify(target)}`;
 
-  // 3. Checkout the target. Tolerate already-there. Never forced.
-  try {
-    const { stdout: headRef } = await execFn("git rev-parse --abbrev-ref HEAD", {
-      cwd: repoRoot,
-      maxBuffer: 64 * 1024,
-    });
-    const currentBranch = headRef.trim();
-    if (currentBranch !== target) {
-      await execFn(checkoutCmd, { cwd: repoRoot, maxBuffer: 256 * 1024 });
-      trace(`work-driver: checked out ${target}`);
-    } else {
-      trace(`work-driver: already on ${target}, skipping checkout`);
-    }
-  } catch (err) {
-    const e = err as Error;
-    // Dirty tree, detached HEAD or other git state — report with the exact
-    // command the operator runs. The tree is left as it is (#1093).
-    notes.push(
-      `git checkout ${target} failed (repoRoot was NOT restored): ${e.message?.slice(0, 200)}; run \`${checkoutCmd}\` at the repo root once the tree is clean`,
-    );
+  // 3. Checkout the target via the single non-forcing restore primitive.
+  // Tolerates already-there; a refusal (dirty tree, detached HEAD) leaves the
+  // tree as it is and the note carries the exact command to run by hand.
+  const restore = await restoreRootToRef(execFn, { repoRoot, ref: target, label: "merged" });
+  if (!restore.restored) {
+    notes.push(`repoRoot was NOT restored to ${target}: ${restore.detail ?? "unknown error"}`);
   }
 
   // 4. Pull --ff-only, only when the target is mainline. Tolerate
   // already-up-to-date.
   if (onMainline && mainline) {
     try {
-      await execFn(`git pull --ff-only origin ${JSON.stringify(mainline)}`, {
+      await execFn("git", {
         cwd: repoRoot,
         maxBuffer: 1024 * 1024,
+        argv: ["pull", "--ff-only", "origin", mainline],
       });
     } catch (err) {
       const e = err as Error;
@@ -214,9 +221,10 @@ export async function restoreCheckout(
   // 5. Delete merged feature branch. Tolerate absent branch.
   if (mergedBranch) {
     try {
-      await execFn(`git branch -d ${JSON.stringify(mergedBranch)}`, {
+      await execFn("git", {
         cwd: repoRoot,
         maxBuffer: 64 * 1024,
+        argv: ["branch", "-d", mergedBranch],
       });
       trace(`work-driver: deleted branch ${mergedBranch}`);
     } catch (err) {
@@ -242,18 +250,22 @@ export async function captureCycleStartRef(
   repoRoot: string,
 ): Promise<string> {
   try {
-    const { stdout } = await execFn("git symbolic-ref --quiet --short HEAD", {
+    // The full ref, not `--short`: a tag sharing the branch's short name makes
+    // `--short` emit `heads/<name>`, which is not a name a restore can check out.
+    const { stdout } = await execFn("git", {
       cwd: repoRoot,
       maxBuffer: 64 * 1024,
+      argv: ["symbolic-ref", "--quiet", "HEAD"],
     });
-    const branch = stdout.trim();
-    if (branch) return branch;
+    const full = stdout.trim();
+    if (full.startsWith("refs/heads/")) return full.slice("refs/heads/".length);
   } catch {
     // Detached HEAD: symbolic-ref refuses. Fall through to the SHA.
   }
-  const { stdout } = await execFn("git rev-parse HEAD", {
+  const { stdout } = await execFn("git", {
     cwd: repoRoot,
     maxBuffer: 64 * 1024,
+    argv: ["rev-parse", "HEAD"],
   });
   return stdout.trim();
 }
@@ -265,6 +277,13 @@ export async function captureCycleStartRef(
  * traced and leaves the state without a ref (restores fall back to the
  * pre-#1093 targets) rather than failing the branch step.
  */
+const CAPTURE_FAILED = "could not record the cycle start ref";
+
+/** Did an earlier run fail to capture the start ref? (#1093 — see recordCycleStartRef.) */
+export function hasCaptureFailure(state: WorkState): boolean {
+  return (state.pipelineState.plumbReports ?? []).some((r) => r.body.startsWith(CAPTURE_FAILED));
+}
+
 export async function recordCycleStartRef(
   execFn: VerifyExecFn,
   repoRoot: string,
@@ -276,10 +295,25 @@ export async function recordCycleStartRef(
     trace(`work-driver: cycle started on ${startRef}`);
     return { ...state, pipelineState: { ...state.pipelineState, startRef } };
   } catch (err) {
-    trace(
-      `work-driver: could not record the cycle start ref: ${(err as Error).message?.slice(0, 160)}`,
-    );
-    return state;
+    const msg = (err as Error).message?.slice(0, 160);
+    trace(`work-driver: could not record the cycle start ref: ${msg}`);
+    // Surfaced in the handoff (plumbReports), not only traced: without a ref the
+    // restore falls back to mainline, which the operator must be told about.
+    return {
+      ...state,
+      pipelineState: {
+        ...state.pipelineState,
+        plumbReports: [
+          ...(state.pipelineState.plumbReports ?? []),
+          {
+            step: "branch",
+            role: "driver",
+            body: `${CAPTURE_FAILED} (${msg}); the checkout restore falls back to mainline`,
+            at: Date.now(),
+          },
+        ],
+      },
+    };
   }
 }
 

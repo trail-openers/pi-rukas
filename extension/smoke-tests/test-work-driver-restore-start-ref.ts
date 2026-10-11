@@ -17,79 +17,25 @@
  *      with the same refusal shape;
  *   5. the handoff repro: the branch step left repoRoot on a stray branch;
  *      consolidation must return it to the recorded start ref, not to the
- *      stray branch it captured mid-cycle.
+ *      stray branch it captured mid-cycle;
+ *   6. resume: the ref survives a writeState/readState round-trip, so a
+ *      resumed cycle restores to the ref its first run captured;
+ *   7. the ABORT path (restoreRootToRefPreserving) never issues a forced
+ *      command, preserves the discarded state first, and reports the command;
+ *   8. refs with shell metacharacters and a tag sharing the branch's short
+ *      name are checked out verbatim, never expanded or misread.
  */
 
-import { exec, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
-import {
-  captureCycleStartRef,
-  recordCycleStartRef,
-  restoreCheckout,
-} from "../src/work-driver-git.ts";
+import { captureCycleStartRef, recordCycleStartRef, restoreCheckout } from "../src/work-driver-git.ts";
 import { consolidateWorktreesToBranch } from "../src/work-driver-handoff-consolidate.ts";
 import { restoreRootToRef } from "../src/work-driver-restore.ts";
-import type { WorkState } from "../src/workflow-state.ts";
+import { WorkState, readState, writeState } from "../src/workflow-state.ts";
 import type { ExecFn } from "../src/worktree.ts";
-
-let exit = 0;
-function assert(cond: boolean, msg: string) {
-  if (cond) console.log(`✓ ${msg}`);
-  else {
-    console.error(`✗ ${msg}`);
-    exit = 1;
-  }
-}
-
-const pExec = promisify(exec);
-const realExec: ExecFn = (cmd, opts) =>
-  pExec(cmd, { cwd: opts?.cwd, maxBuffer: opts?.maxBuffer }) as ReturnType<ExecFn>;
-
-/** Temp repo: `main` with tracked.txt, a `feature/x` branch at the same commit,
- * and `feature/merged` checked out (the state a cycle leaves behind). */
-function buildRepo(): string {
-  const dir = mkdtempSync(join(tmpdir(), "issue1093-start-ref-"));
-  const g = (args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf8" });
-  g(["init", "-q", "-b", "main"]);
-  g(["config", "user.name", "t"]);
-  g(["config", "user.email", "t@t"]);
-  writeFileSync(join(dir, "tracked.txt"), "base\n");
-  g(["add", "-A"]);
-  g(["commit", "-q", "-m", "base"]);
-  g(["branch", "feature/x"]);
-  g(["checkout", "-q", "-b", "feature/merged"]);
-  return dir;
-}
-
-const head = (dir: string) =>
-  execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: dir, encoding: "utf8" }).trim();
-const sha = (dir: string, ref = "HEAD") =>
-  execFileSync("git", ["rev-parse", ref], { cwd: dir, encoding: "utf8" }).trim();
-
-function stateWith(startRef: string | undefined, branchName: string): WorkState {
-  return {
-    schemaVersion: 1,
-    resumable: false,
-    issue: 1093,
-    startedAt: 1,
-    updatedAt: 2,
-    pipelineState: {
-      status: "running",
-      currentStep: "merged",
-      lastCompletedStep: "ci",
-      reviewRound: 0,
-      ciRetryCount: 0,
-      inFlightJobIds: [],
-      plumbReports: [],
-      branchName,
-      ...(startRef ? { startRef } : {}),
-    },
-    eventLog: [],
-  };
-}
+import { assert, realExec, shown, buildRepo, head, sha, stateWith, result } from "./lib/restore-start-ref-fixtures.ts";
 
 // ---- 1. capture + record --------------------------------------------------
 {
@@ -128,10 +74,16 @@ function stateWith(startRef: string | undefined, branchName: string): WorkState 
   try {
     const calls: string[] = [];
     const recording: ExecFn = (cmd, opts) => {
-      calls.push(cmd);
+      calls.push(shown(cmd, opts));
       return realExec(cmd, opts);
     };
-    await restoreCheckout(dir, "main", "feature/merged", recording, "feature/x");
+    await restoreCheckout({
+      repoRoot: dir,
+      mainline: "main",
+      mergedBranch: "feature/merged",
+      execFn: recording,
+      startRef: "feature/x",
+    });
     assert(head(dir) === "feature/x", "restore: feature-branch start → repoRoot back on feature/x");
     assert(
       !calls.some((c) => c.startsWith("git pull")),
@@ -147,7 +99,13 @@ function stateWith(startRef: string | undefined, branchName: string): WorkState 
     const start = sha(dir, "feature/x");
     execFileSync("git", ["checkout", "-q", "--detach", start], { cwd: dir });
     execFileSync("git", ["checkout", "-q", "feature/merged"], { cwd: dir });
-    await restoreCheckout(dir, "main", "feature/merged", realExec, start);
+    await restoreCheckout({
+      repoRoot: dir,
+      mainline: "main",
+      mergedBranch: "feature/merged",
+      execFn: realExec,
+      startRef: start,
+    });
     assert(
       head(dir) === "HEAD" && sha(dir) === start,
       "restore: detached start → repoRoot detached at the same SHA",
@@ -159,7 +117,13 @@ function stateWith(startRef: string | undefined, branchName: string): WorkState 
 {
   const dir = buildRepo();
   try {
-    await restoreCheckout(dir, "main", "feature/merged", realExec, "main");
+    await restoreCheckout({
+      repoRoot: dir,
+      mainline: "main",
+      mergedBranch: "feature/merged",
+      execFn: realExec,
+      startRef: "main",
+    });
     assert(head(dir) === "main", "restore: mainline start → repoRoot on main (unchanged)");
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -178,14 +142,20 @@ function stateWith(startRef: string | undefined, branchName: string): WorkState 
     g(["commit", "-q", "-am", "x"]);
     g(["checkout", "-q", "feature/merged"]);
     writeFileSync(join(dir, "tracked.txt"), "operator edit\n");
-    const notes = await restoreCheckout(dir, "main", undefined, realExec, "feature/x");
+    const notes = await restoreCheckout({
+      repoRoot: dir,
+      mainline: "main",
+      mergedBranch: undefined,
+      execFn: realExec,
+      startRef: "feature/x",
+    });
     assert(head(dir) === "feature/merged", "refused: HEAD stays on the cycle's branch");
     assert(
       readFileSync(join(dir, "tracked.txt"), "utf8") === "operator edit\n",
       "refused: the operator's uncommitted edit is untouched (no reset, no --force)",
     );
     assert(
-      notes.some((n) => n.includes('git checkout "feature/x"') && n.includes("NOT restored")),
+      notes.some((n) => n.includes("git checkout feature/x") && n.includes("NOT restored")),
       `refused: the note carries the exact command to run (got ${JSON.stringify(notes)})`,
     );
   } finally {
@@ -223,7 +193,7 @@ function stateWith(startRef: string | undefined, branchName: string): WorkState 
     });
     assert(!r.restored, "restoreRootToRef: refusal → not restored");
     assert(
-      r.detail?.includes('run `git checkout "feature/x"`') === true,
+      r.detail?.includes("run `git checkout feature/x`") === true,
       `restoreRootToRef: detail names the exact command (got ${JSON.stringify(r.detail)})`,
     );
     assert(
@@ -302,5 +272,26 @@ function stateWith(startRef: string | undefined, branchName: string): WorkState 
   }
 }
 
-console.log(`\nexit ${exit}`);
-process.exit(exit);
+// ---- 6. resume: the ref survives a state-file round-trip -----------------
+{
+  const dir = buildRepo();
+  try {
+    execFileSync("git", ["checkout", "-q", "feature/x"], { cwd: dir });
+    const stamped = await recordCycleStartRef(realExec, dir, stateWith(undefined, "b"));
+    await writeState(dir, stamped);
+    // The first run's branch step moved repoRoot; the resumed run must not re-capture.
+    execFileSync("git", ["checkout", "-q", "main"], { cwd: dir });
+    const resumed = await readState(dir, 1093);
+    assert(resumed !== undefined, "resume: the state file is readable after the checkout moved");
+    const again = await recordCycleStartRef(realExec, dir, resumed as WorkState);
+    assert(
+      again.pipelineState.startRef === "feature/x",
+      `resume: the persisted startRef survives a resume (got ${again.pipelineState.startRef})`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+console.log(`\nexit ${result.exit}`);
+process.exit(result.exit);

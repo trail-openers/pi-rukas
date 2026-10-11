@@ -12,7 +12,7 @@ import { trace } from "./trace.ts";
 import { BranchAheadError, mechanizedBranchSetup } from "./work-driver-branch-mechanized.ts";
 import { parseWorktreesBlock, runBranchViaOpsDispatch } from "./work-driver-branch-ops.ts";
 import { runBranchResiduePass } from "./work-driver-branch-residue.ts";
-import { recordCycleStartRef } from "./work-driver-git.ts";
+import { hasCaptureFailure, recordCycleStartRef } from "./work-driver-git.ts";
 
 export { parseWorktreesBlock };
 import type { DriverContext } from "./work-driver-context.ts";
@@ -27,10 +27,28 @@ import { applySafetyNet, hasAnyWorktreeEvidence } from "./work-driver-safety-net
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import { makeWorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
-import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
+import { type WorkEvent, type WorkState, appendEvent, writeState } from "./workflow-state.ts";
 import { DirtyWorktreeError, gitErrorDetail } from "./worktree.ts";
 
 const execp = promisify(exec);
+
+/**
+ * #1093 — stamp `pipelineState.startRef` (the checkout the cycle found) and
+ * persist it BEFORE the branch step can move repoRoot. The driver calls this
+ * just ahead of runBranch, not inside it: the step-boundary write only comes
+ * after the whole step, so a crash inside the branch dispatch would lose the
+ * ref with the checkout already moved. Written once; a resumed cycle keeps the
+ * ref its first run captured.
+ */
+export async function stampCycleStartRef(ctx: DriverContext, state: WorkState): Promise<WorkState> {
+  if (state.pipelineState.startRef) return state;
+  // A failed capture on an earlier run is recorded in plumbReports; a resumed
+  // cycle must not recapture (repoRoot may already be on the feature branch).
+  if (hasCaptureFailure(state)) return state;
+  const stamped = await recordCycleStartRef(ctx.verifyExecFn ?? execp, ctx.repoRoot, state);
+  if (stamped !== state) await writeState(ctx.repoRoot, stamped);
+  return stamped;
+}
 
 /**
  * Step 3 — Setup: ops creates the feature branch + worktrees.
@@ -50,13 +68,9 @@ const execp = promisify(exec);
  */
 export async function runBranch(
   ctx: DriverContext,
-  incomingRaw: WorkState,
+  incoming: WorkState,
   now: number,
 ): Promise<WorkState> {
-  // #1093 — stamp the checkout the cycle started on BEFORE the residue pass,
-  // mechanized setup or ops fallback can move repoRoot. Written once; a resumed
-  // cycle keeps the ref its first run captured.
-  const incoming = await recordCycleStartRef(ctx.verifyExecFn ?? execp, ctx.repoRoot, incomingRaw);
   const workstreamIds = Object.keys(incoming.pipelineState.workstreams ?? {});
   // Reassigned only when the mechanized path falls back, to carry its
   // plumb-report into the ops dispatch below.

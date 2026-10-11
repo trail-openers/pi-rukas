@@ -13,7 +13,7 @@ import { trace } from "./trace.ts";
 import { runAdversarial } from "./work-driver-adversarial.ts";
 import { runArtifactSweep } from "./work-driver-artifact-sweep.ts";
 import { checkAttentionLabel } from "./work-driver-attention.ts";
-import { runBranch, runDevelop } from "./work-driver-branch-develop.ts";
+import { runBranch, runDevelop, stampCycleStartRef } from "./work-driver-branch-develop.ts";
 import { checkpointCapedDispatch } from "./work-driver-cap-checkpoint.ts";
 import { runCommitPr } from "./work-driver-commit.ts";
 import {
@@ -86,7 +86,7 @@ async function runStep(ctx: DriverContext, state: WorkState, step: WorkStep): Pr
     case "plan":
       return runPlan(ctx, state, now);
     case "branch":
-      return runBranch(ctx, state, now);
+      return runBranch(ctx, await stampCycleStartRef(ctx, state), now);
     case "develop":
       return runDevelop(ctx, state, now);
     case "adversarial":

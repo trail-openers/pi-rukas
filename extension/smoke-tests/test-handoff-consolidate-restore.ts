@@ -24,7 +24,7 @@
  *      a failed restore — and no longer implies repoRoot is on the branch.
  */
 
-import { exec, execFileSync } from "node:child_process";
+import { exec, execFile, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -45,7 +45,7 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const pExec = promisify(exec);
+const pExec = promisify(exec), pExecFile = promisify(execFile);
 
 /** Build a temp repo: main + the operator's branch + a detached worktree
  * one real commit ahead of the root's HEAD. Returns the root and the
@@ -233,11 +233,11 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
     let dirtWriteError: unknown;
     let dirtSurvived = false;
     let restoreCheckoutCount = 0;
-    // #1093 — the success-path restore is a plain `git checkout "<ref>"`.
-    const restoreCmd = 'git checkout "operator-feature"';
-    const stub: ExecFn = async (cmd, opts) => {
+    const restoreCmd = "git checkout operator-feature";
+    const stub: ExecFn = async (rawCmd, opts) => {
+      const cmd = opts?.argv ? [rawCmd, ...opts.argv].join(" ") : rawCmd;
       const isRoot = opts?.cwd === dir;
-      const res = await pExec(cmd, { cwd: opts?.cwd, maxBuffer: opts?.maxBuffer });
+      const res = opts?.argv ? await pExecFile(rawCmd, opts.argv, { cwd: opts.cwd, maxBuffer: opts.maxBuffer }) : await pExec(rawCmd, { cwd: opts?.cwd, maxBuffer: opts?.maxBuffer });
       if (isRoot && cmd === restoreCmd) {
         restoreCheckoutCount += 1;
         // Write the dirt after the FIRST restore checkout so the on-disk file
