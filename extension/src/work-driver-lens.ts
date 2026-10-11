@@ -121,8 +121,9 @@ export async function runLens(
   if (carried) {
     context += `\n\nOUTSTANDING FROM THE ADVERSARIAL GATE (non-blocking there — judge them yourself):\n${carried}`;
   }
-  // #1040 — comments the branch removed, for the SIMPLICITY lens (documentation)
-  // to weigh. Lost comments never failed the develop step; this is their review.
+  // #1040 — comments the branch removed, for every lens to weigh (SIMPLICITY
+  // owns documentation). Lost comments never failed the develop step; this is
+  // their review.
   context += await lensCommentBlock(
     lensWorktree(ctx, state),
     ps.baseSha,

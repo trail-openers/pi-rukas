@@ -36,9 +36,9 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-// (1) A removed SQL comment `-- old note` followed by an added `++ ` line is
-// diff-encoded as `--- old note` / `+++ new`. It must be content (lost), not
-// mistaken for a file header and silently skipped.
+// (1) A removed SQL comment `-- old note` directly followed by an added `++ `
+// line is diff-encoded as `--- old note` / `+++ new`. It must be content (lost),
+// not mistaken for a file header and silently skipped.
 {
   const res = await runRetention("src/q.sql", "-- old note\nSELECT 1;\n", "++ new\nSELECT 1;\n");
   assert(res.ok === true, "sql (1): result is ok");
@@ -70,8 +70,8 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-// (3) A comment dropped while an UNRELATED comment is added elsewhere in the
-// hunk, above unchanged code: lost, and the unrelated line is only context.
+// (3) Control: a comment dropped while an UNRELATED comment is added in the
+// same hunk stays lost (the wording must be carried, not merely a comment added).
 {
   const res = await runRetention(
     "src/app.ts",
@@ -187,6 +187,29 @@ function assert(cond: boolean, msg: string) {
   );
 }
 
+// (10b) A comment moved onto a code line WITH trailing text is retained; a
+// comment whose text is only a fragment of a longer word at head is lost.
+{
+  const moved = await runRetention(
+    "src/app.ts",
+    "// the retry budget\nconst n = 3;\n",
+    "const n = 3; // the retry budget (see config)\n",
+  );
+  assert(
+    moved.ok === true && moved.ok && moved.lost.length === 0,
+    "retained (10b): comment moved with trailing text on a code line is retained",
+  );
+  const fragment = await runRetention(
+    "src/app.ts",
+    "// Fast\nconst n = 3;\n",
+    "const n = 3;\n// Fasting\n",
+  );
+  assert(
+    fragment.ok === true && fragment.ok && fragment.lost.length === 1,
+    "retained (10b): a different longer word does not retain the comment",
+  );
+}
+
 // (11) Evidence rendering: the note names each lost line with its file and the
 // added comment as context, and says it is not a failure.
 {
@@ -298,7 +321,7 @@ function assert(cond: boolean, msg: string) {
   assert(res.ok === false, "fail-closed (14): unreadable head tree → ok:false");
 }
 
-// (16) A timeout-like exec error is an infra error: the gate degrades to a
+// A timeout-like exec error is an infra error: the gate degrades to a
 // not-run note, never a failure — and the timeout option is actually
 // passed on every git exec (a recording fake asserts that).
 {

@@ -290,10 +290,10 @@ async function classifyDiff(
       reason: `could not read head tree at ${headRef ?? "the worktree"} under ${paths.join(" ")}`,
     };
   }
-  // Retained = the trimmed line reappears verbatim, or as the leading or
-  // trailing part of a head line (a comment moved to the end of a code line, or
-  // re-wrapped onto a longer line). Only word-bearing text is matched in part:
-  // `}`, `*/` or `/**` must not be retained by any head line that ends in them.
+  // Retained = the trimmed line reappears verbatim, or as whole tokens inside a
+  // head line (a comment moved onto a code line, with or without trailing text,
+  // or re-wrapped onto a longer line). Only word-bearing text is matched in part:
+  // `}`, `*/` or `/**` must not be retained by any head line that contains them.
   // Scanned only for removed comments with no verbatim match, so the cost is
   // bounded by the number of removed comments, not by the tree size.
   const presentAtHead = (text: string): boolean => {
@@ -301,7 +301,7 @@ async function classifyDiff(
     if (!t) return false;
     if (headSet.has(t)) return true;
     if (!hasWord(t)) return false;
-    for (const line of headSet) if (line.startsWith(t) || line.endsWith(t)) return true;
+    for (const line of headSet) if (carriesWhole(line, t)) return true;
     return false;
   };
 
@@ -313,6 +313,20 @@ async function classifyDiff(
     exempt += v.exempt;
   }
   return { ok: true, lost, exempt };
+}
+
+/**
+ * Does `line` contain `t` as whole tokens? A match inside a longer word
+ * (`// Fast` in `// Fasting`) does not count; punctuation edges always do.
+ */
+function carriesWhole(line: string, t: string): boolean {
+  const word = /[\p{L}\p{N}]/u;
+  for (let i = line.indexOf(t); i >= 0; i = line.indexOf(t, i + 1)) {
+    const startOk = !word.test(t.charAt(0)) || !word.test(line.charAt(i - 1));
+    const endOk = !word.test(t.charAt(t.length - 1)) || !word.test(line.charAt(i + t.length));
+    if (startOk && endOk) return true;
+  }
+  return false;
 }
 
 /**

@@ -61,6 +61,8 @@ export async function repoWithFiles(
 	return dir;
 }
 
+// Build a scratch repo with a base commit at `src/app.ts`, then a head commit
+// applying the given new file content. Returns the repo dir.
 /** Single-file convenience: `file` at base, rewritten to `head`. */
 export async function repoWith(
 	file: string,

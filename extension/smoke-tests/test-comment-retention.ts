@@ -49,6 +49,8 @@ type OkRes = Extract<Res, { ok: true }>;
 
 // Compact real-git case runner: build a repo, run findLostComments against
 // base...head under PATHS, assert ok + `check` holds, clean up.
+// Compact real-git case runner: build a repo, run findLostComments against
+// base...head under PATHS, assert ok + `check` holds, clean up.
 /** One real-git case: scratch repo `src/app.ts` base→head, retention over it. */
 async function realCase(
   name: string,
@@ -86,6 +88,8 @@ function makeFakePi() {
   };
 }
 
+// A fake execFn whose `git diff base...HEAD -- src` returns a removed
+// comment and a head-tree read that does NOT contain it.
 /** A fake exec for the develop gate: the diff body and the head-tree grep. */
 function gateExec(diff: string, headLines: string): NonNullable<DriverContext["verifyExecFn"]> {
   return async (cmd) => {
@@ -212,8 +216,10 @@ async function developGate(
     (res) => res.lost.length === 0,
   );
 
-  // (h0) an empty scoped diff with a non-empty UNSCOPED range: the head commit
-  // touches only a file OUTSIDE paths → the gate passes with NO skip note.
+  // (h0) an empty scoped diff with a non-empty UNSCOPED range: the head
+  // commit touches only a file OUTSIDE paths (a `makeRepo` head commit
+  // re-adds the base file, keeping it in scope), so no in-scope comment can be
+  // lost — the gate must pass cleanly (ok:true, lost 0) with NO skip note.
   {
     const dirH0 = mkdtempSync(path.join(tmpdir(), "pi-ens-comment-"));
     await execFileP("git", ["init", "-q", "-b", "main"], { cwd: dirH0 });
