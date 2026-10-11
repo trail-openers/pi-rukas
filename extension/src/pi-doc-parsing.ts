@@ -1,6 +1,5 @@
 /**
- * Doc parsing for the pi compatibility claim — issue #1038 (split from
- * pi-binary-resolve.ts so the drift gate can import the parser directly).
+ * Doc parsing for the pi compatibility claim.
  *
  * Single source of the "## Last verified against pi X.Y.Z (YYYY-MM-DD)" regex.
  * Consumed by pi-version-probe.ts (version warning) and

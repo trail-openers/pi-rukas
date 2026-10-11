@@ -70,7 +70,12 @@ function captureWarnings(): { warnings: string[]; restore: () => void } {
   const warnings: string[] = [];
   const origWarn = console.warn;
   console.warn = (...args: unknown[]) => void warnings.push(args.map(String).join(" "));
-  return { warnings, restore: () => void (console.warn = origWarn) };
+  return {
+    warnings,
+    restore: () => {
+      console.warn = origWarn;
+    },
+  };
 }
 
 section("package bin containment (realpath)");
@@ -124,7 +129,9 @@ section("version probe lifecycle");
       "missing binary: probe promise identity is stable (one-shot)",
     );
     assert(
-      cap.warnings.length === 1 && cap.warnings[0]?.includes("pi-version-probe") === true,
+      cap.warnings.length === 1 &&
+        cap.warnings[0]?.includes("pi-version-probe") === true &&
+        cap.warnings[0]?.includes(missing) === true,
       `missing binary: exactly one warning (got ${cap.warnings.length})`,
     );
   } finally {
@@ -165,7 +172,8 @@ section("PATH warning");
 // The PATH warning fires exactly once at resolution time (#1038). Run in a
 // child process over a copy of src/ with no pi package, so the PATH branch is
 // reached deterministically (the real install ships a package bin that
-// short-circuits it).
+// short-circuits it). The child injects a recording reporter that prints to
+// stdout, so the count does not depend on stderr.
 {
   const root = mkTmpDir("hard-pathwarn");
   cpSync(path.resolve(import.meta.dirname, "..", "src"), path.join(root, "src"), {
@@ -173,15 +181,19 @@ section("PATH warning");
   });
   writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "no-pi" }));
   const modUrl = path.join(root, "src", "pi-binary-resolve.ts");
-  const script = `const m = await import(${JSON.stringify(modUrl)});\nconst a = m.resolvePiBinarySync(); m.resolvePiBinarySync(); m.resolvePiBinarySync();\nconsole.log(a.source);`;
-  const env: Record<string, string> = { ...(process.env as Record<string, string>) };
-  delete env.PI_ENSEMBLE_PI_BIN;
+  const script = `const m = await import(${JSON.stringify(modUrl)});\nm.setPathWarningReporter((msg) => console.log("REPORTED " + msg));\nconst a = m.resolvePiBinarySync(); m.resolvePiBinarySync(); m.resolvePiBinarySync();\nconsole.log("SOURCE " + a.source);`;
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(
+      (e): e is [string, string] => e[0] !== "PI_ENSEMBLE_PI_BIN" && e[1] !== undefined,
+    ),
+  );
   const r = spawnSync(process.execPath, ["-e", script], { env, encoding: "utf8" });
-  const pathWarns = (r.stderr ?? "").split("resolved from PATH").length - 1;
-  assert(r.stdout.trim() === "path", `child resolves via PATH (got ${r.stdout.trim()})`);
+  const out = r.stdout ?? "";
+  const pathWarns = out.split("REPORTED ").length - 1;
+  assert(out.includes("SOURCE path"), `child resolves via PATH (stdout: ${out.trim()})`);
   assert(
-    pathWarns === 1,
-    `PATH warning fires exactly once across repeated resolution (got ${pathWarns})`,
+    pathWarns === 1 && out.includes("resolved from PATH"),
+    `PATH warning reported exactly once across repeated resolution (got ${pathWarns})`,
   );
   rmDir(root);
 }

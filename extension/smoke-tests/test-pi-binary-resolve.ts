@@ -6,19 +6,18 @@
  * package bin, PATH fallback, version probe, probe wiring.
  */
 
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { parseVerifiedLine } from "../src/pi-doc-parsing.ts";
 import {
-  _resetPiBinaryCache,
   getPiInvocation,
   looksLikePiCli,
   parsePiVersion,
   resolvePackageBin,
   resolvePiBinarySync,
 } from "../src/pi-binary-resolve.ts";
+import { parseVerifiedLine } from "../src/pi-doc-parsing.ts";
 import {
   _resetPiVersionProbe,
   getPiResolutionInfo,
@@ -162,10 +161,25 @@ assert(isVersionOlder("garbage", "1.0.0") === false, "unparseable returns false"
   // the plain version (range prefix stripped), comparable by isVersionOlder.
   _resetPiVersionProbe();
   const verified = getVerifiedVersion();
-  const doc = readFileSync(path.resolve(import.meta.dirname, "..", "..", "docs", "pi-compatibility.md"), "utf8");
+  const doc = readFileSync(
+    path.resolve(import.meta.dirname, "..", "..", "docs", "pi-compatibility.md"),
+    "utf8",
+  );
   const docVerified = parseVerifiedLine(doc)?.version.replace(/^[~^><=]+/, "");
-  assert(verified !== null && verified === docVerified, `getVerifiedVersion strips the range prefix (got ${verified})`);
-  assert(verified !== null && isVersionOlder("0.0.1", verified), "verified version is comparable");
+  assert(
+    verified !== null && verified === docVerified,
+    `getVerifiedVersion strips the range prefix (got ${verified})`,
+  );
+  assert(
+    verified !== null && isVersionOlder("0.0.1", verified) && !isVersionOlder(verified, "0.0.1"),
+    "verified version compares correctly in both directions",
+  );
+  // Literal fixture: the parser captures the bare version from the doc line.
+  const fixture = "## Last verified against pi 0.0.1 (2026-01-01)";
+  assert(
+    parseVerifiedLine(fixture)?.version === "0.0.1",
+    "parseVerifiedLine captures the version from a literal fixture",
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -175,7 +189,7 @@ assert(isVersionOlder("garbage", "1.0.0") === false, "unparseable returns false"
 section("resolvePiBinarySync");
 
 // --- PATH fallback (no env, package injected-absent) ---
-_resetPiBinaryCache();
+_resetPiVersionProbe();
 withEnv({ PI_ENSEMBLE_PI_BIN: undefined }, () => {
   const fallback = resolvePiBinarySync();
   if (fallback.source === "package") {
@@ -191,7 +205,7 @@ withEnv({ PI_ENSEMBLE_PI_BIN: undefined }, () => {
 });
 
 // --- ENV override (valid) ---
-_resetPiBinaryCache();
+_resetPiVersionProbe();
 const fakeBin1 = makeFakeBin("fake-pi", "echo 'pi 9.9.9'");
 withEnv({ PI_ENSEMBLE_PI_BIN: fakeBin1 }, () => {
   const resolved = resolvePiBinarySync();
@@ -202,7 +216,7 @@ withEnv({ PI_ENSEMBLE_PI_BIN: fakeBin1 }, () => {
 rmFile(fakeBin1);
 
 // --- ENV override (invalid — non-existent path) ---
-_resetPiBinaryCache();
+_resetPiVersionProbe();
 let threw1 = false;
 let errMsg1 = "";
 withEnv({ PI_ENSEMBLE_PI_BIN: "/nonexistent/path/to/pi-12345" }, () => {
@@ -218,7 +232,7 @@ assert(errMsg1.includes("PI_ENSEMBLE_PI_BIN"), "error names the env var");
 assert(errMsg1.includes("not an existing executable"), "error describes the failure");
 
 // --- ENV override (invalid — not executable) ---
-_resetPiBinaryCache();
+_resetPiVersionProbe();
 const nonExec = makeFakeBin("non-exec-pi", "echo never", 0o644);
 let threw2 = false;
 let errMsg2 = "";
@@ -243,7 +257,9 @@ rmFile(nonExec);
 
   const resolved = resolvePackageBin(fakePkgJson);
   assert(resolved !== null, "resolvePackageBin finds the bin");
-  assert(resolved === path.join(tmpDir, "cli.js"), `path is ${path.join(tmpDir, "cli.js")}`);
+  // The returned path is the checked realpath (macOS tmp dirs are symlinked under /private).
+  const realCli = realpathSync(path.join(tmpDir, "cli.js"));
+  assert(resolved === realCli, `path is the checked realpath ${realCli}`);
 
   rmDir(tmpDir);
 }
@@ -254,7 +270,7 @@ rmFile(nonExec);
   const resolved = resolvePackageBin(missing);
   assert(resolved === null, "resolvePackageBin returns null when package.json missing");
 
-  _resetPiBinaryCache();
+  _resetPiVersionProbe();
   withEnv({ PI_ENSEMBLE_PI_BIN: undefined }, () => {
     const fallback = resolvePiBinarySync();
     assert(fallback.source === "path", "sync resolution falls back to PATH");
@@ -298,7 +314,6 @@ rmFile(nonExec);
   rmDir(outsideBin);
 }
 
-
 // ---------------------------------------------------------------------------
 // getPiInvocation — backward-compatible interface
 // ---------------------------------------------------------------------------
@@ -306,7 +321,7 @@ rmFile(nonExec);
 section("getPiInvocation");
 
 // PATH/source path (argv[1] is this test file, not Pi CLI)
-_resetPiBinaryCache();
+_resetPiVersionProbe();
 withEnv({ PI_ENSEMBLE_PI_BIN: undefined }, () => {
   const inv = getPiInvocation(["--mode", "rpc"]);
   // In dev env, the package is installed so it resolves to the package bin
@@ -316,7 +331,7 @@ withEnv({ PI_ENSEMBLE_PI_BIN: undefined }, () => {
 });
 
 // Simulate Pi process (argv[1] looks like Pi CLI)
-_resetPiBinaryCache();
+_resetPiVersionProbe();
 withEnv({ PI_ENSEMBLE_PI_BIN: undefined }, () => {
   assert(
     looksLikePiCli("/usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"),
@@ -332,7 +347,7 @@ section("getPiResolutionInfo");
 
 // Use a fake pi binary that responds to --version
 {
-  _resetPiBinaryCache();
+  _resetPiVersionProbe();
   _resetPiVersionProbe();
 
   const fakeBin = makeFakeBin(
@@ -353,7 +368,7 @@ section("getPiResolutionInfo");
 
 // Version probe with a non-responsive binary (timeout path)
 {
-  _resetPiBinaryCache();
+  _resetPiVersionProbe();
   _resetPiVersionProbe();
 
   const slowBin = makeFakeBin("slow-pi", "sleep 5");
@@ -369,7 +384,7 @@ section("getPiResolutionInfo");
 
 // Unparseable version output
 {
-  _resetPiBinaryCache();
+  _resetPiVersionProbe();
   _resetPiVersionProbe();
 
   const garbageBin = makeFakeBin("garbage-pi", "echo 'I am not a version'");
@@ -386,7 +401,7 @@ section("getPiResolutionInfo");
 
 section("Caching");
 
-_resetPiBinaryCache();
+_resetPiVersionProbe();
 withEnv({ PI_ENSEMBLE_PI_BIN: undefined }, () => {
   const first = resolvePiBinarySync();
   const second = resolvePiBinarySync();
@@ -414,7 +429,7 @@ section("probe wiring");
   const counterFile = path.join(os.tmpdir(), `pi-rukas-probe-count-${process.pid}-${Date.now()}`);
 
   withEnv({ PI_ENSEMBLE_PI_BIN: probeFakeBin, COUNTER_FILE: counterFile }, async () => {
-    _resetPiBinaryCache();
+    _resetPiVersionProbe();
     _resetPiVersionProbe();
 
     // The kick returns synchronously (void) and must not block.
@@ -443,7 +458,7 @@ section("probe wiring");
 
   rmFile(probeFakeBin);
   rmFile(counterFile);
-  _resetPiBinaryCache();
+  _resetPiVersionProbe();
   _resetPiVersionProbe();
 }
 

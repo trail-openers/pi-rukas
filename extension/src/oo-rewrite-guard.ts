@@ -2,9 +2,8 @@
  * oo-rewrite-guard — the silent rewrite of bare verbose-runner bash commands
  * to their `oo`-prefixed form for developer + ops subagents.
  *
- * The doctrine (modules/core/oo-command-runner.md, agents-base/developer.md)
- * makes the `oo` prefix mandatory for 12 verbose runners, but on the bash
- * tool's argument string that rule is pure prose: the only structural
+ * Prose doctrine about the `oo` prefix for verbose runners is not enforceable
+ * on the bash tool's argument string: the only structural
  * enforcement layer (spawn.ts --exclude-tools / role-tools.ts) can remove
  * NAMED tools, not a bash-string distinction like `pytest` vs `oo pytest`.
  * Prose tool-preference is the least reliable enforcement mechanism in the
@@ -15,8 +14,8 @@
  * handler) see the rewritten string, so in trust/sandbox mode a bare
  * `cargo test` routes through the existing `oo cargo test*` allow row
  * instead of relying on the model remembering the prefix.
- * (#1038: the `oo` prefix is no longer mandatory doctrine — the rewritten and the
- * bare form are both legitimate, and this hook only normalizes them.)
+ * The rewritten and the bare form are both legitimate; this hook only
+ * normalizes them.
  *
  * REWRITE ONLY — no block/deny path of any kind. This hook must NEVER return
  * `{ block: true }` for any input; a no-match is a pass-through, not a
@@ -67,11 +66,9 @@ import { BASH_COMMAND_INJECTION_CHARS, stripQuotedSegments } from "./bash-comman
 import { trace } from "./trace.ts";
 
 /**
- * The 12 bare verbose-runner commands the doctrine mandates the `oo` prefix
- * for (modules/core/oo-command-runner.md lines 7-11 — including the
+ * The 12 bare verbose-runner commands this guard rewrites (including the
  * corrected `bun run build`, not the non-existent `bun build`). Each entry
  * is the full bare token sequence as it appears at the START of a command.
- * (#1038: these are the prefixes this guard rewrites, not a mandate.)
  */
 export const OO_PREFIXES = [
   "pytest",

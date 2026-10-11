@@ -1,5 +1,5 @@
 /**
- * Pi version probe — issue #1019, split out of pi-binary-resolve.ts (#1038).
+ * Pi version probe — issue #1019.
  *
  * Runs `pi --version` on the binary resolved by resolvePiBinarySync, once per
  * process, with a 3 s timeout. Never awaited on a spawn path: kickPiResolutionProbe
@@ -37,15 +37,16 @@ let verifiedVersionCache: string | null | undefined;
 /**
  * Run `pi --version` on the resolved binary and cache the result.
  * Times out after 3 s (returns version: null, probeTimedOut: true).
- * Never throws and never caches a rejection — unparseable output yields
- * version: null, and an unspawnable binary (including a synchronous throw from
- * resolvePiBinarySync) also yields version: null, reported once on stderr.
+ * Never throws — unparseable output yields version: null.
+ * Never caches a rejection: an unspawnable binary (including a synchronous throw
+ * from resolvePiBinarySync) also yields version: null, reported once on stderr.
  */
 export function probePiVersion(): Promise<ProbeResult> {
   if (versionPromise) return versionPromise;
 
   versionPromise = new Promise((resolve) => {
-    let command = "pi";
+    // Until resolution succeeds, name the configured override (if any) in warnings.
+    let command = process.env.PI_ENSEMBLE_PI_BIN || "pi";
     try {
       const resolved = resolvePiBinarySync();
       command = resolved.command;
@@ -169,6 +170,9 @@ export async function getPiResolutionInfo(): Promise<PiBinaryResolution> {
 // Probe lifecycle (spawn-kicked, fire-and-forget)
 // ---------------------------------------------------------------------------
 
+// #1019 — kick the version probe on first spawn (fire-and-forget; never
+// awaited). The flag + kick live here (with the probe they guard) rather than
+// in spawn.ts so the probe lifecycle stays inside this module.
 /**
  * Kick the version probe on first spawn (#1019). The once-flag and the kick live
  * here, with the probe they guard, so the probe lifecycle stays in this module.
@@ -224,7 +228,8 @@ export function getVerifiedVersion(): string | null {
     // Strip a leading range prefix (~, ^, >, <, =) so isVersionOlder always
     // compares plain versions.
     verifiedVersionCache = parsed ? parsed.replace(/^[~^><=]+/, "") : null;
-  } catch {
+  } catch (err) {
+    trace(`pi-version-probe: could not read the verified version from docs \u2014 ${String(err)}`);
     verifiedVersionCache = null;
   }
   return verifiedVersionCache;

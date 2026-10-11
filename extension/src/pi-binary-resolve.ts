@@ -18,10 +18,9 @@
  * The `pi --version` probe is async, runs once, is cached, times out after
  * 3 s (version null, probeTimedOut: true), and never blocks a spawn.
  *
- * #1038 behaviour change: a package bin whose realpath escapes the package
- * directory (e.g. a hoisted bin symlinked outside it) is rejected and falls
- * through to PATH, where it previously was accepted. A broken symlink is skipped
- * with a trace, like the escape case.
+ * A package bin whose realpath escapes the package directory (e.g. a hoisted
+ * bin symlinked outside it) is rejected and falls through to PATH. A broken
+ * symlink is skipped with a trace, like the escape case.
  */
 
 import { constants, accessSync, existsSync, readFileSync, realpathSync } from "node:fs";
@@ -92,22 +91,33 @@ export function resolvePackageBin(
     // existsSync is false for a broken symlink, so realpathSync below only runs
     // on a target that exists.
     if (!existsSync(binPath)) {
-      trace(`pi-binary-resolve: package bin ${binPath} does not exist (broken symlink?) — skipped`);
+      trace(`pi-binary-resolve: package bin ${binPath} missing or broken symlink — skipped`);
       return null;
     }
     // A bin entry escaping the package directory is a hostile or broken
     // package.json — never execute it (traced so the skip is auditable).
-    const realBin = realpathSync(binPath);
-    const realPkgDir = realpathSync(pkgDir);
+    let realBin: string;
+    let realPkgDir: string;
+    try {
+      realBin = realpathSync(binPath);
+      realPkgDir = realpathSync(pkgDir);
+    } catch (err) {
+      // ELOOP, EACCES, or the file vanishing between existsSync and realpathSync.
+      trace(
+        `pi-binary-resolve: realpath of package bin ${binPath} failed — skipped (${String(err)})`,
+      );
+      return null;
+    }
     if (!realBin.startsWith(realPkgDir + path.sep)) {
       trace(
         `pi-binary-resolve: package bin ${binPath} (real: ${realBin}) resolves outside the package directory — rejected`,
       );
       return null;
     }
-    // Verify executable bit
-    accessSync(binPath, constants.X_OK);
-    return binPath;
+    // Check the executable bit on the checked path, and return that same path
+    // so the checked and executed binaries are identical.
+    accessSync(realBin, constants.X_OK);
+    return realBin;
   } catch {
     return null;
   }
@@ -139,12 +149,23 @@ interface SyncResolution {
 
 let cachedSync: SyncResolution | null = null;
 
+type WarningReporter = (message: string) => void;
+let pathWarningReporter: WarningReporter = (message) => console.warn(message);
+
+/**
+ * Replace the sink for the PATH-fallback warning. Tests inject a recorder; the
+ * default writes to stderr. Resolution itself never writes directly.
+ */
+export function setPathWarningReporter(reporter: WarningReporter): void {
+  pathWarningReporter = reporter;
+}
+
 /**
  * Resolve the pi binary path and source synchronously. Cached per process;
  * a handful of stat/read syscalls per process (memoized after the first call).
  *
  * Resolution order:
- *   - Inside a Pi process: argv[1] (existing behaviour, unchanged)
+ *   - Inside a Pi process: argv[1]
  *   - PI_ENSEMBLE_PI_BIN (fails with a named error if invalid)
  *   - Package bin (silently skipped if not installed)
  *   - PATH fallback (warns once per process, here at resolution time)
@@ -206,10 +227,9 @@ export function resolvePiBinarySync(): SyncResolution {
   // 4. PATH fallback.
   // The PATH-source warning is operational, not a debug detail — a hijacked
   // or mismatched `pi` on PATH should be visible without PI_ENSEMBLE_DEBUG=1.
-  // Warned here, once per process (cachedSync guards repeats), so it is visible
-  // even if the async version probe never completes. Required at resolution time
-  // by #1038 — do not move it into the probe.
-  console.warn(
+  // Reported here, once per process (cachedSync guards repeats), so it is visible
+  // even if the async version probe never completes. Not moved into the probe.
+  pathWarningReporter(
     "[pi-rukas] pi-binary-resolve: WARNING — pi resolved from PATH, no integrity check performed",
   );
   cachedSync = { path: "pi", source: "path", command: "pi" };
@@ -217,8 +237,8 @@ export function resolvePiBinarySync(): SyncResolution {
 }
 
 /**
- * Reset the binary-resolution cache. Exported for tests only; tests that touch
- * the probe should use _resetPiVersionProbe (pi-version-probe.ts), which resets both.
+ * Reset the binary-resolution cache. Internal: only pi-version-probe.ts calls it,
+ * via _resetPiVersionProbe, which is the reset seam tests use.
  */
 export function _resetPiBinaryCache(): void {
   cachedSync = null;

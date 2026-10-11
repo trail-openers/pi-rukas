@@ -249,7 +249,8 @@ const SEAMS: Seam[] = [
         "the injected-path overload is test-asserted; the default branch is wired via resolvePiBinarySync",
       resolvePiBinarySync:
         "the sync resolver; wired via getPiInvocation; also directly test-asserted",
-      _resetPiBinaryCache: "test-only cache reset; exercised by test-pi-binary-resolve.ts",
+      setPathWarningReporter:
+        "injects the PATH-warning sink; exercised by test-pi-binary-hardening.ts (child process)",
     },
     canary: { symbol: "getPiInvocation", importer: "work-driver-resume-reattach.ts" },
   },
@@ -270,8 +271,7 @@ const SEAMS: Seam[] = [
     canary: { symbol: "kickPiResolutionProbe", importer: "spawn.ts" },
   },
   {
-    // #1038 — the shared verified-line parser, split out so the drift gate
-    // imports it directly.
+    // The shared verified-line parser, imported by the version probe and the drift gate.
     file: "pi-doc-parsing.ts",
     pending: {},
     testOnly: {

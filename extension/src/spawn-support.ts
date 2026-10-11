@@ -174,6 +174,10 @@ export function makeRunId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+// getPiInvocation moved to pi-binary-resolve.ts (#1019) — explicit
+// resolution order: argv → env → package → path, with version probing.
+// (#1038: the version probe itself lives in pi-version-probe.ts.)
+
 /**
  * Is the child about to retry this failure itself?
  *
