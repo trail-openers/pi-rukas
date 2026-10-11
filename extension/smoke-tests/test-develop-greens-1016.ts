@@ -82,8 +82,23 @@ const stubExec =
 
 {
   // Crash-resume greens and the sha-only / tri-state rules, with no git at all.
-  const { trustedPreservedGreens, resetWorktreeToBase, runIndependentFanout, commitsAheadOfBase } =
-    await import("../src/work-develop-retry.ts");
+  const { trustedPreservedGreens, runIndependentFanout } = await import(
+    "../src/work-develop-retry.ts"
+  );
+  const {
+    commitsAheadOfBase: commitsRaw,
+    resetWorktreeToBase: resetRaw,
+    runGit,
+  } = await import("../src/work-develop-git.ts");
+  // Shims: the tests stub the ExecFn; the git primitives take the GitExec adapter.
+  const commitsAheadOfBase = (f: ExecFn, cwd: string, base: string | undefined) =>
+    commitsRaw(runGit(f), cwd, base);
+  const resetWorktreeToBase = (
+    f: ExecFn,
+    cwd: string,
+    base: string | undefined,
+    save: { repoRoot: string; patchPath: string },
+  ) => resetRaw(runGit(f), cwd, base, save);
   const boom: ExecFn = async () => {
     throw new Error("fatal: bad object");
   };
@@ -207,8 +222,16 @@ const stubExec =
   const fs = await import("node:fs/promises");
   const os = await import("node:os");
   const path = await import("node:path");
-  const { trustedPreservedGreens, runIndependentFanout, resetWorktreeToBase, greenCountsAsWork } =
-    await import("../src/work-develop-retry.ts");
+  const { trustedPreservedGreens, runIndependentFanout, greenCountsAsWork } = await import(
+    "../src/work-develop-retry.ts"
+  );
+  const { resetWorktreeToBase: resetRaw, runGit } = await import("../src/work-develop-git.ts");
+  const resetWorktreeToBase = (
+    f: ExecFn,
+    cwd: string,
+    base: string | undefined,
+    save: { repoRoot: string; patchPath: string },
+  ) => resetRaw(runGit(f), cwd, base, save);
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "greens-1016-"));
   const git = (cwd: string, args: string[]) =>
     execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], {
@@ -370,7 +393,10 @@ const stubExec =
   await fs.writeFile(path.join(dirD, ".pi", "verify-cmd"), "edited\n");
   const dSaved = await resetWorktreeToBase(execFn, dirD, baseD, save("d"));
   const dPatch = await fs.readFile(dSaved ?? "", "utf8").catch(() => "");
-  assert(dPatch.includes("+edited"), "#1016: a tracked .pi/ edit is saved to the patch before reset");
+  assert(
+    dPatch.includes("+edited"),
+    "#1016: a tracked .pi/ edit is saved to the patch before reset",
+  );
   assert(
     (await fs.readFile(path.join(dirD, ".pi", "verify-cmd"), "utf8")) === "old\n",
     "#1016: the reset restores the tracked .pi/ file to its base content",
@@ -429,6 +455,7 @@ const stubExec =
         ms: 0,
         at: 3,
         error: GREEN_DOWNGRADE,
+        downgrade: true,
       },
     ],
   } as unknown as WorkState;

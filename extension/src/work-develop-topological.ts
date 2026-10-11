@@ -67,7 +67,7 @@ async function runDevelopTopological(
   const begun = { jobId };
   let next = initialState;
   const scratchAbs = scratchDir(ctx.repoRoot, ctx.issue);
-  let verdicts: Array<{ id: string; ok: boolean; reason?: string }> = [];
+  let verdicts: Array<{ id: string; ok: boolean; reason?: string; claimed?: true }> = [];
   const branchEvents: WorkEvent[] = [];
   const dependsOnMap: Record<string, string[]> = {};
   for (const [id, ws] of Object.entries(workstreams)) {
@@ -166,7 +166,6 @@ async function runDevelopTopological(
   // final verdict list, which replaces the shared array before dependents run.
   // #1016 — a developer that CLAIMED green is hollow evidence even when no
   // commit or change backs it: the gate must run to say so, not be skipped.
-  let claimedGreen = false;
   verdicts = await runIndependentFanout({
     independent,
     preserved: preserved.kept,
@@ -175,8 +174,7 @@ async function runDevelopTopological(
       const cwd = worktrees[id];
       if (typeof cwd !== "string") return { id, ok: false, reason: "no worktree" };
       const r = await runOneWorkstream(id, cwd);
-      if (!r.ok) return { id, ok: false };
-      claimedGreen = true;
+      if (!r.ok) return { id, ok: false, reason: r.reason };
       const base = workstreamBaseShas[id] ?? globalBaseSha;
       // #1016 — the #622 safety net commits this worktree's leftover edits
       // BEFORE the green check, so uncommitted developer work counts as work
@@ -187,10 +185,10 @@ async function runDevelopTopological(
       }
       const green = await greenCountsAsWork(execFn, cwd, base, id, "fresh");
       if (green.note !== undefined) persistNotes.push(green.note);
-      if (green.counts) return r;
+      if (green.counts) return { ...r, claimed: true };
       const reason = green.reason ?? GREEN_DOWNGRADE;
       recordDowngrade(persister, id, reason);
-      return { id, ok: false, reason };
+      return { id, ok: false, reason, claimed: true };
     },
     // #1016 — the retry's reset: saves the worktree's partial work to the cycle
     // scratch dir first, and refuses (fail closed) when it cannot.
@@ -306,7 +304,8 @@ async function runDevelopTopological(
   // is ANY evidence to check: at least one worktree has commits ahead of its
   // base OR has uncommitted changes — the same condition verifyDevelopOutcome
   // itself computes per worktree.
-  const hasDevelopEvidence = claimedGreen || (await hasAnyWorktreeEvidence(ctx, next));
+  const hasDevelopEvidence =
+    verdicts.some((v) => v.claimed === true) || (await hasAnyWorktreeEvidence(ctx, next));
   // #622 — mechanical auto-commit safety net. Fires per-worktree when a
   // developer left uncommitted work in their worktree (no commits ahead of the
   // workstream's effective base) after a successful dispatch. #679: independent

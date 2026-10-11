@@ -20,7 +20,7 @@
  * The flipped `reason` wording stays in work-develop-fence-verdicts.ts
  * (applyFenceVerdicts) — this module only renders it, never builds it.
  */
-import { GREEN_DOWNGRADE, eventsSinceDevelopStart } from "./work-develop-greens.ts";
+import { eventsSinceDevelopStart } from "./work-develop-greens.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 /** One line of the handoff's "Workstream verdicts" section. */
@@ -47,6 +47,9 @@ export interface RawVerdict {
   id: string;
   ok: boolean;
   reason?: string;
+  /** #1016 — the developer CLAIMED green, even when no commit backed it: the
+   *  develop gate must run to say so. Set only by the fan-out's green check. */
+  claimed?: true;
 }
 
 /** Plain rendering of one verdict (no retry annotation). */
@@ -66,8 +69,7 @@ function developAttemptCounts(state: WorkState): Map<string, number> {
   const counts = new Map<string, number>();
   for (const e of eventsSinceDevelopStart(state)) {
     // A downgrade rewrites its attempt's verdict; it is not a new attempt.
-    const rewrite =
-      e.kind === "branch-completed" && !e.ok && !!e.error?.startsWith(GREEN_DOWNGRADE);
+    const rewrite = e.kind === "branch-completed" && !e.ok && e.downgrade === true;
     if (e.kind === "branch-completed" && !rewrite) {
       counts.set(e.workstreamId, (counts.get(e.workstreamId) ?? 0) + 1);
     }

@@ -9,7 +9,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { resetWorktreeToBase } from "../src/work-develop-git.ts";
+import { resetWorktreeToBase as resetRaw, runGit } from "../src/work-develop-git.ts";
 import { greenCountsAsWork, runIndependentFanout } from "../src/work-develop-retry.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { applySafetyNet, safetyNetWorktree } from "../src/work-driver-safety-net.ts";
@@ -25,6 +25,14 @@ function assert(cond: boolean, msg: string) {
     exit = 1;
   }
 }
+
+// The fixture's execp is the ExecFn; the git primitives take the GitExec adapter.
+const resetWorktreeToBase = (
+  f: typeof execFn,
+  cwd: string,
+  base: string | undefined,
+  save: { repoRoot: string; patchPath: string },
+) => resetRaw(runGit(f), cwd, base, save);
 
 const dir = await mkdtemp(path.join(tmpdir(), "safety-1016-"));
 try {
@@ -90,14 +98,19 @@ try {
     verdicts: [],
     multi: true,
     runAt: async (id) => ({ id, ok: id === "task-a" }),
-    resetFor: (id) => resetWorktreeToBase(execFn, wt(id), shas[id], save(id)),
+    // A second save needs its own path: the first patch exists, and a save never overwrites.
+    resetFor: (id) =>
+      resetWorktreeToBase(execFn, wt(id), shas[id], {
+        repoRoot: dir,
+        patchPath: path.join(dir, "tmp", "issue-1", `retry-${id}-2.patch`),
+      }),
     notes,
   });
   const c = res.find((v) => v.id === "task-c");
   assert(c !== undefined && !c.ok, "#1016: task-c's retry runs and its second failure stands");
   assert(
     notes.some(
-      (n) => n.startsWith("task-c: partial work saved to") && n.includes(patchFor("task-c")),
+      (n) => n.startsWith("task-c: partial work saved to") && n.includes("retry-task-c-2.patch"),
     ),
     "#1016: the handoff note names the saved patch path",
   );
@@ -116,7 +129,9 @@ try {
     // -z: ls-tree would C-quote the non-ASCII name and hide the literal bytes.
     const names = gitIn(wx, ["ls-tree", "-z", "--name-only", "HEAD"]).split("\0").join("\n");
     assert(
-      names.includes("$(touch pwned)") && names.includes("`touch pwned2`") && names.includes("café.txt"),
+      names.includes("$(touch pwned)") &&
+        names.includes("`touch pwned2`") &&
+        names.includes("café.txt"),
       "#1016: the files are committed under their literal names",
     );
     assert(

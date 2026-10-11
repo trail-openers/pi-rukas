@@ -6,11 +6,11 @@
  */
 import path from "node:path";
 import { dispatchCore } from "./dispatch.ts";
-import { execp } from "./lens-exec.ts";
 import { trace } from "./trace.ts";
 import { BranchAheadError, mechanizedBranchSetup } from "./work-driver-branch-mechanized.ts";
 import { parseWorktreesBlock, runBranchViaOpsDispatch } from "./work-driver-branch-ops.ts";
 import { runBranchResiduePass } from "./work-driver-branch-residue.ts";
+import { execp } from "./work-driver-verify.ts";
 
 export { parseWorktreesBlock };
 import type { DriverContext } from "./work-driver-context.ts";

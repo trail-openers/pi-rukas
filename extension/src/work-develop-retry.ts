@@ -12,7 +12,6 @@
  * branches-converged verdict and the handoff. Called from runDevelopTopological
  * (work-develop-topological.ts).
  */
-import { join } from "node:path";
 import { trace } from "./trace.ts";
 import {
   type ExecFn,
@@ -20,17 +19,13 @@ import {
   errText,
   isValidBaseSha,
   resetWorktreeToBase,
+  retryPatchPath,
+  runGit,
 } from "./work-develop-git.ts";
 import { GREEN_DOWNGRADE } from "./work-develop-greens.ts";
 import type { RawVerdict } from "./work-develop-verdict-source.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 import { appendEvent, writeState } from "./workflow-state.ts";
-
-export {
-  commitsAheadOfBase,
-  resetWorktreeToBase,
-  worktreeStatus,
-} from "./work-develop-git.ts";
 
 /** One workstream's verdict in the develop fan-out. */
 export type FanoutVerdict = RawVerdict;
@@ -100,6 +95,7 @@ export function recordDowngrade(
     ms: 0,
     at: Date.now(),
     error: reason,
+    downgrade: true,
   });
 }
 
@@ -122,7 +118,7 @@ export async function greenCountsAsWork(
   if (!isValidBaseSha(base)) {
     return { counts: false, reason: `${GREEN_DOWNGRADE}: no valid base sha` };
   }
-  const ahead = await commitsAheadOfBase(execFn, cwd, base);
+  const ahead = await commitsAheadOfBase(runGit(execFn), cwd, base);
   if ("unreadable" in ahead) {
     if (mode === "resume") {
       return {
@@ -158,6 +154,9 @@ export async function trustedPreservedGreens(
     }
     const r = await greenCountsAsWork(ctx.execFn, cwd, ctx.baseFor(id), id, "resume");
     if (r.note !== undefined) out.notes.push(r.note);
+    else if (!r.counts && r.reason !== undefined) {
+      out.notes.push(`${id}: preserved green not kept — ${r.reason}`);
+    }
     if (r.counts) out.kept.add(id);
   }
   return out;
@@ -176,9 +175,15 @@ export function retryResetFor(args: {
   return (id) => {
     const cwd = args.cwdFor(id);
     if (typeof cwd !== "string") return Promise.reject(new Error(`${id}: no worktree to reset`));
-    return resetWorktreeToBase(args.execFn, cwd, args.baseFor(id), {
+    let patchPath: string;
+    try {
+      patchPath = retryPatchPath(args.scratchAbs, id, 1);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+    return resetWorktreeToBase(runGit(args.execFn), cwd, args.baseFor(id), {
       repoRoot: args.repoRoot,
-      patchPath: join(args.scratchAbs, `retry-${id}-1.patch`),
+      patchPath,
     });
   };
 }

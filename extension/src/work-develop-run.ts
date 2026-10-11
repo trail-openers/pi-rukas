@@ -129,7 +129,7 @@ export function parkDeferredLeftover(
 /** Create the per-workstream dispatch closure (captures `stateRef` for memory-inject events). */
 export function makeRunOneWorkstream(
   s: DevelopRunState,
-): (id: string, cwd: string) => Promise<{ id: string; ok: boolean }> {
+): (id: string, cwd: string) => Promise<{ id: string; ok: boolean; reason?: string }> {
   return async (id: string, cwd: string) => {
     const { ctx, activeIssues, scratchAbs, workstreams, ids, dispatch, deckTagFor } = s;
     // The speculative-explore knob is a global env var, not per-run state,
@@ -310,8 +310,11 @@ export function makeRunOneWorkstream(
           at: Date.now(),
         });
       }
-      s.verdicts.push({ id, ok });
-      return { id, ok };
+      // #1016 — a first-pass failure carries its reason into the verdicts.
+      const tail = "errorTail" in completionEvent ? completionEvent.errorTail : undefined;
+      const reason = ok ? undefined : (tail ?? "developer did not complete ok");
+      s.verdicts.push(ok ? { id, ok } : { id, ok, reason });
+      return ok ? { id, ok } : { id, ok, reason };
     } catch (err) {
       const errMsg = (err as Error).message?.slice(0, 200);
       s.branchEvents.push({

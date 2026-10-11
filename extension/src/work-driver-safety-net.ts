@@ -46,8 +46,10 @@ import {
   type ExecFn,
   commitsAheadOfBase,
   errText,
-  isDriverArtefact,
   isValidBaseSha,
+  runGit,
+  stagePaths,
+  workEntriesOf,
   worktreeStatus,
 } from "./work-develop-git.ts";
 import { withPersistNotes } from "./work-develop-retry.ts";
@@ -103,7 +105,7 @@ export async function hasAnyWorktreeEvidence(
   if (ids.length === 0) return true; // nothing to gate on, but be conservative
   for (const [wsId, cwd] of Object.entries(worktrees)) {
     // Uncommitted changes anywhere → evidence, regardless of base validity.
-    const status = await worktreeStatus(execFn, cwd);
+    const status = await worktreeStatus(runGit(execFn), cwd);
     // git status failed in this worktree — cannot assess; stay conservative.
     if (!Array.isArray(status) || status.length > 0) return true;
     const effectiveBase = effectiveBaseForWorkstream(wsId, workstreamBaseShas, baseSha);
@@ -111,7 +113,7 @@ export async function hasAnyWorktreeEvidence(
     // Effective base not in this worktree's history — not evidence either way;
     // move to the next worktree rather than conservatively bailing (a worktree
     // whose base can't be resolved and that is clean has no evidence here).
-    const ahead = await commitsAheadOfBase(execFn, cwd, effectiveBase);
+    const ahead = await commitsAheadOfBase(runGit(execFn), cwd, effectiveBase);
     if ("commits" in ahead && ahead.commits > 0) return true;
   }
   // No worktree had uncommitted changes or commits ahead of its base. The
@@ -137,26 +139,27 @@ export async function safetyNetWorktree(
 ): Promise<WorkEvent | undefined> {
   if (!safetyNetEnabled()) return undefined;
   const now = Date.now();
+  const git = runGit(execFn);
 
-  // (1) Uncommitted work (driver artefacts under .pi/ and tmp/ excluded).
-  const status = await worktreeStatus(execFn, cwd);
+  // (1) Check if worktree has uncommitted changes. Skip driver artefacts: .pi/ and tmp/
+  // (same exclusion as cap-checkpoint) — untracked only; a tracked edit there is work.
+  const status = await worktreeStatus(git, cwd);
   if (!Array.isArray(status)) {
     const note = `${wsId}: safety net skipped — git status unreadable — ${status.unreadable}`;
     trace(`work-driver: ${note}`);
     notes.push(note);
     return undefined;
   }
-  const workPaths = status.filter((p) => !isDriverArtefact(p));
+  const workPaths = workEntriesOf(status).map((e) => e.path);
 
-  // (AC3) Clean tree (or artefacts only) → nothing to commit → skip.
+  // (AC3) Clean tree → nothing to commit → skip.
   if (workPaths.length === 0) {
     trace(`work-driver: safety net skipped ${wsId} — tree clean`);
     return undefined;
   }
 
-  // (2) Commits ahead of the EFFECTIVE base — the per-workstream base, not the
-  // global baseSha (#679). An unreadable count never licenses a commit.
-  const ahead = await commitsAheadOfBase(execFn, cwd, effectiveBase);
+  // (2) Check if worktree already has commits ahead of its EFFECTIVE base — the per-workstream effective base, not the global baseSha (#679). A dependent workstream's worktree was created from its dependency's post-commit SHA, so comparing against the global baseSha would miscount its commits ahead. An unreadable count never licenses a commit.
+  const ahead = await commitsAheadOfBase(git, cwd, effectiveBase);
   if (!("commits" in ahead)) {
     const note = `${wsId}: safety net skipped — commit check unreadable — ${ahead.unreadable}`;
     trace(`work-driver: ${note}`);
@@ -176,45 +179,35 @@ export async function safetyNetWorktree(
   // Fire the safety net: stage the work paths and commit.
   trace(`work-driver: safety net firing for ${wsId} — ${workPaths.length} uncommitted path(s)`);
   let commitSha: string | undefined;
-  let filesCommitted = 0;
-
+  // One `git add` for the whole list (chunked). A failed add records its git
+  // error and commits nothing: a partial stage must never turn green.
   try {
-    for (const clean of workPaths) {
-      try {
-        await execFn("git", {
-          cwd,
-          maxBuffer: 256 * 1024,
-          argv: ["add", "--", clean],
-        });
-        filesCommitted++;
-      } catch (err) {
-        trace(`work-driver: safety net add failed for ${clean}: ${errText(err)}`);
-      }
-    }
+    await stagePaths(git, cwd, workPaths);
+  } catch (err) {
+    const note = `${wsId}: safety net skipped — git add failed — ${errText(err)}`;
+    trace(`work-driver: ${note}`);
+    notes.push(note);
+    return undefined;
+  }
+  try {
     // Commit with driver-attributed message so the operator can tell
     // this from a developer's seam commit.
     const commitMsg = `wip: driver safety-net commit for ${wsId}`;
-    await execFn("git", {
-      cwd,
-      maxBuffer: 64 * 1024,
-      argv: ["commit", "-q", "--no-verify", "-m", commitMsg],
-    });
-    const { stdout: shaOut } = await execFn("git", {
-      cwd,
-      maxBuffer: 64 * 1024,
-      argv: ["rev-parse", "HEAD"],
-    });
+    await git(["commit", "-q", "--no-verify", "-m", commitMsg], { cwd, maxBuffer: 64 * 1024 });
+    const { stdout: shaOut } = await git(["rev-parse", "HEAD"], { cwd, maxBuffer: 64 * 1024 });
     commitSha = shaOut.trim();
   } catch (err) {
-    trace(`work-driver: safety net commit failed for ${wsId}: ${errText(err)}`);
-    // The commit failed — the tree is still dirty, nothing was saved.
-    // The verify gate will produce the same failure as before the safety net.
+    const note = `${wsId}: safety net commit failed — ${errText(err)}`;
+    trace(`work-driver: ${note}`);
+    notes.push(note);
+    // The tree is still dirty and nothing was committed; the verify gate will
+    // produce the same failure as before the safety net.
     return undefined;
   }
 
   if (commitSha) {
     trace(
-      `work-driver: safety net committed ${wsId} (${commitSha.slice(0, 8)}) — ${filesCommitted} file(s)`,
+      `work-driver: safety net committed ${wsId} (${commitSha.slice(0, 8)}) — ${workPaths.length} file(s)`,
     );
     return {
       kind: "safety-net-commit",
@@ -222,7 +215,7 @@ export async function safetyNetWorktree(
       workstreamId: wsId,
       worktreePath: cwd,
       commitSha,
-      filesCommitted,
+      filesCommitted: workPaths.length,
     };
   }
   return undefined;

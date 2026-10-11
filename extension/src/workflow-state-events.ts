@@ -362,6 +362,8 @@ export type WorkEvent =
       depCompletedAt?: number;
       /** #753 — the underlying failure detail for a DEFERRED worktree-creation failure. Absent on every other branch-completed. */
       deferredCreation?: DeferredCreationEventFragment;
+      /** #1016 — set by recordDowngrade: a commitless green rewritten to ok:false. Not a new attempt. */
+      downgrade?: true;
     }
   | {
       /**
