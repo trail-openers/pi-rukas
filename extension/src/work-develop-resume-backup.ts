@@ -18,6 +18,7 @@ import {
   retryPatchPath,
   runGit,
   savePartialWork,
+  unstagePaths,
   workEntriesOf,
   worktreeStatus,
 } from "./work-develop-git.ts";
@@ -60,6 +61,9 @@ export async function backupInterruptedWorktrees(args: {
       const attempt = await nextRetryAttempt(args.scratchAbs, id);
       const patchPath = retryPatchPath(args.scratchAbs, id, attempt);
       out.saved[id] = await savePartialWork(git, cwd, base, work, patchPath);
+      // The save staged the work to build the patch; unstage it so the index is
+      // left as the developer left it (the working tree is never touched here).
+      await unstagePaths(git, cwd, work);
       trace(`work-driver: resumed ${id}: uncommitted work saved to ${out.saved[id]}`);
     } catch (err) {
       out.refused[id] = `could not save uncommitted work before resume — ${errText(err)}`;

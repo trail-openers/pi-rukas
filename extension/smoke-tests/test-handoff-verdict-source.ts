@@ -109,11 +109,19 @@ assert(
 const SECOND = "developer exited non-zero";
 const second: WorkState = {
   ...s,
-  // task-b's green is preserved from BEFORE the last develop step-started (a
-  // crash-resume keeps it, #1016), so this step never re-ran it: "kept (ok)".
+  // task-b's green is preserved from an interrupted attempt (a crash-resume
+  // re-records it with resumed:true inside this window), so it never re-ran: "kept (ok)".
   eventLog: [
-    { kind: "branch-completed", step: "develop", workstreamId: "task-b", ok: true, ms: 1, at: 2 },
     { kind: "step-started", step: "develop", at: 2.5 },
+    {
+      kind: "branch-completed",
+      step: "develop",
+      workstreamId: "task-b",
+      ok: true,
+      ms: 1,
+      at: 2.6,
+      resumed: true,
+    },
     {
       kind: "branch-completed",
       step: "develop",

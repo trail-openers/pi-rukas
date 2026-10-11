@@ -67,7 +67,12 @@ async function runDevelopTopological(
   const begun = { jobId };
   let next = initialState;
   const scratchAbs = scratchDir(ctx.repoRoot, ctx.issue);
-  let verdicts: Array<{ id: string; ok: boolean; reason?: string; claimed?: true }> = [];
+  let verdicts: Array<{
+    id: string;
+    ok: boolean;
+    reason?: string;
+    claimed?: true;
+  }> = [];
   const branchEvents: WorkEvent[] = [];
   const dependsOnMap: Record<string, string[]> = {};
   for (const [id, ws] of Object.entries(workstreams)) {
@@ -183,7 +188,12 @@ async function runDevelopTopological(
       const green = await greenCountsAsWork(execFn, cwd, base);
       if (green.counts) return { ...r, claimed: true };
       recordDowngrade(persister, id, green.detail);
-      return { id, ok: false, reason: downgradeReason(green.detail), claimed: true };
+      return {
+        id,
+        ok: false,
+        reason: downgradeReason(green.detail),
+        claimed: true,
+      };
     },
     resetFor: retryResetFor({
       execFn,
@@ -221,7 +231,27 @@ async function runDevelopTopological(
     globalBaseSha,
     ids,
     runOneWorkstream,
-    { stateRef, inCycleWorktrees, depCompletedAtMap, failureSource },
+    {
+      stateRef,
+      inCycleWorktrees,
+      depCompletedAtMap,
+      failureSource,
+      // #1016 — crash-resume and the selective retry reach the dependent phase too.
+      kept: preserved.kept,
+      refused: preserved.refused,
+      notes: persistNotes,
+      emitBranchCompleted: persister.emit,
+      updateState: persister.update,
+      flushState: persister.flush,
+      resetFor: (id, cwd, base) =>
+        retryResetFor({
+          execFn,
+          repoRoot: ctx.repoRoot,
+          scratchAbs,
+          cwdFor: () => cwd,
+          baseFor: () => base,
+        })(id),
+    },
   );
   await persister.flush();
   worktrees = wtResult.worktrees;

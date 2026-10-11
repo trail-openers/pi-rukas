@@ -49,19 +49,32 @@ export function makeBranchCompletedPersister(
   repoRoot: string,
   stateRef: { current: WorkState },
   notes: string[],
-): { emit: (ev: WorkEvent) => void; flush: () => Promise<void> } {
+): {
+  emit: (ev: WorkEvent) => void;
+  update: (fn: (s: WorkState) => WorkState) => void;
+  flush: () => Promise<void>;
+} {
   let chain: Promise<void> = Promise.resolve();
+  const persistSnapshot = () => {
+    const snapshot = stateRef.current;
+    chain = chain
+      .then(() => writeState(repoRoot, snapshot))
+      .catch((err) => {
+        const note = `state persist failed (crash-resume record may be incomplete) — ${errText(err)}`;
+        trace(`work-driver: ${note}`);
+        notes.push(note);
+      });
+  };
   return {
     emit: (ev) => {
       stateRef.current = appendEvent(stateRef.current, ev);
-      const snapshot = stateRef.current;
-      chain = chain
-        .then(() => writeState(repoRoot, snapshot))
-        .catch((err) => {
-          const note = `branch-completed persist failed (crash-resume record may be incomplete) — ${errText(err)}`;
-          trace(`work-driver: ${note}`);
-          notes.push(note);
-        });
+      persistSnapshot();
+    },
+    // #1016 — a non-event state change (a dependent's worktree path) written
+    // through the same chain, so it never races an in-flight branch-completed write.
+    update: (fn) => {
+      stateRef.current = fn(stateRef.current);
+      persistSnapshot();
     },
     flush: () => chain,
   };
@@ -143,7 +156,10 @@ export async function greenCountsAsWork(
   }
   const ahead = await commitsAheadOfBase(runGit(execFn), cwd, base);
   if ("unreadable" in ahead) {
-    return { counts: false, detail: `commit check unreadable — ${ahead.unreadable}` };
+    return {
+      counts: false,
+      detail: `commit check unreadable — ${ahead.unreadable}`,
+    };
   }
   return ahead.commits > 0 ? { counts: true } : { counts: false };
 }

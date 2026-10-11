@@ -87,6 +87,24 @@ export interface DependentRunState {
   inCycleWorktrees?: string[];
   depCompletedAtMap?: Record<string, number>;
   failureSource?: Record<string, "skipped" | "failed">;
+  /** #1016 — dependents whose green survived a crash: kept, never re-dispatched. */
+  kept?: ReadonlySet<string>;
+  /** #1016 — dependents whose unsaved work blocks their dispatch (id → reason). */
+  refused?: Record<string, string>;
+  /** #1016 — persists a dependent's branch-completed (incl. the kept re-record). */
+  emitBranchCompleted?: (ev: WorkEvent) => void;
+  /** #1016 — persists a non-event state change (dependent worktree paths). */
+  updateState?: (fn: (s: WorkState) => WorkState) => void;
+  /** #1016 — waits for every queued state write before a direct write. */
+  flushState?: () => Promise<void>;
+  /** #1016 — the one-shot retry reset for a failed dependent. */
+  resetFor?: (
+    id: string,
+    cwd: string,
+    base: string | undefined,
+  ) => Promise<{ attempt: number; patch?: string }>;
+  /** #1016 — driver notes (saved patches), surfaced in the handoff. */
+  notes?: string[];
 }
 
 /** #753 — the optional `extra` fields added to a failed dependent's

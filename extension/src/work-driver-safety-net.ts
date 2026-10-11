@@ -110,9 +110,8 @@ export async function hasAnyWorktreeEvidence(
     if (!Array.isArray(status) || status.length > 0) return true;
     const effectiveBase = effectiveBaseForWorkstream(wsId, workstreamBaseShas, baseSha);
     if (!effectiveBase) continue; // no base → no commit evidence possible for this tree
-    // Effective base not in this worktree's history — not evidence either way;
-    // move to the next worktree rather than conservatively bailing (a worktree
-    // whose base can't be resolved and that is clean has no evidence here).
+    // An unreadable count is conservative evidence (handled below); a missing
+    // base has no commit evidence at all (handled above).
     const ahead = await commitsAheadOfBase(runGit(execFn), cwd, effectiveBase);
     // An unreadable count is treated as evidence (conservative), mirroring the
     // status branch above: a gate is never suppressed on an unknown state.
@@ -165,7 +164,12 @@ export async function safetyNetWorktree(
     return undefined;
   }
 
-  // (2) Check if worktree already has commits ahead of its EFFECTIVE base — the per-workstream effective base, not the global baseSha (#679). A dependent workstream's worktree was created from its dependency's post-commit SHA, so comparing against the global baseSha would miscount its commits ahead. An unreadable count never licenses a commit.
+  // Check if worktree already has commits ahead of its EFFECTIVE base —
+  // the per-workstream effective base, not the global baseSha (#679). A
+  // dependent workstream's worktree was created from its dependency's
+  // post-commit SHA, so comparing against the global baseSha would
+  // miscount its commits ahead.
+  // An unreadable count never licenses a commit.
   const ahead = await commitsAheadOfBase(git, cwd, effectiveBase);
   if (!("commits" in ahead)) {
     const note = `${wsId}: safety net skipped — commit check unreadable — ${ahead.unreadable}`;

@@ -11,7 +11,9 @@
  * names so existing imports keep their path. No behaviour change — the
  * import paths below are the union of both files' imports.
  */
+import { existsSync } from "node:fs";
 import { trace } from "./trace.ts";
+import { errText } from "./work-develop-git.ts";
 import {
   type BranchCompletedExtra,
   type DependentRunState,
@@ -19,12 +21,23 @@ import {
 } from "./work-develop-run.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import {
+  type DeferredCreationResult,
   computeSkipCascade,
   createDependentWorktree,
   resolveDependentBase,
 } from "./work-driver-dep-scheduler.ts";
 import { armStepNotice } from "./work-driver-step-notice.ts";
 import { type WorkEvent, type WorkState, writeState } from "./workflow-state.ts";
+
+/** #1016 — one verdict per workstream: a retry replaces the first pass's entry. */
+function replaceVerdict(
+  verdicts: Array<{ id: string; ok: boolean; reason?: string }>,
+  v: { id: string; ok: boolean; reason?: string },
+): void {
+  const i = verdicts.map((x) => x.id).lastIndexOf(v.id);
+  if (i >= 0) verdicts[i] = v;
+  else verdicts.push(v);
+}
 
 /**
  * #679 — run all dependent workstreams sequentially in topological order.
@@ -46,14 +59,17 @@ export async function runDependentWorkstreams(
   workstreams: NonNullable<WorkState["pipelineState"]["workstreams"]>,
   dependsOnMap: Record<string, string[]>,
   failedOrSkipped: Set<string>,
-  verdicts: Array<{ id: string; ok: boolean }>,
+  verdicts: Array<{ id: string; ok: boolean; reason?: string }>,
   branchEvents: WorkEvent[],
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
   worktrees: Record<string, string>,
   workstreamBaseShas: Record<string, string>,
   globalBaseSha: string | undefined,
   allIds: string[],
-  runOneWorkstream: (id: string, cwd: string) => Promise<{ id: string; ok: boolean }>,
+  runOneWorkstream: (
+    id: string,
+    cwd: string,
+  ) => Promise<{ id: string; ok: boolean; reason?: string }>,
   /** #753 — the per-run state (in-cycle worktrees, park flag, dep-completion timestamps, failure source). */
   run: DependentRunState,
 ): Promise<{
@@ -113,6 +129,39 @@ export async function runDependentWorkstreams(
         );
         continue;
       }
+      // #1016 — a green from the interrupted attempt keeps its worktree and
+      // commits; its verdict stands and it is never re-dispatched.
+      if (run.kept?.has(id)) {
+        trace(
+          `work-driver: kept dependent ${id} — green from the interrupted attempt, not re-dispatched`,
+        );
+        run.emitBranchCompleted?.({
+          kind: "branch-completed",
+          step: "develop",
+          workstreamId: id,
+          ok: true,
+          ms: 0,
+          at: Date.now(),
+          resumed: true,
+        });
+        verdicts.push({ id, ok: true });
+        if (depCompletedAtMap) depCompletedAtMap[id] = Date.now();
+        continue;
+      }
+      // #1016 — unsaved partial work from the interrupted attempt blocks the dispatch.
+      const refusal = run.refused?.[id];
+      if (refusal !== undefined) {
+        trace(`work-driver: dependent ${id} refused — ${refusal}`);
+        failedOrSkipped.add(id);
+        if (failureSource) failureSource[id] = failureSource[id] ?? "failed";
+        verdicts.push({ id, ok: false, reason: refusal });
+        recordBranchCompleted(
+          id,
+          refusal,
+          depCompletedAt !== undefined ? { depCompletedAt } : undefined,
+        );
+        continue;
+      }
       const depResult = await resolveDependentBase(
         execFn,
         ctx.repoRoot,
@@ -137,14 +186,20 @@ export async function runDependentWorkstreams(
         );
         continue;
       }
-      const created = await createDependentWorktree(
-        execFn,
-        ctx.repoRoot,
-        ctx.issue,
-        id,
-        depResult.fromRef,
-        inCycleWorktrees,
-      );
+      // #1016 — a resumed dependent reuses its existing worktree (its partial work
+      // was saved before this step); creating over it would be refused as leftover.
+      const existingCwd = wtRef.worktrees[id];
+      const created: DeferredCreationResult =
+        existingCwd !== undefined && existsSync(existingCwd)
+          ? { path: existingCwd }
+          : await createDependentWorktree(
+              execFn,
+              ctx.repoRoot,
+              ctx.issue,
+              id,
+              depResult.fromRef,
+              inCycleWorktrees,
+            );
       if (created.path === undefined) {
         failedOrSkipped.add(id);
         if (failureSource) failureSource[id] = "failed";
@@ -195,6 +250,7 @@ export async function runDependentWorkstreams(
           // events flushed by parkDeferredLeftover are persisted HERE, before
           // the caller's short-circuit returns — a crash between the cap-hit and
           // the step-boundary write would otherwise lose the siblings' results.
+          await run.flushState?.();
           await writeState(ctx.repoRoot, stateRef.current);
           trace(
             `work-driver: PARK — deferred worktree creation for ${id} refused by dirty leftover at ${leftoverPath}; parking the cycle (no force-remove)`,
@@ -216,10 +272,47 @@ export async function runDependentWorkstreams(
       // #753 — the dependent's worktree is now part of this cycle; a LATER
       // dependent's deferred creation must not treat it as a same-issue
       // leftover (it is in-flight work, not residue).
-      if (inCycleWorktrees) inCycleWorktrees.push(createdPath);
+      if (inCycleWorktrees && !inCycleWorktrees.includes(createdPath))
+        inCycleWorktrees.push(createdPath);
       const depBaseSha = depResult.baseSha ?? depResult.fromRef;
-      if (depBaseSha) wtRef.workstreamBaseShas = { ...wtRef.workstreamBaseShas, [id]: depBaseSha };
-      await runOneWorkstream(id, createdPath);
+      if (depBaseSha)
+        wtRef.workstreamBaseShas = {
+          ...wtRef.workstreamBaseShas,
+          [id]: depBaseSha,
+        };
+      // #1016 — persist the worktree and base as soon as they exist: a crash before
+      // the step ends must still find them, or a finished dependent could never be kept.
+      run.updateState?.((s) => ({
+        ...s,
+        pipelineState: {
+          ...s.pipelineState,
+          worktrees: wtRef.worktrees,
+          workstreamBaseShas: wtRef.workstreamBaseShas,
+        },
+      }));
+      let outcome = await runOneWorkstream(id, createdPath);
+      if (!outcome.ok) {
+        // #1016 — a failed dependent keeps its own dependents skipped even when
+        // retried, and gets the same one-shot retry an independent gets.
+        failedOrSkipped.add(id);
+        if (failureSource) failureSource[id] = "failed";
+        if (allIds.length > 1 && run.resetFor) {
+          try {
+            const { attempt, patch } = await run.resetFor(
+              id,
+              createdPath,
+              wtRef.workstreamBaseShas[id] ?? globalBaseSha,
+            );
+            if (patch !== undefined) {
+              run.notes?.push(`${id}: retry attempt ${attempt}: partial work saved to ${patch}`);
+            }
+            outcome = await runOneWorkstream(id, createdPath);
+          } catch (err) {
+            outcome = { id, ok: false, reason: errText(err) };
+          }
+          replaceVerdict(verdicts, outcome);
+        }
+      }
       // #753 — the dependent's completion is the timestamp its own dependents record.
       if (depCompletedAtMap) depCompletedAtMap[id] = Date.now();
       // #679 — after this workstream dispatches, check if it actually produced

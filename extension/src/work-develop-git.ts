@@ -95,22 +95,33 @@ export async function worktreeStatus(
   const out: StatusEntry[] = [];
   for (let i = 0; i < tokens.length; i++) {
     const tok = tokens[i] ?? "";
-    if (tok.length < 4) continue;
+    // The only empty token is the one after the final NUL; any other is malformed.
+    if (tok === "" && i === tokens.length - 1) continue;
+    // Porcelain v1 is `XY PATH`: a status line is at least 4 chars with a space at 2.
+    if (tok.length < 4 || tok[2] !== " ") {
+      return { unreadable: `malformed status entry ${JSON.stringify(tok.slice(0, 80))}` };
+    }
     const code = tok.slice(0, 2);
     out.push({ path: tok.slice(3), untracked: code === "??" });
     // With -z a rename/copy is `XY new\0orig\0`: the origin is its own token.
     if (/[RC]/.test(code)) {
       i++;
       const orig = tokens[i];
-      if (orig) out.push({ path: orig, untracked: false });
+      if (!orig) return { unreadable: "rename/copy status entry without its origin path" };
+      out.push({ path: orig, untracked: false });
     }
   }
   return out;
 }
 
-/** Driver artefact paths (`.pi/`, `tmp/`). */
+/** Driver artefact paths: anything under `.pi/` or `tmp/`. The first segment is
+ *  compared case-insensitively, so `.PI/x` and `TMP/x` (case-insensitive
+ *  filesystems) are artefacts too. */
 export function isDriverArtefact(path: string): boolean {
-  return path.startsWith(".pi/") || path.startsWith("tmp/");
+  const slash = path.indexOf("/");
+  if (slash < 0) return false;
+  const first = path.slice(0, slash).toLowerCase();
+  return first === ".pi" || first === "tmp";
 }
 
 /** The entries the safety net may commit and the reset must save: everything
@@ -250,10 +261,23 @@ export async function resetWorktreeToBase(
   return patchPath;
 }
 
+/** Unstage `paths` (index only — the working tree is untouched), one
+ *  `git --literal-pathspecs reset` per ≤500-path chunk. */
+export async function unstagePaths(git: GitExec, cwd: string, paths: string[]): Promise<void> {
+  for (let i = 0; i < paths.length; i += STAGE_CHUNK) {
+    await git(["--literal-pathspecs", "reset", "-q", "--", ...paths.slice(i, i + STAGE_CHUNK)], {
+      cwd,
+      maxBuffer: 256 * 1024,
+    });
+  }
+}
+
 /** Stage the work paths and write `git diff --binary --cached <base>` to
  *  `patchPath`. The write refuses to overwrite an existing file (`wx`), so a
- *  retry can never clobber an earlier save. Any failure throws, so the caller
- *  never resets unsaved work. */
+ *  retry can never clobber an earlier save. Before writing, every work path must
+ *  appear in the index (`diff --cached --name-only`) and the patch must be
+ *  non-empty; otherwise it throws. Any failure throws, so the caller never
+ *  resets unsaved work. */
 export async function savePartialWork(
   git: GitExec,
   cwd: string,
@@ -264,10 +288,22 @@ export async function savePartialWork(
   let patch: string;
   try {
     await stagePaths(git, cwd, work);
+    const names = await git(["diff", "--cached", "--name-only", "--no-renames", "-z"], {
+      cwd,
+      maxBuffer: 256 * 1024,
+    });
+    const staged = new Set(names.stdout.split("\0"));
+    const unstaged = work.filter((p) => !staged.has(p));
+    if (unstaged.length > 0) {
+      throw new Error(
+        `${unstaged.length} work path(s) not staged, e.g. ${JSON.stringify(unstaged[0])}`,
+      );
+    }
     const { stdout } = await git(["diff", "--binary", "--cached", base], {
       cwd,
       maxBuffer: 64 * 1024 * 1024,
     });
+    if (stdout.trim() === "") throw new Error("empty patch for non-empty work");
     patch = stdout;
     await mkdir(dirname(patchPath), { recursive: true });
     await writeFile(patchPath, patch, { flag: "wx" });
