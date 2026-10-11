@@ -19,7 +19,13 @@ import {
   setPlanDispatch,
   setPlanStatFn,
 } from "../src/plan-driver.ts";
+import { setPlanGitStateFn } from "../src/plan-investigation-cache.ts";
 import { reporterMissingError } from "../src/reporter-preflight.ts";
+
+// #1043: a non-dry run here must not reuse a dry run cached in the real clone
+// by another suite — the reporter preflight is what this test asserts. A null
+// git state is the documented "HEAD unreadable" path: caching is skipped.
+setPlanGitStateFn(async () => undefined);
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

@@ -121,6 +121,20 @@ export interface PlanResult {
    * fixture run, 2026-09-09). Present only when at least one angle failed.
    */
   failedAngles?: { name: string; detail: string }[];
+  /**
+   * #1043: set when the investigation (inventory, duplicate-risk, angles) was
+   * reused from the confirmed dry run; `ageMs` is that dry run's age.
+   * Drafting, validation and the gap gate always re-ran.
+   */
+  investigationReused?: { ageMs: number };
+  /**
+   * #1043: set when the filed spec is the confirmed dry run's reviewed spec,
+   * filed verbatim with no investigation, drafting or gate; `ageMs` is that
+   * dry run's age.
+   */
+  filedFromDryRun?: { ageMs: number };
+  /** #1043: on a fileable dry run, the digest of its title + body (see plan-filing-claim.ts). */
+  reviewedDigest?: string;
   /** True when the body was compacted to fit the forge's 65,536-char limit. */
   compacted?: boolean;
   /** Per-phase wall-clock durations, always present on a completed run. */
@@ -132,6 +146,11 @@ export interface PlanDriverInput {
   type?: PlanType;
   context?: string;
   dryRun?: boolean;
+  /**
+   * #1043: the digest a dry run reported. A confirm that echoes it files the
+   * reviewed spec verbatim, but only when the cached title + body still hash to it.
+   */
+  reviewedDigest?: string;
   /** Internal: epic recursion depth. Never agent-settable. */
   depth?: number;
 }

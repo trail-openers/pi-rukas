@@ -27,6 +27,7 @@ import {
   gatePrompts,
   installForgeStub,
   installOfflineVipuneStub,
+  installNoPlanCacheStub,
   makeDispatchStub,
 } from "./plan-test-stubs.ts";
 
@@ -47,6 +48,7 @@ function assert(cond: boolean, msg: string) {
 // Install the forge stub BEFORE any non-dryRun invocation.
 installForgeStub();
 installOfflineVipuneStub();
+installNoPlanCacheStub();
 
 // ------------------------------ NO-OP ROUND ELIMINATED (speed fix)
 

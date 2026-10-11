@@ -24,6 +24,7 @@ import {
   gatePrompts,
   installForgeStub,
   installOfflineVipuneStub,
+  installNoPlanCacheStub,
   makeDispatchStub,
 } from "./plan-test-stubs.ts";
 
@@ -38,6 +39,7 @@ function assert(cond: boolean, msg: string) {
 
 installForgeStub();
 installOfflineVipuneStub();
+installNoPlanCacheStub();
 const DESCRIPTOR = "add a start_plan_driver tool for the plan pipeline in extension";
 
 async function run(gateReplies: string[] | string) {

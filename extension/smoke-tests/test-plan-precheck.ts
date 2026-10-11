@@ -13,6 +13,7 @@
 
 import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
 import { PRECHECK_WORD_FLOOR, precheckDescriptor } from "../src/plan-precheck.ts";
+import { installOfflineVipuneStub, installNoPlanCacheStub } from "./plan-test-stubs.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -60,6 +61,9 @@ function assert(cond: boolean, msg: string) {
 
 // -------------------------------------------------- pipeline: zero dispatch
 
+// Per-clone cache isolated (no real git common dir under the repo).
+installOfflineVipuneStub();
+installNoPlanCacheStub();
 {
   let dispatches = 0;
   setPlanDispatch((() => {

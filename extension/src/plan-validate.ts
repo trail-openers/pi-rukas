@@ -31,6 +31,7 @@
  * draftSpec — single source, so a reworded placeholder cannot silently
  * stop matching the validator.
  */
+import { parseOperatorDirectives } from "./plan-directives.ts";
 import { EPIC_SUB_ISSUE_DEPTH_LIMIT, type PlanType } from "./plan-types.ts";
 
 /**
@@ -312,4 +313,33 @@ export function fitDraftToBudget<T extends { body: string }>(
     size: second.body.length,
     breakdown: bodySectionBreakdown(second.body),
   };
+}
+
+/**
+ * #1043 — the final-spec checks every FILING must pass, whichever path files
+ * it: the pipeline's pre-filing check (plan-phase5.ts, dry runs included, so a
+ * dry run's fileability already reflects them) and the verbatim path that files
+ * a reviewed dry run (plan-confirm.ts). A non-empty title; no NEVER CLAIM phrase
+ * (read from `context`) in a generated section; a body within the forge limit.
+ * Deterministic and cheap — the LLM gates are not re-run here.
+ */
+export function validateFinalSpec(
+  title: string,
+  body: string,
+  context: string | undefined,
+): DraftValidation {
+  const problems: string[] = [];
+  if (title.trim().length === 0) problems.push("the title is empty");
+  const hits = bodyContainsForbiddenPhrase(body, parseOperatorDirectives(context).neverClaim ?? []);
+  if (hits.length > 0) {
+    problems.push(
+      `a NEVER CLAIM phrase appears in a generated section: ${hits.map((h) => `"${h}"`).join(", ")}`,
+    );
+  }
+  if (body.length > FORGE_BODY_MAX) {
+    problems.push(
+      `the spec is ${body.length} chars, over the forge's ${FORGE_BODY_MAX}-char body limit`,
+    );
+  }
+  return { ok: problems.length === 0, problems };
 }

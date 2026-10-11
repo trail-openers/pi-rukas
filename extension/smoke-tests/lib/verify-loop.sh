@@ -75,6 +75,14 @@ set -u
 # reaches the child env.
 export PI_ENSEMBLE_FORBID_LIVE_SPAWN=1
 
+# #1043 — the /plan investigation cache lives under the git common dir, which a
+# worktree resolves to the main clone's .git. An offline test that never installs
+# a git-state stub must not write into the real clone's pi-plan-cache, so the
+# real lookup is off here. A test that wants the cache installs a stub
+# (newPlanCache) — the explicit enable; the canary in test-plan-investigation-cache.ts
+# proves this export disables the real lookup.
+export PI_ENSEMBLE_PLAN_CACHE=0
+
 # #1069 — the per-clone review ledger lives under the git common dir, and a
 # worktree's common dir resolves to the main clone's .git. Every test that
 # calls a ledger writer seam (runLensReview / runAdversarialLoop /

@@ -7,12 +7,15 @@
  * section header as the orchestration-visible seam.
  */
 import { type FilingFailure, fileIssue, getPlanForge, planForgeFor } from "./plan-filing.ts";
+import { validateFinalSpec } from "./plan-validate.ts";
 
 export interface Phase5Args {
   capReason: string | undefined;
   dryRun?: boolean;
   title: string;
   finalBody: string;
+  /** The operator context: its NEVER CLAIM block is re-checked on the final body (#1043). */
+  context?: string;
   repoRoot: string;
   rawUnparsedHead?: string;
   timed: <T>(phase: string, fn: () => Promise<T>) => Promise<T>;
@@ -57,12 +60,26 @@ export async function phase5FilingFailure(args: Phase5Args): Promise<Phase5Resul
       detail:
         "the gap-gate dispatch failed — no reviewer ever saw the spec, so it was not filed (re-run start_plan_driver after the gate failure is addressed)",
     };
-  } else if (!args.dryRun) {
-    const fr = await args.timed("filing", () =>
-      fileIssue(args.title, args.finalBody, getPlanForge() ?? (() => planForgeFor(args.repoRoot))),
-    );
-    issueUrl = fr.url;
-    filingFailure = fr.failure;
+  } else {
+    // #1043: the final-spec checks run on every path that would file, a dry run
+    // included, so a dry run's fileability already reflects them.
+    const check = validateFinalSpec(args.title, args.finalBody, args.context);
+    if (!check.ok) {
+      filingFailure = {
+        reason: "draft-invalid",
+        detail: `the final spec failed deterministic checks, so it was not filed: ${check.problems.join("; ")}`,
+      };
+    } else if (!args.dryRun) {
+      const fr = await args.timed("filing", () =>
+        fileIssue(
+          args.title,
+          args.finalBody,
+          getPlanForge() ?? (() => planForgeFor(args.repoRoot)),
+        ),
+      );
+      issueUrl = fr.url;
+      filingFailure = fr.failure;
+    }
   }
   return { issueUrl, filingFailure };
 }
