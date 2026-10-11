@@ -279,5 +279,79 @@ const BRIEF = "Prior memory: #394 calibrated the retrieval floor; do not re-deri
   );
 }
 
+// --------------------------------------------------------------- #1078: issue body artifact + branch state
+
+{
+  const ARTIFACT_PATH = "/home/user/.pi/work-state/1078/issue-body.txt";
+  const prompt = inlineDevelopPrompt(
+    [1078],
+    "/tmp/scratch",
+    ws,
+    undefined,
+    undefined,
+    BRIEF,
+    undefined,
+    undefined,
+    [ARTIFACT_PATH],
+  );
+  assert(
+    prompt.includes(ARTIFACT_PATH),
+    "#1078: the driver-cached issue body artifact path is named in the prompt",
+  );
+  assert(
+    prompt.includes(`cat ${ARTIFACT_PATH}`),
+    "#1078: the developer is told to read the cached file (cat), not re-fetch",
+  );
+  assert(
+    /Do NOT re-fetch/i.test(prompt),
+    "#1078: the prompt explicitly forbids the re-fetch that Step 1 already did",
+  );
+  assert(
+    !/gh issue view 1078/.test(prompt),
+    "#1078: the re-fetch instruction is absent when the artifact path is present",
+  );
+
+  // Branch state: the worktree is on a detached HEAD, not "the current branch".
+  assert(
+    /detached HEAD at the base commit/i.test(prompt),
+    "#1078: the prompt states the worktree is on a detached HEAD at the base commit",
+  );
+  assert(
+    !/in the current branch/i.test(prompt),
+    "#1078: the misleading 'current branch' language is gone",
+  );
+  assert(
+    /driver moves the commits to the feature branch/i.test(prompt),
+    "#1078: the prompt explains that the driver handles commit-to-branch migration",
+  );
+
+  // Softened commit clause: no longer prescribes a fixed <type>(scope): shape.
+  assert(
+    /follow the project['']s commit convention/i.test(prompt),
+    "#1078: the commit clause defers to the project's commit convention",
+  );
+  assert(
+    !/git commit -m \"<type>\(scope\): concise subject\"/.test(prompt),
+    "#1078: the rigid <type>(scope): concise subject template is gone from the develop prompt",
+  );
+
+  // When the artifact path is absent, the old re-fetch form is used.
+  const noArtifact = inlineDevelopPrompt(
+    [1078],
+    "/tmp/scratch",
+    ws,
+    undefined,
+    undefined,
+    BRIEF,
+    undefined,
+    undefined,
+    undefined,
+  );
+  assert(
+    noArtifact.includes("gh issue view 1078"),
+    "#1078: absent artifact path → falls back to the gh issue view re-fetch",
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

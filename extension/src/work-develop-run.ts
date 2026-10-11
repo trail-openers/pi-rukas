@@ -17,6 +17,7 @@
  * fan-out, failed/skipped detection, the safety net + verify gate) — lives
  * in work-develop-topological.ts.
  */
+import fs from "node:fs";
 import path from "node:path";
 import { buildMemoryBrief } from "./memory-brief.ts";
 import { trace } from "./trace.ts";
@@ -177,6 +178,41 @@ export function makeRunOneWorkstream(
         ids: brief.hits.map((h: { id: string }) => h.id),
       });
 
+      // #1078: siblings are written as issue-body-<N>.txt in the primary's dir by the
+      // explore writer (work-driver-explore-run.ts) but not tracked in state — derive
+      // and existence-check each (may be gone by develop time; falls back to re-fetch).
+      // The bare legacy issue-body.txt is never written in multi-issue mode.
+      const artifact = s.stateRef.current.pipelineState.issueBodyArtifact;
+      const artifactPaths: string[] = [];
+      if (artifact) {
+        const candidates = [artifact];
+        if (activeIssues.length > 1) {
+          // The explore writer names every active issue `issue-body-<N>.txt`
+          // in the primary's dir; the primary's state-tracked file may still
+          // carry the legacy bare name (single-issue cycles, resumed state),
+          // so `artifact` itself is the primary's candidate — skip it here
+          // instead of deriving a phantom `issue-body-<primary>.txt`.
+          for (const n of activeIssues) {
+            if (n === ctx.issue) continue;
+            candidates.push(path.join(path.dirname(artifact), `issue-body-${n}.txt`));
+          }
+        }
+        // fs.existsSync returns false (never throws) on any stat failure, so
+        // a path that is gone or unreadable simply degrades to the re-fetch
+        // line for that issue.
+        for (const candidate of candidates) {
+          if (fs.existsSync(candidate)) artifactPaths.push(candidate);
+        }
+      }
+      if (artifact && artifactPaths.length === 0) {
+        trace(
+          `work-driver: issue body artifact missing at develop time, falling back to re-fetch: ${artifact}`,
+        );
+      }
+      // An empty array (artifact tracked but all files gone) is a meaningful
+      // "checked, none present" state; the prompt guard treats it as absent
+      // and falls back to the re-fetch line.
+      const issueBodyArtifactPaths = artifactPaths;
       const [developerSettled, speculativeSettled] = await Promise.allSettled([
         dispatch(
           ctx.pi,
@@ -191,6 +227,7 @@ export function makeRunOneWorkstream(
               brief.text,
               siblingWorkstreams,
               verifyCmd,
+              issueBodyArtifactPaths,
             ),
             cwd,
           },

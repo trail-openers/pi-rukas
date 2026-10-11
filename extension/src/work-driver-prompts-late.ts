@@ -327,7 +327,9 @@ export function inlineLensFixPrompt(findings: string, scratchDirAbs: string): st
     // inlineDevelopPrompt: the lens-fix worktree is the same tree the
     // develop gate (and later the adversarial diff) reads, so committed
     // work is what the downstream steps expect.
-    '  - Commit your work in the worktree at natural seams (a clean build, a passing test suite): run `git add -A` followed by `git commit -m "<type>(scope): concise subject"`. The driver\'s gate REJECTS uncommitted-only work — no commit ahead of base SHA means the step fails. Do NOT push — the driver owns the branch.',
+    // #1078 — commit subject follows the project's convention (same
+    // softening as the develop prompt).
+    "  - Commit your work in the worktree at natural seams (a clean build, a passing test suite): run `git add -A` followed by `git commit -m \"<concise subject — follow the project's commit convention from AGENTS.md, or <type>(scope): description>\"`. The driver's gate REJECTS uncommitted-only work — no commit ahead of base SHA means the step fails. Do NOT push — the driver owns the branch.",
     "",
     "Findings (JSON-encoded array of {path, line, severity, title, suggestion}):",
     "```json",

@@ -234,74 +234,6 @@ export function inlinePlanPrompt(issues: number[], scratchDirAbs: string): strin
   ].join("\n");
 }
 
-export function inlineBranchPrompt(
-  issues: number[],
-  workstreamIds: string[],
-  scratchDirAbs: string,
-  /**
-   * #844 — the driver-fetched base SHA. When present the prompt names this
-   * EXACT SHA instead of "the fresh mainline tip" so ops builds the branch
-   * from the same commit the driver then verifies against (the merge-base
-   * check in runBranchViaOpsDispatch). The ops-fallback path fires after a
-   * failed fetch, so the call site may omit it — the prompt then keeps the
-   * pre-#844 "fresh mainline tip" shape.
-   */
-  baseSha?: string,
-): string {
-  const multi = workstreamIds.length > 1;
-  const multiIssue = issues.length > 1;
-  const primary = issues[0] ?? 0;
-  const headline = multiIssue ? `issues #${issues.join(", #")}` : `issue #${primary}`;
-  const branchHint = multiIssue
-    ? `feature/issues-${issues.join("-")}-<brief-description>`
-    : `feature/issue-${primary}-<brief-description>`;
-  const worktreePrefix = multiIssue
-    ? `.worktrees/issues-${issues.join("-")}`
-    : `.worktrees/issue-${primary}`;
-  const lines = [
-    `/work ${headline} — Step 3 (Setup). Create the feature branch under the safety preconditions below.`,
-    "",
-    "  1. Identify the mainline branch (default `main`; detect via `git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@'`).",
-    "  2. Verify clean working tree (`git status --porcelain` must be empty). If dirty, ABORT and surface the failure verbatim — do NOT branch off uncommitted work.",
-    "  3. Fetch + fast-forward mainline (`git fetch origin && git checkout <mainline> && git pull --ff-only origin <mainline>`). If --ff-only fails, ABORT.",
-    ...(baseSha
-      ? [
-          `  4. Create branch \`${branchHint}\` from the driver-fetched base SHA \`${baseSha}\`. Verify with \`git rev-parse \`${branchHint}\`\` that the branch sits exactly at that SHA — the driver verifies this after your reply and HALTS the cycle with a cap on any mismatch.`,
-          `     If a local branch of the target name already exists, do NOT build on its tip: it may be stale. Use \`git branch -f \`${branchHint}\` \`${baseSha}\`\` to create it at the base SHA, or report the conflict verbatim.`,
-        ]
-      : [`  4. Create branch \`${branchHint}\` from the fresh mainline tip.`]),
-    "  5. End your reply with a single line `branch: <branch-name>` so the driver can capture it.",
-  ];
-  if (multi) {
-    lines.push(
-      "",
-      `  6. **Multi-workstream cycle** — Step 2 decomposed the active issue${multiIssue ? "s" : ""} into ${workstreamIds.length} workstreams (${workstreamIds.join(", ")}). Create one git worktree per workstream off the feature branch:`,
-      "",
-      ...workstreamIds.map(
-        (id) =>
-          `       git worktree add ${worktreePrefix}-${id} ${branchHint.replace("<brief-description>", "<brief>")}`,
-      ),
-      "",
-      "  7. End your reply with an additional fenced `## Worktrees` block mapping each workstream id to its absolute path:",
-      "",
-      "       ```markdown",
-      "       ## Worktrees",
-      "",
-      ...workstreamIds.map((id) => `       - ${id}: <absolute-path-to-worktree>`),
-      "       ```",
-      "",
-      "       Use `git rev-parse --show-toplevel` from inside each worktree to get the absolute path. The driver parses this block to wire up Step 4's per-workstream developer dispatches.",
-    );
-  } else {
-    lines.push(
-      "",
-      "Single-workstream cycle — do NOT create worktrees. The driver records the repo root as the `default` workstream's path automatically.",
-    );
-  }
-  lines.push(scratchHygieneSection(scratchDirAbs));
-  return lines.join("\n");
-}
-
 export function inlineDevelopPrompt(
   issues: number[],
   scratchDirAbs: string,
@@ -348,6 +280,14 @@ export function inlineDevelopPrompt(
    * existing call.
    */
   verifyCmd?: string,
+  /**
+   * #1078 — paths to the driver-cached issue body artifact(s); the prompt
+   * points at the file(s) instead of re-fetching via gh. A multi-issue cycle
+   * caches one file per active issue (each as `issue-body-<N>.txt` under the
+   * primary issue's state dir); the caller threads all of them so every
+   * named issue's body stays reachable even though re-fetching is forbidden.
+   */
+  issueBodyArtifactPaths?: string[],
 ): string {
   // PR11 — multi-issue cycles must show the developer the ACTIVE issues
   // (NEEDS_WORK subset after explore), not the primary cycle issue. The
@@ -403,16 +343,27 @@ export function inlineDevelopPrompt(
       );
     }
   }
-  const fetchInstr =
-    issues.length === 1
-      ? `\`gh issue view ${issues[0]}\` to re-fetch the issue body (acceptance criteria, DoD).`
-      : `Re-fetch each active issue body — run \`gh issue view <N>\` for each of: ${issues.map((n) => `#${n}`).join(", ")}.`;
+  // #1078 — the driver already fetched the issue body in Step 1 and cached
+  // it to disk. Point the developer at that file instead of re-fetching.
+  // Multi-issue: name every issue's cached file (the caller threads one path
+  // per active issue) — the primary is cached in state, the siblings are not,
+  // and the "do not re-fetch" line below forbids fetching them back.
+  let fetchInstr: string;
+  if (issueBodyArtifactPaths && issueBodyArtifactPaths.length > 0) {
+    const cats = issueBodyArtifactPaths.map((p) => `\`cat ${p}\``).join(", ");
+    const single = issueBodyArtifactPaths.length === 1;
+    fetchInstr = `Read ${single ? "the issue body" : "each active issue body"} (acceptance criteria, DoD) from the driver-cached file${single ? "" : "s"}: ${cats}. Do NOT re-fetch via \`gh issue view\` — the driver already did that in Step 1.`;
+  } else if (issues.length === 1) {
+    fetchInstr = `\`gh issue view ${issues[0]}\` to re-fetch the issue body (acceptance criteria, DoD).`;
+  } else {
+    fetchInstr = `Re-fetch each active issue body — run \`gh issue view <N>\` for each of: ${issues.map((n) => `#${n}`).join(", ")}.`;
+  }
   const verifyLine = verifyCmd
     ? `Before committing, run the project's verify command — \`${verifyCmd}\` — and make it pass in your worktree; this is the exact command the verify gate will run, so the two cannot diverge. Fix formatting or lint output by RUNNING the formatter/linter, never by hand-guessing.`
     : "This project has no discoverable verify command, so there is no project-level check to run before committing — rely on the change being correct and complete.";
   lines.push(
     `  1. ${fetchInstr}`,
-    "  2. Implement the change end-to-end in the current branch.",
+    "  2. Implement the change end-to-end. Your worktree is on a detached HEAD at the base commit — that is correct. Commit your work there; the driver moves the commits to the feature branch during Step 6 consolidation.",
     `  3. ${verifyLine}`,
     // #543 F5 — the driver's checkpoint commits the worktree at the natural
     // seams the child made during its run, so a cap kill never leaves only
@@ -423,7 +374,9 @@ export function inlineDevelopPrompt(
     // Make the exact commands explicit so smaller models don't drift off the
     // commit step under long-context constraint decay (issue #622 covers the
     // mechanical safety net as defense-in-depth).
-    '  4. Commit your work in the worktree at natural seams (a clean build, a passing test suite): run `git add -A` followed by `git commit -m "<type>(scope): concise subject"`. The verify gate REJECTS uncommitted-only work — no commit ahead of base SHA means the develop step fails. Do NOT push — the driver owns the branch and ops owns the push in Step 6.',
+    // #1078 — commit subject follows the project's convention, not a fixed
+    // <type>(scope): shape (a project's AGENTS.md may set a different style).
+    '  4. Commit your work in the worktree at natural seams (a clean build, a passing test suite): run `git add -A` followed by `git commit -m "<concise subject — follow the project\'s commit convention from AGENTS.md, or <type>(scope): description>"`. The verify gate REJECTS uncommitted-only work — no commit ahead of base SHA means the develop step fails. Do NOT push — the driver owns the branch and ops owns the push in Step 6.',
     "  5. End your reply with a `## Touched files` section listing every file you changed and a one-line `## Summary`.",
     "",
     "Discourage drive-by edits; only touch files in scope.",
