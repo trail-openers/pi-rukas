@@ -320,5 +320,51 @@ function sectionOf(body: string, heading: string, nextHeading: string): string {
   );
 }
 
+// ------------------- #1111: tolerant resolution-type parse; marker always stripped
+
+{
+  const RES = "the retry path stops after three attempts";
+  const one = (type: string) =>
+    parseGaps(
+      `GAP: CRITICAL no failure-mode criterion — proposed resolution: ${RES} — resolution-type: ${type}\nVERDICT: NEEDS_ITERATION`,
+    ).gaps[0];
+  assert(
+    one("concrete.")?.resolutionType === "concrete",
+    "#1111 tolerant: `concrete.` (trailing period) parses as concrete",
+  );
+  assert(
+    one("**concrete**")?.resolutionType === "concrete",
+    "#1111 tolerant: `**concrete**` (markdown emphasis) parses as concrete",
+  );
+  assert(
+    one("`concrete`.")?.resolutionType === "concrete",
+    "#1111 tolerant: backticked `concrete`. parses as concrete",
+  );
+  assert(
+    one("operator decision")?.resolutionType === "operator-decision",
+    "#1111 tolerant: `operator decision` (space) parses as operator-decision",
+  );
+  assert(
+    one("**Operator Decision**")?.resolutionType === "operator-decision",
+    "#1111 tolerant: `**Operator Decision**` parses as operator-decision",
+  );
+  const misspelled = one("concret");
+  assert(
+    misspelled?.resolutionType === undefined,
+    "#1111 tolerant: `concret` (misspelled) stays undefined",
+  );
+  assert(
+    misspelled?.resolution === RES,
+    "#1111 tolerant: the unrecognised marker is stripped from the resolution text",
+  );
+  const noMarker = parseGaps(
+    `GAP: CRITICAL no failure-mode criterion — proposed resolution: ${RES}\nVERDICT: NEEDS_ITERATION`,
+  ).gaps[0];
+  assert(
+    noMarker?.resolutionType === undefined && noMarker?.resolution === RES,
+    "#1111 tolerant: a GAP line with no marker stays undefined, resolution unchanged",
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

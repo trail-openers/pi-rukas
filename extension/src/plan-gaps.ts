@@ -77,6 +77,22 @@ export interface GapGateParse {
 }
 
 /**
+ * Normalise a declared resolution-type value before the membership check:
+ * markdown emphasis and backticks, trailing punctuation, case, and inner
+ * spaces (`**Operator decision**.` → `operator-decision`). Anything still not
+ * a RESOLUTION_TYPE after this is rejected by isResolutionType (fail closed).
+ */
+function normaliseResolutionType(raw: string): string {
+  return raw
+    .replace(/[`*_]/g, "")
+    .trim()
+    .replace(/[.,;:!?)\]]+$/, "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-");
+}
+
+/**
  * Parse a gap-gate reply. Only lines starting with the `GAP:` marker create
  * gaps — bare severity words in prose (the reviewer's legend, a clean bill of
  * health, this prompt's own examples) must NOT parse as findings. The
@@ -101,9 +117,10 @@ export function parseGaps(reply: string): GapGateParse {
   // words in prose are inert — the same invariant the GAP: marker carries.
   const ungroundedRe = /^\s*UNGROUNDED:\s*(?:—|–|-)?\s*(.+)$/i;
   // #1111: the structured resolution type, a trailing `— resolution-type: <t>`
-  // segment. Absent or outside RESOLUTION_TYPES → undefined, which the writeback
-  // treats as not concrete (never spliced).
-  const typeRe = /[—–-]\s*resolution-type:\s*([a-z-]+)\s*$/i;
+  // segment. The value is read loosely and normalised (see
+  // normaliseResolutionType); absent or outside RESOLUTION_TYPES → undefined,
+  // which the writeback treats as not concrete (never spliced).
+  const typeRe = /[—–-]\s*resolution-type:\s*(.*)$/i;
   for (const line of lines) {
     const ug = line.match(ungroundedRe);
     if (ug) {
@@ -114,11 +131,15 @@ export function parseGaps(reply: string): GapGateParse {
     if (!m) continue;
     let rest = (m[2] ?? "").trim();
     const typeMatch = rest.match(typeRe);
-    const declared = typeMatch?.[1]?.toLowerCase();
-    const resolutionType = isResolutionType(declared) ? declared : undefined;
-    if (declared !== undefined && resolutionType === undefined)
-      trace(`plan-gaps: unrecognised resolution-type "${declared}" — not spliced`);
+    // The marker is metadata, never resolution text: strip it whenever present,
+    // parsed or not.
     if (typeMatch?.index !== undefined) rest = rest.slice(0, typeMatch.index).trim();
+    const declared = typeMatch ? normaliseResolutionType(typeMatch[1] ?? "") : undefined;
+    const resolutionType = isResolutionType(declared) ? declared : undefined;
+    if (!typeMatch)
+      trace(`plan-gaps: GAP line has no resolution-type — not spliced (${rest.slice(0, 120)})`);
+    else if (resolutionType === undefined)
+      trace(`plan-gaps: unrecognised resolution-type "${declared}" — not spliced`);
     const resMatch = rest.match(/[—–-]?\s*proposed resolution:\s*(.+)$/i);
     const resolution = resMatch?.[1]?.trim() ?? GAP_RESOLUTION_PLACEHOLDER;
     const description = (resMatch ? rest.slice(0, resMatch.index) : rest).trim();
