@@ -47,6 +47,7 @@
  * block exactly as today (no recovery), and `undeclared` records (warn-only)
  * never trigger the merge.
  */
+import { recordCommentEvidence } from "./comment-evidence.ts";
 import {
   fenceCapHit,
   mergeEvidence,
@@ -100,6 +101,8 @@ export async function runMergeRetryFlow(
   let next = state;
   next = await applySafetyNet(ctx, next);
   const gate2 = await verifyStepOutcome(ctx, next, "develop");
+  // #1040 — lost-comment evidence persists from the re-run's develop note.
+  next = recordCommentEvidence(next, gate2.notes);
   const rereRunRecords = gate2.fenceViolations ?? [];
   const blockingSecond = rereRunRecords.filter(
     (f) => f.kind === "sibling-declared" || f.kind === "issue-fenced",

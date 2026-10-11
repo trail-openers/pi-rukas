@@ -47,6 +47,8 @@ const BASE_SHA = "0123456789abcdef0123456789abcdef01234567";
 type Res = Awaited<ReturnType<typeof runRetentionIn>>;
 type OkRes = Extract<Res, { ok: true }>;
 
+// Compact real-git case runner: build a repo, run findLostComments against
+// base...head under PATHS, assert ok + `check` holds, clean up.
 /** One real-git case: scratch repo `src/app.ts` base→head, retention over it. */
 async function realCase(
   name: string,
@@ -134,6 +136,7 @@ async function developGate(
   );
 
   // (b) moving a function with its comment verbatim to another file → not lost.
+  // (b) moving a function with its comment verbatim to another file → not lost.
   {
     const code = "// doc for moved\nfunction moved() {\n  return 3;\n}\n";
     const dir = await repoWithFiles({ "src/a.ts": code }, { "src/a.ts": null, "src/b.ts": code });
@@ -179,6 +182,7 @@ async function developGate(
     (res) => res.lost.length === 2,
   );
 
+  // (f) 25 lost comments → format lists 20 + "5 more".
   // (f) 25 lost comments → format lists 20 + "5 more".
   const baseF =
     Array.from({ length: 25 }, (_, i) => `// comment number ${i}\n`).join("") +
@@ -317,6 +321,8 @@ async function developGate(
   writeFileSync(path.join(dir, ".pi", "verify-cmd"), "echo ok\n");
   const headAdd = "HEAD:src/app.ts:function add(a,b){return a+b;}\n";
   try {
+    // A fake execFn whose `git diff base...HEAD -- src` returns a removed
+    // comment and a head-tree read that does NOT contain it.
     // (i) lossy diff → passes; the lost line is evidence in a note, never a failure (#1040).
     {
       process.env.PI_ENSEMBLE_COMMENT_RETENTION = "1";

@@ -155,3 +155,29 @@ export function synthesizeResult(i: SynthesizeInput): DispatchResult {
     ...(i.killCause ? { killCause: i.killCause } : {}),
   };
 }
+
+export function toRoundRecords(
+  rounds: Array<{ round: number; verdict: AdversarialVerdict; ms: number }>,
+): DispatchResult["adversarialRounds"] {
+  return rounds.map((r) => ({
+    round: r.round,
+    status: r.verdict.status,
+    verdictParsed: r.verdict.verdictParsed !== false,
+  }));
+}
+
+/**
+ * One line of what a round objected to, for the next round's fixer. The full
+ * text is the reviewer's entire reply (narration included); replaying it all
+ * every round would crowd out the round's actual findings.
+ */
+export function summariseFindings(findings: string): string {
+  return (
+    findings
+      .split("\n")
+      .map((l) => l.trim())
+      .find((l) => /^(?:[-*\d]|###?\s)/.test(l) && l.length > 12) ??
+    findings.trim().split("\n")[0] ??
+    "(no detail)"
+  ).slice(0, 200);
+}

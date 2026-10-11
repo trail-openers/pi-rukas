@@ -51,13 +51,15 @@ const MARKER_TOKENS = [
  * The readers match a token with no word boundary (`readMarker` accepts
  * `XVERDICT: APPROVED`), so long tokens are neutralised ANYWHERE, case
  * insensitively. Short plain words (`GAP`, `pr`) would mangle prose
- * ("approved" → "app‹pr›oved"), so they are only neutralised as whole words.
+ * ("approved" → "app‹pr›oved"), so they are neutralised as whole words, and
+ * anywhere they carry a colon (`xpr: 9` is the shape a lenient reader would
+ * take), since no reader's boundary is verified here.
  */
 const BOUNDED = MARKER_TOKENS.filter((t) => t.length <= 4);
 const UNBOUNDED = MARKER_TOKENS.filter((t) => t.length > 4);
 const alternation = (tokens: string[]): string => tokens.map(escapeRe).join("|");
 const MARKER_RE = new RegExp(
-  `(?<![\\p{L}\\p{N}])(?:${alternation(BOUNDED)})(?![\\p{L}\\p{N}])|${alternation(UNBOUNDED)}`,
+  `(?<![\\p{L}\\p{N}])(?:${alternation(BOUNDED)})(?![\\p{L}\\p{N}])|(?:${alternation(BOUNDED)})(?=\\s*\\**\\s*:)|${alternation(UNBOUNDED)}`,
   "giu",
 );
 
@@ -99,7 +101,10 @@ function renderLost(lost: LostComment[], indent: string): string[] {
  * The develop-gate note for lost comments. Evidence for the reviewers — never a
  * failure, so it carries no verdict.
  */
-export function formatLostComments(res: { lost: LostComment[]; exempt: number }): string {
+export function formatLostComments(res: {
+  lost: LostComment[];
+  exempt: number;
+}): string {
   return [
     `comment-retention: ${res.lost.length} comment line(s) removed and not retained (exempt: ${res.exempt}) — evidence for the reviewers, not a failure`,
     ...renderLost(res.lost, "    "),
@@ -143,7 +148,12 @@ export function commentEvidencePlumbReports(
 ): Array<{ step: "develop"; role: string; body: string; at: number }> {
   return notes
     .filter((n) => n.startsWith("comment-retention:"))
-    .map((body) => ({ step: "develop" as const, role: "develop-gate", body, at }));
+    .map((body) => ({
+      step: "develop" as const,
+      role: "develop-gate",
+      body,
+      at,
+    }));
 }
 
 /**
@@ -180,7 +190,12 @@ export function roundComments(
   cwd: string | undefined,
   timeoutMs = DEFAULT_COMMENT_TIMEOUT_MS,
 ): Promise<LostCommentResult> {
-  return collectRoundComments({ cwd: cwd ?? process.cwd(), timeoutMs, headRef, diff });
+  return collectRoundComments({
+    cwd: cwd ?? process.cwd(),
+    timeoutMs,
+    headRef,
+    diff,
+  });
 }
 
 /** Persist the develop note's lost-comment lines into the cycle state (plumbing). */

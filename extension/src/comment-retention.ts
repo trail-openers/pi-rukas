@@ -19,13 +19,7 @@
 
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
-import {
-  type LostComment,
-  classifyHunk,
-  hasWord,
-  parseHunks,
-  wordsOf,
-} from "./comment-retention-hunks.ts";
+import { type LostComment, classifyHunk, hasWord, parseHunks } from "./comment-retention-hunks.ts";
 import { trace } from "./trace.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -220,10 +214,16 @@ export async function findLostComments(
     return { ok: false, reason: "no base ref or diff to check" };
   }
   if (baseRef !== undefined && !isSafeRef(baseRef)) {
-    return { ok: false, reason: `unsafe ref (${baseRef}) — refusing shell interpolation` };
+    return {
+      ok: false,
+      reason: `unsafe ref (${baseRef}) — refusing shell interpolation`,
+    };
   }
   if (headRef !== undefined && !isSafeRef(headRef)) {
-    return { ok: false, reason: `unsafe ref (${headRef}) — refusing shell interpolation` };
+    return {
+      ok: false,
+      reason: `unsafe ref (${headRef}) — refusing shell interpolation`,
+    };
   }
   if (!isSafePathList(paths)) {
     return { ok: false, reason: "unsafe path — refusing shell interpolation" };
@@ -234,7 +234,10 @@ export async function findLostComments(
   }
   // Range mode: both ends are required. (`baseRef` is defined by the guard above.)
   if (baseRef === undefined || headRef === undefined) {
-    return { ok: false, reason: "range check needs both a base and a head ref" };
+    return {
+      ok: false,
+      reason: "range check needs both a base and a head ref",
+    };
   }
   const pathArg = paths.join(" ");
   let rangeDiff: string;
@@ -247,7 +250,10 @@ export async function findLostComments(
     });
     rangeDiff = stdout;
   } catch (err) {
-    return { ok: false, reason: `git diff failed: ${errText(err).slice(0, 120)}` };
+    return {
+      ok: false,
+      reason: `git diff failed: ${errText(err).slice(0, 120)}`,
+    };
   }
   if (!rangeDiff.trim()) {
     return confirmEmptyDiff(execFn, cwd, baseRef, headRef, pathArg, timeoutMs);
@@ -284,20 +290,19 @@ async function classifyDiff(
       reason: `could not read head tree at ${headRef ?? "the worktree"} under ${paths.join(" ")}`,
     };
   }
-  const headByLastToken = indexByLastToken(headSet);
-  // Retained = the trimmed line reappears verbatim, or as the trailing part of
-  // a head line (a comment moved to the end of a code line). A comment that
-  // merely prefixes a longer comment at head is NOT retained.
+  // Retained = the trimmed line reappears verbatim, or as the leading or
+  // trailing part of a head line (a comment moved to the end of a code line, or
+  // re-wrapped onto a longer line). Only word-bearing text is matched in part:
+  // `}`, `*/` or `/**` must not be retained by any head line that ends in them.
+  // Scanned only for removed comments with no verbatim match, so the cost is
+  // bounded by the number of removed comments, not by the tree size.
   const presentAtHead = (text: string): boolean => {
     const t = text.trim();
     if (!t) return false;
     if (headSet.has(t)) return true;
-    // Trailing-part retention needs a word-bearing tail: `}`, `*/` or `/**`
-    // must not be "retained" by any head line that happens to end in them.
-    if (!hasWord(t) || wordsOf(t).length < 2) return false;
-    // A head line ending with `t` ends with `t`'s last token, so only those
-    // lines are candidates. Index built once above, not scanned per lookup.
-    return (headByLastToken.get(lastToken(t)) ?? []).some((l) => l.endsWith(t));
+    if (!hasWord(t)) return false;
+    for (const line of headSet) if (line.startsWith(t) || line.endsWith(t)) return true;
+    return false;
   };
 
   const lost: LostComment[] = [];
@@ -308,23 +313,6 @@ async function classifyDiff(
     exempt += v.exempt;
   }
   return { ok: true, lost, exempt };
-}
-
-/** The last whitespace-separated token of a (trimmed) line. */
-function lastToken(s: string): string {
-  return s.split(/\s/).pop() ?? "";
-}
-
-/** Head lines grouped by their last token: the only candidates a trailing-part lookup needs. */
-function indexByLastToken(lines: Set<string>): Map<string, string[]> {
-  const index = new Map<string, string[]>();
-  for (const l of lines) {
-    const k = lastToken(l);
-    const bucket = index.get(k);
-    if (bucket) bucket.push(l);
-    else index.set(k, [l]);
-  }
-  return index;
 }
 
 /**

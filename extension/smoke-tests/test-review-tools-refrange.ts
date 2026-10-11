@@ -138,7 +138,8 @@ async function withSkillsDir<T>(skillsDir: string, fn: () => Promise<T>): Promis
   }
 }
 
-const { registerAdversarialTool, runAdversarialLoop } = await import("../src/adversarial.ts");
+const { registerAdversarialTool } = await import("../src/adversarial-tool.ts");
+const { runAdversarialLoop } = await import("../src/adversarial.ts");
 const { computeRangeDiff } = await import("../src/review-diff.ts");
 
 const execp = promisify(exec);

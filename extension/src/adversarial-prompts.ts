@@ -29,6 +29,8 @@
  * behaviour rather than putting the string "undefined" in front of a reviewer.
  */
 
+import { COMMENT_JUDGEMENT_PROSE } from "./comment-evidence.ts";
+
 /** Keeps a pathological issue body from crowding out the diff. */
 const MAX_ISSUE_CHARS = 6000;
 
@@ -41,8 +43,6 @@ function issueSection(issueBody: string | undefined): string {
       : trimmed;
   return `\n\nWhat this change was asked to do — judge the diff against THIS, not against generic code quality. A diff that works but violates a stated constraint is a finding:\n\n${body}`;
 }
-
-import { COMMENT_JUDGEMENT_PROSE } from "./comment-evidence.ts";
 
 export function buildAdversarialPrompt(opts: {
   diff: string;

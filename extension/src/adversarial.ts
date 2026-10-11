@@ -1,13 +1,18 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
 import { classifyDispatchOutcome } from "./adversarial-classify.ts";
 import { buildLedgerNote } from "./adversarial-ledger-note.ts";
 import { writeAdversarialLedgerEntry } from "./adversarial-ledger.ts";
 import { buildAdversarialPrompt, buildFixPrompt } from "./adversarial-prompts.ts";
 import { type InfraCtx, infraFailureResult, runPhaseWithInfraRetry } from "./adversarial-retry.ts";
-import { decideLoopAction, parseVerdict, synthesizeResult } from "./adversarial-verdict.ts";
+import {
+  decideLoopAction,
+  parseVerdict,
+  summariseFindings,
+  synthesizeResult,
+  toRoundRecords,
+} from "./adversarial-verdict.ts";
 import { childHandles, registerChildHandle } from "./async-jobs-registry.ts";
-import { markOrchestrator, setOrchestratorActiveChild, startJob } from "./async-jobs.ts";
+import { markOrchestrator, setOrchestratorActiveChild } from "./async-jobs.ts";
 import { formatReportLine, renderCommentEvidence, roundComments } from "./comment-evidence.ts";
 import type { LostCommentResult } from "./comment-retention.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
@@ -34,79 +39,6 @@ export function adversarialPhaseBudgetMs(): number {
 }
 
 /**
- * Async adversarial gate: the orchestrator does sequential rounds internally
- * (adversarial → developer fix → re-adversarial, up to 3 rounds). From the PM's
- * POV the whole saga is one async dispatch: a job handle returns immediately,
- * and one consolidated report ("APPROVED after round N" or "REJECTED after 3
- * rounds") arrives as an [ensemble:async] user message when the loop ends.
- */
-export function registerAdversarialTool(pi: ExtensionAPI) {
-  pi.registerTool({
-    name: "adversarial_loop",
-    label: "Adversarial Loop",
-    description:
-      "Async adversarial gate: review → developer fix → re-review, up to 3 rounds. Returns a job handle immediately; the final verdict (APPROVED or REJECTED + findings) arrives as an [ensemble:async] message. End your turn after dispatching.",
-    parameters: Type.Object({
-      diff: Type.Optional(
-        Type.String({
-          description:
-            "Current diff to review (git diff output). Optional when base+head are given — then the diff is computed from the ref range; when both are given, this string wins.",
-        }),
-      ),
-      context: Type.String({
-        description: "Brief description of what changed and why; passed to adversarial.",
-      }),
-      base: Type.Optional(
-        Type.String({
-          description:
-            "With head: ref for the diff computed as `git diff <base>...<head>` (three-dot, merge-base) in workCwd — preferred over pasting a large diff.",
-        }),
-      ),
-      head: Type.Optional(
-        Type.String({
-          description:
-            "Ref for the diff the tool computes itself (see base). Recomputed before every review round, so rounds 2+ see fixes.",
-        }),
-      ),
-      workCwd: Type.Optional(
-        Type.String({
-          description:
-            "Worktree/repo path where developer applies fixes and `git diff <base>...<head>` runs (defaults to process cwd).",
-        }),
-      ),
-    }),
-    async execute(_id, raw) {
-      const params = raw as {
-        diff?: string;
-        context: string;
-        base?: string;
-        head?: string;
-        workCwd?: string;
-      };
-      const { jobId } = startJob(pi, {
-        label: "adversarial_loop",
-        role: "adversarial-loop",
-        // Each round spawns its own deck entry (adversarial review → developer
-        // fix → re-review). A single umbrella row would just flicker between
-        // sub-states; per-round entries show the actual child running now.
-        skipDeck: true,
-        work: (signal, hooks) =>
-          runAdversarialLoop({ ...params, pi }, signal, hooks.jobId, computeRangeDiff),
-      });
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Dispatched async adversarial_loop job ${jobId}. Verdict will arrive as a [ensemble:async] user message. End your turn.`,
-          },
-        ],
-        details: { jobId, role: "adversarial-loop", async: true },
-      };
-    },
-  });
-}
-
-/**
  * Run the 3-round adversarial loop directly. Exported so the work-driver can
  * call it without the tool-registration layer (PR1 workflow-graph compilation).
  * The `adversarial_loop` tool wraps this with `startJob` + steer-back; the
@@ -121,7 +53,8 @@ export async function runAdversarialLoop(
     /** Optional when `base` + `head` are present (computed from the ref
      * range). When both `diff` and base/head are given, the string wins. */
     diff?: string;
-    /** #1040 — git timeout for the comment-loss check (the driver passes verifyTimeoutMs()). */ commentTimeoutMs?: number;
+    /** #1040 — git timeout for the comment-loss check (the driver passes verifyTimeoutMs()). */
+    commentTimeoutMs?: number;
     /** #859 — the base ref the tool computes the diff from (with head). */
     base?: string;
     /** #859 — the head ref the tool computes the diff from (with base). */
@@ -151,12 +84,23 @@ export async function runAdversarialLoop(
 ): Promise<DispatchResult> {
   const start = Date.now();
   const runId = makeRunId();
-  const rounds: Array<{ round: number; verdict: AdversarialVerdict; ms: number }> = [];
+  const rounds: Array<{
+    round: number;
+    verdict: AdversarialVerdict;
+    ms: number;
+  }> = [];
   // #859 — failed re-reads on rounds 2+: the loop keeps the previous diff (never
   // abandons a round); the loop itself never reviews the STALE diff on a
   // failed re-read, and the final result must say so.
   const diffRereadNotes: string[] = [];
-  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
+  const usage = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: 0,
+    turns: 0,
+  };
   let lastTranscript: string | undefined;
   let lastModel: string | undefined;
 
@@ -188,7 +132,10 @@ export async function runAdversarialLoop(
   // reviews; that single result feeds both the reviewer's prompt and the
   // `comments:` report line (the last round's). A lost count > 0 does NOT change
   // the verdict. A check that never ran reads as not-run, never as clean.
-  let lastComments: LostCommentResult = { ok: false, reason: "no review round ran" };
+  let lastComments: LostCommentResult = {
+    ok: false,
+    reason: "no review round ran",
+  };
   const commentsLineNow = () => formatReportLine(lastComments);
   // #980 fix — the infra-failure result must carry the values ACCUMULATED up
   // to this point (the transcript/model of the round that just failed), so
@@ -321,7 +268,12 @@ export async function runAdversarialLoop(
             // Publish this inner spawn as the orchestrator's active child so
             // PM's peek/steer calls against the orchestrator jobId resolve
             // to this stdin. Updated on each round; cleared in the finally.
-            setOrchestratorActiveChild(orchestratorJobId, { role, label, deckKey, stdin });
+            setOrchestratorActiveChild(orchestratorJobId, {
+              role,
+              label,
+              deckKey,
+              stdin,
+            });
             // #799 — also registered under the deck key (steer from the peek id).
             registerChildHandle(deckKey, stdin, label, role);
           },
@@ -392,7 +344,10 @@ export async function runAdversarialLoop(
           round,
           "review",
           adv,
-          { ...advCls, headline: "produced no readable VERDICT marker on the final round" },
+          {
+            ...advCls,
+            headline: "produced no readable VERDICT marker on the final round",
+          },
           infraCtxNow(),
         ),
       );
@@ -473,28 +428,4 @@ export async function runAdversarialLoop(
     adversarialRounds: toRoundRecords(rounds),
   });
   return ledgerWrite(r);
-}
-function toRoundRecords(
-  rounds: Array<{ round: number; verdict: AdversarialVerdict; ms: number }>,
-): DispatchResult["adversarialRounds"] {
-  return rounds.map((r) => ({
-    round: r.round,
-    status: r.verdict.status,
-    verdictParsed: r.verdict.verdictParsed !== false,
-  }));
-}
-/**
- * One line of what a round objected to, for the next round's fixer. The full
- * text is the reviewer's entire reply (narration included); replaying it all
- * every round would crowd out the round's actual findings.
- */
-function summariseFindings(findings: string): string {
-  return (
-    findings
-      .split("\n")
-      .map((l) => l.trim())
-      .find((l) => /^(?:[-*\d]|###?\s)/.test(l) && l.length > 12) ??
-    findings.trim().split("\n")[0] ??
-    "(no detail)"
-  ).slice(0, 200);
 }

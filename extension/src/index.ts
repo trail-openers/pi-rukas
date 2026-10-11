@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { registerAdversarialTool } from "./adversarial.ts";
+import { registerAdversarialTool } from "./adversarial-tool.ts";
 import { LIST_SHORTCUT } from "./agent-list-keys.ts";
 import { openAgentListWithReturn } from "./agent-list-nav.ts";
 import { registerAgentsMdTools } from "./agents-md-tool.ts";

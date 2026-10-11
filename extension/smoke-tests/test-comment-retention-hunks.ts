@@ -318,5 +318,33 @@ function assert(cond: boolean, msg: string) {
   );
 }
 
+// (17) A one-word comment moved onto the end of a code line is retained: its
+// trailing part is a word, so the head line that ends with it matches.
+{
+  const res = await runRetention(
+    "src/app.ts",
+    "const timeout = 30;\n// seconds\n",
+    "const timeout = 30; // seconds\n",
+  );
+  assert(
+    res.ok === true && res.ok && res.lost.length === 0,
+    "one-word tail (17): a one-word comment moved onto a code line is retained",
+  );
+}
+
+// (18) A comment re-wrapped onto a longer head line is retained by its prefix;
+// only the genuinely reworded line is lost.
+{
+  const res = await runRetention(
+    "src/app.ts",
+    "// the retry budget is\n// three attempts\nconst n = 3;\n",
+    "// the retry budget is three\n// attempts.\nconst n = 3;\n",
+  );
+  assert(
+    res.ok === true && res.ok && res.lost.length === 1 && res.lost[0]?.text === "// three attempts",
+    "re-wrap (18): prefix-extended comment is retained; the reworded line is lost",
+  );
+}
+
 if (exit !== 0) process.exit(exit);
 console.log("comment-retention hunks: all assertions passed");

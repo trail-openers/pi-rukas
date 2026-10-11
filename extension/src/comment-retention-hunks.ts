@@ -4,7 +4,8 @@
  *
  * RETENTION: a comment line removed between base and head is retained when its
  * trimmed text reappears verbatim under the scoped paths at head, or as the
- * trailing part of a head line (a comment moved to the end of a code line).
+ * leading or trailing part of a head line (a comment moved onto a code line, or
+ * re-wrapped onto a longer one).
  * Comment lines with no word characters (`/**`, ` *`, `*\/`, `//`) carry no
  * wording and are ignored entirely: neither lost nor counted as retained.
  *
@@ -217,7 +218,11 @@ export function classifyHunk(hunk: Hunk, presentAtHead: (text: string) => boolea
     }
     for (const text of lines) {
       if (!presentAtHead(text))
-        verdict.lost.push({ file: hunk.file, text, addedNearby: addedComments });
+        verdict.lost.push({
+          file: hunk.file,
+          text,
+          addedNearby: addedComments,
+        });
     }
   }
   return verdict;
