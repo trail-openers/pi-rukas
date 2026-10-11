@@ -8,11 +8,17 @@
  */
 
 import { codeIdentifiersIn, draftSpec, extractPlanItems } from "../src/plan-draft.ts";
-import { setPlanDispatch } from "../src/plan-driver.ts";
-import { registerPlanTool, type RegisteredPlanTool } from "../src/plan-tool.ts";
+import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
+import { type RegisteredPlanTool, registerPlanTool } from "../src/plan-tool.ts";
 import { type PlanType, classifyPlanType } from "../src/plan-types.ts";
 import type { DispatchResult } from "../src/types.ts";
-import { calls, gatePrompts, invokePlanTool, installNoPlanCacheStub } from "./plan-test-stubs.ts";
+import {
+  calls,
+  gatePrompts,
+  installNoPlanCacheStub,
+  invokePlanTool,
+  makeDispatchStub,
+} from "./plan-test-stubs.ts";
 installNoPlanCacheStub();
 
 let exit = 0;
@@ -434,6 +440,47 @@ async function invoke(params: Record<string, unknown>) {
     edgeSection.includes("the retry path must not double-fire on provider timeout"),
     "D3: edge-case items from ANY angle populate the Edge cases section for a feature plan",
   );
+}
+
+// ------------------------------------------------------------------ #1111
+
+{
+  // The reported loop, reproduced with a stub dispatcher. Reply 1 carries an
+  // either/or acceptance-criterion resolution typed operator-decision: it must
+  // not be spliced into any body section. Reply 2 raises a CRITICAL that quotes
+  // a gate-spliced bullet: that must not cap the plan CRITICAL.
+  const replies = [
+    "GAP: CRITICAL — the retry criterion is missing — proposed resolution: either add an acceptance criterion for the retry path or narrow the scope to the first attempt — resolution-type: operator-decision\nVERDICT: NEEDS_ITERATION",
+    'GAP: CRITICAL — the bullet "(gate resolution) add a criterion for the retry path" does not state a behaviour — proposed resolution: restate it as a behaviour — resolution-type: concrete\nVERDICT: NEEDS_ITERATION',
+  ];
+  gatePrompts.length = 0;
+  setPlanDispatch(makeDispatchStub(replies) as never);
+  const r = await runPlanPipeline(
+    {} as never,
+    { descriptor: "add a start_plan_driver tool for the plan pipeline in extension", dryRun: true },
+    process.cwd(),
+  );
+  assert(
+    r.capReason !== "unresolved-blocking",
+    `#1111 loop: the plan is not capped CRITICAL on the gate's own bullet (capReason: ${r.capReason})`,
+  );
+  // A spliced bullet starts with the marker; the re-routed CRITICAL may
+  // legitimately appear as a disclosed finding (the residual section), so only
+  // BULLETS are checked.
+  const gateLines = r.spec.split("\n").filter((l) => l.startsWith("- (gate resolution)"));
+  assert(
+    !gateLines.some((l) => /\(b\)|\(c\)|either/.test(l)),
+    "#1111 loop: no body bullet carries (gate resolution) text with (b), (c) or either",
+  );
+  assert(
+    gateLines.length === 0,
+    "#1111 loop: an undecided either/or resolution is not spliced into any section",
+  );
+  assert(
+    /status: open/.test(r.spec) && /decision owner: operator/.test(r.spec),
+    "#1111 loop: the undecided resolution stays open in Open Questions, owner operator",
+  );
+  setPlanDispatch(null);
 }
 
 console.log(`\nexit ${exit}`);

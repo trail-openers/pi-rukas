@@ -354,5 +354,46 @@ function assert(cond: boolean, msg: string) {
   );
 }
 
+// -------------------------------------------------
+// #1111 — every GAP line carries a structured resolution-type field, so the
+// writeback can tell a stated behaviour (the only spliceable type) from
+// instruction, research and operator-decision resolutions. The round-2
+// verification prompt asks for the same field on its CRITICAL lines.
+{
+  const { gapGateVerifyPrompt } = await import("../src/plan-gate-prompt.ts");
+  const gatePrompt = gapGatePrompt(
+    "DRAFT SPEC BODY",
+    [{ name: "test-surface", ok: true, text: "summary", toolUses: [] }],
+    [],
+  );
+  assert(
+    gatePrompt.includes("resolution-type: <type>"),
+    "#1111 prompt: every GAP line is asked for a resolution-type field",
+  );
+  for (const t of ["concrete", "instruction", "research", "operator-decision"]) {
+    assert(gatePrompt.includes(t), `#1111 prompt: the resolution-type vocabulary names '${t}'`);
+  }
+  assert(
+    /the only\s+type whose text is written into the spec/.test(gatePrompt),
+    "#1111 prompt: only 'concrete' is defined as written into the spec",
+  );
+  assert(
+    /resolution-type: operator-decision\./.test(gatePrompt),
+    "#1111 prompt: the example GAP line carries a resolution-type",
+  );
+  const verifyPrompt = gapGateVerifyPrompt("DRAFT SPEC BODY", [
+    {
+      description: "the retry cap is unnamed",
+      resolution: "name which wins",
+      writtenBack: false,
+      heading: "Open Questions",
+    },
+  ]);
+  assert(
+    verifyPrompt.includes("resolution-type: <concrete|instruction|research|operator-decision>"),
+    "#1111 prompt: the verification round's CRITICAL lines carry the same resolution-type field",
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

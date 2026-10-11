@@ -1,3 +1,4 @@
+import { GATE_RESOLUTION_MARKER, spliceStatement } from "./plan-gap-resolution.ts";
 /**
  * plan-writeback — the Decision-A writeback for carried gap-gate resolutions
  * (issue #639, defect 2).
@@ -36,13 +37,10 @@
 import { GAP_RESOLUTION_PLACEHOLDER } from "./plan-gaps.ts";
 import type { PlanGap, PlanType } from "./plan-types.ts";
 
-/**
- * Prefix on every spliced writeback bullet: a gate resolution rendered
- * into a section must be attributable to the gate, never mistakable for
- * an investigator-derived item (vipune round 9). markWrittenDecisions
- * matches the marked form; decision records keep the raw resolution.
- */
-export const GATE_RESOLUTION_MARKER = "(gate resolution) ";
+// Re-exported: the marker is declared in plan-gaps.ts (the re-route rule there
+// must recognise it). markWrittenDecisions matches the marked form; decision
+// records keep the raw resolution.
+export { GATE_RESOLUTION_MARKER };
 
 /**
  * The headings a carried resolution may name as its writeback destination.
@@ -183,6 +181,9 @@ export function destinationFor(gap: PlanGap, type: PlanType): WritebackDestinati
   // route to Decision-A branch 1: status open, decision owner operator —
   // fail closed to human review, disclosed, never silently spliced.
   if (/\b(delete|remove|replace|reword|rewrite|instead)\b/i.test(resolution)) return null;
+  // #1111: "either … or …" and a leftover (a)/(b)/(c) label are gate
+  // meta-language (the choice is undecided), never a stated behaviour.
+  if (/\beither\b/i.test(resolution) || /\((?:a|b|c)\)/i.test(resolution)) return null;
   let named: { heading: string; index: number } | null = null;
   for (const s of WRITABLE_SECTIONS) {
     const m = s.re.exec(resolution);
@@ -211,7 +212,13 @@ export function buildResolvedDecisions(
   const decisions: ResolvedDecision[] = [];
   const writebackMap = new Map<string, string[]>();
   for (const g of gaps) {
-    const dest = destinationFor(g, type);
+    // #1111: only a CONCRETE resolution (a stated behaviour) may enter a body
+    // section. Instruction / research / operator-decision types, and a missing
+    // or unparseable type, stay in Open Questions (fail closed).
+    const dest =
+      g.resolutionType === "concrete"
+        ? destinationFor({ ...g, resolution: spliceStatement(g.resolution) }, type)
+        : null;
     decisions.push({
       description: g.description,
       resolution: g.resolution,
@@ -221,8 +228,9 @@ export function buildResolvedDecisions(
       const existing = writebackMap.get(dest.heading) ?? [];
       // Provenance marker: a spliced bullet must never read as an
       // investigator-derived criterion (vipune round 9 mistook one for an
-      // AC). The decisions record above keeps the raw resolution.
-      existing.push(GATE_RESOLUTION_MARKER + g.resolution);
+      // AC). The bullet is the concrete statement, without the (a)/(b)/(c)
+      // label. The decisions record above keeps the raw resolution.
+      existing.push(GATE_RESOLUTION_MARKER + spliceStatement(g.resolution));
       writebackMap.set(dest.heading, existing);
     }
   }
@@ -255,7 +263,7 @@ export function markWrittenDecisions(
     const list = appliedByHeading.get(d.writebackHeading) ?? [];
     // The spliced bullet carries the provenance marker; the decision
     // record keeps the raw resolution — match the marked form.
-    const idx = list.indexOf(GATE_RESOLUTION_MARKER + d.resolution);
+    const idx = list.indexOf(GATE_RESOLUTION_MARKER + spliceStatement(d.resolution));
     if (idx === -1) return { ...d, writtenBack: false };
     list.splice(idx, 1);
     return { ...d, writtenBack: true };

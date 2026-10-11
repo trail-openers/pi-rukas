@@ -1,3 +1,7 @@
+import { rerouteGateQuotes } from "./plan-gap-resolution.ts";
+import { type PlanGap, RESOLUTION_TYPES, type ResolutionType } from "./plan-types.ts";
+import { trace } from "./trace.ts";
+
 /**
  * plan-gaps — Phase-4 gap-gate parsing and cap routing for the compiled
  * /plan pipeline.
@@ -29,8 +33,12 @@
  *     identical input and "fix the gaps and re-run" is not a convergent
  *     strategy.
  */
-import type { PlanGap } from "./plan-types.ts";
-import { trace } from "./trace.ts";
+// Re-exported so existing importers keep one import path for the renderers.
+export {
+  residualGapsSection,
+  settledGapsSection,
+  truncateForDisclosure,
+} from "./plan-gap-disclosure.ts";
 
 /** One verdict the gap gate can yield for a parsed reviewer reply. */
 export type GapGateVerdict = "READY" | "NEEDS_ITERATION";
@@ -93,6 +101,10 @@ export function parseGaps(reply: string): GapGateParse {
   // anchored at the line start the same way gapRe is, so bare "ungrounded"
   // words in prose are inert — the same invariant the GAP: marker carries.
   const ungroundedRe = /^\s*UNGROUNDED:\s*(?:—|–|-)?\s*(.+)$/i;
+  // #1111: the structured resolution type, a trailing `— resolution-type: <t>`
+  // segment. Absent or outside RESOLUTION_TYPES → undefined, which the writeback
+  // treats as not concrete (never spliced).
+  const typeRe = /[—–-]\s*resolution-type:\s*([a-z-]+)\s*$/i;
   for (const line of lines) {
     const ug = line.match(ungroundedRe);
     if (ug) {
@@ -101,7 +113,13 @@ export function parseGaps(reply: string): GapGateParse {
     }
     const m = line.match(gapRe);
     if (!m) continue;
-    const rest = (m[2] ?? "").trim();
+    let rest = (m[2] ?? "").trim();
+    const typeMatch = rest.match(typeRe);
+    const declared = typeMatch?.[1]?.toLowerCase();
+    const resolutionType = (RESOLUTION_TYPES as readonly string[]).includes(declared ?? "")
+      ? (declared as ResolutionType)
+      : undefined;
+    if (typeMatch?.index !== undefined) rest = rest.slice(0, typeMatch.index).trim();
     const resMatch = rest.match(/[—–-]?\s*proposed resolution:\s*(.+)$/i);
     const resolution = resMatch?.[1]?.trim() ?? GAP_RESOLUTION_PLACEHOLDER;
     const description = (resMatch ? rest.slice(0, resMatch.index) : rest).trim();
@@ -110,6 +128,7 @@ export function parseGaps(reply: string): GapGateParse {
       severity: (m[1] ?? "MEDIUM").toUpperCase() as PlanGap["severity"],
       description,
       resolution,
+      ...(resolutionType ? { resolutionType } : {}),
     });
   }
   // D3: track whether a verdict line was actually present. The legacy
@@ -186,65 +205,6 @@ export function evaluateGapGate(parsed: GapGateParse, iterations: number, maxIte
  */
 export function capRouted(blocking: PlanGap[]): "file" | "surface" {
   return blocking.length === 0 ? "file" : "surface";
-}
-
-/**
- * The display bound for operator-visible residual findings.
- *
- * Applied ONLY at the render sites (the filed body's residual section via
- * `residualGapsSection`, and the inline cap-message list in plan-tool.ts via
- * `renderResidualList`). parseGaps keeps the FULL description on the object
- * so the union dedupe (seenDescriptions) keys on the complete string — two
- * genuinely different findings that share a 300-char prefix used to collide
- * on the truncated form and the second was silently dropped from the
- * disclosure (lens review, PR #637 finding 1 — a disclosure-completeness
- * bug in the terminal rule's precondition, since under CRITICAL-only blocking
- * the disclosure IS what allows filing).
- */
-const RESIDUAL_DISPLAY_MAX = 300;
-
-/** The single truncation applied to residual findings for display. */
-export function truncateForDisclosure(s: string): string {
-  return s.length > RESIDUAL_DISPLAY_MAX ? `${s.slice(0, RESIDUAL_DISPLAY_MAX - 1)}…` : s;
-}
-
-/**
- * The residual-findings disclosure appended to the spec when the cap routes
- * to filing (D2). Naming each gap with its severity + proposed resolution is
- * what makes the disclosure a disclosure — an unposted residual would be the
- * silent swallow the /work doctrine refuses.
- */
-export function residualGapsSection(residual: PlanGap[]): string {
-  const items = residual
-    .map((g) => `- [${g.severity}] ${truncateForDisclosure(g.description)} → ${g.resolution}`)
-    .join("\n");
-  return `## Residual gap-gate findings\n\n${items}\n`;
-}
-
-/**
- * Ceiling on the settled-gaps list rendered into a gate prompt (#1043 review).
- */
-const SETTLED_SECTION_MAX = 10;
-
-/**
- * #1043 — the prior dry run's gaps, appended to the FIRST gate prompt on a
- * cache miss. They are framed as settled so the reviewer does not re-raise
- * them; a finding the spec now contradicts is still raised. Empty when there
- * is no prior run (the prompt is then byte-identical to before).
- */
-export function settledGapsSection(settled: PlanGap[]): string {
-  if (settled.length === 0) return "";
-  // Bounded like the residual disclosure: the 10 most severe, each side clipped.
-  const rank: Record<string, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
-  const items = [...settled]
-    .sort((a, b) => (rank[a.severity] ?? 4) - (rank[b.severity] ?? 4))
-    .slice(0, SETTLED_SECTION_MAX)
-    .map(
-      (g) =>
-        `- [${g.severity}] ${truncateForDisclosure(g.description)} → ${truncateForDisclosure(g.resolution)}`,
-    )
-    .join("\n");
-  return `\n\nALREADY SETTLED — a prior gap-gate run on this same descriptor raised the findings below. Do NOT re-raise them unless the spec now contradicts them; a finding the spec already addresses is settled.\n${items}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -339,6 +299,9 @@ export async function runGapGateLoop(
   let capReason: GapGateLoopCapReason | undefined;
   let lastGaps: PlanGap[] = [];
   let lastParse: GapGateParse | undefined;
+  // #1111: the CRITICAL gaps the last corrective re-draft carried; a CRITICAL
+  // that quotes one of their spliced bullets is re-routed, not blocking.
+  let carried: PlanGap[] = [];
   let rawUnparsedHead: string | undefined;
   // One strict-contract retry per LOOP (not per round): most parse misses
   // are format drift, and one retry is far cheaper than a bad filing.
@@ -405,6 +368,11 @@ export async function runGapGateLoop(
     }
     lastGaps = lastParse.gaps;
 
+    // #1111: a CRITICAL quoting a gate-spliced bullet is the gate's own output,
+    // not a spec defect — it is disclosed, never counted toward capRouted.
+    const { kept, rerouted } = rerouteGateQuotes(lastParse.gaps, carried);
+    const roundParse: GapGateParse = { ...lastParse, gaps: kept };
+
     // Problem 2: accumulate non-blocking findings (CRITICAL travels via the
     // blocking path; HIGH/MEDIUM/LOW accumulate here for the residual union).
     // The dedupe keys on the FULL description: two distinct findings that
@@ -412,14 +380,14 @@ export async function runGapGateLoop(
     // dropping the second from the disclosure is exactly what the D2
     // guarantee forbids (lens review, PR #637 finding 1). Truncation
     // happens only at the render sites (truncateForDisclosure).
-    for (const g of lastGaps) {
-      if (g.severity !== "CRITICAL" && !seenDescriptions.has(g.description)) {
+    for (const g of [...kept.filter((x) => x.severity !== "CRITICAL"), ...rerouted]) {
+      if (!seenDescriptions.has(g.description)) {
         seenDescriptions.add(g.description);
         allNonBlocking.push({ ...g });
       }
     }
 
-    const evald = evaluateGapGate(lastParse, iterations, maxIterations);
+    const evald = evaluateGapGate(roundParse, iterations, maxIterations);
     ready = evald.ready;
     if (!ready && evald.corrective && evald.blocking.length > 0) {
       // Problem 1: corrective round fires ONLY when blocking is non-empty.
@@ -434,6 +402,7 @@ export async function runGapGateLoop(
       // it (the decision record is the structured resolvedDecisions parameter
       // draftSpec takes, built by the caller's onCorrective closure via
       // plan-writeback.ts).
+      carried = evald.blocking;
       onCorrective(evald.blocking);
     } else if (!ready) {
       // Two cases reach here:
