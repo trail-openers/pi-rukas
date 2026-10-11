@@ -21,8 +21,9 @@
  * A non-fileable dry run is cached too, but only feeds the investigation reuse
  * and gate seed; it never files on its own.
  *
- * Staleness is keyed on git HEAD only. Uncommitted working-tree edits are NOT
- * part of the key; the result says so (plan-tool.ts).
+ * Staleness is keyed on git HEAD and epic depth (both change the drafted spec).
+ * Uncommitted working-tree edits are NOT part of the key; the result says so
+ * (plan-tool.ts).
  *
  * Storage: one file per lineage (descriptor + context + type) under the clone's
  * git common dir (`<common-dir>/pi-plan-cache/`), so it is never tracked. The
@@ -58,6 +59,8 @@ export interface CacheInputs {
   context?: string;
   type: PlanType;
   head: string;
+  /** Resolved epic recursion depth (`input.depth ?? 0`): it changes drafting and validation. */
+  depth?: number;
 }
 
 export interface CachedInvestigation {
@@ -130,10 +133,14 @@ export async function resolvePlanGitState(repoRoot: string): Promise<PlanGitStat
 const digest = (parts: unknown[]): string =>
   createHash("sha256").update(JSON.stringify(parts)).digest("hex");
 
-/** The inputs that name one plan, everything except git HEAD. */
+/**
+ * The inputs that name one plan, everything except git HEAD. Depth is part of
+ * the lineage: a sub-issue drafted at depth 3 is a different plan from the same
+ * descriptor at depth 0, so a confirm must never file the other one's spec.
+ */
 function lineageOf(i: Omit<CacheInputs, "head">): string {
   // `?? null` keeps an absent context (undefined) distinct from "" and " ".
-  return digest(["plan-lineage-v1", i.descriptor.trim(), i.context ?? null, i.type]);
+  return digest(["plan-lineage-v1", i.descriptor.trim(), i.context ?? null, i.type, i.depth ?? 0]);
 }
 
 /** Full cache key: the lineage plus git HEAD. */
@@ -256,6 +263,10 @@ export async function claimFileableDryRun(
   } catch {
     return undefined;
   }
+  // rename keeps the entry's own mtime (the dry run's write time). Stamp the claim
+  // now, so its freshness is the claim's age — not the dry run's — for a racing
+  // identical confirm (concurrentFilingOf) and for the sweep.
+  await fs.utimes(claim, now / 1000, now / 1000).catch(() => undefined);
   const entry = await readEntryAt(claim);
   const ageMs = entry ? now - entry.createdAt : -1;
   if (
@@ -312,6 +323,19 @@ export async function concurrentFilingOf(
     if (st && now - st.mtimeMs <= RECENT_FILING_WINDOW_MS) return {};
   }
   return undefined;
+}
+
+/**
+ * Drop a lineage's entry at the start of a dry run. Every dry run is a fresh
+ * review: if it halts before it can cache a verdict (precheck, duplicate risk,
+ * a failed angle fan-out, a draft that does not validate), the previous
+ * fileable verdict must not survive for a confirm to file verbatim.
+ */
+export async function invalidateInvestigationCache(
+  cacheDir: string,
+  inputs: CacheInputs,
+): Promise<void> {
+  await fs.rm(entryFile(cacheDir, inputs), { force: true }).catch(() => undefined);
 }
 
 /**

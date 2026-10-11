@@ -41,6 +41,7 @@ import {
   runInvestigation,
 } from "./plan-investigate.ts";
 import {
+  invalidateInvestigationCache,
   readInvestigationCache,
   readSettledGaps,
   resolvePlanGitState,
@@ -120,6 +121,21 @@ export async function runPlanPipeline(
     return [...timings, total];
   };
 
+  // #1043 — the per-clone cache lineage (descriptor, context, type, depth at
+  // git HEAD). A dry run never READS the investigation cache (it is the thing
+  // being confirmed) but EVERY dry run invalidates its lineage first, so a dry
+  // run that halts before caching (precheck, duplicate risk, …) cannot leave a
+  // fileable verdict behind. Its gap-gate settled set is read before that.
+  const gitState = await resolvePlanGitState(repoRoot);
+  const cacheInputs = gitState
+    ? { descriptor, context, type, head: gitState.head, depth }
+    : undefined;
+  const settled: PlanGap[] =
+    gitState && cacheInputs ? await readSettledGaps(gitState.cacheDir, cacheInputs) : [];
+  if (dryRun && gitState && cacheInputs) {
+    await invalidateInvestigationCache(gitState.cacheDir, cacheInputs);
+  }
+
   // Phase 0b — deterministic under-specification triage (plan-precheck.ts)
   // BEFORE any dispatch; fires only on the strongest signal.
   const pre = precheckDescriptor(type, descriptor, context);
@@ -146,8 +162,6 @@ export async function runPlanPipeline(
   // reuses that dry run's inventory + investigation barrier (within the expiry).
   // A dry run never reads the cache: it is the thing being confirmed. The gap
   // gate is ALWAYS re-run, seeded with the prior dry run's gaps as settled.
-  const gitState = await resolvePlanGitState(repoRoot);
-  const cacheInputs = gitState ? { descriptor, context, type, head: gitState.head } : undefined;
   // #1043 — an identical confirm of a fileable dry run files its reviewed spec.
   const confirmed =
     !dryRun && gitState && cacheInputs
@@ -158,8 +172,6 @@ export async function runPlanPipeline(
     !dryRun && gitState && cacheInputs
       ? await readInvestigationCache(gitState.cacheDir, cacheInputs)
       : undefined;
-  const settled: PlanGap[] =
-    gitState && cacheInputs ? await readSettledGaps(gitState.cacheDir, cacheInputs) : [];
 
   const inv = reused
     ? reused.cached.inventory

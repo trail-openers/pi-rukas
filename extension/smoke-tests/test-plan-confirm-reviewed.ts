@@ -11,7 +11,7 @@
  * entry so a repeated confirm cannot file the same spec twice.
  */
 
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileReviewedDryRun } from "../src/plan-confirm.ts";
@@ -79,7 +79,10 @@ async function mutateEntry(fn: (e: RawEntry) => void): Promise<void> {
 }
 
 /** Counts every investigation (explore) and gap-gate dispatch. */
-function installDispatch(gateReply: string) {
+function installDispatch(
+  gateReply: string,
+  dupReply = "DUPLICATE_RISK: none — no overlapping open work",
+) {
   log.explore = 0;
   log.gate = 0;
   setPlanDispatch(((_pi: unknown, spec: { role: string; prompt: string }) => {
@@ -93,7 +96,7 @@ function installDispatch(gateReply: string) {
       return Promise.resolve({
         ...base,
         role: "explore",
-        text: "DUPLICATE_RISK: none — no overlapping open work",
+        text: dupReply,
       });
     }
     return Promise.resolve({
@@ -195,6 +198,70 @@ assert(
   late?.filingFailure?.reason === "filing-in-progress" &&
     (late.filingFailure.detail ?? "").includes("example.test/issues/9"),
   "a confirm arriving just after a filing is refused and names the filed URL",
+);
+
+// ------------------------------------------------------------- claim freshness: a dry run 11 min old
+
+await newCache();
+installDispatch(GAP_HIGH);
+await pipeline({ dryRun: true });
+{
+  // The entry file keeps the dry run's write time; a claim made now must not inherit it.
+  const [f] = await cacheFiles();
+  const old = (Date.now() - 11 * 60_000) / 1000;
+  await utimes(path.join(cacheDir, f ?? ""), old, old);
+}
+const sessionA = await claimFileableDryRun(cacheDir, { descriptor: DESC, type: "feature", head });
+assert(sessionA !== undefined, "(f) session A claims an 11-min-old dry run");
+installDispatch(GAP_HIGH);
+const sessionB = await pipeline();
+assert(
+  !sessionB.filed && sessionB.filingFailure?.reason === "filing-in-progress",
+  "(f) session B's identical confirm is refused while A's claim is live, not re-run",
+);
+assert(
+  log.explore === 0 && forgeStub.created.length === 0,
+  "(f) session B runs no pipeline and files nothing",
+);
+installDispatch(GAP_HIGH);
+await pipeline({ descriptor: "add a second unrelated plan to trigger a cache sweep", dryRun: true });
+assert(
+  (await readdir(cacheDir)).some((f) => f.endsWith(".claim")),
+  "(f) a sweep from another dry run keeps the live claim",
+);
+await sessionA?.release();
+
+// ------------------------------------------------------------- (g) depth is part of the key
+
+await newCache();
+installDispatch(GAP_HIGH);
+await pipeline({ dryRun: true, depth: 0 });
+installDispatch(GAP_HIGH);
+const deeper = await pipeline({ depth: 3 });
+assert(
+  deeper.filedFromDryRun === undefined && log.explore > 0,
+  "(g) a confirm at depth 3 of a depth-0 dry run runs the full pipeline, not verbatim",
+);
+assert(forgeStub.created.length === 1, "(g) the depth-3 confirm files its own spec, once");
+
+// ------------------------------------------------------------- (h) a halting dry run invalidates the lineage
+
+await newCache();
+installDispatch(GAP_HIGH);
+await pipeline({ dryRun: true });
+assert((await cacheFiles()).length === 1, "(h) fileable dry run is cached");
+installDispatch(GAP_HIGH, "DUPLICATE_RISK: high — overlaps an open issue entirely");
+const haltedDry = await pipeline({ dryRun: true });
+assert(
+  haltedDry.filingFailure?.reason === "duplicate-risk",
+  "(h) second dry run halts on duplicate-risk HIGH",
+);
+assert((await cacheFiles()).length === 0, "(h) the halting dry run drops the stale fileable entry");
+installDispatch(GAP_HIGH);
+const afterHalt = await pipeline();
+assert(
+  afterHalt.filedFromDryRun === undefined && log.explore > 0 && afterHalt.filed,
+  "(h) confirm after a halting dry run runs the full pipeline, not verbatim",
 );
 
 // ------------------------------------------------------------- rendered statement

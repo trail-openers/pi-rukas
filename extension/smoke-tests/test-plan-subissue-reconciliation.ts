@@ -30,6 +30,7 @@
 import { draftSpec, extractPlanItems, itemsByKind } from "../src/plan-draft.ts";
 import { anglePromptsFor } from "../src/plan-angles.ts";
 import { setPlanDispatch } from "../src/plan-driver.ts";
+import { installOfflineVipuneStub } from "./plan-test-stubs.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -261,6 +262,8 @@ function epicBody(findings: Parameters<typeof draftSpec>[2]) {
 // angle) so the file stays under the 500-line limit.
 
 {
+  // Per-clone cache isolated (no real git common dir under the repo).
+  installOfflineVipuneStub();
   setPlanDispatch(((pi: unknown, spec: { role: string; prompt: string }) => {
     if (spec.role === "adversarial-developer") {
       return Promise.resolve({

@@ -64,13 +64,11 @@ export function allAnglesFailedSpec(angleNames: string, findings: AngleFindings[
     : `(spec not drafted — all investigation angles returned zero structured items)\n\nDispatched angles: ${angleNames}\n\nEach angle returned either prose only (no report_plan_item tool calls) or schema-invalid calls only. This usually means the reporter extension was not loaded, or the model did not make the tool calls. Re-run start_plan_driver — the investigation children are re-dispatched; if this recurs, check the plan-reporter extension registration (PLAN_REPORTER_PATH).`;
 }
 
-/**
- * #633 aggregate all-angles-failed guard (fail-closed): if EVERY angle
- * produced zero structured items, every typed section would silently fall
- * back — halt before draftSpec/fileIssue with the discriminated
- * `skipped-all-angles-failed` reason instead ("deliberately skipped",
- * never "filing failed"). Moved from plan-driver.ts along the 500-line seam.
- */
+// #633 aggregate all-angles-failed guard (fail-closed): if EVERY angle
+// produced zero structured items, every typed section would silently fall
+// back — halt before draftSpec/fileIssue with the discriminated
+// `skipped-all-angles-failed` reason instead ("deliberately skipped",
+// never "filing failed").
 export function allAnglesFailedHalt(args: {
   type: PlanType;
   descriptor: string;
