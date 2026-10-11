@@ -390,7 +390,6 @@
           "git tag*": "allow",
           "git cherry-pick*": "allow",
           "git worktree*": "allow",
-          "git -C *": "allow",
           "git submodule*": "allow",
           "git apply*": "allow",
           "git restore*": "allow",

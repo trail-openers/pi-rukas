@@ -160,15 +160,18 @@ const PRE_EXISTING: Record<"developer" | "ops", readonly string[]> = {
 
 /**
  * oo rows deliberately given NO bare twin, keyed by role. Only the forward check
- * skips them, and each skip is printed with its reason. Ops' `oo git *` is the
- * one entry: its verbs are granted bare individually, and a bare catch-all
- * would allow every git verb (force-push, reset --hard, git -c) in strict and
- * headless mode.
+ * skips them, and each skip is printed with its reason. Ops' `oo git *` and
+ * `oo git -C *` are the entries: ops' verbs are granted bare individually. A
+ * bare catch-all would allow whatever no verb row covers (`git -c`, `git -C`
+ * with update-ref, gc or config --global) in strict and headless mode. Verb
+ * rows are prefix-matched, so they do not grant those.
  */
 const INTENTIONAL_NARROWING: Partial<Record<"developer" | "ops", Record<string, string>>> = {
   ops: {
     "oo git *":
-      "ops gets only its explicit verb rows bare; a bare git catch-all would allow every git verb (force-push, reset --hard, git -c) in strict/headless mode",
+      "ops gets only its explicit verb rows bare; a bare git catch-all would allow every verb no row covers (git -c, git -C <p> update-ref/gc/config) in strict/headless mode",
+    "oo git -C *":
+      "no bare git -C row: it is a prefix match that would allow any subcommand after -C <path> (update-ref, gc, config --global) in strict/headless mode",
   },
 };
 
@@ -203,7 +206,10 @@ for (const role of ROLES) {
     if (!key.startsWith("oo ") || verdict !== "allow") continue;
     const bare = key.slice(3);
     const family = familyOf(bare);
-    if (Object.hasOwn(EXEMPT, family)) continue;
+    if (Object.hasOwn(EXEMPT, family)) {
+      console.log(`- ${role}: "${key}" exempt: ${EXEMPT[family]}`);
+      continue;
+    }
     if (Object.hasOwn(INTENTIONAL_NARROWING[role] ?? {}, key)) {
       console.log(
         `- ${role}: "${key}" has no bare twin by design: ${INTENTIONAL_NARROWING[role]?.[key]}`,
@@ -281,7 +287,6 @@ for (const cmd of [
   "git push -u origin feature/x",
   "git worktree remove ../x",
   "git rebase --abort",
-  "git -C /tmp/x add -A",
   "git diff --cached",
   "git branch --show-current",
 ]) {
@@ -299,6 +304,15 @@ for (const role of ROLES) {
     `${role}: bare glab mr merge stays ask`,
   );
 }
+
+assert(
+  matchBashSubcommand("git -C /repo update-ref -d refs/heads/main", ops) === "ask",
+  "ops: bare git -C <p> update-ref stays ask",
+);
+assert(
+  matchBashSubcommand("git -C /repo config --global x y", ops) === "ask",
+  "ops: bare git -C <p> config stays ask",
+);
 
 console.log(exit === 0 ? "\nAll oo/bare parity checks passed." : "\nFAILED");
 process.exit(exit);
