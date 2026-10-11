@@ -46,6 +46,39 @@ export function normalisePhrase(t: string): string {
 }
 
 /**
+ * Normalised-text key for de-duplication (#858): lowercase, collapse
+ * whitespace, strip trailing punctuation. Case/whitespace-modulo duplicates
+ * ("Offline tests with stubs" / "offline tests with stubs.") collapse; the
+ * exact-`.trim()` Set alone would let a case-differing pair both render.
+ */
+export function normalisedTextKey(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[.,;:!?)]+$/, "")
+    .trim();
+}
+
+/**
+ * First-occurrence-wins de-duplication on normalised text (#858). The
+ * operator's own line wins over a specialist item that restates it.
+ */
+export function dedupeByNormalised(items: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const s of items) {
+    const t = s.trim();
+    if (!t) continue;
+    const k = normalisedTextKey(t);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    out.push(t);
+  }
+  return out;
+}
+
+/**
  * #677: a forbidden-phrase scan over a body, EXCLUDING the Prior-context
  * inventory section — that section re-renders the operator context verbatim
  * and would always match a phrase the operator themselves declared
@@ -77,7 +110,14 @@ export const SUB_ISSUES_FALLBACK = "(decomposition not available)";
 /** The Test-surface fallback (single-sourced here so the validator's scan
  * cannot silently drift from what draftSpec renders — same rule as
  * AC_FALLBACK). */
-export const TEST_SURFACE_FALLBACK = "catalogue the tests near the work area in Phase 2";
+/**
+ * The Test-surface status draftSpec renders when neither the operator nor the
+ * investigation produced a test-surface item (#1087). An explicit status, not
+ * an instruction: the filed body states the fact instead of reading as an
+ * unfilled placeholder. Single-sourced here (the original rule, AC_FALLBACK's
+ * sibling: the validator's scan cannot silently drift from what draftSpec renders).
+ */
+export const TEST_SURFACE_FALLBACK = "no test-surface items were produced";
 
 /** The References fallback draftSpec renders when no reference exists. */
 export const REFERENCES_FALLBACK =
@@ -115,6 +155,15 @@ function sliceSection(body: string, heading: string): string | undefined {
   return m?.[1];
 }
 
+/**
+ * True when a section has a bullet line that is EXACTLY the fallback. Whole-line
+ * equality (not substring): operator or angle text that merely contains the
+ * fallback phrase is data, not the status.
+ */
+function hasFallbackBullet(section: string | undefined, fallback: string): boolean {
+  return !!section && section.split("\n").some((l) => l.trimEnd() === `- ${fallback}`);
+}
+
 export interface ValidateOpts {
   /** True when the operator supplied a context param / directives. */
   operatorSupplied?: boolean;
@@ -127,13 +176,20 @@ export interface ValidateOpts {
    * verbatim and always matches by construction).
    */
   forbiddenPhrases?: string[];
+  /**
+   * #1087: operator channels that exceeded OPERATOR_ITEM_CEILING, as data from
+   * draftSpec (draftSpec's `operatorOmitted`). REQUIRED — omitting it is a type
+   * error. A non-empty list halts validation: the filed spec would be missing
+   * operator-supplied items.
+   */
+  operatorOmitted: OperatorOmission[];
 }
 
 export function validateDraft(
   type: PlanType,
   body: string,
   depth: number,
-  opts: ValidateOpts = {},
+  opts: ValidateOpts,
 ): DraftValidation {
   const problems: string[] = [];
   const forbidden = (opts.forbiddenPhrases ?? []).filter((p) => p.trim().length > 0);
@@ -147,17 +203,28 @@ export function validateDraft(
       );
     }
   }
+  // #1087 review: an operator list past the ceiling is a truncated authority
+  // channel — halt rather than file a spec missing operator-supplied items.
+  // Decided from the omission DATA, never by searching the rendered body.
+  if (opts.operatorOmitted.length > 0) {
+    const where = opts.operatorOmitted.map((o) => `${o.omitted} in ${o.section}`).join(", ");
+    problems.push(
+      `operator-supplied items were truncated past the ceiling of ${OPERATOR_ITEM_CEILING} (${where}) — the operator's block is too large to file faithfully; split the descriptor or reduce the block`,
+    );
+  }
   if (type === "bug" || type === "feature") {
     const ac = sliceSection(body, "Acceptance criteria");
-    if (!ac || ac.includes(AC_FALLBACK)) {
+    if (!ac || hasFallbackBullet(ac, AC_FALLBACK)) {
       problems.push(
         "the Acceptance criteria section is the fallback placeholder — no angle or operator directive produced a testable outcome, so the issue would not be /work-consumable",
       );
     }
   }
   if (type === "epic" && depth < EPIC_SUB_ISSUE_DEPTH_LIMIT) {
+    // Only the angle-derived list counts: the operator DECOMPOSITION block
+    // renders under its own top-level heading (#1087), outside this section.
     const sub = sliceSection(body, "Sub-issues");
-    if (!sub || sub.includes(SUB_ISSUES_FALLBACK)) {
+    if (!sub || hasFallbackBullet(sub, SUB_ISSUES_FALLBACK)) {
       problems.push(
         "the epic has no sub-issue decomposition — the decomposition-surface angle produced no sub-issue items",
       );
@@ -182,15 +249,15 @@ export function validateDraft(
     // deliverable or test-surface section still showing scaffold strings
     // means the operator's instructions never landed.
     const deliverable = sliceSection(body, "Expected deliverable");
-    if (deliverable?.includes(SPIKE_DELIVERABLE_FALLBACK)) {
+    if (hasFallbackBullet(deliverable, SPIKE_DELIVERABLE_FALLBACK)) {
       problems.push(
         "the spike's Expected deliverable section is the fallback placeholder despite operator-supplied context — the scoping angle produced nothing and the operator's input never landed",
       );
     }
     const ts = sliceSection(body, "Test surface");
-    if (ts?.includes(TEST_SURFACE_FALLBACK)) {
+    if (hasFallbackBullet(ts, TEST_SURFACE_FALLBACK)) {
       problems.push(
-        "the spike's Test surface section is the fallback placeholder despite operator-supplied context — state the intended test surface via a TEST SURFACE block in the context param",
+        "the spike's Test surface section reports no test-surface items despite operator-supplied context — state the intended test surface via a TEST SURFACE block in the context param",
       );
     }
   }
@@ -227,6 +294,70 @@ export const RENDER_BUDGETS: readonly RenderBudget[] = [
   { maxItemsPerSection: 20, itemClipChars: 400 },
   { maxItemsPerSection: 10, itemClipChars: 220 },
 ];
+
+/**
+ * Ceiling on operator items per directive channel (#1087). Operator text is
+ * authority, so the render budget never clips it or count-caps it on the angle
+ * cap. The parser's block terminators are the other bound, and an unterminated
+ * block (the round-9 failure) would otherwise swallow trailing prose unbounded.
+ * Past the ceiling the rendered list STATES the omission; oversized bytes still
+ * halt at fitDraftToBudget's tooLarge.
+ */
+export const OPERATOR_ITEM_CEILING = 100;
+
+/**
+ * Rendered text for readers only. The halt is decided by operatorOmitted (data),
+ * never by searching the body for this phrase.
+ */
+export const OMISSION_PHRASE = "further operator item(s) omitted";
+
+export interface CappedItems {
+  items: string[];
+  omitted: number;
+}
+
+/**
+ * Applies OPERATOR_ITEM_CEILING. The omitted count is returned as data, so the
+ * omission is rendered as a status line (omissionNote) rather than as a bullet
+ * in the item channel.
+ */
+export function capOperatorItems(items: string[]): CappedItems {
+  return {
+    items: items.slice(0, OPERATOR_ITEM_CEILING),
+    omitted: Math.max(0, items.length - OPERATOR_ITEM_CEILING),
+  };
+}
+
+/** The omission status line, outside the bullet list. Empty when nothing was omitted. */
+export function omissionNote(capped: CappedItems): string {
+  return capped.omitted > 0
+    ? `\n_… ${capped.omitted} ${OMISSION_PHRASE} (ceiling ${OPERATOR_ITEM_CEILING}; an unterminated or oversized operator block)_\n`
+    : "";
+}
+
+/** One operator channel that exceeded the ceiling: the rendered section and how many items were dropped. */
+export interface OperatorOmission {
+  section: string;
+  omitted: number;
+}
+
+/**
+ * The truncated channels among `channels` (section label → capped result), as
+ * data. Carried through draftSpec's result so every filing path decides on the
+ * count, not on whether the rendered body happens to contain the status text.
+ */
+export function operatorOmissions(channels: Record<string, CappedItems>): OperatorOmission[] {
+  return Object.entries(channels)
+    .filter(([, c]) => c.omitted > 0)
+    .map(([section, c]) => ({ section, omitted: c.omitted }));
+}
+
+/**
+ * The top-level heading an operator DECOMPOSITION block renders under (#1087).
+ * It sits OUTSIDE the Sub-issues section, so validateDraft counts the angle
+ * list without splitting rendered markdown.
+ */
+export const OPERATOR_DECOMPOSITION_HEADING = "Operator decomposition";
 
 /** Clip one rendered item with a visible marker. Fallback strings are never items. */
 export function clipItem(text: string, max: number): string {

@@ -76,7 +76,7 @@ export interface OperatorDirectiveParse {
 }
 
 const KEYWORD =
-  "(ACCEPTANCE[\\s-]*CRITERIA|PITFALLS|EDGE[\\s-]*CASES|OUT[\\s-]*OF[\\s-]*SCOPE|TEST[\\s-]*SURFACE|DECOMPOSITION|SUB[\\s-]*ISSUES?|NEVER[\\s-]*CLAIM|FORBIDDEN)";
+  "(ACCEPTANCE[\\s-]*CRITERIA|PITFALLS|EDGE[\\s-]*CASES|OUT[\\s-]*OF[\\s-]*SCOPE|TEST[\\s-]*SURFACE|DECOMPOSITION\\s*\\/\\s*SUB[\\s-]*ISSUES?|DECOMPOSITION|SUB[\\s-]*ISSUES?|NEVER[\\s-]*CLAIM|FORBIDDEN)";
 
 /**
  * A keyword line is a heading ONLY when the keyword (with optional
@@ -96,6 +96,15 @@ const FENCE_RE = /^[-=\s]*(BEGIN|END)[-=\s]*$/i;
 
 /** Bullet-list continuation marker (also keeps spaced lists open across blanks). */
 const BULLET_RE = /^(?:[-*]+|\d+[.)])\s+/;
+
+/**
+ * A bare `Label:` line (1-3 capitalised words, nothing after the colon) that
+ * is NOT a recognised keyword. Inside an open block it closes the block: an
+ * unrecognised heading such as `Decisions:` must not be absorbed as an item
+ * of the adjacent typed section. Longer prose lines ending in a colon ("The
+ * following must hold:") still read as items.
+ */
+const LABEL_RE = /^[A-Z][A-Za-z/-]*(?: [A-Za-z/-]+){0,2}:$/;
 
 function channelFor(name: string): keyof OperatorDirectives {
   const up = name.toUpperCase();
@@ -201,7 +210,14 @@ export function parseOperatorDirectivesWithLines(
       // Outside an open block: a bulleted line is a typed-block line the
       // parser consumes (it never becomes an item — same as before, now
       // visible to the inventory exclusion).
-      if (BULLET_RE.test(line)) consumed.add(i);
+      // #1087: superseded — outside an open block nothing is typed, so bullets
+      // under an unrecognised heading (e.g. `Decisions:`) stay in the filed
+      // inventory instead of being consumed and silently dropped.
+      continue;
+    }
+    if (LABEL_RE.test(line)) {
+      // An unrecognised heading closes the open block and is left unconsumed.
+      target = null;
       continue;
     }
     consumed.add(i);

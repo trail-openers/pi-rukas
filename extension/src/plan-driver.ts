@@ -32,6 +32,11 @@ import {
   correctiveRedraftError,
   haltResult,
 } from "./plan-driver-halt.ts";
+import {
+  type PlanDispatchFn,
+  getPlanDispatchOverride,
+  getPlanStatFnOverride,
+} from "./plan-driver-seams.ts";
 import { reviewedDigestOf } from "./plan-filing-claim.ts";
 import {
   type GapGateLoopResult,
@@ -72,25 +77,6 @@ import {
 import { type ResolvedDecision, buildResolvedDecisions } from "./plan-writeback.ts";
 import { trace } from "./trace.ts";
 
-// The dispatch seam, injectable for tests (ESM namespaces are not mutable
-// in Bun — the FsOps-style DI the agents-md core uses too).
-export type PlanDispatchFn = typeof dispatchCore;
-
-let _dispatchOverride: PlanDispatchFn | null = null;
-
-/** Set a dispatch stub for the next run (tests). Pass `null` to clear. */
-export function setPlanDispatch(fn: PlanDispatchFn | null): void {
-  _dispatchOverride = fn;
-}
-
-// #893 — injectable stat seam for the plan-reporter preflight (tests).
-let _statFnOverride: ((p: string) => Promise<unknown>) | null = null;
-
-/** Set a stat stub for the next run (tests). Pass `null` to clear. */
-export function setPlanStatFn(fn: ((p: string) => Promise<unknown>) | null): void {
-  _statFnOverride = fn;
-}
-
 const GAP_GATE_MAX_ITERATIONS = 2;
 
 // Phase-4 prompts (round-1 review + round-2 scoped verification) live in
@@ -106,7 +92,7 @@ export async function runPlanPipeline(
   input: PlanDriverInput,
   repoRoot: string,
 ): Promise<PlanResult> {
-  const dispatch: PlanDispatchFn = _dispatchOverride ?? dispatchCore;
+  const dispatch: PlanDispatchFn = getPlanDispatchOverride() ?? dispatchCore;
   const { descriptor, context, dryRun } = input;
   const type = classifyPlanType(descriptor, input.type);
   const depth = input.depth ?? 0;
@@ -206,7 +192,7 @@ export async function runPlanPipeline(
           codeIdentifiers: codeIds,
           pinnedSubIssues,
           forbiddenPhrases: directives.neverClaim,
-          statFn: _statFnOverride ?? undefined,
+          statFn: getPlanStatFnOverride() ?? undefined,
         }),
       );
 
@@ -309,6 +295,7 @@ export async function runPlanPipeline(
     operatorSupplied: !!context?.trim(),
     pinnedSubIssues,
     forbiddenPhrases: directives.neverClaim,
+    operatorOmitted: fitted.result.operatorOmitted,
   });
   if (!draftCheck.ok) {
     trace(`plan-driver: draft validation failed — ${draftCheck.problems.join("; ")}`);
@@ -389,6 +376,7 @@ export async function runPlanPipeline(
               writebackMap,
               chosenBudget,
             );
+            if (redraft.operatorOmitted.length) throw new Error("redraft truncated operator items");
             // Re-draft RETURN: marked decisions (writtenBack from the splice,
             // not predicted). Body/title re-assigned for round 2.
             ({ title, body } = redraft);
@@ -497,3 +485,4 @@ export { classifyPlanType, planTitle } from "./plan-types.ts";
 export { codeIdentifiersIn, draftSpec } from "./plan-draft.ts";
 // Test seam re-export (the alias now lives in plan-gaps.ts, its home).
 export { parseGapsForTest } from "./plan-gaps.ts";
+export { type PlanDispatchFn, setPlanDispatch, setPlanStatFn } from "./plan-driver-seams.ts";

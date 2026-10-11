@@ -25,13 +25,20 @@ import { PLAN_ITEM_KINDS } from "./plan-reporter.ts";
 import { EPIC_SUB_ISSUE_DEPTH_LIMIT, type PlanType, planTitle } from "./plan-types.ts";
 import {
   AC_FALLBACK,
+  OPERATOR_DECOMPOSITION_HEADING,
+  type OperatorOmission,
   REFERENCES_FALLBACK,
   type RenderBudget,
   SPIKE_DELIVERABLE_FALLBACK,
   SUB_ISSUES_FALLBACK,
   TEST_SURFACE_FALLBACK,
+  capOperatorItems,
   clipItem,
   clipRef,
+  dedupeByNormalised,
+  normalisedTextKey,
+  omissionNote,
+  operatorOmissions,
 } from "./plan-validate.ts";
 import {
   type ResolvedDecision,
@@ -109,38 +116,9 @@ import type { OperatorDirectives } from "./plan-directives.ts";
 export { type OperatorDirectives, parseOperatorDirectives } from "./plan-directives.ts";
 export { parseOperatorDirectivesWithLines } from "./plan-directives.ts";
 
-/**
- * Normalised-text key for de-duplication (#858): lowercase, collapse
- * whitespace, strip trailing punctuation. Case/whitespace-modulo duplicates
- * ("Offline tests with stubs" / "offline tests with stubs.") collapse; the
- * exact-`.trim()` Set alone would let a case-differing pair both render.
- */
-export function normalisedTextKey(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/[.,;:!?)]+$/, "")
-    .trim();
-}
-
-/**
- * First-occurrence-wins de-duplication on normalised text (#858). The
- * operator's own line wins over a specialist item that restates it.
- */
-export function dedupeByNormalised(items: string[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const s of items) {
-    const t = s.trim();
-    if (!t) continue;
-    const k = normalisedTextKey(t);
-    if (!k || seen.has(k)) continue;
-    seen.add(k);
-    out.push(t);
-  }
-  return out;
-}
+// The #858 normalised-text de-dup helpers live in plan-validate.ts (the
+// 500-line seam); re-exported for existing consumers.
+export { dedupeByNormalised, normalisedTextKey } from "./plan-validate.ts";
 
 function sectionBullets(items: string[], fallback: string): string {
   // #858: normalised de-dup (case/whitespace/trailing-punctuation equality),
@@ -278,7 +256,12 @@ export function draftSpec(
   // (operator authority, D2) — they count toward the budget and the
   // tooLarge halt covers the extreme.
   budget?: RenderBudget,
-): { title: string; body: string; resolvedDecisions: ResolvedDecision[] } {
+): {
+  title: string;
+  body: string;
+  resolvedDecisions: ResolvedDecision[];
+  operatorOmitted: OperatorOmission[];
+} {
   const title = planTitle(descriptor, type);
   const cap = budget?.maxItemsPerSection ?? SECTION_MAX_ITEMS;
   const clip = (s: string) => clipItem(s, budget?.itemClipChars ?? 400);
@@ -306,23 +289,47 @@ export function draftSpec(
   // lines). #858: de-duplicated on normalised text across BOTH sources
   // (first occurrence wins — an operator line beats an angle item that
   // restates it modulo case/whitespace/punctuation).
-  const acItems = dedupeByNormalised([
-    ...directives.acceptanceCriteria,
-    ...itemsByKind(findings, "acceptance-criterion").map((i) => clip(i.text)),
-  ]).slice(0, cap);
+  // #1087: operator items are authority, so the investigation cap never
+  // applies to them — they are bounded only by capOperatorItems (plan-validate)
+  // and the tooLarge halt. An unterminated block (round 9) swallowed trailing
+  // prose unbounded; the ceiling is what stops that. When the operator supplied
+  // ACCEPTANCE CRITERIA they ARE the section; angle-derived criteria (often
+  // paraphrases of the operator's own) move under a separate heading instead
+  // of sitting beside them. #858: de-duplicated on normalised text (first
+  // occurrence wins).
+  const opAcRaw = dedupeByNormalised(directives.acceptanceCriteria);
+  const opAc = capOperatorItems(opAcRaw);
+  const angleAc = dedupeByNormalised(
+    itemsByKind(findings, "acceptance-criterion").map((i) => clip(i.text)),
+  );
+  const acItems = opAc.items.length > 0 ? opAc.items : angleAc.slice(0, cap);
+  const opKeys = new Set(opAcRaw.map(normalisedTextKey));
+  // A spike has no AC section to pair a suggested block with (its criteria
+  // slot is the Expected deliverable), so it never gets one.
+  const suggestedAc =
+    type !== "spike" && opAc.items.length > 0
+      ? angleAc.filter((s) => !opKeys.has(normalisedTextKey(s))).slice(0, cap)
+      : [];
+  const suggestedSection =
+    suggestedAc.length > 0
+      ? `\n## Suggested additional criteria\n\n${suggestedAc.map((s) => `- ${s}`).join("\n")}\n`
+      : "";
 
   // An operator TEST SURFACE directive REPLACES the angle items (unlike
   // ACs, which prepend) — "exactly: none" must not be diluted (C2). The
   // count cap applies to BOTH branches (round 9: an unterminated block
   // swallowed trailing prose unbounded); operator text stays unclipped (D2).
-  const opTestSurface = directives.testSurface ?? [];
-  const testSurface = sectionBullets(
-    (opTestSurface.length > 0
-      ? opTestSurface
-      : itemsByKind(findings, "test-surface-item").map((i) => clip(i.text))
-    ).slice(0, cap),
-    TEST_SURFACE_FALLBACK,
-  );
+  // #1087: operator text is never capped or clipped; only angle items are capped.
+  const opTestSurface = capOperatorItems(dedupeByNormalised(directives.testSurface ?? []));
+  const testSurface =
+    sectionBullets(
+      opTestSurface.items.length > 0
+        ? opTestSurface.items
+        : itemsByKind(findings, "test-surface-item")
+            .map((i) => clip(i.text))
+            .slice(0, cap),
+      TEST_SURFACE_FALLBACK,
+    ) + omissionNote(opTestSurface);
 
   // References: structured reference items first; fallback to a prose
   // file-path scan only when none were reported (silence-detection
@@ -342,11 +349,16 @@ export function draftSpec(
   // D3 fix: edge cases come from the "edge-case" kind across ALL angles (the
   // old filter matched a nonexistent "risk-surface" angle name). Operator
   // pitfalls take precedence.
+  const opPitfalls = capOperatorItems(dedupeByNormalised(directives.pitfalls));
   const edgeItems = [
-    ...directives.pitfalls,
-    ...itemsByKind(findings, "edge-case").map((i) => clip(i.text)),
-  ].slice(0, cap);
-  const edgeCases = sectionBullets(edgeItems, "none surfaced by the investigation angles");
+    ...opPitfalls.items,
+    ...itemsByKind(findings, "edge-case")
+      .map((i) => clip(i.text))
+      .slice(0, cap),
+  ];
+  const edgeCases =
+    sectionBullets(edgeItems, "none surfaced by the investigation angles") +
+    omissionNote(opPitfalls);
 
   const depthLimit = depth >= EPIC_SUB_ISSUE_DEPTH_LIMIT ? `\n${DEPTH_LIMIT_NOTE}\n` : "";
 
@@ -354,6 +366,14 @@ export function draftSpec(
   // survive compaction); only the per-item TEXT clips — epicSubIssues
   // clips before decorating so the checkbox prefix and the
   // "(sub-issue N, from angle)" attribution survive every budget stage.
+  // #1087: an operator DECOMPOSITION block renders under its own sub-heading
+  // so the angle-derived sub-issue list (what validateDraft counts) stays
+  // distinct from the operator's constraints.
+  const opDecomposition = capOperatorItems(dedupeByNormalised(directives.decomposition ?? []));
+  const opDecompositionSection =
+    opDecomposition.items.length > 0
+      ? `\n## ${OPERATOR_DECOMPOSITION_HEADING}\n\n${opDecomposition.items.map((s) => `- ${s}`).join("\n")}${omissionNote(opDecomposition)}\n`
+      : "";
   const subIssues =
     type === "epic" && depth < EPIC_SUB_ISSUE_DEPTH_LIMIT
       ? `\n## Sub-issues\n\n${
@@ -374,15 +394,16 @@ export function draftSpec(
     type === "spike"
       ? `## Expected deliverable (NOT code — a decision or proof of concept)\n\n${sectionBullets(
           [
-            ...directives.acceptanceCriteria,
+            ...opAc.items,
             ...findings
               .filter((x) => x.name === "scoping" && x.ok)
               .flatMap((x) => x.toolUses)
-              .map((i) => clip(i.text)),
-          ].slice(0, cap),
+              .map((i) => clip(i.text))
+              .slice(0, cap),
+          ],
           SPIKE_DELIVERABLE_FALLBACK,
-        )}\n`
-      : `## Acceptance criteria\n\n${sectionBullets(acItems, AC_FALLBACK)}\n`;
+        )}${omissionNote(opAc)}\n`
+      : `## Acceptance criteria\n\n${sectionBullets(acItems, AC_FALLBACK)}${omissionNote(opAc)}\n`;
   const oos =
     oosAll.length > 0
       ? oosAll.map((s) => `- ${s}`).join("\n")
@@ -404,7 +425,7 @@ ${ctx}
 
 ${techContext}
 
-${acSection}
+${acSection}${suggestedSection}
 ## References
 
 ${references}
@@ -424,7 +445,7 @@ ${edgeCases}
 ## Out of scope
 
 ${oos}
-${subIssues}${depthLimit}`;
+${subIssues}${opDecompositionSection}${depthLimit}`;
 
   // PR #640: single splice site (the dead onCorrective splice is gone).
   // Splice → collapse → render Open Questions from marked decisions →
@@ -439,5 +460,12 @@ ${subIssues}${depthLimit}`;
     `## Open Questions\n\n${openQ}\n`,
   );
 
-  return { title, body: finalBody, resolvedDecisions: markedDecisions };
+  // #1087: truncated operator channels as data; filing paths halt on this, not the body.
+  const operatorOmitted = operatorOmissions({
+    [type === "spike" ? "Expected deliverable" : "Acceptance criteria"]: opAc,
+    "Test surface": opTestSurface,
+    "Edge cases & pitfalls": opPitfalls,
+    [OPERATOR_DECOMPOSITION_HEADING]: opDecomposition,
+  });
+  return { title, body: finalBody, resolvedDecisions: markedDecisions, operatorOmitted };
 }
