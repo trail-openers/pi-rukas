@@ -121,6 +121,12 @@ export interface PlanResult {
    * fixture run, 2026-09-09). Present only when at least one angle failed.
    */
   failedAngles?: { name: string; detail: string }[];
+  /**
+   * #1043: set when the investigation (inventory, duplicate-risk, angles) was
+   * reused from the confirmed dry run; `ageMs` is that dry run's age.
+   * Drafting, validation and the gap gate always re-ran.
+   */
+  investigationReused?: { ageMs: number };
   /** True when the body was compacted to fit the forge's 65,536-char limit. */
   compacted?: boolean;
   /** Per-phase wall-clock durations, always present on a completed run. */

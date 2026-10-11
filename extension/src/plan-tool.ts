@@ -100,7 +100,12 @@ export function registerPlanTool(pi: ExtensionAPI) {
       };
       if (!params.descriptor || params.descriptor.trim().length === 0) {
         return {
-          content: [{ type: "text", text: "start_plan_driver requires a non-empty descriptor." }],
+          content: [
+            {
+              type: "text",
+              text: "start_plan_driver requires a non-empty descriptor.",
+            },
+          ],
           details: { started: false },
         };
       }
@@ -244,6 +249,9 @@ function renderPlanResult(r: PlanResult, dryRun: boolean): string {
     r.failedAngles && r.failedAngles.length > 0
       ? `\n\n=== INVESTIGATION STATUS ===\n${r.failedAngles.length} angle(s) FAILED — their surface is uninvestigated:\n${r.failedAngles.map((a) => `- ${a.name}: ${a.detail}`).join("\n")}`
       : "";
+  const reusedNote = r.investigationReused
+    ? `\n\n=== INVESTIGATION REUSED ===\nThe duplicate-risk and angle investigation (and the inventory) was reused from the confirmed dry run ${fmtMs(r.investigationReused.ageMs)} ago — the descriptor, context, type and git HEAD are unchanged. Drafting, validation and the gap gate re-ran.`
+    : "";
   const compactedNote = r.compacted
     ? "\n\nCOMPACTED: the body was deterministically compacted to fit the forge's 65,536-char limit (a disclosure line inside the body says how; full findings live in the run transcripts)."
     : "";
@@ -263,7 +271,7 @@ ${r.spec}
 ${gaps}
 
 === PRIOR CONTEXT ATTRIBUTION ===
-${prior}${investigation}${cap}${filingStatus}${compactedNote}${timingsLine}`;
+${prior}${reusedNote}${investigation}${cap}${filingStatus}${compactedNote}${timingsLine}`;
 }
 
 /** Human-readable duration: sub-minute in seconds, else m+s. */
@@ -289,6 +297,7 @@ function resultDetails(r: PlanResult, dryRun: boolean): Record<string, unknown> 
   if (r.filingFailure) d.filingFailure = r.filingFailure;
   if (r.failedAngles) d.failedAngles = r.failedAngles;
   if (r.compacted) d.compacted = true;
+  if (r.investigationReused) d.investigationReused = r.investigationReused;
   if (r.timings) d.timings = r.timings;
   return d;
 }

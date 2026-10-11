@@ -221,6 +221,20 @@ export function residualGapsSection(residual: PlanGap[]): string {
   return `## Residual gap-gate findings\n\n${items}\n`;
 }
 
+/**
+ * #1043 — the prior dry run's gaps, appended to the FIRST gate prompt on a
+ * cache miss. They are framed as settled so the reviewer does not re-raise
+ * them; a finding the spec now contradicts is still raised. Empty when there
+ * is no prior run (the prompt is then byte-identical to before).
+ */
+export function settledGapsSection(settled: PlanGap[]): string {
+  if (settled.length === 0) return "";
+  const items = settled
+    .map((g) => `- [${g.severity}] ${truncateForDisclosure(g.description)} → ${g.resolution}`)
+    .join("\n");
+  return `\n\nALREADY SETTLED — a prior gap-gate run on this same descriptor raised the findings below. Do NOT re-raise them unless the spec now contradicts them; a finding the spec already addresses is settled.\n${items}`;
+}
+
 // ---------------------------------------------------------------------------
 // runGapGateLoop — the Phase-4 gate loop, extracted from plan-driver.ts
 // ---------------------------------------------------------------------------
@@ -295,7 +309,12 @@ export interface GapGateLoopResult {
 export type GapGateDispatch = (
   spec: { role: string; prompt: string },
   opts?: { label: string },
-) => Promise<{ ok: boolean; errorStop?: unknown; text: string; toolUses: unknown[] }>;
+) => Promise<{
+  ok: boolean;
+  errorStop?: unknown;
+  text: string;
+  toolUses: unknown[];
+}>;
 
 export async function runGapGateLoop(
   dispatch: GapGateDispatch,
