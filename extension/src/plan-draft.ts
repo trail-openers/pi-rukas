@@ -34,6 +34,7 @@ import {
   capOperatorItems,
   clipItem,
   clipRef,
+  omissionNote,
 } from "./plan-validate.ts";
 import {
   type ResolvedDecision,
@@ -108,7 +109,10 @@ export function extractPlanItems(toolUses: unknown[], angleName: string): PlanIt
 // parseOperatorDirectives + OperatorDirectives live in plan-directives.ts
 // (the operator's trusted typed channel); re-exported for existing consumers.
 import type { OperatorDirectives } from "./plan-directives.ts";
-export { type OperatorDirectives, parseOperatorDirectives } from "./plan-directives.ts";
+export {
+  type OperatorDirectives,
+  parseOperatorDirectives,
+} from "./plan-directives.ts";
 export { parseOperatorDirectivesWithLines } from "./plan-directives.ts";
 
 /**
@@ -316,10 +320,14 @@ export function draftSpec(
   const angleAc = dedupeByNormalised(
     itemsByKind(findings, "acceptance-criterion").map((i) => clip(i.text)),
   );
-  const acItems = opAc.length > 0 ? opAc : angleAc.slice(0, cap);
+  const acItems = opAc.items.length > 0 ? opAc.items : angleAc.slice(0, cap);
   const opKeys = new Set(opAcRaw.map(normalisedTextKey));
+  // A spike has no AC section to pair a suggested block with (its criteria
+  // slot is the Expected deliverable), so it never gets one.
   const suggestedAc =
-    opAc.length > 0 ? angleAc.filter((s) => !opKeys.has(normalisedTextKey(s))).slice(0, cap) : [];
+    type !== "spike" && opAc.items.length > 0
+      ? angleAc.filter((s) => !opKeys.has(normalisedTextKey(s))).slice(0, cap)
+      : [];
   const suggestedSection =
     suggestedAc.length > 0
       ? `\n## Suggested additional criteria\n\n${suggestedAc.map((s) => `- ${s}`).join("\n")}\n`
@@ -329,14 +337,15 @@ export function draftSpec(
   // ACs, which prepend) — "exactly: none" must not be diluted (C2). Operator
   // text is never capped or clipped (D2, #1087); only angle items are capped.
   const opTestSurface = capOperatorItems(directives.testSurface ?? []);
-  const testSurface = sectionBullets(
-    opTestSurface.length > 0
-      ? opTestSurface
-      : itemsByKind(findings, "test-surface-item")
-          .map((i) => clip(i.text))
-          .slice(0, cap),
-    TEST_SURFACE_FALLBACK,
-  );
+  const testSurface =
+    sectionBullets(
+      opTestSurface.items.length > 0
+        ? opTestSurface.items
+        : itemsByKind(findings, "test-surface-item")
+            .map((i) => clip(i.text))
+            .slice(0, cap),
+      TEST_SURFACE_FALLBACK,
+    ) + omissionNote(opTestSurface);
 
   // References: structured reference items first; fallback to a prose
   // file-path scan only when none were reported (silence-detection
@@ -356,13 +365,16 @@ export function draftSpec(
   // D3 fix: edge cases come from the "edge-case" kind across ALL angles (the
   // old filter matched a nonexistent "risk-surface" angle name). Operator
   // pitfalls take precedence.
+  const opPitfalls = capOperatorItems(directives.pitfalls);
   const edgeItems = [
-    ...capOperatorItems(directives.pitfalls),
+    ...opPitfalls.items,
     ...itemsByKind(findings, "edge-case")
       .map((i) => clip(i.text))
       .slice(0, cap),
   ];
-  const edgeCases = sectionBullets(edgeItems, "none surfaced by the investigation angles");
+  const edgeCases =
+    sectionBullets(edgeItems, "none surfaced by the investigation angles") +
+    omissionNote(opPitfalls);
 
   const depthLimit = depth >= EPIC_SUB_ISSUE_DEPTH_LIMIT ? `\n${DEPTH_LIMIT_NOTE}\n` : "";
 
@@ -374,15 +386,15 @@ export function draftSpec(
   // so the angle-derived sub-issue list (what validateDraft counts) stays
   // distinct from the operator's constraints.
   const opDecomposition = capOperatorItems(dedupeByNormalised(directives.decomposition ?? []));
+  const opDecompositionSection =
+    opDecomposition.items.length > 0
+      ? `\n## ${OPERATOR_DECOMPOSITION_HEADING}\n\n${opDecomposition.items.map((s) => `- ${s}`).join("\n")}${omissionNote(opDecomposition)}\n`
+      : "";
   const subIssues =
     type === "epic" && depth < EPIC_SUB_ISSUE_DEPTH_LIMIT
       ? `\n## Sub-issues\n\n${
           epicSubIssues(findings, clip).join("\n") || `- ${SUB_ISSUES_FALLBACK}`
-        }\n${
-          opDecomposition.length > 0
-            ? `\n### ${OPERATOR_DECOMPOSITION_HEADING}\n\n${opDecomposition.map((s) => `- ${s}`).join("\n")}\n`
-            : ""
-        }`
+        }\n${opDecompositionSection}`
       : "";
 
   const oosAll = [
@@ -398,7 +410,7 @@ export function draftSpec(
     type === "spike"
       ? `## Expected deliverable (NOT code — a decision or proof of concept)\n\n${sectionBullets(
           [
-            ...capOperatorItems(directives.acceptanceCriteria),
+            ...opAc.items,
             ...findings
               .filter((x) => x.name === "scoping" && x.ok)
               .flatMap((x) => x.toolUses)
@@ -406,8 +418,8 @@ export function draftSpec(
               .slice(0, cap),
           ],
           SPIKE_DELIVERABLE_FALLBACK,
-        )}\n`
-      : `## Acceptance criteria\n\n${sectionBullets(acItems, AC_FALLBACK)}\n`;
+        )}${omissionNote(opAc)}\n`
+      : `## Acceptance criteria\n\n${sectionBullets(acItems, AC_FALLBACK)}${omissionNote(opAc)}\n`;
   const oos =
     oosAll.length > 0
       ? oosAll.map((s) => `- ${s}`).join("\n")

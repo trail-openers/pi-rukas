@@ -6,13 +6,14 @@
  *     items only): ACCEPTANCE CRITERIA, PITFALLS, spike deliverable;
  *   - when the operator supplies ACCEPTANCE CRITERIA they ARE the section;
  *     angle-derived criteria go under "Suggested additional criteria";
- *   - an operator DECOMPOSITION block renders in the Sub-issues section, and
- *     the angle-derived sub-issue count (validateDraft) ignores it;
+ *   - an operator DECOMPOSITION block renders under its own top-level heading
+ *     outside Sub-issues, and the angle-derived sub-issue count (validateDraft)
+ *     ignores it;
  *   - an empty test-surface renders an explicit status, not an instruction.
  */
 
-import { type AngleFindings, draftSpec } from "../src/plan-draft.ts";
 import type { OperatorDirectives } from "../src/plan-directives.ts";
+import { type AngleFindings, draftSpec } from "../src/plan-draft.ts";
 import {
   OPERATOR_ITEM_CEILING,
   TEST_SURFACE_FALLBACK,
@@ -70,7 +71,11 @@ function renders(sec: string, item: string): boolean {
     [],
     [],
     0,
-    { ...NO_DIRS, acceptanceCriteria: ops, pitfalls: ops.map((s) => `${s} pit`) },
+    {
+      ...NO_DIRS,
+      acceptanceCriteria: ops,
+      pitfalls: ops.map((s) => `${s} pit`),
+    },
     [],
   );
   const ac = section(r.body, "Acceptance criteria", "References");
@@ -175,12 +180,13 @@ function renders(sec: string, item: string): boolean {
     { ...NO_DIRS, decomposition: ["split by surface", "keep parser separate"] },
     [],
   );
-  const sub = section(r.body, "Sub-issues", "Context"); // no following section → to end
+  const sub = section(r.body, "Sub-issues", "Operator decomposition");
+  const opDec = section(r.body, "Operator decomposition", "Context"); // no following section → to end
   assert(
-    sub.includes("### Operator decomposition") &&
-      sub.includes("- split by surface") &&
-      sub.includes("- keep parser separate"),
-    "DECOMPOSITION: the operator block renders in the Sub-issues section",
+    !sub.includes("split by surface") &&
+      opDec.includes("- split by surface") &&
+      opDec.includes("- keep parser separate"),
+    "DECOMPOSITION: the operator block renders under its own heading, outside Sub-issues",
   );
   assert(
     validateDraft("epic", r.body, 0).ok,

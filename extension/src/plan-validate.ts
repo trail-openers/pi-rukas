@@ -119,6 +119,15 @@ function sliceSection(body: string, heading: string): string | undefined {
   return m?.[1];
 }
 
+/**
+ * True when a section has a bullet line that is EXACTLY the fallback. Whole-line
+ * equality (not substring): operator or angle text that merely contains the
+ * fallback phrase is data, not the status.
+ */
+function hasFallbackBullet(section: string | undefined, fallback: string): boolean {
+  return !!section && section.split("\n").some((l) => l.trimEnd() === `- ${fallback}`);
+}
+
 export interface ValidateOpts {
   /** True when the operator supplied a context param / directives. */
   operatorSupplied?: boolean;
@@ -151,19 +160,26 @@ export function validateDraft(
       );
     }
   }
+  // #1087 review: an operator list past the ceiling is a truncated authority
+  // channel — halt rather than file a spec missing operator-supplied items.
+  if (body.includes(OMISSION_PHRASE)) {
+    problems.push(
+      `operator-supplied items were truncated past the ceiling of ${OPERATOR_ITEM_CEILING} — the operator's block is too large to file faithfully; split the descriptor or reduce the block`,
+    );
+  }
   if (type === "bug" || type === "feature") {
     const ac = sliceSection(body, "Acceptance criteria");
-    if (!ac || ac.includes(AC_FALLBACK)) {
+    if (!ac || hasFallbackBullet(ac, AC_FALLBACK)) {
       problems.push(
         "the Acceptance criteria section is the fallback placeholder — no angle or operator directive produced a testable outcome, so the issue would not be /work-consumable",
       );
     }
   }
   if (type === "epic" && depth < EPIC_SUB_ISSUE_DEPTH_LIMIT) {
-    // Only the angle-derived list counts: the operator DECOMPOSITION
-    // sub-heading (#1087) carries the operator's constraints, not sub-issues.
-    const sub = sliceSection(body, "Sub-issues")?.split(`### ${OPERATOR_DECOMPOSITION_HEADING}`)[0];
-    if (!sub || sub.includes(SUB_ISSUES_FALLBACK)) {
+    // Only the angle-derived list counts: the operator DECOMPOSITION block
+    // renders under its own top-level heading (#1087), outside this section.
+    const sub = sliceSection(body, "Sub-issues");
+    if (!sub || hasFallbackBullet(sub, SUB_ISSUES_FALLBACK)) {
       problems.push(
         "the epic has no sub-issue decomposition — the decomposition-surface angle produced no sub-issue items",
       );
@@ -188,13 +204,13 @@ export function validateDraft(
     // deliverable or test-surface section still showing scaffold strings
     // means the operator's instructions never landed.
     const deliverable = sliceSection(body, "Expected deliverable");
-    if (deliverable?.includes(SPIKE_DELIVERABLE_FALLBACK)) {
+    if (hasFallbackBullet(deliverable, SPIKE_DELIVERABLE_FALLBACK)) {
       problems.push(
         "the spike's Expected deliverable section is the fallback placeholder despite operator-supplied context — the scoping angle produced nothing and the operator's input never landed",
       );
     }
     const ts = sliceSection(body, "Test surface");
-    if (ts?.includes(TEST_SURFACE_FALLBACK)) {
+    if (hasFallbackBullet(ts, TEST_SURFACE_FALLBACK)) {
       problems.push(
         "the spike's Test surface section reports no test-surface items despite operator-supplied context — state the intended test surface via a TEST SURFACE block in the context param",
       );
@@ -244,17 +260,38 @@ export const RENDER_BUDGETS: readonly RenderBudget[] = [
  */
 export const OPERATOR_ITEM_CEILING = 100;
 
-/** Applies OPERATOR_ITEM_CEILING; the omission is a visible bullet, never silent. */
-export function capOperatorItems(items: string[]): string[] {
-  if (items.length <= OPERATOR_ITEM_CEILING) return items;
-  const omitted = items.length - OPERATOR_ITEM_CEILING;
-  return [
-    ...items.slice(0, OPERATOR_ITEM_CEILING),
-    `… ${omitted} further operator item(s) omitted (ceiling ${OPERATOR_ITEM_CEILING}; an unterminated or oversized operator block)`,
-  ];
+/** The phrase every omission status line carries; validateDraft halts on it. */
+export const OMISSION_PHRASE = "further operator item(s) omitted";
+
+export interface CappedItems {
+  items: string[];
+  omitted: number;
 }
 
-/** The sub-heading an operator DECOMPOSITION block renders under (#1087). Shared by draftSpec (renders it) and validateDraft (excludes it). */
+/**
+ * Applies OPERATOR_ITEM_CEILING. The omitted count is returned as data, so the
+ * omission is rendered as a status line (omissionNote) rather than as a bullet
+ * in the item channel.
+ */
+export function capOperatorItems(items: string[]): CappedItems {
+  return {
+    items: items.slice(0, OPERATOR_ITEM_CEILING),
+    omitted: Math.max(0, items.length - OPERATOR_ITEM_CEILING),
+  };
+}
+
+/** The omission status line, outside the bullet list. Empty when nothing was omitted. */
+export function omissionNote(capped: CappedItems): string {
+  return capped.omitted > 0
+    ? `\n_… ${capped.omitted} ${OMISSION_PHRASE} (ceiling ${OPERATOR_ITEM_CEILING}; an unterminated or oversized operator block)_\n`
+    : "";
+}
+
+/**
+ * The top-level heading an operator DECOMPOSITION block renders under (#1087).
+ * It sits OUTSIDE the Sub-issues section, so validateDraft counts the angle
+ * list without splitting rendered markdown.
+ */
 export const OPERATOR_DECOMPOSITION_HEADING = "Operator decomposition";
 
 /** Clip one rendered item with a visible marker. Fallback strings are never items. */
