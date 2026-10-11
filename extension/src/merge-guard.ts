@@ -108,6 +108,7 @@ import {
   remoteName,
 } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
+import { runNetGit } from "./work-driver-net-git.ts";
 
 const execp = promisify(exec);
 
@@ -276,10 +277,9 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
 
     // Fetch the branch. Fail-closed on error.
     try {
-      await execFn(`git fetch ${remote} ${target.headBranch}`, {
+      await runNetGit(execFn, `git fetch ${remote} ${target.headBranch}`, {
         cwd,
         maxBuffer: 64 * 1024,
-        timeout: EXEC_TIMEOUT_MS,
       });
     } catch (err) {
       return block(

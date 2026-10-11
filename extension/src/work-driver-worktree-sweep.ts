@@ -3,6 +3,7 @@ import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { trace } from "./trace.ts";
+import { runNetGit } from "./work-driver-net-git.ts";
 import { processAlive } from "./work-driver-resume.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
@@ -200,10 +201,9 @@ async function isWorkProvablyOnRemote(
 
   try {
     // Fetch the branch
-    await execFn(`git fetch origin ${branchName}`, {
+    await runNetGit(execFn, `git fetch origin ${branchName}`, {
       cwd: worktreePath,
       maxBuffer: 256 * 1024,
-      timeout: 10000, // 10s
     });
     // Check if HEAD matches FETCH_HEAD
     const { stdout: diffOut } = await execFn("git diff --quiet --submodule=diff FETCH_HEAD", {

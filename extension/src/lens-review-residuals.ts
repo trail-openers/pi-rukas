@@ -47,6 +47,7 @@ import type { LensReviewSummary } from "./lens-review.ts";
 import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
 import { branchPatchId, remoteName } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
+import { runNetGit } from "./work-driver-net-git.ts";
 
 const execp = promisify(exec);
 
@@ -245,10 +246,9 @@ async function doPost(
   // fetch runs first; on a fetch failure nothing is posted and the failure
   // is reported (fail closed — the caller's catch returns the note).
   try {
-    await execFn(`git fetch ${remote} ${headBranch} ${baseBranch}`, {
+    await runNetGit(execFn, `git fetch ${remote} ${headBranch} ${baseBranch}`, {
       cwd,
       maxBuffer: 64 * 1024,
-      timeout: 30_000,
     });
   } catch (err) {
     throw new Error(

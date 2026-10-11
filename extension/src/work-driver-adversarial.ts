@@ -31,6 +31,7 @@ import {
   repoRootOriginalRef,
 } from "./work-driver-lens-fix-commit.ts";
 import { commitLensFixChanges, lensWorktree } from "./work-driver-lens.ts";
+import { runNetGit } from "./work-driver-net-git.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
@@ -136,9 +137,8 @@ async function handleNoCommittedFix(
       const sha = landed.sha;
       let pushOk = true;
       try {
-        await execFn(`git push origin ${JSON.stringify(branchName)}`, {
+        await runNetGit(execFn, `git push origin ${JSON.stringify(branchName)}`, {
           cwd: ctx.repoRoot,
-          maxBuffer: 1024 * 1024,
         });
       } catch {
         pushOk = false;
@@ -382,7 +382,7 @@ export async function runAdversarial(
       }
       if (result.committed && !result.pushed) {
         try {
-          await execFn("git push origin HEAD -q", { cwd: ctx.repoRoot, maxBuffer: 64 * 1024 });
+          await runNetGit(execFn, "git push origin HEAD -q", { cwd: ctx.repoRoot });
         } catch (err) {
           const errMsg = `lens-fix push failed (non-blocking): ${(err as Error).message?.slice(0, 200)}`;
           trace(`work-driver: ${errMsg}`);

@@ -22,6 +22,7 @@
 
 import { trace } from "./trace.ts";
 import { detectMainline, reconcileExistingLocalBranch } from "./work-driver-branch-mechanized.ts";
+import { runNetGit } from "./work-driver-net-git.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
@@ -46,10 +47,7 @@ export async function reconcileHandoffConsolidateBranch(
   try {
     const mainline = await detectMainline(execFn, repoRoot);
     try {
-      await execFn(`git fetch origin ${JSON.stringify(mainline)}`, {
-        cwd: repoRoot,
-        maxBuffer: 1024 * 1024,
-      });
+      await runNetGit(execFn, `git fetch origin ${JSON.stringify(mainline)}`, { cwd: repoRoot });
     } catch (err) {
       trace(
         `work-driver: handoff-consolidate fetch of origin/${mainline} failed — skipping stale-branch reconciliation: ${(err as Error).message?.slice(0, 160)}`,

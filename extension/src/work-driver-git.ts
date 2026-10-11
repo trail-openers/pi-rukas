@@ -11,6 +11,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "./trace.ts";
+import { runNetGit } from "./work-driver-net-git.ts";
 
 /**
  * VerifyExecFn — the shell executor signature used by the outcome-
@@ -35,6 +36,8 @@ export type VerifyExecFn = (
     // merge's rule-3 grep uses this so planner-controlled paths arrive
     // verbatim.
     argv?: string[];
+    /** #1095 — network git calls carry the non-interactive env. */
+    env?: NodeJS.ProcessEnv;
   },
 ) => Promise<{ stdout: string; stderr?: string }>;
 
@@ -139,10 +142,7 @@ export async function restoreCheckout(
 
   // 1. Fetch origin --prune.
   try {
-    await execFn("git fetch origin --prune", {
-      cwd: repoRoot,
-      maxBuffer: 1024 * 1024,
-    });
+    await runNetGit(execFn, "git fetch origin --prune", { cwd: repoRoot });
   } catch (err) {
     notes.push(`git fetch origin --prune failed: ${(err as Error).message?.slice(0, 200)}`);
     // Continue — subsequent steps may still work with stale refs.
@@ -180,9 +180,8 @@ export async function restoreCheckout(
 
   // 4. Pull --ff-only. Tolerate already-up-to-date.
   try {
-    await execFn(`git pull --ff-only origin ${JSON.stringify(targetMainline)}`, {
+    await runNetGit(execFn, `git pull --ff-only origin ${JSON.stringify(targetMainline)}`, {
       cwd: repoRoot,
-      maxBuffer: 1024 * 1024,
     });
   } catch (err) {
     const e = err as Error;

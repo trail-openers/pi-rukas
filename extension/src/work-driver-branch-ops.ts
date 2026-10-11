@@ -42,6 +42,7 @@ import type { DriverContext } from "./work-driver-context.ts";
 import { parseBranchName } from "./work-driver-diff.ts";
 import { resolvedTheMainline } from "./work-driver-git.ts";
 import { buildCompletionEvent, runSingleDispatch } from "./work-driver-merged.ts";
+import { runNetGit } from "./work-driver-net-git.ts";
 import { sliceMarkdownSection } from "./work-driver-plan.ts";
 import { inlineBranchPrompt } from "./work-driver-prompts-branch.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
@@ -112,9 +113,8 @@ export async function runBranchViaOpsDispatch(
     const mainline = await detectMainline(execFn, ctx.repoRoot);
     // Best-effort fetch of the mainline ref; a failure degrades to the local ref.
     try {
-      await execFn(`git fetch origin ${JSON.stringify(mainline)}`, {
+      await runNetGit(execFn, `git fetch origin ${JSON.stringify(mainline)}`, {
         cwd: ctx.repoRoot,
-        maxBuffer: 1024 * 1024,
       });
     } catch (err) {
       trace(

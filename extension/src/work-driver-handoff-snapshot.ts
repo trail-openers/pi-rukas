@@ -14,6 +14,7 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { trace } from "./trace.ts";
+import { runNetGit } from "./work-driver-net-git.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 const execp = promisify(exec);
@@ -100,13 +101,16 @@ export async function captureWorktreeSnapshot(
     } catch {
       snapshot.branchExists = false;
     }
-    // Remote tracking (best-effort; network may be down). 10s timeout
-    // because ls-remote can hang on unreachable remotes.
+    // Remote tracking (best-effort; network may be down). runNetGit bounds
+    // ls-remote (#1095) — an unreachable remote no longer hangs the snapshot.
     try {
-      const { stdout } = await execp(`git ls-remote --heads origin ${JSON.stringify(branchName)}`, {
-        cwd: repoRoot,
-        timeout: 10_000,
-      });
+      const { stdout } = await runNetGit(
+        execp,
+        `git ls-remote --heads origin ${JSON.stringify(branchName)}`,
+        {
+          cwd: repoRoot,
+        },
+      );
       snapshot.branchPushed = stdout.trim().length > 0;
     } catch {
       snapshot.branchPushed = false;

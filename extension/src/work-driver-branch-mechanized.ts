@@ -39,6 +39,7 @@
 
 import { trace } from "./trace.ts";
 import { ensureWorktreesExcluded } from "./work-driver-git-exclude.ts";
+import { isNetGitTimeout, runNetGit } from "./work-driver-net-git.ts";
 import type { ExecFn } from "./worktree.ts";
 import { DirtyWorktreeError, worktreeCreate } from "./worktree.ts";
 import type { ProvisionResult } from "./worktree.ts";
@@ -149,10 +150,9 @@ async function sharedFetch(execFn: ExecFn, repoRoot: string, ref: string): Promi
     await inFlightFetch.p.catch(() => undefined);
     return;
   }
-  const p = execFn(`git fetch origin ${JSON.stringify(ref)}`, {
-    cwd: repoRoot,
-    maxBuffer: 1024 * 1024,
-  });
+  // #1095 — a hung fetch rejects the SHARED promise, so every coalesced caller
+  // sees the NetGitTimeoutError; the stale-ref fallback does not apply to it.
+  const p = runNetGit(execFn, `git fetch origin ${JSON.stringify(ref)}`, { cwd: repoRoot });
   inFlightFetch = { key, p };
   try {
     await p;
@@ -371,6 +371,9 @@ export async function mechanizedBranchSetup(
   try {
     await sharedFetch(execFn, repoRoot, mainline);
   } catch (err) {
+    // #1095 — a timeout fails the step with its named cause; only a fetch that
+    // errored (the SSH auth window) falls back to the local mainline ref.
+    if (isNetGitTimeout(err)) throw err;
     trace(
       `work-driver: fetch of origin/${mainline} failed — proceeding from local refs: ${(err as Error).message?.slice(0, 160)}`,
     );

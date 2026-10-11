@@ -1,0 +1,101 @@
+#!/usr/bin/env bun
+/**
+ * #1095 — a hung network git call fails within the bound, with its cause.
+ *
+ * Real git, no stubs: `origin` is an ssh:// URL whose transport is
+ * GIT_SSH_COMMAND, pointed at a script that records its argv and sleeps. That
+ * is the shape of a forwarded SSH agent that vanished mid-cycle. The driver's
+ * `runNetGit` must:
+ *   1. reject with NetGitTimeoutError ("network git timed out …") within
+ *      PI_ENSEMBLE_GIT_NET_TIMEOUT_MS, not block until the script exits;
+ *   2. have run ssh with `-o BatchMode=yes` and `-o ConnectTimeout=30`, the
+ *      non-interactive setting that makes a passphrase prompt fail instead of
+ *      waiting on /dev/tty.
+ *
+ * The sleeping script's pid is killed at the end: the wrapper races the
+ * deadline rather than waiting for the child, so the child outlives the call.
+ */
+
+import { exec } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, chmodSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
+import { isNetGitTimeout, runNetGit } from "../src/work-driver-net-git.ts";
+
+const execp = promisify(exec);
+let failures = 0;
+function assert(cond: boolean, msg: string) {
+  if (cond) console.log(`  ✓ ${msg}`);
+  else {
+    console.log(`  ✗ ${msg}`);
+    failures++;
+  }
+}
+
+const dir = mkdtempSync(path.join(tmpdir(), "net-git-timeout-"));
+const pidFile = path.join(dir, "pid");
+const argvFile = path.join(dir, "argv");
+const script = path.join(dir, "hang-ssh.sh");
+writeFileSync(
+  script,
+  `#!/bin/sh\necho "$@" > "${argvFile}"\necho $$ > "${pidFile}"\nexec sleep 60\n`,
+);
+chmodSync(script, 0o755);
+
+const bare = path.join(dir, "origin.git");
+await execp(`git init --bare -q ${JSON.stringify(bare)}`);
+const repo = path.join(dir, "work");
+await execp(`git init -q ${JSON.stringify(repo)}`);
+// ssh:// transport, so git hands the connection to GIT_SSH_COMMAND.
+await execp(`git -C ${JSON.stringify(repo)} remote add origin ${JSON.stringify(`ssh://nohost${bare}`)}`);
+
+const savedSsh = process.env.GIT_SSH_COMMAND;
+const savedTimeout = process.env.PI_ENSEMBLE_GIT_NET_TIMEOUT_MS;
+process.env.GIT_SSH_COMMAND = script;
+process.env.PI_ENSEMBLE_GIT_NET_TIMEOUT_MS = "1500";
+
+console.log("1. hanging remote fails within the bound with the named cause");
+const started = Date.now();
+let caught: unknown;
+try {
+  await runNetGit(execp, "git fetch origin main", { cwd: repo });
+} catch (err) {
+  caught = err;
+}
+const elapsed = Date.now() - started;
+assert(isNetGitTimeout(caught), "rejects with NetGitTimeoutError");
+assert(
+  caught instanceof Error && caught.message.includes("network git timed out"),
+  "message carries 'network git timed out' as the root cause",
+);
+assert(
+  caught instanceof Error && caught.message.includes("git fetch origin main"),
+  "message names the command",
+);
+assert(elapsed < 10_000, `returned in ${elapsed}ms (bound 1500ms, not the 60s sleep)`);
+
+console.log("2. ssh ran non-interactively");
+const argv = existsSync(argvFile) ? readFileSync(argvFile, "utf8") : "";
+assert(argv.includes("-o BatchMode=yes"), "ssh invoked with -o BatchMode=yes");
+assert(argv.includes("-o ConnectTimeout=30"), "ssh invoked with -o ConnectTimeout=30");
+
+// Clean up the orphaned sleep (the wrapper does not wait for the child).
+if (existsSync(pidFile)) {
+  const pid = Number(readFileSync(pidFile, "utf8").trim());
+  if (Number.isInteger(pid) && pid > 0) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // already gone
+    }
+  }
+}
+if (savedSsh === undefined) delete process.env.GIT_SSH_COMMAND;
+else process.env.GIT_SSH_COMMAND = savedSsh;
+if (savedTimeout === undefined) delete process.env.PI_ENSEMBLE_GIT_NET_TIMEOUT_MS;
+else process.env.PI_ENSEMBLE_GIT_NET_TIMEOUT_MS = savedTimeout;
+rmSync(dir, { recursive: true, force: true });
+
+console.log(failures === 0 ? "\nAll net-git timeout checks passed" : `\n${failures} failure(s)`);
+process.exit(failures === 0 ? 0 : 1);
