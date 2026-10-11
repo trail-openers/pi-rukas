@@ -268,6 +268,26 @@ for (const cmd of [
   assert(matchBashSubcommand(cmd, ops) === "deny", `ops: bare "${cmd}" stays deny`);
 }
 
+// Recovery commands the prompts and refusal text tell ops to run must resolve
+// allow through the production matcher, not just the oo/bare twin shape.
+for (const cmd of [
+  "git apply --3way --binary --index tmp/issue-1/x.patch",
+  "git restore --staged src/a.ts",
+  "git revert HEAD",
+  "git stash push -m x",
+  "git symbolic-ref --short HEAD",
+  "git checkout main",
+  "git pull --ff-only",
+  "git push -u origin feature/x",
+  "git worktree remove ../x",
+  "git rebase --abort",
+  "git -C /tmp/x add -A",
+  "git diff --cached",
+  "git branch --show-current",
+]) {
+  assert(matchBashSubcommand(cmd, ops) === "allow", `ops: recovery "${cmd}" resolves allow`);
+}
+
 for (const role of ROLES) {
   const bash = agents.agent[role]?.permission?.bash ?? {};
   assert(

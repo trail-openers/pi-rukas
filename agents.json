@@ -373,6 +373,8 @@
         "bash": {
           "*": "ask",
           "oo git *": "allow",
+          "oo git apply*": "allow",
+          "oo git restore*": "allow",
           "git add*": "allow",
           "git commit*": "allow",
           "git push*": "allow",
@@ -390,6 +392,8 @@
           "git worktree*": "allow",
           "git -C *": "allow",
           "git submodule*": "allow",
+          "git apply*": "allow",
+          "git restore*": "allow",
           "docker *": "allow",
           "ssh *": "allow",
           "which*": "allow",
