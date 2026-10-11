@@ -14,6 +14,7 @@ import path from "node:path";
 import {
   type GitExec,
   isDriverArtefact,
+  resetWorktreeToBase,
   runGit,
   savePartialWork,
   worktreeStatus,
@@ -33,8 +34,8 @@ function assert(cond: boolean, msg: string) {
 
 const dir = await mkdtemp(path.join(tmpdir(), "git-strict-1016-"));
 try {
-  const ids = ["pi-ws", "nested-ws"];
-  await makeBaseWorktrees(dir, ids);
+  const ids = ["pi-ws", "nested-ws", "clean-ws"];
+  const shas = await makeBaseWorktrees(dir, ids);
   const wt = (id: string) => path.join(dir, ".worktrees", id);
   const scratch = path.join(dir, "tmp", "issue-1");
 
@@ -57,12 +58,19 @@ try {
     baseFor: () => piBase,
   });
   const savedPatch = backup.saved["pi-ws"];
-  assert(savedPatch !== undefined && backup.refused["pi-ws"] === undefined, "#1016: the backup saves the tracked .pi/ edit");
   assert(
-    savedPatch !== undefined && (await readFile(savedPatch, "utf8")).includes("+edited by developer"),
+    savedPatch !== undefined && backup.refused["pi-ws"] === undefined,
+    "#1016: the backup saves the tracked .pi/ edit",
+  );
+  assert(
+    savedPatch !== undefined &&
+      (await readFile(savedPatch, "utf8")).includes("+edited by developer"),
     "#1016: the saved patch carries the .pi/ edit",
   );
-  assert(gitIn(pw, ["diff", "--cached", "--name-only"]) === "", "#1016: the backup leaves nothing staged");
+  assert(
+    gitIn(pw, ["diff", "--cached", "--name-only"]) === "",
+    "#1016: the backup leaves nothing staged",
+  );
   assert(
     (await readFile(path.join(pw, ".pi", "verify-cmd"), "utf8")) === "edited by developer\n" &&
       existsSync(path.join(pw, "new.txt")),
@@ -79,7 +87,10 @@ try {
   } catch {
     threwUnstaged = true;
   }
-  assert(threwUnstaged && !existsSync(patchA), "#1016: a work path missing from the index refuses the save");
+  assert(
+    threwUnstaged && !existsSync(patchA),
+    "#1016: a work path missing from the index refuses the save",
+  );
 
   const emptyFake: GitExec = async (args) => {
     if (args.includes("--name-only")) return { stdout: "a.txt\0" };
@@ -87,7 +98,13 @@ try {
   };
   let threwEmpty = false;
   try {
-    await savePartialWork(emptyFake, dir, piBase, ["a.txt"], path.join(scratch, "incomplete-b.patch"));
+    await savePartialWork(
+      emptyFake,
+      dir,
+      piBase,
+      ["a.txt"],
+      path.join(scratch, "incomplete-b.patch"),
+    );
   } catch {
     threwEmpty = true;
   }
@@ -107,8 +124,66 @@ try {
   } catch {
     threwNested = true;
   }
-  assert(threwNested && !existsSync(patchN), "#1016: a nested-repo path that cannot be staged refuses the save");
-  assert(existsSync(path.join(nw, "inner", "x.txt")), "#1016: the nested-repo work is left on disk");
+  assert(
+    threwNested && !existsSync(patchN),
+    "#1016: a nested-repo path that cannot be staged refuses the save",
+  );
+  assert(
+    existsSync(path.join(nw, "inner", "x.txt")),
+    "#1016: the nested-repo work is left on disk",
+  );
+
+  // A save that fails AFTER staging (the patch build throws) leaves nothing staged,
+  // driver-owned tracked .pi/ paths included.
+  await writeFile(path.join(pw, "late.txt"), "late\n");
+  const failAfterStage: GitExec = (args, o) =>
+    args.includes("--binary") ? Promise.reject(new Error("boom")) : runGit(execp)(args, o);
+  let threwLate = false;
+  try {
+    await savePartialWork(
+      failAfterStage,
+      pw,
+      piBase,
+      ["late.txt", ".pi/verify-cmd"],
+      path.join(scratch, "late.patch"),
+    );
+  } catch {
+    threwLate = true;
+  }
+  assert(
+    threwLate && gitIn(pw, ["diff", "--cached", "--name-only"]) === "",
+    "#1016: a save that fails after staging leaves the index clean",
+  );
+
+  // 2b. Untracked directories are listed file by file, and an untracked upper-case
+  // TMP/ file survives the reset (it is not saved, and clean must not delete it).
+  const cw = wt("clean-ws");
+  const cleanBase = shas["clean-ws"] ?? "";
+  await mkdir(path.join(cw, "newdir"), { recursive: true });
+  await writeFile(path.join(cw, "newdir", "a.ts"), "a\n");
+  await mkdir(path.join(cw, "TMP"), { recursive: true });
+  await writeFile(path.join(cw, "TMP", "notes.txt"), "keep me\n");
+  const cwStatus = await worktreeStatus(runGit(execp), cw);
+  const cwPaths = Array.isArray(cwStatus) ? cwStatus.map((e) => e.path) : [];
+  assert(
+    cwPaths.includes("newdir/a.ts") && !cwPaths.some((p) => p.endsWith("/")),
+    "#1016: an untracked directory is reported as its files, never as a `dir/` entry",
+  );
+  const cleanPatch = path.join(dir, "tmp", "issue-1", "clean-ws.patch");
+  const savedClean = await resetWorktreeToBase(runGit(execp), cw, cleanBase, {
+    repoRoot: dir,
+    patchPath: cleanPatch,
+  });
+  assert(
+    savedClean === cleanPatch &&
+      (await readFile(cleanPatch, "utf8")).includes("newdir/a.ts") &&
+      !existsSync(path.join(cw, "newdir", "a.ts")),
+    "#1016: an untracked directory's file is saved to the patch, then reset",
+  );
+  assert(
+    existsSync(path.join(cw, "TMP", "notes.txt")),
+    "#1016: an untracked upper-case TMP/ file survives the reset",
+  );
 
   // 3. worktreeStatus: a malformed entry or a rename without its origin is
   //    unreadable; a well-formed -z listing parses.
@@ -118,11 +193,17 @@ try {
   const noOrigin = await statusOf("R  new.txt\0");
   assert(!Array.isArray(noOrigin), "#1016: a rename without its origin path is unreadable");
   const wellFormed = await statusOf("?? a.txt\0 M b.txt\0");
-  assert(Array.isArray(wellFormed) && wellFormed.length === 2, "#1016: a well-formed -z listing parses");
+  assert(
+    Array.isArray(wellFormed) && wellFormed.length === 2,
+    "#1016: a well-formed -z listing parses",
+  );
 
   // 4. Driver artefacts: the first segment is compared case-insensitively.
   assert(
-    isDriverArtefact(".PI/verify-cmd") && isDriverArtefact("TMP/x.txt") && isDriverArtefact(".pi/x") && isDriverArtefact("tmp/x"),
+    isDriverArtefact(".PI/verify-cmd") &&
+      isDriverArtefact("TMP/x.txt") &&
+      isDriverArtefact(".pi/x") &&
+      isDriverArtefact("tmp/x"),
     "#1016: .PI/ and TMP/ paths are driver artefacts",
   );
   assert(

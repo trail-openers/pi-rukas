@@ -87,7 +87,12 @@ export async function worktreeStatus(
 ): Promise<StatusEntry[] | { unreadable: string }> {
   let stdout: string;
   try {
-    ({ stdout } = await git(["status", "--porcelain", "-z"], { cwd, maxBuffer: 256 * 1024 }));
+    // -uall: an untracked directory is listed file by file, so every path is a
+    // file that `git diff --cached --name-only` can later confirm as staged.
+    ({ stdout } = await git(["status", "--porcelain", "-z", "--untracked-files=all"], {
+      cwd,
+      maxBuffer: 16 * 1024 * 1024,
+    }));
   } catch (err) {
     return { unreadable: errText(err) };
   }
@@ -139,6 +144,11 @@ export function workEntriesOf(entries: StatusEntry[]): StatusEntry[] {
 export function commitEntriesOf(entries: StatusEntry[]): StatusEntry[] {
   return entries.filter((e) => !isDriverArtefact(e.path));
 }
+
+/** The reset's `git clean`. Driver artefacts are matched case-insensitively
+ *  (isDriverArtefact), so the exclusion must cover the upper-case spellings too:
+ *  an untracked `TMP/x` is then kept on disk instead of deleted without a patch. */
+const RESET_CLEAN_ARGS = ["-fd", "-e", ".pi/", "-e", "tmp/", "-e", ".PI/", "-e", "TMP/"];
 
 /** Where the save-then-reset applies: the scratch patch, and the repo whose
  *  `.worktrees/` directory is the only place a reset may run. */
@@ -227,7 +237,8 @@ export async function stagePaths(git: GitExec, cwd: string, paths: string[]): Pr
  *  commit count is readable and zero (a worktree with commits is never reset),
  *  and the status is readable. Uncommitted work (untracked artefacts excluded)
  *  is staged, written as a binary patch against the base to `save.patchPath`,
- *  and only then reset with `git reset --hard` and `git clean -fd -e .pi/ -e tmp/`.
+ *  and only then reset with `git reset --hard` and `git clean -fd` that excludes
+ *  both the lower-case and the upper-case driver directories (see RESET_CLEAN_ARGS).
  *  A failed patch write refuses the reset. Returns the patch path, or undefined
  *  when there was no work to save. */
 export async function resetWorktreeToBase(
@@ -257,7 +268,7 @@ export async function resetWorktreeToBase(
     patchPath = await savePartialWork(git, cwd, base, work, save.patchPath);
   }
   await git(["reset", "--hard", base], { cwd, maxBuffer: 64 * 1024 });
-  await git(["clean", "-fd", "-e", ".pi/", "-e", "tmp/"], { cwd, maxBuffer: 64 * 1024 });
+  await git(["clean", ...RESET_CLEAN_ARGS], { cwd, maxBuffer: 64 * 1024 });
   return patchPath;
 }
 
@@ -308,6 +319,9 @@ export async function savePartialWork(
     await mkdir(dirname(patchPath), { recursive: true });
     await writeFile(patchPath, patch, { flag: "wx" });
   } catch (err) {
+    // A failed save may already have staged driver-owned paths (.pi/, tmp/):
+    // unstage them so the index is left as found. The working tree is untouched.
+    await unstagePaths(git, cwd, work).catch(() => undefined);
     throw new Error(`refusing to reset ${cwd}: could not save partial work — ${errText(err)}`);
   }
   return patchPath;

@@ -13,7 +13,9 @@
  */
 import { existsSync } from "node:fs";
 import { trace } from "./trace.ts";
-import { errText } from "./work-develop-git.ts";
+import { errText, isValidBaseSha } from "./work-develop-git.ts";
+import { downgradeReason } from "./work-develop-greens.ts";
+import { greenCountsAsWork, recordDowngrade } from "./work-develop-retry.ts";
 import {
   type BranchCompletedExtra,
   type DependentRunState,
@@ -26,8 +28,9 @@ import {
   createDependentWorktree,
   resolveDependentBase,
 } from "./work-driver-dep-scheduler.ts";
+import { safetyNetWorktree } from "./work-driver-safety-net.ts";
 import { armStepNotice } from "./work-driver-step-notice.ts";
-import { type WorkEvent, type WorkState, writeState } from "./workflow-state.ts";
+import { type WorkEvent, type WorkState, appendEvent, writeState } from "./workflow-state.ts";
 
 /** #1016 — one verdict per workstream: a retry replaces the first pass's entry. */
 function replaceVerdict(
@@ -322,18 +325,22 @@ export async function runDependentWorkstreams(
       // dependency that shipped nothing is the incoherent-tree failure this
       // ticket fixes. Fail-safe: an unreadable count also blocks downstream.
       const ownBase = wtRef.workstreamBaseShas[id] ?? globalBaseSha;
-      if (typeof ownBase === "string" && /^[0-9a-f]{40}$/.test(ownBase)) {
-        try {
-          const { stdout } = await execFn(`git rev-list --count ${ownBase}..HEAD`, {
-            cwd: createdPath,
-            maxBuffer: 64 * 1024,
-          });
-          if (Number.parseInt(stdout.trim(), 10) === 0) failedOrSkipped.add(id);
-        } catch {
-          failedOrSkipped.add(id);
+      // #1016 — the same green rule as an independent: the safety net commits
+      // leftover edits first, then a green needs commits ahead of its base. A
+      // green that fails it is downgraded, so its verdict and its dependents agree.
+      if (outcome.ok) {
+        if (isValidBaseSha(ownBase)) {
+          const sn = await safetyNetWorktree(id, createdPath, ownBase, execFn, run.notes ?? []);
+          if (sn) run.updateState?.((s) => appendEvent(s, sn));
         }
-      } else {
-        failedOrSkipped.add(id);
+        const green = await greenCountsAsWork(execFn, createdPath, ownBase);
+        if (!green.counts) {
+          failedOrSkipped.add(id);
+          if (failureSource) failureSource[id] = "failed";
+          if (run.emitBranchCompleted)
+            recordDowngrade({ emit: run.emitBranchCompleted }, id, green.detail);
+          replaceVerdict(verdicts, { id, ok: false, reason: downgradeReason(green.detail) });
+        }
       }
     }
   } finally {
