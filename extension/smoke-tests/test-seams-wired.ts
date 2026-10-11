@@ -136,7 +136,7 @@ const SEAMS: Seam[] = [
       markDispatchStarted:
         "resume plumbing — write-ahead dispatch-started; exercised by test-resume.ts",
     },
-    canary: { symbol: "beginDispatch", importer: "work-driver-explore-run.ts" },
+    canary: { symbol: "beginDispatch", importer: "work-driver-explore-dispatch.ts" },
   },
   {
     // #594 — spec artifact validation, precedence, and file operations.

@@ -106,16 +106,31 @@ export function inlineExplorePrompt(
     "  2b. `vipune search 'invariant-removal <basename>' --memory-type guard --no-hybrid --recency 0.0 --limit 3` for guard memories about recent constraint removals (invariant-removal scan),",
     "  3. `mcp__codebase_memory__search_code({query: '<concept>'})` for existing relevant code.",
     "",
-    "Return a STRUCTURED summary the work-driver can route on:",
-    ...verdictBlock,
-    "  - parallel-workstream candidates (heading: `## Workstreams`),",
-    "  - relevant prior decisions (heading: `## Prior decisions`),",
-    "  - touchpoint files (heading: `## Touchpoints`).",
-    "",
+    // #1094 — the intent path returns ONE spec (the `## Spec` block below).
+    // The legacy headings were listed here too, and a model answering in that
+    // shape produced a reply with no `## Spec` — the driver then parked.
+    ...(useLegacyVerdict
+      ? [
+          "Return a STRUCTURED summary the work-driver can route on:",
+          ...verdictBlock,
+          "  - parallel-workstream candidates (heading: `## Workstreams`),",
+          "  - relevant prior decisions (heading: `## Prior decisions`),",
+          "  - touchpoint files (heading: `## Touchpoints`).",
+          "",
+        ]
+      : []),
     verdictDoctrine,
     useLegacyVerdict ? "" : intentResolutionBlock(issues),
     bodyBlock,
     scratchHygieneSection(scratchDirAbs),
+    // #1094 — the last thing the model reads, after the issue body. Without a
+    // `## Spec` heading the cycle parks, so say so where it will be read.
+    ...(useLegacyVerdict
+      ? []
+      : [
+          "",
+          "Your reply MUST contain the `INTENT-VERDICT:` line and a `## Spec` heading; without them the cycle parks.",
+        ]),
     // #397 — drop the block the gate above suppressed, so removing a protocol
     // does not leave a stray blank line where it used to be.
   ]
@@ -187,7 +202,7 @@ function intentResolutionBlock(issues: number[]): string {
     "",
     "A deliverable that cannot produce a code diff by design (e.g. a GitHub repo settings toggle, an operator decision, a manual verification step, or external service configuration) gets a `[no-diff: <evidence>]` marker INSTEAD of `[paths: ...]`, where <evidence> is the command, API endpoint, or settings URL that proves it was done. The driver skips the diff check for marked deliverables and surfaces them as operator actions in the PR body — but the marker is honoured ONLY when the evidence string is non-empty, and ONLY when the deliverable declares no code paths (a deliverable with both is malformed and the code paths win). Never use the marker to excuse missing code work, and never write prose like `n/a` into a `[paths: ...]` slot — prose is not a control signal.",
     "",
-    "A no-diff deliverable is NOT a workstream candidate — it must not appear in the `## Workstreams` block (it has no paths, so it would fail the empty-paths plan-quality check).",
+    "A no-diff deliverable is NOT a workstream candidate: it has no paths, so it would fail the empty-paths plan-quality check.",
   ].join("\n");
 }
 

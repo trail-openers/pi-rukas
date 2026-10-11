@@ -84,6 +84,15 @@ const incidentKindEvents: WorkEvent[] = [
 
 const everyKindEvent: WorkEvent[] = [
   { kind: "step-started", step: "explore", at: 1 },
+  // #1094 — the one automatic explore re-dispatch after a reply with no `## Spec`.
+  {
+    kind: "explore-retried",
+    step: "explore",
+    at: 1,
+    reason: "no-spec",
+    verdictParsed: true,
+    firstJobId: "j1",
+  },
   { kind: "adversarial-approved", at: 1, jobId: "j1", rounds: 1 },
   { kind: "adversarial-rejected", at: 1, jobId: "j1", rounds: 2, findings: "f" },
   { kind: "adversarial-round", at: 1, round: 1, status: "APPROVED", verdictParsed: true },

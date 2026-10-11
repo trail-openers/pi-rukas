@@ -52,18 +52,29 @@ function assert(cond: boolean, msg: string) {
 {
   const { readFileSync } = await import("node:fs");
   const path = await import("node:path");
+  // #1094 — the attempt helper owns the completion/failure split; the run
+  // file returns before the verdict router whenever no reply was produced.
   const src = readFileSync(
     path.resolve(import.meta.dirname, "..", "src", "work-driver-explore-run.ts"),
     "utf8",
   );
+  const helper = readFileSync(
+    path.resolve(import.meta.dirname, "..", "src", "work-driver-explore-dispatch.ts"),
+    "utf8",
+  );
 
-  const appendIdx = src.indexOf("appendEvent(clearDispatch(next, begun.jobId), event)");
-  const guardIdx = src.indexOf('if (event.kind !== "dispatch-completed") return next;');
-  const routerIdx = src.indexOf("const responseText = exploreDispatch.text");
+  const replyIdx = helper.indexOf(
+    'reply: event.kind === "dispatch-completed" ? exploreDispatch : undefined',
+  );
+  const guardIdx = src.indexOf("if (first.reply === undefined) return next;");
+  const routerIdx = src.indexOf("let responseText = first.reply.text");
 
-  assert(appendIdx > 0 && routerIdx > 0, "the append and the verdict router are both present");
   assert(
-    guardIdx > appendIdx && guardIdx < routerIdx,
+    replyIdx > 0 && routerIdx > 0,
+    "the reply is set only on completion and the verdict router is present",
+  );
+  assert(
+    guardIdx > 0 && guardIdx < routerIdx,
     "canary: a failed dispatch returns BEFORE the verdict router — it fell through, and a timeout was reported as an underspecified issue",
   );
 }

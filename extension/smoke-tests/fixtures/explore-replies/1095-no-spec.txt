@@ -1,0 +1,49 @@
+Task complete: recon for #1095 (driver network git calls have no timeout and no non-interactive SSH env).
+
+**INTENT-VERDICT: proceed-with-assumptions** (the issue's own open question is already resolved as "sharedFetch fails the step with `network git timed out`; no stale-ref fallback for timeouts")
+
+**Verified against code**
+- `extension/src/work-driver-branch-mechanized.ts:146-160` `sharedFetch`: `execFn("git fetch origin …", {cwd, maxBuffer})`. No `timeout`, no env. Coalesced promise, so one hang blocks every waiting group.
+- `extension/src/work-driver-git.ts:142` `git fetch origin --prune` and `:183` `git pull --ff-only`: no timeout, no env. Failures are caught and only noted.
+- `extension/src/work-driver-integrate.ts:430` `git push -u origin`: no timeout.
+- `extension/src/work-driver-adversarial.ts:139` and `:385` `git push origin`: no timeout.
+- `extension/src/work-driver-worktree-sweep.ts:203` fetch has `timeout: 10000`. `work-driver-handoff-snapshot.ts:106` ls-remote has `timeout: 10_000`. `lens-review-residuals.ts` uses 30s per exec. These are precedents to reuse.
+- `GIT_TERMINAL_PROMPT=0` exists only in `spawn.ts` childEnv (subagents). No driver-side `GIT_SSH_COMMAND` or `BatchMode` anywhere.
+
+**Prior decisions (vipune)**
+- 2026-08-25 incident (#533/#534): `mechanizedBranchSetup` threw on failed fetch and diverted to the LLM ops fallback. Fixed in PR #535 by falling back to local refs. A timeout must not reuse that silent fallback, per the issue's DECISIONS.
+- #610/#636: merge-readiness exec seams are unbounded for the same reason. The `vipune.ts` `e.killed → timeout` classification is the precedent.
+
+**Guards**
+- Found no guard memories on this topic. The `invariant-removal` scan returned only unrelated plan-constraint notes.
+- Constraint: the touched files are near the 500-line cap (integrate 499, adversarial 499, lens 491, per the #749 recon). The fix must go in a shared helper module, not inline.
+
+## Workstreams
+1. **net-git-wrapper**: new shared helper (e.g. `work-driver-net-git.ts`) with env (`GIT_TERMINAL_PROMPT=0`, `GIT_SSH_COMMAND` with `BatchMode`/`ConnectTimeout` appended only when absent) and timeout (`PI_ENSEMBLE_GIT_NET_TIMEOUT_MS`, default 300000) that throws `network git timed out`. Paths: `extension/src/work-driver-net-git.ts`.
+2. **call-site-migration**: route each call site through the wrapper. Paths: `extension/src/work-driver-branch-mechanized.ts`, `extension/src/work-driver-git.ts`, `extension/src/work-driver-integrate.ts`, `extension/src/work-driver-adversarial.ts`, `extension/src/work-driver-branch-ops.ts`. Depends on 1.
+3. **tests**: real-git hanging-remote test plus an enumeration canary. Paths: `extension/smoke-tests/test-work-driver-net-git-timeout.ts`. Depends on 1 and 2 (the enumeration test follows the call-site list).
+
+## Prior decisions
+- Stale-ref fallback in `sharedFetch` (#533) applies to failures, not timeouts. Per DECISIONS, timeouts fail the step.
+- The sweep's fetch at `work-driver-worktree-sweep.ts:203` already has a 10s timeout. Keep or align it, but do not regress it.
+
+## Touchpoints
+- `extension/src/work-driver-branch-mechanized.ts` (sharedFetch ~L146, near cap)
+- `extension/src/work-driver-git.ts` (fetch --prune L142, pull L183)
+- `extension/src/work-driver-integrate.ts` (push L430, near cap)
+- `extension/src/work-driver-adversarial.ts` (push L139, L385, near cap)
+- `extension/src/work-driver-branch-ops.ts`, `work-driver-handoff-consolidate-branch.ts`, `work-driver-handoff-snapshot.ts`, `work-driver-worktree-sweep.ts`
+- `extension/src/spawn.ts` L165-168 (reference only, do not change child env)
+- Tests to extend: `test-work-driver-always-worktree.ts`, `test-merge-guard.ts`, `test-lens-residuals-marker*.ts`, `test-subagent-git-guard.ts` (pattern)
+
+## Plumb-report
+None. The recon confirms the issue body; no spec-level conflict.
+
+**Recommendations**
+1. Land the wrapper as its own helper module, so every touched file stays net-neutral under 500 lines. Confidence: High.
+2. Wrap `execFn` in tests with a hanging stub (`sleep`) as well as the real-git test, because the existing stubs never exercise timeout or env. Confidence: High.
+3. Kill the process group on timeout (`killSignal` plus a detached group), so a timed-out push does not hold the integration lock. Confidence: Medium. Needs a check on Node exec behaviour.
+
+Scratch: `tmp/issue-1095` (not written; recon only).
+
+Stored in project memory: not stored (reconnaissance only; no new durable facts beyond the code state above).

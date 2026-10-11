@@ -86,9 +86,10 @@ const ROOT_INTENTIONAL_SITES: Array<{ file: string; site: RegExp; label: string;
     why: "watches the FORGE, not a tree — the worktrees are already committed and pushed at this point",
   },
   {
-    file: "work-driver-explore-run.ts",
-    // #799 — runExplore (and its dispatch) lives in work-driver-explore-run.ts
-    site: /dispatch\(\s*ctx\.pi,\s*\{\s*role:\s*"explore",\s*prompt\s*\},\s*\{\s*label:\s*"explore",\s*onSlow:/,
+    file: "work-driver-explore-dispatch.ts",
+    // #799 — runExplore's dispatch; #1094 moved it to work-driver-explore-dispatch.ts.
+    // A comment sits between the prompt and the opts object, so match across it.
+    site: /dispatch\(\s*ctx\.pi,\s*\{\s*role:\s*"explore",\s*prompt\s*\},[\s\S]{0,400}?label:\s*"explore",\s*onSlow:/,
     label: "explore (label: explore) — runExplore",
     why: "reads the issue and the code at the integration point before any worktree exists",
   },
@@ -284,7 +285,7 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
     "work-driver-lens.ts": 1, // the lens-fix runSingleDispatch (the review is an exec)
     "adversarial.ts": 1, // runPhase's inner spawn — cwd threaded by the fan-out
     "lens-review-child.ts": 1, // the lens child — cwd: runOpts.cwd, set by the lens review seam
-    "work-driver-explore-run.ts": 1, // runExplore (the integration-point read, no cwd)
+    "work-driver-explore-dispatch.ts": 1, // runExplore (the integration-point read, no cwd)
     "work-driver-commit-fallback.ts": 1, // #861 — the ops-fallback commit-pr dispatch, pinned to the integrate worktree (cwd: integratePath)
     "work-develop-fence-recovery-run.ts": 1, // #849 — the fence recovery's single re-dispatch, pinned to the violator's worktree (cwd: the recovered workstream's worktree)
     "work-develop-fence-merge.ts": 1, // #1005 — the merge-and-retry's single re-dispatch of the MERGED workstream, pinned to the violator's (now merged) worktree (cwd: the merged workstream's worktree)
