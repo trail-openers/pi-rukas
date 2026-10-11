@@ -67,6 +67,7 @@ import { execFileSync } from "node:child_process";
 // (#1038: the parser moved to pi-doc-parsing.ts, so the version warning and
 // this gate share it without a pi-binary-resolve ↔ probe import cycle.)
 import { parseVerifiedLine } from "../src/pi-doc-parsing.ts";
+export { parseVerifiedLine };
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const FIXTURES = path.resolve(import.meta.dirname, "fixtures", "prerequisite-drift");

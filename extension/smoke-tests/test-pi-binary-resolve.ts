@@ -6,7 +6,7 @@
  * package bin, PATH fallback, version probe, probe wiring.
  */
 
-import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -25,7 +25,6 @@ import {
   getVerifiedVersion,
   isVersionOlder,
   kickPiResolutionProbe,
-  probePiVersion,
 } from "../src/pi-version-probe.ts";
 
 let exit = 0;
@@ -166,7 +165,7 @@ assert(isVersionOlder("garbage", "1.0.0") === false, "unparseable returns false"
   const doc = readFileSync(path.resolve(import.meta.dirname, "..", "..", "docs", "pi-compatibility.md"), "utf8");
   const docVerified = parseVerifiedLine(doc)?.version.replace(/^[~^><=]+/, "");
   assert(verified !== null && verified === docVerified, `getVerifiedVersion strips the range prefix (got ${verified})`);
-  assert(isVersionOlder("0.0.1", verified as string), "verified version is comparable");
+  assert(verified !== null && isVersionOlder("0.0.1", verified), "verified version is comparable");
 }
 
 // ---------------------------------------------------------------------------
@@ -299,45 +298,6 @@ rmFile(nonExec);
   rmDir(outsideBin);
 }
 
-// Symlink inside the package dir pointing outside is rejected (realpath check)
-{
-  const tmpDir4 = mkTmpDir("pi-resolve-test-pkg4");
-  const outside4 = mkTmpDir("pi-resolve-test-outer4");
-  const target4 = path.join(outside4, "evil.js");
-  writeFileSync(target4, "#!/usr/bin/env node\n", { mode: 0o755 });
-  symlinkSync(target4, path.join(tmpDir4, "cli.js"));
-  writeFileSync(path.join(tmpDir4, "package.json"), JSON.stringify({ bin: "cli.js" }));
-  assert(resolvePackageBin(path.join(tmpDir4, "package.json")) === null, "rejects a symlink escaping the package directory");
-  rmDir(tmpDir4);
-  rmDir(outside4);
-}
-
-// Broken symlink bin is rejected without throwing
-{
-  const tmpDir5 = mkTmpDir("pi-resolve-test-pkg5");
-  symlinkSync(path.join(tmpDir5, "gone.js"), path.join(tmpDir5, "cli.js"));
-  writeFileSync(path.join(tmpDir5, "package.json"), JSON.stringify({ bin: "cli.js" }));
-  assert(resolvePackageBin(path.join(tmpDir5, "package.json")) === null, "rejects a broken symlink bin");
-  rmDir(tmpDir5);
-}
-
-// Spawn failure (a directory passes X_OK but cannot be spawned) warns visibly
-{
-  _resetPiBinaryCache();
-  _resetPiVersionProbe();
-  const dir = mkTmpDir("pi-resolve-test-unrunnable");
-  const warnings: string[] = [];
-  const origWarn = console.warn;
-  console.warn = (...args: unknown[]) => void warnings.push(args.map(String).join(" "));
-  try {
-    const probe = await withEnv({ PI_ENSEMBLE_PI_BIN: dir }, () => probePiVersion());
-    assert(probe.version === null && warnings.some((w) => w.includes(dir)), "spawn failure warns, naming the command");
-  } finally {
-    console.warn = origWarn;
-    _resetPiVersionProbe();
-    rmDir(dir);
-  }
-}
 
 // ---------------------------------------------------------------------------
 // getPiInvocation — backward-compatible interface

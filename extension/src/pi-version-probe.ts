@@ -136,14 +136,14 @@ export async function getPiResolutionInfo(): Promise<PiBinaryResolution> {
 
   // Emit trace + warnings once (trace is a no-op when PI_ENSEMBLE_DEBUG≠1).
   const versionStr = result.version ?? (probe.probeTimedOut ? "(probe timed out)" : "unknown");
-  trace(`pi-binary-resolve: path=${result.path} source=${result.source} version=${versionStr}`);
+  trace(`pi-version-probe: path=${result.path} source=${result.source} version=${versionStr}`);
 
   // Version warning: compare against the "Last verified against pi X.Y.Z" line.
   if (result.version) {
     const verified = getVerifiedVersion();
     if (verified && isVersionOlder(result.version, verified)) {
       trace(
-        `pi-binary-resolve: WARNING — pi version ${result.version} is older than the verified version ${verified} (docs/pi-compatibility.md)`,
+        `pi-version-probe: WARNING — pi version ${result.version} is older than the verified version ${verified} (docs/pi-compatibility.md)`,
       );
     }
   }
@@ -221,9 +221,8 @@ export function getVerifiedVersion(): string | null {
 }
 
 /**
- * Reset all probe-side state. Exported for tests only.
- * Reset the verified-version cache. Exported for tests only.
- * Test seam to reset the once-flag between runs.
+ * Reset all probe-side state (probe promise, once-flag, verified-version cache).
+ * Exported for tests only.
  */
 export function _resetPiVersionProbe(): void {
   versionPromise = null;
