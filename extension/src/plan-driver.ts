@@ -74,7 +74,11 @@ import {
   parsePinnedSubIssueCount,
   validateDraft,
 } from "./plan-validate.ts";
-import { type ResolvedDecision, buildResolvedDecisions } from "./plan-writeback.ts";
+import {
+  type ResolvedDecision,
+  buildResolvedDecisions,
+  spliceDestination,
+} from "./plan-writeback.ts";
 import { trace } from "./trace.ts";
 
 const GAP_GATE_MAX_ITERATIONS = 2;
@@ -398,6 +402,8 @@ export async function runPlanPipeline(
             throw correctiveRedraftError(computed, writtenOutcomes, e);
           }
         },
+        // #1111: a carried gap is a splice origin only if the writeback wrote it.
+        (g) => spliceDestination(g, type) !== null,
       ),
     );
     gaps = loopResult.gaps;

@@ -50,12 +50,14 @@ export function quotesGateBullet(g: PlanGap): boolean {
 export function rerouteGateQuotes(
   gaps: PlanGap[],
   carried: PlanGap[],
+  // Whether a carried gap was actually written into a body section (the
+  // writeback's own predicate). Only such a gap can be the origin of a
+  // gate-spliced bullet; a rejected concrete gap never reached the body.
+  isSpliced: (g: PlanGap) => boolean = (c) => c.resolutionType === "concrete",
 ): { kept: PlanGap[]; rerouted: PlanGap[] } {
   const kept: PlanGap[] = [];
   const rerouted: PlanGap[] = [];
-  // Only a CONCRETE carried gap was ever spliced, so only it can be the origin
-  // of a gate-spliced bullet. A quote with no matching origin is not ours.
-  const spliced = carried.filter((c) => c.resolutionType === "concrete");
+  const spliced = carried.filter(isSpliced);
   for (const g of gaps) {
     if (g.severity !== "CRITICAL" || !quotesGateBullet(g)) {
       kept.push(g);

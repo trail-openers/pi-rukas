@@ -304,5 +304,27 @@ function sectionOf(body: string, heading: string, nextHeading: string): string {
   );
 }
 
+// ------------------- #1111 round 2: READY with a re-routed CRITICAL is disclosed
+
+{
+  // Round 2 says READY, but its only CRITICAL quotes the gate's spliced bullet:
+  // it is re-routed, and must still reach the residual disclosure (no silent drop).
+  const replies = [
+    `GAP: CRITICAL — the retry criterion is missing — proposed resolution: ${RETRY_STATEMENT} — resolution-type: concrete\nVERDICT: NEEDS_ITERATION`,
+    `GAP: CRITICAL — the bullet "(gate resolution) ${RETRY_STATEMENT}" is vague — proposed resolution: restate it — resolution-type: concrete\nVERDICT: READY`,
+  ];
+  setPlanDispatch(makeDispatchStub(replies) as never);
+  const r = await runPlanPipeline(
+    {} as never,
+    { descriptor: DESCRIPTOR, dryRun: true },
+    process.cwd(),
+  );
+  assert(
+    r.spec.includes("## Residual gap-gate findings") && r.spec.includes("is vague"),
+    "#1111 READY: a re-routed CRITICAL on a READY verdict is disclosed in the residual section",
+  );
+  setPlanDispatch(null);
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

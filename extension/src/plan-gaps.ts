@@ -292,6 +292,9 @@ export async function runGapGateLoop(
   makeGatePrompt: (iteration: number) => string,
   maxIterations: number,
   onCorrective: (blocking: PlanGap[]) => void,
+  // #1111: which carried gaps were actually spliced into the body (see
+  // rerouteGateQuotes). Defaults to the concrete-type rule.
+  isSpliced?: (g: PlanGap) => boolean,
 ): Promise<GapGateLoopResult> {
   let iterations = 0;
   let ready = false;
@@ -310,6 +313,9 @@ export async function runGapGateLoop(
   // by exact description string only — no fuzzy matching).
   const seenDescriptions = new Set<string>();
   const allNonBlocking: PlanGap[] = [];
+  // #1111: re-routed CRITICALs, disclosed on every exit path (a READY verdict
+  // that drops one without a trace would file a silent swallow).
+  const reroutedAll: PlanGap[] = [];
 
   while (iterations < maxIterations && !ready) {
     iterations++;
@@ -370,7 +376,9 @@ export async function runGapGateLoop(
 
     // #1111: a CRITICAL quoting a gate-spliced bullet is the gate's own output,
     // not a spec defect — it is disclosed, never counted toward capRouted.
-    const { kept, rerouted } = rerouteGateQuotes(lastParse.gaps, carried);
+    const { kept, rerouted } = rerouteGateQuotes(lastParse.gaps, carried, isSpliced);
+    for (const g of rerouted)
+      if (!reroutedAll.some((x) => x.description === g.description)) reroutedAll.push({ ...g });
     const roundParse: GapGateParse = { ...lastParse, gaps: kept };
 
     // Problem 2: accumulate non-blocking findings (CRITICAL travels via the
@@ -438,7 +446,7 @@ export async function runGapGateLoop(
 
   // Problem 2: the residual disclosure is the UNION of all non-blocking
   // findings across all rounds (deduped by exact description string).
-  const residualForDisclosure = capHit && allNonBlocking.length > 0 ? allNonBlocking : [];
+  const residualForDisclosure = capHit ? allNonBlocking : reroutedAll;
 
   return {
     gaps: lastGaps,

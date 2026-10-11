@@ -210,6 +210,18 @@ export function destinationFor(gap: PlanGap, type: PlanType): WritebackDestinati
  * applyWritebackToBody's SpliceOutcome list), so a flag claiming a write
  * happened can never be predicted against a body that was discarded.
  */
+/**
+ * #1111: the body section a gap's resolution would be spliced into, or null
+ * when it stays in Open Questions. Only a CONCRETE resolution (a stated
+ * behaviour) may enter a body section; instruction / research /
+ * operator-decision types, and a missing or unparseable type, fail closed.
+ * The single predicate both the splice and the gate's origin check use.
+ */
+export function spliceDestination(g: PlanGap, type: PlanType): WritebackDestination | null {
+  if (g.resolutionType !== "concrete") return null;
+  return destinationFor({ ...g, resolution: spliceStatement(g.resolution) }, type);
+}
+
 export function buildResolvedDecisions(
   gaps: PlanGap[],
   type: PlanType,
@@ -217,13 +229,7 @@ export function buildResolvedDecisions(
   const decisions: ResolvedDecision[] = [];
   const writebackMap = new Map<string, string[]>();
   for (const g of gaps) {
-    // #1111: only a CONCRETE resolution (a stated behaviour) may enter a body
-    // section. Instruction / research / operator-decision types, and a missing
-    // or unparseable type, stay in Open Questions (fail closed).
-    const dest =
-      g.resolutionType === "concrete"
-        ? destinationFor({ ...g, resolution: spliceStatement(g.resolution) }, type)
-        : null;
+    const dest = spliceDestination(g, type);
     decisions.push({
       description: g.description,
       resolution: g.resolution,
