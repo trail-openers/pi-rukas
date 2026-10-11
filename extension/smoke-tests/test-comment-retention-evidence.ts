@@ -119,7 +119,7 @@ try {
   );
   const notRun = reviewerPrompts[0] ?? "";
   assert(
-    notRun.includes("Comments removed by this change: NOT CHECKED (could not read head tree"),
+    notRun.includes("Comments removed by this change: NOT CHECKED (head tree unreadable"),
     "(c) unreadable head: the section says the check was NOT CHECKED",
   );
 

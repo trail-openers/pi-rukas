@@ -205,8 +205,8 @@ function assert(cond: boolean, msg: string) {
     "const n = 3;\n// Fasting\n",
   );
   assert(
-    fragment.ok === true && fragment.ok && fragment.lost.length === 1,
-    "retained (10b): a different longer word does not retain the comment",
+    fragment.ok === true && fragment.ok && fragment.lost.length === 0,
+    "retained (10b): a longer word containing the comment text retains it (substring, #1040)",
   );
 }
 
@@ -243,7 +243,7 @@ function assert(cond: boolean, msg: string) {
   const fake: ExecFn = async (cmd) => {
     if (cmd.startsWith("git diff")) return { stdout: diff };
     if (cmd.startsWith("git grep"))
-      return { stdout: "HEAD:extension/src/app.ts:function f() {}\n" };
+      return { stdout: "HEAD:extension/src/app.ts\0function f() {}\n" };
     return { stdout: "" };
   };
   const section = renderCommentEvidence(

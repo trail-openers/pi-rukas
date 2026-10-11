@@ -319,7 +319,7 @@ async function runDevelopTopological(
   if (hasDevelopEvidence) {
     const gate = await verifyStepOutcome(ctx, next, "develop");
     // #1040 — lost-comment evidence persists from the develop note (handoff even with no reviewer).
-    next = recordCommentEvidence(next, gate.notes);
+    next = recordCommentEvidence(next, gate.commentEvidence);
     stateRef.current = next;
     // #814 — a fence violator must not report a bare "ok" here: replace the
     // event with the flipped verdicts via replaceDevelopConvergedVerdicts

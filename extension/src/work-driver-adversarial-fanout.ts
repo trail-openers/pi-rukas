@@ -159,6 +159,7 @@ export async function fanOutAdversarial(
               : `/work issue #${ctx.issue}: gating diff before commit (Step 5).`,
           workCwd: cwd,
           commentTimeoutMs: verifyTimeoutMs(),
+          commentExecFn: ctx.verifyExecFn,
           // Re-read before each round. Without this, rounds 2+ are prompted
           // with the pre-fix diff and the reviewer has to notice for itself
           // that its earlier objections were already addressed.

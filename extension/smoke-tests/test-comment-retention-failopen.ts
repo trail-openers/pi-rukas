@@ -37,7 +37,7 @@ function execError(code: number, msg: string): Error {
             "--- a/src/app.ts\r\n+++ b/src/app.ts\r\n@@ -1,2 +1,1 @@\r\n-// gone in crlf\r\n function f() {}\r\n",
         }
       : cmd.startsWith("git grep")
-        ? { stdout: "HEAD:src/app.ts:function f() {}\n" }
+        ? { stdout: "HEAD:src/app.ts\0function f() {}\n" }
         : { stdout: "" };
   const res = await findLostComments(exec, "/tmp", "a".repeat(40), "HEAD", ["src"]);
   assert(
@@ -75,7 +75,7 @@ function execError(code: number, msg: string): Error {
   };
   const res = await findLostComments(exec, "/tmp", "a".repeat(40), "HEAD", ["src"]);
   assert(
-    res.ok === false && res.reason.includes("could not read head tree"),
+    res.ok === false && res.reason === "head tree unreadable",
     `grep-exit-1 (23): unresolved ref behind exit 1 → ok:false (got ${JSON.stringify(res)})`,
   );
 }

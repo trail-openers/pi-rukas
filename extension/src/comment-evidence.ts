@@ -138,28 +138,31 @@ export function renderCommentEvidence(res: LostCommentResult): string {
 }
 
 /**
- * Plumbing records for the develop-gate `comment-retention:` notes, so the
- * evidence reaches the handoff even when no reviewer runs (empty diff, a
- * REVIEW_INCOMPLETE lens round). Pure: the caller appends them to state.
+ * One develop-gate comment check: the note shown to humans and the structured
+ * result it was rendered from. A lost comment or a NOT CHECKED outcome is
+ * evidence; a clean check produces no entry.
+ */
+export type CommentEvidence = { note: string; result: LostCommentResult };
+
+/**
+ * Plumbing records for the develop-gate comment evidence, so it reaches the
+ * handoff even when no reviewer runs (empty diff, a REVIEW_INCOMPLETE lens
+ * round). Built from the structured result, never by matching note text.
  */
 export function commentEvidencePlumbReports(
-  notes: readonly string[],
+  entries: readonly CommentEvidence[],
   at: number,
 ): Array<{ step: "develop"; role: string; body: string; at: number }> {
-  return notes
-    .filter((n) => n.startsWith("comment-retention:"))
-    .map((body) => ({
-      step: "develop" as const,
-      role: "develop-gate",
-      body,
-      at,
-    }));
+  return entries
+    .filter((e) => !e.result.ok || e.result.lost.length > 0)
+    .map((e) => ({ step: "develop" as const, role: "develop-gate", body: e.note, at }));
 }
 
 /**
  * One comment-loss check for the reviewers. Honours
  * `PI_ENSEMBLE_COMMENT_RETENTION=0` and never throws: a disabled or crashed
- * check is `ok: false`, which every renderer shows as NOT CHECKED.
+ * check is `ok: false`, which every renderer shows as NOT CHECKED. The
+ * production `makeExecFn()` default is applied here only, the outermost call.
  */
 export async function collectRoundComments(req: {
   cwd: string;
@@ -189,24 +192,39 @@ export function roundComments(
   headRef: string | undefined,
   cwd: string | undefined,
   timeoutMs = DEFAULT_COMMENT_TIMEOUT_MS,
+  execFn?: ExecFn,
 ): Promise<LostCommentResult> {
   return collectRoundComments({
     cwd: cwd ?? process.cwd(),
     timeoutMs,
     headRef,
     diff,
+    execFn,
   });
 }
 
-/** Persist the develop note's lost-comment lines into the cycle state (plumbing). */
-export function recordCommentEvidence(state: WorkState, notes: readonly string[]): WorkState {
-  const reports = commentEvidencePlumbReports(notes, Date.now());
-  if (reports.length === 0) return state;
+/**
+ * Persist the develop-gate comment evidence into the cycle state (plumbing).
+ * A body already recorded is not recorded again, so a re-verify does not
+ * duplicate the handoff line.
+ */
+export function recordCommentEvidence(
+  state: WorkState,
+  entries: readonly CommentEvidence[] = [],
+): WorkState {
+  const seen = new Set((state.pipelineState.plumbReports ?? []).map((r) => r.body));
+  const fresh: Array<{ step: "develop"; role: string; body: string; at: number }> = [];
+  for (const r of commentEvidencePlumbReports(entries, Date.now())) {
+    if (seen.has(r.body)) continue;
+    seen.add(r.body);
+    fresh.push(r);
+  }
+  if (fresh.length === 0) return state;
   return {
     ...state,
     pipelineState: {
       ...state.pipelineState,
-      plumbReports: [...(state.pipelineState.plumbReports ?? []), ...reports],
+      plumbReports: [...(state.pipelineState.plumbReports ?? []), ...fresh],
     },
   };
 }
@@ -221,6 +239,7 @@ export async function lensCommentBlock(
   baseSha: string | undefined,
   branchName: string | undefined,
   timeoutMs: number,
+  execFn?: ExecFn,
 ): Promise<string> {
   const res =
     !baseSha || !branchName
@@ -230,6 +249,7 @@ export async function lensCommentBlock(
           timeoutMs,
           baseRef: baseSha,
           headRef: `origin/${branchName}`,
+          execFn,
         });
   const data = renderCommentEvidence(res);
   return data ? `\n\n${data}\n\n${COMMENT_JUDGEMENT_PROSE}` : "";

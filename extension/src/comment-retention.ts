@@ -95,23 +95,18 @@ async function readLinesAtRef(
   // No ref = the working tree (tracked files): the uncommitted /work diff.
   const refArg = ref ? `${ref} ` : "";
   try {
-    const { stdout } = await execFn(`git grep -e "" ${refArg}-- ${pathArg}`, {
+    // `-z` ends the file name with a NUL, so a `:` inside a path cannot shift
+    // the slice: `ref:file\0content` (or `file\0content` with no ref).
+    const { stdout } = await execFn(`git grep -z -e "" ${refArg}-- ${pathArg}`, {
       cwd,
       timeout: timeoutMs,
       maxBuffer: 64 * 1024 * 1024,
     });
     const out = new Set<string>();
     for (const line of stdout.split("\n")) {
-      // `git grep -e "" <ref> -- <paths>` emits `ref:file:line`; the line
-      // content is what follows the SECOND colon.
-      // With a ref the prefix is `ref:file:`; without one it is `file:`.
-      let from = 0;
-      for (let k = 0; k < (ref ? 2 : 1) && from >= 0; k++) {
-        const at = line.indexOf(":", from);
-        from = at < 0 ? -1 : at + 1;
-      }
-      if (from < 0) continue;
-      out.add(line.slice(from).trim());
+      const at = line.indexOf("\0");
+      if (at < 0) continue;
+      out.add(line.slice(at + 1).trim());
     }
     return out;
   } catch (err) {
@@ -250,10 +245,8 @@ export async function findLostComments(
     });
     rangeDiff = stdout;
   } catch (err) {
-    return {
-      ok: false,
-      reason: `git diff failed: ${errText(err).slice(0, 120)}`,
-    };
+    trace(`comment-retention: git diff failed: ${errText(err).slice(0, 120)}`);
+    return { ok: false, reason: "git diff failed" };
   }
   if (!rangeDiff.trim()) {
     return confirmEmptyDiff(execFn, cwd, baseRef, headRef, pathArg, timeoutMs);
@@ -287,22 +280,32 @@ async function classifyDiff(
   if (headSet === undefined) {
     return {
       ok: false,
-      reason: `could not read head tree at ${headRef ?? "the worktree"} under ${paths.join(" ")}`,
+      reason: "head tree unreadable",
     };
   }
-  // Retained = the trimmed line reappears verbatim, or as whole tokens inside a
-  // head line (a comment moved onto a code line, with or without trailing text,
-  // or re-wrapped onto a longer line). Only word-bearing text is matched in part:
+  // Retained = the trimmed line reappears verbatim, or as a substring of a head
+  // line (a comment moved onto a code line, with or without trailing text, or
+  // re-wrapped onto a longer line). Only word-bearing text is matched in part:
   // `}`, `*/` or `/**` must not be retained by any head line that contains them.
   // Scanned only for removed comments with no verbatim match, so the cost is
   // bounded by the number of removed comments, not by the tree size.
+  const containsCache = new Map<string, boolean>();
   const presentAtHead = (text: string): boolean => {
     const t = text.trim();
     if (!t) return false;
     if (headSet.has(t)) return true;
     if (!hasWord(t)) return false;
-    for (const line of headSet) if (carriesWhole(line, t)) return true;
-    return false;
+    const cached = containsCache.get(t);
+    if (cached !== undefined) return cached;
+    let found = false;
+    for (const line of headSet) {
+      if (line.includes(t)) {
+        found = true;
+        break;
+      }
+    }
+    containsCache.set(t, found);
+    return found;
   };
 
   const lost: LostComment[] = [];
@@ -313,20 +316,6 @@ async function classifyDiff(
     exempt += v.exempt;
   }
   return { ok: true, lost, exempt };
-}
-
-/**
- * Does `line` contain `t` as whole tokens? A match inside a longer word
- * (`// Fast` in `// Fasting`) does not count; punctuation edges always do.
- */
-function carriesWhole(line: string, t: string): boolean {
-  const word = /[\p{L}\p{N}]/u;
-  for (let i = line.indexOf(t); i >= 0; i = line.indexOf(t, i + 1)) {
-    const startOk = !word.test(t.charAt(0)) || !word.test(line.charAt(i - 1));
-    const endOk = !word.test(t.charAt(t.length - 1)) || !word.test(line.charAt(i + t.length));
-    if (startOk && endOk) return true;
-  }
-  return false;
 }
 
 /**
@@ -345,9 +334,8 @@ export async function checkComments(
   try {
     return await findLostComments(execFn, cwd, baseRef, headRef, paths, timeoutMs, diff);
   } catch (err) {
-    const reason = errText(err).slice(0, 120) || "error";
-    trace(`comment-retention: check threw: ${reason}`);
-    return { ok: false, reason: `check threw: ${reason}` };
+    trace(`comment-retention: check threw: ${errText(err).slice(0, 120) || "error"}`);
+    return { ok: false, reason: "check threw" };
   }
 }
 

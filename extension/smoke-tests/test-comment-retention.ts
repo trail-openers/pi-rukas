@@ -244,18 +244,16 @@ async function developGate(
       res.ok && res.lost.length === 0 && res.exempt === 0,
       "real-git (h0): empty scoped diff + out-of-scope commit → {ok:true, lost:[], exempt:0}",
     );
-    const failures: string[] = [];
-    const notes: string[] = [];
-    await collectCommentEvidence(
+    const evidence = await collectCommentEvidence(
       realExec,
       () => base,
       new Map<string, string>([["default", dirH0]]),
       PATHS,
-      failures,
-      notes,
     );
-    assert(failures.length === 0, "real-git (h0): gate passes (no failure)");
-    assert(notes.length === 0, "real-git (h0): gate emits NO skip note");
+    assert(
+      evidence.length === 0,
+      "real-git (h0): gate emits no evidence (no note, no NOT CHECKED)",
+    );
     rmSync(dirH0, { recursive: true, force: true });
   }
 
@@ -325,7 +323,7 @@ async function developGate(
   const dir = mkdtempSync(path.join(tmpdir(), "pi-ens-comment-gate-"));
   mkdirSync(path.join(dir, ".pi"), { recursive: true });
   writeFileSync(path.join(dir, ".pi", "verify-cmd"), "echo ok\n");
-  const headAdd = "HEAD:src/app.ts:function add(a,b){return a+b;}\n";
+  const headAdd = "HEAD:src/app.ts\0function add(a,b){return a+b;}\n";
   try {
     // A fake execFn whose `git diff base...HEAD -- src` returns a removed
     // comment and a head-tree read that does NOT contain it.
@@ -362,7 +360,7 @@ async function developGate(
     {
       process.env.PI_ENSEMBLE_COMMENT_RETENTION = "1";
       const rewrittenDiff = `--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1,2 +1,2 @@\n-// old comment\n-function f(){return 1;}\n+// new comment\n+function f(){return 2;}\n`;
-      const headF = "HEAD:src/app.ts:function f(){return 2;}\nHEAD:src/app.ts:// new comment\n";
+      const headF = "HEAD:src/app.ts\0function f(){return 2;}\nHEAD:src/app.ts\0// new comment\n";
       const gate = await developGate(951, dir, gateExec(rewrittenDiff, headF));
       assert(
         gate.ok && !gate.failures.some((f) => f.startsWith("comment-retention:")),
@@ -401,7 +399,7 @@ async function developGate(
       return {
         stdout: `--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1,2 +1,1 @@\n-// gone for good\n function f(){return 1;}\n`,
       };
-    if (cmd.startsWith("git grep")) return { stdout: "HEAD:src/app.ts:function f(){return 1;}\n" };
+    if (cmd.startsWith("git grep")) return { stdout: "HEAD:src/app.ts\0function f(){return 1;}\n" };
     return { stdout: "" };
   };
   const report = formatReportLine(
@@ -417,7 +415,7 @@ async function developGate(
       };
     if (cmd.startsWith("git grep"))
       return {
-        stdout: "HEAD:src/app.ts:function f(){return 2;}\nHEAD:src/app.ts:// new comment\n",
+        stdout: "HEAD:src/app.ts\0function f(){return 2;}\nHEAD:src/app.ts\0// new comment\n",
       };
     return { stdout: "" };
   };

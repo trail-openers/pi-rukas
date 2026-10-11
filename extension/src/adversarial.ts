@@ -24,6 +24,7 @@ import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { AdversarialVerdict, DispatchFailureCause, DispatchResult } from "./types.ts";
 import { ADVERSARIAL_TRANSIENT_MAX_RETRIES, isRateLimit429Msg } from "./types.ts";
+import type { ExecFn } from "./worktree.ts";
 const MAX_ROUNDS = 3;
 
 /**
@@ -55,6 +56,8 @@ export async function runAdversarialLoop(
     diff?: string;
     /** #1040 — git timeout for the comment-loss check (the driver passes verifyTimeoutMs()). */
     commentTimeoutMs?: number;
+    /** #1040 — injected git seam for the comment-loss check (the driver passes its verify exec). */
+    commentExecFn?: ExecFn;
     /** #859 — the base ref the tool computes the diff from (with head). */
     base?: string;
     /** #859 — the head ref the tool computes the diff from (with base). */
@@ -310,7 +313,13 @@ export async function runAdversarialLoop(
         );
       }
     }
-    lastComments = await roundComments(diff, params.head, params.workCwd, params.commentTimeoutMs);
+    lastComments = await roundComments(
+      diff,
+      params.head,
+      params.workCwd,
+      params.commentTimeoutMs,
+      params.commentExecFn,
+    );
     const adv = await runPhaseWithInfraRetry(
       "adversarial-developer",
       `round${round}-review`,

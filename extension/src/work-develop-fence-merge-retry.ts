@@ -102,7 +102,7 @@ export async function runMergeRetryFlow(
   next = await applySafetyNet(ctx, next);
   const gate2 = await verifyStepOutcome(ctx, next, "develop");
   // #1040 — lost-comment evidence persists from the re-run's develop note.
-  next = recordCommentEvidence(next, gate2.notes);
+  next = recordCommentEvidence(next, gate2.commentEvidence);
   const rereRunRecords = gate2.fenceViolations ?? [];
   const blockingSecond = rereRunRecords.filter(
     (f) => f.kind === "sibling-declared" || f.kind === "issue-fenced",

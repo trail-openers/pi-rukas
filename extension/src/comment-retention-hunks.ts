@@ -3,8 +3,8 @@
  * the comment-retention gate (#948, #1040).
  *
  * RETENTION: a comment line removed between base and head is retained when its
- * trimmed text reappears verbatim under the scoped paths at head, or as whole
- * tokens inside a head line (a comment moved onto a code line, with or without
+ * trimmed text reappears verbatim under the scoped paths at head, or as a
+ * substring of a head line (a comment moved onto a code line, with or without
  * trailing text, or re-wrapped onto a longer one).
  * Comment lines with no word characters (`/**`, ` *`, `*\/`, `//`) carry no
  * wording and are ignored entirely: neither lost nor counted as retained.

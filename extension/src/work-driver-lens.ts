@@ -129,6 +129,7 @@ export async function runLens(
     ps.baseSha,
     ps.branchName,
     verifyTimeoutMs(),
+    ctx.verifyExecFn,
   );
   if (wideningScanEnabled && widenings.length > 0) {
     const findingsSummary = widenings

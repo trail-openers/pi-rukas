@@ -10,7 +10,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { formatLostComments } from "./comment-evidence.ts";
+import { type CommentEvidence, formatLostComments } from "./comment-evidence.ts";
 import { checkComments, commentRetentionEnabled } from "./comment-retention.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import {
@@ -42,31 +42,39 @@ function isValidSha(s: string | undefined) {
  * effective base, mirroring `runFalsilyGreenCheck`. A git error or an unreadable
  * tree reads `NOT CHECKED (<reason>)` (infra errors are never failures).
  * `PI_ENSEMBLE_COMMENT_RETENTION=0` disables the check and emits a note instead.
+ * Returns one entry per outcome that needs a human eye (a lost comment or a
+ * NOT CHECKED); the note and the structured result travel together.
  */
 export async function collectCommentEvidence(
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
   effectiveBaseFor: (wsId: string) => string | undefined,
   worktrees: Map<string, string>,
   paths: string[],
-  notes: string[],
-): Promise<void> {
+): Promise<CommentEvidence[]> {
+  const out: CommentEvidence[] = [];
   if (!commentRetentionEnabled()) {
-    notes.push("comment-retention: NOT CHECKED (PI_ENSEMBLE_COMMENT_RETENTION=0)");
-    return;
+    const reason = "PI_ENSEMBLE_COMMENT_RETENTION=0";
+    out.push({ note: `comment-retention: NOT CHECKED (${reason})`, result: { ok: false, reason } });
+    return out;
   }
   for (const [id, cwd] of worktrees) {
     const baseRef = effectiveBaseFor(id);
     if (!baseRef) {
-      notes.push(`comment-retention: NOT CHECKED (no base ref for workstream ${id}) in ${cwd}`);
+      const reason = `no base ref for workstream ${id}`;
+      out.push({
+        note: `comment-retention: NOT CHECKED (${reason}) in ${cwd}`,
+        result: { ok: false, reason },
+      });
       continue;
     }
     const res = await checkComments(execFn, cwd, baseRef, "HEAD", paths, verifyTimeoutMs());
     if (!res.ok) {
-      notes.push(`comment-retention: NOT CHECKED (${res.reason}) in ${cwd}`);
-      continue;
+      out.push({ note: `comment-retention: NOT CHECKED (${res.reason}) in ${cwd}`, result: res });
+    } else if (res.lost.length > 0) {
+      out.push({ note: formatLostComments(res), result: res });
     }
-    if (res.lost.length > 0) notes.push(formatLostComments(res));
   }
+  return out;
 }
 
 /**
