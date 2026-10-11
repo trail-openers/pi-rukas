@@ -53,18 +53,25 @@ export function rerouteGateQuotes(
 ): { kept: PlanGap[]; rerouted: PlanGap[] } {
   const kept: PlanGap[] = [];
   const rerouted: PlanGap[] = [];
+  // Only a CONCRETE carried gap was ever spliced, so only it can be the origin
+  // of a gate-spliced bullet. A quote with no matching origin is not ours.
+  const spliced = carried.filter((c) => c.resolutionType === "concrete");
   for (const g of gaps) {
     if (g.severity !== "CRITICAL" || !quotesGateBullet(g)) {
       kept.push(g);
       continue;
     }
-    const origin = carried.find((c) => {
+    const origin = spliced.find((c) => {
       const statement = spliceStatement(c.resolution);
       return (
         statement !== "" && (g.description.includes(statement) || g.resolution.includes(statement))
       );
     });
-    rerouted.push({ ...g, severity: origin?.severity ?? g.severity });
+    if (!origin) {
+      kept.push(g);
+      continue;
+    }
+    rerouted.push({ ...g, severity: origin.severity });
   }
   return { kept, rerouted };
 }

@@ -449,9 +449,10 @@ async function invoke(params: Record<string, unknown>) {
   // either/or acceptance-criterion resolution typed operator-decision: it must
   // not be spliced into any body section. Reply 2 raises a CRITICAL that quotes
   // a gate-spliced bullet: that must not cap the plan CRITICAL.
+  const spliced = "in the Acceptance criteria section, the retry path stops after three attempts";
   const replies = [
-    "GAP: CRITICAL — the retry criterion is missing — proposed resolution: either add an acceptance criterion for the retry path or narrow the scope to the first attempt — resolution-type: operator-decision\nVERDICT: NEEDS_ITERATION",
-    'GAP: CRITICAL — the bullet "(gate resolution) add a criterion for the retry path" does not state a behaviour — proposed resolution: restate it as a behaviour — resolution-type: concrete\nVERDICT: NEEDS_ITERATION',
+    `GAP: CRITICAL — the retry criterion is missing — proposed resolution: either add an acceptance criterion for the retry path or narrow the scope to the first attempt — resolution-type: operator-decision\nGAP: CRITICAL — the retry stop rule is unnamed — proposed resolution: ${spliced} — resolution-type: concrete\nVERDICT: NEEDS_ITERATION`,
+    `GAP: CRITICAL — the bullet "(gate resolution) ${spliced}" does not state a behaviour — proposed resolution: restate it as a behaviour — resolution-type: concrete\nVERDICT: NEEDS_ITERATION`,
   ];
   gatePrompts.length = 0;
   setPlanDispatch(makeDispatchStub(replies) as never);
@@ -473,8 +474,8 @@ async function invoke(params: Record<string, unknown>) {
     "#1111 loop: no body bullet carries (gate resolution) text with (b), (c) or either",
   );
   assert(
-    gateLines.length === 0,
-    "#1111 loop: an undecided either/or resolution is not spliced into any section",
+    gateLines.length === 1 && gateLines[0]?.includes(spliced) === true,
+    "#1111 loop: only the concrete resolution is spliced; the either/or is not",
   );
   assert(
     /status: open/.test(r.spec) && /decision owner: operator/.test(r.spec),

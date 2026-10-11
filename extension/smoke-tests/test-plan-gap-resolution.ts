@@ -281,6 +281,19 @@ function sectionOf(body: string, heading: string, nextHeading: string): string {
     rerouted.length === 1 && rerouted[0]?.severity === "CRITICAL",
     "#1111 re-route: it is carried to the residual disclosure at the originating gap's severity",
   );
+  // A quoted marker with no spliced origin (no carried round, or only a
+  // non-concrete carried gap) is not a gate bullet: the CRITICAL stays blocking.
+  const unorigined = rerouteGateQuotes(quoting.gaps, []);
+  assert(
+    unorigined.kept.length === 1 && unorigined.rerouted.length === 0,
+    "#1111 re-route: a marker quote with no spliced origin stays blocking",
+  );
+  const nonConcreteOrigin: PlanGap = { ...carried[0], resolutionType: "operator-decision" } as PlanGap;
+  const nonConcrete = rerouteGateQuotes(quoting.gaps, [nonConcreteOrigin]);
+  assert(
+    nonConcrete.kept.length === 1 && nonConcrete.rerouted.length === 0,
+    "#1111 re-route: a non-concrete carried gap is never a splice origin",
+  );
   const genuine = parseGaps(
     "GAP: CRITICAL — the retry cap contradicts the quota rule — proposed resolution: name which wins — resolution-type: operator-decision\nVERDICT: NEEDS_ITERATION",
   );
