@@ -189,9 +189,8 @@ const stubExec =
   const fs = await import("node:fs/promises");
   const os = await import("node:os");
   const path = await import("node:path");
-  const { trustedPreservedGreens, runIndependentFanout, resetWorktreeToBase } = await import(
-    "../src/work-develop-retry.ts"
-  );
+  const { trustedPreservedGreens, runIndependentFanout, resetWorktreeToBase, greenCountsAsWork } =
+    await import("../src/work-develop-retry.ts");
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "greens-1016-"));
   const git = (cwd: string, args: string[]) =>
     execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], {
@@ -250,18 +249,26 @@ const stubExec =
     "#1016: the returned verdicts carry a (kept) and b (retried green)",
   );
 
-  // Retry hygiene: a zero-commit failed workstream's uncommitted edits are gone
-  // after the reset, and no stash entry is left behind.
+  // Retry hygiene: uncommitted developer edits are NEVER reset — the reset
+  // refuses and the edits stay on disk for the #622 safety net. A clean
+  // worktree resets to its base with no stash entry left behind.
   const baseB = git(dirB, ["rev-parse", "HEAD"]);
   await fs.writeFile(path.join(dirB, "partial.txt"), "half-written");
-  await fs.writeFile(path.join(dirB, "README.md"), "tracked edit");
-  await resetWorktreeToBase(execFn, dirB, baseB);
-  assert(git(dirB, ["stash", "list"]) === "", "#1016: the retry reset leaves no stash entry");
-  const leftover = await fs.stat(path.join(dirB, "partial.txt")).then(
+  const dirtyRefused = await resetWorktreeToBase(execFn, dirB, baseB).then(
+    () => false,
+    (err: Error) => /uncommitted work/.test(err.message),
+  );
+  const survived = await fs.stat(path.join(dirB, "partial.txt")).then(
     () => true,
     () => false,
   );
-  assert(!leftover, "#1016: untracked partial edits are removed before the retry");
+  assert(
+    dirtyRefused && survived,
+    "#1016: a reset refuses uncommitted edits and leaves them on disk",
+  );
+  await fs.rm(path.join(dirB, "partial.txt"));
+  await resetWorktreeToBase(execFn, dirB, baseB);
+  assert(git(dirB, ["stash", "list"]) === "", "#1016: the retry reset leaves no stash entry");
   assert(
     git(dirB, ["rev-parse", "HEAD"]) === baseB,
     "#1016: the failed worktree is reset to its base SHA",
@@ -297,6 +304,27 @@ const stubExec =
       thrown.some((v) => v.id === "b" && !v.ok && /retry exploded/.test(v.reason ?? "")),
     "#1016: a throwing retry becomes {id, ok:false, reason}; the green verdict survives",
   );
+  // #1016 — a zero-commit worktree is green only through commits: the develop
+  // step's safety net commits leftover edits BEFORE this check. An empty tree is
+  // not green, and a reset never discards uncommitted edits.
+  const dirC = await mkRepo("c");
+  const baseC = git(dirC, ["rev-parse", "HEAD"]);
+  const emptyC = await greenCountsAsWork(execFn, dirC, baseC, "c");
+  await fs.writeFile(path.join(dirC, "edit.txt"), "uncommitted");
+  const dirtyC = await greenCountsAsWork(execFn, dirC, baseC, "c");
+  assert(
+    !emptyC.counts && !dirtyC.counts,
+    "#1016: a zero-commit worktree is not green until the safety net commits it",
+  );
+  const cRefused = await resetWorktreeToBase(execFn, dirC, baseC).then(
+    () => false,
+    (err: Error) => /uncommitted work/.test(err.message),
+  );
+  const cSurvived = await fs.stat(path.join(dirC, "edit.txt")).then(
+    () => true,
+    () => false,
+  );
+  assert(cRefused && cSurvived, "#1016: a reset never discards uncommitted edits");
   await fs.rm(dir, { recursive: true, force: true });
 }
 

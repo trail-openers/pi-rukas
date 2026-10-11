@@ -5,6 +5,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { mkdir } from "node:fs/promises";
+import { writeFileSync } from "node:fs";
 import path from "node:path";
 
 export function gitIn(cwd: string, args: string[]): string {
@@ -12,6 +13,13 @@ export function gitIn(cwd: string, args: string[]): string {
     cwd,
     encoding: "utf8",
   }).trim();
+}
+
+/** #1016 — the mock developer's work: task-c leaves its edit UNCOMMITTED (the
+ *  case the #622 safety net commits); every other developer commits. */
+export function mockDeveloperWork(cwd: string, label: string | undefined): void {
+  if (label === "developer[task-c]") writeFileSync(path.join(cwd, "edit.txt"), "uncommitted");
+  else gitIn(cwd, ["commit", "--allow-empty", "-qm", `work ${label}`]);
 }
 
 /** Create `<dir>/.worktrees/<id>` as a repo with one base commit; returns id → base SHA. */

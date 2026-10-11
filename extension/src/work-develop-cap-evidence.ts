@@ -9,6 +9,11 @@
  */
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
 
+// #841 — per-failure / joined-evidence bounds for the cap-hit evidence
+// field. A failure string is already an 800-char attributed tail; a
+// fanout with several failures joined unboundedly produced multi-KB
+// evidence. Bound each failure and the join itself, with a truncation
+// marker so the operator knows the evidence is bounded.
 const CAP_EVIDENCE_PER_FAILURE_MAX = 800;
 const CAP_EVIDENCE_TOTAL_MAX = 4000;
 const CAP_EVIDENCE_TRUNCATED = " … (truncated)";

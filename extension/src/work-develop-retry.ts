@@ -108,9 +108,24 @@ export async function commitsAheadOfBase(
   }
 }
 
+/** #1016 — `git status --porcelain` lines (untrimmed), or unreadable. */
+export async function worktreeStatus(
+  execFn: ExecFn,
+  cwd: string,
+): Promise<string[] | { unreadable: string }> {
+  try {
+    const { stdout } = await execFn("git status --porcelain", { cwd, maxBuffer: 256 * 1024 });
+    return stdout.split("\n").filter((l) => l.trim().length > 0);
+  } catch (err) {
+    return { unreadable: errText(err) };
+  }
+}
+
 /** #1016 — the ONE owner of the rule "a green counts only with commits ahead
  *  of base". An unreadable check never untrusts a green: it keeps it, and the
- *  `note` names the workstream and the git error for the handoff. */
+ *  `note` names the workstream and the git error for the handoff. The develop
+ *  step runs the #622 safety net per worktree BEFORE this check, so a developer's
+ *  uncommitted edits are already commits here. */
 export async function greenCountsAsWork(
   execFn: ExecFn,
   cwd: string,
@@ -131,8 +146,9 @@ export async function greenCountsAsWork(
  *  (`git clean -fd`, no `-x`: gitignored dependency links survive). Refuses,
  *  by throwing, unless the base is a 40-hex SHA AND the commit check returned
  *  zero commits ahead: a worktree with committed work is never reset, and an
- *  unreadable check is never a licence to reset. Uncommitted edits are
- *  discarded — by definition scratch, since nothing was committed. */
+ *  unreadable check is never a licence to reset. Uncommitted edits are developer
+ *  output the #622 safety net must commit, so a dirty (or unreadable) worktree
+ *  is refused too. */
 export async function resetWorktreeToBase(
   execFn: ExecFn,
   cwd: string,
@@ -147,6 +163,12 @@ export async function resetWorktreeToBase(
   }
   if (ahead.commits > 0) {
     throw new Error(`refusing to reset ${cwd}: HEAD has ${ahead.commits} commit(s) ahead of base`);
+  }
+  // Any dirty path (driver-owned included) or an unreadable status refuses:
+  // the reset discards files, so it must never run on a tree it cannot prove clean.
+  const status = await worktreeStatus(execFn, cwd);
+  if (!Array.isArray(status) || status.length > 0) {
+    throw new Error(`refusing to reset ${cwd}: uncommitted work present (or status unreadable)`);
   }
   await execFn(`git reset --hard ${base}`, { cwd, maxBuffer: 64 * 1024 });
   await execFn("git clean -fd", { cwd, maxBuffer: 64 * 1024 });

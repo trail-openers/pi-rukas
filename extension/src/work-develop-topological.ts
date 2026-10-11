@@ -35,7 +35,12 @@ import type { DriverContext } from "./work-driver-context.ts";
 import { runConvergeGateHandler } from "./work-driver-converge-gate.ts";
 import { topologicalDispatchOrder } from "./work-driver-dep-scheduler.ts";
 import { clearDispatch } from "./work-driver-resume.ts";
-import { applySafetyNet, hasAnyWorktreeEvidence } from "./work-driver-safety-net.ts";
+import {
+  applySafetyNet,
+  hasAnyWorktreeEvidence,
+  isValidBaseSha,
+  safetyNetWorktree,
+} from "./work-driver-safety-net.ts";
 import { armStepNotice } from "./work-driver-step-notice.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
@@ -166,6 +171,13 @@ async function runDevelopTopological(
       const r = await runOneWorkstream(id, cwd);
       if (!r.ok) return { id, ok: false };
       const base = workstreamBaseShas[id] ?? globalBaseSha;
+      // #1016 — the #622 safety net commits this worktree's leftover edits
+      // BEFORE the green check, so uncommitted developer work counts as work
+      // and is never reset away.
+      if (isValidBaseSha(base)) {
+        const sn = await safetyNetWorktree(id, cwd, base);
+        if (sn) branchEvents.push(sn);
+      }
       const green = await greenCountsAsWork(execFn, cwd, base, id);
       if (green.note !== undefined) persistNotes.push(green.note);
       if (green.counts) return r;

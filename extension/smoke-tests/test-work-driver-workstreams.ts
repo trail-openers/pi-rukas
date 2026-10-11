@@ -12,7 +12,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseWorktreesBlock } from "../src/work-driver-branch-develop.ts";
-import { gitIn, makeBaseWorktrees } from "./lib/git-worktree-fixture.ts";
+import { makeBaseWorktrees, mockDeveloperWork } from "./lib/git-worktree-fixture.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { parseWorkstreams } from "../src/work-driver-plan.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
@@ -304,7 +304,7 @@ branch: feature/issue-553-fix
         if (spec.role !== "developer") {
           throw new Error("smoke: halting after develop fanout");
         }
-        gitIn(spec.cwd ?? dir, ["commit", "--allow-empty", "-qm", `work ${opts?.label}`]);
+        mockDeveloperWork(spec.cwd ?? dir, opts?.label);
         return mkResult({
           role: "developer",
           text: `mock developer output for ${opts?.label}`,

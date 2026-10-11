@@ -54,7 +54,7 @@ function safetyNetEnabled(): boolean {
 }
 
 /** #679 — the global base is unusable as a fallback (older state files). */
-function isValidBaseSha(s: string | undefined): boolean {
+export function isValidBaseSha(s: string | undefined): s is string {
   return typeof s === "string" && /^[0-9a-f]{40}$/.test(s);
 }
 
@@ -131,6 +131,134 @@ export async function hasAnyWorktreeEvidence(
 }
 
 /**
+ * #1016 — the safety-net commit for ONE workstream worktree, shared by the
+ * per-workstream green check (runAt) and the post-fan-out sweep. Returns the
+ * `safety-net-commit` event when it committed, undefined otherwise. Never throws.
+ */
+export async function safetyNetWorktree(
+  wsId: string,
+  cwd: string,
+  effectiveBase: string,
+): Promise<WorkEvent | undefined> {
+  if (!safetyNetEnabled()) return undefined;
+  const now = Date.now();
+  let dirty: string[] = [];
+  let commitAhead = 0;
+
+  // (1) Check if worktree has uncommitted changes.
+  try {
+    const { stdout } = await safetyNetExecp("git status --porcelain", {
+      cwd,
+      maxBuffer: 256 * 1024,
+    });
+    dirty = stdout
+      .trim()
+      .split("\n")
+      .filter((l) => l.trim().length > 0);
+  } catch (err) {
+    trace(
+      `work-driver: safety net — git status failed in ${cwd}: ${(err as Error).message?.slice(0, 200)}`,
+    );
+    return undefined;
+  }
+
+  // (AC3) Clean tree → nothing to commit → skip.
+  if (dirty.length === 0) {
+    trace(`work-driver: safety net skipped ${wsId} — tree clean`);
+    return undefined;
+  }
+
+  // (2) Check if worktree already has commits ahead of its EFFECTIVE base —
+  // the per-workstream effective base, not the global baseSha (#679). A
+  // dependent workstream's worktree was created from its dependency's
+  // post-commit SHA, so comparing against the global baseSha would
+  // miscount its commits ahead.
+  try {
+    const { stdout } = await safetyNetExecp(`git rev-list --count ${effectiveBase}..HEAD`, {
+      cwd,
+      maxBuffer: 64 * 1024,
+    });
+    commitAhead = Number.parseInt(stdout.trim(), 10) || 0;
+  } catch {
+    // The effective base may not exist in this worktree's history — not
+    // evidence either way. Conservatively treat as 0 commits (fire the
+    // safety net if dirty).
+  }
+
+  // (AC2) Already has commits ahead of its effective base → developer committed
+  // correctly → skip.
+  if (commitAhead > 0) {
+    trace(
+      `work-driver: safety net skipped ${wsId} — already has ${commitAhead} commit(s) ahead of its base`,
+    );
+    return undefined;
+  }
+
+  // Fire the safety net: stage porcelain paths and commit.
+  trace(`work-driver: safety net firing for ${wsId} — ${dirty.length} uncommitted path(s)`);
+  let commitSha: string | undefined;
+  let filesCommitted = 0;
+
+  try {
+    for (const line of dirty) {
+      const entry = line.slice(3);
+      const arrow = entry.indexOf(" -> ");
+      const targets = arrow >= 0 ? [entry.slice(0, arrow), entry.slice(arrow + 4)] : [entry];
+      for (const t of targets) {
+        const clean = t.startsWith('"') && t.endsWith('"') ? t.slice(1, -1) : t;
+        // Skip driver artefacts: .pi/ and tmp/ (same exclusion as cap-checkpoint).
+        if (clean.startsWith(".pi/") || clean.startsWith("tmp/")) continue;
+        try {
+          await safetyNetExecp(`git add -- ${JSON.stringify(clean)}`, {
+            cwd,
+            maxBuffer: 256 * 1024,
+          });
+          filesCommitted++;
+        } catch (err) {
+          trace(
+            `work-driver: safety net add failed for ${clean}: ${(err as Error).message?.slice(0, 120)}`,
+          );
+        }
+      }
+    }
+    // Commit with driver-attributed message so the operator can tell
+    // this from a developer's seam commit.
+    const commitMsg = `wip: driver safety-net commit for ${wsId}`;
+    await safetyNetExecp(`git commit -q --no-verify -m ${JSON.stringify(commitMsg)}`, {
+      cwd,
+      maxBuffer: 64 * 1024,
+    });
+    const { stdout: shaOut } = await safetyNetExecp("git rev-parse HEAD", {
+      cwd,
+      maxBuffer: 64 * 1024,
+    });
+    commitSha = shaOut.trim();
+  } catch (err) {
+    trace(
+      `work-driver: safety net commit failed for ${wsId}: ${(err as Error).message?.slice(0, 200)}`,
+    );
+    // The commit failed — the tree is still dirty, nothing was saved.
+    // The verify gate will produce the same failure as before the safety net.
+    return undefined;
+  }
+
+  if (commitSha) {
+    trace(
+      `work-driver: safety net committed ${wsId} (${commitSha.slice(0, 8)}) — ${filesCommitted} file(s)`,
+    );
+    return {
+      kind: "safety-net-commit",
+      at: now,
+      workstreamId: wsId,
+      worktreePath: cwd,
+      commitSha,
+      filesCommitted,
+    };
+  }
+  return undefined;
+}
+
+/**
  * #622 — Apply the mechanical auto-commit safety net after all developer
  * dispatches complete.
  *
@@ -169,7 +297,6 @@ export async function applySafetyNet(ctx: DriverContext, state: WorkState): Prom
   }
 
   const events: WorkEvent[] = [];
-  const now = Date.now();
 
   for (const [wsId, cwd] of Object.entries(worktrees)) {
     const effectiveBase = effectiveBaseForWorkstream(wsId, workstreamBaseShas, baseSha);
@@ -179,119 +306,8 @@ export async function applySafetyNet(ctx: DriverContext, state: WorkState): Prom
       );
       continue;
     }
-    let dirty: string[] = [];
-    let commitAhead = 0;
-
-    // (1) Check if worktree has uncommitted changes.
-    try {
-      const { stdout } = await safetyNetExecp("git status --porcelain", {
-        cwd,
-        maxBuffer: 256 * 1024,
-      });
-      dirty = stdout
-        .trim()
-        .split("\n")
-        .filter((l) => l.trim().length > 0);
-    } catch (err) {
-      trace(
-        `work-driver: safety net — git status failed in ${cwd}: ${(err as Error).message?.slice(0, 200)}`,
-      );
-      continue;
-    }
-
-    // (AC3) Clean tree → nothing to commit → skip.
-    if (dirty.length === 0) {
-      trace(`work-driver: safety net skipped ${wsId} — tree clean`);
-      continue;
-    }
-
-    // (2) Check if worktree already has commits ahead of its EFFECTIVE base —
-    // the per-workstream effective base, not the global baseSha (#679). A
-    // dependent workstream's worktree was created from its dependency's
-    // post-commit SHA, so comparing against the global baseSha would
-    // miscount its commits ahead.
-    try {
-      const { stdout } = await safetyNetExecp(`git rev-list --count ${effectiveBase}..HEAD`, {
-        cwd,
-        maxBuffer: 64 * 1024,
-      });
-      commitAhead = Number.parseInt(stdout.trim(), 10) || 0;
-    } catch {
-      // The effective base may not exist in this worktree's history — not
-      // evidence either way. Conservatively treat as 0 commits (fire the
-      // safety net if dirty).
-    }
-
-    // (AC2) Already has commits ahead of its effective base → developer committed
-    // correctly → skip.
-    if (commitAhead > 0) {
-      trace(
-        `work-driver: safety net skipped ${wsId} — already has ${commitAhead} commit(s) ahead of its base`,
-      );
-      continue;
-    }
-
-    // Fire the safety net: stage porcelain paths and commit.
-    trace(`work-driver: safety net firing for ${wsId} — ${dirty.length} uncommitted path(s)`);
-    let commitSha: string | undefined;
-    let filesCommitted = 0;
-
-    try {
-      for (const line of dirty) {
-        const entry = line.slice(3);
-        const arrow = entry.indexOf(" -> ");
-        const targets = arrow >= 0 ? [entry.slice(0, arrow), entry.slice(arrow + 4)] : [entry];
-        for (const t of targets) {
-          const clean = t.startsWith('"') && t.endsWith('"') ? t.slice(1, -1) : t;
-          // Skip driver artefacts: .pi/ and tmp/ (same exclusion as cap-checkpoint).
-          if (clean.startsWith(".pi/") || clean.startsWith("tmp/")) continue;
-          try {
-            await safetyNetExecp(`git add -- ${JSON.stringify(clean)}`, {
-              cwd,
-              maxBuffer: 256 * 1024,
-            });
-            filesCommitted++;
-          } catch (err) {
-            trace(
-              `work-driver: safety net add failed for ${clean}: ${(err as Error).message?.slice(0, 120)}`,
-            );
-          }
-        }
-      }
-      // Commit with driver-attributed message so the operator can tell
-      // this from a developer's seam commit.
-      const commitMsg = `wip: driver safety-net commit for ${wsId}`;
-      await safetyNetExecp(`git commit -q --no-verify -m ${JSON.stringify(commitMsg)}`, {
-        cwd,
-        maxBuffer: 64 * 1024,
-      });
-      const { stdout: shaOut } = await safetyNetExecp("git rev-parse HEAD", {
-        cwd,
-        maxBuffer: 64 * 1024,
-      });
-      commitSha = shaOut.trim();
-    } catch (err) {
-      trace(
-        `work-driver: safety net commit failed for ${wsId}: ${(err as Error).message?.slice(0, 200)}`,
-      );
-      // The commit failed — the tree is still dirty, nothing was saved.
-      // The verify gate will produce the same failure as before the safety net.
-      continue;
-    }
-
-    if (commitSha) {
-      events.push({
-        kind: "safety-net-commit",
-        at: now,
-        workstreamId: wsId,
-        worktreePath: cwd,
-        commitSha,
-        filesCommitted,
-      });
-      trace(
-        `work-driver: safety net committed ${wsId} (${commitSha.slice(0, 8)}) — ${filesCommitted} file(s)`,
-      );
-    }
+    const ev = await safetyNetWorktree(wsId, cwd, effectiveBase);
+    if (ev) events.push(ev);
   }
 
   if (events.length === 0) return state;
