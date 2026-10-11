@@ -8,7 +8,7 @@ import { type InfraCtx, infraFailureResult, runPhaseWithInfraRetry } from "./adv
 import { decideLoopAction, parseVerdict, synthesizeResult } from "./adversarial-verdict.ts";
 import { childHandles, registerChildHandle } from "./async-jobs-registry.ts";
 import { markOrchestrator, setOrchestratorActiveChild, startJob } from "./async-jobs.ts";
-import { buildCommentsLine } from "./comment-retention.ts";
+import { buildCommentsLine, lostCommentsSection } from "./comment-retention.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { readEnumMarker } from "./reply-markers.ts";
@@ -367,6 +367,8 @@ export async function runAdversarialLoop(
         round,
         maxRounds: MAX_ROUNDS,
         issueBody: params.issueBody,
+        // #1040 — comments this change removed, for the reviewer to judge.
+        commentEvidence: await lostCommentsSection(range, params.workCwd ?? process.cwd()),
       }),
       params.workCwd,
       { runPhase, accumulate, signal },

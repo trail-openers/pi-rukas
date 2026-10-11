@@ -41,7 +41,7 @@ function execError(code: number, msg: string): Error {
         : { stdout: "" };
   const res = await findLostComments(exec, "/tmp", "a".repeat(40), "HEAD", ["src"]);
   assert(
-    res.ok === true && res.lost.length === 1 && res.lost[0] === "// gone in crlf",
+    res.ok === true && res.lost.length === 1 && res.lost[0]?.text === "// gone in crlf",
     `crlf (21): lost comment in a CRLF diff is reported LOST (got ${JSON.stringify(res)})`,
   );
 }
@@ -94,7 +94,7 @@ function execError(code: number, msg: string): Error {
   };
   const res = await findLostComments(exec, "/tmp", "a".repeat(40), "HEAD", ["src"]);
   assert(
-    res.ok === true && res.lost.length === 1 && res.lost[0] === "// gone",
+    res.ok === true && res.lost.length === 1 && res.lost[0]?.text === "// gone",
     `grep-exit-1 (24): resolving ref + exit 1 → empty head, comment LOST (got ${JSON.stringify(res)})`,
   );
 }

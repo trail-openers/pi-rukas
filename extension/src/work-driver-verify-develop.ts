@@ -390,7 +390,6 @@ export async function verifyDevelopOutcome(
     effectiveBaseFor,
     new Map(Object.entries(worktrees)),
     commentRetentionPaths,
-    failures,
     notes,
   );
   await runSmokeGate(execFn, ctx.repoRoot, changedWorktrees, failures, notes);

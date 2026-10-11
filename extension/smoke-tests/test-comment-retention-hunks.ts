@@ -1,20 +1,17 @@
 #!/usr/bin/env bun
 /**
- * #1040 / follow-up — comment-retention hunk parsing and classification (real git).
+ * #1040 — comment-retention hunk parsing and the three-bucket classification
+ * (real git where the fixture is git-shaped).
  *
- * Split out of test-comment-retention.ts to keep both files under the 500-line
- * cap. Covers: a removed SQL-style `-- ` comment is content, never a file
- * header (`--- ` in the diff); and a comment reworded in the same hunk as an
- * added comment that contains its old wording is REPLACED, not retained via the
- * substring fallback and not double-counted.
+ * Every removed comment line is RETAINED (its text survives at head), EXEMPT
+ * (its annotated code was removed and the hunk adds no comment) or LOST.
+ * A lost comment is evidence for the reviewers, never a failure: each lost
+ * entry carries its file and the added comment lines of its hunk.
  *
- * Also covers: the annotated-code binding (an unrelated remark in the same hunk
- * never replaces a comment whose documented code is unchanged); in-place
- * rewording (one change run) is a replacement regardless of word overlap; per-file
- * hunk keys (two deleted files); wording carry (≥3 words, ≥60% shared; `TODO: fix`
- * never counts); word-less markers (`/**`, `*\/`) are ignored; an unparseable `@@`
- * header (CRLF) is a named infra failure; and the fail-open paths (an erroring
- * empty-diff cross-check, an unresolved ref behind `git grep` exit 1).
+ * Fail-closed paths covered here: a removed SQL `-- ` comment is content, not a
+ * file header; a CRLF `@@` header parses; an unparseable `@@` header is a named
+ * error; deleted files are keyed by their real path; word-less markers are
+ * ignored.
  *
  * Deliberately NOT named `*-live.ts` (it spawns nothing; runs in the offline gate).
  */
@@ -24,17 +21,12 @@ import {
   buildCommentsLine,
   findLostComments,
   formatLostComments,
+  formatReportLine,
+  lostCommentsSection,
 } from "../src/comment-retention.ts";
-import { runCommentRetentionGate } from "../src/work-driver-verify-develop-gates.ts";
+import { classifyHunk, parseHunks } from "../src/comment-retention-hunks.ts";
 import type { ExecFn } from "../src/worktree.ts";
-import {
-  git,
-  realExec,
-  repoWith,
-  repoWithFiles,
-  runRetention,
-  runRetentionIn,
-} from "./lib/comment-retention-fixtures.ts";
+import { repoWithFiles, runRetention, runRetentionIn } from "./lib/comment-retention-fixtures.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -45,406 +37,231 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-// (1) A removed SQL comment `-- old note` directly followed by an added `++ `
-// line is diff-encoded as `--- old note` / `+++ new`. It must be content (lost),
-// not mistaken for a file header and silently skipped.
+// (1) A removed SQL comment `-- old note` followed by an added `++ ` line is
+// diff-encoded as `--- old note` / `+++ new`. It must be content (lost), not
+// mistaken for a file header and silently skipped.
 {
   const res = await runRetention("src/q.sql", "-- old note\nSELECT 1;\n", "++ new\nSELECT 1;\n");
   assert(res.ok === true, "sql (1): result is ok");
   if (res.ok) {
     assert(
-      res.lost.length === 1 && res.lost[0] === "-- old note",
-      `sql (1): removed \`-- \` line is reported lost, not skipped as a header (got ${JSON.stringify(res.lost)})`,
+      res.lost.length === 1 && res.lost[0]?.text === "-- old note",
+      `sql (1): removed \`-- \` line is lost, not skipped as a header (got ${JSON.stringify(res.lost)})`,
     );
   }
 }
 
-// (2) #1040 same-hunk rewording: the comment is reworded to contain its old
-// wording plus more, the code is unchanged. Must be replaced (one note), not
-// lost, not retained by the substring fallback, not double-counted.
+// (2) Reworded in place above UNCHANGED code: the old wording is gone and the
+// new comment is recorded as added context. Under the three-bucket contract it
+// is LOST (a reviewer judges it), not "replaced".
 {
   const res = await runRetention(
     "src/app.ts",
     "// original wording here\nfunction f() {\n  return 1;\n}\n",
-    "// original wording here, now with the rationale\nfunction f() {\n  return 1;\n}\n",
+    "// different wording now\nfunction f() {\n  return 1;\n}\n",
   );
-  assert(res.ok === true, "same-hunk (2): result is ok");
-  if (res.ok) {
-    assert(res.lost.length === 0, "same-hunk (2): reworded-with-more comment is NOT lost");
-    assert(
-      res.replaced.length === 1 && res.replaced[0] === "// original wording here",
-      `same-hunk (2): counted once as replaced (got ${JSON.stringify(res.replaced)})`,
-    );
-    assert(res.exempt === 0, "same-hunk (2): not also counted as exempt");
-  }
-}
-
-// (3) Control: a comment dropped while an UNRELATED comment is added in the
-// same hunk stays lost (the wording must be carried, not merely a comment added).
-{
-  const res = await runRetention(
-    "src/app.ts",
-    "// original wording here\nfunction f() {\n  return 1;\n}\n",
-    "function f() {\n  return 1;\n}\n// unrelated remark\n",
-  );
-  assert(
-    res.ok === true && res.lost.length === 1 && res.replaced.length === 0,
-    "same-hunk (3): unrelated added comment → dropped comment stays lost",
-  );
-}
-
-// (4) Row wording: "comment-retention: N lost, M replaced (exempt: K)".
-{
-  const row = formatLostComments({
-    lost: ["// a"],
-    replaced: ["// x", "// y", "// z"],
-    exempt: 2,
-  });
-  assert(
-    row.startsWith("comment-retention: 1 lost, 3 replaced (exempt: 2)"),
-    `row wording: "N lost, M replaced (exempt: K)" (got ${row.split("\n")[0]})`,
-  );
-}
-
-// (5) Annotated-code binding regression: the comment documents `function a()`,
-// which is UNCHANGED; the code removed further down (`const q`) is unrelated.
-// An added unrelated remark in the same hunk must not turn the drop into a
-// replacement → LOST.
-{
-  const res = await runRetention(
-    "src/app.ts",
-    "// important invariant: keep lock\nfunction a() {\n  return 1;\n}\nconst q = 1;\n",
-    "function a() {\n  return 1;\n}\nconst q = 2;\n// unrelated remark\n",
-  );
-  assert(res.ok === true, "binding (5): result is ok");
+  assert(res.ok === true, "reword (2): result is ok");
   if (res.ok) {
     assert(
       res.lost.length === 1 &&
-        res.lost[0] === "// important invariant: keep lock" &&
-        res.replaced.length === 0,
-      `binding (5): comment above unchanged code stays lost (got ${JSON.stringify(res)})`,
+        res.lost[0]?.text === "// original wording here" &&
+        res.lost[0]?.addedNearby.includes("// different wording now"),
+      `reword (2): lost, with the added comment as context (got ${JSON.stringify(res.lost)})`,
     );
   }
 }
 
-// (6) Two deleted files in one diff: each file's comment is keyed to its own
-// path (`+++ /dev/null` used to collapse every deleted file onto one key).
+// (3) A comment dropped while an UNRELATED comment is added elsewhere in the
+// hunk, above unchanged code: lost, and the unrelated line is only context.
+{
+  const res = await runRetention(
+    "src/app.ts",
+    "// keep the retry budget at 3\nfunction f() {\n  return 1;\n}\n",
+    "// an unrelated remark\nfunction f() {\n  return 1;\n}\n",
+  );
+  assert(
+    res.ok === true && res.ok && res.lost.length === 1 && res.exempt === 0,
+    "unrelated (3): dropped comment above unchanged code is lost",
+  );
+}
+
+// (4) Exempt: a comment removed together with its annotated code, and the hunk
+// adds no comment. Nothing is lost.
+{
+  const res = await runRetention(
+    "src/app.ts",
+    "function keep() {}\n// doc for gone()\nfunction gone() {\n  return 1;\n}\n",
+    "function keep() {}\n",
+  );
+  assert(
+    res.ok === true && res.ok && res.lost.length === 0 && res.exempt >= 1,
+    `exempt (4): comment deleted with its code is exempt, not lost (got ${JSON.stringify(res)})`,
+  );
+}
+
+// (5) The annotated code is removed but the hunk ADDS a comment: no longer
+// exempt. The removed comment is lost, with the added comment as context.
+{
+  const res = await runRetention(
+    "src/app.ts",
+    "// doc for gone()\nfunction gone() {\n  return 1;\n}\n",
+    "// new rationale\nfunction other() {\n  return 2;\n}\n",
+  );
+  assert(
+    res.ok === true &&
+      res.ok &&
+      res.lost.length === 1 &&
+      res.lost[0]?.addedNearby[0] === "// new rationale" &&
+      res.exempt === 0,
+    `annotated-removed (5): with an added comment in the hunk it is lost, not exempt`,
+  );
+}
+
+// (6) Two deleted files in one diff: each lost comment is keyed to its own file.
 {
   const dir = await repoWithFiles(
     {
-      "src/a.ts": "// doc for alpha\nfunction alpha() {\n  return 1;\n}\n",
-      "src/b.ts": "// doc for beta\nfunction beta() {\n  return 2;\n}\n",
+      "src/a.ts": "// doc for aaa\nconst a = 1;\n",
+      "src/b.ts": "// doc for bbb\nconst b = 2;\n",
     },
-    { "src/a.ts": null, "src/b.ts": null },
+    { "src/a.ts": "const a = 1;\n", "src/b.ts": "const b = 2;\n" },
   );
   try {
     const res = await runRetentionIn(dir);
+    const files = res.ok ? res.lost.map((l) => l.file).sort() : [];
     assert(
-      res.ok === true && res.lost.length === 0 && res.exempt === 2,
-      `deleted files (6): each file's doc comment is exempt with its deleted code, both counted (got ${JSON.stringify(res)})`,
+      res.ok === true && files.join(",") === "src/a.ts,src/b.ts",
+      `two files (6): each lost comment keyed to its own path (got ${JSON.stringify(res)})`,
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }
 
-// (7) `// TODO: fix` → `// TODO: fix the other thing`, code unchanged: the
-// rewording is in place (one change run), so it is REPLACED whatever the word
-// overlap; the old line is not retained by the new one.
+// (7) A CRLF `@@` header parses (trailing CR tolerated); the drop is lost.
 {
-  const res = await runRetention(
-    "src/app.ts",
-    "// TODO: fix\nfunction t() {\n  return 1;\n}\n",
-    "// TODO: fix the other thing\nfunction t() {\n  return 1;\n}\n",
-  );
-  assert(
-    res.ok === true &&
-      res.lost.length === 0 &&
-      res.replaced.length === 1 &&
-      res.replaced[0] === "// TODO: fix",
-    "wording (7): `// TODO: fix` reworded in place with unchanged code → REPLACED",
-  );
-}
-
-// (8) A CRLF `@@` header parses (trailing CR tolerated) and the drop is LOST;
-// a genuinely malformed header fails closed with a named reason ("not run").
-{
-  const mkExec =
-    (header: string): ExecFn =>
-    async (cmd) =>
-      cmd.startsWith("git diff")
-        ? {
-            stdout: `--- a/src/app.ts\n+++ b/src/app.ts\n${header}\n-// gone\n function f() {}\n`,
-          }
-        : { stdout: "" };
-  const crlf = await findLostComments(mkExec("@@ -1,2 +1,1 @@\r"), "/tmp", "a".repeat(40), "HEAD", [
-    "src",
-  ]);
-  assert(
-    crlf.ok === true && crlf.lost.length === 1,
-    `crlf (8): CRLF hunk header parses and the lost comment is reported (got ${JSON.stringify(crlf)})`,
-  );
-  const bad = await findLostComments(mkExec("@@ garbage @@"), "/tmp", "a".repeat(40), "HEAD", [
-    "src",
-  ]);
-  assert(
-    bad.ok === false && bad.reason.includes("unparseable hunk header"),
-    `crlf (8): malformed hunk header → ok:false naming the unparseable header (got ${JSON.stringify(bad)})`,
-  );
-}
-
-// (9) In-place rewording: the comment is reworded on its own change run (no
-// unchanged context between the removed and added comment), above an unchanged
-// signature whose body changed. The rewording is in place → REPLACED, not LOST.
-{
-  const res = await runRetention(
-    "src/app.ts",
-    "// original wording here\nfunction f() {\n  return 1;\n}\n",
-    "// different wording now\nfunction f() {\n  return 2;\n}\n",
-  );
-  assert(
-    res.ok === true &&
-      res.lost.length === 0 &&
-      res.replaced.length === 1 &&
-      res.replaced[0] === "// original wording here",
-    "in-place (9): one-line rewording with a changed body → replaced, not lost",
-  );
-}
-
-// (10) #1017 shape: 2-line comment reworded + body changed, hunk-local wording
-// carry → replaced (2 lines), zero lost.
-{
-  const res = await runRetention(
-    "src/app.ts",
-    "// the doc for f, line one\n// the doc for f, line two\nfunction f() {\n  return 1;\n}\n",
-    "// the doc for f, now reworded one\n// the doc for f, now reworded two\nfunction f() {\n  return 2;\n}\n",
-  );
-  assert(
-    res.ok === true && res.lost.length === 0 && res.replaced.length === 2 && res.exempt === 0,
-    "#1017 (10): reworded 2-line comment + changed code → replaced, not lost",
-  );
-}
-
-// (11) #1019 shape: block comment dropped above unchanged code, no new comment
-// in the hunk → every line lost.
-{
-  const res = await runRetention(
-    "src/app.ts",
-    "/* the doc for g.\n   more detail here */\nfunction g() {\n  return 1;\n}\n",
-    "function g() {\n  return 1;\n}\n",
-  );
-  assert(
-    res.ok === true && res.lost.length === 2 && res.replaced.length === 0,
-    "#1019 (11): dropped block comment on unchanged code → all lines lost",
-  );
-}
-
-// (12) Mixed hunks: A is reworded with its code changed (replaced); B is dropped
-// above unchanged code in a separate hunk (lost).
-{
-  const res = await runRetention(
-    "src/app.ts",
-    "// doc for aaa\nfunction aaa() {\n  return 1;\n}\n\n\n\n// note about bbb\nfunction bbb() {\n  return 2;\n}\n",
-    "// doc for aaa, reworded\nfunction aaa(n: number) {\n  return n;\n}\n\n\n\nfunction bbb() {\n  return 2;\n}\n",
-  );
-  assert(
-    res.ok === true &&
-      res.lost.length === 1 &&
-      res.lost[0] === "// note about bbb" &&
-      res.replaced.length === 1 &&
-      res.replaced[0] === "// doc for aaa",
-    "mixed (12): one lost (B, unchanged code) and one replaced (A, code changed)",
-  );
-}
-
-// (13) The annotated signature changes in the same hunk as a new comment →
-// replaced; the removed comment above an unchanged function in another hunk
-// stays lost; the failure row lists only the lost line; the gate note lists the
-// replaced line.
-{
-  const base =
-    "// comment to keep\nfunction x() {\n  return 1;\n}\n\n\n\n\n// comment replaced by the new rationale\nfunction y() {\n  return 1;\n}\n";
-  const head =
-    "function x() {\n  return 1;\n}\n\n\n\n\n// comment replaced by the new rationale, now with detail\nfunction y(n) {\n  return n;\n}\n";
-  const dir = await repoWith("src/app.ts", base, head);
-  try {
-    const res = await runRetentionIn(dir);
-    assert(
-      res.ok === true && res.lost.length === 1 && res.replaced.length === 1,
-      "signature (13): one lost + one replaced",
-    );
-    if (res.ok) {
-      const row = formatLostComments(res);
-      assert(
-        row.includes("comment to keep") && !row.includes("comment replaced"),
-        "signature (13): failure row lists only the lost line",
-      );
-      const failures: string[] = [];
-      const notes: string[] = [];
-      const b = (await git(dir, ["rev-parse", "HEAD~1"])).stdout.trim();
-      await runCommentRetentionGate(
-        realExec,
-        () => b,
-        new Map([["default", dir]]),
-        ["src"],
-        failures,
-        notes,
-      );
-      assert(
-        failures.length === 1 && failures[0].includes("comment to keep"),
-        "signature (13): gate failure lists only the lost line",
-      );
-      assert(
-        notes.length === 1 && notes[0].includes("comment replaced"),
-        "signature (13): gate note lists the replaced line",
-      );
-    }
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
+  const diff =
+    "--- a/src/app.ts\r\n+++ b/src/app.ts\r\n@@ -1,3 +1,2 @@\r\n-// crlf doc here\r\n function f() {}\r\n+function g() {}\r\n";
+  const parsed = parseHunks(diff);
+  assert(parsed.ok === true, "crlf (7): CRLF diff parses");
+  if (parsed.ok) {
+    const v = classifyHunk(parsed.hunks[0] as NonNullable<(typeof parsed.hunks)[0]>, () => false);
+    assert(v.lost.length === 1 && v.lost[0]?.text === "// crlf doc here", "crlf (7): drop is lost");
   }
 }
 
-// (14) Replaced-only diff through the develop gate (real git): no failure, a note.
+// (8) Fail-closed: an unparseable `@@` header is a named error, never skipped.
 {
-  const dir = await repoWith(
-    "src/app.ts",
-    "// compute the total for f\nfunction f() {\n  return 1;\n}\n",
-    "// compute the total for f, now with detail\nfunction g() {\n  return 1;\n}\n",
+  const parsed = parseHunks("--- a/x.ts\n+++ b/x.ts\n@@ garbage @@\n-// x\n");
+  assert(
+    parsed.ok === false && parsed.reason.includes("unparseable hunk header"),
+    "header (8): unparseable @@ header → ok:false with a named reason",
   );
-  try {
-    const b = (await git(dir, ["rev-parse", "HEAD~1"])).stdout.trim();
-    const failures: string[] = [];
-    const notes: string[] = [];
-    await runCommentRetentionGate(
-      realExec,
-      () => b,
-      new Map([["default", dir]]),
-      ["src"],
-      failures,
-      notes,
-    );
-    assert(failures.length === 0, "replaced-only (14): gate records no failure");
-    assert(
-      notes.some((n) => n.includes("replaced in the same hunk")),
-      "replaced-only (14): gate emits a replaced note",
-    );
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
 }
 
-// (15) Report line: replaced-only range → lost=0 with the replaced count and text.
+// (9) Word-less markers (`/**`, ` *`, `*\/`) carry no wording and are ignored.
 {
-  const fakeExec: ExecFn = async (cmd) => {
-    if (cmd.startsWith("git diff"))
-      return {
-        stdout:
-          "--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1,2 +1,2 @@\n-// compute the total for f\n-function f(){return 1;}\n+// compute the total for f, now with detail\n+function f(){return 2;}\n",
-      };
+  const res = await runRetention(
+    "src/app.ts",
+    "/**\n * \n */\nfunction f() {\n  return 1;\n}\n",
+    "function f() {\n  return 1;\n}\n",
+  );
+  assert(
+    res.ok === true && res.ok && res.lost.length === 0,
+    "markers (9): word-less marker lines are neither lost nor counted",
+  );
+}
+
+// (10) Retained: a comment moved to the end of a head code line is not lost.
+{
+  const res = await runRetention(
+    "src/app.ts",
+    "// the retry budget\nconst n = 3;\n",
+    "const n = 3; // the retry budget\n",
+  );
+  assert(
+    res.ok === true && res.ok && res.lost.length === 0,
+    "retained (10): trailing-part retention keeps a moved comment",
+  );
+}
+
+// (11) Evidence rendering: the note names each lost line with its file and the
+// added comment as context, and says it is not a failure.
+{
+  const row = formatLostComments({
+    lost: [{ file: "src/a.ts", text: "// old doc", addedNearby: ["// new doc"] }],
+    exempt: 2,
+  });
+  assert(
+    row.startsWith("comment-retention: 1 comment line(s) removed and not retained (exempt: 2)") &&
+      row.includes("not a failure") &&
+      row.includes("src/a.ts: // old doc") &&
+      row.includes("added nearby: // new doc"),
+    `note (11): lists file, text and added context, marked not a failure`,
+  );
+  const line = formatReportLine({
+    lost: [{ file: "src/a.ts", text: "// old doc", addedNearby: [] }],
+    exempt: 0,
+  });
+  assert(
+    line.startsWith("comments: lost=1 (exempt: 0)") && !line.includes("replaced"),
+    `report (11): keeps the comments: lost=N (exempt: K) line, no replaced bucket`,
+  );
+}
+
+// (12) The "Comments removed by this change" section reaches the reviewers
+// with each lost line; an empty result yields no section.
+{
+  const diff =
+    "--- a/extension/src/app.ts\n+++ b/extension/src/app.ts\n@@ -1,2 +1,2 @@\n-// old doc here\n function f() {}\n";
+  const fake: ExecFn = async (cmd) => {
+    if (cmd.startsWith("git diff")) return { stdout: diff };
     if (cmd.startsWith("git grep"))
-      return {
-        stdout: "HEAD:src/app.ts:function f(){return 2;}\nHEAD:src/app.ts:// new comment\n",
-      };
+      return { stdout: "HEAD:extension/src/app.ts:function f() {}\n" };
     return { stdout: "" };
   };
-  const line = await buildCommentsLine({ base: "abc", head: "def" }, "/tmp", fakeExec, ["src"]);
+  const section = await lostCommentsSection({ base: "abc", head: "def" }, "/tmp", fake, [
+    "extension/src",
+  ]);
   assert(
-    line.startsWith("comments: lost=0"),
-    "report (15): replaced-only range → 'comments: lost=0'",
+    section.includes("Comments removed by this change") &&
+      section.includes("extension/src/app.ts: // old doc here") &&
+      section.includes("LOSS:"),
+    "section (12): adversarial/lens context lists the lost line and asks for a judgement",
   );
-  assert(
-    line.includes("replaced: 1") && line.includes("compute the total"),
-    "report (15): replaced count and line are listed",
-  );
+  const none = await lostCommentsSection({ base: "abc", head: "def" }, "/tmp", async () => ({
+    stdout: "",
+  }));
+  assert(none === "", "section (12): empty diff → no section");
 }
 
-// (16) A timeout-like exec error is an infra error: the gate degrades to a
-// not-run note, never a failure — and the timeout option is actually
-// passed on every git exec (a recording fake asserts that).
+// (13) Fail-closed: the report line degrades to not-run when the range is unreadable.
 {
-  const seenOpts: Array<{ timeout?: number } | undefined> = [];
-  const failingExec: ExecFn = async (cmd, opts) => {
-    seenOpts.push(opts);
-    throw new Error(`etimedout: git ${cmd.split(" ")[1]} timed out after 1000ms (killed)`);
-  };
-  const line = await buildCommentsLine({ base: "abc", head: "def" }, "/tmp", failingExec, ["src"]);
+  const line = await buildCommentsLine({ base: "abc", head: "def" }, "/tmp", async () => {
+    throw new Error("boom");
+  });
   assert(
-    line.startsWith("comments: not-run ("),
-    "timeout (16): timeout-like exec error → not-run note",
-  );
-  assert(
-    seenOpts.length > 0 && seenOpts.every((o) => typeof o?.timeout === "number" && o.timeout > 0),
-    "timeout (16): every git exec in findLostComments carries a timeout option",
-  );
-  const res = await findLostComments(failingExec, "/tmp", "abc", "def", ["src"]);
-  assert(
-    !res.ok,
-    "timeout (16): a timed-out git diff is ok:false (note), never a lost-comment verdict",
+    line.startsWith("comments: not-run"),
+    "report (13): unreadable range → not-run, never a pass",
   );
 }
 
-// (17) Boilerplate overlap: stopwords alone never carry a lost comment's wording.
+// (14) Fail-closed: a diff whose head tree cannot be read is ok:false, not "nothing lost".
 {
-  const res = await runRetention(
-    "src/app.ts",
-    "// see the docs for details\nfunction f() {\n  return 1;\n}\n",
-    "function f() {\n  return 1;\n}\n// see the docs for more info\n",
+  const diff =
+    "--- a/extension/src/x.ts\n+++ b/extension/src/x.ts\n@@ -1,2 +1,1 @@\n-// doc\n f();\n";
+  const res = await findLostComments(
+    async (cmd) => {
+      if (cmd.startsWith("git diff")) return { stdout: diff };
+      throw new Error("unreadable");
+    },
+    "/tmp",
+    "abc",
+    "def",
+    ["extension/src"],
   );
-  assert(
-    res.ok === true && res.lost.length === 1 && res.replaced.length === 0,
-    "boilerplate (17): stopword-only overlap does not carry a lost comment",
-  );
+  assert(res.ok === false, "fail-closed (14): unreadable head tree → ok:false");
 }
 
-// (18) A blank unchanged line between a comment and its deleted code still
-// binds them: the comment is EXEMPT with its code, not LOST.
-{
-  const res = await runRetention(
-    "src/app.ts",
-    "// doc for gone\n\nfunction gone() {\n  return 1;\n}\nconst keep = 1;\n",
-    "\nconst keep = 1;\n",
-  );
-  assert(
-    res.ok === true && res.lost.length === 0 && res.exempt === 1,
-    `blank-line (18): comment bound to deleted code across a blank line is exempt (got ${JSON.stringify(res)})`,
-  );
-}
-
-// (19) Multi-line jsdoc dropped above unchanged code, with an unrelated remark
-// added in the same hunk: the `/**` opener and ` */` closer carry no words and
-// are ignored; only the word-bearing body line is LOST.
-{
-  const res = await runRetention(
-    "src/app.ts",
-    "/**\n * the doc for g\n */\nfunction g() {\n  return 1;\n}\n",
-    "function g() {\n  return 1;\n}\n// unrelated remark\n",
-  );
-  assert(
-    res.ok === true &&
-      res.lost.length === 1 &&
-      res.lost[0] === "* the doc for g" &&
-      res.replaced.length === 0,
-    `jsdoc closer (19): word-less /** and */ ignored, body line lost (got ${JSON.stringify(res)})`,
-  );
-}
-
-// (20) Trivial trailing text: a removed `*/` carries no words, so it is ignored
-// (neither lost nor replaced); the opener is reworded in place by the head line.
-{
-  const res = await runRetention(
-    "src/app.ts",
-    "/* a long doc block here\n*/\nfunction m() {\n  return 1;\n}\n",
-    "/* other unrelated doc */\nfunction m() {\n  return 1;\n}\n",
-  );
-  assert(
-    res.ok === true &&
-      res.lost.length === 0 &&
-      res.replaced.length === 1 &&
-      res.replaced[0] === "/* a long doc block here" &&
-      !res.replaced.includes("*/"),
-    `trivial retention (20): word-less "*/" ignored, opener replaced in place (got ${JSON.stringify(res)})`,
-  );
-}
-
-console.log(`\nexit ${exit}`);
-process.exit(exit);
+if (exit !== 0) process.exit(exit);
+console.log("comment-retention hunks: all assertions passed");

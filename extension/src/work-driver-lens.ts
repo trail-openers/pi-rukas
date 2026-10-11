@@ -1,6 +1,7 @@
 /** work-driver-lens — Step 7 (lens review) + Step 7f (lens-fix) handlers. */
 
 import { carriedAdversarialFindings } from "./adversarial-findings.ts";
+import { lostCommentsSection } from "./comment-retention.ts";
 import { detectRepeatSeam } from "./detect-repeat-seam.ts";
 import { type WideningFinding, scanTypeWidening } from "./invariant-scan.ts";
 import { buildEvidence, runClaimScan } from "./lens-evidence.ts";
@@ -118,6 +119,14 @@ export async function runLens(
   const carried = carriedAdversarialFindings(state.eventLog);
   if (carried) {
     context += `\n\nOUTSTANDING FROM THE ADVERSARIAL GATE (non-blocking there — judge them yourself):\n${carried}`;
+  }
+  // #1040 — comments the branch removed, for the SIMPLICITY lens (documentation)
+  // to weigh. Lost comments never failed the develop step; this is their review.
+  if (ps.baseSha && ps.branchName) {
+    context += await lostCommentsSection(
+      { base: ps.baseSha, head: `origin/${ps.branchName}` },
+      ctx.repoRoot,
+    );
   }
   if (wideningScanEnabled && widenings.length > 0) {
     const findingsSummary = widenings

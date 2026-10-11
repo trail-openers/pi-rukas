@@ -15,7 +15,6 @@ import {
   commentRetentionEnabled,
   findLostComments,
   formatLostComments,
-  formatReplacedComments,
 } from "./comment-retention.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import {
@@ -38,23 +37,20 @@ function isValidSha(s: string | undefined) {
 }
 
 /**
- * The #948 comment-retention gate: a removed comment line whose trimmed text
- * does not reappear under `paths` at the workstream's head is "lost" (the
- * developer deleted it to shrink the file). A removed comment whose annotated
- * code was deleted/changed in the SAME hunk and a new comment line was added
- * there is "replaced" (#1017 — reported as a NOTE, never a failure). Runs
- * PER-WORKTREE against each workstream's effective base, mirroring
- * `runFalsilyGreenCheck`. A git error or an unreadable tree degrades to a
- * NOTE (infra errors are never failures); only genuinely-lost comments
- * become a failure. `PI_ENSEMBLE_COMMENT_RETENTION=0` disables the check
- * and emits a note instead.
+ * The #948 comment-retention gate. A removed comment line whose text does not
+ * survive under `paths` at the workstream's head is LOST — recorded as a NOTE
+ * listing each line (with the added comment lines of its hunk as context) for
+ * the adversarial reviewer and the six-lens review to judge (#1040). Lost
+ * comments never fail the develop step. Runs PER-WORKTREE against each
+ * workstream's effective base, mirroring `runFalsilyGreenCheck`. A git error or
+ * an unreadable tree degrades to a NOTE. `PI_ENSEMBLE_COMMENT_RETENTION=0`
+ * disables the check and emits a note instead.
  */
 export async function runCommentRetentionGate(
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
   effectiveBaseFor: (wsId: string) => string | undefined,
   worktrees: Map<string, string>,
   paths: string[],
-  failures: string[],
   notes: string[],
 ): Promise<void> {
   if (!commentRetentionEnabled()) {
@@ -69,8 +65,7 @@ export async function runCommentRetentionGate(
       notes.push(`comment-retention: diff unavailable in ${cwd} (${res.reason}) — gate skipped`);
       continue;
     }
-    if (res.lost.length > 0) failures.push(formatLostComments(res));
-    if (res.replaced.length > 0) notes.push(formatReplacedComments(res.replaced));
+    if (res.lost.length > 0) notes.push(formatLostComments(res));
   }
 }
 

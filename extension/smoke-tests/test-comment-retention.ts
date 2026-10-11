@@ -7,7 +7,7 @@
  * and the develop-gate wiring (fake ExecFn through `verifyStepOutcome`) proves
  * the `verify-failed:develop` cap fires with the lost-line evidence, plus the
  * `PI_ENSEMBLE_COMMENT_RETENTION=0` note. Both directions are asserted (the
- * lossy diff fails, the replaced-only and clean diffs pass) — a gate never
+ * lost comments are evidence, so the lossy diff passes with a note) — a gate never
  * observed to fail is worthless. Hunk-level cases live in
  * test-comment-retention-hunks.ts.
  *
@@ -133,7 +133,7 @@ async function developGate(
     `// helpful comment to keep\nfunction add(a: number, b: number) {\n  return a + b;\n}\n`,
     `function add(a: number, b: number) {\n  return a + b;\n}\n`,
     "deleted comment above unchanged code is reported lost",
-    (res) => res.lost.length === 1 && res.lost[0] === "// helpful comment to keep",
+    (res) => res.lost.length === 1 && res.lost[0]?.text === "// helpful comment to keep",
   );
 
   // (b) moving a function with its comment verbatim to another file → not lost.
@@ -160,17 +160,17 @@ async function developGate(
     (res) => res.lost.length === 0 && res.exempt === 1,
   );
 
-  // (d) rewording a comment above UNCHANGED code, on its own change run → the
-  // rewording is in place, so it is REPLACED (a note), not lost.
+  // (d) rewording a comment above UNCHANGED code → the old wording is LOST
+  // (evidence for the reviewers); the new comment is its added context.
   await realCase(
     "(d)",
     `// original wording here\nfunction f() {\n  return 1;\n}\n`,
     `// different wording now\nfunction f() {\n  return 1;\n}\n`,
-    "in-place rewording above unchanged code is replaced (not lost)",
+    "rewording above unchanged code is lost, with the new comment as context",
     (res) =>
-      res.lost.length === 0 &&
-      res.replaced.length === 1 &&
-      res.replaced[0] === "// original wording here",
+      res.lost.length === 1 &&
+      res.lost[0]?.text === "// original wording here" &&
+      res.lost[0]?.addedNearby[0] === "// different wording now",
   );
 
   // (e) a multi-line block comment removed above unchanged code → lost (block).
@@ -196,7 +196,7 @@ async function developGate(
       return (
         res.lost.length === 25 &&
         row.includes("and 5 more") &&
-        row.split("\n").filter((l) => l.trim().startsWith("//")).length === 20
+        row.split("\n").filter((l) => l.includes("src/app.ts: //")).length === 20
       );
     },
   );
@@ -259,7 +259,7 @@ async function developGate(
     `// a real comment above\nconst y = a\n * b;\nconst z = 9;\n`,
     `const y = a\n * b;\nconst z = 9;\n`,
     "real comment above retained code IS lost; arithmetic continuation is not a comment",
-    (res) => res.lost.length === 1 && res.lost[0] === "// a real comment above",
+    (res) => res.lost.length === 1 && res.lost[0]?.text === "// a real comment above",
   );
 }
 
@@ -320,19 +320,22 @@ async function developGate(
   writeFileSync(path.join(dir, ".pi", "verify-cmd"), "echo ok\n");
   const headAdd = "HEAD:src/app.ts:function add(a,b){return a+b;}\n";
   try {
-    // (i) lossy diff → gate fails with the lost-line evidence.
+    // (i) lossy diff → passes; the lost line is evidence in a note, never a failure (#1040).
     {
       process.env.PI_ENSEMBLE_COMMENT_RETENTION = "1";
       const lossy = `--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1,2 +1,1 @@\n-// the comment the developer deleted\n function add(a,b){return a+b;}\n`;
       const gate = await developGate(948, dir, gateExec(lossy, headAdd));
-      const crFail = gate.failures.find((f) => f.startsWith("comment-retention:"));
       assert(
-        !gate.ok && crFail !== undefined,
-        "gate: lossy diff fails with a comment-retention failure",
+        gate.ok && !gate.failures.some((f) => f.startsWith("comment-retention:")),
+        "gate: lossy diff passes (a lost comment never fails the develop step)",
       );
       assert(
-        crFail !== undefined && crFail.includes("the comment the developer deleted"),
-        "gate: evidence row lists the lost line",
+        gate.notes.some(
+          (n) =>
+            n.includes("evidence for the reviewers") &&
+            n.includes("the comment the developer deleted"),
+        ),
+        "gate: evidence note lists the lost line",
       );
     }
     // (ii) clean diff → passes (both directions).
@@ -345,19 +348,20 @@ async function developGate(
         "gate: clean diff passes (no comment-retention failure)",
       );
     }
-    // (iv) replaced-only diff → passes (replaced is a note, not a failure).
+    // (iv) a removed comment rewritten with its code, in a hunk that adds a
+    // comment → lost evidence (a reviewer judges it); the gate still passes.
     {
       process.env.PI_ENSEMBLE_COMMENT_RETENTION = "1";
-      const replacedDiff = `--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1,2 +1,2 @@\n-// old comment\n-function f(){return 1;}\n+// new comment\n+function f(){return 2;}\n`;
+      const rewrittenDiff = `--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1,2 +1,2 @@\n-// old comment\n-function f(){return 1;}\n+// new comment\n+function f(){return 2;}\n`;
       const headF = "HEAD:src/app.ts:function f(){return 2;}\nHEAD:src/app.ts:// new comment\n";
-      const gate = await developGate(951, dir, gateExec(replacedDiff, headF));
+      const gate = await developGate(951, dir, gateExec(rewrittenDiff, headF));
       assert(
         gate.ok && !gate.failures.some((f) => f.startsWith("comment-retention:")),
-        "gate: replaced-only diff passes (replaced is a note, not a failure)",
+        "gate: rewritten-comment diff passes (lost is a note, not a failure)",
       );
       assert(
-        gate.notes.some((n) => n.includes("replaced in the same hunk")),
-        "gate: replaced-only diff emits a replaced note",
+        gate.notes.some((n) => n.includes("removed and not retained")),
+        "gate: rewritten-comment diff emits the evidence note",
       );
     }
     // (iii) escape hatch → disabled note, no failure.
@@ -400,8 +404,8 @@ async function developGate(
   const report = await buildCommentsLine({ base: "abc", head: "def" }, "/tmp", fakeExec, ["src"]);
   assert(report.startsWith("comments: lost=1"), "report: lossy range → 'comments: lost=1'");
   assert(report.includes("gone for good"), "report: the lost line is listed");
-  // A fake execFn: a replaced-only range yields lost=0, replaced=<n>.
-  const replacedExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
+  // A fake execFn: a rewritten-comment range lists the lost line with the added comment.
+  const rewrittenExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
     if (cmd.startsWith("git diff"))
       return {
         stdout: `--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1,2 +1,2 @@\n-// old comment\n-function f(){return 1;}\n+// new comment\n+function f(){return 2;}\n`,
@@ -412,15 +416,21 @@ async function developGate(
       };
     return { stdout: "" };
   };
-  const replacedLine = await buildCommentsLine({ base: "abc", head: "def" }, "/tmp", replacedExec, [
-    "src",
-  ]);
-  assert(
-    replacedLine.startsWith("comments: lost=0"),
-    "report: replaced-only range → 'comments: lost=0'",
+  const rewrittenLine = await buildCommentsLine(
+    { base: "abc", head: "def" },
+    "/tmp",
+    rewrittenExec,
+    ["src"],
   );
-  assert(replacedLine.includes("replaced: 1"), "report: replaced count is listed");
-  assert(replacedLine.includes("old comment"), "report: the replaced line is listed");
+  assert(
+    rewrittenLine.startsWith("comments: lost=1 (exempt: 0)"),
+    "report: rewritten comment → 'comments: lost=1 (exempt: 0)'",
+  );
+  assert(rewrittenLine.includes("old comment"), "report: the lost line is listed");
+  assert(
+    rewrittenLine.includes("added nearby: // new comment"),
+    "report: the added comment is shown as context",
+  );
 }
 
 console.log(`\nexit ${exit}`);

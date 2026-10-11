@@ -48,6 +48,8 @@ export function buildAdversarialPrompt(opts: {
   round: number;
   maxRounds: number;
   issueBody?: string;
+  /** The "Comments removed by this change" section (#1040); empty when none. */
+  commentEvidence?: string;
 }): string {
   return `You are reviewing the diff below. Context: ${opts.context}
 Round: ${opts.round} of ${opts.maxRounds}.
@@ -58,7 +60,7 @@ Attack this implementation. Find edge cases, security holes, race conditions, AP
   VERDICT: ISSUES_FOUND
   VERDICT: CRITICAL_ISSUES_FOUND
 
-Use the severity your role prompt defines. Only CRITICAL_ISSUES_FOUND blocks the commit; the others are recorded and carried into the pull request. Inflating a finding's severity to avoid approving is the worst failure mode of this role.${issueSection(opts.issueBody)}
+Use the severity your role prompt defines. Only CRITICAL_ISSUES_FOUND blocks the commit; the others are recorded and carried into the pull request. Inflating a finding's severity to avoid approving is the worst failure mode of this role.${issueSection(opts.issueBody)}${opts.commentEvidence ?? ""}
 
 Diff:
 \`\`\`diff

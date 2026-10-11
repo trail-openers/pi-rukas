@@ -1,6 +1,6 @@
 /**
  * comment-retention-hunks — pure diff parsing and per-hunk classification for
- * the comment-retention gate (#948, #1040; follow-up fix on main).
+ * the comment-retention gate (#948, #1040).
  *
  * RETENTION: a comment line removed between base and head is retained when its
  * trimmed text reappears verbatim under the scoped paths at head, or as the
@@ -8,16 +8,14 @@
  * Comment lines with no word characters (`/**`, ` *`, `*\/`, `//`) carry no
  * wording and are ignored entirely: neither lost nor counted as retained.
  *
- * REPLACEMENT: a removed comment block is REPLACED (a note, never a failure)
- * when either
- *  (a) it is reworded IN PLACE — the block and one or more added comment lines
- *      form one contiguous change run in the diff (no unchanged context line
- *      between them), whatever the word overlap; or
- *  (b) the annotated code (the old-file line right after the block) was removed
- *      or changed in this hunk AND the block's wording carries (≥3 words, ≥60%
- *      of the non-stop words shared) into one run of added comment lines.
- * An unrelated comment added elsewhere in the hunk never replaces a comment
- * whose annotated code is unchanged; boilerplate overlap alone never carries.
+ * Every removed comment line therefore falls into exactly one of three buckets:
+ *  - RETAINED: its text survives at head (see above).
+ *  - EXEMPT: the annotated code (the old-file line right after the comment
+ *    block) was removed and no added line in the hunk is a comment — the
+ *    comment went out together with the code it described.
+ *  - LOST: everything else. A lost comment is EVIDENCE for the reviewers, not a
+ *    develop failure: the adversarial reviewer and the six-lens review judge
+ *    whether the removal is legitimate or a loss of still-relevant docs.
  *
  * `parseHunks` turns a unified diff into hunks, each keyed to its REAL file
  * (a deleted file's `+++ /dev/null` is resolved from its `--- a/…` header) and
@@ -26,48 +24,25 @@
  * still cannot be parsed is an error, never silently skipped.
  *
  * A comment documents the code line immediately after it in the OLD file (its
- * annotated line), not the surrounding function body: a body edit alone never
- * licenses rewording a comment above an unchanged annotated line.
+ * annotated line), not the surrounding function body.
  *
  * `classifyHunk` decides, for one hunk, which removed comment blocks are
- * lost, replaced or exempt:
- *  - Annotated code = the code line(s) immediately after the removed comment
- *    block in the OLD file, with no unchanged context line in between. If the
- *    next old-file line is unchanged context, the annotated code is unchanged.
- *  - Exempt: the annotated code is gone at head and the hunk adds nothing
- *    (a pure deletion of the comment together with its code).
- *  - Otherwise each block line is lost unless its trimmed text reappears under
- *    the scoped paths at head.
+ * lost or exempt (the remainder are retained). Annotated code = the code line
+ * immediately after the removed comment block in the OLD file, with no
+ * unchanged context line in between.
  */
 
 const HUNK_HEADER_RE = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@(?: .*)?$/;
-const CARRY_MIN_WORDS = 3;
-const CARRY_RATIO = 0.6;
-/** Boilerplate that carries no meaning; never counts toward wording carry. */
-const CARRY_STOP = new Set([
-  "a",
-  "an",
-  "and",
-  "or",
-  "the",
-  "of",
-  "to",
-  "in",
-  "on",
-  "for",
-  "is",
-  "it",
-  "this",
-  "that",
-  "see",
-  "doc",
-  "docs",
-  "todo",
-  "fix",
-  "note",
-  "more",
-  "info",
-]);
+
+/** A removed comment line the head does not keep, with the evidence around it. */
+export type LostComment = {
+  /** The file the comment was removed from (the real path at head, or base for deletions). */
+  file: string;
+  /** The removed comment line, trimmed. */
+  text: string;
+  /** Added comment lines in the same hunk — what the change wrote in its place, if anything. */
+  addedNearby: string[];
+};
 
 export type BodyLine = {
   kind: "context" | "removed" | "added";
@@ -77,8 +52,7 @@ export type BodyLine = {
 export type Hunk = { file: string; lines: BodyLine[] };
 export type ParseResult = { ok: true; hunks: Hunk[] } | { ok: false; reason: string };
 export type HunkVerdict = {
-  lost: string[];
-  replaced: string[];
+  lost: LostComment[];
   exempt: number;
 };
 
@@ -200,57 +174,15 @@ export function parseHunks(diff: string): ParseResult {
   return { ok: true, hunks };
 }
 
-/**
- * Did the block's wording survive into one contiguous run of added comment
- * lines? Runs (not the whole hunk) are the unit, so an unrelated comment added
- * elsewhere in the hunk cannot launder a lost comment.
- */
-function wordingCarried(block: string[], addedRuns: string[][]): boolean {
-  // Count real words (≥3) but measure overlap on non-stop words, so boilerplate
-  // alone never carries and a one-content-word comment can still be carried.
-  if (new Set(wordsOf(block.join(" "))).size < CARRY_MIN_WORDS) return false;
-  const words = new Set(wordsOf(block.join(" ")).filter((w) => !CARRY_STOP.has(w)));
-  if (words.size === 0) return false;
-  return addedRuns.some((run) => {
-    const added = new Set(wordsOf(run.join(" ")));
-    let shared = 0;
-    for (const w of words) if (added.has(w)) shared++;
-    return shared / words.size >= CARRY_RATIO;
-  });
-}
-
-/** Classify one hunk's removed comment blocks. */
+/** Classify one hunk's removed comment blocks into lost or exempt. */
 export function classifyHunk(hunk: Hunk, presentAtHead: (text: string) => boolean): HunkVerdict {
-  const verdict: HunkVerdict = { lost: [], replaced: [], exempt: 0 };
-  // Contiguous change runs: a run is broken by an unchanged context line only.
-  // A removed comment and an added comment in the same run were reworded in place.
-  const changeRunOf = new Map<BodyLine, number>();
-  const runsWithAddedComment = new Set<number>();
-  const addedRuns: string[][] = [];
-  let changeRun = 0;
-  let inChange = false;
-  let run: string[] | null = null;
-  for (const l of hunk.lines) {
-    if (l.kind === "context") {
-      inChange = false;
-      run = null;
-      continue;
-    }
-    if (!inChange) {
-      changeRun++;
-      inChange = true;
-    }
-    changeRunOf.set(l, changeRun);
-    if (l.kind === "added" && l.isComment) {
-      runsWithAddedComment.add(changeRun);
-      if (!run) {
-        run = [];
-        addedRuns.push(run);
-      }
-      run.push(l.raw.trim());
-    } else run = null;
-  }
-  const hunkAddsNothing = !hunk.lines.some((l) => l.kind === "added");
+  const verdict: HunkVerdict = { lost: [], exempt: 0 };
+  // The added comment lines of this hunk: what the change wrote in place of
+  // whatever it removed. Shown to the reviewers as context for a lost comment.
+  const addedComments = hunk.lines
+    .filter((l) => l.kind === "added" && l.isComment && hasWord(l.raw))
+    .map((l) => l.raw.trim());
+  const hunkAddsComment = addedComments.length > 0;
   // The OLD file's view of this hunk: context and removed lines, in order.
   const old = hunk.lines.filter((l) => l.kind !== "added");
   let i = 0;
@@ -278,22 +210,15 @@ export function classifyHunk(hunk: Hunk, presentAtHead: (text: string) => boolea
     const annotated = old[j];
     const follow =
       annotated && annotated.kind === "removed" && !annotated.isComment ? annotated.raw.trim() : "";
-    // (a) reworded in place: the block shares a change run with added comment lines.
-    if (block.some((l) => runsWithAddedComment.has(changeRunOf.get(l) ?? -1))) {
-      verdict.replaced.push(...lines);
-      continue;
-    }
-    // (b) the annotated code changed AND the wording carried into an added comment.
-    if (follow !== "" && wordingCarried(lines, addedRuns)) {
-      verdict.replaced.push(...lines);
-      continue;
-    }
-    // Pure deletion: the annotated code is gone and the hunk adds nothing.
-    if (follow && !presentAtHead(follow) && hunkAddsNothing) {
+    // Exempt: the annotated code is gone at head and no comment was added.
+    if (follow && !presentAtHead(follow) && !hunkAddsComment) {
       verdict.exempt += lines.length;
       continue;
     }
-    for (const l of lines) if (!presentAtHead(l)) verdict.lost.push(l);
+    for (const text of lines) {
+      if (!presentAtHead(text))
+        verdict.lost.push({ file: hunk.file, text, addedNearby: addedComments });
+    }
   }
   return verdict;
 }

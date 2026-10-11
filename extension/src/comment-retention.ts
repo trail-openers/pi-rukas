@@ -4,27 +4,21 @@
  * Developers repeatedly delete or compress pre-existing comments to get
  * under the 500-line file cap. This module finds comment lines REMOVED between
  * base and head whose text does not reappear under `paths` at head, and
- * classifies each removed block as lost, replaced (a note) or exempt.
+ * classifies each removed block as retained, exempt or lost (the rules live in
+ * comment-retention-hunks.ts).
  *
- * Retention: a removed comment line survives when its trimmed text reappears
- * verbatim (or as the trailing part of a head line) under `paths`. Lines with
- * no word characters (`/**`, ` *`, `*\/`, `//`) are ignored.
- * Replacement: a block reworded in place (one contiguous change run with an
- * added comment) or whose annotated code changed while its wording carried
- * into an added comment is a note, never a loss. Exemption: a comment deleted
- * together with its annotated code, in a hunk that adds nothing. Full rules
- * live in comment-retention-hunks.ts.
+ * A LOST comment is evidence, not a failure: the develop gate records it as a
+ * note, and the adversarial reviewer and the six-lens review receive it as a
+ * "Comments removed by this change" section to judge (`lostCommentsSection`).
+ * Infra errors (unreadable base, git failure, an unparseable hunk header) make
+ * this module return `ok: false`; callers turn those into a note as well.
  *
  * `paths` scopes ALL operations (the diff, the head-tree read).
- *
- * Infra errors (unreadable base, git failure, an unparseable hunk header)
- * degrade to a NOTE — callers turn this module's failure union into a note,
- * never a failure.
  */
 
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
-import { classifyHunk, parseHunks, wordsOf } from "./comment-retention-hunks.ts";
+import { type LostComment, classifyHunk, parseHunks, wordsOf } from "./comment-retention-hunks.ts";
 import { trace } from "./trace.ts";
 import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import type { ExecFn } from "./worktree.ts";
@@ -69,7 +63,7 @@ function isSafePathList(paths: string[]): boolean {
 }
 
 export type LostCommentResult =
-  | { ok: true; lost: string[]; replaced: string[]; exempt: number }
+  | { ok: true; lost: LostComment[]; exempt: number }
   | { ok: false; reason: string };
 
 /** The exit code of a child-process failure, or undefined for any other value. */
@@ -171,14 +165,14 @@ async function confirmEmptyDiff(
       reason: `diff empty but range ${baseRef}...${headRef} (under paths) has ${changedInRange} commit(s) (misread) — cannot trust an empty diff`,
     };
   }
-  return { ok: true, lost: [], replaced: [], exempt: 0 };
+  return { ok: true, lost: [], exempt: 0 };
 }
 
 /**
- * Find comment lines removed between base and head that are not retained and
- * not exempt or replaced. Uses a normal-context diff (not `-U0`) so comment
- * blocks stay in one hunk. Reads the head tree under `paths` ONCE, and only
- * when a hunk actually removed a comment line.
+ * Find comment lines removed between base and head that are neither retained
+ * nor exempt. Uses a normal-context diff (not `-U0`) so comment blocks stay in
+ * one hunk. Reads the head tree under `paths` ONCE, and only when a hunk
+ * actually removed a comment line.
  */
 export async function findLostComments(
   execFn: ExecFn,
@@ -224,7 +218,7 @@ export async function findLostComments(
   const removedComment = parsed.hunks.some((h) =>
     h.lines.some((l) => l.kind === "removed" && l.isComment),
   );
-  if (!removedComment) return { ok: true, lost: [], replaced: [], exempt: 0 };
+  if (!removedComment) return { ok: true, lost: [], exempt: 0 };
 
   const headSet = await readLinesAtRef(execFn, cwd, headRef, paths);
   if (headSet === undefined) {
@@ -247,16 +241,14 @@ export async function findLostComments(
     return wordsOf(t).length >= 2 && [...headSet].some((l) => l.endsWith(t));
   };
 
-  const lost: string[] = [];
-  const replaced: string[] = [];
+  const lost: LostComment[] = [];
   let exempt = 0;
   for (const hunk of parsed.hunks) {
     const v = classifyHunk(hunk, presentAtHead);
     lost.push(...v.lost);
-    replaced.push(...v.replaced);
     exempt += v.exempt;
   }
-  return { ok: true, lost, replaced, exempt };
+  return { ok: true, lost, exempt };
 }
 
 /** Escape-hatch gate. Honours `PI_ENSEMBLE_COMMENT_RETENTION=0`. */
@@ -264,51 +256,77 @@ export function commentRetentionEnabled(): boolean {
   return process.env.PI_ENSEMBLE_COMMENT_RETENTION !== "0";
 }
 
-/** Max lost-comment lines listed in a failure row before "N more". */
+/** Max lost-comment lines listed in a note or report before "N more". */
 export const MAX_LISTED_LOST = 20;
 
-type RetentionCounts = { lost: string[]; replaced: string[]; exempt: number };
-
-/** Build the gate failure row (up to 20 lost lines + "N more"). */
-export function formatLostComments(res: RetentionCounts): string {
-  const shown = res.lost.slice(0, MAX_LISTED_LOST);
-  const more = res.lost.length - shown.length;
-  const lines = shown.map((l) => `    ${l}`).join("\n");
-  const tail = more > 0 ? `\n    … and ${more} more` : "";
-  return `comment-retention: ${res.lost.length} lost, ${res.replaced.length} replaced (exempt: ${res.exempt})\n${lines}${tail}`;
+/** The lost lines, each with the added comment lines of its hunk as context. */
+function renderLost(lost: LostComment[]): string[] {
+  const shown = lost.slice(0, MAX_LISTED_LOST);
+  const out: string[] = [];
+  for (const l of shown) {
+    out.push(`    ${l.file}: ${l.text}`);
+    if (l.addedNearby.length > 0) {
+      out.push(`      added nearby: ${l.addedNearby.slice(0, 3).join(" | ")}`);
+    }
+  }
+  const more = lost.length - shown.length;
+  if (more > 0) out.push(`    … and ${more} more`);
+  return out;
 }
 
-/** Build the note row for comments that were replaced, not lost. */
-export function formatReplacedComments(replaced: string[]): string {
-  const shown = replaced.slice(0, MAX_LISTED_LOST);
-  const more = replaced.length - shown.length;
-  const lines = shown.map((l) => `    ${l}`).join("\n");
-  const tail = more > 0 ? `\n    … and ${more} more` : "";
-  return `comment-retention: ${replaced.length} comment line(s) replaced in the same hunk (not a loss)\n${lines}${tail}`;
+/**
+ * The develop-gate note for lost comments. Evidence for the reviewers — never a
+ * failure, so it carries no verdict.
+ */
+export function formatLostComments(res: { lost: LostComment[]; exempt: number }): string {
+  return [
+    `comment-retention: ${res.lost.length} comment line(s) removed and not retained (exempt: ${res.exempt}) — evidence for the reviewers, not a failure`,
+    ...renderLost(res.lost),
+  ].join("\n");
 }
 
 /** Build the `comments:` line appended to an adversarial report. */
-export function formatReportLine(res: RetentionCounts): string {
-  const head = `comments: lost=${res.lost.length} (replaced: ${res.replaced.length}, exempt: ${res.exempt})`;
-  const parts = [head];
-  if (res.lost.length > 0) {
-    const shown = res.lost.slice(0, MAX_LISTED_LOST);
-    const more = res.lost.length - shown.length;
-    parts.push(...shown.map((l) => `  - ${l}`));
-    if (more > 0) parts.push(`  … and ${more} more`);
+export function formatReportLine(res: { lost: LostComment[]; exempt: number }): string {
+  return [
+    `comments: lost=${res.lost.length} (exempt: ${res.exempt})`,
+    ...renderLost(res.lost),
+  ].join("\n");
+}
+
+/**
+ * The "Comments removed by this change" section handed to the adversarial
+ * reviewer and the six-lens review. Empty string when nothing was lost or the
+ * check could not run — the section never claims a comment it did not see.
+ */
+export async function lostCommentsSection(
+  range: { base: string; head: string } | null,
+  cwd: string,
+  execFn: ExecFn = makeExecFn(),
+  paths: string[] = COMMENT_RETENTION_PATHS,
+): Promise<string> {
+  if (!range) return "";
+  try {
+    const res = await findLostComments(execFn, cwd, range.base, range.head, paths);
+    if (!res.ok || res.lost.length === 0) return "";
+    return [
+      "",
+      'Comments removed by this change (mechanical scan — each line below was deleted and its text does not survive at head; "added nearby" lists the comment lines this change wrote in the same hunk):',
+      ...renderLost(res.lost),
+      "",
+      "Judge each removal. LEGITIMATE: the code the comment described was removed or rewritten, or the comment was replaced by an equivalent. LOSS: the comment still documents code that exists at head, or it carried a constraint or rationale nothing else records. Report an unjustified loss as an ISSUES finding; do not report a legitimate removal.",
+    ].join("\n");
+  } catch (err) {
+    trace(`comment-retention: lostCommentsSection failed: ${(err as Error).message?.slice(0, 80)}`);
+    return "";
   }
-  if (res.replaced.length > 0) {
-    parts.push(`  replaced: ${res.replaced.map((l) => `"${l}"`).join(", ")}`);
-  }
-  return parts.join("\n");
 }
 
 /**
  * #948 — compute the comment-retention report line for the adversarial loop.
  * With a ref range, runs the check in `cwd` against `range.base`...`range.head`
  * (a real `ExecFn`); a git/ref error degrades to `not-run` (infra errors are
- * never a failure here — the /work develop gate is what fails on lost
- * comments). Without a range, the check cannot run (no base ref).
+ * never a failure here — lost comments are evidence, not a verdict). Without a
+ * range, the check cannot run (no base ref).
  */
 export async function buildCommentsLine(
   range: { base: string; head: string } | null,
