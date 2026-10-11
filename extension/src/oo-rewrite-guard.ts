@@ -13,6 +13,10 @@
  * handler) see the rewritten string, so in trust/sandbox mode a bare
  * `cargo test` routes through the existing `oo cargo test*` allow row
  * instead of relying on the model remembering the prefix.
+ * Correction (#1084): the routing sentence above is historical. In
+ * trust/sandbox mode the permission guard returns before reading agents.json,
+ * so the rewrite is not matched against any allow row; it only normalises the
+ * command. Strict and headless children never get the rewrite at all.
  *
  * REWRITE ONLY — no block/deny path of any kind. This hook must NEVER return
  * `{ block: true }` for any input; a no-match is a pass-through, not a
