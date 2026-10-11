@@ -5,19 +5,32 @@
  *
  * Only the workstreams without a green result are re-run. Greens keep their
  * worktree, commits and verdicts. Before a retry a failed workstream is reset
- * to its base, but ONLY when it has no commits ahead of that base: a worktree
- * with commits is never reset, so committed work cannot be discarded. The
- * retry is in-process and bounded to one attempt per workstream; a second
- * failure falls through to the branches-converged verdict and the handoff.
- * Called from runDevelopTopological (work-develop-topological.ts).
+ * to its base, but ONLY when it has no commits ahead of that base: its partial
+ * uncommitted edits are saved as a patch first (work-develop-git.ts). A
+ * worktree with commits is never reset. The retry is in-process and bounded
+ * to one attempt per workstream; a second failure falls through to the
+ * branches-converged verdict and the handoff. Called from runDevelopTopological
+ * (work-develop-topological.ts).
  */
+import { join } from "node:path";
 import { trace } from "./trace.ts";
+import {
+  type ExecFn,
+  commitsAheadOfBase,
+  errText,
+  isValidBaseSha,
+  resetWorktreeToBase,
+} from "./work-develop-git.ts";
+import { GREEN_DOWNGRADE } from "./work-develop-greens.ts";
 import type { RawVerdict } from "./work-develop-verdict-source.ts";
-import type { DriverContext } from "./work-driver-context.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 import { appendEvent, writeState } from "./workflow-state.ts";
 
-type ExecFn = NonNullable<DriverContext["verifyExecFn"]>;
+export {
+  commitsAheadOfBase,
+  resetWorktreeToBase,
+  worktreeStatus,
+} from "./work-develop-git.ts";
 
 /** One workstream's verdict in the develop fan-out. */
 export type FanoutVerdict = RawVerdict;
@@ -27,17 +40,6 @@ export interface PreservedGreens {
   kept: Set<string>;
   notes: string[];
 }
-
-/** #1016 — the only ref a git command in these paths may receive: a full
- *  40-hex SHA. A branch name, `--hard`, `-x` or anything else is refused
- *  before git sees it. */
-const SHA_RE = /^[0-9a-f]{40}$/;
-export const isBaseSha = (s: unknown): s is string => typeof s === "string" && SHA_RE.test(s);
-
-/** #1016 — tri-state commit count: git answered, or the check could not be read. */
-export type CommitCheck = { commits: number } | { unreadable: string };
-
-const errText = (err: unknown): string => String((err as Error)?.message ?? err).slice(0, 200);
 
 /** A shared, chained persister: each branch-completed is appended to the
  *  state ref and written as its workstream finishes. Writes are serialised
@@ -66,8 +68,8 @@ export function makeBranchCompletedPersister(
   };
 }
 
-/** #1016 — surface non-fatal persist failures in the handoff: each note
- *  lands in pipelineState.plumbReports (the handoff reads that field directly). */
+/** #1016 — surface non-fatal notes in the handoff: each lands in
+ *  pipelineState.plumbReports (the handoff reads that field directly). */
 export function withPersistNotes(state: WorkState, notes: string[]): WorkState {
   if (notes.length === 0) return state;
   const at = Date.now();
@@ -83,99 +85,62 @@ export function withPersistNotes(state: WorkState, notes: string[]): WorkState {
   return { ...state, pipelineState: { ...state.pipelineState, plumbReports } };
 }
 
-/** #1016 — `git rev-list --count <base>..HEAD` in the workstream worktree.
- *  Only a real answer from git is a count; an invalid base, a git error or
- *  unparseable output is `unreadable` and says why. */
-export async function commitsAheadOfBase(
-  execFn: ExecFn,
-  cwd: string,
-  base: string | undefined,
-): Promise<CommitCheck> {
-  if (!isBaseSha(base)) return { unreadable: "base is not a 40-hex sha" };
-  try {
-    const { stdout } = await execFn(`git rev-list --count ${base}..HEAD`, {
-      cwd,
-      maxBuffer: 64 * 1024,
-    });
-    const n = Number.parseInt(stdout.trim(), 10);
-    return Number.isNaN(n)
-      ? {
-          unreadable: `unparseable rev-list output: ${stdout.trim().slice(0, 80)}`,
-        }
-      : { commits: n };
-  } catch (err) {
-    return { unreadable: errText(err) };
-  }
-}
-
-/** #1016 — `git status --porcelain` lines (untrimmed), or unreadable. */
-export async function worktreeStatus(
-  execFn: ExecFn,
-  cwd: string,
-): Promise<string[] | { unreadable: string }> {
-  try {
-    const { stdout } = await execFn("git status --porcelain", { cwd, maxBuffer: 256 * 1024 });
-    return stdout.split("\n").filter((l) => l.trim().length > 0);
-  } catch (err) {
-    return { unreadable: errText(err) };
-  }
+/** #1016 — persist a commitless green's downgrade. The log (and any crash-resume)
+ *  must not keep the ok:true that runOneWorkstream already emitted for it. */
+export function recordDowngrade(
+  persister: { emit: (ev: WorkEvent) => void },
+  id: string,
+  reason: string,
+): void {
+  persister.emit({
+    kind: "branch-completed",
+    step: "develop",
+    workstreamId: id,
+    ok: false,
+    ms: 0,
+    at: Date.now(),
+    error: reason,
+  });
 }
 
 /** #1016 — the ONE owner of the rule "a green counts only with commits ahead
- *  of base". An unreadable check never untrusts a green: it keeps it, and the
- *  `note` names the workstream and the git error for the handoff. The develop
- *  step runs the #622 safety net per worktree BEFORE this check, so a developer's
- *  uncommitted edits are already commits here. */
+ *  of base". `fresh` is a green this run just produced: an invalid base or an
+ *  unreadable check fails it (fail-safe — uncommitted work is never trusted).
+ *  `resume` is a green preserved from an interrupted attempt: an unreadable
+ *  check keeps it, and `note` names the workstream and the git error. An
+ *  invalid base is a configuration fault, not a git error: it never keeps a
+ *  green, in either mode. The develop step runs the #622 safety net per
+ *  worktree BEFORE the fresh check, so a developer's uncommitted edits are
+ *  already commits here. */
 export async function greenCountsAsWork(
   execFn: ExecFn,
   cwd: string,
   base: string | undefined,
   workstreamId: string,
-): Promise<{ counts: boolean; note?: string }> {
+  mode: "fresh" | "resume",
+): Promise<{ counts: boolean; note?: string; reason?: string }> {
+  if (!isValidBaseSha(base)) {
+    return { counts: false, reason: `${GREEN_DOWNGRADE}: no valid base sha` };
+  }
   const ahead = await commitsAheadOfBase(execFn, cwd, base);
   if ("unreadable" in ahead) {
+    if (mode === "resume") {
+      return {
+        counts: true,
+        note: `${workstreamId}: commit check unreadable, green kept — ${ahead.unreadable}`,
+      };
+    }
     return {
-      counts: true,
-      note: `${workstreamId}: commit check unreadable, green kept — ${ahead.unreadable}`,
+      counts: false,
+      reason: `${GREEN_DOWNGRADE}: commit check unreadable — ${ahead.unreadable}`,
     };
   }
-  return { counts: ahead.commits > 0 };
+  return ahead.commits > 0 ? { counts: true } : { counts: false, reason: GREEN_DOWNGRADE };
 }
 
-/** #1016 — reset a workstream worktree to its base and drop untracked files
- *  (`git clean -fd`, no `-x`: gitignored dependency links survive). Refuses,
- *  by throwing, unless the base is a 40-hex SHA AND the commit check returned
- *  zero commits ahead: a worktree with committed work is never reset, and an
- *  unreadable check is never a licence to reset. Uncommitted edits are developer
- *  output the #622 safety net must commit, so a dirty (or unreadable) worktree
- *  is refused too. */
-export async function resetWorktreeToBase(
-  execFn: ExecFn,
-  cwd: string,
-  base: string | undefined,
-): Promise<void> {
-  if (!isBaseSha(base)) {
-    throw new Error(`refusing to reset ${cwd}: base is not a 40-hex sha`);
-  }
-  const ahead = await commitsAheadOfBase(execFn, cwd, base);
-  if (!("commits" in ahead)) {
-    throw new Error(`refusing to reset ${cwd}: commit check unreadable — ${ahead.unreadable}`);
-  }
-  if (ahead.commits > 0) {
-    throw new Error(`refusing to reset ${cwd}: HEAD has ${ahead.commits} commit(s) ahead of base`);
-  }
-  // Any dirty path (driver-owned included) or an unreadable status refuses:
-  // the reset discards files, so it must never run on a tree it cannot prove clean.
-  const status = await worktreeStatus(execFn, cwd);
-  if (!Array.isArray(status) || status.length > 0) {
-    throw new Error(`refusing to reset ${cwd}: uncommitted work present (or status unreadable)`);
-  }
-  await execFn(`git reset --hard ${base}`, { cwd, maxBuffer: 64 * 1024 });
-  await execFn("git clean -fd", { cwd, maxBuffer: 64 * 1024 });
-}
-
-/** #1016 — the crash-resume greens that still count as work. Each unreadable
- *  check keeps its green and records a note naming the workstream. */
+/** #1016 — the crash-resume greens that still count as work. An unreadable
+ *  check keeps its green and records a note; a preserved id with no worktree
+ *  is not kept and records a note naming it. */
 export async function trustedPreservedGreens(
   preserved: ReadonlySet<string>,
   ctx: {
@@ -187,12 +152,35 @@ export async function trustedPreservedGreens(
   const out: PreservedGreens = { kept: new Set<string>(), notes: [] };
   for (const id of preserved) {
     const cwd = ctx.worktrees[id];
-    if (typeof cwd !== "string") continue;
-    const r = await greenCountsAsWork(ctx.execFn, cwd, ctx.baseFor(id), id);
+    if (typeof cwd !== "string") {
+      out.notes.push(`${id}: preserved green has no worktree — not kept`);
+      continue;
+    }
+    const r = await greenCountsAsWork(ctx.execFn, cwd, ctx.baseFor(id), id, "resume");
     if (r.note !== undefined) out.notes.push(r.note);
     if (r.counts) out.kept.add(id);
   }
   return out;
+}
+
+/** #1016 — the retry's reset for one workstream: saves its partial work to
+ *  `<scratchAbs>/retry-<id>-1.patch`, then resets (fail closed: a refused save
+ *  or reset rejects, and that workstream is not re-run). */
+export function retryResetFor(args: {
+  execFn: ExecFn;
+  repoRoot: string;
+  scratchAbs: string;
+  cwdFor: (id: string) => string | undefined;
+  baseFor: (id: string) => string | undefined;
+}): (id: string) => Promise<string | undefined> {
+  return (id) => {
+    const cwd = args.cwdFor(id);
+    if (typeof cwd !== "string") return Promise.reject(new Error(`${id}: no worktree to reset`));
+    return resetWorktreeToBase(args.execFn, cwd, args.baseFor(id), {
+      repoRoot: args.repoRoot,
+      patchPath: join(args.scratchAbs, `retry-${id}-1.patch`),
+    });
+  };
 }
 
 /** #1016 — the independent fan-out with crash-resume greens kept (verdict
@@ -200,17 +188,19 @@ export async function trustedPreservedGreens(
  *  worktree reset. Workstreams in `skip` (no worktree) were already failed by
  *  the caller. `verdicts` is the pre-fan-out snapshot and is NOT mutated; the
  *  return value is the complete final verdict list, which the caller adopts
- *  as-is. */
+ *  as-is. `resetFor` returns the saved-patch path when partial work was saved;
+ *  each saved patch is recorded in `notes`. */
 export async function runIndependentFanout(args: {
   independent: string[];
   preserved: ReadonlySet<string>;
   skip: string[];
   runAt: (id: string) => Promise<FanoutVerdict>;
-  resetFor: (id: string) => Promise<void>;
+  resetFor: (id: string) => Promise<string | undefined>;
   verdicts: readonly FanoutVerdict[];
   multi: boolean;
+  notes?: string[];
 }): Promise<FanoutVerdict[]> {
-  const { independent, preserved, skip, runAt, resetFor, verdicts, multi } = args;
+  const { independent, preserved, skip, runAt, resetFor, verdicts, multi, notes } = args;
   const kept = independent.filter((id) => preserved.has(id));
   const toDispatch = independent.filter((id) => !skip.includes(id) && !kept.includes(id));
   const runSafely = (id: string): Promise<FanoutVerdict> =>
@@ -229,29 +219,21 @@ export async function runIndependentFanout(args: {
     trace(`work-driver: re-dispatching failed workstreams once — ${failed.join(", ")}`);
     // Resets run sequentially: they are cheap and keep git's index/ref locks
     // uncontended. A reset that refuses (commits ahead, unreadable check, bad
-    // base) fails that workstream with its named reason and is not re-run.
-    const resetErr = new Map<string, string>();
+    // base, path outside .worktrees, unsaved work) fails that workstream with
+    // its named reason and is not re-run.
+    const retried: FanoutVerdict[] = [];
     for (const id of failed) {
       try {
-        await resetFor(id);
+        const patch = await resetFor(id);
+        if (patch !== undefined) {
+          notes?.push(`${id}: partial work saved to ${patch} before the retry reset`);
+        }
+        retried.push(await runSafely(id));
       } catch (err) {
-        resetErr.set(id, errText(err));
+        retried.push({ id, ok: false, reason: errText(err) });
       }
     }
-    const retried = await Promise.allSettled(
-      failed.map(async (id): Promise<FanoutVerdict> => {
-        const err = resetErr.get(id);
-        if (err !== undefined) return { id, ok: false, reason: err };
-        return runAt(id);
-      }),
-    );
-    retried.forEach((s, i) => {
-      const id = failed[i] as string;
-      finals.set(
-        id,
-        s.status === "fulfilled" ? s.value : { id, ok: false, reason: errText(s.reason) },
-      );
-    });
+    for (const v of retried) finals.set(v.id, v);
   }
   const dispatched = new Set(toDispatch);
   const out = verdicts.filter((v) => !dispatched.has(v.id) && !kept.includes(v.id));

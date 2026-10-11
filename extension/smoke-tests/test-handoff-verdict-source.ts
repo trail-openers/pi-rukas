@@ -135,11 +135,11 @@ const second: WorkState = {
 const md2 = renderHandoffMarkdown(second, REPO);
 const chat2 = renderHandoffUserMessage(second, REPO, `${REPO}/tmp/issue-848`);
 assert(
-  md2.includes("- task-b: kept (ok)") && md2.includes(`- task-a: FAIL after retry — ${SECOND}`),
+  md2.includes("- task-b: ok") && !md2.includes("task-b: kept") && md2.includes(`- task-a: FAIL after retry — ${SECOND}`),
   "markdown: second failure names kept task-b and FAIL-after-retry task-a",
 );
 assert(
-  chat2.includes("task-b: kept (ok)") && chat2.includes(`task-a: FAIL after retry — ${SECOND}`),
+  chat2.includes("task-b: ok") && !chat2.includes("task-b: kept") && chat2.includes(`task-a: FAIL after retry — ${SECOND}`),
   "chat: second failure names kept task-b and FAIL-after-retry task-a",
 );
 

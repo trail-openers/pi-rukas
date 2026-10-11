@@ -21,6 +21,7 @@
  * fence-recovery-started event (nothing was discarded).
  */
 
+import { commandOf } from "./lib/argv-shell.ts";
 import { execFile } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -44,6 +45,7 @@ function assert(cond: boolean, msg: string) {
 }
 
 const realExec: ExecFn = async (cmd, o) => {
+  cmd = commandOf(cmd, o);
   const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
     cwd: o?.cwd,
     maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
@@ -335,9 +337,7 @@ function discardedShaOf(after: WorkState): string | undefined {
     caps.length === 0,
     `#849 case 3 (merged as c): the clean re-run proceeds — NO cap-hit (got: ${caps.map((c) => c.cap)})`,
   );
-  const recoveryCalls = calls.filter((c) =>
-    (c.prompt ?? "").includes("FENCE MERGE-AND-RETRY"),
-  );
+  const recoveryCalls = calls.filter((c) => (c.prompt ?? "").includes("FENCE MERGE-AND-RETRY"));
   assert(
     recoveryCalls.length === 1,
     `#849 case 3 (merged as c): exactly ONE merge-and-retry re-dispatch (the cycle IS the merge) (got ${recoveryCalls.length})`,
@@ -357,8 +357,10 @@ function discardedShaOf(after: WorkState): string | undefined {
     .find(
       (
         e,
-      ): e is Extract<import("../src/workflow-state.ts").WorkEvent, { kind: "branches-converged" }> =>
-        e.kind === "branches-converged" && e.step === "develop",
+      ): e is Extract<
+        import("../src/workflow-state.ts").WorkEvent,
+        { kind: "branches-converged" }
+      > => e.kind === "branches-converged" && e.step === "develop",
     );
   const cVerdict = conv?.verdicts.find((v) => v.id === "c");
   const bVerdict = conv?.verdicts.find((v) => v.id === "b");

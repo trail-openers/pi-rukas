@@ -20,7 +20,7 @@
  * The flipped `reason` wording stays in work-develop-fence-verdicts.ts
  * (applyFenceVerdicts) — this module only renders it, never builds it.
  */
-import { eventsSinceDevelopStart } from "./work-develop-greens.ts";
+import { GREEN_DOWNGRADE, eventsSinceDevelopStart } from "./work-develop-greens.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 /** One line of the handoff's "Workstream verdicts" section. */
@@ -65,11 +65,34 @@ export function verdictLine(v: RawVerdict, attempts = 0): VerdictLine {
 function developAttemptCounts(state: WorkState): Map<string, number> {
   const counts = new Map<string, number>();
   for (const e of eventsSinceDevelopStart(state)) {
-    if (e.kind === "branch-completed") {
+    // A downgrade rewrites its attempt's verdict; it is not a new attempt.
+    const rewrite =
+      e.kind === "branch-completed" && !e.ok && !!e.error?.startsWith(GREEN_DOWNGRADE);
+    if (e.kind === "branch-completed" && !rewrite) {
       counts.set(e.workstreamId, (counts.get(e.workstreamId) ?? 0) + 1);
     }
   }
   return counts;
+}
+
+/**
+ * #1016 — one verdict per workstream: its LATEST branch-completed. The log is
+ * append-only, so a retry or a downgrade adds an event that supersedes the
+ * earlier one; the first-seen order is kept.
+ */
+function latestCompletionPerWorkstream(state: WorkState): RawVerdict[] {
+  const latest = new Map<string, RawVerdict>();
+  for (const e of state.eventLog) {
+    if (e.kind !== "branch-completed") continue;
+    // branch-completed carries no structured `reason` field — its `error`
+    // tail (truncated at the event) is the fallback attribution.
+    latest.set(e.workstreamId, {
+      id: e.workstreamId,
+      ok: e.ok,
+      reason: e.ok ? undefined : e.error,
+    });
+  }
+  return [...latest.values()];
 }
 
 /**
@@ -92,18 +115,7 @@ export function developVerdictLines(state: WorkState): VerdictLine[] {
   const raw: RawVerdict[] =
     lastConverged && lastConverged.verdicts.length > 0
       ? lastConverged.verdicts
-      : state.eventLog
-          .filter(
-            (e): e is Extract<WorkEvent, { kind: "branch-completed" }> =>
-              e.kind === "branch-completed",
-          )
-          // branch-completed carries no structured `reason` field — its `error`
-          // tail (truncated at the event) is the fallback attribution.
-          .map((e) => ({
-            id: e.workstreamId,
-            ok: e.ok,
-            reason: e.ok ? undefined : e.error,
-          }));
+      : latestCompletionPerWorkstream(state);
   const attempts = developAttemptCounts(state);
   return raw.map((v) => verdictLine(v, attempts.get(v.id) ?? 0));
 }

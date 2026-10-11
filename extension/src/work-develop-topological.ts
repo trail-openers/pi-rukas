@@ -17,12 +17,15 @@ import {
   describeSiblingFenceViolations,
   replaceDevelopConvergedVerdicts,
 } from "./work-develop-fence-verdicts.ts";
+import { isValidBaseSha } from "./work-develop-git.ts";
+import { GREEN_DOWNGRADE } from "./work-develop-greens.ts";
 import { refuseMissingWorktrees } from "./work-develop-missing-worktree.ts";
 import {
   type PreservedGreens,
   greenCountsAsWork,
   makeBranchCompletedPersister,
-  resetWorktreeToBase,
+  recordDowngrade,
+  retryResetFor,
   runIndependentFanout,
   withPersistNotes,
 } from "./work-develop-retry.ts";
@@ -38,7 +41,6 @@ import { clearDispatch } from "./work-driver-resume.ts";
 import {
   applySafetyNet,
   hasAnyWorktreeEvidence,
-  isValidBaseSha,
   safetyNetWorktree,
 } from "./work-driver-safety-net.ts";
 import { armStepNotice } from "./work-driver-step-notice.ts";
@@ -162,43 +164,46 @@ async function runDevelopTopological(
   // #1016 — a green with no commits ahead of its base is failed inside runAt,
   // so the retry and the verdicts see the same truth. The fan-out returns the
   // final verdict list, which replaces the shared array before dependents run.
+  // #1016 — a developer that CLAIMED green is hollow evidence even when no
+  // commit or change backs it: the gate must run to say so, not be skipped.
+  let claimedGreen = false;
   verdicts = await runIndependentFanout({
     independent,
     preserved: preserved.kept,
     skip: missingWorktree,
     runAt: async (id) => {
-      const cwd = worktrees[id] as string;
+      const cwd = worktrees[id];
+      if (typeof cwd !== "string") return { id, ok: false, reason: "no worktree" };
       const r = await runOneWorkstream(id, cwd);
       if (!r.ok) return { id, ok: false };
+      claimedGreen = true;
       const base = workstreamBaseShas[id] ?? globalBaseSha;
       // #1016 — the #622 safety net commits this worktree's leftover edits
       // BEFORE the green check, so uncommitted developer work counts as work
       // and is never reset away.
       if (isValidBaseSha(base)) {
-        const sn = await safetyNetWorktree(id, cwd, base);
+        const sn = await safetyNetWorktree(id, cwd, base, execFn, persistNotes);
         if (sn) branchEvents.push(sn);
       }
-      const green = await greenCountsAsWork(execFn, cwd, base, id);
+      const green = await greenCountsAsWork(execFn, cwd, base, id, "fresh");
       if (green.note !== undefined) persistNotes.push(green.note);
       if (green.counts) return r;
-      // Persist the downgrade: the log (and any crash-resume) must not keep the
-      // ok:true that runOneWorkstream already emitted for a commitless green.
-      const reason = "no commits ahead of base";
-      persister.emit({
-        kind: "branch-completed",
-        step: "develop",
-        workstreamId: id,
-        ok: false,
-        ms: 0,
-        at: Date.now(),
-        error: reason,
-      });
+      const reason = green.reason ?? GREEN_DOWNGRADE;
+      recordDowngrade(persister, id, reason);
       return { id, ok: false, reason };
     },
-    resetFor: (id) =>
-      resetWorktreeToBase(execFn, worktrees[id] as string, workstreamBaseShas[id] ?? globalBaseSha),
+    // #1016 — the retry's reset: saves the worktree's partial work to the cycle
+    // scratch dir first, and refuses (fail closed) when it cannot.
+    resetFor: retryResetFor({
+      execFn,
+      repoRoot: ctx.repoRoot,
+      scratchAbs,
+      cwdFor: (id) => worktrees[id],
+      baseFor: (id) => workstreamBaseShas[id] ?? globalBaseSha,
+    }),
     verdicts,
     multi: ids.length > 1,
+    notes: persistNotes,
   });
   for (const v of verdicts) {
     if (!v.ok) failedOrSkipped.add(v.id);
@@ -301,7 +306,7 @@ async function runDevelopTopological(
   // is ANY evidence to check: at least one worktree has commits ahead of its
   // base OR has uncommitted changes — the same condition verifyDevelopOutcome
   // itself computes per worktree.
-  const hasDevelopEvidence = await hasAnyWorktreeEvidence(ctx, next);
+  const hasDevelopEvidence = claimedGreen || (await hasAnyWorktreeEvidence(ctx, next));
   // #622 — mechanical auto-commit safety net. Fires per-worktree when a
   // developer left uncommitted work in their worktree (no commits ahead of the
   // workstream's effective base) after a successful dispatch. #679: independent

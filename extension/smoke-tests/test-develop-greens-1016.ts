@@ -70,10 +70,12 @@ const SHA = "a".repeat(40);
 /** A recording stub: every git command seen, answering rev-list with `count`. */
 const stubExec =
   (count: string, calls: string[]): ExecFn =>
-  async (cmd) => {
-    calls.push(cmd);
+  async (cmd, opts) => {
+    // argv form (#1016): the recorded line is the command as git receives it.
+    const line = [cmd, ...(opts?.argv ?? [])].join(" ");
+    calls.push(line);
     return {
-      stdout: cmd.startsWith("git rev-list") ? `${count}\n` : "",
+      stdout: line.startsWith("git rev-list") ? `${count}\n` : "",
       stderr: "",
     };
   };
@@ -113,11 +115,23 @@ const stubExec =
     baseFor: () => SHA,
   });
   assert(zeroCommits.kept.size === 0, "#1016: a green with zero commits (git said 0) is not kept");
+  const noBase = await trustedPreservedGreens(new Set(["task-x"]), {
+    execFn: stubExec("3", []),
+    worktrees: { "task-x": "/w" },
+    baseFor: () => undefined,
+  });
+  assert(noBase.kept.size === 0, "#1016: an invalid/absent base fails closed, never kept as green");
 
   // Finding 2: the reset accepts ONLY a 40-hex sha; nothing reaches git otherwise.
+  const SAVE_W = { repoRoot: "/r", patchPath: "/r/tmp/w.patch" };
   for (const bad of ["-x", "--hard", "main", "abc123", `${SHA}\n`]) {
     const calls: string[] = [];
-    const refused = await resetWorktreeToBase(stubExec("0", calls), "/w", bad).then(
+    const refused = await resetWorktreeToBase(
+      stubExec("0", calls),
+      "/r/.worktrees/w",
+      bad,
+      SAVE_W,
+    ).then(
       () => false,
       (err: Error) => /40-hex/.test(err.message),
     );
@@ -129,7 +143,12 @@ const stubExec =
   // Finding 2: a worktree with commits ahead is never reset, and an unreadable
   // check is never a licence to reset.
   const ahead: string[] = [];
-  const aheadRefused = await resetWorktreeToBase(stubExec("2", ahead), "/w", SHA).then(
+  const aheadRefused = await resetWorktreeToBase(
+    stubExec("2", ahead),
+    "/r/.worktrees/w",
+    SHA,
+    SAVE_W,
+  ).then(
     () => false,
     (err: Error) => /2 commit\(s\) ahead/.test(err.message),
   );
@@ -137,7 +156,7 @@ const stubExec =
     aheadRefused && !ahead.some((c) => c.startsWith("git reset")),
     "#1016: a worktree with commits ahead of base is never reset",
   );
-  const unreadableRefused = await resetWorktreeToBase(boom, "/w", SHA).then(
+  const unreadableRefused = await resetWorktreeToBase(boom, "/r/.worktrees/w", SHA, SAVE_W).then(
     () => false,
     (err: Error) => /unreadable/.test(err.message),
   );
@@ -145,10 +164,10 @@ const stubExec =
 
   // Finding 3: a zero-commit reset is reset --hard + clean -fd, with no stash.
   const seen: string[] = [];
-  await resetWorktreeToBase(stubExec("0", seen), "/w", SHA);
+  await resetWorktreeToBase(stubExec("0", seen), "/r/.worktrees/w", SHA, SAVE_W);
   assert(
     seen.includes(`git reset --hard ${SHA}`) &&
-      seen.includes("git clean -fd") &&
+      seen.some((c) => c.startsWith("git clean -fd")) &&
       !seen.some((c) => c.includes("stash")),
     "#1016: the reset is git reset --hard <sha> + git clean -fd, never a stash",
   );
@@ -164,7 +183,7 @@ const stubExec =
       calls.push(id);
       return { id, ok: false };
     },
-    resetFor: (id) => resetWorktreeToBase(stubExec("1", []), `/w/${id}`, SHA),
+    resetFor: (id) => resetWorktreeToBase(stubExec("1", []), `/r/.worktrees/${id}`, SHA, SAVE_W),
     verdicts: [],
     multi: true,
   });
@@ -184,8 +203,7 @@ const stubExec =
 // #1016 — a crash-resume green is trusted only with commits ahead of base, and
 // a re-run never touches a preserved green's HEAD.
 {
-  const { execFileSync, exec } = await import("node:child_process");
-  const { promisify } = await import("node:util");
+  const { execFileSync } = await import("node:child_process");
   const fs = await import("node:fs/promises");
   const os = await import("node:os");
   const path = await import("node:path");
@@ -198,23 +216,28 @@ const stubExec =
       encoding: "utf8",
     }).trim();
   const mkRepo = async (name: string) => {
-    const d = path.join(dir, name);
+    const d = path.join(dir, ".worktrees", name);
     await fs.mkdir(d, { recursive: true });
     git(d, ["init", "-q"]);
     git(d, ["commit", "--allow-empty", "-qm", "base"]);
     return d;
   };
+  const save = (name: string) => ({
+    repoRoot: dir,
+    patchPath: path.join(dir, "tmp", `${name}.patch`),
+  });
+  const exists = (p: string) =>
+    fs.stat(p).then(
+      () => true,
+      () => false,
+    );
   const dirA = await mkRepo("a");
   const dirB = await mkRepo("b");
   const base = git(dirA, ["rev-parse", "HEAD"]);
   git(dirA, ["commit", "--allow-empty", "-qm", "work"]);
   const headA = git(dirA, ["rev-parse", "HEAD"]);
-  // Test shim: the real shell exec, typed to the driver's verifyExecFn seam.
-  const shell = promisify(exec);
-  const execFn: ExecFn = async (cmd, opts) => {
-    const r = await shell(cmd, opts);
-    return { stdout: String(r.stdout), stderr: String(r.stderr) };
-  };
+  // The production executor: argv commands run via execFile (no shell).
+  const { execp: execFn } = await import("../src/work-driver-verify.ts");
   const kept = await trustedPreservedGreens(new Set(["a", "b"]), {
     execFn,
     worktrees: { a: dirA, b: dirB },
@@ -233,7 +256,7 @@ const stubExec =
     skip: [],
     verdicts: [],
     multi: true,
-    resetFor: async () => {},
+    resetFor: async () => undefined,
     runAt: async (id) => {
       calls.push(id);
       attempts[id] = (attempts[id] ?? 0) + 1;
@@ -254,20 +277,17 @@ const stubExec =
   // worktree resets to its base with no stash entry left behind.
   const baseB = git(dirB, ["rev-parse", "HEAD"]);
   await fs.writeFile(path.join(dirB, "partial.txt"), "half-written");
-  const dirtyRefused = await resetWorktreeToBase(execFn, dirB, baseB).then(
-    () => false,
-    (err: Error) => /uncommitted work/.test(err.message),
-  );
-  const survived = await fs.stat(path.join(dirB, "partial.txt")).then(
-    () => true,
-    () => false,
+  const patchB = path.join(dir, "tmp", "b.patch");
+  const savedB = await resetWorktreeToBase(execFn, dirB, baseB, save("b"));
+  const savedText = await fs.readFile(patchB, "utf8").catch(() => "");
+  assert(
+    savedB === patchB && savedText.includes("partial.txt"),
+    "#1016: a reset saves uncommitted edits to the patch before resetting",
   );
   assert(
-    dirtyRefused && survived,
-    "#1016: a reset refuses uncommitted edits and leaves them on disk",
+    !(await exists(path.join(dirB, "partial.txt"))),
+    "#1016: the reset removes the saved edit from the tree",
   );
-  await fs.rm(path.join(dirB, "partial.txt"));
-  await resetWorktreeToBase(execFn, dirB, baseB);
   assert(git(dirB, ["stash", "list"]) === "", "#1016: the retry reset leaves no stash entry");
   assert(
     git(dirB, ["rev-parse", "HEAD"]) === baseB,
@@ -276,7 +296,7 @@ const stubExec =
   // A worktree with a commit ahead of base is never reset: HEAD and the commit survive.
   git(dirB, ["commit", "--allow-empty", "-qm", "committed work"]);
   const headB = git(dirB, ["rev-parse", "HEAD"]);
-  const aheadRefused = await resetWorktreeToBase(execFn, dirB, baseB).then(
+  const aheadRefused = await resetWorktreeToBase(execFn, dirB, baseB, save("b2")).then(
     () => false,
     () => true,
   );
@@ -292,7 +312,7 @@ const stubExec =
     skip: [],
     verdicts: [],
     multi: true,
-    resetFor: async () => {},
+    resetFor: async () => undefined,
     runAt: async (id) => {
       if (id === "b" && attempts.b !== undefined) throw new Error("retry exploded");
       attempts[id] = (attempts[id] ?? 0) + 1;
@@ -309,23 +329,89 @@ const stubExec =
   // not green, and a reset never discards uncommitted edits.
   const dirC = await mkRepo("c");
   const baseC = git(dirC, ["rev-parse", "HEAD"]);
-  const emptyC = await greenCountsAsWork(execFn, dirC, baseC, "c");
+  const emptyC = await greenCountsAsWork(execFn, dirC, baseC, "c", "fresh");
   await fs.writeFile(path.join(dirC, "edit.txt"), "uncommitted");
-  const dirtyC = await greenCountsAsWork(execFn, dirC, baseC, "c");
+  const dirtyC = await greenCountsAsWork(execFn, dirC, baseC, "c", "fresh");
   assert(
     !emptyC.counts && !dirtyC.counts,
     "#1016: a zero-commit worktree is not green until the safety net commits it",
   );
-  const cRefused = await resetWorktreeToBase(execFn, dirC, baseC).then(
+  // A failed patch write (a file where the patch dir should be) refuses the reset.
+  await fs.writeFile(path.join(dir, "blocker"), "x");
+  const cRefused = await resetWorktreeToBase(execFn, dirC, baseC, {
+    repoRoot: dir,
+    patchPath: path.join(dir, "blocker", "c.patch"),
+  }).then(
     () => false,
-    (err: Error) => /uncommitted work/.test(err.message),
+    (err: Error) => /could not save partial work/.test(err.message),
   );
-  const cSurvived = await fs.stat(path.join(dirC, "edit.txt")).then(
-    () => true,
+  assert(
+    cRefused && (await exists(path.join(dirC, "edit.txt"))),
+    "#1016: a failed patch write refuses the reset and the edit stays on disk",
+  );
+  const cSaved = await resetWorktreeToBase(execFn, dirC, baseC, save("c"));
+  const cPatch = await fs.readFile(cSaved ?? "", "utf8").catch(() => "");
+  assert(
+    cPatch.includes("edit.txt") && !(await exists(path.join(dirC, "edit.txt"))),
+    "#1016: an unsaved edit is written to the patch, then reset",
+  );
+  const outside = await resetWorktreeToBase(execFn, dir, baseC, save("o")).then(
     () => false,
+    (err: Error) => /not inside/.test(err.message),
   );
-  assert(cRefused && cSurvived, "#1016: a reset never discards uncommitted edits");
+  assert(outside, "#1016: a path outside .worktrees/ is refused before git runs");
+  // Finding 1: an invalid base or an unreadable check never makes a FRESH green
+  // count, even with uncommitted edits present; a resume green is still kept.
+  const boomFn: ExecFn = async () => {
+    throw new Error("fatal: bad object");
+  };
+  const invalid = await greenCountsAsWork(execFn, dirC, "main", "c", "fresh");
+  const invalidResume = await greenCountsAsWork(execFn, dirC, undefined, "c", "resume");
+  assert(!invalidResume.counts, "#1016: an absent base never keeps a preserved green");
+  const unreadableFresh = await greenCountsAsWork(boomFn, dirC, baseC, "c", "fresh");
+  const unreadableResume = await greenCountsAsWork(boomFn, dirC, baseC, "c", "resume");
+  assert(
+    !invalid.counts && !unreadableFresh.counts && unreadableResume.counts,
+    "#1016: an invalid base or unreadable check fails a fresh green; a resume green is kept",
+  );
   await fs.rm(dir, { recursive: true, force: true });
+}
+
+// Finding 2: a downgraded commitless green is ONE attempt, not a retry.
+{
+  const { fanoutVerdictLines } = await import("../src/work-driver-handoff-fanout.ts");
+  const { GREEN_DOWNGRADE } = await import("../src/work-develop-greens.ts");
+  const st = {
+    schemaVersion: 1,
+    issue: 1,
+    updatedAt: 0,
+    pipelineState: { currentStep: "develop", inFlightJobIds: [] },
+    eventLog: [
+      { kind: "step-started", step: "develop", at: 1 },
+      {
+        kind: "branch-completed",
+        step: "develop",
+        workstreamId: "task-x",
+        ok: true,
+        ms: 1,
+        at: 2,
+      },
+      {
+        kind: "branch-completed",
+        step: "develop",
+        workstreamId: "task-x",
+        ok: false,
+        ms: 0,
+        at: 3,
+        error: GREEN_DOWNGRADE,
+      },
+    ],
+  } as unknown as WorkState;
+  const texts = fanoutVerdictLines(st).map((l) => l.text);
+  assert(
+    texts.join() === `task-x: FAIL \u2014 ${GREEN_DOWNGRADE}`,
+    `#1016: a first-try commitless green is FAIL with its reason, not 'after retry' (got ${texts.join()})`,
+  );
 }
 
 console.log(`\nexit ${exit}`);

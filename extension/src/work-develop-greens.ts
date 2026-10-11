@@ -11,6 +11,11 @@
  */
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
+/** #1016 — the reason a fresh green is downgraded to failed when it has no
+ *  commits ahead of base (or its check is unreadable). The downgrade REWRITES
+ *  the attempt's verdict, so attempt counting skips these events. */
+export const GREEN_DOWNGRADE = "no commits ahead of base";
+
 /** #1016 — the events after the last develop step-started (the whole log when
  *  there is none). Shared by the crash-resume greens and the handoff's per-
  *  workstream attempt counts, so both read the same window. */
