@@ -142,7 +142,7 @@ export function probePiVersion(): Promise<ProbeResult> {
  * timeout) before resolving.
  *
  * ⚠ Spawn paths must NEVER await this. `spawnSpecialist` resolves the binary
- * with `resolvePiBinarySync()` only (zero I/O beyond the cached resolution) —
+ * through `getPiInvocation` (sync and cached, no I/O beyond the cached resolution) —
  * the probe exists to surface the spawn-failure / older-than-verified warnings,
  * which the first spawn of a process triggers fire-and-forget. Awaiting here
  * would hold the spawn path for up to 3 s against a hung `--version` probe.

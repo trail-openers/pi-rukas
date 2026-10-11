@@ -199,5 +199,42 @@ section("PATH warning");
   rmDir(root);
 }
 
+// Every production caller of the resolver must emit the PATH warning, and only
+// once per process. Each case is a fresh child so each caller's own emission is
+// observed, including the combined sequence (#1038).
+{
+  const root = mkTmpDir("hard-pathemit");
+  cpSync(path.resolve(import.meta.dirname, "..", "src"), path.join(root, "src"), {
+    recursive: true,
+  });
+  writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "no-pi" }));
+  const binUrl = JSON.stringify(path.join(root, "src", "pi-binary-resolve.ts"));
+  const probeUrl = JSON.stringify(path.join(root, "src", "pi-version-probe.ts"));
+  const calls: Record<string, string> = {
+    inv: 'bin.getPiInvocation(["--mode", "rpc"]);',
+    probe: "await probe.probePiVersion();",
+    info: "await probe.getPiResolutionInfo();",
+  };
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(
+      (e): e is [string, string] => e[0] !== "PI_ENSEMBLE_PI_BIN" && e[1] !== undefined,
+    ),
+  );
+  for (const mode of [["inv"], ["probe"], ["info"], ["inv", "probe", "info"]]) {
+    const script = [
+      `const bin = await import(${binUrl});`,
+      `const probe = await import(${probeUrl});`,
+      ...mode.map((m) => calls[m] ?? ""),
+    ].join("\n");
+    const r = spawnSync(process.execPath, ["-e", script], { env, encoding: "utf8" });
+    const warns = (r.stderr ?? "").split("resolved from PATH").length - 1;
+    assert(
+      warns === 1,
+      `PATH warning emitted once via [${mode.join(", ")}] (got ${warns}, exit ${r.status})`,
+    );
+  }
+  rmDir(root);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(exit);
