@@ -38,13 +38,10 @@ interface Exception {
 	ticket: string;
 }
 
-const EXCEPTIONS: Exception[] = [
-	{
-		file: "agents-base/developer.md",
-		anchor: "the allowlisted form of a verbose runner is the `oo`-prefixed one",
-		ticket: "#1029",
-	},
-];
+// Empty: no prompt instructs a hand-typed oo prefix (#1083). The list is kept
+// so a future exception is a reviewed, ticketed addition, and the stale-entry
+// check below still applies to any entry added later.
+const EXCEPTIONS: Exception[] = [];
 
 for (const e of EXCEPTIONS) {
 	assert(
