@@ -10,9 +10,9 @@
  * a bare 12-item command at the START of the quote-stripped command string is
  * rewritten in-place to `oo <cmd>` in event.input.command, which Pi documents
  * as mutable — later tool_call handlers (the legacy subagent guard's verdict
- * handler) see the rewritten string, so in trust/sandbox mode a bare
- * `cargo test` routes through the existing `oo cargo test*` allow row
- * instead of relying on the model remembering the prefix.
+ * handler) see the rewritten string. The rewrite normalises the command; it
+ * does not route it through an agents.json row. In trust/sandbox mode the
+ * permission guard returns before reading agents.json at all.
  *
  * REWRITE ONLY — no block/deny path of any kind. This hook must NEVER return
  * `{ block: true }` for any input; a no-match is a pass-through, not a
