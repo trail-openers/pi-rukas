@@ -1,7 +1,3 @@
-import { rerouteGateQuotes } from "./plan-gap-resolution.ts";
-import { type PlanGap, RESOLUTION_TYPES, type ResolutionType } from "./plan-types.ts";
-import { trace } from "./trace.ts";
-
 /**
  * plan-gaps — Phase-4 gap-gate parsing and cap routing for the compiled
  * /plan pipeline.
@@ -33,6 +29,10 @@ import { trace } from "./trace.ts";
  *     identical input and "fix the gaps and re-run" is not a convergent
  *     strategy.
  */
+import { rerouteGateQuotes } from "./plan-gap-resolution.ts";
+import { type PlanGap, RESOLUTION_TYPES, type ResolutionType } from "./plan-types.ts";
+import { trace } from "./trace.ts";
+
 // Re-exported so existing importers keep one import path for the renderers.
 export {
   residualGapsSection,

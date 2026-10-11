@@ -52,14 +52,14 @@ function sectionOf(body: string, heading: string, nextHeading: string): string {
   return body.slice(start, end === -1 ? body.length : end);
 }
 
-// ------------------------------ branch 1: concrete resolution names Acceptance criteria
+// ------------------------------ branch 1: resolution names Acceptance criteria
 
 {
-  // A CRITICAL whose resolution is CONCRETE (a stated behaviour) and names
-  // the Acceptance criteria section → written back there (outside Open
-  // Questions), without an (a)/(b)/(c) label, and the Open Questions bullet
-  // renders status: resolved. Round 2 has no CRITICAL, so the cap routes to
-  // file (the single-round corrective shape).
+  // A CRITICAL whose resolution explicitly names the Acceptance criteria
+  // section → written back to that section (outside Open Questions), and the
+  // Open Questions bullet renders status: resolved. Round 2 has no CRITICAL,
+  // so the cap routes to file (the single-round corrective shape).
+  // #1111: the resolution is typed concrete, so it is spliced.
   const replies = [
     `GAP: CRITICAL no failure-mode criterion — proposed resolution: ${RETRY_STATEMENT} — resolution-type: concrete\nVERDICT: NEEDS_ITERATION`,
     "GAP: MEDIUM minor clarification — proposed resolution: add a note — resolution-type: concrete\nVERDICT: READY",

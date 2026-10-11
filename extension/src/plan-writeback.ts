@@ -1,4 +1,3 @@
-import { GATE_RESOLUTION_MARKER, spliceStatement } from "./plan-gap-resolution.ts";
 /**
  * plan-writeback — the Decision-A writeback for carried gap-gate resolutions
  * (issue #639, defect 2).
@@ -34,12 +33,18 @@ import { GATE_RESOLUTION_MARKER, spliceStatement } from "./plan-gap-resolution.t
 // branch-3 comparison below keys on the EXACT string the parser writes:
 // a parser-side rename must flip both files at once, not silently drift.
 // plan-gaps.ts imports nothing from this module, so the dependency is one-way.
+import { GATE_RESOLUTION_MARKER, spliceStatement } from "./plan-gap-resolution.ts";
 import { GAP_RESOLUTION_PLACEHOLDER } from "./plan-gaps.ts";
 import type { PlanGap, PlanType } from "./plan-types.ts";
 
-// Re-exported: the marker is declared in plan-gaps.ts (the re-route rule there
-// must recognise it). markWrittenDecisions matches the marked form; decision
-// records keep the raw resolution.
+/**
+ * Prefix on every spliced writeback bullet: a gate resolution rendered
+ * into a section must be attributable to the gate, never mistakable for
+ * an investigator-derived item (vipune round 9). markWrittenDecisions
+ * matches the marked form; decision records keep the raw resolution.
+ * Declared in plan-gap-resolution.ts (the re-route rule there must
+ * recognise it) and re-exported here.
+ */
 export { GATE_RESOLUTION_MARKER };
 
 /**
@@ -228,8 +233,9 @@ export function buildResolvedDecisions(
       const existing = writebackMap.get(dest.heading) ?? [];
       // Provenance marker: a spliced bullet must never read as an
       // investigator-derived criterion (vipune round 9 mistook one for an
-      // AC). The bullet is the concrete statement, without the (a)/(b)/(c)
-      // label. The decisions record above keeps the raw resolution.
+      // AC). The decisions record above keeps the raw resolution.
+      // The bullet is the concrete statement, without the (a)/(b)/(c)
+      // label.
       existing.push(GATE_RESOLUTION_MARKER + spliceStatement(g.resolution));
       writebackMap.set(dest.heading, existing);
     }

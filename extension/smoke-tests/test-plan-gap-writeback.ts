@@ -66,7 +66,7 @@ function sectionOf(body: string, heading: string, nextHeading: string): string {
 const RETRY_STATEMENT =
   "in the Acceptance criteria section, the retry path stops after three attempts";
 
-// ------------------------------ branch 2: concrete resolution names a different section
+// ------------------------------ branch 2: resolution names a different section
 
 {
   // A CRITICAL whose resolution explicitly names the Edge cases section →
@@ -290,6 +290,9 @@ const RETRY_STATEMENT =
   // applyWritebackToBody delegates to the same helper (one splice
   // implementation, one heading regex — a divergent re-implementation is
   // gone): the map-driven path reaches the same parenthetical heading.
+  // (Six-lens re-review, PR #640: buildWritebackMap is deleted — the map is
+  // built by buildResolvedDecisions in plan-writeback.ts; this unit test
+  // constructs the map directly to pin the splice behaviour in isolation.)
   const map = new Map<string, string[]>([["Expected deliverable", ["the re-applied criterion"]]]);
   const { body: out2, outcomes } = applyWritebackToBody(body, map);
   assert(
@@ -328,12 +331,16 @@ const RETRY_STATEMENT =
   // throw. The original stack is preserved via the Error cause option.
   //
   // With valid inputs, draftSpec is effectively unthrowable (all its
-  // helpers are defensive). The widened guard is a DEFENSIVE measure. The
-  // test verifies: (1) the catch block exists and is WIDE (covers
+  // helpers are defensive: appendBulletsToSection returns null for missing
+  // headings, template literals don't throw on string interpolation). The
+  // widened guard is a DEFENSIVE measure for the case where a future
+  // refactoring makes draftSpec or buildResolvedDecisions throw. The test
+  // verifies: (1) the catch block exists and is WIDE (covers
   // buildResolvedDecisions + draftSpec), (2) the catch uses the Error
   // cause option (original stack preserved), (3) the thrown message names
   // the carried gap decisions (disclosure), and (4) the corrective round
-  // fires and the pipeline completes normally.
+  // fires and the pipeline completes normally (the disclosure only fires
+  // on throw, which doesn't happen with valid inputs).
   const { readFileSync } = await import("node:fs");
   const { resolve } = await import("node:path");
   const src = readFileSync(resolve(import.meta.dirname, "..", "src", "plan-driver.ts"), "utf8");
