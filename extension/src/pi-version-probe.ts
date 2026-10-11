@@ -170,12 +170,10 @@ export async function getPiResolutionInfo(): Promise<PiBinaryResolution> {
 // Probe lifecycle (spawn-kicked, fire-and-forget)
 // ---------------------------------------------------------------------------
 
-// #1019 — kick the version probe on first spawn (fire-and-forget; never
-// awaited). The flag + kick live here (with the probe they guard) rather than
-// in spawn.ts so the probe lifecycle stays inside this module.
 /**
- * Kick the version probe on first spawn (#1019). The once-flag and the kick live
- * here, with the probe they guard, so the probe lifecycle stays in this module.
+ * Kick the version probe on first spawn (#1019; called from spawn.ts). The
+ * once-flag and the kick live here, with the probe they guard, so the probe
+ * lifecycle stays in this module.
  * Fire-and-forget: never awaited, never throws into the spawn path, and a failed
  * probe is warned on stderr and traced.
  */
@@ -224,10 +222,7 @@ export function getVerifiedVersion(): string | null {
   try {
     const compatPath = path.resolve(import.meta.dirname, "..", "..", "docs", "pi-compatibility.md");
     const doc = readFileSync(compatPath, "utf8");
-    const parsed = parseVerifiedLine(doc)?.version ?? null;
-    // Strip a leading range prefix (~, ^, >, <, =) so isVersionOlder always
-    // compares plain versions.
-    verifiedVersionCache = parsed ? parsed.replace(/^[~^><=]+/, "") : null;
+    verifiedVersionCache = parseVerifiedLine(doc)?.version ?? null;
   } catch (err) {
     trace(`pi-version-probe: could not read the verified version from docs \u2014 ${String(err)}`);
     verifiedVersionCache = null;

@@ -154,21 +154,20 @@ assert(isVersionOlder("2.0.0", "1.9.9") === false, "2.0.0 > 1.9.9");
 assert(isVersionOlder("1.0", "1.0.1") === true, "1.0 < 1.0.1");
 assert(isVersionOlder("garbage", "1.0.0") === false, "unparseable returns false");
 
-// Range prefixes must be stripped before caching (getVerifiedVersion strips
-// /^^[~^><=]+/), so isVersionOlder always compares plain versions.
+// getVerifiedVersion reads docs/pi-compatibility.md and must return the bare
+// version the parser captures. The parser accepts no range prefix (the doc line
+// carries none), so there is nothing to strip.
 {
-  // Real seam: getVerifiedVersion reads docs/pi-compatibility.md and must return
-  // the plain version (range prefix stripped), comparable by isVersionOlder.
   _resetPiVersionProbe();
   const verified = getVerifiedVersion();
   const doc = readFileSync(
     path.resolve(import.meta.dirname, "..", "..", "docs", "pi-compatibility.md"),
     "utf8",
   );
-  const docVerified = parseVerifiedLine(doc)?.version.replace(/^[~^><=]+/, "");
+  const docVerified = parseVerifiedLine(doc)?.version ?? null;
   assert(
     verified !== null && verified === docVerified,
-    `getVerifiedVersion strips the range prefix (got ${verified})`,
+    `getVerifiedVersion returns the doc's verified version (got ${verified})`,
   );
   assert(
     verified !== null && isVersionOlder("0.0.1", verified) && !isVersionOlder(verified, "0.0.1"),
@@ -348,7 +347,6 @@ section("getPiResolutionInfo");
 // Use a fake pi binary that responds to --version
 {
   _resetPiVersionProbe();
-  _resetPiVersionProbe();
 
   const fakeBin = makeFakeBin(
     "fake-pi-ver",
@@ -369,7 +367,6 @@ section("getPiResolutionInfo");
 // Version probe with a non-responsive binary (timeout path)
 {
   _resetPiVersionProbe();
-  _resetPiVersionProbe();
 
   const slowBin = makeFakeBin("slow-pi", "sleep 5");
   const start = Date.now();
@@ -384,7 +381,6 @@ section("getPiResolutionInfo");
 
 // Unparseable version output
 {
-  _resetPiVersionProbe();
   _resetPiVersionProbe();
 
   const garbageBin = makeFakeBin("garbage-pi", "echo 'I am not a version'");
@@ -430,7 +426,6 @@ section("probe wiring");
 
   withEnv({ PI_ENSEMBLE_PI_BIN: probeFakeBin, COUNTER_FILE: counterFile }, async () => {
     _resetPiVersionProbe();
-    _resetPiVersionProbe();
 
     // The kick returns synchronously (void) and must not block.
     const start = Date.now();
@@ -458,7 +453,6 @@ section("probe wiring");
 
   rmFile(probeFakeBin);
   rmFile(counterFile);
-  _resetPiVersionProbe();
   _resetPiVersionProbe();
 }
 
