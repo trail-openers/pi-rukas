@@ -36,6 +36,7 @@ import {
 } from "./work-driver-failure-taxonomy.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { armStepNotice } from "./work-driver-step-notice.ts";
+import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 export { capKillOutcomeFields };
 
@@ -157,6 +158,8 @@ export async function fanOutAdversarial(
               ? `/work issue #${ctx.issue}: gating diff for workstream "${id}" before commit (Step 5).`
               : `/work issue #${ctx.issue}: gating diff before commit (Step 5).`,
           workCwd: cwd,
+          commentTimeoutMs: verifyTimeoutMs(),
+          commentExecFn: ctx.verifyExecFn,
           // Re-read before each round. Without this, rounds 2+ are prompted
           // with the pre-fix diff and the reviewer has to notice for itself
           // that its earlier objections were already addressed.

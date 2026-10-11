@@ -10,13 +10,8 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import {
-  COMMENT_RETENTION_PATHS,
-  commentRetentionEnabled,
-  findLostComments,
-  formatLostComments,
-  formatReplacedComments,
-} from "./comment-retention.ts";
+import { type CommentEvidence, formatLostComments } from "./comment-evidence.ts";
+import { checkComments, commentRetentionEnabled } from "./comment-retention.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import {
   TEST_BLOCK_MARKERS,
@@ -38,41 +33,48 @@ function isValidSha(s: string | undefined) {
 }
 
 /**
- * The #948 comment-retention gate: a removed comment line whose trimmed text
- * does not reappear under `paths` at the workstream's head is "lost" (the
- * developer deleted it to shrink the file). A removed comment whose annotated
- * code was deleted/changed in the SAME hunk and a new comment line was added
- * there is "replaced" (#1017 — reported as a NOTE, never a failure). Runs
- * PER-WORKTREE against each workstream's effective base, mirroring
- * `runFalsilyGreenCheck`. A git error or an unreadable tree degrades to a
- * NOTE (infra errors are never failures); only genuinely-lost comments
- * become a failure. `PI_ENSEMBLE_COMMENT_RETENTION=0` disables the check
- * and emits a note instead.
+ * The #948 comment-loss check, as evidence for the reviewers (#1040). A removed
+ * comment line whose trimmed text does not reappear under `paths` at the
+ * workstream's head is "lost" (the developer deleted it to shrink the file):
+ * listed in a NOTE (with the added comment lines of its hunk as context) for the
+ * adversarial reviewer and the six-lens review to judge. It never fails the
+ * develop step and cannot throw. Runs PER-WORKTREE against each workstream's
+ * effective base, mirroring `runFalsilyGreenCheck`. A git error or an unreadable
+ * tree reads `NOT CHECKED (<reason>)` (infra errors are never failures).
+ * `PI_ENSEMBLE_COMMENT_RETENTION=0` disables the check and emits a note instead.
+ * Returns one entry per outcome that needs a human eye (a lost comment or a
+ * NOT CHECKED); the note and the structured result travel together.
  */
-export async function runCommentRetentionGate(
+export async function collectCommentEvidence(
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
   effectiveBaseFor: (wsId: string) => string | undefined,
   worktrees: Map<string, string>,
   paths: string[],
-  failures: string[],
-  notes: string[],
-): Promise<void> {
+): Promise<CommentEvidence[]> {
+  const out: CommentEvidence[] = [];
   if (!commentRetentionEnabled()) {
-    notes.push("PI_ENSEMBLE_COMMENT_RETENTION=0 — comment-retention gate disabled");
-    return;
+    const reason = "PI_ENSEMBLE_COMMENT_RETENTION=0";
+    out.push({ note: `comment-retention: NOT CHECKED (${reason})`, result: { ok: false, reason } });
+    return out;
   }
   for (const [id, cwd] of worktrees) {
     const baseRef = effectiveBaseFor(id);
-    if (!baseRef) continue; // no base ref → cannot diff; skip this worktree
-    const res = await findLostComments(execFn, cwd, baseRef, "HEAD", paths);
-    if (!res.ok) {
-      notes.push(`comment-retention: diff unavailable in ${cwd} (${res.reason}) — gate skipped`);
+    if (!baseRef) {
+      const reason = `no base ref for workstream ${id}`;
+      out.push({
+        note: `comment-retention: NOT CHECKED (${reason}) in ${cwd}`,
+        result: { ok: false, reason },
+      });
       continue;
     }
-    if (res.lost.length > 0)
-      failures.push(formatLostComments(res.lost, res.exempt, res.replaced.length));
-    if (res.replaced.length > 0) notes.push(formatReplacedComments(res.replaced));
+    const res = await checkComments(execFn, cwd, baseRef, "HEAD", paths, verifyTimeoutMs());
+    if (!res.ok) {
+      out.push({ note: `comment-retention: NOT CHECKED (${res.reason}) in ${cwd}`, result: res });
+    } else if (res.lost.length > 0) {
+      out.push({ note: formatLostComments(res), result: res });
+    }
   }
+  return out;
 }
 
 /**
@@ -171,7 +173,11 @@ export async function runSmokeGate(
         maxBuffer: 4 * 1024 * 1024,
       });
     } catch (err) {
-      const e = err as Error & { stdout?: string; stderr?: string; killed?: boolean };
+      const e = err as Error & {
+        stdout?: string;
+        stderr?: string;
+        killed?: boolean;
+      };
       failures.push(
         formatExecError(
           e,

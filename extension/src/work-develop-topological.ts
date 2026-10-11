@@ -7,6 +7,7 @@
  * Step-4 handler) delegates to; the per-workstream dispatch closure and the
  * dependent-workstream runner live in work-develop-run.ts.
  */
+import { recordCommentEvidence } from "./comment-evidence.ts";
 import { trace } from "./trace.ts";
 import { runMergeRetryFlow } from "./work-develop-fence-merge-retry.ts";
 import { siblingDeclaredViolators } from "./work-develop-fence-recovery.ts";
@@ -317,6 +318,9 @@ async function runDevelopTopological(
   // failed workstream no longer skips the gate for the whole fanout.
   if (hasDevelopEvidence) {
     const gate = await verifyStepOutcome(ctx, next, "develop");
+    // #1040 — lost-comment evidence persists from the develop note (handoff even with no reviewer).
+    next = recordCommentEvidence(next, gate.commentEvidence);
+    stateRef.current = next;
     // #814 — a fence violator must not report a bare "ok" here: replace the
     // event with the flipped verdicts via replaceDevelopConvergedVerdicts
     // (invariant named there; see work-develop-fence-verdicts.ts).

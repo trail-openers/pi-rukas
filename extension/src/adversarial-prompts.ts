@@ -29,6 +29,8 @@
  * behaviour rather than putting the string "undefined" in front of a reviewer.
  */
 
+import { COMMENT_JUDGEMENT_PROSE } from "./comment-evidence.ts";
+
 /** Keeps a pathological issue body from crowding out the diff. */
 const MAX_ISSUE_CHARS = 6000;
 
@@ -48,7 +50,12 @@ export function buildAdversarialPrompt(opts: {
   round: number;
   maxRounds: number;
   issueBody?: string;
+  /** The "Comments removed by this change" data block (#1040); empty when none. */
+  commentEvidence?: string;
 }): string {
+  const commentSection = opts.commentEvidence
+    ? `\n\n${opts.commentEvidence}\n\n${COMMENT_JUDGEMENT_PROSE}`
+    : "";
   return `You are reviewing the diff below. Context: ${opts.context}
 Round: ${opts.round} of ${opts.maxRounds}.
 
@@ -58,7 +65,7 @@ Attack this implementation. Find edge cases, security holes, race conditions, AP
   VERDICT: ISSUES_FOUND
   VERDICT: CRITICAL_ISSUES_FOUND
 
-Use the severity your role prompt defines. Only CRITICAL_ISSUES_FOUND blocks the commit; the others are recorded and carried into the pull request. Inflating a finding's severity to avoid approving is the worst failure mode of this role.${issueSection(opts.issueBody)}
+Use the severity your role prompt defines. Only CRITICAL_ISSUES_FOUND blocks the commit; the others are recorded and carried into the pull request. Inflating a finding's severity to avoid approving is the worst failure mode of this role.${issueSection(opts.issueBody)}${commentSection}
 
 Diff:
 \`\`\`diff

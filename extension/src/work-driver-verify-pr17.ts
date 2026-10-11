@@ -9,6 +9,7 @@
 
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
+import type { CommentEvidence } from "./comment-evidence.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { detectMainline } from "./work-driver-git.ts";
@@ -133,6 +134,8 @@ export async function verifyStepOutcome(
    * written (write failure, no consolidated run).
    */
   logPath?: string;
+  /** #1040 — the develop gate's comment-loss checks, structured (see `recordCommentEvidence`). */
+  commentEvidence?: CommentEvidence[];
 }> {
   const failures: string[] = [];
   const notes: string[] = [];
@@ -147,6 +150,7 @@ export async function verifyStepOutcome(
     let flakeEvidenceTail: string | undefined;
     let consolidatedLogPath: string | undefined;
     const fenceViolations: FenceViolationRecord[] = [];
+    const commentEvidence: CommentEvidence[] = [];
     await verifyDevelopOutcome(
       ctx,
       state,
@@ -160,6 +164,7 @@ export async function verifyStepOutcome(
       (logPath) => {
         consolidatedLogPath = logPath;
       },
+      commentEvidence,
     );
     const flakeRecovered = flakeEvidenceTail !== undefined;
     return {
@@ -169,6 +174,7 @@ export async function verifyStepOutcome(
       ...(fenceViolations.length > 0 ? { fenceViolations } : {}),
       ...(flakeRecovered ? { flakeRecovered: true } : {}),
       ...(consolidatedLogPath !== undefined ? { logPath: consolidatedLogPath } : {}),
+      commentEvidence,
     };
   }
 

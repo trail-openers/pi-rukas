@@ -9,6 +9,7 @@
  * normaliser, tolerance) live in work-driver-verify-develop-helpers.ts.
  */
 
+import type { CommentEvidence } from "./comment-evidence.ts";
 import { COMMENT_RETENTION_PATHS } from "./comment-retention.ts";
 import { runConsolidatedVerify } from "./work-driver-consolidated-verify.ts";
 import type { DriverContext } from "./work-driver-context.ts";
@@ -28,7 +29,7 @@ import {
   verifyCmdFor,
 } from "./work-driver-verify-cmd.ts";
 import {
-  runCommentRetentionGate,
+  collectCommentEvidence,
   runSkipRatchetGate,
   runSmokeGate,
 } from "./work-driver-verify-develop-gates.ts";
@@ -62,6 +63,9 @@ export async function verifyDevelopOutcome(
   // log path (the gate records it when a log was written, so the caller can
   // put it on the cap-hit event structurally instead of regexing prose).
   onConsolidatedLogPath?: (logPath: string) => void,
+  // #1040 — out-parameter for the structured comment-loss checks (the
+  // note and its result), so the caller plumbs them without matching note text.
+  commentEvidence: CommentEvidence[] = [],
 ): Promise<void> {
   const worktrees =
     Object.keys(state.pipelineState.worktrees ?? {}).length > 0
@@ -385,14 +389,15 @@ export async function verifyDevelopOutcome(
   await runSkipRatchetGate(execFn, ctx.repoRoot, baseSha, changedWorktrees, failures, notes);
   // #948 — comment-retention gate. Threaded like runFalsilyGreenCheck: per
   // worktree, against that workstream's effective base.
-  await runCommentRetentionGate(
+  for (const check of await collectCommentEvidence(
     execFn,
     effectiveBaseFor,
     new Map(Object.entries(worktrees)),
     commentRetentionPaths,
-    failures,
-    notes,
-  );
+  )) {
+    notes.push(check.note);
+    commentEvidence.push(check);
+  }
   await runSmokeGate(execFn, ctx.repoRoot, changedWorktrees, failures, notes);
   return undefined;
 }

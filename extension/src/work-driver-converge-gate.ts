@@ -29,6 +29,7 @@
 import { exec } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
+import { recordCommentEvidence } from "./comment-evidence.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import {
@@ -163,6 +164,8 @@ export async function runConvergeGateHandler(
     // first (commit the uncommitted work), then the verify gate.
     next = await applySafetyNet(ctx, next);
     const gate2 = await verifyStepOutcome(ctx, next, "develop");
+    // #1040 — lost-comment evidence persists from the re-run's develop note.
+    next = recordCommentEvidence(next, gate2.commentEvidence);
     if (gate2.flakeRecovered) {
       next = appendEvent(next, {
         kind: "verify-flake-recovered",
