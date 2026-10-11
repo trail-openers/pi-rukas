@@ -160,9 +160,9 @@ export function validateDraft(
     }
   }
   if (type === "epic" && depth < EPIC_SUB_ISSUE_DEPTH_LIMIT) {
-    // Only the angle-derived list counts: an "### Operator decomposition"
+    // Only the angle-derived list counts: the operator DECOMPOSITION
     // sub-heading (#1087) carries the operator's constraints, not sub-issues.
-    const sub = sliceSection(body, "Sub-issues")?.split(/^### /m)[0];
+    const sub = sliceSection(body, "Sub-issues")?.split(`### ${OPERATOR_DECOMPOSITION_HEADING}`)[0];
     if (!sub || sub.includes(SUB_ISSUES_FALLBACK)) {
       problems.push(
         "the epic has no sub-issue decomposition — the decomposition-surface angle produced no sub-issue items",
@@ -233,6 +233,29 @@ export const RENDER_BUDGETS: readonly RenderBudget[] = [
   { maxItemsPerSection: 20, itemClipChars: 400 },
   { maxItemsPerSection: 10, itemClipChars: 220 },
 ];
+
+/**
+ * Ceiling on operator items per directive channel (#1087). Operator text is
+ * authority, so the render budget never clips it or count-caps it on the angle
+ * cap. The parser's block terminators are the other bound, and an unterminated
+ * block (the round-9 failure) would otherwise swallow trailing prose unbounded.
+ * Past the ceiling the rendered list STATES the omission; oversized bytes still
+ * halt at fitDraftToBudget's tooLarge.
+ */
+export const OPERATOR_ITEM_CEILING = 100;
+
+/** Applies OPERATOR_ITEM_CEILING; the omission is a visible bullet, never silent. */
+export function capOperatorItems(items: string[]): string[] {
+  if (items.length <= OPERATOR_ITEM_CEILING) return items;
+  const omitted = items.length - OPERATOR_ITEM_CEILING;
+  return [
+    ...items.slice(0, OPERATOR_ITEM_CEILING),
+    `… ${omitted} further operator item(s) omitted (ceiling ${OPERATOR_ITEM_CEILING}; an unterminated or oversized operator block)`,
+  ];
+}
+
+/** The sub-heading an operator DECOMPOSITION block renders under (#1087). Shared by draftSpec (renders it) and validateDraft (excludes it). */
+export const OPERATOR_DECOMPOSITION_HEADING = "Operator decomposition";
 
 /** Clip one rendered item with a visible marker. Fallback strings are never items. */
 export function clipItem(text: string, max: number): string {

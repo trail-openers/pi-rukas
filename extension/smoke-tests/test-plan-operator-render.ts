@@ -13,7 +13,12 @@
 
 import { type AngleFindings, draftSpec } from "../src/plan-draft.ts";
 import type { OperatorDirectives } from "../src/plan-directives.ts";
-import { TEST_SURFACE_FALLBACK, validateDraft } from "../src/plan-validate.ts";
+import {
+  OPERATOR_ITEM_CEILING,
+  TEST_SURFACE_FALLBACK,
+  fitDraftToBudget,
+  validateDraft,
+} from "../src/plan-validate.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -48,6 +53,11 @@ function section(body: string, heading: string, next: string): string {
   return start < 0 ? "" : body.slice(start, end < 0 ? undefined : end);
 }
 
+/** True when `item` is rendered as its own bullet in `sec`. */
+function renders(sec: string, item: string): boolean {
+  return sec.includes(`- ${item}\n`);
+}
+
 // ---------------------------------------------- uncapped operator items
 
 {
@@ -65,7 +75,7 @@ function section(body: string, heading: string, next: string): string {
   );
   const ac = section(r.body, "Acceptance criteria", "References");
   assert(
-    ops.every((s) => ac.includes(`- ${s}\n`) || ac.endsWith(`- ${s}\n`)),
+    ops.every((s) => renders(ac, s)),
     "uncapped: all 25 operator ACCEPTANCE CRITERIA render (none dropped by the 20 cap)",
   );
   const edge = section(r.body, "Edge cases & pitfalls", "Open Questions");
@@ -89,8 +99,11 @@ function section(body: string, heading: string, next: string): string {
     [],
   );
   const ac = section(r.body, "Acceptance criteria", "References");
-  const rendered = angleItems.filter((s) => ac.includes(`- ${s}\n`) || ac.endsWith(`- ${s}\n`));
-  assert(rendered.length === 20, `cap: investigation ACs still capped at 20 (got ${rendered.length})`);
+  const rendered = angleItems.filter((s) => renders(ac, s));
+  assert(
+    rendered.length === 20,
+    `cap: investigation ACs still capped at 20 (got ${rendered.length})`,
+  );
 }
 
 // ------------------------------------ operator ACs suppress angle criteria
@@ -99,7 +112,12 @@ function section(body: string, heading: string, next: string): string {
   const r = draftSpec(
     "feature",
     "d",
-    [angle("scoping", "acceptance-criterion", ["CSV export works for users", "extra angle criterion"])],
+    [
+      angle("scoping", "acceptance-criterion", [
+        "CSV export works for users",
+        "extra angle criterion",
+      ]),
+    ],
     [],
     [],
     [],
@@ -223,9 +241,83 @@ function section(body: string, heading: string, next: string): string {
   );
   const del = section(r.body, "Expected deliverable", "References");
   assert(
-    ops.every((s) => del.includes(`- ${s}\n`) || del.endsWith(`- ${s}\n`)),
+    ops.every((s) => renders(del, s)),
     "uncapped: all 25 operator items render in the spike deliverable",
   );
+}
+
+// ------------------------------------- operator ceiling and oversized input
+
+{
+  const ops = Array.from({ length: OPERATOR_ITEM_CEILING + 5 }, (_, i) => `op item ${i}`);
+  const r = draftSpec(
+    "feature",
+    "d",
+    [],
+    [],
+    [],
+    [],
+    0,
+    { ...NO_DIRS, acceptanceCriteria: ops },
+    [],
+  );
+  const ac = section(r.body, "Acceptance criteria", "References");
+  assert(
+    renders(ac, ops[OPERATOR_ITEM_CEILING - 1] ?? "") &&
+      !renders(ac, ops[OPERATOR_ITEM_CEILING] ?? ""),
+    "ceiling: items past OPERATOR_ITEM_CEILING are not rendered",
+  );
+  assert(
+    ac.includes("5 further operator item(s) omitted"),
+    "ceiling: the omission is stated in the body, not silent",
+  );
+}
+
+{
+  // Oversized operator input cannot be compacted, so it must halt with a
+  // breakdown rather than produce a truncated or silently oversized body.
+  const big = Array.from({ length: 100 }, (_, i) => `${i} ${"x".repeat(1000)}`);
+  const fitted = fitDraftToBudget((budget) =>
+    draftSpec(
+      "feature",
+      "d",
+      [],
+      [],
+      [],
+      [],
+      0,
+      { ...NO_DIRS, acceptanceCriteria: big },
+      [],
+      undefined,
+      budget,
+    ),
+  );
+  assert(
+    "tooLarge" in fitted &&
+      fitted.tooLarge === true &&
+      fitted.breakdown.includes("Acceptance criteria"),
+    "oversized operator ACs: fitDraftToBudget returns tooLarge with a section breakdown",
+  );
+}
+
+{
+  // A short operator set at default budget fits and is not compacted.
+  const fitted = fitDraftToBudget((budget) =>
+    draftSpec(
+      "feature",
+      "d",
+      [],
+      [],
+      [],
+      [],
+      0,
+      { ...NO_DIRS, acceptanceCriteria: ["short"] },
+      [],
+      undefined,
+      budget,
+    ),
+  );
+  assert("result" in fitted && fitted.compacted === false, "short operator ACs: fits at stage 0");
 }
 
 if (exit === 0) console.log("\n✓ test-plan-operator-render: all assertions passed");

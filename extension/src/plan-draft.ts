@@ -25,11 +25,13 @@ import { PLAN_ITEM_KINDS } from "./plan-reporter.ts";
 import { EPIC_SUB_ISSUE_DEPTH_LIMIT, type PlanType, planTitle } from "./plan-types.ts";
 import {
   AC_FALLBACK,
+  OPERATOR_DECOMPOSITION_HEADING,
   REFERENCES_FALLBACK,
   type RenderBudget,
   SPIKE_DELIVERABLE_FALLBACK,
   SUB_ISSUES_FALLBACK,
   TEST_SURFACE_FALLBACK,
+  capOperatorItems,
   clipItem,
   clipRef,
 } from "./plan-validate.ts";
@@ -301,19 +303,23 @@ export function draftSpec(
       ? angleLines.join("\n")
       : "- (no code-named investigation angles ran for this descriptor)";
 
-  // #1087: operator items are authority and are NEVER count-capped — the
-  // cap bounds investigation-derived items only. When the operator supplied
+  // #1087: operator items are authority, so the investigation cap never
+  // applies to them — they are bounded only by capOperatorItems (plan-validate)
+  // and the tooLarge halt. An unterminated block (round 9) swallowed trailing
+  // prose unbounded; the ceiling is what stops that. When the operator supplied
   // ACCEPTANCE CRITERIA they ARE the section; angle-derived criteria (often
   // paraphrases of the operator's own) move under a separate heading instead
   // of sitting beside them. #858: de-duplicated on normalised text (first
   // occurrence wins).
-  const opAc = dedupeByNormalised(directives.acceptanceCriteria);
-  const angleAc = itemsByKind(findings, "acceptance-criterion").map((i) => clip(i.text));
-  const acItems = opAc.length > 0 ? opAc : dedupeByNormalised(angleAc).slice(0, cap);
+  const opAcRaw = dedupeByNormalised(directives.acceptanceCriteria);
+  const opAc = capOperatorItems(opAcRaw);
+  const angleAc = dedupeByNormalised(
+    itemsByKind(findings, "acceptance-criterion").map((i) => clip(i.text)),
+  );
+  const acItems = opAc.length > 0 ? opAc : angleAc.slice(0, cap);
+  const opKeys = new Set(opAcRaw.map(normalisedTextKey));
   const suggestedAc =
-    opAc.length > 0
-      ? dedupeByNormalised([...opAc, ...angleAc]).slice(opAc.length, opAc.length + cap)
-      : [];
+    opAc.length > 0 ? angleAc.filter((s) => !opKeys.has(normalisedTextKey(s))).slice(0, cap) : [];
   const suggestedSection =
     suggestedAc.length > 0
       ? `\n## Suggested additional criteria\n\n${suggestedAc.map((s) => `- ${s}`).join("\n")}\n`
@@ -322,7 +328,7 @@ export function draftSpec(
   // An operator TEST SURFACE directive REPLACES the angle items (unlike
   // ACs, which prepend) — "exactly: none" must not be diluted (C2). Operator
   // text is never capped or clipped (D2, #1087); only angle items are capped.
-  const opTestSurface = directives.testSurface ?? [];
+  const opTestSurface = capOperatorItems(directives.testSurface ?? []);
   const testSurface = sectionBullets(
     opTestSurface.length > 0
       ? opTestSurface
@@ -351,7 +357,7 @@ export function draftSpec(
   // old filter matched a nonexistent "risk-surface" angle name). Operator
   // pitfalls take precedence.
   const edgeItems = [
-    ...directives.pitfalls,
+    ...capOperatorItems(directives.pitfalls),
     ...itemsByKind(findings, "edge-case")
       .map((i) => clip(i.text))
       .slice(0, cap),
@@ -367,14 +373,14 @@ export function draftSpec(
   // #1087: an operator DECOMPOSITION block renders under its own sub-heading
   // so the angle-derived sub-issue list (what validateDraft counts) stays
   // distinct from the operator's constraints.
-  const opDecomposition = dedupeByNormalised(directives.decomposition ?? []);
+  const opDecomposition = capOperatorItems(dedupeByNormalised(directives.decomposition ?? []));
   const subIssues =
     type === "epic" && depth < EPIC_SUB_ISSUE_DEPTH_LIMIT
       ? `\n## Sub-issues\n\n${
           epicSubIssues(findings, clip).join("\n") || `- ${SUB_ISSUES_FALLBACK}`
         }\n${
           opDecomposition.length > 0
-            ? `\n### Operator decomposition\n\n${opDecomposition.map((s) => `- ${s}`).join("\n")}\n`
+            ? `\n### ${OPERATOR_DECOMPOSITION_HEADING}\n\n${opDecomposition.map((s) => `- ${s}`).join("\n")}\n`
             : ""
         }`
       : "";
@@ -392,7 +398,7 @@ export function draftSpec(
     type === "spike"
       ? `## Expected deliverable (NOT code — a decision or proof of concept)\n\n${sectionBullets(
           [
-            ...directives.acceptanceCriteria,
+            ...capOperatorItems(directives.acceptanceCriteria),
             ...findings
               .filter((x) => x.name === "scoping" && x.ok)
               .flatMap((x) => x.toolUses)
