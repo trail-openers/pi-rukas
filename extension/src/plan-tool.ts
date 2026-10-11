@@ -151,7 +151,7 @@ function renderPlanResult(r: PlanResult, dryRun: boolean): string {
       ? "PLAN DRY-RUN (nothing filed). Show this spec to the operator; on their confirmation re-call start_plan_driver with dryRun omitted to file."
       : r.filed
         ? r.filedFromDryRun
-          ? `PLAN FILED FROM REVIEWED DRY RUN (age ${fmtMs(r.filedFromDryRun.ageMs)}) — ${r.issueUrl}. The spec below is the dry run's reviewed body, filed verbatim: no investigation, drafting or gap gate ran.`
+          ? `PLAN FILED FROM REVIEWED DRY RUN (age ${fmtMs(r.filedFromDryRun.ageMs)}) — ${r.issueUrl}. The spec below is the dry run's reviewed body, filed verbatim: no investigation, drafting or gap gate ran. NOT re-checked: the duplicate-risk check against live forge state, and the NEVER CLAIM directives.`
           : `PLAN FILED — ${r.issueUrl}`
         : "PLAN COMPLETED — filing failed or was blocked; see the FILING STATUS section below. The spec is still valid to review.";
   const gaps =

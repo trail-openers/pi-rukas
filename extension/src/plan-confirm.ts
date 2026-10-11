@@ -23,7 +23,7 @@ import {
   type CacheInputs,
   type PlanGitState,
   consumeInvestigationCache,
-  readFileableDryRun,
+  claimFileableDryRun,
   writeInvestigationCache,
 } from "./plan-investigation-cache.ts";
 import type { PlanGap, PlanPhaseTiming, PlanResult } from "./plan-types.ts";
@@ -80,25 +80,31 @@ export async function fileReviewedDryRun(
   repoRoot: string,
   finishTimings: () => PlanPhaseTiming[],
 ): Promise<PlanResult | undefined> {
-  const hit = await readFileableDryRun(cacheDir, inputs);
-  if (!hit) return undefined;
-  const { title, spec, priorContext } = hit.reviewed;
+  const claimed = await claimFileableDryRun(cacheDir, inputs);
+  if (!claimed) return undefined;
+  const { title, spec, priorContext } = claimed.reviewed;
+  // A throw from the forge releases the claim before propagating.
   const { url, failure } = await fileIssue(
     title,
     spec,
     getPlanForge() ?? (() => planForgeFor(repoRoot)),
-  );
-  if (url) await consumeInvestigationCache(cacheDir, inputs);
+  ).catch(async (err: unknown) => {
+    await claimed.release();
+    throw err;
+  });
+  // Consume only once the forge answered: a failed filing keeps the entry.
+  if (url) await claimed.commit();
+  else await claimed.release();
   return {
     type: inputs.type,
     title,
     spec,
-    gaps: hit.gaps,
+    gaps: claimed.gaps,
     priorContext,
     filed: !!url,
     issueUrl: url,
     filingFailure: failure,
-    filedFromDryRun: url ? { ageMs: hit.ageMs } : undefined,
+    filedFromDryRun: url ? { ageMs: claimed.ageMs } : undefined,
     timings: finishTimings(),
   };
 }

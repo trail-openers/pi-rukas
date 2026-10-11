@@ -15,7 +15,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
-import { setPlanGitStateFn } from "../src/plan-investigation-cache.ts";
+import { claimFileableDryRun, setPlanGitStateFn } from "../src/plan-investigation-cache.ts";
 import { type RegisteredPlanTool, registerPlanTool } from "../src/plan-tool.ts";
 import type { PlanDriverInput, PlanResult } from "../src/plan-types.ts";
 import {
@@ -63,7 +63,13 @@ async function cacheFiles(): Promise<string[]> {
   }
 }
 
-async function mutateEntry(fn: (e: Record<string, any>) => void): Promise<void> {
+type RawEntry = {
+  createdAt: number;
+  barrier: Record<string, unknown>;
+  reviewed?: Record<string, unknown>;
+};
+
+async function mutateEntry(fn: (e: RawEntry) => void): Promise<void> {
   const [f] = await cacheFiles();
   const p = path.join(cacheDir, f ?? "");
   const e = JSON.parse(await readFile(p, "utf8"));
@@ -144,6 +150,24 @@ assert(
 assert(
   log.explore > 0,
   "a repeat confirm after filing runs the pipeline (duplicate check applies)",
+);
+
+// ------------------------------------------------------------- the claim is exclusive
+
+await newCache();
+installDispatch(GAP_HIGH);
+await pipeline({ dryRun: true });
+const claimInputs = { descriptor: DESC, type: "feature" as const, head };
+const first = await claimFileableDryRun(cacheDir, claimInputs);
+assert(first !== undefined, "a fileable entry can be claimed");
+assert(
+  (await claimFileableDryRun(cacheDir, claimInputs)) === undefined,
+  "a second claim of the same entry is refused (no double filing)",
+);
+await first?.release();
+assert(
+  (await claimFileableDryRun(cacheDir, claimInputs)) !== undefined,
+  "a released claim restores the entry",
 );
 
 // ------------------------------------------------------------- rendered statement
@@ -229,20 +253,20 @@ assert(
 for (const [label, mutate] of [
   [
     "reviewed block missing",
-    (e: Record<string, any>) => {
+    (e: RawEntry) => {
       e.reviewed = undefined;
     },
   ],
   [
     "fileable not a boolean",
-    (e: Record<string, any>) => {
-      e.reviewed.fileable = "yes";
+    (e: RawEntry) => {
+      if (e.reviewed) e.reviewed.fileable = "yes";
     },
   ],
   [
     "fileable with an empty spec",
-    (e: Record<string, any>) => {
-      e.reviewed.spec = "  ";
+    (e: RawEntry) => {
+      if (e.reviewed) e.reviewed.spec = "  ";
     },
   ],
 ] as const) {

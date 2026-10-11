@@ -65,11 +65,6 @@ export function allAnglesFailedSpec(angleNames: string, findings: AngleFindings[
 }
 
 /**
- * The corrective re-draft failure with its writeback DISCLOSURE: names what
- * was computed (and whether each splice landed) before the throw, so a
- * crash cannot silently lose carried gap decisions.
- */
-/**
  * #633 aggregate all-angles-failed guard (fail-closed): if EVERY angle
  * produced zero structured items, every typed section would silently fall
  * back — halt before draftSpec/fileIssue with the discriminated
@@ -112,6 +107,11 @@ export function allAnglesFailedHalt(args: {
   });
 }
 
+/**
+ * The corrective re-draft failure with its writeback DISCLOSURE: names what
+ * was computed (and whether each splice landed) before the throw, so a
+ * crash cannot silently lose carried gap decisions.
+ */
 export function correctiveRedraftError(
   computed: { description: string; resolution: string }[],
   writtenOutcomes: { applied: boolean; heading: string }[],

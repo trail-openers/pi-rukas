@@ -433,11 +433,8 @@ export async function runPlanPipeline(
     timed,
   });
 
-  // #1043 — only a successful dry run is cached (filed=false, no filing
-  // failure): a halted dry run would halt the confirming call for the same
-  // reason, so there is nothing worth reusing.
-  // #1043 (reviewed-spec update, supersedes the filing condition above): every
-  // dry run that reached the end is cached with its reviewed spec; a filed run
+  // #1043: every dry run that reached the end is cached with its reviewed spec
+  // (the earlier "successful dry run only" rule was superseded); a filed run
   // consumes the entry (plan-confirm.ts settlePlanCache).
   await settlePlanCache(gitState, cacheInputs, {
     dryRun,

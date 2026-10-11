@@ -169,16 +169,20 @@ function isReviewed(x: unknown): x is ReviewedDryRun {
   );
 }
 
-async function readEntry(
-  cacheDir: string,
-  i: Omit<CacheInputs, "head">,
-): Promise<InvestigationCacheEntry | undefined> {
+async function readEntryAt(file: string): Promise<InvestigationCacheEntry | undefined> {
   try {
-    const parsed: unknown = JSON.parse(await fs.readFile(entryFile(cacheDir, i), "utf8"));
+    const parsed: unknown = JSON.parse(await fs.readFile(file, "utf8"));
     return isEntry(parsed) ? parsed : undefined;
   } catch {
     return undefined;
   }
+}
+
+function readEntry(
+  cacheDir: string,
+  i: Omit<CacheInputs, "head">,
+): Promise<InvestigationCacheEntry | undefined> {
+  return readEntryAt(entryFile(cacheDir, i));
 }
 
 /**
@@ -197,18 +201,55 @@ export async function readInvestigationCache(
   return { cached: entry, ageMs };
 }
 
+/** A FILEABLE dry run this call holds exclusively until it commits or releases it. */
+export interface ClaimedDryRun {
+  reviewed: ReviewedDryRun;
+  gaps: PlanGap[];
+  ageMs: number;
+  /** Filing succeeded: the claimed entry is dropped for good. */
+  commit(): Promise<void>;
+  /** Filing failed: the entry is restored so a retry can file the same bytes. */
+  release(): Promise<void>;
+}
+
 /**
- * The reviewed spec of a FILEABLE dry run whose inputs and HEAD match, inside
- * the expiry. Undefined for a non-fileable dry run, a miss, or a malformed entry.
+ * Claim the reviewed spec of a FILEABLE dry run whose inputs and HEAD match,
+ * inside the expiry. The claim is an atomic rename of the entry file, so of N
+ * concurrent identical confirms exactly one gets it; the rest get undefined.
+ * A crash after the claim drops the entry without filing — at-most-once, never
+ * a second copy. Undefined for a miss, a non-fileable entry, or a malformed one.
  */
-export async function readFileableDryRun(
+export async function claimFileableDryRun(
   cacheDir: string,
   inputs: CacheInputs,
   now: number = Date.now(),
-): Promise<{ reviewed: ReviewedDryRun; gaps: PlanGap[]; ageMs: number } | undefined> {
-  const hit = await readInvestigationCache(cacheDir, inputs, now);
-  if (!hit?.cached.reviewed.fileable) return undefined;
-  return { reviewed: hit.cached.reviewed, gaps: hit.cached.gaps, ageMs: hit.ageMs };
+): Promise<ClaimedDryRun | undefined> {
+  const file = entryFile(cacheDir, inputs);
+  const claim = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.claim`;
+  try {
+    await fs.rename(file, claim);
+  } catch {
+    return undefined;
+  }
+  const entry = await readEntryAt(claim);
+  const ageMs = entry ? now - entry.createdAt : -1;
+  if (
+    !entry ||
+    !entry.reviewed.fileable ||
+    entry.key !== investigationCacheKey(inputs) ||
+    ageMs < 0 ||
+    ageMs > INVESTIGATION_CACHE_TTL_MS
+  ) {
+    await fs.rename(claim, file).catch(() => undefined);
+    return undefined;
+  }
+  return {
+    reviewed: entry.reviewed,
+    gaps: entry.gaps,
+    ageMs,
+    commit: () => fs.rm(claim, { force: true }).catch(() => undefined),
+    release: () => fs.rename(claim, file).catch(() => undefined),
+  };
 }
 
 /**

@@ -136,8 +136,7 @@ export function setPlanVipuneStub(
   }
   // The partial signature is safe: the inventory calls vipuneSearch with
   // (terms, searchOpts) only — no other shape ever reaches this seam.
-  setPlanVipuneSearch(((q: string, o: { cwd: string }) =>
-    fn(q, { hybrid: o.hybrid })) as unknown as typeof vipuneSearch);
+  setPlanVipuneSearch(((q: string, o: { cwd: string }) => fn(q, { hybrid: o.hybrid })) as unknown as typeof vipuneSearch);
 }
 
 /**
