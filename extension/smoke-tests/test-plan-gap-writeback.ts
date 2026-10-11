@@ -11,6 +11,12 @@
  *      (delete/remove/replace/reword/rewrite/instead — vipune rounds 8+9)
  *      → `status: open`, `decision owner: operator`, body NOT modified.
  *
+ * #1111 tightens branch 1 and 2: only a CONCRETE resolution (the reviewer's
+ * `resolution-type: concrete`) may be spliced. Instruction-form, research and
+ * operator-decision (either/or) resolutions, and a missing or unparseable
+ * type, stay in Open Questions with `status: open`. A spliced concrete
+ * statement carries no (a)/(b)/(c) label.
+ *
  * The round-2 gate prompt must be built from the RE-DRAFTED body (the
  * makeGatePrompt thunk closes over the reassigned `body` in onCorrective).
  * Single-round corrective shape only (GAP_GATE_MAX_ITERATIONS = 2). Seam
@@ -26,7 +32,14 @@ import {
   markWrittenDecisions,
   renderOpenQuestions,
 } from "../src/plan-writeback.ts";
-import { forgeStub, gatePrompts, installForgeStub, installOfflineVipuneStub, installNoPlanCacheStub, makeDispatchStub } from "./plan-test-stubs.ts";
+import {
+  forgeStub,
+  gatePrompts,
+  installForgeStub,
+  installNoPlanCacheStub,
+  installOfflineVipuneStub,
+  makeDispatchStub,
+} from "./plan-test-stubs.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -49,66 +62,8 @@ function sectionOf(body: string, heading: string, nextHeading: string): string {
   return body.slice(start, end === -1 ? body.length : end);
 }
 
-// ------------------------------ branch 1: resolution names Acceptance criteria
-
-{
-  // A CRITICAL whose resolution explicitly names the Acceptance criteria
-  // section → written back to that section (outside Open Questions), and the
-  // Open Questions bullet renders status: resolved. Round 2 has no CRITICAL,
-  // so the cap routes to file (the single-round corrective shape).
-  const replies = [
-    "GAP: CRITICAL no failure-mode criterion — proposed resolution: add a criterion for the retry path to the Acceptance criteria section\nVERDICT: NEEDS_ITERATION",
-    "GAP: MEDIUM minor clarification — proposed resolution: add a note\nVERDICT: READY",
-  ];
-  forgeStub.created.length = 0;
-  forgeStub.mode = "ok";
-  gatePrompts.length = 0;
-  setPlanDispatch(makeDispatchStub(replies) as never);
-
-  const r = await runPlanPipeline(
-    {} as never,
-    { descriptor: DESCRIPTOR, dryRun: true },
-    process.cwd(),
-  );
-
-  const body = r.spec;
-  const ac = sectionOf(body, "Acceptance criteria", "References");
-  const oq = sectionOf(body, "Open Questions", "Out of scope");
-  assert(
-    ac.includes(
-      "- (gate resolution) add a criterion for the retry path to the Acceptance criteria section",
-    ),
-    "branch 1: the resolution text is a NEW bullet in the Acceptance criteria section (with the provenance marker)",
-  );
-  assert(
-    !oq.includes(
-      "- (gate resolution) add a criterion for the retry path to the Acceptance criteria section",
-    ),
-    "branch 1: the resolution text is NOT a bullet in Open Questions (writeback is outside it)",
-  );
-  assert(
-    oq.includes("no failure-mode criterion"),
-    "branch 1: the gap description renders in Open Questions",
-  );
-  assert(
-    /status: resolved/.test(oq),
-    "branch 1: the written-back decision renders status: resolved",
-  );
-  assert(!/status: open/.test(oq), "branch 1: no status: open bullet for a written-back decision");
-  // The round-2 gate prompt is built from the re-drafted body: the reviewer
-  // sees the applied resolution (not just the round-1 body).
-  const r2 = gatePrompts[1] ?? "";
-  assert(
-    r2.includes("add a criterion for the retry path to the Acceptance criteria section"),
-    "branch 1: round-2 gate prompt contains the written-back resolution (built from the re-drafted body)",
-  );
-  assert(
-    r2.includes("status: resolved"),
-    "branch 1: round-2 gate prompt renders the carried gap as status: resolved",
-  );
-
-  setPlanDispatch(null);
-}
+const RETRY_STATEMENT =
+  "in the Acceptance criteria section, the retry path stops after three attempts";
 
 // ------------------------------ branch 2: resolution names a different section
 
@@ -116,8 +71,8 @@ function sectionOf(body: string, heading: string, nextHeading: string): string {
   // A CRITICAL whose resolution explicitly names the Edge cases section →
   // the bullet is written back THERE, not to Acceptance criteria.
   const replies = [
-    "GAP: CRITICAL the boundary condition is unnamed — proposed resolution: document the boundary in the Edge cases section\nVERDICT: NEEDS_ITERATION",
-    "GAP: LOW cosmetic nit — proposed resolution: retitle\nVERDICT: READY",
+    "GAP: CRITICAL the boundary condition is unnamed — proposed resolution: document the boundary in the Edge cases section — resolution-type: concrete\nVERDICT: NEEDS_ITERATION",
+    "GAP: LOW cosmetic nit — proposed resolution: retitle — resolution-type: concrete\nVERDICT: READY",
   ];
   forgeStub.created.length = 0;
   forgeStub.mode = "ok";
@@ -159,7 +114,7 @@ function sectionOf(body: string, heading: string, nextHeading: string): string {
   // body sections are NOT modified (no resolution text injected anywhere).
   const replies = [
     "GAP: CRITICAL the boundary condition is unnamed\nVERDICT: NEEDS_ITERATION",
-    "GAP: LOW cosmetic nit — proposed resolution: retitle\nVERDICT: READY",
+    "GAP: LOW cosmetic nit — proposed resolution: retitle — resolution-type: concrete\nVERDICT: READY",
   ];
   forgeStub.created.length = 0;
   forgeStub.mode = "ok";
@@ -208,8 +163,8 @@ function sectionOf(body: string, heading: string, nextHeading: string): string {
   // also falls to branch 3 (open, decision owner operator, body unmodified).
   // The resolution text must still be visible in the bullet.
   const replies = [
-    "GAP: CRITICAL the approach cannot work — proposed resolution: revisit the architecture before building\nVERDICT: NEEDS_ITERATION",
-    "GAP: LOW cosmetic nit — proposed resolution: retitle\nVERDICT: READY",
+    "GAP: CRITICAL the approach cannot work — proposed resolution: revisit the architecture before building — resolution-type: concrete\nVERDICT: NEEDS_ITERATION",
+    "GAP: LOW cosmetic nit — proposed resolution: retitle — resolution-type: concrete\nVERDICT: READY",
   ];
   forgeStub.created.length = 0;
   forgeStub.mode = "ok";
@@ -260,6 +215,7 @@ function sectionOf(body: string, heading: string, nextHeading: string): string {
         severity: "CRITICAL",
         description: "the deliverable is undefined",
         resolution: "name the decision the spike must reach in the Expected deliverable section",
+        resolutionType: "concrete",
       },
     ],
     "spike",
@@ -418,8 +374,8 @@ function sectionOf(body: string, heading: string, nextHeading: string): string {
   );
   // Integration: the corrective round fires and the pipeline completes.
   const replies = [
-    "GAP: CRITICAL no failure-mode criterion — proposed resolution: add a criterion for the retry path to the Acceptance criteria section\nVERDICT: NEEDS_ITERATION",
-    "GAP: MEDIUM minor clarification — proposed resolution: add a note\nVERDICT: READY",
+    `GAP: CRITICAL no failure-mode criterion — proposed resolution: ${RETRY_STATEMENT} — resolution-type: concrete\nVERDICT: NEEDS_ITERATION`,
+    "GAP: MEDIUM minor clarification — proposed resolution: add a note — resolution-type: concrete\nVERDICT: READY",
   ];
   forgeStub.created.length = 0;
   forgeStub.mode = "ok";
@@ -466,6 +422,7 @@ function sectionOf(body: string, heading: string, nextHeading: string): string {
         description: "AC4 contradicts the context",
         resolution:
           'delete "reproduce bit-for-bit" from the Acceptance criteria and instead state that rankings shift',
+        resolutionType: "concrete",
       },
     ],
     "feature",
@@ -485,7 +442,8 @@ function sectionOf(body: string, heading: string, nextHeading: string): string {
       {
         severity: "CRITICAL",
         description: "missing retry criterion",
-        resolution: "add a criterion for the retry path to the Acceptance criteria section",
+        resolution: RETRY_STATEMENT,
+        resolutionType: "concrete",
       },
     ],
     "feature",

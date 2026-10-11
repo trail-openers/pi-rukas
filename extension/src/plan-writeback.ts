@@ -45,6 +45,26 @@ import type { PlanGap, PlanType } from "./plan-types.ts";
 export const GATE_RESOLUTION_MARKER = "(gate resolution) ";
 
 /**
+ * The leading resolution-type label an older gate prompt asked for
+ * ("(a) additional research", "(b) a sharper acceptance criterion", "(c) an
+ * Open Question"). It is gate meta-language, never a spec statement (#1111).
+ */
+const RESOLUTION_LABEL_RE = /^\s*\((?:a|b|c)\)\s*/i;
+
+/**
+ * The concrete statement a resolution contributes to a spec body: the
+ * resolution with any leading (a)/(b)/(c) label removed (#1111).
+ */
+export function spliceStatement(resolution: string): string {
+  return resolution.replace(RESOLUTION_LABEL_RE, "").trim();
+}
+
+/** The marked bullet a gate resolution is spliced as; one spelling for both writers and matcher. */
+function writebackBullet(resolution: string): string {
+  return GATE_RESOLUTION_MARKER + spliceStatement(resolution);
+}
+
+/**
  * The headings a carried resolution may name as its writeback destination.
  * The winner is the entry whose match occurs EARLIEST IN THE RESOLUTION
  * TEXT — not array order (vipune fixture run, C4: array-order matching
@@ -171,7 +191,11 @@ export interface SpliceOutcome {
  * to branch 1.
  */
 export function destinationFor(gap: PlanGap, type: PlanType): WritebackDestination | null {
-  const resolution = gap.resolution;
+  // #1111: only a CONCRETE resolution (a stated behaviour) may enter a body
+  // section. Instruction, research and operator-decision types, and a missing
+  // or unparseable type, stay in Open Questions. Every caller goes through here.
+  if (gap.resolutionType !== "concrete") return null;
+  const resolution = spliceStatement(gap.resolution);
   if (!resolution || resolution === GAP_RESOLUTION_PLACEHOLDER) return null;
   // Edit-imperative resolutions ("delete X … and instead state Y") are
   // instructions to EDIT the spec, not criteria — splicing them verbatim
@@ -222,7 +246,9 @@ export function buildResolvedDecisions(
       // Provenance marker: a spliced bullet must never read as an
       // investigator-derived criterion (vipune round 9 mistook one for an
       // AC). The decisions record above keeps the raw resolution.
-      existing.push(GATE_RESOLUTION_MARKER + g.resolution);
+      // The bullet is the concrete statement, without the (a)/(b)/(c)
+      // label.
+      existing.push(writebackBullet(g.resolution));
       writebackMap.set(dest.heading, existing);
     }
   }
@@ -255,7 +281,7 @@ export function markWrittenDecisions(
     const list = appliedByHeading.get(d.writebackHeading) ?? [];
     // The spliced bullet carries the provenance marker; the decision
     // record keeps the raw resolution — match the marked form.
-    const idx = list.indexOf(GATE_RESOLUTION_MARKER + d.resolution);
+    const idx = list.indexOf(writebackBullet(d.resolution));
     if (idx === -1) return { ...d, writtenBack: false };
     list.splice(idx, 1);
     return { ...d, writtenBack: true };

@@ -38,6 +38,23 @@ import { DESCRIPTOR_DATA_FRAMING } from "./plan-angles.ts";
 import type { AngleFindings } from "./plan-draft.ts";
 import { VIPUNE_PRECEDENCE_NOTE, priorContextHasVipune, renderPriorContext } from "./plan-draft.ts";
 import { forbiddenPhrasesBlock } from "./plan-prior-context.ts";
+import { RESOLUTION_TYPES, type ResolutionType } from "./plan-types.ts";
+
+/** What each resolution type means to the reviewer (#1111). Keyed on ResolutionType: a new member fails to compile until described. */
+const RESOLUTION_TYPE_GUIDE: Record<ResolutionType, string> = {
+  concrete:
+    "the resolution states a BEHAVIOUR the spec must commit to, in declarative form — no either/or, no instruction to the author; the only type whose text is written into the spec",
+  instruction: 'an instruction to add or change criteria, e.g. "add acceptance criteria for …"',
+  research: "a dispatch to investigate",
+  "operator-decision":
+    "a choice between options that the PM or operator must make, including any either/or",
+};
+
+/** The single resolution-type vocabulary, shared by the round-1 and round-2 prompts. */
+const RESOLUTION_TYPE_ALT = RESOLUTION_TYPES.join("|");
+
+/** The clause that asks every GAP line for its resolution type (the only resolution taxonomy). */
+const RESOLUTION_TYPE_CLAUSE = `Then end EVERY GAP line with its resolution type as the LAST segment — " — resolution-type: <type>" — where <type> is exactly one of: ${RESOLUTION_TYPES.map((t) => `${t} (${RESOLUTION_TYPE_GUIDE[t]})`).join(", ")}. `;
 
 /**
  * The round-1 gap-gate reviewer prompt. Carries the prior context (capped
@@ -90,8 +107,10 @@ export function gapGatePrompt(
     "- a test-harness mechanic (mock flags, grep needles, variable usage)\n" +
     "- exact line numbers anywhere (they rot; name the SYMBOL)\n" +
     "- restating a decision the spec already makes once\n\n" +
-    "Example: GAP: CRITICAL — the spec commits to both a retry cap of 3 and an infinite retry on quota errors — proposed resolution: name which wins. Example: UNGROUNDED: whether library BOSL2 exposes a screw() module — no spec-internal contradiction, and no world source you can verify against — reported as ungrounded, NOT as a gap. Never write a severity word on its own line — prose mentioning CRITICAL/HIGH/MEDIUM/LOW does not create a gap unless the line starts with GAP:; the same holds for UNGROUNDED: lines — the marker is what counts, and it counts as an UNVERIFIED classification, not a finding. Each resolution must be ONE of: (a) an additional research dispatch, (b) a sharper acceptance criterion to add, or (c) an Open Question. End your reply with a single line exactly of the form:\nVERDICT: READY  (zero CRITICAL gaps)\nor\nVERDICT: NEEDS_ITERATION";
-  return `${head}${spec}${sum}${prior}${forbidden}${tail}`;
+    "Example: GAP: CRITICAL — the spec commits to both a retry cap of 3 and an infinite retry on quota errors — proposed resolution: name which wins — resolution-type: operator-decision. Example: UNGROUNDED: whether library BOSL2 exposes a screw() module — no spec-internal contradiction, and no world source you can verify against — reported as ungrounded, NOT as a gap. Never write a severity word on its own line — prose mentioning CRITICAL/HIGH/MEDIUM/LOW does not create a gap unless the line starts with GAP:; the same holds for UNGROUNDED: lines — the marker is what counts, and it counts as an UNVERIFIED classification, not a finding. ";
+  const closing =
+    "End your reply with a single line exactly of the form:\nVERDICT: READY  (zero CRITICAL gaps)\nor\nVERDICT: NEEDS_ITERATION";
+  return `${head}${spec}${sum}${prior}${forbidden}${tail}${RESOLUTION_TYPE_CLAUSE}${closing}`;
 }
 
 /** One carried CRITICAL gap + what happened to its resolution. */
@@ -115,5 +134,5 @@ export function gapGateVerifyPrompt(body: string, carried: CarriedCritical[]): s
         `- ${c.description} → resolution: ${c.resolution} (${c.writtenBack ? `written back to ${c.heading}` : "left as an Open Question, decision owner operator"})`,
     )
     .join("\n");
-  return `VERIFICATION ROUND: in the previous review round you flagged the CRITICAL gaps listed below, and the spec has been re-drafted with their resolutions applied. Verify ONLY whether each carried CRITICAL gap is now resolved. Do NOT re-review the whole spec, and do NOT raise new findings unless an applied resolution ITSELF introduces a contradiction. Grounding-source rule (same as round 1): a CRITICAL must be an internal contradiction or internal impossibility checkable from the spec text alone. An ungrounded claim (no spec-internal contradiction, no live code to check, no world source you can verify against) is reported with a line starting with the marker UNGROUNDED: (the claim — why it is ungrounded) — UNGROUNDED: lines are NOT gaps, do NOT count them toward a severity, and do NOT invent a severity for them; a claim about the WORLD you cannot verify is a HIGH at most, never a CRITICAL.\n\nAPPLIED RESOLUTIONS SUPERSEDE OLDER PROSE: a resolution "written back to <section>" appears as the LAST bullet of that section, and where it conflicts with an earlier line in the spec, the appended bullet is the governing text — treat the older line as superseded rather than re-flagging the pair as a contradiction. Only a resolution left as an Open Question resolves nothing.\n\n${DESCRIPTOR_DATA_FRAMING}RE-DRAFTED SPEC:\n${body}\n\nCARRIED CRITICAL GAPS:\n${list}\n\nFor any carried gap that is NOT resolved (or a new contradiction an applied resolution introduces), output ONE line starting with the marker GAP: CRITICAL — a short description — proposed resolution: the proposed resolution. Do not output GAP lines at any other severity in this round. End your reply with a single line exactly of the form:\nVERDICT: READY  (every carried CRITICAL gap is resolved)\nor\nVERDICT: NEEDS_ITERATION`;
+  return `VERIFICATION ROUND: in the previous review round you flagged the CRITICAL gaps listed below, and the spec has been re-drafted with their resolutions applied. Verify ONLY whether each carried CRITICAL gap is now resolved. Do NOT re-review the whole spec, and do NOT raise new findings unless an applied resolution ITSELF introduces a contradiction. Grounding-source rule (same as round 1): a CRITICAL must be an internal contradiction or internal impossibility checkable from the spec text alone. An ungrounded claim (no spec-internal contradiction, no live code to check, no world source you can verify against) is reported with a line starting with the marker UNGROUNDED: (the claim — why it is ungrounded) — UNGROUNDED: lines are NOT gaps, do NOT count them toward a severity, and do NOT invent a severity for them; a claim about the WORLD you cannot verify is a HIGH at most, never a CRITICAL.\n\nAPPLIED RESOLUTIONS SUPERSEDE OLDER PROSE: a resolution "written back to <section>" appears as the LAST bullet of that section, and where it conflicts with an earlier line in the spec, the appended bullet is the governing text — treat the older line as superseded rather than re-flagging the pair as a contradiction. Only a resolution left as an Open Question resolves nothing.\n\n${DESCRIPTOR_DATA_FRAMING}RE-DRAFTED SPEC:\n${body}\n\nCARRIED CRITICAL GAPS:\n${list}\n\nFor any carried gap that is NOT resolved (or a new contradiction an applied resolution introduces), output ONE line starting with the marker GAP: CRITICAL — a short description — proposed resolution: the proposed resolution — resolution-type: <${RESOLUTION_TYPE_ALT}>. Do not output GAP lines at any other severity in this round. End your reply with a single line exactly of the form:\nVERDICT: READY  (every carried CRITICAL gap is resolved)\nor\nVERDICT: NEEDS_ITERATION`;
 }

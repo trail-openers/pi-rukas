@@ -29,8 +29,15 @@
  *     identical input and "fix the gaps and re-run" is not a convergent
  *     strategy.
  */
-import type { PlanGap } from "./plan-types.ts";
+import { type PlanGap, isResolutionType } from "./plan-types.ts";
 import { trace } from "./trace.ts";
+
+// Re-exported so existing importers keep one import path for the renderers.
+export {
+  residualGapsSection,
+  settledGapsSection,
+  truncateForDisclosure,
+} from "./plan-gap-disclosure.ts";
 
 /** One verdict the gap gate can yield for a parsed reviewer reply. */
 export type GapGateVerdict = "READY" | "NEEDS_ITERATION";
@@ -70,6 +77,22 @@ export interface GapGateParse {
 }
 
 /**
+ * Normalise a declared resolution-type value before the membership check:
+ * markdown emphasis and backticks, trailing punctuation, case, and inner
+ * spaces (`**Operator decision**.` → `operator-decision`). Anything still not
+ * a RESOLUTION_TYPE after this is rejected by isResolutionType (fail closed).
+ */
+function normaliseResolutionType(raw: string): string {
+  return raw
+    .replace(/[`*_]/g, "")
+    .trim()
+    .replace(/[.,;:!?)\]]+$/, "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-");
+}
+
+/**
  * Parse a gap-gate reply. Only lines starting with the `GAP:` marker create
  * gaps — bare severity words in prose (the reviewer's legend, a clean bill of
  * health, this prompt's own examples) must NOT parse as findings. The
@@ -93,6 +116,11 @@ export function parseGaps(reply: string): GapGateParse {
   // anchored at the line start the same way gapRe is, so bare "ungrounded"
   // words in prose are inert — the same invariant the GAP: marker carries.
   const ungroundedRe = /^\s*UNGROUNDED:\s*(?:—|–|-)?\s*(.+)$/i;
+  // #1111: the structured resolution type, a trailing `— resolution-type: <t>`
+  // segment. The value is read loosely and normalised (see
+  // normaliseResolutionType); absent or outside RESOLUTION_TYPES → undefined,
+  // which the writeback treats as not concrete (never spliced).
+  const typeRe = /[—–-]\s*resolution-type:\s*(.*)$/i;
   for (const line of lines) {
     const ug = line.match(ungroundedRe);
     if (ug) {
@@ -101,7 +129,17 @@ export function parseGaps(reply: string): GapGateParse {
     }
     const m = line.match(gapRe);
     if (!m) continue;
-    const rest = (m[2] ?? "").trim();
+    let rest = (m[2] ?? "").trim();
+    const typeMatch = rest.match(typeRe);
+    // The marker is metadata, never resolution text: strip it whenever present,
+    // parsed or not.
+    if (typeMatch?.index !== undefined) rest = rest.slice(0, typeMatch.index).trim();
+    const declared = typeMatch ? normaliseResolutionType(typeMatch[1] ?? "") : undefined;
+    const resolutionType = isResolutionType(declared) ? declared : undefined;
+    if (!typeMatch)
+      trace(`plan-gaps: GAP line has no resolution-type — not spliced (${rest.slice(0, 120)})`);
+    else if (resolutionType === undefined)
+      trace(`plan-gaps: unrecognised resolution-type "${declared}" — not spliced`);
     const resMatch = rest.match(/[—–-]?\s*proposed resolution:\s*(.+)$/i);
     const resolution = resMatch?.[1]?.trim() ?? GAP_RESOLUTION_PLACEHOLDER;
     const description = (resMatch ? rest.slice(0, resMatch.index) : rest).trim();
@@ -110,6 +148,7 @@ export function parseGaps(reply: string): GapGateParse {
       severity: (m[1] ?? "MEDIUM").toUpperCase() as PlanGap["severity"],
       description,
       resolution,
+      ...(resolutionType ? { resolutionType } : {}),
     });
   }
   // D3: track whether a verdict line was actually present. The legacy
@@ -186,65 +225,6 @@ export function evaluateGapGate(parsed: GapGateParse, iterations: number, maxIte
  */
 export function capRouted(blocking: PlanGap[]): "file" | "surface" {
   return blocking.length === 0 ? "file" : "surface";
-}
-
-/**
- * The display bound for operator-visible residual findings.
- *
- * Applied ONLY at the render sites (the filed body's residual section via
- * `residualGapsSection`, and the inline cap-message list in plan-tool.ts via
- * `renderResidualList`). parseGaps keeps the FULL description on the object
- * so the union dedupe (seenDescriptions) keys on the complete string — two
- * genuinely different findings that share a 300-char prefix used to collide
- * on the truncated form and the second was silently dropped from the
- * disclosure (lens review, PR #637 finding 1 — a disclosure-completeness
- * bug in the terminal rule's precondition, since under CRITICAL-only blocking
- * the disclosure IS what allows filing).
- */
-const RESIDUAL_DISPLAY_MAX = 300;
-
-/** The single truncation applied to residual findings for display. */
-export function truncateForDisclosure(s: string): string {
-  return s.length > RESIDUAL_DISPLAY_MAX ? `${s.slice(0, RESIDUAL_DISPLAY_MAX - 1)}…` : s;
-}
-
-/**
- * The residual-findings disclosure appended to the spec when the cap routes
- * to filing (D2). Naming each gap with its severity + proposed resolution is
- * what makes the disclosure a disclosure — an unposted residual would be the
- * silent swallow the /work doctrine refuses.
- */
-export function residualGapsSection(residual: PlanGap[]): string {
-  const items = residual
-    .map((g) => `- [${g.severity}] ${truncateForDisclosure(g.description)} → ${g.resolution}`)
-    .join("\n");
-  return `## Residual gap-gate findings\n\n${items}\n`;
-}
-
-/**
- * Ceiling on the settled-gaps list rendered into a gate prompt (#1043 review).
- */
-const SETTLED_SECTION_MAX = 10;
-
-/**
- * #1043 — the prior dry run's gaps, appended to the FIRST gate prompt on a
- * cache miss. They are framed as settled so the reviewer does not re-raise
- * them; a finding the spec now contradicts is still raised. Empty when there
- * is no prior run (the prompt is then byte-identical to before).
- */
-export function settledGapsSection(settled: PlanGap[]): string {
-  if (settled.length === 0) return "";
-  // Bounded like the residual disclosure: the 10 most severe, each side clipped.
-  const rank: Record<string, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
-  const items = [...settled]
-    .sort((a, b) => (rank[a.severity] ?? 4) - (rank[b.severity] ?? 4))
-    .slice(0, SETTLED_SECTION_MAX)
-    .map(
-      (g) =>
-        `- [${g.severity}] ${truncateForDisclosure(g.description)} → ${truncateForDisclosure(g.resolution)}`,
-    )
-    .join("\n");
-  return `\n\nALREADY SETTLED — a prior gap-gate run on this same descriptor raised the findings below. Do NOT re-raise them unless the spec now contradicts them; a finding the spec already addresses is settled.\n${items}`;
 }
 
 // ---------------------------------------------------------------------------
