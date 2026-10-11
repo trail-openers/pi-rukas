@@ -89,7 +89,6 @@ const everyKindEvent: WorkEvent[] = [
     kind: "explore-retried",
     step: "explore",
     at: 1,
-    reason: "no-spec",
     verdictParsed: true,
     firstJobId: "j1",
   },

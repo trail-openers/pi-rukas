@@ -10,7 +10,6 @@ import type { BranchResetEvent } from "./workflow-state-events-branch-reset.ts";
 import type { WorkCapLiteral } from "./workflow-state-events-caps.ts";
 import type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
 import type { DeferredCreationEventFragment } from "./workflow-state-events-deferred.ts";
-import type { ExploreRetriedEvent } from "./workflow-state-events-explore.ts";
 import type { FenceRecoveryStartedEvent } from "./workflow-state-events-fence.ts";
 import type {
   HandoffConsolidatedEvent,
@@ -76,7 +75,15 @@ export type WorkEvent =
     }
   | AdversarialEventFragment
   /** #1094 — explore re-dispatched once after a completed reply had no `## Spec`. */
-  | ExploreRetriedEvent
+  | {
+      kind: "explore-retried";
+      step: "explore";
+      at: number;
+      /** Whether the unreadable reply still carried an `INTENT-VERDICT:` token. */
+      verdictParsed: boolean;
+      /** The job id of the attempt that produced the unreadable reply. */
+      firstJobId: string;
+    }
   | {
       kind: "dispatch-started";
       step: WorkStep;

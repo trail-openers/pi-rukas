@@ -87,7 +87,7 @@ const ROOT_INTENTIONAL_SITES: Array<{ file: string; site: RegExp; label: string;
   },
   {
     file: "work-driver-explore-dispatch.ts",
-    // #799 — runExplore's dispatch; #1094 moved it to work-driver-explore-dispatch.ts.
+    // #799 — runExplore (and its dispatch) lives in work-driver-explore-dispatch.ts (#1094 split it out of work-driver-explore-run.ts).
     // A comment sits between the prompt and the opts object, so match across it.
     site: /dispatch\(\s*ctx\.pi,\s*\{\s*role:\s*"explore",\s*prompt\s*\},[\s\S]{0,400}?label:\s*"explore",\s*onSlow:/,
     label: "explore (label: explore) — runExplore",

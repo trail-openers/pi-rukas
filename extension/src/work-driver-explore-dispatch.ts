@@ -1,22 +1,24 @@
-import { dispatchCore } from "./dispatch.ts";
 /**
  * work-driver-explore-dispatch — one explore dispatch attempt, plus the #1094
- * "no readable `## Spec`" predicate and retry preface.
+ * "no readable `## Spec`" resolver, retry predicate and retry preface.
  *
- * `dispatchExploreAttempt` is the write-ahead / spec-artifact / completion
- * sequence that `runExplore` used to inline, lifted so the single retry runs
- * the identical sequence (#382 resume state, #594 artifact hygiene, #573
- * transcript path). A FAILED dispatch returns no reply: the router owns it and
- * the retry must never fire on one (dispatch-failed tail, #686/#693).
+ * `dispatchExploreAttempt` is the write-ahead / completion sequence that
+ * `runExplore` used to inline, lifted so the single retry runs the identical
+ * sequence (#382 resume state, #573 transcript path). It takes no intent
+ * policy: the caller clears the prior spec artifact (#594) before each attempt.
+ * A FAILED dispatch returns no reply: the router owns it and the retry must
+ * never fire on one (dispatch-failed tail, #686/#693).
  */
+import { dispatchCore } from "./dispatch.ts";
 import { readMarker } from "./reply-markers.ts";
 import { slowRecorder } from "./slow-events.ts";
 import { transcriptPathFor } from "./spawn-support.ts";
 import type { DispatchResult } from "./types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
-import { deleteSpecArtifact, readSpecArtifact } from "./work-driver-intent-artifact.ts";
+import { readSpecArtifact, resolveIntentVerdict } from "./work-driver-intent-artifact.ts";
 import { recoverOffloadedSpec } from "./work-driver-intent-offload.ts";
+import type { NormalisedSpec } from "./work-driver-intent.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
@@ -27,6 +29,12 @@ export interface ExploreAttempt {
   state: WorkState;
   jobId: string;
   reply?: DispatchResult;
+}
+
+/** A readable spec resolved from an explore reply, and which channel won. */
+export interface ResolvedExploreSpec {
+  spec: NormalisedSpec;
+  source: "prose" | "artifact";
 }
 
 /** The preface the single retry prepends to the original explore prompt (#1094). */
@@ -45,15 +53,34 @@ export function hasIntentVerdictToken(text: string): boolean {
 }
 
 /**
- * #1094 — is a COMPLETED explore reply unreadable as a spec? Offloaded specs
- * and a valid persisted artifact count as a spec; a verdict token alone does
- * not, because the `## Spec` body is what the cycle routes on.
+ * #1094 — the ONE definition of a readable spec. An inline `## Spec` block,
+ * an offloaded spec file, or a valid persisted artifact counts; a verdict
+ * token alone does not, because the `## Spec` body is what the cycle routes
+ * on. Both the retry decision and the routing call this, so the reply is read
+ * once and the two can never disagree.
  */
-export async function replyLacksSpec(ctx: DriverContext, text: string): Promise<boolean> {
-  if ((await recoverOffloadedSpec(text, scratchDir(ctx.repoRoot, ctx.issue))) !== undefined) {
-    return false;
-  }
-  return (await readSpecArtifact(ctx.repoRoot, ctx.issue)) === undefined;
+export async function resolveExploreSpec(
+  ctx: Pick<DriverContext, "repoRoot" | "issue">,
+  text: string,
+): Promise<ResolvedExploreSpec | undefined> {
+  const prose = await recoverOffloadedSpec(text, scratchDir(ctx.repoRoot, ctx.issue));
+  const artifact = await readSpecArtifact(ctx.repoRoot, ctx.issue);
+  const { spec, source } = resolveIntentVerdict(prose, artifact);
+  return spec === undefined ? undefined : { spec, source };
+}
+
+/**
+ * #1094 — the explore re-dispatch decision, as a pure function. Retries only
+ * on the intent path, only after a COMPLETED dispatch whose reply has no
+ * readable spec, and only once.
+ */
+export function shouldRetryExplore(input: {
+  useIntent: boolean;
+  dispatchOk: boolean;
+  spec: NormalisedSpec | undefined;
+  alreadyRetried: boolean;
+}): boolean {
+  return input.useIntent && input.dispatchOk && input.spec === undefined && !input.alreadyRetried;
 }
 
 /**
@@ -70,15 +97,13 @@ export function noSpecEvidence(text: string, retried: boolean): string {
 }
 
 /**
- * Run one explore dispatch: write-ahead (#382), drop the prior spec artifact
- * (#594, intent path only), dispatch, then append the completion or failure
- * event and clear the in-flight marker.
+ * Run one explore dispatch: write-ahead (#382), dispatch, then append the
+ * completion or failure event and clear the in-flight marker.
  */
 export async function dispatchExploreAttempt(
   ctx: DriverContext,
   state: WorkState,
   prompt: string,
-  useIntent: boolean,
 ): Promise<ExploreAttempt> {
   const dispatch = ctx.dispatchFn ?? dispatchCore;
   const startedAt = Date.now();
@@ -97,14 +122,9 @@ export async function dispatchExploreAttempt(
     exploreTranscript,
   );
   const next = begun.state;
-  // #594 — delete the prior cycle's spec artifact before dispatch (best-effort,
-  // trace on failure). Gated on useIntent: the artifact is only used on the
-  // intent path, so on the legacy path (PI_ENSEMBLE_INTENT=0 or N>1) leave it.
-  if (useIntent) {
-    await deleteSpecArtifact(ctx.repoRoot, ctx.issue);
-  }
-  const dispatchSettled = await Promise.allSettled([
-    dispatch(
+  let exploreDispatch: DispatchResult;
+  try {
+    exploreDispatch = await dispatch(
       ctx.pi,
       { role: "explore", prompt },
       // #799 — the slow recorder collects into the driver's pending buffer;
@@ -115,20 +135,12 @@ export async function dispatchExploreAttempt(
         onSlow: slowRecorder(ctx.issue, "explore"),
         deck: { ...driverDeckOpts(ctx.issue, "explore", "explore"), label: "explore" },
       },
-    ),
-  ]).then((arr) => arr[0]);
-
-  // A dispatch that did not fulfil is recorded as dispatch-failed. The
-  // rejected arm carries the real error; the defensive arm (Promise.allSettled
-  // always settles, so unreachable) synthesises one so the driver routes normally.
-  if (!dispatchSettled || dispatchSettled.status !== "fulfilled") {
-    const errorTail =
-      dispatchSettled?.status === "rejected"
-        ? (dispatchSettled.reason as Error).message?.slice(-200)
-        : "explore dispatch settled in an unexpected state";
-    // #799 — a crossing recorded before the failure survives in the pending
-    // buffer and is drained at the step boundary; the failure append here
-    // needs no ref fold.
+    );
+  } catch (err) {
+    // A dispatch that did not fulfil is recorded as dispatch-failed with the
+    // real error. A crossing recorded before the failure survives in the
+    // pending buffer and is drained at the step boundary (#799).
+    const errorTail = (err instanceof Error ? err.message : String(err)).slice(-200);
     return {
       state: appendEvent(clearDispatch(next, begun.jobId), {
         kind: "dispatch-failed",
@@ -144,9 +156,7 @@ export async function dispatchExploreAttempt(
     };
   }
 
-  // dispatchSettled.value is the explore role's dispatch result
-  // (single-dispatch — explore returns one report covering all issues).
-  const exploreDispatch = dispatchSettled.value as DispatchResult;
+  // The explore role returns one report covering all issues (single dispatch).
   const event = await buildCompletionEvent(ctx, "explore", "explore", "explore", exploreDispatch);
   const after = appendEvent(clearDispatch(next, begun.jobId), event);
   // A dispatch that FAILED has no reply to route on (nessie #686/#693).

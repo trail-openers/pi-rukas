@@ -12,19 +12,15 @@ import {
   dispatchExploreAttempt,
   hasIntentVerdictToken,
   noSpecEvidence,
-  replyLacksSpec,
+  resolveExploreSpec,
+  shouldRetryExplore,
 } from "./work-driver-explore-dispatch.ts";
 import {
   exploreProducedNoSignal,
   fetchIssueBodyViaGh,
   fetchIssueBodyWithRetry,
 } from "./work-driver-explore.ts";
-import {
-  persistSpecArtifact,
-  readSpecArtifact,
-  resolveIntentVerdict,
-} from "./work-driver-intent-artifact.ts";
-import { recoverOffloadedSpec } from "./work-driver-intent-offload.ts";
+import { deleteSpecArtifact, persistSpecArtifact } from "./work-driver-intent-artifact.ts";
 import { intentResolutionEnabled, reconcileVerdict } from "./work-driver-intent.ts";
 import {
   type ExploreVerdict,
@@ -187,55 +183,57 @@ export async function runExplore(
   );
   // #1094 — one dispatch attempt, then at most ONE re-dispatch when a
   // COMPLETED reply has no readable `## Spec`. Failed dispatches return here
-  // (no reply to route on) and never consume the retry.
-  const first = await dispatchExploreAttempt(ctx, next, prompt, useIntent);
+  // (no reply to route on) and never consume the retry. The prior spec
+  // artifact is dropped before each attempt, on the intent path only (#594).
+  if (useIntent) await deleteSpecArtifact(ctx.repoRoot, ctx.issue);
+  const first = await dispatchExploreAttempt(ctx, next, prompt);
   next = first.state;
   if (first.reply === undefined) return next;
   let responseText = first.reply.text ?? "";
+  // One read per reply: the retry decision and the routing below both use it.
+  let resolved = useIntent ? await resolveExploreSpec(ctx, responseText) : undefined;
   let retried = false;
-  if (useIntent && (await replyLacksSpec(ctx, responseText))) {
+  // dispatchOk is true: a failed dispatch returned above.
+  if (
+    shouldRetryExplore({
+      useIntent,
+      dispatchOk: true,
+      spec: resolved?.spec,
+      alreadyRetried: retried,
+    })
+  ) {
     trace("work-driver: explore reply has no `## Spec` — re-dispatching explore once (#1094)");
     next = appendEvent(next, {
       kind: "explore-retried",
       step: "explore",
       at: Date.now(),
-      reason: "no-spec",
       verdictParsed: hasIntentVerdictToken(responseText),
       firstJobId: first.jobId,
     });
-    const second = await dispatchExploreAttempt(
-      ctx,
-      next,
-      `${EXPLORE_RETRY_PREFACE}${prompt}`,
-      useIntent,
-    );
+    if (useIntent) await deleteSpecArtifact(ctx.repoRoot, ctx.issue);
+    const second = await dispatchExploreAttempt(ctx, next, `${EXPLORE_RETRY_PREFACE}${prompt}`);
     next = second.state;
     if (second.reply === undefined) return next;
     responseText = second.reply.text ?? "";
+    resolved = useIntent ? await resolveExploreSpec(ctx, responseText) : undefined;
     retried = true;
   }
 
   if (useIntent) {
-    const parsed = await recoverOffloadedSpec(responseText, scratchDir(ctx.repoRoot, ctx.issue));
-    if (parsed !== undefined) {
-      trace("work-driver: intent — spec resolved (offload fallback or inline parse)");
-    }
-    const artifact = await readSpecArtifact(ctx.repoRoot, ctx.issue);
-    const { spec, source } = resolveIntentVerdict(parsed, artifact);
     // Reconcile the chosen spec: a `proceed` with contradictions is
     // parked, a `proceed` with assumptions is promoted, an `underspecified`
     // park may be refuted by a complete spec. This runs on the WINNER
     // (prose or artifact), so the reconciliation logic is identical
     // regardless of which channel won the precedence rule.
-    const finalSpec = spec ? reconcileVerdict(spec) : undefined;
-    if (finalSpec !== undefined) {
+    const finalSpec = resolved ? reconcileVerdict(resolved.spec) : undefined;
+    if (resolved !== undefined && finalSpec !== undefined) {
       next = {
         ...next,
         pipelineState: { ...next.pipelineState, normalisedSpec: finalSpec },
       };
       await persistSpecArtifact(ctx.repoRoot, ctx.issue, finalSpec);
       trace(
-        `work-driver: intent verdict=${finalSpec.verdict}${finalSpec.parkReason ? ` (${finalSpec.parkReason})` : ""}, ${finalSpec.deliverables.length} deliverable(s) (source: ${source})`,
+        `work-driver: intent verdict=${finalSpec.verdict}${finalSpec.parkReason ? ` (${finalSpec.parkReason})` : ""}, ${finalSpec.deliverables.length} deliverable(s) (source: ${resolved.source})`,
       );
       if (finalSpec.verdict === "park") {
         // #657 — carry the machine-readable park reason on the cap-hit itself

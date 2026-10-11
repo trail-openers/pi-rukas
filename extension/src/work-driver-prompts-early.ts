@@ -129,7 +129,7 @@ export function inlineExplorePrompt(
       ? []
       : [
           "",
-          "Your reply MUST contain the `INTENT-VERDICT:` line and a `## Spec` heading; without them the cycle parks.",
+          "Your reply MUST contain the `INTENT-VERDICT:` line and a `## Spec` heading; a reply without them is retried once, then the cycle parks.",
         ]),
     // #397 — drop the block the gate above suppressed, so removing a protocol
     // does not leave a stray blank line where it used to be.

@@ -34,7 +34,7 @@ function assert(cond: boolean, msg: string) {
 // The no-signal predicate is still correct for its own case — a COMPLETED
 // dispatch whose reply carried no decision. What changed is that a FAILED
 // dispatch never reaches it.
-{
+function noSignalPredicate() {
   assert(
     exploreProducedNoSignal(true, null),
     "a COMPLETED explore that returned no decision is still no signal",
@@ -49,7 +49,7 @@ function assert(cond: boolean, msg: string) {
 // the completion event is not a success. This is a structural assertion because
 // the failure is one of ORDERING — the predicate is fine, it was simply
 // reachable from a state it must never see.
-{
+async function guardOrdering() {
   const { readFileSync } = await import("node:fs");
   const path = await import("node:path");
   // #1094 — the attempt helper owns the completion/failure split; the run
@@ -78,6 +78,9 @@ function assert(cond: boolean, msg: string) {
     "canary: a failed dispatch returns BEFORE the verdict router — it fell through, and a timeout was reported as an underspecified issue",
   );
 }
+
+noSignalPredicate();
+await guardOrdering();
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

@@ -152,7 +152,7 @@ const SEAMS: Seam[] = [
       exploreSpecArtifactPath:
         "#594 — artifact path helper; called by test-work-driver-pr12.ts and internally by readSpecArtifact/deleteSpecArtifact",
     },
-    canary: { symbol: "resolveIntentVerdict", importer: "work-driver-explore-run.ts" },
+    canary: { symbol: "resolveIntentVerdict", importer: "work-driver-explore-dispatch.ts" },
   },
   {
     // #750 — the shared verified-restore helper for consolidation abort
