@@ -16,7 +16,9 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { DriverContext } from "../src/work-driver-context.ts";
+import type { DispatchResult } from "../src/types.ts";
 import { greenWorkstreamsFromInterruptedDevelop } from "../src/work-develop-greens.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { type WorkState, readState, writeState } from "../src/workflow-state.ts";

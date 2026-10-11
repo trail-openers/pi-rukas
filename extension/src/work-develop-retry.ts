@@ -266,15 +266,9 @@ export async function runIndependentFanout(args: {
     // its named reason and is not re-run.
     const resetOk: string[] = [];
     for (const id of failed) {
-      try {
-        const { attempt, patch } = await resetFor(id);
-        if (patch !== undefined) {
-          notes?.push(`${id}: retry attempt ${attempt}: partial work saved to ${patch}`);
-        }
-        resetOk.push(id);
-      } catch (err) {
-        finals.set(id, { id, ok: false, reason: errText(err) });
-      }
+      const r = await resetForRetry(id, () => resetFor(id), notes);
+      if (r.ok) resetOk.push(id);
+      else finals.set(id, r.verdict);
     }
     // The retry dispatches start together: each is independent once its reset is done.
     const retried = await Promise.all(resetOk.map(runSafely));
@@ -285,4 +279,50 @@ export async function runIndependentFanout(args: {
   for (const id of kept) out.push({ id, ok: true });
   for (const id of toDispatch) out.push(finals.get(id) ?? { id, ok: false });
   return out;
+}
+
+/** #1016 — the ONE rule for a retry's reset, shared by the independent fan-out
+ *  and the dependent phase: a saved partial-work patch is noted; a refused reset
+ *  fails that workstream with its named reason and it is not re-run. */
+export async function resetForRetry(
+  id: string,
+  reset: () => Promise<ResetOutcome>,
+  notes?: string[],
+): Promise<{ ok: true } | { ok: false; verdict: FanoutVerdict }> {
+  try {
+    const { attempt, patch } = await reset();
+    if (patch !== undefined)
+      notes?.push(`${id}: retry attempt ${attempt}: partial work saved to ${patch}`);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, verdict: { id, ok: false, reason: errText(err) } };
+  }
+}
+
+/** #1016 — the one-shot retry of ONE workstream: reset (or refuse), then dispatch
+ *  once. Returns the retry's outcome; the caller settles it into the verdicts. */
+export async function retryOnce(args: {
+  id: string;
+  reset: () => Promise<ResetOutcome>;
+  runAt: () => Promise<FanoutVerdict>;
+  notes?: string[];
+}): Promise<FanoutVerdict> {
+  const r = await resetForRetry(args.id, args.reset, args.notes);
+  if (!r.ok) return r.verdict;
+  return args.runAt().catch((err: unknown) => ({ id: args.id, ok: false, reason: errText(err) }));
+}
+
+/** #1016 — one verdict per workstream. Keeps the id's first position, replaces
+ *  its entry and drops every other entry for the id (a retry that dispatched
+ *  pushed its own entry; the first pass left a stale failed one). */
+export function settleVerdict(verdicts: FanoutVerdict[], v: FanoutVerdict): void {
+  const idx = verdicts.findIndex((x) => x.id === v.id);
+  if (idx < 0) {
+    verdicts.push(v);
+    return;
+  }
+  verdicts[idx] = v;
+  for (let i = verdicts.length - 1; i > idx; i--) {
+    if (verdicts[i]?.id === v.id) verdicts.splice(i, 1);
+  }
 }

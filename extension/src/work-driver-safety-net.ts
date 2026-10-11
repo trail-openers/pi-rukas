@@ -41,15 +41,20 @@
  * recorded on the event so handoff renderers can show what was committed.
  */
 
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { trace } from "./trace.ts";
 import {
   type ExecFn,
+  type GitExec,
   commitEntriesOf,
   commitsAheadOfBase,
   errText,
+  isDriverArtefact,
   isValidBaseSha,
   runGit,
   stagePaths,
+  unstagePaths,
   worktreeStatus,
 } from "./work-develop-git.ts";
 import { withPersistNotes } from "./work-develop-retry.ts";
@@ -190,10 +195,17 @@ export async function safetyNetWorktree(
   // Fire the safety net: stage the work paths and commit.
   trace(`work-driver: safety net firing for ${wsId} — ${workPaths.length} uncommitted path(s)`);
   let commitSha: string | undefined;
-  // One `git add` for the whole list (chunked). A failed add records its git
-  // error and commits nothing: a partial stage must never turn green.
+  // One `git add` for the list (chunked). A failed add records its git
+  // error and commits nothing: a partial stage must never turn green. A path
+  // absent from disk is a deletion (a staged rename's origin is already out of
+  // the index, so `git add` has nothing to match): the path-limited commit below
+  // records it from HEAD, so only present paths are staged.
   try {
-    await stagePaths(git, cwd, workPaths);
+    await stagePaths(
+      git,
+      cwd,
+      workPaths.filter((p) => existsSync(join(cwd, p))),
+    );
   } catch (err) {
     const note = `${wsId}: safety net skipped — git add failed — ${errText(err)}`;
     trace(`work-driver: ${note}`);
@@ -218,6 +230,10 @@ export async function safetyNetWorktree(
     // produce the same failure as before the safety net.
     return undefined;
   }
+  // #1016 — a staged rename into or out of `.pi/` leaves the driver-owned side
+  // in the index after the path-limited commit. Unstage it (the working tree is
+  // untouched) so the index holds no driver artefact the commit did not name.
+  await unstageDriverArtefacts(git, cwd, wsId, notes);
   // The commit has landed. A failed read of its sha must not hide it: the
   // event then names HEAD, and the note says the sha was not read.
   try {
@@ -306,4 +322,35 @@ export async function applySafetyNet(ctx: DriverContext, state: WorkState): Prom
 
   const withEvents = events.length === 0 ? state : appendEvent(state, ...events);
   return withPersistNotes(withEvents, notes);
+}
+
+/** #1016 — after the path-limited commit, unstage every driver-artefact path the
+ *  index still holds (a staged rename into or out of `.pi/` leaves one there).
+ *  Literal pathspecs; index only. A failure or a surviving entry is a note, never
+ *  a throw: the commit has already landed. */
+async function unstageDriverArtefacts(
+  git: GitExec,
+  cwd: string,
+  wsId: string,
+  notes: string[],
+): Promise<void> {
+  let staged: string[];
+  try {
+    const { stdout } = await git(["diff", "--cached", "--name-only", "--no-renames", "-z"], {
+      cwd,
+      maxBuffer: 256 * 1024,
+    });
+    staged = stdout.split("\0").filter((p) => p !== "" && isDriverArtefact(p));
+  } catch (err) {
+    notes.push(`${wsId}: could not read the index after the safety-net commit — ${errText(err)}`);
+    return;
+  }
+  if (staged.length === 0) return;
+  try {
+    await unstagePaths(git, cwd, staged);
+  } catch (err) {
+    notes.push(
+      `${wsId}: index still holds ${staged.length} driver-artefact path(s), e.g. ${JSON.stringify(staged[0])} — ${errText(err)}`,
+    );
+  }
 }

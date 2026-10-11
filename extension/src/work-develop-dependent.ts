@@ -13,9 +13,14 @@
  */
 import { existsSync } from "node:fs";
 import { trace } from "./trace.ts";
-import { errText, isValidBaseSha } from "./work-develop-git.ts";
+import { assertInsideWorktrees, errText, isValidBaseSha } from "./work-develop-git.ts";
 import { downgradeReason } from "./work-develop-greens.ts";
-import { greenCountsAsWork, recordDowngrade } from "./work-develop-retry.ts";
+import {
+  greenCountsAsWork,
+  recordDowngrade,
+  retryOnce,
+  settleVerdict,
+} from "./work-develop-retry.ts";
 import {
   type BranchCompletedExtra,
   type DependentRunState,
@@ -32,14 +37,16 @@ import { safetyNetWorktree } from "./work-driver-safety-net.ts";
 import { armStepNotice } from "./work-driver-step-notice.ts";
 import { type WorkEvent, type WorkState, appendEvent, writeState } from "./workflow-state.ts";
 
-/** #1016 — one verdict per workstream: a retry replaces the first pass's entry. */
-function replaceVerdict(
-  verdicts: Array<{ id: string; ok: boolean; reason?: string }>,
-  v: { id: string; ok: boolean; reason?: string },
-): void {
-  const i = verdicts.map((x) => x.id).lastIndexOf(v.id);
-  if (i >= 0) verdicts[i] = v;
-  else verdicts.push(v);
+/** #1016 — a persisted dependent worktree is reused only from inside
+ *  `.worktrees/` (fail closed): a path outside it is a refusal, not a reuse. */
+function persistedPathRefusal(repoRoot: string, path: string | undefined): string | undefined {
+  if (path === undefined || !existsSync(path)) return undefined;
+  try {
+    assertInsideWorktrees(repoRoot, path);
+    return undefined;
+  } catch (err) {
+    return `persisted worktree path refused — ${errText(err)}`;
+  }
 }
 
 /**
@@ -152,7 +159,7 @@ export async function runDependentWorkstreams(
         continue;
       }
       // #1016 — unsaved partial work from the interrupted attempt blocks the dispatch.
-      const refusal = run.refused?.[id];
+      const refusal = run.refused?.[id] ?? persistedPathRefusal(ctx.repoRoot, wtRef.worktrees[id]);
       if (refusal !== undefined) {
         trace(`work-driver: dependent ${id} refused — ${refusal}`);
         failedOrSkipped.add(id);
@@ -300,20 +307,16 @@ export async function runDependentWorkstreams(
         failedOrSkipped.add(id);
         if (failureSource) failureSource[id] = "failed";
         if (allIds.length > 1 && run.resetFor) {
-          try {
-            const { attempt, patch } = await run.resetFor(
-              id,
-              createdPath,
-              wtRef.workstreamBaseShas[id] ?? globalBaseSha,
-            );
-            if (patch !== undefined) {
-              run.notes?.push(`${id}: retry attempt ${attempt}: partial work saved to ${patch}`);
-            }
-            outcome = await runOneWorkstream(id, createdPath);
-          } catch (err) {
-            outcome = { id, ok: false, reason: errText(err) };
-          }
-          replaceVerdict(verdicts, outcome);
+          const resetFor = run.resetFor;
+          outcome = await retryOnce({
+            id,
+            reset: () => resetFor(id, createdPath, wtRef.workstreamBaseShas[id] ?? globalBaseSha),
+            runAt: () => runOneWorkstream(id, createdPath),
+            notes: run.notes,
+          });
+          // The retry's own dispatch pushed an entry, and the first pass left a
+          // stale failed one: one final verdict per workstream, nothing else.
+          settleVerdict(verdicts, outcome);
         }
       }
       // #753 — the dependent's completion is the timestamp its own dependents record.
@@ -339,7 +342,7 @@ export async function runDependentWorkstreams(
           if (failureSource) failureSource[id] = "failed";
           if (run.emitBranchCompleted)
             recordDowngrade({ emit: run.emitBranchCompleted }, id, green.detail);
-          replaceVerdict(verdicts, { id, ok: false, reason: downgradeReason(green.detail) });
+          settleVerdict(verdicts, { id, ok: false, reason: downgradeReason(green.detail) });
         }
       }
     }

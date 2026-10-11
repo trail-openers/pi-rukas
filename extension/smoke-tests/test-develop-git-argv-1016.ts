@@ -223,6 +223,8 @@ try {
     return { stdout: "" };
   }) as unknown as typeof execFn;
   const notes: string[] = [];
+  // bad.ts must exist: only present paths are staged (a missing one is a deletion).
+  await writeFile(path.join(dir, "bad.ts"), "x");
   const failedAdd = await safetyNetWorktree("w", dir, trackedBase, stub, notes);
   assert(failedAdd === undefined, "#1016: no commit event when a git add fails");
   assert(

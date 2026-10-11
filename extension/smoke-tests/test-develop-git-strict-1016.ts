@@ -155,8 +155,8 @@ try {
     "#1016: a save that fails after staging leaves the index clean",
   );
 
-  // 2b. Untracked directories are listed file by file, and an untracked upper-case
-  // TMP/ file survives the reset (it is not saved, and clean must not delete it).
+  // 2b. Untracked directories are listed file by file; the save and the reset's
+  // clean share one exact-case rule, so an untracked upper-case TMP/ file is saved.
   const cw = wt("clean-ws");
   const cleanBase = shas["clean-ws"] ?? "";
   await mkdir(path.join(cw, "newdir"), { recursive: true });
@@ -180,9 +180,12 @@ try {
       !existsSync(path.join(cw, "newdir", "a.ts")),
     "#1016: an untracked directory's file is saved to the patch, then reset",
   );
+  // Only the EXACT-case tmp/ and .pi/ are spared by the reset's clean; an
+  // untracked upper-case TMP/ file is saved to the patch first, then removed.
   assert(
-    existsSync(path.join(cw, "TMP", "notes.txt")),
-    "#1016: an untracked upper-case TMP/ file survives the reset",
+    (await readFile(cleanPatch, "utf8")).includes("TMP/notes.txt") &&
+      !existsSync(path.join(cw, "TMP", "notes.txt")),
+    "#1016: an untracked upper-case TMP/ file is saved to the patch, then removed",
   );
 
   // 3. worktreeStatus: a malformed entry or a rename without its origin is

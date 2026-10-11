@@ -129,26 +129,34 @@ export function isDriverArtefact(path: string): boolean {
   return first === ".pi" || first === "tmp";
 }
 
-/** The entries the safety net may commit and the reset must save: everything
- *  except UNTRACKED driver artefacts. A tracked `.pi/` edit is real work and
- *  stays in; an untracked `.pi/` file is a driver file and is left alone (the
- *  reset's `clean -e .pi/ -e tmp/` keeps it). */
-export function workEntriesOf(entries: StatusEntry[]): StatusEntry[] {
-  return entries.filter((e) => !(e.untracked && isDriverArtefact(e.path)));
+/** Exact-case driver directories: the only paths the reset's `git clean` spares
+ *  (RESET_CLEAN_ARGS is case-sensitive). */
+export function isExactDriverArtefact(path: string): boolean {
+  return path.startsWith(".pi/") || path.startsWith("tmp/");
 }
 
-/** The entries the safety net may COMMIT: everything outside `.pi/` and `tmp/`,
- *  tracked or not. `.pi/` defines verification, so a developer's edit there is
- *  never committed by the driver; it goes through the protected-path check (#406).
+/** The entries the save and the reset act on: everything except UNTRACKED files
+ *  under the EXACT-case `.pi/` and `tmp/` — precisely what `git clean -e .pi/
+ *  -e tmp/` spares. A tracked `.pi/` edit is real work and stays in; an untracked
+ *  `.PI/x` is not spared by clean, so it is saved to the patch before the reset
+ *  removes it. (It is still never committed: see commitEntriesOf.) */
+export function workEntriesOf(entries: StatusEntry[]): StatusEntry[] {
+  return entries.filter((e) => !(e.untracked && isExactDriverArtefact(e.path)));
+}
+
+/** The entries the safety net may COMMIT: everything outside the driver
+ *  directories in EVERY case spelling (`.pi/`, `.PI/`, `tmp/`, `TMP/`), tracked
+ *  or not. `.pi/` defines verification, so a developer's edit there is never
+ *  committed by the driver; it goes through the protected-path check (#406).
  *  It is still saved to the retry patch by `workEntriesOf` before any reset. */
 export function commitEntriesOf(entries: StatusEntry[]): StatusEntry[] {
   return entries.filter((e) => !isDriverArtefact(e.path));
 }
 
-/** The reset's `git clean`. Driver artefacts are matched case-insensitively
- *  (isDriverArtefact), so the exclusion must cover the upper-case spellings too:
- *  an untracked `TMP/x` is then kept on disk instead of deleted without a patch. */
-const RESET_CLEAN_ARGS = ["-fd", "-e", ".pi/", "-e", "tmp/", "-e", ".PI/", "-e", "TMP/"];
+/** The reset's `git clean`. Its exclusions are case-sensitive and must equal the
+ *  save rule (workEntriesOf / isExactDriverArtefact): an untracked `.PI/x` is not
+ *  spared here, so it has to be in the patch first. */
+const RESET_CLEAN_ARGS = ["-fd", "-e", ".pi/", "-e", "tmp/"];
 
 /** Where the save-then-reset applies: the scratch patch, and the repo whose
  *  `.worktrees/` directory is the only place a reset may run. */
@@ -238,7 +246,7 @@ export async function stagePaths(git: GitExec, cwd: string, paths: string[]): Pr
  *  and the status is readable. Uncommitted work (untracked artefacts excluded)
  *  is staged, written as a binary patch against the base to `save.patchPath`,
  *  and only then reset with `git reset --hard` and `git clean -fd` that excludes
- *  both the lower-case and the upper-case driver directories (see RESET_CLEAN_ARGS).
+ *  the exact-case driver directories (see RESET_CLEAN_ARGS).
  *  A failed patch write refuses the reset. Returns the patch path, or undefined
  *  when there was no work to save. */
 export async function resetWorktreeToBase(
