@@ -28,6 +28,9 @@
  * re-called with `dryRun` omitted and files. Non-resumable by design (a
  * 2-5 minute flow; re-running is cheaper than a state file).
  *
+ * #1043: an identical confirm of a FILEABLE dry run files the reviewed spec
+ * verbatim (plan-confirm.ts) with no investigation, drafting or gate.
+ *
  * The driver's own filing is a child-process exec — exempt from the
  * tool_call guard by construction, exactly like the work driver's
  * mechanized `gh pr create`.
@@ -58,7 +61,7 @@ export function registerPlanTool(pi: ExtensionAPI) {
     name: "start_plan_driver",
     label: "Start /plan Driver",
     description:
-      "Run the compiled /plan pipeline (classify → inventory → type-specialised investigation → draft → adversarial gap gate → file) and file the resulting GitHub issue. This is the ONLY way to create a GitHub issue: direct `gh issue create` (and `gh api` POST to the issues collection) is structurally refused for every role in every mode — the refusal names this tool. Call with dryRun:true FIRST to return { spec, gaps, priorContext, filed:false } without filing; show the spec + gap dispositions to the operator, and on their confirmation re-call with dryRun omitted to file. The result includes issueUrl on success. Epic sub-issues at depth >= 3 get a minimal body with a depth-limit note. Gap gate: runs for bug/feature/epic; chore/spike get deterministic validation only. A too-thin descriptor (below the word floor, no code identifier, no context) returns needs-clarification questions without dispatching anything — answer them and re-call. Non-resumable: a failed run is re-run, not resumed.",
+      "Run the compiled /plan pipeline (classify → inventory → type-specialised investigation → draft → adversarial gap gate → file) and file the resulting GitHub issue. This is the ONLY way to create a GitHub issue: direct `gh issue create` (and `gh api` POST to the issues collection) is structurally refused for every role in every mode — the refusal names this tool. Call with dryRun:true FIRST to return { spec, gaps, priorContext, filed:false } without filing; show the spec + gap dispositions to the operator, and on their confirmation re-call with dryRun omitted to file. The result includes issueUrl on success. An identical confirm (same descriptor, context, type and git HEAD, within 2 hours of that dry run) whose dry run was fileable (no unresolved CRITICAL gap, gate ran) files the REVIEWED dry-run spec VERBATIM — the exact body the operator saw — with no investigation, drafting or gap gate, and the result says FILED FROM REVIEWED DRY RUN. Any changed input, a moved HEAD, or an expired entry runs the full pipeline; so does a confirm after a non-fileable dry run (it reuses the investigation and re-runs the gate). There is no way to force a re-review of an identical confirm: change an input, or wait for the expiry. Epic sub-issues at depth >= 3 get a minimal body with a depth-limit note. Gap gate: runs for bug/feature/epic; chore/spike get deterministic validation only. A too-thin descriptor (below the word floor, no code identifier, no context) returns needs-clarification questions without dispatching anything — answer them and re-call. Non-resumable: a failed run is re-run, not resumed.",
     parameters: Type.Object({
       descriptor: Type.String({
         description: "Ticket descriptor — one or two sentences describing the intended change.",
@@ -147,7 +150,9 @@ function renderPlanResult(r: PlanResult, dryRun: boolean): string {
     : dryRun
       ? "PLAN DRY-RUN (nothing filed). Show this spec to the operator; on their confirmation re-call start_plan_driver with dryRun omitted to file."
       : r.filed
-        ? `PLAN FILED — ${r.issueUrl}`
+        ? r.filedFromDryRun
+          ? `PLAN FILED FROM REVIEWED DRY RUN (age ${fmtMs(r.filedFromDryRun.ageMs)}) — ${r.issueUrl}. The spec below is the dry run's reviewed body, filed verbatim: no investigation, drafting or gap gate ran.`
+          : `PLAN FILED — ${r.issueUrl}`
         : "PLAN COMPLETED — filing failed or was blocked; see the FILING STATUS section below. The spec is still valid to review.";
   const gaps =
     r.gaps.length > 0
@@ -293,6 +298,7 @@ function resultDetails(r: PlanResult, dryRun: boolean): Record<string, unknown> 
   if (r.failedAngles) d.failedAngles = r.failedAngles;
   if (r.compacted) d.compacted = true;
   if (r.investigationReused) d.investigationReused = r.investigationReused;
+  if (r.filedFromDryRun) d.filedFromDryRun = r.filedFromDryRun;
   if (r.timings) d.timings = r.timings;
   return d;
 }

@@ -44,6 +44,8 @@ const DESC = "add a start_plan_driver tool for the plan pipeline in extension";
 const REPO = process.cwd();
 const GAP_HIGH =
   "GAP: HIGH — the spec omits the rollback path — proposed resolution: add a rollback section\nVERDICT: READY";
+const GAP_CRITICAL =
+  "GAP: CRITICAL the spec commits to both a retry cap of 3 and an infinite retry — proposed resolution: name which wins\nVERDICT: NEEDS_ITERATION";
 
 let head = "a".repeat(40);
 let cacheDir = "";
@@ -163,19 +165,33 @@ assert(log.explore > 0, "dry run dispatches the investigation barrier");
 installDispatch([GAP_HIGH]);
 const conf = await pipeline();
 assert(log.explore === 0, "confirming run with unchanged inputs dispatches no investigation");
-assert(log.gate >= 1, "confirming run still dispatches the gap gate");
+assert(log.gate === 0, "#1043: a fileable dry run's confirm dispatches no gap gate");
 assert(
-  conf.investigationReused !== undefined && conf.investigationReused.ageMs >= 0,
-  "confirming run reports the reuse with the dry run's age",
+  conf.filedFromDryRun !== undefined && conf.filedFromDryRun.ageMs >= 0,
+  "a fileable confirm reports the verbatim filing with the dry run's age",
 );
 assert(conf.filed, "confirming run files the reviewed spec");
-assert(
-  (gatePrompts[0] ?? "").includes("ALREADY SETTLED"),
-  "a cache hit seeds the gate with the dry run's settled gaps",
-);
-assert(conf.spec.includes("the tool registers"), "drafted body is built from the cached findings");
+assert(conf.spec.includes("the tool registers"), "the filed spec is the cached reviewed body");
 assert(!conf.timings?.some((t) => t.phase === "inventory"), "inventory is not re-run on a hit");
 assert(forgeStub.created.length >= 1, "filing still goes through the forge");
+
+// ------------------------------------------------------------- non-fileable hit: barrier reuse + gate seed
+
+await newCache();
+installDispatch([GAP_CRITICAL]);
+await pipeline({ dryRun: true });
+installDispatch([GAP_CRITICAL]);
+const nonFileable = await pipeline();
+assert(log.explore === 0, "a non-fileable dry run's confirm reuses the investigation");
+assert(log.gate >= 1, "a non-fileable dry run's confirm still runs the gap gate");
+assert(
+  nonFileable.investigationReused !== undefined && !nonFileable.filed,
+  "a non-fileable confirm reports the reuse and does not file verbatim",
+);
+assert(
+  (gatePrompts[0] ?? "").includes("ALREADY SETTLED"),
+  "a non-fileable hit seeds the gate with the dry run's settled gaps",
+);
 
 // ------------------------------------------------------------- HEAD miss (+ gate seed)
 
@@ -277,7 +293,7 @@ assert(
 // ------------------------------------------------------------- cached duplicate-risk HIGH halts
 
 await newCache();
-installDispatch([GAP_HIGH]);
+installDispatch([GAP_CRITICAL]);
 await pipeline({ dryRun: true });
 await mutateEntry((e) => {
   e.barrier.duplicateRisk = { level: "high", rationale: "duplicates #5" };
@@ -315,9 +331,9 @@ assert((await cacheFiles()).length === 0, "a halted dry run writes no cache entr
   } as any;
   registerPlanTool(fakePi);
   await newCache();
-  installDispatch([GAP_HIGH]);
+  installDispatch([GAP_CRITICAL]);
   await invokePlanTool(tools, { descriptor: DESC, dryRun: true });
-  installDispatch([GAP_HIGH]);
+  installDispatch([GAP_CRITICAL]);
   const hit = await invokePlanTool(tools, { descriptor: DESC });
   assert(
     hit.text.includes("INVESTIGATION REUSED"),

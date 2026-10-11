@@ -14,6 +14,13 @@
  * seeded with them as "already settled" (plan-gaps.ts) on hit and miss alike,
  * so a re-review does not re-raise what the operator already saw.
  *
+ * It also carries the dry run's FINAL drafted spec (title + body, byte-exact)
+ * and its fileability verdict. An identical confirming call whose dry run was
+ * fileable files that spec verbatim (plan-confirm.ts) — the operator reviewed
+ * exactly those bytes, so nothing is re-investigated, re-drafted or re-gated.
+ * A non-fileable dry run is cached too, but only feeds the investigation reuse
+ * and gate seed; it never files on its own.
+ *
  * Staleness is keyed on git HEAD only. Uncommitted working-tree edits are NOT
  * part of the key; the result says so (plan-tool.ts).
  *
@@ -51,6 +58,21 @@ export interface CachedInvestigation {
   barrier: InvestigationResult;
   /** The dry run's gap-gate findings — seed for the gate on a miss. */
   gaps: PlanGap[];
+  /** What the dry run drafted and whether it was fileable (#1043). */
+  reviewed: ReviewedDryRun;
+}
+
+/** The reviewed dry run: the exact title/body the operator saw, and its verdict. */
+export interface ReviewedDryRun {
+  /**
+   * False when the dry run's gap gate or validation blocked filing (an
+   * unresolved CRITICAL gap, a gate that never ran, an unparseable review).
+   * Duplicate-risk and precheck halts never reach the cache at all.
+   */
+  fileable: boolean;
+  title: string;
+  spec: string;
+  priorContext: { source: string; fact: string }[];
 }
 
 interface InvestigationCacheEntry extends CachedInvestigation {
@@ -129,7 +151,21 @@ function isEntry(x: unknown): x is InvestigationCacheEntry {
       (typeof e.barrier.duplicateRisk === "object" &&
         typeof e.barrier.duplicateRisk.level === "string" &&
         typeof e.barrier.duplicateRisk.rationale === "string")) &&
-    Array.isArray(e.gaps)
+    Array.isArray(e.gaps) &&
+    isReviewed(e.reviewed)
+  );
+}
+
+function isReviewed(x: unknown): x is ReviewedDryRun {
+  if (!x || typeof x !== "object") return false;
+  const r = x as Partial<ReviewedDryRun>;
+  return (
+    typeof r.fileable === "boolean" &&
+    typeof r.title === "string" &&
+    typeof r.spec === "string" &&
+    Array.isArray(r.priorContext) &&
+    // A fileable entry must carry something to file.
+    (!r.fileable || (r.title.trim().length > 0 && r.spec.trim().length > 0))
   );
 }
 
@@ -159,6 +195,32 @@ export async function readInvestigationCache(
   const ageMs = now - entry.createdAt;
   if (ageMs < 0 || ageMs > INVESTIGATION_CACHE_TTL_MS) return undefined;
   return { cached: entry, ageMs };
+}
+
+/**
+ * The reviewed spec of a FILEABLE dry run whose inputs and HEAD match, inside
+ * the expiry. Undefined for a non-fileable dry run, a miss, or a malformed entry.
+ */
+export async function readFileableDryRun(
+  cacheDir: string,
+  inputs: CacheInputs,
+  now: number = Date.now(),
+): Promise<{ reviewed: ReviewedDryRun; gaps: PlanGap[]; ageMs: number } | undefined> {
+  const hit = await readInvestigationCache(cacheDir, inputs, now);
+  if (!hit?.cached.reviewed.fileable) return undefined;
+  return { reviewed: hit.cached.reviewed, gaps: hit.cached.gaps, ageMs: hit.ageMs };
+}
+
+/**
+ * Drop the entry once its spec has been filed. Without this, an identical
+ * confirm after a successful filing would verbatim-file the same spec again.
+ * Fails open: an entry that cannot be removed is merely reusable.
+ */
+export async function consumeInvestigationCache(
+  cacheDir: string,
+  inputs: CacheInputs,
+): Promise<void> {
+  await fs.rm(entryFile(cacheDir, inputs), { force: true }).catch(() => undefined);
 }
 
 /**

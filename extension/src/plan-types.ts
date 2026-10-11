@@ -127,6 +127,12 @@ export interface PlanResult {
    * Drafting, validation and the gap gate always re-ran.
    */
   investigationReused?: { ageMs: number };
+  /**
+   * #1043: set when the filed spec is the confirmed dry run's reviewed spec,
+   * filed verbatim with no investigation, drafting or gate; `ageMs` is that
+   * dry run's age.
+   */
+  filedFromDryRun?: { ageMs: number };
   /** True when the body was compacted to fit the forge's 65,536-char limit. */
   compacted?: boolean;
   /** Per-phase wall-clock durations, always present on a completed run. */

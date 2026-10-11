@@ -11,6 +11,7 @@ import { setPlanVipuneSearch } from "../src/plan-draft.ts";
  */
 import { setPlanDispatch } from "../src/plan-driver.ts";
 import { setPlanForge } from "../src/plan-filing.ts";
+import { setPlanGitStateFn } from "../src/plan-investigation-cache.ts";
 import type { RegisteredPlanTool } from "../src/plan-tool.ts";
 import type { SearchResult } from "../src/vipune.ts";
 import { vipuneSearch } from "../src/vipune.ts";
@@ -107,9 +108,15 @@ export { setPlanDispatch };
  * pipeline fully offline and its output byte-deterministic (the vipune rows
  * are the "droppable tail" of the inventory; no pipeline assertion reads
  * them). Pair with installForgeStub() so the related-issues leg is stubbed too.
+ *
+ * #1043: it also disables the per-clone investigation cache. Without this a
+ * dry run in one test file leaves an entry in the REAL `.git/pi-plan-cache`,
+ * and a later confirm in another file would file that spec verbatim and skip
+ * its gate. A test that exercises the cache sets its own git-state stub.
  */
 export function installOfflineVipuneStub(): void {
   setPlanVipuneSearch(async () => ({ kind: "hits", hits: [] }));
+  setPlanGitStateFn(async () => undefined);
 }
 
 /**
@@ -129,7 +136,8 @@ export function setPlanVipuneStub(
   }
   // The partial signature is safe: the inventory calls vipuneSearch with
   // (terms, searchOpts) only — no other shape ever reaches this seam.
-  setPlanVipuneSearch(((q: string, o: { cwd: string }) => fn(q, { hybrid: o.hybrid })) as unknown as typeof vipuneSearch);
+  setPlanVipuneSearch(((q: string, o: { cwd: string }) =>
+    fn(q, { hybrid: o.hybrid })) as unknown as typeof vipuneSearch);
 }
 
 /**

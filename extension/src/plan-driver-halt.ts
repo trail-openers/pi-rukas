@@ -13,8 +13,9 @@
 import type { AngleFindings } from "./plan-draft.ts";
 import type { FilingFailure } from "./plan-filing.ts";
 import { PLAN_REPORTER_PATH } from "./plan-investigate.ts";
-import type { PlanPhaseTiming, PlanResult, PlanType } from "./plan-types.ts";
+import { type PlanPhaseTiming, type PlanResult, type PlanType, planTitle } from "./plan-types.ts";
 import { reporterMissingError } from "./reporter-preflight.ts";
+import { trace } from "./trace.ts";
 
 export function haltResult(args: {
   type: PlanType;
@@ -68,6 +69,49 @@ export function allAnglesFailedSpec(angleNames: string, findings: AngleFindings[
  * was computed (and whether each splice landed) before the throw, so a
  * crash cannot silently lose carried gap decisions.
  */
+/**
+ * #633 aggregate all-angles-failed guard (fail-closed): if EVERY angle
+ * produced zero structured items, every typed section would silently fall
+ * back — halt before draftSpec/fileIssue with the discriminated
+ * `skipped-all-angles-failed` reason instead ("deliberately skipped",
+ * never "filing failed"). Moved from plan-driver.ts along the 500-line seam.
+ */
+export function allAnglesFailedHalt(args: {
+  type: PlanType;
+  descriptor: string;
+  findings: AngleFindings[];
+  priorContext: { source: string; fact: string }[];
+  failedAngles: { name: string; detail: string }[];
+  dryRun?: boolean;
+  timings: () => PlanPhaseTiming[];
+}): PlanResult | undefined {
+  const { type, descriptor, findings, priorContext, failedAngles, dryRun } = args;
+  const withItems = findings.filter((f) => f.toolUses.length > 0).length;
+  if (findings.length === 0 || withItems > 0) return undefined;
+  trace(
+    `plan-driver: ALL ${findings.length} angles produced zero structured items (prose-only or schema-invalid calls) — halting, no spec filed`,
+  );
+  const angleNames = findings.map((f) => f.name).join(", ");
+  const spec = allAnglesFailedSpec(angleNames, findings);
+  const title = planTitle(descriptor, type);
+  trace(
+    `plan-driver: type=${type} angles=${findings.length} structured=${withItems} gaps=0 filed=false dryRun=${!!dryRun} ALL-ANGLES-FAILED`,
+  );
+  return haltResult({
+    type,
+    title,
+    spec,
+    priorContext,
+    capHit: true,
+    failure: {
+      reason: "skipped-all-angles-failed",
+      detail: `all ${findings.length} angles produced zero structured items — filing was deliberately skipped (not a forge failure)`,
+    },
+    failedAngles,
+    timings: args.timings(),
+  });
+}
+
 export function correctiveRedraftError(
   computed: { description: string; resolution: string }[],
   writtenOutcomes: { applied: boolean; heading: string }[],

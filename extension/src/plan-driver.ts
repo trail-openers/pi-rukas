@@ -18,13 +18,15 @@
  * dryRun is the confirmation seam: `dryRun: true` returns the spec +
  * gaps without filing; on confirmation the driver is re-called without
  * dryRun. Every phase is timed (PlanResult.timings — measure, then cut).
+ * #1043: an identical confirm of a FILEABLE dry run files its reviewed spec
+ * verbatim (plan-confirm.ts — no phase below runs).
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { dispatchCore } from "./dispatch.ts";
+import { fileReviewedDryRun, settlePlanCache } from "./plan-confirm.ts";
 import { codeIdentifiersIn, draftSpec, mechanicalInventory } from "./plan-draft.ts";
-import { allAnglesFailedSpec, correctiveRedraftError, haltResult } from "./plan-driver-halt.ts";
-import { type FilingFailure, fileIssue, getPlanForge, planForgeFor } from "./plan-filing.ts";
+import { allAnglesFailedHalt, correctiveRedraftError, haltResult } from "./plan-driver-halt.ts";
 import {
   type GapGateLoopResult,
   residualGapsSection,
@@ -42,7 +44,6 @@ import {
   readInvestigationCache,
   readSettledGaps,
   resolvePlanGitState,
-  writeInvestigationCache,
 } from "./plan-investigation-cache.ts";
 import { phase5FilingFailure } from "./plan-phase5.ts";
 import { precheckDescriptor } from "./plan-precheck.ts";
@@ -147,6 +148,12 @@ export async function runPlanPipeline(
   // gate is ALWAYS re-run, seeded with the prior dry run's gaps as settled.
   const gitState = await resolvePlanGitState(repoRoot);
   const cacheInputs = gitState ? { descriptor, context, type, head: gitState.head } : undefined;
+  // #1043 — an identical confirm of a fileable dry run files its reviewed spec.
+  const confirmed =
+    !dryRun && gitState && cacheInputs
+      ? await fileReviewedDryRun(gitState.cacheDir, cacheInputs, repoRoot, finishTimings)
+      : undefined;
+  if (confirmed) return confirmed;
   const reused =
     !dryRun && gitState && cacheInputs
       ? await readInvestigationCache(gitState.cacheDir, cacheInputs)
@@ -217,36 +224,17 @@ export async function runPlanPipeline(
     });
   }
 
-  // #633 aggregate all-angles-failed guard (fail-closed): if EVERY angle
-  // produced zero structured items, every typed section would silently fall
-  // back — halt before draftSpec/fileIssue with the discriminated
-  // `skipped-all-angles-failed` reason instead ("deliberately skipped",
-  // never "filing failed").
-  const withItems = findings.filter((f) => f.toolUses.length > 0).length;
-  if (findings.length > 0 && withItems === 0) {
-    trace(
-      `plan-driver: ALL ${findings.length} angles produced zero structured items (prose-only or schema-invalid calls) — halting, no spec filed`,
-    );
-    const angleNames = findings.map((f) => f.name).join(", ");
-    const spec = allAnglesFailedSpec(angleNames, findings);
-    const title = planTitle(descriptor, type);
-    trace(
-      `plan-driver: type=${type} angles=${findings.length} structured=${withItems} gaps=0 filed=false dryRun=${!!dryRun} ALL-ANGLES-FAILED`,
-    );
-    return haltResult({
-      type,
-      title,
-      spec,
-      priorContext,
-      capHit: true,
-      failure: {
-        reason: "skipped-all-angles-failed",
-        detail: `all ${findings.length} angles produced zero structured items — filing was deliberately skipped (not a forge failure)`,
-      },
-      failedAngles,
-      timings: finishTimings(),
-    });
-  }
+  // #633 aggregate all-angles-failed guard — plan-driver-halt.ts (fail-closed).
+  const allFailed = allAnglesFailedHalt({
+    type,
+    descriptor,
+    findings,
+    priorContext,
+    failedAngles,
+    dryRun,
+    timings: finishTimings,
+  });
+  if (allFailed) return allFailed;
 
   // Phase 3 — draft WITHIN the forge body budget (vipune session: four
   // filings hit the 65,536-char wall after clean gates; plan-validate.ts
@@ -448,13 +436,20 @@ export async function runPlanPipeline(
   // #1043 — only a successful dry run is cached (filed=false, no filing
   // failure): a halted dry run would halt the confirming call for the same
   // reason, so there is nothing worth reusing.
-  if (dryRun && gitState && cacheInputs && !filingFailure) {
-    await writeInvestigationCache(gitState.cacheDir, cacheInputs, {
-      inventory: inv,
-      barrier,
-      gaps: resolvedGaps,
-    });
-  }
+  // #1043 (reviewed-spec update, supersedes the filing condition above): every
+  // dry run that reached the end is cached with its reviewed spec; a filed run
+  // consumes the entry (plan-confirm.ts settlePlanCache).
+  await settlePlanCache(gitState, cacheInputs, {
+    dryRun,
+    issueUrl,
+    filingFailure,
+    inventory: inv,
+    barrier,
+    gaps: resolvedGaps,
+    title,
+    spec: finalBody,
+    priorContext: inventoryContext.slice(0, 15),
+  });
 
   // #633: report BOTH how many angles were dispatched and how many produced
   // structured items — `angles=` alone read as "3 angles ran" even when all
