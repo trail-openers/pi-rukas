@@ -12,7 +12,11 @@
  * result.
  */
 
-import { type CacheInputs, investigationCacheKey } from "../src/plan-investigation-cache.ts";
+import {
+  type CacheInputs,
+  investigationCacheKey,
+  resolvePlanGitState,
+} from "../src/plan-investigation-cache.ts";
 import { type RegisteredPlanTool, registerPlanTool } from "../src/plan-tool.ts";
 import {
   DESC,
@@ -45,6 +49,23 @@ function assert(cond: boolean, msg: string) {
 
 installOfflineVipuneStub();
 installForgeStub();
+
+// ------------------------------------------------------------- isolation canary
+
+// verify-loop.sh exports PI_ENSEMBLE_PLAN_CACHE=0: the real git-state lookup must
+// then return nothing, so no offline test can write the clone's real cache. Set
+// and unset explicitly here, so the canary holds standalone and under the loop.
+{
+  const prior = process.env.PI_ENSEMBLE_PLAN_CACHE;
+  process.env.PI_ENSEMBLE_PLAN_CACHE = "0";
+  const off = await resolvePlanGitState(REPO);
+  delete process.env.PI_ENSEMBLE_PLAN_CACHE;
+  const on = await resolvePlanGitState(REPO);
+  if (prior === undefined) delete process.env.PI_ENSEMBLE_PLAN_CACHE;
+  else process.env.PI_ENSEMBLE_PLAN_CACHE = prior;
+  assert(off === undefined, "canary: PI_ENSEMBLE_PLAN_CACHE=0 disables the real git-state lookup");
+  assert(on !== undefined && on.head.length > 0, "canary: unset, the real lookup resolves HEAD");
+}
 
 // ------------------------------------------------------------- key
 

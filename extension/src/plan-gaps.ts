@@ -222,6 +222,11 @@ export function residualGapsSection(residual: PlanGap[]): string {
 }
 
 /**
+ * Ceiling on the settled-gaps list rendered into a gate prompt (#1043 review).
+ */
+const SETTLED_SECTION_MAX = 10;
+
+/**
  * #1043 — the prior dry run's gaps, appended to the FIRST gate prompt on a
  * cache miss. They are framed as settled so the reviewer does not re-raise
  * them; a finding the spec now contradicts is still raised. Empty when there
@@ -229,8 +234,15 @@ export function residualGapsSection(residual: PlanGap[]): string {
  */
 export function settledGapsSection(settled: PlanGap[]): string {
   if (settled.length === 0) return "";
-  const items = settled
-    .map((g) => `- [${g.severity}] ${truncateForDisclosure(g.description)} → ${g.resolution}`)
+  // Bounded like the residual disclosure: the 10 most severe, each side clipped.
+  const rank: Record<string, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
+  const items = [...settled]
+    .sort((a, b) => (rank[a.severity] ?? 4) - (rank[b.severity] ?? 4))
+    .slice(0, SETTLED_SECTION_MAX)
+    .map(
+      (g) =>
+        `- [${g.severity}] ${truncateForDisclosure(g.description)} → ${truncateForDisclosure(g.resolution)}`,
+    )
     .join("\n");
   return `\n\nALREADY SETTLED — a prior gap-gate run on this same descriptor raised the findings below. Do NOT re-raise them unless the spec now contradicts them; a finding the spec already addresses is settled.\n${items}`;
 }

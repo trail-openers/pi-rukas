@@ -20,6 +20,7 @@ import path from "node:path";
 import {
   type CacheInputs,
   INVESTIGATION_CACHE_TTL_MS,
+  type InvestigationCacheEntry,
   RECENT_FILING_WINDOW_MS,
   type ReviewedDryRun,
   entryFile,
@@ -52,6 +53,28 @@ export interface ClaimedDryRun {
   commit(url: string): Promise<void>;
   /** Filing failed: the entry is restored so a retry can file the same bytes. */
   release(): Promise<void>;
+}
+
+/**
+ * Whether an entry may be filed under these inputs, digest and clock: fileable,
+ * same key (lineage + HEAD), inside the expiry, and (when given) hashing to the
+ * digest the operator was shown. Used BEFORE the claim and again on the claimed
+ * bytes, so a check never relies on a file that changed underneath it.
+ */
+function fileableEntry(
+  entry: InvestigationCacheEntry | undefined,
+  inputs: CacheInputs,
+  digest: string | undefined,
+  now: number,
+): entry is InvestigationCacheEntry {
+  if (!entry || !entry.reviewed.fileable || entry.key !== investigationCacheKey(inputs)) {
+    return false;
+  }
+  const ageMs = now - entry.createdAt;
+  if (ageMs < 0 || ageMs > INVESTIGATION_CACHE_TTL_MS) return false;
+  return (
+    digest === undefined || reviewedDigestOf(entry.reviewed.title, entry.reviewed.spec) === digest
+  );
 }
 
 /** Filed-marker path for an entry file (`<lineage>.filed`, not `.json`, so readers skip it). */
@@ -93,9 +116,12 @@ async function restoreClaim(claim: string, file: string): Promise<void> {
 
 /**
  * Claim the reviewed spec of a FILEABLE dry run whose inputs and HEAD match,
- * inside the expiry. With `digest`, the claim also requires the entry's title +
- * body to hash to it (`reviewedDigestOf`); anything else restores the entry and
- * returns undefined. A crash after the claim drops the entry without filing —
+ * inside the expiry. With `digest`, the entry's title + body must hash to it
+ * (`reviewedDigestOf`). The digest is checked BEFORE the rename: a call that
+ * would not file never takes the entry, so it cannot make a concurrent correct
+ * confirm see "filing-in-progress". After the rename the CLAIMED bytes are
+ * checked again (the entry may have been replaced in between); a mismatch puts
+ * them back. A crash after the claim drops the entry without filing —
  * at-most-once, never a second copy. Undefined for a miss, a non-fileable or
  * malformed entry, or a digest mismatch.
  */
@@ -106,6 +132,7 @@ export async function claimFileableDryRun(
 ): Promise<ClaimedDryRun | undefined> {
   const now = opts.now ?? Date.now();
   const file = entryFile(cacheDir, inputs);
+  if (!fileableEntry(await readEntryAt(file), inputs, opts.digest, now)) return undefined;
   const claim = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.claim`;
   try {
     await fs.rename(file, claim);
@@ -121,19 +148,11 @@ export async function claimFileableDryRun(
     );
   });
   const entry = await readEntryAt(claim);
-  const ageMs = entry ? now - entry.createdAt : -1;
-  if (
-    !entry ||
-    !entry.reviewed.fileable ||
-    entry.key !== investigationCacheKey(inputs) ||
-    ageMs < 0 ||
-    ageMs > INVESTIGATION_CACHE_TTL_MS ||
-    (opts.digest !== undefined &&
-      reviewedDigestOf(entry.reviewed.title, entry.reviewed.spec) !== opts.digest)
-  ) {
+  if (!fileableEntry(entry, inputs, opts.digest, now)) {
     await restoreClaim(claim, file);
     return undefined;
   }
+  const ageMs = now - entry.createdAt;
   return {
     reviewed: entry.reviewed,
     gaps: entry.gaps,
@@ -143,7 +162,10 @@ export async function claimFileableDryRun(
       // marker cannot be written the claim is KEPT — it is what concurrentFilingOf
       // reads for the next 10 minutes, so an identical confirm is still refused.
       try {
-        await fs.writeFile(markerOf(file), JSON.stringify({ at: Date.now(), url }));
+        await fs.writeFile(
+          markerOf(file),
+          JSON.stringify({ at: Date.now(), url, head: inputs.head }),
+        );
       } catch (err) {
         trace(
           `plan-filing-claim: filed-marker write failed — claim kept so a concurrent identical confirm is still refused (${(err as Error).message})`,
@@ -170,11 +192,14 @@ export async function concurrentFilingOf(
   const file = entryFile(cacheDir, inputs);
   const marker = await fs
     .readFile(markerOf(file), "utf8")
-    .then((t) => JSON.parse(t) as { at?: unknown; url?: unknown })
+    .then((t) => JSON.parse(t) as { at?: unknown; url?: unknown; head?: unknown })
     .catch(() => undefined);
+  // A marker refuses only the HEAD it was written at: after HEAD moves, the
+  // identical confirm is a new plan and runs the pipeline (#1043 review).
   if (
     marker &&
     typeof marker.at === "number" &&
+    marker.head === inputs.head &&
     Math.abs(now - marker.at) <= RECENT_FILING_WINDOW_MS
   ) {
     return { url: typeof marker.url === "string" ? marker.url : undefined };

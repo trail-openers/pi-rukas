@@ -41,6 +41,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { MechanicalInventory } from "./plan-draft.ts";
 import type { InvestigationResult } from "./plan-investigate.ts";
+import { assemblePriorContext } from "./plan-prior-context-assembly.ts";
 import type { PlanGap, PlanType } from "./plan-types.ts";
 import { trace } from "./trace.ts";
 
@@ -89,7 +90,7 @@ export interface ReviewedDryRun {
   failedAngles?: { name: string; detail: string }[];
 }
 
-interface InvestigationCacheEntry extends CachedInvestigation {
+export interface InvestigationCacheEntry extends CachedInvestigation {
   key: string;
   createdAt: number;
 }
@@ -115,6 +116,9 @@ export function setPlanGitStateFn(fn: GitStateFn | null): void {
  */
 export async function resolvePlanGitState(repoRoot: string): Promise<PlanGitState | undefined> {
   if (_gitStateOverride) return _gitStateOverride(repoRoot);
+  // PI_ENSEMBLE_PLAN_CACHE=0 (set by smoke-tests/lib/verify-loop.sh): no real
+  // lookup, so a test without an explicit stub cannot touch the real clone's cache.
+  if (process.env.PI_ENSEMBLE_PLAN_CACHE === "0") return undefined;
   try {
     const { stdout } = await execFileP(
       "git",
@@ -180,7 +184,8 @@ const isFinding = (x: unknown): boolean =>
 
 const isGap = (x: unknown): boolean =>
   isObj(x) &&
-  SEVERITIES.includes(x.severity as string) &&
+  typeof x.severity === "string" &&
+  SEVERITIES.includes(x.severity) &&
   isStr(x.description) &&
   isStr(x.resolution);
 
@@ -253,8 +258,34 @@ function readEntry(
 }
 
 /**
+ * Fail closed on cache shape (#1043 review). The guard above proves the entry is
+ * well-formed; this runs the consumers the pipeline will apply to it (the
+ * inventory's prior-context assembly, the barrier's findings and disclosure, the
+ * gap gate's settled list) once, up front. Anything that throws is a miss, traced,
+ * never a crash deep inside drafting.
+ */
+function consumable(entry: InvestigationCacheEntry, context: string | undefined): boolean {
+  try {
+    assemblePriorContext(context, entry.inventory);
+    // The reads the pipeline makes: failed-angle disclosure, the NEVER CLAIM
+    // disclosure, and each settled gap's text. Every one must yield a string.
+    const reads = [
+      ...entry.barrier.findings.filter((f) => !f.ok).map((f) => f.failure ?? "failed"),
+      entry.barrier.neverClaimDisclosure.join("\n"),
+      ...entry.gaps.map((g) => `${g.description}${g.resolution}`),
+    ];
+    return reads.every((r) => typeof r === "string");
+  } catch (err) {
+    trace(
+      `plan-investigation-cache: cached entry unusable by the pipeline — treated as a miss (${(err as Error).message})`,
+    );
+    return false;
+  }
+}
+
+/**
  * The reusable investigation for these exact inputs, with the dry run's age.
- * Undefined on any mismatch (key, expiry, missing or corrupt file).
+ * Undefined on any mismatch (key, expiry, missing, corrupt or unusable file).
  */
 export async function readInvestigationCache(
   cacheDir: string,
@@ -265,40 +296,33 @@ export async function readInvestigationCache(
   if (!entry || entry.key !== investigationCacheKey(inputs)) return undefined;
   const ageMs = now - entry.createdAt;
   if (ageMs < 0 || ageMs > INVESTIGATION_CACHE_TTL_MS) return undefined;
+  if (!consumable(entry, inputs.context)) return undefined;
   return { cached: entry, ageMs };
 }
 
 /**
- * Drop a lineage's entry at the start of a dry run. Every dry run is a fresh
- * review: if it halts before it can cache a verdict (precheck, duplicate risk,
- * a failed angle fan-out, a draft that does not validate), the previous
- * fileable verdict must not survive for a confirm to file verbatim.
+ * Drop a lineage's entry. Two callers, one rule, because both need the same
+ * thing: no fileable verdict survives for an identical confirm to file verbatim.
+ * (a) A dry run calls it at its start, so a dry run that halts before it can
+ * cache a verdict (precheck, duplicate risk, a failed angle fan-out, a draft
+ * that does not validate) leaves no stale fileable entry behind. (b) A successful
+ * filing calls it, so an identical confirm after the filing cannot file the same
+ * spec a second time. Fails open: an entry that cannot be removed is merely
+ * reusable (and, after a filing, guarded by the filed-marker).
  */
-export async function invalidateInvestigationCache(
-  cacheDir: string,
-  inputs: CacheInputs,
-): Promise<void> {
-  await fs.rm(entryFile(cacheDir, inputs), { force: true }).catch(() => undefined);
-}
-
-/**
- * Drop the entry once its spec has been filed. Without this, an identical
- * confirm after a successful filing would verbatim-file the same spec again.
- * Fails open: an entry that cannot be removed is merely reusable.
- */
-export async function consumeInvestigationCache(
-  cacheDir: string,
-  inputs: CacheInputs,
-): Promise<void> {
+export async function dropInvestigationCache(cacheDir: string, inputs: CacheInputs): Promise<void> {
   await fs.rm(entryFile(cacheDir, inputs), { force: true }).catch(() => undefined);
 }
 
 /**
  * The gap-gate findings of the most recent dry run for this lineage, at ANY
- * head and age. These seed a gate re-run; they are never a verdict.
+ * head and age. These seed a gate re-run; they are never a verdict. An entry the
+ * pipeline cannot consume seeds nothing (fail closed, as readInvestigationCache).
  */
 export async function readSettledGaps(cacheDir: string, inputs: CacheInputs): Promise<PlanGap[]> {
-  return (await readEntry(cacheDir, inputs))?.gaps ?? [];
+  const entry = await readEntry(cacheDir, inputs);
+  if (!entry || !consumable(entry, inputs.context)) return [];
+  return entry.gaps;
 }
 
 /**

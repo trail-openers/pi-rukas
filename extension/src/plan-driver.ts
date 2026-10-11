@@ -26,7 +26,12 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { dispatchCore } from "./dispatch.ts";
 import { confirmVerbatim, settlePlanCache } from "./plan-confirm.ts";
 import { codeIdentifiersIn, draftSpec, mechanicalInventory } from "./plan-draft.ts";
-import { allAnglesFailedHalt, correctiveRedraftError, haltResult } from "./plan-driver-halt.ts";
+import {
+  allAnglesFailedHalt,
+  buildPlanResult,
+  correctiveRedraftError,
+  haltResult,
+} from "./plan-driver-halt.ts";
 import { reviewedDigestOf } from "./plan-filing-claim.ts";
 import {
   type GapGateLoopResult,
@@ -42,7 +47,7 @@ import {
   runInvestigation,
 } from "./plan-investigate.ts";
 import {
-  invalidateInvestigationCache,
+  dropInvestigationCache,
   readInvestigationCache,
   readSettledGaps,
   resolvePlanGitState,
@@ -122,11 +127,9 @@ export async function runPlanPipeline(
     return [...timings, total];
   };
 
-  // #1043 — the per-clone cache lineage (descriptor, context, type, depth at
-  // git HEAD). A dry run never READS the investigation cache (it is the thing
-  // being confirmed) but EVERY dry run invalidates its lineage first, so a dry
-  // run that halts before caching (precheck, duplicate risk, …) cannot leave a
-  // fileable verdict behind. Its gap-gate settled set is read before that.
+  // #1043 — the cache lineage at git HEAD. A dry run never READS the investigation
+  // cache (it is the thing confirmed); it DROPS the lineage first, so a halting dry
+  // run leaves no fileable verdict. Its settled gaps are read before the drop.
   const gitState = await resolvePlanGitState(repoRoot);
   const cacheInputs = gitState
     ? { descriptor, context, type, head: gitState.head, depth }
@@ -134,7 +137,7 @@ export async function runPlanPipeline(
   const settled: PlanGap[] =
     gitState && cacheInputs ? await readSettledGaps(gitState.cacheDir, cacheInputs) : [];
   if (dryRun && gitState && cacheInputs) {
-    await invalidateInvestigationCache(gitState.cacheDir, cacheInputs);
+    await dropInvestigationCache(gitState.cacheDir, cacheInputs);
   }
 
   // Phase 0b — deterministic under-specification triage (plan-precheck.ts)
@@ -438,6 +441,7 @@ export async function runPlanPipeline(
     dryRun,
     title,
     finalBody,
+    context,
     repoRoot,
     rawUnparsedHead,
     timed,
@@ -468,25 +472,24 @@ export async function runPlanPipeline(
     `plan-driver: type=${type} angles=${findings.length} structured=${structuredCount} gaps=${gaps.length} filed=${!!issueUrl} dryRun=${!!dryRun} capReason=${capReason ?? "none"}`,
   );
 
-  return {
+  return buildPlanResult({
     type,
     title,
     spec: finalBody,
     gaps: resolvedGaps,
     priorContext: inventoryContext.slice(0, 15),
-    filed: !!issueUrl,
     issueUrl,
-    capHit: capHit || undefined,
+    capHit,
     capReason,
-    residualForDisclosure: residualForDisclosure.length > 0 ? residualForDisclosure : undefined,
+    residualForDisclosure,
     filingFailure,
-    failedAngles: failedAngles.length > 0 ? failedAngles : undefined,
-    compacted: compacted || undefined,
+    failedAngles,
+    compacted,
     // #1043: a fileable dry run reports the digest a verbatim filing must echo.
     reviewedDigest: dryRun && !filingFailure ? reviewedDigestOf(title, finalBody) : undefined,
     investigationReused: reused ? { ageMs: reused.ageMs } : undefined,
     timings: finishTimings(),
-  };
+  });
 }
 
 // Re-export for consumers that import from plan-driver.ts

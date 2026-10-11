@@ -9,14 +9,69 @@
  * #647 rule). One builder so a field added to the halt shape cannot be
  * forgotten at four of five sites. Split from plan-driver.ts along the
  * 500-line seam (AGENTS.md §12).
+ *
+ * #1043: `buildPlanResult` is the ONE PlanResult builder. The pipeline's final
+ * return, the verbatim filing and the in-progress refusal all go through it, so
+ * a field added to PlanResult cannot be set on one path and forgotten on another.
+ * The normalisation (empty arrays and false flags become absent) lives here too.
  */
 import type { AngleFindings } from "./plan-draft.ts";
 import type { FilingFailure } from "./plan-filing.ts";
+import type { GapGateLoopCapReason } from "./plan-gaps.ts";
 import { PLAN_REPORTER_PATH } from "./plan-investigate.ts";
-import { type PlanPhaseTiming, type PlanResult, type PlanType, planTitle } from "./plan-types.ts";
+import {
+  type PlanGap,
+  type PlanPhaseTiming,
+  type PlanResult,
+  type PlanType,
+  planTitle,
+} from "./plan-types.ts";
 import { reporterMissingError } from "./reporter-preflight.ts";
 import { trace } from "./trace.ts";
 
+/** Every field a PlanResult can carry. Callers pass what they know; the builder normalises. */
+export interface PlanResultFields {
+  type: PlanType;
+  title: string;
+  spec: string;
+  gaps: PlanGap[];
+  priorContext: { source: string; fact: string }[];
+  issueUrl?: string;
+  filingFailure?: FilingFailure;
+  timings: PlanPhaseTiming[];
+  capHit?: boolean;
+  capReason?: GapGateLoopCapReason;
+  residualForDisclosure?: PlanGap[];
+  failedAngles?: { name: string; detail: string }[];
+  compacted?: boolean;
+  reviewedDigest?: string;
+  investigationReused?: { ageMs: number };
+  filedFromDryRun?: { ageMs: number };
+}
+
+export function buildPlanResult(f: PlanResultFields): PlanResult {
+  return {
+    type: f.type,
+    title: f.title,
+    spec: f.spec,
+    gaps: f.gaps,
+    priorContext: f.priorContext,
+    filed: !!f.issueUrl,
+    issueUrl: f.issueUrl,
+    capHit: f.capHit || undefined,
+    capReason: f.capReason,
+    residualForDisclosure: f.residualForDisclosure?.length ? f.residualForDisclosure : undefined,
+    filingFailure: f.filingFailure,
+    failedAngles: f.failedAngles?.length ? f.failedAngles : undefined,
+    compacted: f.compacted || undefined,
+    reviewedDigest: f.reviewedDigest,
+    investigationReused: f.investigationReused,
+    filedFromDryRun: f.filedFromDryRun,
+    timings: f.timings,
+  };
+}
+
+/** An early-return halt: nothing filed, zero gaps, the filing failure says why. */
 export function haltResult(args: {
   type: PlanType;
   title: string;
@@ -28,20 +83,17 @@ export function haltResult(args: {
   capHit?: boolean;
   failedAngles?: { name: string; detail: string }[];
 }): PlanResult {
-  return {
+  return buildPlanResult({
     type: args.type,
     title: args.title,
     spec: args.spec,
     gaps: [],
     priorContext: args.priorContext.slice(0, 15),
-    filed: false,
-    ...(args.capHit ? { capHit: true } : {}),
     filingFailure: args.failure,
-    ...(args.failedAngles && args.failedAngles.length > 0
-      ? { failedAngles: args.failedAngles }
-      : {}),
+    capHit: args.capHit,
+    failedAngles: args.failedAngles,
     timings: args.timings,
-  };
+  });
 }
 
 /**
