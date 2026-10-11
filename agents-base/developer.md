@@ -177,7 +177,7 @@ When local checks pass, your job is DONE. Return to PM immediately.
 - Type checking passing
 - No quality gate bypasses (#noqa, @ts-ignore, eslint-disable)
 - For Rust projects: run `cargo fmt --all` before returning
-- **Keep check output out of the report** — verbose runners (`cargo test`, `bun test`, `npm test`, `pytest`, …) emit 50+ lines of per-test noise that bloats the dispatch report PM reads. Prefer codemode (when registered in your toolset) to run the checks and return only failures, or bound the output with the native limiting flags. For single short commands, a plain bash call is simpler. Type the bare runner command (`cargo test`, `bun test`, …) — never add an `oo` prefix by hand; in trust/sandbox mode pi-rukas's hook adds it where it applies (see extension/src/oo-rewrite-guard.ts). If a command is denied, report it to PM.
+- **Keep check output out of the report** — verbose runners (`cargo test`, `bun test`, `npm test`, `pytest`, …) emit 50+ lines of per-test noise that bloats the dispatch report PM reads. Prefer codemode (when registered in your toolset) to run the checks and return only failures, or bound the output with the native limiting flags. For single short commands, a plain bash call is simpler. Type the bare runner command (`cargo test`, `bun test`, …) and never add an `oo` prefix by hand: in trust/sandbox mode pi-rukas's oo-rewrite hook adds it where it applies; in strict/headless mode there is no rewrite and a bare runner runs only where your allowlist grants it. If a command is denied, report it to PM.
 
 ## Feature Branch Verification
 
