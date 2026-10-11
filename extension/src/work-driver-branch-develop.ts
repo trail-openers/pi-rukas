@@ -19,8 +19,12 @@ import { cachedIssueTitle } from "./work-driver-integrate.ts";
 import { findOpenPrForIssue, prPreflightEnabled } from "./work-driver-pr-preflight.ts";
 import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 
-import { greenWorkstreamsFromInterruptedDevelop } from "./work-develop-greens.ts";
-import { trustedPreservedGreens } from "./work-develop-retry.ts";
+import {
+  greenWorkstreamsFromInterruptedDevelop,
+  isInterruptedDevelop,
+} from "./work-develop-greens.ts";
+import { backupInterruptedWorktrees } from "./work-develop-resume-backup.ts";
+import { type PreservedGreens, trustedPreservedGreens } from "./work-develop-retry.ts";
 import { runDevelopTopological } from "./work-develop-topological.ts";
 import { salvageKnownDirtyWorktrees } from "./work-driver-branch-salvage.ts";
 import { applySafetyNet, hasAnyWorktreeEvidence } from "./work-driver-safety-net.ts";
@@ -365,11 +369,36 @@ export async function runDevelop(
   // #1016 — crash-resume: workstreams that finished green before the crash
   // keep their worktree and commits; only the rest are re-dispatched.
   // A green without commits ahead of its base is re-dispatched, not kept.
-  const preserved = await trustedPreservedGreens(greenWorkstreamsFromInterruptedDevelop(state), {
+  const baseFor = (id: string) =>
+    state.pipelineState.workstreamBaseShas?.[id] ?? state.pipelineState.baseSha;
+  const greens = await trustedPreservedGreens(greenWorkstreamsFromInterruptedDevelop(state), {
     execFn,
     worktrees: state.pipelineState.worktrees ?? {},
-    baseFor: (id) => state.pipelineState.workstreamBaseShas?.[id] ?? state.pipelineState.baseSha,
+    baseFor,
   });
+  // #1016 — save before re-dispatch: an interrupted develop may have left a
+  // failed workstream's partial edits in its worktree. Save them to a patch
+  // before the resumed fan-out can run the developer over them.
+  const backup = isInterruptedDevelop(state)
+    ? await backupInterruptedWorktrees({
+        execFn,
+        repoRoot: ctx.repoRoot,
+        scratchAbs: scratchDir(ctx.repoRoot, ctx.issue),
+        ids: ids.filter((id) => !greens.kept.has(id)),
+        worktrees: state.pipelineState.worktrees ?? {},
+        baseFor,
+      })
+    : { refused: {}, saved: {} };
+  const preserved: PreservedGreens = {
+    kept: greens.kept,
+    notes: [
+      ...greens.notes,
+      ...Object.entries(backup.saved).map(
+        ([id, p]) => `${id}: uncommitted work from the interrupted attempt saved to ${p}`,
+      ),
+    ],
+    refused: backup.refused,
+  };
   if (preserved.kept.size > 0) {
     trace(
       `work-driver: develop resumed — keeping green workstreams ${[...preserved.kept].join(", ")}`,

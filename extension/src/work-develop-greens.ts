@@ -28,10 +28,23 @@ export function eventsSinceDevelopStart(state: WorkState): WorkEvent[] {
   return [...log];
 }
 
+/** #1016 — "an interrupted develop": the step is still `develop` and a develop
+ *  dispatch was started in the current window. The event log is the durable
+ *  signal: clearForResume empties `inFlightJobIds` before the step re-enters,
+ *  but keeps every `dispatch-started`. Develop is re-entered only by resume. */
+export function isInterruptedDevelop(state: WorkState): boolean {
+  if (state.pipelineState.currentStep !== "develop") return false;
+  if (state.pipelineState.inFlightJobIds.length > 0) return true;
+  // A completed develop is followed by a later step's step-started (adversarial
+  // re-entry included): that is a new attempt with feedback, never a crash.
+  const window = eventsSinceDevelopStart(state);
+  if (window.some((e) => e.kind === "step-started")) return false;
+  return window.some((e) => e.kind === "dispatch-started" && e.step === "develop");
+}
+
 export function greenWorkstreamsFromInterruptedDevelop(state: WorkState): Set<string> {
   const green = new Set<string>();
-  if (state.pipelineState.currentStep !== "develop") return green;
-  if (state.pipelineState.inFlightJobIds.length === 0) return green;
+  if (!isInterruptedDevelop(state)) return green;
   const latest = new Map<string, boolean>();
   for (const e of eventsSinceDevelopStart(state)) {
     if (e.kind === "branch-completed") latest.set(e.workstreamId, e.ok);

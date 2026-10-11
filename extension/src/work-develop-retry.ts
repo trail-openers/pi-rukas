@@ -34,6 +34,9 @@ export type FanoutVerdict = RawVerdict;
 export interface PreservedGreens {
   kept: Set<string>;
   notes: string[];
+  /** Workstream id → the reason a resumed workstream must not be dispatched
+   *  (its uncommitted work could not be saved first). Fail closed. */
+  refused?: Record<string, string>;
 }
 
 /** A shared, chained persister: each branch-completed is appended to the
@@ -61,6 +64,27 @@ export function makeBranchCompletedPersister(
     },
     flush: () => chain,
   };
+}
+
+/** #1016 — a kept green finished in an earlier attempt, before this window's
+ *  step-started. Re-record it so a second crash still finds it green. */
+export function reRecordKeptGreens(
+  persister: { emit: (ev: WorkEvent) => void },
+  independent: string[],
+  kept: ReadonlySet<string>,
+): void {
+  for (const id of independent) {
+    if (!kept.has(id)) continue;
+    persister.emit({
+      kind: "branch-completed",
+      step: "develop",
+      workstreamId: id,
+      ok: true,
+      ms: 0,
+      at: Date.now(),
+      resumed: true,
+    });
+  }
 }
 
 /** #1016 — surface non-fatal notes in the handoff: each lands in
@@ -100,32 +124,21 @@ export function recordDowngrade(
 }
 
 /** #1016 — the ONE owner of the rule "a green counts only with commits ahead
- *  of base". `fresh` is a green this run just produced: an invalid base or an
- *  unreadable check fails it (fail-safe — uncommitted work is never trusted).
- *  `resume` is a green preserved from an interrupted attempt: an unreadable
- *  check keeps it, and `note` names the workstream and the git error. An
- *  invalid base is a configuration fault, not a git error: it never keeps a
- *  green, in either mode. The develop step runs the #622 safety net per
- *  worktree BEFORE the fresh check, so a developer's uncommitted edits are
- *  already commits here. */
+ *  of base", for a fresh green and a green preserved from an interrupted
+ *  attempt alike. An invalid base or an unreadable check fails it: nothing is
+ *  trusted without a readable commit count. A failed preserved green is
+ *  re-run, not kept. The develop step runs the #622 safety net per worktree
+ *  BEFORE this check, so a developer's uncommitted edits are already commits. */
 export async function greenCountsAsWork(
   execFn: ExecFn,
   cwd: string,
   base: string | undefined,
-  workstreamId: string,
-  mode: "fresh" | "resume",
-): Promise<{ counts: boolean; note?: string; reason?: string }> {
+): Promise<{ counts: boolean; reason?: string }> {
   if (!isValidBaseSha(base)) {
     return { counts: false, reason: `${GREEN_DOWNGRADE}: no valid base sha` };
   }
   const ahead = await commitsAheadOfBase(runGit(execFn), cwd, base);
   if ("unreadable" in ahead) {
-    if (mode === "resume") {
-      return {
-        counts: true,
-        note: `${workstreamId}: commit check unreadable, green kept — ${ahead.unreadable}`,
-      };
-    }
     return {
       counts: false,
       reason: `${GREEN_DOWNGRADE}: commit check unreadable — ${ahead.unreadable}`,
@@ -134,9 +147,9 @@ export async function greenCountsAsWork(
   return ahead.commits > 0 ? { counts: true } : { counts: false, reason: GREEN_DOWNGRADE };
 }
 
-/** #1016 — the crash-resume greens that still count as work. An unreadable
- *  check keeps its green and records a note; a preserved id with no worktree
- *  is not kept and records a note naming it. */
+/** #1016 — the crash-resume greens that still count as work. A preserved green
+ *  that fails the commit rule is not kept (its workstream is re-run) and a note
+ *  says why; a preserved id with no worktree is not kept either. */
 export async function trustedPreservedGreens(
   preserved: ReadonlySet<string>,
   ctx: {
@@ -152,12 +165,9 @@ export async function trustedPreservedGreens(
       out.notes.push(`${id}: preserved green has no worktree — not kept`);
       continue;
     }
-    const r = await greenCountsAsWork(ctx.execFn, cwd, ctx.baseFor(id), id, "resume");
-    if (r.note !== undefined) out.notes.push(r.note);
-    else if (!r.counts && r.reason !== undefined) {
-      out.notes.push(`${id}: preserved green not kept — ${r.reason}`);
-    }
+    const r = await greenCountsAsWork(ctx.execFn, cwd, ctx.baseFor(id));
     if (r.counts) out.kept.add(id);
+    else out.notes.push(`${id}: preserved green not kept — ${r.reason}`);
   }
   return out;
 }
@@ -177,7 +187,8 @@ export function retryResetFor(args: {
     if (typeof cwd !== "string") return Promise.reject(new Error(`${id}: no worktree to reset`));
     let patchPath: string;
     try {
-      patchPath = retryPatchPath(args.scratchAbs, id, 1);
+      // A fresh stamp: a later pass in the same cycle never collides with this save.
+      patchPath = retryPatchPath(args.scratchAbs, id, Date.now());
     } catch (err) {
       return Promise.reject(err);
     }
@@ -204,8 +215,12 @@ export async function runIndependentFanout(args: {
   verdicts: readonly FanoutVerdict[];
   multi: boolean;
   notes?: string[];
+  /** Filled with every id that failed its FIRST pass, even when the retry
+   *  recovers it: dependents of a recovered workstream stay skipped (#1016). */
+  firstPassFailed?: Set<string>;
 }): Promise<FanoutVerdict[]> {
-  const { independent, preserved, skip, runAt, resetFor, verdicts, multi, notes } = args;
+  const { independent, preserved, skip, runAt, resetFor, verdicts, multi, notes, firstPassFailed } =
+    args;
   const kept = independent.filter((id) => preserved.has(id));
   const toDispatch = independent.filter((id) => !skip.includes(id) && !kept.includes(id));
   const runSafely = (id: string): Promise<FanoutVerdict> =>
@@ -219,6 +234,7 @@ export async function runIndependentFanout(args: {
   // every workstream failed is a step failure and goes straight to the verdicts.
   const finals = new Map(first.map((r) => [r.id, r]));
   const failed = first.filter((r) => !r.ok).map((r) => r.id);
+  for (const id of failed) firstPassFailed?.add(id);
   const someGreen = first.some((r) => r.ok) || kept.length > 0;
   if (multi && someGreen && failed.length > 0) {
     trace(`work-driver: re-dispatching failed workstreams once — ${failed.join(", ")}`);

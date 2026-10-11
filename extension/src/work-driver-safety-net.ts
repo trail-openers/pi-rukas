@@ -44,12 +44,12 @@
 import { trace } from "./trace.ts";
 import {
   type ExecFn,
+  commitEntriesOf,
   commitsAheadOfBase,
   errText,
   isValidBaseSha,
   runGit,
   stagePaths,
-  workEntriesOf,
   worktreeStatus,
 } from "./work-develop-git.ts";
 import { withPersistNotes } from "./work-develop-retry.ts";
@@ -142,7 +142,7 @@ export async function safetyNetWorktree(
   const git = runGit(execFn);
 
   // (1) Check if worktree has uncommitted changes. Skip driver artefacts: .pi/ and tmp/
-  // (same exclusion as cap-checkpoint) — untracked only; a tracked edit there is work.
+  // (same exclusion as cap-checkpoint). commitEntriesOf drops every .pi/ and tmp/ path, tracked or not.
   const status = await worktreeStatus(git, cwd);
   if (!Array.isArray(status)) {
     const note = `${wsId}: safety net skipped — git status unreadable — ${status.unreadable}`;
@@ -150,7 +150,8 @@ export async function safetyNetWorktree(
     notes.push(note);
     return undefined;
   }
-  const workPaths = workEntriesOf(status).map((e) => e.path);
+  // Only non-driver paths are committed: a .pi/ or tmp/ edit is never staged here.
+  const workPaths = commitEntriesOf(status).map((e) => e.path);
 
   // (AC3) Clean tree → nothing to commit → skip.
   if (workPaths.length === 0) {

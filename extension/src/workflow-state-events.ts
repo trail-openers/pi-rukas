@@ -364,6 +364,8 @@ export type WorkEvent =
       deferredCreation?: DeferredCreationEventFragment;
       /** #1016 — set by recordDowngrade: a commitless green rewritten to ok:false. Not a new attempt. */
       downgrade?: true;
+      /** #1016 — a green kept from an interrupted attempt, re-recorded at the start of the resumed window so a second crash still sees it. Not a new attempt. */
+      resumed?: true;
     }
   | {
       /**

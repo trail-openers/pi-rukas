@@ -4,6 +4,7 @@
  * edits, non-ASCII and spaced names, patch no-overwrite, id validation), and a
  * GitExec fake for the argv-only and no-partial-stage rules.
  */
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -33,7 +34,7 @@ function assert(cond: boolean, msg: string) {
 const execFn = execp;
 const dir = await mkdtemp(path.join(tmpdir(), "git-argv-1016-"));
 try {
-  const ids = ["fail-ws", "green-ws", "names-ws"];
+  const ids = ["fail-ws", "green-ws", "names-ws", "keep-ws"];
   const shas = await makeBaseWorktrees(dir, ids);
   const wt = (id: string) => path.join(dir, ".worktrees", id);
   const save = (id: string) => ({
@@ -59,18 +60,29 @@ try {
     "#1016: the reset reverts the tracked .pi/ edit after saving it",
   );
 
-  // 2. The same tracked .pi/ edit on a GREEN workstream is committed by the safety net.
+  // 2. The same tracked .pi/ edit on a GREEN workstream is NEVER committed by the
+  //    safety net: .pi/ defines verification, so it goes through the protected-path check.
   await mkdir(path.join(wt("green-ws"), ".pi"), { recursive: true });
   await writeFile(path.join(wt("green-ws"), ".pi", "verify-cmd"), "x\n");
   gitIn(wt("green-ws"), ["add", "-f", ".pi/verify-cmd"]);
   gitIn(wt("green-ws"), ["commit", "-qm", "track"]);
   const greenBase = gitIn(wt("green-ws"), ["rev-parse", "HEAD"]);
   await writeFile(path.join(wt("green-ws"), ".pi", "verify-cmd"), "green edit\n");
+  await mkdir(path.join(wt("green-ws"), "tmp"), { recursive: true });
+  await writeFile(path.join(wt("green-ws"), "tmp", "scratch.txt"), "scratch");
   const ev = await safetyNetWorktree("green-ws", wt("green-ws"), greenBase, execFn, []);
-  assert(ev?.kind === "safety-net-commit", "#1016: the safety net commits a tracked .pi/ edit");
+  assert(ev === undefined, "#1016: the safety net does not commit a tracked .pi/ edit");
   assert(
-    gitIn(wt("green-ws"), ["show", "HEAD:.pi/verify-cmd"]) === "green edit",
-    "#1016: the committed tree carries the tracked .pi/ edit",
+    gitIn(wt("green-ws"), ["rev-parse", "HEAD"]) === greenBase,
+    "#1016: HEAD is unchanged — the .pi/ edit was not committed",
+  );
+  assert(
+    gitIn(wt("green-ws"), ["diff", "--cached", "--name-only"]) === "",
+    "#1016: the safety net stages nothing (no .pi/ or tmp/ path)",
+  );
+  assert(
+    gitIn(wt("green-ws"), ["diff", "--name-only"]) === ".pi/verify-cmd",
+    "#1016: the tracked .pi/ edit stays on disk, uncommitted, for the protected-path check",
   );
 
   // 3. Non-ASCII and spaced names round-trip through status -z and the commit.
@@ -124,6 +136,42 @@ try {
   assert(
     emitted[0]?.kind === "branch-completed" && emitted[0].downgrade === true,
     "#1016: recordDowngrade writes a typed downgrade flag",
+  );
+
+  // 6b. Untracked driver files under .pi/ and tmp/ survive the reset (clean -e),
+  // while a tracked edit is saved, and the saved patch re-applies onto base in a
+  // fresh worktree with the edit's content intact.
+  const kw = wt("keep-ws");
+  await writeFile(path.join(kw, "src.txt"), "base\n");
+  gitIn(kw, ["add", "src.txt"]);
+  gitIn(kw, ["commit", "-qm", "track src"]);
+  const keepBase = gitIn(kw, ["rev-parse", "HEAD"]);
+  await writeFile(path.join(kw, "src.txt"), "developer edit\n");
+  await mkdir(path.join(kw, ".pi"), { recursive: true });
+  await writeFile(path.join(kw, ".pi", "local.txt"), "driver file");
+  await mkdir(path.join(kw, "tmp"), { recursive: true });
+  await writeFile(path.join(kw, "tmp", "scratch.txt"), "scratch");
+  const keepPatch = path.join(dir, "tmp", "issue-1", "keep.patch");
+  const savedKeep = await resetWorktreeToBase(runGit(execFn), kw, keepBase, {
+    repoRoot: dir,
+    patchPath: keepPatch,
+  });
+  assert(savedKeep === keepPatch, "#1016: the tracked edit is saved while untracked driver files are excluded");
+  assert(
+    existsSync(path.join(kw, ".pi", "local.txt")) && existsSync(path.join(kw, "tmp", "scratch.txt")),
+    "#1016: untracked .pi/ and tmp/ driver files survive the reset",
+  );
+  assert(
+    !(await readFile(keepPatch, "utf8")).includes("local.txt"),
+    "#1016: untracked driver files are not in the saved patch",
+  );
+  assert(gitIn(kw, ["show", "HEAD:src.txt"]) === "base", "#1016: the tracked file is reset to base");
+  const reapply = path.join(dir, ".worktrees", "keep-reapply");
+  gitIn(kw, ["worktree", "add", "--detach", reapply, keepBase]);
+  gitIn(reapply, ["apply", "--binary", keepPatch]);
+  assert(
+    (await readFile(path.join(reapply, "src.txt"), "utf8")) === "developer edit\n",
+    "#1016: the saved patch re-applies onto base in a fresh worktree with the edit intact",
   );
 
   // 7. GitExec fake: argv only, one add per ≤500 chunk, and no commit after a failed add.

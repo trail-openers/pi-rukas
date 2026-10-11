@@ -110,19 +110,19 @@ const stubExec =
     "#1016: zero is reported as zero only when git returned 0",
   );
 
-  // Finding 1: an unreadable check never untrusts a green — it is kept, and a
+  // An unreadable check never keeps a preserved green: it is re-run, and a
   // handoff note names the workstream and the git error.
   const kept = await trustedPreservedGreens(new Set(["task-x"]), {
     execFn: boom,
     worktrees: { "task-x": "/w" },
     baseFor: () => SHA,
   });
-  assert(kept.kept.has("task-x"), "#1016: an unreadable check keeps the preserved green");
+  assert(kept.kept.size === 0, "#1016: an unreadable check does not keep the preserved green");
   assert(
     kept.notes.length === 1 &&
       /task-x/.test(kept.notes[0] ?? "") &&
       /fatal: bad object/.test(kept.notes[0] ?? ""),
-    "#1016: the kept-unreadable note names the workstream and the git error",
+    "#1016: the not-kept note names the workstream and the git error",
   );
   const zeroCommits = await trustedPreservedGreens(new Set(["task-x"]), {
     execFn: stubExec("0", []),
@@ -233,10 +233,17 @@ const stubExec =
     save: { repoRoot: string; patchPath: string },
   ) => resetRaw(runGit(f), cwd, base, save);
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "greens-1016-"));
+  // Fixed dates make two independently created base commits byte-identical,
+  // so the same-base assumptions below do not depend on wall-clock timing.
   const git = (cwd: string, args: string[]) =>
     execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], {
       cwd,
       encoding: "utf8",
+      env: {
+        ...process.env,
+        GIT_AUTHOR_DATE: "2020-01-01T00:00:00Z",
+        GIT_COMMITTER_DATE: "2020-01-01T00:00:00Z",
+      },
     }).trim();
   const mkRepo = async (name: string) => {
     const d = path.join(dir, ".worktrees", name);
@@ -352,9 +359,9 @@ const stubExec =
   // not green, and a reset never discards uncommitted edits.
   const dirC = await mkRepo("c");
   const baseC = git(dirC, ["rev-parse", "HEAD"]);
-  const emptyC = await greenCountsAsWork(execFn, dirC, baseC, "c", "fresh");
+  const emptyC = await greenCountsAsWork(execFn, dirC, baseC);
   await fs.writeFile(path.join(dirC, "edit.txt"), "uncommitted");
-  const dirtyC = await greenCountsAsWork(execFn, dirC, baseC, "c", "fresh");
+  const dirtyC = await greenCountsAsWork(execFn, dirC, baseC);
   assert(
     !emptyC.counts && !dirtyC.counts,
     "#1016: a zero-commit worktree is not green until the safety net commits it",
@@ -411,21 +418,44 @@ const stubExec =
     (err: Error) => /not inside/.test(err.message),
   );
   assert(outside, "#1016: a path outside .worktrees/ is refused before git runs");
-  // Finding 1: an invalid base or an unreadable check never makes a FRESH green
-  // count, even with uncommitted edits present; a resume green is still kept.
+  // An invalid or absent base, or an unreadable check, never counts as green,
+  // with uncommitted edits present or not (fresh and preserved alike).
   const boomFn: ExecFn = async () => {
     throw new Error("fatal: bad object");
   };
-  const invalid = await greenCountsAsWork(execFn, dirC, "main", "c", "fresh");
-  const invalidResume = await greenCountsAsWork(execFn, dirC, undefined, "c", "resume");
-  assert(!invalidResume.counts, "#1016: an absent base never keeps a preserved green");
-  const unreadableFresh = await greenCountsAsWork(boomFn, dirC, baseC, "c", "fresh");
-  const unreadableResume = await greenCountsAsWork(boomFn, dirC, baseC, "c", "resume");
+  const invalid = await greenCountsAsWork(execFn, dirC, "main");
+  const absent = await greenCountsAsWork(execFn, dirC, undefined);
+  const unreadable = await greenCountsAsWork(boomFn, dirC, baseC);
   assert(
-    !invalid.counts && !unreadableFresh.counts && unreadableResume.counts,
-    "#1016: an invalid base or unreadable check fails a fresh green; a resume green is kept",
+    !invalid.counts && !absent.counts && !unreadable.counts,
+    "#1016: an invalid or absent base, or an unreadable check, never counts as green",
   );
   await fs.rm(dir, { recursive: true, force: true });
+}
+
+// #1016 — a workstream that fails its FIRST pass is reported to the caller even
+// when the retry recovers it: the topological step keeps its dependents skipped.
+{
+  const { runIndependentFanout } = await import("../src/work-develop-retry.ts");
+  const firstPassFailed = new Set<string>();
+  const tries: Record<string, number> = {};
+  const out = await runIndependentFanout({
+    independent: ["x", "y"],
+    preserved: new Set(),
+    skip: [],
+    verdicts: [],
+    multi: true,
+    resetFor: async () => undefined,
+    runAt: async (id) => {
+      tries[id] = (tries[id] ?? 0) + 1;
+      return { id, ok: id !== "x" || tries[id] > 1 };
+    },
+    firstPassFailed,
+  });
+  assert(
+    [...firstPassFailed].join() === "x" && out.every((v) => v.ok),
+    "#1016: x failed its first pass (reported) and recovered on retry (ok); y never failed",
+  );
 }
 
 // Finding 2: a downgraded commitless green is ONE attempt, not a retry.

@@ -24,6 +24,7 @@ import {
   type PreservedGreens,
   greenCountsAsWork,
   makeBranchCompletedPersister,
+  reRecordKeptGreens,
   recordDowngrade,
   retryResetFor,
   runIndependentFanout,
@@ -77,6 +78,7 @@ async function runDevelopTopological(
   const stateRef = { current: next };
   const persistNotes: string[] = [...preserved.notes];
   const persister = makeBranchCompletedPersister(ctx.repoRoot, stateRef, persistNotes);
+  reRecordKeptGreens(persister, independent, preserved.kept);
   // #753 — per-workstream completion timestamps + a shared map of WHY each
   // failed-or-skipped workstream failed (the cascade event names the workstream
   // that ACTUALLY failed; a cascade is distinguishable from a legitimate skip).
@@ -137,13 +139,15 @@ async function runDevelopTopological(
   // extension/src/work-driver-converge.ts at the root refused the NEXT
   // cycle's consolidated verify ~50 minutes in). The correct behaviour is to
   // fail that workstream with a named error, never to silently fall back.
-  // Deferred (depends-on) workstreams legitimately have no entry here —
-  // they are not in `independent` (their cwd comes from
-  // createDependentWorktree in the dependent phase, which already fails the
-  // workstream on a creation failure).
-  const missingWorktree = independent.filter((id) => typeof worktrees[id] !== "string");
+  // Deferred (depends-on) workstreams are not in `independent`: their cwd comes
+  // from createDependentWorktree, which fails the workstream on its own.
+  // #1016 — also refused: a resumed workstream whose work was not saved.
+  const notDispatched = independent.filter(
+    (id) => typeof worktrees[id] !== "string" || preserved.refused?.[id] !== undefined,
+  );
   refuseMissingWorktrees({
-    missing: missingWorktree,
+    missing: notDispatched,
+    reasons: preserved.refused,
     multi: ids.length > 1,
     branchEvents,
     verdicts,
@@ -159,39 +163,30 @@ async function runDevelopTopological(
   // grows this as it creates worktrees.
   const inCycleWorktrees: string[] = [...Object.values(worktrees)];
 
-  // #746 — every dispatched independent now has a worktree (the missing ones
-  // failed above); the lookup can no longer fall back to ctx.repoRoot.
-  // #1016 — a green with no commits ahead of its base is failed inside runAt,
-  // so the retry and the verdicts see the same truth. The fan-out returns the
-  // final verdict list, which replaces the shared array before dependents run.
-  // #1016 — a developer that CLAIMED green is hollow evidence even when no
-  // commit or change backs it: the gate must run to say so, not be skipped.
+  // #746 — every dispatched independent has a worktree (the rest failed above).
+  // #1016 — a green with no commits ahead of its base fails inside runAt.
+  const firstPassFailed = new Set<string>();
   verdicts = await runIndependentFanout({
     independent,
     preserved: preserved.kept,
-    skip: missingWorktree,
+    skip: notDispatched,
     runAt: async (id) => {
       const cwd = worktrees[id];
       if (typeof cwd !== "string") return { id, ok: false, reason: "no worktree" };
       const r = await runOneWorkstream(id, cwd);
       if (!r.ok) return { id, ok: false, reason: r.reason };
       const base = workstreamBaseShas[id] ?? globalBaseSha;
-      // #1016 — the #622 safety net commits this worktree's leftover edits
-      // BEFORE the green check, so uncommitted developer work counts as work
-      // and is never reset away.
+      // #1016 — the #622 safety net commits leftover edits before the green check.
       if (isValidBaseSha(base)) {
         const sn = await safetyNetWorktree(id, cwd, base, execFn, persistNotes);
         if (sn) branchEvents.push(sn);
       }
-      const green = await greenCountsAsWork(execFn, cwd, base, id, "fresh");
-      if (green.note !== undefined) persistNotes.push(green.note);
+      const green = await greenCountsAsWork(execFn, cwd, base);
       if (green.counts) return { ...r, claimed: true };
       const reason = green.reason ?? GREEN_DOWNGRADE;
       recordDowngrade(persister, id, reason);
       return { id, ok: false, reason, claimed: true };
     },
-    // #1016 — the retry's reset: saves the worktree's partial work to the cycle
-    // scratch dir first, and refuses (fail closed) when it cannot.
     resetFor: retryResetFor({
       execFn,
       repoRoot: ctx.repoRoot,
@@ -202,9 +197,13 @@ async function runDevelopTopological(
     verdicts,
     multi: ids.length > 1,
     notes: persistNotes,
+    firstPassFailed,
   });
-  for (const v of verdicts) {
-    if (!v.ok) failedOrSkipped.add(v.id);
+  for (const v of verdicts) if (!v.ok) failedOrSkipped.add(v.id);
+  // #1016 — a first-pass failure keeps its dependents skipped, even when retried.
+  for (const id of firstPassFailed) {
+    failedOrSkipped.add(id);
+    if (failureSource[id] === undefined) failureSource[id] = "failed";
   }
   // #753 — populate the dep-completion map: dependents wait on their DIRECT
   // dependency, so record the resolved fan-out time for every independent

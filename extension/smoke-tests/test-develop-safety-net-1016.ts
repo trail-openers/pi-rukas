@@ -55,7 +55,7 @@ try {
     sn?.kind === "safety-net-commit",
     "#1016: the per-worktree safety net commits task-b first",
   );
-  const green = await greenCountsAsWork(execFn, wt("task-b"), shas["task-b"], "task-b", "fresh");
+  const green = await greenCountsAsWork(execFn, wt("task-b"), shas["task-b"]);
   assert(green.counts, "#1016: the safety-net commit makes task-b a green");
 
   // The same safety-net call develop makes after the fan-out.

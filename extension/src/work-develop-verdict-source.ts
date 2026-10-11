@@ -68,9 +68,11 @@ export function verdictLine(v: RawVerdict, attempts = 0): VerdictLine {
 function developAttemptCounts(state: WorkState): Map<string, number> {
   const counts = new Map<string, number>();
   for (const e of eventsSinceDevelopStart(state)) {
-    // A downgrade rewrites its attempt's verdict; it is not a new attempt.
-    const rewrite = e.kind === "branch-completed" && !e.ok && e.downgrade === true;
-    if (e.kind === "branch-completed" && !rewrite) {
+    // A downgrade rewrites its attempt's verdict, and a resumed green re-records
+    // an earlier attempt: neither is a new attempt.
+    if (e.kind !== "branch-completed" || e.resumed === true) continue;
+    const rewrite = !e.ok && e.downgrade === true;
+    if (!rewrite) {
       counts.set(e.workstreamId, (counts.get(e.workstreamId) ?? 0) + 1);
     }
   }

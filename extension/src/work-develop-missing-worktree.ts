@@ -11,15 +11,30 @@ import type { WorkEvent } from "./workflow-state.ts";
 
 export function refuseMissingWorktrees(args: {
   missing: string[];
+  /** Per-id refusal reason; ids not listed get the missing-worktree message. */
+  reasons?: Record<string, string>;
   multi: boolean;
   branchEvents: WorkEvent[];
   verdicts: Array<{ id: string; ok: boolean; reason?: string }>;
   failedOrSkipped: Set<string>;
   failureSource: Record<string, "skipped" | "failed">;
 }): void {
-  const { missing, multi, branchEvents, verdicts, failedOrSkipped, failureSource } = args;
+  const { missing, reasons, multi, branchEvents, verdicts, failedOrSkipped, failureSource } = args;
   for (const id of missing) {
-    const err = `no worktree recorded for workstream ${id} (worktrees map has no entry) — dispatch refused rather than falling back to repoRoot`;
+    const err =
+      reasons?.[id] ??
+      `no worktree recorded for workstream ${id} (worktrees map has no entry) — dispatch refused rather than falling back to repoRoot`;
+    branchEvents.push({
+      kind: "branch-completed",
+      step: "develop",
+      workstreamId: id,
+      ok: false,
+      ms: 0,
+      at: Date.now(),
+      error: err,
+    });
+    // dispatch-failed comes LAST: for N=1 it is the event the step router reads
+    // as the failure (a trailing branch-completed would route past the refusal).
     branchEvents.push({
       kind: "dispatch-failed",
       step: "develop",
@@ -29,15 +44,6 @@ export function refuseMissingWorktrees(args: {
       ms: 0,
       at: Date.now(),
       errorTail: err.slice(0, 200),
-    });
-    branchEvents.push({
-      kind: "branch-completed",
-      step: "develop",
-      workstreamId: id,
-      ok: false,
-      ms: 0,
-      at: Date.now(),
-      error: err,
     });
     verdicts.push({ id, ok: false });
     failedOrSkipped.add(id);

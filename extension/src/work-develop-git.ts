@@ -121,6 +121,14 @@ export function workEntriesOf(entries: StatusEntry[]): StatusEntry[] {
   return entries.filter((e) => !(e.untracked && isDriverArtefact(e.path)));
 }
 
+/** The entries the safety net may COMMIT: everything outside `.pi/` and `tmp/`,
+ *  tracked or not. `.pi/` defines verification, so a developer's edit there is
+ *  never committed by the driver; it goes through the protected-path check (#406).
+ *  It is still saved to the retry patch by `workEntriesOf` before any reset. */
+export function commitEntriesOf(entries: StatusEntry[]): StatusEntry[] {
+  return entries.filter((e) => !isDriverArtefact(e.path));
+}
+
 /** Where the save-then-reset applies: the scratch patch, and the repo whose
  *  `.worktrees/` directory is the only place a reset may run. */
 export interface ResetSave {
@@ -220,7 +228,7 @@ export async function resetWorktreeToBase(
  *  `patchPath`. The write refuses to overwrite an existing file (`wx`), so a
  *  retry can never clobber an earlier save. Any failure throws, so the caller
  *  never resets unsaved work. */
-async function savePartialWork(
+export async function savePartialWork(
   git: GitExec,
   cwd: string,
   base: string,
