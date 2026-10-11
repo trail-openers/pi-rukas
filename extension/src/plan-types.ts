@@ -53,6 +53,11 @@ export const RESOLUTION_TYPES = [
 ] as const;
 export type ResolutionType = (typeof RESOLUTION_TYPES)[number];
 
+/** Narrows an unparsed value to a ResolutionType; only an exact member passes (#1111). */
+export function isResolutionType(v: unknown): v is ResolutionType {
+  return typeof v === "string" && (RESOLUTION_TYPES as readonly string[]).includes(v);
+}
+
 export interface PlanGap {
   severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
   description: string;

@@ -381,6 +381,11 @@ function assert(cond: boolean, msg: string) {
     /resolution-type: operator-decision\./.test(gatePrompt),
     "#1111 prompt: the example GAP line carries a resolution-type",
   );
+  assert(
+    !gatePrompt.includes("(a) an additional research dispatch") &&
+      !gatePrompt.includes("(c) an Open Question"),
+    "#1111 prompt: one taxonomy \u2014 the old (a)/(b)/(c) resolution requirement is gone",
+  );
   const verifyPrompt = gapGateVerifyPrompt("DRAFT SPEC BODY", [
     {
       description: "the retry cap is unnamed",

@@ -1,17 +1,15 @@
 #!/usr/bin/env bun
 import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
-import { rerouteGateQuotes } from "../src/plan-gap-resolution.ts";
 /**
  * #1111 — the /plan gap gate must not splice undecided resolutions into the
- * spec body, and must not cap the plan on the CRITICAL that its own splice
- * produces. Companion to test-plan-gap-writeback.ts (the 500-line seam).
+ * spec body. Companion to test-plan-gap-writeback.ts (the 500-line seam).
  *
  *   - only a `resolution-type: concrete` resolution is spliced, as its concrete
  *     statement with no (a)/(b)/(c) label;
  *   - instruction, research and operator-decision (either/or) resolutions, and
  *     a missing or unparseable type, stay in Open Questions (status: open);
- *   - a CRITICAL quoting a gate-spliced bullet is re-routed to the residual
- *     disclosure and never counts toward the cap.
+ *   - a CRITICAL that quotes a gate-spliced bullet is an ordinary blocking
+ *     CRITICAL (there is no re-route rule).
  */
 import { parseGaps } from "../src/plan-gaps.ts";
 import type { PlanGap } from "../src/plan-types.ts";
@@ -237,9 +235,8 @@ function sectionOf(body: string, heading: string, nextHeading: string): string {
 }
 
 {
-  // #1111: a leftover (a)/(b)/(c) label mid-text, or either/or, never splices
-  // even when the type is concrete (the type is the reviewer's claim; the
-  // text is checked too).
+  // #1111: a leftover (a)/(b)/(c) label is stripped from a concrete resolution
+  // before it is spliced; the spliced bullet is the bare statement.
   const labelled = buildResolvedDecisions(
     [
       {
@@ -258,60 +255,14 @@ function sectionOf(body: string, heading: string, nextHeading: string): string {
   );
 }
 
-// ------------------- #1111: a CRITICAL quoting a gate bullet is re-routed
+// ------------------- #1111: a CRITICAL quoting a gate bullet still blocks
 
 {
-  const carried: PlanGap[] = [
-    {
-      severity: "CRITICAL",
-      description: "no failure-mode criterion",
-      resolution: RETRY_STATEMENT,
-      resolutionType: "concrete",
-    },
-  ];
-  const quoting = parseGaps(
-    `GAP: CRITICAL — the bullet "(gate resolution) ${RETRY_STATEMENT}" does not state a behaviour — proposed resolution: restate it — resolution-type: concrete\nVERDICT: NEEDS_ITERATION`,
-  );
-  const { kept, rerouted } = rerouteGateQuotes(quoting.gaps, carried);
-  assert(
-    kept.length === 0,
-    "#1111 re-route: a CRITICAL quoting a gate-spliced bullet is not kept as blocking",
-  );
-  assert(
-    rerouted.length === 1 && rerouted[0]?.severity === "CRITICAL",
-    "#1111 re-route: it is carried to the residual disclosure at the originating gap's severity",
-  );
-  // A quoted marker with no spliced origin (no carried round, or only a
-  // non-concrete carried gap) is not a gate bullet: the CRITICAL stays blocking.
-  const unorigined = rerouteGateQuotes(quoting.gaps, []);
-  assert(
-    unorigined.kept.length === 1 && unorigined.rerouted.length === 0,
-    "#1111 re-route: a marker quote with no spliced origin stays blocking",
-  );
-  const nonConcreteOrigin: PlanGap = { ...carried[0], resolutionType: "operator-decision" } as PlanGap;
-  const nonConcrete = rerouteGateQuotes(quoting.gaps, [nonConcreteOrigin]);
-  assert(
-    nonConcrete.kept.length === 1 && nonConcrete.rerouted.length === 0,
-    "#1111 re-route: a non-concrete carried gap is never a splice origin",
-  );
-  const genuine = parseGaps(
-    "GAP: CRITICAL — the retry cap contradicts the quota rule — proposed resolution: name which wins — resolution-type: operator-decision\nVERDICT: NEEDS_ITERATION",
-  );
-  const g2 = rerouteGateQuotes(genuine.gaps, carried);
-  assert(
-    g2.kept.length === 1 && g2.rerouted.length === 0,
-    "#1111 re-route: a genuine CRITICAL is still blocking",
-  );
-}
-
-// ------------------- #1111 round 2: READY with a re-routed CRITICAL is disclosed
-
-{
-  // Round 2 says READY, but its only CRITICAL quotes the gate's spliced bullet:
-  // it is re-routed, and must still reach the residual disclosure (no silent drop).
+  // There is no re-route rule: round 2's CRITICAL quotes the bullet round 1
+  // spliced (a concrete resolution), and it blocks exactly like any other.
   const replies = [
     `GAP: CRITICAL — the retry criterion is missing — proposed resolution: ${RETRY_STATEMENT} — resolution-type: concrete\nVERDICT: NEEDS_ITERATION`,
-    `GAP: CRITICAL — the bullet "(gate resolution) ${RETRY_STATEMENT}" is vague — proposed resolution: restate it — resolution-type: concrete\nVERDICT: READY`,
+    `GAP: CRITICAL — the bullet "(gate resolution) ${RETRY_STATEMENT}" does not state a behaviour — proposed resolution: restate it — resolution-type: concrete\nVERDICT: NEEDS_ITERATION`,
   ];
   setPlanDispatch(makeDispatchStub(replies) as never);
   const r = await runPlanPipeline(
@@ -320,10 +271,53 @@ function sectionOf(body: string, heading: string, nextHeading: string): string {
     process.cwd(),
   );
   assert(
-    r.spec.includes("## Residual gap-gate findings") && r.spec.includes("is vague"),
-    "#1111 READY: a re-routed CRITICAL on a READY verdict is disclosed in the residual section",
+    r.capReason === "unresolved-blocking" && r.filed === false,
+    `#1111 quote (spliced origin): a CRITICAL quoting a spliced gate bullet still caps and blocks (capReason: ${r.capReason})`,
   );
   setPlanDispatch(null);
+}
+
+{
+  // Same, when the quoted origin was NOT spliced (operator-decision): still blocks.
+  const replies = [
+    "GAP: CRITICAL — the retry criterion is missing — proposed resolution: either add a criterion or narrow the scope — resolution-type: operator-decision\nVERDICT: NEEDS_ITERATION",
+    'GAP: CRITICAL — the bullet "(gate resolution) either add a criterion" is vague — proposed resolution: restate it — resolution-type: concrete\nVERDICT: NEEDS_ITERATION',
+  ];
+  setPlanDispatch(makeDispatchStub(replies) as never);
+  const r = await runPlanPipeline(
+    {} as never,
+    { descriptor: DESCRIPTOR, dryRun: true },
+    process.cwd(),
+  );
+  assert(
+    r.capReason === "unresolved-blocking" && r.filed === false,
+    `#1111 quote (unspliced origin): a CRITICAL quoting a gate bullet still caps and blocks (capReason: ${r.capReason})`,
+  );
+  setPlanDispatch(null);
+}
+
+// ------------------- #1111: a resolution stays visible when not spliced
+
+{
+  // markWrittenDecisions never marks an unspliced decision written back, so
+  // its Open Question renders status: open regardless of text.
+  const { decisions, writebackMap } = buildResolvedDecisions(
+    [
+      {
+        severity: "CRITICAL",
+        description: "the retry cap is unnamed",
+        resolution: "either cap at three or retry forever",
+        resolutionType: "operator-decision",
+      },
+    ],
+    "feature",
+  );
+  assert(writebackMap.size === 0, "#1111 either/or: buildResolvedDecisions splices nothing");
+  const oq = renderOpenQuestions([], markWrittenDecisions(decisions, []));
+  assert(
+    /status: open/.test(oq) && oq.includes("either cap at three"),
+    "#1111 either/or: the unspliced decision renders status: open with its resolution visible",
+  );
 }
 
 console.log(`\nexit ${exit}`);

@@ -447,12 +447,12 @@ async function invoke(params: Record<string, unknown>) {
 {
   // The reported loop, reproduced with a stub dispatcher. Reply 1 carries an
   // either/or acceptance-criterion resolution typed operator-decision: it must
-  // not be spliced into any body section. Reply 2 raises a CRITICAL that quotes
-  // a gate-spliced bullet: that must not cap the plan CRITICAL.
+  // not be spliced into any body section, and stays open in Open Questions.
+  // The concrete CRITICAL is spliced once. Reply 2 is READY on a LOW nit.
   const spliced = "in the Acceptance criteria section, the retry path stops after three attempts";
   const replies = [
     `GAP: CRITICAL — the retry criterion is missing — proposed resolution: either add an acceptance criterion for the retry path or narrow the scope to the first attempt — resolution-type: operator-decision\nGAP: CRITICAL — the retry stop rule is unnamed — proposed resolution: ${spliced} — resolution-type: concrete\nVERDICT: NEEDS_ITERATION`,
-    `GAP: CRITICAL — the bullet "(gate resolution) ${spliced}" does not state a behaviour — proposed resolution: restate it as a behaviour — resolution-type: concrete\nVERDICT: NEEDS_ITERATION`,
+    "GAP: LOW cosmetic nit — proposed resolution: retitle — resolution-type: concrete\nVERDICT: READY",
   ];
   gatePrompts.length = 0;
   setPlanDispatch(makeDispatchStub(replies) as never);
@@ -462,8 +462,8 @@ async function invoke(params: Record<string, unknown>) {
     process.cwd(),
   );
   assert(
-    r.capReason !== "unresolved-blocking",
-    `#1111 loop: the plan is not capped CRITICAL on the gate's own bullet (capReason: ${r.capReason})`,
+    r.capReason === undefined,
+    `#1111 loop: the plan is not capped on the gate's own bullet (capReason: ${r.capReason})`,
   );
   // A spliced bullet starts with the marker; the re-routed CRITICAL may
   // legitimately appear as a disclosed finding (the residual section), so only

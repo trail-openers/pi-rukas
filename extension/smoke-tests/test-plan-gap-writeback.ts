@@ -24,8 +24,7 @@
  */
 import { draftSpec } from "../src/plan-draft.ts";
 import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
-import { GAP_RESOLUTION_PLACEHOLDER, parseGaps, rerouteGateQuotes } from "../src/plan-gaps.ts";
-import type { PlanGap } from "../src/plan-types.ts";
+import { GAP_RESOLUTION_PLACEHOLDER } from "../src/plan-gaps.ts";
 import {
   appendBulletsToSection,
   applyWritebackToBody,

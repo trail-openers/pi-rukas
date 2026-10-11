@@ -106,6 +106,7 @@ installNoPlanCacheStub();
     severity: "CRITICAL" as const,
     description: "d",
     resolution,
+    resolutionType: "concrete" as const,
   });
   assert(
     destinationFor(gap("add a sharper acceptance criterion covering the retry path"), "feature")

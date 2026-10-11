@@ -29,8 +29,7 @@
  *     identical input and "fix the gaps and re-run" is not a convergent
  *     strategy.
  */
-import { rerouteGateQuotes } from "./plan-gap-resolution.ts";
-import { type PlanGap, RESOLUTION_TYPES, type ResolutionType } from "./plan-types.ts";
+import { type PlanGap, isResolutionType } from "./plan-types.ts";
 import { trace } from "./trace.ts";
 
 // Re-exported so existing importers keep one import path for the renderers.
@@ -116,9 +115,9 @@ export function parseGaps(reply: string): GapGateParse {
     let rest = (m[2] ?? "").trim();
     const typeMatch = rest.match(typeRe);
     const declared = typeMatch?.[1]?.toLowerCase();
-    const resolutionType = (RESOLUTION_TYPES as readonly string[]).includes(declared ?? "")
-      ? (declared as ResolutionType)
-      : undefined;
+    const resolutionType = isResolutionType(declared) ? declared : undefined;
+    if (declared !== undefined && resolutionType === undefined)
+      trace(`plan-gaps: unrecognised resolution-type "${declared}" — not spliced`);
     if (typeMatch?.index !== undefined) rest = rest.slice(0, typeMatch.index).trim();
     const resMatch = rest.match(/[—–-]?\s*proposed resolution:\s*(.+)$/i);
     const resolution = resMatch?.[1]?.trim() ?? GAP_RESOLUTION_PLACEHOLDER;
@@ -292,9 +291,6 @@ export async function runGapGateLoop(
   makeGatePrompt: (iteration: number) => string,
   maxIterations: number,
   onCorrective: (blocking: PlanGap[]) => void,
-  // #1111: which carried gaps were actually spliced into the body (see
-  // rerouteGateQuotes). Defaults to the concrete-type rule.
-  isSpliced?: (g: PlanGap) => boolean,
 ): Promise<GapGateLoopResult> {
   let iterations = 0;
   let ready = false;
@@ -302,9 +298,6 @@ export async function runGapGateLoop(
   let capReason: GapGateLoopCapReason | undefined;
   let lastGaps: PlanGap[] = [];
   let lastParse: GapGateParse | undefined;
-  // #1111: the CRITICAL gaps the last corrective re-draft carried; a CRITICAL
-  // that quotes one of their spliced bullets is re-routed, not blocking.
-  let carried: PlanGap[] = [];
   let rawUnparsedHead: string | undefined;
   // One strict-contract retry per LOOP (not per round): most parse misses
   // are format drift, and one retry is far cheaper than a bad filing.
@@ -313,9 +306,6 @@ export async function runGapGateLoop(
   // by exact description string only — no fuzzy matching).
   const seenDescriptions = new Set<string>();
   const allNonBlocking: PlanGap[] = [];
-  // #1111: re-routed CRITICALs, disclosed on every exit path (a READY verdict
-  // that drops one without a trace would file a silent swallow).
-  const reroutedAll: PlanGap[] = [];
 
   while (iterations < maxIterations && !ready) {
     iterations++;
@@ -374,13 +364,6 @@ export async function runGapGateLoop(
     }
     lastGaps = lastParse.gaps;
 
-    // #1111: a CRITICAL quoting a gate-spliced bullet is the gate's own output,
-    // not a spec defect — it is disclosed, never counted toward capRouted.
-    const { kept, rerouted } = rerouteGateQuotes(lastParse.gaps, carried, isSpliced);
-    for (const g of rerouted)
-      if (!reroutedAll.some((x) => x.description === g.description)) reroutedAll.push({ ...g });
-    const roundParse: GapGateParse = { ...lastParse, gaps: kept };
-
     // Problem 2: accumulate non-blocking findings (CRITICAL travels via the
     // blocking path; HIGH/MEDIUM/LOW accumulate here for the residual union).
     // The dedupe keys on the FULL description: two distinct findings that
@@ -388,14 +371,14 @@ export async function runGapGateLoop(
     // dropping the second from the disclosure is exactly what the D2
     // guarantee forbids (lens review, PR #637 finding 1). Truncation
     // happens only at the render sites (truncateForDisclosure).
-    for (const g of [...kept.filter((x) => x.severity !== "CRITICAL"), ...rerouted]) {
-      if (!seenDescriptions.has(g.description)) {
+    for (const g of lastGaps) {
+      if (g.severity !== "CRITICAL" && !seenDescriptions.has(g.description)) {
         seenDescriptions.add(g.description);
         allNonBlocking.push({ ...g });
       }
     }
 
-    const evald = evaluateGapGate(roundParse, iterations, maxIterations);
+    const evald = evaluateGapGate(lastParse, iterations, maxIterations);
     ready = evald.ready;
     if (!ready && evald.corrective && evald.blocking.length > 0) {
       // Problem 1: corrective round fires ONLY when blocking is non-empty.
@@ -410,7 +393,6 @@ export async function runGapGateLoop(
       // it (the decision record is the structured resolvedDecisions parameter
       // draftSpec takes, built by the caller's onCorrective closure via
       // plan-writeback.ts).
-      carried = evald.blocking;
       onCorrective(evald.blocking);
     } else if (!ready) {
       // Two cases reach here:
@@ -446,7 +428,7 @@ export async function runGapGateLoop(
 
   // Problem 2: the residual disclosure is the UNION of all non-blocking
   // findings across all rounds (deduped by exact description string).
-  const residualForDisclosure = capHit ? allNonBlocking : reroutedAll;
+  const residualForDisclosure = capHit && allNonBlocking.length > 0 ? allNonBlocking : [];
 
   return {
     gaps: lastGaps,
