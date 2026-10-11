@@ -18,11 +18,8 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import {
-  buildCommentsLine,
-  findLostComments,
-  formatLostComments,
-} from "../src/comment-retention.ts";
+import { formatLostComments, formatReportLine } from "../src/comment-evidence.ts";
+import { findLostComments } from "../src/comment-retention.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runCommentRetentionGate } from "../src/work-driver-verify-develop-gates.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
@@ -384,14 +381,8 @@ async function developGate(
   }
 }
 
-// --- report line (buildCommentsLine) -------------------------------------
+// --- report line (formatReportLine) --------------------------------------
 {
-  // No range → the not-run line.
-  const line = await buildCommentsLine(null, "/tmp");
-  assert(
-    line === "comments: not-run (no base ref)",
-    "report: no range → 'comments: not-run (no base ref)'",
-  );
   // A fake execFn: a lossy range yields lost=<n> with the line listed.
   const fakeExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
     if (cmd.startsWith("git diff"))
@@ -401,7 +392,9 @@ async function developGate(
     if (cmd.startsWith("git grep")) return { stdout: "HEAD:src/app.ts:function f(){return 1;}\n" };
     return { stdout: "" };
   };
-  const report = await buildCommentsLine({ base: "abc", head: "def" }, "/tmp", fakeExec, ["src"]);
+  const report = formatReportLine(
+    await findLostComments(fakeExec, "/tmp", "abc", "def", ["src"], 1000),
+  );
   assert(report.startsWith("comments: lost=1"), "report: lossy range → 'comments: lost=1'");
   assert(report.includes("gone for good"), "report: the lost line is listed");
   // A fake execFn: a rewritten-comment range lists the lost line with the added comment.
@@ -416,11 +409,8 @@ async function developGate(
       };
     return { stdout: "" };
   };
-  const rewrittenLine = await buildCommentsLine(
-    { base: "abc", head: "def" },
-    "/tmp",
-    rewrittenExec,
-    ["src"],
+  const rewrittenLine = formatReportLine(
+    await findLostComments(rewrittenExec, "/tmp", "abc", "def", ["src"], 1000),
   );
   assert(
     rewrittenLine.startsWith("comments: lost=1 (exempt: 0)"),

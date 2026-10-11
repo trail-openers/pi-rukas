@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { classifyDispatchOutcome } from "./adversarial-classify.ts";
+import { roundCommentCheck } from "./adversarial-comments.ts";
 import { buildLedgerNote } from "./adversarial-ledger-note.ts";
 import { writeAdversarialLedgerEntry } from "./adversarial-ledger.ts";
 import { buildAdversarialPrompt, buildFixPrompt } from "./adversarial-prompts.ts";
@@ -8,7 +9,8 @@ import { type InfraCtx, infraFailureResult, runPhaseWithInfraRetry } from "./adv
 import { decideLoopAction, parseVerdict, synthesizeResult } from "./adversarial-verdict.ts";
 import { childHandles, registerChildHandle } from "./async-jobs-registry.ts";
 import { markOrchestrator, setOrchestratorActiveChild, startJob } from "./async-jobs.ts";
-import { buildCommentsLine, lostCommentsSection } from "./comment-retention.ts";
+import { formatReportLine, renderCommentEvidence } from "./comment-evidence.ts";
+import type { LostCommentResult } from "./comment-retention.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { readEnumMarker } from "./reply-markers.ts";
@@ -182,14 +184,12 @@ export async function runAdversarialLoop(
   // #859 — resolve the ref range (used by both the diff and the comment check).
   const range = params.base && params.head ? { base: params.base, head: params.head } : null;
 
-  // #948 — the comment-retention line, computed lazily at FINAL synthesis
-  // (both the pass and the reject path). When the loop has a ref range, the
-  // check runs in workCwd against base...head with a real ExecFn and appends a
-  // `comments: lost=<n>` line (plus up to 20 lines) to the FINAL text —
-  // reflecting the post-fix tree (round 2+ re-reads the range). A lost count
-  // > 0 does NOT change the verdict. Without a range: `not-run`; early exits
-  // never pay for the check.
-  const commentsLineNow = () => buildCommentsLine(range, params.workCwd ?? process.cwd());
+  // #948 / #1040 — the comment check runs ONCE per round, on the diff that round
+  // reviews; that single result feeds both the reviewer's prompt and the
+  // `comments:` report line (the last round's). A lost count > 0 does NOT change
+  // the verdict. A check that never ran reads as not-run, never as clean.
+  let lastComments: LostCommentResult = { ok: false, reason: "no review round ran" };
+  const commentsLineNow = () => formatReportLine(lastComments);
   // #980 fix — the infra-failure result must carry the values ACCUMULATED up
   // to this point (the transcript/model of the round that just failed), so
   // they are read at CALL time through this snapshot rather than captured
@@ -358,6 +358,7 @@ export async function runAdversarialLoop(
         );
       }
     }
+    lastComments = await roundCommentCheck(diff, params.head, params.workCwd);
     const adv = await runPhaseWithInfraRetry(
       "adversarial-developer",
       `round${round}-review`,
@@ -367,8 +368,8 @@ export async function runAdversarialLoop(
         round,
         maxRounds: MAX_ROUNDS,
         issueBody: params.issueBody,
-        // #1040 — comments this change removed, for the reviewer to judge.
-        commentEvidence: await lostCommentsSection(range, params.workCwd ?? process.cwd()),
+        // #1040 — comments this round's diff removed, for the reviewer to judge.
+        commentEvidence: renderCommentEvidence(lastComments),
       }),
       params.workCwd,
       { runPhase, accumulate, signal },

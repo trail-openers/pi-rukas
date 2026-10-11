@@ -89,7 +89,7 @@ export function isCommentLine(raw: string, inBlock: boolean): boolean {
 }
 
 /** Does the text carry any word character (not just markers / punctuation)? */
-function hasWord(s: string): boolean {
+export function hasWord(s: string): boolean {
   return /[\p{L}\p{N}]/u.test(s);
 }
 

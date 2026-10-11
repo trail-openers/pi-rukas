@@ -10,11 +10,11 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import { formatLostComments } from "./comment-evidence.ts";
 import {
   COMMENT_RETENTION_PATHS,
   commentRetentionEnabled,
   findLostComments,
-  formatLostComments,
 } from "./comment-retention.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import {
@@ -60,7 +60,7 @@ export async function runCommentRetentionGate(
   for (const [id, cwd] of worktrees) {
     const baseRef = effectiveBaseFor(id);
     if (!baseRef) continue; // no base ref → cannot diff; skip this worktree
-    const res = await findLostComments(execFn, cwd, baseRef, "HEAD", paths);
+    const res = await findLostComments(execFn, cwd, baseRef, "HEAD", paths, verifyTimeoutMs());
     if (!res.ok) {
       notes.push(`comment-retention: diff unavailable in ${cwd} (${res.reason}) — gate skipped`);
       continue;

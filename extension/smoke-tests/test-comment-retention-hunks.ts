@@ -18,13 +18,12 @@
 
 import { rmSync } from "node:fs";
 import {
-  buildCommentsLine,
-  findLostComments,
   formatLostComments,
   formatReportLine,
-  lostCommentsSection,
-} from "../src/comment-retention.ts";
+  renderCommentEvidence,
+} from "../src/comment-evidence.ts";
 import { classifyHunk, parseHunks } from "../src/comment-retention-hunks.ts";
+import { findLostComments } from "../src/comment-retention.ts";
 import type { ExecFn } from "../src/worktree.ts";
 import { repoWithFiles, runRetention, runRetentionIn } from "./lib/comment-retention-fixtures.ts";
 
@@ -144,8 +143,11 @@ function assert(cond: boolean, msg: string) {
     "--- a/src/app.ts\r\n+++ b/src/app.ts\r\n@@ -1,3 +1,2 @@\r\n-// crlf doc here\r\n function f() {}\r\n+function g() {}\r\n";
   const parsed = parseHunks(diff);
   assert(parsed.ok === true, "crlf (7): CRLF diff parses");
-  if (parsed.ok) {
-    const v = classifyHunk(parsed.hunks[0] as NonNullable<(typeof parsed.hunks)[0]>, () => false);
+  const hunk = parsed.ok ? parsed.hunks[0] : undefined;
+  if (!hunk) {
+    assert(false, "crlf (7): CRLF diff yields a hunk");
+  } else {
+    const v = classifyHunk(hunk, () => false);
     assert(v.lost.length === 1 && v.lost[0]?.text === "// crlf doc here", "crlf (7): drop is lost");
   }
 }
@@ -200,6 +202,7 @@ function assert(cond: boolean, msg: string) {
     `note (11): lists file, text and added context, marked not a failure`,
   );
   const line = formatReportLine({
+    ok: true,
     lost: [{ file: "src/a.ts", text: "// old doc", addedNearby: [] }],
     exempt: 0,
   });
@@ -220,26 +223,58 @@ function assert(cond: boolean, msg: string) {
       return { stdout: "HEAD:extension/src/app.ts:function f() {}\n" };
     return { stdout: "" };
   };
-  const section = await lostCommentsSection({ base: "abc", head: "def" }, "/tmp", fake, [
-    "extension/src",
-  ]);
+  const section = renderCommentEvidence(
+    await findLostComments(fake, "/tmp", "abc", "def", ["extension/src"], 1000),
+  );
   assert(
     section.includes("Comments removed by this change") &&
       section.includes("extension/src/app.ts: // old doc here") &&
-      section.includes("LOSS:"),
-    "section (12): adversarial/lens context lists the lost line and asks for a judgement",
+      section.includes("<<<comment-evidence"),
+    "section (12): the reviewer data block lists the lost line, fenced as data",
   );
-  const none = await lostCommentsSection({ base: "abc", head: "def" }, "/tmp", async () => ({
-    stdout: "",
-  }));
+  // A genuinely empty range: the diff is empty AND the scoped commit count is 0.
+  const none = renderCommentEvidence(
+    await findLostComments(
+      async (cmd) => ({ stdout: cmd.startsWith("git rev-list") ? "0\n" : "" }),
+      "/tmp",
+      "abc",
+      "def",
+      ["extension/src"],
+      1000,
+    ),
+  );
   assert(none === "", "section (12): empty diff → no section");
+  // An unreadable commit count is NOT silence: the reviewer is told it was not run.
+  const unreadable = renderCommentEvidence(
+    await findLostComments(
+      async () => ({ stdout: "" }),
+      "/tmp",
+      "abc",
+      "def",
+      ["extension/src"],
+      1000,
+    ),
+  );
+  assert(
+    unreadable.includes("NOT CHECKED ("),
+    "section (12): unreadable check → visible NOT CHECKED line",
+  );
 }
 
 // (13) Fail-closed: the report line degrades to not-run when the range is unreadable.
 {
-  const line = await buildCommentsLine({ base: "abc", head: "def" }, "/tmp", async () => {
-    throw new Error("boom");
-  });
+  const line = formatReportLine(
+    await findLostComments(
+      async () => {
+        throw new Error("boom");
+      },
+      "/tmp",
+      "abc",
+      "def",
+      ["extension/src"],
+      1000,
+    ),
+  );
   assert(
     line.startsWith("comments: not-run"),
     "report (13): unreadable range → not-run, never a pass",
@@ -261,6 +296,26 @@ function assert(cond: boolean, msg: string) {
     ["extension/src"],
   );
   assert(res.ok === false, "fail-closed (14): unreadable head tree → ok:false");
+}
+
+// (16) A timeout-like exec error is an infra error: the gate degrades to a
+// not-run note, never a failure — and the timeout option is actually
+// passed on every git exec (a recording fake asserts that).
+{
+  const seenOpts: Array<{ timeout?: number } | undefined> = [];
+  const failingExec: ExecFn = async (cmd, opts) => {
+    seenOpts.push(opts);
+    throw new Error(`etimedout: git ${cmd.split(" ")[1]} timed out after 1000ms (killed)`);
+  };
+  const res = await findLostComments(failingExec, "/tmp", "abc", "def", ["src"], 1234);
+  assert(
+    !res.ok && res.reason.startsWith("git diff failed"),
+    "timeout (16): timeout-like exec error → ok:false (not-run), never a lost-comment verdict",
+  );
+  assert(
+    seenOpts.length > 0 && seenOpts.every((o) => o?.timeout === 1234),
+    "timeout (16): every git exec in findLostComments carries the caller's timeout",
+  );
 }
 
 if (exit !== 0) process.exit(exit);

@@ -42,15 +42,25 @@ function issueSection(issueBody: string | undefined): string {
   return `\n\nWhat this change was asked to do — judge the diff against THIS, not against generic code quality. A diff that works but violates a stated constraint is a finding:\n\n${body}`;
 }
 
+/**
+ * Reviewer instruction for the comment DATA block (#1040). Shared with the
+ * six-lens context builder so every reviewer judges removals the same way.
+ */
+export const COMMENT_JUDGEMENT_PROSE =
+  "Judge each removal listed above. LEGITIMATE: the code the comment described was removed or rewritten, or the comment was replaced by an equivalent. LOSS: the comment still documents code that exists at head, or it carried a constraint or rationale nothing else records. Report an unjustified loss as an ISSUES finding; do not report a legitimate removal. If the check was NOT CHECKED, review the comment changes in the diff yourself.";
+
 export function buildAdversarialPrompt(opts: {
   diff: string;
   context: string;
   round: number;
   maxRounds: number;
   issueBody?: string;
-  /** The "Comments removed by this change" section (#1040); empty when none. */
+  /** The "Comments removed by this change" data block (#1040); empty when none. */
   commentEvidence?: string;
 }): string {
+  const commentSection = opts.commentEvidence
+    ? `\n\n${opts.commentEvidence}\n\n${COMMENT_JUDGEMENT_PROSE}`
+    : "";
   return `You are reviewing the diff below. Context: ${opts.context}
 Round: ${opts.round} of ${opts.maxRounds}.
 
@@ -60,7 +70,7 @@ Attack this implementation. Find edge cases, security holes, race conditions, AP
   VERDICT: ISSUES_FOUND
   VERDICT: CRITICAL_ISSUES_FOUND
 
-Use the severity your role prompt defines. Only CRITICAL_ISSUES_FOUND blocks the commit; the others are recorded and carried into the pull request. Inflating a finding's severity to avoid approving is the worst failure mode of this role.${issueSection(opts.issueBody)}${opts.commentEvidence ?? ""}
+Use the severity your role prompt defines. Only CRITICAL_ISSUES_FOUND blocks the commit; the others are recorded and carried into the pull request. Inflating a finding's severity to avoid approving is the worst failure mode of this role.${issueSection(opts.issueBody)}${commentSection}
 
 Diff:
 \`\`\`diff
