@@ -68,6 +68,22 @@ async function guardOrdering() {
   );
   const guardIdx = src.indexOf("if (first.reply === undefined) return next;");
   const routerIdx = src.indexOf("let responseText = first.reply.text");
+  // The helper appends the completion event on the success path and a
+  // dispatch-failed event on the catch path, both before it returns.
+  const successIdx = helper.indexOf(
+    'const after = appendEvent(clearDispatch(next, begun.jobId), event);',
+  );
+  const catchIdx = helper.indexOf("} catch (err) {");
+  const failedIdx = helper.indexOf('kind: "dispatch-failed"', catchIdx);
+  assert(
+    successIdx > 0 && catchIdx > 0 && failedIdx > catchIdx,
+    "dispatchExploreAttempt: completion event on success, dispatch-failed on the catch path",
+  );
+  const catchReturnIdx = helper.indexOf("return {", catchIdx);
+  assert(
+    catchReturnIdx > catchIdx && catchReturnIdx < failedIdx && failedIdx < successIdx,
+    "dispatchExploreAttempt: dispatch-failed is appended inside the catch return, before the success path",
+  );
 
   assert(
     replyIdx > 0 && routerIdx > 0,

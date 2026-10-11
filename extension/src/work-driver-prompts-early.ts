@@ -129,7 +129,7 @@ export function inlineExplorePrompt(
       ? []
       : [
           "",
-          "Your reply MUST contain the `INTENT-VERDICT:` line and a `## Spec` heading; a reply without them is retried once, then the cycle parks.",
+          "Your reply MUST contain the `INTENT-VERDICT:` line and a `## Spec` block (inline, or in a scratch file you cite); a reply without them is retried once, then the cycle parks.",
         ]),
     // #397 — drop the block the gate above suppressed, so removing a protocol
     // does not leave a stray blank line where it used to be.
@@ -202,7 +202,7 @@ function intentResolutionBlock(issues: number[]): string {
     "",
     "A deliverable that cannot produce a code diff by design (e.g. a GitHub repo settings toggle, an operator decision, a manual verification step, or external service configuration) gets a `[no-diff: <evidence>]` marker INSTEAD of `[paths: ...]`, where <evidence> is the command, API endpoint, or settings URL that proves it was done. The driver skips the diff check for marked deliverables and surfaces them as operator actions in the PR body — but the marker is honoured ONLY when the evidence string is non-empty, and ONLY when the deliverable declares no code paths (a deliverable with both is malformed and the code paths win). Never use the marker to excuse missing code work, and never write prose like `n/a` into a `[paths: ...]` slot — prose is not a control signal.",
     "",
-    "A no-diff deliverable is NOT a workstream candidate: it has no paths, so it would fail the empty-paths plan-quality check.",
+    "A no-diff deliverable is NOT a workstream candidate — it must not appear in the `## Workstreams` block (it has no paths, so it would fail the empty-paths plan-quality check).",
   ].join("\n");
 }
 

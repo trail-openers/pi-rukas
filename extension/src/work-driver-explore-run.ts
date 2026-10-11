@@ -185,23 +185,24 @@ export async function runExplore(
   // COMPLETED reply has no readable `## Spec`. Failed dispatches return here
   // (no reply to route on) and never consume the retry. The prior spec
   // artifact is dropped before each attempt, on the intent path only (#594).
+  // #594 — delete the prior cycle's spec artifact before dispatch (best-effort,
+  // trace on failure). Gated on useIntent: the artifact is only used on the
+  // intent path, so on the legacy path (PI_ENSEMBLE_INTENT=0 or N>1) leave it.
   if (useIntent) await deleteSpecArtifact(ctx.repoRoot, ctx.issue);
   const first = await dispatchExploreAttempt(ctx, next, prompt);
   next = first.state;
+  // A failed dispatch has no reply, so it returns here and can never reach the
+  // retry below — this early return is what guarantees a failed dispatch never
+  // retries.
   if (first.reply === undefined) return next;
   let responseText = first.reply.text ?? "";
   // One read per reply: the retry decision and the routing below both use it.
   let resolved = useIntent ? await resolveExploreSpec(ctx, responseText) : undefined;
   let retried = false;
-  // dispatchOk is true: a failed dispatch returned above.
-  if (
-    shouldRetryExplore({
-      useIntent,
-      dispatchOk: true,
-      spec: resolved?.spec,
-      alreadyRetried: retried,
-    })
-  ) {
+  // At most one retry: this is the only site that re-dispatches. The second
+  // attempt's reply is not re-checked here, so control flow cannot come back
+  // to this block.
+  if (shouldRetryExplore({ useIntent, spec: resolved?.spec })) {
     trace("work-driver: explore reply has no `## Spec` — re-dispatching explore once (#1094)");
     next = appendEvent(next, {
       kind: "explore-retried",
@@ -220,6 +221,7 @@ export async function runExplore(
   }
 
   if (useIntent) {
+    if (resolved !== undefined) trace(`work-driver: intent — spec resolved (${resolved.source})`);
     // Reconcile the chosen spec: a `proceed` with contradictions is
     // parked, a `proceed` with assumptions is promoted, an `underspecified`
     // park may be refuted by a complete spec. This runs on the WINNER

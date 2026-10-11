@@ -217,16 +217,18 @@ async function failedDispatch() {
 // 6. Prompt canary. Intent path: no legacy headings, ends with the spec rule.
 function promptCanary() {
   const MUST =
-    "Your reply MUST contain the `INTENT-VERDICT:` line and a `## Spec` heading; a reply without them is retried once, then the cycle parks.";
+    "Your reply MUST contain the `INTENT-VERDICT:` line and a `## Spec` block (inline, or in a scratch file you cite); a reply without them is retried once, then the cycle parks.";
   const intent = inlineExplorePrompt(
     [1095],
     "/tmp/scratch",
     [{ issue: 1095, body: "body", truncated: false }],
     true,
   );
-  assert(!intent.includes("## Workstreams"), "intent prompt: no `## Workstreams` heading");
-  assert(!intent.includes("## Prior decisions"), "intent prompt: no `## Prior decisions` heading");
-  assert(!intent.includes("## Touchpoints"), "intent prompt: no `## Touchpoints` heading");
+  // Heading form only: the intent block may mention `## Workstreams` in prose.
+  const headings = intent.split("\n").map((l) => l.trim());
+  assert(!headings.includes("## Workstreams"), "intent prompt: no `## Workstreams` heading");
+  assert(!headings.includes("## Prior decisions"), "intent prompt: no `## Prior decisions` heading");
+  assert(!headings.includes("## Touchpoints"), "intent prompt: no `## Touchpoints` heading");
   const lines = intent.split("\n").filter((l) => l.trim() !== "");
   assert(
     lines[lines.length - 1] === MUST,
@@ -254,11 +256,9 @@ async function shouldRetryCases() {
     GOOD_REPLY,
   );
   assert(good !== undefined, "predicate fixture: GOOD_REPLY resolves to a spec");
-  const base = { useIntent: true, dispatchOk: true, spec: undefined, alreadyRetried: false };
-  assert(shouldRetryExplore(base), "predicate: intent + completed + no spec + first miss → retry");
+  const base = { useIntent: true, spec: undefined };
+  assert(shouldRetryExplore(base), "predicate: intent + no spec → retry");
   assert(!shouldRetryExplore({ ...base, useIntent: false }), "predicate: legacy path never retries");
-  assert(!shouldRetryExplore({ ...base, dispatchOk: false }), "predicate: failed dispatch never retries");
-  assert(!shouldRetryExplore({ ...base, alreadyRetried: true }), "predicate: a second miss does not retry again");
   assert(!shouldRetryExplore({ ...base, spec: good?.spec }), "predicate: a readable spec does not retry");
 }
 

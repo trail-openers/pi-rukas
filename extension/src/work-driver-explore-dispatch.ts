@@ -70,17 +70,15 @@ export async function resolveExploreSpec(
 }
 
 /**
- * #1094 — the explore re-dispatch decision, as a pure function. Retries only
- * on the intent path, only after a COMPLETED dispatch whose reply has no
- * readable spec, and only once.
+ * #1094 — the explore re-dispatch decision, as a pure function. The caller
+ * only asks after a COMPLETED dispatch (a failed one returns before any reply
+ * is read), so the predicate is just: intent path and no readable spec.
  */
 export function shouldRetryExplore(input: {
   useIntent: boolean;
-  dispatchOk: boolean;
   spec: NormalisedSpec | undefined;
-  alreadyRetried: boolean;
 }): boolean {
-  return input.useIntent && input.dispatchOk && input.spec === undefined && !input.alreadyRetried;
+  return input.useIntent && input.spec === undefined;
 }
 
 /**
