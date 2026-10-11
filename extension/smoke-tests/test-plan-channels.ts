@@ -128,10 +128,10 @@ const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
     [],
   );
   assert(
-    validateDraft("spike", bare.body, 0, { operatorSupplied: false }).ok,
+    validateDraft("spike", bare.body, 0, { operatorOmitted: [], operatorSupplied: false }).ok,
     "spike without operator input: scaffold strings are tolerated (status quo)",
   );
-  const v = validateDraft("spike", bare.body, 0, { operatorSupplied: true });
+  const v = validateDraft("spike", bare.body, 0, { operatorOmitted: [], operatorSupplied: true });
   assert(
     !v.ok,
     "spike WITH operator input: scaffold deliverable halts (the gate never runs for spikes)",
@@ -178,14 +178,20 @@ const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
     },
   ];
   const three = draftSpec("epic", "d", findings(3), [], [], [], 0, NO_DIRS, []);
-  const vPin = validateDraft("epic", three.body, 0, { pinnedSubIssues: 5 });
+  const vPin = validateDraft("epic", three.body, 0, { operatorOmitted: [], pinnedSubIssues: 5 });
   assert(
     !vPin.ok && /EXACTLY 5/.test(vPin.problems[0] ?? ""),
     "C5: pin mismatch (3 vs 5) is draft-invalid",
   );
   const five = draftSpec("epic", "d", findings(5), [], [], [], 0, NO_DIRS, []);
-  assert(validateDraft("epic", five.body, 0, { pinnedSubIssues: 5 }).ok, "C5: pin match passes");
-  assert(validateDraft("epic", three.body, 0, {}).ok, "C5: no pin → count free (ceiling only)");
+  assert(
+    validateDraft("epic", five.body, 0, { operatorOmitted: [], pinnedSubIssues: 5 }).ok,
+    "C5: pin match passes",
+  );
+  assert(
+    validateDraft("epic", three.body, 0, { operatorOmitted: [] }).ok,
+    "C5: no pin → count free (ceiling only)",
+  );
 
   const prompts = anglePromptsFor("epic", "an epic", [], [], 5);
   const decomp = prompts.find((p) => p.name === "decomposition-surface");

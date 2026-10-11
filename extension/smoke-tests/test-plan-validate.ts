@@ -61,7 +61,7 @@ function findingsWith(items: { kind: string; text: string }[]) {
     NO_DIRS,
     [],
   );
-  const v = validateDraft("feature", noAc.body, 0);
+  const v = validateDraft("feature", noAc.body, 0, { operatorOmitted: [] });
   assert(!v.ok, "feature with fallback Acceptance criteria is invalid");
   assert(/Acceptance criteria/.test(v.problems[0] ?? ""), "the problem names the section");
 
@@ -77,7 +77,10 @@ function findingsWith(items: { kind: string; text: string }[]) {
     NO_DIRS,
     [],
   );
-  assert(validateDraft("feature", withAc.body, 0).ok, "feature with a real AC is valid");
+  assert(
+    validateDraft("feature", withAc.body, 0, { operatorOmitted: [] }).ok,
+    "feature with a real AC is valid",
+  );
 
   // Operator directives alone can satisfy the AC requirement.
   const dirAc = draftSpec(
@@ -96,7 +99,7 @@ function findingsWith(items: { kind: string; text: string }[]) {
     [],
   );
   assert(
-    validateDraft("bug", dirAc.body, 0).ok,
+    validateDraft("bug", dirAc.body, 0, { operatorOmitted: [] }).ok,
     "an operator ACCEPTANCE CRITERIA directive satisfies the check",
   );
 
@@ -112,7 +115,7 @@ function findingsWith(items: { kind: string; text: string }[]) {
     NO_DIRS,
     [],
   );
-  const ve = validateDraft("epic", noSub.body, 0);
+  const ve = validateDraft("epic", noSub.body, 0, { operatorOmitted: [] });
   assert(!ve.ok, "epic with no decomposition is invalid");
   assert(/decomposition/.test(ve.problems[0] ?? ""), "the problem names the missing decomposition");
 
@@ -128,7 +131,10 @@ function findingsWith(items: { kind: string; text: string }[]) {
     NO_DIRS,
     [],
   );
-  assert(validateDraft("epic", withSub.body, 0).ok, "epic with a decomposition is valid");
+  assert(
+    validateDraft("epic", withSub.body, 0, { operatorOmitted: [] }).ok,
+    "epic with a decomposition is valid",
+  );
 
   // Epic with a runaway decomposition → invalid.
   const many = draftSpec(
@@ -147,13 +153,13 @@ function findingsWith(items: { kind: string; text: string }[]) {
     NO_DIRS,
     [],
   );
-  const vm = validateDraft("epic", many.body, 0);
+  const vm = validateDraft("epic", many.body, 0, { operatorOmitted: [] });
   assert(!vm.ok, `epic with > ${EPIC_SUB_ISSUE_MAX} sub-issues is invalid`);
 
   // Epic at the depth limit has no Sub-issues section by design — skip.
   const atDepth = draftSpec("epic", "d", findingsWith([]), [], [], [], 3, NO_DIRS, []);
   assert(
-    validateDraft("epic", atDepth.body, 3).ok,
+    validateDraft("epic", atDepth.body, 3, { operatorOmitted: [] }).ok,
     "epic at the sub-issue depth limit skips the decomposition check",
   );
 
@@ -169,7 +175,10 @@ function findingsWith(items: { kind: string; text: string }[]) {
     NO_DIRS,
     [],
   );
-  assert(validateDraft("chore", chore.body, 0).ok, "chore has no AC requirement");
+  assert(
+    validateDraft("chore", chore.body, 0, { operatorOmitted: [] }).ok,
+    "chore has no AC requirement",
+  );
 }
 
 // --------------------------------- NEVER CLAIM post-filter (#677, pre-draft)
@@ -275,7 +284,8 @@ function findingsWith(items: { kind: string; text: string }[]) {
     "#677 validate: a phrase only inside the Prior context inventory is excluded from the scan",
   );
   assert(
-    validateDraft("feature", inventoryOnly, 0, { forbiddenPhrases: forbidden }).ok,
+    validateDraft("feature", inventoryOnly, 0, { operatorOmitted: [], forbiddenPhrases: forbidden })
+      .ok,
     "#677 validate: inventory-only occurrence does not invalidate the draft",
   );
 
@@ -299,7 +309,10 @@ function findingsWith(items: { kind: string; text: string }[]) {
       bodyContainsForbiddenPhrase(generated, forbidden)[0] === "rankings are identical",
     "#677 validate: a phrase in a generated section is found by the scan",
   );
-  const v = validateDraft("feature", generated, 0, { forbiddenPhrases: forbidden });
+  const v = validateDraft("feature", generated, 0, {
+    operatorOmitted: [],
+    forbiddenPhrases: forbidden,
+  });
   assert(
     !v.ok &&
       v.problems.some((p) => p.includes('"rankings are identical"') && p.includes("NEVER CLAIM")),
@@ -308,7 +321,7 @@ function findingsWith(items: { kind: string; text: string }[]) {
 
   // No forbidden phrases → the check is a no-op (existing drafts unaffected).
   assert(
-    validateDraft("feature", generated, 0).ok &&
+    validateDraft("feature", generated, 0, { operatorOmitted: [] }).ok &&
       bodyContainsForbiddenPhrase(generated, []).length === 0,
     "#677 validate: without forbidden phrases the scan is a no-op",
   );
@@ -319,7 +332,7 @@ function findingsWith(items: { kind: string; text: string }[]) {
 {
   process.env.PI_ENSEMBLE_FORGE = "none";
   installOfflineVipuneStub();
-installNoPlanCacheStub();
+  installNoPlanCacheStub();
   let gateDispatches = 0;
   setPlanDispatch(((_pi: unknown, spec: { role: string; prompt: string }) => {
     if (spec.role === "adversarial-developer") gateDispatches++;

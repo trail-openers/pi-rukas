@@ -142,7 +142,7 @@ function renders(sec: string, item: string): boolean {
     "AC suppression: angle-derived criteria appear under 'Suggested additional criteria'",
   );
   assert(
-    validateDraft("feature", r.body, 0).ok,
+    validateDraft("feature", r.body, 0, { operatorOmitted: [] }).ok,
     "AC suppression: the Acceptance criteria section still satisfies the validator",
   );
 }
@@ -190,10 +190,10 @@ function renders(sec: string, item: string): boolean {
     "DECOMPOSITION: the operator block renders under its own heading, outside Sub-issues",
   );
   assert(
-    validateDraft("epic", r.body, 0).ok,
+    validateDraft("epic", r.body, 0, { operatorOmitted: [] }).ok,
     "DECOMPOSITION: operator constraints do not inflate the angle sub-issue count",
   );
-  const pinned = validateDraft("epic", r.body, 0, { pinnedSubIssues: 1 });
+  const pinned = validateDraft("epic", r.body, 0, { operatorOmitted: [], pinnedSubIssues: 1 });
   assert(pinned.ok, "DECOMPOSITION: a pin is judged against angle sub-issues only");
 }
 
@@ -211,7 +211,7 @@ function renders(sec: string, item: string): boolean {
     [],
   );
   assert(
-    !validateDraft("epic", r.body, 0).ok,
+    !validateDraft("epic", r.body, 0, { operatorOmitted: [] }).ok,
     "DECOMPOSITION: operator constraints without sub-issue items still fail the epic check",
   );
 }

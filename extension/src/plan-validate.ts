@@ -107,6 +107,9 @@ export const AC_FALLBACK =
 /** The Sub-issues fallback draftSpec renders when no decomposition exists. */
 export const SUB_ISSUES_FALLBACK = "(decomposition not available)";
 
+/** The Test-surface fallback (single-sourced here so the validator's scan
+ * cannot silently drift from what draftSpec renders — same rule as
+ * AC_FALLBACK). */
 /**
  * The Test-surface status draftSpec renders when neither the operator nor the
  * investigation produced a test-surface item (#1087). An explicit status, not
@@ -175,17 +178,18 @@ export interface ValidateOpts {
   forbiddenPhrases?: string[];
   /**
    * #1087: operator channels that exceeded OPERATOR_ITEM_CEILING, as data from
-   * draftSpec. A non-empty list halts validation — the filed spec would be
-   * missing operator-supplied items.
+   * draftSpec (draftSpec's `operatorOmitted`). REQUIRED — omitting it is a type
+   * error. A non-empty list halts validation: the filed spec would be missing
+   * operator-supplied items.
    */
-  operatorOmitted?: OperatorOmission[];
+  operatorOmitted: OperatorOmission[];
 }
 
 export function validateDraft(
   type: PlanType,
   body: string,
   depth: number,
-  opts: ValidateOpts = {},
+  opts: ValidateOpts,
 ): DraftValidation {
   const problems: string[] = [];
   const forbidden = (opts.forbiddenPhrases ?? []).filter((p) => p.trim().length > 0);
@@ -202,7 +206,7 @@ export function validateDraft(
   // #1087 review: an operator list past the ceiling is a truncated authority
   // channel — halt rather than file a spec missing operator-supplied items.
   // Decided from the omission DATA, never by searching the rendered body.
-  if (opts.operatorOmitted && opts.operatorOmitted.length > 0) {
+  if (opts.operatorOmitted.length > 0) {
     const where = opts.operatorOmitted.map((o) => `${o.omitted} in ${o.section}`).join(", ");
     problems.push(
       `operator-supplied items were truncated past the ceiling of ${OPERATOR_ITEM_CEILING} (${where}) — the operator's block is too large to file faithfully; split the descriptor or reduce the block`,
@@ -301,7 +305,10 @@ export const RENDER_BUDGETS: readonly RenderBudget[] = [
  */
 export const OPERATOR_ITEM_CEILING = 100;
 
-/** The phrase every omission status line carries; validateDraft halts on it. */
+/**
+ * Rendered text for readers only. The halt is decided by operatorOmitted (data),
+ * never by searching the body for this phrase.
+ */
 export const OMISSION_PHRASE = "further operator item(s) omitted";
 
 export interface CappedItems {
