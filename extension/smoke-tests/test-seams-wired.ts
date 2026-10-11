@@ -262,8 +262,10 @@ const SEAMS: Seam[] = [
       probePiVersion: "the async probe; wired via getPiResolutionInfo; also directly test-asserted",
       getPiResolutionInfo: "the full resolution + probe; also directly test-asserted",
       isVersionOlder: "the version comparator; exercised by test-pi-binary-resolve.ts",
-      _resetPiVersionProbe: "test-only probe reset; exercised by test-pi-binary-resolve.ts",
-      getVerifiedVersion: "the doc-derived verified version; exercised by test-pi-binary-resolve.ts",
+      _resetPiVersionProbe:
+        "composed test-only reset (probe + binary cache); exercised by test-pi-binary-hardening.ts",
+      getVerifiedVersion:
+        "the doc-derived verified version; exercised by test-pi-binary-resolve.ts",
     },
     canary: { symbol: "kickPiResolutionProbe", importer: "spawn.ts" },
   },

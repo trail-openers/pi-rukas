@@ -8,12 +8,12 @@
  * warning, and the PATH warning firing exactly once at resolution time.
  */
 
-import { mkdirSync, cpSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { cpSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { _resetPiBinaryCache, resolvePackageBin } from "../src/pi-binary-resolve.ts";
+import { resolvePackageBin } from "../src/pi-binary-resolve.ts";
 import { _resetPiVersionProbe, probePiVersion } from "../src/pi-version-probe.ts";
 
 let exit = 0;
@@ -83,7 +83,10 @@ section("package bin containment (realpath)");
   writeFileSync(target, "#!/usr/bin/env node\n", { mode: 0o755 });
   symlinkSync(target, path.join(pkg, "cli.js"));
   writeFileSync(path.join(pkg, "package.json"), JSON.stringify({ bin: "cli.js" }));
-  assert(resolvePackageBin(path.join(pkg, "package.json")) === null, "rejects a symlink escaping the package directory");
+  assert(
+    resolvePackageBin(path.join(pkg, "package.json")) === null,
+    "rejects a symlink escaping the package directory",
+  );
   rmDir(pkg);
   rmDir(outside);
 }
@@ -93,27 +96,63 @@ section("package bin containment (realpath)");
   const pkg = mkTmpDir("hard-pkg5");
   symlinkSync(path.join(pkg, "gone.js"), path.join(pkg, "cli.js"));
   writeFileSync(path.join(pkg, "package.json"), JSON.stringify({ bin: "cli.js" }));
-  assert(resolvePackageBin(path.join(pkg, "package.json")) === null, "rejects a broken symlink bin");
+  assert(
+    resolvePackageBin(path.join(pkg, "package.json")) === null,
+    "rejects a broken symlink bin",
+  );
   rmDir(pkg);
 }
 
 section("version probe lifecycle");
 
+// A missing PI_ENSEMBLE_PI_BIN makes resolvePiBinarySync throw synchronously
+// inside the probe. It must resolve to version null with one warning, and the
+// same (resolved, never rejected) promise must be cached for later callers.
+{
+  _resetPiVersionProbe();
+  const cap = captureWarnings();
+  try {
+    const missing = path.join(os.tmpdir(), `pi-rukas-missing-bin-${process.pid}-${Date.now()}`);
+    const first = withEnv({ PI_ENSEMBLE_PI_BIN: missing }, () => probePiVersion());
+    const probe = await first;
+    assert(
+      probe.version === null,
+      "missing PI_ENSEMBLE_PI_BIN: probe resolves to version null (not rejected)",
+    );
+    assert(
+      withEnv({ PI_ENSEMBLE_PI_BIN: missing }, () => probePiVersion()) === first,
+      "missing binary: probe promise identity is stable (one-shot)",
+    );
+    assert(
+      cap.warnings.length === 1 && cap.warnings[0]?.includes("pi-version-probe") === true,
+      `missing binary: exactly one warning (got ${cap.warnings.length})`,
+    );
+  } finally {
+    cap.restore();
+    _resetPiVersionProbe();
+  }
+}
+
 // Spawn failure (a directory passes X_OK but cannot be spawned) warns visibly,
 // and the probe is one-shot (#1038): the failed result stays cached.
 {
-  _resetPiBinaryCache();
   _resetPiVersionProbe();
   const dir = mkTmpDir("hard-unrunnable");
   const cap = captureWarnings();
   try {
     const first = withEnv({ PI_ENSEMBLE_PI_BIN: dir }, () => probePiVersion());
     const probe = await first;
-    assert(probe.version === null && cap.warnings.some((w) => w.includes(dir)), "spawn failure warns, naming the command");
+    assert(
+      probe.version === null && cap.warnings.some((w) => w.includes(dir)),
+      "spawn failure warns, naming the command",
+    );
     const second = probePiVersion();
     assert(second === first, "one-shot probe: a failed spawn is cached, not re-probed");
     await second;
-    assert(cap.warnings.length === 1, `one-shot probe: spawn-failure warning emitted once (got ${cap.warnings.length})`);
+    assert(
+      cap.warnings.length === 1,
+      `one-shot probe: spawn-failure warning emitted once (got ${cap.warnings.length})`,
+    );
   } finally {
     cap.restore();
     _resetPiVersionProbe();
@@ -129,7 +168,9 @@ section("PATH warning");
 // short-circuits it).
 {
   const root = mkTmpDir("hard-pathwarn");
-  cpSync(path.resolve(import.meta.dirname, "..", "src"), path.join(root, "src"), { recursive: true });
+  cpSync(path.resolve(import.meta.dirname, "..", "src"), path.join(root, "src"), {
+    recursive: true,
+  });
   writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "no-pi" }));
   const modUrl = path.join(root, "src", "pi-binary-resolve.ts");
   const script = `const m = await import(${JSON.stringify(modUrl)});\nconst a = m.resolvePiBinarySync(); m.resolvePiBinarySync(); m.resolvePiBinarySync();\nconsole.log(a.source);`;
@@ -138,7 +179,10 @@ section("PATH warning");
   const r = spawnSync(process.execPath, ["-e", script], { env, encoding: "utf8" });
   const pathWarns = (r.stderr ?? "").split("resolved from PATH").length - 1;
   assert(r.stdout.trim() === "path", `child resolves via PATH (got ${r.stdout.trim()})`);
-  assert(pathWarns === 1, `PATH warning fires exactly once across repeated resolution (got ${pathWarns})`);
+  assert(
+    pathWarns === 1,
+    `PATH warning fires exactly once across repeated resolution (got ${pathWarns})`,
+  );
   rmDir(root);
 }
 

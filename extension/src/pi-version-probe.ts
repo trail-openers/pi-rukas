@@ -6,9 +6,10 @@
  * fires it and forgets it. Warns (trace) when the resolved version is older than
  * the "Last verified against pi X.Y.Z" line in docs/pi-compatibility.md.
  *
- * Retry model (#1038): ONE-SHOT. A probe that fails to spawn is cached as
- * `{ version: null }` and reported once on stderr; it is not re-run, because the
- * failure mode is a broken binary path that a retry will not repair.
+ * Retry model (#1038): ONE-SHOT. A probe that fails to spawn — including a
+ * synchronous throw from binary resolution — is cached as `{ version: null }` and
+ * reported once on stderr; it is not re-run, because the failure mode is a broken
+ * binary path that a retry will not repair.
  */
 
 import { spawn as cpSpawn } from "node:child_process";
@@ -16,6 +17,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
   type PiBinaryResolution,
+  _resetPiBinaryCache,
   parsePiVersion,
   resolvePiBinarySync,
 } from "./pi-binary-resolve.ts";
@@ -35,66 +37,80 @@ let verifiedVersionCache: string | null | undefined;
 /**
  * Run `pi --version` on the resolved binary and cache the result.
  * Times out after 3 s (returns version: null, probeTimedOut: true).
- * Never throws — unparseable output yields version: null.
- * (#1038: an unspawnable binary also yields version: null, and is reported on stderr.)
+ * Never throws and never caches a rejection — unparseable output yields
+ * version: null, and an unspawnable binary (including a synchronous throw from
+ * resolvePiBinarySync) also yields version: null, reported once on stderr.
  */
 export function probePiVersion(): Promise<ProbeResult> {
   if (versionPromise) return versionPromise;
 
   versionPromise = new Promise((resolve) => {
-    const resolved = resolvePiBinarySync();
-    const spawnArgs = resolved.script ? [resolved.script, "--version"] : ["--version"];
+    let command = "pi";
+    try {
+      const resolved = resolvePiBinarySync();
+      command = resolved.command;
+      const spawnArgs = resolved.script ? [resolved.script, "--version"] : ["--version"];
 
-    const child = cpSpawn(resolved.command, spawnArgs, {
-      stdio: ["ignore", "pipe", "ignore"],
-      shell: false,
-    });
+      const child = cpSpawn(resolved.command, spawnArgs, {
+        stdio: ["ignore", "pipe", "ignore"],
+        shell: false,
+      });
 
-    let stdout = "";
-    let stdoutBytes = 0;
-    let settled = false;
+      let stdout = "";
+      let stdoutBytes = 0;
+      let settled = false;
 
-    const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        // Destroy the pipes in addition to killing the process: a grandchild
-        // that keeps the write ends open would otherwise pin the process
-        // handle (and our buffered stdout) past the kill.
-        child.kill("SIGKILL");
-        child.stdout?.destroy();
-        resolve({ version: null, probeTimedOut: true });
-      }
-    }, 3000);
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          // Destroy the pipes in addition to killing the process: a grandchild
+          // that keeps the write ends open would otherwise pin the process
+          // handle (and our buffered stdout) past the kill.
+          child.kill("SIGKILL");
+          child.stdout?.destroy();
+          resolve({ version: null, probeTimedOut: true });
+        }
+      }, 3000);
 
-    child.stdout?.on("data", (d: Buffer) => {
-      // Cap the accumulator — `pi --version` prints one short line, anything
-      // larger is not a version and is not worth retaining in memory.
-      if (stdoutBytes < 4096) {
-        stdout += d.toString("utf8");
-        stdoutBytes += d.length;
-      }
-    });
+      child.stdout?.on("data", (d: Buffer) => {
+        // Cap the accumulator — `pi --version` prints one short line, anything
+        // larger is not a version and is not worth retaining in memory.
+        if (stdoutBytes < 4096) {
+          stdout += d.toString("utf8");
+          stdoutBytes += d.length;
+        }
+      });
 
-    child.on("error", (err: Error) => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        // Spawn failure (bad binary path). Operational, not debug: a binary that
-        // cannot be spawned must be visible. One-shot: the probe is not re-run.
-        console.warn(
-          `[pi-rukas] pi-version-probe: WARNING — could not run "${resolved.command}" for --version: ${err.message}`,
-        );
-        resolve({ version: null });
-      }
-    });
+      child.on("error", (err: Error) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          // Spawn failure (bad binary path). Operational, not debug: a binary that
+          // cannot be spawned must be visible. One-shot: the probe is not re-run.
+          console.warn(
+            `[pi-rukas] pi-version-probe: WARNING — could not run "${command}" for --version: ${err.message}`,
+          );
+          resolve({ version: null });
+        }
+      });
 
-    child.on("close", () => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        resolve({ version: parsePiVersion(stdout) });
-      }
-    });
+      child.on("close", () => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          resolve({ version: parsePiVersion(stdout) });
+        }
+      });
+    } catch (err) {
+      // Synchronous failure before or during spawn (e.g. PI_ENSEMBLE_PI_BIN names
+      // a missing binary). Resolve, never reject: a rejected promise would be
+      // cached forever and every later caller would see the same rejection.
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[pi-rukas] pi-version-probe: WARNING — could not run "${command}" for --version: ${msg}`,
+      );
+      resolve({ version: null });
+    }
   });
 
   return versionPromise;
@@ -113,15 +129,13 @@ export function probePiVersion(): Promise<ProbeResult> {
  *
  * ⚠ Spawn paths must NEVER await this. `spawnSpecialist` resolves the binary
  * with `resolvePiBinarySync()` only (zero I/O beyond the cached resolution) —
- * the probe exists to surface the PATH-source / older-than-verified warnings,
+ * the probe exists to surface the spawn-failure / older-than-verified warnings,
  * which the first spawn of a process triggers fire-and-forget. Awaiting here
  * would hold the spawn path for up to 3 s against a hung `--version` probe.
  *
  * Emits a single trace line with the resolved path, source, and version.
- * Warns (trace) when:
- *   - source is "path" (always)
- *   - version is older than the "Last verified against pi X.Y.Z" line
- * (#1038: the PATH warning is emitted once in resolvePiBinarySync, not here.)
+ * Warns (trace) when version is older than the "Last verified against pi X.Y.Z"
+ * line. (The PATH-source warning is emitted once in resolvePiBinarySync, not here.)
  */
 export async function getPiResolutionInfo(): Promise<PiBinaryResolution> {
   const sync = resolvePiBinarySync();
@@ -155,24 +169,20 @@ export async function getPiResolutionInfo(): Promise<PiBinaryResolution> {
 // Probe lifecycle (spawn-kicked, fire-and-forget)
 // ---------------------------------------------------------------------------
 
-// #1019 — kick the version probe on first spawn (fire-and-forget; never
-// awaited). The flag + kick live here (with the probe they guard) rather than
-// in spawn.ts so the probe lifecycle stays inside this module.
-
 /**
- * Kick the version probe on first spawn (#1019). Fire-and-forget: never throws
- * into the spawn path, and a failed probe is traced rather than swallowed.
+ * Kick the version probe on first spawn (#1019). The once-flag and the kick live
+ * here, with the probe they guard, so the probe lifecycle stays in this module.
+ * Fire-and-forget: never awaited, never throws into the spawn path, and a failed
+ * probe is warned on stderr and traced.
  */
 export function kickPiResolutionProbe(): void {
   if (piResolutionProbeStarted) return;
   piResolutionProbeStarted = true;
-  try {
-    getPiResolutionInfo().catch((e: unknown) => {
-      trace(`pi-version-probe: probe failed — ${e instanceof Error ? e.message : String(e)}`);
-    });
-  } catch (e) {
-    trace(`pi-version-probe: probe failed — ${e instanceof Error ? e.message : String(e)}`);
-  }
+  getPiResolutionInfo().catch((e: unknown) => {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(`[pi-rukas] pi-version-probe: WARNING — probe failed: ${msg}`);
+    trace(`pi-version-probe: probe failed — ${msg}`);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -221,10 +231,12 @@ export function getVerifiedVersion(): string | null {
 }
 
 /**
- * Reset all probe-side state (probe promise, once-flag, verified-version cache).
- * Exported for tests only.
+ * The single reset seam for tests: clears the probe promise, the once-flag and
+ * the verified-version cache, AND the binary-resolution cache (so a reset can
+ * never leave a stale resolution behind a fresh probe). Exported for tests only.
  */
 export function _resetPiVersionProbe(): void {
+  _resetPiBinaryCache();
   versionPromise = null;
   piResolutionProbeStarted = false;
   verifiedVersionCache = undefined;

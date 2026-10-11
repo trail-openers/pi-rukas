@@ -6,7 +6,6 @@
  *   1. PI_ENSEMBLE_PI_BIN env var (must be an existing executable, else fail)
  *   2. The bin of the locally installed @earendil-works/pi-coding-agent package
  *   3. `pi` on PATH (always warns)
- *      (#1038: the warning is emitted once per process, at resolution time)
  *
  * Setting PI_ENSEMBLE_PI_BIN executes THAT binary as the child pi — the
  * X_OK check below validates usability only, never trust. Use it for an
@@ -18,7 +17,11 @@
  * The path + source resolve synchronously and are cached per process.
  * The `pi --version` probe is async, runs once, is cached, times out after
  * 3 s (version null, probeTimedOut: true), and never blocks a spawn.
- * (#1038: the probe lives in pi-version-probe.ts, still never on a spawn path.)
+ *
+ * #1038 behaviour change: a package bin whose realpath escapes the package
+ * directory (e.g. a hoisted bin symlinked outside it) is rejected and falls
+ * through to PATH, where it previously was accepted. A broken symlink is skipped
+ * with a trace, like the escape case.
  */
 
 import { constants, accessSync, existsSync, readFileSync, realpathSync } from "node:fs";
@@ -71,8 +74,8 @@ export function parsePiVersion(output: string): string | null {
  *
  * Returns the resolved absolute path to the CLI entry, or null when the package
  * is not installed. Never throws.
- * (#1038: it also returns null when the bin escapes the package directory, checked
- * on REALPATHS, so a symlink inside the package pointing outside is rejected.)
+ * Returns null when the bin's realpath escapes the package directory, so a
+ * symlink inside the package pointing outside is rejected.
  */
 export function resolvePackageBin(
   packageJsonPath: string = defaultPackageJsonPath(),
@@ -88,10 +91,12 @@ export function resolvePackageBin(
     const binPath = path.resolve(pkgDir, binEntry);
     // existsSync is false for a broken symlink, so realpathSync below only runs
     // on a target that exists.
-    if (!existsSync(binPath)) return null;
+    if (!existsSync(binPath)) {
+      trace(`pi-binary-resolve: package bin ${binPath} does not exist (broken symlink?) — skipped`);
+      return null;
+    }
     // A bin entry escaping the package directory is a hostile or broken
     // package.json — never execute it (traced so the skip is auditable).
-    // (#1038: a symlink planted inside the package is caught by the realpath check.)
     const realBin = realpathSync(binPath);
     const realPkgDir = realpathSync(pkgDir);
     if (!realBin.startsWith(realPkgDir + path.sep)) {
@@ -123,7 +128,7 @@ function defaultPackageJsonPath(): string {
 // Synchronous resolution (cached per process)
 // ---------------------------------------------------------------------------
 
-export interface SyncResolution {
+interface SyncResolution {
   path: string;
   source: PiBinSource;
   /** The executable to invoke (process.execPath when source is argv). */
@@ -201,8 +206,9 @@ export function resolvePiBinarySync(): SyncResolution {
   // 4. PATH fallback.
   // The PATH-source warning is operational, not a debug detail — a hijacked
   // or mismatched `pi` on PATH should be visible without PI_ENSEMBLE_DEBUG=1.
-  // Warned here, once per process (cachedSync guards repeats),
-  // so it is visible even if the async version probe never completes.
+  // Warned here, once per process (cachedSync guards repeats), so it is visible
+  // even if the async version probe never completes. Required at resolution time
+  // by #1038 — do not move it into the probe.
   console.warn(
     "[pi-rukas] pi-binary-resolve: WARNING — pi resolved from PATH, no integrity check performed",
   );
@@ -211,8 +217,8 @@ export function resolvePiBinarySync(): SyncResolution {
 }
 
 /**
- * Reset the process-level cache. Exported for tests only.
- * (#1038: probe state is reset by _resetPiVersionProbe in pi-version-probe.ts.)
+ * Reset the binary-resolution cache. Exported for tests only; tests that touch
+ * the probe should use _resetPiVersionProbe (pi-version-probe.ts), which resets both.
  */
 export function _resetPiBinaryCache(): void {
   cachedSync = null;
