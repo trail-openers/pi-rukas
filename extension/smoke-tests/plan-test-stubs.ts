@@ -1,3 +1,6 @@
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type { Forge } from "../src/forge.ts";
 import { setPlanVipuneSearch } from "../src/plan-draft.ts";
 /**
@@ -9,12 +12,13 @@ import { setPlanVipuneSearch } from "../src/plan-draft.ts";
  * verbatim"). A single copy lives here; both tests import it. If the
  * dispatch/forge shapes evolve, update the stub ONCE.
  */
-import { setPlanDispatch } from "../src/plan-driver.ts";
+import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
 import { setPlanForge } from "../src/plan-filing.ts";
 import { setPlanGitStateFn } from "../src/plan-investigation-cache.ts";
 import type { RegisteredPlanTool } from "../src/plan-tool.ts";
+import type { PlanDriverInput, PlanResult } from "../src/plan-types.ts";
 import type { SearchResult } from "../src/vipune.ts";
-import { vipuneSearch } from "../src/vipune.ts";
+import type { vipuneSearch } from "../src/vipune.ts";
 
 /** The gate prompts captured by installForgeStub/makeDispatchStub callers. */
 export const gatePrompts: string[] = [];
@@ -107,15 +111,21 @@ export { setPlanDispatch };
  * where the binary is fast). Pointing the seam at an empty result keeps the
  * pipeline fully offline and its output byte-deterministic (the vipune rows
  * are the "droppable tail" of the inventory; no pipeline assertion reads
- * them). Pair with installForgeStub() so the related-issues leg is stubbed too.
- *
- * #1043: it also disables the per-clone investigation cache. Without this a
- * dry run in one test file leaves an entry in the REAL `.git/pi-plan-cache`,
- * and a later confirm in another file would file that spec verbatim and skip
- * its gate. A test that exercises the cache sets its own git-state stub.
+ * them). Pair with installForgeStub() so the related-issues leg is stubbed too,
+ * and with installNoPlanCacheStub() so the per-clone investigation cache is off.
  */
 export function installOfflineVipuneStub(): void {
   setPlanVipuneSearch(async () => ({ kind: "hits", hits: [] }));
+}
+
+/**
+ * #1043: disable the per-clone investigation cache. Without this a dry run in one
+ * test file leaves an entry in the REAL `.git/pi-plan-cache`, and a later confirm
+ * in another file would file that spec verbatim and skip its gate. Every test
+ * that calls runPlanPipeline / invokePlanTool installs it explicitly. A test that
+ * exercises the cache calls newPlanCache() instead.
+ */
+export function installNoPlanCacheStub(): void {
   setPlanGitStateFn(async () => undefined);
 }
 
@@ -136,7 +146,8 @@ export function setPlanVipuneStub(
   }
   // The partial signature is safe: the inventory calls vipuneSearch with
   // (terms, searchOpts) only — no other shape ever reaches this seam.
-  setPlanVipuneSearch(((q: string, o: { cwd: string }) => fn(q, { hybrid: o.hybrid })) as unknown as typeof vipuneSearch);
+  setPlanVipuneSearch(((q: string, o: { cwd: string }) =>
+    fn(q, { hybrid: o.hybrid })) as unknown as typeof vipuneSearch);
 }
 
 /**
@@ -160,4 +171,104 @@ export async function invokePlanTool(
     details: Record<string, unknown>;
   };
   return { text: out.content[0]?.text ?? "", details: out.details ?? {} };
+}
+
+// ---------------------------------------------------------------------------
+// #1043 cache tests — the fixtures shared by test-plan-confirm-reviewed.ts and
+// test-plan-investigation-cache.ts (formerly copied into both).
+// ---------------------------------------------------------------------------
+
+export const DESC = "add a start_plan_driver tool for the plan pipeline in extension";
+export const REPO = process.cwd();
+export const GAP_HIGH =
+  "GAP: HIGH — the spec omits the rollback path — proposed resolution: add a rollback section\nVERDICT: READY";
+export const GAP_CRITICAL =
+  "GAP: CRITICAL the spec commits to both a retry cap of 3 and an infinite retry — proposed resolution: name which wins\nVERDICT: NEEDS_ITERATION";
+export const DUP_NONE = "DUPLICATE_RISK: none — no overlapping open work";
+
+/** Dispatches seen by the counting stub: explore (duplicate-risk + angles) and gate. */
+export const log = { explore: 0, gate: 0 };
+
+/**
+ * Counting dispatch for the pipeline and cache tests. `gateReply` is one reply or
+ * one per gate round (the last repeats); `dupReply` is the duplicate-risk verdict.
+ */
+export function installCountingDispatch(gateReply: string | string[], dupReply = DUP_NONE): void {
+  const replies = Array.isArray(gateReply) ? gateReply : [gateReply];
+  log.explore = 0;
+  log.gate = 0;
+  gatePrompts.length = 0;
+  setPlanDispatch(((_pi: unknown, spec: { role: string; prompt: string }) => {
+    const base = { ok: true, toolUses: [], ms: 1, exitCode: 0 };
+    if (spec.role === "adversarial-developer") {
+      gatePrompts.push(spec.prompt);
+      const text = replies[Math.min(log.gate, replies.length - 1)] ?? "";
+      log.gate++;
+      return Promise.resolve({ ...base, role: spec.role, text });
+    }
+    log.explore++;
+    if (spec.prompt.includes("DUPLICATE RISK CHECK")) {
+      return Promise.resolve({ ...base, role: "explore", text: dupReply });
+    }
+    return Promise.resolve({
+      ...base,
+      role: "explore",
+      text: "summary prose",
+      toolUses: [
+        {
+          name: "report_plan_item",
+          arguments: { kind: "acceptance-criterion", text: "the tool registers", angle: "x" },
+        },
+      ],
+    });
+  }) as never);
+}
+
+export function pipeline(input: Partial<PlanDriverInput> = {}): Promise<PlanResult> {
+  return runPlanPipeline({} as never, { descriptor: DESC, ...input }, REPO);
+}
+
+/** The per-test cache: its directory and the HEAD the git-state stub reports. */
+export const cacheState = { dir: "", head: "a".repeat(40) };
+const tmpCacheDirs: string[] = [];
+
+/** A fresh cache directory and HEAD, with the git-state stub pointing at them. */
+export async function newPlanCache(prefix = "plan-cache-"): Promise<void> {
+  cacheState.dir = await mkdtemp(path.join(os.tmpdir(), prefix));
+  tmpCacheDirs.push(cacheState.dir);
+  cacheState.head = "a".repeat(40);
+  setPlanGitStateFn(async () => ({ head: cacheState.head, cacheDir: cacheState.dir }));
+  forgeStub.created.length = 0;
+  forgeStub.mode = "ok";
+}
+
+/** Reset the seams and remove every cache directory a test created. */
+export async function teardownPlanCache(): Promise<void> {
+  setPlanGitStateFn(null);
+  setPlanDispatch(null);
+  for (const d of tmpCacheDirs) await rm(d, { recursive: true, force: true });
+}
+
+/** The lineage entry files (`*.json`) in the current cache directory. */
+export async function cacheFiles(): Promise<string[]> {
+  try {
+    return (await readdir(cacheState.dir)).filter((f) => f.endsWith(".json"));
+  } catch {
+    return [];
+  }
+}
+
+export type RawCacheEntry = {
+  createdAt: number;
+  barrier: Record<string, unknown>;
+  reviewed?: Record<string, unknown>;
+};
+
+/** Rewrite the current cache's first entry through `fn` (simulates a stale or hand-edited file). */
+export async function mutateEntry(fn: (e: RawCacheEntry) => void): Promise<void> {
+  const [f] = await cacheFiles();
+  const p = path.join(cacheState.dir, f ?? "");
+  const e = JSON.parse(await readFile(p, "utf8")) as RawCacheEntry;
+  fn(e);
+  await writeFile(p, JSON.stringify(e));
 }

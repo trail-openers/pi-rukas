@@ -12,23 +12,26 @@
  * result.
  */
 
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
-import {
-  type CacheInputs,
-  investigationCacheKey,
-  setPlanGitStateFn,
-} from "../src/plan-investigation-cache.ts";
+import { type CacheInputs, investigationCacheKey } from "../src/plan-investigation-cache.ts";
 import { type RegisteredPlanTool, registerPlanTool } from "../src/plan-tool.ts";
-import type { PlanDriverInput, PlanResult } from "../src/plan-types.ts";
 import {
+  DESC,
+  GAP_CRITICAL,
+  GAP_HIGH,
+  REPO,
+  cacheFiles,
+  cacheState,
   forgeStub,
   gatePrompts,
+  installCountingDispatch,
   installForgeStub,
   installOfflineVipuneStub,
   invokePlanTool,
+  log,
+  mutateEntry,
+  newPlanCache,
+  pipeline,
+  teardownPlanCache,
 } from "./plan-test-stubs.ts";
 
 let exit = 0;
@@ -38,98 +41,6 @@ function assert(cond: boolean, msg: string) {
     console.error(`✗ ${msg}`);
     exit = 1;
   }
-}
-
-const DESC = "add a start_plan_driver tool for the plan pipeline in extension";
-const REPO = process.cwd();
-const GAP_HIGH =
-  "GAP: HIGH — the spec omits the rollback path — proposed resolution: add a rollback section\nVERDICT: READY";
-const GAP_CRITICAL =
-  "GAP: CRITICAL the spec commits to both a retry cap of 3 and an infinite retry — proposed resolution: name which wins\nVERDICT: NEEDS_ITERATION";
-
-let head = "a".repeat(40);
-let cacheDir = "";
-const tmpDirs: string[] = [];
-let dupReply = "DUPLICATE_RISK: none — no overlapping open work";
-const log = { explore: 0, gate: 0 };
-
-async function newCache(): Promise<void> {
-  cacheDir = await mkdtemp(path.join(os.tmpdir(), "plan-inv-cache-"));
-  tmpDirs.push(cacheDir);
-  head = "a".repeat(40);
-  setPlanGitStateFn(async () => ({ head, cacheDir }));
-}
-
-async function cacheFiles(): Promise<string[]> {
-  try {
-    return (await readdir(cacheDir)).filter((f) => f.endsWith(".json"));
-  } catch {
-    return [];
-  }
-}
-
-async function mutateEntry(
-  fn: (e: { createdAt: number; barrier: Record<string, unknown> }) => void,
-) {
-  const [f] = await cacheFiles();
-  const p = path.join(cacheDir, f ?? "");
-  const e = JSON.parse(await readFile(p, "utf8"));
-  fn(e);
-  await writeFile(p, JSON.stringify(e));
-}
-
-/** Counting dispatch: every explore (duplicate-risk + angles) and gate call. */
-function installDispatch(gates: string[]) {
-  log.explore = 0;
-  log.gate = 0;
-  gatePrompts.length = 0;
-  setPlanDispatch(((_pi: unknown, spec: { role: string; prompt: string }) => {
-    if (spec.role === "adversarial-developer") {
-      gatePrompts.push(spec.prompt);
-      const text = gates[Math.min(log.gate, gates.length - 1)] ?? "";
-      log.gate++;
-      return Promise.resolve({
-        role: spec.role,
-        ok: true,
-        text,
-        toolUses: [],
-        ms: 1,
-        exitCode: 0,
-      });
-    }
-    log.explore++;
-    if (spec.prompt.includes("DUPLICATE RISK CHECK")) {
-      return Promise.resolve({
-        role: "explore",
-        ok: true,
-        text: dupReply,
-        toolUses: [],
-        ms: 1,
-        exitCode: 0,
-      });
-    }
-    return Promise.resolve({
-      role: "explore",
-      ok: true,
-      text: "summary prose",
-      toolUses: [
-        {
-          name: "report_plan_item",
-          arguments: {
-            kind: "acceptance-criterion",
-            text: "the tool registers",
-            angle: "x",
-          },
-        },
-      ],
-      ms: 1,
-      exitCode: 0,
-    });
-  }) as never);
-}
-
-function pipeline(input: Partial<PlanDriverInput> = {}): Promise<PlanResult> {
-  return runPlanPipeline({} as never, { descriptor: DESC, ...input }, REPO);
 }
 
 installOfflineVipuneStub();
@@ -155,15 +66,15 @@ installForgeStub();
 
 // ------------------------------------------------------------- hit
 
-await newCache();
-installDispatch([GAP_HIGH]);
+await newPlanCache();
+installCountingDispatch([GAP_HIGH]);
 const dry = await pipeline({ dryRun: true });
 assert(!dry.filed && !dry.filingFailure, "dry run: not filed and no filing failure");
 assert((await cacheFiles()).length === 1, "successful dry run stores one cache entry");
 assert(log.explore > 0, "dry run dispatches the investigation barrier");
 
-installDispatch([GAP_HIGH]);
-const conf = await pipeline();
+installCountingDispatch([GAP_HIGH]);
+const conf = await pipeline({ reviewedDigest: dry.reviewedDigest });
 assert(log.explore === 0, "confirming run with unchanged inputs dispatches no investigation");
 assert(log.gate === 0, "#1043: a fileable dry run's confirm dispatches no gap gate");
 assert(
@@ -177,10 +88,10 @@ assert(forgeStub.created.length >= 1, "filing still goes through the forge");
 
 // ------------------------------------------------------------- non-fileable hit: barrier reuse + gate seed
 
-await newCache();
-installDispatch([GAP_CRITICAL]);
+await newPlanCache();
+installCountingDispatch([GAP_CRITICAL]);
 await pipeline({ dryRun: true });
-installDispatch([GAP_CRITICAL]);
+installCountingDispatch([GAP_CRITICAL]);
 const nonFileable = await pipeline();
 assert(log.explore === 0, "a non-fileable dry run's confirm reuses the investigation");
 assert(log.gate >= 1, "a non-fileable dry run's confirm still runs the gap gate");
@@ -195,11 +106,11 @@ assert(
 
 // ------------------------------------------------------------- HEAD miss (+ gate seed)
 
-await newCache();
-installDispatch([GAP_HIGH]);
+await newPlanCache();
+installCountingDispatch([GAP_HIGH]);
 await pipeline({ dryRun: true });
-head = "b".repeat(40);
-installDispatch([GAP_HIGH]);
+cacheState.head = "b".repeat(40);
+installCountingDispatch([GAP_HIGH]);
 const headMiss = await pipeline();
 assert(
   log.explore > 0 && headMiss.investigationReused === undefined,
@@ -213,8 +124,8 @@ assert(
 
 // ------------------------------------------------------------- no prior run: no seed
 
-await newCache();
-installDispatch([GAP_HIGH]);
+await newPlanCache();
+installCountingDispatch([GAP_HIGH]);
 await pipeline();
 assert(
   !gatePrompts.some((p) => p.includes("ALREADY SETTLED")),
@@ -223,23 +134,23 @@ assert(
 
 // ------------------------------------------------------------- context miss
 
-await newCache();
-installDispatch([GAP_HIGH]);
+await newPlanCache();
+installCountingDispatch([GAP_HIGH]);
 await pipeline({ dryRun: true });
-installDispatch([GAP_HIGH]);
+installCountingDispatch([GAP_HIGH]);
 const ctxMiss = await pipeline({ context: "" });
 assert(
   log.explore > 0 && ctxMiss.investigationReused === undefined,
   "empty-string context misses (absent ≠ empty)",
 );
 
-await newCache();
-installDispatch([GAP_HIGH]);
+await newPlanCache();
+installCountingDispatch([GAP_HIGH]);
 await pipeline({
   dryRun: true,
   context: "Prior research: the rollback path is out of scope.",
 });
-installDispatch([GAP_HIGH]);
+installCountingDispatch([GAP_HIGH]);
 const ctxMiss2 = await pipeline({
   context: "Prior research: the rollback path is in scope.",
 });
@@ -250,10 +161,10 @@ assert(
 
 // ------------------------------------------------------------- type miss
 
-await newCache();
-installDispatch([GAP_HIGH]);
+await newPlanCache();
+installCountingDispatch([GAP_HIGH]);
 await pipeline({ dryRun: true });
-installDispatch([GAP_HIGH]);
+installCountingDispatch([GAP_HIGH]);
 const typeMiss = await pipeline({ type: "bug" });
 assert(
   log.explore > 0 && typeMiss.investigationReused === undefined,
@@ -262,13 +173,13 @@ assert(
 
 // ------------------------------------------------------------- expiry
 
-await newCache();
-installDispatch([GAP_HIGH]);
+await newPlanCache();
+installCountingDispatch([GAP_HIGH]);
 await pipeline({ dryRun: true });
 await mutateEntry((e) => {
   e.createdAt = Date.now() - 3 * 60 * 60_000;
 });
-installDispatch([GAP_HIGH]);
+installCountingDispatch([GAP_HIGH]);
 const expired = await pipeline();
 assert(
   log.explore > 0 && expired.investigationReused === undefined,
@@ -277,13 +188,13 @@ assert(
 
 // ------------------------------------------------------------- schema-drifted entry is a miss
 
-await newCache();
-installDispatch([GAP_HIGH]);
+await newPlanCache();
+installCountingDispatch([GAP_HIGH]);
 await pipeline({ dryRun: true });
 await mutateEntry((e) => {
   e.barrier.neverClaimDisclosure = undefined; // JSON drops it on write
 });
-installDispatch([GAP_HIGH]);
+installCountingDispatch([GAP_HIGH]);
 const drifted = await pipeline();
 assert(
   log.explore > 0 && drifted.investigationReused === undefined,
@@ -292,13 +203,13 @@ assert(
 
 // ------------------------------------------------------------- cached duplicate-risk HIGH halts
 
-await newCache();
-installDispatch([GAP_CRITICAL]);
+await newPlanCache();
+installCountingDispatch([GAP_CRITICAL]);
 await pipeline({ dryRun: true });
 await mutateEntry((e) => {
   e.barrier.duplicateRisk = { level: "high", rationale: "duplicates #5" };
 });
-installDispatch([GAP_HIGH]);
+installCountingDispatch([GAP_HIGH]);
 const halted = await pipeline();
 assert(
   !halted.filed && halted.filingFailure?.reason === "duplicate-risk",
@@ -308,11 +219,9 @@ assert(log.gate === 0, "a cached duplicate-risk HIGH never reaches the gap gate"
 
 // ------------------------------------------------------------- halted dry run writes nothing
 
-await newCache();
-dupReply = "DUPLICATE_RISK: high — duplicates #5 which is still open";
-installDispatch([GAP_HIGH]);
+await newPlanCache();
+installCountingDispatch([GAP_HIGH], "DUPLICATE_RISK: high — duplicates #5 which is still open");
 const haltedDry = await pipeline({ dryRun: true });
-dupReply = "DUPLICATE_RISK: none — no overlapping open work";
 assert(
   haltedDry.filingFailure?.reason === "duplicate-risk",
   "dry run halted on duplicate-risk HIGH",
@@ -330,10 +239,10 @@ assert((await cacheFiles()).length === 0, "a halted dry run writes no cache entr
     // biome-ignore lint/suspicious/noExplicitAny: minimal stub; only registerTool is used
   } as any;
   registerPlanTool(fakePi);
-  await newCache();
-  installDispatch([GAP_CRITICAL]);
+  await newPlanCache();
+  installCountingDispatch([GAP_CRITICAL]);
   await invokePlanTool(tools, { descriptor: DESC, dryRun: true });
-  installDispatch([GAP_CRITICAL]);
+  installCountingDispatch([GAP_CRITICAL]);
   const hit = await invokePlanTool(tools, { descriptor: DESC });
   assert(
     hit.text.includes("INVESTIGATION REUSED"),
@@ -347,8 +256,8 @@ assert((await cacheFiles()).length === 0, "a halted dry run writes no cache entr
     hit.details.investigationReused !== undefined,
     "a reused investigation is carried on the details",
   );
-  head = "c".repeat(40);
-  installDispatch([GAP_HIGH]);
+  cacheState.head = "c".repeat(40);
+  installCountingDispatch([GAP_HIGH]);
   const miss = await invokePlanTool(tools, { descriptor: DESC });
   assert(
     !miss.text.includes("INVESTIGATION REUSED"),
@@ -356,11 +265,24 @@ assert((await cacheFiles()).length === 0, "a halted dry run writes no cache entr
   );
 }
 
+// ------------------------------------------------------------- #1043 review: shape guard covers every dereferenced field
+
+await newPlanCache();
+installCountingDispatch([GAP_HIGH]);
+await pipeline({ dryRun: true });
+await mutateEntry((e) => {
+  e.barrier.findings = [{}]; // a finding with no name/ok/toolUses: the pipeline would crash on it
+});
+installCountingDispatch([GAP_HIGH]);
+const hollow = await pipeline();
+assert(
+  log.explore > 0 && hollow.investigationReused === undefined,
+  "a barrier finding missing its fields is a miss, and the pipeline runs",
+);
+
 // ------------------------------------------------------------- teardown
 
-setPlanGitStateFn(null);
-setPlanDispatch(null);
-for (const d of tmpDirs) await rm(d, { recursive: true, force: true });
+await teardownPlanCache();
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

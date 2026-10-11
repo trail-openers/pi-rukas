@@ -32,7 +32,7 @@ import { gapGateVerifyPrompt } from "../src/plan-gate-prompt.ts";
 import { parseDuplicateRisk } from "../src/plan-investigate.ts";
 import { registerPlanTool } from "../src/plan-tool.ts";
 import { destinationFor } from "../src/plan-writeback.ts";
-import { installOfflineVipuneStub } from "./plan-test-stubs.ts";
+import { installOfflineVipuneStub, installNoPlanCacheStub } from "./plan-test-stubs.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -45,6 +45,7 @@ function assert(cond: boolean, msg: string) {
 
 process.env.PI_ENSEMBLE_FORGE = "none";
 installOfflineVipuneStub();
+installNoPlanCacheStub();
 
 // ---------------------------------------------- C6: duplicate-risk parser
 

@@ -24,9 +24,10 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { dispatchCore } from "./dispatch.ts";
-import { fileReviewedDryRun, settlePlanCache } from "./plan-confirm.ts";
+import { confirmVerbatim, settlePlanCache } from "./plan-confirm.ts";
 import { codeIdentifiersIn, draftSpec, mechanicalInventory } from "./plan-draft.ts";
 import { allAnglesFailedHalt, correctiveRedraftError, haltResult } from "./plan-driver-halt.ts";
+import { reviewedDigestOf } from "./plan-filing-claim.ts";
 import {
   type GapGateLoopResult,
   residualGapsSection,
@@ -163,10 +164,7 @@ export async function runPlanPipeline(
   // A dry run never reads the cache: it is the thing being confirmed. The gap
   // gate is ALWAYS re-run, seeded with the prior dry run's gaps as settled.
   // #1043 — an identical confirm of a fileable dry run files its reviewed spec.
-  const confirmed =
-    !dryRun && gitState && cacheInputs
-      ? await fileReviewedDryRun(gitState.cacheDir, cacheInputs, repoRoot, finishTimings)
-      : undefined;
+  const confirmed = await confirmVerbatim(gitState, cacheInputs, input, repoRoot, finishTimings);
   if (confirmed) return confirmed;
   const reused =
     !dryRun && gitState && cacheInputs
@@ -484,6 +482,8 @@ export async function runPlanPipeline(
     filingFailure,
     failedAngles: failedAngles.length > 0 ? failedAngles : undefined,
     compacted: compacted || undefined,
+    // #1043: a fileable dry run reports the digest a verbatim filing must echo.
+    reviewedDigest: dryRun && !filingFailure ? reviewedDigestOf(title, finalBody) : undefined,
     investigationReused: reused ? { ageMs: reused.ageMs } : undefined,
     timings: finishTimings(),
   };

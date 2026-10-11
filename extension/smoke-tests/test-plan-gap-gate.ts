@@ -27,7 +27,7 @@
  */
 
 import { setPlanDispatch } from "../src/plan-driver.ts";
-import { installOfflineVipuneStub } from "./plan-test-stubs.ts";
+import { installOfflineVipuneStub, installNoPlanCacheStub } from "./plan-test-stubs.ts";
 import { setPlanForge } from "../src/plan-filing.ts";
 import { runPlanPipeline } from "../src/plan-driver.ts";
 import type { Forge } from "../src/forge.ts";
@@ -128,6 +128,7 @@ function makeDispatchStub(gateReply: string | string[]) {
 // Install the forge stub BEFORE any non-dryRun invocation.
 installForgeStub();
 installOfflineVipuneStub();
+installNoPlanCacheStub();
 
 // ----------------------------------------------- D1: cap message names the real cause
 

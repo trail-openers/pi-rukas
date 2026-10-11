@@ -22,7 +22,7 @@ import {
   bodyContainsForbiddenPhrase,
   validateDraft,
 } from "../src/plan-validate.ts";
-import { installOfflineVipuneStub } from "./plan-test-stubs.ts";
+import { installOfflineVipuneStub, installNoPlanCacheStub } from "./plan-test-stubs.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -319,6 +319,7 @@ function findingsWith(items: { kind: string; text: string }[]) {
 {
   process.env.PI_ENSEMBLE_FORGE = "none";
   installOfflineVipuneStub();
+installNoPlanCacheStub();
   let gateDispatches = 0;
   setPlanDispatch(((_pi: unknown, spec: { role: string; prompt: string }) => {
     if (spec.role === "adversarial-developer") gateDispatches++;

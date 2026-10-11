@@ -19,7 +19,8 @@
  * fileable files that spec verbatim (plan-confirm.ts) — the operator reviewed
  * exactly those bytes, so nothing is re-investigated, re-drafted or re-gated.
  * A non-fileable dry run is cached too, but only feeds the investigation reuse
- * and gate seed; it never files on its own.
+ * and gate seed; it never files on its own. The claim/commit protocol that
+ * hands a fileable entry to the forge lives in plan-filing-claim.ts.
  *
  * Staleness is keyed on git HEAD and epic depth (both change the drafted spec).
  * Uncommitted working-tree edits are NOT part of the key; the result says so
@@ -28,9 +29,10 @@
  * Storage: one file per lineage (descriptor + context + type) under the clone's
  * git common dir (`<common-dir>/pi-plan-cache/`), so it is never tracked. The
  * stored entry carries the full key; a reader accepts it only on an exact key
- * match and inside INVESTIGATION_CACHE_TTL_MS. Every failure fails open: an
- * unreadable or corrupt entry is a miss, and a failed write costs only the
- * next run's reuse — never the run itself.
+ * match, inside INVESTIGATION_CACHE_TTL_MS, and only when every field the
+ * pipeline dereferences is well-formed (a malformed entry is a miss, never a
+ * crash). Every failure fails open: an unreadable or corrupt entry is a miss,
+ * and a failed write costs only the next run's reuse — never the run itself.
  */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -148,45 +150,93 @@ export function investigationCacheKey(i: CacheInputs): string {
   return digest(["plan-investigation-v1", lineageOf(i), i.head]);
 }
 
-function entryFile(cacheDir: string, i: Omit<CacheInputs, "head">): string {
+/** The entry file for one lineage (exported for the claim protocol, plan-filing-claim.ts). */
+export function entryFile(cacheDir: string, i: Omit<CacheInputs, "head">): string {
   return path.join(cacheDir, `${lineageOf(i)}.json`);
 }
 
-function isEntry(x: unknown): x is InvestigationCacheEntry {
-  if (!x || typeof x !== "object") return false;
-  const e = x as Partial<InvestigationCacheEntry>;
-  return (
-    typeof e.key === "string" &&
-    typeof e.createdAt === "number" &&
-    !!e.inventory &&
-    typeof e.inventory === "object" &&
-    !!e.barrier &&
-    Array.isArray(e.barrier.findings) &&
-    Array.isArray(e.barrier.neverClaimDisclosure) &&
-    (e.barrier.duplicateRisk === undefined ||
-      (typeof e.barrier.duplicateRisk === "object" &&
-        typeof e.barrier.duplicateRisk.level === "string" &&
-        typeof e.barrier.duplicateRisk.rationale === "string")) &&
-    Array.isArray(e.gaps) &&
-    isReviewed(e.reviewed)
-  );
-}
+// ---------------------------------------------------------------------------
+// Entry guard. Validates every field the pipeline dereferences from a cached
+// entry (the barrier's findings and their tool uses, the gaps, the inventory,
+// the reviewed spec and its facts), so a malformed or hand-edited entry is a
+// miss rather than a crash deep inside drafting or filing.
+// ---------------------------------------------------------------------------
 
-function isReviewed(x: unknown): x is ReviewedDryRun {
-  if (!x || typeof x !== "object") return false;
-  const r = x as Partial<ReviewedDryRun>;
+const isObj = (x: unknown): x is Record<string, unknown> => !!x && typeof x === "object";
+const isStr = (x: unknown): x is string => typeof x === "string";
+const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
+
+const isToolUse = (x: unknown): boolean =>
+  isObj(x) && isStr(x.kind) && isStr(x.text) && isStr(x.angle);
+
+const isFinding = (x: unknown): boolean =>
+  isObj(x) &&
+  isStr(x.name) &&
+  typeof x.ok === "boolean" &&
+  isStr(x.text) &&
+  Array.isArray(x.toolUses) &&
+  x.toolUses.every(isToolUse) &&
+  (x.failure === undefined || isStr(x.failure));
+
+const isGap = (x: unknown): boolean =>
+  isObj(x) &&
+  SEVERITIES.includes(x.severity as string) &&
+  isStr(x.description) &&
+  isStr(x.resolution);
+
+const isFact = (x: unknown): boolean => isObj(x) && isStr(x.source) && isStr(x.fact);
+
+const isInventory = (x: unknown): boolean =>
+  isObj(x) &&
+  Array.isArray(x.memory) &&
+  x.memory.every((m) => isObj(m) && isStr(m.content)) &&
+  Array.isArray(x.related) &&
+  x.related.every(
+    (r) => isObj(r) && typeof r.number === "number" && isStr(r.title) && isStr(r.state),
+  ) &&
+  Array.isArray(x.errors) &&
+  x.errors.every(isStr);
+
+const isBarrier = (x: unknown): boolean =>
+  isObj(x) &&
+  Array.isArray(x.findings) &&
+  x.findings.every(isFinding) &&
+  Array.isArray(x.neverClaimDisclosure) &&
+  x.neverClaimDisclosure.every(isStr) &&
+  (x.duplicateRisk === undefined ||
+    (isObj(x.duplicateRisk) && isStr(x.duplicateRisk.level) && isStr(x.duplicateRisk.rationale)));
+
+const isReviewed = (x: unknown): boolean => {
+  if (!isObj(x)) return false;
+  const { fileable, title, spec, priorContext, failedAngles } = x;
   return (
-    typeof r.fileable === "boolean" &&
-    typeof r.title === "string" &&
-    typeof r.spec === "string" &&
-    Array.isArray(r.priorContext) &&
-    (r.failedAngles === undefined || Array.isArray(r.failedAngles)) &&
+    typeof fileable === "boolean" &&
+    isStr(title) &&
+    isStr(spec) &&
+    Array.isArray(priorContext) &&
+    priorContext.every(isFact) &&
+    (failedAngles === undefined ||
+      (Array.isArray(failedAngles) &&
+        failedAngles.every((a) => isObj(a) && isStr(a.name) && isStr(a.detail)))) &&
     // A fileable entry must carry something to file.
-    (!r.fileable || (r.title.trim().length > 0 && r.spec.trim().length > 0))
+    (!fileable || (title.trim().length > 0 && spec.trim().length > 0))
+  );
+};
+
+function isEntry(x: unknown): x is InvestigationCacheEntry {
+  if (!isObj(x)) return false;
+  return (
+    isStr(x.key) &&
+    typeof x.createdAt === "number" &&
+    isInventory(x.inventory) &&
+    isBarrier(x.barrier) &&
+    Array.isArray(x.gaps) &&
+    x.gaps.every(isGap) &&
+    isReviewed(x.reviewed)
   );
 }
 
-async function readEntryAt(file: string): Promise<InvestigationCacheEntry | undefined> {
+export async function readEntryAt(file: string): Promise<InvestigationCacheEntry | undefined> {
   try {
     const parsed: unknown = JSON.parse(await fs.readFile(file, "utf8"));
     return isEntry(parsed) ? parsed : undefined;
@@ -216,113 +266,6 @@ export async function readInvestigationCache(
   const ageMs = now - entry.createdAt;
   if (ageMs < 0 || ageMs > INVESTIGATION_CACHE_TTL_MS) return undefined;
   return { cached: entry, ageMs };
-}
-
-/** A FILEABLE dry run this call holds exclusively until it commits or releases it. */
-export interface ClaimedDryRun {
-  reviewed: ReviewedDryRun;
-  gaps: PlanGap[];
-  ageMs: number;
-  /**
-   * Filing succeeded: leave a short-lived filed-marker (so a concurrent identical
-   * confirm is refused, not re-run) and drop the claim.
-   */
-  commit(url: string): Promise<void>;
-  /** Filing failed: the entry is restored so a retry can file the same bytes. */
-  release(): Promise<void>;
-}
-
-/** Filed-marker path for an entry file (`<lineage>.filed`, not `.json`, so readers skip it). */
-const markerOf = (file: string): string => file.replace(/\.json$/, ".filed");
-
-/**
- * Put a claimed entry back. `link` never overwrites: a fresher dry run that
- * wrote the entry while this claim was held wins, and the older bytes are dropped.
- */
-async function restoreClaim(claim: string, file: string): Promise<void> {
-  await fs.link(claim, file).catch(() => undefined);
-  await fs.rm(claim, { force: true }).catch(() => undefined);
-}
-
-/**
- * Claim the reviewed spec of a FILEABLE dry run whose inputs and HEAD match,
- * inside the expiry. The claim is an atomic rename of the entry file, so of N
- * concurrent identical confirms exactly one gets it; the rest get undefined.
- * A crash after the claim drops the entry without filing — at-most-once, never
- * a second copy. Undefined for a miss, a non-fileable entry, or a malformed one.
- */
-export async function claimFileableDryRun(
-  cacheDir: string,
-  inputs: CacheInputs,
-  now: number = Date.now(),
-): Promise<ClaimedDryRun | undefined> {
-  const file = entryFile(cacheDir, inputs);
-  const claim = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.claim`;
-  try {
-    await fs.rename(file, claim);
-  } catch {
-    return undefined;
-  }
-  // rename keeps the entry's own mtime (the dry run's write time). Stamp the claim
-  // now, so its freshness is the claim's age — not the dry run's — for a racing
-  // identical confirm (concurrentFilingOf) and for the sweep.
-  await fs.utimes(claim, now / 1000, now / 1000).catch(() => undefined);
-  const entry = await readEntryAt(claim);
-  const ageMs = entry ? now - entry.createdAt : -1;
-  if (
-    !entry ||
-    !entry.reviewed.fileable ||
-    entry.key !== investigationCacheKey(inputs) ||
-    ageMs < 0 ||
-    ageMs > INVESTIGATION_CACHE_TTL_MS
-  ) {
-    await restoreClaim(claim, file);
-    return undefined;
-  }
-  return {
-    reviewed: entry.reviewed,
-    gaps: entry.gaps,
-    ageMs,
-    commit: async (url) => {
-      // Marker first: there is never a moment with neither claim nor marker.
-      await fs.writeFile(markerOf(file), JSON.stringify({ at: Date.now(), url })).catch(() => {});
-      await fs.rm(claim, { force: true }).catch(() => undefined);
-    },
-    release: () => restoreClaim(claim, file),
-  };
-}
-
-/**
- * Whether an identical confirm is already filing this lineage, or filed it a
- * moment ago. A caller whose claim missed must consult this before running the
- * full pipeline: a miss there re-investigates and can file a second issue while
- * the first is still in flight. Undefined for a plain miss.
- */
-export async function concurrentFilingOf(
-  cacheDir: string,
-  inputs: CacheInputs,
-  now: number = Date.now(),
-): Promise<{ url?: string } | undefined> {
-  const file = entryFile(cacheDir, inputs);
-  const marker = await fs
-    .readFile(markerOf(file), "utf8")
-    .then((t) => JSON.parse(t) as { at?: unknown; url?: unknown })
-    .catch(() => undefined);
-  if (
-    marker &&
-    typeof marker.at === "number" &&
-    Math.abs(now - marker.at) <= RECENT_FILING_WINDOW_MS
-  ) {
-    return { url: typeof marker.url === "string" ? marker.url : undefined };
-  }
-  const prefix = `${path.basename(file)}.`;
-  const names = await fs.readdir(cacheDir).catch(() => [] as string[]);
-  for (const name of names) {
-    if (!name.startsWith(prefix) || !name.endsWith(".claim")) continue;
-    const st = await fs.stat(path.join(cacheDir, name)).catch(() => undefined);
-    if (st && now - st.mtimeMs <= RECENT_FILING_WINDOW_MS) return {};
-  }
-  return undefined;
 }
 
 /**

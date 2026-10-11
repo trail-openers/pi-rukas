@@ -12,7 +12,8 @@ import { setPlanDispatch } from "../src/plan-driver.ts";
 import { registerPlanTool, type RegisteredPlanTool } from "../src/plan-tool.ts";
 import { type PlanType, classifyPlanType } from "../src/plan-types.ts";
 import type { DispatchResult } from "../src/types.ts";
-import { calls, gatePrompts, invokePlanTool } from "./plan-test-stubs.ts";
+import { calls, gatePrompts, invokePlanTool, installNoPlanCacheStub } from "./plan-test-stubs.ts";
+installNoPlanCacheStub();
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

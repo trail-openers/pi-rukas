@@ -61,7 +61,7 @@ export function registerPlanTool(pi: ExtensionAPI) {
     name: "start_plan_driver",
     label: "Start /plan Driver",
     description:
-      "Run the compiled /plan pipeline (classify → inventory → type-specialised investigation → draft → adversarial gap gate → file) and file the resulting GitHub issue. This is the ONLY way to create a GitHub issue: direct `gh issue create` (and `gh api` POST to the issues collection) is structurally refused for every role in every mode — the refusal names this tool. Call with dryRun:true FIRST to return { spec, gaps, priorContext, filed:false } without filing; show the spec + gap dispositions to the operator, and on their confirmation re-call with dryRun omitted to file. The result includes issueUrl on success. An identical confirm (same descriptor, context, type and git HEAD, within 2 hours of that dry run) whose dry run was fileable (no unresolved CRITICAL gap, gate ran) files the REVIEWED dry-run spec VERBATIM — the exact body the operator saw — with no investigation, drafting or gap gate, and the result says FILED FROM REVIEWED DRY RUN. Any changed input, a moved HEAD, or an expired entry runs the full pipeline; so does a confirm after a non-fileable dry run (it reuses the investigation and re-runs the gate). There is no way to force a re-review of an identical confirm: change an input, or wait for the expiry. Epic sub-issues at depth >= 3 get a minimal body with a depth-limit note. Gap gate: runs for bug/feature/epic; chore/spike get deterministic validation only. A too-thin descriptor (below the word floor, no code identifier, no context) returns needs-clarification questions without dispatching anything — answer them and re-call. Non-resumable: a failed run is re-run, not resumed.",
+      "Run the compiled /plan pipeline (classify → inventory → type-specialised investigation → draft → adversarial gap gate → file) and file the resulting GitHub issue. This is the ONLY way to create a GitHub issue: direct `gh issue create` (and `gh api` POST to the issues collection) is structurally refused for every role in every mode — the refusal names this tool. Call with dryRun:true FIRST to return { spec, gaps, priorContext, filed:false } without filing; show the spec + gap dispositions to the operator, and on their confirmation re-call with dryRun omitted to file. The result includes issueUrl on success. A dry run reports a reviewedDigest; re-calling with identical inputs (same descriptor, context, type and git HEAD, within 2 hours) and that digest files the reviewed spec VERBATIM, with no investigation, drafting or gap gate (the result says FILED FROM REVIEWED DRY RUN). Any other call — a changed input, a missing or wrong digest, an expired or non-fileable dry run — runs the full pipeline, which reuses the investigation and re-runs the gate. Epic sub-issues at depth >= 3 get a minimal body with a depth-limit note. Gap gate: runs for bug/feature/epic; chore/spike get deterministic validation only. A too-thin descriptor (below the word floor, no code identifier, no context) returns needs-clarification questions without dispatching anything — answer them and re-call. Non-resumable: a failed run is re-run, not resumed.",
     parameters: Type.Object({
       descriptor: Type.String({
         description: "Ticket descriptor — one or two sentences describing the intended change.",
@@ -93,6 +93,12 @@ export function registerPlanTool(pi: ExtensionAPI) {
             "Return the structured spec + gap dispositions WITHOUT filing. Call first; on operator confirmation, re-call with dryRun omitted.",
         }),
       ),
+      reviewedDigest: Type.Optional(
+        Type.String({
+          description:
+            "The reviewedDigest a dry run reported. Echo it on the confirming call to file that exact reviewed spec verbatim; without it, or on a mismatch, the full pipeline runs.",
+        }),
+      ),
     }),
     async execute(_id, raw, _signal, _onUpdate, ctx: ExtensionContext) {
       const params = raw as {
@@ -100,6 +106,7 @@ export function registerPlanTool(pi: ExtensionAPI) {
         type?: "bug" | "feature" | "epic" | "chore" | "spike";
         context?: string;
         dryRun?: boolean;
+        reviewedDigest?: string;
       };
       if (!params.descriptor || params.descriptor.trim().length === 0) {
         return {
@@ -148,7 +155,9 @@ function renderPlanResult(r: PlanResult, dryRun: boolean): string {
   const head = halted
     ? `PLAN ${dryRun ? "DRY-RUN — " : ""}NOT FILEABLE AS-IS (${r.filingFailure?.reason}). Nothing was filed${dryRun ? ", and re-calling without dryRun would NOT file this spec either" : ""} — see the FILING STATUS section below before showing this to the operator.`
     : dryRun
-      ? "PLAN DRY-RUN (nothing filed). Show this spec to the operator; on their confirmation re-call start_plan_driver with dryRun omitted to file."
+      ? r.reviewedDigest
+        ? `PLAN DRY-RUN (nothing filed). Show this spec to the operator. reviewedDigest: ${r.reviewedDigest} — on their confirmation re-call start_plan_driver with dryRun omitted and reviewedDigest: "${r.reviewedDigest}" to file this exact spec verbatim.`
+        : "PLAN DRY-RUN (nothing filed). Show this spec to the operator; on their confirmation re-call start_plan_driver with dryRun omitted to file."
       : r.filed
         ? r.filedFromDryRun
           ? `PLAN FILED FROM REVIEWED DRY RUN (age ${fmtMs(r.filedFromDryRun.ageMs)}) — ${r.issueUrl}. The spec below is the dry run's reviewed body, filed verbatim: no investigation, drafting or gap gate ran. NOT re-checked: the duplicate-risk check against live forge state, and the NEVER CLAIM directives.`
@@ -298,6 +307,7 @@ function resultDetails(r: PlanResult, dryRun: boolean): Record<string, unknown> 
   if (r.failedAngles) d.failedAngles = r.failedAngles;
   if (r.compacted) d.compacted = true;
   if (r.investigationReused) d.investigationReused = r.investigationReused;
+  if (r.reviewedDigest) d.reviewedDigest = r.reviewedDigest;
   if (r.filedFromDryRun) d.filedFromDryRun = r.filedFromDryRun;
   if (r.timings) d.timings = r.timings;
   return d;

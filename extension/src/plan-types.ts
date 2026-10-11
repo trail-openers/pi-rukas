@@ -133,6 +133,8 @@ export interface PlanResult {
    * dry run's age.
    */
   filedFromDryRun?: { ageMs: number };
+  /** #1043: on a fileable dry run, the digest of its title + body (see plan-filing-claim.ts). */
+  reviewedDigest?: string;
   /** True when the body was compacted to fit the forge's 65,536-char limit. */
   compacted?: boolean;
   /** Per-phase wall-clock durations, always present on a completed run. */
@@ -144,6 +146,11 @@ export interface PlanDriverInput {
   type?: PlanType;
   context?: string;
   dryRun?: boolean;
+  /**
+   * #1043: the digest a dry run reported. A confirm that echoes it files the
+   * reviewed spec verbatim, but only when the cached title + body still hash to it.
+   */
+  reviewedDigest?: string;
   /** Internal: epic recursion depth. Never agent-settable. */
   depth?: number;
 }

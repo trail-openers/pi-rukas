@@ -32,7 +32,8 @@ import { codeIdentifiersIn, draftSpec } from "../src/plan-draft.ts";
 import { setPlanDispatch } from "../src/plan-driver.ts";
 import { registerPlanTool, type RegisteredPlanTool } from "../src/plan-tool.ts";
 import { classifyPlanType } from "../src/plan-types.ts";
-import { calls, gatePrompts, invokePlanTool, setPlanVipuneStub } from "./plan-test-stubs.ts";
+import { calls, gatePrompts, invokePlanTool, setPlanVipuneStub, installNoPlanCacheStub } from "./plan-test-stubs.ts";
+installNoPlanCacheStub();
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -63,7 +64,7 @@ registerPlanTool(fakePi);
   assert(!!t, "start_plan_driver registers");
   const props = Object.keys(t?.parameters.properties ?? {});
   assert(
-    props.join(",") === "descriptor,type,context,dryRun",
+    props.join(",") === "descriptor,type,context,dryRun,reviewedDigest",
     `exact TypeBox schema: ${props.join(", ")}`,
   );
   const typeUnion = (t?.parameters.properties?.type as { anyOf?: Array<{ const?: string }> })?.anyOf;

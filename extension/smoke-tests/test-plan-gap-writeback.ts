@@ -16,7 +16,6 @@
  * Single-round corrective shape only (GAP_GATE_MAX_ITERATIONS = 2). Seam
  * wiring lives in the shared plan-test-stubs.ts.
  */
-
 import { draftSpec } from "../src/plan-draft.ts";
 import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
 import { GAP_RESOLUTION_PLACEHOLDER } from "../src/plan-gaps.ts";
@@ -27,7 +26,7 @@ import {
   markWrittenDecisions,
   renderOpenQuestions,
 } from "../src/plan-writeback.ts";
-import { forgeStub, gatePrompts, installForgeStub, installOfflineVipuneStub, makeDispatchStub } from "./plan-test-stubs.ts";
+import { forgeStub, gatePrompts, installForgeStub, installOfflineVipuneStub, installNoPlanCacheStub, makeDispatchStub } from "./plan-test-stubs.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -40,6 +39,7 @@ function assert(cond: boolean, msg: string) {
 
 installForgeStub();
 installOfflineVipuneStub();
+installNoPlanCacheStub();
 
 const DESCRIPTOR = "add a start_plan_driver tool for the plan pipeline in extension";
 
