@@ -179,7 +179,7 @@ export function fixRequestEvents(
       at,
       workstreamId: o.id,
       round: o.records[0]?.round ?? 0,
-      findings: (o.fixFindings ?? "").slice(0, FIX_FINDINGS_MAX),
+      findings: capWithMarker(o.fixFindings ?? "", FIX_FINDINGS_MAX),
     }));
 }
 
@@ -254,10 +254,7 @@ function withFixPassReport(
   now: number,
 ): WorkState {
   const rounds = pending.map((p) => `${p.workstreamId} round ${p.round}`).join(", ");
-  const findings = pending
-    .map((p) => p.findings)
-    .join("\n---\n")
-    .slice(0, FIX_FINDINGS_MAX);
+  const findings = capWithMarker(pending.map((p) => p.findings).join("\n---\n"), FIX_FINDINGS_MAX);
   return {
     ...state,
     pipelineState: {

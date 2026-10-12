@@ -5,7 +5,7 @@
  * dropped, so one long sibling cannot silence the others and no cut is silent.
  */
 
-import { withParsedSiblings } from "../src/work-driver-adversarial-fix.ts";
+import { fixRequestEvents, withParsedSiblings } from "../src/work-driver-adversarial-fix.ts";
 import type { AdversarialOutcome } from "../src/work-driver-adversarial-types.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 
@@ -59,6 +59,17 @@ const short = withParsedSiblings(
 assert(
   !(short.pipelineState.plumbReports?.[0]?.body ?? "").includes("[truncated"),
   "C: an uncut finding carries no truncation marker",
+);
+
+// D: the fix request handed to develop is cut with the same explicit marker, never silently.
+const routed = fixRequestEvents(
+  [{ id: "a", fixRequested: true, fixFindings: long, records: [{ round: 1 }] }],
+  1,
+);
+const routedText = routed[0]?.kind === "adversarial-fix-requested" ? routed[0].findings : "";
+assert(
+  routedText.endsWith("[truncated: 6 chars omitted]") && !routedText.includes("TAIL-A"),
+  "D: a long fix request is cut at the cap with an explicit truncation marker",
 );
 
 console.log(`\nexit ${exit}`);
