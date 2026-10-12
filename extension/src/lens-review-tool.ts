@@ -56,7 +56,7 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
       full: Type.Optional(
         Type.Boolean({
           description:
-            "#973 — force a full review: the automatic delta base (the latest lens ledger entry's headSha) is not consulted. An explicit `since` still wins when given. An explicit base + head (with no `since`) is ALWAYS a full review — the automatic delta base only applies to a bare branch/cwd review.",
+            "#973 — force a full review: the automatic delta base (the latest lens ledger entry's headSha) is not consulted. An explicit `since` still wins when given. An explicit base + head (with no `since`) is not forced to a full review: base + head define the context range, and the automatic delta base still applies when a branch resolves.",
         }),
       ),
       pr: Type.Optional(
