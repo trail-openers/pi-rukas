@@ -9,17 +9,24 @@
  * bash command that names the script, in every mode, the way the issue-creation
  * guard refuses `gh issue create`.
  *
- * The raw command is scanned, not the quote-stripped one: a quoted path is still
- * a path that runs the script, and a false positive on `echo review-accept` is a
- * cheap price for not being bypassable with quotes.
+ * A match requires an invocation shape: a JS runner (bun/bunx/tsx/node/npx)
+ * directly before the script, or a `/review-accept` path. A bare word in prose —
+ * a commit message or PR body naming the feature — is not an invocation and is
+ * left alone. The raw command is scanned, not the quote-stripped one, so quoting
+ * the path does not hide it.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { trace } from "./trace.ts";
 
-/** The matched script name when a command runs review-accept, else undefined. */
+const RUNNER_INVOCATION =
+  /\b(?:bun|bunx|tsx|node|npx|ts-node)\s+(?:run\s+)?(?:--?\S+\s+)*["'`]?(?:[^\s"'`;&|]*\/)?review-accept(?:\.ts)?(?=[\s'"`;&|]|$)/;
+const SCRIPT_PATH = /\/review-accept(?:\.ts)?(?=[\s'"`;&|]|$)/;
+
+/** The matched invocation when a command runs review-accept, else undefined. */
 export function runsReviewAccept(command: string): string | undefined {
-  return /(?:^|[\s;&|/'"`(])review-accept(?:\.ts)?(?=[\s'"`);&|]|$)/.exec(command)?.[0].trim();
+  const m = RUNNER_INVOCATION.exec(command) ?? SCRIPT_PATH.exec(command);
+  return m?.[0].trim();
 }
 
 export function registerReviewAcceptGuard(pi: ExtensionAPI): void {
