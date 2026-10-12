@@ -182,11 +182,13 @@ try {
   // #750 regression 4 — a restore that CANNOT restore the root fails loudly.
   {
     const { verifiedRestoreRoot } = await import("../src/work-driver-restore.ts");
-    const failingExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-      if (/git reset --hard/.test(cmd)) {
+    const failingExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
+      // Argv calls (#1093) are matched as the joined command line.
+      const line = o?.argv ? [cmd, ...o.argv].join(" ") : cmd;
+      if (/git reset --hard/.test(line)) {
         throw new Error("fatal: cannot update ref (refusing destructive reset)");
       }
-      if (/git status --porcelain/.test(cmd)) {
+      if (/git status --porcelain/.test(line)) {
         return { stdout: "UU src/broken.ts\n?? note.txt\n" };
       }
       return { stdout: "" };

@@ -26,6 +26,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "./trace.ts";
 import { classifyFailureCause } from "./work-driver-failure-taxonomy.ts";
+import { captureInvocationStartRef } from "./work-driver-git.ts";
 import type { GroupingResult } from "./work-driver-grouping.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
 import {
@@ -33,14 +34,10 @@ import {
   mergeHoldAction,
   mergeHoldGrantAction,
 } from "./work-driver-merge-authority.ts";
-import { processAlive } from "./work-driver-resume.ts";
 import { notify } from "./work-notify.ts";
 import { groupPathsOverlap } from "./work-queue-overlap.ts";
-import {
-  deferredLeftoverAction,
-  deferredLeftoverPath,
-  deferredLeftoverStep,
-} from "./work-queue-parks.ts";
+import { parkReason } from "./work-queue-park-reason.ts";
+import { deferredLeftoverAction } from "./work-queue-parks.ts";
 import { mergeQueueSummaryEntries } from "./work-queue-summary.ts";
 // #753 (six-lens FIX 5) — the renderer moved to work-queue-render.ts to keep
 // this module under the 500-line cap; re-exported so importers keep working.
@@ -138,66 +135,6 @@ export function isSystemicFailure(state: WorkState | undefined): {
 }
 
 /**
- * Is the process that owns this state file still alive?
- *
- * `processAlive` treats an EPERM as alive (the pid exists, owned by another
- * user), which is the safe direction here: mistaking a live cycle for a
- * corpse is what produced the `--restart` advice that would race two drivers
- * on one issue.
- */
-function ownerAlive(state: WorkState): boolean {
-  const pid = state.owner?.pid;
-  return typeof pid === "number" && processAlive(pid);
-}
-
-function parkReason(state: WorkState | undefined): { reason: string; failedStep?: string } {
-  if (!state) return { reason: "cycle produced no state file" };
-  // A `running` status with a live owner is not a park — it is a cycle in
-  // flight. Reporting its most recent cap-hit as a terminal reason told the
-  // operator a live cycle had failed, and recommended `--restart`.
-  if (state.pipelineState.status === "running" && ownerAlive(state)) {
-    return { reason: "still running — this is not a terminal state" };
-  }
-  const cap = [...state.eventLog].reverse().find((e) => e.kind === "cap-hit");
-  // `lastCompletedStep` is the last step that SUCCEEDED, so reporting it as
-  // the failure point names the wrong step. The halt-cascade stamps the real
-  // step into the cap (`step-failed:<step>`); prefer that when present. The
-  // #753 deferred-creation park has no `step-failed:` prefix by design (it is
-  // a deliberate park, not a dispatch failure), so map its step explicitly —
-  // the fallback would name `branch` (the last step that succeeded) instead
-  // of the dependent phase of develop where the refusal actually happened.
-  const capStep =
-    cap?.kind === "cap-hit"
-      ? cap.cap.startsWith("step-failed:")
-        ? cap.cap.slice("step-failed:".length)
-        : cap.cap === "deferred-creation:develop"
-          ? deferredLeftoverStep()
-          : undefined
-      : undefined;
-  const step = capStep ?? state.pipelineState.lastCompletedStep ?? state.pipelineState.currentStep;
-  if (cap?.kind === "cap-hit") {
-    // Carry the specific reason so humanActionFor can be specific rather
-    // than saying "cap intent-park". #380: the merge hold carries the PR
-    // number and whether authority was the blocker.
-    let suffix = "";
-    if (cap.cap === "intent-park" && state.pipelineState.normalisedSpec?.parkReason) {
-      suffix = `:${state.pipelineState.normalisedSpec.parkReason}`;
-    } else if (cap.cap === "awaiting-human-merge") {
-      const granted = state.pipelineState.mergeHold?.authorityGranted ? "granted" : "no-authority";
-      suffix = `:${granted}:pr${state.pipelineState.prNumber ?? 0}`;
-      if (state.pipelineState.mergeHold?.evidenceFailureKind === "tooling") suffix += ":tooling";
-    } else if (cap.cap === "deferred-creation:develop") {
-      // #753 — name the leftover on the reason so the queue action can
-      // point at the exact path (salvage-before-rerun, never --restart).
-      const path = deferredLeftoverPath(state);
-      if (path) suffix = `:${path}`;
-    }
-    return { reason: `cap ${cap.cap}${suffix}`, failedStep: step };
-  }
-  return { reason: `cycle ended as ${state.pipelineState.status}`, failedStep: step };
-}
-
-/**
  * Human action for a parked group. The SRE rule is that a notification must
  * name what the human should do that the system cannot do itself; "it failed"
  * is not that. If we cannot name an action, we say so plainly rather than
@@ -272,7 +209,11 @@ export interface RunQueueOpts {
    * The queue MUST NOT read a state file as this group's outcome in that
    * case: the file on disk belongs to whatever cycle is actually running.
    */
-  runGroup: (primary: number, issues: number[] | undefined) => Promise<GroupOutcome>;
+  runGroup: (
+    primary: number,
+    issues: number[] | undefined,
+    invocationStartRef: string | undefined,
+  ) => Promise<GroupOutcome>;
   /** Groups to run at once. Defaults to 1 (strictly sequential). */
   concurrency?: number;
   readStateFn?: (repoRoot: string, issue: number) => Promise<WorkState | undefined>;
@@ -294,6 +235,10 @@ export async function runWorkQueue(opts: RunQueueOpts): Promise<QueueSummary> {
   const claimed = new Set<string>();
   let cursor = 0;
   let halted = false;
+  // #1093 — the operator's checkout, read ONCE before any group starts. A group
+  // that leaves repoRoot on its own branch (a failed restore) must not become
+  // a sibling's start ref, so every group stamps this value, not a re-read.
+  const invocationStartRef = await captureInvocationStartRef(opts.repoRoot);
   const cap = Math.max(1, Math.min(opts.concurrency ?? 1, groups.length || 1));
   /**
    * One worker: claim the next unclaimed group, run it to completion, repeat.
@@ -358,7 +303,11 @@ export async function runWorkQueue(opts: RunQueueOpts): Promise<QueueSummary> {
       let threw: Error | undefined;
       let outcome: GroupOutcome | undefined;
       try {
-        outcome = await opts.runGroup(primary, g.issues.length > 1 ? g.issues : undefined);
+        outcome = await opts.runGroup(
+          primary,
+          g.issues.length > 1 ? g.issues : undefined,
+          invocationStartRef,
+        );
       } catch (err) {
         threw = err as Error;
       } finally {

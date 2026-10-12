@@ -44,7 +44,8 @@ function mkExec(
   o: Record<string, { stdout?: string; stderr?: string; error?: boolean }> = {},
 ): MockExec {
   const calls: string[] = [];
-  const fn: VerifyExecFn = async (cmd) => {
+  const fn: VerifyExecFn = async (rawCmd, opts) => {
+    const cmd = opts?.argv ? [rawCmd, ...opts.argv].join(" ") : rawCmd;
     calls.push(cmd);
     for (const [k, v] of Object.entries(o)) {
       if (cmd.includes(k)) {
@@ -198,15 +199,15 @@ setupSpawnGuard();
     "git pull": { stdout: "" },
     "git branch -d": { stdout: "" },
   });
-  await restoreCheckout("/fake", "main", "feature/issue-100", fn);
+  await restoreCheckout({ repoRoot: "/fake", mainline: "main", mergedBranch: "feature/issue-100", execFn: fn });
   const pfx = calls.map((c) => c.split(" ").slice(0, 2).join(" "));
   assert(
     JSON.stringify(pfx) ===
-      JSON.stringify(["git fetch", "git rev-parse", "git checkout", "git pull", "git branch"]),
-    "restoreCheckout: 5-step sequence (fetch→rev-parse→checkout→pull→branch -d)",
+      JSON.stringify(["git fetch", "git checkout", "git status", "git pull", "git check-ref-format", "git branch"]),
+    "restoreCheckout: fetch→checkout→status→pull→validate→branch -d (branch validated once, before -d)",
   );
   assert(
-    calls[4]?.includes("git branch -d") && calls[4]?.includes("feature/issue-100"),
+    calls[calls.length - 1]?.includes("git branch -d") && calls[calls.length - 1]?.includes("feature/issue-100"),
     "restoreCheckout: step 5 uses lowercase -d",
   );
 }
@@ -218,9 +219,9 @@ setupSpawnGuard();
     "git pull": { stdout: "" },
     "git branch -d": { error: true, stderr: "not fully merged" },
   });
-  const notes = await restoreCheckout("/fake", "main", "feature/issue-100", fn);
+  const notes = await restoreCheckout({ repoRoot: "/fake", mainline: "main", mergedBranch: "feature/issue-100", execFn: fn });
   assert(
-    notes.length > 0 && notes[0]?.includes("branch -d"),
+    notes.some((n) => n.includes("branch -d")),
     "restoreCheckout: branch -d refusal → note, not fatal",
   );
 }
@@ -230,10 +231,10 @@ setupSpawnGuard();
     "git rev-parse": { stdout: "main\n" },
     "git pull": { stdout: "" },
   });
-  await restoreCheckout("/fake", "main", "feature/issue-100", fn);
+  await restoreCheckout({ repoRoot: "/fake", mainline: "main", mergedBranch: "feature/issue-100", execFn: fn });
   assert(
-    !calls.some((c) => c.includes("git checkout")),
-    "restoreCheckout: skips checkout when already on mainline",
+    calls.some((c) => c === "git checkout main --"),
+    "restoreCheckout: checks out the target even when already on it",
   );
 }
 
@@ -257,6 +258,9 @@ setupSpawnGuard();
   try {
     const calls: string[] = [];
     const base = mkExec({
+      // The mainline probe (#1093: a validated ref) must get the branch name;
+      // the broader "gh repo view" key below answers the repo-settings query.
+      "gh repo view --json defaultBranchRef": { stdout: "main\n" },
       "gh repo view": {
         stdout: '{"squashMergeAllowed":true,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}',
       },
@@ -265,6 +269,8 @@ setupSpawnGuard();
       "gh pr view": { stdout: "MERGED\n" },
       "git fetch": { stdout: "" },
       "git rev-parse": { stdout: "feature/issue-476\n" },
+      "git check-ref-format": { stdout: "" },
+      "git status": { stdout: "" },
       "git checkout": { stdout: "" },
       "git pull": { stdout: "" },
       // The refusal is the point: a failed `branch -d` must become a
@@ -275,12 +281,14 @@ setupSpawnGuard();
     // recorded, and any command the fakes above do not cover would touch
     // the outside world in production — throw instead.
     const recorder: VerifyExecFn = async (cmd, opts) => {
-      calls.push(cmd);
+      // Argv calls (#1093) are recorded as the joined command line.
+      const line = opts?.argv ? [cmd, ...opts.argv].join(" ") : cmd;
+      calls.push(line);
       try {
         return await base.fn(cmd, opts);
       } catch (err) {
-        if (cmd.includes("git branch -d")) throw err;
-        throw new Error(`offline test: unmocked command: ${cmd}`);
+        if (line.includes("git branch -d")) throw err;
+        throw new Error(`offline test: unmocked command: ${line}`);
       }
     };
 

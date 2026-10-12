@@ -43,24 +43,27 @@
  * worktrees because the work is not (yet) on a branch. Consolidation must
  * never destroy work or block the handoff from completing.
  */
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
 import { type ForgeDetection, detectForge } from "./forge-detect.ts";
 import { createForge } from "./forge.ts";
 import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
+import { detectMainline, resolveRestoreTarget } from "./work-driver-git.ts";
 import { reconcileHandoffConsolidateBranch } from "./work-driver-handoff-consolidate-branch.ts";
 import { deriveConsolidationSubject } from "./work-driver-handoff-subject.ts";
-import { withIntegrationLock } from "./work-driver-integrate.ts";
+import { withIntegrationLock } from "./work-driver-lock.ts";
 import {
+  type VerifiedRestoreResult,
   restoreClaim,
-  verifiedRestoreRoot,
-  verifiedRestoreRootWithClaim,
+  restoreRootToRef,
+  restoreRootToRefPreserving,
 } from "./work-driver-restore.ts";
+import { execp } from "./work-driver-verify.ts";
 import type { WorkState } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
 
-const defaultExecFn: ExecFn = promisify(exec) as unknown as ExecFn;
+// #1093: execp honours opts.argv, and ExecFn now declares it, so this is a
+// compile-checked assignment rather than a cast.
+const defaultExecFn: ExecFn = execp;
 
 /** Whether handoff-time consolidation is enabled (default on). */
 export function handoffConsolidationEnabled(): boolean {
@@ -191,6 +194,9 @@ export async function consolidateWorktreesToBranch(
   // --no-commit pick) and claimed "the batch was aborted" with the root
   // still carrying staged/unmerged index content.
   let originalRef: string | undefined;
+  // #1093 — the restore-target note (why mainline, or why the start ref was
+  // not used). Carried into the claim so the operator sees the target chosen.
+  let restoreNotes: string[] = [];
   const mode = await branchExistsAtRoot(execFn, ctx.repoRoot, branchName);
   const commitBody =
     `Consolidated at handoff (issue #${state.issue}): the cycle parked at ` +
@@ -220,19 +226,18 @@ export async function consolidateWorktreesToBranch(
             .join(", ")}`,
         };
       }
-      originalRef = await execFn("git symbolic-ref --quiet --short HEAD", {
-        cwd: ctx.repoRoot,
-        maxBuffer: 64 * 1024,
-      })
-        .then((r) => r.stdout.trim())
-        .catch(async () =>
-          (
-            await execFn("git rev-parse HEAD", {
-              cwd: ctx.repoRoot,
-              maxBuffer: 64 * 1024,
-            })
-          ).stdout.trim(),
-        );
+      // #1093 — the cycle-start ref the branch step recorded wins. Capturing
+      // here would read whatever the branch step left checked out (the feature
+      // branch), which restored the operator's root to the wrong branch.
+      const mainlineResult = await detectMainline(ctx.repoRoot, execFn);
+      const resolved = await resolveRestoreTarget({
+        execFn,
+        repoRoot: ctx.repoRoot,
+        mainline: "branch" in mainlineResult ? mainlineResult.branch : undefined,
+        startRef: ps.startRef,
+      });
+      originalRef = resolved.target;
+      restoreNotes = resolved.notes;
       // #844 — PM decision 1: the single-predicate stale-branch
       // reconciliation for the follow-up mode (a plain `git checkout
       // <branch>` below would cherry-pick onto whatever tip the existing
@@ -251,19 +256,18 @@ export async function consolidateWorktreesToBranch(
           };
         }
         // #968 — the `-B` checkout switches repoRoot to the branch; the
-        // success-path restore below (and the failure paths) use plain
-        // `git checkout --force` on the captured originalRef.
-        await execFn(
-          `git checkout -B ${JSON.stringify(branchName)} ${JSON.stringify(ps.baseSha)}`,
-          {
-            cwd: ctx.repoRoot,
-            maxBuffer: 256 * 1024,
-          },
-        );
-      } else {
-        await execFn(`git checkout ${JSON.stringify(branchName)}`, {
+        // restore below (success and abort paths alike) is a plain, non-forcing
+        // checkout of the captured originalRef (#1093).
+        await execFn("git", {
           cwd: ctx.repoRoot,
           maxBuffer: 256 * 1024,
+          argv: ["checkout", "-B", branchName, ps.baseSha],
+        });
+      } else {
+        await execFn("git", {
+          cwd: ctx.repoRoot,
+          maxBuffer: 256 * 1024,
+          argv: ["checkout", branchName],
         });
       }
       // #794 — own-range selection: a stacked workstream's range is
@@ -284,9 +288,9 @@ export async function consolidateWorktreesToBranch(
         // `--abort`; this one resets the staged/unmerged index the refusal
         // leaves behind and verifies the root is actually clean).
         const restore = originalRef
-          ? await verifiedRestoreRoot(execFn, {
+          ? await restoreRootToRefPreserving(execFn, {
               repoRoot: ctx.repoRoot,
-              originalRef,
+              ref: originalRef,
               scratchDir: ctx.scratchDir,
               label: "handoff consolidation",
             })
@@ -297,11 +301,7 @@ export async function consolidateWorktreesToBranch(
         // #750 — the claim goes through the shared builder: the restored
         // variant is the verified post-condition, the not-restored variant
         // is loud and tells the operator where to look.
-        const claim = restoreClaim(
-          restore === undefined ? undefined : restore,
-          undefined,
-          "run git status at the repo root",
-        );
+        const claim = restoreClaim(restore, { trailing: "run git status at the repo root" });
         return {
           ok: false as const,
           reason: `cherry-pick conflict — ${claim}; the work remains on its worktree detached HEADs (per-worktree recovery below)`,
@@ -310,9 +310,9 @@ export async function consolidateWorktreesToBranch(
       if (orch._applyConflict !== undefined) {
         const { id, reason, patchFile } = orch._applyConflict;
         const restore = originalRef
-          ? await verifiedRestoreRoot(execFn, {
+          ? await restoreRootToRefPreserving(execFn, {
               repoRoot: ctx.repoRoot,
-              originalRef,
+              ref: originalRef,
               scratchDir: ctx.scratchDir,
               label: "handoff consolidation",
             })
@@ -386,18 +386,26 @@ export async function consolidateWorktreesToBranch(
       // "repoRoot was NOT restored: …" on failure, threaded into the
       // handoff-consolidated event and both renderers.
       //
-      // originalRef is a BRANCH name (symbolic-ref capture) when the
-      // operator was attached — so this is a branch checkout, never a
-      // detached SHA — and a SHA for a detached operator, which detaches
-      // back to that same SHA. The `?? ps.baseSha ?? "HEAD"` tiers are
-      // defensive only: originalRef is always set once we are this far.
-      const { claim } = await verifiedRestoreRootWithClaim(execFn, {
-        repoRoot: ctx.repoRoot,
-        originalRef: originalRef ?? ps.baseSha ?? "HEAD",
-        scratchDir: ctx.scratchDir,
-        label: "handoff consolidation",
-        trailing: "run git status at the repo root",
-      });
+      // originalRef is the restore target resolveRestoreTarget chose: the
+      // cycle-start ref (a branch name, or a SHA when the operator was
+      // detached), else mainline. #1093 — no `ps.baseSha` / `HEAD` fallback: when
+      // no restore target resolved, nothing is checked out and the claim says so.
+      // The success path never forces: a refused checkout leaves the tree alone
+      // and the claim carries the exact command to run by hand.
+      const restore: VerifiedRestoreResult = originalRef
+        ? await restoreRootToRef(execFn, {
+            repoRoot: ctx.repoRoot,
+            ref: originalRef,
+            label: "handoff consolidation",
+          })
+        : {
+            restored: false,
+            detail: `no restore target (no start ref recorded and no mainline resolved); the tree was left on ${branchName}`,
+          };
+      const claim = [
+        ...restoreNotes,
+        restoreClaim(restore, { trailing: "run git status at the repo root" }),
+      ].join("; ");
       return { ok: true as const, branchName, workstreams: applied, restoreClaim: claim };
     });
     if (result.ok) {
@@ -421,13 +429,13 @@ export async function consolidateWorktreesToBranch(
       // the consolidation failure but not that their checkout did not come
       // back). verifiedRestoreRoot never throws, so this cannot lose the
       // outcome.
-      const { claim } = await verifiedRestoreRootWithClaim(execFn, {
+      const restore = await restoreRootToRefPreserving(execFn, {
         repoRoot: ctx.repoRoot,
-        originalRef,
+        ref: originalRef,
         scratchDir: ctx.scratchDir,
         label: "handoff consolidation",
-        trailing: "run git status at the repo root",
       });
+      const claim = restoreClaim(restore, { trailing: "run git status at the repo root" });
       return {
         ok: false,
         reason: `consolidation failed: ${msg.toString().slice(0, 200)}; ${claim}`,

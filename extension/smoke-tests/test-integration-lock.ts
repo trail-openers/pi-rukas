@@ -23,7 +23,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ensureGitExclude } from "../src/work-driver-branch-mechanized.ts";
-import { __resetIntegrationLock, withIntegrationLock } from "../src/work-driver-integrate.ts";
+import { __resetIntegrationLock, withIntegrationLock } from "../src/work-driver-lock.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

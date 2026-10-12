@@ -97,10 +97,11 @@ function makeRecordingExec(
 ): ExecFn {
   const realExec: ExecFn = async (cmd, o) => {
     try {
-      const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
-        cwd: o?.cwd,
-        maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
-      });
+      // Argv calls (#1093) run the executable directly, as production's execp does.
+      const opts = { cwd: o?.cwd, maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024 };
+      const { stdout } = o?.argv
+        ? await execFileP(cmd, o.argv, opts)
+        : await execFileP("/bin/sh", ["-c", cmd], opts);
       return { stdout };
     } catch (err) {
       const e = err as Error & { stderr?: string };
@@ -110,10 +111,12 @@ function makeRecordingExec(
   };
   return async (cmd, o) => {
     if (o?.cwd === f.repo) {
-      if (cmd === "git status --porcelain -uall") {
+      // Argv calls (#1093) are matched as the joined command line.
+      const line = o?.argv ? [cmd, ...o.argv].join(" ") : cmd;
+      if (line === "git status --porcelain -uall") {
         order.push({ kind: "preflight", seq });
         if (delayMs > 0) await sleep(delayMs);
-      } else if (cmd === "git reset --hard") {
+      } else if (line === "git reset --hard") {
         order.push({ kind: "restore", seq });
       }
     }
