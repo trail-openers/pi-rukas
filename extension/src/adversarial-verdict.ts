@@ -82,7 +82,7 @@ export type LoopAction = "pass" | "fix" | "reject" | "incomplete";
  */
 export function parseVerdict(text: string): AdversarialVerdict {
   const status = readEnumMarker(text, "VERDICT", VERDICT_STATUSES);
-  if (status) return { status, findings: text, raw: text };
+  if (status) return { status, findings: text, raw: text, verdictParsed: true };
   return {
     status: "ISSUES_FOUND",
     findings: `The reviewer's reply contained no readable VERDICT marker, so its verdict is unknown — this is NOT a list of findings. Treat the text below as unstructured review notes, and if it raises nothing actionable, say so plainly rather than inventing work.\n\n${text}`,
