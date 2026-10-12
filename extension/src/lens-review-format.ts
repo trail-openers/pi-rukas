@@ -8,7 +8,7 @@
 
 import os from "node:os";
 import path from "node:path";
-import { type SuppressedFinding, suppressedLines } from "./lens-residuals.ts";
+import { type SuppressedFinding, suppressedSection } from "./lens-residuals.ts";
 import type { Finding, FindingSource, LensRunResult } from "./lens-review.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
 
@@ -85,6 +85,12 @@ export interface LensReviewSummary {
    * residual disclosure lists them with their row ids and reasons.
    */
   suppressed?: SuppressedFinding[];
+  /**
+   * #1105 "findings memory unavailable: <reason>" — the round could not be
+   * recorded (fail open: every finding is reported). Shown in the summary and
+   * the residual comment.
+   */
+  memoryNote?: string;
 }
 
 /**
@@ -478,13 +484,11 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
     "",
     s.totalFindings > 0 ? "Findings (deduped, sorted by severity):" : "",
     ...findingLines,
-    ...(s.suppressed && s.suppressed.length > 0
-      ? [
-          "",
-          `Suppressed as already known (${s.suppressed.length}, not re-reported):`,
-          ...suppressedLines(s.suppressed),
-        ]
-      : []),
+    ...suppressedSection(
+      s.suppressed,
+      `Suppressed as already known (${s.suppressed?.length ?? 0}, not re-reported):`,
+    ),
+    ...(s.memoryNote ? ["", s.memoryNote] : []),
     "",
     "Transcripts:",
     transcripts,

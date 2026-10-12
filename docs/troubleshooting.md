@@ -1845,3 +1845,21 @@ Pre-fix (2026-09-09) driver bug: `nextStep()` answered "done" on `currentStep: "
 ### Re-entering a crashed cycle no longer duplicates PRs or handoff comments
 
 Resume re-enters at the STEP, and the mechanized seams are now explicitly idempotent: `commit-pr` checks for an open PR already heading the cycle's exact branch (`findOpenPrForBranch`) and short-circuits with its number instead of resetting the branch and creating a duplicate (fails open on an unreadable `gh` — the push rejection remains the backstop); the handoff writer reuses a previously delivered comment URL from the `handoff-emitted` event instead of posting a second comment (the label re-applies — server-side idempotent). Mechanized driver events carry unique jobIds via `synthesizeDriverCompletion` (the old literal `"mechanized"` made the id useless as a correlation key).
+
+### Accepting a review finding (#1105)
+
+A recorded review finding is suppressed from later rounds only when the operator accepts it. Run it from a terminal, never from an agent:
+
+```bash
+bun extension/scripts/review-accept.ts <branch> <row-id> --reason "<at least 20 characters>"
+```
+
+The acceptance boundary is layered:
+
+1. The script refuses to run when `PI_ENSEMBLE_ROLE` is set, or when `PI_ENSEMBLE_SUBAGENT_MODE=1` or `PI_ENSEMBLE_TRUST_MODE=1` is in its environment.
+2. The write path (`extension/scripts/review-accept-row.ts`) is imported by nothing under `src/`. It also enforces the reason rule and refuses CRITICAL rows.
+3. `review-accept-guard.ts` refuses agent bash that names the script, the findings file, the store module or the write module, and agent `edit`/`write`/`multiedit` of `review-findings.json`.
+
+Layers 1 and 3 are **advisory in trust mode**. They are environment and string checks, so an agent with a shell can still bypass them. They stop an agent that is not trying to bypass them; the operator's terminal is the real boundary.
+
+A corrupt `review-findings.json` is never overwritten. The writer copies it to `review-findings.json.corrupt-<ms>`, the review reads it as no memory, and the summary shows `findings memory unavailable: …`. Fix or remove the file, then re-run the review.

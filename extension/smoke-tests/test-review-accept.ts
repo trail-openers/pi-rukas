@@ -70,6 +70,15 @@ assert(
 
 // ── acceptance in a real clone ──────────────────────────────────────────────
 
+// The operator's shell: this process's env minus any agent-context variable, so
+// the suite passes whether or not it was itself spawned by a pi-rukas role.
+const AGENT_VARS = ["PI_ENSEMBLE_ROLE", "PI_ENSEMBLE_SUBAGENT_MODE", "PI_ENSEMBLE_TRUST_MODE"];
+const OPERATOR_ENV: Record<string, string> = Object.fromEntries(
+  Object.entries(process.env).filter(
+    (e): e is [string, string] => e[1] !== undefined && !AGENT_VARS.includes(e[0]),
+  ),
+);
+
 const git = (cwd: string, ...args: string[]) =>
   execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
 const dir = mkdtempSync(path.join(os.tmpdir(), "review-accept-"));
@@ -100,7 +109,7 @@ try {
   const rowId = run?.[0]?.rowId ?? "";
   assert(/^[0-9a-f]{8}$/.test(rowId), "setup: a finding row exists");
 
-  const bad = await runReviewAccept(["feat/x", rowId, "--reason", "short"], dir);
+  const bad = await runReviewAccept(["feat/x", rowId, "--reason", "short"], dir, OPERATOR_ENV);
   assert(bad.code === 2, "accept: a short reason exits 2 and writes nothing");
   assert(
     (await readBranchRows(dir, "feat/x"))[0]?.status === "open",
@@ -110,6 +119,7 @@ try {
   const ok = await runReviewAccept(
     ["feat/x", rowId, "--reason", "known, tracked in a follow-up issue"],
     dir,
+    OPERATOR_ENV,
   );
   assert(ok.code === 0, `accept: a valid acceptance exits 0 (${ok.message})`);
   const row = (await readBranchRows(dir, "feat/x"))[0];
@@ -122,6 +132,7 @@ try {
   const noId = await runReviewAccept(
     ["feat/x", rowId, "--reason", "known, tracked in a follow-up issue"],
     dir,
+    OPERATOR_ENV,
   );
   assert(noId.code === 2, "accept: no git identity refuses (the operator must be known)");
 
@@ -135,7 +146,7 @@ try {
       "--reason",
       "x",
     ],
-    { cwd: dir, encoding: "utf8" },
+    { cwd: dir, encoding: "utf8", env: OPERATOR_ENV },
   );
   assert(cli.status === 2, "cli: a short reason exits 2 from the entry point");
   assert(cli.stderr.includes("at least 20"), "cli: the refusal names the reason rule on stderr");
@@ -182,7 +193,6 @@ for (const c of agentCommands) {
 for (const c of [
   "git status",
   "bun test smoke-tests/test-review-accept.ts",
-  "bun test smoke-tests/test-review-findings-store.ts",
   "echo review-acceptance-notes",
   'git commit -m "feat: review-accept guard"',
   'git commit -m "docs: review-accept flow"',

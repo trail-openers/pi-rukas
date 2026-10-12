@@ -12,6 +12,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { acceptRow } from "../scripts/review-accept-row.ts";
 import { execp } from "../src/lens-exec.ts";
 import { partitionDecisions } from "../src/lens-residuals.ts";
 import type { Finding } from "../src/lens-review-types.ts";
@@ -26,7 +27,7 @@ import {
   titleClassOf,
   titleTokens,
 } from "../src/review-findings-match.ts";
-import { acceptRow, readBranchRows, recordFindingRun } from "../src/review-findings-store.ts";
+import { readBranchRows, recordFindingRun } from "../src/review-findings-store.ts";
 import { ledgerPathFor } from "../src/review-ledger-path.ts";
 
 let exit = 0;
@@ -114,8 +115,8 @@ assert(
   "match: reworded title with the same tokens matches on titleClass",
 );
 assert(
-  pickMatch(mk("Division by zero may occur", 4), [rowOf(base)]) !== undefined,
-  "match: Jaccard ≥ 0.6 matches a close rewording",
+  pickMatch(mk("Division by zero may occur", 4), [rowOf(base)]) === undefined,
+  "match: a rewording below Jaccard 0.6 on the same snippet is a new finding, not the old row",
 );
 assert(
   pickMatch(mk("Unrelated logging issue", 3), [rowOf(base)]) === undefined,
@@ -139,8 +140,8 @@ assert(
 );
 const snippetOnly = mk("Completely different words here", 4);
 assert(
-  pickMatch(snippetOnly, [rowOf(base, { title: "zzz qqq", titleClass: "qqq zzz" })]) !== undefined,
-  "match: equal snippetHash on a resolvable line matches even when titles differ",
+  pickMatch(snippetOnly, [rowOf(base, { title: "zzz qqq", titleClass: "qqq zzz" })]) === undefined,
+  "match: an equal snippetHash alone does not match when titles differ (a new row)",
 );
 
 const older = rowOf(base, { id: "00000001", lastSeen: 10 });
@@ -280,7 +281,7 @@ try {
   );
 
   // Same snippet, different title on the accepted line: a different finding, so
-  // it is matched and reported, never suppressed by the acceptance.
+  // it gets its own row and is reported, never suppressed by the acceptance.
   const otherTitle = await recordFindingRun({
     cwd: dir,
     branch: "feat/x",
@@ -289,8 +290,8 @@ try {
     complete: true,
   });
   assert(
-    otherTitle?.[0]?.action === "matched",
-    "accepted: a different title on the same accepted snippet is matched, not suppressed",
+    otherTitle?.[0]?.action === "new",
+    "accepted: a different title on the same accepted snippet is a new row, not suppressed",
   );
 
   // Changing the code the row cites lapses the acceptance.

@@ -18,10 +18,11 @@ import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { acceptRow } from "../scripts/review-accept-row.ts";
 import type { LensRunResult } from "../src/lens-review-types.ts";
 import { runLensReview } from "../src/lens-review.ts";
 import { LENS_ROSTER } from "../src/lens-roster.ts";
-import { acceptRow, readBranchRows } from "../src/review-findings-store.ts";
+import { readBranchRows } from "../src/review-findings-store.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

@@ -15,9 +15,11 @@
  *                   hash of the empty string and NEVER matches on it.
  *
  * A finding matches a stored row only when path and anchor are equal AND
- * (titleClass equal OR title-token Jaccard ≥ 0.6 OR, for a finding with a
- * resolvable line, snippetHash equal). Storage and I/O live in
- * review-findings-store.ts; this module touches neither git nor the disk.
+ * (titleClass equal OR title-token Jaccard ≥ 0.6). A snippet match alone never
+ * matches: two distinct findings on one line share a snippet, and a second
+ * finding must get its own row (so it can be accepted separately). Storage and
+ * I/O live in review-findings-store.ts; this module touches neither git nor the
+ * disk.
  */
 
 import { createHash } from "node:crypto";
@@ -189,8 +191,7 @@ export function identityOf(
 export function sameIdentity(id: FindingIdentity, row: MatchableRow): boolean {
   if (row.path !== id.path || row.anchor !== id.anchor) return false;
   if (id.titleClass !== "" && row.titleClass === id.titleClass) return true;
-  if (jaccard(titleTokens(id.title), titleTokens(row.title)) >= JACCARD_MATCH) return true;
-  return id.hasLine && row.snippetHash === id.snippetHash;
+  return jaccard(titleTokens(id.title), titleTokens(row.title)) >= JACCARD_MATCH;
 }
 
 /**

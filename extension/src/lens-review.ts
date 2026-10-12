@@ -29,10 +29,11 @@ import {
   piSkillsDir,
   renderSummary,
 } from "./lens-review-format.ts";
+import { isReviewIncomplete } from "./lens-review-incomplete.ts";
 import { installBlockRowsForRoster, skillsDirUsable } from "./lens-review-skills.ts";
 import type { Finding, LensRunResult } from "./lens-review-types.ts";
 import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
-import { readBranchRows, recordFindingRun } from "./review-findings-store.ts";
+import { readBranchRows, recordFindingRunOutcome } from "./review-findings-store.ts";
 import { isFullCommitSha, resolveHeadSha } from "./review-head-sha.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
@@ -406,10 +407,10 @@ export async function runLensReview(opts: {
   // findings (already known on untouched code, or accepted by the operator)
   // leave the review; a complete full review resolves rows it no longer
   // reports. Undefined decisions (nothing recorded) keep every finding.
-  const complete = !delta && computeVerdict([], lensResults, threshold) !== "REVIEW_INCOMPLETE";
-  const decisions =
+  const complete = !delta && !isReviewIncomplete(lensResults);
+  const recorded =
     branchResolved && headSha
-      ? await recordFindingRun({
+      ? await recordFindingRunOutcome({
           cwd: opts.cwd ?? process.cwd(),
           branch: branchResolved,
           headSha,
@@ -418,6 +419,11 @@ export async function runLensReview(opts: {
           complete,
         })
       : undefined;
+  // Fail open: an unrecorded round reports every finding, and the summary and
+  // the residual comment say why memory was not used.
+  const memoryNote =
+    recorded && !recorded.ok ? `findings memory unavailable: ${recorded.reason}` : undefined;
+  const decisions = recorded?.ok ? recorded.decisions : undefined;
   const { kept, suppressed } = partitionDecisions(deduped, decisions);
   const verdict = computeVerdict(kept, lensResults, threshold);
   // #973 — the round-cap rule's inputs for the ledger write: hasCritical
@@ -439,6 +445,7 @@ export async function runLensReview(opts: {
       lenses: lensResults,
       findings: kept,
       ...(suppressed.length > 0 ? { suppressed } : {}),
+      ...(memoryNote ? { memoryNote } : {}),
       usage: aggregateLensUsage(lensResults),
       // #543 — a dispatch-cap kill on any lens child (loop detector / token
       // budget) is surfaced on the summary so the driver emits the fixed-literal

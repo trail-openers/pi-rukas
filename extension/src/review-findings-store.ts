@@ -10,18 +10,28 @@
  *
  * Each row is one finding a round reported (see review-findings-match.ts for
  * the identity). Rows are `open` (reported, not resolved), `accepted`
- * (an operator accepted it by id — human-only, see extension/scripts/
- * review-accept.ts) or `resolved` (a full review no longer reported it).
- * A branch keeps at most MAX_ROWS_PER_BRANCH rows; resolved rows go first.
+ * (an operator accepted it by id) or `resolved` (a full review no longer
+ * reported it). A branch keeps at most MAX_ROWS_PER_BRANCH rows; resolved rows
+ * go first. Accepted rows are never evicted.
  *
- * `recordFindingRun` is the one per-round entry point. It never throws: every
- * fault is traced and it returns `undefined`, which the caller reads as "no
- * suppression this round" — the findings are then all reported, the safe
- * direction. Acceptance is the only path that marks a row accepted.
+ * Failure policy — fail closed on the file, fail open on the review:
+ *   - A findings file that does not parse, or holds a malformed row, is
+ *     CORRUPT. Readers treat it as no memory. Writers refuse to overwrite it
+ *     and copy it aside to `review-findings.json.corrupt-<ms>`, so an operator
+ *     acceptance is never silently erased.
+ *   - Any fault while recording a round (no clone, corrupt file, a head file
+ *     that cannot be read) skips recording for that round and returns the
+ *     reason. The caller reports every finding and shows the reason.
+ *
+ * This module has NO acceptance write path. The only way to mark a row
+ * accepted is `acceptRow` in extension/scripts/review-accept-row.ts, which the
+ * operator reaches through extension/scripts/review-accept.ts. Agents are
+ * refused that path by review-accept-guard.ts — a guard that is advisory in
+ * trust mode (a string match, see its header).
  */
 
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { execp } from "./lens-exec.ts";
@@ -45,7 +55,7 @@ const execFileP = promisify(execFile);
 
 /** The findings file's name, beside `review-ledger.json`. */
 export const FINDINGS_FILE = "review-findings.json";
-/** Rows kept per branch; beyond this the oldest resolved rows go first. */
+/** Rows kept per branch; beyond this the oldest resolved, then open, rows go first. */
 export const MAX_ROWS_PER_BRANCH = 200;
 
 export type RowStatus = "open" | "accepted" | "resolved";
@@ -90,25 +100,54 @@ export interface FindingRun {
   now?: number;
 }
 
+/** The result of recording one round: the decisions, or why nothing was recorded. */
+export type RecordOutcome = { ok: true; decisions: Decision[] } | { ok: false; reason: string };
+
+/** The result of a locked read-modify-write: the callback's value, or why it did not run. */
+export type MutateOutcome<T> = { ok: true; value: T } | { ok: false; reason: string };
+
+const SEVERITIES: readonly string[] = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
+
 /** A repo-relative path that git can show at a commit without option injection. */
 function safeRepoPath(p: string): boolean {
   if (!p || p.startsWith("-") || p.startsWith("/") || /[\0\n]/.test(p)) return false;
   return !p.split("/").includes("..");
 }
 
-/** The lines of `file` at `sha`, or [] when it cannot be read there. */
-async function readHeadLines(cwd: string, sha: string, file: string): Promise<string[]> {
-  if (!safeRepoPath(file)) return [];
+type HeadLines = { ok: true; lines: string[] } | { ok: false; reason: string };
+
+/**
+ * The lines of `file` at `sha`. A git error (unknown path at that commit, bad
+ * sha, unsafe path) is a failure, never an empty file: an empty file would give
+ * every finding a fake identity and suppress nothing on the wrong evidence.
+ */
+async function readHeadLines(cwd: string, sha: string, file: string): Promise<HeadLines> {
+  if (!safeRepoPath(file)) return { ok: false, reason: `unsafe path ${file}` };
   try {
     const { stdout } = await execFileP("git", ["-C", cwd, "show", `${sha}:${file}`], {
       maxBuffer: 8 * 1024 * 1024,
     });
-    return stdout.split("\n");
-  } catch {
-    return [];
+    return { ok: true, lines: stdout.split("\n") };
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `cannot read ${file} at ${sha.slice(0, 12)}: ${(err as Error).message.slice(0, 120)}`,
+    };
   }
 }
 
+function isAcceptance(v: unknown): boolean {
+  if (!v || typeof v !== "object") return false;
+  const a = v as Record<string, unknown>;
+  return (
+    typeof a.by === "string" &&
+    typeof a.reason === "string" &&
+    typeof a.at === "number" &&
+    typeof a.snippetHash === "string"
+  );
+}
+
+/** Every declared field of a stored row, checked. A row failing any check makes the file corrupt. */
 function isRow(v: unknown): v is StoredFinding {
   if (!v || typeof v !== "object") return false;
   const r = v as Record<string, unknown>;
@@ -119,34 +158,42 @@ function isRow(v: unknown): v is StoredFinding {
     typeof r.anchor === "string" &&
     typeof r.titleClass === "string" &&
     typeof r.title === "string" &&
+    typeof r.severity === "string" &&
+    SEVERITIES.includes(r.severity) &&
+    typeof r.lens === "string" &&
+    (r.line === undefined || typeof r.line === "number") &&
     typeof r.snippetHash === "string" &&
+    (r.status === "open" || r.status === "accepted" || r.status === "resolved") &&
+    typeof r.firstSeen === "number" &&
     typeof r.lastSeen === "number" &&
-    (r.status === "open" || r.status === "accepted" || r.status === "resolved")
+    (r.acceptance === undefined || isAcceptance(r.acceptance))
   );
+}
+
+type ParsedFile = { ok: true; rows: StoredFinding[] } | { ok: false; reason: string };
+
+/** Parse the findings file. A missing file is an empty store; anything else unreadable is corrupt. */
+function parseFindingsFile(file: string): ParsedFile {
+  if (!existsSync(file)) return { ok: true, rows: [] };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(file, "utf8"));
+  } catch (err) {
+    return { ok: false, reason: `unparseable JSON (${(err as Error).message.slice(0, 80)})` };
+  }
+  const rows = (parsed as { rows?: unknown } | null)?.rows;
+  if (!Array.isArray(rows)) return { ok: false, reason: "no rows array" };
+  const bad = rows.findIndex((r) => !isRow(r));
+  if (bad >= 0) return { ok: false, reason: `row ${bad} is malformed` };
+  return { ok: true, rows: rows as StoredFinding[] };
 }
 
 /** Read the findings file; a missing or corrupt file reads as no rows. */
 export function readFindingsFile(file: string): StoredFinding[] {
-  if (!existsSync(file)) return [];
-  try {
-    const parsed = JSON.parse(readFileSync(file, "utf8")) as { rows?: unknown };
-    if (!Array.isArray(parsed.rows)) return [];
-    return parsed.rows.filter(isRow);
-  } catch (err) {
-    trace(`review-findings: unreadable findings file ${file}: ${(err as Error).message}`);
-    return [];
-  }
-}
-
-/** True when the findings file exists but does not parse to a rows array. */
-function fileIsCorrupt(file: string): boolean {
-  if (!existsSync(file)) return false;
-  try {
-    const parsed = JSON.parse(readFileSync(file, "utf8")) as { rows?: unknown };
-    return !Array.isArray(parsed.rows);
-  } catch {
-    return true;
-  }
+  const parsed = parseFindingsFile(file);
+  if (parsed.ok) return parsed.rows;
+  trace(`review-findings: ${file} is corrupt (${parsed.reason}) — treated as no memory`);
+  return [];
 }
 
 /** A fresh 8-hex row id, unique among `taken`. */
@@ -160,26 +207,22 @@ export function newRowId(taken: ReadonlySet<string>): string {
 }
 
 /**
- * Keep at most `max` rows: the oldest resolved rows are dropped first, then
- * the oldest of the rest.
+ * Keep at most `max` rows. Resolved rows go first (oldest first), then open
+ * rows (oldest first). Accepted rows are never dropped — an acceptance is an
+ * operator decision, so the store may exceed `max` when they alone fill it.
  */
 export function capRows(rows: StoredFinding[], max = MAX_ROWS_PER_BRANCH): StoredFinding[] {
   if (rows.length <= max) return rows;
   let excess = rows.length - max;
   const byAge = [...rows].sort((a, b) => a.lastSeen - b.lastSeen);
   const drop = new Set<string>();
-  for (const r of byAge) {
-    if (excess <= 0) break;
-    if (r.status === "resolved") {
-      drop.add(r.id);
-      excess--;
-    }
-  }
-  for (const r of byAge) {
-    if (excess <= 0) break;
-    if (!drop.has(r.id)) {
-      drop.add(r.id);
-      excess--;
+  for (const evictable of ["resolved", "open"] as const) {
+    for (const r of byAge) {
+      if (excess <= 0) break;
+      if (r.status === evictable) {
+        drop.add(r.id);
+        excess--;
+      }
     }
   }
   return rows.filter((r) => !drop.has(r.id));
@@ -199,29 +242,39 @@ async function locate(cwd: string): Promise<{ ledger: string; file: string } | u
 }
 
 /**
- * Read-modify-write the findings file under the ledger lock. `fn` returns the
- * rows to store and a result. Returns undefined when there is no clone.
+ * Read-modify-write the findings file under the ledger lock. `fn` gets the
+ * stored rows and returns the rows to keep plus a value. A corrupt file is
+ * copied aside and never overwritten; any failure is a `{ ok: false }` with
+ * the reason, never a throw.
  */
-async function mutate<T>(
+export async function mutateFindings<T>(
   cwd: string,
   fn: (rows: StoredFinding[]) => { rows: StoredFinding[]; result: T },
-): Promise<T | undefined> {
+): Promise<MutateOutcome<T>> {
   const loc = await locate(cwd);
-  if (!loc) return undefined;
-  const release = await acquireLedgerLock(loc.ledger);
+  if (!loc) return { ok: false, reason: "not a git clone (no git common dir)" };
+  let release: (() => void) | undefined;
   try {
-    // A corrupt file is never overwritten: that would erase operator acceptances.
-    if (fileIsCorrupt(loc.file)) {
-      trace(`review-findings: ${loc.file} is corrupt — refusing to overwrite it`);
-      return undefined;
+    release = await acquireLedgerLock(loc.ledger);
+    const parsed = parseFindingsFile(loc.file);
+    if (!parsed.ok) {
+      const copy = `${loc.file}.corrupt-${Date.now()}`;
+      copyFileSync(loc.file, copy);
+      trace(`review-findings: ${loc.file} is corrupt (${parsed.reason}) — copied to ${copy}`);
+      return {
+        ok: false,
+        reason: `the findings file is corrupt (${parsed.reason}); it was not overwritten and was copied to ${copy}`,
+      };
     }
-    const { rows, result } = fn(readFindingsFile(loc.file));
+    const { rows, result } = fn(parsed.rows);
     const tmp = `${loc.file}.tmp-${process.pid}-${Date.now()}`;
     writeFileSync(tmp, JSON.stringify({ rows: capRows(rows) }, null, 2), "utf8");
     renameSync(tmp, loc.file);
-    return result;
+    return { ok: true, value: result };
+  } catch (err) {
+    return { ok: false, reason: `write failed: ${(err as Error).message.slice(0, 160)}` };
   } finally {
-    release();
+    release?.();
   }
 }
 
@@ -252,30 +305,31 @@ function outsideDelta(
 /**
  * Record one round: match each finding to a stored row (or create one), decide
  * whether it is suppressed, and resolve open rows a complete full review no
- * longer reported. Returns one decision per input finding, or undefined when
- * nothing could be recorded (no clone, unreadable store) — the caller then
- * reports every finding.
+ * longer reported. Returns the decisions (one per input finding) or the reason
+ * nothing was recorded — the caller then reports every finding and shows that
+ * reason. Never throws.
  *
  * Suppression (CRITICAL is never suppressed):
  *   - `suppressed-accepted`: the matched row is accepted and the code it cites
  *     still has the snippet the operator accepted;
- *   - `suppressed-unchanged`: a delta round, and the cited line lies outside
- *     the delta's changed lines (the finding is on code this round did not
- *     touch).
+ *   - `suppressed-unchanged`: a delta round, the title agrees, the cited code's
+ *     snippet is unchanged, and the cited line lies outside the delta's changed
+ *     lines.
  * An accepted row whose snippet changed lapses to open and is reported again.
  */
-export async function recordFindingRun(run: FindingRun): Promise<Decision[] | undefined> {
+export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOutcome> {
   try {
     const now = run.now ?? Date.now();
     const ranges = run.deltaDiff !== undefined ? changedLineRanges(run.deltaDiff) : undefined;
     const linesByPath = new Map<string, string[]>();
     for (const f of run.findings) {
-      if (!linesByPath.has(f.path)) {
-        linesByPath.set(f.path, await readHeadLines(run.cwd, run.headSha, f.path));
-      }
+      if (linesByPath.has(f.path)) continue;
+      const head = await readHeadLines(run.cwd, run.headSha, f.path);
+      if (!head.ok) return { ok: false, reason: head.reason };
+      linesByPath.set(f.path, head.lines);
     }
     const identities = run.findings.map((f) => identityOf(f, linesByPath.get(f.path) ?? []));
-    return await mutate(run.cwd, (all) => {
+    const out = await mutateFindings(run.cwd, (all) => {
       const others = all.filter((r) => r.branch !== run.branch);
       const mine = all.filter((r) => r.branch === run.branch);
       const touched = new Set<string>();
@@ -340,6 +394,7 @@ export async function recordFindingRun(run: FindingRun): Promise<Decision[] | un
             return;
           }
         }
+        // priorHash === snippetHash: the cited code is the code the row last saw.
         if (
           !critical &&
           sameTitle &&
@@ -361,51 +416,15 @@ export async function recordFindingRun(run: FindingRun): Promise<Decision[] | un
       }
       return { rows: [...others, ...mine], result: decisions };
     });
+    return out.ok ? { ok: true, decisions: out.value } : out;
   } catch (err) {
     trace(`review-findings: record failed: ${(err as Error).message}`);
-    return undefined;
+    return { ok: false, reason: (err as Error).message.slice(0, 160) };
   }
 }
 
-/** The outcome of an acceptance attempt. */
-export type AcceptResult = { ok: true; row: StoredFinding } | { ok: false; reason: string };
-
-/**
- * Mark one open row accepted. Human-only by construction: the only caller is
- * extension/scripts/review-accept.ts, which the operator runs in a terminal.
- * A resolved row cannot be accepted (nothing is reported against it).
- */
-export async function acceptRow(opts: {
-  cwd: string;
-  branch: string;
-  rowId: string;
-  reason: string;
-  by: string;
-  now?: number;
-}): Promise<AcceptResult> {
-  const now = opts.now ?? Date.now();
-  const out = await mutate<AcceptResult>(opts.cwd, (all) => {
-    const row = all.find((r) => r.branch === opts.branch && r.id === opts.rowId);
-    if (!row) {
-      return {
-        rows: all,
-        result: { ok: false, reason: `no row ${opts.rowId} on branch ${opts.branch}` },
-      };
-    }
-    if (row.status === "resolved") {
-      return {
-        rows: all,
-        result: { ok: false, reason: `row ${opts.rowId} is resolved — nothing to accept` },
-      };
-    }
-    row.status = "accepted";
-    row.acceptance = { by: opts.by, reason: opts.reason, at: now, snippetHash: row.snippetHash };
-    return { rows: all, result: { ok: true, row } };
-  });
-  return (
-    out ?? {
-      ok: false,
-      reason: "not a git clone, or the findings file is unreadable — nothing recorded",
-    }
-  );
+/** The decisions of a round, or undefined when nothing was recorded. */
+export async function recordFindingRun(run: FindingRun): Promise<Decision[] | undefined> {
+  const out = await recordFindingRunOutcome(run);
+  return out.ok ? out.decisions : undefined;
 }

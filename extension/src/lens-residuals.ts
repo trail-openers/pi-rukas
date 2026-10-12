@@ -72,10 +72,24 @@ export function partitionDecisions(
   return { kept, suppressed };
 }
 
-/** One line per suppressed finding: row id, reason, and where it points. */
-export function suppressedLines(suppressed: readonly SuppressedFinding[]): string[] {
-  return suppressed.map(
-    (s) =>
-      `- suppressed (row ${s.rowId}): [${s.finding.severity}] ${s.finding.path}:${s.finding.line ?? "?"} — ${s.finding.title} — ${s.reason}`,
-  );
+/**
+ * The "suppressed as already known" block — ONE helper for the summary and the
+ * residual comment. Each line names the row id, where the finding points and the
+ * reason it was dropped. The title and reason come from agent output, so every
+ * line goes through `neutraliseEvidence`. Empty input renders nothing.
+ */
+export function suppressedSection(
+  suppressed: readonly SuppressedFinding[] | undefined,
+  heading: string,
+): string[] {
+  if (!suppressed || suppressed.length === 0) return [];
+  return [
+    "",
+    neutraliseEvidence(heading),
+    ...suppressed.map((s) =>
+      neutraliseEvidence(
+        `- suppressed (row ${s.rowId}): [${s.finding.severity}] ${s.finding.path}:${s.finding.line ?? "?"} — ${s.finding.title} — ${s.reason}`,
+      ),
+    ),
+  ];
 }
