@@ -12,8 +12,10 @@
  *      non-interactive setting that makes a passphrase prompt fail instead of
  *      waiting on /dev/tty.
  *
- * The sleeping script's pid is killed at the end: the wrapper races the
- * deadline rather than waiting for the child, so the child outlives the call.
+ * 3. the whole process group is killed on timeout: the script backgrounds a
+ *    `sleep` grandchild that inherits the stdout pipe (the ssh-holds-the-pipe
+ *    shape). Node's exec would never call back, and the grandchild would
+ *    outlive the call. lens-exec's killGroup executor must SIGKILL it.
  */
 
 import { exec } from "node:child_process";
@@ -21,6 +23,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, chmodSync
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { execp as groupExecp } from "../src/lens-exec.ts";
 import { isNetGitTimeout, runNetGit } from "../src/work-driver-net-git.ts";
 
 const execp = promisify(exec);
@@ -33,13 +36,19 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
+// The verify loop may export GIT_DIR and friends; a leaked GIT_DIR would point
+// every git call below at the host repo instead of the fixture.
+for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"]) {
+  delete process.env[k];
+}
 const dir = mkdtempSync(path.join(tmpdir(), "net-git-timeout-"));
 const pidFile = path.join(dir, "pid");
+const grandPidFile = path.join(dir, "grand-pid");
 const argvFile = path.join(dir, "argv");
 const script = path.join(dir, "hang-ssh.sh");
 writeFileSync(
   script,
-  `#!/bin/sh\necho "$@" > "${argvFile}"\necho $$ > "${pidFile}"\nexec sleep 60\n`,
+  `#!/bin/sh\necho "$@" > "${argvFile}"\necho $$ > "${pidFile}"\nsleep 60 &\necho $! > "${grandPidFile}"\nwait\n`,
 );
 chmodSync(script, 0o755);
 
@@ -48,18 +57,20 @@ await execp(`git init --bare -q ${JSON.stringify(bare)}`);
 const repo = path.join(dir, "work");
 await execp(`git init -q ${JSON.stringify(repo)}`);
 // ssh:// transport, so git hands the connection to GIT_SSH_COMMAND.
-await execp(`git -C ${JSON.stringify(repo)} remote add origin ${JSON.stringify(`ssh://nohost${bare}`)}`);
+await execp(
+  `git -C ${JSON.stringify(repo)} remote add origin ${JSON.stringify(`ssh://nohost${bare}`)}`,
+);
 
 const savedSsh = process.env.GIT_SSH_COMMAND;
 const savedTimeout = process.env.PI_ENSEMBLE_GIT_NET_TIMEOUT_MS;
 process.env.GIT_SSH_COMMAND = script;
-process.env.PI_ENSEMBLE_GIT_NET_TIMEOUT_MS = "1500";
+process.env.PI_ENSEMBLE_GIT_NET_TIMEOUT_MS = "4000";
 
 console.log("1. hanging remote fails within the bound with the named cause");
 const started = Date.now();
 let caught: unknown;
 try {
-  await runNetGit(execp, "git fetch origin main", { cwd: repo });
+  await runNetGit(groupExecp, "git fetch origin main", { cwd: repo });
 } catch (err) {
   caught = err;
 }
@@ -73,14 +84,39 @@ assert(
   caught instanceof Error && caught.message.includes("git fetch origin main"),
   "message names the command",
 );
-assert(elapsed < 10_000, `returned in ${elapsed}ms (bound 1500ms, not the 60s sleep)`);
+assert(elapsed < 20_000, `returned in ${elapsed}ms (bound 4000ms, not the 60s sleep)`);
+await new Promise((r) => setTimeout(r, 200));
+const grandPid = existsSync(grandPidFile) ? Number(readFileSync(grandPidFile, "utf8").trim()) : 0;
+let grandAlive = false;
+if (grandPid > 0) {
+  try {
+    process.kill(grandPid, 0);
+    grandAlive = true;
+  } catch {
+    grandAlive = false;
+  }
+}
+assert(
+  grandPid > 0 && !grandAlive,
+  "backgrounded grandchild (holds the pipe) is killed with the group",
+);
 
 console.log("2. ssh ran non-interactively");
 const argv = existsSync(argvFile) ? readFileSync(argvFile, "utf8") : "";
 assert(argv.includes("-o BatchMode=yes"), "ssh invoked with -o BatchMode=yes");
 assert(argv.includes("-o ConnectTimeout=30"), "ssh invoked with -o ConnectTimeout=30");
 
-// Clean up the orphaned sleep (the wrapper does not wait for the child).
+// Clean up any survivor (the group kill should already have removed it).
+if (existsSync(grandPidFile)) {
+  const gp = Number(readFileSync(grandPidFile, "utf8").trim());
+  if (Number.isInteger(gp) && gp > 0) {
+    try {
+      process.kill(gp, "SIGKILL");
+    } catch {
+      // already gone
+    }
+  }
+}
 if (existsSync(pidFile)) {
   const pid = Number(readFileSync(pidFile, "utf8").trim());
   if (Number.isInteger(pid) && pid > 0) {

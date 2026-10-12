@@ -17,13 +17,13 @@ import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import { capHitForCapKill } from "./work-driver-adversarial-capkill.ts";
 import { fanOutAdversarial } from "./work-driver-adversarial-fanout.ts";
+import { integrateLensFix } from "./work-driver-adversarial-lens-integrate.ts";
 import { reentryPassBatchSpan } from "./work-driver-adversarial-reentry.ts";
 import {
   ADVERSARIAL_PER_WS_MAX_RETRIES,
   type AdversarialOutcome,
 } from "./work-driver-adversarial-types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
-import { integrate, restoreRepoRoot } from "./work-driver-integrate.ts";
 import {
   detectCommittedFix,
   landCommittedFix,
@@ -38,66 +38,6 @@ import type { PipelineState } from "./workflow-state-schema.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
 const execp = promisify(exec);
-
-/** #287 Part C — re-integrate a lens-fix made in a worktree (#654 task-c). */
-async function integrateLensFix(
-  execFn: ExecFn,
-  ctx: DriverContext,
-  ps: PipelineState,
-  worktrees: Record<string, string>,
-): Promise<{ committed: boolean; error?: string; pushed?: boolean }> {
-  const branchName = ps.branchName;
-  if (!branchName) return { committed: false, error: "no branch name recorded" };
-  const round = ps.reviewRound;
-  const res = await withIntegrationLock(ctx.repoRoot, () =>
-    integrate(execFn, {
-      repoRoot: ctx.repoRoot,
-      branchName,
-      worktrees,
-      // #794 — own-range selection (stacked workstreams: see workstreamBaseShas).
-      workstreamBaseShas: ps.workstreamBaseShas,
-      scratchDir: scratchDir(ctx.repoRoot, ctx.issue),
-      commitTitle: `fix(lens): round ${round} review findings`,
-      commitBody: `Addresses six-pass review findings from round ${round}.`,
-      mode: "followup",
-    }),
-  );
-  if (!res.ok) {
-    if (res.failure === "dirty-repoRoot" && res.porcelain) {
-      const outcome = await restoreRepoRoot(execFn, ctx.repoRoot, res.porcelain);
-      if (outcome.restored) {
-        const retry = await integrate(execFn, {
-          repoRoot: ctx.repoRoot,
-          branchName,
-          worktrees,
-          // #794 — same pick scope as the first pass above.
-          workstreamBaseShas: ps.workstreamBaseShas,
-          scratchDir: scratchDir(ctx.repoRoot, ctx.issue),
-          commitTitle: `fix(lens): round ${round} review findings`,
-          commitBody: `Addresses six-pass review findings from round ${round}.`,
-          mode: "followup",
-        });
-        if (!retry.ok) {
-          return {
-            committed: false,
-            error: `restored repoRoot (stash+pop) but the retry still failed: ${retry.reason}`,
-          };
-        }
-        if (retry.empty) return { committed: false };
-        return { committed: true, pushed: true };
-      }
-      return {
-        committed: false,
-        error: `dirty repoRoot at lens-fix time, not safely restorable — ${outcome.reason}. Porcelain: ${res.porcelain
-          .slice(0, 5)
-          .join("; ")}`,
-      };
-    }
-    return { committed: false, error: res.reason };
-  }
-  if (res.empty) return { committed: false };
-  return { committed: true, pushed: true };
-}
 
 /** #749/#797 — committed-work classification for the `!result.committed` branch. */
 async function handleNoCommittedFix(
@@ -226,7 +166,11 @@ export async function runAdversarial(
     pipelineState: { ...state.pipelineState, currentStep: "adversarial" },
   };
   if (!priorHadInfraFailure) {
-    next = appendEvent(next, { kind: "step-started", step: "adversarial", at: now });
+    next = appendEvent(next, {
+      kind: "step-started",
+      step: "adversarial",
+      at: now,
+    });
     if (ids.length > 1) {
       next = appendEvent(next, {
         kind: "branches-fanned-out",
@@ -268,7 +212,10 @@ export async function runAdversarial(
       if (capKill.evidence) {
         next = {
           ...next,
-          pipelineState: { ...next.pipelineState, capEvidence: capKill.evidence },
+          pipelineState: {
+            ...next.pipelineState,
+            capEvidence: capKill.evidence,
+          },
         };
       }
       return next;
@@ -382,7 +329,9 @@ export async function runAdversarial(
       }
       if (result.committed && !result.pushed) {
         try {
-          await runNetGit(execFn, "git push origin HEAD -q", { cwd: ctx.repoRoot });
+          await runNetGit(execFn, "git push origin HEAD -q", {
+            cwd: ctx.repoRoot,
+          });
         } catch (err) {
           const errMsg = `lens-fix push failed (non-blocking): ${(err as Error).message?.slice(0, 200)}`;
           trace(`work-driver: ${errMsg}`);
@@ -417,7 +366,10 @@ export async function runAdversarial(
         if (capKill.evidence) {
           next = {
             ...next,
-            pipelineState: { ...next.pipelineState, capEvidence: capKill.evidence },
+            pipelineState: {
+              ...next.pipelineState,
+              capEvidence: capKill.evidence,
+            },
           };
         }
         return next;

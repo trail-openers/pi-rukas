@@ -159,14 +159,22 @@ export async function restoreCheckout(opts: {
   // ref is data, never shell text.
   try {
     // #1095 — network call: non-interactive env + bounded wait.
-    await runNetGit(execFn, "git", { cwd: repoRoot, argv: ["fetch", "origin", "--prune"] });
+    await runNetGit(execFn, "git", {
+      cwd: repoRoot,
+      argv: ["fetch", "origin", "--prune"],
+    });
   } catch (err) {
     notes.push(`git fetch origin --prune failed: ${(err as Error).message?.slice(0, 200)}`);
     // Continue — subsequent steps may still work with stale refs.
   }
 
   // 2. The restore target — the ONE rule, shared with the handoff path.
-  const resolved = await resolveRestoreTarget({ execFn, repoRoot, mainline, startRef });
+  const resolved = await resolveRestoreTarget({
+    execFn,
+    repoRoot,
+    mainline,
+    startRef,
+  });
   notes.push(...resolved.notes);
   const target = resolved.target;
   if (!target) return notes;
@@ -175,7 +183,11 @@ export async function restoreCheckout(opts: {
   // 3. Checkout the target via the single non-forcing restore primitive.
   // Tolerates already-there; a refusal (dirty tree, detached HEAD) leaves the
   // tree as it is and the note carries the exact command to run by hand.
-  const restore = await restoreRootToRef(execFn, { repoRoot, ref: target, label: "merged" });
+  const restore = await restoreRootToRef(execFn, {
+    repoRoot,
+    ref: target,
+    label: "merged",
+  });
   if (!restore.checkedOut) {
     notes.push(`repoRoot was NOT restored to ${target}: ${restore.detail ?? "unknown error"}`);
     // A refused checkout performs no further git mutation: no pull, and no
@@ -256,7 +268,10 @@ export async function resolveRestoreTarget(opts: {
   const { execFn, repoRoot, mainline, startRef } = opts;
   const toMainline = mainline ? `restored to ${mainline}` : "no mainline to restore to";
   if (startRef === undefined) {
-    return { target: mainline, notes: [`start ref was not recorded; ${toMainline}`] };
+    return {
+      target: mainline,
+      notes: [`start ref was not recorded; ${toMainline}`],
+    };
   }
   const problem = await restoreRefProblem(execFn, repoRoot, startRef);
   if (problem === undefined) return { target: startRef, notes: [] };

@@ -15,7 +15,9 @@
  *   - is bounded by `PI_ENSEMBLE_GIT_NET_TIMEOUT_MS` (default 300000). The
  *     bound is enforced by a race, not just the exec `timeout`, because the
  *     exec callback waits for stdio to close and an ssh grandchild can hold
- *     the pipe open after git is killed. A timeout rejects with
+ *     the pipe open after git is killed. The call also passes `killGroup`, so
+ *     an executor that honours it (lens-exec) SIGKILLs the whole process group
+ *     and no ssh grandchild outlives the bound. A timeout rejects with
  *     `NetGitTimeoutError`, whose message begins "network git timed out".
  *
  * The enumeration gate (smoke-tests/test-driver-network-git-env.ts) fails if a
@@ -36,6 +38,8 @@ export type NetExec = (
     maxBuffer?: number;
     argv?: string[];
     env?: NodeJS.ProcessEnv;
+    /** Run in its own process group and kill the group on timeout (lens-exec). */
+    killGroup?: boolean;
   },
 ) => Promise<{ stdout: string; stderr?: string }>;
 
@@ -109,6 +113,7 @@ export async function runNetGit(
         cwd: opts.cwd,
         maxBuffer: opts.maxBuffer ?? 1024 * 1024,
         timeout: timeoutMs,
+        killGroup: true,
         env: netGitEnv(),
         ...(opts.argv ? { argv: opts.argv } : {}),
       }),
