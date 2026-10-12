@@ -248,9 +248,10 @@ function ctxFor(
   }
 }
 
-// C2 — mixed fan-out: one workstream routed to fix, its sibling infra. The
-// routing record is written (the fix request is not dropped) and the infra
-// sibling is left for re-entry.
+// C2 — mixed fan-out, first pass: `a` returns a parsed ISSUES_FOUND, its
+// sibling `b` never produces a verdict. Deterministic outcome: the infra
+// early-return parks on the explicit `adversarial-infra-failure` cap, and NO
+// fix request is recorded (the early-return precedes the routing block).
 {
   const a2 = tmpDir("mix-a");
   const b2 = tmpDir("mix-b");
@@ -279,13 +280,14 @@ function ctxFor(
       },
     };
     s = await runAdversarial(ctx, s, Date.now());
-    // The infra sibling exhausts its budget on the first pass, so the cycle
-    // parks on the explicit infra cap; a's fix request is not routed (see
-    // runAdversarial), and the cycle never approves.
     const tail = s.eventLog[s.eventLog.length - 1];
     assert(
-      tail?.kind === "cap-hit",
-      `C2: a mixed fan-out parks on the explicit infra cap (tail: ${tail?.kind})`,
+      tail?.kind === "cap-hit" && tail.cap === "adversarial-infra-failure",
+      `C2: a mixed first-pass fan-out parks on the explicit infra cap (tail: ${tail?.kind})`,
+    );
+    assert(
+      !s.eventLog.some((e) => e.kind === "adversarial-fix-requested"),
+      "C2: the parsed ISSUES_FOUND sibling's fix request is not recorded",
     );
     assert(
       !s.eventLog.some((e) => e.kind === "adversarial-approved"),

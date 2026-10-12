@@ -4,7 +4,7 @@
  * prefix, so the gate glob does not run it).
  */
 
-import { exec, execSync } from "node:child_process";
+import { exec, execFile, execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -14,6 +14,7 @@ import type { DriverContext } from "../../src/work-driver-context.ts";
 import { type WorkState, initialState } from "../../src/workflow-state.ts";
 
 const realExec = promisify(exec);
+const realExecFile = promisify(execFile);
 
 export function tmpDir(label: string): string {
   const dir = mkdtempSync(path.join(tmpdir(), `adv-fix-${label}-`));
@@ -118,11 +119,17 @@ export function fixCtx(
 
 /**
  * A git executor that fails any command containing `match` (a simulated
- * unreadable tree, base or HEAD) and runs every other command for real.
+ * unreadable tree, base or HEAD) and runs every other command for real. Argv-form
+ * calls (`opts.argv`, the develop step's git reads) are matched on the full
+ * command line and run without a shell, as the production executor does.
  */
 export function execFailing(match: string): NonNullable<DriverContext["verifyExecFn"]> {
   return (cmd, opts) => {
-    if (cmd.includes(match)) return Promise.reject(new Error(`simulated git failure: ${match}`));
+    const full = [cmd, ...(opts?.argv ?? [])].join(" ");
+    if (full.includes(match)) return Promise.reject(new Error(`simulated git failure: ${match}`));
+    if (opts?.argv) {
+      return realExecFile(cmd, opts.argv, { cwd: opts.cwd, maxBuffer: opts.maxBuffer });
+    }
     return realExec(cmd, { cwd: opts?.cwd, maxBuffer: opts?.maxBuffer });
   };
 }

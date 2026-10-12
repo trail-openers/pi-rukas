@@ -308,8 +308,13 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
       issue: 912,
       issueBodyFetcherFn: mockIssueBodyOk,
       adversarialLoopFn: async (params) => {
-        // task-a APPROVED in 1 round; task-b APPROVED in 2 rounds (its run
-        // reports the rounds it covered). Aggregate rounds should be max = 2.
+        // task-a APPROVED in 1 round; task-b APPROVED in 2 rounds.
+        // Aggregate rounds should be max = 2.
+        // #1114: a reportOnly call is ONE review, and a round-1 ISSUES_FOUND
+        // would route task-b into a fix pass that needs a real developer diff in
+        // a real worktree (this fixture has none, and dispatchFn throws on any
+        // developer dispatch). So task-b's second round is carried by
+        // roundsExecuted, not by a second loop call.
         if (params.workCwd?.endsWith("task-a")) {
           return mkResult({
             role: "adversarial-developer",

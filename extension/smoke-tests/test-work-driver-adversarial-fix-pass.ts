@@ -268,7 +268,9 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
         } as DispatchResult;
       },
     };
-    const st = fixState(dir, []);
+    // The workstream is declared on the file the comment lives in: a finding
+    // widens only within a declared or already-changed directory.
+    const st = fixState(dir, ["extension/src/x.ts"]);
     const commentFinding: WorkState = {
       ...st,
       eventLog: st.eventLog.map((e) =>
@@ -299,14 +301,14 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
 
 // H — a named path is a whole path token: `data.txt` does not name `a.txt`.
 {
-  const named = namedPaths("data.txt: fix it; a.txt: and this", ["a.txt", "data.txt", "x.txt"]);
+  const named = namedPaths("data.txt: fix it; a.txt: and this", ["a.txt", "data.txt", "x.txt"], ["a.txt"]);
   assert(
     named.join(",") === "a.txt,data.txt",
     `H: only whole-token path names are widened (got ${named.join(",")})`,
   );
   assert(
-    namedPaths("see data.txt.", ["a.txt"]).length === 0 &&
-      namedPaths("see (a.txt).", ["a.txt"]).join() === "a.txt",
+    namedPaths("see data.txt.", ["a.txt"], ["a.txt"]).length === 0 &&
+      namedPaths("see (a.txt).", ["a.txt"], ["a.txt"]).join() === "a.txt",
     "H: punctuation around a path token still matches, a longer name does not",
   );
 }

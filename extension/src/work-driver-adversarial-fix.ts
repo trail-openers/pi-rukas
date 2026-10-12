@@ -272,6 +272,20 @@ function withFixPassReport(
   };
 }
 
+/** Discloses a fact on the handoff report without parking the pass. */
+function noteFixPass(state: WorkState, note: string, now: number): WorkState {
+  return {
+    ...state,
+    pipelineState: {
+      ...state.pipelineState,
+      plumbReports: [
+        ...(state.pipelineState.plumbReports ?? []),
+        { step: "develop", role: "driver", body: `adversarial fix pass: ${note}`, at: now },
+      ],
+    },
+  };
+}
+
 function parkFixPass(
   state: WorkState,
   pending: readonly PendingFix[],
@@ -371,11 +385,14 @@ export async function runAdversarialFixPass(
   if (post.reason) return parkFixPass(restored, pending, post.reason, now);
   // The operator's kill switch is NOT a failed check: a disabled check reads
   // NOT CHECKED (as every other reader renders it) and the pass proceeds with
-  // that disclosed in the handoff, never parked.
+  // that disclosed on the handoff, never parked. Only a check that was asked
+  // for and could not run parks.
+  let kept = restored;
   if (!commentRetentionEnabled()) {
-    trace(
-      "work-driver: fix pass comment retention disabled (PI_ENSEMBLE_COMMENT_RETENTION=0) — NOT CHECKED",
-    );
+    const note =
+      "comment retention NOT CHECKED (PI_ENSEMBLE_COMMENT_RETENTION=0) — the pass proceeded without the origin/main comment check";
+    trace(`work-driver: ${note}`);
+    kept = noteFixPass(restored, note, now);
   } else {
     for (const p of plans) {
       const lost = await roundComments(
@@ -410,5 +427,5 @@ export async function runAdversarialFixPass(
     workstreamId: p.workstreamId,
     round: p.round,
   }));
-  return appendEvent(restored, ...applied);
+  return appendEvent(kept, ...applied);
 }

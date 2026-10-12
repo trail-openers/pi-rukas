@@ -32,30 +32,40 @@ export interface PassPlan {
   /** Changes against the base commit before the pass (the N=1 baseline). */
   before: TreeChanges;
   declared: string[];
-  /** Tracked paths a finding names, not protected (see neverWidened). */
+  /** Tracked, unprotected paths a finding names in an anchor's directory (see namedPaths). */
   named: string[];
   /** Named paths that widen a declared fence for this pass only. */
   widened: string[];
 }
 
-/** Paths a finding may never widen the fence to: doctrine, guards and the install surface. */
-function neverWidened(p: string): boolean {
-  return (
-    protectedPathsIn([p]).length > 0 ||
-    /^extension\/src\/permission[^/]*\.ts$/.test(p) ||
-    /^extension\/src\/[^/]*guard[^/]*\.ts$/.test(p) ||
-    p === "install.sh" ||
-    p === "build.sh" ||
-    p.startsWith("bin/")
-  );
+/** The directory a repo-relative path lives in ("" at the root). */
+function dirOfPath(p: string): string {
+  const i = p.lastIndexOf("/");
+  return i < 0 ? "" : p.slice(0, i);
 }
 
 /**
- * Named paths: tracked at base, widenable, and named in a finding as a whole
- * path token (`data.txt` does not name `a.txt`).
+ * Named paths a fix pass may widen its fence onto. Generic, not a project list:
+ * a finding-named path qualifies only if it is (a) tracked at base, (b) not
+ * protected per `protectedPathsIn` (the single source of protected paths), and
+ * (c) in the same directory as an anchor — a declared path or a file the
+ * workstream already changed. A directory entry (`src/foo/`) is its own
+ * directory. Named as a whole path token (`data.txt` does not name `a.txt`).
  */
-export function namedPaths(findings: string, tracked: readonly string[]): string[] {
-  return tracked.filter((p) => !neverWidened(p) && pathTokenIn(findings, p));
+export function namedPaths(
+  findings: string,
+  tracked: readonly string[],
+  anchors: readonly string[],
+): string[] {
+  const dirs = new Set(
+    anchors.map((a) => {
+      const c = cleaned(a);
+      return c.endsWith("/") ? c.slice(0, -1) : dirOfPath(c);
+    }),
+  );
+  return tracked.filter(
+    (p) => protectedPathsIn([p]).length === 0 && dirs.has(dirOfPath(p)) && pathTokenIn(findings, p),
+  );
 }
 
 function pathTokenIn(text: string, p: string): boolean {
@@ -93,7 +103,8 @@ export async function planFixPass(
     const before = await treeChanges(execFn, worktree, ps.baseSha ?? "");
     if (!before.ok) return fenced(before.reason);
     const declared = ps.workstreams?.[p.workstreamId]?.paths ?? [];
-    const named = namedPaths(p.findings, tracked.value);
+    // Widening anchors: the declared fence, and what the workstream already changed.
+    const named = namedPaths(p.findings, tracked.value, [...declared, ...before.value.names]);
     plans.push({
       id: p.workstreamId,
       worktree,

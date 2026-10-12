@@ -3,7 +3,8 @@
  * #1114 — the adversarial fix pass fails closed. Every read the fence needs
  * (HEAD, the base tree, the worktree diff, comment retention) either succeeds
  * or parks the pass with a named reason before (or after) the developer runs;
- * a finding never widens the fence onto doctrine, guards or the install surface.
+ * a finding widens the fence only within a declared or already-changed
+ * directory, and never onto a protected path (protectedPathsIn).
  */
 
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -36,13 +37,13 @@ function assert(cond: boolean, msg: string) {
 process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS = "0";
 process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
 
-/** Runs a fix pass and reports the parked evidence (undefined when it applied). */
+/** Runs a fix pass and reports the parked evidence (undefined when it applied) and the handoff notes. */
 async function passOf(
   dir: string,
   st: ReturnType<typeof fixState>,
   onDev: (d: string) => void,
   verifyExecFn?: Parameters<typeof fixCtx>[2],
-): Promise<{ parked?: string; applied: boolean; devs: number }> {
+): Promise<{ parked?: string; applied: boolean; devs: number; notes: string[] }> {
   let devs = 0;
   const ctx = fixCtx(
     dir,
@@ -59,6 +60,7 @@ async function passOf(
     parked: tail?.kind === "cap-hit" ? tail.evidence : undefined,
     applied,
     devs,
+    notes: out.pipelineState.plumbReports.map((r) => r.body),
   };
 }
 
@@ -143,28 +145,40 @@ async function passOf(
   }
 }
 
-// B2 — a comment-retention read that cannot run (git grep fails) is not
-// cleared: the pass parks (the develop gate's own comment check or the fix
-// pass's NOT CHECKED park, whichever reads first).
+// B2 — a comment-retention read that cannot run is not cleared. The pass
+// removes an origin/main comment line, so the check must read the head tree;
+// that read (git grep) fails, and the pass parks as NOT CHECKED. The develop
+// gate treats an infra error as a note, never a failure, so this park is the
+// fix pass's own.
 {
   const dir = repoWithFile("fc-comment");
   try {
+    mkdirSync(path.join(dir, "extension", "src"), { recursive: true });
+    writeFileSync(
+      path.join(dir, "extension", "src", "x.ts"),
+      "export const x = 1;\n// keep this comment about the parser\nexport const y = 2;\n",
+    );
+    git(dir, "add -A");
+    git(dir, 'commit -q -m "x"');
     const r = await passOf(
       dir,
-      fixState(dir, ["a.txt"]),
-      () => devCommit(dir, "a.txt", "two\n"),
+      fixState(dir, ["extension/src/x.ts"]),
+      () => devCommit(dir, "extension/src/x.ts", "export const x = 1;\nexport const y = 2;\n"),
       execFailing("git grep"),
     );
     assert(
-      r.parked !== undefined && !r.applied,
-      `B2: an unavailable comment check is not cleared (got ${r.parked})`,
+      r.parked?.includes("comment retention could not be checked") === true &&
+        r.parked.includes("NOT CHECKED") &&
+        !r.applied,
+      `B2: an unavailable comment check parks as NOT CHECKED (got ${r.parked})`,
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }
 
-// B2b — the operator's kill switch is not a failed check: the pass proceeds.
+// B2b — the operator's kill switch is not a failed check: the pass proceeds,
+// and the handoff records that the check was NOT CHECKED.
 {
   const dir = repoWithFile("fc-hatch");
   process.env.PI_ENSEMBLE_COMMENT_RETENTION = "0";
@@ -173,6 +187,10 @@ async function passOf(
     assert(
       r.applied && r.parked === undefined,
       `B2b: PI_ENSEMBLE_COMMENT_RETENTION=0 does not park a fix pass (got ${r.parked})`,
+    );
+    assert(
+      r.notes.some((n) => n.includes("NOT CHECKED (PI_ENSEMBLE_COMMENT_RETENTION=0)")),
+      "B2b: the handoff records the comment check as NOT CHECKED",
     );
   } finally {
     delete process.env.PI_ENSEMBLE_COMMENT_RETENTION;
@@ -214,50 +232,36 @@ async function passOf(
   assert(approved.ok && !approved.infra, "B5: a parsed APPROVED is still an approval");
 }
 
-// C — finding-named paths never widen the fence onto doctrine, guards or the
-// install surface; a dispatch that touches them parks.
+// C — a finding-named path widens the fence only within a declared or
+// already-changed directory, and never onto a protected path. `agents.json`
+// shares the root directory with the declared `a.txt`, so only the protection
+// check (protectedPathsIn) keeps it out of scope.
 {
   const dir = repoWithFile("fc-protected");
   try {
     mkdirSync(path.join(dir, "extension", "src"), { recursive: true });
-    writeFileSync(path.join(dir, "install.sh"), "#!/bin/sh\n");
-    writeFileSync(path.join(dir, "extension", "src", "permission-guard.ts"), "export {};\n");
+    writeFileSync(path.join(dir, "agents.json"), "{}\n");
+    writeFileSync(path.join(dir, "extension", "src", "x.ts"), "export {};\n");
     git(dir, "add -A");
     git(dir, 'commit -q -m "protected"');
-    const tracked = [
-      "install.sh",
-      "build.sh",
-      "extension/src/permission-guard.ts",
-      "extension/src/x-guard-check.ts",
-      "bin/run.sh",
-      ".github/workflows/ci.yml",
-      "a.txt",
-    ];
-    const findings =
-      "install.sh build.sh extension/src/permission-guard.ts extension/src/x-guard-check.ts bin/run.sh .github/workflows/ci.yml a.txt";
+    const tracked = ["a.txt", "b.txt", "agents.json", ".github/workflows/ci.yml", "extension/src/x.ts"];
+    const findings = "agents.json .github/workflows/ci.yml extension/src/x.ts b.txt a.txt";
+    const widened = namedPaths(findings, tracked, ["a.txt"]).join(",");
     assert(
-      namedPaths(findings, tracked).join(",") === "a.txt",
-      `C: only the ordinary path is widenable (got ${namedPaths(findings, tracked).join(",")})`,
+      widened === "a.txt,b.txt",
+      `C: only same-directory, unprotected paths are widenable (got ${widened})`,
     );
-    const st = fixState(
-      dir,
-      ["a.txt"],
-      "install.sh: fix the shebang; extension/src/permission-guard.ts: and this",
-    );
+    const st = fixState(dir, ["a.txt"], "a.txt: fix it; agents.json: and this; extension/src/x.ts: and that");
     const r = await passOf(dir, st, (d) => {
-      writeFileSync(path.join(d, "install.sh"), "#!/bin/sh\necho two\n");
-      writeFileSync(
-        path.join(d, "extension", "src", "permission-guard.ts"),
-        "export const g = 2;\n",
-      );
+      writeFileSync(path.join(d, "a.txt"), "two\n");
+      writeFileSync(path.join(d, "agents.json"), '{"auto": true}\n');
+      writeFileSync(path.join(d, "extension", "src", "x.ts"), "export const x = 2;\n");
       git(d, "add -A");
       git(d, 'commit -q -m "fix"');
     });
     assert(
-      !r.applied &&
-        r.parked?.includes("install.sh") === true &&
-        r.parked.includes("permission-guard.ts"),
-      `C: a finding naming protected paths does not widen the fence (got ${r.parked})`,
+      !r.applied && r.parked?.includes("agents.json") === true,
+      `C: a finding naming a protected path does not widen the fence (got ${r.parked})`,
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

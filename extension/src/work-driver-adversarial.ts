@@ -163,9 +163,10 @@ export async function runAdversarial(
 
   // #1114 — a parsed non-approving verdict routes its workstream back to
   // develop (a fix pass), but only when every sibling is approved, rejected
-  // or infra-failed. A mixed fan-out with an infra sibling is not routed: the
-  // aggregate below parks on the explicit cap, and the fix request is not
-  // recorded (the handoff names the infra failure).
+  // or infra-failed. On a first pass a mixed fan-out with an infra sibling
+  // never reaches this point: the `parkedInfra` early-return above parks on
+  // the explicit infra cap first, so the fix request is not recorded and the
+  // handoff names the infra failure.
   const fixEvents = fixRequestEvents(outcomes, Date.now());
   if (fixEvents.length > 0 && outcomes.every((o) => o.ok || o.infra)) {
     trace(

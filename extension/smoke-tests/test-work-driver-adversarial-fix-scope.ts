@@ -2,11 +2,13 @@
 /**
  * #1114 — the fix pass's fence covers everything the developer leaves in the
  * worktree, not only committed work; an unfenced (N=1, undeclared) workstream
- * is held to the files it already changed plus the files its findings name;
+ * is held to the files it already changed plus the files its findings name in
+ * those files' directories;
  * and a declared fence's fan-out ceiling is computed from the DECLARED paths.
  */
 
-import { rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import {
   devCommit,
   devWrite,
@@ -86,9 +88,11 @@ async function runPass(dir: string, st: WorkState, onDev: (d: string) => void) {
 {
   const dir = repoWithFile("fs-unfenced-ok");
   try {
-    const r = await runPass(dir, fixState(dir, [], "a.txt: change one to two"), (d) =>
-      devCommit(d, "a.txt", "two\n"),
-    );
+    const st = fixState(dir, [], "a.txt: change one to two");
+    // The first develop pass already changed a.txt: that is the anchor a
+    // finding-named file in the same directory widens onto (see J below).
+    devCommit(dir, "a.txt", "mid\n");
+    const r = await runPass(dir, st, (d) => devCommit(d, "a.txt", "two\n"));
     assert(r.applied, "B8: an unfenced pass changing the file its findings name applies");
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -125,6 +129,76 @@ async function runPass(dir: string, st: WorkState, onDev: (d: string) => void) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
     }
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// J — the widening rule is directory-scoped and generic (no project list). A
+// finding-named path widens only when it shares a directory with a declared
+// path or a file the workstream already changed.
+{
+  // J1 — a verifier module in another directory does not widen; the change parks.
+  const dir = repoWithFile("fs-other-dir");
+  try {
+    mkdirSync(path.join(dir, "lib"), { recursive: true });
+    writeFileSync(path.join(dir, "lib", "verify.ts"), "export {};\n");
+    git(dir, "add -A");
+    git(dir, 'commit -q -m "verifier"');
+    const st = fixState(dir, ["extension/src/a.ts"], "lib/verify.ts: fix the check");
+    const r = await runPass(dir, st, (d) => {
+      writeFileSync(path.join(d, "lib", "verify.ts"), "export const v = 2;\n");
+      git(d, "add -A");
+      git(d, 'commit -q -m "fix"');
+    });
+    assert(
+      !r.applied && r.parked.includes("lib/verify.ts"),
+      `J1: a finding naming a file in another directory does not widen the fence (got "${r.parked}")`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+{
+  // J2 — a file in the declared file's directory widens and the pass applies.
+  const dir = repoWithFile("fs-same-dir");
+  try {
+    mkdirSync(path.join(dir, "lib"), { recursive: true });
+    writeFileSync(path.join(dir, "lib", "parse.ts"), "export {};\n");
+    writeFileSync(path.join(dir, "lib", "check.ts"), "export {};\n");
+    git(dir, "add -A");
+    git(dir, 'commit -q -m "lib"');
+    const st = fixState(dir, ["lib/parse.ts"], "lib/parse.ts: fix; lib/check.ts: also");
+    const r = await runPass(dir, st, (d) => {
+      writeFileSync(path.join(d, "lib", "parse.ts"), "export const p = 2;\n");
+      writeFileSync(path.join(d, "lib", "check.ts"), "export const c = 2;\n");
+      git(d, "add -A");
+      git(d, 'commit -q -m "fix"');
+    });
+    assert(
+      r.applied,
+      `J2: a finding naming a same-directory file widens the fence (got "${r.parked}")`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+{
+  // J3 — the install surface is not special-cased: a root file named by a
+  // finding widens a root-declared fence exactly like any other tracked file.
+  const dir = repoWithFile("fs-install");
+  try {
+    writeFileSync(path.join(dir, "install.sh"), "#!/bin/sh\n");
+    git(dir, "add -A");
+    git(dir, 'commit -q -m "install"');
+    const st = fixState(dir, ["a.txt"], "a.txt: fix; install.sh: and this");
+    const r = await runPass(dir, st, (d) => {
+      writeFileSync(path.join(d, "a.txt"), "two\n");
+      writeFileSync(path.join(d, "install.sh"), "#!/bin/sh\necho two\n");
+      git(d, "add -A");
+      git(d, 'commit -q -m "fix"');
+    });
+    assert(r.applied, `J3: a same-directory root file named by a finding widens (got "${r.parked}")`);
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }
