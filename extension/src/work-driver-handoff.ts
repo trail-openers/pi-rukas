@@ -301,7 +301,9 @@ export async function runHandoff(
       const ok = await applyIssueLabelDualTarget(forge, ctx.issue);
       const verified = ok || (await verifyHandoffLabel(forge, "issue", ctx.issue));
       issueLabelApplied = verified;
-      if (verified) labelApplied = true;
+      // Both targets or nothing: the issue label alone must not report the
+      // PR's failed label as applied (#1219).
+      labelApplied = verified && prLabelApplied === true;
     }
   }
   // #674 — carry the consolidation outcome into the handoff-emitted event so the
@@ -361,7 +363,7 @@ export async function runHandoff(
     },
   };
   trace(
-    `work-driver: handoff for issue #${ctx.issue} (${target}) — commentUrl=${commentUrl ?? "?"} label=${labelApplied}`,
+    `work-driver: handoff for issue #${ctx.issue} (${target}) — commentUrl=${commentUrl ?? "NOT POSTED"} label=${labelApplied}${prNumber ? ` (issue=${issueLabelApplied === true} pr=${prLabelApplied === true})` : ""}`,
   );
   // #799 — final drain: the handoff ops child may outlive the dispatch bound
   // (its slow watch keeps recording until it settles), and the driver's
