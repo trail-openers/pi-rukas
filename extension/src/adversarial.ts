@@ -80,10 +80,11 @@ export async function runAdversarialLoop(
     branch?: string;
     /**
      * #1114 — exactly ONE reviewer dispatch: no developer dispatch, no fix
-     * round, no review-ledger write. The result carries the parsed verdict in
-     * `adversarialRounds` and its findings in `text`; `loopOutcome` is NOT a
-     * decision here (the driver decides from the round record). An unparsed
-     * verdict is an infrastructure outcome, never a verdict.
+     * round. The result carries the parsed verdict in `adversarialRounds` and
+     * its findings in `text`; the driver routes from the round record. The
+     * review-ledger entry is still written (#912) with `loopOutcome` set to
+     * `approved` on a pass and `rejected` otherwise. An unparsed verdict is an
+     * infrastructure outcome, never a verdict.
      */
     reportOnly?: boolean;
     /** #1114 — the round number a reportOnly review carries (prompt + record). Default 1. */
@@ -306,9 +307,6 @@ export async function runAdversarialLoop(
   const priorFindings: string[] = [];
 
   const firstRound = params.reportRound ?? 1;
-  // #1114 — a reportOnly call records its round in the driver's event log, so
-  // ledger writes are skipped there (the driver decides; see `record` below).
-  const record = (r: DispatchResult): DispatchResult => (params.reportOnly ? r : ledgerWrite(r));
   for (let round = firstRound; round <= MAX_ROUNDS; round++) {
     if (signal.aborted) break;
     if (round > firstRound && getDiff) {
@@ -351,14 +349,14 @@ export async function runAdversarialLoop(
     );
     const advCls = classifyDispatchOutcome(adv);
     if (advCls.cause !== "success") {
-      return record(infraFailureResult(round, "review", adv, advCls, infraCtxNow()));
+      return ledgerWrite(infraFailureResult(round, "review", adv, advCls, infraCtxNow()));
     }
 
     const verdict = parseVerdict(adv.text);
     rounds.push({ round, verdict, ms: adv.ms });
     if (params.reportOnly) {
       if (!verdict.verdictParsed) {
-        return record(
+        return ledgerWrite(
           infraFailureResult(
             round,
             "review",
@@ -368,16 +366,22 @@ export async function runAdversarialLoop(
           ),
         );
       }
-      return synthesizeResult({
-        ok: true,
-        loopOutcome: "approved",
-        text: verdict.findings,
-        ms: Date.now() - start,
-        usage,
-        transcriptPath: lastTranscript,
-        model: lastModel,
-        adversarialRounds: toRoundRecords(rounds),
-      });
+      // #912 — the review ledger keys on the latest entry per branch, so every
+      // reviewed round records its verdict: a pass is `approved`, anything the
+      // driver will route back or reject is `rejected` (replaced by a later pass).
+      const passed = decideLoopAction(verdict.status, round, MAX_ROUNDS, true) === "pass";
+      return ledgerWrite(
+        synthesizeResult({
+          ok: true,
+          loopOutcome: passed ? "approved" : "rejected",
+          text: verdict.findings,
+          ms: Date.now() - start,
+          usage,
+          transcriptPath: lastTranscript,
+          model: lastModel,
+          adversarialRounds: toRoundRecords(rounds),
+        }),
+      );
     }
     const action = decideLoopAction(verdict.status, round, MAX_ROUNDS, verdict.verdictParsed);
     if (action === "incomplete") {

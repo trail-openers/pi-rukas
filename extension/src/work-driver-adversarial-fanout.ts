@@ -296,6 +296,8 @@ export async function fanOutAdversarial(
   // re-runs only the infra-failed ones while their budget holds (#486); a
   // normal invocation runs what still needs a review (first review, or a fix
   // pass applied since the last one). Everything else is a survivor below.
+  // A permanent failure stops the retry loop instead of re-running siblings
+  // forever; preserved outcomes keep the aggregate honest.
   const runSet = priorHadInfraFailure
     ? ids.filter((id) => {
         const prev = priorOutcomes.get(id);

@@ -185,7 +185,9 @@ export function survivorsOf(
   return ids
     .filter((id) => !runSet.includes(id))
     .flatMap((id) => {
-      const prev = priorOutcomes.get(id) ?? (ids.length === 1 ? "approved" : undefined);
+      const prev =
+        priorOutcomes.get(id) ??
+        (ids.length === 1 ? lastReviewVerdict(state.eventLog, id) : undefined);
       if (prev !== "approved" && prev !== "rejected" && prev !== "skipped-empty-diff") return [];
       const findings = [...state.eventLog]
         .reverse()
@@ -210,9 +212,40 @@ export function survivorsOf(
     });
 }
 
-/** Named paths: tracked at base, outside the protected set, and verbatim in a finding. */
+/**
+ * Named paths: tracked at base, outside the protected set, and named in a
+ * finding as a whole path token (`data.txt` does not name `a.txt`).
+ */
 export function namedPaths(findings: string, tracked: readonly string[]): string[] {
-  return tracked.filter((p) => protectedPathsIn([p]).length === 0 && findings.includes(p));
+  return tracked.filter(
+    (p) => protectedPathsIn([p]).length === 0 && pathTokenIn(findings, p),
+  );
+}
+
+function pathTokenIn(text: string, p: string): boolean {
+  const escaped = p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![\\w./-])${escaped}(?![\\w/-]|\\.\\w)`).test(text);
+}
+
+/**
+ * The verdict a single-workstream cycle's last parsed review reached. Such a
+ * cycle keeps no per-workstream outcome event, so the log is the only record.
+ */
+function lastReviewVerdict(
+  eventLog: readonly WorkEvent[],
+  workstreamId: string,
+): "approved" | "rejected" | undefined {
+  const last = [...eventLog]
+    .reverse()
+    .find(
+      (e): e is Extract<WorkEvent, { kind: "adversarial-round" }> =>
+        e.kind === "adversarial-round" && e.verdictParsed && keyOf(e.workstreamId) === workstreamId,
+    );
+  if (!last) return undefined;
+  const action = decideLoopAction(last.status, last.round, MAX_ROUNDS, true);
+  if (action === "pass") return "approved";
+  if (action === "reject") return "rejected";
+  return undefined;
 }
 
 async function trackedPaths(

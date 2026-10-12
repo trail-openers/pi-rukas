@@ -12,7 +12,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DispatchResult } from "../src/types.ts";
-import { pendingFixes, runAdversarialFixPass } from "../src/work-driver-adversarial-fix.ts";
+import {
+  namedPaths,
+  pendingFixes,
+  runAdversarialFixPass,
+  survivorsOf,
+} from "../src/work-driver-adversarial-fix.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
 
@@ -312,6 +317,45 @@ function fixState(dir: string, paths: string[]): WorkState {
     assert(
       out.pipelineState.plumbReports.some((r) => r.body.includes("origin/main comment")),
       "G: the handoff names the removed comment",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// H — a named path is a whole path token: `data.txt` does not name `a.txt`.
+{
+  const named = namedPaths("data.txt: fix it; a.txt: and this", ["a.txt", "data.txt", "x.txt"]);
+  assert(
+    named.join(",") === "a.txt,data.txt",
+    `H: only whole-token path names are widened (got ${named.join(",")})`,
+  );
+  assert(
+    namedPaths("see data.txt.", ["a.txt"]).length === 0 &&
+      namedPaths("see (a.txt).", ["a.txt"]).join() === "a.txt",
+    "H: punctuation around a path token still matches, a longer name does not",
+  );
+}
+
+// I — a single-workstream cycle that ended on a round-3 CRITICAL reject is not
+// recovered as approved when its survivor outcome is rebuilt from the log.
+{
+  const dir = tmpDir("survivor");
+  try {
+    const log: WorkState["eventLog"] = [
+      { kind: "adversarial-round", at: 1, round: 1, status: "ISSUES_FOUND", verdictParsed: true },
+      { kind: "adversarial-fix-requested", at: 2, workstreamId: "default", round: 1, findings: "r1" },
+      { kind: "adversarial-fix-applied", at: 3, workstreamId: "default", round: 1 },
+      { kind: "adversarial-round", at: 4, round: 2, status: "ISSUES_FOUND", verdictParsed: true },
+      { kind: "adversarial-fix-requested", at: 5, workstreamId: "default", round: 2, findings: "r2" },
+      { kind: "adversarial-fix-applied", at: 6, workstreamId: "default", round: 2 },
+      { kind: "adversarial-round", at: 7, round: 3, status: "CRITICAL_ISSUES_FOUND", verdictParsed: true },
+    ];
+    const st = singleState(dir, log);
+    const survivors = survivorsOf(st, ["default"], [], new Map());
+    assert(
+      survivors.length === 1 && survivors[0]?.ok === false && survivors[0]?.priorVerdict === "rejected",
+      `I: a rejected single workstream stays rejected (got ${JSON.stringify(survivors.map((s) => [s.ok, s.priorVerdict]))})`,
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
