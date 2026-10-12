@@ -82,6 +82,10 @@ export function fmtEvent(e: WorkEvent): string {
       return `  adversarial-round · round ${e.round} · ${e.status}${e.workstreamId ? ` · [${e.workstreamId}]` : ""}${e.verdictParsed ? "" : " · (unparsed — parser default, not a reviewer verdict)"}`;
     case "adversarial-workstream-outcome":
       return `  adversarial-workstream-outcome · [${e.workstreamId}] · ${e.outcome} · ${e.roundsExecuted} round(s)`;
+    case "adversarial-fix-requested":
+      return `  adversarial-fix-requested · [${e.workstreamId}] · round ${e.round} · routed to develop`;
+    case "adversarial-fix-applied":
+      return `  adversarial-fix-applied · [${e.workstreamId}] · round ${e.round} · back to review`;
     case "lens-approved":
       return `  lens-approved · round ${e.round}`;
     case "lens-issues-found":

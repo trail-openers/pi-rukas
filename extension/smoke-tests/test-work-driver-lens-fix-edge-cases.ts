@@ -142,7 +142,7 @@ setupSpawnGuard();
         throw new Error(`unexpected dispatch: ${spec.role} / ${opts?.label}`);
       },
       adversarialLoopFn: async () =>
-        mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", text: "APPROVED." }),
+        mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }], text: "APPROVED." }),
       lensReviewFn: async () => mkLensSummary({ verdict: "APPROVED" }),
     };
     await runWorkDriver(ctx).catch(() => {});
@@ -234,7 +234,7 @@ setupSpawnGuard();
         throw new Error(`unexpected dispatch: ${spec.role} / ${opts?.label}`);
       },
       adversarialLoopFn: async () =>
-        mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", text: "APPROVED." }),
+        mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }], text: "APPROVED." }),
       lensReviewFn: async () => mkLensSummary({ verdict: "APPROVED" }),
     };
     await runWorkDriver(ctx).catch(() => {});
@@ -341,6 +341,7 @@ setupSpawnGuard();
           role: "adversarial-loop",
           ok: true,
           loopOutcome: "approved",
+          adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
           text: "Adversarial APPROVED.",
         });
       },
@@ -452,7 +453,7 @@ setupSpawnGuard();
         throw new Error(`unexpected dispatch: ${opts?.label}`);
       },
       adversarialLoopFn: async () =>
-        mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", text: "APPROVED." }),
+        mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }], text: "APPROVED." }),
       lensReviewFn: async () => mkLensSummary({ verdict: "APPROVED" }),
     };
     await runWorkDriver(ctx).catch(() => {});

@@ -184,7 +184,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
       tokens: 1234,
       at: Date.now(),
     });
-    return { role: "adversarial-loop", ok: true, text: "VERDICT: APPROVED\n\nNo issues.", toolUses: [], ms: 1, exitCode: 0 };
+    return { role: "adversarial-loop", ok: true, text: "VERDICT: APPROVED\n\nNo issues.", toolUses: [], ms: 1, exitCode: 0, adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }] };
   };
   const ctx: any = {
     pi: { sendUserMessage: () => {} },

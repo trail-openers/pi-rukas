@@ -353,6 +353,14 @@ export function nextStep(state: WorkState): StepDecision {
   // always carries its own routing and is handled above).
   if (ps.currentStep === "merged" || ps.currentStep === "handoff") return { kind: "done" };
 
+  // #1114 — a parsed non-approving verdict routes that workstream back to
+  // develop as a fix pass; the develop step answers with its own gates.
+  if (lastEvent?.kind === "adversarial-fix-requested") return { kind: "step", step: "develop" };
+  // A passing fix pass returns the workstream to the review gate explicitly —
+  // not by falling through the linear table, which keys on currentStep and
+  // would silently change if the fix pass ever left currentStep elsewhere.
+  if (lastEvent?.kind === "adversarial-fix-applied") return { kind: "step", step: "adversarial" };
+
   // Adversarial verdict routes the next step.
   if (lastEvent?.kind === "adversarial-approved") {
     // The post-adversarial transition depends on what step we came FROM,

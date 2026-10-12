@@ -50,6 +50,8 @@ export interface DevelopRunState {
         outOfScope: string[];
         dependsOn?: string[];
         integrationTest?: string;
+        /** #1114 — the adversarial findings a fix pass resolves (absent on a first pass). */
+        fixFindings?: string;
       }
     | undefined
   >;
@@ -251,6 +253,7 @@ export function makeRunOneWorkstream(
               siblingWorkstreams,
               verifyCmd,
               issueBodyArtifactPaths,
+              ws?.fixFindings,
             ),
             cwd,
           },

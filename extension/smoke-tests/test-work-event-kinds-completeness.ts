@@ -154,6 +154,8 @@ const everyKindEvent: WorkEvent[] = [
     at: 1,
     workstreamId: "default",
   },
+  { kind: "adversarial-fix-requested", at: 1, workstreamId: "default", round: 1, findings: "f" },
+  { kind: "adversarial-fix-applied", at: 1, workstreamId: "default", round: 1 },
   { kind: "converge-redispatch", step: "develop", at: 1 },
   { kind: "cap-hit", at: 1, cap: "round-cap", reviewRound: 3, nextStep: "ci" },
   { kind: "plumb-report", at: 1, step: "develop", role: "developer", body: "b" },

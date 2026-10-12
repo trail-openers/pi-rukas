@@ -42,6 +42,10 @@ export interface AdversarialOutcome {
   /** #486 — a prior run's VERDICT outcome (approved / rejected / skipped-empty-diff). Final and NOT re-run on re-entry; the event loop below re-emits the prior verdict from this record so the log stays complete after the splice replaces the prior pass's batch. */
   priorVerdict?: "approved" | "rejected" | "skipped-empty-diff";
   rejectionText?: string;
+  /** #1114 — a parsed non-terminal verdict: this workstream goes back to develop as a fix pass. */
+  fixRequested?: boolean;
+  /** #1114 — the reviewer's findings for a fix pass (the develop prompt's data). */
+  fixFindings?: string;
   /** Non-blocking findings outstanding when this workstream passed. */
   passFindings?: string;
   errorTail?: string;
@@ -56,4 +60,20 @@ export interface AdversarialOutcome {
   completionEvent?: WorkEvent;
   failureEvent?: WorkEvent;
   branchEvent?: WorkEvent;
+}
+
+/** The `outcome` a per-workstream event records. */
+export type WorkstreamOutcome = Extract<
+  WorkEvent,
+  { kind: "adversarial-workstream-outcome" }
+>["outcome"];
+
+/** The outcome label one workstream's event records. Total: every outcome has exactly one. */
+export function outcomeOf(o: AdversarialOutcome): WorkstreamOutcome {
+  if (o.priorVerdict) return o.priorVerdict;
+  if (o.fixRequested) return "fix-requested";
+  if (o.skipped) return "skipped-empty-diff";
+  if (o.threw) return "dispatch-failed";
+  if (o.infra) return "infra-failure";
+  return o.ok ? "approved" : "rejected";
 }
