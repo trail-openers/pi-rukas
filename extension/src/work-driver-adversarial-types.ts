@@ -42,6 +42,10 @@ export interface AdversarialOutcome {
   /** #486 — a prior run's VERDICT outcome (approved / rejected / skipped-empty-diff). Final and NOT re-run on re-entry; the event loop below re-emits the prior verdict from this record so the log stays complete after the splice replaces the prior pass's batch. */
   priorVerdict?: "approved" | "rejected" | "skipped-empty-diff";
   rejectionText?: string;
+  /** #1114 — a parsed non-terminal verdict: this workstream goes back to develop as a fix pass. */
+  fixRequested?: boolean;
+  /** #1114 — the reviewer's findings for a fix pass (the develop prompt's data). */
+  fixFindings?: string;
   /** Non-blocking findings outstanding when this workstream passed. */
   passFindings?: string;
   errorTail?: string;

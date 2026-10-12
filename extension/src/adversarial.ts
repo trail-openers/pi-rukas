@@ -25,7 +25,7 @@ import { trace } from "./trace.ts";
 import type { AdversarialVerdict, DispatchFailureCause, DispatchResult } from "./types.ts";
 import { ADVERSARIAL_TRANSIENT_MAX_RETRIES, isRateLimit429Msg } from "./types.ts";
 import type { ExecFn } from "./worktree.ts";
-const MAX_ROUNDS = 3;
+export const MAX_ROUNDS = 3;
 
 /**
  * Wall-clock budget for all retry attempts in a single adversarial phase. When
@@ -78,6 +78,16 @@ export async function runAdversarialLoop(
      * recover it). When absent the writer recovers the branch from `HEAD`
      * and skips (traces) on a detached head. */
     branch?: string;
+    /**
+     * #1114 — exactly ONE reviewer dispatch: no developer dispatch, no fix
+     * round, no review-ledger write. The result carries the parsed verdict in
+     * `adversarialRounds` and its findings in `text`; `loopOutcome` is NOT a
+     * decision here (the driver decides from the round record). An unparsed
+     * verdict is an infrastructure outcome, never a verdict.
+     */
+    reportOnly?: boolean;
+    /** #1114 — the round number a reportOnly review carries (prompt + record). Default 1. */
+    reportRound?: number;
   },
   signal: AbortSignal,
   orchestratorJobId: string,
@@ -295,9 +305,13 @@ export async function runAdversarialLoop(
   // notice the staleness itself.
   const priorFindings: string[] = [];
 
-  for (let round = 1; round <= MAX_ROUNDS; round++) {
+  const firstRound = params.reportRound ?? 1;
+  // #1114 — a reportOnly call records its round in the driver's event log, so
+  // ledger writes are skipped there (the driver decides; see `record` below).
+  const record = (r: DispatchResult): DispatchResult => (params.reportOnly ? r : ledgerWrite(r));
+  for (let round = firstRound; round <= MAX_ROUNDS; round++) {
     if (signal.aborted) break;
-    if (round > 1 && getDiff) {
+    if (round > firstRound && getDiff) {
       try {
         const fresh = await getDiff();
         if (fresh.trim()) diff = fresh;
@@ -337,11 +351,34 @@ export async function runAdversarialLoop(
     );
     const advCls = classifyDispatchOutcome(adv);
     if (advCls.cause !== "success") {
-      return ledgerWrite(infraFailureResult(round, "review", adv, advCls, infraCtxNow()));
+      return record(infraFailureResult(round, "review", adv, advCls, infraCtxNow()));
     }
 
     const verdict = parseVerdict(adv.text);
     rounds.push({ round, verdict, ms: adv.ms });
+    if (params.reportOnly) {
+      if (!verdict.verdictParsed) {
+        return record(
+          infraFailureResult(
+            round,
+            "review",
+            adv,
+            { ...advCls, headline: "produced no readable VERDICT marker" },
+            infraCtxNow(),
+          ),
+        );
+      }
+      return synthesizeResult({
+        ok: true,
+        loopOutcome: "approved",
+        text: verdict.findings,
+        ms: Date.now() - start,
+        usage,
+        transcriptPath: lastTranscript,
+        model: lastModel,
+        adversarialRounds: toRoundRecords(rounds),
+      });
+    }
     const action = decideLoopAction(verdict.status, round, MAX_ROUNDS, verdict.verdictParsed);
     if (action === "incomplete") {
       // Out of rounds with no readable verdict on the last one. Nothing was

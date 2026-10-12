@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
-import { initialState, readState, writeState } from "../src/workflow-state.ts";
+import { appendEvent, initialState, readState, writeState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -185,14 +185,18 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   }
 }
 
-// R2 (#485) — a normal 2-round loop (ISSUES_FOUND in round 1, APPROVED in
-// round 2) records BOTH rounds' verdict tokens in the event log, so the
-// gate is auditable from the state file without reading a transcript.
+// R2 (#485) — a normal 2-round review (ISSUES_FOUND in round 1, APPROVED in
+// round 2) records BOTH rounds' verdict tokens in the event log, so the gate is
+// auditable from the state file without reading a transcript. #1114: the gate
+// reviews one round per call; round 1's ISSUES_FOUND routes to a develop fix
+// pass, which is simulated here by its applied marker (the develop gates have
+// their own tests), then round 2 approves.
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-485-r2-"));
   try {
     const fs = await import("node:fs/promises");
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    const { runAdversarial } = await import("../src/work-driver-adversarial.ts");
     let s = initialState(957, 1_000_000);
     s = {
       ...s,
@@ -205,33 +209,39 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         branchName: "feature/issue-957",
       },
     };
-    await writeState(dir, s);
-
     const ctx: DriverContext = {
       pi: makeFakePi().pi,
       repoRoot: dir,
       issue: 957,
       issueBodyFetcherFn: mockIssueBodyOk,
-      adversarialLoopFn: async () =>
-        mkResult({
+      adversarialLoopFn: async (params) => {
+        const round = params.reportRound ?? 1;
+        return mkResult({
           role: "adversarial-loop",
           ok: true,
           exitCode: 0,
           loopOutcome: "approved",
-          text: "Adversarial APPROVED after round 2.\n",
+          text: round === 1 ? "findings" : "Adversarial APPROVED.\n",
           adversarialRounds: [
-            { round: 1, status: "ISSUES_FOUND", verdictParsed: true },
-            { round: 2, status: "APPROVED", verdictParsed: true },
+            round === 1
+              ? { round: 1, status: "ISSUES_FOUND", verdictParsed: true }
+              : { round: 2, status: "APPROVED", verdictParsed: true },
           ],
-        }),
+        });
+      },
       dispatchFn: async (_pi, spec, opts) => {
-        throw new Error(`halting after adversarial: ${spec.role}/${opts?.label}`);
+        throw new Error(`no dispatch expected: ${spec.role}/${opts?.label}`);
       },
     };
-    await runWorkDriver(ctx).catch(() => {});
-
-    const after = await readState(dir, 957);
-    const events = after?.eventLog ?? [];
+    s = await runAdversarial(ctx, s, Date.now());
+    s = appendEvent(s, {
+      kind: "adversarial-fix-applied",
+      at: Date.now(),
+      workstreamId: "default",
+      round: 1,
+    });
+    s = await runAdversarial(ctx, s, Date.now());
+    const events = s.eventLog;
     const rounds = events.filter((e) => e.kind === "adversarial-round");
     assert(
       rounds.length === 2,

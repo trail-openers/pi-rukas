@@ -17,6 +17,8 @@ import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import { capHitForCapKill } from "./work-driver-adversarial-capkill.ts";
 import { fanOutAdversarial } from "./work-driver-adversarial-fanout.ts";
+import { fixRequestEvents } from "./work-driver-adversarial-fix.ts";
+import { handleNoCommittedFix, integrateLensFix } from "./work-driver-adversarial-lensfix.ts";
 import { reentryPassBatchSpan } from "./work-driver-adversarial-reentry.ts";
 import {
   ADVERSARIAL_PER_WS_MAX_RETRIES,
@@ -37,163 +39,6 @@ import type { PipelineState } from "./workflow-state-schema.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
 const execp = promisify(exec);
-
-/** #287 Part C — re-integrate a lens-fix made in a worktree (#654 task-c). */
-async function integrateLensFix(
-  execFn: ExecFn,
-  ctx: DriverContext,
-  ps: PipelineState,
-  worktrees: Record<string, string>,
-): Promise<{ committed: boolean; error?: string; pushed?: boolean }> {
-  const branchName = ps.branchName;
-  if (!branchName) return { committed: false, error: "no branch name recorded" };
-  const round = ps.reviewRound;
-  const res = await withIntegrationLock(ctx.repoRoot, () =>
-    integrate(execFn, {
-      repoRoot: ctx.repoRoot,
-      branchName,
-      worktrees,
-      // #794 — own-range selection (stacked workstreams: see workstreamBaseShas).
-      workstreamBaseShas: ps.workstreamBaseShas,
-      scratchDir: scratchDir(ctx.repoRoot, ctx.issue),
-      commitTitle: `fix(lens): round ${round} review findings`,
-      commitBody: `Addresses six-pass review findings from round ${round}.`,
-      mode: "followup",
-    }),
-  );
-  if (!res.ok) {
-    if (res.failure === "dirty-repoRoot" && res.porcelain) {
-      const outcome = await restoreRepoRoot(execFn, ctx.repoRoot, res.porcelain);
-      if (outcome.restored) {
-        const retry = await integrate(execFn, {
-          repoRoot: ctx.repoRoot,
-          branchName,
-          worktrees,
-          // #794 — same pick scope as the first pass above.
-          workstreamBaseShas: ps.workstreamBaseShas,
-          scratchDir: scratchDir(ctx.repoRoot, ctx.issue),
-          commitTitle: `fix(lens): round ${round} review findings`,
-          commitBody: `Addresses six-pass review findings from round ${round}.`,
-          mode: "followup",
-        });
-        if (!retry.ok) {
-          return {
-            committed: false,
-            error: `restored repoRoot (stash+pop) but the retry still failed: ${retry.reason}`,
-          };
-        }
-        if (retry.empty) return { committed: false };
-        return { committed: true, pushed: true };
-      }
-      return {
-        committed: false,
-        error: `dirty repoRoot at lens-fix time, not safely restorable — ${outcome.reason}. Porcelain: ${res.porcelain
-          .slice(0, 5)
-          .join("; ")}`,
-      };
-    }
-    return { committed: false, error: res.reason };
-  }
-  if (res.empty) return { committed: false };
-  return { committed: true, pushed: true };
-}
-
-/** #749/#797 — committed-work classification for the `!result.committed` branch. */
-async function handleNoCommittedFix(
-  execFn: ExecFn,
-  ctx: DriverContext,
-  ps: PipelineState,
-  fixTree: string,
-  result: { committed: boolean; error?: string; pushed?: boolean },
-  stateIn: WorkState,
-): Promise<WorkState | null> {
-  let state = stateIn;
-  if (result.error) return null;
-  if (!ps.branchName) {
-    return appendEvent(state, {
-      kind: "cap-hit",
-      at: Date.now(),
-      cap: "lens-fix-not-integrated",
-      reviewRound: ps.reviewRound,
-      nextStep: "handoff",
-      lensWorktreePath: fixTree,
-      evidence: `no committed fix and no branch name recorded — cannot measure committed work in ${fixTree}`,
-    });
-  }
-  const branchName = ps.branchName;
-  const fix = await detectCommittedFix(execFn, fixTree, branchName);
-  if (fix.status === "committed") {
-    if (fix.diffEmpty) {
-      trace(
-        "work-driver: lens-fix committed and already on the branch — proceeding to re-review (no cap)",
-      );
-      return null;
-    }
-    const landed = await landCommittedFix(execFn, ctx, ps, fixTree);
-    if (landed.ok) {
-      // #776 — ok covers both "landed" and "tree-hash-dedup skip" (#749).
-      // The work is on the branch; no cap.
-      const sha = landed.sha;
-      let pushOk = true;
-      try {
-        await execFn(`git push origin ${JSON.stringify(branchName)}`, {
-          cwd: ctx.repoRoot,
-          maxBuffer: 1024 * 1024,
-        });
-      } catch {
-        pushOk = false;
-      }
-      if (!pushOk) {
-        state = {
-          ...state,
-          pipelineState: {
-            ...state.pipelineState,
-            plumbReports: [
-              ...state.pipelineState.plumbReports,
-              {
-                step: "adversarial",
-                role: "driver",
-                body: `lens-fix landed locally but the push failed — check the remote for ${branchName}`,
-                at: Date.now(),
-              },
-            ],
-          },
-        };
-      }
-      trace(
-        `work-driver: lens-fix committed fix ${sha.slice(0, 8)} landed on ${branchName} — proceeding to re-review`,
-      );
-      return null;
-    }
-    // #776 — integration genuinely failed (e.g. cherry-pick conflict).
-    // #797 — the restore outcome rides in `landed.error`; naming the
-    // pre-integration ref makes the post-condition checkable.
-    const preIntegrationRef = await repoRootOriginalRef(execFn, ctx.repoRoot);
-    return appendEvent(state, {
-      kind: "cap-hit",
-      at: Date.now(),
-      cap: "lens-fix-not-integrated",
-      reviewRound: ps.reviewRound,
-      nextStep: "handoff",
-      lensWorktreePath: fixTree,
-      restoredToRef: preIntegrationRef,
-      evidence: `committed fix in ${fixTree} (${fix.count} commit(s) ahead of ${branchName}) — integration genuinely failed: ${landed.error}. repoRoot condition after the restore: ${landed.error.includes("repoRoot was verified restored") || landed.error.includes("repoRoot was restored") ? "restored" : landed.error.includes("repoRoot was NOT restored") ? "NOT restored — manual repair required" : "unknown"}${preIntegrationRef ? ` (the cycle started from ${preIntegrationRef})` : ""}. The fix's worktree HEAD SHA is recorded in the handoff snapshot's committedWork so it can be recovered (git cherry-pick from ${fixTree}).`,
-    });
-  }
-  const evidence =
-    fix.status === "no-commits"
-      ? noDiffEvidence(fixTree, branchName, fix.count)
-      : `no committed fix and the count of commits ahead of ${branchName} in ${fixTree} could not be read (git error)`;
-  return appendEvent(state, {
-    kind: "cap-hit",
-    at: Date.now(),
-    cap: "lens-fix-not-integrated",
-    reviewRound: ps.reviewRound,
-    nextStep: "handoff",
-    lensWorktreePath: fixTree,
-    evidence,
-  });
-}
 
 /**
  * Step 5 — Adversarial gate. Fans out one `runAdversarialLoop` per
@@ -314,6 +159,18 @@ export async function runAdversarial(
       },
     );
     return next;
+  }
+
+  // #1114 — a parsed non-approving verdict routes its workstream back to
+  // develop (a fix pass), and nothing else in this invocation failed. The
+  // approvals already in this batch wait in the log; the aggregate is decided
+  // once every workstream has a final verdict.
+  const fixEvents = fixRequestEvents(outcomes, Date.now());
+  if (fixEvents.length > 0 && outcomes.every((o) => o.ok || o.fixRequested)) {
+    trace(
+      `work-driver: adversarial routed ${fixEvents.length} workstream(s) to a develop fix pass`,
+    );
+    return appendEvent(next, ...fixEvents);
   }
 
   const maxRounds = outcomes.reduce((acc, o) => Math.max(acc, o.rounds), 0);

@@ -17,6 +17,13 @@ import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import { capKillOutcomeFields } from "./work-driver-adversarial-fanout-capkill.ts";
 import {
+  interpretReview,
+  reviewRoundFor,
+  reviewTrack,
+  survivorsOf,
+  workstreamsToReview,
+} from "./work-driver-adversarial-fix.ts";
+import {
   classifyAdversarialOutcome,
   isTransientAdversarialOutcome,
   mergeFreshOutcomes,
@@ -177,6 +184,9 @@ export async function fanOutAdversarial(
           // (driver worktrees are detached; the ledger writer cannot
           // recover the branch name from a detached HEAD).
           branch: state.pipelineState.branchName,
+          // #1114 — one reviewer dispatch; the driver routes the verdict.
+          reportOnly: true,
+          reportRound: reviewRoundFor(state, id),
         },
         // No AbortController plumbing in v1 — spawn-level timeouts
         // in spawn.ts (per-role) bound the work.
@@ -231,23 +241,29 @@ export async function fanOutAdversarial(
       // the escalation menu as errorTail).
       result.loopOutcome === "rejected" ? { ...result, ok: true, exitCode: 0 } : result,
     );
-    const ok = result.ok && !result.errorStop;
     const records = roundsRecords(result);
+    // #1114 — the verdict decides routing (fix / pass / reject / infra).
+    const reading = interpretReview(result, reviewRoundFor(state, id));
+    const ok = reading.ok;
     // #485 — rounds are data: the loop's own count when it carried one,
-    // else the count the per-round records describe.
-    const rounds = result.roundsExecuted ?? records.length;
+    // else the count the per-round records describe; #1114 adds the rounds
+    // this workstream already ran on earlier invocations.
+    const rounds =
+      reviewTrack(state.eventLog, id).rounds + (result.roundsExecuted ?? records.length);
     return {
       id,
       ok,
       rounds,
       records,
-      infra: !ok && result.loopOutcome === "infra-failure",
+      infra: reading.infra || (!ok && result.loopOutcome === "infra-failure"),
       threw: false,
       skipped: false,
       priorInfra: priorOutcomes.get(id) === "infra-failure",
       rejectionText: ok ? undefined : result.text,
+      fixRequested: reading.fixRequested,
+      fixFindings: reading.fixRequested ? result.text : undefined,
       // A pass that carried unresolved findings says so in its headline.
-      passFindings: ok && result.text?.includes("PASSED WITH FINDINGS") ? result.text : undefined,
+      passFindings: reading.passFindings,
       errorTail: result.errorStop?.message ?? undefined,
       // #543 — thread a loop / token-budget cap kill (+ its trigger
       // evidence) so the aggregate parks with the fixed-literal cap
@@ -276,34 +292,11 @@ export async function fanOutAdversarial(
   // per-workstream events are re-emitted from this prior-outcome record
   // (see the `outcomes` seed below), so the log stays complete after the
   // splice replaces the prior pass's batch.
-  const survivorOutcomes: AdversarialOutcome[] = priorHadInfraFailure
-    ? ids
-        .filter((id) => {
-          const prev = priorOutcomes.get(id);
-          return prev === "approved" || prev === "rejected" || prev === "skipped-empty-diff";
-        })
-        .map((id) => {
-          const prev = priorOutcomes.get(id) ?? "approved";
-          return {
-            id,
-            ok: prev === "approved" || prev === "skipped-empty-diff",
-            rounds: 0,
-            records: [],
-            infra: false,
-            threw: false,
-            skipped: prev === "skipped-empty-diff",
-            priorInfra: false,
-            priorVerdict: prev as "approved" | "rejected" | "skipped-empty-diff",
-          };
-        })
-    : [];
-  // #486 — the workstreams that run on THIS pass. First entry: everything.
-  // Re-entry (the previous fan-out recorded a NO-VERDICT outcome): only the
-  // infra-failed ones re-run while their per-workstream budget holds — a
-  // permanent failure therefore stops the retry loop rather than re-running
-  // siblings forever, and their preserved outcomes keep the aggregate
-  // honest.
-  let toRun = priorHadInfraFailure
+  // #1114 — the workstreams this pass runs. Re-entry after an infra failure
+  // re-runs only the infra-failed ones while their budget holds (#486); a
+  // normal invocation runs what still needs a review (first review, or a fix
+  // pass applied since the last one). Everything else is a survivor below.
+  const runSet = priorHadInfraFailure
     ? ids.filter((id) => {
         const prev = priorOutcomes.get(id);
         return (
@@ -311,7 +304,14 @@ export async function fanOutAdversarial(
           (localRetries[id] ?? 0) < ADVERSARIAL_PER_WS_MAX_RETRIES
         );
       })
-    : [...ids];
+    : workstreamsToReview(state, ids);
+  // #486 — workstreams with a FINAL verdict on an earlier invocation are not
+  // re-run, and their per-workstream events are re-emitted from the prior
+  // record (see the `outcomes` seed below), so the log stays complete after
+  // the splice. A single-workstream cycle keeps no per-workstream outcome
+  // event, so its approval is recovered from the rounds it already ran.
+  const survivorOutcomes = survivorsOf(state, ids, runSet, priorOutcomes);
+  let toRun = [...runSet];
   // #486 — a first-pass workstream whose FINAL (merged) outcome has no
   // verdict and whose failure the in-step retry could not absorb is a
   // permanent infra shortfall. The step-level router does not retry
@@ -439,15 +439,17 @@ export async function fanOutAdversarial(
     if (ids.length > 1) {
       const outcome = o.priorVerdict
         ? (o.priorVerdict as "approved" | "rejected" | "skipped-empty-diff")
-        : o.skipped
-          ? ("skipped-empty-diff" as const)
-          : o.threw
-            ? ("dispatch-failed" as const)
-            : o.infra
-              ? ("infra-failure" as const)
-              : o.ok
-                ? ("approved" as const)
-                : ("rejected" as const);
+        : o.fixRequested
+          ? ("fix-requested" as const)
+          : o.skipped
+            ? ("skipped-empty-diff" as const)
+            : o.threw
+              ? ("dispatch-failed" as const)
+              : o.infra
+                ? ("infra-failure" as const)
+                : o.ok
+                  ? ("approved" as const)
+                  : ("rejected" as const);
       events.push({
         kind: "adversarial-workstream-outcome",
         at: Date.now(),
@@ -455,6 +457,7 @@ export async function fanOutAdversarial(
         outcome,
         roundsExecuted: o.rounds,
         ...(o.errorTail && (o.infra || o.threw) ? { errorTail: o.errorTail } : {}),
+        ...(outcome === "approved" && o.passFindings ? { findings: o.passFindings } : {}),
       });
     }
     if (o.branchEvent) events.push(o.branchEvent);
