@@ -249,6 +249,7 @@ async function doPost(
     await runNetGit(execFn, `git fetch ${remote} ${headBranch} ${baseBranch}`, {
       cwd,
       maxBuffer: 64 * 1024,
+      timeoutMs: 30_000,
     });
   } catch (err) {
     throw new Error(

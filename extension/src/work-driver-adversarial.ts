@@ -333,6 +333,9 @@ export async function runAdversarial(
             cwd: ctx.repoRoot,
           });
         } catch (err) {
+          // #1095: a timeout is non-blocking too, and its message names the
+          // cause ("network git timed out"). The fix is then not on the PR, and
+          // the plumbReport below is where the operator sees it.
           const errMsg = `lens-fix push failed (non-blocking): ${(err as Error).message?.slice(0, 200)}`;
           trace(`work-driver: ${errMsg}`);
           next.pipelineState.plumbReports.push({

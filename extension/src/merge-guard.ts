@@ -280,6 +280,7 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
       await runNetGit(execFn, `git fetch ${remote} ${target.headBranch}`, {
         cwd,
         maxBuffer: 64 * 1024,
+        timeoutMs: EXEC_TIMEOUT_MS,
       });
     } catch (err) {
       return block(

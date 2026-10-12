@@ -204,6 +204,7 @@ async function isWorkProvablyOnRemote(
     await runNetGit(execFn, `git fetch origin ${branchName}`, {
       cwd: worktreePath,
       maxBuffer: 256 * 1024,
+      timeoutMs: 10_000,
     });
     // Check if HEAD matches FETCH_HEAD
     const { stdout: diffOut } = await execFn("git diff --quiet --submodule=diff FETCH_HEAD", {

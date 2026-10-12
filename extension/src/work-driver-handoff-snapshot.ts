@@ -101,15 +101,14 @@ export async function captureWorktreeSnapshot(
     } catch {
       snapshot.branchExists = false;
     }
-    // Remote tracking (best-effort; network may be down). runNetGit bounds
-    // ls-remote (#1095) — an unreachable remote no longer hangs the snapshot.
+    // Remote tracking (best-effort; network may be down). 10s timeout
+    // because ls-remote can hang on unreachable remotes (#1095: still 10s,
+    // now enforced through runNetGit).
     try {
       const { stdout } = await runNetGit(
         execp,
         `git ls-remote --heads origin ${JSON.stringify(branchName)}`,
-        {
-          cwd: repoRoot,
-        },
+        { cwd: repoRoot, timeoutMs: 10_000 },
       );
       snapshot.branchPushed = stdout.trim().length > 0;
     } catch {

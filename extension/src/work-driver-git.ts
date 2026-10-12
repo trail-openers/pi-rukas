@@ -165,7 +165,10 @@ export async function restoreCheckout(opts: {
     });
   } catch (err) {
     notes.push(`git fetch origin --prune failed: ${(err as Error).message?.slice(0, 200)}`);
-    // Continue — subsequent steps may still work with stale refs.
+    // Continue — subsequent steps may still work with stale refs. #1095: a
+    // timeout is also a note, carrying "network git timed out" as its named
+    // cause. Not a thrown step failure: the merge has already succeeded, and a
+    // halt here routes a merged PR to handoff (see work-driver-events.ts).
   }
 
   // 2. The restore target — the ONE rule, shared with the handoff path.

@@ -24,6 +24,7 @@
  * driver source file runs a network git command without going through here.
  */
 
+import { execFileSync } from "node:child_process";
 import type { ExecFn } from "./worktree.ts";
 
 export const NET_GIT_TIMEOUT_ENV = "PI_ENSEMBLE_GIT_NET_TIMEOUT_MS";
@@ -74,13 +75,41 @@ export function withSshDefaults(sshCommand: string): string {
   return parts.join(" ");
 }
 
-/** The non-interactive environment every driver network git call runs with. */
-export function netGitEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const operatorSsh = base.GIT_SSH_COMMAND?.trim();
+/**
+ * The ssh command git itself would run, in git's precedence order:
+ * GIT_SSH_COMMAND, then core.sshCommand (repo config, read in `cwd`), then
+ * GIT_SSH, then plain `ssh`. Setting GIT_SSH_COMMAND unconditionally would
+ * outrank a repo's core.sshCommand, so the defaults must be appended to the
+ * command git would have used (#1095 review).
+ */
+export function operatorSshCommand(base: NodeJS.ProcessEnv, cwd?: string): string {
+  const fromEnv = base.GIT_SSH_COMMAND?.trim();
+  if (fromEnv) return fromEnv;
+  if (cwd !== undefined) {
+    try {
+      const cfg = execFileSync("git", ["config", "--get", "core.sshCommand"], {
+        cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+      if (cfg) return cfg;
+    } catch {
+      // unset (git config exits 1) or not a repo: fall through to GIT_SSH / ssh
+    }
+  }
+  return base.GIT_SSH?.trim() || "ssh";
+}
+
+/**
+ * The non-interactive environment every driver network git call runs with.
+ * `cwd` lets the repo's core.sshCommand take part in the precedence (see
+ * operatorSshCommand); without it only the env and the default apply.
+ */
+export function netGitEnv(base: NodeJS.ProcessEnv = process.env, cwd?: string): NodeJS.ProcessEnv {
   return {
     ...base,
     GIT_TERMINAL_PROMPT: "0",
-    GIT_SSH_COMMAND: withSshDefaults(operatorSsh ? operatorSsh : "ssh"),
+    GIT_SSH_COMMAND: withSshDefaults(operatorSshCommand(base, cwd)),
   };
 }
 
@@ -89,6 +118,11 @@ export interface NetGitOpts {
   maxBuffer?: number;
   /** argv form (#1005): `cmd` is the executable, `argv` its arguments. */
   argv?: string[];
+  /**
+   * A tighter per-call bound (e.g. a best-effort ls-remote). Clamped to the
+   * PI_ENSEMBLE_GIT_NET_TIMEOUT_MS ceiling, never raised above it.
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -101,7 +135,8 @@ export async function runNetGit(
   cmd: string,
   opts: NetGitOpts = {},
 ): Promise<{ stdout: string; stderr?: string }> {
-  const timeoutMs = netGitTimeoutMs();
+  const ceiling = netGitTimeoutMs();
+  const timeoutMs = opts.timeoutMs === undefined ? ceiling : Math.min(opts.timeoutMs, ceiling);
   const label = (opts.argv ? [cmd, ...opts.argv] : [cmd]).join(" ").slice(0, 160);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
@@ -114,7 +149,7 @@ export async function runNetGit(
         maxBuffer: opts.maxBuffer ?? 1024 * 1024,
         timeout: timeoutMs,
         killGroup: true,
-        env: netGitEnv(),
+        env: netGitEnv(process.env, opts.cwd),
         ...(opts.argv ? { argv: opts.argv } : {}),
       }),
       deadline,
