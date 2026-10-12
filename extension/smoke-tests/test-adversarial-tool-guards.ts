@@ -161,6 +161,17 @@ try {
     ledgerResults.length === 1 && ledgerResults[0]?.text.includes("workCwd"),
     "B: ledger entry recorded for the gated run",
   );
+  reset();
+  reviewerReplies = [ISSUES];
+  const b2 = await runAdversarialLoop(
+    { diff: "diff --git a/f b/f\n+x", context: "gate" },
+    signal(),
+    "job-b2",
+  );
+  assert(
+    spawnCalls.filter((c) => c.role === "developer").length === 0 && b2.ok === false,
+    "B: the workCwd gate also applies on the driver path (no guardFixRounds)",
+  );
 
   // ------------------------------- C. fix round in workCwd: every developer cwd === workCwd
   reset();
@@ -212,6 +223,7 @@ try {
     ledgerResults.at(-1)?.text.includes("VIOLATION") === true,
     "D: the ledger entry carries the violation text",
   );
+  assert(d.ok === false, "D: a breach of the workCwd fence fails the result (ok: false)");
 
   // -------- E. caller file already dirty; a fix round rewrites its CONTENT only
   // (porcelain status line is unchanged) → still a violation.
