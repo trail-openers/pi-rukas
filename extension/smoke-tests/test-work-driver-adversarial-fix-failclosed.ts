@@ -143,16 +143,36 @@ async function passOf(
   }
 }
 
-// B2 — a comment-retention check that cannot run reads NOT CHECKED, and the
-// pass is not cleared.
+// B2 — a comment-retention read that cannot run (git grep fails) is not
+// cleared: the pass parks (the develop gate's own comment check or the fix
+// pass's NOT CHECKED park, whichever reads first).
 {
   const dir = repoWithFile("fc-comment");
+  try {
+    const r = await passOf(
+      dir,
+      fixState(dir, ["a.txt"]),
+      () => devCommit(dir, "a.txt", "two\n"),
+      execFailing("git grep"),
+    );
+    assert(
+      r.parked !== undefined && !r.applied,
+      `B2: an unavailable comment check is not cleared (got ${r.parked})`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// B2b — the operator's kill switch is not a failed check: the pass proceeds.
+{
+  const dir = repoWithFile("fc-hatch");
   process.env.PI_ENSEMBLE_COMMENT_RETENTION = "0";
   try {
     const r = await passOf(dir, fixState(dir, ["a.txt"]), () => devCommit(dir, "a.txt", "two\n"));
     assert(
-      r.parked?.includes("comment retention could not be checked") === true && !r.applied,
-      `B2: an unavailable comment check is NOT CHECKED, not cleared (got ${r.parked})`,
+      r.applied && r.parked === undefined,
+      `B2b: PI_ENSEMBLE_COMMENT_RETENTION=0 does not park a fix pass (got ${r.parked})`,
     );
   } finally {
     delete process.env.PI_ENSEMBLE_COMMENT_RETENTION;

@@ -21,6 +21,7 @@
 import { type LoopAction, decideLoopAction } from "./adversarial-verdict.ts";
 import { MAX_ROUNDS } from "./adversarial.ts";
 import { roundComments } from "./comment-evidence.ts";
+import { commentRetentionEnabled } from "./comment-retention.ts";
 import { dispatchCore } from "./dispatch.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
@@ -368,30 +369,39 @@ export async function runAdversarialFixPass(
 
   const post = await postPassFault(execFn, plans, ps.baseSha ?? "");
   if (post.reason) return parkFixPass(restored, pending, post.reason, now);
-  for (const p of plans) {
-    const lost = await roundComments(
-      post.diffs[p.id] ?? "",
-      undefined,
-      p.worktree,
-      verifyTimeoutMs(),
-      ctx.verifyExecFn,
+  // The operator's kill switch is NOT a failed check: a disabled check reads
+  // NOT CHECKED (as every other reader renders it) and the pass proceeds with
+  // that disclosed in the handoff, never parked.
+  if (!commentRetentionEnabled()) {
+    trace(
+      "work-driver: fix pass comment retention disabled (PI_ENSEMBLE_COMMENT_RETENTION=0) — NOT CHECKED",
     );
-    // A check that could not run reads NOT CHECKED, never silence (AGENTS.md §7).
-    if (!lost.ok) {
-      return parkFixPass(
-        restored,
-        pending,
-        `comment retention could not be checked for ${p.id} (NOT CHECKED) — the fix pass is not cleared`,
-        now,
+  } else {
+    for (const p of plans) {
+      const lost = await roundComments(
+        post.diffs[p.id] ?? "",
+        undefined,
+        p.worktree,
+        verifyTimeoutMs(),
+        ctx.verifyExecFn,
       );
-    }
-    if (lost.lost.length > 0) {
-      return parkFixPass(
-        restored,
-        pending,
-        `the fix pass removed ${lost.lost.length} origin/main comment line(s) in ${p.id}`,
-        now,
-      );
+      // A check that could not run reads NOT CHECKED, never silence (AGENTS.md §7).
+      if (!lost.ok) {
+        return parkFixPass(
+          restored,
+          pending,
+          `comment retention could not be checked for ${p.id} (NOT CHECKED) — the fix pass is not cleared`,
+          now,
+        );
+      }
+      if (lost.lost.length > 0) {
+        return parkFixPass(
+          restored,
+          pending,
+          `the fix pass removed ${lost.lost.length} origin/main comment line(s) in ${p.id}`,
+          now,
+        );
+      }
     }
   }
   const applied: WorkEvent[] = pending.map((p) => ({

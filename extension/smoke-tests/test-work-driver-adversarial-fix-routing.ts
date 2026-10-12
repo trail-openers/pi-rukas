@@ -280,15 +280,12 @@ function ctxFor(
     };
     s = await runAdversarial(ctx, s, Date.now());
     // The infra sibling exhausts its budget on the first pass, so the cycle
-    // parks on the explicit infra cap — the fix request is never silently
-    // dropped and the aggregate never approves.
+    // parks on the explicit infra cap; a's fix request is not routed (see
+    // runAdversarial), and the cycle never approves.
     const tail = s.eventLog[s.eventLog.length - 1];
     assert(
-      tail?.kind === "cap-hit" ||
-        pendingFixes(s.eventLog)
-          .map((p) => p.workstreamId)
-          .join(",") === "a",
-      `C2: a mixed fan-out either routes a's fix or parks explicitly (tail: ${tail?.kind})`,
+      tail?.kind === "cap-hit",
+      `C2: a mixed fan-out parks on the explicit infra cap (tail: ${tail?.kind})`,
     );
     assert(
       !s.eventLog.some((e) => e.kind === "adversarial-approved"),
