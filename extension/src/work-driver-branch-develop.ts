@@ -38,6 +38,7 @@ import {
 import { backupInterruptedWorktrees } from "./work-develop-resume-backup.ts";
 import { type PreservedGreens, trustedPreservedGreens } from "./work-develop-retry.ts";
 import { runDevelopTopological } from "./work-develop-topological.ts";
+import { pendingFixes, runAdversarialFixPass } from "./work-driver-adversarial-fix.ts";
 import { salvageKnownDirtyWorktrees } from "./work-driver-branch-salvage.ts";
 import { applySafetyNet, hasAnyWorktreeEvidence } from "./work-driver-safety-net.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
@@ -389,6 +390,11 @@ export async function runDevelop(
   state: WorkState,
   now: number,
 ): Promise<WorkState> {
+  // #1114 — a develop step with adversarial fix requests pending is a FIX
+  // PASS for those workstreams (work-driver-adversarial-fix.ts), not a fresh
+  // implementation: same worktrees, same gates, findings in the prompt.
+  const pendingFix = pendingFixes(state.eventLog);
+  if (pendingFix.length > 0) return runAdversarialFixPass(ctx, state, pendingFix, now);
   const workstreams = state.pipelineState.workstreams ?? {};
   const ids = Object.keys(workstreams).length > 0 ? Object.keys(workstreams) : ["default"];
   // PR11 — thread the ACTIVE issue list (NEEDS_WORK subset after

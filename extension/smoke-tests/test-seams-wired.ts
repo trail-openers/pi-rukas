@@ -70,7 +70,6 @@ const SEAMS: Seam[] = [
         "#407 — superseded by readDoctrineAtBase; kept for callers outside the driver",
       // Consumed inside the seam by functions that are themselves unwired, so
       // these reach production only once those do.
-      looksLikeSecret: "#422 — called by vipuneAdd inside the seam",
       searchArgv: "#422 — called by vipuneSearch (and by the offline argv gate)",
     },
     canary: { symbol: "vipuneChildEnv", importer: "spawn.ts" },

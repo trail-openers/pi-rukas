@@ -69,9 +69,36 @@ export type AdversarialEventFragment =
       kind: "adversarial-workstream-outcome";
       at: number;
       workstreamId: string;
-      outcome: "approved" | "rejected" | "infra-failure" | "dispatch-failed" | "skipped-empty-diff";
+      outcome:
+        | "approved"
+        | "rejected"
+        | "infra-failure"
+        | "dispatch-failed"
+        | "skipped-empty-diff"
+        | "fix-requested";
       /** Reviews executed for this workstream (0 when none ran). */
       roundsExecuted: number;
       /** Present for infra-failure / dispatch-failed — what the failure was. */
       errorTail?: string;
+      /** #1114 — non-blocking findings an approved workstream carries (re-emitted on re-entry). */
+      findings?: string;
+    }
+  | {
+      /**
+       * #1114 — a parsed non-terminal verdict routed this workstream back to
+       * develop. The findings are the develop fix pass's data; the event is
+       * the routing record (nextStep routes on it).
+       */
+      kind: "adversarial-fix-requested";
+      at: number;
+      workstreamId: string;
+      round: number;
+      findings: string;
+    }
+  | {
+      /** #1114 — the develop fix pass for this workstream passed every gate; it returns to adversarial. */
+      kind: "adversarial-fix-applied";
+      at: number;
+      workstreamId: string;
+      round: number;
     };

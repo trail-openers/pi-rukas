@@ -17,13 +17,15 @@ import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import { capHitForCapKill } from "./work-driver-adversarial-capkill.ts";
 import { fanOutAdversarial } from "./work-driver-adversarial-fanout.ts";
-import { integrateLensFix } from "./work-driver-adversarial-lens-integrate.ts";
+import { fixRequestEvents, withParsedSiblings } from "./work-driver-adversarial-fix.ts";
+import { handleNoCommittedFix, integrateLensFix } from "./work-driver-adversarial-lensfix.ts";
 import { reentryPassBatchSpan } from "./work-driver-adversarial-reentry.ts";
 import {
   ADVERSARIAL_PER_WS_MAX_RETRIES,
   type AdversarialOutcome,
 } from "./work-driver-adversarial-types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
+import { integrate, restoreRepoRoot } from "./work-driver-integrate.ts";
 import {
   detectCommittedFix,
   landCommittedFix,
@@ -38,102 +40,6 @@ import type { PipelineState } from "./workflow-state-schema.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
 const execp = promisify(exec);
-
-/** #749/#797 — committed-work classification for the `!result.committed` branch. */
-async function handleNoCommittedFix(
-  execFn: ExecFn,
-  ctx: DriverContext,
-  ps: PipelineState,
-  fixTree: string,
-  result: { committed: boolean; error?: string; pushed?: boolean },
-  stateIn: WorkState,
-): Promise<WorkState | null> {
-  let state = stateIn;
-  if (result.error) return null;
-  if (!ps.branchName) {
-    return appendEvent(state, {
-      kind: "cap-hit",
-      at: Date.now(),
-      cap: "lens-fix-not-integrated",
-      reviewRound: ps.reviewRound,
-      nextStep: "handoff",
-      lensWorktreePath: fixTree,
-      evidence: `no committed fix and no branch name recorded — cannot measure committed work in ${fixTree}`,
-    });
-  }
-  const branchName = ps.branchName;
-  const fix = await detectCommittedFix(execFn, fixTree, branchName);
-  if (fix.status === "committed") {
-    if (fix.diffEmpty) {
-      trace(
-        "work-driver: lens-fix committed and already on the branch — proceeding to re-review (no cap)",
-      );
-      return null;
-    }
-    const landed = await landCommittedFix(execFn, ctx, ps, fixTree);
-    if (landed.ok) {
-      // #776 — ok covers both "landed" and "tree-hash-dedup skip" (#749).
-      // The work is on the branch; no cap.
-      const sha = landed.sha;
-      let pushOk = true;
-      try {
-        await runNetGit(execFn, `git push origin ${JSON.stringify(branchName)}`, {
-          cwd: ctx.repoRoot,
-        });
-      } catch {
-        pushOk = false;
-      }
-      if (!pushOk) {
-        state = {
-          ...state,
-          pipelineState: {
-            ...state.pipelineState,
-            plumbReports: [
-              ...state.pipelineState.plumbReports,
-              {
-                step: "adversarial",
-                role: "driver",
-                body: `lens-fix landed locally but the push failed — check the remote for ${branchName}`,
-                at: Date.now(),
-              },
-            ],
-          },
-        };
-      }
-      trace(
-        `work-driver: lens-fix committed fix ${sha.slice(0, 8)} landed on ${branchName} — proceeding to re-review`,
-      );
-      return null;
-    }
-    // #776 — integration genuinely failed (e.g. cherry-pick conflict).
-    // #797 — the restore outcome rides in `landed.error`; naming the
-    // pre-integration ref makes the post-condition checkable.
-    const preIntegrationRef = await repoRootOriginalRef(execFn, ctx.repoRoot);
-    return appendEvent(state, {
-      kind: "cap-hit",
-      at: Date.now(),
-      cap: "lens-fix-not-integrated",
-      reviewRound: ps.reviewRound,
-      nextStep: "handoff",
-      lensWorktreePath: fixTree,
-      restoredToRef: preIntegrationRef,
-      evidence: `committed fix in ${fixTree} (${fix.count} commit(s) ahead of ${branchName}) — integration genuinely failed: ${landed.error}. repoRoot condition after the restore: ${landed.error.includes("repoRoot was verified restored") || landed.error.includes("repoRoot was restored") ? "restored" : landed.error.includes("repoRoot was NOT restored") ? "NOT restored — manual repair required" : "unknown"}${preIntegrationRef ? ` (the cycle started from ${preIntegrationRef})` : ""}. The fix's worktree HEAD SHA is recorded in the handoff snapshot's committedWork so it can be recovered (git cherry-pick from ${fixTree}).`,
-    });
-  }
-  const evidence =
-    fix.status === "no-commits"
-      ? noDiffEvidence(fixTree, branchName, fix.count)
-      : `no committed fix and the count of commits ahead of ${branchName} in ${fixTree} could not be read (git error)`;
-  return appendEvent(state, {
-    kind: "cap-hit",
-    at: Date.now(),
-    cap: "lens-fix-not-integrated",
-    reviewRound: ps.reviewRound,
-    nextStep: "handoff",
-    lensWorktreePath: fixTree,
-    evidence,
-  });
-}
 
 /**
  * Step 5 — Adversarial gate. Fans out one `runAdversarialLoop` per
@@ -166,11 +72,7 @@ export async function runAdversarial(
     pipelineState: { ...state.pipelineState, currentStep: "adversarial" },
   };
   if (!priorHadInfraFailure) {
-    next = appendEvent(next, {
-      kind: "step-started",
-      step: "adversarial",
-      at: now,
-    });
+    next = appendEvent(next, { kind: "step-started", step: "adversarial", at: now });
     if (ids.length > 1) {
       next = appendEvent(next, {
         kind: "branches-fanned-out",
@@ -200,6 +102,8 @@ export async function runAdversarial(
   }
   if (parkedInfra) {
     const infraShortfall = outcomes.filter((o) => o.infra || o.threw);
+    // A parsed sibling's verdict must survive the infra park (both returns below).
+    next = withParsedSiblings(next, outcomes, now);
     const names = infraShortfall.map((o) => o.id).join(", ");
     trace(
       `work-driver: adversarial per-workstream retry budget exhausted on first pass for [${names}] — parking`,
@@ -212,10 +116,7 @@ export async function runAdversarial(
       if (capKill.evidence) {
         next = {
           ...next,
-          pipelineState: {
-            ...next.pipelineState,
-            capEvidence: capKill.evidence,
-          },
+          pipelineState: { ...next.pipelineState, capEvidence: capKill.evidence },
         };
       }
       return next;
@@ -261,6 +162,20 @@ export async function runAdversarial(
       },
     );
     return next;
+  }
+
+  // #1114 — a parsed non-approving verdict routes its workstream back to
+  // develop (a fix pass), but only when every sibling is approved, rejected
+  // or infra-failed. On a first pass a mixed fan-out with an infra sibling
+  // never reaches this point: the `parkedInfra` early-return above parks on
+  // the explicit infra cap first, so the fix request is not recorded and the
+  // handoff names the infra failure.
+  const fixEvents = fixRequestEvents(outcomes, Date.now());
+  if (fixEvents.length > 0 && outcomes.every((o) => o.ok || o.infra)) {
+    trace(
+      `work-driver: adversarial routed ${fixEvents.length} workstream(s) to a develop fix pass`,
+    );
+    return appendEvent(next, ...fixEvents);
   }
 
   const maxRounds = outcomes.reduce((acc, o) => Math.max(acc, o.rounds), 0);
@@ -329,9 +244,7 @@ export async function runAdversarial(
       }
       if (result.committed && !result.pushed) {
         try {
-          await runNetGit(execFn, "git push origin HEAD -q", {
-            cwd: ctx.repoRoot,
-          });
+          await runNetGit(execFn, "git push origin HEAD -q", { cwd: ctx.repoRoot });
         } catch (err) {
           // #1095: a timeout is non-blocking too, and its message names the
           // cause ("network git timed out"). The fix is then not on the PR, and
@@ -369,10 +282,7 @@ export async function runAdversarial(
         if (capKill.evidence) {
           next = {
             ...next,
-            pipelineState: {
-              ...next.pipelineState,
-              capEvidence: capKill.evidence,
-            },
+            pipelineState: { ...next.pipelineState, capEvidence: capKill.evidence },
           };
         }
         return next;

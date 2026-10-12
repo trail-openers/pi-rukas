@@ -131,6 +131,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
           role: "adversarial-developer",
           ok: true,
           text: "Adversarial APPROVED after round 1.\n",
+          adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
         });
       },
       dispatchFn: async (_pi, spec, opts) => {
@@ -232,6 +233,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
           role: "adversarial-developer",
           ok: true,
           text: "Adversarial APPROVED after round 1.\n",
+          adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
         });
       },
       dispatchFn: async (_pi, spec, opts) => {
@@ -308,17 +310,25 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
       adversarialLoopFn: async (params) => {
         // task-a APPROVED in 1 round; task-b APPROVED in 2 rounds.
         // Aggregate rounds should be max = 2.
+        // #1114: a reportOnly call is ONE review, and a round-1 ISSUES_FOUND
+        // would route task-b into a fix pass that needs a real developer diff in
+        // a real worktree (this fixture has none, and dispatchFn throws on any
+        // developer dispatch). So task-b's second round is carried by
+        // roundsExecuted, not by a second loop call.
         if (params.workCwd?.endsWith("task-a")) {
           return mkResult({
             role: "adversarial-developer",
             ok: true,
             text: "Adversarial APPROVED after round 1.\n",
+            adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
           });
         }
         return mkResult({
           role: "adversarial-developer",
           ok: true,
           text: "Adversarial APPROVED after round 2.\n",
+          roundsExecuted: 2,
+          adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
         });
       },
       dispatchFn: async (_pi, spec, opts) => {

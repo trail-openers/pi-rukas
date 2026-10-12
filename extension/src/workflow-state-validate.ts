@@ -44,6 +44,9 @@ export const KNOWN_EVENT_KINDS = [
   "adversarial-round",
   "adversarial-workstream-outcome",
   "adversarial-skipped-empty-diff",
+  // #1114 — the adversarial→develop routing record and the fix pass's applied marker.
+  "adversarial-fix-requested",
+  "adversarial-fix-applied",
   "lens-approved",
   "lens-issues-found",
   "lens-skipped-empty-diff",

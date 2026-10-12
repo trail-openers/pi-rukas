@@ -43,6 +43,8 @@ export async function runLensChild(opts: {
     cwd?: string;
     signal?: AbortSignal;
     evidence?: string;
+    /** #1105 — the branch's prior-findings DATA block (lens-residuals.ts). */
+    priorFindings?: string;
   };
   bumpBatch: () => void;
   /** #799 — the parent pi for the slow-run watch's PM notice (the driver
@@ -109,7 +111,14 @@ export async function runLensChild(opts: {
       };
     }
   }
-  const prompt = lensPromptFor(lens, runOpts.diff, context, runOpts.evidence, roster);
+  const prompt = lensPromptFor(
+    lens,
+    runOpts.diff,
+    context,
+    runOpts.evidence,
+    roster,
+    runOpts.priorFindings,
+  );
   const tag = lens.name.toLowerCase().replaceAll("_", "-");
   // Per-lens deck key. The dispatch deck (#117) is now the single live
   // surface — there used to be a parallel onUpdate callback rendering an

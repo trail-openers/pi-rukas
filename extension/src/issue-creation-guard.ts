@@ -37,6 +37,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createsIssue } from "./bash-creates-issue.ts";
+import { registerReviewAcceptGuard } from "./review-accept-guard.ts";
 import { trace } from "./trace.ts";
 
 /** Opt-out for an operator who genuinely wants to file tickets by hand. */
@@ -45,6 +46,10 @@ function directIssueCreateAllowed(): boolean {
 }
 
 export function registerIssueCreationGuard(pi: ExtensionAPI): void {
+  // #1105 — the human-only review acceptance refusal rides with the other
+  // mode-independent refusals: this function is already the one registration
+  // both the parent guard and the subagent guards call, in every mode.
+  registerReviewAcceptGuard(pi);
   if (directIssueCreateAllowed()) {
     trace(
       "issue-creation-guard: PI_ENSEMBLE_ALLOW_DIRECT_ISSUE_CREATE=1 — direct issue creation permitted",

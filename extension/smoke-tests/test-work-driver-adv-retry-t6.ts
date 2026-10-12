@@ -92,6 +92,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           role: "adversarial-loop",
           ok: true,
           loopOutcome: "approved",
+          adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
           text: "Adversarial APPROVED after round 1.\n",
         });
       },

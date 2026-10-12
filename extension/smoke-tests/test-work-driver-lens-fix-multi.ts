@@ -200,6 +200,7 @@ setupSpawnGuard();
           role: "adversarial-loop",
           ok: true,
           loopOutcome: "approved",
+          adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
           text: "Adversarial APPROVED.",
         }),
       lensReviewFn: async () => mkLensSummary({ verdict: "APPROVED" }),

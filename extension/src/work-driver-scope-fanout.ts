@@ -104,6 +104,10 @@ function scopeFanoutMinimum(): number {
   if (!Number.isFinite(value) || value < 0) return 6;
   return Math.floor(value);
 }
+/** #1114 — the fan-out ceiling for a workstream with `declared` paths (the gate's own tunables). */
+export function fanoutLimitFor(declared: number): number {
+  return Math.max(declared * scopeFanoutFactor(), scopeFanoutMinimum());
+}
 
 /**
  * #285 — run the develop scope/fanout gate. Mutates `failures` and `notes`
@@ -303,7 +307,7 @@ export function runScopeFanoutGate(
       notes.push(`scope fanout check skipped for ${id} — workstream has no declared paths`);
       continue;
     }
-    const limit = Math.max(declaredPaths.length * scopeFanoutFactor(), scopeFanoutMinimum());
+    const limit = fanoutLimitFor(declaredPaths.length);
     // #672 (sub-defect 3) — the test-file exception: a changed path that
     // matches `isTestPath` is fence-permitted when its INFERRED SUBJECT
     // (via `couplesTo`) is in the plan-wide declared set. Inference-gated,
