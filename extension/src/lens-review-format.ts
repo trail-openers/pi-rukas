@@ -12,6 +12,7 @@ import { neutraliseEvidence } from "./comment-evidence.ts";
 import { type SuppressedFinding, suppressedSection } from "./lens-residuals.ts";
 import { isReviewIncomplete } from "./lens-review-incomplete.ts";
 import type { Finding, FindingSource, LensRunResult } from "./lens-review.ts";
+import { CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE, type RosterEntry } from "./lens-roster.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
 
 /** The finding's severity level. Owned here (the pure leaf both the format
@@ -115,7 +116,6 @@ export type Verdict =
   | "CRITICAL_ISSUES_FOUND"
   | "REVIEW_INCOMPLETE"
   | "ROUND_CAP_REACHED";
-import { CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE, type RosterEntry } from "./lens-roster.ts";
 
 export const LENS_PREFIX = "code-review-";
 

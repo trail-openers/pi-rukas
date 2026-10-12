@@ -5,21 +5,32 @@
  * and the #973 merge rule refuses a merge that ran past it, but a hand-run
  * `dispatch_lens_review` had no budget of its own: nothing stopped a PR from
  * being reviewed 13-19 six-lens rounds. This module is the check the tool runs
- * BEFORE any lens is dispatched:
+ * BEFORE any lens is dispatched (`admitLensRound`):
  *
  *   - the branch's recorded lens round is read from the per-clone review ledger
  *     under the ledger lock (fail closed: an unreadable or malformed ledger
  *     refuses rather than restoring unlimited rounds; a missing ledger file is
  *     a first review, round 0);
- *   - the next round is `latest.round + 1` (bumpLensRound's numbering: a
- *     REVIEW_INCOMPLETE entry carries the previous round, so an aborted run
- *     consumes no budget);
+ *   - the next round is `latest.round + 1 + inFlight` (bumpLensRound's
+ *     numbering: a REVIEW_INCOMPLETE entry carries the previous round, so an
+ *     aborted run does not advance the round; `inFlight` counts runs this
+ *     process has admitted but not yet settled, so concurrent calls cannot
+ *     both claim the same round);
+ *   - a streak of REVIEW_INCOMPLETE runs (`incompleteRuns`, bumpLensRound) at
+ *     the cap refuses too — without it a lens that keeps failing would be
+ *     re-run forever at the same round;
  *   - the cap is `PI_ENSEMBLE_LENS_ROUND_CAP` when set to a positive integer,
  *     otherwise MAX_REVIEW_ROUNDS (the driver's single constant, not a copy);
  *   - a CRITICAL finding open in the latest recorded round allows exactly one
  *     round beyond the cap (CRITICAL is never capped away);
+ *   - a run with no resolvable branch is refused (nothing keys the ledger, so
+ *     nothing could be counted) unless `overrideCap: true`;
  *   - `overrideCap: true` bypasses the check; the override is recorded on the
  *     ledger entry the run writes.
+ *
+ * Known limit: the in-flight reservation is per Pi process. Across processes,
+ * and against a previous run's fire-and-forget ledger write that has not
+ * landed yet, the check is best-effort.
  *
  * A refused run returns a `ROUND_CAP_REACHED` summary: no lens child is
  * spawned, no ledger entry is written (so the refusal consumes no round), and
@@ -54,20 +65,42 @@ export function lensRoundCap(env: NodeJS.ProcessEnv = process.env): number {
 /** Pure budget decision over the branch's latest recorded lens entry. */
 export interface RoundBudget {
   allowed: boolean;
-  /** The round this run would be (latest round + 1; 1 on a first review). */
+  /** The round this run would be (latest round + 1 + in-flight; 1 on a first review). */
   nextRound: number;
   /** The round the latest recorded entry ran as (0 when none recorded). */
   lastRound: number;
   criticalOpen: boolean;
+  /** Consecutive REVIEW_INCOMPLETE runs since the last completed round. */
+  incompleteStreak: number;
+  /** True when the incomplete streak alone refuses the run. */
+  streakCapped: boolean;
 }
 
-export function evaluateRoundBudget(latest: LedgerEntry | undefined, cap: number): RoundBudget {
+/**
+ * `inFlight` is the number of runs admitted in this process and not yet
+ * settled; each is counted as if it will complete (conservative: an aborted
+ * one over-refuses a concurrent call, which is the safe direction).
+ */
+export function evaluateRoundBudget(
+  latest: LedgerEntry | undefined,
+  cap: number,
+  inFlight = 0,
+): RoundBudget {
   // A legacy entry without `round` counts as round 1 (bumpLensRound's rule).
   const lastRound = latest ? (latest.round ?? 1) : 0;
-  const nextRound = lastRound + 1;
+  const nextRound = lastRound + 1 + inFlight;
   const criticalOpen = latest?.hasCritical === true;
+  const incompleteStreak = latest?.incompleteRuns ?? 0;
+  const streakCapped = incompleteStreak >= cap;
   const limit = cap + (criticalOpen ? 1 : 0);
-  return { allowed: nextRound <= limit, nextRound, lastRound, criticalOpen };
+  return {
+    allowed: nextRound <= limit && !streakCapped,
+    nextRound,
+    lastRound,
+    criticalOpen,
+    incompleteStreak,
+    streakCapped,
+  };
 }
 
 export type RecordedLens =
@@ -102,8 +135,11 @@ export async function readRecordedLens(cwd: string, branch: string): Promise<Rec
 function capNote(budget: RoundBudget, cap: number, latest: LedgerEntry | undefined): string {
   const last = latest?.detail ?? "no verdict recorded";
   const crit = budget.criticalOpen ? "open (one extra round is allowed)" : "not open";
+  const why = budget.streakCapped
+    ? `${budget.incompleteStreak} consecutive run(s) ended REVIEW_INCOMPLETE — the ${cap}-run limit for incomplete runs is reached`
+    : `round ${budget.nextRound} would exceed the ${cap}-round cap (${ROUND_CAP_ENV})`;
   return [
-    `ROUND_CAP_REACHED — round ${budget.nextRound} would exceed the ${cap}-round cap (${ROUND_CAP_ENV}). No lens was dispatched and nothing was recorded.`,
+    `ROUND_CAP_REACHED — ${why}. No lens was dispatched and nothing was recorded.`,
     `Last recorded round: ${budget.lastRound} — verdict ${last}. CRITICAL in that round: ${crit}.`,
     "Residuals marker: not verified by this tool — the merge guard checks the PR's disclosure marker at merge time (condition 5).",
     "After the cap: fix only CRITICAL/HIGH and confirmed-real MEDIUM bugs, file the rest as one follow-up issue, and merge under the #973 round-cap rule. To force another round anyway, re-run with `overrideCap: true` (recorded in the ledger).",
@@ -122,40 +158,73 @@ function refusal(note: string): LensReviewSummary {
   };
 }
 
+/** In-process reservations: branch → runs admitted and not yet settled. */
+const inFlight = new Map<string, number>();
+const NOOP = (): void => {};
+
+/** Reserve one in-flight slot for `branch`; the returned release is idempotent. */
+function reserve(branch: string): () => void {
+  inFlight.set(branch, (inFlight.get(branch) ?? 0) + 1);
+  let settled = false;
+  return () => {
+    if (settled) return;
+    settled = true;
+    const left = (inFlight.get(branch) ?? 1) - 1;
+    if (left > 0) inFlight.set(branch, left);
+    else inFlight.delete(branch);
+  };
+}
+
+export type RoundAdmission =
+  | { admitted: true; release: () => void }
+  | { admitted: false; refusal: LensReviewSummary };
+
 /**
- * The round-budget gate for one `dispatch_lens_review` call. Returns the
- * refusal summary when the run must not dispatch, or `undefined` when it may
- * proceed. Runs before the delta/full decision, so an empty delta also
+ * The round-budget gate for one `dispatch_lens_review` call. On admission the
+ * caller MUST call `release()` once the run settles (the tool does so in a
+ * `finally`). Runs before the delta/full decision, so an empty delta also
  * passes through here without consuming a round (it writes no entry).
  */
-export async function roundBudgetRefusal(opts: {
+export async function admitLensRound(opts: {
   cwd?: string;
   head?: string;
   overrideCap?: boolean;
   env?: NodeJS.ProcessEnv;
-}): Promise<LensReviewSummary | undefined> {
-  if (opts.overrideCap === true) {
-    trace("lens-round-cap: overrideCap set — round budget not enforced for this run");
-    return undefined;
-  }
+}): Promise<RoundAdmission> {
   const cwd = opts.cwd ?? process.cwd();
   const { branch } = await resolveLensReviewBranch({ head: opts.head, cwd });
+  if (opts.overrideCap === true) {
+    trace("lens-round-cap: overrideCap set — round budget not enforced for this run");
+    return { admitted: true, release: branch ? reserve(branch) : NOOP };
+  }
   if (!branch) {
-    // Nothing keys the ledger without a branch; the writer skips too, and the
-    // review reports its own "disclosure NOT posted" note. Traced, not refused.
-    trace("lens-round-cap: no branch resolved — round budget not checked");
-    return undefined;
+    // Nothing keys the ledger without a branch, so this run could not be
+    // counted against any budget. Refused rather than run unbudgeted.
+    trace("lens-round-cap: no branch resolved — refusing (fail closed)");
+    return {
+      admitted: false,
+      refusal: refusal(
+        "ROUND_CAP_REACHED — no branch could be resolved for this review (detached head and no branch-named `head`), so its round cannot be counted. Pass `branch` or run from the branch's checkout, or re-run with `overrideCap: true` if the operator accepts an unbudgeted round.",
+      ),
+    };
   }
   const recorded = await readRecordedLens(cwd, branch);
   const cap = lensRoundCap(opts.env);
   if (!recorded.ok) {
     trace(`lens-round-cap: ledger unreadable (${recorded.reason}) — refusing (fail closed)`);
-    return refusal(
-      `ROUND_CAP_REACHED — the round budget could not be verified: the review ledger is unreadable (${recorded.reason}). Refused fail closed so an unreadable ledger cannot restore unlimited rounds. Fix or restore the ledger, or re-run with \`overrideCap: true\` if the operator accepts an unbudgeted round.`,
-    );
+    return {
+      admitted: false,
+      refusal: refusal(
+        `ROUND_CAP_REACHED — the round budget could not be verified: the review ledger is unreadable (${recorded.reason}). Refused fail closed so an unreadable ledger cannot restore unlimited rounds. Fix or restore the ledger, or re-run with \`overrideCap: true\` if the operator accepts an unbudgeted round.`,
+      ),
+    };
   }
-  const budget = evaluateRoundBudget(recorded.latest, cap);
-  if (budget.allowed) return undefined;
-  trace(`lens-round-cap: refusing round ${budget.nextRound} on ${branch} (cap ${cap})`);
-  return refusal(capNote(budget, cap, recorded.latest));
+  // Check and reserve in ONE synchronous step (no await between them), so a
+  // concurrent call in this process sees this run's slot as soon as it is taken.
+  const budget = evaluateRoundBudget(recorded.latest, cap, inFlight.get(branch) ?? 0);
+  if (!budget.allowed) {
+    trace(`lens-round-cap: refusing round ${budget.nextRound} on ${branch} (cap ${cap})`);
+    return { admitted: false, refusal: refusal(capNote(budget, cap, recorded.latest)) };
+  }
+  return { admitted: true, release: reserve(branch) };
 }

@@ -1,9 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { startJob } from "./async-jobs.ts";
-import { renderSummary } from "./lens-review-format.ts";
+import { type LensReviewSummary, renderSummary } from "./lens-review-format.ts";
 import { LENS_REVIEW_DIFF_DESCRIPTION, MAX_LENS_ATTEMPTS, runLensReview } from "./lens-review.ts";
-import { roundBudgetRefusal } from "./lens-round-cap.ts";
+import { admitLensRound } from "./lens-round-cap.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 
@@ -101,12 +101,27 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
           const start = Date.now();
           // #1127 — the round budget runs BEFORE any lens is dispatched; a
           // refusal is the terminal ROUND_CAP_REACHED summary, nothing recorded.
-          const summary =
-            (await roundBudgetRefusal({
-              cwd: params.cwd,
-              head: params.head,
-              overrideCap: params.overrideCap,
-            })) ?? (await runLensReview({ ...params, signal }));
+          // An admitted run holds its reservation until it settles, so a
+          // concurrent call in this process cannot pass the same round.
+          const admission = await admitLensRound({
+            cwd: params.cwd,
+            head: params.head,
+            overrideCap: params.overrideCap,
+          });
+          let summary: LensReviewSummary;
+          if (admission.admitted) {
+            try {
+              summary = await runLensReview({ ...params, signal });
+            } finally {
+              admission.release();
+            }
+          } else {
+            summary = admission.refusal;
+          }
+          // ROUND_CAP_REACHED's note is the whole report (renderSummary), so it
+          // is not appended a second time.
+          const noteAppended =
+            summary.note && summary.verdict !== "ROUND_CAP_REACHED" ? summary.note : undefined;
           // ok is true when the review completed AND the verdict is neither
           // CRITICAL nor INCOMPLETE. INCOMPLETE means at least one lens
           // failed all retries (#3) — the review did NOT actually run every
@@ -125,7 +140,7 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
               summary.verdict !== "CRITICAL_ISSUES_FOUND" &&
               summary.verdict !== "REVIEW_INCOMPLETE" &&
               summary.verdict !== "ROUND_CAP_REACHED",
-            text: summary.note ? `${text}\n\n${summary.note}` : text,
+            text: noteAppended ? `${text}\n\n${noteAppended}` : text,
             toolUses: [],
             ms: Date.now() - start,
             exitCode: 0,

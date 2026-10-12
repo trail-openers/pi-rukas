@@ -94,6 +94,10 @@ export interface LedgerEntry {
    * dispatch_lens_review, so this run was allowed past the tool-side round
    * budget. Recorded so an audit can see which rounds were forced. */
   overrideCap?: boolean;
+  /** #1127 — lens entries only: consecutive REVIEW_INCOMPLETE runs since the
+   * last completed round. An incomplete run does not advance `round`, so this
+   * is the budget's only record that the branch keeps spending six-lens runs. */
+  incompleteRuns?: number;
 }
 
 interface LedgerFile {

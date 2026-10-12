@@ -22,7 +22,13 @@ import type { LedgerEntry } from "./review-ledger.ts";
  * Otherwise a killed run wedged between two completed runs would consume a
  * round the driver never spent, and the guard's `round >= 3` cap condition
  * would fire one run early. Adversarial writes and rows for other branches
- * pass through unchanged. The input rows are the deduped contents of the
+ * pass through unchanged.
+ *
+ * #1127 — `incompleteRuns` counts the consecutive INCOMPLETE runs since the last
+ * completed one (reset to 0 by a completed run). The round stays put for those
+ * runs, so without this counter a lens that keeps failing could be re-run
+ * forever at the same round; the tool-side budget refuses once the streak
+ * reaches the cap. The input rows are the deduped contents of the
  * ledger file as re-read immediately before this write, so the number is
  * deterministic in the file's state.
  */
@@ -35,5 +41,6 @@ export function bumpLensRound(entry: LedgerEntry, existing: LedgerEntry[]): Ledg
   }
   const completed = entry.detail !== "REVIEW_INCOMPLETE";
   const next = completed ? (prev ? (prev.round ?? 1) : 0) + 1 : (prev?.round ?? 1);
-  return { ...entry, round: next };
+  const incompleteRuns = completed ? 0 : (prev?.incompleteRuns ?? 0) + 1;
+  return { ...entry, round: next, incompleteRuns };
 }

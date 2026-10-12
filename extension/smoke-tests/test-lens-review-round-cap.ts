@@ -68,9 +68,10 @@ git("fetch -q origin");
 writeFileSync(path.join(repo, "a.txt"), "one\ntwo\n");
 git('commit -qam "feature"');
 
-const { roundBudgetRefusal, evaluateRoundBudget, lensRoundCap, readRecordedLens } = await import(
+const { admitLensRound, evaluateRoundBudget, lensRoundCap, readRecordedLens } = await import(
   "../src/lens-round-cap.ts"
 );
+const { bumpLensRound } = await import("../src/review-ledger-round.ts");
 const { MAX_REVIEW_ROUNDS } = await import("../src/work-driver-context.ts");
 const { registerLensReviewTool } = await import("../src/lens-review-tool.ts");
 const { runLensReview } = await import("../src/lens-review.ts");
@@ -102,6 +103,7 @@ for (const bad of ["", "abc", "0", "-2", "2.5", "NaN"]) {
 }
 
 // ------------------------------------------------ 2. pure budget decisions
+type LedgerEntryT = import("../src/review-ledger.ts").LedgerEntry;
 const at = (round?: number, hasCritical?: boolean) =>
   ({
     branch: "b",
@@ -123,6 +125,27 @@ assert(
   "a legacy entry (no round) is round 1",
 );
 assert(evaluateRoundBudget(at(4), 5).allowed, "a raised cap admits round 5");
+
+// #1127 review — an incomplete streak at the cap refuses, a shorter one does not
+const streak = (n: number, round = 2) => ({ ...at(round), incompleteRuns: n }) as LedgerEntryT;
+assert(!evaluateRoundBudget(streak(3), 3).allowed, "3 consecutive incomplete runs at cap 3 refuse");
+assert(evaluateRoundBudget(streak(2), 3).allowed, "2 consecutive incomplete runs at cap 3 allow");
+assert(
+  evaluateRoundBudget(streak(3), 3).streakCapped && !evaluateRoundBudget(at(2), 3).streakCapped,
+  "the streak refusal is reported as the streak, not the round",
+);
+
+// #1127 review — an incomplete run carries the round and grows the streak;
+// a completed run resets it
+const lensEntry = (detail: string, extra: Partial<LedgerEntryT> = {}) =>
+  ({ branch: "b", kind: "lens", patchId: "p", passed: false, at: 2, detail, ...extra }) as LedgerEntryT;
+const prior = at(2) as LedgerEntryT;
+const inc1 = bumpLensRound(lensEntry("REVIEW_INCOMPLETE"), [prior]);
+assert(inc1.round === 2 && inc1.incompleteRuns === 1, "an incomplete run keeps round 2, streak 1");
+const inc2 = bumpLensRound(lensEntry("REVIEW_INCOMPLETE", { at: 3 }), [{ ...prior, ...inc1, at: 2 }]);
+assert(inc2.round === 2 && inc2.incompleteRuns === 2, "a second incomplete run grows the streak to 2");
+const done = bumpLensRound(lensEntry("ISSUES_FOUND", { at: 4 }), [{ ...prior, ...inc2, at: 3 }]);
+assert(done.round === 3 && done.incompleteRuns === 0, "a completed run advances to round 3 and resets the streak");
 
 // ------------------------------------- 3. the registered tool, round 4 refused
 type Captured = { text?: string };
@@ -153,6 +176,10 @@ await waitFor(() => sent.length > before2);
 const report = sent.slice(before2).join("\n");
 assert(report.includes("ROUND_CAP_REACHED"), "round 4 is refused with ROUND_CAP_REACHED");
 assert(
+  report.split("No lens was dispatched").length - 1 === 1,
+  "the refusal note is reported once (not appended a second time)",
+);
+assert(
   /Last recorded round: 3 — verdict ISSUES_FOUND/.test(report),
   "the refusal names the last round's verdict",
 );
@@ -162,13 +189,15 @@ assert(readEntries().length === before, "a refused run records nothing (no round
 
 // ----------------------------------------- 4. CRITICAL open allows round 4
 seed([lensRow({ round: 3, hasCritical: true, at: 1000 })]);
-const refusal = await roundBudgetRefusal({ cwd: repo });
-assert(refusal === undefined, "CRITICAL open in round 3 lets the gate pass (round 4)");
+const adm4 = await admitLensRound({ cwd: repo });
+assert(adm4.admitted, "CRITICAL open in round 3 lets the gate pass (round 4)");
+if (adm4.admitted) adm4.release();
 
 // ---------------------- 5. overrideCap bypasses and is recorded on the entry
 seed([lensRow({ round: 3, at: 1000 })]);
-const overridden = await roundBudgetRefusal({ cwd: repo, overrideCap: true });
-assert(overridden === undefined, "overrideCap: true bypasses the round budget");
+const overridden = await admitLensRound({ cwd: repo, overrideCap: true });
+assert(overridden.admitted, "overrideCap: true bypasses the round budget");
+if (overridden.admitted) overridden.release();
 const summary = await runLensReview({
   cwd: repo,
   diff: "diff --git a/a.txt b/a.txt\n+two\n",
@@ -190,18 +219,47 @@ assert(
 seed([lensRow({ round: 2, at: 1000 })]);
 const fresh = await readRecordedLens(repo, "feature/x");
 assert(fresh.ok && fresh.latest?.round === 2, "a fresh read of the ledger recovers round 2");
-const gated = await roundBudgetRefusal({ cwd: repo });
-assert(gated === undefined, "round 3 is still allowed after a fresh read");
+const gated = await admitLensRound({ cwd: repo });
+assert(gated.admitted, "round 3 is still allowed after a fresh read");
+if (gated.admitted) gated.release();
 
 // ------------------------------------------- 7. unreadable ledger fails closed
 writeFileSync(ledgerFile, "{not json");
-const unreadable = await roundBudgetRefusal({ cwd: repo });
+const unreadable = await admitLensRound({ cwd: repo });
 assert(
-  unreadable?.verdict === "ROUND_CAP_REACHED" && /unreadable/.test(unreadable?.note ?? ""),
+  !unreadable.admitted &&
+    unreadable.refusal.verdict === "ROUND_CAP_REACHED" &&
+    /unreadable/.test(unreadable.refusal.note ?? ""),
   "an unreadable ledger refuses fail closed (no unlimited rounds)",
 );
 writeFileSync(ledgerFile, JSON.stringify({ entries: "nope" }));
-const shaped = await roundBudgetRefusal({ cwd: repo });
-assert(shaped?.verdict === "ROUND_CAP_REACHED", "a ledger without an entries array refuses");
+const shaped = await admitLensRound({ cwd: repo });
+assert(!shaped.admitted, "a ledger without an entries array refuses");
+
+// -------------- 8. streak, in-flight, no-branch
+seed([lensRow({ round: 2, incompleteRuns: 3, at: 1000 })]);
+const streakRun = await admitLensRound({ cwd: repo });
+assert(
+  !streakRun.admitted && /consecutive run\(s\) ended REVIEW_INCOMPLETE/.test(streakRun.refusal.note ?? ""),
+  "three consecutive incomplete runs refuse the next run even with rounds left",
+);
+
+seed([lensRow({ round: 2, at: 1000 })]);
+const first = await admitLensRound({ cwd: repo });
+const second = await admitLensRound({ cwd: repo });
+assert(first.admitted && !second.admitted, "a concurrent call in this process cannot claim the same round");
+if (first.admitted) first.release();
+const third = await admitLensRound({ cwd: repo });
+assert(third.admitted, "after the first run settles its slot is free again");
+if (third.admitted) third.release();
+
+const noBranch = await admitLensRound({ cwd: root });
+assert(
+  !noBranch.admitted && /no branch could be resolved/.test(noBranch.refusal.note ?? ""),
+  "a run with no resolvable branch is refused (not run unbudgeted)",
+);
+const bypass = await admitLensRound({ cwd: root, overrideCap: true });
+assert(bypass.admitted, "overrideCap admits a run with no resolvable branch");
+if (bypass.admitted) bypass.release();
 
 process.exit(exit);
