@@ -181,3 +181,30 @@ export function summariseFindings(findings: string): string {
     "(no detail)"
   ).slice(0, 200);
 }
+
+/**
+ * The result when a fix is needed but the tool was called without workCwd:
+ * the verdict is kept, no developer is dispatched, and the error names workCwd.
+ */
+export function workCwdRequiredResult(
+  round: number,
+  verdict: { status: AdversarialVerdictStatus; findings: string },
+  state: {
+    start: number;
+    usage: DispatchResult["usage"];
+    lastTranscript: string | undefined;
+    lastModel: string | undefined;
+    rounds: Parameters<typeof toRoundRecords>[0];
+  },
+): DispatchResult {
+  return synthesizeResult({
+    ok: false,
+    loopOutcome: "rejected",
+    text: `Adversarial round ${round} verdict: ${verdict.status}. A fix is needed, but no \`workCwd\` was given, so no developer was dispatched — fixes edit files only in workCwd. Pass \`workCwd\` (the worktree the fix should edit), or set \`reportOnly: true\` to review without fixing.\n\n${verdict.findings}`,
+    ms: Date.now() - state.start,
+    usage: state.usage,
+    transcriptPath: state.lastTranscript,
+    model: state.lastModel,
+    adversarialRounds: toRoundRecords(state.rounds),
+  });
+}

@@ -1,10 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { classifyDispatchOutcome } from "./adversarial-classify.ts";
-import {
-  beginFixGuard,
-  withFixViolations,
-  workCwdRequiredResult,
-} from "./adversarial-fix-guard.ts";
+import { beginFixGuard, withFixViolations } from "./adversarial-fix-guard.ts";
 import { buildLedgerNote } from "./adversarial-ledger-note.ts";
 import { writeAdversarialLedgerEntry } from "./adversarial-ledger.ts";
 import { buildAdversarialPrompt, buildFixPrompt } from "./adversarial-prompts.ts";
@@ -15,6 +11,7 @@ import {
   summariseFindings,
   synthesizeResult,
   toRoundRecords,
+  workCwdRequiredResult,
 } from "./adversarial-verdict.ts";
 import { childHandles, registerChildHandle } from "./async-jobs-registry.ts";
 import { markOrchestrator, setOrchestratorActiveChild } from "./async-jobs.ts";
@@ -94,8 +91,13 @@ export async function runAdversarialLoop(
     reportOnly?: boolean;
     /** #1114 — the round number a reportOnly review carries (prompt + record). Default 1. */
     reportRound?: number;
-    /** #1104 — tool path: fix rounds are caller-repo-checked (`workCwd` is required on every path). */
+    /**
+     * #1104 — tool path: fix rounds are caller-repo-checked (`workCwd` is required on every path).
+     * The /work driver does not set it: its caller is the integration checkout it mutates itself.
+     */
     guardFixRounds?: boolean;
+    /** #1104 — the calling repository the fence snapshots; supplied by the tool boundary. */
+    callerCwd?: string;
   },
   signal: AbortSignal,
   orchestratorJobId: string,

@@ -23,7 +23,7 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
     name: "adversarial_loop",
     label: "Adversarial Loop",
     description:
-      "Async adversarial gate: review → developer fix → re-review, up to 3 rounds. Returns a job handle immediately; the final verdict (APPROVED or REJECTED + findings) arrives as an [ensemble:async] message. End your turn after dispatching. `reportOnly: true` runs exactly one review: no developer dispatch, no file changes, verdict recorded as usual. Otherwise a round that needs a fix REQUIRES `workCwd` (the worktree fixes are applied in) — without it the loop stops after the verdict with an error naming workCwd, dispatching no developer. Fix developers always run in workCwd; changes to the calling repository during a fix round are reported as a violation.",
+      "Async adversarial gate: review → developer fix → re-review, up to 3 rounds. Returns a job handle immediately; the final verdict (APPROVED or REJECTED + findings) arrives as an [ensemble:async] message. End your turn after dispatching. `reportOnly: true` runs exactly one review: no developer dispatch, no file changes, verdict recorded as usual. Otherwise a round that needs a fix REQUIRES `workCwd` (the worktree fixes are applied in) — without it the loop stops after the verdict with an error naming workCwd, dispatching no developer. Fix developers run with cwd = workCwd; changes to the calling repository during a fix round are reported as a violation (writes elsewhere are not detected).",
     parameters: Type.Object({
       diff: Type.Optional(
         Type.String({
@@ -77,7 +77,7 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
         skipDeck: true,
         work: (signal, hooks) =>
           runAdversarialLoop(
-            { ...params, pi, guardFixRounds: true },
+            { ...params, pi, guardFixRounds: true, callerCwd: process.cwd() },
             signal,
             hooks.jobId,
             computeRangeDiff,
