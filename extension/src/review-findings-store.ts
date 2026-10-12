@@ -30,9 +30,12 @@ import type { Finding } from "./lens-review-types.ts";
 import { changedLineRanges } from "./review-diff.ts";
 import {
   type FindingIdentity,
+  JACCARD_MATCH,
   identityOf,
+  jaccard,
   pickMatch,
   titleClassOf,
+  titleTokens,
 } from "./review-findings-match.ts";
 import { acquireLedgerLock } from "./review-ledger-lock.ts";
 import { ledgerPathFor } from "./review-ledger-path.ts";
@@ -135,6 +138,17 @@ export function readFindingsFile(file: string): StoredFinding[] {
   }
 }
 
+/** True when the findings file exists but does not parse to a rows array. */
+function fileIsCorrupt(file: string): boolean {
+  if (!existsSync(file)) return false;
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as { rows?: unknown };
+    return !Array.isArray(parsed.rows);
+  } catch {
+    return true;
+  }
+}
+
 /** A fresh 8-hex row id, unique among `taken`. */
 export function newRowId(taken: ReadonlySet<string>): string {
   for (;;) {
@@ -196,6 +210,11 @@ async function mutate<T>(
   if (!loc) return undefined;
   const release = await acquireLedgerLock(loc.ledger);
   try {
+    // A corrupt file is never overwritten: that would erase operator acceptances.
+    if (fileIsCorrupt(loc.file)) {
+      trace(`review-findings: ${loc.file} is corrupt — refusing to overwrite it`);
+      return undefined;
+    }
     const { rows, result } = fn(readFindingsFile(loc.file));
     const tmp = `${loc.file}.tmp-${process.pid}-${Date.now()}`;
     writeFileSync(tmp, JSON.stringify({ rows: capRows(rows) }, null, 2), "utf8");
@@ -289,6 +308,12 @@ export async function recordFindingRun(run: FindingRun): Promise<Decision[] | un
           return;
         }
         touched.add(row.id);
+        // Suppression needs the titles to agree too: a snippet match alone can
+        // be a different finding on the same line. No-line findings keep the
+        // stricter titleClass equality (Jaccard would merge sibling file gaps).
+        const sameTitle =
+          row.titleClass === id.titleClass ||
+          (id.hasLine && jaccard(titleTokens(f.title), titleTokens(row.title)) >= JACCARD_MATCH);
         row.lastSeen = now;
         row.snippetHash = id.snippetHash;
         if (f.line) row.line = f.line;
@@ -303,7 +328,7 @@ export async function recordFindingRun(run: FindingRun): Promise<Decision[] | un
             );
             row.status = "open";
             row.acceptance = undefined;
-          } else if (!critical && (id.hasLine || row.titleClass === id.titleClass)) {
+          } else if (!critical && sameTitle) {
             decisions.push({
               action: "suppressed-accepted",
               rowId: row.id,
@@ -312,7 +337,7 @@ export async function recordFindingRun(run: FindingRun): Promise<Decision[] | un
             return;
           }
         }
-        if (!critical && ranges && outsideDelta(f, id, ranges)) {
+        if (!critical && sameTitle && ranges && outsideDelta(f, id, ranges)) {
           const reason = `cited line ${f.line ?? "?"} is outside the delta since the last recorded review`;
           trace(`review-findings: suppressed-unchanged ${row.id} — ${reason}`);
           decisions.push({ action: "suppressed-unchanged", rowId: row.id, reason });
@@ -368,5 +393,10 @@ export async function acceptRow(opts: {
     row.acceptance = { by: opts.by, reason: opts.reason, at: now, snippetHash: row.snippetHash };
     return { rows: all, result: { ok: true, row } };
   });
-  return out ?? { ok: false, reason: "no git common dir (not a git clone) — nothing recorded" };
+  return (
+    out ?? {
+      ok: false,
+      reason: "not a git clone, or the findings file is unreadable — nothing recorded",
+    }
+  );
 }

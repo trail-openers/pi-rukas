@@ -8,7 +8,11 @@
 
 import { renderPriorFindingsBlock } from "../src/lens-residuals.ts";
 import { changedLineRanges } from "../src/review-diff.ts";
-import type { StoredFinding } from "../src/review-findings-store.ts";
+import {
+  MAX_ROWS_PER_BRANCH,
+  type StoredFinding,
+  capRows,
+} from "../src/review-findings-store.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -93,6 +97,26 @@ assert(
 assert(
   renderPriorFindingsBlock([stored(1, { status: "resolved" })]) === "",
   "prior block: resolved rows are not shown; an empty set renders nothing",
+);
+
+// ── cap (moved here from test-review-findings-store.ts to keep it under 500 lines) ─
+
+const big: StoredFinding[] = Array.from({ length: MAX_ROWS_PER_BRANCH + 5 }, (_, i) =>
+  stored(i + 1, {
+    id: `r${i.toString().padStart(7, "0")}`,
+    status: i < 5 ? "resolved" : "open",
+    lastSeen: i + 1,
+  }),
+);
+const capped = capRows(big);
+assert(capped.length === MAX_ROWS_PER_BRANCH, "cap: at most 200 rows per branch");
+assert(
+  capped.every((r) => r.status === "open" || r.lastSeen > 5),
+  "cap: the oldest RESOLVED rows are dropped first",
+);
+assert(
+  !capped.some((r) => r.id === "r0000000") && capped.some((r) => r.id === "r0000005"),
+  "cap: resolved rows are dropped oldest-first; a newer resolved row survives until needed",
 );
 
 process.exit(exit);

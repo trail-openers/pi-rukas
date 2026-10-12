@@ -9,7 +9,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execp } from "../src/lens-exec.ts";
@@ -26,14 +26,7 @@ import {
   titleClassOf,
   titleTokens,
 } from "../src/review-findings-match.ts";
-import {
-  MAX_ROWS_PER_BRANCH,
-  type StoredFinding,
-  acceptRow,
-  capRows,
-  readBranchRows,
-  recordFindingRun,
-} from "../src/review-findings-store.ts";
+import { acceptRow, readBranchRows, recordFindingRun } from "../src/review-findings-store.ts";
 import { ledgerPathFor } from "../src/review-ledger-path.ts";
 
 let exit = 0;
@@ -162,25 +155,6 @@ assert(
   "pick: among equal candidates the most recently seen wins",
 );
 
-// stored-row fixture, shared with the cap section below
-
-const stored = (i: number, extra: Partial<StoredFinding> = {}): StoredFinding => ({
-  id: i.toString(16).padStart(8, "0"),
-  branch: "feat/x",
-  path: "src/a.ts",
-  anchor: "alpha",
-  titleClass: "division zero",
-  title: `Finding ${i}`,
-  severity: "MEDIUM",
-  lens: "SIMPLICITY",
-  line: i,
-  snippetHash: "h",
-  status: "open",
-  firstSeen: i,
-  lastSeen: i,
-  ...extra,
-});
-
 // ── store, in a real temp clone ─────────────────────────────────────────────
 
 const git = (cwd: string, ...args: string[]) =>
@@ -303,6 +277,20 @@ try {
   assert(
     crit?.[0]?.action === "matched",
     "CRITICAL: never suppressed, even on an accepted unchanged row",
+  );
+
+  // Same snippet, different title on the accepted line: a different finding, so
+  // it is matched and reported, never suppressed by the acceptance.
+  const otherTitle = await recordFindingRun({
+    cwd: dir,
+    branch: "feat/x",
+    headSha: c2,
+    findings: [finding("Unchecked integer overflow", 6)],
+    complete: true,
+  });
+  assert(
+    otherTitle?.[0]?.action === "matched",
+    "accepted: a different title on the same accepted snippet is matched, not suppressed",
   );
 
   // Changing the code the row cites lapses the acceptance.
@@ -443,6 +431,22 @@ try {
     "no-line: the same title stays suppressed by its acceptance",
   );
 
+  // A corrupt findings file fails closed: no suppression, and it is not overwritten.
+  writeFileSync(findingsFile, "{not json");
+  const corruptRun = await recordFindingRun({
+    cwd: dir,
+    branch: "feat/x",
+    headSha: c3,
+    findings: [finding("Division by zero possible", 6)],
+    complete: true,
+  });
+  assert(corruptRun === undefined, "corrupt: an unparsable findings file records nothing");
+  assert(
+    readFileSync(findingsFile, "utf8") === "{not json",
+    "corrupt: the unparsable file is left untouched, not overwritten",
+  );
+  writeFileSync(findingsFile, JSON.stringify({ rows: [] }));
+
   // A branch's rows never leak into another branch's view.
   assert(
     (await readBranchRows(dir, "feat/x")).every((r) => r.branch === "feat/x"),
@@ -451,25 +455,5 @@ try {
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }
-
-// ── cap ─────────────────────────────────────────────────────────────────────
-
-const big: StoredFinding[] = Array.from({ length: MAX_ROWS_PER_BRANCH + 5 }, (_, i) =>
-  stored(i + 1, {
-    id: `r${i.toString().padStart(7, "0")}`,
-    status: i < 5 ? "resolved" : "open",
-    lastSeen: i + 1,
-  }),
-);
-const capped = capRows(big);
-assert(capped.length === MAX_ROWS_PER_BRANCH, "cap: at most 200 rows per branch");
-assert(
-  capped.every((r) => r.status === "open" || r.lastSeen > 5),
-  "cap: the oldest RESOLVED rows are dropped first",
-);
-assert(
-  !capped.some((r) => r.id === "r0000000") && capped.some((r) => r.id === "r0000005"),
-  "cap: resolved rows are dropped oldest-first; a newer resolved row survives until needed",
-);
 
 process.exit(exit);
