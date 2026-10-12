@@ -117,12 +117,16 @@ async function runPass(dir: string, st: WorkState, onDev: (d: string) => void) {
   process.env.PI_ENSEMBLE_SCOPE_FANOUT_FACTOR = "1";
   process.env.PI_ENSEMBLE_SCOPE_FANOUT_MIN = "1";
   try {
-    const r = await runPass(dir, fixState(dir, ["lib/a.txt"], "lib/a.txt: one; lib/b.txt: also"), (d) => {
-      writeFileSync(`${d}/lib/a.txt`, "two\n");
-      writeFileSync(`${d}/lib/b.txt`, "two\n");
-      git(d, "add -A");
-      git(d, 'commit -q -m "fix"');
-    });
+    const r = await runPass(
+      dir,
+      fixState(dir, ["lib/a.txt"], "lib/a.txt: one; lib/b.txt: also"),
+      (d) => {
+        writeFileSync(`${d}/lib/a.txt`, "two\n");
+        writeFileSync(`${d}/lib/b.txt`, "two\n");
+        git(d, "add -A");
+        git(d, 'commit -q -m "fix"');
+      },
+    );
     assert(
       !r.applied && r.parked.includes("fan-out limit 1 for its 1 declared path"),
       `C2: the fan-out ceiling counts declared paths only (got "${r.parked}")`,
@@ -250,23 +254,28 @@ async function runPass(dir: string, st: WorkState, onDev: (d: string) => void) {
   }
 }
 
-// K — driver-owned modules are never widened onto, even in the declared directory.
+// K — a protectedPathsIn path never widens, even in a declared directory.
 {
-  const tracked = [
-    "extension/src/x.ts",
-    "extension/src/y.ts",
-    "extension/src/work-driver-verify-cmd.ts",
-    "extension/src/adversarial-verdict.ts",
-    "extension/src/comment-evidence.ts",
-  ];
-  const named = namedPaths(
-    "extension/src/work-driver-verify-cmd.ts extension/src/adversarial-verdict.ts extension/src/comment-evidence.ts extension/src/y.ts",
-    tracked,
-    ["extension/src/x.ts"],
-  );
+  const tracked = [".github/workflows/a.yml", ".github/workflows/b.yml"];
+  const named = namedPaths("fix .github/workflows/a.yml and .github/workflows/b.yml", tracked, [
+    ".github/workflows/a.yml",
+  ]);
   assert(
-    named.join(",") === "extension/src/y.ts",
-    `K: a finding naming a driver-owned module does not widen the fence (got ${named.join(",")})`,
+    named.length === 0,
+    `K: a protected path named by a finding does not widen the fence (got ${named.join(",")})`,
+  );
+}
+
+// K2 — no project list: a driver module widens like any other file in a
+// declared directory, the same as on a first develop pass.
+{
+  const tracked = ["extension/src/x.ts", "extension/src/work-driver-verify-cmd.ts"];
+  const named = namedPaths("extension/src/work-driver-verify-cmd.ts", tracked, [
+    "extension/src/x.ts",
+  ]);
+  assert(
+    named.join(",") === "extension/src/work-driver-verify-cmd.ts",
+    `K2: a driver module in a declared directory widens like any other file (got ${named.join(",")})`,
   );
 }
 

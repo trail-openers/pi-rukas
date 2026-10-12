@@ -4,6 +4,14 @@
  * becomes a named park reason, and nothing falls back to repoRoot or to an
  * empty set. The widened scope lives in an overlay the develop step receives
  * as a parameter; it is never written into the persisted pipeline state.
+ *
+ * Widening is bounded by three conditions, and only these: a finding-named path
+ * widens the fence when it is tracked at base, not protected per
+ * `protectedPathsIn` (the single source of protected paths), and in the same
+ * non-root directory as a declared or already-changed path. There is no list of
+ * project-specific modules: the /work driver runs on other repositories too. A
+ * driver module is therefore no more editable in a fix pass than on a first
+ * develop pass, which has the same fence and the same gates.
  */
 
 import path from "node:path";
@@ -46,15 +54,6 @@ function dirOfPath(p: string): string {
 }
 
 /**
- * The driver's own gate modules (verify, verdict, retention, marker parsing).
- * They share `extension/src/` with ordinary code, so the directory rule alone
- * would let a finding widen a fence onto them. Never widenable.
- */
-const DRIVER_OWNED =
-  /^extension\/src\/(work|adversarial|comment-|reply-markers|review-threshold|lens-)/;
-const driverOwned = (p: string): boolean => DRIVER_OWNED.test(p);
-
-/**
  * Named paths a fix pass may widen its fence onto. Generic, not a project list:
  * a finding-named path qualifies only if it is (a) tracked at base, (b) not
  * protected per `protectedPathsIn` (the single source of protected paths), and
@@ -77,11 +76,7 @@ export function namedPaths(
       .filter((d) => d !== ""),
   );
   return tracked.filter(
-    (p) =>
-      protectedPathsIn([p]).length === 0 &&
-      !driverOwned(p) &&
-      dirs.has(dirOfPath(p)) &&
-      pathTokenIn(findings, p),
+    (p) => protectedPathsIn([p]).length === 0 && dirs.has(dirOfPath(p)) && pathTokenIn(findings, p),
   );
 }
 
