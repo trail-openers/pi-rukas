@@ -7,9 +7,9 @@
  * under the ledger's lock (review-ledger-lock.ts); the ledger itself is untouched.
  *
  * Rows are `open` (reported, not resolved), `accepted` (an operator accepted it)
- * or `resolved` (a complete full review no longer reported it AND either its cited
- * code changed, its path is gone at head, or it has no line; an open row whose
- * code is unchanged is carried forward instead).
+ * or `resolved` (a complete full review no longer reported it AND its path is
+ * gone at head, its cited line is past the end of the head file, or it has no
+ * line; any other open row is carried forward).
  * Accepted rows are never evicted (see review-findings-file.ts for the cap).
  *
  * Failure policy — fail closed on the file, fail open on the review:
@@ -46,7 +46,6 @@ import {
   identityOf,
   pickMatch,
   sameTitle,
-  snippetHashAt,
 } from "./review-findings-match.ts";
 import { acquireLedgerLock } from "./review-ledger-lock.ts";
 import { ledgerPathFor } from "./review-ledger-path.ts";
@@ -287,13 +286,11 @@ export async function acceptFinding(
 }
 
 /**
- * True only when the row's cited line exists at head and its snippet differs from
- * the one recorded. Unknown lines (path absent, unreadable, no line) are NOT
- * changed: an open row is resolved only on positive evidence its code moved.
+ * True when the file is present at head but the row's cited line is past its end
+ * (the code was truncated away). A missing path is `pathGone`, not this.
  */
-function codeChanged(r: StoredFinding, lines: string[] | undefined): boolean {
-  if (!lines || r.line === undefined || r.line > lines.length) return false;
-  return snippetHashAt(lines, r.line) !== r.snippetHash;
+function citedLineGone(r: StoredFinding, lines: string[] | undefined): boolean {
+  return !!lines && r.line !== undefined && r.line > lines.length;
 }
 
 /** Would a finding on `line` of `file` fall outside the delta's changed lines? */
@@ -445,18 +442,20 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
       mine.forEach((r, i) => {
         if (r.status !== "open" || touched.has(r.id)) return;
         const pathGone = missingPaths.has(r.path);
-        const changed = codeChanged(r, linesByPath.get(r.path));
+        const truncated = citedLineGone(r, linesByPath.get(r.path));
         // A complete full review resolves an untouched open row when its path is
-        // gone at head (the PR deleted the file), it has no line, or its cited code
-        // changed. A git read error never reaches here (the whole round is refused).
-        if (run.complete && (pathGone || r.line === undefined || changed)) {
+        // gone at head, it has no line, or its cited line no longer exists. A
+        // line-bearing row on a present file is never resolved here, even when its
+        // code changed: only a re-report or an acceptance clears it. A git read
+        // error never reaches here (the whole round is refused).
+        if (run.complete && (pathGone || r.line === undefined || truncated)) {
           mine[i] = { ...r, status: "resolved", acceptance: undefined };
           return;
         }
-        // Otherwise it stands while its path is present and its cited code is
-        // provably unchanged — on a complete review and on a delta alike. A lens
-        // omitting a known finding on unchanged code is not a fix.
-        if (!pathGone && !changed) {
+        // Otherwise it stands while its path is present and its cited line exists,
+        // on a complete review and on a delta alike. A lens omitting a known
+        // finding is not a fix.
+        if (!pathGone && !truncated) {
           carried.push({
             lens: r.lens,
             severity: r.severity,

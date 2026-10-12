@@ -143,6 +143,37 @@ try {
     "C round 2: a no-line row the review re-reports stays open",
   );
   assert(c2.verdict === "ISSUES_FOUND", `C round 2: the re-reported finding blocks (${c2.verdict})`);
+  // D — the file is truncated so the cited line no longer exists: resolved.
+  sh("git checkout -q main");
+  sh("git checkout -q -b feat/trunc");
+  await runRound("feat/trunc", head(), [
+    { severity: "MEDIUM", path: "src/a.ts", line: 3, title: "Unused constant" },
+  ]);
+  writeFileSync(path.join(repo, "src", "a.ts"), "// header\n");
+  sh("git commit -qam truncate");
+  const d2 = await runRound("feat/trunc", head(), []);
+  const dRows = await readBranchRows(repo, "feat/trunc");
+  assert(
+    dRows.length === 1 && dRows[0]?.status === "resolved",
+    "D round 2: an open row whose cited line is past the end of the file resolves",
+  );
+  assert(d2.verdict === "APPROVED", `D round 2: the verdict is not blocked (${d2.verdict})`);
+
+  // E: a neighbour edit changes the snippet of a line-bearing row on a
+  // present file. A complete review that does not re-report it carries it forward.
+  sh("git checkout -q main");
+  sh("git checkout -q -b feat/neighbour");
+  await runRound("feat/neighbour", head(), [
+    { severity: "MEDIUM", path: "src/a.ts", line: 3, title: "Unused constant" },
+  ]);
+  writeFileSync(path.join(repo, "src", "a.ts"), "// header\nexport const a = 9;\nexport const b = 2;\n");
+  sh("git commit -qam neighbour");
+  const e2 = await runRound("feat/neighbour", head(), []);
+  assert(
+    (await readBranchRows(repo, "feat/neighbour"))[0]?.status === "open" &&
+      e2.verdict === "ISSUES_FOUND",
+    `E round 2: a neighbour edit does not resolve a line-bearing finding (verdict ${e2.verdict})`,
+  );
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

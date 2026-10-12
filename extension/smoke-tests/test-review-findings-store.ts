@@ -329,13 +329,13 @@ try {
     "accepted: the lapsed row is open with no acceptance",
   );
 
-  // A complete full review resolves an open row only when its cited code changed
-  // (omission alone carries it forward; see test-review-findings-run.ts).
-  const c4 = commit(readFileSync(path.join(dir, "src", "a.ts"), "utf8").replace("x + 9", "x + 10"));
+  // A complete full review resolves a row whose cited line was truncated away
+  // (a changed line-bearing row is carried; see test-review-findings-resolve.ts).
+  const c4 = commit("// header\n");
   await decide({ cwd: dir, branch: "feat/x", headSha: c4, findings: [], complete: true });
   assert(
     (await readBranchRows(dir, "feat/x"))[0]?.status === "resolved",
-    "resolve: an open row a complete full review no longer reports is resolved",
+    "resolve: an open row whose cited line is past the end of the file resolves",
   );
   const refused = await acceptRow({
     cwd: dir,
