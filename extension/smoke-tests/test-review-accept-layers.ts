@@ -29,10 +29,11 @@ import { isReviewIncomplete } from "../src/lens-review-incomplete.ts";
 import type { Finding } from "../src/lens-review-types.ts";
 import { editsFindingsFile, runsReviewAccept } from "../src/review-accept-guard.ts";
 import {
+  type FindingRun,
   type StoredFinding,
+  acceptFinding,
   capRows,
   readBranchRows,
-  recordFindingRun,
   recordFindingRunOutcome,
 } from "../src/review-findings-store.ts";
 
@@ -46,6 +47,12 @@ function assert(cond: boolean, msg: string) {
 }
 
 const repoExt = path.join(import.meta.dir, "..");
+
+/** A round's decisions, or undefined when nothing was recorded. */
+const decide = async (run: FindingRun) => {
+  const out = await recordFindingRunOutcome(run);
+  return out.ok ? out.decisions : undefined;
+};
 
 // ── layer 1: agent context ──────────────────────────────────────────────────
 
@@ -84,11 +91,30 @@ const importers = srcFiles.filter((f) =>
   /from\s+["'][^"']*review-accept-row/.test(readFileSync(path.join(repoExt, "src", f), "utf8")),
 );
 assert(importers.length === 0, "boundary: no src/ module imports the acceptance write path");
+const storeSrc = readFileSync(path.join(repoExt, "src", "review-findings-store.ts"), "utf8");
 assert(
-  !readFileSync(path.join(repoExt, "src", "review-findings-store.ts"), "utf8").includes(
-    "export async function acceptRow",
-  ),
+  !/export\s+(?:async\s+)?function\s+mutateFindings\b/.test(storeSrc),
+  "boundary: mutateFindings is module-private in the findings store",
+);
+assert(
+  !storeSrc.includes("export async function acceptRow"),
   "boundary: the findings store does not export acceptRow",
+);
+const others = srcFiles.filter((f) => f !== "review-findings-store.ts");
+const srcText = (f: string) => readFileSync(path.join(repoExt, "src", f), "utf8");
+assert(
+  others.every((f) => !/\b(?:acceptFinding|acceptRow|mutateFindings)\b/.test(srcText(f))),
+  "boundary: no src/ module other than the store names acceptFinding or a write primitive",
+);
+// review-findings-file.ts declares the schema (`status: "accepted"` is a type literal
+// there); it assigns nothing, so it is the one src file exempt from the write check.
+const ACCEPT_WRITE =
+  /\bstatus\s*=(?!=)\s*["']accepted["']|\bacceptance\s*=(?!=)|\bstatus\s*:\s*["']accepted["']/;
+assert(
+  others
+    .filter((f) => f !== "review-findings-file.ts")
+    .every((f) => !ACCEPT_WRITE.test(srcText(f))),
+  'boundary: no src/ code assigns status "accepted" or an acceptance outside the store',
 );
 
 // ── layer 3: the guard ──────────────────────────────────────────────────────
@@ -114,6 +140,14 @@ for (const c of [
   `cat ${storeFile}`,
   'bun -e \'require("fs").writeFileSync("review-findings-store", "")\'',
   "bun extension/scripts/review-accept-row.ts",
+  // A multi-line command starting with git is scanned, not waved through as plain git.
+  'git status\nbun -e \'require("fs").writeFileSync("review-findings-store", "")\'',
+  // A git/gh command with a shell operator is not plain: its store mention is scanned.
+  "git log; cat review-findings.json",
+  // A test run with an eval flag runs code from the command line.
+  "bun test -e 'x' smoke-tests/review-findings-store*",
+  // The operator script is not a test file, even under a test runner.
+  "bun test smoke-tests/review-accept-row.ts",
 ]) {
   assert(
     runsReviewAccept(c) !== undefined,
@@ -123,6 +157,14 @@ for (const c of [
 assert(
   runsReviewAccept("bun test smoke-tests/test-review-*.ts") === undefined,
   "guard: a test glob that names no store path is allowed",
+);
+assert(
+  runsReviewAccept("bun test smoke-tests/review-findings-store*") === undefined,
+  "guard: a read-only test run may name the store's stem by glob",
+);
+assert(
+  runsReviewAccept('git commit -m "fix: note review-findings.json (#1)"') === undefined,
+  "guard: a git commit message naming the findings file is allowed",
 );
 
 // ── temp clone for the store-backed rules ───────────────────────────────────
@@ -154,7 +196,7 @@ try {
   const head = git(dir, "rev-parse", "HEAD");
 
   // CRITICAL: refused by acceptRow, and never suppressed on a delta.
-  const crit = await recordFindingRun({
+  const crit = await decide({
     cwd: dir,
     branch: "feat/x",
     headSha: head,
@@ -173,7 +215,7 @@ try {
     !critRefused.ok && critRefused.reason.includes("CRITICAL"),
     "critical: acceptRow refuses a CRITICAL row",
   );
-  const critDelta = await recordFindingRun({
+  const critDelta = await decide({
     cwd: dir,
     branch: "feat/x",
     headSha: head,
@@ -190,7 +232,7 @@ try {
   // acceptRow's own refusals — no CLI in between.
   const rowId =
     (
-      await recordFindingRun({
+      await decide({
         cwd: dir,
         branch: "feat/x",
         headSha: head,
@@ -227,38 +269,66 @@ try {
   );
   assert(ok.code === 0, `accept: the operator run succeeds from an operator shell (${ok.message})`);
 
-  // Corrupt file: copied aside, never overwritten; readers see no memory.
+  // A direct call with a malformed row id is refused by the store's transition.
+  const badId = await acceptFinding(dir, "feat/x", "XYZ", {
+    by: "op",
+    reason: "a long enough reason to pass the rule",
+  });
+  assert(
+    !badId.ok && badId.reason.includes("8 lowercase hex"),
+    "accept: acceptFinding refuses a malformed row id",
+  );
+
+  // A malformed row among good rows: that row alone is set aside; the valid rows
+  // and the acceptance survive, and the file is written back without it.
   const before = readFileSync(findingsFile, "utf8");
+  const good = (JSON.parse(before) as { rows: Array<Record<string, unknown>> }).rows;
   writeFileSync(
     findingsFile,
-    before.replace(
-      /"status": "accepted"/,
-      '"status": "accepted", "bogus": true, "severity": "BOGUS"',
-    ),
+    JSON.stringify({ rows: [...good, { ...good[0], id: "deadbeef", severity: "BOGUS" }] }, null, 2),
   );
-  const corruptText = readFileSync(findingsFile, "utf8");
-  const refusedWrite = await acceptRow({
+  const badRound = await recordFindingRunOutcome({
     cwd: dir,
     branch: "feat/x",
-    rowId: critId,
+    headSha: head,
+    findings: [finding("Shadowed variable", 2)],
+    complete: true,
+  });
+  assert(badRound.ok, "corrupt row: a round still records when one row is malformed");
+  assert(
+    !readFileSync(findingsFile, "utf8").includes("BOGUS"),
+    "corrupt row: the malformed row is removed from the store file",
+  );
+  assert(
+    (await readBranchRows(dir, "feat/x")).some((r) => r.id === rowId && r.status === "accepted"),
+    "corrupt row: the valid rows and the acceptance survive",
+  );
+  assert(
+    readdirSync(path.join(dir, ".git")).filter((f) => f.startsWith("review-findings.json.corrupt-"))
+      .length === 1,
+    "corrupt row: exactly one .corrupt copy holds the malformed row",
+  );
+
+  // A file that does not parse at all is fail-closed: never overwritten, no memory.
+  writeFileSync(findingsFile, "{not json");
+  const unparseable = await acceptRow({
+    cwd: dir,
+    branch: "feat/x",
+    rowId,
     reason: "a long enough reason to pass the rule",
     by: "op@example.com",
   });
   assert(
-    !refusedWrite.ok && refusedWrite.reason.includes("copied to"),
-    "corrupt: a write refuses and names the copy",
+    !unparseable.ok && unparseable.reason.includes("copied to"),
+    "corrupt file: a write refuses and names the copy",
   );
   assert(
-    readFileSync(findingsFile, "utf8") === corruptText,
-    "corrupt: the file is not overwritten",
-  );
-  assert(
-    readdirSync(path.join(dir, ".git")).some((f) => f.startsWith("review-findings.json.corrupt-")),
-    "corrupt: a timestamped .corrupt copy exists",
+    readFileSync(findingsFile, "utf8") === "{not json",
+    "corrupt file: the file is not overwritten",
   );
   assert(
     (await readBranchRows(dir, "feat/x")).length === 0,
-    "corrupt: readers treat it as no memory",
+    "corrupt file: readers treat it as no memory",
   );
   const corruptRound = await recordFindingRunOutcome({
     cwd: dir,
@@ -267,7 +337,10 @@ try {
     findings: [finding("Shadowed variable", 2)],
     complete: true,
   });
-  assert(!corruptRound.ok, "corrupt: recording a round reports the failure instead of recording");
+  assert(
+    !corruptRound.ok,
+    "corrupt file: recording a round reports the failure instead of recording",
+  );
   writeFileSync(findingsFile, before);
 
   // A path absent at the head commit is a wrong citation, not a fault: it is

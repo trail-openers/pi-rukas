@@ -2,74 +2,70 @@
  * review-findings-store — the per-branch memory of what six-lens review rounds
  * found (#1105).
  *
- * One JSON file, `review-findings.json`, sits NEXT TO `review-ledger.json`
- * under the git common dir, so every worktree of the clone shares it. It is
- * written under the ledger's own lock (review-ledger-lock.ts keyed on the
- * ledger path) rather than a second lock. The ledger itself is not touched:
- * review-ledger.ts stays at its size cap, and this module owns the findings.
+ * One JSON file, `review-findings.json`, sits next to `review-ledger.json` under
+ * the git common dir, so every worktree of the clone shares it. It is written
+ * under the ledger's lock (review-ledger-lock.ts); the ledger itself is untouched.
  *
- * Each row is one finding a round reported (see review-findings-match.ts for
- * the identity). Rows are `open` (reported, not resolved), `accepted`
- * (an operator accepted it by id) or `resolved` (a full review no longer
- * reported it AND its cited code changed; an open row whose code is unchanged
- * is carried forward into the review instead). A branch keeps at most MAX_ROWS_PER_BRANCH rows; resolved rows
- * go first. Accepted rows are never evicted.
+ * Rows are `open` (reported, not resolved), `accepted` (an operator accepted it)
+ * or `resolved` (a complete full review no longer reported it AND its cited code
+ * changed; an open row whose code is unchanged is carried forward instead).
+ * Accepted rows are never evicted (see review-findings-file.ts for the cap).
  *
  * Failure policy — fail closed on the file, fail open on the review:
- *   - A findings file that does not parse, or holds a malformed row, is
- *     CORRUPT. Readers treat it as no memory. Writers refuse to overwrite it
- *     and copy it aside to `review-findings.json.corrupt-<hash of its bytes>`, so an operator
- *     acceptance is never silently erased.
- *   - Any fault while recording a round (no clone, corrupt file, a git error
- *     reading a head file) skips recording for that round and returns the
- *     reason. The caller reports every finding and shows the reason. A path
- *     absent at head is not a fault: its findings are recorded as no-line
- *     findings, never suppressed as unchanged, and suppressed only by an
- *     operator acceptance whose title matches.
+ *   - A file that does not parse is CORRUPT: readers see no memory, and writers
+ *     refuse to overwrite it and copy it aside to `<file>.corrupt-<hash>`.
+ *   - A malformed row is set aside on its own (`<file>.corrupt-<hash of the row>`)
+ *     and the valid rows are kept and written back.
+ *   - A fault while recording a round (no clone, corrupt file, a git error other
+ *     than "path absent at head") skips recording and returns the reason; the
+ *     caller reports every finding and shows the reason.
  *
- * This module has NO acceptance write path. The only way to mark a row
- * accepted is `acceptRow` in extension/scripts/review-accept-row.ts, which the
- * operator reaches through extension/scripts/review-accept.ts. Agents are
- * refused that path by review-accept-guard.ts — a guard that is advisory in
- * trust mode (a string match, see its header).
+ * The ONLY acceptance write is `acceptFinding`; `mutateFindings` is private.
+ * extension/scripts/review-accept-row.ts calls `acceptFinding`, and
+ * review-accept-guard.ts refuses agent attempts (advisory in trust mode).
  */
 
 import { execFile } from "node:child_process";
-import { copyFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { execp } from "./lens-exec.ts";
 import type { Finding } from "./lens-review-types.ts";
 import { changedLineRanges } from "./review-diff.ts";
 import {
-  type RowStatus,
   type StoredFinding,
+  capPerBranch,
   parseFindingsFile,
   readFindingsFile,
+  reasonProblem,
 } from "./review-findings-file.ts";
 import {
   type FindingIdentity,
-  JACCARD_MATCH,
   hashText,
   identityOf,
-  jaccard,
   pickMatch,
+  sameTitle,
   snippetHashAt,
-  titleClassOf,
-  titleTokens,
 } from "./review-findings-match.ts";
 import { acquireLedgerLock } from "./review-ledger-lock.ts";
 import { ledgerPathFor } from "./review-ledger-path.ts";
 import { trace } from "./trace.ts";
 
-export { readFindingsFile, type RowStatus, type StoredFinding } from "./review-findings-file.ts";
+export {
+  MAX_ROWS_PER_BRANCH,
+  capPerBranch,
+  capRows,
+  readFindingsFile,
+  type RowStatus,
+  type StoredFinding,
+} from "./review-findings-file.ts";
 
 const execFileP = promisify(execFile);
 
 /** The findings file's name, beside `review-ledger.json`. */
 export const FINDINGS_FILE = "review-findings.json";
-/** Rows kept per branch; beyond this the oldest resolved, then open, rows go first. */
-export const MAX_ROWS_PER_BRANCH = 200;
+const FULL_SHA = /^[0-9a-f]{40}$/;
+const ROW_ID = /^[0-9a-f]{8}$/;
 
 /**
  * What a round decided for one finding, aligned by index with the findings it
@@ -89,7 +85,7 @@ export interface FindingRun {
   findings: Finding[];
   /** The delta diff (`git diff since..head`) when this round was a delta review. */
   deltaDiff?: string;
-  /** Whether a full review that reached a verdict — only then may unmatched open rows resolve (when their cited code changed) or carry forward. */
+  /** Whether a full review reached a verdict — only then may open rows resolve or carry forward. */
   complete: boolean;
   now?: number;
 }
@@ -99,8 +95,10 @@ export type RecordOutcome =
   | { ok: true; decisions: Decision[]; carried: Finding[] }
   | { ok: false; reason: string };
 
-/** The result of a locked read-modify-write: the callback's value, or why it did not run. */
-export type MutateOutcome<T> = { ok: true; value: T } | { ok: false; reason: string };
+/** The result of an acceptance: the accepted row, or why nothing was accepted. */
+export type AcceptOutcome = { ok: true; row: StoredFinding } | { ok: false; reason: string };
+
+type MutateOutcome<T> = { ok: true; value: T } | { ok: false; reason: string };
 
 /** A repo-relative path that git can show at a commit without option injection. */
 function safeRepoPath(p: string): boolean {
@@ -110,44 +108,44 @@ function safeRepoPath(p: string): boolean {
 
 /**
  * `lines`: the file exists at the commit. `missing`: the commit is readable but
- * the path is not in it (a lens cited a wrong or stale path) — an expected case,
- * recorded as a no-line finding. `error`: git itself failed (bad sha, I/O,
- * buffer overflow) — this round cannot be recorded.
+ * the path is not in it (a lens cited a wrong or stale path) — recorded as a
+ * no-line finding. `error`: git itself failed (bad sha, I/O) — the round cannot
+ * be recorded.
  */
 type HeadLines =
   | { kind: "lines"; lines: string[] }
   | { kind: "missing" }
   | { kind: "error"; reason: string };
 
-/** Does git hold `spec` (a `<sha>:<path>` or `<sha>^{commit}`)? Exit 0 only when it does. */
-async function gitHas(cwd: string, spec: string): Promise<boolean> {
-  try {
-    await execFileP("git", ["-C", cwd, "cat-file", "-e", spec]);
-    return true;
-  } catch {
-    return false;
-  }
-}
+/** git's own wording for "this path is not in that commit" (LC_ALL=C pins it). */
+const PATH_ABSENT_AT_HEAD = /does not exist in|exists on disk, but not in/;
 
 /**
  * The lines of `file` at `sha`. A path absent from a readable commit is
- * `missing`, not an error, so one wrong citation does not disable the run's
- * memory. Any other git failure is an `error`, never an empty file: an empty
+ * `missing`; any other git failure is an `error`, never an empty file: an empty
  * file would give every finding a fake identity and suppress nothing on the
- * wrong evidence.
+ * wrong evidence. git words "path absent" the same way for an unreadable commit,
+ * so the commit is checked first.
  */
 async function readHeadLines(cwd: string, sha: string, file: string): Promise<HeadLines> {
-  // An unsafe path names nothing git can hold, so it is missing at head too.
   if (!safeRepoPath(file)) return { kind: "missing" };
+  try {
+    await execFileP("git", ["-C", cwd, "cat-file", "-e", `${sha}^{commit}`]);
+  } catch (err) {
+    return {
+      kind: "error",
+      reason: `cannot read ${file} at ${sha.slice(0, 12)}: not a commit in this clone (${(err as Error).message.slice(0, 80)})`,
+    };
+  }
   try {
     const { stdout } = await execFileP("git", ["-C", cwd, "show", `${sha}:${file}`], {
       maxBuffer: 8 * 1024 * 1024,
+      env: { ...process.env, LC_ALL: "C" },
     });
     return { kind: "lines", lines: stdout.split("\n") };
   } catch (err) {
-    if ((await gitHas(cwd, `${sha}^{commit}`)) && !(await gitHas(cwd, `${sha}:${file}`))) {
-      return { kind: "missing" };
-    }
+    const stderr = String((err as { stderr?: unknown }).stderr ?? "");
+    if (PATH_ABSENT_AT_HEAD.test(stderr)) return { kind: "missing" };
     return {
       kind: "error",
       reason: `cannot read ${file} at ${sha.slice(0, 12)}: ${(err as Error).message.slice(0, 120)}`,
@@ -166,37 +164,8 @@ export function newRowId(taken: ReadonlySet<string>): string {
 }
 
 /**
- * Keep at most `max` rows. Resolved rows go first (oldest first), then open
- * rows (oldest first). Accepted rows are never dropped — an acceptance is an
- * operator decision, so the store may exceed `max` when they alone fill it.
- */
-export function capRows(rows: StoredFinding[], max = MAX_ROWS_PER_BRANCH): StoredFinding[] {
-  if (rows.length <= max) return rows;
-  let excess = rows.length - max;
-  const byAge = [...rows].sort((a, b) => a.lastSeen - b.lastSeen);
-  const drop = new Set<string>();
-  for (const evictable of ["resolved", "open"] as const) {
-    for (const r of byAge) {
-      if (excess <= 0) break;
-      if (r.status === evictable) {
-        drop.add(r.id);
-        excess--;
-      }
-    }
-  }
-  return rows.filter((r) => !drop.has(r.id));
-}
-
-/** `capRows` applied to each branch separately, so one branch never evicts another's rows. */
-export function capPerBranch(rows: StoredFinding[]): StoredFinding[] {
-  const branches = new Set(rows.map((r) => r.branch));
-  return [...branches].flatMap((b) => capRows(rows.filter((r) => r.branch === b)));
-}
-
-/**
  * Resolve the findings file's path and the ledger path that guards it. Both
- * are undefined outside a git clone; the findings file lives beside the
- * ledger so the two share a directory (and the override in tests).
+ * are undefined outside a git clone; the findings file lives beside the ledger.
  */
 async function locate(cwd: string): Promise<{ ledger: string; file: string } | undefined> {
   const ledger = await ledgerPathFor(execp, cwd);
@@ -206,13 +175,33 @@ async function locate(cwd: string): Promise<{ ledger: string; file: string } | u
   return { ledger, file: path.join(dir, FINDINGS_FILE) };
 }
 
+/** Copy one malformed row aside, named by its content, so a repeat never duplicates it. */
+function setAside(file: string, row: unknown): void {
+  const text = JSON.stringify(row, null, 2);
+  const copy = `${file}.corrupt-${hashText(text)}`;
+  if (!existsSync(copy)) writeFileSync(copy, `${text}\n`, "utf8");
+  trace(`review-findings: a malformed row was set aside in ${copy}`);
+}
+
+/** Write the rows atomically; a failed write leaves no tmp file behind. */
+function writeRows(file: string, rows: StoredFinding[]): void {
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    writeFileSync(tmp, JSON.stringify({ rows: capPerBranch(rows) }, null, 2), "utf8");
+    renameSync(tmp, file);
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw err;
+  }
+}
+
 /**
  * Read-modify-write the findings file under the ledger lock. `fn` gets the
- * stored rows and returns the rows to keep plus a value. A corrupt file is
- * copied aside and never overwritten; any failure is a `{ ok: false }` with
- * the reason, never a throw.
+ * stored rows and returns the rows to keep plus a value. Private: the only
+ * callers are `acceptFinding` and `recordFindingRunOutcome` in this module.
+ * Never throws.
  */
-export async function mutateFindings<T>(
+async function mutateFindings<T>(
   cwd: string,
   fn: (rows: StoredFinding[]) => { rows: StoredFinding[]; result: T },
 ): Promise<MutateOutcome<T>> {
@@ -223,7 +212,6 @@ export async function mutateFindings<T>(
     release = await acquireLedgerLock(loc.ledger);
     const parsed = parseFindingsFile(loc.file);
     if (!parsed.ok) {
-      // Named by content, so repeated rounds on one corrupt file reuse one copy.
       const copy = `${loc.file}.corrupt-${hashText(readFileSync(loc.file, "utf8"))}`;
       copyFileSync(loc.file, copy);
       trace(`review-findings: ${loc.file} is corrupt (${parsed.reason}) — copied to ${copy}`);
@@ -232,15 +220,18 @@ export async function mutateFindings<T>(
         reason: `the findings file is corrupt (${parsed.reason}); it was not overwritten and was copied to ${copy}`,
       };
     }
+    for (const bad of parsed.malformed) setAside(loc.file, bad);
     const { rows, result } = fn(parsed.rows);
-    const tmp = `${loc.file}.tmp-${process.pid}-${Date.now()}`;
-    writeFileSync(tmp, JSON.stringify({ rows: capPerBranch(rows) }, null, 2), "utf8");
-    renameSync(tmp, loc.file);
+    writeRows(loc.file, rows);
     return { ok: true, value: result };
   } catch (err) {
     return { ok: false, reason: `write failed: ${(err as Error).message.slice(0, 160)}` };
   } finally {
-    release?.();
+    try {
+      release?.();
+    } catch (err) {
+      trace(`review-findings: lock release failed: ${(err as Error).message}`);
+    }
   }
 }
 
@@ -253,6 +244,45 @@ export async function readBranchRows(cwd: string, branch: string): Promise<Store
   } catch {
     return [];
   }
+}
+
+/** The one acceptance transition: an operator accepts a recorded row by id. */
+export async function acceptFinding(
+  cwd: string,
+  branch: string,
+  rowId: string,
+  opts: { by: string; reason: string; now?: number },
+): Promise<AcceptOutcome> {
+  const by = opts.by.trim();
+  const reason = opts.reason.trim();
+  const problem =
+    reasonProblem(reason) ??
+    (ROW_ID.test(rowId)
+      ? undefined
+      : `row id must be 8 lowercase hex characters, got "${rowId}"`) ??
+    (by ? undefined : "an acceptance needs an operator identity");
+  if (problem) return { ok: false, reason: problem };
+  const now = opts.now ?? Date.now();
+  const out = await mutateFindings<AcceptOutcome>(cwd, (all) => {
+    const idx = all.findIndex((r) => r.branch === branch && r.id === rowId);
+    const refuse = (why: string) => ({ rows: all, result: { ok: false, reason: why } as const });
+    const row = all[idx];
+    if (!row) return refuse(`no row ${rowId} on branch ${branch}`);
+    if (row.status === "resolved") return refuse(`row ${rowId} is resolved — nothing to accept`);
+    if (row.severity === "CRITICAL") {
+      return refuse(`row ${rowId} is CRITICAL — CRITICAL findings are never accepted`);
+    }
+    const accepted: StoredFinding = {
+      ...row,
+      status: "accepted",
+      acceptance: { by, reason, at: now, snippetHash: row.snippetHash },
+    };
+    return {
+      rows: all.map((r, i) => (i === idx ? accepted : r)),
+      result: { ok: true, row: accepted },
+    };
+  });
+  return out.ok ? out.value : { ok: false, reason: out.reason };
 }
 
 /**
@@ -278,25 +308,33 @@ function outsideDelta(
   return !spans.some(([lo, hi]) => line >= lo && line <= hi);
 }
 
+/** The row with its acceptance withdrawn: open again, so it is reported again. */
+function reopen(r: StoredFinding): StoredFinding {
+  return { ...r, status: "open", acceptance: undefined };
+}
+
 /**
  * Record one round: match each finding to a stored row (or create one), decide
  * whether it is suppressed, and resolve open rows a complete full review no
  * longer reported. Returns the decisions (one per input finding) or the reason
- * nothing was recorded — the caller then reports every finding and shows that
- * reason. Never throws.
+ * nothing was recorded. Never throws.
  *
  * Suppression (CRITICAL is never suppressed; a finding on a path missing at
  * head is never suppressed):
- *   - `suppressed-accepted`: the matched row is accepted and, for a line-bearing
- *     finding, the code it cites still has the snippet the operator accepted
- *     (a no-line finding is bound to its title only);
+ *   - `suppressed-accepted`: the matched row is accepted, the title agrees, and
+ *     for a line-bearing finding the cited code still has the accepted snippet;
  *   - `suppressed-unchanged`: a delta round, the title agrees, the cited code's
- *     snippet is unchanged, and the cited line lies outside the delta's changed
- *     lines. Never for a path missing at head.
+ *     snippet is unchanged, and the cited line lies outside the delta.
  * An accepted row whose snippet changed lapses to open and is reported again.
  */
 export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOutcome> {
   try {
+    if (!FULL_SHA.test(run.headSha)) {
+      return {
+        ok: false,
+        reason: `the reviewed head is not a full commit SHA (${run.headSha.slice(0, 40)})`,
+      };
+    }
     const now = run.now ?? Date.now();
     const ranges = run.deltaDiff !== undefined ? changedLineRanges(run.deltaDiff) : undefined;
     const linesByPath = new Map<string, string[]>();
@@ -327,7 +365,6 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
       const touched = new Set<string>();
       const taken = new Set(all.map((r) => r.id));
       const decisions: Decision[] = [];
-      const carried: Finding[] = [];
       findings.forEach((f, i) => {
         const id = identities[i] as FindingIdentity;
         const critical = f.severity === "CRITICAL";
@@ -339,7 +376,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
             branch: run.branch,
             path: f.path,
             anchor: id.anchor,
-            titleClass: id.titleClass || titleClassOf(f.title),
+            titleClass: id.titleClass,
             title: f.title,
             severity: f.severity,
             lens: f.lens,
@@ -356,43 +393,44 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
           return;
         }
         touched.add(row.id);
-        // Suppression needs the titles to agree too: a snippet match alone can
-        // be a different finding on the same line. No-line findings keep the
-        // stricter titleClass equality (Jaccard would merge sibling file gaps).
-        const sameTitle =
-          row.titleClass === id.titleClass ||
-          (id.hasLine && jaccard(titleTokens(f.title), titleTokens(row.title)) >= JACCARD_MATCH);
+        // Suppression needs the titles to agree too (see sameTitle): a snippet
+        // match alone can be a different finding on the same line.
+        const same = sameTitle(id, row);
         // The snippet the row was last recorded with. A changed neighbour line
         // changes the ±2 window, so an unchanged-code suppression needs this equal.
         const priorHash = row.snippetHash;
-        row.lastSeen = now;
-        row.snippetHash = id.snippetHash;
-        row.line = f.line;
-        if (row.status === "resolved") row.status = "open";
-        if (row.status === "accepted" && row.acceptance) {
-          // A line-bearing finding is bound to the snippet the operator accepted.
-          // A no-line finding is bound to its title only: two file-level findings
-          // sharing most title tokens must not inherit each other's acceptance.
-          if (id.hasLine && row.acceptance.snippetHash !== id.snippetHash) {
-            trace(
-              `review-findings: acceptance of ${row.id} lapsed (cited code changed) — reported again`,
-            );
-            row.status = "open";
-            row.acceptance = undefined;
-          } else if (!critical && sameTitle) {
-            decisions.push({
-              action: "suppressed-accepted",
-              rowId: row.id,
-              reason: `accepted by ${row.acceptance.by}: ${row.acceptance.reason}`,
-            });
-            return;
-          }
+        let kept: StoredFinding = {
+          ...row,
+          lastSeen: now,
+          snippetHash: id.snippetHash,
+          line: f.line,
+        };
+        if (kept.status === "resolved") kept = reopen(kept);
+        // A line-bearing finding is bound to the snippet the operator accepted; a
+        // no-line finding is bound to its title only (see sameTitle).
+        if (
+          kept.status === "accepted" &&
+          id.hasLine &&
+          kept.acceptance.snippetHash !== id.snippetHash
+        ) {
+          trace(
+            `review-findings: acceptance of ${kept.id} lapsed (cited code changed) — reported again`,
+          );
+          kept = reopen(kept);
         }
-        // priorHash === snippetHash: the cited code is the code the row last saw.
+        mine[mine.indexOf(row)] = kept;
+        if (kept.status === "accepted" && !critical && same) {
+          decisions.push({
+            action: "suppressed-accepted",
+            rowId: kept.id,
+            reason: `accepted by ${kept.acceptance.by}: ${kept.acceptance.reason}`,
+          });
+          return;
+        }
         if (
           !critical &&
           !gone &&
-          sameTitle &&
+          same &&
           ranges &&
           priorHash === id.snippetHash &&
           outsideDelta(f, id, ranges)
@@ -404,11 +442,13 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
         }
         decisions.push({ action: "matched", rowId: row.id });
       });
+      const carried: Finding[] = [];
       if (run.complete) {
-        for (const r of mine) {
-          if (r.status !== "open" || touched.has(r.id)) continue;
-          if (codeChanged(r, linesByPath.get(r.path))) r.status = "resolved";
-          else {
+        mine.forEach((r, i) => {
+          if (r.status !== "open" || touched.has(r.id)) return;
+          if (codeChanged(r, linesByPath.get(r.path))) {
+            mine[i] = { ...r, status: "resolved", acceptance: undefined };
+          } else {
             carried.push({
               lens: r.lens,
               severity: r.severity,
@@ -417,7 +457,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
               title: r.title,
             });
           }
-        }
+        });
       }
       return { rows: [...others, ...mine], result: { decisions, carried } };
     });
@@ -426,10 +466,4 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
     trace(`review-findings: record failed: ${(err as Error).message}`);
     return { ok: false, reason: (err as Error).message.slice(0, 160) };
   }
-}
-
-/** The decisions of a round, or undefined when nothing was recorded. */
-export async function recordFindingRun(run: FindingRun): Promise<Decision[] | undefined> {
-  const out = await recordFindingRunOutcome(run);
-  return out.ok ? out.decisions : undefined;
 }

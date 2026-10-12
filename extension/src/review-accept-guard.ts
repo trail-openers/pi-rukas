@@ -20,8 +20,9 @@
  *
  * A match requires an invocation shape (a JS runtime naming a protected file,
  * or the script run directly) or the findings data file itself. Plain git/gh
- * commands without shell metacharacters are never matched, so a commit message
- * or PR body naming the feature is left alone. The raw command is scanned, not
+ * commands (no shell operator, no line break) are never matched, so a commit
+ * message or PR body naming the feature is left alone; a test run is matched
+ * only when it carries an eval flag or names the operator script. The raw command is scanned, not
  * the quote-stripped one, so quoting the path does not hide it.
  */
 
@@ -41,8 +42,17 @@ const RUNTIME_NAME = new RegExp(`${RUNTIME}${NAMES}`);
 const DATA_FILE = /(?<![\w-])review-findings\.json/;
 /** The script run directly by path as the first word, e.g. `./review-accept.ts`. */
 const DIRECT_RUN = /^\s*(?:\S*\/)?review-accept(?:\.ts)?(?=\s|$)/;
-/** Plain git/gh with no shell metacharacters: its arguments are text, not code. */
-const PLAIN_VCS = /^\s*(?:git|gh)\s[^;&|`$<>()]*$/;
+/**
+ * Plain git/gh: no shell operator and no line break, so the whole command is one
+ * git/gh invocation whose arguments are text (a commit message may name the store).
+ */
+const PLAIN_VCS = /^\s*(?:git|gh)\s[^;&|`$<>\n\r]*$/;
+/** A test run (bun test / verify-loop): no shell operator and no line break. */
+const TEST_RUN = /^\s*(?:bun\s+test|bash\s+\S*verify-loop\.sh)\s[^;&|`$<>\n\r]*$/;
+/** An eval flag: the runtime then executes code named on the command line. */
+const EVAL = /(?:^|\s)(?:-e|--eval)(?=\s|=|$)/;
+/** The operator script or its write module, named in a command. */
+const SCRIPT = /(?<![\w-])review-accept(?:-row)?(?:\.ts)?(?![\w.-])/;
 /** Edit tools whose `path` argument is checked against the findings file. */
 const FILE_TOOLS = new Set(["edit", "write", "multiedit"]);
 /** The findings file and its tmp / corrupt-copy siblings, by basename. */
@@ -51,6 +61,9 @@ const FINDINGS_BASENAME = /^review-findings\.json(?:\.|$)/;
 /** The matched invocation when a command runs review-accept or names the store, else undefined. */
 export function runsReviewAccept(command: string): string | undefined {
   if (PLAIN_VCS.test(command)) return undefined;
+  // A test run may name the store's files by glob (a read-only suite); it may not
+  // name the operator's script, and it may not carry an eval flag.
+  if (TEST_RUN.test(command) && !EVAL.test(command) && !SCRIPT.test(command)) return undefined;
   const m = RUNTIME_NAME.exec(command) ?? DIRECT_RUN.exec(command) ?? DATA_FILE.exec(command);
   return m?.[0].trim();
 }

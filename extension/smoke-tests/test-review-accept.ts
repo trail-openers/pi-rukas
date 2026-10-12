@@ -20,7 +20,17 @@ import {
   runReviewAccept,
 } from "../scripts/review-accept.ts";
 import { registerReviewAcceptGuard, runsReviewAccept } from "../src/review-accept-guard.ts";
-import { readBranchRows, recordFindingRun } from "../src/review-findings-store.ts";
+import {
+  type FindingRun,
+  readBranchRows,
+  recordFindingRunOutcome,
+} from "../src/review-findings-store.ts";
+
+/** A round's decisions, or undefined when nothing was recorded (the outcome's reason is not needed here). */
+const decide = async (run: FindingRun) => {
+  const out = await recordFindingRunOutcome(run);
+  return out.ok ? out.decisions : undefined;
+};
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -91,7 +101,7 @@ try {
   git(dir, "add", "-A");
   git(dir, "commit", "-q", "-m", "c");
   const head = git(dir, "rev-parse", "HEAD");
-  const run = await recordFindingRun({
+  const run = await decide({
     cwd: dir,
     branch: "feat/x",
     headSha: head,

@@ -27,8 +27,15 @@ import {
   titleClassOf,
   titleTokens,
 } from "../src/review-findings-match.ts";
-import { readBranchRows, recordFindingRun } from "../src/review-findings-store.ts";
+import type { FindingRun } from "../src/review-findings-store.ts";
+import { readBranchRows, recordFindingRunOutcome } from "../src/review-findings-store.ts";
 import { ledgerPathFor } from "../src/review-ledger-path.ts";
+
+/** A round's decisions, or undefined when nothing was recorded. */
+const decide = async (run: FindingRun) => {
+  const out = await recordFindingRunOutcome(run);
+  return out.ok ? out.decisions : undefined;
+};
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -197,7 +204,7 @@ try {
     "store: the clone has a git common dir",
   );
 
-  const first = await recordFindingRun({
+  const first = await decide({
     cwd: dir,
     branch: "feat/x",
     headSha: c1,
@@ -228,7 +235,7 @@ try {
     "+// new 1",
     "+// new 2",
   ].join("\n");
-  const delta = await recordFindingRun({
+  const delta = await decide({
     cwd: dir,
     branch: "feat/x",
     headSha: c2,
@@ -255,7 +262,7 @@ try {
     by: "op@example.com",
   });
   assert(accepted.ok, "accept: an open row can be accepted by id");
-  const later = await recordFindingRun({
+  const later = await decide({
     cwd: dir,
     branch: "feat/x",
     headSha: c2,
@@ -268,7 +275,7 @@ try {
   );
 
   // CRITICAL is never dropped, even when it matches an accepted row.
-  const crit = await recordFindingRun({
+  const crit = await decide({
     cwd: dir,
     branch: "feat/x",
     headSha: c2,
@@ -282,7 +289,7 @@ try {
 
   // Same snippet, different title on the accepted line: a different finding, so
   // it gets its own row and is reported, never suppressed by the acceptance.
-  const otherTitle = await recordFindingRun({
+  const otherTitle = await decide({
     cwd: dir,
     branch: "feat/x",
     headSha: c2,
@@ -305,7 +312,7 @@ try {
       ...SRC.slice(3),
     ].join("\n"),
   );
-  const lapsed = await recordFindingRun({
+  const lapsed = await decide({
     cwd: dir,
     branch: "feat/x",
     headSha: c3,
@@ -325,7 +332,7 @@ try {
   // A complete full review resolves an open row only when its cited code changed
   // (omission alone carries it forward; see test-review-findings-run.ts).
   const c4 = commit(readFileSync(path.join(dir, "src", "a.ts"), "utf8").replace("x + 9", "x + 10"));
-  await recordFindingRun({ cwd: dir, branch: "feat/x", headSha: c4, findings: [], complete: true });
+  await decide({ cwd: dir, branch: "feat/x", headSha: c4, findings: [], complete: true });
   assert(
     (await readBranchRows(dir, "feat/x"))[0]?.status === "resolved",
     "resolve: an open row a complete full review no longer reports is resolved",
@@ -354,7 +361,7 @@ try {
   // Concurrent writers on one clone: every row survives (the ledger lock).
   const runs = await Promise.all(
     ["alpha one", "beta two", "gamma three", "delta four", "epsilon five"].map((t, i) =>
-      recordFindingRun({
+      decide({
         cwd: dir,
         branch: "feat/y",
         headSha: c3,
@@ -375,7 +382,7 @@ try {
   );
 
   // No-line findings: an acceptance binds to the title, not to shared tokens.
-  const nl = await recordFindingRun({
+  const nl = await decide({
     cwd: dir,
     branch: "feat/nl",
     headSha: c3,
@@ -397,7 +404,7 @@ try {
     reason: "file-level gap, tracked elsewhere",
     by: "op@example.com",
   });
-  const sibling = await recordFindingRun({
+  const sibling = await decide({
     cwd: dir,
     branch: "feat/nl",
     headSha: c3,
@@ -412,10 +419,10 @@ try {
     complete: true,
   });
   assert(
-    sibling?.[0]?.action === "matched",
-    "no-line: a different title sharing 0.6 of its tokens is matched, not suppressed by the acceptance",
+    sibling?.[0]?.action === "new",
+    "no-line: a different title sharing 0.6 of its tokens gets its own row, not the acceptance",
   );
-  const sameTitle = await recordFindingRun({
+  const sameTitle = await decide({
     cwd: dir,
     branch: "feat/nl",
     headSha: c3,
@@ -437,7 +444,7 @@ try {
   // A changed neighbour line changes the ±2 snippet window: a delta that touched
   // line 3 must not suppress the finding on line 4 as unchanged.
   const n1 = commit(SRC.join("\n"));
-  await recordFindingRun({
+  await decide({
     cwd: dir,
     branch: "feat/nb",
     headSha: n1,
@@ -445,7 +452,7 @@ try {
     complete: true,
   });
   const n2 = commit(SRC.map((l, i) => (i === 2 ? "  const a = x + 9;" : l)).join("\n"));
-  const neighbour = await recordFindingRun({
+  const neighbour = await decide({
     cwd: dir,
     branch: "feat/nb",
     headSha: n2,
@@ -467,7 +474,7 @@ try {
 
   // A corrupt findings file fails closed: no suppression, and it is not overwritten.
   writeFileSync(findingsFile, "{not json");
-  const corruptRun = await recordFindingRun({
+  const corruptRun = await decide({
     cwd: dir,
     branch: "feat/x",
     headSha: c3,

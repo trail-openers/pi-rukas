@@ -187,11 +187,20 @@ export function identityOf(
   };
 }
 
+/**
+ * Do a finding and a stored row carry the same title? The ONE title rule, shared
+ * by matching and by the store's suppression gate: equal title classes, or — for
+ * a line-bearing finding only — token Jaccard ≥ JACCARD_MATCH. A no-line finding
+ * keeps the stricter equality, because Jaccard would merge sibling file gaps.
+ */
+export function sameTitle(id: FindingIdentity, row: MatchableRow): boolean {
+  if (id.titleClass !== "" && row.titleClass === id.titleClass) return true;
+  return id.hasLine && jaccard(titleTokens(id.title), titleTokens(row.title)) >= JACCARD_MATCH;
+}
+
 /** True when a finding identity names the same finding as a stored row. */
 export function sameIdentity(id: FindingIdentity, row: MatchableRow): boolean {
-  if (row.path !== id.path || row.anchor !== id.anchor) return false;
-  if (id.titleClass !== "" && row.titleClass === id.titleClass) return true;
-  return jaccard(titleTokens(id.title), titleTokens(row.title)) >= JACCARD_MATCH;
+  return row.path === id.path && row.anchor === id.anchor && sameTitle(id, row);
 }
 
 /**
