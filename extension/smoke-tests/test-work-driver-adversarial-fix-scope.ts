@@ -236,6 +236,20 @@ async function runPass(dir: string, st: WorkState, onDev: (d: string) => void) {
   }
 }
 
+// L — a declared `./`-prefixed path is normalised: a change to the file it
+// names is inside the fence (no false park).
+{
+  const dir = repoWithFile("fs-dot-slash");
+  try {
+    const r = await runPass(dir, fixState(dir, ["./a.txt"], "a.txt: change one to two"), (d) =>
+      devCommit(d, "a.txt", "two\n"),
+    );
+    assert(r.applied, `L: a ./-declared path fences the file it names (got "${r.parked}")`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // K — driver-owned modules are never widened onto, even in the declared directory.
 {
   const tracked = [

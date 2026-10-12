@@ -6,6 +6,7 @@
  * as a parameter; it is never written into the persisted pipeline state.
  */
 
+import path from "node:path";
 import {
   type FixExec,
   type GitRead,
@@ -118,7 +119,7 @@ export async function planFixPass(
     if (!head.ok) return fenced(head.reason);
     const before = await treeChanges(execFn, worktree, ps.baseSha ?? "");
     if (!before.ok) return fenced(before.reason);
-    const declared = ps.workstreams?.[p.workstreamId]?.paths ?? [];
+    const declared = (ps.workstreams?.[p.workstreamId]?.paths ?? []).map(cleaned);
     // Widening anchors: the declared fence, and what the workstream already changed.
     const named = namedPaths(p.findings, tracked.value, [...declared, ...before.value.names]);
     plans.push({
@@ -165,8 +166,13 @@ export interface PostPass {
 const allows = (entry: string, file: string): boolean =>
   file === entry || (entry.endsWith("/") && file.startsWith(entry));
 
-/** A declared path may carry a planner annotation (`"src/a.ts (new)"`). */
-const cleaned = (p: string): string => p.replace(/\s+\([^)]*\)$/, "").trim();
+/**
+ * A declared path may carry a planner annotation (`"src/a.ts (new)"`) or a
+ * `./` prefix; normalised to the repo-relative form git emits, so a `./` path
+ * neither false-parks nor fails to widen a directory anchor.
+ */
+const cleaned = (p: string): string =>
+  path.posix.normalize(p.replace(/\s+\([^)]*\)$/, "").trim()).replace(/^\.\/+/, "");
 
 /**
  * The post-pass checks, in order: the pass changed something, every file it
