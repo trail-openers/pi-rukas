@@ -41,7 +41,8 @@ function assert(cond: boolean, msg: string) {
 // `sh -c`, matching promisify(exec)'s default. NOT a login shell: `-l` sources
 // profile files that may cd, which would silently run git somewhere else.
 const realExec: ExecFn = async (cmd, o) => {
-  const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
+  const [file, args] = o?.argv ? [cmd, o.argv] : ["/bin/sh", ["-c", cmd]];
+  const { stdout } = await execFileP(file, args, {
     cwd: o?.cwd,
     maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
   });

@@ -13,7 +13,7 @@
 
 import { execp } from "./lens-exec.ts";
 import { trace } from "./trace.ts";
-import { runNetGit } from "./work-driver-net-git.ts";
+import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 /**
@@ -102,11 +102,13 @@ export async function captureWorktreeSnapshot(
     // because ls-remote can hang on unreachable remotes (#1095: still 10s,
     // now enforced through runNetGit).
     try {
-      const { stdout } = await runNetGit(
-        execp,
-        `git ls-remote --heads origin ${JSON.stringify(branchName)}`,
-        { cwd: repoRoot, timeoutMs: 10_000 },
-      );
+      const refProblem = netRefProblem(branchName);
+      if (refProblem !== undefined) throw new Error(refProblem);
+      const { stdout } = await runNetGit(execp, "git", {
+        cwd: repoRoot,
+        timeoutMs: 10_000,
+        argv: ["ls-remote", "--heads", "origin", branchName],
+      });
       snapshot.branchPushed = stdout.trim().length > 0;
     } catch {
       snapshot.branchPushed = false;

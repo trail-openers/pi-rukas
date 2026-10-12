@@ -28,7 +28,10 @@ import {
   isNetGitTimeout,
   netGitEnv,
   netGitTimeoutMs,
+  netRefProblem,
+  resetSshConfigCache,
   runNetGit,
+  splitShellWords,
   withSshDefaults,
 } from "../src/work-driver-net-git.ts";
 
@@ -74,7 +77,8 @@ assert(
 rmSync(cfgRepo, { recursive: true, force: true });
 // Only OpenSSH takes the -o defaults; a plink-style program is kept verbatim.
 assert(
-  netGitEnv({ GIT_SSH_COMMAND: "plink -i /keys/deploy" }).GIT_SSH_COMMAND === "plink -i /keys/deploy",
+  netGitEnv({ GIT_SSH_COMMAND: "plink -i /keys/deploy" }).GIT_SSH_COMMAND ===
+    "plink -i /keys/deploy",
   "non-OpenSSH GIT_SSH_COMMAND is not given -o flags",
 );
 // GIT_SSH is exec'd directly by git, but GIT_SSH_COMMAND is shell-parsed: a
@@ -84,6 +88,38 @@ assert(
     "'/opt/my ssh/ssh' -o BatchMode=yes -o ConnectTimeout=30",
   "GIT_SSH path with spaces is shell-quoted before the defaults",
 );
+// A quoted OpenSSH path with spaces is still recognised as ssh (program is the
+// unquoted word), so the -o defaults are appended.
+assert(
+  netGitEnv({ GIT_SSH_COMMAND: "'/opt/my ssh/ssh' -i /k" }).GIT_SSH_COMMAND ===
+    "'/opt/my ssh/ssh' -i /k -o BatchMode=yes -o ConnectTimeout=30",
+  "quoted OpenSSH path in GIT_SSH_COMMAND still gets BatchMode/ConnectTimeout",
+);
+assert(
+  splitShellWords(`"/opt/a b/ssh" -o 'X=1 2' \\ x`).join("|") === "/opt/a b/ssh|-o|X=1 2| x",
+  "splitShellWords: double quotes, single quotes and escaped space",
+);
+// core.sshCommand is read once per cwd, not once per call.
+const cacheRepo = mkdtempSync(path.join(tmpdir(), "net-git-cache-"));
+execFileSync("git", ["init", "-q", cacheRepo]);
+execFileSync("git", ["-C", cacheRepo, "config", "core.sshCommand", "'/opt/my ssh/ssh' -i /k"]);
+resetSshConfigCache();
+assert(
+  netGitEnv({}, cacheRepo).GIT_SSH_COMMAND ===
+    "'/opt/my ssh/ssh' -i /k -o BatchMode=yes -o ConnectTimeout=30",
+  "quoted core.sshCommand keeps its quoting and gets the defaults",
+);
+execFileSync("git", ["-C", cacheRepo, "config", "core.sshCommand", "ssh -i /other"]);
+assert(
+  (netGitEnv({}, cacheRepo).GIT_SSH_COMMAND ?? "").startsWith("'/opt/my ssh/ssh'"),
+  "second call in the same cwd reuses the cached core.sshCommand",
+);
+resetSshConfigCache();
+assert(
+  (netGitEnv({}, cacheRepo).GIT_SSH_COMMAND ?? "").startsWith("ssh -i /other"),
+  "after a reset the new core.sshCommand is read",
+);
+rmSync(cacheRepo, { recursive: true, force: true });
 const already = withSshDefaults("ssh -o BatchMode=no -o ConnectTimeout=5");
 assert(
   already === "ssh -o BatchMode=no -o ConnectTimeout=5",
@@ -108,9 +144,15 @@ for (const bad of ["abc", "0", "-1", "1.5"]) {
 process.env[NET_GIT_TIMEOUT_ENV] = "4321";
 
 console.log("3. runNetGit applies env, bound and argv");
-type Seen = { cmd: string; opts: Record<string, unknown> | undefined };
+type SeenOpts = {
+  argv?: string[];
+  timeout?: number;
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+};
+type Seen = { cmd: string; opts: SeenOpts | undefined };
 const seen: Seen[] = [];
-const stub = async (cmd: string, opts?: Record<string, unknown>) => {
+const stub = async (cmd: string, opts?: SeenOpts) => {
   seen.push({ cmd, opts });
   return { stdout: "ok\n" };
 };
@@ -159,7 +201,7 @@ if (saved === undefined) delete process.env[NET_GIT_TIMEOUT_ENV];
 else process.env[NET_GIT_TIMEOUT_ENV] = saved;
 
 console.log("4. enumeration of driver network git call sites");
-const SRC = path.resolve(import.meta.dir, "../src");
+const SRC = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../src");
 // Raw = a network git exec issued directly: a shell string, or the argv form
 // (`execFn("git", { … argv: ["fetch", …] })`). The wrapper's own argv sits
 // inside `runNetGit(execFn, "git", {`, which the leading `runNetGit(` keeps out.

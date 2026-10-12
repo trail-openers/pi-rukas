@@ -39,7 +39,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { integrate } from "../src/work-driver-integrate.ts";
-import type { ExecFn } from "../src/worktree.ts";
+import { realExec } from "./lib/restore-start-ref-fixtures.ts";
 
 const execFileP = promisify(execFile);
 
@@ -52,13 +52,6 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const realExec: ExecFn = async (cmd, o) => {
-  const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
-    cwd: o?.cwd,
-    maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
-  });
-  return { stdout };
-};
 
 const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 

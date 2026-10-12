@@ -29,6 +29,7 @@ import path from "node:path";
 import { postLensResidualDisclosure } from "../src/lens-review-residuals.ts";
 import type { LensReviewSummary } from "../src/lens-review.ts";
 import { lensResidualsMarker } from "../src/merge-guard-round-cap.ts";
+import { commandOf } from "./lib/argv-shell.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -61,7 +62,8 @@ function summary(
  */
 function makeStub(opts: { failPost?: boolean } = {}) {
   const calls: string[] = [];
-  const execFn = async (cmd: string): Promise<{ stdout: string }> => {
+  const execFn = async (cmd0: string, o?: { argv?: string[] }): Promise<{ stdout: string }> => {
+    const cmd = commandOf(cmd0, o);
     calls.push(cmd);
     if (cmd.includes("pr list --state open --head feature/x")) {
       return { stdout: JSON.stringify([{ number: 12 }]) };
@@ -248,7 +250,8 @@ function repoDir(): string {
     // A stub whose fetch fails: the disclosure must NOT post (fail closed)
     // and the note names the fetch failure.
     const calls: string[] = [];
-    const execFn = async (cmd: string): Promise<{ stdout: string }> => {
+    const execFn = async (cmd0: string, o?: { argv?: string[] }): Promise<{ stdout: string }> => {
+      const cmd = commandOf(cmd0, o);
       calls.push(cmd);
       if (cmd.includes("pr list --state open --head feature/x")) {
         return { stdout: JSON.stringify([{ number: 12 }]) };
@@ -296,7 +299,8 @@ function repoDir(): string {
   const dir = mkdtempSync(path.join(tmpdir(), "pi-residuals-"));
   try {
     // A stub that returns no PR number (the PR is not open).
-    const execFn = async (cmd: string): Promise<{ stdout: string }> => {
+    const execFn = async (cmd0: string, o?: { argv?: string[] }): Promise<{ stdout: string }> => {
+      const cmd = commandOf(cmd0, o);
       if (cmd.includes("pr list --state open --head feature/x")) {
         return { stdout: JSON.stringify([]) };
       }

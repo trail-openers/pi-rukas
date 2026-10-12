@@ -37,7 +37,9 @@ function assert(cond: boolean, msg: string) {
 /** Records every (command, cwd) pair so tests can assert on where git ran. */
 function recorder(overrides: Record<string, string> = {}) {
   const calls: Array<{ cmd: string; cwd: string }> = [];
-  const execFn: ExecFn = async (cmd, o) => {
+  // The argv form (#1095) records as `cmd argv\u2026` so prefix matchers read it.
+  const execFn: ExecFn = async (cmd0, o) => {
+    const cmd = o?.argv ? [cmd0, ...o.argv].join(" ") : cmd0;
     calls.push({ cmd, cwd: o?.cwd ?? "" });
     for (const [prefix, stdout] of Object.entries(overrides)) {
       if (cmd.startsWith(prefix)) {
@@ -227,7 +229,8 @@ assert(
     // Simplest: let the recorder return different values per call.
   });
   let calls2 = 0;
-  const execFn2: ExecFn = async (cmd, o) => {
+  const execFn2: ExecFn = async (cmd0, o) => {
+    const cmd = o?.argv ? [cmd0, ...o.argv].join(" ") : cmd0;
     calls2 += 1;
     if (cmd.startsWith("git symbolic-ref")) return { stdout: "origin/main\n" };
     if (cmd.startsWith("git fetch")) throw new Error("Permission denied (publickey)");
@@ -275,7 +278,8 @@ const INTEGRATE_BASE = {
   // multiple integrate() invocations in this file.
   let _revListN = 0;
   const calls: Array<{ cmd: string; cwd: string }> = [];
-  const execFn: ExecFn = async (cmd, o) => {
+  const execFn: ExecFn = async (cmd0, o) => {
+    const cmd = o?.argv ? [cmd0, ...o.argv].join(" ") : cmd0;
     const cwd = o?.cwd ?? "";
     calls.push({ cmd, cwd });
     if (cmd.startsWith("git rev-list --count")) {

@@ -39,7 +39,7 @@
 
 import { trace } from "./trace.ts";
 import { ensureWorktreesExcluded } from "./work-driver-git-exclude.ts";
-import { isNetGitTimeout, runNetGit } from "./work-driver-net-git.ts";
+import { isNetGitTimeout, netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 import type { ExecFn } from "./worktree.ts";
 import { DirtyWorktreeError, worktreeCreate } from "./worktree.ts";
 import type { ProvisionResult } from "./worktree.ts";
@@ -145,6 +145,8 @@ let inFlightFetch: { key: string; p: Promise<unknown> } | undefined;
 
 /** Coalesce concurrent `git fetch origin <ref>` calls into one. */
 async function sharedFetch(execFn: ExecFn, repoRoot: string, ref: string): Promise<void> {
+  const refProblem = netRefProblem(ref);
+  if (refProblem !== undefined) throw new Error(`fetch refused: ${refProblem}`);
   const key = `${repoRoot}::${ref}`;
   if (inFlightFetch?.key === key) {
     // #1095 — a timeout is not the stale-ref case: rethrow it so this caller
@@ -156,7 +158,10 @@ async function sharedFetch(execFn: ExecFn, repoRoot: string, ref: string): Promi
   }
   // #1095 — a hung fetch rejects the SHARED promise; the owner rethrows a
   // timeout (mechanizedBranchSetup) and coalesced callers rethrow it above.
-  const p = runNetGit(execFn, `git fetch origin ${JSON.stringify(ref)}`, { cwd: repoRoot });
+  const p = runNetGit(execFn, "git", {
+    cwd: repoRoot,
+    argv: ["fetch", "origin", ref],
+  });
   inFlightFetch = { key, p };
   try {
     await p;

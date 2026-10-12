@@ -26,6 +26,7 @@
 
 import { execFileSync } from "node:child_process";
 import path from "node:path";
+import { restoreRefSyntaxProblem } from "./work-driver-restore.ts";
 import type { ExecFn } from "./worktree.ts";
 
 export const NET_GIT_TIMEOUT_ENV = "PI_ENSEMBLE_GIT_NET_TIMEOUT_MS";
@@ -82,6 +83,72 @@ function shellWord(p: string): string {
 }
 
 /**
+ * Split a shell-style command string into words (POSIX quoting: single quotes,
+ * double quotes with backslash escapes, backslash outside quotes). GIT_SSH_COMMAND
+ * and core.sshCommand are run through a shell, so `'/opt/my ssh/ssh' -i /k`
+ * names the program `/opt/my ssh/ssh`.
+ */
+export function splitShellWords(s: string): string[] {
+  const words: string[] = [];
+  let cur = "";
+  let inWord = false;
+  let quote: "'" | '"' | undefined;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i] as string;
+    if (quote === "'") {
+      if (c === "'") quote = undefined;
+      else cur += c;
+    } else if (quote === '"') {
+      if (c === '"') quote = undefined;
+      else if (c === "\\" && i + 1 < s.length && '"\\$`'.includes(s[i + 1] as string))
+        cur += s[++i];
+      else cur += c;
+    } else if (c === "'" || c === '"') {
+      quote = c;
+      inWord = true;
+    } else if (c === "\\" && i + 1 < s.length) {
+      cur += s[++i];
+      inWord = true;
+    } else if (/\s/.test(c)) {
+      if (inWord) words.push(cur);
+      cur = "";
+      inWord = false;
+    } else {
+      cur += c;
+      inWord = true;
+    }
+  }
+  if (inWord) words.push(cur);
+  return words;
+}
+
+/** core.sshCommand per repo, read once: a `git config` spawn per network call is wasted work. */
+const sshConfigCache = new Map<string, string | null>();
+
+/** Test seam: forget the cached core.sshCommand lookups. */
+export function resetSshConfigCache(): void {
+  sshConfigCache.clear();
+}
+
+function repoSshCommand(cwd: string): string | null {
+  const hit = sshConfigCache.get(cwd);
+  if (hit !== undefined) return hit;
+  let value: string | null = null;
+  try {
+    value =
+      execFileSync("git", ["config", "--get", "core.sshCommand"], {
+        cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim() || null;
+  } catch {
+    // unset (git config exits 1) or not a repo: fall through to GIT_SSH / ssh
+  }
+  sshConfigCache.set(cwd, value);
+  return value;
+}
+
+/**
  * The ssh command git itself would run, as a shell-ready string plus its
  * program name, in git's precedence order: GIT_SSH_COMMAND, then
  * core.sshCommand (repo config, read in `cwd`), then GIT_SSH, then plain `ssh`.
@@ -91,19 +158,9 @@ function shellWord(p: string): string {
  */
 function operatorSsh(base: NodeJS.ProcessEnv, cwd?: string): { command: string; program: string } {
   const fromEnv = base.GIT_SSH_COMMAND?.trim();
-  if (fromEnv) return { command: fromEnv, program: fromEnv.split(/\s+/)[0] ?? "" };
-  if (cwd !== undefined) {
-    try {
-      const cfg = execFileSync("git", ["config", "--get", "core.sshCommand"], {
-        cwd,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-      }).trim();
-      if (cfg) return { command: cfg, program: cfg.split(/\s+/)[0] ?? "" };
-    } catch {
-      // unset (git config exits 1) or not a repo: fall through to GIT_SSH / ssh
-    }
-  }
+  if (fromEnv) return { command: fromEnv, program: splitShellWords(fromEnv)[0] ?? "" };
+  const cfg = cwd === undefined ? null : repoSshCommand(cwd);
+  if (cfg) return { command: cfg, program: splitShellWords(cfg)[0] ?? "" };
   const gitSsh = base.GIT_SSH?.trim();
   // GIT_SSH is exec'd directly by git (no shell), so its path is quoted here.
   if (gitSsh) return { command: shellWord(gitSsh), program: gitSsh };
@@ -119,13 +176,26 @@ function operatorSsh(base: NodeJS.ProcessEnv, cwd?: string): { command: string; 
  */
 export function netGitEnv(base: NodeJS.ProcessEnv = process.env, cwd?: string): NodeJS.ProcessEnv {
   const { command, program } = operatorSsh(base, cwd);
-  const cleaned = program.replace(/^['"]|['"]$/g, "");
-  const isOpenSsh = /^ssh(\.exe)?$/.test(path.basename(cleaned));
+  const isOpenSsh = /^ssh(\.exe)?$/.test(path.basename(program));
   return {
     ...base,
     GIT_TERMINAL_PROMPT: "0",
     GIT_SSH_COMMAND: isOpenSsh ? withSshDefaults(command) : command,
   };
+}
+
+/**
+ * Named refusal for a remote or branch that is not safe to hand to git (#1095
+ * security): a shell metacharacter, a leading `-` (option injection) or a
+ * pathological name. Undefined when every value is safe. Callers refuse BEFORE
+ * any git call, so a refused name never reaches a command line.
+ */
+export function netRefProblem(...refs: string[]): string | undefined {
+  for (const ref of refs) {
+    const problem = restoreRefSyntaxProblem(ref);
+    if (problem !== undefined) return problem;
+  }
+  return undefined;
 }
 
 export interface NetGitOpts {

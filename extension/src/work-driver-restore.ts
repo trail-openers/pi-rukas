@@ -71,7 +71,7 @@ const UNTRACKED_SHOWN = 10;
  * `-`) before git sees it. Callers still pass refs through argv; this is the
  * refusal, not the only defence.
  */
-function restoreRefSyntaxProblem(ref: string): string | undefined {
+export function restoreRefSyntaxProblem(ref: string): string | undefined {
   if (FULL_SHA.test(ref)) return undefined;
   if (!PLAIN_REF.test(ref)) return `"${ref}" contains characters a restore will not check out`;
   return undefined;

@@ -15,7 +15,7 @@ import {
   repoRootOriginalRef,
 } from "./work-driver-lens-fix-commit.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
-import { isNetGitTimeout, runNetGit } from "./work-driver-net-git.ts";
+import { isNetGitTimeout, netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
@@ -118,13 +118,19 @@ async function handleNoCommittedFix(
       // The work is on the branch; no cap.
       const sha = landed.sha;
       let pushFailure: string | undefined;
-      try {
-        await runNetGit(execFn, `git push origin ${JSON.stringify(branchName)}`, {
-          cwd: ctx.repoRoot,
-        });
-      } catch (err) {
-        // #1095 — keep the named timeout cause visible to the operator.
-        pushFailure = isNetGitTimeout(err) ? err.message.slice(0, 200) : "push rejected";
+      const pushRefProblem = netRefProblem(branchName);
+      if (pushRefProblem !== undefined) {
+        pushFailure = `push refused: ${pushRefProblem}`;
+      } else {
+        try {
+          await runNetGit(execFn, "git", {
+            cwd: ctx.repoRoot,
+            argv: ["push", "origin", branchName],
+          });
+        } catch (err) {
+          // #1095 — keep the named timeout cause visible to the operator.
+          pushFailure = isNetGitTimeout(err) ? err.message.slice(0, 200) : "push rejected";
+        }
       }
       if (pushFailure !== undefined) {
         state = {

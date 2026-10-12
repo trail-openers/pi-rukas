@@ -41,7 +41,12 @@ import type { DriverContext } from "./work-driver-context.ts";
 import { parseBranchName } from "./work-driver-diff.ts";
 import { resolvedTheMainline } from "./work-driver-git.ts";
 import { buildCompletionEvent, runSingleDispatch } from "./work-driver-merged.ts";
-import { type NetGitTimeoutError, isNetGitTimeout, runNetGit } from "./work-driver-net-git.ts";
+import {
+  type NetGitTimeoutError,
+  isNetGitTimeout,
+  netRefProblem,
+  runNetGit,
+} from "./work-driver-net-git.ts";
 import { sliceMarkdownSection } from "./work-driver-plan.ts";
 import { inlineBranchPrompt } from "./work-driver-prompts-branch.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
@@ -144,8 +149,11 @@ export async function runBranchViaOpsDispatch(
     const mainline = await detectMainline(execFn, ctx.repoRoot);
     // Best-effort fetch of the mainline ref; a failure degrades to the local ref.
     try {
-      await runNetGit(execFn, `git fetch origin ${JSON.stringify(mainline)}`, {
+      const refProblem = netRefProblem(mainline);
+      if (refProblem !== undefined) throw new Error(refProblem);
+      await runNetGit(execFn, "git", {
         cwd: ctx.repoRoot,
+        argv: ["fetch", "origin", mainline],
       });
     } catch (err) {
       // #1095 — a timeout fails the step with its named cause; only a fetch

@@ -13,6 +13,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSyn
 import { execSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
+import { commandOf } from "./lib/argv-shell.ts";
 import { type MergeTarget } from "../src/merge-target.ts";
 import { registerMergeGuard } from "../src/merge-guard.ts";
 import { type LedgerEntry, ledgerPathFor, latestEntry } from "../src/review-ledger.ts";
@@ -35,7 +36,10 @@ export async function setupLedgerPath() {
   if (!p) throw new Error("cannot resolve the ledger path for the decision matrix");
   // Canary: the ledger must NOT live inside any .git directory — that would
   // clobber the real per-clone review ledger shared by every worktree.
-  assert(!/([/\\])\.git([/\\]|$)/.test(p), "canary: the test ledger is not inside a .git directory");
+  assert(
+    !/([/\\])\.git([/\\]|$)/.test(p),
+    "canary: the test ledger is not inside a .git directory",
+  );
   LEDGER_FILE = p;
 }
 
@@ -138,7 +142,13 @@ export async function makeHook(env: {
       labels: t.labels.map((n) => ({ name: n })),
     }),
   };
-  const execFn = async (cmd: string): Promise<{ stdout: string }> => {
+  // The argv form (#1095) records as `cmd argv…` so the matchers below read the
+  // same command text whichever form the guard used.
+  const execFn = async (
+    cmd0: string,
+    opts?: { argv?: string[]; cwd?: string; timeout?: number; maxBuffer?: number; shell?: string },
+  ): Promise<{ stdout: string }> => {
+    const cmd = commandOf(cmd0, opts);
     env.calls.push(cmd);
     if (cmd.includes("gh pr view")) {
       if (cmd.includes("--json number")) {
@@ -214,7 +224,7 @@ export async function hookDecision(
     handler({ toolName: "bash", input: { command } }, undefined as never),
   );
   return {
-    block: r?.block === true,
+    block: (r as { block?: boolean } | undefined)?.block === true,
     reason: (r as { reason?: string } | undefined)?.reason,
     calls: env.calls,
   };

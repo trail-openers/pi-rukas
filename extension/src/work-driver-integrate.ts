@@ -6,7 +6,7 @@ import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
 import type { ConsolidationCompleteness } from "./work-driver-completeness.ts";
 import { runCommitPrConsolidatedVerify } from "./work-driver-integrate-verify.ts";
-import { runNetGit } from "./work-driver-net-git.ts";
+import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
 import type { WorkState } from "./workflow-state-schema.ts";
@@ -427,8 +427,11 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
     }
 
     // 5. Push.
-    await runNetGit(execFn, `git push -u origin ${JSON.stringify(branchName)}`, {
+    const pushRefProblem = netRefProblem(branchName);
+    if (pushRefProblem !== undefined) throw new Error(`push refused: ${pushRefProblem}`);
+    await runNetGit(execFn, "git", {
       cwd: repoRoot,
+      argv: ["push", "-u", "origin", branchName],
     });
 
     // Advance each cherry-picked worktree to the new HEAD — without this the
