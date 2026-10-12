@@ -8,6 +8,7 @@ import { exec } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
 import { dispatchCore } from "./dispatch.ts";
+import { execp as argvExecp } from "./lens-exec.ts";
 import { trace } from "./trace.ts";
 import { BranchAheadError, mechanizedBranchSetup } from "./work-driver-branch-mechanized.ts";
 import { parseWorktreesBlock, runBranchViaOpsDispatch } from "./work-driver-branch-ops.ts";
@@ -44,14 +45,26 @@ const execp = promisify(exec);
  * #1093 — the capture runs under the integration lock. A sibling group's
  * merged or handoff step moves repoRoot under that same lock, so an unlocked
  * read could record the SIBLING's feature branch as this cycle's start ref.
+ * When the queue captured the ref once per invocation (`invocationStartRef`),
+ * that value is stamped instead: the lock only orders reads, it cannot tell a
+ * sibling's failed restore (repoRoot left on its branch) from the operator's.
  */
 export async function stampCycleStartRef(ctx: DriverContext, state: WorkState): Promise<WorkState> {
   if (state.pipelineState.startRef) return state;
   // A failed capture on an earlier run is recorded in plumbReports; a resumed
   // cycle must not recapture (repoRoot may already be on the feature branch).
   if (hasCaptureFailure(state)) return state;
+  if (ctx.invocationStartRef !== undefined) {
+    const stamped = {
+      ...state,
+      pipelineState: { ...state.pipelineState, startRef: ctx.invocationStartRef },
+    };
+    await writeState(ctx.repoRoot, stamped);
+    return stamped;
+  }
   return withIntegrationLock(ctx.repoRoot, async () => {
-    const stamped = await recordCycleStartRef(ctx.verifyExecFn ?? execp, ctx.repoRoot, state);
+    // argv-aware: the capture passes argv, which promisify(exec) silently drops.
+    const stamped = await recordCycleStartRef(ctx.verifyExecFn ?? argvExecp, ctx.repoRoot, state);
     if (stamped !== state) await writeState(ctx.repoRoot, stamped);
     return stamped;
   });

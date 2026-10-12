@@ -101,19 +101,23 @@ export async function restoreRefProblem(
 }
 
 /**
- * The tracked dirt at repoRoot (`git status --porcelain`, minus untracked `??`
- * entries and `.worktrees/` scaffolding). The single post-condition read every
- * restore verifies against. Throws when git cannot be read.
+ * The dirt at repoRoot (`git status --porcelain`, minus `.worktrees/`
+ * scaffolding). The single post-condition read every restore verifies against.
+ * Untracked `??` entries are dirt only when `untracked` is set: the abort path
+ * stashes them with `-u`, so one left behind is a cycle file in the operator's
+ * tree. Throws when git cannot be read.
  */
-async function trackedDirt(execFn: ExecFn, repoRoot: string): Promise<string[]> {
+async function trackedDirt(execFn: ExecFn, repoRoot: string, untracked = false): Promise<string[]> {
   const { stdout } = await execFn("git", {
     cwd: repoRoot,
     maxBuffer: 1024 * 1024,
-    argv: ["status", "--porcelain", "-uno"],
+    argv: untracked ? ["status", "--porcelain"] : ["status", "--porcelain", "-uno"],
   });
   return stdout
     .split("\n")
-    .filter((l) => l.trim() && !l.startsWith("??") && !/^..\s+"?\.worktrees\//.test(l));
+    .filter(
+      (l) => l.trim() && (untracked || !l.startsWith("??")) && !/^..\s+"?\.worktrees\//.test(l),
+    );
 }
 
 /** The verified post-condition of a restore attempt. */
@@ -242,10 +246,13 @@ export async function restoreRootToRefPreserving(
   }
   try {
     const message = `pi-rukas #1093 ${label}: cycle changes (preserved at ${preservedAt ?? "none"})`;
+    // `-u`: the mixed reset above turns the cycle's staged NEW files into
+    // untracked ones, which a tracked-only stash leaves in the operator's tree.
+    // `.worktrees/` is excluded: those are other cycles' worktrees, not ours.
     await execFn("git", {
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
-      argv: ["stash", "push", "-m", message],
+      argv: ["stash", "push", "-u", "-m", message, "--", ".", ":(exclude).worktrees"],
     });
   } catch (err) {
     const msg = (err as Error).message?.slice(0, 160);
@@ -257,7 +264,7 @@ export async function restoreRootToRefPreserving(
       detail: `could not stash the cycle's changes (${msg}); no checkout was attempted and the tree was left as it is — run \`git stash push\` then \`git checkout ${ref}\` at the repo root`,
     };
   }
-  const restore = await restoreRootToRef(execFn, { repoRoot, ref, label });
+  const restore = await restoreRootToRef(execFn, { repoRoot, ref, label, untracked: true });
   return { ...restore, preservedAt };
 }
 
@@ -271,9 +278,9 @@ export async function restoreRootToRefPreserving(
  */
 export async function restoreRootToRef(
   execFn: ExecFn,
-  opts: { repoRoot: string; ref: string; label: string },
+  opts: { repoRoot: string; ref: string; label: string; untracked?: boolean },
 ): Promise<VerifiedRestoreResult> {
-  const { repoRoot, ref, label } = opts;
+  const { repoRoot, ref, label, untracked } = opts;
   // The ref is validated first, so showing it verbatim as the operator's
   // command is safe.
   const cmd = `git checkout ${ref}`;
@@ -287,7 +294,14 @@ export async function restoreRootToRef(
     };
   }
   try {
-    await execFn("git", { cwd: repoRoot, maxBuffer: 256 * 1024, argv: ["checkout", ref] });
+    // `--` ends the revision list: a ref that no longer exists (a deleted start
+    // branch) errors instead of falling back to a pathspec that would overwrite
+    // a same-named tracked file's uncommitted edit.
+    await execFn("git", {
+      cwd: repoRoot,
+      maxBuffer: 256 * 1024,
+      argv: ["checkout", ref, "--"],
+    });
   } catch (err) {
     const msg = (err as Error).message?.slice(0, 160);
     trace(`work-driver: ${label} \u2014 ${cmd} refused: ${msg}`);
@@ -298,12 +312,12 @@ export async function restoreRootToRef(
     };
   }
   try {
-    const dirt = await trackedDirt(execFn, repoRoot);
+    const dirt = await trackedDirt(execFn, repoRoot, untracked);
     if (dirt.length > 0) {
       return {
         restored: false,
         checkedOut: true,
-        detail: `${cmd} succeeded but tracked changes remain (${dirt
+        detail: `${cmd} succeeded but ${untracked ? "changes remain" : "tracked changes remain"} (${dirt
           .slice(0, 5)
           .map((l) => l.slice(3))
           .join(", ")}); nothing was reset \u2014 run \`git status\` at the repo root`,

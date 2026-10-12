@@ -233,7 +233,7 @@ setupSpawnGuard();
   });
   await restoreCheckout({ repoRoot: "/fake", mainline: "main", mergedBranch: "feature/issue-100", execFn: fn });
   assert(
-    calls.some((c) => c === "git checkout main"),
+    calls.some((c) => c === "git checkout main --"),
     "restoreCheckout: checks out the target even when already on it",
   );
 }

@@ -10,6 +10,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import { execp } from "./lens-exec.ts";
 import { trace } from "./trace.ts";
 import { restoreRefProblem, restoreRootToRef } from "./work-driver-restore.ts";
 import type { WorkState } from "./workflow-state.ts";
@@ -309,6 +310,16 @@ const CAPTURE_FAILED = "could not record the cycle start ref";
 /** Did an earlier run fail to capture the start ref? (#1093 — see recordCycleStartRef.) */
 export function hasCaptureFailure(state: WorkState): boolean {
   return (state.pipelineState.plumbReports ?? []).some((r) => r.body.startsWith(CAPTURE_FAILED));
+}
+
+/**
+ * #1093 — the operator's checkout, read once per /work invocation by the queue
+ * before any group starts (`runWorkQueue`). Undefined when the read fails; the
+ * per-cycle stamp then falls back to its own locked capture.
+ */
+export async function captureInvocationStartRef(repoRoot: string): Promise<string | undefined> {
+  // argv-aware executor: promisify(exec) would run a bare `git` and read its usage text.
+  return captureCycleStartRef(execp, repoRoot).catch(() => undefined);
 }
 
 export async function recordCycleStartRef(

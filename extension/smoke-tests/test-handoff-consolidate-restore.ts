@@ -234,7 +234,7 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
     let dirtWriteError: unknown;
     let dirtSurvived = false;
     let restoreCheckoutCount = 0;
-    const restoreCmd = "git checkout operator-feature";
+    const restoreCmd = "git checkout operator-feature --";
     const stub: ExecFn = async (rawCmd, opts) => {
       const cmd = opts?.argv ? [rawCmd, ...opts.argv].join(" ") : rawCmd;
       const isRoot = opts?.cwd === dir;

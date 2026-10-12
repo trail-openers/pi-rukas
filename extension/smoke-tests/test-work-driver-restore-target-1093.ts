@@ -9,7 +9,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { resolveRestoreTarget, restoreCheckout } from "../src/work-driver-git.ts";
 import type { ExecFn } from "../src/worktree.ts";
@@ -96,6 +96,38 @@ function recordingExec(calls: string[]): ExecFn {
     assert(
       resolved.notes.includes("start ref was not recorded; no mainline to restore to"),
       `no target: the note says why (got ${JSON.stringify(resolved.notes)})`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ---- 6. deleted start branch + same-named dirty tracked file --------------
+// Without `--`, `git checkout gone-branch` falls back to a pathspec and
+// overwrites the operator's uncommitted edit to the file of that name.
+{
+  const dir = buildRepo();
+  try {
+    const g = (args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf8" });
+    writeFileSync(join(dir, "gone-branch"), "committed\n");
+    g(["add", "gone-branch"]);
+    g(["commit", "-q", "-m", "file named like a branch"]);
+    writeFileSync(join(dir, "gone-branch"), "operator edit\n");
+    const notes = await restoreCheckout({
+      repoRoot: dir,
+      mainline: "main",
+      mergedBranch: undefined,
+      execFn: realExec,
+      startRef: "gone-branch",
+    });
+    assert(head(dir) === "feature/merged", "deleted start: HEAD stays on the cycle's branch");
+    assert(
+      readFileSync(join(dir, "gone-branch"), "utf8") === "operator edit\n",
+      "deleted start: the same-named dirty file is NOT overwritten by a pathspec checkout",
+    );
+    assert(
+      notes.some((n) => n.includes("NOT restored")),
+      `deleted start: reported as not restored (got ${JSON.stringify(notes)})`,
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
