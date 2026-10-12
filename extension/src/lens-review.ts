@@ -2,6 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { execp } from "./lens-exec.ts";
+import type { LensLedgerOutcome } from "./lens-ledger.ts";
 import { partitionDecisions, renderPriorFindingsBlock } from "./lens-residuals.ts";
 import { resolveLensReviewBranch } from "./lens-review-branch-resolve.ts";
 import { capKillSummary } from "./lens-review-capkill.ts";
@@ -155,7 +156,10 @@ export async function runLensReview(opts: {
   overrideCap?: boolean;
   /** #1127 — receives the run's ledger-write promise once the run has finished;
    * the caller holds its round reservation until it settles. */
-  onLedgerWrite?: (ledgerWrite: Promise<void>) => void;
+  onLedgerWrite?: (ledgerWrite: Promise<LensLedgerOutcome>) => void;
+  /** #1127 — the round-budget key the tool admitted this run under (lens-budget-key.ts);
+   * keys the ledger entry when no branch resolves. */
+  ledgerKey?: string;
 }): Promise<LensReviewSummary> {
   const runId = makeRunId();
   const skillsDir = piSkillsDir();
@@ -268,7 +272,13 @@ export async function runLensReview(opts: {
       threshold,
       opts.cwd,
       branchResolved,
-      { hasCritical, headSha, head: opts.head, overrideCap: opts.overrideCap },
+      {
+        hasCritical,
+        headSha,
+        head: opts.head,
+        overrideCap: opts.overrideCap,
+        ledgerKey: opts.ledgerKey,
+      },
       opts.pr,
     );
     // #1127 review — the caller's round reservation is held until this write

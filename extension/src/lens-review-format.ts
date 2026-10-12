@@ -107,11 +107,12 @@ export interface LensReviewSummary {
  * or was aborted without evidence: the review is incomplete and the user/PM
  * must decide whether to retry the whole pass, override, or halt — never
  * silently downgrade a six-pass review to a five-pass one (#3).
- */
-/** #1127 — `ROUND_CAP_REACHED` and `REVIEW_INCOMPLETE_STREAK` are produced only
+ *
+ * #1127 — `ROUND_CAP_REACHED` and `REVIEW_INCOMPLETE_STREAK` are produced only
  * by the tool-side round budget (lens-round-cap.ts): no lens ran, nothing was
  * recorded. The streak refusal is distinct so an operator can tell a stalled
- * infrastructure outage from a spent round budget. */
+ * infrastructure outage from a spent round budget.
+ */
 export type Verdict =
   | "APPROVED"
   | "ISSUES_FOUND"

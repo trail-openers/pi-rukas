@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { startJob } from "./async-jobs.ts";
+import type { LensLedgerOutcome } from "./lens-ledger.ts";
 import { type LensReviewSummary, renderSummary } from "./lens-review-format.ts";
 import { LENS_REVIEW_DIFF_DESCRIPTION, MAX_LENS_ATTEMPTS, runLensReview } from "./lens-review.ts";
 import { admitLensRound } from "./lens-round-cap.ts";
@@ -98,25 +99,32 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
           // concurrent call in this process cannot pass the same round.
           // The bypass is the operator's env var (read inside admitLensRound) —
           // never a tool parameter, so the model cannot set it (#1127).
-          const admission = await admitLensRound({ cwd: params.cwd, head: params.head });
+          const admission = await admitLensRound({
+            cwd: params.cwd,
+            head: params.head,
+            pr: params.pr,
+          });
           let summary: LensReviewSummary;
           let admissionNote: string | undefined;
+          let unrecordedNote: string | undefined;
           if (admission.admitted) {
             admissionNote = admission.note;
             // The round is held until the run's ledger write settles, so a
-            // back-to-back call cannot be admitted to the same round.
-            let ledgerWrite: Promise<void> | undefined;
+            // back-to-back call cannot be admitted to the same round. The
+            // settled write's outcome is reported on this run's result (#1127).
+            let ledgerWrite: Promise<LensLedgerOutcome> | undefined;
             try {
               summary = await runLensReview({
                 ...params,
                 overrideCap: admission.overrideCap,
+                ledgerKey: admission.key,
                 signal,
                 onLedgerWrite: (w) => {
                   ledgerWrite = w;
                 },
               });
             } finally {
-              admission.release(ledgerWrite);
+              unrecordedNote = await admission.release(ledgerWrite);
             }
           } else {
             summary = admission.refusal;
@@ -127,7 +135,9 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
             summary.verdict === "ROUND_CAP_REACHED" ||
             summary.verdict === "REVIEW_INCOMPLETE_STREAK";
           const noteAppended = summary.note && !refused ? summary.note : undefined;
-          const extra = [noteAppended, admissionNote].filter((n): n is string => !!n);
+          const extra = [noteAppended, admissionNote, unrecordedNote].filter(
+            (n): n is string => !!n,
+          );
           // ok is true when the review completed AND the verdict is neither
           // CRITICAL nor INCOMPLETE. INCOMPLETE means at least one lens
           // failed all retries (#3) — the review did NOT actually run every

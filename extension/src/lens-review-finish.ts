@@ -27,7 +27,7 @@
  * write (see `writeLensLedgerEntry` — the promise is the #984 test seam).
  */
 
-import { writeLensLedgerEntry } from "./lens-ledger.ts";
+import { type LensLedgerOutcome, writeLensLedgerEntry } from "./lens-ledger.ts";
 import type { LensReviewSummary } from "./lens-review-format.ts";
 import { postLensResidualDisclosure } from "./lens-review-residuals.ts";
 import type { Severity } from "./lens-review.ts";
@@ -40,7 +40,7 @@ import type { Severity } from "./lens-review.ts";
  */
 export type LensFinishResult = {
   summary: LensReviewSummary;
-  ledgerWrite: Promise<void>;
+  ledgerWrite: Promise<LensLedgerOutcome>;
 };
 
 async function finish(
@@ -48,7 +48,15 @@ async function finish(
   threshold: Severity,
   cwd: string | undefined,
   branch: string | undefined,
-  ledger: { hasCritical?: boolean; headSha?: string; head?: string; overrideCap?: boolean } = {},
+  ledger: {
+    hasCritical?: boolean;
+    headSha?: string;
+    head?: string;
+    overrideCap?: boolean;
+    /** #1127 — the round-budget key when the branch was not resolved (a
+     * branch the commit sits on, the PR head, or `detached:<sha>`). */
+    ledgerKey?: string;
+  } = {},
   pr?: number,
 ): Promise<LensFinishResult> {
   // #984 — the fire-and-forget write is intentionally NOT awaited here (#912
@@ -64,8 +72,9 @@ async function finish(
     ledger.headSha,
     ledger.head,
     // #988 — the finish path IS `runLensReview`'s single resolution site;
-    // thread it so the fire-and-forget write does not re-resolve.
-    branch,
+    // thread it so the fire-and-forget write does not re-resolve. #1127 — a
+    // budget key stands in for an unresolved branch so the round is recorded.
+    ledger.ledgerKey ?? branch,
     // #1127 — the operator's round-cap override, recorded on the entry.
     ledger.overrideCap,
   );

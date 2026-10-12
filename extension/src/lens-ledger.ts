@@ -22,7 +22,7 @@ import {
   lensPassed,
   workingTreePatchId,
 } from "./review-ledger.ts";
-import { trace } from "./trace.ts";
+import { trace, traceWarn } from "./trace.ts";
 
 import { execp } from "./lens-exec.ts";
 
@@ -46,6 +46,14 @@ import { execp } from "./lens-exec.ts";
  * `bumpLensRound` in review-ledger.ts is the only read-and-write site of
  * the counter (the writer never touches it).
  */
+/**
+ * What the fire-and-forget write did. `recorded: false` means the round is NOT
+ * on the ledger, so the budget must not treat it as consumed by a recorded
+ * entry (lens-round-cap.ts counts it as an unrecorded round). The promise
+ * still never rejects.
+ */
+export type LensLedgerOutcome = { recorded: true } | { recorded: false; reason: string };
+
 export function writeLensLedgerEntry(
   verdict: string,
   threshold: string,
@@ -59,8 +67,8 @@ export function writeLensLedgerEntry(
   resolvedBranch?: string,
   /** #1127 — the operator passed `overrideCap: true`; recorded on the entry. */
   overrideCap?: boolean,
-): Promise<void> {
-  const write = async () => {
+): Promise<LensLedgerOutcome> {
+  const write = async (): Promise<LensLedgerOutcome> => {
     const c = cwd ?? process.cwd();
     // #980 — the branch comes from the SHARED resolver (review-branch.ts:
     // explicit `branch` → branch-named `head` → rev-parse) — the same one
@@ -72,14 +80,19 @@ export function writeLensLedgerEntry(
     const b = resolvedBranch ?? (await resolveReviewBranch({ branch, head, cwd: c }, execp)).branch;
     if (!b) {
       trace("lens-review: ledger write skipped — no branch (detached head, no caller branch)");
-      return;
+      return { recorded: false, reason: "no branch to key the ledger entry on" };
     }
     // The shared working-tree patch id (review-ledger.ts). When untracked
     // files exist the entry is still written for the tracked content, but the
     // gap is traced — see the warning's wording in workingTreePatchId.
     const computed = await workingTreePatchId(execp, c);
     if (computed.warning) trace(`lens-review: ${computed.warning}`);
-    if (!computed.patchId) return;
+    if (!computed.patchId) {
+      traceWarn(
+        `lens-review: ledger write skipped for ${b} — no patch id (${computed.warning ?? "unknown"}); the round is not recorded`,
+      );
+      return { recorded: false, reason: computed.warning ?? "no patch id for the working tree" };
+    }
     const entry: LedgerEntry = {
       branch: b,
       kind: "lens",
@@ -91,13 +104,16 @@ export function writeLensLedgerEntry(
       ...(headSha ? { headSha } : {}),
       ...(overrideCap ? { overrideCap: true } : {}),
     };
-    await appendLedgerEntry(entry, execp, c);
+    const failure = await appendLedgerEntry(entry, execp, c);
+    return failure ? { recorded: false, reason: failure } : { recorded: true };
   };
   // The catch is load-bearing for the fire-and-forget contract: the
   // returned promise MUST resolve (never reject) so an un-awaited caller
   // cannot leak an unhandled rejection. Tests that await it can rely on
   // the same guarantee.
-  return write().catch((err) =>
-    trace(`lens-review: ledger write failed: ${(err as Error).message}`),
-  );
+  return write().catch((err: unknown): LensLedgerOutcome => {
+    const reason = (err as Error).message;
+    trace(`lens-review: ledger write failed: ${reason}`);
+    return { recorded: false, reason };
+  });
 }

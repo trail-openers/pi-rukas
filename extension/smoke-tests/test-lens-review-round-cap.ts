@@ -306,14 +306,6 @@ const third = await admitLensRound({ cwd: repo });
 assert(third.admitted, "after the first run settles its slot is free again");
 if (third.admitted) third.release();
 
-const noBranch = await admitLensRound({ cwd: root });
-assert(
-  noBranch.admitted &&
-    !noBranch.overrideCap &&
-    /round budget not applied \(no ledger row\)/.test(noBranch.note ?? ""),
-  "a run with no resolvable branch is admitted unbudgeted with a visible note",
-);
-if (noBranch.admitted) noBranch.release();
 const bypass = await admitLensRound({ cwd: root, env: OVERRIDE_ON });
 assert(
   bypass.admitted && bypass.overrideCap,
@@ -340,8 +332,8 @@ seed([lensRow({ round: 2, at: 1000 })]);
 const held = await admitLensRound({ cwd: repo });
 assert(held.admitted, "round 3 is admitted while nothing is in flight");
 let settleWrite: () => void = () => {};
-const pendingWrite = new Promise<void>((resolve) => {
-  settleWrite = resolve;
+const pendingWrite = new Promise<undefined>((resolve) => {
+  settleWrite = () => resolve(undefined);
 });
 if (held.admitted) held.release(pendingWrite);
 const whileWriting = await admitLensRound({ cwd: repo });
@@ -356,14 +348,19 @@ const afterWrite = await admitLensRound({ cwd: repo });
 assert(afterWrite.admitted, "once the write settles the slot is freed");
 if (afterWrite.admitted) afterWrite.release();
 
-// A rejected write is traced, not dropped, and still frees the slot.
+// A rejected write frees the slot, but its round is counted, not reused (#1127):
+// the next run is round 4 (recorded 2 + the rejected round 3 + this one), so the
+// refusal names round 4 — a run still in flight would have made it round 5.
 seed([lensRow({ round: 2, at: 1000 })]);
 const rejected = await admitLensRound({ cwd: repo });
-if (rejected.admitted) rejected.release(Promise.reject(new Error("disk full")));
-await new Promise((r) => setTimeout(r, 0));
+if (rejected.admitted) await rejected.release(Promise.reject(new Error("disk full")));
 const afterReject = await admitLensRound({ cwd: repo });
-assert(afterReject.admitted, "a rejected ledger write still frees the slot");
-if (afterReject.admitted) afterReject.release();
+assert(
+  !afterReject.admitted &&
+    afterReject.refusal.verdict === "ROUND_CAP_REACHED" &&
+    /round 4 would exceed/.test(afterReject.refusal.note ?? ""),
+  "a rejected ledger write frees the slot but its round is not reused",
+);
 
 // -------- 11. one cap value: the merge guard's round-cap path follows the env cap
 const { evaluateRoundCapMerge } = await import("../src/merge-guard-round-cap.ts");

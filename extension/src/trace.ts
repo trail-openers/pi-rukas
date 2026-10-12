@@ -15,6 +15,14 @@ export function trace(msg: string): void {
   process.stderr.write(`[pi-rukas] ${msg}\n`);
 }
 
+/**
+ * A warning that is NOT gated on `PI_ENSEMBLE_DEBUG`: the operator needs to
+ * see a fault that changes an outcome (e.g. a review round left unrecorded).
+ */
+export function traceWarn(msg: string): void {
+  process.stderr.write(`[pi-rukas] WARN ${msg}\n`);
+}
+
 export function isTraceEnabled(): boolean {
   return DEBUG_ENABLED;
 }
