@@ -167,28 +167,11 @@ export async function restoreCheckout(opts: {
     // Continue — subsequent steps may still work with stale refs.
   }
 
-  // 2. The restore target: the cycle-start ref when it is usable, else
-  // mainline. An unusable ref (#1093: not a SHA, not a name git accepts) is
-  // never checked out; the note says why and that mainline was used instead.
-  let target = mainline;
-  if (startRef === undefined) {
-    notes.push(
-      `no cycle start ref was recorded; restoring to mainline${mainline ? ` ${mainline}` : ""} instead`,
-    );
-  } else {
-    const problem = await restoreRefProblem(execFn, repoRoot, startRef);
-    if (problem === undefined) target = startRef;
-    else
-      notes.push(
-        `cycle start ref not used (${problem}); restoring to mainline${mainline ? ` ${mainline}` : ""} instead`,
-      );
-  }
-  if (!target) {
-    notes.push(
-      "restoreCheckout called without mainline or startRef — skipping checkout restoration",
-    );
-    return notes;
-  }
+  // 2. The restore target — the ONE rule, shared with the handoff path.
+  const resolved = await resolveRestoreTarget({ execFn, repoRoot, mainline, startRef });
+  notes.push(...resolved.notes);
+  const target = resolved.target;
+  if (!target) return notes;
   const onMainline = target === mainline;
 
   // 3. Checkout the target via the single non-forcing restore primitive.
@@ -197,10 +180,14 @@ export async function restoreCheckout(opts: {
   const restore = await restoreRootToRef(execFn, { repoRoot, ref: target, label: "merged" });
   if (!restore.restored) {
     notes.push(`repoRoot was NOT restored to ${target}: ${restore.detail ?? "unknown error"}`);
+    // A refused checkout performs no further git mutation: no pull, and no
+    // branch deletion (the operator's tree is still on the merged branch).
+    notes.push("git pull and git branch -d skipped: the checkout was refused");
+    return notes;
   }
 
-  // 4. Pull --ff-only, only when the target is mainline. Tolerate
-  // already-up-to-date.
+  // 4. Pull --ff-only, only when the restore succeeded AND the target is
+  // mainline. Tolerate already-up-to-date.
   if (onMainline && mainline) {
     try {
       await execFn("git", {
@@ -218,26 +205,59 @@ export async function restoreCheckout(opts: {
     }
   }
 
-  // 5. Delete merged feature branch. Tolerate absent branch.
+  // 5. Delete merged feature branch. Tolerate absent branch. `--` ends option
+  // parsing, so a branch name can never be read as a flag.
   if (mergedBranch) {
-    try {
-      await execFn("git", {
-        cwd: repoRoot,
-        maxBuffer: 64 * 1024,
-        argv: ["branch", "-d", mergedBranch],
-      });
-      trace(`work-driver: deleted branch ${mergedBranch}`);
-    } catch (err) {
-      // -d refuses on squash-merged branches (SHA mismatch). Expected.
-      // Also tolerates already-deleted branches.
-      const e = err as Error;
-      notes.push(
-        `git branch -d ${mergedBranch} refused (expected after squash merge or if branch already deleted): ${e.message?.slice(0, 200)}`,
-      );
+    const problem = await restoreRefProblem(execFn, repoRoot, mergedBranch);
+    if (problem !== undefined) {
+      notes.push(`git branch -d skipped: ${problem}`);
+    } else {
+      try {
+        await execFn("git", {
+          cwd: repoRoot,
+          maxBuffer: 64 * 1024,
+          argv: ["branch", "-d", "--", mergedBranch],
+        });
+        trace(`work-driver: deleted branch ${mergedBranch}`);
+      } catch (err) {
+        // -d refuses on squash-merged branches (SHA mismatch). Expected.
+        // Also tolerates already-deleted branches.
+        const e = err as Error;
+        notes.push(
+          `git branch -d ${mergedBranch} refused (expected after squash merge or if branch already deleted): ${e.message?.slice(0, 200)}`,
+        );
+      }
     }
   }
 
   return notes;
+}
+
+/**
+ * #1093 — THE restore-target rule, shared by restoreCheckout (merged step)
+ * and the handoff consolidation path. The cycle-start ref (`startRef`) when it
+ * was recorded and is usable; otherwise mainline, with a note saying why. The
+ * ref is validated here, once. `target` is undefined when neither is usable:
+ * the caller then restores nothing rather than guessing a checkout (and never
+ * the branch the cycle left checked out).
+ */
+export async function resolveRestoreTarget(opts: {
+  execFn: VerifyExecFn;
+  repoRoot: string;
+  mainline: string | undefined;
+  startRef: string | undefined;
+}): Promise<{ target: string | undefined; notes: string[] }> {
+  const { execFn, repoRoot, mainline, startRef } = opts;
+  const toMainline = mainline ? `restored to ${mainline}` : "no mainline to restore to";
+  if (startRef === undefined) {
+    return { target: mainline, notes: [`start ref was not recorded; ${toMainline}`] };
+  }
+  const problem = await restoreRefProblem(execFn, repoRoot, startRef);
+  if (problem === undefined) return { target: startRef, notes: [] };
+  return {
+    target: mainline,
+    notes: [`cycle start ref not used (${problem}); ${toMainline}`],
+  };
 }
 
 /**

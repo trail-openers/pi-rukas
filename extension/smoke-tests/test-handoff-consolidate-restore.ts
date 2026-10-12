@@ -108,6 +108,7 @@ function stateFor(
       inFlightJobIds: [],
       plumbReports: [],
       branchName,
+      startRef: "operator-feature",
       baseSha,
       worktrees: { "task-a": wt },
     },
@@ -253,7 +254,7 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
           }
         }
       }
-      if (dirtWritten && isRoot && cmd === "git status --porcelain") {
+      if (dirtWritten && isRoot && cmd.startsWith("git status --porcelain")) {
         // The restore's post-condition read — mark survived if the tracked
         // dirt is still reported (the file is on disk after the reset +
         // checkout, which have already run).

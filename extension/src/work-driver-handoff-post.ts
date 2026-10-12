@@ -270,7 +270,7 @@ export async function captureCommittedWork(
   snapshot: NonNullable<WorkState["pipelineState"]["handoffSnapshot"]>,
   _repoRoot: string,
   ps: { baseSha?: string; worktrees?: Record<string, string> },
-  execFn: ExecFn = execp as unknown as ExecFn,
+  execFn: ExecFn = execp,
 ): Promise<void> {
   const worktrees = ps.worktrees ?? {};
   const baseSha = ps.baseSha;

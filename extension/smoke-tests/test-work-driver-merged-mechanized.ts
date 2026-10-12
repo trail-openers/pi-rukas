@@ -203,8 +203,8 @@ setupSpawnGuard();
   const pfx = calls.map((c) => c.split(" ").slice(0, 2).join(" "));
   assert(
     JSON.stringify(pfx) ===
-      JSON.stringify(["git fetch", "git check-ref-format", "git checkout", "git status", "git pull", "git branch"]),
-    "restoreCheckout: 5-step sequence (fetch→rev-parse→checkout→pull→branch -d)",
+      JSON.stringify(["git fetch", "git checkout", "git status", "git pull", "git check-ref-format", "git branch"]),
+    "restoreCheckout: fetch→checkout→status→pull→validate→branch -d (branch validated once, before -d)",
   );
   assert(
     calls[calls.length - 1]?.includes("git branch -d") && calls[calls.length - 1]?.includes("feature/issue-100"),

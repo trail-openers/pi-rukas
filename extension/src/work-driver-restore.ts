@@ -40,6 +40,17 @@
  * (some untracked content is deliberate). The integration lock is owned by
  * the caller (`withIntegrationLock`'s `finally`), which releases on every
  * path; this helper never holds the lock itself.
+ *
+ * #1093 — two restore families live here, and they are NOT the same thing:
+ *   - restoreRootToRef / restoreRootToRefPreserving are the OPERATOR-CHECKOUT
+ *     restores. Non-forcing by construction: a plain `git checkout`, never
+ *     `--hard` / `--force`. A refusal leaves the tree as it is and reports the
+ *     exact command to run by hand. restoreCheckout (work-driver-git.ts) and
+ *     the handoff consolidation path call these.
+ *   - verifiedRestoreRoot is the driver's INTERNAL integration-point reset
+ *     (`reset --hard` + `checkout --force`). It is forcing by design and is
+ *     deliberately out of #1093's scope: it resets the driver's own integration
+ *     root, not the operator's checkout.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -52,19 +63,31 @@ const FULL_SHA = /^[0-9a-f]{40}$/;
 const PLAIN_REF = /^[A-Za-z0-9_][A-Za-z0-9._/-]*$/;
 
 /**
- * #1093 — why `ref` may not be checked out, or `undefined` when it may. A
- * 40-hex SHA, or a plain name that `git check-ref-format --branch` accepts.
- * Refused before git sees it: anything with shell or option syntax (`$(…)`,
- * backticks, a leading `-`). Callers pass the ref through argv, so this is a
- * second, validity check, not the only thing standing between a ref and sh.
+ * #1093 — the syntactic half of the ref check, with no git call: a 40-hex SHA,
+ * or a plain name. Refuses shell or option syntax (`$(…)`, backticks, a leading
+ * `-`) before git sees it. Callers still pass refs through argv; this is the
+ * refusal, not the only defence.
+ */
+function restoreRefSyntaxProblem(ref: string): string | undefined {
+  if (FULL_SHA.test(ref)) return undefined;
+  if (!PLAIN_REF.test(ref)) return `"${ref}" contains characters a restore will not check out`;
+  return undefined;
+}
+
+/**
+ * #1093 — why `ref` may not be checked out, or `undefined` when it may: the
+ * syntactic check, then `git check-ref-format --branch` for names. Validate a
+ * ref ONCE per restore: resolveRestoreTarget (work-driver-git.ts) is the one
+ * caller on the restore path; restoreRootToRef re-checks syntax only.
  */
 export async function restoreRefProblem(
   execFn: ExecFn,
   repoRoot: string,
   ref: string,
 ): Promise<string | undefined> {
+  const syntax = restoreRefSyntaxProblem(ref);
+  if (syntax !== undefined) return syntax;
   if (FULL_SHA.test(ref)) return undefined;
-  if (!PLAIN_REF.test(ref)) return `"${ref}" contains characters a restore will not check out`;
   try {
     await execFn("git", {
       cwd: repoRoot,
@@ -86,7 +109,7 @@ async function trackedDirt(execFn: ExecFn, repoRoot: string): Promise<string[]> 
   const { stdout } = await execFn("git", {
     cwd: repoRoot,
     maxBuffer: 1024 * 1024,
-    argv: ["status", "--porcelain"],
+    argv: ["status", "--porcelain", "-uno"],
   });
   return stdout
     .split("\n")
@@ -231,7 +254,7 @@ export async function restoreRootToRef(
   // The ref is validated first, so showing it verbatim as the operator's
   // command is safe.
   const cmd = `git checkout ${ref}`;
-  const problem = await restoreRefProblem(execFn, repoRoot, ref);
+  const problem = restoreRefSyntaxProblem(ref);
   if (problem !== undefined) {
     trace(`work-driver: ${label}: ${cmd} not attempted: ${problem}`);
     return { restored: false, detail: `not checked out: ${problem}; the tree was left as it is` };
