@@ -416,7 +416,14 @@ export async function runAdversarialFixPass(
         (e.kind === "branch-completed" && !e.ok) ||
         (e.kind === "branches-converged" && e.verdicts.some((v) => !v.ok)),
     );
-  if (failed) return restored;
+  // A failed gate that already recorded its own cap routes through that cap.
+  // Any other failed tail (a bare branches-converged verdict, say) would fall
+  // through nextStep to the linear table, so it parks explicitly here.
+  if (failed) {
+    const tail = restored.eventLog[restored.eventLog.length - 1];
+    if (tail?.kind === "cap-hit") return restored;
+    return parkFixPass(restored, pending, "a develop gate failed on the fix pass", now);
+  }
 
   const after = await Promise.all(ids.map((id) => fetchDiff(wtOf(id), ps.baseSha)));
   const unchanged = ids.filter((_, i) => after[i] === before[i]);

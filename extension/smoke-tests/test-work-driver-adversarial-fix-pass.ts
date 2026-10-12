@@ -19,6 +19,7 @@ import {
   survivorsOf,
 } from "../src/work-driver-adversarial-fix.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
+import { nextStep } from "../src/work-driver-context.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
 
 let exit = 0;
@@ -254,6 +255,36 @@ function fixState(dir: string, paths: string[]): WorkState {
     assert(
       out.eventLog[out.eventLog.length - 1]?.kind === "adversarial-fix-applied",
       "F: a file named in the findings is allowed outside the declared paths",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// F2 — a developer dispatch that fails parks the fix pass at a cap: it never
+// reaches the review gate, and the tail routes through nextStep to handoff.
+{
+  const dir = repoWithFile("fix-dispatch-fail");
+  try {
+    const ctx: DriverContext = {
+      pi: { sendUserMessage: () => {} } as unknown as DriverContext["pi"],
+      repoRoot: dir,
+      issue: 1114,
+      issueBodyFetcherFn: async () => ({ stdout: "mock" }),
+      dispatchFn: async () => {
+        throw new Error("developer exploded");
+      },
+    };
+    const st = fixState(dir, ["a.txt"]);
+    const out = await runAdversarialFixPass(ctx, st, pendingFixes(st.eventLog), Date.now());
+    const tail = out.eventLog[out.eventLog.length - 1];
+    assert(
+      tail?.kind === "cap-hit" && !out.eventLog.some((e) => e.kind === "adversarial-fix-applied"),
+      `F2: a failed fix-pass dispatch parks at a cap, never applied (tail: ${tail?.kind})`,
+    );
+    assert(
+      tail?.kind === "cap-hit" && nextStep(out).kind === "step" && (nextStep(out) as { step: string }).step === "handoff",
+      "F2: the parked fix pass routes to handoff",
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

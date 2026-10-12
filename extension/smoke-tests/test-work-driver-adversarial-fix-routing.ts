@@ -157,6 +157,20 @@ function ctxFor(
   }
 }
 
+// A2 — the route back: a fix pass that applied returns the workstream to
+// the review gate explicitly, and the routing record is what decides it.
+{
+  const s = singleState("/nonexistent", [
+    { kind: "adversarial-fix-requested", at: 1, workstreamId: "default", round: 1, findings: "f" },
+    { kind: "adversarial-fix-applied", at: 2, workstreamId: "default", round: 1 },
+  ]);
+  const d = nextStep(s);
+  assert(
+    d.kind === "step" && d.step === "adversarial",
+    `A2: fix-applied routes back to adversarial (got ${JSON.stringify(d)})`,
+  );
+}
+
 // B — an unparsed verdict is infra: no routing, no develop, no counted round.
 {
   const dir = tmpDir("infra");
