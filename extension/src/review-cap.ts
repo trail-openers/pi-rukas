@@ -14,9 +14,11 @@
  * don't pollute each other's timers. Keys are scoped to this Pi session
  * (module-level Map); restarting Pi resets everything.
  *
- * No mechanical enforcement on `dispatch_lens_review` itself — PM is told
- * (via doctrine) to call the check tool. Discipline-by-prompt, same trust
- * model as dispatch_peek / dispatch_steer.
+ * This timer covers the /work review loop only. `dispatch_lens_review` has its
+ * own round budget, enforced mechanically in the tool (lens-round-cap.ts,
+ * #1127); the two are independent and neither reads the other.
+ * Discipline-by-prompt for this timer, same trust model as dispatch_peek /
+ * dispatch_steer.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";

@@ -58,12 +58,6 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
             "#973 — force a full review: the automatic delta base (the latest lens ledger entry's headSha) is not consulted. An explicit `since` still wins when given. An explicit base + head (with no `since`) is ALWAYS a full review — the automatic delta base only applies to a bare branch/cwd review.",
         }),
       ),
-      overrideCap: Type.Optional(
-        Type.Boolean({
-          description:
-            "#1127 — bypass the per-branch lens round budget (default cap 3, PI_ENSEMBLE_LENS_ROUND_CAP). Without it, a review past the cap returns ROUND_CAP_REACHED and dispatches no lens. The override is recorded on the ledger entry.",
-        }),
-      ),
       pr: Type.Optional(
         Type.Number({
           description:
@@ -81,7 +75,6 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
         since?: string;
         full?: boolean;
         pr?: number;
-        overrideCap?: boolean;
       };
       const hasDiff = typeof params.diff === "string" && params.diff.length > 0;
       const hasRange = typeof params.base === "string" && typeof params.head === "string";
@@ -103,25 +96,38 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
           // refusal is the terminal ROUND_CAP_REACHED summary, nothing recorded.
           // An admitted run holds its reservation until it settles, so a
           // concurrent call in this process cannot pass the same round.
-          const admission = await admitLensRound({
-            cwd: params.cwd,
-            head: params.head,
-            overrideCap: params.overrideCap,
-          });
+          // The bypass is the operator's env var (read inside admitLensRound) —
+          // never a tool parameter, so the model cannot set it (#1127).
+          const admission = await admitLensRound({ cwd: params.cwd, head: params.head });
           let summary: LensReviewSummary;
+          let admissionNote: string | undefined;
           if (admission.admitted) {
+            admissionNote = admission.note;
+            // The round is held until the run's ledger write settles, so a
+            // back-to-back call cannot be admitted to the same round.
+            let ledgerWrite: Promise<void> | undefined;
             try {
-              summary = await runLensReview({ ...params, signal });
+              summary = await runLensReview({
+                ...params,
+                overrideCap: admission.overrideCap,
+                signal,
+                onLedgerWrite: (w) => {
+                  ledgerWrite = w;
+                },
+              });
             } finally {
-              admission.release();
+              admission.release(ledgerWrite);
             }
           } else {
             summary = admission.refusal;
           }
-          // ROUND_CAP_REACHED's note is the whole report (renderSummary), so it
-          // is not appended a second time.
-          const noteAppended =
-            summary.note && summary.verdict !== "ROUND_CAP_REACHED" ? summary.note : undefined;
+          // A refusal's note is the whole report (renderSummary), so it is not
+          // appended a second time.
+          const refused =
+            summary.verdict === "ROUND_CAP_REACHED" ||
+            summary.verdict === "REVIEW_INCOMPLETE_STREAK";
+          const noteAppended = summary.note && !refused ? summary.note : undefined;
+          const extra = [noteAppended, admissionNote].filter((n): n is string => !!n);
           // ok is true when the review completed AND the verdict is neither
           // CRITICAL nor INCOMPLETE. INCOMPLETE means at least one lens
           // failed all retries (#3) — the review did NOT actually run every
@@ -139,8 +145,8 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
               !summary.noReview &&
               summary.verdict !== "CRITICAL_ISSUES_FOUND" &&
               summary.verdict !== "REVIEW_INCOMPLETE" &&
-              summary.verdict !== "ROUND_CAP_REACHED",
-            text: noteAppended ? `${text}\n\n${noteAppended}` : text,
+              !refused,
+            text: extra.length > 0 ? `${text}\n\n${extra.join("\n\n")}` : text,
             toolUses: [],
             ms: Date.now() - start,
             exitCode: 0,

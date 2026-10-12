@@ -33,7 +33,7 @@
  *   3. The latest lens entry has `hasCritical === false`. A legacy entry
  *      without the field (pre-#973) cannot satisfy this — conservative
  *      refusal (design decision 3).
- *   4. The latest lens entry's `round >= MAX_REVIEW_ROUNDS` (3). A legacy
+ *   4. The latest lens entry's `round >= lensRoundCap()` (3 by default). A legacy
  *      entry without `round` counts as round 1 — never enough (design
  *      decision 3; the acceptance criterion's "existing entries count as
  *      rounds but cannot satisfy 'no CRITICAL'" is covered by condition 3,
@@ -79,9 +79,9 @@
  * here checks the author), so modelling it here would be theatre.
  */
 
+import { lensRoundCap } from "./lens-round-cap.ts";
 import { isFullCommitSha } from "./review-head-sha.ts";
 import { type LedgerEntry, latestEntry } from "./review-ledger.ts";
-import { MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 
 /**
  * The escape hatch (design decision 7): `PI_ENSEMBLE_LENS_ROUND_CAP_MERGE=0`
@@ -203,21 +203,23 @@ export function evaluateRoundCapMerge(
         "the latest lens entry does not establish that no CRITICAL finding is present (hasCritical is missing or true) — a legacy entry counts as a round but cannot satisfy the no-CRITICAL condition; re-run the review to record it",
     };
   }
-  // Condition 4: the round must be >= MAX_REVIEW_ROUNDS (3). A legacy
-  // entry without `round` counts as round 1 — never enough (design
-  // decision 3). The constant is the driver's (work-driver-context.ts),
-  // not a second independently-tuned number. A malformed row (a non-integer
+  // Condition 4: the round must be >= the resolved lens round cap (#1127:
+  // lensRoundCap() — the SAME value the tool-side budget enforces, so
+  // PI_ENSEMBLE_LENS_ROUND_CAP moves both; default MAX_REVIEW_ROUNDS = 3).
+  // A legacy entry without `round` counts as round 1 — never enough (design
+  // decision 3). A malformed row (a non-integer
   // `round` that slipped past the loader) counts as round 1 the same way a
   // missing one does — the `typeof`/`Number.isInteger` guards mean a
   // string like "3" or a float like 3.5 can never be coerced into a pass
   // (a `??`-style fallback would let them through `< MAX_REVIEW_ROUNDS`)
   // and must refuse, never throw (no cast).
   const round = typeof lens.round === "number" && Number.isInteger(lens.round) ? lens.round : 1;
-  if (round < MAX_REVIEW_ROUNDS) {
+  const cap = lensRoundCap();
+  if (round < cap) {
     return {
       applies: true,
       allowed: false,
-      failedCondition: `the latest lens entry is round ${round}, below the ${MAX_REVIEW_ROUNDS}-round cap — re-run the review (the round-cap rule mirrors work-driver-lens-cap.ts's MAX_REVIEW_ROUNDS)`,
+      failedCondition: `the latest lens entry is round ${round}, below the ${cap}-round cap (PI_ENSEMBLE_LENS_ROUND_CAP; default MAX_REVIEW_ROUNDS) — re-run the review`,
     };
   }
   // Condition 5: the disclosure marker. The guard fetches the PR's comments

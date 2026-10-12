@@ -153,6 +153,9 @@ export async function runLensReview(opts: {
   pr?: number;
   /** #1127 — the operator bypassed the tool-side round budget; recorded on the ledger entry. */
   overrideCap?: boolean;
+  /** #1127 — receives the run's ledger-write promise once the run has finished;
+   * the caller holds its round reservation until it settles. */
+  onLedgerWrite?: (ledgerWrite: Promise<void>) => void;
 }): Promise<LensReviewSummary> {
   const runId = makeRunId();
   const skillsDir = piSkillsDir();
@@ -259,17 +262,20 @@ export async function runLensReview(opts: {
   const finishWith = async (
     s: LensReviewSummary,
     hasCritical = false,
-  ): Promise<LensReviewSummary> =>
-    (
-      await finishLensReview(
-        s,
-        threshold,
-        opts.cwd,
-        branchResolved,
-        { hasCritical, headSha, head: opts.head, overrideCap: opts.overrideCap },
-        opts.pr,
-      )
-    ).summary;
+  ): Promise<LensReviewSummary> => {
+    const finished = await finishLensReview(
+      s,
+      threshold,
+      opts.cwd,
+      branchResolved,
+      { hasCritical, headSha, head: opts.head, overrideCap: opts.overrideCap },
+      opts.pr,
+    );
+    // #1127 review — the caller's round reservation is held until this write
+    // settles (see lens-round-cap.ts `release`); the write is NOT awaited here.
+    opts.onLedgerWrite?.(finished.ledgerWrite);
+    return finished.summary;
+  };
   if (resolved.kind === "blocked") {
     const blockRows = blockedRowsForRoster(roster, resolved.problem);
     const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
