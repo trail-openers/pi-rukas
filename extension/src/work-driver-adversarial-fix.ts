@@ -149,6 +149,9 @@ export function interpretReview(result: DispatchResult, reviewRound: number): Re
   const rec = result.adversarialRounds?.[0];
   if (!rec?.verdictParsed) return { ok: false, infra: true, fixRequested: false };
   const action = actionFor(rec.status, reviewRound);
+  // A fix request with no findings gives the developer nothing to act on: infra.
+  if (action === "fix" && !result.text?.trim())
+    return { ok: false, infra: true, fixRequested: false };
   if (action === "fix") return { ok: true, infra: false, fixRequested: true };
   if (action === "reject") return { ok: false, infra: false, fixRequested: false };
   return {

@@ -230,6 +230,18 @@ async function passOf(
     1,
   );
   assert(approved.ok && !approved.infra, "B5: a parsed APPROVED is still an approval");
+  const emptyFix = interpretReview(
+    {
+      ...ok,
+      text: "  ",
+      adversarialRounds: [{ round: 1, status: "ISSUES_FOUND", verdictParsed: true }],
+    } as DispatchResult,
+    1,
+  );
+  assert(
+    emptyFix.infra && !emptyFix.fixRequested,
+    "B5: a parsed ISSUES_FOUND with an empty body is infra, not a fix pass with no findings",
+  );
 }
 
 // C — a finding-named path widens the fence only within a declared or

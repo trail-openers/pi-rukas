@@ -18,6 +18,7 @@ import {
   git,
 } from "./lib/adversarial-fix-fixtures.ts";
 import { pendingFixes, runAdversarialFixPass } from "../src/work-driver-adversarial-fix.ts";
+import { namedPaths } from "../src/work-driver-adversarial-fix-scope.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 
 let exit = 0;
@@ -201,6 +202,26 @@ async function runPass(dir: string, st: WorkState, onDev: (d: string) => void) {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+// K — driver-owned modules are never widened onto, even in the declared directory.
+{
+  const tracked = [
+    "extension/src/x.ts",
+    "extension/src/y.ts",
+    "extension/src/work-driver-verify-cmd.ts",
+    "extension/src/adversarial-verdict.ts",
+    "extension/src/comment-evidence.ts",
+  ];
+  const named = namedPaths(
+    "extension/src/work-driver-verify-cmd.ts extension/src/adversarial-verdict.ts extension/src/comment-evidence.ts extension/src/y.ts",
+    tracked,
+    ["extension/src/x.ts"],
+  );
+  assert(
+    named.join(",") === "extension/src/y.ts",
+    `K: a finding naming a driver-owned module does not widen the fence (got ${named.join(",")})`,
+  );
 }
 
 console.log(`\nexit ${exit}`);

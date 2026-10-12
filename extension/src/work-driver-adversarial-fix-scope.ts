@@ -45,6 +45,15 @@ function dirOfPath(p: string): string {
 }
 
 /**
+ * The driver's own gate modules (verify, verdict, retention, marker parsing).
+ * They share `extension/src/` with ordinary code, so the directory rule alone
+ * would let a finding widen a fence onto them. Never widenable.
+ */
+const DRIVER_OWNED =
+  /^extension\/src\/(work|adversarial|comment-|reply-markers|review-threshold|lens-)/;
+const driverOwned = (p: string): boolean => DRIVER_OWNED.test(p);
+
+/**
  * Named paths a fix pass may widen its fence onto. Generic, not a project list:
  * a finding-named path qualifies only if it is (a) tracked at base, (b) not
  * protected per `protectedPathsIn` (the single source of protected paths), and
@@ -64,7 +73,11 @@ export function namedPaths(
     }),
   );
   return tracked.filter(
-    (p) => protectedPathsIn([p]).length === 0 && dirs.has(dirOfPath(p)) && pathTokenIn(findings, p),
+    (p) =>
+      protectedPathsIn([p]).length === 0 &&
+      !driverOwned(p) &&
+      dirs.has(dirOfPath(p)) &&
+      pathTokenIn(findings, p),
   );
 }
 
