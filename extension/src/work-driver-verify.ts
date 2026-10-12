@@ -15,6 +15,7 @@
 import { exec, execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { promisify } from "node:util";
+import { execp as groupExecp } from "./lens-exec.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { detectMainline } from "./work-driver-git.ts";
@@ -46,8 +47,14 @@ export async function execp(
     shell?: string;
     encoding?: BufferEncoding | "buffer";
     argv?: string[];
+    env?: NodeJS.ProcessEnv;
+    killGroup?: boolean;
   },
 ): Promise<{ stdout: string; stderr?: string }> {
+  // #1095 — a network call (killGroup set) runs through lens-exec's group-
+  // killing executor, so an ssh grandchild cannot outlive the timeout. Every
+  // other caller takes the classic path below, unchanged.
+  if (opts?.killGroup) return groupExecp(cmd, opts);
   const { argv, ...rest } = opts ?? {};
   if (argv) {
     // execFile takes no shell — an explicit one cannot be honoured, so say
@@ -65,6 +72,7 @@ export async function execp(
       timeout: rest.timeout,
       maxBuffer: rest.maxBuffer,
       encoding: rest.encoding ?? "utf8",
+      env: rest.env,
     });
     return {
       stdout: r.stdout as string,
@@ -75,6 +83,7 @@ export async function execp(
     cwd: rest.cwd,
     timeout: rest.timeout,
     maxBuffer: rest.maxBuffer,
+    env: rest.env,
   });
   return { stdout, stderr };
 }
