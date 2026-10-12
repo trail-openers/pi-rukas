@@ -176,7 +176,7 @@ function noticeText(w: Watch, s: RunningState, triggered: string[], excludedMs: 
     `[ensemble:slow] ${w.label} (${w.id}) has been running past a slow-run threshold (level ${w.level})${trigger} ${fmtSlow(s.elapsedMs, s.turns, s.totalTokens, excludedMs)}.`,
     s.lastToolName ? `Last tool: ${s.lastToolName}` : "",
     snippet,
-    `Use dispatch_peek ${w.id} to inspect it or dispatch_steer ${w.id} to course-correct it.`,
+    `Use dispatch_peek ${w.id} to inspect it or dispatch_steer ${w.id} to course-correct it. A steer only lands once the current tool call returns — if it is hung in one, dispatch_kill ${w.id}.`,
   ]
     .filter(Boolean)
     .join("\n");
