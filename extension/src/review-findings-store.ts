@@ -8,8 +8,8 @@
  *
  * Rows are `open` (reported, not resolved), `accepted` (an operator accepted it)
  * or `resolved` (a complete full review no longer reported it AND its path is
- * gone at head, its cited line is past the end of the head file, or it has no
- * line; any other open row is carried forward).
+ * gone at head or its cited line is past the end of the head file; any other
+ * open row is carried forward, including a row with no line).
  * Accepted rows are never evicted (see review-findings-file.ts for the cap).
  *
  * Failure policy — fail closed on the file, fail open on the review:
@@ -443,12 +443,12 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
         if (r.status !== "open" || touched.has(r.id)) return;
         const pathGone = missingPaths.has(r.path);
         const truncated = citedLineGone(r, linesByPath.get(r.path));
-        // A complete full review resolves an untouched open row when its path is
-        // gone at head, it has no line, or its cited line no longer exists. A
-        // line-bearing row on a present file is never resolved here, even when its
-        // code changed: only a re-report or an acceptance clears it. A git read
-        // error never reaches here (the whole round is refused).
-        if (run.complete && (pathGone || r.line === undefined || truncated)) {
+        // A complete full review resolves an untouched open row only when its
+        // cited code is gone: the path is absent at head, or its cited line no
+        // longer exists. A row on a present file is never resolved here, even when
+        // its code changed, and a lens omitting it is not a fix. A git read error
+        // never reaches here (the whole round is refused).
+        if (run.complete && (pathGone || truncated)) {
           mine[i] = { ...r, status: "resolved", acceptance: undefined };
           return;
         }

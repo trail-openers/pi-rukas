@@ -7,7 +7,8 @@
  * Each scenario runs on its own branch, with a complete full review each round:
  *   A. the PR deletes the file an open row cites → the row resolves and the
  *      verdict is APPROVED (the row does not block it);
- *   B. a no-line open row the next complete review does not re-report → resolved;
+ *   B. a no-line open row the next complete review does not re-report, on a
+ *      present file, stays open (its cited code still stands);
  *   C. a no-line open row the next complete review DOES re-report → stays open.
  */
 
@@ -112,7 +113,7 @@ try {
     `A round 2: the resolved row does not block the verdict (verdict ${a2.verdict})`,
   );
 
-  // B — a no-line open row the next complete review does not re-report.
+  // B — a no-line open row the next complete review does not re-report stays open.
   sh("git checkout -q main");
   sh("git checkout -q -b feat/noline");
   const b1 = await runRound("feat/noline", head(), [
@@ -124,10 +125,13 @@ try {
   const b2 = await runRound("feat/noline", head(), []);
   const bRows = await readBranchRows(repo, "feat/noline");
   assert(
-    bRows.length === 1 && bRows[0]?.status === "resolved",
-    "B round 2: the no-line row not re-reported by a complete review resolves",
+    bRows.length === 1 && bRows[0]?.status === "open",
+    "B round 2: the no-line row not re-reported on a present file stays open",
   );
-  assert(b2.verdict === "APPROVED", `B round 2: the verdict is not blocked (${b2.verdict})`);
+  assert(
+    b2.verdict === "ISSUES_FOUND" && b2.findings.some((f) => f.title === "Unclear naming"),
+    `B round 2: the carried no-line finding still blocks (${b2.verdict})`,
+  );
 
   // C — a no-line open row the next complete review re-reports stays open.
   sh("git checkout -q main");
