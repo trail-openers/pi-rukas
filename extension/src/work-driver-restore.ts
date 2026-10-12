@@ -44,9 +44,10 @@
  * #1093 — two restore families live here, and they are NOT the same thing:
  *   - restoreRootToRef / restoreRootToRefPreserving are the OPERATOR-CHECKOUT
  *     restores. Non-forcing by construction: a plain `git checkout`, never
- *     `--hard` / `--force`. The abort path stashes only the cycle's own paths. A refusal leaves the tree as it is and reports the
- *     exact command to run by hand. restoreCheckout (work-driver-git.ts) and
- *     the handoff consolidation path call these.
+ *     `--hard` / `--force`. The abort path stashes only the cycle's own paths.
+ *     A refusal leaves the tree as it is and reports the exact command to run
+ *     by hand. restoreCheckout (work-driver-git.ts) and the handoff
+ *     consolidation path call these.
  *   - verifiedRestoreRoot is the driver's INTERNAL integration-point reset
  *     (`reset --hard` + `checkout --force`). It is forcing by design and is
  *     deliberately out of #1093's scope: it resets the driver's own integration
@@ -61,6 +62,8 @@ import type { ExecFn } from "./worktree.ts";
 const FULL_SHA = /^[0-9a-f]{40}$/;
 /** A name a restore may pass to git: no shell metacharacters, no leading `-`. */
 const PLAIN_REF = /^[A-Za-z0-9_][A-Za-z0-9._/-]*$/;
+/** How many untracked paths a restore claim names before it counts the rest. */
+const UNTRACKED_SHOWN = 10;
 
 /**
  * #1093 — the syntactic half of the ref check, with no git call: a 40-hex SHA,
@@ -100,47 +103,60 @@ export async function restoreRefProblem(
   }
 }
 
-/**
- * The dirt at repoRoot (`git status --porcelain`, minus `.worktrees/`
- * scaffolding). The single post-condition read every restore verifies against.
- * Without `paths`: tracked dirt across the whole tree. With `paths` (the abort
- * path): only the cycle's own paths, untracked included, so the operator's
- * untracked files are never counted as a failed restore. Throws when git
- * cannot be read.
- */
-async function trackedDirt(execFn: ExecFn, repoRoot: string, paths?: string[]): Promise<string[]> {
-  if (paths !== undefined && paths.length === 0) return [];
-  const argv =
-    paths === undefined
-      ? ["status", "--porcelain", "-uno"]
-      : ["--literal-pathspecs", "status", "--porcelain", "-uall", "--", ...paths];
-  const { stdout } = await execFn("git", { cwd: repoRoot, maxBuffer: 1024 * 1024, argv });
-  return stdout.split("\n").filter((l) => l.trim() && !/^..\s+"?\.worktrees\//.test(l));
+/** One record of the structured `git status` read at repoRoot. */
+interface StatusEntry {
+  /** The two-character XY porcelain code (`??` for untracked). */
+  code: string;
+  path: string;
+  /** A rename or copy's original path (the record after the entry). */
+  origPath?: string;
 }
 
+/** Paths the driver never counts as checkout dirt: its scaffolding and state. */
+function isExcludedStatusPath(p: string): boolean {
+  return p.startsWith(".worktrees/") || p.startsWith(".pi/work-state/");
+}
+
+/** A tracked entry: anything git knows about, staged, unstaged or unmerged. */
+const isTracked = (e: StatusEntry): boolean => e.code !== "??";
+
 /**
- * #1093 — the paths the cycle changed at repoRoot: every TRACKED entry in
- * `git status` (staged, unstaged, and unmerged from a conflict; a staged NEW
- * file is included). Read BEFORE the abort path's mixed reset, which would turn
- * those files untracked and leave them indistinguishable from the operator's
- * own untracked files. `-z` keeps unusual names unquoted; a rename record is
- * followed by its original path. Throws when git cannot be read.
+ * #1093 — the ONE structured status read at repoRoot. The abort path's
+ * changed-path list and every restore post-condition derive from it, so they
+ * cannot disagree about what is dirty. `-uall` lists each untracked file (a
+ * bare `-u` collapses a directory into one `dir/` entry); `-z` keeps unusual
+ * names unquoted. Throws when git cannot be read.
  */
-async function cycleChangedPaths(execFn: ExecFn, repoRoot: string): Promise<string[]> {
+async function readStatus(execFn: ExecFn, repoRoot: string): Promise<StatusEntry[]> {
   const { stdout } = await execFn("git", {
     cwd: repoRoot,
-    maxBuffer: 1024 * 1024,
-    argv: ["status", "--porcelain", "-z", "-uno"],
+    maxBuffer: 8 * 1024 * 1024,
+    argv: ["status", "--porcelain", "-z", "-uall"],
   });
   const records = stdout.split("\0");
-  const paths: string[] = [];
+  const entries: StatusEntry[] = [];
   for (let i = 0; i < records.length; i++) {
     const rec = records[i];
     if (!rec) continue;
-    paths.push(rec.slice(3));
-    if (rec[0] === "R" || rec[0] === "C") paths.push(records[++i] ?? "");
+    const entry: StatusEntry = { code: rec.slice(0, 2), path: rec.slice(3) };
+    if (/[RC]/.test(entry.code)) entry.origPath = records[++i] ?? "";
+    if (!isExcludedStatusPath(entry.path)) entries.push(entry);
   }
-  return paths.filter((p) => p && !p.startsWith(".worktrees/"));
+  return entries;
+}
+
+/**
+ * #1093 — the paths the cycle changed at repoRoot: every TRACKED entry (a
+ * staged NEW file included, and a rename's original path too). Read BEFORE the
+ * abort path's mixed reset, which would turn those files untracked and leave
+ * them indistinguishable from the operator's own untracked files. Throws when
+ * git cannot be read.
+ */
+async function cycleChangedPaths(execFn: ExecFn, repoRoot: string): Promise<string[]> {
+  const entries = await readStatus(execFn, repoRoot);
+  return entries
+    .filter(isTracked)
+    .flatMap((e) => (e.origPath !== undefined ? [e.path, e.origPath] : [e.path]));
 }
 
 /** The verified post-condition of a restore attempt. */
@@ -157,6 +173,10 @@ export interface VerifiedRestoreResult {
   /** #1093 — true when the checkout itself succeeded (HEAD moved), even if
    *  tracked dirt then remained and `restored` is false. */
   checkedOut?: boolean;
+  /** #1093 — untracked files present at repoRoot after a successful restore.
+   *  They do not make `restored` false (the restore never sweeps them), but
+   *  the claim must name them rather than say "verified restored". */
+  untracked?: string[];
 }
 
 /**
@@ -178,7 +198,13 @@ export function restoreClaim(
   const { label, trailing } = opts;
   if (r === undefined) return "the batch was aborted";
   if (r.restored) {
-    const restored = "repoRoot was verified restored";
+    const untracked = r.untracked ?? [];
+    const more =
+      untracked.length > UNTRACKED_SHOWN ? ` (+${untracked.length - UNTRACKED_SHOWN} more)` : "";
+    const restored =
+      untracked.length > 0
+        ? `repoRoot checkout was restored, but ${untracked.length} untracked file(s) remain in the checkout — they may be yours or left by the cycle: ${untracked.slice(0, UNTRACKED_SHOWN).join(", ")}${more}`
+        : "repoRoot was verified restored";
     if (!label) return restored;
     return label.endsWith(" ") ? `${label}${restored}` : `${label} ${restored}`;
   }
@@ -351,18 +377,12 @@ export async function restoreRootToRef(
       detail: `${cmd} refused (${msg}); the tree was left as it is \u2014 run \`${cmd}\` at the repo root once it is clean`,
     };
   }
+  // One structured read gives both answers: tracked dirt (scoped to the cycle's
+  // paths on the abort path) fails the restore; untracked files are listed by
+  // the claim. The read always runs, so an empty `paths` is never a free pass.
+  let entries: StatusEntry[];
   try {
-    const dirt = await trackedDirt(execFn, repoRoot, paths);
-    if (dirt.length > 0) {
-      return {
-        restored: false,
-        checkedOut: true,
-        detail: `${cmd} succeeded but ${paths !== undefined ? "changes remain" : "tracked changes remain"} (${dirt
-          .slice(0, 5)
-          .map((l) => l.slice(3))
-          .join(", ")}); nothing was reset \u2014 run \`git status\` at the repo root`,
-      };
-    }
+    entries = await readStatus(execFn, repoRoot);
   } catch (err) {
     return {
       restored: false,
@@ -370,7 +390,20 @@ export async function restoreRootToRef(
       detail: `could not verify the tree after ${cmd} (${(err as Error).message?.slice(0, 160)})`,
     };
   }
-  return { restored: true, checkedOut: true };
+  const scope = paths === undefined ? undefined : new Set(paths);
+  const dirt = entries.filter((e) => isTracked(e) && (scope === undefined || scope.has(e.path)));
+  if (dirt.length > 0) {
+    return {
+      restored: false,
+      checkedOut: true,
+      detail: `${cmd} succeeded but ${paths !== undefined ? "changes remain" : "tracked changes remain"} (${dirt
+        .slice(0, 5)
+        .map((e) => e.path)
+        .join(", ")}); nothing was reset \u2014 run \`git status\` at the repo root`,
+    };
+  }
+  const untracked = entries.filter((e) => !isTracked(e)).map((e) => e.path);
+  return { restored: true, checkedOut: true, untracked };
 }
 
 /**

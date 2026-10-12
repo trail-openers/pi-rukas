@@ -20,7 +20,7 @@ import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { detectMainline, restoreCheckout } from "./work-driver-git.ts";
-import { withIntegrationLock } from "./work-driver-integrate.ts";
+import { withIntegrationLock } from "./work-driver-lock.ts";
 import {
   gatherMergeEvidence,
   heldByUnresolvedReview,

@@ -14,7 +14,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import { __resetIntegrationLock } from "../src/work-driver-integrate.ts";
+import { __resetIntegrationLock } from "../src/work-driver-lock.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
 import { mkLensSummary, setupSpawnGuard } from "./test-helpers.ts";

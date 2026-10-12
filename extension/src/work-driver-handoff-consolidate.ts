@@ -50,7 +50,7 @@ import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
 import { detectMainline, resolveRestoreTarget } from "./work-driver-git.ts";
 import { reconcileHandoffConsolidateBranch } from "./work-driver-handoff-consolidate-branch.ts";
 import { deriveConsolidationSubject } from "./work-driver-handoff-subject.ts";
-import { withIntegrationLock } from "./work-driver-integrate.ts";
+import { withIntegrationLock } from "./work-driver-lock.ts";
 import {
   type VerifiedRestoreResult,
   restoreClaim,

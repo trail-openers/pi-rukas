@@ -34,7 +34,7 @@
 import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
 import { collectConflictEvidence } from "./work-driver-conflict-evidence.ts";
-import { withIntegrationLock } from "./work-driver-integrate.ts";
+import { withIntegrationLock } from "./work-driver-lock.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";

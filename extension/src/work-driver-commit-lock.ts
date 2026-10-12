@@ -19,7 +19,7 @@ import { conflictArtifactFromPlumb } from "./work-driver-commit-helpers.ts";
 import { auditCommitPrFallback } from "./work-driver-commit-pr-audit.ts";
 import { mechanizedCommitPr } from "./work-driver-commit.ts";
 import type { DriverContext } from "./work-driver-context.ts";
-import { withIntegrationLock } from "./work-driver-integrate.ts";
+import { withIntegrationLock } from "./work-driver-lock.ts";
 import { appendEvent } from "./workflow-state.ts";
 import type { WorkState } from "./workflow-state.ts";
 

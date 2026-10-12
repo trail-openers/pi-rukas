@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { stampCycleStartRef } from "../src/work-driver-branch-develop.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { captureInvocationStartRef } from "../src/work-driver-git.ts";
-import { restoreRootToRefPreserving } from "../src/work-driver-restore.ts";
+import { restoreClaim, restoreRootToRefPreserving } from "../src/work-driver-restore.ts";
 import type { ExecFn } from "../src/worktree.ts";
 import { assert, buildRepo, head, realExec, result, stateWith } from "./lib/restore-start-ref-fixtures.ts";
 
@@ -118,10 +118,14 @@ const git = (dir: string, args: string[]) =>
       scratchDir: scratch,
       label: "leftover",
     });
-    assert(!r.restored, "leftover: the claim is NOT verified restored");
+    const claim = restoreClaim(r);
     assert(
-      (r.detail ?? "").includes("cyc-new.txt"),
-      `leftover: the detail names the leftover file (got ${JSON.stringify(r.detail)})`,
+      !claim.includes("verified restored"),
+      `leftover: the claim is NOT verified restored (got ${JSON.stringify(claim)})`,
+    );
+    assert(
+      claim.includes("cyc-new.txt"),
+      `leftover: the claim names the leftover file (got ${JSON.stringify(claim)})`,
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
