@@ -270,7 +270,8 @@ try {
   assert(!corruptRound.ok, "corrupt: recording a round reports the failure instead of recording");
   writeFileSync(findingsFile, before);
 
-  // An unreadable head file skips recording with a reason — no fake identity.
+  // A path absent at the head commit is a wrong citation, not a fault: it is
+  // recorded as a no-line finding, so one bad path does not disable the run.
   const missing = await recordFindingRunOutcome({
     cwd: dir,
     branch: "feat/x",
@@ -279,8 +280,20 @@ try {
     complete: true,
   });
   assert(
-    !missing.ok && missing.reason.includes("cannot read src/missing.ts"),
-    "head: a file absent at the head commit skips recording with the git reason",
+    missing.ok && missing.decisions[0]?.action === "new",
+    "head: a file absent at the head commit is recorded as a no-line finding",
+  );
+  // A git error reading the head commit is a fault: no fake identity, no record.
+  const badSha = await recordFindingRunOutcome({
+    cwd: dir,
+    branch: "feat/x",
+    headSha: "0".repeat(40),
+    findings: [finding("Gone file", 1)],
+    complete: true,
+  });
+  assert(
+    !badSha.ok && badSha.reason.includes("cannot read src/a.ts"),
+    "head: a git error reading the head commit skips recording with the git reason",
   );
 } finally {
   rmSync(dir, { recursive: true, force: true });

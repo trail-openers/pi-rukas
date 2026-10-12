@@ -19,9 +19,11 @@
  *     CORRUPT. Readers treat it as no memory. Writers refuse to overwrite it
  *     and copy it aside to `review-findings.json.corrupt-<ms>`, so an operator
  *     acceptance is never silently erased.
- *   - Any fault while recording a round (no clone, corrupt file, a head file
- *     that cannot be read) skips recording for that round and returns the
- *     reason. The caller reports every finding and shows the reason.
+ *   - Any fault while recording a round (no clone, corrupt file, a git error
+ *     reading a head file) skips recording for that round and returns the
+ *     reason. The caller reports every finding and shows the reason. A path
+ *     absent at head is not a fault: its findings are recorded as no-line
+ *     findings and are never suppressed.
  *
  * This module has NO acceptance write path. The only way to mark a row
  * accepted is `acceptRow` in extension/scripts/review-accept-row.ts, which the
@@ -114,23 +116,48 @@ function safeRepoPath(p: string): boolean {
   return !p.split("/").includes("..");
 }
 
-type HeadLines = { ok: true; lines: string[] } | { ok: false; reason: string };
+/**
+ * `lines`: the file exists at the commit. `missing`: the commit is readable but
+ * the path is not in it (a lens cited a wrong or stale path) — an expected case,
+ * recorded as a no-line finding. `error`: git itself failed (bad sha, I/O,
+ * buffer overflow) — this round cannot be recorded.
+ */
+type HeadLines =
+  | { kind: "lines"; lines: string[] }
+  | { kind: "missing" }
+  | { kind: "error"; reason: string };
+
+/** Does git hold `spec` (a `<sha>:<path>` or `<sha>^{commit}`)? Exit 0 only when it does. */
+async function gitHas(cwd: string, spec: string): Promise<boolean> {
+  try {
+    await execFileP("git", ["-C", cwd, "cat-file", "-e", spec]);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
- * The lines of `file` at `sha`. A git error (unknown path at that commit, bad
- * sha, unsafe path) is a failure, never an empty file: an empty file would give
- * every finding a fake identity and suppress nothing on the wrong evidence.
+ * The lines of `file` at `sha`. A path absent from a readable commit is
+ * `missing`, not an error, so one wrong citation does not disable the run's
+ * memory. Any other git failure is an `error`, never an empty file: an empty
+ * file would give every finding a fake identity and suppress nothing on the
+ * wrong evidence.
  */
 async function readHeadLines(cwd: string, sha: string, file: string): Promise<HeadLines> {
-  if (!safeRepoPath(file)) return { ok: false, reason: `unsafe path ${file}` };
+  // An unsafe path names nothing git can hold, so it is missing at head too.
+  if (!safeRepoPath(file)) return { kind: "missing" };
   try {
     const { stdout } = await execFileP("git", ["-C", cwd, "show", `${sha}:${file}`], {
       maxBuffer: 8 * 1024 * 1024,
     });
-    return { ok: true, lines: stdout.split("\n") };
+    return { kind: "lines", lines: stdout.split("\n") };
   } catch (err) {
+    if ((await gitHas(cwd, `${sha}^{commit}`)) && !(await gitHas(cwd, `${sha}:${file}`))) {
+      return { kind: "missing" };
+    }
     return {
-      ok: false,
+      kind: "error",
       reason: `cannot read ${file} at ${sha.slice(0, 12)}: ${(err as Error).message.slice(0, 120)}`,
     };
   }
@@ -309,7 +336,8 @@ function outsideDelta(
  * nothing was recorded — the caller then reports every finding and shows that
  * reason. Never throws.
  *
- * Suppression (CRITICAL is never suppressed):
+ * Suppression (CRITICAL is never suppressed; a finding on a path missing at
+ * head is never suppressed):
  *   - `suppressed-accepted`: the matched row is accepted and the code it cites
  *     still has the snippet the operator accepted;
  *   - `suppressed-unchanged`: a delta round, the title agrees, the cited code's
@@ -322,22 +350,30 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
     const now = run.now ?? Date.now();
     const ranges = run.deltaDiff !== undefined ? changedLineRanges(run.deltaDiff) : undefined;
     const linesByPath = new Map<string, string[]>();
+    const missingPaths = new Set<string>();
     for (const f of run.findings) {
-      if (linesByPath.has(f.path)) continue;
+      if (linesByPath.has(f.path) || missingPaths.has(f.path)) continue;
       const head = await readHeadLines(run.cwd, run.headSha, f.path);
-      if (!head.ok) return { ok: false, reason: head.reason };
-      linesByPath.set(f.path, head.lines);
+      if (head.kind === "error") return { ok: false, reason: head.reason };
+      if (head.kind === "missing") missingPaths.add(f.path);
+      else linesByPath.set(f.path, head.lines);
     }
-    const identities = run.findings.map((f) => identityOf(f, linesByPath.get(f.path) ?? []));
+    // A path absent at head has no line to cite: the finding is a no-line one,
+    // and it is never suppressed (there is no code it could be unchanged against).
+    const findings = run.findings.map((f) =>
+      missingPaths.has(f.path) ? { ...f, line: undefined } : f,
+    );
+    const identities = findings.map((f) => identityOf(f, linesByPath.get(f.path) ?? []));
     const out = await mutateFindings(run.cwd, (all) => {
       const others = all.filter((r) => r.branch !== run.branch);
       const mine = all.filter((r) => r.branch === run.branch);
       const touched = new Set<string>();
       const taken = new Set(all.map((r) => r.id));
       const decisions: Decision[] = [];
-      run.findings.forEach((f, i) => {
+      findings.forEach((f, i) => {
         const id = identities[i] as FindingIdentity;
         const critical = f.severity === "CRITICAL";
+        const gone = missingPaths.has(f.path);
         const row = pickMatch(id, mine);
         if (!row) {
           const fresh: StoredFinding = {
@@ -373,6 +409,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
         const priorHash = row.snippetHash;
         row.lastSeen = now;
         row.snippetHash = id.snippetHash;
+        if (gone) row.line = undefined;
         if (f.line) row.line = f.line;
         if (row.status === "resolved") row.status = "open";
         if (row.status === "accepted" && row.acceptance) {
@@ -385,7 +422,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
             );
             row.status = "open";
             row.acceptance = undefined;
-          } else if (!critical && sameTitle) {
+          } else if (!critical && !gone && sameTitle) {
             decisions.push({
               action: "suppressed-accepted",
               rowId: row.id,
@@ -397,6 +434,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
         // priorHash === snippetHash: the cited code is the code the row last saw.
         if (
           !critical &&
+          !gone &&
           sameTitle &&
           ranges &&
           priorHash === id.snippetHash &&
