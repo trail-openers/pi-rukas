@@ -56,8 +56,6 @@
 # detail, because the 3×200 bound was sized for the 800-char
 # extractAttributedTail window, not for a full digest.
 #
-# Digest mode prints NOTHING on all-pass (exit 0). Callers must distinguish
-# pass from no-output by exit code (0 = pass), not by stdout presence.
 # #1122 — on all-pass digest mode now prints exactly one line, the same tally
 # shape as the failure path: `P: <pass-count>  F: 0` (exit 0). The line carries
 # no ✗ and no `FAILED:` marker, so the failure-side filters never match it.
