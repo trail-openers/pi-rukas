@@ -167,7 +167,9 @@ export function commitEntriesOf(entries: StatusEntry[]): StatusEntry[] {
 /** The reset's `git clean`. Its exclusions are case-sensitive and must equal the
  *  save rule (workEntriesOf / isExactDriverArtefact): an untracked `.PI/x` is not
  *  spared here, so it has to be in the patch first. */
-const RESET_CLEAN_ARGS = ["-fd", "-e", ".pi/", "-e", "tmp/"];
+// Anchored (leading `/`): an unanchored `tmp/` matches at any depth, so it would
+// spare a nested `src/tmp/x.ts` that the save rule (isExactDriverArtefact) saves.
+const RESET_CLEAN_ARGS = ["-fd", "-e", "/.pi/", "-e", "/tmp/"];
 
 /** Where the save-then-reset applies: the scratch patch, and the repo whose
  *  `.worktrees/` directory is the only place a reset may run. */

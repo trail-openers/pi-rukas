@@ -24,6 +24,8 @@
  * back to the global `baseSha`.
  *
  * The safety net NEVER fires when:
+ *   - the worktree already has commits ahead of its effective base (AC2): the
+ *     developer's commit stands, and leftover edits are noted, not committed, or
  *   - the worktree is clean (AC3), or
  *   - the dispatch failed (the dispatch-failed HALT machinery handles it), or
  *   - `PI_ENSEMBLE_SAFETY_NET_COMMIT=0` is set (AC5), or
@@ -278,16 +280,6 @@ export async function safetyNetWorktree(
   // in the index after the path-limited commit. Unstage it (the working tree is
   // untouched) so the index holds no driver artefact the commit did not name.
   await unstageDriverArtefacts(git, cwd, wsId, notes);
-  // A developer's own commit was already ahead of base: the leftover edits just
-  // committed were NOT in that commit. Say so, so the handoff shows what the
-  // driver added to the PR beyond the reviewed work.
-  if (ahead.commits > 0) {
-    const shown = workPaths.slice(0, 10).join(", ");
-    const more = workPaths.length > 10 ? ` (+${workPaths.length - 10} more)` : "";
-    notes.push(
-      `${wsId}: safety net committed ${workPaths.length} leftover uncommitted path(s) after ${ahead.commits} developer commit(s), not in the developer's commit — ${shown}${more}`,
-    );
-  }
   // The commit has landed. A failed read of its sha must not hide it: the
   // event then names HEAD, and the note says the sha was not read.
   try {
@@ -325,9 +317,9 @@ export async function safetyNetWorktree(
  *
  * For each worktree (every step is an argv call through the develop git transport):
  *   1. `git status --porcelain -z` — no commit-eligible path → skip (AC3).
- *   2. `git rev-list --count <effectiveBase>..HEAD` — read only to refuse an
- *      unreadable state (commits already ahead do not skip: leftover edits are
- *      still committed).
+ *   2. `git rev-list --count <effectiveBase>..HEAD` — `ahead > 0` → skip and
+ *      note the leftover paths (the developer's commit is not extended); an
+ *      unreadable count → skip and note.
  *   3. `git --literal-pathspecs add -- <paths>` (chunked), excluding `.pi/` and `tmp/`.
  *   4. `git --literal-pathspecs commit -m <driver message> -- <paths>`, naming the
  *      same paths so nothing else in the index rides along.

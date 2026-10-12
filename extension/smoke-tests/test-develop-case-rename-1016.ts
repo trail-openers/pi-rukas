@@ -62,12 +62,15 @@ const caseSensitive = (() => {
   const { repo, wt, base } = fresh("save");
   put(path.join(wt, ".PI", "x.json"), "upper-case driver file");
   put(path.join(wt, "src", "b.ts"), "export const b = 2;\n");
+  put(path.join(wt, "src", "tmp", "n.ts"), "nested tmp dir\n");
   const patchPath = path.join(root, "scratch-save", "retry-save-1.patch");
   const saved = await resetWorktreeToBase(git, wt, base, { repoRoot: repo, patchPath });
   assert(saved === patchPath, "#1016: work under .PI/ and src/ is saved to the patch");
   const patch = existsSync(patchPath) ? readFileSync(patchPath, "utf8") : "";
   assert(patch.includes(".PI/x.json"), "#1016: the untracked .PI/x.json is in the saved patch");
   assert(patch.includes("src/b.ts"), "#1016: the untracked src/b.ts is in the saved patch");
+  assert(patch.includes("src/tmp/n.ts"), "#1016: a nested src/tmp/n.ts is saved (not a driver dir)");
+  assert(!existsSync(path.join(wt, "src", "tmp", "n.ts")), "#1016: nested src/tmp/n.ts is removed by the reset after the save");
   if (caseSensitive) {
     assert(!existsSync(path.join(wt, ".PI", "x.json")), "#1016: .PI/x.json removed after save");
   }
