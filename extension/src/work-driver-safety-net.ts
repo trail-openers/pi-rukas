@@ -53,6 +53,7 @@ import {
   isDriverArtefact,
   isValidBaseSha,
   runGit,
+  stageDeletions,
   stagePaths,
   unstagePaths,
   worktreeStatus,
@@ -185,19 +186,19 @@ export async function safetyNetWorktree(
     return undefined;
   }
   // Only non-driver paths are committed: a .pi/ or tmp/ edit is never staged here.
-  const workPaths = commitEntriesOf(status).map((e) => e.path);
+  const candidates = commitEntriesOf(status);
 
   // (AC3) Clean tree → nothing to commit → skip.
-  if (workPaths.length === 0) {
+  if (candidates.length === 0) {
     trace(`work-driver: safety net skipped ${wsId} — tree clean`);
     return undefined;
   }
 
-  // The commit count is read only to refuse an unknown state: an unreadable
-  // count never licenses a commit. Commits already ahead of the effective base
-  // (#679: a dependent's base is its dependency's post-commit SHA) do NOT skip:
-  // a developer's second, uncommitted edit is work the PR would otherwise lose
-  // silently, so it is committed as a further safety-net commit.
+  // (2) Check if worktree already has commits ahead of its EFFECTIVE base — the
+  // per-workstream effective base, not the global baseSha (#679). A dependent
+  // workstream's worktree was created from its dependency's post-commit SHA, so
+  // comparing against the global baseSha would miscount its commits ahead. An
+  // unreadable count never licenses a commit.
   const ahead = await commitsAheadOfBase(git, cwd, effectiveBase);
   if (!("commits" in ahead)) {
     const note = `${wsId}: safety net skipped — commit check unreadable — ${ahead.unreadable}`;
@@ -206,21 +207,43 @@ export async function safetyNetWorktree(
     return undefined;
   }
 
+  // (AC2) Already has commits ahead of its effective base → developer committed
+  // correctly → skip. Leftovers are not committed here: they were not part of the
+  // reviewed commit, so they are listed in a note for the handoff instead.
+  if (ahead.commits > 0) {
+    const shown = candidates
+      .slice(0, 10)
+      .map((e) => e.path)
+      .join(", ");
+    const more = candidates.length > 10 ? ` (+${candidates.length - 10} more)` : "";
+    notes.push(
+      `${wsId}: safety net skipped after ${ahead.commits} developer commit(s); ${candidates.length} uncommitted path(s) left out of the PR — ${shown}${more}`,
+    );
+    trace(
+      `work-driver: safety net skipped ${wsId} — already has ${ahead.commits} commit(s) ahead of its base`,
+    );
+    return undefined;
+  }
+
+  const workPaths = candidates.map((e) => e.path);
+
   // Fire the safety net: stage the work paths and commit.
-  trace(
-    `work-driver: safety net firing for ${wsId} — ${workPaths.length} uncommitted path(s) (${ahead.commits} commit(s) already ahead of base)`,
-  );
+  trace(`work-driver: safety net firing for ${wsId} — ${workPaths.length} uncommitted path(s)`);
   let commitSha: string | undefined;
-  // One `git add` for the list (chunked). A failed add records its git
-  // error and commits nothing: a partial stage must never turn green. A path
-  // absent from disk is a deletion (a staged rename's origin is already out of
-  // the index, so `git add` has nothing to match): the path-limited commit below
-  // records it from HEAD, so only present paths are staged.
+  // One `git add` for the present paths (chunked), and `rm --cached` for the
+  // absent ones (a staged rename's origin is already out of the index, so `git
+  // add` has nothing to match). A failed stage records its git error and commits
+  // nothing: a partial stage must never turn green.
   try {
     await stagePaths(
       git,
       cwd,
       workPaths.filter((p) => existsSync(join(cwd, p))),
+    );
+    await stageDeletions(
+      git,
+      cwd,
+      workPaths.filter((p) => !existsSync(join(cwd, p))),
     );
   } catch (err) {
     // A chunk may have staged before a later one failed: unstage every work path.
@@ -268,7 +291,10 @@ export async function safetyNetWorktree(
   // The commit has landed. A failed read of its sha must not hide it: the
   // event then names HEAD, and the note says the sha was not read.
   try {
-    const { stdout: shaOut } = await git(["rev-parse", "HEAD"], { cwd, maxBuffer: 64 * 1024 });
+    const { stdout: shaOut } = await git(["rev-parse", "HEAD"], {
+      cwd,
+      maxBuffer: 64 * 1024,
+    });
     commitSha = shaOut.trim();
   } catch (err) {
     commitSha = "HEAD";

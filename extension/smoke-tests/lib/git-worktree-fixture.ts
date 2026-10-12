@@ -4,22 +4,27 @@
  * so fixtures that stage a passing developer must make real commits.
  */
 import { execFileSync } from "node:child_process";
-import { mkdir } from "node:fs/promises";
 import { writeFileSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
-// The safety net's `git commit` runs through the inherited environment, not
-// through gitIn's per-call `-c` flags. A CI runner has no global git identity,
-// so the commit fails with "Author identity unknown" and the test sees no commit.
-// Supply an identity to this test process only (never `git config --global`),
-// and keep any identity the operator already has.
-for (const [key, value] of Object.entries({
-  GIT_AUTHOR_NAME: "pi-rukas test",
-  GIT_AUTHOR_EMAIL: "t@t",
-  GIT_COMMITTER_NAME: "pi-rukas test",
-  GIT_COMMITTER_EMAIL: "t@t",
-})) {
-  process.env[key] ??= value;
+/**
+ * The safety net's `git commit` runs through the inherited environment, not
+ * through gitIn's per-call `-c` flags. A CI runner has no global git identity,
+ * so the commit fails with "Author identity unknown" and the test sees no commit.
+ * Call this at the top of every test file that commits through the safety net.
+ * It supplies an identity to this test process only (never `git config --global`),
+ * and keeps any identity the operator already has.
+ */
+export function ensureGitIdentity(): void {
+  for (const [key, value] of Object.entries({
+    GIT_AUTHOR_NAME: "pi-rukas test",
+    GIT_AUTHOR_EMAIL: "t@t",
+    GIT_COMMITTER_NAME: "pi-rukas test",
+    GIT_COMMITTER_EMAIL: "t@t",
+  })) {
+    process.env[key] ??= value;
+  }
 }
 
 export function gitIn(cwd: string, args: string[]): string {

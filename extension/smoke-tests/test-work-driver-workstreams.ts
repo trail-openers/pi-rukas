@@ -16,7 +16,9 @@ import type { DriverContext } from "../src/work-driver-context.ts";
 import { parseWorkstreams } from "../src/work-driver-plan.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { type WorkEvent, readState, writeState } from "../src/workflow-state.ts";
-import { gitIn, makeBaseWorktrees, mockDeveloperWork } from "./lib/git-worktree-fixture.ts";
+import { ensureGitIdentity, gitIn, makeBaseWorktrees, mockDeveloperWork } from "./lib/git-worktree-fixture.ts";
+
+ensureGitIdentity();
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

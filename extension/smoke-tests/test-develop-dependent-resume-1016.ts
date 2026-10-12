@@ -15,7 +15,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { type WorkState, readState, writeState } from "../src/workflow-state.ts";
-import { gitIn, makeBaseWorktrees } from "./lib/git-worktree-fixture.ts";
+import { ensureGitIdentity, gitIn, makeBaseWorktrees } from "./lib/git-worktree-fixture.ts";
+
+ensureGitIdentity();
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

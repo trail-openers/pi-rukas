@@ -17,7 +17,9 @@ import type { DriverContext } from "../src/work-driver-context.ts";
 import { hasAnyWorktreeEvidence, safetyNetWorktree } from "../src/work-driver-safety-net.ts";
 import { execp } from "../src/work-driver-verify.ts";
 import type { WorkState } from "../src/workflow-state.ts";
-import { gitIn, makeBaseWorktrees } from "./lib/git-worktree-fixture.ts";
+import { ensureGitIdentity, gitIn, makeBaseWorktrees } from "./lib/git-worktree-fixture.ts";
+
+ensureGitIdentity();
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

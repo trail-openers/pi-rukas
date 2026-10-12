@@ -14,7 +14,9 @@ import path from "node:path";
 import { resetWorktreeToBase, runGit } from "../src/work-develop-git.ts";
 import { safetyNetWorktree } from "../src/work-driver-safety-net.ts";
 import { execp } from "../src/work-driver-verify.ts";
-import { gitIn } from "./lib/git-worktree-fixture.ts";
+import { ensureGitIdentity, gitIn } from "./lib/git-worktree-fixture.ts";
+
+ensureGitIdentity();
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

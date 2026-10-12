@@ -22,7 +22,9 @@ import type { DispatchResult } from "../src/types.ts";
 import { greenWorkstreamsFromInterruptedDevelop } from "../src/work-develop-greens.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { type WorkState, readState, writeState } from "../src/workflow-state.ts";
-import { gitIn, makeBaseWorktrees, mockDeveloperWork } from "./lib/git-worktree-fixture.ts";
+import { ensureGitIdentity, gitIn, makeBaseWorktrees, mockDeveloperWork } from "./lib/git-worktree-fixture.ts";
+
+ensureGitIdentity();
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

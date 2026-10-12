@@ -21,7 +21,9 @@ import {
 } from "../src/work-develop-git.ts";
 import { backupInterruptedWorktrees } from "../src/work-develop-resume-backup.ts";
 import { execp } from "../src/work-driver-verify.ts";
-import { gitIn, makeBaseWorktrees } from "./lib/git-worktree-fixture.ts";
+import { ensureGitIdentity, gitIn, makeBaseWorktrees } from "./lib/git-worktree-fixture.ts";
+
+ensureGitIdentity();
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

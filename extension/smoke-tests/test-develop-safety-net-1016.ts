@@ -6,7 +6,7 @@
  * shell syntax is committed as a literal name without running anything.
  */
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { resetWorktreeToBase as resetRaw, runGit } from "../src/work-develop-git.ts";
@@ -15,7 +15,9 @@ import type { DriverContext } from "../src/work-driver-context.ts";
 import { applySafetyNet, safetyNetWorktree } from "../src/work-driver-safety-net.ts";
 import { execp as execFn } from "../src/work-driver-verify.ts";
 import type { WorkState } from "../src/workflow-state.ts";
-import { gitIn, makeBaseWorktrees } from "./lib/git-worktree-fixture.ts";
+import { ensureGitIdentity, gitIn, makeBaseWorktrees } from "./lib/git-worktree-fixture.ts";
+
+ensureGitIdentity();
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -177,8 +179,8 @@ try {
   await rm(dir, { recursive: true, force: true });
 }
 
-// #1016 — a developer commit plus a second, UNCOMMITTED edit: the leftover edit
-// is committed by the safety net, never silently dropped from the PR.
+// #1016 — a developer commit plus an UNTRACKED leftover: the safety net does not
+// commit beside a developer's reviewed commit; the leftover is noted, not dropped.
 {
   const dir3 = await mkdtemp(path.join(tmpdir(), "safety-second-1016-"));
   try {
@@ -187,16 +189,24 @@ try {
     await writeFile(path.join(ws, "first.ts"), "1");
     gitIn(ws, ["add", "first.ts"]);
     gitIn(ws, ["commit", "-qm", "first"]);
-    await writeFile(path.join(ws, "second.ts"), "2");
-    const ev = await safetyNetWorktree("task-s", dir3, ws, shas3["task-s"] ?? "", execFn, []);
-    assert(ev?.kind === "safety-net-commit", "#1016: a leftover edit after a commit is committed");
+    await writeFile(path.join(ws, ".env.local"), "SECRET=1");
+    const notes: string[] = [];
+    const ev = await safetyNetWorktree("task-s", dir3, ws, shas3["task-s"] ?? "", execFn, notes);
     assert(
-      gitIn(ws, ["rev-list", "--count", `${shas3["task-s"]}..HEAD`]) === "2",
-      "#1016: the worktree holds both the developer's commit and the safety-net commit",
+      ev === undefined,
+      "#1016: an untracked leftover beside a developer commit is not committed",
     );
     assert(
-      gitIn(ws, ["show", "--name-only", "--format=", "HEAD"]) === "second.ts",
-      "#1016: the safety-net commit holds exactly the leftover second.ts",
+      gitIn(ws, ["rev-list", "--count", `${shas3["task-s"]}..HEAD`]) === "1",
+      "#1016: the worktree still holds only the developer's commit",
+    );
+    assert(
+      existsSync(path.join(ws, ".env.local")),
+      "#1016: the untracked .env.local stays on disk",
+    );
+    assert(
+      notes.some((n) => n.includes("left out of the PR") && n.includes(".env.local")),
+      "#1016: the untracked leftover is noted with its path, not silently dropped",
     );
   } finally {
     await rm(dir3, { recursive: true, force: true });
@@ -226,7 +236,10 @@ try {
         plumbReports: [],
       },
     } as unknown as WorkState;
-    const ctx4 = { repoRoot: dir4, verifyExecFn: execFn } as unknown as DriverContext;
+    const ctx4 = {
+      repoRoot: dir4,
+      verifyExecFn: execFn,
+    } as unknown as DriverContext;
     const skipped = await applySafetyNet(ctx4, state, new Set<string>());
     assert(skipped.eventLog.length === 0, "#1016: a workstream outside the ok set is not swept");
     assert(
@@ -234,13 +247,52 @@ try {
       "#1016: the failed workstream's leftover edit stays uncommitted",
     );
     const swept = await applySafetyNet(ctx4, state, new Set(["task-f"]));
-    assert(swept.eventLog.some((e) => e.kind === "safety-net-commit"), "#1016: an ok workstream is swept");
     assert(
-      (swept.pipelineState.plumbReports ?? []).some((r) => /leftover uncommitted path\(s\) after 1 developer commit/.test(r.body)),
-      "#1016: a leftover commit beside a developer commit is noted with its count",
+      !swept.eventLog.some((e) => e.kind === "safety-net-commit"),
+      "#1016: an untracked leftover beside a developer commit is not committed",
+    );
+    assert(
+      (swept.pipelineState.plumbReports ?? []).some((r) =>
+        /after 1 developer commit\(s\); 1 uncommitted path\(s\) left out of the PR — leftover\.ts/.test(
+          r.body,
+        ),
+      ),
+      "#1016: the leftover is noted with its count and path",
     );
   } finally {
     await rm(dir4, { recursive: true, force: true });
+  }
+}
+
+// #1016 — a staged same-folder rename in a zero-commit worktree: the origin is
+// absent from disk and out of the index, so it is staged as a deletion and the
+// safety-net commit lands the rename without `git add` failing on the origin.
+{
+  const dirM = await mkdtemp(path.join(tmpdir(), "safety-rename-1016-"));
+  try {
+    await makeBaseWorktrees(dirM, ["task-m"]);
+    const wm = path.join(dirM, ".worktrees", "task-m");
+    await mkdir(path.join(wm, "src"), { recursive: true });
+    await writeFile(path.join(wm, "src", "a.ts"), "a");
+    gitIn(wm, ["add", "src/a.ts"]);
+    gitIn(wm, ["commit", "-qm", "setup"]);
+    // The setup commit becomes the base, so the worktree has zero commits ahead.
+    const base = gitIn(wm, ["rev-parse", "HEAD"]);
+    gitIn(wm, ["mv", "src/a.ts", "src/b.ts"]);
+    const notes: string[] = [];
+    const ev = await safetyNetWorktree("task-m", dirM, wm, base, execFn, notes);
+    assert(
+      ev?.kind === "safety-net-commit",
+      "#1016: a staged rename in a zero-commit worktree is committed",
+    );
+    assert(notes.length === 0, `#1016: the rename raises no note (got ${JSON.stringify(notes)})`);
+    const tree = gitIn(wm, ["ls-tree", "--name-only", "-r", "HEAD"]);
+    assert(
+      tree.includes("src/b.ts") && !tree.includes("src/a.ts"),
+      "#1016: HEAD holds the renamed file and not its origin",
+    );
+  } finally {
+    await rm(dirM, { recursive: true, force: true });
   }
 }
 

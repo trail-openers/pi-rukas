@@ -35,7 +35,8 @@ export const runGit =
 
 const SHA_RE = /^[0-9a-f]{40}$/;
 
-/** The only ref a git command in the develop paths may receive: a full 40-hex SHA. */
+/** The only ref a git command in the develop paths may receive: a full 40-hex SHA.
+ *  #679 — the global base is unusable as a fallback (older state files). */
 export const isValidBaseSha = (s: unknown): s is string => typeof s === "string" && SHA_RE.test(s);
 
 /** A workstream id is used as a path component: letters, digits, `.`, `_`, `-` only. */
@@ -106,7 +107,9 @@ export async function worktreeStatus(
     if (tok === "" && i === tokens.length - 1) continue;
     // Porcelain v1 is `XY PATH`: a status line is at least 4 chars with a space at 2.
     if (tok.length < 4 || tok[2] !== " ") {
-      return { unreadable: `malformed status entry ${JSON.stringify(tok.slice(0, 80))}` };
+      return {
+        unreadable: `malformed status entry ${JSON.stringify(tok.slice(0, 80))}`,
+      };
     }
     const code = tok.slice(0, 2);
     const p = tok.slice(3);
@@ -114,7 +117,10 @@ export async function worktreeStatus(
     if (/[RC]/.test(code)) {
       i++;
       const orig = tokens[i];
-      if (!orig) return { unreadable: "rename/copy status entry without its origin path" };
+      if (!orig)
+        return {
+          unreadable: "rename/copy status entry without its origin path",
+        };
       out.push({ path: p, untracked: false, pairedWith: orig });
       out.push({ path: orig, untracked: false, pairedWith: p });
     } else {

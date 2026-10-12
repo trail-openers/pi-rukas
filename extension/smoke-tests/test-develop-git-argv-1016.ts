@@ -21,7 +21,9 @@ import { recordDowngrade, runIndependentFanout } from "../src/work-develop-retry
 import { safetyNetWorktree } from "../src/work-driver-safety-net.ts";
 import { execp } from "../src/work-driver-verify.ts";
 import type { WorkEvent, WorkState } from "../src/workflow-state.ts";
-import { gitIn, makeBaseWorktrees } from "./lib/git-worktree-fixture.ts";
+import { ensureGitIdentity, gitIn, makeBaseWorktrees } from "./lib/git-worktree-fixture.ts";
+
+ensureGitIdentity();
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
