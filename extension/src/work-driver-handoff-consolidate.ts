@@ -49,6 +49,7 @@ import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
 import { detectMainline, resolveRestoreTarget } from "./work-driver-git.ts";
 import { reconcileHandoffConsolidateBranch } from "./work-driver-handoff-consolidate-branch.ts";
+import { readError } from "./work-driver-handoff-snapshot.ts";
 import { deriveConsolidationSubject } from "./work-driver-handoff-subject.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
 import {
@@ -75,18 +76,20 @@ export function handoffConsolidationEnabled(): boolean {
  * worktree HEADs. `rev-list --count baseSha..HEAD` is the same predicate the
  * cherry-pick orchestrator uses to decide a worktree has commits to move, so
  * consolidation only runs when there is something to move. Returns
- * `{ ahead: 0 }` when there is no committed work to consolidate (or no base
+ * `{ total: 0 }` when there is no committed work to consolidate (or no base
  * SHA recorded) — the caller treats that as "nothing to do, keep the
- * existing snapshot".
+ * existing snapshot". A count that could not be READ is reported in
+ * `unreadable`, never folded into that zero.
  */
 export async function countAheadOfBase(
   execFn: ExecFn,
   repoRoot: string,
   baseSha: string | undefined,
   worktrees: Record<string, string>,
-): Promise<{ total: number; ahead: Record<string, number> }> {
-  if (!baseSha) return { total: 0, ahead: {} };
+): Promise<{ total: number; ahead: Record<string, number>; unreadable: string[] }> {
+  if (!baseSha) return { total: 0, ahead: {}, unreadable: [] };
   const ahead: Record<string, number> = {};
+  const unreadable: string[] = [];
   let total = 0;
   for (const [id, wt] of Object.entries(worktrees)) {
     try {
@@ -99,13 +102,13 @@ export async function countAheadOfBase(
         ahead[id] = n;
         total += n;
       }
-    } catch {
-      // Unreadable worktree (deleted on disk, no shared history) — treat as
-      // no committed work. Uncommitted dirt in the same worktree is still
-      // visible via the porcelain-based snapshot.
+    } catch (err) {
+      // Unreadable worktree (deleted on disk, git could not run) — nothing
+      // to move from here, but NOT proof it holds no commits.
+      unreadable.push(`${wt}: ${readError(err)}`);
     }
   }
-  return { total, ahead };
+  return { total, ahead, unreadable };
 }
 
 /**
@@ -183,9 +186,13 @@ export async function consolidateWorktreesToBranch(
   // Nothing to move? Then the existing (porcelain-based) snapshot already
   // describes the cycle's true state and consolidation would only risk
   // repoRoot for no gain.
-  const { total } = await countAheadOfBase(execFn, ctx.repoRoot, ps.baseSha, worktrees);
-  if (total === 0) {
-    return { ok: false, reason: "no committed work ahead of the base — nothing to consolidate" };
+  const counted = await countAheadOfBase(execFn, ctx.repoRoot, ps.baseSha, worktrees);
+  if (counted.total === 0) {
+    const reason =
+      counted.unreadable.length > 0
+        ? `could not read the commits ahead of the base (${counted.unreadable.join("; ")}) — committed work may exist in the worktrees; nothing was consolidated`
+        : "no committed work ahead of the base — nothing to consolidate";
+    return { ok: false, reason };
   }
 
   // #750 — where the root was before consolidation touched its checkout.

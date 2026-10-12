@@ -47,7 +47,8 @@ export function explainCap(
     return "the cycle halted without recording which gate stopped it — check the event log directly";
   }
   const snap = state.pipelineState.handoffSnapshot;
-  const fileCount = snap ? snap.unstagedCount + snap.stagedCount : undefined;
+  const fileCount =
+    snap && !snap.unreadable?.length ? snap.unstagedCount + snap.stagedCount : undefined;
   const fileBlurb =
     fileCount !== undefined ? `${fileCount} file(s) modified-but-uncommitted` : "uncommitted work";
   switch (cap) {

@@ -377,6 +377,15 @@ export interface PipelineState {
      * unknown (readers treat absent as "no committed work recorded").
      */
     committedWork?: Array<{ worktreeId: string; path: string; headSha: string; ahead: number }>;
+    /**
+     * git reads that FAILED while the snapshot was taken (`<what>: <error>`).
+     * A failed read leaves its field at the empty default, which is
+     * indistinguishable from a real "0 files / no branch / no commits" — a
+     * fork-exhausted host produced a handoff saying "0 file(s) modified"
+     * over five reviewed commits. Non-empty means the fields above are NOT
+     * evidence of absence; the renderers say so. Absent on older state files.
+     */
+    unreadable?: string[];
   };
   /**
    * Epoch ms when the 90-min wall-clock cap was started. Persists across
