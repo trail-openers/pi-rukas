@@ -45,13 +45,16 @@ function dirOfPath(p: string): string {
 }
 
 /**
- * The driver's own gate modules (verify, verdict, retention, marker parsing).
- * They share `extension/src/` with ordinary code, so the directory rule alone
- * would let a finding widen a fence onto them. Never widenable.
+ * Verdict-, merge- and evidence-bearing gate modules (driver verify and verdict,
+ * comment retention, marker parsing, merge guard, review ledger, claim and
+ * invariant scans, policy and doctrine). They share `extension/src/` with
+ * ordinary code, so the directory rule alone would let a finding widen a fence
+ * onto them. Matched on the basename, anywhere in the tree, so a new gate module
+ * named with one of these words is covered without a list edit. Never widenable.
  */
-const DRIVER_OWNED =
-  /^extension\/src\/(work|adversarial|comment-|reply-markers|review-threshold|lens-)/;
-const driverOwned = (p: string): boolean => DRIVER_OWNED.test(p);
+const GATE_MODULE =
+  /(work-driver|adversarial|comment|marker|review|lens|merge|ledger|claim|invariant|verify|verdict|retention|policy|doctrine|protected|judge|guard|threshold|scan)/;
+const driverOwned = (p: string): boolean => GATE_MODULE.test(p.slice(p.lastIndexOf("/") + 1));
 
 /**
  * Named paths a fix pass may widen its fence onto. Generic, not a project list:

@@ -212,9 +212,13 @@ async function runPass(dir: string, st: WorkState, onDev: (d: string) => void) {
     "extension/src/work-driver-verify-cmd.ts",
     "extension/src/adversarial-verdict.ts",
     "extension/src/comment-evidence.ts",
+    "extension/src/merge-guard.ts",
+    "extension/src/review-ledger.ts",
+    "extension/src/claim-scan.ts",
+    "extension/src/invariant-scan.ts",
   ];
   const named = namedPaths(
-    "extension/src/work-driver-verify-cmd.ts extension/src/adversarial-verdict.ts extension/src/comment-evidence.ts extension/src/y.ts",
+    "extension/src/work-driver-verify-cmd.ts extension/src/adversarial-verdict.ts extension/src/comment-evidence.ts extension/src/merge-guard.ts extension/src/review-ledger.ts extension/src/claim-scan.ts extension/src/invariant-scan.ts extension/src/y.ts",
     tracked,
     ["extension/src/x.ts"],
   );
