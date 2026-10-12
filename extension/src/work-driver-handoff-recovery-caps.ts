@@ -76,8 +76,13 @@ export function recoveryStepsForCap(
         },
         {
           section: "worktree-work-consolidated",
+          // `branchPushed` means "origin has a branch of this name" (true
+          // after any earlier commit-pr push), so "not yet pushed" beside
+          // "pushed to origin: yes" contradicted itself.
           comment: [
-            "2. Push the branch (the push works by branch name — the local branch was created at handoff time; it is not yet pushed):",
+            ps.handoffSnapshot?.branchPushed
+              ? `2. Push the branch (origin already has an EARLIER push of it; what the driver consolidated at handoff time is local only — if the push is rejected as non-fast-forward, compare \`git log ${ps.branchName} --not origin/${ps.branchName}\` (local commits origin lacks) before forcing anything):`
+              : "2. Push the branch (the push works by branch name — the local branch was created at handoff time; it is not yet pushed):",
           ],
           lines: [`git push -u origin ${ps.branchName}`],
         },

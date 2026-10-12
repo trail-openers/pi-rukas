@@ -14,7 +14,7 @@
 
 import * as lifecycle from "./lifecycle-events.ts";
 import type { RoleName } from "./roles.ts";
-import { drainSlowEvents } from "./slow-events.ts";
+import { drainSlowEvents, foldSlowEvents } from "./slow-events.ts";
 import { trace } from "./trace.ts";
 import { capKilledString } from "./work-driver-cap-killed.ts";
 import { STEP_FAILURE_POLICY } from "./work-driver-context.ts";
@@ -116,14 +116,14 @@ export async function routeStepOutcome(
   // collect land here, exactly once, regardless of which step recorded
   // them). The buffer is keyed by the cycle's primary issue (the registry's
   // cycle identity), so a sibling cycle running concurrently in this process
-  // drains only its own list. The events carry their own `at`, so it is
-  // acceptable that they sit after the step's completion event in the log.
+  // drains only its own list. They are folded in BEHIND the step's own
+  // events (foldSlowEvents): the tail is what nextStep() routes on.
   const slowEvents = drainSlowEvents(ctx.issue);
   // #1016 — the driver's own refusals for this step (see work-driver-step-refusal.ts).
   const refusals = refusedWorkstreams(stateIn.eventLog, step);
   let state =
     slowEvents.length > 0
-      ? { ...stateIn, eventLog: [...stateIn.eventLog, ...slowEvents] }
+      ? { ...stateIn, eventLog: foldSlowEvents(stateIn.eventLog, slowEvents, step) }
       : stateIn;
   {
     const lastEvent = failureEventOf(state.eventLog);
