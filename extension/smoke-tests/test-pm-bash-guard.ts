@@ -306,8 +306,8 @@ resetPmMode();
   } as unknown as Parameters<typeof registerPermissionGuard>[0];
   registerPermissionGuard(fakePi);
   assert(
-    handlers.length === 3,
-    "hook: issue-creation + PM bash + merge guard handlers registered (all ahead of the sandbox short-circuit)",
+    handlers.length === 4,
+    "hook: issue-creation + review-accept + PM bash + merge guard handlers registered (all ahead of the sandbox short-circuit)",
   );
   assert(
     (await callAll(handlers, "git commit -m x", true)) === undefined,

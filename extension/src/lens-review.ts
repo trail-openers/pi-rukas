@@ -2,6 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { execp } from "./lens-exec.ts";
+import { partitionDecisions, renderPriorFindingsBlock } from "./lens-residuals.ts";
 import { resolveLensReviewBranch } from "./lens-review-branch-resolve.ts";
 import { capKillSummary } from "./lens-review-capkill.ts";
 import { runLensChild } from "./lens-review-child.ts";
@@ -31,6 +32,7 @@ import {
 import { installBlockRowsForRoster, skillsDirUsable } from "./lens-review-skills.ts";
 import type { Finding, LensRunResult } from "./lens-review-types.ts";
 import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
+import { readBranchRows, recordFindingRun } from "./review-findings-store.ts";
 import { isFullCommitSha, resolveHeadSha } from "./review-head-sha.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
@@ -355,6 +357,12 @@ export async function runLensReview(opts: {
   // throughout the run even as fast lenses drop out at 0s linger. Registered
   // BEFORE the per-lens entries so its seq sorts first on Pi's footer.
   const { batchKey, bumpBatch } = startPersistentBatch(runId, roster.length);
+  // #1105 — the branch's open and accepted findings from earlier rounds, as a
+  // fenced DATA block every lens receives (empty on a first review).
+  const priorFindings =
+    branchResolved && headSha
+      ? renderPriorFindingsBlock(await readBranchRows(opts.cwd ?? process.cwd(), branchResolved))
+      : "";
   // #873 — blocked roster entries become blocked lens results (no spawn,
   // the named error as parseError) and feed REVIEW_INCOMPLETE via
   // computeVerdict; healthy entries fan out as before.
@@ -369,7 +377,7 @@ export async function runLensReview(opts: {
         skillsDir,
         context,
         roster,
-        opts: { ...opts, diff: diff ?? "" },
+        opts: { ...opts, diff: diff ?? "", priorFindings },
         bumpBatch,
         ...(opts.pi ? { pi: opts.pi } : {}),
       }),
@@ -394,7 +402,24 @@ export async function runLensReview(opts: {
   // same threshold, same rendering. They are findings, not a side channel.
   const all = [...lensResults.flatMap((r) => r.findings), ...(opts.extraFindings ?? [])];
   const deduped = dedupeFindings(all, roster);
-  const verdict = computeVerdict(deduped, lensResults, threshold);
+  // #1105 — record the round against the branch's findings memory. Suppressed
+  // findings (already known on untouched code, or accepted by the operator)
+  // leave the review; a complete full review resolves rows it no longer
+  // reports. Undefined decisions (nothing recorded) keep every finding.
+  const complete = !delta && computeVerdict([], lensResults, threshold) !== "REVIEW_INCOMPLETE";
+  const decisions =
+    branchResolved && headSha
+      ? await recordFindingRun({
+          cwd: opts.cwd ?? process.cwd(),
+          branch: branchResolved,
+          headSha,
+          findings: deduped,
+          ...(delta ? { deltaDiff: diff } : {}),
+          complete,
+        })
+      : undefined;
+  const { kept, suppressed } = partitionDecisions(deduped, decisions);
+  const verdict = computeVerdict(kept, lensResults, threshold);
   // #973 — the round-cap rule's inputs for the ledger write: hasCritical
   // from the deduped findings, headSha from the ref the review actually
   // covered (the delta's head when this was a delta run, otherwise
@@ -409,10 +434,11 @@ export async function runLensReview(opts: {
   return finishWith(
     {
       verdict,
-      totalFindings: deduped.length,
-      bySeverity: bySeverityCounts(deduped),
+      totalFindings: kept.length,
+      bySeverity: bySeverityCounts(kept),
       lenses: lensResults,
-      findings: deduped,
+      findings: kept,
+      ...(suppressed.length > 0 ? { suppressed } : {}),
       usage: aggregateLensUsage(lensResults),
       // #543 — a dispatch-cap kill on any lens child (loop detector / token
       // budget) is surfaced on the summary so the driver emits the fixed-literal

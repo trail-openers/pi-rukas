@@ -170,3 +170,33 @@ export async function computeDeltaDiff(
   if (!stdout.trim()) return { ok: true, diff: "", empty: true };
   return { ok: true, diff: stdout, empty: false };
 }
+
+/**
+ * #1105 — the new-side line ranges a unified diff touches, per repo-relative
+ * path. A hunk that only deletes lines maps to the single line where the
+ * deletion lands, so a finding citing that spot counts as touched. A deleted
+ * file (`+++ /dev/null`) contributes no ranges.
+ */
+export function changedLineRanges(diff: string): Map<string, Array<[number, number]>> {
+  const out = new Map<string, Array<[number, number]>>();
+  const lines = diff.split("\n");
+  let file: string | undefined;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? "";
+    if (line.startsWith("+++ ") && (lines[i - 1] ?? "").startsWith("--- ")) {
+      const name = line.slice(4).replace(/\t.*$/, "");
+      file = name === "/dev/null" ? undefined : name.replace(/^b\//, "");
+      continue;
+    }
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
+    if (hunk && file) {
+      const start = Number(hunk[1]);
+      const count = hunk[2] === undefined ? 1 : Number(hunk[2]);
+      const end = count === 0 ? start : start + count - 1;
+      const spans = out.get(file) ?? [];
+      spans.push([start, end]);
+      out.set(file, spans);
+    }
+  }
+  return out;
+}

@@ -43,6 +43,7 @@ import { promisify } from "node:util";
 import * as cmds from "./forge-commands.ts";
 import { postPrComment } from "./forge-comments.ts";
 import { detectForge } from "./forge-detect.ts";
+import { suppressedLines } from "./lens-residuals.ts";
 import type { LensReviewSummary } from "./lens-review.ts";
 import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
 import { branchPatchId, remoteName } from "./review-ledger.ts";
@@ -283,6 +284,13 @@ async function doPost(
     "silent about them. Decide them before merging.",
     "",
     ...lines,
+    ...(summary.suppressed && summary.suppressed.length > 0
+      ? [
+          "",
+          `Suppressed as already known (${summary.suppressed.length}) — not re-reported; each names its row id and the reason it was dropped:`,
+          ...suppressedLines(summary.suppressed),
+        ]
+      : []),
     "",
     marker,
     "",

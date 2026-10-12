@@ -8,6 +8,7 @@
 
 import os from "node:os";
 import path from "node:path";
+import { suppressedLines } from "./lens-residuals.ts";
 import type { Finding, FindingSource, LensRunResult } from "./lens-review.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
 
@@ -77,6 +78,13 @@ export interface LensReviewSummary {
    * `applyLensVerdict` must not append a `lens-approved` event for it.
    */
   noReview?: boolean;
+  /**
+   * #1105 — findings the round dropped as already known: `suppressed-unchanged`
+   * (a delta round, cited code untouched) or `suppressed-accepted` (an operator
+   * accepted it). They are not in `findings` and do not decide the verdict; the
+   * residual disclosure lists them with their row ids and reasons.
+   */
+  suppressed?: SuppressedFinding[];
 }
 
 /**
@@ -92,6 +100,7 @@ export interface LensReviewSummary {
  * silently downgrade a six-pass review to a five-pass one (#3).
  */
 export type Verdict = "APPROVED" | "ISSUES_FOUND" | "CRITICAL_ISSUES_FOUND" | "REVIEW_INCOMPLETE";
+import type { SuppressedFinding } from "./lens-residuals.ts";
 import { CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE, type RosterEntry } from "./lens-roster.ts";
 
 export const LENS_PREFIX = "code-review-";
@@ -102,6 +111,7 @@ export function lensPromptFor(
   context: string,
   evidence?: string,
   roster: RosterEntry[] = [],
+  prior = "",
 ): string {
   // The other-lenses list is derived from the FULL roster — every other
   // lens in the configured roster, including blocked ones (a blocked lens
@@ -121,7 +131,7 @@ Diff to review:
 \`\`\`diff
 ${diff}
 \`\`\`
-${evidence ? `\n${evidence}\n` : ""}
+${evidence ? `\n${evidence}\n` : ""}${prior ? `\n${prior}\n` : ""}
 ## Your working directory is NOT the branch
 
 Read the supplied content above rather than opening files. Your filesystem is checked out at the **base commit** — the state before this PR — so a file you open yourself shows the code as it was, not as this diff leaves it. Reviewing the diff against a stale file produces contradictions that do not exist. If you need a changed file in full and it is not supplied, say so in your summary instead of guessing.
@@ -469,6 +479,13 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
     "",
     s.totalFindings > 0 ? "Findings (deduped, sorted by severity):" : "",
     ...findingLines,
+    ...(s.suppressed && s.suppressed.length > 0
+      ? [
+          "",
+          `Suppressed as already known (${s.suppressed.length}, not re-reported):`,
+          ...suppressedLines(s.suppressed),
+        ]
+      : []),
     "",
     "Transcripts:",
     transcripts,
