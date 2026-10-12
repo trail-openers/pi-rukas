@@ -329,8 +329,14 @@ export async function savePartialWork(
   } catch (err) {
     // A failed save may already have staged driver-owned paths (.pi/, tmp/):
     // unstage them so the index is left as found. The working tree is untouched.
-    await unstagePaths(git, cwd, work).catch(() => undefined);
-    throw new Error(`refusing to reset ${cwd}: could not save partial work — ${errText(err)}`);
+    // An unstage failure is part of the refusal, never swallowed.
+    const unstage = await unstagePaths(git, cwd, work).then(
+      () => "",
+      (e: unknown) => ` (unstage failed too — ${errText(e)})`,
+    );
+    throw new Error(
+      `refusing to reset ${cwd}: could not save partial work — ${errText(err)}${unstage}`,
+    );
   }
   return patchPath;
 }

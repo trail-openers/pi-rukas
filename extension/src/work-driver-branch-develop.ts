@@ -387,7 +387,7 @@ export async function runDevelop(
         worktrees: state.pipelineState.worktrees ?? {},
         baseFor,
       })
-    : { refused: {}, saved: {} };
+    : { refused: {}, saved: {}, notes: [] };
   const preserved: PreservedGreens = {
     kept: greens.kept,
     notes: [
@@ -395,6 +395,7 @@ export async function runDevelop(
       ...Object.entries(backup.saved).map(
         ([id, p]) => `${id}: uncommitted work from the interrupted attempt saved to ${p}`,
       ),
+      ...backup.notes,
     ],
     refused: backup.refused,
   };

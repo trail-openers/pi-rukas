@@ -83,12 +83,12 @@ const caseSensitive = (() => {
 
 // --- 2. commit: every case spelling of the driver directories is excluded.
 {
-  const { wt, base } = fresh("commit");
+  const { repo, wt, base } = fresh("commit");
   put(path.join(wt, ".PI", "x.json"), "upper");
   put(path.join(wt, "TMP", "z.txt"), "tmp upper");
   put(path.join(wt, "src", "b.ts"), "export const b = 2;\n");
   const notes: string[] = [];
-  const ev = await safetyNetWorktree("w", wt, base, execp, notes);
+  const ev = await safetyNetWorktree("w", repo, wt, base, execp, notes);
   assert(ev !== undefined, "#1016: safety net commits the non-driver file");
   const files = gitIn(wt, ["show", "--name-only", "--format=", "HEAD"]).split("\n").filter(Boolean);
   assert(
@@ -100,11 +100,11 @@ const caseSensitive = (() => {
 
 // --- 3. staged rename into .pi/: the driver-owned side is unstaged after the commit.
 {
-  const { wt, base } = fresh("rename");
+  const { repo, wt, base } = fresh("rename");
   mkdirSync(path.join(wt, ".pi"), { recursive: true });
   gitIn(wt, ["mv", "src/a.ts", ".pi/a.ts"]);
   const notes: string[] = [];
-  const ev = await safetyNetWorktree("w", wt, base, execp, notes);
+  const ev = await safetyNetWorktree("w", repo, wt, base, execp, notes);
   assert(ev !== undefined, "#1016: safety net commits the rename's source side");
   const cached = gitIn(wt, ["diff", "--cached", "--name-only"]);
   assert(cached === "", `#1016: index holds no .pi/ path after the commit (got "${cached}")`);

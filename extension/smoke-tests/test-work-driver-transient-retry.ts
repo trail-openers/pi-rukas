@@ -85,6 +85,10 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   try {
     const fs = await import("node:fs/promises");
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    // #1016 — the branch step's worktree must live under <repo>/.worktrees/
+    // (containment); a repo-root-adjacent tmp path is a refusal, not a worktree.
+    const wtDir = path.join(dir, ".worktrees", "issue-950-default");
+    await fs.mkdir(wtDir, { recursive: true });
     let s = initialState(950, 1_000_000);
     s = {
       ...s,
@@ -120,7 +124,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           }
           return mkResult({
             role: "ops",
-            text: `branch: feature/issue-950-transient-test\nworktrees:\n  default: ${dir}`,
+            text: `branch: feature/issue-950-transient-test\n\n## Worktrees\n- default: ${wtDir}`,
           });
         }
         // Halt cleanly once develop dispatches (out of scope for this test).

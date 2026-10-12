@@ -152,7 +152,6 @@ async function runDevelopTopological(
   refuseMissingWorktrees({
     missing: notDispatched,
     reasons: preserved.refused,
-    multi: ids.length > 1,
     branchEvents,
     verdicts,
     failedOrSkipped,
@@ -182,7 +181,7 @@ async function runDevelopTopological(
       const base = workstreamBaseShas[id] ?? globalBaseSha;
       // #1016 — the #622 safety net commits leftover edits before the green check.
       if (isValidBaseSha(base)) {
-        const sn = await safetyNetWorktree(id, cwd, base, execFn, persistNotes);
+        const sn = await safetyNetWorktree(id, ctx.repoRoot, cwd, base, execFn, persistNotes);
         if (sn) branchEvents.push(sn);
       }
       const green = await greenCountsAsWork(execFn, cwd, base);

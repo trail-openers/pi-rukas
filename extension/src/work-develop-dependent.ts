@@ -21,6 +21,7 @@ import {
   retryOnce,
   settleVerdict,
 } from "./work-develop-retry.ts";
+import { reuseRefusal } from "./work-develop-reuse.ts";
 import {
   type BranchCompletedExtra,
   type DependentRunState,
@@ -168,7 +169,7 @@ export async function runDependentWorkstreams(
         recordBranchCompleted(
           id,
           refusal,
-          depCompletedAt !== undefined ? { depCompletedAt } : undefined,
+          depCompletedAt !== undefined ? { depCompletedAt, refused: true } : { refused: true },
         );
         continue;
       }
@@ -199,17 +200,34 @@ export async function runDependentWorkstreams(
       // #1016 — a resumed dependent reuses its existing worktree (its partial work
       // was saved before this step); creating over it would be refused as leftover.
       const existingCwd = wtRef.worktrees[id];
-      const created: DeferredCreationResult =
-        existingCwd !== undefined && existsSync(existingCwd)
-          ? { path: existingCwd }
-          : await createDependentWorktree(
-              execFn,
-              ctx.repoRoot,
-              ctx.issue,
-              id,
-              depResult.fromRef,
-              inCycleWorktrees,
-            );
+      const reusing = existingCwd !== undefined && existsSync(existingCwd);
+      // #1016 — a reused tree must already contain its resolved base; otherwise it
+      // was built on different history and is refused, never dispatched.
+      const reuseWhy = reusing
+        ? await reuseRefusal(execFn, existingCwd, depResult.baseSha ?? depResult.fromRef)
+        : undefined;
+      if (reuseWhy !== undefined) {
+        trace(`work-driver: dependent ${id} refused — ${reuseWhy}`);
+        failedOrSkipped.add(id);
+        if (failureSource) failureSource[id] = failureSource[id] ?? "failed";
+        verdicts.push({ id, ok: false, reason: reuseWhy });
+        recordBranchCompleted(
+          id,
+          reuseWhy,
+          depCompletedAt !== undefined ? { depCompletedAt, refused: true } : { refused: true },
+        );
+        continue;
+      }
+      const created: DeferredCreationResult = reusing
+        ? { path: existingCwd }
+        : await createDependentWorktree(
+            execFn,
+            ctx.repoRoot,
+            ctx.issue,
+            id,
+            depResult.fromRef,
+            inCycleWorktrees,
+          );
       if (created.path === undefined) {
         failedOrSkipped.add(id);
         if (failureSource) failureSource[id] = "failed";
@@ -333,7 +351,14 @@ export async function runDependentWorkstreams(
       // green that fails it is downgraded, so its verdict and its dependents agree.
       if (outcome.ok) {
         if (isValidBaseSha(ownBase)) {
-          const sn = await safetyNetWorktree(id, createdPath, ownBase, execFn, run.notes ?? []);
+          const sn = await safetyNetWorktree(
+            id,
+            ctx.repoRoot,
+            createdPath,
+            ownBase,
+            execFn,
+            run.notes ?? [],
+          );
           if (sn) run.updateState?.((s) => appendEvent(s, sn));
         }
         const green = await greenCountsAsWork(execFn, createdPath, ownBase);

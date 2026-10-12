@@ -50,7 +50,7 @@ try {
   // task-b: the developer left its edit UNCOMMITTED (zero commits ahead).
   await writeFile(path.join(wt("task-b"), "b.rs"), "b");
   // The develop step's runAt commits the leftover work BEFORE the green check.
-  const sn = await safetyNetWorktree("task-b", wt("task-b"), shas["task-b"] ?? "", execFn, []);
+  const sn = await safetyNetWorktree("task-b", dir, wt("task-b"), shas["task-b"] ?? "", execFn, []);
   assert(
     sn?.kind === "safety-net-commit",
     "#1016: the per-worktree safety net commits task-b first",
@@ -70,7 +70,10 @@ try {
       worktrees: { "task-a": wt("task-a"), "task-b": wt("task-b") },
     },
   } as unknown as WorkState;
-  const after = await applySafetyNet({ verifyExecFn: execFn } as unknown as DriverContext, state);
+  const after = await applySafetyNet(
+    { repoRoot: dir, verifyExecFn: execFn } as unknown as DriverContext,
+    state,
+  );
   assert(after.eventLog.length === 0, "#1016: the post-fan-out sweep finds nothing left to commit");
   assert(
     gitIn(wt("task-b"), ["rev-list", "--count", `${shas["task-b"]}..HEAD`]) === "1",
@@ -128,7 +131,7 @@ try {
     await writeFile(path.join(wx, "`touch pwned2`"), "x");
     // #1016 — a non-ASCII name is C-quoted by plain porcelain; -z must keep it whole.
     await writeFile(path.join(wx, "café.txt"), "x");
-    const ev = await safetyNetWorktree("task-x", wx, shas2["task-x"] ?? "", execFn, []);
+    const ev = await safetyNetWorktree("task-x", dir2, wx, shas2["task-x"] ?? "", execFn, []);
     assert(ev?.kind === "safety-net-commit", "#1016: the injection-named files are committed");
     // -z: ls-tree would C-quote the non-ASCII name and hide the literal bytes.
     const names = gitIn(wx, ["ls-tree", "-z", "--name-only", "HEAD"]).split("\0").join("\n");
@@ -145,6 +148,31 @@ try {
   } finally {
     await rm(dir2, { recursive: true, force: true });
   }
+
+  // #1016 containment: a state path that is the repo root itself (outside
+  // `.worktrees/`) is refused — no commit lands there and a note records why.
+  gitIn(dir, ["init", "-q"]);
+  gitIn(dir, ["commit", "--allow-empty", "-qm", "root"]);
+  const headBefore = gitIn(dir, ["rev-parse", "HEAD"]);
+  await writeFile(path.join(dir, "root-dirt.txt"), "dirt");
+  const refusalNotes: string[] = [];
+  const refused = await safetyNetWorktree(
+    "task-r",
+    dir,
+    dir,
+    shas["task-a"] ?? "",
+    execFn,
+    refusalNotes,
+  );
+  assert(refused === undefined, "#1016: a repo-root path yields no safety-net commit");
+  assert(
+    gitIn(dir, ["rev-parse", "HEAD"]) === headBefore,
+    "#1016: no commit lands on the repo root",
+  );
+  assert(
+    refusalNotes.some((n) => n.startsWith("task-r: safety net refused")),
+    "#1016: the refusal is recorded as a note",
+  );
 } finally {
   await rm(dir, { recursive: true, force: true });
 }

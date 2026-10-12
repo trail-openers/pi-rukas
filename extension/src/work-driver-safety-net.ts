@@ -47,6 +47,7 @@ import { trace } from "./trace.ts";
 import {
   type ExecFn,
   type GitExec,
+  assertInsideWorktrees,
   commitEntriesOf,
   commitsAheadOfBase,
   errText,
@@ -142,12 +143,23 @@ export async function hasAnyWorktreeEvidence(
  */
 export async function safetyNetWorktree(
   wsId: string,
+  repoRoot: string,
   cwd: string,
   effectiveBase: string,
   execFn: ExecFn = execp,
   notes: string[] = [],
 ): Promise<WorkEvent | undefined> {
   if (!safetyNetEnabled()) return undefined;
+  // Containment first: a state path outside `<repoRoot>/.worktrees/` is a
+  // refusal and no git write may run against it (a repo root is never a worktree).
+  try {
+    assertInsideWorktrees(repoRoot, cwd);
+  } catch (err) {
+    const note = `${wsId}: safety net refused — ${errText(err)}`;
+    trace(`work-driver: ${note}`);
+    notes.push(note);
+    return undefined;
+  }
   const now = Date.now();
   const git = runGit(execFn);
 
@@ -207,7 +219,12 @@ export async function safetyNetWorktree(
       workPaths.filter((p) => existsSync(join(cwd, p))),
     );
   } catch (err) {
-    const note = `${wsId}: safety net skipped — git add failed — ${errText(err)}`;
+    // A chunk may have staged before a later one failed: unstage every work path.
+    const unstage = await unstagePaths(git, cwd, workPaths).then(
+      () => "",
+      (e: unknown) => ` (unstage failed too — ${errText(e)})`,
+    );
+    const note = `${wsId}: safety net skipped — git add failed — ${errText(err)}${unstage}`;
     trace(`work-driver: ${note}`);
     notes.push(note);
     return undefined;
@@ -316,7 +333,7 @@ export async function applySafetyNet(ctx: DriverContext, state: WorkState): Prom
       );
       continue;
     }
-    const ev = await safetyNetWorktree(wsId, cwd, effectiveBase, execFn, notes);
+    const ev = await safetyNetWorktree(wsId, ctx.repoRoot, cwd, effectiveBase, execFn, notes);
     if (ev) events.push(ev);
   }
 

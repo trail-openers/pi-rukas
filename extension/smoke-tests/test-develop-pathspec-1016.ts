@@ -68,7 +68,7 @@ try {
   gitIn(wt("mix"), ["add", "-f", ".pi/verify-cmd"]);
   await writeFile(path.join(wt("mix"), "tmp", "notes.txt"), "scratch edit\n");
   await writeFile(path.join(wt("mix"), "src.txt"), "real work");
-  const sn = await safetyNetWorktree("mix", wt("mix"), mixBase, execp, []);
+  const sn = await safetyNetWorktree("mix", dir, wt("mix"), mixBase, execp, []);
   assert(sn?.kind === "safety-net-commit", "#1016: the source edit is committed");
   const committed = gitIn(wt("mix"), ["show", "--name-only", "--format=", "HEAD"]).split("\n");
   assert(
@@ -149,7 +149,7 @@ try {
     return execp(cmd, o as Parameters<typeof execp>[1]);
   }) as unknown as typeof execp;
   const rpNotes: string[] = [];
-  const rpEv = await safetyNetWorktree("rp", wt("rp"), shas.rp, rpFake, rpNotes);
+  const rpEv = await safetyNetWorktree("rp", dir, wt("rp"), shas.rp, rpFake, rpNotes);
   assert(
     rpEv?.kind === "safety-net-commit" && rpEv.commitSha === "HEAD",
     "#1016: a landed commit is recorded even when its sha cannot be read",

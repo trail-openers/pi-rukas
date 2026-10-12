@@ -76,7 +76,7 @@ try {
   await writeFile(path.join(wt("green-ws"), ".pi", "verify-cmd"), "green edit\n");
   await mkdir(path.join(wt("green-ws"), "tmp"), { recursive: true });
   await writeFile(path.join(wt("green-ws"), "tmp", "scratch.txt"), "scratch");
-  const ev = await safetyNetWorktree("green-ws", wt("green-ws"), greenBase, execFn, []);
+  const ev = await safetyNetWorktree("green-ws", dir, wt("green-ws"), greenBase, execFn, []);
   assert(ev === undefined, "#1016: the safety net does not commit a tracked .pi/ edit");
   assert(
     gitIn(wt("green-ws"), ["rev-parse", "HEAD"]) === greenBase,
@@ -102,6 +102,7 @@ try {
   );
   const named = await safetyNetWorktree(
     "names-ws",
+    dir,
     wt("names-ws"),
     shas["names-ws"] ?? "",
     execFn,
@@ -224,8 +225,9 @@ try {
   }) as unknown as typeof execFn;
   const notes: string[] = [];
   // bad.ts must exist: only present paths are staged (a missing one is a deletion).
-  await writeFile(path.join(dir, "bad.ts"), "x");
-  const failedAdd = await safetyNetWorktree("w", dir, trackedBase, stub, notes);
+  await mkdir(wt("w"), { recursive: true });
+  await writeFile(path.join(wt("w"), "bad.ts"), "x");
+  const failedAdd = await safetyNetWorktree("w", dir, wt("w"), trackedBase, stub, notes);
   assert(failedAdd === undefined, "#1016: no commit event when a git add fails");
   assert(
     notes.some((n) => n.includes("git add failed") && n.includes("add refused")),
