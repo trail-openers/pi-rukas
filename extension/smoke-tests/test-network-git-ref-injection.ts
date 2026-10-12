@@ -34,7 +34,8 @@ console.log("1. netRefProblem");
 for (const bad of [`x$(touch ${marker})`, "x`touch y`", "-oProxyCommand=evil", "a;b", "a b"]) {
   assert(netRefProblem(bad) !== undefined, `refused: ${JSON.stringify(bad)}`);
 }
-for (const good of ["feature/issue-1095-x", "origin", "main"]) {
+// git-valid names the restore allowlist refused (+, @): a PR head must not be blocked.
+for (const good of ["feature/issue-1095-x", "origin", "main", "feature/x+y", "user@host-ref", "release/1.2_rc"]) {
   assert(netRefProblem(good) === undefined, `accepted: ${good}`);
 }
 

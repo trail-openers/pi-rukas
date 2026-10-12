@@ -26,7 +26,6 @@
 
 import { execFileSync } from "node:child_process";
 import path from "node:path";
-import { restoreRefSyntaxProblem } from "./work-driver-restore.ts";
 import type { ExecFn } from "./worktree.ts";
 
 export const NET_GIT_TIMEOUT_ENV = "PI_ENSEMBLE_GIT_NET_TIMEOUT_MS";
@@ -192,11 +191,20 @@ export function netGitEnv(base: NodeJS.ProcessEnv = process.env, cwd?: string): 
  */
 export function netRefProblem(...refs: string[]): string | undefined {
   for (const ref of refs) {
-    const problem = restoreRefSyntaxProblem(ref);
-    if (problem !== undefined) return problem;
+    if (ref.length === 0 || ref.startsWith("-")) return `"${ref}" is not a valid git ref name`;
+    if (NET_REF_REFUSED.test(ref) || ref.includes("..")) {
+      return `"${ref}" contains characters a network git call will not take`;
+    }
   }
   return undefined;
 }
+
+/**
+ * Characters refused on the network path. Git-valid names such as `feature/x+y`
+ * and `user@host` pass; whitespace and shell metacharacters are refused so a
+ * name can never be mistaken for shell text, even though argv is used.
+ */
+const NET_REF_REFUSED = /[\s$`;|&<>()\\'"]/;
 
 export interface NetGitOpts {
   cwd?: string;

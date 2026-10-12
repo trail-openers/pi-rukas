@@ -77,7 +77,8 @@ function execGroup(
       }
     });
     child.stderr.on("data", (d: string) => {
-      stderr += d;
+      // Bounded like stdout: a chatty ssh must not grow memory until the timeout.
+      if (stderr.length < maxBuffer) stderr += d;
     });
     child.on("error", (err) => finish(() => reject(err)));
     child.on("close", (code) =>
