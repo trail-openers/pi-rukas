@@ -25,7 +25,11 @@ import {
 } from "./work-driver-consolidation-classify.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { provisionDepsHint } from "./work-driver-deps-hint.ts";
-import { extractAttributedTail } from "./work-driver-exec-error.ts";
+import {
+  extractAttributedTail,
+  hostExhaustionFailure,
+  isHostForkExhaustion,
+} from "./work-driver-exec-error.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { formatExecError, verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
@@ -261,6 +265,11 @@ export async function runVerifyCommandGate(opts: {
       failures.push(
         `consolidated verify was refused — repoRoot is dirty (${cons.detail}). Leftover residue from an earlier cycle, NOT a workstream conflict or verify failure: run \`git status\` at the repo root, clear the residue, and re-run the cycle`,
       );
+    } else if (cons.kind === "host") {
+      // The host could not fork, so nothing was combined: neither a conflict
+      // nor a verify failure. The message deliberately avoids the conflict
+      // wording the cap router matches on.
+      failures.push(hostExhaustionFailure("consolidated verify", cons.detail));
     } else {
       // #814 — the "incoherent decomposition" claim is asserted ONLY when
       // the driver has NO recorded fence evidence. When a sibling-declared
@@ -350,7 +359,20 @@ export async function runVerifyCommandGate(opts: {
     // #841 — the shared rawOutputClause helper (single home for the
     // sentence so both verify seams render identically).
     const logClause = rawOutputClause(cons.logPath);
-    failures.push(consolidatedFailureMessage(verdict, cmd) + logClause);
+    // A verify command the host could not fork never ran, so the classifier's
+    // verdict ("[needs-human-decision] … no specific assertion could be
+    // extracted") would be a judgement about code nobody executed. Read from
+    // the same bounded evidence the classifier saw, not the whole stream — a
+    // passing stage that merely prints the phrase must not relabel a real
+    // failure further down.
+    failures.push(
+      (isHostForkExhaustion(classifierInput)
+        ? hostExhaustionFailure(
+            `verify command \`${cmd}\` on the CONSOLIDATED tree`,
+            classifierInput,
+          )
+        : consolidatedFailureMessage(verdict, cmd)) + logClause,
+    );
     // #841 — thread the ACTUAL written log path back (the write's own
     // return — undefined when the write failed, in which case there is
     // nothing to record structurally).
