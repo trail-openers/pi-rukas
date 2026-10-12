@@ -24,7 +24,6 @@
  * back to the global `baseSha`.
  *
  * The safety net NEVER fires when:
- *   - the worktree already has commits ahead of its effective base (AC2), or
  *   - the worktree is clean (AC3), or
  *   - the dispatch failed (the dispatch-failed HALT machinery handles it), or
  *   - `PI_ENSEMBLE_SAFETY_NET_COMMIT=0` is set (AC5), or
@@ -172,6 +171,19 @@ export async function safetyNetWorktree(
     notes.push(note);
     return undefined;
   }
+  // #1016 — a staged rename across the driver boundary (`.pi/x` <-> `src/x`) cannot
+  // be committed by path: the commit would record only one side (a deletion of
+  // the source). Refuse; the retry's reset saves both sides to the patch.
+  const crossing = status.find(
+    (e) =>
+      e.pairedWith !== undefined && isDriverArtefact(e.path) !== isDriverArtefact(e.pairedWith),
+  );
+  if (crossing) {
+    const note = `${wsId}: safety net refused — staged rename crosses the driver boundary (${crossing.pairedWith} <-> ${crossing.path}); not committed`;
+    trace(`work-driver: ${note}`);
+    notes.push(note);
+    return undefined;
+  }
   // Only non-driver paths are committed: a .pi/ or tmp/ edit is never staged here.
   const workPaths = commitEntriesOf(status).map((e) => e.path);
 
@@ -181,12 +193,11 @@ export async function safetyNetWorktree(
     return undefined;
   }
 
-  // Check if worktree already has commits ahead of its EFFECTIVE base —
-  // the per-workstream effective base, not the global baseSha (#679). A
-  // dependent workstream's worktree was created from its dependency's
-  // post-commit SHA, so comparing against the global baseSha would
-  // miscount its commits ahead.
-  // An unreadable count never licenses a commit.
+  // The commit count is read only to refuse an unknown state: an unreadable
+  // count never licenses a commit. Commits already ahead of the effective base
+  // (#679: a dependent's base is its dependency's post-commit SHA) do NOT skip:
+  // a developer's second, uncommitted edit is work the PR would otherwise lose
+  // silently, so it is committed as a further safety-net commit.
   const ahead = await commitsAheadOfBase(git, cwd, effectiveBase);
   if (!("commits" in ahead)) {
     const note = `${wsId}: safety net skipped — commit check unreadable — ${ahead.unreadable}`;
@@ -195,17 +206,10 @@ export async function safetyNetWorktree(
     return undefined;
   }
 
-  // (AC2) Already has commits ahead of its effective base → developer committed
-  // correctly → skip.
-  if (ahead.commits > 0) {
-    trace(
-      `work-driver: safety net skipped ${wsId} — already has ${ahead.commits} commit(s) ahead of its base`,
-    );
-    return undefined;
-  }
-
   // Fire the safety net: stage the work paths and commit.
-  trace(`work-driver: safety net firing for ${wsId} — ${workPaths.length} uncommitted path(s)`);
+  trace(
+    `work-driver: safety net firing for ${wsId} — ${workPaths.length} uncommitted path(s) (${ahead.commits} commit(s) already ahead of base)`,
+  );
   let commitSha: string | undefined;
   // One `git add` for the list (chunked). A failed add records its git
   // error and commits nothing: a partial stage must never turn green. A path
@@ -285,8 +289,9 @@ export async function safetyNetWorktree(
  *
  * For each worktree (every step is an argv call through the develop git transport):
  *   1. `git status --porcelain -z` — no commit-eligible path → skip (AC3).
- *   2. `git rev-list --count <effectiveBase>..HEAD` — > 0 → skip (AC2); an
- *      unreadable count skips too (an unknown state is never committed).
+ *   2. `git rev-list --count <effectiveBase>..HEAD` — read only to refuse an
+ *      unreadable state (commits already ahead do not skip: leftover edits are
+ *      still committed).
  *   3. `git --literal-pathspecs add -- <paths>` (chunked), excluding `.pi/` and `tmp/`.
  *   4. `git --literal-pathspecs commit -m <driver message> -- <paths>`, naming the
  *      same paths so nothing else in the index rides along.

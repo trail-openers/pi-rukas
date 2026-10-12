@@ -14,7 +14,7 @@
  * reset (`resetWorktreeToBase`), which saves partial work to a patch before it
  * discards anything and refuses to touch a worktree outside `.worktrees/`.
  */
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import type { DriverContext } from "./work-driver-context.ts";
@@ -74,6 +74,8 @@ export async function commitsAheadOfBase(
 export interface StatusEntry {
   path: string;
   untracked: boolean;
+  /** For a rename/copy side: the other side's path. Absent otherwise. */
+  pairedWith?: string;
 }
 
 /** Every path the worktree has uncommitted, read with `status --porcelain -z`
@@ -107,13 +109,16 @@ export async function worktreeStatus(
       return { unreadable: `malformed status entry ${JSON.stringify(tok.slice(0, 80))}` };
     }
     const code = tok.slice(0, 2);
-    out.push({ path: tok.slice(3), untracked: code === "??" });
+    const p = tok.slice(3);
     // With -z a rename/copy is `XY new\0orig\0`: the origin is its own token.
     if (/[RC]/.test(code)) {
       i++;
       const orig = tokens[i];
       if (!orig) return { unreadable: "rename/copy status entry without its origin path" };
-      out.push({ path: orig, untracked: false });
+      out.push({ path: p, untracked: false, pairedWith: orig });
+      out.push({ path: orig, untracked: false, pairedWith: p });
+    } else {
+      out.push({ path: p, untracked: code === "??" });
     }
   }
   return out;
@@ -280,6 +285,29 @@ export async function resetWorktreeToBase(
   return patchPath;
 }
 
+/** Stage the deletion of `paths` that are gone from the working tree. `rm --cached`
+ *  with --ignore-unmatch covers both a tracked file deleted on disk and a rename
+ *  origin already absent from the index (where `git add` has nothing to match). */
+export async function stageDeletions(git: GitExec, cwd: string, paths: string[]): Promise<void> {
+  for (let i = 0; i < paths.length; i += STAGE_CHUNK) {
+    await git(
+      [
+        "--literal-pathspecs",
+        "rm",
+        "--cached",
+        "-q",
+        "--ignore-unmatch",
+        "--",
+        ...paths.slice(i, i + STAGE_CHUNK),
+      ],
+      {
+        cwd,
+        maxBuffer: 256 * 1024,
+      },
+    );
+  }
+}
+
 /** Unstage `paths` (index only — the working tree is untouched), one
  *  `git --literal-pathspecs reset` per ≤500-path chunk. */
 export async function unstagePaths(git: GitExec, cwd: string, paths: string[]): Promise<void> {
@@ -306,7 +334,16 @@ export async function savePartialWork(
 ): Promise<string> {
   let patch: string;
   try {
-    await stagePaths(git, cwd, work);
+    await stagePaths(
+      git,
+      cwd,
+      work.filter((p) => existsSync(join(cwd, p))),
+    );
+    await stageDeletions(
+      git,
+      cwd,
+      work.filter((p) => !existsSync(join(cwd, p))),
+    );
     const names = await git(["diff", "--cached", "--name-only", "--no-renames", "-z"], {
       cwd,
       maxBuffer: 256 * 1024,

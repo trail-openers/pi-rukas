@@ -177,5 +177,31 @@ try {
   await rm(dir, { recursive: true, force: true });
 }
 
+// #1016 — a developer commit plus a second, UNCOMMITTED edit: the leftover edit
+// is committed by the safety net, never silently dropped from the PR.
+{
+  const dir3 = await mkdtemp(path.join(tmpdir(), "safety-second-1016-"));
+  try {
+    const shas3 = await makeBaseWorktrees(dir3, ["task-s"]);
+    const ws = path.join(dir3, ".worktrees", "task-s");
+    await writeFile(path.join(ws, "first.ts"), "1");
+    gitIn(ws, ["add", "first.ts"]);
+    gitIn(ws, ["commit", "-qm", "first"]);
+    await writeFile(path.join(ws, "second.ts"), "2");
+    const ev = await safetyNetWorktree("task-s", dir3, ws, shas3["task-s"] ?? "", execFn, []);
+    assert(ev?.kind === "safety-net-commit", "#1016: a leftover edit after a commit is committed");
+    assert(
+      gitIn(ws, ["rev-list", "--count", `${shas3["task-s"]}..HEAD`]) === "2",
+      "#1016: the worktree holds both the developer's commit and the safety-net commit",
+    );
+    assert(
+      gitIn(ws, ["show", "--name-only", "--format=", "HEAD"]) === "second.ts",
+      "#1016: the safety-net commit holds exactly the leftover second.ts",
+    );
+  } finally {
+    await rm(dir3, { recursive: true, force: true });
+  }
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

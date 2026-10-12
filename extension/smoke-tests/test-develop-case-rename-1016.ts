@@ -5,8 +5,8 @@
  *    exact-case rule: an untracked `.PI/x` is saved before the reset, an
  *    untracked `.pi/y` is neither saved nor removed;
  *  - committing (the safety net) excludes every case spelling of `.pi/` and `tmp/`;
- *  - a staged rename into `.pi/` leaves no driver-owned path in the index after
- *    the safety-net commit.
+ *  - a staged rename across the `.pi/` boundary is refused by the safety net
+ *    (HEAD unchanged, a note recorded), and the retry reset saves both sides.
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -105,11 +105,25 @@ const caseSensitive = (() => {
   gitIn(wt, ["mv", "src/a.ts", ".pi/a.ts"]);
   const notes: string[] = [];
   const ev = await safetyNetWorktree("w", repo, wt, base, execp, notes);
-  assert(ev !== undefined, "#1016: safety net commits the rename's source side");
-  const cached = gitIn(wt, ["diff", "--cached", "--name-only"]);
-  assert(cached === "", `#1016: index holds no .pi/ path after the commit (got "${cached}")`);
-  assert(existsSync(path.join(wt, ".pi", "a.ts")), "#1016: .pi/a.ts stays on disk, unstaged");
-  assert(notes.length === 0, "#1016: no note for a clean unstage");
+  assert(ev === undefined, "#1016: a staged rename across the driver boundary is not committed");
+  assert(
+    gitIn(wt, ["rev-parse", "HEAD"]) === base,
+    "#1016: HEAD is unchanged (no commit recording the deletion of src/a.ts)",
+  );
+  assert(
+    notes.some((n) => n.includes("crosses the driver boundary")),
+    "#1016: the refusal is recorded as a note",
+  );
+  const renamePatch = path.join(root, "scratch-rename", "retry-rename-1.patch");
+  const saved = await resetWorktreeToBase(git, wt, base, {
+    repoRoot: repo,
+    patchPath: renamePatch,
+  });
+  const body = saved ? readFileSync(saved, "utf8") : "";
+  assert(
+    body.includes(".pi/a.ts") && body.includes("src/a.ts"),
+    "#1016: the retry reset saves both sides of the rename to the patch",
+  );
 }
 
 rmSync(root, { recursive: true, force: true });

@@ -8,6 +8,20 @@ import { mkdir } from "node:fs/promises";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 
+// The safety net's `git commit` runs through the inherited environment, not
+// through gitIn's per-call `-c` flags. A CI runner has no global git identity,
+// so the commit fails with "Author identity unknown" and the test sees no commit.
+// Supply an identity to this test process only (never `git config --global`),
+// and keep any identity the operator already has.
+for (const [key, value] of Object.entries({
+  GIT_AUTHOR_NAME: "pi-rukas test",
+  GIT_AUTHOR_EMAIL: "t@t",
+  GIT_COMMITTER_NAME: "pi-rukas test",
+  GIT_COMMITTER_EMAIL: "t@t",
+})) {
+  process.env[key] ??= value;
+}
+
 export function gitIn(cwd: string, args: string[]): string {
   return execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], {
     cwd,
