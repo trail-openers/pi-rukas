@@ -388,5 +388,76 @@ const branch = "feature/work";
   }
 }
 
+// (#1128) Merging main into the branch after the last reviewed head must NOT
+// put main's hunks in the delta. Fixture: main advances with main-only.txt,
+// the branch merges it (H = merge), and the last lens round reviewed c2.
+async function mergeMainFixture(): Promise<Awaited<ReturnType<typeof mkRepo>> & { merge: string }> {
+  const r = await mkRepo();
+  await execp("git checkout -q main && echo main-only > main-only.txt && git add -A && git commit -q -m m1", {
+    cwd: r.dir,
+    shell: "/bin/bash",
+  });
+  await execp("git checkout -q feature/work && git merge -q -m merge-main main", {
+    cwd: r.dir,
+    shell: "/bin/bash",
+  });
+  const merge = (await execp("git rev-parse HEAD", { cwd: r.dir })).stdout.trim();
+  return { ...r, merge };
+}
+
+// (7) A round after `merge main` (no fix) reviews no main-only hunks → no-review
+{
+  const r = await mergeMainFixture();
+  writeLedger(r.ledgerFile, [
+    { branch, kind: "lens", patchId: "p1", passed: true, at: 1000, detail: "APPROVED", hasCritical: false, headSha: r.c2, round: 1 },
+  ]);
+  try {
+    const d = await resolveReviewDiff({ base: "main", head: "feature/work", branch, cwd: r.dir });
+    assert(d.kind === "noReview", "merge-of-main round (no fix) → no-review, main-only hunks excluded");
+  } finally {
+    cleanup(r.dir, r.ledgerFile);
+  }
+}
+
+// (8) A fix commit after the merge: only the fix's hunk is reviewed
+{
+  const r = await mergeMainFixture();
+  writeFileSync(path.join(r.dir, "third.txt"), "three\n");
+  await execp("git add third.txt && git commit -q -m c3", { cwd: r.dir, shell: "/bin/bash" });
+  writeLedger(r.ledgerFile, [
+    { branch, kind: "lens", patchId: "p1", passed: true, at: 1000, detail: "APPROVED", hasCritical: false, headSha: r.c2, round: 1 },
+  ]);
+  try {
+    const d = await resolveReviewDiff({ base: "main", head: "feature/work", branch, cwd: r.dir });
+    assert(d.kind === "ok", "fix-after-merge round resolves to ok");
+    if (d.kind === "ok") {
+      assert(d.diff.includes("third.txt"), "fix-after-merge round reviews the fix hunk (third.txt)");
+      assert(!d.diff.includes("main-only.txt"), "fix-after-merge round excludes main-only.txt");
+      assert(!d.diff.includes("first.txt") && !d.diff.includes("second.txt"), "fix-after-merge round excludes already-reviewed c1/c2 hunks");
+      eq(d.delta?.auto, true, "fix-after-merge round is an auto delta");
+    }
+  } finally {
+    cleanup(r.dir, r.ledgerFile);
+  }
+}
+
+// (9) full: true over the same history reviews everything, including merged hunks
+{
+  const r = await mergeMainFixture();
+  writeLedger(r.ledgerFile, [
+    { branch, kind: "lens", patchId: "p1", passed: true, at: 1000, detail: "APPROVED", hasCritical: false, headSha: r.c2, round: 1 },
+  ]);
+  try {
+    const d = await resolveReviewDiff({ full: true, base: "main", head: "feature/work", branch, cwd: r.dir });
+    assert(d.kind === "ok", "full: true over merged history → ok");
+    if (d.kind === "ok") {
+      assert(d.diff.includes("first.txt") && d.diff.includes("second.txt"), "full: true includes every branch hunk (already-reviewed c1/c2 too)");
+      eq(d.delta, undefined, "full: true → no delta");
+    }
+  } finally {
+    cleanup(r.dir, r.ledgerFile);
+  }
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

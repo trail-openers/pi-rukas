@@ -27,6 +27,7 @@ import { bySeverityCounts, computeVerdict, dedupeFindings } from "./lens-review-
 import type { LensRunResult, Severity, Verdict } from "./lens-review.ts";
 import type { Finding } from "./lens-review.ts";
 import type { RosterEntry } from "./lens-roster.ts";
+import { resolveAutoHunkDelta } from "./review-delta-hunks.ts";
 import { computeDeltaDiff, computeRangeDiff } from "./review-diff.ts";
 import { isFullCommitSha, resolveHeadSha } from "./review-head-sha.ts";
 import { latestEntry, ledgerPathFor, readLedgerAt } from "./review-ledger.ts";
@@ -271,6 +272,29 @@ export async function resolveReviewDiff(opts: {
     }
     if (d.problem) {
       return { kind: "blocked", problem: d.problem };
+    }
+    // #1128 — an automatic delta with an explicit base reviews the branch's
+    // OWN hunks not already reviewed (review-delta-hunks.ts): main's hunks
+    // merged in since the last round are excluded. An explicit `since` keeps
+    // the plain two-dot range (its precedence is unchanged).
+    if (autoSince && opts.base) {
+      const h = await resolveAutoHunkDelta({
+        since,
+        head: d.head,
+        base: opts.base,
+        cwd: opts.cwd,
+      });
+      if (h.kind === "problem") return { kind: "blocked", problem: h.problem };
+      if (h.kind === "empty") {
+        return { kind: "noReview", since: d.since, head: d.head, reason: h.reason };
+      }
+      if (h.kind === "diff") {
+        return {
+          kind: "ok",
+          diff: h.diff,
+          delta: { since: d.since, head: d.head, auto: true },
+        };
+      }
     }
     return {
       kind: "ok",
