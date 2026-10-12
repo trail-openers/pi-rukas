@@ -11,6 +11,7 @@ import { changedLineRanges } from "../src/review-diff.ts";
 import {
   MAX_ROWS_PER_BRANCH,
   type StoredFinding,
+  capPerBranch,
   capRows,
 } from "../src/review-findings-store.ts";
 
@@ -117,6 +118,17 @@ assert(
 assert(
   !capped.some((r) => r.id === "r0000000") && capped.some((r) => r.id === "r0000005"),
   "cap: resolved rows are dropped oldest-first; a newer resolved row survives until needed",
+);
+
+const otherBranch: StoredFinding = { ...stored(1), id: "aaaaaaaa", branch: "feat/other" };
+const perBranch = capPerBranch([...big, otherBranch]);
+assert(
+  perBranch.some((r) => r.id === "aaaaaaaa"),
+  "cap: one branch's overflow never evicts another branch's row",
+);
+assert(
+  perBranch.filter((r) => r.branch === "feat/x").length === MAX_ROWS_PER_BRANCH,
+  "cap: each branch is capped to MAX_ROWS_PER_BRANCH on its own",
 );
 
 process.exit(exit);

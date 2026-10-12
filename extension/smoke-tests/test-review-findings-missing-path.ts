@@ -11,7 +11,8 @@
  *      row is a no-line row (anchor `file`, no line);
  *   2. both findings are reported and the verdict is ISSUES_FOUND;
  *   3. the operator accepts the missing-path row by id — a later full review
- *      still reports it, because a missing path is never suppressed.
+ *      suppresses it by title (suppressed-accepted), so an accepted wrong
+ *      citation can be cleared; the real-file finding is still reported.
  */
 
 import { execSync } from "node:child_process";
@@ -130,8 +131,8 @@ try {
     "round 1: the missing-path finding is a no-line row (anchor file, no line)",
   );
 
-  // Round 2 — the operator accepts the missing-path row; a full review still
-  // reports it, because a path absent at head is never suppressed.
+  // Round 2 — the operator accepts the missing-path row; a full review then
+  // suppresses it by title, and the real-file finding is still reported.
   const acc = await acceptRow({
     cwd: repo,
     branch: "feat/x",
@@ -142,9 +143,15 @@ try {
   assert(acc.ok, "round 2: the operator accepts the missing-path row by id");
   const r2 = await runLensReview({ ...common, diff: FULL_DIFF, full: true, head: c1 });
   assert(
-    r2.findings.some((f) => f.path === "src/gone.ts") &&
-      !(r2.suppressed ?? []).some((s) => s.finding.path === "src/gone.ts"),
-    "round 2: the accepted missing-path finding is still reported, not suppressed",
+    !r2.findings.some((f) => f.path === "src/gone.ts") &&
+      (r2.suppressed ?? []).some(
+        (s) => s.finding.path === "src/gone.ts" && s.reason.includes("op@example.com"),
+      ),
+    "round 2: the accepted missing-path finding is suppressed by its title, naming the operator",
+  );
+  assert(
+    r2.findings.some((f) => f.path === "src/a.ts"),
+    "round 2: the real-file finding is still reported",
   );
   assert(r2.memoryNote === undefined, "round 2: the run still records (memoryNote is unset)");
 } finally {

@@ -18,20 +18,31 @@
  * shell can always do so. It exists to stop an agent that is not trying to
  * bypass it. The real boundary is the operator's terminal.
  *
- * A match requires an invocation shape or a store mention. A bare word in
- * prose — a commit message or PR body naming the feature — is not an
- * invocation and is left alone. The raw command is scanned, not the
- * quote-stripped one, so quoting the path does not hide it.
+ * A match requires an invocation shape (a JS runtime naming a protected file,
+ * or the script run directly) or the findings data file itself. Plain git/gh
+ * commands without shell metacharacters are never matched, so a commit message
+ * or PR body naming the feature is left alone. The raw command is scanned, not
+ * the quote-stripped one, so quoting the path does not hide it.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { trace } from "./trace.ts";
 
-const RUNNER_INVOCATION =
-  /\b(?:bun|bunx|tsx|node|npx|ts-node)\s+(?:run\s+)?(?:--?\S+\s+)*["'`]?(?:[^\s"'`;&|]*\/)?review-accept(?:\.ts)?(?=[\s'"`;&|]|$)/;
-const SCRIPT_PATH = /\/review-accept(?:\.ts)?(?=[\s'"`;&|]|$)/;
-/** Any mention of the store, its findings file or the write module. */
-const STORE_MENTION = /review-findings\.json|review-findings-store|review-accept-row/;
+/** A JS runtime, then anything, then a protected name. */
+const RUNTIME = String.raw`\b(?:bun|bunx|node|npx|tsx|ts-node|deno)\b[^\n]*?`;
+/**
+ * The operator script, the write module, the store module or the findings
+ * file, by name. A name that is only the tail of a longer one (`test-review-
+ * accept.ts`, `test-review-findings-store.ts`) does not count.
+ */
+const NAMES = String.raw`(?<![\w-])(?:review-accept-row|review-accept|review-findings-store|review-findings\.json)(?:\.ts)?(?![\w.-])`;
+const RUNTIME_NAME = new RegExp(`${RUNTIME}${NAMES}`);
+/** The findings data file, named in any command (cat, cp, sed, a heredoc). */
+const DATA_FILE = /(?<![\w-])review-findings\.json/;
+/** The script run directly by path as the first word, e.g. `./review-accept.ts`. */
+const DIRECT_RUN = /^\s*(?:\S*\/)?review-accept(?:\.ts)?(?=\s|$)/;
+/** Plain git/gh with no shell metacharacters: its arguments are text, not code. */
+const PLAIN_VCS = /^\s*(?:git|gh)\s[^;&|`$<>()]*$/;
 /** Edit tools whose `path` argument is checked against the findings file. */
 const FILE_TOOLS = new Set(["edit", "write", "multiedit"]);
 /** The findings file and its tmp / corrupt-copy siblings, by basename. */
@@ -39,8 +50,8 @@ const FINDINGS_BASENAME = /^review-findings\.json(?:\.|$)/;
 
 /** The matched invocation when a command runs review-accept or names the store, else undefined. */
 export function runsReviewAccept(command: string): string | undefined {
-  const m =
-    RUNNER_INVOCATION.exec(command) ?? SCRIPT_PATH.exec(command) ?? STORE_MENTION.exec(command);
+  if (PLAIN_VCS.test(command)) return undefined;
+  const m = RUNTIME_NAME.exec(command) ?? DIRECT_RUN.exec(command) ?? DATA_FILE.exec(command);
   return m?.[0].trim();
 }
 
