@@ -51,6 +51,8 @@ export interface SlowWatchInput {
    * unref'd setTimeout. */
   schedule?: (fn: () => void, ms: number) => () => void;
   onSlow?: OnSlowCallback;
+  /** The child is the /work driver's, not the PM's — the notice says so. */
+  driverOwned?: boolean;
 }
 
 /** The handle `watchSlowDispatch` returns: `stop` releases the watch, and

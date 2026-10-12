@@ -43,6 +43,8 @@ export interface JobStatusRow {
   elapsedMs: number;
   batchId?: string;
   batchProgress?: { completed: number; size: number };
+  /** Set when the job is the /work driver's, not the PM's. */
+  driverOwned?: true;
 }
 
 export function jobStatusSnapshot(): JobStatusRow[] {
@@ -64,7 +66,7 @@ export function jobStatusSnapshot(): JobStatusRow[] {
         batchProgress: { completed: job.completed, size: job.size },
       });
     } else {
-      out.push(base);
+      out.push(job.ownerKind === "driver" ? { ...base, driverOwned: true } : base);
     }
   }
   return out;

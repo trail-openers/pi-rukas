@@ -10,6 +10,7 @@ export function makeSlowWatch(
   label: string,
   pi: DispatchHost | undefined,
   onSlow: OnSlowCallback | undefined,
+  driverOwned = false,
 ): { hooks: { onRawEvent: (event: PiJsonEvent) => void }; stop: () => void } {
   const slowRaw: (event: PiJsonEvent) => void = (event) => live.feedRawEvent(id, event);
   const watch = watchSlowDispatch({
@@ -18,6 +19,7 @@ export function makeSlowWatch(
     label,
     ...(pi ? { pi } : {}),
     ...(onSlow ? { onSlow } : {}),
+    ...(driverOwned ? { driverOwned } : {}),
     onRawEvent: slowRaw,
   });
   return { hooks: { onRawEvent: watch.onRawEvent ?? slowRaw }, stop: watch.stop };
