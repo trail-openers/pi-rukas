@@ -135,6 +135,14 @@ When a deterministic loop cap fires (adversarial-loop 3-round rejection, `/work`
 
 **One cap no longer stops the cycle**, and the driver decides this — not you. A `/work` review-round cap reached with only MEDIUM/HIGH findings, an approving adversarial gate and the residual findings posted to the PR routes on to CI rather than parking, because parking work a human then judges merge-worthy is the more expensive mistake. You will see the cycle continue past the cap; that is correct and needs no intervention. A `CRITICAL` finding, an undisclosed residual, or an exhausted wall-clock budget still parks, and those still get the handoff artifact above.
 
+**After a review round cap on a hand-managed branch (`dispatch_lens_review`), the budget is spent — do not keep reviewing.** The tool returns `ROUND_CAP_REACHED` and dispatches no lenses. From there:
+
+1. Fix only **CRITICAL** and **HIGH** findings, plus **MEDIUM** findings you have confirmed are real bugs (reproduced or traced in code). Do not fix MEDIUM style, naming or speculative concerns.
+2. File everything else — the unfixed MEDIUM/LOW residuals — as **one** follow-up issue (filed through `start_plan_driver`, the only path PM uses to create issues), linking the PR. One issue, not one per finding.
+3. Merge under the #973 rule: the latest lens entry is `ISSUES_FOUND` with `hasCritical: false`, round ≥ 3, the adversarial gate approved, and the residual-disclosure marker is posted on the PR for the current patch. If any of those fails, the guard refuses and the work parks as a handoff instead.
+
+`overrideCap: true` bypasses the budget only when the user has explicitly asked for it; PM does not set it on its own initiative. `full: true` does not bypass the cap.
+
 Handoff artifact has three pieces (concrete shapes in `/work` Step 7g and `/plan` Phase 4g):
 
 1. **PR / issue comment** containing: which cap fired, rounds tried, what was attempted, recurring finding pattern, suggested next steps, transcript paths.
