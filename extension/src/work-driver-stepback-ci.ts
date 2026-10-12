@@ -10,8 +10,7 @@
  * dispatch.
  */
 
-import { exec as nodeExec } from "node:child_process";
-import { promisify } from "node:util";
+import { execTree } from "./exec-tree.ts";
 import { readMarker } from "./reply-markers.ts";
 import { trace } from "./trace.ts";
 import { type CycleContext, type DriverContext, MAX_CI_RETRIES } from "./work-driver-context.ts";
@@ -26,7 +25,8 @@ import { runVerifyFull, verifyCmdFullFor } from "./work-driver-verify-full.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
-const execp = promisify(nodeExec);
+// Tree-killing: the ci step runs `.pi/verify-cmd-full`, the longest gate.
+const execp = execTree;
 
 /**
  * Step-back when findings cluster around a theme. Dispatches @explore with

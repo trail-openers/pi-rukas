@@ -388,7 +388,7 @@ export function inlineDevelopPrompt(
     fetchInstr = `Re-fetch each active issue body — run \`gh issue view <N>\` for each of: ${issues.map((n) => `#${n}`).join(", ")}.`;
   }
   const verifyLine = verifyCmd
-    ? `Before committing, run the project's verify command — \`${verifyCmd}\` — and make it pass in your worktree; this is the exact command the verify gate will run, so the two cannot diverge. Fix formatting or lint output by RUNNING the formatter/linter, never by hand-guessing.`
+    ? `Before committing, run the project's verify command — \`${verifyCmd}\` — and make it pass in your worktree; this is the exact command the verify gate will run, so the two cannot diverge. Run it when the change is complete, not after every edit: the driver runs it again on your worktree the moment you finish, so a re-run that only re-confirms a green result buys nothing. Fix formatting or lint output by RUNNING the formatter/linter, never by hand-guessing.`
     : "This project has no discoverable verify command, so there is no project-level check to run before committing — rely on the change being correct and complete.";
   if (interruptedNote) lines.push(interruptedNote);
   lines.push(

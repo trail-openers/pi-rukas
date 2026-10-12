@@ -10,10 +10,9 @@
  * fallback has no standing to overturn (see `mechanizedCommitPr`).
  */
 
-import { exec } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
+import { execTree } from "./exec-tree.ts";
 import { trace } from "./trace.ts";
 import { raiseConsolidationIncompleteCap } from "./work-driver-commit-completeness.ts";
 import {
@@ -69,7 +68,8 @@ import type {
   IncompleteConsolidation,
   WorkState,
 } from "./workflow-state.ts";
-const execp = promisify(exec);
+// Tree-killing: commit-pr runs the project's verify on the consolidated tree.
+const execp = execTree;
 
 // clipTitle (#507) lives with the PR text builders in
 // work-driver-pr-body-definition.ts; re-exported for existing consumers.
