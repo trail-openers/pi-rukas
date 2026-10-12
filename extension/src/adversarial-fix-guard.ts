@@ -1,19 +1,20 @@
 /**
  * adversarial-fix-guard — the tool-path guards around a fix round (#1104).
  *
- * The `adversarial_loop` tool lets a fix-developer edit files. Two rules keep
- * those edits inside the worktree the caller named:
- *   1. a fix round needs `workCwd` (the worktree the developer edits);
+ * A fix-developer edits files. Two rules keep those edits inside the worktree
+ * the caller named:
+ *   1. a fix round needs `workCwd` (the worktree the developer edits), enforced
+ *      in runAdversarialLoop on every path;
  *   2. around each fix round, the calling process's repository is snapshotted
  *      (`git status --porcelain`) when it is NOT the workCwd repository; any
  *      change there is reported as a violation. A snapshot that cannot be read
  *      is reported as a note — "not checked" is never silently "clean".
- * Both are only armed by the tool path (`guardFixRounds`); the /work driver
+ * Rule 2 is armed only by the tool path (`guardFixRounds`); the /work driver
  * always passes workCwd and is unchanged.
  */
 
 import { synthesizeResult, toRoundRecords } from "./adversarial-verdict.ts";
-import { makeExecFn } from "./comment-retention.ts";
+import { execp } from "./lens-exec.ts";
 import type { AdversarialVerdict, DispatchResult } from "./types.ts";
 import { type ExecFn, resolvePath } from "./worktree.ts";
 
@@ -27,28 +28,25 @@ type Snapshot =
   | { kind: "not-repo" }
   | { kind: "unreadable"; reason: string };
 
-const shQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
-
 const errorText = (err: unknown): string =>
   (err instanceof Error ? err.message : String(err)).trim().split("\n").at(-1) ?? "unknown error";
 
-/**
- * Content id of one working-tree path. Porcelain status records path and state,
- * not content, so a write to an already-dirty file leaves the status line
- * unchanged; hashing the file catches it. Unhashable (e.g. deleted) → a marker.
- */
-async function contentId(top: string, file: string, exec: ExecFn): Promise<string> {
-  try {
-    return (await exec(`git hash-object -- ${shQuote(file)}`, { cwd: top })).stdout.trim();
-  } catch {
-    return "unhashable";
-  }
-}
+/** The status column pair marks a deleted path: it has no content to hash. */
+const isDeleted = (line: string): boolean => line.slice(0, 2).includes("D");
 
+/**
+ * Snapshot one repository's dirty state. Argv form throughout (no shell), so a
+ * path name is never re-parsed. Porcelain status records path and state, not
+ * content, so a write to an already-dirty file leaves the status line unchanged;
+ * the content hashes catch that. All live paths are hashed in ONE process, and a
+ * failed hash is `unreadable` (reported as not checked), never a silent marker.
+ */
 async function snapshotRepo(cwd: string, exec: ExecFn): Promise<Snapshot> {
   let top: string;
   try {
-    top = resolvePath((await exec("git rev-parse --show-toplevel", { cwd })).stdout.trim());
+    top = resolvePath(
+      (await exec("git", { argv: ["rev-parse", "--show-toplevel"], cwd })).stdout.trim(),
+    );
   } catch (err) {
     return /not a git repository/i.test(errorText(err))
       ? { kind: "not-repo" }
@@ -56,18 +54,32 @@ async function snapshotRepo(cwd: string, exec: ExecFn): Promise<Snapshot> {
   }
   try {
     // -z: NUL-separated, unquoted paths; -uall: every untracked file, not its dir.
-    const parts = (await exec("git status --porcelain -z -uall", { cwd })).stdout
+    const parts = (
+      await exec("git", { argv: ["status", "--porcelain", "-z", "-uall"], cwd })
+    ).stdout
       .split("\0")
       .filter(Boolean);
-    const records: Array<{ line: string; file: string }> = [];
+    const records: string[] = [];
     for (let i = 0; i < parts.length; i++) {
-      const line = parts[i] as string;
+      const line = parts[i];
+      if (line === undefined) break;
       // A rename/copy record is followed by its origin path, which is not a record.
       if (/[RC]/.test(line.slice(0, 2))) i++;
-      records.push({ line, file: line.slice(3) });
+      records.push(line);
     }
-    const entries = await Promise.all(
-      records.map(async ({ line, file }) => `${line}\t${await contentId(top, file, exec)}`),
+    const live = records.filter((line) => !isDeleted(line)).map((line) => line.slice(3));
+    const hashes =
+      live.length === 0
+        ? []
+        : (await exec("git", { argv: ["hash-object", "--", ...live], cwd: top })).stdout
+            .split("\n")
+            .filter(Boolean);
+    if (hashes.length !== live.length) {
+      throw new Error(`hash-object returned ${hashes.length} ids for ${live.length} paths`);
+    }
+    let h = 0;
+    const entries = records.map((line) =>
+      isDeleted(line) ? `${line}\tdeleted` : `${line}\t${hashes[h++]}`,
     );
     return { kind: "repo", top, entries };
   } catch (err) {
@@ -87,7 +99,7 @@ const noCheck = async (): Promise<void> => {};
 export async function beginFixGuard(
   opts: { guardFixRounds?: boolean; workCwd?: string },
   violations: string[],
-  exec: ExecFn = makeExecFn(),
+  exec: ExecFn = execp,
 ): Promise<(round: number) => Promise<void>> {
   const workCwd = opts.guardFixRounds ? opts.workCwd : undefined;
   if (!workCwd) return noCheck;
@@ -121,10 +133,20 @@ export async function beginFixGuard(
   };
 }
 
-/** Prefix a result's text with any recorded violations (the ledger sees the same text). */
+/**
+ * Prefix a result's text with any recorded violations (the ledger sees the same
+ * text). A VIOLATION (a write outside workCwd) also fails the result: callers
+ * keying on `ok` must not read a run that breached the fence as clean. Notes
+ * (a check that did not run) leave `ok` alone.
+ */
 export function withFixViolations(result: DispatchResult, violations: string[]): DispatchResult {
   if (violations.length === 0) return result;
-  return { ...result, text: [...violations, "", result.text].join("\n") };
+  const breached = violations.some((v) => v.startsWith("VIOLATION:"));
+  return {
+    ...result,
+    ok: breached ? false : result.ok,
+    text: [...violations, "", result.text].join("\n"),
+  };
 }
 
 /**

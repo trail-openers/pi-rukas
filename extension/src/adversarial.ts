@@ -94,7 +94,7 @@ export async function runAdversarialLoop(
     reportOnly?: boolean;
     /** #1114 — the round number a reportOnly review carries (prompt + record). Default 1. */
     reportRound?: number;
-    /** #1104 — tool path: fix rounds need `workCwd` and are caller-repo-checked. */
+    /** #1104 — tool path: fix rounds are caller-repo-checked (`workCwd` is required on every path). */
     guardFixRounds?: boolean;
   },
   signal: AbortSignal,
@@ -437,7 +437,7 @@ export async function runAdversarialLoop(
       return ledgerWrite(r);
     }
     if (action === "reject") break;
-    if (params.guardFixRounds && !params.workCwd) {
+    if (!params.workCwd) {
       const state = { start, usage, lastTranscript, lastModel, rounds };
       return ledgerWrite(workCwdRequiredResult(round, verdict, state));
     }
