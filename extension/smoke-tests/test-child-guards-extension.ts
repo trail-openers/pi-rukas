@@ -143,8 +143,8 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
   childGuards(fake as unknown as ExtensionAPI);
   const n = fake.handlers["tool_call"]?.length ?? 0;
   assert(
-    n === 3,
-    `registers exactly 3 tool_call hooks (the three mode-independent guards, oo-rewrite excluded; got ${n})`,
+    n === 4,
+    `registers exactly 4 tool_call hooks (the mode-independent guards incl. #1105 review-accept, oo-rewrite excluded; got ${n})`,
   );
   assert(fake.registeredTools.length === 0, "registers no tools (hook-only companion)");
   assert(fake.registeredCommands.length === 0, "registers no commands");

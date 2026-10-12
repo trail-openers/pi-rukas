@@ -384,6 +384,12 @@ const CLEAN_SUMMARY =
  * (verdict APPROVED when all six are clean). */
 {
   const { dir, cleanup } = fixtureSkillsDir(SIX_SKILLS, "f");
+  // #1105 — (e)'s finding is still open on this branch in the shared findings
+  // store; give (f) its own store so only this reply's review is judged.
+  process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = path.join(
+    mkdtempSync(path.join(os.tmpdir(), "skill-wiring-f-")),
+    "review-ledger.json",
+  );
   try {
     spawnCalls.length = 0;
     spawnResponder = () => ({

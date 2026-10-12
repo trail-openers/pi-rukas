@@ -8,6 +8,9 @@
 
 import os from "node:os";
 import path from "node:path";
+import { neutraliseEvidence } from "./comment-evidence.ts";
+import { type SuppressedFinding, suppressedSection } from "./lens-residuals.ts";
+import { isReviewIncomplete } from "./lens-review-incomplete.ts";
 import type { Finding, FindingSource, LensRunResult } from "./lens-review.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
 
@@ -77,6 +80,19 @@ export interface LensReviewSummary {
    * `applyLensVerdict` must not append a `lens-approved` event for it.
    */
   noReview?: boolean;
+  /**
+   * #1105 — findings the round dropped as already known: `suppressed-unchanged`
+   * (a delta round, cited code untouched) or `suppressed-accepted` (an operator
+   * accepted it). They are not in `findings` and do not decide the verdict; the
+   * residual disclosure lists them with their row ids and reasons.
+   */
+  suppressed?: SuppressedFinding[];
+  /**
+   * #1105 "findings memory unavailable: <reason>" — the round could not be
+   * recorded (fail open: every finding is reported). Shown in the summary and
+   * the residual comment.
+   */
+  memoryNote?: string;
 }
 
 /**
@@ -102,6 +118,7 @@ export function lensPromptFor(
   context: string,
   evidence?: string,
   roster: RosterEntry[] = [],
+  prior = "",
 ): string {
   // The other-lenses list is derived from the FULL roster — every other
   // lens in the configured roster, including blocked ones (a blocked lens
@@ -121,7 +138,7 @@ Diff to review:
 \`\`\`diff
 ${diff}
 \`\`\`
-${evidence ? `\n${evidence}\n` : ""}
+${evidence ? `\n${evidence}\n` : ""}${prior ? `\n${prior}\n` : ""}
 ## Your working directory is NOT the branch
 
 Read the supplied content above rather than opening files. Your filesystem is checked out at the **base commit** — the state before this PR — so a file you open yourself shows the code as it was, not as this diff leaves it. Reviewing the diff against a stale file produces contradictions that do not exist. If you need a changed file in full and it is not supplied, say so in your summary instead of guessing.
@@ -252,42 +269,14 @@ export function bySeverityCounts(findings: Finding[]): Record<Severity, number> 
   return out;
 }
 
-/**
- * Did this lens actually review anything?
- *
- * A lens that reported a finding plainly did. A lens that reported none is
- * only credible if it also wrote the closing summary the prompt asks for.
- * Neither means the child produced nothing at all — wrong model, dropped
- * reporter extension, exhausted context, or a bare "ok" — and that is
- * indistinguishable from a careful review right up until it is treated as one.
- *
- * `blocked` covers the lens that FAILED. This covers the lens that succeeded
- * at saying nothing, which is the harder case because it looks like success.
- */
-export function lensProducedEvidence(r: LensRunResult): boolean {
-  return hasReviewEvidence(r.findings, r.summary);
-}
-
-/**
- * Did a (possibly cap-killed) child produce ANY review evidence — findings
- * or a non-placeholder closing summary. Shared by `lensProducedEvidence`
- * and the cap-kill branch in lens-review-child.ts, so a `(thinking content
- * only - no text output)` placeholder never counts as a summary in either
- * path.
- */
-// `collapseEvents` substitutes NO_TEXT_PLACEHOLDER when a child produced only
-// thinking blocks. It is a placeholder describing the absence of output, not
-// output — counting it as a summary would let the exact silence this guards
-// against slip through wearing the right shape.
-export function hasReviewEvidence(findings: unknown[], summary?: string): boolean {
-  if (findings.length > 0) return true;
-  const s = summary?.trim();
-  if (!s) return false;
-  return s !== NO_TEXT_PLACEHOLDER;
-}
-
-/** What `spawn-collapse-events.ts` substitutes for a reply that was all thinking. */
-export const NO_TEXT_PLACEHOLDER = "(thinking content only - no text output)";
+// The evidence rule (lensProducedEvidence, NO_TEXT_PLACEHOLDER) and the
+// incompleteness rule live in lens-review-incomplete.ts; re-exported here so
+// existing importers keep working.
+export {
+  hasReviewEvidence,
+  lensProducedEvidence,
+  NO_TEXT_PLACEHOLDER,
+} from "./lens-review-incomplete.ts";
 
 /**
  * Map (findings × lens completion state) to a single verdict.
@@ -313,10 +302,11 @@ export function computeVerdict(
   lensResults?: LensRunResult[],
   threshold: Severity = DEFAULT_REVIEW_THRESHOLD,
 ): Verdict {
-  if (lensResults?.some((r) => r.blocked)) return "REVIEW_INCOMPLETE";
   // A lens that returned in silence has not reviewed the diff, whatever its
   // exit code said. Six of those used to add up to APPROVED.
-  if (lensResults?.some((r) => !lensProducedEvidence(r))) return "REVIEW_INCOMPLETE";
+  // A blocked lens, or one that returned in silence, has not reviewed the diff
+  // whatever its exit code said — the one rule lives in isReviewIncomplete.
+  if (isReviewIncomplete(lensResults)) return "REVIEW_INCOMPLETE";
   if (findings.some((f) => f.severity === "CRITICAL")) return "CRITICAL_ISSUES_FOUND";
   // The threshold check: any finding at or above the project's bar.
   const bar = SEVERITY_RANK[threshold];
@@ -469,6 +459,11 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
     "",
     s.totalFindings > 0 ? "Findings (deduped, sorted by severity):" : "",
     ...findingLines,
+    ...suppressedSection(
+      s.suppressed,
+      `Suppressed as already known (${s.suppressed?.length ?? 0}, not re-reported):`,
+    ),
+    ...(s.memoryNote ? ["", neutraliseEvidence(s.memoryNote)] : []),
     "",
     "Transcripts:",
     transcripts,

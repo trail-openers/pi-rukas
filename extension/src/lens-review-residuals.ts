@@ -40,9 +40,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { neutraliseEvidence } from "./comment-evidence.ts";
 import * as cmds from "./forge-commands.ts";
 import { postPrComment } from "./forge-comments.ts";
 import { detectForge } from "./forge-detect.ts";
+import { suppressedSection } from "./lens-residuals.ts";
 import type { LensReviewSummary } from "./lens-review.ts";
 import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
 import { branchPatchId, remoteName } from "./review-ledger.ts";
@@ -283,6 +285,11 @@ async function doPost(
     "silent about them. Decide them before merging.",
     "",
     ...lines,
+    ...suppressedSection(
+      summary.suppressed,
+      `Suppressed as already known (${summary.suppressed?.length ?? 0}) — not re-reported; each names its row id and the reason it was dropped:`,
+    ),
+    ...(summary.memoryNote ? ["", neutraliseEvidence(summary.memoryNote)] : []),
     "",
     marker,
     "",
