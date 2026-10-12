@@ -339,7 +339,8 @@ async function runDevelopTopological(
   // net for a legitimate uncommitted workstream. Escape hatch:
   // PI_ENSEMBLE_SAFETY_NET_COMMIT=0 disables it.
   if (hasDevelopEvidence) {
-    next = await applySafetyNet(ctx, next);
+    // Only workstreams whose verdict is ok: a failed one's partial work stays uncommitted.
+    next = await applySafetyNet(ctx, next, new Set(verdicts.filter((v) => v.ok).map((v) => v.id)));
     // #849 — the gate (and the fence flip below) operate on `stateRef.current`
     // (the shared state the memory-inject events accumulate into); keep the
     // local alias and the shared ref in sync so the flip's verdict replacement

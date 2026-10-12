@@ -255,6 +255,16 @@ export async function safetyNetWorktree(
   // in the index after the path-limited commit. Unstage it (the working tree is
   // untouched) so the index holds no driver artefact the commit did not name.
   await unstageDriverArtefacts(git, cwd, wsId, notes);
+  // A developer's own commit was already ahead of base: the leftover edits just
+  // committed were NOT in that commit. Say so, so the handoff shows what the
+  // driver added to the PR beyond the reviewed work.
+  if (ahead.commits > 0) {
+    const shown = workPaths.slice(0, 10).join(", ");
+    const more = workPaths.length > 10 ? ` (+${workPaths.length - 10} more)` : "";
+    notes.push(
+      `${wsId}: safety net committed ${workPaths.length} leftover uncommitted path(s) after ${ahead.commits} developer commit(s), not in the developer's commit — ${shown}${more}`,
+    );
+  }
   // The commit has landed. A failed read of its sha must not hide it: the
   // event then names HEAD, and the note says the sha was not read.
   try {
@@ -302,7 +312,11 @@ export async function safetyNetWorktree(
  * recorded in plumbReports. Never throws: a git failure degrades to the
  * pre-safety-net behaviour.
  */
-export async function applySafetyNet(ctx: DriverContext, state: WorkState): Promise<WorkState> {
+export async function applySafetyNet(
+  ctx: DriverContext,
+  state: WorkState,
+  only?: ReadonlySet<string>,
+): Promise<WorkState> {
   if (!safetyNetEnabled()) {
     trace("work-driver: safety net disabled (PI_ENSEMBLE_SAFETY_NET_COMMIT=0)");
     return state;
@@ -331,6 +345,9 @@ export async function applySafetyNet(ctx: DriverContext, state: WorkState): Prom
   const notes: string[] = [];
 
   for (const [wsId, cwd] of Object.entries(worktrees)) {
+    // A workstream whose verdict is not ok keeps its leftover edits uncommitted:
+    // committing a failed attempt's partial work would put it on the branch under a FAIL verdict.
+    if (only !== undefined && !only.has(wsId)) continue;
     const effectiveBase = effectiveBaseForWorkstream(wsId, workstreamBaseShas, baseSha);
     if (!effectiveBase) {
       trace(

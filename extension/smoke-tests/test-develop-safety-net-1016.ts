@@ -203,5 +203,46 @@ try {
   }
 }
 
+// #1016 — the post-fan-out sweep commits only ok workstreams, and a leftover
+// commit beside a developer commit is noted with its paths.
+{
+  const dir4 = await mkdtemp(path.join(tmpdir(), "safety-scope-1016-"));
+  try {
+    const shas4 = await makeBaseWorktrees(dir4, ["task-f"]);
+    const wf = path.join(dir4, ".worktrees", "task-f");
+    await writeFile(path.join(wf, "dev.ts"), "1");
+    gitIn(wf, ["add", "dev.ts"]);
+    gitIn(wf, ["commit", "-qm", "dev"]);
+    await writeFile(path.join(wf, "leftover.ts"), "2");
+    const state = {
+      schemaVersion: 1,
+      issue: 1,
+      updatedAt: 0,
+      eventLog: [],
+      pipelineState: {
+        baseSha: shas4["task-f"],
+        workstreamBaseShas: shas4,
+        worktrees: { "task-f": wf },
+        plumbReports: [],
+      },
+    } as unknown as WorkState;
+    const ctx4 = { repoRoot: dir4, verifyExecFn: execFn } as unknown as DriverContext;
+    const skipped = await applySafetyNet(ctx4, state, new Set<string>());
+    assert(skipped.eventLog.length === 0, "#1016: a workstream outside the ok set is not swept");
+    assert(
+      gitIn(wf, ["rev-list", "--count", `${shas4["task-f"]}..HEAD`]) === "1",
+      "#1016: the failed workstream's leftover edit stays uncommitted",
+    );
+    const swept = await applySafetyNet(ctx4, state, new Set(["task-f"]));
+    assert(swept.eventLog.some((e) => e.kind === "safety-net-commit"), "#1016: an ok workstream is swept");
+    assert(
+      (swept.pipelineState.plumbReports ?? []).some((r) => /leftover uncommitted path\(s\) after 1 developer commit/.test(r.body)),
+      "#1016: a leftover commit beside a developer commit is noted with its count",
+    );
+  } finally {
+    await rm(dir4, { recursive: true, force: true });
+  }
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);
