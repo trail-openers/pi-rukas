@@ -19,7 +19,7 @@
  */
 
 import { exec } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, chmodSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -38,9 +38,13 @@ function assert(cond: boolean, msg: string) {
 
 // The verify loop may export GIT_DIR and friends; a leaked GIT_DIR would point
 // every git call below at the host repo instead of the fixture.
-for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"]) {
-  delete process.env[k];
-}
+const isolatedGitVars = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"];
+const savedEnv: Record<string, string | undefined> = {
+  GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND,
+  PI_ENSEMBLE_GIT_NET_TIMEOUT_MS: process.env.PI_ENSEMBLE_GIT_NET_TIMEOUT_MS,
+};
+for (const k of isolatedGitVars) savedEnv[k] = process.env[k];
+for (const k of isolatedGitVars) Reflect.deleteProperty(process.env, k);
 const dir = mkdtempSync(path.join(tmpdir(), "net-git-timeout-"));
 const pidFile = path.join(dir, "pid");
 const grandPidFile = path.join(dir, "grand-pid");
@@ -61,8 +65,6 @@ await execp(
   `git -C ${JSON.stringify(repo)} remote add origin ${JSON.stringify(`ssh://nohost${bare}`)}`,
 );
 
-const savedSsh = process.env.GIT_SSH_COMMAND;
-const savedTimeout = process.env.PI_ENSEMBLE_GIT_NET_TIMEOUT_MS;
 process.env.GIT_SSH_COMMAND = script;
 process.env.PI_ENSEMBLE_GIT_NET_TIMEOUT_MS = "4000";
 
@@ -127,10 +129,10 @@ if (existsSync(pidFile)) {
     }
   }
 }
-if (savedSsh === undefined) delete process.env.GIT_SSH_COMMAND;
-else process.env.GIT_SSH_COMMAND = savedSsh;
-if (savedTimeout === undefined) delete process.env.PI_ENSEMBLE_GIT_NET_TIMEOUT_MS;
-else process.env.PI_ENSEMBLE_GIT_NET_TIMEOUT_MS = savedTimeout;
+for (const [k, v] of Object.entries(savedEnv)) {
+  if (v === undefined) Reflect.deleteProperty(process.env, k);
+  else process.env[k] = v;
+}
 rmSync(dir, { recursive: true, force: true });
 
 console.log(failures === 0 ? "\nAll net-git timeout checks passed" : `\n${failures} failure(s)`);

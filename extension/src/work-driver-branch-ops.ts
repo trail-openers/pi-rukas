@@ -42,7 +42,7 @@ import type { DriverContext } from "./work-driver-context.ts";
 import { parseBranchName } from "./work-driver-diff.ts";
 import { resolvedTheMainline } from "./work-driver-git.ts";
 import { buildCompletionEvent, runSingleDispatch } from "./work-driver-merged.ts";
-import { runNetGit } from "./work-driver-net-git.ts";
+import { type NetGitTimeoutError, isNetGitTimeout, runNetGit } from "./work-driver-net-git.ts";
 import { sliceMarkdownSection } from "./work-driver-plan.ts";
 import { inlineBranchPrompt } from "./work-driver-prompts-branch.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
@@ -50,6 +50,40 @@ import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 const execp = promisify(exec);
+
+/**
+ * #1095 — a network git timeout fails the branch step with its named cause.
+ * It is NOT a stale-ref case for the #533 local-ref fallback, and the ops
+ * fallback would re-run the same hung fetch, so the step halts here instead.
+ */
+export function netTimeoutBranchFailure(
+  state: WorkState,
+  err: NetGitTimeoutError,
+  now: number,
+): WorkState {
+  const started = appendEvent(
+    { ...state, pipelineState: { ...state.pipelineState, currentStep: "branch" } },
+    { kind: "step-started", step: "branch", at: now },
+  );
+  const withReport = {
+    ...started,
+    pipelineState: {
+      ...started.pipelineState,
+      plumbReports: [
+        ...(started.pipelineState.plumbReports ?? []),
+        { step: "branch" as const, role: "driver", body: err.message, at: Date.now() },
+      ],
+    },
+  };
+  return appendEvent(withReport, {
+    kind: "cap-hit",
+    at: Date.now(),
+    cap: "step-failed:branch",
+    reviewRound: state.pipelineState.reviewRound,
+    nextStep: "handoff",
+    evidence: err.message.slice(0, 300),
+  });
+}
 
 /**
  * Parse a fenced `## Worktrees` block from ops's branch reply.
@@ -117,6 +151,9 @@ export async function runBranchViaOpsDispatch(
         cwd: ctx.repoRoot,
       });
     } catch (err) {
+      // #1095 — a timeout fails the step with its named cause; only a fetch
+      // that errored falls back to the local refs (#533).
+      if (isNetGitTimeout(err)) throw err;
       trace(
         `work-driver: ops-fallback fetch of origin/${mainline} failed — verifying against local refs: ${(err as Error).message?.slice(0, 160)}`,
       );
@@ -125,6 +162,7 @@ export async function runBranchViaOpsDispatch(
     driverBaseSha = tip.sha;
     driverBaseFromOrigin = tip.fromOrigin;
   } catch (err) {
+    if (isNetGitTimeout(err)) throw err;
     trace(
       `work-driver: ops-fallback baseSha resolution failed (verification will degrade): ${(err as Error).message?.slice(0, 160)}`,
     );

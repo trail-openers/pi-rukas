@@ -22,7 +22,7 @@
 
 import { trace } from "./trace.ts";
 import { detectMainline, reconcileExistingLocalBranch } from "./work-driver-branch-mechanized.ts";
-import { runNetGit } from "./work-driver-net-git.ts";
+import { isNetGitTimeout, runNetGit } from "./work-driver-net-git.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
@@ -49,6 +49,9 @@ export async function reconcileHandoffConsolidateBranch(
     try {
       await runNetGit(execFn, `git fetch origin ${JSON.stringify(mainline)}`, { cwd: repoRoot });
     } catch (err) {
+      // #1095 — a timeout is not the stale-ref case; it propagates to
+      // consolidateWorktreesToBranch, which reports it as the degradation reason.
+      if (isNetGitTimeout(err)) throw err;
       trace(
         `work-driver: handoff-consolidate fetch of origin/${mainline} failed — skipping stale-branch reconciliation: ${(err as Error).message?.slice(0, 160)}`,
       );
@@ -63,6 +66,7 @@ export async function reconcileHandoffConsolidateBranch(
       fetchedTip = "";
     }
   } catch (err) {
+    if (isNetGitTimeout(err)) throw err;
     trace(
       `work-driver: handoff-consolidate mainline detection failed — skipping stale-branch reconciliation: ${(err as Error).message?.slice(0, 160)}`,
     );

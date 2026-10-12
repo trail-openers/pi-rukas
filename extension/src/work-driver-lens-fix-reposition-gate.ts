@@ -125,8 +125,9 @@ export async function repositionLensFixWorktree(
     // working-tree mutations at repoRoot, which this gate never touches
     // (it operates on the lens-fix worktree `tree`), so the fetch does not
     // need it.
-    // Bounded + non-interactive via runNetGit (#1095); the pack output scales
-    // with branch history, hence the 1 MiB buffer.
+    // Bounded + non-interactive via runNetGit (#1095). Match sharedFetch
+    // (work-driver-branch-mechanized.ts): the fetch's pack output scales with
+    // branch history, not a fixed 64 KiB, hence the 1 MiB buffer.
     await runNetGit(execFn, "git", {
       cwd: tree,
       maxBuffer: 1024 * 1024,
