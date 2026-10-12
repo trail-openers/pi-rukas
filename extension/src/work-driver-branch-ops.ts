@@ -33,9 +33,8 @@
  * in each worktree before the develop step.
  */
 
-import { exec } from "node:child_process";
 import path from "node:path";
-import { promisify } from "node:util";
+import { execp } from "./lens-exec.ts";
 import { trace } from "./trace.ts";
 import { detectMainline, freshMainlineTip } from "./work-driver-branch-mechanized.ts";
 import type { DriverContext } from "./work-driver-context.ts";
@@ -48,8 +47,6 @@ import { inlineBranchPrompt } from "./work-driver-prompts-branch.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
-
-const execp = promisify(exec);
 
 /**
  * #1095 — a network git timeout fails the branch step with its named cause.

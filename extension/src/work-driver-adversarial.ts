@@ -10,9 +10,8 @@
  * the git evidence, the worktree inspected, and the repoRoot restore claim.
  */
 
-import { exec } from "node:child_process";
 import path from "node:path";
-import { promisify } from "node:util";
+import { execp } from "./lens-exec.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import { capHitForCapKill } from "./work-driver-adversarial-capkill.ts";
@@ -39,7 +38,6 @@ import { scratchDir } from "./work-driver-workspace.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
-const execp = promisify(exec);
 
 /**
  * Step 5 — Adversarial gate. Fans out one `runAdversarialLoop` per

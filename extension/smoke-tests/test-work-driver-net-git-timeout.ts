@@ -49,7 +49,9 @@ const dir = mkdtempSync(path.join(tmpdir(), "net-git-timeout-"));
 const pidFile = path.join(dir, "pid");
 const grandPidFile = path.join(dir, "grand-pid");
 const argvFile = path.join(dir, "argv");
-const script = path.join(dir, "hang-ssh.sh");
+// Named `ssh`: the driver adds the OpenSSH -o defaults only to a program
+// whose basename is ssh (work-driver-net-git.ts netGitEnv).
+const script = path.join(dir, "ssh");
 writeFileSync(
   script,
   `#!/bin/sh\necho "$@" > "${argvFile}"\necho $$ > "${pidFile}"\nsleep 60 &\necho $! > "${grandPidFile}"\nwait\n`,

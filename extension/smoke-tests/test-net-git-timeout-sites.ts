@@ -58,7 +58,8 @@ await execp(
 );
 await execp(`git -C ${JSON.stringify(repo)} update-ref refs/remotes/origin/main HEAD`);
 
-const ctx = { repoRoot: repo, verifyExecFn: groupExecp } as unknown as DriverContext;
+// No verifyExecFn injected: the production default executor is the one under test.
+const ctx = { repoRoot: repo } as unknown as DriverContext;
 const base = {} as unknown as WorkState;
 
 process.env.PI_ENSEMBLE_GIT_NET_TIMEOUT_MS = "4000";

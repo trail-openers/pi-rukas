@@ -11,13 +11,10 @@
  * work-driver-handoff.ts so no consumer's import path changes.
  */
 
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
+import { execp } from "./lens-exec.ts";
 import { trace } from "./trace.ts";
 import { runNetGit } from "./work-driver-net-git.ts";
 import type { WorkState } from "./workflow-state.ts";
-
-const execp = promisify(exec);
 
 /**
  * PR5 — capture a snapshot of the worktree at handoff time. Lets the

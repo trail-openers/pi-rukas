@@ -35,23 +35,20 @@
  * the reason in the tool result).
  */
 
-import { exec } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import { neutraliseEvidence } from "./comment-evidence.ts";
 import * as cmds from "./forge-commands.ts";
 import { postPrComment } from "./forge-comments.ts";
 import { detectForge } from "./forge-detect.ts";
+import { execp } from "./lens-exec.ts";
 import { suppressedSection } from "./lens-residuals.ts";
 import type { LensReviewSummary } from "./lens-review.ts";
 import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
 import { branchPatchId, remoteName } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
 import { runNetGit } from "./work-driver-net-git.ts";
-
-const execp = promisify(exec);
 
 /**
  * The git-ref-safe character allowlist the marker's `branch=` value must

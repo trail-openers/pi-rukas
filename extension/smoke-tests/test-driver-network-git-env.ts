@@ -72,6 +72,18 @@ assert(
   "GIT_SSH_COMMAND outranks core.sshCommand",
 );
 rmSync(cfgRepo, { recursive: true, force: true });
+// Only OpenSSH takes the -o defaults; a plink-style program is kept verbatim.
+assert(
+  netGitEnv({ GIT_SSH_COMMAND: "plink -i /keys/deploy" }).GIT_SSH_COMMAND === "plink -i /keys/deploy",
+  "non-OpenSSH GIT_SSH_COMMAND is not given -o flags",
+);
+// GIT_SSH is exec'd directly by git, but GIT_SSH_COMMAND is shell-parsed: a
+// path with spaces must be quoted when it becomes the command.
+assert(
+  netGitEnv({ GIT_SSH: "/opt/my ssh/ssh" }).GIT_SSH_COMMAND ===
+    "'/opt/my ssh/ssh' -o BatchMode=yes -o ConnectTimeout=30",
+  "GIT_SSH path with spaces is shell-quoted before the defaults",
+);
 const already = withSshDefaults("ssh -o BatchMode=no -o ConnectTimeout=5");
 assert(
   already === "ssh -o BatchMode=no -o ConnectTimeout=5",
@@ -182,6 +194,10 @@ function sourceFiles(dir: string): string[] {
 
 const rawHits: string[] = [];
 const wrappedCounts: Record<string, number> = {};
+// A runNetGit caller whose executor is promisify(exec) ignores killGroup and
+// argv, so the timeout cannot kill the ssh process group. Callers must use the
+// lens-exec execp (or receive an injected one).
+const promisifyCallers: string[] = [];
 for (const file of sourceFiles(SRC)) {
   const base = path.basename(file);
   const lines = readFileSync(file, "utf8").split("\n");
@@ -194,9 +210,14 @@ for (const file of sourceFiles(SRC)) {
   const text = lines.filter((l) => !l.trim().startsWith("//")).join("\n");
   const n = text.match(WRAPPED)?.length ?? 0;
   if (n > 0) wrappedCounts[base] = n;
+  if (n > 0 && /promisify\(exec\)/.test(text)) promisifyCallers.push(base);
 }
 
 assert(rawHits.length === 0, `no raw network git exec in src (${rawHits.join(", ") || "none"})`);
+assert(
+  promisifyCallers.length === 0,
+  `no runNetGit caller uses a promisify(exec) executor (${promisifyCallers.join(", ") || "none"})`,
+);
 const unexpected = Object.keys(wrappedCounts).filter((f) => !(f in EXPECTED));
 const missing = Object.keys(EXPECTED).filter((f) => !(f in wrappedCounts));
 const mismatched = Object.keys(EXPECTED).filter(

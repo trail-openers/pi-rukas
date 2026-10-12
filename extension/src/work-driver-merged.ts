@@ -7,9 +7,8 @@
  * `parseMergeCommit` + `runMerged` are the Step 9 pair.
  */
 
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
 import { dispatchCore } from "./dispatch.ts";
+import { execp } from "./lens-exec.ts";
 import { slowRecorder } from "./slow-events.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
@@ -36,8 +35,6 @@ import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 import { activeIssuesOf, scratchDir, teardownWorkspaceTmp } from "./work-driver-workspace.ts";
 import { type WorkState, type WorkStep, appendEvent } from "./workflow-state.ts";
 import { worktreePrune, worktreeRemove } from "./worktree.ts";
-
-const execp = promisify(exec);
 
 export { buildCompletionEvent } from "./work-driver-completion-event.ts";
 

@@ -1,14 +1,13 @@
-import { exec } from "node:child_process";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { promisify } from "node:util";
+import { execp } from "./lens-exec.ts";
 import { trace } from "./trace.ts";
 import { runNetGit } from "./work-driver-net-git.ts";
 import { processAlive } from "./work-driver-resume.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
 
-const defaultExecFn: ExecFn = promisify(exec) as unknown as ExecFn;
+const defaultExecFn: ExecFn = execp;
 
 /**
  * Result of resolving a sweep target.

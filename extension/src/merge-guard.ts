@@ -82,11 +82,10 @@
  * or error refuses (fail-closed).
  */
 
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { stripQuotedSegments } from "./bash-command-parser.ts";
 import { mergesPr } from "./bash-merges-pr.ts";
+import { execp } from "./lens-exec.ts";
 import { lensNotEvaluatedRefusal, readPrCommentBodies } from "./merge-guard-reads.ts";
 import { evaluateRoundCapMerge } from "./merge-guard-round-cap.ts";
 import { extractMergeNumber, mergeVerbArgs, mergeVerbRepo } from "./merge-parse.ts";
@@ -109,8 +108,6 @@ import {
 } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
 import { runNetGit } from "./work-driver-net-git.ts";
-
-const execp = promisify(exec);
 
 /** Per-exec timeout for the guard's gh/git calls. */
 const EXEC_TIMEOUT_MS = 30_000;

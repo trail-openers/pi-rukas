@@ -25,6 +25,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import path from "node:path";
 import type { ExecFn } from "./worktree.ts";
 
 export const NET_GIT_TIMEOUT_ENV = "PI_ENSEMBLE_GIT_NET_TIMEOUT_MS";
@@ -75,16 +76,22 @@ export function withSshDefaults(sshCommand: string): string {
   return parts.join(" ");
 }
 
+/** Shell-quote one word: git runs GIT_SSH_COMMAND through a shell, so a GIT_SSH path with spaces must be quoted. */
+function shellWord(p: string): string {
+  return /^[\w@%+=:,./-]+$/.test(p) ? p : `'${p.replace(/'/g, "'\\''")}'`;
+}
+
 /**
- * The ssh command git itself would run, in git's precedence order:
- * GIT_SSH_COMMAND, then core.sshCommand (repo config, read in `cwd`), then
- * GIT_SSH, then plain `ssh`. Setting GIT_SSH_COMMAND unconditionally would
- * outrank a repo's core.sshCommand, so the defaults must be appended to the
- * command git would have used (#1095 review).
+ * The ssh command git itself would run, as a shell-ready string plus its
+ * program name, in git's precedence order: GIT_SSH_COMMAND, then
+ * core.sshCommand (repo config, read in `cwd`), then GIT_SSH, then plain `ssh`.
+ * Setting GIT_SSH_COMMAND unconditionally would outrank a repo's
+ * core.sshCommand, so the defaults must be appended to the command git would
+ * have used (#1095 review).
  */
-export function operatorSshCommand(base: NodeJS.ProcessEnv, cwd?: string): string {
+function operatorSsh(base: NodeJS.ProcessEnv, cwd?: string): { command: string; program: string } {
   const fromEnv = base.GIT_SSH_COMMAND?.trim();
-  if (fromEnv) return fromEnv;
+  if (fromEnv) return { command: fromEnv, program: fromEnv.split(/\s+/)[0] ?? "" };
   if (cwd !== undefined) {
     try {
       const cfg = execFileSync("git", ["config", "--get", "core.sshCommand"], {
@@ -92,24 +99,32 @@ export function operatorSshCommand(base: NodeJS.ProcessEnv, cwd?: string): strin
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
       }).trim();
-      if (cfg) return cfg;
+      if (cfg) return { command: cfg, program: cfg.split(/\s+/)[0] ?? "" };
     } catch {
       // unset (git config exits 1) or not a repo: fall through to GIT_SSH / ssh
     }
   }
-  return base.GIT_SSH?.trim() || "ssh";
+  const gitSsh = base.GIT_SSH?.trim();
+  // GIT_SSH is exec'd directly by git (no shell), so its path is quoted here.
+  if (gitSsh) return { command: shellWord(gitSsh), program: gitSsh };
+  return { command: "ssh", program: "ssh" };
 }
 
 /**
  * The non-interactive environment every driver network git call runs with.
  * `cwd` lets the repo's core.sshCommand take part in the precedence (see
- * operatorSshCommand); without it only the env and the default apply.
+ * operatorSsh); without it only the env and the default apply. The OpenSSH
+ * options are appended only when the program is OpenSSH: a plink or wrapper
+ * may reject unknown `-o` flags, and the operator's command is kept as is.
  */
 export function netGitEnv(base: NodeJS.ProcessEnv = process.env, cwd?: string): NodeJS.ProcessEnv {
+  const { command, program } = operatorSsh(base, cwd);
+  const cleaned = program.replace(/^['"]|['"]$/g, "");
+  const isOpenSsh = /^ssh(\.exe)?$/.test(path.basename(cleaned));
   return {
     ...base,
     GIT_TERMINAL_PROMPT: "0",
-    GIT_SSH_COMMAND: withSshDefaults(operatorSshCommand(base, cwd)),
+    GIT_SSH_COMMAND: isOpenSsh ? withSshDefaults(command) : command,
   };
 }
 

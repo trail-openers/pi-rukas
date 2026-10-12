@@ -34,7 +34,6 @@ import {
   parkCherryFailedTree,
 } from "./work-driver-lens-fix-reposition-backup.ts";
 import {
-  FETCH_TIMEOUT_MS,
   GIT_TIMEOUT_MS,
   cherryLines,
   isAncestor,
