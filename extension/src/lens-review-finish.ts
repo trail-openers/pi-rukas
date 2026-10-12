@@ -48,7 +48,7 @@ async function finish(
   threshold: Severity,
   cwd: string | undefined,
   branch: string | undefined,
-  ledger: { hasCritical?: boolean; headSha?: string; head?: string } = {},
+  ledger: { hasCritical?: boolean; headSha?: string; head?: string; overrideCap?: boolean } = {},
   pr?: number,
 ): Promise<LensFinishResult> {
   // #984 — the fire-and-forget write is intentionally NOT awaited here (#912
@@ -66,6 +66,8 @@ async function finish(
     // #988 — the finish path IS `runLensReview`'s single resolution site;
     // thread it so the fire-and-forget write does not re-resolve.
     branch,
+    // #1127 — the operator's round-cap override, recorded on the entry.
+    ledger.overrideCap,
   );
   // #973 — the residual-findings disclosure: posted ONLY when the verdict is
   // ISSUES_FOUND AND the branch's PR/MR resolves (see postLensResidual for

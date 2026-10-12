@@ -151,6 +151,8 @@ export async function runLensReview(opts: {
   branch?: string;
   /** #973 — the PR/MR number for the residual-findings disclosure post. */
   pr?: number;
+  /** #1127 — the operator bypassed the tool-side round budget; recorded on the ledger entry. */
+  overrideCap?: boolean;
 }): Promise<LensReviewSummary> {
   const runId = makeRunId();
   const skillsDir = piSkillsDir();
@@ -264,7 +266,7 @@ export async function runLensReview(opts: {
         threshold,
         opts.cwd,
         branchResolved,
-        { hasCritical, headSha, head: opts.head },
+        { hasCritical, headSha, head: opts.head, overrideCap: opts.overrideCap },
         opts.pr,
       )
     ).summary;

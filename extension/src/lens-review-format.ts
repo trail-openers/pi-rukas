@@ -107,7 +107,14 @@ export interface LensReviewSummary {
  * must decide whether to retry the whole pass, override, or halt — never
  * silently downgrade a six-pass review to a five-pass one (#3).
  */
-export type Verdict = "APPROVED" | "ISSUES_FOUND" | "CRITICAL_ISSUES_FOUND" | "REVIEW_INCOMPLETE";
+/** #1127 — `ROUND_CAP_REACHED` is produced only by the tool-side round budget
+ * (lens-round-cap.ts): no lens ran, nothing was recorded. */
+export type Verdict =
+  | "APPROVED"
+  | "ISSUES_FOUND"
+  | "CRITICAL_ISSUES_FOUND"
+  | "REVIEW_INCOMPLETE"
+  | "ROUND_CAP_REACHED";
 import { CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE, type RosterEntry } from "./lens-roster.ts";
 
 export const LENS_PREFIX = "code-review-";
@@ -361,6 +368,8 @@ function killCauseSuffix(r: LensRunResult): string {
 }
 
 export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): string {
+  // #1127 — a round-budget refusal ran no lens; its note is the whole report.
+  if (s.verdict === "ROUND_CAP_REACHED") return s.note ?? "ROUND_CAP_REACHED";
   // #973 — the no-review outcome (decision 4): the delta was empty, so no
   // review ran. This is NOT an approval — the summary must say "NO REVIEW",
   // never "APPROVED" (a no-review outcome looking like an approval is the

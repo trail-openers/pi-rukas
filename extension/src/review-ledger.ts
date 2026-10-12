@@ -90,6 +90,10 @@ export interface LedgerEntry {
    * present (#1039); absent when the head could not be resolved; a non-SHA
    * value is malformed and refused by the round-cap path. */
   headSha?: string;
+  /** #1127 — lens entries only: the operator passed `overrideCap: true` to
+   * dispatch_lens_review, so this run was allowed past the tool-side round
+   * budget. Recorded so an audit can see which rounds were forced. */
+  overrideCap?: boolean;
 }
 
 interface LedgerFile {

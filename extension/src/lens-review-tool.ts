@@ -3,6 +3,7 @@ import { Type } from "@sinclair/typebox";
 import { startJob } from "./async-jobs.ts";
 import { renderSummary } from "./lens-review-format.ts";
 import { LENS_REVIEW_DIFF_DESCRIPTION, MAX_LENS_ATTEMPTS, runLensReview } from "./lens-review.ts";
+import { roundBudgetRefusal } from "./lens-round-cap.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 
@@ -57,6 +58,12 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
             "#973 — force a full review: the automatic delta base (the latest lens ledger entry's headSha) is not consulted. An explicit `since` still wins when given. An explicit base + head (with no `since`) is ALWAYS a full review — the automatic delta base only applies to a bare branch/cwd review.",
         }),
       ),
+      overrideCap: Type.Optional(
+        Type.Boolean({
+          description:
+            "#1127 — bypass the per-branch lens round budget (default cap 3, PI_ENSEMBLE_LENS_ROUND_CAP). Without it, a review past the cap returns ROUND_CAP_REACHED and dispatches no lens. The override is recorded on the ledger entry.",
+        }),
+      ),
       pr: Type.Optional(
         Type.Number({
           description:
@@ -74,6 +81,7 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
         since?: string;
         full?: boolean;
         pr?: number;
+        overrideCap?: boolean;
       };
       const hasDiff = typeof params.diff === "string" && params.diff.length > 0;
       const hasRange = typeof params.base === "string" && typeof params.head === "string";
@@ -91,7 +99,14 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
         skipDeck: true,
         work: async (signal): Promise<DispatchResult> => {
           const start = Date.now();
-          const summary = await runLensReview({ ...params, signal });
+          // #1127 — the round budget runs BEFORE any lens is dispatched; a
+          // refusal is the terminal ROUND_CAP_REACHED summary, nothing recorded.
+          const summary =
+            (await roundBudgetRefusal({
+              cwd: params.cwd,
+              head: params.head,
+              overrideCap: params.overrideCap,
+            })) ?? (await runLensReview({ ...params, signal }));
           // ok is true when the review completed AND the verdict is neither
           // CRITICAL nor INCOMPLETE. INCOMPLETE means at least one lens
           // failed all retries (#3) — the review did NOT actually run every
@@ -108,7 +123,8 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
             ok:
               !summary.noReview &&
               summary.verdict !== "CRITICAL_ISSUES_FOUND" &&
-              summary.verdict !== "REVIEW_INCOMPLETE",
+              summary.verdict !== "REVIEW_INCOMPLETE" &&
+              summary.verdict !== "ROUND_CAP_REACHED",
             text: summary.note ? `${text}\n\n${summary.note}` : text,
             toolUses: [],
             ms: Date.now() - start,

@@ -57,6 +57,8 @@ export function writeLensLedgerEntry(
   /** #988 — the branch ALREADY resolved by `runLensReview` (threaded by the
    * finish path) — the write skips its own re-resolution when present. */
   resolvedBranch?: string,
+  /** #1127 — the operator passed `overrideCap: true`; recorded on the entry. */
+  overrideCap?: boolean,
 ): Promise<void> {
   const write = async () => {
     const c = cwd ?? process.cwd();
@@ -87,6 +89,7 @@ export function writeLensLedgerEntry(
       detail: verdict,
       ...(hasCritical !== undefined ? { hasCritical } : {}),
       ...(headSha ? { headSha } : {}),
+      ...(overrideCap ? { overrideCap: true } : {}),
     };
     await appendLedgerEntry(entry, execp, c);
   };
