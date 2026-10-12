@@ -4,8 +4,10 @@
  *
  *  1. The abort path's mixed `git reset` turns the cycle's staged NEW files
  *     untracked. A tracked-only stash left them in the operator's tree while
- *     the claim said "verified restored". The stash now carries `-u`, and the
- *     post-condition counts `??` entries (outside `.worktrees/`) as dirt.
+ *     the claim said "verified restored". The stash now carries `-u` scoped to
+ *     the cycle's own paths, so the operator's untracked files are never
+ *     stashed, and the post-condition checks those same paths (untracked
+ *     included).
  *  2. Start-ref race across groups: a sibling that leaves repoRoot on its own
  *     branch must not become this cycle's start ref. The queue captures the
  *     ref once per invocation, and the stamp uses that value.
@@ -20,7 +22,7 @@ import type { DriverContext } from "../src/work-driver-context.ts";
 import { captureInvocationStartRef } from "../src/work-driver-git.ts";
 import { restoreRootToRefPreserving } from "../src/work-driver-restore.ts";
 import type { ExecFn } from "../src/worktree.ts";
-import { assert, buildRepo, head, realExec, stateWith } from "./lib/restore-start-ref-fixtures.ts";
+import { assert, buildRepo, head, realExec, result, stateWith } from "./lib/restore-start-ref-fixtures.ts";
 
 const git = (dir: string, args: string[]) =>
   execFileSync("git", args, { cwd: dir, encoding: "utf8" });
@@ -63,6 +65,40 @@ const git = (dir: string, args: string[]) =>
   }
 }
 
+// ---- 1a. abort: the operator's OWN untracked file is not displaced --------
+{
+  const dir = buildRepo();
+  const scratch = mkdtempSync(join(tmpdir(), "issue1093-operator-untracked-scratch-"));
+  try {
+    git(dir, ["checkout", "-q", "feature/merged"]);
+    writeFileSync(join(dir, "notes.txt"), "operator notes\n");
+    writeFileSync(join(dir, "cyc-new.txt"), "cycle new file\n");
+    git(dir, ["add", "cyc-new.txt"]);
+    const r = await restoreRootToRefPreserving(realExec, {
+      repoRoot: dir,
+      ref: "feature/x",
+      scratchDir: scratch,
+      label: "operator-untracked",
+    });
+    assert(r.restored && head(dir) === "feature/x", "operator-untracked: restored onto feature/x");
+    assert(
+      readFileSync(join(dir, "notes.txt"), "utf8") === "operator notes\n",
+      "operator-untracked: the operator's untracked file stayed in the tree",
+    );
+    assert(
+      !git(dir, ["ls-tree", "-r", "--name-only", "stash@{0}^3"]).includes("notes.txt"),
+      "operator-untracked: the operator's untracked file is NOT in the stash",
+    );
+    assert(
+      git(dir, ["status", "--porcelain"]).trim() === "?? notes.txt",
+      "operator-untracked: the only remaining entry is the operator's own file",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
 // ---- 1b. abort: a leftover untracked cycle file means NOT verified ---------
 {
   const dir = buildRepo();
@@ -73,7 +109,7 @@ const git = (dir: string, args: string[]) =>
     git(dir, ["add", "cyc-new.txt"]);
     // Simulate a stash that silently did nothing: the leftover must be reported.
     const noStash: ExecFn = (cmd, opts) =>
-      opts?.argv?.[0] === "stash"
+      opts?.argv?.includes("stash")
         ? Promise.resolve({ stdout: "", stderr: "" })
         : realExec(cmd, opts);
     const r = await restoreRootToRefPreserving(noStash, {
@@ -125,3 +161,5 @@ const git = (dir: string, args: string[]) =>
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
+process.exit(result.exit);

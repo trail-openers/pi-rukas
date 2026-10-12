@@ -193,7 +193,7 @@ import { assert, realExec, shown, buildRepo, head, sha, stateWith, result } from
     });
     assert(!r.restored, "restoreRootToRef: refusal → not restored");
     assert(
-      r.detail?.includes("run `git checkout feature/x`") === true,
+      r.detail?.includes("run `git checkout feature/x --`") === true,
       `restoreRootToRef: detail names the exact command (got ${JSON.stringify(r.detail)})`,
     );
     assert(

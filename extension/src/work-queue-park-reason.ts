@@ -1,10 +1,10 @@
-import { processAlive } from "./work-driver-resume.ts";
-import { deferredLeftoverPath, deferredLeftoverStep } from "./work-queue-parks.ts";
 /**
  * Why a queued group parked, read from its state file. Moved out of
  * work-queue.ts (#1093) to make room for the once-per-invocation start-ref
  * capture; the logic is unchanged.
  */
+import { processAlive } from "./work-driver-resume.ts";
+import { deferredLeftoverPath, deferredLeftoverStep } from "./work-queue-parks.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 /**

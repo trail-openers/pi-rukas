@@ -45,7 +45,8 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const pExec = promisify(exec), pExecFile = promisify(execFile);
+const pExec = promisify(exec);
+const pExecFile = promisify(execFile);
 
 /** Build a temp repo: main + the operator's branch + a detached worktree
  * one real commit ahead of the root's HEAD. Returns the root and the
@@ -238,13 +239,13 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
     const stub: ExecFn = async (rawCmd, opts) => {
       const cmd = opts?.argv ? [rawCmd, ...opts.argv].join(" ") : rawCmd;
       const isRoot = opts?.cwd === dir;
-      const res = opts?.argv ? await pExecFile(rawCmd, opts.argv, { cwd: opts.cwd, maxBuffer: opts.maxBuffer }) : await pExec(rawCmd, { cwd: opts?.cwd, maxBuffer: opts?.maxBuffer });
+      const res = opts?.argv
+        ? await pExecFile(rawCmd, opts.argv, { cwd: opts.cwd, maxBuffer: opts.maxBuffer })
+        : await pExec(rawCmd, { cwd: opts?.cwd, maxBuffer: opts?.maxBuffer });
       if (isRoot && cmd === restoreCmd) {
         restoreCheckoutCount += 1;
-        // Write the dirt after the FIRST restore checkout so the on-disk file
-        // survives and the post-condition read sees it. A write failure is
-        // recorded, not swallowed — the test's "dirt was written" assertion
-        // must fail on its own terms.
+        // Write the dirt after the FIRST restore checkout so the post-condition
+        // read sees it; a write failure is recorded and asserted on below.
         if (!dirtWritten && restoreCheckoutCount === 1) {
           try {
             writeFileSync(dirtFile, "dirt\n");
@@ -278,10 +279,7 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
       dirtWriteError === undefined,
       "#968 forced-restore-failure: the dirt writeFileSync did not throw (write failures fail on their own terms)",
     );
-    assert(
-      dirtWritten,
-      "#968 forced-restore-failure: the stub intercepted the restore checkout and wrote the tracked dirt",
-    );
+    assert(dirtWritten, "#968 forced-restore-failure: the stub intercepted the restore checkout and wrote the dirt");
     assert(
       dirtSurvived,
       "#968 forced-restore-failure: the tracked dirt survived to the restore's post-condition read (the intercept did not drift)",

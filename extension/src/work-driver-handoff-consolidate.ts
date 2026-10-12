@@ -386,10 +386,9 @@ export async function consolidateWorktreesToBranch(
       // "repoRoot was NOT restored: …" on failure, threaded into the
       // handoff-consolidated event and both renderers.
       //
-      // originalRef is a BRANCH name (symbolic-ref capture) when the
-      // operator was attached — so this is a branch checkout, never a
-      // detached SHA — and a SHA for a detached operator, which detaches
-      // back to that same SHA. #1093 — no `ps.baseSha` / `HEAD` fallback: when
+      // originalRef is the restore target resolveRestoreTarget chose: the
+      // cycle-start ref (a branch name, or a SHA when the operator was
+      // detached), else mainline. #1093 — no `ps.baseSha` / `HEAD` fallback: when
       // no restore target resolved, nothing is checked out and the claim says so.
       // The success path never forces: a refused checkout leaves the tree alone
       // and the claim carries the exact command to run by hand.

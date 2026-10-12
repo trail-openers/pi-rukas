@@ -44,7 +44,7 @@
  * #1093 — two restore families live here, and they are NOT the same thing:
  *   - restoreRootToRef / restoreRootToRefPreserving are the OPERATOR-CHECKOUT
  *     restores. Non-forcing by construction: a plain `git checkout`, never
- *     `--hard` / `--force`. A refusal leaves the tree as it is and reports the
+ *     `--hard` / `--force`. The abort path stashes only the cycle's own paths. A refusal leaves the tree as it is and reports the
  *     exact command to run by hand. restoreCheckout (work-driver-git.ts) and
  *     the handoff consolidation path call these.
  *   - verifiedRestoreRoot is the driver's INTERNAL integration-point reset
@@ -103,21 +103,44 @@ export async function restoreRefProblem(
 /**
  * The dirt at repoRoot (`git status --porcelain`, minus `.worktrees/`
  * scaffolding). The single post-condition read every restore verifies against.
- * Untracked `??` entries are dirt only when `untracked` is set: the abort path
- * stashes them with `-u`, so one left behind is a cycle file in the operator's
- * tree. Throws when git cannot be read.
+ * Without `paths`: tracked dirt across the whole tree. With `paths` (the abort
+ * path): only the cycle's own paths, untracked included, so the operator's
+ * untracked files are never counted as a failed restore. Throws when git
+ * cannot be read.
  */
-async function trackedDirt(execFn: ExecFn, repoRoot: string, untracked = false): Promise<string[]> {
+async function trackedDirt(execFn: ExecFn, repoRoot: string, paths?: string[]): Promise<string[]> {
+  if (paths !== undefined && paths.length === 0) return [];
+  const argv =
+    paths === undefined
+      ? ["status", "--porcelain", "-uno"]
+      : ["--literal-pathspecs", "status", "--porcelain", "-uall", "--", ...paths];
+  const { stdout } = await execFn("git", { cwd: repoRoot, maxBuffer: 1024 * 1024, argv });
+  return stdout.split("\n").filter((l) => l.trim() && !/^..\s+"?\.worktrees\//.test(l));
+}
+
+/**
+ * #1093 — the paths the cycle changed at repoRoot: every TRACKED entry in
+ * `git status` (staged, unstaged, and unmerged from a conflict; a staged NEW
+ * file is included). Read BEFORE the abort path's mixed reset, which would turn
+ * those files untracked and leave them indistinguishable from the operator's
+ * own untracked files. `-z` keeps unusual names unquoted; a rename record is
+ * followed by its original path. Throws when git cannot be read.
+ */
+async function cycleChangedPaths(execFn: ExecFn, repoRoot: string): Promise<string[]> {
   const { stdout } = await execFn("git", {
     cwd: repoRoot,
     maxBuffer: 1024 * 1024,
-    argv: untracked ? ["status", "--porcelain"] : ["status", "--porcelain", "-uno"],
+    argv: ["status", "--porcelain", "-z", "-uno"],
   });
-  return stdout
-    .split("\n")
-    .filter(
-      (l) => l.trim() && (untracked || !l.startsWith("??")) && !/^..\s+"?\.worktrees\//.test(l),
-    );
+  const records = stdout.split("\0");
+  const paths: string[] = [];
+  for (let i = 0; i < records.length; i++) {
+    const rec = records[i];
+    if (!rec) continue;
+    paths.push(rec.slice(3));
+    if (rec[0] === "R" || rec[0] === "C") paths.push(records[++i] ?? "");
+  }
+  return paths.filter((p) => p && !p.startsWith(".worktrees/"));
 }
 
 /** The verified post-condition of a restore attempt. */
@@ -223,15 +246,19 @@ ${staged}
 
 /**
  * #1093 — the non-forcing restore for an ABORT path (conflict, apply-conflict,
- * throw). The discarded state is preserved to a file first. Then `git reset`
- * (mixed) clears the index (the conflict's staged and unmerged entries), and
- * `git stash push` moves the cycle's remaining TRACKED changes out of the
- * working tree. A mixed reset alone is not enough: it keeps the cycle's edits
- * as unstaged modifications, and a plain checkout then carries them onto the
- * target wherever the target agrees with HEAD on that path. The stash is
- * recoverable (`git stash list`), so nothing is lost. Never `--hard`, never
- * `--force`. If the stash fails the checkout is not attempted, and the detail
- * carries the commands to run by hand. Never throws.
+ * throw). The discarded state is preserved to a file first. The cycle's own
+ * changed paths are read, then `git reset` (mixed) clears the index (the
+ * conflict's staged and unmerged entries), then `git stash push -u -- <those
+ * paths>` moves exactly those paths out of the working tree. Scoping the stash
+ * to the cycle's paths matters: a whole-tree `-u` would also stash the
+ * operator's OWN untracked files in repoRoot. The mixed reset is needed
+ * because it keeps the cycle's edits as unstaged modifications, which a plain
+ * checkout would otherwise carry onto the target. The stash is recoverable
+ * (`git stash list`), so nothing is lost. The caller guarantees repoRoot was
+ * clean before the cycle touched it, so every tracked change here is the
+ * cycle's. Never `--hard`, never `--force`. If the stash fails the checkout is
+ * not attempted, and the detail carries the commands to run by hand. Never
+ * throws.
  */
 export async function restoreRootToRefPreserving(
   execFn: ExecFn,
@@ -239,32 +266,44 @@ export async function restoreRootToRefPreserving(
 ): Promise<VerifiedRestoreResult> {
   const { repoRoot, ref, scratchDir, label } = opts;
   const preservedAt = await preserveDiscardedState(execFn, repoRoot, scratchDir, label);
+  let paths: string[];
+  try {
+    paths = await cycleChangedPaths(execFn, repoRoot);
+  } catch (err) {
+    return {
+      restored: false,
+      checkedOut: false,
+      preservedAt,
+      detail: `could not list the cycle's changed paths (${(err as Error).message?.slice(0, 160)}); no checkout was attempted and the tree was left as it is`,
+    };
+  }
   try {
     await execFn("git", { cwd: repoRoot, maxBuffer: 256 * 1024, argv: ["reset"] });
   } catch (err) {
     trace(`work-driver: ${label} — index reset failed: ${(err as Error).message?.slice(0, 160)}`);
   }
-  try {
-    const message = `pi-rukas #1093 ${label}: cycle changes (preserved at ${preservedAt ?? "none"})`;
-    // `-u`: the mixed reset above turns the cycle's staged NEW files into
-    // untracked ones, which a tracked-only stash leaves in the operator's tree.
-    // `.worktrees/` is excluded: those are other cycles' worktrees, not ours.
-    await execFn("git", {
-      cwd: repoRoot,
-      maxBuffer: 1024 * 1024,
-      argv: ["stash", "push", "-u", "-m", message, "--", ".", ":(exclude).worktrees"],
-    });
-  } catch (err) {
-    const msg = (err as Error).message?.slice(0, 160);
-    trace(`work-driver: ${label} — stash of the cycle's changes failed: ${msg}`);
-    return {
-      restored: false,
-      checkedOut: false,
-      preservedAt,
-      detail: `could not stash the cycle's changes (${msg}); no checkout was attempted and the tree was left as it is — run \`git stash push\` then \`git checkout ${ref}\` at the repo root`,
-    };
+  if (paths.length > 0) {
+    try {
+      const message = `pi-rukas #1093 ${label}: cycle changes (preserved at ${preservedAt ?? "none"})`;
+      // `-u` so the cycle's staged NEW files (untracked after the reset) go too;
+      // the pathspec is the cycle's own list, never the whole tree.
+      await execFn("git", {
+        cwd: repoRoot,
+        maxBuffer: 1024 * 1024,
+        argv: ["--literal-pathspecs", "stash", "push", "-u", "-m", message, "--", ...paths],
+      });
+    } catch (err) {
+      const msg = (err as Error).message?.slice(0, 160);
+      trace(`work-driver: ${label} — stash of the cycle's changes failed: ${msg}`);
+      return {
+        restored: false,
+        checkedOut: false,
+        preservedAt,
+        detail: `could not stash the cycle's changes (${msg}); no checkout was attempted and the tree was left as it is — run \`git stash push -u -- <the cycle's paths>\` then \`git checkout ${ref} --\` at the repo root`,
+      };
+    }
   }
-  const restore = await restoreRootToRef(execFn, { repoRoot, ref, label, untracked: true });
+  const restore = await restoreRootToRef(execFn, { repoRoot, ref, label, paths });
   return { ...restore, preservedAt };
 }
 
@@ -278,12 +317,13 @@ export async function restoreRootToRefPreserving(
  */
 export async function restoreRootToRef(
   execFn: ExecFn,
-  opts: { repoRoot: string; ref: string; label: string; untracked?: boolean },
+  opts: { repoRoot: string; ref: string; label: string; paths?: string[] },
 ): Promise<VerifiedRestoreResult> {
-  const { repoRoot, ref, label, untracked } = opts;
+  const { repoRoot, ref, label, paths } = opts;
   // The ref is validated first, so showing it verbatim as the operator's
-  // command is safe.
-  const cmd = `git checkout ${ref}`;
+  // command is safe. `--` is part of the command the operator is told to run:
+  // without it git reads a deleted branch name as a pathspec.
+  const cmd = `git checkout ${ref} --`;
   const problem = restoreRefSyntaxProblem(ref);
   if (problem !== undefined) {
     trace(`work-driver: ${label}: ${cmd} not attempted: ${problem}`);
@@ -312,12 +352,12 @@ export async function restoreRootToRef(
     };
   }
   try {
-    const dirt = await trackedDirt(execFn, repoRoot, untracked);
+    const dirt = await trackedDirt(execFn, repoRoot, paths);
     if (dirt.length > 0) {
       return {
         restored: false,
         checkedOut: true,
-        detail: `${cmd} succeeded but ${untracked ? "changes remain" : "tracked changes remain"} (${dirt
+        detail: `${cmd} succeeded but ${paths !== undefined ? "changes remain" : "tracked changes remain"} (${dirt
           .slice(0, 5)
           .map((l) => l.slice(3))
           .join(", ")}); nothing was reset \u2014 run \`git status\` at the repo root`,
