@@ -58,6 +58,9 @@
 #
 # Digest mode prints NOTHING on all-pass (exit 0). Callers must distinguish
 # pass from no-output by exit code (0 = pass), not by stdout presence.
+# #1122 — on all-pass digest mode now prints exactly one line, the same tally
+# shape as the failure path: `P: <pass-count>  F: 0` (exit 0). The line carries
+# no ✗ and no `FAILED:` marker, so the failure-side filters never match it.
 #
 # The caller expands the glob; the script receives the file list.
 # Live tests (suffix -live.ts) are skipped in both modes, matching the legacy
@@ -433,5 +436,9 @@ if [ "${#names[@]}" -gt 0 ]; then
     done < <(grep -F -- "✗" "$capfile" || true)
   done
   exit 1
+fi
+if [ "$DIGEST" -eq 1 ]; then
+  # #1122 — all-pass digest: one tally line, same `total` as the failure path.
+  echo "P: $total  F: 0"
 fi
 exit 0

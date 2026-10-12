@@ -20,8 +20,8 @@
  *   1. Mixed fail/pass set (fixture-1/2/3): exit code parity with normal
  *      mode, every failing file named, every ✗ present, the `FAILED:`
  *      summary present, no ✓ lines, no passing tests' output.
- *   2. All-pass set: exit 0, empty digest, no FAILED: marker (the existing
- *      case-2 invariant, in digest mode).
+ *   2. All-pass set: exit 0, a single `P: <n>  F: 0` line, no FAILED: marker
+ *      (#1122 — the pass tally replaces the former empty digest).
  *   3. Planted failures at head, middle and tail of a multi-fixture argument
  *      list: all three failures' ✗ lines appear in the digest — not just
  *      the last one (unpatterned head/tail truncation drops the middle).
@@ -136,8 +136,8 @@ function runDigest(
   const digest = runDigest(files);
   assert(digest.status === 0, "case 2 (digest): exit 0 when all pass");
   assert(
-    digest.stdout.trim() === "",
-    `case 2 (digest): digest prints nothing on all-pass (got: ${JSON.stringify(digest.stdout)})`,
+    /^P: \d+  F: 0$/.test(digest.stdout.trim()) && digest.stdout.trim().split("\n").length === 1,
+    `case 2 (digest): all-pass prints exactly one line P: <n>  F: 0 (got: ${JSON.stringify(digest.stdout)})`,
   );
   assert(!digest.stdout.includes("FAILED:"), "case 2 (digest): no FAILED: marker on all-pass");
 }
