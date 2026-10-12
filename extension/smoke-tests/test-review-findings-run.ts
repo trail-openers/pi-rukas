@@ -14,7 +14,9 @@
  *      suppressed-accepted and the verdict stays APPROVED;
  *   4. a new finding is reported and recorded open;
  *   5. a full review where the lens omits that open finding on unchanged code
- *      carries it forward — the row stays open and the verdict stays ISSUES_FOUND.
+ *      carries it forward — the row stays open and the verdict stays ISSUES_FOUND;
+ *   6. a delta review of an unrelated file: the open finding on unchanged code
+ *      still blocks the delta verdict (ISSUES_FOUND).
  */
 
 import { execSync } from "node:child_process";
@@ -185,6 +187,18 @@ try {
       (r) => r.title === "Unchecked slice bound" && r.status === "open",
     ),
     "round 5: the carried row stays open",
+  );
+
+  // Round 6 — a delta review of an unrelated file: the open row on unchanged
+  // code is carried into the delta's verdict too.
+  writeFileSync(path.join(repo, "src", "b.ts"), "export const z = 1;\n");
+  sh("git add -A");
+  sh("git commit -qm three");
+  const c3 = sh("git rev-parse HEAD");
+  const r6 = await runLensReview({ ...common, since: c2, head: c3 });
+  assert(
+    r6.verdict === "ISSUES_FOUND" && r6.findings.some((f) => f.title === "Unchecked slice bound"),
+    `round 6: an open row on unchanged code still blocks a delta verdict (verdict ${r6.verdict})`,
   );
 } finally {
   rmSync(root, { recursive: true, force: true });

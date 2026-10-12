@@ -340,13 +340,11 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
     const ranges = run.deltaDiff !== undefined ? changedLineRanges(run.deltaDiff) : undefined;
     const linesByPath = new Map<string, string[]>();
     const missingPaths = new Set<string>();
-    // Open rows' paths are read too: a complete round resolves one only when its
-    // cited code provably changed, so it needs the head lines to decide.
-    const openPaths = run.complete
-      ? (await readBranchRows(run.cwd, run.branch))
-          .filter((r) => r.status === "open")
-          .map((r) => r.path)
-      : [];
+    // Open rows' paths are read too: a round resolves or carries one forward only
+    // on proof about its cited code (changed, or unchanged), so it needs the head lines.
+    const openPaths = (await readBranchRows(run.cwd, run.branch))
+      .filter((r) => r.status === "open")
+      .map((r) => r.path);
     for (const p of [...run.findings.map((f) => f.path), ...openPaths]) {
       if (linesByPath.has(p) || missingPaths.has(p)) continue;
       const head = await readHeadLines(run.cwd, run.headSha, p);
@@ -444,26 +442,30 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
         decisions.push({ action: "matched", rowId: row.id });
       });
       const carried: Finding[] = [];
-      if (run.complete) {
-        mine.forEach((r, i) => {
-          if (r.status !== "open" || touched.has(r.id)) return;
-          // Resolved, not carried: the path is gone at head (the PR deleted the
-          // file), or the row has no line and this complete review did not re-report
-          // it. A git read error never reaches here (the whole round is refused).
-          const pathGone = missingPaths.has(r.path);
-          if (pathGone || r.line === undefined || codeChanged(r, linesByPath.get(r.path))) {
-            mine[i] = { ...r, status: "resolved", acceptance: undefined };
-          } else {
-            carried.push({
-              lens: r.lens,
-              severity: r.severity,
-              path: r.path,
-              line: r.line,
-              title: r.title,
-            });
-          }
-        });
-      }
+      mine.forEach((r, i) => {
+        if (r.status !== "open" || touched.has(r.id)) return;
+        const pathGone = missingPaths.has(r.path);
+        const changed = codeChanged(r, linesByPath.get(r.path));
+        // A complete full review resolves an untouched open row when its path is
+        // gone at head (the PR deleted the file), it has no line, or its cited code
+        // changed. A git read error never reaches here (the whole round is refused).
+        if (run.complete && (pathGone || r.line === undefined || changed)) {
+          mine[i] = { ...r, status: "resolved", acceptance: undefined };
+          return;
+        }
+        // Otherwise it stands while its path is present and its cited code is
+        // provably unchanged — on a complete review and on a delta alike. A lens
+        // omitting a known finding on unchanged code is not a fix.
+        if (!pathGone && !changed) {
+          carried.push({
+            lens: r.lens,
+            severity: r.severity,
+            path: r.path,
+            line: r.line,
+            title: r.title,
+          });
+        }
+      });
       return { rows: [...others, ...mine], result: { decisions, carried } };
     });
     return out.ok ? { ok: true, decisions: out.value.decisions, carried: out.value.carried } : out;
