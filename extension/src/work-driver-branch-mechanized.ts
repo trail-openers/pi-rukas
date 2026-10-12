@@ -147,11 +147,15 @@ let inFlightFetch: { key: string; p: Promise<unknown> } | undefined;
 async function sharedFetch(execFn: ExecFn, repoRoot: string, ref: string): Promise<void> {
   const key = `${repoRoot}::${ref}`;
   if (inFlightFetch?.key === key) {
-    await inFlightFetch.p.catch(() => undefined);
+    // #1095 — a timeout is not the stale-ref case: rethrow it so this caller
+    // fails with the named cause too. Other failures keep the coalesced fallback.
+    await inFlightFetch.p.catch((err: unknown) => {
+      if (isNetGitTimeout(err)) throw err;
+    });
     return;
   }
-  // #1095 — a hung fetch rejects the SHARED promise, so every coalesced caller
-  // sees the NetGitTimeoutError; the stale-ref fallback does not apply to it.
+  // #1095 — a hung fetch rejects the SHARED promise; the owner rethrows a
+  // timeout (mechanizedBranchSetup) and coalesced callers rethrow it above.
   const p = runNetGit(execFn, `git fetch origin ${JSON.stringify(ref)}`, { cwd: repoRoot });
   inFlightFetch = { key, p };
   try {
