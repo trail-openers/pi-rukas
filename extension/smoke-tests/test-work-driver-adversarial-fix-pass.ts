@@ -169,8 +169,8 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
   }
 }
 
-// F — a finding may name a file outside the declared paths: that file is
-// allowed for the pass, so the pass completes.
+// F — a finding naming a ROOT file does not widen a root-declared fence: the
+// repo root is not an anchor, so the developer's b.txt change parks the pass.
 {
   const dir = repoWithFile("fix-named");
   try {
@@ -194,8 +194,8 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
     const st = fixState(dir, ["a.txt"]);
     const out = await runAdversarialFixPass(ctx, st, pendingFixes(st.eventLog), Date.now());
     assert(
-      out.eventLog[out.eventLog.length - 1]?.kind === "adversarial-fix-applied",
-      "F: a file named in the findings is allowed outside the declared paths",
+      out.eventLog[out.eventLog.length - 1]?.kind === "cap-hit",
+      "F: a root file named in the findings is not allowed outside the declared paths",
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -299,16 +299,20 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
   }
 }
 
-// H — a named path is a whole path token: `data.txt` does not name `a.txt`.
+// H — a named path is a whole path token: `lib/data.txt` does not name `lib/a.txt`.
 {
-  const named = namedPaths("data.txt: fix it; a.txt: and this", ["a.txt", "data.txt", "x.txt"], ["a.txt"]);
+  const named = namedPaths(
+    "lib/data.txt: fix it; lib/a.txt: and this",
+    ["lib/a.txt", "lib/data.txt", "lib/x.txt"],
+    ["lib/a.txt"],
+  );
   assert(
-    named.join(",") === "a.txt,data.txt",
+    named.join(",") === "lib/a.txt,lib/data.txt",
     `H: only whole-token path names are widened (got ${named.join(",")})`,
   );
   assert(
-    namedPaths("see data.txt.", ["a.txt"], ["a.txt"]).length === 0 &&
-      namedPaths("see (a.txt).", ["a.txt"], ["a.txt"]).join() === "a.txt",
+    namedPaths("see lib/data.txt.", ["lib/a.txt"], ["lib/a.txt"]).length === 0 &&
+      namedPaths("see (lib/a.txt).", ["lib/a.txt"], ["lib/a.txt"]).join() === "lib/a.txt",
     "H: punctuation around a path token still matches, a longer name does not",
   );
 }

@@ -105,6 +105,11 @@ async function runPass(dir: string, st: WorkState, onDev: (d: string) => void) {
 // fence for the pass but not the ceiling, so changing both parks.
 {
   const dir = repoWithFile("fs-fanout");
+  mkdirSync(path.join(dir, "lib"), { recursive: true });
+  writeFileSync(path.join(dir, "lib", "a.txt"), "one\n");
+  writeFileSync(path.join(dir, "lib", "b.txt"), "one\n");
+  git(dir, "add -A");
+  git(dir, 'commit -q -m "lib"');
   const env = {
     factor: process.env.PI_ENSEMBLE_SCOPE_FANOUT_FACTOR,
     min: process.env.PI_ENSEMBLE_SCOPE_FANOUT_MIN,
@@ -112,9 +117,9 @@ async function runPass(dir: string, st: WorkState, onDev: (d: string) => void) {
   process.env.PI_ENSEMBLE_SCOPE_FANOUT_FACTOR = "1";
   process.env.PI_ENSEMBLE_SCOPE_FANOUT_MIN = "1";
   try {
-    const r = await runPass(dir, fixState(dir, ["a.txt"], "a.txt: one; b.txt: also"), (d) => {
-      writeFileSync(`${d}/a.txt`, "two\n");
-      writeFileSync(`${d}/b.txt`, "two\n");
+    const r = await runPass(dir, fixState(dir, ["lib/a.txt"], "lib/a.txt: one; lib/b.txt: also"), (d) => {
+      writeFileSync(`${d}/lib/a.txt`, "two\n");
+      writeFileSync(`${d}/lib/b.txt`, "two\n");
       git(d, "add -A");
       git(d, 'commit -q -m "fix"');
     });
@@ -130,6 +135,30 @@ async function runPass(dir: string, st: WorkState, onDev: (d: string) => void) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
     }
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// B9 — a rename lists both sides. A pass that moves an undeclared file onto a
+// declared path names the deleted source too, so the move parks.
+{
+  const dir = repoWithFile("fs-rename");
+  try {
+    mkdirSync(path.join(dir, "other"), { recursive: true });
+    writeFileSync(path.join(dir, "other", "x.ts"), "export {};\n");
+    git(dir, "add -A");
+    git(dir, 'commit -q -m "other"');
+    const r = await runPass(dir, fixState(dir, ["lib/a.ts"], "lib/a.ts: fix it"), (d) => {
+      mkdirSync(path.join(d, "lib"), { recursive: true });
+      git(d, "mv other/x.ts lib/a.ts");
+      git(d, "add -A");
+      git(d, 'commit -q -m "fix"');
+    });
+    assert(
+      !r.applied && r.parked.includes("other/x.ts"),
+      `B9: a rename from an undeclared file onto a declared path parks (got "${r.parked}")`,
+    );
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -184,8 +213,8 @@ async function runPass(dir: string, st: WorkState, onDev: (d: string) => void) {
   }
 }
 {
-  // J3 — the install surface is not special-cased: a root file named by a
-  // finding widens a root-declared fence exactly like any other tracked file.
+  // J3 — the repo root is not an anchor: a root file named by a finding does
+  // not widen a root-declared fence, so the install.sh change parks.
   const dir = repoWithFile("fs-install");
   try {
     writeFileSync(path.join(dir, "install.sh"), "#!/bin/sh\n");
@@ -198,7 +227,10 @@ async function runPass(dir: string, st: WorkState, onDev: (d: string) => void) {
       git(d, "add -A");
       git(d, 'commit -q -m "fix"');
     });
-    assert(r.applied, `J3: a same-directory root file named by a finding widens (got "${r.parked}")`);
+    assert(
+      !r.applied && r.parked.includes("install.sh"),
+      `J3: a root file named by a finding does not widen a root-declared fence (got "${r.parked}")`,
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -212,13 +244,9 @@ async function runPass(dir: string, st: WorkState, onDev: (d: string) => void) {
     "extension/src/work-driver-verify-cmd.ts",
     "extension/src/adversarial-verdict.ts",
     "extension/src/comment-evidence.ts",
-    "extension/src/merge-guard.ts",
-    "extension/src/review-ledger.ts",
-    "extension/src/claim-scan.ts",
-    "extension/src/invariant-scan.ts",
   ];
   const named = namedPaths(
-    "extension/src/work-driver-verify-cmd.ts extension/src/adversarial-verdict.ts extension/src/comment-evidence.ts extension/src/merge-guard.ts extension/src/review-ledger.ts extension/src/claim-scan.ts extension/src/invariant-scan.ts extension/src/y.ts",
+    "extension/src/work-driver-verify-cmd.ts extension/src/adversarial-verdict.ts extension/src/comment-evidence.ts extension/src/y.ts",
     tracked,
     ["extension/src/x.ts"],
   );

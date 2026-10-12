@@ -17,7 +17,7 @@ import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import { capHitForCapKill } from "./work-driver-adversarial-capkill.ts";
 import { fanOutAdversarial } from "./work-driver-adversarial-fanout.ts";
-import { fixRequestEvents } from "./work-driver-adversarial-fix.ts";
+import { fixRequestEvents, withParsedSiblings } from "./work-driver-adversarial-fix.ts";
 import { handleNoCommittedFix, integrateLensFix } from "./work-driver-adversarial-lensfix.ts";
 import { reentryPassBatchSpan } from "./work-driver-adversarial-reentry.ts";
 import {
@@ -101,6 +101,8 @@ export async function runAdversarial(
   }
   if (parkedInfra) {
     const infraShortfall = outcomes.filter((o) => o.infra || o.threw);
+    // A parsed sibling's verdict must survive the infra park (both returns below).
+    next = withParsedSiblings(next, outcomes, now);
     const names = infraShortfall.map((o) => o.id).join(", ");
     trace(
       `work-driver: adversarial per-workstream retry budget exhausted on first pass for [${names}] — parking`,

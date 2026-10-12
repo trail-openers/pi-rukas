@@ -70,7 +70,9 @@ export async function treeChanges(
   sha: string,
 ): Promise<GitRead<TreeChanges>> {
   if (!SHA_RE.test(sha)) return { ok: false, reason: "the comparison commit is not a SHA" };
-  const names = await run(execFn, `git diff --name-only ${sha}`, cwd);
+  // --no-renames: a rename lists its source too, so a move from an out-of-fence
+  // path onto a declared one cannot pass the fence by naming only the new side.
+  const names = await run(execFn, `git diff --name-only --no-renames ${sha}`, cwd);
   if (!names.ok) return names;
   const diff = await run(execFn, `git diff ${sha}`, cwd);
   if (!diff.ok) return diff;

@@ -275,6 +275,43 @@ function withFixPassReport(
   };
 }
 
+/**
+ * A mixed first-pass fan-out parks on the infra cap, which would otherwise drop
+ * the parsed siblings. Each parsed sibling's verdict and findings go to the
+ * handoff as a plumb report, so the cap does not hide a review that did happen.
+ */
+export function withParsedSiblings(
+  state: WorkState,
+  outcomes: readonly AdversarialOutcome[],
+  now: number,
+): WorkState {
+  const parsed = outcomes.filter((o) => o.fixRequested || (!o.ok && !o.infra && !o.threw));
+  if (parsed.length === 0) return state;
+  const body = parsed
+    .map((o) => {
+      const status = o.records[o.records.length - 1]?.status ?? "parsed verdict";
+      const text = (o.fixRequested ? o.fixFindings : o.rejectionText) ?? "(no findings text)";
+      return `[workstream ${o.id}] ${status}:\n${text}`;
+    })
+    .join("\n\n---\n\n")
+    .slice(0, FIX_FINDINGS_MAX);
+  return {
+    ...state,
+    pipelineState: {
+      ...state.pipelineState,
+      plumbReports: [
+        ...(state.pipelineState.plumbReports ?? []),
+        {
+          step: "adversarial",
+          role: "driver",
+          body: `mixed fan-out: parsed sibling verdicts kept alongside the infra cap:\n${body}`,
+          at: now,
+        },
+      ],
+    },
+  };
+}
+
 /** Discloses a fact on the handoff report without parking the pass. */
 function noteFixPass(state: WorkState, note: string, now: number): WorkState {
   return {

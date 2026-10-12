@@ -60,7 +60,7 @@ async function passOf(
     parked: tail?.kind === "cap-hit" ? tail.evidence : undefined,
     applied,
     devs,
-    notes: out.pipelineState.plumbReports.map((r) => r.body),
+    notes: (out.pipelineState.plumbReports ?? []).map((r) => r.body),
   };
 }
 
@@ -259,9 +259,10 @@ async function passOf(
     const tracked = ["a.txt", "b.txt", "agents.json", ".github/workflows/ci.yml", "extension/src/x.ts"];
     const findings = "agents.json .github/workflows/ci.yml extension/src/x.ts b.txt a.txt";
     const widened = namedPaths(findings, tracked, ["a.txt"]).join(",");
+    // The repo root is not an anchor: a root-declared a.txt widens nothing.
     assert(
-      widened === "a.txt,b.txt",
-      `C: only same-directory, unprotected paths are widenable (got ${widened})`,
+      widened === "",
+      `C: a root-level anchor widens no root file (got ${widened})`,
     );
     const st = fixState(dir, ["a.txt"], "a.txt: fix it; agents.json: and this; extension/src/x.ts: and that");
     const r = await passOf(dir, st, (d) => {

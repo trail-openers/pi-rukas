@@ -293,6 +293,12 @@ function ctxFor(
       !s.eventLog.some((e) => e.kind === "adversarial-approved"),
       "C2: a mixed fan-out with a parsed ISSUES_FOUND never approves",
     );
+    assert(
+      (s.pipelineState.plumbReports ?? []).some(
+        (r) => r.body.includes("[workstream a]") && r.body.includes("a finding"),
+      ),
+      "C2: the parsed sibling's findings reach the infra cap's handoff",
+    );
   } finally {
     rmSync(a2, { recursive: true, force: true });
     rmSync(b2, { recursive: true, force: true });
