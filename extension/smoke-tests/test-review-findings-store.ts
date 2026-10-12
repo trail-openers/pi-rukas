@@ -431,6 +431,37 @@ try {
     "no-line: the same title stays suppressed by its acceptance",
   );
 
+  // A changed neighbour line changes the ±2 snippet window: a delta that touched
+  // line 3 must not suppress the finding on line 4 as unchanged.
+  const n1 = commit(SRC.join("\n"));
+  await recordFindingRun({
+    cwd: dir,
+    branch: "feat/nb",
+    headSha: n1,
+    findings: [finding("Division by zero possible", 4)],
+    complete: true,
+  });
+  const n2 = commit(SRC.map((l, i) => (i === 2 ? "  const a = x + 9;" : l)).join("\n"));
+  const neighbour = await recordFindingRun({
+    cwd: dir,
+    branch: "feat/nb",
+    headSha: n2,
+    findings: [finding("Division by zero possible", 4)],
+    deltaDiff: [
+      "diff --git a/src/a.ts b/src/a.ts",
+      "--- a/src/a.ts",
+      "+++ b/src/a.ts",
+      "@@ -3,1 +3,1 @@",
+      "-  const a = x + 1;",
+      "+  const a = x + 9;",
+    ].join("\n"),
+    complete: false,
+  });
+  assert(
+    neighbour?.[0]?.action === "matched",
+    "delta: a changed neighbour line changes the snippet, so the finding is matched, not suppressed-unchanged",
+  );
+
   // A corrupt findings file fails closed: no suppression, and it is not overwritten.
   writeFileSync(findingsFile, "{not json");
   const corruptRun = await recordFindingRun({

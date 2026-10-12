@@ -22,10 +22,20 @@ import { trace } from "./trace.ts";
 const RUNNER_INVOCATION =
   /\b(?:bun|bunx|tsx|node|npx|ts-node)\s+(?:run\s+)?(?:--?\S+\s+)*["'`]?(?:[^\s"'`;&|]*\/)?review-accept(?:\.ts)?(?=[\s'"`;&|]|$)/;
 const SCRIPT_PATH = /\/review-accept(?:\.ts)?(?=[\s'"`;&|]|$)/;
+/**
+ * A JS runner whose code calls acceptRow or names the findings file (`bun -e`,
+ * `node -e`, a heredoc). This closes the eval route only; a shell write to the
+ * JSON is still possible for an agent with shell access.
+ */
+const RUNNER_TOUCHES_STORE =
+  /\b(?:bun|bunx|node|tsx|npx|ts-node)\b[\s\S]*?\b(?:acceptRow|review-findings\.json)\b/;
 
 /** The matched invocation when a command runs review-accept, else undefined. */
 export function runsReviewAccept(command: string): string | undefined {
-  const m = RUNNER_INVOCATION.exec(command) ?? SCRIPT_PATH.exec(command);
+  const m =
+    RUNNER_INVOCATION.exec(command) ??
+    SCRIPT_PATH.exec(command) ??
+    RUNNER_TOUCHES_STORE.exec(command);
   return m?.[0].trim();
 }
 

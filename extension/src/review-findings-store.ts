@@ -314,6 +314,9 @@ export async function recordFindingRun(run: FindingRun): Promise<Decision[] | un
         const sameTitle =
           row.titleClass === id.titleClass ||
           (id.hasLine && jaccard(titleTokens(f.title), titleTokens(row.title)) >= JACCARD_MATCH);
+        // The snippet the row was last recorded with. A changed neighbour line
+        // changes the ±2 window, so an unchanged-code suppression needs this equal.
+        const priorHash = row.snippetHash;
         row.lastSeen = now;
         row.snippetHash = id.snippetHash;
         if (f.line) row.line = f.line;
@@ -337,7 +340,13 @@ export async function recordFindingRun(run: FindingRun): Promise<Decision[] | un
             return;
           }
         }
-        if (!critical && sameTitle && ranges && outsideDelta(f, id, ranges)) {
+        if (
+          !critical &&
+          sameTitle &&
+          ranges &&
+          priorHash === id.snippetHash &&
+          outsideDelta(f, id, ranges)
+        ) {
           const reason = `cited line ${f.line ?? "?"} is outside the delta since the last recorded review`;
           trace(`review-findings: suppressed-unchanged ${row.id} — ${reason}`);
           decisions.push({ action: "suppressed-unchanged", rowId: row.id, reason });

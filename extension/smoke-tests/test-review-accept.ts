@@ -170,6 +170,8 @@ const agentCommands = [
   "cd extension && bunx tsx scripts/review-accept.ts main 0123abcd --reason y",
   "bun run extension/scripts/review-accept.ts feat/x deadbeef --reason x",
   "cd extension/scripts && bun review-accept.ts main 0123abcd --reason y",
+  "bun -e 'await (await import(\"./src/review-findings-store.ts\")).acceptRow({})'",
+  "node -e \"require('fs').writeFileSync('review-findings.json','{}')\"",
 ];
 for (const c of agentCommands) {
   assert(
@@ -180,6 +182,7 @@ for (const c of agentCommands) {
 for (const c of [
   "git status",
   "bun test smoke-tests/test-review-accept.ts",
+  "bun test smoke-tests/test-review-findings-store.ts",
   "echo review-acceptance-notes",
   'git commit -m "feat: review-accept guard"',
   'git commit -m "docs: review-accept flow"',
