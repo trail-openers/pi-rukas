@@ -11,13 +11,14 @@
  * Each row is one finding a round reported (see review-findings-match.ts for
  * the identity). Rows are `open` (reported, not resolved), `accepted`
  * (an operator accepted it by id) or `resolved` (a full review no longer
- * reported it). A branch keeps at most MAX_ROWS_PER_BRANCH rows; resolved rows
+ * reported it AND its cited code changed; an open row whose code is unchanged
+ * is carried forward into the review instead). A branch keeps at most MAX_ROWS_PER_BRANCH rows; resolved rows
  * go first. Accepted rows are never evicted.
  *
  * Failure policy — fail closed on the file, fail open on the review:
  *   - A findings file that does not parse, or holds a malformed row, is
  *     CORRUPT. Readers treat it as no memory. Writers refuse to overwrite it
- *     and copy it aside to `review-findings.json.corrupt-<ms>`, so an operator
+ *     and copy it aside to `review-findings.json.corrupt-<hash of its bytes>`, so an operator
  *     acceptance is never silently erased.
  *   - Any fault while recording a round (no clone, corrupt file, a git error
  *     reading a head file) skips recording for that round and returns the
@@ -43,9 +44,11 @@ import { changedLineRanges } from "./review-diff.ts";
 import {
   type FindingIdentity,
   JACCARD_MATCH,
+  hashText,
   identityOf,
   jaccard,
   pickMatch,
+  snippetHashAt,
   titleClassOf,
   titleTokens,
 } from "./review-findings-match.ts";
@@ -97,13 +100,15 @@ export interface FindingRun {
   findings: Finding[];
   /** The delta diff (`git diff since..head`) when this round was a delta review. */
   deltaDiff?: string;
-  /** Whether a full review that reached a verdict — only then may unmatched open rows resolve. */
+  /** Whether a full review that reached a verdict — only then may unmatched open rows resolve (when their cited code changed) or carry forward. */
   complete: boolean;
   now?: number;
 }
 
 /** The result of recording one round: the decisions, or why nothing was recorded. */
-export type RecordOutcome = { ok: true; decisions: Decision[] } | { ok: false; reason: string };
+export type RecordOutcome =
+  | { ok: true; decisions: Decision[]; carried: Finding[] }
+  | { ok: false; reason: string };
 
 /** The result of a locked read-modify-write: the callback's value, or why it did not run. */
 export type MutateOutcome<T> = { ok: true; value: T } | { ok: false; reason: string };
@@ -285,7 +290,8 @@ export async function mutateFindings<T>(
     release = await acquireLedgerLock(loc.ledger);
     const parsed = parseFindingsFile(loc.file);
     if (!parsed.ok) {
-      const copy = `${loc.file}.corrupt-${Date.now()}`;
+      // Named by content, so repeated rounds on one corrupt file reuse one copy.
+      const copy = `${loc.file}.corrupt-${hashText(readFileSync(loc.file, "utf8"))}`;
       copyFileSync(loc.file, copy);
       trace(`review-findings: ${loc.file} is corrupt (${parsed.reason}) — copied to ${copy}`);
       return {
@@ -314,6 +320,16 @@ export async function readBranchRows(cwd: string, branch: string): Promise<Store
   } catch {
     return [];
   }
+}
+
+/**
+ * True only when the row's cited line exists at head and its snippet differs from
+ * the one recorded. Unknown lines (path absent, unreadable, no line) are NOT
+ * changed: an open row is resolved only on positive evidence its code moved.
+ */
+function codeChanged(r: StoredFinding, lines: string[] | undefined): boolean {
+  if (!lines || r.line === undefined || r.line > lines.length) return false;
+  return snippetHashAt(lines, r.line) !== r.snippetHash;
 }
 
 /** Would a finding on `line` of `file` fall outside the delta's changed lines? */
@@ -351,12 +367,19 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
     const ranges = run.deltaDiff !== undefined ? changedLineRanges(run.deltaDiff) : undefined;
     const linesByPath = new Map<string, string[]>();
     const missingPaths = new Set<string>();
-    for (const f of run.findings) {
-      if (linesByPath.has(f.path) || missingPaths.has(f.path)) continue;
-      const head = await readHeadLines(run.cwd, run.headSha, f.path);
+    // Open rows' paths are read too: a complete round resolves one only when its
+    // cited code provably changed, so it needs the head lines to decide.
+    const openPaths = run.complete
+      ? (await readBranchRows(run.cwd, run.branch))
+          .filter((r) => r.status === "open")
+          .map((r) => r.path)
+      : [];
+    for (const p of [...run.findings.map((f) => f.path), ...openPaths]) {
+      if (linesByPath.has(p) || missingPaths.has(p)) continue;
+      const head = await readHeadLines(run.cwd, run.headSha, p);
       if (head.kind === "error") return { ok: false, reason: head.reason };
-      if (head.kind === "missing") missingPaths.add(f.path);
-      else linesByPath.set(f.path, head.lines);
+      if (head.kind === "missing") missingPaths.add(p);
+      else linesByPath.set(p, head.lines);
     }
     // A path absent at head has no line to cite: the finding is a no-line one,
     // and it is never suppressed (there is no code it could be unchanged against).
@@ -370,6 +393,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
       const touched = new Set<string>();
       const taken = new Set(all.map((r) => r.id));
       const decisions: Decision[] = [];
+      const carried: Finding[] = [];
       findings.forEach((f, i) => {
         const id = identities[i] as FindingIdentity;
         const critical = f.severity === "CRITICAL";
@@ -409,8 +433,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
         const priorHash = row.snippetHash;
         row.lastSeen = now;
         row.snippetHash = id.snippetHash;
-        if (gone) row.line = undefined;
-        if (f.line) row.line = f.line;
+        row.line = f.line;
         if (row.status === "resolved") row.status = "open";
         if (row.status === "accepted" && row.acceptance) {
           // A line-bearing finding is bound to the snippet the operator accepted.
@@ -449,12 +472,18 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
       });
       if (run.complete) {
         for (const r of mine) {
-          if (r.status === "open" && !touched.has(r.id)) r.status = "resolved";
+          if (r.status !== "open" || touched.has(r.id)) continue;
+          if (codeChanged(r, linesByPath.get(r.path))) r.status = "resolved";
+          else {
+            carried.push({ lens: r.lens, severity: r.severity, path: r.path, line: r.line, title: r.title });
+          }
         }
       }
-      return { rows: [...others, ...mine], result: decisions };
+      return { rows: [...others, ...mine], result: { decisions, carried } };
     });
-    return out.ok ? { ok: true, decisions: out.value } : out;
+    return out.ok
+      ? { ok: true, decisions: out.value.decisions, carried: out.value.carried }
+      : out;
   } catch (err) {
     trace(`review-findings: record failed: ${(err as Error).message}`);
     return { ok: false, reason: (err as Error).message.slice(0, 160) };

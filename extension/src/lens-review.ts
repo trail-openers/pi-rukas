@@ -425,14 +425,18 @@ export async function runLensReview(opts: {
     recorded && !recorded.ok ? `findings memory unavailable: ${recorded.reason}` : undefined;
   const decisions = recorded?.ok ? recorded.decisions : undefined;
   const { kept, suppressed } = partitionDecisions(deduped, decisions);
-  const verdict = computeVerdict(kept, lensResults, threshold);
+  // #1105 — open rows this round did not re-report, whose cited code is
+  // unchanged, still stand: a lens omitting a known finding is not a fix.
+  // They are reported alongside this round's findings.
+  const reported = [...kept, ...(recorded?.ok ? recorded.carried : [])];
+  const verdict = computeVerdict(reported, lensResults, threshold);
   // #973 — the round-cap rule's inputs for the ledger write: hasCritical
   // from the deduped findings, headSha from the ref the review actually
   // covered (the delta's head when this was a delta run, otherwise
   // opts.head or HEAD). Both are undefined on the full-review path when no
   // head is named (the ledger write omits them; a later round-cap check
   // fails closed on the missing field — conservative by design).
-  const hasCritical = deduped.some((f) => f.severity === "CRITICAL");
+  const hasCritical = reported.some((f) => f.severity === "CRITICAL");
   // #1039 — headSha was resolved once, before any early return (see the
   // block above). The ledger write carries it through to all paths.
   // #984 — the ledger write's promise is discarded (fire-and-forget in
@@ -440,10 +444,10 @@ export async function runLensReview(opts: {
   return finishWith(
     {
       verdict,
-      totalFindings: kept.length,
-      bySeverity: bySeverityCounts(kept),
+      totalFindings: reported.length,
+      bySeverity: bySeverityCounts(reported),
       lenses: lensResults,
-      findings: kept,
+      findings: reported,
       ...(suppressed.length > 0 ? { suppressed } : {}),
       ...(memoryNote ? { memoryNote } : {}),
       usage: aggregateLensUsage(lensResults),

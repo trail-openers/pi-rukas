@@ -11,7 +11,10 @@
  *      cited code suppresses it (suppressed-unchanged, same row), so the
  *      verdict is APPROVED and the finding is listed as suppressed;
  *   3. an operator acceptance by row id, then a full review — the finding is
- *      suppressed-accepted and the verdict stays APPROVED.
+ *      suppressed-accepted and the verdict stays APPROVED;
+ *   4. a new finding is reported and recorded open;
+ *   5. a full review where the lens omits that open finding on unchanged code
+ *      carries it forward — the row stays open and the verdict stays ISSUES_FOUND.
  */
 
 import { execSync } from "node:child_process";
@@ -74,6 +77,7 @@ const c1 = sh("git rev-parse HEAD");
 // reports the same finding each round, and the prompt it received is recorded.
 const seenPrior: string[] = [];
 let reportLine = 4;
+let reportTitle: string | undefined = "Division by zero possible";
 const stubLens = async (args: {
   lens: { name: string };
   opts: { priorFindings?: string };
@@ -88,14 +92,14 @@ const stubLens = async (args: {
     attempts: 1,
     blocked: false,
     summary: "reviewed the diff",
-    findings: first
+    findings: first && reportTitle
       ? [
           {
             lens: args.lens.name,
             severity: "MEDIUM",
             path: "src/a.ts",
             line: reportLine,
-            title: "Division by zero possible",
+            title: reportTitle,
           },
         ]
       : [],
@@ -162,6 +166,25 @@ try {
   assert(
     r3.verdict === "APPROVED" && r3.suppressed?.[0]?.reason.includes("op@example.com") === true,
     "round 3: the accepted finding is suppressed on a full review and the verdict is APPROVED",
+  );
+
+  // Round 4 — a new finding is reported and recorded open.
+  reportTitle = "Unchecked slice bound";
+  const r4 = await runLensReview({ ...common, diff: FULL_DIFF, full: true, head: c2 });
+  assert(r4.verdict === "ISSUES_FOUND", `round 4: the new finding blocks (verdict ${r4.verdict})`);
+
+  // Round 5 — the lens omits it on unchanged code: carried forward, not resolved.
+  reportTitle = undefined;
+  const r5 = await runLensReview({ ...common, diff: FULL_DIFF, full: true, head: c2 });
+  assert(
+    r5.verdict === "ISSUES_FOUND" && r5.findings.some((f) => f.title === "Unchecked slice bound"),
+    `round 5: an omitted open finding on unchanged code still blocks (verdict ${r5.verdict})`,
+  );
+  assert(
+    (await readBranchRows(repo, "feat/x")).some(
+      (r) => r.title === "Unchecked slice bound" && r.status === "open",
+    ),
+    "round 5: the carried row stays open",
   );
 } finally {
   rmSync(root, { recursive: true, force: true });

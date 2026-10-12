@@ -322,8 +322,10 @@ try {
     "accepted: the lapsed row is open with no acceptance",
   );
 
-  // A complete full review that no longer reports a row resolves it.
-  await recordFindingRun({ cwd: dir, branch: "feat/x", headSha: c3, findings: [], complete: true });
+  // A complete full review resolves an open row only when its cited code changed
+  // (omission alone carries it forward; see test-review-findings-run.ts).
+  const c4 = commit(readFileSync(path.join(dir, "src", "a.ts"), "utf8").replace("x + 9", "x + 10"));
+  await recordFindingRun({ cwd: dir, branch: "feat/x", headSha: c4, findings: [], complete: true });
   assert(
     (await readBranchRows(dir, "feat/x"))[0]?.status === "resolved",
     "resolve: an open row a complete full review no longer reports is resolved",
