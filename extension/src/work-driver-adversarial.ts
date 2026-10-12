@@ -167,7 +167,7 @@ export async function runAdversarial(
   // holds), and the routing record is what keeps the fix request from being
   // dropped. A rejected sibling still goes to the aggregate below.
   const fixEvents = fixRequestEvents(outcomes, Date.now());
-  if (fixEvents.length > 0 && outcomes.every((o) => o.ok || o.fixRequested || o.infra)) {
+  if (fixEvents.length > 0 && outcomes.every((o) => o.ok || o.infra)) {
     trace(
       `work-driver: adversarial routed ${fixEvents.length} workstream(s) to a develop fix pass`,
     );

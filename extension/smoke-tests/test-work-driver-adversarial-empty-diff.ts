@@ -122,6 +122,7 @@ async function seedAdversarialState(
           ok: true,
           text: "APPROVED after round 1",
           loopOutcome: "approved",
+          adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
         });
       },
       dispatchFn: async (_pi, spec, opts) => {
@@ -221,6 +222,7 @@ async function seedAdversarialState(
           ok: true,
           text: "APPROVED after round 1",
           loopOutcome: "approved",
+          adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
         });
       },
       dispatchFn: async (_pi, spec, opts) => {
@@ -322,6 +324,7 @@ async function seedAdversarialState(
           ok: true,
           text: "APPROVED after round 1",
           loopOutcome: "approved",
+          adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
         });
       },
       dispatchFn: async (_pi, spec, opts) => {
@@ -395,6 +398,7 @@ async function seedAdversarialState(
           ok: true,
           text: "APPROVED after round 1",
           loopOutcome: "approved",
+          adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
         });
       },
       dispatchFn: async (_pi, spec, opts) => {

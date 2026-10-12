@@ -13,23 +13,27 @@
  *
  * This module owns the event-log reading (round counts, pending fixes), the
  * per-round interpretation of a reportOnly result, and the fix pass itself.
+ * The fence (scope, git reads) lives in work-driver-adversarial-fix-scope.ts.
  * Leaf for the adversarial step: it imports develop's topological core but
  * never the adversarial handlers, so there is no import cycle.
  */
 
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
-import { decideLoopAction } from "./adversarial-verdict.ts";
+import { type LoopAction, decideLoopAction } from "./adversarial-verdict.ts";
 import { MAX_ROUNDS } from "./adversarial.ts";
 import { roundComments } from "./comment-evidence.ts";
 import { dispatchCore } from "./dispatch.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import { runDevelopTopological } from "./work-develop-topological.ts";
+import { defaultExec } from "./work-driver-adversarial-fix-git.ts";
+import {
+  type FixRequest,
+  overlayWorkstreams,
+  planFixPass,
+  postPassFault,
+} from "./work-driver-adversarial-fix-scope.ts";
 import type { AdversarialOutcome } from "./work-driver-adversarial-types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
-import { fetchDiff } from "./work-driver-diff.ts";
-import { protectedPathsIn } from "./work-driver-doctrine.ts";
 import { beginDispatch } from "./work-driver-resume.ts";
 import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import { execp as argvExecp } from "./work-driver-verify.ts";
@@ -37,8 +41,7 @@ import { activeIssuesOf } from "./work-driver-workspace.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 
-const execp = promisify(exec);
-type FixExec = NonNullable<DriverContext["verifyExecFn"]> | typeof execp;
+export { namedPaths } from "./work-driver-adversarial-fix-scope.ts";
 
 /** Bound on the findings carried in an event / the fix prompt (state-file hygiene). */
 export const FIX_FINDINGS_MAX = 4000;
@@ -50,6 +53,18 @@ export interface PendingFix {
   workstreamId: string;
   round: number;
   findings: string;
+}
+
+/**
+ * The one verdict → action mapping for the review track. Both the live
+ * interpretation of a reportOnly result and the rebuild of a single-workstream
+ * verdict from the log consume it, so the thresholds cannot drift apart.
+ */
+export function actionFor(
+  status: Parameters<typeof decideLoopAction>[0],
+  round: number,
+): LoopAction {
+  return decideLoopAction(status, round, MAX_ROUNDS, true);
 }
 
 /**
@@ -123,23 +138,16 @@ export interface ReviewReading {
 }
 
 /**
- * Interpret one reportOnly review (or a legacy full-loop result, which has no
- * round record and keeps its own `ok`). The decision is `decideLoopAction` —
- * the same table the in-gate loop used — so the thresholds cannot drift.
+ * Interpret one reportOnly review. Every review carries its round record
+ * (#1114), so a successful dispatch without a parsed verdict is infra, never
+ * an approval. The decision is `actionFor`, the same table the log rebuild uses.
  */
 export function interpretReview(result: DispatchResult, reviewRound: number): ReviewReading {
   const ok = result.ok && !result.errorStop;
+  if (!ok) return { ok: false, infra: false, fixRequested: false };
   const rec = result.adversarialRounds?.[0];
-  if (!rec || !ok) {
-    return {
-      ok,
-      infra: false,
-      fixRequested: false,
-      passFindings: ok && result.text?.includes("PASSED WITH FINDINGS") ? result.text : undefined,
-    };
-  }
-  if (!rec.verdictParsed) return { ok: false, infra: true, fixRequested: false };
-  const action = decideLoopAction(rec.status, reviewRound, MAX_ROUNDS, true);
+  if (!rec?.verdictParsed) return { ok: false, infra: true, fixRequested: false };
+  const action = actionFor(rec.status, reviewRound);
   if (action === "fix") return { ok: true, infra: false, fixRequested: true };
   if (action === "reject") return { ok: false, infra: false, fixRequested: false };
   return {
@@ -214,19 +222,6 @@ export function survivorsOf(
 }
 
 /**
- * Named paths: tracked at base, outside the protected set, and named in a
- * finding as a whole path token (`data.txt` does not name `a.txt`).
- */
-export function namedPaths(findings: string, tracked: readonly string[]): string[] {
-  return tracked.filter((p) => protectedPathsIn([p]).length === 0 && pathTokenIn(findings, p));
-}
-
-function pathTokenIn(text: string, p: string): boolean {
-  const escaped = p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?<![\\w./-])${escaped}(?![\\w/-]|\\.\\w)`).test(text);
-}
-
-/**
  * The verdict a single-workstream cycle's last parsed review reached. Such a
  * cycle keeps no per-workstream outcome event, so the log is the only record.
  */
@@ -241,70 +236,16 @@ function lastReviewVerdict(
         e.kind === "adversarial-round" && e.verdictParsed && keyOf(e.workstreamId) === workstreamId,
     );
   if (!last) return undefined;
-  const action = decideLoopAction(last.status, last.round, MAX_ROUNDS, true);
+  const action = actionFor(last.status, last.round);
   if (action === "pass") return "approved";
   if (action === "reject") return "rejected";
   return undefined;
 }
 
-async function trackedPaths(
-  execFn: NonNullable<DriverContext["verifyExecFn"]> | typeof execp,
-  repoRoot: string,
-  baseSha: string | undefined,
-): Promise<string[]> {
-  if (!baseSha || !/^[0-9a-f]{40}$/.test(baseSha)) return [];
-  try {
-    const { stdout } = await execFn(`git ls-tree -r --name-only ${baseSha}`, {
-      cwd: repoRoot,
-      maxBuffer: 64 * 1024 * 1024,
-    });
-    return stdout.split("\n").filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-async function headOf(execFn: FixExec, cwd: string): Promise<string | undefined> {
-  try {
-    const { stdout } = await execFn("git rev-parse HEAD", { cwd, maxBuffer: 64 * 1024 });
-    return stdout.trim() || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * The files this fix pass changed (commits since its pre-pass HEAD) that fall
- * outside the workstream's allowed paths. A path is allowed when it equals a
- * declared/named path or sits under a declared directory.
- */
-async function outOfScopeSince(
-  execFn: FixExec,
-  cwd: string,
-  headBefore: string | undefined,
-  allowed: readonly string[],
-): Promise<string[]> {
-  if (!headBefore) return [];
-  let changed: string[] = [];
-  try {
-    const { stdout } = await execFn(`git diff --name-only ${headBefore}..HEAD`, {
-      cwd,
-      maxBuffer: 1024 * 1024,
-    });
-    changed = stdout.split("\n").filter(Boolean);
-  } catch {
-    return [];
-  }
-  const cleaned = allowed.map((a) => a.replace(/\s+\([^)]*\)$/, "").trim());
-  return changed.filter(
-    (f) => !cleaned.some((a) => f === a || (a.endsWith("/") && f.startsWith(a))),
-  );
-}
-
 /** Records the handoff report naming the rounds, the reason and the findings. */
 function withFixPassReport(
   state: WorkState,
-  pending: PendingFix[],
+  pending: readonly PendingFix[],
   reason: string,
   now: number,
 ): WorkState {
@@ -332,7 +273,7 @@ function withFixPassReport(
 
 function parkFixPass(
   state: WorkState,
-  pending: PendingFix[],
+  pending: readonly PendingFix[],
   reason: string,
   now: number,
 ): WorkState {
@@ -348,11 +289,10 @@ function parkFixPass(
 
 /**
  * The develop fix pass for the pending workstreams. Reuses their worktrees;
- * named finding paths widen the scope fence (only where the workstream
- * declares paths, so an N=1 workstream with no fence stays fenceless); all
- * develop gates run unchanged. Parks like a first develop failure on: a
- * failed gate or dispatch (router handles), a no-op pass, or a removed
- * origin/main comment.
+ * named finding paths widen a declared fence for this pass only; all develop
+ * gates run unchanged. Parks like a first develop failure: a failed gate or
+ * dispatch, a no-op pass, a change outside the fence, or a removed origin/main
+ * comment. Every pre-pass read fails closed (see the scope module).
  */
 export async function runAdversarialFixPass(
   ctx: DriverContext,
@@ -361,34 +301,26 @@ export async function runAdversarialFixPass(
   now: number,
 ): Promise<WorkState> {
   const ps: PipelineState = state.pipelineState;
-  const execFn = ctx.verifyExecFn ?? execp;
-  const ids = pending.map((p) => p.workstreamId);
-  const originals = ps.workstreams;
-  const tracked = await trackedPaths(execFn, ctx.repoRoot, ps.baseSha);
-  const passWorkstreams: NonNullable<PipelineState["workstreams"]> = { ...originals };
-  for (const p of pending) {
-    const orig = originals?.[p.workstreamId];
-    const declared = orig?.paths ?? [];
-    const named =
-      declared.length > 0
-        ? namedPaths(p.findings, tracked).filter((x) => !declared.includes(x))
-        : [];
-    const base = orig
-      ? { ...orig, paths: [...declared, ...named] }
-      : { id: p.workstreamId, scope: "", paths: [], outOfScope: [] };
-    passWorkstreams[p.workstreamId] = { ...base, fixFindings: p.findings } as NonNullable<
-      PipelineState["workstreams"]
-    >[string];
-    if (named.length > 0)
-      trace(`work-driver: fix pass ${p.workstreamId} widened by ${named.join(", ")}`);
+  const execFn = ctx.verifyExecFn ?? defaultExec;
+  const requests: FixRequest[] = pending.map((p) => ({
+    workstreamId: p.workstreamId,
+    findings: p.findings,
+  }));
+  const planned = await planFixPass(execFn, ctx.repoRoot, ps, requests);
+  if (!planned.ok) return parkFixPass(state, pending, planned.reason, now);
+  const plans = planned.value;
+  for (const p of plans) {
+    if (p.widened.length > 0)
+      trace(`work-driver: fix pass ${p.id} widened by ${p.widened.join(", ")}`);
   }
-  const wtOf = (id: string): string => ps.worktrees?.[id] ?? ctx.repoRoot;
-  const before = await Promise.all(ids.map((id) => fetchDiff(wtOf(id), ps.baseSha)));
-  const heads = await Promise.all(ids.map((id) => headOf(execFn, wtOf(id))));
+  const ids = plans.map((p) => p.id);
+  const passWorkstreams = overlayWorkstreams(ps.workstreams, plans);
 
+  // The develop step receives the overlay as a parameter; the write-ahead and
+  // the persisted pipeline carry the ORIGINAL workstreams.
   const startLen = state.eventLog.length;
   const stepped = appendEvent(
-    { ...state, pipelineState: { ...ps, currentStep: "develop", workstreams: passWorkstreams } },
+    { ...state, pipelineState: { ...ps, currentStep: "develop" } },
     { kind: "step-started", step: "develop", at: now },
   );
   const begun = await beginDispatch(
@@ -411,10 +343,9 @@ export async function runAdversarialFixPass(
     now,
     begun.jobId,
   );
-  // The widened scope and the findings are for this pass only.
   const restored: WorkState = {
     ...passed,
-    pipelineState: { ...passed.pipelineState, workstreams: originals },
+    pipelineState: { ...passed.pipelineState, workstreams: ps.workstreams },
   };
   const failed = restored.eventLog
     .slice(startLen)
@@ -435,35 +366,13 @@ export async function runAdversarialFixPass(
     return parkFixPass(restored, pending, "a develop gate failed on the fix pass", now);
   }
 
-  const after = await Promise.all(ids.map((id) => fetchDiff(wtOf(id), ps.baseSha)));
-  const unchanged = ids.filter((_, i) => after[i] === before[i]);
-  if (unchanged.length > 0) {
-    return parkFixPass(
-      restored,
-      pending,
-      `the diff of ${unchanged.join(", ")} is byte-identical to its pre-pass state — nothing was fixed`,
-      now,
-    );
-  }
-  for (const [i, id] of ids.entries()) {
-    const allowed = passWorkstreams[id]?.paths ?? [];
-    // A declared fence holds for the pass: only the widened paths may change.
-    const strays =
-      allowed.length > 0 ? await outOfScopeSince(execFn, wtOf(id), heads[i], allowed) : [];
-    if (strays.length > 0) {
-      return parkFixPass(
-        restored,
-        pending,
-        `${id} changed ${strays.join(", ")} — outside its declared paths and the files the findings name`,
-        now,
-      );
-    }
-  }
-  for (const id of ids) {
+  const post = await postPassFault(execFn, plans, ps.baseSha ?? "");
+  if (post.reason) return parkFixPass(restored, pending, post.reason, now);
+  for (const p of plans) {
     const lost = await roundComments(
-      after[ids.indexOf(id)] ?? "",
+      post.diffs[p.id] ?? "",
       undefined,
-      wtOf(id),
+      p.worktree,
       verifyTimeoutMs(),
       ctx.verifyExecFn,
     );
@@ -472,7 +381,7 @@ export async function runAdversarialFixPass(
       return parkFixPass(
         restored,
         pending,
-        `comment retention could not be checked for ${id} (NOT CHECKED) — the fix pass is not cleared`,
+        `comment retention could not be checked for ${p.id} (NOT CHECKED) — the fix pass is not cleared`,
         now,
       );
     }
@@ -480,7 +389,7 @@ export async function runAdversarialFixPass(
       return parkFixPass(
         restored,
         pending,
-        `the fix pass removed ${lost.lost.length} origin/main comment line(s) in ${id}`,
+        `the fix pass removed ${lost.lost.length} origin/main comment line(s) in ${p.id}`,
         now,
       );
     }

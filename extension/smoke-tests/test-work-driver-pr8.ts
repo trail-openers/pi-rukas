@@ -131,6 +131,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
           role: "adversarial-developer",
           ok: true,
           text: "Adversarial APPROVED after round 1.\n",
+          adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
         });
       },
       dispatchFn: async (_pi, spec, opts) => {
@@ -232,6 +233,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
           role: "adversarial-developer",
           ok: true,
           text: "Adversarial APPROVED after round 1.\n",
+          adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
         });
       },
       dispatchFn: async (_pi, spec, opts) => {
@@ -306,19 +308,22 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
       issue: 912,
       issueBodyFetcherFn: mockIssueBodyOk,
       adversarialLoopFn: async (params) => {
-        // task-a APPROVED in 1 round; task-b APPROVED in 2 rounds.
-        // Aggregate rounds should be max = 2.
+        // task-a APPROVED in 1 round; task-b APPROVED in 2 rounds (its run
+        // reports the rounds it covered). Aggregate rounds should be max = 2.
         if (params.workCwd?.endsWith("task-a")) {
           return mkResult({
             role: "adversarial-developer",
             ok: true,
             text: "Adversarial APPROVED after round 1.\n",
+            adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
           });
         }
         return mkResult({
           role: "adversarial-developer",
           ok: true,
           text: "Adversarial APPROVED after round 2.\n",
+          roundsExecuted: 2,
+          adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
         });
       },
       dispatchFn: async (_pi, spec, opts) => {

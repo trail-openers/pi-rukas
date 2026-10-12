@@ -7,10 +7,16 @@
  * unnamed one is refused; removing an origin/main comment parks.
  */
 
-import { execSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import {
+  devCommit,
+  fixState,
+  git,
+  repoWithFile,
+  singleState,
+  tmpDir,
+} from "./lib/adversarial-fix-fixtures.ts";
 import type { DispatchResult } from "../src/types.ts";
 import {
   namedPaths,
@@ -20,7 +26,7 @@ import {
 } from "../src/work-driver-adversarial-fix.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { nextStep } from "../src/work-driver-context.ts";
-import { type WorkState, initialState } from "../src/workflow-state.ts";
+import type { WorkState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -34,74 +40,9 @@ function assert(cond: boolean, msg: string) {
 process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS = "0";
 process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
 
-function tmpDir(label: string): string {
-  const dir = mkdtempSync(path.join(tmpdir(), `adv-fix-${label}-`));
-  mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
-  return dir;
-}
-
-function git(cwd: string, cmd: string): string {
-  return execSync(`git -c user.email=t@t -c user.name=t ${cmd}`, { cwd, stdio: "pipe" }).toString();
-}
-
-function singleState(dir: string, eventLog: WorkState["eventLog"] = []): WorkState {
-  const s = initialState(1114, 1_000_000);
-  return {
-    ...s,
-    eventLog,
-    pipelineState: {
-      ...s.pipelineState,
-      currentStep: "adversarial",
-      lastCompletedStep: "develop",
-      worktrees: { default: dir },
-      branchName: "feature/issue-1114",
-    },
-  };
-}
-
 // E — the fix pass on a real repository: the developer's edit is committed
 // through the develop gates and the workstream returns to adversarial; a
 // no-op pass parks; a finding-named path widens scope, an unnamed one does not.
-function repoWithFile(label: string): string {
-  const dir = tmpDir(label);
-  mkdirSync(path.join(dir, ".pi"), { recursive: true });
-  writeFileSync(path.join(dir, ".pi", "verify-cmd"), "true\n");
-  writeFileSync(path.join(dir, "a.txt"), "one\n");
-  writeFileSync(path.join(dir, "b.txt"), "one\n");
-  git(dir, "init -q -b main");
-  // The driver's own state file lives under .pi/work-state; real cycles exclude it.
-  writeFileSync(path.join(dir, ".git", "info", "exclude"), ".pi/work-state/\ntmp/\n");
-  git(dir, "add -A");
-  git(dir, 'commit -q -m "base"');
-  return dir;
-}
-/** The developer's edit, committed in its worktree as a real developer does. */
-function devCommit(dir: string, file: string, body: string): void {
-  writeFileSync(path.join(dir, file), body);
-  git(dir, "add -A");
-  git(dir, 'commit -q -m "fix"');
-}
-function fixState(dir: string, paths: string[]): WorkState {
-  const base = git(dir, "rev-parse HEAD").trim();
-  const s = singleState(dir, [
-    { kind: "adversarial-round", at: 1, round: 1, status: "ISSUES_FOUND", verdictParsed: true },
-    {
-      kind: "adversarial-fix-requested",
-      at: 2,
-      workstreamId: "default",
-      round: 1,
-      findings: "a.txt: change one to two; b.txt: also fix",
-    },
-  ]);
-  return {
-    ...s,
-    pipelineState: {
-      ...s.pipelineState,
-      baseSha: base,
-      workstreams: { default: { id: "default", scope: "fix", paths, outOfScope: [] } },
-    },
-  };
-}
 {
   const dir = repoWithFile("fix-ok");
   try {
@@ -283,7 +224,9 @@ function fixState(dir: string, paths: string[]): WorkState {
       `F2: a failed fix-pass dispatch parks at a cap, never applied (tail: ${tail?.kind})`,
     );
     assert(
-      tail?.kind === "cap-hit" && nextStep(out).kind === "step" && (nextStep(out) as { step: string }).step === "handoff",
+      tail?.kind === "cap-hit" &&
+        nextStep(out).kind === "step" &&
+        (nextStep(out) as { step: string }).step === "handoff",
       "F2: the parked fix pass routes to handoff",
     );
   } finally {
@@ -375,17 +318,37 @@ function fixState(dir: string, paths: string[]): WorkState {
   try {
     const log: WorkState["eventLog"] = [
       { kind: "adversarial-round", at: 1, round: 1, status: "ISSUES_FOUND", verdictParsed: true },
-      { kind: "adversarial-fix-requested", at: 2, workstreamId: "default", round: 1, findings: "r1" },
+      {
+        kind: "adversarial-fix-requested",
+        at: 2,
+        workstreamId: "default",
+        round: 1,
+        findings: "r1",
+      },
       { kind: "adversarial-fix-applied", at: 3, workstreamId: "default", round: 1 },
       { kind: "adversarial-round", at: 4, round: 2, status: "ISSUES_FOUND", verdictParsed: true },
-      { kind: "adversarial-fix-requested", at: 5, workstreamId: "default", round: 2, findings: "r2" },
+      {
+        kind: "adversarial-fix-requested",
+        at: 5,
+        workstreamId: "default",
+        round: 2,
+        findings: "r2",
+      },
       { kind: "adversarial-fix-applied", at: 6, workstreamId: "default", round: 2 },
-      { kind: "adversarial-round", at: 7, round: 3, status: "CRITICAL_ISSUES_FOUND", verdictParsed: true },
+      {
+        kind: "adversarial-round",
+        at: 7,
+        round: 3,
+        status: "CRITICAL_ISSUES_FOUND",
+        verdictParsed: true,
+      },
     ];
     const st = singleState(dir, log);
     const survivors = survivorsOf(st, ["default"], [], new Map());
     assert(
-      survivors.length === 1 && survivors[0]?.ok === false && survivors[0]?.priorVerdict === "rejected",
+      survivors.length === 1 &&
+        survivors[0]?.ok === false &&
+        survivors[0]?.priorVerdict === "rejected",
       `I: a rejected single workstream stays rejected (got ${JSON.stringify(survivors.map((s) => [s.ok, s.priorVerdict]))})`,
     );
   } finally {

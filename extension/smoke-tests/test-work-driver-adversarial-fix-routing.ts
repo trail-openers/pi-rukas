@@ -17,10 +17,9 @@
  *    paths, and parks on a no-op pass.
  */
 
-import { execSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { git, singleState, tmpDir } from "./lib/adversarial-fix-fixtures.ts";
 import type { DispatchResult } from "../src/types.ts";
 import { pendingFixes, runAdversarialFixPass } from "../src/work-driver-adversarial-fix.ts";
 import { runAdversarial } from "../src/work-driver-adversarial.ts";
@@ -68,31 +67,6 @@ function unparsed(round: number): DispatchResult {
     loopOutcome: "infra-failure",
     adversarialRounds: [{ round, status: "ISSUES_FOUND", verdictParsed: false }],
   } as DispatchResult;
-}
-
-function tmpDir(label: string): string {
-  const dir = mkdtempSync(path.join(tmpdir(), `adv-fix-${label}-`));
-  mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
-  return dir;
-}
-
-function git(cwd: string, cmd: string): string {
-  return execSync(`git -c user.email=t@t -c user.name=t ${cmd}`, { cwd, stdio: "pipe" }).toString();
-}
-
-function singleState(dir: string, eventLog: WorkState["eventLog"] = []): WorkState {
-  const s = initialState(1114, 1_000_000);
-  return {
-    ...s,
-    eventLog,
-    pipelineState: {
-      ...s.pipelineState,
-      currentStep: "adversarial",
-      lastCompletedStep: "develop",
-      worktrees: { default: dir },
-      branchName: "feature/issue-1114",
-    },
-  };
 }
 
 function ctxFor(
@@ -310,7 +284,10 @@ function ctxFor(
     // dropped and the aggregate never approves.
     const tail = s.eventLog[s.eventLog.length - 1];
     assert(
-      tail?.kind === "cap-hit" || pendingFixes(s.eventLog).map((p) => p.workstreamId).join(",") === "a",
+      tail?.kind === "cap-hit" ||
+        pendingFixes(s.eventLog)
+          .map((p) => p.workstreamId)
+          .join(",") === "a",
       `C2: a mixed fan-out either routes a's fix or parks explicitly (tail: ${tail?.kind})`,
     );
     assert(

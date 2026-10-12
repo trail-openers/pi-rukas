@@ -185,10 +185,10 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   }
 }
 
-// R2 (#485) — a normal 2-round review (ISSUES_FOUND in round 1, APPROVED in
-// round 2) records BOTH rounds' verdict tokens in the event log, so the gate is
-// auditable from the state file without reading a transcript. #1114: the gate
-// reviews one round per call; round 1's ISSUES_FOUND routes to a develop fix
+// R2 (#485) — a normal 2-round loop (ISSUES_FOUND in round 1, APPROVED in
+// round 2) records BOTH rounds' verdict tokens in the event log, so the
+// gate is auditable from the state file without reading a transcript.
+// #1114: the gate reviews one round per call; round 1's ISSUES_FOUND routes to a develop fix
 // pass, which is simulated here by its applied marker (the develop gates have
 // their own tests), then round 2 approves.
 {

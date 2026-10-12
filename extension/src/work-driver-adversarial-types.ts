@@ -61,3 +61,19 @@ export interface AdversarialOutcome {
   failureEvent?: WorkEvent;
   branchEvent?: WorkEvent;
 }
+
+/** The `outcome` a per-workstream event records. */
+export type WorkstreamOutcome = Extract<
+  WorkEvent,
+  { kind: "adversarial-workstream-outcome" }
+>["outcome"];
+
+/** The outcome label one workstream's event records. Total: every outcome has exactly one. */
+export function outcomeOf(o: AdversarialOutcome): WorkstreamOutcome {
+  if (o.priorVerdict) return o.priorVerdict;
+  if (o.fixRequested) return "fix-requested";
+  if (o.skipped) return "skipped-empty-diff";
+  if (o.threw) return "dispatch-failed";
+  if (o.infra) return "infra-failure";
+  return o.ok ? "approved" : "rejected";
+}

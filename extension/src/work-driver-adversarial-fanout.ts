@@ -33,6 +33,7 @@ import {
 import {
   ADVERSARIAL_PER_WS_MAX_RETRIES,
   type AdversarialOutcome,
+  outcomeOf,
 } from "./work-driver-adversarial-types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { fetchDiff } from "./work-driver-diff.ts";
@@ -246,8 +247,8 @@ export async function fanOutAdversarial(
     const reading = interpretReview(result, reviewRoundFor(state, id));
     const ok = reading.ok;
     // #485 — rounds are data: the loop's own count when it carried one,
-    // else the count the per-round records describe; #1114 adds the rounds
-    // this workstream already ran on earlier invocations.
+    // else the count the per-round records describe.
+    // #1114 — plus the rounds this workstream already ran on earlier invocations.
     const rounds =
       reviewTrack(state.eventLog, id).rounds + (result.roundsExecuted ?? records.length);
     return {
@@ -292,9 +293,15 @@ export async function fanOutAdversarial(
   // per-workstream events are re-emitted from this prior-outcome record
   // (see the `outcomes` seed below), so the log stays complete after the
   // splice replaces the prior pass's batch.
-  // #1114 — the workstreams this pass runs: on re-entry after an infra failure,
-  // the infra-failed ones within budget (#486) plus any fix pass awaiting
-  // re-review; otherwise whatever still needs a review. The rest are survivors.
+  // #486 — the workstreams that run on THIS pass. First entry: everything.
+  // Re-entry (the previous fan-out recorded a NO-VERDICT outcome): only the
+  // infra-failed ones re-run while their per-workstream budget holds — a
+  // permanent failure therefore stops the retry loop rather than re-running
+  // siblings forever, and their preserved outcomes keep the aggregate
+  // honest.
+  // #1114 — "everything" on a first entry means whatever still needs a review;
+  // re-entry also re-runs a workstream whose fix pass was applied since its
+  // routed review. The rest are survivors.
   const runSet = priorHadInfraFailure
     ? ids.filter((id) => {
         const prev = priorOutcomes.get(id);
@@ -439,19 +446,7 @@ export async function fanOutAdversarial(
       });
     }
     if (ids.length > 1) {
-      const outcome = o.priorVerdict
-        ? (o.priorVerdict as "approved" | "rejected" | "skipped-empty-diff")
-        : o.fixRequested
-          ? ("fix-requested" as const)
-          : o.skipped
-            ? ("skipped-empty-diff" as const)
-            : o.threw
-              ? ("dispatch-failed" as const)
-              : o.infra
-                ? ("infra-failure" as const)
-                : o.ok
-                  ? ("approved" as const)
-                  : ("rejected" as const);
+      const outcome = outcomeOf(o);
       events.push({
         kind: "adversarial-workstream-outcome",
         at: Date.now(),

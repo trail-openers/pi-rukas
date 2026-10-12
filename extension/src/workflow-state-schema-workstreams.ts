@@ -37,6 +37,8 @@ export interface Workstream {
   dependsOn?: string[];
   /** #679 — case 3. Consolidated-tree test path (see above). */
   integrationTest?: string;
+  /** #1114 — the adversarial findings a fix pass resolves (absent on a first pass). */
+  fixFindings?: string;
 }
 
 /**
