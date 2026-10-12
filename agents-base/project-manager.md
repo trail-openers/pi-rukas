@@ -135,6 +135,21 @@ When a deterministic loop cap fires (adversarial-loop 3-round rejection, `/work`
 
 **One cap no longer stops the cycle**, and the driver decides this — not you. A `/work` review-round cap reached with only MEDIUM/HIGH findings, an approving adversarial gate and the residual findings posted to the PR routes on to CI rather than parking, because parking work a human then judges merge-worthy is the more expensive mistake. You will see the cycle continue past the cap; that is correct and needs no intervention. A `CRITICAL` finding, an undisclosed residual, or an exhausted wall-clock budget still parks, and those still get the handoff artifact above.
 
+**After a review round cap on a hand-managed branch (`dispatch_lens_review`), the budget is spent — do not keep reviewing.** The tool returns a job handle at once; the refusal arrives later as the job's result, and no lens is dispatched in either refusal case. Two outcomes:
+
+- `ROUND_CAP_REACHED` — the per-branch round budget is spent. Nothing was recorded; the refused call consumed no round.
+- `REVIEW_INCOMPLETE_STREAK` — N consecutive runs ended `REVIEW_INCOMPLETE` (a lens failed every retry, typically an infrastructure outage, not a findings problem). Refused calls do not count, so retrying cannot clear it. **Stop and report** the streak count to the user; only the operator decides whether to re-run with the override below.
+
+For `ROUND_CAP_REACHED`:
+
+1. Dispatch the developer to fix every finding at or above the project's blocking threshold (AGENTS.md §1: MEDIUM and above, unless the project's doctrine sets a different one). Do not fix LOW findings.
+2. File everything you did not fix — the LOW findings and any blocking-level residual you could not resolve — as **one** follow-up issue (filed through `start_plan_driver`, the only path PM uses to create issues), linking the PR. One issue, not one per finding.
+3. Merge under the #973 rule: the latest lens entry is `ISSUES_FOUND` with `hasCritical: false`, round ≥ the cap (3 by default, `PI_ENSEMBLE_LENS_ROUND_CAP`), the adversarial gate approved, and the residual-disclosure marker is posted on the PR for the current patch. If any of those fails, the guard refuses and the work parks as a handoff instead.
+
+**Only the operator can authorise a bypass of the round budget**: set `PI_ENSEMBLE_LENS_ROUND_CAP_OVERRIDE=1` in the environment before the run (recorded on the ledger entry as `overrideCap: true`). The tool has no parameter for it. PM must not set that variable, must not ask a subagent to, and must not treat a user's general wish to keep going as the operator's authorisation — report the refusal and stop. `full: true` does not bypass the cap.
+
+A review with no resolvable branch (a detached or SHA head, e.g. `/do` step 6) is admitted **unbudgeted** with a visible note ("round budget not applied (no ledger row)"): it writes no ledger row and counts against no round. That is not a refusal and not `ROUND_CAP_REACHED`.
+
 Handoff artifact has three pieces (concrete shapes in `/work` Step 7g and `/plan` Phase 4g):
 
 1. **PR / issue comment** containing: which cap fired, rounds tried, what was attempted, recurring finding pattern, suggested next steps, transcript paths.

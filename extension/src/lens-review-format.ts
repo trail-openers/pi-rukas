@@ -12,6 +12,7 @@ import { neutraliseEvidence } from "./comment-evidence.ts";
 import { type SuppressedFinding, suppressedSection } from "./lens-residuals.ts";
 import { isReviewIncomplete } from "./lens-review-incomplete.ts";
 import type { Finding, FindingSource, LensRunResult } from "./lens-review.ts";
+import { CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE, type RosterEntry } from "./lens-roster.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
 
 /** The finding's severity level. Owned here (the pure leaf both the format
@@ -106,9 +107,19 @@ export interface LensReviewSummary {
  * or was aborted without evidence: the review is incomplete and the user/PM
  * must decide whether to retry the whole pass, override, or halt — never
  * silently downgrade a six-pass review to a five-pass one (#3).
+ *
+ * #1127 — `ROUND_CAP_REACHED` and `REVIEW_INCOMPLETE_STREAK` are produced only
+ * by the tool-side round budget (lens-round-cap.ts): no lens ran, nothing was
+ * recorded. The streak refusal is distinct so an operator can tell a stalled
+ * infrastructure outage from a spent round budget.
  */
-export type Verdict = "APPROVED" | "ISSUES_FOUND" | "CRITICAL_ISSUES_FOUND" | "REVIEW_INCOMPLETE";
-import { CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE, type RosterEntry } from "./lens-roster.ts";
+export type Verdict =
+  | "APPROVED"
+  | "ISSUES_FOUND"
+  | "CRITICAL_ISSUES_FOUND"
+  | "REVIEW_INCOMPLETE"
+  | "ROUND_CAP_REACHED"
+  | "REVIEW_INCOMPLETE_STREAK";
 
 export const LENS_PREFIX = "code-review-";
 
@@ -361,6 +372,10 @@ function killCauseSuffix(r: LensRunResult): string {
 }
 
 export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): string {
+  // #1127 — a round-budget refusal ran no lens; its note is the whole report.
+  if (s.verdict === "ROUND_CAP_REACHED" || s.verdict === "REVIEW_INCOMPLETE_STREAK") {
+    return s.note ?? s.verdict;
+  }
   // #973 — the no-review outcome (decision 4): the delta was empty, so no
   // review ran. This is NOT an approval — the summary must say "NO REVIEW",
   // never "APPROVED" (a no-review outcome looking like an approval is the
