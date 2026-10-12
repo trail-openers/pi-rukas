@@ -178,7 +178,7 @@ try {
   reviewerReplies = [ISSUES, APPROVED];
   developerWrite = (cwd) => writeFileSync(path.join(cwd, "f.txt"), "one\nfixed\n");
   const c = await runAdversarialLoop(
-    { diff: "diff --git a/f b/f\n+x", context: "fix", workCwd: workRepo, guardFixRounds: true },
+    { diff: "diff --git a/f b/f\n+x", context: "fix", workCwd: workRepo, guardFixRounds: true, callerCwd: priorCwd },
     signal(),
     "job-c",
   );
@@ -202,7 +202,7 @@ try {
     writeFileSync(path.join(callerRepo, "stray.txt"), "wrong place\n");
   };
   const d = await runAdversarialLoop(
-    { diff: "diff --git a/f b/f\n+x", context: "viol", workCwd: workRepo, guardFixRounds: true },
+    { diff: "diff --git a/f b/f\n+x", context: "viol", workCwd: workRepo, guardFixRounds: true, callerCwd: callerRepo },
     signal(),
     "job-d",
   );
@@ -238,7 +238,7 @@ try {
     writeFileSync(path.join(callerRepo, "f.txt"), "dirty rewritten\n");
   };
   const e = await runAdversarialLoop(
-    { diff: "diff --git a/f b/f\n+x", context: "dirty", workCwd: workRepo, guardFixRounds: true },
+    { diff: "diff --git a/f b/f\n+x", context: "dirty", workCwd: workRepo, guardFixRounds: true, callerCwd: callerRepo },
     signal(),
     "job-e",
   );
@@ -257,7 +257,7 @@ try {
   devFailures = 1;
   developerWrite = (cwd) => writeFileSync(path.join(cwd, "f.txt"), "one\nretried\n");
   const f = await runAdversarialLoop(
-    { diff: "diff --git a/f b/f\n+x", context: "retry", workCwd: workRepo, guardFixRounds: true },
+    { diff: "diff --git a/f b/f\n+x", context: "retry", workCwd: workRepo, guardFixRounds: true, callerCwd: priorCwd },
     signal(),
     "job-f",
   );
@@ -278,7 +278,7 @@ try {
   process.chdir(callerRepo);
   developerWrite = (cwd) => writeFileSync(path.join(cwd, "f.txt"), "one\nfixed\n");
   const g = await runAdversarialLoop(
-    { diff: "diff --git a/f b/f\n+x", context: "unreadable", workCwd: workRepo, guardFixRounds: true },
+    { diff: "diff --git a/f b/f\n+x", context: "unreadable", workCwd: workRepo, guardFixRounds: true, callerCwd: callerRepo },
     signal(),
     "job-g",
   );
@@ -288,6 +288,25 @@ try {
     "G: an unreadable caller snapshot is reported as not checked",
   );
   assert(!g.text.includes("VIOLATION"), "G: an unreadable snapshot is not reported as a violation");
+
+  // -------- H. caller is not a git repository → reported as not checked, never silent
+  reset();
+  const notRepo = mkdtempSync(path.join(os.tmpdir(), "adv-1104-notrepo-"));
+  reviewerReplies = [ISSUES, APPROVED];
+  developerWrite = (cwd) => writeFileSync(path.join(cwd, "f.txt"), "one\nfixed\n");
+  try {
+    const h = await runAdversarialLoop(
+      { diff: "diff --git a/f b/f\n+x", context: "norepo", workCwd: workRepo, guardFixRounds: true, callerCwd: notRepo },
+      signal(),
+      "job-h",
+    );
+    assert(
+      h.text.includes("fix round 1 caller-repo check did not run (caller is not a git repository)"),
+      "H: a non-repo caller is reported as not checked",
+    );
+  } finally {
+    rmSync(notRepo, { recursive: true, force: true });
+  }
 } finally {
   process.chdir(priorCwd);
   rmSync(workRepo, { recursive: true, force: true });

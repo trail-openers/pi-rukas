@@ -13,9 +13,8 @@
  * always passes workCwd and is unchanged.
  */
 
-import { synthesizeResult, toRoundRecords } from "./adversarial-verdict.ts";
 import { execp } from "./lens-exec.ts";
-import type { AdversarialVerdict, DispatchResult } from "./types.ts";
+import type { DispatchResult } from "./types.ts";
 import { type ExecFn, resolvePath } from "./worktree.ts";
 
 type Snapshot =
@@ -48,7 +47,8 @@ async function snapshotRepo(cwd: string, exec: ExecFn): Promise<Snapshot> {
       (await exec("git", { argv: ["rev-parse", "--show-toplevel"], cwd })).stdout.trim(),
     );
   } catch (err) {
-    return /not a git repository/i.test(errorText(err))
+    // Classify on the full message: git's "not a git repository" line is not always the last.
+    return /not a git repository/i.test(err instanceof Error ? err.message : String(err))
       ? { kind: "not-repo" }
       : { kind: "unreadable", reason: errorText(err) };
   }
@@ -68,12 +68,12 @@ async function snapshotRepo(cwd: string, exec: ExecFn): Promise<Snapshot> {
       records.push(line);
     }
     const live = records.filter((line) => !isDeleted(line)).map((line) => line.slice(3));
-    const hashes =
-      live.length === 0
-        ? []
-        : (await exec("git", { argv: ["hash-object", "--", ...live], cwd: top })).stdout
-            .split("\n")
-            .filter(Boolean);
+    const hashes: string[] = [];
+    for (let i = 0; i < live.length; i += HASH_BATCH) {
+      const batch = live.slice(i, i + HASH_BATCH);
+      const out = (await exec("git", { argv: ["hash-object", "--", ...batch], cwd: top })).stdout;
+      hashes.push(...out.split("\n").filter(Boolean));
+    }
     if (hashes.length !== live.length) {
       throw new Error(`hash-object returned ${hashes.length} ids for ${live.length} paths`);
     }
@@ -89,22 +89,32 @@ async function snapshotRepo(cwd: string, exec: ExecFn): Promise<Snapshot> {
 
 const noCheck = async (): Promise<void> => {};
 
+/** Hash at most this many paths per `git hash-object` call (keeps argv far below ARG_MAX). */
+const HASH_BATCH = 200;
+
 /**
  * Arm the caller-repo check for one fix round. Resolves to a check run after
- * the round: it pushes a violation onto `violations` when the calling process's
- * `git status` changed, or a note when the check could not run. A no-op unless
- * `guardFixRounds` is set, or when the caller is not a git repository, or when
- * the caller's repository IS the workCwd repository.
+ * the round: it pushes a violation onto `violations` when the caller's `git
+ * status` changed, or a note when the check could not run. A no-op unless
+ * `guardFixRounds` is set (the tool path supplies `callerCwd`; the /work driver
+ * does not arm it), or when the caller's repository IS the workCwd repository.
  */
 export async function beginFixGuard(
-  opts: { guardFixRounds?: boolean; workCwd?: string },
+  opts: { guardFixRounds?: boolean; workCwd?: string; callerCwd?: string },
   violations: string[],
   exec: ExecFn = execp,
 ): Promise<(round: number) => Promise<void>> {
   const workCwd = opts.guardFixRounds ? opts.workCwd : undefined;
-  if (!workCwd) return noCheck;
-  const caller = await snapshotRepo(process.cwd(), exec);
-  if (caller.kind === "not-repo") return noCheck;
+  const callerCwd = opts.callerCwd;
+  if (!workCwd || !callerCwd) return noCheck;
+  const caller = await snapshotRepo(callerCwd, exec);
+  if (caller.kind === "not-repo") {
+    return async (round) => {
+      violations.push(
+        `note: fix round ${round} caller-repo check did not run (caller is not a git repository)`,
+      );
+    };
+  }
   const work = await snapshotRepo(workCwd, exec);
   if (work.kind === "repo" && caller.kind === "repo" && caller.top === work.top) return noCheck;
   if (caller.kind === "unreadable" || work.kind === "unreadable") {
@@ -117,7 +127,7 @@ export async function beginFixGuard(
   const workTop = work.kind === "repo" ? work.top : workCwd;
   const baseline = caller.entries;
   return async (round) => {
-    const after = await snapshotRepo(process.cwd(), exec);
+    const after = await snapshotRepo(callerCwd, exec);
     if (after.kind !== "repo") {
       const why = after.kind === "unreadable" ? after.reason : "caller is no longer a repository";
       violations.push(`note: fix round ${round} caller-repo check did not run (${why})`);
@@ -147,31 +157,4 @@ export function withFixViolations(result: DispatchResult, violations: string[]):
     ok: breached ? false : result.ok,
     text: [...violations, "", result.text].join("\n"),
   };
-}
-
-/**
- * The result when a fix is needed but the tool was called without workCwd:
- * the verdict is kept, no developer is dispatched, and the error names workCwd.
- */
-export function workCwdRequiredResult(
-  round: number,
-  verdict: { status: AdversarialVerdict["status"]; findings: string },
-  state: {
-    start: number;
-    usage: DispatchResult["usage"];
-    lastTranscript: string | undefined;
-    lastModel: string | undefined;
-    rounds: Parameters<typeof toRoundRecords>[0];
-  },
-): DispatchResult {
-  return synthesizeResult({
-    ok: false,
-    loopOutcome: "rejected",
-    text: `Adversarial round ${round} verdict: ${verdict.status}. A fix is needed, but no \`workCwd\` was given, so no developer was dispatched — fixes edit files only in workCwd. Pass \`workCwd\` (the worktree the fix should edit), or set \`reportOnly: true\` to review without fixing.\n\n${verdict.findings}`,
-    ms: Date.now() - state.start,
-    usage: state.usage,
-    transcriptPath: state.lastTranscript,
-    model: state.lastModel,
-    adversarialRounds: toRoundRecords(state.rounds),
-  });
 }
