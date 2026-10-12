@@ -18,6 +18,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { mock } from "bun:test";
+import type { AdversarialVerdict } from "../src/adversarial-verdict.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -59,6 +60,21 @@ mock.module(new URL("../src/async-jobs-registry.ts", import.meta.url).href, () =
   registerChildHandle: () => {},
   setOrchestratorActiveChild: () => {},
   markOrchestrator: () => {},
+}));
+
+// Parse seam: a reply prefixed `LEGACY-SHAPE` comes back WITHOUT `verdictParsed`,
+// the way a verdict object built before the field existed would. Absence must
+// fail closed on the reportOnly path, not read as a parsed verdict.
+const realVerdict = { ...(await import("../src/adversarial-verdict.ts")) };
+const realParseVerdict = realVerdict.parseVerdict;
+mock.module(new URL("../src/adversarial-verdict.ts", import.meta.url).href, () => ({
+  ...realVerdict,
+  parseVerdict: (text: string): AdversarialVerdict => {
+    const v = realParseVerdict(text);
+    if (!text.startsWith("LEGACY-SHAPE")) return v;
+    const { verdictParsed: _absent, ...legacy } = v;
+    return legacy as AdversarialVerdict;
+  },
 }));
 
 const { runAdversarialLoop } = await import("../src/adversarial.ts");
@@ -142,6 +158,15 @@ try {
     "reply without a VERDICT marker: reported as unreadable (infra)",
   );
   assert(none.loopOutcome !== "approved", "reply without a VERDICT marker: never approved");
+
+  // 5. A verdict object with NO verdictParsed field reaching the guard is
+  // unreadable (absence = unparsed), never an approval.
+  const absent = await reportOnce("LEGACY-SHAPE\nVERDICT: APPROVED\n\nNo issues found.");
+  assert(
+    absent.text.includes("produced no readable VERDICT marker"),
+    "verdict without verdictParsed field: reported as unreadable (infra)",
+  );
+  assert(absent.loopOutcome !== "approved", "verdict without verdictParsed field: never approved");
 } finally {
   try {
     rmSync(repoDir, { recursive: true, force: true });

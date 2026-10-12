@@ -355,7 +355,7 @@ export async function runAdversarialLoop(
     const verdict = parseVerdict(adv.text);
     rounds.push({ round, verdict, ms: adv.ms });
     if (params.reportOnly) {
-      if (verdict.verdictParsed === false) {
+      if (verdict.verdictParsed !== true) {
         return ledgerWrite(
           infraFailureResult(
             round,
