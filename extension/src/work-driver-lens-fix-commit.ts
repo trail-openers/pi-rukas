@@ -34,7 +34,7 @@
 import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
 import { collectConflictEvidence } from "./work-driver-conflict-evidence.ts";
-import { withIntegrationLock } from "./work-driver-integrate.ts";
+import { withIntegrationLock } from "./work-driver-lock.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
@@ -204,8 +204,8 @@ export async function landCommittedFix(
         // actionable part: WHICH files conflict, not the restore claim.
         const causeMsg =
           orch._conflict === "conflict"
-            ? `cherry-pick conflict — the batch was aborted. ${evidence.note} ${restoreClaim(restore, "", MANUAL_REPAIR_HINT)} The fix's commits remain in the worktree ${tree}.`
-            : `patch-apply failed for the lens-fix worktree: ${orch._applyConflict?.reason ?? "unknown"}. ${restoreClaim(restore, "", MANUAL_REPAIR_HINT)} The fix's commits remain in the worktree ${tree}.${evidence.note}`;
+            ? `cherry-pick conflict — the batch was aborted. ${evidence.note} ${restoreClaim(restore, { trailing: MANUAL_REPAIR_HINT })} The fix's commits remain in the worktree ${tree}.`
+            : `patch-apply failed for the lens-fix worktree: ${orch._applyConflict?.reason ?? "unknown"}. ${restoreClaim(restore, { trailing: MANUAL_REPAIR_HINT })} The fix's commits remain in the worktree ${tree}.${evidence.note}`;
         throw new Error(causeMsg);
       }
       // #749 — the tree-hash dedup skip means the content is already on the
@@ -219,7 +219,7 @@ export async function landCommittedFix(
           label: "lens-fix-integration",
         });
         throw new Error(
-          `nothing landed on the branch. ${restoreClaim(restore, "", MANUAL_REPAIR_HINT)}`,
+          `nothing landed on the branch. ${restoreClaim(restore, { trailing: MANUAL_REPAIR_HINT })}`,
         );
       }
     });
@@ -240,7 +240,7 @@ export async function landCommittedFix(
       });
       return {
         ok: false,
-        error: `${msg.slice(0, 200)}. ${restoreClaim(restore, "", MANUAL_REPAIR_HINT)} The fix's commits remain in the worktree ${tree}.`,
+        error: `${msg.slice(0, 200)}. ${restoreClaim(restore, { trailing: MANUAL_REPAIR_HINT })} The fix's commits remain in the worktree ${tree}.`,
       };
     }
     return { ok: false, error: msg.slice(0, 300) };

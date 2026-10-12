@@ -268,6 +268,10 @@ function assert(cond: boolean, msg: string) {
     g(["config", "user.name", "t"]);
     g(["config", "user.email", "t@t"]);
     g(["commit", "--allow-empty", "-m", "base"]);
+    // #1093 — mainline resolves from origin/HEAD (the production shape); with
+    // no start ref recorded, the restore target is mainline.
+    g(["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    g(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
     g(["worktree", "add", "--detach", wt, "HEAD"]);
     // A real (non-empty) change in the worktree so the staged diff is non-empty.
     writeFileSync(join(wt, "change.txt"), "content\n");

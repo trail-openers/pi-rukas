@@ -20,7 +20,7 @@ import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { detectMainline, restoreCheckout } from "./work-driver-git.ts";
-import { withIntegrationLock } from "./work-driver-integrate.ts";
+import { withIntegrationLock } from "./work-driver-lock.ts";
 import {
   gatherMergeEvidence,
   heldByUnresolvedReview,
@@ -336,18 +336,24 @@ export async function runMerged(
       // branch -d attempt.
       const execFn = ctx.verifyExecFn ?? execp;
       const mainlineResult = await detectMainline(ctx.repoRoot, execFn);
-      if ("branch" in mainlineResult) {
-        // #289 — restoreCheckout runs `git checkout <mainline>` + `pull
-        // --ff-only` + `branch -d` at repoRoot. A sibling group mid-
-        // integrate would find itself moved onto mainline and commit
-        // there, so this takes the same lock as integration.
+      const mainline = "branch" in mainlineResult ? mainlineResult.branch : undefined;
+      // #1093 — return the operator's checkout to the ref the cycle STARTED on,
+      // not to mainline. Without a recorded startRef (pre-#1093 state) the
+      // target stays mainline.
+      const startRef = state.pipelineState.startRef;
+      if (mainline || startRef) {
+        // #289 — restoreCheckout runs `git checkout <target>` + `branch -d`
+        // (and `pull --ff-only` when the target is mainline) at repoRoot. A
+        // sibling group mid-integrate would find itself moved onto it and
+        // commit there, so this takes the same lock as integration.
         const restorationNotes = await withIntegrationLock(ctx.repoRoot, () =>
-          restoreCheckout(
-            ctx.repoRoot,
-            mainlineResult.branch,
-            state.pipelineState.branchName,
+          restoreCheckout({
+            repoRoot: ctx.repoRoot,
+            mainline,
+            mergedBranch: state.pipelineState.branchName,
             execFn,
-          ),
+            startRef,
+          }),
         );
         for (const note of restorationNotes) {
           // Log restoration notes (informational — not errors).

@@ -212,6 +212,12 @@ export interface DriverContext {
    */
   parallelCycles?: number;
   /**
+   * #1093 — the operator's checkout read once per /work invocation, before any
+   * sibling group started. Stamped as this cycle's start ref when present; the
+   * per-cycle locked capture is the fallback (single-issue path).
+   */
+  invocationStartRef?: string;
+  /**
    * Optional injection point for tests: replace runAdversarialLoop with a
    * fake. Production callers omit this — runAdversarial uses the real
    * orchestrator from adversarial.ts. Mirrors `dispatchFn` for symmetry.
