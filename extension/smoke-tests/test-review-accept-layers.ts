@@ -146,6 +146,9 @@ for (const c of [
   "git log; cat review-findings.json",
   // A test run with an eval flag runs code from the command line.
   "bun test -e 'x' smoke-tests/review-findings-store*",
+  // A preload runs a named module before the test run: the same route as eval.
+  "bun test --preload ./x.ts smoke-tests/review-findings-store*",
+  "bun test -r ./x.ts smoke-tests/review-findings-store*",
   // The operator script is not a test file, even under a test runner.
   "bun test smoke-tests/review-accept-row.ts",
 ]) {

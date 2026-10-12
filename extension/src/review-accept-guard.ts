@@ -49,8 +49,12 @@ const DIRECT_RUN = /^\s*(?:\S*\/)?review-accept(?:\.ts)?(?=\s|$)/;
 const PLAIN_VCS = /^\s*(?:git|gh)\s[^;&|`$<>\n\r]*$/;
 /** A test run (bun test / verify-loop): no shell operator and no line break. */
 const TEST_RUN = /^\s*(?:bun\s+test|bash\s+\S*verify-loop\.sh)\s[^;&|`$<>\n\r]*$/;
-/** An eval flag: the runtime then executes code named on the command line. */
-const EVAL = /(?:^|\s)(?:-e|--eval)(?=\s|=|$)/;
+/**
+ * An eval flag: the runtime then executes code named on the command line. A
+ * preload (`--preload`, `-r`, `--require`) runs a named module before the test
+ * run, so it is the same route round the guard and is treated the same way.
+ */
+const EVAL = /(?:^|\s)(?:-e|--eval|-r|--require|--preload)(?=\s|=|$)/;
 /** The operator script or its write module, named in a command. */
 const SCRIPT = /(?<![\w-])review-accept(?:-row)?(?:\.ts)?(?![\w.-])/;
 /** Edit tools whose `path` argument is checked against the findings file. */

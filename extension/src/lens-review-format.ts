@@ -302,6 +302,8 @@ export function computeVerdict(
   lensResults?: LensRunResult[],
   threshold: Severity = DEFAULT_REVIEW_THRESHOLD,
 ): Verdict {
+  // A lens that returned in silence has not reviewed the diff, whatever its
+  // exit code said. Six of those used to add up to APPROVED.
   // A blocked lens, or one that returned in silence, has not reviewed the diff
   // whatever its exit code said — the one rule lives in isReviewIncomplete.
   if (isReviewIncomplete(lensResults)) return "REVIEW_INCOMPLETE";

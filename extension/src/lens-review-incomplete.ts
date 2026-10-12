@@ -16,9 +16,10 @@ export const NO_TEXT_PLACEHOLDER = "(thinking content only - no text output)";
 
 /**
  * Did a (possibly cap-killed) child produce ANY review evidence — findings
- * or a non-placeholder closing summary. Shared by `lensProducedEvidence` and the
- * cap-kill branch in lens-review-child.ts, so a `(thinking content only - no
- * text output)` placeholder never counts as a summary in either path.
+ * or a non-placeholder closing summary. Shared by `lensProducedEvidence`
+ * and the cap-kill branch in lens-review-child.ts, so a `(thinking content
+ * only - no text output)` placeholder never counts as a summary in either
+ * path.
  */
 // `collapseEvents` substitutes NO_TEXT_PLACEHOLDER when a child produced only
 // thinking blocks. It is a placeholder describing the absence of output, not

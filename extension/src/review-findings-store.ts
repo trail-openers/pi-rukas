@@ -7,8 +7,9 @@
  * under the ledger's lock (review-ledger-lock.ts); the ledger itself is untouched.
  *
  * Rows are `open` (reported, not resolved), `accepted` (an operator accepted it)
- * or `resolved` (a complete full review no longer reported it AND its cited code
- * changed; an open row whose code is unchanged is carried forward instead).
+ * or `resolved` (a complete full review no longer reported it AND either its cited
+ * code changed, its path is gone at head, or it has no line; an open row whose
+ * code is unchanged is carried forward instead).
  * Accepted rows are never evicted (see review-findings-file.ts for the cap).
  *
  * Failure policy — fail closed on the file, fail open on the review:
@@ -446,7 +447,11 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
       if (run.complete) {
         mine.forEach((r, i) => {
           if (r.status !== "open" || touched.has(r.id)) return;
-          if (codeChanged(r, linesByPath.get(r.path))) {
+          // Resolved, not carried: the path is gone at head (the PR deleted the
+          // file), or the row has no line and this complete review did not re-report
+          // it. A git read error never reaches here (the whole round is refused).
+          const pathGone = missingPaths.has(r.path);
+          if (pathGone || r.line === undefined || codeChanged(r, linesByPath.get(r.path))) {
             mine[i] = { ...r, status: "resolved", acceptance: undefined };
           } else {
             carried.push({
