@@ -393,7 +393,7 @@ export async function handoffConsolidateWorktrees(
   // Re-entry guard: a second runHandoff (crash-resume re-post) must not
   // re-consolidate work that is already on the local branch.
   const notYet = await workNotYetOnBranch(
-    execp as unknown as ExecFn,
+    execp,
     ctx.repoRoot,
     state.pipelineState.branchName,
     state.pipelineState.baseSha,

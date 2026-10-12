@@ -26,10 +26,11 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
 
 export const realExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
   try {
-    const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
-      cwd: o?.cwd,
-      maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
-    });
+    // argv form (#1093) runs the executable directly, as production's execp does.
+    const opts = { cwd: o?.cwd, maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024 };
+    const { stdout } = o?.argv
+      ? await execFileP(cmd, o.argv, opts)
+      : await execFileP("/bin/sh", ["-c", cmd], opts);
     return { stdout };
   } catch (err) {
     const e = err as Error & { stderr?: string; stdout?: string };

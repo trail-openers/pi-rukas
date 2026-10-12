@@ -23,7 +23,7 @@ import {
   type AdversarialOutcome,
 } from "./work-driver-adversarial-types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
-import { integrate, restoreRepoRoot, withIntegrationLock } from "./work-driver-integrate.ts";
+import { integrate, restoreRepoRoot } from "./work-driver-integrate.ts";
 import {
   detectCommittedFix,
   landCommittedFix,
@@ -31,12 +31,12 @@ import {
   repoRootOriginalRef,
 } from "./work-driver-lens-fix-commit.ts";
 import { commitLensFixChanges, lensWorktree } from "./work-driver-lens.ts";
+import { withIntegrationLock } from "./work-driver-lock.ts";
 import { runNetGit } from "./work-driver-net-git.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
-
 const execp = promisify(exec);
 
 /** #287 Part C — re-integrate a lens-fix made in a worktree (#654 task-c). */

@@ -20,7 +20,6 @@ export { readDirtyPorcelain, restoreRepoRoot } from "./work-driver-preflight.ts"
 // #794 — the integration lock lives in work-driver-lock.ts (extracted to
 // keep this file under the 500-line gate); the re-exports below preserve
 // every existing import path unchanged.
-export { withIntegrationLock, __resetIntegrationLock } from "./work-driver-lock.ts";
 
 /**
  * Issue title from the explore step's cached artifact; undefined on miss.

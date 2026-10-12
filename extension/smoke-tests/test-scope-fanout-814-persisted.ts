@@ -15,6 +15,7 @@
  * when there was no evidence).
  */
 
+import { asShellForm } from "./lib/argv-shell.ts";
 import { exec as cpExec } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -106,7 +107,7 @@ try {
     workstreams,
     [814],
     dispatch,
-    execp as never,
+    asShellForm(execp) as never,
     Date.now(),
     "job-persisted",
   );
@@ -195,7 +196,7 @@ try {
       ws2,
       [814],
       (() => Promise.resolve({ reply: "done", ok: true })) as never,
-      execp as never,
+      asShellForm(execp) as never,
       Date.now(),
       "job-noevidence",
     );
@@ -240,7 +241,7 @@ try {
       wsU,
       [814],
       (() => Promise.resolve({ reply: "done", ok: true })) as never,
-      execp as never,
+      asShellForm(execp) as never,
       Date.now(),
       "job-undeclared",
     );
@@ -266,13 +267,31 @@ try {
   {
     const mk = () => {
       const s = initialState(814, 1_000_000);
-      s.eventLog.push({ kind: "branches-converged", step: "adversarial", verdicts: [{ id: "x", ok: true }], at: 1 });
-      s.eventLog.push({ kind: "branches-converged", step: "develop", verdicts: [{ id: "a", ok: true }], at: 2 });
-      s.eventLog.push({ kind: "cap-hit", at: 3, cap: "verify-failed:develop", reviewRound: 0, nextStep: "handoff" });
+      s.eventLog.push({
+        kind: "branches-converged",
+        step: "adversarial",
+        verdicts: [{ id: "x", ok: true }],
+        at: 1,
+      });
+      s.eventLog.push({
+        kind: "branches-converged",
+        step: "develop",
+        verdicts: [{ id: "a", ok: true }],
+        at: 2,
+      });
+      s.eventLog.push({
+        kind: "cap-hit",
+        at: 3,
+        cap: "verify-failed:develop",
+        reviewRound: 0,
+        nextStep: "handoff",
+      });
       return s;
     };
     const base = mk();
-    const r1 = replaceDevelopConvergedVerdicts(base, [{ id: "a", ok: false, reason: "fence violation: f" }]);
+    const r1 = replaceDevelopConvergedVerdicts(base, [
+      { id: "a", ok: false, reason: "fence violation: f" },
+    ]);
     const devEv = r1.eventLog.find(
       (e) => e.kind === "branches-converged" && e.step === "develop",
     ) as { verdicts: Array<{ id: string; ok: boolean; reason?: string }> };

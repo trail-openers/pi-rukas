@@ -15,7 +15,10 @@ import { parseWorktreesBlock } from "../src/work-driver-branch-develop.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { parseWorkstreams } from "../src/work-driver-plan.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
-import { readState, writeState } from "../src/workflow-state.ts";
+import { type WorkEvent, readState, writeState } from "../src/workflow-state.ts";
+import { ensureGitIdentity, gitIn, makeBaseWorktrees, mockDeveloperWork } from "./lib/git-worktree-fixture.ts";
+
+ensureGitIdentity();
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -206,7 +209,8 @@ branch: feature/issue-553-fix
   ].join("\n");
   const parsed = parseWorkstreams(depBlock);
   assert(
-    (parsed["task-b"]?.dependsOn ?? []).length === 1 && parsed["task-b"]?.dependsOn?.[0] === "task-a",
+    (parsed["task-b"]?.dependsOn ?? []).length === 1 &&
+      parsed["task-b"]?.dependsOn?.[0] === "task-a",
     "#679: `- depends-on: task-a` parsed into dependsOn array",
   );
   assert(
@@ -258,15 +262,31 @@ branch: feature/issue-553-fix
           "task-c": `${dir}/.worktrees/task-c`,
         },
         workstreams: {
-          "task-a": { id: "task-a", scope: "frontend", paths: ["frontend/foo.ts"], outOfScope: [] },
-          "task-b": { id: "task-b", scope: "backend", paths: ["src/api.rs"], outOfScope: [] },
-          "task-c": { id: "task-c", scope: "docs", paths: ["docs/api.md"], outOfScope: [] },
+          "task-a": {
+            id: "task-a",
+            scope: "frontend",
+            paths: ["frontend/foo.ts"],
+            outOfScope: [],
+          },
+          "task-b": {
+            id: "task-b",
+            scope: "backend",
+            paths: ["src/api.rs"],
+            outOfScope: [],
+          },
+          "task-c": {
+            id: "task-c",
+            scope: "docs",
+            paths: ["docs/api.md"],
+            outOfScope: [],
+          },
         },
         reviewRound: 0,
         ciRetryCount: 0,
         plumbReports: [],
         status: "running" as const,
         branchName: "feature/issue-700-multi",
+        workstreamBaseShas: {} as Record<string, string>,
       },
       eventLog: [
         // Minimum prior events so the loop doesn't trip on inconsistency
@@ -274,6 +294,8 @@ branch: feature/issue-553-fix
       ],
     };
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    const baseShas = await makeBaseWorktrees(dir, ["task-a", "task-b", "task-c"]);
+    Object.assign(state.pipelineState.workstreamBaseShas, baseShas);
     await writeState(dir, state);
 
     const seenCwds: string[] = [];
@@ -299,6 +321,7 @@ branch: feature/issue-553-fix
         if (spec.role !== "developer") {
           throw new Error("smoke: halting after develop fanout");
         }
+        mockDeveloperWork(spec.cwd ?? dir, opts?.label);
         return mkResult({
           role: "developer",
           text: `mock developer output for ${opts?.label}`,
@@ -310,7 +333,18 @@ branch: feature/issue-553-fix
     // Three developer dispatches fired, one per workstream, each with the
     // correct per-worktree cwd.
     const developerLabels = seenLabels.filter((l) => l.startsWith("developer["));
-    assert(developerLabels.length === 3, "multi-workstream: 3 developer dispatches fired");
+    // #1016 — task-b fails once, so exactly ONE selective re-dispatch of it:
+    // 4 developer dispatches (a, b, c, then b again); a and c never re-run.
+    assert(
+      developerLabels.length === 4,
+      "multi-workstream: 3 developer dispatches + 1 selective retry",
+    );
+    assert(
+      developerLabels.filter((l) => l === "developer[task-b]").length === 2 &&
+        developerLabels.filter((l) => l === "developer[task-a]").length === 1 &&
+        developerLabels.filter((l) => l === "developer[task-c]").length === 1,
+      "multi-workstream: only the failed workstream (task-b) is re-dispatched",
+    );
     assert(
       developerLabels.includes("developer[task-a]") &&
         developerLabels.includes("developer[task-b]") &&
@@ -336,10 +370,14 @@ branch: feature/issue-553-fix
     const after = await readState(dir, 700);
     const kinds = (after?.eventLog ?? []).map((e) => e.kind);
     assert(kinds.includes("branches-fanned-out"), "multi-workstream: branches-fanned-out emitted");
-    const branchCompletions = (after?.eventLog ?? []).filter((e) => e.kind === "branch-completed");
+    const isBranchCompleted = (
+      e: WorkEvent,
+    ): e is Extract<WorkEvent, { kind: "branch-completed" }> =>
+      e.kind === "branch-completed" && e.step === "develop";
+    const branchCompletions = (after?.eventLog ?? []).filter(isBranchCompleted);
     assert(
-      branchCompletions.length === 3,
-      "multi-workstream: 3 branch-completed events (one per branch)",
+      branchCompletions.length === 4,
+      "multi-workstream: 4 branch-completed events (3 branches + task-b's retry, append-only)",
     );
     assert(
       kinds.includes("branches-converged"),
@@ -348,16 +386,27 @@ branch: feature/issue-553-fix
 
     // Partial failure: task-b's branch-completed has ok=false, others ok=true.
     const verdictsByWorkstream = Object.fromEntries(
-      branchCompletions.map((e) => [
-        (e as Extract<typeof e, { kind: "branch-completed" }>).workstreamId,
-        (e as Extract<typeof e, { kind: "branch-completed" }>).ok,
-      ]),
+      branchCompletions.map((e) => [e.workstreamId, e.ok]),
     );
     assert(verdictsByWorkstream["task-a"] === true, "task-a: success recorded");
+    // #1016 end-to-end: task-c left its edit uncommitted; after the first pass the
+    // safety net must have committed it, so task-c is one commit ahead of base.
+    const cAhead = gitIn(path.join(dir, ".worktrees", "task-c"), [
+      "rev-list",
+      "--count",
+      `${baseShas["task-c"]}..HEAD`,
+    ]);
     assert(
-      verdictsByWorkstream["task-b"] === false,
-      "task-b: failure recorded (partial-failure aggregate)",
+      cAhead === "1",
+      `#1016: uncommitted task-c is committed and counted green (ahead=${cAhead})`,
     );
+    // The latest task-b event is the retry's green result.
+    const taskBLatest = branchCompletions.filter((e) => e.workstreamId === "task-b");
+    assert(
+      taskBLatest.length === 2 && taskBLatest[0]?.ok === false,
+      "task-b: first failure recorded before the selective retry",
+    );
+    assert(verdictsByWorkstream["task-b"] === true, "task-b: retry recorded green");
     assert(
       verdictsByWorkstream["task-c"] === true,
       "task-c: success recorded (NOT aborted by task-b failure)",
@@ -368,106 +417,13 @@ branch: feature/issue-553-fix
     assert(converged !== undefined, "branches-converged is present");
     if (converged?.kind === "branches-converged") {
       assert(
-        converged.verdicts.filter((v) => v.ok).length === 2,
-        "branches-converged verdicts: 2 of 3 ok (partial failure aggregate)",
+        converged.verdicts.filter((v) => v.ok).length === 3,
+        "branches-converged verdicts: 3 of 3 ok after the selective retry",
       );
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-}
-
-// 10b. #679 case 2(a)/2(b) — topological dispatch order + deferred worktree
-// creation for a depends-on pair. The plan-quality gate guarantees a DAG;
-// this test exercises the scheduler's topological ordering and the
-// deferred worktree creation (from the dependency's post-commit SHA, not
-// baseSha) without a real git repo (the execFn is mocked).
-{
-  const { topologicalDispatchOrder, computeSkipCascade } = await import(
-    "../src/work-driver-dep-scheduler.ts"
-  );
-
-  // Topological order: A (independent), B depends on A, C depends on B.
-  const ids = ["task-a", "task-b", "task-c"];
-  const dependsOnMap = {
-    "task-b": ["task-a"],
-    "task-c": ["task-b"],
-  };
-  const { independent, dependentOrdered } = topologicalDispatchOrder(ids, dependsOnMap);
-  assert(independent.length === 1 && independent[0] === "task-a", "#679: task-a is independent");
-  assert(
-    dependentOrdered.length === 2 && dependentOrdered[0] === "task-b" && dependentOrdered[1] === "task-c",
-    "#679: topological order is task-b → task-c (C waits on B which waits on A)",
-  );
-
-  // Skip cascade: if task-a fails, task-b is skipped, and task-c is
-  // transitively skipped (its dependency task-b was skipped).
-  const failedOrSkipped = new Set(["task-a"]);
-  const skips = computeSkipCascade(["task-b", "task-c"], dependsOnMap, failedOrSkipped);
-  assert(skips.has("task-b"), "#679: task-b is skipped when its dependency task-a failed");
-  assert(skips.has("task-c"), "#679: task-c is transitively skipped when task-b was skipped");
-
-  // No failures → no skips.
-  const noSkips = computeSkipCascade(["task-b", "task-c"], dependsOnMap, new Set());
-  assert(noSkips.size === 0, "#679: no skips when no dependency failed");
-
-  // The N=1 default path: no depends-on, all independent.
-  const { independent: solo, dependentOrdered: soloDep } = topologicalDispatchOrder(["default"], {});
-  assert(solo.length === 1 && solo[0] === "default", "#679: N=1 default is independent");
-  assert(soloDep.length === 0, "#679: N=1 default has no dependent workstreams");
-}
-
-// 10c. #679 case 2(b) — resolveDependentBase with a mocked execFn: the
-// dependent's base is the dependency's post-commit HEAD SHA (not baseSha).
-{
-  const { resolveDependentBase } = await import("../src/work-driver-dep-scheduler.ts");
-  const FAKE_DEP_SHA = "a".repeat(40);
-  const FAKE_BASE_SHA = "b".repeat(40);
-  const mockExecFn = async (cmd: string) => {
-    if (cmd === "git rev-parse HEAD") return { stdout: `${FAKE_DEP_SHA}\n` };
-    if (cmd.startsWith("git rev-list --count")) return { stdout: "1\n" };
-    return { stdout: "" };
-  };
-  const result = await resolveDependentBase(
-    mockExecFn,
-    "/repo",
-    679,
-    "task-b",
-    ["task-a"],
-    { "task-a": "/repo/.worktrees/issue-679-task-a" },
-    { "task-a": FAKE_BASE_SHA },
-    FAKE_BASE_SHA,
-  );
-  assert(
-    result.fromRef === FAKE_DEP_SHA,
-    "#679: the dependent's fromRef is the dependency's post-commit HEAD (not baseSha)",
-  );
-  assert(
-    result.baseSha === FAKE_DEP_SHA,
-    "#679: the dependent's effective base is the dependency's post-commit HEAD",
-  );
-  assert(result.skipReason === undefined, "#679: no skip reason when the dependency has commits");
-
-  // Dependency with zero commits ahead of its base → skip (no baseSha fallback).
-  const mockExecFnZero = async (cmd: string) => {
-    if (cmd === "git rev-parse HEAD") return { stdout: `${FAKE_DEP_SHA}\n` };
-    if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
-    return { stdout: "" };
-  };
-  const zeroResult = await resolveDependentBase(
-    mockExecFnZero,
-    "/repo",
-    679,
-    "task-b",
-    ["task-a"],
-    { "task-a": "/repo/.worktrees/issue-679-task-a" },
-    { "task-a": FAKE_BASE_SHA },
-    FAKE_BASE_SHA,
-  );
-  assert(
-    zeroResult.fromRef === undefined && zeroResult.skipReason !== undefined,
-    "#679: a dependency with zero commits ahead of its base → the dependent is skipped (no baseSha fallback)",
-  );
 }
 
 console.log(`\nexit ${exit}`);

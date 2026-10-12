@@ -5,6 +5,7 @@
  * Split from test-work-driver-dep-deferred-creation.ts for the 500-line cap.
  */
 
+import { commandOf } from "./lib/argv-shell.ts";
 import { execFile } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -31,6 +32,7 @@ function assert(cond: boolean, msg: string) {
 }
 
 const realExec: ExecFn = async (cmd, o) => {
+  cmd = commandOf(cmd, o);
   const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
     cwd: o?.cwd,
     maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
@@ -332,6 +334,7 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
   // we throw only once to be safe).
   let listCalls = 0;
   const broken: ExecFn = async (cmd, o) => {
+    cmd = commandOf(cmd, o);
     if (cmd.includes("worktree list")) {
       listCalls++;
       if (listCalls === 1) throw new Error("git: unable to read worktree list");

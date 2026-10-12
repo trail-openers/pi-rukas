@@ -38,13 +38,9 @@ import type { DriverContext } from "./work-driver-context.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { deriveConsolidationSubject } from "./work-driver-handoff-subject.ts";
-import {
-  type IntegrateResult,
-  cachedIssueTitle,
-  integrate,
-  withIntegrationLock,
-} from "./work-driver-integrate.ts";
+import { type IntegrateResult, cachedIssueTitle, integrate } from "./work-driver-integrate.ts";
 import { renderAssumptions } from "./work-driver-intent.ts";
+import { withIntegrationLock } from "./work-driver-lock.ts";
 import { parsePrNumber } from "./work-driver-merged.ts";
 
 // #861 — the lock-wrapped step handler lives in work-driver-commit-lock.ts

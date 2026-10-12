@@ -37,10 +37,33 @@ export interface PlanPhaseTiming {
   ms: number;
 }
 
+/**
+ * What KIND of proposed resolution the gate reviewer offered (#1111). Only
+ * `concrete` — a statement of a behaviour — may be spliced into a spec body.
+ * `instruction` ("add acceptance criteria for …"), `research` and
+ * `operator-decision` (an either/or, or a choice the PM must make) are gate
+ * meta-language and stay in Open Questions. A missing or unparseable type is
+ * never spliced (fail closed).
+ */
+export const RESOLUTION_TYPES = [
+  "concrete",
+  "instruction",
+  "research",
+  "operator-decision",
+] as const;
+export type ResolutionType = (typeof RESOLUTION_TYPES)[number];
+
+/** Narrows an unparsed value to a ResolutionType; only an exact member passes (#1111). */
+export function isResolutionType(v: unknown): v is ResolutionType {
+  return typeof v === "string" && (RESOLUTION_TYPES as readonly string[]).includes(v);
+}
+
 export interface PlanGap {
   severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
   description: string;
   resolution: string;
+  /** Parsed from the reviewer's `resolution-type:` field; undefined when absent or unparseable. */
+  resolutionType?: ResolutionType;
   // #639 DECISION B: the old optional `status` field ("pending" | "resolved",
   // Bug 3 #606) is DELETED. It had ZERO consumers: the only writer was the
   // gap-gate loop's `{ ...g, status: "resolved" }` copy, and the only

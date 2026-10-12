@@ -24,7 +24,7 @@
  *      a failed restore — and no longer implies repoRoot is on the branch.
  */
 
-import { exec, execFileSync } from "node:child_process";
+import { exec, execFile, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -46,6 +46,7 @@ function assert(cond: boolean, msg: string) {
 }
 
 const pExec = promisify(exec);
+const pExecFile = promisify(execFile);
 
 /** Build a temp repo: main + the operator's branch + a detached worktree
  * one real commit ahead of the root's HEAD. Returns the root and the
@@ -108,6 +109,7 @@ function stateFor(
       inFlightJobIds: [],
       plumbReports: [],
       branchName,
+      startRef: "operator-feature",
       baseSha,
       worktrees: { "task-a": wt },
     },
@@ -232,17 +234,19 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
     let dirtWritten = false;
     let dirtWriteError: unknown;
     let dirtSurvived = false;
-    let checkoutForceCount = 0;
-    const stub: ExecFn = async (cmd, opts) => {
+    let restoreCheckoutCount = 0;
+    const restoreCmd = "git checkout operator-feature --";
+    const stub: ExecFn = async (rawCmd, opts) => {
+      const cmd = opts?.argv ? [rawCmd, ...opts.argv].join(" ") : rawCmd;
       const isRoot = opts?.cwd === dir;
-      const res = await pExec(cmd, { cwd: opts?.cwd, maxBuffer: opts?.maxBuffer });
-      if (isRoot && cmd.startsWith("git checkout --force")) {
-        checkoutForceCount += 1;
-        // Write the dirt after the FIRST `git checkout --force` (the
-        // restore's) so the on-disk file survives and the post-condition
-        // read sees it. A write failure is recorded, not swallowed — the
-        // test's "dirt was written" assertion must fail on its own terms.
-        if (!dirtWritten && checkoutForceCount === 1) {
+      const res = opts?.argv
+        ? await pExecFile(rawCmd, opts.argv, { cwd: opts.cwd, maxBuffer: opts.maxBuffer })
+        : await pExec(rawCmd, { cwd: opts?.cwd, maxBuffer: opts?.maxBuffer });
+      if (isRoot && cmd === restoreCmd) {
+        restoreCheckoutCount += 1;
+        // Write the dirt after the FIRST restore checkout so the post-condition
+        // read sees it; a write failure is recorded and asserted on below.
+        if (!dirtWritten && restoreCheckoutCount === 1) {
           try {
             writeFileSync(dirtFile, "dirt\n");
             dirtWritten = true;
@@ -251,7 +255,7 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
           }
         }
       }
-      if (dirtWritten && isRoot && cmd === "git status --porcelain") {
+      if (dirtWritten && isRoot && cmd.startsWith("git status --porcelain")) {
         // The restore's post-condition read — mark survived if the tracked
         // dirt is still reported (the file is on disk after the reset +
         // checkout, which have already run).
@@ -275,7 +279,7 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
       dirtWriteError === undefined,
       "#968 forced-restore-failure: the dirt writeFileSync did not throw (write failures fail on their own terms)",
     );
-    assert(dirtWritten, "#968 forced-restore-failure: the stub intercepted `git checkout --force` and wrote the tracked dirt");
+    assert(dirtWritten, "#968 forced-restore-failure: the stub intercepted the restore checkout and wrote the dirt");
     assert(
       dirtSurvived,
       "#968 forced-restore-failure: the tracked dirt survived to the restore's post-condition read (the intercept did not drift)",
@@ -370,7 +374,7 @@ const SAVED_FORGE = process.env.PI_ENSEMBLE_FORGE;
     "#968 render: chat header does NOT carry its own restored claim (verified case)",
   );
   // (b) the not-restored failure is printed by both surfaces.
-  const bad=
+  const bad =
     "repoRoot was NOT restored: still dirty after reset + checkout: a.txt (discarded state preserved at /tmp/x)";
   const sBad = makeState(bad);
   const mdBad = renderHandoffMarkdown(sBad);

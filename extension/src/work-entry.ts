@@ -173,7 +173,7 @@ export async function runGroupedIssues(
     groups: groupList,
     restart,
     concurrency,
-    runGroup: async (primary, groupIssueNums) => {
+    runGroup: async (primary, groupIssueNums, invocationStartRef) => {
       const handle = startJob(pi, {
         label: `work-driver-group:${groupList.find((g) => g.issues[0] === primary)?.id ?? "unknown"}`,
         role: "work-driver",
@@ -188,6 +188,7 @@ export async function runGroupedIssues(
             restart,
             mergeGrant,
             parallelCycles: concurrency,
+            invocationStartRef,
           });
           return makeResult(
             true,

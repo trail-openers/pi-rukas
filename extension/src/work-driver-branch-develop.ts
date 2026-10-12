@@ -4,14 +4,20 @@
  * the worktree(s); develop fans a developer into each and runs the safety net
  * + verify gate (re-gated per-worktree by #679 task-evidence).
  */
-import { exec } from "node:child_process";
 import path from "node:path";
-import { promisify } from "node:util";
 import { dispatchCore } from "./dispatch.ts";
+import { execp as argvExecp } from "./lens-exec.ts";
 import { trace } from "./trace.ts";
 import { BranchAheadError, mechanizedBranchSetup } from "./work-driver-branch-mechanized.ts";
 import { parseWorktreesBlock, runBranchViaOpsDispatch } from "./work-driver-branch-ops.ts";
 import { runBranchResiduePass } from "./work-driver-branch-residue.ts";
+// #1093 — cycle-start-ref stamping runs under the single integration lock.
+import { hasCaptureFailure, recordCycleStartRef } from "./work-driver-git.ts";
+import { withIntegrationLock } from "./work-driver-lock.ts";
+// #1016 — the argv-honouring executor: the develop path passes `argv` to every
+// git call, and a shell-only exec would run bare `git` and read every check as
+// unreadable (fail closed on every workstream).
+import { execp } from "./work-driver-verify.ts";
 
 export { parseWorktreesBlock };
 import type { DriverContext } from "./work-driver-context.ts";
@@ -20,16 +26,56 @@ import { cachedIssueTitle } from "./work-driver-integrate.ts";
 import { findOpenPrForIssue, prPreflightEnabled } from "./work-driver-pr-preflight.ts";
 import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 
+import {
+  greenWorkstreamsFromInterruptedDevelop,
+  isInterruptedDevelop,
+} from "./work-develop-greens.ts";
+import { backupInterruptedWorktrees } from "./work-develop-resume-backup.ts";
+import { type PreservedGreens, trustedPreservedGreens } from "./work-develop-retry.ts";
 import { runDevelopTopological } from "./work-develop-topological.ts";
 import { salvageKnownDirtyWorktrees } from "./work-driver-branch-salvage.ts";
 import { applySafetyNet, hasAnyWorktreeEvidence } from "./work-driver-safety-net.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import { makeWorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
-import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
+import { type WorkEvent, type WorkState, appendEvent, writeState } from "./workflow-state.ts";
 import { DirtyWorktreeError, gitErrorDetail } from "./worktree.ts";
 
-const execp = promisify(exec);
+/**
+ * #1093 — stamp `pipelineState.startRef` (the checkout the cycle found) and
+ * persist it BEFORE the branch step can move repoRoot. The driver calls this
+ * just ahead of runBranch, not inside it: the step-boundary write only comes
+ * after the whole step, so a crash inside the branch dispatch would lose the
+ * ref with the checkout already moved. Written once; a resumed cycle keeps the
+ * ref its first run captured.
+ *
+ * #1093 — the capture runs under the integration lock. A sibling group's
+ * merged or handoff step moves repoRoot under that same lock, so an unlocked
+ * read could record the SIBLING's feature branch as this cycle's start ref.
+ * When the queue captured the ref once per invocation (`invocationStartRef`),
+ * that value is stamped instead: the lock only orders reads, it cannot tell a
+ * sibling's failed restore (repoRoot left on its branch) from the operator's.
+ */
+export async function stampCycleStartRef(ctx: DriverContext, state: WorkState): Promise<WorkState> {
+  if (state.pipelineState.startRef) return state;
+  // A failed capture on an earlier run is recorded in plumbReports; a resumed
+  // cycle must not recapture (repoRoot may already be on the feature branch).
+  if (hasCaptureFailure(state)) return state;
+  if (ctx.invocationStartRef !== undefined) {
+    const stamped = {
+      ...state,
+      pipelineState: { ...state.pipelineState, startRef: ctx.invocationStartRef },
+    };
+    await writeState(ctx.repoRoot, stamped);
+    return stamped;
+  }
+  return withIntegrationLock(ctx.repoRoot, async () => {
+    // argv-aware: the capture passes argv, which promisify(exec) silently drops.
+    const stamped = await recordCycleStartRef(ctx.verifyExecFn ?? argvExecp, ctx.repoRoot, state);
+    if (stamped !== state) await writeState(ctx.repoRoot, stamped);
+    return stamped;
+  });
+}
 
 /**
  * Step 3 — Setup: ops creates the feature branch + worktrees.
@@ -68,7 +114,11 @@ export async function runBranch(
     if (existing) {
       const withPr: WorkState = {
         ...state,
-        pipelineState: { ...state.pipelineState, currentStep: "branch", existingPr: existing },
+        pipelineState: {
+          ...state.pipelineState,
+          currentStep: "branch",
+          existingPr: existing,
+        },
       };
       return appendEvent(withPr, {
         kind: "cap-hit",
@@ -127,7 +177,10 @@ export async function runBranch(
             `work-driver: branch step halted — local branch ${aheadErr.branchName} is ${aheadLabel === "unknown" ? "an unknown number of" : `${aheadLabel}`} commit(s) ahead of the fetched base; nothing was reset`,
           );
           const started = appendEvent(
-            { ...state, pipelineState: { ...state.pipelineState, currentStep: "branch" } },
+            {
+              ...state,
+              pipelineState: { ...state.pipelineState, currentStep: "branch" },
+            },
             { kind: "step-started", step: "branch", at: now },
           );
           return appendEvent(started, {
@@ -155,7 +208,10 @@ export async function runBranch(
         });
       }
       const started = appendEvent(
-        { ...baseState, pipelineState: { ...baseState.pipelineState, currentStep: "branch" } },
+        {
+          ...baseState,
+          pipelineState: { ...baseState.pipelineState, currentStep: "branch" },
+        },
         { kind: "step-started", step: "branch", at: now },
       );
       // Via the shared builder (work-driver-events.ts): unique jobId —
@@ -213,7 +269,10 @@ export async function runBranch(
       if (err instanceof DirtyWorktreeError) {
         trace(`work-driver: branch step refused — dirty worktree: ${err.message?.slice(0, 300)}`);
         const started = appendEvent(
-          { ...state, pipelineState: { ...state.pipelineState, currentStep: "branch" } },
+          {
+            ...state,
+            pipelineState: { ...state.pipelineState, currentStep: "branch" },
+          },
           { kind: "step-started", step: "branch", at: now },
         );
         // #545 — salvage the dirty worktrees this cycle ALREADY knows about
@@ -346,6 +405,45 @@ export async function runDevelop(
     Date.now(),
   );
   next = begun.state;
+  // #1016 — crash-resume: workstreams that finished green before the crash
+  // keep their worktree and commits; only the rest are re-dispatched.
+  // A green without commits ahead of its base is re-dispatched, not kept.
+  const baseFor = (id: string) =>
+    state.pipelineState.workstreamBaseShas?.[id] ?? state.pipelineState.baseSha;
+  const greens = await trustedPreservedGreens(greenWorkstreamsFromInterruptedDevelop(state), {
+    execFn,
+    worktrees: state.pipelineState.worktrees ?? {},
+    baseFor,
+  });
+  // #1016 — save before re-dispatch: an interrupted develop may have left a
+  // failed workstream's partial edits in its worktree. Save them to a patch
+  // before the resumed fan-out can run the developer over them.
+  const backup = isInterruptedDevelop(state)
+    ? await backupInterruptedWorktrees({
+        execFn,
+        repoRoot: ctx.repoRoot,
+        scratchAbs: scratchDir(ctx.repoRoot, ctx.issue),
+        ids: ids.filter((id) => !greens.kept.has(id)),
+        worktrees: state.pipelineState.worktrees ?? {},
+        baseFor,
+      })
+    : { refused: {}, saved: {}, notes: [] };
+  const preserved: PreservedGreens = {
+    kept: greens.kept,
+    notes: [
+      ...greens.notes,
+      ...Object.entries(backup.saved).map(
+        ([id, p]) => `${id}: uncommitted work from the interrupted attempt saved to ${p}`,
+      ),
+      ...backup.notes,
+    ],
+    refused: backup.refused,
+  };
+  if (preserved.kept.size > 0) {
+    trace(
+      `work-driver: develop resumed — keeping green workstreams ${[...preserved.kept].join(", ")}`,
+    );
+  }
   return runDevelopTopological(
     ctx,
     next,
@@ -356,5 +454,6 @@ export async function runDevelop(
     execFn,
     now,
     begun.jobId,
+    preserved,
   );
 }

@@ -9,11 +9,11 @@
 
 import type { ForgeType } from "./forge-detect.ts";
 import { renderLensFindings } from "./lens-findings-render.ts";
-import { developVerdictLines } from "./work-develop-verdict-source.ts";
 import { capedPartialStateLines } from "./work-driver-caped-state.ts";
 import { commitPrRootFactLines } from "./work-driver-commit-inspect.ts";
 import { MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 import { explainCap } from "./work-driver-explain.ts";
+import { fanoutVerdictLines } from "./work-driver-handoff-fanout.ts";
 import { recoveryCommandsChat } from "./work-driver-handoff-recovery.chat.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
@@ -227,7 +227,7 @@ export function renderHandoffUserMessage(
   // (post-#814 the fence-flipped verdicts live there), else branch-completed.
   // The same array + presence rule renderHandoffMarkdown uses, so a fence
   // flip shows as "FAIL — <reason>" in both surfaces.
-  const verdictLines = developVerdictLines(state);
+  const verdictLines = fanoutVerdictLines(state);
   if (verdictLines.length > 0) {
     const okN = verdictLines.filter((v) => v.ok).length;
     lines.push(
