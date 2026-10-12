@@ -28,6 +28,7 @@ import {
   transientRetryBackoffMs,
   transientRetryEnabled,
 } from "./work-driver-failure-taxonomy.ts";
+import { refusedWorkstreams } from "./work-driver-step-refusal.ts";
 import type { CapEvidence } from "./workflow-state-cap.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
 import { type WorkState, type WorkStep, appendEvent, writeState } from "./workflow-state.ts";
@@ -85,14 +86,19 @@ export function failureEventOf(events: readonly WorkEvent[]): WorkEvent | undefi
   if (last.verdicts.some((v: { ok: boolean }) => v.ok)) return undefined;
 
   let failure: WorkEvent | undefined;
+  let refused = false;
   for (let i = events.length - 2; i >= 0; i--) {
     const e = events[i];
     if (!e || e.kind === "branches-fanned-out") break;
+    // #1016 — a driver refusal is not transient, and a fan-out that contains
+    // one is not a transient failure even when a sibling dispatch also failed:
+    // re-running it would re-refuse the same workstream. Decline the retry.
+    if (e.kind === "branch-completed" && e.refused) refused = true;
     if (!failure && (e.kind === "dispatch-failed" || e.kind === "dispatch-failed-provider")) {
       failure = e;
     }
   }
-  return failure;
+  return refused ? undefined : failure;
 }
 
 export async function routeStepOutcome(
@@ -112,6 +118,8 @@ export async function routeStepOutcome(
   // drains only its own list. The events carry their own `at`, so it is
   // acceptable that they sit after the step's completion event in the log.
   const slowEvents = drainSlowEvents(ctx.issue);
+  // #1016 — the driver's own refusals for this step (see work-driver-step-refusal.ts).
+  const refusals = refusedWorkstreams(stateIn.eventLog, step);
   let state =
     slowEvents.length > 0
       ? { ...stateIn, eventLog: [...stateIn.eventLog, ...slowEvents] }
@@ -153,6 +161,16 @@ export async function routeStepOutcome(
         stepOrd.total,
         elapsed,
         `cap-hit: ${lastEvent.cap}`,
+        stepRound,
+        ctx.issue,
+      );
+    } else if (refusals.length > 0) {
+      lifecycle.emitStepFailed(
+        step,
+        stepOrd.num,
+        stepOrd.total,
+        elapsed,
+        `refused: ${refusals.map((r) => r.id).join(", ")}`,
         stepRound,
         ctx.issue,
       );
@@ -433,6 +451,29 @@ export async function routeStepOutcome(
       // is HALT, lens-review N>1 path uses the same N>1 fanout but
       // its retry semantics are handled internally by runLensReview).
       // DEGRADED_OK: fall-through.
+    }
+  }
+
+  // #1016 — a driver REFUSAL halts the step as a non-transient failure. N=1
+  // has no branches-converged, so the fan-out check above cannot see it; the
+  // refusal is never retried with backoff and never advances the cycle.
+  {
+    const refusals = refusedWorkstreams(state.eventLog, step);
+    const parked = state.eventLog[state.eventLog.length - 1]?.kind === "cap-hit";
+    if (refusals.length > 0 && !parked && STEP_FAILURE_POLICY[step] === "HALT") {
+      state = appendEvent(state, {
+        kind: "cap-hit",
+        at: Date.now(),
+        cap: `step-failed:${step}` as const,
+        reviewRound: state.pipelineState.reviewRound,
+        nextStep: "handoff",
+      });
+      state = { ...state, pipelineState: { ...state.pipelineState, currentStep: "handoff" } };
+      await writeState(ctx.repoRoot, state);
+      trace(
+        `work-driver: HALT on step="${step}" — refused: ${refusals.map((r) => `${r.id} (${r.reason})`).join("; ")} → handoff`,
+      );
+      return { state, retry: true };
     }
   }
 

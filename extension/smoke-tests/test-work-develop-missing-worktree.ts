@@ -7,7 +7,8 @@
  * Cases:
  *  1. N=1 (default workstream, empty worktrees map) — dispatch is never
  *     called; the workstream is failed with the named refusal; the
- *     dispatch-failed + branch-completed events are recorded.
+ *     branch-completed failure is recorded (NO dispatch-failed: a refusal is
+ *     not an infrastructure failure the router may retry).
  *  2. N>1 — the workstream with the missing worktree is refused, its
  *     sibling WITH a worktree dispatches normally; the dependents of the
  *     failed workstream are skipped (cascade) and the dependents of the
@@ -19,10 +20,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import type { DispatchResult } from "../src/types.ts";
 import { runDevelopTopological } from "../src/work-develop-topological.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import type { DispatchResult } from "../src/types.ts";
-import { initialState, type WorkState } from "../src/workflow-state.ts";
+import { type WorkState, initialState } from "../src/workflow-state.ts";
 import type { ExecFn } from "../src/worktree.ts";
 
 const execFileP = promisify(execFile);
@@ -91,7 +92,7 @@ function recordingDispatch(
       toolUses: [],
       ms: 1,
       exitCode: 0,
-      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
       transcriptPath: "/tmp/x",
     };
   };
@@ -101,7 +102,7 @@ function recordingDispatch(
 function ctxFor(repo: string, dispatchFn: NonNullable<DriverContext["dispatchFn"]>): DriverContext {
   const fixture: Pick<
     DriverContext,
-    "repoRoot" | "issue" | "issues" | "verifyExecFn" | "stateRef" | "dispatchFn"
+    "repoRoot" | "issue" | "issues" | "verifyExecFn" | "dispatchFn"
   > & {
     // biome-ignore lint/suspicious/noExplicitAny: driver fixture — the pi binding is never touched on this path
     pi: any;
@@ -111,7 +112,6 @@ function ctxFor(repo: string, dispatchFn: NonNullable<DriverContext["dispatchFn"
     issues: [746],
     repoRoot: repo,
     verifyExecFn: realExec,
-    stateRef: { current: initialState(746) },
     dispatchFn,
   };
   return fixture as unknown as DriverContext;
@@ -149,20 +149,16 @@ function ctxFor(repo: string, dispatchFn: NonNullable<DriverContext["dispatchFn"
     calls.length === 0,
     "#746 case 1: no dispatch at all when the default workstream has no worktree (the pre-fix code dispatched with cwd=repoRoot)",
   );
-  const df = after.eventLog.find((e) => e.kind === "dispatch-failed");
   assert(
-    df?.kind === "dispatch-failed" &&
-      df.errorTail?.includes("no worktree recorded for workstream default") === true &&
-      df.errorTail?.includes("falling back to repoRoot") === true,
-    `#746 case 1: a dispatch-failed event records the named refusal (got: ${df?.kind === "dispatch-failed" ? df.errorTail : String(df?.kind)})`,
+    !after.eventLog.some((e) => e.kind === "dispatch-failed"),
+    "#1016 refusal: a missing worktree emits no dispatch-failed (the router would treat it as infrastructure)",
   );
   const bc = after.eventLog.find(
     (e): e is Extract<import("../src/workflow-state.ts").WorkEvent, { kind: "branch-completed" }> =>
       e.kind === "branch-completed" && e.workstreamId === "default",
   );
   assert(
-    bc?.ok === false &&
-      bc.error?.includes("no worktree recorded for workstream default") === true,
+    bc?.ok === false && bc.error?.includes("no worktree recorded for workstream default") === true,
     "#746 case 1: the branch-completed event names the refusal (the router HALTs on this verdict)",
   );
   // The state ends at a cap-hit (the verify gate ran: with no worktree the
@@ -171,8 +167,9 @@ function ctxFor(repo: string, dispatchFn: NonNullable<DriverContext["dispatchFn"
   // workstream had succeeded.
   const tail = after.eventLog[after.eventLog.length - 1];
   assert(
-    tail.kind === "cap-hit" && (tail.cap === "verify-failed:develop" || tail.cap.startsWith("verify-failed:")),
-    `#746 case 1: the event-log tail is a verify-failed cap (the failed workstream left no evidence), not a success (tail: ${tail.kind}:${tail.kind === "cap-hit" ? tail.cap : ""})`,
+    tail?.kind === "cap-hit" &&
+      (tail.cap === "verify-failed:develop" || tail.cap.startsWith("verify-failed:")),
+    `#746 case 1: the event-log tail is a verify-failed cap (the failed workstream left no evidence), not a success (tail: ${tail?.kind}:${tail?.kind === "cap-hit" ? tail.cap : ""})`,
   );
   // The worktree dir was never created and the repo root was never written to.
   const { stdout: status } = await git(repo, ["status", "--porcelain"]);
@@ -217,9 +214,7 @@ function ctxFor(repo: string, dispatchFn: NonNullable<DriverContext["dispatchFn"
   );
   // Only the workstream WITH a worktree dispatched, and with its worktree cwd.
   assert(
-    calls.length === 1 &&
-      calls[0].role === "developer" &&
-      calls[0].cwd === wt,
+    calls.length === 1 && calls[0]?.role === "developer" && calls[0]?.cwd === wt,
     `#746 case 2: exactly one dispatch (task-b, cwd=its worktree); task-a was refused (calls: ${JSON.stringify(calls)})`,
   );
   // task-a failed with the named refusal.
@@ -228,8 +223,7 @@ function ctxFor(repo: string, dispatchFn: NonNullable<DriverContext["dispatchFn"
       e.kind === "branch-completed" && e.workstreamId === "task-a",
   );
   assert(
-    dfA?.ok === false &&
-      dfA.error?.includes("no worktree recorded for workstream task-a") === true,
+    dfA?.ok === false && dfA.error?.includes("no worktree recorded for workstream task-a") === true,
     `#746 case 2: task-a's branch-completed names the refusal (got: ${dfA?.error?.slice(0, 100)})`,
   );
   // task-b succeeded.

@@ -17,6 +17,7 @@
  *      paths AND carries fallbackCause="dirty-repoRoot" (#539).
  */
 
+import { commandOf } from "./lib/argv-shell.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -129,10 +130,13 @@ const mkDispatchFn =
         });
         const calls2: string[] = [];
         const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
+          cmd = commandOf(cmd, o);
           calls2.push(cmd);
-          if (cmd === "git rev-parse HEAD") return { stdout: "base123\n" };
+          if (cmd === "git rev-parse HEAD")
+            return { stdout: "1111111111111111111111111111111111111111\n" };
           if (cmd === "git rev-parse --abbrev-ref HEAD") return { stdout: "feature/issue-995\n" };
-          if (cmd.startsWith("git rev-parse ")) return { stdout: "base123\n" };
+          if (cmd.startsWith("git rev-parse "))
+            return { stdout: "1111111111111111111111111111111111111111\n" };
           if (cmd.startsWith("git fetch origin")) return { stdout: "" };
           if (cmd.startsWith("git worktree add")) return { stdout: "" };
           if (cmd.startsWith("git worktree remove")) return { stdout: "" };
@@ -143,7 +147,8 @@ const mkDispatchFn =
             if (/-task-[abc]$/.test(cwd)) return { stdout: " M src/x.rs\n" };
             return { stdout: "" };
           }
-          if (cmd.startsWith("git rev-list --count base123")) return { stdout: "0\n" };
+          if (cmd.startsWith("git rev-list --count 1111111111111111111111111111111111111111"))
+            return { stdout: "1\n" };
           if (cmd.startsWith("git rev-list --count origin/")) return { stdout: "1\n" };
           if (cmd.startsWith("git add -- ")) return { stdout: "" };
           if (cmd.startsWith("git diff --cached")) return { stdout: "diff --git a/x b/x\n+new\n" };
@@ -230,15 +235,17 @@ const mkDispatchFn =
         const capturedOpsPrompts: string[] = [];
         const callsP: string[] = [];
         const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
+          cmd = commandOf(cmd, o);
           callsP.push(cmd);
           if (cmd.startsWith("git rev-parse --verify --quiet refs/heads/"))
-            return { stdout: "base123\n" };
+            return { stdout: "1111111111111111111111111111111111111111\n" };
           if (cmd.startsWith("git rev-parse --verify --quiet HEAD"))
             throw new Error("fatal: not a git repository");
-          if (cmd === "git rev-parse HEAD") return { stdout: "base123\n" };
-          if (cmd === "git rev-parse --abbrev-ref HEAD")
-            return { stdout: "feature/issue-998\n" };
-          if (cmd.startsWith("git rev-parse ")) return { stdout: "base123\n" };
+          if (cmd === "git rev-parse HEAD")
+            return { stdout: "1111111111111111111111111111111111111111\n" };
+          if (cmd === "git rev-parse --abbrev-ref HEAD") return { stdout: "feature/issue-998\n" };
+          if (cmd.startsWith("git rev-parse "))
+            return { stdout: "1111111111111111111111111111111111111111\n" };
           if (cmd.startsWith("git fetch origin")) return { stdout: "" };
           if (cmd.startsWith("git worktree add")) return { stdout: "" };
           if (cmd.startsWith("git worktree remove")) return { stdout: "" };
@@ -250,11 +257,11 @@ const mkDispatchFn =
             if (/-task-[abc]$/.test(cwd)) return { stdout: " M src/x.rs\n" };
             return { stdout: "" };
           }
-          if (cmd.startsWith("git rev-list --count base123")) return { stdout: "0\n" };
+          if (cmd.startsWith("git rev-list --count 1111111111111111111111111111111111111111"))
+            return { stdout: "1\n" };
           if (cmd.startsWith("git rev-list --count origin/")) return { stdout: "1\n" };
           if (cmd.startsWith("git add -- ")) return { stdout: "" };
-          if (cmd.startsWith("git diff --cached"))
-            return { stdout: "diff --git a/x b/x\n+new\n" };
+          if (cmd.startsWith("git diff --cached")) return { stdout: "diff --git a/x b/x\n+new\n" };
           // #861 — a FAILED apply: the patch file (integrate-task-a.patch)
           // is the preserved artifact integrate() records as conflictPatch.
           if (cmd.startsWith("git apply")) {
@@ -305,7 +312,9 @@ const mkDispatchFn =
         const prompt = capturedOpsPrompts.join("\n");
         assert(
           prompt.includes(PATCH) &&
-            /The preserved conflict artifact from the mechanized attempt is at `[^`]+`/.test(prompt),
+            /The preserved conflict artifact from the mechanized attempt is at `[^`]+`/.test(
+              prompt,
+            ),
           "M2b: the fallback ops prompt carries the conflict-patch path (structured value)",
         );
         assert(
@@ -326,7 +335,9 @@ const mkDispatchFn =
           recursive: true,
         });
         const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
-          if (cmd === "git rev-parse HEAD") return { stdout: "base123\n" };
+          cmd = commandOf(cmd, o);
+          if (cmd === "git rev-parse HEAD")
+            return { stdout: "1111111111111111111111111111111111111111\n" };
           if (cmd === "git rev-parse --abbrev-ref HEAD") return { stdout: "feature/issue-996\n" };
           if (cmd.startsWith("git status --porcelain")) {
             const cwd = o?.cwd ?? "";
@@ -334,7 +345,8 @@ const mkDispatchFn =
             if (cwd.endsWith("/wta") || cwd.endsWith("/wtc")) return { stdout: " M src/x.rs\n" };
             return { stdout: "" };
           }
-          if (cmd.startsWith("git rev-list --count base123")) return { stdout: "0\n" };
+          if (cmd.startsWith("git rev-list --count 1111111111111111111111111111111111111111"))
+            return { stdout: "1\n" };
           if (cmd.startsWith("git rev-list --count origin/")) return { stdout: "1\n" };
           if (cmd.startsWith("git add -- ")) return { stdout: "" };
           if (cmd.startsWith("git diff --cached")) return { stdout: "diff --git a/x b/x\n+new\n" };
@@ -379,19 +391,22 @@ const mkDispatchFn =
         });
         const calls4: string[] = [];
         const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
+          cmd = commandOf(cmd, o);
           calls4.push(cmd);
           // #861 — the driver's ensureIntegrateWorktree probes the branch ref
           // and the (nonexistent) integrate path's HEAD before the #475
           // target guard. The path's HEAD read must fail (directory absent)
           // so the re-entry does not treat the tree as stale; the branch ref
-          // read hits the same `base123` the rest of the fake answers.
+          // read hits the same `1111111111111111111111111111111111111111` the rest of the fake answers.
           if (cmd.startsWith("git rev-parse --verify --quiet refs/heads/"))
-            return { stdout: "base123\n" };
+            return { stdout: "1111111111111111111111111111111111111111\n" };
           if (cmd.startsWith("git rev-parse --verify --quiet HEAD"))
             throw new Error("fatal: not a git repository");
-          if (cmd === "git rev-parse HEAD") return { stdout: "base123\n" };
+          if (cmd === "git rev-parse HEAD")
+            return { stdout: "1111111111111111111111111111111111111111\n" };
           if (cmd === "git rev-parse --abbrev-ref HEAD") return { stdout: "feature/issue-997\n" };
-          if (cmd.startsWith("git rev-parse ")) return { stdout: "base123\n" };
+          if (cmd.startsWith("git rev-parse "))
+            return { stdout: "1111111111111111111111111111111111111111\n" };
           if (cmd.startsWith("git fetch origin")) return { stdout: "" };
           if (cmd.startsWith("git worktree add")) return { stdout: "" };
           if (cmd.startsWith("git worktree remove")) return { stdout: "" };
@@ -413,7 +428,8 @@ const mkDispatchFn =
             if (cwd !== dir && worktreeAdds >= 3) return { stdout: " M src/x.rs\n" };
             return { stdout: "" };
           }
-          if (cmd.startsWith("git rev-list --count base123")) return { stdout: "0\n" };
+          if (cmd.startsWith("git rev-list --count 1111111111111111111111111111111111111111"))
+            return { stdout: "1\n" };
           if (cmd.startsWith("git rev-list --count origin/")) return { stdout: "1\n" };
           if (cmd.startsWith("git add -- ")) return { stdout: "" };
           if (cmd.startsWith("git diff --cached")) return { stdout: "diff --git a/x b/x\n+new\n" };

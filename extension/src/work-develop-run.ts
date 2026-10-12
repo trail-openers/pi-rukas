@@ -66,6 +66,9 @@ export interface DevelopRunState {
   verdicts: Array<{ id: string; ok: boolean; reason?: string }>;
   /** Per-branch events (completion, speculative, branch-completed, dispatch-failed). */
   branchEvents: WorkEvent[];
+  /** #1016 — persists a `branch-completed` as its workstream finishes (the
+   *  crash-resume record). */
+  emitBranchCompleted: (ev: WorkEvent) => void;
   /** The current state (mutated by appendEvent for memory-inject events). */
   stateRef: { current: WorkState };
 }
@@ -84,6 +87,24 @@ export interface DependentRunState {
   inCycleWorktrees?: string[];
   depCompletedAtMap?: Record<string, number>;
   failureSource?: Record<string, "skipped" | "failed">;
+  /** #1016 — dependents whose green survived a crash: kept, never re-dispatched. */
+  kept?: ReadonlySet<string>;
+  /** #1016 — dependents whose unsaved work blocks their dispatch (id → reason). */
+  refused?: Record<string, string>;
+  /** #1016 — persists a dependent's branch-completed (incl. the kept re-record). */
+  emitBranchCompleted?: (ev: WorkEvent) => void;
+  /** #1016 — persists a non-event state change (dependent worktree paths). */
+  updateState?: (fn: (s: WorkState) => WorkState) => void;
+  /** #1016 — waits for every queued state write before a direct write. */
+  flushState?: () => Promise<void>;
+  /** #1016 — the one-shot retry reset for a failed dependent. */
+  resetFor?: (
+    id: string,
+    cwd: string,
+    base: string | undefined,
+  ) => Promise<{ attempt: number; patch?: string }>;
+  /** #1016 — driver notes (saved patches), surfaced in the handoff. */
+  notes?: string[];
 }
 
 /** #753 — the optional `extra` fields added to a failed dependent's
@@ -126,7 +147,7 @@ export function parkDeferredLeftover(
 /** Create the per-workstream dispatch closure (captures `stateRef` for memory-inject events). */
 export function makeRunOneWorkstream(
   s: DevelopRunState,
-): (id: string, cwd: string) => Promise<{ id: string; ok: boolean }> {
+): (id: string, cwd: string) => Promise<{ id: string; ok: boolean; reason?: string }> {
   return async (id: string, cwd: string) => {
     const { ctx, activeIssues, scratchAbs, workstreams, ids, dispatch, deckTagFor } = s;
     // The speculative-explore knob is a global env var, not per-run state,
@@ -142,6 +163,8 @@ export function makeRunOneWorkstream(
     // This is INFORMATIONAL ONLY — the scope-fanout gate in
     // work-driver-verify-develop.ts reads `workstream.paths` from state,
     // never the prompt text.
+    // #1016 — per-completion persistence: every develop caller supplies emitBranchCompleted.
+    const emitCompleted = (ev: WorkEvent): void => s.emitBranchCompleted(ev);
     const isParallel = ids.length > 1 && id !== "default";
     const siblingWorkstreams = isParallel
       ? ids
@@ -296,7 +319,7 @@ export function makeRunOneWorkstream(
       );
       s.branchEvents.push(completionEvent);
       if (ids.length > 1) {
-        s.branchEvents.push({
+        emitCompleted({
           kind: "branch-completed",
           step: "develop",
           workstreamId: id,
@@ -305,8 +328,11 @@ export function makeRunOneWorkstream(
           at: Date.now(),
         });
       }
-      s.verdicts.push({ id, ok });
-      return { id, ok };
+      // #1016 — a first-pass failure carries its reason into the verdicts.
+      const tail = "errorTail" in completionEvent ? completionEvent.errorTail : undefined;
+      const reason = ok ? undefined : (tail ?? "developer did not complete ok");
+      s.verdicts.push(ok ? { id, ok } : { id, ok, reason });
+      return ok ? { id, ok } : { id, ok, reason };
     } catch (err) {
       const errMsg = (err as Error).message?.slice(0, 200);
       s.branchEvents.push({
@@ -320,7 +346,7 @@ export function makeRunOneWorkstream(
         errorTail: errMsg,
       });
       if (ids.length > 1) {
-        s.branchEvents.push({
+        emitCompleted({
           kind: "branch-completed",
           step: "develop",
           workstreamId: id,

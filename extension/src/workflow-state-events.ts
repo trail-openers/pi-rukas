@@ -362,6 +362,17 @@ export type WorkEvent =
       depCompletedAt?: number;
       /** #753 — the underlying failure detail for a DEFERRED worktree-creation failure. Absent on every other branch-completed. */
       deferredCreation?: DeferredCreationEventFragment;
+      /** #1016 — set by recordDowngrade: a commitless green rewritten to ok:false. Not a new attempt. */
+      downgrade?: true;
+      /** #1016 — a green kept from an interrupted attempt, re-recorded at the start of the resumed window so a second crash still sees it. Not a new attempt. */
+      resumed?: true;
+      /**
+       * #1016 — the driver REFUSED this workstream (no worktree, an unsafe
+       * reuse, a containment violation). A refusal is a driver decision, not a
+       * provider blip: the step router never treats a fan-out containing one as
+       * transient, so it is never retried with backoff.
+       */
+      refused?: true;
     }
   | {
       /**

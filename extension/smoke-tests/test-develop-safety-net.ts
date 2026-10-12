@@ -60,7 +60,7 @@ async function mkBaseRepo(): Promise<{ root: string; wt: string; baseSha: string
   await execFileP("git", ["-C", repo, "commit", "-q", "-m", "base"]);
   const { stdout: baseShaRaw } = await execFileP("git", ["-C", repo, "rev-parse", "HEAD"]);
   const baseSha = baseShaRaw.trim();
-  const wt = path.join(root, "wt");
+  const wt = path.join(root, ".worktrees", "wt");
   await execFileP("git", ["-C", repo, "worktree", "add", "-q", "--detach", wt, "HEAD"]);
   return { root, wt, baseSha };
 }
@@ -257,7 +257,7 @@ async function caseF_multiWorkstream(): Promise<void> {
   const { root, wt: wtA, baseSha } = await mkBaseRepo();
   try {
     // Create a second worktree at baseSha for task-b.
-    const wtB = path.join(root, "wt-b");
+    const wtB = path.join(root, ".worktrees", "wt-b");
     await execFileP("git", [
       "-C",
       path.join(root, "repo"),
@@ -351,7 +351,7 @@ async function caseH_perWorktreeBase_dependent(): Promise<void> {
   const { root, wt, baseSha } = await mkBaseRepo();
   try {
     // Create a second worktree (B) at the global baseSha.
-    const wtB = path.join(root, "wt-b");
+    const wtB = path.join(root, ".worktrees", "wt-b");
     await execFileP("git", [
       "-C",
       path.join(root, "repo"),

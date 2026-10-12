@@ -9,18 +9,11 @@
  */
 
 import { execFile } from "node:child_process";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { asShellForm, commandOf } from "./lib/argv-shell.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runConsolidatedVerify } from "../src/work-driver-consolidated-verify.ts";
 import { runDevelopTopological } from "../src/work-develop-topological.ts";
@@ -47,10 +40,9 @@ const sh = (cwd: string, cmd: string) => execFileP("/bin/sh", ["-c", cmd], { cwd
 
 type StubExec = NonNullable<DriverContext["verifyExecFn"]>;
 
-function makeStubExec(
-  verify: () => { stdout: string; stderr: string; throw: boolean },
-): StubExec {
+function makeStubExec(verify: () => { stdout: string; stderr: string; throw: boolean }): StubExec {
   return async (cmd, o) => {
+    cmd = commandOf(cmd, o);
     if (cmd.startsWith("git ")) return { stdout: (await sh(o?.cwd ?? "", cmd)).stdout };
     const r = verify();
     if (r.throw) {
@@ -122,10 +114,17 @@ async function runCase8b() {
     repoRoot: repo,
     issue: 841,
     dispatchFn: async () => ({
-      ok: true, finalText: "done", errorStop: false, stopReason: "stop",
-      durationMs: 100, totalCost: 0, inputTokens: 0, outputTokens: 0,
+      ok: true,
+      finalText: "done",
+      errorStop: false,
+      stopReason: "stop",
+      durationMs: 100,
+      totalCost: 0,
+      inputTokens: 0,
+      outputTokens: 0,
     }),
     verifyExecFn: async (cmd, o) => {
+      cmd = commandOf(cmd, o);
       if (cmd.startsWith("git ")) return { stdout: (await sh(o?.cwd ?? "", cmd)).stdout };
       const e = new Error("Command failed") as Error & { stdout?: string; stderr?: string };
       e.stdout = "";
@@ -142,39 +141,23 @@ async function runCase8b() {
   // field length directly — the join path with a single failure must
   // still respect the per-failure bound, and the generic boundJoinFailures
   // cap is exercised by the assertion below on the recorded evidence.
-  const result = await runDevelopTopological(
-    ctx, state, ["default"], state.pipelineState.workstreams!, [841],
-    ctx.dispatchFn!, ctx.verifyExecFn!, Date.now(), "job-841b",
-  );
+  const result = await runDevelopTopological(ctx, state, ["default"], state.pipelineState.workstreams!, [841], ctx.dispatchFn!, asShellForm(ctx.verifyExecFn!), Date.now(), "job-841b");
   const capHit = [...result.eventLog].reverse().find((e) => e.kind === "cap-hit");
   assert(capHit !== undefined, "case 8b: cap-hit emitted");
   if (capHit?.kind === "cap-hit") {
     const evLen = capHit.evidence?.length ?? 0;
-    assert(
-      evLen > 0 && evLen <= 4100,
-      `case 8b: cap-hit evidence bounded (got ${evLen} chars, expected ≤ 4100)`,
-    );
+    assert(evLen > 0 && evLen <= 4100, `case 8b: cap-hit evidence bounded (got ${evLen} chars, expected ≤ 4100)`);
   }
   // Direct boundJoinFailures check: simulate the 10 × 5 KB shape that the
   // multi-worktree fanout produces and confirm the join cap holds.
   const { boundJoinFailuresForTest } = await import("../src/work-develop-topological.ts");
   const tenBig = Array.from({ length: 10 }, () => "y".repeat(5 * 1024));
   const joined = boundJoinFailuresForTest(tenBig);
-  assert(
-    joined.length <= 4100,
-    `case 8b: boundJoinFailures(10 × 5 KB) ≤ 4100 chars (got ${joined.length})`,
-  );
-  assert(
-    joined.includes("truncated"),
-    "case 8b: truncated joined evidence carries the truncation marker",
-  );
+  assert(joined.length <= 4100, `case 8b: boundJoinFailures(10 × 5 KB) ≤ 4100 chars (got ${joined.length})`);
+  assert(joined.includes("truncated"), "case 8b: truncated joined evidence carries the truncation marker");
 }
 
-const opts = (
-  f: { repo: string; baseSha: string; dir: string; scratch: string },
-  wt: Record<string, string>,
-  extra?: { retry?: Parameters<typeof runConsolidatedVerify>[1]["retry"] },
-) => ({
+const opts = (f: { repo: string; baseSha: string; dir: string; scratch: string }, wt: Record<string, string>, extra?: { retry?: Parameters<typeof runConsolidatedVerify>[1]["retry"] }) => ({
   repoRoot: f.repo,
   baseSha: f.baseSha,
   worktrees: wt,
@@ -196,8 +179,7 @@ async function runCases1to7() {
     }));
     const r = await runConsolidatedVerify(stub, opts(f, { a: wt }));
     assert(r.status === "failed", "case 1: status is failed");
-    if (r.status === "failed")
-      assert(r.detail.includes("✗ x"), `case 1: detail contains "✗ x" (stdout survives)`);
+    if (r.status === "failed") assert(r.detail.includes("✗ x"), `case 1: detail contains "✗ x" (stdout survives)`);
   }
   // Case 2: run1 log written, holds both streams, stdout before stderr
   {
@@ -214,29 +196,29 @@ async function runCases1to7() {
     assert(run1.length === 1, `case 2: exactly one run1 log (got ${run1.length})`);
     if (run1.length === 1) {
       const c = readFileSync(path.join(f.scratch, run1[0]), "utf8");
-      assert(
-        c.includes("FAILED: t.ts") && c.includes("some warning"),
-        "case 2: log holds both streams verbatim",
-      );
-      assert(
-        c.indexOf("FAILED: t.ts") < c.indexOf("some warning"),
-        "case 2: stdout before stderr in log",
-      );
+      assert(c.includes("FAILED: t.ts") && c.includes("some warning"), "case 2: log holds both streams verbatim");
+      assert(c.indexOf("FAILED: t.ts") < c.indexOf("some warning"), "case 2: stdout before stderr in log");
     }
-    if (r.status === "failed")
-      assert(
-        r.logPath !== undefined && existsSync(r.logPath),
-        `case 2: logPath exists (got: ${r.logPath})`,
-      );
+    if (r.status === "failed") assert(r.logPath !== undefined && existsSync(r.logPath), `case 2: logPath exists (got: ${r.logPath})`);
   }
   // Case 3: run2 log when flake re-run also fails; same timestamp prefix
   {
     const f = await makeFixture("case3");
     const wt = await addWorktree(f, "a");
     const stub = makeStubExec(() => ({ stdout: "✗ x\n", stderr: "w\n", throw: true }));
-    const r = await runConsolidatedVerify(stub, opts(f, { a: wt }, {
-      retry: { canRetry: true, onRecover: () => assert(false, "case 3: onRecover should not fire") },
-    }));
+    const r = await runConsolidatedVerify(
+      stub,
+      opts(
+        f,
+        { a: wt },
+        {
+          retry: {
+            canRetry: true,
+            onRecover: () => assert(false, "case 3: onRecover should not fire"),
+          },
+        },
+      ),
+    );
     assert(r.status === "failed", "case 3: status is failed");
     if (r.status === "failed") {
       assert(r.retried === true, "case 3: retried is true");
@@ -260,23 +242,30 @@ async function runCases1to7() {
     let n = 0;
     const stub = makeStubExec(() => {
       n++;
-      return n === 1
-        ? { stdout: "✗ transient\n", stderr: "w\n", throw: true }
-        : { stdout: "ok\n", stderr: "", throw: false };
+      return n === 1 ? { stdout: "✗ transient\n", stderr: "w\n", throw: true } : { stdout: "ok\n", stderr: "", throw: false };
     });
     let rec = false;
-    const r = await runConsolidatedVerify(stub, opts(f, { a: wt }, {
-      retry: { canRetry: true, onRecover: () => { rec = true; } },
-    }));
+    const r = await runConsolidatedVerify(
+      stub,
+      opts(
+        f,
+        { a: wt },
+        {
+          retry: {
+            canRetry: true,
+            onRecover: () => {
+              rec = true;
+            },
+          },
+        },
+      ),
+    );
     assert(r.status === "passed", `case 4: status is passed (got: ${r.status})`);
     if (r.status === "passed") {
       assert(r.recovered === true, "case 4: recovered is true");
       const r1 = listLogs(f.scratch).filter((n) => n.includes("-run1.log"));
       assert(r1.length === 1, "case 4: run1 log exists after recovery");
-      assert(
-        r.logPath !== undefined && r1.length === 1 && r.logPath.endsWith(r1[0]),
-        "case 4: logPath names the run1 log",
-      );
+      assert(r.logPath !== undefined && r1.length === 1 && r.logPath.endsWith(r1[0]), "case 4: logPath names the run1 log");
     }
     assert(rec, "case 4: onRecover was called");
   }
@@ -302,9 +291,19 @@ async function runCases1to7() {
     const wt = await addWorktree(f, "a");
     writeFileSync(f.scratch, "not-a-dir\n"); // scratch is now a file
     const stub = makeStubExec(() => ({ stdout: "✗ x\n", stderr: "w\n", throw: true }));
-    const r = await runConsolidatedVerify(stub, opts(f, { a: wt }, {
-      retry: { canRetry: true, onRecover: () => assert(false, "case 5b: onRecover should not fire") },
-    }));
+    const r = await runConsolidatedVerify(
+      stub,
+      opts(
+        f,
+        { a: wt },
+        {
+          retry: {
+            canRetry: true,
+            onRecover: () => assert(false, "case 5b: onRecover should not fire"),
+          },
+        },
+      ),
+    );
     assert(r.status === "failed", `case 5b: status is failed (got: ${r.status})`);
     if (r.status === "failed") {
       assert(r.retried === true, "case 5b: retried is true (the re-run fired)");
@@ -373,10 +372,17 @@ async function runCase8() {
     repoRoot: repo,
     issue: 841,
     dispatchFn: async () => ({
-      ok: true, finalText: "done", errorStop: false, stopReason: "stop",
-      durationMs: 100, totalCost: 0, inputTokens: 0, outputTokens: 0,
+      ok: true,
+      finalText: "done",
+      errorStop: false,
+      stopReason: "stop",
+      durationMs: 100,
+      totalCost: 0,
+      inputTokens: 0,
+      outputTokens: 0,
     }),
     verifyExecFn: async (cmd, o) => {
+      cmd = commandOf(cmd, o);
       if (cmd.startsWith("git ")) return { stdout: (await sh(o?.cwd ?? "", cmd)).stdout };
       const e = new Error(`Command failed`) as Error & { stdout?: string; stderr?: string };
       e.stdout = "✗ x: assertion failed\n";
@@ -385,25 +391,16 @@ async function runCase8() {
     },
   };
 
-  const result = await runDevelopTopological(
-    ctx, state, ["default"], state.pipelineState.workstreams!, [841],
-    ctx.dispatchFn!, ctx.verifyExecFn!, Date.now(), "job-841",
-  );
+  const result = await runDevelopTopological(ctx, state, ["default"], state.pipelineState.workstreams!, [841], ctx.dispatchFn!, asShellForm(ctx.verifyExecFn!), Date.now(), "job-841");
   const capHit = [...result.eventLog].reverse().find((e) => e.kind === "cap-hit");
   assert(capHit !== undefined, "case 8: cap-hit emitted");
   if (capHit?.kind === "cap-hit") {
     assert(capHit.cap === "verify-failed:develop", `case 8: cap is verify-failed:develop (got: ${capHit.cap})`);
-    assert(
-      capHit.evidence !== undefined && capHit.evidence.length > 0,
-      "case 8: cap-hit evidence field is non-empty",
-    );
+    assert(capHit.evidence !== undefined && capHit.evidence.length > 0, "case 8: cap-hit evidence field is non-empty");
   }
   const ve = result.pipelineState.verifyEvidence;
   assert(ve !== undefined && ve.failures.length > 0, "case 8: verifyEvidence.failures non-empty");
-  assert(
-    ve?.failures.some((f) => f.includes("Raw output:")) === true,
-    "case 8: failures name the log path via 'Raw output:'",
-  );
+  assert(ve?.failures.some((f) => f.includes("Raw output:")) === true, "case 8: failures name the log path via 'Raw output:'");
 }
 
 // Case 9: N>1 flake recovery — run1 log written, no verify-failed cap after recovery
@@ -438,10 +435,17 @@ async function runCase9() {
     repoRoot: repo,
     issue: 841,
     dispatchFn: async () => ({
-      ok: true, finalText: "done", errorStop: false, stopReason: "stop",
-      durationMs: 100, totalCost: 0, inputTokens: 0, outputTokens: 0,
+      ok: true,
+      finalText: "done",
+      errorStop: false,
+      stopReason: "stop",
+      durationMs: 100,
+      totalCost: 0,
+      inputTokens: 0,
+      outputTokens: 0,
     }),
     verifyExecFn: async (cmd, o) => {
+      cmd = commandOf(cmd, o);
       if (cmd.startsWith("git ")) return { stdout: (await sh(o?.cwd ?? "", cmd)).stdout };
       vc++;
       if (vc === 3) {
@@ -454,18 +458,12 @@ async function runCase9() {
     },
   };
 
-  const result = await runDevelopTopological(
-    ctx, state, ["a", "b"], state.pipelineState.workstreams!, [841],
-    ctx.dispatchFn!, ctx.verifyExecFn!, Date.now(), "job-841",
-  );
+  const result = await runDevelopTopological(ctx, state, ["a", "b"], state.pipelineState.workstreams!, [841], ctx.dispatchFn!, asShellForm(ctx.verifyExecFn!), Date.now(), "job-841");
   const scratchDir = path.join(repo, "tmp", "issue-841");
   const r1 = listLogs(scratchDir).filter((n) => n.includes("-run1.log"));
   assert(r1.length === 1, `case 9: run1 log written during flake recovery (got ${r1.length})`);
   const capHit = [...result.eventLog].reverse().find((e) => e.kind === "cap-hit");
-  assert(
-    capHit === undefined || (capHit.kind === "cap-hit" && capHit.cap !== "verify-failed:develop"),
-    "case 9: no verify-failed:develop cap-hit after recovery",
-  );
+  assert(capHit === undefined || (capHit.kind === "cap-hit" && capHit.cap !== "verify-failed:develop"), "case 9: no verify-failed:develop cap-hit after recovery");
 }
 
 const root = mkdtempSync(path.join(tmpdir(), "pi-ens-841-log-"));

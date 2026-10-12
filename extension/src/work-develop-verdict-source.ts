@@ -20,6 +20,7 @@
  * The flipped `reason` wording stays in work-develop-fence-verdicts.ts
  * (applyFenceVerdicts) — this module only renders it, never builds it.
  */
+import { eventsSinceDevelopStart } from "./work-develop-greens.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 /** One line of the handoff's "Workstream verdicts" section. */
@@ -33,20 +34,69 @@ export interface VerdictLine {
    * (`  ${text}`): `task-a: ok` or `task-a: FAIL — fence violation: src/main.rs (declared by task-d)`.
    */
   text: string;
+  /** The workstream id (structured — renderers must not parse `text`). */
+  id: string;
+  /** The failure reason, when the verdict carries one. */
+  reason?: string;
+  /** branch-completed events for this workstream in the current develop step (#1016). */
+  attempts: number;
 }
 
 /** One raw verdict before the id/ok/reason → line-text mapping. */
-interface RawVerdict {
+export interface RawVerdict {
   id: string;
   ok: boolean;
   reason?: string;
+  /** #1016 — the developer CLAIMED green, even when no commit backed it: the
+   *  develop gate must run to say so. Set only by the fan-out's green check. */
+  claimed?: true;
 }
 
-function toLine({ id, ok, reason }: RawVerdict): VerdictLine {
+/** Plain rendering of one verdict (no retry annotation). */
+export function verdictLine(v: RawVerdict, attempts = 0): VerdictLine {
+  const { id, ok, reason } = v;
   return {
     ok,
+    id,
+    reason,
+    attempts,
     text: ok ? `${id}: ok` : reason ? `${id}: FAIL — ${reason}` : `${id}: FAIL`,
   };
+}
+
+/** #1016 — branch-completed count per workstream since the last develop step-started. */
+function developAttemptCounts(state: WorkState): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const e of eventsSinceDevelopStart(state)) {
+    // A downgrade rewrites its attempt's verdict, and a resumed green re-records
+    // an earlier attempt: neither is a new attempt.
+    if (e.kind !== "branch-completed" || e.resumed === true) continue;
+    const rewrite = !e.ok && e.downgrade === true;
+    if (!rewrite) {
+      counts.set(e.workstreamId, (counts.get(e.workstreamId) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+
+/**
+ * #1016 — one verdict per workstream: its LATEST branch-completed. The log is
+ * append-only, so a retry or a downgrade adds an event that supersedes the
+ * earlier one; the first-seen order is kept.
+ */
+function latestCompletionPerWorkstream(state: WorkState): RawVerdict[] {
+  const latest = new Map<string, RawVerdict>();
+  for (const e of state.eventLog) {
+    if (e.kind !== "branch-completed") continue;
+    // branch-completed carries no structured `reason` field — its `error`
+    // tail (truncated at the event) is the fallback attribution.
+    latest.set(e.workstreamId, {
+      id: e.workstreamId,
+      ok: e.ok,
+      reason: e.ok ? undefined : e.error,
+    });
+  }
+  return [...latest.values()];
 }
 
 /**
@@ -69,13 +119,7 @@ export function developVerdictLines(state: WorkState): VerdictLine[] {
   const raw: RawVerdict[] =
     lastConverged && lastConverged.verdicts.length > 0
       ? lastConverged.verdicts
-      : state.eventLog
-          .filter(
-            (e): e is Extract<WorkEvent, { kind: "branch-completed" }> =>
-              e.kind === "branch-completed",
-          )
-          // branch-completed carries no structured `reason` field — its `error`
-          // tail (truncated at the event) is the fallback attribution.
-          .map((e) => ({ id: e.workstreamId, ok: e.ok, reason: e.ok ? undefined : e.error }));
-  return raw.map(toLine);
+      : latestCompletionPerWorkstream(state);
+  const attempts = developAttemptCounts(state);
+  return raw.map((v) => verdictLine(v, attempts.get(v.id) ?? 0));
 }
