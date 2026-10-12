@@ -182,11 +182,11 @@ async function mkRepoWithBranch(): Promise<{ dir: string; head: string; base: st
 }
 
 /** Stub the ExtensionAPI surface and capture registerTool calls. */
-function fakePi(): { pi: object; tools: Map<string, { name: string; parameters: unknown; execute: Function }> } {
-  const tools = new Map<string, { name: string; parameters: unknown; execute: Function }>();
+function fakePi(): { pi: object; tools: Map<string, { name: string; description?: string; parameters: unknown; execute: Function }> } {
+  const tools = new Map<string, { name: string; description?: string; parameters: unknown; execute: Function }>();
   const pi = {
-    registerTool: (t: { name: string; parameters: unknown; execute: Function }) =>
-      tools.set(t.name, { name: t.name, parameters: t.parameters, execute: t.execute }),
+    registerTool: (t: { name: string; description?: string; parameters: unknown; execute: Function }) =>
+      tools.set(t.name, { name: t.name, description: t.description, parameters: t.parameters, execute: t.execute }),
     on: () => undefined,
     sendUserMessage: () => undefined,
   };
@@ -210,6 +210,13 @@ registerAdversarialTool(fakePi().pi); // warm any module init
   const advRequired = (adv?.parameters as { required?: string[] })?.required ?? [];
   assert(!advRequired.includes("diff"), "adversarial_loop: `diff` is no longer required (base+head alternative)");
   assert(advRequired.includes("context"), "adversarial_loop: `context` is still required");
+  // #1104 — reportOnly + workCwd rule are part of the tool contract.
+  assert("reportOnly" in advProps, "adversarial_loop schema has optional `reportOnly`");
+  assert(!advRequired.includes("reportOnly"), "adversarial_loop: `reportOnly` is optional");
+  assert(
+    (adv?.description ?? "").includes("reportOnly") && (adv?.description ?? "").includes("workCwd"),
+    "adversarial_loop description documents reportOnly and the workCwd rule",
+  );
 }
 
 // ============================================================ 2. adversarial_loop ref range (tool path)
