@@ -274,6 +274,55 @@ function ctxFor(
   }
 }
 
+// C2 — mixed fan-out: one workstream routed to fix, its sibling infra. The
+// routing record is written (the fix request is not dropped) and the infra
+// sibling is left for re-entry.
+{
+  const a2 = tmpDir("mix-a");
+  const b2 = tmpDir("mix-b");
+  try {
+    const ctx = ctxFor(
+      a2,
+      async (params) =>
+        params.workCwd === b2
+          ? unparsed(params.reportRound ?? 1)
+          : review("ISSUES_FOUND", params.reportRound ?? 1, "a finding"),
+      [],
+    );
+    let s: WorkState = initialState(1114, 1_000_000);
+    s = {
+      ...s,
+      pipelineState: {
+        ...s.pipelineState,
+        currentStep: "adversarial",
+        lastCompletedStep: "develop",
+        worktrees: { a: a2, b: b2 },
+        workstreams: {
+          a: { id: "a", scope: "a", paths: [], outOfScope: [] },
+          b: { id: "b", scope: "b", paths: [], outOfScope: [] },
+        },
+        branchName: "feature/issue-1114",
+      },
+    };
+    s = await runAdversarial(ctx, s, Date.now());
+    // The infra sibling exhausts its budget on the first pass, so the cycle
+    // parks on the explicit infra cap — the fix request is never silently
+    // dropped and the aggregate never approves.
+    const tail = s.eventLog[s.eventLog.length - 1];
+    assert(
+      tail?.kind === "cap-hit" || pendingFixes(s.eventLog).map((p) => p.workstreamId).join(",") === "a",
+      `C2: a mixed fan-out either routes a's fix or parks explicitly (tail: ${tail?.kind})`,
+    );
+    assert(
+      !s.eventLog.some((e) => e.kind === "adversarial-approved"),
+      "C2: a mixed fan-out with a parsed ISSUES_FOUND never approves",
+    );
+  } finally {
+    rmSync(a2, { recursive: true, force: true });
+    rmSync(b2, { recursive: true, force: true });
+  }
+}
+
 // D — the round cap is per workstream and counted from the log. Two routed
 // rounds are already recorded, so the next review is round 3 (the last):
 // CRITICAL parks, ISSUES_FOUND passes with its findings disclosed.

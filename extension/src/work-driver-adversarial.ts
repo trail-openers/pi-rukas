@@ -162,11 +162,12 @@ export async function runAdversarial(
   }
 
   // #1114 — a parsed non-approving verdict routes its workstream back to
-  // develop (a fix pass), and nothing else in this invocation failed. The
-  // approvals already in this batch wait in the log; the aggregate is decided
-  // once every workstream has a final verdict.
+  // develop (a fix pass). An infra-failed sibling does not hold the routing
+  // back: its re-run happens on re-entry (fanout re-runs it while its budget
+  // holds), and the routing record is what keeps the fix request from being
+  // dropped. A rejected sibling still goes to the aggregate below.
   const fixEvents = fixRequestEvents(outcomes, Date.now());
-  if (fixEvents.length > 0 && outcomes.every((o) => o.ok || o.fixRequested)) {
+  if (fixEvents.length > 0 && outcomes.every((o) => o.ok || o.fixRequested || o.infra)) {
     trace(
       `work-driver: adversarial routed ${fixEvents.length} workstream(s) to a develop fix pass`,
     );

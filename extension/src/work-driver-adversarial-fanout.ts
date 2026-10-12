@@ -292,19 +292,19 @@ export async function fanOutAdversarial(
   // per-workstream events are re-emitted from this prior-outcome record
   // (see the `outcomes` seed below), so the log stays complete after the
   // splice replaces the prior pass's batch.
-  // #1114 — the workstreams this pass runs. Re-entry after an infra failure
-  // re-runs only the infra-failed ones while their budget holds (#486); a
-  // normal invocation runs what still needs a review (first review, or a fix
-  // pass applied since the last one). Everything else is a survivor below.
-  // A permanent failure stops the retry loop instead of re-running siblings
-  // forever; preserved outcomes keep the aggregate honest.
+  // #1114 — the workstreams this pass runs: on re-entry after an infra failure,
+  // the infra-failed ones within budget (#486) plus any fix pass awaiting
+  // re-review; otherwise whatever still needs a review. The rest are survivors.
   const runSet = priorHadInfraFailure
     ? ids.filter((id) => {
         const prev = priorOutcomes.get(id);
-        return (
+        const retryableInfra =
           (prev === "infra-failure" || prev === "dispatch-failed") &&
-          (localRetries[id] ?? 0) < ADVERSARIAL_PER_WS_MAX_RETRIES
-        );
+          (localRetries[id] ?? 0) < ADVERSARIAL_PER_WS_MAX_RETRIES;
+        // #1114 — a fix pass applied since its routed review still needs re-review.
+        const fixedAwaitingReview =
+          prev === "fix-requested" && reviewTrack(state.eventLog, id).needsReview;
+        return retryableInfra || fixedAwaitingReview;
       })
     : workstreamsToReview(state, ids);
   // #486 — workstreams with a FINAL verdict on an earlier invocation are not

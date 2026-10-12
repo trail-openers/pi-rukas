@@ -467,7 +467,16 @@ export async function runAdversarialFixPass(
       verifyTimeoutMs(),
       ctx.verifyExecFn,
     );
-    if (lost.ok && lost.lost.length > 0) {
+    // A check that could not run reads NOT CHECKED, never silence (AGENTS.md §7).
+    if (!lost.ok) {
+      return parkFixPass(
+        restored,
+        pending,
+        `comment retention could not be checked for ${id} (NOT CHECKED) — the fix pass is not cleared`,
+        now,
+      );
+    }
+    if (lost.lost.length > 0) {
       return parkFixPass(
         restored,
         pending,
