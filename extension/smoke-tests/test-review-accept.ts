@@ -139,11 +139,24 @@ try {
   );
 
   git(dir, "config", "--unset", "user.email");
+  // Isolate from the host's global git config: a machine with a global
+  // user.email would otherwise supply an identity and the refusal never fires.
+  // runReviewAccept's env argument only drives agent detection; the identity
+  // lookup inherits process.env, so the isolation is set there.
+  const savedGlobal = process.env.GIT_CONFIG_GLOBAL;
+  const savedNoSystem = process.env.GIT_CONFIG_NOSYSTEM;
+  process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+  process.env.GIT_CONFIG_NOSYSTEM = "1";
   const noId = await runReviewAccept(
     ["feat/x", rowId, "--reason", "known, tracked in a follow-up issue"],
     dir,
     OPERATOR_ENV,
-  );
+  ).finally(() => {
+    if (savedGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+    else process.env.GIT_CONFIG_GLOBAL = savedGlobal;
+    if (savedNoSystem === undefined) delete process.env.GIT_CONFIG_NOSYSTEM;
+    else process.env.GIT_CONFIG_NOSYSTEM = savedNoSystem;
+  });
   assert(noId.code === 2, "accept: no git identity refuses (the operator must be known)");
 
   // The CLI entry point, run as the operator would (a refusal exits 2).

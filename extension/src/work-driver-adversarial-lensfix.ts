@@ -15,6 +15,7 @@ import {
   repoRootOriginalRef,
 } from "./work-driver-lens-fix-commit.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
+import { isNetGitTimeout, netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
@@ -116,16 +117,22 @@ async function handleNoCommittedFix(
       // #776 — ok covers both "landed" and "tree-hash-dedup skip" (#749).
       // The work is on the branch; no cap.
       const sha = landed.sha;
-      let pushOk = true;
-      try {
-        await execFn(`git push origin ${JSON.stringify(branchName)}`, {
-          cwd: ctx.repoRoot,
-          maxBuffer: 1024 * 1024,
-        });
-      } catch {
-        pushOk = false;
+      let pushFailure: string | undefined;
+      const pushRefProblem = netRefProblem(branchName);
+      if (pushRefProblem !== undefined) {
+        pushFailure = `push refused: ${pushRefProblem}`;
+      } else {
+        try {
+          await runNetGit(execFn, "git", {
+            cwd: ctx.repoRoot,
+            argv: ["push", "origin", branchName],
+          });
+        } catch (err) {
+          // #1095 — keep the named timeout cause visible to the operator.
+          pushFailure = isNetGitTimeout(err) ? err.message.slice(0, 200) : "push rejected";
+        }
       }
-      if (!pushOk) {
+      if (pushFailure !== undefined) {
         state = {
           ...state,
           pipelineState: {
@@ -135,7 +142,7 @@ async function handleNoCommittedFix(
               {
                 step: "adversarial",
                 role: "driver",
-                body: `lens-fix landed locally but the push failed — check the remote for ${branchName}`,
+                body: `lens-fix landed locally but the push failed (${pushFailure}) — check the remote for ${branchName}`,
                 at: Date.now(),
               },
             ],

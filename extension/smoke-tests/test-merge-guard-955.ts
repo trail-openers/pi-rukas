@@ -9,7 +9,7 @@
  */
 
 import { readFileSync, writeFileSync, unlinkSync, existsSync, rmSync, mkdtempSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { mergesPr } from "../src/bash-command-parser.ts";
@@ -17,6 +17,7 @@ import { extractMergeNumber, extractMergeRepo, mergeVerbArgs } from "../src/merg
 import { type MergeTarget } from "../src/merge-target.ts";
 import { registerMergeGuard } from "../src/merge-guard.ts";
 import { type LedgerEntry, ledgerPathFor } from "../src/review-ledger.ts";
+import { commandOf } from "./lib/argv-shell.ts";
 
 // The hook reads the forge from PI_ENSEMBLE_FORGE (the detectForge hard
 // override) so the decision matrix below runs offline, without a real remote.
@@ -45,8 +46,10 @@ async function setupLedgerPath() {
   // `ledgerPathFor` (the module under test) returns it and never the real
   // per-clone ledger under the git common dir.
   process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = file;
-  const realExec = async (cmd: string) => ({
-    stdout: execSync(cmd, { cwd: import.meta.dirname, encoding: "utf8" }),
+  const realExec = async (cmd: string, o?: { argv?: string[] }) => ({
+    stdout: o?.argv
+      ? execFileSync(cmd, o.argv, { cwd: import.meta.dirname, encoding: "utf8" })
+      : execSync(cmd, { cwd: import.meta.dirname, encoding: "utf8" }),
   });
   const p = await ledgerPathFor(realExec, import.meta.dirname);
   if (!p) throw new Error("cannot resolve the ledger path for the decision matrix");
@@ -229,7 +232,8 @@ async function makeHook(env: {
       labels: t.labels.map((n) => ({ name: n })),
     }),
   };
-  const execFn = async (cmd: string): Promise<{ stdout: string }> => {
+  const execFn = async (cmd0: string, o?: { argv?: string[] }): Promise<{ stdout: string }> => {
+    const cmd = commandOf(cmd0, o);
     env.calls.push(cmd);
     if (cmd.includes("gh pr view")) {
       if (cmd.includes("--json number")) {

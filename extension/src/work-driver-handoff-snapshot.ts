@@ -11,12 +11,10 @@
  * work-driver-handoff.ts so no consumer's import path changes.
  */
 
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
+import { execp } from "./lens-exec.ts";
 import { trace } from "./trace.ts";
+import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 import type { WorkState } from "./workflow-state.ts";
-
-const execp = promisify(exec);
 
 /**
  * PR5 — capture a snapshot of the worktree at handoff time. Lets the
@@ -101,11 +99,15 @@ export async function captureWorktreeSnapshot(
       snapshot.branchExists = false;
     }
     // Remote tracking (best-effort; network may be down). 10s timeout
-    // because ls-remote can hang on unreachable remotes.
+    // because ls-remote can hang on unreachable remotes (#1095: still 10s,
+    // now enforced through runNetGit).
     try {
-      const { stdout } = await execp(`git ls-remote --heads origin ${JSON.stringify(branchName)}`, {
+      const refProblem = netRefProblem(branchName);
+      if (refProblem !== undefined) throw new Error(refProblem);
+      const { stdout } = await runNetGit(execp, "git", {
         cwd: repoRoot,
-        timeout: 10_000,
+        timeoutMs: 10_000,
+        argv: ["ls-remote", "--heads", "origin", branchName],
       });
       snapshot.branchPushed = stdout.trim().length > 0;
     } catch {

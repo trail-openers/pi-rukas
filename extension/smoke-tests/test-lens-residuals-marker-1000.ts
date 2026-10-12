@@ -22,6 +22,7 @@ import path from "node:path";
 import { postLensResidualDisclosure } from "../src/lens-review-residuals.ts";
 import { lensResidualsMarker } from "../src/merge-guard-round-cap.ts";
 import type { LensReviewSummary } from "../src/lens-review.ts";
+import { commandOf } from "./lib/argv-shell.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -66,7 +67,8 @@ type Stub = {
 function stubForBranch(branchName: string): Stub {
   const calls: string[] = [];
   const bodyFiles: string[] = [];
-  const execFn = async (cmd: string): Promise<{ stdout: string }> => {
+  const execFn = async (cmd0: string, o?: { argv?: string[] }): Promise<{ stdout: string }> => {
+    const cmd = commandOf(cmd0, o);
     calls.push(cmd);
     if (cmd.includes(`pr list --state open --head ${branchName}`)) {
       return { stdout: JSON.stringify([{ number: 12 }]) };
@@ -249,7 +251,8 @@ function repoDir(): string {
     // git-ref-safe: it contains `-->`, which would terminate the
     // HTML-comment marker early (smuggled-comment injection into the post).
     const calls: string[] = [];
-    const execFn = async (cmd: string): Promise<{ stdout: string }> => {
+    const execFn = async (cmd0: string, o?: { argv?: string[] }): Promise<{ stdout: string }> => {
+      const cmd = commandOf(cmd0, o);
       calls.push(cmd);
       if (cmd.includes("pr list --state open")) return { stdout: JSON.stringify([{ number: 12 }]) };
       if (cmd.includes("pr view 12 --json headRefName,baseRefName")) {
@@ -320,7 +323,8 @@ for (const badPr of [7.5, NaN]) {
   const dir = repoDir();
   try {
     const calls: string[] = [];
-    const execFn = async (cmd: string): Promise<{ stdout: string }> => {
+    const execFn = async (cmd0: string, o?: { argv?: string[] }): Promise<{ stdout: string }> => {
+      const cmd = commandOf(cmd0, o);
       calls.push(cmd);
       if (cmd.includes("pr list --state open")) return { stdout: JSON.stringify([{ number: 12 }]) };
       if (cmd.includes("pr view 12 --json headRefName,baseRefName")) {

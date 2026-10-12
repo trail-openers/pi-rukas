@@ -1,13 +1,13 @@
-import { exec } from "node:child_process";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { promisify } from "node:util";
+import { execp } from "./lens-exec.ts";
 import { trace } from "./trace.ts";
+import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 import { processAlive } from "./work-driver-resume.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
 
-const defaultExecFn: ExecFn = promisify(exec) as unknown as ExecFn;
+const defaultExecFn: ExecFn = execp;
 
 /**
  * Result of resolving a sweep target.
@@ -198,12 +198,15 @@ async function isWorkProvablyOnRemote(
   // Status must be merged, handoff, or aborted
   if (!["merged", "handoff", "aborted"].includes(status)) return false;
 
+  // A branch name that is not git-safe is never fetched: not swept (keep it).
+  if (netRefProblem(branchName) !== undefined) return false;
   try {
     // Fetch the branch
-    await execFn(`git fetch origin ${branchName}`, {
+    await runNetGit(execFn, "git", {
       cwd: worktreePath,
       maxBuffer: 256 * 1024,
-      timeout: 10000, // 10s
+      timeoutMs: 10_000,
+      argv: ["fetch", "origin", branchName],
     });
     // Check if HEAD matches FETCH_HEAD
     const { stdout: diffOut } = await execFn("git diff --quiet --submodule=diff FETCH_HEAD", {

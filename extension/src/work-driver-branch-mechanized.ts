@@ -39,6 +39,7 @@
 
 import { trace } from "./trace.ts";
 import { ensureWorktreesExcluded } from "./work-driver-git-exclude.ts";
+import { isNetGitTimeout, netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 import type { ExecFn } from "./worktree.ts";
 import { DirtyWorktreeError, worktreeCreate } from "./worktree.ts";
 import type { ProvisionResult } from "./worktree.ts";
@@ -144,14 +145,22 @@ let inFlightFetch: { key: string; p: Promise<unknown> } | undefined;
 
 /** Coalesce concurrent `git fetch origin <ref>` calls into one. */
 async function sharedFetch(execFn: ExecFn, repoRoot: string, ref: string): Promise<void> {
+  const refProblem = netRefProblem(ref);
+  if (refProblem !== undefined) throw new Error(`fetch refused: ${refProblem}`);
   const key = `${repoRoot}::${ref}`;
   if (inFlightFetch?.key === key) {
-    await inFlightFetch.p.catch(() => undefined);
+    // #1095 — a timeout is not the stale-ref case: rethrow it so this caller
+    // fails with the named cause too. Other failures keep the coalesced fallback.
+    await inFlightFetch.p.catch((err: unknown) => {
+      if (isNetGitTimeout(err)) throw err;
+    });
     return;
   }
-  const p = execFn(`git fetch origin ${JSON.stringify(ref)}`, {
+  // #1095 — a hung fetch rejects the SHARED promise; the owner rethrows a
+  // timeout (mechanizedBranchSetup) and coalesced callers rethrow it above.
+  const p = runNetGit(execFn, "git", {
     cwd: repoRoot,
-    maxBuffer: 1024 * 1024,
+    argv: ["fetch", "origin", ref],
   });
   inFlightFetch = { key, p };
   try {
@@ -371,6 +380,9 @@ export async function mechanizedBranchSetup(
   try {
     await sharedFetch(execFn, repoRoot, mainline);
   } catch (err) {
+    // #1095 — a timeout fails the step with its named cause; only a fetch that
+    // errored (the SSH auth window) falls back to the local mainline ref.
+    if (isNetGitTimeout(err)) throw err;
     trace(
       `work-driver: fetch of origin/${mainline} failed — proceeding from local refs: ${(err as Error).message?.slice(0, 160)}`,
     );

@@ -35,22 +35,20 @@
  * the reason in the tool result).
  */
 
-import { exec } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import { neutraliseEvidence } from "./comment-evidence.ts";
 import * as cmds from "./forge-commands.ts";
 import { postPrComment } from "./forge-comments.ts";
 import { detectForge } from "./forge-detect.ts";
+import { execp } from "./lens-exec.ts";
 import { suppressedSection } from "./lens-residuals.ts";
 import type { LensReviewSummary } from "./lens-review.ts";
 import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
 import { branchPatchId, remoteName } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
-
-const execp = promisify(exec);
+import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 
 /**
  * The git-ref-safe character allowlist the marker's `branch=` value must
@@ -246,11 +244,18 @@ async function doPost(
   // though the post "succeeded" — the disclosure would never match). The
   // fetch runs first; on a fetch failure nothing is posted and the failure
   // is reported (fail closed — the caller's catch returns the note).
+  const fetchRefProblem = netRefProblem(remote, headBranch, baseBranch);
+  if (fetchRefProblem !== undefined) {
+    throw new Error(
+      `git fetch refused: ${fetchRefProblem} — the disclosure was not posted (fail closed)`,
+    );
+  }
   try {
-    await execFn(`git fetch ${remote} ${headBranch} ${baseBranch}`, {
+    await runNetGit(execFn, "git", {
       cwd,
       maxBuffer: 64 * 1024,
-      timeout: 30_000,
+      timeoutMs: 30_000,
+      argv: ["fetch", remote, headBranch, baseBranch],
     });
   } catch (err) {
     throw new Error(

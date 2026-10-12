@@ -10,9 +10,8 @@
  * the git evidence, the worktree inspected, and the repoRoot restore claim.
  */
 
-import { exec } from "node:child_process";
 import path from "node:path";
-import { promisify } from "node:util";
+import { execp } from "./lens-exec.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import { capHitForCapKill } from "./work-driver-adversarial-capkill.ts";
@@ -34,11 +33,11 @@ import {
 } from "./work-driver-lens-fix-commit.ts";
 import { commitLensFixChanges, lensWorktree } from "./work-driver-lens.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
+import { runNetGit } from "./work-driver-net-git.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
-const execp = promisify(exec);
 
 /**
  * Step 5 — Adversarial gate. Fans out one `runAdversarialLoop` per
@@ -243,8 +242,11 @@ export async function runAdversarial(
       }
       if (result.committed && !result.pushed) {
         try {
-          await execFn("git push origin HEAD -q", { cwd: ctx.repoRoot, maxBuffer: 64 * 1024 });
+          await runNetGit(execFn, "git push origin HEAD -q", { cwd: ctx.repoRoot });
         } catch (err) {
+          // #1095: a timeout is non-blocking too, and its message names the
+          // cause ("network git timed out"). The fix is then not on the PR, and
+          // the plumbReport below is where the operator sees it.
           const errMsg = `lens-fix push failed (non-blocking): ${(err as Error).message?.slice(0, 200)}`;
           trace(`work-driver: ${errMsg}`);
           next.pipelineState.plumbReports.push({

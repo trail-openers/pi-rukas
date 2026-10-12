@@ -82,11 +82,10 @@
  * or error refuses (fail-closed).
  */
 
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { stripQuotedSegments } from "./bash-command-parser.ts";
 import { mergesPr } from "./bash-merges-pr.ts";
+import { execp } from "./lens-exec.ts";
 import { lensNotEvaluatedRefusal, readPrCommentBodies } from "./merge-guard-reads.ts";
 import { evaluateRoundCapMerge } from "./merge-guard-round-cap.ts";
 import { extractMergeNumber, mergeVerbArgs, mergeVerbRepo } from "./merge-parse.ts";
@@ -108,8 +107,7 @@ import {
   remoteName,
 } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
-
-const execp = promisify(exec);
+import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 
 /** Per-exec timeout for the guard's gh/git calls. */
 const EXEC_TIMEOUT_MS = 30_000;
@@ -274,12 +272,20 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
       );
     }
 
-    // Fetch the branch. Fail-closed on error.
+    // Fetch the branch. Fail-closed on error. The remote and branch come from
+    // the PR and the git config: validated and passed as argv, never shell text.
+    const refProblem = netRefProblem(remote, target.headBranch);
+    if (refProblem !== undefined) {
+      return block(
+        `git fetch refused: ${refProblem} — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
+      );
+    }
     try {
-      await execFn(`git fetch ${remote} ${target.headBranch}`, {
+      await runNetGit(execFn, "git", {
         cwd,
         maxBuffer: 64 * 1024,
-        timeout: EXEC_TIMEOUT_MS,
+        timeoutMs: EXEC_TIMEOUT_MS,
+        argv: ["fetch", remote, target.headBranch],
       });
     } catch (err) {
       return block(

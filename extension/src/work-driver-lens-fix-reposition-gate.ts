@@ -34,13 +34,13 @@ import {
   parkCherryFailedTree,
 } from "./work-driver-lens-fix-reposition-backup.ts";
 import {
-  FETCH_TIMEOUT_MS,
   GIT_TIMEOUT_MS,
   cherryLines,
   isAncestor,
   rangeAllNonEmpty,
   resolveBranchTip,
 } from "./work-driver-lens-fix-reposition-queries.ts";
+import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
@@ -124,11 +124,13 @@ export async function repositionLensFixWorktree(
     // working-tree mutations at repoRoot, which this gate never touches
     // (it operates on the lens-fix worktree `tree`), so the fetch does not
     // need it.
-    await execFn("git", {
+    // Bounded + non-interactive via runNetGit (#1095). Match sharedFetch
+    // (work-driver-branch-mechanized.ts): the fetch's pack output scales with
+    // branch history, not a fixed 64 KiB, hence the 1 MiB buffer.
+    const refProblem = netRefProblem(branchName);
+    if (refProblem !== undefined) throw new Error(refProblem);
+    await runNetGit(execFn, "git", {
       cwd: tree,
-      timeout: FETCH_TIMEOUT_MS,
-      // Match sharedFetch (work-driver-branch-mechanized.ts): the fetch's
-      // pack output scales with branch history, not a fixed 64 KiB.
       maxBuffer: 1024 * 1024,
       argv: ["fetch", "origin", branchName, "--quiet"],
     });

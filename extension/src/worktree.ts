@@ -34,7 +34,15 @@ export { salvageUncommittedWork, salvageDirtyWorktree } from "./worktree-salvage
  * lens-exec.ts) both honour it via `execFile`. */
 export type ExecFn = (
   cmd: string,
-  opts?: { cwd?: string; timeout?: number; maxBuffer?: number; shell?: string; argv?: string[] },
+  opts?: {
+    cwd?: string;
+    timeout?: number;
+    maxBuffer?: number;
+    shell?: string;
+    argv?: string[];
+    /** #1095 — network git calls carry the non-interactive env (work-driver-net-git.ts). */
+    env?: NodeJS.ProcessEnv;
+  },
 ) => Promise<{ stdout: string; stderr?: string }>;
 
 /** Worktrees live under `<repoRoot>/.worktrees/<name>`. */
