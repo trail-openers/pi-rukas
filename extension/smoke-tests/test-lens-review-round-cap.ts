@@ -61,7 +61,10 @@ git('commit -q -m "base"');
 // A remote with a mainline, and a feature commit on top, so the ledger writer
 // can compute a patch id (workingTreePatchId needs <remote>/<mainline>).
 const remote = path.join(root, "remote.git");
-execSync(`git init -q --bare ${remote}`);
+// `-b main` pins the bare remote's HEAD to the mainline pushed below. Without
+// it the remote HEAD follows the host's init.defaultBranch (`master` on CI), so
+// `git fetch` cannot set origin/HEAD and mainline detection fails.
+execSync(`git init -q --bare -b main ${remote}`);
 git(`remote add origin ${remote}`);
 git("push -q origin feature/x:main");
 git("fetch -q origin");
