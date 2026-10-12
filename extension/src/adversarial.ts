@@ -1,5 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { classifyDispatchOutcome } from "./adversarial-classify.ts";
+import {
+  beginFixGuard,
+  withFixViolations,
+  workCwdRequiredResult,
+} from "./adversarial-fix-guard.ts";
 import { buildLedgerNote } from "./adversarial-ledger-note.ts";
 import { writeAdversarialLedgerEntry } from "./adversarial-ledger.ts";
 import { buildAdversarialPrompt, buildFixPrompt } from "./adversarial-prompts.ts";
@@ -89,6 +94,8 @@ export async function runAdversarialLoop(
     reportOnly?: boolean;
     /** #1114 — the round number a reportOnly review carries (prompt + record). Default 1. */
     reportRound?: number;
+    /** #1104 — tool path: fix rounds need `workCwd` and are caller-repo-checked. */
+    guardFixRounds?: boolean;
   },
   signal: AbortSignal,
   orchestratorJobId: string,
@@ -127,7 +134,11 @@ export async function runAdversarialLoop(
     workCwd: params.workCwd,
   });
 
-  const ledgerWrite = (result: DispatchResult): DispatchResult => {
+  const fixViolations: string[] = [];
+  const ledgerWrite = (raw: DispatchResult): DispatchResult => {
+    // #1104 — violations are prefixed BEFORE the write: the durable ledger row
+    // must carry the same text the caller sees.
+    const result = withFixViolations(raw, fixViolations);
     writeAdversarialLedgerEntry(result, {
       workCwd: params.workCwd,
       // #988 — thread the branch the note resolved (same shared resolution,
@@ -426,6 +437,11 @@ export async function runAdversarialLoop(
       return ledgerWrite(r);
     }
     if (action === "reject") break;
+    if (params.guardFixRounds && !params.workCwd) {
+      const state = { start, usage, lastTranscript, lastModel, rounds };
+      return ledgerWrite(workCwdRequiredResult(round, verdict, state));
+    }
+    const fixGuard = await beginFixGuard(params, fixViolations);
 
     const fix = await runPhaseWithInfraRetry(
       "developer",
@@ -445,6 +461,7 @@ export async function runAdversarialLoop(
     priorFindings.push(
       `Round ${round} (${verdict.status}): ${summariseFindings(verdict.findings)}`,
     );
+    await fixGuard(round);
     const fixCls = classifyDispatchOutcome(fix);
     if (fixCls.cause !== "success") {
       return ledgerWrite(infraFailureResult(round, "fix", fix, fixCls, infraCtxNow()));
