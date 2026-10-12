@@ -21,11 +21,10 @@ import type { WorkState } from "./workflow-state.ts";
  * shell commands directly.
  *
  * SECURITY NOTE: any extension accepting dynamic branch or repo names must
- * NOT interpolate them raw into the shell string — use shellDoubleQuote
- * (escapes `$`, backtick, `\`, `"`), or prefer execFile-style arg arrays
- * when possible. JSON.stringify is NOT sufficient: it leaves `$` and backtick
- * live inside the double quotes that /bin/sh expands. The restore path (#1093)
- * uses the argv form throughout, with refs validated by restoreRefProblem.
+ * NOT interpolate them raw into the shell string. Prefer execFile-style arg
+ * arrays (`opts.argv`), as the restore path (#1093) does throughout, with refs
+ * validated by restoreRefProblem. JSON.stringify is NOT a safe substitute: it
+ * leaves `$` and backtick live inside the double quotes that /bin/sh expands.
  */
 export type VerifyExecFn = (
   cmd: string,
@@ -178,17 +177,25 @@ export async function restoreCheckout(opts: {
   // Tolerates already-there; a refusal (dirty tree, detached HEAD) leaves the
   // tree as it is and the note carries the exact command to run by hand.
   const restore = await restoreRootToRef(execFn, { repoRoot, ref: target, label: "merged" });
-  if (!restore.restored) {
+  if (!restore.checkedOut) {
     notes.push(`repoRoot was NOT restored to ${target}: ${restore.detail ?? "unknown error"}`);
     // A refused checkout performs no further git mutation: no pull, and no
     // branch deletion (the operator's tree is still on the merged branch).
     notes.push("git pull and git branch -d skipped: the checkout was refused");
     return notes;
   }
+  if (!restore.restored) {
+    // HEAD has moved off the merged branch, so the deletion below is still
+    // safe (-d refuses unmerged work). The pull is not: it would run on a
+    // tree with tracked changes left behind.
+    notes.push(
+      `repoRoot is on ${target} but was NOT verified clean: ${restore.detail ?? "unknown error"}`,
+    );
+  }
 
-  // 4. Pull --ff-only, only when the restore succeeded AND the target is
+  // 4. Pull --ff-only, only when the tree is verified clean AND the target is
   // mainline. Tolerate already-up-to-date.
-  if (onMainline && mainline) {
+  if (restore.restored && onMainline && mainline) {
     try {
       await execFn("git", {
         cwd: repoRoot,

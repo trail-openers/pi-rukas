@@ -14,7 +14,15 @@ import { captureCycleStartRef, hasCaptureFailure, recordCycleStartRef, restoreCh
 import { restoreRootToRefPreserving } from "../src/work-driver-restore.ts";
 import { readState } from "../src/workflow-state.ts";
 import type { ExecFn } from "../src/worktree.ts";
-import { assert, realExec, shown, buildRepo, head, stateWith, result } from "./lib/restore-start-ref-fixtures.ts";
+import {
+  assert,
+  buildRepo,
+  head,
+  realExec,
+  result,
+  shown,
+  stateWith,
+} from "./lib/restore-start-ref-fixtures.ts";
 
 // ---- 7. abort path: non-forcing, preserved, command reported --------------
 {
@@ -38,14 +46,14 @@ import { assert, realExec, shown, buildRepo, head, stateWith, result } from "./l
       scratchDir: scratch,
       label: "test",
     });
-    assert(!r.restored, "abort: a refused checkout is not claimed restored");
+    assert(r.restored && head(dir) === "feature/x", "abort: the cycle's edit is stashed, then the checkout lands on feature/x");
     assert(
-      r.detail?.includes("run `git checkout feature/x`") === true,
-      `abort: the detail carries the exact command (got ${JSON.stringify(r.detail)})`,
+      readFileSync(join(dir, "tracked.txt"), "utf8") === "x\n",
+      "abort: the working tree holds the target's content, not the cycle's edit",
     );
     assert(
-      readFileSync(join(dir, "tracked.txt"), "utf8") === "operator edit\n",
-      "abort: the operator's edit survives (no reset --hard)",
+      execFileSync("git", ["stash", "list"], { cwd: dir, encoding: "utf8" }).includes("pi-rukas #1093"),
+      "abort: the cycle's edit is recoverable from the stash list",
     );
     assert(
       !calls.some((c) => /reset --hard|checkout --force|checkout -f\b/.test(c)),
@@ -56,6 +64,36 @@ import { assert, realExec, shown, buildRepo, head, stateWith, result } from "./l
         existsSync(r.preservedAt) &&
         readFileSync(r.preservedAt, "utf8").includes("operator edit"),
       "abort: the discarded state is preserved to a file before the restore runs",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+// ---- 7b. abort: a staged cycle edit must not ride onto the target ---------
+{
+  const dir = buildRepo();
+  const scratch = mkdtempSync(join(tmpdir(), "issue1093-carry-scratch-"));
+  try {
+    // feature/x and feature/merged agree on tracked.txt ("base"), so a plain
+    // checkout after a mixed reset would carry the staged edit silently.
+    writeFileSync(join(dir, "tracked.txt"), "carried\n");
+    execFileSync("git", ["add", "tracked.txt"], { cwd: dir });
+    const r = await restoreRootToRefPreserving(realExec, {
+      repoRoot: dir,
+      ref: "feature/x",
+      scratchDir: scratch,
+      label: "test",
+    });
+    assert(r.restored && head(dir) === "feature/x", "carry: the restore lands on feature/x");
+    assert(
+      readFileSync(join(dir, "tracked.txt"), "utf8") === "base\n",
+      "carry: the staged cycle edit did not travel onto feature/x",
+    );
+    assert(
+      execFileSync("git", ["status", "--porcelain"], { cwd: dir, encoding: "utf8" }).trim() === "",
+      "carry: the operator's tree is clean after the restore",
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

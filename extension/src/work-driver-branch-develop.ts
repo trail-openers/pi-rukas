@@ -13,6 +13,7 @@ import { BranchAheadError, mechanizedBranchSetup } from "./work-driver-branch-me
 import { parseWorktreesBlock, runBranchViaOpsDispatch } from "./work-driver-branch-ops.ts";
 import { runBranchResiduePass } from "./work-driver-branch-residue.ts";
 import { hasCaptureFailure, recordCycleStartRef } from "./work-driver-git.ts";
+import { withIntegrationLock } from "./work-driver-lock.ts";
 
 export { parseWorktreesBlock };
 import type { DriverContext } from "./work-driver-context.ts";
@@ -39,15 +40,21 @@ const execp = promisify(exec);
  * after the whole step, so a crash inside the branch dispatch would lose the
  * ref with the checkout already moved. Written once; a resumed cycle keeps the
  * ref its first run captured.
+ *
+ * #1093 — the capture runs under the integration lock. A sibling group's
+ * merged or handoff step moves repoRoot under that same lock, so an unlocked
+ * read could record the SIBLING's feature branch as this cycle's start ref.
  */
 export async function stampCycleStartRef(ctx: DriverContext, state: WorkState): Promise<WorkState> {
   if (state.pipelineState.startRef) return state;
   // A failed capture on an earlier run is recorded in plumbReports; a resumed
   // cycle must not recapture (repoRoot may already be on the feature branch).
   if (hasCaptureFailure(state)) return state;
-  const stamped = await recordCycleStartRef(ctx.verifyExecFn ?? execp, ctx.repoRoot, state);
-  if (stamped !== state) await writeState(ctx.repoRoot, stamped);
-  return stamped;
+  return withIntegrationLock(ctx.repoRoot, async () => {
+    const stamped = await recordCycleStartRef(ctx.verifyExecFn ?? execp, ctx.repoRoot, state);
+    if (stamped !== state) await writeState(ctx.repoRoot, stamped);
+    return stamped;
+  });
 }
 
 /**

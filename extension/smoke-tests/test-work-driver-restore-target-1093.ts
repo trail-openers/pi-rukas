@@ -127,4 +127,41 @@ function recordingExec(calls: string[]): ExecFn {
   }
 }
 
+// ---- 5. checkout succeeds but tracked dirt remains: HEAD moved, so -d still runs
+{
+  const dir = buildRepo();
+  try {
+    // The operator's edit to tracked.txt carries onto feature/x, which holds the
+    // same content, so git allows the checkout and the dirt survives it.
+    writeFileSync(join(dir, "tracked.txt"), "operator edit\n");
+    const calls: string[] = [];
+    const notes = await restoreCheckout({
+      repoRoot: dir,
+      mainline: "main",
+      mergedBranch: "feature/merged",
+      execFn: recordingExec(calls),
+      startRef: "feature/x",
+    });
+    assert(head(dir) === "feature/x", "dirt-after-checkout: HEAD moved to the start ref");
+    assert(
+      notes.some((n) => n.includes("NOT verified clean")),
+      `dirt-after-checkout: reported as on the ref but not verified clean (got ${JSON.stringify(notes)})`,
+    );
+    assert(
+      !notes.some((n) => n.includes("was NOT restored") || n.includes("checkout was refused")),
+      "dirt-after-checkout: not reported as a refused checkout",
+    );
+    assert(
+      !calls.some((c) => /\bpull\b/.test(c)),
+      "dirt-after-checkout: no pull runs on a tree with tracked changes",
+    );
+    assert(
+      execFileSync("git", ["branch", "--list", "feature/merged"], { cwd: dir, encoding: "utf8" }).trim() === "",
+      "dirt-after-checkout: the merged branch is deleted (HEAD is off it)",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 process.exit(result.exit);

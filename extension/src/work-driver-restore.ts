@@ -127,6 +127,9 @@ export interface VerifiedRestoreResult {
   detail?: string;
   /** Where the discarded state was preserved, if it was captured. */
   preservedAt?: string;
+  /** #1093 — true when the checkout itself succeeded (HEAD moved), even if
+   *  tracked dirt then remained and `restored` is false. */
+  checkedOut?: boolean;
 }
 
 /**
@@ -216,12 +219,15 @@ ${staged}
 
 /**
  * #1093 — the non-forcing restore for an ABORT path (conflict, apply-conflict,
- * throw). The discarded state is preserved first, exactly as the forced helper
- * does. Then `git reset` (mixed) clears the index — the conflict's staged and
- * unmerged entries — WITHOUT touching the working tree, and the checkout is a
- * plain `restoreRootToRef`. Never `--hard`, never `--force`: when git refuses
- * the checkout the tree is left as it is and the detail carries the exact
- * command to run by hand. Never throws.
+ * throw). The discarded state is preserved to a file first. Then `git reset`
+ * (mixed) clears the index (the conflict's staged and unmerged entries), and
+ * `git stash push` moves the cycle's remaining TRACKED changes out of the
+ * working tree. A mixed reset alone is not enough: it keeps the cycle's edits
+ * as unstaged modifications, and a plain checkout then carries them onto the
+ * target wherever the target agrees with HEAD on that path. The stash is
+ * recoverable (`git stash list`), so nothing is lost. Never `--hard`, never
+ * `--force`. If the stash fails the checkout is not attempted, and the detail
+ * carries the commands to run by hand. Never throws.
  */
 export async function restoreRootToRefPreserving(
   execFn: ExecFn,
@@ -233,6 +239,23 @@ export async function restoreRootToRefPreserving(
     await execFn("git", { cwd: repoRoot, maxBuffer: 256 * 1024, argv: ["reset"] });
   } catch (err) {
     trace(`work-driver: ${label} — index reset failed: ${(err as Error).message?.slice(0, 160)}`);
+  }
+  try {
+    const message = `pi-rukas #1093 ${label}: cycle changes (preserved at ${preservedAt ?? "none"})`;
+    await execFn("git", {
+      cwd: repoRoot,
+      maxBuffer: 1024 * 1024,
+      argv: ["stash", "push", "-m", message],
+    });
+  } catch (err) {
+    const msg = (err as Error).message?.slice(0, 160);
+    trace(`work-driver: ${label} — stash of the cycle's changes failed: ${msg}`);
+    return {
+      restored: false,
+      checkedOut: false,
+      preservedAt,
+      detail: `could not stash the cycle's changes (${msg}); no checkout was attempted and the tree was left as it is — run \`git stash push\` then \`git checkout ${ref}\` at the repo root`,
+    };
   }
   const restore = await restoreRootToRef(execFn, { repoRoot, ref, label });
   return { ...restore, preservedAt };
@@ -257,7 +280,11 @@ export async function restoreRootToRef(
   const problem = restoreRefSyntaxProblem(ref);
   if (problem !== undefined) {
     trace(`work-driver: ${label}: ${cmd} not attempted: ${problem}`);
-    return { restored: false, detail: `not checked out: ${problem}; the tree was left as it is` };
+    return {
+      restored: false,
+      checkedOut: false,
+      detail: `not checked out: ${problem}; the tree was left as it is`,
+    };
   }
   try {
     await execFn("git", { cwd: repoRoot, maxBuffer: 256 * 1024, argv: ["checkout", ref] });
@@ -266,6 +293,7 @@ export async function restoreRootToRef(
     trace(`work-driver: ${label} \u2014 ${cmd} refused: ${msg}`);
     return {
       restored: false,
+      checkedOut: false,
       detail: `${cmd} refused (${msg}); the tree was left as it is \u2014 run \`${cmd}\` at the repo root once it is clean`,
     };
   }
@@ -274,6 +302,7 @@ export async function restoreRootToRef(
     if (dirt.length > 0) {
       return {
         restored: false,
+        checkedOut: true,
         detail: `${cmd} succeeded but tracked changes remain (${dirt
           .slice(0, 5)
           .map((l) => l.slice(3))
@@ -283,10 +312,11 @@ export async function restoreRootToRef(
   } catch (err) {
     return {
       restored: false,
+      checkedOut: true,
       detail: `could not verify the tree after ${cmd} (${(err as Error).message?.slice(0, 160)})`,
     };
   }
-  return { restored: true };
+  return { restored: true, checkedOut: true };
 }
 
 /**
