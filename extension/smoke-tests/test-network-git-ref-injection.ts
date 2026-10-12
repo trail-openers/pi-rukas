@@ -31,11 +31,35 @@ const dir = mkdtempSync(path.join(tmpdir(), "net-git-inject-"));
 const marker = path.join(dir, "pwned");
 
 console.log("1. netRefProblem");
-for (const bad of [`x$(touch ${marker})`, "x`touch y`", "-oProxyCommand=evil", "a;b", "a b"]) {
+const refused = [
+  `x$(touch ${marker})`,
+  "x`touch y`",
+  "-oProxyCommand=evil",
+  "a;b",
+  "a b",
+  "HEAD:refs/heads/main",
+  "+main",
+  "a^b",
+  "a~1",
+  "a*",
+  "a?",
+  "a[0]",
+  "a{b}",
+  ":main",
+];
+for (const bad of refused) {
   assert(netRefProblem(bad) !== undefined, `refused: ${JSON.stringify(bad)}`);
 }
 // git-valid names the restore allowlist refused (+, @): a PR head must not be blocked.
-for (const good of ["feature/issue-1095-x", "origin", "main", "feature/x+y", "user@host-ref", "release/1.2_rc"]) {
+const accepted = [
+  "feature/issue-1095-x",
+  "origin",
+  "main",
+  "feature/x+y",
+  "user@host-ref",
+  "release/1.2_rc",
+];
+for (const good of accepted) {
   assert(netRefProblem(good) === undefined, `accepted: ${good}`);
 }
 

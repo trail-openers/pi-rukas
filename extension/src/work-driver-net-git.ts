@@ -185,14 +185,16 @@ export function netGitEnv(base: NodeJS.ProcessEnv = process.env, cwd?: string): 
 
 /**
  * Named refusal for a remote or branch that is not safe to hand to git (#1095
- * security): a shell metacharacter, a leading `-` (option injection) or a
- * pathological name. Undefined when every value is safe. Callers refuse BEFORE
- * any git call, so a refused name never reaches a command line.
+ * security). Argv removes shell parsing, but git still parses refspec syntax
+ * from argv: `:` (src:dst), a leading `+` (force), `^`, `~`, `*`, `?`, `[`, `{`
+ * and a leading `-` (option injection) are all live. So the check is an
+ * allowlist, not a denylist. Undefined when every value is safe. Callers refuse
+ * BEFORE any git call, so a refused name never reaches a command line.
  */
 export function netRefProblem(...refs: string[]): string | undefined {
   for (const ref of refs) {
     if (ref.length === 0 || ref.startsWith("-")) return `"${ref}" is not a valid git ref name`;
-    if (NET_REF_REFUSED.test(ref) || ref.includes("..")) {
+    if (!NET_REF_ALLOWED.test(ref) || ref.includes("..")) {
       return `"${ref}" contains characters a network git call will not take`;
     }
   }
@@ -200,11 +202,12 @@ export function netRefProblem(...refs: string[]): string | undefined {
 }
 
 /**
- * Characters refused on the network path. Git-valid names such as `feature/x+y`
- * and `user@host` pass; whitespace and shell metacharacters are refused so a
- * name can never be mistaken for shell text, even though argv is used.
+ * The names a network git call may carry: a letter, digit or `_` first, then
+ * git-valid name characters. Refuses `:` (refspec), a leading `+` (force),
+ * `^ ~ * ? [ {` (refspec/revision syntax), whitespace and shell metacharacters.
+ * Git-valid names such as `feature/x+y` and `user@host` pass.
  */
-const NET_REF_REFUSED = /[\s$`;|&<>()\\'"]/;
+const NET_REF_ALLOWED = /^[A-Za-z0-9_][A-Za-z0-9._/+@-]*$/;
 
 export interface NetGitOpts {
   cwd?: string;

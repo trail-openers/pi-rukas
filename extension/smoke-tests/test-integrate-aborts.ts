@@ -52,7 +52,6 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-
 const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 
 const root = mkdtempSync(path.join(tmpdir(), "pi-ens-integrate-"));
