@@ -440,6 +440,45 @@ try {
     "concurrent: all five rows survive the race",
   );
 
+  // No-line findings: an acceptance binds to the title, not to shared tokens.
+  const nl = await recordFindingRun({
+    cwd: dir,
+    branch: "feat/nl",
+    headSha: c3,
+    findings: [{ lens: "SIMPLICITY", severity: "MEDIUM", path: "src/a.ts", title: "Missing null check on token" }],
+    complete: true,
+  });
+  const nlId = nl?.[0]?.rowId ?? "";
+  await acceptRow({
+    cwd: dir,
+    branch: "feat/nl",
+    rowId: nlId,
+    reason: "file-level gap, tracked elsewhere",
+    by: "op@example.com",
+  });
+  const sibling = await recordFindingRun({
+    cwd: dir,
+    branch: "feat/nl",
+    headSha: c3,
+    findings: [{ lens: "SIMPLICITY", severity: "MEDIUM", path: "src/a.ts", title: "Missing null check on user" }],
+    complete: true,
+  });
+  assert(
+    sibling?.[0]?.action === "matched",
+    "no-line: a different title sharing 0.6 of its tokens is matched, not suppressed by the acceptance",
+  );
+  const sameTitle = await recordFindingRun({
+    cwd: dir,
+    branch: "feat/nl",
+    headSha: c3,
+    findings: [{ lens: "SIMPLICITY", severity: "MEDIUM", path: "src/a.ts", title: "Missing null check on token" }],
+    complete: true,
+  });
+  assert(
+    sameTitle?.[0]?.action === "suppressed-accepted",
+    "no-line: the same title stays suppressed by its acceptance",
+  );
+
   // A branch's rows never leak into another branch's view.
   assert(
     (await readBranchRows(dir, "feat/x")).every((r) => r.branch === "feat/x"),

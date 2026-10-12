@@ -294,13 +294,16 @@ export async function recordFindingRun(run: FindingRun): Promise<Decision[] | un
         if (f.line) row.line = f.line;
         if (row.status === "resolved") row.status = "open";
         if (row.status === "accepted" && row.acceptance) {
-          if (row.acceptance.snippetHash !== id.snippetHash) {
+          // A line-bearing finding is bound to the snippet the operator accepted.
+          // A no-line finding is bound to its title only: two file-level findings
+          // sharing most title tokens must not inherit each other's acceptance.
+          if (id.hasLine && row.acceptance.snippetHash !== id.snippetHash) {
             trace(
               `review-findings: acceptance of ${row.id} lapsed (cited code changed) — reported again`,
             );
             row.status = "open";
             row.acceptance = undefined;
-          } else if (!critical) {
+          } else if (!critical && (id.hasLine || row.titleClass === id.titleClass)) {
             decisions.push({
               action: "suppressed-accepted",
               rowId: row.id,

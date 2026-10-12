@@ -184,7 +184,11 @@ for (const c of [
 }
 
 const handlers: Record<string, (e: unknown, c: unknown) => Promise<unknown>> = {};
-registerReviewAcceptGuard({ on: (ev: string, fn: never) => (handlers[ev] = fn) } as never);
+registerReviewAcceptGuard({
+  on: (ev: string, fn: (e: unknown, c: unknown) => Promise<unknown>) => {
+    handlers[ev] = fn;
+  },
+} as never);
 const verdict = (await handlers.tool_call?.(
   {
     toolName: "bash",

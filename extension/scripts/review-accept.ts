@@ -10,9 +10,10 @@
  * asked for. The reason must be at least 20 characters and must not look like
  * a secret.
  *
- * Human-only by construction: this is not a Pi tool, not in agents.json, and
- * the permission layer refuses agent-run invocations (review-accept-guard.ts).
- * It exits non-zero on any refusal and writes nothing.
+ * Human-only: this is not a Pi tool and not in agents.json, and the guard in
+ * review-accept-guard.ts refuses agent bash that names this script. That guard
+ * is a string match, so it does not cover quote-splitting or direct edits of
+ * the findings file. It exits non-zero on any refusal and writes nothing.
  */
 
 import { execFile } from "node:child_process";

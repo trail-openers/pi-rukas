@@ -8,7 +8,7 @@
 
 import os from "node:os";
 import path from "node:path";
-import { suppressedLines } from "./lens-residuals.ts";
+import { type SuppressedFinding, suppressedLines } from "./lens-residuals.ts";
 import type { Finding, FindingSource, LensRunResult } from "./lens-review.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
 
@@ -100,7 +100,6 @@ export interface LensReviewSummary {
  * silently downgrade a six-pass review to a five-pass one (#3).
  */
 export type Verdict = "APPROVED" | "ISSUES_FOUND" | "CRITICAL_ISSUES_FOUND" | "REVIEW_INCOMPLETE";
-import type { SuppressedFinding } from "./lens-residuals.ts";
 import { CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE, type RosterEntry } from "./lens-roster.ts";
 
 export const LENS_PREFIX = "code-review-";
