@@ -32,6 +32,7 @@ import { fetchDiff } from "./work-driver-diff.ts";
 import { protectedPathsIn } from "./work-driver-doctrine.ts";
 import { beginDispatch } from "./work-driver-resume.ts";
 import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
+import { execp as argvExecp } from "./work-driver-verify.ts";
 import { activeIssuesOf } from "./work-driver-workspace.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
@@ -217,9 +218,7 @@ export function survivorsOf(
  * finding as a whole path token (`data.txt` does not name `a.txt`).
  */
 export function namedPaths(findings: string, tracked: readonly string[]): string[] {
-  return tracked.filter(
-    (p) => protectedPathsIn([p]).length === 0 && pathTokenIn(findings, p),
-  );
+  return tracked.filter((p) => protectedPathsIn([p]).length === 0 && pathTokenIn(findings, p));
 }
 
 function pathTokenIn(text: string, p: string): boolean {
@@ -302,7 +301,8 @@ async function outOfScopeSince(
   );
 }
 
-function parkFixPass(
+/** Records the handoff report naming the rounds, the reason and the findings. */
+function withFixPassReport(
   state: WorkState,
   pending: PendingFix[],
   reason: string,
@@ -313,7 +313,7 @@ function parkFixPass(
     .map((p) => p.findings)
     .join("\n---\n")
     .slice(0, FIX_FINDINGS_MAX);
-  const withReport: WorkState = {
+  return {
     ...state,
     pipelineState: {
       ...state.pipelineState,
@@ -328,7 +328,15 @@ function parkFixPass(
       ],
     },
   };
-  return appendEvent(withReport, {
+}
+
+function parkFixPass(
+  state: WorkState,
+  pending: PendingFix[],
+  reason: string,
+  now: number,
+): WorkState {
+  return appendEvent(withFixPassReport(state, pending, reason, now), {
     kind: "cap-hit",
     at: Date.now(),
     cap: "verify-failed:develop",
@@ -398,7 +406,8 @@ export async function runAdversarialFixPass(
     passWorkstreams,
     activeIssuesOf(state),
     ctx.dispatchFn ?? dispatchCore,
-    execFn,
+    // Develop's git checks pass argv: the shell-string executor drops it.
+    ctx.verifyExecFn ?? argvExecp,
     now,
     begun.jobId,
   );
@@ -421,7 +430,8 @@ export async function runAdversarialFixPass(
   // through nextStep to the linear table, so it parks explicitly here.
   if (failed) {
     const tail = restored.eventLog[restored.eventLog.length - 1];
-    if (tail?.kind === "cap-hit") return restored;
+    if (tail?.kind === "cap-hit")
+      return withFixPassReport(restored, pending, "a develop gate failed on the fix pass", now);
     return parkFixPass(restored, pending, "a develop gate failed on the fix pass", now);
   }
 
