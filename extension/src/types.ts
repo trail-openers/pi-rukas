@@ -285,6 +285,8 @@ export interface AdversarialVerdict {
    * #408 — false when no VERDICT marker could be read and the status was
    * defaulted. `findings` then carries unstructured prose, not review output,
    * and callers must not present it to a fix-developer as a list of defects.
+   * Required: a parse that succeeds must say so explicitly, because absence
+   * reads as unparsed (the #1114 regression).
    */
-  verdictParsed?: boolean;
+  verdictParsed: boolean;
 }
