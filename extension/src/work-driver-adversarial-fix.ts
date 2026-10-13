@@ -33,19 +33,29 @@ import {
   planFixPass,
   postPassFault,
 } from "./work-driver-adversarial-fix-scope.ts";
+import {
+  FIX_FINDINGS_MAX,
+  NO_CHANGE_REASON,
+  capWithMarker,
+  freshPlumbQuestion,
+  noChangeProven,
+  noteFixPass,
+  withDeveloperPlumbReplies,
+} from "./work-driver-adversarial-plumb.ts";
 import type { AdversarialOutcome } from "./work-driver-adversarial-types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { beginDispatch } from "./work-driver-resume.ts";
 import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import { execp as argvExecp } from "./work-driver-verify.ts";
 import { activeIssuesOf } from "./work-driver-workspace.ts";
+import { FIX_PASS_EVIDENCE_PREFIX } from "./workflow-state-cap.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 
 export { namedPaths } from "./work-driver-adversarial-fix-scope.ts";
+export { plumbQuestion, withParsedSiblings } from "./work-driver-adversarial-plumb.ts";
 
-/** Bound on the findings carried in an event / the fix prompt (state-file hygiene). */
-export const FIX_FINDINGS_MAX = 4000;
+export { FIX_FINDINGS_MAX };
 
 /** A workstream id as the event log keys it (N=1 rounds carry no workstreamId). */
 const keyOf = (workstreamId: string | undefined): string => workstreamId ?? "default";
@@ -272,65 +282,6 @@ function withFixPassReport(
   };
 }
 
-/**
- * Cuts one sibling's findings to `max` characters and says so, so a cut is
- * never silent.
- */
-function capWithMarker(text: string, max: number): string {
-  if (text.length <= max) return text;
-  return `${text.slice(0, max)}\n[truncated: ${text.length - max} chars omitted]`;
-}
-
-/**
- * A mixed first-pass fan-out parks on the infra cap, which would otherwise drop
- * the parsed siblings. Each parsed sibling's verdict and findings go to the
- * handoff as a plumb report, so the cap does not hide a review that did happen.
- */
-export function withParsedSiblings(
-  state: WorkState,
-  outcomes: readonly AdversarialOutcome[],
-  now: number,
-): WorkState {
-  const parsed = outcomes.filter((o) => o.fixRequested || (!o.ok && !o.infra && !o.threw));
-  if (parsed.length === 0) return state;
-  const body = parsed
-    .map((o) => {
-      const status = o.records[o.records.length - 1]?.status ?? "parsed verdict";
-      const text = (o.fixRequested ? o.fixFindings : o.rejectionText) ?? "(no findings text)";
-      return `[workstream ${o.id}] ${status}:\n${capWithMarker(text, FIX_FINDINGS_MAX)}`;
-    })
-    .join("\n\n---\n\n");
-  return {
-    ...state,
-    pipelineState: {
-      ...state.pipelineState,
-      plumbReports: [
-        ...(state.pipelineState.plumbReports ?? []),
-        {
-          step: "adversarial",
-          role: "driver",
-          body: `mixed fan-out: parsed sibling verdicts kept alongside the infra cap:\n${body}`,
-          at: now,
-        },
-      ],
-    },
-  };
-}
-
-/** Discloses a fact on the handoff report without parking the pass. */
-function noteFixPass(state: WorkState, note: string, now: number): WorkState {
-  return {
-    ...state,
-    pipelineState: {
-      ...state.pipelineState,
-      plumbReports: [
-        ...(state.pipelineState.plumbReports ?? []),
-        { step: "develop", role: "driver", body: `adversarial fix pass: ${note}`, at: now },
-      ],
-    },
-  };
-}
-
 function parkFixPass(
   state: WorkState,
   pending: readonly PendingFix[],
@@ -343,7 +294,7 @@ function parkFixPass(
     cap: "verify-failed:develop",
     reviewRound: state.pipelineState.reviewRound,
     nextStep: "handoff",
-    evidence: `adversarial fix pass: ${reason}`,
+    evidence: `${FIX_PASS_EVIDENCE_PREFIX}${reason}`,
   });
 }
 
@@ -379,6 +330,7 @@ export async function runAdversarialFixPass(
   // The develop step receives the overlay as a parameter; the write-ahead and
   // the persisted pipeline carry the ORIGINAL workstreams.
   const startLen = state.eventLog.length;
+  const priorPlumbBodies = new Set((ps.plumbReports ?? []).map((r) => r.body));
   const stepped = appendEvent(
     { ...state, pipelineState: { ...ps, currentStep: "develop" } },
     { kind: "step-started", step: "develop", at: now },
@@ -391,7 +343,7 @@ export async function runAdversarialFixPass(
     ids.length > 1 ? `developer×${ids.length}` : "developer",
     Date.now(),
   );
-  const passed = await runDevelopTopological(
+  const develop = await runDevelopTopological(
     ctx,
     begun.state,
     ids,
@@ -403,10 +355,14 @@ export async function runAdversarialFixPass(
     now,
     begun.jobId,
   );
-  const restored: WorkState = {
-    ...passed,
-    pipelineState: { ...passed.pipelineState, workstreams: ps.workstreams },
-  };
+  // #1137 — record the fix developer's plumb reply (from this pass's develop
+  // events) before any gate reads the state. The develop step's workstreams
+  // overlay is undone before anything persists.
+  const restored = withDeveloperPlumbReplies(
+    { ...develop, pipelineState: { ...develop.pipelineState, workstreams: ps.workstreams } },
+    startLen,
+    priorPlumbBodies,
+  );
   const failed = restored.eventLog
     .slice(startLen)
     .some(
@@ -420,6 +376,18 @@ export async function runAdversarialFixPass(
   // Any other failed tail (a bare branches-converged verdict, say) would fall
   // through nextStep to the linear table, so it parks explicitly here.
   if (failed) {
+    // #1137 — a no-change fix pass whose developer asked a plumb question is a
+    // question, not a failed gate. Checked before the tail so it holds whichever
+    // gate tripped; noChangeProven keeps a pass that changed files out of it.
+    const question = freshPlumbQuestion(restored, priorPlumbBodies);
+    if (question && (await noChangeProven(execFn, plans, ps.baseSha ?? ""))) {
+      return parkFixPass(
+        restored,
+        pending,
+        `the developer returned a plumb report and changed nothing — answer the question: ${question}`,
+        now,
+      );
+    }
     const tail = restored.eventLog[restored.eventLog.length - 1];
     if (tail?.kind === "cap-hit")
       return withFixPassReport(restored, pending, "a develop gate failed on the fix pass", now);
@@ -427,7 +395,26 @@ export async function runAdversarialFixPass(
   }
 
   const post = await postPassFault(execFn, plans, ps.baseSha ?? "");
-  if (post.reason) return parkFixPass(restored, pending, post.reason, now);
+  if (post.reason) {
+    // #1137 — a no-change fix pass whose workstream carried a plumb report
+    // (a structural question, e.g. scope-ambiguity) is a question to answer,
+    // not a failed gate. The plumb report is already in pipelineState (the
+    // develop step recorded the developer's reply); the handoff's plumb
+    // section renders it, and the evidence names the plumb question so the
+    // operator answers it instead of re-dispatching the same no-op.
+    if (NO_CHANGE_REASON.test(post.reason)) {
+      const question = freshPlumbQuestion(restored, priorPlumbBodies);
+      if (question) {
+        return parkFixPass(
+          restored,
+          pending,
+          `the developer returned a plumb report and changed nothing — answer the question: ${question}`,
+          now,
+        );
+      }
+    }
+    return parkFixPass(restored, pending, post.reason, now);
+  }
   // The operator's kill switch is NOT a failed check: a disabled check reads
   // NOT CHECKED (as every other reader renders it) and the pass proceeds with
   // that disclosed on the handoff, never parked. Only a check that was asked

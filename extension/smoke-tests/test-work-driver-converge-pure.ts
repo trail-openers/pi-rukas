@@ -256,6 +256,60 @@ assert(
   "prompt: the corrective re-dispatch carries the normalised spec (the LLM-assisted seam)",
 );
 
+// --- #1137 d2: the `deliveredBy` field — sibling-delivered criteria ---
+{
+  // Two workstreams: task-a declares src/alpha.ts, task-b declares src/beta.ts.
+  // Deliverable d1 covers src/alpha.ts (owned by task-a), d2 covers src/beta.ts (owned by task-b).
+  // When BOTH paths are in the diff, both deliverables are `implemented` and
+  // `deliveredBy` names the owning workstream.
+  const wsMap = {
+    "task-a": ["src/alpha.ts"],
+    "task-b": ["src/beta.ts"],
+  };
+  const vSib = classifyDeliverables(
+    [
+      { id: "d1", description: "alpha", paths: ["src/alpha.ts"] },
+      { id: "d2", description: "beta", paths: ["src/beta.ts"] },
+    ],
+    new Set(["src/alpha.ts", "src/beta.ts"]),
+    wsMap,
+  );
+  assert(
+    vSib.deliverables[0].status === "implemented" && vSib.deliverables[0].deliveredBy?.includes("task-a"),
+    "d2: a deliverable delivered by its owning workstream carries deliveredBy naming that workstream",
+  );
+  assert(
+    vSib.deliverables[1].status === "implemented" && vSib.deliverables[1].deliveredBy?.includes("task-b"),
+    "d2: the sibling deliverable is also implemented (not flagged — sibling-delivered criteria pass)",
+  );
+  assert(vSib.absent.length === 0, "d2: no deliverable is absent when all paths are in the consolidated diff");
+
+  // When task-b's paths are NOT in the diff, d2 is `absent` — the gate flags it.
+  const vSibMissing = classifyDeliverables(
+    [
+      { id: "d1", description: "alpha", paths: ["src/alpha.ts"] },
+      { id: "d2", description: "beta", paths: ["src/beta.ts"] },
+    ],
+    new Set(["src/alpha.ts"]),
+    wsMap,
+  );
+  assert(
+    vSibMissing.deliverables[1].status === "absent",
+    "d2: a deliverable whose paths are NOT in the diff is absent (flagged)",
+  );
+  assert(vSibMissing.absent.length === 1 && vSibMissing.absent[0].id === "d2", "d2: the gate flags exactly the undelivered deliverable");
+
+  // When no workstream map is provided, `deliveredBy` is not populated (degrade).
+  const vNoMap = classifyDeliverables(
+    [{ id: "d1", description: "alpha", paths: ["src/alpha.ts"] }],
+    new Set(["src/alpha.ts"]),
+  );
+  assert(
+    vNoMap.deliverables[0].status === "implemented" && vNoMap.deliverables[0].deliveredBy === undefined,
+    "d2: without a workstream map, deliveredBy is absent (pre-#1137 shape)",
+  );
+}
+
 // --- No-diff status (issue #792) ---
 {
   // 1. A marked deliverable WITH evidence classifies `no-diff` and is NOT in absent.

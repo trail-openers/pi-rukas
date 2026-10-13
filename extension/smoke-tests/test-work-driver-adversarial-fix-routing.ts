@@ -17,9 +17,9 @@
  *    paths, and parks on a no-op pass.
  */
 
-import { rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { git, singleState, tmpDir } from "./lib/adversarial-fix-fixtures.ts";
+import { git, singleState, tmpDir, twoWorkstreamState } from "./lib/adversarial-fix-fixtures.ts";
 import type { DispatchResult } from "../src/types.ts";
 import { pendingFixes, runAdversarialFixPass } from "../src/work-driver-adversarial-fix.ts";
 import { runAdversarial } from "../src/work-driver-adversarial.ts";
@@ -364,6 +364,63 @@ function seededLog(): WorkState["eventLog"] {
     assert(
       !s.eventLog.some((e) => e.kind === "cap-hit"),
       "D: no cap for a non-critical last round",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// E — #1137: a plumb-report with no file change routes to a handoff that
+// names the plumb question, not the generic "byte-identical" failure.
+// The cap routes to handoff (verify-failed:develop), and the evidence carries
+// the plumb question so the operator answers it.
+{
+  const dir = tmpDir("plumb-nochange");
+  try {
+    // A real repo so the fix pass's git reads work.
+    mkdirSync(path.join(dir, ".pi"), { recursive: true });
+    mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
+    writeFileSync(path.join(dir, ".pi", "verify-cmd"), "true\n");
+    writeFileSync(path.join(dir, "b.txt"), "one\n");
+    writeFileSync(path.join(dir, "a.txt"), "one\n");
+    git(dir, "init -q -b main");
+    writeFileSync(path.join(dir, ".git", "info", "exclude"), ".pi/work-state/\ntmp/\n");
+    git(dir, "add -A");
+    git(dir, 'commit -q -m "base"');
+    const ctx: DriverContext = {
+      pi: { sendUserMessage: () => {} } as unknown as DriverContext["pi"],
+      repoRoot: dir,
+      issue: 1137,
+      issueBodyFetcherFn: async () => ({ stdout: "mock" }),
+      dispatchFn: async (_pi, spec) =>
+        ({
+          role: spec.role,
+          ok: true,
+          exitCode: 0,
+          text: "[ensemble:plumb]\ncategory: scope-ambiguity\nquestion: does docs own b.txt?",
+          toolUses: [],
+          ms: 1,
+        }) as DispatchResult,
+    };
+    // No prior plumb report: the fix developer's reply is the only source.
+    const st = twoWorkstreamState(dir);
+    const pending = pendingFixes(st.eventLog);
+    const out = await runAdversarialFixPass(ctx, st, pending, Date.now());
+    const tail = out.eventLog[out.eventLog.length - 1];
+    assert(
+      tail?.kind === "cap-hit" && tail.cap === "verify-failed:develop",
+      `E: plumb-with-no-change parks as verify-failed:develop (tail: ${tail?.kind})`,
+    );
+    assert(
+      tail?.kind === "cap-hit" &&
+        nextStep(out).kind === "step" &&
+        (nextStep(out) as { step: string }).step === "handoff",
+      "E: the cap routes to handoff",
+    );
+    const ev = tail?.kind === "cap-hit" ? (tail.evidence ?? "") : "";
+    assert(
+      /answer the question/.test(ev) && ev.includes("does docs own b.txt?"),
+      `E: the developer's plumb question is named in the evidence (got: ${ev.slice(0, 100)})`,
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

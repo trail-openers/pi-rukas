@@ -10,6 +10,13 @@ import type { RoleName } from "./roles.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
 import type { WorkState } from "./workflow-state-schema.ts";
 
+/**
+ * #1137 — the `evidence` prefix a fix-pass park writes on its verify-failed:develop
+ * cap-hit. The explain renderer keys on it to prefer that evidence over the
+ * gate's failure bullets; the fix pass writes it. One constant, both sides.
+ */
+export const FIX_PASS_EVIDENCE_PREFIX = "adversarial fix pass: ";
+
 export type CapHitEvent = Extract<WorkEvent, { kind: "cap-hit" }>;
 
 /**
