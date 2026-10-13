@@ -50,6 +50,7 @@ import {
   resumeEnabled,
 } from "./work-driver-resume-reattach.ts";
 import { reenterInterrupted } from "./work-driver-resume.ts";
+import { interruptedByShutdown, sessionEnding } from "./work-driver-shutdown.ts";
 import { routeStepOutcome } from "./work-driver-step-router.ts";
 import { runCi, runStepBack } from "./work-driver-stepback-ci.ts";
 import { deliverTerminalLine } from "./work-driver-terminal-delivery.ts";
@@ -124,6 +125,7 @@ export { DriverNotImplementedError } from "./work-driver-context.ts";
 export type DriverOutcome = { started: true } | { started: false; reason: string };
 
 export async function runWorkDriver(ctx: DriverContext): Promise<DriverOutcome> {
+  if (sessionEnding()) return { started: false, reason: "the session is shutting down" };
   const claimed = claimCycle(ctx.issue, ctx.issues);
   if (!claimed.ok) {
     notifyAgent(
@@ -322,6 +324,8 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
       return { started: true };
     }
     const step = state.pipelineState.currentStep;
+    // A session shutdown is not a step failure — see work-driver-shutdown.ts.
+    if (interruptedByShutdown(ctx, state, step)) return { started: true };
     // Step-level lifecycle event (PR2 O1): "▶ step N/9 X started".
     const stepOrd = STEP_ORDINAL[step] ?? { num: 0, total: 9 };
     const stepStartedAt = Date.now();
@@ -336,7 +340,9 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
     updateFooter(state, stepStartedAt);
     try {
       state = await runStep(ctx, state, step);
+      if (interruptedByShutdown(ctx, state, step)) return { started: true };
     } catch (err) {
+      if (interruptedByShutdown(ctx, state, step)) return { started: true };
       // Recorded before the abort branch: a crash that coincides with a signal
       // is still a crash. An abort that makes the step throw is the interrupt.
       state = recordStepCrash(state, step, err);
@@ -485,13 +491,3 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
   }
   return { started: true };
 }
-
-/**
- * #573 — attempt reattach in the crash-resume path. Returns whether the
- * resumed child produced a valid result (skip runStep) and the updated state.
- *
- * The resume path reads `transcriptPath` from the in-flight `dispatch-started`
- * event, calls `resolveReattach` to check if reattach is possible, and
- * `attemptReattach` to actually reconnect. On success, emits a
- * `dispatch-completed` event and advances to the next step.
- */

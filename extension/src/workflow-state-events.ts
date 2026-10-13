@@ -402,6 +402,24 @@ export type WorkEvent =
   | WorktreeLeftoverHandledEvent
   | DispatchSlowEvent
   | FenceRecoveryStartedEvent
+  | {
+      /**
+       * The session was shut down under a running cycle (Pi's
+       * `session_shutdown`). NOT a failure and never followed by a cap-hit:
+       * status stays `running`, and the next `/work <N>` re-enters `step`.
+       */
+      kind: "cycle-interrupted";
+      at: number;
+      /** The step that was running, or about to start. */
+      step: WorkStep;
+      /** Pi's shutdown reason: `quit` | `reload` | `new` | `resume` | `fork`. */
+      reason: string;
+      /** Where the work is, when the cycle had got that far. */
+      branch?: string;
+      headSha?: string;
+      /** False when the state on disk is one the re-entry check refuses. */
+      resumable: boolean;
+    }
   /**
    * S4a (#1162) — the cycle was interrupted (SIGTERM / SIGINT, via
    * `markInterrupted`). `reason` is the operator-facing why; renderers read

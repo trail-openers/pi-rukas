@@ -70,6 +70,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { renameSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { type EmitSink, emitPersisted } from "./work-state-emit.ts";
@@ -290,6 +291,18 @@ export function markInterrupted(
     if (next === state) return state;
     return writeSnapshot(file, next, sink);
   });
+}
+
+/**
+ * `writeState`, synchronously — for the one caller that cannot rely on the
+ * event loop outliving its `await`: the session-shutdown record
+ * (work-driver-shutdown.ts) is written from a process that is exiting.
+ */
+export function writeStateSync(repoRoot: string, state: WorkState): void {
+  const file = workStateFile(repoRoot, state.issue);
+  const tmp = `${file}.sync.tmp`;
+  writeFileSync(tmp, `${JSON.stringify({ ...state, updatedAt: Date.now() }, null, 2)}\n`, "utf8");
+  renameSync(tmp, file);
 }
 
 /**
