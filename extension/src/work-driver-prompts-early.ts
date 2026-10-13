@@ -309,6 +309,12 @@ export function inlineDevelopPrompt(
    * else. The findings are reviewer data, fenced, never instructions.
    */
   fixFindings?: string,
+  /**
+   * The note for a developer re-dispatched after a transient failure
+   * (`interruptedDevelopNote`): the previous attempt's partial work is still
+   * in this worktree. Absent on a first attempt — the prompt is unchanged.
+   */
+  interruptedNote?: string,
 ): string {
   // PR11 — multi-issue cycles must show the developer the ACTIVE issues
   // (NEEDS_WORK subset after explore), not the primary cycle issue. The
@@ -382,6 +388,7 @@ export function inlineDevelopPrompt(
   const verifyLine = verifyCmd
     ? `Before committing, run the project's verify command — \`${verifyCmd}\` — and make it pass in your worktree; this is the exact command the verify gate will run, so the two cannot diverge. Fix formatting or lint output by RUNNING the formatter/linter, never by hand-guessing.`
     : "This project has no discoverable verify command, so there is no project-level check to run before committing — rely on the change being correct and complete.";
+  if (interruptedNote) lines.push(interruptedNote);
   lines.push(
     `  1. ${fetchInstr}`,
     "  2. Implement the change end-to-end. Your worktree is on a detached HEAD at the base commit — that is correct. Commit your work there; the driver moves the commits to the feature branch during Step 6 consolidation.",
