@@ -185,6 +185,8 @@ export function summariseFindings(findings: string): string {
 /**
  * The result when a fix is needed but the tool was called without workCwd:
  * the verdict is kept, no developer is dispatched, and the error names workCwd.
+ * Its outcome is `invalid-input` (a missing argument), never `rejected` (a
+ * code verdict): the ledger and the merge guard must not read it as a rejection.
  */
 export function workCwdRequiredResult(
   round: number,
@@ -199,8 +201,37 @@ export function workCwdRequiredResult(
 ): DispatchResult {
   return synthesizeResult({
     ok: false,
-    loopOutcome: "rejected",
+    loopOutcome: "invalid-input",
     text: `Adversarial round ${round} verdict: ${verdict.status}. A fix is needed, but no \`workCwd\` was given, so no developer was dispatched — fixes edit files only in workCwd. Pass \`workCwd\` (the worktree the fix should edit), or set \`reportOnly: true\` to review without fixing.\n\n${verdict.findings}`,
+    ms: Date.now() - state.start,
+    usage: state.usage,
+    transcriptPath: state.lastTranscript,
+    model: state.lastModel,
+    adversarialRounds: toRoundRecords(state.rounds),
+  });
+}
+
+/**
+ * A fix round the fence refused to run (#1104): no developer was dispatched.
+ * `invalid-input` = the workCwd is not a worktree of the caller's repository;
+ * `infra-failure` = the caller-repo fence could not be armed, so the round is
+ * not checked and must not approve.
+ */
+export function fixRefusedResult(
+  outcome: "invalid-input" | "infra-failure",
+  reason: string,
+  state: {
+    start: number;
+    usage: DispatchResult["usage"];
+    lastTranscript: string | undefined;
+    lastModel: string | undefined;
+    rounds: Parameters<typeof toRoundRecords>[0];
+  },
+): DispatchResult {
+  return synthesizeResult({
+    ok: false,
+    loopOutcome: outcome,
+    text: `Adversarial fix refused: ${reason}. No developer was dispatched, so this review is not approved. Fixes edit files only in workCwd, which must be a worktree of the calling repository.`,
     ms: Date.now() - state.start,
     usage: state.usage,
     transcriptPath: state.lastTranscript,

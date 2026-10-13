@@ -1,31 +1,33 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { classifyDispatchOutcome } from "./adversarial-classify.ts";
-import { guardFixRound, withFixViolations } from "./adversarial-fix-guard.ts";
+import {
+  type FenceRecord,
+  type FixFence,
+  createFixFence,
+  withFixViolations,
+} from "./adversarial-fix-guard.ts";
 import { buildLedgerNote } from "./adversarial-ledger-note.ts";
 import { writeAdversarialLedgerEntry } from "./adversarial-ledger.ts";
+import { makeRunPhase } from "./adversarial-phase.ts";
 import { buildAdversarialPrompt, buildFixPrompt } from "./adversarial-prompts.ts";
 import { type InfraCtx, infraFailureResult, runPhaseWithInfraRetry } from "./adversarial-retry.ts";
 import {
   decideLoopAction,
+  fixRefusedResult,
   parseVerdict,
   summariseFindings,
   synthesizeResult,
   toRoundRecords,
   workCwdRequiredResult,
 } from "./adversarial-verdict.ts";
-import { childHandles, registerChildHandle } from "./async-jobs-registry.ts";
-import { markOrchestrator, setOrchestratorActiveChild } from "./async-jobs.ts";
+import { markOrchestrator } from "./async-jobs.ts";
 import { formatReportLine, renderCommentEvidence, roundComments } from "./comment-evidence.ts";
 import type { LostCommentResult } from "./comment-retention.ts";
-import * as dispatchDeck from "./dispatch-deck.ts";
-import type { PiJsonEvent } from "./pi-event-shapes.ts";
-import { readEnumMarker } from "./reply-markers.ts";
 import { type RangeDiff, computeRangeDiff } from "./review-diff.ts";
-import { type OnSlowCallback, feedSlowProgress, watchSlowDispatch } from "./slow-notice.ts";
-import { makeRunId, spawnSpecialist } from "./spawn.ts";
+import type { OnSlowCallback } from "./slow-notice.ts";
+import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
-import type { AdversarialVerdict, DispatchFailureCause, DispatchResult } from "./types.ts";
-import { ADVERSARIAL_TRANSIENT_MAX_RETRIES, isRateLimit429Msg } from "./types.ts";
+import type { AdversarialVerdict, DispatchResult } from "./types.ts";
 import type { ExecFn } from "./worktree.ts";
 export const MAX_ROUNDS = 3;
 
@@ -92,12 +94,12 @@ export async function runAdversarialLoop(
     /** #1114 — the round number a reportOnly review carries (prompt + record). Default 1. */
     reportRound?: number;
     /**
-     * #1104 — tool path: fix rounds are caller-repo-checked (`workCwd` is required on every path).
-     * The /work driver does not set it: its caller is the integration checkout it mutates itself.
+     * #1104 — the tool path's caller-repo fence. Set ONLY at the tool boundary
+     * (`adversarial-tool.ts`) with the calling process's cwd; the /work driver
+     * leaves it unset, because its caller is the integration checkout it
+     * mutates itself. A fix round needs `workCwd` on every path.
      */
-    guardFixRounds?: boolean;
-    /** #1104 — the calling repository the fence snapshots; supplied by the tool boundary. */
-    callerCwd?: string;
+    fixFence?: FixFence;
   },
   signal: AbortSignal,
   orchestratorJobId: string,
@@ -136,11 +138,12 @@ export async function runAdversarialLoop(
     workCwd: params.workCwd,
   });
 
-  const fixViolations: string[] = [];
+  const fenceRecords: FenceRecord[] = [];
+  const fence = createFixFence(params.fixFence, fenceRecords);
   const ledgerWrite = (raw: DispatchResult): DispatchResult => {
-    // #1104 — violations are prefixed BEFORE the write: the durable ledger row
-    // must carry the same text the caller sees.
-    const result = withFixViolations(raw, fixViolations);
+    // #1104 — fence findings are prefixed BEFORE the write: the durable ledger
+    // row must carry the same text the caller sees.
+    const result = withFixViolations(raw, fenceRecords);
     writeAdversarialLedgerEntry(result, {
       workCwd: params.workCwd,
       // #988 — thread the branch the note resolved (same shared resolution,
@@ -250,69 +253,13 @@ export async function runAdversarialLoop(
     if (r.model && !lastModel) lastModel = r.model;
   };
 
-  /**
-   * Run one phase, threading dispatch-deck lifecycle and onProgress so the deck
-   * shows whichever phase is running now. Also registers the inner spawn as the
-   * orchestrator's `activeChild` so PM can `dispatch_peek` / `dispatch_steer`
-   * against the loop's jobId and reach the currently-running inner child.
-   */
-  const runPhase = async (
-    role: "adversarial-developer" | "developer",
-    tag: string,
-    prompt: string,
-    cwd?: string,
-  ): Promise<DispatchResult> => {
-    const deckKey = `${runId}/${tag}`;
-    const label = `${role}[${tag}]`;
-    dispatchDeck.startEntry(deckKey, { label, role, tag });
-    // #799 — the slow-run watch for this inner child: the deck key is the id
-    // dispatch_peek shows, and it is what the PM notice names. The parent pi
-    // is threaded so the notice reaches the PM (the watch site has no pi).
-    // #907 — the CI-wait span feed for this inner child: the watch chains
-    // its span tracker in front of the raw-event hook the spawn receives.
-    const slowRaw: (event: PiJsonEvent) => void = () => {};
-    const stopSlow = watchSlowDispatch({
-      id: deckKey,
-      role,
-      label,
-      ...(params.onSlow ? { onSlow: params.onSlow } : {}),
-      ...(params.pi ? { pi: params.pi } : {}),
-      onRawEvent: slowRaw,
-    });
-    try {
-      return await spawnSpecialist(
-        { role, prompt, cwd },
-        {
-          signal,
-          runId,
-          tag,
-          onProgress: (state) => {
-            dispatchDeck.updateEntry(deckKey, state);
-            feedSlowProgress(deckKey, state);
-          },
-          onRawEvent: stopSlow.onRawEvent ?? slowRaw,
-          onStdin: (stdin) => {
-            // Publish this inner spawn as the orchestrator's active child so
-            // PM's peek/steer calls against the orchestrator jobId resolve
-            // to this stdin. Updated on each round; cleared in the finally.
-            setOrchestratorActiveChild(orchestratorJobId, {
-              role,
-              label,
-              deckKey,
-              stdin,
-            });
-            // #799 — also registered under the deck key (steer from the peek id).
-            registerChildHandle(deckKey, stdin, label, role);
-          },
-        },
-      );
-    } finally {
-      stopSlow.stop();
-      dispatchDeck.clearEntry(deckKey);
-      childHandles.delete(deckKey);
-      setOrchestratorActiveChild(orchestratorJobId, null);
-    }
-  };
+  const runPhase = makeRunPhase({
+    runId,
+    signal,
+    orchestratorJobId,
+    ...(params.onSlow ? { onSlow: params.onSlow } : {}),
+    ...(params.pi ? { pi: params.pi } : {}),
+  });
 
   // Re-read before every review. `fetchDiff` used to run once, before the loop,
   // so rounds 2 and 3 were prompted with pre-fix material and the reviewer had to
@@ -443,7 +390,10 @@ export async function runAdversarialLoop(
       const state = { start, usage, lastTranscript, lastModel, rounds };
       return ledgerWrite(workCwdRequiredResult(round, verdict, state));
     }
-    const fix = await guardFixRound(params, fixViolations, round, () =>
+    // #1104 — the fence checks workCwd (a worktree of the caller's repo) before
+    // the first fix round, and runs the caller-repo check after every round,
+    // even one whose dispatch throws. A refused round dispatches nothing.
+    const fixRun = await fence.round(round, params.workCwd, () =>
       runPhaseWithInfraRetry(
         "developer",
         `round${round}-fix`,
@@ -459,6 +409,11 @@ export async function runAdversarialLoop(
         { runPhase, accumulate, signal },
       ),
     );
+    if (!fixRun.ran) {
+      const state = { start, usage, lastTranscript, lastModel, rounds };
+      return ledgerWrite(fixRefusedResult(fixRun.outcome, fixRun.reason, state));
+    }
+    const fix = fixRun.value;
     // Record what this round asked for, so the next fixer does not undo it.
     priorFindings.push(
       `Round ${round} (${verdict.status}): ${summariseFindings(verdict.findings)}`,

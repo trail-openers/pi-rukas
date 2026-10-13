@@ -10,7 +10,7 @@
  *   - the caller repository's `git status --porcelain` is snapshotted around
  *     each fix round; a change there is reported as a violation.
  *
- * Drives the REAL runAdversarialLoop with guardFixRounds (what the tool
+ * Drives the REAL runAdversarialLoop with fixFence (what the tool
  * passes) over real scratch git repos. The spawn seam, the ledger writer and
  * the deck/registry bookkeeping are mocked (same seams as
  * test-adversarial-range-recompute.ts).
@@ -53,6 +53,7 @@ mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
       return { role: "developer", ok: true, text: "Applied.", toolUses: [], ms: 1, exitCode: 0 };
     }
     const text = reviewerReplies.length > 1 ? reviewerReplies.shift() : reviewerReplies[0];
+    if (text === undefined) throw new Error("test mock: no reviewer reply queued");
     return { role: spec.role, ok: true, text, toolUses: [], ms: 1, exitCode: 0 };
   },
 }));
@@ -107,8 +108,11 @@ const reset = () => {
   devFailures = 0;
 };
 
-const workRepo = newRepo("work");
 const callerRepo = newRepo("caller");
+// The fence requires workCwd to be a worktree of the caller's repository (#1104 r2).
+const workBase = mkdtempSync(path.join(os.tmpdir(), "adv-1104-wt-"));
+const workRepo = path.join(workBase, "wt");
+git(callerRepo, "worktree", "add", "-q", "-b", "wt-1104", workRepo);
 const priorCwd = process.cwd();
 try {
   // ---------------------------------------------------------------- A. reportOnly
@@ -120,7 +124,6 @@ try {
       context: "ro",
       workCwd: workRepo,
       reportOnly: true,
-      guardFixRounds: true,
     },
     signal(),
     "job-a",
@@ -147,7 +150,7 @@ try {
   reset();
   reviewerReplies = [ISSUES];
   const b = await runAdversarialLoop(
-    { diff: "diff --git a/f b/f\n+x", context: "gate", guardFixRounds: true },
+    { diff: "diff --git a/f b/f\n+x", context: "gate", fixFence: { callerCwd: callerRepo } },
     signal(),
     "job-b",
   );
@@ -156,6 +159,7 @@ try {
     "B: no fix-developer spawned without workCwd",
   );
   assert(b.ok === false && b.text.includes("workCwd"), "B: result is an error naming workCwd");
+  assert(b.loopOutcome === "invalid-input", "B: a missing workCwd is invalid-input, not rejected");
   assert(b.text.includes("CRITICAL_ISSUES_FOUND"), "B: the review verdict is still returned");
   assert(
     ledgerResults.length === 1 && ledgerResults[0]?.text.includes("workCwd"),
@@ -170,7 +174,7 @@ try {
   );
   assert(
     spawnCalls.filter((c) => c.role === "developer").length === 0 && b2.ok === false,
-    "B: the workCwd gate also applies on the driver path (no guardFixRounds)",
+    "B: the workCwd gate also applies on the driver path (no fixFence)",
   );
 
   // ------------------------------- C. fix round in workCwd: every developer cwd === workCwd
@@ -178,7 +182,7 @@ try {
   reviewerReplies = [ISSUES, APPROVED];
   developerWrite = (cwd) => writeFileSync(path.join(cwd, "f.txt"), "one\nfixed\n");
   const c = await runAdversarialLoop(
-    { diff: "diff --git a/f b/f\n+x", context: "fix", workCwd: workRepo, guardFixRounds: true, callerCwd: priorCwd },
+    { diff: "diff --git a/f b/f\n+x", context: "fix", workCwd: workRepo, fixFence: { callerCwd: callerRepo } },
     signal(),
     "job-c",
   );
@@ -202,7 +206,7 @@ try {
     writeFileSync(path.join(callerRepo, "stray.txt"), "wrong place\n");
   };
   const d = await runAdversarialLoop(
-    { diff: "diff --git a/f b/f\n+x", context: "viol", workCwd: workRepo, guardFixRounds: true, callerCwd: callerRepo },
+    { diff: "diff --git a/f b/f\n+x", context: "viol", workCwd: workRepo, fixFence: { callerCwd: callerRepo } },
     signal(),
     "job-d",
   );
@@ -238,7 +242,7 @@ try {
     writeFileSync(path.join(callerRepo, "f.txt"), "dirty rewritten\n");
   };
   const e = await runAdversarialLoop(
-    { diff: "diff --git a/f b/f\n+x", context: "dirty", workCwd: workRepo, guardFixRounds: true, callerCwd: callerRepo },
+    { diff: "diff --git a/f b/f\n+x", context: "dirty", workCwd: workRepo, fixFence: { callerCwd: callerRepo } },
     signal(),
     "job-e",
   );
@@ -257,7 +261,7 @@ try {
   devFailures = 1;
   developerWrite = (cwd) => writeFileSync(path.join(cwd, "f.txt"), "one\nretried\n");
   const f = await runAdversarialLoop(
-    { diff: "diff --git a/f b/f\n+x", context: "retry", workCwd: workRepo, guardFixRounds: true, callerCwd: priorCwd },
+    { diff: "diff --git a/f b/f\n+x", context: "retry", workCwd: workRepo, fixFence: { callerCwd: callerRepo } },
     signal(),
     "job-f",
   );
@@ -278,16 +282,23 @@ try {
   process.chdir(callerRepo);
   developerWrite = (cwd) => writeFileSync(path.join(cwd, "f.txt"), "one\nfixed\n");
   const g = await runAdversarialLoop(
-    { diff: "diff --git a/f b/f\n+x", context: "unreadable", workCwd: workRepo, guardFixRounds: true, callerCwd: callerRepo },
+    { diff: "diff --git a/f b/f\n+x", context: "unreadable", workCwd: workRepo, fixFence: { callerCwd: callerRepo } },
     signal(),
     "job-g",
   );
   process.chdir(priorCwd);
   assert(
-    g.text.includes("fix round 1 caller-repo check did not run"),
-    "G: an unreadable caller snapshot is reported as not checked",
+    g.text.includes("could not be armed before fix round 1"),
+    "G: an unreadable caller snapshot refuses the fix round",
   );
-  assert(!g.text.includes("VIOLATION"), "G: an unreadable snapshot is not reported as a violation");
+  assert(
+    spawnCalls.filter((x) => x.role === "developer").length === 0,
+    "G: no fix-developer is dispatched while the fence is unchecked",
+  );
+  assert(
+    g.ok === false && g.loopOutcome === "infra-failure",
+    "G: an unchecked fence never approves",
+  );
 
   // -------- H. caller is not a git repository → reported as not checked, never silent
   reset();
@@ -296,7 +307,7 @@ try {
   developerWrite = (cwd) => writeFileSync(path.join(cwd, "f.txt"), "one\nfixed\n");
   try {
     const h = await runAdversarialLoop(
-      { diff: "diff --git a/f b/f\n+x", context: "norepo", workCwd: workRepo, guardFixRounds: true, callerCwd: notRepo },
+      { diff: "diff --git a/f b/f\n+x", context: "norepo", workCwd: workRepo, fixFence: { callerCwd: notRepo } },
       signal(),
       "job-h",
     );
@@ -309,7 +320,7 @@ try {
   }
 } finally {
   process.chdir(priorCwd);
-  rmSync(workRepo, { recursive: true, force: true });
+  rmSync(workBase, { recursive: true, force: true });
   rmSync(callerRepo, { recursive: true, force: true });
 }
 
