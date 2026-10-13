@@ -8,6 +8,30 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.80](https://github.com/trail-openers/pi-rukas/compare/v0.12.79...v0.12.80) (2026-10-13)
+
+
+### Features
+
+* **adversarial:** reportOnly and a workCwd requirement for the adversarial_loop tool ([#1141](https://github.com/trail-openers/pi-rukas/issues/1141)) ([df71518](https://github.com/trail-openers/pi-rukas/commit/df715185422d70c654cbf26f2b73828971661141))
+* **plan:** an identical confirm files the reviewed dry-run spec ([#1106](https://github.com/trail-openers/pi-rukas/issues/1106)) ([019f8c8](https://github.com/trail-openers/pi-rukas/commit/019f8c85fcda5b4bdb5e457fbfecec33de4a87bd))
+* **review:** give six-lens review rounds cross-round memory ([#1124](https://github.com/trail-openers/pi-rukas/issues/1124)) ([ff65659](https://github.com/trail-openers/pi-rukas/commit/ff6565958f0de345560dc61c7b97de7d5a38c7be))
+* **work:** re-run only failed workstreams and resume develop per workstream ([#1063](https://github.com/trail-openers/pi-rukas/issues/1063)) ([7b767ae](https://github.com/trail-openers/pi-rukas/commit/7b767ae95da981e3e29c8a0d2b8fa3b8d94e74f2))
+* **work:** the adversarial step only reviews; fixes go through develop ([#1123](https://github.com/trail-openers/pi-rukas/issues/1123)) ([fb16cd2](https://github.com/trail-openers/pi-rukas/commit/fb16cd241ab3150948561f40fc07fb88140c226d))
+
+
+### Bug Fixes
+
+* **plan:** splice only concrete gap resolutions; never cap on the gate's own bullet ([#1112](https://github.com/trail-openers/pi-rukas/issues/1112)) ([a190bda](https://github.com/trail-openers/pi-rukas/commit/a190bda1d081ae763e335d3673c449433164897e))
+* **review:** enforce the lens round budget in dispatch_lens_review ([#1135](https://github.com/trail-openers/pi-rukas/issues/1135)) ([4f583a7](https://github.com/trail-openers/pi-rukas/commit/4f583a74fa610fb42f99dbbe8e5f9ff62e90faf7))
+* **review:** follow-up lens rounds review only the branch's own changes ([#1138](https://github.com/trail-openers/pi-rukas/issues/1138)) ([9d58aac](https://github.com/trail-openers/pi-rukas/commit/9d58aac3b8b4dc34fca6211924a93aaf17fb9a8b))
+* **review:** remove the two operator-only dead ends in the lens review ([#1143](https://github.com/trail-openers/pi-rukas/issues/1143)) ([52584f4](https://github.com/trail-openers/pi-rukas/commit/52584f48f60de12434bf98310b61af08d13c2b65))
+* **work:** a parsed adversarial verdict is not reported as unreadable ([#1130](https://github.com/trail-openers/pi-rukas/issues/1130)) ([9d4f570](https://github.com/trail-openers/pi-rukas/commit/9d4f57061992fdfef93dee259de8f05bcaec29d7))
+* **work:** restore the original checkout branch after a handoff ([#1109](https://github.com/trail-openers/pi-rukas/issues/1109)) ([3d2acc4](https://github.com/trail-openers/pi-rukas/commit/3d2acc4af5f1dc84aba1db71f09425c0a14252cd))
+* **work:** retry explore once when the reply has no ## Spec ([#1110](https://github.com/trail-openers/pi-rukas/issues/1110)) ([237bb9e](https://github.com/trail-openers/pi-rukas/commit/237bb9e7680cf1906c6cba17b0bf542bc5e79ee7))
+* **work:** The /plan driver's directive parsing and drafting… ([#1108](https://github.com/trail-openers/pi-rukas/issues/1108)) ([c194e0e](https://github.com/trail-openers/pi-rukas/commit/c194e0e8ec7a0650d46c2d8128cdaac0d8f06e97))
+* **work:** time out network git calls; non-interactive ssh ([#1126](https://github.com/trail-openers/pi-rukas/issues/1126)) ([c00aa4b](https://github.com/trail-openers/pi-rukas/commit/c00aa4b0628f3d31e175309f19150b62cb285caf))
+
 ## [0.12.79](https://github.com/trail-openers/pi-rukas/compare/v0.12.78...v0.12.79) (2026-10-11)
 
 
