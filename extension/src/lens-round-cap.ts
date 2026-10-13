@@ -196,12 +196,10 @@ function capWarning(budget: RoundBudget, cap: number, latest: LedgerEntry | unde
   ].join("\n");
 }
 
-function refusal(
-  note: string,
-  verdict: "ROUND_CAP_REACHED" | "REVIEW_INCOMPLETE_STREAK" = "ROUND_CAP_REACHED",
-): LensReviewSummary {
+/** A fail-closed refusal (#1140: the round and streak caps warn instead). */
+function refusal(note: string): LensReviewSummary {
   return {
-    verdict,
+    verdict: "ROUND_CAP_REACHED",
     totalFindings: 0,
     bySeverity: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 },
     lenses: [],

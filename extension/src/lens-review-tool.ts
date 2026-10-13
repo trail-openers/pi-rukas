@@ -133,9 +133,8 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
           }
           // A refusal's note is the whole report (renderSummary), so it is not
           // appended a second time.
-          const refused =
-            summary.verdict === "ROUND_CAP_REACHED" ||
-            summary.verdict === "REVIEW_INCOMPLETE_STREAK";
+          // #1140 — only the fail-closed refusals remain (the streak warns).
+          const refused = summary.verdict === "ROUND_CAP_REACHED";
           const noteAppended = summary.note && !refused ? summary.note : undefined;
           const extra = [noteAppended, admissionNote, unrecordedNote].filter(
             (n): n is string => !!n,

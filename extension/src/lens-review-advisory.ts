@@ -80,7 +80,11 @@ export async function splitCarried(
 ): Promise<CarriedSplit> {
   const carried = recorded?.ok ? (recorded.carried ?? []) : [];
   if (carried.length === 0) return { blocking: [], fields: {} };
-  const list = await changedFiles(cwd ?? process.cwd(), base, head);
+  // A throw is contained like a failed git read: every carried row blocks.
+  const list = await changedFiles(cwd ?? process.cwd(), base, head).catch((err: unknown) => ({
+    ok: false as const,
+    reason: `changed-file check failed: ${(err as Error)?.message ?? String(err)}`,
+  }));
   if (!list.ok) {
     return {
       blocking: [...carried],
