@@ -25,17 +25,40 @@ const git = async (cwd: string, args: string[], timeout = 60_000): Promise<strin
   return stdout.trim();
 };
 
+/** git's stderr when the process left some, else the error's message. */
+function stderrOf(err: unknown): string {
+  if (typeof err === "object" && err !== null && "stderr" in err) {
+    if (typeof err.stderr === "string" && err.stderr.trim()) return err.stderr;
+  }
+  return err instanceof Error ? err.message : String(err);
+}
+
 /** The first non-empty line of git's stderr: the reason, not the "Command failed" header. */
 function firstLine(err: unknown): string {
-  const stderr = (err as { stderr?: unknown }).stderr;
-  const text = typeof stderr === "string" && stderr.trim() ? stderr : (err as Error).message;
   return (
-    text
+    stderrOf(err)
       .split("\n")
       .map((l) => l.trim())
       .find((l) => l.length > 0) ?? "unknown error"
   );
 }
+
+/**
+ * git's ref-not-found exit for `symbolic-ref`: 128 with "is not a symbolic ref"
+ * (the same text a ref that exists but is not symbolic gets).
+ */
+function refNotFound(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    err.code === 128 &&
+    /is not a symbolic ref/.test(stderrOf(err))
+  );
+}
+
+/** Base trees older than this belong to a run that crashed before its `finally` (#1132). */
+const STALE_BASE_MS = 24 * 60 * 60 * 1000;
 
 /** What one /plan run reads, and how that was resolved. */
 export interface PlanBase {
@@ -66,6 +89,22 @@ export async function branchNameProblem(
   } catch (err) {
     if (typeof (err as { code?: unknown }).code === "number") return notUsable;
     return `branch-name check failed (${firstLine(err)})`;
+  }
+}
+
+/**
+ * Remove base trees a crashed run left in `baseRoot` (#1132). Best-effort and
+ * traced: never throws, and never touches `keep`, this run's own tree.
+ */
+async function sweepStaleBases(repoRoot: string, baseRoot: string, keep: string): Promise<void> {
+  const names = await fs.readdir(baseRoot).catch(() => []);
+  for (const name of names) {
+    const dir = path.join(baseRoot, name);
+    if (dir === keep) continue;
+    const stat = await fs.stat(dir).catch(() => undefined);
+    if (!stat || Date.now() - stat.mtimeMs < STALE_BASE_MS) continue;
+    await removeBaseTree(repoRoot, dir);
+    trace(`plan-base-tree: swept a base tree left by an earlier run (${name})`);
   }
 }
 
@@ -112,8 +151,10 @@ export async function openPlanBase(repoRoot: string): Promise<PlanBase> {
     );
     branch = ref.replace(/^origin\//, "");
   } catch (err) {
-    const reason = "origin/HEAD is not set; investigators read the local checkout";
-    trace(`plan-base-tree: ${reason} (${firstLine(err)})`);
+    const reason = refNotFound(err)
+      ? "origin/HEAD is not set; investigators read the local checkout"
+      : `could not read origin/HEAD: ${firstLine(err)}`;
+    trace(`plan-base-tree: ${reason} — reading the checkout`);
     return local(reason);
   }
   const problem = await branchNameProblem(repoRoot, branch);
@@ -155,6 +196,7 @@ export async function openPlanBase(repoRoot: string): Promise<PlanBase> {
     // Registrations left by a run whose directory is already gone.
     await git(repoRoot, ["worktree", "prune"], 10_000).catch(() => undefined);
     dir = path.join(baseRoot, randomBytes(8).toString("hex"));
+    await sweepStaleBases(repoRoot, baseRoot, dir);
     await git(repoRoot, ["worktree", "add", "--detach", dir, sha], 120_000);
   } catch (err) {
     if (dir) await removeBaseTree(repoRoot, dir);

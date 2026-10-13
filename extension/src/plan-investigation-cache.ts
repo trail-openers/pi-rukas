@@ -120,7 +120,8 @@ export function setPlanGitStateFn(fn: GitStateFn | null): void {
  * HEAD and the per-clone cache dir. Undefined when HEAD is unreadable (for
  * example an unborn branch) — caching is then skipped and the run proceeds
  * exactly as it did before this module existed.
- * #1132: the key is the run's origin/<default> SHA; without one there is no key.
+ * #1132: "HEAD" in this comment is the run's origin/<default> SHA, not local HEAD;
+ * the key is that SHA, so without one there is no key.
  */
 export async function resolvePlanGitState(
   repoRoot: string,

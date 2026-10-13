@@ -40,11 +40,7 @@ import {
   getPlanStatFnOverride,
 } from "./plan-driver-seams.ts";
 import { reviewedDigestOf } from "./plan-filing-claim.ts";
-import {
-  openPointsSection,
-  residualGapsSection,
-  settledGapsSection,
-} from "./plan-gap-disclosure.ts";
+import { filedBodyOf, settledGapsSection } from "./plan-gap-disclosure.ts";
 import { type GapGateLoopResult, runGapGateLoop } from "./plan-gaps.ts";
 import { type CarriedCritical, gapGatePrompt, gapGateVerifyPrompt } from "./plan-gate-prompt.ts";
 import {
@@ -117,6 +113,7 @@ async function runPipelineOn(
   // #1043 — the cache lineage at git HEAD. A dry run never READS the investigation
   // cache (it is the thing confirmed); it DROPS the lineage first, so a halting dry
   // run leaves no fileable verdict. Its settled gaps are read before the drop.
+  // #1132: "HEAD" here is origin/<default> (the run's base SHA), not the local HEAD.
   const gitState = await resolvePlanGitState(repoRoot, base);
   const cacheInputs = gitState
     ? { descriptor, context, type, keySha: gitState.keySha, depth }
@@ -416,15 +413,8 @@ async function runPipelineOn(
   // D2: when the cap routed to filing, the spec that gets filed carries the
   // residual disclosure. Append it HERE, before fileIssue, so the single
   // filing pass below sees the final body.
-  // #1132: at the iteration cap the spec is filed with its still-blocking points
-  // listed as open points, so the unresolved state is visible on the issue.
-  const finalBody = [
-    body,
-    residualForDisclosure.length > 0 ? residualGapsSection(residualForDisclosure) : "",
-    openPointsSection(openPoints),
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  // #1132: open points and the base fallback are disclosed in the body too.
+  const finalBody = filedBodyOf(body, residualForDisclosure, openPoints, base.baseFallback);
 
   const resolvedGaps = gapGateEnabled ? gaps : [];
 

@@ -62,6 +62,35 @@ export function openPointsSection(points: PlanGap[]): string {
 }
 
 /**
+ * #1132: the disclosure for a spec drafted from the local checkout because the
+ * origin base could not be read. "" when the run had a base.
+ */
+export function baseFallbackSection(reason: string | undefined): string {
+  if (!reason) return "";
+  return `## Base fallback\n\nThis spec was drafted from the local checkout, not origin/<default>: ${reason}. The investigators read the checkout, so the spec may reflect uncommitted or unpushed local changes.\n`;
+}
+
+/**
+ * The body that gets filed or shown on a dry run: the spec, then each
+ * disclosure section that applies (#1132: open points and the base fallback).
+ */
+export function filedBodyOf(
+  body: string,
+  residual: PlanGap[],
+  openPoints: PlanGap[],
+  baseFallback: string | undefined,
+): string {
+  return [
+    body,
+    residual.length > 0 ? residualGapsSection(residual) : "",
+    openPointsSection(openPoints),
+    baseFallbackSection(baseFallback),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+/**
  * Ceiling on the settled-gaps list rendered into a gate prompt (#1043 review).
  */
 const SETTLED_SECTION_MAX = 10;

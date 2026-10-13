@@ -181,6 +181,32 @@ try {
     (await resolvePlanGitState(solo, soloBase)) === undefined,
     "no origin/HEAD: the cache is skipped (no origin key)",
   );
+
+  // #1132: a symbolic-ref failure that is NOT a missing ref names its real cause.
+  const notARepo = path.join(root, "does-not-exist");
+  const brokenRead = await openPlanBase(notARepo);
+  assert(
+    (brokenRead.baseFallback ?? "").startsWith("could not read origin/HEAD: ") &&
+      !(brokenRead.baseFallback ?? "").includes("is not set"),
+    "an unreadable repo is reported as a read failure, not as origin/HEAD unset",
+  );
+
+  // #1132: a crashed run's base tree (older than 24h) is swept on the next run;
+  // a recent foreign tree and this run's own tree are left alone.
+  const baseRoot = path.join(clone, ".git", "pi-plan-base");
+  await fs.mkdir(baseRoot, { recursive: true });
+  const stale = path.join(baseRoot, "stale-crash");
+  const recent = path.join(baseRoot, "recent-run");
+  await git(clone, ["worktree", "add", "--detach", stale, originV1]);
+  await git(clone, ["worktree", "add", "--detach", recent, originV1]);
+  const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+  await fs.utimes(stale, old, old);
+  const sweepRun = await openPlanBase(clone);
+  held.push(sweepRun);
+  assert(!(await exists(stale)), "a base tree older than 24h from a crashed run is swept");
+  assert(await exists(recent), "a recent base tree from another run is left in place");
+  assert(await exists(sweepRun.readRoot), "the sweeping run keeps its own base tree");
+  await git(clone, ["worktree", "remove", "--force", recent]);
 } finally {
   for (const b of held) await b.release();
   setPlanGitStateFn(null);

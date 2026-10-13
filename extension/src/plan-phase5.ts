@@ -30,10 +30,10 @@ export interface Phase5Result {
  * Phase 5 — file (unless dryRun OR the cap routed to surface). D2: when
  * the cap routed to "surface" (CRITICAL remaining — the CRITICAL-only
  * terminal rule, #664 transposed), do NOT file — surface to the operator. D7: the filing failure is DISCRIMINATED and
- * (#1132: the cap no longer routes to surface. Still-blocking CRITICAL points are
- * filed in the body as open points, so the iteration cap does not prevent filing.)
  * carried on the result; the operator-visible text (plan-tool.ts) surfaces
  * the reason including the forge stderr, without requiring PI_ENSEMBLE_DEBUG.
+ * #1132: the cap no longer routes to surface. Still-blocking CRITICAL points are
+ * filed in the body as open points, so the iteration cap does not prevent filing.
  */
 export async function phase5FilingFailure(args: Phase5Args): Promise<Phase5Result> {
   let issueUrl: string | undefined;

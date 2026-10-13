@@ -1,20 +1,18 @@
 /**
- * plan-draft-conflicts — operator-over-investigation conflict rules for /plan.
+ * plan-draft-conflicts — operator-over-investigation conflict rules for /plan drafting.
  *
  * The operator's lines (ACCEPTANCE CRITERIA, OUT OF SCOPE, Decisions, i.e.
  * the `context param` prior-context entries) are final. An investigation
  * item (edge case, test-surface, out-of-scope, suggested criterion) that
  * contradicts one of them is dropped BEFORE drafting and disclosed, so the
- * gap gate never sees the clash. The same rule is applied to gap-gate
- * reports: a gap that sets an operator line against an investigation line is
- * discarded and disclosed, not counted toward the CRITICAL cap.
+ * drafted spec never carries the clash.
  *
  * Detection is deliberately lexical and conservative: two lines conflict when
  * they share at least three content tokens (the same topic) and exactly one of
  * them carries a negation / exclusion cue (the opposite polarity). Operator
- * lines are never dropped. This heuristic decides ONLY whether an investigation
- * item is drafted: it never decides whether the gap gate blocks or files. A gate
- * CRITICAL is handled by the gate loop (plan-gaps.ts), whatever its text.
+ * lines are never dropped. This runs only while drafting. It never decides
+ * whether the gap gate blocks or files: the gate (plan-gaps.ts, prompt in
+ * plan-gate-prompt.ts) judges the drafted spec on its own terms.
  *
  * Two investigation items that clash are settled by an operator line when that
  * line agrees with one of them and contradicts the other: the contradicted item
