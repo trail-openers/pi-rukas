@@ -193,7 +193,10 @@ export async function rangeAllNonEmpty(
       cwd: tree,
       timeout: GIT_TIMEOUT_MS,
       maxBuffer: 64 * 1024,
-      argv: ["rev-list", `${tipSha}..${treeSha}`],
+      // Three-dot + --right-only is the same set as `tipSha..treeSha` (the
+      // tree's commits not on the tip), written in the same range notation as
+      // every other driver count (#1134).
+      argv: ["rev-list", "--right-only", `${tipSha}...${treeSha}`],
     });
     shas = stdout
       .trim()

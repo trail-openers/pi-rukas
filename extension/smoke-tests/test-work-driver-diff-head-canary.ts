@@ -118,11 +118,19 @@ const readSrc = (name: string) => readFileSync(path.join(SRC, name), "utf8");
 // ---------------------------------------------------------------------------
 
 /** Two-dot ranges over origin refs, in any interpolation form. */
-const TWO_DOT_ORIGIN_RANGE = /origin\/(\$\{[^}]*\}|[\w.-]+)\.\.(?!\.)(origin\/|\$\{[^}]*\}|[\w/.-]+)/;
+// The lookbehind/lookahead keep a three-dot range (`origin/a...origin/b`) from
+// matching as a two-dot one.
+const TWO_DOT_ORIGIN_RANGE =
+  /origin\/(\$\{[^}]*\}|[\w.-]+)(?<!\.)\.\.(?!\.)(origin\/|\$\{[^}]*\}|[\w/.-]+)/;
 
 /**
- * Two-dot origin ranges that are deliberately NOT PR diffs. Each entry is a
- * file that matches the pattern, with the reason it is exempt.
+ * Allow-list of files exempt from the two-dot check, each with its reason.
+ * Empty on purpose: the exempt sites carry no origin ref, so the pattern never
+ * sees them. They are the tip-vs-tip counts `tipSha..HEAD`
+ * (work-driver-lens-fix-reposition-backup.ts) and `tipSha..treeSha`
+ * (work-driver-lens-fix-reposition-queries.ts; #1134 made it
+ * `--right-only tipSha...treeSha`, the same set), and `computeDeltaDiff`'s
+ * `since..head` (test-delta-diff.ts), a distinct two-dot concept on purpose.
  */
 const TWO_DOT_EXEMPT: Record<string, string> = {};
 
