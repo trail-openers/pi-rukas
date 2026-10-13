@@ -212,6 +212,35 @@ export function workCwdRequiredResult(
 }
 
 /**
+ * A fix dispatch that THREW (#1104 r3): the fence's caller check still ran in its
+ * `finally`, so the records are on the ledger write; this result carries the
+ * error. Not approved: nothing was reviewed after the fix.
+ */
+export function fixThrewResult(
+  round: number,
+  err: unknown,
+  state: {
+    start: number;
+    usage: DispatchResult["usage"];
+    lastTranscript: string | undefined;
+    lastModel: string | undefined;
+    rounds: Parameters<typeof toRoundRecords>[0];
+  },
+): DispatchResult {
+  const message = err instanceof Error ? err.message : String(err);
+  return synthesizeResult({
+    ok: false,
+    loopOutcome: "infra-failure",
+    text: `Adversarial fix round ${round} threw: ${message}. The developer dispatch did not complete, so no fresh review ran and this result is not approved.`,
+    ms: Date.now() - state.start,
+    usage: state.usage,
+    transcriptPath: state.lastTranscript,
+    model: state.lastModel,
+    adversarialRounds: toRoundRecords(state.rounds),
+  });
+}
+
+/**
  * A fix round the fence refused to run (#1104): no developer was dispatched.
  * `invalid-input` = the workCwd is not a worktree of the caller's repository;
  * `infra-failure` = the caller-repo fence could not be armed, so the round is

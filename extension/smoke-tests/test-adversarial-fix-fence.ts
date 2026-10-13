@@ -213,10 +213,20 @@ async function main() {
         r1.reason.includes("not a worktree of the calling repository"),
       "T6: a workCwd from an unrelated repository is invalid-input",
     );
+    // A missing path git cannot read is infra (the git error is carried), not caller error.
     const missing = path.join(tmp("t6-missing"), "nope");
     const r2 = await createFixFence({ callerCwd: caller }, []).round(1, missing, fn);
-    assert(!r2.ran && r2.outcome === "invalid-input", "T6: a nonexistent workCwd is invalid-input");
-    assert(!called, "T6: no fix dispatch runs for an invalid workCwd");
+    assert(
+      !r2.ran && r2.outcome === "infra-failure" && r2.reason.includes("could not be read"),
+      "T6: an unreadable (nonexistent) workCwd is infra-failure, carrying the git error",
+    );
+    const plain = tmp("t6-plain");
+    const r5 = await createFixFence({ callerCwd: caller }, []).round(1, plain, fn);
+    assert(
+      !r5.ran && r5.outcome === "invalid-input" && r5.reason.includes("is not a git worktree"),
+      "T6: a real not-a-repository workCwd is invalid-input",
+    );
+    assert(!called, "T6: no fix dispatch runs for an invalid or unreadable workCwd");
 
     const real = worktreeOf(caller, "wt-t6");
     const linkDir = tmp("t6-link");
@@ -276,6 +286,56 @@ async function main() {
       recs.some((r) => r.kind === "violation" && r.text.includes("f.txt")),
       "T7: a content-only rewrite of a dirty caller file is a violation",
     );
+  }
+  // ------------- T9 the shared git dir: hooks/ and config are part of the snapshot
+  {
+    const caller = repo("t9h");
+    const work = worktreeOf(caller, "wt-t9h");
+    const gitDir = git(caller, "rev-parse", "--path-format=absolute", "--git-common-dir").trim();
+    const recs: FenceRecord[] = [];
+    await createFixFence({ callerCwd: caller }, recs).round(1, work, async () => {
+      mkdirSync(path.join(gitDir, "hooks", "sub"), { recursive: true });
+      writeFileSync(path.join(gitDir, "hooks", "sub", "post-x"), "#!/bin/sh\n");
+    });
+    assert(
+      recs.some((r) => r.kind === "violation" && r.text.includes("hooks/sub/post-x")),
+      "T9: a new file in a nested shared hooks/ directory is a violation, named",
+    );
+  }
+  {
+    const caller = repo("t9x");
+    const work = worktreeOf(caller, "wt-t9x");
+    const recs: FenceRecord[] = [];
+    await createFixFence({ callerCwd: caller }, recs).round(1, work, async () => {
+      git(caller, "config", "user.name", "changed-by-round");
+    });
+    assert(
+      recs.some((r) => r.kind === "violation" && r.text.includes("config")),
+      "T9: a change to the shared config is a violation",
+    );
+  }
+  {
+    const caller = repo("t9e");
+    const work = worktreeOf(caller, "wt-t9e");
+    const gitDir = git(caller, "rev-parse", "--path-format=absolute", "--git-common-dir").trim();
+    const recs: FenceRecord[] = [];
+    await createFixFence({ callerCwd: caller }, recs).round(1, work, async () => {
+      writeFileSync(path.join(gitDir, "hooks", "pre-commit.sample"), "edited\n");
+    });
+    assert(
+      recs.some((r) => r.kind === "violation" && r.text.includes("hooks/pre-commit.sample")),
+      "T9: an edit to an existing shared hook is a violation",
+    );
+  }
+  {
+    // Refs and objects are documented as uncovered: a ref write is not a violation.
+    const caller = repo("t9r");
+    const work = worktreeOf(caller, "wt-t9r");
+    const recs: FenceRecord[] = [];
+    await createFixFence({ callerCwd: caller }, recs).round(1, work, async () => {
+      git(caller, "branch", "side-branch");
+    });
+    assert(recs.length === 0, "T9: refs are outside the snapshot (documented, not covered)");
   }
   // ------------------------------------------ T8 status stdout is not capped at 1 MiB
   {

@@ -37,6 +37,8 @@ let reviewerReplies: string[] = [];
 let developerWrite: ((cwd: string) => void) | null = null;
 // How many developer dispatches fail (crash, no verdict) before they succeed.
 let devFailures = 0;
+// The next fix dispatch writes (via developerWrite) and then throws (#1104 r3).
+let devThrow = false;
 const spawnCalls: Array<{ role: string; cwd?: string }> = [];
 const ledgerResults: Array<{ loopOutcome?: string; text: string }> = [];
 
@@ -45,6 +47,11 @@ mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
   spawnSpecialist: async (spec: SpawnSpec) => {
     spawnCalls.push({ role: spec.role, cwd: spec.cwd });
     if (spec.role === "developer") {
+      if (devThrow) {
+        devThrow = false;
+        developerWrite?.(spec.cwd ?? process.cwd());
+        throw new Error("spawn exploded");
+      }
       if (devFailures > 0) {
         devFailures--;
         return { role: "developer", ok: false, text: "", toolUses: [], ms: 1, exitCode: 1 };
@@ -106,6 +113,7 @@ const reset = () => {
   ledgerResults.length = 0;
   developerWrite = null;
   devFailures = 0;
+  devThrow = false;
 };
 
 const callerRepo = newRepo("caller");
@@ -182,7 +190,12 @@ try {
   reviewerReplies = [ISSUES, APPROVED];
   developerWrite = (cwd) => writeFileSync(path.join(cwd, "f.txt"), "one\nfixed\n");
   const c = await runAdversarialLoop(
-    { diff: "diff --git a/f b/f\n+x", context: "fix", workCwd: workRepo, fixFence: { callerCwd: callerRepo } },
+    {
+      diff: "diff --git a/f b/f\n+x",
+      context: "fix",
+      workCwd: workRepo,
+      fixFence: { callerCwd: callerRepo },
+    },
     signal(),
     "job-c",
   );
@@ -206,7 +219,12 @@ try {
     writeFileSync(path.join(callerRepo, "stray.txt"), "wrong place\n");
   };
   const d = await runAdversarialLoop(
-    { diff: "diff --git a/f b/f\n+x", context: "viol", workCwd: workRepo, fixFence: { callerCwd: callerRepo } },
+    {
+      diff: "diff --git a/f b/f\n+x",
+      context: "viol",
+      workCwd: workRepo,
+      fixFence: { callerCwd: callerRepo },
+    },
     signal(),
     "job-d",
   );
@@ -242,7 +260,12 @@ try {
     writeFileSync(path.join(callerRepo, "f.txt"), "dirty rewritten\n");
   };
   const e = await runAdversarialLoop(
-    { diff: "diff --git a/f b/f\n+x", context: "dirty", workCwd: workRepo, fixFence: { callerCwd: callerRepo } },
+    {
+      diff: "diff --git a/f b/f\n+x",
+      context: "dirty",
+      workCwd: workRepo,
+      fixFence: { callerCwd: callerRepo },
+    },
     signal(),
     "job-e",
   );
@@ -261,7 +284,12 @@ try {
   devFailures = 1;
   developerWrite = (cwd) => writeFileSync(path.join(cwd, "f.txt"), "one\nretried\n");
   const f = await runAdversarialLoop(
-    { diff: "diff --git a/f b/f\n+x", context: "retry", workCwd: workRepo, fixFence: { callerCwd: callerRepo } },
+    {
+      diff: "diff --git a/f b/f\n+x",
+      context: "retry",
+      workCwd: workRepo,
+      fixFence: { callerCwd: callerRepo },
+    },
     signal(),
     "job-f",
   );
@@ -282,7 +310,12 @@ try {
   process.chdir(callerRepo);
   developerWrite = (cwd) => writeFileSync(path.join(cwd, "f.txt"), "one\nfixed\n");
   const g = await runAdversarialLoop(
-    { diff: "diff --git a/f b/f\n+x", context: "unreadable", workCwd: workRepo, fixFence: { callerCwd: callerRepo } },
+    {
+      diff: "diff --git a/f b/f\n+x",
+      context: "unreadable",
+      workCwd: workRepo,
+      fixFence: { callerCwd: callerRepo },
+    },
     signal(),
     "job-g",
   );
@@ -307,7 +340,12 @@ try {
   developerWrite = (cwd) => writeFileSync(path.join(cwd, "f.txt"), "one\nfixed\n");
   try {
     const h = await runAdversarialLoop(
-      { diff: "diff --git a/f b/f\n+x", context: "norepo", workCwd: workRepo, fixFence: { callerCwd: notRepo } },
+      {
+        diff: "diff --git a/f b/f\n+x",
+        context: "norepo",
+        workCwd: workRepo,
+        fixFence: { callerCwd: notRepo },
+      },
       signal(),
       "job-h",
     );
@@ -318,6 +356,43 @@ try {
   } finally {
     rmSync(notRepo, { recursive: true, force: true });
   }
+
+  // -------- I. a fix dispatch writes to the caller, then THROWS: the violation survives
+  reset();
+  // G corrupted the caller's index: rebuild it from HEAD before the clean.
+  rmSync(path.join(callerRepo, ".git", "index"), { force: true });
+  git(callerRepo, "reset", "-q");
+  git(callerRepo, "clean", "-fdq");
+  git(callerRepo, "checkout", "-q", "--", "f.txt");
+  reviewerReplies = [ISSUES, APPROVED];
+  devThrow = true;
+  developerWrite = (cwd) => {
+    writeFileSync(path.join(cwd, "f.txt"), "one\nfixed\n");
+    writeFileSync(path.join(callerRepo, "stray.txt"), "wrong place\n");
+  };
+  const i = await runAdversarialLoop(
+    {
+      diff: "diff --git a/f b/f\n+x",
+      context: "throw",
+      workCwd: workRepo,
+      fixFence: { callerCwd: callerRepo },
+    },
+    signal(),
+    "job-i",
+  );
+  assert(i.ok === false, "I: a throwing fix round is not ok");
+  assert(i.loopOutcome === "infra-failure", "I: a throwing fix round is infra-failure");
+  assert(i.text.includes("threw: spawn exploded"), "I: the result carries the error message");
+  assert(
+    i.text.includes("VIOLATION") && i.text.includes("stray.txt"),
+    "I: the caller write made before the throw is reported in the result",
+  );
+  assert(
+    ledgerResults.length === 1 &&
+      ledgerResults[0]?.text.includes("VIOLATION") === true &&
+      ledgerResults[0]?.text.includes("threw: spawn exploded") === true,
+    "I: the ledger write carries both the violation and the error",
+  );
 } finally {
   process.chdir(priorCwd);
   rmSync(workBase, { recursive: true, force: true });

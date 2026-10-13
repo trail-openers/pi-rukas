@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { classifyDispatchOutcome } from "./adversarial-classify.ts";
 import {
   type FenceRecord,
+  type FencedRound,
   type FixFence,
   createFixFence,
   withFixViolations,
@@ -14,6 +15,7 @@ import { type InfraCtx, infraFailureResult, runPhaseWithInfraRetry } from "./adv
 import {
   decideLoopAction,
   fixRefusedResult,
+  fixThrewResult,
   parseVerdict,
   summariseFindings,
   synthesizeResult,
@@ -393,22 +395,30 @@ export async function runAdversarialLoop(
     // #1104 — the fence checks workCwd (a worktree of the caller's repo) before
     // the first fix round, and runs the caller-repo check after every round,
     // even one whose dispatch throws. A refused round dispatches nothing.
-    const fixRun = await fence.round(round, params.workCwd, () =>
-      runPhaseWithInfraRetry(
-        "developer",
-        `round${round}-fix`,
-        buildFixPrompt({
-          findings: verdict.findings,
-          context: params.context,
-          diff,
-          round,
-          issueBody: params.issueBody,
-          priorFindings: [...priorFindings],
-        }),
-        params.workCwd,
-        { runPhase, accumulate, signal },
-      ),
-    );
+    let fixRun: FencedRound<DispatchResult>;
+    try {
+      fixRun = await fence.round(round, params.workCwd, () =>
+        runPhaseWithInfraRetry(
+          "developer",
+          `round${round}-fix`,
+          buildFixPrompt({
+            findings: verdict.findings,
+            context: params.context,
+            diff,
+            round,
+            issueBody: params.issueBody,
+            priorFindings: [...priorFindings],
+          }),
+          params.workCwd,
+          { runPhase, accumulate, signal },
+        ),
+      );
+    } catch (err) {
+      // A throwing dispatch must not lose the fence's records: the ledger write
+      // carries them (the check ran in the fence's finally before this throw).
+      const state = { start, usage, lastTranscript, lastModel, rounds };
+      return ledgerWrite(fixThrewResult(round, err, state));
+    }
     if (!fixRun.ran) {
       const state = { start, usage, lastTranscript, lastModel, rounds };
       return ledgerWrite(fixRefusedResult(fixRun.outcome, fixRun.reason, state));

@@ -17,15 +17,22 @@
  *      approved (`withFixViolations`).
  *   A caller that was never a git repository gets a `note` and no snapshots.
  *
+ * The snapshot also covers the caller's shared git dir (every worktree shares
+ * it): every regular file under `hooks/` and the `config` file. A change there
+ * is a violation too, since a fix round could install a hook that runs later.
+ *
  * Coverage limits, by design: gitignored paths are not covered (status skips
  * them); directories (nested repositories, submodules) and symlinks are
- * reported by name and kind, never by content; only regular files are hashed.
- * Attribution is not verified: any caller-repo change during a round is
- * reported, whoever made it. Writes to paths outside the caller repository are
- * not detected.
+ * reported by name and kind, never by content (a symlink's target is not
+ * followed); only regular files are hashed. Not covered: refs and objects of the
+ * shared git dir, per-worktree `config.worktree`, and any shared-dir path
+ * outside `hooks/` and `config`. Attribution is not verified: any caller-repo
+ * change during a round is reported, whoever made it. Writes to paths outside
+ * the caller repository and its shared git dir are not detected.
  */
 
-import { lstat } from "node:fs/promises";
+import type { Dirent } from "node:fs";
+import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
 import { execp } from "./lens-exec.ts";
 import type { DispatchResult } from "./types.ts";
@@ -104,6 +111,47 @@ async function identify(cwd: string, exec: ExecFn): Promise<Identity> {
   }
 }
 
+/**
+ * Content-hash files in batched `hash-object` calls; one id per path, in order.
+ * A short or long reply is an error, so a partial snapshot can never pass.
+ */
+async function hashFiles(paths: string[], cwd: string, exec: ExecFn): Promise<string[]> {
+  const hashes: string[] = [];
+  for (let i = 0; i < paths.length; i += HASH_BATCH) {
+    const batch = paths.slice(i, i + HASH_BATCH);
+    const out = (await exec("git", { argv: ["hash-object", "--", ...batch], cwd })).stdout;
+    hashes.push(...out.split("\n").filter(Boolean));
+  }
+  if (hashes.length !== paths.length) {
+    throw new Error(`hash-object returned ${hashes.length} ids for ${paths.length} files`);
+  }
+  return hashes;
+}
+
+/**
+ * Regular files in the shared git dir that a fix round must not change: every
+ * file under `hooks/`, and `config`. Missing `hooks/` is no files, not an error.
+ */
+async function sharedGitFiles(commonDir: string): Promise<string[]> {
+  const out = [path.join(commonDir, "config")];
+  const walk = async (dir: string): Promise<void> => {
+    let entries: Dirent[];
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw err;
+    }
+    for (const e of entries) {
+      const abs = path.join(dir, e.name);
+      if (e.isDirectory()) await walk(abs);
+      else out.push(abs);
+    }
+  };
+  await walk(path.join(commonDir, "hooks"));
+  return out;
+}
+
 /** The status column pair marks a deleted path: it has no content to hash. */
 const isDeleted = (line: string): boolean => line.slice(0, 2).includes("D");
 
@@ -156,27 +204,27 @@ async function snapshotCaller(cwd: string, exec: ExecFn): Promise<Snapshot> {
     }
     const live = records.filter((line) => !isDeleted(line));
     const kinds = await Promise.all(live.map((line) => kindOf(path.join(id.top, line.slice(3)))));
-    const files = live.filter((_, i) => kinds[i] === "file").map((line) => line.slice(3));
-    const hashes: string[] = [];
-    for (let i = 0; i < files.length; i += HASH_BATCH) {
-      const batch = files.slice(i, i + HASH_BATCH);
-      const out = (
-        await exec("git", {
-          argv: ["hash-object", "--", ...batch],
-          cwd: id.top,
-        })
-      ).stdout;
-      hashes.push(...out.split("\n").filter(Boolean));
-    }
-    if (hashes.length !== files.length) {
-      throw new Error(`hash-object returned ${hashes.length} ids for ${files.length} files`);
-    }
+    const files = live
+      .filter((_, i) => kinds[i] === "file")
+      .map((line) => path.join(id.top, line.slice(3)));
+    const shared = await sharedGitFiles(id.commonDir);
+    const sharedKinds = await Promise.all(shared.map(kindOf));
+    const sharedFiles = shared.filter((_, i) => sharedKinds[i] === "file");
+    const hashed = await hashFiles([...files, ...sharedFiles], id.top, exec);
+    const hashOf = new Map(
+      [...files, ...sharedFiles].map((p, i): [string, string] => [p, hashed[i] ?? ""]),
+    );
     let k = 0;
-    let h = 0;
     const entries = records.map((line) => {
       if (isDeleted(line)) return `${line}\tdeleted`;
       const kind = kinds[k++];
-      return kind === "file" ? `${line}\t${hashes[h++]}` : `${line}\t${kind}`;
+      const abs = path.join(id.top, line.slice(3));
+      return kind === "file" ? `${line}\t${hashOf.get(abs)}` : `${line}\t${kind}`;
+    });
+    shared.forEach((p, i) => {
+      const label = `shared:${path.relative(id.commonDir, p)}`;
+      const state = sharedKinds[i] === "file" ? hashOf.get(p) : sharedKinds[i];
+      entries.push(`${label}\t${state}`);
     });
     return { kind: "repo", entries };
   } catch (err) {
@@ -215,7 +263,15 @@ async function resolveMode(
     };
   }
   const work = await identify(resolvePath(workCwd), exec);
-  if (work.kind !== "repo") {
+  // Unreadable (missing path, git failure) is infra, carrying the git error;
+  // only a directory git really reports as not-a-repository is caller error.
+  if (work.kind === "unreadable") {
+    return {
+      kind: "refused",
+      reason: `workCwd ${workCwd} could not be read as a git worktree (${work.reason})`,
+    };
+  }
+  if (work.kind === "not-repo") {
     return {
       kind: "invalid",
       reason: `workCwd ${workCwd} is not a git worktree`,
