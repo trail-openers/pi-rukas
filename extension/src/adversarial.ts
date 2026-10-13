@@ -10,7 +10,11 @@ import {
 import { buildLedgerNote } from "./adversarial-ledger-note.ts";
 import { writeAdversarialLedgerEntry } from "./adversarial-ledger.ts";
 import { makeRunPhase } from "./adversarial-phase.ts";
-import { buildAdversarialPrompt, buildFixPrompt } from "./adversarial-prompts.ts";
+import {
+  type SiblingScope,
+  buildAdversarialPrompt,
+  buildFixPrompt,
+} from "./adversarial-prompts.ts";
 import { type InfraCtx, infraFailureResult, runPhaseWithInfraRetry } from "./adversarial-retry.ts";
 import {
   decideLoopAction,
@@ -104,6 +108,13 @@ export async function runAdversarialLoop(
      * reviews keep non-terminal routing (ISSUES_FOUND → develop fix pass).
      */
     reportOnlyTerminal?: boolean;
+    /**
+     * #1137 — the workstream scope the review is judged within. Present only
+     * on the per-workstream driver path (N>1 fan-out); absent on N=1 and on
+     * the `adversarial_loop` tool path, where the whole issue is the scope
+     * and the prompt is byte-identical to the pre-#1137 one.
+     */
+    scope?: { own?: SiblingScope; siblings: readonly SiblingScope[] };
     /**
      * #1104 — the tool path's caller-repo fence. Set ONLY at the tool boundary
      * (`adversarial-tool.ts`) with the calling process's cwd; the /work driver
@@ -314,6 +325,8 @@ export async function runAdversarialLoop(
         issueBody: params.issueBody,
         // #1040 — comments this round's diff removed, for the reviewer to judge.
         commentEvidence: renderCommentEvidence(lastComments),
+        // #1137 — scope the review to this workstream (N>1 only; absent on N=1).
+        ...(params.scope !== undefined ? { scope: params.scope } : {}),
       }),
       params.workCwd,
       { runPhase, accumulate, signal },

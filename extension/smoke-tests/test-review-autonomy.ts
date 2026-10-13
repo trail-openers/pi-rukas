@@ -1,9 +1,11 @@
 #!/usr/bin/env bun
 /**
- * #1154 — review autonomy: a tool-path reportOnly review's ledger row feeds the
- * merge guard. The adversarial row is derived from the REAL runAdversarialLoop
- * tool-path result (reportOnlyTerminal), then driven through the real merge
- * guard hook with two lens shapes:
+ * #1154 — review autonomy: a tool-path reportOnly review's verdict feeds the
+ * merge guard. The verdict comes from the REAL runAdversarialLoop tool-path
+ * result (reportOnlyTerminal); the test converts it to a ledger row itself
+ * (passed = adversarialPassed(result), fixed patchId). The ledger writer is NOT
+ * exercised here, so the row shape is the test's, not the writer's. That row is
+ * then driven through the real merge guard hook with two lens shapes:
  *
  *   - strict: the lens row is passed:true → merge allowed.
  *   - round-cap (#973): the lens row is ISSUES_FOUND at the cap with no
@@ -73,7 +75,10 @@ const HEAD = "a".repeat(40);
 const TARGET_HEAD = { ...TARGET, headOid: HEAD };
 const BRANCH = TARGET.headBranch;
 
-/** The adversarial ledger row a tool-path reportOnly review writes. */
+/**
+ * Runs a tool-path reportOnly review and returns the ledger row built from its
+ * verdict. The row is hand-built here, not read back from the ledger writer.
+ */
 async function toolRow(text: string): Promise<LedgerEntry> {
   reply = text;
   const result = await runAdversarialLoop(

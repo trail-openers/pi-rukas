@@ -133,3 +133,45 @@ export function execFailing(match: string): NonNullable<DriverContext["verifyExe
     return realExec(cmd, { cwd: opts?.cwd, maxBuffer: opts?.maxBuffer });
   };
 }
+
+/**
+ * #1137 — a two-workstream (docs + code) state with a pending fix for the
+ * DOCS workstream. The docs workstream is declared on `b.txt` (a non-source,
+ * docs-style path) and the code sibling on `a.txt`; the issue body carries a
+ * criterion owned only by the code sibling. Used to assert the per-workstream
+ * adversarial prompt scopes the docs review and lists the sibling's criteria
+ * as out of scope.
+ */
+export function twoWorkstreamState(
+  dir: string,
+  findings = "b.txt: document the change",
+): WorkState {
+  const base = git(dir, "rev-parse HEAD").trim();
+  const s = singleState(dir, [
+    { kind: "adversarial-round", at: 1, round: 1, status: "ISSUES_FOUND", verdictParsed: true },
+    { kind: "adversarial-fix-requested", at: 2, workstreamId: "docs", round: 1, findings },
+  ]);
+  return {
+    ...s,
+    pipelineState: {
+      ...s.pipelineState,
+      baseSha: base,
+      worktrees: { docs: dir, code: dir },
+      workstreams: {
+        docs: {
+          id: "docs",
+          scope: "document the change in b.txt",
+          paths: ["b.txt"],
+          outOfScope: ["a.txt"],
+        },
+        code: {
+          id: "code",
+          scope: "implement the feature in a.txt",
+          paths: ["a.txt"],
+          outOfScope: ["b.txt"],
+        },
+      },
+      plumbReports: [],
+    },
+  };
+}
