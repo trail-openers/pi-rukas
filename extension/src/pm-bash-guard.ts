@@ -68,10 +68,23 @@ export function registerPmBashGuard(pi: ExtensionAPI): void {
     // here exactly as they block under strict-mode headless resolution.
     if (verdict === "allow") return;
     trace(`pm-bash-guard: BLOCKED PM bash (mode-independent) — ${command}`);
-    return {
-      block: true,
-      reason:
-        'PM may only run bash commands on its agents.json allowlist (or none matched — including injection chains like "&&", "|", ";" and backticks). This command is not on the list. Dispatch implementation and git/mutation work to specialists instead (dispatch_specialist to ops for git and forge-CLI (gh/glab) mutations, developer for code); only allowlisted read-only commands may run directly.',
-    };
+    return { block: true, reason: pmBashRefusal(verdict) };
   });
+}
+
+/**
+ * Why a PM bash call was refused. `null` from the matcher means the command
+ * carries a shell operator outside quotes (`&&`, `;`, `|`, a redirect,
+ * backticks, `$(…)`): the allowlist matches ONE command, so a compound is
+ * never matched — even when every part of it is a read-only command that
+ * would pass alone. The old text called that an "injection chain", which sent
+ * a PM (and the operator reading the log) looking for an attack in
+ * `git status && git log`, and did not say that the same reads work one at a
+ * time (#1233).
+ */
+export function pmBashRefusal(verdict: string | null): string {
+  if (verdict === null) {
+    return "Refused: PM bash runs ONE allowlisted command per call, and this one chains, pipes or redirects (`&&`, `;`, `|`, `>`, backticks, `$(…)`). A compound command is never matched against the allowlist, even when every part is read-only. Run each part as its own bash call — for another directory use `git -C <dir> …` rather than `cd <dir> && …` — and dispatch anything that mutates to a specialist (dispatch_specialist: ops for git and forge-CLI (gh/glab) mutations, developer for code).";
+  }
+  return "Refused: this command is not on the PM bash allowlist (agents.json). PM may run only its allowlisted read-only commands directly. Dispatch implementation and git/mutation work to specialists instead (dispatch_specialist to ops for git and forge-CLI (gh/glab) mutations, developer for code).";
 }
