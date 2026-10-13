@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { classifyDispatchOutcome } from "./adversarial-classify.ts";
-import { beginFixGuard, withFixViolations } from "./adversarial-fix-guard.ts";
+import { guardFixRound, withFixViolations } from "./adversarial-fix-guard.ts";
 import { buildLedgerNote } from "./adversarial-ledger-note.ts";
 import { writeAdversarialLedgerEntry } from "./adversarial-ledger.ts";
 import { buildAdversarialPrompt, buildFixPrompt } from "./adversarial-prompts.ts";
@@ -443,27 +443,26 @@ export async function runAdversarialLoop(
       const state = { start, usage, lastTranscript, lastModel, rounds };
       return ledgerWrite(workCwdRequiredResult(round, verdict, state));
     }
-    const fixGuard = await beginFixGuard(params, fixViolations);
-
-    const fix = await runPhaseWithInfraRetry(
-      "developer",
-      `round${round}-fix`,
-      buildFixPrompt({
-        findings: verdict.findings,
-        context: params.context,
-        diff,
-        round,
-        issueBody: params.issueBody,
-        priorFindings: [...priorFindings],
-      }),
-      params.workCwd,
-      { runPhase, accumulate, signal },
+    const fix = await guardFixRound(params, fixViolations, round, () =>
+      runPhaseWithInfraRetry(
+        "developer",
+        `round${round}-fix`,
+        buildFixPrompt({
+          findings: verdict.findings,
+          context: params.context,
+          diff,
+          round,
+          issueBody: params.issueBody,
+          priorFindings: [...priorFindings],
+        }),
+        params.workCwd,
+        { runPhase, accumulate, signal },
+      ),
     );
     // Record what this round asked for, so the next fixer does not undo it.
     priorFindings.push(
       `Round ${round} (${verdict.status}): ${summariseFindings(verdict.findings)}`,
     );
-    await fixGuard(round);
     const fixCls = classifyDispatchOutcome(fix);
     if (fixCls.cause !== "success") {
       return ledgerWrite(infraFailureResult(round, "fix", fix, fixCls, infraCtxNow()));

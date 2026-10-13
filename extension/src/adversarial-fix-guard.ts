@@ -144,6 +144,25 @@ export async function beginFixGuard(
 }
 
 /**
+ * Run one fix round under the caller-repo fence. The check runs in `finally`,
+ * so a fix dispatch that throws still has its caller-repo writes recorded.
+ */
+export async function guardFixRound<T>(
+  opts: { guardFixRounds?: boolean; workCwd?: string; callerCwd?: string },
+  violations: string[],
+  round: number,
+  fn: () => Promise<T>,
+  exec: ExecFn = execp,
+): Promise<T> {
+  const check = await beginFixGuard(opts, violations, exec);
+  try {
+    return await fn();
+  } finally {
+    await check(round);
+  }
+}
+
+/**
  * Prefix a result's text with any recorded violations (the ledger sees the same
  * text). A VIOLATION (a write outside workCwd) also fails the result: callers
  * keying on `ok` must not read a run that breached the fence as clean. Notes

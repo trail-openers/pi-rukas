@@ -23,7 +23,7 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
     name: "adversarial_loop",
     label: "Adversarial Loop",
     description:
-      "Async adversarial gate: review → developer fix → re-review, up to 3 rounds. Returns a job handle immediately; the final verdict (APPROVED or REJECTED + findings) arrives as an [ensemble:async] message. End your turn after dispatching. `reportOnly: true` runs exactly one review: no developer dispatch, no file changes, verdict recorded as usual. Otherwise a round that needs a fix REQUIRES `workCwd` (the worktree fixes are applied in) — without it the loop stops after the verdict with an error naming workCwd, dispatching no developer. Fix developers run with cwd = workCwd; changes to the calling repository during a fix round are reported as a violation (writes elsewhere are not detected).",
+      "Async adversarial gate: review → developer fix → re-review, up to 3 rounds. Returns a job handle immediately; the final verdict (APPROVED or REJECTED + findings) arrives as an [ensemble:async] message. End your turn after dispatching. `reportOnly: true` runs exactly one review: no developer dispatch, no file changes, verdict recorded as usual. Otherwise a round that needs a fix REQUIRES `workCwd` (the worktree fixes are applied in) — without it the loop stops after the verdict with an error naming workCwd, dispatching no developer. Fix developers run with cwd = workCwd. Changes to the calling repository during a fix round are reported as a VIOLATION and fail the result (`ok: false`) — including unrelated edits you make in that repo while the round runs, since attribution is not verified, so do not edit the calling repo during a fix round. Writes to other paths are not detected.",
     parameters: Type.Object({
       diff: Type.Optional(
         Type.String({
@@ -49,7 +49,7 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
       workCwd: Type.Optional(
         Type.String({
           description:
-            "Worktree/repo path where developer applies fixes and `git diff <base>...<head>` runs (defaults to process cwd). Required before any fix round (not needed with reportOnly).",
+            "Worktree/repo path where `git diff <base>...<head>` runs (defaults to process cwd). Fixes are applied here, so a fix round REQUIRES an explicit workCwd (not needed with reportOnly); without it the loop stops after the verdict with an error.",
         }),
       ),
       reportOnly: Type.Optional(
