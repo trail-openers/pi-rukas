@@ -56,10 +56,10 @@ function makeState(issue: number, status: "merged" | "handoff" | "aborted") {
 }
 
 function makeCtx(
-  pi: TerminalDeliveryCtx["host"],
+  host: TerminalDeliveryCtx["host"],
   issue = 808,
 ): TerminalDeliveryCtx {
-  return { repoRoot: "/repo", issue, host: pi };
+  return { repoRoot: "/repo", issue, host };
 }
 
 // ---------------------------------------------------------------------------

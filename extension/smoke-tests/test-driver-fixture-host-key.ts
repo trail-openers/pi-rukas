@@ -30,7 +30,7 @@ function assert(cond: boolean, msg: string) {
 
 // Matches `pi:` (key) and `pi,` / `pi }` (shorthand key). Not `const pi =`,
 // `piSessionHost`, or a value position (`host: pi,`), which is `(?<!:\s*)`.
-const PI_KEY = /(^|[{,(\s])(?<!:\s*)pi(\s*:\s|\s*,|\s*\})/;
+const PI_KEY = /(^|[{,(\s])(?<!:\s*)pi(\s*:|\s*,|\s*\})/;
 const WINDOW = 4;
 
 /** Line numbers (1-based) where a `pi:` key sits in a DriverContext-shaped literal. */
@@ -46,7 +46,7 @@ function staleHostKeyLines(source: string): number[] {
     const lo = Math.max(0, i - WINDOW);
     const hi = Math.min(lines.length, i + WINDOW + 1);
     const near = lines.slice(lo, hi).join("\n");
-    if (/\brepoRoot:/.test(near) && /\bissue:/.test(near)) hits.push(i + 1);
+    if (/\brepoRoot\s*[:,}]/.test(near) && /\bissue\s*[:,}]/.test(near)) hits.push(i + 1);
   });
   return hits;
 }
@@ -78,6 +78,13 @@ assert(staleHostKeyLines(VALUE_POS).length === 0, "detector ignores `host: pi` v
 assert(
   staleHostKeyLines(DESTRUCT).length === 0,
   "detector ignores a `const { pi } =` destructuring binding",
+);
+const UNSPACED = "const ctx = {\n  pi:fake,\n  repoRoot:dir,\n  issue:1,\n} as unknown as DriverContext;";
+const SHORTHAND_CTX = "const ctx = {\n  pi,\n  repoRoot,\n  issue\n} as unknown as DriverContext;";
+assert(staleHostKeyLines(UNSPACED).length === 1, "detector flags unspaced `pi:fake,` key");
+assert(
+  staleHostKeyLines(SHORTHAND_CTX).length === 1,
+  "detector flags shorthand `pi,` with shorthand `repoRoot,` / `issue` context",
 );
 
 const dir = path.join(import.meta.dir);
