@@ -120,7 +120,7 @@ export interface DispatchResult {
    * verdict exists (must route through the dispatch-failure/retry machinery,
    * never be read as findings).
    */
-  loopOutcome?: "approved" | "rejected" | "infra-failure";
+  loopOutcome?: "approved" | "rejected" | "infra-failure" | "invalid-input";
   /**
    * #485 — the reviews the loop actually ran, with each round's parsed
    * verdict (or its parse failure), plus the total rounds executed when the

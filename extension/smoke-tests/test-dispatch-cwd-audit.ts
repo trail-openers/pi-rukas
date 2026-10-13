@@ -283,7 +283,7 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
     "work-develop-run.ts": 2, // developer + speculative explore (dependents go through runOneWorkstream)
     "work-driver-converge-gate.ts": 1, // the corrective re-dispatch
     "work-driver-lens.ts": 1, // the lens-fix runSingleDispatch (the review is an exec)
-    "adversarial.ts": 1, // runPhase's inner spawn — cwd threaded by the fan-out
+    "adversarial-phase.ts": 1, // makeRunPhase's inner spawn — cwd threaded by the fan-out
     "lens-review-child.ts": 1, // the lens child — cwd: runOpts.cwd, set by the lens review seam
     "work-driver-explore-dispatch.ts": 1, // runExplore (the integration-point read, no cwd)
     "work-driver-commit-fallback.ts": 1, // #861 — the ops-fallback commit-pr dispatch, pinned to the integrate worktree (cwd: integratePath)
