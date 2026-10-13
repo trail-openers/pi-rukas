@@ -1,14 +1,8 @@
 #!/usr/bin/env bun
 /**
- * #398 — what the handoff actually says to the operator. **No test anywhere
- * asserted on rendered handoff content**, which is why this shipped:
- * `intent-park` inherited a `developer-timeout` recovery block and told the
- * operator (live, #337) to retry a timeout that never happened and run
- * `git push -u origin (branch not captured)` — a placeholder in a command.
- *
- * The `&&` assertions are not cosmetic: these lines land in the Pi chat, and
- * the permission matcher cannot wildcard a chained shape, so every unique
- * chain re-prompts the operator.
+ * #398 — what the handoff actually says to the operator. The `&&` assertions
+ * are not cosmetic: these lines land in the Pi chat, and the permission
+ * matcher cannot wildcard a chained shape.
  */
 
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
@@ -65,9 +59,7 @@ for (const [name, render] of [
   ["markdown", (s: WorkState) => renderHandoffMarkdown(s, REPO)],
 ] as const) {
   const out = render(intentParkState());
-
   // ---- the four things the #337 handoff got wrong
-
   assert(!/git push/.test(out), `${name}: no 'git push' — the cycle never created a branch`);
   assert(
     !/\(branch not captured\)/.test(out.replace(/\*\*Branch\*\*:[^\n]*/g, "")),
@@ -81,18 +73,14 @@ for (const [name, render] of [
     !/keep the worktree changes|keep worktree/.test(out),
     `${name}: does not offer to keep worktree changes that do not exist`,
   );
-
   // ---- and what it should say instead
-
   assert(/intent resolution/i.test(out), `${name}: says the cycle halted at intent resolution`);
   assert(
     /add acceptance criteria|concrete description/i.test(out),
     `${name}: carries parkAction's text for the recorded reason`,
   );
   assert(/spec\.txt/.test(out), `${name}: points at the resolver's own reasoning`);
-
   // ---- no chained shell commands anywhere in the rendered output
-
   const shellLines = out
     .split("\n")
     .filter((l) => /^\s*(#\s)?\s*(git|gh|rm|export|cat|\/work)\b/.test(l.trim()));
@@ -107,8 +95,7 @@ for (const [name, render] of [
   );
 }
 
-// ------------------------------------- the park reason reaches the action
-
+// the park reason reaches the action
 {
   const a = renderHandoffUserMessage(intentParkState("too-large"), REPO, `${REPO}/tmp`);
   const b = renderHandoffUserMessage(intentParkState("already-implemented"), REPO, `${REPO}/tmp`);
@@ -117,8 +104,7 @@ for (const [name, render] of [
   assert(a !== b, "different park reasons produce different handoffs");
 }
 
-// -------------------------- a real branch still gets the takeover commands
-
+// a real branch still gets the takeover commands
 {
   const s = intentParkState();
   s.pipelineState.branchName = "feature/issue-337-x";
@@ -142,12 +128,7 @@ for (const [name, render] of [
   );
 }
 
-// #500 — commit-pr-incomplete-consolidation with recorded repoRoot state:
-// the live #481 cycle left repoRoot with two UU paths and eight staged
-// files, and the pre-#500 handoff rendered recovery commands that assumed a
-// clean tree. The fixture's eventLog carries the ops-fallback plumb-report
-// so the "hedge rendered" assertion below is unconditional.
-/** A cycle that parked at commit-pr with a conflicted repoRoot. */
+// #500 — commit-pr-incomplete-consolidation with recorded repoRoot state.
 function commitPrConflictedState(): WorkState {
   return {
     schemaVersion: 1,
@@ -204,7 +185,6 @@ function commitPrConflictedState(): WorkState {
   const s = commitPrConflictedState();
   const md = renderHandoffMarkdown(s, REPO);
   const chat = renderHandoffUserMessage(s, REPO, `${REPO}/tmp/issue-481`);
-
   // The handoff must name the unmerged paths.
   assert(
     md.includes("extension/src/worktree-provision.ts") &&
@@ -218,8 +198,6 @@ function commitPrConflictedState(): WorkState {
   );
 
   // The handoff must carry a clearing command (reset --hard or checkout --theirs).
-  // The chat renderer prefixes commands with `git -C <repoRoot>`, so the
-  // regex must allow for that prefix between `git` and the subcommand.
   const clearingCmd = /git (?:-C \S+ )?(?:reset --hard|checkout --theirs)/;
   assert(clearingCmd.test(md), "markdown: carries a clearing command for the conflicted state");
   assert(clearingCmd.test(chat), "chat: carries a clearing command for the conflicted state");
@@ -230,11 +208,9 @@ function commitPrConflictedState(): WorkState {
     "markdown: states the recorded branch",
   );
   assert(chat.includes("feature/issue-481-worktree-provision"), "chat: states the recorded branch");
-
   // The staged count must be present.
   assert(/8 staged|staged-but-uncommitted: 8/.test(md), "markdown: states the staged count");
   assert(/8 staged|staged-but-uncommitted: 8/.test(chat), "chat: states the staged count");
-
   // The recovery commands must be valid against the conflicted state:
   // the unmerged-paths warning must appear before the git apply commands.
   assert(
@@ -257,8 +233,7 @@ function commitPrConflictedState(): WorkState {
     "markdown: renders the plumb-report hedge into the handoff body",
   );
 
-  // No `&&`-chained shell commands anywhere. The recovery's `|` pipes are
-  // by design (one pipeline command, not a re-prompting `&&` chain).
+  // No `&&`-chained shell commands anywhere.
   for (const [name, out] of [
     ["markdown", md],
     ["chat", chat],
@@ -271,8 +246,7 @@ function commitPrConflictedState(): WorkState {
       chained.length === 0,
       `${name} (#500): no &&-chained commands (${chained[0]?.trim() ?? "none"})`,
     );
-    // Every piped shell line must be the expected pipeline shape (the
-    // exemption must not be vacuous), and shell lines must exist at all.
+    // Every piped shell line must be the expected pipeline shape.
     const pipeLines = shellLines.filter((l) => l.includes("|"));
     assert(
       pipeLines.every((l) => /git (?:-C \S+ )?diff[^|]*\|[^|]*git (?:-C \S+ )?apply/.test(l)),
@@ -286,10 +260,8 @@ function commitPrConflictedState(): WorkState {
 }
 
 // #500 (clean-tree variant) + #539 (the "tree is clean" lie): zero unmerged,
-// zero staged, 12 untracked leftovers (the exact #533/#534 shape) must NOT
-// render the clean framing — name the count, order `git status` first, warn
-// the paths may belong to another cycle, commit ONLY the patch paths. The
-// zero-entries variant must still say clean. Both surfaces.
+// zero staged, 12 untracked leftovers must NOT render the clean framing.
+// Both surfaces. The zero-entries variant must still say clean.
 {
   const variants = [
     { totalEntries: 0, expectClean: true, tag: "clean root" },
@@ -299,7 +271,10 @@ function commitPrConflictedState(): WorkState {
     const s = commitPrConflictedState();
     s.pipelineState.commitPrRoot = {
       branch: "feature/issue-481-worktree-provision",
-      unmergedPaths: [], stagedCount: 0, totalEntries: v.totalEntries, capturedAt: Date.now(),
+      unmergedPaths: [],
+      stagedCount: 0,
+      totalEntries: v.totalEntries,
+      capturedAt: Date.now(),
     };
     const outs = [
       ["markdown", renderHandoffMarkdown(s, REPO)],
@@ -308,9 +283,15 @@ function commitPrConflictedState(): WorkState {
     for (const [name, out] of outs) {
       if (v.expectClean) {
         assert(/clean|as-is/.test(out), `${name} (${v.tag}): says the tree is clean`);
-        assert(!/unmerged paths \(\d+\)/.test(out), `${name} (${v.tag}): does not claim unmerged paths`);
+        assert(
+          !/unmerged paths \(\d+\)/.test(out),
+          `${name} (${v.tag}): does not claim unmerged paths`,
+        );
       } else {
-        assert(!/The tree is clean|apply as-is/.test(out), `${name} (${v.tag}): does NOT claim the tree is clean`);
+        assert(
+          !/The tree is clean|apply as-is/.test(out),
+          `${name} (${v.tag}): does NOT claim the tree is clean`,
+        );
         assert(/NOT clean|not clean/i.test(out), `${name} (${v.tag}): says not clean`);
         assert(/12 untracked/.test(out), `${name} (${v.tag}): names the untracked count (12)`);
         assert(/git status/.test(out), `${name} (${v.tag}): orders a git status first`);
@@ -318,7 +299,10 @@ function commitPrConflictedState(): WorkState {
           /another cycle/.test(out) && /\.pi\/work-state\//.test(out),
           `${name} (${v.tag}): warns the paths may belong to another cycle (check .pi/work-state/)`,
         );
-        assert(/ONLY the applied patch paths/.test(out), `${name} (${v.tag}): recovery commits ONLY the applied patch paths`);
+        assert(
+          /ONLY the applied patch paths/.test(out),
+          `${name} (${v.tag}): recovery commits ONLY the applied patch paths`,
+        );
       }
     }
   }
@@ -353,10 +337,7 @@ function commitPrConflictedState(): WorkState {
     ["markdown", renderHandoffMarkdown(s, REPO)],
     ["chat", renderHandoffUserMessage(s, REPO, `${REPO}/tmp/issue-481`)],
   ] as const) {
-    assert(
-      /inspection failed/.test(out),
-      `${name} (inspection failed): says the inspection failed`,
-    );
+    assert(/inspection failed/.test(out), `${name} (inspection failed): says the inspection failed`);
   }
   assert(
     /git status/.test(renderHandoffMarkdown(s, REPO)),
@@ -365,20 +346,13 @@ function commitPrConflictedState(): WorkState {
 }
 
 // #499 — the lossless consolidation recipe reaches BOTH handoff surfaces.
-// `git diff HEAD` omits untracked files, so a workstream that created a NEW
-// file is lost when an operator follows the in-chat recipe; #483's
-// workstream had created a 204-line test file only `git status --porcelain`
-// would have surfaced. Both surfaces must stage first (`add -A`), diff the
-// staged tree and apply losslessly, with no bare `diff HEAD |` pipeline.
 {
   const s = commitPrConflictedState();
-  // ONE missing workstream: the recipe assertions count occurrences, so one
-  // workstream keeps the arithmetic unambiguous.
+  // ONE missing workstream: the recipe assertions count occurrences.
   s.pipelineState.incompleteConsolidation = [
     { id: "default", paths: ["extension/src/worktree-provision.ts (new)"] },
   ];
-  // Clean repoRoot so step 1b's conflicted-tree block does not muddy the
-  // lossless-recipe check.
+  // Clean repoRoot so the conflicted-tree block does not muddy the check.
   s.pipelineState.commitPrRoot = {
     branch: "feature/issue-481-worktree-provision",
     unmergedPaths: [],
@@ -389,48 +363,45 @@ function commitPrConflictedState(): WorkState {
 
   const md = renderHandoffMarkdown(s, REPO);
   const chat = renderHandoffUserMessage(s, REPO, `${REPO}/tmp/issue-481`);
-  // The worktree-qualified suffix common to both surfaces (markdown renders
-  // cwd-relative `git -C .worktrees/…`; chat renders the absolute path).
+  // The worktree-qualified suffix common to both surfaces.
   const wtSuffix = `.worktrees/issue-${s.issue}-default`;
   for (const [name, out] of [
     ["markdown", md],
     ["chat", chat],
   ] as const) {
-    // 1. No bare `diff HEAD |` pipeline — the lossy form that omits
-    //    untracked files (comments MENTIONING it are fine; this targets the
-    //    command form).
+    // 1. No bare `diff HEAD |` pipeline (the lossy form).
     assert(!/diff HEAD\s*\|/.test(out), `${name} (#499): no bare 'diff HEAD |' pipeline`);
-    // 2. The recipe stages BEFORE diffing: `git add -A` in the missing
-    //    workstream, then `git diff --cached --binary` piped to `git apply`
-    //    — the lossless form.
-    assert(out.includes(`${wtSuffix} add -A`), `${name} (#499): stages untracked files first — 'add -A' in the worktree`);
-    assert(out.includes(`${wtSuffix} diff --cached --binary`), `${name} (#499): diffs the staged tree, not HEAD`);
+    // 2. The recipe stages BEFORE diffing.
+    assert(
+      out.includes(`${wtSuffix} add -A`),
+      `${name} (#499): stages untracked files first — 'add -A' in the worktree`,
+    );
+    assert(
+      out.includes(`${wtSuffix} diff --cached --binary`),
+      `${name} (#499): diffs the staged tree, not HEAD`,
+    );
     assert(
       /diff --cached --binary\s*\|\s*git (?:-C \S+ )?apply --3way --binary --index/.test(out),
       `${name} (#499): applies the staged diff losslessly (--3way --binary --index)`,
     );
-    // 3. The recipe appears exactly once — one missing workstream, one
-    //    recipe. Prevents a renderer from quietly dropping one surface.
+    // 3. The recipe appears exactly once.
     const addCount = out.split(`${wtSuffix} add -A`).length - 1;
     assert(addCount === 1, `${name} (#499): the add step appears exactly once (got ${addCount})`);
     // 4. Non-vacuity: the recovery block still carries the apply command.
     assert(/git (?:-C \S+ )?apply/.test(out), `${name} (#499): ...and there IS an apply step`);
   }
-  // 5. The surfaces agree on the recipe (prefixes legitimately differ —
-  //    chat is `git -C <repoRoot>`, markdown is cwd-relative).
+  // 5. The surfaces agree on the recipe.
   const recipe = (md.match(/\.worktrees[^\n]*add -A[^\n]*/g) ?? [])[0] ?? "";
   assert(
-    recipe.includes("add -A") && (chat.match(/\.worktrees[^\n]*add -A[^\n]*/g) ?? [])[0]?.includes("add -A"),
-    "#499: both surfaces stage before diffing (chat + markdown agree on the add step)",
+    recipe.includes("add -A") &&
+      (chat.match(/\.worktrees[^\n]*add -A[^\n]*/g) ?? [])[0]?.includes("add -A"),
+    "#499: both surfaces stage before diffing",
   );
 }
 
 // #848 — the bug the two renderers disagreed on: after a fence flip, the
 // branches-converged verdict is FAIL-with-reason while every branch-completed
-// event is still ok:true (the flip replaces the converged event, never the
-// per-branch events). Both surfaces must show the identical "FAIL — <reason>"
-// line from the SAME shared verdict source; the fallback (no branches-converged
-// event at all) must agree too.
+// event is still ok:true. Both surfaces must show the identical "FAIL — <reason>".
 {
   const FENCE = "task-a: FAIL — fence violation: src/main.rs (declared by task-d)";
   const fenceState = (dropConverged = false): WorkState => {
@@ -444,7 +415,9 @@ function commitPrConflictedState(): WorkState {
         ? []
         : [
             {
-              kind: "branches-converged" as const, step: "develop" as const, at: 5,
+              kind: "branches-converged" as const,
+              step: "develop" as const,
+              at: 5,
               verdicts: [
                 { id: "task-a", ok: false, reason: "fence violation: src/main.rs (declared by task-d)" },
                 { id: "task-b", ok: true },
@@ -456,32 +429,41 @@ function commitPrConflictedState(): WorkState {
     return s;
   };
   const scratch = `${REPO}/tmp/issue-848`;
-  const render = (s: WorkState): [string, string] => [renderHandoffMarkdown(s, REPO), renderHandoffUserMessage(s, REPO, scratch)];
+  const render = (s: WorkState): [string, string] => [
+    renderHandoffMarkdown(s, REPO),
+    renderHandoffUserMessage(s, REPO, scratch),
+  ];
 
-  // 1-3. The fence flip: both surfaces show the identical "FAIL — <reason>"
-  //      line (the markdown surface used to say task-a: ok), no stale "ok",
-  //      the clean workstream stays ok, and the chat header carries the ratio.
+  // 1-3. The fence flip: both surfaces show the identical "FAIL — <reason>".
   const [md, chat] = render(fenceState());
   assert(
-    md.includes(FENCE) && chat.includes(FENCE) && !md.includes("- task-a: ok") && !chat.includes("  task-a: ok"),
+    md.includes(FENCE) &&
+      chat.includes(FENCE) &&
+      !md.includes("- task-a: ok") &&
+      !chat.includes("  task-a: ok"),
     "both: the fence-flipped verdict shows as 'FAIL — <reason>' with no stale 'ok'",
   );
   assert(
-    md.includes("- task-b: ok") && chat.includes("task-b: ok") && chat.includes("Workstream verdicts (develop fanout, 1/2 ok):"),
+    md.includes("- task-b: ok") &&
+      chat.includes("task-b: ok") &&
+      chat.includes("Workstream verdicts (develop fanout, 1/2 ok):"),
     "both: the clean workstream stays ok; chat header carries the 1/2 ratio",
   );
   assert(md.includes("### Workstream verdicts (Step 4 fanout)"), "markdown: section header present");
 
-  // 4-5. Fallback: no branches-converged event at all → both surfaces fall
-  //      back to the branch-completed events (today's behaviour), identically;
-  //      a failed branch renders its `error` tail as the "FAIL — <reason>".
+  // 4-5. Fallback: no branches-converged event → both surfaces fall back.
   const [md2, chat2] = render(fenceState(true));
   assert(
-    md2.includes("- task-a: ok") && md2.includes("- task-b: ok") && chat2.includes("task-a: ok") && chat2.includes("task-b: ok"),
+    md2.includes("- task-a: ok") &&
+      md2.includes("- task-b: ok") &&
+      chat2.includes("task-a: ok") &&
+      chat2.includes("task-b: ok"),
     "both (no converged): fall back to the branch-completed verdicts, same lines",
   );
   const s3 = fenceState(true);
-  const fa = s3.eventLog.find((e) => e.kind === "branch-completed" && e.workstreamId === "task-a");
+  const fa = s3.eventLog.find(
+    (e) => e.kind === "branch-completed" && e.workstreamId === "task-a",
+  );
   if (fa) {
     fa.ok = false;
     fa.error = "boom";
@@ -490,6 +472,25 @@ function commitPrConflictedState(): WorkState {
   assert(
     md3.includes("- task-a: FAIL — boom") && chat3.includes("task-a: FAIL — boom"),
     "both (fallback, failed branch): identical 'FAIL — <error>' line",
+  );
+}
+
+// #1137 — a verify-failed:develop cap whose cap-hit carries evidence: the
+// handoff "Why" shows the evidence, not "(evidence detail missing from state)".
+{
+  const evidence =
+    "adversarial fix pass: the diff of docs is byte-identical to its pre-pass state — nothing was fixed";
+  const s = intentParkState();
+  s.pipelineState.branchName = "feature/issue-1137";
+  s.eventLog = [
+    { kind: "cap-hit", at: 3, cap: "verify-failed:develop", reviewRound: 1, nextStep: "handoff", evidence },
+    // biome-ignore lint/suspicious/noExplicitAny: partial fixture
+  ] as any;
+  const md = renderHandoffMarkdown(s, REPO);
+  assert(md.includes("byte-identical"), "markdown: the 'Why' carries the cap's evidence");
+  assert(
+    !md.includes("evidence detail missing from state"),
+    "markdown: no 'evidence detail missing' when the cap carries evidence",
   );
 }
 

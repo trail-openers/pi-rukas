@@ -306,8 +306,18 @@ export function explainCap(
   if (cap.startsWith("verify-failed:")) {
     const step = cap.slice("verify-failed:".length);
     const evidence = state.pipelineState.verifyEvidence;
-    const findings =
-      evidence && evidence.failures.length > 0
+    // #1137 — the cap-hit event's own `evidence` string is the FIRST source
+    // of the "Why": the fix-pass park (parkFixPass) and the plumb-with-no-change
+    // route both write their detail there, and `verifyEvidence.failures` is
+    // only written by the develop-verify gate's own failure path. Reading only
+    // the latter is what produced "(evidence detail missing from state)" on a
+    // cap that carried evidence — the #1128 shape. Prefer the cap's evidence;
+    // fall back to the gate's failures only when the cap carried none.
+    const capHit = lastCapHit(state, cap);
+    const capEvidence = capHit?.evidence;
+    const findings = capEvidence
+      ? `\n${capEvidence}`
+      : evidence && evidence.failures.length > 0
         ? `\n${evidence.failures.map((f) => `  - ${f}`).join("\n")}`
         : " (evidence detail missing from state)";
     // #841 — when the cap carries the persisted raw-output log paths

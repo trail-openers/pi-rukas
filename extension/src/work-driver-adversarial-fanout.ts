@@ -1,13 +1,8 @@
 /**
  * work-driver-adversarial-fanout — the per-workstream fan-out of the
- * adversarial gate (#486), extracted from work-driver-adversarial.ts
- * (AGENTS.md §12 file-size limit). Leaf module — no dependency on any
- * work-driver-<step>.ts handler. #486: a transient infrastructure failure
- * in ONE workstream's loop is retried in-step (per-workstream budget,
- * taxonomy backoff) while the other workstreams' approved verdicts are
- * preserved in the event log either way. A permanent failure parks with
- * cap `adversarial-infra-failure` instead of being rendered as a review
- * rejection.
+ * adversarial gate (#486). A transient infra failure in ONE workstream is
+ * retried in-step (per-workstream budget); a permanent failure parks with
+ * cap `adversarial-infra-failure` rather than being rendered as a rejection.
  */
 
 import { runAdversarialLoop } from "./adversarial.ts";
@@ -51,8 +46,7 @@ export { capKillOutcomeFields };
 /**
  * #543 — the cap-kill fields of an AdversarialOutcome: the killCause
  * (loop / token-budget) + its structured trigger evidence, threaded from
- * the inner spawn's DispatchResult. Empty when the result carries no cap
- * kill. Split from runOne's return (AGENTS.md §12 file-size limit).
+ * the inner spawn's DispatchResult. Empty when the result carries no cap kill.
  */
 
 export async function fanOutAdversarial(
@@ -112,6 +106,24 @@ export async function fanOutAdversarial(
   const runOne = async (id: string): Promise<AdversarialOutcome> => {
     const cwd = state.pipelineState.worktrees?.[id] ?? ctx.repoRoot;
     const label = ids.length > 1 ? `adversarial[${id}]` : "adversarial_loop";
+    // #1137 — the per-workstream scope the reviewer is judged within: the
+    // workstream's own declared paths + scope, and every sibling's, so the
+    // prompt can say "judge only this; the rest is out of scope." Absent on
+    // N=1 (no siblings) — the whole issue is the scope, pre-#1137 behaviour.
+    const ps_ws = state.pipelineState.workstreams;
+    const scope =
+      ids.length > 1
+        ? {
+            own: ps_ws?.[id] ? { id, scope: ps_ws[id].scope, paths: ps_ws[id].paths } : undefined,
+            siblings: ids
+              .filter((other) => other !== id)
+              .map((other) => {
+                const w = ps_ws?.[other];
+                return w ? { id: other, scope: w.scope, paths: w.paths } : undefined;
+              })
+              .filter((w): w is NonNullable<typeof w> => w !== undefined),
+          }
+        : undefined;
     const startedAt = Date.now();
     const orchestratorJobId = makeRunId();
     // Per-workstream diff: `git diff <baseSha>..HEAD` from this worktree
@@ -176,6 +188,9 @@ export async function fanOutAdversarial(
           // not just against generic code quality. Absent on cycles resumed
           // from older state files, which degrade to the previous behaviour.
           issueBody: state.pipelineState.issueBodyArtifact,
+          // #1137 — judge this workstream against its OWN scope; sibling
+          // criteria are listed as out of scope in the prompt.
+          ...(scope !== undefined ? { scope } : {}),
           // #799 — the slow-run recorder collects into the driver's pending
           // buffer (keyed by this cycle's primary issue); the step boundary
           // (routeStepOutcome) drains it — the fan-out folds nothing of its
@@ -288,20 +303,12 @@ export async function fanOutAdversarial(
   const isTransient = (o: AdversarialOutcome): boolean => isTransientAdversarialOutcome(o);
   const classify = (o: AdversarialOutcome) => classifyAdversarialOutcome(o);
 
-  // #486 — workstreams that produced a VERDICT (approved / rejected /
-  // skipped-empty-diff) on the prior pass are final and NOT re-run. Their
-  // per-workstream events are re-emitted from this prior-outcome record
-  // (see the `outcomes` seed below), so the log stays complete after the
-  // splice replaces the prior pass's batch.
-  // #486 — the workstreams that run on THIS pass. First entry: everything.
-  // Re-entry (the previous fan-out recorded a NO-VERDICT outcome): only the
-  // infra-failed ones re-run while their per-workstream budget holds — a
-  // permanent failure therefore stops the retry loop rather than re-running
-  // siblings forever, and their preserved outcomes keep the aggregate
-  // honest.
-  // #1114 — "everything" on a first entry means whatever still needs a review;
-  // re-entry also re-runs a workstream whose fix pass was applied since its
-  // routed review. The rest are survivors.
+  // #486 — workstreams with a VERDICT on the prior pass are final and NOT
+  // re-run; their per-workstream events are re-emitted from the prior record
+  // so the log stays complete after the splice. First entry: everything.
+  // Re-entry: only the infra-failed ones re-run while their budget holds;
+  // #1114 also re-runs a workstream whose fix pass was applied since its
+  // routed review.
   const runSet = priorHadInfraFailure
     ? ids.filter((id) => {
         const prev = priorOutcomes.get(id);

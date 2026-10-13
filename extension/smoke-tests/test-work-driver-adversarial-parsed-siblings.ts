@@ -6,6 +6,7 @@
  */
 
 import { fixRequestEvents, withParsedSiblings } from "../src/work-driver-adversarial-fix.ts";
+import { buildAdversarialPrompt } from "../src/adversarial-prompts.ts";
 import type { AdversarialOutcome } from "../src/work-driver-adversarial-types.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 
@@ -71,6 +72,52 @@ assert(
   routedText.endsWith("[truncated: 6 chars omitted]") && !routedText.includes("TAIL-A"),
   "D: a long fix request is cut at the cap with an explicit truncation marker",
 );
+
+// #1137 — the per-workstream adversarial prompt scopes a docs-only workstream
+// to its own declared paths and lists the code sibling's criteria as out of
+// scope; a docs-only workstream with a code sibling is NOT asked for the
+// sibling's criteria.
+{
+  const prompt = buildAdversarialPrompt({
+    diff: "--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-document old\n+document new",
+    context: '/work issue #1137: gating diff for workstream "docs" before commit.',
+    round: 1,
+    maxRounds: 3,
+    issueBody:
+      "## Acceptance criteria\n- b.txt documents the new flag\n- a.txt implements the feature in src",
+    scope: {
+      own: { id: "docs", scope: "document the change in b.txt", paths: ["b.txt"] },
+      siblings: [{ id: "code", scope: "implement the feature in a.txt", paths: ["a.txt"] }],
+    },
+  });
+  // The scope section is present and names the workstream's own paths.
+  assert(
+    prompt.includes("WORKSTREAM SCOPE") && prompt.includes("b.txt"),
+    "E: the per-workstream prompt carries the workstream's own scope (b.txt)",
+  );
+  // The sibling is listed as out of scope.
+  assert(
+    prompt.includes("Out of scope") && prompt.includes('code: "implement the feature in a.txt"'),
+    "E: the sibling's criteria are listed as out of scope",
+  );
+  // The reviewer is told NOT to flag the sibling's criterion.
+  assert(
+    /do not report them as findings|NOT judged against this diff/i.test(prompt),
+    "E: the reviewer is instructed not to flag sibling-owned criteria",
+  );
+  // N=1 (no scope) is byte-identical to the pre-#1137 prompt shape.
+  const n1 = buildAdversarialPrompt({
+    diff: "--- a/a.txt\n+++ b/a.txt",
+    context: "/work issue #1137: gating diff before commit.",
+    round: 1,
+    maxRounds: 3,
+    issueBody: "## Acceptance criteria\n- a.txt implements the feature",
+  });
+  assert(
+    !n1.includes("WORKSTREAM SCOPE"),
+    "E: N=1 has no scope section (byte-identical to pre-#1137)",
+  );
+}
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

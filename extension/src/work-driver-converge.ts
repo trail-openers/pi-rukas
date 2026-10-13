@@ -77,6 +77,16 @@ export interface ConvergeDeliverableResult {
    * in the operator-actions render. `undefined` for all other statuses.
    */
   noDiffEvidence?: string;
+  /**
+   * #1137 d2 — the workstream id(s) that delivered this deliverable's paths
+   * (the workstream(s) whose declared paths overlap this deliverable's paths
+   * AND whose paths are present in the consolidated diff). `undefined` when
+   * no workstream claim can be resolved (N=1 default workstream, or no
+   * workstream declared the paths). Present on `implemented` results to make
+   * the "sibling-delivered" behavior explicit: a deliverable is `implemented`
+   * when ANY workstream delivered its paths, not just the "owning" one.
+   */
+  deliveredBy?: string[];
 }
 
 export interface ConvergeVerdict {
@@ -225,9 +235,20 @@ export interface ClassifyDeliverableInput {
   noDiffEvidence?: string;
 }
 
+/**
+ * #1137 d2 — the workstream ownership map passed to `classifyDeliverables`
+ * for the `deliveredBy` field. Maps workstream id → its declared (normalised)
+ * paths. When absent, `deliveredBy` is not populated (the gate degrades to
+ * the pre-#1137 shape: status + reason only, no attribution).
+ */
+export interface WorkstreamPathsMap {
+  [workstreamId: string]: string[];
+}
+
 export function classifyDeliverables(
   deliverables: ClassifyDeliverableInput[],
   diffFiles: Set<string>,
+  workstreamPaths?: WorkstreamPathsMap,
 ): ConvergeVerdict {
   const results: ConvergeDeliverableResult[] = deliverables.map((d) => {
     const paths = [
@@ -275,7 +296,30 @@ export function classifyDeliverables(
       status = "partial";
       reason = `only ${present.length}/${paths.length} declared path(s) in the diff — missing: ${missing.join(", ")}`;
     }
-    return { id: d.id, status, paths, present, missing, reason };
+    // #1137 d2 — attribute the deliverable to the workstream(s) that delivered
+    // its paths. A deliverable is `implemented` when ANY workstream's declared
+    // paths overlap the deliverable's paths AND those workstream paths are in
+    // the consolidated diff. This makes the "sibling-delivered" behavior
+    // explicit: the gate does not flag a deliverable just because the
+    // "owning" workstream didn't deliver it, as long as a sibling did.
+    let deliveredBy: string[] | undefined;
+    if (status === "implemented" && workstreamPaths) {
+      const ids: string[] = [];
+      for (const [wsId, wsPaths] of Object.entries(workstreamPaths)) {
+        const normalised = wsPaths.map(normaliseDeclaredPath).filter((p) => p.length > 0);
+        const overlaps = normalised.some(
+          (p) => diffFiles.has(p) || Array.from(diffFiles).some((f) => f.startsWith(`${p}/`)),
+        );
+        const coversDeliverable = paths.some((dp) =>
+          normalised.some((wp) => dp === wp || dp.startsWith(`${wp}/`) || wp.startsWith(`${dp}/`)),
+        );
+        if (overlaps && coversDeliverable) ids.push(wsId);
+      }
+      if (ids.length > 0) deliveredBy = ids;
+    }
+    return deliveredBy
+      ? { id: d.id, status, paths, present, missing, reason, deliveredBy }
+      : { id: d.id, status, paths, present, missing, reason };
   });
   return {
     diffUnreadable: false,
@@ -305,7 +349,13 @@ export async function runConvergeGate(
     trace("work-driver: converge gate — diff unreadable, gate degraded to pass");
     return null;
   }
-  const verdict = classifyDeliverables(spec.deliverables, files);
+  // #1137 d2 — build the workstream paths map for the `deliveredBy` field.
+  const wsMap = state.pipelineState.workstreams ?? {};
+  const workstreamPaths: WorkstreamPathsMap = {};
+  for (const [id, ws] of Object.entries(wsMap)) {
+    if (ws?.paths?.length) workstreamPaths[id] = ws.paths;
+  }
+  const verdict = classifyDeliverables(spec.deliverables, files, workstreamPaths);
   if (verdict.absent.length > 0) {
     trace(
       `work-driver: converge gate — absent deliverable(s): ${verdict.absent.map((a) => a.id).join(", ")}`,

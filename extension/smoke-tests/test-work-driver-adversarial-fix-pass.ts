@@ -16,6 +16,7 @@ import {
   repoWithFile,
   singleState,
   tmpDir,
+  twoWorkstreamState,
 } from "./lib/adversarial-fix-fixtures.ts";
 import type { DispatchResult } from "../src/types.ts";
 import {
@@ -356,6 +357,70 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
         survivors[0]?.ok === false &&
         survivors[0]?.priorVerdict === "rejected",
       `I: a rejected single workstream stays rejected (got ${JSON.stringify(survivors.map((s) => [s.ok, s.priorVerdict]))})`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// J — #1137: a no-change fix pass whose workstream carried a plumb report
+// (scope-ambiguity) routes to a handoff that NAMES the plumb question, not
+// the generic "byte-identical — nothing was fixed". The cap is still
+// verify-failed:develop (so nextStep routes to handoff) but the evidence
+// carries the plumb question so the operator answers it.
+{
+  const dir = repoWithFile("fix-plumb");
+  try {
+    const ctx: DriverContext = {
+      pi: { sendUserMessage: () => {} } as unknown as DriverContext["pi"],
+      repoRoot: dir,
+      issue: 1137,
+      issueBodyFetcherFn: async () => ({ stdout: "mock" }),
+      dispatchFn: async (_pi, spec) =>
+        ({
+          role: spec.role,
+          ok: true,
+          exitCode: 0,
+          // The developer returns a plumb report (scope-ambiguity) and changes nothing.
+          text: "[ensemble:plumb]\ncategory: scope-ambiguity\nquestion: does this workstream own b.txt or a.txt?",
+          toolUses: [],
+          ms: 1,
+        }) as DispatchResult,
+    };
+    const st = twoWorkstreamState(dir);
+    // Inject the plumb report into pipelineState (the develop step would have
+    // recorded the developer's reply there).
+    const stWithPlumb: WorkState = {
+      ...st,
+      pipelineState: {
+        ...st.pipelineState,
+        plumbReports: [
+          {
+            step: "develop" as const,
+            role: "driver",
+            body: "[ensemble:plumb]\ncategory: scope-ambiguity\nquestion: does this workstream own b.txt or a.txt?",
+            at: Date.now(),
+          },
+        ],
+      },
+    };
+    const pending = pendingFixes(stWithPlumb.eventLog);
+    const out = await runAdversarialFixPass(ctx, stWithPlumb, pending, Date.now());
+    const tail = out.eventLog[out.eventLog.length - 1];
+    assert(
+      tail?.kind === "cap-hit" && tail.cap === "verify-failed:develop",
+      `J: a plumb-with-no-change parks as verify-failed:develop (tail: ${tail?.kind})`,
+    );
+    // The evidence names the plumb question, not just "byte-identical".
+    const evidence = tail?.kind === "cap-hit" ? tail.evidence : "";
+    assert(
+      /plumb report|scope-ambiguity|answer the question/i.test(evidence),
+      `J: the cap evidence names the plumb question (got: ${evidence?.slice(0, 120)})`,
+    );
+    // The handoff's plumb section also carries the question.
+    assert(
+      (out.pipelineState.plumbReports ?? []).some((r) => /plumb|scope-ambiguity/i.test(r.body)),
+      "J: the plumb report is in pipelineState for the handoff",
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

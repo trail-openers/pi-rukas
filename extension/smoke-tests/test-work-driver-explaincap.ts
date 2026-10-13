@@ -7,6 +7,7 @@
  */
 
 import { explainCap } from "../src/work-driver-explain.ts";
+import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
 import { appendEvent, initialState } from "../src/workflow-state.ts";
 
 let exit = 0;
@@ -89,6 +90,46 @@ function runExplainCapCanaries() {
 }
 
 runExplainCapCanaries();
+
+// #1137 — a verify-failed:develop cap whose cap-hit carries evidence: the
+// handoff "Why" shows the evidence string, not "(evidence detail missing
+// from state)". The fix-pass park writes its detail on the cap-hit's
+// `evidence` field, not on verifyEvidence.failures — the renderer must read
+// the former.
+{
+  const evidence =
+    "adversarial fix pass: the diff of docs is byte-identical to its pre-pass state — nothing was fixed";
+  let s = initialState(1137, 1_000_000);
+  s = { ...s, pipelineState: { ...s.pipelineState, currentStep: "handoff" } };
+  s = appendEvent(s, {
+    kind: "cap-hit",
+    at: 2,
+    cap: "verify-failed:develop",
+    reviewRound: 1,
+    nextStep: "handoff",
+    evidence,
+  } as Parameters<typeof appendEvent>[1]);
+  const line = explainCap("verify-failed:develop", s);
+  assert(
+    typeof line === "string" && line.includes(evidence),
+    `explainCap(verify-failed:develop) shows the cap's evidence string`,
+  );
+  assert(
+    !line.includes("evidence detail missing from state"),
+    "explainCap(verify-failed:develop) does NOT say 'evidence detail missing' when the cap carries evidence",
+  );
+  // The full handoff markdown also carries the evidence in the "Why" section.
+  s = { ...s, pipelineState: { ...s.pipelineState, status: "handoff" as const } };
+  const md = renderHandoffMarkdown(s);
+  assert(
+    md.includes("byte-identical"),
+    "handoff markdown: the 'Why' section carries the cap's evidence string",
+  );
+  assert(
+    !md.includes("evidence detail missing from state"),
+    "handoff markdown: no 'evidence detail missing' when the cap carries evidence",
+  );
+}
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

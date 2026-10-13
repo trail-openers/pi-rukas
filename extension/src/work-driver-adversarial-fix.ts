@@ -3,13 +3,11 @@
  * develop step fixes.
  *
  * The adversarial step no longer edits anything. Each driver round is one
- * reportOnly review per workstream (adversarial.ts `reportOnly`). A parsed
- * ISSUES_FOUND / CRITICAL_ISSUES_FOUND at a non-terminal round routes that
- * workstream back to develop as a FIX PASS: the findings travel into the
- * developer prompt as data, the pass reuses the workstream's worktree, and
- * every develop gate runs on the result exactly as on a first pass. Then the
- * workstream returns to adversarial for a re-review. Approved workstreams are
- * neither re-developed nor re-reviewed.
+ * reportOnly review per workstream; a parsed ISSUES_FOUND / CRITICAL at a
+ * non-terminal round routes that workstream back to develop as a FIX PASS.
+ * The findings travel into the developer prompt as data, the pass reuses the
+ * workstream's worktree, and every develop gate runs unchanged. Approved
+ * workstreams are neither re-developed nor re-reviewed.
  *
  * This module owns the event-log reading (round counts, pending fixes), the
  * per-round interpretation of a reportOnly result, and the fix pass itself.
@@ -57,9 +55,7 @@ export interface PendingFix {
 }
 
 /**
- * The one verdict → action mapping for the review track. Both the live
- * interpretation of a reportOnly result and the rebuild of a single-workstream
- * verdict from the log consume it, so the thresholds cannot drift apart.
+ * The one verdict → action mapping for the review track.
  */
 export function actionFor(
   status: Parameters<typeof decideLoopAction>[0],
@@ -70,9 +66,8 @@ export function actionFor(
 
 /**
  * The review track of one workstream, read from the cycle's event log:
- * `rounds` counts PARSED reviews only (an infra-failed round never counts
- * toward the cap). `needsReview` is true before the first parsed review, and
- * after a fix pass has been applied since the last review.
+ * `rounds` counts PARSED reviews only; `needsReview` is true before the first
+ * parsed review, and after a fix pass applied since the last review.
  */
 export function reviewTrack(
   eventLog: readonly WorkEvent[],
@@ -139,9 +134,8 @@ export interface ReviewReading {
 }
 
 /**
- * Interpret one reportOnly review. Every review carries its round record
- * (#1114), so a successful dispatch without a parsed verdict is infra, never
- * an approval. The decision is `actionFor`, the same table the log rebuild uses.
+ * Interpret one reportOnly review. A successful dispatch without a parsed
+ * verdict is infra, never an approval. The decision is `actionFor`.
  */
 export function interpretReview(result: DispatchResult, reviewRound: number): ReviewReading {
   const ok = result.ok && !result.errorStop;
@@ -185,9 +179,7 @@ export function fixRequestEvents(
 
 /**
  * Workstreams that keep a FINAL verdict from an earlier invocation: not run
- * again, their outcome re-emitted so the log stays complete. A single-workstream
- * cycle keeps no per-workstream outcome event, so its approval is recovered
- * from the rounds it already ran.
+ * again, their outcome re-emitted so the log stays complete.
  */
 export function survivorsOf(
   state: WorkState,
@@ -226,8 +218,7 @@ export function survivorsOf(
 }
 
 /**
- * The verdict a single-workstream cycle's last parsed review reached. Such a
- * cycle keeps no per-workstream outcome event, so the log is the only record.
+ * The verdict a single-workstream cycle's last parsed review reached.
  */
 function lastReviewVerdict(
   eventLog: readonly WorkEvent[],
@@ -273,8 +264,8 @@ function withFixPassReport(
 }
 
 /**
- * Cuts one sibling's findings to `max` characters and says so, so a cut is
- * never silent.
+ * Cuts one sibling's findings to `max` characters and says so, so a cut
+ * is never silent.
  */
 function capWithMarker(text: string, max: number): string {
   if (text.length <= max) return text;
@@ -282,9 +273,9 @@ function capWithMarker(text: string, max: number): string {
 }
 
 /**
- * A mixed first-pass fan-out parks on the infra cap, which would otherwise drop
- * the parsed siblings. Each parsed sibling's verdict and findings go to the
- * handoff as a plumb report, so the cap does not hide a review that did happen.
+ * A mixed first-pass fan-out parks on the infra cap, which would otherwise
+ * drop the parsed siblings. Each parsed sibling's verdict and findings go to
+ * the handoff as a plumb report.
  */
 export function withParsedSiblings(
   state: WorkState,
@@ -350,9 +341,7 @@ function parkFixPass(
 /**
  * The develop fix pass for the pending workstreams. Reuses their worktrees;
  * named finding paths widen a declared fence for this pass only; all develop
- * gates run unchanged. Parks like a first develop failure: a failed gate or
- * dispatch, a no-op pass, a change outside the fence, or a removed origin/main
- * comment. Every pre-pass read fails closed (see the scope module).
+ * gates run unchanged. Parks like a first develop failure.
  */
 export async function runAdversarialFixPass(
   ctx: DriverContext,
@@ -421,17 +410,52 @@ export async function runAdversarialFixPass(
   // through nextStep to the linear table, so it parks explicitly here.
   if (failed) {
     const tail = restored.eventLog[restored.eventLog.length - 1];
-    if (tail?.kind === "cap-hit")
+    if (tail?.kind === "cap-hit") {
+      // #1137 — a no-change fix pass with a plumb report is a question, not
+      // a failed gate. The develop gate's empty-diff failure fires here;
+      // the plumb report is already in pipelineState. The evidence names the
+      // question so the operator answers it instead of re-dispatching.
+      const plumb = (ps.plumbReports ?? []).find((r) =>
+        /\[ensemble:plumb\]|plumb report|scope-ambiguity/i.test(r.body),
+      );
+      if (plumb) {
+        return parkFixPass(
+          restored,
+          pending,
+          `the developer returned a plumb report and changed nothing — answer the question: ${plumb.body}`,
+          now,
+        );
+      }
       return withFixPassReport(restored, pending, "a develop gate failed on the fix pass", now);
+    }
     return parkFixPass(restored, pending, "a develop gate failed on the fix pass", now);
   }
 
   const post = await postPassFault(execFn, plans, ps.baseSha ?? "");
-  if (post.reason) return parkFixPass(restored, pending, post.reason, now);
+  if (post.reason) {
+    // #1137 — a no-change fix pass whose workstream carried a plumb report
+    // (a structural question, e.g. scope-ambiguity) is a question to answer,
+    // not a failed gate. The plumb report is already in pipelineState (the
+    // develop step recorded the developer's reply); the handoff's plumb
+    // section renders it, and the evidence names the plumb question so the
+    // operator answers it instead of re-dispatching the same no-op.
+    if (/byte-identical|nothing was fixed/i.test(post.reason)) {
+      const plumb = (ps.plumbReports ?? []).find((r) =>
+        /\[ensemble:plumb\]|plumb report|scope-ambiguity/i.test(r.body),
+      );
+      if (plumb) {
+        return parkFixPass(
+          restored,
+          pending,
+          `the developer returned a plumb report and changed nothing — answer the question: ${plumb.body}`,
+          now,
+        );
+      }
+    }
+    return parkFixPass(restored, pending, post.reason, now);
+  }
   // The operator's kill switch is NOT a failed check: a disabled check reads
-  // NOT CHECKED (as every other reader renders it) and the pass proceeds with
-  // that disclosed on the handoff, never parked. Only a check that was asked
-  // for and could not run parks.
+  // NOT CHECKED and the pass proceeds with that disclosed, never parked.
   let kept = restored;
   if (!commentRetentionEnabled()) {
     const note =
