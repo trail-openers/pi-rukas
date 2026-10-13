@@ -27,10 +27,11 @@ import type { DispatchHost } from "./async-jobs-lifecycle.ts";
 export type DriverHost = DispatchHost;
 
 /**
- * Wrap the interactive Pi session as a DriverHost. The only driver-side
- * module that names ExtensionAPI as a value. `deliverAs` is taken from the
- * caller's options (always "steer" under the DispatchHost type) so the
- * no-behaviour-change guarantee is visible at the call site.
+ * Wrap the interactive Pi session as a DriverHost. This is the only
+ * driver-side module that names the ExtensionAPI type. It forwards the
+ * caller's deliverAs (typed to "steer" under the DispatchHost type) rather
+ * than hard-coding it, so the no-behaviour-change guarantee is visible at the
+ * call site.
  */
 export function piSessionHost(pi: Pick<ExtensionAPI, "sendUserMessage">): DriverHost {
   return {
