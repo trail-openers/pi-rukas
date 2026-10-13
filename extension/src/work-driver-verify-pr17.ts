@@ -7,18 +7,19 @@
  * post-dispatch safety gate.
  */
 
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
 import type { CommentEvidence } from "./comment-evidence.ts";
-import { countPrCommits } from "./git-range.ts";
+import { countPrCommits, refResolves } from "./git-range.ts";
+import { execp } from "./lens-exec.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
-import { detectMainline } from "./work-driver-git.ts";
+import { resolveMainline } from "./work-driver-git.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { verifyDevelopOutcome } from "./work-driver-verify-develop.ts";
 import type { WorkState } from "./workflow-state.ts";
 
-const execp = promisify(exec);
+// #1134 follow-up — the argv-capable executor. The previous `promisify(exec)`
+// dropped `argv`, so countPrCommits ran a bare `git` in production (no
+// verifyExecFn is injected there) and every commit-pr read as unverifiable.
 
 /**
  * PR17 — Driver-side outcome verification gate.
@@ -81,7 +82,10 @@ export function judgePrIdentity(
   view: PrView | undefined,
 ): { ok: true } | { ok: false; failure: string } {
   if (!branchName) {
-    return { ok: false, failure: "cannot be bound to this cycle: no branch was recorded" };
+    return {
+      ok: false,
+      failure: "cannot be bound to this cycle: no branch was recorded",
+    };
   }
   if (!view?.headRefName) {
     return {
@@ -144,7 +148,11 @@ export async function verifyStepOutcome(
   const failures: string[] = [];
   const notes: string[] = [];
   if (!verifyGateEnabled()) {
-    return { ok: true, failures, notes: ["PI_ENSEMBLE_VERIFY=0 — outcome gate skipped"] };
+    return {
+      ok: true,
+      failures,
+      notes: ["PI_ENSEMBLE_VERIFY=0 — outcome gate skipped"],
+    };
   }
   const execFn = ctx.verifyExecFn ?? execp;
 
@@ -185,7 +193,7 @@ export async function verifyStepOutcome(
   // step === "commit-pr"
   // #1134 — the same mainline resolution readIntegratedDiff uses (detectMainline).
   // Unresolved has no base to count against, so it fails closed below.
-  const mainline = await detectMainline(ctx.repoRoot, execFn);
+  const mainline = await resolveMainline(ctx.repoRoot, execFn);
   const base = "branch" in mainline ? mainline.branch : undefined;
   // #451 — name the integration branch explicitly. `origin/<branchName>`
   // requires the branch to be pushed, which it is at commit-pr time (ops
@@ -207,6 +215,10 @@ export async function verifyStepOutcome(
     failures.push(
       `could not count commits ahead of origin/${base}: no branch name was recorded for this cycle`,
     );
+  } else if (!(await refResolves(execFn, ctx.repoRoot, `origin/${branch}`))) {
+    // The count reads origin/<branch>; a clone that never pushed it has nothing
+    // to count, and that is a named fact, not an unverifiable reading.
+    failures.push(`origin/${branch} not found in this clone — the branch was not pushed from here`);
   } else {
     try {
       const ahead = await countPrCommits(

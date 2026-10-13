@@ -14,7 +14,7 @@ import { promisify } from "node:util";
 import { countPrCommits, prRange } from "./git-range.ts";
 import { execp as gitExec } from "./lens-exec.ts";
 import { trace } from "./trace.ts";
-import { detectMainline } from "./work-driver-git.ts";
+import { resolveMainline } from "./work-driver-git.ts";
 import type { WorkState, WorkStep } from "./workflow-state.ts";
 
 const execp = promisify(exec);
@@ -75,10 +75,7 @@ export async function fetchDiff(cwd: string | undefined, baseSha?: string): Prom
       if (stdout.trim()) return stdout;
     } catch (err) {
       trace(
-        `work-driver: fetchDiff(${cwd}, baseSha..HEAD) failed: ${(err as Error).message?.slice(
-          0,
-          200,
-        )}`,
+        `work-driver: fetchDiff(${cwd}, baseSha..HEAD) failed: ${(err as Error).message?.slice(0, 200)}`,
       );
     }
   }
@@ -210,10 +207,11 @@ export async function readIntegratedDiff(
   branchName: string,
 ): Promise<IntegratedDiff> {
   // The mainline is unknowable, so the diff below would be meaningless.
-  // The mainline, resolved by detectMainline (#1134) — the same call verify-pr17
+  // The mainline, resolved by resolveMainline (#1134) — the same call verify-pr17
   // makes, so both read one base. Unresolved means there is no base to diff
-  // against: unreadable, not a guessed "main".
-  const mainline = await detectMainline(repoRoot, gitExec);
+  // against: unreadable, not a guessed "main". A throw or unexpected shape is
+  // the same unresolved outcome, never an escaping exception.
+  const mainline = await resolveMainline(repoRoot, gitExec);
   if (!("branch" in mainline)) return { ok: false, reason: mainline.reason };
   const base = mainline.branch;
   try {
@@ -240,7 +238,10 @@ export async function readIntegratedDiff(
     // The PR's own commits, whatever the base has done since (#1134).
     const ahead = await countPrCommits(gitExec, repoRoot, `origin/${base}`, `origin/${branchName}`);
     if (Number.isNaN(ahead)) {
-      return { ok: false, reason: `could not count commits ahead of origin/${base}` };
+      return {
+        ok: false,
+        reason: `could not count commits ahead of origin/${base}`,
+      };
     }
     if (ahead === 0) return { ok: true, diff: "", empty: true };
     // Commits exist but the diff is empty. Possible legitimately (an empty
@@ -251,7 +252,10 @@ export async function readIntegratedDiff(
       reason: `branch is ${ahead} commit(s) ahead of origin/${base} but the diff came back empty`,
     };
   } catch (err) {
-    return { ok: false, reason: `could not count commits ahead: ${errText(err)}` };
+    return {
+      ok: false,
+      reason: `could not count commits ahead: ${errText(err)}`,
+    };
   }
 }
 

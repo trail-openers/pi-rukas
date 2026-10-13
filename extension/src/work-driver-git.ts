@@ -108,6 +108,40 @@ export async function detectMainline(
 }
 
 /**
+ * #1134 follow-up — detectMainline as a total function for its callers.
+ *
+ * A caller that reads `"branch" in mainline` on a value that is undefined, or
+ * on an unexpected shape, gets a TypeError rather than a verdict, and a throw
+ * from the detector escapes the gate that asked. Both become the same
+ * unresolved result a failed detection produces, carrying the reason.
+ */
+export async function resolveMainline(
+  repoRoot: string,
+  execFn: VerifyExecFn,
+  detect: typeof detectMainline = detectMainline,
+): Promise<{ branch: string } | { ok: false; reason: string }> {
+  let m: unknown;
+  try {
+    m = await detect(repoRoot, execFn);
+  } catch (err) {
+    const msg = ((err as Error)?.message ?? String(err)).slice(0, 200);
+    return { ok: false, reason: `mainline detection threw: ${msg}` };
+  }
+  if (m && typeof m === "object") {
+    if ("branch" in m && typeof m.branch === "string" && m.branch.length > 0) {
+      return { branch: m.branch };
+    }
+    if ("reason" in m && typeof m.reason === "string" && m.reason.length > 0) {
+      return { ok: false, reason: m.reason };
+    }
+  }
+  return {
+    ok: false,
+    reason: "mainline detection returned an unexpected result",
+  };
+}
+
+/**
  * Restore the operator's checkout after a merge.
  *
  * #1093 — the restore target is the cycle-start ref (`startRef`: the branch

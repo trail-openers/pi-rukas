@@ -169,6 +169,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         };
         const emptyExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
           if (cmd === "git status --porcelain") return { stdout: "" };
+          if (cmd.includes("rev-parse --verify --quiet --end-of-options origin/")) return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
           return { stdout: "" };
         };
@@ -202,6 +203,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
           if (cmd === "git status --porcelain") return { stdout: " M src/foo.ts\n" };
           if (cmd.startsWith("git rev-parse HEAD"))
             return { stdout: "b".repeat(40) + "\n" };
+          if (cmd.includes("rev-parse --verify --quiet --end-of-options origin/")) return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "1\n" };
           if (cmd === "run-verify") {
             const err = new Error("Command failed: run-verify") as Error & {
@@ -250,6 +252,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         // Zero commits ahead → failure even though PR resolves.
         const zeroCommits: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
+          if (cmd.includes("rev-parse --verify --quiet --end-of-options origin/")) return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
           if (cmd.startsWith("gh pr view"))
             return { stdout: JSON.stringify({ state: "OPEN", headRefName: BRANCH_UNDER_TEST }) };
@@ -265,6 +268,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         // Commits ahead + PR resolves → ok.
         const happy: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
+          if (cmd.includes("rev-parse --verify --quiet --end-of-options origin/")) return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "2\n" };
           if (cmd.startsWith("gh pr view"))
             return { stdout: JSON.stringify({ state: "OPEN", headRefName: BRANCH_UNDER_TEST }) };
@@ -281,6 +285,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         };
         const adopt: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
+          if (cmd.includes("rev-parse --verify --quiet --end-of-options origin/")) return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "2\n" };
           if (cmd.startsWith("gh pr list")) return { stdout: "789\n" };
           if (cmd.startsWith("gh pr view"))
@@ -296,6 +301,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         // prNumber missing + NO PR for branch → failure.
         const noPr: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
+          if (cmd.includes("rev-parse --verify --quiet --end-of-options origin/")) return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "2\n" };
           if (cmd.startsWith("gh pr list")) return { stdout: "\n" };
           return { stdout: "" };
@@ -310,6 +316,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         // prNumber set but gh pr view errors → failure.
         const ghosted: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
+          if (cmd.includes("rev-parse --verify --quiet --end-of-options origin/")) return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "2\n" };
           if (cmd.startsWith("gh pr view")) {
             const err = new Error("gh failed") as Error & { stderr?: string };

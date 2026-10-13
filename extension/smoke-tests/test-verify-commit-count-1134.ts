@@ -40,6 +40,8 @@ function gitStub(opts: {
 			return { stdout: `origin/${opts.mainline}\n` };
 		}
 		if (cmd.startsWith("gh repo view")) throw new Error("gh unavailable");
+		// The pushed-ref precondition (#1134 follow-up): origin/<branch> resolves.
+		if (cmd === "git" && o?.argv?.[0] === "rev-parse") return { stdout: `${"a".repeat(40)}\n` };
 		if (cmd === "git" && o?.argv?.[0] === "rev-list") return opts.count();
 		// Everything else (forge detection, PR lookups) is unanswered: the gate
 		// reports that itself, and these assertions only look at the commit count.

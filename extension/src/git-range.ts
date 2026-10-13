@@ -21,6 +21,24 @@ export function prRange(base: string, head: string): string {
 }
 
 /**
+ * Does `ref` resolve to a commit in this clone? Runs through argv, so a branch
+ * name never reaches a shell. Any failure is "does not resolve" — the caller
+ * names what that means for its gate (#1134 follow-up: a pushed-ref precondition).
+ */
+export async function refResolves(exec: ExecFn, cwd: string, ref: string): Promise<boolean> {
+  try {
+    const { stdout } = await exec("git", {
+      argv: ["rev-parse", "--verify", "--quiet", "--end-of-options", ref],
+      cwd,
+      maxBuffer: 64 * 1024,
+    });
+    return /^[0-9a-f]{40,64}$/.test(stdout.trim());
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The PR's own commits: `rev-list --count --right-only <range>`, i.e. commits
  * reachable from `head` and not from `base`. Returns NaN when git's reply is not
  * a plain count; callers treat NaN as unknown, never as zero. An exec failure

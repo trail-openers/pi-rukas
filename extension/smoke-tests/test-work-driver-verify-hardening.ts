@@ -105,6 +105,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
             if (opts?.cwd?.endsWith("/a")) throw new Error("not a git repository");
             return { stdout: "" };
           }
+          if (cmd.includes("rev-parse --verify --quiet --end-of-options origin/")) return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) {
             if (opts?.cwd?.endsWith("/a")) throw new Error("bad revision");
             return { stdout: "0\n" };
@@ -131,6 +132,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         const allErr: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, stubOpts) => {
           cmd = commandOf(cmd, stubOpts);
           if (cmd === "git status --porcelain") throw new Error("not a git repository");
+          if (cmd.includes("rev-parse --verify --quiet --end-of-options origin/")) return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) throw new Error("bad revision");
           return { stdout: "" };
         };
@@ -176,6 +178,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           cmd = commandOf(cmd, stubOpts);
           if (cmd === "git rev-parse HEAD") return { stdout: "1111111111111111111111111111111111111111\n" };
           if (cmd === "git status --porcelain") return { stdout: "" };
+          if (cmd.includes("rev-parse --verify --quiet --end-of-options origin/")) return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
           return { stdout: "" };
@@ -223,6 +226,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           cmd = commandOf(cmd, stubOpts);
           if (cmd === "git rev-parse HEAD") return { stdout: "1111111111111111111111111111111111111111\n" };
           if (cmd === "git status --porcelain") return { stdout: " M src/lib.rs\n" };
+          if (cmd.includes("rev-parse --verify --quiet --end-of-options origin/")) return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
           if (cmd.startsWith("gh pr view")) return { stdout: JSON.stringify({ state: "OPEN", headRefName: "feature/issue-991" }) };
@@ -280,6 +284,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           cmd = commandOf(cmd, stubOpts);
           if (cmd === "git rev-parse HEAD") return { stdout: "1111111111111111111111111111111111111111\n" };
           if (cmd === "git status --porcelain") return { stdout: " M src/lib.rs\n" };
+          if (cmd.includes("rev-parse --verify --quiet --end-of-options origin/")) return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "2\n" };
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
           if (cmd.startsWith("gh pr list")) return { stdout: "789\n" };
@@ -332,6 +337,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         if (cmd === "git status --porcelain") {
           return { stdout: files.map((file) => ` M ${file}`).join("\n") };
         }
+        if (cmd.includes("rev-parse --verify --quiet --end-of-options origin/")) return { stdout: "a".repeat(40) + "\n" };
         if (cmd.startsWith("git rev-list --count")) {
           return { stdout: files.length > 0 || committedFiles.length > 0 ? "1\n" : "0\n" };
         }

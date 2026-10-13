@@ -15,7 +15,7 @@
 import { exec, execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { promisify } from "node:util";
-import { prRange } from "./git-range.ts";
+import { prRange, refResolves } from "./git-range.ts";
 import { execp as groupExecp } from "./lens-exec.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
@@ -26,7 +26,10 @@ import type { WorkState } from "./workflow-state.ts";
 // Re-export for existing consumers (smoke tests) so import paths stay valid.
 export { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 // Re-export for existing consumers (smoke tests).
-export { judgePrIdentity, verifyStepOutcome } from "./work-driver-verify-pr17.ts";
+export {
+  judgePrIdentity,
+  verifyStepOutcome,
+} from "./work-driver-verify-pr17.ts";
 export type { PrView } from "./work-driver-verify-pr17.ts";
 
 const execFileP = promisify(execFile);
@@ -264,31 +267,47 @@ export async function verifyConsolidation(
   missing: Array<{ id: string; paths: string[] }>;
   filesPresent: string[];
   verdicts: ConsolidationVerdict[];
+  /** #1134 follow-up — notes for a check that could not run (best-effort result). */
+  notes: string[];
 }> {
   const workstreams = state.pipelineState.workstreams ?? {};
   const ids = Object.keys(workstreams);
-  if (ids.length <= 1) return { missing: [], filesPresent: [], verdicts: [] };
+  if (ids.length <= 1) return { missing: [], filesPresent: [], verdicts: [], notes: [] };
   // Resolve the mainline branch to diff against.
   let base = "main";
   const mainline = await detectMainline(ctx.repoRoot, execp);
   if (mainline && "branch" in mainline) {
     base = mainline.branch;
   }
+  // #451 — name the integration branch explicitly. Under worktree isolation
+  // the repo root sits on mainline; bare `..HEAD` would compare mainline
+  // against itself and return empty (passing the gate unconditionally).
+  // #1134 follow-up — both preconditions (a recorded branch, a pushed origin/<branch>)
+  // are checked BEFORE the diff; each failing one is a named note on the
+  // best-effort (no-missing) result, not a silent pass or an exception.
+  const branch = state.pipelineState.branchName;
+  // No recorded branch: unknowable, so the best-effort path below (no-missing).
+  // (#1134 follow-up: that path is now an explicit early return carrying a note.)
+  if (!branch) {
+    const note = "consolidation check skipped: no branch recorded";
+    trace(`work-driver: ${note}`);
+    return { missing: [], filesPresent: [], verdicts: [], notes: [note] };
+  }
+  if (!(await refResolves(execp, ctx.repoRoot, `origin/${branch}`))) {
+    const note = `consolidation check skipped: origin/${branch} not found in this clone — the branch was not pushed from here`;
+    trace(`work-driver: ${note}`);
+    return { missing: [], filesPresent: [], verdicts: [], notes: [note] };
+  }
   let statusOut = "";
   try {
-    // #451 — name the integration branch explicitly. Under worktree isolation
-    // the repo root sits on mainline; bare `..HEAD` would compare mainline
-    // against itself and return empty (passing the gate unconditionally).
     // #778 — `--name-status -M` (not `--name-only`): renames emit R### with
     // the SOURCE path in the diff output, so a move is visible evidence
     // instead of a silent absence of the old name.
-    const branch = state.pipelineState.branchName;
-    // No recorded branch: unknowable, so the best-effort path below (no-missing).
-    if (!branch) throw new Error("no branch name recorded for this cycle");
     // #1134 — head is origin/<branch>, the ref readIntegratedDiff reads. This gate
     // runs after integrate() has pushed. Three-dot: the branch's own changes from
     // the merge base, so a base that moved after the branch was cut does not read
     // as reverted files.
+    // argv (not a shell string): the range reaches git verbatim.
     const { stdout } = await execp("git", {
       argv: [
         "diff",
@@ -305,7 +324,7 @@ export async function verifyConsolidation(
     trace(
       `work-driver: verifyConsolidation diff failed (treating as no-missing): ${(err as Error).message?.slice(0, 120)}`,
     );
-    return { missing: [], filesPresent: [], verdicts: [] };
+    return { missing: [], filesPresent: [], verdicts: [], notes: [] };
   }
   const changedFiles = new Set<string>();
   // #778 — rename SOURCES (the old side of R### codes): a declared path that
@@ -368,7 +387,11 @@ export async function verifyConsolidation(
     const ws = workstreams[id];
     if (!ws || ws.paths.length === 0) {
       // No paths declared → can't verify; note, don't false-alarm.
-      verdicts.push({ id, status: "unverifiable", reason: "no declared paths" });
+      verdicts.push({
+        id,
+        status: "unverifiable",
+        reason: "no declared paths",
+      });
       continue;
     }
     const own = declaredOf(ws);
@@ -414,7 +437,7 @@ export async function verifyConsolidation(
       verdicts.push({ id, status: "complete" });
     }
   }
-  return { missing, filesPresent, verdicts };
+  return { missing, filesPresent, verdicts, notes: [] };
 }
 
 /**
