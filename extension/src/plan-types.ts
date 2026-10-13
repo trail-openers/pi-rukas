@@ -84,6 +84,12 @@ export interface PlanResult {
   priorContext: { source: string; fact: string }[];
   filed: boolean;
   issueUrl?: string;
+  /**
+   * #1132: why investigators read the local checkout instead of origin/<default>
+   * (a failed fetch or base tree). Absent when the run read the base. Disclosed
+   * on the result; the investigation cache was not used for the run.
+   */
+  baseFallback?: string;
   capHit?: boolean;
   /**
    * The residual union (non-blocking findings across ALL gate rounds,
@@ -126,9 +132,7 @@ export interface PlanResult {
    * D7: a DISCRIMINATED filing failure (or deliberate skip) carried on the
    * result so the operator-visible text can say WHY the issue did not file
    * — forge-unresolved / create-error (detail carries the forge stderr) /
-   * empty-url / cap-surface (the gap-gate cap routed to surface because a
-   * CRITICAL gap remains — CRITICAL-only blocks, #664 transposed; the spec
-   * was not filed BY POLICY — nothing failed) / gate-unavailable
+   * empty-url / gate-unavailable
    * (the gap-gate dispatch itself failed, so no reviewer ever saw the spec)
    * — instead of the generic "filing failed or was blocked".
    *

@@ -32,6 +32,8 @@ export interface Phase5Result {
  * terminal rule, #664 transposed), do NOT file — surface to the operator. D7: the filing failure is DISCRIMINATED and
  * carried on the result; the operator-visible text (plan-tool.ts) surfaces
  * the reason including the forge stderr, without requiring PI_ENSEMBLE_DEBUG.
+ * #1132: the cap no longer routes to surface. Still-blocking CRITICAL points are
+ * filed in the body as open points, so the iteration cap does not prevent filing.
  */
 export async function phase5FilingFailure(args: Phase5Args): Promise<Phase5Result> {
   let issueUrl: string | undefined;
@@ -45,13 +47,6 @@ export async function phase5FilingFailure(args: Phase5Args): Promise<Phase5Resul
     filingFailure = {
       reason: "review-unparseable",
       detail: `the gap-gate review could not be parsed (no structured findings and no verdict, after one strict retry) — the spec was NOT reviewed and was not filed. Re-run start_plan_driver to retry the gate. Raw reviewer output head: ${args.rawUnparsedHead ?? "(unavailable)"}`,
-    };
-  } else if (args.capReason === "unresolved-blocking") {
-    // Deliberate skip: CRITICAL gaps remain (CRITICAL-only blocks; HIGH
-    // travels in the residual disclosure) — not filed by policy.
-    filingFailure = {
-      reason: "cap-surface",
-      detail: "the gap gate cap routed to surface (CRITICAL gaps remain) — not filed by policy",
     };
   } else if (args.capReason === "gate-unavailable") {
     // Deliberate skip: the gate dispatch failed — no reviewer saw the spec.

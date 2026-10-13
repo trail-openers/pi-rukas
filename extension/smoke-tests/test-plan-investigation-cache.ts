@@ -58,22 +58,29 @@ installForgeStub();
 {
   const prior = process.env.PI_ENSEMBLE_PLAN_CACHE;
   process.env.PI_ENSEMBLE_PLAN_CACHE = "0";
-  const off = await resolvePlanGitState(REPO);
+  const localBase = { readRoot: REPO, baseSha: "a".repeat(40), release: async () => undefined };
+  const off = await resolvePlanGitState(REPO, localBase);
   delete process.env.PI_ENSEMBLE_PLAN_CACHE;
-  const on = await resolvePlanGitState(REPO);
+  const on = await resolvePlanGitState(REPO, localBase);
   if (prior === undefined) delete process.env.PI_ENSEMBLE_PLAN_CACHE;
   else process.env.PI_ENSEMBLE_PLAN_CACHE = prior;
   assert(off === undefined, "canary: PI_ENSEMBLE_PLAN_CACHE=0 disables the real git-state lookup");
-  assert(on !== undefined && on.head.length > 0, "canary: unset, the real lookup resolves HEAD");
+  assert(
+    on?.keySha === "a".repeat(40),
+    "canary: unset, the real lookup keys on the run's origin SHA",
+  );
 }
 
 // ------------------------------------------------------------- key
 
 {
-  const base: CacheInputs = { descriptor: DESC, type: "feature", head: "h1" };
+  const base: CacheInputs = { descriptor: DESC, type: "feature", keySha: "h1" };
   const k = investigationCacheKey(base);
   assert(k === investigationCacheKey({ ...base }), "key is stable for identical inputs");
-  assert(k !== investigationCacheKey({ ...base, head: "h2" }), "key changes with git HEAD");
+  assert(
+    k !== investigationCacheKey({ ...base, keySha: "h2" }),
+    "key changes with origin/<default>",
+  );
   assert(k !== investigationCacheKey({ ...base, type: "bug" }), "key changes with the type");
   assert(
     k !== investigationCacheKey({ ...base, descriptor: `${DESC} now` }),
@@ -110,9 +117,10 @@ assert(forgeStub.created.length >= 1, "filing still goes through the forge");
 // ------------------------------------------------------------- non-fileable hit: barrier reuse + gate seed
 
 await newPlanCache();
-installCountingDispatch([GAP_CRITICAL]);
+// Non-fileable = the review never completed (corrective round, then unreadable).
+installCountingDispatch([GAP_CRITICAL, "", ""]);
 await pipeline({ dryRun: true });
-installCountingDispatch([GAP_CRITICAL]);
+installCountingDispatch([GAP_CRITICAL, "", ""]);
 const nonFileable = await pipeline();
 assert(log.explore === 0, "a non-fileable dry run's confirm reuses the investigation");
 assert(log.gate >= 1, "a non-fileable dry run's confirm still runs the gap gate");
@@ -130,7 +138,7 @@ assert(
 await newPlanCache();
 installCountingDispatch([GAP_HIGH]);
 await pipeline({ dryRun: true });
-cacheState.head = "b".repeat(40);
+cacheState.keySha = "b".repeat(40);
 installCountingDispatch([GAP_HIGH]);
 const headMiss = await pipeline();
 assert(
@@ -277,7 +285,7 @@ assert((await cacheFiles()).length === 0, "a halted dry run writes no cache entr
     hit.details.investigationReused !== undefined,
     "a reused investigation is carried on the details",
   );
-  cacheState.head = "c".repeat(40);
+  cacheState.keySha = "c".repeat(40);
   installCountingDispatch([GAP_HIGH]);
   const miss = await invokePlanTool(tools, { descriptor: DESC });
   assert(
