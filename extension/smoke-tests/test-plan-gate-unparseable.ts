@@ -76,8 +76,8 @@ async function run(gateReplies: string[] | string) {
 }
 
 {
-  // Reviewed, CRITICAL persists both rounds → at the cap, FILED with the
-  // CRITICAL as an open point (#1132 addendum: the cap no longer refuses).
+  // Reviewed, CRITICAL persists both rounds → BLOCKED.
+  // (#1132: no longer blocked — at the cap, FILED with the CRITICAL as an open point.)
   const r = await run([
     "GAP: CRITICAL — contradiction A\nVERDICT: NEEDS_ITERATION",
     "GAP: CRITICAL — contradiction A\nVERDICT: NEEDS_ITERATION",
@@ -126,7 +126,8 @@ async function run(gateReplies: string[] | string) {
 
 {
   // Truncated mid-structure: GAP lines present, verdict missing → REVIEWED
-  // (D3): CRITICAL without a verdict routes to iteration, then reaches the cap.
+  // (D3): CRITICAL without a verdict routes to iteration, then blocks.
+  // (#1132: the block is now the cap, which FILES with the CRITICAL as an open point.)
   const r = await run([
     "GAP: CRITICAL — the retry cap contradicts the quota rule",
     "GAP: CRITICAL — the retry cap contradicts the quota rule",

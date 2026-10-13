@@ -58,14 +58,17 @@ installForgeStub();
 {
   const prior = process.env.PI_ENSEMBLE_PLAN_CACHE;
   process.env.PI_ENSEMBLE_PLAN_CACHE = "0";
-  const localBase = { readRoot: REPO, release: async () => undefined };
+  const localBase = { readRoot: REPO, baseSha: "a".repeat(40), release: async () => undefined };
   const off = await resolvePlanGitState(REPO, localBase);
   delete process.env.PI_ENSEMBLE_PLAN_CACHE;
   const on = await resolvePlanGitState(REPO, localBase);
   if (prior === undefined) delete process.env.PI_ENSEMBLE_PLAN_CACHE;
   else process.env.PI_ENSEMBLE_PLAN_CACHE = prior;
   assert(off === undefined, "canary: PI_ENSEMBLE_PLAN_CACHE=0 disables the real git-state lookup");
-  assert(on !== undefined && on.keySha.length > 0, "canary: unset, the real lookup resolves HEAD");
+  assert(
+    on?.keySha === "a".repeat(40),
+    "canary: unset, the real lookup keys on the run's origin SHA",
+  );
 }
 
 // ------------------------------------------------------------- key
@@ -135,7 +138,7 @@ assert(
 await newPlanCache();
 installCountingDispatch([GAP_HIGH]);
 await pipeline({ dryRun: true });
-cacheState.head = "b".repeat(40);
+cacheState.keySha = "b".repeat(40);
 installCountingDispatch([GAP_HIGH]);
 const headMiss = await pipeline();
 assert(
@@ -282,7 +285,7 @@ assert((await cacheFiles()).length === 0, "a halted dry run writes no cache entr
     hit.details.investigationReused !== undefined,
     "a reused investigation is carried on the details",
   );
-  cacheState.head = "c".repeat(40);
+  cacheState.keySha = "c".repeat(40);
   installCountingDispatch([GAP_HIGH]);
   const miss = await invokePlanTool(tools, { descriptor: DESC });
   assert(

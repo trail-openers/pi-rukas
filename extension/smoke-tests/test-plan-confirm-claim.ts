@@ -46,7 +46,7 @@ installForgeStub();
   await newPlanCache();
   installCountingDispatch(GAP_HIGH);
   const d = await pipeline({ dryRun: true });
-  const inputs = { descriptor: DESC, type: "feature" as const, keySha: cacheState.head };
+  const inputs = { descriptor: DESC, type: "feature" as const, keySha: cacheState.keySha };
   // Stamp a known past mtime: a claim-then-restore rewrites it (utimes on the
   // claim, then link back), so an untouched mtime proves the entry was never claimed.
   const [entryName] = await cacheFiles();
@@ -81,7 +81,7 @@ installForgeStub();
   await newPlanCache();
   installCountingDispatch([GAP_CRITICAL, "", ""]); // unreviewed after a corrective round: non-fileable
   await pipeline({ dryRun: true });
-  const inputs = { descriptor: DESC, type: "feature" as const, keySha: cacheState.head };
+  const inputs = { descriptor: DESC, type: "feature" as const, keySha: cacheState.keySha };
   assert(
     (await claimFileableDryRun(cacheState.dir, inputs)) === undefined &&
       !(await readdir(cacheState.dir)).some((f) => f.endsWith(".claim")),
@@ -95,7 +95,7 @@ installForgeStub();
   await newPlanCache();
   installCountingDispatch(GAP_HIGH);
   await pipeline({ dryRun: true });
-  const atHead = { descriptor: DESC, type: "feature" as const, keySha: cacheState.head };
+  const atHead = { descriptor: DESC, type: "feature" as const, keySha: cacheState.keySha };
   const won = await claimFileableDryRun(cacheState.dir, atHead);
   await won?.commit("https://example.test/issues/12");
   assert(

@@ -194,8 +194,9 @@ export async function concurrentFilingOf(
     .readFile(markerOf(file), "utf8")
     .then((t) => JSON.parse(t) as { at?: unknown; url?: unknown; keySha?: unknown })
     .catch(() => undefined);
-  // A marker refuses only the origin/<default> SHA it was written at: after it
-  // moves, the identical confirm is a new plan and runs the pipeline (#1043 review).
+  // A marker refuses only the HEAD it was written at: after HEAD moves, the
+  // identical confirm is a new plan and runs the pipeline (#1043 review).
+  // (#1132: "HEAD" here is the origin/<default> SHA, the cache key's keySha.)
   if (
     marker &&
     typeof marker.at === "number" &&

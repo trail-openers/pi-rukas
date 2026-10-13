@@ -2,7 +2,8 @@
  * plan-gap-disclosure — the operator-visible renderings of gap-gate findings:
  * the residual-findings section of a filed body and the settled-gaps list in a
  * gate prompt (#1043, D2). Split out of plan-gaps.ts (500-line hard limit,
- * AGENTS.md §12); plan-gaps.ts re-exports these names.
+ * AGENTS.md §12). Importers take these names from this module; plan-gaps.ts
+ * does not re-export them.
  */
 import { GAP_RESOLUTION_PLACEHOLDER } from "./plan-gap-parse.ts";
 import type { PlanGap } from "./plan-types.ts";

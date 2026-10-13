@@ -158,8 +158,8 @@ const CONSISTENT_EDGE = "an absent config file falls back to the default protect
     "settled pair: the negated line is dropped, the positive line kept",
   );
   assert(
-    r.body.includes('dropped: conflicts with operator decision "the verdict parser must accept'),
-    "settled pair: the drop cites the operator line",
+    r.body.includes('dropped: operator decision "the verdict parser must accept'),
+    "settled pair: the drop names the operator line that settled it",
   );
   assert(
     !r.body.includes("Unresolved investigation conflict"),
@@ -285,6 +285,57 @@ const CONSISTENT_EDGE = "an absent config file falls back to the default protect
   assert(
     p.includes("a conflict between an operator-authored line"),
     "prompt: an operator-vs-investigation conflict is not a gap",
+  );
+}
+
+// -------------------------------------------------
+// 10. A pair settled by an operator line keeps the side the line agrees with and
+//     drops only the other, naming the settling line and the kept sibling.
+{
+  const agreed = "the verdict parser must accept bare VERDICT lines";
+  const negated = "the verdict parser must not accept bare VERDICT lines";
+  const op = "the verdict parser must accept bare VERDICT lines, per the operator";
+  const res = filterInvestigationConflicts(
+    [
+      { kind: "edge-case", text: negated, angle: "e" },
+      { kind: "edge-case", text: agreed, angle: "e" },
+    ],
+    [op],
+  );
+  assert(res.kept.length === 1 && res.kept[0]?.text === agreed, "settled: the agreed side is kept");
+  assert(
+    res.dropped.length === 1 &&
+      res.dropped[0]?.reason === "settled" &&
+      res.dropped[0]?.against === op &&
+      res.dropped[0]?.sibling === agreed,
+    "settled: the dropped side names the operator line and the kept sibling",
+  );
+  assert(res.openQuestions.length === 0, "settled: no Open Question");
+}
+
+// -------------------------------------------------
+// 11. An item in several conflicting pairs is dropped and listed once; the
+//     operator line settles each pair in favour of the same agreed item.
+{
+  const agreed = "the verdict parser must accept bare VERDICT lines";
+  const negA = "the verdict parser must not accept bare VERDICT lines";
+  const negB = "the verdict parser must never accept bare VERDICT lines";
+  const res = filterInvestigationConflicts(
+    [
+      { kind: "edge-case", text: negA, angle: "e" },
+      { kind: "edge-case", text: agreed, angle: "e" },
+      { kind: "edge-case", text: negB, angle: "e" },
+    ],
+    [agreed],
+  );
+  const listed = res.dropped.map((d) => d.item.text);
+  assert(
+    listed.length === 2 && new Set(listed).size === 2,
+    `once: each dropped item is listed once (listed ${listed.length})`,
+  );
+  assert(
+    res.kept.length === 1 && res.kept[0]?.text === agreed,
+    "once: the agreed item survives both pairs",
   );
 }
 

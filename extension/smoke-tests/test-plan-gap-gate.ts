@@ -231,9 +231,13 @@ installNoPlanCacheStub();
     "D2: the result spec carries the residual disclosure",
   );
 
-  // Case 2 (#1132 addendum): a CRITICAL the gate offered NO resolution for is an
-  // open point at the cap — the spec is FILED with it listed under
-  // "Open points", not refused. The HIGH-only case stays in case 1.
+  // Case 2: CRITICAL remaining at the cap → DO NOT file. Re-cut to
+  // CRITICAL-only from the old CRITICAL+HIGH bundle: the HIGH line is the
+  // finding the gate is non-deterministic about, and a bundled case would
+  // still pass even if the filter change regressed to HIGH-blocking.
+  // (#1132 addendum: superseded. A CRITICAL the gate offered NO resolution for is
+  // an open point at the cap — the spec is FILED with it listed under
+  // "Open points", not refused. The HIGH-only case stays in case 1.)
   forgeStub.created.length = 0;
   forgeStub.mode = "ok";
   const blockingGaps =

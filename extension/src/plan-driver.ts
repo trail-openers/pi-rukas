@@ -40,8 +40,11 @@ import {
   getPlanStatFnOverride,
 } from "./plan-driver-seams.ts";
 import { reviewedDigestOf } from "./plan-filing-claim.ts";
-import { openPointsSection, residualGapsSection } from "./plan-gap-disclosure.ts";
-import { settledGapsSection } from "./plan-gap-disclosure.ts";
+import {
+  openPointsSection,
+  residualGapsSection,
+  settledGapsSection,
+} from "./plan-gap-disclosure.ts";
 import { type GapGateLoopResult, runGapGateLoop } from "./plan-gaps.ts";
 import { type CarriedCritical, gapGatePrompt, gapGateVerifyPrompt } from "./plan-gate-prompt.ts";
 import {

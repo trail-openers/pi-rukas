@@ -6,7 +6,7 @@
  * Real git, in temp dirs: a bare origin, a clone whose working tree is dirty
  * and stale. Asserts: one fetch yields a per-run base tree with the committed
  * origin content; the tree is removed at release; the cache key moves when
- * origin moves; a dead owner's tree is pruned while a live run's is kept; and
+ * origin moves; withPlanBase removes its tree when the callback throws; and
  * every failure falls back to the checkout with a recorded reason.
  */
 
@@ -15,7 +15,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { type PlanBase, openPlanBase } from "../src/plan-base-tree.ts";
+import {
+  type PlanBase,
+  branchNameProblem,
+  openPlanBase,
+  withPlanBase,
+} from "../src/plan-base-tree.ts";
 import { resolvePlanGitState, setPlanGitStateFn } from "../src/plan-investigation-cache.ts";
 
 const execFileP = promisify(execFile);
@@ -111,14 +116,16 @@ try {
   await base2.release();
   assert(!(await exists(base2.readRoot)), "release of the second run removes its tree");
 
-  // A tree whose owning process is dead is pruned on the next run.
-  const baseRoot = path.join(clone, ".git", "pi-plan-base");
-  const orphan = path.join(baseRoot, `${originV1}.2147483640.deadbeef`);
-  await fs.mkdir(orphan, { recursive: true });
-  await fs.writeFile(path.join(orphan, "marker"), "dead owner\n");
-  const base3 = await openPlanBase(clone);
-  held.push(base3);
-  assert(!(await exists(orphan)), "a dead owner's base tree is pruned");
+  // withPlanBase removes the run's tree in its finally, even when the callback throws.
+  let treeInside = "";
+  await withPlanBase(clone, async (b) => {
+    treeInside = b.readRoot;
+    throw new Error("boom");
+  }).catch(() => undefined);
+  assert(
+    treeInside !== "" && !(await exists(treeInside)),
+    "withPlanBase removes its tree when the callback throws",
+  );
 
   // Fail open, reason recorded: an option-like default branch name is refused.
   await git(clone, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/-bad"]);
@@ -131,6 +138,15 @@ try {
     (await resolvePlanGitState(clone, badName)) === undefined,
     "a base fallback skips the investigation cache for the run",
   );
+  // A name git rejects (check-ref-format) is a bad name, and the reason says so.
+  // git's check-ref-format rejects a name (exit 1) → a bad-name reason; a name it
+  // accepts has no problem. (git itself refuses to read an invalid symref, so the
+  // rejection is asserted on the check directly.)
+  assert(
+    (await branchNameProblem(clone, "bad..name"))?.includes("is not a usable branch name") === true,
+    "a name check-ref-format rejects is reported as a bad name",
+  );
+  assert((await branchNameProblem(clone, "main")) === undefined, "a valid name has no problem");
   await git(clone, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
 
   // Fail open, reason recorded: a failed fetch reads the checkout (not the last fetched ref).
@@ -138,8 +154,9 @@ try {
   const failedFetch = await openPlanBase(clone);
   assert(
     failedFetch.readRoot === clone &&
-      (failedFetch.baseFallback ?? "").includes("fetch origin main failed"),
-    "a failed fetch reads the checkout and records why",
+      (failedFetch.baseFallback ?? "").includes("fetch origin main failed") &&
+      !(failedFetch.baseFallback ?? "").includes("Command failed"),
+    "a failed fetch reads the checkout and records git's stderr, not the Command-failed header",
   );
   assert(
     (await resolvePlanGitState(clone, failedFetch)) === undefined,
@@ -154,15 +171,15 @@ try {
   await git(solo, [...cfg, "add", "-A"]);
   await git(solo, [...cfg, "commit", "-m", "init"]);
   const soloBase = await openPlanBase(solo);
+  assert(soloBase.baseSha === undefined, "no origin/HEAD: no base SHA");
   assert(
-    soloBase.baseSha === undefined && soloBase.baseFallback === undefined,
-    "no origin: no base SHA and no fallback reason",
+    soloBase.baseFallback === "origin/HEAD is not set; investigators read the local checkout",
+    "no origin/HEAD: the fallback is disclosed",
   );
-  assert(soloBase.readRoot === solo, "no origin: investigators read the checkout");
-  const soloState = await resolvePlanGitState(solo, soloBase);
+  assert(soloBase.readRoot === solo, "no origin/HEAD: investigators read the checkout");
   assert(
-    soloState?.keySha !== undefined && soloState.keySha.length === 40,
-    "no origin: the cache keys on local HEAD",
+    (await resolvePlanGitState(solo, soloBase)) === undefined,
+    "no origin/HEAD: the cache is skipped (no origin key)",
   );
 } finally {
   for (const b of held) await b.release();

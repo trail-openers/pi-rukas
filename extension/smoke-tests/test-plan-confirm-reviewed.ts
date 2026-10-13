@@ -92,7 +92,7 @@ assert(forgeStub.created.length === 1, "the repeat files nothing: still exactly 
 await newPlanCache();
 installCountingDispatch(GAP_HIGH);
 await pipeline({ dryRun: true });
-const claimInputs = { descriptor: DESC, type: "feature" as const, keySha: cacheState.head };
+const claimInputs = { descriptor: DESC, type: "feature" as const, keySha: cacheState.keySha };
 const first = await claimFileableDryRun(cacheState.dir, claimInputs);
 assert(first !== undefined, "a fileable entry can be claimed");
 assert(
@@ -110,7 +110,7 @@ assert(
 await newPlanCache();
 installCountingDispatch(GAP_HIGH);
 await pipeline({ dryRun: true });
-const raceInputs = { descriptor: DESC, type: "feature" as const, keySha: cacheState.head };
+const raceInputs = { descriptor: DESC, type: "feature" as const, keySha: cacheState.keySha };
 const held = await claimFileableDryRun(cacheState.dir, raceInputs);
 installCountingDispatch(GAP_HIGH);
 const raced = await fileReviewedDryRun(cacheState.dir, raceInputs, REPO, () => []);
@@ -147,7 +147,7 @@ await pipeline({ dryRun: true });
 const sessionA = await claimFileableDryRun(cacheState.dir, {
   descriptor: DESC,
   type: "feature",
-  keySha: cacheState.head,
+  keySha: cacheState.keySha,
 });
 assert(sessionA !== undefined, "(f) session A claims an 11-min-old dry run");
 installCountingDispatch(GAP_HIGH);
@@ -269,7 +269,7 @@ assert(
 await newPlanCache();
 installCountingDispatch(GAP_HIGH);
 await pipeline({ dryRun: true });
-cacheState.head = "b".repeat(40);
+cacheState.keySha = "b".repeat(40);
 installCountingDispatch(GAP_HIGH);
 const headChanged = await pipeline();
 assert(
@@ -360,7 +360,7 @@ for (const [label, mutate] of [
   await newPlanCache();
   installCountingDispatch(GAP_HIGH);
   await pipeline({ dryRun: true });
-  const inputs = { descriptor: DESC, type: "feature" as const, keySha: cacheState.head };
+  const inputs = { descriptor: DESC, type: "feature" as const, keySha: cacheState.keySha };
   assert(
     (await claimFileableDryRun(cacheState.dir, inputs, { digest: "0000000000000000" })) ===
       undefined,
@@ -438,7 +438,7 @@ for (const [label, mutate] of [
   await newPlanCache();
   installCountingDispatch(GAP_HIGH);
   await pipeline({ dryRun: true });
-  const inputs = { descriptor: DESC, type: "feature" as const, keySha: cacheState.head };
+  const inputs = { descriptor: DESC, type: "feature" as const, keySha: cacheState.keySha };
   const [entryName] = await cacheFiles();
   const held = await claimFileableDryRun(cacheState.dir, inputs);
   const blocker = path.join(cacheState.dir, (entryName ?? "").replace(/\.json$/, ".filed"));

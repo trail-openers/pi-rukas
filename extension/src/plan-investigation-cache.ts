@@ -22,8 +22,9 @@
  * and gate seed; it never files on its own. The claim/commit protocol that
  * hands a fileable entry to the forge lives in plan-filing-claim.ts.
  *
- * Staleness is keyed on origin/<default> (#1132: what investigators read, see
- * plan-base-tree.ts; local HEAD when no default branch resolves) and epic depth.
+ * Staleness is keyed on git HEAD and epic depth (both change the drafted spec).
+ * #1132: the HEAD in that key is origin/<default>, what investigators read
+ * (plan-base-tree.ts); a run with no origin SHA neither reads nor writes the cache.
  * Uncommitted working-tree edits are NOT part of the key; the result says so
  * (plan-tool.ts).
  *
@@ -40,7 +41,6 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { PlanBase } from "./plan-base-tree.ts";
 import type { MechanicalInventory } from "./plan-draft.ts";
 import type { InvestigationResult } from "./plan-investigate.ts";
 import { assemblePriorContext } from "./plan-prior-context-assembly.ts";
@@ -104,7 +104,10 @@ export interface PlanGitState {
   cacheDir: string;
 }
 
-type GitStateFn = (repoRoot: string, base: PlanBase) => Promise<PlanGitState | undefined>;
+/** The part of a run's base the cache keys on: its origin SHA, or why there is none. */
+type BaseRef = { baseSha?: string; baseFallback?: string };
+
+type GitStateFn = (repoRoot: string, base: BaseRef) => Promise<PlanGitState | undefined>;
 
 let _gitStateOverride: GitStateFn | null = null;
 
@@ -117,33 +120,32 @@ export function setPlanGitStateFn(fn: GitStateFn | null): void {
  * HEAD and the per-clone cache dir. Undefined when HEAD is unreadable (for
  * example an unborn branch) — caching is then skipped and the run proceeds
  * exactly as it did before this module existed.
+ * #1132: the key is the run's origin/<default> SHA; without one there is no key.
  */
 export async function resolvePlanGitState(
   repoRoot: string,
-  base: PlanBase,
+  base: BaseRef,
 ): Promise<PlanGitState | undefined> {
   if (_gitStateOverride) return _gitStateOverride(repoRoot, base);
   // PI_ENSEMBLE_PLAN_CACHE=0 (set by smoke-tests/lib/verify-loop.sh): no real
   // lookup, so a test without an explicit stub cannot touch the real clone's cache.
   if (process.env.PI_ENSEMBLE_PLAN_CACHE === "0") return undefined;
-  // #1132: a run whose origin/<default> read failed has no origin key to use or
-  // write, so it neither reads nor writes the cache (the local checkout is not keyed).
-  if (base.baseFallback) {
+  if (base.baseSha === undefined) {
     trace(
-      `plan-investigation-cache: base fallback (${base.baseFallback}) — cache skipped for this run`,
+      `plan-investigation-cache: no origin key (${base.baseFallback ?? "no origin/HEAD"}) — cache skipped for this run`,
     );
     return undefined;
   }
   try {
     const { stdout } = await execFileP(
       "git",
-      ["-C", repoRoot, "rev-parse", "--path-format=absolute", "--git-common-dir", "HEAD"],
+      ["-C", repoRoot, "rev-parse", "--path-format=absolute", "--git-common-dir"],
       { timeout: 10_000 },
     );
-    const [commonDir, head] = stdout.trim().split("\n");
-    if (!commonDir || !head) return undefined;
+    const commonDir = stdout.trim();
+    if (!commonDir) return undefined;
     return {
-      keySha: base.baseSha ?? head,
+      keySha: base.baseSha,
       cacheDir: path.join(commonDir, "pi-plan-cache"),
     };
   } catch (err) {

@@ -310,9 +310,10 @@ function hasResidualSection(body: string): boolean {
 
 // -------------------------------------------------
 // Pipeline: the ratchet shape is now the prompt's job — but if the
-// reviewer STILL writes a CRITICAL with a proposal (internal contradiction),
-// the #1132 addendum applies: unresolved-blocking at the cap, FILED with the
-// CRITICAL disclosed in the residual section.
+// reviewer STILL writes a CRITICAL (internal contradiction or impossibility),
+// the PR #637 terminal rule is untouched: unresolved-blocking, never files.
+// (#1132 addendum: superseded — unresolved-blocking at the cap, FILED with the
+// CRITICAL disclosed as an open point.)
 {
   const blockingReply =
     "GAP: CRITICAL the spec commits to both a retry cap of 3 and an infinite retry on quota errors — proposed resolution: name which wins\n" +

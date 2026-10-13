@@ -20,15 +20,17 @@
  *     the doctrine called non-blocking, and the fix was a policy terminal
  *     rule, not a findings filter): at the cap, zero CRITICAL gaps FILE
  *     the spec with the residual HIGH/MEDIUM/LOW gaps disclosed in a
- *     "## Residual gap-gate findings" section (D2); CRITICAL remains → the
- *     spec is still filed, with each open CRITICAL listed under "## Open
- *     points" (#1132: the cap no longer refuses filing). With CRITICAL-only blocking, a
+ *     "## Residual gap-gate findings" section (D2); CRITICAL remains → do
+ *     not file, surface to the operator. With CRITICAL-only blocking, a
  *     ratcheting stream of fresh HIGH findings is structurally incapable of
  *     preventing filing — the findings travel, they are not deduped. The
  *     corrective round likewise fires only on CRITICAL: HIGH no longer
  *     triggers re-drafting, because the gate is non-deterministic on
  *     identical input and "fix the gaps and re-run" is not a convergent
  *     strategy.
+ *
+ *     #1132: the "do not file" above is superseded. At the cap a remaining CRITICAL
+ *     still FILES the spec, each open CRITICAL listed under "## Open points".
  */
 import { type GapGateParse, type GapGateVerdict, parseGaps } from "./plan-gap-parse.ts";
 import type { PlanGap } from "./plan-types.ts";

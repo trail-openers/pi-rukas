@@ -51,7 +51,7 @@ export interface PlanResultFields {
 
 /**
  * Per-phase wall-clock record for one pipeline run (PlanResult.timings). Split
- * out of plan-driver.ts along the 500-line seam (AGENTS.md \u00a712).
+ * out of plan-driver.ts along the 500-line seam (AGENTS.md §12).
  */
 export function phaseTimer() {
   const timings: PlanPhaseTiming[] = [];

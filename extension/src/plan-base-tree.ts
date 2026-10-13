@@ -6,11 +6,10 @@
  * (never tracked). The inventory and the investigation children read that tree,
  * never the working tree, so a dirty or stale checkout cannot change the spec.
  *
- * The tree is per run (`<sha>.<pid>.<rand>`) and removed by `release()` when the
- * run ends. Other runs' trees are never retired; only trees whose owning pid is
- * dead are pruned. Every failure fails open to the local checkout, and the run
- * records WHY in `baseFallback` (disclosed on the result), so a /plan run is
- * never lost to git plumbing.
+ * `withPlanBase` removes the run's tree in its `finally`; `git worktree prune`
+ * clears registrations whose directory has already gone. Every failure fails
+ * open to the local checkout, and the run records WHY in `baseFallback`
+ * (disclosed on the result), so a /plan run is never lost to git plumbing.
  */
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -26,8 +25,17 @@ const git = async (cwd: string, args: string[], timeout = 60_000): Promise<strin
   return stdout.trim();
 };
 
-/** The first line of a git failure, for a one-line disclosure. */
-const firstLine = (err: unknown): string => (err as Error).message.split("\n")[0] ?? "";
+/** The first non-empty line of git's stderr: the reason, not the "Command failed" header. */
+function firstLine(err: unknown): string {
+  const stderr = (err as { stderr?: unknown }).stderr;
+  const text = typeof stderr === "string" && stderr.trim() ? stderr : (err as Error).message;
+  return (
+    text
+      .split("\n")
+      .map((l) => l.trim())
+      .find((l) => l.length > 0) ?? "unknown error"
+  );
+}
 
 /** What one /plan run reads, and how that was resolved. */
 export interface PlanBase {
@@ -41,14 +49,23 @@ export interface PlanBase {
   release(): Promise<void>;
 }
 
-/** A default-branch name the fetch may take: no option-like prefix, a valid branch name. */
-async function isUsableBranchName(repoRoot: string, name: string): Promise<boolean> {
-  if (!name || name.startsWith("-")) return false;
+/**
+ * Why a default-branch name may not reach git, or undefined when it may. git
+ * exiting non-zero is a rejection of the name; any other failure (a spawn error,
+ * a timeout) is a failed check, reported as such rather than as a bad name.
+ */
+export async function branchNameProblem(
+  repoRoot: string,
+  name: string,
+): Promise<string | undefined> {
+  const notUsable = `default branch name ${JSON.stringify(name)} is not a usable branch name`;
+  if (!name || name.startsWith("-")) return notUsable;
   try {
     await git(repoRoot, ["check-ref-format", "--branch", name], 10_000);
-    return true;
-  } catch {
-    return false;
+    return undefined;
+  } catch (err) {
+    if (typeof (err as { code?: unknown }).code === "number") return notUsable;
+    return `branch-name check failed (${firstLine(err)})`;
   }
 }
 
@@ -57,28 +74,6 @@ async function removeBaseTree(repoRoot: string, dir: string): Promise<void> {
   await git(repoRoot, ["worktree", "remove", "--force", dir], 60_000).catch(() => undefined);
   await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
   await git(repoRoot, ["worktree", "prune"], 10_000).catch(() => undefined);
-}
-
-/** A process that exists, or one we may not signal (EPERM), is alive. */
-function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
-/**
- * Prune base trees whose owning process is gone. A tree named for this process
- * (or a live one) is left alone: another run may be reading it.
- */
-async function pruneDeadBaseTrees(repoRoot: string, baseRoot: string): Promise<void> {
-  for (const name of await fs.readdir(baseRoot).catch(() => [] as string[])) {
-    const pid = Number(name.split(".")[1]);
-    if (!Number.isInteger(pid) || pid === process.pid || pidAlive(pid)) continue;
-    await removeBaseTree(repoRoot, path.join(baseRoot, name));
-  }
 }
 
 /** Run `fn` with this run's base, releasing the base tree however `fn` ends. */
@@ -117,16 +112,14 @@ export async function openPlanBase(repoRoot: string): Promise<PlanBase> {
     );
     branch = ref.replace(/^origin\//, "");
   } catch (err) {
-    // No origin/HEAD: the default branch is unresolved, which is normal, not a failure.
-    trace(
-      `plan-base-tree: origin/<default> unresolvable — reading the checkout (${firstLine(err)})`,
-    );
-    return local();
-  }
-  if (!(await isUsableBranchName(repoRoot, branch))) {
-    const reason = `default branch name ${JSON.stringify(branch)} is not a usable branch name`;
-    trace(`plan-base-tree: ${reason} — reading the checkout`);
+    const reason = "origin/HEAD is not set; investigators read the local checkout";
+    trace(`plan-base-tree: ${reason} (${firstLine(err)})`);
     return local(reason);
+  }
+  const problem = await branchNameProblem(repoRoot, branch);
+  if (problem) {
+    trace(`plan-base-tree: ${problem} — reading the checkout`);
+    return local(problem);
   }
 
   try {
@@ -159,8 +152,9 @@ export async function openPlanBase(repoRoot: string): Promise<PlanBase> {
     );
     const baseRoot = path.join(commonDir, "pi-plan-base");
     await fs.mkdir(baseRoot, { recursive: true });
-    await pruneDeadBaseTrees(repoRoot, baseRoot);
-    dir = path.join(baseRoot, `${sha}.${process.pid}.${randomBytes(4).toString("hex")}`);
+    // Registrations left by a run whose directory is already gone.
+    await git(repoRoot, ["worktree", "prune"], 10_000).catch(() => undefined);
+    dir = path.join(baseRoot, randomBytes(8).toString("hex"));
     await git(repoRoot, ["worktree", "add", "--detach", dir, sha], 120_000);
   } catch (err) {
     if (dir) await removeBaseTree(repoRoot, dir);

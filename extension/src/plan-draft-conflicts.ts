@@ -15,6 +15,11 @@
  * lines are never dropped. This heuristic decides ONLY whether an investigation
  * item is drafted: it never decides whether the gap gate blocks or files. A gate
  * CRITICAL is handled by the gate loop (plan-gaps.ts), whatever its text.
+ *
+ * Two investigation items that clash are settled by an operator line when that
+ * line agrees with one of them and contradicts the other: the contradicted item
+ * is dropped and the disclosure names the operator line. Only an unsettled
+ * clash drops both items and raises an Open Question.
  */
 
 import type { OperatorDirectives } from "./plan-directives.ts";
@@ -115,6 +120,14 @@ export function linesConflict(a: string, b: string): boolean {
   return NEGATION_CUE.test(a) !== NEGATION_CUE.test(b);
 }
 
+/** Same topic and same polarity: the operator line restates the investigation item. */
+function agrees(op: string, item: string): boolean {
+  return (
+    sharedTokenCount(op, item) >= MIN_SHARED_TOKENS &&
+    NEGATION_CUE.test(op) === NEGATION_CUE.test(item)
+  );
+}
+
 /** One investigation item as the drafting path sees it. */
 export interface InvestigationLine {
   kind: string;
@@ -124,9 +137,15 @@ export interface InvestigationLine {
 
 export interface DroppedInvestigationItem<T extends InvestigationLine = InvestigationLine> {
   item: T;
-  /** The operator line it contradicts, or the other investigation line. */
+  /** The operator line it contradicts or that settled its clash, or the other investigation line. */
   against: string;
-  reason: "operator" | "investigation";
+  /**
+   * operator: contradicts an operator line. settled: an operator line agreed
+   * with `sibling` and contradicted this item. investigation: an unsettled clash.
+   */
+  reason: "operator" | "investigation" | "settled";
+  /** For "settled": the investigation line the operator line kept. */
+  sibling?: string;
 }
 
 export interface InvestigationConflictResult<T extends InvestigationLine = InvestigationLine> {
@@ -136,47 +155,71 @@ export interface InvestigationConflictResult<T extends InvestigationLine = Inves
   openQuestions: string[];
 }
 
+/** The operator line that settles a clash between two items, and which item it keeps. */
+function settlement<T extends InvestigationLine>(
+  a: T,
+  b: T,
+  operatorLines: string[],
+): { keep: T; drop: T; line: string } | undefined {
+  for (const op of operatorLines) {
+    if (agrees(op, a.text) && linesConflict(op, b.text)) return { keep: a, drop: b, line: op };
+    if (agrees(op, b.text) && linesConflict(op, a.text)) return { keep: b, drop: a, line: op };
+  }
+  return undefined;
+}
+
 /**
- * Drop investigation items that contradict an operator line, and drop BOTH
- * sides of an investigation-vs-investigation clash. An investigation-vs-
- * investigation clash becomes an Open Question only when no operator line
- * is about the same topic (operator context settles it otherwise).
+ * Drop investigation items that contradict the operator. A clash between two
+ * investigation items is settled by an operator line that agrees with one side
+ * (that side is kept, the other dropped and disclosed as settled); an unsettled
+ * clash drops BOTH sides and becomes an Open Question. An item is dropped at
+ * most once, however many conflicting pairs it sits in.
  */
 export function filterInvestigationConflicts<T extends InvestigationLine>(
   items: T[],
   operatorLines: string[],
 ): InvestigationConflictResult<T> {
+  const doomed = new Set<T>();
   const dropped: DroppedInvestigationItem<T>[] = [];
-  const survivors: T[] = [];
-  for (const item of items) {
-    const op = operatorLines.find((o) => linesConflict(o, item.text));
-    if (op !== undefined) dropped.push({ item, against: op, reason: "operator" });
-    else survivors.push(item);
-  }
+  const drop = (d: DroppedInvestigationItem<T>): void => {
+    if (doomed.has(d.item)) return;
+    doomed.add(d.item);
+    dropped.push(d);
+  };
+  const live = (): T[] => items.filter((it) => !doomed.has(it));
 
-  const doomed = new Set<number>();
-  const openQuestions: string[] = [];
-  for (let i = 0; i < survivors.length; i++) {
-    for (let j = i + 1; j < survivors.length; j++) {
-      const a = survivors[i];
-      const b = survivors[j];
-      if (!a || !b || doomed.has(i) || doomed.has(j)) continue;
+  // 1. Operator-settled pairs: the side the operator line contradicts goes.
+  for (let i = 0; i < items.length; i++) {
+    for (let j = i + 1; j < items.length; j++) {
+      const a = items[i];
+      const b = items[j];
+      if (!a || !b || doomed.has(a) || doomed.has(b)) continue;
       if (!linesConflict(a.text, b.text)) continue;
-      doomed.add(i);
-      doomed.add(j);
-      dropped.push({ item: a, against: b.text, reason: "investigation" });
-      dropped.push({ item: b, against: a.text, reason: "investigation" });
-      const settled = operatorLines.some(
-        (o) =>
-          sharedTokenCount(o, a.text) >= MIN_SHARED_TOKENS ||
-          sharedTokenCount(o, b.text) >= MIN_SHARED_TOKENS,
-      );
-      if (!settled)
-        openQuestions.push(`Unresolved investigation conflict: "${a.text}" vs "${b.text}"`);
+      const s = settlement(a, b, operatorLines);
+      if (s) drop({ item: s.drop, against: s.line, reason: "settled", sibling: s.keep.text });
     }
   }
-  const kept = survivors.filter((_, idx) => !doomed.has(idx));
-  return { kept, dropped, openQuestions };
+
+  // 2. Items that contradict an operator line.
+  for (const item of live()) {
+    const op = operatorLines.find((o) => linesConflict(o, item.text));
+    if (op !== undefined) drop({ item, against: op, reason: "operator" });
+  }
+
+  // 3. Unsettled investigation-vs-investigation clashes among the rest.
+  const openQuestions: string[] = [];
+  for (let i = 0; i < items.length; i++) {
+    for (let j = i + 1; j < items.length; j++) {
+      const a = items[i];
+      const b = items[j];
+      if (!a || !b || doomed.has(a) || doomed.has(b)) continue;
+      if (!linesConflict(a.text, b.text)) continue;
+      drop({ item: a, against: b.text, reason: "investigation" });
+      drop({ item: b, against: a.text, reason: "investigation" });
+      openQuestions.push(`Unresolved investigation conflict: "${a.text}" vs "${b.text}"`);
+    }
+  }
+  return { kept: live(), dropped, openQuestions };
 }
 
 /** The disclosure bullet for one dropped item (rendered in the filed body). */
@@ -185,7 +228,9 @@ export function droppedDisclosure(d: DroppedInvestigationItem): string {
   const why =
     d.reason === "operator"
       ? `dropped: conflicts with operator decision "${d.against.slice(0, 160)}"`
-      : `dropped: conflicts with another investigation line "${d.against.slice(0, 160)}" that no operator decision settles`;
+      : d.reason === "settled"
+        ? `dropped: operator decision "${d.against.slice(0, 160)}" settles its clash with the investigation line "${(d.sibling ?? "").slice(0, 160)}"`
+        : `dropped: conflicts with another investigation line "${d.against.slice(0, 160)}" that no operator decision settles`;
   return `- ${why} — [${item.angle} / ${item.kind}] ${item.text}`;
 }
 
