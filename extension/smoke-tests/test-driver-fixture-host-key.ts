@@ -28,7 +28,9 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const PI_KEY = /(^|[{,(\s])pi:\s/;
+// Matches `pi:` (key) and `pi,` / `pi }` (shorthand key). Not `const pi =`,
+// `piSessionHost`, or a value position (`host: pi,`), which is `(?<!:\s*)`.
+const PI_KEY = /(^|[{,(\s])(?<!:\s*)pi(\s*:\s|\s*,|\s*\})/;
 const WINDOW = 4;
 
 /** Line numbers (1-based) where a `pi:` key sits in a DriverContext-shaped literal. */
@@ -39,6 +41,8 @@ function staleHostKeyLines(source: string): number[] {
     if (!PI_KEY.test(line)) return;
     // A type annotation (`pi: ExtensionAPI`) is not a fixture value.
     if (/pi:\s*(ExtensionAPI|Pick<|DispatchHost|DriverHost)\b/.test(line)) return;
+    // A destructuring binding (`const { pi } = mkPi()`) names a local, not a context key.
+    if (/\b(const|let|var)\s*\{[^}]*\bpi\b/.test(line)) return;
     const lo = Math.max(0, i - WINDOW);
     const hi = Math.min(lines.length, i + WINDOW + 1);
     const near = lines.slice(lo, hi).join("\n");
@@ -48,15 +52,38 @@ function staleHostKeyLines(source: string): number[] {
 }
 
 // Detector self-test: it must flag a stale literal and ignore a correct one.
-const STALE = `const ctx = {\n  pi: fake,\n  repoRoot: dir,\n  issue: 1,\n} as unknown as DriverContext;`;
-const FRESH = `const ctx = {\n  host: fake,\n  repoRoot: dir,\n  issue: 1,\n} as unknown as DriverContext;`;
-const HELPER = `function makeFakePi(): { pi: ExtensionAPI; sent: string[] } {\n  return { pi: stub, sent };\n}`;
+const STALE =
+  "const ctx = {\n  pi: fake,\n  repoRoot: dir,\n  issue: 1,\n} as unknown as DriverContext;";
+const FRESH =
+  "const ctx = {\n  host: fake,\n  repoRoot: dir,\n  issue: 1,\n} as unknown as DriverContext;";
+const HELPER =
+  "function makeFakePi(): { pi: ExtensionAPI; sent: string[] } {\n  return { pi: stub, sent };\n}";
+const SHORTHAND = "const ctx = { pi, repoRoot: dir, issue: 1 } as unknown as DriverContext;";
+const SHORTHAND_ONLY = "const ctx = { pi };\nconst r = { repoRoot: dir, issue: 1 };";
+const NOT_KEY = "const pi = path.join(a);\nconst r = { repoRoot: dir, issue: 1 };";
+const NOT_IDENT = "const x = piSessionHost(x);\nconst r = { repoRoot: dir, issue: 1 };";
 assert(staleHostKeyLines(STALE).length === 1, "detector flags a stale `pi:` DriverContext literal");
 assert(staleHostKeyLines(FRESH).length === 0, "detector ignores a correct `host:` literal");
 assert(staleHostKeyLines(HELPER).length === 0, "detector ignores a `{ pi, sent }` helper return");
+assert(
+  staleHostKeyLines(SHORTHAND).length === 1,
+  "detector flags shorthand `{ pi, repoRoot, issue }`",
+);
+assert(staleHostKeyLines(SHORTHAND_ONLY).length === 1, "detector flags shorthand `{ pi }`");
+assert(staleHostKeyLines(NOT_KEY).length === 0, "detector ignores `const pi = path.join(a)`");
+assert(staleHostKeyLines(NOT_IDENT).length === 0, "detector ignores `piSessionHost(x)`");
+const VALUE_POS = "const ctx = {\n  host: pi,\n  repoRoot: dir,\n  issue: 1,\n};";
+const DESTRUCT = "const { pi } = mkPi();\nconst ctx = {\n  repoRoot: dir,\n  issue: 1,\n};";
+assert(staleHostKeyLines(VALUE_POS).length === 0, "detector ignores `host: pi` value position");
+assert(
+  staleHostKeyLines(DESTRUCT).length === 0,
+  "detector ignores a `const { pi } =` destructuring binding",
+);
 
 const dir = path.join(import.meta.dir);
-const files = readdirSync(dir).filter((f) => f.endsWith(".ts") && f !== path.basename(import.meta.path));
+const files = readdirSync(dir).filter(
+  (f) => f.endsWith(".ts") && f !== path.basename(import.meta.path),
+);
 const libFiles = readdirSync(path.join(dir, "lib"))
   .filter((f) => f.endsWith(".ts"))
   .map((f) => path.join("lib", f));
