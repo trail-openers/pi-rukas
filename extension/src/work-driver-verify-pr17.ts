@@ -7,17 +7,19 @@
  * post-dispatch safety gate.
  */
 
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
 import type { CommentEvidence } from "./comment-evidence.ts";
+import { countPrCommits, refResolves } from "./git-range.ts";
+import { execp } from "./lens-exec.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
-import { detectMainline } from "./work-driver-git.ts";
+import { resolveMainline } from "./work-driver-git.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { verifyDevelopOutcome } from "./work-driver-verify-develop.ts";
 import type { WorkState } from "./workflow-state.ts";
 
-const execp = promisify(exec);
+// #1134 follow-up — the argv-capable executor. The previous `promisify(exec)`
+// dropped `argv`, so countPrCommits ran a bare `git` in production (no
+// verifyExecFn is injected there) and every commit-pr read as unverifiable.
 
 /**
  * PR17 — Driver-side outcome verification gate.
@@ -39,6 +41,8 @@ const execp = promisify(exec);
  *     (a) commits exist on the branch: `git rev-list --count
  *         origin/<base>..<branchName>` > 0 at repoRoot (#451 — the branch
  *         is named explicitly so the gate works regardless of repo-root checkout).
+ *         (#1134: the count is now `--right-only origin/<base>...origin/<branch>`,
+ *         the mainline comes from detectMainline, and an unreadable count fails closed.)
  *     (b) the parsed PR number resolves via the forge adapter. When ops
  *         forgot the `pr: <N>` marker, fall back to a head-branch PR
  *         list and ADOPT the number into pipelineState
@@ -50,7 +54,8 @@ const execp = promisify(exec);
  * cap-hit `verify-failed:<step>` → handoff with evidence in
  * pipelineState.verifyEvidence. Infra errors on OUR side (git itself
  * erroring at repoRoot) are notes, not failures — same no-false-alarm
- * stance as verifyConsolidation.
+ * stance as verifyConsolidation. The commit count is the exception (#1134):
+ * if git cannot give it, the commit evidence is unverifiable, which is a failure.
  */
 /** PR17 — escape hatch: PI_ENSEMBLE_VERIFY=0 disables the outcome gate. */
 function verifyGateEnabled(): boolean {
@@ -77,7 +82,10 @@ export function judgePrIdentity(
   view: PrView | undefined,
 ): { ok: true } | { ok: false; failure: string } {
   if (!branchName) {
-    return { ok: false, failure: "cannot be bound to this cycle: no branch was recorded" };
+    return {
+      ok: false,
+      failure: "cannot be bound to this cycle: no branch was recorded",
+    };
   }
   if (!view?.headRefName) {
     return {
@@ -140,7 +148,11 @@ export async function verifyStepOutcome(
   const failures: string[] = [];
   const notes: string[] = [];
   if (!verifyGateEnabled()) {
-    return { ok: true, failures, notes: ["PI_ENSEMBLE_VERIFY=0 — outcome gate skipped"] };
+    return {
+      ok: true,
+      failures,
+      notes: ["PI_ENSEMBLE_VERIFY=0 — outcome gate skipped"],
+    };
   }
   const execFn = ctx.verifyExecFn ?? execp;
 
@@ -179,31 +191,59 @@ export async function verifyStepOutcome(
   }
 
   // step === "commit-pr"
-  let base = "main";
-  const mainline = await detectMainline(ctx.repoRoot, execFn);
-  if (mainline && "branch" in mainline) {
-    base = mainline.branch;
-  }
-  try {
-    // #451 — name the integration branch explicitly. `origin/<branchName>`
-    // requires the branch to be pushed, which it is at commit-pr time (ops
-    // pushes before opening the PR). Using the local ref name (not
-    // `origin/<branch>`) because the commit-pr gate can run before push in
-    // some edge cases; the local ref is what the cycle created.
-    const branch = state.pipelineState.branchName ?? "HEAD";
-    const { stdout } = await execFn(`git rev-list --count origin/${base}..${branch}`, {
-      cwd: ctx.repoRoot,
-      maxBuffer: 64 * 1024,
-    });
-    if (Number.parseInt(stdout.trim(), 10) === 0) {
+  // #1134 — the same mainline resolution readIntegratedDiff uses (detectMainline).
+  // Unresolved has no base to count against, so it fails closed below.
+  const mainline = await resolveMainline(ctx.repoRoot, execFn);
+  const base = "branch" in mainline ? mainline.branch : undefined;
+  // #451 — name the integration branch explicitly. `origin/<branchName>`
+  // requires the branch to be pushed, which it is at commit-pr time (ops
+  // pushes before opening the PR). Using the local ref name (not
+  // `origin/<branch>`) because the commit-pr gate can run before push in
+  // some edge cases; the local ref is what the cycle created.
+  // #1134 supersedes the local-ref choice above: the head is origin/<branch>.
+  // #1134 — head is origin/<branch>, the ref readIntegratedDiff reads. This gate
+  // runs after integrate() has pushed (work-driver-commit-pr-events.ts), so the
+  // remote-tracking ref exists. Three-dot + --right-only: the branch's own
+  // commits, measured from the merge base.
+  const branch = state.pipelineState.branchName;
+  if (base === undefined) {
+    const reason = "reason" in mainline ? mainline.reason : "unknown";
+    failures.push(
+      `could not count commits: the mainline is unresolved (${reason}) — commit evidence is unverifiable`,
+    );
+  } else if (!branch) {
+    failures.push(
+      `could not count commits ahead of origin/${base}: no branch name was recorded for this cycle`,
+    );
+  } else if (!(await refResolves(execFn, ctx.repoRoot, `origin/${branch}`))) {
+    // The count reads origin/<branch>; a clone that never pushed it has nothing
+    // to count, and that is a named fact, not an unverifiable reading.
+    failures.push(`origin/${branch} not found in this clone — the branch was not pushed from here`);
+  } else {
+    try {
+      const ahead = await countPrCommits(
+        execFn,
+        ctx.repoRoot,
+        `origin/${base}`,
+        `origin/${branch}`,
+      );
+      if (Number.isNaN(ahead)) {
+        // Unparseable is not zero and not a pass: it is unknown, so it fails closed.
+        failures.push(
+          `could not count commits ahead of origin/${base} — commit evidence is unverifiable`,
+        );
+      } else if (ahead === 0) {
+        failures.push(
+          `ops claimed commit+PR done but the branch has zero commits ahead of origin/${base} — nothing was committed`,
+        );
+      }
+    } catch (err) {
+      // #1134 — a rejected count is unknown, the same as NaN: a failure, never a note.
+      const msg = ((err as Error).message ?? String(err)).slice(0, 200);
       failures.push(
-        `ops claimed commit+PR done but the branch has zero commits ahead of origin/${base} — nothing was committed`,
+        `could not count commits ahead of origin/${base}: ${msg} — commit evidence is unverifiable`,
       );
     }
-  } catch (err) {
-    notes.push(
-      `git rev-list failed (${(err as Error).message?.slice(0, 100)}) — commit evidence unavailable`,
-    );
   }
   let adoptedPrNumber: number | undefined;
   let prToCheck = state.pipelineState.prNumber;

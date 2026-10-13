@@ -19,7 +19,14 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { formatLostComments, formatReportLine } from "../src/comment-evidence.ts";
-import { findLostComments } from "../src/comment-retention.ts";
+import { findLostComments as findLostCommentsRaw } from "../src/comment-retention.ts";
+import { asShellForm } from "./lib/argv-shell.ts";
+
+// #1134 — these stubs match the shell-form command string; asShellForm shows argv calls in that form.
+const findLostComments = (...args: Parameters<typeof findLostCommentsRaw>) => {
+  const [exec, ...rest] = args;
+  return findLostCommentsRaw(asShellForm(exec), ...rest);
+};
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { collectCommentEvidence } from "../src/work-driver-verify-develop-gates.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
@@ -123,7 +130,7 @@ async function developGate(
     repoRoot: dir,
     issue,
     issueBodyFetcherFn: () => ({ stdout: "mock" }),
-    verifyExecFn: exec,
+    verifyExecFn: asShellForm(exec),
   };
   return verifyStepOutcome(ctx, s, "develop");
 }

@@ -85,6 +85,7 @@ process.env.PI_ENSEMBLE_VERIFY = "1";
     if (committedFiles.length > 0) {
       await execp2("git add . && git commit -q -m 'committed work'", { cwd: dir, shell: "/bin/bash" });
     }
+    await execp2("git update-ref refs/remotes/origin/feature/issue-540-test HEAD", { cwd: dir });
   };
 
   const mkConsolidationState = (

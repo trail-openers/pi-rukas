@@ -11,7 +11,10 @@
 import { exec } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
+import { countPrCommits, prRange } from "./git-range.ts";
+import { execp as gitExec } from "./lens-exec.ts";
 import { trace } from "./trace.ts";
+import { resolveMainline } from "./work-driver-git.ts";
 import type { WorkState, WorkStep } from "./workflow-state.ts";
 
 const execp = promisify(exec);
@@ -72,10 +75,7 @@ export async function fetchDiff(cwd: string | undefined, baseSha?: string): Prom
       if (stdout.trim()) return stdout;
     } catch (err) {
       trace(
-        `work-driver: fetchDiff(${cwd}, baseSha..HEAD) failed: ${(err as Error).message?.slice(
-          0,
-          200,
-        )}`,
+        `work-driver: fetchDiff(${cwd}, baseSha..HEAD) failed: ${(err as Error).message?.slice(0, 200)}`,
       );
     }
   }
@@ -176,6 +176,7 @@ async function fetchAllDiffs(
  * once `integrate()` has committed and pushed, and it is independent of any
  * worktree's HEAD (which stays detached at baseSha). Best-effort: any failure
  * returns empty and the caller falls back to the per-worktree read.
+ * (#1134: the range above is now three-dot, from the merge base.)
  */
 export async function fetchIntegratedDiff(repoRoot: string, branchName: string): Promise<string> {
   const r = await readIntegratedDiff(repoRoot, branchName);
@@ -205,19 +206,21 @@ export async function readIntegratedDiff(
   repoRoot: string,
   branchName: string,
 ): Promise<IntegratedDiff> {
-  let base: string;
+  // The mainline is unknowable, so the diff below would be meaningless.
+  // The mainline, resolved by resolveMainline (#1134) — the same call verify-pr17
+  // makes, so both read one base. Unresolved means there is no base to diff
+  // against: unreadable, not a guessed "main". A throw or unexpected shape is
+  // the same unresolved outcome, never an escaping exception.
+  const mainline = await resolveMainline(repoRoot, gitExec);
+  if (!("branch" in mainline)) return { ok: false, reason: mainline.reason };
+  const base = mainline.branch;
   try {
-    const { stdout: head } = await execp(
-      "git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@'",
-      { cwd: repoRoot, shell: "/bin/bash" },
-    );
-    base = head.trim() || "main";
-  } catch (err) {
-    // The mainline is unknowable, so the diff below would be meaningless.
-    return { ok: false, reason: `could not resolve mainline: ${errText(err)}` };
-  }
-  try {
-    const { stdout } = await execp(`git diff origin/${base}..origin/${branchName}`, {
+    // Three-dot: the diff is taken from the MERGE BASE, so a base that moved
+    // after the branch was cut contributes nothing. Two-dot would diff the
+    // branch tip against the base tip and report the base's new commits as
+    // reversed (phantom CRITICAL findings, #1134).
+    const { stdout } = await gitExec("git", {
+      argv: ["diff", "--end-of-options", prRange(`origin/${base}`, `origin/${branchName}`)],
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
     });
@@ -225,20 +228,20 @@ export async function readIntegratedDiff(
   } catch (err) {
     return {
       ok: false,
-      reason: `git diff origin/${base}..origin/${branchName} failed: ${errText(err)}`,
+      reason: `git diff origin/${base}...origin/${branchName} failed: ${errText(err)}`,
     };
   }
   // Empty output. Confirm it means "no commits ahead" rather than "the read
   // silently produced nothing" — those are the two cases this whole type
   // exists to separate.
   try {
-    const { stdout } = await execp(`git rev-list --count origin/${base}..origin/${branchName}`, {
-      cwd: repoRoot,
-      maxBuffer: 64 * 1024,
-    });
-    const ahead = Number.parseInt(stdout.trim(), 10);
-    if (!Number.isFinite(ahead)) {
-      return { ok: false, reason: `could not count commits ahead of origin/${base}` };
+    // The PR's own commits, whatever the base has done since (#1134).
+    const ahead = await countPrCommits(gitExec, repoRoot, `origin/${base}`, `origin/${branchName}`);
+    if (Number.isNaN(ahead)) {
+      return {
+        ok: false,
+        reason: `could not count commits ahead of origin/${base}`,
+      };
     }
     if (ahead === 0) return { ok: true, diff: "", empty: true };
     // Commits exist but the diff is empty. Possible legitimately (an empty
@@ -249,7 +252,10 @@ export async function readIntegratedDiff(
       reason: `branch is ${ahead} commit(s) ahead of origin/${base} but the diff came back empty`,
     };
   } catch (err) {
-    return { ok: false, reason: `could not count commits ahead: ${errText(err)}` };
+    return {
+      ok: false,
+      reason: `could not count commits ahead: ${errText(err)}`,
+    };
   }
 }
 
@@ -267,7 +273,8 @@ const SAFE_PATH = /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/;
  * is built from `origin/<base>..origin/<branch>` (see `readIntegratedDiff`),
  * but lens children run with `cwd` set to a worktree, and under always-worktree
  * those "stay DETACHED at baseSha" — the invariant recorded at the bottom of
- * `readAllMergedDiffs`. A reviewer that opens a changed file from its own cwd
+ * `readAllMergedDiffs`. (#1134: that range is now three-dot, from the merge base.)
+ * A reviewer that opens a changed file from its own cwd
  * therefore reads the version from BEFORE the change.
  *
  * That is not a hypothetical. A real cycle shipped a documentation paragraph

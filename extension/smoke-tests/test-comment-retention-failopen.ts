@@ -10,7 +10,14 @@
  * Deliberately NOT named `*-live.ts` (it spawns nothing; runs in the offline gate).
  */
 
-import { findLostComments } from "../src/comment-retention.ts";
+import { findLostComments as findLostCommentsRaw } from "../src/comment-retention.ts";
+import { asShellForm } from "./lib/argv-shell.ts";
+
+// #1134 — these stubs match the shell-form command string; asShellForm shows argv calls in that form.
+const findLostComments = (...args: Parameters<typeof findLostCommentsRaw>) => {
+  const [exec, ...rest] = args;
+  return findLostCommentsRaw(asShellForm(exec), ...rest);
+};
 import type { ExecFn } from "../src/worktree.ts";
 
 let exit = 0;

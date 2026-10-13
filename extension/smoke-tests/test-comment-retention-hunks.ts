@@ -23,7 +23,14 @@ import {
   renderCommentEvidence,
 } from "../src/comment-evidence.ts";
 import { classifyHunk, parseHunks } from "../src/comment-retention-hunks.ts";
-import { findLostComments } from "../src/comment-retention.ts";
+import { findLostComments as findLostCommentsRaw } from "../src/comment-retention.ts";
+import { asShellForm } from "./lib/argv-shell.ts";
+
+// #1134 — these stubs match the shell-form command string; asShellForm shows argv calls in that form.
+const findLostComments = (...args: Parameters<typeof findLostCommentsRaw>) => {
+  const [exec, ...rest] = args;
+  return findLostCommentsRaw(asShellForm(exec), ...rest);
+};
 import type { ExecFn } from "../src/worktree.ts";
 import { repoWithFiles, runRetention, runRetentionIn } from "./lib/comment-retention-fixtures.ts";
 

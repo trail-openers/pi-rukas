@@ -12,7 +12,14 @@
 
 import { recordCommentEvidence } from "../src/comment-evidence.ts";
 import { lensCommentBlock, roundComments } from "../src/comment-evidence.ts";
-import { findLostComments } from "../src/comment-retention.ts";
+import { findLostComments as findLostCommentsRaw } from "../src/comment-retention.ts";
+import { asShellForm } from "./lib/argv-shell.ts";
+
+// #1134 — these stubs match the shell-form command string; asShellForm shows argv calls in that form.
+const findLostComments = (...args: Parameters<typeof findLostCommentsRaw>) => {
+  const [exec, ...rest] = args;
+  return findLostCommentsRaw(asShellForm(exec), ...rest);
+};
 import { initialState } from "../src/workflow-state.ts";
 import type { ExecFn } from "../src/worktree.ts";
 
@@ -161,7 +168,7 @@ const SRC = "src/app.ts";
     return { stdout: "" };
   };
   const diff = `--- a/${SRC}\n+++ b/${SRC}\n@@ -1,1 +0,0 @@\n-// kept doc\n`;
-  const res = await roundComments(diff, undefined, "/tmp", 1000, fake);
+  const res = await roundComments(diff, undefined, "/tmp", 1000, asShellForm(fake));
   assert(
     res.ok && seen.some((c) => c.startsWith("git grep -z")),
     "roundComments: injected exec used for the head read",

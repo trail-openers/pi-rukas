@@ -314,6 +314,8 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       cwd: dir,
       shell: "/bin/bash",
     });
+    // #1134 — verifyConsolidation reads origin/<branch>: publish the branch as the push would.
+    await execp("git update-ref refs/remotes/origin/feature/issue-577-multi HEAD", { cwd: dir });
 
     let s = initialState(577, 1_000_000);
     s = {
