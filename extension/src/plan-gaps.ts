@@ -29,6 +29,7 @@
  *     identical input and "fix the gaps and re-run" is not a convergent
  *     strategy.
  */
+import { isOperatorInvestigationGap } from "./plan-draft-conflicts.ts";
 import { type PlanGap, isResolutionType } from "./plan-types.ts";
 import { trace } from "./trace.ts";
 
@@ -258,6 +259,11 @@ export interface GapGateLoopResult {
   capReason?: GapGateLoopCapReason;
   residualForDisclosure: PlanGap[];
   /**
+   * #1132: gaps that set an operator line against an investigation line.
+   * Discarded (they neither block nor cap); disclosed in the residual section.
+   */
+  discardedConflicts: PlanGap[];
+  /**
    * The head of the raw reply that could not be parsed (review-unparseable
    * only) — a parse failure is a signal about the parser or the reviewer
    * prompt, and discarding it silently means the bug recurs indefinitely.
@@ -312,7 +318,11 @@ export async function runGapGateLoop(
   makeGatePrompt: (iteration: number) => string,
   maxIterations: number,
   onCorrective: (blocking: PlanGap[]) => void,
+  // #1132: operator-authored and investigation-authored lines, so a gap that
+  // sets one against the other is discarded rather than capping the plan.
+  provenance?: { operatorLines: string[]; investigationLines: string[] },
 ): Promise<GapGateLoopResult> {
+  const discardedConflicts: PlanGap[] = [];
   let iterations = 0;
   let ready = false;
   let capHit = false;
@@ -383,6 +393,16 @@ export async function runGapGateLoop(
         break;
       }
     }
+    if (provenance) {
+      const isConflict = (g: PlanGap) =>
+        isOperatorInvestigationGap(g.description, provenance.operatorLines, provenance.investigationLines);
+      const conflicts = lastParse.gaps.filter(isConflict);
+      for (const g of conflicts) {
+        discardedConflicts.push(g);
+        trace(`plan-gaps: discarded operator-vs-investigation gap (${g.description.slice(0, 120)})`);
+      }
+      lastParse = { ...lastParse, gaps: lastParse.gaps.filter((g) => !isConflict(g)) };
+    }
     lastGaps = lastParse.gaps;
 
     // Problem 2: accumulate non-blocking findings (CRITICAL travels via the
@@ -449,13 +469,17 @@ export async function runGapGateLoop(
 
   // Problem 2: the residual disclosure is the UNION of all non-blocking
   // findings across all rounds (deduped by exact description string).
-  const residualForDisclosure = capHit && allNonBlocking.length > 0 ? allNonBlocking : [];
+  const residualForDisclosure =
+    capHit && (allNonBlocking.length > 0 || discardedConflicts.length > 0)
+      ? [...allNonBlocking, ...discardedConflicts]
+      : [];
 
   return {
     gaps: lastGaps,
     capHit,
     capReason,
     residualForDisclosure,
+    discardedConflicts,
     ...(rawUnparsedHead !== undefined ? { rawUnparsedHead } : {}),
   };
 }

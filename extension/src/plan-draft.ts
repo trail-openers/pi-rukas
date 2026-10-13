@@ -21,6 +21,7 @@ import {
   mechanicalInventory,
   setPlanVipuneSearch,
 } from "./plan-inventory.ts";
+import { applyOperatorConflicts, droppedSection } from "./plan-draft-conflicts.ts";
 import { PLAN_ITEM_KINDS } from "./plan-reporter.ts";
 import { EPIC_SUB_ISSUE_DEPTH_LIMIT, type PlanType, planTitle } from "./plan-types.ts";
 import {
@@ -238,7 +239,7 @@ export const PROSE_REF_SUFFIX =
 export function draftSpec(
   type: PlanType,
   descriptor: string,
-  findings: AngleFindings[],
+  rawFindings: AngleFindings[],
   priorContext: { source: string; fact: string }[],
   openQuestions: string[],
   outOfScope: string[],
@@ -263,6 +264,8 @@ export function draftSpec(
   operatorOmitted: OperatorOmission[];
 } {
   const title = planTitle(descriptor, type);
+  const conflicts = applyOperatorConflicts(rawFindings, directives, priorContext);
+  const findings = conflicts.findings;
   const cap = budget?.maxItemsPerSection ?? SECTION_MAX_ITEMS;
   const clip = (s: string) => clipItem(s, budget?.itemClipChars ?? 400);
 
@@ -437,7 +440,7 @@ ${testSurface}
 ## Edge cases & pitfalls
 
 ${edgeCases}
-
+${droppedSection(conflicts.dropped)}
 ## Open Questions
 
 - (none)
@@ -454,7 +457,10 @@ ${subIssues}${opDecompositionSection}${depthLimit}`;
   const { body: spliced, outcomes } = applyWritebackToBody(body, writebackMap ?? new Map());
   const collapsed = spliced.replace(/\n{3,}/g, "\n\n");
   const markedDecisions = markWrittenDecisions(resolvedDecisions, outcomes);
-  const openQ = renderOpenQuestions(openQuestions, markedDecisions);
+  const openQ = renderOpenQuestions(
+    [...openQuestions, ...conflicts.openQuestions],
+    markedDecisions,
+  );
   const finalBody = collapsed.replace(
     "## Open Questions\n\n- (none)\n",
     `## Open Questions\n\n${openQ}\n`,

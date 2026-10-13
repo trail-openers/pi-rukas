@@ -106,7 +106,8 @@ export function gapGatePrompt(
     "- a field list derivable from an existing type (when the type exists; when the type is to be created, the spec must commit to creating it with the named fields)\n" +
     "- a test-harness mechanic (mock flags, grep needles, variable usage)\n" +
     "- exact line numbers anywhere (they rot; name the SYMBOL)\n" +
-    "- restating a decision the spec already makes once\n\n" +
+    "- restating a decision the spec already makes once\n" +
+    "- a conflict between an operator-authored line (ACCEPTANCE CRITERIA, OUT OF SCOPE, Decisions, or any line from the PM-established context above) and an investigation-authored line. OPERATOR-AUTHORED LINES ARE FINAL: the investigation line is the one that yields, and the driver drops it. Only a clash between two operator-authored lines is a gap.\n\n" +
     "Example: GAP: CRITICAL — the spec commits to both a retry cap of 3 and an infinite retry on quota errors — proposed resolution: name which wins — resolution-type: operator-decision. Example: UNGROUNDED: whether library BOSL2 exposes a screw() module — no spec-internal contradiction, and no world source you can verify against — reported as ungrounded, NOT as a gap. Never write a severity word on its own line — prose mentioning CRITICAL/HIGH/MEDIUM/LOW does not create a gap unless the line starts with GAP:; the same holds for UNGROUNDED: lines — the marker is what counts, and it counts as an UNVERIFIED classification, not a finding. ";
   const closing =
     "End your reply with a single line exactly of the form:\nVERDICT: READY  (zero CRITICAL gaps)\nor\nVERDICT: NEEDS_ITERATION";
