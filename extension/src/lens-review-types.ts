@@ -34,6 +34,10 @@ export type FindingSource = LensName | "CLAIM_SCAN";
 export interface Finding extends RawFinding {
   severity: Severity;
   lens: FindingSource;
+  /** #1129 — the concrete input or sequence the lens named (MEDIUM or higher). Absent = no trigger. */
+  trigger?: string;
+  /** #1129 — set when the round-2 pre-pass downgraded this finding; `from` is the severity before. */
+  downgrade?: { from: Severity; reason: string };
 }
 
 export interface LensRunResult {

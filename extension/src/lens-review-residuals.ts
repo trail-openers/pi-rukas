@@ -81,7 +81,8 @@ export async function postLensResidualDisclosure(opts: {
   // other verdicts have no residual to disclose (APPROVED — the guard's
   // strict rule passes; REVIEW_INCOMPLETE / CRITICAL_ISSUES_FOUND — the
   // guard refuses on the ledger entry itself).
-  if (summary.verdict !== "ISSUES_FOUND") return "";
+  // #1129 — CONVERGED posts too: it exists only because findings were downgraded.
+  if (summary.verdict !== "ISSUES_FOUND" && summary.verdict !== "CONVERGED") return "";
   // A branch is required to resolve the PR (or an explicit `pr` number is
   // used directly). Without either, the disclosure is skipped (fail
   // closed — the guard refuses).
@@ -280,7 +281,8 @@ async function doPost(
   // `lensResidualsMarker(target.headBranch, patchId)` can never match).
   const marker = lensResidualsMarker(headBranch, patchId);
   const lines = summary.findings.map(
-    (f) => `- [${f.severity}] ${f.path}:${f.line ?? "?"} — ${f.title} (${f.lens})`,
+    (f) =>
+      `- [${f.severity}] ${f.path}:${f.line ?? "?"} — ${f.title} (${f.lens})${f.downgrade ? ` — downgraded from ${f.downgrade.from}: ${f.downgrade.reason}` : ""}`,
   );
   const body = [
     "## Six-pass review — residual findings (round disclosure)",

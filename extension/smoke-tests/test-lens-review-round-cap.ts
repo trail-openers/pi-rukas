@@ -156,13 +156,16 @@ const lensEntry = (detail: string, extra: Partial<LedgerEntryT> = {}) =>
   }) as LedgerEntryT;
 const prior = at(2) as LedgerEntryT;
 const inc1 = bumpLensRound(lensEntry("REVIEW_INCOMPLETE"), [prior]);
-assert(inc1.round === 2 && inc1.incompleteRuns === 1, "an incomplete run keeps round 2, streak 1");
+assert(
+  inc1.round === 3 && inc1.incompleteRuns === 1,
+  "#1129 — an incomplete run is stored at the probed round (3), streak 1",
+);
 const inc2 = bumpLensRound(lensEntry("REVIEW_INCOMPLETE", { at: 3 }), [
   { ...prior, ...inc1, at: 2 },
 ]);
 assert(
-  inc2.round === 2 && inc2.incompleteRuns === 2,
-  "a second incomplete run grows the streak to 2",
+  inc2.round === 3 && inc2.incompleteRuns === 2,
+  "a second incomplete run holds the probed round (3) and grows the streak to 2",
 );
 const done = bumpLensRound(lensEntry("ISSUES_FOUND", { at: 4 }), [{ ...prior, ...inc2, at: 3 }]);
 assert(

@@ -8,6 +8,7 @@ import { partitionDecisions, renderPriorFindingsBlock } from "./lens-residuals.t
 import { resolveLensReviewBranch } from "./lens-review-branch-resolve.ts";
 import { capKillSummary } from "./lens-review-capkill.ts";
 import { runLensChild } from "./lens-review-child.ts";
+import { applyRoundDowngrade, convergeVerdict, probeLensRound } from "./lens-review-converge.ts";
 import {
   type AutoDeltaInfo,
   blockedReviewSummary,
@@ -179,6 +180,7 @@ export async function runLensReview(opts: {
   // here — synchronously before the fan-out — so the note can never lie
   // about a fire-and-forget write's outcome.
   const { branch: branchResolved } = await resolveLensReviewBranch(opts);
+  const round = await probeLensRound(opts.cwd ?? process.cwd(), branchResolved); // #1129
   // #873 — the roster is data: the INSTALLED skills dir's `code-review-*`
   // SKILL.md files (precedence in frontmatter), PLUS a blocked entry for
   // every expected lens (the BUNDLED skill/ dir) that is absent from the
@@ -294,6 +296,7 @@ export async function runLensReview(opts: {
         head: opts.head,
         overrideCap: opts.overrideCap,
         ledgerKey: opts.ledgerKey,
+        round,
       },
       opts.pr,
     );
@@ -436,7 +439,8 @@ export async function runLensReview(opts: {
   // indistinguishable downstream from a lens's own — same precedence rules,
   // same threshold, same rendering. They are findings, not a side channel.
   const all = [...lensResults.flatMap((r) => r.findings), ...(opts.extraFindings ?? [])];
-  const deduped = dedupeFindings(all, roster);
+  const judged = applyRoundDowngrade(all, round); // #1129 — the pre-pass runs before dedupe
+  const deduped = dedupeFindings(judged, roster);
   // #1105 — record the round against the branch's findings memory. Suppressed
   // findings (already known on untouched code, or accepted by the operator)
   // leave the review; a complete full review resolves rows it no longer
@@ -463,7 +467,7 @@ export async function runLensReview(opts: {
   // unchanged, still stand: a lens omitting a known finding is not a fix.
   // They are reported alongside this round's findings.
   const reported = [...kept, ...(recorded?.ok ? recorded.carried : [])];
-  const verdict = computeVerdict(reported, lensResults, threshold);
+  const verdict = convergeVerdict(computeVerdict(reported, lensResults, threshold), judged);
   // #973 — the round-cap rule's inputs for the ledger write: hasCritical
   // from the deduped findings, headSha from the ref the review actually
   // covered (the delta's head when this was a delta run, otherwise

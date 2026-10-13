@@ -40,7 +40,22 @@ export function bumpLensRound(entry: LedgerEntry, existing: LedgerEntry[]): Ledg
     if (!prev || e.at >= prev.at) prev = e;
   }
   const completed = entry.detail !== "REVIEW_INCOMPLETE";
-  const next = completed ? (prev ? (prev.round ?? 1) : 0) + 1 : (prev?.round ?? 1);
   const incompleteRuns = completed ? 0 : (prev?.incompleteRuns ?? 0) + 1;
-  return { ...entry, round: next, incompleteRuns };
+  // #1129 — the round is PROBED before the review and stored as given;
+  // the write-time derivation below is only the fallback for a caller that
+  // did not probe (the same function, so the two cannot disagree).
+  return { ...entry, round: entry.round ?? roundAfter(prev), incompleteRuns };
+}
+
+/**
+ * #1129 — the round a lens run is recorded as, given the branch's latest
+ * lens entry (`undefined` when there is none): no prior entry \u2192 1; a prior
+ * entry without `round` (legacy) \u2192 2; a prior REVIEW_INCOMPLETE run \u2192 its
+ * round (an incomplete run does not advance the round); otherwise \u2192 its
+ * round + 1.
+ */
+export function roundAfter(prev: LedgerEntry | undefined): number {
+  if (!prev) return 1;
+  if (prev.round === undefined) return 2;
+  return prev.detail === "REVIEW_INCOMPLETE" ? prev.round : prev.round + 1;
 }

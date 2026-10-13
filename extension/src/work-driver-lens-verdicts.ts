@@ -27,7 +27,7 @@ export async function applyLensVerdict(
   next: WorkState,
 ): Promise<WorkState> {
   let state = next;
-  if (summary.verdict === "APPROVED") {
+  if (summary.verdict === "APPROVED" || summary.verdict === "CONVERGED") {
     // Deliberately NO cap-hit. The round cap exists to stop a fix loop that is
     // not converging; a review that just approved has converged, and appending
     // a cap here made `nextStep` route an APPROVED cycle to handoff instead of
@@ -46,9 +46,13 @@ export async function applyLensVerdict(
       // lenses found nothing" stays distinct from "found sub-threshold and
       // kept no record".
       findings: JSON.stringify(summary.findings.slice(0, 50)),
+      // #1129 — CONVERGED is an approval that names its verdict.
+      ...(summary.verdict === "CONVERGED" ? { verdict: "CONVERGED" as const } : {}),
     });
   } else if (summary.verdict === "ISSUES_FOUND" || summary.verdict === "CRITICAL_ISSUES_FOUND") {
-    const findingsBlob = JSON.stringify(summary.findings.slice(0, 50));
+    // #1129 — a downgraded finding is not a blocker: it is never sent to the
+    // lens-fix developer (which reads this blob), only disclosed on the PR.
+    const findingsBlob = JSON.stringify(summary.findings.filter((f) => !f.downgrade).slice(0, 50));
     state = appendEvent(state, {
       kind: "lens-issues-found",
       at: Date.now(),
