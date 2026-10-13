@@ -8,7 +8,56 @@
  */
 
 import { postPassFault } from "./work-driver-adversarial-fix-scope.ts";
+import type { AdversarialOutcome } from "./work-driver-adversarial-types.ts";
 import type { WorkState } from "./workflow-state.ts";
+
+/** Bound on the findings carried in an event / the fix prompt (state-file hygiene). */
+export const FIX_FINDINGS_MAX = 4000;
+
+/**
+ * Cuts one sibling's findings to `max` characters and says so, so a cut
+ * is never silent.
+ */
+export function capWithMarker(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}\n[truncated: ${text.length - max} chars omitted]`;
+}
+
+/**
+ * A mixed first-pass fan-out parks on the infra cap, which would otherwise
+ * drop the parsed siblings. Each parsed sibling's verdict and findings go to
+ * the handoff as a plumb report.
+ */
+export function withParsedSiblings(
+  state: WorkState,
+  outcomes: readonly AdversarialOutcome[],
+  now: number,
+): WorkState {
+  const parsed = outcomes.filter((o) => o.fixRequested || (!o.ok && !o.infra && !o.threw));
+  if (parsed.length === 0) return state;
+  const body = parsed
+    .map((o) => {
+      const status = o.records[o.records.length - 1]?.status ?? "parsed verdict";
+      const text = (o.fixRequested ? o.fixFindings : o.rejectionText) ?? "(no findings text)";
+      return `[workstream ${o.id}] ${status}:\n${capWithMarker(text, FIX_FINDINGS_MAX)}`;
+    })
+    .join("\n\n---\n\n");
+  return {
+    ...state,
+    pipelineState: {
+      ...state.pipelineState,
+      plumbReports: [
+        ...(state.pipelineState.plumbReports ?? []),
+        {
+          step: "adversarial",
+          role: "driver",
+          body: `mixed fan-out: parsed sibling verdicts kept alongside the infra cap:\n${body}`,
+          at: now,
+        },
+      ],
+    },
+  };
+}
 
 /** Discloses a fact on the handoff report without parking the pass. */
 export function noteFixPass(state: WorkState, note: string, now: number): WorkState {

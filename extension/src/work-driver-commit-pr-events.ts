@@ -12,7 +12,7 @@
 
 import { trace } from "./trace.ts";
 import {
-  raiseAcceptanceCoverageCap,
+  recordAcceptanceCoverage,
   runAcceptanceCoverageGate,
 } from "./work-driver-acceptance-coverage.ts";
 import { raiseConsolidationIncompleteCap } from "./work-driver-commit-completeness.ts";
@@ -167,10 +167,7 @@ export async function runCommitPrPostDispatchGates(
   // skip (scope unknown) when it cannot read the diff or no criteria are
   // recorded — it never fails on whole-issue criteria it could not judge.
   const coverage = await runAcceptanceCoverageGate(ctx, state);
-  if (coverage && coverage.undelivered.length > 0) {
-    return raiseAcceptanceCoverageCap(state, coverage);
-  }
-  return state;
+  return coverage ? recordAcceptanceCoverage(state, coverage) : state;
 }
 
 /**

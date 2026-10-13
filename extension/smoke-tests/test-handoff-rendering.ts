@@ -13,7 +13,7 @@
 
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
 import { renderHandoffUserMessage } from "../src/work-driver-handoff-message.ts";
-import type { WorkState } from "../src/workflow-state.ts";
+import type { WorkEvent, WorkState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -54,8 +54,7 @@ function intentParkState(parkReason = "underspecified"): WorkState {
       },
     },
     eventLog: [{ kind: "cap-hit", at: 3, cap: "intent-park", reviewRound: 0, nextStep: "handoff" }],
-    // biome-ignore lint/suspicious/noExplicitAny: partial fixture; renderers read a subset
-  } as any;
+  } as WorkState;
 }
 
 const REPO = "/Users/x/repo";
@@ -124,8 +123,7 @@ for (const [name, render] of [
   s.pipelineState.branchName = "feature/issue-337-x";
   s.eventLog = [
     { kind: "cap-hit", at: 3, cap: "developer-timeout", reviewRound: 0, nextStep: "handoff" },
-    // biome-ignore lint/suspicious/noExplicitAny: partial fixture
-  ] as any;
+  ] as WorkEvent[];
   const out = renderHandoffUserMessage(s, REPO, `${REPO}/tmp`);
   assert(
     /git .*push -u origin feature\/issue-337-x/.test(out),
@@ -365,7 +363,7 @@ function commitPrConflictedState(): WorkState {
 {
   const FENCE = "task-a: FAIL — fence violation: src/main.rs (declared by task-d)";
   const fenceState = (dropConverged = false): WorkState => {
-    const s = intentParkState() as any;
+    const s = intentParkState();
     s.pipelineState.branchName = "feature/issue-848-fence";
     s.eventLog = [
       { kind: "branch-completed", step: "develop", workstreamId: "task-a", ok: true, ms: 1, at: 3 },
@@ -460,8 +458,7 @@ function commitPrConflictedState(): WorkState {
       nextStep: "handoff",
       evidence,
     },
-    // biome-ignore lint/suspicious/noExplicitAny: partial fixture
-  ] as any;
+  ] as WorkEvent[];
   const md = renderHandoffMarkdown(s, REPO);
   assert(md.includes("byte-identical"), "markdown: the 'Why' carries the cap's evidence");
   assert(

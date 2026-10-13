@@ -295,12 +295,12 @@ export function classifyCoverage(
  * paths flow through it, so the check is independent of which path opened
  * the PR).
  *
- * Returns `null` when the gate does not apply — disabled, no normalised
- * spec, no recorded acceptance criteria, or an unreadable consolidated
- * diff (a git failure is not evidence a criterion is undelivered; the
- * "scope unknown" degradation, explicit in the ticket's edge cases).
- * Otherwise returns the verdict; the caller raises the
- * `acceptance-coverage-incomplete` cap when `undelivered` is non-empty.
+ * Returns `null` when the gate does not apply — disabled, or no normalised
+ * spec / no recorded acceptance criteria. An unreadable consolidated diff
+ * returns a skipped verdict with the reason (a git failure is not evidence
+ * a criterion is undelivered; the reason reads NOT CHECKED on the handoff).
+ * Otherwise returns the verdict; the caller records undelivered criteria
+ * as a warning (never a cap) via `recordAcceptanceCoverage`.
  */
 export async function runAcceptanceCoverageGate(
   ctx: DriverContext,
@@ -321,10 +321,16 @@ export async function runAcceptanceCoverageGate(
     state.pipelineState.branchName,
   );
   if (unreadable) {
-    trace(
-      "work-driver: acceptance coverage — consolidated diff unreadable; gate skipped (scope unknown)",
-    );
-    return null;
+    const skipReason = "consolidated diff unreadable";
+    trace(`work-driver: acceptance coverage — ${skipReason}; NOT CHECKED`);
+    return {
+      skipped: true,
+      skipReason,
+      diffUnreadable: true,
+      criteria: [],
+      undelivered: [],
+      filesPresent: [],
+    };
   }
   const verdict = classifyCoverage(
     spec.acceptanceCriteria,
@@ -340,26 +346,37 @@ export async function runAcceptanceCoverageGate(
 }
 
 /**
- * Raise the `verify-failed:commit-pr` cap from a failing verdict.
- * The undelivered criteria (with owner attribution) ride in the event's
- * `evidence` field — the same shape the existing commit-pr verify gate
- * uses for its renderers — so the handoff's "Why" names each criterion
- * and where it was supposed to land.
+ * Record a coverage verdict as a WARNING, never a cap: undelivered criteria
+ * (with owner attribution) and a NOT CHECKED skip are plumb notes on the
+ * handoff, and the cycle continues. A criterion no workstream delivered is
+ * disclosed to the operator, not used to park work that is otherwise fine.
  */
-export function raiseAcceptanceCoverageCap(state: WorkState, verdict: CoverageVerdict): WorkState {
-  const evidence = verdict.undelivered
-    .map((u) => {
-      const owner = u.owner ? ` (owned by workstream ${u.owner})` : " (no workstream declared it)";
-      return `acceptance criterion undelivered: ${u.text} — missing path(s): ${u.missing.join(", ")}${owner}`;
-    })
-    .join(" | ");
-  trace(`work-driver: acceptance coverage — raising cap: ${evidence}`);
-  return appendEvent(state, {
-    kind: "cap-hit",
-    at: Date.now(),
-    cap: "verify-failed:commit-pr",
-    reviewRound: state.pipelineState.reviewRound,
-    nextStep: "handoff",
-    evidence,
-  });
+export function recordAcceptanceCoverage(state: WorkState, verdict: CoverageVerdict): WorkState {
+  let body: string;
+  if (verdict.skipped) {
+    body = `acceptance coverage NOT CHECKED: ${verdict.skipReason ?? "unknown reason"}`;
+  } else if (verdict.undelivered.length > 0) {
+    const items = verdict.undelivered
+      .map((u) => {
+        const owner = u.owner
+          ? ` (owned by workstream ${u.owner})`
+          : " (no workstream declared it)";
+        return `${u.text} — missing path(s): ${u.missing.join(", ")}${owner}`;
+      })
+      .join(" | ");
+    body = `Acceptance coverage: not delivered: ${items}`;
+  } else {
+    return state;
+  }
+  trace(`work-driver: ${body}`);
+  return {
+    ...state,
+    pipelineState: {
+      ...state.pipelineState,
+      plumbReports: [
+        ...(state.pipelineState.plumbReports ?? []),
+        { step: "commit-pr", role: "driver", body, at: Date.now() },
+      ],
+    },
+  };
 }
