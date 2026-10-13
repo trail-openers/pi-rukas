@@ -92,10 +92,10 @@ const okLenses = [lens()];
   const high = f({ severity: "HIGH", title: "high" });
   const crit = f({ severity: "CRITICAL", title: "crit" });
   assert(
-    applyRoundDowngrade([med], 1)[0]?.severity === "MEDIUM",
+    applyRoundDowngrade([med], 1, new Set([med]))[0]?.severity === "MEDIUM",
     "round 1: no pre-pass, MEDIUM stays",
   );
-  const r2 = applyRoundDowngrade([med, trig, high, crit], 2);
+  const r2 = applyRoundDowngrade([med, trig, high, crit], 2, new Set([med, trig, high, crit]));
   assert(
     r2[0]?.severity === "LOW" && r2[0]?.downgrade?.reason === NO_TRIGGER_REASON,
     "round 2: trigger-less MEDIUM → LOW with reason 'no trigger'",
@@ -114,7 +114,7 @@ const okLenses = [lens()];
 // ------------------------------------------------------ verdicts end to end
 {
   const verdictOf = (findings: Finding[], round: number, lenses = okLenses) => {
-    const judged = applyRoundDowngrade(findings, round);
+    const judged = applyRoundDowngrade(findings, round, new Set(findings));
     return convergeVerdict(computeVerdict(dedupeFindings(judged, []), lenses), judged);
   };
   assert(verdictOf([f({})], 1) === "ISSUES_FOUND", "round 1 trigger-less MEDIUM → ISSUES_FOUND");
@@ -141,14 +141,24 @@ const okLenses = [lens()];
   );
   // Dedupe: the triggered MEDIUM outranks the downgraded duplicate.
   const dup = [f({ title: "same", trigger: "boom" }), f({ title: "Same", lens: "SECURITY" })];
-  const kept = dedupeFindings(applyRoundDowngrade(dup, 2), []);
+  const kept = dedupeFindings(applyRoundDowngrade(dup, 2, new Set(dup)), []);
   assert(
     kept.length === 1 && kept[0]?.severity === "MEDIUM" && kept[0]?.trigger === "boom",
     "dedupe keeps the triggered MEDIUM over a downgraded duplicate",
   );
   assert(verdictOf(dup, 2) === "ISSUES_FOUND", "the verdict reflects the kept triggered record");
+  // Equal severity, trigger-less duplicate seen FIRST: the triggered one still wins (dedupe runs before the downgrade).
+  const dupFirst = dedupeFindings(
+    [f({ title: "same", lens: "SECURITY" }), f({ title: "Same", trigger: "boom" })],
+    [],
+  );
+  assert(
+    dupFirst.length === 1 && dupFirst[0]?.trigger === "boom",
+    "dedupe at equal severity keeps the triggered duplicate over a trigger-less one",
+  );
   // Threshold LOW: a surviving downgraded LOW blocks, so no CONVERGED pass.
-  const judgedLow = applyRoundDowngrade([f({})], 2);
+  const lowSrc = f({});
+  const judgedLow = applyRoundDowngrade([lowSrc], 2, new Set([lowSrc]));
   assert(
     computeVerdict(judgedLow, okLenses, "LOW") === "ISSUES_FOUND",
     "threshold LOW: a downgraded LOW is at the bar and blocks",
@@ -156,15 +166,13 @@ const okLenses = [lens()];
 }
 
 // ------------------------------------------------------- lensPassed / verdicts
-{
-  assert(
-    lensPassed("CONVERGED", "MEDIUM") &&
-      lensPassed("CONVERGED", "HIGH") &&
-      lensPassed("CONVERGED", "LOW"),
-    "lensPassed(CONVERGED) true at every threshold",
-  );
-  assert(!lensPassed("REVIEW_INCOMPLETE", "MEDIUM"), "lensPassed(REVIEW_INCOMPLETE) still false");
-}
+assert(
+  lensPassed("CONVERGED", "MEDIUM") &&
+    lensPassed("CONVERGED", "HIGH") &&
+    lensPassed("CONVERGED", "LOW"),
+  "lensPassed(CONVERGED) true at every threshold",
+);
+assert(!lensPassed("REVIEW_INCOMPLETE", "MEDIUM"), "lensPassed(REVIEW_INCOMPLETE) still false");
 
 // ------------------------------------------------ doctrine sentence (§1)
 {

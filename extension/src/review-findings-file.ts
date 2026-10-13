@@ -37,11 +37,11 @@ interface StoredBase {
   /** #1129 — the trigger the lens named when it last reported this finding; absent = none. */
   trigger?: string;
   /**
-   * #1129 — set on every row a round writes from #1129 on. Absent = a legacy row
-   * written before triggers existed: its trigger was never asked for, so it is
-   * not subject to the round-2 downgrade until a lens re-reports it.
+   * #1129 — set ONLY when a round from #1129 on first inserts the row, never by an
+   * update. Absent = a legacy row written before triggers existed: it is never
+   * eligible for the round-2 downgrade (see review-findings-severity.ts).
    */
-  triggerKnown?: true;
+  triggerTracked?: true;
   snippetHash: string;
   firstSeen: number;
   lastSeen: number;

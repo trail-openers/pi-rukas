@@ -45,7 +45,14 @@ export function dedupeFindings(input: Finding[], lens: RosterEntry[]): Finding[]
       continue;
     }
     const severityGap = SEVERITY_ORDER[f.severity] - SEVERITY_ORDER[existing.severity];
-    if (severityGap < 0 || (severityGap === 0 && precedence(f) < precedence(existing))) {
+    // #1129 — at equal severity a finding that names a trigger outranks one that
+    // does not, so a triggered duplicate is never collapsed into a trigger-less one.
+    const triggerGap = (f.trigger ? 1 : 0) - (existing.trigger ? 1 : 0);
+    if (
+      severityGap < 0 ||
+      (severityGap === 0 &&
+        (triggerGap > 0 || (triggerGap === 0 && precedence(f) < precedence(existing))))
+    ) {
       bestByKey.set(key, f);
     }
   }

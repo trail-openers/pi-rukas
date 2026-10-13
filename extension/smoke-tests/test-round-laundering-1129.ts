@@ -1,14 +1,14 @@
 #!/usr/bin/env bun
 /**
- * #1129 review — a triggered MEDIUM never launders to LOW, and a legacy row
- * keeps its MEDIUM until a lens re-reports it.
+ * #1129 review (round 3) — the findings memory never stores a downgraded
+ * severity, and the round-2 downgrade reaches only rows created under #1129
+ * that have never had a trigger and are stored at MEDIUM.
  *
- *   - round 1 triggered MEDIUM → round 2 re-report without a trigger (the
- *     pre-pass makes it LOW) → the store keeps MEDIUM and the trigger, the round
- *     reports MEDIUM, and the verdict is ISSUES_FOUND;
- *   - round 1 triggered MEDIUM → round 2 omitted → the carried MEDIUM blocks;
- *   - a legacy row (written before triggers existed) carried into a round-2
- *     review is not downgraded: it stays MEDIUM and blocks.
+ *   - HIGH with no trigger, re-reported at LOW → stored HIGH, ISSUES_FOUND;
+ *   - triggered MEDIUM, re-reported trigger-less and then omitted → MEDIUM, ISSUES_FOUND;
+ *   - legacy MEDIUM (no `triggerTracked`), re-reported trigger-less at rounds 2 and 3 → MEDIUM, ISSUES_FOUND;
+ *   - fresh trigger-less MEDIUM created in round 1 → round 2 → LOW, CONVERGED (the rule still converges);
+ *   - CONVERGED with no branch and no PR → a visible note, the verdict kept.
  */
 
 import { execSync } from "node:child_process";
@@ -49,11 +49,27 @@ git("add -A");
 git('commit -q -m "base"');
 const headSha = git("rev-parse HEAD").trim();
 
-const { recordFindingRunOutcome } = await import("../src/review-findings-store.ts");
+const { recordFindingRunOutcome, readBranchRows, FINDINGS_FILE } = await import(
+  "../src/review-findings-store.ts"
+);
 const { judgeRound } = await import("../src/lens-review-converge.ts");
-const { FINDINGS_FILE } = await import("../src/review-findings-store.ts");
-
+const { finishLensReview } = await import("../src/lens-review-finish.ts");
 type F = import("../src/lens-review-types.ts").Finding;
+type Recorded = Awaited<ReturnType<typeof recordFindingRunOutcome>>;
+type Summary = import("../src/lens-review-format.ts").LensReviewSummary;
+
+const lens: import("../src/lens-review-types.ts").LensRunResult[] = [
+  {
+    lens: "SECURITY",
+    ok: true,
+    ms: 1,
+    startMs: 0,
+    findings: [],
+    attempts: 1,
+    blocked: false,
+    summary: "reviewed",
+  },
+];
 const finding = (over: Partial<F> = {}): F =>
   ({
     lens: "SECURITY",
@@ -63,99 +79,126 @@ const finding = (over: Partial<F> = {}): F =>
     title: "two is unchecked",
     ...over,
   }) as F;
-const record = (branch: string, findings: F[], complete = true) =>
+const record = (branch: string, findings: F[], complete = true): Promise<Recorded> =>
   recordFindingRunOutcome({ cwd: repo, branch, headSha, findings, complete, now: 1 });
-
-// -------- 1. triggered MEDIUM, re-reported without a trigger (round 2 pre-pass → LOW)
-const r1 = await record("b-relabel", [finding({ trigger: "call twice" })]);
-assert(r1.ok, "round 1 records the triggered MEDIUM");
-const downgraded = finding({
-  severity: "LOW",
-  downgrade: { from: "MEDIUM", reason: "no trigger" },
-});
-const r2 = await record("b-relabel", [downgraded]);
-if (!r2.ok) throw new Error(`round 2 not recorded: ${r2.reason}`);
-const eff = r2.effective[0];
-assert(
-  eff?.severity === "MEDIUM" && eff.trigger === "call twice" && eff.downgrade === undefined,
-  "a trigger-less re-report keeps the stored MEDIUM and trigger (no downgrade record)",
-);
-const j1 = judgeRound([eff as F], r2, [], "MEDIUM", 2);
-assert(
-  j1.verdict === "ISSUES_FOUND" && j1.reported[0]?.severity === "MEDIUM",
-  "round 2 with the re-report is ISSUES_FOUND at MEDIUM (not CONVERGED)",
-);
-
-// -------- 2. triggered MEDIUM, omitted in round 2 → the carried MEDIUM blocks
-const omitted1 = await record("b-omit", [finding({ trigger: "call twice" })]);
-assert(omitted1.ok, "round 1 records a triggered MEDIUM on a second branch");
-const omitted2 = await record("b-omit", []);
-if (!omitted2.ok) throw new Error(`round 2 (omitted) not recorded: ${omitted2.reason}`);
-const j2 = judgeRound([], omitted2, [], "MEDIUM", 2);
-assert(
-  omitted2.carried.length === 1 && j2.verdict === "ISSUES_FOUND",
-  "a round-2 omitted triggered MEDIUM is carried and blocks (ISSUES_FOUND)",
-);
-
-// -------- 3. a legacy row (no trigger ever recorded) keeps MEDIUM when carried
-const legacy = {
-  id: "1a2b3c4d",
-  branch: "b-legacy",
-  path: "a.txt",
-  anchor: "x",
-  titleClass: "unchecked",
-  title: "two is unchecked",
-  severity: "MEDIUM",
-  lens: "SECURITY",
-  line: 2,
-  snippetHash: "0".repeat(16),
-  status: "open",
-  firstSeen: 1,
-  lastSeen: 1,
-};
-writeFileSync(path.join(root, FINDINGS_FILE), JSON.stringify({ rows: [legacy] }));
-const l2 = await record("b-legacy", []);
-if (!l2.ok) throw new Error(`legacy round not recorded: ${l2.reason}`);
-assert(
-  l2.legacy.length === 1 && l2.carried.length === 0,
-  "a legacy carried row is classed legacy, not downgradable",
-);
-const j3 = judgeRound([], l2, [], "MEDIUM", 2);
-assert(
-  j3.verdict === "ISSUES_FOUND" && j3.reported[0]?.severity === "MEDIUM",
-  "a legacy MEDIUM stays MEDIUM in round 2 and blocks (ISSUES_FOUND)",
-);
-
-// -------- 4. a legacy row RE-REPORTED trigger-less at round 2 stays MEDIUM
-const seed = await record("b-relegacy", [finding({ title: "legacy re-report" })]);
-if (!seed.ok) throw new Error(`legacy seed not recorded: ${seed.reason}`);
-const storeFile = path.join(root, FINDINGS_FILE);
-const stored = JSON.parse(readFileSync(storeFile, "utf8")) as {
-  rows: Array<Record<string, unknown>>;
-};
-for (const r of stored.rows) {
-  if (r.branch === "b-relegacy") {
-    delete r.triggerKnown;
-    delete r.trigger;
-  }
+/** The verdict of a recorded round, judged the way lens-review.ts judges it. */
+function judge(r: Recorded, round: number) {
+  if (!r.ok) throw new Error(`round not recorded: ${r.reason}`);
+  return judgeRound(r.effective, r, [], lens, "MEDIUM", round);
 }
-writeFileSync(storeFile, JSON.stringify(stored));
-const relabelled = finding({
-  title: "legacy re-report",
-  severity: "LOW",
-  downgrade: { from: "MEDIUM", reason: "no trigger" },
-});
-const l4 = await record("b-relegacy", [relabelled]);
-if (!l4.ok) throw new Error(`legacy re-report not recorded: ${l4.reason}`);
-const eff4 = l4.effective[0];
-assert(
-  eff4?.severity === "MEDIUM" && eff4.downgrade === undefined,
-  "a trigger-less re-report of a legacy row keeps its MEDIUM (no launder to LOW)",
-);
-const j4 = judgeRound([eff4 as F], l4, [], "MEDIUM", 2);
-assert(
-  j4.verdict === "ISSUES_FOUND",
-  "a legacy row re-reported trigger-less at round 2 blocks (ISSUES_FOUND)",
-);
+async function storedRow(branch: string, title: string) {
+  return (await readBranchRows(repo, branch)).find((r) => r.title === title);
+}
+
+// -------- 1. HIGH, no trigger in round 1; re-reported at LOW in round 2
+{
+  const r1 = await record("b-high", [finding({ severity: "HIGH", title: "high one" })]);
+  assert(r1.ok, "A round 1: the trigger-less HIGH is recorded");
+  const r2 = await record("b-high", [finding({ severity: "LOW", title: "high one" })]);
+  const j = judge(r2, 2);
+  assert(
+    (await storedRow("b-high", "high one"))?.severity === "HIGH",
+    "A round 2: a LOW re-report never lowers the stored HIGH",
+  );
+  assert(
+    j.reported[0]?.severity === "HIGH" && j.reported[0]?.downgrade === undefined,
+    "A round 2: the HIGH is reported at HIGH with no downgrade",
+  );
+  assert(j.verdict === "ISSUES_FOUND", "A round 2: the HIGH blocks (ISSUES_FOUND)");
+}
+
+// -------- 2. triggered MEDIUM; trigger-less re-report at round 2, omitted at round 3
+{
+  const r1 = await record("b-trig", [finding({ title: "triggered", trigger: "call twice" })]);
+  assert(r1.ok, "B round 1: the triggered MEDIUM is recorded");
+  const r2 = await record("b-trig", [finding({ title: "triggered" })]);
+  const j2 = judge(r2, 2);
+  const row2 = await storedRow("b-trig", "triggered");
+  assert(
+    row2?.severity === "MEDIUM" && row2?.trigger === "call twice",
+    "B round 2: the trigger-less re-report keeps the stored MEDIUM and the sticky trigger",
+  );
+  assert(
+    j2.reported[0]?.severity === "MEDIUM" && j2.verdict === "ISSUES_FOUND",
+    "B round 2: MEDIUM, ISSUES_FOUND",
+  );
+  const r3 = await record("b-trig", []);
+  const j3 = judge(r3, 3);
+  assert(
+    j3.reported[0]?.severity === "MEDIUM" && j3.verdict === "ISSUES_FOUND",
+    "B round 3: the omitted triggered MEDIUM is carried at MEDIUM, ISSUES_FOUND",
+  );
+}
+
+// -------- 3. legacy MEDIUM (written before triggers existed) re-reported trigger-less
+{
+  const seed = await record("b-legacy", [finding({ title: "legacy one" })]);
+  assert(seed.ok, "C seed: a trigger-less MEDIUM is recorded");
+  // Make the row legacy: strip the creation marker and the trigger, as a pre-#1129 file has it.
+  const file = path.join(root, FINDINGS_FILE);
+  const stored = JSON.parse(readFileSync(file, "utf8")) as { rows: Array<Record<string, unknown>> };
+  for (const r of stored.rows) {
+    if (r.branch === "b-legacy") {
+      r.triggerTracked = undefined;
+      r.trigger = undefined;
+    }
+  }
+  writeFileSync(file, JSON.stringify(stored));
+  const r2 = await record("b-legacy", [finding({ title: "legacy one" })]);
+  const j2 = judge(r2, 2);
+  assert(
+    j2.reported[0]?.severity === "MEDIUM" && j2.reported[0]?.downgrade === undefined,
+    "C round 2: a legacy MEDIUM re-reported trigger-less stays MEDIUM (no launder)",
+  );
+  assert(j2.verdict === "ISSUES_FOUND", "C round 2: ISSUES_FOUND");
+  assert(
+    (await storedRow("b-legacy", "legacy one"))?.triggerTracked === undefined,
+    "C round 2: a re-report never sets the creation marker on a legacy row",
+  );
+  const r3 = await record("b-legacy", [finding({ title: "legacy one" })]);
+  const j3 = judge(r3, 3);
+  assert(
+    j3.reported[0]?.severity === "MEDIUM" && j3.verdict === "ISSUES_FOUND",
+    "C round 3: the legacy MEDIUM still blocks at MEDIUM (ISSUES_FOUND)",
+  );
+}
+
+// -------- 4. fresh trigger-less MEDIUM created in round 1 → round 2 → LOW, CONVERGED
+{
+  const r1 = await record("b-fresh", [finding({ title: "fresh one" })]);
+  assert(r1.ok, "D round 1: a trigger-less MEDIUM is recorded");
+  const j1 = judge(r1, 1);
+  assert(j1.verdict === "ISSUES_FOUND", "D round 1: no downgrade, ISSUES_FOUND");
+  const r2 = await record("b-fresh", [finding({ title: "fresh one" })]);
+  const j2 = judge(r2, 2);
+  assert(
+    j2.reported[0]?.severity === "LOW" && j2.reported[0]?.downgrade?.reason === "no trigger",
+    "D round 2: the fresh trigger-less MEDIUM is downgraded to LOW at the verdict",
+  );
+  assert(j2.verdict === "CONVERGED", "D round 2: CONVERGED (the rule still converges)");
+  assert(
+    (await storedRow("b-fresh", "fresh one"))?.severity === "MEDIUM",
+    "D round 2: the store keeps MEDIUM — the downgrade is never written",
+  );
+}
+
+// -------- 5. CONVERGED with no branch and no PR says so
+{
+  const summary = {
+    verdict: "CONVERGED",
+    totalFindings: 1,
+    bySeverity: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 1 },
+    lenses: lens,
+    findings: [finding({ severity: "LOW", downgrade: { from: "MEDIUM", reason: "no trigger" } })],
+  } as unknown as Summary;
+  const out = await finishLensReview(summary, "MEDIUM", repo, undefined, {});
+  await out.ledgerWrite;
+  assert(out.summary.verdict === "CONVERGED", "E: the verdict is kept");
+  assert(
+    out.summary.note ===
+      "CONVERGED: 1 finding(s) downgraded for lack of a trigger were not posted — no PR resolved",
+    "E: a CONVERGED review with no branch and no PR carries the visible note",
+  );
+}
 
 process.exit(exit);
