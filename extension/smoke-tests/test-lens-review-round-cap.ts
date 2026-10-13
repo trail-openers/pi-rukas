@@ -3,16 +3,15 @@
  * #1127 — the tool-side lens round budget of `dispatch_lens_review`.
  *
  * Covers (the acceptance criteria):
- *   - round 4 is refused with ROUND_CAP_REACHED (no lens dispatched, nothing
- *     recorded), through the registered tool's execute;
+ *   - #1140: round 4 RUNS with a ROUND_CAP_REACHED warning and is recorded,
+ *     through the registered tool's execute (no operator env var needed);
  *   - a CRITICAL finding open in the latest recorded round allows one more
  *     round;
  *   - the operator's env override (PI_ENSEMBLE_LENS_ROUND_CAP_OVERRIDE=1)
- *     bypasses the budget, is recorded on the ledger, and no tool parameter can
- *     set it (#1127);
+ *     skips the budget (no warning), is recorded on the ledger, and no tool
+ *     parameter can set it (#1127);
  *   - the round is held until the run's ledger write settles (#1127);
- *   - the streak refusal is REVIEW_INCOMPLETE_STREAK, distinct from the cap;
- *     entry the run writes;
+ *   - the streak warning is REVIEW_INCOMPLETE_STREAK, distinct from the cap;
  *   - the counter survives a fresh read of the ledger file (a new session);
  *   - an unreadable ledger fails closed; PI_ENSEMBLE_LENS_ROUND_CAP parses
  *     with the driver's MAX_REVIEW_ROUNDS as the fallback.
@@ -170,7 +169,7 @@ assert(
   "a completed run advances to round 3 and resets the streak",
 );
 
-// ------------------------------------- 3. the registered tool, round 4 refused
+// ------------------- 3. the registered tool, round 4 runs with a warning (#1140)
 type Captured = { text?: string };
 const sent: string[] = [];
 const tools: { execute: (id: string, raw: unknown) => Promise<unknown> }[] = [];
@@ -193,31 +192,40 @@ const before2 = sent.length;
 const res = (await tool().execute("t1", { cwd: repo })) as Captured;
 assert(
   JSON.stringify(res).includes("Dispatched async lens review"),
-  "the tool returns a job handle (the refusal is produced inside the job)",
+  "the tool returns a job handle (the review runs inside the job)",
 );
 await waitFor(() => sent.length > before2);
 const report = sent.slice(before2).join("\n");
-assert(report.includes("ROUND_CAP_REACHED"), "round 4 is refused with ROUND_CAP_REACHED");
 assert(
-  report.split("No lens was dispatched").length - 1 === 1,
-  "the refusal note is reported once (not appended a second time)",
+  /WARNING: ROUND_CAP_REACHED — round 4 exceeds the 3-round cap/.test(report),
+  "round 4 runs with a ROUND_CAP_REACHED warning naming the round and the cap",
+);
+assert(/Code review verdict \(/.test(report), "the past-cap run returns the review's real verdict");
+assert(
+  report.split("WARNING: ROUND_CAP_REACHED").length - 1 === 1,
+  "the warning is reported once",
 );
 assert(
-  /Last recorded round: 3 — verdict ISSUES_FOUND/.test(report),
-  "the refusal names the last round's verdict",
+  /Last recorded round before this one: 3 — verdict ISSUES_FOUND/.test(report),
+  "the warning names the last round's verdict",
 );
-assert(/CRITICAL in that round: not open/.test(report), "the refusal says CRITICAL is not open");
-assert(/Residuals marker: /.test(report), "the refusal reports the residuals marker status");
-assert(readEntries().length === before, "a refused run records nothing (no round consumed)");
+assert(/CRITICAL in that round: not open/.test(report), "the warning says CRITICAL is not open");
+assert(/Residuals marker: /.test(report), "the warning reports the residuals marker status");
+await waitFor(() => readEntries().length > before);
+assert(
+  readEntries().some((e) => e.at !== 1000),
+  "the past-cap run is recorded on the ledger (it is not a refusal)",
+);
 
 // #1127 — a model-supplied overrideCap is not a bypass: the schema has no such
-// parameter and execute never reads it, so the refusal stands.
+// parameter and execute never reads it, so the warning stands.
+seed([lensRow({ round: 3, at: 1000 })]);
 const sentBeforeParam = sent.length;
 await tool().execute("t1b", { cwd: repo, overrideCap: true });
 await waitFor(() => sent.length > sentBeforeParam);
 assert(
-  sent.slice(sentBeforeParam).join("\n").includes("ROUND_CAP_REACHED"),
-  "a tool call's overrideCap parameter cannot bypass the round budget",
+  sent.slice(sentBeforeParam).join("\n").includes("WARNING: ROUND_CAP_REACHED"),
+  "a tool call's overrideCap parameter cannot silence the round-cap warning",
 );
 
 // ----------------------------------------- 4. CRITICAL open allows round 4
@@ -233,6 +241,10 @@ const overridden = await admitLensRound({ cwd: repo, env: OVERRIDE_ON });
 assert(
   overridden.admitted && overridden.overrideCap,
   "the operator's env override bypasses the round budget",
+);
+assert(
+  overridden.admitted && !/WARNING/.test(overridden.note ?? ""),
+  "the env override suppresses the round-cap warning",
 );
 if (overridden.admitted) overridden.release();
 const summary = await runLensReview({
@@ -277,17 +289,14 @@ assert(!shaped.admitted, "a ledger without an entries array refuses");
 seed([lensRow({ round: 2, incompleteRuns: 3, at: 1000 })]);
 const streakRun = await admitLensRound({ cwd: repo });
 assert(
-  !streakRun.admitted &&
-    streakRun.refusal.verdict === "REVIEW_INCOMPLETE_STREAK" &&
-    /consecutive run\(s\) ended REVIEW_INCOMPLETE/.test(streakRun.refusal.note ?? "") &&
-    /PI_ENSEMBLE_LENS_ROUND_CAP_OVERRIDE=1/.test(streakRun.refusal.note ?? ""),
-  "three consecutive incomplete runs refuse with REVIEW_INCOMPLETE_STREAK and name the operator override",
+  streakRun.admitted &&
+    streakRun.round === 3 &&
+    /WARNING: REVIEW_INCOMPLETE_STREAK/.test(streakRun.note ?? "") &&
+    /3 consecutive run\(s\) ended REVIEW_INCOMPLETE/.test(streakRun.note ?? "") &&
+    !/ROUND_CAP_REACHED/.test(streakRun.note ?? ""),
+  "three consecutive incomplete runs are admitted with a REVIEW_INCOMPLETE_STREAK warning naming the streak",
 );
-const againStreak = await admitLensRound({ cwd: repo });
-assert(
-  !againStreak.admitted && againStreak.refusal.verdict === "REVIEW_INCOMPLETE_STREAK",
-  "a refused call does not count: the next call is refused the same way",
-);
+if (streakRun.admitted) streakRun.release();
 seed([lensRow({ round: 2, incompleteRuns: 0, at: 1000 })]);
 const afterDone = await admitLensRound({ cwd: repo });
 assert(afterDone.admitted, "a completed run resets the streak: the next run is admitted");
@@ -298,10 +307,15 @@ seed([lensRow({ round: 2, at: 1000 })]);
 const first = await admitLensRound({ cwd: repo });
 const second = await admitLensRound({ cwd: repo });
 assert(
-  first.admitted && !second.admitted,
+  first.admitted && second.admitted && first.round === 3 && second.round === 4,
   "a concurrent call in this process cannot claim the same round",
 );
+assert(
+  second.admitted && /WARNING: ROUND_CAP_REACHED/.test(second.note ?? ""),
+  "the concurrent call past the cap carries the warning",
+);
 if (first.admitted) first.release();
+if (second.admitted) second.release();
 const third = await admitLensRound({ cwd: repo });
 assert(third.admitted, "after the first run settles its slot is free again");
 if (third.admitted) third.release();
@@ -338,9 +352,10 @@ const pendingWrite = new Promise<undefined>((resolve) => {
 if (held.admitted) held.release(pendingWrite);
 const whileWriting = await admitLensRound({ cwd: repo });
 assert(
-  !whileWriting.admitted && whileWriting.refusal.verdict === "ROUND_CAP_REACHED",
+  whileWriting.admitted && whileWriting.round === 4,
   "back-to-back calls cannot both claim the round while its ledger write is pending",
 );
+if (whileWriting.admitted) whileWriting.release();
 settleWrite();
 await pendingWrite;
 await new Promise((r) => setTimeout(r, 0));
@@ -350,17 +365,18 @@ if (afterWrite.admitted) afterWrite.release();
 
 // A rejected write frees the slot, but its round is counted, not reused (#1127):
 // the next run is round 4 (recorded 2 + the rejected round 3 + this one), so the
-// refusal names round 4 — a run still in flight would have made it round 5.
+// warning names round 4 — a run still in flight would have made it round 5.
 seed([lensRow({ round: 2, at: 1000 })]);
 const rejected = await admitLensRound({ cwd: repo });
 if (rejected.admitted) await rejected.release(Promise.reject(new Error("disk full")));
 const afterReject = await admitLensRound({ cwd: repo });
 assert(
-  !afterReject.admitted &&
-    afterReject.refusal.verdict === "ROUND_CAP_REACHED" &&
-    /round 4 would exceed/.test(afterReject.refusal.note ?? ""),
+  afterReject.admitted &&
+    afterReject.round === 4 &&
+    /round 4 exceeds/.test(afterReject.note ?? ""),
   "a rejected ledger write frees the slot but its round is not reused",
 );
+if (afterReject.admitted) afterReject.release();
 
 // -------- 11. one cap value: the merge guard's round-cap path follows the env cap
 const { evaluateRoundCapMerge } = await import("../src/merge-guard-round-cap.ts");

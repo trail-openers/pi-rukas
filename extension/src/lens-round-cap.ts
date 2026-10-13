@@ -17,11 +17,9 @@
  *     process has admitted but not yet settled, so concurrent calls cannot
  *     both claim the same round);
  *   - a streak of REVIEW_INCOMPLETE runs (`incompleteRuns`, bumpLensRound) at
- *     the cap refuses too — without it a lens that keeps failing would be
- *     re-run forever at the same round; a streak at the cap is refused as the
- *     distinct REVIEW_INCOMPLETE_STREAK outcome, a refused call does not count,
- *     and only the operator's override clears it (an outage is the operator's
- *     call, not a retry loop's);
+ *     the cap is flagged too — without it a lens that keeps failing would be
+ *     re-run silently at the same round; a streak at the cap carries the
+ *     distinct REVIEW_INCOMPLETE_STREAK warning (#1140);
  *   - the cap is `PI_ENSEMBLE_LENS_ROUND_CAP` when set to a positive integer,
  *     otherwise MAX_REVIEW_ROUNDS (the driver's single constant, not a copy);
  *   - a CRITICAL finding open in the latest recorded round allows exactly one
@@ -35,10 +33,9 @@
  *     hand the same round to the next run;
  *   - a corrupt `round` or `incompleteRuns` on the latest entry refuses, naming
  *     the field (fail closed);
- *   - the only bypass is the operator's environment variable
- *     `PI_ENSEMBLE_LENS_ROUND_CAP_OVERRIDE=1`, read at call time. The tool schema
- *     has no parameter for it, so a model cannot set it; the override is
- *     recorded on the ledger entry the run writes.
+ *   - the operator's environment variable `PI_ENSEMBLE_LENS_ROUND_CAP_OVERRIDE=1`,
+ *     read at call time, skips the budget (no warning) and is recorded on the
+ *     ledger entry the run writes. The tool schema has no parameter for it.
  *
  * Known limit: the in-flight reservation is per Pi process. Across processes,
  * and against a previous run's fire-and-forget ledger write that has not
@@ -46,10 +43,14 @@
  * held until the run's ledger write settles (`release`), so the next call
  * cannot claim the round the previous run is still recording.
  *
- * A refused run returns a `ROUND_CAP_REACHED` summary: no lens child is
- * spawned, no ledger entry is written (so the refusal consumes no round), and
- * the note names the last round's verdict, whether CRITICAL is open, and the
- * residuals-marker status (see `capNote`).
+ * #1140 — a run past the round cap or at the incomplete-streak cap is NOT
+ * refused: refusing made the cap an operator-only dead end (a fix commit after
+ * the last round left the PR's head unreviewable). The run is admitted exactly
+ * like an in-cap run (round, key, ledger write) and carries a visible warning
+ * naming the round, the cap, the last verdict, whether CRITICAL is open, and
+ * the residuals-marker status (see `capWarning`). Only the fail-closed faults
+ * above (no key, no patch id, unreadable ledger, corrupt counter) still refuse
+ * with a `ROUND_CAP_REACHED` summary: no lens child, no ledger entry.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -180,18 +181,18 @@ export async function readRecordedLens(cwd: string, branch: string): Promise<Rec
   }
 }
 
-/** The text a refused run carries: last verdict, CRITICAL state, marker status. */
-function capNote(budget: RoundBudget, cap: number, latest: LedgerEntry | undefined): string {
+/** The warning a run past the budget carries: last verdict, CRITICAL state, marker status (#1140). */
+function capWarning(budget: RoundBudget, cap: number, latest: LedgerEntry | undefined): string {
   const last = latest?.detail ?? "no verdict recorded";
   const crit = budget.criticalOpen ? "open (one extra round is allowed)" : "not open";
   const why = budget.streakCapped
-    ? `${budget.incompleteStreak} consecutive run(s) ended REVIEW_INCOMPLETE — the ${cap}-run limit for incomplete runs is reached; only the operator can clear it (PI_ENSEMBLE_LENS_ROUND_CAP_OVERRIDE=1)`
-    : `round ${budget.nextRound} would exceed the ${cap}-round cap (${ROUND_CAP_ENV})`;
+    ? `REVIEW_INCOMPLETE_STREAK — ${budget.incompleteStreak} consecutive run(s) ended REVIEW_INCOMPLETE, reaching the ${cap}-run limit for incomplete runs; the lenses keep failing, which points at infrastructure rather than the round budget`
+    : `ROUND_CAP_REACHED — round ${budget.nextRound} exceeds the ${cap}-round cap (${ROUND_CAP_ENV})`;
   return [
-    `${budget.streakCapped ? "REVIEW_INCOMPLETE_STREAK" : "ROUND_CAP_REACHED"} — ${why}. No lens was dispatched and nothing was recorded.`,
-    `Last recorded round: ${budget.lastRound} — verdict ${last}. CRITICAL in that round: ${crit}.`,
+    `⚠ WARNING: ${why}. The review ran anyway and this round is recorded as round ${budget.nextRound}.`,
+    `Last recorded round before this one: ${budget.lastRound} — verdict ${last}. CRITICAL in that round: ${crit}.`,
     "Residuals marker: not verified by this tool — the merge guard checks the PR's disclosure marker at merge time (condition 5).",
-    "Only the operator can authorise another round: PI_ENSEMBLE_LENS_ROUND_CAP_OVERRIDE=1 in the environment (recorded in the ledger). The tool has no parameter for it.",
+    `The operator can silence this warning with ${OVERRIDE_ENV}=1 in the environment.`,
   ].join("\n");
 }
 
@@ -384,17 +385,20 @@ export async function admitLensRound(opts: {
       ),
     };
   }
-  if (!budget.allowed) {
-    const verdict = budget.streakCapped ? "REVIEW_INCOMPLETE_STREAK" : "ROUND_CAP_REACHED";
-    trace(`lens-round-cap: refusing (${verdict}) round ${budget.nextRound} on ${key} (cap ${cap})`);
-    return { admitted: false, refusal: refusal(capNote(budget, cap, recorded.latest), verdict) };
-  }
+  // #1140 — past the cap the review still RUNS: the cap is a visible warning,
+  // not an operator-only dead end. The round, key and ledger write are the
+  // same as an in-cap run, so the #973 merge rule can see this head reviewed.
+  const warning = budget.allowed ? undefined : capWarning(budget, cap, recorded.latest);
+  if (warning)
+    trace(
+      `lens-round-cap: round ${budget.nextRound} on ${key} is past the cap (${cap}) — running with a warning`,
+    );
   return {
     admitted: true,
     overrideCap: false,
     key,
     round: budget.nextRound,
-    note,
+    note: [warning, note].filter(Boolean).join("\n\n") || undefined,
     release: reserve(key, budget.nextRound),
   };
 }

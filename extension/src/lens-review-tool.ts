@@ -94,7 +94,9 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
         work: async (signal): Promise<DispatchResult> => {
           const start = Date.now();
           // #1127 — the round budget runs BEFORE any lens is dispatched; a
-          // refusal is the terminal ROUND_CAP_REACHED summary, nothing recorded.
+          // fail-closed refusal is the terminal ROUND_CAP_REACHED summary,
+          // nothing recorded. #1140 — a run past the cap is admitted and its
+          // warning arrives as the admission note.
           // An admitted run holds its reservation until it settles, so a
           // concurrent call in this process cannot pass the same round.
           // The bypass is the operator's env var (read inside admitLensRound) —
