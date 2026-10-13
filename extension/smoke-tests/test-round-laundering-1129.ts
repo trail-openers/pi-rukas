@@ -84,7 +84,7 @@ const record = (branch: string, findings: F[], complete = true): Promise<Recorde
 /** The verdict of a recorded round, judged the way lens-review.ts judges it. */
 function judge(r: Recorded, round: number) {
   if (!r.ok) throw new Error(`round not recorded: ${r.reason}`);
-  return judgeRound(r.effective, r, [], lens, "MEDIUM", round);
+  return judgeRound(r.effective, r, lens, "MEDIUM", round);
 }
 async function storedRow(branch: string, title: string) {
   return (await readBranchRows(repo, branch)).find((r) => r.title === title);
