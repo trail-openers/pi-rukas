@@ -44,6 +44,7 @@ import { postPrComment } from "./forge-comments.ts";
 import { detectForge } from "./forge-detect.ts";
 import { execp } from "./lens-exec.ts";
 import { suppressedSection } from "./lens-residuals.ts";
+import { deltaFallbackText } from "./lens-review-diff.ts";
 import type { LensReviewSummary } from "./lens-review.ts";
 import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
 import { branchPatchId, remoteName } from "./review-ledger.ts";
@@ -298,7 +299,7 @@ async function doPost(
     ...(summary.deltaReview?.fallback
       ? [
           "",
-          `Delta fallback: this review covers the full two-dot range since ${summary.deltaReview.since.slice(0, 8)} because ${neutraliseEvidence(summary.deltaReview.fallback)} — main's hunks may be included.`,
+          `Delta fallback: ${deltaFallbackText({ since: summary.deltaReview.since, fallback: summary.deltaReview.fallback })} — main's hunks may be included.`,
         ]
       : []),
     "",

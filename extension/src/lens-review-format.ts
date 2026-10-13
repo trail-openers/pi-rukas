@@ -10,6 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { neutraliseEvidence } from "./comment-evidence.ts";
 import { type SuppressedFinding, suppressedSection } from "./lens-residuals.ts";
+import { deltaFallbackText } from "./lens-review-diff.ts";
 import { isReviewIncomplete } from "./lens-review-incomplete.ts";
 import type { Finding, FindingSource, LensRunResult } from "./lens-review.ts";
 import { CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE, type RosterEntry } from "./lens-roster.ts";
@@ -465,7 +466,7 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
           `Mode: delta review since ${s.deltaReview.since.slice(0, 8)}${s.deltaReview.auto ? " (automatic — the last recorded lens run)" : ""} — findings below cover only \`git diff ${s.deltaReview.since}..${s.deltaReview.head}\` since the last recorded lens run, not the full branch diff.`,
           ...(s.deltaReview.fallback
             ? [
-                `Delta fallback: this delta review covers the full two-dot range since ${s.deltaReview.since.slice(0, 8)} because ${s.deltaReview.fallback}.`,
+                `Delta fallback: ${deltaFallbackText({ since: s.deltaReview.since, fallback: s.deltaReview.fallback })}.`,
               ]
             : []),
         ]

@@ -87,6 +87,11 @@ function hunkKey(s: Section, h: Hunk): string {
   return `${s.file}\u0000${h.body}`;
 }
 
+/** Append by loop — a spread of a large array hits the argument-count limit. */
+function pushAll(out: string[], lines: string[]): void {
+  for (const line of lines) out.push(line);
+}
+
 /** Decrement-and-test: true when an unconsumed identical unit was seen. */
 function take(seen: Map<string, number>, key: string): boolean {
   const n = seen.get(key) ?? 0;
@@ -110,13 +115,13 @@ export function subtractReviewedHunks(headDiff: string, prevDiff: string): strin
   const out: string[] = [];
   for (const s of parseSections(headDiff)) {
     if (s.hunks.length === 0) {
-      if (!take(seen, headerKey(s))) out.push(...s.header);
+      if (!take(seen, headerKey(s))) pushAll(out, s.header);
       continue;
     }
     const kept = s.hunks.filter((h) => !take(seen, hunkKey(s, h)));
     if (kept.length === 0) continue;
-    out.push(...s.header);
-    for (const h of kept) out.push(...h.lines);
+    pushAll(out, s.header);
+    for (const h of kept) pushAll(out, h.lines);
   }
   return out.length === 0 ? "" : `${out.join("\n")}\n`;
 }
