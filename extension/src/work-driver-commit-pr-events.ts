@@ -11,6 +11,10 @@
  */
 
 import { trace } from "./trace.ts";
+import {
+  recordAcceptanceCoverage,
+  runAcceptanceCoverageGate,
+} from "./work-driver-acceptance-coverage.ts";
 import { raiseConsolidationIncompleteCap } from "./work-driver-commit-completeness.ts";
 import type { CommitPrRootInspect } from "./work-driver-commit-inspect.ts";
 import { inspectCommitPrRoot } from "./work-driver-commit-inspect.ts";
@@ -153,8 +157,17 @@ export async function runCommitPrPostDispatchGates(
       reviewRound: state.pipelineState.reviewRound,
       nextStep: "handoff",
     });
+    return state;
   }
-  return state;
+  // #1137 — the whole-issue acceptance-coverage check, ONCE on the
+  // consolidated diff (never per workstream — the per-workstream review is
+  // scoped to its own paths by the adversarial prompt). A criterion no
+  // workstream delivered is flagged here, after the PR is open, so the
+  // operator sees exactly what was not delivered. The gate degrades to a
+  // skip (scope unknown) when it cannot read the diff or no criteria are
+  // recorded — it never fails on whole-issue criteria it could not judge.
+  const coverage = await runAcceptanceCoverageGate(ctx, state);
+  return coverage ? recordAcceptanceCoverage(state, coverage) : state;
 }
 
 /**
