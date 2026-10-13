@@ -13,19 +13,19 @@
  * "merge allowed".
  */
 
+import { mock } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
-import { mock } from "bun:test";
 import { adversarialPassed } from "../src/review-ledger.ts";
 import {
   assert,
+  TARGET,
   exit,
   hookDecision,
   setupLedgerPath,
   teardownLedger,
-  TARGET,
 } from "./merge-guard-helpers.ts";
 import type { LedgerEntry } from "./merge-guard-helpers.ts";
 
@@ -119,7 +119,10 @@ try {
 
   // Driver path (reportOnlyTerminal unset): non-terminal routing is unchanged.
   const driverIssues = await review(ISSUES, false);
-  assert(driverIssues.loopOutcome === "rejected", "driver path ISSUES_FOUND: still rejected (fix round)");
+  assert(
+    driverIssues.loopOutcome === "rejected",
+    "driver path ISSUES_FOUND: still rejected (fix round)",
+  );
   assert(adversarialPassed(driverIssues) === false, "driver path ISSUES_FOUND: not passed");
   const driverApproved = await review("VERDICT: APPROVED\n\nok", false);
   assert(driverApproved.loopOutcome === "approved", "driver path APPROVED: approved");
@@ -161,7 +164,10 @@ try {
     patchId: "p1",
     ghComments: marker,
   });
-  assert(decision.block === false, "merge guard: tool-path ISSUES_FOUND + round-capped lens → merge allowed");
+  assert(
+    decision.block === false,
+    "merge guard: tool-path ISSUES_FOUND + round-capped lens → merge allowed",
+  );
 } finally {
   try {
     rmSync(repoDir, { recursive: true, force: true });
