@@ -1030,6 +1030,12 @@ It used to continue. The failure was recorded in `plumbReports` rather than the 
 
 Symptom: after `lens-fix` and a long re-review the driver ran `commit-pr` again instead of `lens-review`, logged `integrate worktree creation failed … refusing to force-remove existing worktree …/issue-<N>-default — it holds unrecoverable work: (unpushed commits: N)` and `! [rejected] … (non-fast-forward)`, and parked. Two causes, both fixed: a `dispatch-slow` event (any dispatch past the slow-run threshold) was appended after the step's verdict, and the driver routes on the last event — so the approval was shadowed and the cycle fell through to `commit-pr` (#1235); and the fallback's integrate worktree treated the cycle's own workstream tree as a foreign leftover (#1185). On an older build the work is intact in `.worktrees/issue-<N>-<id>` (detached HEAD) — cherry-pick it onto the branch.
 
+### CI failed, the driver "fixed" it, and CI failed on the same commit again
+
+Symptom: after `ci-status: failure` the cycle ran `develop → adversarial → commit-pr`, logged `commit-pr re-entry — open PR #<N> already heads <branch>; integrate/prCreate skipped`, and `ci` then watched the unchanged head until the retry cap. The re-entry guard treated every open PR as a finished `commit-pr` and never pushed the fix. Fixed: a second `commit-pr` now measures the worktrees against the branch, and work the branch lacks is integrated onto the branch's own head and pushed fast-forward to the PR that is already open (`commit-pr second round` in the trace). On an older build the fix is intact in `.worktrees/issue-<N>-<id>` — cherry-pick it onto the branch and push.
+
+If the cycle's PR was **merged or closed** in the meantime, the second `commit-pr` parks (`verify-failed:commit-pr`, "PR #<N> is MERGED, not OPEN") without touching the branch — it used to rebuild the branch from base and push over the remote (the non-fast-forward rejection). The new work is in the worktree; open a new issue or PR for it.
+
 ### `integration-verify-failed` — the consolidated tree does not build
 
 `commit-pr` runs the project's `.pi/verify-cmd` against the **integrated** tree, between the commit and the push. Everything upstream saw one workstream in isolation: the develop gate ran inside a single worktree and adversarial reviewed a single worktree's diff. Two workstreams that each pass alone can still fail together — one renames or deletes what another still refers to — and that defect is *created* by integration, so integration is the only place it can be caught.
