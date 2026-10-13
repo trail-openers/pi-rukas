@@ -244,7 +244,7 @@ function branchCtx(execFn: ExecFn): DriverContext {
   });
   return {
     // biome-ignore lint/suspicious/noExplicitAny: driver fixture — only verifyExecFn + repoRoot are touched on this path
-    pi: {} as any,
+    host: {} as any,
     issue: 540,
     issues: [540],
     restart: true,

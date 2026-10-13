@@ -71,7 +71,7 @@ try {
       },
     };
     const ctx: DriverContext = {
-      pi: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
+      host: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
       repoRoot: f.repo,
       issue: 777,
       verifyExecFn: realExec,
@@ -124,7 +124,7 @@ try {
       },
     };
     const ctx: DriverContext = {
-      pi: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
+      host: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
       repoRoot: f.repo,
       issue: 777,
       verifyExecFn: realExec,

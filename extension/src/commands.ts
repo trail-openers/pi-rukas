@@ -47,6 +47,7 @@ import { armPmMode, isPmModeActive, peekDoctrinePending, takeDoctrinePending } f
 import { transcriptsSummary } from "./runs.ts";
 import { trace } from "./trace.ts";
 import { groupIssues, resolvedParallelGroups } from "./work-driver-grouping.ts";
+import { piSessionHost } from "./work-driver-host.ts";
 import { runWorkDriver } from "./work-driver.ts";
 import { launchWork, parseWorkArgs, resolveRepoRoot } from "./work-entry.ts";
 import { renderQueueSummary, runWorkQueue } from "./work-queue.ts";
@@ -226,7 +227,7 @@ export function registerCommands(pi: ExtensionAPI) {
           // emitted by the driver via notifyAgent land cleanly.
           armPmMode();
           stripPmTools(pi);
-          await launchWork(pi, {
+          await launchWork(piSessionHost(pi), {
             repoRoot: await resolveRepoRoot(ctx.cwd),
             invocation: parsed,
             sink: { notify: (t) => ctx.ui.notify(t, "info") },

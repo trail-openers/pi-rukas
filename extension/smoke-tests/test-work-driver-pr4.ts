@@ -229,7 +229,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     const seenLabels: string[] = [];
     let developerPrompt = "";
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 700,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -297,7 +297,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       const seenLabels: string[] = [];
       let developerPrompt = "";
       const ctx: DriverContext = {
-        pi: makeFakePi().pi,
+        host: makeFakePi().pi,
         repoRoot: dir,
         issue: 701,
         dispatchFn: async (_pi, spec, opts) => {

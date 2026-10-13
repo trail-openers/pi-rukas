@@ -148,7 +148,7 @@ const scratchDir = "/tmp/pi-ensemble-issue-284";
     };
     let captured = "";
     const ctx: DriverContext = {
-      pi: {} as ExtensionAPI,
+      host: {} as ExtensionAPI,
       repoRoot: dir,
       issue: 284,
       verifyExecFn: async (cmd) => {
@@ -207,7 +207,7 @@ const scratchDir = "/tmp/pi-ensemble-issue-284";
     };
     let captured = "";
     const ctx: DriverContext = {
-      pi: {} as ExtensionAPI,
+      host: {} as ExtensionAPI,
       repoRoot: dir,
       issue: 284,
       dispatchFn: async (_pi, spec, opts) => {

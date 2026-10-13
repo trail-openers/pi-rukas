@@ -125,7 +125,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     const rolesDispatched: string[] = [];
     const labelsDispatched: string[] = [];
     const ctx: DriverContext = {
-      pi,
+      host: pi,
       repoRoot: dir,
       issue: 600,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -213,7 +213,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     );
 
     const { pi, sent } = makeFakePi();
-    await runWorkDriver({ pi, repoRoot: dir, issue });
+    await runWorkDriver({ host: pi, repoRoot: dir, issue });
     assert(
       sent.some((m) => m.includes("state-file inconsistencies")),
       "runWorkDriver surfaces the inconsistency to the user",
@@ -420,7 +420,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     // A — mismatch: ops reports a wrong branch, git resolves the real one.
     {
       const ctx: DriverContext = {
-        pi,
+        host: pi,
         repoRoot: dir,
         issue: 800,
         dispatchFn: async () =>
@@ -452,7 +452,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     // of the escape hatch, not the behaviour anyone wants.
     {
       const ctx: DriverContext = {
-        pi,
+        host: pi,
         repoRoot: dir,
         issue: 800,
         dispatchFn: async () =>

@@ -127,7 +127,7 @@ function makeCtx(repo: string, execFn: ExecFn, opsReply: string) {
   });
   return {
     // biome-ignore lint/suspicious/noExplicitAny: driver fixture
-    pi: {} as any,
+    host: {} as any,
     issue: 844,
     issues: [844],
     restart: false,

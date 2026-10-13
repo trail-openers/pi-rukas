@@ -178,7 +178,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     const startMs = Date.now();
 
     const ctx: DriverContext = {
-      pi: makeFakePi(),
+      host: makeFakePi(),
       repoRoot: dir,
       issue: 357,
       issueBodyFetcherFn: mockIssueBodyOk,

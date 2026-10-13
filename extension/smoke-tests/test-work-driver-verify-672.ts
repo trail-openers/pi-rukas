@@ -94,7 +94,7 @@ const stateFor = (workstreams: Record<string, ScopeWorkstream>) => {
 };
 
 const ctx: DriverContext = {
-  pi: makeFakePi().pi,
+  host: makeFakePi().pi,
   repoRoot: dir,
   issue: 998,
   verifyExecFn: exec,

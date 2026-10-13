@@ -152,7 +152,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
       repoRoot: string,
       execFn: NonNullable<DriverContext["verifyExecFn"]>,
     ): DriverContext => ({
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot,
       issue: 999,
       verifyExecFn: asShellForm(execFn),

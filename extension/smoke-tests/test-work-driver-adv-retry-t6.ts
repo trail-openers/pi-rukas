@@ -73,7 +73,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 
     let loopCalls = 0;
     const ctx: DriverContext = {
-      pi: makeFakePi(),
+      host: makeFakePi(),
       repoRoot: dir,
       issue: 955,
       issueBodyFetcherFn: mockIssueBodyOk,

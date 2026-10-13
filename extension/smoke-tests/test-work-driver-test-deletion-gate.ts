@@ -42,7 +42,7 @@ async function runGate(diff: string, issue: number) {
       },
     };
     const ctx: DriverContext = {
-      pi: makePi(),
+      host: makePi(),
       repoRoot: dir,
       issue,
       issueBodyFetcherFn: () => ({ stdout: "test-deletion ratchet" }),

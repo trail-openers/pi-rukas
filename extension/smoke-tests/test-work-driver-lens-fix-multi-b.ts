@@ -123,7 +123,7 @@ setupSpawnGuard();
 
     const capturedDiffs: string[] = [];
     const ctx: DriverContext = {
-      pi: makeFakePi(),
+      host: makeFakePi(),
       repoRoot: dir,
       issue: 309,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -250,7 +250,7 @@ setupSpawnGuard();
     await writeState(dir, s);
 
     const ctx: DriverContext = {
-      pi: makeFakePi(),
+      host: makeFakePi(),
       repoRoot: dir,
       issue: 310,
       issueBodyFetcherFn: mockIssueBodyOk,

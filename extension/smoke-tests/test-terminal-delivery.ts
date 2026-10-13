@@ -56,10 +56,10 @@ function makeState(issue: number, status: "merged" | "handoff" | "aborted") {
 }
 
 function makeCtx(
-  pi: TerminalDeliveryCtx["pi"],
+  host: TerminalDeliveryCtx["host"],
   issue = 808,
 ): TerminalDeliveryCtx {
-  return { repoRoot: "/repo", issue, pi };
+  return { repoRoot: "/repo", issue, host };
 }
 
 // ---------------------------------------------------------------------------
@@ -75,7 +75,7 @@ function makeCtx(
       // send-first, then record.
       markerSetAtSend = stateRef.pipelineState.handoffDeliveredAt === undefined;
     },
-  } as unknown as TerminalDeliveryCtx["pi"];
+  } as unknown as TerminalDeliveryCtx["host"];
   let stateRef = makeState(808, "handoff");
 
   const result = await deliverTerminalLine(makeCtx(fakePi), stateRef);
@@ -102,7 +102,7 @@ function makeCtx(
       callCount += 1;
       if (callCount === 1) throw new Error("Agent is already processing. Specify streamingBehavior");
     },
-  } as unknown as TerminalDeliveryCtx["pi"];
+  } as unknown as TerminalDeliveryCtx["host"];
   let stateRef = makeState(808, "handoff");
 
   const result1 = await deliverTerminalLine(makeCtx(fakePi), stateRef);
@@ -130,7 +130,7 @@ function makeCtx(
     sendUserMessage() {
       callCount += 1;
     },
-  } as unknown as TerminalDeliveryCtx["pi"];
+  } as unknown as TerminalDeliveryCtx["host"];
   let s = makeState(808, "handoff");
   s = {
     ...s,
@@ -151,7 +151,7 @@ function makeCtx(
     sendUserMessage(text: string) {
       deliveredText = text;
     },
-  } as unknown as TerminalDeliveryCtx["pi"];
+  } as unknown as TerminalDeliveryCtx["host"];
   const s = makeState(808, "merged");
 
   const result = await deliverTerminalLine(makeCtx(fakePi), s);
@@ -179,7 +179,7 @@ function makeCtx(
     sendUserMessage(text: string) {
       deliveredText = text;
     },
-  } as unknown as TerminalDeliveryCtx["pi"];
+  } as unknown as TerminalDeliveryCtx["host"];
   const s = makeState(808, "handoff");
 
   await deliverTerminalLine(makeCtx(fakePi), s);
@@ -199,7 +199,7 @@ function makeCtx(
     sendUserMessage(text: string, options?: { deliverAs?: string }) {
       calls.push({ text, options });
     },
-  } as unknown as TerminalDeliveryCtx["pi"];
+  } as unknown as TerminalDeliveryCtx["host"];
   const s = makeState(808, "merged");
 
   await deliverTerminalLine(makeCtx(fakePi), s);

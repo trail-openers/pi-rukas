@@ -390,7 +390,7 @@ async function runWithRecorder(
   const prev = process.env.PI_ENSEMBLE_NOTIFY_CMD;
   process.env.PI_ENSEMBLE_NOTIFY_CMD = `sh ${recorder} >> ${out}`;
   const ctx: DriverContext = {
-    pi: {},
+    host: {},
     issue: 799,
     issues: [799],
     repoRoot: repo,
@@ -450,7 +450,7 @@ await withEnv("PI_ENSEMBLE_STEP_NOTICE_MS", "150", async () => {
   try {
     await runDevelopTopological(
       // biome-ignore lint/suspicious/noExplicitAny: driver fixture — the pi binding is never touched on this path
-      ({ pi: {}, issue: 799, issues: [799], repoRoot: repo, dispatchFn, verifyExecFn: realSh }) as any,
+      ({ host: {}, issue: 799, issues: [799], repoRoot: repo, dispatchFn, verifyExecFn: realSh }) as any,
       state,
       ["default"],
       state.pipelineState.workstreams as never,

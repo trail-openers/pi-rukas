@@ -347,7 +347,7 @@ const WT = path.join(REPO, ".worktrees", "issue-475-default");
 function branchCtx(execFn: ExecFn): DriverContext {
   return {
     // biome-ignore lint/suspicious/noExplicitAny: driver fixture — only verifyExecFn + repoRoot are touched on this path
-    pi: {} as any,
+    host: {} as any,
     issue: 475,
     issues: [475],
     restart: false,

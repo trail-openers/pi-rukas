@@ -148,7 +148,7 @@ setupSpawnGuard();
 
     let lensDispatched = false;
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 820,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -233,7 +233,7 @@ setupSpawnGuard();
     await writeState(dir, s);
 
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 821,
       issueBodyFetcherFn: mockIssueBodyOk,

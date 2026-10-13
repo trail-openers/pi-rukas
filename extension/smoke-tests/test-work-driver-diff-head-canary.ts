@@ -237,7 +237,7 @@ async function main2() {
     transcriptPath: "/tmp/x.json",
   };
   const ctx = {
-    pi: {} as ExtensionAPI,
+    host: {} as ExtensionAPI,
     issue: 451,
     issues: [451],
     repoRoot: base,

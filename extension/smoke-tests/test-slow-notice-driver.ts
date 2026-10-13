@@ -59,7 +59,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
     return { role: "ops", ok: true, text: "done", toolUses: [], ms: 1, exitCode: 0, transcriptPath: "/tmp/x" };
   };
   const ctx: DriverContext = {
-    pi: fakePi([]),
+    host: fakePi([]),
     issue: 799,
     issues: [799],
     repoRoot: REPO,
@@ -118,7 +118,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
     return { role: "explore", ok: true, text: "done", toolUses: [], ms: 5, exitCode: 0 };
   };
   const ctx: any = {
-    pi: { sendUserMessage: () => {} },
+    host: { sendUserMessage: () => {} },
     issue: 799,
     issues: [799],
     repoRoot: "/tmp",
@@ -187,7 +187,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
     return { role: "adversarial-loop", ok: true, text: "VERDICT: APPROVED\n\nNo issues.", toolUses: [], ms: 1, exitCode: 0, adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }] };
   };
   const ctx: any = {
-    pi: { sendUserMessage: () => {} },
+    host: { sendUserMessage: () => {} },
     issue: 799,
     issues: [799],
     repoRoot: fixture,
@@ -225,7 +225,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
   clearSlowEventsForTesting();
   const dir = mkdtempSync(path.join(os.tmpdir(), "pi-ens-799handoff-"));
   const ctx: any = {
-    pi: { sendUserMessage: () => {} },
+    host: { sendUserMessage: () => {} },
     issue: 799,
     issues: [799],
     repoRoot: dir,
@@ -290,7 +290,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
   // The fake dispatch records nothing; the stale entry's jobId is not in the
   // log after the cycle runs.
   const ctx: DriverContext = {
-    pi: fakePi([]),
+    host: fakePi([]),
     issue: 799,
     issues: [799],
     repoRoot: "/tmp",

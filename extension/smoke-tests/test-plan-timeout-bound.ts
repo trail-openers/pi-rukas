@@ -101,7 +101,7 @@ function primaryOk(): DispatchResult {
 
 function mkCtx(dir: string, dispatchFn: DriverContext["dispatchFn"]): DriverContext {
   return {
-    pi: fakePi,
+    host: fakePi,
     repoRoot: dir,
     issue: 754,
     dispatchFn,

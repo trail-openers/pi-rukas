@@ -113,7 +113,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           return { stdout: "" };
         };
         const ctx: DriverContext = {
-          pi: makeFakePi().pi,
+          host: makeFakePi().pi,
           repoRoot: dir,
           issue: 998,
           verifyExecFn: oneErrOneEmpty,
@@ -184,7 +184,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           return { stdout: "" };
         };
         const ctx: DriverContext = {
-          pi: makeFakePi().pi,
+          host: makeFakePi().pi,
           repoRoot: dir,
           issue: 991,
           issueBodyFetcherFn: mockIssueBodyOk,
@@ -233,7 +233,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           return { stdout: "" };
         };
         const ctx: DriverContext = {
-          pi: makeFakePi().pi,
+          host: makeFakePi().pi,
           repoRoot: dir,
           issue: 992,
           issueBodyFetcherFn: mockIssueBodyOk,
@@ -292,7 +292,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           return { stdout: "" };
         };
         const ctx: DriverContext = {
-          pi: makeFakePi().pi,
+          host: makeFakePi().pi,
           repoRoot: dir,
           issue: 993,
           issueBodyFetcherFn: mockIssueBodyOk,
@@ -359,7 +359,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         };
       };
       const ctx: DriverContext = {
-        pi: makeFakePi().pi,
+        host: makeFakePi().pi,
         repoRoot: dir,
         issue: 998,
         verifyExecFn: exec,

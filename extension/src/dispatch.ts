@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import type { DispatchHost } from "./async-jobs-lifecycle.ts";
 import { startBatch, startJob } from "./async-jobs.ts";
 import { type RetryNotice, withProviderBackoff } from "./dispatch-retry.ts";
 import { steerChild } from "./dispatch-steer.ts";
@@ -70,7 +71,7 @@ export function stripModelOverride(spec: DispatchSpec): DispatchSpec {
  * (or similar) event into the state file.
  */
 export function dispatchCore(
-  pi: ExtensionAPI,
+  pi: DispatchHost,
   spec: DispatchSpec,
   opts: {
     label?: string;

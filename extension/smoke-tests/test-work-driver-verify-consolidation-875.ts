@@ -132,14 +132,14 @@ process.env.PI_ENSEMBLE_VERIFY = "1";
   };
   const baseShaOf = async (dir: string) => (await execp2("git rev-parse HEAD", { cwd: dir })).stdout.trim();
   const ctx = (dir: string): DriverContext => ({
-    pi: makeFakePi().pi,
+    host: makeFakePi().pi,
     repoRoot: dir,
     issue: 540,
     verifyExecFn: execp2,
   });
   // The PRODUCTION shape: no `verifyExecFn` — that seam is test-only
   // ("production callers omit it", #476 comment in work-driver-merged.ts).
-  const prodCtx = (dir: string): DriverContext => ({ pi: makeFakePi().pi, repoRoot: dir, issue: 540 });
+  const prodCtx = (dir: string): DriverContext => ({ host: makeFakePi().pi, repoRoot: dir, issue: 540 });
 
   // F5.9 — N=1 short-circuit (regression: the #875 cumulative read must not
   // relax the structural unverifiability of single-workstream cycles).

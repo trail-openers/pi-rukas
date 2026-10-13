@@ -37,7 +37,7 @@ function mkCtx(issue: number, exec: VerifyExecFn): DriverContext {
   return {
     repoRoot: "/fake",
     issue,
-    pi: { sendUserMessage: () => {} },
+    host: { sendUserMessage: () => {} },
     verifyExecFn: exec,
     mergeGrant: true,
   } as unknown as DriverContext;

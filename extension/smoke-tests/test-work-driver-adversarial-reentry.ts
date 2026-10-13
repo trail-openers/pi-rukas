@@ -83,7 +83,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
 
     const failures: Record<string, number> = {};
     const ctx: DriverContext = {
-      pi: makeFakePi(),
+      host: makeFakePi(),
       repoRoot: dir,
       issue: 961,
       issueBodyFetcherFn: async () => ({ stdout: "mock" }),
@@ -211,7 +211,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
 
     const failures: Record<string, number> = {};
     const ctx: DriverContext = {
-      pi: makeFakePi(),
+      host: makeFakePi(),
       repoRoot: dir,
       issue: 962,
       issueBodyFetcherFn: async () => ({ stdout: "mock" }),
@@ -386,7 +386,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
 
     const calls: Record<string, number> = { "task-a": 0, "task-b": 0 };
     const ctx: DriverContext = {
-      pi: makeFakePi(),
+      host: makeFakePi(),
       repoRoot: dir,
       issue: 963,
       issueBodyFetcherFn: async () => ({ stdout: "mock" }),

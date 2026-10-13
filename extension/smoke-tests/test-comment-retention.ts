@@ -126,7 +126,7 @@ async function developGate(
     },
   };
   const ctx: DriverContext = {
-    pi: makeFakePi().pi,
+    host: makeFakePi().pi,
     repoRoot: dir,
     issue,
     issueBodyFetcherFn: () => ({ stdout: "mock" }),

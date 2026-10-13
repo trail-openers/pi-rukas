@@ -144,7 +144,7 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
   try {
     const { forge, calls } = mkScriptedForge({ label: true });
     const ctx: DriverContext = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: dir,
       issue: 730,
       dispatchFn: async () => ({
@@ -193,7 +193,7 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
       throw new Error("simulated comment post failure");
     };
     const ctx: DriverContext = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: dir,
       issue: 655,
       dispatchFn: failingDispatch(),
@@ -227,7 +227,7 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
     process.env.PI_ENSEMBLE_HANDOFF_POST_RETRY = "0";
     const { forge } = mkScriptedForge({ labelAddFailures: 99 });
     const ctx: DriverContext = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: dir,
       issue: 736,
       dispatchFn: failingDispatch(),
@@ -265,7 +265,7 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
       throw new Error("simulated comment post failure");
     };
     const ctx: DriverContext = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: dir,
       issue: 758,
       dispatchFn: failingDispatch(),
@@ -299,7 +299,7 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
   try {
     process.env.PI_ENSEMBLE_FORGE = "none";
     const ctx: DriverContext = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: dir,
       issue: 759,
       dispatchFn: failingDispatch(),
@@ -418,7 +418,7 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
     // I1: empty list → fallback posts; record the body.
     const { forge: f1, calls: c1 } = mkScriptedForge({ comments: [] });
     const ctx1: DriverContext = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: dir,
       issue: 775,
       dispatchFn: async (): Promise<DispatchResult> => ({
@@ -443,7 +443,7 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
       comments: [{ body: fileBody, url: "https://github.com/acme/widget/issues/775#issuecomment-100" }],
     });
     const ctx2: DriverContext = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: dir,
       issue: 775,
       dispatchFn: async (): Promise<DispatchResult> => ({
@@ -473,7 +473,7 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
       comments: [{ body: "a completely different older comment" }],
     });
     const ctx3: DriverContext = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: dir,
       issue: 775,
       dispatchFn: async (): Promise<DispatchResult> => ({

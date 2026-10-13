@@ -74,7 +74,7 @@ process.env.PI_ENSEMBLE_HANDOFF_TIMEOUT_MS = "200";
   try {
     const SLOW_MS = 4_000;
     const ctx: DriverContext = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: dir,
       issue: 626,
       dispatchFn: () =>
@@ -131,7 +131,7 @@ process.env.PI_ENSEMBLE_HANDOFF_TIMEOUT_MS = "200";
   try {
     let dispatched = 0;
     const ctx: DriverContext = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: dir,
       issue: 626,
       dispatchFn: async () => {
@@ -176,7 +176,7 @@ process.env.PI_ENSEMBLE_HANDOFF_TIMEOUT_MS = "200";
   const dir = mkdtempSync(path.join(tmpdir(), "handoff-throw-"));
   try {
     const ctx: DriverContext = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: dir,
       issue: 626,
       dispatchFn: async () => {

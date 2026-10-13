@@ -77,7 +77,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
     let capturedPrompt = "";
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 940,
       // PR13 — fetcher returns a body with a unique marker we can scan
@@ -129,7 +129,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
     let capturedPrompt = "";
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 950,
       issues: [950, 951, 952],
@@ -183,7 +183,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     const hugeBody = "A".repeat(17 * 1024); // 17 KiB > 16 KiB cap
     let capturedPrompt = "";
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 960,
       issueBodyFetcherFn: async (_n, _cwd) => ({ stdout: hugeBody }),
@@ -224,7 +224,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
     let exploreDispatched = false;
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 970,
       issueBodyFetcherFn: async (_n, _cwd) => ({ stdout: "" }), // all empty

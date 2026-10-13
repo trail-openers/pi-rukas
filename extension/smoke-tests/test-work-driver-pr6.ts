@@ -119,7 +119,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
     const seenLabels: string[] = [];
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 533,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -185,7 +185,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     const fs = await import("node:fs/promises");
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 700,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -225,7 +225,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
     let planSeen = false;
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 701,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -314,7 +314,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 
     const seenLabels: string[] = [];
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 702,
       issueBodyFetcherFn: mockIssueBodyOk,

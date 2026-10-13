@@ -160,7 +160,7 @@ const defaultDispatchFn: DriverContext["dispatchFn"] = async (_pi, spec, opts) =
     });
     await writeState(root, s);
     const ctx: DriverContext = {
-      pi: makeFakePi().pi, repoRoot: root, issue: 749,
+      host: makeFakePi().pi, repoRoot: root, issue: 749,
       issueBodyFetcherFn: mockIssueBodyOk, dispatchFn: defaultDispatchFn,
       adversarialLoopFn: async () => mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", text: "Approved." }),
       lensReviewFn: async () => mkLensSummary({ verdict: "APPROVED" }),
@@ -192,7 +192,7 @@ const defaultDispatchFn: DriverContext["dispatchFn"] = async (_pi, spec, opts) =
     });
     await writeState(root, s);
     const ctx: DriverContext = {
-      pi: makeFakePi().pi, repoRoot: root, issue: 750,
+      host: makeFakePi().pi, repoRoot: root, issue: 750,
       issueBodyFetcherFn: mockIssueBodyOk, dispatchFn: defaultDispatchFn,
       adversarialLoopFn: async () => mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", text: "Approved." }),
       lensReviewFn: async () => mkLensSummary({ verdict: "APPROVED" }),
@@ -226,7 +226,7 @@ const defaultDispatchFn: DriverContext["dispatchFn"] = async (_pi, spec, opts) =
     });
     await writeState(root, s);
     const ctx: DriverContext = {
-      pi: makeFakePi().pi, repoRoot: root, issue: 751,
+      host: makeFakePi().pi, repoRoot: root, issue: 751,
       issueBodyFetcherFn: mockIssueBodyOk, dispatchFn: defaultDispatchFn,
       adversarialLoopFn: async () => mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", text: "Approved." }),
       lensReviewFn: async () => mkLensSummary({ verdict: "APPROVED" }),
@@ -268,7 +268,7 @@ const defaultDispatchFn: DriverContext["dispatchFn"] = async (_pi, spec, opts) =
     });
     await writeState(root, s);
     const ctx: DriverContext = {
-      pi: makeFakePi().pi, repoRoot: root, issue: 776,
+      host: makeFakePi().pi, repoRoot: root, issue: 776,
       issueBodyFetcherFn: mockIssueBodyOk, dispatchFn: defaultDispatchFn,
       adversarialLoopFn: async () => mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", text: "Approved." }),
       lensReviewFn: async () => mkLensSummary({ verdict: "APPROVED" }),
@@ -352,7 +352,7 @@ const defaultDispatchFn: DriverContext["dispatchFn"] = async (_pi, spec, opts) =
     });
     await writeState(root, s);
     const ctx: DriverContext = {
-      pi: makeFakePi().pi, repoRoot: root, issue: 797,
+      host: makeFakePi().pi, repoRoot: root, issue: 797,
       issueBodyFetcherFn: mockIssueBodyOk, dispatchFn: defaultDispatchFn,
       adversarialLoopFn: async () => mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", text: "Approved." }),
       lensReviewFn: async () => mkLensSummary({ verdict: "APPROVED" }),

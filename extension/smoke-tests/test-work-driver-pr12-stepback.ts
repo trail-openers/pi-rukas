@@ -103,7 +103,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     const { pi, sent } = makeFakePi();
     let dispatchCalled = false;
     const ctx: DriverContext = {
-      pi,
+      host: pi,
       repoRoot: dir,
       issue: 900,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -158,7 +158,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     await writeState(dir, s);
 
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 910,
       restart: true,
@@ -275,7 +275,7 @@ alternativeApproach: Could also split into two issues — one for the impl, one 
     await writeState(dir, s);
 
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 920,
       issueBodyFetcherFn: mockIssueBodyOk,

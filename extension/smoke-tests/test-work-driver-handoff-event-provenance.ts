@@ -54,7 +54,7 @@ function assert(cond: boolean, msg: string) {
   try {
     const { forge } = mkFakeForge({ issueLabels: ["needs-human-attention"] });
     const ctx: DriverContext = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: dir,
       issue: 626,
       dispatchFn: async () => ({
@@ -118,7 +118,7 @@ function assert(cond: boolean, msg: string) {
       };
     };
     const ctx: DriverContext = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: dir,
       issue: 626,
       dispatchFn: async () => ({
@@ -239,7 +239,7 @@ function assert(cond: boolean, msg: string) {
       },
     } as unknown as Forge;
     const ctx: DriverContext = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: dir,
       issue: 626,
       dispatchFn: async (): Promise<DispatchResult> => {
@@ -277,7 +277,7 @@ function assert(cond: boolean, msg: string) {
   const dir = mkdtempSync(path.join(tmpdir(), "issue775-none-"));
   try {
     const ctx: DriverContext = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: dir,
       issue: 626,
       dispatchFn: async (): Promise<DispatchResult> => {

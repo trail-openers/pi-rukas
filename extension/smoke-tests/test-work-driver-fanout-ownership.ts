@@ -74,7 +74,7 @@ const WS = {
     const reviewed: string[] = [];
     const siblingsSeen: Record<string, string[]> = {};
     const ctx: DriverContext = {
-      pi: { sendUserMessage: () => {} } as unknown as DriverContext["pi"],
+      host: { sendUserMessage: () => {} } as unknown as DriverContext["host"],
       repoRoot: dir,
       issue: 1137,
       issueBodyFetcherFn: async () => ({ stdout: "mock" }),
@@ -122,7 +122,7 @@ const WS = {
     const reviewed: string[] = [];
     const siblingsSeen: Record<string, string[]> = {};
     const ctx: DriverContext = {
-      pi: { sendUserMessage: () => {} } as unknown as DriverContext["pi"],
+      host: { sendUserMessage: () => {} } as unknown as DriverContext["host"],
       repoRoot: dir,
       issue: 1137,
       issueBodyFetcherFn: async () => ({ stdout: "mock" }),
@@ -165,7 +165,7 @@ const WS = {
     git(dir, "init -q -b main");
     let n1 = false;
     const ctx: DriverContext = {
-      pi: { sendUserMessage: () => {} } as unknown as DriverContext["pi"],
+      host: { sendUserMessage: () => {} } as unknown as DriverContext["host"],
       repoRoot: dir,
       issue: 1137,
       issueBodyFetcherFn: async () => ({ stdout: "mock" }),
@@ -204,7 +204,7 @@ const WS = {
     git(dir, "init -q -b main");
     const reviewed: string[] = [];
     const ctx: DriverContext = {
-      pi: { sendUserMessage: () => {} } as unknown as DriverContext["pi"],
+      host: { sendUserMessage: () => {} } as unknown as DriverContext["host"],
       repoRoot: dir,
       issue: 1137,
       issueBodyFetcherFn: async () => ({ stdout: "mock" }),

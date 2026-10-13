@@ -107,7 +107,7 @@ export async function runSingleDispatch(
     // the `onSlow` callback; there is no driver-side polling loop here.
     // The await itself is unchanged: same promise, same resolution.
     result = await dispatch(
-      ctx.pi,
+      ctx.host,
       // `cwd` matters when work lives elsewhere (lens-fix: worktree, not repoRoot).
       { role, prompt: buildPrompt(), ...(opts?.cwd ? { cwd: opts.cwd } : {}) },
       {

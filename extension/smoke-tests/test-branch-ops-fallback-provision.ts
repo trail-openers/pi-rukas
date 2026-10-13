@@ -99,7 +99,7 @@ function opsFallbackRecorder(opsReply: string) {
 
 function branchCtx(execFn: ExecFn, dispatchFn?: () => Promise<DispatchResult>): DriverContext {
   return {
-    pi: {},
+    host: {},
     issue: 536,
     issues: [536],
     restart: false,

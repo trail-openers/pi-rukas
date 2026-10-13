@@ -18,7 +18,6 @@ import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readMarker } from "../src/reply-markers.ts";
 import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
@@ -95,7 +94,7 @@ async function runWith(
   try {
     const prompts: string[] = [];
     const ctx: DriverContext = {
-      pi: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
+      host: { sendUserMessage: () => {} } as unknown as DriverContext["host"],
       repoRoot: dir,
       issue,
       issueBodyFetcherFn: async () => ({ stdout: `title:\tmock #${issue}\n\nmock body` }),
@@ -227,7 +226,10 @@ function promptCanary() {
   // Heading form only: the intent block may mention `## Workstreams` in prose.
   const headings = intent.split("\n").map((l) => l.trim());
   assert(!headings.includes("## Workstreams"), "intent prompt: no `## Workstreams` heading");
-  assert(!headings.includes("## Prior decisions"), "intent prompt: no `## Prior decisions` heading");
+  assert(
+    !headings.includes("## Prior decisions"),
+    "intent prompt: no `## Prior decisions` heading",
+  );
   assert(!headings.includes("## Touchpoints"), "intent prompt: no `## Touchpoints` heading");
   const lines = intent.split("\n").filter((l) => l.trim() !== "");
   assert(
@@ -258,8 +260,14 @@ async function shouldRetryCases() {
   assert(good !== undefined, "predicate fixture: GOOD_REPLY resolves to a spec");
   const base = { useIntent: true, spec: undefined };
   assert(shouldRetryExplore(base), "predicate: intent + no spec → retry");
-  assert(!shouldRetryExplore({ ...base, useIntent: false }), "predicate: legacy path never retries");
-  assert(!shouldRetryExplore({ ...base, spec: good?.spec }), "predicate: a readable spec does not retry");
+  assert(
+    !shouldRetryExplore({ ...base, useIntent: false }),
+    "predicate: legacy path never retries",
+  );
+  assert(
+    !shouldRetryExplore({ ...base, spec: good?.spec }),
+    "predicate: a readable spec does not retry",
+  );
 }
 
 await goldenFixture();

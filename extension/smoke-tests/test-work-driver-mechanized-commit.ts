@@ -156,7 +156,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           return { stdout: "" };
         };
         const ctx: DriverContext = {
-          pi: makeFakePi().pi,
+          host: makeFakePi().pi,
           repoRoot: dir,
           issue: 994,
           issueBodyFetcherFn: mockIssueBodyOk,

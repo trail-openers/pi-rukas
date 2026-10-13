@@ -120,7 +120,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 
     let developerPrompt = "";
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 479,
       issues: [479, 480, 481, 482, 476],
@@ -162,7 +162,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
     const seenLabels: string[] = [];
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 850,
       // Simulate the v10r incident: gh issue view returns empty stdout
@@ -217,7 +217,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
     let fetchCount = 0;
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 860,
       issues: [860, 861, 862],

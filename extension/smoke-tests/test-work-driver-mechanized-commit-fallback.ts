@@ -164,7 +164,7 @@ const mkDispatchFn =
           return { stdout: "" };
         };
         const ctx: DriverContext = {
-          pi: makeFakePi().pi,
+          host: makeFakePi().pi,
           repoRoot: dir,
           issue: 995,
           issueBodyFetcherFn: mockIssueBodyOk,
@@ -278,7 +278,7 @@ const mkDispatchFn =
         const mkOpsResult = (): DispatchResult =>
           mkResult({ role: "ops", text: "Committed and pushed.\npr: 599" });
         const ctx: DriverContext = {
-          pi: makeFakePi().pi,
+          host: makeFakePi().pi,
           repoRoot: dir,
           issue: 998,
           issueBodyFetcherFn: mockIssueBodyOk,
@@ -358,7 +358,7 @@ const mkDispatchFn =
           return { stdout: "" };
         };
         const ctx: DriverContext = {
-          pi: makeFakePi().pi,
+          host: makeFakePi().pi,
           repoRoot: dir,
           issue: 996,
           issueBodyFetcherFn: mockIssueBodyOk,
@@ -441,7 +441,7 @@ const mkDispatchFn =
           return { stdout: "" };
         };
         const ctx: DriverContext = {
-          pi: makeFakePi().pi,
+          host: makeFakePi().pi,
           repoRoot: dir,
           issue: 997,
           issueBodyFetcherFn: mockIssueBodyOk,

@@ -145,7 +145,7 @@ try {
   const labels: string[] = [];
   let midFanOut = { taskBPersisted: false, taskAKept: false };
   const ctx: DriverContext = {
-    pi: makeFakePi(),
+    host: makeFakePi(),
     repoRoot: dir,
     issue: ISSUE,
     issueBodyFetcherFn: mockIssueBodyOk,

@@ -201,7 +201,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     };
     const seenLabels: string[] = [];
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 950,
       mergeGrant: true,
@@ -272,7 +272,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       return { stdout: "" };
     };
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 951,
       mergeGrant: true,
@@ -347,7 +347,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     await writeState(dir, s2);
     const seenLabels: string[] = [];
     await runWorkDriver({
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 952,
       issueBodyFetcherFn: mockIssueBodyOk,

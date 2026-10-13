@@ -22,6 +22,7 @@
 import { notifyAgent } from "./agent-message.ts";
 import { trace } from "./trace.ts";
 import { renderHandoffUserMessage } from "./work-driver-handoff-message.ts";
+import type { DriverHost } from "./work-driver-host.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import type { WorkState } from "./workflow-state.ts";
 
@@ -29,7 +30,7 @@ import type { WorkState } from "./workflow-state.ts";
 export type TerminalDeliveryCtx = {
   repoRoot: string;
   issue: number;
-  pi: Pick<import("@earendil-works/pi-coding-agent").ExtensionAPI, "sendUserMessage">;
+  host: DriverHost;
 };
 
 /**
@@ -64,7 +65,7 @@ export async function deliverTerminalLine(
   // and (b) leave a write-ahead marker that made re-delivery impossible.
   // Now the marker stays unset, so a resume retries the send.
   try {
-    notifyAgent(ctx.pi, message);
+    notifyAgent(ctx.host, message);
   } catch (err) {
     trace(
       `work-driver: terminal line for #${ctx.issue} FAILED to deliver: ` +

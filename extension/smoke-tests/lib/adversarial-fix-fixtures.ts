@@ -105,7 +105,7 @@ export function fixCtx(
   verifyExecFn?: DriverContext["verifyExecFn"],
 ): DriverContext {
   return {
-    pi: { sendUserMessage: () => {} } as unknown as DriverContext["pi"],
+    host: { sendUserMessage: () => {} } as unknown as DriverContext["host"],
     repoRoot: dir,
     issue: 1114,
     issueBodyFetcherFn: async () => ({ stdout: "mock" }),

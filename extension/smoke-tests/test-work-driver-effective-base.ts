@@ -25,7 +25,7 @@ import { verifyDevelopOutcome } from "../src/work-driver-verify-develop.ts";
 import { initialState } from "../src/workflow-state.ts";
 
 type StubPi = Pick<ExtensionAPI, "sendUserMessage">;
-const stubPi: DriverContext["pi"] = { sendUserMessage: () => {} } as StubPi;
+const stubPi: DriverContext["host"] = { sendUserMessage: () => {} } as StubPi;
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -63,7 +63,7 @@ function makeState(overrides: {
 
 const mkCtx = (execFn: NonNullable<DriverContext["verifyExecFn"]>): DriverContext =>
   ({
-    pi: stubPi,
+    host: stubPi,
     issue: 725,
     repoRoot: tmpDir,
     verifyExecFn: execFn,

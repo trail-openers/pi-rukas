@@ -70,7 +70,7 @@ function mkCtx(
   return {
     repoRoot: opts?.repoRoot ?? "/fake",
     issue,
-    pi: mkPi(),
+    host: mkPi(),
     verifyExecFn: exec,
     mergeGrant: true, // #380 — granted the way `/work N --merge` would
     issueBodyFetcherFn: async () => ({
@@ -346,7 +346,7 @@ setupSpawnGuard();
   // the LLM-narrated merge behind the #245/#253 silent merges). Assert there
   // is NO knob left: mechanization is attempted unconditionally.
   const r = await mechanizedMerge(
-    { repoRoot: "/fake", issue: 100, pi: mkPi() } as DriverContext,
+    { repoRoot: "/fake", issue: 100, host: mkPi() } as DriverContext,
     { pipelineState: { prNumber: 999 } } as unknown as WorkState,
   );
   assert(
@@ -377,7 +377,7 @@ setupSpawnGuard();
       }
       return base.fn(cmd);
     };
-    const r = await mechanizedMerge({ repoRoot: dir, issue: 100, pi: mkPi(), verifyExecFn: exec }, {
+    const r = await mechanizedMerge({ repoRoot: dir, issue: 100, host: mkPi(), verifyExecFn: exec }, {
       pipelineState: { prNumber: 999 },
     } as unknown as WorkState);
     assert(
@@ -411,7 +411,7 @@ setupSpawnGuard();
       }
       return base.fn(cmd);
     };
-    const r = await mechanizedMerge({ repoRoot: dir, issue: 100, pi: mkPi(), verifyExecFn: exec }, {
+    const r = await mechanizedMerge({ repoRoot: dir, issue: 100, host: mkPi(), verifyExecFn: exec }, {
       pipelineState: { prNumber: 999 },
     } as unknown as WorkState);
     assert(

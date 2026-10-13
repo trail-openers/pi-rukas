@@ -98,7 +98,7 @@ export async function runConvergeGateHandler(
   let correctiveNote: string | undefined;
   try {
     const retry = await dispatchFn(
-      ctx.pi,
+      ctx.host,
       {
         role: "developer",
         prompt,

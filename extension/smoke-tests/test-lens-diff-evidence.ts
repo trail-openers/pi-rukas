@@ -191,7 +191,7 @@ async function mkRepo(): Promise<string> {
 
     const labels: string[] = [];
     await runWorkDriver({
-      pi: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
+      host: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
       repoRoot: dir,
       issue: 840,
       issueBodyFetcherFn: async () => ({ stdout: "title:\tt\nstate:\tOPEN\n\nbody" }),

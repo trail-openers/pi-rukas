@@ -13,6 +13,11 @@ import { reset as resetDeck } from "./dispatch-deck.ts";
 import { incrementNotice } from "./notice-counter.ts";
 import { trace } from "./trace.ts";
 
+/** The narrow host surface startJob / dispatch need: steer delivery only. */
+export interface DispatchHost {
+  sendUserMessage(text: string, options: { deliverAs: "steer" }): void;
+}
+
 /**
  * Push a report back to the parent agent. `deliverAs: "steer"` queues the
  * message during a streaming turn (delivered before the next LLM call) or
@@ -20,10 +25,10 @@ import { trace } from "./trace.ts";
  * #916 SLICE B: counts the delivery for the live view's "N new notices"
  * badge (reset on view open).
  */
-export function deliverReport(pi: ExtensionAPI, report: string): void {
+export function deliverReport(host: DispatchHost, report: string): void {
   incrementNotice();
   try {
-    pi.sendUserMessage(report, { deliverAs: "steer" });
+    host.sendUserMessage(report, { deliverAs: "steer" });
   } catch (err) {
     trace(`async report delivery failed: ${(err as Error).message}`);
   }

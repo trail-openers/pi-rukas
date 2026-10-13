@@ -135,7 +135,7 @@ setupSpawnGuard();
     await writeState(root, state);
 
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: root,
       issue: 280,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -288,7 +288,7 @@ setupSpawnGuard();
     await writeState(root, state);
 
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: root,
       issue: 281,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -425,7 +425,7 @@ setupSpawnGuard();
     process.env.PI_ENSEMBLE_SEAM_ESCALATION = "0";
     try {
       const ctx: DriverContext = {
-        pi: makeFakePi().pi,
+        host: makeFakePi().pi,
         repoRoot: root,
         issue: 282,
         issueBodyFetcherFn: mockIssueBodyOk,

@@ -86,7 +86,7 @@ for (const [killCause, cap] of [
 
     const failures: Record<string, number> = {};
     const ctx: DriverContext = {
-      pi: makeFakePi(),
+      host: makeFakePi(),
       repoRoot: dir,
       issue: 543,
       issueBodyFetcherFn: async () => ({ stdout: "mock" }),

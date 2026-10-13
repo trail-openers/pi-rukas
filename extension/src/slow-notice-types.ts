@@ -3,7 +3,7 @@
  * (slow-notice.ts), moved here verbatim so slow-notice.ts stays under the
  * 500-line limit. The watch itself (arm/feed/tick) stays in slow-notice.ts.
  */
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { DispatchHost } from "./async-jobs-lifecycle.ts";
 import type { SteerSource } from "./dispatch-steer.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 
@@ -34,7 +34,7 @@ export interface SlowWatchInput {
    * extension api (async-jobs-registry) so children spawned without a pi in
    * scope (lens, adversarial) still notify the PM. Undefined in the suite →
    * the notice is skipped, never thrown. */
-  pi?: Pick<ExtensionAPI, "sendUserMessage">;
+  pi?: DispatchHost;
   /** Injectable steer core — tests record instead of writing to a real
    * stdin. Defaults to `steerChild`. */
   steerFn?: (jobId: string, text: string, source: SteerSource) => unknown;

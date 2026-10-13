@@ -199,7 +199,7 @@ const withInFlight = (over: Partial<WorkState> = {}): WorkState => {
     let midFlight: WorkState | undefined;
     const { pi } = mkPi();
     await runWorkDriver({
-      pi,
+      host: pi,
       repoRoot: dir,
       issue: 710,
       issueBodyFetcherFn: async () => ({ stdout: "title:\tt\nstate:\tOPEN\n\nbody" }),
@@ -268,7 +268,7 @@ const withInFlight = (over: Partial<WorkState> = {}): WorkState => {
     const labels: string[] = [];
     const { pi, sent } = mkPi();
     await runWorkDriver({
-      pi,
+      host: pi,
       repoRoot: dir,
       issue: 712,
       issueBodyFetcherFn: async () => ({ stdout: "title:\tt\nstate:\tOPEN\n\nbody" }),

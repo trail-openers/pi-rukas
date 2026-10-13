@@ -87,7 +87,7 @@ function mkResult(overrides: Partial<DispatchResult> = {}): DispatchResult {
     await writeState(dir, s);
 
     const ctx: DriverContext = {
-      pi: makeFakePi(),
+      host: makeFakePi(),
       repoRoot: dir,
       issue: 954,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -166,7 +166,7 @@ function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof
 
     const calls: Record<string, number> = { "task-a": 0, "task-b": 0, "task-c": 0 };
     const ctx: DriverContext = {
-      pi: makeFakePi(),
+      host: makeFakePi(),
       repoRoot: dir,
       issue: 958,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -254,7 +254,7 @@ function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof
 
     const calls: Record<string, number> = { "task-a": 0, "task-b": 0, "task-c": 0 };
     const ctx: DriverContext = {
-      pi: makeFakePi(),
+      host: makeFakePi(),
       repoRoot: dir,
       issue: 959,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -349,7 +349,7 @@ function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof
 
     const calls: Record<string, number> = { "task-a": 0, "task-b": 0, "task-c": 0 };
     const ctx: DriverContext = {
-      pi: makeFakePi(),
+      host: makeFakePi(),
       repoRoot: dir,
       issue: 960,
       issueBodyFetcherFn: mockIssueBodyOk,

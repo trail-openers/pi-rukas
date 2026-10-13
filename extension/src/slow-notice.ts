@@ -42,8 +42,8 @@
  * entry per live child, bounded by MAX_JOBS, deleted on settle.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { notifyAgent } from "./agent-message.ts";
+import type { DispatchHost } from "./async-jobs-lifecycle.ts";
 import { getParentExtensionApi } from "./async-jobs-registry.ts";
 import { steerChild } from "./dispatch-steer.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
@@ -115,7 +115,7 @@ interface Watch {
   level: number;
   /** Injectable scheduler for the elapsed check (injectable in tests). */
   schedule: (fn: () => void, ms: number) => () => void;
-  pi?: Pick<ExtensionAPI, "sendUserMessage">;
+  pi?: DispatchHost;
   steerFn?: SlowWatchInput["steerFn"];
   now: () => number;
   onSlow?: OnSlowCallback;

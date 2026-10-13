@@ -26,7 +26,6 @@ import { exec } from "node:child_process";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { dispatchCore } from "./dispatch.ts";
 import {
   VIPUNE_PRECEDENCE_NOTE,
@@ -77,6 +76,7 @@ import {
 } from "./research-verify.ts";
 import { trace } from "./trace.ts";
 import { vipuneSearch } from "./vipune.ts";
+import type { DriverHost } from "./work-driver-host.ts";
 import type { ExecFn } from "./worktree.ts";
 
 const execp = promisify(exec);
@@ -121,7 +121,7 @@ export interface ResearchDeps {
 }
 
 export async function runResearchPipeline(
-  pi: ExtensionAPI,
+  pi: DriverHost,
   input: ResearchDriverInput,
   repoRoot: string,
   deps: ResearchDeps = {},

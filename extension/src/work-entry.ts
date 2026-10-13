@@ -16,7 +16,6 @@
 import { exec } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { notifyAgent } from "./agent-message.ts";
 import { setJobIssues } from "./async-jobs-registry.ts";
 import { startJob } from "./async-jobs.ts";
@@ -25,6 +24,7 @@ import { type Forge, createForge } from "./forge.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import { groupIssues, resolvedParallelGroups } from "./work-driver-grouping.ts";
+import type { DriverHost } from "./work-driver-host.ts";
 import { runWorkDriver } from "./work-driver.ts";
 import { singleCycleQueueEntry } from "./work-queue-single-entry.ts";
 import { mergeQueueSummaryEntry } from "./work-queue-summary.ts";
@@ -107,13 +107,13 @@ export interface WorkLaunch {
  * launchWork and runDriver's single-issue branches.
  */
 function runSingleIssue(
-  pi: ExtensionAPI,
+  pi: DriverHost,
   repoRoot: string,
   issue: number,
   restart: boolean,
   mergeGrant: boolean,
 ): Promise<import("./work-driver.ts").DriverOutcome> {
-  return runWorkDriver({ pi, repoRoot, issue, restart, mergeGrant });
+  return runWorkDriver({ host: pi, repoRoot, issue, restart, mergeGrant });
 }
 
 /**
@@ -137,7 +137,7 @@ function runSingleIssue(
  * so both entry paths share one correct value.
  */
 export async function runGroupedIssues(
-  pi: ExtensionAPI,
+  pi: DriverHost,
   repoRoot: string,
   issues: number[],
   restart: boolean,
@@ -181,7 +181,7 @@ export async function runGroupedIssues(
         ownerKind: "driver" as const,
         work: async () => {
           await runWorkDriver({
-            pi,
+            host: pi,
             repoRoot,
             issue: primary,
             issues: groupIssueNums,
@@ -240,7 +240,7 @@ export async function entryForge(repoRoot: string): Promise<Forge | undefined> {
  * them. Progress arrives via `notifyAgent`, outcomes via `/work-status`.
  */
 export async function launchWork(
-  pi: ExtensionAPI,
+  pi: DriverHost,
   opts: {
     repoRoot: string;
     invocation: WorkInvocation;
@@ -373,7 +373,7 @@ function makeResult(ok: boolean, text: string, startMs: number, error?: string):
  * structured steer report on completion.
  */
 export async function runDriver(
-  pi: ExtensionAPI,
+  pi: DriverHost,
   opts: {
     repoRoot: string;
     invocation: WorkInvocation;

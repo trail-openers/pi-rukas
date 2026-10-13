@@ -42,6 +42,7 @@ import { runPlanPipeline } from "./plan-driver.ts";
 import { truncateForDisclosure } from "./plan-gap-disclosure.ts";
 import type { PlanResult } from "./plan-types.ts";
 import { trace } from "./trace.ts";
+import { piSessionHost } from "./work-driver-host.ts";
 import { resolveRepoRoot } from "./work-entry.ts";
 
 /**
@@ -119,7 +120,7 @@ export function registerPlanTool(pi: ExtensionAPI) {
         `start_plan_driver → descriptor="${params.descriptor.slice(0, 60)}" type=${params.type ?? "inferred"} dryRun=${!!params.dryRun} repoRoot=${repoRoot}`,
       );
       try {
-        const result = await runPlanPipeline(pi, params, repoRoot);
+        const result = await runPlanPipeline(piSessionHost(pi), params, repoRoot);
         return {
           content: [
             {

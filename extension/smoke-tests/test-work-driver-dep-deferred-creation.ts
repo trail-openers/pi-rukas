@@ -77,9 +77,9 @@ function ctxFor(repo: string): DriverContext {
     "repoRoot" | "issue" | "issues" | "verifyExecFn" | "stateRef"
   > & {
     // biome-ignore lint/suspicious/noExplicitAny: driver fixture — the pi binding is never touched on this path
-    pi: any;
+    host: any;
   } = {
-    pi: {},
+    host: {},
     issue: 753,
     issues: [753],
     repoRoot: repo,

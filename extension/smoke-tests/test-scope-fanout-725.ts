@@ -39,11 +39,11 @@ import type { DriverContext } from "../src/work-driver-context.ts";
  * #725 review (TYPE_SAFETY) — a minimal structural stub for the pi handle
  * the driver context needs, so the test avoids the `as unknown as
  * ExtensionAPI` double-erasure (which would silently survive any future
- * change to the `sendUserMessage` contract). The `as DriverContext["pi"]`
+ * change to the `sendUserMessage` contract). The `as DriverContext["host"]`
  * cast is a one-step structural conformance assertion, not an erasure.
  */
 type StubPi = Pick<ExtensionAPI, "sendUserMessage">;
-const stubPi: DriverContext["pi"] = { sendUserMessage: () => {} } as StubPi;
+const stubPi: DriverContext["host"] = { sendUserMessage: () => {} } as StubPi;
 import { runScopeFanoutGate } from "../src/work-driver-scope-fanout.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
@@ -189,7 +189,7 @@ try {
       },
     };
     const ctx: DriverContext = {
-      pi: stubPi,
+      host: stubPi,
       repoRoot: f.repo,
       issue: 607,
       verifyExecFn: realExec,
@@ -250,7 +250,7 @@ try {
       },
     };
     const ctx: DriverContext = {
-      pi: stubPi,
+      host: stubPi,
       repoRoot: f.repo,
       issue: 725,
       verifyExecFn: realExec,
@@ -389,7 +389,7 @@ try {
       },
     };
     const ctx: DriverContext = {
-      pi: stubPi,
+      host: stubPi,
       repoRoot: f.repo,
       issue: 725,
       verifyExecFn: realExec,

@@ -111,7 +111,7 @@ async function seedAdversarialState(
 
     let adversarialCalls = 0;
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 286,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -210,7 +210,7 @@ async function seedAdversarialState(
     let adversarialCalls = 0;
     let lastDiff: string | undefined;
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 287,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -313,7 +313,7 @@ async function seedAdversarialState(
 
     let adversarialCalls = 0;
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 288,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -387,7 +387,7 @@ async function seedAdversarialState(
 
     let adversarialCalls = 0;
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 289,
       issueBodyFetcherFn: mockIssueBodyOk,

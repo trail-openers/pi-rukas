@@ -63,7 +63,7 @@ async function fixture(tag: string) {
 
 function ctxFor(repo: string): DriverContext {
   const fixture = {
-    pi: {},
+    host: {},
     issue: 753,
     issues: [753],
     repoRoot: repo,

@@ -132,7 +132,7 @@ try {
   const ctx: DriverContext = {
     repoRoot: repoDir,
     issue: 476,
-    pi: mkPi(),
+    host: mkPi(),
     // CRITICAL: `verifyExecFn` is deliberately NOT set — production shape,
     // so runMerged must resolve its executor via `?? execp`.
     //

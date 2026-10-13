@@ -225,7 +225,7 @@ function assert(cond: boolean, msg: string) {
     // keeps it for a git-failed result.
     const parkDir = mkdtempSync(path.join(tmpdir(), "work-driver-lens-park-"));
     try {
-      const ctx = { pi: {}, repoRoot: parkDir, issue: 981 } as unknown as DriverContext;
+      const ctx = { host: {}, repoRoot: parkDir, issue: 981 } as unknown as DriverContext;
       const state = initialState(981, Date.now());
       const parkNow = Date.now();
       const gitFailedWithRef = {

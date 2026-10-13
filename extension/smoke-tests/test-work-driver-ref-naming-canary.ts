@@ -98,7 +98,7 @@ async function testCommitPrGate() {
     };
 
     const ctx: DriverContext = {
-      pi: {} as ExtensionAPI,
+      host: {} as ExtensionAPI,
       repoRoot: root,
       issue: 451,
       issueBodyFetcherFn: () => ({ stdout: "canary test" }),
@@ -179,7 +179,7 @@ async function testCommitPrGatePasses() {
     };
 
     const ctx: DriverContext = {
-      pi: {} as ExtensionAPI,
+      host: {} as ExtensionAPI,
       repoRoot: repo,
       issue: 453,
       issueBodyFetcherFn: () => ({ stdout: "canary pass test" }),
@@ -242,7 +242,7 @@ async function testConsolidationZeroCommits() {
     };
 
     const ctx: DriverContext = {
-      pi: {} as ExtensionAPI,
+      host: {} as ExtensionAPI,
       repoRoot: root,
       issue: 455,
       issueBodyFetcherFn: () => ({ stdout: "consolidation test" }),
@@ -327,7 +327,7 @@ async function testConsolidationWithCommits() {
     };
 
     const ctx: DriverContext = {
-      pi: {} as ExtensionAPI,
+      host: {} as ExtensionAPI,
       repoRoot: repo,
       issue: 457,
       issueBodyFetcherFn: () => ({ stdout: "consolidation pass test" }),

@@ -123,7 +123,7 @@ export async function dispatchExploreAttempt(
   let exploreDispatch: DispatchResult;
   try {
     exploreDispatch = await dispatch(
-      ctx.pi,
+      ctx.host,
       { role: "explore", prompt },
       // #799 — the slow recorder collects into the driver's pending buffer;
       // the step boundary (routeStepOutcome) drains it — this step folds
