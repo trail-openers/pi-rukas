@@ -12,7 +12,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { applyRoundDowngrade, judgeRound } from "../src/lens-review-converge.ts";
+import { judgeRound } from "../src/lens-review-converge.ts";
 import { extractFindings } from "../src/lens-review-format.ts";
 import { postLensResidualDisclosure } from "../src/lens-review-residuals.ts";
 import type { Finding, LensRunResult } from "../src/lens-review-types.ts";
@@ -250,15 +250,19 @@ const srcDir = path.join(here, "..", "src");
         complete,
       });
 
-    // Round 1: the trigger-less MEDIUM is recorded as MEDIUM (no pre-pass).
-    await run(applyRoundDowngrade([base], 1));
+    // The round's carried rows judged at `round` (the verdict-time downgrade).
+    const judgeCarried = (r: Awaited<ReturnType<typeof run>>, round: number) =>
+      judgeRound([], r, [], lens, "MEDIUM", round);
+
+    // Round 1: the trigger-less MEDIUM is recorded as MEDIUM (no downgrade in round 1).
+    await run([base]);
     const r1 = await run([], true);
     const carried1 = r1.ok ? r1.carried : [];
     assert(
       carried1.length === 1 && carried1[0]?.severity === "MEDIUM",
       "memory: round 1 row carried as MEDIUM",
     );
-    const j1 = judgeRound([], r1, lens, "MEDIUM", 2);
+    const j1 = judgeCarried(r1, 2);
     assert(j1.verdict === "CONVERGED", "memory: a round-2 omitted trigger-less MEDIUM converges");
     assert(j1.reported[0]?.severity === "LOW", "memory: the carried finding is reported at LOW");
     assert(
@@ -266,16 +270,16 @@ const srcDir = path.join(here, "..", "src");
       "memory: the carried downgrade carries reason 'no trigger'",
     );
 
-    // A downgraded fresh finding is stored at LOW.
+    // A round-2 fresh finding is stored at its own MEDIUM, never the downgrade.
     const stored = await readBranchRows(dir, "feat/x");
     assert(
       stored.length === 1 && stored[0]?.severity === "MEDIUM",
       "memory: round 1 stored MEDIUM",
     );
-    await run(applyRoundDowngrade([{ ...base, title: "round two new" }], 2));
+    await run([{ ...base, title: "round two new" }]);
     const after = await readBranchRows(dir, "feat/x");
     const fresh = after.find((r) => r.title === "round two new");
-    assert(fresh?.severity === "LOW", "memory: a downgraded fresh finding is stored at LOW");
+    assert(fresh?.severity === "MEDIUM", "memory: a round-2 fresh finding is stored at MEDIUM");
 
     // A triggered MEDIUM carried across rounds keeps blocking.
     const trig: Finding = {
@@ -288,7 +292,7 @@ const srcDir = path.join(here, "..", "src");
     const r3 = await run([], true);
     const carriedTrig = r3.ok ? r3.carried.find((f) => f.title === "triggered medium") : undefined;
     assert(carriedTrig?.trigger === "two calls", "memory: the carried row keeps its trigger");
-    const j3 = judgeRound([], r3, lens, "MEDIUM", 2);
+    const j3 = judgeCarried(r3, 2);
     assert(
       j3.verdict === "ISSUES_FOUND",
       "memory: a triggered carried MEDIUM blocks (ISSUES_FOUND)",
@@ -298,10 +302,9 @@ const srcDir = path.join(here, "..", "src");
       "memory: a triggered carried MEDIUM stays MEDIUM",
     );
 
-    // A row first seen trigger-less at round 2 is stored at LOW; when the lens
-    // re-reports it WITH a trigger, the stored severity follows the latest
-    // judgement, so a later carried copy still blocks instead of staying LOW.
-    await run(applyRoundDowngrade([{ ...base, line: 1, title: "escalated" }], 2));
+    // A row first seen trigger-less at round 2 is stored at MEDIUM; when the lens
+    // re-reports it WITH a trigger, the sticky trigger keeps it blocking.
+    await run([{ ...base, line: 1, title: "escalated" }]);
     await run([{ ...base, line: 1, title: "escalated", trigger: "two calls" }]);
     const r4 = await run([], true);
     const carriedEsc = r4.ok ? r4.carried.find((f) => f.title === "escalated") : undefined;
@@ -309,7 +312,7 @@ const srcDir = path.join(here, "..", "src");
       carriedEsc?.severity === "MEDIUM" && carriedEsc.trigger === "two calls",
       "memory: a re-reported triggered MEDIUM is stored at MEDIUM (not left at LOW)",
     );
-    const j4 = judgeRound([], r4, lens, "MEDIUM", 3);
+    const j4 = judgeCarried(r4, 3);
     assert(
       j4.verdict === "ISSUES_FOUND",
       "memory: a carried escalated MEDIUM blocks at round 3 (ISSUES_FOUND)",

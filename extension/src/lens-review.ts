@@ -8,7 +8,7 @@ import { partitionDecisions, renderPriorFindingsBlock } from "./lens-residuals.t
 import { resolveLensReviewBranch } from "./lens-review-branch-resolve.ts";
 import { capKillSummary } from "./lens-review-capkill.ts";
 import { runLensChild } from "./lens-review-child.ts";
-import { applyRoundDowngrade, judgeRound, probeLensRound } from "./lens-review-converge.ts";
+import { judgeRound, probeLensRound } from "./lens-review-converge.ts";
 import {
   type AutoDeltaInfo,
   blockedReviewSummary,
@@ -439,8 +439,8 @@ export async function runLensReview(opts: {
   // indistinguishable downstream from a lens's own — same precedence rules,
   // same threshold, same rendering. They are findings, not a side channel.
   const all = [...lensResults.flatMap((r) => r.findings), ...(opts.extraFindings ?? [])];
-  const judged = applyRoundDowngrade(all, round); // #1129 — the pre-pass runs before dedupe
-  const deduped = dedupeFindings(judged, roster);
+  // #1129 — memory stores the lens severity; the round-2 downgrade applies at the verdict.
+  const deduped = dedupeFindings(all, roster);
   // #1105 — record the round against the branch's findings memory. Suppressed
   // findings (already known on untouched code, or accepted by the operator)
   // leave the review; a complete full review resolves rows it no longer
@@ -467,7 +467,7 @@ export async function runLensReview(opts: {
   // #1105 — open rows this round did not re-report, whose cited code is
   // unchanged, still stand: a lens omitting a known finding is not a fix.
   // They are reported alongside this round's findings.
-  const { reported, verdict } = judgeRound(kept, recorded, lensResults, threshold, round);
+  const { reported, verdict } = judgeRound(kept, recorded, deduped, lensResults, threshold, round);
   // #973 — the round-cap rule's inputs for the ledger write: hasCritical
   // from the deduped findings, headSha from the ref the review actually
   // covered (the delta's head when this was a delta run, otherwise

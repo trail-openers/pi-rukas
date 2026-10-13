@@ -1,13 +1,16 @@
 /**
  * lens-review-converge — the #1129 convergence stop rule for the six-lens
- * review: the round probe, the round-2 downgrade pre-pass and the CONVERGED
- * verdict. Split out of lens-review.ts (AGENTS.md §12 file-size limit).
+ * review: the round probe, the round-2 downgrade and the CONVERGED verdict.
+ * Split out of lens-review.ts (AGENTS.md §12 file-size limit).
  *
  * AGENTS.md §1: round 1 is unchanged. From the second lens round a MEDIUM
  * finding WITHOUT a concrete trigger is downgraded to LOW ("no trigger");
- * HIGH and CRITICAL are never downgraded. A round whose remaining findings
- * are only those downgrades — and where no lens blocked or went silent and
- * nothing reaches the configured threshold — is CONVERGED (passed).
+ * HIGH and CRITICAL are never downgraded. The downgrade is a VERDICT-time
+ * judgement: the findings memory stores the severity a lens gave and never a
+ * downgraded one (review-findings-severity.ts says which rows are eligible).
+ * A round whose remaining findings are only those downgrades — and where no
+ * lens blocked or went silent and nothing reaches the configured threshold —
+ * is CONVERGED (passed).
  */
 
 import { execp } from "./lens-exec.ts";
@@ -16,7 +19,7 @@ import type { Finding, LensRunResult } from "./lens-review-types.ts";
 import { roundAfter } from "./review-ledger-round.ts";
 import { latestEntry, ledgerPathFor, readLedgerAt } from "./review-ledger.ts";
 
-/** The first round the downgrade pre-pass applies to. */
+/** The first round the downgrade applies to. */
 export const CONVERGENCE_FROM_ROUND = 2;
 
 /** The reason recorded on every downgraded finding. */
@@ -34,14 +37,20 @@ export async function probeLensRound(cwd: string, branch: string | undefined): P
 }
 
 /**
- * The downgrade pre-pass (runs BEFORE dedupe). On round ≥ 2 each MEDIUM with
- * no trigger becomes a LOW carrying a `downgrade` record; everything else is
- * returned unchanged. Round 1 has no pre-pass. The input is not mutated.
+ * The round-2 downgrade, applied when the verdict is computed. Only a MEDIUM
+ * with no trigger that is `eligible` (the memory admitted it — see
+ * review-findings-severity.ts) becomes a LOW carrying a `downgrade` record;
+ * everything else is returned unchanged. Round 1 has no downgrade. The input is
+ * not mutated.
  */
-export function applyRoundDowngrade(findings: Finding[], round: number): Finding[] {
+export function applyRoundDowngrade(
+  findings: Finding[],
+  round: number,
+  eligible: ReadonlySet<Finding>,
+): Finding[] {
   if (round < CONVERGENCE_FROM_ROUND) return findings;
   return findings.map((f) =>
-    f.severity === "MEDIUM" && !f.trigger
+    f.severity === "MEDIUM" && !f.trigger && eligible.has(f)
       ? {
           ...f,
           severity: "LOW",
@@ -54,7 +63,7 @@ export function applyRoundDowngrade(findings: Finding[], round: number): Finding
 /**
  * CONVERGED: an APPROVED verdict (zero findings at or above the threshold, no
  * CRITICAL, every lens complete — all of which `computeVerdict` has already
- * decided) becomes CONVERGED when the pre-pass downgraded at least one finding.
+ * decided) becomes CONVERGED when the downgrade applied to at least one finding.
  * REVIEW_INCOMPLETE, CRITICAL_ISSUES_FOUND and ISSUES_FOUND keep their
  * precedence; a review with zero findings stays APPROVED.
  */
@@ -63,26 +72,24 @@ export function convergeVerdict(verdict: Verdict, judged: Finding[]): Verdict {
 }
 
 /**
- * The round's reported findings and verdict. Carried rows (open findings the
- * round did not re-report, from the findings memory) get the same pre-pass as
- * this round's findings, so a trigger-less MEDIUM a round-2 lens omits still
- * downgrades; a triggered one (the row keeps its trigger) still blocks. A
- * downgraded carried row counts toward CONVERGED like a judged one. CONVERGED is
- * decided on the REPORTED findings (what the store kept), so a downgrade the
- * store reversed cannot pass the verdict silently. Legacy
- * carried rows (written before #1129, no trigger ever recorded) are NOT
- * downgraded: they keep their stored MEDIUM until a lens re-reports them.
+ * The round's reported findings and verdict. `kept` are this round's findings
+ * as the memory reported them; `recorded` carries the open rows this round did
+ * not re-report (`carried`) and the set the downgrade may touch (`downgradable`,
+ * by identity). With no memory (`recorded` not ok or absent) every fresh finding
+ * in `unrecorded` is eligible. CONVERGED is decided on the REPORTED findings, so
+ * a downgrade the store reversed cannot pass the verdict silently.
  */
 export function judgeRound(
   kept: Finding[],
-  recorded: { ok: boolean; carried?: Finding[]; legacy?: Finding[] } | undefined,
+  recorded: { ok: boolean; carried?: Finding[]; downgradable?: ReadonlySet<Finding> } | undefined,
+  unrecorded: Finding[],
   lensResults: LensRunResult[],
   threshold: Severity,
   round: number,
 ): { reported: Finding[]; verdict: Verdict } {
-  const carried = applyRoundDowngrade(recorded?.ok ? (recorded.carried ?? []) : [], round);
-  const legacy = recorded?.ok ? (recorded.legacy ?? []) : [];
-  const reported = [...kept, ...carried, ...legacy];
+  const carried = recorded?.ok ? (recorded.carried ?? []) : [];
+  const eligible = recorded?.ok ? (recorded.downgradable ?? new Set()) : new Set(unrecorded);
+  const reported = applyRoundDowngrade([...kept, ...carried], round, eligible);
   const verdict = convergeVerdict(computeVerdict(reported, lensResults, threshold), reported);
   return { reported, verdict };
 }

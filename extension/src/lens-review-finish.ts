@@ -98,6 +98,11 @@ async function finish(
         pr,
         cwd: cwd ?? process.cwd(),
       });
+    } else if (summary.verdict === "CONVERGED") {
+      // #1129 — CONVERGED with nowhere to post must still say so: the downgraded
+      // findings are not on any PR, and the verdict is kept.
+      const downgraded = summary.findings.filter((f) => f.downgrade).length;
+      summary.note = `CONVERGED: ${downgraded} finding(s) downgraded for lack of a trigger were not posted — no PR resolved`;
     } else {
       summary.note =
         "Residual-findings disclosure NOT posted — no branch could be resolved for this review (detached head with no `branch` argument and no branch-named `head`), so no open PR/MR could be looked up. The merge guard's round-cap path will refuse until the marker is posted on the PR — run the review with an explicit `branch` (or on the branch's own checkout) and re-run.";

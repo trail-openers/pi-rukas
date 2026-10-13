@@ -29,7 +29,6 @@
 import { copyFileSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { execp } from "./lens-exec.ts";
-import type { Severity } from "./lens-review-format.ts";
 import type { Finding } from "./lens-review-types.ts";
 import { changedLineRanges } from "./review-diff.ts";
 import {
@@ -47,6 +46,12 @@ import {
   pickMatch,
   sameTitle,
 } from "./review-findings-match.ts";
+import {
+  downgradeEligible,
+  effectiveFinding,
+  reportedSeverity,
+  reportedTrigger,
+} from "./review-findings-severity.ts";
 import { acquireLedgerLock } from "./review-ledger-lock.ts";
 import { ledgerPathFor } from "./review-ledger-path.ts";
 import { trace } from "./trace.ts";
@@ -78,40 +83,6 @@ export type Decision =
       reason: string;
     };
 
-/**
- * #1129 — the stored severity of a row a lens re-reported. A row stored WITH a
- * trigger never loses severity to a re-report: the higher of stored and incoming
- * wins, and the stored trigger survives a re-report that names none. A row stored
- * without a trigger takes the incoming severity (the round-2 pre-pass has already
- * judged it), so a trigger-less MEDIUM re-reported from round 2 becomes LOW.
- * A LEGACY row (no `triggerKnown`: its trigger was never asked for) keeps the
- * higher rule even without a trigger, so a trigger-less re-report cannot launder
- * its MEDIUM to LOW.
- */
-function reportedSeverity(row: StoredFinding, incoming: Finding): Severity {
-  if (row.trigger === undefined && row.triggerKnown) return incoming.severity;
-  return SEVERITY_RANK[incoming.severity] > SEVERITY_RANK[row.severity]
-    ? incoming.severity
-    : row.severity;
-}
-
-const SEVERITY_RANK: Record<Severity, number> = { LOW: 0, MEDIUM: 1, HIGH: 2, CRITICAL: 3 };
-
-/**
- * The finding as the round reports it: the incoming finding, but with the
- * severity and trigger the store kept (so a laundered-protected row blocks even
- * when this round's judgement was the round-2 downgrade). A downgrade record
- * stays only when the severity is still the one the pre-pass gave. The store's
- * trigger is authoritative: it replaces the incoming one whenever they differ, so
- * the reported finding names exactly what the verdict was judged on.
- */
-function effectiveFinding(f: Finding, kept: { severity: Severity; trigger?: string }): Finding {
-  if (kept.severity === f.severity) {
-    return f.trigger === kept.trigger ? f : { ...f, trigger: kept.trigger };
-  }
-  return { ...f, severity: kept.severity, downgrade: undefined, trigger: kept.trigger };
-}
-
 export interface FindingRun {
   cwd: string;
   branch: string;
@@ -133,10 +104,13 @@ export type RecordOutcome =
       decisions: Decision[];
       /** The findings as the round reports them (aligned with `decisions`). */
       effective: Finding[];
-      /** Open rows not re-reported this round whose code still stands (downgrade applies). */
+      /** Open rows not re-reported this round whose code still stands, at their stored severity. */
       carried: Finding[];
-      /** Carried rows from before #1129 (no trigger was ever recorded): never downgraded. */
-      legacy: Finding[];
+      /**
+       * #1129 — the findings (of `effective` and `carried`) the round-2 downgrade may
+       * apply to, by identity. The store never downgrades; the verdict does, and only here.
+       */
+      downgradable: ReadonlySet<Finding>;
     }
   | { ok: false; reason: string };
 
@@ -360,6 +334,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
       const taken = new Set(all.map((r) => r.id));
       const decisions: Decision[] = [];
       const effective: Finding[] = [];
+      const downgradable = new Set<Finding>();
       findings.forEach((f, i) => {
         const id = identities[i] as FindingIdentity;
         const critical = f.severity === "CRITICAL";
@@ -377,7 +352,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
             lens: f.lens,
             ...(f.line ? { line: f.line } : {}),
             ...(f.trigger ? { trigger: f.trigger } : {}),
-            triggerKnown: true,
+            triggerTracked: true,
             snippetHash: id.snippetHash,
             status: "open",
             firstSeen: now,
@@ -388,6 +363,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
           touched.add(fresh.id);
           decisions.push({ action: "new", rowId: fresh.id });
           effective.push(f);
+          if (downgradeEligible(fresh)) downgradable.add(f);
           return;
         }
         touched.add(row.id);
@@ -397,19 +373,19 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
         // The snippet the row was last recorded with. A changed neighbour line
         // changes the ±2 window, so an unchanged-code suppression needs this equal.
         const priorHash = row.snippetHash;
+        // #1129 — the severity only rises and the trigger is sticky, so a re-report
+        // can never store a downgrade (see review-findings-severity.ts).
         let kept: StoredFinding = {
           ...row,
           lastSeen: now,
           snippetHash: id.snippetHash,
           line: f.line,
-          // #1129 — the stored severity and trigger never launder a triggered row
-          // (see reportedSeverity); a row first recorded LOW by the round-2 pre-pass
-          // blocks once re-reported with a trigger.
-          severity: reportedSeverity(row, f),
-          trigger: f.trigger ?? row.trigger,
-          triggerKnown: true,
+          severity: reportedSeverity(row.severity, f.severity),
+          trigger: reportedTrigger(row.trigger, f.trigger),
         };
-        effective.push(effectiveFinding(f, { severity: kept.severity, trigger: kept.trigger }));
+        const reported = effectiveFinding(f, { severity: kept.severity, trigger: kept.trigger });
+        effective.push(reported);
+        if (downgradeEligible(kept)) downgradable.add(reported);
         if (kept.status === "resolved") kept = reopen(kept);
         // A line-bearing finding is bound to the snippet the operator accepted; a
         // no-line finding is bound to its title only (see sameTitle).
@@ -452,7 +428,6 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
         decisions.push({ action: "matched", rowId: row.id });
       });
       const carried: Finding[] = [];
-      const legacy: Finding[] = [];
       mine.forEach((r, i) => {
         if (r.status !== "open" || touched.has(r.id)) return;
         const pathGone = missingPaths.has(r.path);
@@ -478,10 +453,14 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
             title: r.title,
             ...(r.trigger ? { trigger: r.trigger } : {}),
           };
-          (r.triggerKnown ? carried : legacy).push(stands);
+          carried.push(stands);
+          if (downgradeEligible(r)) downgradable.add(stands);
         }
       });
-      return { rows: [...others, ...mine], result: { decisions, effective, carried, legacy } };
+      return {
+        rows: [...others, ...mine],
+        result: { decisions, effective, carried, downgradable },
+      };
     });
     return out.ok ? { ok: true, ...out.value } : out;
   } catch (err) {
