@@ -84,9 +84,12 @@ export type Decision =
  * wins, and the stored trigger survives a re-report that names none. A row stored
  * without a trigger takes the incoming severity (the round-2 pre-pass has already
  * judged it), so a trigger-less MEDIUM re-reported from round 2 becomes LOW.
+ * A LEGACY row (no `triggerKnown`: its trigger was never asked for) keeps the
+ * higher rule even without a trigger, so a trigger-less re-report cannot launder
+ * its MEDIUM to LOW.
  */
 function reportedSeverity(row: StoredFinding, incoming: Finding): Severity {
-  if (row.trigger === undefined) return incoming.severity;
+  if (row.trigger === undefined && row.triggerKnown) return incoming.severity;
   return SEVERITY_RANK[incoming.severity] > SEVERITY_RANK[row.severity]
     ? incoming.severity
     : row.severity;
@@ -98,7 +101,9 @@ const SEVERITY_RANK: Record<Severity, number> = { LOW: 0, MEDIUM: 1, HIGH: 2, CR
  * The finding as the round reports it: the incoming finding, but with the
  * severity and trigger the store kept (so a laundered-protected row blocks even
  * when this round's judgement was the round-2 downgrade). A downgrade record
- * stays only when the severity is still the one the pre-pass gave.
+ * stays only when the severity is still the one the pre-pass gave. The store's
+ * trigger is authoritative: it replaces the incoming one whenever they differ, so
+ * the reported finding names exactly what the verdict was judged on.
  */
 function effectiveFinding(f: Finding, kept: { severity: Severity; trigger?: string }): Finding {
   if (kept.severity === f.severity) {

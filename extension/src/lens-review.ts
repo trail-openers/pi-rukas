@@ -467,7 +467,7 @@ export async function runLensReview(opts: {
   // #1105 — open rows this round did not re-report, whose cited code is
   // unchanged, still stand: a lens omitting a known finding is not a fix.
   // They are reported alongside this round's findings.
-  const { reported, verdict } = judgeRound(kept, recorded, judged, lensResults, threshold, round);
+  const { reported, verdict } = judgeRound(kept, recorded, lensResults, threshold, round);
   // #973 — the round-cap rule's inputs for the ledger write: hasCritical
   // from the deduped findings, headSha from the ref the review actually
   // covered (the delta's head when this was a delta run, otherwise
