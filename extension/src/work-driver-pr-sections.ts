@@ -36,7 +36,7 @@ export function renderLensFindingsSection(eventLog: readonly WorkEvent[]): strin
       return buildSection(e.findings, e.verdict, true);
     }
     if (e?.kind === "lens-approved" && e.findings?.trim()) {
-      return buildSection(e.findings, "APPROVED", false);
+      return buildSection(e.findings, e.verdict === "CONVERGED" ? "CONVERGED" : "APPROVED", false);
     }
   }
   return "";
@@ -50,7 +50,9 @@ function buildSection(blob: string, verdict: string, blocked: boolean): string {
     "",
     blocked
       ? "The six-pass review found issues at or above the project's blocking threshold. They have been cleared through the lens-fix loop; they are recorded here for the record."
-      : "The six-pass review passed (APPROVED). These sub-threshold findings did not block the commit; recording them is what keeps a silent pass from reading as a rubber stamp.",
+      : verdict === "CONVERGED"
+        ? "The six-pass review converged (CONVERGED): from the second round, trigger-less MEDIUM findings are downgraded to LOW. These sub-threshold findings did not block the commit; recording them is what keeps a silent pass from reading as a rubber stamp."
+        : "The six-pass review passed (APPROVED). These sub-threshold findings did not block the commit; recording them is what keeps a silent pass from reading as a rubber stamp.",
     "",
     ...findings,
   ].join("\n");

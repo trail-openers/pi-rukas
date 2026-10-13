@@ -36,7 +36,7 @@ Files matching `extension/smoke-tests/test-*-live.ts` spawn real Pi children and
 
 CI runs the offline tests only. Live tests are dev-machine only.
 
-**Six-pass review findings are blocking at MEDIUM severity and above** (from the second lens round, a MEDIUM blocks only when it names a concrete trigger). The fix loop continues until all MEDIUM, HIGH, and CRITICAL findings are resolved. Only LOW findings may be deferred or overridden with user confirmation.
+**Six-pass review findings are blocking at MEDIUM severity and above** (from the second lens round, a MEDIUM blocks only when it names a concrete trigger). The fix loop continues until all HIGH and CRITICAL findings, and every MEDIUM finding that still blocks under the trigger rule above, are resolved. Only LOW findings may be deferred or overridden with user confirmation.
 
 The fix loop is bounded, and what happens at the bound depends on severity. A `CRITICAL` finding always parks. A round cap reached with only MEDIUM/HIGH findings outstanding, an **approving** adversarial gate, and the residual findings **posted to the PR** carries on to CI instead of parking — measured: two of six outcomes in one overnight run parked here, and a human then judged both merge-worthy (one merged unchanged). Parking work that is fine costs a re-run and operator time; carrying findings forward silently would be worse, so disclosure is a precondition and a failure to post parks the cycle instead. A review that also exhausts its wall-clock budget parks regardless — running out of rounds says the loop is not converging, running out of time says nobody knows what it is doing.
 

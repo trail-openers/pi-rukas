@@ -36,6 +36,12 @@ interface StoredBase {
   line?: number;
   /** #1129 — the trigger the lens named when it last reported this finding; absent = none. */
   trigger?: string;
+  /**
+   * #1129 — set on every row a round writes from #1129 on. Absent = a legacy row
+   * written before triggers existed: its trigger was never asked for, so it is
+   * not subject to the round-2 downgrade until a lens re-reports it.
+   */
+  triggerKnown?: true;
   snippetHash: string;
   firstSeen: number;
   lastSeen: number;

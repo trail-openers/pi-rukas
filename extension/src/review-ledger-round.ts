@@ -41,10 +41,15 @@ export function bumpLensRound(entry: LedgerEntry, existing: LedgerEntry[]): Ledg
   }
   const completed = entry.detail !== "REVIEW_INCOMPLETE";
   const incompleteRuns = completed ? 0 : (prev?.incompleteRuns ?? 0) + 1;
-  // #1129 — the round is PROBED before the review and stored as given;
-  // the write-time derivation below is only the fallback for a caller that
-  // did not probe (the same function, so the two cannot disagree).
-  return { ...entry, round: entry.round ?? roundAfter(prev), incompleteRuns };
+  // #1129 — the round is PROBED before the review (lens-review-converge.ts), and
+  // the probe is only a HINT: two runs that probed the same prior round must
+  // still get distinct rounds. The write is under the ledger lock and `existing`
+  // is the file re-read inside it, so the stored round is never below what the
+  // latest entry now implies. No probe → the same derivation (one function, so
+  // the probe and the writer cannot disagree).
+  const derived = roundAfter(prev);
+  const round = entry.round === undefined ? derived : Math.max(entry.round, derived);
+  return { ...entry, round, incompleteRuns };
 }
 
 /**

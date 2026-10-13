@@ -26,11 +26,10 @@
  * review-accept-guard.ts refuses agent attempts (advisory in trust mode).
  */
 
-import { execFile } from "node:child_process";
 import { copyFileSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
 import { execp } from "./lens-exec.ts";
+import type { Severity } from "./lens-review-format.ts";
 import type { Finding } from "./lens-review-types.ts";
 import { changedLineRanges } from "./review-diff.ts";
 import {
@@ -40,6 +39,7 @@ import {
   readFindingsFile,
   reasonProblem,
 } from "./review-findings-file.ts";
+import { type HeadLines, readHeadLines } from "./review-findings-head.ts";
 import {
   type FindingIdentity,
   hashText,
@@ -60,8 +60,6 @@ export {
   type StoredFinding,
 } from "./review-findings-file.ts";
 
-const execFileP = promisify(execFile);
-
 /** The findings file's name, beside `review-ledger.json`. */
 export const FINDINGS_FILE = "review-findings.json";
 const FULL_SHA = /^[0-9a-f]{40}$/;
@@ -80,6 +78,35 @@ export type Decision =
       reason: string;
     };
 
+/**
+ * #1129 — the stored severity of a row a lens re-reported. A row stored WITH a
+ * trigger never loses severity to a re-report: the higher of stored and incoming
+ * wins, and the stored trigger survives a re-report that names none. A row stored
+ * without a trigger takes the incoming severity (the round-2 pre-pass has already
+ * judged it), so a trigger-less MEDIUM re-reported from round 2 becomes LOW.
+ */
+function reportedSeverity(row: StoredFinding, incoming: Finding): Severity {
+  if (row.trigger === undefined) return incoming.severity;
+  return SEVERITY_RANK[incoming.severity] > SEVERITY_RANK[row.severity]
+    ? incoming.severity
+    : row.severity;
+}
+
+const SEVERITY_RANK: Record<Severity, number> = { LOW: 0, MEDIUM: 1, HIGH: 2, CRITICAL: 3 };
+
+/**
+ * The finding as the round reports it: the incoming finding, but with the
+ * severity and trigger the store kept (so a laundered-protected row blocks even
+ * when this round's judgement was the round-2 downgrade). A downgrade record
+ * stays only when the severity is still the one the pre-pass gave.
+ */
+function effectiveFinding(f: Finding, kept: { severity: Severity; trigger?: string }): Finding {
+  if (kept.severity === f.severity) {
+    return f.trigger === kept.trigger ? f : { ...f, trigger: kept.trigger };
+  }
+  return { ...f, severity: kept.severity, downgrade: undefined, trigger: kept.trigger };
+}
+
 export interface FindingRun {
   cwd: string;
   branch: string;
@@ -96,66 +123,22 @@ export interface FindingRun {
 
 /** The result of recording one round: the decisions, or why nothing was recorded. */
 export type RecordOutcome =
-  | { ok: true; decisions: Decision[]; carried: Finding[] }
+  | {
+      ok: true;
+      decisions: Decision[];
+      /** The findings as the round reports them (aligned with `decisions`). */
+      effective: Finding[];
+      /** Open rows not re-reported this round whose code still stands (downgrade applies). */
+      carried: Finding[];
+      /** Carried rows from before #1129 (no trigger was ever recorded): never downgraded. */
+      legacy: Finding[];
+    }
   | { ok: false; reason: string };
 
 /** The result of an acceptance: the accepted row, or why nothing was accepted. */
 export type AcceptOutcome = { ok: true; row: StoredFinding } | { ok: false; reason: string };
 
 type MutateOutcome<T> = { ok: true; value: T } | { ok: false; reason: string };
-
-/** A repo-relative path that git can show at a commit without option injection. */
-function safeRepoPath(p: string): boolean {
-  if (!p || p.startsWith("-") || p.startsWith("/") || /[\0\n]/.test(p)) return false;
-  return !p.split("/").includes("..");
-}
-
-/**
- * `lines`: the file exists at the commit. `missing`: the commit is readable but
- * the path is not in it (a lens cited a wrong or stale path) — recorded as a
- * no-line finding. `error`: git itself failed (bad sha, I/O) — the round cannot
- * be recorded.
- */
-type HeadLines =
-  | { kind: "lines"; lines: string[] }
-  | { kind: "missing" }
-  | { kind: "error"; reason: string };
-
-/** git's own wording for "this path is not in that commit" (LC_ALL=C pins it). */
-const PATH_ABSENT_AT_HEAD = /does not exist in|exists on disk, but not in/;
-
-/**
- * The lines of `file` at `sha`. A path absent from a readable commit is
- * `missing`; any other git failure is an `error`, never an empty file: an empty
- * file would give every finding a fake identity and suppress nothing on the
- * wrong evidence. git words "path absent" the same way for an unreadable commit,
- * so the commit is checked first.
- */
-async function readHeadLines(cwd: string, sha: string, file: string): Promise<HeadLines> {
-  if (!safeRepoPath(file)) return { kind: "missing" };
-  try {
-    await execFileP("git", ["-C", cwd, "cat-file", "-e", `${sha}^{commit}`]);
-  } catch (err) {
-    return {
-      kind: "error",
-      reason: `cannot read ${file} at ${sha.slice(0, 12)}: not a commit in this clone (${(err as Error).message.slice(0, 80)})`,
-    };
-  }
-  try {
-    const { stdout } = await execFileP("git", ["-C", cwd, "show", `${sha}:${file}`], {
-      maxBuffer: 8 * 1024 * 1024,
-      env: { ...process.env, LC_ALL: "C" },
-    });
-    return { kind: "lines", lines: stdout.split("\n") };
-  } catch (err) {
-    const stderr = String((err as { stderr?: unknown }).stderr ?? "");
-    if (PATH_ABSENT_AT_HEAD.test(stderr)) return { kind: "missing" };
-    return {
-      kind: "error",
-      reason: `cannot read ${file} at ${sha.slice(0, 12)}: ${(err as Error).message.slice(0, 120)}`,
-    };
-  }
-}
 
 /** A fresh 8-hex row id, unique among `taken`. */
 export function newRowId(taken: ReadonlySet<string>): string {
@@ -371,6 +354,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
       const touched = new Set<string>();
       const taken = new Set(all.map((r) => r.id));
       const decisions: Decision[] = [];
+      const effective: Finding[] = [];
       findings.forEach((f, i) => {
         const id = identities[i] as FindingIdentity;
         const critical = f.severity === "CRITICAL";
@@ -388,6 +372,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
             lens: f.lens,
             ...(f.line ? { line: f.line } : {}),
             ...(f.trigger ? { trigger: f.trigger } : {}),
+            triggerKnown: true,
             snippetHash: id.snippetHash,
             status: "open",
             firstSeen: now,
@@ -397,6 +382,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
           mine.push(fresh);
           touched.add(fresh.id);
           decisions.push({ action: "new", rowId: fresh.id });
+          effective.push(f);
           return;
         }
         touched.add(row.id);
@@ -411,11 +397,14 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
           lastSeen: now,
           snippetHash: id.snippetHash,
           line: f.line,
-          // #1129 — the stored severity follows the latest judgement: a row first
-          // recorded LOW by the round-2 pre-pass must block once re-reported with a trigger.
-          severity: f.severity,
-          trigger: f.trigger,
+          // #1129 — the stored severity and trigger never launder a triggered row
+          // (see reportedSeverity); a row first recorded LOW by the round-2 pre-pass
+          // blocks once re-reported with a trigger.
+          severity: reportedSeverity(row, f),
+          trigger: f.trigger ?? row.trigger,
+          triggerKnown: true,
         };
+        effective.push(effectiveFinding(f, { severity: kept.severity, trigger: kept.trigger }));
         if (kept.status === "resolved") kept = reopen(kept);
         // A line-bearing finding is bound to the snippet the operator accepted; a
         // no-line finding is bound to its title only (see sameTitle).
@@ -458,6 +447,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
         decisions.push({ action: "matched", rowId: row.id });
       });
       const carried: Finding[] = [];
+      const legacy: Finding[] = [];
       mine.forEach((r, i) => {
         if (r.status !== "open" || touched.has(r.id)) return;
         const pathGone = missingPaths.has(r.path);
@@ -475,19 +465,20 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
         // on a complete review and on a delta alike. A lens omitting a known
         // finding is not a fix.
         if (!pathGone && !truncated) {
-          carried.push({
+          const stands: Finding = {
             lens: r.lens,
             severity: r.severity,
             path: r.path,
             line: r.line,
             title: r.title,
             ...(r.trigger ? { trigger: r.trigger } : {}),
-          });
+          };
+          (r.triggerKnown ? carried : legacy).push(stands);
         }
       });
-      return { rows: [...others, ...mine], result: { decisions, carried } };
+      return { rows: [...others, ...mine], result: { decisions, effective, carried, legacy } };
     });
-    return out.ok ? { ok: true, decisions: out.value.decisions, carried: out.value.carried } : out;
+    return out.ok ? { ok: true, ...out.value } : out;
   } catch (err) {
     trace(`review-findings: record failed: ${(err as Error).message}`);
     return { ok: false, reason: (err as Error).message.slice(0, 160) };
