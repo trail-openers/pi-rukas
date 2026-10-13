@@ -180,7 +180,7 @@ export async function runLensReview(opts: {
   // here — synchronously before the fan-out — so the note can never lie
   // about a fire-and-forget write's outcome.
   const { branch: branchResolved } = await resolveLensReviewBranch(opts);
-  const round = await probeLensRound(opts.cwd ?? process.cwd(), branchResolved); // #1129
+  const round = await probeLensRound(opts.cwd ?? process.cwd(), opts.ledgerKey ?? branchResolved);
   // #873 — the roster is data: the INSTALLED skills dir's `code-review-*`
   // SKILL.md files (precedence in frontmatter), PLUS a blocked entry for
   // every expected lens (the BUNDLED skill/ dir) that is absent from the
@@ -295,7 +295,7 @@ export async function runLensReview(opts: {
         headSha,
         head: opts.head,
         overrideCap: opts.overrideCap,
-        ledgerKey: opts.ledgerKey,
+        ledgerKey: opts.ledgerKey ?? branchResolved,
         round,
       },
       opts.pr,
@@ -462,7 +462,8 @@ export async function runLensReview(opts: {
   const memoryNote =
     recorded && !recorded.ok ? `findings memory unavailable: ${recorded.reason}` : undefined;
   const decisions = recorded?.ok ? recorded.decisions : undefined;
-  const { kept, suppressed } = partitionDecisions(deduped, decisions);
+  const reported0 = recorded?.ok ? recorded.effective : deduped; // #1129 — as the store reports them
+  const { kept, suppressed } = partitionDecisions(reported0, decisions);
   // #1105 — open rows this round did not re-report, whose cited code is
   // unchanged, still stand: a lens omitting a known finding is not a fix.
   // They are reported alongside this round's findings.
