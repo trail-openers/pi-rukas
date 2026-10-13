@@ -32,11 +32,10 @@
  * cycle goes, never what it is permitted to do when it gets there.
  */
 
-import { exec } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 import { adversarialGateApproved } from "./adversarial-findings.ts";
+import { execp } from "./lens-exec.ts";
 import { renderLensFindings } from "./lens-findings-render.ts";
 import { trace } from "./trace.ts";
 import {
@@ -48,8 +47,6 @@ import {
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
-
-const execp = promisify(exec);
 
 /**
  * The PR comment a round-capped cycle leaves behind.

@@ -11,8 +11,7 @@
  * seam as `integrate()`, `runConsolidatedVerify`, handoff-consolidate, and
  * the merged teardown).
  */
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
+import { execp } from "./lens-exec.ts";
 import { trace } from "./trace.ts";
 import { dispatchCommitPrFallback } from "./work-driver-commit-fallback.ts";
 import { conflictArtifactFromPlumb } from "./work-driver-commit-helpers.ts";
@@ -22,8 +21,6 @@ import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
 import { appendEvent } from "./workflow-state.ts";
 import type { WorkState } from "./workflow-state.ts";
-
-const execp = promisify(exec);
 
 export { runCommitPr };
 
