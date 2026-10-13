@@ -295,6 +295,12 @@ async function doPost(
       `Suppressed as already known (${summary.suppressed?.length ?? 0}) — not re-reported; each names its row id and the reason it was dropped:`,
     ),
     ...(summary.memoryNote ? ["", neutraliseEvidence(summary.memoryNote)] : []),
+    ...(summary.deltaReview?.fallback
+      ? [
+          "",
+          `Delta fallback: this review covers the full two-dot range since ${summary.deltaReview.since.slice(0, 8)} because ${neutraliseEvidence(summary.deltaReview.fallback)} — main's hunks may be included.`,
+        ]
+      : []),
     "",
     marker,
     "",

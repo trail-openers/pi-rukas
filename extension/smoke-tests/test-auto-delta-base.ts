@@ -15,16 +15,13 @@
  *   - `full: true` → full
  *   - explicit `since` → that range
  *
- * Uses PI_ENSEMBLE_REVIEW_LEDGER_FILE for an isolated ledger.
+ * Uses PI_ENSEMBLE_REVIEW_LEDGER_FILE for an isolated ledger. The mainline
+ * (#1128) cases live in test-auto-delta-mainline.ts.
  */
 
-import { exec } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import os from "node:os";
+import { writeFileSync } from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
-
-const execp = promisify(exec);
+import { cleanup, execp, mergeMainFixture, mkRepo, writeLedger } from "./lib/auto-delta-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -50,52 +47,6 @@ const { resolveDeltaSince, resolveReviewDiff } = await import("../src/lens-revie
 const { runLensReview } = await import("../src/lens-review.ts");
 const { renderSummary } = await import("../src/lens-review-format.ts");
 
-// --- repo fixture: origin/main → c0, feature/work → c0 → c1 → c2 ---
-async function mkRepo(): Promise<{
-  dir: string;
-  c0: string;
-  c1: string;
-  c2: string;
-  ledgerFile: string;
-}> {
-  const base = mkdtempSync(path.join(os.tmpdir(), "pi-973-"));
-  const dir = path.join(base, "repo");
-  mkdirSync(dir, { recursive: true });
-  const ledgerFile = path.join(base, "review-ledger.json");
-  process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = ledgerFile;
-  await execp("git init -q -b main", { cwd: dir });
-  await execp('git config user.email "t@t" && git config user.name "T"', {
-    cwd: dir,
-    shell: "/bin/bash",
-  });
-  writeFileSync(path.join(dir, "base.txt"), "hello\n");
-  await execp("git add -A && git commit -q -m c0", { cwd: dir, shell: "/bin/bash" });
-  const c0 = (await execp("git rev-parse HEAD", { cwd: dir })).stdout.trim();
-  await execp("git checkout -qb feature/work", { cwd: dir });
-  writeFileSync(path.join(dir, "first.txt"), "one\n");
-  await execp("git add first.txt && git commit -q -m c1", { cwd: dir, shell: "/bin/bash" });
-  const c1 = (await execp("git rev-parse HEAD", { cwd: dir })).stdout.trim();
-  writeFileSync(path.join(dir, "second.txt"), "two\n");
-  await execp("git add second.txt && git commit -q -m c2", { cwd: dir, shell: "/bin/bash" });
-  const c2 = (await execp("git rev-parse HEAD", { cwd: dir })).stdout.trim();
-  return { dir, c0, c1, c2, ledgerFile };
-}
-
-function writeLedger(
-  file: string,
-  entries: Array<Record<string, unknown>>,
-): void {
-  writeFileSync(file, JSON.stringify({ entries }, null, 2), "utf8");
-}
-
-function cleanup(dir: string, ledgerFile: string): void {
-  process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = "";
-  rmSync(dir, { recursive: true, force: true });
-  try {
-    rmSync(path.dirname(ledgerFile), { recursive: true, force: true });
-  } catch {}
-}
-
 const branch = "feature/work";
 
 // (1) No ledger → full review
@@ -107,16 +58,17 @@ const branch = "feature/work";
       head: "feature/work",
       cwd: r.dir,
       branch,
-      lensChildFn: async () => ({
-        lens: "SECURITY",
-        ok: true,
-        ms: 0,
-        startMs: Date.now(),
-        findings: [],
-        attempts: 1,
-        blocked: false,
-        summary: "clean",
-      } as never),
+      lensChildFn: async () =>
+        ({
+          lens: "SECURITY",
+          ok: true,
+          ms: 0,
+          startMs: Date.now(),
+          findings: [],
+          attempts: 1,
+          blocked: false,
+          summary: "clean",
+        }) as never,
     });
     assert(true, "no ledger → full review (no crash)");
   } finally {
@@ -158,9 +110,7 @@ const branch = "feature/work";
     if (d.kind === "ok") {
       eq(d.delta?.auto, true, "delta is marked auto");
       eq(d.delta?.since, r.c1, "delta since is the auto-resolved headSha");
-      const expected = (
-        await execp(`git diff ${r.c1}..${r.c2}`, { cwd: r.dir })
-      ).stdout;
+      const expected = (await execp(`git diff ${r.c1}..${r.c2}`, { cwd: r.dir })).stdout;
       eq(d.diff, expected, "delta diff matches git diff c1..c2 byte-for-byte");
     }
   } finally {
@@ -388,32 +338,28 @@ const branch = "feature/work";
   }
 }
 
-// (#1128) Merging main into the branch after the last reviewed head must NOT
-// put main's hunks in the delta. Fixture: main advances with main-only.txt,
-// the branch merges it (H = merge), and the last lens round reviewed c2.
-async function mergeMainFixture(): Promise<Awaited<ReturnType<typeof mkRepo>> & { merge: string }> {
-  const r = await mkRepo();
-  await execp("git checkout -q main && echo main-only > main-only.txt && git add -A && git commit -q -m m1", {
-    cwd: r.dir,
-    shell: "/bin/bash",
-  });
-  await execp("git checkout -q feature/work && git merge -q -m merge-main main", {
-    cwd: r.dir,
-    shell: "/bin/bash",
-  });
-  const merge = (await execp("git rev-parse HEAD", { cwd: r.dir })).stdout.trim();
-  return { ...r, merge };
-}
-
 // (7) A round after `merge main` (no fix) reviews no main-only hunks → no-review
 {
   const r = await mergeMainFixture();
   writeLedger(r.ledgerFile, [
-    { branch, kind: "lens", patchId: "p1", passed: true, at: 1000, detail: "APPROVED", hasCritical: false, headSha: r.c2, round: 1 },
+    {
+      branch,
+      kind: "lens",
+      patchId: "p1",
+      passed: true,
+      at: 1000,
+      detail: "APPROVED",
+      hasCritical: false,
+      headSha: r.c2,
+      round: 1,
+    },
   ]);
   try {
     const d = await resolveReviewDiff({ base: "main", head: "feature/work", branch, cwd: r.dir });
-    assert(d.kind === "noReview", "merge-of-main round (no fix) → no-review, main-only hunks excluded");
+    assert(
+      d.kind === "noReview",
+      "merge-of-main round (no fix) → no-review, main-only hunks excluded",
+    );
   } finally {
     cleanup(r.dir, r.ledgerFile);
   }
@@ -425,15 +371,31 @@ async function mergeMainFixture(): Promise<Awaited<ReturnType<typeof mkRepo>> & 
   writeFileSync(path.join(r.dir, "third.txt"), "three\n");
   await execp("git add third.txt && git commit -q -m c3", { cwd: r.dir, shell: "/bin/bash" });
   writeLedger(r.ledgerFile, [
-    { branch, kind: "lens", patchId: "p1", passed: true, at: 1000, detail: "APPROVED", hasCritical: false, headSha: r.c2, round: 1 },
+    {
+      branch,
+      kind: "lens",
+      patchId: "p1",
+      passed: true,
+      at: 1000,
+      detail: "APPROVED",
+      hasCritical: false,
+      headSha: r.c2,
+      round: 1,
+    },
   ]);
   try {
     const d = await resolveReviewDiff({ base: "main", head: "feature/work", branch, cwd: r.dir });
     assert(d.kind === "ok", "fix-after-merge round resolves to ok");
     if (d.kind === "ok") {
-      assert(d.diff.includes("third.txt"), "fix-after-merge round reviews the fix hunk (third.txt)");
+      assert(
+        d.diff.includes("third.txt"),
+        "fix-after-merge round reviews the fix hunk (third.txt)",
+      );
       assert(!d.diff.includes("main-only.txt"), "fix-after-merge round excludes main-only.txt");
-      assert(!d.diff.includes("first.txt") && !d.diff.includes("second.txt"), "fix-after-merge round excludes already-reviewed c1/c2 hunks");
+      assert(
+        !d.diff.includes("first.txt") && !d.diff.includes("second.txt"),
+        "fix-after-merge round excludes already-reviewed c1/c2 hunks",
+      );
       eq(d.delta?.auto, true, "fix-after-merge round is an auto delta");
     }
   } finally {
@@ -445,13 +407,32 @@ async function mergeMainFixture(): Promise<Awaited<ReturnType<typeof mkRepo>> & 
 {
   const r = await mergeMainFixture();
   writeLedger(r.ledgerFile, [
-    { branch, kind: "lens", patchId: "p1", passed: true, at: 1000, detail: "APPROVED", hasCritical: false, headSha: r.c2, round: 1 },
+    {
+      branch,
+      kind: "lens",
+      patchId: "p1",
+      passed: true,
+      at: 1000,
+      detail: "APPROVED",
+      hasCritical: false,
+      headSha: r.c2,
+      round: 1,
+    },
   ]);
   try {
-    const d = await resolveReviewDiff({ full: true, base: "main", head: "feature/work", branch, cwd: r.dir });
+    const d = await resolveReviewDiff({
+      full: true,
+      base: "main",
+      head: "feature/work",
+      branch,
+      cwd: r.dir,
+    });
     assert(d.kind === "ok", "full: true over merged history → ok");
     if (d.kind === "ok") {
-      assert(d.diff.includes("first.txt") && d.diff.includes("second.txt"), "full: true includes every branch hunk (already-reviewed c1/c2 too)");
+      assert(
+        d.diff.includes("first.txt") && d.diff.includes("second.txt"),
+        "full: true includes every branch hunk (already-reviewed c1/c2 too)",
+      );
       eq(d.delta, undefined, "full: true → no delta");
     }
   } finally {

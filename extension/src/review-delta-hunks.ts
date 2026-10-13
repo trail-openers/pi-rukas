@@ -27,9 +27,11 @@ import { promisify } from "node:util";
 import { execp } from "./lens-exec.ts";
 import { resolveHeadSha } from "./review-head-sha.ts";
 import { trace } from "./trace.ts";
+import { detectMainline } from "./work-driver-git.ts";
 
 const execFileP = promisify(execFile);
-const DIFF_MAX_BUFFER = 1024 * 1024;
+/** Matches the other diff reads (lens-review-diff.ts computeRangeDiff). */
+const DIFF_MAX_BUFFER = 64 * 1024 * 1024;
 
 interface Hunk {
   /** The `@@` line and the body lines, as emitted. */
@@ -119,6 +121,27 @@ export function subtractReviewedHunks(headDiff: string, prevDiff: string): strin
   return out.length === 0 ? "" : `${out.join("\n")}\n`;
 }
 
+/**
+ * The base for an automatic delta with no explicit `base`: the mainline,
+ * resolved by the same `detectMainline` the review ledger and merge guard
+ * use. `origin/<mainline>` is preferred when it exists, else the local
+ * branch. Undefined when no mainline ref resolves — the caller records that
+ * as a fallback rather than guessing a base.
+ */
+export async function resolveMainlineBase(cwd: string): Promise<string | undefined> {
+  const mainline = await detectMainline(cwd, execp);
+  if (!("branch" in mainline)) return undefined;
+  for (const ref of [`origin/${mainline.branch}`, mainline.branch]) {
+    if (await resolveHeadSha(cwd, ref, execp)) return ref;
+  }
+  return undefined;
+}
+
+/** A non-empty diff that yields no file sections is unreadable, not empty. */
+export function unparseable(diff: string): boolean {
+  return diff.trim() !== "" && parseSections(diff).length === 0;
+}
+
 export type AutoHunkDelta =
   | { kind: "diff"; diff: string }
   | { kind: "empty"; reason: string }
@@ -156,6 +179,9 @@ export async function resolveAutoHunkDelta(opts: {
     if (!mbPrev) return { kind: "fallback", reason: "no merge-base for the previous head" };
     const headDiff = await git(c, ["diff", `${baseSha}...${opts.head}`]);
     const prevDiff = await git(c, ["diff", `${mbPrev}..${opts.since}`]);
+    if (unparseable(headDiff) || unparseable(prevDiff)) {
+      return { kind: "fallback", reason: "the git diff parsed to no file sections" };
+    }
     const diff = subtractReviewedHunks(headDiff, prevDiff);
     if (!diff) {
       return {

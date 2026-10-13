@@ -70,7 +70,7 @@ export interface LensReviewSummary {
    * as distinct from an operator-supplied `since`. The findings it produced are
    * findings on the DELTA; a later full review still owns the rest of the branch.
    */
-  deltaReview?: { since: string; head: string; auto?: boolean };
+  deltaReview?: { since: string; head: string; auto?: boolean; fallback?: string };
   /**
    * #973 — the no-review outcome (decision 4): the delta was empty (nothing
    * changed since the last recorded lens run), so no review ran at all. The
@@ -463,6 +463,11 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
     ...(s.deltaReview
       ? [
           `Mode: delta review since ${s.deltaReview.since.slice(0, 8)}${s.deltaReview.auto ? " (automatic — the last recorded lens run)" : ""} — findings below cover only \`git diff ${s.deltaReview.since}..${s.deltaReview.head}\` since the last recorded lens run, not the full branch diff.`,
+          ...(s.deltaReview.fallback
+            ? [
+                `Delta fallback: this delta review covers the full two-dot range since ${s.deltaReview.since.slice(0, 8)} because ${s.deltaReview.fallback}.`,
+              ]
+            : []),
         ]
       : ["Mode: full review (the whole branch diff)"]),
     `Total findings: ${s.totalFindings}  (${sevSummary || "none"})`,

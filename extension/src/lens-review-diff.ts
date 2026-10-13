@@ -27,7 +27,7 @@ import { bySeverityCounts, computeVerdict, dedupeFindings } from "./lens-review-
 import type { LensRunResult, Severity, Verdict } from "./lens-review.ts";
 import type { Finding } from "./lens-review.ts";
 import type { RosterEntry } from "./lens-roster.ts";
-import { resolveAutoHunkDelta } from "./review-delta-hunks.ts";
+import { resolveAutoHunkDelta, resolveMainlineBase } from "./review-delta-hunks.ts";
 import { computeDeltaDiff, computeRangeDiff } from "./review-diff.ts";
 import { isFullCommitSha, resolveHeadSha } from "./review-head-sha.ts";
 import { latestEntry, ledgerPathFor, readLedgerAt } from "./review-ledger.ts";
@@ -224,6 +224,36 @@ export async function resolveDeltaDiff(
   return { noReview: false, since, head: resolvedHead, diff: d.diff, problem: undefined };
 }
 
+/** The delta a review ran against. `fallback` is set when an automatic delta
+ * could not use its hunk-level method and reviewed the two-dot range instead
+ * (the reason is disclosed in the context, the summary and the residuals). */
+export interface AutoDeltaInfo {
+  since: string;
+  head: string;
+  auto?: boolean;
+  fallback?: string;
+}
+
+/** The DELTA FALLBACK note appended to the lens context when an automatic delta
+ * fell back to the two-dot range; empty when there is no fallback. */
+export function deltaFallbackNote(delta: AutoDeltaInfo | undefined): string {
+  if (!delta?.fallback) return "";
+  return `\n\nDELTA FALLBACK: this delta review covers the full two-dot range since ${delta.since} because ${delta.fallback}. Main's hunks merged into the branch since then may be included; do not report them as branch-authored defects.`;
+}
+
+/** The `deltaReview` field of the review summary; carries the fallback when set. */
+export function deltaReviewOf(delta: AutoDeltaInfo): {
+  since: string;
+  head: string;
+  fallback?: string;
+} {
+  return {
+    since: delta.since,
+    head: delta.head,
+    ...(delta.fallback ? { fallback: delta.fallback } : {}),
+  };
+}
+
 /**
  * #973 — the unified review-diff resolver. Single entry point for
  * `runLensReview` (lens-review.ts): resolves which mode the review runs in
@@ -246,7 +276,7 @@ export async function resolveReviewDiff(opts: {
   branch?: string;
   cwd?: string;
 }): Promise<
-  | { kind: "ok"; diff: string; delta?: { since: string; head: string; auto?: boolean } }
+  | { kind: "ok"; diff: string; delta?: AutoDeltaInfo }
   | { kind: "blocked"; problem: string }
   | { kind: "noReview"; since: string; head: string; reason: string }
 > {
@@ -273,28 +303,39 @@ export async function resolveReviewDiff(opts: {
     if (d.problem) {
       return { kind: "blocked", problem: d.problem };
     }
-    // #1128 — an automatic delta with an explicit base reviews the branch's
-    // OWN hunks not already reviewed (review-delta-hunks.ts): main's hunks
-    // merged in since the last round are excluded. An explicit `since` keeps
-    // the plain two-dot range (its precedence is unchanged).
-    if (autoSince && opts.base) {
-      const h = await resolveAutoHunkDelta({
-        since,
-        head: d.head,
-        base: opts.base,
-        cwd: opts.cwd,
-      });
-      if (h.kind === "problem") return { kind: "blocked", problem: h.problem };
-      if (h.kind === "empty") {
-        return { kind: "noReview", since: d.since, head: d.head, reason: h.reason };
+    // #1128 — an automatic delta reviews the branch's OWN hunks not already
+    // reviewed (review-delta-hunks.ts): main's hunks merged in since the last
+    // round are excluded. The base is the explicit `base`, else the mainline
+    // (the same resolution the ledger uses). An explicit `since` keeps the
+    // plain two-dot range (its precedence is unchanged). Every fallback to
+    // the two-dot range is recorded on the delta, never silent.
+    if (autoSince) {
+      const cwd = opts.cwd ?? process.cwd();
+      const base = opts.base ?? (await resolveMainlineBase(cwd));
+      let fallback: string | undefined;
+      if (!base) {
+        fallback =
+          "no mainline base resolves (origin/HEAD, origin/<main|master>, local <main|master>)";
+      } else {
+        const h = await resolveAutoHunkDelta({ since, head: d.head, base, cwd });
+        if (h.kind === "problem" && opts.base) return { kind: "blocked", problem: h.problem };
+        if (h.kind === "empty") {
+          return { kind: "noReview", since: d.since, head: d.head, reason: h.reason };
+        }
+        if (h.kind === "diff") {
+          return {
+            kind: "ok",
+            diff: h.diff,
+            delta: { since: d.since, head: d.head, auto: true },
+          };
+        }
+        fallback = h.kind === "problem" ? h.problem : h.reason;
       }
-      if (h.kind === "diff") {
-        return {
-          kind: "ok",
-          diff: h.diff,
-          delta: { since: d.since, head: d.head, auto: true },
-        };
-      }
+      return {
+        kind: "ok",
+        diff: d.diff ?? "",
+        delta: { since: d.since, head: d.head, auto: true, fallback },
+      };
     }
     return {
       kind: "ok",

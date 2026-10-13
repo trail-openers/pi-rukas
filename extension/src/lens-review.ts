@@ -9,9 +9,12 @@ import { resolveLensReviewBranch } from "./lens-review-branch-resolve.ts";
 import { capKillSummary } from "./lens-review-capkill.ts";
 import { runLensChild } from "./lens-review-child.ts";
 import {
+  type AutoDeltaInfo,
   blockedReviewSummary,
   blockedRowsForRoster,
   buildDeltaFullContext,
+  deltaFallbackNote,
+  deltaReviewOf,
   resolveReviewDiff,
   startPersistentBatch,
 } from "./lens-review-diff.ts";
@@ -191,12 +194,14 @@ export async function runLensReview(opts: {
   // confirmed-empty range, cap overflow, nothing supplied) blocks the whole
   // review — a computed diff is never silently empty, never an approval
   // (same rule as #384). Blocked rows use the EXPECTED roster above.
-  let delta: { since: string; head: string; auto?: boolean } | undefined;
+  let delta: AutoDeltaInfo | undefined;
   let diff = "";
   let context: string;
   // #1128 — the automatic delta reads the SAME ledger key the round cap
-  // budgets under (lens-budget-key.ts), so a SHA head or detached worktree
-  // still finds its prior entry instead of falling back to a full review.
+  // budgets under (lens-budget-key.ts). The delta is found when the head
+  // commit sits on exactly one local branch (or a PR is given); a purely
+  // detached head keyed `detached:<sha>` changes key on every commit, so
+  // it gets a full review.
   const budgetKey = await resolveBudgetKey({
     cwd: opts.cwd ?? process.cwd(),
     head: opts.head,
@@ -218,6 +223,7 @@ export async function runLensReview(opts: {
         since: resolved.delta.since,
         head: resolved.delta.head,
         ...(resolved.delta.auto ? { auto: true } : {}),
+        ...(resolved.delta.fallback ? { fallback: resolved.delta.fallback } : {}),
       };
     }
     // #973 review — a delta review with an explicit base+head appends the
@@ -234,6 +240,7 @@ export async function runLensReview(opts: {
             resolved.delta.auto === true,
           )
         : (opts.context ?? "");
+    context += deltaFallbackNote(delta);
   } else {
     context = opts.context ?? "";
   }
@@ -482,7 +489,7 @@ export async function runLensReview(opts: {
       // budget) is surfaced on the summary so the driver emits the fixed-literal
       // cap-hit (F4g) instead of a silent 1-of-6 loss.
       ...capKillSummary(lensResults),
-      ...(delta ? { deltaReview: { since: delta.since, head: delta.head } } : {}),
+      ...(delta ? { deltaReview: deltaReviewOf(delta) } : {}),
     },
     hasCritical,
   );
