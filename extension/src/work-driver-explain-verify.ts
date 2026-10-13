@@ -65,7 +65,7 @@ export function explainVerifyFailed(cap: Cap, state: WorkState): string {
   // Neither a check the host could not fork nor a gate already red at the
   // base judged the change: "inspect the worktree(s)" would be wrong advice.
   if (evidence?.failures.some(isHostExhaustionFailure)) {
-    return `the driver's outcome-verification gate could not run on the ${step} step — the host refused to start a process (fork failed / EAGAIN):${findings}${retryNote}${logLine}\nThe entries marked ${HOST_EXHAUSTION_LABEL} are environment failures, not defects in the change: those checks never executed. Free processes on the host (or raise its pid limit), then re-run the cycle`;
+    return `the driver's outcome-verification gate could not run on the ${step} step — the system refused to start a process (fork failed / EAGAIN):${findings}${retryNote}${logLine}\nThe entries marked ${HOST_EXHAUSTION_LABEL} are environment failures, not defects in the change: those checks never executed. They name the pid count and limit where the driver runs — in a container that is the container's own pid limit, not a host ulimit. Restart it (or raise that limit), then re-run the cycle`;
   }
   const advice = evidence?.failures.some((f) => f.startsWith(BASELINE_RED_MARKER))
     ? "The verify command already fails at the cycle's base commit — fix the gate there (or the host it runs on) before inspecting the worktree(s), then re-run."

@@ -28,6 +28,8 @@
  * this tradeoff stays deliberate and visible.
  */
 
+import { readFileSync } from "node:fs";
+
 /** The exact marker `.pi/verify-cmd`'s smoke-test loop emits on failure. */
 const FAILED_MARKER_RE = /^FAILED: .+$/gm;
 
@@ -112,10 +114,38 @@ export function isHostExhaustionFailure(failure: string): boolean {
 }
 
 /**
- * The failure string for a gate command the host could not start. It stays a
- * FAILURE — an unrun gate must never read as a pass — but it says what was
- * and was not established, and points at the host instead of the diff.
+ * Where the pid ceiling actually is, read without forking (a fork is what
+ * just failed). In a container the ceiling that was hit is the container's
+ * cgroup `pids.max` (docker `--pids-limit`), not a host ulimit: an operator
+ * sent to "free processes on the host" found `ulimit -u` unlimited and
+ * nothing to raise (#1277). Undefined when the counters cannot
+ * be read (no cgroup v2, not Linux).
  */
-export function hostExhaustionFailure(what: string, detail: string): string {
-  return `${HOST_EXHAUSTION_LABEL} ${what} could not run — the host refused to start a process (fork failed / EAGAIN: its process or thread limit is exhausted). This is an environment failure, NOT a verdict on the change: the gate did not execute, so the change is neither confirmed nor refuted. Free processes on the host (or raise its pid limit) and re-run — ${detail}`;
+export function pidLimitSnapshot(
+  read: (file: string) => string = (f) => readFileSync(f, "utf8"),
+): string | undefined {
+  try {
+    const current = read("/sys/fs/cgroup/pids.current").trim();
+    const max = read("/sys/fs/cgroup/pids.max").trim();
+    if (!/^\d+$/.test(current) || max === "") return undefined;
+    return `cgroup pids.current=${current} of pids.max=${max}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The failure string for a gate command that could not be started. It stays a
+ * FAILURE — an unrun gate must never read as a pass — but it says what was
+ * and was not established, and points at the process ceiling, not the diff.
+ */
+export function hostExhaustionFailure(
+  what: string,
+  detail: string,
+  pids: string | undefined = pidLimitSnapshot(),
+): string {
+  const where = pids
+    ? `the process limit where the driver runs is exhausted: ${pids}`
+    : "the process or thread limit where the driver runs is exhausted (its cgroup pid counters could not be read)";
+  return `${HOST_EXHAUSTION_LABEL} ${what} could not run — the system refused to start a process (fork failed / EAGAIN); ${where}. This is an environment failure, NOT a verdict on the change: the gate did not execute, so the change is neither confirmed nor refuted. In a container this is the CONTAINER's pid limit (docker \`--pids-limit\`), not a host ulimit; a count at the limit with little running means leaked or unreaped children — PID 1 must be an init (\`cat /proc/1/comm\`). Restart the container (or raise its pid limit) and re-run — ${detail}`;
 }

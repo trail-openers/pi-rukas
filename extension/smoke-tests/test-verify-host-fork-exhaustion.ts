@@ -19,6 +19,7 @@ import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { appendDevelopVerifyFailure } from "../src/work-develop-verify-failure.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
+import { hostExhaustionFailure, pidLimitSnapshot } from "../src/work-driver-exec-error.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import { formatExecError } from "../src/work-driver-verify-develop-helpers.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
@@ -125,7 +126,7 @@ try {
       `preflight cannot fork: the cap is not consolidated-verify-conflict (got: ${p.cap})`,
     );
     assert(
-      /host refused to start a process/.test(p.explain) && !/Inspect the worktree/.test(p.explain),
+      /refused to start a process/.test(p.explain) && !/Inspect the worktree/.test(p.explain),
       `preflight cannot fork: explainCap points at the host, not the worktree (got: ${p.explain.slice(0, 200)})`,
     );
     assert(
@@ -219,6 +220,48 @@ try {
   }
 } finally {
   rmSync(root, { recursive: true, force: true });
+}
+
+// #1277 — the message names the ceiling that was actually hit
+// (the driver's own cgroup pid limit), read without forking, and does not
+// send the operator to the host's ulimits.
+{
+  const files: Record<string, string> = {
+    "/sys/fs/cgroup/pids.current": "4095\n",
+    "/sys/fs/cgroup/pids.max": "4096\n",
+  };
+  const snap = pidLimitSnapshot((f) => {
+    const v = files[f];
+    if (v === undefined) throw new Error("ENOENT");
+    return v;
+  });
+  assert(
+    snap === "cgroup pids.current=4095 of pids.max=4096",
+    `#1277: counters are read (got: ${snap})`,
+  );
+  assert(
+    pidLimitSnapshot(() => {
+      throw new Error("ENOENT");
+    }) === undefined,
+    "#1277: unreadable counters yield no snapshot (never a guess)",
+  );
+  assert(
+    pidLimitSnapshot((f) => (f.endsWith("pids.max") ? "max\n" : "17\n")) ===
+      "cgroup pids.current=17 of pids.max=max",
+    "#1277: an unlimited cgroup is reported as it reads",
+  );
+  const msg = hostExhaustionFailure("consolidated verify", "detail", snap);
+  assert(msg.startsWith(LABEL), "#1277: the label still leads the failure");
+  assert(
+    msg.includes("pids.current=4095 of pids.max=4096"),
+    "#1277: the failure quotes the pid count and limit",
+  );
+  assert(
+    /CONTAINER's pid limit/.test(msg) && !/on the host/.test(msg),
+    "#1277: it points at the container's limit, not the host",
+  );
+  const blind = hostExhaustionFailure("consolidated verify", "detail", undefined);
+  assert(/could not be read/.test(blind), "#1277: without counters the message says so");
 }
 
 process.exit(exit);

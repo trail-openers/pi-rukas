@@ -1645,7 +1645,7 @@ After the `develop` step (when every branch claims success) and after the `commi
 
 **Cause:** The host (or the container's pid limit) had no room to start a process, so the driver's git / verify / smoke commands never executed. This is an environment failure, not a verdict on the change — the gate still fails, because an unrun gate is not a pass, but nothing was learned about the diff. Before this label existed the same condition was reported as `[needs-human-decision] … (no specific assertion could be extracted)`, or as `consolidated-verify-conflict` ("two workstreams edited the same lines") even on a single-workstream cycle.
 
-**Fix:** Free processes on the host or raise its pid/thread limit, then re-run the cycle. Do not start by inspecting the diff: it has not been judged either way.
+**Fix:** The evidence line quotes `cgroup pids.current=N of pids.max=M` for wherever the driver runs. In a container that is the container's own limit (docker `--pids-limit`), not a host ulimit — `ulimit -u` on the host will show nothing to raise. A count at the limit with a low load average means leaked or unreaped children: check that PID 1 is an init (`cat /proc/1/comm` → `tini`), restart the container or raise its pid limit, then re-run the cycle. Do not start by inspecting the diff: it has not been judged either way.
 
 #### Scope fan-out: the developer changed too many files
 
