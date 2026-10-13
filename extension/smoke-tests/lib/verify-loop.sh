@@ -43,23 +43,30 @@
 # Normal mode: runs every test once, prints each test's full output plus a
 # per-failure `FAILED: <file>` marker and a final summary line.
 #
-# Digest mode (--digest): prints ONLY the failure detail (or, on all-pass, one
-# `P: <n>  F: 0` tally line) — per-failure
+# Digest mode (--digest): prints ONLY the failure detail — per-failure
 # markers, each failing test's ✗ lines with their indented detail lines, the
 # summary marker, and a pass/fail tally line (P: <pass-count>  F:
 # <fail-count>). P counts every non-live test that was not a failure — i.e.
 # the passing tests (live tests are skipped and count toward neither P nor
-# F). No ✓ lines, no passing tests' output. Exit codes are identical to
-# normal mode (0 all-pass, 1 any failure, 2 usage error), so the gate can
-# switch call sites to --digest without a separate exit-code path.
+# F). No ✓ lines, no passing tests' output. On all-pass it prints only the
+# tally line, `P: <n>  F: 0`.
 # The #827 echo of the first 3 ✗ lines (truncated to 200 chars) does NOT
 # apply in digest mode — the digest prints EVERY ✗ line and its indented
 # detail, because the 3×200 bound was sized for the 800-char
 # extractAttributedTail window, not for a full digest.
 #
-# #1122 — on all-pass digest mode now prints exactly one line, the same tally
-# shape as the failure path: `P: <pass-count>  F: 0` (exit 0). The line carries
-# no ✗ and no `FAILED:` marker, so the failure-side filters never match it.
+# Exit codes (both modes):
+#   0  every test passed
+#   1  at least one test failed
+#   2  usage error (no file arguments)
+#   3  no tests ran (every argument was a skipped *-live.ts file)
+#
+# Stdout contract (digest mode): on failure, the detail described above; on
+# all-pass, exactly one line, `P: <n>  F: 0`, with no ✗ and no `FAILED:`.
+#
+# Known callers — .github/workflows/ci.yml and .pi/verify-cmd — key on the
+# exit code and always pass a non-empty glob. Exit 3 is what stops an empty
+# glob from passing vacuously.
 #
 # The caller expands the glob; the script receives the file list.
 # Live tests (suffix -live.ts) are skipped in both modes, matching the legacy
@@ -340,8 +347,14 @@ done
 # Nothing ran (every argument was skipped): refuse rather than pass vacuously.
 if [ "$total" -eq 0 ]; then
   echo "verify-loop: no tests ran" >&2
-  exit 2
+  exit 3
 fi
+
+# The pass/fail tally line — the one emitter for both digest paths (failure
+# and all-pass). Usage: emit_tally <pass-count> <fail-count>.
+emit_tally() {
+  echo "P: $1  F: $2"
+}
 
 if [ "${#names[@]}" -gt 0 ]; then
   # Build `FAILED: <n> test(s) — <list>`, capping the name list so the whole
@@ -406,7 +419,7 @@ if [ "${#names[@]}" -gt 0 ]; then
       fi
     done
     echo "$summary"
-    echo "P: $((total - ${#names[@]}))  F: ${#names[@]}"
+    emit_tally "$((total - ${#names[@]}))" "${#names[@]}"
     exit 1
   fi
 
@@ -443,7 +456,6 @@ if [ "${#names[@]}" -gt 0 ]; then
   exit 1
 fi
 if [ "$DIGEST" -eq 1 ]; then
-  # #1122 — all-pass digest: one tally line, same `total` as the failure path.
-  echo "P: $total  F: 0"
+  emit_tally "$total" 0
 fi
 exit 0

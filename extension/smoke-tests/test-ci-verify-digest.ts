@@ -20,8 +20,7 @@
  *   1. Mixed fail/pass set (fixture-1/2/3): exit code parity with normal
  *      mode, every failing file named, every ✗ present, the `FAILED:`
  *      summary present, no ✓ lines, no passing tests' output.
- *   2. All-pass set: exit 0, a single `P: <n>  F: 0` line, no FAILED: marker
- *      (#1122 — the pass tally replaces the former empty digest).
+ *   2. All-pass set: exit 0, a single `P: <n>  F: 0` line, no FAILED: marker.
  *   3. Planted failures at head, middle and tail of a multi-fixture argument
  *      list: all three failures' ✗ lines appear in the digest — not just
  *      the last one (unpatterned head/tail truncation drops the middle).
@@ -312,43 +311,35 @@ function runDigest(
   );
 }
 
-// --- Case 7: nothing ran — no files, or only *-live.ts (skipped) ---
-// Both must refuse: exit 2, a stderr message, and no pass tally on stdout.
-// A bare `--digest` with no files is a usage error (usage line on stderr);
-// an all-skipped list reports `verify-loop: no tests ran`.
+// --- Case 7: no files → usage error, exit 2 (digest mode) ---
 {
   const noFiles = runDigest([]);
-  assert(noFiles.status === 2, `case 7a (digest): no files exits 2 (got ${noFiles.status})`);
+  assert(noFiles.status === 2, `case 7 (digest): no files exits 2 (got ${noFiles.status})`);
   assert(
     noFiles.stderr.includes("usage:"),
-    `case 7a (digest): no files prints a usage message on stderr (got: ${JSON.stringify(noFiles.stderr)})`,
+    `case 7 (digest): no files prints a usage message on stderr (got: ${JSON.stringify(noFiles.stderr)})`,
   );
-  assert(!/P: \d+  F: \d+/.test(noFiles.stdout), "case 7a (digest): no files prints no pass/fail tally");
-
-  const liveOnly = runDigest([path.join(__dirname, "test-spawn-live.ts")]);
-  assert(liveOnly.status === 2, `case 7b (digest): only *-live.ts exits 2 (got ${liveOnly.status})`);
-  assert(
-    liveOnly.stderr.includes("verify-loop: no tests ran"),
-    `case 7b (digest): only *-live.ts prints 'verify-loop: no tests ran' on stderr (got: ${JSON.stringify(liveOnly.stderr)})`,
-  );
-  assert(
-    !/P: \d+  F: \d+/.test(liveOnly.stdout) && liveOnly.stdout === "",
-    "case 7b (digest): only *-live.ts prints no pass/fail tally and no stdout",
-  );
+  assert(!/P: \d+  F: \d+/.test(noFiles.stdout), "case 7 (digest): no files prints no pass/fail tally");
 }
 
-// --- Case 8: normal mode has the same guard (only *-live.ts → exit 2) ---
+// --- Case 8: only *-live.ts (every argument skipped) → exit 3 "no tests ran", in both modes ---
 {
-  const result = spawnSync("bash", [SCRIPT, path.join(__dirname, "test-spawn-live.ts")], {
-    cwd: path.join(__dirname, ".."),
-    encoding: "utf-8",
-    timeout: 120000,
-  });
-  assert(result.status === 2, `case 8 (normal): only *-live.ts exits 2 (got ${result.status})`);
-  assert(
-    (result.stderr ?? "").includes("verify-loop: no tests ran"),
-    "case 8 (normal): prints 'verify-loop: no tests ran' on stderr",
-  );
+  const liveFile = path.join(__dirname, "test-spawn-live.ts");
+  for (const digest of [true, false]) {
+    const mode = digest ? "digest" : "normal";
+    const argv = digest ? ["--digest", liveFile] : [liveFile];
+    const result = spawnSync("bash", [SCRIPT, ...argv], {
+      cwd: path.join(__dirname, ".."),
+      encoding: "utf-8",
+      timeout: 120000,
+    });
+    assert(result.status === 3, `case 8 (${mode}): only *-live.ts exits 3 (got ${result.status})`);
+    assert(
+      (result.stderr ?? "").includes("verify-loop: no tests ran"),
+      `case 8 (${mode}): prints 'verify-loop: no tests ran' on stderr`,
+    );
+    assert(result.stdout === "", `case 8 (${mode}): prints no stdout (no tally)`);
+  }
 }
 
 console.log(exit === 0 ? "\nAll digest checks passed." : "\nFAILED");
