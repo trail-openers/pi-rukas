@@ -56,6 +56,8 @@ async function finish(
     /** #1127 — the round-budget key when the branch was not resolved (a
      * branch the commit sits on, the PR head, or `detached:<sha>`). */
     ledgerKey?: string;
+    /** #1129 — the round probed before the review (lens-review-converge.ts). */
+    round?: number;
   } = {},
   pr?: number,
 ): Promise<LensFinishResult> {
@@ -77,6 +79,7 @@ async function finish(
     ledger.ledgerKey ?? branch,
     // #1127 — the operator's round-cap override, recorded on the entry.
     ledger.overrideCap,
+    ledger.round,
   );
   // #973 — the residual-findings disclosure: posted ONLY when the verdict is
   // ISSUES_FOUND AND the branch's PR/MR resolves (see postLensResidual for
@@ -86,7 +89,8 @@ async function finish(
   // when the branch is unresolvable: the pre-#980 `&& branch` gate skipped
   // the post silently (the tool result was byte-identical to a successful
   // run). The note fires ONLY on ISSUES_FOUND (design decision 2).
-  if (summary.verdict === "ISSUES_FOUND") {
+  // #1129 — CONVERGED carries downgraded findings, so it discloses too.
+  if (summary.verdict === "ISSUES_FOUND" || summary.verdict === "CONVERGED") {
     if (branch || pr) {
       summary.note = await postLensResidualDisclosure({
         summary,

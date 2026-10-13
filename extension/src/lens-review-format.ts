@@ -12,8 +12,8 @@ import { neutraliseEvidence } from "./comment-evidence.ts";
 import { type SuppressedFinding, suppressedSection } from "./lens-residuals.ts";
 import { deltaFallbackText } from "./lens-review-diff.ts";
 import { isReviewIncomplete } from "./lens-review-incomplete.ts";
-import type { Finding, FindingSource, LensRunResult } from "./lens-review.ts";
-import { CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE, type RosterEntry } from "./lens-roster.ts";
+import type { Finding, LensRunResult } from "./lens-review.ts";
+import type { RosterEntry } from "./lens-roster.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
 
 /** The finding's severity level. Owned here (the pure leaf both the format
@@ -116,6 +116,7 @@ export interface LensReviewSummary {
  */
 export type Verdict =
   | "APPROVED"
+  | "CONVERGED"
   | "ISSUES_FOUND"
   | "CRITICAL_ISSUES_FOUND"
   | "REVIEW_INCOMPLETE"
@@ -163,6 +164,7 @@ For every issue you identify in your lane, call the \`report_finding\` tool ONCE
   - line: line number (omit for file-level findings)
   - title: short title (< 80 chars)
   - description: 1–3 sentence description of the issue
+  - trigger: for every MEDIUM or higher finding, a concrete input or sequence that produces wrong behaviour, data loss or a security boundary crossing (omit for LOW)
   - suggestion: short suggested fix
 
 Do NOT batch multiple findings into a single call — one tool call per finding. Do NOT emit findings as JSON in your prose; only the \`report_finding\` tool calls count.
@@ -198,6 +200,8 @@ export function extractFindings(
     }
     const filePath = typeof i.path === "string" ? i.path : "";
     const title = typeof i.title === "string" ? i.title : "";
+    // #1129 — presence only: absent, non-string or whitespace-only = no trigger.
+    const trigger = typeof i.trigger === "string" ? i.trigger.trim() : "";
     if (!filePath || !title) {
       skipped++;
       continue;
@@ -210,6 +214,7 @@ export function extractFindings(
       title,
       description: typeof i.description === "string" ? i.description : undefined,
       suggestion: typeof i.suggestion === "string" ? i.suggestion : undefined,
+      ...(trigger ? { trigger } : {}),
     });
   }
   return { findings: out, skipped };
@@ -219,61 +224,8 @@ function normalisePath(p: string): string {
   return p.replace(/^\.\//, "").replace(/\/+$/, "");
 }
 
-/**
- * Deduplicate findings by (normalised path, line, lowercased title). When
- * duplicates exist across lenses, keep the one from the highest-priority lens
- * (roster precedence ascending: the lowest declared value wins). `lens`
- * takes the roster parsed from the skills dir; lenses the roster does not
- * know (e.g. stale findings from an older pass) fall back to 99.
- */
-export function dedupeFindings(input: Finding[], lens: RosterEntry[]): Finding[] {
-  const precedenceOf = new Map<FindingSource, number>();
-  for (const l of lens) {
-    if (l.precedence !== undefined) precedenceOf.set(l.name, l.precedence);
-  }
-  // CLAIM_SCAN outranks every lens on a collision. Its findings are lookups,
-  // not judgments — if a lens and the scan land on the same line, the one that
-  // can point at a grep result is the one worth keeping. NEGATIVE_INFINITY so
-  // it outranks any declared value, whatever the skill authors renumber to.
-  precedenceOf.set(CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE);
-  // `bestByKey` is bounded by the lens fan-in (≤6 children × finite findings
-  // per pass) — at most a few hundred entries per invocation, and the whole
-  // map goes out of scope when this function returns. No explicit cap needed.
-  const bestByKey = new Map<string, Finding>();
-  for (const f of input) {
-    const key = `${f.path}::${f.line ?? 0}::${normaliseTitle(f.title)}`;
-    const existing = bestByKey.get(key);
-    if (!existing) {
-      bestByKey.set(key, f);
-      continue;
-    }
-    const a = precedenceOf.get(existing.lens) ?? 99;
-    const b = precedenceOf.get(f.lens) ?? 99;
-    if (b < a) bestByKey.set(key, f);
-  }
-  return Array.from(bestByKey.values()).sort(sortFindings);
-}
-
-function normaliseTitle(t: string): string {
-  return t
-    .toLowerCase()
-    .replace(/[.!?;,]+$/, "")
-    .trim();
-}
-
-const SEVERITY_ORDER: Record<Severity, number> = {
-  CRITICAL: 0,
-  HIGH: 1,
-  MEDIUM: 2,
-  LOW: 3,
-};
-
-function sortFindings(a: Finding, b: Finding): number {
-  const s = SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity];
-  if (s !== 0) return s;
-  if (a.path !== b.path) return a.path.localeCompare(b.path);
-  return (a.line ?? 0) - (b.line ?? 0);
-}
+// Deduplication (dedupeFindings) lives in lens-review-dedupe.ts (500-line gate).
+export { dedupeFindings } from "./lens-review-dedupe.ts";
 
 export function bySeverityCounts(findings: Finding[]): Record<Severity, number> {
   const out: Record<Severity, number> = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };

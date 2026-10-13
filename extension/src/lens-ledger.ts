@@ -67,6 +67,8 @@ export function writeLensLedgerEntry(
   resolvedBranch?: string,
   /** #1127 — the operator passed `overrideCap: true`; recorded on the entry. */
   overrideCap?: boolean,
+  /** #1129 — the round PROBED before the review (lens-review-converge.ts); stored as given. */
+  round?: number,
 ): Promise<LensLedgerOutcome> {
   const write = async (): Promise<LensLedgerOutcome> => {
     const c = cwd ?? process.cwd();
@@ -103,6 +105,7 @@ export function writeLensLedgerEntry(
       ...(hasCritical !== undefined ? { hasCritical } : {}),
       ...(headSha ? { headSha } : {}),
       ...(overrideCap ? { overrideCap: true } : {}),
+      ...(round !== undefined ? { round } : {}),
     };
     const failure = await appendLedgerEntry(entry, execp, c);
     return failure ? { recorded: false, reason: failure } : { recorded: true };

@@ -90,8 +90,8 @@ const execp = async (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) =
   };
   const afterAbort = bumpLensRound(aborted, [first, second]);
   assert(
-    afterAbort.round === 2,
-    "an aborted (REVIEW_INCOMPLETE) write carries the previous round unchanged",
+    afterAbort.round === 3,
+    "#1129 — an aborted (REVIEW_INCOMPLETE) write stores the probed round (previous completed round + 1)",
   );
   const afterAbortThenDone = bumpLensRound({ ...base, at: 5000 }, [first, second, afterAbort]);
   assert(
@@ -244,25 +244,45 @@ const execp = async (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) =
     // ISSUES_FOUND (r1) → REVIEW_INCOMPLETE (r2) → ISSUES_FOUND (r3).
     const at = Date.now();
     await appendLedgerEntry(
-      { branch: "feature/x", kind: "lens", patchId: "pa", passed: false, at,
-        detail: "ISSUES_FOUND", hasCritical: false },
+      {
+        branch: "feature/x",
+        kind: "lens",
+        patchId: "pa",
+        passed: false,
+        at,
+        detail: "ISSUES_FOUND",
+        hasCritical: false,
+      },
       execp,
       repo,
     );
     await appendLedgerEntry(
-      { branch: "feature/x", kind: "lens", patchId: "pb", passed: false, at: at + 1000,
-        detail: "REVIEW_INCOMPLETE" },
+      {
+        branch: "feature/x",
+        kind: "lens",
+        patchId: "pb",
+        passed: false,
+        at: at + 1000,
+        detail: "REVIEW_INCOMPLETE",
+      },
       execp,
       repo,
     );
     const afterAbort = latestX(readLedgerAt(file));
     assert(
-      afterAbort?.round === 1,
-      "aborted run carries the previous round (round 1 after an aborted run)",
+      afterAbort?.round === 2,
+      "#1129 — aborted run is stored at the probed round (2 after a round-1 completed run)",
     );
     await appendLedgerEntry(
-      { branch: "feature/x", kind: "lens", patchId: "pc", passed: false, at: at + 2000,
-        detail: "ISSUES_FOUND", hasCritical: false },
+      {
+        branch: "feature/x",
+        kind: "lens",
+        patchId: "pc",
+        passed: false,
+        at: at + 2000,
+        detail: "ISSUES_FOUND",
+        hasCritical: false,
+      },
       execp,
       repo,
     );
@@ -273,18 +293,31 @@ const execp = async (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) =
     );
     // Three COMPLETED runs (an aborted run between them) reach round 3.
     await appendLedgerEntry(
-      { branch: "feature/x", kind: "lens", patchId: "pd", passed: false, at: at + 3000,
-        detail: "REVIEW_INCOMPLETE" },
+      {
+        branch: "feature/x",
+        kind: "lens",
+        patchId: "pd",
+        passed: false,
+        at: at + 3000,
+        detail: "REVIEW_INCOMPLETE",
+      },
       execp,
       repo,
     );
     assert(
-      latestX(readLedgerAt(file))?.round === 2,
-      "an aborted run between completed runs leaves the count unchanged",
+      latestX(readLedgerAt(file))?.round === 3,
+      "#1129 — an aborted run is stored at the probed round; the next completed run holds it",
     );
     await appendLedgerEntry(
-      { branch: "feature/x", kind: "lens", patchId: "pe", passed: false, at: at + 4000,
-        detail: "ISSUES_FOUND", hasCritical: false },
+      {
+        branch: "feature/x",
+        kind: "lens",
+        patchId: "pe",
+        passed: false,
+        at: at + 4000,
+        detail: "ISSUES_FOUND",
+        hasCritical: false,
+      },
       execp,
       repo,
     );
@@ -353,8 +386,8 @@ const execp = async (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) =
     "race merge: the surviving row is the NEW entry (latest by at), not the winner's or the loser's stale row",
   );
   assert(
-    rows[0]?.round === 2,
-    "race merge: the round advances off the re-read file's prior completed round (1 → 2), not a duplicate of round 1",
+    rows[0]?.round === 1,
+    "race merge: the round is probed from the re-read latest entry — an incomplete run (round 1) holds the round at 1",
   );
   assert(
     rows[0]?.passed === true && rows[0]?.detail === "APPROVED",
@@ -410,8 +443,8 @@ const execp = async (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) =
   };
   const afterIncomplete = mergeAfterRace([staleIncomplete], nextCompleted);
   assert(
-    afterIncomplete.length === 1 && afterIncomplete[0]?.round === 3,
-    "race merge: a completed review after a stale REVIEW_INCOMPLETE row advances the round (2 → 3)",
+    afterIncomplete.length === 1 && afterIncomplete[0]?.round === 2,
+    "race merge: a completed review after a stale REVIEW_INCOMPLETE row (round 2) holds round 2 (#1129 probe)",
   );
 }
 

@@ -24,6 +24,7 @@ interface FindingInput {
   title: string;
   description?: string;
   suggestion?: string;
+  trigger?: unknown;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -49,6 +50,13 @@ export default function (pi: ExtensionAPI) {
         Type.String({ description: "1–3 sentence description of the issue." }),
       ),
       suggestion: Type.Optional(Type.String({ description: "Short suggested fix." })),
+      // #1129 — required in practice for MEDIUM or higher; the parent checks presence only.
+      trigger: Type.Optional(
+        Type.String({
+          description:
+            "For MEDIUM or higher: a concrete input or sequence producing wrong behaviour, data loss or a security boundary crossing.",
+        }),
+      ),
     }),
     async execute(_id, raw) {
       const params = raw as FindingInput;

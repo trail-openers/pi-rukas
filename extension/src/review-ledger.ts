@@ -298,7 +298,7 @@ export function adversarialPassed(result: {
  * at or above LOW that is not already a finding).
  */
 export function lensPassed(verdict: string, threshold: string): boolean {
-  if (verdict === "APPROVED") return true;
+  if (verdict === "APPROVED" || verdict === "CONVERGED") return true;
   if (verdict === "REVIEW_INCOMPLETE") return false;
   if (verdict === "CRITICAL_ISSUES_FOUND") return false;
   // ISSUES_FOUND — the project's threshold decides.

@@ -167,6 +167,8 @@ export type WorkEvent =
       round: number;
       /** #456 — sub-threshold findings retained on an APPROVED verdict (same shape as `lens-issues-found`). */
       findings?: string;
+      /** #1129 — set to CONVERGED when the round-2 stop rule passed the review (absent = APPROVED). */
+      verdict?: "CONVERGED";
     }
   | {
       kind: "lens-issues-found";
