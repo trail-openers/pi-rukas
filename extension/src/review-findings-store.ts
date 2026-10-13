@@ -411,6 +411,9 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
           lastSeen: now,
           snippetHash: id.snippetHash,
           line: f.line,
+          // #1129 — the stored severity follows the latest judgement: a row first
+          // recorded LOW by the round-2 pre-pass must block once re-reported with a trigger.
+          severity: f.severity,
           trigger: f.trigger,
         };
         if (kept.status === "resolved") kept = reopen(kept);
