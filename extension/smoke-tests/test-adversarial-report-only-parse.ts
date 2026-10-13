@@ -204,6 +204,33 @@ try {
     toolUnparsed.loopOutcome === "infra-failure",
     "tool path unparsed reply: infra-failure, not a verdict",
   );
+
+  // 7. #1154 coupling: the terminal rule applies only WITH reportOnly. A
+  // non-reportOnly loop (the tool's fix-capable path) whose round 1 is
+  // ISSUES_FOUND must NOT record that round as passed: it routes to a fix round
+  // and only a later round can approve. Here every round repeats ISSUES_FOUND,
+  // so the loop runs all 3 rounds and rejects.
+  reply = "VERDICT: ISSUES_FOUND\n\n- x.txt:1 — missing test";
+  const nonReportOnly = await runAdversarialLoop(
+    {
+      diff: DIFF,
+      context: "ctx",
+      workCwd: repoDir,
+      branch: "fix/report-only-parse-nonterminal",
+      reportOnlyTerminal: true,
+    },
+    new AbortController().signal,
+    "job-report-only-parse-nonterminal",
+  );
+  assert(
+    nonReportOnly.adversarialRounds?.length === 3,
+    "non-reportOnly loop with reportOnlyTerminal set: ISSUES_FOUND round 1 routes to a fix round (3 rounds run)",
+  );
+  assert(
+    nonReportOnly.text.includes("PASSED WITH FINDINGS after round 3") &&
+      !nonReportOnly.text.includes("after round 1"),
+    "non-reportOnly loop with reportOnlyTerminal set: round 1 ISSUES_FOUND is not passed (only the final round passes it)",
+  );
 } finally {
   try {
     rmSync(repoDir, { recursive: true, force: true });

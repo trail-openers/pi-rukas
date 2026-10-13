@@ -100,12 +100,13 @@ export async function runAdversarialLoop(
     /** #1114 — the round number a reportOnly review carries (prompt + record). Default 1. */
     reportRound?: number;
     /**
-     * #1154 — tool path only. A reportOnly review is the loop's ONLY round, so
-     * it is judged by the terminal-round rule (ISSUES_FOUND passes, only
-     * CRITICAL_ISSUES_FOUND rejects) instead of as round 1 of 3. Set by
-     * `adversarial-tool.ts` after the raw params spread, so a caller cannot
-     * spoof it. The /work driver leaves it unset: its per-round reportOnly
-     * reviews keep non-terminal routing (ISSUES_FOUND → develop fix pass).
+     * #1154 — tool path only, and only meaningful WITH `reportOnly`. A
+     * reportOnly review is the loop's ONLY round, so it is judged by the
+     * terminal-round rule (ISSUES_FOUND passes, only CRITICAL_ISSUES_FOUND
+     * rejects) instead of as round 1 of 3. Ignored when `reportOnly` is not
+     * true. Set by `adversarial-tool.ts` after the raw params spread, so a
+     * caller cannot spoof it. The /work driver leaves it unset: its per-round
+     * reportOnly reviews keep non-terminal routing (ISSUES_FOUND → develop fix pass).
      */
     reportOnlyTerminal?: boolean;
     /**
@@ -353,7 +354,7 @@ export async function runAdversarialLoop(
       // #912 — the review ledger keys on the latest entry per branch, so every
       // reviewed round records its verdict: a pass is `approved`, anything the
       // driver will route back or reject is `rejected` (replaced by a later pass).
-      const terminalRound = params.reportOnlyTerminal ? MAX_ROUNDS : round;
+      const terminalRound = params.reportOnly && params.reportOnlyTerminal ? MAX_ROUNDS : round;
       const passed = decideLoopAction(verdict.status, terminalRound, MAX_ROUNDS, true) === "pass";
       return ledgerWrite(
         synthesizeResult({

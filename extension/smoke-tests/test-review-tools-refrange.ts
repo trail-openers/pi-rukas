@@ -218,8 +218,10 @@ registerAdversarialTool(fakePi().pi); // warm any module init
     "adversarial_loop description documents reportOnly and the workCwd rule",
   );
   assert(
-    (adv?.description ?? "").includes("terminal-round rule"),
-    "adversarial_loop description states the reportOnly terminal-round rule (#1154)",
+    (adv?.description ?? "").includes(
+      "A reportOnly review records one verdict; only CRITICAL_ISSUES_FOUND (or an unreadable reply) fails it.",
+    ),
+    "adversarial_loop description states the reportOnly single-verdict rule (#1154)",
   );
 }
 
