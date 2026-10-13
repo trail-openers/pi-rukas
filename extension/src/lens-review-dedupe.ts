@@ -25,10 +25,12 @@ export function dedupeFindings(input: Finding[], lens: RosterEntry[]): Finding[]
   for (const l of lens) {
     if (l.precedence !== undefined) precedenceOf.set(l.name, l.precedence);
   }
-  // CLAIM_SCAN outranks every lens on a collision. Its findings are lookups,
-  // not judgments — if a lens and the scan land on the same line, the one that
-  // can point at a grep result is the one worth keeping. NEGATIVE_INFINITY so
-  // it outranks any declared value, whatever the skill authors renumber to.
+  // CLAIM_SCAN ranks above every lens at equal severity. Its findings are
+  // lookups, not judgments — if a lens and the scan land on the same line at
+  // the same severity, the one that can point at a grep result is the one
+  // worth keeping. Severity is compared first (see the loop below), so a more
+  // severe lens finding still wins. NEGATIVE_INFINITY so it outranks any
+  // declared value, whatever the skill authors renumber to.
   precedenceOf.set(CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE);
   const precedence = (f: Finding) => precedenceOf.get(f.lens) ?? 99;
   // `bestByKey` is bounded by the lens fan-in (≤6 children × finite findings

@@ -11,8 +11,8 @@
  */
 
 import { execp } from "./lens-exec.ts";
-import type { Verdict } from "./lens-review-format.ts";
-import type { Finding } from "./lens-review-types.ts";
+import { type Severity, type Verdict, computeVerdict } from "./lens-review-format.ts";
+import type { Finding, LensRunResult } from "./lens-review-types.ts";
 import { roundAfter } from "./review-ledger-round.ts";
 import { latestEntry, ledgerPathFor, readLedgerAt } from "./review-ledger.ts";
 
@@ -60,4 +60,28 @@ export function applyRoundDowngrade(findings: Finding[], round: number): Finding
  */
 export function convergeVerdict(verdict: Verdict, judged: Finding[]): Verdict {
   return verdict === "APPROVED" && judged.some((f) => f.downgrade) ? "CONVERGED" : verdict;
+}
+
+/**
+ * The round's reported findings and verdict. Carried rows (open findings the
+ * round did not re-report, from the findings memory) get the same pre-pass as
+ * this round's findings, so a trigger-less MEDIUM a round-2 lens omits still
+ * downgrades; a triggered one (the row keeps its trigger) still blocks. A
+ * downgraded carried row counts toward CONVERGED like a judged one.
+ */
+export function judgeRound(
+  kept: Finding[],
+  recorded: { ok: boolean; carried?: Finding[] } | undefined,
+  judged: Finding[],
+  lensResults: LensRunResult[],
+  threshold: Severity,
+  round: number,
+): { reported: Finding[]; verdict: Verdict } {
+  const carried = applyRoundDowngrade(recorded?.ok ? (recorded.carried ?? []) : [], round);
+  const reported = [...kept, ...carried];
+  const verdict = convergeVerdict(computeVerdict(reported, lensResults, threshold), [
+    ...judged,
+    ...carried,
+  ]);
+  return { reported, verdict };
 }

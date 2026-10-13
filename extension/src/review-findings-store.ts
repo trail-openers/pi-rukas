@@ -74,7 +74,11 @@ const ROW_ID = /^[0-9a-f]{8}$/;
  */
 export type Decision =
   | { action: "new" | "matched"; rowId: string }
-  | { action: "suppressed-unchanged" | "suppressed-accepted"; rowId: string; reason: string };
+  | {
+      action: "suppressed-unchanged" | "suppressed-accepted";
+      rowId: string;
+      reason: string;
+    };
 
 export interface FindingRun {
   cwd: string;
@@ -225,7 +229,10 @@ async function mutateFindings<T>(
     writeRows(loc.file, rows);
     return { ok: true, value: result };
   } catch (err) {
-    return { ok: false, reason: `write failed: ${(err as Error).message.slice(0, 160)}` };
+    return {
+      ok: false,
+      reason: `write failed: ${(err as Error).message.slice(0, 160)}`,
+    };
   } finally {
     try {
       release?.();
@@ -265,7 +272,10 @@ export async function acceptFinding(
   const now = opts.now ?? Date.now();
   const out = await mutateFindings<AcceptOutcome>(cwd, (all) => {
     const idx = all.findIndex((r) => r.branch === branch && r.id === rowId);
-    const refuse = (why: string) => ({ rows: all, result: { ok: false, reason: why } as const });
+    const refuse = (why: string) => ({
+      rows: all,
+      result: { ok: false, reason: why } as const,
+    });
     const row = all[idx];
     if (!row) return refuse(`no row ${rowId} on branch ${branch}`);
     if (row.status === "resolved") return refuse(`row ${rowId} is resolved — nothing to accept`);
@@ -377,6 +387,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
             severity: f.severity,
             lens: f.lens,
             ...(f.line ? { line: f.line } : {}),
+            ...(f.trigger ? { trigger: f.trigger } : {}),
             snippetHash: id.snippetHash,
             status: "open",
             firstSeen: now,
@@ -400,6 +411,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
           lastSeen: now,
           snippetHash: id.snippetHash,
           line: f.line,
+          trigger: f.trigger,
         };
         if (kept.status === "resolved") kept = reopen(kept);
         // A line-bearing finding is bound to the snippet the operator accepted; a
@@ -433,7 +445,11 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
         ) {
           const reason = `cited line ${f.line ?? "?"} is outside the delta since the last recorded review`;
           trace(`review-findings: suppressed-unchanged ${row.id} — ${reason}`);
-          decisions.push({ action: "suppressed-unchanged", rowId: row.id, reason });
+          decisions.push({
+            action: "suppressed-unchanged",
+            rowId: row.id,
+            reason,
+          });
           return;
         }
         decisions.push({ action: "matched", rowId: row.id });
@@ -462,6 +478,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
             path: r.path,
             line: r.line,
             title: r.title,
+            ...(r.trigger ? { trigger: r.trigger } : {}),
           });
         }
       });

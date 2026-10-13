@@ -34,6 +34,8 @@ interface StoredBase {
   severity: Severity;
   lens: string;
   line?: number;
+  /** #1129 — the trigger the lens named when it last reported this finding; absent = none. */
+  trigger?: string;
   snippetHash: string;
   firstSeen: number;
   lastSeen: number;
@@ -139,7 +141,10 @@ export function parseFindingsFile(file: string): ParsedFile {
   try {
     parsed = JSON.parse(readFileSync(file, "utf8"));
   } catch (err) {
-    return { ok: false, reason: `unparseable JSON (${(err as Error).message.slice(0, 80)})` };
+    return {
+      ok: false,
+      reason: `unparseable JSON (${(err as Error).message.slice(0, 80)})`,
+    };
   }
   const rows = (parsed as { rows?: unknown } | null)?.rows;
   if (!Array.isArray(rows)) return { ok: false, reason: "no rows array" };

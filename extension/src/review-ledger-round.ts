@@ -49,9 +49,9 @@ export function bumpLensRound(entry: LedgerEntry, existing: LedgerEntry[]): Ledg
 
 /**
  * #1129 — the round a lens run is recorded as, given the branch's latest
- * lens entry (`undefined` when there is none): no prior entry \u2192 1; a prior
- * entry without `round` (legacy) \u2192 2; a prior REVIEW_INCOMPLETE run \u2192 its
- * round (an incomplete run does not advance the round); otherwise \u2192 its
+ * lens entry (`undefined` when there is none): no prior entry → 1; a prior
+ * entry without `round` (legacy) → 2; a prior REVIEW_INCOMPLETE run → its
+ * round (an incomplete run does not advance the round); otherwise → its
  * round + 1.
  */
 export function roundAfter(prev: LedgerEntry | undefined): number {

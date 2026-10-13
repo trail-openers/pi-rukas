@@ -8,7 +8,7 @@ import { partitionDecisions, renderPriorFindingsBlock } from "./lens-residuals.t
 import { resolveLensReviewBranch } from "./lens-review-branch-resolve.ts";
 import { capKillSummary } from "./lens-review-capkill.ts";
 import { runLensChild } from "./lens-review-child.ts";
-import { applyRoundDowngrade, convergeVerdict, probeLensRound } from "./lens-review-converge.ts";
+import { applyRoundDowngrade, judgeRound, probeLensRound } from "./lens-review-converge.ts";
 import {
   type AutoDeltaInfo,
   blockedReviewSummary,
@@ -466,8 +466,7 @@ export async function runLensReview(opts: {
   // #1105 — open rows this round did not re-report, whose cited code is
   // unchanged, still stand: a lens omitting a known finding is not a fix.
   // They are reported alongside this round's findings.
-  const reported = [...kept, ...(recorded?.ok ? recorded.carried : [])];
-  const verdict = convergeVerdict(computeVerdict(reported, lensResults, threshold), judged);
+  const { reported, verdict } = judgeRound(kept, recorded, judged, lensResults, threshold, round);
   // #973 — the round-cap rule's inputs for the ledger write: hasCritical
   // from the deduped findings, headSha from the ref the review actually
   // covered (the delta's head when this was a delta run, otherwise
