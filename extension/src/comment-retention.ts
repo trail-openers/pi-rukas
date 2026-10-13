@@ -17,9 +17,10 @@
  * supplied by the caller for every git invocation.
  */
 
-import { exec } from "node:child_process";
+import { exec, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { type LostComment, classifyHunk, hasWord, parseHunks } from "./comment-retention-hunks.ts";
+import { countPrCommits, prRange } from "./git-range.ts";
 import { trace } from "./trace.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -29,13 +30,14 @@ import type { ExecFn } from "./worktree.ts";
  * an injected `ExecFn` instead; this one is the production default.
  */
 export function makeExecFn(): ExecFn {
-  const execp = promisify(exec);
-  return (cmd, opts) =>
-    execp(cmd, {
-      cwd: opts?.cwd,
-      timeout: opts?.timeout,
-      maxBuffer: opts?.maxBuffer,
-    });
+  const shell = promisify(exec);
+  const file = promisify(execFile);
+  return (cmd, opts) => {
+    const common = { cwd: opts?.cwd, timeout: opts?.timeout, maxBuffer: opts?.maxBuffer };
+    // #1134 — the argv form runs the executable directly, with no shell re-parse.
+    if (opts?.argv) return file(cmd, opts.argv, { ...common, encoding: "utf8" });
+    return shell(cmd, common);
+  };
 }
 
 /** The paths the diff / existence / exemption searches are scoped to. */
@@ -91,13 +93,13 @@ async function readLinesAtRef(
   paths: string[],
   timeoutMs: number,
 ): Promise<Set<string> | undefined> {
-  const pathArg = paths.join(" ");
   // No ref = the working tree (tracked files): the uncommitted /work diff.
-  const refArg = ref ? `${ref} ` : "";
   try {
     // `-z` ends the file name with a NUL, so a `:` inside a path cannot shift
     // the slice: `ref:file\0content` (or `file\0content` with no ref).
-    const { stdout } = await execFn(`git grep -z -e "" ${refArg}-- ${pathArg}`, {
+    // argv (#1134): the ref and paths are never shell-parsed.
+    const { stdout } = await execFn("git", {
+      argv: ["grep", "-z", "-e", "", ...(ref ? ["--end-of-options", ref] : []), "--", ...paths],
       cwd,
       timeout: timeoutMs,
       maxBuffer: 64 * 1024 * 1024,
@@ -127,7 +129,8 @@ async function refResolves(
   timeoutMs: number,
 ): Promise<boolean> {
   try {
-    await execFn(`git rev-parse --verify "${ref}^{commit}"`, {
+    await execFn("git", {
+      argv: ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`],
       cwd,
       timeout: timeoutMs,
       maxBuffer: 1 * 1024 * 1024,
@@ -144,7 +147,7 @@ async function confirmEmptyDiff(
   cwd: string,
   baseRef: string,
   headRef: string,
-  pathArg: string,
+  paths: string[],
   timeoutMs: number,
 ): Promise<LostCommentResult> {
   // An empty diff under the pathspec is legitimate (no changes under paths), but
@@ -153,12 +156,12 @@ async function confirmEmptyDiff(
   // silently passing as "nothing lost".
   let changedInRange = Number.NaN;
   try {
-    const { stdout } = await execFn(`git rev-list --count ${baseRef}..${headRef} -- ${pathArg}`, {
-      cwd,
+    // The PR's own commits under paths, from the merge base (#1134: a base that
+    // moved after the branch was cut must not count here).
+    changedInRange = await countPrCommits(execFn, cwd, baseRef, headRef, {
+      pathspec: paths,
       timeout: timeoutMs,
-      maxBuffer: 1 * 1024 * 1024,
     });
-    changedInRange = Number.parseInt(stdout.trim(), 10);
   } catch {
     changedInRange = Number.NaN; // unreadable — note, not pass
   }
@@ -234,11 +237,11 @@ export async function findLostComments(
       reason: "range check needs both a base and a head ref",
     };
   }
-  const pathArg = paths.join(" ");
   let rangeDiff: string;
   // 1. The diff (normal context, so comment blocks stay contiguous).
   try {
-    const { stdout } = await execFn(`git diff ${baseRef}...${headRef} -- ${pathArg}`, {
+    const { stdout } = await execFn("git", {
+      argv: ["diff", "--end-of-options", prRange(baseRef, headRef), "--", ...paths],
       cwd,
       timeout: timeoutMs,
       maxBuffer: 16 * 1024 * 1024,
@@ -249,7 +252,7 @@ export async function findLostComments(
     return { ok: false, reason: "git diff failed" };
   }
   if (!rangeDiff.trim()) {
-    return confirmEmptyDiff(execFn, cwd, baseRef, headRef, pathArg, timeoutMs);
+    return confirmEmptyDiff(execFn, cwd, baseRef, headRef, paths, timeoutMs);
   }
   return classifyDiff(execFn, cwd, rangeDiff, headRef, paths, timeoutMs);
 }

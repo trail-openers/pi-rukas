@@ -50,7 +50,10 @@ export async function runCommitPrPostDispatchGates(
   const rootState = await inspectCommitPrRoot(execFn, ctx.repoRoot);
   let state: WorkState = {
     ...next,
-    pipelineState: { ...next.pipelineState, ...commitPrRootFieldsOf(rootState) },
+    pipelineState: {
+      ...next.pipelineState,
+      ...commitPrRootFieldsOf(rootState),
+    },
   };
   const prNumber = parsePrNumber(last.summary);
   if (prNumber !== undefined) {
@@ -60,6 +63,7 @@ export async function runCommitPrPostDispatchGates(
     return raiseConsolidationIncompleteCap(state);
   }
   const consolidationCheck = await verifyConsolidation(ctx, state);
+  for (const note of consolidationCheck.notes) trace(`work-driver: ${note}`);
   if (consolidationCheck.missing.length > 0) {
     trace(
       `work-driver: commit-pr partial-consolidation detected — missing workstreams: ${consolidationCheck.missing.map((m) => m.id).join(", ")}`,
@@ -110,7 +114,10 @@ export async function runCommitPrPostDispatchGates(
       ...state,
       pipelineState: {
         ...state.pipelineState,
-        incompleteConsolidation: { verdicts, filesPresent: consolidationCheck.filesPresent },
+        incompleteConsolidation: {
+          verdicts,
+          filesPresent: consolidationCheck.filesPresent,
+        },
       },
     };
     return appendEvent(state, {
@@ -186,7 +193,10 @@ export function finalizeCommitPrState(
   commitPrFlakeEvidence: string | undefined,
 ): WorkState {
   let next = appendEvent(
-    { ...state, pipelineState: { ...state.pipelineState, currentStep: "commit-pr" } },
+    {
+      ...state,
+      pipelineState: { ...state.pipelineState, currentStep: "commit-pr" },
+    },
     { kind: "step-started", step: "commit-pr", at: now },
   );
   // #782 — the commit-pr consolidated verify recovered from a flake: emit

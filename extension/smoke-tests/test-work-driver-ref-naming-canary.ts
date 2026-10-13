@@ -24,6 +24,7 @@ import { promisify } from "node:util";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { verifyConsolidation, verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
+import { commandOf } from "./lib/argv-shell.ts";
 
 const execFileP = promisify(execFile);
 
@@ -59,6 +60,8 @@ async function setupFixture(): Promise<{ root: string; branch: string }> {
   await execFileP("git", ["init", "-q", "--bare", "--initial-branch=main", origin]);
   await execFileP("git", ["remote", "add", "origin", origin], { cwd: repo });
   await execFileP("git", ["push", "-q", "origin", "main"], { cwd: repo });
+  // A real clone carries refs/remotes/origin/HEAD; the mainline is resolved from it (#1134).
+  await execFileP("git", ["remote", "set-head", "origin", "main"], { cwd: repo });
 
   // Feature branch with ZERO commits ahead of main (just a branch point).
   const branch = "feature/issue-451-canary";
@@ -104,7 +107,7 @@ async function testCommitPrGate() {
         cmd: string,
         opts?: { cwd?: string; timeout?: number; maxBuffer?: number },
       ) => {
-        const { stdout, stderr } = await execFileP("/bin/sh", ["-c", cmd], {
+        const { stdout, stderr } = await execFileP("/bin/sh", ["-c", commandOf(cmd, opts)], {
           cwd: opts?.cwd,
           timeout: opts?.timeout,
           maxBuffer: opts?.maxBuffer ?? 64 * 1024,
@@ -184,7 +187,7 @@ async function testCommitPrGatePasses() {
         cmd: string,
         opts?: { cwd?: string; timeout?: number; maxBuffer?: number },
       ) => {
-        const { stdout, stderr } = await execFileP("/bin/sh", ["-c", cmd], {
+        const { stdout, stderr } = await execFileP("/bin/sh", ["-c", commandOf(cmd, opts)], {
           cwd: opts?.cwd,
           timeout: opts?.timeout,
           maxBuffer: opts?.maxBuffer ?? 64 * 1024,
@@ -283,6 +286,8 @@ async function testConsolidationWithCommits() {
   await execFileP("git", ["init", "-q", "--bare", "--initial-branch=main", origin]);
   await execFileP("git", ["remote", "add", "origin", origin], { cwd: repo });
   await execFileP("git", ["push", "-q", "origin", "main"], { cwd: repo });
+  // A real clone carries refs/remotes/origin/HEAD; the mainline is resolved from it (#1134).
+  await execFileP("git", ["remote", "set-head", "origin", "main"], { cwd: repo });
 
   // Feature branch with commits touching both files.
   const branch = "feature/issue-451-consol-pass";

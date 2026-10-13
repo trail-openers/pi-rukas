@@ -229,15 +229,15 @@ export function pipeline(input: Partial<PlanDriverInput> = {}): Promise<PlanResu
 }
 
 /** The per-test cache: its directory and the HEAD the git-state stub reports. */
-export const cacheState = { dir: "", head: "a".repeat(40) };
+export const cacheState = { dir: "", keySha: "a".repeat(40) };
 const tmpCacheDirs: string[] = [];
 
 /** A fresh cache directory and HEAD, with the git-state stub pointing at them. */
 export async function newPlanCache(prefix = "plan-cache-"): Promise<void> {
   cacheState.dir = await mkdtemp(path.join(os.tmpdir(), prefix));
   tmpCacheDirs.push(cacheState.dir);
-  cacheState.head = "a".repeat(40);
-  setPlanGitStateFn(async () => ({ head: cacheState.head, cacheDir: cacheState.dir }));
+  cacheState.keySha = "a".repeat(40);
+  setPlanGitStateFn(async () => ({ keySha: cacheState.keySha, cacheDir: cacheState.dir }));
   forgeStub.created.length = 0;
   forgeStub.mode = "ok";
 }

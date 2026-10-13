@@ -25,13 +25,6 @@ import { trace } from "./trace.ts";
  * empty url, all-angles-failed skip) and the forge stderr reached only a
  * trace() call behind PI_ENSEMBLE_DEBUG=1.
  *
- * `cap-surface` is the DELIBERATE-SKIP case: the gap-gate cap routed to
- * surface because unresolved CRITICAL gaps remain (CRITICAL-only terminal
- * rule, #664 transposed — HIGH findings travel in the residual disclosure
- * instead, so they do NOT route to surface). The spec is NOT filed by
- * policy (it is surfaced to the operator). Nothing failed to resolve, so it
- * must NOT reuse `forge-unresolved`.
- *
  * `needs-clarification` and `draft-invalid` are the two DETERMINISTIC
  * skips: the pre-dispatch under-specification triage (plan-precheck.ts)
  * returned targeted questions instead of investigating, or the drafted
@@ -44,7 +37,6 @@ export interface FilingFailure {
     | "create-error"
     | "empty-url"
     | "skipped-all-angles-failed"
-    | "cap-surface"
     | "gate-unavailable"
     | "needs-clarification"
     | "draft-invalid"

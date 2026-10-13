@@ -11,7 +11,7 @@ import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
  *   - a CRITICAL that quotes a gate-spliced bullet is an ordinary blocking
  *     CRITICAL (there is no re-route rule).
  */
-import { parseGaps } from "../src/plan-gaps.ts";
+import { parseGaps } from "../src/plan-gap-parse.ts";
 import type { PlanGap } from "../src/plan-types.ts";
 import {
   buildResolvedDecisions,

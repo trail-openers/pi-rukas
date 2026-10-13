@@ -30,9 +30,15 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { codeIdentifiersIn, draftSpec } from "../src/plan-draft.ts";
 import { setPlanDispatch } from "../src/plan-driver.ts";
-import { registerPlanTool, type RegisteredPlanTool } from "../src/plan-tool.ts";
+import { type RegisteredPlanTool, registerPlanTool } from "../src/plan-tool.ts";
 import { classifyPlanType } from "../src/plan-types.ts";
-import { calls, gatePrompts, invokePlanTool, setPlanVipuneStub, installNoPlanCacheStub } from "./plan-test-stubs.ts";
+import {
+  calls,
+  gatePrompts,
+  installNoPlanCacheStub,
+  invokePlanTool,
+  setPlanVipuneStub,
+} from "./plan-test-stubs.ts";
 installNoPlanCacheStub();
 
 let exit = 0;
@@ -67,7 +73,8 @@ registerPlanTool(fakePi);
     props.join(",") === "descriptor,type,context,dryRun,reviewedDigest",
     `exact TypeBox schema: ${props.join(", ")}`,
   );
-  const typeUnion = (t?.parameters.properties?.type as { anyOf?: Array<{ const?: string }> })?.anyOf;
+  const typeUnion = (t?.parameters.properties?.type as { anyOf?: Array<{ const?: string }> })
+    ?.anyOf;
   const types = (typeUnion ?? []).map((v) => v.const).filter(Boolean) as string[];
   assert(
     types.join(",") === "bug,feature,epic,chore,spike",
@@ -331,14 +338,8 @@ setPlanDispatch(((pi: unknown, spec: { role: string; prompt: string }) => {
     !inv2.includes("ACCEPTANCE CRITERIA:"),
     "#858 alignment: the heading line is still excluded (no index shift into it)",
   );
-  assert(
-    inv2.includes(prose2a),
-    "#858 alignment: the prose line BEFORE the typed block is kept",
-  );
-  assert(
-    inv2.includes(prose2b),
-    "#858 alignment: the prose line AFTER the typed block is kept",
-  );
+  assert(inv2.includes(prose2a), "#858 alignment: the prose line BEFORE the typed block is kept");
+  assert(inv2.includes(prose2b), "#858 alignment: the prose line AFTER the typed block is kept");
 }
 
 {
@@ -437,12 +438,15 @@ setPlanDispatch(((pi: unknown, spec: { role: string; prompt: string }) => {
     !/PI_ENSEMBLE_PLAN_GAP_GATE/.test(pdDriver),
     "canary: the PI_ENSEMBLE_PLAN_GAP_GATE knob is deleted from the driver (chore/spike skip the gate unconditionally)",
   );
-  const pd = readFileSync(path.resolve(import.meta.dirname, "..", "src", "plan-gaps.ts"), "utf8");
+  const pd = readFileSync(
+    path.resolve(import.meta.dirname, "..", "src", "plan-gap-parse.ts"),
+    "utf8",
+  );
   // #606 canary: the GAP: marker contract is in the prompt AND the parser
   // matches markers only (no bare severityRe fallback).
   assert(
     pd.includes("(CRITICAL|HIGH|MEDIUM|LOW)"),
-    "canary: parseGaps matches the structured GAP: marker (plan-gaps.ts)",
+    "canary: parseGaps matches the structured GAP: marker (plan-gap-parse.ts)",
   );
   assert(
     !/severityRe/.test(pd),

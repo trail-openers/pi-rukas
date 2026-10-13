@@ -26,8 +26,8 @@ import {
   forgeStub,
   gatePrompts,
   installForgeStub,
-  installOfflineVipuneStub,
   installNoPlanCacheStub,
+  installOfflineVipuneStub,
   makeDispatchStub,
 } from "./plan-test-stubs.ts";
 
@@ -114,7 +114,13 @@ installNoPlanCacheStub();
     gateDispatchCount === 2,
     `CRITICAL-STILL-ITERATES: exactly TWO gate dispatches (got ${gateDispatchCount})`,
   );
-  assert(r1.filed === false, `CRITICAL-STILL-ITERATES: not filed (got filed=${r1.filed})`);
+  // #1132 addendum: at the cap the spec files; a CRITICAL with a proposal is
+  // disclosed in the residual section with that proposal.
+  assert(r1.filed === true, `CRITICAL-STILL-ITERATES: filed at the cap (got filed=${r1.filed})`);
+  assert(
+    r1.spec.includes("[CRITICAL]") && r1.spec.includes("add a criterion"),
+    "CRITICAL-STILL-ITERATES: the CRITICAL and its proposal are disclosed in the residual section",
+  );
   assert(
     r1.capReason === "unresolved-blocking",
     `CRITICAL-STILL-ITERATES: capReason is unresolved-blocking (got ${r1.capReason})`,

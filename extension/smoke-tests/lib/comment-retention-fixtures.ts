@@ -19,12 +19,12 @@ import type { ExecFn } from "../../src/worktree.ts";
 
 export const execFileP = promisify(execFile);
 
-/** Real shell exec, matching the driver's ExecFn contract. */
+/** Real exec, matching the driver's ExecFn contract. The argv form (#1134) runs the executable directly. */
 export const realExec: ExecFn = async (cmd, o) => {
-	const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
-		cwd: o?.cwd,
-		maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
-	});
+	const opts = { cwd: o?.cwd, maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024 };
+	const { stdout } = o?.argv
+		? await execFileP(cmd, o.argv, opts)
+		: await execFileP("/bin/sh", ["-c", cmd], opts);
 	return { stdout };
 };
 
