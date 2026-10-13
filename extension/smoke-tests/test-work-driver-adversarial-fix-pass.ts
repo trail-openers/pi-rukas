@@ -19,6 +19,7 @@ import {
 } from "../src/work-driver-adversarial-fix.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { nextStep } from "../src/work-driver-context.ts";
+import { explainCap } from "../src/work-driver-explain.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 import {
   devCommit,
@@ -295,6 +296,11 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
     assert(
       out.pipelineState.plumbReports.some((r) => r.body.includes("origin/main comment")),
       "G: the handoff names the removed comment",
+    );
+    const cap = explainCap("verify-failed:develop", out);
+    assert(
+      cap.includes("origin/main comment") && !cap.includes("evidence detail missing"),
+      `G: the cap text names the comment check (got ${cap.slice(0, 200)})`,
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
