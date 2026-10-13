@@ -151,7 +151,14 @@ export async function readConsolidatedDiffFiles(
         if (p) files.add(p);
       }
       return true;
-    } catch {
+    } catch (err) {
+      // #1137 — a failed ref read is a skip signal; name the ref and the
+      // error so the operator can tell "not pushed yet" (the expected
+      // fallback to the local ref) from "branch does not exist" (the gate
+      // degrades to the "scope unknown" skip below).
+      trace(
+        `work-driver: acceptance coverage — diff read failed for ${ref}: ${(err as Error).message?.slice(0, 200) ?? String(err).slice(0, 200)}`,
+      );
       return false;
     }
   };

@@ -9,6 +9,17 @@
 
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import type { DispatchResult } from "../src/types.ts";
+import {
+  namedPaths,
+  pendingFixes,
+  plumbQuestion,
+  runAdversarialFixPass,
+  survivorsOf,
+} from "../src/work-driver-adversarial-fix.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
+import { nextStep } from "../src/work-driver-context.ts";
+import type { WorkState } from "../src/workflow-state.ts";
 import {
   devCommit,
   fixState,
@@ -18,16 +29,6 @@ import {
   tmpDir,
   twoWorkstreamState,
 } from "./lib/adversarial-fix-fixtures.ts";
-import type { DispatchResult } from "../src/types.ts";
-import {
-  namedPaths,
-  pendingFixes,
-  runAdversarialFixPass,
-  survivorsOf,
-} from "../src/work-driver-adversarial-fix.ts";
-import type { DriverContext } from "../src/work-driver-context.ts";
-import { nextStep } from "../src/work-driver-context.ts";
-import type { WorkState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -315,6 +316,33 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
     namedPaths("see lib/data.txt.", ["lib/a.txt"], ["lib/a.txt"]).length === 0 &&
       namedPaths("see (lib/a.txt).", ["lib/a.txt"], ["lib/a.txt"]).join() === "lib/a.txt",
     "H: punctuation around a path token still matches, a longer name does not",
+  );
+}
+
+// H2 — #1137: plumbQuestion is the single reader both no-change park branches
+// use: the untrusted-text prefix, code fences stripped, capped at 300 chars
+// with an ellipsis; null when no report carries the marker.
+{
+  const fenced = [
+    {
+      body: "[ensemble:plumb]\ncategory: scope-ambiguity\n```diff\nold\nnew\n```\nquestion: does docs own b.txt?",
+    },
+  ];
+  const q = plumbQuestion(fenced);
+  assert(
+    q?.startsWith("developer question (untrusted text): ") && !q.includes("```"),
+    `H2: the plumb body is prefixed, and code fences are stripped (got: ${q})`,
+  );
+  const long = [{ body: `[ensemble:plumb]\n${"x".repeat(400)}` }];
+  const ql = plumbQuestion(long) ?? "";
+  const bodyAfterPrefix = ql.slice("developer question (untrusted text): ".length);
+  assert(
+    ql.endsWith("…") && bodyAfterPrefix.length === 300,
+    `H2: a long plumb body is capped at 300 chars with an ellipsis (body len ${bodyAfterPrefix.length})`,
+  );
+  assert(
+    plumbQuestion([{ body: "an ordinary note with no marker" }]) === null,
+    "H2: a report without the plumb marker returns null",
   );
 }
 

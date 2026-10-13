@@ -25,6 +25,7 @@ import {
   reentryPassBatchSpan,
   roundsRecords,
 } from "./work-driver-adversarial-reentry.ts";
+import { scopeFor } from "./work-driver-adversarial-scope.ts";
 import {
   ADVERSARIAL_PER_WS_MAX_RETRIES,
   type AdversarialOutcome,
@@ -46,7 +47,8 @@ export { capKillOutcomeFields };
 /**
  * #543 — the cap-kill fields of an AdversarialOutcome: the killCause
  * (loop / token-budget) + its structured trigger evidence, threaded from
- * the inner spawn's DispatchResult. Empty when the result carries no cap kill.
+ * the inner spawn's DispatchResult. Empty when the result carries no cap
+ * kill. Split from runOne's return (AGENTS.md §12 file-size limit).
  */
 
 export async function fanOutAdversarial(
@@ -82,6 +84,10 @@ export async function fanOutAdversarial(
     step: "adversarial",
     startedAt: stepStartedAt,
   });
+  // #1137 — workstream set from pipelineState.workstreams keys (the coverage
+  // gate reads the same); absent keys fall back to the argument `ids`.
+  const wsMap = state.pipelineState.workstreams;
+  const reviewIds = wsMap && Object.keys(wsMap).length > 0 ? Object.keys(wsMap) : ids;
   const endStep = (
     final: WorkState,
     rest: { outcomes: AdversarialOutcome[]; parked: boolean; parkedInfra: boolean },
@@ -104,26 +110,12 @@ export async function fanOutAdversarial(
   // log — BEFORE this pass's events are appended.
   const passStart = priorBatchSpan ? priorBatchSpan[0] : state.eventLog.length;
   const runOne = async (id: string): Promise<AdversarialOutcome> => {
+    // #1137 — a state key absent from the worktrees map is reviewed at repoRoot.
     const cwd = state.pipelineState.worktrees?.[id] ?? ctx.repoRoot;
-    const label = ids.length > 1 ? `adversarial[${id}]` : "adversarial_loop";
-    // #1137 — the per-workstream scope the reviewer is judged within: the
-    // workstream's own declared paths + scope, and every sibling's, so the
-    // prompt can say "judge only this; the rest is out of scope." Absent on
-    // N=1 (no siblings) — the whole issue is the scope, pre-#1137 behaviour.
-    const ps_ws = state.pipelineState.workstreams;
-    const scope =
-      ids.length > 1
-        ? {
-            own: ps_ws?.[id] ? { id, scope: ps_ws[id].scope, paths: ps_ws[id].paths } : undefined,
-            siblings: ids
-              .filter((other) => other !== id)
-              .map((other) => {
-                const w = ps_ws?.[other];
-                return w ? { id: other, scope: w.scope, paths: w.paths } : undefined;
-              })
-              .filter((w): w is NonNullable<typeof w> => w !== undefined),
-          }
-        : undefined;
+    if (!state.pipelineState.worktrees?.[id])
+      trace(`work-driver: adversarial[${id}] — no worktree, reviewing at repoRoot`);
+    const label = reviewIds.length > 1 ? `adversarial[${id}]` : "adversarial_loop";
+    const scope = scopeFor(wsMap, reviewIds, id);
     const startedAt = Date.now();
     const orchestratorJobId = makeRunId();
     // Per-workstream diff: `git diff <baseSha>..HEAD` from this worktree
@@ -154,7 +146,7 @@ export async function fanOutAdversarial(
           workstreamId: id,
         },
         branchEvent:
-          ids.length > 1
+          reviewIds.length > 1
             ? {
                 kind: "branch-completed",
                 step: "adversarial",
@@ -174,7 +166,7 @@ export async function fanOutAdversarial(
         {
           diff,
           context:
-            ids.length > 1
+            reviewIds.length > 1
               ? `/work issue #${ctx.issue}: gating diff for workstream "${id}" before commit (Step 5).`
               : `/work issue #${ctx.issue}: gating diff before commit (Step 5).`,
           workCwd: cwd,
@@ -233,7 +225,7 @@ export async function fanOutAdversarial(
           errorTail: errMsg,
         },
         branchEvent:
-          ids.length > 1
+          reviewIds.length > 1
             ? {
                 kind: "branch-completed",
                 step: "adversarial",
@@ -287,7 +279,7 @@ export async function fanOutAdversarial(
       ...capKillOutcomeFields(result),
       completionEvent,
       branchEvent:
-        ids.length > 1
+        reviewIds.length > 1
           ? {
               kind: "branch-completed",
               step: "adversarial",
@@ -303,14 +295,13 @@ export async function fanOutAdversarial(
   const isTransient = (o: AdversarialOutcome): boolean => isTransientAdversarialOutcome(o);
   const classify = (o: AdversarialOutcome) => classifyAdversarialOutcome(o);
 
-  // #486 — workstreams with a VERDICT on the prior pass are final and NOT
-  // re-run; their per-workstream events are re-emitted from the prior record
-  // so the log stays complete after the splice. First entry: everything.
-  // Re-entry: only the infra-failed ones re-run while their budget holds;
-  // #1114 also re-runs a workstream whose fix pass was applied since its
-  // routed review.
+  // #486 — VERDICT-holders from the prior pass are final and NOT re-run; their
+  // events are re-emitted from the prior record (the `outcomes` seed), so the log
+  // stays complete after the splice. First entry: everything. Re-entry: only the
+  // infra-failed ones re-run while their budget holds; #1114 also re-runs a
+  // workstream whose fix pass was applied since its routed review. The rest are survivors.
   const runSet = priorHadInfraFailure
-    ? ids.filter((id) => {
+    ? reviewIds.filter((id) => {
         const prev = priorOutcomes.get(id);
         const retryableInfra =
           (prev === "infra-failure" || prev === "dispatch-failed") &&
@@ -320,13 +311,13 @@ export async function fanOutAdversarial(
           prev === "fix-requested" && reviewTrack(state.eventLog, id).needsReview;
         return retryableInfra || fixedAwaitingReview;
       })
-    : workstreamsToReview(state, ids);
+    : workstreamsToReview(state, reviewIds);
   // #486 — workstreams with a FINAL verdict on an earlier invocation are not
   // re-run, and their per-workstream events are re-emitted from the prior
   // record (see the `outcomes` seed below), so the log stays complete after
   // the splice. A single-workstream cycle keeps no per-workstream outcome
   // event, so its approval is recovered from the rounds it already ran.
-  const survivorOutcomes = survivorsOf(state, ids, runSet, priorOutcomes);
+  const survivorOutcomes = survivorsOf(state, reviewIds, runSet, priorOutcomes);
   let toRun = [...runSet];
   // #486 — a first-pass workstream whose FINAL (merged) outcome has no
   // verdict and whose failure the in-step retry could not absorb is a
@@ -375,7 +366,7 @@ export async function fanOutAdversarial(
 
   for (;;) {
     const fresh = await Promise.all(toRun.map((id) => runOne(id)));
-    outcomes = mergeFreshOutcomes(outcomes, fresh, ids);
+    outcomes = mergeFreshOutcomes(outcomes, fresh, reviewIds);
 
     // #486 — a transient infra failure in ANY pass earns a bounded in-step
     // retry: the per-workstream budget (ADVERSARIAL_PER_WS_MAX_RETRIES)
@@ -446,13 +437,13 @@ export async function fanOutAdversarial(
       events.push({
         kind: "adversarial-round",
         at: recordsAt,
-        workstreamId: ids.length > 1 ? o.id : undefined,
+        workstreamId: reviewIds.length > 1 ? o.id : undefined,
         round: r.round,
         status: r.status,
         verdictParsed: r.verdictParsed,
       });
     }
-    if (ids.length > 1) {
+    if (reviewIds.length > 1) {
       const outcome = outcomeOf(o);
       events.push({
         kind: "adversarial-workstream-outcome",
@@ -467,16 +458,14 @@ export async function fanOutAdversarial(
     if (o.branchEvent) events.push(o.branchEvent);
   }
   // #485/#486 — true splice: the fresh batch REPLACES the previous pass's
-  // batch on re-entry (see `priorBatchSpan` above). On a first pass
-  // `priorBatchSpan` is null and `passStart` is the end of the log, so this
-  // degenerates to an append.
+  // batch on re-entry (see `priorBatchSpan`); first pass degenerates to an append.
   const passEnd = priorBatchSpan ? priorBatchSpan[1] : passStart;
   next = {
     ...next,
     eventLog: [...next.eventLog.slice(0, passStart), ...events, ...next.eventLog.slice(passEnd)],
   };
 
-  if (ids.length > 1) {
+  if (reviewIds.length > 1) {
     next = appendEvent(next, {
       kind: "branches-converged",
       step: "adversarial",
@@ -494,6 +483,6 @@ export async function fanOutAdversarial(
   return endStep(next, {
     outcomes,
     parked: false,
-    parkedInfra: !priorHadInfraFailure && ids.length > 1 && outcomes.some(exhaustedNoVerdict),
+    parkedInfra: !priorHadInfraFailure && reviewIds.length > 1 && outcomes.some(exhaustedNoVerdict),
   });
 }
