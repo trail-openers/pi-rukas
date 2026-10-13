@@ -164,7 +164,7 @@ export async function claimFileableDryRun(
       try {
         await fs.writeFile(
           markerOf(file),
-          JSON.stringify({ at: Date.now(), url, head: inputs.head }),
+          JSON.stringify({ at: Date.now(), url, keySha: inputs.keySha }),
         );
       } catch (err) {
         trace(
@@ -192,14 +192,14 @@ export async function concurrentFilingOf(
   const file = entryFile(cacheDir, inputs);
   const marker = await fs
     .readFile(markerOf(file), "utf8")
-    .then((t) => JSON.parse(t) as { at?: unknown; url?: unknown; head?: unknown })
+    .then((t) => JSON.parse(t) as { at?: unknown; url?: unknown; keySha?: unknown })
     .catch(() => undefined);
-  // A marker refuses only the HEAD it was written at: after HEAD moves, the
-  // identical confirm is a new plan and runs the pipeline (#1043 review).
+  // A marker refuses only the origin/<default> SHA it was written at: after it
+  // moves, the identical confirm is a new plan and runs the pipeline (#1043 review).
   if (
     marker &&
     typeof marker.at === "number" &&
-    marker.head === inputs.head &&
+    marker.keySha === inputs.keySha &&
     Math.abs(now - marker.at) <= RECENT_FILING_WINDOW_MS
   ) {
     return { url: typeof marker.url === "string" ? marker.url : undefined };

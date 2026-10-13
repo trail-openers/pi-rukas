@@ -49,6 +49,28 @@ export interface PlanResultFields {
   filedFromDryRun?: { ageMs: number };
 }
 
+/**
+ * Per-phase wall-clock record for one pipeline run (PlanResult.timings). Split
+ * out of plan-driver.ts along the 500-line seam (AGENTS.md \u00a712).
+ */
+export function phaseTimer() {
+  const timings: PlanPhaseTiming[] = [];
+  const pipelineStart = Date.now();
+  const timed = async <T>(phase: string, fn: () => Promise<T>): Promise<T> => {
+    const t0 = Date.now();
+    try {
+      return await fn();
+    } finally {
+      timings.push({ phase, ms: Date.now() - t0 });
+    }
+  };
+  const finishTimings = (): PlanPhaseTiming[] => {
+    const total = { phase: "total", ms: Date.now() - pipelineStart } as const;
+    return [...timings, total];
+  };
+  return { timed, finishTimings };
+}
+
 export function buildPlanResult(f: PlanResultFields): PlanResult {
   return {
     type: f.type,

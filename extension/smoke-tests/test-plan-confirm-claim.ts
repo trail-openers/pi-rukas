@@ -46,7 +46,7 @@ installForgeStub();
   await newPlanCache();
   installCountingDispatch(GAP_HIGH);
   const d = await pipeline({ dryRun: true });
-  const inputs = { descriptor: DESC, type: "feature" as const, head: cacheState.head };
+  const inputs = { descriptor: DESC, type: "feature" as const, keySha: cacheState.head };
   // Stamp a known past mtime: a claim-then-restore rewrites it (utimes on the
   // claim, then link back), so an untouched mtime proves the entry was never claimed.
   const [entryName] = await cacheFiles();
@@ -81,7 +81,7 @@ installForgeStub();
   await newPlanCache();
   installCountingDispatch([GAP_CRITICAL, "", ""]); // unreviewed after a corrective round: non-fileable
   await pipeline({ dryRun: true });
-  const inputs = { descriptor: DESC, type: "feature" as const, head: cacheState.head };
+  const inputs = { descriptor: DESC, type: "feature" as const, keySha: cacheState.head };
   assert(
     (await claimFileableDryRun(cacheState.dir, inputs)) === undefined &&
       !(await readdir(cacheState.dir)).some((f) => f.endsWith(".claim")),
@@ -95,7 +95,7 @@ installForgeStub();
   await newPlanCache();
   installCountingDispatch(GAP_HIGH);
   await pipeline({ dryRun: true });
-  const atHead = { descriptor: DESC, type: "feature" as const, head: cacheState.head };
+  const atHead = { descriptor: DESC, type: "feature" as const, keySha: cacheState.head };
   const won = await claimFileableDryRun(cacheState.dir, atHead);
   await won?.commit("https://example.test/issues/12");
   assert(
@@ -103,7 +103,7 @@ installForgeStub();
     "(10) the filed-marker refuses a re-confirm at the filed HEAD",
   );
   assert(
-    (await concurrentFilingOf(cacheState.dir, { ...atHead, head: "c".repeat(40) })) === undefined,
+    (await concurrentFilingOf(cacheState.dir, { ...atHead, keySha: "c".repeat(40) })) === undefined,
     "(10) the filed-marker does not refuse once HEAD has moved",
   );
 }

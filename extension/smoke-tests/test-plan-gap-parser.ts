@@ -30,11 +30,11 @@ import {
   renderPriorContext,
 } from "../src/plan-draft.ts";
 import { parseGapsForTest } from "../src/plan-driver.ts";
-import { parseGaps as parseGapsFromDriver } from "../src/plan-gaps.ts";
+import { parseGaps as parseGapsFromDriver } from "../src/plan-gap-parse.ts";
 // The gap-gate parsing logic lives in plan-gaps.ts (split from plan-driver.ts).
 // Bind under the original name so all call sites below stay unchanged.
 const parseGaps = parseGapsFromDriver;
-import { GAP_RESOLUTION_PLACEHOLDER } from "../src/plan-gaps.ts";
+import { GAP_RESOLUTION_PLACEHOLDER } from "../src/plan-gap-parse.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

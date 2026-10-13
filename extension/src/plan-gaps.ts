@@ -20,8 +20,9 @@
  *     the doctrine called non-blocking, and the fix was a policy terminal
  *     rule, not a findings filter): at the cap, zero CRITICAL gaps FILE
  *     the spec with the residual HIGH/MEDIUM/LOW gaps disclosed in a
- *     "## Residual gap-gate findings" section (D2); CRITICAL remains → do
- *     not file, surface to the operator. With CRITICAL-only blocking, a
+ *     "## Residual gap-gate findings" section (D2); CRITICAL remains → the
+ *     spec is still filed, with each open CRITICAL listed under "## Open
+ *     points" (#1132: the cap no longer refuses filing). With CRITICAL-only blocking, a
  *     ratcheting stream of fresh HIGH findings is structurally incapable of
  *     preventing filing — the findings travel, they are not deduped. The
  *     corrective round likewise fires only on CRITICAL: HIGH no longer
@@ -29,43 +30,22 @@
  *     identical input and "fix the gaps and re-run" is not a convergent
  *     strategy.
  */
-import { isOperatorInvestigationGap, isOperatorOperatorGap } from "./plan-draft-conflicts.ts";
-import {
-  GAP_RESOLUTION_PLACEHOLDER,
-  type GapGateParse,
-  type GapGateVerdict,
-  parseGaps,
-} from "./plan-gap-parse.ts";
+import { type GapGateParse, type GapGateVerdict, parseGaps } from "./plan-gap-parse.ts";
 import type { PlanGap } from "./plan-types.ts";
 import { trace } from "./trace.ts";
 
-// Re-exported so existing importers keep one import path (the parser and the renderers).
-export {
-  GAP_RESOLUTION_PLACEHOLDER,
-  type GapGateParse,
-  type GapGateVerdict,
-  parseGaps,
-} from "./plan-gap-parse.ts";
-export {
-  residualGapsSection,
-  settledGapsSection,
-  truncateForDisclosure,
-} from "./plan-gap-disclosure.ts";
-
 /**
- * #1132 (addendum 2026-10-13): an OPEN POINT is a CRITICAL gap the filed issue
- * must carry visibly at the iteration cap: one the gate gave no resolution for
- * (the placeholder), or an operator-vs-operator clash, which only the operator
- * can settle. A CRITICAL with a proposed resolution is not an open point: it
- * travels in the residual disclosure with that proposal.
+ * The gaps that block filing: CRITICAL only. #664 transposed — the
+ * terminal rule is a policy decision, not a findings filter: HIGH is the
+ * severity the gap gate is non-deterministic on (same descriptor, zero
+ * HIGH on one run, six the next), so letting HIGH block makes
+ * "fix the gaps and re-run" a non-convergent strategy. HIGH findings
+ * travel in the residual disclosure instead of blocking filing.
+ *
+ * #1132: any CRITICAL triggers the corrective re-draft, as before. No text
+ * heuristic decides which CRITICAL counts; at the iteration cap every one still
+ * open is listed as an open point in the filed body.
  */
-export function isOpenPointGap(g: PlanGap, operatorOperator = false): boolean {
-  return (
-    g.severity === "CRITICAL" && (operatorOperator || g.resolution === GAP_RESOLUTION_PLACEHOLDER)
-  );
-}
-
-/** The CRITICAL gaps: the corrective re-draft trigger (#664 terminal rule, unchanged). */
 export function blockingGaps(gaps: PlanGap[]): PlanGap[] {
   return gaps.filter((g) => g.severity === "CRITICAL");
 }
@@ -95,14 +75,6 @@ export function evaluateGapGate(parsed: GapGateParse, iterations: number, maxIte
   const corrective = iterations < maxIterations;
   return { ready: false, blocking, corrective, capHit: !corrective };
 }
-
-/**
- * #1132 (addendum): the iteration cap no longer prevents filing. At the cap
- * the spec is FILED, with the residual findings disclosed and any still-
- * blocking gaps listed as open points (plan-gap-disclosure.ts). The cap's
- * job is to make the unresolved points visible on the filed issue; the /work
- * intent gate decides later whether the issue is buildable.
- */
 
 // ---------------------------------------------------------------------------
 // runGapGateLoop — the Phase-4 gate loop, extracted from plan-driver.ts
@@ -134,13 +106,8 @@ export interface GapGateLoopResult {
   capHit: boolean;
   capReason?: GapGateLoopCapReason;
   residualForDisclosure: PlanGap[];
-  /** #1132: the still-blocking gaps at the cap, listed as open points in the filed body. */
+  /** #1132: the CRITICAL gaps still unresolved at the cap, listed as open points in the filed body. */
   openPoints: PlanGap[];
-  /**
-   * #1132: gaps that set an operator line against an investigation line.
-   * Discarded (they neither block nor cap); disclosed in the residual section.
-   */
-  discardedConflicts: PlanGap[];
   /**
    * The head of the raw reply that could not be parsed (review-unparseable
    * only) — a parse failure is a signal about the parser or the reviewer
@@ -185,7 +152,12 @@ export interface GapGateLoopResult {
 export type GapGateDispatch = (
   spec: { role: string; prompt: string },
   opts?: { label: string },
-) => Promise<{ ok: boolean; errorStop?: unknown; text: string; toolUses: unknown[] }>;
+) => Promise<{
+  ok: boolean;
+  errorStop?: unknown;
+  text: string;
+  toolUses: unknown[];
+}>;
 
 export async function runGapGateLoop(
   dispatch: GapGateDispatch,
@@ -196,11 +168,7 @@ export async function runGapGateLoop(
   makeGatePrompt: (iteration: number) => string,
   maxIterations: number,
   onCorrective: (blocking: PlanGap[]) => void,
-  // #1132: operator-authored and investigation-authored lines, so a gap that
-  // sets one against the other is discarded rather than capping the plan.
-  provenance?: { operatorLines: string[]; investigationLines: string[] },
 ): Promise<GapGateLoopResult> {
-  const discardedConflicts: PlanGap[] = [];
   let openPoints: PlanGap[] = [];
   let iterations = 0;
   let ready = false;
@@ -272,22 +240,6 @@ export async function runGapGateLoop(
         break;
       }
     }
-    if (provenance) {
-      const isConflict = (g: PlanGap) =>
-        isOperatorInvestigationGap(
-          g.description,
-          provenance.operatorLines,
-          provenance.investigationLines,
-        );
-      const conflicts = lastParse.gaps.filter(isConflict);
-      for (const g of conflicts) {
-        discardedConflicts.push(g);
-        trace(
-          `plan-gaps: discarded operator-vs-investigation gap (${g.description.slice(0, 120)})`,
-        );
-      }
-      lastParse = { ...lastParse, gaps: lastParse.gaps.filter((g) => !isConflict(g)) };
-    }
     lastGaps = lastParse.gaps;
 
     // Problem 2: accumulate non-blocking findings (CRITICAL travels via the
@@ -328,20 +280,13 @@ export async function runGapGateLoop(
       //     be a no-op (empty array, byte-identical body); go straight
       //     to the cap/file path.
       capHit = true;
-      // #1132: at the cap the still-open CRITICAL gaps split. Open points are listed
-      // in the filed body; a CRITICAL with a proposal joins the residual union.
-      const isOpen = (g: PlanGap) =>
-        isOpenPointGap(
-          g,
-          !!provenance && isOperatorOperatorGap(g.description, provenance.operatorLines),
-        );
-      openPoints = evald.blocking.filter(isOpen);
-      for (const g of evald.blocking) {
-        if (!isOpen(g) && !seenDescriptions.has(g.description)) {
-          seenDescriptions.add(g.description);
-          allNonBlocking.push({ ...g });
-        }
-      }
+      // D2 (#1132 addendum): the cap ROUTES, it does not only stop. The driver
+      // files the spec: every CRITICAL still unresolved here is an open point
+      // listed in the filed body (with its proposal, when the gate gave one), and
+      // the non-blocking findings travel as the residual disclosure. The cap's
+      // job is to make the unresolved points visible on the issue; the /work
+      // intent gate decides later whether the issue is buildable.
+      openPoints = evald.blocking;
       // D3: an ABSENT verdict on this terminal round is recorded HERE (it
       // used to be recorded post-loop, but the no-op round elimination made
       // that path unreachable: a zero-CRITICAL single round sets capHit=true
@@ -367,8 +312,7 @@ export async function runGapGateLoop(
 
   // Problem 2: the residual disclosure is the UNION of all non-blocking
   // findings across all rounds (deduped by exact description string).
-  // #1132: discarded conflicts are disclosed on every path, not only at the cap.
-  const residualForDisclosure = [...(capHit ? allNonBlocking : []), ...discardedConflicts];
+  const residualForDisclosure = capHit ? allNonBlocking : [];
 
   return {
     gaps: lastGaps,
@@ -376,7 +320,6 @@ export async function runGapGateLoop(
     capReason,
     residualForDisclosure,
     openPoints,
-    discardedConflicts,
     ...(rawUnparsedHead !== undefined ? { rawUnparsedHead } : {}),
   };
 }

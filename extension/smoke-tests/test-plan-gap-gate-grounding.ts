@@ -43,7 +43,8 @@ import type { Forge } from "../src/forge.ts";
 import { setPlanDispatch } from "../src/plan-driver.ts";
 import { runPlanPipeline } from "../src/plan-driver.ts";
 import { setPlanForge } from "../src/plan-filing.ts";
-import { parseGaps, runGapGateLoop } from "../src/plan-gaps.ts";
+import { parseGaps } from "../src/plan-gap-parse.ts";
+import { runGapGateLoop } from "../src/plan-gaps.ts";
 import { installNoPlanCacheStub, installOfflineVipuneStub } from "./plan-test-stubs.ts";
 
 let exit = 0;

@@ -10,17 +10,22 @@
  * discarded and disclosed, not counted toward the CRITICAL cap.
  *
  * Detection is deliberately lexical and conservative: two lines conflict when
- * they share at least two content tokens (the same topic) and exactly one of
+ * they share at least three content tokens (the same topic) and exactly one of
  * them carries a negation / exclusion cue (the opposite polarity). Operator
- * lines are never dropped; operator-vs-operator conflicts are never touched
- * (they still cap as before).
+ * lines are never dropped. This heuristic decides ONLY whether an investigation
+ * item is drafted: it never decides whether the gap gate blocks or files. A gate
+ * CRITICAL is handled by the gate loop (plan-gaps.ts), whatever its text.
  */
 
 import type { OperatorDirectives } from "./plan-directives.ts";
 import type { AngleFindings } from "./plan-draft.ts";
 
-/** Minimum shared content tokens for two lines to be about the same thing. */
-const MIN_SHARED_TOKENS = 2;
+/**
+ * Minimum shared content tokens for two lines to be about the same thing.
+ * Three, not two: a 401 line and a 429 line about one response shape share two
+ * tokens and carry opposite polarity, and must both survive (#1132 fixture).
+ */
+const MIN_SHARED_TOKENS = 3;
 
 const STOPWORDS = new Set([
   "the",
@@ -80,9 +85,13 @@ const STOPWORDS = new Set([
   "only",
 ]);
 
-/** Polarity cues: a line carrying one asserts the opposite of a line without. */
+/**
+ * Polarity cues: a line carrying one asserts the opposite of a line without.
+ * Whole words only: a hyphen or word character on either side disqualifies a
+ * match, so `no-op` and `not-applicable` are not negations (#1132).
+ */
 const NEGATION_CUE =
-  /\b(?:not|no|never|none|nothing|without|cannot|can't|don't|doesn't|must not|shall not|excluded?|absent|instead|rather than|forbidden|disallowed|prohibited)\b|n't\b/i;
+  /(?<![\w-])(?:not|no|never|none|nothing|without|cannot|can't|don't|doesn't|must not|shall not|excluded?|absent|instead|rather than|forbidden|disallowed|prohibited)(?![\w-])|n't(?![\w-])/i;
 
 /** Content tokens: lowercase words of length ≥ 3, stopwords removed. */
 export function contentTokens(text: string): Set<string> {
@@ -180,36 +189,6 @@ export function droppedDisclosure(d: DroppedInvestigationItem): string {
   return `- ${why} — [${item.angle} / ${item.kind}] ${item.text}`;
 }
 
-/**
- * A gap-gate finding that sets an operator-authored line against an
- * investigation-authored line. Both sides must be matched; a gap that only
- * touches operator lines (an operator-vs-operator conflict) is NOT one of
- * these and keeps capping.
- */
-export function isOperatorInvestigationGap(
-  gapText: string,
-  operatorLines: string[],
-  investigationLines: string[],
-): boolean {
-  const opHit = operatorLines.some((o) => sharedTokenCount(o, gapText) >= MIN_SHARED_TOKENS);
-  const invHit = investigationLines.some((i) => sharedTokenCount(i, gapText) >= MIN_SHARED_TOKENS);
-  // An operator-vs-operator contradiction is never this rule's to discard.
-  return opHit && invHit && !isOperatorOperatorGap(gapText, operatorLines);
-}
-
-/**
- * A gap that sets two operator-authored lines against each other (#1132: an
- * operator-vs-operator contradiction still blocks, whatever resolution it
- * proposes, because only the operator can settle it).
- */
-export function isOperatorOperatorGap(gapText: string, operatorLines: string[]): boolean {
-  const opMatches = operatorLines.filter((o) => sharedTokenCount(o, gapText) >= MIN_SHARED_TOKENS);
-  for (let i = 0; i < opMatches.length; i++)
-    for (let j = i + 1; j < opMatches.length; j++)
-      if (linesConflict(opMatches[i] ?? "", opMatches[j] ?? "")) return true;
-  return false;
-}
-
 /** Investigation kinds an operator line can contradict (#1132). */
 const CONFLICTABLE_KINDS = new Set([
   "edge-case",
@@ -235,21 +214,6 @@ export function operatorLinesOf(
 /** The investigation-authored candidate items this rule may drop. */
 function conflictableItems(findings: AngleFindings[]) {
   return findings.flatMap((f) => f.toolUses.filter((i) => CONFLICTABLE_KINDS.has(i.kind)));
-}
-
-/**
- * #1132: the provenance the gap gate needs to discard a reviewer-reported
- * operator-vs-investigation conflict (plan-gaps.ts runGapGateLoop).
- */
-export function gateProvenance(
-  findings: AngleFindings[],
-  directives: OperatorDirectives,
-  priorContext: { source: string; fact: string }[],
-): { operatorLines: string[]; investigationLines: string[] } {
-  return {
-    operatorLines: operatorLinesOf(directives, priorContext),
-    investigationLines: conflictableItems(findings).map((i) => i.text),
-  };
 }
 
 /**

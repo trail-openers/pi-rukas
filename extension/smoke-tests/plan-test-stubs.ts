@@ -237,7 +237,7 @@ export async function newPlanCache(prefix = "plan-cache-"): Promise<void> {
   cacheState.dir = await mkdtemp(path.join(os.tmpdir(), prefix));
   tmpCacheDirs.push(cacheState.dir);
   cacheState.head = "a".repeat(40);
-  setPlanGitStateFn(async () => ({ head: cacheState.head, cacheDir: cacheState.dir }));
+  setPlanGitStateFn(async () => ({ keySha: cacheState.head, cacheDir: cacheState.dir }));
   forgeStub.created.length = 0;
   forgeStub.mode = "ok";
 }

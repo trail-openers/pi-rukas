@@ -40,7 +40,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { fetchOriginBase } from "./plan-base-tree.ts";
+import type { PlanBase } from "./plan-base-tree.ts";
 import type { MechanicalInventory } from "./plan-draft.ts";
 import type { InvestigationResult } from "./plan-investigate.ts";
 import { assemblePriorContext } from "./plan-prior-context-assembly.ts";
@@ -63,7 +63,8 @@ export interface CacheInputs {
   descriptor: string;
   context?: string;
   type: PlanType;
-  head: string;
+  /** origin/<default> when the run read it (#1132), else local HEAD. */
+  keySha: string;
   /** Resolved epic recursion depth (`input.depth ?? 0`): it changes drafting and validation. */
   depth?: number;
 }
@@ -98,14 +99,12 @@ export interface InvestigationCacheEntry extends CachedInvestigation {
 }
 
 export interface PlanGitState {
-  /** The cache key: origin/<default> when resolvable (#1132), else local HEAD. */
-  head: string;
+  /** The cache key: origin/<default> when the run read it (#1132), else local HEAD. */
+  keySha: string;
   cacheDir: string;
-  /** origin/<default> after the driver's one fetch — what investigators read (plan-base-tree.ts). */
-  baseSha?: string;
 }
 
-type GitStateFn = (repoRoot: string) => Promise<PlanGitState | undefined>;
+type GitStateFn = (repoRoot: string, base: PlanBase) => Promise<PlanGitState | undefined>;
 
 let _gitStateOverride: GitStateFn | null = null;
 
@@ -119,11 +118,22 @@ export function setPlanGitStateFn(fn: GitStateFn | null): void {
  * example an unborn branch) — caching is then skipped and the run proceeds
  * exactly as it did before this module existed.
  */
-export async function resolvePlanGitState(repoRoot: string): Promise<PlanGitState | undefined> {
-  if (_gitStateOverride) return _gitStateOverride(repoRoot);
+export async function resolvePlanGitState(
+  repoRoot: string,
+  base: PlanBase,
+): Promise<PlanGitState | undefined> {
+  if (_gitStateOverride) return _gitStateOverride(repoRoot, base);
   // PI_ENSEMBLE_PLAN_CACHE=0 (set by smoke-tests/lib/verify-loop.sh): no real
   // lookup, so a test without an explicit stub cannot touch the real clone's cache.
   if (process.env.PI_ENSEMBLE_PLAN_CACHE === "0") return undefined;
+  // #1132: a run whose origin/<default> read failed has no origin key to use or
+  // write, so it neither reads nor writes the cache (the local checkout is not keyed).
+  if (base.baseFallback) {
+    trace(
+      `plan-investigation-cache: base fallback (${base.baseFallback}) — cache skipped for this run`,
+    );
+    return undefined;
+  }
   try {
     const { stdout } = await execFileP(
       "git",
@@ -132,11 +142,9 @@ export async function resolvePlanGitState(repoRoot: string): Promise<PlanGitStat
     );
     const [commonDir, head] = stdout.trim().split("\n");
     if (!commonDir || !head) return undefined;
-    const baseSha = await fetchOriginBase(repoRoot);
     return {
-      head: baseSha ?? head,
+      keySha: base.baseSha ?? head,
       cacheDir: path.join(commonDir, "pi-plan-cache"),
-      ...(baseSha ? { baseSha } : {}),
     };
   } catch (err) {
     trace(
@@ -154,18 +162,18 @@ const digest = (parts: unknown[]): string =>
  * the lineage: a sub-issue drafted at depth 3 is a different plan from the same
  * descriptor at depth 0, so a confirm must never file the other one's spec.
  */
-function lineageOf(i: Omit<CacheInputs, "head">): string {
+function lineageOf(i: Omit<CacheInputs, "keySha">): string {
   // `?? null` keeps an absent context (undefined) distinct from "" and " ".
   return digest(["plan-lineage-v1", i.descriptor.trim(), i.context ?? null, i.type, i.depth ?? 0]);
 }
 
 /** Full cache key: the lineage plus git HEAD. */
 export function investigationCacheKey(i: CacheInputs): string {
-  return digest(["plan-investigation-v1", lineageOf(i), i.head]);
+  return digest(["plan-investigation-v1", lineageOf(i), i.keySha]);
 }
 
 /** The entry file for one lineage (exported for the claim protocol, plan-filing-claim.ts). */
-export function entryFile(cacheDir: string, i: Omit<CacheInputs, "head">): string {
+export function entryFile(cacheDir: string, i: Omit<CacheInputs, "keySha">): string {
   return path.join(cacheDir, `${lineageOf(i)}.json`);
 }
 
@@ -262,7 +270,7 @@ export async function readEntryAt(file: string): Promise<InvestigationCacheEntry
 
 function readEntry(
   cacheDir: string,
-  i: Omit<CacheInputs, "head">,
+  i: Omit<CacheInputs, "keySha">,
 ): Promise<InvestigationCacheEntry | undefined> {
   return readEntryAt(entryFile(cacheDir, i));
 }

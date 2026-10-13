@@ -4,6 +4,7 @@
  * gate prompt (#1043, D2). Split out of plan-gaps.ts (500-line hard limit,
  * AGENTS.md §12); plan-gaps.ts re-exports these names.
  */
+import { GAP_RESOLUTION_PLACEHOLDER } from "./plan-gap-parse.ts";
 import type { PlanGap } from "./plan-types.ts";
 
 /**
@@ -40,16 +41,23 @@ export function residualGapsSection(residual: PlanGap[]): string {
 }
 
 /**
- * #1132: the open points of a spec filed at the gate's iteration cap: the
- * still-blocking gaps (CRITICAL with no proposed resolution), so the unresolved
- * points are visible on the issue rather than blocking its filing.
+ * #1132: the open points of a spec filed at the gate's iteration cap: every
+ * CRITICAL still unresolved at the cap, each with the gate's proposal when it
+ * gave one, so the unresolved points are visible on the issue rather than
+ * blocking its filing.
  */
 export function openPointsSection(points: PlanGap[]): string {
   if (points.length === 0) return "";
   const items = points
-    .map((g) => `- [${g.severity}] ${truncateForDisclosure(g.description)}`)
+    .map((g) => {
+      const proposal =
+        g.resolution === GAP_RESOLUTION_PLACEHOLDER
+          ? "no proposed resolution"
+          : `proposed: ${truncateForDisclosure(g.resolution)}`;
+      return `- [${g.severity}] ${truncateForDisclosure(g.description)} — ${proposal}`;
+    })
     .join("\n");
-  return `## Open points (unresolved at the gap-gate cap)\n\nThe gap gate reached its iteration cap with these points still blocking and no proposed resolution. The issue is filed so they are visible; the /work intent gate decides whether it is buildable.\n\n${items}\n`;
+  return `## Open points (unresolved at the gap-gate cap)\n\nThe gap gate reached its iteration cap with these CRITICAL points still unresolved. The issue is filed so they are visible; the /work intent gate decides whether it is buildable.\n\n${items}\n`;
 }
 
 /**

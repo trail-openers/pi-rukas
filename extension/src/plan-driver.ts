@@ -24,15 +24,15 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { dispatchCore } from "./dispatch.ts";
-import { planReadRoot } from "./plan-base-tree.ts";
+import { type PlanBase, withPlanBase } from "./plan-base-tree.ts";
 import { confirmVerbatim, settlePlanCache } from "./plan-confirm.ts";
-import { gateProvenance } from "./plan-draft-conflicts.ts";
 import { codeIdentifiersIn, draftSpec, mechanicalInventory } from "./plan-draft.ts";
 import {
   allAnglesFailedHalt,
   buildPlanResult,
   correctiveRedraftError,
   haltResult,
+  phaseTimer,
 } from "./plan-driver-halt.ts";
 import {
   type PlanDispatchFn,
@@ -41,7 +41,8 @@ import {
 } from "./plan-driver-seams.ts";
 import { reviewedDigestOf } from "./plan-filing-claim.ts";
 import { openPointsSection, residualGapsSection } from "./plan-gap-disclosure.ts";
-import { type GapGateLoopResult, runGapGateLoop, settledGapsSection } from "./plan-gaps.ts";
+import { settledGapsSection } from "./plan-gap-disclosure.ts";
+import { type GapGateLoopResult, runGapGateLoop } from "./plan-gaps.ts";
 import { type CarriedCritical, gapGatePrompt, gapGateVerifyPrompt } from "./plan-gate-prompt.ts";
 import {
   type InvestigationResult,
@@ -61,7 +62,6 @@ import { assemblePriorContext } from "./plan-prior-context-assembly.ts";
 import {
   type PlanDriverInput,
   type PlanGap,
-  type PlanPhaseTiming,
   type PlanResult,
   classifyPlanType,
   planTitle,
@@ -90,33 +90,33 @@ export async function runPlanPipeline(
   input: PlanDriverInput,
   repoRoot: string,
 ): Promise<PlanResult> {
+  // #1132: one origin fetch per run; the base tree is removed when the run ends.
+  return withPlanBase(repoRoot, async (base) => {
+    const result = await runPipelineOn(pi, input, repoRoot, base);
+    return base.baseFallback ? { ...result, baseFallback: base.baseFallback } : result;
+  });
+}
+
+async function runPipelineOn(
+  pi: ExtensionAPI,
+  input: PlanDriverInput,
+  repoRoot: string,
+  base: PlanBase,
+): Promise<PlanResult> {
   const dispatch: PlanDispatchFn = getPlanDispatchOverride() ?? dispatchCore;
   const { descriptor, context, dryRun } = input;
   const type = classifyPlanType(descriptor, input.type);
   const depth = input.depth ?? 0;
 
   // Per-phase wall-clock record (research next-step #1: measure, then cut).
-  const timings: PlanPhaseTiming[] = [];
-  const pipelineStart = Date.now();
-  const timed = async <T>(phase: string, fn: () => Promise<T>): Promise<T> => {
-    const t0 = Date.now();
-    try {
-      return await fn();
-    } finally {
-      timings.push({ phase, ms: Date.now() - t0 });
-    }
-  };
-  const finishTimings = (): PlanPhaseTiming[] => {
-    const total = { phase: "total", ms: Date.now() - pipelineStart } as const;
-    return [...timings, total];
-  };
+  const { timed, finishTimings } = phaseTimer();
 
   // #1043 — the cache lineage at git HEAD. A dry run never READS the investigation
   // cache (it is the thing confirmed); it DROPS the lineage first, so a halting dry
   // run leaves no fileable verdict. Its settled gaps are read before the drop.
-  const gitState = await resolvePlanGitState(repoRoot);
+  const gitState = await resolvePlanGitState(repoRoot, base);
   const cacheInputs = gitState
-    ? { descriptor, context, type, head: gitState.head, depth }
+    ? { descriptor, context, type, keySha: gitState.keySha, depth }
     : undefined;
   const settled: PlanGap[] =
     gitState && cacheInputs ? await readSettledGaps(gitState.cacheDir, cacheInputs) : [];
@@ -160,7 +160,7 @@ export async function runPlanPipeline(
 
   // #1132: investigators and the inventory read origin/<default> (one fetch per run),
   // never the working tree; the cache key above uses the same SHA.
-  const readRoot = await planReadRoot(repoRoot, gitState);
+  const readRoot = base.readRoot;
   const inv = reused
     ? reused.cached.inventory
     : await timed("inventory", () => mechanicalInventory(readRoot, descriptor));
@@ -400,7 +400,6 @@ export async function runPlanPipeline(
             throw correctiveRedraftError(computed, writtenOutcomes, e);
           }
         },
-        gateProvenance(findings, directives, priorContext),
       ),
     );
     gaps = loopResult.gaps;

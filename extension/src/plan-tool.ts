@@ -39,7 +39,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { runPlanPipeline } from "./plan-driver.ts";
-import { truncateForDisclosure } from "./plan-gaps.ts";
+import { truncateForDisclosure } from "./plan-gap-disclosure.ts";
 import type { PlanResult } from "./plan-types.ts";
 import { trace } from "./trace.ts";
 import { resolveRepoRoot } from "./work-entry.ts";
@@ -204,8 +204,7 @@ function renderPlanResult(r: PlanResult, dryRun: boolean): string {
       .map((g) => `[${g.severity}] ${truncateForDisclosure(g.description)}`)
       .join(", ");
     if (r.capReason === "unresolved-blocking") {
-      cap =
-        "\n\nGAP GATE CAP HIT: after the iteration cap, unresolved CRITICAL gaps remain. They are listed below and must be resolved with the operator before /work. (HIGH findings no longer block filing — they travel in the residual disclosure instead; only CRITICAL stops the gate.)";
+      cap = `\n\nGAP GATE CAP HIT: after the iteration cap, unresolved CRITICAL gaps remain (listed under GAP DISPOSITIONS). ${r.filed ? "The spec was FILED with them under '## Open points' in the issue body; the /work intent gate decides whether the issue is buildable." : "Nothing was filed (dry run): a confirmed run files them under '## Open points'."}`;
     } else if (r.capReason === "residual-high") {
       cap = `\n\nGAP GATE CAP HIT: the reviewer returned HIGH findings alongside MEDIUM/LOW items (${residual}); with no CRITICAL gap the spec is FILED with the residual findings disclosed in the issue body (see '## Residual gap-gate findings'). HIGH findings travel in that disclosure — the terminal rule is CRITICAL-only.`;
     } else if (r.capReason === "residual-medium-low") {
@@ -232,7 +231,6 @@ function renderPlanResult(r: PlanResult, dryRun: boolean): string {
   if (!r.filed && r.filingFailure) {
     const f = r.filingFailure;
     if (
-      f.reason === "cap-surface" ||
       f.reason === "gate-unavailable" ||
       f.reason === "needs-clarification" ||
       f.reason === "draft-invalid" ||
@@ -261,6 +259,9 @@ function renderPlanResult(r: PlanResult, dryRun: boolean): string {
   const reusedNote = r.investigationReused
     ? `\n\n=== INVESTIGATION REUSED ===\nThe duplicate-risk and angle investigation (and the inventory) was reused from the confirmed dry run ${fmtMs(r.investigationReused.ageMs)} ago — the descriptor, context, type and git HEAD are unchanged. The working tree was NOT compared: uncommitted edits made after the dry run are not reflected in the reused investigation. Drafting, validation and the gap gate re-ran.`
     : "";
+  const baseNote = r.baseFallback
+    ? `\n\n=== BASE FALLBACK ===\nInvestigators read the local checkout, not origin/<default>: ${r.baseFallback}. The investigation cache was not used for this run.`
+    : "";
   const compactedNote = r.compacted
     ? "\n\nCOMPACTED: the body was deterministically compacted to fit the forge's 65,536-char limit (a disclosure line inside the body says how; full findings live in the run transcripts)."
     : "";
@@ -280,7 +281,7 @@ ${r.spec}
 ${gaps}
 
 === PRIOR CONTEXT ATTRIBUTION ===
-${prior}${reusedNote}${investigation}${cap}${filingStatus}${compactedNote}${timingsLine}`;
+${prior}${reusedNote}${investigation}${baseNote}${cap}${filingStatus}${compactedNote}${timingsLine}`;
 }
 
 /** Human-readable duration: sub-minute in seconds, else m+s. */

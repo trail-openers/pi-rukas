@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
 /**
  * #1132 addendum (blocking rule + cap routing) — the gate loop's split at the
- * iteration cap. A CRITICAL with the placeholder resolution, or an operator-vs-
- * operator clash, is an OPEN POINT (listed in the filed body). A CRITICAL with a
- * proposed resolution is NOT an open point: it travels in the residual section
- * with its proposal. Neither refuses filing (filing is decided by the driver).
+ * iteration cap. Every CRITICAL still unresolved at the cap is an OPEN POINT,
+ * listed in the filed body with the gate's proposal when it gave one. Nothing
+ * CRITICAL is demoted to the residual section, and no text heuristic decides
+ * which CRITICAL counts. The cap files the spec; the driver decides filing.
  */
 
 import { openPointsSection, residualGapsSection } from "../src/plan-gap-disclosure.ts";
@@ -33,7 +33,8 @@ const PROPOSED =
   "GAP: CRITICAL the retry cap contradicts the quota rule — proposed resolution: name the winner — resolution-type: concrete\nVERDICT: NEEDS_ITERATION";
 const OPEN = "GAP: CRITICAL the retry cap contradicts the quota rule\nVERDICT: NEEDS_ITERATION";
 
-// 1. A CRITICAL with a proposal is not an open point at the cap: residual, not open points.
+// 1. A CRITICAL with a proposal is still an open point at the cap, shown with
+//    its proposal, and is not repeated in the residual section.
 {
   const r = await runGapGateLoop(
     replies(PROPOSED, PROPOSED),
@@ -45,12 +46,14 @@ const OPEN = "GAP: CRITICAL the retry cap contradicts the quota rule\nVERDICT: N
     r.capHit && r.capReason === "unresolved-blocking",
     "proposal CRITICAL: the cap is reached",
   );
-  assert(r.openPoints.length === 0, "proposal CRITICAL: NOT an open point");
+  assert(r.openPoints.length === 1, "proposal CRITICAL: an open point at the cap");
   assert(
-    r.residualForDisclosure.some(
-      (g) => g.severity === "CRITICAL" && g.resolution === "name the winner",
-    ),
-    "proposal CRITICAL: disclosed in the residual with its proposal",
+    openPointsSection(r.openPoints).includes("proposed: name the winner"),
+    "proposal CRITICAL: the open point carries the gate's proposal",
+  );
+  assert(
+    !residualGapsSection(r.residualForDisclosure).includes("retry cap contradicts"),
+    "proposal CRITICAL: not repeated in the residual section",
   );
 }
 
@@ -68,14 +71,17 @@ const OPEN = "GAP: CRITICAL the retry cap contradicts the quota rule\nVERDICT: N
     "placeholder CRITICAL: not repeated in the residual",
   );
   assert(
+    openPointsSection(r.openPoints).includes("no proposed resolution"),
+    "placeholder CRITICAL: the open point says no resolution was proposed",
+  );
+  assert(
     openPointsSection(r.openPoints).startsWith("## Open points (unresolved at the gap-gate cap)"),
     "open points render under the marked heading",
   );
 }
 
-// 3. An operator-vs-operator CRITICAL still caps: open point even with a proposal.
+// 3. An operator-vs-operator CRITICAL is an open point at the cap, like any other.
 {
-  const op = ["do not change protectedPathsIn for any caller"];
   const conflict =
     "GAP: CRITICAL do not change protectedPathsIn for any caller versus a caller must change protectedPathsIn — proposed resolution: pick one — resolution-type: operator-decision\nVERDICT: NEEDS_ITERATION";
   const r = await runGapGateLoop(
@@ -83,37 +89,26 @@ const OPEN = "GAP: CRITICAL the retry cap contradicts the quota rule\nVERDICT: N
     () => "P",
     2,
     () => {},
-    {
-      operatorLines: [...op, "a caller must change protectedPathsIn for every run"],
-      investigationLines: [],
-    },
   );
-  assert(
-    r.openPoints.length === 1,
-    "operator-vs-operator CRITICAL: still an open point at the cap",
-  );
+  assert(r.openPoints.length === 1, "operator-vs-operator CRITICAL: an open point at the cap");
 }
 
-// 4. A discarded operator-vs-investigation conflict is disclosed even when the gate is READY.
+// 4. The gate's proposal for a CRITICAL is shown with the open point, so the
+//    operator sees what the gate offered next to what is unresolved.
 {
-  const conflict =
-    "GAP: CRITICAL every caller keeps protectedPathsIn unchanged versus callers thread a per-cycle set through protectedPathsIn — proposed resolution: pick one\nVERDICT: NEEDS_ITERATION";
   const r = await runGapGateLoop(
-    replies(conflict),
+    replies(
+      "GAP: CRITICAL the retry cap is 3 contradicts the retry cap is 5 — proposed resolution: keep 3\nVERDICT: NEEDS_ITERATION",
+    ),
     () => "P",
-    2,
+    1,
     () => {},
-    {
-      operatorLines: ["every caller keeps protectedPathsIn unchanged"],
-      investigationLines: ["callers thread a per-cycle set through protectedPathsIn"],
-    },
   );
-  assert(r.discardedConflicts.length === 1, "discard: the conflict is recorded");
+  assert(r.openPoints.length === 1, "single round at the cap: the CRITICAL is an open point");
   assert(
-    residualGapsSection(r.residualForDisclosure).includes("per-cycle set"),
-    "discard: the conflict is disclosed in the residual section on every path",
+    openPointsSection(r.openPoints).includes("proposed: keep 3"),
+    "single round at the cap: the open point shows the proposal",
   );
-  assert(r.openPoints.length === 0 && r.gaps.length === 0, "discard: it neither blocks nor caps");
 }
 
 // 5. A silent reviewer with a CRITICAL proposal does not pass as READY.

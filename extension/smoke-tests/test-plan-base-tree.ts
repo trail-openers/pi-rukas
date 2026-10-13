@@ -4,8 +4,10 @@
  * working tree; the investigation cache key uses that SHA.
  *
  * Real git, in temp dirs: a bare origin, a clone whose working tree is dirty
- * and stale. Asserts: the base tree carries the committed origin content; the
- * cache key moves when origin moves; a missing origin fails open.
+ * and stale. Asserts: one fetch yields a per-run base tree with the committed
+ * origin content; the tree is removed at release; the cache key moves when
+ * origin moves; a dead owner's tree is pruned while a live run's is kept; and
+ * every failure falls back to the checkout with a recorded reason.
  */
 
 import { execFile } from "node:child_process";
@@ -13,12 +15,17 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { fetchOriginBase, planReadRoot } from "../src/plan-base-tree.ts";
+import { type PlanBase, openPlanBase } from "../src/plan-base-tree.ts";
 import { resolvePlanGitState, setPlanGitStateFn } from "../src/plan-investigation-cache.ts";
 
 const execFileP = promisify(execFile);
 const git = async (cwd: string, args: string[]) =>
   (await execFileP("git", ["-C", cwd, ...args], { timeout: 60_000 })).stdout.trim();
+const exists = (p: string) =>
+  fs.access(p).then(
+    () => true,
+    () => false,
+  );
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -34,6 +41,7 @@ const root = await fs.mkdtemp(path.join(os.tmpdir(), "plan-base-tree-"));
 process.env.PI_ENSEMBLE_PLAN_CACHE = "1";
 setPlanGitStateFn(null);
 
+const held: PlanBase[] = [];
 try {
   const bare = path.join(root, "origin.git");
   const seed = path.join(root, "seed");
@@ -48,7 +56,7 @@ try {
   await git(seed, ["remote", "add", "origin", bare]);
   await git(seed, ["push", "-q", "origin", "main"]);
   await execFileP("git", ["clone", "-q", bare, clone]);
-  // The clone's remote HEAD must name the default branch (what detectMainline reads).
+  // The clone's remote HEAD must name the default branch (what the base reads).
   await git(clone, ["remote", "set-head", "origin", "main"]);
 
   // Dirty and stale: an uncommitted edit, and a local commit origin does not have.
@@ -58,53 +66,86 @@ try {
   await git(clone, [...cfg, "commit", "-m", "local only"]);
 
   const originV1 = await git(bare, ["rev-parse", "main"]);
-  const baseSha = await fetchOriginBase(clone);
-  assert(baseSha === originV1, "fetchOriginBase resolves origin/<default>, not the local HEAD");
-
-  const state = await resolvePlanGitState(clone);
-  assert(state?.head === originV1, "the cache key is the origin/<default> SHA");
-  assert(state?.baseSha === originV1, "the run records the base SHA investigators read");
-
-  const readRoot = await planReadRoot(clone, state);
-  assert(readRoot !== clone, "investigators read a base tree, not the local checkout");
+  const base1 = await openPlanBase(clone);
+  held.push(base1);
+  assert(base1.baseSha === originV1, "one fetch resolves origin/<default>, not the local HEAD");
+  assert(base1.baseFallback === undefined, "a clean fetch records no fallback");
+  assert(base1.readRoot !== clone, "investigators read a base tree, not the local checkout");
   assert(
-    (await fs.readFile(path.join(readRoot, "policy.txt"), "utf8")) === "committed v1\n",
+    (await fs.readFile(path.join(base1.readRoot, "policy.txt"), "utf8")) === "committed v1\n",
     "the base tree carries the committed origin content, not the dirty edit",
   );
-  let staleVisible = true;
-  try {
-    await fs.access(path.join(readRoot, "local-only.txt"));
-  } catch {
-    staleVisible = false;
-  }
-  assert(!staleVisible, "the stale local-only commit is not visible to investigators");
   assert(
-    (await planReadRoot(clone, state)) === readRoot,
-    "a second call with the same origin SHA reuses the base tree",
+    !(await exists(path.join(base1.readRoot, "local-only.txt"))),
+    "the stale local-only commit is not visible to investigators",
   );
 
-  // Origin moves: the key moves, and the base tree is replaced (only one is kept).
+  const state = await resolvePlanGitState(clone, base1);
+  assert(state?.keySha === originV1, "the cache key is the origin/<default> SHA");
+
+  // Origin moves: a new run gets a new base; the first run's tree is still live.
   await fs.writeFile(path.join(seed, "policy.txt"), "committed v2\n");
   await git(seed, [...cfg, "add", "-A"]);
   await git(seed, [...cfg, "commit", "-m", "v2"]);
   await git(seed, ["push", "-q", "origin", "main"]);
-  const state2 = await resolvePlanGitState(clone);
+  const base2 = await openPlanBase(clone);
+  held.push(base2);
+  const state2 = await resolvePlanGitState(clone, base2);
   assert(
-    state2?.head !== undefined && state2.head !== state.head,
+    state2?.keySha !== undefined && state2.keySha !== state?.keySha,
     "the cache key changes when origin/<default> moves",
   );
-  const readRoot2 = await planReadRoot(clone, state2);
   assert(
-    (await fs.readFile(path.join(readRoot2, "policy.txt"), "utf8")) === "committed v2\n",
-    "after origin moves the base tree carries the new content",
+    (await fs.readFile(path.join(base2.readRoot, "policy.txt"), "utf8")) === "committed v2\n",
+    "after origin moves the new base tree carries the new content",
   );
-  let oldKept = true;
-  try {
-    await fs.access(readRoot);
-  } catch {
-    oldKept = false;
-  }
-  assert(!oldKept, "the superseded base tree is retired");
+  assert(
+    await exists(path.join(base1.readRoot, "policy.txt")),
+    "a live run's base tree is not retired by another run",
+  );
+
+  // Release removes this run's tree and only this run's.
+  await base1.release();
+  assert(!(await exists(base1.readRoot)), "release removes the run's own base tree");
+  assert(await exists(base2.readRoot), "release leaves the other run's tree in place");
+  await base2.release();
+  assert(!(await exists(base2.readRoot)), "release of the second run removes its tree");
+
+  // A tree whose owning process is dead is pruned on the next run.
+  const baseRoot = path.join(clone, ".git", "pi-plan-base");
+  const orphan = path.join(baseRoot, `${originV1}.2147483640.deadbeef`);
+  await fs.mkdir(orphan, { recursive: true });
+  await fs.writeFile(path.join(orphan, "marker"), "dead owner\n");
+  const base3 = await openPlanBase(clone);
+  held.push(base3);
+  assert(!(await exists(orphan)), "a dead owner's base tree is pruned");
+
+  // Fail open, reason recorded: an option-like default branch name is refused.
+  await git(clone, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/-bad"]);
+  const badName = await openPlanBase(clone);
+  assert(
+    badName.readRoot === clone && (badName.baseFallback ?? "").includes("-bad"),
+    "a default branch named '-bad' is refused and the run reads the checkout",
+  );
+  assert(
+    (await resolvePlanGitState(clone, badName)) === undefined,
+    "a base fallback skips the investigation cache for the run",
+  );
+  await git(clone, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+
+  // Fail open, reason recorded: a failed fetch reads the checkout (not the last fetched ref).
+  await git(clone, ["remote", "set-url", "origin", path.join(root, "missing.git")]);
+  const failedFetch = await openPlanBase(clone);
+  assert(
+    failedFetch.readRoot === clone &&
+      (failedFetch.baseFallback ?? "").includes("fetch origin main failed"),
+    "a failed fetch reads the checkout and records why",
+  );
+  assert(
+    (await resolvePlanGitState(clone, failedFetch)) === undefined,
+    "a failed fetch skips the investigation cache (no origin key for the run)",
+  );
+  await git(clone, ["remote", "set-url", "origin", bare]);
 
   // Fail open: a repo with no origin/HEAD resolves no base and reads the checkout.
   const solo = path.join(root, "solo");
@@ -112,17 +153,19 @@ try {
   await fs.writeFile(path.join(solo, "a.txt"), "x\n");
   await git(solo, [...cfg, "add", "-A"]);
   await git(solo, [...cfg, "commit", "-m", "init"]);
-  assert((await fetchOriginBase(solo)) === undefined, "no origin: no base SHA");
-  const soloState = await resolvePlanGitState(solo);
+  const soloBase = await openPlanBase(solo);
   assert(
-    soloState?.baseSha === undefined && soloState?.head !== undefined,
-    "no origin: the cache keys on local HEAD and the run reads the checkout",
+    soloBase.baseSha === undefined && soloBase.baseFallback === undefined,
+    "no origin: no base SHA and no fallback reason",
   );
+  assert(soloBase.readRoot === solo, "no origin: investigators read the checkout");
+  const soloState = await resolvePlanGitState(solo, soloBase);
   assert(
-    (await planReadRoot(solo, soloState)) === solo,
-    "no origin: investigators read the checkout",
+    soloState?.keySha !== undefined && soloState.keySha.length === 40,
+    "no origin: the cache keys on local HEAD",
   );
 } finally {
+  for (const b of held) await b.release();
   setPlanGitStateFn(null);
   await fs.rm(root, { recursive: true, force: true });
 }

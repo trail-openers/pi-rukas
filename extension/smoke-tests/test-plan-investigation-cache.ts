@@ -58,22 +58,26 @@ installForgeStub();
 {
   const prior = process.env.PI_ENSEMBLE_PLAN_CACHE;
   process.env.PI_ENSEMBLE_PLAN_CACHE = "0";
-  const off = await resolvePlanGitState(REPO);
+  const localBase = { readRoot: REPO, release: async () => undefined };
+  const off = await resolvePlanGitState(REPO, localBase);
   delete process.env.PI_ENSEMBLE_PLAN_CACHE;
-  const on = await resolvePlanGitState(REPO);
+  const on = await resolvePlanGitState(REPO, localBase);
   if (prior === undefined) delete process.env.PI_ENSEMBLE_PLAN_CACHE;
   else process.env.PI_ENSEMBLE_PLAN_CACHE = prior;
   assert(off === undefined, "canary: PI_ENSEMBLE_PLAN_CACHE=0 disables the real git-state lookup");
-  assert(on !== undefined && on.head.length > 0, "canary: unset, the real lookup resolves HEAD");
+  assert(on !== undefined && on.keySha.length > 0, "canary: unset, the real lookup resolves HEAD");
 }
 
 // ------------------------------------------------------------- key
 
 {
-  const base: CacheInputs = { descriptor: DESC, type: "feature", head: "h1" };
+  const base: CacheInputs = { descriptor: DESC, type: "feature", keySha: "h1" };
   const k = investigationCacheKey(base);
   assert(k === investigationCacheKey({ ...base }), "key is stable for identical inputs");
-  assert(k !== investigationCacheKey({ ...base, head: "h2" }), "key changes with git HEAD");
+  assert(
+    k !== investigationCacheKey({ ...base, keySha: "h2" }),
+    "key changes with origin/<default>",
+  );
   assert(k !== investigationCacheKey({ ...base, type: "bug" }), "key changes with the type");
   assert(
     k !== investigationCacheKey({ ...base, descriptor: `${DESC} now` }),

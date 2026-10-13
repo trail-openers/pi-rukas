@@ -33,7 +33,7 @@
 // branch-3 comparison below keys on the EXACT string the parser writes:
 // a parser-side rename must flip both files at once, not silently drift.
 // plan-gaps.ts imports nothing from this module, so the dependency is one-way.
-import { GAP_RESOLUTION_PLACEHOLDER } from "./plan-gaps.ts";
+import { GAP_RESOLUTION_PLACEHOLDER } from "./plan-gap-parse.ts";
 import type { PlanGap, PlanType } from "./plan-types.ts";
 
 /**

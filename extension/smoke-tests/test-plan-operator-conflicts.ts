@@ -1,17 +1,14 @@
 #!/usr/bin/env bun
 /**
  * #1132 — operator lines are final. An investigation item that contradicts an
- * operator line is dropped and disclosed BEFORE drafting; the gap gate
- * discards a gap that sets an operator line against an investigation line;
- * an operator-vs-operator clash still caps.
+ * operator line is dropped and disclosed BEFORE drafting (lexical, conservative:
+ * >= 3 shared content tokens and opposite polarity). The heuristic decides only
+ * what is drafted, never what blocks: a gate CRITICAL is never dropped, demoted
+ * or discarded by text matching, and at the iteration cap it is an open point.
  */
 
 import type { OperatorDirectives } from "../src/plan-directives.ts";
-import {
-  filterInvestigationConflicts,
-  isOperatorInvestigationGap,
-  linesConflict,
-} from "../src/plan-draft-conflicts.ts";
+import { filterInvestigationConflicts, linesConflict } from "../src/plan-draft-conflicts.ts";
 import { type AngleFindings, draftSpec } from "../src/plan-draft.ts";
 import { runGapGateLoop } from "../src/plan-gaps.ts";
 import { gapGatePrompt } from "../src/plan-gate-prompt.ts";
@@ -40,8 +37,9 @@ function angle(name: string, items: { kind: string; text: string }[]): AngleFind
   };
 }
 
-const OP_AC = "Do not change protectedPathsIn: every caller keeps using it unchanged";
-const CONFLICTING_EDGE = "a caller that changes protectedPathsIn must park the fix pass";
+const OP_AC = "every caller keeps protectedPathsIn unchanged";
+const CONFLICTING_EDGE =
+  "a caller that changes protectedPathsIn must park the fix pass; no caller keeps using it unchanged";
 const CONSISTENT_EDGE = "an absent config file falls back to the default protected set";
 
 // -------------------------------------------------
@@ -149,7 +147,10 @@ const CONSISTENT_EDGE = "an absent config file falls back to the default protect
     [],
     [],
     0,
-    { ...NO_DIRS, pitfalls: ["the verdict parser is signed off by the operator"] },
+    {
+      ...NO_DIRS,
+      pitfalls: ["the verdict parser must accept bare VERDICT lines, signed off by the operator"],
+    },
     [],
   );
   assert(
@@ -157,7 +158,7 @@ const CONSISTENT_EDGE = "an absent config file falls back to the default protect
     "settled pair: the negated line is dropped, the positive line kept",
   );
   assert(
-    r.body.includes(`dropped: conflicts with operator decision "the verdict parser is signed off`),
+    r.body.includes('dropped: conflicts with operator decision "the verdict parser must accept'),
     "settled pair: the drop cites the operator line",
   );
   assert(
@@ -173,22 +174,23 @@ const CONSISTENT_EDGE = "an absent config file falls back to the default protect
     [
       {
         kind: "test-surface-item",
-        text: "test that callers still change protectedPathsIn",
+        text: "no caller keeps protectedPathsIn unchanged after the cycle",
         angle: "t",
       },
-      { kind: "out-of-scope", text: "the callers do not keep protectedPathsIn", angle: "o" },
       { kind: "out-of-scope", text: "the rubric is out of scope", angle: "o" },
+      {
+        kind: "out-of-scope",
+        text: "a caller keeps protectedPathsIn unchanged in every run",
+        angle: "o",
+      },
     ],
-    ["every caller keeps protectedPathsIn unchanged"],
+    [OP_AC],
   );
   assert(
-    res.dropped.length === 2,
-    `filter: two lines contradict the operator line (got ${res.dropped.length})`,
+    res.dropped.length === 1 && res.dropped[0]?.item.text.startsWith("no caller"),
+    `filter: the negated line contradicts the operator line (dropped ${res.dropped.length})`,
   );
-  assert(
-    res.kept.length === 1 && res.kept[0]?.text === "the rubric is out of scope",
-    "filter: an unrelated line is kept",
-  );
+  assert(res.kept.length === 2, "filter: the unrelated line and the positive restatement are kept");
   assert(
     !linesConflict("a plain positive line", "another plain positive line"),
     "polarity: two positive lines do not conflict",
@@ -196,18 +198,42 @@ const CONSISTENT_EDGE = "an absent config file falls back to the default protect
 }
 
 // -------------------------------------------------
-// 6. The gap gate discards a gap that sets an operator line against an
-//    investigation line: no CRITICAL cap, the gap is disclosed as discarded.
+// 6. #1132 fixtures for the threshold and the polarity cue.
 {
-  const op = ["every caller keeps protectedPathsIn unchanged"];
-  const inv = ["callers thread a per-cycle set through protectedPathsIn"];
+  // 401 vs 429: the same response shape, opposite behaviour. Two shared tokens
+  // (response, retried) are not enough to call them the same topic: KEPT.
+  const op = "a 429 response is retried with backoff";
+  const inv = "a 401 response is not retried, it fails at once";
+  assert(!linesConflict(op, inv), "401-vs-429: two shared tokens are not a conflict");
+  const r = draftSpec(
+    "feature",
+    "retry policy",
+    [angle("edge-cases", [{ kind: "edge-case", text: inv }])],
+    [],
+    [],
+    [],
+    0,
+    { ...NO_DIRS, acceptanceCriteria: [op] },
+    [],
+  );
+  assert(r.body.includes(`- ${inv}\n`), "401-vs-429: the investigation item is KEPT in the body");
+  assert(!r.body.includes("dropped: conflicts with operator decision"), "401-vs-429: no drop");
+
+  // `no-op` is not a negation: the operator line and the investigation line are
+  // the same polarity and share the topic, so nothing is dropped.
+  const opNoOp = "a 429 response is a no-op for the retry budget";
+  const invSpends = "a 429 response spends the retry budget before backing off";
+  assert(!linesConflict(opNoOp, invSpends), "no-op: a hyphenated no-op is not a negation cue");
+}
+
+// -------------------------------------------------
+// 7. The gap gate does NOT discard a CRITICAL that sets an operator line against
+//    an investigation line (#1132: a text heuristic never decides blocking). It
+//    triggers the corrective round like any CRITICAL and, at the cap, is an open
+//    point in the filed body.
+{
   const gap =
     "callers must keep protectedPathsIn unchanged versus callers thread a per-cycle set through protectedPathsIn";
-  assert(
-    isOperatorInvestigationGap(gap, op, inv),
-    "gap: an operator-vs-investigation gap is recognised",
-  );
-
   let dispatches = 0;
   const reply = `GAP: CRITICAL — ${gap} — proposed resolution: pick one — resolution-type: operator-decision\nVERDICT: NEEDS_ITERATION`;
   const r = await runGapGateLoop(
@@ -216,52 +242,40 @@ const CONSISTENT_EDGE = "an absent config file falls back to the default protect
       return { ok: true, text: reply, toolUses: [] };
     },
     () => "GATE PROMPT",
-    3,
+    1,
     () => {},
-    { operatorLines: op, investigationLines: inv },
+  );
+  assert(dispatches === 1, `gate: one round at the cap (dispatches=${dispatches})`);
+  assert(
+    r.capReason === "unresolved-blocking",
+    `gate: the CRITICAL reaches the cap (${r.capReason})`,
   );
   assert(
-    dispatches === 1,
-    `gap: the discarded conflict does not iterate (dispatches=${dispatches})`,
-  );
-  assert(r.gaps.length === 0, "gap: the conflicting CRITICAL is not a blocking gap");
-  assert(r.capReason !== "unresolved-blocking", `gap: no CRITICAL cap (capReason=${r.capReason})`);
-  assert(r.discardedConflicts.length === 1, "gap: the discarded conflict is recorded");
-  assert(
-    r.residualForDisclosure.some((g) => g.description.includes(gap)),
-    "gap: the discarded conflict is disclosed in the residual section when capped",
+    r.openPoints.length === 1 && (r.openPoints[0]?.description ?? "").includes(gap),
+    "gate: the CRITICAL is an open point, not discarded",
   );
 }
 
 // -------------------------------------------------
-// 7. An operator-vs-operator clash still caps (no discard).
+// 8. Two positive, contradictory operator lines ("retry cap is 3" / "retry cap
+//    is 5") must end in an open point at the cap, never silently filed.
 {
-  const op = [
-    "do not change protectedPathsIn for callers",
-    "every caller must change protectedPathsIn",
-  ];
-  const inv = ["callers change protectedPathsIn per cycle"];
-  const gap =
-    "do not change protectedPathsIn for callers versus every caller must change protectedPathsIn — callers change per cycle";
-  assert(
-    !isOperatorInvestigationGap(gap, op, inv),
-    "op-vs-op: a clash between two operator lines is not discarded",
-  );
-
+  const gap = "the retry cap is 3 contradicts the retry cap is 5";
   const reply = `GAP: CRITICAL — ${gap} — proposed resolution: pick one — resolution-type: operator-decision\nVERDICT: NEEDS_ITERATION`;
   const r = await runGapGateLoop(
     async () => ({ ok: true, text: reply, toolUses: [] }),
     () => "GATE PROMPT",
     1,
     () => {},
-    { operatorLines: op, investigationLines: inv },
   );
-  assert(r.capReason === "unresolved-blocking", `op-vs-op: still caps (capReason=${r.capReason})`);
-  assert(r.discardedConflicts.length === 0, "op-vs-op: nothing discarded");
+  assert(
+    r.openPoints.length === 1 && r.residualForDisclosure.length === 0,
+    "retry cap 3 vs 5: an open point at the cap, nothing dropped to the residual",
+  );
 }
 
 // -------------------------------------------------
-// 8. The gap-gate prompt states that operator-authored lines are final.
+// 9. The gap-gate prompt states that operator-authored lines are final.
 {
   const p = gapGatePrompt("body", [], [{ source: "context param", fact: OP_AC }]);
   assert(
