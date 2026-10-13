@@ -15,10 +15,10 @@
 import { exec, execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { promisify } from "node:util";
+import { prRange } from "./git-range.ts";
 import { execp as groupExecp } from "./lens-exec.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
-import { prRange } from "./work-driver-diff.ts";
 import { detectMainline } from "./work-driver-git.ts";
 import type { ConsolidationVerdict } from "./workflow-state-consolidation.ts";
 import type { WorkState } from "./workflow-state.ts";
@@ -290,7 +290,13 @@ export async function verifyConsolidation(
     // the merge base, so a base that moved after the branch was cut does not read
     // as reverted files.
     const { stdout } = await execp("git", {
-      argv: ["diff", "--name-status", "-M", prRange(`origin/${base}`, `origin/${branch}`)],
+      argv: [
+        "diff",
+        "--name-status",
+        "-M",
+        "--end-of-options",
+        prRange(`origin/${base}`, `origin/${branch}`),
+      ],
       cwd: ctx.repoRoot,
       maxBuffer: 1024 * 1024,
     });

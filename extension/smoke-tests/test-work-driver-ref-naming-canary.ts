@@ -60,6 +60,8 @@ async function setupFixture(): Promise<{ root: string; branch: string }> {
   await execFileP("git", ["init", "-q", "--bare", "--initial-branch=main", origin]);
   await execFileP("git", ["remote", "add", "origin", origin], { cwd: repo });
   await execFileP("git", ["push", "-q", "origin", "main"], { cwd: repo });
+  // A real clone carries refs/remotes/origin/HEAD; the mainline is resolved from it (#1134).
+  await execFileP("git", ["remote", "set-head", "origin", "main"], { cwd: repo });
 
   // Feature branch with ZERO commits ahead of main (just a branch point).
   const branch = "feature/issue-451-canary";

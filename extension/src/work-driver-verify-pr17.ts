@@ -10,8 +10,8 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import type { CommentEvidence } from "./comment-evidence.ts";
+import { countPrCommits } from "./git-range.ts";
 import type { DriverContext } from "./work-driver-context.ts";
-import { countPrCommits } from "./work-driver-diff.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { detectMainline } from "./work-driver-git.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
@@ -40,6 +40,8 @@ const execp = promisify(exec);
  *     (a) commits exist on the branch: `git rev-list --count
  *         origin/<base>..<branchName>` > 0 at repoRoot (#451 — the branch
  *         is named explicitly so the gate works regardless of repo-root checkout).
+ *         (#1134: the count is now `--right-only origin/<base>...origin/<branch>`,
+ *         the mainline comes from detectMainline, and an unreadable count fails closed.)
  *     (b) the parsed PR number resolves via the forge adapter. When ops
  *         forgot the `pr: <N>` marker, fall back to a head-branch PR
  *         list and ADOPT the number into pipelineState
@@ -51,7 +53,8 @@ const execp = promisify(exec);
  * cap-hit `verify-failed:<step>` → handoff with evidence in
  * pipelineState.verifyEvidence. Infra errors on OUR side (git itself
  * erroring at repoRoot) are notes, not failures — same no-false-alarm
- * stance as verifyConsolidation.
+ * stance as verifyConsolidation. The commit count is the exception (#1134):
+ * if git cannot give it, the commit evidence is unverifiable, which is a failure.
  */
 /** PR17 — escape hatch: PI_ENSEMBLE_VERIFY=0 disables the outcome gate. */
 function verifyGateEnabled(): boolean {
@@ -180,17 +183,27 @@ export async function verifyStepOutcome(
   }
 
   // step === "commit-pr"
-  let base = "main";
+  // #1134 — the same mainline resolution readIntegratedDiff uses (detectMainline).
+  // Unresolved has no base to count against, so it fails closed below.
   const mainline = await detectMainline(ctx.repoRoot, execFn);
-  if (mainline && "branch" in mainline) {
-    base = mainline.branch;
-  }
+  const base = "branch" in mainline ? mainline.branch : undefined;
+  // #451 — name the integration branch explicitly. `origin/<branchName>`
+  // requires the branch to be pushed, which it is at commit-pr time (ops
+  // pushes before opening the PR). Using the local ref name (not
+  // `origin/<branch>`) because the commit-pr gate can run before push in
+  // some edge cases; the local ref is what the cycle created.
+  // #1134 supersedes the local-ref choice above: the head is origin/<branch>.
   // #1134 — head is origin/<branch>, the ref readIntegratedDiff reads. This gate
   // runs after integrate() has pushed (work-driver-commit-pr-events.ts), so the
   // remote-tracking ref exists. Three-dot + --right-only: the branch's own
   // commits, measured from the merge base.
   const branch = state.pipelineState.branchName;
-  if (!branch) {
+  if (base === undefined) {
+    const reason = "reason" in mainline ? mainline.reason : "unknown";
+    failures.push(
+      `could not count commits: the mainline is unresolved (${reason}) — commit evidence is unverifiable`,
+    );
+  } else if (!branch) {
     failures.push(
       `could not count commits ahead of origin/${base}: no branch name was recorded for this cycle`,
     );
@@ -213,8 +226,10 @@ export async function verifyStepOutcome(
         );
       }
     } catch (err) {
-      notes.push(
-        `git rev-list failed (${(err as Error).message?.slice(0, 100)}) — commit evidence unavailable`,
+      // #1134 — a rejected count is unknown, the same as NaN: a failure, never a note.
+      const msg = ((err as Error).message ?? String(err)).slice(0, 200);
+      failures.push(
+        `could not count commits ahead of origin/${base}: ${msg} — commit evidence is unverifiable`,
       );
     }
   }

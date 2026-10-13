@@ -20,8 +20,8 @@
 import { exec, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { type LostComment, classifyHunk, hasWord, parseHunks } from "./comment-retention-hunks.ts";
+import { countPrCommits, prRange } from "./git-range.ts";
 import { trace } from "./trace.ts";
-import { countPrCommits, prRange } from "./work-driver-diff.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
@@ -99,7 +99,7 @@ async function readLinesAtRef(
     // the slice: `ref:file\0content` (or `file\0content` with no ref).
     // argv (#1134): the ref and paths are never shell-parsed.
     const { stdout } = await execFn("git", {
-      argv: ["grep", "-z", "-e", "", ...(ref ? [ref] : []), "--", ...paths],
+      argv: ["grep", "-z", "-e", "", ...(ref ? ["--end-of-options", ref] : []), "--", ...paths],
       cwd,
       timeout: timeoutMs,
       maxBuffer: 64 * 1024 * 1024,
@@ -130,7 +130,7 @@ async function refResolves(
 ): Promise<boolean> {
   try {
     await execFn("git", {
-      argv: ["rev-parse", "--verify", `${ref}^{commit}`],
+      argv: ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`],
       cwd,
       timeout: timeoutMs,
       maxBuffer: 1 * 1024 * 1024,
@@ -241,7 +241,7 @@ export async function findLostComments(
   // 1. The diff (normal context, so comment blocks stay contiguous).
   try {
     const { stdout } = await execFn("git", {
-      argv: ["diff", prRange(baseRef, headRef), "--", ...paths],
+      argv: ["diff", "--end-of-options", prRange(baseRef, headRef), "--", ...paths],
       cwd,
       timeout: timeoutMs,
       maxBuffer: 16 * 1024 * 1024,

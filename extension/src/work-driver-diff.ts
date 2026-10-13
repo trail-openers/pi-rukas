@@ -11,8 +11,10 @@
 import { exec } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
+import { countPrCommits, prRange } from "./git-range.ts";
 import { execp as gitExec } from "./lens-exec.ts";
 import { trace } from "./trace.ts";
+import { detectMainline } from "./work-driver-git.ts";
 import type { WorkState, WorkStep } from "./workflow-state.ts";
 
 const execp = promisify(exec);
@@ -207,27 +209,20 @@ export async function readIntegratedDiff(
   repoRoot: string,
   branchName: string,
 ): Promise<IntegratedDiff> {
-  let base: string;
-  try {
-    // argv, not a shell pipe (#1134): nothing is interpolated. An absent
-    // origin/HEAD falls back to main, as the old pipe did (its failure was
-    // masked by `sed`, so the fallback was the effective behaviour).
-    const { stdout: head } = await gitExec("git", {
-      argv: ["symbolic-ref", "refs/remotes/origin/HEAD"],
-      cwd: repoRoot,
-      maxBuffer: 64 * 1024,
-    });
-    base = head.trim().replace(/^refs\/remotes\/origin\//, "") || "main";
-  } catch {
-    base = "main";
-  }
+  // The mainline is unknowable, so the diff below would be meaningless.
+  // The mainline, resolved by detectMainline (#1134) — the same call verify-pr17
+  // makes, so both read one base. Unresolved means there is no base to diff
+  // against: unreadable, not a guessed "main".
+  const mainline = await detectMainline(repoRoot, gitExec);
+  if (!("branch" in mainline)) return { ok: false, reason: mainline.reason };
+  const base = mainline.branch;
   try {
     // Three-dot: the diff is taken from the MERGE BASE, so a base that moved
     // after the branch was cut contributes nothing. Two-dot would diff the
     // branch tip against the base tip and report the base's new commits as
     // reversed (phantom CRITICAL findings, #1134).
     const { stdout } = await gitExec("git", {
-      argv: ["diff", prRange(`origin/${base}`, `origin/${branchName}`)],
+      argv: ["diff", "--end-of-options", prRange(`origin/${base}`, `origin/${branchName}`)],
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
     });
@@ -260,53 +255,6 @@ export async function readIntegratedDiff(
   }
 }
 
-/** An executor that accepts the argv form (lens-exec `execp`, work-driver-verify `execp`, `ExecFn`). */
-export type ArgvExec = (
-  cmd: string,
-  opts?: { cwd?: string; timeout?: number; maxBuffer?: number; argv?: string[] },
-) => Promise<{ stdout: string }>;
-
-/**
- * #1134 — the PR range as one string: `<base>...<head>`, the diff from the
- * merge base to `head`. Callers pass fully-qualified refs (`origin/<base>`,
- * `origin/<branch>`) — or a local ref where the site runs before the push.
- * Two-dot is never used for a PR: it diffs tip against tip, so a base that
- * moved after the branch was cut reads as reverted files.
- */
-export function prRange(base: string, head: string): string {
-  return `${base}...${head}`;
-}
-
-/**
- * #1134 — the PR's own commits: `rev-list --count --right-only <range>`, i.e.
- * commits reachable from `head` and not from `base`. Returns NaN when git's
- * reply is not a plain count; callers treat NaN as unknown, never as zero.
- * An exec failure rejects.
- */
-export async function countPrCommits(
-  exec: ArgvExec,
-  cwd: string,
-  base: string,
-  head: string,
-  opts: { pathspec?: string[]; timeout?: number } = {},
-): Promise<number> {
-  const pathspec = opts.pathspec ?? [];
-  const { stdout } = await exec("git", {
-    argv: [
-      "rev-list",
-      "--count",
-      "--right-only",
-      prRange(base, head),
-      ...(pathspec.length > 0 ? ["--", ...pathspec] : []),
-    ],
-    cwd,
-    timeout: opts.timeout,
-    maxBuffer: 64 * 1024,
-  });
-  const t = stdout.trim();
-  return /^\d+$/.test(t) ? Number(t) : Number.NaN;
-}
-
 function errText(err: unknown): string {
   return ((err as Error).message ?? String(err)).slice(0, 200);
 }
@@ -319,10 +267,10 @@ const SAFE_PATH = /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/;
  *
  * This distinction is the whole reason the function exists. The reviewed diff
  * is built from `origin/<base>..origin/<branch>` (see `readIntegratedDiff`),
- * (#1134: that range is now three-dot, from the merge base)
  * but lens children run with `cwd` set to a worktree, and under always-worktree
  * those "stay DETACHED at baseSha" — the invariant recorded at the bottom of
- * `readAllMergedDiffs`. A reviewer that opens a changed file from its own cwd
+ * `readAllMergedDiffs`. (#1134: that range is now three-dot, from the merge base.)
+ * A reviewer that opens a changed file from its own cwd
  * therefore reads the version from BEFORE the change.
  *
  * That is not a hypothetical. A real cycle shipped a documentation paragraph
