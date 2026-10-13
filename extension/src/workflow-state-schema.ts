@@ -325,6 +325,12 @@ export interface PipelineState {
     lenses: Array<{ lens: string; ok: boolean; blocked: boolean; findings: number }>;
   };
   /**
+   * The pushed branch commit the most recent completed lens review read. The
+   * next review round diffs against it to show what the fix pass changed
+   * (fix-delta.ts). Absent before the first review and on older state files.
+   */
+  lensReviewedHead?: string;
+  /**
    * #543 — the most recent cap kill's trigger evidence (F1 loop / F6
    * token-budget), on pipelineState per the #533 tail-invariance rule.
    * Type: workflow-state-cap.ts (§12).

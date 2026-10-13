@@ -101,4 +101,6 @@ export type AdversarialEventFragment =
       at: number;
       workstreamId: string;
       round: number;
+      /** The worktree HEAD the pass started from — the tree the last review read (fix-delta.ts). */
+      headBefore?: string;
     };

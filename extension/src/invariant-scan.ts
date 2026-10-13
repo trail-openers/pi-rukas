@@ -300,3 +300,20 @@ export function scanTypeWidening(diff: string): WideningFinding[] {
 
   return findings;
 }
+
+/**
+ * The lens-context block for the widenings a diff carries ("" when none).
+ * Route-only: the ARCHITECTURE lens is asked what now guarantees the invariant.
+ */
+export function wideningContext(widenings: readonly WideningFinding[]): string {
+  if (widenings.length === 0) return "";
+  const findingsSummary = widenings
+    .map(
+      (f) =>
+        `  ${f.file}:${f.line ?? "?"} [${f.kind}]${f.before ? ` before: ${f.before}` : ""}${
+          f.after ? ` after: ${f.after}` : ""
+        }`,
+    )
+    .join("\n");
+  return `\n\nTYPE-WIDENING DETECTED (route-only to ARCHITECTURE lens):\n${findingsSummary}\n\nMANDATE: the ARCHITECTURE lens must answer: what invariant did this widening remove, and what now guarantees it?`;
+}
