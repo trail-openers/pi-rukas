@@ -258,7 +258,7 @@ const srcDir = path.join(here, "..", "src");
       carried1.length === 1 && carried1[0]?.severity === "MEDIUM",
       "memory: round 1 row carried as MEDIUM",
     );
-    const j1 = judgeRound([], r1, [], lens, "MEDIUM", 2);
+    const j1 = judgeRound([], r1, lens, "MEDIUM", 2);
     assert(j1.verdict === "CONVERGED", "memory: a round-2 omitted trigger-less MEDIUM converges");
     assert(j1.reported[0]?.severity === "LOW", "memory: the carried finding is reported at LOW");
     assert(
@@ -288,7 +288,7 @@ const srcDir = path.join(here, "..", "src");
     const r3 = await run([], true);
     const carriedTrig = r3.ok ? r3.carried.find((f) => f.title === "triggered medium") : undefined;
     assert(carriedTrig?.trigger === "two calls", "memory: the carried row keeps its trigger");
-    const j3 = judgeRound([], r3, [], lens, "MEDIUM", 2);
+    const j3 = judgeRound([], r3, lens, "MEDIUM", 2);
     assert(
       j3.verdict === "ISSUES_FOUND",
       "memory: a triggered carried MEDIUM blocks (ISSUES_FOUND)",
@@ -309,7 +309,7 @@ const srcDir = path.join(here, "..", "src");
       carriedEsc?.severity === "MEDIUM" && carriedEsc.trigger === "two calls",
       "memory: a re-reported triggered MEDIUM is stored at MEDIUM (not left at LOW)",
     );
-    const j4 = judgeRound([], r4, [], lens, "MEDIUM", 3);
+    const j4 = judgeRound([], r4, lens, "MEDIUM", 3);
     assert(
       j4.verdict === "ISSUES_FOUND",
       "memory: a carried escalated MEDIUM blocks at round 3 (ISSUES_FOUND)",

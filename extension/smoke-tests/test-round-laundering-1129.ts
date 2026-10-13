@@ -12,7 +12,7 @@
  */
 
 import { execSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setupSpawnGuard } from "./test-helpers.ts";
@@ -80,7 +80,7 @@ assert(
   eff?.severity === "MEDIUM" && eff.trigger === "call twice" && eff.downgrade === undefined,
   "a trigger-less re-report keeps the stored MEDIUM and trigger (no downgrade record)",
 );
-const j1 = judgeRound([eff as F], r2, [downgraded], [], "MEDIUM", 2);
+const j1 = judgeRound([eff as F], r2, [], "MEDIUM", 2);
 assert(
   j1.verdict === "ISSUES_FOUND" && j1.reported[0]?.severity === "MEDIUM",
   "round 2 with the re-report is ISSUES_FOUND at MEDIUM (not CONVERGED)",
@@ -91,7 +91,7 @@ const omitted1 = await record("b-omit", [finding({ trigger: "call twice" })]);
 assert(omitted1.ok, "round 1 records a triggered MEDIUM on a second branch");
 const omitted2 = await record("b-omit", []);
 if (!omitted2.ok) throw new Error(`round 2 (omitted) not recorded: ${omitted2.reason}`);
-const j2 = judgeRound([], omitted2, [], [], "MEDIUM", 2);
+const j2 = judgeRound([], omitted2, [], "MEDIUM", 2);
 assert(
   omitted2.carried.length === 1 && j2.verdict === "ISSUES_FOUND",
   "a round-2 omitted triggered MEDIUM is carried and blocks (ISSUES_FOUND)",
@@ -120,10 +120,42 @@ assert(
   l2.legacy.length === 1 && l2.carried.length === 0,
   "a legacy carried row is classed legacy, not downgradable",
 );
-const j3 = judgeRound([], l2, [], [], "MEDIUM", 2);
+const j3 = judgeRound([], l2, [], "MEDIUM", 2);
 assert(
   j3.verdict === "ISSUES_FOUND" && j3.reported[0]?.severity === "MEDIUM",
   "a legacy MEDIUM stays MEDIUM in round 2 and blocks (ISSUES_FOUND)",
+);
+
+// -------- 4. a legacy row RE-REPORTED trigger-less at round 2 stays MEDIUM
+const seed = await record("b-relegacy", [finding({ title: "legacy re-report" })]);
+if (!seed.ok) throw new Error(`legacy seed not recorded: ${seed.reason}`);
+const storeFile = path.join(root, FINDINGS_FILE);
+const stored = JSON.parse(readFileSync(storeFile, "utf8")) as {
+  rows: Array<Record<string, unknown>>;
+};
+for (const r of stored.rows) {
+  if (r.branch === "b-relegacy") {
+    delete r.triggerKnown;
+    delete r.trigger;
+  }
+}
+writeFileSync(storeFile, JSON.stringify(stored));
+const relabelled = finding({
+  title: "legacy re-report",
+  severity: "LOW",
+  downgrade: { from: "MEDIUM", reason: "no trigger" },
+});
+const l4 = await record("b-relegacy", [relabelled]);
+if (!l4.ok) throw new Error(`legacy re-report not recorded: ${l4.reason}`);
+const eff4 = l4.effective[0];
+assert(
+  eff4?.severity === "MEDIUM" && eff4.downgrade === undefined,
+  "a trigger-less re-report of a legacy row keeps its MEDIUM (no launder to LOW)",
+);
+const j4 = judgeRound([eff4 as F], l4, [], "MEDIUM", 2);
+assert(
+  j4.verdict === "ISSUES_FOUND",
+  "a legacy row re-reported trigger-less at round 2 blocks (ISSUES_FOUND)",
 );
 
 process.exit(exit);

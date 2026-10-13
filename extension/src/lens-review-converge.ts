@@ -67,14 +67,15 @@ export function convergeVerdict(verdict: Verdict, judged: Finding[]): Verdict {
  * round did not re-report, from the findings memory) get the same pre-pass as
  * this round's findings, so a trigger-less MEDIUM a round-2 lens omits still
  * downgrades; a triggered one (the row keeps its trigger) still blocks. A
- * downgraded carried row counts toward CONVERGED like a judged one. Legacy
+ * downgraded carried row counts toward CONVERGED like a judged one. CONVERGED is
+ * decided on the REPORTED findings (what the store kept), so a downgrade the
+ * store reversed cannot pass the verdict silently. Legacy
  * carried rows (written before #1129, no trigger ever recorded) are NOT
  * downgraded: they keep their stored MEDIUM until a lens re-reports them.
  */
 export function judgeRound(
   kept: Finding[],
   recorded: { ok: boolean; carried?: Finding[]; legacy?: Finding[] } | undefined,
-  judged: Finding[],
   lensResults: LensRunResult[],
   threshold: Severity,
   round: number,
@@ -82,9 +83,6 @@ export function judgeRound(
   const carried = applyRoundDowngrade(recorded?.ok ? (recorded.carried ?? []) : [], round);
   const legacy = recorded?.ok ? (recorded.legacy ?? []) : [];
   const reported = [...kept, ...carried, ...legacy];
-  const verdict = convergeVerdict(computeVerdict(reported, lensResults, threshold), [
-    ...judged,
-    ...carried,
-  ]);
+  const verdict = convergeVerdict(computeVerdict(reported, lensResults, threshold), reported);
   return { reported, verdict };
 }
