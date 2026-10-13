@@ -1,6 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as dispatchDeck from "./dispatch-deck.ts";
+import { resolveBudgetKey } from "./lens-budget-key.ts";
 import { execp } from "./lens-exec.ts";
 import type { LensLedgerOutcome } from "./lens-ledger.ts";
 import { partitionDecisions, renderPriorFindingsBlock } from "./lens-residuals.ts";
@@ -193,13 +194,21 @@ export async function runLensReview(opts: {
   let delta: { since: string; head: string; auto?: boolean } | undefined;
   let diff = "";
   let context: string;
+  // #1128 — the automatic delta reads the SAME ledger key the round cap
+  // budgets under (lens-budget-key.ts), so a SHA head or detached worktree
+  // still finds its prior entry instead of falling back to a full review.
+  const budgetKey = await resolveBudgetKey({
+    cwd: opts.cwd ?? process.cwd(),
+    head: opts.head,
+    pr: opts.pr,
+  });
   const resolved = await resolveReviewDiff({
     diff: opts.diff,
     since: opts.since,
     full: opts.full,
     base: opts.base,
     head: opts.head,
-    branch: branchResolved,
+    branch: budgetKey.key ?? branchResolved,
     cwd: opts.cwd,
   });
   if (resolved.kind === "ok") {
