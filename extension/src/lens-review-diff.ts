@@ -21,12 +21,14 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { neutraliseEvidence } from "./comment-evidence.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { execp } from "./lens-exec.ts";
 import { bySeverityCounts, computeVerdict, dedupeFindings } from "./lens-review-format.ts";
 import type { LensRunResult, Severity, Verdict } from "./lens-review.ts";
 import type { Finding } from "./lens-review.ts";
 import type { RosterEntry } from "./lens-roster.ts";
+import { resolveAutoHunkDelta, resolveMainlineBase } from "./review-delta-hunks.ts";
 import { computeDeltaDiff, computeRangeDiff } from "./review-diff.ts";
 import { isFullCommitSha, resolveHeadSha } from "./review-head-sha.ts";
 import { latestEntry, ledgerPathFor, readLedgerAt } from "./review-ledger.ts";
@@ -140,6 +142,37 @@ export async function resolveDeltaSince(
 }
 
 /**
+ * Resolve the delta's head to a full SHA (or the cwd's current HEAD when none
+ * is named). #1039 — a branch name is a valid ref to git but not a 40-char
+ * SHA; storing it as headSha corrupts the round-cap comparison and the
+ * auto-delta base, so it is resolved through the shared resolver. A leading
+ * dash is rejected before git sees it.
+ */
+export async function resolveDeltaHead(
+  head: string | undefined,
+  c: string,
+): Promise<{ head: string } | { problem: string }> {
+  if (!head) {
+    try {
+      const { stdout } = await execFileP("git", ["-C", c, "rev-parse", "HEAD"], {
+        maxBuffer: 8 * 1024,
+      });
+      return { head: stdout.trim() };
+    } catch (err) {
+      return {
+        problem: `lens review: cannot resolve the current HEAD in ${c}: ${(err as Error).message?.slice(0, 200) ?? "unknown error"}`,
+      };
+    }
+  }
+  if (head.startsWith("-")) {
+    return {
+      problem: `lens review: head ref "${head}" is rejected: ref names must not start with '-'`,
+    };
+  }
+  return { head: (await resolveHeadSha(c, head, execp)) ?? head };
+}
+
+/**
  * #973 — the delta review's diff resolution (see `computeDeltaDiff` for the
  * empty-delta contract).
  *
@@ -164,44 +197,11 @@ export async function resolveDeltaDiff(
   | { noReview: false; since: string; head: string; problem: string; diff?: undefined }
 > {
   const c = cwd ?? process.cwd();
-  let resolvedHead: string;
-  if (head) {
-    // #1039 — resolve the caller's head ref to a full 40-char SHA via the
-    // shared resolver (review-head-sha.ts). A branch name (e.g.
-    // "feature/x") is a valid ref to git but is NOT a 40-char SHA; storing
-    // it as headSha in the ledger corrupts the merge guard's round-cap
-    // comparison (which expects an OID) and the auto-delta base. The
-    // resolver rejects non-commit objects (tags pointing at trees) and
-    // argument-injection refs (leading dash); a leading dash is surfaced
-    // explicitly below — computeDeltaDiff's own ref check still produces
-    // the named error, but only after it rejects it.
-    if (head.startsWith("-")) {
-      return {
-        noReview: false,
-        since,
-        head: "HEAD",
-        problem: `lens review: head ref "${head}" is rejected: ref names must not start with '-'`,
-      };
-    }
-    resolvedHead = (await resolveHeadSha(c, head, execp)) ?? head;
-  } else {
-    // No explicit head: the current HEAD of the cwd's repo (the commit the
-    // review runs against). Resolved before the diff so the no-review
-    // outcome can name it in its reason.
-    try {
-      const { stdout } = await execFileP("git", ["-C", c, "rev-parse", "HEAD"], {
-        maxBuffer: 8 * 1024,
-      });
-      resolvedHead = stdout.trim();
-    } catch (err) {
-      return {
-        noReview: false,
-        since,
-        head: "HEAD",
-        problem: `lens review: cannot resolve the current HEAD in ${c}: ${(err as Error).message?.slice(0, 200) ?? "unknown error"}`,
-      };
-    }
+  const h = await resolveDeltaHead(head, c);
+  if ("problem" in h) {
+    return { noReview: false, since, head: "HEAD", problem: h.problem };
   }
+  const resolvedHead = h.head;
   const d = await computeDeltaDiff(c, since, resolvedHead);
   if (!d.ok) {
     return {
@@ -221,6 +221,44 @@ export async function resolveDeltaDiff(
     };
   }
   return { noReview: false, since, head: resolvedHead, diff: d.diff, problem: undefined };
+}
+
+/** The delta a review ran against. `fallback` is set when an automatic delta
+ * could not use its hunk-level method and reviewed the two-dot range instead
+ * (the reason is disclosed in the context, the summary and the residuals). */
+export interface AutoDeltaInfo {
+  since: string;
+  head: string;
+  auto?: boolean;
+  fallback?: string;
+}
+
+/** The fallback sentence, built once for every surface that discloses it (the
+ * lens context, the review summary, the PR residuals). The reason is
+ * neutralised here, so a marker-like token in it cannot forge a verdict on any
+ * surface. */
+export function deltaFallbackText(delta: { since: string; fallback: string }): string {
+  return `this delta review covers the full two-dot range since ${delta.since.slice(0, 8)} because ${neutraliseEvidence(delta.fallback)}`;
+}
+
+/** The DELTA FALLBACK note appended to the lens context when an automatic delta
+ * fell back to the two-dot range; empty when there is no fallback. */
+export function deltaFallbackNote(delta: AutoDeltaInfo | undefined): string {
+  if (!delta?.fallback) return "";
+  return `\n\nDELTA FALLBACK: ${deltaFallbackText({ since: delta.since, fallback: delta.fallback })}. Main's hunks merged into the branch since then may be included; do not report them as branch-authored defects.`;
+}
+
+/** The `deltaReview` field of the review summary; carries the fallback when set. */
+export function deltaReviewOf(delta: AutoDeltaInfo): {
+  since: string;
+  head: string;
+  fallback?: string;
+} {
+  return {
+    since: delta.since,
+    head: delta.head,
+    ...(delta.fallback ? { fallback: delta.fallback } : {}),
+  };
 }
 
 /**
@@ -245,7 +283,7 @@ export async function resolveReviewDiff(opts: {
   branch?: string;
   cwd?: string;
 }): Promise<
-  | { kind: "ok"; diff: string; delta?: { since: string; head: string; auto?: boolean } }
+  | { kind: "ok"; diff: string; delta?: AutoDeltaInfo }
   | { kind: "blocked"; problem: string }
   | { kind: "noReview"; since: string; head: string; reason: string }
 > {
@@ -264,6 +302,8 @@ export async function resolveReviewDiff(opts: {
       ? await resolveDeltaSince(opts.branch, opts.head, opts.cwd)
       : undefined;
   const since = opts.since ?? autoSince;
+  // #1128 — the automatic delta resolves its hunk-level patch first.
+  if (autoSince) return resolveAutoDelta(opts, autoSince);
   if (since) {
     const d = await resolveDeltaDiff(since, opts.head, opts.cwd);
     if (d.noReview) {
@@ -272,17 +312,52 @@ export async function resolveReviewDiff(opts: {
     if (d.problem) {
       return { kind: "blocked", problem: d.problem };
     }
-    return {
-      kind: "ok",
-      diff: d.diff ?? "",
-      delta: { since: d.since, head: d.head, ...(autoSince ? { auto: true } : {}) },
-    };
+    return { kind: "ok", diff: d.diff ?? "", delta: { since: d.since, head: d.head } };
   }
   const resolution = await resolveLensDiff(opts);
   if (resolution.problem) {
     return { kind: "blocked", problem: resolution.problem };
   }
   return { kind: "ok", diff: resolution.diff ?? "" };
+}
+
+type ReviewDiffOutcome = Awaited<ReturnType<typeof resolveReviewDiff>>;
+
+/**
+ * #1128 — the automatic delta's diff. The hunk-level reviewed patch
+ * (review-delta-hunks.ts) is tried FIRST; the two-dot range is computed only
+ * when that method falls back, so the large range is never built for nothing.
+ * The base is the explicit `base`, else the mainline (the same resolution the
+ * ledger uses). Every fallback is recorded on the delta, never silent.
+ */
+async function resolveAutoDelta(
+  opts: { base?: string; head?: string; cwd?: string },
+  since: string,
+): Promise<ReviewDiffOutcome> {
+  const cwd = opts.cwd ?? process.cwd();
+  const h = await resolveDeltaHead(opts.head, cwd);
+  if ("problem" in h) return { kind: "blocked", problem: h.problem };
+  const base = opts.base ?? (await resolveMainlineBase(cwd));
+  let fallback: string | undefined;
+  if (!base) {
+    fallback = "no mainline base resolves (origin/HEAD, origin/<main|master>, local <main|master>)";
+  } else {
+    const r = await resolveAutoHunkDelta({ since, head: h.head, base, cwd });
+    if (r.kind === "problem" && opts.base) return { kind: "blocked", problem: r.problem };
+    if (r.kind === "empty") return { kind: "noReview", since, head: h.head, reason: r.reason };
+    if (r.kind === "diff") {
+      return { kind: "ok", diff: r.diff, delta: { since, head: h.head, auto: true } };
+    }
+    fallback = r.kind === "problem" ? r.problem : r.reason;
+  }
+  const d = await resolveDeltaDiff(since, h.head, cwd);
+  if (d.noReview) return { kind: "noReview", since: d.since, head: d.head, reason: d.reason };
+  if (d.problem) return { kind: "blocked", problem: d.problem };
+  return {
+    kind: "ok",
+    diff: d.diff ?? "",
+    delta: { since: d.since, head: d.head, auto: true, fallback },
+  };
 }
 
 /**

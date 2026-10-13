@@ -35,6 +35,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { resolveDeltaDiff } from "../src/lens-review-diff.ts";
 import { computeDeltaDiff, computeRangeDiff } from "../src/review-diff.ts";
+import { subtractReviewedHunks } from "../src/review-delta-hunks.ts";
 
 const execp = promisify(exec);
 
@@ -255,6 +256,38 @@ async function mkRepo(): Promise<{ dir: string; c0: string; c1: string; c2: stri
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+// (#1128) subtractReviewedHunks — pure hunk-identity filter, no git.
+{
+  const hunkA = "@@ -1,2 +1,2 @@\n ctx\n-old\n+new\n";
+  const file = (name: string, body: string) =>
+    `diff --git a/${name} b/${name}\nindex 1111111..2222222 100644\n--- a/${name}\n+++ b/${name}\n${body}`;
+  // (a) identical hunk at a shifted line offset is the same hunk → dropped
+  const shifted = "@@ -40,2 +41,2 @@\n ctx\n-old\n+new\n";
+  assert(
+    subtractReviewedHunks(file("a.ts", shifted), file("a.ts", hunkA)) === "",
+    "shifted-offset identical hunk is subtracted (numbers ignored)",
+  );
+  // (b) a genuinely new hunk is kept; the reviewed one is dropped
+  const hunkB = "@@ -9,1 +9,2 @@\n keep\n+added\n";
+  const out = subtractReviewedHunks(file("a.ts", hunkA + hunkB), file("a.ts", hunkA));
+  assert(out.includes("+added") && !out.includes("+new"), "new hunk kept, reviewed hunk dropped");
+  assert(out.startsWith("diff --git a/a.ts b/a.ts\n"), "kept hunks keep their file header");
+  // (c) identity is per file: the same body in another file is NOT subtracted
+  assert(
+    subtractReviewedHunks(file("b.ts", hunkA), file("a.ts", hunkA)).includes("+new"),
+    "identical body in a different file is kept (per-file identity)",
+  );
+  // (d) multiset: two identical hunks in head, one reviewed → one survives
+  const twice = file("a.ts", hunkA + hunkA);
+  const once = subtractReviewedHunks(twice, file("a.ts", hunkA));
+  assert(once.split("+new").length - 1 === 1, "multiset: one of two identical hunks survives");
+  // (e) empty prev → everything kept, byte-identical to the input
+  const full = file("a.ts", hunkA);
+  assert(subtractReviewedHunks(full, "") === full, "empty previous diff leaves the head diff byte-identical");
+  // (f) all hunks reviewed → "" (caller turns this into the no-review outcome)
+  assert(subtractReviewedHunks(full, full) === "", "everything already reviewed → empty");
 }
 
 console.log(`\nexit ${exit}`);

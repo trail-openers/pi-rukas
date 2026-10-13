@@ -50,13 +50,13 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
       since: Type.Optional(
         Type.String({
           description:
-            "#973 — the delta base: a commit ref the review diffs from (`git diff <since>..<head>`). When given, the lenses review ONLY the delta, with the full base...head range as context. Without it, the delta base DEFAULTS to this branch's latest lens ledger entry's headSha when that SHA is an ancestor of HEAD (an automatic delta review); the first review on a branch (no ledger entry) is always a full review. An empty delta (no changes since the base) is a no-review outcome — no re-review, no ledger entry. Pass `full: true` to force a full review.",
+            "#973 — the delta base: a commit ref to review changes since. When given, the lenses review only the changes since that commit (the same range an automatic delta uses). Without it, the delta base DEFAULTS to the last reviewed head recorded for this branch (the round-budget key's latest lens ledger entry) when that SHA is an ancestor of HEAD — an automatic delta review, which subtracts hunks already reviewed (hunk-identity against that head) when base is given. The first review on a branch (no ledger entry) is always a full review. An empty delta (nothing new since the last review) is a no-review outcome — no re-review, no ledger entry. Pass `full: true` to force a full review.",
         }),
       ),
       full: Type.Optional(
         Type.Boolean({
           description:
-            "#973 — force a full review: the automatic delta base (the latest lens ledger entry's headSha) is not consulted. An explicit `since` still wins when given. An explicit base + head (with no `since`) is ALWAYS a full review — the automatic delta base only applies to a bare branch/cwd review.",
+            "#973 — force a full review: the automatic delta base (the latest lens ledger entry's headSha) is not consulted. An explicit `since` still wins when given. An explicit base + head (with no `since`) is not forced to a full review: base + head define the context range, and the automatic delta base still applies when a branch resolves.",
         }),
       ),
       pr: Type.Optional(

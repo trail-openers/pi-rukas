@@ -44,6 +44,7 @@ import { postPrComment } from "./forge-comments.ts";
 import { detectForge } from "./forge-detect.ts";
 import { execp } from "./lens-exec.ts";
 import { suppressedSection } from "./lens-residuals.ts";
+import { deltaFallbackText } from "./lens-review-diff.ts";
 import type { LensReviewSummary } from "./lens-review.ts";
 import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
 import { branchPatchId, remoteName } from "./review-ledger.ts";
@@ -295,6 +296,12 @@ async function doPost(
       `Suppressed as already known (${summary.suppressed?.length ?? 0}) — not re-reported; each names its row id and the reason it was dropped:`,
     ),
     ...(summary.memoryNote ? ["", neutraliseEvidence(summary.memoryNote)] : []),
+    ...(summary.deltaReview?.fallback
+      ? [
+          "",
+          `Delta fallback: ${deltaFallbackText({ since: summary.deltaReview.since, fallback: summary.deltaReview.fallback })} — main's hunks may be included.`,
+        ]
+      : []),
     "",
     marker,
     "",
