@@ -11,8 +11,8 @@
  *     what makes the non-blocking findings visible; without it, no merge).
  *
  * A tool-path CRITICAL_ISSUES_FOUND row must stay refused even with a passing
- * lens. The round-cap merge path itself is covered in
- * test-adversarial-report-only-terminal.ts.
+ * lens. The tool-path verdict cases (approved / rejected / infra-failure) are covered
+ * in test-adversarial-report-only-parse.ts and test-adversarial-tool-guards.ts.
  */
 
 import { mock } from "bun:test";

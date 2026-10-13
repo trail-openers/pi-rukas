@@ -13,11 +13,11 @@
  * replies are reviewer-shaped text, then asserts on the parsed result.
  */
 
-import { mock } from "bun:test";
-import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
+import { mock } from "bun:test";
 import type { AdversarialVerdict } from "../src/adversarial-verdict.ts";
 
 let exit = 0;
