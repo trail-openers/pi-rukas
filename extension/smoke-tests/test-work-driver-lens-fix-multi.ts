@@ -179,7 +179,7 @@ setupSpawnGuard();
     }) as typeof realExec;
 
     const ctx: DriverContext = {
-      pi: makeFakePi(),
+      host: makeFakePi(),
       repoRoot: root,
       issue: 493,
       issueBodyFetcherFn: mockIssueBodyOk,

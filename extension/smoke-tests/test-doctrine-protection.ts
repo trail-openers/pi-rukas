@@ -261,7 +261,7 @@ const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "pi-doctrine-"));
     pipelineState: { ...s.pipelineState, worktrees: { "task-a": wt }, baseSha: "abc123" },
   };
   const ctx = (porcelain: string): DriverContext => ({
-    pi: { sendUserMessage: () => {} } as unknown as DriverContext["pi"],
+    host: { sendUserMessage: () => {} } as unknown as DriverContext["host"],
     repoRoot: tmp,
     issue: 406,
     verifyExecFn: async (cmd) => {

@@ -131,7 +131,7 @@ setupSpawnGuard();
     await writeState(dir, s);
 
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 306,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -223,7 +223,7 @@ setupSpawnGuard();
     };
     await writeState(root, s);
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: root,
       issue: 492,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -323,7 +323,7 @@ setupSpawnGuard();
     };
     await writeState(dir, s);
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 308,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -442,7 +442,7 @@ setupSpawnGuard();
     };
     await writeState(root, s);
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: root,
       issue: 776,
       issueBodyFetcherFn: mockIssueBodyOk,

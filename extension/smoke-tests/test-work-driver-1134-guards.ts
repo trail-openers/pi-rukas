@@ -85,7 +85,7 @@ function stateFor(
 
 function ctxFor(dir: string): DriverContext {
   return {
-    pi: {} as unknown as DriverContext["pi"],
+    pi: {} as unknown as DriverContext["host"],
     repoRoot: dir,
     issue: 1134,
   };

@@ -49,7 +49,7 @@ function mkCtx(issue: number, exec: VerifyExecFn): DriverContext {
   return {
     repoRoot: "/fake",
     issue,
-    pi: mkPi(),
+    host: mkPi(),
     verifyExecFn: exec,
   } as DriverContext;
 }

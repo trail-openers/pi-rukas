@@ -91,7 +91,7 @@ try {
   {
     let seenContext = "";
     const ctx = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: repo,
       issue: 279,
       lensReviewFn: async (args: { context: string }) => {
@@ -123,7 +123,7 @@ try {
   {
     // Route-only: a widening must never fail the cycle by itself.
     const ctx = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: repo,
       issue: 279,
       lensReviewFn: async () => mkLensSummary("APPROVED"),
@@ -143,7 +143,7 @@ try {
     try {
       let seenContext = "";
       const ctx = {
-        pi: fakePi,
+        host: fakePi,
         repoRoot: repo,
         issue: 279,
         lensReviewFn: async (args: { context: string }) => {
@@ -174,7 +174,7 @@ try {
     const prompts: string[] = [];
     const execCalls: Array<{ cmd: string; cwd?: string }> = [];
     const ctx = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: root,
       issue: 279,
       verifyExecFn: async (cmd: string, o?: { cwd?: string }) => {

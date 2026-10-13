@@ -157,7 +157,7 @@ setupSpawnGuard();
     await writeState(dir, s);
 
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 305,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -308,7 +308,7 @@ setupSpawnGuard();
     await writeState(dir, s);
 
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 307,
       issueBodyFetcherFn: mockIssueBodyOk,

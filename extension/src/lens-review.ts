@@ -1,6 +1,5 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { DispatchHost } from "./async-jobs-lifecycle.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { resolveBudgetKey } from "./lens-budget-key.ts";
 import { execp } from "./lens-exec.ts";
@@ -144,8 +143,9 @@ export async function runLensReview(opts: {
    * `/work` and `/review` through this one path.
    */
   extraFindings?: Finding[];
-  /** #799 — parent host for the inner children's slow-run watch (PM notice half). */
-  pi?: DispatchHost;
+  /** #799 — the parent pi for the inner children's slow-run watch (the PM
+   * notice half; the watch site has no pi of its own). */
+  pi?: import("./async-jobs-lifecycle.ts").DispatchHost;
   /** Blocking bar; defaults to MEDIUM. See `DEFAULT_REVIEW_THRESHOLD`. */
   threshold?: Severity;
   /**

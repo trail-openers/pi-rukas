@@ -132,7 +132,7 @@ process.env.PI_ENSEMBLE_VERIFY = "1";
   };
   const baseShaOf = async (dir: string) => (await execp2("git rev-parse HEAD", { cwd: dir })).stdout.trim();
   const ctx = (dir: string): DriverContext => ({
-    pi: makeFakePi().pi,
+    host: makeFakePi().pi,
     repoRoot: dir,
     issue: 540,
     verifyExecFn: execp2,

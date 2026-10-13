@@ -75,7 +75,7 @@ function ctxFor(
   devSpawns: string[],
 ): DriverContext {
   return {
-    pi: { sendUserMessage: () => {} } as unknown as DriverContext["pi"],
+    pi: { sendUserMessage: () => {} } as unknown as DriverContext["host"],
     repoRoot: dir,
     issue: 1114,
     issueBodyFetcherFn: async () => ({ stdout: "mock" }),
@@ -388,7 +388,7 @@ function seededLog(): WorkState["eventLog"] {
     git(dir, "add -A");
     git(dir, 'commit -q -m "base"');
     const ctx: DriverContext = {
-      pi: { sendUserMessage: () => {} } as unknown as DriverContext["pi"],
+      host: { sendUserMessage: () => {} } as unknown as DriverContext["host"],
       repoRoot: dir,
       issue: 1137,
       issueBodyFetcherFn: async () => ({ stdout: "mock" }),

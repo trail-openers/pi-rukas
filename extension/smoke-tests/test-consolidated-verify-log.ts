@@ -110,7 +110,7 @@ async function runCase8b() {
 
   const bigStderr = "x".repeat(5 * 1024);
   const ctx: DriverContext = {
-    pi: {} as unknown as DriverContext["pi"],
+    host: {} as unknown as DriverContext["host"],
     repoRoot: repo,
     issue: 841,
     dispatchFn: async () => ({
@@ -368,7 +368,7 @@ async function runCase8() {
   };
 
   const ctx: DriverContext = {
-    pi: {} as unknown as DriverContext["pi"],
+    host: {} as unknown as DriverContext["host"],
     repoRoot: repo,
     issue: 841,
     dispatchFn: async () => ({
@@ -431,7 +431,7 @@ async function runCase9() {
 
   let vc = 0;
   const ctx: DriverContext = {
-    pi: {} as unknown as DriverContext["pi"],
+    host: {} as unknown as DriverContext["host"],
     repoRoot: repo,
     issue: 841,
     dispatchFn: async () => ({

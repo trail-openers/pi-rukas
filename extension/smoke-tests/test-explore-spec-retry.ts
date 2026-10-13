@@ -95,7 +95,7 @@ async function runWith(
   try {
     const prompts: string[] = [];
     const ctx: DriverContext = {
-      pi: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
+      host: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
       repoRoot: dir,
       issue,
       issueBodyFetcherFn: async () => ({ stdout: `title:\tmock #${issue}\n\nmock body` }),

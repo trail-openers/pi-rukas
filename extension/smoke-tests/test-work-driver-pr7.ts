@@ -110,7 +110,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 
     const seenLabels: string[] = [];
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 900,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -185,7 +185,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 
     const seenLabels: string[] = [];
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 901,
       issueBodyFetcherFn: mockIssueBodyOk,

@@ -148,7 +148,7 @@ function cappedState(issue: number) {
   try {
     const { forge, calls } = mkFakeForge();
     const ctx: DriverContext = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: dir,
       issue: 626,
       dispatchFn: failingDispatch(),
@@ -203,7 +203,7 @@ function cappedState(issue: number) {
   try {
     const { forge, calls } = mkFakeForge();
     const ctx: DriverContext = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: dir,
       issue: 626,
       dispatchFn: failingDispatch(),
@@ -233,7 +233,7 @@ function cappedState(issue: number) {
   try {
     const { forge, calls } = mkFakeForge();
     const ctx: DriverContext = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: dir,
       issue: 626,
       dispatchFn: async () => ({

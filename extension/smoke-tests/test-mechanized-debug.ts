@@ -75,7 +75,7 @@ async function main() {
     };
 
     const ctx = {
-      pi: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
+      host: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
       repoRoot: dir,
       issue: 994,
       issueBodyFetcherFn: async () => ({ stdout: "title:\ttest\nstate:\tOPEN\n\nbody" }),

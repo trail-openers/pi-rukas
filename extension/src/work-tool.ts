@@ -46,6 +46,7 @@ import { startJob } from "./async-jobs.ts";
 import { type SlashCommand, expandArgs, loadPromptBody } from "./commands.ts";
 import { armPmMode } from "./pm-mode.ts";
 import { trace } from "./trace.ts";
+import { piSessionHost } from "./work-driver-host.ts";
 import { doctrinePresence } from "./work-driver-policy.ts";
 import { parseWorkArgs, resolveRepoRoot, runDriver } from "./work-entry.ts";
 
@@ -134,7 +135,7 @@ export function registerWorkTools(pi: ExtensionAPI) {
         role: "work-driver",
         skipDeck: true,
         work: (signal, hooks) =>
-          runDriver(pi, { repoRoot, invocation, sink: { notify: (t) => trace(t) } }),
+          runDriver(piSessionHost(pi), { repoRoot, invocation, sink: { notify: (t) => trace(t) } }),
       });
 
       setJobIssues(handle.jobId, params.issues);

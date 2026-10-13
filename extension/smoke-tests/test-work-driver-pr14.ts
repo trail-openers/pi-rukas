@@ -134,7 +134,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     await writeState(dir, s);
 
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 577,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -228,7 +228,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     await writeState(dir, s);
 
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 580,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -355,7 +355,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     await writeState(dir, s);
 
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 577,
       issueBodyFetcherFn: mockIssueBodyOk,

@@ -15,6 +15,7 @@ import { Type } from "@sinclair/typebox";
 import { runResearchPipeline } from "./research-driver.ts";
 import type { ResearchClaim, ResearchResult } from "./research-types.ts";
 import { trace } from "./trace.ts";
+import { piSessionHost } from "./work-driver-host.ts";
 import { resolveRepoRoot } from "./work-entry.ts";
 
 export function registerResearchTool(pi: ExtensionAPI) {
@@ -70,7 +71,7 @@ export function registerResearchTool(pi: ExtensionAPI) {
         `start_research_driver → topic="${params.topic.slice(0, 60)}" tier=${params.tier ?? "standard"} repoRoot=${repoRoot}`,
       );
       try {
-        const result = await runResearchPipeline(pi, params, repoRoot);
+        const result = await runResearchPipeline(piSessionHost(pi), params, repoRoot);
         return {
           content: [{ type: "text", text: renderResearchResult(result) }],
           details: resultDetails(result),

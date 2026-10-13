@@ -311,7 +311,7 @@ async function runDriverCase(
   let exploreDispatches = 0;
   try {
     const ctx: DriverContext = {
-      pi: makeFakePi(),
+      host: makeFakePi(),
       repoRoot: dir,
       issue,
       issueBodyFetcherFn: async (n, _cwd) => ({ stdout: `title:\tissue #${n}\nstate:\tOPEN\n\nbody for #${n}` }),

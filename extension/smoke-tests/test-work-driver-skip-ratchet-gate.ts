@@ -121,7 +121,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
               return { stdout: "" };
             };
             const ctx: DriverContext = {
-              pi: makeFakePi().pi,
+              host: makeFakePi().pi,
               repoRoot: dir,
               issue: 1000,
               issueBodyFetcherFn: () => ({ stdout: "mock body without exemption" }),
@@ -165,7 +165,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
               return { stdout: "" };
             };
             const ctx: DriverContext = {
-              pi: makeFakePi().pi,
+              host: makeFakePi().pi,
               repoRoot: dir,
               issue: 1002,
               issueBodyFetcherFn: () => ({ stdout: "replacing skips" }),
@@ -186,7 +186,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
               return { stdout: "" };
             };
             const ctxNegative: DriverContext = {
-              pi: makeFakePi().pi,
+              host: makeFakePi().pi,
               repoRoot: dir,
               issue: 1002,
               issueBodyFetcherFn: () => ({ stdout: "removing more skips" }),
@@ -230,7 +230,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
               return { stdout: "" };
             };
             const ctx: DriverContext = {
-              pi: makeFakePi().pi,
+              host: makeFakePi().pi,
               repoRoot: dir,
               issue: 1003,
               issueBodyFetcherFn: () => ({ stdout: "adding documentation" }),
@@ -274,7 +274,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
               return { stdout: "" };
             };
             const ctx: DriverContext = {
-              pi: makeFakePi().pi,
+              host: makeFakePi().pi,
               repoRoot: dir,
               issue: 1004,
               issueBodyFetcherFn: () => ({ stdout: "adding tests" }),
@@ -319,7 +319,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
               return { stdout: "" };
             };
             const ctx: DriverContext = {
-              pi: makeFakePi().pi,
+              host: makeFakePi().pi,
               repoRoot: dir,
               issue: 1005,
               issueBodyFetcherFn: () => ({ stdout: "fixing smoke" }),
@@ -351,7 +351,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
               },
             };
             const ctx: DriverContext = {
-              pi: makeFakePi().pi,
+              host: makeFakePi().pi,
               repoRoot: dir,
               issue: 1006,
               issueBodyFetcherFn: () => ({ stdout: "adding feature" }),
@@ -401,7 +401,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
                 return { stdout: "" };
               };
               const ctxSmokeDisabled: DriverContext = {
-                pi: makeFakePi().pi,
+                host: makeFakePi().pi,
                 repoRoot: dir,
                 issue: 1007,
                 issueBodyFetcherFn: () => ({ stdout: "testing smoke disable" }),
@@ -443,7 +443,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
                 return { stdout: "" };
               };
               const ctxRatchetDisabled: DriverContext = {
-                pi: makeFakePi().pi,
+                host: makeFakePi().pi,
                 repoRoot: dir,
                 issue: 1008,
                 issueBodyFetcherFn: () => ({ stdout: "testing ratchet disable" }),

@@ -97,7 +97,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     let planPrompt = "";
     let commitPrPrompt = "";
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 961,
       issues: [961, 962, 963],
@@ -161,7 +161,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
     let commitPrPrompt = "";
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 970,
       issues: [970, 971, 972],
@@ -233,7 +233,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
     const seenLabels: string[] = [];
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 980,
       issues: [980, 981],

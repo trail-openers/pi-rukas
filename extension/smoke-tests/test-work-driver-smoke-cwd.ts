@@ -51,7 +51,7 @@ try {
   };
   let smokeCwd: string | undefined;
   const ctx: DriverContext = {
-    pi: makeFakePi().pi,
+    host: makeFakePi().pi,
     repoRoot,
     issue: 1010,
     issueBodyFetcherFn: () => ({ stdout: "smoke cwd test" }),

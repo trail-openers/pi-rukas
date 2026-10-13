@@ -203,7 +203,7 @@ const specWith = (criteria: string[]) => ({
   };
 
   const ctx: DriverContext = {
-    pi: {} as never,
+    host: {} as never,
     repoRoot: "/repo",
     issue: 1137,
     verifyExecFn: execFn,
@@ -418,7 +418,7 @@ const specWith = (criteria: string[]) => ({
         return execFn(cmd, o);
       };
       const ctx: DriverContext = {
-        pi: {} as never,
+        host: {} as never,
         repoRoot: dir,
         issue: 1137,
         verifyExecFn: prExec,

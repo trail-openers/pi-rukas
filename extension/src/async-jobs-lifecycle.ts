@@ -8,15 +8,15 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { type JobKind, childHandles, jobs } from "./async-jobs-registry.ts";
+import { reset as resetDeck } from "./dispatch-deck.ts";
+import { incrementNotice } from "./notice-counter.ts";
+import { trace } from "./trace.ts";
 
 /** The narrow host surface startJob / dispatch need: steer delivery only. */
 export interface DispatchHost {
   sendUserMessage(text: string, options: { deliverAs: "steer" }): void;
 }
-import { type JobKind, childHandles, jobs } from "./async-jobs-registry.ts";
-import { reset as resetDeck } from "./dispatch-deck.ts";
-import { incrementNotice } from "./notice-counter.ts";
-import { trace } from "./trace.ts";
 
 /**
  * Push a report back to the parent agent. `deliverAs: "steer"` queues the

@@ -42,7 +42,7 @@ export function auditStateFor(
 /** A driver context for a direct auditCommitPrFallback call (real-exec verify seam). */
 export function auditCtx(repo: string, issue: number): DriverContext {
   return {
-    pi: {} as unknown as DriverContext["pi"],
+    pi: {} as unknown as DriverContext["host"],
     repoRoot: repo,
     issue,
     verifyExecFn: realExec,
@@ -145,7 +145,7 @@ export function makeCtx(opts: {
     throw new Error(`unexpected dispatch: ${label}`);
   };
   return {
-    pi: {} as unknown as DriverContext["pi"],
+    pi: {} as unknown as DriverContext["host"],
     repoRoot: repo,
     issue,
     issueBodyFetcherFn: async (i: number) => ({

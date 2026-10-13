@@ -275,7 +275,7 @@ async function runExploreWithArtifact(
   }
   const state = initialState(issue, 1_000_000);
   const ctx: DriverContext = {
-    pi,
+    host: pi,
     repoRoot: dir,
     issue,
     issueBodyFetcherFn: mockIssueBodyOk,

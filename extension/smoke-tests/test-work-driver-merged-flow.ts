@@ -59,7 +59,7 @@ function mkCtx(
   return {
     repoRoot: opts.repoRoot,
     issue,
-    pi: mkPi(),
+    host: mkPi(),
     verifyExecFn: exec,
     mergeGrant: true, // #380 — granted the way `/work N --merge` would
     issueBodyFetcherFn: async () => ({ stdout: `title:\ttest #${issue}\nstate:\tOPEN\n\nbody` }),

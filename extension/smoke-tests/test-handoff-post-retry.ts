@@ -189,7 +189,7 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
     process.env.PI_ENSEMBLE_HANDOFF_POST_RETRY_BACKOFF_MS = "0";
     const { forge, calls } = mkFlakyForge({ issueCommentFailures: [1] });
     const ctx: DriverContext = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: dir,
       issue: 674,
       dispatchFn: failingDispatch(),
@@ -241,7 +241,7 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
     process.env.PI_ENSEMBLE_HANDOFF_POST_RETRY_BACKOFF_MS = "0";
     const { forge, calls } = mkFlakyForge({ labelAddFailures: [1] });
     const ctx: DriverContext = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: dir,
       issue: 674,
       dispatchFn: failingDispatch(),
@@ -288,7 +288,7 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
       labelAddFailures: [1, 2, 3],
     });
     const ctx: DriverContext = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: dir,
       issue: 674,
       dispatchFn: failingDispatch(),
@@ -337,7 +337,7 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
   try {
     const { forge, calls } = mkFlakyForge({});
     const ctx: DriverContext = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: dir,
       issue: 674,
       dispatchFn: async () => ({

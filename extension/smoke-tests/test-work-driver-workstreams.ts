@@ -302,7 +302,7 @@ branch: feature/issue-553-fix
     const seenLabels: string[] = [];
     let throwOnce = false;
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 700,
       issueBodyFetcherFn: mockIssueBodyOk,

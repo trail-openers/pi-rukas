@@ -96,7 +96,7 @@ const STRAY_REL = path.join("extension", "src", "work-driver-converge.ts");
 function branchCtx(repo: string, execFn: ExecFn, dispatchFn?: () => Promise<DispatchResult>) {
   return {
     // biome-ignore lint/suspicious/noExplicitAny: driver fixture
-    pi: {} as any,
+    host: {} as any,
     issue: 746,
     issues: [746],
     restart: false,

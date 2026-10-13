@@ -105,7 +105,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 
     let branchAttempts = 0;
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 950,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -180,7 +180,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 
     let branchAttempts = 0;
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 951,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -242,7 +242,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 
     let branchAttempts = 0;
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 952,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -298,7 +298,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     await writeState(dir, s);
 
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue: 953,
       issueBodyFetcherFn: mockIssueBodyOk,

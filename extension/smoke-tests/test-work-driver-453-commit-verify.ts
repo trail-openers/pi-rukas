@@ -104,7 +104,7 @@ async function mkCommittedWorktree(): Promise<{ root: string; wt: string; baseSh
   try {
     const mkCtx = (execFn: NonNullable<DriverContext["verifyExecFn"]>): DriverContext =>
       ({
-        pi: makeFakePi(),
+        host: makeFakePi(),
         issue: 453,
         repoRoot: tmpDir,
         verifyExecFn: execFn,
@@ -263,7 +263,7 @@ async function mainAdversarialCommittedDiff(): Promise<void> {
 
     let seenDiff: string | undefined;
     const ctx = {
-      pi: makeFakePi(),
+      host: makeFakePi(),
       repoRoot: root,
       issue: 453,
       adversarialLoopFn: async (params: { diff?: string }) => {
@@ -301,7 +301,7 @@ async function mainFalsilyGreen(): Promise<void> {
 
     const mkCtx = (execFn: NonNullable<DriverContext["verifyExecFn"]>): DriverContext =>
       ({
-        pi: makeFakePi(),
+        host: makeFakePi(),
         issue: 679,
         repoRoot: tmpDir,
         verifyExecFn: execFn,

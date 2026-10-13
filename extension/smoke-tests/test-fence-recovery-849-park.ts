@@ -109,9 +109,9 @@ function ctxFor(repo: string, dispatchFn: NonNullable<DriverContext["dispatchFn"
     "repoRoot" | "issue" | "issues" | "verifyExecFn" | "stateRef" | "dispatchFn"
   > & {
     // biome-ignore lint/suspicious/noExplicitAny: driver fixture — the pi binding is never touched on this path
-    pi: any;
+    host: any;
   } = {
-    pi: {},
+    host: {},
     issue: 849,
     issues: [849],
     repoRoot: repo,

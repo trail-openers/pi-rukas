@@ -45,7 +45,7 @@ function assert(cond: boolean, msg: string) {
       prLabels: ["needs-human-attention"],
     });
     const ctx: DriverContext = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: dir,
       issue: 782,
       dispatchFn: async () => ({
@@ -91,7 +91,7 @@ function assert(cond: boolean, msg: string) {
       prLabels: [], // the PR label is NOT on the PR
     });
     const ctx: DriverContext = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: dir,
       issue: 782,
       dispatchFn: async () => ({
@@ -136,7 +136,7 @@ function assert(cond: boolean, msg: string) {
   try {
     const { forge } = mkFakeForge({ issueLabels: ["needs-human-attention"] });
     const ctx: DriverContext = {
-      pi: fakePi,
+      host: fakePi,
       repoRoot: dir,
       issue: 626,
       dispatchFn: async () => ({

@@ -416,7 +416,7 @@ try {
     };
     const state = auditStateFor(1, branch1, baseSha, "stub\npr: 99");
     const ctx: DriverContext = {
-      pi: {} as unknown as DriverContext["pi"],
+      host: {} as unknown as DriverContext["host"],
       repoRoot: repo,
       issue: 1,
       verifyExecFn: failingExec,

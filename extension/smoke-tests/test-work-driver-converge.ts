@@ -158,7 +158,7 @@ async function runConvergeCycle(
       execOut.diffReads = exec.diffReads;
     }
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: dir,
       issue,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -342,7 +342,7 @@ async function runConvergeCycle(
         return { stdout: "" };
       };
       const ctx: DriverContext = {
-        pi: makeFakePi().pi,
+        host: makeFakePi().pi,
         repoRoot: dir,
         issue: 1001,
         verifyExecFn: exec,

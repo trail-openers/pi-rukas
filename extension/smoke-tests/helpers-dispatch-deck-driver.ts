@@ -61,7 +61,7 @@ export function mkCycleCtx(
   return {
     repoRoot: dir,
     issue,
-    pi: { sendUserMessage: () => {} } as unknown as DriverContext["pi"],
+    host: { sendUserMessage: () => {} } as unknown as DriverContext["host"],
     dispatchFn: dispatch,
     issueBodyFetcherFn: async (i: number) => ({
       stdout: `title:\ttest #${i}\nstate:\tOPEN\n\nmock body for issue #${i} — non-empty placeholder`,

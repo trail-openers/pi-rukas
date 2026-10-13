@@ -284,7 +284,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         stdout: `${ISSUE_TITLE}\n\n## Context & motivation\n\nBody of the issue — non-empty.`,
       });
       const ctx: DriverContext = {
-        pi: makeFakePi().pi,
+        host: makeFakePi().pi,
         repoRoot: dir,
         issue: 818,
         issueBodyFetcherFn,

@@ -141,7 +141,7 @@ if (isEntry) {
         },
       };
       const ctx: DriverContext = {
-        pi: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
+        host: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
         repoRoot: f.repo,
         issue: 669,
         verifyExecFn: realExec,
@@ -187,7 +187,7 @@ if (isEntry) {
         },
       };
       const ctx: DriverContext = {
-        pi: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
+        host: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
         repoRoot: f.repo,
         issue: 669,
         verifyExecFn: realExec,
@@ -232,7 +232,7 @@ if (isEntry) {
         },
       };
       const ctx: DriverContext = {
-        pi: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
+        host: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
         repoRoot: f.repo,
         issue: 669,
         verifyExecFn: realExec,
@@ -299,7 +299,7 @@ if (isEntry) {
         },
       };
       const ctx2: DriverContext = {
-        pi: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
+        host: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
         repoRoot: f2.repo,
         issue: 669,
         verifyExecFn: realExec,

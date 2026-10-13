@@ -168,7 +168,7 @@ setupSpawnGuard();
 
     const lensFixPrompts: string[] = [];
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      host: makeFakePi().pi,
       repoRoot: root,
       issue: 655,
       issueBodyFetcherFn: mockIssueBodyOk,

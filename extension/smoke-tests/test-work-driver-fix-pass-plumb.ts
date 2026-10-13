@@ -34,7 +34,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
     const state = fixState(dir, ["b.txt"]);
     const before = JSON.stringify(state.pipelineState.workstreams);
     const ctx: DriverContext = {
-      pi: { sendUserMessage: () => {} } as unknown as DriverContext["pi"],
+      host: { sendUserMessage: () => {} } as unknown as DriverContext["host"],
       repoRoot: dir,
       issue: 1114,
       issueBodyFetcherFn: async () => ({ stdout: "mock" }),

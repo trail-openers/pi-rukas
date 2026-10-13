@@ -390,7 +390,7 @@ async function runWithRecorder(
   const prev = process.env.PI_ENSEMBLE_NOTIFY_CMD;
   process.env.PI_ENSEMBLE_NOTIFY_CMD = `sh ${recorder} >> ${out}`;
   const ctx: DriverContext = {
-    pi: {},
+    host: {},
     issue: 799,
     issues: [799],
     repoRoot: repo,

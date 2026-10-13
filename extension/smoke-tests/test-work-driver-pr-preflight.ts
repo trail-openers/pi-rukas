@@ -93,7 +93,7 @@ function assert(cond: boolean, msg: string) {
 function ctxWith(prListJson: string | Error, dispatched: string[]): DriverContext {
   return {
     // biome-ignore lint/suspicious/noExplicitAny: only the fields runBranch touches are needed
-    pi: {} as any,
+    host: {} as any,
     repoRoot: "/tmp/does-not-exist",
     issue: 5,
     verifyExecFn: async (cmd: string) => {

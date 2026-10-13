@@ -266,7 +266,7 @@ try {
     });
     const ctx = {
       // biome-ignore lint/suspicious/noExplicitAny: driver fixture
-      pi: {} as any,
+      host: {} as any,
       issue: 730,
       issues: [730],
       restart: true,

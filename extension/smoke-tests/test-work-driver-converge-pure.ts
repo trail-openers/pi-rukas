@@ -168,7 +168,7 @@ function makeFakePi(): { pi: ExtensionAPI; sent: string[] } {
     },
   };
   const outsideCtx: DriverContext = {
-    pi: makeFakePi().pi,
+    host: makeFakePi().pi,
     repoRoot: path.join(tmpdir(), "pi-rukas-converge-inside"),
     issue: 1003,
     verifyExecFn: async () => ({

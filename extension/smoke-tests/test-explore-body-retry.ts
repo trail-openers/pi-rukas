@@ -79,7 +79,7 @@ async function capOf(dir: string, issue: number): Promise<string | undefined> {
     let attempts = 0;
     let exploreDispatched = false;
     const ctx: DriverContext = {
-      pi: makeFakePi(),
+      host: makeFakePi(),
       repoRoot: dir,
       issue: 700,
       issueBodyFetcherFn: async (n, _cwd) => {
@@ -114,7 +114,7 @@ async function capOf(dir: string, issue: number): Promise<string | undefined> {
     let attempts = 0;
     let exploreDispatched = false;
     const ctx: DriverContext = {
-      pi: makeFakePi(),
+      host: makeFakePi(),
       repoRoot: dir,
       issue: 701,
       issueBodyFetcherFn: async (n, _cwd) => {
@@ -150,7 +150,7 @@ async function capOf(dir: string, issue: number): Promise<string | undefined> {
     let attempts = 0;
     let exploreDispatched = false;
     const ctx: DriverContext = {
-      pi: makeFakePi(),
+      host: makeFakePi(),
       repoRoot: dir,
       issue: 702,
       issueBodyFetcherFn: async (_n, _cwd) => {
@@ -184,7 +184,7 @@ async function capOf(dir: string, issue: number): Promise<string | undefined> {
   try {
     let attempts = 0;
     const ctx: DriverContext = {
-      pi: makeFakePi(),
+      host: makeFakePi(),
       repoRoot: dir,
       issue: 703,
       issueBodyFetcherFn: async (_n, _cwd) => {
@@ -239,7 +239,7 @@ async function capOf(dir: string, issue: number): Promise<string | undefined> {
   try {
     let attempts = 0;
     const ctx: DriverContext = {
-      pi: makeFakePi(),
+      host: makeFakePi(),
       repoRoot: dir,
       issue: 705,
       issueBodyFetcherFn: async (_n, _cwd) => {
