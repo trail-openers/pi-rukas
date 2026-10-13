@@ -217,6 +217,10 @@ registerAdversarialTool(fakePi().pi); // warm any module init
     (adv?.description ?? "").includes("reportOnly") && (adv?.description ?? "").includes("workCwd"),
     "adversarial_loop description documents reportOnly and the workCwd rule",
   );
+  assert(
+    (adv?.description ?? "").includes("terminal-round rule"),
+    "adversarial_loop description states the reportOnly terminal-round rule (#1154)",
+  );
 }
 
 // ============================================================ 2. adversarial_loop ref range (tool path)
