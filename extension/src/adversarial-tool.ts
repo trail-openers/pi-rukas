@@ -68,6 +68,12 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
         workCwd?: string;
         reportOnly?: boolean;
       };
+      // #1154 — the verdict policy is set after the raw spread, so a caller
+      // cannot spoof it: reportOnly picks "terminal"; anything else gets none.
+      const policy =
+        params.reportOnly === true
+          ? { reportOnly: true as const, reportVerdict: "terminal" as const }
+          : { reportOnly: false as const, reportVerdict: undefined };
       const { jobId } = startJob(pi, {
         label: "adversarial_loop",
         role: "adversarial-loop",
@@ -77,12 +83,11 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
         skipDeck: true,
         work: (signal, hooks) =>
           runAdversarialLoop(
-            // #1154 — set after the spread so a caller cannot spoof it; terminal only for reportOnly.
             {
               ...params,
               pi,
               fixFence: { callerCwd: process.cwd() },
-              reportVerdict: params.reportOnly === true ? "terminal" : "routed",
+              ...policy,
             },
             signal,
             hooks.jobId,

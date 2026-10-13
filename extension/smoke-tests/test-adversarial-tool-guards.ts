@@ -16,11 +16,11 @@
  * test-adversarial-range-recompute.ts).
  */
 
+import { mock } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { mock } from "bun:test";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -132,6 +132,7 @@ try {
       context: "ro",
       workCwd: workRepo,
       reportOnly: true,
+      reportVerdict: "routed",
     },
     signal(),
     "job-a",
