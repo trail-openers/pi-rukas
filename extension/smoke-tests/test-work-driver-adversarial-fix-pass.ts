@@ -445,6 +445,8 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
 
 // K — #1137 review: a plumb report from an EARLIER pass is not this pass's question.
 {
+  // No-change pass: the developer answers "done" and commits nothing, so the
+  // stale report is the only plumb candidate a route could present.
   const dir = repoWithFile("fix-stale-plumb");
   try {
     const ctx: DriverContext = {
@@ -452,10 +454,15 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
       repoRoot: dir,
       issue: 1137,
       issueBodyFetcherFn: async () => ({ stdout: "mock" }),
-      dispatchFn: async (_pi, spec) => {
-        if (spec.role === "developer") devCommit(dir, "stray.txt", "x\n");
-        return { role: spec.role, ok: true, exitCode: 0, text: "done", toolUses: [], ms: 1 } as DispatchResult;
-      },
+      dispatchFn: async (_pi, spec) =>
+        ({
+          role: spec.role,
+          ok: true,
+          exitCode: 0,
+          text: "done",
+          toolUses: [],
+          ms: 1,
+        }) as DispatchResult,
     };
     const st = twoWorkstreamState(dir);
     const stale: WorkState = {
@@ -469,7 +476,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
     const tail = out.eventLog[out.eventLog.length - 1];
     const ev = tail?.kind === "cap-hit" ? (tail.evidence ?? "") : "";
     assert(
-      !/answer the question/.test(ev),
+      tail?.kind === "cap-hit" && !/answer the question/.test(ev),
       `K: a stale plumb report is not presented as this pass's question (tail: ${tail?.kind})`,
     );
   } finally {

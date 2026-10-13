@@ -8,6 +8,7 @@
 
 import { explainCap } from "../src/work-driver-explain.ts";
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
+import { appendDevelopVerifyFailure } from "../src/work-develop-verify-failure.ts";
 import { appendEvent, initialState } from "../src/workflow-state.ts";
 
 let exit = 0;
@@ -128,6 +129,32 @@ runExplainCapCanaries();
   assert(
     !md.includes("evidence detail missing from state"),
     "handoff markdown: no 'evidence detail missing' when the cap carries evidence",
+  );
+}
+
+// #1137 — a REAL develop verify-failure cap (appendDevelopVerifyFailure) carries
+// evidence too, but the Why must keep the per-failure bullets with the fence
+// attribution: the cap's evidence is only a join of the same failures, so the
+// fix-pass precedence must not apply to it.
+{
+  const failure = "task-a: FAIL — fence violation: src/main.rs (declared by task-d)";
+  const gate = {
+    failures: [failure],
+    fenceViolations: [
+      { kind: "sibling-declared", workstreamId: "task-a", file: "src/main.rs", declaredById: "task-d" },
+    ],
+  } as unknown as Parameters<typeof appendDevelopVerifyFailure>[1];
+  let s = initialState(1137, 1_000_000);
+  s = { ...s, pipelineState: { ...s.pipelineState, currentStep: "develop" } };
+  s = appendDevelopVerifyFailure(s, gate);
+  const line = explainCap("verify-failed:develop", s);
+  assert(
+    line.includes(`  - ${failure}`),
+    "explainCap(real develop verify cap) keeps the per-failure bullet with the fence attribution",
+  );
+  assert(
+    !line.includes("evidence detail missing from state"),
+    "explainCap(real develop verify cap) does not report missing evidence",
   );
 }
 

@@ -173,8 +173,8 @@ export async function readConsolidatedDiffFiles(
         const code = fields[0]?.trim() ?? "";
         if (!code) continue;
         const codeBase = code[0];
-        if (codeBase === "R" && fields.length >= 3) {
-          // The rename TARGET is what landed; the source covered via prefix.
+        if ((codeBase === "R" || codeBase === "C") && fields.length >= 3) {
+          // The rename/copy TARGET is what landed; the source covered via prefix.
           const tgt = normaliseDeclaredPath(fields[2] ?? "");
           if (tgt) files.add(tgt);
           continue;

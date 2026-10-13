@@ -17,7 +17,7 @@ import { explainReview } from "./work-driver-explain-review.ts";
 import { cherryPickRecoveryFor } from "./work-driver-handoff-cherry-pick.ts";
 import { type ParkReason, explainPark } from "./work-driver-intent.ts";
 import { explainMergeHold } from "./work-driver-merge-authority.ts";
-import { lastCapHit } from "./workflow-state-cap.ts";
+import { FIX_PASS_EVIDENCE_PREFIX, lastCapHit } from "./workflow-state-cap.ts";
 import {
   type WorkEvent,
   type WorkState,
@@ -306,15 +306,17 @@ export function explainCap(
   if (cap.startsWith("verify-failed:")) {
     const step = cap.slice("verify-failed:".length);
     const evidence = state.pipelineState.verifyEvidence;
-    // #1137 — the cap-hit event's own `evidence` string is the FIRST source
-    // of the "Why": the fix-pass park (parkFixPass) and the plumb-with-no-change
-    // route both write their detail there, and `verifyEvidence.failures` is
-    // only written by the develop-verify gate's own failure path. Reading only
-    // the latter is what produced "(evidence detail missing from state)" on a
-    // cap that carried evidence — the #1128 shape. Prefer the cap's evidence;
-    // fall back to the gate's failures only when the cap carried none.
+    // #1137 — a fix-pass park (parkFixPass) writes its detail on the cap-hit's
+    // own `evidence` string, and `verifyEvidence.failures` is never written on
+    // that path, so the "Why" read "(evidence detail missing from state)".
+    // Prefer the cap's evidence ONLY for fix-pass caps: the generic develop
+    // verify cap also carries evidence, but it is a bounded join of the same
+    // failures, and the per-failure bullets (with fence attribution) are the
+    // richer rendering for it.
     const capHit = lastCapHit(state, cap);
-    const capEvidence = capHit?.evidence;
+    const capEvidence = capHit?.evidence?.startsWith(FIX_PASS_EVIDENCE_PREFIX)
+      ? capHit.evidence
+      : undefined;
     const findings = capEvidence
       ? `\n${capEvidence}`
       : evidence && evidence.failures.length > 0

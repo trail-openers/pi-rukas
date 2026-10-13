@@ -194,5 +194,45 @@ const WS = {
   }
 }
 
+{
+  // D: the map has three keys but `ids` names ONE of them. N>1 follows the
+  // map (not the id count), so the single review is still a multi-workstream
+  // review: its own branch-completed + branches-converged events are written.
+  // This is deliberate — the map is the cycle's workstream count.
+  const dir = tmpDir("own-subset");
+  try {
+    git(dir, "init -q -b main");
+    const reviewed: string[] = [];
+    const ctx: DriverContext = {
+      pi: { sendUserMessage: () => {} } as unknown as DriverContext["pi"],
+      repoRoot: dir,
+      issue: 1137,
+      issueBodyFetcherFn: async () => ({ stdout: "mock" }),
+      adversarialLoopFn: async (params) => {
+        const m = params.context.match(/gating diff for workstream "([\w-]+)"/);
+        reviewed.push(m?.[1] ?? "n1");
+        return APPROVED;
+      },
+    };
+    const st = stateWith(dir, WS);
+    writeFileSync(path.join(dir, "b.txt"), "base b\n");
+    git(dir, "add -A");
+    git(dir, 'commit -q -m "base"');
+    st.pipelineState.baseSha = git(dir, "rev-parse HEAD").trim();
+    const { next, outcomes } = await fanOutAdversarial(ctx, st, ["docs"], new Map(), false, null);
+    assert(
+      reviewed.join(",") === "docs" && outcomes.length === 1,
+      `D: only the id passed in is reviewed (reviewed ${reviewed.join(",")})`,
+    );
+    assert(
+      next.eventLog.some((e) => e.kind === "branches-converged") &&
+        next.eventLog.some((e) => e.kind === "branch-completed" && e.workstreamId === "docs"),
+      "D: the map's N>1 shape writes the fan-out events for the one reviewed id",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

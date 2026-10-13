@@ -3,11 +3,13 @@
  * develop step fixes.
  *
  * The adversarial step no longer edits anything. Each driver round is one
- * reportOnly review per workstream; a parsed ISSUES_FOUND / CRITICAL at a
- * non-terminal round routes that workstream back to develop as a FIX PASS.
- * The findings travel into the developer prompt as data, the pass reuses the
- * workstream's worktree, and every develop gate runs unchanged. Approved
- * workstreams are neither re-developed nor re-reviewed.
+ * reportOnly review per workstream (adversarial.ts `reportOnly`). A parsed
+ * ISSUES_FOUND / CRITICAL_ISSUES_FOUND at a non-terminal round routes that
+ * workstream back to develop as a FIX PASS: the findings travel into the
+ * developer prompt as data, the pass reuses the workstream's worktree, and
+ * every develop gate runs on the result exactly as on a first pass. Then the
+ * workstream returns to adversarial for a re-review. Approved workstreams are
+ * neither re-developed nor re-reviewed.
  *
  * This module owns the event-log reading (round counts, pending fixes), the
  * per-round interpretation of a reportOnly result, and the fix pass itself.
@@ -46,6 +48,7 @@ import { beginDispatch } from "./work-driver-resume.ts";
 import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import { execp as argvExecp } from "./work-driver-verify.ts";
 import { activeIssuesOf } from "./work-driver-workspace.ts";
+import { FIX_PASS_EVIDENCE_PREFIX } from "./workflow-state-cap.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 
@@ -77,8 +80,9 @@ export function actionFor(
 
 /**
  * The review track of one workstream, read from the cycle's event log:
- * `rounds` counts PARSED reviews only; `needsReview` is true before the first
- * parsed review, and after a fix pass applied since the last review.
+ * `rounds` counts PARSED reviews only (an infra-failed round never counts
+ * toward the cap). `needsReview` is true before the first parsed review, and
+ * after a fix pass has been applied since the last review.
  */
 export function reviewTrack(
   eventLog: readonly WorkEvent[],
@@ -191,7 +195,9 @@ export function fixRequestEvents(
 
 /**
  * Workstreams that keep a FINAL verdict from an earlier invocation: not run
- * again, their outcome re-emitted so the log stays complete.
+ * again, their outcome re-emitted so the log stays complete. A single-workstream
+ * cycle keeps no per-workstream outcome event, so its approval is recovered
+ * from the rounds it already ran.
  */
 export function survivorsOf(
   state: WorkState,
@@ -230,7 +236,8 @@ export function survivorsOf(
 }
 
 /**
- * The verdict a single-workstream cycle's last parsed review reached.
+ * The verdict a single-workstream cycle's last parsed review reached. Such a
+ * cycle keeps no per-workstream outcome event, so the log is the only record.
  */
 function lastReviewVerdict(
   eventLog: readonly WorkEvent[],
@@ -287,7 +294,7 @@ function parkFixPass(
     cap: "verify-failed:develop",
     reviewRound: state.pipelineState.reviewRound,
     nextStep: "handoff",
-    evidence: `adversarial fix pass: ${reason}`,
+    evidence: `${FIX_PASS_EVIDENCE_PREFIX}${reason}`,
   });
 }
 
