@@ -261,6 +261,7 @@ The hook is the escape hatch for the inexpressible: anything the symlink allowli
 - **`cwd` = the new worktree root.** `git worktree add --detach` has just run, so the hook sees a tree of tracked files only.
 - **The hook path skips the symlink loop entirely**, including the `.git/info/exclude` write that loop performs. If your hook creates a symlink (say, `ln -s $repo_root/extension/node_modules extension/node_modules`), it must write its own exclude entry to `$GIT_COMMON_DIR/info/exclude`, or the link surfaces as untracked in `git status --porcelain` and `stagePorcelainPaths` stages it into the PR.
 - **A non-zero exit is reported as `ProvisionResult.problem`** and traced at the branch step; the cycle continues (a bare worktree is the status quo, not a regression). A hook that cannot provision should exit 0 with a diagnostic to stderr, not fail the cycle.
+- **`hook-failed` in a `worktree-provisioned` event means the hook exited non-zero, nothing else.** A hook that exited 0 is recorded `hook-ran`; it carries a `problem` only when the project has a Node or Python manifest/lockfile and the worktree still has no `node_modules` / `.venv`. A project whose toolchain keeps dependencies outside the tree (Cargo, Go, Bundler) expects nothing here, so a `Cargo.toml` alone never raises one.
 
 ### The plan step re-dispatches saying two workstreams claim the same file
 

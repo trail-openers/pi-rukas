@@ -76,6 +76,11 @@ export interface ProvisionResult {
   linked: string[];
   /** Set when provisioning was attempted and failed. Never throws. */
   problem?: string;
+  /**
+   * The hook exited non-zero. Distinct from `problem`, which a hook that
+   * exited 0 also carries when the worktree still lacks an expected tree.
+   */
+  hookFailed?: boolean;
 }
 
 /**

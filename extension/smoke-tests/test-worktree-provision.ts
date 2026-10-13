@@ -227,9 +227,9 @@ async function makeWorktreeFixture(root: string, name: string): Promise<string> 
 {
   const { root, wt } = fixture("w");
   try {
-    // A Rust project (Cargo.toml) with no `target/` (never shared) and no
-    // other shareable dep; `problem` set but provisioning returns cleanly.
-    await initRepo(root, "target/\n", { "Cargo.toml": '[package]\nname = "demo"\n' });
+    // A Node project with no `node_modules` anywhere; `problem` set, clean
+    // return. (Cargo-only expects no tree: test-worktree-provision-outcome.ts.)
+    await initRepo(root, "node_modules/\n", { "package.json": '{"name": "demo"}\n' });
     mkdirSync(wt, { recursive: true });
     await makeWorktreeFixture(root, "w");
 
