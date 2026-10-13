@@ -421,7 +421,7 @@ async function runConvergeCycle(
           : commandOf(cmd, o) === "git status --porcelain"
             ? { stdout: "M  src/a.ts\nM  src/b.ts\n" }
             : { stdout: "" };
-      const verdict = await runConvergeGate({ pi: makeFakePi().pi, repoRoot: dir, issue: 1010, verifyExecFn: exec }, spec);
+      const verdict = await runConvergeGate({ host: makeFakePi().pi, repoRoot: dir, issue: 1010, verifyExecFn: exec }, spec);
       assert(verdict !== null && verdict.absent.length === 0, "AC792f: converge gate PASSES (all code done, one no-diff)");
       assert(verdict?.deliverables.find((d) => d.id === "d3")?.status === "no-diff", "AC792h: no-diff status persisted in gate result");
     } finally {

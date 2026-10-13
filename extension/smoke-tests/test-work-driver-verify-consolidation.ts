@@ -116,7 +116,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         a: wsA(["src/a.ts", "src/b.ts"]),
         b: wsB(["src/b.ts"]),
       });
-      const ctx: DriverContext = { pi: makeFakePi().pi, repoRoot: dir, issue: 540 };
+      const ctx: DriverContext = { host: makeFakePi().pi, repoRoot: dir, issue: 540 };
       const res = await verifyConsolidation(ctx, state);
       assert(
         res.missing.length === 0,
@@ -142,7 +142,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         a: wsA(["src/a.ts", "src/b.ts"]),
         b: wsB(["src/b.ts"]),
       });
-      const ctx: DriverContext = { pi: makeFakePi().pi, repoRoot: dir, issue: 540 };
+      const ctx: DriverContext = { host: makeFakePi().pi, repoRoot: dir, issue: 540 };
       const res = await verifyConsolidation(ctx, state);
       assert(
         res.missing.length === 1 && res.missing[0].id === "a",
@@ -174,7 +174,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
     try {
       await mkGitRepo(dir, []);
       const state = mkConsolidationState({ a: wsA(["src/a.ts", "src/b.ts"]), b: wsB(["src/b.ts"]) });
-      const res = await verifyConsolidation({ pi: makeFakePi().pi, repoRoot: dir, issue: 540 }, state);
+      const res = await verifyConsolidation({ host: makeFakePi().pi, repoRoot: dir, issue: 540 }, state);
       const ids = res.missing.map((m) => m.id).sort();
       assert(JSON.stringify(ids) === JSON.stringify(["a", "b"]), `F5.4: empty diff → all missing (got: ${JSON.stringify(ids)})`);
       assert(res.filesPresent.length === 0, "F5.4: empty diff → empty filesPresent");
@@ -193,7 +193,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         a: wsA(["src/new-module.ts (new)"]),
         b: wsB(["src/other.ts"]),
       });
-      const ctx: DriverContext = { pi: makeFakePi().pi, repoRoot: dir, issue: 540 };
+      const ctx: DriverContext = { host: makeFakePi().pi, repoRoot: dir, issue: 540 };
       const res = await verifyConsolidation(ctx, state);
       const aVerdict = res.verdicts.find((v) => v.id === "a");
       assert(
@@ -246,7 +246,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         a: wsA(["src/old-name.ts"]),
         b: wsB(["src/genuinely-absent.ts"]),
       });
-      const ctx: DriverContext = { pi: makeFakePi().pi, repoRoot: dir, issue: 540 };
+      const ctx: DriverContext = { host: makeFakePi().pi, repoRoot: dir, issue: 540 };
       const res = await verifyConsolidation(ctx, state);
       const aVerdict = res.verdicts.find((v) => v.id === "a");
       assert(
@@ -291,7 +291,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         a: wsA(["src/measure2.ts", "src/measurement-report.md"]),
         b: wsB(["src/measurement.ts", "src/report.json"]),
       });
-      const ctx: DriverContext = { pi: makeFakePi().pi, repoRoot: dir, issue: 540 };
+      const ctx: DriverContext = { host: makeFakePi().pi, repoRoot: dir, issue: 540 };
       const res = await verifyConsolidation(ctx, state);
       // A is fully present → covered.
       const aVerdict = res.verdicts.find((v) => v.id === "a");
@@ -347,7 +347,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         a: wsA(["docs/notes (draft).md"]),
         b: wsB(["src/absent.ts"]),
       });
-      const ctx: DriverContext = { pi: makeFakePi().pi, repoRoot: dir, issue: 540 };
+      const ctx: DriverContext = { host: makeFakePi().pi, repoRoot: dir, issue: 540 };
       const res = await verifyConsolidation(ctx, state);
       const aVerdict = res.verdicts.find((v) => v.id === "a");
       assert(

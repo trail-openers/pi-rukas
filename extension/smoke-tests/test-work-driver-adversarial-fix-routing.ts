@@ -75,7 +75,7 @@ function ctxFor(
   devSpawns: string[],
 ): DriverContext {
   return {
-    pi: { sendUserMessage: () => {} } as unknown as DriverContext["host"],
+    host: { sendUserMessage: () => {} } as unknown as DriverContext["host"],
     repoRoot: dir,
     issue: 1114,
     issueBodyFetcherFn: async () => ({ stdout: "mock" }),

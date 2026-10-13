@@ -205,7 +205,7 @@ function makeFakePi(): { pi: ExtensionAPI; sent: string[] } {
         },
       },
     };
-    const ctx: DriverContext = { pi: makeFakePi().pi, repoRoot: dir, issue: 1003 };
+    const ctx: DriverContext = { host: makeFakePi().pi, repoRoot: dir, issue: 1003 };
     const verdict = await runConvergeGate(ctx, withSpec);
     assert(verdict === null, "gate: a spec with zero deliverables skips (nothing to converge on)");
   } finally {

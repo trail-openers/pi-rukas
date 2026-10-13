@@ -108,7 +108,7 @@ const fakePi = { sendUserMessage: () => {} } as unknown as ExtensionAPI;
       },
     };
     await writeState(repo, s);
-    const ctx = { pi: fakePi, repoRoot: repo, issue: 9901 } as unknown as Parameters<
+    const ctx = { host: fakePi, repoRoot: repo, issue: 9901 } as unknown as Parameters<
       typeof checkpointCapedDispatch
     >[0];
     const out = await checkpointCapedDispatch(ctx, s, "develop");
@@ -144,7 +144,7 @@ const fakePi = { sendUserMessage: () => {} } as unknown as ExtensionAPI;
     writeFileSync(path.join(repo, "foreign-untracked.txt"), "foreign\n");
     const s = capKillState(repo, 9902);
     await writeState(repo, s);
-    const ctx = { pi: fakePi, repoRoot: repo, issue: 9902 } as unknown as Parameters<
+    const ctx = { host: fakePi, repoRoot: repo, issue: 9902 } as unknown as Parameters<
       typeof checkpointCapedDispatch
     >[0];
     const out = await checkpointCapedDispatch(ctx, s, "develop");
@@ -197,7 +197,7 @@ const fakePi = { sendUserMessage: () => {} } as unknown as ExtensionAPI;
     };
     await writeState(repo, s);
     const before = git(repo, "rev-parse", "HEAD");
-    const ctx = { pi: fakePi, repoRoot: repo, issue: 9903 } as unknown as Parameters<
+    const ctx = { host: fakePi, repoRoot: repo, issue: 9903 } as unknown as Parameters<
       typeof checkpointCapedDispatch
     >[0];
     const out = await checkpointCapedDispatch(ctx, s, "lens-review");

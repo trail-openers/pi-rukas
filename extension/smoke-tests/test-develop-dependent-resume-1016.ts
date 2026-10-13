@@ -11,7 +11,6 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { type WorkState, readState, writeState } from "../src/workflow-state.ts";
@@ -91,7 +90,7 @@ try {
 
   const labels: string[] = [];
   const ctx: DriverContext = {
-    host: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
+    host: { sendUserMessage: () => {} } as unknown as DriverContext["host"],
     repoRoot: dir,
     issue: ISSUE,
     issueBodyFetcherFn: async (issue: number) => ({

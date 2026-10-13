@@ -85,7 +85,7 @@ function makeState(
 
 function makeCtx(repoRoot: string, issue: number): DriverContext {
   return {
-    pi: makeFakePi(),
+    host: makeFakePi(),
     repoRoot,
     issue,
   } as unknown as DriverContext;

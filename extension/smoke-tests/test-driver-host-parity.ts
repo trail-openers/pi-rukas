@@ -5,9 +5,13 @@
  * recording test host, must leave identical state and eventLog once run-local
  * values are normalised. Messages are compared at the bottom of each host (what
  * reaches the transport), not at the driver call site, so the message
- * comparison can fail if piSessionHost drops or rewrites a send. Only the work
- * cycle is in the invariant; plan / research / lens-review are wired to
- * DriverHost but not compared here.
+ * comparison can fail if piSessionHost drops or rewrites a send.
+ *
+ * Scope of the invariant — driver-level sends only. `dispatchFn` is stubbed, so
+ * `dispatchCore` / `startJob` (the DispatchHost half: report delivery and the
+ * slow-run steer) never run under either host and are NOT compared here; their
+ * steer delivery is covered by test-async-dispatch.ts. Plan / research / lens-review are wired to DriverHost but not
+ * compared here either.
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -173,7 +177,10 @@ assert(
   "both hosts' transports receive identical messages (text and deliverAs, normalised)",
 );
 assert(
-  piSent.every((m) => m.deliverAs === "steer") && testSent.every((m) => m.deliverAs === "steer"),
+  piSent.length > 0 &&
+    testSent.length > 0 &&
+    piSent.every((m) => m.deliverAs === "steer") &&
+    testSent.every((m) => m.deliverAs === "steer"),
   'every driver message is delivered with deliverAs "steer" on both hosts',
 );
 

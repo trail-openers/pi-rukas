@@ -70,7 +70,7 @@ function mkResult(text: string): DispatchResult {
 }
 
 function mkCtx(dir: string, dispatchFn: DriverContext["dispatchFn"]): DriverContext {
-  return { pi: fakePi, repoRoot: dir, issue: 849, dispatchFn };
+  return { host: fakePi, repoRoot: dir, issue: 849, dispatchFn };
 }
 
 function stateWithArtifact(dir: string, body: string): WorkState {
