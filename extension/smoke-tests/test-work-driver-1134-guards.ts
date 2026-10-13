@@ -11,6 +11,7 @@
  *       git verbatim (a shell metacharacter in the branch name is data).
  *   G5  the commit-pr count runs through argv in production (no verifyExecFn):
  *       a pushed branch with commits ahead counts without a failure.
+ *   G6  verifyConsolidation: unresolved mainline → named note, no origin/main diff.
  *
  * Real git repos throughout, so the commands the gates run are the ones git sees.
  */
@@ -263,6 +264,33 @@ const ws = (id: string, paths: string[]) => ({
     assert(
       countFailures.length === 0,
       "G5 pushed branch with commits ahead counts via argv (no bare-git failure)",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ── G6: unresolved mainline → named note, and no `origin/main` diff is issued ─
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "g6-nomain-consol-"));
+  try {
+    mkRepo(dir, BRANCH, ["src/a.ts"], true);
+    // origin/main and origin/<branch> both resolve; only the mainline is unknown.
+    git(dir, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD");
+    // `src/zzz.ts` never shipped: a diff against origin/main WOULD flag workstream
+    // `a` as missing, so an empty `missing` proves no such diff was issued.
+    const cons = await verifyConsolidation(
+      ctxFor(dir),
+      stateFor(BRANCH, {
+        a: ws("a", ["src/a.ts", "src/zzz.ts"]),
+        b: ws("b", ["src/b.ts"]),
+      }),
+    );
+    assert(
+      cons.missing.length === 0 &&
+        cons.notes.length === 1 &&
+        cons.notes[0]?.startsWith("consolidation check skipped: mainline unresolved: ") === true,
+      "G6 consolidation: unresolved mainline → best-effort result + named note, no origin/main diff",
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

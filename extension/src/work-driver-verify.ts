@@ -19,7 +19,7 @@ import { prRange, refResolves } from "./git-range.ts";
 import { execp as groupExecp } from "./lens-exec.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
-import { detectMainline } from "./work-driver-git.ts";
+import { resolveMainline } from "./work-driver-git.ts";
 import type { ConsolidationVerdict } from "./workflow-state-consolidation.ts";
 import type { WorkState } from "./workflow-state.ts";
 
@@ -274,11 +274,15 @@ export async function verifyConsolidation(
   const ids = Object.keys(workstreams);
   if (ids.length <= 1) return { missing: [], filesPresent: [], verdicts: [], notes: [] };
   // Resolve the mainline branch to diff against.
-  let base = "main";
-  const mainline = await detectMainline(ctx.repoRoot, execp);
-  if (mainline && "branch" in mainline) {
-    base = mainline.branch;
+  // #1134 follow-up — the same resolver readIntegratedDiff uses. Unresolved is a
+  // named note on the best-effort result, never a guessed "main".
+  const mainline = await resolveMainline(ctx.repoRoot, execp);
+  if (!("branch" in mainline)) {
+    const note = `consolidation check skipped: mainline unresolved: ${mainline.reason}`;
+    trace(`work-driver: ${note}`);
+    return { missing: [], filesPresent: [], verdicts: [], notes: [note] };
   }
+  const base = mainline.branch;
   // #451 — name the integration branch explicitly. Under worktree isolation
   // the repo root sits on mainline; bare `..HEAD` would compare mainline
   // against itself and return empty (passing the gate unconditionally).
