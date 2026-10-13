@@ -23,8 +23,8 @@ import {
   forgeStub,
   gatePrompts,
   installForgeStub,
-  installOfflineVipuneStub,
   installNoPlanCacheStub,
+  installOfflineVipuneStub,
   makeDispatchStub,
 } from "./plan-test-stubs.ts";
 
@@ -76,12 +76,18 @@ async function run(gateReplies: string[] | string) {
 }
 
 {
-  // Reviewed, CRITICAL persists both rounds → BLOCKED.
+  // Reviewed, CRITICAL persists both rounds → at the cap, FILED with the
+  // CRITICAL as an open point (#1132 addendum: the cap no longer refuses).
   const r = await run([
-    "GAP: CRITICAL — contradiction A — proposed resolution: pick one\nVERDICT: NEEDS_ITERATION",
-    "GAP: CRITICAL — contradiction A — proposed resolution: pick one\nVERDICT: NEEDS_ITERATION",
+    "GAP: CRITICAL — contradiction A\nVERDICT: NEEDS_ITERATION",
+    "GAP: CRITICAL — contradiction A\nVERDICT: NEEDS_ITERATION",
   ]);
-  assert(r.filed === false && r.capReason === "unresolved-blocking", "CRITICAL review blocks");
+  assert(
+    r.filed === true &&
+      r.capReason === "unresolved-blocking" &&
+      (forgeStub.created[0]?.body ?? "").includes("## Open points"),
+    "CRITICAL review files at the cap with the open point listed",
+  );
 }
 
 {
@@ -120,14 +126,14 @@ async function run(gateReplies: string[] | string) {
 
 {
   // Truncated mid-structure: GAP lines present, verdict missing → REVIEWED
-  // (D3): CRITICAL without a verdict routes to iteration, then blocks.
+  // (D3): CRITICAL without a verdict routes to iteration, then reaches the cap.
   const r = await run([
     "GAP: CRITICAL — the retry cap contradicts the quota rule",
     "GAP: CRITICAL — the retry cap contradicts the quota rule",
   ]);
   assert(
-    r.filed === false && r.capReason === "unresolved-blocking",
-    "truncated-but-reviewed (CRITICAL, no verdict) still blocks via D3 — not misclassified as unparseable",
+    r.capReason === "unresolved-blocking" && r.filed === true,
+    "truncated-but-reviewed (CRITICAL, no verdict) reaches the cap via D3 — not misclassified as unparseable",
   );
 }
 

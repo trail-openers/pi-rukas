@@ -16,12 +16,12 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { epicSubIssues } from "./plan-angles.ts";
+import { applyOperatorConflicts, droppedSection } from "./plan-draft-conflicts.ts";
 import {
   type MechanicalInventory,
   mechanicalInventory,
   setPlanVipuneSearch,
 } from "./plan-inventory.ts";
-import { applyOperatorConflicts, droppedSection } from "./plan-draft-conflicts.ts";
 import { PLAN_ITEM_KINDS } from "./plan-reporter.ts";
 import { EPIC_SUB_ISSUE_DEPTH_LIMIT, type PlanType, planTitle } from "./plan-types.ts";
 import {

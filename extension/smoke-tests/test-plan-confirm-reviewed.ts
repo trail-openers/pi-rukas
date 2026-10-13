@@ -230,12 +230,18 @@ assert(
 }
 
 // ------------------------------------------------------------- (b) non-fileable dry run
+// #1132 addendum: a CRITICAL alone is fileable (filed at the cap with open points).
+// A non-fileable dry run is one whose review never completed: a corrective round,
+// then an unreadable reply that the strict retry does not rescue.
 
 await newPlanCache();
-installCountingDispatch(GAP_CRITICAL);
+installCountingDispatch([GAP_CRITICAL, "", ""]);
 const blocked = await pipeline({ dryRun: true });
-assert(blocked.capReason === "unresolved-blocking", "(b) dry run ends with an unresolved CRITICAL");
-installCountingDispatch(GAP_CRITICAL);
+assert(
+  blocked.capReason === "review-unparseable",
+  "(b) dry run ends unreviewed (review-unparseable)",
+);
+installCountingDispatch([GAP_CRITICAL, "", ""]);
 const blockedConf = await pipeline();
 assert(
   blockedConf.filedFromDryRun === undefined && !blockedConf.filed,

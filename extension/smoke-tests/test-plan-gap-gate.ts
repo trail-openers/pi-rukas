@@ -26,11 +26,11 @@
  * in test-plan-tool.ts.
  */
 
-import { setPlanDispatch } from "../src/plan-driver.ts";
-import { installOfflineVipuneStub, installNoPlanCacheStub } from "./plan-test-stubs.ts";
-import { setPlanForge } from "../src/plan-filing.ts";
-import { runPlanPipeline } from "../src/plan-driver.ts";
 import type { Forge } from "../src/forge.ts";
+import { setPlanDispatch } from "../src/plan-driver.ts";
+import { runPlanPipeline } from "../src/plan-driver.ts";
+import { setPlanForge } from "../src/plan-filing.ts";
+import { installNoPlanCacheStub, installOfflineVipuneStub } from "./plan-test-stubs.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -231,14 +231,13 @@ installNoPlanCacheStub();
     "D2: the result spec carries the residual disclosure",
   );
 
-  // Case 2: CRITICAL remaining at the cap → DO NOT file. Re-cut to
-  // CRITICAL-only from the old CRITICAL+HIGH bundle: the HIGH line is the
-  // finding the gate is non-deterministic about, and a bundled case would
-  // still pass even if the filter change regressed to HIGH-blocking.
+  // Case 2 (#1132 addendum): a CRITICAL the gate offered NO resolution for is an
+  // open point at the cap — the spec is FILED with it listed under
+  // "Open points", not refused. The HIGH-only case stays in case 1.
   forgeStub.created.length = 0;
   forgeStub.mode = "ok";
   const blockingGaps =
-    "GAP: CRITICAL no failure-mode criterion — proposed resolution: add a criterion\n" +
+    "GAP: CRITICAL no failure-mode criterion — proposed resolution: address during /work plan phase\n" +
     "VERDICT: NEEDS_ITERATION";
 
   setPlanDispatch(makeDispatchStub(blockingGaps) as never);
@@ -249,22 +248,24 @@ installNoPlanCacheStub();
     process.cwd(),
   );
 
-  assert(r2.filed === false, `D2: CRITICAL remaining at cap → NOT FILED (got filed=${r2.filed})`);
+  assert(
+    r2.filed === true,
+    `D2: open CRITICAL at cap → FILED with open points (got filed=${r2.filed})`,
+  );
   assert(r2.capHit === true, "D2: capHit is true (blocking case)");
   assert(
     r2.capReason === "unresolved-blocking",
     `D2: capReason is unresolved-blocking (got ${r2.capReason})`,
   );
   assert(
-    forgeStub.created.length === 0,
-    `D2: no filing happened (forge calls: ${forgeStub.created.length})`,
+    forgeStub.created.length === 1,
+    `D2: the spec is filed once (forge calls: ${forgeStub.created.length})`,
   );
-  // Finding 1 (adversarial review): the deliberate cap-surface skip must NOT
-  // reuse the `forge-unresolved` reason — nothing failed to resolve here.
   assert(
-    r2.filingFailure?.reason === "cap-surface",
-    `D2: filingFailure.reason is cap-surface, not forge-unresolved (got ${r2.filingFailure?.reason})`,
+    r2.spec.includes("## Open points (unresolved at the gap-gate cap)"),
+    "D2: the filed body carries the open-points section",
   );
+  assert(r2.filingFailure === undefined, "D2: no filing failure (cap no longer refuses)");
 
   // Verdict-absent interaction: an ABSENT verdict with only HIGH gaps
   // now PASSES (HIGH no longer blocks); an ABSENT verdict with a CRITICAL
@@ -300,8 +301,8 @@ installNoPlanCacheStub();
     process.cwd(),
   );
   assert(
-    r5.filed === false,
-    `verdict-absent + CRITICAL: still routes NEEDS_ITERATION → not filed (got filed=${r5.filed})`,
+    r5.capHit === true,
+    `verdict-absent + CRITICAL: still routes NEEDS_ITERATION to the cap (got capHit=${r5.capHit})`,
   );
   assert(
     r5.capReason === "unresolved-blocking",

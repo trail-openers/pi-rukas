@@ -110,9 +110,10 @@ assert(forgeStub.created.length >= 1, "filing still goes through the forge");
 // ------------------------------------------------------------- non-fileable hit: barrier reuse + gate seed
 
 await newPlanCache();
-installCountingDispatch([GAP_CRITICAL]);
+// Non-fileable = the review never completed (corrective round, then unreadable).
+installCountingDispatch([GAP_CRITICAL, "", ""]);
 await pipeline({ dryRun: true });
-installCountingDispatch([GAP_CRITICAL]);
+installCountingDispatch([GAP_CRITICAL, "", ""]);
 const nonFileable = await pipeline();
 assert(log.explore === 0, "a non-fileable dry run's confirm reuses the investigation");
 assert(log.gate >= 1, "a non-fileable dry run's confirm still runs the gap gate");

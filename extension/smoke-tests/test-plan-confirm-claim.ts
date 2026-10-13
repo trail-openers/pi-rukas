@@ -9,14 +9,14 @@
  * A filed-marker refuses a re-confirm only at the HEAD it was written at.
  */
 
-import { claimFileableDryRun, concurrentFilingOf } from "../src/plan-filing-claim.ts";
 import { readdir, stat, utimes } from "node:fs/promises";
 import path from "node:path";
+import { claimFileableDryRun, concurrentFilingOf } from "../src/plan-filing-claim.ts";
 import {
   DESC,
   GAP_CRITICAL,
-  cacheFiles,
   GAP_HIGH,
+  cacheFiles,
   cacheState,
   installCountingDispatch,
   installForgeStub,
@@ -79,7 +79,7 @@ installForgeStub();
 {
   // Non-fileable entries are refused before any rename, digest or not.
   await newPlanCache();
-  installCountingDispatch(GAP_CRITICAL);
+  installCountingDispatch([GAP_CRITICAL, "", ""]); // unreviewed after a corrective round: non-fileable
   await pipeline({ dryRun: true });
   const inputs = { descriptor: DESC, type: "feature" as const, head: cacheState.head };
   assert(

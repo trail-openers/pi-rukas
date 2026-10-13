@@ -7,14 +7,14 @@
  */
 
 import type { OperatorDirectives } from "../src/plan-directives.ts";
-import { type AngleFindings, draftSpec } from "../src/plan-draft.ts";
 import {
   filterInvestigationConflicts,
   isOperatorInvestigationGap,
   linesConflict,
 } from "../src/plan-draft-conflicts.ts";
-import { gapGatePrompt } from "../src/plan-gate-prompt.ts";
+import { type AngleFindings, draftSpec } from "../src/plan-draft.ts";
 import { runGapGateLoop } from "../src/plan-gaps.ts";
+import { gapGatePrompt } from "../src/plan-gate-prompt.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -70,7 +70,8 @@ const CONSISTENT_EDGE = "an absent config file falls back to the default protect
   );
   assert(r.body.includes(CONSISTENT_EDGE), "drop: a non-conflicting edge case still renders");
   assert(
-    r.body.includes("dropped: conflicts with operator decision") && r.body.includes(CONFLICTING_EDGE),
+    r.body.includes("dropped: conflicts with operator decision") &&
+      r.body.includes(CONFLICTING_EDGE),
     "drop: the dropped item is disclosed with the operator-decision reason",
   );
   assert(r.body.includes(OP_AC), "drop: the operator acceptance criterion is rendered");
@@ -105,10 +106,12 @@ const CONSISTENT_EDGE = "an absent config file falls back to the default protect
   const r = draftSpec(
     "feature",
     "verdict parsing",
-    [angle("edge-cases", [
-      { kind: "edge-case", text: a },
-      { kind: "edge-case", text: b },
-    ])],
+    [
+      angle("edge-cases", [
+        { kind: "edge-case", text: a },
+        { kind: "edge-case", text: b },
+      ]),
+    ],
     [],
     [],
     [],
@@ -136,10 +139,12 @@ const CONSISTENT_EDGE = "an absent config file falls back to the default protect
   const r = draftSpec(
     "feature",
     "verdict parsing",
-    [angle("edge-cases", [
-      { kind: "edge-case", text: a },
-      { kind: "edge-case", text: b },
-    ])],
+    [
+      angle("edge-cases", [
+        { kind: "edge-case", text: a },
+        { kind: "edge-case", text: b },
+      ]),
+    ],
     [],
     [],
     [],
@@ -166,15 +171,28 @@ const CONSISTENT_EDGE = "an absent config file falls back to the default protect
 {
   const res = filterInvestigationConflicts(
     [
-      { kind: "test-surface-item", text: "test that callers still change protectedPathsIn", angle: "t" },
+      {
+        kind: "test-surface-item",
+        text: "test that callers still change protectedPathsIn",
+        angle: "t",
+      },
       { kind: "out-of-scope", text: "the callers do not keep protectedPathsIn", angle: "o" },
       { kind: "out-of-scope", text: "the rubric is out of scope", angle: "o" },
     ],
     ["every caller keeps protectedPathsIn unchanged"],
   );
-  assert(res.dropped.length === 2, `filter: two lines contradict the operator line (got ${res.dropped.length})`);
-  assert(res.kept.length === 1 && res.kept[0]?.text === "the rubric is out of scope", "filter: an unrelated line is kept");
-  assert(!linesConflict("a plain positive line", "another plain positive line"), "polarity: two positive lines do not conflict");
+  assert(
+    res.dropped.length === 2,
+    `filter: two lines contradict the operator line (got ${res.dropped.length})`,
+  );
+  assert(
+    res.kept.length === 1 && res.kept[0]?.text === "the rubric is out of scope",
+    "filter: an unrelated line is kept",
+  );
+  assert(
+    !linesConflict("a plain positive line", "another plain positive line"),
+    "polarity: two positive lines do not conflict",
+  );
 }
 
 // -------------------------------------------------
@@ -185,7 +203,10 @@ const CONSISTENT_EDGE = "an absent config file falls back to the default protect
   const inv = ["callers thread a per-cycle set through protectedPathsIn"];
   const gap =
     "callers must keep protectedPathsIn unchanged versus callers thread a per-cycle set through protectedPathsIn";
-  assert(isOperatorInvestigationGap(gap, op, inv), "gap: an operator-vs-investigation gap is recognised");
+  assert(
+    isOperatorInvestigationGap(gap, op, inv),
+    "gap: an operator-vs-investigation gap is recognised",
+  );
 
   let dispatches = 0;
   const reply = `GAP: CRITICAL — ${gap} — proposed resolution: pick one — resolution-type: operator-decision\nVERDICT: NEEDS_ITERATION`;
@@ -199,7 +220,10 @@ const CONSISTENT_EDGE = "an absent config file falls back to the default protect
     () => {},
     { operatorLines: op, investigationLines: inv },
   );
-  assert(dispatches === 1, `gap: the discarded conflict does not iterate (dispatches=${dispatches})`);
+  assert(
+    dispatches === 1,
+    `gap: the discarded conflict does not iterate (dispatches=${dispatches})`,
+  );
   assert(r.gaps.length === 0, "gap: the conflicting CRITICAL is not a blocking gap");
   assert(r.capReason !== "unresolved-blocking", `gap: no CRITICAL cap (capReason=${r.capReason})`);
   assert(r.discardedConflicts.length === 1, "gap: the discarded conflict is recorded");
@@ -212,11 +236,17 @@ const CONSISTENT_EDGE = "an absent config file falls back to the default protect
 // -------------------------------------------------
 // 7. An operator-vs-operator clash still caps (no discard).
 {
-  const op = ["do not change protectedPathsIn for callers", "every caller must change protectedPathsIn"];
+  const op = [
+    "do not change protectedPathsIn for callers",
+    "every caller must change protectedPathsIn",
+  ];
   const inv = ["callers change protectedPathsIn per cycle"];
   const gap =
     "do not change protectedPathsIn for callers versus every caller must change protectedPathsIn — callers change per cycle";
-  assert(!isOperatorInvestigationGap(gap, op, inv), "op-vs-op: a clash between two operator lines is not discarded");
+  assert(
+    !isOperatorInvestigationGap(gap, op, inv),
+    "op-vs-op: a clash between two operator lines is not discarded",
+  );
 
   const reply = `GAP: CRITICAL — ${gap} — proposed resolution: pick one — resolution-type: operator-decision\nVERDICT: NEEDS_ITERATION`;
   const r = await runGapGateLoop(

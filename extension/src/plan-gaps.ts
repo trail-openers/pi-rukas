@@ -29,160 +29,43 @@
  *     identical input and "fix the gaps and re-run" is not a convergent
  *     strategy.
  */
-import { isOperatorInvestigationGap } from "./plan-draft-conflicts.ts";
-import { type PlanGap, isResolutionType } from "./plan-types.ts";
+import { isOperatorInvestigationGap, isOperatorOperatorGap } from "./plan-draft-conflicts.ts";
+import {
+  GAP_RESOLUTION_PLACEHOLDER,
+  type GapGateParse,
+  type GapGateVerdict,
+  parseGaps,
+} from "./plan-gap-parse.ts";
+import type { PlanGap } from "./plan-types.ts";
 import { trace } from "./trace.ts";
 
-// Re-exported so existing importers keep one import path for the renderers.
+// Re-exported so existing importers keep one import path (the parser and the renderers).
+export {
+  GAP_RESOLUTION_PLACEHOLDER,
+  type GapGateParse,
+  type GapGateVerdict,
+  parseGaps,
+} from "./plan-gap-parse.ts";
 export {
   residualGapsSection,
   settledGapsSection,
   truncateForDisclosure,
 } from "./plan-gap-disclosure.ts";
 
-/** One verdict the gap gate can yield for a parsed reviewer reply. */
-export type GapGateVerdict = "READY" | "NEEDS_ITERATION";
-
 /**
- * The resolution text parseGaps assigns when a GAP: line carries no
- * "proposed resolution:" segment. Exported (single source) so the Decision-A
- * writeback (plan-writeback.ts) compares against the EXACT sentinel instead
- * of re-spelling the literal — a parser-side change to the placeholder would
- * otherwise silently flip branch 3 (open, decision owner operator, body
- * unmodified) to a writeback.
+ * #1132 (addendum 2026-10-13): an OPEN POINT is a CRITICAL gap the filed issue
+ * must carry visibly at the iteration cap: one the gate gave no resolution for
+ * (the placeholder), or an operator-vs-operator clash, which only the operator
+ * can settle. A CRITICAL with a proposed resolution is not an open point: it
+ * travels in the residual disclosure with that proposal.
  */
-export const GAP_RESOLUTION_PLACEHOLDER = "address during /work plan phase";
-
-export interface GapGateParse {
-  gaps: PlanGap[];
-  /**
-   * #638: claims the reviewer classified as ungrounded — no spec-internal
-   * contradiction, no live code to check, no verifiable world source.
-   * These are NOT gaps: the marker vocabulary mirrors /work's intent gate
-   * (work-driver-intent.ts SpecEvidence: confirmed | contradicted |
-   * unverifiable — ungrounded is this gate's name for the same third
-   * state). They are parsed into their own channel so the review-unparseable
-   * branch in runGapGateLoop can distinguish "classified every claim as
-   * ungrounded and said READY" (a full review) from "said nothing".
-   */
-  ungrounded: string[];
-  verdict: GapGateVerdict;
-  /**
-   * D3: true only when a parseable `VERDICT:` line was present in the reply.
-   * A reviewer that reviews fully, flags gaps, and simply never writes the
-   * verdict line must NOT silently pass as READY — absence is a signal the
-   * gate routes on (see `evaluateGapGate`), mirroring the adversarial
-   * gate's `verdictParsed` fix (#664).
-   */
-  verdictParsed: boolean;
+export function isOpenPointGap(g: PlanGap, operatorOperator = false): boolean {
+  return (
+    g.severity === "CRITICAL" && (operatorOperator || g.resolution === GAP_RESOLUTION_PLACEHOLDER)
+  );
 }
 
-/**
- * Normalise a declared resolution-type value before the membership check:
- * markdown emphasis and backticks, trailing punctuation, case, and inner
- * spaces (`**Operator decision**.` → `operator-decision`). Anything still not
- * a RESOLUTION_TYPE after this is rejected by isResolutionType (fail closed).
- */
-function normaliseResolutionType(raw: string): string {
-  return raw
-    .replace(/[`*_]/g, "")
-    .trim()
-    .replace(/[.,;:!?)\]]+$/, "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "-");
-}
-
-/**
- * Parse a gap-gate reply. Only lines starting with the `GAP:` marker create
- * gaps — bare severity words in prose (the reviewer's legend, a clean bill of
- * health, this prompt's own examples) must NOT parse as findings. The
- * marker format is `GAP: <SEVERITY> — <description> — proposed resolution: <r>`
- * (em dash or hyphen separators; the resolution segment is optional, in which
- * case the default placeholder applies).
- *
- * The verdict search is unchanged on purpose (FIELD-CONFIRMED): across 34
- * real gap-gate replies, every verdict line is exactly `VERDICT: READY` or
- * `VERDICT: NEEDS_ITERATION` as the last non-empty line, and zero replies
- * echo the prompt's verdict legend — `reverse().find()` picks the right line
- * in every completed reply.
- */
-export function parseGaps(reply: string): GapGateParse {
-  const lines = reply.split("\n");
-  const gaps: PlanGap[] = [];
-  const ungrounded: string[] = [];
-  const gapRe = /^\s*GAP:\s*(CRITICAL|HIGH|MEDIUM|LOW)\b[—–-]?\s*(.*)$/i;
-  // #638: the third-outcome marker. Anchored on UNGROUNDED: (never a GAP:
-  // line, so the two markers are mutually exclusive by construction) and
-  // anchored at the line start the same way gapRe is, so bare "ungrounded"
-  // words in prose are inert — the same invariant the GAP: marker carries.
-  const ungroundedRe = /^\s*UNGROUNDED:\s*(?:—|–|-)?\s*(.+)$/i;
-  // #1111: the structured resolution type, a trailing `— resolution-type: <t>`
-  // segment. The value is read loosely and normalised (see
-  // normaliseResolutionType); absent or outside RESOLUTION_TYPES → undefined,
-  // which the writeback treats as not concrete (never spliced).
-  const typeRe = /[—–-]\s*resolution-type:\s*(.*)$/i;
-  for (const line of lines) {
-    const ug = line.match(ungroundedRe);
-    if (ug) {
-      ungrounded.push((ug[1] ?? "").trim());
-      continue;
-    }
-    const m = line.match(gapRe);
-    if (!m) continue;
-    let rest = (m[2] ?? "").trim();
-    const typeMatch = rest.match(typeRe);
-    // The marker is metadata, never resolution text: strip it whenever present,
-    // parsed or not.
-    if (typeMatch?.index !== undefined) rest = rest.slice(0, typeMatch.index).trim();
-    const declared = typeMatch ? normaliseResolutionType(typeMatch[1] ?? "") : undefined;
-    const resolutionType = isResolutionType(declared) ? declared : undefined;
-    if (!typeMatch)
-      trace(`plan-gaps: GAP line has no resolution-type — not spliced (${rest.slice(0, 120)})`);
-    else if (resolutionType === undefined)
-      trace(`plan-gaps: unrecognised resolution-type "${declared}" — not spliced`);
-    const resMatch = rest.match(/[—–-]?\s*proposed resolution:\s*(.+)$/i);
-    const resolution = resMatch?.[1]?.trim() ?? GAP_RESOLUTION_PLACEHOLDER;
-    const description = (resMatch ? rest.slice(0, resMatch.index) : rest).trim();
-    if (!description) continue;
-    gaps.push({
-      severity: (m[1] ?? "MEDIUM").toUpperCase() as PlanGap["severity"],
-      description,
-      resolution,
-      ...(resolutionType ? { resolutionType } : {}),
-    });
-  }
-  // D3: track whether a verdict line was actually present. The legacy
-  // "silence = READY" default survives ONLY for the HIGH/MEDIUM/LOW-only
-  // case; with a CRITICAL gap present, an absent verdict routes to
-  // NEEDS_ITERATION in `evaluateGapGate` instead of filing a spec its own
-  // reviewer rated CRITICAL-gap (transcripts mtsn8vox / mtsngexs).
-  // (Pre-#664-transposition the same rule keyed on CRITICAL/HIGH; HIGH no
-  // longer blocks — a reviewer silence is no longer worth re-dispatching
-  // for a finding the gate may not repeat next round.)
-  const verdictLine = [...lines].reverse().find((l) => /verdict\s*[:—-]/i.test(l));
-  const verdictParsed = typeof verdictLine === "string";
-  const verdict: GapGateVerdict =
-    verdictParsed && /needs[_ ]iteration/i.test(verdictLine) ? "NEEDS_ITERATION" : "READY";
-  // Zero gaps is returned HONESTLY (operator bug report, 2026-09-09): the
-  // old synthetic `[MEDIUM] no structured gaps parsed → proceed` gap
-  // collapsed "reviewed, clean" and "review unreadable" onto one severity
-  // ladder — and under CRITICAL-only blocking, an unparseable review was
-  // structurally guaranteed to pass (it fired twice in six fixture rounds;
-  // both escapes filed real contradictions). Severity describes the SPEC;
-  // parse success describes the REVIEW — the loop now distinguishes them
-  // via `verdictParsed` (see runGapGateLoop's unreviewed branch).
-  return { gaps, ungrounded, verdict, verdictParsed };
-}
-
-/**
- * The gaps that block filing: CRITICAL only. #664 transposed — the
- * terminal rule is a policy decision, not a findings filter: HIGH is the
- * severity the gap gate is non-deterministic on (same descriptor, zero
- * HIGH on one run, six the next), so letting HIGH block makes
- * "fix the gaps and re-run" a non-convergent strategy. HIGH findings
- * travel in the residual disclosure instead of blocking filing.
- */
+/** The CRITICAL gaps: the corrective re-draft trigger (#664 terminal rule, unchanged). */
 export function blockingGaps(gaps: PlanGap[]): PlanGap[] {
   return gaps.filter((g) => g.severity === "CRITICAL");
 }
@@ -214,19 +97,12 @@ export function evaluateGapGate(parsed: GapGateParse, iterations: number, maxIte
 }
 
 /**
- * D2: the cap ROUTES, it does not only stop (AGENTS.md §7 — /work's lens
- * round cap routes to CI when the residuals were posted; a silent swallow is
- * worse than a park). At the iteration cap:
- *
- *   - zero CRITICAL gaps remaining → FILE the spec, disclosing the
- *     residual HIGH/MEDIUM/LOW gaps in a "## Residual gap-gate findings"
- *     section of the issue body (each with its severity and the reviewer's
- *     proposed resolution). The disclosure is the precondition for filing.
- *   - any CRITICAL remaining → do NOT file; surface to the operator.
+ * #1132 (addendum): the iteration cap no longer prevents filing. At the cap
+ * the spec is FILED, with the residual findings disclosed and any still-
+ * blocking gaps listed as open points (plan-gap-disclosure.ts). The cap's
+ * job is to make the unresolved points visible on the filed issue; the /work
+ * intent gate decides later whether the issue is buildable.
  */
-export function capRouted(blocking: PlanGap[]): "file" | "surface" {
-  return blocking.length === 0 ? "file" : "surface";
-}
 
 // ---------------------------------------------------------------------------
 // runGapGateLoop — the Phase-4 gate loop, extracted from plan-driver.ts
@@ -258,6 +134,8 @@ export interface GapGateLoopResult {
   capHit: boolean;
   capReason?: GapGateLoopCapReason;
   residualForDisclosure: PlanGap[];
+  /** #1132: the still-blocking gaps at the cap, listed as open points in the filed body. */
+  openPoints: PlanGap[];
   /**
    * #1132: gaps that set an operator line against an investigation line.
    * Discarded (they neither block nor cap); disclosed in the residual section.
@@ -323,6 +201,7 @@ export async function runGapGateLoop(
   provenance?: { operatorLines: string[]; investigationLines: string[] },
 ): Promise<GapGateLoopResult> {
   const discardedConflicts: PlanGap[] = [];
+  let openPoints: PlanGap[] = [];
   let iterations = 0;
   let ready = false;
   let capHit = false;
@@ -395,11 +274,17 @@ export async function runGapGateLoop(
     }
     if (provenance) {
       const isConflict = (g: PlanGap) =>
-        isOperatorInvestigationGap(g.description, provenance.operatorLines, provenance.investigationLines);
+        isOperatorInvestigationGap(
+          g.description,
+          provenance.operatorLines,
+          provenance.investigationLines,
+        );
       const conflicts = lastParse.gaps.filter(isConflict);
       for (const g of conflicts) {
         discardedConflicts.push(g);
-        trace(`plan-gaps: discarded operator-vs-investigation gap (${g.description.slice(0, 120)})`);
+        trace(
+          `plan-gaps: discarded operator-vs-investigation gap (${g.description.slice(0, 120)})`,
+        );
       }
       lastParse = { ...lastParse, gaps: lastParse.gaps.filter((g) => !isConflict(g)) };
     }
@@ -443,7 +328,20 @@ export async function runGapGateLoop(
       //     be a no-op (empty array, byte-identical body); go straight
       //     to the cap/file path.
       capHit = true;
-      const route = capRouted(evald.blocking);
+      // #1132: at the cap the still-open CRITICAL gaps split. Open points are listed
+      // in the filed body; a CRITICAL with a proposal joins the residual union.
+      const isOpen = (g: PlanGap) =>
+        isOpenPointGap(
+          g,
+          !!provenance && isOperatorOperatorGap(g.description, provenance.operatorLines),
+        );
+      openPoints = evald.blocking.filter(isOpen);
+      for (const g of evald.blocking) {
+        if (!isOpen(g) && !seenDescriptions.has(g.description)) {
+          seenDescriptions.add(g.description);
+          allNonBlocking.push({ ...g });
+        }
+      }
       // D3: an ABSENT verdict on this terminal round is recorded HERE (it
       // used to be recorded post-loop, but the no-op round elimination made
       // that path unreachable: a zero-CRITICAL single round sets capHit=true
@@ -455,11 +353,11 @@ export async function runGapGateLoop(
       capReason =
         !lastParse.verdictParsed && evald.blocking.length === 0
           ? "verdict-absent"
-          : route === "file"
-            ? lastGaps.some((g) => g.severity === "HIGH")
+          : evald.blocking.length > 0
+            ? "unresolved-blocking"
+            : lastGaps.some((g) => g.severity === "HIGH")
               ? "residual-high"
-              : "residual-medium-low"
-            : "unresolved-blocking";
+              : "residual-medium-low";
       // The gate has produced its routing decision. Stop here — a second
       // dispatch would be a provably useless no-op (case b) or a cap
       // overrun (case a).
@@ -469,16 +367,15 @@ export async function runGapGateLoop(
 
   // Problem 2: the residual disclosure is the UNION of all non-blocking
   // findings across all rounds (deduped by exact description string).
-  const residualForDisclosure =
-    capHit && (allNonBlocking.length > 0 || discardedConflicts.length > 0)
-      ? [...allNonBlocking, ...discardedConflicts]
-      : [];
+  // #1132: discarded conflicts are disclosed on every path, not only at the cap.
+  const residualForDisclosure = [...(capHit ? allNonBlocking : []), ...discardedConflicts];
 
   return {
     gaps: lastGaps,
     capHit,
     capReason,
     residualForDisclosure,
+    openPoints,
     discardedConflicts,
     ...(rawUnparsedHead !== undefined ? { rawUnparsedHead } : {}),
   };

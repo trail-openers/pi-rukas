@@ -40,6 +40,19 @@ export function residualGapsSection(residual: PlanGap[]): string {
 }
 
 /**
+ * #1132: the open points of a spec filed at the gate's iteration cap: the
+ * still-blocking gaps (CRITICAL with no proposed resolution), so the unresolved
+ * points are visible on the issue rather than blocking its filing.
+ */
+export function openPointsSection(points: PlanGap[]): string {
+  if (points.length === 0) return "";
+  const items = points
+    .map((g) => `- [${g.severity}] ${truncateForDisclosure(g.description)}`)
+    .join("\n");
+  return `## Open points (unresolved at the gap-gate cap)\n\nThe gap gate reached its iteration cap with these points still blocking and no proposed resolution. The issue is filed so they are visible; the /work intent gate decides whether it is buildable.\n\n${items}\n`;
+}
+
+/**
  * Ceiling on the settled-gaps list rendered into a gate prompt (#1043 review).
  */
 const SETTLED_SECTION_MAX = 10;

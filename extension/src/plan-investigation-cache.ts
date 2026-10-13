@@ -22,7 +22,8 @@
  * and gate seed; it never files on its own. The claim/commit protocol that
  * hands a fileable entry to the forge lives in plan-filing-claim.ts.
  *
- * Staleness is keyed on git HEAD and epic depth (both change the drafted spec).
+ * Staleness is keyed on origin/<default> (#1132: what investigators read, see
+ * plan-base-tree.ts; local HEAD when no default branch resolves) and epic depth.
  * Uncommitted working-tree edits are NOT part of the key; the result says so
  * (plan-tool.ts).
  *
@@ -39,6 +40,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { fetchOriginBase } from "./plan-base-tree.ts";
 import type { MechanicalInventory } from "./plan-draft.ts";
 import type { InvestigationResult } from "./plan-investigate.ts";
 import { assemblePriorContext } from "./plan-prior-context-assembly.ts";
@@ -96,8 +98,11 @@ export interface InvestigationCacheEntry extends CachedInvestigation {
 }
 
 export interface PlanGitState {
+  /** The cache key: origin/<default> when resolvable (#1132), else local HEAD. */
   head: string;
   cacheDir: string;
+  /** origin/<default> after the driver's one fetch — what investigators read (plan-base-tree.ts). */
+  baseSha?: string;
 }
 
 type GitStateFn = (repoRoot: string) => Promise<PlanGitState | undefined>;
@@ -127,7 +132,12 @@ export async function resolvePlanGitState(repoRoot: string): Promise<PlanGitStat
     );
     const [commonDir, head] = stdout.trim().split("\n");
     if (!commonDir || !head) return undefined;
-    return { head, cacheDir: path.join(commonDir, "pi-plan-cache") };
+    const baseSha = await fetchOriginBase(repoRoot);
+    return {
+      head: baseSha ?? head,
+      cacheDir: path.join(commonDir, "pi-plan-cache"),
+      ...(baseSha ? { baseSha } : {}),
+    };
   } catch (err) {
     trace(
       `plan-investigation-cache: git state unreadable — caching skipped (${(err as Error).message})`,

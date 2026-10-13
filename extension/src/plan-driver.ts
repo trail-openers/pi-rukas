@@ -24,7 +24,9 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { dispatchCore } from "./dispatch.ts";
+import { planReadRoot } from "./plan-base-tree.ts";
 import { confirmVerbatim, settlePlanCache } from "./plan-confirm.ts";
+import { gateProvenance } from "./plan-draft-conflicts.ts";
 import { codeIdentifiersIn, draftSpec, mechanicalInventory } from "./plan-draft.ts";
 import {
   allAnglesFailedHalt,
@@ -38,12 +40,8 @@ import {
   getPlanStatFnOverride,
 } from "./plan-driver-seams.ts";
 import { reviewedDigestOf } from "./plan-filing-claim.ts";
-import {
-  type GapGateLoopResult,
-  residualGapsSection,
-  runGapGateLoop,
-  settledGapsSection,
-} from "./plan-gaps.ts";
+import { openPointsSection, residualGapsSection } from "./plan-gap-disclosure.ts";
+import { type GapGateLoopResult, runGapGateLoop, settledGapsSection } from "./plan-gaps.ts";
 import { type CarriedCritical, gapGatePrompt, gapGateVerifyPrompt } from "./plan-gate-prompt.ts";
 import {
   type InvestigationResult,
@@ -160,9 +158,12 @@ export async function runPlanPipeline(
       ? await readInvestigationCache(gitState.cacheDir, cacheInputs)
       : undefined;
 
+  // #1132: investigators and the inventory read origin/<default> (one fetch per run),
+  // never the working tree; the cache key above uses the same SHA.
+  const readRoot = await planReadRoot(repoRoot, gitState);
   const inv = reused
     ? reused.cached.inventory
-    : await timed("inventory", () => mechanicalInventory(repoRoot, descriptor));
+    : await timed("inventory", () => mechanicalInventory(readRoot, descriptor));
   // Phase 1's two-channel prior-context build (plan-prior-context-assembly.ts):
   // the child-prompt channel gets the FULL operator context (D2: the operator
   // is the authority — test-plan-prior-context.ts pins those caps), the
@@ -186,7 +187,7 @@ export async function runPlanPipeline(
         runInvestigation(dispatch, pi, {
           type,
           descriptor,
-          repoRoot,
+          repoRoot: readRoot,
           inv,
           priorContext,
           codeIdentifiers: codeIds,
@@ -322,6 +323,7 @@ export async function runPlanPipeline(
   let capHit = false;
   let capReason: PlanResult["capReason"];
   let residualForDisclosure: PlanGap[] = [];
+  let openPoints: PlanGap[] = [];
   let rawUnparsedHead: string | undefined;
 
   // The carried CRITICAL decisions from the last corrective re-draft — what
@@ -398,22 +400,29 @@ export async function runPlanPipeline(
             throw correctiveRedraftError(computed, writtenOutcomes, e);
           }
         },
+        gateProvenance(findings, directives, priorContext),
       ),
     );
     gaps = loopResult.gaps;
     capHit = loopResult.capHit;
     capReason = loopResult.capReason;
     residualForDisclosure = loopResult.residualForDisclosure;
+    openPoints = loopResult.openPoints;
     rawUnparsedHead = loopResult.rawUnparsedHead;
   }
 
   // D2: when the cap routed to filing, the spec that gets filed carries the
   // residual disclosure. Append it HERE, before fileIssue, so the single
   // filing pass below sees the final body.
-  const finalBody =
-    residualForDisclosure.length > 0
-      ? `${body}\n\n${residualGapsSection(residualForDisclosure)}`
-      : body;
+  // #1132: at the iteration cap the spec is filed with its still-blocking points
+  // listed as open points, so the unresolved state is visible on the issue.
+  const finalBody = [
+    body,
+    residualForDisclosure.length > 0 ? residualGapsSection(residualForDisclosure) : "",
+    openPointsSection(openPoints),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 
   const resolvedGaps = gapGateEnabled ? gaps : [];
 

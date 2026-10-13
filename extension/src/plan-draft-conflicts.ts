@@ -158,9 +158,12 @@ export function filterInvestigationConflicts<T extends InvestigationLine>(
       dropped.push({ item: a, against: b.text, reason: "investigation" });
       dropped.push({ item: b, against: a.text, reason: "investigation" });
       const settled = operatorLines.some(
-        (o) => sharedTokenCount(o, a.text) >= MIN_SHARED_TOKENS || sharedTokenCount(o, b.text) >= MIN_SHARED_TOKENS,
+        (o) =>
+          sharedTokenCount(o, a.text) >= MIN_SHARED_TOKENS ||
+          sharedTokenCount(o, b.text) >= MIN_SHARED_TOKENS,
       );
-      if (!settled) openQuestions.push(`Unresolved investigation conflict: "${a.text}" vs "${b.text}"`);
+      if (!settled)
+        openQuestions.push(`Unresolved investigation conflict: "${a.text}" vs "${b.text}"`);
     }
   }
   const kept = survivors.filter((_, idx) => !doomed.has(idx));
@@ -188,19 +191,66 @@ export function isOperatorInvestigationGap(
   operatorLines: string[],
   investigationLines: string[],
 ): boolean {
-  const opMatches = operatorLines.filter((o) => sharedTokenCount(o, gapText) >= MIN_SHARED_TOKENS);
+  const opHit = operatorLines.some((o) => sharedTokenCount(o, gapText) >= MIN_SHARED_TOKENS);
   const invHit = investigationLines.some((i) => sharedTokenCount(i, gapText) >= MIN_SHARED_TOKENS);
-  if (opMatches.length === 0 || !invHit) return false;
-  // The gap sets two operator lines against each other: an operator-vs-operator
-  // contradiction, which is never this rule's to discard.
+  // An operator-vs-operator contradiction is never this rule's to discard.
+  return opHit && invHit && !isOperatorOperatorGap(gapText, operatorLines);
+}
+
+/**
+ * A gap that sets two operator-authored lines against each other (#1132: an
+ * operator-vs-operator contradiction still blocks, whatever resolution it
+ * proposes, because only the operator can settle it).
+ */
+export function isOperatorOperatorGap(gapText: string, operatorLines: string[]): boolean {
+  const opMatches = operatorLines.filter((o) => sharedTokenCount(o, gapText) >= MIN_SHARED_TOKENS);
   for (let i = 0; i < opMatches.length; i++)
     for (let j = i + 1; j < opMatches.length; j++)
-      if (linesConflict(opMatches[i] ?? "", opMatches[j] ?? "")) return false;
-  return true;
+      if (linesConflict(opMatches[i] ?? "", opMatches[j] ?? "")) return true;
+  return false;
 }
 
 /** Investigation kinds an operator line can contradict (#1132). */
-const CONFLICTABLE_KINDS = new Set(["edge-case", "test-surface-item", "out-of-scope", "acceptance-criterion"]);
+const CONFLICTABLE_KINDS = new Set([
+  "edge-case",
+  "test-surface-item",
+  "out-of-scope",
+  "acceptance-criterion",
+]);
+
+/** Operator-authored lines: final, never dropped by this rule. */
+export function operatorLinesOf(
+  directives: OperatorDirectives,
+  priorContext: { source: string; fact: string }[],
+): string[] {
+  return [
+    ...directives.acceptanceCriteria,
+    ...directives.outOfScope,
+    ...directives.pitfalls,
+    ...(directives.testSurface ?? []),
+    ...priorContext.filter((p) => p.source === "context param").map((p) => p.fact),
+  ];
+}
+
+/** The investigation-authored candidate items this rule may drop. */
+function conflictableItems(findings: AngleFindings[]) {
+  return findings.flatMap((f) => f.toolUses.filter((i) => CONFLICTABLE_KINDS.has(i.kind)));
+}
+
+/**
+ * #1132: the provenance the gap gate needs to discard a reviewer-reported
+ * operator-vs-investigation conflict (plan-gaps.ts runGapGateLoop).
+ */
+export function gateProvenance(
+  findings: AngleFindings[],
+  directives: OperatorDirectives,
+  priorContext: { source: string; fact: string }[],
+): { operatorLines: string[]; investigationLines: string[] } {
+  return {
+    operatorLines: operatorLinesOf(directives, priorContext),
+    investigationLines: conflictableItems(findings).map((i) => i.text),
+  };
+}
 
 /**
  * #1132: operator lines are final. Drop every investigation item that
@@ -212,18 +262,16 @@ export function applyOperatorConflicts(
   directives: OperatorDirectives,
   priorContext: { source: string; fact: string }[],
 ) {
-  const operatorLines = [
-    ...directives.acceptanceCriteria,
-    ...directives.outOfScope,
-    ...directives.pitfalls,
-    ...(directives.testSurface ?? []),
-    ...priorContext.filter((p) => p.source === "context param").map((p) => p.fact),
-  ];
-  const candidates = findings.flatMap((f) => f.toolUses.filter((i) => CONFLICTABLE_KINDS.has(i.kind)));
-  const res = filterInvestigationConflicts(candidates, operatorLines);
+  const res = filterInvestigationConflicts(
+    conflictableItems(findings),
+    operatorLinesOf(directives, priorContext),
+  );
   const dropItems = new Set(res.dropped.map((d) => d.item));
   return {
-    findings: findings.map((f) => ({ ...f, toolUses: f.toolUses.filter((i) => !dropItems.has(i)) })),
+    findings: findings.map((f) => ({
+      ...f,
+      toolUses: f.toolUses.filter((i) => !dropItems.has(i)),
+    })),
     dropped: res.dropped,
     openQuestions: res.openQuestions,
   };
