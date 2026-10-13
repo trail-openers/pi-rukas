@@ -252,7 +252,7 @@ const srcDir = path.join(here, "..", "src");
 
     // The round's carried rows judged at `round` (the verdict-time downgrade).
     const judgeCarried = (r: Awaited<ReturnType<typeof run>>, round: number) =>
-      judgeRound([], r, [], lens, "MEDIUM", round);
+      judgeRound([], r, lens, "MEDIUM", round);
 
     // Round 1: the trigger-less MEDIUM is recorded as MEDIUM (no downgrade in round 1).
     await run([base]);
@@ -320,6 +320,39 @@ const srcDir = path.join(here, "..", "src");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+// -------- no usable memory fails closed: a round-2 trigger-less MEDIUM still blocks
+{
+  const medNoTrigger: Finding = {
+    lens: "SIMPLICITY",
+    severity: "MEDIUM",
+    path: "src/a.ts",
+    line: 2,
+    title: "no memory",
+  };
+  const lens: LensRunResult[] = [
+    {
+      lens: "SIMPLICITY",
+      ok: true,
+      ms: 1,
+      startMs: 0,
+      findings: [],
+      attempts: 1,
+      blocked: false,
+      summary: "reviewed",
+    },
+  ];
+  const absent = judgeRound([medNoTrigger], undefined, lens, "MEDIUM", 2);
+  assert(
+    absent.verdict === "ISSUES_FOUND" && absent.reported[0]?.severity === "MEDIUM",
+    "memory absent: a round-2 trigger-less MEDIUM stays MEDIUM and returns ISSUES_FOUND",
+  );
+  const failed = judgeRound([medNoTrigger], { ok: false }, lens, "MEDIUM", 2);
+  assert(
+    failed.verdict === "ISSUES_FOUND" && failed.reported[0]?.severity === "MEDIUM",
+    "memory failed: a round-2 trigger-less MEDIUM stays MEDIUM and returns ISSUES_FOUND",
+  );
 }
 
 console.log(`\nexit ${exit}`);

@@ -88,7 +88,7 @@ async function finish(
   // before the summary is returned. #980 — the same VISIBLE rule applies
   // when the branch is unresolvable: the pre-#980 `&& branch` gate skipped
   // the post silently (the tool result was byte-identical to a successful
-  // run). The note fires ONLY on ISSUES_FOUND (design decision 2).
+  // run). The note fires on ISSUES_FOUND and CONVERGED (design decision 2; #1129).
   // #1129 — CONVERGED carries downgraded findings, so it discloses too.
   if (summary.verdict === "ISSUES_FOUND" || summary.verdict === "CONVERGED") {
     if (branch || pr) {

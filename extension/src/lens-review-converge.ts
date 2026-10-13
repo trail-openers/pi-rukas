@@ -75,20 +75,23 @@ export function convergeVerdict(verdict: Verdict, judged: Finding[]): Verdict {
  * The round's reported findings and verdict. `kept` are this round's findings
  * as the memory reported them; `recorded` carries the open rows this round did
  * not re-report (`carried`) and the set the downgrade may touch (`downgradable`,
- * by identity). With no memory (`recorded` not ok or absent) every fresh finding
- * in `unrecorded` is eligible. CONVERGED is decided on the REPORTED findings, so
- * a downgrade the store reversed cannot pass the verdict silently.
+ * by identity). With no usable memory (`recorded` absent or not ok) NOTHING is
+ * eligible: without a record the review cannot know whether a finding ever had
+ * a trigger, so it fails closed and every MEDIUM keeps blocking. CONVERGED is
+ * decided on the REPORTED findings, so a downgrade the store reversed cannot
+ * pass the verdict silently.
  */
 export function judgeRound(
   kept: Finding[],
   recorded: { ok: boolean; carried?: Finding[]; downgradable?: ReadonlySet<Finding> } | undefined,
-  unrecorded: Finding[],
   lensResults: LensRunResult[],
   threshold: Severity,
   round: number,
 ): { reported: Finding[]; verdict: Verdict } {
   const carried = recorded?.ok ? (recorded.carried ?? []) : [];
-  const eligible = recorded?.ok ? (recorded.downgradable ?? new Set()) : new Set(unrecorded);
+  const eligible: ReadonlySet<Finding> = recorded?.ok
+    ? (recorded.downgradable ?? new Set())
+    : new Set();
   const reported = applyRoundDowngrade([...kept, ...carried], round, eligible);
   const verdict = convergeVerdict(computeVerdict(reported, lensResults, threshold), reported);
   return { reported, verdict };
