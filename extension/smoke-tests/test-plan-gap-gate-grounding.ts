@@ -39,12 +39,13 @@
  * (the #664 lesson: the prompt text and its contract test move together).
  */
 
-import { setPlanDispatch } from "../src/plan-driver.ts";
-import { installOfflineVipuneStub, installNoPlanCacheStub } from "./plan-test-stubs.ts";
-import { setPlanForge } from "../src/plan-filing.ts";
-import { runPlanPipeline } from "../src/plan-driver.ts";
-import { parseGaps, runGapGateLoop } from "../src/plan-gaps.ts";
 import type { Forge } from "../src/forge.ts";
+import { setPlanDispatch } from "../src/plan-driver.ts";
+import { runPlanPipeline } from "../src/plan-driver.ts";
+import { setPlanForge } from "../src/plan-filing.ts";
+import { parseGaps } from "../src/plan-gap-parse.ts";
+import { runGapGateLoop } from "../src/plan-gaps.ts";
+import { installNoPlanCacheStub, installOfflineVipuneStub } from "./plan-test-stubs.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -311,6 +312,8 @@ function hasResidualSection(body: string): boolean {
 // Pipeline: the ratchet shape is now the prompt's job — but if the
 // reviewer STILL writes a CRITICAL (internal contradiction or impossibility),
 // the PR #637 terminal rule is untouched: unresolved-blocking, never files.
+// (#1132 addendum: superseded — unresolved-blocking at the cap, FILED with the
+// CRITICAL disclosed as an open point.)
 {
   const blockingReply =
     "GAP: CRITICAL the spec commits to both a retry cap of 3 and an infinite retry on quota errors — proposed resolution: name which wins\n" +
@@ -326,14 +329,17 @@ function hasResidualSection(body: string): boolean {
     process.cwd(),
   );
   assert(
-    r.filed === false,
-    `ratchet-canary: a reply that still writes a CRITICAL does NOT file (got filed=${r.filed})`,
+    r.filed === true,
+    `ratchet-canary: a reply that still writes a CRITICAL files at the cap (got filed=${r.filed})`,
   );
   assert(
     r.capReason === "unresolved-blocking",
     `ratchet-canary: capReason is unresolved-blocking (got ${r.capReason})`,
   );
-  assert(forgeStub.created.length === 0, "ratchet-canary: no filing happened");
+  assert(
+    r.spec.includes("[CRITICAL]"),
+    "ratchet-canary: the CRITICAL is disclosed in the filed body",
+  );
   setPlanDispatch(null);
 }
 

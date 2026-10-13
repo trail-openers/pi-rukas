@@ -92,7 +92,7 @@ assert(forgeStub.created.length === 1, "the repeat files nothing: still exactly 
 await newPlanCache();
 installCountingDispatch(GAP_HIGH);
 await pipeline({ dryRun: true });
-const claimInputs = { descriptor: DESC, type: "feature" as const, head: cacheState.head };
+const claimInputs = { descriptor: DESC, type: "feature" as const, keySha: cacheState.keySha };
 const first = await claimFileableDryRun(cacheState.dir, claimInputs);
 assert(first !== undefined, "a fileable entry can be claimed");
 assert(
@@ -110,7 +110,7 @@ assert(
 await newPlanCache();
 installCountingDispatch(GAP_HIGH);
 await pipeline({ dryRun: true });
-const raceInputs = { descriptor: DESC, type: "feature" as const, head: cacheState.head };
+const raceInputs = { descriptor: DESC, type: "feature" as const, keySha: cacheState.keySha };
 const held = await claimFileableDryRun(cacheState.dir, raceInputs);
 installCountingDispatch(GAP_HIGH);
 const raced = await fileReviewedDryRun(cacheState.dir, raceInputs, REPO, () => []);
@@ -147,7 +147,7 @@ await pipeline({ dryRun: true });
 const sessionA = await claimFileableDryRun(cacheState.dir, {
   descriptor: DESC,
   type: "feature",
-  head: cacheState.head,
+  keySha: cacheState.keySha,
 });
 assert(sessionA !== undefined, "(f) session A claims an 11-min-old dry run");
 installCountingDispatch(GAP_HIGH);
@@ -230,12 +230,18 @@ assert(
 }
 
 // ------------------------------------------------------------- (b) non-fileable dry run
+// #1132 addendum: a CRITICAL alone is fileable (filed at the cap with open points).
+// A non-fileable dry run is one whose review never completed: a corrective round,
+// then an unreadable reply that the strict retry does not rescue.
 
 await newPlanCache();
-installCountingDispatch(GAP_CRITICAL);
+installCountingDispatch([GAP_CRITICAL, "", ""]);
 const blocked = await pipeline({ dryRun: true });
-assert(blocked.capReason === "unresolved-blocking", "(b) dry run ends with an unresolved CRITICAL");
-installCountingDispatch(GAP_CRITICAL);
+assert(
+  blocked.capReason === "review-unparseable",
+  "(b) dry run ends unreviewed (review-unparseable)",
+);
+installCountingDispatch([GAP_CRITICAL, "", ""]);
 const blockedConf = await pipeline();
 assert(
   blockedConf.filedFromDryRun === undefined && !blockedConf.filed,
@@ -263,7 +269,7 @@ assert(
 await newPlanCache();
 installCountingDispatch(GAP_HIGH);
 await pipeline({ dryRun: true });
-cacheState.head = "b".repeat(40);
+cacheState.keySha = "b".repeat(40);
 installCountingDispatch(GAP_HIGH);
 const headChanged = await pipeline();
 assert(
@@ -354,7 +360,7 @@ for (const [label, mutate] of [
   await newPlanCache();
   installCountingDispatch(GAP_HIGH);
   await pipeline({ dryRun: true });
-  const inputs = { descriptor: DESC, type: "feature" as const, head: cacheState.head };
+  const inputs = { descriptor: DESC, type: "feature" as const, keySha: cacheState.keySha };
   assert(
     (await claimFileableDryRun(cacheState.dir, inputs, { digest: "0000000000000000" })) ===
       undefined,
@@ -432,7 +438,7 @@ for (const [label, mutate] of [
   await newPlanCache();
   installCountingDispatch(GAP_HIGH);
   await pipeline({ dryRun: true });
-  const inputs = { descriptor: DESC, type: "feature" as const, head: cacheState.head };
+  const inputs = { descriptor: DESC, type: "feature" as const, keySha: cacheState.keySha };
   const [entryName] = await cacheFiles();
   const held = await claimFileableDryRun(cacheState.dir, inputs);
   const blocker = path.join(cacheState.dir, (entryName ?? "").replace(/\.json$/, ".filed"));

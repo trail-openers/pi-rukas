@@ -2,8 +2,10 @@
  * plan-gap-disclosure — the operator-visible renderings of gap-gate findings:
  * the residual-findings section of a filed body and the settled-gaps list in a
  * gate prompt (#1043, D2). Split out of plan-gaps.ts (500-line hard limit,
- * AGENTS.md §12); plan-gaps.ts re-exports these names.
+ * AGENTS.md §12). Importers take these names from this module; plan-gaps.ts
+ * does not re-export them.
  */
+import { GAP_RESOLUTION_PLACEHOLDER } from "./plan-gap-parse.ts";
 import type { PlanGap } from "./plan-types.ts";
 
 /**
@@ -37,6 +39,55 @@ export function residualGapsSection(residual: PlanGap[]): string {
     .map((g) => `- [${g.severity}] ${truncateForDisclosure(g.description)} → ${g.resolution}`)
     .join("\n");
   return `## Residual gap-gate findings\n\n${items}\n`;
+}
+
+/**
+ * #1132: the open points of a spec filed at the gate's iteration cap: every
+ * CRITICAL still unresolved at the cap, each with the gate's proposal when it
+ * gave one, so the unresolved points are visible on the issue rather than
+ * blocking its filing.
+ */
+export function openPointsSection(points: PlanGap[]): string {
+  if (points.length === 0) return "";
+  const items = points
+    .map((g) => {
+      const proposal =
+        g.resolution === GAP_RESOLUTION_PLACEHOLDER
+          ? "no proposed resolution"
+          : `proposed: ${truncateForDisclosure(g.resolution)}`;
+      return `- [${g.severity}] ${truncateForDisclosure(g.description)} — ${proposal}`;
+    })
+    .join("\n");
+  return `## Open points (unresolved at the gap-gate cap)\n\nThe gap gate reached its iteration cap with these CRITICAL points still unresolved. The issue is filed so they are visible; the /work intent gate decides whether it is buildable.\n\n${items}\n`;
+}
+
+/**
+ * #1132: the disclosure for a spec drafted from the local checkout because the
+ * origin base could not be read. "" when the run had a base.
+ */
+export function baseFallbackSection(reason: string | undefined): string {
+  if (!reason) return "";
+  return `## Base fallback\n\nThis spec was drafted from the local checkout, not origin/<default>: ${reason}. The investigators read the checkout, so the spec may reflect uncommitted or unpushed local changes.\n`;
+}
+
+/**
+ * The body that gets filed or shown on a dry run: the spec, then each
+ * disclosure section that applies (#1132: open points and the base fallback).
+ */
+export function filedBodyOf(
+  body: string,
+  residual: PlanGap[],
+  openPoints: PlanGap[],
+  baseFallback: string | undefined,
+): string {
+  return [
+    body,
+    residual.length > 0 ? residualGapsSection(residual) : "",
+    openPointsSection(openPoints),
+    baseFallbackSection(baseFallback),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 /**
