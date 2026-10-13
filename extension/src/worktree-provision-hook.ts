@@ -135,8 +135,14 @@ export async function packageDirsAt(repoRoot: string): Promise<string[]> {
     .filter((e) => e.isDirectory() && !e.name.startsWith(".") && e.name !== "node_modules")
     .map((e) => e.name);
   if (dirs.length === 0) return [];
-  const hasMarker = async (dir: string) =>
-    DEPENDENCY_MARKERS.some((m) => fileExists(path.join(repoRoot, dir, m)));
+  // Awaited one by one: `fileExists` returns a Promise, and a Promise is
+  // always truthy — a bare `.some(fileExists)` made every directory a match.
+  const hasMarker = async (dir: string) => {
+    for (const m of DEPENDENCY_MARKERS) {
+      if (await fileExists(path.join(repoRoot, dir, m))) return true;
+    }
+    return false;
+  };
   const marked: string[] = [];
   for (const dir of dirs) {
     if (await hasMarker(dir)) marked.push(dir);
