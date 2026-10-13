@@ -34,6 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ripgrep fd-find \
       docker.io \
       util-linux \
+      tini \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/fdfind /usr/local/bin/fd
 # docker.io: CLI only (we never spawn the daemon inside the container — the
@@ -280,7 +281,13 @@ ENV PI_ENSEMBLE_SANDBOX_MODE=1
 # before exec'ing the user command.
 # Keeping the entrypoint as root for these one-time fixups is safer than the
 # alternatives (sudoers carve-outs, GID guessing across host platforms).
-ENTRYPOINT ["/usr/local/bin/pi-rukas-entrypoint"]
+#
+# tini is PID 1, not pi. Node never reaps processes it did not spawn, so with
+# pi as PID 1 every orphan — a gate's git children after the gate is killed
+# at a timeout — stays a zombie and keeps its pid. A pid-limited container
+# then cannot fork (`/bin/sh: Cannot fork`, `spawn EAGAIN`) for the rest of
+# the cycle (#1256). tini reaps them and forwards signals to pi.
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/pi-rukas-entrypoint"]
 
 # Default: drop the user into `pi` directly. The wrapper script overrides via
 # `pi-rukas shell` for a bash prompt instead.
