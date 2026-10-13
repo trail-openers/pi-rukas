@@ -61,7 +61,7 @@ async function mkRepo(): Promise<string> {
   const dir = await mkRepo();
   try {
     // The exact real-world shape: the branch was never pushed, or the local
-    // remote-tracking ref is stale. `git diff origin/main..origin/<branch>`
+    // remote-tracking ref is stale. `git diff origin/main...origin/<branch>`
     // fails with "unknown revision".
     const r = await readIntegratedDiff(dir, "feature/never-pushed");
     assert(!r.ok, "a missing origin/<branch> is a FAILURE, not an empty diff");

@@ -217,7 +217,11 @@ export async function readIntegratedDiff(
     return { ok: false, reason: `could not resolve mainline: ${errText(err)}` };
   }
   try {
-    const { stdout } = await execp(`git diff origin/${base}..origin/${branchName}`, {
+    // Three-dot: the diff is taken from the MERGE BASE, so a base that moved
+    // after the branch was cut contributes nothing. Two-dot would diff the
+    // branch tip against the base tip and report the base's new commits as
+    // reversed (phantom CRITICAL findings, #1134).
+    const { stdout } = await execp(`git diff origin/${base}...origin/${branchName}`, {
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
     });
@@ -225,17 +229,19 @@ export async function readIntegratedDiff(
   } catch (err) {
     return {
       ok: false,
-      reason: `git diff origin/${base}..origin/${branchName} failed: ${errText(err)}`,
+      reason: `git diff origin/${base}...origin/${branchName} failed: ${errText(err)}`,
     };
   }
   // Empty output. Confirm it means "no commits ahead" rather than "the read
   // silently produced nothing" — those are the two cases this whole type
   // exists to separate.
   try {
-    const { stdout } = await execp(`git rev-list --count origin/${base}..origin/${branchName}`, {
-      cwd: repoRoot,
-      maxBuffer: 64 * 1024,
-    });
+    // --right-only: commits reachable from the branch but not from the base,
+    // i.e. the PR's own commits, whatever the base has done since.
+    const { stdout } = await execp(
+      `git rev-list --count --right-only origin/${base}...origin/${branchName}`,
+      { cwd: repoRoot, maxBuffer: 64 * 1024 },
+    );
     const ahead = Number.parseInt(stdout.trim(), 10);
     if (!Number.isFinite(ahead)) {
       return { ok: false, reason: `could not count commits ahead of origin/${base}` };

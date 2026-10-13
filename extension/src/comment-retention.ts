@@ -153,11 +153,16 @@ async function confirmEmptyDiff(
   // silently passing as "nothing lost".
   let changedInRange = Number.NaN;
   try {
-    const { stdout } = await execFn(`git rev-list --count ${baseRef}..${headRef} -- ${pathArg}`, {
-      cwd,
-      timeout: timeoutMs,
-      maxBuffer: 1 * 1024 * 1024,
-    });
+    // Three-dot + --right-only: the PR's own commits, measured from the merge
+    // base (a base that moved after the branch was cut must not count here).
+    const { stdout } = await execFn(
+      `git rev-list --count --right-only ${baseRef}...${headRef} -- ${pathArg}`,
+      {
+        cwd,
+        timeout: timeoutMs,
+        maxBuffer: 1 * 1024 * 1024,
+      },
+    );
     changedInRange = Number.parseInt(stdout.trim(), 10);
   } catch {
     changedInRange = Number.NaN; // unreadable — note, not pass

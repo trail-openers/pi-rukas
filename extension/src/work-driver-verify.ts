@@ -282,7 +282,9 @@ export async function verifyConsolidation(
     // the SOURCE path in the diff output, so a move is visible evidence
     // instead of a silent absence of the old name.
     const branch = state.pipelineState.branchName ?? "HEAD";
-    const { stdout } = await execp(`git diff --name-status -M origin/${base}..${branch}`, {
+    // #1134 — three-dot: the branch's own changes from the merge base, so a
+    // base that moved after the branch was cut does not read as reverted files.
+    const { stdout } = await execp(`git diff --name-status -M origin/${base}...${branch}`, {
       cwd: ctx.repoRoot,
       maxBuffer: 1024 * 1024,
     });

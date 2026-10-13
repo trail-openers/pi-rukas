@@ -191,10 +191,15 @@ export async function verifyStepOutcome(
     // `origin/<branch>`) because the commit-pr gate can run before push in
     // some edge cases; the local ref is what the cycle created.
     const branch = state.pipelineState.branchName ?? "HEAD";
-    const { stdout } = await execFn(`git rev-list --count origin/${base}..${branch}`, {
-      cwd: ctx.repoRoot,
-      maxBuffer: 64 * 1024,
-    });
+    // Three-dot + --right-only: the branch's own commits, measured from the
+    // merge base so a base that moved after the branch was cut is not counted.
+    const { stdout } = await execFn(
+      `git rev-list --count --right-only origin/${base}...${branch}`,
+      {
+        cwd: ctx.repoRoot,
+        maxBuffer: 64 * 1024,
+      },
+    );
     if (Number.parseInt(stdout.trim(), 10) === 0) {
       failures.push(
         `ops claimed commit+PR done but the branch has zero commits ahead of origin/${base} — nothing was committed`,

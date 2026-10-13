@@ -15,7 +15,8 @@
  * is exactly the uncommitted work to review. The defect this canary
  * guards is the SCOPE, not the command: a repo-root verification path
  * must name the branch it means (see readIntegratedDiff, which uses
- * `origin/<base>..origin/<branch>` and is the reference shape).
+ * `origin/<base>...origin/<branch>` — three-dot, from the merge base — and is
+ * the reference shape).
  *
  * Two assertions, both offline:
  *
@@ -35,7 +36,14 @@
  */
 
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -97,8 +105,40 @@ const readSrc = (name: string) => readFileSync(path.join(SRC, name), "utf8");
   );
   // The repo-root integrated read names both refs — the reference shape.
   assert(
-    /git diff origin\/\$\{base\}\.\.origin\/\$\{branchName\}/.test(src),
-    "work-driver-diff.ts: readIntegratedDiff names explicit refs (origin/<base>..origin/<branch>)",
+    /git diff origin\/\$\{base\}\.\.\.origin\/\$\{branchName\}/.test(src),
+    "work-driver-diff.ts: readIntegratedDiff names explicit refs (origin/<base>...origin/<branch>, three-dot)",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 0. Two-dot canary (#1134) — no driver module computes a PR diff or a PR
+//    commit count with a two-dot `origin/<base>..origin/<branch>` range. The
+//    two-dot form diffs tip against tip, so a base that moved after the
+//    branch was cut reads as a phantom reversal. Three-dot (merge base) only.
+// ---------------------------------------------------------------------------
+
+/** Two-dot ranges over origin refs, in any interpolation form. */
+const TWO_DOT_ORIGIN_RANGE = /origin\/(\$\{[^}]*\}|[\w.-]+)\.\.(?!\.)(origin\/|\$\{[^}]*\}|[\w/.-]+)/;
+
+/**
+ * Two-dot origin ranges that are deliberately NOT PR diffs. Each entry is a
+ * file that matches the pattern, with the reason it is exempt.
+ */
+const TWO_DOT_EXEMPT: Record<string, string> = {};
+
+{
+  const offenders: string[] = [];
+  for (const name of readdirSync(SRC)) {
+    if (!name.endsWith(".ts") || TWO_DOT_EXEMPT[name]) continue;
+    const code = readSrc(name)
+      .split("\n")
+      .filter((l) => !l.trim().startsWith("*") && !l.trim().startsWith("//"))
+      .join("\n");
+    if (TWO_DOT_ORIGIN_RANGE.test(code)) offenders.push(name);
+  }
+  assert(
+    offenders.length === 0,
+    `two-dot canary: no src module uses a two-dot origin/<base>..origin/<branch> range (offenders: ${offenders.join(", ") || "none"})`,
   );
 }
 
