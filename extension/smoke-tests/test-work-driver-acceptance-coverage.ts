@@ -138,6 +138,20 @@ const specWith = (criteria: string[]) => ({
   );
   assert(v2.undelivered.length === 0, "classifyCoverage: partial presence → no undelivered set");
 
+  // Prose that looks like a path never blocks (#1137 review): a slash-only
+  // token counts only if the diff has files under it; a path after prose counts.
+  const vProse = classifyCoverage(
+    ["Errors (read/write)", "Docs (see docs/x.md)", "Covered (e.g. src/a.ts)", "Gone (see docs/gone.md)"],
+    workstreams,
+    new Set(["docs/x.md", "src/a.ts"]),
+  );
+  assert(vProse.criteria[0].status === "unmeasurable", "classifyCoverage: '(read/write)' is prose");
+  assert(
+    vProse.criteria[1].status === "delivered" && vProse.criteria[2].status === "delivered",
+    "classifyCoverage: paths after prose ('see docs/x.md', 'e.g. src/a.ts') are found and shipped",
+  );
+  assert(vProse.undelivered.length === 1, "classifyCoverage: only the unshipped prose-wrapped path blocks");
+
   // Explicit skip: "scope unknown" shapes degrade to a recorded skip.
   const vs = classifyCoverage(["Any (src/a.ts)"], workstreams, diff, {
     skipReason: "no recorded acceptance criteria",
@@ -198,6 +212,9 @@ const specWith = (criteria: string[]) => ({
     // Unreadable: a branch that does not exist and has no origin ref.
     const r2 = await readConsolidatedDiffFiles(execFn, dir, "feature/nope");
     assert(r2.unreadable === true, "readConsolidatedDiffFiles: unknown branch → unreadable");
+    // A shell-metacharacter branch name is refused, never handed to the shell.
+    const r3 = await readConsolidatedDiffFiles(execFn, dir, "feature/x;touch pwned");
+    assert(r3.unreadable === true, "readConsolidatedDiffFiles: unsafe ref name is refused (unreadable)");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

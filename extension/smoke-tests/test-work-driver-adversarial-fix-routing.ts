@@ -432,8 +432,8 @@ function seededLog(): WorkState["eventLog"] {
     );
     const ev = tail?.kind === "cap-hit" ? (tail.evidence ?? "") : "";
     assert(
-      /plumb|scope-ambiguity|answer the question/i.test(ev),
-      `E: the evidence names the plumb question (got: ${ev.slice(0, 100)})`,
+      !/answer the question/.test(ev),
+      `E: a stale plumb report is not presented as this pass's question (got: ${ev.slice(0, 100)})`,
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

@@ -7,6 +7,7 @@
  * pass or its handlers.
  */
 
+import { postPassFault } from "./work-driver-adversarial-fix-scope.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 /** Discloses a fact on the handoff report without parking the pass. */
@@ -45,6 +46,31 @@ export function plumbQuestion(reports: readonly PlumbReportLike[]): string | nul
     .trim();
   const capped = body.length > 300 ? `${body.slice(0, 299)}…` : body; // ≤300 chars total, ellipsis-marked
   return `developer question (untrusted text): ${capped}`;
+}
+
+/** The post-pass read's reason when the pass changed nothing (postPassFault). */
+export const NO_CHANGE_REASON = /byte-identical|nothing was fixed/i;
+
+/**
+ * The fix developer's plumb question from reports NEW to this pass. A stale
+ * question from an earlier pass is never presented as this pass's.
+ */
+export function freshPlumbQuestion(
+  state: WorkState,
+  priorBodies: ReadonlySet<string>,
+): string | null {
+  const fresh = (state.pipelineState.plumbReports ?? []).filter((r) => !priorBodies.has(r.body));
+  return plumbQuestion(fresh);
+}
+
+/** True only when the post-pass read proves the pass changed nothing. */
+export async function noChangeProven(
+  execFn: Parameters<typeof postPassFault>[0],
+  plans: Parameters<typeof postPassFault>[1],
+  baseSha: string,
+): Promise<boolean> {
+  const check = await postPassFault(execFn, plans, baseSha);
+  return check.reason !== undefined && NO_CHANGE_REASON.test(check.reason);
 }
 
 /**

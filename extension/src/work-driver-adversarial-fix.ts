@@ -32,8 +32,10 @@ import {
   postPassFault,
 } from "./work-driver-adversarial-fix-scope.ts";
 import {
+  NO_CHANGE_REASON,
+  freshPlumbQuestion,
+  noChangeProven,
   noteFixPass,
-  plumbQuestion,
   withNewPlumbReports,
 } from "./work-driver-adversarial-plumb.ts";
 import type { AdversarialOutcome } from "./work-driver-adversarial-types.ts";
@@ -331,7 +333,9 @@ function parkFixPass(
 /**
  * The develop fix pass for the pending workstreams. Reuses their worktrees;
  * named finding paths widen a declared fence for this pass only; all develop
- * gates run unchanged. Parks like a first develop failure.
+ * gates run unchanged. Parks like a first develop failure: a failed gate or
+ * dispatch, a no-op pass, a change outside the fence, or a removed origin/main
+ * comment. Every pre-pass read fails closed (see the scope module).
  */
 export async function runAdversarialFixPass(
   ctx: DriverContext,
@@ -400,16 +404,15 @@ export async function runAdversarialFixPass(
   if (failed) {
     const tail = restored.eventLog[restored.eventLog.length - 1];
     if (tail?.kind === "cap-hit") {
-      // #1137 — a no-change fix pass with a plumb report is a question, not
-      // a failed gate. The develop gate's empty-diff failure fires here;
-      // the plumb report is already in pipelineState. The evidence names the
-      // question so the operator answers it instead of re-dispatching.
-      const plumb = plumbQuestion(restored.pipelineState.plumbReports ?? []);
-      if (plumb) {
+      // #1137 — a fix pass that changed nothing and left a fresh plumb question
+      // is a question to answer, not a failed gate. "Changed nothing" is proven
+      // by the post-pass read, never assumed from the cap that fired.
+      const question = freshPlumbQuestion(restored, priorPlumbBodies);
+      if (question && (await noChangeProven(execFn, plans, ps.baseSha ?? ""))) {
         return parkFixPass(
           restored,
           pending,
-          `the developer returned a plumb report and changed nothing — answer the question: ${plumb}`,
+          `the developer returned a plumb report and changed nothing — answer the question: ${question}`,
           now,
         );
       }
@@ -420,19 +423,15 @@ export async function runAdversarialFixPass(
 
   const post = await postPassFault(execFn, plans, ps.baseSha ?? "");
   if (post.reason) {
-    // #1137 — a no-change fix pass whose workstream carried a plumb report
-    // (a structural question, e.g. scope-ambiguity) is a question to answer,
-    // not a failed gate. The plumb report is already in pipelineState (the
-    // develop step recorded the developer's reply); the handoff's plumb
-    // section renders it, and the evidence names the plumb question so the
-    // operator answers it instead of re-dispatching the same no-op.
-    if (/byte-identical|nothing was fixed/i.test(post.reason)) {
-      const plumb = plumbQuestion(restored.pipelineState.plumbReports ?? []);
-      if (plumb) {
+    // #1137 — a no-change pass (the post-pass read's own verdict) that left a
+    // fresh plumb question is a question to answer, not a failed gate.
+    if (NO_CHANGE_REASON.test(post.reason)) {
+      const question = freshPlumbQuestion(restored, priorPlumbBodies);
+      if (question) {
         return parkFixPass(
           restored,
           pending,
-          `the developer returned a plumb report and changed nothing — answer the question: ${plumb}`,
+          `the developer returned a plumb report and changed nothing — answer the question: ${question}`,
           now,
         );
       }
@@ -440,7 +439,9 @@ export async function runAdversarialFixPass(
     return parkFixPass(restored, pending, post.reason, now);
   }
   // The operator's kill switch is NOT a failed check: a disabled check reads
-  // NOT CHECKED and the pass proceeds with that disclosed, never parked.
+  // NOT CHECKED (as every other reader renders it) and the pass proceeds with
+  // that disclosed on the handoff, never parked. Only a check that was asked
+  // for and could not run parks.
   let kept = restored;
   if (!commentRetentionEnabled()) {
     const note =

@@ -1,8 +1,13 @@
 /**
  * work-driver-adversarial-fanout — the per-workstream fan-out of the
- * adversarial gate (#486). A transient infra failure in ONE workstream is
- * retried in-step (per-workstream budget); a permanent failure parks with
- * cap `adversarial-infra-failure` rather than being rendered as a rejection.
+ * adversarial gate (#486), extracted from work-driver-adversarial.ts
+ * (AGENTS.md §12 file-size limit). Leaf module — no dependency on any
+ * work-driver-<step>.ts handler. #486: a transient infrastructure failure
+ * in ONE workstream's loop is retried in-step (per-workstream budget,
+ * taxonomy backoff) while the other workstreams' approved verdicts are
+ * preserved in the event log either way. A permanent failure parks with
+ * cap `adversarial-infra-failure` instead of being rendered as a review
+ * rejection.
  */
 
 import { runAdversarialLoop } from "./adversarial.ts";
@@ -84,8 +89,7 @@ export async function fanOutAdversarial(
     step: "adversarial",
     startedAt: stepStartedAt,
   });
-  // #1137 — workstream set from pipelineState.workstreams keys (the coverage
-  // gate reads the same); absent keys fall back to the argument `ids`.
+  // #1137 — review set = pipelineState.workstreams keys (as the coverage gate reads it).
   const wsMap = state.pipelineState.workstreams;
   const reviewIds = wsMap && Object.keys(wsMap).length > 0 ? Object.keys(wsMap) : ids;
   const endStep = (
@@ -110,7 +114,6 @@ export async function fanOutAdversarial(
   // log — BEFORE this pass's events are appended.
   const passStart = priorBatchSpan ? priorBatchSpan[0] : state.eventLog.length;
   const runOne = async (id: string): Promise<AdversarialOutcome> => {
-    // #1137 — a state key absent from the worktrees map is reviewed at repoRoot.
     const cwd = state.pipelineState.worktrees?.[id] ?? ctx.repoRoot;
     if (!state.pipelineState.worktrees?.[id])
       trace(`work-driver: adversarial[${id}] — no worktree, reviewing at repoRoot`);
@@ -295,11 +298,20 @@ export async function fanOutAdversarial(
   const isTransient = (o: AdversarialOutcome): boolean => isTransientAdversarialOutcome(o);
   const classify = (o: AdversarialOutcome) => classifyAdversarialOutcome(o);
 
-  // #486 — VERDICT-holders from the prior pass are final and NOT re-run; their
-  // events are re-emitted from the prior record (the `outcomes` seed), so the log
-  // stays complete after the splice. First entry: everything. Re-entry: only the
-  // infra-failed ones re-run while their budget holds; #1114 also re-runs a
-  // workstream whose fix pass was applied since its routed review. The rest are survivors.
+  // #486 — workstreams that produced a VERDICT (approved / rejected /
+  // skipped-empty-diff) on the prior pass are final and NOT re-run. Their
+  // per-workstream events are re-emitted from this prior-outcome record
+  // (see the `outcomes` seed below), so the log stays complete after the
+  // splice replaces the prior pass's batch.
+  // #486 — the workstreams that run on THIS pass. First entry: everything.
+  // Re-entry (the previous fan-out recorded a NO-VERDICT outcome): only the
+  // infra-failed ones re-run while their per-workstream budget holds — a
+  // permanent failure therefore stops the retry loop rather than re-running
+  // siblings forever, and their preserved outcomes keep the aggregate
+  // honest.
+  // #1114 — "everything" on a first entry means whatever still needs a review;
+  // re-entry also re-runs a workstream whose fix pass was applied since its
+  // routed review. The rest are survivors.
   const runSet = priorHadInfraFailure
     ? reviewIds.filter((id) => {
         const prev = priorOutcomes.get(id);

@@ -442,13 +442,47 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
     // The evidence names the plumb question, not just "byte-identical".
     const evidence = tail?.kind === "cap-hit" ? tail.evidence : "";
     assert(
-      /plumb report|scope-ambiguity|answer the question/i.test(evidence),
-      `J: the cap evidence names the plumb question (got: ${evidence?.slice(0, 120)})`,
+      !/answer the question/.test(evidence),
+      `J: a stale plumb report is not presented as this pass's question (got: ${evidence?.slice(0, 120)})`,
     );
     // The handoff's plumb section also carries the question.
     assert(
       (out.pipelineState.plumbReports ?? []).some((r) => /plumb|scope-ambiguity/i.test(r.body)),
       "J: the plumb report is in pipelineState for the handoff",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// K — #1137 review: a plumb report from an EARLIER pass is not this pass's question.
+{
+  const dir = repoWithFile("fix-stale-plumb");
+  try {
+    const ctx: DriverContext = {
+      pi: { sendUserMessage: () => {} } as unknown as DriverContext["pi"],
+      repoRoot: dir,
+      issue: 1137,
+      issueBodyFetcherFn: async () => ({ stdout: "mock" }),
+      dispatchFn: async (_pi, spec) => {
+        if (spec.role === "developer") devCommit(dir, "stray.txt", "x\n");
+        return { role: spec.role, ok: true, exitCode: 0, text: "done", toolUses: [], ms: 1 } as DispatchResult;
+      },
+    };
+    const st = twoWorkstreamState(dir);
+    const stale: WorkState = {
+      ...st,
+      pipelineState: {
+        ...st.pipelineState,
+        plumbReports: [{ step: "develop", role: "driver", body: "[ensemble:plumb] old question", at: 1 }],
+      },
+    };
+    const out = await runAdversarialFixPass(ctx, stale, pendingFixes(stale.eventLog), Date.now());
+    const tail = out.eventLog[out.eventLog.length - 1];
+    const ev = tail?.kind === "cap-hit" ? (tail.evidence ?? "") : "";
+    assert(
+      !/answer the question/.test(ev),
+      `K: a stale plumb report is not presented as this pass's question (tail: ${tail?.kind})`,
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

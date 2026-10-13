@@ -84,30 +84,58 @@ export interface CoverageVerdict {
   filesPresent: string[];
 }
 
+/** A repo-path token: word characters, dots, dashes, `@`, slash-separated. */
+const PATH_TOKEN = /^[\w.@-]+(\/[\w.@-]+)*$/;
+/** A token with a file extension is a file path; a slash-only token is a directory. */
+const FILE_SHAPED = /\.[A-Za-z0-9]+$/;
+
 /**
  * Extract the deliverable paths a criterion names in parentheses,
  * normalised the same way the verify gate normalises planner prose
- * ("`src/a.ts (new)`" → "src/a.ts"). A parenthesis pair without a path
- * (no `/` or file extension) is prose and is ignored — the check stays
- * deterministic and never guesses over free text.
+ * ("`src/a.ts (new)`" → "src/a.ts"). A parenthesis pair without a path is
+ * prose and is ignored — the check stays deterministic and never guesses
+ * over free text.
  *
  * A single parenthetical may name several paths ("(src/a.ts, src/b.ts)") —
- * it is split on commas. A nested trailing annotation ("(x.ts (new))") is
- * unwrapped so the path survives the outer-paren match.
+ * it is split on commas, and each comma part on whitespace, so a path
+ * written after prose ("(see docs/x.md)") is still found. Only a token of
+ * clean path shape survives: "(read/write)" yields "read/write" here, which
+ * `parseablePaths` then drops unless the diff actually has files under it.
  */
 export function criterionPathsOf(text: string): string[] {
   const seen = new Set<string>();
   for (const m of text.matchAll(/\(([^()]*(?:\([^()]*\)[^()]*)*)\)/g)) {
     const inner = (m[1] ?? "").replace(/\s*\([^()]*\)\s*$/, "");
     for (const part of inner.split(",")) {
-      const p = normaliseDeclaredPath(part);
-      // A path has a slash or a file extension; a bare parenthetical
-      // ("docs") is prose, not a declared path.
-      if (p.length === 0) continue;
-      if (p.includes("/") || /\.[A-Za-z0-9]+$/.test(p)) seen.add(p);
+      for (const tok of normaliseDeclaredPath(part).split(/\s+/)) {
+        if (!PATH_TOKEN.test(tok)) continue;
+        if (FILE_SHAPED.test(tok) || tok.includes("/")) seen.add(tok);
+      }
     }
   }
   return [...seen];
+}
+
+/**
+ * The criterion's paths that can bear on the consolidated diff. A file-shaped
+ * token always counts; a slash-only token (a directory) counts only when some
+ * file in the diff lives under it. So "(read/write)" in prose is not a path
+ * unless the diff actually touches read/ — the prose stays unmeasurable.
+ */
+export function parseablePaths(text: string, diffFiles: ReadonlySet<string>): string[] {
+  return criterionPathsOf(text).filter(
+    (p) => FILE_SHAPED.test(p) || [...diffFiles].some((f) => f.startsWith(`${p}/`)),
+  );
+}
+
+/**
+ * A git ref we are willing to hand to the shell. Branch names come from the
+ * driver slug or from `git rev-parse` on the ops fallback, so they are
+ * validated rather than trusted: no shell metacharacters, no `..` (which
+ * would turn the range into something else), no leading dash.
+ */
+function isSafeRef(ref: string): boolean {
+  return /^[A-Za-z0-9._/-]+$/.test(ref) && !ref.includes("..") && !ref.startsWith("-");
 }
 
 /**
@@ -129,6 +157,10 @@ export async function readConsolidatedDiffFiles(
   const mainline = await detectMainline(repoRoot, execFn);
   const base = mainline && "branch" in mainline ? `origin/${mainline.branch}` : "origin/main";
   const tryRef = async (ref: string): Promise<boolean> => {
+    if (!isSafeRef(ref) || !isSafeRef(base)) {
+      trace(`work-driver: acceptance coverage — refusing unsafe ref name in diff read: ${ref}`);
+      return false;
+    }
     try {
       const { stdout } = await execFn(`git diff --name-status -M ${base}..${ref}`, {
         cwd: repoRoot,
@@ -178,9 +210,8 @@ export async function readConsolidatedDiffFiles(
  */
 function criterionOwner(
   workstreams: Record<string, { paths: string[] }>,
-  criterion: string,
+  paths: readonly string[],
 ): string | null {
-  const paths = criterionPathsOf(criterion);
   if (paths.length === 0) return null;
   for (const [id, ws] of Object.entries(workstreams)) {
     const declared = (ws?.paths ?? []).map(normaliseDeclaredPath);
@@ -220,7 +251,7 @@ export function classifyCoverage(
     };
   }
   const results: CoverageCriterionResult[] = criteria.map((text) => {
-    const paths = criterionPathsOf(text);
+    const paths = parseablePaths(text, diffFiles);
     if (paths.length === 0) {
       return {
         text,
@@ -234,35 +265,18 @@ export function classifyCoverage(
       (p) => diffFiles.has(p) || [...diffFiles].some((f) => f.startsWith(`${p}/`)),
     );
     const missing = paths.filter((p) => !present.includes(p));
+    const owner = criterionOwner(workstreams, paths);
     if (missing.length === 0) {
-      return {
-        text,
-        status: "delivered",
-        present,
-        missing,
-        owner: criterionOwner(workstreams, text),
-      };
+      return { text, status: "delivered", present, missing, owner };
     }
     if (present.length === 0) {
-      return {
-        text,
-        status: "undelivered",
-        present,
-        missing,
-        owner: criterionOwner(workstreams, text),
-      };
+      return { text, status: "undelivered", present, missing, owner };
     }
     // Partial: some of the criterion's paths shipped, some did not. Not a
     // block (the converge gate parks only on fully-absent deliverables) —
     // the delivered side is what shipped; the rest is an over-declaration
     // or a sibling's slice, which per-workstream review owns.
-    return {
-      text,
-      status: "delivered",
-      present,
-      missing,
-      owner: criterionOwner(workstreams, text),
-    };
+    return { text, status: "delivered", present, missing, owner };
   });
   const undelivered = results.filter((r) => r.status === "undelivered");
   return {

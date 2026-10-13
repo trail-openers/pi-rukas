@@ -75,7 +75,7 @@ export function buildWorkstreamScopeSection(
   // passed verbatim and the reviewer judges the diff against it.
   if (!own && siblings.length === 0) return "";
   const ownLine = own
-    ? `This workstream owns: ${own.scope ? ` "${own.scope}"` : "(no scope recorded)"} — declared paths: ${own.paths.length ? own.paths.join(", ") : "(none recorded)"}`
+    ? `This workstream owns: ${own.scope ? `"${own.scope}"` : "(no scope recorded)"} — declared paths: ${own.paths.length ? own.paths.join(", ") : "(none recorded)"}`
     : "This workstream's own scope is not recorded in the cycle state (scope unknown — do not guess, do not default to the whole issue).";
   const sibLines =
     siblings.length > 0
