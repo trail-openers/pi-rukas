@@ -297,6 +297,23 @@ const srcDir = path.join(here, "..", "src");
       j3.reported.some((f) => f.title === "triggered medium" && f.severity === "MEDIUM"),
       "memory: a triggered carried MEDIUM stays MEDIUM",
     );
+
+    // A row first seen trigger-less at round 2 is stored at LOW; when the lens
+    // re-reports it WITH a trigger, the stored severity follows the latest
+    // judgement, so a later carried copy still blocks instead of staying LOW.
+    await run(applyRoundDowngrade([{ ...base, line: 1, title: "escalated" }], 2));
+    await run([{ ...base, line: 1, title: "escalated", trigger: "two calls" }]);
+    const r4 = await run([], true);
+    const carriedEsc = r4.ok ? r4.carried.find((f) => f.title === "escalated") : undefined;
+    assert(
+      carriedEsc?.severity === "MEDIUM" && carriedEsc.trigger === "two calls",
+      "memory: a re-reported triggered MEDIUM is stored at MEDIUM (not left at LOW)",
+    );
+    const j4 = judgeRound([], r4, [], lens, "MEDIUM", 3);
+    assert(
+      j4.verdict === "ISSUES_FOUND",
+      "memory: a carried escalated MEDIUM blocks at round 3 (ISSUES_FOUND)",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
