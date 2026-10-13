@@ -31,6 +31,10 @@ const base = mkdtempSync(path.join(os.tmpdir(), "pi-1128-"));
 const dir = path.join(base, "repo");
 const ledgerFile = path.join(base, "review-ledger.json");
 process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = ledgerFile;
+// The lens roster reads the installed skills dir (~/.pi/agent/skills), which
+// CI does not have. Point it at the repo's own skill/ dir (the offline
+// stand-in, as test-lens-review.ts does) so the roster resolves everywhere.
+process.env.PI_ENSEMBLE_SKILLS_DIR = path.resolve(import.meta.dirname, "..", "..", "skill");
 
 try {
   mkdirSync(dir, { recursive: true });
