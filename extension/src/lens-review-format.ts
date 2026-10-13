@@ -10,6 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { neutraliseEvidence } from "./comment-evidence.ts";
 import { type SuppressedFinding, suppressedSection } from "./lens-residuals.ts";
+import { advisorySection } from "./lens-review-advisory.ts";
 import { deltaFallbackText } from "./lens-review-diff.ts";
 import { isReviewIncomplete } from "./lens-review-incomplete.ts";
 import type { Finding, FindingSource, LensRunResult } from "./lens-review.ts";
@@ -95,6 +96,8 @@ export interface LensReviewSummary {
    * the residual comment.
    */
   memoryNote?: string;
+  /** #1140 — carried rows on files outside the PR's diff: listed, never blocking. */
+  advisory?: Finding[];
 }
 
 /**
@@ -484,6 +487,7 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
       s.suppressed,
       `Suppressed as already known (${s.suppressed?.length ?? 0}, not re-reported):`,
     ),
+    ...advisorySection(s.advisory),
     ...(s.memoryNote ? ["", neutraliseEvidence(s.memoryNote)] : []),
     "",
     "Transcripts:",

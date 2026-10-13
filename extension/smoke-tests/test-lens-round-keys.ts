@@ -134,9 +134,10 @@ if (shaFirst.admitted) await shaFirst.release();
 seed([lensRow({ branch: shaKey, round: 3, at: 1000 })]);
 const sha4 = await admitLensRound({ cwd: repo, head: detachedSha });
 assert(
-  !sha4.admitted && sha4.refusal.verdict === "ROUND_CAP_REACHED",
-  "a SHA head is budgeted: the 4th run under its key is refused",
+  sha4.admitted && sha4.round === 4 && /WARNING: ROUND_CAP_REACHED/.test(sha4.note ?? ""),
+  "a SHA head is budgeted: the 4th run under its key carries the round-cap warning (#1140)",
 );
+if (sha4.admitted) await sha4.release();
 const shaWide = await admitLensRound({
   cwd: repo,
   head: detachedSha,
@@ -167,9 +168,13 @@ if (onBranch.admitted) await onBranch.release();
 seed([lensRow({ round: 3, at: 1000 })]);
 const onBranch4 = await admitLensRound({ cwd: repo });
 assert(
-  !onBranch4.admitted && onBranch4.refusal.verdict === "ROUND_CAP_REACHED",
-  "the detached run counts against the branch: the 4th is refused",
+  onBranch4.admitted &&
+    onBranch4.key === "feature/x" &&
+    onBranch4.round === 4 &&
+    /WARNING: ROUND_CAP_REACHED/.test(onBranch4.note ?? ""),
+  "the detached run counts against the branch: the 4th carries the round-cap warning",
 );
+if (onBranch4.admitted) await onBranch4.release();
 
 // -------- 13. #1127 — a corrupt counter fails closed and names its field
 const bad = (extra: Partial<LedgerEntryT>) =>

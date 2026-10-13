@@ -5,6 +5,7 @@ import { resolveBudgetKey } from "./lens-budget-key.ts";
 import { execp } from "./lens-exec.ts";
 import type { LensLedgerOutcome } from "./lens-ledger.ts";
 import { partitionDecisions, renderPriorFindingsBlock } from "./lens-residuals.ts";
+import { splitCarried } from "./lens-review-advisory.ts";
 import { resolveLensReviewBranch } from "./lens-review-branch-resolve.ts";
 import { capKillSummary } from "./lens-review-capkill.ts";
 import { runLensChild } from "./lens-review-child.ts";
@@ -461,8 +462,10 @@ export async function runLensReview(opts: {
   const { kept, suppressed } = partitionDecisions(deduped, decisions);
   // #1105 — open rows this round did not re-report, whose cited code is
   // unchanged, still stand: a lens omitting a known finding is not a fix.
-  // They are reported alongside this round's findings.
-  const reported = [...kept, ...(recorded?.ok ? recorded.carried : [])];
+  // They are reported alongside this round's findings. #1140 — a carried row
+  // on a file outside the PR's diff is advisory (lens-review-advisory.ts).
+  const carried = await splitCarried(recorded, opts.cwd, opts.base, headSha);
+  const reported = [...kept, ...carried.blocking];
   const verdict = computeVerdict(reported, lensResults, threshold);
   // #973 — the round-cap rule's inputs for the ledger write: hasCritical
   // from the deduped findings, headSha from the ref the review actually
@@ -484,6 +487,7 @@ export async function runLensReview(opts: {
       findings: reported,
       ...(suppressed.length > 0 ? { suppressed } : {}),
       ...(memoryNote ? { memoryNote } : {}),
+      ...carried.fields,
       usage: aggregateLensUsage(lensResults),
       // #543 — a dispatch-cap kill on any lens child (loop detector / token
       // budget) is surfaced on the summary so the driver emits the fixed-literal
