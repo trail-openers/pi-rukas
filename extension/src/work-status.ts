@@ -13,7 +13,7 @@ import {
 } from "./work-driver-context.ts";
 import { formatCycleTotal } from "./work-driver-cycle-total.ts";
 import { explainCap } from "./work-driver-explain.ts";
-import { unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
+import { branchTipTag, unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
 import { readQueueSummary } from "./work-queue-summary.ts";
 import { humanActionFor } from "./work-queue.ts";
 import { renderDispatchDurations } from "./work-status-dispatch-durations.ts";
@@ -183,7 +183,7 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
     lines.push("", "Worktree state:");
     if (ps.branchName) {
       const pushedTag = snap ? (snap.branchPushed ? " (pushed)" : " (NOT pushed)") : "";
-      const headTag = snap?.headSha ? ` · HEAD ${snap.headSha}` : "";
+      const headTag = branchTipTag(snap);
       lines.push(`  branch: ${ps.branchName}${pushedTag}${headTag}`);
     }
     lines.push(`  ${ps.prNumber ? `PR: #${ps.prNumber}` : "PR: none created"}`);

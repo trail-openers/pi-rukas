@@ -37,6 +37,7 @@ export async function captureWorktreeSnapshot(
   repoRoot: string,
   branchName: string | undefined,
   worktrees?: Record<string, string>,
+  baseSha?: string,
 ): Promise<NonNullable<WorkState["pipelineState"]["handoffSnapshot"]>> {
   const snapshot: NonNullable<WorkState["pipelineState"]["handoffSnapshot"]> = {
     modifiedFiles: [],
@@ -85,7 +86,8 @@ export async function captureWorktreeSnapshot(
       );
     }
   }
-  // HEAD short SHA.
+  // repoRoot's HEAD short SHA — the operator's checkout, NOT the feature
+  // branch (see `branchTip` below for that).
   try {
     const { stdout } = await execp("git rev-parse --short HEAD", { cwd: repoRoot });
     snapshot.headSha = stdout.trim();
@@ -100,14 +102,33 @@ export async function captureWorktreeSnapshot(
     // output, so any OTHER failure (git could not run at all) is a failed
     // read rather than proof the branch was never created.
     try {
-      await execp(`git rev-parse --verify --quiet ${JSON.stringify(branchName)}`, {
-        cwd: repoRoot,
-      });
+      const { stdout } = await execp(
+        `git rev-parse --verify --quiet ${JSON.stringify(branchName)}`,
+        { cwd: repoRoot },
+      );
       snapshot.branchExists = true;
+      // The branch's OWN tip. `headSha` above is repoRoot's checkout, which
+      // the pre-handoff consolidation restores to where the operator was —
+      // so a branch that had just received the cycle's commits was printed
+      // as sitting at the base commit (#1286).
+      const sha = stdout.trim();
+      if (sha) snapshot.branchTip = { sha };
     } catch (err) {
       snapshot.branchExists = false;
       if ((err as { code?: unknown }).code !== 1) {
         unreadable.push(`git rev-parse --verify ${branchName}: ${readError(err)}`);
+      }
+    }
+    if (snapshot.branchTip && baseSha) {
+      try {
+        const { stdout } = await execp(
+          `git rev-list --count ${JSON.stringify(baseSha)}..${JSON.stringify(snapshot.branchTip.sha)}`,
+          { cwd: repoRoot },
+        );
+        const ahead = Number.parseInt(stdout.trim(), 10);
+        if (Number.isFinite(ahead)) snapshot.branchTip.ahead = ahead;
+      } catch (err) {
+        unreadable.push(`commits on ${branchName} ahead of base: ${readError(err)}`);
       }
     }
     // Remote tracking (best-effort; network may be down). 10s timeout
@@ -162,4 +183,21 @@ export function unreadableSnapshotLines(ps: WorkState["pipelineState"]): string[
         ]
       : []),
   ];
+}
+
+/**
+ * What the branch line says after the branch name: the feature branch's own
+ * tip and its distance from the cycle's base. Falls back to repoRoot's HEAD,
+ * labelled as such, for a state file written before `branchTip` existed or a
+ * cycle that never created a branch.
+ */
+export function branchTipTag(
+  snap: WorkState["pipelineState"]["handoffSnapshot"] | undefined,
+): string {
+  const tip = snap?.branchTip;
+  if (tip) {
+    const ahead = tip.ahead === undefined ? "" : `, ${tip.ahead} commit(s) ahead of base`;
+    return ` · tip ${tip.sha.slice(0, 8)}${ahead}`;
+  }
+  return snap?.headSha ? ` · repo-root HEAD ${snap.headSha}` : "";
 }

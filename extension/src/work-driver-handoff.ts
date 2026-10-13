@@ -82,6 +82,7 @@ export async function runHandoff(
     ctx.repoRoot,
     state.pipelineState.branchName,
     state.pipelineState.worktrees,
+    state.pipelineState.baseSha,
   );
   // #674 — `git status --porcelain` alone reports 0 files for committed work
   // on detached-HEAD worktrees (clean tree, commits ahead of base) — the

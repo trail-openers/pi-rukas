@@ -152,7 +152,12 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
     lines.push(
       "### Worktree state at handoff",
       "",
-      `- HEAD: \`${snap.headSha || "(unknown)"}\``,
+      `- repo-root HEAD: \`${snap.headSha || "(unknown)"}\``,
+      ...(snap.branchTip
+        ? [
+            `- branch tip: \`${snap.branchTip.sha.slice(0, 8)}\`${snap.branchTip.ahead === undefined ? "" : `, ${snap.branchTip.ahead} commit(s) ahead of base`}`,
+          ]
+        : []),
       `- branch exists locally: ${snap.branchExists ? "yes" : `no${unread}`}`,
       `- branch pushed to origin: ${snap.branchPushed ? "yes" : "no (local only)"}`,
       `- uncommitted: ${snap.unstagedCount + snap.stagedCount} files (${snap.stagedCount} staged, ${snap.unstagedCount} unstaged)${unread}`,
@@ -176,7 +181,7 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
     // discover it via `git worktree list`.
     if (snap.committedWork?.length) {
       lines.push(
-        "- committed work on detached-HEAD worktrees (the porcelain counts above are blind to this):",
+        "- committed work on detached-HEAD worktrees (committed — not in the uncommitted count above):",
         ...snap.committedWork.map(
           (w) =>
             `    - \`${w.path}\` — HEAD \`${w.headSha.slice(0, 8)}\`, ${w.ahead} commit(s) ahead of base (workstream: ${w.worktreeId})`,
