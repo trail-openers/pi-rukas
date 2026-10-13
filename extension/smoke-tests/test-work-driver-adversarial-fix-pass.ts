@@ -391,8 +391,8 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
   }
 }
 
-// J — #1137: a no-change fix pass whose workstream carried a plumb report
-// (scope-ambiguity) routes to a handoff that NAMES the plumb question, not
+// J — #1137: a no-change fix pass whose developer replied with a plumb
+// question (scope-ambiguity) routes to a handoff that NAMES the question, not
 // the generic "byte-identical — nothing was fixed". The cap is still
 // verify-failed:develop (so nextStep routes to handoff) but the evidence
 // carries the plumb question so the operator answers it.
@@ -415,40 +415,28 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
           ms: 1,
         }) as DispatchResult,
     };
+    // No prior plumb report: the fix developer's reply is the only source.
     const st = twoWorkstreamState(dir);
-    // Inject the plumb report into pipelineState (the develop step would have
-    // recorded the developer's reply there).
-    const stWithPlumb: WorkState = {
-      ...st,
-      pipelineState: {
-        ...st.pipelineState,
-        plumbReports: [
-          {
-            step: "develop" as const,
-            role: "driver",
-            body: "[ensemble:plumb]\ncategory: scope-ambiguity\nquestion: does this workstream own b.txt or a.txt?",
-            at: Date.now(),
-          },
-        ],
-      },
-    };
-    const pending = pendingFixes(stWithPlumb.eventLog);
-    const out = await runAdversarialFixPass(ctx, stWithPlumb, pending, Date.now());
+    const pending = pendingFixes(st.eventLog);
+    const out = await runAdversarialFixPass(ctx, st, pending, Date.now());
     const tail = out.eventLog[out.eventLog.length - 1];
     assert(
       tail?.kind === "cap-hit" && tail.cap === "verify-failed:develop",
       `J: a plumb-with-no-change parks as verify-failed:develop (tail: ${tail?.kind})`,
     );
     // The evidence names the plumb question, not just "byte-identical".
-    const evidence = tail?.kind === "cap-hit" ? tail.evidence : "";
+    const evidence = tail?.kind === "cap-hit" ? (tail.evidence ?? "") : "";
     assert(
-      !/answer the question/.test(evidence),
-      `J: a stale plumb report is not presented as this pass's question (got: ${evidence?.slice(0, 120)})`,
+      /answer the question/.test(evidence) &&
+        evidence.includes("does this workstream own b.txt or a.txt?"),
+      `J: the evidence names the developer's plumb question (got: ${evidence.slice(0, 160)})`,
     );
-    // The handoff's plumb section also carries the question.
+    // The handoff's plumb section also carries the reply.
     assert(
-      (out.pipelineState.plumbReports ?? []).some((r) => /plumb|scope-ambiguity/i.test(r.body)),
-      "J: the plumb report is in pipelineState for the handoff",
+      (out.pipelineState.plumbReports ?? []).some((r) =>
+        r.body.includes("does this workstream own b.txt or a.txt?"),
+      ),
+      "J: the developer's reply is recorded as a plumb report for the handoff",
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

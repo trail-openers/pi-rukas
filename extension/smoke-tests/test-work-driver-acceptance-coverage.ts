@@ -114,6 +114,52 @@ const specWith = (criteria: string[]) => ({
   }
 }
 
+// ----------------- 3b. main advances after the branch is cut (#1137 review)
+{
+  const fs = await import("node:fs/promises");
+  const { exec: execChild } = await import("node:child_process");
+  const { promisify: promisifyUtil } = await import("node:util");
+  const execp2 = promisifyUtil(execChild);
+  const sh = (cmd: string, cwd: string) => execp2(cmd, { cwd, shell: "/bin/bash" });
+  const execFn = async (cmd: string, o?: { cwd?: string; maxBuffer?: number }) =>
+    await execp2(cmd, { ...o, shell: "/bin/bash" });
+
+  const dir = mkdtempSync(path.join(tmpdir(), "acc-advance-"));
+  try {
+    await execp2("git init -q", { cwd: dir });
+    await sh('git config user.email "t@t" && git config user.name "T"', dir);
+    await fs.writeFile(path.join(dir, ".gitkeep"), "\n");
+    await sh("git add . && git commit -q -m baseline", dir);
+    await fs.mkdir(path.join(dir, "src"), { recursive: true });
+    await fs.writeFile(path.join(dir, "src/shared.ts"), "shared\n");
+    await sh("git add . && git commit -q -m cut-point", dir);
+    // origin/main is the cut point, and the branch is cut here.
+    await sh("git update-ref refs/remotes/origin/main HEAD", dir);
+    await sh("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main", dir);
+    await sh("git checkout -qb feature/issue-1137", dir);
+    await fs.writeFile(path.join(dir, "src/a.ts"), "a\n");
+    await sh("git add . && git commit -q -m work", dir);
+    // Main advances after the cut: it edits a file the branch never touched
+    // and adds one of its own.
+    await sh("git checkout -q -b mainline origin/main", dir);
+    await fs.writeFile(path.join(dir, "src/shared.ts"), "shared, advanced on main\n");
+    await fs.writeFile(path.join(dir, "src/main-only.ts"), "main\n");
+    await sh("git add . && git commit -q -m main-advances", dir);
+    await sh("git update-ref refs/remotes/origin/main HEAD", dir);
+    await sh("git checkout -q feature/issue-1137", dir);
+
+    const r = await readConsolidatedDiffFiles(execFn, dir, "feature/issue-1137");
+    assert(r.unreadable === false, "advanced main: the consolidated read succeeds");
+    assert(r.files.has("src/a.ts"), "advanced main: the branch's own file is delivered");
+    assert(
+      !r.files.has("src/shared.ts") && !r.files.has("src/main-only.ts"),
+      "advanced main: main-only changes are NOT counted as delivered (merge-base diff)",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // ------------------------------------ 4. end-to-end gate on a real repo
 {
   const fs = await import("node:fs/promises");

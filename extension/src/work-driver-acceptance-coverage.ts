@@ -16,7 +16,7 @@
  * The check is deterministic path presence — the same stance as the
  * converge gate (#741, work-driver-converge.ts) and the consolidation
  * coverage gate (work-driver-verify.ts): the consolidated diff (what
- * actually shipped, `origin/<mainline>..origin/<branch>` at repoRoot, the
+ * actually shipped, `origin/<mainline>...origin/<branch>` at repoRoot, the
  * same read `verifyConsolidation` uses) is compared against the union of
  * every workstream's declared paths, and each acceptance criterion is
  * classified delivered / undelivered / unmeasurable. Zero LLM calls.
@@ -140,7 +140,7 @@ function isSafeRef(ref: string): boolean {
 
 /**
  * The consolidated diff name-set: every file in
- * `origin/<mainline>..origin/<branch>` at repoRoot (the same read and the
+ * `origin/<mainline>...origin/<branch>` at repoRoot (the same read and the
  * same `--name-status -M` rename awareness as `verifyConsolidation` in
  * work-driver-verify.ts — rename targets cover the path, rename sources
  * do not). Reads the LOCAL ref of the pushed branch (`origin/<branch>`)
@@ -162,7 +162,9 @@ export async function readConsolidatedDiffFiles(
       return false;
     }
     try {
-      const { stdout } = await execFn(`git diff --name-status -M ${base}..${ref}`, {
+      // Three-dot: the merge base, so a base that advanced after the branch
+      // was cut does not put main-only files into the delivered set (#1134).
+      const { stdout } = await execFn(`git diff --name-status -M ${base}...${ref}`, {
         cwd: repoRoot,
         maxBuffer: 1024 * 1024,
       });

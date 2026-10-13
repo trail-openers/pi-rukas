@@ -402,23 +402,10 @@ function seededLog(): WorkState["eventLog"] {
           ms: 1,
         }) as DispatchResult,
     };
+    // No prior plumb report: the fix developer's reply is the only source.
     const st = twoWorkstreamState(dir);
-    const stWithPlumb: WorkState = {
-      ...st,
-      pipelineState: {
-        ...st.pipelineState,
-        plumbReports: [
-          {
-            step: "develop" as const,
-            role: "driver",
-            body: "[ensemble:plumb]\ncategory: scope-ambiguity\nquestion: does docs own b.txt?",
-            at: Date.now(),
-          },
-        ],
-      },
-    };
-    const pending = pendingFixes(stWithPlumb.eventLog);
-    const out = await runAdversarialFixPass(ctx, stWithPlumb, pending, Date.now());
+    const pending = pendingFixes(st.eventLog);
+    const out = await runAdversarialFixPass(ctx, st, pending, Date.now());
     const tail = out.eventLog[out.eventLog.length - 1];
     assert(
       tail?.kind === "cap-hit" && tail.cap === "verify-failed:develop",
@@ -432,8 +419,8 @@ function seededLog(): WorkState["eventLog"] {
     );
     const ev = tail?.kind === "cap-hit" ? (tail.evidence ?? "") : "";
     assert(
-      !/answer the question/.test(ev),
-      `E: a stale plumb report is not presented as this pass's question (got: ${ev.slice(0, 100)})`,
+      /answer the question/.test(ev) && ev.includes("does docs own b.txt?"),
+      `E: the developer's plumb question is named in the evidence (got: ${ev.slice(0, 100)})`,
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

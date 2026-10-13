@@ -38,7 +38,7 @@ import {
   freshPlumbQuestion,
   noChangeProven,
   noteFixPass,
-  withNewPlumbReports,
+  withDeveloperPlumbReplies,
 } from "./work-driver-adversarial-plumb.ts";
 import type { AdversarialOutcome } from "./work-driver-adversarial-types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
@@ -64,7 +64,9 @@ export interface PendingFix {
 }
 
 /**
- * The one verdict → action mapping for the review track.
+ * The one verdict → action mapping for the review track. Both the live
+ * interpretation of a reportOnly result and the rebuild of a single-workstream
+ * verdict from the log consume it, so the thresholds cannot drift apart.
  */
 export function actionFor(
   status: Parameters<typeof decideLoopAction>[0],
@@ -143,8 +145,9 @@ export interface ReviewReading {
 }
 
 /**
- * Interpret one reportOnly review. A successful dispatch without a parsed
- * verdict is infra, never an approval. The decision is `actionFor`.
+ * Interpret one reportOnly review. Every review carries its round record
+ * (#1114), so a successful dispatch without a parsed verdict is infra, never
+ * an approval. The decision is `actionFor`, the same table the log rebuild uses.
  */
 export function interpretReview(result: DispatchResult, reviewRound: number): ReviewReading {
   const ok = result.ok && !result.errorStop;
@@ -291,7 +294,9 @@ function parkFixPass(
 /**
  * The develop fix pass for the pending workstreams. Reuses their worktrees;
  * named finding paths widen a declared fence for this pass only; all develop
- * gates run unchanged. Parks like a first develop failure.
+ * gates run unchanged. Parks like a first develop failure: a failed gate or
+ * dispatch, a no-op pass, a change outside the fence, or a removed origin/main
+ * comment. Every pre-pass read fails closed (see the scope module).
  */
 export async function runAdversarialFixPass(
   ctx: DriverContext,
@@ -343,10 +348,12 @@ export async function runAdversarialFixPass(
     now,
     begun.jobId,
   );
-  // #1137 — wire the fix developer's plumb report into pipelineState. The
-  // develop step's workstreams overlay is undone before anything persists.
-  const restored = withNewPlumbReports(
+  // #1137 — record the fix developer's plumb reply (from this pass's develop
+  // events) before any gate reads the state. The develop step's workstreams
+  // overlay is undone before anything persists.
+  const restored = withDeveloperPlumbReplies(
     { ...develop, pipelineState: { ...develop.pipelineState, workstreams: ps.workstreams } },
+    startLen,
     priorPlumbBodies,
   );
   const failed = restored.eventLog
@@ -362,23 +369,21 @@ export async function runAdversarialFixPass(
   // Any other failed tail (a bare branches-converged verdict, say) would fall
   // through nextStep to the linear table, so it parks explicitly here.
   if (failed) {
-    const tail = restored.eventLog[restored.eventLog.length - 1];
-    if (tail?.kind === "cap-hit") {
-      // #1137 — a no-change fix pass with a plumb report is a question, not
-      // a failed gate. The develop gate's empty-diff failure fires here;
-      // the plumb report is already in pipelineState. The evidence names the
-      // question so the operator answers it instead of re-dispatching.
-      const question = freshPlumbQuestion(restored, priorPlumbBodies);
-      if (question && (await noChangeProven(execFn, plans, ps.baseSha ?? ""))) {
-        return parkFixPass(
-          restored,
-          pending,
-          `the developer returned a plumb report and changed nothing — answer the question: ${question}`,
-          now,
-        );
-      }
-      return withFixPassReport(restored, pending, "a develop gate failed on the fix pass", now);
+    // #1137 — a no-change fix pass whose developer asked a plumb question is a
+    // question, not a failed gate. Checked before the tail so it holds whichever
+    // gate tripped; noChangeProven keeps a pass that changed files out of it.
+    const question = freshPlumbQuestion(restored, priorPlumbBodies);
+    if (question && (await noChangeProven(execFn, plans, ps.baseSha ?? ""))) {
+      return parkFixPass(
+        restored,
+        pending,
+        `the developer returned a plumb report and changed nothing — answer the question: ${question}`,
+        now,
+      );
     }
+    const tail = restored.eventLog[restored.eventLog.length - 1];
+    if (tail?.kind === "cap-hit")
+      return withFixPassReport(restored, pending, "a develop gate failed on the fix pass", now);
     return parkFixPass(restored, pending, "a develop gate failed on the fix pass", now);
   }
 
@@ -404,7 +409,9 @@ export async function runAdversarialFixPass(
     return parkFixPass(restored, pending, post.reason, now);
   }
   // The operator's kill switch is NOT a failed check: a disabled check reads
-  // NOT CHECKED and the pass proceeds with that disclosed, never parked.
+  // NOT CHECKED (as every other reader renders it) and the pass proceeds with
+  // that disclosed on the handoff, never parked. Only a check that was asked
+  // for and could not run parks.
   let kept = restored;
   if (!commentRetentionEnabled()) {
     const note =

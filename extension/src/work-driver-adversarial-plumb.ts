@@ -122,21 +122,44 @@ export async function noChangeProven(
   return check.reason !== undefined && NO_CHANGE_REASON.test(check.reason);
 }
 
+/** The marker a fix developer's reply carries when it asks a plumb question. */
+export const PLUMB_REPLY_MARKER = "[ensemble:plumb]";
+
 /**
- * Records the fix developer's plumb report (marker-matched, new to this
- * pass — the develop step records git failures, never the reply itself,
- * which is what made the plumb-with-no-change route dead code).
+ * Records the fix developer's plumb reply as a plumb report. The reply is the
+ * `summary` of the develop step's dispatch-completed events since `fromIndex`:
+ * the develop step records git failures in plumbReports, never the reply, so
+ * without this the plumb-with-no-change route could not be reached. Only
+ * replies carrying the marker and not already in `priorBodies` are recorded.
+ * A reply spilled to a claim-check artifact (over 4 KB) is not read here: a
+ * plumb question is short by contract.
  */
-export function withNewPlumbReports(state: WorkState, priorBodies: ReadonlySet<string>): WorkState {
-  const fresh = (state.pipelineState.plumbReports ?? []).filter(
-    (r) => !priorBodies.has(r.body) && PLUMB_REPORT_MARKER.test(r.body),
-  );
-  if (fresh.length === 0) return state;
+export function withDeveloperPlumbReplies(
+  state: WorkState,
+  fromIndex: number,
+  priorBodies: ReadonlySet<string>,
+): WorkState {
+  const replies: string[] = [];
+  for (const e of state.eventLog.slice(fromIndex)) {
+    if (
+      e.kind === "dispatch-completed" &&
+      e.step === "develop" &&
+      e.summary?.includes(PLUMB_REPLY_MARKER) &&
+      !priorBodies.has(e.summary) &&
+      !replies.includes(e.summary)
+    )
+      replies.push(e.summary);
+  }
+  if (replies.length === 0) return state;
+  const at = Date.now();
   return {
     ...state,
     pipelineState: {
       ...state.pipelineState,
-      plumbReports: [...(state.pipelineState.plumbReports ?? []), ...fresh],
+      plumbReports: [
+        ...(state.pipelineState.plumbReports ?? []),
+        ...replies.map((body) => ({ step: "develop" as const, role: "developer", body, at })),
+      ],
     },
   };
 }
