@@ -22,6 +22,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { DriverContext } from "../src/work-driver-context.ts";
+import { commandOf } from "./lib/argv-shell.ts";
 import { verifyConsolidation, verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
 
@@ -104,7 +105,7 @@ async function testCommitPrGate() {
         cmd: string,
         opts?: { cwd?: string; timeout?: number; maxBuffer?: number },
       ) => {
-        const { stdout, stderr } = await execFileP("/bin/sh", ["-c", cmd], {
+        const { stdout, stderr } = await execFileP("/bin/sh", ["-c", commandOf(cmd, opts)], {
           cwd: opts?.cwd,
           timeout: opts?.timeout,
           maxBuffer: opts?.maxBuffer ?? 64 * 1024,
@@ -184,7 +185,7 @@ async function testCommitPrGatePasses() {
         cmd: string,
         opts?: { cwd?: string; timeout?: number; maxBuffer?: number },
       ) => {
-        const { stdout, stderr } = await execFileP("/bin/sh", ["-c", cmd], {
+        const { stdout, stderr } = await execFileP("/bin/sh", ["-c", commandOf(cmd, opts)], {
           cwd: opts?.cwd,
           timeout: opts?.timeout,
           maxBuffer: opts?.maxBuffer ?? 64 * 1024,

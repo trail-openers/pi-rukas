@@ -11,6 +11,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { asShellForm } from "./lib/argv-shell.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import { verifyCmdFor, verifyStepOutcome } from "../src/work-driver-verify.ts";
@@ -154,7 +155,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
       pi: makeFakePi().pi,
       repoRoot,
       issue: 999,
-      verifyExecFn: execFn,
+      verifyExecFn: asShellForm(execFn),
     });
 
     {

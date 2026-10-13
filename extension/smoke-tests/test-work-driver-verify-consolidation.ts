@@ -81,6 +81,8 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         shell: "/bin/bash",
       });
     }
+    // #1134 — verifyConsolidation reads origin/<branch>: publish the branch as the push would.
+    await execp2("git update-ref refs/remotes/origin/feature/issue-540-test HEAD", { cwd: dir });
   };
 
   const mkConsolidationState = (
@@ -238,6 +240,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
       // The developer renames the file (git mv → R100 in --name-status -M).
       await execp2("git mv src/old-name.ts src/new-name.ts", { cwd: dir, shell: "/bin/bash" });
       await execp2("git commit -q -m 'rename module'", { cwd: dir, shell: "/bin/bash" });
+      await execp2("git update-ref refs/remotes/origin/feature/issue-540-test HEAD", { cwd: dir });
 
       const state = mkConsolidationState({
         a: wsA(["src/old-name.ts"]),
@@ -338,6 +341,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
       await fs.mkdir(path.join(dir, "src"), { recursive: true });
       await fs.writeFile(path.join(dir, "src", "other.ts"), "other\n");
       await execp2("git add . && git commit -q -m 'add docs'", { cwd: dir, shell: "/bin/bash" });
+      await execp2("git update-ref refs/remotes/origin/feature/issue-540-test HEAD", { cwd: dir });
 
       const state = mkConsolidationState({
         a: wsA(["docs/notes (draft).md"]),

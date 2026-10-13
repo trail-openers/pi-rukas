@@ -105,8 +105,8 @@ const readSrc = (name: string) => readFileSync(path.join(SRC, name), "utf8");
   );
   // The repo-root integrated read names both refs — the reference shape.
   assert(
-    /git diff origin\/\$\{base\}\.\.\.origin\/\$\{branchName\}/.test(src),
-    "work-driver-diff.ts: readIntegratedDiff names explicit refs (origin/<base>...origin/<branch>, three-dot)",
+    /prRange\(`origin\/\$\{base\}`, `origin\/\$\{branchName\}`\)/.test(src),
+    "work-driver-diff.ts: readIntegratedDiff names explicit refs via prRange (origin/<base>...origin/<branch>, three-dot)",
   );
 }
 
@@ -123,21 +123,12 @@ const readSrc = (name: string) => readFileSync(path.join(SRC, name), "utf8");
 const TWO_DOT_ORIGIN_RANGE =
   /origin\/(\$\{[^}]*\}|[\w.-]+)(?<!\.)\.\.(?!\.)(origin\/|\$\{[^}]*\}|[\w/.-]+)/;
 
-/**
- * Allow-list of files exempt from the two-dot check, each with its reason.
- * Empty on purpose: the exempt sites carry no origin ref, so the pattern never
- * sees them. They are the tip-vs-tip counts `tipSha..HEAD`
- * (work-driver-lens-fix-reposition-backup.ts) and `tipSha..treeSha`
- * (work-driver-lens-fix-reposition-queries.ts; #1134 made it
- * `--right-only tipSha...treeSha`, the same set), and `computeDeltaDiff`'s
- * `since..head` (test-delta-diff.ts), a distinct two-dot concept on purpose.
- */
-const TWO_DOT_EXEMPT: Record<string, string> = {};
-
+// Only origin ranges are targeted: tip-vs-tip counts such as `tipSha..HEAD`
+// carry no origin ref, so the pattern cannot see them, and are not policed here.
 {
   const offenders: string[] = [];
   for (const name of readdirSync(SRC)) {
-    if (!name.endsWith(".ts") || TWO_DOT_EXEMPT[name]) continue;
+    if (!name.endsWith(".ts")) continue;
     const code = readSrc(name)
       .split("\n")
       .filter((l) => !l.trim().startsWith("*") && !l.trim().startsWith("//"))
@@ -147,6 +138,14 @@ const TWO_DOT_EXEMPT: Record<string, string> = {};
   assert(
     offenders.length === 0,
     `two-dot canary: no src module uses a two-dot origin/<base>..origin/<branch> range (offenders: ${offenders.join(", ") || "none"})`,
+  );
+  assert(
+    !TWO_DOT_ORIGIN_RANGE.test("git diff origin/main...origin/feature/x"),
+    "two-dot canary: a three-dot origin literal is not flagged",
+  );
+  assert(
+    TWO_DOT_ORIGIN_RANGE.test("git diff origin/main..origin/feature/x"),
+    "two-dot canary: a two-dot origin literal is flagged (the pattern can fire)",
   );
 }
 

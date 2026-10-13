@@ -18,6 +18,7 @@ import { promisify } from "node:util";
 import { execp as groupExecp } from "./lens-exec.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
+import { prRange } from "./work-driver-diff.ts";
 import { detectMainline } from "./work-driver-git.ts";
 import type { ConsolidationVerdict } from "./workflow-state-consolidation.ts";
 import type { WorkState } from "./workflow-state.ts";
@@ -281,10 +282,15 @@ export async function verifyConsolidation(
     // #778 — `--name-status -M` (not `--name-only`): renames emit R### with
     // the SOURCE path in the diff output, so a move is visible evidence
     // instead of a silent absence of the old name.
-    const branch = state.pipelineState.branchName ?? "HEAD";
-    // #1134 — three-dot: the branch's own changes from the merge base, so a
-    // base that moved after the branch was cut does not read as reverted files.
-    const { stdout } = await execp(`git diff --name-status -M origin/${base}...${branch}`, {
+    const branch = state.pipelineState.branchName;
+    // No recorded branch: unknowable, so the best-effort path below (no-missing).
+    if (!branch) throw new Error("no branch name recorded for this cycle");
+    // #1134 — head is origin/<branch>, the ref readIntegratedDiff reads. This gate
+    // runs after integrate() has pushed. Three-dot: the branch's own changes from
+    // the merge base, so a base that moved after the branch was cut does not read
+    // as reverted files.
+    const { stdout } = await execp("git", {
+      argv: ["diff", "--name-status", "-M", prRange(`origin/${base}`, `origin/${branch}`)],
       cwd: ctx.repoRoot,
       maxBuffer: 1024 * 1024,
     });

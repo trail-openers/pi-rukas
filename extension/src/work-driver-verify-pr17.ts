@@ -11,6 +11,7 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import type { CommentEvidence } from "./comment-evidence.ts";
 import type { DriverContext } from "./work-driver-context.ts";
+import { countPrCommits } from "./work-driver-diff.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { detectMainline } from "./work-driver-git.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
@@ -184,31 +185,38 @@ export async function verifyStepOutcome(
   if (mainline && "branch" in mainline) {
     base = mainline.branch;
   }
-  try {
-    // #451 — name the integration branch explicitly. `origin/<branchName>`
-    // requires the branch to be pushed, which it is at commit-pr time (ops
-    // pushes before opening the PR). Using the local ref name (not
-    // `origin/<branch>`) because the commit-pr gate can run before push in
-    // some edge cases; the local ref is what the cycle created.
-    const branch = state.pipelineState.branchName ?? "HEAD";
-    // Three-dot + --right-only: the branch's own commits, measured from the
-    // merge base so a base that moved after the branch was cut is not counted.
-    const { stdout } = await execFn(
-      `git rev-list --count --right-only origin/${base}...${branch}`,
-      {
-        cwd: ctx.repoRoot,
-        maxBuffer: 64 * 1024,
-      },
+  // #1134 — head is origin/<branch>, the ref readIntegratedDiff reads. This gate
+  // runs after integrate() has pushed (work-driver-commit-pr-events.ts), so the
+  // remote-tracking ref exists. Three-dot + --right-only: the branch's own
+  // commits, measured from the merge base.
+  const branch = state.pipelineState.branchName;
+  if (!branch) {
+    failures.push(
+      `could not count commits ahead of origin/${base}: no branch name was recorded for this cycle`,
     );
-    if (Number.parseInt(stdout.trim(), 10) === 0) {
-      failures.push(
-        `ops claimed commit+PR done but the branch has zero commits ahead of origin/${base} — nothing was committed`,
+  } else {
+    try {
+      const ahead = await countPrCommits(
+        execFn,
+        ctx.repoRoot,
+        `origin/${base}`,
+        `origin/${branch}`,
+      );
+      if (Number.isNaN(ahead)) {
+        // Unparseable is not zero and not a pass: it is unknown, so it fails closed.
+        failures.push(
+          `could not count commits ahead of origin/${base} — commit evidence is unverifiable`,
+        );
+      } else if (ahead === 0) {
+        failures.push(
+          `ops claimed commit+PR done but the branch has zero commits ahead of origin/${base} — nothing was committed`,
+        );
+      }
+    } catch (err) {
+      notes.push(
+        `git rev-list failed (${(err as Error).message?.slice(0, 100)}) — commit evidence unavailable`,
       );
     }
-  } catch (err) {
-    notes.push(
-      `git rev-list failed (${(err as Error).message?.slice(0, 100)}) — commit evidence unavailable`,
-    );
   }
   let adoptedPrNumber: number | undefined;
   let prToCheck = state.pipelineState.prNumber;
