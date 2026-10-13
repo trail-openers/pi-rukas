@@ -24,7 +24,9 @@ import {
   renderFenceRecords,
   withFixViolations,
 } from "../src/adversarial-fix-guard.ts";
+import { execp } from "../src/lens-exec.ts";
 import type { DispatchResult } from "../src/types.ts";
+import type { ExecFn } from "../src/worktree.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -78,9 +80,14 @@ const approved = (): DispatchResult =>
 async function main() {
   // ---------------------------------------------------------------- T1 typed records
   {
-    const notes: FenceRecord[] = [{ kind: "note", round: 1, text: "caller-repo check did not run (x)" }];
+    const notes: FenceRecord[] = [
+      { kind: "note", round: 1, text: "caller-repo check did not run (x)" },
+    ];
     const r1 = withFixViolations(approved(), notes);
-    assert(r1.ok === true && r1.loopOutcome === "approved", "T1: a note leaves ok and the approval alone");
+    assert(
+      r1.ok === true && r1.loopOutcome === "approved",
+      "T1: a note leaves ok and the approval alone",
+    );
     assert(
       r1.text.startsWith("note: fix round 1 caller-repo check did not run (x)"),
       "T1: a note renders once, with its round",
@@ -93,7 +100,10 @@ async function main() {
       r2.text.split("VIOLATION: fix round 2 stray").length === 2,
       "T1: the violation text appears exactly once",
     );
-    assert(renderFenceRecords(v)[0] === "VIOLATION: fix round 2 stray", "T1: the label comes from kind");
+    assert(
+      renderFenceRecords(v)[0] === "VIOLATION: fix round 2 stray",
+      "T1: the label comes from kind",
+    );
     const same = approved();
     assert(withFixViolations(same, []) === same, "T1: no records → the result is returned as-is");
   }
@@ -107,7 +117,10 @@ async function main() {
       writeFileSync(path.join(caller, "stray.txt"), "x");
       return 7;
     });
-    assert(res.ran && res.value === 7 && recs.length === 0, "T2: no fence → the round runs, no caller check");
+    assert(
+      res.ran && res.value === 7 && recs.length === 0,
+      "T2: no fence → the round runs, no caller check",
+    );
   }
 
   // ------------------------------------------- T3 check runs even when dispatch throws
@@ -162,7 +175,10 @@ async function main() {
       "T4: a snapshot lost after the round is a violation",
     );
     const r = withFixViolations(approved(), recs);
-    assert(r.ok === false && r.loopOutcome === "rejected", "T4: a lost snapshot never leaves an approval");
+    assert(
+      r.ok === false && r.loopOutcome === "rejected",
+      "T4: a lost snapshot never leaves an approval",
+    );
   }
 
   // -------------------------------------------- T5 non-repo caller: note, never blocks
@@ -173,7 +189,9 @@ async function main() {
     const res = await createFixFence({ callerCwd: notRepo }, recs).round(1, work, async () => "x");
     assert(res.ran === true, "T5: a never-a-repo caller does not block the round");
     assert(
-      recs.length === 1 && recs[0]?.kind === "note" && recs[0].text.includes("not a git repository"),
+      recs.length === 1 &&
+        recs[0]?.kind === "note" &&
+        recs[0].text.includes("not a git repository"),
       "T5: a never-a-repo caller is recorded as a note",
     );
     assert(withFixViolations(approved(), recs).ok === true, "T5: a note leaves the result ok");
@@ -190,7 +208,9 @@ async function main() {
     };
     const r1 = await createFixFence({ callerCwd: caller }, []).round(1, unrelated, fn);
     assert(
-      !r1.ran && r1.outcome === "invalid-input" && r1.reason.includes("not a worktree of the calling repository"),
+      !r1.ran &&
+        r1.outcome === "invalid-input" &&
+        r1.reason.includes("not a worktree of the calling repository"),
       "T6: a workCwd from an unrelated repository is invalid-input",
     );
     const missing = path.join(tmp("t6-missing"), "nope");
@@ -206,7 +226,10 @@ async function main() {
     assert(r3.ran === true, "T6: a symlink to the caller's worktree is accepted (realpath'd)");
 
     const r4 = await createFixFence({ callerCwd: caller }, []).round(1, caller, async () => "ok");
-    assert(r4.ran === true, "T6: workCwd that is the caller's own worktree runs with the check off");
+    assert(
+      r4.ran === true,
+      "T6: workCwd that is the caller's own worktree runs with the check off",
+    );
   }
 
   // --------------------------------------------- T7 snapshot scope (caller only, by name)
@@ -252,6 +275,26 @@ async function main() {
     assert(
       recs.some((r) => r.kind === "violation" && r.text.includes("f.txt")),
       "T7: a content-only rewrite of a dirty caller file is a violation",
+    );
+  }
+  // ------------------------------------------ T8 status stdout is not capped at 1 MiB
+  {
+    const caller = repo("t8c");
+    const work = worktreeOf(caller, "wt-t8");
+    const statusCaps: number[] = [];
+    const spyExec: ExecFn = (cmd, opts) => {
+      if (opts?.argv?.[0] === "status") statusCaps.push(opts.maxBuffer ?? 0);
+      return execp(cmd, opts);
+    };
+    const res = await createFixFence({ callerCwd: caller }, [], spyExec).round(
+      1,
+      work,
+      async () => 1,
+    );
+    assert(res.ran === true, "T8: the round runs with the spy exec");
+    assert(
+      statusCaps.length >= 2 && statusCaps.every((c) => c >= 16 * 1024 * 1024),
+      "T8: every caller `git status` call sets maxBuffer well above exec's 1 MiB default",
     );
   }
 }

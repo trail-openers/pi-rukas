@@ -3,7 +3,8 @@
  *
  * A fix-developer edits files. The tool path sets `fixFence` (its calling
  * repository) at the tool boundary; the /work driver never does, so this module
- * is inert for it. With a fence, the fix rounds are kept inside workCwd:
+ * is inert for it. With a fence, fix-round writes to the caller repository are
+ * detected (not prevented). The fence checks:
  *   1. workCwd must be a worktree of the caller's repository (the same
  *      `--git-common-dir`), checked once, before the first fix round. Otherwise
  *      the round is refused as `invalid-input`. Only `rev-parse` runs against
@@ -65,6 +66,12 @@ type Mode =
 
 /** Hash at most this many paths per `git hash-object` call (keeps argv far below ARG_MAX). */
 const HASH_BATCH = 200;
+
+/**
+ * stdout cap for `git status -uall`: every untracked file is one record, so a
+ * large dirty caller would overflow exec's 1 MiB default and refuse every round.
+ */
+const STATUS_MAX_BUFFER = 64 * 1024 * 1024;
 
 const errorText = (err: unknown): string =>
   (err instanceof Error ? err.message : String(err)).trim().split("\n").at(-1) ?? "unknown error";
@@ -134,6 +141,7 @@ async function snapshotCaller(cwd: string, exec: ExecFn): Promise<Snapshot> {
       await exec("git", {
         argv: ["status", "--porcelain", "-z", "-uall"],
         cwd: id.top,
+        maxBuffer: STATUS_MAX_BUFFER,
       })
     ).stdout
       .split("\0")
