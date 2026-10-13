@@ -73,7 +73,7 @@ function assert(cond: boolean, msg: string) {
 // @returns {status, stdout} are meaningful only when envError is null.
 function runDigest(
   files: string[],
-): { status: number; stdout: string; envError: string | null } {
+): { status: number; stdout: string; stderr: string; envError: string | null } {
   const result = spawnSync("bash", [SCRIPT, "--digest", ...files], {
     cwd: path.join(__dirname, ".."),
     encoding: "utf-8",
@@ -83,10 +83,16 @@ function runDigest(
     return {
       status: -1,
       stdout: "",
+      stderr: "",
       envError: `failed to spawn bash: ${result.error.message}`,
     };
   }
-  return { status: result.status ?? -1, stdout: result.stdout ?? "", envError: null };
+  return {
+    status: result.status ?? -1,
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+    envError: null,
+  };
 }
 
 // --- Case 1: mixed fail/pass — parity + invariants ---
@@ -303,6 +309,45 @@ function runDigest(
   assert(
     mismatches.length === 0,
     `case 6: both filters keep the same ✗ lines, in order (mismatches: ${mismatches.length}${mismatches.length ? ` — ${JSON.stringify(mismatches[0])}` : ""})`,
+  );
+}
+
+// --- Case 7: nothing ran — no files, or only *-live.ts (skipped) ---
+// Both must refuse: exit 2, a stderr message, and no pass tally on stdout.
+// A bare `--digest` with no files is a usage error (usage line on stderr);
+// an all-skipped list reports `verify-loop: no tests ran`.
+{
+  const noFiles = runDigest([]);
+  assert(noFiles.status === 2, `case 7a (digest): no files exits 2 (got ${noFiles.status})`);
+  assert(
+    noFiles.stderr.includes("usage:"),
+    `case 7a (digest): no files prints a usage message on stderr (got: ${JSON.stringify(noFiles.stderr)})`,
+  );
+  assert(!/P: \d+  F: \d+/.test(noFiles.stdout), "case 7a (digest): no files prints no pass/fail tally");
+
+  const liveOnly = runDigest([path.join(__dirname, "test-spawn-live.ts")]);
+  assert(liveOnly.status === 2, `case 7b (digest): only *-live.ts exits 2 (got ${liveOnly.status})`);
+  assert(
+    liveOnly.stderr.includes("verify-loop: no tests ran"),
+    `case 7b (digest): only *-live.ts prints 'verify-loop: no tests ran' on stderr (got: ${JSON.stringify(liveOnly.stderr)})`,
+  );
+  assert(
+    !/P: \d+  F: \d+/.test(liveOnly.stdout) && liveOnly.stdout === "",
+    "case 7b (digest): only *-live.ts prints no pass/fail tally and no stdout",
+  );
+}
+
+// --- Case 8: normal mode has the same guard (only *-live.ts → exit 2) ---
+{
+  const result = spawnSync("bash", [SCRIPT, path.join(__dirname, "test-spawn-live.ts")], {
+    cwd: path.join(__dirname, ".."),
+    encoding: "utf-8",
+    timeout: 120000,
+  });
+  assert(result.status === 2, `case 8 (normal): only *-live.ts exits 2 (got ${result.status})`);
+  assert(
+    (result.stderr ?? "").includes("verify-loop: no tests ran"),
+    "case 8 (normal): prints 'verify-loop: no tests ran' on stderr",
   );
 }
 

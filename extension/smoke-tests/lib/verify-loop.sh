@@ -43,7 +43,8 @@
 # Normal mode: runs every test once, prints each test's full output plus a
 # per-failure `FAILED: <file>` marker and a final summary line.
 #
-# Digest mode (--digest): prints ONLY the failure detail — per-failure
+# Digest mode (--digest): prints ONLY the failure detail (or, on all-pass, one
+# `P: <n>  F: 0` tally line) — per-failure
 # markers, each failing test's ✗ lines with their indented detail lines, the
 # summary marker, and a pass/fail tally line (P: <pass-count>  F:
 # <fail-count>). P counts every non-live test that was not a failure — i.e.
@@ -335,6 +336,12 @@ for t in "$@"; do
     fi
   fi
 done
+
+# Nothing ran (every argument was skipped): refuse rather than pass vacuously.
+if [ "$total" -eq 0 ]; then
+  echo "verify-loop: no tests ran" >&2
+  exit 2
+fi
 
 if [ "${#names[@]}" -gt 0 ]; then
   # Build `FAILED: <n> test(s) — <list>`, capping the name list so the whole
