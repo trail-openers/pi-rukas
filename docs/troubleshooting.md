@@ -1007,6 +1007,8 @@ It used to continue. The failure was recorded in `plumbReports` rather than the 
 
 **The fix may still be on disk.** Check `git -C .worktrees/issue-<N>-<id> status` before re-running — the developer's work is usually there, uncommitted.
 
+**A committed fix that could not be integrated is named.** When the fixer committed and the pick onto the branch failed, the handoff gives the fix's sha, the worktree holding it and the conflicting paths — the PR does not contain that commit, so land it by hand before merging. On an older build the second lens-fix round parked this way on its own: integration re-picked a commit that was already on the branch behind the tip (`Committing is not possible because you have unmerged files` in the evidence), stranding the round's real fix one commit ahead in the worktree. Fixed: a commit already in the branch's history is skipped.
+
 ### `integration-verify-failed` — the consolidated tree does not build
 
 `commit-pr` runs the project's `.pi/verify-cmd` against the **integrated** tree, between the commit and the push. Everything upstream saw one workstream in isolation: the develop gate ran inside a single worktree and adversarial reviewed a single worktree's diff. Two workstreams that each pass alone can still fail together — one renames or deletes what another still refers to — and that defect is *created* by integration, so integration is the only place it can be caught.
