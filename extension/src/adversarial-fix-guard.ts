@@ -6,8 +6,9 @@
  * is inert for it. With a fence, fix-round writes to the caller repository are
  * detected (not prevented). The fence checks:
  *   1. workCwd must be a worktree of the caller's repository (the same
- *      `--git-common-dir`), checked once, before the first fix round. Otherwise
- *      the round is refused as `invalid-input`. Only `rev-parse` runs against
+ *      `--git-common-dir`) other than the caller's own checkout, checked once,
+ *      before the first fix round. Otherwise the round is refused as
+ *      `invalid-input`. Only `rev-parse` runs against
  *      workCwd — its status and content are never read.
  *   2. around each fix round the caller repository's dirty state is snapshotted
  *      (`git status --porcelain -z -uall`; regular files are content-hashed).
@@ -243,8 +244,8 @@ const describe = (s: Snapshot): string =>
  * Resolve the fence once, before the first fix round. An unreadable caller
  * refuses the round (a "not checked" fence never approves). A caller that was
  * never a repository is a note. A workCwd that is not a worktree of the caller's
- * repository is invalid input. A workCwd that IS the caller's worktree has
- * nothing outside it to fence, so the check is off.
+ * repository is invalid input. A workCwd that IS the caller's own checkout is
+ * invalid input too: a fix written there cannot be told apart from a caller change.
  */
 async function resolveMode(
   fence: FixFence | undefined,
@@ -283,7 +284,12 @@ async function resolveMode(
       reason: `workCwd ${workCwd} is not a worktree of the calling repository (${caller.top})`,
     };
   }
-  if (work.top === caller.top) return { kind: "off" };
+  if (work.top === caller.top) {
+    return {
+      kind: "invalid",
+      reason: `workCwd ${workCwd} is the calling repository's own checkout; fix rounds must run in a separate worktree, since their writes there cannot be told apart from the caller's`,
+    };
+  }
   return {
     kind: "check",
     callerCwd: fence.callerCwd,

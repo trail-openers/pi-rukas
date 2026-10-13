@@ -8,7 +8,7 @@
  *   T4  fail closed: an unreadable caller refuses the round before it runs; a
  *       snapshot lost after the round is a violation; neither can approve
  *   T5  a non-repo caller is a note only; it never blocks the round
- *   T6  workCwd must be a worktree of the caller's repo (realpath'd) — else invalid-input
+ *   T6  workCwd must be a worktree of the caller's repo, not its own checkout (realpath'd) — else invalid-input
  *   T7  the snapshot covers the caller repo: nested repos and symlinks are reported by
  *       name and do not fail it; a dirty-file content rewrite is still caught; the
  *       workCwd index is never read
@@ -235,10 +235,10 @@ async function main() {
     const r3 = await createFixFence({ callerCwd: caller }, []).round(1, link, async () => "ok");
     assert(r3.ran === true, "T6: a symlink to the caller's worktree is accepted (realpath'd)");
 
-    const r4 = await createFixFence({ callerCwd: caller }, []).round(1, caller, async () => "ok");
+    const r4 = await createFixFence({ callerCwd: caller }, []).round(1, caller, fn);
     assert(
-      r4.ran === true,
-      "T6: workCwd that is the caller's own worktree runs with the check off",
+      !r4.ran && r4.outcome === "invalid-input" && r4.reason.includes("own checkout"),
+      "T6: workCwd that is the caller's own checkout is invalid-input (never silently unfenced)",
     );
   }
 
