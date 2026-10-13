@@ -77,12 +77,12 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
         skipDeck: true,
         work: (signal, hooks) =>
           runAdversarialLoop(
-            // #1154 — set after the spread so a caller cannot spoof it; true only for reportOnly.
+            // #1154 — set after the spread so a caller cannot spoof it; terminal only for reportOnly.
             {
               ...params,
               pi,
               fixFence: { callerCwd: process.cwd() },
-              reportOnlyTerminal: params.reportOnly === true,
+              reportVerdict: params.reportOnly === true ? "terminal" : "routed",
             },
             signal,
             hooks.jobId,

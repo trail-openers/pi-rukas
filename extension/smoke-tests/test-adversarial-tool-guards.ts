@@ -394,7 +394,7 @@ try {
     "I: the ledger write carries both the violation and the error",
   );
 
-  // -------- J. tool path (#1154): reportOnlyTerminal records the terminal verdict
+  // -------- J. tool path (#1154): reportVerdict "terminal" records the terminal verdict
   const tool = async (text: string) => {
     reset();
     reviewerReplies = [text];
@@ -404,7 +404,7 @@ try {
         context: "tool",
         workCwd: workRepo,
         reportOnly: true,
-        reportOnlyTerminal: true,
+        reportVerdict: "terminal",
       },
       signal(),
       "job-j",

@@ -2,7 +2,7 @@
 /**
  * #1154 — review autonomy: a tool-path reportOnly review's verdict feeds the
  * merge guard. The verdict comes from the REAL runAdversarialLoop tool-path
- * result (reportOnlyTerminal); the test converts it to a ledger row itself
+ * result (reportVerdict "terminal"); the test converts it to a ledger row itself
  * (passed = adversarialPassed(result), fixed patchId). The ledger writer is NOT
  * exercised here, so the row shape is the test's, not the writer's. That row is
  * then driven through the real merge guard hook with two lens shapes:
@@ -89,7 +89,7 @@ async function toolRow(text: string): Promise<LedgerEntry> {
       branch: BRANCH,
       reportOnly: true,
       reportRound: 1,
-      reportOnlyTerminal: true,
+      reportVerdict: "terminal",
     },
     new AbortController().signal,
     "job-review-autonomy",

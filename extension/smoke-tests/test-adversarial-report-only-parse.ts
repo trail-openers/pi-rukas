@@ -19,6 +19,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { mock } from "bun:test";
 import type { AdversarialVerdict } from "../src/adversarial-verdict.ts";
+import { adversarialPassed } from "../src/review-ledger.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -168,7 +169,7 @@ try {
   );
   assert(absent.loopOutcome !== "approved", "verdict without verdictParsed field: never approved");
 
-  // 6. Tool path (#1154): reportOnlyTerminal makes the single review the terminal
+  // 6. Tool path (#1154): reportVerdict "terminal" makes the single review the terminal
   // round, so the same parsed verdicts resolve by the terminal-round rule.
   const reportTool = (text: string) => {
     reply = text;
@@ -180,7 +181,7 @@ try {
         branch: "fix/report-only-parse-tool",
         reportOnly: true,
         reportRound: 1,
-        reportOnlyTerminal: true,
+        reportVerdict: "terminal",
       },
       new AbortController().signal,
       "job-report-only-parse-tool",
@@ -205,6 +206,27 @@ try {
     "tool path unparsed reply: infra-failure, not a verdict",
   );
 
+  // 6b. The driver's routed reportOnly review (#1154 r2): the same ISSUES_FOUND
+  // reply is a per-round verdict, so it routes to a fix pass and is not passed.
+  reply = "VERDICT: ISSUES_FOUND\n\n- x.txt:1 — missing test";
+  const toolRouted = await runAdversarialLoop(
+    {
+      diff: DIFF,
+      context: "ctx",
+      workCwd: repoDir,
+      branch: "fix/report-only-parse-routed",
+      reportOnly: true,
+      reportRound: 1,
+      reportVerdict: "routed",
+    },
+    new AbortController().signal,
+    "job-report-only-parse-routed",
+  );
+  assert(
+    toolRouted.loopOutcome === "rejected" && adversarialPassed(toolRouted) === false,
+    "reportOnly routed ISSUES_FOUND: rejected and not passed (per-round routing)",
+  );
+
   // 7. #1154 coupling: the terminal rule applies only WITH reportOnly. A
   // non-reportOnly loop (the tool's fix-capable path) whose round 1 is
   // ISSUES_FOUND must NOT record that round as passed: it routes to a fix round
@@ -217,19 +239,19 @@ try {
       context: "ctx",
       workCwd: repoDir,
       branch: "fix/report-only-parse-nonterminal",
-      reportOnlyTerminal: true,
+      reportVerdict: "terminal",
     },
     new AbortController().signal,
     "job-report-only-parse-nonterminal",
   );
   assert(
     nonReportOnly.adversarialRounds?.length === 3,
-    "non-reportOnly loop with reportOnlyTerminal set: ISSUES_FOUND round 1 routes to a fix round (3 rounds run)",
+    "non-reportOnly loop with reportVerdict terminal set: ISSUES_FOUND round 1 routes to a fix round (3 rounds run)",
   );
   assert(
     nonReportOnly.text.includes("PASSED WITH FINDINGS after round 3") &&
       !nonReportOnly.text.includes("after round 1"),
-    "non-reportOnly loop with reportOnlyTerminal set: round 1 ISSUES_FOUND is not passed (only the final round passes it)",
+    "non-reportOnly loop with reportVerdict terminal set: round 1 ISSUES_FOUND is not passed (only the final round passes it)",
   );
 } finally {
   try {

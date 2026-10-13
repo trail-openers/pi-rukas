@@ -100,15 +100,16 @@ export async function runAdversarialLoop(
     /** #1114 — the round number a reportOnly review carries (prompt + record). Default 1. */
     reportRound?: number;
     /**
-     * #1154 — tool path only, and only meaningful WITH `reportOnly`. A
-     * reportOnly review is the loop's ONLY round, so it is judged by the
-     * terminal-round rule (ISSUES_FOUND passes, only CRITICAL_ISSUES_FOUND
-     * rejects) instead of as round 1 of 3. Ignored when `reportOnly` is not
-     * true. Set by `adversarial-tool.ts` after the raw params spread, so a
-     * caller cannot spoof it. The /work driver leaves it unset: its per-round
-     * reportOnly reviews keep non-terminal routing (ISSUES_FOUND → develop fix pass).
+     * #1154 — how a reportOnly verdict is judged. Only read when `reportOnly`
+     * is true. "terminal": the review is the loop's only round, so it is
+     * judged by the terminal-round rule (ISSUES_FOUND passes; only
+     * CRITICAL_ISSUES_FOUND or an unreadable reply fails) — the tool path.
+     * "routed": judged as round N of 3, so ISSUES_FOUND routes to a fix pass
+     * — the /work driver's per-round reviews. Default "routed". Set by
+     * `adversarial-tool.ts` after the raw params spread, so a caller cannot
+     * spoof it.
      */
-    reportOnlyTerminal?: boolean;
+    reportVerdict?: "terminal" | "routed";
     /**
      * #1137 — the workstream scope the review is judged within. Present only
      * on the per-workstream driver path (N>1 fan-out); absent on N=1 and on
@@ -354,7 +355,7 @@ export async function runAdversarialLoop(
       // #912 — the review ledger keys on the latest entry per branch, so every
       // reviewed round records its verdict: a pass is `approved`, anything the
       // driver will route back or reject is `rejected` (replaced by a later pass).
-      const terminalRound = params.reportOnly && params.reportOnlyTerminal ? MAX_ROUNDS : round;
+      const terminalRound = params.reportVerdict === "terminal" ? MAX_ROUNDS : round;
       const passed = decideLoopAction(verdict.status, terminalRound, MAX_ROUNDS, true) === "pass";
       return ledgerWrite(
         synthesizeResult({

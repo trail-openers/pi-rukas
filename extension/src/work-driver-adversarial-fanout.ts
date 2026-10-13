@@ -197,6 +197,7 @@ export async function fanOutAdversarial(
           branch: state.pipelineState.branchName,
           // #1114 — one reviewer dispatch; the driver routes the verdict.
           reportOnly: true,
+          reportVerdict: "routed",
           reportRound: reviewRoundFor(state, id),
         },
         // No AbortController plumbing in v1 — spawn-level timeouts
