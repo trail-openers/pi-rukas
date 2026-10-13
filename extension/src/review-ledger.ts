@@ -241,7 +241,10 @@ export async function workingTreePatchId(
   // because the committed patchId will no longer match.
   const untracked: string[] = [];
   try {
-    const { stdout } = await execFn("git status --porcelain", { cwd, maxBuffer: 256 * 1024 });
+    const { stdout } = await execFn("git status --porcelain", {
+      cwd,
+      maxBuffer: 256 * 1024,
+    });
     for (const line of stdout.split("\n")) {
       if (line.startsWith("??")) untracked.push(line.slice(3).trim());
     }
@@ -283,8 +286,7 @@ export function adversarialPassed(result: {
   errorStop?: unknown;
   killCause?: string;
 }): boolean {
-  if (result.loopOutcome === "rejected") return false;
-  if (result.loopOutcome === "infra-failure") return false;
+  if (result.loopOutcome && result.loopOutcome !== "approved") return false;
   if (!result.ok) return false;
   if (result.errorStop || result.killCause) return false;
   return true;
