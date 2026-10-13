@@ -13,11 +13,11 @@
  * replies are reviewer-shaped text, then asserts on the parsed result.
  */
 
+import { mock } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
-import { mock } from "bun:test";
 import type { AdversarialVerdict } from "../src/adversarial-verdict.ts";
 
 let exit = 0;
@@ -167,6 +167,43 @@ try {
     "verdict without verdictParsed field: reported as unreadable (infra)",
   );
   assert(absent.loopOutcome !== "approved", "verdict without verdictParsed field: never approved");
+
+  // 6. Tool path (#1154): reportOnlyTerminal makes the single review the terminal
+  // round, so the same parsed verdicts resolve by the terminal-round rule.
+  const reportTool = (text: string) => {
+    reply = text;
+    return runAdversarialLoop(
+      {
+        diff: DIFF,
+        context: "ctx",
+        workCwd: repoDir,
+        branch: "fix/report-only-parse-tool",
+        reportOnly: true,
+        reportRound: 1,
+        reportOnlyTerminal: true,
+      },
+      new AbortController().signal,
+      "job-report-only-parse-tool",
+    );
+  };
+  const toolIssues = await reportTool("VERDICT: ISSUES_FOUND\n\n- x.txt:1 — missing test");
+  assert(
+    toolIssues.adversarialRounds?.[0]?.verdictParsed === true,
+    "tool path ISSUES_FOUND: verdict parsed",
+  );
+  assert(
+    toolIssues.loopOutcome === "approved",
+    "tool path ISSUES_FOUND: approved (terminal round)",
+  );
+  const toolMinor = await reportTool("VERDICT: MINOR_OBSERVATIONS\n\nnit");
+  assert(toolMinor.loopOutcome === "approved", "tool path MINOR_OBSERVATIONS: approved");
+  const toolCritical = await reportTool("VERDICT: CRITICAL_ISSUES_FOUND\n\n1. broken");
+  assert(toolCritical.loopOutcome === "rejected", "tool path CRITICAL_ISSUES_FOUND: rejected");
+  const toolUnparsed = await reportTool("no marker here");
+  assert(
+    toolUnparsed.loopOutcome === "infra-failure",
+    "tool path unparsed reply: infra-failure, not a verdict",
+  );
 } finally {
   try {
     rmSync(repoDir, { recursive: true, force: true });
