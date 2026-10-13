@@ -182,7 +182,7 @@ export async function runLens(
       evidence,
       extraFindings,
       threshold,
-      pi: ctx.pi,
+      pi: ctx.host,
       // #912 — caller-supplied branch for the review-ledger write
       // (driver worktrees are detached; the ledger writer cannot
       // recover the branch name from a detached HEAD).

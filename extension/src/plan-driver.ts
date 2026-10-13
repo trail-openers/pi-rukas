@@ -22,7 +22,6 @@
  * verbatim (plan-confirm.ts — no phase below runs).
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { dispatchCore } from "./dispatch.ts";
 import { type PlanBase, withPlanBase } from "./plan-base-tree.ts";
 import { confirmVerbatim, settlePlanCache } from "./plan-confirm.ts";
@@ -73,6 +72,7 @@ import {
 } from "./plan-validate.ts";
 import { type ResolvedDecision, buildResolvedDecisions } from "./plan-writeback.ts";
 import { trace } from "./trace.ts";
+import type { DriverHost } from "./work-driver-host.ts";
 
 const GAP_GATE_MAX_ITERATIONS = 2;
 
@@ -85,7 +85,7 @@ export { gapGatePrompt } from "./plan-gate-prompt.ts";
 // ---------------------------------------------------------------------------
 
 export async function runPlanPipeline(
-  pi: ExtensionAPI,
+  pi: DriverHost,
   input: PlanDriverInput,
   repoRoot: string,
 ): Promise<PlanResult> {
@@ -97,7 +97,7 @@ export async function runPlanPipeline(
 }
 
 async function runPipelineOn(
-  pi: ExtensionAPI,
+  pi: DriverHost,
   input: PlanDriverInput,
   repoRoot: string,
   base: PlanBase,

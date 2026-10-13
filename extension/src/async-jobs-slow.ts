@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { DispatchHost } from "./async-jobs-lifecycle.ts";
 import * as live from "./dispatch-deck-live.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { type OnSlowCallback, watchSlowDispatch } from "./slow-notice.ts";
@@ -8,7 +8,7 @@ export function makeSlowWatch(
   id: string,
   role: string,
   label: string,
-  pi: ExtensionAPI | undefined,
+  pi: DispatchHost | undefined,
   onSlow: OnSlowCallback | undefined,
 ): { hooks: { onRawEvent: (event: PiJsonEvent) => void }; stop: () => void } {
   const slowRaw: (event: PiJsonEvent) => void = (event) => live.feedRawEvent(id, event);

@@ -11,10 +11,10 @@
  */
 
 import fs from "node:fs/promises";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
+import type { DriverHost } from "./work-driver-host.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 // #849 — findDroppedDependencyEdges moved to work-driver-plan-deps.ts (the
 // 500-line cap); re-exported so the importers keep their paths.
@@ -102,11 +102,11 @@ export function planTimeoutKill(
  */
 export async function planTimeoutCorrective(
   ctx: DriverContext,
-  pi: ExtensionAPI,
+  pi: DriverHost,
   dispatch:
     | NonNullable<DriverContext["dispatchFn"]>
     | ((
-        pi: ExtensionAPI,
+        pi: DriverHost,
         spec: { role: string; prompt: string },
         opts: { label: string; timeoutMs?: number },
       ) => Promise<DispatchResult>),

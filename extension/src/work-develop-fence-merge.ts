@@ -284,7 +284,7 @@ export async function runMergePrep(
       // checkout — the live #1005 incident (a killed developer's files blocked
       // the next cycle's branch step).
       const res = await dispatch(
-        ctx.pi,
+        ctx.host,
         { role: "developer", prompt, cwd: wt },
         { label: `developer[${mergedId}] (merge-retry)` },
       );

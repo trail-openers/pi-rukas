@@ -124,7 +124,7 @@ export async function runWorkDriver(ctx: DriverContext): Promise<DriverOutcome> 
   const claimed = claimCycle(ctx.issue, ctx.issues);
   if (!claimed.ok) {
     notifyAgent(
-      ctx.pi,
+      ctx.host,
       `pi-rukas: /work for issue #${ctx.issue} refused — issue #${claimed.conflictIssue} is already being worked by the cycle for #${claimed.heldByCycle} in this session. Two drivers on one branch interleave commits and produce a PR nobody can review. Wait for it to finish, or check /work-status.`,
     );
     return {
@@ -176,7 +176,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
     const terminalStatus = state.pipelineState.status;
     const at = new Date().toISOString();
     notifyAgent(
-      ctx.pi,
+      ctx.host,
       `pi-rukas:driver-event v1 kind=refused issue=${ctx.issue} at=${at}\npi-rukas: /work for issue #${ctx.issue} already terminated as ${terminalStatus}. To start a fresh cycle (e.g., after revising the issue via /plan), re-run with --restart:\n  /work ${ctx.issue} --restart\nOr rm ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json manually. The prior cycle's event log is preserved in the state file until you restart or remove it.`,
     );
     return { started: false, reason: `already terminated as ${terminalStatus}` };
@@ -192,7 +192,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
       issues: ctx.issues,
     });
     if (attention.refuse && attention.message) {
-      notifyAgent(ctx.pi, attention.message);
+      notifyAgent(ctx.host, attention.message);
       return { started: false, reason: "issue carries the needs-human-attention label" };
     }
     if (!attention.checked) {
@@ -220,7 +220,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
     if (verdict.action === "refuse") {
       const at = new Date().toISOString();
       notifyAgent(
-        ctx.pi,
+        ctx.host,
         `pi-rukas:driver-event v1 kind=refused issue=${ctx.issue} at=${at}\n${explainRefusal(ctx.issue, verdict.ownerPid)}`,
       );
       return {
@@ -241,7 +241,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
       ) as (WorkEvent & { jobId?: string; transcriptPath?: string; role?: string }) | undefined;
       const at = new Date().toISOString();
       notifyAgent(
-        ctx.pi,
+        ctx.host,
         `pi-rukas:driver-event v1 kind=resume issue=${ctx.issue} at=${at}\n${explainResume(ctx.issue, verdict.step, verdict.jobIds.length)}`,
       );
 
@@ -269,7 +269,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
       const detail = unknowns.map((u) => `  - ${u}`).join("\n");
       trace(`work-driver: state discriminant validation failed for issue ${ctx.issue}:\n${detail}`);
       notifyAgent(
-        ctx.pi,
+        ctx.host,
         `pi-rukas /work driver halted on issue #${ctx.issue}: state file carries an unrecognised value.\n${detail}\nInspect ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json or rm to start fresh (your git work is unaffected; only the workflow tracker state is removed).`,
       );
       return { started: false, reason: "state-file discriminant validation failed" };
@@ -282,7 +282,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
     const detail = inconsistencies.join("\n  - ");
     trace(`work-driver: state inconsistencies detected for issue ${ctx.issue}:\n  - ${detail}`);
     notifyAgent(
-      ctx.pi,
+      ctx.host,
       `pi-rukas /work driver halted on issue #${ctx.issue}: state-file inconsistencies detected.\n  - ${detail}\nInspect ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json or rm to start fresh (your git work is unaffected; only the workflow tracker state is removed).`,
     );
     return { started: false, reason: "state-file inconsistencies detected" };
@@ -308,7 +308,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
       };
       await writeState(ctx.repoRoot, state);
       notifyAgent(
-        ctx.pi,
+        ctx.host,
         `pi-rukas /work driver aborted on issue #${ctx.issue}: transition safety limit reached.` +
           `Inspect ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json for the state.`,
       );
@@ -352,7 +352,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
           ctx.issue,
         );
         notifyAgent(
-          ctx.pi,
+          ctx.host,
           `pi-rukas /work driver halted: step "${err.step}" is not implemented in this build. This is a bug — the state file at .pi/work-state/ has the full cycle for the report.`,
         );
         // The cycle ran and then aborted — its state file is the real outcome.
@@ -375,7 +375,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
         ctx.issue,
       );
       notifyAgent(
-        ctx.pi,
+        ctx.host,
         `pi-rukas /work driver aborted on step "${step}" for issue #${ctx.issue}: ` +
           `${(err as Error).message}`,
       );
@@ -431,7 +431,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
       };
       await writeState(ctx.repoRoot, state);
       notifyAgent(
-        ctx.pi,
+        ctx.host,
         `pi-rukas:driver-event v1 kind=crash issue=${ctx.issue} at=${new Date().toISOString()}\npi-rukas /work driver halted on issue #${ctx.issue}: pipelineState.currentStep has unknown value ${JSON.stringify(decision.value)}. ` +
           `Inspect ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json or rm to start fresh.`,
       );
@@ -467,7 +467,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
       `work-driver: ANOMALY — loop exited with status "running" for issue ${ctx.issue} (currentStep=${state.pipelineState.currentStep})`,
     );
     notifyAgent(
-      ctx.pi,
+      ctx.host,
       `pi-rukas /work driver ended its loop for issue #${ctx.issue} with status still "running" — this is a driver bug; the cycle did NOT terminalize. Inspect ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json and report the event tail.`,
     );
   }

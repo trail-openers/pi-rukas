@@ -91,7 +91,7 @@ try {
 
   const labels: string[] = [];
   const ctx: DriverContext = {
-    pi: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
+    host: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
     repoRoot: dir,
     issue: ISSUE,
     issueBodyFetcherFn: async (issue: number) => ({

@@ -372,7 +372,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     const sent: string[] = [];
     const labels: string[] = [];
     await runWorkDriver({
-      pi: { sendUserMessage: (c: unknown) => sent.push(String(c)) } as never,
+      host: { sendUserMessage: (c: unknown) => sent.push(String(c)) } as never,
       repoRoot: dir,
       issue: 533,
       issueBodyFetcherFn: async () => ({ stdout: "title:\tt\nstate:\tOPEN\n\nbody" }),

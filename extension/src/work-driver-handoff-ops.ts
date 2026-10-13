@@ -75,7 +75,7 @@ export async function runHandoffOpsDispatch(
     });
     const res = await Promise.race([
       dispatch(
-        ctx.pi,
+        ctx.host,
         { role: "ops", prompt },
         {
           label: "ops:handoff",

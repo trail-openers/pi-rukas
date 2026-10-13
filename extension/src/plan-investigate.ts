@@ -19,7 +19,7 @@
  * to the repo root (children used to inherit the parent process cwd — a
  * latent wrong-repo hazard for the gh/vipune searches they run).
  */
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { DispatchHost } from "./async-jobs-lifecycle.ts";
 import type { dispatchCore } from "./dispatch.ts";
 import { DESCRIPTOR_DATA_FRAMING, anglePromptsFor } from "./plan-angles.ts";
 import type { AngleFindings, MechanicalInventory, PlanItemKind } from "./plan-draft.ts";
@@ -219,7 +219,7 @@ export function parseDuplicateRisk(text: string): DuplicateRisk {
  */
 export async function runInvestigation(
   dispatch: InvestigateDispatch,
-  pi: ExtensionAPI,
+  pi: DispatchHost,
   args: {
     type: PlanType;
     descriptor: string;

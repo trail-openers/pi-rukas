@@ -8,6 +8,11 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+/** The narrow host surface startJob / dispatch need: steer delivery only. */
+export interface DispatchHost {
+  sendUserMessage(text: string, options: { deliverAs: "steer" }): void;
+}
 import { type JobKind, childHandles, jobs } from "./async-jobs-registry.ts";
 import { reset as resetDeck } from "./dispatch-deck.ts";
 import { incrementNotice } from "./notice-counter.ts";
@@ -20,10 +25,10 @@ import { trace } from "./trace.ts";
  * #916 SLICE B: counts the delivery for the live view's "N new notices"
  * badge (reset on view open).
  */
-export function deliverReport(pi: ExtensionAPI, report: string): void {
+export function deliverReport(host: DispatchHost, report: string): void {
   incrementNotice();
   try {
-    pi.sendUserMessage(report, { deliverAs: "steer" });
+    host.sendUserMessage(report, { deliverAs: "steer" });
   } catch (err) {
     trace(`async report delivery failed: ${(err as Error).message}`);
   }

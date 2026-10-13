@@ -1,6 +1,5 @@
 import type { Writable } from "node:stream";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { deliverReport } from "./async-jobs-lifecycle.ts";
+import { type DispatchHost, deliverReport } from "./async-jobs-lifecycle.ts";
 import {
   MAX_JOBS,
   type SingleJobState,
@@ -175,7 +174,7 @@ export interface StartJobHandle {
  * `input.ownerKind === "driver"`, in which case the in-process caller
  * consumes the result via the `completion` promise and the steer is skipped.
  */
-export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle {
+export function startJob(pi: DispatchHost, input: StartJobInput): StartJobHandle {
   if (jobs.size >= MAX_JOBS) {
     throw new Error(
       `async-jobs: refusing to start job — ${jobs.size} jobs already in flight (cap ${MAX_JOBS}). This usually indicates a stuck settle path; check 'dispatch_status' or restart Pi.`,

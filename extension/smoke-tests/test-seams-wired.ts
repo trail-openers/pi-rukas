@@ -58,6 +58,13 @@ interface Seam {
 
 const SEAMS: Seam[] = [
   {
+    // #1020 — the host seam. piSessionHost is the only Pi-touching driver
+    // surface; commands.ts is its production caller.
+    file: "work-driver-host.ts",
+    pending: {},
+    canary: { symbol: "piSessionHost", importer: "commands.ts" },
+  },
+  {
     file: "vipune.ts",
     pending: {
       // NOT planned for a caller. #394 calibrated `selectResults` as floor AND
