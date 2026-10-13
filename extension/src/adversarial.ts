@@ -50,6 +50,36 @@ export function adversarialPhaseBudgetMs(): number {
 }
 
 /**
+ * Whether the loop runs as one reviewer dispatch (#1114) and, if so, how its
+ * verdict is judged (#1154). Discriminated: `reportVerdict` is REQUIRED whenever
+ * `reportOnly` is true and must be absent otherwise, so no reportOnly caller
+ * gets a verdict policy by omission.
+ */
+type ReportPolicy =
+  | {
+      /**
+       * #1114 — exactly ONE reviewer dispatch: no developer dispatch, no fix
+       * round. The result carries the parsed verdict in `adversarialRounds` and
+       * its findings in `text`; the driver routes from the round record. The
+       * review-ledger entry is still written (#912) with `loopOutcome` set to
+       * `approved` on a pass and `rejected` otherwise. An unparsed verdict is an
+       * infrastructure outcome, never a verdict.
+       */
+      reportOnly: true;
+      /**
+       * #1154 — how the reportOnly verdict is judged. "terminal": the review is
+       * the loop's only round, so it is judged by the terminal-round rule
+       * (ISSUES_FOUND passes; only CRITICAL_ISSUES_FOUND or an unreadable reply
+       * fails) — the tool path. "routed": judged as round N of 3, so ISSUES_FOUND
+       * routes to a fix pass — the /work driver's per-round reviews. Set by the
+       * adversarial_loop tool (terminal) and by the /work fan-out (routed);
+       * required whenever reportOnly is true.
+       */
+      reportVerdict: "terminal" | "routed";
+    }
+  | { reportOnly?: false | undefined; reportVerdict?: undefined };
+
+/**
  * Run the 3-round adversarial loop directly. Exported so the work-driver can
  * call it without the tool-registration layer (PR1 workflow-graph compilation).
  * The `adversarial_loop` tool wraps this with `startJob` + steer-back; the
@@ -88,15 +118,6 @@ export async function runAdversarialLoop(
      * recover it). When absent the writer recovers the branch from `HEAD`
      * and skips (traces) on a detached head. */
     branch?: string;
-    /**
-     * #1114 — exactly ONE reviewer dispatch: no developer dispatch, no fix
-     * round. The result carries the parsed verdict in `adversarialRounds` and
-     * its findings in `text`; the driver routes from the round record. The
-     * review-ledger entry is still written (#912) with `loopOutcome` set to
-     * `approved` on a pass and `rejected` otherwise. An unparsed verdict is an
-     * infrastructure outcome, never a verdict.
-     */
-    reportOnly?: boolean;
     /** #1114 — the round number a reportOnly review carries (prompt + record). Default 1. */
     reportRound?: number;
     /**
@@ -113,7 +134,7 @@ export async function runAdversarialLoop(
      * mutates itself. A fix round needs `workCwd` on every path.
      */
     fixFence?: FixFence;
-  },
+  } & ReportPolicy,
   signal: AbortSignal,
   orchestratorJobId: string,
   /** #859 — the ref-range diff computation (injectable for tests). Used when
@@ -344,7 +365,8 @@ export async function runAdversarialLoop(
       // #912 — the review ledger keys on the latest entry per branch, so every
       // reviewed round records its verdict: a pass is `approved`, anything the
       // driver will route back or reject is `rejected` (replaced by a later pass).
-      const passed = decideLoopAction(verdict.status, round, MAX_ROUNDS, true) === "pass";
+      const terminalRound = params.reportVerdict === "terminal" ? MAX_ROUNDS : round;
+      const passed = decideLoopAction(verdict.status, terminalRound, MAX_ROUNDS, true) === "pass";
       return ledgerWrite(
         synthesizeResult({
           ok: true,

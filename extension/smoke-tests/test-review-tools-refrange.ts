@@ -217,6 +217,12 @@ registerAdversarialTool(fakePi().pi); // warm any module init
     (adv?.description ?? "").includes("reportOnly") && (adv?.description ?? "").includes("workCwd"),
     "adversarial_loop description documents reportOnly and the workCwd rule",
   );
+  assert(
+    (adv?.description ?? "").includes(
+      "A reportOnly review records one verdict; only CRITICAL_ISSUES_FOUND (or an unreadable reply) fails it.",
+    ),
+    "adversarial_loop description states the reportOnly single-verdict rule (#1154)",
+  );
 }
 
 // ============================================================ 2. adversarial_loop ref range (tool path)

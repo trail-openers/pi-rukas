@@ -16,11 +16,11 @@
  * test-adversarial-range-recompute.ts).
  */
 
+import { mock } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { mock } from "bun:test";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -132,6 +132,7 @@ try {
       context: "ro",
       workCwd: workRepo,
       reportOnly: true,
+      reportVerdict: "routed",
     },
     signal(),
     "job-a",
@@ -392,6 +393,51 @@ try {
       ledgerResults[0]?.text.includes("VIOLATION") === true &&
       ledgerResults[0]?.text.includes("threw: spawn exploded") === true,
     "I: the ledger write carries both the violation and the error",
+  );
+
+  // -------- J. tool path (#1154): reportVerdict "terminal" records the terminal verdict
+  const tool = async (text: string) => {
+    reset();
+    reviewerReplies = [text];
+    const r = await runAdversarialLoop(
+      {
+        diff: "diff --git a/f b/f\n+x",
+        context: "tool",
+        workCwd: workRepo,
+        reportOnly: true,
+        reportVerdict: "terminal",
+      },
+      signal(),
+      "job-j",
+    );
+    return {
+      r,
+      ledger: ledgerResults.at(-1)?.loopOutcome,
+      devs: spawnCalls.filter((x) => x.role === "developer").length,
+    };
+  };
+  const jIssues = await tool("VERDICT: ISSUES_FOUND\n\n- x.txt:1 — the added line lacks a test");
+  assert(jIssues.devs === 0, "J: tool-path reportOnly still dispatches zero developers");
+  assert(jIssues.r.loopOutcome === "approved", "J: tool-path ISSUES_FOUND is approved");
+  assert(jIssues.ledger === "approved", "J: tool-path ISSUES_FOUND ledger row is approved");
+  assert(
+    jIssues.r.text.includes("the added line lacks a test"),
+    "J: tool-path ISSUES_FOUND keeps the findings in the result text",
+  );
+  const jMinor = await tool("VERDICT: MINOR_OBSERVATIONS\n\nnit");
+  assert(
+    jMinor.r.loopOutcome === "approved" && jMinor.ledger === "approved",
+    "J: tool-path MINOR_OBSERVATIONS is approved",
+  );
+  const jCritical = await tool("VERDICT: CRITICAL_ISSUES_FOUND\n\n1. broken");
+  assert(
+    jCritical.r.loopOutcome === "rejected" && jCritical.ledger === "rejected",
+    "J: tool-path CRITICAL_ISSUES_FOUND is rejected",
+  );
+  const jUnparsed = await tool("no marker here");
+  assert(
+    jUnparsed.r.loopOutcome === "infra-failure" && jUnparsed.ledger === "infra-failure",
+    "J: tool-path unparsed reply is infra-failure in the ledger",
   );
 } finally {
   process.chdir(priorCwd);
