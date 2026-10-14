@@ -13,16 +13,12 @@
  *     secrets, input validation/injection, sandboxing, data deletion) parks the
  *     cycle with reason `security-open-point`; any other point caps a proceed at
  *     `proceed-with-assumptions`;
- *   - only bullets under the heading, and only those tagged `[CRITICAL]` (uppercase),
- *     gate;
- *   - a security-class point parks the cycle with reason `security-open-point`; any
- *     other point caps a proceed at `proceed-with-assumptions`. The security class is
- *     SECURITY_CLASS_TERMS below and nothing else: it is the only home of that list;
+ *     (#1171: the parenthetical above is illustrative only; the authoritative security
+ *     class is SECURITY_CLASS_TERMS below, and explainPark derives its text from it.)
  *   - a point the author has answered no longer gates. A bullet is resolved only
  *     when `[RESOLVED]` immediately follows the severity tag (e.g.
  *     `- [CRITICAL][RESOLVED] …` or `- [CRITICAL] [RESOLVED] …`). Answer the point
  *     in the issue body, mark it resolved, and re-run with `/work N --restart`.
- *     in the issue body, mark it resolved, and re-run with `/work N --restart`;
  *   - a line in the section that mentions CRITICAL but does not parse as a point
  *     or a resolved bullet caps a proceed rather than being ignored.
  */
@@ -45,10 +41,6 @@ export interface SecurityTerm {
   readonly requires?: readonly string[];
 }
 
-/**
- * Words that name a decision the driver must not make on the resolver's behalf.
- * An unresolved CRITICAL point touching one of these parks rather than proceeds.
- */
 /**
  * The security class: decisions the driver must not make on the resolver's behalf.
  * An unresolved CRITICAL point matching any term parks rather than proceeds.
@@ -122,6 +114,11 @@ export const SECURITY_CLASS_TERMS: readonly SecurityTerm[] = [
     stem: String.raw`allow[ _-]?list`,
     requires: ["ip", "origin", "origins", "host", "domain", "redirect", "url", "egress"],
   },
+];
+
+/** Distinct security-class labels in declaration order: the list explainPark names (#1171). */
+export const SECURITY_CLASS_LABELS: readonly string[] = [
+  ...new Set(SECURITY_CLASS_TERMS.map((term) => term.label)),
 ];
 
 interface CompiledTerm {

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * #1151 review — open-point edge cases for the intent gate.
- * Open-point edge cases for the intent gate.
+ * (#1171: the security park text is checked against every SECURITY_CLASS_TERMS label.)
  *
  * A bare `- [CRITICAL]` bullet is still a point (it must not vanish from the
  * gate), and assumption text is clipped by code point so an emoji run never
@@ -13,6 +13,7 @@
  * canaries live in test-intent-criticality.ts and test-intent-security-class.ts.
  */
 
+import { SECURITY_CLASS_LABELS } from "../src/open-points-contract.ts";
 import { openPointsSection } from "../src/plan-gap-disclosure.ts";
 import { GAP_RESOLUTION_PLACEHOLDER } from "../src/plan-gap-parse.ts";
 import type { PlanGap } from "../src/plan-types.ts";
@@ -224,12 +225,10 @@ const section = (...lines: string[]) => [HEADING, "", ...lines].join("\n");
 }
 
 // The security park names the whole class, not only the first words of it (#1151 review).
-// The security park names the whole class, not only the first words of it.
+// (#1171: the text is derived from SECURITY_CLASS_LABELS, so a new term cannot go unnamed.)
 assert(
-  /credentials and keys.*input validation\/injection.*data deletion/.test(
-    explainPark("security-open-point", 42),
-  ),
-  "explainPark: the security park describes the whole class",
+  SECURITY_CLASS_LABELS.every((label) => explainPark("security-open-point", 42).includes(label)),
+  "explainPark: the security park names every SECURITY_CLASS_TERMS label",
 );
 
 // #1151 review: an unparsed CRITICAL line naming a security class parks, as a parsed one does.

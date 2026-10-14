@@ -26,6 +26,7 @@
  * are never required — that is the whole point.
  */
 
+import { SECURITY_CLASS_LABELS } from "./open-points-contract.ts";
 import { readMarker } from "./reply-markers.ts";
 import { trace } from "./trace.ts";
 import {
@@ -454,7 +455,7 @@ export function explainPark(reason: ParkReason, issue: number): string {
     case "too-large":
       return `#${issue} is too large to execute as one cycle. Split it into separate issues; each should be a diff a reviewer can hold in their head.`;
     case "security-open-point":
-      return `#${issue} has an unresolved CRITICAL security-relevant open point (authentication/authorization, credentials and keys, secrets, input validation/injection, sandboxing, or data deletion). The driver will not choose that policy for you. Answer it in the issue body, mark it [RESOLVED], and re-run.`;
+      return `#${issue} has an unresolved CRITICAL security-relevant open point (${SECURITY_CLASS_LABELS.join(", ")}). The driver will not choose that policy for you. Answer it in the issue body, mark it [RESOLVED], and re-run.`;
     case "premise-unsound":
       return `#${issue} rests on a premise the driver could not substantiate — typically an API or behaviour that does not exist as described. Confirm the premise and re-run.`;
   }

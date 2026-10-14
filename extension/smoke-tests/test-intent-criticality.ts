@@ -334,7 +334,7 @@ for (const incident of incidents) {
 }
 
 // ----------------------------------- authorization class canaries (#1151 widened)
-// ----------------------------------- authorization class canaries
+// (#1171: each canary below parks; the full label list is checked in test-intent-open-point-edges.ts.)
 
 {
   // One canary per widened class: each CRITICAL point touching it parks.

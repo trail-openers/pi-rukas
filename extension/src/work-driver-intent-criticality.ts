@@ -14,6 +14,7 @@
  * #1151: it also reads the CRITICAL open points from the filed issue body and
  * applies them to the verdict (`applyOpenPointGate`): an authorization point
  * parks, any other caps a proceed at proceed-with-assumptions.
+ * (#1171: applyOpenPointGate now lives in work-driver-intent-finalise.ts; this module only reads the points.)
  *
  * It also reads the CRITICAL open points of a filed issue (`readOpenPoints`).
  * Applying them to the verdict is private to work-driver-intent-finalise.ts,

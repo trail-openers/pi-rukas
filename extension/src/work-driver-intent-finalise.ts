@@ -57,6 +57,8 @@ function quotedIssueText(text: string): string {
  *
  * `primaryBody` is the primary issue body as read; `undefined` or blank means
  * the gate could not run, which is recorded rather than silently skipped.
+ * (#1171: the unread-body branch was removed — explore-bodies-empty halts first, so
+ * primaryBody is a string here and this sentence describes the old signature.)
  *
  * `primaryBody` is the primary issue body as read. A body with no open-points
  * section yields no open points, so the spec passes through the gate unchanged.
@@ -91,6 +93,8 @@ function resolvedAssumption(point: OpenPoint): SpecAssumption {
  *   secrets, input validation/injection, sandboxing, data deletion): park as
  *   `security-open-point` — the driver will not choose that policy. The #397
  *   complete-spec override lifts only `underspecified`, so this park stands.
+ *   (#1171: stale — the parenthetical is illustrative; SECURITY_CLASS_TERMS in
+ *   open-points-contract.ts is the class. The bullet below is the current wording.)
  * - A security-class point, parsed or unparsed: park as `security-open-point`
  *   (the driver will not choose that policy). An existing park is kept and the
  *   security points join its open questions. Either way each one is recorded as
@@ -153,6 +157,7 @@ function applyOpenPointGate(spec: NormalisedSpec, reading: OpenPointReading): No
    * The verdict cap shared by the open-point gate and its unread-body branch: a
    * park is final and passes through unchanged; anything else becomes
    * proceed-with-assumptions with `assumptions` appended.
+   * (#1171: the unread-body branch was removed; the cap is applied only here now.)
    */
   return {
     ...base,
