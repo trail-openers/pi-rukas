@@ -941,6 +941,14 @@ Without `--restart`, re-invoking `/work N` on a terminal-state file now emits a 
 
 `--restart` only wipes the driver's state file (`.pi/work-state/N.json`). Worktrees and feature branches from the prior cycle are NOT removed — the branch step reuses them at runtime: a leftover at the same path with no uncommitted work and no unpushed commits is removed and recreated (the common path, unchanged), but a leftover that HOLDS work is refused instead (see `worktree-dirty-preremove` below). If you want a fully clean slate, salvage any work first, then `git worktree remove --force -- .worktrees/issue-N-*` and `git branch -D feature/issue-N-*` before re-running.
 
+### `/work N --restart` parked again and posted no new comment
+
+**Symptom:** a restarted cycle ends as `intent-park` again, explore ran, but the issue has no second "Cap hit" comment. The handoff reads *"REPEAT of the park reported N min ago (<comment link>) …"*.
+
+**Why:** `--restart` re-resolves the issue from scratch every time. When that fresh resolution parks for the same reason, against the same issue text and the same checked-out commit as the park already reported, a second comment would say nothing new — so the handoff links the earlier one instead (the `needs-human-attention` label is still verified and re-applied). The earlier park is remembered in `.pi/work-state/N/intent-park.txt`, which `--restart` does not wipe. Any difference — another park reason, an edited issue, a moved `HEAD`, a missing or unreadable record — posts a new comment as before.
+
+**Fix:** none needed; act on the linked comment. Delete the record file if you want the next park reported in full regardless.
+
 ### `worktree-dirty-preremove` — the branch step refuses a worktree that holds uncommitted work (#475)
 
 **Symptom:** `/work N --restart` (or a fresh `/work N` over a surviving worktree directory) halts at step 3 (branch) with cap `step-failed:branch` and a plumb report reading *“refusing to force-remove existing worktree <path> — it holds unrecoverable work: …”*. No subagent ran; nothing was pushed.
