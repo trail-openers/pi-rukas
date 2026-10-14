@@ -19,7 +19,8 @@
  *
  *   - Prefix matches and the log grew → emit only the new tail.
  *   - A shorter log that still matches its prefix (a stale snapshot) → emit
- *     nothing and keep the watermark; exactly-once is not weakened.
+ *     nothing and keep the watermark; exactly-once is not weakened. The
+ *     watermark is never truncated by a strict prefix.
  *   - A mismatch at index i (the log was spliced or rewritten, e.g. a batch
  *     replaced by a longer or shorter one) → forget fingerprints from i on, and
  *     emit log[i..]. A rewritten event is never silently dropped.

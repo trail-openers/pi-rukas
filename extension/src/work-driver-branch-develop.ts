@@ -44,7 +44,7 @@ import { applySafetyNet, hasAnyWorktreeEvidence } from "./work-driver-safety-net
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import { makeWorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
-import { type WorkEvent, type WorkState, appendEvent, writeState } from "./workflow-state.ts";
+import { type WorkEvent, type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
 import { DirtyWorktreeError, gitErrorDetail } from "./worktree.ts";
 
 /**
@@ -72,13 +72,13 @@ export async function stampCycleStartRef(ctx: DriverContext, state: WorkState): 
       ...state,
       pipelineState: { ...state.pipelineState, startRef: ctx.invocationStartRef },
     };
-    await writeState(ctx.repoRoot, stamped, ctx.emitSink);
+    await persistCycle(ctx, stamped);
     return stamped;
   }
   return withIntegrationLock(ctx.repoRoot, async () => {
     // argv-aware: the capture passes argv, which promisify(exec) silently drops.
     const stamped = await recordCycleStartRef(ctx.verifyExecFn ?? argvExecp, ctx.repoRoot, state);
-    if (stamped !== state) await writeState(ctx.repoRoot, stamped, ctx.emitSink);
+    if (stamped !== state) await persistCycle(ctx, stamped);
     return stamped;
   });
 }

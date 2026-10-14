@@ -41,7 +41,7 @@
 import { existsSync } from "node:fs";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
-import { type WorkState, type WorkStep, writeState } from "./workflow-state.ts";
+import { type WorkState, type WorkStep, persistCycle } from "./workflow-state.ts";
 
 /** #382 escape hatch: PI_ENSEMBLE_RESUME=0 restores the pre-#382 behaviour. */
 export function resumeEnabled(): boolean {
@@ -221,7 +221,7 @@ export async function beginDispatch(
   const jobId = mintJobId(step, label, at);
   if (!resumeEnabled()) return { state, jobId };
   const next = markDispatchStarted(state, step, role, label, jobId, at, transcriptPath);
-  await writeState(ctx.repoRoot, next, ctx.emitSink);
+  await persistCycle(ctx, next);
   return { state: next, jobId };
 }
 

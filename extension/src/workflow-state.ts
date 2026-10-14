@@ -161,50 +161,144 @@ function assertSchemaVersion(raw: Record<string, unknown>, file: string): WorkSt
 }
 
 /**
- * Atomic state write: write to a unique tmp name then rename. Avoids leaving a
- * half-written file if the process dies mid-write, and two writers never share
- * a tmp path. Updates `updatedAt`.
+ * Per-state-file write chain (S4a, #1162). Every write to one file (driver
+ * persists, the branch-completed persister, the step router, the interrupt) is
+ * queued behind the previous one in call order, so an older snapshot can never
+ * land after a newer one and the emit watermark sees persists in call order.
+ */
+const writeChains = new Map<string, Promise<void>>();
+
+function enqueue<T>(file: string, task: () => Promise<T>): Promise<T> {
+  const prev = writeChains.get(file) ?? Promise.resolve();
+  const run = prev.then(task);
+  const settled = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  writeChains.set(file, settled);
+  void settled.then(() => {
+    if (writeChains.get(file) === settled) writeChains.delete(file);
+  });
+  return run;
+}
+
+/** An interrupt recorded for one state file (S4a, #1162). */
+interface InterruptRequest {
+  at: number;
+  reason: string;
+}
+
+/** Interrupts requested in this process, keyed by state file. */
+const interruptRequests = new Map<string, InterruptRequest>();
+
+/**
+ * S4a (#1162) — flag an issue's cycle as interrupted in this process. Every
+ * later write of that issue's state is forced to `interrupted` (see
+ * `honourInterrupt`), so a driver persist that holds an older in-memory
+ * `running` snapshot cannot erase the record. `markInterrupted` sets it;
+ * `clearInterruptRequest` drops it when a new driver run starts.
+ */
+export function requestInterrupt(
+  repoRoot: string,
+  issue: number,
+  reason: string,
+  at: number = Date.now(),
+): void {
+  interruptRequests.set(workStateFile(repoRoot, issue), { at, reason });
+}
+
+/** Drop an issue's interrupt flag. A new driver run supersedes the old interrupt. */
+export function clearInterruptRequest(repoRoot: string, issue: number): void {
+  interruptRequests.delete(workStateFile(repoRoot, issue));
+}
+
+/**
+ * Keep an interrupted cycle interrupted: status `interrupted` and exactly one
+ * `interrupted` event. An event already in the log is kept as it is.
+ */
+function honourInterrupt(state: WorkState, req: InterruptRequest | undefined): WorkState {
+  if (!req) return state;
+  const hasEvent = state.eventLog.some((e) => e.kind === "interrupted");
+  return {
+    ...state,
+    pipelineState: { ...state.pipelineState, status: "interrupted" },
+    eventLog: hasEvent
+      ? state.eventLog
+      : [...state.eventLog, { kind: "interrupted", at: req.at, reason: req.reason }],
+  };
+}
+
+/**
+ * Atomic write of one snapshot: unique tmp name, then rename. A failed write
+ * removes its tmp file and rethrows. Updates `updatedAt`. Must run inside the
+ * file's `enqueue` slot.
  *
  * `sink` (S4a, #1162) receives the eventLog entries this write makes durable.
- * It is passed explicitly; omitting it persists without emitting. Emit failures
- * never reject this promise (see work-state-emit.ts).
+ * Emit failures never reject this promise (see work-state-emit.ts).
  */
-export async function writeState(
-  repoRoot: string,
-  state: WorkState,
-  sink?: EmitSink,
-): Promise<void> {
-  const file = workStateFile(repoRoot, state.issue);
+async function writeSnapshot(file: string, state: WorkState, sink?: EmitSink): Promise<WorkState> {
   await fs.mkdir(path.dirname(file), { recursive: true });
-  const next: WorkState = { ...state, updatedAt: Date.now() };
+  const next = honourInterrupt({ ...state, updatedAt: Date.now() }, interruptRequests.get(file));
   const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
-  await fs.writeFile(tmp, `${JSON.stringify(next, null, 2)}\n`, "utf8");
-  await fs.rename(tmp, file);
+  try {
+    await fs.writeFile(tmp, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+    await fs.rename(tmp, file);
+  } catch (err) {
+    await fs.rm(tmp, { force: true }).catch(() => undefined);
+    throw err;
+  }
   if (sink) emitPersisted(sink, next);
+  return next;
+}
+
+/**
+ * Persist a state snapshot. Writes to one file run serially in call order (see
+ * `enqueue`).
+ */
+export function writeState(repoRoot: string, state: WorkState, sink?: EmitSink): Promise<void> {
+  const file = workStateFile(repoRoot, state.issue);
+  return enqueue(file, async () => {
+    await writeSnapshot(file, state, sink);
+  });
+}
+
+/**
+ * The driver's single persist call (S4a, #1162). Every driver-path write goes
+ * through here so the emit sink is never forgotten at a call site.
+ */
+export function persistCycle(
+  ctx: { repoRoot: string; emitSink?: EmitSink },
+  state: WorkState,
+): Promise<void> {
+  return writeState(ctx.repoRoot, state, ctx.emitSink);
 }
 
 /**
  * S4a (#1162) — record an interrupt (SIGTERM / SIGINT). Re-reads the state from
- * disk (a caller's snapshot may be stale: another writer may have appended
- * since), sets status to `interrupted`, appends the `interrupted` event carrying
- * `reason`, and persists. Returns undefined when no state file exists. Re-entry
- * resumes the cycle (see `reenterInterrupted`).
+ * disk inside the file's write slot (a caller's snapshot may be stale: another
+ * writer may have appended since), sets status to `interrupted`, appends the
+ * `interrupted` event carrying `reason`, sets the interrupt flag, and persists.
+ * Returns undefined when no state file exists. Re-entry resumes the cycle (see
+ * `reenterInterrupted`).
  */
-export async function markInterrupted(
+export function markInterrupted(
   repoRoot: string,
   issue: number,
   reason: string,
   sink?: EmitSink,
   at: number = Date.now(),
 ): Promise<WorkState | undefined> {
-  const state = await readState(repoRoot, issue);
-  if (!state) return undefined;
-  const next = appendEvent(
-    { ...state, pipelineState: { ...state.pipelineState, status: "interrupted" } },
-    { kind: "interrupted", at, reason },
-  );
-  await writeState(repoRoot, next, sink);
-  return next;
+  const file = workStateFile(repoRoot, issue);
+  return enqueue(file, async () => {
+    const state = await readState(repoRoot, issue);
+    if (!state) return undefined;
+    requestInterrupt(repoRoot, issue, reason, at);
+    const next = appendEvent(
+      { ...state, pipelineState: { ...state.pipelineState, status: "interrupted" } },
+      { kind: "interrupted", at, reason },
+    );
+    return writeSnapshot(file, next, sink);
+  });
 }
 
 /**

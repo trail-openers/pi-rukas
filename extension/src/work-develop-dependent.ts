@@ -36,7 +36,7 @@ import {
 } from "./work-driver-dep-scheduler.ts";
 import { safetyNetWorktree } from "./work-driver-safety-net.ts";
 import { armStepNotice } from "./work-driver-step-notice.ts";
-import { type WorkEvent, type WorkState, appendEvent, writeState } from "./workflow-state.ts";
+import { type WorkEvent, type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
 
 /** #1016 — a persisted dependent worktree is reused only from inside
  *  `.worktrees/` (fail closed): a path outside it is a refusal, not a reuse. */
@@ -274,12 +274,12 @@ export async function runDependentWorkstreams(
           // transcripts.
           const leftoverPath = created.failure.leftoverPath ?? "(path unknown)";
           const parked = parkDeferredLeftover(stateRef, leftoverPath, branchEvents);
-          // #753 — the park path's own writeState: the sibling branch-completed
+          // #753 — the park path's own persistCycle: the sibling branch-completed
           // events flushed by parkDeferredLeftover are persisted HERE, before
           // the caller's short-circuit returns — a crash between the cap-hit and
           // the step-boundary write would otherwise lose the siblings' results.
           await run.flushState?.();
-          await writeState(ctx.repoRoot, stateRef.current, ctx.emitSink);
+          await persistCycle(ctx, stateRef.current);
           trace(
             `work-driver: PARK — deferred worktree creation for ${id} refused by dirty leftover at ${leftoverPath}; parking the cycle (no force-remove)`,
           );

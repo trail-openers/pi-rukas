@@ -68,8 +68,15 @@ const SEAMS: Seam[] = [
     // S4a (#1162) — the workflow-state persistence seam. markInterrupted has
     // no caller until the headless runner's signal handling lands (#1024).
     file: "workflow-state.ts",
-    pending: { markInterrupted: "#1024 \u2014 S4 wires SIGTERM/SIGINT to it" },
-    canary: { symbol: "writeState", importer: "work-driver-resume.ts" },
+    pending: {
+      markInterrupted: "#1024 \u2014 S4 wires SIGTERM/SIGINT to it",
+      requestInterrupt: "#1024 \u2014 set by markInterrupted; has no caller of its own",
+    },
+    testOnly: {
+      writeState:
+        "the write primitive behind persistCycle; driver code persists through persistCycle",
+    },
+    canary: { symbol: "persistCycle", importer: "work-driver-resume.ts" },
   },
   {
     file: "vipune.ts",

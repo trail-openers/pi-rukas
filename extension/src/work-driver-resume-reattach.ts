@@ -28,7 +28,7 @@ import {
 } from "./work-driver-resume.ts";
 import type { WorkStep } from "./workflow-state-events.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
-import { writeState } from "./workflow-state.ts";
+import { persistCycle } from "./workflow-state.ts";
 
 // Re-export resume helpers that work-driver.ts still needs.
 export function resolveReattach(
@@ -279,7 +279,7 @@ export async function attemptReattachInResume(
       ...next,
       pipelineState: { ...next.pipelineState, currentStep: decision.step },
     };
-    await writeState(ctx.repoRoot, next, ctx.emitSink);
+    await persistCycle(ctx, next);
     emitStepCompleted(reattachStep, 0, 9, reattach.grantMs);
     return { shouldSkipStep: true, nextState: next };
   }

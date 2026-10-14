@@ -3,7 +3,7 @@
  *
  * Code-as-orchestrator: owns step transitions (#393), dispatches via
  * `dispatchCore()` (ownerKind:driver), persists to `.pi/work-state/` via
- * `writeState()`, surfaces progress via `notifyAgent()`.
+ * `persistCycle()`, surfaces progress via `notifyAgent()`.
  *
  * All 9 steps wired; each implementation lives in `work-driver-<step>.ts`.
  */
@@ -59,11 +59,12 @@ import { type WorkEvent, appendEvent } from "./workflow-state.ts";
 import {
   type WorkState,
   type WorkStep,
+  clearInterruptRequest,
   detectInconsistencies,
   initialState,
+  persistCycle,
   readState,
   workStateDir,
-  writeState,
 } from "./workflow-state.ts";
 
 /**
@@ -154,6 +155,8 @@ export async function runWorkDriver(ctx: DriverContext): Promise<DriverOutcome> 
 async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
   // PR12 — `/work N --restart`: skip readState, start fresh. Branch step
   // handles worktree leftovers at runtime; this flag only wipes state.
+  // S4a (#1162) — a new driver run supersedes any interrupt flagged earlier in this process.
+  clearInterruptRequest(ctx.repoRoot, ctx.issue);
   let state =
     ctx.restart === true
       ? initialState(ctx.issue)
@@ -286,7 +289,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
 
   // Persist the initial state on first run so the user can see the file
   // appear as soon as a cycle starts.
-  await writeState(ctx.repoRoot, state, ctx.emitSink);
+  await persistCycle(ctx, state);
 
   // PR2 fold-in: set up project-local scratch dir (#553).
   const tmpDir = await setupWorkspaceTmp(ctx.repoRoot, ctx.issue);
@@ -302,7 +305,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
         ...state,
         pipelineState: { ...state.pipelineState, status: "aborted" },
       };
-      await writeState(ctx.repoRoot, state, ctx.emitSink);
+      await persistCycle(ctx, state);
       notifyAgent(
         ctx.host,
         `pi-rukas /work driver aborted on issue #${ctx.issue}: transition safety limit reached.` +
@@ -335,7 +338,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
           ...state,
           pipelineState: { ...state.pipelineState, status: "aborted" },
         };
-        await writeState(ctx.repoRoot, state, ctx.emitSink);
+        await persistCycle(ctx, state);
         emitStepFailed(
           step,
           stepOrd.num,
@@ -358,7 +361,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
         ...state,
         pipelineState: { ...state.pipelineState, status: "aborted" },
       };
-      await writeState(ctx.repoRoot, state, ctx.emitSink);
+      await persistCycle(ctx, state);
       emitStepFailed(
         step,
         stepOrd.num,
@@ -383,6 +386,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
     // #657 — the loop round is derived from log position when rendered
     // (fmtRecentEvents), not backfilled here: an amended step-started would no
     // longer match the event the host was already emitted (S4a, #1162).
+    // Do not append a second step-started to backfill: nextStep()/routeStepOutcome() read the trailing event.
     // #543 F5 — driver-owned checkpoint after a dispatch-cap kill. Must stay
     // BEFORE the `routed.retry` continue so a retried step never checkpoints
     // the same kill twice. Never throws; failure degrades to the uncommitted.
@@ -402,7 +406,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
         ...state,
         pipelineState: { ...state.pipelineState, status: "aborted" },
       };
-      await writeState(ctx.repoRoot, state, ctx.emitSink);
+      await persistCycle(ctx, state);
       notifyAgent(
         ctx.host,
         `pi-rukas:driver-event v1 kind=crash issue=${ctx.issue} at=${new Date().toISOString()}\npi-rukas /work driver halted on issue #${ctx.issue}: pipelineState.currentStep has unknown value ${JSON.stringify(decision.value)}. ` +
@@ -420,7 +424,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
           currentStep: decisionStep,
         },
       };
-      await writeState(ctx.repoRoot, state, ctx.emitSink);
+      await persistCycle(ctx, state);
     }
   }
 
@@ -457,7 +461,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
     // unchanged when the send threw — in which case the next invocation
     // retries the delivery). On a send failure this write is the only
     // record that the driver reached its terminal boundary at all.
-    await writeState(ctx.repoRoot, state, ctx.emitSink);
+    await persistCycle(ctx, state);
   }
   return { started: true };
 }
