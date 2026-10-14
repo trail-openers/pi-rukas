@@ -203,6 +203,7 @@ export async function runConvergeGateHandler(
             step: "develop",
             failures: gate2.failures,
             at: Date.now(),
+            origin: "outcome-gate",
             ...(gate2.flakeRecovered ? { retries: 1, recovered: true } : {}),
           },
         },

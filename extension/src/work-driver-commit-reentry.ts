@@ -21,9 +21,9 @@
 
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
-import { PR_NOT_OPEN_MARKER } from "./work-driver-explain-verify.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
+import { PR_NOT_OPEN_MARKER } from "./workflow-state-cap.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 /**
@@ -121,6 +121,7 @@ export function prGoneRefusal(
           step: "commit-pr",
           failures: [`${PR_NOT_OPEN_MARKER} ${reason}`],
           at: Date.now(),
+          origin: "pr-not-open",
         },
       },
     },

@@ -12,9 +12,8 @@
  * reason was not recorded, and keeps the real gate's text byte-identical.
  */
 import { prGoneRefusal } from "../src/work-driver-commit-reentry.ts";
-import { PR_NOT_OPEN_MARKER } from "../src/work-driver-explain-verify.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
-import { FIX_PASS_EVIDENCE_PREFIX } from "../src/workflow-state-cap.ts";
+import { FIX_PASS_EVIDENCE_PREFIX, PR_NOT_OPEN_MARKER } from "../src/workflow-state-cap.ts";
 import { type WorkState, appendEvent, initialState } from "../src/workflow-state.ts";
 
 let exit = 0;
@@ -33,11 +32,18 @@ const GATE_CLAIMS = [
 ];
 const claimsTheGate = (text: string) => GATE_CLAIMS.some((re) => re.test(text));
 
-function withEvidence(step: "develop" | "commit-pr", failures: string[]): WorkState {
+function withEvidence(
+  step: "develop" | "commit-pr",
+  failures: string[],
+  origin?: "outcome-gate" | "fix-pass" | "pr-not-open",
+): WorkState {
   const s = initialState(9001, 1000);
   return {
     ...s,
-    pipelineState: { ...s.pipelineState, verifyEvidence: { step, failures, at: 2000 } },
+    pipelineState: {
+      ...s.pipelineState,
+      verifyEvidence: { step, failures, at: 2000, ...(origin ? { origin } : {}) },
+    },
   };
 }
 
@@ -73,6 +79,59 @@ function withEvidence(step: "develop" | "commit-pr", failures: string[]): WorkSt
   assert(claimsTheGate(text), "mixed evidence: a real gate failure keeps the gate's text");
 }
 
+// Legacy (no origin): a pr-not-open marker beside a real gate failure is a
+// gate failure, not a refused re-entry — the marker counts only when every
+// failure carries it.
+{
+  const text = explainCap(
+    "verify-failed:commit-pr",
+    withEvidence("commit-pr", [`${PR_NOT_OPEN_MARKER} PR #7 is CLOSED`, "no PR resolves"]),
+  );
+  assert(
+    /rejected the commit-pr step's "done" claim/.test(text) && !/no longer open/.test(text),
+    `mixed evidence (pr-not-open + gate, no origin): renders the gate text (got: ${text})`,
+  );
+}
+
+// Origin-tagged parks route on the origin, whatever their text says.
+{
+  const prText = explainCap(
+    "verify-failed:commit-pr",
+    withEvidence("commit-pr", ["PR #7 is CLOSED, not OPEN"], "pr-not-open"),
+  );
+  assert(
+    /no longer open/.test(prText),
+    "origin pr-not-open: routes to the refused re-entry text without a marker",
+  );
+
+  const gateText = explainCap(
+    "verify-failed:develop",
+    withEvidence("develop", [`${FIX_PASS_EVIDENCE_PREFIX}looks like a park`], "outcome-gate"),
+  );
+  assert(
+    claimsTheGate(gateText),
+    "origin outcome-gate: a failure that reads like a marker still renders the gate text",
+  );
+
+  const fixText = explainCap(
+    "verify-failed:develop",
+    withEvidence("develop", ["scope fence: touched a.ts"], "fix-pass"),
+  );
+  assert(
+    /adversarial fix pass did not clear/.test(fixText) && !claimsTheGate(fixText),
+    "origin fix-pass: routes to the fix-pass text without a marker",
+  );
+
+  const emptyGate = explainCap(
+    "verify-failed:develop",
+    withEvidence("develop", [], "outcome-gate"),
+  );
+  assert(
+    /does not record the reason/.test(emptyGate) && !claimsTheGate(emptyGate),
+    "origin outcome-gate with no failures: says the reason was not recorded",
+  );
+}
+
 // No evidence: the text must not claim the driver ran anything.
 {
   const bare = initialState(9001, 1000);
@@ -98,6 +157,28 @@ function withEvidence(step: "develop" | "commit-pr", failures: string[]): WorkSt
   );
   const empty = explainCap("verify-failed:develop", withEvidence("develop", []));
   assert(!claimsTheGate(empty), "empty failure list: claims no executed check");
+
+  // Empty failures, but the cap carries the raw-output log paths: the early
+  // return must not drop them (#841 renders the log path for develop caps).
+  const logged = appendEvent(bare, {
+    kind: "cap-hit",
+    at: 3000,
+    cap: "verify-failed:develop",
+    reviewRound: 0,
+    nextStep: "handoff",
+    logPaths: ["/tmp/pi-rukas-dev/run1.log", "/tmp/pi-rukas-dev/run2.log"],
+  });
+  const loggedText = explainCap("verify-failed:develop", logged);
+  assert(
+    loggedText.includes(
+      "Full raw verify output: /tmp/pi-rukas-dev/run1.log, /tmp/pi-rukas-dev/run2.log",
+    ),
+    `empty failures + logPaths: the log path renders (got: ${loggedText})`,
+  );
+  assert(
+    /does not record the reason/.test(loggedText) && !claimsTheGate(loggedText),
+    "empty failures + logPaths: keeps the no-reason wording, claims no executed check",
+  );
 }
 
 // The commit-pr re-entry refusal, through its real writer.
