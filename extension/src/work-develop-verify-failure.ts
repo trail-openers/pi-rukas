@@ -66,6 +66,7 @@ export function appendDevelopVerifyFailure(state: WorkState, gate: DevelopVerify
         step: "develop",
         failures: gate.failures,
         at: Date.now(),
+        origin: "outcome-gate",
         ...(gate.fenceViolations ? { fenceViolations: gate.fenceViolations } : {}),
         ...(gate.flakeRecovered ? { retries: 1, recovered: true } : {}),
       },

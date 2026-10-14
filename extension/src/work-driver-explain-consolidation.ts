@@ -15,25 +15,13 @@ type Cap = Extract<WorkEvent, { kind: "cap-hit" }>["cap"];
 
 /**
  * Explains the consolidation/verify-conflict family of caps
- * (`verify-failed:commit-pr`, `integration-verify-failed`,
+ * (`integration-verify-failed`,
  * `consolidated-verify-consolidation-created`,
  * `consolidated-verify-conflict`); the dispatch is exhaustive, so an
  * unknown cap can never land here.
  */
 export function explainConsolidation(cap: Cap, state: WorkState): string {
   switch (cap) {
-    case "verify-failed:commit-pr": {
-      // #500 — the outcome gate fires on the same commit-pr step as the
-      // incomplete-consolidation cap, so the recorded repoRoot state applies
-      // to its recovery too. The blurb stays cap-scoped: it only appends from
-      // the cases whose recovery commands reference the recorded state.
-      const rootBlurb = commitPrRootBlurb(
-        state.pipelineState.commitPrRoot,
-        state.pipelineState.commitPrRootError,
-        "the recovery commands below apply as-is",
-      );
-      return `the driver's outcome-verification gate rejected the commit-pr step's "done" claim — the committed + pushed + PR-opened claim is not backed by executed evidence. The per-check findings are in the handoff body; inspect the recorded repoRoot state there and re-run.${rootBlurb}`;
-    }
     case "integration-verify-failed": {
       const base =
         "the consolidated tree failed the project's verify command, so nothing was pushed. Each workstream passed its own develop gate in its own worktree; the combination does not build — which is a defect integration CREATED, and the only place it can be caught. The failing output is in the plumb-report above. Recover by fixing the interaction (typically one workstream renamed or moved something another still refers to) and re-running";
