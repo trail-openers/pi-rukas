@@ -32,7 +32,9 @@ export { startBatch } from "./async-jobs-batch.ts";
 export {
   getChildHandle,
   getJobIssues,
+  DRIVER_OWNED_NOTICE,
   getOrchestratorActiveChild,
+  isDriverOwnedJob,
   isOrchestratorJob,
   markOrchestrator,
   setOrchestratorActiveChild,
@@ -209,7 +211,14 @@ export function startJob(pi: DispatchHost, input: StartJobInput): StartJobHandle
   // at the one layer that sees progress for every PM job, batch member
   // and driver child. Notice + steer, never a kill. disabled entirely by
   // PI_ENSEMBLE_SLOW_NOTICE=0.
-  const slow = makeSlowWatch(jobId, input.role, input.label, pi, input.onSlow);
+  const slow = makeSlowWatch(
+    jobId,
+    input.role,
+    input.label,
+    pi,
+    input.onSlow,
+    ownerKind === "driver",
+  );
   const hooks: WorkHooks = {
     onProgress: (progress) => {
       dispatchDeck.updateEntry(jobId, progress);
