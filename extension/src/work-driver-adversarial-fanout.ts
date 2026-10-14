@@ -199,10 +199,13 @@ export async function fanOutAdversarial(
           reportOnly: true,
           reportVerdict: "routed",
           reportRound: reviewRoundFor(state, id),
+          // #1024 — headless: the cycle's signal reaches the inner children and
+          // each one leads its own process group.
+          processGroup: ctx.processGroup,
         },
-        // No AbortController plumbing in v1 — spawn-level timeouts
-        // in spawn.ts (per-role) bound the work.
-        new AbortController().signal,
+        // Interactive runs have no cycle signal; spawn-level timeouts in
+        // spawn.ts (per-role) bound the work there.
+        ctx.signal ?? new AbortController().signal,
         orchestratorJobId,
       );
     } catch (err) {

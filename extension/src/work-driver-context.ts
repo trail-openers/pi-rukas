@@ -255,7 +255,7 @@ export interface DriverContext {
    * children.
    */
   adversarialLoopFn?: (
-    params: { diff: string; context: string; workCwd?: string },
+    params: { diff: string; context: string; workCwd?: string; processGroup?: boolean },
     signal: AbortSignal,
     orchestratorJobId: string,
   ) => Promise<DispatchResult>;
@@ -293,6 +293,7 @@ export interface DriverContext {
     context?: string;
     cwd?: string;
     signal?: AbortSignal;
+    processGroup?: boolean;
     evidence?: string;
     extraFindings?: import("./lens-review.ts").Finding[];
     threshold?: import("./lens-review.ts").Severity;

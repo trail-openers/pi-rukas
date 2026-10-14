@@ -27,7 +27,7 @@ import { acquireWorkDeckHeader, headerToken } from "./work-driver-deck-header.ts
 import { countPriorStepStarts } from "./work-driver-diff.ts";
 import { runExplore } from "./work-driver-explore.ts";
 import { runHandoff } from "./work-driver-handoff.ts";
-import { interruptAfterStep, interruptIfRequested } from "./work-driver-interrupt.ts";
+import { interruptIfRequested, recordStepCrash } from "./work-driver-interrupt.ts";
 import { runLens, runLensFix } from "./work-driver-lens.ts";
 import {
   clearFooter,
@@ -334,11 +334,12 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
     emitStepStarted(step, stepOrd.num, stepOrd.total, stepRound, ctx.issue);
     // PR2 O2: footer status cursor (step-level position with live-tick).
     updateFooter(state, stepStartedAt);
-    const priorLength = state.eventLog.length;
     try {
       state = await runStep(ctx, state, step);
     } catch (err) {
-      // An abort that makes the step throw is the interrupt, not a crash.
+      // Recorded before the abort branch: a crash that coincides with a signal
+      // is still a crash. An abort that makes the step throw is the interrupt.
+      state = recordStepCrash(state, step, err);
       if (ctx.signal?.aborted === true) {
         state = await interruptIfRequested(ctx, state);
         break;
@@ -369,7 +370,6 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
         return { started: true };
       }
       // Spawn-level / unexpected error — mark aborted with the error.
-      trace(`work-driver: step "${step}" threw: ${(err as Error).message}`);
       state = {
         ...state,
         pipelineState: { ...state.pipelineState, status: "aborted" },
@@ -393,10 +393,10 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
       return { started: true };
     }
     // Headless S4 (#1024): an interrupt that fired during the step ends the
-    // cycle here. The router never sees the aborted step, so no cap-hit or
-    // handoff is recorded for it.
+    // cycle here, without routing. The step's events stay in the log (they
+    // happened); the router never sees its outcome, so no handoff follows.
     if (ctx.signal?.aborted === true) {
-      state = await interruptAfterStep(ctx, state, priorLength);
+      state = await interruptIfRequested(ctx, state);
       break;
     }
     // Route step outcome (work-driver-step-router.ts); `retry: true` means

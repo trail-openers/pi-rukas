@@ -10,34 +10,56 @@
  * Only the headless runner asks for a group (`processGroup`). An interactive
  * Pi session keeps its children in the terminal's foreground process group, so
  * Ctrl-C reaches them as it always did; for those, a kill signals the leader
- * handle alone. Group kills are tracked so the runner can reap them on exit.
+ * handle alone.
  *
- * SIGTERM goes to the group first; SIGKILL follows after KILL_GRACE_MS for
- * anything that ignores SIGTERM. The escalation fires even when the leader has
- * already exited, because its descendants may still be running. If the group
- * is already gone (ESRCH) we fall back to the leader handle, which is a no-op
- * for an exited child.
+ * The group decision is made once, at spawn time, and stored on the child
+ * handle (`registerChild`). Every kill site then reads that one policy through
+ * `killProcessTree(child)`; no caller restates it. Group children are tracked
+ * so the runner can reap them on exit.
+ *
+ * Escalation: SIGTERM first, then SIGKILL after a grace period. A group kill
+ * uses KILL_GRACE_MS and keeps its timer ref'd (the runner must not exit before
+ * the group is gone); an interactive kill keeps the 5 s escalation, unref'd.
+ * The escalation fires even when the leader has already exited, because its
+ * descendants may still be running. If the group is already gone (ESRCH) we
+ * fall back to the leader handle, which is a no-op for an exited child.
  *
  * Normal exit is untouched: nothing here runs unless a kill was requested.
  */
 
 import type { ChildProcess } from "node:child_process";
 
-/** Grace between SIGTERM and SIGKILL for a process group. */
+/** Grace between SIGTERM and SIGKILL for a process group (headless). */
 export const KILL_GRACE_MS = 2_000;
+
+/** Grace between SIGTERM and SIGKILL for a lone leader (interactive). */
+export const INTERACTIVE_KILL_GRACE_MS = 5_000;
 
 /** Spawn options for a child: its own process group only when a headless run asks. */
 export function groupSpawnOpts(processGroup: boolean): { detached: boolean } {
   return { detached: processGroup };
 }
 
+/** The group decision recorded for each child at spawn time. */
+const groupPolicy = new WeakMap<ChildProcess, boolean>();
+
 /** Group children still running, so the headless runner can reap them on exit. */
 const liveGroups = new Set<ChildProcess>();
 
-/** Track a group child until it exits (see killLiveProcessGroups). */
-export function trackProcessGroup(child: ChildProcess): void {
+/**
+ * Record a child's group policy at spawn time. A group child is also tracked
+ * until it exits (see killLiveProcessGroups). Call before any kill can happen.
+ */
+export function registerChild(child: ChildProcess, processGroup: boolean): void {
+  groupPolicy.set(child, processGroup);
+  if (!processGroup) return;
   liveGroups.add(child);
   child.once("exit", () => liveGroups.delete(child));
+}
+
+/** True when the child was registered as a process-group leader. */
+export function isGroupChild(child: ChildProcess): boolean {
+  return groupPolicy.get(child) === true;
 }
 
 function signalGroupPid(pid: number, signal: NodeJS.Signals): boolean {
@@ -60,14 +82,17 @@ function signalChild(child: ChildProcess, signal: NodeJS.Signals, processGroup: 
 }
 
 /**
- * SIGTERM the child (its whole group when `processGroup`), SIGKILL after
- * KILL_GRACE_MS. A group kill's escalation timer stays ref'd: the runner must
- * not exit before SIGKILL lands, or the group outlives it.
+ * SIGTERM the child (its whole group when it was registered as one), SIGKILL
+ * after the policy's grace period.
  */
-export function killProcessTree(child: ChildProcess, processGroup = false): void {
-  signalChild(child, "SIGTERM", processGroup);
-  const escalate = setTimeout(() => signalChild(child, "SIGKILL", processGroup), KILL_GRACE_MS);
-  if (!processGroup) escalate.unref();
+export function killProcessTree(child: ChildProcess): void {
+  const group = isGroupChild(child);
+  signalChild(child, "SIGTERM", group);
+  const escalate = setTimeout(
+    () => signalChild(child, "SIGKILL", group),
+    group ? KILL_GRACE_MS : INTERACTIVE_KILL_GRACE_MS,
+  );
+  if (!group) escalate.unref();
 }
 
 /**

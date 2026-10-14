@@ -166,7 +166,10 @@ export async function runLens(
     const read = await readDoctrineAtBase(execFn, ctx.repoRoot, ps.baseSha, file);
     if (read.text !== undefined) docs.push({ file, text: read.text });
   }
-  const thresholdDecision = await resolveReviewThreshold(judgePolicy(ctx.repoRoot), docs);
+  const thresholdDecision = await resolveReviewThreshold(
+    judgePolicy(ctx.repoRoot, undefined, ctx.processGroup === true),
+    docs,
+  );
   trace(`work-driver: lens-review — blocking severity ${thresholdDecision.severity}`);
   const threshold = thresholdDecision.severity;
 
@@ -187,6 +190,9 @@ export async function runLens(
       // (driver worktrees are detached; the ledger writer cannot
       // recover the branch name from a detached HEAD).
       branch: ps.branchName,
+      // #1024 — the cycle's signal and group policy reach every lens child.
+      signal: ctx.signal,
+      processGroup: ctx.processGroup,
     });
     const capKillEvent = lensCapKillEvent(
       summary,

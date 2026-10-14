@@ -113,6 +113,7 @@ export async function runAdversarialLoop(
      * the parent pi for their slow-run watch (the PM notice half). */
     onSlow?: OnSlowCallback;
     pi?: ExtensionAPI;
+    processGroup?: boolean;
     /** #912 — caller-supplied branch for the review-ledger write (the driver
      * worktrees are detached, so `git rev-parse --abbrev-ref HEAD` cannot
      * recover it). When absent the writer recovers the branch from `HEAD`
@@ -293,8 +294,8 @@ export async function runAdversarialLoop(
     orchestratorJobId,
     ...(params.onSlow ? { onSlow: params.onSlow } : {}),
     ...(params.pi ? { pi: params.pi } : {}),
+    processGroup: params.processGroup,
   });
-
   // Re-read before every review. `fetchDiff` used to run once, before the loop,
   // so rounds 2 and 3 were prompted with pre-fix material and the reviewer had to
   // notice the staleness itself.

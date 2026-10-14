@@ -86,6 +86,7 @@ async function runDevelopTopological(
     stateRef,
     persistNotes,
     ctx.emitSink,
+    ctx.signal,
   );
   reRecordKeptGreens(persister, independent, preserved.kept);
   // #753 — per-workstream completion timestamps + a shared map of WHY each

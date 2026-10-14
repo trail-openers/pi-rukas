@@ -224,7 +224,7 @@ async function defaultSpawnReattach(): Promise<{
  * `dispatch-completed` event and advances to the next step.
  */
 export async function attemptReattachInResume(
-  ctx: Pick<CycleContext, "repoRoot" | "emitSink">,
+  ctx: Pick<CycleContext, "repoRoot" | "emitSink" | "signal">,
   state: WorkState,
   verdict: { step: WorkStep; jobIds: string[] },
   inFlightEvents: Array<Record<string, unknown>>,

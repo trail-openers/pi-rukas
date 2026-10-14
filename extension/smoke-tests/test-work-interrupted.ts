@@ -60,7 +60,7 @@ function step(s: WorkState, name: "explore" | "plan" | "branch", at: number): Wo
       ...base,
       pipelineState: { ...base.pipelineState, status: "interrupted" },
     },
-    { kind: "interrupted", at: 1, reason: "SIGTERM" },
+    { kind: "interrupted", at: 1, reason: "signal" },
   );
   assert(
     validateDiscriminants(interruptedState).length === 0,
@@ -82,7 +82,7 @@ function step(s: WorkState, name: "explore" | "plan" | "branch", at: number): Wo
   const repo = tmpRepo();
   try {
     await writeState(repo, initialState(77));
-    const next = await markInterrupted(repo, 77, "SIGTERM", undefined, 5);
+    const next = await markInterrupted(repo, 77, "signal", undefined, 5);
     const back = await readState(repo, 77);
     assert(
       next?.pipelineState.status === "interrupted",
@@ -91,7 +91,7 @@ function step(s: WorkState, name: "explore" | "plan" | "branch", at: number): Wo
     assert(back?.pipelineState.status === "interrupted", "markInterrupted persists the status");
     const last = back?.eventLog[back.eventLog.length - 1];
     assert(
-      last?.kind === "interrupted" && last.reason === "SIGTERM",
+      last?.kind === "interrupted" && last.reason === "signal",
       "markInterrupted appends an `interrupted` event carrying the reason",
     );
   } finally {
@@ -109,7 +109,7 @@ function step(s: WorkState, name: "explore" | "plan" | "branch", at: number): Wo
     // Another writer (the live driver) appends an event and persists.
     await writeState(repo, step(base, "explore", 3));
     // The interrupt handler holds the older snapshot.
-    await markInterrupted(repo, 78, "SIGINT", undefined, 4);
+    await markInterrupted(repo, 78, "signal", undefined, 4);
     const back = await readState(repo, 78);
     assert(
       back?.eventLog.some((e) => e.kind === "step-started" && e.step === "explore") === true,
@@ -138,7 +138,7 @@ function step(s: WorkState, name: "explore" | "plan" | "branch", at: number): Wo
     assert(emitted.length === 2, "a stale (shorter) snapshot emits nothing");
     // The live cycle's full log is what is on disk again before the interrupt.
     await writeState(repo, state, sink);
-    await markInterrupted(repo, 88, "SIGINT", sink, at + 2);
+    await markInterrupted(repo, 88, "signal", sink, at + 2);
     const persisted = await readState(repo, 88);
     assert(
       JSON.stringify(emitted) === JSON.stringify(persisted?.eventLog),
@@ -226,7 +226,7 @@ function step(s: WorkState, name: "explore" | "plan" | "branch", at: number): Wo
       ...base,
       pipelineState: { ...base.pipelineState, currentStep: "plan" },
     });
-    await markInterrupted(repo, 99, "SIGTERM", undefined, 1);
+    await markInterrupted(repo, 99, "signal", undefined, 1);
     const notices: string[] = [];
     const host: DriverHost = {
       sendUserMessage: (text) => {
@@ -271,21 +271,21 @@ function step(s: WorkState, name: "explore" | "plan" | "branch", at: number): Wo
   const repo = tmpRepo();
   try {
     await writeState(repo, initialState(55));
-    const state = (await markInterrupted(repo, 55, "SIGTERM", undefined, 1)) as WorkState;
+    const state = (await markInterrupted(repo, 55, "signal", undefined, 1)) as WorkState;
     const status = renderStatus(state, repo);
     assert(
-      status.includes("INTERRUPTED") && status.includes("reason: SIGTERM"),
+      status.includes("INTERRUPTED") && status.includes("reason: signal"),
       "renderStatus names the interrupted status and its reason",
     );
     const index = renderCycleIndex([{ issue: 55, state }], Date.now());
     assert(
-      index.includes("interrupted at explore (SIGTERM)") && index.includes("/work 55 resumes it"),
+      index.includes("interrupted at explore (signal)") && index.includes("/work 55 resumes it"),
       "the cycle index lists the interrupted cycle with its reason and resume action",
     );
     const entry = await singleCycleQueueEntry(repo, 55);
     assert(
       entry?.outcome === "parked" &&
-        entry.reason === "cycle interrupted: SIGTERM" &&
+        entry.reason === "cycle interrupted: signal" &&
         entry.humanAction === "resume with /work 55",
       "the queue summary entry for an interrupted cycle names the reason and the resume action",
     );

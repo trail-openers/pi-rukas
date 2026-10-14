@@ -22,13 +22,14 @@
  */
 
 import { killLiveProcessGroups } from "../spawn-kill.ts";
+import { trace } from "../trace.ts";
 import type { DriverContext } from "../work-driver-context.ts";
 import { groupIssues } from "../work-driver-grouping.ts";
 import { releaseHeldIntegrationLocks } from "../work-driver-lock.ts";
 import { type DriverOutcome, runWorkDriver } from "../work-driver.ts";
 import { fetchIssueBodies } from "../work-entry.ts";
 import { createEmitSink } from "../work-state-emit.ts";
-import { markInterrupted, readState, workStateFile } from "../workflow-state.ts";
+import { interruptReasonOf, markInterrupted, readState, workStateFile } from "../workflow-state.ts";
 import { EXIT, exitCodeForGroup, exitCodeForState } from "./exit-code.ts";
 import { type LineWriter, createHeadlessHost } from "./host.ts";
 import { type IssueResult, projectIssue } from "./result.ts";
@@ -37,7 +38,6 @@ export interface HeadlessRunOptions {
   repoRoot: string;
   issues: number[];
   restart: boolean;
-  mergeGrant: boolean;
   /** Runner-level wall clock. Absent = no timeout. */
   timeoutMs?: number;
   /** Milliseconds the driver gets to reach a step boundary after an abort. */
@@ -176,13 +176,16 @@ async function runGroup(
     issue: primary,
     issues: members,
     restart: opts.restart,
-    mergeGrant: opts.mergeGrant,
     signal,
     processGroup: true,
     emitSink: sink,
     ...opts.driverSeams,
   }).catch((err: unknown) => ({ crashed: errorMessage(err) }));
 
+  let settled = false;
+  void driver.then(() => {
+    settled = true;
+  });
   const timer = graceTimer(signal, grace);
   const outcome = await Promise.race([driver, timer.expired]);
   timer.cancel();
@@ -191,8 +194,13 @@ async function runGroup(
     // The driver missed its boundary: record the interrupt from here (a no-op
     // on a terminal status), then give a driver that was mid-step a bounded
     // moment to finish its persist before the state is read back.
-    await markInterrupted(opts.repoRoot, primary, String(signal.reason ?? "signal"), sink);
+    await markInterrupted(opts.repoRoot, primary, interruptReasonOf(signal), sink);
     await waitAtMost(driver, LATE_DRIVER_MS);
+    // The integration locks are released in runHeadless's finally; a driver
+    // still running here may take one after that, so the release is traced.
+    if (!settled) {
+      trace(`headless: driver for issue #${primary} still running past the late deadline`);
+    }
   }
 
   // Computed once for the group. A refusal is a driver that did not start.

@@ -10,14 +10,14 @@
  *  21  interrupted by a signal
  *  30  the driver threw, or interrupted by the runner's own --timeout
  *  40  refused to start (claimed by a live cycle, needs-human-attention without
- *      --restart, bad arguments, --merge from an agent)
+ *      --restart, bad arguments, an unknown flag such as --merge)
  *
  * A grouped run exits 21 if any issue was interrupted, otherwise the highest
  * per-issue code. The JSON result carries every issue regardless.
  */
 
 import type { WorkCapLiteral } from "../workflow-state-events-caps.ts";
-import type { WorkEvent, WorkState } from "../workflow-state.ts";
+import type { InterruptReason, WorkEvent, WorkState } from "../workflow-state.ts";
 
 export const EXIT = {
   merged: 0,
@@ -52,7 +52,7 @@ export function lastCap(state: WorkState): string | undefined {
 }
 
 /** The reason of the most recent `interrupted` event (`signal` or `timeout`). */
-export function lastInterruptReason(state: WorkState): string | undefined {
+export function lastInterruptReason(state: WorkState): InterruptReason | undefined {
   return lastEvent(state, "interrupted")?.reason;
 }
 

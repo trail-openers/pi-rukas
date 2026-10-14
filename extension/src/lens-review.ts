@@ -120,10 +120,10 @@ export async function runLensReview(opts: {
   /** #859 — head ref for the tool-computed diff (with base). */
   head?: string;
   signal?: AbortSignal;
+  processGroup?: boolean;
   /** #973 — the delta base (see resolveReviewDiff for the full contract). */
   since?: string;
-  /** #973 — force a full review (the automatic delta base is not consulted;
-   * an explicit `since` still wins when given). */
+  /** #973 — force a full review (the automatic delta base is not consulted; an explicit `since` still wins when given). */
   full?: boolean;
   /**
    * #966 — the per-lens spawner (the real `runLensChild` by default;

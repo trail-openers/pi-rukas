@@ -7,14 +7,24 @@
  * `persistCycle`, so the in-memory snapshot it keeps is the one that lands on
  * disk: there is no storage-layer override that could rewrite a later persist.
  *
- * The interrupt applies only while the cycle is `running`. A terminal status is
- * never rewritten, and an interrupt is recorded once per run (the signal is
- * one-shot).
+ * The interrupt is the pure transition `applyInterrupt` (workflow-state.ts): it
+ * applies only while the cycle is `running`, so a terminal status is never
+ * rewritten, and an interrupt is recorded once per run.
+ *
+ * Events are never dropped. A step that was in flight when the signal fired
+ * keeps every event it appended (they happened); the driver then stops without
+ * routing that step's outcome.
  */
 
-import type { CycleContext, DriverContext } from "./work-driver-context.ts";
-import { persistCycle } from "./workflow-state.ts";
-import { type WorkState, appendEvent } from "./workflow-state.ts";
+import { trace } from "./trace.ts";
+import type { CycleContext } from "./work-driver-context.ts";
+import {
+  type WorkState,
+  appendEvent,
+  applyInterrupt,
+  interruptReasonOf,
+  persistCycle,
+} from "./workflow-state.ts";
 
 /**
  * If the cycle's signal has fired and the cycle is still running, record the
@@ -26,39 +36,30 @@ export async function interruptIfRequested(
   state: WorkState,
 ): Promise<WorkState> {
   const signal = ctx.signal;
-  if (!signal?.aborted || state.pipelineState.status !== "running") return state;
-  const reason = typeof signal.reason === "string" ? signal.reason : "signal";
-  const next = appendEvent(
-    { ...state, pipelineState: { ...state.pipelineState, status: "interrupted" } },
-    { kind: "interrupted", at: Date.now(), reason },
-  );
+  if (signal?.aborted !== true) return state;
+  const next = applyInterrupt(state, interruptReasonOf(signal), Date.now());
+  if (next === state) return state;
   await persistCycle(ctx, next);
   return next;
 }
 
-/** Events a step appends when its dispatch failed or capped: an aborted step records none of them. */
-const ABORTED_STEP_FAILURE_KINDS: ReadonlySet<string> = new Set([
-  "dispatch-failed",
-  "dispatch-failed-provider",
-  "cap-hit",
-  "handoff-emitted",
-  "handoff-consolidated",
-]);
-
 /**
- * The cycle's signal fired while `runStep` was in flight. The step may have
- * recorded its aborted dispatch as a failure or a cap; the interrupt is the
- * outcome, so those events are dropped from the log before the interrupt is
- * recorded. `priorLength` is the log length before the step ran: events before
- * it are never touched. Returns the interrupted state (persisted).
+ * A step threw. Traced and recorded as a plumb note BEFORE the caller decides
+ * whether the cycle was interrupted, so a crash that coincides with a signal is
+ * not lost. The returned state carries the note; the caller persists it.
  */
-export async function interruptAfterStep(
-  ctx: CycleContext,
+export function recordStepCrash(
   state: WorkState,
-  priorLength: number,
-): Promise<WorkState> {
-  const eventLog = state.eventLog.filter(
-    (e, i) => i < priorLength || !ABORTED_STEP_FAILURE_KINDS.has(e.kind),
-  );
-  return interruptIfRequested(ctx, { ...state, eventLog });
+  step: WorkState["pipelineState"]["currentStep"],
+  err: unknown,
+): WorkState {
+  const message = err instanceof Error ? `${err.message}\n${err.stack ?? ""}`.trim() : String(err);
+  trace(`work-driver: step "${step}" threw: ${message}`);
+  return appendEvent(state, {
+    kind: "plumb-report",
+    at: Date.now(),
+    step,
+    role: "driver",
+    body: `step "${step}" threw: ${message}`,
+  });
 }

@@ -127,8 +127,8 @@ function tmpFiles(repo: string): string[] {
     const { sink, emitted } = recordingSink();
     const older = stepEvents(initialState(94), 1);
     await writeState(repo, older, sink);
-    await markInterrupted(repo, 94, "SIGTERM", sink, 50);
-    await markInterrupted(repo, 94, "SIGINT", sink, 51);
+    await markInterrupted(repo, 94, "signal", sink, 50);
+    await markInterrupted(repo, 94, "signal", sink, 51);
     const back = await readState(repo, 94);
     assert(back?.pipelineState.status === "interrupted", "markInterrupted sets interrupted");
     const interrupts = back?.eventLog.filter((e) => e.kind === "interrupted") ?? [];
@@ -143,7 +143,7 @@ function tmpFiles(repo: string): string[] {
       pipelineState: { ...older.pipelineState, status: "merged" as const },
     };
     await writeState(repo, merged, sink);
-    await markInterrupted(repo, 94, "SIGTERM", sink, 52);
+    await markInterrupted(repo, 94, "signal", sink, 52);
     const term = await readState(repo, 94);
     assert(
       term?.pipelineState.status === "merged",

@@ -400,6 +400,13 @@ export type WorkEvent =
    * `markInterrupted`). `reason` is the operator-facing why; renderers read
    * the most recent `interrupted` event for it.
    */
-  | { kind: "interrupted"; at: number; reason: string };
+  | { kind: "interrupted"; at: number; reason: InterruptReason };
+/**
+ * Why a cycle was interrupted: the runner's SIGTERM / SIGINT / SIGHUP (`signal`)
+ * or its own `--timeout` (`timeout`). The one vocabulary for the event field,
+ * the abort reason and the exit code (headless/exit-code.ts).
+ */
+export type InterruptReason = "signal" | "timeout";
+
 /** Discriminator union of event kinds — useful for callers that switch on it. */
 export type WorkEventKind = WorkEvent["kind"];

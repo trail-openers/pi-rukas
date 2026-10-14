@@ -92,7 +92,7 @@ try {
   }
 
   // Test 2 — the SIGTERM→SIGKILL escalation: a child that IGNORES SIGTERM is
-  // still killed by the 2s SIGKILL timer (spawn-kill.ts KILL_GRACE_MS). This was previously uncovered — the
+  // still killed by the 5s SIGKILL timer (spawn-kill.ts INTERACTIVE_KILL_GRACE_MS). This was previously uncovered — the
   // real-spawn sections could not demonstrate it, because a healthy real child
   // exits on SIGTERM before the escalation ever matters.
   //
@@ -108,8 +108,8 @@ try {
     assert(p.ok, "TERM-trapping child: killCause='abort' + ok=false");
     for (const l of p.lines) console.log(l);
     assert(
-      p.elapsedMs >= 2_000,
-      `SIGKILL escalation fired (wall ${p.elapsedMs}ms ≥ 2000ms; TERM was trapped)`,
+      p.elapsedMs >= 5_000,
+      `SIGKILL escalation fired (wall ${p.elapsedMs}ms ≥ 5000ms; TERM was trapped)`,
     );
     assert(
       p.exitCode === null || p.exitCode === -9,

@@ -4,7 +4,7 @@
  * (headless S4, #1024). Entry point for `bin/pi-rukas-headless` and for
  * `pi-rukas run`, which execs it.
  *
- *   pi-rukas-headless work <issue> [more issues] [--restart] [--merge]
+ *   pi-rukas-headless work <issue> [more issues] [--restart]
  *                          [--timeout <minutes>] [--json]
  *
  * stderr: NDJSON v1 progress lines (ndjson.ts). stdout: one summary line, or
@@ -16,9 +16,8 @@
  * with its process group (exit 21). Interactive /work is unchanged: its
  * children stay in the terminal's group, so Ctrl-C reaches them as before.
  *
- * `--merge` is refused when the process runs as an agent (PI_ENSEMBLE_ROLE or
- * PI_ENSEMBLE_SUBAGENT_MODE is set): an agent must not grant itself merge
- * authority.
+ * There is no `--merge`: merge authority comes only from the project's AGENTS.md
+ * (judged by the policy judge), as it does for start_work_driver.
  */
 
 import { releaseHeldIntegrationLocks } from "../work-driver-lock.ts";
@@ -29,7 +28,6 @@ import { runHeadless } from "./run.ts";
 export interface ParsedArgs {
   issues: number[];
   restart: boolean;
-  mergeGrant: boolean;
   timeoutMs?: number;
   json: boolean;
 }
@@ -38,13 +36,11 @@ export interface ParsedArgs {
 export function parseHeadlessArgs(argv: string[]): ParsedArgs | { error: string } {
   const issues: number[] = [];
   let restart = false;
-  let mergeGrant = false;
   let json = false;
   let timeoutMs: number | undefined;
   for (let i = 0; i < argv.length; i++) {
     const tok = argv[i] as string;
     if (tok === "--restart") restart = true;
-    else if (tok === "--merge") mergeGrant = true;
     else if (tok === "--json") json = true;
     else if (tok === "--timeout") {
       const v = Number(argv[++i]);
@@ -59,13 +55,7 @@ export function parseHeadlessArgs(argv: string[]): ParsedArgs | { error: string 
     }
   }
   if (issues.length === 0) return { error: "work needs at least one issue number" };
-  return { issues, restart, mergeGrant, timeoutMs, json };
-}
-
-/** True when the process runs as a pi-rukas agent (a subagent or a role child). */
-export function runsAsAgent(env: NodeJS.ProcessEnv): boolean {
-  const set = (v: string | undefined) => v !== undefined && v !== "";
-  return set(env.PI_ENSEMBLE_ROLE) || set(env.PI_ENSEMBLE_SUBAGENT_MODE);
+  return { issues, restart, timeoutMs, json };
 }
 
 function errorMessage(err: unknown): string {
@@ -76,7 +66,7 @@ async function main(argv: string[]): Promise<number> {
   const [verb, ...rest] = argv;
   if (verb !== "work") {
     process.stderr.write(
-      "usage: pi-rukas-headless work <issue...> [--restart] [--merge] [--timeout <min>] [--json]\n",
+      "usage: pi-rukas-headless work <issue...> [--restart] [--timeout <min>] [--json]\n",
     );
     return EXIT.refused;
   }
@@ -87,18 +77,11 @@ async function main(argv: string[]): Promise<number> {
     );
     return EXIT.refused;
   }
-  if (args.mergeGrant && runsAsAgent(process.env)) {
-    process.stdout.write(
-      `${JSON.stringify({ error: { code: "merge-refused", message: "--merge is refused when an agent runs the headless runner: an agent must not grant itself merge authority" } })}\n`,
-    );
-    return EXIT.refused;
-  }
   const repoRoot = await resolveRepoRoot(process.cwd());
   const run = await runHeadless({
     repoRoot,
     issues: args.issues,
     restart: args.restart,
-    mergeGrant: args.mergeGrant,
     timeoutMs: args.timeoutMs,
     write: (line) => process.stderr.write(`${line}\n`),
   });

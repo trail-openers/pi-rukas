@@ -10,7 +10,7 @@
  *     lands as `interrupted`, never `running` (the grace-expiry race);
  *   - an interactive spawn is NOT a process-group leader; a headless spawn is;
  *   - a group kill reaches a grandchild, and a non-group kill leaves the group alone;
- *   - `--merge` is refused when the process runs as an agent;
+ *   - there is no `--merge` (an unknown flag exits 40); merge authority comes from AGENTS.md only;
  *   - the NDJSON key index is the event's position in the state log.
  *
  * Offline: the dispatch is a stub, the issue body is a stub, gh is absent.
@@ -19,10 +19,10 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { parseHeadlessArgs, runsAsAgent } from "../src/headless/cli.ts";
+import { parseHeadlessArgs } from "../src/headless/cli.ts";
 import { createHeadlessHost } from "../src/headless/host.ts";
 import { runHeadless } from "../src/headless/run.ts";
-import { groupSpawnOpts, killProcessTree } from "../src/spawn-kill.ts";
+import { groupSpawnOpts, killProcessTree, registerChild } from "../src/spawn-kill.ts";
 import type { DispatchResult } from "../src/types.ts";
 import { createEmitSink } from "../src/work-state-emit.ts";
 import {
@@ -93,7 +93,6 @@ function tmpRepo(): string {
       repoRoot: repo,
       issues: [61],
       restart: false,
-      mergeGrant: false,
       graceMs: 50,
       signalTarget: sig as unknown as NodeJS.Process,
       driverSeams: { dispatchFn: honouring as never, issueBodyFetcherFn: issueFetch },
@@ -107,8 +106,8 @@ function tmpRepo(): string {
     assert(!kinds.includes("handoff-emitted"), "no handoff event for the aborted step");
     assert(!kinds.includes("cap-hit"), "no cap-hit event for the aborted step");
     assert(
-      !kinds.some((k) => k.startsWith("dispatch-failed")),
-      "no dispatch-failed event for the aborted step",
+      kinds.some((k) => k.startsWith("dispatch-failed")),
+      "the aborted step's dispatch-failed stays in the log (events are never dropped)",
     );
   } finally {
     rmSync(repo, { recursive: true, force: true });
@@ -152,7 +151,8 @@ function tmpRepo(): string {
 
   const plain = spawn("sleep", ["30"], { stdio: "ignore" });
   const exitedPlain = new Promise((r) => plain.once("exit", r));
-  killProcessTree(plain, false);
+  registerChild(plain, false);
+  killProcessTree(plain);
   await exitedPlain;
   assert(plain.signalCode === "SIGTERM", "a non-group kill reaches the leader");
 
@@ -166,7 +166,8 @@ function tmpRepo(): string {
   });
   const grandchild = Number(pidLine);
   const exitedGroup = new Promise((r) => grouped.once("exit", r));
-  killProcessTree(grouped, true);
+  registerChild(grouped, true);
+  killProcessTree(grouped);
   await exitedGroup;
   let alive = true;
   for (let i = 0; i < 40 && alive; i++) {
@@ -180,17 +181,10 @@ function tmpRepo(): string {
   assert(!alive, "a group kill reaches the grandchild");
 }
 
-// ── 4. --merge is refused for an agent; a human's --merge parses as before.
+// ── 4. --merge is no longer a flag: an agent or a human gets the same unknown-argument refusal.
 {
-  assert(runsAsAgent({ PI_ENSEMBLE_ROLE: "developer" }), "PI_ENSEMBLE_ROLE marks an agent");
-  assert(
-    runsAsAgent({ PI_ENSEMBLE_SUBAGENT_MODE: "1" }),
-    "PI_ENSEMBLE_SUBAGENT_MODE marks an agent",
-  );
-  assert(!runsAsAgent({ PI_ENSEMBLE_ROLE: "" }), "an empty PI_ENSEMBLE_ROLE is not an agent");
-  assert(!runsAsAgent({}), "no agent env: a human run");
   const parsed = parseHeadlessArgs(["7", "--merge"]);
-  assert("mergeGrant" in parsed && parsed.mergeGrant === true, "--merge still parses for a human");
+  assert("error" in parsed && parsed.error.includes("--merge"), "--merge is an unknown argument");
   assert("error" in parseHeadlessArgs(["7", "--sandboxed"]), "--sandboxed is no longer a flag");
 }
 

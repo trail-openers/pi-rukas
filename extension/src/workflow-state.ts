@@ -73,6 +73,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { type EmitSink, emitPersisted } from "./work-state-emit.ts";
+import type { InterruptReason } from "./workflow-state-events.ts";
 import { WORK_STATE_SCHEMA_VERSION, type WorkState } from "./workflow-state-schema.ts";
 import { appendEvent, detectInconsistencies, initialState } from "./workflow-state-update.ts";
 
@@ -91,6 +92,7 @@ export type {
 export type { CommitPrRootState } from "./workflow-state-schema.ts";
 export type { CapEvidence, CapedPartialState } from "./workflow-state-schema.ts";
 export type { PipelineState, WorkState } from "./workflow-state-schema.ts";
+export type { InterruptReason } from "./workflow-state-events.ts";
 export {
   filesPresentFromConsolidation,
   missingWorkstreamsFromConsolidation,
@@ -225,15 +227,38 @@ export function persistCycle(
   state: WorkState,
 ): Promise<void> {
   // Headless S4 (#1024): once the cycle's signal has fired, a snapshot that
-  // still reads `running` is written as `interrupted`. The driver's in-memory
-  // copy can predate an interrupt the runner already recorded on disk; this
-  // stops that stale copy writing `running` back. Terminal statuses are never
-  // touched, and no event is added here (work-driver-interrupt.ts records it).
+  // still reads `running` is written as `interrupted`, with its interrupt event.
+  // The driver's in-memory copy can predate an interrupt the runner already
+  // recorded on disk; this stops that stale copy writing `running` back.
+  // Terminal statuses are never touched.
+  const signal = ctx.signal;
   const snapshot =
-    ctx.signal?.aborted === true && state.pipelineState.status === "running"
-      ? { ...state, pipelineState: { ...state.pipelineState, status: "interrupted" as const } }
-      : state;
+    signal?.aborted === true ? applyInterrupt(state, interruptReasonOf(signal), Date.now()) : state;
   return writeState(ctx.repoRoot, snapshot, ctx.emitSink);
+}
+
+/** The interrupt reason an aborted cycle signal carries (`timeout`, else `signal`). */
+export function interruptReasonOf(signal: AbortSignal): InterruptReason {
+  return signal.reason === "timeout" ? "timeout" : "signal";
+}
+
+/**
+ * Headless S4 (#1024) — the one pure interrupt transition. A no-op unless the
+ * cycle is `running`. Otherwise it sets `interrupted` and appends exactly one
+ * `interrupted` event carrying `reason`. The event is not appended again when
+ * the log already ends with that same interrupt (a re-entered cycle that is
+ * interrupted again before doing anything else). Every interrupt path goes
+ * through here: the driver checkpoint, persistCycle and markInterrupted.
+ */
+export function applyInterrupt(state: WorkState, reason: InterruptReason, at: number): WorkState {
+  if (state.pipelineState.status !== "running") return state;
+  const interrupted = {
+    ...state,
+    pipelineState: { ...state.pipelineState, status: "interrupted" as const },
+  };
+  const last = state.eventLog[state.eventLog.length - 1];
+  if (last?.kind === "interrupted" && last.reason === reason) return interrupted;
+  return appendEvent(interrupted, { kind: "interrupted", at, reason });
 }
 
 /**
@@ -253,7 +278,7 @@ export function persistCycle(
 export function markInterrupted(
   repoRoot: string,
   issue: number,
-  reason: string,
+  reason: InterruptReason,
   sink?: EmitSink,
   at: number = Date.now(),
 ): Promise<WorkState | undefined> {
@@ -261,11 +286,8 @@ export function markInterrupted(
   return enqueue(file, async () => {
     const state = await readState(repoRoot, issue);
     if (!state) return undefined;
-    if (state.pipelineState.status !== "running") return state;
-    const next = appendEvent(
-      { ...state, pipelineState: { ...state.pipelineState, status: "interrupted" } },
-      { kind: "interrupted", at, reason },
-    );
+    const next = applyInterrupt(state, reason, at);
+    if (next === state) return state;
     return writeSnapshot(file, next, sink);
   });
 }

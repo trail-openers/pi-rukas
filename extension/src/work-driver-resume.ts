@@ -210,7 +210,7 @@ export function markDispatchStarted(
  * step, and a half-finished fan-out is re-entered wholesale.
  */
 export async function beginDispatch(
-  ctx: Pick<CycleContext, "repoRoot" | "emitSink">,
+  ctx: Pick<CycleContext, "repoRoot" | "emitSink" | "signal">,
   state: WorkState,
   step: WorkStep,
   role: string,
