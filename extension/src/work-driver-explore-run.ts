@@ -1,3 +1,4 @@
+import { flattenAndClip } from "./text-flatten.ts";
 /**
  * work-driver-explore-run — the `runExplore` step handler, moved VERBATIM
  * from work-driver-explore.ts (the 500-line gate headroom for the #799
@@ -41,11 +42,7 @@ function fetchFailureReason(reason: unknown): string {
   let message = "";
   if (reason instanceof Error) message = reason.message;
   else if (typeof reason === "string") message = reason;
-  const flat = message
-    .replace(/\p{Cc}+/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  return Array.from(flat).slice(0, 300).join("");
+  return flattenAndClip(message, 300);
 }
 
 /**

@@ -12,6 +12,7 @@
  */
 
 import { matchSecurityTerm } from "./security-class.ts";
+import { flattenAndClip } from "./text-flatten.ts";
 import { trace } from "./trace.ts";
 import {
   type OpenPoint,
@@ -28,21 +29,10 @@ import {
 /** #1151: the assumption text for one CRITICAL point is capped at this many characters. */
 const OPEN_POINT_ASSUMPTION_MAX = 300;
 
-/** Clip by code point, so a surrogate pair is never split into a lone half. */
-function clipTo(text: string, max: number): string {
-  const chars = Array.from(text);
-  return chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : text;
-}
-
-// Each run of control characters (`\p{Cc}`) and U+2028/U+2029 becomes one space, whitespace is
-// collapsed, then the text is code-span quoted and clipped.
+// Shared flatten-and-clip with fetchFailureReason (text-flatten.ts).
 /** Code-span quoting for untrusted issue text: keeps it inert in the PR body. */
 function quotedIssueText(text: string): string {
-  const flat = text
-    .replace(/[\p{Cc}\u2028\u2029]+/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  return `\`${clipTo(flat.replace(/`/g, "'"), OPEN_POINT_ASSUMPTION_MAX)}\``;
+  return `\`${flattenAndClip(text.replace(/`/g, "'"), OPEN_POINT_ASSUMPTION_MAX)}\``;
 }
 
 /**
@@ -61,6 +51,7 @@ export function finaliseSpecVerdict(
     trace(
       "open-point-gate-unchecked: the filed issue body was blank; its open points were not checked",
     );
+    // Recorded even when the spec is already parked: an unchecked body is a fact the PR body must carry.
     return capToAssumptions(reconciled, [
       {
         text: "Open-point gate did not run: issue body blank",
@@ -93,14 +84,12 @@ function resolvedAssumption(point: OpenPoint): SpecAssumption {
  * The verdict cap shared by the open-point gate and its unread-body branch: a
  * park is final and passes through unchanged; anything else becomes
  * proceed-with-assumptions with `assumptions` appended.
+ * `assumptions` are appended even to a park, so the note still reaches the PR body.
  */
 function capToAssumptions(spec: NormalisedSpec, assumptions: SpecAssumption[]): NormalisedSpec {
-  if (spec.verdict === "park") return spec;
-  return {
-    ...spec,
-    verdict: "proceed-with-assumptions",
-    assumptions: [...spec.assumptions, ...assumptions],
-  };
+  const withNotes = { ...spec, assumptions: [...spec.assumptions, ...assumptions] };
+  if (spec.verdict === "park") return withNotes;
+  return { ...withNotes, verdict: "proceed-with-assumptions" };
 }
 
 /**
@@ -123,7 +112,7 @@ function capToAssumptions(spec: NormalisedSpec, assumptions: SpecAssumption[]): 
 function applyOpenPointGate(spec: NormalisedSpec, reading: OpenPointReading): NormalisedSpec {
   for (const point of reading.resolved) {
     trace(
-      `work-driver: intent — resolved open point skipped: ${clipTo(openPointText(point), OPEN_POINT_ASSUMPTION_MAX)}`,
+      `work-driver: intent — resolved open point skipped: ${flattenAndClip(openPointText(point), OPEN_POINT_ASSUMPTION_MAX)}`,
     );
   }
   const base: NormalisedSpec =

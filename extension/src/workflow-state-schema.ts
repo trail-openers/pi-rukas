@@ -4,6 +4,7 @@
  */
 
 import type { Verdict } from "./lens-review.ts";
+import type { NormalisedSpec } from "./work-driver-intent.ts";
 import type { CapEvidence, CapedPartialState, EvidenceFailureKind } from "./workflow-state-cap.ts";
 import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
 // #679/#728 — workstream shape + consolidation record, split for the 500-line gate.
@@ -194,31 +195,13 @@ export interface PipelineState {
    * #378 — the resolved intent. Absent when intent resolution is
    * disabled or the resolver returned no `## Spec` block.
    */
-  normalisedSpec?: {
-    intent: string;
-    deliverables: Array<{
-      id: string;
-      description: string;
-      paths: string[];
-      /**
-       * #792 — the plan-time no-diff marker. Set by the intent resolver
-       * and nowhere else; a marker without a non-empty evidence string is
-       * NOT honoured. Optional; absent = no marker.
-       */
-      noDiff?: boolean;
-      noDiffEvidence?: string;
-    }>;
-    acceptanceCriteria: string[];
-    outOfScope: string[];
-    assumptions: Array<{ text: string; basis: string }>;
-    openQuestions: string[];
-    /** Security-class CRITICAL open points of the filed issue; absent = none. */
-    securityOpenPoints?: string[];
-    evidence: Array<{ claim: string; source: string; verdict: string }>;
-    verdict: "proceed" | "proceed-with-assumptions" | "park";
-    parkReason?: string;
-    rationale: string;
-  };
+  /**
+   * #792 — the plan-time no-diff marker. Set by the intent resolver
+   * and nowhere else; a marker without a non-empty evidence string is
+   * NOT honoured. Optional; absent = no marker.
+   * (Carried on the deliverables of NormalisedSpec; see work-driver-intent.ts.)
+   */
+  normalisedSpec?: NormalisedSpec;
   /**
    * #380 — why the cycle stopped at the merge step: merge authority
    * (citation-verified grant) and executed `gh` evidence, both defaulting

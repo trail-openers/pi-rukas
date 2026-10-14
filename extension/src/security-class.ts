@@ -8,23 +8,31 @@
  * A stem matches only as a whole identifier segment: letters and digits bound it,
  * while `_`, `-`, `.` and spaces do not, so `db_password` and `client_secret` match.
  *
- * Ambiguous stems carry co-words so ordinary engineering wording ("dependency
- * injection", "config validate step", "which role reviews the PR", "tokenizer
- * output", "stale cache entries are deleted") does not park. Co-words are widened
- * on purpose: a security point missed is worse than an ordinary one that parks,
- * and a park clears with [RESOLVED] and --restart.
+ * The rule: a bare security stem parks. An ambiguous stem (one that is also ordinary
+ * engineering vocabulary, e.g. "injection" in "dependency injection") carries an
+ * `excludes` list of its known-ordinary phrases; the stem parks on its own UNLESS the
+ * bullet contains one of those phrases. A few non-security stems (hash, nonce) carry
+ * a `requires` list instead: they park only alongside a security word. Excludes are
+ * deliberately short and named, so a new ordinary phrase is an explicit edit here,
+ * not a silent widening of the class. A security point missed is worse than an
+ * ordinary one that parks, and a park clears with [RESOLVED] and --restart.
  */
 
 /**
  * One family of the security class. `stem` is a regex body matched as a whole
- * segment, case-insensitively. When `requires` is set, the term matches only if one
- * of the co-words also appears in the same open-point bullet (the whole bullet
- * text, case-insensitive, whole-word).
+ * segment, case-insensitively.
+ * - `requires`: the term matches only if one of these co-words also appears in the
+ *   bullet (whole-word, case-insensitive). For non-security stems that need a
+ *   security word (hash, nonce).
+ * - `excludes`: the term does NOT match if one of these known-ordinary phrases
+ *   appears in the bullet (whole-word, case-insensitive). Regex bodies; `[ _-]`
+ *   stands for a space, underscore or hyphen between words.
  */
 export interface SecurityTerm {
   readonly label: string;
   readonly stem: string;
   readonly requires?: readonly string[];
+  readonly excludes?: readonly string[];
 }
 
 /**
@@ -48,41 +56,17 @@ export const SECURITY_CLASS_TERMS: readonly SecurityTerm[] = [
   {
     label: "role",
     stem: String.raw`roles?`,
-    requires: [
-      "role-based",
-      "rbac",
-      "admin",
-      "rotate",
-      "grant",
-      "assign",
-      "access",
-      "permission",
-      "privilege",
+    excludes: [
+      "role[ _-]in[ _-]the[ _-]pipeline",
+      "reviewer[ _-]role",
+      "role[ _-]of[ _-]the",
+      "plays[ _-]a[ _-]role",
     ],
   },
   {
     label: "session",
     stem: String.raw`sessions?`,
-    requires: [
-      "auth",
-      "login",
-      "cookie",
-      "token",
-      "hijack",
-      "fixation",
-      "expiry",
-      "timeout",
-      "valid",
-      "validity",
-      "lifetime",
-      "expire",
-      "expires",
-      "expired",
-      "expiration",
-      "revoke",
-      "revoked",
-      "idle",
-    ],
+    excludes: ["session[ _-]store", "test[ _-]session", "session[ _-]state", "repl[ _-]session"],
   },
   { label: "login", stem: String.raw`login` },
   { label: "signing key", stem: String.raw`signing[ _-]?keys?` },
@@ -93,29 +77,7 @@ export const SECURITY_CLASS_TERMS: readonly SecurityTerm[] = [
   {
     label: "token",
     stem: String.raw`token\w*`,
-    requires: [
-      "api",
-      "access",
-      "auth",
-      "bearer",
-      "refresh",
-      "jwt",
-      "session",
-      "csrf",
-      "secret",
-      "oauth",
-      "lifetime",
-      "expiry",
-      "expiration",
-      "expire",
-      "expires",
-      "expired",
-      "ttl",
-      "revoke",
-      "revoked",
-      "rotate",
-      "issued",
-    ],
+    excludes: ["tokeniz\\w*", "tokens?[ _-](?:count|budget|limit|usage)", "context[ _-]window"],
   },
   { label: "API key", stem: String.raw`api[ _-]?keys?\w*` },
   {
@@ -149,60 +111,32 @@ export const SECURITY_CLASS_TERMS: readonly SecurityTerm[] = [
   {
     label: "input validation",
     stem: String.raw`(?:un|pre|re|non)?validat\w*`,
-    requires: ["input", "request", "payload", "schema", "untrusted", "user", "external"],
+    excludes: ["config[ _-]validat\\w*", "validate[ _-]step", "schema[ _-]version"],
   },
   {
     label: "injection",
     stem: String.raw`inject\w*`,
-    requires: [
-      "sql",
-      "nosql",
-      "command",
-      "ldap",
-      "xpath",
-      "os",
-      "shell",
-      "template",
-      "code",
-      "prompt",
-      "script",
-      "header",
-    ],
+    excludes: ["dependency", "constructor", "di", "property", "setter"],
   },
   {
     label: "sandbox",
     stem: String.raw`sandbox\w*`,
-    requires: [
-      "escape",
-      "isolation",
-      "untrusted",
-      "container",
-      "jail",
-      "breakout",
-      "enabled",
-      "enable",
-      "disabled",
-      "disable",
-      "child",
-    ],
+    excludes: ["feature[ _-]flag", "test[ _-]sandbox", "sandbox[ _-]environment[ _-]for[ _-]tests"],
   },
   { label: "privilege", stem: String.raw`privilege\w*` },
   { label: "access control", stem: String.raw`access[ _-]control` },
   {
     label: "deletion",
     stem: String.raw`delet\w*`,
-    requires: [
-      "data",
-      "user",
-      "account",
-      "hard",
-      "records",
-      "rows",
-      "production",
-      "prod",
-      "soft",
-      "permanent",
-      "purge",
+    excludes: [
+      "caches?",
+      "cached",
+      "temp",
+      "temporary",
+      "scratch",
+      "worktrees?",
+      "branch(?:es)?",
+      "stale",
     ],
   },
   { label: "data loss", stem: String.raw`data[ _-]loss` },
@@ -220,6 +154,24 @@ export const SECURITY_CLASS_TERMS: readonly SecurityTerm[] = [
     stem: String.raw`allow[ _-]?list`,
     requires: ["ip", "origin", "origins", "host", "domain", "redirect", "url", "egress"],
   },
+  { label: "MFA", stem: String.raw`mfa` },
+  { label: "2FA", stem: String.raw`2fa` },
+  { label: "OTP", stem: String.raw`otp` },
+  { label: "passcode", stem: String.raw`passcodes?` },
+  { label: "SSO", stem: String.raw`sso` },
+  { label: "SAML", stem: String.raw`saml` },
+  { label: "OIDC", stem: String.raw`oidc` },
+  { label: "path traversal", stem: String.raw`(?:path[ _-]?)?traversal\w*` },
+  { label: "deserialization", stem: String.raw`deserializ\w*` },
+  {
+    label: "eval",
+    stem: String.raw`eval`,
+    requires: ["untrusted", "user", "input", "code", "string"],
+  },
+  { label: "sudo", stem: String.raw`sudo` },
+  { label: "setuid", stem: String.raw`setuid` },
+  { label: "PII", stem: String.raw`pii` },
+  { label: "privacy", stem: String.raw`privacy` },
 ];
 
 /** Distinct security-class labels in declaration order: the list explainPark names. */
@@ -231,19 +183,27 @@ interface CompiledTerm {
   readonly term: SecurityTerm;
   readonly stem: RegExp;
   readonly coWords: RegExp | undefined;
+  readonly excludeWords: RegExp | undefined;
+}
+
+/** A whole-word alternation over `words`, as regex bodies. */
+function wordsRe(words: readonly string[]): RegExp {
+  return new RegExp(`(?<![a-z0-9])(?:${words.join("|")})(?![a-z0-9])`, "i");
 }
 
 const COMPILED_TERMS: readonly CompiledTerm[] = SECURITY_CLASS_TERMS.map((term) => ({
   term,
   stem: new RegExp(`(?<![a-z0-9])(?:${term.stem})(?![a-z0-9])`, "i"),
-  coWords: term.requires
-    ? new RegExp(`(?<![a-z0-9])(?:${term.requires.join("|")})(?![a-z0-9])`, "i")
-    : undefined,
+  coWords: term.requires ? wordsRe(term.requires) : undefined,
+  excludeWords: term.excludes ? wordsRe(term.excludes) : undefined,
 }));
 
 /** The first security term the text matches, or undefined when the text is outside the class. */
 export function matchSecurityTerm(text: string): SecurityTerm | undefined {
   return COMPILED_TERMS.find(
-    (c) => c.stem.test(text) && (c.coWords === undefined || c.coWords.test(text)),
+    (c) =>
+      c.stem.test(text) &&
+      (c.coWords === undefined || c.coWords.test(text)) &&
+      (c.excludeWords === undefined || !c.excludeWords.test(text)),
   )?.term;
 }

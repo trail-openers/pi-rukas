@@ -125,7 +125,7 @@ const HEADING = SECURITY_OPEN_POINTS_HEADING;
   );
   // spec() never sets the field: it is the artifact shape written before the field existed.
   assert(
-    parseNormalisedSpecArtifact(JSON.stringify(spec()))?.securityOpenPoints?.length === 0,
+    parseNormalisedSpecArtifact(JSON.stringify(spec()))?.securityOpenPoints === undefined,
     "artifact: a legacy artifact without the field reads as no security open points",
   );
   assert(

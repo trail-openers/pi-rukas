@@ -116,6 +116,31 @@ const parkingCanaries: Array<[string, string]> = [
   ["cookie (secure)", "Whether the cookie is marked secure \u2014 proposal: yes"],
   ["allowlist", "Which origins go on the allowlist \u2014 proposal: the console"],
   ["allowlist (host)", "Which host allow list the proxy uses \u2014 proposal: one host"],
+  // Bare stems that now park without a co-word (#1171): an excludes list, not a requires list, decides.
+  ["injection (bare)", "Whether injection is blocked \u2014 proposal: yes"],
+  ["sandbox (bare)", "Whether the sandbox mode is the default \u2014 proposal: on"],
+  ["session (bare)", "Whether sessions are shared across tenants \u2014 proposal: no"],
+  ["role (bare, plural)", "Which roles may view the report \u2014 proposal: admins"],
+  ["role (review, moved from benign)", "which role reviews the PR \u2014 proposal: maintainer"],
+  ["validation (bare)", "Whether uploaded files are validated for malware \u2014 proposal: yes"],
+  ["deletion (bare)", "Whether the audit log is deleted on rollback \u2014 proposal: no"],
+  // Terms added in #1171: multi-factor and single sign-on, traversal, deserialization, eval,
+  // privilege escalation, personal data.
+  ["MFA", "Whether MFA is required for admins \u2014 proposal: yes"],
+  ["2FA", "Whether 2FA is enforced for the console \u2014 proposal: yes"],
+  ["OTP", "Whether the OTP expires after five minutes \u2014 proposal: yes"],
+  ["passcode", "Which passcode length the kiosk uses \u2014 proposal: six digits"],
+  ["SSO", "Whether SSO is enabled for tenants \u2014 proposal: yes"],
+  ["SAML", "Which SAML attribute carries the email \u2014 proposal: email"],
+  ["OIDC", "Which OIDC issuer to trust \u2014 proposal: the corporate IdP"],
+  ["path traversal", "Whether path traversal is rejected on upload \u2014 proposal: yes"],
+  ["traversal (bare)", "Whether traversal of the upload directory is blocked \u2014 proposal: yes"],
+  ["deserialization", "Whether deserialization of uploads is allowed \u2014 proposal: no"],
+  ["eval (co-word)", "Whether eval of user input is blocked \u2014 proposal: yes"],
+  ["sudo", "Whether the worker may use sudo \u2014 proposal: no"],
+  ["setuid", "Whether the helper binary is setuid \u2014 proposal: no"],
+  ["PII", "Whether PII is written to the logs \u2014 proposal: no"],
+  ["privacy", "Which privacy policy text applies \u2014 proposal: v2"],
   // Identifiers: `_` bounds a stem, so these park (#1171 boundary).
   ["identifier db_password", "Where db_password is read from \u2014 proposal: env"],
   ["identifier client_secret", "Whether client_secret rotates \u2014 proposal: monthly"],
@@ -146,7 +171,8 @@ for (const [label, point] of parkingCanaries) {
 // words are checked here too: `auth` is a whole identifier segment, not a prefix.
 const benignCanaries: Array<[string, string]> = [
   ["token (tokenizer)", "tokenizer output format \u2014 proposal: JSON"],
-  ["role (review)", "which role reviews the PR \u2014 proposal: maintainer"],
+  ["role (pipeline)", "the reviewer role in the pipeline stays as is \u2014 proposal: keep it"],
+  ["eval (harness)", "eval harness runs the tests \u2014 proposal: keep it"],
   [
     "injection (dependency)",
     "constructor/dependency injection \u2014 proposal: pass the client in",
@@ -195,6 +221,15 @@ for (const term of SECURITY_CLASS_TERMS.filter((t) => t.requires)) {
     ([, point]) => stemRe(term.stem).test(point) && matchSecurityTerm(point) === undefined,
   );
   assert(covered, `every co-word term has a benign canary: ${term.label} (${term.stem})`);
+}
+
+// Every term with excludes has a benign canary: its stem appears in an ordinary phrase the
+// excludes list names, and that phrase is the only security-looking part of the bullet.
+for (const term of SECURITY_CLASS_TERMS.filter((t) => t.excludes)) {
+  const covered = benignCanaries.some(
+    ([, point]) => stemRe(term.stem).test(point) && matchSecurityTerm(point) === undefined,
+  );
+  assert(covered, `every excludes term has a benign canary: ${term.label} (${term.stem})`);
 }
 
 // A term with co-words does not match on the stem alone.

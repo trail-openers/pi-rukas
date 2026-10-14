@@ -213,8 +213,9 @@ export function readOpenPoints(issueBody: string): OpenPointReading {
     // A list item that mentions CRITICAL, or a line leading with it, is a malformed
     // point. Other prose (e.g. the gap gate's own intro line) is not.
     // The item match is case-insensitive, so lowercase and titlecase tags land here.
+    // `non-critical` is ordinary prose, not a severity tag, so it is not malformed.
     const malformed =
-      item !== undefined ? /\bcritical\b/i.test(line) : /^\W*critical\b/i.test(line);
+      item !== undefined ? /(?<!non-)\bcritical\b/i.test(line) : /^\W*critical\b/i.test(line);
     if (malformed) reading.unparsed.push(line);
   }
   return reading;

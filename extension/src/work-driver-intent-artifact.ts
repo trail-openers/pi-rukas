@@ -263,11 +263,12 @@ function validateSpec(raw: unknown): NormalisedSpec | undefined {
     outOfScope: v.outOfScope as string[],
     assumptions: v.assumptions as SpecAssumption[],
     openQuestions: v.openQuestions as string[],
-    securityOpenPoints: (v.securityOpenPoints as string[] | undefined) ?? [],
     evidence: v.evidence as SpecEvidence[],
     verdict: v.verdict,
     rationale: typeof v.rationale === "string" ? v.rationale : "",
   };
+  // Absent stays absent: the renderers read undefined as none (one contract with NormalisedSpec).
+  if (v.securityOpenPoints !== undefined) out.securityOpenPoints = v.securityOpenPoints as string[];
   if (v.parkReason !== undefined) {
     const pr = v.parkReason;
     if (typeof pr !== "string" || !PARK_REASONS.includes(pr as ParkReason)) return undefined;
