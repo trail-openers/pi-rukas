@@ -123,6 +123,13 @@ export type ConsolidatedVerifyResult =
        * log path / restore claim back out of `detail` prose.
        */
       rawFailure?: string;
+      /**
+       * True when the run that ended the run was KILLED at `timeoutMs`
+       * rather than exiting non-zero. Its stream stops wherever the kill
+       * landed, so it carries no verdict about the code: the caller reports
+       * the bound, not an assertion extracted from a truncated stream.
+       */
+      timedOut?: boolean;
     }
   // #725 — the caller distinguishes a genuine cherry-pick / patch-apply
   // conflict from a dirty-repoRoot preflight refusal via `kind`, not by
@@ -282,11 +289,13 @@ export async function runConsolidatedVerifyUnlocked(
     let run2LogPath: string | undefined;
     // Run the verify command against the combined tree.
     let verifyFailure: string | undefined;
+    let timedOut = false;
     try {
       await execFn(verifyCmd, { cwd: repoRoot, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 });
     } catch (err) {
-      const e = err as Error & { stderr?: string; stdout?: string };
+      const e = err as Error & { stderr?: string; stdout?: string; killed?: boolean };
       verifyFailure = combinedExecFailureStream(e);
+      timedOut = e.killed === true;
       // #841 — persist the RAW run1 stream before the bounded tail is
       // computed: the run1 log is the operator's only record of what the
       // first attempt printed, including the stdout that the pre-#841 `||`
@@ -351,6 +360,7 @@ export async function runConsolidatedVerifyUnlocked(
           verifyFailure = secondRun.raw;
           rawFailure = secondRun.raw;
           run2LogPath = secondRun.logPath;
+          timedOut = secondRun.timedOut;
         }
       }
     }
@@ -402,6 +412,7 @@ export async function runConsolidatedVerifyUnlocked(
         retryDecision,
         logPath: finalLogPath,
         rawFailure,
+        ...(timedOut ? { timedOut } : {}),
       };
     }
     if (!restore.restored) {
