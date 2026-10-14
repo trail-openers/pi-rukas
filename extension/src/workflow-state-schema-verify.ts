@@ -48,7 +48,7 @@ export type FenceViolation =
 /**
  * Which writer raised a `verify-failed:<step>` park. The explanation routes on
  * this field, not on the text of the failure strings. Written by each writer;
- * absent on state files from before it existed (those fall back to the text
- * markers in work-driver-explain-verify.ts).
+ * absent on state files from before it existed, which render as the outcome
+ * gate did.
  */
 export type VerifyEvidenceOrigin = "outcome-gate" | "fix-pass" | "pr-not-open";

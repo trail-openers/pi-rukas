@@ -8,12 +8,14 @@
  * passed, was reported that way — and so was a park with no evidence at all,
  * where nothing on the state file shows a check ran.
  *
- * Covers: the explanation routes on the writer's marker, says so when the
- * reason was not recorded, and keeps the real gate's text byte-identical.
+ * Covers: the explanation routes on the writer's origin (never on the text),
+ * says so when the reason was not recorded, and keeps the real gate's text
+ * byte-identical.
  */
 import { prGoneRefusal } from "../src/work-driver-commit-reentry.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import { FIX_PASS_EVIDENCE_PREFIX, PR_NOT_OPEN_MARKER } from "../src/workflow-state-cap.ts";
+import type { VerifyEvidenceOrigin } from "../src/workflow-state-schema-verify.ts";
 import { type WorkState, appendEvent, initialState } from "../src/workflow-state.ts";
 
 let exit = 0;
@@ -35,14 +37,19 @@ const claimsTheGate = (text: string) => GATE_CLAIMS.some((re) => re.test(text));
 function withEvidence(
   step: "develop" | "commit-pr",
   failures: string[],
-  origin?: "outcome-gate" | "fix-pass" | "pr-not-open",
+  origin?: VerifyEvidenceOrigin | "bogus",
 ): WorkState {
   const s = initialState(9001, 1000);
   return {
     ...s,
     pipelineState: {
       ...s.pipelineState,
-      verifyEvidence: { step, failures, at: 2000, ...(origin ? { origin } : {}) },
+      verifyEvidence: {
+        step,
+        failures,
+        at: 2000,
+        ...(origin ? { origin: origin as VerifyEvidenceOrigin } : {}),
+      },
     },
   };
 }
@@ -61,7 +68,7 @@ function withEvidence(
 // The fix pass's own park names the fix pass, not the gate.
 {
   const reason = `${FIX_PASS_EVIDENCE_PREFIX}the fix pass removed 3 origin/main comment line(s) in default and wrote no comment in their place (a.sh: # keep)`;
-  const text = explainCap("verify-failed:develop", withEvidence("develop", [reason]));
+  const text = explainCap("verify-failed:develop", withEvidence("develop", [reason], "fix-pass"));
   assert(text.includes(reason), "fix-pass park: the recorded reason is rendered");
   assert(
     /adversarial fix pass did not clear/.test(text),
@@ -157,6 +164,57 @@ function withEvidence(
   );
   const empty = explainCap("verify-failed:develop", withEvidence("develop", []));
   assert(!claimsTheGate(empty), "empty failure list: claims no executed check");
+
+  // Origin fix-pass / pr-not-open with nothing recorded: the unrecorded wording.
+  for (const [cap, origin] of [
+    ["verify-failed:develop", "fix-pass"],
+    ["verify-failed:commit-pr", "pr-not-open"],
+  ] as const) {
+    const t = explainCap(
+      cap,
+      withEvidence(cap.endsWith("develop") ? "develop" : "commit-pr", [], origin),
+    );
+    assert(
+      /does not record the reason/.test(t) && !claimsTheGate(t),
+      `origin ${origin} with no failures: says the reason was not recorded`,
+    );
+  }
+
+  // The retry suffix is appended on the fix-pass route too.
+  const fixBase = withEvidence("develop", [`${FIX_PASS_EVIDENCE_PREFIX}noted`], "fix-pass");
+  const fixRetried: WorkState = {
+    ...fixBase,
+    pipelineState: {
+      ...fixBase.pipelineState,
+      verifyEvidence: {
+        ...fixBase.pipelineState.verifyEvidence,
+        step: "develop",
+        failures: [`${FIX_PASS_EVIDENCE_PREFIX}noted`],
+        at: 2000,
+        origin: "fix-pass",
+        retries: 1,
+        recovered: true,
+      },
+    },
+  };
+  assert(
+    /RECOVERED/.test(explainCap("verify-failed:develop", fixRetried)),
+    "origin fix-pass: the retry note is rendered",
+  );
+
+  // An origin this build does not know is treated as absent.
+  const unknown = explainCap(
+    "verify-failed:develop",
+    withEvidence("develop", ["verify command exited 1"], "bogus"),
+  );
+  assert(claimsTheGate(unknown), "unknown origin: renders the outcome-gate text");
+
+  // Text markers alone never route: a fix-pass-prefixed failure with no origin is a gate failure.
+  const markerOnly = explainCap(
+    "verify-failed:develop",
+    withEvidence("develop", [`${FIX_PASS_EVIDENCE_PREFIX}looks like a park`]),
+  );
+  assert(claimsTheGate(markerOnly), "no origin + marker text: routes to the gate, not the marker");
 
   // Empty failures, but the cap carries the raw-output log paths: the early
   // return must not drop them (#841 renders the log path for develop caps).

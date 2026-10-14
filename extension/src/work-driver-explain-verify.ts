@@ -4,19 +4,17 @@
  * cap. A verify-failed cap is reused by parks the outcome gate never raised
  * (the adversarial fix pass, the commit-pr re-entry refusal). Each writer
  * records where its park came from on `verifyEvidence.origin`, and the
- * explanation routes on that field through ONE decision (`routeVerifyFailed`).
- * State files written before `origin` existed fall back to the text markers,
- * honoured only when every failure carries the marker.
+ * explanation routes on that field alone (`routeVerifyFailed`). The failure
+ * strings are text for the operator and never drive routing. A state file
+ * with no origin, or an origin this build does not know, renders as the
+ * outcome gate did before origin existed.
  */
 
+import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
 import { HOST_EXHAUSTION_LABEL, isHostExhaustionFailure } from "./work-driver-exec-error.ts";
 import { BASELINE_RED_MARKER } from "./work-driver-verify-baseline.ts";
-import {
-  type CapHitEvent,
-  FIX_PASS_EVIDENCE_PREFIX,
-  PR_NOT_OPEN_MARKER,
-  lastCapHit,
-} from "./workflow-state-cap.ts";
+import { type CapHitEvent, lastCapHit } from "./workflow-state-cap.ts";
+import type { VerifyEvidenceOrigin } from "./workflow-state-schema-verify.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 type Cap = Extract<WorkEvent, { kind: "cap-hit" }>["cap"];
@@ -24,52 +22,51 @@ type Cap = Extract<WorkEvent, { kind: "cap-hit" }>["cap"];
 /** The one routing decision for a `verify-failed:<step>` cap. */
 export type VerifyFailedRoute = "fix-pass" | "pr-not-open" | "gate" | "unrecorded";
 
-/** The fix pass's own reason on the cap-hit, when the cap carries one. */
-function fixPassCapEvidence(cap: Cap, state: WorkState): string | undefined {
-  const evidence = lastCapHit(state, cap)?.evidence;
-  return evidence?.startsWith(FIX_PASS_EVIDENCE_PREFIX) ? evidence : undefined;
+/** The recorded origin, or `undefined` when absent or unknown to this build (treated as absent). */
+function originOf(state: WorkState): VerifyEvidenceOrigin | undefined {
+  const raw: string | undefined = state.pipelineState.verifyEvidence?.origin;
+  return raw === "outcome-gate" || raw === "fix-pass" || raw === "pr-not-open" ? raw : undefined;
 }
 
 /**
- * Decides, once, which explanation a verify-failed cap gets. An explicit
- * `origin` wins outright. Without one (a legacy state file) a marker is
- * honoured only when EVERY failure carries it, so a real gate failure beside
- * a marker stays a gate failure.
+ * The fix pass's own reason on the cap-hit. Read only on the fix-pass origin.
+ * Not used on the gate route: the cap's evidence is a bounded join of
+ * verifyEvidence.failures, and the per-failure bullets (with fence attribution)
+ * are the richer rendering.
+ */
+function fixPassCapEvidence(cap: Cap, state: WorkState): string | undefined {
+  return lastCapHit(state, cap)?.evidence;
+}
+
+function assertNeverOrigin(origin: never): never {
+  throw new Error(`unhandled verify-evidence origin: ${String(origin)}`);
+}
+
+/**
+ * Decides, once, which explanation a verify-failed cap gets. Routes on
+ * `origin` alone. An empty failure list with no reason recorded anywhere on
+ * the cap is `unrecorded` on every route.
  */
 export function routeVerifyFailed(cap: Cap, state: WorkState): VerifyFailedRoute {
-  const evidence = state.pipelineState.verifyEvidence;
-  const failures = evidence?.failures ?? [];
-  if (evidence?.origin === "fix-pass") return "fix-pass";
-  if (evidence?.origin === "pr-not-open") return "pr-not-open";
-  if (evidence?.origin === "outcome-gate") return failures.length === 0 ? "unrecorded" : "gate";
-  if (
-    fixPassCapEvidence(cap, state) !== undefined &&
-    failures.every((f) => f.startsWith(FIX_PASS_EVIDENCE_PREFIX))
-  ) {
-    return "fix-pass";
+  const failures = state.pipelineState.verifyEvidence?.failures ?? [];
+  const origin = originOf(state);
+  switch (origin) {
+    case "fix-pass":
+      return failures.length > 0 || fixPassCapEvidence(cap, state) !== undefined
+        ? "fix-pass"
+        : "unrecorded";
+    case "pr-not-open":
+      return failures.length > 0 ? "pr-not-open" : "unrecorded";
+    case "outcome-gate":
+    case undefined:
+      return failures.length > 0 ? "gate" : "unrecorded";
+    default:
+      return assertNeverOrigin(origin);
   }
-  if (failures.length > 0 && failures.every((f) => f.startsWith(PR_NOT_OPEN_MARKER))) {
-    return "pr-not-open";
-  }
-  if (failures.length > 0 && failures.every((f) => f.startsWith(FIX_PASS_EVIDENCE_PREFIX))) {
-    return "fix-pass";
-  }
-  return failures.length === 0 ? "unrecorded" : "gate";
 }
 
 function prNotOpenText(failures: readonly string[]): string {
   return `the cycle's pull request was no longer open when commit-pr ran again, so the driver refused before rebuilding or pushing anything:\n${failures.map((f) => `  - ${f}`).join("\n")}\nThe driver read the PR's state from the forge. Nothing was committed, pushed or claimed done on this round, so no "done" claim was rejected and there is no worktree defect to look for. Whether the new work belongs in a new pull request is a human decision`;
-}
-
-/**
- * The commit-pr re-entry refusal, or `undefined` for a real outcome-gate
- * failure. Nothing was committed, pushed or claimed on that round, so the
- * gate's "done claim rejected" sentence would describe something that did not
- * happen.
- */
-export function explainPrNotOpen(cap: Cap, state: WorkState): string | undefined {
-  if (routeVerifyFailed(cap, state) !== "pr-not-open") return undefined;
-  return prNotOpenText(state.pipelineState.verifyEvidence?.failures ?? []);
 }
 
 /**
@@ -78,8 +75,22 @@ export function explainPrNotOpen(cap: Cap, state: WorkState): string | undefined
  * The outcome gate rejected nothing, and the pass does not consult
  * PI_ENSEMBLE_VERIFY.
  */
-function explainFixPassPark(findings: string): string {
-  return `the adversarial fix pass did not clear, so the cycle parked before commit-pr — the fix pass raised this park itself, and the reason it recorded is the whole of it:${findings}\nThis is not the outcome-verification gate refusing the develop step's first-round work, and the entry above is not output of the project's verify command. The change, including whatever the pass edited, is still in the cycle's worktree(s); the review findings the pass was answering are in the handoff's plumb report. Act on the reason above, then re-run the cycle`;
+function explainFixPassPark(findings: string, suffix: string): string {
+  return `the adversarial fix pass did not clear, so the cycle parked before commit-pr — the fix pass raised this park itself, and the reason it recorded is the whole of it:${findings}${suffix}\nThis is not the outcome-verification gate refusing the develop step's first-round work, and the entry above is not output of the project's verify command. The change, including whatever the pass edited, is still in the cycle's worktree(s); the review findings the pass was answering are in the handoff's plumb report. Act on the reason above, then re-run the cycle`;
+}
+
+/**
+ * The commit-pr outcome-gate sentence: the text the consolidation explainer
+ * carried before this module owned every verify-failed cap. The per-check
+ * findings live in the handoff body, so they are not repeated here.
+ */
+function commitPrGateText(state: WorkState): string {
+  const rootBlurb = commitPrRootBlurb(
+    state.pipelineState.commitPrRoot,
+    state.pipelineState.commitPrRootError,
+    "the recovery commands below apply as-is",
+  );
+  return `the driver's outcome-verification gate rejected the commit-pr step's "done" claim — the committed + pushed + PR-opened claim is not backed by executed evidence. The per-check findings are in the handoff body; inspect the recorded repoRoot state there and re-run.${rootBlurb}`;
 }
 
 /**
@@ -117,17 +128,17 @@ export function explainVerifyFailed(cap: Cap, state: WorkState): string {
   const evidence = state.pipelineState.verifyEvidence;
   const failures = evidence?.failures ?? [];
   const route = routeVerifyFailed(cap, state);
+  const capHit = lastCapHit(state, cap);
+  // The verify-run suffixes describe the command, not the writer, so every route gets them.
+  const suffix = `${retryLine(evidence)}${rawLogLine(step, capHit)}`;
+  const findings = `\n${failures.map((f) => `  - ${f}`).join("\n")}`;
   if (route === "fix-pass") {
     // #1137 — a fix-pass park writes its detail on the cap-hit's own
     // `evidence`; prefer it, since `failures` may be empty on that path.
     const capEvidence = fixPassCapEvidence(cap, state);
-    return explainFixPassPark(
-      capEvidence ? `\n${capEvidence}` : `\n${failures.map((f) => `  - ${f}`).join("\n")}`,
-    );
+    return explainFixPassPark(capEvidence ? `\n${capEvidence}` : findings, suffix);
   }
-  if (route === "pr-not-open") return prNotOpenText(failures);
-  const capHit = lastCapHit(state, cap);
-  const suffix = `${retryLine(evidence)}${rawLogLine(step, capHit)}`;
+  if (route === "pr-not-open") return `${prNotOpenText(failures)}${suffix}`;
   // No recorded failure means this text cannot say which check refused the
   // step, or that the driver ran one: the gate's sentence below would be a
   // claim about checks nothing on the state file shows were executed.
@@ -137,7 +148,7 @@ export function explainVerifyFailed(cap: Cap, state: WorkState): string {
       : "";
     return `the ${step} step parked as verify-failed, but the state file does not record the reason — no check result was saved with the cap, so this message cannot say which check refused the step or whether the project's verify command ran at all.${recorded}${suffix} Read the plumb reports in the handoff body and the event log for the reason before changing anything`;
   }
-  const findings = `\n${failures.map((f) => `  - ${f}`).join("\n")}`;
+  if (step === "commit-pr") return commitPrGateText(state);
   // Neither a check the host could not fork nor a gate already red at the
   // base judged the change: "inspect the worktree(s)" would be wrong advice.
   if (failures.some(isHostExhaustionFailure)) {

@@ -14,7 +14,7 @@ import { explainLens } from "./work-driver-explain-lens.ts";
 import { explainOther } from "./work-driver-explain-other.ts";
 import { explainPrSteps } from "./work-driver-explain-pr-steps.ts";
 import { explainReview } from "./work-driver-explain-review.ts";
-import { explainPrNotOpen, explainVerifyFailed } from "./work-driver-explain-verify.ts";
+import { explainVerifyFailed } from "./work-driver-explain-verify.ts";
 import { cherryPickRecoveryFor } from "./work-driver-handoff-cherry-pick.ts";
 import { type ParkReason, explainPark } from "./work-driver-intent.ts";
 import { explainMergeHold } from "./work-driver-merge-authority.ts";
@@ -212,8 +212,6 @@ export function explainCap(
       );
       return `commit-pr's post-dispatch consolidation gate detected that the committed diff is missing files from these workstreams. ${which} Pre-PR14 this would have merged silently (v0.12.13 /work 577 closed an issue with 1 of 3 workstreams' changes shipped). The driver halted before merge; take over the integration manually or follow the recovery below.${rootBlurb}`;
     }
-    case "verify-failed:commit-pr":
-      return explainPrNotOpen(cap, state) ?? explainConsolidation(cap, state);
     case "integration-verify-failed":
       return explainConsolidation(cap, state);
     case "consolidated-verify-consolidation-created": {
