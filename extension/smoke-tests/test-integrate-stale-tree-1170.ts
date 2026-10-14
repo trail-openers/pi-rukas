@@ -100,6 +100,29 @@ try {
     assert(list.includes(wt), "(b) the integrate worktree was recreated at its path");
   }
 
+  // (b2) clean stale integrate tree + ignored build output (target/) → still
+  // replaced: ignored regenerable output must not wedge re-entry.
+  {
+    const { repo, baseSha, branch, wt, stateFile } = await fixture("ignored");
+    writeFileSync(path.join(repo, ".git", "info", "exclude"), "target/\n", { flag: "a" });
+    mkdirSync(path.join(wt, "target"), { recursive: true });
+    writeFileSync(path.join(wt, "target", "out.bin"), "built\n");
+    let err: unknown;
+    try {
+      await ensureIntegrateWorktree(
+        realExec,
+        { repoRoot: repo, issue: 17, branchName: branch, baseSha },
+        stateFile,
+      );
+    } catch (e) {
+      err = e;
+    }
+    assert(
+      err === undefined,
+      `(b2) a stale integrate tree holding only ignored build output is replaced, not refused (${err ? (err as Error).message.split("\n")[0] : "ok"})`,
+    );
+  }
+
   // (c) unsafe branchName → refused before any git command runs
   {
     const { repo, baseSha, stateFile } = await fixture("unsafe-branch");
