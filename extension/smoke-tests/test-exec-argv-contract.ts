@@ -11,10 +11,10 @@
  * cycle, and so did the merged step's checkout restore.
  *
  * Three checks:
- *   1. every exported production executor really runs the argv form;
- *   2. no module hands a bare `promisify(exec)` on as a value — it may only
- *      be CALLED, or serve a seam listed below whose type has no argv form.
- *      The scan is also run against a fixture, so it is seen to fail;
+ *   1. the shared executor (exec.ts) and the other argv-aware executors really
+ *      run the argv form;
+ *   2. no bare `promisify(exec)` outside the shared executor and the one
+ *      documented shell-only seam (work-driver-merged-mechanized.ts);
  *   3. the incident itself: the develop gate's consolidated verify, on its
  *      PRODUCTION default executor, preserves the state it discards.
  */
@@ -23,8 +23,8 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { execp as sharedExecp } from "../src/exec.ts";
 import { execTree } from "../src/exec-tree.ts";
-import { execp as lensExecp } from "../src/lens-exec.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { execp as verifyExecp, verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
@@ -41,44 +41,16 @@ function assert(cond: boolean, msg: string) {
 
 const SRC = path.join(import.meta.dir, "..", "src");
 
-/**
- * Modules whose bare `promisify(exec)` is handed on as a value, with why that
- * cannot reach an argv-form call: each serves a seam type that declares no
- * `argv`, so a consumer cannot pass one without a type error — bar the last
- * entry, which says why it is listed anyway.
- */
-const SHELL_ONLY_SEAMS: Record<string, string> = {
-  "forge-detect.ts": "its own seam is `typeof execp`: shell strings only",
-  "forge.ts": "ForgeExecFn has no argv form",
-  "work-driver-explore.ts": "IssueBodyExec has no argv form",
-  "work-driver-adversarial-fix-git.ts":
-    "FixExec serves the fix pass's shell-string reads; its develop checks get the argv-aware executor",
-  // The one entry typed as the driver's argv-declaring executor. It reaches
-  // only forge reads and the merge command, all shell strings, and
-  // test-merge-guard.ts pins this module's direct `exec` import as its
-  // in-process-merge canary. An argv-form call added on this path needs the
-  // argv-aware executor first.
-  "work-driver-merged-mechanized.ts": "forge reads and the merge command only: shell strings",
-};
+/** Files allowed one bare `promisify(exec)`: the shared executor, and the shell-only seam. */
+const BARE_EXEC_OWNERS = new Set(["exec.ts", "work-driver-merged-mechanized.ts"]);
 
-/** Every place `source` hands a bare `promisify(exec)` on instead of calling it. */
-function shellOnlyEscapes(source: string): string[] {
-  const escapes: string[] = [];
-  const lines = source.split("\n");
-  const defRe = /\b(?:const|let)\s+(\w+)(?::\s*[\w.]+)?\s*=\s*promisify\(\s*exec\w*\s*\)/g;
-  for (const def of source.matchAll(defRe)) {
-    const use = new RegExp(`(?<!typeof\\s)\\b${def[1]}\\b(?!\\s*\\()`);
-    lines.forEach((line, i) => {
-      // String contents are prose, not uses ("refusing shell interpolation").
-      const code = line.trim().replace(/(["'`])(?:\\.|(?!\1).)*\1/g, '""');
-      if (code.startsWith("//") || code.startsWith("*") || code.startsWith("/*")) return;
-      // An import binds a name; it hands nothing on.
-      if (code.startsWith("import ")) return;
-      if (/=\s*promisify\(/.test(code)) return;
-      if (use.test(code)) escapes.push(`${i + 1}: ${code}`);
-    });
-  }
-  return escapes;
+/** A bare `promisify(exec)` (or its `execCb` alias) in code — comments and prose excluded. */
+const BARE_EXEC = /\bpromisify\(\s*exec(?:Cb)?\s*\)/;
+
+function bareExecLines(source: string): number {
+  return source
+    .split("\n")
+    .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line) && BARE_EXEC.test(line)).length;
 }
 
 function sourceFiles(dir: string): string[] {
@@ -94,8 +66,8 @@ function sourceFiles(dir: string): string[] {
 async function main() {
   // ------------------------------------------------- 1. executors honour argv
   const executors = {
+    "execp (exec.ts)": sharedExecp,
     "execTree (exec-tree.ts)": execTree,
-    "execp (lens-exec.ts)": lensExecp,
     "execp (work-driver-verify.ts)": verifyExecp,
   };
   for (const [name, run] of Object.entries(executors)) {
@@ -125,40 +97,18 @@ async function main() {
     `execTree: an argv-form failure names the whole command and carries stderr (got: ${failure?.message.slice(0, 80)})`,
   );
 
-  // ------------------------------------ 2. no shell-only executor is handed on
-  const offenders: string[] = [];
-  const seen = new Set<string>();
-  for (const file of sourceFiles(SRC)) {
-    const rel = path.relative(SRC, file);
-    const escapes = shellOnlyEscapes(readFileSync(file, "utf8"));
-    if (escapes.length === 0) continue;
-    seen.add(rel);
-    if (!(rel in SHELL_ONLY_SEAMS)) offenders.push(...escapes.map((e) => `${rel}:${e}`));
-  }
+  // ------------------------- 2. one shell-only seam: no other bare promisify(exec)
+  const offenders = sourceFiles(SRC)
+    .filter((f) => !BARE_EXEC_OWNERS.has(path.basename(f)))
+    .filter((f) => bareExecLines(readFileSync(f, "utf8")) > 0)
+    .map((f) => path.relative(SRC, f));
   assert(
     offenders.length === 0,
-    `no module hands a bare promisify(exec) on as a value — use execp from lens-exec.ts (offenders: ${offenders.join(" | ") || "none"})`,
+    `no bare promisify(exec) outside exec.ts and the shell-only seam in work-driver-merged-mechanized.ts (offenders: ${offenders.join(", ") || "none"})`,
   );
-  const dead = Object.keys(SHELL_ONLY_SEAMS).filter((f) => !seen.has(f));
   assert(
-    dead.length === 0,
-    `every listed shell-only seam still exists (stale: ${dead.join(", ") || "none"})`,
-  );
-  // The scan in the failing direction: the shapes the tree had before #1279.
-  const fixtureSource = [
-    "const execp = promisify(exec);",
-    "const defaultExecFn: ExecFn = promisify(exec) as unknown as ExecFn;",
-    "const a = ctx.verifyExecFn ?? execp;",
-    "await helper(execp, repoRoot);",
-    "const { execFn = defaultExecFn } = opts;",
-    "// execp is fine in a comment",
-    "type Seam = typeof execp;",
-    'await execp("git status", { cwd });',
-  ].join("\n");
-  const caught = shellOnlyEscapes(fixtureSource);
-  assert(
-    caught.length === 3 && caught.every((c) => /^[345]:/.test(c)),
-    `the scan catches a fallback, an argument and a default — and nothing else (got: ${caught.join(" | ")})`,
+    bareExecLines("const execp = promisify(exec);\n// promisify(exec) in prose\n* promisify(exec)\nconst f = promisify(execFile);") === 1,
+    "the check counts a code use of promisify(exec) and nothing else (comments, prose and execFile are not counted)",
   );
 
   // ---------------- 3. the incident: consolidated verify on the default executor

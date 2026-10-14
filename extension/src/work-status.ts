@@ -1,9 +1,8 @@
 /** `/work-status` command (PR2 O4) — compact terminal-friendly status snapshot. */
-import { exec } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import {
   MAX_CI_RETRIES,
@@ -23,7 +22,6 @@ import { discoverAllCycles, renderCycleIndex } from "./work-status-index.ts";
 import { renderInterruptedStatus } from "./work-status-interrupted.ts";
 import { isIssueNumberArg, resolveJobId } from "./work-status-jobid.ts";
 import { type WorkState, readState, workStateDir } from "./workflow-state.ts";
-const execp = promisify(exec);
 
 /** Resolve project repo root via `git rev-parse --show-toplevel`. */
 async function resolveRepoRoot(cwd: string): Promise<string> {

@@ -5,11 +5,9 @@
  * "nothing changed". Split from work-driver-adversarial-fix.ts (AGENTS.md §12).
  */
 
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
+import { execp } from "./exec.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 
-const execp = promisify(exec);
 export type FixExec = NonNullable<DriverContext["verifyExecFn"]> | typeof execp;
 /** The shell-string executor, used when the driver supplies no `verifyExecFn`. */
 export const defaultExec: FixExec = execp;

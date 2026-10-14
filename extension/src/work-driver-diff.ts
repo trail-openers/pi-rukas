@@ -8,16 +8,14 @@
  * branch subagent replies.
  */
 
-import { exec } from "node:child_process";
 import { createHash } from "node:crypto";
-import { promisify } from "node:util";
 import { countPrCommits, prRange } from "./git-range.ts";
 import { execp as gitExec } from "./lens-exec.ts";
 import { trace } from "./trace.ts";
 import { resolveMainline } from "./work-driver-git.ts";
 import type { WorkState, WorkStep } from "./workflow-state.ts";
 
-const execp = promisify(exec);
+const execp = gitExec;
 
 /** Validate a git SHA before shell interpolation. */
 const VALID_BASEDIFF_SHA_RE = /^[0-9a-f]{40}$/;

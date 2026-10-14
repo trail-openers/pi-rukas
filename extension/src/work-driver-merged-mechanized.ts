@@ -21,7 +21,19 @@ import type { VerifyExecFn } from "./work-driver-git.ts";
 import { mergeSubjectForState } from "./work-driver-merge-subject.ts";
 import type { WorkState } from "./workflow-state.ts";
 
-const execp = promisify(exec);
+/**
+ * The SHELL-ONLY seam of this module (#1279). `ShellExec` declares no `argv`,
+ * so an argv-form call on the executor a function here holds is a compile
+ * error, not a silently dropped argument. Everything this module runs is a
+ * shell string: forge reads and the merge command. The bare `exec` import is
+ * deliberate — the in-process merge exemption is pinned by test-merge-guard.ts.
+ * An argv-form call added on this path needs the argv-aware `execp` first.
+ */
+type ShellExec = (
+  cmd: string,
+  opts?: { cwd?: string; timeout?: number; maxBuffer?: number },
+) => Promise<{ stdout: string; stderr?: string }>;
+const execp: ShellExec = promisify(exec);
 
 /** Valid merge methods — maps to the forge adapter's `prMerge` method argument. */
 export type MergeMethod = "squash" | "merge" | "rebase";
@@ -305,7 +317,7 @@ export async function mechanizedMerge(
   // also silently disabled `restoreCheckout`, since `mergeSucceeded` is only
   // set on this branch — which is why repoRoot was left sitting on the merged
   // feature branch after a cycle.
-  const execFn = ctx.verifyExecFn ?? execp;
+  const execFn: ShellExec = ctx.verifyExecFn ?? execp;
 
   const prNumber = state.pipelineState.prNumber;
   if (!prNumber) {

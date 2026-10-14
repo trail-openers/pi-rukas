@@ -17,9 +17,10 @@
  * supplied by the caller for every git invocation.
  */
 
-import { exec, execFile } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { type LostComment, classifyHunk, hasWord, parseHunks } from "./comment-retention-hunks.ts";
+import { execp } from "./exec.ts";
 import { countPrCommits, prRange } from "./git-range.ts";
 import { trace } from "./trace.ts";
 import type { ExecFn } from "./worktree.ts";
@@ -30,7 +31,7 @@ import type { ExecFn } from "./worktree.ts";
  * an injected `ExecFn` instead; this one is the production default.
  */
 export function makeExecFn(): ExecFn {
-  const shell = promisify(exec);
+  const shell = execp;
   const file = promisify(execFile);
   return (cmd, opts) => {
     const common = { cwd: opts?.cwd, timeout: opts?.timeout, maxBuffer: opts?.maxBuffer };

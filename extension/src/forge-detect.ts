@@ -34,11 +34,8 @@
  * the GitHub variable convention: `CI=0`/`CI=false` are treated as unset.
  */
 
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
+import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
-
-const execp = promisify(exec);
 
 /**
  * The forge this repo is on. Fail-closed union: `unknown` is a real variant
