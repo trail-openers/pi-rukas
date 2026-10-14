@@ -964,6 +964,8 @@ Without `--restart`, re-invoking `/work N` on a terminal-state file now emits a 
 
 **Why:** a fix pass is told to answer review findings, so it parks when it deletes a comment outright while the code stays. It does not park for a reworded or replaced comment (the same diff hunk adds a comment) or for a comment an earlier develop pass already removed: those are listed for the reviewers under "Comments removed by this change", who judge them. Before this, any comment line the whole workstream diff did not keep verbatim parked the pass, and the cap text read *"(evidence detail missing from state)"*.
 
+The park reuses the `verify-failed:develop` cap but is not a rejection by the outcome-verification gate, so do not set `PI_ENSEMBLE_VERIFY=0` for it; the cap text opens *"the adversarial fix pass did not clear"*.
+
 **Fix:** restore the named lines in the workstream's worktree, or reword them in place, and re-run. `PI_ENSEMBLE_COMMENT_RETENTION=0` disables the check.
 
 ### "repoRoot was NOT restored: the discarded state could not be saved"

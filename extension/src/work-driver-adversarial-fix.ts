@@ -289,13 +289,19 @@ function parkFixPass(
   now: number,
 ): WorkState {
   // The handoff's cap text reads verifyEvidence, not the event: without it the
-  // park reads "(evidence detail missing from state)".
+  // park reads as one whose reason was never recorded. The prefix is what
+  // keeps that text from blaming the outcome gate.
   const reported = withFixPassReport(state, pending, reason, now);
   const evidenced: WorkState = {
     ...reported,
     pipelineState: {
       ...reported.pipelineState,
-      verifyEvidence: { step: "develop", failures: [`adversarial fix pass: ${reason}`], at: now },
+      verifyEvidence: {
+        step: "develop",
+        failures: [`${FIX_PASS_EVIDENCE_PREFIX}${reason}`],
+        at: now,
+        origin: "fix-pass",
+      },
     },
   };
   return appendEvent(evidenced, {

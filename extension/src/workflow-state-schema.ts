@@ -17,7 +17,7 @@ export type { FenceViolation } from "./workflow-state-schema-verify.ts";
 import type { ConsolidationCompleteness } from "./workflow-state-schema-consolidation-completeness.ts";
 import type { ConvergeEvidence } from "./workflow-state-schema-converge.ts";
 import type { PlanQualityReason } from "./workflow-state-schema-plan-quality.ts";
-import type { FenceViolation } from "./workflow-state-schema-verify.ts";
+import type { FenceViolation, VerifyEvidenceOrigin } from "./workflow-state-schema-verify.ts";
 import type { Workstream, WorkstreamBaseShas } from "./workflow-state-schema-workstreams.ts";
 
 // #861 — PlanQualityReason moved to its own fragment (the 500-line cap);
@@ -440,6 +440,8 @@ export interface PipelineState {
     at: number;
     retries?: number;
     recovered?: boolean;
+    /** Which writer raised this park; see `VerifyEvidenceOrigin`. Absent pre-origin. */
+    origin?: VerifyEvidenceOrigin;
     /**
      * #814 — structured develop-scope-fence violations (see
      * `FenceViolation` below). Absent = none recorded.
