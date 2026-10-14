@@ -5,6 +5,7 @@
  * AGENTS.md §12). Importers take these names from this module; plan-gaps.ts
  * does not re-export them.
  */
+import { OPEN_POINTS_HEADING } from "./open-points-contract.ts";
 import { GAP_RESOLUTION_PLACEHOLDER } from "./plan-gap-parse.ts";
 import type { PlanGap } from "./plan-types.ts";
 
@@ -58,7 +59,7 @@ export function openPointsSection(points: PlanGap[]): string {
       return `- [${g.severity}] ${truncateForDisclosure(g.description)} — ${proposal}`;
     })
     .join("\n");
-  return `## Open points (unresolved at the gap-gate cap)\n\nThe gap gate reached its iteration cap with these CRITICAL points still unresolved. The issue is filed so they are visible; the /work intent gate decides whether it is buildable.\n\n${items}\n`;
+  return `## ${OPEN_POINTS_HEADING}\n\nThe gap gate reached its iteration cap with these CRITICAL points still unresolved. The issue is filed so they are visible; the /work intent gate decides whether it is buildable.\n\n${items}\n`;
 }
 
 /**

@@ -129,6 +129,7 @@ export const MARKER_CONTRACTS: readonly MarkerContract[] = [
       "already-implemented",
       "too-large",
       "premise-unsound",
+      "security-open-point",
     ],
     consumer: "work-driver-intent.ts",
     onAbsence:
@@ -179,5 +180,14 @@ export const MARKER_CONTRACTS: readonly MarkerContract[] = [
     consumer: "lens-review-child.ts",
     onAbsence:
       "not blocked — traced; the pre-spawn statSync is the executed evidence the skill exists; only an explicit FAILED blocks",
+  },
+  {
+    // Not a child reply: the gap gate writes this section into a filed issue body,
+    // and the /work intent gate reads it back from there (#1151).
+    token: "Open points",
+    values: ["CRITICAL"],
+    consumer: "work-driver-intent-criticality.ts",
+    onAbsence:
+      "no section, or no CRITICAL bullet in it → no open points; the gate passes and the spec is unchanged",
   },
 ];

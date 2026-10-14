@@ -21,7 +21,8 @@ import {
   fetchIssueBodyWithRetry,
 } from "./work-driver-explore.ts";
 import { deleteSpecArtifact, persistSpecArtifact } from "./work-driver-intent-artifact.ts";
-import { intentResolutionEnabled, reconcileVerdict } from "./work-driver-intent.ts";
+import { finaliseSpecVerdict } from "./work-driver-intent-finalise.ts";
+import { intentResolutionEnabled } from "./work-driver-intent.ts";
 import {
   type ExploreVerdict,
   parseExploreVerdict,
@@ -227,7 +228,31 @@ export async function runExplore(
     // park may be refuted by a complete spec. This runs on the WINNER
     // (prose or artifact), so the reconciliation logic is identical
     // regardless of which channel won the precedence rule.
-    const finalSpec = resolved ? reconcileVerdict(resolved.spec) : undefined;
+    // #1151 — the primary body comes from the settled fetch, read here at the
+    // gate (not a mutable local). A failed or blank read is passed through as
+    // `undefined`, which finaliseSpecVerdict records instead of skipping.
+    // The primary is always in the set on this path (intent is single-issue), so a
+    // miss is a wiring bug and must not be read as a blank body.
+    const primaryIdx = issues.indexOf(ctx.issue);
+    if (primaryIdx === -1) {
+      // A wiring bug, not a bad issue: report it as a halted step rather than
+      // throwing out of the driver.
+      trace(
+        `work-driver: primary issue #${ctx.issue} is not in the explore issue set [${issues.join(", ")}]`,
+      );
+      return appendEvent(next, {
+        kind: "cap-hit",
+        at: Date.now(),
+        cap: "step-failed:explore",
+        reviewRound: 0,
+        nextStep: "handoff",
+        evidence: `wiring: primary issue missing from issue list [${issues.join(", ")}]`,
+      });
+    }
+    const primarySettled = bodySettled[primaryIdx];
+    const primaryBody =
+      primarySettled?.status === "fulfilled" ? primarySettled.value.stdout : undefined;
+    const finalSpec = resolved ? finaliseSpecVerdict(resolved.spec, primaryBody) : undefined;
     if (resolved !== undefined && finalSpec !== undefined) {
       next = {
         ...next,
