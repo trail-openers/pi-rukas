@@ -31,21 +31,19 @@
  * baseSha (`git update-ref`) and a `branch-reset` event records the old tip
  * so the work is recoverable. A branch that IS ahead of
  * `origin/<mainline>` (unpushed work — only a human can decide what to do
- * with it) halts the step via a `branch-ahead:branch` cap; nothing is
- * reset. The detection is purely read-only (two `git` probes) and runs
- * only against the resolved branch name, so a fresh cycle with no local
+ * with it) halts the step via a `branch-ahead:branch` cap unless #1189's
+ * push check shows its tip is already on `origin/<branch>`; nothing is
+ * reset otherwise. The detection is purely read-only (two `git` probes) and
+ * runs only against the resolved branch name, so a fresh cycle with no local
  * branch never sees it.
  */
-
 import { trace } from "./trace.ts";
 import { ensureWorktreesExcluded } from "./work-driver-git-exclude.ts";
 import { isNetGitTimeout, netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 import type { ExecFn } from "./worktree.ts";
 import { DirtyWorktreeError, worktreeCreate } from "./worktree.ts";
 import type { ProvisionResult } from "./worktree.ts";
-
 export { ensureGitExclude } from "./work-driver-git-exclude.ts";
-
 /**
  * Deterministic branch slug. Replaces the LLM-authored name, which produced
  * `…-thinking-only-output` and `…-thinking-only-model-output` for the same
@@ -64,7 +62,6 @@ export function branchSlug(issues: number[], title: string | undefined): string 
     .join("-");
   return brief ? `feature/${stem}-${brief}` : `feature/${stem}`;
 }
-
 /** Detect the mainline branch name, preferring origin's HEAD over a guess. */
 export async function detectMainline(execFn: ExecFn, repoRoot: string): Promise<string> {
   try {
@@ -90,7 +87,6 @@ export async function detectMainline(execFn: ExecFn, repoRoot: string): Promise<
   }
   return "main";
 }
-
 /**
  * Resolve the mainline to a commit SHA, preferring `origin/<mainline>` over
  * the local `refs/heads/<mainline>`. Returns `""` when neither ref exists
@@ -118,7 +114,6 @@ export async function resolveBaseSha(
   if (local) return { sha: local, fromOrigin: false };
   return { sha: "", fromOrigin: false };
 }
-
 /**
  * Resolve the mainline tip via `resolveBaseSha` and report WHERE the SHA
  * came from: `fromOrigin` is true only when `origin/<mainline>` resolved
@@ -140,9 +135,7 @@ export async function freshMainlineTip(
   const line = mainline ?? (await detectMainline(execFn, repoRoot));
   return resolveBaseSha(execFn, repoRoot, line);
 }
-
 let inFlightFetch: { key: string; p: Promise<unknown> } | undefined;
-
 /** Coalesce concurrent `git fetch origin <ref>` calls into one. */
 async function sharedFetch(execFn: ExecFn, repoRoot: string, ref: string): Promise<void> {
   const refProblem = netRefProblem(ref);
@@ -169,7 +162,6 @@ async function sharedFetch(execFn: ExecFn, repoRoot: string, ref: string): Promi
     if (inFlightFetch?.p === p) inFlightFetch = undefined;
   }
 }
-
 /**
  * #844 — a local branch of the resolved name is AHEAD of the freshly
  * fetched `origin/<mainline>`: it holds unpushed commits a reset would
@@ -195,30 +187,14 @@ export class BranchAheadError extends Error {
     this.name = "BranchAheadError";
   }
 }
-
 /**
  * #1189 — did the branch's ahead commits make it to the remote? Compares the
- * local ref against `origin/<branch>` (read-only — `rev-parse`, no fetch; the
- * fresh-fetch guarantee is `mechanizedBranchSetup`'s `sharedFetch` of the
- * mainline ref, and the remote-tracking ref for the branch itself was written
- * by whatever pushed it). Returns:
- *
- *   - `undefined` — the remote branch ref is UNRESOLVED (never pushed, or its
- *     tracking ref is absent). The caller keeps the ahead halt: an ahead
- *     branch with no remote counterpart is the genuine unpushed-work shape
- *     this guard exists for, and an absent tracking ref proves nothing
- *     (a deleted remote branch is not evidence of push state).
- *   - `true` — the local tip IS the remote branch's tip: every ahead commit
- *     is pushed, so a reset would destroy nothing the operator cannot get
- *     back from `origin/<branch>`, and the reset is the correct action
- *     (fresh base = fresh worktree).
- *   - `false` — the local tip diverges from the remote branch's tip (the
- *     local holds commits the remote does not, or the remote is ahead):
- *     the ahead halt stands, and the operator must decide what to do.
- *
- * The comparison is exact-equality, not ancestry: "pushed" means the local
- * ref and the remote ref hold the SAME commit, and only that is provable
- * from a SHA.
+ * local ref against `origin/<branch>` (read-only `rev-parse`; the tracking
+ * ref may be STALE, which only narrows the reset's scope). `undefined` =
+ * the remote branch ref is unresolved (never pushed): keep the ahead halt.
+ * `true` = the local tip IS the remote branch's tip (exact SHA equality):
+ * every ahead commit is pushed, so the reset destroys nothing. `false` =
+ * the tips diverge: the ahead halt stands, operator decides.
  */
 async function aheadBranchIsPushed(
   execFn: ExecFn,
@@ -229,7 +205,10 @@ async function aheadBranchIsPushed(
   try {
     const { stdout } = await execFn(
       `git rev-parse --verify --quiet ${JSON.stringify(`refs/remotes/origin/${branchName}`)}`,
-      { cwd: repoRoot, maxBuffer: 64 * 1024 },
+      {
+        cwd: repoRoot,
+        maxBuffer: 64 * 1024,
+      },
     );
     const remoteSha = stdout.trim();
     if (!remoteSha) return undefined;
@@ -238,7 +217,6 @@ async function aheadBranchIsPushed(
     return undefined;
   }
 }
-
 /**
  * #844 — inspect a local branch of the resolved name against the freshly
  * fetched base. Returns the pre-reset tip SHA when the branch was force-moved
@@ -257,13 +235,10 @@ async function aheadBranchIsPushed(
  * unreadable probe must not license destroying an existing branch.
  *
  * #1189 — an ahead branch whose commits are ALREADY on `origin/<branch>`
- * (the local tip equals the remote branch's tip) is NOT unpushed work: the
- * cycle's own pushed, integrated commits (a `--restart` or `--continue` on
- * the just-merged issue) trip the ahead check without any work a reset could
- * lose. The reset below is safe in that case and is what a fresh cycle
- * needs (worktree at the freshly-fetched base). The ahead halt remains the
- * action for a genuinely ahead-and-unpushed branch (no remote counterpart,
- * or a local tip that diverges from the remote branch's tip).
+ * (local tip == remote branch tip) is NOT unpushed work: the cycle's own
+ * pushed, integrated commits (`--restart`/`--continue` on the just-merged
+ * issue) trip the ahead check without any work a reset could lose, so the
+ * reset below is safe and is what a fresh cycle needs.
  */
 export async function reconcileExistingLocalBranch(
   execFn: ExecFn,
@@ -333,13 +308,9 @@ export async function reconcileExistingLocalBranch(
     } catch {
       aheadCount = null;
     }
-    // #1189 — "ahead of origin/<mainline>" ≠ "unpushed". When the branch's
-    // ahead commits are the pushed ones (local tip == remote branch's tip),
-    // a reset destroys nothing unique and the branch is reset to the fresh
-    // base like any other stale one (the resetFromSha return carries the
-    // old tip as the recovery handle). An ahead branch with NO remote
-    // counterpart, or one whose local tip DIVERGES from the remote branch's
-    // tip, keeps the ahead halt: the operator's call.
+    // #1189 — "ahead of origin/<mainline>" ≠ "unpushed": a fully-pushed
+    // ahead branch resets (nothing unique is lost); an unpushed or
+    // diverged one keeps the ahead halt (the operator's call).
     const pushed = await aheadBranchIsPushed(execFn, repoRoot, branchName, oldSha);
     if (pushed === true) {
       trace(
@@ -350,11 +321,11 @@ export async function reconcileExistingLocalBranch(
     }
   }
   // The branch is checked out at repoRoot (a handoff-parked cycle leaves it
-  // there — the #830/#835 shape; the #1189 pushed-and-reset shape is the
-  // same): `git branch -f` refuses to move the currently-checked-out ref.
-  // Force-move via `update-ref`, which moves any branch ref regardless of
-  // checkout — the working tree is re-read on the next `git status`, so the
-  // operator's checkout is never destroyed.
+  // there — the #830/#835 shape; #1189's pushed-and-reset shape lands the
+  // same way): `git branch -f` refuses to move the
+  // currently-checked-out ref. Force-move via `update-ref`, which moves any
+  // branch ref regardless of checkout — the working tree is re-read on the
+  // next `git status`, so the operator's checkout is never destroyed.
   await execFn(
     `git update-ref ${JSON.stringify(`refs/heads/${branchName}`)} ${JSON.stringify(baseSha)}`,
     {
@@ -364,7 +335,6 @@ export async function reconcileExistingLocalBranch(
   );
   return oldSha;
 }
-
 export interface MechanizedBranchResult {
   branchName: string;
   baseSha: string;
@@ -400,7 +370,6 @@ export interface MechanizedBranchResult {
    */
   resetFromSha?: string;
 }
-
 /**
  * Resolve the base, name the branch, and create one detached worktree per
  * workstream. Throws on any failure — the caller routes that to a
@@ -460,7 +429,6 @@ export async function mechanizedBranchSetup(
       `could not resolve ${mainline} to a commit (no origin/${mainline} after fetch, no refs/heads/${mainline})`,
     );
   }
-
   const branchName = branchSlug(issues, issueTitle);
   // #844 — before any worktree is created: if a local branch of the resolved
   // name exists and does not contain the freshly-fetched base, reset it
