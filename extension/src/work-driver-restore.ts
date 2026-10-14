@@ -1,3 +1,4 @@
+import { trace } from "./trace.ts";
 /**
  * work-driver-restore — #750: the shared verified-restore helper for
  * consolidation abort paths.
@@ -18,7 +19,9 @@
  *   1. Preserve the discarded state — `git diff`, `git diff --cached` and the
  *      status — to a scratch file BEFORE anything destructive. The discarded
  *      content may be the only copy of work (in the incident it held a
- *      genuinely different implementation of the same fix).
+ *      genuinely different implementation of the same fix). #1258 — if that
+ *      save FAILS, nothing below runs: the tree is left as it is and the
+ *      result says so (work-driver-restore-save.ts).
  *   2. Reset index + working tree (`git reset --hard`). Measured on the exact
  *      incident shape (M + UU entries, no CHERRY_PICK_HEAD / MERGE_HEAD),
  *      `reset --hard` alone clears it — no `reset --merge` /
@@ -53,9 +56,7 @@
  *     deliberately out of #1093's scope: it resets the driver's own integration
  *     root, not the operator's checkout.
  */
-import fs from "node:fs";
-import path from "node:path";
-import { trace } from "./trace.ts";
+import { preserveDiscardedState } from "./work-driver-restore-save.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /** A full commit SHA: the only ref form a detached start can produce. */
@@ -214,65 +215,24 @@ export function restoreClaim(
 }
 
 /**
- * Capture the root's staged/unstaged/unmerged state to a scratch file.
- * Best-effort: a capture failure is traced and does not stop the restore
- * (a lost capture is worse than a lost diff, but not as bad as a stuck root).
+ * #1258 — the restore result when the discarded state could not be saved.
+ * Nothing destructive has run: the tree is the only copy of what it holds,
+ * so it is left exactly as it is and the claim says so, with the path, for
+ * a recovery by hand. The root stays dirty, and the next cycle's dirty-root
+ * gate refuses to start until the operator has dealt with it — on purpose.
  */
-async function preserveDiscardedState(
-  execFn: ExecFn,
-  repoRoot: string,
-  scratchDir: string,
-  label: string,
-): Promise<string | undefined> {
-  try {
-    const { stdout: status } = await execFn("git", {
-      cwd: repoRoot,
-      maxBuffer: 1024 * 1024,
-      argv: ["status", "--porcelain"],
-    });
-    const { stdout: unstaged } = await execFn("git", {
-      cwd: repoRoot,
-      maxBuffer: 8 * 1024 * 1024,
-      argv: ["diff"],
-    });
-    const { stdout: staged } = await execFn("git", {
-      cwd: repoRoot,
-      maxBuffer: 8 * 1024 * 1024,
-      argv: ["diff", "--cached"],
-    });
-    if (!status.trim() && !unstaged.trim() && !staged.trim()) return undefined;
-    fs.mkdirSync(scratchDir, { recursive: true });
-    const file = path.join(
-      scratchDir,
-      `restored-state-${new Date().toISOString().replace(/[:.]/g, "-")}-${label}.diff`,
-    );
-    const body = `# #750 — repoRoot state discarded by a consolidation restore
-# label: ${label}
-# captured before the restore's reset and checkout
-
---- status (git status --porcelain) ---
-${status}
-
---- unstaged (git diff) ---
-${unstaged}
-
---- staged (git diff --cached) ---
-${staged}
-`;
-    fs.writeFileSync(file, body, "utf8");
-    trace(`work-driver: ${label} — discarded state preserved to ${file}`);
-    return file;
-  } catch (err) {
-    trace(
-      `work-driver: ${label} — could not preserve discarded state: ${(err as Error).message?.slice(0, 160)}`,
-    );
-    return undefined;
-  }
+function saveFailedRestore(repoRoot: string, error: string): VerifiedRestoreResult {
+  return {
+    restored: false,
+    checkedOut: false,
+    detail: `the discarded state could not be saved (${error}), so nothing was reset or checked out — the tree at ${repoRoot} is left exactly as it was; recover its changes by hand`,
+  };
 }
 
 /**
  * #1093 — the non-forcing restore for an ABORT path (conflict, apply-conflict,
- * throw). The discarded state is preserved to a file first. The cycle's own
+ * throw). The discarded state is preserved to a file first; if that save
+ * fails, the tree is left untouched (#1258). The cycle's own
  * changed paths are read, then `git reset` (mixed) clears the index (the
  * conflict's staged and unmerged entries), then `git stash push -u -- <those
  * paths>` moves exactly those paths out of the working tree. Scoping the stash
@@ -291,7 +251,9 @@ export async function restoreRootToRefPreserving(
   opts: { repoRoot: string; ref: string; scratchDir: string; label: string },
 ): Promise<VerifiedRestoreResult> {
   const { repoRoot, ref, scratchDir, label } = opts;
-  const preservedAt = await preserveDiscardedState(execFn, repoRoot, scratchDir, label);
+  const save = await preserveDiscardedState(execFn, repoRoot, scratchDir, label);
+  if (save.kind === "failed") return saveFailedRestore(repoRoot, save.error);
+  const preservedAt = save.kind === "saved" ? save.path : undefined;
   let paths: string[];
   try {
     paths = await cycleChangedPaths(execFn, repoRoot);
@@ -430,7 +392,11 @@ export async function verifiedRestoreRoot(
   // file BEFORE anything destructive. The discarded content may be the only
   // copy of work (in the incident it held a genuinely different
   // implementation of the same fix); a post-destroy capture would be empty.
-  const preservedAt = await preserveDiscardedState(execFn, repoRoot, scratchDir, label);
+  // #1258 — a capture that FAILED stops the restore here: the reset below
+  // would destroy the only copy, so the tree is left as it is instead.
+  const save = await preserveDiscardedState(execFn, repoRoot, scratchDir, label);
+  if (save.kind === "failed") return saveFailedRestore(repoRoot, save.error);
+  const preservedAt = save.kind === "saved" ? save.path : undefined;
 
   // Reset index + working tree. `reset --hard` clears both the staged (M) and
   // unmerged (UU) entries measured in the incident; a refusal means the
