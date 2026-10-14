@@ -384,7 +384,7 @@ export async function checkpointCapedDispatch(
     );
     merged = { ...state, pipelineState: { ...state.pipelineState, capedPartialState: cps } };
   }
-  await writeState(ctx.repoRoot, merged);
+  await writeState(ctx.repoRoot, merged, ctx.emitSink);
   trace(
     `work-driver: checkpoint for ${step}/${role} (cap=${cap}) — tree=${tree} sha=${commitSha ?? "(none)"} statusFile=${statusFile}`,
   );

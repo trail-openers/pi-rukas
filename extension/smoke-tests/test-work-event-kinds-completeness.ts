@@ -35,19 +35,16 @@
  */
 
 import type { WorkEvent } from "../src/workflow-state-events.ts";
-import {
-	KNOWN_EVENT_KINDS,
-	validateDiscriminants,
-} from "../src/workflow-state-validate.ts";
+import { KNOWN_EVENT_KINDS, validateDiscriminants } from "../src/workflow-state-validate.ts";
 import { initialState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
-	if (cond) console.log(`✓ ${msg}`);
-	else {
-		console.error(`✗ ${msg}`);
-		exit = 1;
-	}
+  if (cond) console.log(`✓ ${msg}`);
+  else {
+    console.error(`✗ ${msg}`);
+    exit = 1;
+  }
 }
 
 // Full, well-typed instance of every WorkEvent union member. Typed as
@@ -61,224 +58,224 @@ function assert(cond: boolean, msg: string) {
 // worktree-leftover-handled (#730 emitter, issue #735). Shared by the
 // all-kinds array (via spread) and the resume-shaped loop below.
 const incidentKindEvents: WorkEvent[] = [
-	{
-		kind: "worktree-provisioned",
-		at: 1,
-		worktreeId: "default",
-		worktreePath: "/wt",
-		outcome: "symlink",
-	},
-	{
-		kind: "safety-net-commit",
-		at: 1,
-		workstreamId: "default",
-		worktreePath: "/wt",
-		commitSha: "abc",
-		filesCommitted: 2,
-	},
-	{
-		kind: "handoff-consolidated",
-		at: 1,
-		branchName: "feature/x",
-		workstreams: ["default"],
-	},
-	{
-		kind: "worktree-leftover-handled",
-		at: 1,
-		path: "/wt",
-		action: "adopt",
-		refs: [],
-	},
+  {
+    kind: "worktree-provisioned",
+    at: 1,
+    worktreeId: "default",
+    worktreePath: "/wt",
+    outcome: "symlink",
+  },
+  {
+    kind: "safety-net-commit",
+    at: 1,
+    workstreamId: "default",
+    worktreePath: "/wt",
+    commitSha: "abc",
+    filesCommitted: 2,
+  },
+  {
+    kind: "handoff-consolidated",
+    at: 1,
+    branchName: "feature/x",
+    workstreams: ["default"],
+  },
+  {
+    kind: "worktree-leftover-handled",
+    at: 1,
+    path: "/wt",
+    action: "adopt",
+    refs: [],
+  },
 ];
 
 const everyKindEvent: WorkEvent[] = [
-	{ kind: "step-started", step: "explore", at: 1 },
-	// #1094 — the one automatic explore re-dispatch after a reply with no `## Spec`.
-	{
-		kind: "explore-retried",
-		step: "explore",
-		at: 1,
-		verdictParsed: true,
-		firstJobId: "j1",
-	},
-	{ kind: "adversarial-approved", at: 1, jobId: "j1", rounds: 1 },
-	{
-		kind: "adversarial-rejected",
-		at: 1,
-		jobId: "j1",
-		rounds: 2,
-		findings: "f",
-	},
-	{
-		kind: "adversarial-round",
-		at: 1,
-		round: 1,
-		status: "APPROVED",
-		verdictParsed: true,
-	},
-	{
-		kind: "adversarial-workstream-outcome",
-		at: 1,
-		workstreamId: "default",
-		outcome: "approved",
-		roundsExecuted: 1,
-	},
-	{
-		kind: "dispatch-started",
-		step: "develop",
-		role: "developer",
-		jobId: "j1",
-		label: "l",
-		at: 1,
-	},
-	{
-		kind: "dispatch-completed",
-		step: "develop",
-		role: "developer",
-		jobId: "j1",
-		label: "l",
-		ok: true,
-		ms: 10,
-		at: 1,
-	},
-	{
-		kind: "dispatch-failed-provider",
-		step: "develop",
-		role: "developer",
-		jobId: "j1",
-		label: "l",
-		ms: 10,
-		at: 1,
-	},
-	{
-		kind: "dispatch-failed",
-		step: "develop",
-		role: "developer",
-		jobId: "j1",
-		label: "l",
-		ms: 10,
-		at: 1,
-	},
-	{ kind: "lens-approved", at: 1, jobId: "j1", round: 1 },
-	{
-		kind: "lens-issues-found",
-		at: 1,
-		jobId: "j1",
-		round: 1,
-		findings: "f",
-		verdict: "ISSUES_FOUND",
-	},
-	{ kind: "lens-skipped-empty-diff", at: 1, round: 1 },
-	{
-		kind: "lens-fix-empty-resend",
-		at: 1,
-		jobId: "j1",
-		round: 1,
-		worktree: "/wt",
-		evidence: "clean",
-	},
-	{
-		kind: "adversarial-skipped-empty-diff",
-		at: 1,
-		workstreamId: "default",
-	},
-	{
-		kind: "adversarial-fix-requested",
-		at: 1,
-		workstreamId: "default",
-		round: 1,
-		findings: "f",
-	},
-	{ kind: "adversarial-fix-applied", at: 1, workstreamId: "default", round: 1 },
-	{ kind: "converge-redispatch", step: "develop", at: 1 },
-	{ kind: "cap-hit", at: 1, cap: "round-cap", reviewRound: 3, nextStep: "ci" },
-	{
-		kind: "plumb-report",
-		at: 1,
-		step: "develop",
-		role: "developer",
-		body: "b",
-	},
-	{ kind: "step-back-triggered", at: 1, theme: "t" },
-	{
-		kind: "step-back-completed",
-		at: 1,
-		jobId: "j1",
-		sddElement: "constraints",
-		diagnosis: "d",
-		proposedRevision: "p",
-	},
-	{ kind: "handoff-emitted", at: 1, labelApplied: true },
-	{
-		kind: "handoff-consolidated",
-		at: 1,
-		branchName: "feature/x",
-		workstreams: ["default"],
-	},
-	{ kind: "ci-status", at: 1, status: "pending" },
-	{ kind: "merged", at: 1, prNumber: 1 },
-	{
-		kind: "branches-fanned-out",
-		step: "develop",
-		workstreams: ["a", "b"],
-		at: 1,
-	},
-	{
-		kind: "branch-completed",
-		step: "develop",
-		workstreamId: "a",
-		ok: true,
-		ms: 10,
-		at: 1,
-	},
-	{
-		kind: "branches-converged",
-		step: "develop",
-		verdicts: [{ id: "a", ok: true }],
-		at: 1,
-	},
-	{ kind: "verify-full-status", at: 1, status: "success", ms: 100 },
-	{ kind: "verify-flake-recovered", at: 1, step: "develop" },
-	{ kind: "widening-scan", at: 1, findings: [] },
-	{
-		kind: "memory-write",
-		at: 1,
-		outcome: "written",
-		id: "m1",
-		memoryType: "fact",
-	},
-	{
-		kind: "memory-inject",
-		at: 1,
-		step: "develop",
-		queries: ["q"],
-		hits: 1,
-		emptyBrief: false,
-		ids: ["m1"],
-	},
-	// The four #986 incident kinds (shared constant above).
-	...incidentKindEvents,
-	{
-		kind: "branch-reset",
-		at: 1,
-		branch: "feature/x",
-		oldSha: "a",
-		newSha: "b",
-	},
-	{
-		kind: "dispatch-slow",
-		at: 1,
-		step: "develop",
-		role: "developer",
-		jobId: "j1",
-		label: "l",
-		elapsedMs: 1000,
-		turns: 1,
-		tokens: 10,
-	},
-	{ kind: "fence-recovery-started", at: 1, workstreamId: "a", owners: ["b"] },
-	// S4a (#1162) — the interrupt record.
-	{ kind: "interrupted", at: 1, reason: "SIGTERM" },
+  { kind: "step-started", step: "explore", at: 1 },
+  // #1094 — the one automatic explore re-dispatch after a reply with no `## Spec`.
+  {
+    kind: "explore-retried",
+    step: "explore",
+    at: 1,
+    verdictParsed: true,
+    firstJobId: "j1",
+  },
+  { kind: "adversarial-approved", at: 1, jobId: "j1", rounds: 1 },
+  {
+    kind: "adversarial-rejected",
+    at: 1,
+    jobId: "j1",
+    rounds: 2,
+    findings: "f",
+  },
+  {
+    kind: "adversarial-round",
+    at: 1,
+    round: 1,
+    status: "APPROVED",
+    verdictParsed: true,
+  },
+  {
+    kind: "adversarial-workstream-outcome",
+    at: 1,
+    workstreamId: "default",
+    outcome: "approved",
+    roundsExecuted: 1,
+  },
+  {
+    kind: "dispatch-started",
+    step: "develop",
+    role: "developer",
+    jobId: "j1",
+    label: "l",
+    at: 1,
+  },
+  {
+    kind: "dispatch-completed",
+    step: "develop",
+    role: "developer",
+    jobId: "j1",
+    label: "l",
+    ok: true,
+    ms: 10,
+    at: 1,
+  },
+  {
+    kind: "dispatch-failed-provider",
+    step: "develop",
+    role: "developer",
+    jobId: "j1",
+    label: "l",
+    ms: 10,
+    at: 1,
+  },
+  {
+    kind: "dispatch-failed",
+    step: "develop",
+    role: "developer",
+    jobId: "j1",
+    label: "l",
+    ms: 10,
+    at: 1,
+  },
+  { kind: "lens-approved", at: 1, jobId: "j1", round: 1 },
+  {
+    kind: "lens-issues-found",
+    at: 1,
+    jobId: "j1",
+    round: 1,
+    findings: "f",
+    verdict: "ISSUES_FOUND",
+  },
+  { kind: "lens-skipped-empty-diff", at: 1, round: 1 },
+  {
+    kind: "lens-fix-empty-resend",
+    at: 1,
+    jobId: "j1",
+    round: 1,
+    worktree: "/wt",
+    evidence: "clean",
+  },
+  {
+    kind: "adversarial-skipped-empty-diff",
+    at: 1,
+    workstreamId: "default",
+  },
+  {
+    kind: "adversarial-fix-requested",
+    at: 1,
+    workstreamId: "default",
+    round: 1,
+    findings: "f",
+  },
+  { kind: "adversarial-fix-applied", at: 1, workstreamId: "default", round: 1 },
+  { kind: "converge-redispatch", step: "develop", at: 1 },
+  { kind: "cap-hit", at: 1, cap: "round-cap", reviewRound: 3, nextStep: "ci" },
+  {
+    kind: "plumb-report",
+    at: 1,
+    step: "develop",
+    role: "developer",
+    body: "b",
+  },
+  { kind: "step-back-triggered", at: 1, theme: "t" },
+  {
+    kind: "step-back-completed",
+    at: 1,
+    jobId: "j1",
+    sddElement: "constraints",
+    diagnosis: "d",
+    proposedRevision: "p",
+  },
+  { kind: "handoff-emitted", at: 1, labelApplied: true },
+  {
+    kind: "handoff-consolidated",
+    at: 1,
+    branchName: "feature/x",
+    workstreams: ["default"],
+  },
+  { kind: "ci-status", at: 1, status: "pending" },
+  { kind: "merged", at: 1, prNumber: 1 },
+  {
+    kind: "branches-fanned-out",
+    step: "develop",
+    workstreams: ["a", "b"],
+    at: 1,
+  },
+  {
+    kind: "branch-completed",
+    step: "develop",
+    workstreamId: "a",
+    ok: true,
+    ms: 10,
+    at: 1,
+  },
+  {
+    kind: "branches-converged",
+    step: "develop",
+    verdicts: [{ id: "a", ok: true }],
+    at: 1,
+  },
+  { kind: "verify-full-status", at: 1, status: "success", ms: 100 },
+  { kind: "verify-flake-recovered", at: 1, step: "develop" },
+  { kind: "widening-scan", at: 1, findings: [] },
+  {
+    kind: "memory-write",
+    at: 1,
+    outcome: "written",
+    id: "m1",
+    memoryType: "fact",
+  },
+  {
+    kind: "memory-inject",
+    at: 1,
+    step: "develop",
+    queries: ["q"],
+    hits: 1,
+    emptyBrief: false,
+    ids: ["m1"],
+  },
+  // The four #986 incident kinds (shared constant above).
+  ...incidentKindEvents,
+  {
+    kind: "branch-reset",
+    at: 1,
+    branch: "feature/x",
+    oldSha: "a",
+    newSha: "b",
+  },
+  {
+    kind: "dispatch-slow",
+    at: 1,
+    step: "develop",
+    role: "developer",
+    jobId: "j1",
+    label: "l",
+    elapsedMs: 1000,
+    turns: 1,
+    tokens: 10,
+  },
+  { kind: "fence-recovery-started", at: 1, workstreamId: "a", owners: ["b"] },
+  // S4a (#1162) — the interrupt record.
+  { kind: "interrupted", at: 1, reason: "SIGTERM" },
 ];
 
 // The union-derived kind set: the source of truth both directions check
@@ -290,23 +287,20 @@ const unionKinds = new Set<string>(everyKindEvent.map((e) => e.kind));
 // tuple: the four missing kinds each produce exactly
 // `eventLog[i].kind has unknown value "<kind>"`.
 {
-	const findings = validateDiscriminants({
-		...initialState(986, 1000),
-		eventLog: everyKindEvent,
-	} as unknown as Record<string, unknown>);
-	const unknownFindings = findings.filter((f) => f.includes("unknown value"));
-	assert(
-		unknownFindings.length === 0,
-		`every WorkEvent kind validates clean (got ${unknownFindings.length} unknown-kind finding(s): ${unknownFindings.join("; ")})`,
-	);
-	// Zero findings of ANY kind overall — not just "no unknown-value
-	// findings": the fixtures are full, well-typed instances, so every
-	// discriminant the validator checks (kind, step, cap-hit fields) must
-	// validate clean, not merely be an unknown-value pass.
-	assert(
-		findings.length === 0,
-		"validateDiscriminants returns zero findings of any kind overall",
-	);
+  const findings = validateDiscriminants({
+    ...initialState(986, 1000),
+    eventLog: everyKindEvent,
+  } as unknown as Record<string, unknown>);
+  const unknownFindings = findings.filter((f) => f.includes("unknown value"));
+  assert(
+    unknownFindings.length === 0,
+    `every WorkEvent kind validates clean (got ${unknownFindings.length} unknown-kind finding(s): ${unknownFindings.join("; ")})`,
+  );
+  // Zero findings of ANY kind overall — not just "no unknown-value
+  // findings": the fixtures are full, well-typed instances, so every
+  // discriminant the validator checks (kind, step, cap-hit fields) must
+  // validate clean, not merely be an unknown-value pass.
+  assert(findings.length === 0, "validateDiscriminants returns zero findings of any kind overall");
 }
 
 // 2. Reverse: the tuple has exactly the fixture set's kinds — no more (a
@@ -321,8 +315,8 @@ const unionKinds = new Set<string>(everyKindEvent.map((e) => e.kind));
 // #986 exhaustiveness assertion in src/workflow-state-validate.ts
 // (`[MissingEventKinds] extends [never]`), which tsc does check.
 assert(
-	(KNOWN_EVENT_KINDS as readonly unknown[]).length === unionKinds.size,
-	`KNOWN_EVENT_KINDS (${(KNOWN_EVENT_KINDS as readonly unknown[]).length} entries) has exactly the fixture set's ${unionKinds.size} kinds (stale-entry backstop; omissions are caught by the src-side tsc assertion)`,
+  (KNOWN_EVENT_KINDS as readonly unknown[]).length === unionKinds.size,
+  `KNOWN_EVENT_KINDS (${(KNOWN_EVENT_KINDS as readonly unknown[]).length} entries) has exactly the fixture set's ${unionKinds.size} kinds (stale-entry backstop; omissions are caught by the src-side tsc assertion)`,
 );
 
 // 3. Resume-shaped: the #981 incident — a RUNNING state file whose eventLog
@@ -330,30 +324,30 @@ assert(
 // validator fires only on the resume path (status "running"), so this is
 // the shape that actually refused to resume.
 {
-	for (const ev of incidentKindEvents) {
-		const name = ev.kind;
-		const running = {
-			...initialState(986, 1000),
-			eventLog: [ev],
-		} as unknown as Record<string, unknown>;
-		assert(
-			validateDiscriminants(running).length === 0,
-			`running state carrying ${name} resumes clean (the #981 shape)`,
-		);
-	}
+  for (const ev of incidentKindEvents) {
+    const name = ev.kind;
+    const running = {
+      ...initialState(986, 1000),
+      eventLog: [ev],
+    } as unknown as Record<string, unknown>;
+    assert(
+      validateDiscriminants(running).length === 0,
+      `running state carrying ${name} resumes clean (the #981 shape)`,
+    );
+  }
 
-	// Contrast (anchors the existing #533 canary, unchanged): an actually
-	// unknown kind in a running file STILL produces one finding naming the
-	// exact value — the fix extends the known set, it does not loosen it.
-	const running = {
-		...initialState(986, 1000),
-		eventLog: [{ kind: "not-a-real-kind", at: 3 }],
-	} as unknown as Record<string, unknown>;
-	const contrast = validateDiscriminants(running);
-	assert(
-		contrast.length === 1 && contrast[0].includes('"not-a-real-kind"'),
-		"an unknown kind still produces exactly one finding naming the value (canary intact)",
-	);
+  // Contrast (anchors the existing #533 canary, unchanged): an actually
+  // unknown kind in a running file STILL produces one finding naming the
+  // exact value — the fix extends the known set, it does not loosen it.
+  const running = {
+    ...initialState(986, 1000),
+    eventLog: [{ kind: "not-a-real-kind", at: 3 }],
+  } as unknown as Record<string, unknown>;
+  const contrast = validateDiscriminants(running);
+  assert(
+    contrast.length === 1 && contrast[0].includes('"not-a-real-kind"'),
+    "an unknown kind still produces exactly one finding naming the value (canary intact)",
+  );
 }
 
 console.log(`\nexit ${exit}`);

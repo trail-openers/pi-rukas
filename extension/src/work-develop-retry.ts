@@ -25,6 +25,7 @@ import {
 } from "./work-develop-git.ts";
 import { downgradeReason } from "./work-develop-greens.ts";
 import type { RawVerdict } from "./work-develop-verdict-source.ts";
+import type { EmitSink } from "./work-state-emit.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 import { appendEvent, writeState } from "./workflow-state.ts";
 
@@ -49,6 +50,7 @@ export function makeBranchCompletedPersister(
   repoRoot: string,
   stateRef: { current: WorkState },
   notes: string[],
+  sink?: EmitSink,
 ): {
   emit: (ev: WorkEvent) => void;
   update: (fn: (s: WorkState) => WorkState) => void;
@@ -58,7 +60,7 @@ export function makeBranchCompletedPersister(
   const persistSnapshot = () => {
     const snapshot = stateRef.current;
     chain = chain
-      .then(() => writeState(repoRoot, snapshot))
+      .then(() => writeState(repoRoot, snapshot, sink))
       .catch((err) => {
         const note = `state persist failed (crash-resume record may be incomplete) — ${errText(err)}`;
         trace(`work-driver: ${note}`);

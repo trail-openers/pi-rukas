@@ -133,7 +133,7 @@ This is residue from a previous cycle or the operator's own in-progress work —
       ...next,
       pipelineState: { ...next.pipelineState, currentStep: "handoff" },
     };
-    await writeState(ctx.repoRoot, next).catch((err) => {
+    await writeState(ctx.repoRoot, next, ctx.emitSink).catch((err) => {
       trace(
         `work-driver: failed to persist dirty-root block state (non-fatal): ${(err as Error).message?.slice(0, 200)}`,
       );

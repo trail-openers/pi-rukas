@@ -40,6 +40,7 @@
 
 import { existsSync } from "node:fs";
 import { trace } from "./trace.ts";
+import type { DriverContext } from "./work-driver-context.ts";
 import { type WorkState, type WorkStep, writeState } from "./workflow-state.ts";
 
 /** #382 escape hatch: PI_ENSEMBLE_RESUME=0 restores the pre-#382 behaviour. */
@@ -209,7 +210,7 @@ export function markDispatchStarted(
  * step, and a half-finished fan-out is re-entered wholesale.
  */
 export async function beginDispatch(
-  repoRoot: string,
+  ctx: Pick<DriverContext, "repoRoot" | "emitSink">,
   state: WorkState,
   step: WorkStep,
   role: string,
@@ -220,7 +221,7 @@ export async function beginDispatch(
   const jobId = mintJobId(step, label, at);
   if (!resumeEnabled()) return { state, jobId };
   const next = markDispatchStarted(state, step, role, label, jobId, at, transcriptPath);
-  await writeState(repoRoot, next);
+  await writeState(ctx.repoRoot, next, ctx.emitSink);
   return { state: next, jobId };
 }
 

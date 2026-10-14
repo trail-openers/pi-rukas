@@ -69,9 +69,10 @@
  * from `./workflow-state.ts`.
  */
 
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { emitPersisted } from "./work-state-emit.ts";
+import { type EmitSink, emitPersisted } from "./work-state-emit.ts";
 import { WORK_STATE_SCHEMA_VERSION, type WorkState } from "./workflow-state-schema.ts";
 import { appendEvent, detectInconsistencies, initialState } from "./workflow-state-update.ts";
 
@@ -160,36 +161,49 @@ function assertSchemaVersion(raw: Record<string, unknown>, file: string): WorkSt
 }
 
 /**
- * Atomic state write: write to <file>.tmp then rename. Avoids leaving a
- * half-written file if the process dies mid-write. Updates `updatedAt`.
+ * Atomic state write: write to a unique tmp name then rename. Avoids leaving a
+ * half-written file if the process dies mid-write, and two writers never share
+ * a tmp path. Updates `updatedAt`.
+ *
+ * `sink` (S4a, #1162) receives the eventLog entries this write makes durable.
+ * It is passed explicitly; omitting it persists without emitting. Emit failures
+ * never reject this promise (see work-state-emit.ts).
  */
-export async function writeState(repoRoot: string, state: WorkState): Promise<void> {
+export async function writeState(
+  repoRoot: string,
+  state: WorkState,
+  sink?: EmitSink,
+): Promise<void> {
   const file = workStateFile(repoRoot, state.issue);
   await fs.mkdir(path.dirname(file), { recursive: true });
   const next: WorkState = { ...state, updatedAt: Date.now() };
-  const tmp = `${file}.tmp`;
+  const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
   await fs.writeFile(tmp, `${JSON.stringify(next, null, 2)}\n`, "utf8");
   await fs.rename(tmp, file);
-  // S4a (#1162) — the emit choke point: events are emitted once they are durable.
-  emitPersisted(file, next);
+  if (sink) emitPersisted(sink, next);
 }
 
 /**
- * S4a (#1162) — record an interrupt (SIGTERM / SIGINT). Sets status to
- * `interrupted`, appends the `interrupted` event carrying `reason`, and
- * persists. Re-entry resumes the cycle (see `reenterInterrupted`).
+ * S4a (#1162) — record an interrupt (SIGTERM / SIGINT). Re-reads the state from
+ * disk (a caller's snapshot may be stale: another writer may have appended
+ * since), sets status to `interrupted`, appends the `interrupted` event carrying
+ * `reason`, and persists. Returns undefined when no state file exists. Re-entry
+ * resumes the cycle (see `reenterInterrupted`).
  */
 export async function markInterrupted(
   repoRoot: string,
-  state: WorkState,
+  issue: number,
   reason: string,
+  sink?: EmitSink,
   at: number = Date.now(),
-): Promise<WorkState> {
+): Promise<WorkState | undefined> {
+  const state = await readState(repoRoot, issue);
+  if (!state) return undefined;
   const next = appendEvent(
     { ...state, pipelineState: { ...state.pipelineState, status: "interrupted" } },
     { kind: "interrupted", at, reason },
   );
-  await writeState(repoRoot, next);
+  await writeState(repoRoot, next, sink);
   return next;
 }
 

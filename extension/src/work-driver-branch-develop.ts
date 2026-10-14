@@ -72,13 +72,13 @@ export async function stampCycleStartRef(ctx: DriverContext, state: WorkState): 
       ...state,
       pipelineState: { ...state.pipelineState, startRef: ctx.invocationStartRef },
     };
-    await writeState(ctx.repoRoot, stamped);
+    await writeState(ctx.repoRoot, stamped, ctx.emitSink);
     return stamped;
   }
   return withIntegrationLock(ctx.repoRoot, async () => {
     // argv-aware: the capture passes argv, which promisify(exec) silently drops.
     const stamped = await recordCycleStartRef(ctx.verifyExecFn ?? argvExecp, ctx.repoRoot, state);
-    if (stamped !== state) await writeState(ctx.repoRoot, stamped);
+    if (stamped !== state) await writeState(ctx.repoRoot, stamped, ctx.emitSink);
     return stamped;
   });
 }
@@ -424,7 +424,7 @@ export async function runDevelop(
   // granularity is the step, and a half-finished fan-out is re-entered
   // wholesale.
   const begun = await beginDispatch(
-    ctx.repoRoot,
+    ctx,
     next,
     "develop",
     "developer",

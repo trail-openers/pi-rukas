@@ -27,48 +27,57 @@ export async function singleCycleQueueEntry(
   const ps = state?.pipelineState;
   const status = ps?.status;
   if (status === undefined) return undefined;
+  const groupId = `single-${issue}`;
   const issues = state?.issues && state.issues.length > 0 ? state.issues : [issue];
+
+  switch (status) {
+    case "merged":
+      return { groupId, issues, outcome: "merged" };
+    case "running":
+      return {
+        groupId,
+        issues,
+        outcome: "not-started",
+        reason: "still running — this is not a terminal state",
+      };
+    default:
+      break;
+  }
+
   const cap = [...(state?.eventLog ?? [])].reverse().find((e) => e.kind === "cap-hit");
   const capHit = cap?.kind === "cap-hit" ? cap : undefined;
-  const failedStep = capHit
-    ? capHit.cap.startsWith("step-failed:")
+  const reason = capHit
+    ? `cap ${capHit.cap}${
+        capHit.cap === "intent-park" && ps?.normalisedSpec?.parkReason
+          ? `:${ps.normalisedSpec.parkReason}`
+          : ""
+      }`
+    : status === "interrupted"
+      ? `cycle interrupted: ${lastInterruptReason(state?.eventLog ?? []) ?? "no reason recorded"}`
+      : `cycle ended as ${status}`;
+
+  // S4a (#1162) — an interrupted cycle is resumable, not terminal: the operator
+  // resumes it rather than acting on a failed step.
+  if (status === "interrupted") {
+    return {
+      groupId,
+      issues,
+      outcome: "parked",
+      reason,
+      humanAction: `resume with /work ${issue}`,
+    };
+  }
+
+  const failedStep =
+    capHit?.cap.startsWith("step-failed:") === true
       ? capHit.cap.slice("step-failed:".length)
-      : undefined
-    : undefined;
-  const reason =
-    capHit?.kind === "cap-hit"
-      ? `cap ${capHit.cap}${
-          capHit.cap === "intent-park" && ps?.normalisedSpec?.parkReason
-            ? `:${ps.normalisedSpec.parkReason}`
-            : ""
-        }`
-      : status === "interrupted"
-        ? `cycle interrupted: ${lastInterruptReason(state?.eventLog ?? []) ?? "no reason recorded"}`
-        : `cycle ended as ${status}`;
-  return status === "merged"
-    ? { groupId: `single-${issue}`, issues, outcome: "merged" }
-    : status === "running"
-      ? {
-          groupId: `single-${issue}`,
-          issues,
-          outcome: "not-started",
-          reason: "still running — this is not a terminal state",
-        }
-      : status === "interrupted"
-        ? {
-            // S4a (#1162) — resumable, not terminal: the operator resumes it.
-            groupId: `single-${issue}`,
-            issues,
-            outcome: "parked",
-            reason,
-            humanAction: `resume with /work ${issue}`,
-          }
-        : {
-            groupId: `single-${issue}`,
-            issues,
-            outcome: "parked",
-            reason,
-            failedStep,
-            humanAction: humanActionFor(reason, issue),
-          };
+      : undefined;
+  return {
+    groupId,
+    issues,
+    outcome: "parked",
+    reason,
+    failedStep,
+    humanAction: humanActionFor(reason, issue),
+  };
 }

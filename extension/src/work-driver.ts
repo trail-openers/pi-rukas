@@ -134,7 +134,7 @@ export async function runWorkDriver(ctx: DriverContext): Promise<DriverOutcome> 
     };
   }
   try {
-    const unbindEmitter = enterCycle(ctx);
+    const cycleCtx = enterCycle(ctx);
     // #838 — the per-cycle deck header ("/work #N"): created when the cycle
     // starts, cleared on EVERY terminal path via the finally — merged,
     // handoff, park, halt, thrown error all unwind through it. A second
@@ -142,10 +142,9 @@ export async function runWorkDriver(ctx: DriverContext): Promise<DriverOutcome> 
     // (per-invocation ownership token; see work-driver-deck-header.ts).
     const header = acquireWorkDeckHeader(ctx.issue, headerToken());
     try {
-      return await runWorkDriverInner(ctx);
+      return await runWorkDriverInner(cycleCtx);
     } finally {
       header.release();
-      unbindEmitter();
     }
   } finally {
     claimed.claim.release();
@@ -287,7 +286,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
 
   // Persist the initial state on first run so the user can see the file
   // appear as soon as a cycle starts.
-  await writeState(ctx.repoRoot, state);
+  await writeState(ctx.repoRoot, state, ctx.emitSink);
 
   // PR2 fold-in: set up project-local scratch dir (#553).
   const tmpDir = await setupWorkspaceTmp(ctx.repoRoot, ctx.issue);
@@ -303,7 +302,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
         ...state,
         pipelineState: { ...state.pipelineState, status: "aborted" },
       };
-      await writeState(ctx.repoRoot, state);
+      await writeState(ctx.repoRoot, state, ctx.emitSink);
       notifyAgent(
         ctx.host,
         `pi-rukas /work driver aborted on issue #${ctx.issue}: transition safety limit reached.` +
@@ -336,7 +335,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
           ...state,
           pipelineState: { ...state.pipelineState, status: "aborted" },
         };
-        await writeState(ctx.repoRoot, state);
+        await writeState(ctx.repoRoot, state, ctx.emitSink);
         emitStepFailed(
           step,
           stepOrd.num,
@@ -359,7 +358,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
         ...state,
         pipelineState: { ...state.pipelineState, status: "aborted" },
       };
-      await writeState(ctx.repoRoot, state);
+      await writeState(ctx.repoRoot, state, ctx.emitSink);
       emitStepFailed(
         step,
         stepOrd.num,
@@ -403,7 +402,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
         ...state,
         pipelineState: { ...state.pipelineState, status: "aborted" },
       };
-      await writeState(ctx.repoRoot, state);
+      await writeState(ctx.repoRoot, state, ctx.emitSink);
       notifyAgent(
         ctx.host,
         `pi-rukas:driver-event v1 kind=crash issue=${ctx.issue} at=${new Date().toISOString()}\npi-rukas /work driver halted on issue #${ctx.issue}: pipelineState.currentStep has unknown value ${JSON.stringify(decision.value)}. ` +
@@ -421,7 +420,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
           currentStep: decisionStep,
         },
       };
-      await writeState(ctx.repoRoot, state);
+      await writeState(ctx.repoRoot, state, ctx.emitSink);
     }
   }
 
@@ -458,7 +457,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
     // unchanged when the send threw — in which case the next invocation
     // retries the delivery). On a send failure this write is the only
     // record that the driver reached its terminal boundary at all.
-    await writeState(ctx.repoRoot, state);
+    await writeState(ctx.repoRoot, state, ctx.emitSink);
   }
   return { started: true };
 }

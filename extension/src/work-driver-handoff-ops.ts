@@ -52,7 +52,7 @@ export async function runHandoffOpsDispatch(
   const handoffTranscript = transcriptPathFor("ops", handoffRunId);
   // #382 — write-ahead: persist the intent to dispatch BEFORE awaiting.
   const begun = await beginDispatch(
-    ctx.repoRoot,
+    ctx,
     next,
     "handoff",
     "ops",

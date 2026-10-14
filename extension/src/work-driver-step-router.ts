@@ -219,7 +219,7 @@ export async function routeStepOutcome(
       );
     }
   }
-  await writeState(ctx.repoRoot, state);
+  await writeState(ctx.repoRoot, state, ctx.emitSink);
 
   // PR5 halt-cascade router. Intercept dispatch-failed at HALT-class
   // steps BEFORE nextStep() — the existing linear table has no
@@ -251,7 +251,7 @@ export async function routeStepOutcome(
               transientRetryAttempts: { ...attempts, [step]: used + 1 },
             },
           };
-          await writeState(ctx.repoRoot, state);
+          await writeState(ctx.repoRoot, state, ctx.emitSink);
           const reason = failureCauseReason(tail);
           lifecycle.emitStepRetry(step, stepOrd.num, stepOrd.total, used + 2, reason, ctx.issue);
           trace(
@@ -341,7 +341,7 @@ export async function routeStepOutcome(
           ...state,
           pipelineState: { ...state.pipelineState, currentStep: "handoff" },
         };
-        await writeState(ctx.repoRoot, state);
+        await writeState(ctx.repoRoot, state, ctx.emitSink);
         trace(
           `work-driver: HALT on step="${step}" → cap="${cap}" → handoff (status set in runHandoff)`,
         );
@@ -369,7 +369,7 @@ export async function routeStepOutcome(
               ...(infra ? { transientRetryAttempts: bumped } : { retryAttempts: bumped }),
             },
           };
-          await writeState(ctx.repoRoot, state);
+          await writeState(ctx.repoRoot, state, ctx.emitSink);
           const reason = failureCauseReason(tail);
           lifecycle.emitStepRetry(step, stepOrd.num, stepOrd.total, used + 2, reason, ctx.issue);
           trace(
@@ -399,7 +399,7 @@ export async function routeStepOutcome(
           ...state,
           pipelineState: { ...state.pipelineState, currentStep: "handoff" },
         };
-        await writeState(ctx.repoRoot, state);
+        await writeState(ctx.repoRoot, state, ctx.emitSink);
         trace(
           `work-driver: RETRY_ONCE exhausted on step="${step}" → handoff (status set in runHandoff)`,
         );
@@ -439,7 +439,7 @@ export async function routeStepOutcome(
           ...state,
           pipelineState: { ...state.pipelineState, currentStep: "handoff" },
         };
-        await writeState(ctx.repoRoot, state);
+        await writeState(ctx.repoRoot, state, ctx.emitSink);
         const failedCount = tail.verdicts.filter((v) => !v.ok).length;
         trace(
           `work-driver: HALT on step="${step}" — ${failedCount}/${tail.verdicts.length} branches failed → handoff`,
@@ -469,7 +469,7 @@ export async function routeStepOutcome(
         nextStep: "handoff",
       });
       state = { ...state, pipelineState: { ...state.pipelineState, currentStep: "handoff" } };
-      await writeState(ctx.repoRoot, state);
+      await writeState(ctx.repoRoot, state, ctx.emitSink);
       trace(
         `work-driver: HALT on step="${step}" — refused: ${refusals.map((r) => `${r.id} (${r.reason})`).join("; ")} → handoff`,
       );

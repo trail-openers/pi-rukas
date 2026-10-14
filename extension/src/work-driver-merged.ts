@@ -93,7 +93,7 @@ export async function runSingleDispatch(
   // the state file at the PREVIOUS step boundary still claiming `running`. A
   // crashed cycle was indistinguishable from a live one, forever. Persisting
   // the intent first is what makes the difference visible on resume.
-  const begun = await beginDispatch(ctx.repoRoot, next, step, role, label, startedAt);
+  const begun = await beginDispatch(ctx, next, step, role, label, startedAt);
   next = begun.state;
   const jobId = begun.jobId;
   let result: DispatchResult;

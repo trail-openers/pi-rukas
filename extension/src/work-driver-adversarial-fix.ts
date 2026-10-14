@@ -336,7 +336,7 @@ export async function runAdversarialFixPass(
     { kind: "step-started", step: "develop", at: now },
   );
   const begun = await beginDispatch(
-    ctx.repoRoot,
+    ctx,
     stepped,
     "develop",
     "developer",

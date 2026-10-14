@@ -51,6 +51,6 @@ export async function parkLensFixReposition(
     ...next,
     pipelineState: { ...next.pipelineState, currentStep: "handoff" },
   };
-  await writeState(ctx.repoRoot, next);
+  await writeState(ctx.repoRoot, next, ctx.emitSink);
   return next;
 }

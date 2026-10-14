@@ -111,7 +111,7 @@ export async function dispatchExploreAttempt(
   const exploreTranscript = transcriptPathFor("explore", exploreRunId);
   // #382 — write-ahead before the await; see work-driver-resume.ts.
   const begun = await beginDispatch(
-    ctx.repoRoot,
+    ctx,
     state,
     "explore",
     "explore",

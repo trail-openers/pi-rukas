@@ -28,12 +28,11 @@ import type { WorkEvent } from "./workflow-state-events.ts";
  * What a driver needs from its host. Same shape as the dispatch-side seam,
  * plus `emit` (S4a, #1162): the progress channel for every eventLog entry, fed
  * by `writeState` (see work-state-emit.ts). Optional so hosts with no progress
- * channel (test fixtures that never reach a persist) need not implement it;
- * the Pi-session host implements it as a no-op and the headless runner (#1024)
- * is the first host that uses it.
+ * channel implement it as a no-op; the Pi-session host does, and the headless
+ * runner (#1024) is the first host that uses it.
  */
 export type DriverHost = DispatchHost & {
-  emit?: (event: WorkEvent) => void;
+  emit: (event: WorkEvent) => void;
 };
 
 /**

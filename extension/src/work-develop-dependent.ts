@@ -279,7 +279,7 @@ export async function runDependentWorkstreams(
           // the caller's short-circuit returns — a crash between the cap-hit and
           // the step-boundary write would otherwise lose the siblings' results.
           await run.flushState?.();
-          await writeState(ctx.repoRoot, stateRef.current);
+          await writeState(ctx.repoRoot, stateRef.current, ctx.emitSink);
           trace(
             `work-driver: PARK — deferred worktree creation for ${id} refused by dirty leftover at ${leftoverPath}; parking the cycle (no force-remove)`,
           );
