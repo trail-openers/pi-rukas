@@ -65,8 +65,9 @@ export function routeVerifyFailed(cap: Cap, state: WorkState): VerifyFailedRoute
   }
 }
 
-function prNotOpenText(failures: readonly string[]): string {
-  return `the cycle's pull request was no longer open when commit-pr ran again, so the driver refused before rebuilding or pushing anything:\n${failures.map((f) => `  - ${f}`).join("\n")}\nThe driver read the PR's state from the forge. Nothing was committed, pushed or claimed done on this round, so no "done" claim was rejected and there is no worktree defect to look for. Whether the new work belongs in a new pull request is a human decision`;
+function prNotOpenText(step: string, failures: readonly string[]): string {
+  const when = step === 'commit-pr' ? 'commit-pr ran again' : `the ${step} step started`;
+  return `the cycle's pull request was no longer open when ${when}, so the driver refused before rebuilding or pushing anything:\n${failures.map((f) => `  - ${f}`).join("\n")}\nThe driver read the PR's state from the forge. Nothing was committed, pushed or claimed done on this round, so no "done" claim was rejected and there is no worktree defect to look for. Whether the new work belongs in a new pull request is a human decision`;
 }
 
 /**
@@ -138,7 +139,7 @@ export function explainVerifyFailed(cap: Cap, state: WorkState): string {
     const capEvidence = fixPassCapEvidence(cap, state);
     return explainFixPassPark(capEvidence ? `\n${capEvidence}` : findings, suffix);
   }
-  if (route === "pr-not-open") return `${prNotOpenText(failures)}${suffix}`;
+  if (route === "pr-not-open") return `${prNotOpenText(step, failures)}${suffix}`;
   // No recorded failure means this text cannot say which check refused the
   // step, or that the driver ran one: the gate's sentence below would be a
   // claim about checks nothing on the state file shows were executed.

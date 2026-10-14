@@ -1,0 +1,31 @@
+✓ branch-ops (ops:branch) — allowlisted site still present in work-driver-branch-ops.ts (creates the feature branch and the worktrees — it cannot run inside a worktree it has not made yet)
+✓ commit-pr (ops:commit-pr) — allowlisted site still present in work-driver-commit-fallback.ts (the ops fallback is pinned to the driver-owned integrate worktree (cwd: integratePath) — the #841 defect was a cwd-less dispatch)
+✓ merged (ops:merge) — allowlisted site still present in work-driver-merged.ts (the merge acts on the PR at the integration point; worktrees are torn down right after)
+✓ step-back (explore:step-back) — allowlisted site still present in work-driver-stepback-ci.ts (a read-only spec-revision analysis of the cycle's findings; nothing of the cycle's work exists yet to pin it to a tree)
+✓ ci watch (ops:ci) — allowlisted site still present in work-driver-stepback-ci.ts (watches the FORGE, not a tree — the worktrees are already committed and pushed at this point)
+✓ explore (label: explore) — runExplore — allowlisted site still present in work-driver-explore-dispatch.ts (reads the issue and the code at the integration point before any worktree exists)
+✓ plan (label: plan) — allowlisted site still present in work-driver-plan.ts (produces the workstream decomposition; the worktrees it describes do not exist until the branch step)
+✓ plan:corrective (label: plan:corrective) — allowlisted site still present in work-driver-plan.ts (the one-shot plan re-dispatch — same step, same reason)
+✓ plan:corrective (kill-triggered, helpers) — allowlisted site still present in work-driver-plan-helpers.ts (the #754 kill-triggered corrective re-dispatch — same step, same reason as the quality-gate corrective)
+✓ policy judge (spawnSpecialist) — allowlisted site still present in work-driver-policy.ts (read-only, answers one question against doctrine read from disk — cwd IS set, explicitly, to repoRoot)
+✓ handoff (ops:handoff) — allowlisted site still present in work-driver-handoff-ops.ts (posts the handoff comment to the forge; the cycle's trees are torn down or parked and the operator is being told where to look)
+✓ canary: the developer dispatch in makeRunOneWorkstream carries the explicit cwd (its VALUE must never be a fallback — sibling audit)
+✓ canary: the speculative-explore dispatch carries the same explicit cwd
+✓ canary: dependent workstreams are dispatched with their freshly created worktree path — no fallback
+✓ canary: the adversarial loop resolves a per-workstream cwd (worktrees map, repoRoot only as last resort for a missing id)
+✓ canary: ...and threads it to the loop as workCwd — the reviewer never falls back to process.cwd()
+✓ canary: the converge corrective re-dispatch carries an explicit cwd (the worktree that owns the missing paths)
+✓ canary: the lens-fix dispatch passes the lens worktree as cwd (the #663 defect)
+✓ canary: the lens review and the lens fix resolve the same tree (4 call sites)
+✓ canary: the lens review exec runs at repoRoot explicitly — the integration tree that holds every workstream's consolidated work
+✓ canary: the consolidated verify runs at repoRoot by an explicit exec cwd — the combined probe tree lives there
+✓ canary: the consolidated verify does not dispatch — nothing inside it can hit the process.cwd() fallback
+✓ canary: runSingleDispatch still accepts a cwd option — the seam the lens-fix fix relies on
+✓ canary: ...and only puts it on the spec when set — callers that pass nothing remain repoRoot-intentional by declaration, not by accident
+✓ census: every spawn-seam call site is in an allowlisted (decision #5) or cwd-audited file, and the counts match the audit sections
+✓ canary: the commit-pr ops fallback dispatch carries cwd: integratePath (the driver-owned integrate worktree)
+✓ canary: the fallback's cwd resolves to the -integrate worktree, not repoRoot
+✓ canary: the merge-and-retry re-dispatch carries an explicit cwd (the merged workstream's worktree — the tree the merge rebased), not the process.cwd() fallback
+✓ canary: the re-dispatch's cwd resolves to the merged workstream's worktree (worktrees[mergedId]) — the violator's tree, rebased to the owner's tip
+
+exit 0

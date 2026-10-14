@@ -34,6 +34,7 @@ import {
 import { commitLensFixChanges, lensWorktree } from "./work-driver-lens.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
 import { runNetGit } from "./work-driver-net-git.ts";
+import { endIfPrGone } from "./work-driver-pr-gone.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
@@ -197,6 +198,10 @@ export async function runAdversarial(
     });
 
     if (state.pipelineState.lastCompletedStep === "lens-fix") {
+      // The fix is pushed below; a PR merged or closed during the fix pass
+      // must not receive it (work-driver-pr-gone.ts).
+      const gone = await endIfPrGone(ctx, next, "adversarial");
+      if (gone) return gone;
       const execFn = ctx.verifyExecFn ?? execp;
       const psFix = state.pipelineState;
       const fixWorktrees = psFix.worktrees ?? {};

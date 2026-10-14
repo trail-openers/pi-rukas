@@ -38,6 +38,7 @@ import {
 } from "./work-driver-lifecycle.ts";
 import { runMerged } from "./work-driver-merged.ts";
 import { runPlan } from "./work-driver-plan.ts";
+import { endIfPrGone } from "./work-driver-pr-gone.ts";
 import { claimCycle } from "./work-driver-registry.ts";
 import {
   attemptReattach,
@@ -97,14 +98,15 @@ async function runStep(ctx: CycleContext, state: WorkState, step: WorkStep): Pro
       return runAdversarial(ctx, state, now);
     case "commit-pr":
       return runCommitPr(ctx, state, now);
+    // A PR merged or closed under the review ends the cycle before the step.
     case "lens-review":
-      return runLens(ctx, state, now);
+      return (await endIfPrGone(ctx, state, step)) ?? runLens(ctx, state, now);
     case "lens-fix":
-      return runLensFix(ctx, state, now);
+      return (await endIfPrGone(ctx, state, step)) ?? runLensFix(ctx, state, now);
     case "step-back":
       return runStepBack(ctx, state, now);
     case "ci":
-      return runCi(ctx, state, now);
+      return (await endIfPrGone(ctx, state, step)) ?? runCi(ctx, state, now);
     case "handoff":
       return runHandoff(ctx, state, now);
     case "merged":
