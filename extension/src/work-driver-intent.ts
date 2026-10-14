@@ -43,7 +43,8 @@ export type ParkReason =
   | "contradicted-by-code"
   | "already-implemented"
   | "too-large"
-  | "premise-unsound";
+  | "premise-unsound"
+  | "security-open-point";
 
 export type IntentVerdict = "proceed" | "proceed-with-assumptions" | "park";
 
@@ -119,6 +120,7 @@ const PARK_REASONS: ParkReason[] = [
   "already-implemented",
   "too-large",
   "premise-unsound",
+  "security-open-point",
 ];
 
 /**
@@ -450,6 +452,8 @@ export function explainPark(reason: ParkReason, issue: number): string {
       return `#${issue} appears to be already implemented. Close it if you agree, or say what is still missing and re-run.`;
     case "too-large":
       return `#${issue} is too large to execute as one cycle. Split it into separate issues; each should be a diff a reviewer can hold in their head.`;
+    case "security-open-point":
+      return `#${issue} has an unresolved CRITICAL open point about authentication, authorization, secrets or permissions. The driver will not choose that policy for you. Answer it in the issue body, mark it [RESOLVED], and re-run.`;
     case "premise-unsound":
       return `#${issue} rests on a premise the driver could not substantiate — typically an API or behaviour that does not exist as described. Confirm the premise and re-run.`;
   }
@@ -466,6 +470,8 @@ export function parkAction(reason: ParkReason, issue: number): string {
       return `confirm and close #${issue}`;
     case "too-large":
       return `split #${issue} into separate issues`;
+    case "security-open-point":
+      return `answer the security open point in #${issue}'s body (mark it [RESOLVED]) and run /work ${issue} --restart`;
     case "premise-unsound":
       return `confirm the premise of #${issue} — the driver could not substantiate it`;
   }

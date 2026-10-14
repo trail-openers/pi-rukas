@@ -146,6 +146,14 @@ export function contradictionAssumptions(evidence: SpecEvidence[]): SpecAssumpti
 /** A `[CRITICAL]` bullet tag, optionally emphasised; captures the point text. */
 const CRITICAL_BULLET = new RegExp(`^[*_\`\\s]*\\[${CRITICAL_SEVERITY}\\][*_\`\\s:]*(.*)$`, "i");
 
+/**
+ * A point the issue author has answered (#1151, convention in open-points-contract.ts):
+ * `[RESOLVED]` anywhere in the bullet, or a strikethrough `~~…~~` span. It no longer gates.
+ */
+function isResolvedBullet(item: string): boolean {
+  return /\[RESOLVED\]/i.test(item) || /~~[^~]+~~/.test(item);
+}
+
 /** Stands in for a bare `- [CRITICAL]` bullet: still a point, just without text. */
 const EMPTY_CRITICAL_POINT = "(empty CRITICAL open point)";
 
@@ -168,7 +176,7 @@ export function criticalOpenPoints(issueBody: string): string[] {
     }
     if (!inSection) continue;
     const item = line.match(/^(?:[-*]|\d+[.)])\s+(.*)$/)?.[1];
-    if (item === undefined) continue;
+    if (item === undefined || isResolvedBullet(item)) continue;
     const tagged = item.match(CRITICAL_BULLET);
     // A bare tag is still a CRITICAL point: dropping it would let an empty
     // gate finding stop gating.
@@ -215,7 +223,8 @@ export function capToAssumptions(
  *
  * - No open points: the spec is unchanged.
  * - An authentication/authorization/secrets/permissions point: park as
- *   `underspecified` — the driver will not choose who may do what.
+ *   `security-open-point` — the driver will not choose who may do what. The
+ *   #397 complete-spec override lifts only `underspecified`, so this park stands.
  * - Any other CRITICAL point: a `proceed` is capped at
  *   `proceed-with-assumptions`, with each point named as an assumption so it
  *   reaches the PR body. An existing park is never rewritten here.
@@ -224,7 +233,12 @@ export function applyOpenPointGate(spec: NormalisedSpec, openPoints: string[]): 
   if (openPoints.length === 0 || spec.verdict === "park") return spec;
   if (openPoints.some((point) => AUTHORIZATION_CLASS.test(point))) {
     trace("work-driver: intent — unresolved CRITICAL open point concerns authorization, parking");
-    return { ...spec, verdict: "park", parkReason: "underspecified", parkReasonSource: "default" };
+    return {
+      ...spec,
+      verdict: "park",
+      parkReason: "security-open-point",
+      parkReasonSource: "default",
+    };
   }
   trace(
     `work-driver: intent — ${openPoints.length} unresolved CRITICAL open point(s) carried as assumptions`,

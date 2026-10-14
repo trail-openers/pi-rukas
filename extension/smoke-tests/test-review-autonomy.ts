@@ -23,6 +23,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { adversarialPassed } from "../src/review-ledger.ts";
+import { finaliseSpecVerdict } from "../src/work-driver-intent-finalise.ts";
+import { type NormalisedSpec, parkAction } from "../src/work-driver-intent.ts";
 import {
   assert,
   TARGET,
@@ -172,6 +174,69 @@ try {
     refused.block === true,
     "tool-path CRITICAL_ISSUES_FOUND + strict lens passed: merge refused",
   );
+  // #1151 — intent-gate autonomy. A non-security CRITICAL open point must not
+  // stall a buildable issue; a security one parks with its own reason; and the
+  // answer (marked [RESOLVED] in the body, then --restart) clears the park.
+  const buildable: NormalisedSpec = {
+    intent: "Keep the retry timeout configurable.",
+    deliverables: [
+      {
+        id: "d1",
+        description: "make the timeout configurable",
+        paths: ["extension/src/retry-config-check.ts"],
+      },
+    ],
+    acceptanceCriteria: ["the timeout is read from config"],
+    outOfScope: [],
+    assumptions: [],
+    openQuestions: [],
+    evidence: [
+      {
+        claim: "the timeout is hard-coded",
+        source: "retry-config-check.ts:1",
+        verdict: "confirmed",
+      },
+    ],
+    verdict: "proceed",
+    rationale: "actionable",
+  };
+  const body = (point: string) => `## Open points (unresolved at the gap-gate cap)\n\n- ${point}\n`;
+
+  const nonSecurity = finaliseSpecVerdict(
+    buildable,
+    body("[CRITICAL] Which timeout wins when both are set \u2014 proposed: the shorter"),
+  );
+  assert(
+    nonSecurity.verdict === "proceed-with-assumptions",
+    "autonomy: a non-security CRITICAL open point still proceeds to the PR path",
+  );
+
+  const security = finaliseSpecVerdict(
+    buildable,
+    body("[CRITICAL] Who may change the retry timeout \u2014 authorization is undecided"),
+  );
+  assert(
+    security.verdict === "park" && security.parkReason === "security-open-point",
+    "autonomy: a security CRITICAL open point parks with security-open-point",
+  );
+  assert(
+    /--restart/.test(parkAction("security-open-point", 42)),
+    "autonomy: the security park names the answer-and-restart way out",
+  );
+
+  const answered = finaliseSpecVerdict(
+    buildable,
+    body("[CRITICAL][RESOLVED] Who may change the retry timeout \u2014 maintainers only"),
+  );
+  assert(
+    answered.verdict !== "park",
+    "autonomy: the same point marked [RESOLVED] does not park after --restart",
+  );
+  const struck = finaliseSpecVerdict(
+    buildable,
+    body("~~[CRITICAL] Who may change the retry timeout~~ \u2014 answered: maintainers"),
+  );
+  assert(struck.verdict !== "park", "autonomy: a struck-through security point does not park");
 } finally {
   try {
     rmSync(repoDir, { recursive: true, force: true });

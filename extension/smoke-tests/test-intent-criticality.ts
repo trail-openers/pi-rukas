@@ -292,7 +292,7 @@ for (const incident of incidents) {
 
 {
   // An open point that touches authentication, authorization, secrets or
-  // permissions is not something the driver may decide: park as underspecified.
+  // permissions is not something the driver may decide: park as security-open-point.
   for (const point of [
     "Who may call the retry endpoint — authentication is undecided",
     "Which role has authorization to rotate keys",
@@ -301,8 +301,8 @@ for (const incident of incidents) {
   ]) {
     const resolved = applyOpenPointGate(spec({ verdict: "proceed" }), [point]);
     assert(
-      resolved.verdict === "park" && resolved.parkReason === "underspecified",
-      `an authorization-class open point parks as underspecified: ${point.slice(0, 40)}`,
+      resolved.verdict === "park" && resolved.parkReason === "security-open-point",
+      `an authorization-class open point parks as security-open-point: ${point.slice(0, 40)}`,
     );
   }
   assert(
@@ -345,8 +345,8 @@ for (const incident of incidents) {
   for (const [cls, point] of classes) {
     const resolved = applyOpenPointGate(spec({ verdict: "proceed" }), [point]);
     assert(
-      resolved.verdict === "park" && resolved.parkReason === "underspecified",
-      `canary: a ${cls} open point parks as underspecified`,
+      resolved.verdict === "park" && resolved.parkReason === "security-open-point",
+      `canary: a ${cls} open point parks as security-open-point`,
     );
   }
   // Non-security CRITICAL points are still carried as assumptions, not parked.
@@ -402,7 +402,7 @@ for (const incident of incidents) {
     "## Open points (unresolved at the gap-gate cap)\n\n- [CRITICAL] Who may call the endpoint \u2014 authentication is undecided\n";
   const finalised = finaliseSpecVerdict(complete, body);
   assert(
-    finalised.verdict === "park" && finalised.parkReason === "underspecified",
+    finalised.verdict === "park" && finalised.parkReason === "security-open-point",
     "finalise: an authorization open point parks a spec that reconciliation had lifted",
   );
   assert(

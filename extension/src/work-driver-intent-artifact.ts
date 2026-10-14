@@ -50,6 +50,7 @@ const PARK_REASONS: readonly ParkReason[] = [
   "already-implemented",
   "too-large",
   "premise-unsound",
+  "security-open-point",
 ];
 
 /**
