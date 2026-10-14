@@ -19,13 +19,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import {
   type CacheInputs,
-  INVESTIGATION_CACHE_TTL_MS,
   type InvestigationCacheEntry,
   RECENT_FILING_WINDOW_MS,
   type ReviewedDryRun,
   entryFile,
   investigationCacheKey,
   readEntryAt,
+  withinPlanCacheTtl,
 } from "./plan-investigation-cache.ts";
 import type { PlanGap } from "./plan-types.ts";
 import { trace } from "./trace.ts";
@@ -70,8 +70,7 @@ function fileableEntry(
   if (!entry || !entry.reviewed.fileable || entry.key !== investigationCacheKey(inputs)) {
     return false;
   }
-  const ageMs = now - entry.createdAt;
-  if (ageMs < 0 || ageMs > INVESTIGATION_CACHE_TTL_MS) return false;
+  if (!withinPlanCacheTtl(now - entry.createdAt)) return false;
   return (
     digest === undefined || reviewedDigestOf(entry.reviewed.title, entry.reviewed.spec) === digest
   );

@@ -220,6 +220,10 @@ That number separates two failures a bare cause could not:
 
 **A `tool-inactivity` kill** is the same watchdog with its in-flight-awareness on: `last output: toolCall in flight: <tool>` means the silence happened *while a tool call was running* — a long bash (a full offline gate, a CI watch) or a tool that genuinely wedged. Its bound is `PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS` (default 60 min), separate from the model-silence budget below; the two knobs disable independently (`0` on one does not touch the other).
 
+**A child hung inside one tool call** shows in `dispatch_peek` as `no new turn for <duration>` next to its wall-clock age. A steer cannot reach it — a steer lands only when the current tool call returns — so the action is `dispatch_kill <id>` with the id the peek row or the `[ensemble:slow]` notice printed; that works for adversarial round and lens children (`<run>/<label>`) too, and the waiting step then sees a failed dispatch. Steers no longer postpone the tool-inactivity kill: Pi acknowledges each one on stdout, and those acknowledgements used to count as output, so a child steered at every slow-run level outlived the 60-minute bound.
+
+**`dispatch_kill` answered `Refused`** — the job belongs to a running `/work` driver cycle, which `dispatch_status`, `dispatch_peek` and the `[ensemble:slow]` notice now mark as `owned by the /work driver, not you`. The PM tool kills such a child only with `force: true` (for a hung one; the driver then sees a failed dispatch), and never kills the cycle's own `work-driver` job, whose abort stops nothing. The agent-list `x` is not gated. A PM `dispatch_specialist` / `dispatch_parallel` of `developer` or `ops` with a `cwd` inside `.worktrees/issue-<N>-*` is refused while the cycle for #N is live in that session; `explore` and the reviewer roles are let through, and so is everything once the cycle has ended.
+
 The 30-minute model-silence budget (and the 60-minute tool-inactivity bound) are deliberately sized for the silence shape each owns: model turns at the model-silence budget, long tool executions at the tool-inactivity bound. Raising a wall-clock number to cover a cause you have not identified is exactly the mistake the six per-role timers were deleted for — each was raised twice, and each time the finding was that the number was too small for a *healthy* child.
 
 ### Reading a handoff
@@ -235,6 +239,10 @@ Every handoff carries three things it previously withheld.
 ### The six-pass review said APPROVED but nothing looks reviewed
 
 A lens that exits 0 without calling `report_finding` used to be indistinguishable from one that reviewed carefully and found nothing, so a silent review reported APPROVED. It now reports `REVIEW_INCOMPLETE` unless every lens produced either findings or a closing summary. If you see REVIEW_INCOMPLETE with no obvious failure, check the lens transcripts under `~/.pi/agent/ensemble-runs/<date>/` — a lens that returned only thinking content is the usual cause.
+
+### A lens line says `N malformed report_finding call(s) skipped`
+
+Pi validates `report_finding` arguments against the tool's schema and rejects a call missing `severity`, `path` or `title` with `Validation failed for tool "report_finding"` — that text is Pi's, and it names one missing key per rejection. A rejected call records nothing; the lens normally repeats it, so the count beside the lens's findings usually means wasted turns, not a lost finding. To check, compare the lens's `N findings` with what its closing summary lists: a finding in the prose with no matching entry was rejected and never re-sent. The lens's line `Skill Load Status: SUCCESS` reports that its skill loaded, not its verdict.
 
 ### `/work` parks at explore saying the spec is underspecified
 
@@ -261,6 +269,7 @@ The hook is the escape hatch for the inexpressible: anything the symlink allowli
 - **`cwd` = the new worktree root.** `git worktree add --detach` has just run, so the hook sees a tree of tracked files only.
 - **The hook path skips the symlink loop entirely**, including the `.git/info/exclude` write that loop performs. If your hook creates a symlink (say, `ln -s $repo_root/extension/node_modules extension/node_modules`), it must write its own exclude entry to `$GIT_COMMON_DIR/info/exclude`, or the link surfaces as untracked in `git status --porcelain` and `stagePorcelainPaths` stages it into the PR.
 - **A non-zero exit is reported as `ProvisionResult.problem`** and traced at the branch step; the cycle continues (a bare worktree is the status quo, not a regression). A hook that cannot provision should exit 0 with a diagnostic to stderr, not fail the cycle.
+- **`hook-failed` in a `worktree-provisioned` event means the hook exited non-zero, nothing else.** A hook that exited 0 is recorded `hook-ran`; it carries a `problem` only when the project has a Node or Python manifest/lockfile and the worktree still has no `node_modules` / `.venv`. A project whose toolchain keeps dependencies outside the tree (Cargo, Go, Bundler) expects nothing here, so a `Cargo.toml` alone never raises one.
 
 ### The plan step re-dispatches saying two workstreams claim the same file
 
@@ -941,6 +950,14 @@ Without `--restart`, re-invoking `/work N` on a terminal-state file now emits a 
 
 `--restart` only wipes the driver's state file (`.pi/work-state/N.json`). Worktrees and feature branches from the prior cycle are NOT removed — the branch step reuses them at runtime: a leftover at the same path with no uncommitted work and no unpushed commits is removed and recreated (the common path, unchanged), but a leftover that HOLDS work is refused instead (see `worktree-dirty-preremove` below). If you want a fully clean slate, salvage any work first, then `git worktree remove --force -- .worktrees/issue-N-*` and `git branch -D feature/issue-N-*` before re-running.
 
+### `/work N --restart` parked again and posted no new comment
+
+**Symptom:** a restarted cycle ends as `intent-park` again, explore ran, but the issue has no second "Cap hit" comment. The handoff reads *"REPEAT of the park reported N min ago (<comment link>) …"*.
+
+**Why:** `--restart` re-resolves the issue from scratch every time. When that fresh resolution parks for the same reason, against the same issue text and the same checked-out commit as the park already reported, a second comment would say nothing new — so the handoff links the earlier one instead (the `needs-human-attention` label is still verified and re-applied). The earlier park is remembered in `.pi/work-state/N/intent-park.txt`, which `--restart` does not wipe. Any difference — another park reason, an edited issue, a moved `HEAD`, a missing or unreadable record — posts a new comment as before.
+
+**Fix:** none needed; act on the linked comment. Delete the record file if you want the next park reported in full regardless.
+
 ### An adversarial fix pass parked on "removed N origin/main comment line(s)"
 
 **Symptom:** the handoff reads *"adversarial fix pass (<workstream> round N) parked: the fix pass removed N origin/main comment line(s) in <workstream> and wrote no comment in their place (<file>: <line> | …)"*.
@@ -1014,6 +1031,12 @@ A lens-fix round ran but its output did not land: either the integration failed 
 It used to continue. The failure was recorded in `plumbReports` rather than the event log *specifically* so the log tail would stay `adversarial-approved` and routing would carry on — which meant the one consumer that could have acted on it never saw it. The next round then re-read `origin/<base>..origin/<branch>`, which had not moved, and re-reported the identical findings at escalating severity until the round cap fired. Measured on nessie #686: two full review rounds after the driver had already logged that it refused to integrate, with the whole review budget spent on a defect that was already solved on disk. Same shape on #673 and #677.
 
 **The fix may still be on disk.** Check `git -C .worktrees/issue-<N>-<id> status` before re-running — the developer's work is usually there, uncommitted.
+
+**A committed fix that could not be integrated is named.** When the fixer committed and the pick onto the branch failed, the handoff gives the fix's sha, the worktree holding it and the conflicting paths — the PR does not contain that commit, so land it by hand before merging. On an older build the second lens-fix round parked this way on its own: integration re-picked a commit that was already on the branch behind the tip (`Committing is not possible because you have unmerged files` in the evidence), stranding the round's real fix one commit ahead in the worktree. Fixed: a commit already in the branch's history is skipped.
+
+### A second `commit-pr` after `lens-fix`, then `integration-worktree-violation` and a non-fast-forward push
+
+Symptom: after `lens-fix` and a long re-review the driver ran `commit-pr` again instead of `lens-review`, logged `integrate worktree creation failed … refusing to force-remove existing worktree …/issue-<N>-default — it holds unrecoverable work: (unpushed commits: N)` and `! [rejected] … (non-fast-forward)`, and parked. Two causes, both fixed: a `dispatch-slow` event (any dispatch past the slow-run threshold) was appended after the step's verdict, and the driver routes on the last event — so the approval was shadowed and the cycle fell through to `commit-pr` (#1235); and the fallback's integrate worktree treated the cycle's own workstream tree as a foreign leftover (#1185). On an older build the work is intact in `.worktrees/issue-<N>-<id>` (detached HEAD) — cherry-pick it onto the branch.
 
 ### `integration-verify-failed` — the consolidated tree does not build
 
@@ -1185,6 +1208,8 @@ Park reasons, each with its own operator action:
 | `too-large` | Not executable as one cycle; split it |
 | `premise-unsound` | It rests on an API or behaviour that could not be substantiated |
 
+A `contradicted` evidence row whose subject is memory — its source is `memory`/`vipune`, or the claim opens with "vipune rows …" — never parks a `proceed`: a stale memory row contradicts the memory, not the issue. It travels as an assumption in the PR body, and a handoff lists it under "Stale memory rows", apart from "Contradicting evidence".
+
 **A missing or unreadable verdict parks.** Before this, an absent token defaulted to "build it" — silence was treated as permission. Parking early is cheap: it costs one explore dispatch rather than a whole cycle ending in a bad PR.
 
 The resolver runs in the `explore` role, which is structurally denied `write`/`edit`/`multiedit`. That is deliberate — an agent holding edit tools rationalises ambiguity away, because building is cheaper than asking.
@@ -1341,6 +1366,8 @@ Before #398, `intent-park` had no branch in either renderer and inherited a bloc
 
 Recovery commands are also **never chained**. They arrive in the Pi chat, and the permission matcher cannot wildcard a chained shape, so every unique `a && b` re-prompts you. One command per line.
 
+**`WORKTREE STATE NOT READ` means the handoff could not run `git`, not that the cycle produced nothing.** Developers commit on detached-HEAD worktrees by design, so a cycle's commits are reachable from no branch until commit-pr integrates them. When the host cannot start a process at handoff time (`/bin/sh: Cannot fork`, `spawn EAGAIN` — a container at its pid limit), every read fails; the handoff used to print those failures as `no committed work ahead of the base`, `(no branch was created)` and `0 file(s) modified` over a worktree holding reviewed commits. It now lists the failed reads and, per recorded worktree, the two commands to run once `git` works again: `git -C <worktree> log --oneline <base>..HEAD` to see the commits, `git -C <worktree> branch <branch> HEAD` to attach them. The numbered options under it still assume a readable repository — check the worktree first. The pid exhaustion itself is the host's to fix.
+
 ### Merge authority — why `/work` opened a PR and stopped
 
 **`/work` will not merge unless something explicitly permitted it to.** That is the default, and the absence of a prohibition is not permission.
@@ -1401,7 +1428,9 @@ Three distinct causes, and they are told apart by *when* the child died.
 
 **The child was about to retry and we hung up on it.** Pi retries transient provider failures itself — 3 attempts, 2s/4s/8s backoff — and stamps `willRetry` on `agent_end`. The harness used to close the child's stdin on any `agent_end`, and rpc mode exits when stdin ends, so the retry never ran. Fixed: stdin stays open while `willRetry` is set. The child's retry is the one worth having — it is in-process, so it resumes with its context intact, where a driver-level retry starts over.
 
-**A fan-out step hit a 429 and halted instead of waiting.** The taxonomy honours a provider's `retry-after` — that is why single dispatches recover from throttling. It never ran for fan-out children, because the router classified only the last event and `runDevelop` ends on `branches-converged`. Fixed. Note the deliberate limit: if *any* workstream succeeded, the step is not retried, because re-running it would re-dispatch work that already landed.
+**The driver retried the step with a new child.** When the child's own retries are exhausted the step router re-runs the step (up to 2 more attempts for a severed provider). That is a fresh child with no memory of the first one, and the `↻ … retrying attempt 2` line now says what went with it: `explore attempt 1 lost: 15m09s, 45 turns, 412k tokens — the step restarts from the beginning`. For `develop` only the conversation is lost — the worktree is the same one, so the retried developer is told a previous attempt was interrupted and to read `git status` / `git log` there before implementing anything. Seeing this line means a provider or network fault, not a defect in the change.
+
+**A fan-out step hit a 429 and halted instead of waiting.** The taxonomy honours a provider's `retry-after` — that is why single dispatches recover from throttling. It never ran for fan-out children, because the router classified only the last event and `runDevelop` ends on `branches-converged`. The first fix reached only the scrollback line: the `✗ step failed` line was withheld for a retry the router then never made, so a multi-workstream develop still halted with `transientRetryAttempts: {}`. The retry decision now uses the same lookup, and a fan-out whose workstreams *all* failed transiently waits and re-runs like a single dispatch (up to 2 more attempts). Note the deliberate limit: if *any* workstream succeeded, the step is not retried, because re-running it would re-dispatch work that already landed — the develop step itself re-runs only the failed workstreams, once.
 
 **The machine went to sleep.** This is the most common one on a laptop and it looks exactly like a provider failure — `Provider request error: terminated`. That string is undici's mid-stream body abort, raised when a socket dies; the real cause is discarded upstream. Signs it was a suspend:
 
@@ -1612,6 +1641,14 @@ After the `develop` step (when every branch claims success) and after the `commi
 - At least one worktree has a real diff — uncommitted porcelain entries, or commits ahead of the `baseSha` recorded at the branch step. All worktrees empty = the claim was hollow.
 - The project's **verify command** exits 0 in each changed worktree.
 
+#### `[host-resource-exhaustion]`: the gate could not run
+
+**Symptom:** The develop step ends with `verify-failed:develop` and the evidence lines start with `[host-resource-exhaustion]`, quoting `/bin/sh: 1: Cannot fork`, `fork: retry: Resource temporarily unavailable` or `spawn … EAGAIN`.
+
+**Cause:** The host (or the container's pid limit) had no room to start a process, so the driver's git / verify / smoke commands never executed. This is an environment failure, not a verdict on the change — the gate still fails, because an unrun gate is not a pass, but nothing was learned about the diff. Before this label existed the same condition was reported as `[needs-human-decision] … (no specific assertion could be extracted)`, or as `consolidated-verify-conflict` ("two workstreams edited the same lines") even on a single-workstream cycle.
+
+**Fix:** Free processes on the host or raise its pid/thread limit, then re-run the cycle. Do not start by inspecting the diff: it has not been judged either way.
+
 #### Scope fan-out: the developer changed too many files
 
 **Symptom:** The develop step ends with `verify-failed:develop` even though the developer reported success. The handoff evidence names an out-of-scope path, or says that the workstream changed more files than its plan declared.
@@ -1684,6 +1721,14 @@ If the smoke command exits non-zero, the gate fails with a `smoke:`-prefixed fai
 
 **Escape hatches:** `PI_ENSEMBLE_SMOKE=0` disables the smoke gate; remove `.pi/smoke-cmd` to omit the smoke test from verification.
 
+#### `fork: Resource temporarily unavailable` after a gate timed out
+
+**A timed-out gate no longer leaves its children running.** The driver's verify, smoke and `verify-cmd-full` runs used `child_process.exec`, whose timeout signals the shell alone — the test runner and everything under it kept running, holding pids and the worktree for the rest of the cycle. They now run in their own process group and the whole group gets SIGTERM at the timeout, then SIGKILL 5 s later (`extension/src/exec-tree.ts`). A command that leaves its group on purpose (`setsid`, GNU `timeout` without `--foreground`) is out of reach; the driver no longer waits on it, but it is not killed.
+
+**Killing a tree does not reap it — that needs an init.** If `pi` is PID 1 of its container, every orphaned process is reparented to it and stays a zombie when it exits, because node only waits for children it spawned itself. Measured on `node:22-alpine`: 20 orphans killed under node-as-PID-1 leave 20 zombies; under `docker run --init`, none. Zombies count against the cgroup's `pids.max`, so the symptom is `pids.current` at the limit with a near-zero load average, and every later command failing to fork. Run the container with `--init` (or another reaper as PID 1). The same applies to a gate a child agent's own bash tool timed out: Pi kills that process group itself, and the corpses still need reaping.
+
+**The reviewer is told not to re-run the gate.** In a `/work` cycle the adversarial reviewer's prompt names the project's verify command and says the driver already owns it — run targeted checks only. `adversarial_loop` called directly is unchanged: nothing ran a gate there, so the reviewer is still asked to.
+
 ### Verify command discovery
 
 Precedence (PR18 shape):
@@ -1698,7 +1743,8 @@ The command is capped at 10 minutes (`PI_ENSEMBLE_VERIFY_TIMEOUT_MS` to override
 
 ### If the gate keeps failing
 
-- **Verify command fails on code the developer didn't touch** — the project was already broken before the cycle started. Fix the baseline first, or point `.pi/verify-cmd` at a narrower command (e.g., `cargo check -p <crate>`).
+- **Verify command fails on code the developer didn't touch** — the project was already broken before the cycle started. Fix the baseline first, or point `.pi/verify-cmd` at a narrower command (e.g., `cargo check -p <crate>`). The driver now checks this itself: when the verify command fails at develop it is re-run once on a clean checkout of the cycle's base commit (a temporary `.worktrees/baseline-verify-<N>`, removed afterwards; never on a passing cycle). If it fails there too, the handoff leads with a `[baseline-red]` finding naming the base sha and the assertion, and the cap is still `verify-failed:develop` — the gate cannot pass, so the cycle still parks, but the change is not what to inspect.
+- **`exceeded its 10-min timeout on the CONSOLIDATED tree`** — the run was killed at the bound, so it says nothing about the code (this used to render as `specific assertion: (no specific assertion could be extracted)`). If the `[baseline-red]` finding reports a timeout at the base commit as well, the gate does not fit the bound on this host: raise `PI_ENSEMBLE_VERIFY_TIMEOUT_MS` or make the gate faster.
 - **Verify command too slow / needs services** — put a cheaper command in `.pi/verify-cmd` (typecheck-only is the intent; full test suites belong to CI).
 - **False alarm you need to bypass right now** — `PI_ENSEMBLE_VERIFY=0` disables the gate entirely (not recommended as a steady state; it re-opens the phantom-handoff class the gate exists to catch).
 
@@ -1775,6 +1821,10 @@ The deterministic pre-triage (`plan-precheck.ts`) fired: the descriptor is below
 ### "Not filed (by policy): the drafted body failed deterministic validation" (draft-invalid)
 
 `plan-validate.ts` halted the draft before the gap gate: bug/feature drafts need a non-fallback Acceptance criteria section (otherwise the issue is not /work-consumable), and an epic needs an actual sub-issue decomposition of sane size. This is the partial-junk case the all-angles-failed guard cannot see (some angle items arrived, but not the load-bearing ones). Re-run (the angles are re-dispatched), or supply the missing content directly via the `context` param (e.g. an `ACCEPTANCE CRITERIA` block — operator directives satisfy the check).
+
+### "PLAN NOT FILED — THE REVIEWED SPEC CHANGED"
+
+A confirm echoed a dry run's `reviewedDigest`, but the reviewed spec could not be filed verbatim — the reason is in the result (the dry run expired, origin/<default> moved, or no cached dry run was found, e.g. in a fresh clone). The full pipeline re-ran and drafted different bytes, so nothing was filed: the confirmation covered the reviewed spec, not the new one. Show the new spec and confirm with the new `reviewedDigest`. For long gaps between dry run and confirm, set `PI_ENSEMBLE_PLAN_CACHE_TTL_MS` (`0` = no expiry); for a fresh clone per turn, set `PI_ENSEMBLE_PLAN_CACHE_DIR` to a directory outside the clone; a confirm then files verbatim as long as origin/<default> has not moved since the dry run ([#1224](https://github.com/trail-openers/pi-rukas/issues/1224)).
 
 ### Chore/spike tickets skip the adversarial gap gate
 

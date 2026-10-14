@@ -14,7 +14,7 @@
 
 import * as lifecycle from "./lifecycle-events.ts";
 import type { RoleName } from "./roles.ts";
-import { drainSlowEvents } from "./slow-events.ts";
+import { drainSlowEvents, foldSlowEvents } from "./slow-events.ts";
 import { trace } from "./trace.ts";
 import { capKilledString } from "./work-driver-cap-killed.ts";
 import { STEP_FAILURE_POLICY } from "./work-driver-context.ts";
@@ -28,6 +28,7 @@ import {
   transientRetryBackoffMs,
   transientRetryEnabled,
 } from "./work-driver-failure-taxonomy.ts";
+import { lostAttemptLine } from "./work-driver-retry-context.ts";
 import { refusedWorkstreams } from "./work-driver-step-refusal.ts";
 import type { CapEvidence } from "./workflow-state-cap.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
@@ -115,14 +116,14 @@ export async function routeStepOutcome(
   // collect land here, exactly once, regardless of which step recorded
   // them). The buffer is keyed by the cycle's primary issue (the registry's
   // cycle identity), so a sibling cycle running concurrently in this process
-  // drains only its own list. The events carry their own `at`, so it is
-  // acceptable that they sit after the step's completion event in the log.
+  // drains only its own list. They are folded in BEHIND the step's own
+  // events (foldSlowEvents): the tail is what nextStep() routes on.
   const slowEvents = drainSlowEvents(ctx.issue);
   // #1016 — the driver's own refusals for this step (see work-driver-step-refusal.ts).
   const refusals = refusedWorkstreams(stateIn.eventLog, step);
   let state =
     slowEvents.length > 0
-      ? { ...stateIn, eventLog: [...stateIn.eventLog, ...slowEvents] }
+      ? { ...stateIn, eventLog: foldSlowEvents(stateIn.eventLog, slowEvents, step) }
       : stateIn;
   {
     const lastEvent = failureEventOf(state.eventLog);
@@ -226,7 +227,15 @@ export async function routeStepOutcome(
   // dispatch-failed branch and would silently advance the cycle into
   // wasted downstream work (the #553 cascade root).
   {
-    const tail = state.eventLog[state.eventLog.length - 1];
+    // The SAME lookup the scrollback block above used. Reading the raw tail
+    // here left a fan-out's transient failure unretried while the block above
+    // had already withheld its ✗ line for the retry: `failureEventOf` was
+    // feeding the message and not the decision.
+    const tail = failureEventOf(state.eventLog);
+    // A fan-out's failure sits behind `branches-converged`. Only the transient
+    // retry applies to it; its halt belongs to the fan-out router below, and
+    // RETRY_ONCE fan-outs (adversarial) keep their own per-workstream budget.
+    const buried = tail !== state.eventLog[state.eventLog.length - 1];
     const isDispatchFail =
       tail?.kind === "dispatch-failed" || tail?.kind === "dispatch-failed-provider";
     if (isDispatchFail) {
@@ -252,10 +261,12 @@ export async function routeStepOutcome(
             },
           };
           await persistCycle(ctx, state);
-          const reason = failureCauseReason(tail);
+          // The retry is a fresh child: say what the failed one took with it.
+          const lost = lostAttemptLine(step, used + 1, tail);
+          const reason = `${failureCauseReason(tail)} · ${lost}`;
           lifecycle.emitStepRetry(step, stepOrd.num, stepOrd.total, used + 2, reason, ctx.issue);
           trace(
-            `work-driver: retry on step="${step}" (attempt ${used + 2}/${classification.maxRetries + 1}, cause=${classification.cause})`,
+            `work-driver: retry on step="${step}" (attempt ${used + 2}/${classification.maxRetries + 1}, cause=${classification.cause}) — ${lost}`,
           );
           // #366 — honour the provider's own requested delay when it stated
           // one (a rate-limit floor: waiting less is what earns the next 429),
@@ -269,7 +280,7 @@ export async function routeStepOutcome(
         }
         // Budget exhausted → fall through to the HALT cap-hit below.
       }
-      if (policy === "HALT") {
+      if (policy === "HALT" && !buried) {
         // #308 — use structured killCause for cap detection instead of
         // regex-matching errorTail. A timeout self-kill is a deliberate
         // budget cap; it should NEVER be retried.
@@ -347,7 +358,7 @@ export async function routeStepOutcome(
         );
         return { state, retry: true };
       }
-      if (policy === "RETRY_ONCE") {
+      if (policy === "RETRY_ONCE" && !buried) {
         // #366 — an infrastructure fault must never decrement the SEMANTIC
         // attempt budget. Pre-fix this branch never consulted the
         // classification, so one 429 on `adversarial` burned the single
@@ -370,10 +381,11 @@ export async function routeStepOutcome(
             },
           };
           await persistCycle(ctx, state);
-          const reason = failureCauseReason(tail);
+          const lost = lostAttemptLine(step, used + 1, tail);
+          const reason = `${failureCauseReason(tail)} · ${lost}`;
           lifecycle.emitStepRetry(step, stepOrd.num, stepOrd.total, used + 2, reason, ctx.issue);
           trace(
-            `work-driver: RETRY_ONCE on step="${step}" (attempt ${used + 2}, budget=${infra ? "transient" : "semantic"})`,
+            `work-driver: RETRY_ONCE on step="${step}" (attempt ${used + 2}, budget=${infra ? "transient" : "semantic"}) — ${lost}`,
           );
           if (infra) {
             const wait = jitteredMs(

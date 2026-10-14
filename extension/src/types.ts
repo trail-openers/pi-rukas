@@ -1,6 +1,18 @@
+/** One image part of an RPC prompt, as Pi takes it. `data` is base64. */
+export interface DispatchImage {
+  type: "image";
+  data: string;
+  mimeType: string;
+}
+
 export interface DispatchSpec {
   role: string;
   prompt: string;
+  /**
+   * Images sent with the kickoff prompt. Set by the /work and /plan drivers
+   * for the issue's own images (work-driver-issue-images.ts); absent elsewhere.
+   */
+  images?: DispatchImage[];
   cwd?: string;
   /**
    * #573 — caller-supplied runId so the transcript path can be derived BEFORE

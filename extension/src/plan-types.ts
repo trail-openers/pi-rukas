@@ -162,6 +162,12 @@ export interface PlanResult {
   filedFromDryRun?: { ageMs: number };
   /** #1043: on a fileable dry run, the digest of its title + body (see plan-filing-claim.ts). */
   reviewedDigest?: string;
+  /**
+   * #1224: a confirm carried a reviewedDigest, the reviewed spec could not be
+   * filed verbatim (`reason`), and the re-run pipeline drafted a different spec.
+   * Nothing was filed; the new spec is cached as a dry run and must be shown again.
+   */
+  reviewedSpecChanged?: { reason: string };
   /** True when the body was compacted to fit the forge's 65,536-char limit. */
   compacted?: boolean;
   /** Per-phase wall-clock durations, always present on a completed run. */

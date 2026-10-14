@@ -34,6 +34,13 @@ export type HandoffEmittedEvent = {
    * trust the fields, don't trust the provenance").
    */
   delivery?: "dispatch" | "fallback";
+  /**
+   * Set when a freshly re-resolved intent park matched the one a previous
+   * cycle already reported (same park reason, issue text and commit): no new
+   * comment was posted, and `commentUrl` is the earlier park's. `at` is when
+   * that earlier park was reported. See work-driver-park-memory.ts.
+   */
+  repeatOf?: { at: number; commentUrl: string };
   /** Path to the handoff markdown body (PR5; back-compat with PR4 events). */
   handoffBodyPath?: string;
   /**

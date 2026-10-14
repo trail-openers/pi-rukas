@@ -43,11 +43,13 @@ import { notifyAgent } from "./agent-message.ts";
 import { buildMemoryPanel } from "./memory-panel.ts";
 import { GLOBAL_KEY, getAllOverrides } from "./model-config.ts";
 import { modelConfigSnapshot } from "./models.ts";
+import { loadPlanImages } from "./plan-images.ts";
 import { armPmMode, isPmModeActive, peekDoctrinePending, takeDoctrinePending } from "./pm-mode.ts";
 import { transcriptsSummary } from "./runs.ts";
 import { trace } from "./trace.ts";
 import { groupIssues, resolvedParallelGroups } from "./work-driver-grouping.ts";
 import { piSessionHost } from "./work-driver-host.ts";
+import { issueImagesSection, toDispatchImages } from "./work-driver-issue-images.ts";
 import { runWorkDriver } from "./work-driver.ts";
 import { launchWork, parseWorkArgs, resolveRepoRoot } from "./work-entry.ts";
 import { renderQueueSummary, runWorkQueue } from "./work-queue.ts";
@@ -182,9 +184,12 @@ export function registerCommands(pi: ExtensionAPI) {
         if (name === "plan") {
           armPmMode();
           stripPmTools(pi);
-          const alias = `/plan is now a thin alias for the compiled plan driver. To create a GitHub issue, call the \`start_plan_driver\` tool with the descriptor${args ? ` ("${args}")` : ""}. Call it with dryRun:true first, show the spec + gap dispositions to the operator, and on their confirmation re-call with dryRun omitted to file. Direct \`gh issue create\` is structurally refused — the refusal will name this tool.`;
+          // The source issue's images (plan-images.ts) ride on this message:
+          // Pi drops any a launcher attaches to the `/plan` command itself.
+          const images = await loadPlanImages();
+          const alias = `/plan is now a thin alias for the compiled plan driver. To create a GitHub issue, call the \`start_plan_driver\` tool with the descriptor${args ? ` ("${args}")` : ""}. Call it with dryRun:true first, show the spec + gap dispositions to the operator, and on their confirmation re-call with dryRun omitted to file. Direct \`gh issue create\` is structurally refused — the refusal will name this tool.${issueImagesSection(images, "pm")}`;
           trace(`/plan → alias message (${alias.length} chars); PM doctrine armed`);
-          notifyAgent(pi, alias);
+          notifyAgent(pi, alias, toDispatchImages(images));
           return;
         }
         // #393 deleted the flag that used to bypass the driver: it fell back

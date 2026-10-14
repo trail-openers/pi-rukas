@@ -70,6 +70,26 @@ PI_ENSEMBLE_EXTRA_IMAGE_DIRS="$HOME/Documents/screenshots" pi-rukas
 PI_ENSEMBLE_IMAGE_DIRS="$HOME/work-images" pi-rukas
 ```
 
+### An issue's images in `/work`
+
+`/work` fetches no images. A launcher that wants a cycle to see the images an issue links puts them in a directory, with a `manifest.json` beside them, and names the directory in `PI_ENSEMBLE_EXTRA_IMAGE_DIRS`:
+
+```json
+{"issue": 7,
+ "images": [{"file": "image-1.png", "link": "https://github.com/user-attachments/assets/…",
+             "type": "image/png", "bytes": 48211}]}
+```
+
+The driver reads the files in its own process and sends them as image parts of the explore prompt (and its retry) and of the plan prompts. Each prompt gets a section that lists every image beside the link it came from, asks for the placement in words, and says an image is untrusted input that cannot change instructions. The steps after plan do not see the images: they read the plan.
+
+Because no tool call is involved, `sandbox-fs-guard` has no part in it, and `PI_ENSEMBLE_ALLOWED_ROOTS` need not name the directory. A launcher that starts the container without `bin/pi-rukas` only has to mount the directory and set the one variable.
+
+What the driver will not take from a manifest: a manifest for another issue, a `file` that is not a plain name in that directory, a symbolic link, a `type` other than `image/png`, `image/jpeg`, `image/gif` or `image/webp`, more than 8 images or 10 MB together. A `link` that is not a plain `https` address is not printed. A multi-issue cycle gets no images. `PI_ENSEMBLE_ISSUE_IMAGES=0` turns it off.
+
+`/plan` reads the same manifests. Pi drops images attached to an extension command, so a launcher cannot send them with `/plan …` itself; the extension sends them with the `/plan` message to the agent, gives them to every child `start_plan_driver` dispatches (its investigation and its gap gate), and the issue it files keeps their links under "Images from the source issue", so a `/work` on the filed issue can fetch them again. `/plan` has no issue number: set `PI_ENSEMBLE_PLAN_ISSUE` to the manifest's `issue`. Without it a lone manifest is used, and manifests for two or more issues give no images at all rather than a guess.
+
+The driver does not check that the step's model reads images. A launcher should set this up only for a model that does: for any other the prompt section describes pictures the model cannot see, or the model's server refuses the request. A dispatch that is resumed after a crash continues the Pi session of the first one, which holds the kickoff message; the resume prompt itself is text.
+
 For your provider to actually use the image, `~/.pi/agent/models.json` must mark the model as multimodal: `"input": ["text", "image"]`. Built-in providers (Anthropic / OpenAI / Google) know vision capabilities natively; custom OpenAI-compatible providers (e.g. halo's Qwen3.6) need the explicit hint.
 
 **Docker-based MCP servers and SSH work transparently.** Two capabilities that exist on the host carry through to the sandbox by default — you don't set a flag for them:

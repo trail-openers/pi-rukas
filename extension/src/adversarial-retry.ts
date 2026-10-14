@@ -4,8 +4,19 @@
  * 500-line gate headroom for the #799 slow-watch wiring).
  */
 import { classifyDispatchOutcome } from "./adversarial-classify.ts";
-import { adversarialPhaseBudgetMs } from "./adversarial.ts";
 import type { DispatchResult } from "./types.ts";
+
+/**
+ * Wall-clock budget for all retry attempts in a single adversarial phase. When
+ * elapsed time reaches this limit no further retries start, preventing a
+ * repeated watchdog kill from consuming its full attempt budget. Set 0 to
+ * disable. Override: PI_ENSEMBLE_ADVERSARIAL_PHASE_BUDGET_MS. Default: 30 min.
+ */
+export function adversarialPhaseBudgetMs(): number {
+  const env = Number(process.env.PI_ENSEMBLE_ADVERSARIAL_PHASE_BUDGET_MS);
+  if (Number.isFinite(env) && env >= 0) return env;
+  return 30 * 60_000;
+}
 
 type PhaseRole = "adversarial-developer" | "developer";
 

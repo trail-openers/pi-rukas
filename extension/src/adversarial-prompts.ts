@@ -120,6 +120,19 @@ export function buildAdversarialPrompt(opts: {
    * and which parts belong to siblings (which are excluded from findings).
    */
   scope?: { own?: SiblingScope; siblings: readonly SiblingScope[] };
+  /**
+   * The "changed by the last fix pass" section (fix-delta.ts); empty when this
+   * review does not follow a fix pass or the delta could not be stated.
+   */
+  fixDelta?: string;
+  /**
+   * The project gate the /work driver runs itself (`driverGateCmd`). Present
+   * only on the driver path: there the verify gate cleared this tree before the
+   * review was dispatched, and a reviewer re-running it — nine minutes on one
+   * measured project, twice in one round — proves nothing new. Absent on the
+   * `adversarial_loop` tool path, where nobody has run anything.
+   */
+  gateCmd?: string;
 }): string {
   const commentSection = opts.commentEvidence
     ? `\n\n${opts.commentEvidence}\n\n${COMMENT_JUDGEMENT_PROSE}`
@@ -127,16 +140,19 @@ export function buildAdversarialPrompt(opts: {
   const scopeSection = opts.scope
     ? buildWorkstreamScopeSection(opts.scope.own, opts.scope.siblings)
     : "";
+  const checks = opts.gateCmd
+    ? `Do NOT run the project's full gate — \`${opts.gateCmd}\` — or anything that wraps it or the whole test suite: the driver runs that exact command itself. Its verify gate had to clear this tree before you were dispatched, and it runs again on the consolidated tree before the pull request opens, so a re-run here costs the whole gate's wall-clock and proves nothing new. Run only targeted checks — the single test file, lint or type check that exercises the behaviour you are attacking.`
+    : "Run lint/type/test if any.";
   return `You are reviewing the diff below. Context: ${opts.context}
 Round: ${opts.round} of ${opts.maxRounds}.
 
-Attack this implementation. Find edge cases, security holes, race conditions, API misuse, flawed assumptions. Run lint/type/test if any. Return a verdict line at the end exactly matching one of:
+Attack this implementation. Find edge cases, security holes, race conditions, API misuse, flawed assumptions. ${checks} Return a verdict line at the end exactly matching one of:
   VERDICT: APPROVED
   VERDICT: MINOR_OBSERVATIONS
   VERDICT: ISSUES_FOUND
   VERDICT: CRITICAL_ISSUES_FOUND
 
-Use the severity your role prompt defines. Only CRITICAL_ISSUES_FOUND blocks the commit; the others are recorded and carried into the pull request. Inflating a finding's severity to avoid approving is the worst failure mode of this role.${scopeSection}${issueSection(opts.issueBody)}${commentSection}
+Use the severity your role prompt defines. Only CRITICAL_ISSUES_FOUND blocks the commit; the others are recorded and carried into the pull request. Inflating a finding's severity to avoid approving is the worst failure mode of this role.${scopeSection}${issueSection(opts.issueBody)}${commentSection}${opts.fixDelta ?? ""}
 
 Diff:
 \`\`\`diff

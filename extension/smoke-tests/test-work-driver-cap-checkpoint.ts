@@ -217,5 +217,28 @@ const fakePi = { sendUserMessage: () => {} } as unknown as ExtensionAPI;
   }
 }
 
+// ---- #1190: an unstaged tracked edit as the FIRST porcelain record
+// (` M seed.txt`) keeps its first character — a trimmed read staged `eed.txt`,
+// the add failed, and the checkpoint committed without the file.
+{
+  const repo = makeRepo();
+  try {
+    writeFileSync(path.join(repo, "seed.txt"), "edited\n");
+    writeFileSync(path.join(repo, "zz-new.ts"), "new\n");
+    const s = capKillState(repo, 9904);
+    await writeState(repo, s);
+    const ctx = { host: fakePi, repoRoot: repo, issue: 9904 } as unknown as Parameters<
+      typeof checkpointCapedDispatch
+    >[0];
+    const out = await checkpointCapedDispatch(ctx, s, "develop");
+    assert(out.pipelineState.capedPartialState?.tree === "committed", "#1190: checkpoint committed");
+    const committed = git(repo, "show", "--name-only", "--format=", "HEAD").split("\n");
+    assert(committed.includes("seed.txt"), "#1190: the first ` M` record is committed whole");
+    assert(committed.includes("zz-new.ts"), "#1190: the later record is committed too");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

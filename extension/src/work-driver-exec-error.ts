@@ -74,3 +74,48 @@ export function extractAttributedTail(combined: string, maxLen: number): Attribu
   }
   return { tail: trimmed.slice(-maxLen), attributed: false };
 }
+
+/**
+ * The label a failure string carries when the command never ran because the
+ * HOST could not start a process. Same convention as the classifier's
+ * `[consolidation-created]` / `[needs-human-decision]` labels: the verify
+ * gate's failures are strings, and the consumers (explainCap, the queue's
+ * human action) route on the label rather than on the prose around it.
+ */
+export const HOST_EXHAUSTION_LABEL = "[host-resource-exhaustion]";
+
+/**
+ * The shapes a fork failure arrives in: dash (`/bin/sh: 1: Cannot fork`),
+ * bash (`fork: retry: Resource temporarily unavailable`), coreutils
+ * (`fork system call failed`), and Node's own spawn error (`spawn /bin/sh
+ * EAGAIN`, `Failed to start worker: EAGAIN`). A bare `EAGAIN` is deliberately
+ * NOT matched — a non-blocking read reports it too, and that is a test's
+ * business, not the host's.
+ */
+const HOST_FORK_FAILURE_RE =
+  /\bCannot fork\b|\bfork: (?:retry: )?(?:Resource temporarily unavailable|Cannot allocate memory)|\bfork system call failed\b|\bspawn\b[^\n]*\bEAGAIN\b|\bFailed to start worker: EAGAIN\b/;
+
+/**
+ * True when `output` shows the host refusing to fork. Three cycles parked
+ * with a verdict about the CODE — `[needs-human-decision]`, and once "two
+ * workstreams edited the same lines" on a single-workstream cycle — when
+ * every command the gate ran had died on `/bin/sh: 1: Cannot fork`. Nothing
+ * was executed, so nothing was learned about the change.
+ */
+export function isHostForkExhaustion(output: string): boolean {
+  return HOST_FORK_FAILURE_RE.test(output);
+}
+
+/** True when a recorded failure string carries the host-exhaustion label. */
+export function isHostExhaustionFailure(failure: string): boolean {
+  return failure.includes(HOST_EXHAUSTION_LABEL);
+}
+
+/**
+ * The failure string for a gate command the host could not start. It stays a
+ * FAILURE — an unrun gate must never read as a pass — but it says what was
+ * and was not established, and points at the host instead of the diff.
+ */
+export function hostExhaustionFailure(what: string, detail: string): string {
+  return `${HOST_EXHAUSTION_LABEL} ${what} could not run — the host refused to start a process (fork failed / EAGAIN: its process or thread limit is exhausted). This is an environment failure, NOT a verdict on the change: the gate did not execute, so the change is neither confirmed nor refuted. Free processes on the host (or raise its pid limit) and re-run — ${detail}`;
+}

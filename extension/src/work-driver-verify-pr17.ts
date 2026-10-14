@@ -8,18 +8,24 @@
  */
 
 import type { CommentEvidence } from "./comment-evidence.ts";
+import { execTree } from "./exec-tree.ts";
 import { countPrCommits, refResolves } from "./git-range.ts";
-import { execp } from "./lens-exec.ts";
+import { execp as lensExecp } from "./lens-exec.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
-import { resolveMainline } from "./work-driver-git.ts";
+import { type VerifyExecFn, resolveMainline } from "./work-driver-git.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
+import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { verifyDevelopOutcome } from "./work-driver-verify-develop.ts";
 import type { WorkState } from "./workflow-state.ts";
 
-// #1134 follow-up — the argv-capable executor. The previous `promisify(exec)`
-// dropped `argv`, so countPrCommits ran a bare `git` in production (no
-// verifyExecFn is injected there) and every commit-pr read as unverifiable.
+// #1134 follow-up — the argv form must be honoured: the previous
+// `promisify(exec)` dropped `argv`, so countPrCommits ran a bare `git` in
+// production (no verifyExecFn is injected there) and every commit-pr read as
+// unverifiable. The argv form keeps lens-exec's executor; the shell form —
+// the project's verify and smoke commands — is tree-killing (exec-tree.ts).
+const execp: VerifyExecFn = (cmd, opts) =>
+  opts?.argv ? lensExecp(cmd, opts) : execTree(cmd, opts);
 
 /**
  * PR17 — Driver-side outcome verification gate.
@@ -61,6 +67,17 @@ import type { WorkState } from "./workflow-state.ts";
 function verifyGateEnabled(): boolean {
   const v = process.env.PI_ENSEMBLE_VERIFY;
   return v !== "0" && v !== "false";
+}
+
+/**
+ * The command the driver's own gates run — after develop, after every
+ * adversarial fix pass, and on the consolidated tree at commit-pr — or
+ * undefined when the gate is disabled or the project has no command. The
+ * adversarial reviewer is told the driver owns this command so it does not
+ * spend a whole gate's wall-clock re-proving a result the driver already has.
+ */
+export async function driverGateCmd(repoRoot: string): Promise<string | undefined> {
+  return verifyGateEnabled() ? verifyCmdFor(repoRoot) : undefined;
 }
 
 /** The fields of the forge `prView` result this gate reads. */

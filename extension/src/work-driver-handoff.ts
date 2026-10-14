@@ -23,6 +23,7 @@ import {
   verifyHandoffLabel,
 } from "./work-driver-handoff-post.ts";
 import { captureWorktreeSnapshot } from "./work-driver-handoff-snapshot.ts";
+import { readParkMemory, recordPark } from "./work-driver-park-memory.ts";
 import { releaseClaim } from "./work-driver-path-claims.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { runWorktreeTeardown } from "./work-driver-worktree-sweep.ts";
@@ -142,7 +143,14 @@ export async function runHandoff(
   // completion / dispatch-failed event construction moved verbatim.)
   const prNumber = state.pipelineState.prNumber;
   const target = prNumber ? `pr #${prNumber}` : `issue #${ctx.issue}`;
-  const dispatchResult = await runHandoffOpsDispatch(ctx, next, handoffBodyPath);
+  // A freshly re-resolved intent park that matches the one already reported
+  // (work-driver-park-memory.ts) has its comment on the issue: no ops
+  // dispatch, no second comment. The label is still verified below and
+  // re-applied if someone removed it.
+  const park = await readParkMemory(ctx, next);
+  const dispatchResult = park.repeatOf
+    ? { next, opsReplyText: "" }
+    : await runHandoffOpsDispatch(ctx, next, handoffBodyPath);
   next = dispatchResult.next;
   const opsReplyText = dispatchResult.opsReplyText;
   // RE-ENTRY DEDUPE (census 2026-09-09): a crash after the comment posted
@@ -161,6 +169,7 @@ export async function runHandoff(
   // The dedupe line, verbatim — re-entry reuses a prior event's URL and
   // never re-posts (the canary above pins the shape):
   let commentUrl = parseHandoffCommentUrl(opsReplyText) ?? priorHandoffCommentUrl(next.eventLog);
+  commentUrl ??= park.repeatOf?.commentUrl;
   if (parsed.commentUrl && !commentUrl) commentUrl = parsed.commentUrl;
   let labelApplied = false;
   // #798 — per-target label state. When prNumber is set, the driver labels
@@ -301,7 +310,9 @@ export async function runHandoff(
       const ok = await applyIssueLabelDualTarget(forge, ctx.issue);
       const verified = ok || (await verifyHandoffLabel(forge, "issue", ctx.issue));
       issueLabelApplied = verified;
-      if (verified) labelApplied = true;
+      // Both targets or nothing: the issue label alone must not report the
+      // PR's failed label as applied (#1219).
+      labelApplied = verified && prLabelApplied === true;
     }
   }
   // #674 — carry the consolidation outcome into the handoff-emitted event so the
@@ -327,13 +338,16 @@ export async function runHandoff(
       : snap.committedWork?.length
         ? "consolidation infeasible (work remains on its worktree detached HEADs)"
         : undefined,
-    delivery,
+    // A repeat delivered nothing this cycle — no provenance to assert.
+    delivery: park.repeatOf ? undefined : delivery,
+    repeatOf: park.repeatOf,
     targetType: prNumber ? "pr" : "issue",
     targetNumber: prNumber ?? ctx.issue,
     issueLabelApplied,
     prLabelApplied,
   });
   next = appendEvent(next, emitted);
+  await recordPark(ctx, park, commentUrl);
   // #571 — release the path claim so sibling cycles can proceed.
   try {
     await releaseClaim(ctx.repoRoot, ctx.issue);
@@ -361,7 +375,7 @@ export async function runHandoff(
     },
   };
   trace(
-    `work-driver: handoff for issue #${ctx.issue} (${target}) — commentUrl=${commentUrl ?? "?"} label=${labelApplied}`,
+    `work-driver: handoff for issue #${ctx.issue} (${target}) — commentUrl=${commentUrl ?? "NOT POSTED"} label=${labelApplied}${prNumber ? ` (issue=${issueLabelApplied === true} pr=${prLabelApplied === true})` : ""}`,
   );
   // #799 — final drain: the handoff ops child may outlive the dispatch bound
   // (its slow watch keeps recording until it settles), and the driver's

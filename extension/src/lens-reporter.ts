@@ -31,7 +31,11 @@ export default function (pi: ExtensionAPI) {
     name: "report_finding",
     label: "Report Finding",
     description:
-      "Report ONE code-review finding from your assigned lens. Call once per finding — do not batch. If you find nothing in your lane, simply do not call this tool.",
+      // The required set is spelled out with one complete call because Pi's
+      // schema validation names a single missing key per rejection: a model
+      // that sends only `description` is told about `title`, then about
+      // `severity`, one wasted turn each.
+      'Report ONE code-review finding from your assigned lens. Call once per finding — do not batch. Every call MUST carry all three required fields — severity, path, title — or it is rejected and nothing is recorded; line, description and suggestion are optional. Example: {"severity": "MEDIUM", "path": "src/api.ts", "line": 42, "title": "fetch() error is swallowed", "description": "The catch block returns [] so callers cannot tell a failure from an empty result.", "suggestion": "Rethrow or return a typed error."}. If you find nothing in your lane, simply do not call this tool.',
     parameters: Type.Object({
       severity: Type.String({
         description: "One of: CRITICAL, HIGH, MEDIUM, LOW",

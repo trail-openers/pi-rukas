@@ -25,8 +25,14 @@ import {
 } from "./work-driver-consolidation-classify.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { provisionDepsHint } from "./work-driver-deps-hint.ts";
-import { extractAttributedTail } from "./work-driver-exec-error.ts";
+import {
+  extractAttributedTail,
+  hostExhaustionFailure,
+  isHostExhaustionFailure,
+  isHostForkExhaustion,
+} from "./work-driver-exec-error.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
+import { baselineRedMessage, probeBaselineVerify } from "./work-driver-verify-baseline.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { formatExecError, verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import { rawOutputClause } from "./work-driver-verify-flake.ts";
@@ -261,6 +267,11 @@ export async function runVerifyCommandGate(opts: {
       failures.push(
         `consolidated verify was refused — repoRoot is dirty (${cons.detail}). Leftover residue from an earlier cycle, NOT a workstream conflict or verify failure: run \`git status\` at the repo root, clear the residue, and re-run the cycle`,
       );
+    } else if (cons.kind === "host") {
+      // The host could not fork, so nothing was combined: neither a conflict
+      // nor a verify failure. The message deliberately avoids the conflict
+      // wording the cap router matches on.
+      failures.push(hostExhaustionFailure("consolidated verify", cons.detail));
     } else {
       // #814 — the "incoherent decomposition" claim is asserted ONLY when
       // the driver has NO recorded fence evidence. When a sibling-declared
@@ -350,7 +361,27 @@ export async function runVerifyCommandGate(opts: {
     // #841 — the shared rawOutputClause helper (single home for the
     // sentence so both verify seams render identically).
     const logClause = rawOutputClause(cons.logPath);
-    failures.push(consolidatedFailureMessage(verdict, cmd) + logClause);
+    // A run KILLED at the bound never reached a verdict: its stream stops
+    // wherever the kill landed, and classifying that reported a timeout as
+    // "specific assertion: (no specific assertion could be extracted)" — a
+    // claim about the code. Report the bound instead, as the per-worktree
+    // run above already does.
+    // A verify command the host could not fork never ran, so the classifier's
+    // verdict ("[needs-human-decision] … no specific assertion could be
+    // extracted") would be a judgement about code nobody executed. Read from
+    // the same bounded evidence the classifier saw, not the whole stream — a
+    // passing stage that merely prints the phrase must not relabel a real
+    // failure further down.
+    failures.push(
+      (cons.timedOut === true
+        ? `verify command \`${cmd}\` exceeded its ${Math.round(verifyTimeoutMs() / 60000)}-min timeout on the CONSOLIDATED tree at ${ctx.repoRoot} — the run was killed at the bound (PI_ENSEMBLE_VERIFY_TIMEOUT_MS), so it reached no verdict about the code.`
+        : isHostForkExhaustion(classifierInput)
+          ? hostExhaustionFailure(
+              `verify command \`${cmd}\` on the CONSOLIDATED tree`,
+              classifierInput,
+            )
+          : consolidatedFailureMessage(verdict, cmd)) + logClause,
+    );
     // #841 — thread the ACTUAL written log path back (the write's own
     // return — undefined when the write failed, in which case there is
     // nothing to record structurally).
@@ -416,6 +447,42 @@ export async function runVerifyCommandGate(opts: {
     for (const f of perWorktreeVerifyFailures) {
       notes.push(
         `per-worktree verify (evidence; still a failure — the consolidated pass does not excuse a per-worktree defect, #1005) — ${f}`,
+      );
+    }
+  }
+  // Baseline comparison — ONLY once the verify command has already failed
+  // (never on the happy path: it costs a full gate run). A command that
+  // also fails on a clean checkout of the base commit was red before the
+  // change existed; the cycle still parks, but the evidence leads with that
+  // instead of blaming the diff. See work-driver-verify-baseline.ts. Not
+  // when the host could not fork: the probe cannot run there either, and its
+  // "red at base" would be the same environment failure read as a verdict.
+  if (
+    (cons.status === "failed" || perWorktreeVerifyFailures.length > 0) &&
+    !failures.some(isHostExhaustionFailure)
+  ) {
+    const base = baseSha as string;
+    const timeoutMs = verifyTimeoutMs();
+    const verdict = await probeBaselineVerify(execFn, {
+      repoRoot: ctx.repoRoot,
+      baseSha: base,
+      issue: ctx.issue,
+      cmd,
+      timeoutMs,
+    });
+    if (verdict.status === "red") {
+      const changeFailure = [
+        cons.status === "failed" ? (cons.rawFailure ?? "") : "",
+        ...perWorktreeVerifyFailures,
+      ].join("\n");
+      failures.unshift(
+        baselineRedMessage(verdict, { cmd, baseSha: base, timeoutMs, changeFailure }),
+      );
+    } else {
+      notes.push(
+        verdict.status === "green"
+          ? `baseline verify passed — \`${cmd}\` exits 0 on a clean checkout of the base commit ${base.slice(0, 12)}, so the gate was green before this change`
+          : `baseline verify not established — ${verdict.reason}`,
       );
     }
   }

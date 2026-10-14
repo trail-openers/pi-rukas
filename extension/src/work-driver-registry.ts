@@ -21,6 +21,7 @@
  * already does it correctly.
  */
 
+import path from "node:path";
 import { trace } from "./trace.ts";
 
 /** issue number -> the primary issue of the cycle that holds it. */
@@ -73,6 +74,20 @@ export function claimCycle(primary: number, issues?: number[]): ClaimResult {
 /** Live cycle primaries, for diagnostics. */
 export function liveCycles(): number[] {
   return [...new Set(held.values())].sort((a, b) => a - b);
+}
+
+/**
+ * The live cycle whose worktree `cwd` is, or is inside — undefined when none.
+ *
+ * Every workstream develops in `<repo>/.worktrees/issue-<N>-<id>`, and while
+ * the cycle for #N is live that tree has exactly one writer: the driver's
+ * child. Matched on the path shape rather than on state files because the
+ * claim is the only thing that says "live" in this process; a tree kept for
+ * inspection after a handoff has no claim and is not refused.
+ */
+export function liveCycleOwning(cwd: string): number | undefined {
+  const m = path.resolve(cwd).match(/[\\/]\.worktrees[\\/]issue-(\d+)-/);
+  return m ? held.get(Number(m[1])) : undefined;
 }
 
 /** Test-only: drop all claims. Never called from production. */

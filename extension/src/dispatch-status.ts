@@ -1,6 +1,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { type JobStatusRow, jobStatusSnapshot, killJob } from "./async-jobs.ts";
+import {
+  DRIVER_OWNED_NOTICE,
+  type JobStatusRow,
+  jobStatusSnapshot,
+  killJob,
+} from "./async-jobs.ts";
 
 /**
  * Structural poll-guard (#364 FIX 1).
@@ -91,24 +96,65 @@ export function registerDispatchStatusTool(pi: ExtensionAPI) {
     description:
       "Abort a running async subagent or batch by jobId. The orchestrator will deliver a FAILED report shortly after. Use sparingly — prefer letting children finish.",
     parameters: Type.Object({
-      jobId: Type.String({ description: "Job id as shown by dispatch_status." }),
+      jobId: Type.String({
+        description:
+          "Job id as shown by dispatch_status, or a child id (`<run>/<label>`) as shown by dispatch_peek or a slow-run notice.",
+      }),
+      force: Type.Optional(
+        Type.Boolean({
+          description:
+            "Required to kill a child owned by a running /work driver cycle. Only for one dispatch_peek shows hung — never to replace it with a dispatch of your own.",
+        }),
+      ),
     }),
     async execute(_id, raw) {
-      const params = raw as { jobId: string };
+      const params = raw as { jobId: string; force?: boolean };
+      // Checked here, not in killJob: the operator's agent-list `x` goes
+      // through killJob directly and must keep working on every row.
+      const owned = jobStatusSnapshot().find((r) => r.jobId === params.jobId && r.driverOwned);
+      const refusal = owned ? driverKillRefusal(owned, params.force === true) : undefined;
+      if (refusal) {
+        return {
+          content: [{ type: "text", text: refusal }],
+          details: { jobId: params.jobId, killed: false, driverOwned: true },
+        };
+      }
       const killed = killJob(params.jobId);
       return {
         content: [
           {
             type: "text",
-            text: killed
-              ? `Sent SIGTERM to job ${params.jobId}. FAILED report will arrive shortly.`
-              : `No such job ${params.jobId} — already finished or never existed.`,
+            text: !killed
+              ? `No such job ${params.jobId} — already finished or never existed.`
+              : owned
+                ? `Sent SIGTERM to the /work driver's child ${params.jobId} (${owned.label}). No report comes to you: the driver records the failed dispatch and retries or parks the cycle itself. Do NOT dispatch a replacement.`
+                : `Sent SIGTERM to job ${params.jobId}. FAILED report will arrive shortly.`,
           },
         ],
-        details: { jobId: params.jobId, killed },
+        details: { jobId: params.jobId, killed, ...(owned ? { driverOwned: true } : {}) },
       };
     },
   });
+}
+
+/**
+ * Why a PM `dispatch_kill` of a driver-owned job is not carried out, or
+ * undefined when it should be. The PM cannot tell a driver child from its own
+ * by id, and killed one on the belief it had mis-dispatched it; saying whose
+ * job it is BEFORE the kill is the fix. `force` keeps the one legitimate
+ * kill — a child hung inside a tool call, which nothing else can stop.
+ * The cycle's own job is refused outright: its work ignores the abort, so
+ * "killed" would be a lie and the cycle would run on.
+ */
+export function driverKillRefusal(
+  row: Pick<JobStatusRow, "jobId" | "role" | "label">,
+  force: boolean,
+): string | undefined {
+  if (row.role === "work-driver") {
+    return `Refused: ${row.jobId} (${row.label}) is the /work driver cycle itself, and dispatch_kill cannot stop a cycle — nothing in the driver listens to this abort. To stop one hung child, dispatch_kill that child's id; otherwise let the cycle reach merged or handoff (state: /work-status).`;
+  }
+  if (force) return undefined;
+  return `Refused: ${row.jobId} (${row.label}). ${DRIVER_OWNED_NOTICE} If dispatch_peek shows it is genuinely hung (no new turn for a long time), call dispatch_kill again with force: true — the driver then handles the failed dispatch.`;
 }
 
 function renderStatus(rows: JobStatusRow[]): string {
@@ -128,7 +174,7 @@ function renderStatus(rows: JobStatusRow[]): string {
     if (r.batchId) {
       return `  ↳ [${r.jobId}] ${r.label} (in batch ${r.batchId}) · ${elapsed}`;
     }
-    return `[${r.jobId}] ${r.label} · ${elapsed} elapsed`;
+    return `[${r.jobId}] ${r.label} · ${elapsed} elapsed${r.driverOwned ? " · owned by the /work driver, not you" : ""}`;
   });
   return [`${rows.length} async slot(s) in flight:`, ...lines].join("\n");
 }

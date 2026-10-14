@@ -58,8 +58,7 @@ export function slowRecorder(issue: number, step: WorkStep): OnSlowCallback {
  * driver's step-boundary persistence point, just before `writeState`, so
  * slow events land in the durable log together with the step's own events
  * — and only in THAT cycle's log (a sibling cycle's list is untouched).
- * The events carry their own `at`, so it is acceptable that they land after
- * the step's completion event. */
+ * The caller places them with `foldSlowEvents`, never at the tail. */
 export function drainSlowEvents(issue: number): WorkEvent[] {
   const list = pendingSlowEvents.get(issue);
   if (!list || list.length === 0) {
@@ -68,6 +67,35 @@ export function drainSlowEvents(issue: number): WorkEvent[] {
   }
   pendingSlowEvents.delete(issue);
   return list;
+}
+
+/**
+ * Fold drained slow events into a step's event log WITHOUT making one the
+ * tail. `nextStep()` and the step router route on the LAST event, so a
+ * `dispatch-slow` appended after the step's verdict shadowed it and the
+ * cycle fell through to the linear table: an `adversarial-approved` that
+ * follows a lens-fix went to commit-pr instead of lens-review (and a
+ * fix-request, a rejection's cap-hit or a failing `ci-status` were skipped
+ * the same way) whenever a dispatch in that step had crossed the slow
+ * threshold. The events carry their own `at`, so they sit right after the
+ * step's own `step-started` (they were recorded during the step); with no
+ * such event they go in front of the tail.
+ */
+export function foldSlowEvents(
+  eventLog: WorkEvent[],
+  slowEvents: WorkEvent[],
+  step: WorkStep,
+): WorkEvent[] {
+  if (slowEvents.length === 0) return eventLog;
+  let at = Math.max(eventLog.length - 1, 0);
+  for (let i = eventLog.length - 1; i >= 0; i--) {
+    const e = eventLog[i];
+    if (e?.kind === "step-started" && e.step === step) {
+      at = i + 1;
+      break;
+    }
+  }
+  return [...eventLog.slice(0, at), ...slowEvents, ...eventLog.slice(at)];
 }
 
 /** Drop one cycle's leftover list without returning it. Called at the
