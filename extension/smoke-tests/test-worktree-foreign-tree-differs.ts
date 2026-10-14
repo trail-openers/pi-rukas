@@ -5,24 +5,11 @@
  * Split out of test-worktree-dirty-preremove.ts to keep that file under the
  * 500-line cap (AGENTS.md §12).
  */
-import { execFile } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
-import { DirtyWorktreeError, type ExecFn, worktreeCreate } from "../src/worktree.ts";
-
-const execFileP = promisify(execFile);
-
-const realExec: ExecFn = async (cmd, o) => {
-  const opts = { cwd: o?.cwd, maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024 };
-  const { stdout } = o?.argv
-    ? await execFileP(cmd, o.argv, opts)
-    : await execFileP("/bin/sh", ["-c", cmd], opts);
-  return { stdout };
-};
-
-const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
+import { git, realExec } from "./lib/worktree-fake-fixture.ts";
+import { DirtyWorktreeError, worktreeCreate } from "../src/worktree.ts";
 
 let failures = 0;
 function assert(cond: boolean, msg: string) {

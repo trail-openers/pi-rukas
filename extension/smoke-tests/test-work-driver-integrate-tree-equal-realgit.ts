@@ -20,15 +20,13 @@
  * The cycle's worktrees are read from the state file's pipelineState.worktrees.
  */
 
-import { execFile } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
+import { git, realExecWithStderr as realExec } from "./lib/worktree-fake-fixture.ts";
 import { ensureIntegrateWorktree } from "../src/work-driver-integrate-worktree.ts";
 import { worktreePath } from "../src/worktree.ts";
 
-const execFileP = promisify(execFile);
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -39,19 +37,6 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const realExec = async (cmd: string, o?: { cwd?: string; maxBuffer?: number }) => {
-  try {
-    const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
-      cwd: o?.cwd,
-      maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
-    });
-    return { stdout };
-  } catch (e) {
-    const err = e as Error & { stderr?: string };
-    throw new Error(`${err.message}\n${err.stderr ?? ""}`);
-  }
-};
-const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 const headOf = async (cwd: string) => (await git(cwd, ["rev-parse", "HEAD"])).stdout.trim();
 
 const root = mkdtempSync(path.join(tmpdir(), "pi-ens-1170-tree-equal-"));

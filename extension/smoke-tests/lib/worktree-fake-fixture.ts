@@ -18,13 +18,32 @@ import type { ExecFn } from "../../src/worktree.ts";
 
 const execFileP = promisify(execFile);
 
-/** Run a shell command for real, in the given cwd. */
+/**
+ * Run a shell command for real, in the given cwd. An `argv` option runs that
+ * program directly (no shell), as the production exec does for JSON-free calls.
+ */
 export const realExec: ExecFn = async (cmd, o) => {
-  const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
-    cwd: o?.cwd,
-    maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
-  });
+  const opts = { cwd: o?.cwd, maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024 };
+  const { stdout } = o?.argv
+    ? await execFileP(cmd, o.argv, opts)
+    : await execFileP("/bin/sh", ["-c", cmd], opts);
   return { stdout };
+};
+
+/**
+ * `realExec` that folds the child's stderr into the thrown message, so a failing
+ * git call shows WHY in the test log. Same behaviour otherwise.
+ */
+export const realExecWithStderr = async (
+  cmd: string,
+  o?: { cwd?: string; maxBuffer?: number },
+): Promise<{ stdout: string }> => {
+  try {
+    return await realExec(cmd, o);
+  } catch (e) {
+    const err = e as Error & { stderr?: string };
+    throw new Error(`${err.message}\n${err.stderr ?? ""}`);
+  }
 };
 
 /** Run git for real in `cwd`. */

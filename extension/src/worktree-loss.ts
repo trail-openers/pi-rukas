@@ -29,9 +29,12 @@
  *    unreadable worktree is not evidence that it is clean. Trade-off (#1170):
  *    an unreadable leftover now blocks the cycle instead of being removed —
  *    fail closed beats the old wedged-queue avoidance.
- *  - Git calls are shell strings. A ref is JSON-quoted into one, and
- *    worktree-create-guard rejects any ref outside a safe charset before a
- *    create runs (no ref reaches a shell unvalidated).
+ *  - Git calls are shell strings. A ref is JSON-quoted into one, and EVERY
+ *    function in this module or worktree-create-guard that interpolates a ref
+ *    validates it with `assertSafeRef` before the first shell call:
+ *    `inspectWorktreeForLoss` (an unsafe ref is a finding with `inspectError`,
+ *    so it fails closed) and `runCreateGuards`. No ref reaches a shell
+ *    unvalidated.
  *  - A path with no directory on disk is not a worktree — nothing to inspect.
  */
 
@@ -119,6 +122,21 @@ export interface InspectOpts {
 
 /** Directories whose ignored form is a regenerable dependency tree. */
 const REGENERABLE_DIR_NAMES = new Set(["node_modules", ".venv", "vendor"]);
+
+/** A ref name made only of characters that are inert inside double quotes. */
+const SAFE_REF = /^[A-Za-z0-9._\/^{}~@-]+$/;
+
+/**
+ * Throw unless `ref` is a plain ref name safe to interpolate into a shell
+ * string. Every caller that puts a ref into a git command line calls this
+ * first (#1170) — the charset is the only thing standing between a ref and
+ * `$(…)` expansion.
+ */
+export function assertSafeRef(ref: string): void {
+  if (!SAFE_REF.test(ref) || ref.startsWith("-")) {
+    throw new Error(`base ref ${JSON.stringify(ref)} is not a valid ref name`);
+  }
+}
 
 /** A depth-1 directory holding one of these is a project whose tree may be exempted. */
 const PROJECT_MANIFESTS = [
@@ -239,6 +257,13 @@ export async function inspectWorktreeForLoss(
     unpushedCommitCount: 0,
     inspectError: errorText(err),
   });
+  // #1170 — `fromRef` is interpolated into shell strings below. An unsafe ref
+  // is refused as an unreadable worktree (fail closed), before any command runs.
+  try {
+    assertSafeRef(fromRef);
+  } catch (err) {
+    return unreadable(err);
+  }
   // A path with no directory is not a worktree — nothing on disk to inspect.
   if (!(await pathExists(worktreeAbs))) return undefined;
   const notOwn: DirtyWorktreeFinding = {

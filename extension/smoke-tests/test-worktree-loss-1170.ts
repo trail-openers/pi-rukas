@@ -4,7 +4,6 @@
  *  - ignored files are loss; ignored symlinks and regenerable dirs are not
  *  - a worktree behind the base (HEAD an ancestor of fromRef) is no-loss
  */
-import { execFile } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -16,7 +15,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
+import { git, realExec } from "./lib/worktree-fake-fixture.ts";
 import { refuseDirtyCycleTrees } from "../src/work-driver-integrate-cycle.ts";
 import {
   DirtyWorktreeError,
@@ -25,17 +24,6 @@ import {
   worktreeCreate,
 } from "../src/worktree.ts";
 
-const execFileP = promisify(execFile);
-
-const realExec: ExecFn = async (cmd, o) => {
-  const opts = { cwd: o?.cwd, maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024 };
-  const { stdout } = o?.argv
-    ? await execFileP(cmd, o.argv, opts)
-    : await execFileP("/bin/sh", ["-c", cmd], opts);
-  return { stdout };
-};
-
-const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 const headOf = async (cwd: string) => (await git(cwd, ["rev-parse", "HEAD"])).stdout.trim();
 
 let failures = 0;

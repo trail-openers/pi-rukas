@@ -19,6 +19,7 @@
 
 import fs from "node:fs/promises";
 import { trace } from "./trace.ts";
+import { assertSafeRef } from "./worktree-loss.ts";
 import {
   DirtyWorktreeError,
   type DirtyWorktreeFinding,
@@ -77,12 +78,18 @@ export async function runCreateGuards(
   // #1170 — the base ref is interpolated into shell strings below (the probe
   // and every inspection). Only a plain ref name may reach one: anything else
   // is refused as a create error before any command runs.
-  if (!SAFE_REF.test(opts.fromRef) || opts.fromRef.startsWith("-")) {
+  try {
+    assertSafeRef(opts.fromRef);
+  } catch (err) {
     throw new Error(
-      `worktreeCreate: ${opts.name} failed: base ref ${JSON.stringify(opts.fromRef)} is not a valid ref name`,
+      `worktreeCreate: ${opts.name} failed: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
   if (!(await baseRefResolves(execFn, opts))) {
+    // EARLY RETURN — before the pre-remove below (`worktreeRemove … true`), so an
+    // unresolved ref deletes NOTHING: no sibling or target worktree is touched,
+    // and `git worktree add` runs against the existing path, refuses it and
+    // surfaces the real stderr as a create error (#1170).
     trace(
       `worktree: base ref ${opts.fromRef} does not resolve \u2014 deferring to git worktree add`,
     );
@@ -160,12 +167,9 @@ export async function runCreateGuards(
 /** Re-export of the finding type for callers of the guard. */
 export type { DirtyWorktreeFinding };
 
-/** A ref name made only of characters that are inert inside double quotes. */
-const SAFE_REF = /^[A-Za-z0-9._/^{}~@-]+$/;
-
 /**
  * Probe `<fromRef>^{tree}` (the ref is JSON-quoted and pre-validated by
- * SAFE_REF). `true` = resolves; `false` = cleanly unresolved (exit 1, empty
+ * assertSafeRef). `true` = resolves; `false` = cleanly unresolved (exit 1, empty
  * stdout and stderr, no signal or kill). Any other failure throws a create error.
  */
 async function baseRefResolves(execFn: ExecFn, opts: CreateGuardOpts): Promise<boolean> {
