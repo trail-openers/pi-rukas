@@ -11,7 +11,11 @@
  */
 
 import { trace } from "./trace.ts";
-import { extractAttributedTail } from "./work-driver-exec-error.ts";
+import {
+  extractAttributedTail,
+  hostExhaustionFailure,
+  isHostForkExhaustion,
+} from "./work-driver-exec-error.ts";
 
 /** PR17 — bounded wall-clock for the verify command (default 10 min). */
 export function verifyTimeoutMs() {
@@ -39,7 +43,16 @@ export function formatExecError(
       ? tail
       : `${tail} (unattributed — best-effort tail)`
     : undefined;
-  return e.killed ? timeoutMsg : `${failMsg}: ${suffix ?? e.message?.slice(0, 300)}`;
+  if (e.killed) return timeoutMsg;
+  const detail = suffix ?? e.message?.slice(0, 300) ?? "";
+  // A command the host could not fork never ran: say so, rather than
+  // reporting "failed" in the same words a real defect gets. Read from the
+  // reported evidence, not the whole stream — a passing stage that merely
+  // prints the phrase must not relabel a real failure further down.
+  if (isHostForkExhaustion(detail)) {
+    return hostExhaustionFailure(failMsg.replace(" failed in ", " in "), detail);
+  }
+  return `${failMsg}: ${detail}`;
 }
 
 /** #285 — normalise a scope path like git would spell it. */

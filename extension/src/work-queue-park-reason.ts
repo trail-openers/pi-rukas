@@ -3,6 +3,7 @@
  * work-queue.ts (#1093) to make room for the once-per-invocation start-ref
  * capture; the logic is unchanged.
  */
+import { isHostExhaustionFailure } from "./work-driver-exec-error.ts";
 import { processAlive } from "./work-driver-resume.ts";
 import { deferredLeftoverPath, deferredLeftoverStep } from "./work-queue-parks.ts";
 import type { WorkState } from "./workflow-state.ts";
@@ -17,6 +18,9 @@ function ownerAlive(state: WorkState): boolean {
   const pid = state.owner?.pid;
   return typeof pid === "number" && processAlive(pid);
 }
+
+/** The reason suffix `humanActionFor` reads for a gate the host could not run. */
+export const HOST_EXHAUSTION_SUFFIX = "host-resource-exhaustion";
 
 export function parkReason(state: WorkState | undefined): { reason: string; failedStep?: string } {
   if (!state) return { reason: "cycle produced no state file" };
@@ -59,6 +63,13 @@ export function parkReason(state: WorkState | undefined): { reason: string; fail
       // point at the exact path (salvage-before-rerun, never --restart).
       const path = deferredLeftoverPath(state);
       if (path) suffix = `:${path}`;
+    } else if (
+      cap.cap.startsWith("verify-failed:") &&
+      state.pipelineState.verifyEvidence?.failures.some(isHostExhaustionFailure)
+    ) {
+      // The gate never ran (the host could not fork): carry that on the
+      // reason so the queue action points at the host, not at the diff.
+      suffix = `:${HOST_EXHAUSTION_SUFFIX}`;
     }
     return { reason: `cap ${cap.cap}${suffix}`, failedStep: step };
   }

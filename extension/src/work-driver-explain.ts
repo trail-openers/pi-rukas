@@ -14,10 +14,11 @@ import { explainLens } from "./work-driver-explain-lens.ts";
 import { explainOther } from "./work-driver-explain-other.ts";
 import { explainPrSteps } from "./work-driver-explain-pr-steps.ts";
 import { explainReview } from "./work-driver-explain-review.ts";
+import { explainVerifyFailed } from "./work-driver-explain-verify.ts";
 import { cherryPickRecoveryFor } from "./work-driver-handoff-cherry-pick.ts";
 import { type ParkReason, explainPark } from "./work-driver-intent.ts";
 import { explainMergeHold } from "./work-driver-merge-authority.ts";
-import { FIX_PASS_EVIDENCE_PREFIX, lastCapHit } from "./workflow-state-cap.ts";
+import { lastCapHit } from "./workflow-state-cap.ts";
 import {
   type WorkEvent,
   type WorkState,
@@ -301,59 +302,7 @@ export function explainCap(
     const ev = hit?.evidence ?? "(no detail recorded)";
     return `the branch step's ops fallback recorded a baseSha that does not match the branch's actual merge-base with origin/<mainline>: ${ev}. The branch was not built off the freshly-fetched base — ops likely created it from a stale local ref. Reset the branch to the correct base (\`git branch -f <branch> <correct-sha>\`) and re-run the cycle, or investigate the branch's commit history before proceeding`;
   }
-  // PR17 — `verify-failed:<step>`: the driver-side outcome gate found
-  // the step's claimed result isn't backed by executed evidence. The
-  // per-check findings live in pipelineState.verifyEvidence.
-  if (cap.startsWith("verify-failed:")) {
-    const step = cap.slice("verify-failed:".length);
-    const evidence = state.pipelineState.verifyEvidence;
-    // #1137 — a fix-pass park (parkFixPass) writes its detail on the cap-hit's
-    // own `evidence` string, and `verifyEvidence.failures` is never written on
-    // that path, so the "Why" read "(evidence detail missing from state)".
-    // Prefer the cap's evidence ONLY for fix-pass caps: the generic develop
-    // verify cap also carries evidence, but it is a bounded join of the same
-    // failures, and the per-failure bullets (with fence attribution) are the
-    // richer rendering for it.
-    const capHit = lastCapHit(state, cap);
-    const capEvidence = capHit?.evidence?.startsWith(FIX_PASS_EVIDENCE_PREFIX)
-      ? capHit.evidence
-      : undefined;
-    const findings = capEvidence
-      ? `\n${capEvidence}`
-      : evidence && evidence.failures.length > 0
-        ? `\n${evidence.failures.map((f) => `  - ${f}`).join("\n")}`
-        : " (evidence detail missing from state)";
-    // #841 — when the cap carries the persisted raw-output log paths
-    // STRUCTURALLY (the consolidated verify's run1/run2 logs, recorded on
-    // the cap-hit event's `logPaths` field by the gate's emit site), render
-    // them here. The failure-string bullets above already name the path, but
-    // the operator reads the closing sentence for WHERE to look; an empty
-    // failures list (the "(evidence detail missing)" shape) otherwise leaves
-    // the log path reachable only from the raw event. No prose scanning —
-    // the paths ride on the event, never parsed out of it. Absent on
-    // pre-#841 state files (say nothing rather than guess).
-    let logLine = "";
-    if (step === "develop") {
-      const capHit = lastCapHit(state, `verify-failed:${step}`);
-      const logPaths = capHit?.logPaths;
-      if (logPaths && logPaths.length > 0) {
-        logLine = `\nFull raw verify output: ${logPaths.join(", ")} (scratch dir — inspect it before re-dispatching)`;
-      }
-    }
-    // #782 — the consolidated-verify gate re-runs the verify command once
-    // before classifying. When the re-run happened, say so so the operator
-    // can tell a genuine double failure from one that recovered; absent on
-    // pre-#782 state files (treat absent as "no re-run", no suffix).
-    let retryNote = "";
-    if (evidence && (evidence.retries ?? 0) > 0) {
-      const n = evidence.retries;
-      const verb = n === 1 ? "retried once" : `retried ${n} times`;
-      retryNote = evidence.recovered
-        ? `\nNote: the verify command was ${verb} and RECOVERED — the recorded failure was a transient flake; inspect the worktree(s) to confirm nothing else changed.`
-        : `\nNote: the verify command was ${verb} and still failed — this is a real failure, not a flake.`;
-    }
-    return `the driver's outcome-verification gate rejected the ${step} step's "done" claim — the claimed result is not backed by executed evidence:${findings}${retryNote}${logLine}\nNo LLM judged this; the driver ran the checks itself (git diff/rev-list, the project's verify command, gh pr view). Inspect the worktree(s), fix or re-dispatch, and re-run. Set PI_ENSEMBLE_VERIFY=0 to disable the gate (not recommended)`;
-  }
+  if (cap.startsWith("verify-failed:")) return explainVerifyFailed(cap, state);
   // #753 — deferred worktree-creation failure. Its own sentence, because
   // `step-failed:develop` would be a mislabel (the dispatch itself never
   // failed; the DEPENDENT's deferred worktree creation was refused or
