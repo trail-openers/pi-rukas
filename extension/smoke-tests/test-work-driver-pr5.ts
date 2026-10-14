@@ -244,7 +244,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     await fs.writeFile(path.join(dir, "unstaged.txt"), "hi");
 
     const snap = await captureWorktreeSnapshot(dir, "main");
-    assert(snap.headSha.length > 0, "captureWorktreeSnapshot: HEAD sha resolved");
+    assert((snap.repoRootHeadSha?.length ?? 0) > 0, "captureWorktreeSnapshot: HEAD sha resolved");
     assert(snap.branchExists === true, "captureWorktreeSnapshot: branch exists locally");
     assert(snap.branchPushed === false, "captureWorktreeSnapshot: no origin → branchPushed=false");
     assert(
@@ -277,7 +277,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         stagedCount: 1,
         branchExists: true,
         branchPushed: false,
-        headSha: "abc1234",
+        repoRootHeadSha: "abc1234",
         capturedAt: 1_000_500,
       },
     },
@@ -349,7 +349,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         stagedCount: 0,
         branchExists: true,
         branchPushed: false,
-        headSha: "deadbee",
+        repoRootHeadSha: "deadbee",
         capturedAt: 1_000_500,
       },
     },

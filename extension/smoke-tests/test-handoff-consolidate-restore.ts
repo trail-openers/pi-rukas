@@ -122,7 +122,7 @@ function stateFor(
     stagedCount: 0,
     branchExists: true,
     branchPushed: false,
-    headSha: extraHeadSha.slice(0, 8),
+    repoRootHeadSha: extraHeadSha.slice(0, 8),
     capturedAt: 1000,
     committedWork: [
       {

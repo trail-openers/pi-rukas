@@ -37,6 +37,7 @@ export async function captureWorktreeSnapshot(
   repoRoot: string,
   branchName: string | undefined,
   worktrees?: Record<string, string>,
+  baseSha?: string,
 ): Promise<NonNullable<WorkState["pipelineState"]["handoffSnapshot"]>> {
   const snapshot: NonNullable<WorkState["pipelineState"]["handoffSnapshot"]> = {
     modifiedFiles: [],
@@ -44,7 +45,7 @@ export async function captureWorktreeSnapshot(
     stagedCount: 0,
     branchExists: false,
     branchPushed: false,
-    headSha: "",
+    repoRootHeadSha: "",
     capturedAt: Date.now(),
   };
   const unreadable: string[] = [];
@@ -85,10 +86,11 @@ export async function captureWorktreeSnapshot(
       );
     }
   }
-  // HEAD short SHA.
+  // repoRoot's HEAD short SHA — the operator's checkout, NOT the feature
+  // branch (see `branchTip` below for that).
   try {
     const { stdout } = await execp("git rev-parse --short HEAD", { cwd: repoRoot });
-    snapshot.headSha = stdout.trim();
+    snapshot.repoRootHeadSha = stdout.trim();
   } catch (err) {
     unreadable.push(`git rev-parse HEAD in ${repoRoot}: ${readError(err)}`);
     trace(
@@ -100,15 +102,55 @@ export async function captureWorktreeSnapshot(
     // output, so any OTHER failure (git could not run at all) is a failed
     // read rather than proof the branch was never created.
     try {
-      await execp(`git rev-parse --verify --quiet ${JSON.stringify(branchName)}`, {
+      // argv form: the branch name is never re-parsed by a shell.
+      const { stdout } = await execp("git", {
         cwd: repoRoot,
+        argv: ["rev-parse", "--verify", "--quiet", `refs/heads/${branchName}`],
       });
       snapshot.branchExists = true;
+      // The branch's OWN tip. `repoRootHeadSha` above is repoRoot's checkout, which
+      // the pre-handoff consolidation restores to where the operator was —
+      // so a branch that had just received the cycle's commits was printed
+      // as sitting at the base commit (#1286).
+      // Exit 0 with no output is not a readable tip: treat it as a failed read.
+      const sha = stdout.trim();
+      if (sha) {
+        snapshot.branchTip = { sha };
+      } else {
+        snapshot.branchTipNotRead = true;
+        unreadable.push(`git rev-parse --verify ${branchName}: exited 0 with no output`);
+      }
     } catch (err) {
       snapshot.branchExists = false;
       if ((err as { code?: unknown }).code !== 1) {
+        snapshot.branchTipNotRead = true;
         unreadable.push(`git rev-parse --verify ${branchName}: ${readError(err)}`);
       }
+    }
+    // `baseSha` is read from the state file, so it is shape-checked before it
+    // reaches git. An unusable base is recorded as unread, never guessed at.
+    if (snapshot.branchTip && baseSha) {
+      if (!COMMIT_SHA_SHAPE.test(baseSha)) {
+        unreadable.push(`commits on ${branchName} ahead of base: base is not a commit SHA`);
+      } else {
+        try {
+          const { stdout } = await execp("git", {
+            cwd: repoRoot,
+            argv: ["rev-list", "--count", `${baseSha}..${snapshot.branchTip.sha}`],
+          });
+          const out = stdout.trim();
+          if (/^\d+$/.test(out)) snapshot.branchTip.ahead = Number(out);
+          else
+            unreadable.push(
+              `commits on ${branchName} ahead of base: unparseable output "${out.slice(0, 40)}"`,
+            );
+        } catch (err) {
+          unreadable.push(`commits on ${branchName} ahead of base: ${readError(err)}`);
+        }
+      }
+    }
+    if (snapshot.branchTip && !baseSha) {
+      unreadable.push(`commits on ${branchName} ahead of base: no base recorded`);
     }
     // Remote tracking (best-effort; network may be down). 10s timeout
     // because ls-remote can hang on unreachable remotes (#1095: still 10s,
@@ -163,3 +205,6 @@ export function unreadableSnapshotLines(ps: WorkState["pipelineState"]): string[
       : []),
   ];
 }
+
+/** A full or abbreviated commit SHA — the only shape a base may take before git. */
+const COMMIT_SHA_SHAPE = /^[0-9a-f]{7,40}$/;

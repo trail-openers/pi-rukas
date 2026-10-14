@@ -76,7 +76,7 @@ function parkedDevelopState(): WorkState {
         stagedCount: 0,
         branchExists: false,
         branchPushed: false,
-        headSha: "99998888",
+        repoRootHeadSha: "99998888",
         capturedAt: 1000,
         committedWork: [
           {
@@ -251,7 +251,7 @@ function parkedDevelopConsolidatedState(): WorkState {
     stagedCount: 0,
     branchExists: false,
     branchPushed: false,
-    headSha: "99998888",
+    repoRootHeadSha: "99998888",
     capturedAt: 1000,
   };
   const { steps } = recoveryStepsForCap(s);
@@ -315,7 +315,7 @@ function parkedDevelopConsolidatedState(): WorkState {
     stagedCount: 0,
     branchExists: false,
     branchPushed: false,
-    headSha: "",
+    repoRootHeadSha: "",
     capturedAt: 0,
   };
   // captureCommittedWork shells out to real git (node child_process exec),
@@ -400,7 +400,7 @@ function parkedDevelopConsolidatedState(): WorkState {
         stagedCount: 0,
         branchExists: false,
         branchPushed: false,
-        headSha: "99998888",
+        repoRootHeadSha: "99998888",
         capturedAt: 1000,
         committedWork: [
           {
