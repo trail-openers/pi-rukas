@@ -360,9 +360,10 @@ export interface PipelineState {
     /** True when `git ls-remote --heads origin <branch>` returns the branch. */
     branchPushed: boolean;
     /** Short SHA of repoRoot's HEAD (the operator's checkout) when the
-     * snapshot was taken — NOT the feature branch; see `branchTip`. Was
-     * `headSha` before the rename; `readState` maps the old name on read. */
-    repoRootHeadSha: string;
+     * snapshot was taken — NOT the feature branch; see `branchTip`. Absent on
+     * snapshots written before the `headSha` → `repoRootHeadSha` rename (no
+     * value was ever recorded under the new name), and the handoff omits the line. */
+    repoRootHeadSha?: string;
     /** The feature branch's own tip, and its commits ahead of the cycle's
      * base when that was readable. Absent when no local branch exists and on
      * state files written before the field. */

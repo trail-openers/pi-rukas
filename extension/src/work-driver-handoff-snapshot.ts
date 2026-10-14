@@ -112,8 +112,14 @@ export async function captureWorktreeSnapshot(
       // the pre-handoff consolidation restores to where the operator was —
       // so a branch that had just received the cycle's commits was printed
       // as sitting at the base commit (#1286).
+      // Exit 0 with no output is not a readable tip: treat it as a failed read.
       const sha = stdout.trim();
-      if (sha) snapshot.branchTip = { sha };
+      if (sha) {
+        snapshot.branchTip = { sha };
+      } else {
+        snapshot.branchTipNotRead = true;
+        unreadable.push(`git rev-parse --verify ${branchName}: exited 0 with no output`);
+      }
     } catch (err) {
       snapshot.branchExists = false;
       if ((err as { code?: unknown }).code !== 1) {
