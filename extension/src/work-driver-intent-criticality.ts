@@ -15,10 +15,6 @@
  * applies them to the verdict (`applyOpenPointGate`): an authorization point
  * parks, any other caps a proceed at proceed-with-assumptions.
  * (#1171: applyOpenPointGate now lives in work-driver-intent-finalise.ts; this module only reads the points.)
- *
- * It also reads the CRITICAL open points of a filed issue (`readOpenPoints`).
- * Applying them to the verdict is private to work-driver-intent-finalise.ts,
- * which is the only exported entry for that step.
  */
 
 /**
@@ -148,7 +144,7 @@ export function contradictionAssumptions(evidence: SpecEvidence[]): SpecAssumpti
 }
 
 /** A `[CRITICAL]` bullet tag, optionally emphasised; captures the point text. */
-/** A `[CRITICAL]` bullet tag, optionally emphasised; captures the point text. Uppercase only. */
+// Uppercase only (#1171): `[critical]` and `[Critical]` are unparsed, so they cap rather than vanish.
 const CRITICAL_BULLET = new RegExp(`^[*_\`\\s]*\\[${CRITICAL_SEVERITY}\\][*_\`\\s:]*(.*)$`);
 
 /** A `[RESOLVED]` marker directly after the severity tag (#1151, open-points-contract.ts). */
@@ -158,11 +154,9 @@ const RESOLVED_MARKER = /^\[RESOLVED\]/i;
 const OTHER_SEVERITY_BULLET = /^[*_`\s]*\[(?:HIGH|MEDIUM|LOW)\]/i;
 
 /** Stands in for a bare `- [CRITICAL]` bullet: still a point, just without text. */
-/**
- * One CRITICAL open point. A bare `- [CRITICAL]` bullet is still a point (it
- * must not vanish from the gate), so it is a variant of its own rather than an
- * empty string.
- */
+// One CRITICAL open point. A bare `- [CRITICAL]` bullet is still a point (it must not vanish
+// from the gate), so it is a variant of its own rather than an empty string. (#1171: the
+// placeholder is this `empty` variant; openPointText renders it.)
 export type OpenPoint = { kind: "text"; text: string } | { kind: "empty" };
 
 /** Text of an open point for display; the placeholder is produced only here. */
@@ -216,7 +210,9 @@ export function readOpenPoints(issueBody: string): OpenPointReading {
     if (item !== undefined && OTHER_SEVERITY_BULLET.test(item)) continue;
     // A list item that mentions CRITICAL, or a line leading with it, is a malformed
     // point. Other prose (e.g. the gap gate's own intro line) is not.
-    const malformed = item !== undefined ? /\bCRITICAL\b/.test(line) : /^\W*CRITICAL\b/.test(line);
+    // (#1171: the item match is case-insensitive, so lowercase and titlecase tags land here.)
+    const malformed =
+      item !== undefined ? /\bcritical\b/i.test(line) : /^\W*critical\b/i.test(line);
     if (malformed) reading.unparsed.push(line);
   }
   return reading;

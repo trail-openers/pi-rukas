@@ -2,13 +2,13 @@
 /**
  * The security class of CRITICAL open points, term by term.
  *
- * Every term in SECURITY_CLASS_TERMS (open-points-contract.ts) has a parking
+ * Every term in SECURITY_CLASS_TERMS (security-class.ts) has a parking
  * canary. A term with co-words also has a benign canary: the same stem without
  * its co-word, which must proceed. The ordinary engineering phrases the class
  * once over-matched must proceed too.
  */
 
-import { SECURITY_CLASS_TERMS, matchSecurityTerm } from "../src/open-points-contract.ts";
+import { SECURITY_CLASS_TERMS, matchSecurityTerm } from "../src/security-class.ts";
 import { finaliseSpecVerdict } from "../src/work-driver-intent-finalise.ts";
 import type { NormalisedSpec } from "../src/work-driver-intent.ts";
 
@@ -87,7 +87,7 @@ const parkingCanaries: Array<[string, string]> = [
   ["deletion (user)", "Whether a user deletion removes sessions \u2014 proposal: yes"],
   ["deletion (hard)", "Whether a hard delete of the record is allowed \u2014 proposal: no"],
   ["data loss", "Whether this risks data loss on rollback \u2014 proposal: none"],
-  ["CSRF", "Whether CSRF tokens guard the form \u2014 proposal: yes"],
+  ["CSRF", "Whether the CSRF check guards the form \u2014 proposal: yes"],
   ["CORS", "Which CORS origins are allowed \u2014 proposal: the console only"],
   ["SSRF", "Whether the webhook fetcher blocks SSRF \u2014 proposal: yes"],
   ["XSS", "Whether the comment renderer escapes XSS \u2014 proposal: yes"],
@@ -95,6 +95,15 @@ const parkingCanaries: Array<[string, string]> = [
   ["cookie (secure)", "Whether the cookie is marked secure \u2014 proposal: yes"],
   ["allowlist", "Which origins go on the allowlist \u2014 proposal: the console"],
   ["allowlist (host)", "Which host allow list the proxy uses \u2014 proposal: one host"],
+  // Original #1151 canaries, restored (#1171): their co-words were widened, not dropped.
+  ["token (lifetime)", "Which token lifetime applies \u2014 proposal: one hour"],
+  ["session (validity)", "How long a session stays valid \u2014 proposal: 1 hour"],
+  ["role (rotate)", "which role may rotate keys \u2014 proposal: admins"],
+  ["deletion (records)", "Whether records are deleted or soft-deleted \u2014 proposal: soft"],
+  ["validation (schema)", "Whether schema validation is strict \u2014 proposal: strict"],
+  ["sandbox (enabled)", "Whether the sandbox is enabled for the child \u2014 proposal: yes"],
+  ["sanitize", "Whether input is sanitized before logging \u2014 proposal: yes"],
+  ["injection (nosql)", "Whether nosql injection is guarded \u2014 proposal: yes"],
 ];
 
 for (const [label, point] of parkingCanaries) {
@@ -116,6 +125,8 @@ const benignCanaries: Array<[string, string]> = [
     "allowlist (formatter)",
     "allowlist of file extensions for the formatter \u2014 proposal: .ts only",
   ],
+  ["sandbox (feature flag)", "sandbox feature flag \u2014 proposal: keep it off by default"],
+  ["session (store)", "the session store is per-cycle \u2014 proposal: keep it"],
 ];
 
 for (const [label, point] of benignCanaries) {
@@ -133,5 +144,59 @@ assert(
   matchSecurityTerm("tokenizer output") === undefined,
   "a co-word term does not match its bare stem",
 );
+
+// ----------------------------------- authorization class canaries (#1151 widened)
+// (#1171: each canary below parks; the full label list is checked in test-intent-open-point-edges.ts.)
+
+{
+  // One canary per widened class: each CRITICAL point touching it parks.
+  const classes: Array<[string, string]> = [
+    ["credential", "Where the credential is read from \u2014 proposal: env"],
+    ["token", "Which token lifetime applies \u2014 proposal: one hour"],
+    ["token (api)", "Which api token lifetime applies \u2014 proposal: one hour"],
+    ["api key", "Whether the api key rotates \u2014 proposal: monthly"],
+    ["password", "Whether the password is hashed \u2014 proposal: bcrypt"],
+    ["encrypt", "Whether the payload is encrypted at rest \u2014 proposal: yes"],
+    ["decrypt", "Who may decrypt the export \u2014 proposal: the owner"],
+    ["tls", "Whether the TLS config is pinned \u2014 proposal: yes"],
+    ["certificate", "Which certificate chain is trusted \u2014 proposal: system store"],
+    ["crypto", "Which crypto library to use \u2014 proposal: node:crypto"],
+    ["sanitize", "Whether input is sanitized before logging \u2014 proposal: yes"],
+    ["validate", "Whether schema validation is strict \u2014 proposal: strict"],
+    ["validate (request)", "Whether request validation is strict \u2014 proposal: strict"],
+    ["inject", "Whether prompt injection is guarded \u2014 proposal: yes"],
+    ["sandbox", "Whether the sandbox is enabled for the child \u2014 proposal: yes"],
+    ["privilege", "Which privilege level the worker runs at \u2014 proposal: least"],
+    ["access control", "Who is covered by the access control list \u2014 proposal: admins"],
+    ["delete", "Whether records are deleted or soft-deleted \u2014 proposal: soft"],
+    ["delete (user)", "Whether user records are deleted or soft-deleted \u2014 proposal: soft"],
+    ["data loss", "Whether this risks data loss on rollback \u2014 proposal: none"],
+    ["secret", "Where the secrets live \u2014 proposal: env var"],
+    ["auth", "Whether auth is required on the retry endpoint \u2014 proposal: yes"],
+    ["oauth", "OAuth scopes for the webhook \u2014 proposal: read-only"],
+    ["jwt", "JWT expiry for the worker \u2014 proposal: 15 minutes"],
+    ["acl", "ACL for the bucket \u2014 proposal: private"],
+    ["rbac", "RBAC mapping for reviewers \u2014 proposal: maintainer"],
+    ["role", "which role may rotate keys \u2014 proposal: admins"],
+    ["role (admin)", "which admin role may rotate keys \u2014 proposal: admins"],
+    ["session", "How long a session stays valid \u2014 proposal: 1 hour"],
+    ["login", "Whether login is rate limited \u2014 proposal: yes"],
+    ["signing key", "Where the signing key is stored \u2014 proposal: KMS"],
+    ["private key", "Whether the private key is rotated \u2014 proposal: yearly"],
+  ];
+  for (const [cls, point] of classes) {
+    const resolved = gateOf(point);
+    assert(
+      resolved.verdict === "park" && resolved.parkReason === "security-open-point",
+      `canary: a ${cls} open point parks as security-open-point`,
+    );
+  }
+  // Non-security CRITICAL points are still carried as assumptions, not parked.
+  const perProvider = gateOf("Whether the retry ceiling is per-provider \u2014 proposal: global");
+  assert(
+    perProvider.verdict === "proceed-with-assumptions",
+    "canary: a non-security CRITICAL point caps proceed to proceed-with-assumptions",
+  );
+}
 
 process.exit(exit);

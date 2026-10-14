@@ -26,8 +26,8 @@
  * are never required — that is the whole point.
  */
 
-import { SECURITY_CLASS_LABELS } from "./open-points-contract.ts";
 import { readMarker } from "./reply-markers.ts";
+import { SECURITY_CLASS_LABELS } from "./security-class.ts";
 import { trace } from "./trace.ts";
 import {
   contradictionAssumptions,

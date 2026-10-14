@@ -1,22 +1,18 @@
 #!/usr/bin/env bun
 /**
  * #1151 review — open-point edge cases for the intent gate.
- * (#1171: the security park text is checked against every SECURITY_CLASS_TERMS label.)
  *
  * A bare `- [CRITICAL]` bullet is still a point (it must not vanish from the
  * gate), and assumption text is clipped by code point so an emoji run never
  * leaves a lone surrogate. The round trip and authorization canaries live in
  * test-intent-criticality.ts.
- * leaves a lone surrogate. Security points on a parked spec reach the handoff's
- * open questions, a resolved security point is recorded as self-resolved, and
- * issue text is flattened to one clean line. The round trip and authorization
- * canaries live in test-intent-criticality.ts and test-intent-security-class.ts.
+ * (#1171: the security park text is checked against every SECURITY_CLASS_LABELS entry.)
  */
 
-import { SECURITY_CLASS_LABELS } from "../src/open-points-contract.ts";
 import { openPointsSection } from "../src/plan-gap-disclosure.ts";
 import { GAP_RESOLUTION_PLACEHOLDER } from "../src/plan-gap-parse.ts";
 import type { PlanGap } from "../src/plan-types.ts";
+import { SECURITY_CLASS_LABELS } from "../src/security-class.ts";
 import { parseNormalisedSpecArtifact } from "../src/work-driver-intent-artifact.ts";
 import {
   criticalOpenPoints,
@@ -113,8 +109,6 @@ const section = (...lines: string[]) => [HEADING, "", ...lines].join("\n");
 
 // The artifact reader accepts every park reason the intent gate can emit (#1151 review:
 // one shared list, so a new reason cannot be written and then silently refused on read).
-// The artifact reader accepts every park reason the intent gate can emit (one shared list,
-// so a new reason cannot be written and then silently refused on read).
 {
   const accepted = PARK_REASONS.filter((reason) => {
     const parsed = parseNormalisedSpecArtifact(
@@ -206,23 +200,48 @@ const section = (...lines: string[]) => [HEADING, "", ...lines].join("\n");
   );
 }
 
-// Only the uppercase tag is a CRITICAL line: prose starting "Critical" in the section is ignored.
+// Case variants (#1171): only the uppercase bracketed tag parses. Lowercase and titlecase tags,
+// and a line that leads with CRITICAL in any case, are unparsed, so they cap rather than vanish.
 {
-  const reading = readOpenPoints(
-    section(
-      "Critical review of the gap gate found the following points.",
-      "critical: a lowercase label is not a tag",
-    ),
+  for (const line of [
+    "- [critical] Which timeout wins",
+    "- [Critical] Which timeout wins",
+    "- [critical][RESOLVED] Which timeout wins",
+  ]) {
+    const reading = readOpenPoints(section(line));
+    assert(
+      reading.points.length === 0 && reading.resolved.length === 0 && reading.unparsed.length === 1,
+      `case variant routes to unparsed: ${line}`,
+    );
+    const capped = finaliseSpecVerdict(spec(), section(line));
+    assert(capped.verdict === "proceed-with-assumptions", `case variant caps a proceed: ${line}`);
+  }
+  for (const line of ["critical: a lowercase label", "Critical review of the gap gate"]) {
+    assert(
+      readOpenPoints(section(line)).unparsed.length === 1,
+      `a line leading with critical in any case is unparsed: ${line}`,
+    );
+  }
+  assert(
+    readOpenPoints(section("The gap gate found one critical point in the design.")).unparsed
+      .length === 0,
+    "mid-sentence lowercase critical in plain prose is still ignored",
+  );
+  const lowerSecurity = finaliseSpecVerdict(
+    spec(),
+    section("- [critical] Who may call the endpoint \u2014 authentication is undecided"),
   );
   assert(
-    reading.unparsed.length === 0 && reading.points.length === 0,
-    "titlecase/lowercase 'Critical' prose in the section is not a malformed CRITICAL line",
-  );
-  assert(
-    readOpenPoints(section("CRITICAL: uppercase without the bracket tag")).unparsed.length === 1,
-    "an uppercase CRITICAL line without the tag is still malformed",
+    lowerSecurity.verdict === "park" && lowerSecurity.parkReason === "security-open-point",
+    "case variant of a security point still parks",
   );
 }
+
+// Prose outside the section that leads with CRITICAL is not read at all.
+assert(
+  readOpenPoints("CRITICAL: outside any section").unparsed.length === 0,
+  "a CRITICAL line outside the Open points section is not read",
+);
 
 // The security park names the whole class, not only the first words of it (#1151 review).
 // (#1171: the text is derived from SECURITY_CLASS_LABELS, so a new term cannot go unnamed.)
@@ -232,7 +251,6 @@ assert(
 );
 
 // #1151 review: an unparsed CRITICAL line naming a security class parks, as a parsed one does.
-// An unparsed CRITICAL line naming a security class parks, as a parsed one does.
 {
   const gated = finaliseSpecVerdict(spec(), section("- CRITICAL: authentication is undecided"));
   assert(
@@ -264,7 +282,11 @@ for (const phrase of [
     "- CRITICAL: authorization for the export is undecided",
   );
   const parked = finaliseSpecVerdict(
-    spec({ verdict: "park", parkReason: "already-implemented", parkReasonSource: "parsed" }),
+    spec({
+      verdict: "park",
+      parkReason: "already-implemented",
+      parkReasonSource: "parsed",
+    }),
     body,
   );
   const questions = parked.openQuestions.filter((q) =>
@@ -286,7 +308,11 @@ for (const phrase of [
 // non-security section caps a proceed without a "could not parse" assumption.
 {
   const gaps: PlanGap[] = [
-    { severity: "CRITICAL", description: "Which timeout wins", resolution: "the shorter" },
+    {
+      severity: "CRITICAL",
+      description: "Which timeout wins",
+      resolution: "the shorter",
+    },
     {
       severity: "CRITICAL",
       description: "Which backoff applies",

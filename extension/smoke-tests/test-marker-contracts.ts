@@ -93,10 +93,15 @@ for (const c of MARKER_CONTRACTS) {
 // parser accepts (PARK_REASONS), in the same order, so the contract cannot drift.
 {
   const parkRow = MARKER_CONTRACTS.find((c) => c.token === "PARK-REASON");
-  const registered = Array.isArray(parkRow?.values) ? [...parkRow.values] : [];
+  assert(parkRow !== undefined, "PARK-REASON registry row exists");
+  // The row is a literal, not a reference: reply-markers cannot import PARK_REASONS
+  // (work-driver-intent imports reply-markers), so this equality is the drift guard.
+  const registered: readonly string[] | undefined = Array.isArray(parkRow?.values)
+    ? parkRow.values
+    : undefined;
   assert(
-    JSON.stringify(registered) === JSON.stringify([...PARK_REASONS]),
-    `PARK-REASON contract values equal PARK_REASONS (registry: ${registered.join(", ")})`,
+    registered !== undefined && JSON.stringify(registered) === JSON.stringify([...PARK_REASONS]),
+    `PARK-REASON contract values equal PARK_REASONS (registry: ${JSON.stringify(parkRow?.values)})`,
   );
 }
 

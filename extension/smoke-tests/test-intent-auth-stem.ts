@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
 /**
  * #1151 follow-up — the authorization class matches auth words, not "author".
- * The authorization class matches auth words, not "author".
  *
  * The bare `auth\w*` stem swallowed author/authored/authority/authorship, so a
  * CRITICAL point about the issue's author parked as a security decision. The
