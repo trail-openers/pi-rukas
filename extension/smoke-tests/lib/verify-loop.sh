@@ -74,6 +74,15 @@
 
 set -u
 
+# The tests build throwaway repositories (`git init --bare <tmp>/origin.git`,
+# `git config user.email "t@t"`). With GIT_DIR in the environment — git sets
+# it for every hook and for `git rebase --exec` — those commands act on the
+# CALLER's repository instead of the temp directory: its config gained
+# `core.bare = true` and a fake identity, and every worktree stopped working.
+# Drop git's repository-locating variables before any test runs.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX \
+  GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE
+
 # #1017 — forbid live spawns in every offline test. Any offline test that
 # reaches the real spawn path (spawnSpecialist) fails loudly in ~5s with the
 # FORBID_LIVE_SPAWN error naming the role and the injection point, instead of
