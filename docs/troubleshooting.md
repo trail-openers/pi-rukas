@@ -1705,6 +1705,14 @@ If the smoke command exits non-zero, the gate fails with a `smoke:`-prefixed fai
 
 **Escape hatches:** `PI_ENSEMBLE_SMOKE=0` disables the smoke gate; remove `.pi/smoke-cmd` to omit the smoke test from verification.
 
+#### `fork: Resource temporarily unavailable` after a gate timed out
+
+**A timed-out gate no longer leaves its children running.** The driver's verify, smoke and `verify-cmd-full` runs used `child_process.exec`, whose timeout signals the shell alone — the test runner and everything under it kept running, holding pids and the worktree for the rest of the cycle. They now run in their own process group and the whole group gets SIGTERM at the timeout, then SIGKILL 5 s later (`extension/src/exec-tree.ts`). A command that leaves its group on purpose (`setsid`, GNU `timeout` without `--foreground`) is out of reach; the driver no longer waits on it, but it is not killed.
+
+**Killing a tree does not reap it — that needs an init.** If `pi` is PID 1 of its container, every orphaned process is reparented to it and stays a zombie when it exits, because node only waits for children it spawned itself. Measured on `node:22-alpine`: 20 orphans killed under node-as-PID-1 leave 20 zombies; under `docker run --init`, none. Zombies count against the cgroup's `pids.max`, so the symptom is `pids.current` at the limit with a near-zero load average, and every later command failing to fork. Run the container with `--init` (or another reaper as PID 1). The same applies to a gate a child agent's own bash tool timed out: Pi kills that process group itself, and the corpses still need reaping.
+
+**The reviewer is told not to re-run the gate.** In a `/work` cycle the adversarial reviewer's prompt names the project's verify command and says the driver already owns it — run targeted checks only. `adversarial_loop` called directly is unchanged: nothing ran a gate there, so the reviewer is still asked to.
+
 ### Verify command discovery
 
 Precedence (PR18 shape):
