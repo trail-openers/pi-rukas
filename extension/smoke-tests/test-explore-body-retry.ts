@@ -20,9 +20,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import { ISSUE_BODY_TIMEOUT_MS, fetchIssueBodyViaGh } from "../src/work-driver-explore.ts";
+import {
+  ISSUE_BODY_TIMEOUT_MS,
+  fetchIssueBodyViaGh,
+  runExplore,
+} from "../src/work-driver-explore.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
-import { readState } from "../src/workflow-state.ts";
+import { initialState, readState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -234,6 +238,7 @@ async function capOf(dir: string, issue: number): Promise<string | undefined> {
 // 6. INVARIANT — PI_ENSEMBLE_TRANSIENT_RETRY=0 restores single-attempt
 // behaviour (the documented escape hatch), and the cap still fires.
 {
+  const prevRetry = process.env.PI_ENSEMBLE_TRANSIENT_RETRY;
   process.env.PI_ENSEMBLE_TRANSIENT_RETRY = "0";
   const dir = await makeRepo("explore-body-retry-optout-");
   try {
@@ -258,7 +263,10 @@ async function capOf(dir: string, issue: number): Promise<string | undefined> {
       "escape hatch still parks on an empty body",
     );
   } finally {
-    delete process.env.PI_ENSEMBLE_TRANSIENT_RETRY;
+    if (prevRetry === undefined) {
+      const env = process.env;
+      Reflect.deleteProperty(env, "PI_ENSEMBLE_TRANSIENT_RETRY");
+    } else process.env.PI_ENSEMBLE_TRANSIENT_RETRY = prevRetry;
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -292,6 +300,69 @@ async function capOf(dir: string, issue: number): Promise<string | undefined> {
     assert(
       (await capOf(dir, 706)) === "explore-bodies-empty",
       "primary fetch rejected: the cycle halts at explore-bodies-empty",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// 8. CANARY — the primary issue missing from the explore set halts as a
+// wiring fault. A single-issue set that does not contain ctx.issue is not a
+// bad issue: the explore dispatch completes, the intent verdict is resolved,
+// and the primary-body lookup finds nothing. The cycle must halt with
+// `step-failed:explore` (evidence names the missing primary) and must not
+// record a normalised spec.
+{
+  const dir = await makeRepo("explore-body-primary-missing-");
+  try {
+    const reply = [
+      "INTENT-VERDICT: proceed",
+      "",
+      "## Spec",
+      "",
+      "### Intent",
+      "Add the widget renderer.",
+      "",
+      "### Deliverables",
+      "- D1: add the widget renderer [paths: src/widget.ts]",
+      "",
+      "### Acceptance criteria",
+      "- the widget renders",
+      "",
+    ].join("\n");
+    let exploreDispatches = 0;
+    const ctx: DriverContext = {
+      host: makeFakePi(),
+      repoRoot: dir,
+      issue: 707,
+      issues: [708],
+      issueBodyFetcherFn: async (n, _cwd) => ({
+        stdout: `title:\tissue #${n}\nstate:\tOPEN\n\nbody for #${n}`,
+      }),
+      dispatchFn: async (_pi, spec, opts) => {
+        if (opts?.label === "explore") exploreDispatches++;
+        return mkResult({ role: spec.role, text: reply });
+      },
+    };
+    const next = await runExplore(ctx, initialState(707, 1_000_000), 1_000_000);
+    const capHit = next.eventLog.find((e) => e.kind === "cap-hit");
+    assert(
+      exploreDispatches === 1,
+      `primary-missing: explore dispatches once (${exploreDispatches})`,
+    );
+    assert(
+      capHit?.kind === "cap-hit" && capHit.cap === "step-failed:explore",
+      `primary-missing: halts with step-failed:explore (${capHit?.kind === "cap-hit" ? capHit.cap : "no cap-hit"})`,
+    );
+    assert(
+      capHit?.kind === "cap-hit" &&
+        capHit.nextStep === "handoff" &&
+        (capHit.evidence ?? "").includes("primary issue missing from issue list [708]"),
+      "primary-missing: cap routes to handoff and names the missing primary in evidence",
+    );
+    assert(
+      next.pipelineState.normalisedSpec === undefined,
+      "primary-missing: no normalised spec reaches the open-point gate",
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

@@ -228,17 +228,16 @@ export async function runExplore(
     // park may be refuted by a complete spec. This runs on the WINNER
     // (prose or artifact), so the reconciliation logic is identical
     // regardless of which channel won the precedence rule.
-    // #1151 — the primary body comes from the settled fetch, read here at the
-    // gate (not a mutable local). A failed or blank read is passed through as
-    // `undefined`, which finaliseSpecVerdict records instead of skipping.
-    // The primary is always in the set on this path (intent is single-issue), so a
-    // miss is a wiring bug and must not be read as a blank body.
+    // The primary body is the settled fetch read here. The empty-body halt above
+    // guarantees every fetched body is non-blank, so reaching this point with no
+    // fulfilled primary is a wiring fault and halts the step.
     const primaryIdx = issues.indexOf(ctx.issue);
-    if (primaryIdx === -1) {
+    const primarySettled = primaryIdx === -1 ? undefined : bodySettled[primaryIdx];
+    if (primarySettled?.status !== "fulfilled") {
       // A wiring bug, not a bad issue: report it as a halted step rather than
       // throwing out of the driver.
       trace(
-        `work-driver: primary issue #${ctx.issue} is not in the explore issue set [${issues.join(", ")}]`,
+        `work-driver: primary issue #${ctx.issue} has no fetched body in the explore issue set [${issues.join(", ")}]`,
       );
       return appendEvent(next, {
         kind: "cap-hit",
@@ -246,13 +245,15 @@ export async function runExplore(
         cap: "step-failed:explore",
         reviewRound: 0,
         nextStep: "handoff",
-        evidence: `wiring: primary issue missing from issue list [${issues.join(", ")}]`,
+        evidence:
+          primaryIdx === -1
+            ? `wiring: primary issue missing from issue list [${issues.join(", ")}]`
+            : `wiring: primary issue #${ctx.issue} body was not fetched`,
       });
     }
-    const primarySettled = bodySettled[primaryIdx];
-    const primaryBody =
-      primarySettled?.status === "fulfilled" ? primarySettled.value.stdout : undefined;
-    const finalSpec = resolved ? finaliseSpecVerdict(resolved.spec, primaryBody) : undefined;
+    const finalSpec = resolved
+      ? finaliseSpecVerdict(resolved.spec, primarySettled.value.stdout)
+      : undefined;
     if (resolved !== undefined && finalSpec !== undefined) {
       next = {
         ...next,

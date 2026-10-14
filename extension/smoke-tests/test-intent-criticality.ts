@@ -11,9 +11,9 @@
 import { openPointsSection } from "../src/plan-gap-disclosure.ts";
 import type { PlanGap } from "../src/plan-types.ts";
 import {
-  applyOpenPointGate,
   criticalOpenPoints,
   intentCriticalityEnabled,
+  openPointText,
 } from "../src/work-driver-intent-criticality.ts";
 import { finaliseSpecVerdict } from "../src/work-driver-intent-finalise.ts";
 import {
@@ -23,6 +23,17 @@ import {
   renderAssumptions,
   specIsComplete,
 } from "../src/work-driver-intent.ts";
+
+/** The gate over raw CRITICAL point texts, as a filed issue carries them. */
+const applyOpenPointGate = (s: NormalisedSpec, points: string[]): NormalisedSpec =>
+  finaliseSpecVerdict(
+    s,
+    [
+      "## Open points (unresolved at the gap-gate cap)",
+      "",
+      ...points.map((p) => `- [CRITICAL] ${p}`),
+    ].join("\n"),
+  );
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -237,7 +248,7 @@ for (const incident of incidents) {
     "## Open Questions",
     "- (none)",
   ].join("\n");
-  const points = criticalOpenPoints(body);
+  const points = criticalOpenPoints(body).map(openPointText);
   assert(
     points.length === 2 &&
       points[0] === "Which timeout wins when both are set — proposal: the shorter one" &&
@@ -315,16 +326,20 @@ for (const incident of incidents) {
 {
   // No open points: the spec passes through untouched.
   const plain = spec({ verdict: "proceed" });
-  assert(applyOpenPointGate(plain, []) === plain, "no open points leaves the spec unchanged");
+  const gated = applyOpenPointGate(plain, []);
+  assert(
+    gated.verdict === "proceed" && gated.assumptions.length === 0,
+    "no open points leaves the spec unchanged",
+  );
 }
 
-// ----------------------------------- authorization class canaries (#1151 widened)
+// ----------------------------------- authorization class canaries
 
 {
   // One canary per widened class: each CRITICAL point touching it parks.
   const classes: Array<[string, string]> = [
     ["credential", "Where the credential is read from \u2014 proposal: env"],
-    ["token", "Which token lifetime applies \u2014 proposal: one hour"],
+    ["token", "Which api token lifetime applies \u2014 proposal: one hour"],
     ["api key", "Whether the api key rotates \u2014 proposal: monthly"],
     ["password", "Whether the password is hashed \u2014 proposal: bcrypt"],
     ["encrypt", "Whether the payload is encrypted at rest \u2014 proposal: yes"],
@@ -333,12 +348,12 @@ for (const incident of incidents) {
     ["certificate", "Which certificate chain is trusted \u2014 proposal: system store"],
     ["crypto", "Which crypto library to use \u2014 proposal: node:crypto"],
     ["sanitize", "Whether input is sanitized before logging \u2014 proposal: yes"],
-    ["validate", "Whether schema validation is strict \u2014 proposal: strict"],
+    ["validate", "Whether request validation is strict \u2014 proposal: strict"],
     ["inject", "Whether prompt injection is guarded \u2014 proposal: yes"],
     ["sandbox", "Whether the sandbox is enabled for the child \u2014 proposal: yes"],
     ["privilege", "Which privilege level the worker runs at \u2014 proposal: least"],
     ["access control", "Who is covered by the access control list \u2014 proposal: admins"],
-    ["delete", "Whether records are deleted or soft-deleted \u2014 proposal: soft"],
+    ["delete", "Whether user records are deleted or soft-deleted \u2014 proposal: soft"],
     ["data loss", "Whether this risks data loss on rollback \u2014 proposal: none"],
     ["secret", "Where the secrets live \u2014 proposal: env var"],
     ["auth", "Whether auth is required on the retry endpoint \u2014 proposal: yes"],
@@ -346,7 +361,7 @@ for (const incident of incidents) {
     ["jwt", "JWT expiry for the worker \u2014 proposal: 15 minutes"],
     ["acl", "ACL for the bucket \u2014 proposal: private"],
     ["rbac", "RBAC mapping for reviewers \u2014 proposal: maintainer"],
-    ["role", "which role may rotate keys \u2014 proposal: admins"],
+    ["role", "which admin role may rotate keys \u2014 proposal: admins"],
     ["session", "How long a session stays valid \u2014 proposal: 1 hour"],
     ["login", "Whether login is rate limited \u2014 proposal: yes"],
     ["signing key", "Where the signing key is stored \u2014 proposal: KMS"],
@@ -369,7 +384,7 @@ for (const incident of incidents) {
   );
 }
 
-// -------------------------- open-point producer round trip (#1151 shared constants)
+// -------------------------- open-point producer round trip
 
 {
   // The gap gate renders the section; criticalOpenPoints must read it back.
@@ -386,7 +401,7 @@ for (const incident of incidents) {
       resolution: "address during /work plan phase",
     },
   ];
-  const points = criticalOpenPoints(openPointsSection(gaps));
+  const points = criticalOpenPoints(openPointsSection(gaps)).map(openPointText);
   assert(
     points.length === 2 &&
       points[0] === "Which timeout wins when both are set \u2014 proposed: use the shorter one" &&
@@ -423,26 +438,16 @@ for (const incident of incidents) {
 }
 
 {
-  // Primary body not read: the gate cannot run. That is recorded, not skipped.
-  for (const unread of [undefined, "   \n"]) {
-    const proceed = finaliseSpecVerdict(spec({ verdict: "proceed" }), unread);
-    assert(
-      proceed.verdict === "proceed-with-assumptions" &&
-        proceed.assumptions.some(
-          (a) => a.text === "Open-point gate did not run: issue body unreadable",
-        ),
-      `unchecked gate: an unread body caps proceed and names the gap (${JSON.stringify(unread)})`,
-    );
-    const parked = spec({
-      verdict: "park",
-      parkReason: "already-implemented",
-      parkReasonSource: "parsed",
-    });
-    assert(
-      finaliseSpecVerdict(parked, unread).parkReason === "already-implemented",
-      "unchecked gate: an existing park stays a park",
-    );
-  }
+  // No Open points section: nothing is gated, so a park keeps its reason.
+  const parked = spec({
+    verdict: "park",
+    parkReason: "already-implemented",
+    parkReasonSource: "parsed",
+  });
+  assert(
+    finaliseSpecVerdict(parked, "   \n").parkReason === "already-implemented",
+    "no open-points section: an existing park stays a park",
+  );
 }
 
 {

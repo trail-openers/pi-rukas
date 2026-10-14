@@ -22,6 +22,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { MARKER_CONTRACTS } from "../src/reply-markers.ts";
+import { PARK_REASONS } from "../src/work-driver-intent.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -85,6 +86,17 @@ for (const c of MARKER_CONTRACTS) {
     /readMarker\(text, "INTENT-VERDICT"/.test(intent) &&
       /readMarker\(text, "PARK-REASON"/.test(intent),
     "INTENT-VERDICT and PARK-REASON parse through reply-markers.readMarker (last-match, colon-optional, bold-tolerant)",
+  );
+}
+
+// 5 — the PARK-REASON registry row lists exactly the park reasons the intent
+// parser accepts (PARK_REASONS), in the same order, so the contract cannot drift.
+{
+  const parkRow = MARKER_CONTRACTS.find((c) => c.token === "PARK-REASON");
+  const registered = Array.isArray(parkRow?.values) ? [...parkRow.values] : [];
+  assert(
+    JSON.stringify(registered) === JSON.stringify([...PARK_REASONS]),
+    `PARK-REASON contract values equal PARK_REASONS (registry: ${registered.join(", ")})`,
   );
 }
 
