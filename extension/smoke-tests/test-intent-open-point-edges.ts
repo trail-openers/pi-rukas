@@ -1,9 +1,12 @@
 #!/usr/bin/env bun
 /**
+ * #1151 review — open-point edge cases for the intent gate.
  * Open-point edge cases for the intent gate.
  *
  * A bare `- [CRITICAL]` bullet is still a point (it must not vanish from the
  * gate), and assumption text is clipped by code point so an emoji run never
+ * leaves a lone surrogate. The round trip and authorization canaries live in
+ * test-intent-criticality.ts.
  * leaves a lone surrogate. Security points on a parked spec reach the handoff's
  * open questions, a resolved security point is recorded as self-resolved, and
  * issue text is flattened to one clean line. The round trip and authorization
@@ -107,6 +110,8 @@ const section = (...lines: string[]) => [HEADING, "", ...lines].join("\n");
   assert(tabbed, "flatten: a tab inside a point is one space in the quoted assumption");
 }
 
+// The artifact reader accepts every park reason the intent gate can emit (#1151 review:
+// one shared list, so a new reason cannot be written and then silently refused on read).
 // The artifact reader accepts every park reason the intent gate can emit (one shared list,
 // so a new reason cannot be written and then silently refused on read).
 {
@@ -218,6 +223,7 @@ const section = (...lines: string[]) => [HEADING, "", ...lines].join("\n");
   );
 }
 
+// The security park names the whole class, not only the first words of it (#1151 review).
 // The security park names the whole class, not only the first words of it.
 assert(
   /credentials and keys.*input validation\/injection.*data deletion/.test(
@@ -226,6 +232,7 @@ assert(
   "explainPark: the security park describes the whole class",
 );
 
+// #1151 review: an unparsed CRITICAL line naming a security class parks, as a parsed one does.
 // An unparsed CRITICAL line naming a security class parks, as a parsed one does.
 {
   const gated = finaliseSpecVerdict(spec(), section("- CRITICAL: authentication is undecided"));

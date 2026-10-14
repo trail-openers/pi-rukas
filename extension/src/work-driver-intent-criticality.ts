@@ -11,6 +11,10 @@
  * become visible assumptions and do not overturn the resolver's actionable
  * decision.
  *
+ * #1151: it also reads the CRITICAL open points from the filed issue body and
+ * applies them to the verdict (`applyOpenPointGate`): an authorization point
+ * parks, any other caps a proceed at proceed-with-assumptions.
+ *
  * It also reads the CRITICAL open points of a filed issue (`readOpenPoints`).
  * Applying them to the verdict is private to work-driver-intent-finalise.ts,
  * which is the only exported entry for that step.
@@ -142,6 +146,7 @@ export function contradictionAssumptions(evidence: SpecEvidence[]): SpecAssumpti
   }));
 }
 
+/** A `[CRITICAL]` bullet tag, optionally emphasised; captures the point text. */
 /** A `[CRITICAL]` bullet tag, optionally emphasised; captures the point text. Uppercase only. */
 const CRITICAL_BULLET = new RegExp(`^[*_\`\\s]*\\[${CRITICAL_SEVERITY}\\][*_\`\\s:]*(.*)$`);
 
@@ -151,6 +156,7 @@ const RESOLVED_MARKER = /^\[RESOLVED\]/i;
 /** A bullet tagged with a non-CRITICAL severity: its text is not a CRITICAL line. */
 const OTHER_SEVERITY_BULLET = /^[*_`\s]*\[(?:HIGH|MEDIUM|LOW)\]/i;
 
+/** Stands in for a bare `- [CRITICAL]` bullet: still a point, just without text. */
 /**
  * One CRITICAL open point. A bare `- [CRITICAL]` bullet is still a point (it
  * must not vanish from the gate), so it is a variant of its own rather than an
@@ -200,6 +206,8 @@ export function readOpenPoints(issueBody: string): OpenPointReading {
         const answered = rest.replace(RESOLVED_MARKER, "").trim();
         reading.resolved.push(answered ? { kind: "text", text: answered } : { kind: "empty" });
       } else {
+        // A bare tag is still a CRITICAL point: dropping it would let an empty
+        // gate finding stop gating.
         reading.points.push(rest ? { kind: "text", text: rest } : { kind: "empty" });
       }
       continue;

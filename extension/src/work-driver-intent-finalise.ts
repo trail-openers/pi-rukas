@@ -5,6 +5,10 @@
  * the criticality module, so calling reconcileVerdict from there made a runtime
  * import cycle. This module imports both sides; nothing imports it back.
  *
+ * The order is the contract: reconcile the resolver's verdict first, then apply
+ * the filed issue's open points. Reconciliation can lift an `underspecified`
+ * park, and the open-point gate must still park an authorization point after that.
+ *
  * `finaliseSpecVerdict` is the only export of the open-point gate. The order is
  * the contract: reconcile the resolver's verdict first, then apply the filed
  * issue's open points. Reconciliation can lift an `underspecified` park, and the
@@ -34,6 +38,7 @@ function clipTo(text: string, max: number): string {
   return chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : text;
 }
 
+/** Code-span quoting for untrusted issue text: keeps it inert in the PR body. */
 /**
  * Issue text quoted into the PR body or handoff. Each run of control characters
  * (`\p{Cc}`) and U+2028/U+2029 becomes one space, whitespace is collapsed, then
@@ -49,6 +54,9 @@ function quotedIssueText(text: string): string {
 
 /**
  * The spec's final verdict at the explore step.
+ *
+ * `primaryBody` is the primary issue body as read; `undefined` or blank means
+ * the gate could not run, which is recorded rather than silently skipped.
  *
  * `primaryBody` is the primary issue body as read. A body with no open-points
  * section yields no open points, so the spec passes through the gate unchanged.
@@ -79,6 +87,10 @@ function resolvedAssumption(point: OpenPoint): SpecAssumption {
  * - Resolved bullets (`[RESOLVED]` after the tag) are traced and recorded as
  *   assumptions, so the answer reaches the PR body. They never gate.
  * - No unresolved or unparsed CRITICAL lines: the spec is otherwise unchanged.
+ * - A security-class point, parsed or unparsed (authentication/authorization, credentials and keys,
+ *   secrets, input validation/injection, sandboxing, data deletion): park as
+ *   `security-open-point` — the driver will not choose that policy. The #397
+ *   complete-spec override lifts only `underspecified`, so this park stands.
  * - A security-class point, parsed or unparsed: park as `security-open-point`
  *   (the driver will not choose that policy). An existing park is kept and the
  *   security points join its open questions. Either way each one is recorded as
@@ -137,6 +149,11 @@ function applyOpenPointGate(spec: NormalisedSpec, reading: OpenPointReading): No
   trace(
     `work-driver: intent — ${points.length} unresolved CRITICAL open point(s), ${unparsed.length} unparsed line(s) carried as assumptions`,
   );
+  /**
+   * The verdict cap shared by the open-point gate and its unread-body branch: a
+   * park is final and passes through unchanged; anything else becomes
+   * proceed-with-assumptions with `assumptions` appended.
+   */
   return {
     ...base,
     verdict: "proceed-with-assumptions",

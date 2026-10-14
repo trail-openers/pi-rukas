@@ -8,6 +8,11 @@
  * one side cannot silently stop the other from reading what it wrote.
  *
  * Reading rules the intent gate applies:
+ *   - only bullets under the heading, and only those tagged `[CRITICAL]`, gate;
+ *   - a security-class point (authentication/authorization, credentials and keys,
+ *     secrets, input validation/injection, sandboxing, data deletion) parks the
+ *     cycle with reason `security-open-point`; any other point caps a proceed at
+ *     `proceed-with-assumptions`;
  *   - only bullets under the heading, and only those tagged `[CRITICAL]` (uppercase),
  *     gate;
  *   - a security-class point parks the cycle with reason `security-open-point`; any
@@ -16,6 +21,7 @@
  *   - a point the author has answered no longer gates. A bullet is resolved only
  *     when `[RESOLVED]` immediately follows the severity tag (e.g.
  *     `- [CRITICAL][RESOLVED] …` or `- [CRITICAL] [RESOLVED] …`). Answer the point
+ *     in the issue body, mark it resolved, and re-run with `/work N --restart`.
  *     in the issue body, mark it resolved, and re-run with `/work N --restart`;
  *   - a line in the section that mentions CRITICAL but does not parse as a point
  *     or a resolved bullet caps a proceed rather than being ignored.
@@ -39,6 +45,10 @@ export interface SecurityTerm {
   readonly requires?: readonly string[];
 }
 
+/**
+ * Words that name a decision the driver must not make on the resolver's behalf.
+ * An unresolved CRITICAL point touching one of these parks rather than proceeds.
+ */
 /**
  * The security class: decisions the driver must not make on the resolver's behalf.
  * An unresolved CRITICAL point matching any term parks rather than proceeds.

@@ -333,6 +333,7 @@ for (const incident of incidents) {
   );
 }
 
+// ----------------------------------- authorization class canaries (#1151 widened)
 // ----------------------------------- authorization class canaries
 
 {
@@ -384,6 +385,7 @@ for (const incident of incidents) {
   );
 }
 
+// -------------------------- open-point producer round trip (#1151 shared constants)
 // -------------------------- open-point producer round trip
 
 {
@@ -438,6 +440,7 @@ for (const incident of incidents) {
 }
 
 {
+  // Primary body not read: the gate cannot run. That is recorded, not skipped.
   // No Open points section: nothing is gated, so a park keeps its reason.
   const parked = spec({
     verdict: "park",

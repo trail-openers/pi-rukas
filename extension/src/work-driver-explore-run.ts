@@ -228,6 +228,11 @@ export async function runExplore(
     // park may be refuted by a complete spec. This runs on the WINNER
     // (prose or artifact), so the reconciliation logic is identical
     // regardless of which channel won the precedence rule.
+    // #1151 — the primary body comes from the settled fetch, read here at the
+    // gate (not a mutable local). A failed or blank read is passed through as
+    // `undefined`, which finaliseSpecVerdict records instead of skipping.
+    // The primary is always in the set on this path (intent is single-issue), so a
+    // miss is a wiring bug and must not be read as a blank body.
     // The primary body is the settled fetch read here. The empty-body halt above
     // guarantees every fetched body is non-blank, so reaching this point with no
     // fulfilled primary is a wiring fault and halts the step.
