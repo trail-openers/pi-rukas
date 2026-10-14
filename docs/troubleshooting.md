@@ -958,6 +958,14 @@ Without `--restart`, re-invoking `/work N` on a terminal-state file now emits a 
 
 **Fix:** none needed; act on the linked comment. Delete the record file if you want the next park reported in full regardless.
 
+### An adversarial fix pass parked on "removed N origin/main comment line(s)"
+
+**Symptom:** the handoff reads *"adversarial fix pass (<workstream> round N) parked: the fix pass removed N origin/main comment line(s) in <workstream> and wrote no comment in their place (<file>: <line> | …)"*.
+
+**Why:** a fix pass is told to answer review findings, so it parks when it deletes a comment outright while the code stays. It does not park for a reworded or replaced comment (the same diff hunk adds a comment) or for a comment an earlier develop pass already removed: those are listed for the reviewers under "Comments removed by this change", who judge them. Before this, any comment line the whole workstream diff did not keep verbatim parked the pass, and the cap text read *"(evidence detail missing from state)"*.
+
+**Fix:** restore the named lines in the workstream's worktree, or reword them in place, and re-run. `PI_ENSEMBLE_COMMENT_RETENTION=0` disables the check.
+
 ### "repoRoot was NOT restored: the discarded state could not be saved"
 
 **Symptom:** a failed consolidation, integration, lens-fix integration or handoff consolidation ends with *"repoRoot was NOT restored: the discarded state could not be saved (`git diff` failed: …), so nothing was reset or checked out — the tree at <path> is left exactly as it was"*. The next `/work` then stops at the branch step with `repo-root-residue`.
