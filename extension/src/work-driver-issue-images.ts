@@ -20,6 +20,8 @@
  * for another issue, on a multi-issue cycle, or with `PI_ENSEMBLE_ISSUE_IMAGES=0`.
  * A manifest is somebody else's file: anything in it that is not exactly the
  * expected shape drops that image, and a failure here never fails the step.
+ *
+ * `/plan` reads the same manifests through this code (plan-images.ts).
  */
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -49,18 +51,32 @@ export function issueImagesEnabled(env: NodeJS.ProcessEnv = process.env): boolea
   return env.PI_ENSEMBLE_ISSUE_IMAGES !== "0";
 }
 
-/** Read one directory's manifest; `undefined` when it is not for this issue. */
-async function readDir(dir: string, issue: number): Promise<IssueImage[] | undefined> {
-  let manifest: unknown;
+/** The directories `PI_ENSEMBLE_EXTRA_IMAGE_DIRS` names, in order. */
+export function imageDirs(env: NodeJS.ProcessEnv = process.env): string[] {
+  return (env.PI_ENSEMBLE_EXTRA_IMAGE_DIRS ?? "").split(":").filter((d) => d.length > 0);
+}
+
+async function readManifest(
+  dir: string,
+): Promise<{ issue?: unknown; images?: unknown } | undefined> {
   try {
-    manifest = JSON.parse(await fs.readFile(path.join(dir, "manifest.json"), "utf8"));
+    const m: unknown = JSON.parse(await fs.readFile(path.join(dir, "manifest.json"), "utf8"));
+    return typeof m === "object" && m !== null ? m : undefined;
   } catch {
     return undefined;
   }
-  const m = manifest as { issue?: unknown; images?: unknown };
-  if (typeof m !== "object" || m === null || m.issue !== issue || !Array.isArray(m.images)) {
-    return undefined;
-  }
+}
+
+/** The issue a directory's manifest is for; `undefined` when there is none to read. */
+export async function manifestIssue(dir: string): Promise<number | undefined> {
+  const m = await readManifest(dir);
+  return typeof m?.issue === "number" ? m.issue : undefined;
+}
+
+/** Read one directory's manifest; `undefined` when it is not for this issue. */
+async function readDir(dir: string, issue: number): Promise<IssueImage[] | undefined> {
+  const m = await readManifest(dir);
+  if (m === undefined || m.issue !== issue || !Array.isArray(m.images)) return undefined;
   const root = await fs.realpath(dir);
   const out: IssueImage[] = [];
   let total = 0;
@@ -100,8 +116,7 @@ export async function loadIssueImages(
 ): Promise<IssueImage[]> {
   const issue = issues[0];
   if (issues.length !== 1 || issue === undefined || !issueImagesEnabled(env)) return [];
-  const dirs = (env.PI_ENSEMBLE_EXTRA_IMAGE_DIRS ?? "").split(":").filter((d) => d.length > 0);
-  for (const dir of dirs) {
+  for (const dir of imageDirs(env)) {
     try {
       const found = await readDir(dir, issue);
       if (found !== undefined) {
@@ -122,6 +137,9 @@ export function toDispatchImages(images: IssueImage[]): DispatchImage[] {
 const STEP_ASK = {
   explore:
     "Use the images to work out WHERE the change goes: which element, which panel, which position in it. Say it in your report in words: the element (its selector or component, once you have found it in the code), its visible title or text, and where in or beside it. The steps after planning do not see the images, so what you do not put into words is lost.",
+  planChild:
+    "Use the images to work out what the issue asks for and WHERE the change goes: which element, which panel, which position in it. Say it in words in your findings: the element (its selector or component, once you have found it in the code), its visible title or text, and where in or beside it. The drafted issue carries only the images' links, so what you do not put into words is not in the spec.",
+  pm: "The plan driver (`start_plan_driver`) reads the same images itself and gives them to its investigation and gap-gate children, and the issue it files keeps their links. Say what the images show, in words, in the descriptor or context you pass it.",
   plan: "For every workstream whose change has a visible place, state that place in words in the workstream's description: the element (selector or component), its visible title or text, and where in or beside it. The developer does not see the images and builds from your words alone.",
 } as const;
 
@@ -155,13 +173,24 @@ export function issueImagesSection(images: IssueImage[], step: keyof typeof STEP
 type DispatchFn = NonNullable<DriverContext["dispatchFn"]>;
 
 /**
- * Wrap a dispatch function so that every spec it sends carries the images.
- * With no images the function is returned as it is.
+ * Wrap a dispatch function so that every spec it sends carries the images,
+ * with `section` appended to its prompt (the /plan children, whose prompts are
+ * built in several files). With no images the function is returned as it is.
  */
-export function withIssueImages(dispatch: DispatchFn, images: IssueImage[]): DispatchFn {
+export function withIssueImages<
+  H,
+  S extends { prompt: string; images?: DispatchImage[] },
+  A extends unknown[],
+  R,
+>(
+  dispatch: (host: H, spec: S, ...rest: A) => R,
+  images: IssueImage[],
+  section = "",
+): (host: H, spec: S, ...rest: A) => R {
   if (images.length === 0) return dispatch;
   const parts = toDispatchImages(images);
-  return (host, spec, opts) => dispatch(host, { ...spec, images: parts }, opts);
+  return (host, spec, ...rest) =>
+    dispatch(host, { ...spec, prompt: spec.prompt + section, images: parts }, ...rest);
 }
 
 /**

@@ -9,8 +9,8 @@ export interface DispatchSpec {
   role: string;
   prompt: string;
   /**
-   * Images sent with the kickoff prompt. Set by the /work driver for the
-   * issue's own images (work-driver-issue-images.ts); absent everywhere else.
+   * Images sent with the kickoff prompt. Set by the /work and /plan drivers
+   * for the issue's own images (work-driver-issue-images.ts); absent elsewhere.
    */
   images?: DispatchImage[];
   cwd?: string;
