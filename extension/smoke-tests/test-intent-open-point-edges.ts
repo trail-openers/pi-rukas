@@ -8,12 +8,16 @@
  * test-intent-criticality.ts.
  */
 
+import { openPointsSection } from "../src/plan-gap-disclosure.ts";
+import { GAP_RESOLUTION_PLACEHOLDER } from "../src/plan-gap-parse.ts";
+import type { PlanGap } from "../src/plan-types.ts";
+import { parseNormalisedSpecArtifact } from "../src/work-driver-intent-artifact.ts";
 import {
   applyOpenPointGate,
   criticalOpenPoints,
   readOpenPoints,
 } from "../src/work-driver-intent-criticality.ts";
-import { parseNormalisedSpecArtifact } from "../src/work-driver-intent-artifact.ts";
+import { finaliseSpecVerdict } from "../src/work-driver-intent-finalise.ts";
 import { type NormalisedSpec, PARK_REASONS, explainPark } from "../src/work-driver-intent.ts";
 
 let exit = 0;
@@ -157,5 +161,51 @@ assert(
   ),
   "explainPark: the security park describes the whole class",
 );
+
+// #1151 review: an unparsed CRITICAL line naming a security class parks, as a parsed one does.
+{
+  const reading = readOpenPoints(
+    "## Open points (unresolved at the gap-gate cap)\n\n- CRITICAL: authentication is undecided\n",
+  );
+  const gated = applyOpenPointGate(spec({ verdict: "proceed" }), reading.points, reading);
+  assert(
+    gated.verdict === "park" && gated.parkReason === "security-open-point",
+    "unparsed security line parks as security-open-point",
+  );
+}
+
+// Prefixed forms of the security stems are security-class too.
+for (const word of ["unencrypted", "preauth", "reauth", "unvalidated", "unsanitized"]) {
+  const gated = applyOpenPointGate(spec({ verdict: "proceed" }), [`the ${word} path is undecided`]);
+  assert(
+    gated.verdict === "park" && gated.parkReason === "security-open-point",
+    `prefixed security form parks: ${word}`,
+  );
+}
+
+// Round trip: the gap gate's own rendered section reads back with nothing unparsed, and a
+// non-security section caps a proceed without a "could not parse" assumption.
+{
+  const gaps: PlanGap[] = [
+    { severity: "CRITICAL", description: "Which timeout wins", resolution: "the shorter" },
+    {
+      severity: "CRITICAL",
+      description: "Which backoff applies",
+      resolution: GAP_RESOLUTION_PLACEHOLDER,
+    },
+  ];
+  const section = openPointsSection(gaps);
+  assert(
+    readOpenPoints(section).unparsed.length === 0,
+    "round trip: rendered section has no unparsed lines",
+  );
+  const finalised = finaliseSpecVerdict(spec({ verdict: "proceed" }), section);
+  assert(
+    finalised.verdict === "proceed-with-assumptions" &&
+      finalised.assumptions.length === 2 &&
+      !finalised.assumptions.some((a) => /could not parse/.test(a.text)),
+    `round trip: non-security section gives proceed-with-assumptions with no parse assumption (${finalised.verdict})`,
+  );
+}
 
 process.exit(exit);

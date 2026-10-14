@@ -198,7 +198,10 @@ export function readOpenPoints(issueBody: string): OpenPointReading {
       continue;
     }
     if (item !== undefined && OTHER_SEVERITY_BULLET.test(item)) continue;
-    if (/\bCRITICAL\b/.test(line)) reading.unparsed.push(line);
+    // A list item that mentions CRITICAL, or a line leading with it, is a malformed
+    // point. Other prose (e.g. the gap gate's own intro line) is not.
+    const malformed = item !== undefined ? /\bCRITICAL\b/.test(line) : /^\W*CRITICAL\b/i.test(line);
+    if (malformed) reading.unparsed.push(line);
   }
   return reading;
 }
@@ -213,7 +216,7 @@ export function criticalOpenPoints(issueBody: string): string[] {
  * An unresolved CRITICAL point touching one of these parks rather than proceeds.
  */
 const AUTHORIZATION_CLASS =
-  /\b(?:authenticat\w*|authori[sz]\w*|auth|oauth|jwt|acl|rbac|roles?|sessions?|login|signing[ _-]?keys?|private[ _-]?keys?|secret\w*|permissions?|credential\w*|token\w*|api[ _-]?keys?\w*|password\w*|(?:en|de)crypt\w*|tls|certificates?|certs?|crypto\w*|sanitiz\w*|validat\w*|inject\w*|sandbox\w*|privilege\w*|access[ _-]control|delet\w*|data[ _-]loss)\b/i;
+  /\b(?:(?:un|pre|re|non)?auth\w*|oauth|jwt|acl|rbac|roles?|sessions?|login|signing[ _-]?keys?|private[ _-]?keys?|secret\w*|permissions?|credential\w*|token\w*|api[ _-]?keys?\w*|password\w*|(?:un|pre|re|non)?(?:en|de)crypt\w*|tls|certificates?|certs?|crypto\w*|(?:un|pre|re|non)?(?:sanitiz\w*|validat\w*)|inject\w*|sandbox\w*|privilege\w*|access[ _-]control|delet\w*|data[ _-]loss)\b/i;
 
 /** #1151: the assumption text for one CRITICAL point is capped at this many characters. */
 const OPEN_POINT_ASSUMPTION_MAX = 300;
@@ -252,7 +255,7 @@ function quotedIssueText(text: string): string {
  * - Resolved bullets (`[RESOLVED]` after the tag) are traced and recorded as
  *   assumptions, so the answer reaches the PR body. They never gate.
  * - No unresolved or unparsed CRITICAL lines: the spec is otherwise unchanged.
- * - A security-class point (authentication/authorization, credentials and keys,
+ * - A security-class point, parsed or unparsed (authentication/authorization, credentials and keys,
  *   secrets, input validation/injection, sandboxing, data deletion): park as
  *   `security-open-point` — the driver will not choose that policy. The #397
  *   complete-spec override lifts only `underspecified`, so this park stands.
@@ -298,7 +301,7 @@ export function applyOpenPointGate(
     );
     return base;
   }
-  if (openPoints.some((point) => AUTHORIZATION_CLASS.test(point))) {
+  if ([...openPoints, ...unparsed].some((line) => AUTHORIZATION_CLASS.test(line))) {
     trace("work-driver: intent — unresolved CRITICAL open point concerns authorization, parking");
     return {
       ...base,
