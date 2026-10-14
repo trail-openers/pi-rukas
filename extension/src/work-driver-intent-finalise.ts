@@ -14,7 +14,7 @@ import { trace } from "./trace.ts";
 import {
   applyOpenPointGate,
   capToAssumptions,
-  criticalOpenPoints,
+  readOpenPoints,
 } from "./work-driver-intent-criticality.ts";
 import { type NormalisedSpec, reconcileVerdict } from "./work-driver-intent.ts";
 
@@ -30,7 +30,11 @@ export function finaliseSpecVerdict(
 ): NormalisedSpec {
   const reconciled = reconcileVerdict(spec);
   if (primaryBody !== undefined && primaryBody.trim() !== "") {
-    return applyOpenPointGate(reconciled, criticalOpenPoints(primaryBody));
+    const reading = readOpenPoints(primaryBody);
+    return applyOpenPointGate(reconciled, reading.points, {
+      resolved: reading.resolved,
+      unparsed: reading.unparsed,
+    });
   }
   trace(
     "open-point-gate-unchecked: the filed issue body was not read; its open points were not checked",

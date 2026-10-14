@@ -235,9 +235,19 @@ export async function runExplore(
     // miss is a wiring bug and must not be read as a blank body.
     const primaryIdx = issues.indexOf(ctx.issue);
     if (primaryIdx === -1) {
-      throw new Error(
-        `work-driver: primary issue #${ctx.issue} is not in the explore issue set [${issues.join(", ")}] (wiring bug)`,
+      // A wiring bug, not a bad issue: report it as a halted step rather than
+      // throwing out of the driver.
+      trace(
+        `work-driver: primary issue #${ctx.issue} is not in the explore issue set [${issues.join(", ")}]`,
       );
+      return appendEvent(next, {
+        kind: "cap-hit",
+        at: Date.now(),
+        cap: "step-failed:explore",
+        reviewRound: 0,
+        nextStep: "handoff",
+        evidence: `wiring: primary issue missing from issue list [${issues.join(", ")}]`,
+      });
     }
     const primarySettled = bodySettled[primaryIdx];
     const primaryBody =

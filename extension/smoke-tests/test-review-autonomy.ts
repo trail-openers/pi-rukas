@@ -232,11 +232,34 @@ try {
     answered.verdict !== "park",
     "autonomy: the same point marked [RESOLVED] does not park after --restart",
   );
+  const spacedResolved = finaliseSpecVerdict(
+    buildable,
+    body("[CRITICAL] [RESOLVED] Who may change the retry timeout \u2014 maintainers only"),
+  );
+  assert(
+    spacedResolved.verdict === "proceed" &&
+      spacedResolved.assumptions.some((a) => /Resolved open point/.test(a.text)),
+    "autonomy: [CRITICAL] [RESOLVED] (spaced) is resolved and recorded as an assumption",
+  );
+  // Strikethrough is no longer a resolution convention: the line is unparsed and caps the proceed.
   const struck = finaliseSpecVerdict(
     buildable,
     body("~~[CRITICAL] Who may change the retry timeout~~ \u2014 answered: maintainers"),
   );
-  assert(struck.verdict !== "park", "autonomy: a struck-through security point does not park");
+  assert(
+    struck.verdict === "proceed-with-assumptions" &&
+      struck.assumptions.some((a) => /could not parse a CRITICAL line/.test(a.text)),
+    "autonomy: a struck-through point is not resolved; it caps the proceed as unparsed",
+  );
+  // [RESOLVED] must sit right after the tag; anywhere else the point still gates.
+  const trailing = finaliseSpecVerdict(
+    buildable,
+    body("[CRITICAL] Who may change the retry timeout \u2014 maintainers only [RESOLVED]"),
+  );
+  assert(
+    trailing.assumptions.some((a) => /unresolved CRITICAL open point/.test(a.text)),
+    "autonomy: [RESOLVED] after the point text does not resolve it",
+  );
 } finally {
   try {
     rmSync(repoDir, { recursive: true, force: true });

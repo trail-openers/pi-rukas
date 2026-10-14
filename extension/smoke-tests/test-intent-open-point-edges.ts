@@ -8,8 +8,13 @@
  * test-intent-criticality.ts.
  */
 
-import { applyOpenPointGate, criticalOpenPoints } from "../src/work-driver-intent-criticality.ts";
-import type { NormalisedSpec } from "../src/work-driver-intent.ts";
+import {
+  applyOpenPointGate,
+  criticalOpenPoints,
+  readOpenPoints,
+} from "../src/work-driver-intent-criticality.ts";
+import { parseNormalisedSpecArtifact } from "../src/work-driver-intent-artifact.ts";
+import { type NormalisedSpec, PARK_REASONS, explainPark } from "../src/work-driver-intent.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -65,5 +70,92 @@ const spec = (over: Partial<NormalisedSpec> = {}): NormalisedSpec => ({
     "clip: no lone surrogate is left before the ellipsis",
   );
 }
+
+// The artifact reader accepts every park reason the intent gate can emit (#1151 review:
+// one shared list, so a new reason cannot be written and then silently refused on read).
+{
+  const accepted = PARK_REASONS.filter((reason) => {
+    const parsed = parseNormalisedSpecArtifact(
+      JSON.stringify({ ...spec(), verdict: "park", parkReason: reason }),
+    );
+    return parsed?.parkReason === reason;
+  });
+  assert(
+    accepted.length === PARK_REASONS.length,
+    `artifact reader accepts every ParkReason (${accepted.length}/${PARK_REASONS.length})`,
+  );
+}
+
+// Resolution: only [RESOLVED] right after the severity tag counts; it is recorded as an assumption.
+{
+  const body = [
+    "## Open points (unresolved at the gap-gate cap)",
+    "- [CRITICAL][RESOLVED] Which timeout wins \u2014 answered: the shorter",
+    "- [CRITICAL] [RESOLVED] Who owns retries \u2014 answered: the driver",
+    "- [CRITICAL] Which backoff applies [RESOLVED]",
+    "- ~~[CRITICAL] struck point~~",
+  ].join("\n");
+  const reading = readOpenPoints(body);
+  assert(
+    reading.resolved.length === 2 && reading.resolved[0]?.startsWith("Which timeout wins"),
+    `resolved: [RESOLVED] after the tag is resolved, both spellings (${reading.resolved.length})`,
+  );
+  assert(
+    reading.points.length === 1 && reading.points[0]?.includes("[RESOLVED]"),
+    "resolved: [RESOLVED] elsewhere in the text does not resolve the point",
+  );
+  assert(
+    reading.unparsed.length === 1,
+    "resolved: a struck-through CRITICAL line is unparsed, not resolved",
+  );
+  const gated = applyOpenPointGate(spec({ verdict: "proceed" }), reading.points, reading);
+  assert(
+    gated.assumptions.some((a) =>
+      a.text.startsWith("Resolved open point (marked [RESOLVED] in the issue body): "),
+    ),
+    "resolved: a skipped resolved bullet reaches the assumptions (PR body)",
+  );
+}
+
+// Malformed section: a CRITICAL line that does not parse caps the proceed; a HIGH line or a line
+// outside the section does not.
+{
+  const body = [
+    "Some CRITICAL context outside the section.",
+    "## Open points (unresolved at the gap-gate cap)",
+    "- CRITICAL: missing the bracket tag",
+    "- [HIGH] a high point that mentions CRITICAL",
+  ].join("\n");
+  const reading = readOpenPoints(body);
+  assert(
+    reading.unparsed.length === 1 && reading.unparsed[0]?.startsWith("- CRITICAL"),
+    `malformed: one unparsed CRITICAL line, nothing from HIGH or outside the section (${reading.unparsed.length})`,
+  );
+  const capped = applyOpenPointGate(spec({ verdict: "proceed" }), reading.points, reading);
+  assert(
+    capped.verdict === "proceed-with-assumptions" &&
+      capped.assumptions.some((a) =>
+        a.text.startsWith("Open-point gate could not parse a CRITICAL line: "),
+      ),
+    "malformed: an unparsed CRITICAL line caps proceed with a named assumption",
+  );
+  const parked = applyOpenPointGate(
+    spec({ verdict: "park", parkReason: "too-large" }),
+    [],
+    reading,
+  );
+  assert(
+    parked.verdict === "park" && parked.parkReason === "too-large",
+    "malformed: an existing park is not rewritten",
+  );
+}
+
+// The security park names the whole class, not only the first words of it (#1151 review).
+assert(
+  /credentials and keys.*input validation\/injection.*data deletion/.test(
+    explainPark("security-open-point", 42),
+  ),
+  "explainPark: the security park describes the whole class",
+);
 
 process.exit(exit);

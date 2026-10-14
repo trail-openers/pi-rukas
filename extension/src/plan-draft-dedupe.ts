@@ -38,8 +38,7 @@ import type { PriorContextEntry } from "./plan-prior-context.ts";
  * Files, paths and line numbers: a restatement that adds one of these is kept,
  * because it carries grounding the operator line lacks.
  */
-const CONCRETE_REFERENCE =
-  /[\w-]{1,255}\.(?:ts|tsx|js|mjs|cjs|md|json|sh|rs|py|go|ya?ml)\b|[\w.-]{1,255}\/[\w.-]{1,255}|:\d{1,9}\b/;
+const CONCRETE_REFERENCE = /\.(?:ts|tsx|js|mjs|cjs|md|json|sh|rs|py|go|ya?ml)\b|\/|:\d/;
 
 /** The duplicate test's view of one line: its content tokens and polarity, computed once. */
 interface LineProfile {

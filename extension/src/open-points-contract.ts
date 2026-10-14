@@ -9,13 +9,16 @@
  *
  * Reading rules the intent gate applies:
  *   - only bullets under the heading, and only those tagged `[CRITICAL]`, gate;
- *   - an authentication / authorization / secrets / permissions point parks the
+ *   - a security-class point (authentication/authorization, credentials and keys,
+ *     secrets, input validation/injection, sandboxing, data deletion) parks the
  *     cycle with reason `security-open-point`; any other point caps a proceed at
  *     `proceed-with-assumptions`;
- *   - a point the author has answered no longer gates. A bullet is resolved when
- *     it carries `[RESOLVED]` anywhere (e.g. `- [CRITICAL][RESOLVED] …`), or when
- *     it contains a strikethrough `~~…~~` span. Answer the point in the issue
- *     body, mark it resolved, and re-run with `/work N --restart`.
+ *   - a point the author has answered no longer gates. A bullet is resolved only
+ *     when `[RESOLVED]` immediately follows the severity tag (e.g.
+ *     `- [CRITICAL][RESOLVED] …` or `- [CRITICAL] [RESOLVED] …`). Answer the point
+ *     in the issue body, mark it resolved, and re-run with `/work N --restart`.
+ *   - a line in the section that mentions CRITICAL but does not parse as a point
+ *     or a resolved bullet caps a proceed rather than being ignored.
  */
 
 /** Heading of the open-points section the gap gate renders. */

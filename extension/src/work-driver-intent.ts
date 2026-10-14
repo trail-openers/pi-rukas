@@ -114,7 +114,8 @@ export function intentResolutionEnabled(): boolean {
   return v !== "0" && v !== "false";
 }
 
-const PARK_REASONS: ParkReason[] = [
+/** Every park reason, in declaration order. Exported so readers can validate against it (#1151). */
+export const PARK_REASONS: readonly ParkReason[] = [
   "underspecified",
   "contradicted-by-code",
   "already-implemented",
@@ -453,7 +454,7 @@ export function explainPark(reason: ParkReason, issue: number): string {
     case "too-large":
       return `#${issue} is too large to execute as one cycle. Split it into separate issues; each should be a diff a reviewer can hold in their head.`;
     case "security-open-point":
-      return `#${issue} has an unresolved CRITICAL open point about authentication, authorization, secrets or permissions. The driver will not choose that policy for you. Answer it in the issue body, mark it [RESOLVED], and re-run.`;
+      return `#${issue} has an unresolved CRITICAL security-relevant open point (authentication/authorization, credentials and keys, secrets, input validation/injection, sandboxing, or data deletion). The driver will not choose that policy for you. Answer it in the issue body, mark it [RESOLVED], and re-run.`;
     case "premise-unsound":
       return `#${issue} rests on a premise the driver could not substantiate — typically an API or behaviour that does not exist as described. Confirm the premise and re-run.`;
   }

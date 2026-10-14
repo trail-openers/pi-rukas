@@ -35,23 +35,15 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "./trace.ts";
-import type {
-  NormalisedSpec,
-  ParkReason,
-  SpecAssumption,
-  SpecDeliverable,
-  SpecEvidence,
+import {
+  type NormalisedSpec,
+  PARK_REASONS,
+  type ParkReason,
+  type SpecAssumption,
+  type SpecDeliverable,
+  type SpecEvidence,
 } from "./work-driver-intent.ts";
 import { dispatchArtifactPath, writeDispatchArtifact } from "./workflow-state.ts";
-
-const PARK_REASONS: readonly ParkReason[] = [
-  "underspecified",
-  "contradicted-by-code",
-  "already-implemented",
-  "too-large",
-  "premise-unsound",
-  "security-open-point",
-];
 
 /**
  * Parse the spec artifact (the JSON the resolver persisted to spec.txt)

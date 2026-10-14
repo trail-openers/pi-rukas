@@ -341,6 +341,16 @@ for (const incident of incidents) {
     ["delete", "Whether records are deleted or soft-deleted \u2014 proposal: soft"],
     ["data loss", "Whether this risks data loss on rollback \u2014 proposal: none"],
     ["secret", "Where the secrets live \u2014 proposal: env var"],
+    ["auth", "Whether auth is required on the retry endpoint \u2014 proposal: yes"],
+    ["oauth", "OAuth scopes for the webhook \u2014 proposal: read-only"],
+    ["jwt", "JWT expiry for the worker \u2014 proposal: 15 minutes"],
+    ["acl", "ACL for the bucket \u2014 proposal: private"],
+    ["rbac", "RBAC mapping for reviewers \u2014 proposal: maintainer"],
+    ["role", "which role may rotate keys \u2014 proposal: admins"],
+    ["session", "How long a session stays valid \u2014 proposal: 1 hour"],
+    ["login", "Whether login is rate limited \u2014 proposal: yes"],
+    ["signing key", "Where the signing key is stored \u2014 proposal: KMS"],
+    ["private key", "Whether the private key is rotated \u2014 proposal: yearly"],
   ];
   for (const [cls, point] of classes) {
     const resolved = applyOpenPointGate(spec({ verdict: "proceed" }), [point]);
