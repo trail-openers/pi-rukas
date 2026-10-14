@@ -188,6 +188,8 @@ export function finalizeCommitPrState(
   res: NonEmptyIntegrateResult,
   rootState: CommitPrRootInspect,
   commitPrFlakeEvidence: string | undefined,
+  /** A second round: the commits were pushed onto a PR that was already open. */
+  prAlreadyOpen = false,
 ): WorkState {
   let next = appendEvent(
     {
@@ -215,7 +217,7 @@ export function finalizeCommitPrState(
     synthesizeDriverCompletion({
       step: "commit-pr",
       label: "driver:commit-pr",
-      summary: `Mechanized commit-pr: consolidated ${ids.length} worktree(s), committed, pushed ${branchName}, opened PR.\npr: ${prNumber}`,
+      summary: `Mechanized commit-pr: consolidated ${ids.length} worktree(s), committed, pushed ${branchName}, ${prAlreadyOpen ? `updated open PR #${prNumber}` : "opened PR"}.\npr: ${prNumber}`,
       startedAt,
       now: Date.now(),
     }),
