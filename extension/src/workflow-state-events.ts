@@ -126,6 +126,8 @@ export type WorkEvent =
       at: number;
       /** Provider's error message captured from the synthetic stopReason: "error". */
       providerMessage?: string;
+      /** #1297 — the adversarial loop stopped after this many identical provider failures in a row; ≥2 is not retried. */
+      providerRepeats?: number;
       transcriptPath?: string;
       /** #534 — tokens flushed before the provider-error stop. */
       usage?: DispatchUsage;

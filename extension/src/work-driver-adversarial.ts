@@ -18,12 +18,16 @@ import { capHitForCapKill } from "./work-driver-adversarial-capkill.ts";
 import { fanOutAdversarial } from "./work-driver-adversarial-fanout.ts";
 import { fixRequestEvents, withParsedSiblings } from "./work-driver-adversarial-fix.ts";
 import { handleNoCommittedFix, integrateLensFix } from "./work-driver-adversarial-lensfix.ts";
-import { reentryPassBatchSpan } from "./work-driver-adversarial-reentry.ts";
+import {
+  classifyAdversarialOutcome,
+  reentryPassBatchSpan,
+} from "./work-driver-adversarial-reentry.ts";
 import {
   ADVERSARIAL_PER_WS_MAX_RETRIES,
   type AdversarialOutcome,
 } from "./work-driver-adversarial-types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { failureCauseReasonForClass } from "./work-driver-failure-taxonomy.ts";
 import { integrate, restoreRepoRoot } from "./work-driver-integrate.ts";
 import {
   detectCommittedFix,
@@ -264,8 +268,12 @@ export async function runAdversarial(
     // re-entry (priorHadInfraFailure) is permanent — park with the DISTINCT
     // cap `adversarial-infra-failure` (NOT a rejection).
     if (!priorHadInfraFailure) {
+      // #1297 — say WHY: the reviewer children's provider error, classified.
+      const o = failed[0];
+      const cls = o ? classifyAdversarialOutcome(o) : undefined;
+      const why = o && cls ? `: ${failureCauseReasonForClass(o, cls)} (cause=${cls.cause})` : "";
       trace(
-        "work-driver: adversarial loop infrastructure failure (N=1) — leaving dispatch-failed tail for the RETRY_ONCE router",
+        `work-driver: adversarial loop infrastructure failure (N=1)${why} — leaving dispatch-failed tail for the RETRY_ONCE router`,
       );
     } else {
       const names = failed.map((o) => o.id).join(", ");

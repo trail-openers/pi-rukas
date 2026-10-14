@@ -11,7 +11,7 @@ import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 import { explainConsolidation } from "./work-driver-explain-consolidation.ts";
 import { explainDetectCaps } from "./work-driver-explain-detect-caps.ts";
 import { explainLens } from "./work-driver-explain-lens.ts";
-import { explainOther } from "./work-driver-explain-other.ts";
+import { adversarialFailureCause, explainOther } from "./work-driver-explain-other.ts";
 import { explainPrSteps } from "./work-driver-explain-pr-steps.ts";
 import { explainReview } from "./work-driver-explain-review.ts";
 import { explainPrNotOpen, explainVerifyFailed } from "./work-driver-explain-verify.ts";
@@ -369,8 +369,12 @@ export function explainCap(
         return "the branch step dispatch failed before creating the feature branch — develop would edit HEAD (likely main), commit-pr has nothing to push, CI has nothing to watch";
       case "develop":
         return `the develop step dispatch failed with ${fileBlurb} on disk${fanoutTag} — adversarial review of partial work is not meaningful, halting cleanly`;
-      case "adversarial":
-        return "the adversarial gate dispatch failed twice (retry exhausted) — cannot commit code that has not passed the adversarial gate";
+      case "adversarial": {
+        // #1297 — name the endpoint's fault, not the driver's retry budget: a
+        // quota window or a missing model is not retried at all.
+        const cause = adversarialFailureCause(state);
+        return `the adversarial gate produced no verdict${cause ? ` — reviewer unavailable: ${cause}` : " (dispatch failed, retry exhausted)"} — cannot commit code that has not passed the adversarial gate`;
+      }
       case "commit-pr":
         return "the commit-pr step dispatch failed before pushing the PR — lens-review of uncommitted work would waste hours, CI has nothing to watch";
       case "lens-review":

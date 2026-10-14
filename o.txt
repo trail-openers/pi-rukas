@@ -1,0 +1,18 @@
+✓ identical timeouts: 2 children, not 4 (got round1-review, round1-review-retry)
+✓ the repeat count travels on the result
+✓ 404 model: 1 child (got 1)
+✓ 404 model classifies as provider-model-unavailable
+✓ quota-window 429: 1 child (got 1)
+✓ burst 429: re-spawned once and recovered
+✓ burst 429: waited ≥ the stated 30s before re-spawning (waited 30860ms)
+✓ alternating errors keep the full depth (got 4)
+✓ loop text names the provider error and its cause (got: Adversarial loop infrastructure failure: round 1 review dispatch provider/transport error: Request timed out. ×2 in a row (cause=provider-severed). No verdict was produced — this is NOT a review rejection.)
+✓ step event is dispatch-failed-provider carrying the child's message (got dispatch-failed-provider)
+✓ a repeated provider error is not retried by the router
+✓ reason names the error and the repeat (got: provider/transport error: Request timed out. (×2 in a row — not re-dispatched))
+✓ repeated timeout: the step is not re-dispatched into the same fault (loops=1)
+✓ repeated timeout: parks with step-failed:adversarial
+✓ repeated timeout: handoff names the provider cause, not the retry budget (got: the adversarial gate produced no verdict — reviewer unavailable: provider/transport error: Request timed out. (×2 in a row — not re-dispatched) [cause=provider-severed] — cannot commit code that has not passed the adversarial gate)
+✓ 404 model: the step is not re-dispatched into the same fault (loops=1)
+✓ 404 model: parks with step-failed:adversarial
+✓ 404 model: handoff names the provider cause, not the retry budget (got: the adversarial gate produced no verdict — reviewer unavailable: provider does not serve the configured model — re-dispatching cannot help: 404: {"message":"model \"qwen3.8-flash-next\" not found","type":"not_found"} [cause=provider-model-unavailable] — cannot commit code that has not passed the adversarial gate)
