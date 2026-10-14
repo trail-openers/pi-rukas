@@ -30,6 +30,7 @@ import {
   hostExhaustionFailure,
   isHostExhaustionFailure,
   isHostForkExhaustion,
+  pidLimitSnapshot,
 } from "./work-driver-exec-error.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { baselineRedMessage, probeBaselineVerify } from "./work-driver-verify-baseline.ts";
@@ -271,7 +272,7 @@ export async function runVerifyCommandGate(opts: {
       // The host could not fork, so nothing was combined: neither a conflict
       // nor a verify failure. The message deliberately avoids the conflict
       // wording the cap router matches on.
-      failures.push(hostExhaustionFailure("consolidated verify", cons.detail));
+      failures.push(hostExhaustionFailure("consolidated verify", cons.detail, pidLimitSnapshot()));
     } else {
       // #814 — the "incoherent decomposition" claim is asserted ONLY when
       // the driver has NO recorded fence evidence. When a sibling-declared
@@ -379,6 +380,7 @@ export async function runVerifyCommandGate(opts: {
           ? hostExhaustionFailure(
               `verify command \`${cmd}\` on the CONSOLIDATED tree`,
               classifierInput,
+              pidLimitSnapshot(),
             )
           : consolidatedFailureMessage(verdict, cmd)) + logClause,
     );

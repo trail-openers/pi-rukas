@@ -127,7 +127,7 @@ export function pidLimitSnapshot(
   try {
     const current = read("/sys/fs/cgroup/pids.current").trim();
     const max = read("/sys/fs/cgroup/pids.max").trim();
-    if (!/^\d+$/.test(current) || max === "") return undefined;
+    if (!/^\d+$/.test(current) || !/^(\d+|max)$/.test(max)) return undefined;
     return `cgroup pids.current=${current} of pids.max=${max}`;
   } catch {
     return undefined;
@@ -135,17 +135,49 @@ export function pidLimitSnapshot(
 }
 
 /**
+ * The operator procedure, named once. The failure string and explainVerifyFailed
+ * both point here, so the procedure lives in exactly one place (troubleshooting).
+ */
+export const HOST_EXHAUSTION_RUNBOOK = `The operator procedure (reading the counters, checking that PID 1 is an init, restarting or raising the limit) is in docs/troubleshooting.md under "${HOST_EXHAUSTION_LABEL}: the gate could not run".`;
+
+/**
+ * Headroom below which a numeric pids.max counts as exhausted. A fork needs
+ * one free slot, but one gate spawns a whole shell tree and parallel
+ * workstreams burst together, so a dozen spare pids is as good as none.
+ */
+const PID_HEADROOM = 10;
+
+const PID_SNAPSHOT_RE = /^cgroup pids\.current=(\d+) of pids\.max=(\d+|max)$/;
+
+/** True only when the snapshot shows a numeric ceiling with no headroom left. */
+export function pidCeilingExhausted(snapshot: string): boolean {
+  const m = PID_SNAPSHOT_RE.exec(snapshot);
+  if (!m || m[2] === "max") return false;
+  return Number(m[2]) - Number(m[1]) < PID_HEADROOM;
+}
+
+const OTHER_CEILINGS =
+  "the other ceilings to check are the kernel's pid_max (/proc/sys/kernel/pid_max), the user's RLIMIT_NPROC (`ulimit -u`), and memory pressure";
+
+/**
  * The failure string for a gate command that could not be started. It stays a
  * FAILURE — an unrun gate must never read as a pass — but it says what was
  * and was not established, and points at the process ceiling, not the diff.
+ * `pids` is the caller's snapshot, taken once at the failure site so this
+ * formatter stays free of side effects.
  */
 export function hostExhaustionFailure(
   what: string,
   detail: string,
-  pids: string | undefined = pidLimitSnapshot(),
+  pids: string | undefined,
 ): string {
-  const where = pids
-    ? `the process limit where the driver runs is exhausted: ${pids}`
-    : "the process or thread limit where the driver runs is exhausted (its cgroup pid counters could not be read)";
-  return `${HOST_EXHAUSTION_LABEL} ${what} could not run — the system refused to start a process (fork failed / EAGAIN); ${where}. This is an environment failure, NOT a verdict on the change: the gate did not execute, so the change is neither confirmed nor refuted. In a container this is the CONTAINER's pid limit (docker \`--pids-limit\`), not a host ulimit; a count at the limit with little running means leaked or unreaped children — PID 1 must be an init (\`cat /proc/1/comm\`). Restart the container (or raise its pid limit) and re-run — ${detail}`;
+  let cause: string;
+  if (pids === undefined) {
+    cause = `the process or thread limit where the driver runs is unknown (its cgroup pid counters could not be read); ${OTHER_CEILINGS}`;
+  } else if (pidCeilingExhausted(pids)) {
+    cause = `the process limit where the driver runs is exhausted: ${pids}`;
+  } else {
+    cause = `the cgroup pid limit is NOT the ceiling here (${pids}), so raising it will not help; ${OTHER_CEILINGS}`;
+  }
+  return `${HOST_EXHAUSTION_LABEL} ${what} could not run — the system refused to start a process (fork failed / EAGAIN); ${cause}. This is an environment failure, NOT a verdict on the change: the gate did not execute, so the change is neither confirmed nor refuted. In a container the ceiling is the CONTAINER's pid limit (docker \`--pids-limit\`), not a host ulimit. ${HOST_EXHAUSTION_RUNBOOK} Evidence: ${detail}`;
 }

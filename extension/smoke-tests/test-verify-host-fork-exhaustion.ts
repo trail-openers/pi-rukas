@@ -19,7 +19,12 @@ import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { appendDevelopVerifyFailure } from "../src/work-develop-verify-failure.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import { hostExhaustionFailure, pidLimitSnapshot } from "../src/work-driver-exec-error.ts";
+import {
+  HOST_EXHAUSTION_RUNBOOK,
+  hostExhaustionFailure,
+  pidCeilingExhausted,
+  pidLimitSnapshot,
+} from "../src/work-driver-exec-error.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import { formatExecError } from "../src/work-driver-verify-develop-helpers.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
@@ -250,18 +255,73 @@ try {
       "cgroup pids.current=17 of pids.max=max",
     "#1277: an unlimited cgroup is reported as it reads",
   );
-  const msg = hostExhaustionFailure("consolidated verify", "detail", snap);
-  assert(msg.startsWith(LABEL), "#1277: the label still leads the failure");
   assert(
-    msg.includes("pids.current=4095 of pids.max=4096"),
+    pidLimitSnapshot((f) => (f.endsWith("pids.max") ? "4096abc\n" : "17\n")) === undefined,
+    "#1277: a malformed pids.max yields no snapshot",
+  );
+
+  // Exhausted: numeric max, headroom under the margin → claims exhaustion.
+  const exhausted = hostExhaustionFailure("consolidated verify", "detail", snap);
+  assert(exhausted.startsWith(LABEL), "#1277: the label still leads the failure");
+  assert(
+    exhausted.includes("pids.current=4095 of pids.max=4096"),
     "#1277: the failure quotes the pid count and limit",
   );
   assert(
-    /CONTAINER's pid limit/.test(msg) && !/on the host/.test(msg),
+    /exhausted: cgroup pids\.current=4095/.test(exhausted),
+    "#1277: a numeric ceiling with no headroom is claimed as exhausted",
+  );
+  assert(
+    /CONTAINER's pid limit/.test(exhausted) && !/on the host/.test(exhausted),
     "#1277: it points at the container's limit, not the host",
   );
+  assert(
+    exhausted.includes(HOST_EXHAUSTION_RUNBOOK) && exhausted.includes("docs/troubleshooting.md"),
+    "#1277: the failure points at the shared troubleshooting runbook",
+  );
+
+  // Unlimited: pids.max=max → the cgroup is NOT the ceiling; no exhaustion claim.
+  const unlimited = hostExhaustionFailure(
+    "consolidated verify",
+    "detail",
+    "cgroup pids.current=17 of pids.max=max",
+  );
+  assert(
+    /NOT the ceiling here \(cgroup pids\.current=17 of pids\.max=max\)/.test(unlimited),
+    "#1277: an unlimited cgroup is not claimed as the ceiling",
+  );
+  assert(
+    !/is exhausted/.test(unlimited),
+    "#1277: an unlimited cgroup is never reported as exhausted",
+  );
+  assert(
+    /pid_max/.test(unlimited) && /RLIMIT_NPROC/.test(unlimited) && /memory/.test(unlimited),
+    "#1277: the other candidate ceilings are listed",
+  );
+
+  // Numeric but with plenty of headroom → also not the ceiling.
+  const roomy = hostExhaustionFailure(
+    "consolidated verify",
+    "detail",
+    "cgroup pids.current=17 of pids.max=4096",
+  );
+  assert(/NOT the ceiling here/.test(roomy), "#1277: a roomy numeric ceiling is not claimed");
+
+  // Margin boundary: 10 spare pids is the threshold (strictly under = exhausted).
+  assert(
+    pidCeilingExhausted("cgroup pids.current=4087 of pids.max=4096") &&
+      !pidCeilingExhausted("cgroup pids.current=4086 of pids.max=4096"),
+    "#1277: exhaustion is headroom < 10 pids",
+  );
+  assert(
+    !pidCeilingExhausted("cgroup pids.current=4096 of pids.max=max"),
+    "#1277: max is never exhausted",
+  );
+
+  // Blind: counters unreadable → the message says so, and makes no claim.
   const blind = hostExhaustionFailure("consolidated verify", "detail", undefined);
   assert(/could not be read/.test(blind), "#1277: without counters the message says so");
+  assert(!/exhausted:/.test(blind), "#1277: without counters no exhaustion is claimed");
 }
 
 process.exit(exit);
