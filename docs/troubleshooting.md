@@ -1189,6 +1189,8 @@ Park reasons, each with its own operator action:
 | `too-large` | Not executable as one cycle; split it |
 | `premise-unsound` | It rests on an API or behaviour that could not be substantiated |
 
+A `contradicted` evidence row whose subject is memory — its source is `memory`/`vipune`, or the claim opens with "vipune rows …" — never parks a `proceed`: a stale memory row contradicts the memory, not the issue. It travels as an assumption in the PR body, and a handoff lists it under "Stale memory rows", apart from "Contradicting evidence".
+
 **A missing or unreadable verdict parks.** Before this, an absent token defaulted to "build it" — silence was treated as permission. Parking early is cheap: it costs one explore dispatch rather than a whole cycle ending in a bad PR.
 
 The resolver runs in the `explore` role, which is structurally denied `write`/`edit`/`multiedit`. That is deliberate — an agent holding edit tools rationalises ambiguity away, because building is cheaper than asking.

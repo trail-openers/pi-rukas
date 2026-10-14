@@ -71,6 +71,31 @@ function criticalityTokens(text: string): Set<string> {
 }
 
 /**
+ * Is this row about the memory store rather than about the issue?
+ *
+ * `contradicted` is meant to say "the ISSUE's claim is false against the code".
+ * A resolver that finds a stale vipune row writes the same token for a
+ * different subject: the MEMORY is what the code contradicts. On orchard #97 the
+ * row read "vipune rows claiming issue 97 already moved the meter into
+ * `header.topbar`, and one describing a `test/app_test.sh` that does not
+ * exist" — rows the resolver had just superseded, under a `proceed` it argued
+ * with file:line evidence. It named a deliverable file and said "does not
+ * exist", so the classifier below read the resolver's own correction as proof
+ * that the issue was stale, and parked.
+ *
+ * Deliberately narrow, because a miss here builds on a false premise: the
+ * source is `memory`/`vipune` (what the prompt asks for), or the claim OPENS
+ * with memory rows as its subject. A claim that merely mentions memory — this
+ * repo has issues about `vipune.ts` — is still a claim about the code.
+ */
+export function isMemoryClaim(evidence: Pick<SpecEvidence, "claim" | "source">): boolean {
+  return (
+    /^[`'"\s]*(?:memory|vipune)(?:[`'"\s]|$)/i.test(evidence.source) ||
+    /^\W*(?:\w+\s+)?(?:vipune|memory)\s+(?:rows?|entr(?:y|ies)|records?)\b/i.test(evidence.claim)
+  );
+}
+
+/**
  * Whether a contradiction describes an absence or relocation that would make
  * one of this spec's deliverables impossible to build.
  *
@@ -86,6 +111,8 @@ function assertsLoadBearingContradiction(spec: NormalisedSpec, evidence: SpecEvi
   // invent a classification: absence of criticality data is the fail-closed
   // default, not a vote for the weaker reading.
   if (evidence.claim.trim() === "") return true;
+  // A stale memory row contradicts the memory, not the issue.
+  if (isMemoryClaim(evidence)) return false;
   const deliverableBasenames = spec.deliverables
     .flatMap((deliverable) => deliverable.paths)
     .map(normaliseDeclaredPath)
@@ -138,10 +165,17 @@ export function supportingContradictions(spec: NormalisedSpec): SpecEvidence[] {
 }
 
 export function contradictionAssumptions(evidence: SpecEvidence[]): SpecAssumption[] {
-  return evidence.map((e) => ({
-    text: `issue detail is stale: ${e.claim}`,
-    basis: e.source ? `supporting contradiction — ${e.source}` : "supporting contradiction",
-  }));
+  return evidence.map((e) =>
+    isMemoryClaim(e)
+      ? {
+          text: `prior memory is stale, not the issue: ${e.claim}`,
+          basis: "the resolver checked the memory row against the code and the code won",
+        }
+      : {
+          text: `issue detail is stale: ${e.claim}`,
+          basis: e.source ? `supporting contradiction — ${e.source}` : "supporting contradiction",
+        },
+  );
 }
 
 // Uppercase only: `[critical]` and `[Critical]` are unparsed, so they cap rather than vanish.

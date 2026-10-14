@@ -8,14 +8,17 @@
  * impossible to build remain fail-closed.
  */
 
+import { explainPrSteps } from "../src/work-driver-explain-pr-steps.ts";
 import { intentCriticalityEnabled } from "../src/work-driver-intent-criticality.ts";
 import {
   type NormalisedSpec,
   type SpecEvidence,
+  parseNormalisedSpec,
   reconcileVerdict,
   renderAssumptions,
   specIsComplete,
 } from "../src/work-driver-intent.ts";
+import type { WorkState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -215,6 +218,122 @@ for (const incident of incidents) {
   assert(
     !specIsComplete(missingCriticality),
     "missing criticality also fails the complete-spec predicate",
+  );
+}
+
+// ------------------------------------------- stale memory is not the issue
+//
+// orchard #97, cycle cycle-id: the resolver said `proceed` with five
+// confirmed file:line rows, and one `contradicted` row whose subject was the
+// vipune rows it had just superseded. The intent, deliverables and evidence
+// below are that cycle's recorded spec; the row text is verbatim.
+
+const ORCHARD_97_MEMORY_ROW =
+  "vipune rows claiming issue 97 already moved the meter into `header.topbar`, and one describing a `test/app_test.sh` that does not exist";
+
+const ORCHARD_97_REPLY = `INTENT-VERDICT: proceed
+
+## Spec
+
+### Intent
+Move the live power/token meter out of the doors row and into the sticky header band of the game view, so it reads next to the header line instead of under the stations.
+
+### Deliverables
+- markup: move the \`#panel-meter\` anchor out of \`nav.menu\` into \`header.topbar\` [paths: web/index.html]
+- guard: add a shell case that pins placement [paths: test/app_test.sh]
+
+### Acceptance criteria
+- \`#panel-meter\` is a child of \`header.topbar\`; \`nav.menu\` contains exactly six doors and no \`.meter\`.
+
+### Evidence
+- Meter currently sits in the doors row — web/index.html:129 (\`nav.menu\`), :136 — confirmed
+- Not already implemented: no PR for #97 in any state — \`gh pr list --state all\` — confirmed
+- ${ORCHARD_97_MEMORY_ROW} — contradicted
+
+## Rationale
+The issue's premise matches main exactly. Verdict is proceed because nothing is ambiguous enough to block. Several vipune rows described this move as already done — they came from an unmerged cycle on #97. I superseded them.
+`;
+
+const asState = (s: NormalisedSpec): WorkState =>
+  ({ issue: 97, pipelineState: { normalisedSpec: s }, eventLog: [] }) as unknown as WorkState;
+
+{
+  const parsed = parseNormalisedSpec(ORCHARD_97_REPLY);
+  assert(
+    parsed?.verdict === "proceed" &&
+      parsed.evidence.some((e) => e.claim === ORCHARD_97_MEMORY_ROW && e.verdict === "contradicted"),
+    "orchard #97: the reply parses as proceed with the memory row contradicted",
+  );
+  const resolved = reconcileVerdict(parsed as NormalisedSpec);
+  assert(
+    resolved.verdict === "proceed-with-assumptions" && resolved.parkReason === undefined,
+    "orchard #97: a superseded memory row does not overturn the resolver's proceed",
+  );
+  const carried = resolved.assumptions.find((a) => a.text.includes(ORCHARD_97_MEMORY_ROW));
+  assert(
+    carried !== undefined && !carried.text.startsWith("issue detail is stale"),
+    "orchard #97: the row travels as an assumption that blames the memory, not the issue",
+  );
+}
+
+{
+  // The same row with the source the prompt now asks for, and no memory
+  // wording in the claim at all.
+  const resolved = reconcileVerdict(
+    spec({
+      intent: "Move the meter into header.topbar.",
+      deliverables: [{ id: "guard", description: "pin placement", paths: ["test/app_test.sh"] }],
+      evidence: [
+        contradicted("the meter already moved; test/app_test.sh does not exist", "memory"),
+      ],
+    }),
+  );
+  assert(
+    resolved.verdict === "proceed-with-assumptions",
+    "a contradicted row sourced `memory` is not load-bearing",
+  );
+}
+
+{
+  // The narrowness guard: a claim ABOUT memory code is still a code reading.
+  const resolved = reconcileVerdict(
+    spec({
+      intent: "Thread includeCandidates through vipune search.",
+      deliverables: [
+        { id: "seam", description: "add the flag", paths: ["extension/src/vipune.ts"] },
+      ],
+      evidence: [contradicted("vipune.ts does not exist in the tree", "extension/src/vipune.ts")],
+    }),
+  );
+  assert(
+    resolved.verdict === "park" && resolved.parkReason === "contradicted-by-code",
+    "a missing deliverable that merely concerns memory still parks",
+  );
+}
+
+{
+  // A memory row beside a real contradiction: the park stands, and the
+  // handoff does not present the memory row as a finding about the code.
+  const resolved = reconcileVerdict(
+    spec({
+      intent: "Move the meter into header.topbar.",
+      deliverables: [{ id: "markup", description: "move it", paths: ["web/index.html"] }],
+      evidence: [
+        contradicted(ORCHARD_97_MEMORY_ROW, ""),
+        contradicted("index.html does not exist in the tree", "web"),
+      ],
+    }),
+  );
+  assert(resolved.verdict === "park", "a real contradiction still parks beside a memory row");
+  const text = explainPrSteps("intent-park", asState(resolved));
+  const [codePart = "", memoryPart = ""] = text.split("Stale memory rows");
+  assert(
+    codePart.includes("index.html does not exist") && !codePart.includes("vipune rows claiming"),
+    "the handoff's contradicting evidence lists the code reading only",
+  );
+  assert(
+    memoryPart.includes(ORCHARD_97_MEMORY_ROW) && memoryPart.includes("not a reading of the code"),
+    "the handoff names the memory row as stale memory, apart from the evidence",
   );
 }
 
