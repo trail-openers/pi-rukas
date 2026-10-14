@@ -1333,6 +1333,8 @@ Before #398, `intent-park` had no branch in either renderer and inherited a bloc
 
 Recovery commands are also **never chained**. They arrive in the Pi chat, and the permission matcher cannot wildcard a chained shape, so every unique `a && b` re-prompts you. One command per line.
 
+**`WORKTREE STATE NOT READ` means the handoff could not run `git`, not that the cycle produced nothing.** Developers commit on detached-HEAD worktrees by design, so a cycle's commits are reachable from no branch until commit-pr integrates them. When the host cannot start a process at handoff time (`/bin/sh: Cannot fork`, `spawn EAGAIN` — a container at its pid limit), every read fails; the handoff used to print those failures as `no committed work ahead of the base`, `(no branch was created)` and `0 file(s) modified` over a worktree holding reviewed commits. It now lists the failed reads and, per recorded worktree, the two commands to run once `git` works again: `git -C <worktree> log --oneline <base>..HEAD` to see the commits, `git -C <worktree> branch <branch> HEAD` to attach them. The numbered options under it still assume a readable repository — check the worktree first. The pid exhaustion itself is the host's to fix.
+
 ### Merge authority — why `/work` opened a PR and stopped
 
 **`/work` will not merge unless something explicitly permitted it to.** That is the default, and the absence of a prohibition is not permission.
