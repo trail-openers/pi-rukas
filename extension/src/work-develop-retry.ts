@@ -25,8 +25,9 @@ import {
 } from "./work-develop-git.ts";
 import { downgradeReason } from "./work-develop-greens.ts";
 import type { RawVerdict } from "./work-develop-verdict-source.ts";
+import type { EmitSink } from "./work-state-emit.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
-import { appendEvent, writeState } from "./workflow-state.ts";
+import { appendEvent, persistCycle } from "./workflow-state.ts";
 
 /** One workstream's verdict in the develop fan-out. */
 export type FanoutVerdict = RawVerdict;
@@ -42,13 +43,14 @@ export interface PreservedGreens {
 
 /** A shared, chained persister: each branch-completed is appended to the
  *  state ref and written as its workstream finishes. Writes are serialised
- *  because concurrent writeState calls share one tmp path. A failed write is
+ *  because writes to one state file run in call order (workflow-state write chain). A failed write is
  *  non-fatal (the in-memory state carries on) but is pushed onto `notes`, so
  *  the handoff can say the crash-resume record may be incomplete. */
 export function makeBranchCompletedPersister(
   repoRoot: string,
   stateRef: { current: WorkState },
   notes: string[],
+  sink?: EmitSink,
 ): {
   emit: (ev: WorkEvent) => void;
   update: (fn: (s: WorkState) => WorkState) => void;
@@ -58,7 +60,7 @@ export function makeBranchCompletedPersister(
   const persistSnapshot = () => {
     const snapshot = stateRef.current;
     chain = chain
-      .then(() => writeState(repoRoot, snapshot))
+      .then(() => persistCycle({ repoRoot, emitSink: sink }, snapshot))
       .catch((err) => {
         const note = `state persist failed (crash-resume record may be incomplete) — ${errText(err)}`;
         trace(`work-driver: ${note}`);

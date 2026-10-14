@@ -17,6 +17,7 @@ import type { LensReviewSummary } from "./lens-review.ts";
 import type { OnSlowCallback } from "./slow-notice.ts";
 import type { DispatchResult } from "./types.ts";
 import type { DriverHost } from "./work-driver-host.ts";
+import type { EmitSink } from "./work-state-emit.ts";
 import { KNOWN_STATUSES } from "./workflow-state-validate.ts";
 import { WORK_STEPS, type WorkState, type WorkStep } from "./workflow-state.ts";
 
@@ -151,6 +152,12 @@ export interface DriverContext {
   host: DriverHost;
   /** Project root (NOT a worktree). State file lives here. */
   repoRoot: string;
+  /**
+   * S4a (#1162) — this cycle's emit sink, passed to every `writeState`. Created
+   * by `enterCycle` (work-driver-cycle-entry.ts); absent for a direct step call,
+   * in which case persists write without emitting.
+   */
+  emitSink?: EmitSink;
   /** Primary issue number — anchors state file path + branch name. For
    * multi-issue cycles this is `issues[0]`. */
   issue: number;

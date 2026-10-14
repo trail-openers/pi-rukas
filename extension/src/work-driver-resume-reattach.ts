@@ -15,7 +15,7 @@ import { getPiInvocation } from "./pi-binary-resolve.ts";
 import { attachStdinErrorGuard } from "./stdin-guard.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
-import { nextStep } from "./work-driver-context.ts";
+import { type DriverContext, nextStep } from "./work-driver-context.ts";
 import {
   FAN_OUT_STEPS,
   classifyRunningState as _classifyRunningState,
@@ -28,7 +28,7 @@ import {
 } from "./work-driver-resume.ts";
 import type { WorkStep } from "./workflow-state-events.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
-import { writeState } from "./workflow-state.ts";
+import { persistCycle } from "./workflow-state.ts";
 
 // Re-export resume helpers that work-driver.ts still needs.
 export function resolveReattach(
@@ -224,7 +224,7 @@ async function defaultSpawnReattach(): Promise<{
  * `dispatch-completed` event and advances to the next step.
  */
 export async function attemptReattachInResume(
-  ctx: { repoRoot: string },
+  ctx: Pick<DriverContext, "repoRoot" | "emitSink">,
   state: WorkState,
   verdict: { step: WorkStep; jobIds: string[] },
   inFlightEvents: Array<Record<string, unknown>>,
@@ -279,7 +279,7 @@ export async function attemptReattachInResume(
       ...next,
       pipelineState: { ...next.pipelineState, currentStep: decision.step },
     };
-    await writeState(ctx.repoRoot, next);
+    await persistCycle(ctx, next);
     emitStepCompleted(reattachStep, 0, 9, reattach.grantMs);
     return { shouldSkipStep: true, nextState: next };
   }

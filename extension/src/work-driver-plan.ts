@@ -103,7 +103,7 @@ export async function runPlan(
   // process death inside the dispatch window is visible on disk rather than
   // leaving the file at the previous step boundary still claiming `running`.
   const begun = await beginDispatch(
-    ctx.repoRoot,
+    ctx,
     next,
     "plan",
     "explore",

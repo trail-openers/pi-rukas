@@ -394,6 +394,12 @@ export type WorkEvent =
   | BranchResetEvent
   | WorktreeLeftoverHandledEvent
   | DispatchSlowEvent
-  | FenceRecoveryStartedEvent;
+  | FenceRecoveryStartedEvent
+  /**
+   * S4a (#1162) — the cycle was interrupted (SIGTERM / SIGINT, via
+   * `markInterrupted`). `reason` is the operator-facing why; renderers read
+   * the most recent `interrupted` event for it.
+   */
+  | { kind: "interrupted"; at: number; reason: string };
 /** Discriminator union of event kinds — useful for callers that switch on it. */
 export type WorkEventKind = WorkEvent["kind"];

@@ -14,7 +14,7 @@ import { trace } from "./trace.ts";
  */
 import type { DriverContext } from "./work-driver-context.ts";
 import type { RepositionResult } from "./work-driver-lens-fix-reposition-gate.ts";
-import { type WorkState, appendEvent, writeState } from "./workflow-state.ts";
+import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
 
 /**
  * Build + persist the `lens-fix-reposition` cap-hit for a reposition-guard
@@ -51,6 +51,6 @@ export async function parkLensFixReposition(
     ...next,
     pipelineState: { ...next.pipelineState, currentStep: "handoff" },
   };
-  await writeState(ctx.repoRoot, next);
+  await persistCycle(ctx, next);
   return next;
 }
