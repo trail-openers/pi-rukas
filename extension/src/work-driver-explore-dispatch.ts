@@ -14,7 +14,7 @@ import { readMarker } from "./reply-markers.ts";
 import { slowRecorder } from "./slow-events.ts";
 import { transcriptPathFor } from "./spawn-support.ts";
 import type { DispatchResult } from "./types.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { readSpecArtifact, resolveIntentVerdict } from "./work-driver-intent-artifact.ts";
 import { recoverOffloadedSpec } from "./work-driver-intent-offload.ts";
@@ -99,7 +99,7 @@ export function noSpecEvidence(text: string, retried: boolean): string {
  * completion or failure event and clear the in-flight marker.
  */
 export async function dispatchExploreAttempt(
-  ctx: DriverContext,
+  ctx: CycleContext,
   state: WorkState,
   prompt: string,
 ): Promise<ExploreAttempt> {

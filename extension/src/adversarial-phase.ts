@@ -34,12 +34,14 @@ export function makeRunPhase(opts: {
   runId: string;
   signal: AbortSignal;
   orchestratorJobId: string;
+  /** #1024 — headless only: each inner child leads its own process group. */
+  processGroup?: boolean;
   /** #799 — the slow-run recorder for this loop's inner children. */
   onSlow?: OnSlowCallback;
   /** The parent pi for the slow-run watch (the PM notice half). */
   pi?: ExtensionAPI;
 }): RunPhase {
-  const { runId, signal, orchestratorJobId } = opts;
+  const { runId, signal, orchestratorJobId, processGroup } = opts;
   return async (role, tag, prompt, cwd) => {
     const deckKey = `${runId}/${tag}`;
     const label = `${role}[${tag}]`;
@@ -63,6 +65,7 @@ export function makeRunPhase(opts: {
         { role, prompt, cwd },
         {
           signal,
+          processGroup,
           runId,
           tag,
           onProgress: (state) => {

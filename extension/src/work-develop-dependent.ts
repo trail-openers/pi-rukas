@@ -27,7 +27,7 @@ import {
   type DependentRunState,
   parkDeferredLeftover,
 } from "./work-develop-run.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import {
   type DeferredCreationResult,
   computeSkipCascade,
@@ -65,7 +65,7 @@ function persistedPathRefusal(repoRoot: string, path: string | undefined): strin
  * cycle at the tail, unchanged).
  */
 export async function runDependentWorkstreams(
-  ctx: DriverContext,
+  ctx: CycleContext,
   ids: string[],
   workstreams: NonNullable<WorkState["pipelineState"]["workstreams"]>,
   dependsOnMap: Record<string, string[]>,

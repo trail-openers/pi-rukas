@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# pi-rukas-headless — run /work cycles without an interactive Pi session (#1024).
+# Execs the TypeScript entry under bun; see extension/src/headless/cli.ts.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec bun "$here/../extension/src/headless/cli.ts" "$@"

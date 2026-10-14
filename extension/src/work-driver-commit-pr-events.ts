@@ -19,7 +19,7 @@ import { raiseConsolidationIncompleteCap } from "./work-driver-commit-completene
 import type { CommitPrRootInspect } from "./work-driver-commit-inspect.ts";
 import { inspectCommitPrRoot } from "./work-driver-commit-inspect.ts";
 import { commitPrRootFieldsOf } from "./work-driver-commit-inspect.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import type { IntegrateResult } from "./work-driver-integrate.ts";
 import { parsePrNumber } from "./work-driver-merged.ts";
@@ -41,7 +41,7 @@ type NonEmptyIntegrateResult = Extract<IntegrateResult, { ok: true; empty: false
  * updated WorkState.
  */
 export async function runCommitPrPostDispatchGates(
-  ctx: DriverContext,
+  ctx: CycleContext,
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
   next: WorkState,
 ): Promise<WorkState> {

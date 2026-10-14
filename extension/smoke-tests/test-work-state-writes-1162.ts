@@ -16,6 +16,8 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { type EmitSink, createEmitSink } from "../src/work-state-emit.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
+import { interruptIfRequested } from "../src/work-driver-interrupt.ts";
 import type { WorkEvent } from "../src/workflow-state-events.ts";
 import type { WorkState } from "../src/workflow-state-schema.ts";
 import { appendEvent } from "../src/workflow-state-update.ts";
@@ -114,44 +116,93 @@ function tmpFiles(repo: string): string[] {
   }
 }
 
-// ── 4. Interrupt durability: a driver write of an older `running` snapshot
-//       after markInterrupted leaves the file interrupted, with one event.
+// ── 4. Interrupt durability (headless S4, #1024): markInterrupted applies only
+//       while the cycle is running. A terminal status is never rewritten, and a
+//       second interrupt adds no second event. The driver records its own
+//       interrupt through persistCycle (work-driver-interrupt.ts), so there is no
+//       storage-layer override that could rewrite a later persist.
 {
   const repo = tmpRepo();
   try {
     const { sink, emitted } = recordingSink();
     const older = stepEvents(initialState(94), 1);
     await writeState(repo, older, sink);
-    await markInterrupted(repo, 94, "SIGTERM", sink, 50);
-    await persistCycle({ repoRoot: repo, emitSink: sink }, older);
+    await markInterrupted(repo, 94, "signal", sink, 50);
+    await markInterrupted(repo, 94, "signal", sink, 51);
     const back = await readState(repo, 94);
-    assert(
-      back?.pipelineState.status === "interrupted",
-      "the driver's older write stays interrupted",
-    );
+    assert(back?.pipelineState.status === "interrupted", "markInterrupted sets interrupted");
     const interrupts = back?.eventLog.filter((e) => e.kind === "interrupted") ?? [];
-    assert(interrupts.length === 1, "the file holds exactly one interrupted event");
+    assert(interrupts.length === 1, "a second interrupt adds no second interrupted event");
     assert(
       JSON.stringify(emitted) === JSON.stringify(back?.eventLog),
-      "the emit stream still equals the final log after the interrupt",
+      "the emit stream equals the final log after the interrupt",
+    );
+    // Terminal status is never rewritten.
+    const merged = {
+      ...older,
+      pipelineState: { ...older.pipelineState, status: "merged" as const },
+    };
+    await writeState(repo, merged, sink);
+    await markInterrupted(repo, 94, "signal", sink, 52);
+    const term = await readState(repo, 94);
+    assert(
+      term?.pipelineState.status === "merged",
+      "markInterrupted never rewrites a terminal status",
+    );
+    // A later driver write is not overridden by an earlier interrupt (no sticky flag).
+    await persistCycle({ repoRoot: repo, emitSink: sink }, older);
+    const after = await readState(repo, 94);
+    assert(
+      after?.pipelineState.status === "running",
+      "no storage-layer override survives a later write",
     );
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
 }
 
-// ── 5. Smoke grep: no driver-path module calls writeState( directly.
+// ── 5. The driver's own interrupt (headless S4, #1024): interruptIfRequested
+//       records the interrupt once; a driver persist after it re-emits nothing.
+{
+  const repo = tmpRepo();
+  try {
+    const { sink, emitted } = recordingSink();
+    const running = stepEvents(initialState(95), 1);
+    await writeState(repo, running, sink);
+    const ac = new AbortController();
+    ac.abort("signal");
+    // Only repoRoot, emitSink and signal are read on this path.
+    const ctx = { repoRoot: repo, emitSink: sink, signal: ac.signal } as unknown as DriverContext;
+    const interrupted = await interruptIfRequested(ctx, running);
+    assert(interrupted.pipelineState.status === "interrupted", "the driver records its own interrupt");
+    const again = await interruptIfRequested(ctx, interrupted);
+    assert(again === interrupted, "a second driver check adds no second interrupted event");
+    const later = appendEvent(interrupted, { kind: "step-started", step: "plan", at: 60 });
+    await persistCycle(ctx, later);
+    const back = await readState(repo, 95);
+    assert(
+      JSON.stringify(emitted) === JSON.stringify(back?.eventLog),
+      "driver persist after its interrupt: emit stream equals the final log exactly once",
+    );
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+}
+
+// ── 6. Smoke grep: no module outside the seam calls writeState( directly.
+//       Comments are stripped first, so prose that names writeState( is not a call.
+//       workflow-state.ts is the seam itself and is the one exempt file.
 {
   const src = path.resolve(import.meta.dir, "../src");
-  const names = readdirSync(src).filter(
-    (f) => /^work-(driver|develop)/.test(f) && f.endsWith(".ts"),
-  );
+  const names = readdirSync(src).filter((f) => f.endsWith(".ts") && f !== "workflow-state.ts");
+  const stripComments = (s: string) =>
+    s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:\\])\/\/.*$/gm, "$1");
   const offenders = names.filter((f) =>
-    /\bwriteState\(/.test(readFileSync(path.join(src, f), "utf8")),
+    /\bwriteState\(/.test(stripComments(readFileSync(path.join(src, f), "utf8"))),
   );
   assert(
     names.length > 0 && offenders.length === 0,
-    `no driver-path module calls writeState( directly (offenders: ${offenders.join(", ") || "none"})`,
+    `no module outside workflow-state.ts calls writeState( directly (offenders: ${offenders.join(", ") || "none"})`,
   );
 }
 

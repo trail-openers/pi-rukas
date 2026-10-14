@@ -5,7 +5,7 @@
 
 import type { runLensReview } from "./lens-review.ts";
 import { capKilledString, isCapKilled } from "./work-driver-cap-killed.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { appendReviewCapHit } from "./work-driver-lens-cap.ts";
 import { appendEvent } from "./workflow-state-update.ts";
 import type { WorkState } from "./workflow-state.ts";
@@ -23,7 +23,7 @@ export async function applyLensVerdict(
   summary: Awaited<ReturnType<typeof runLensReview>>,
   jobId: string,
   round: number,
-  ctx: DriverContext,
+  ctx: CycleContext,
   next: WorkState,
 ): Promise<WorkState> {
   let state = next;

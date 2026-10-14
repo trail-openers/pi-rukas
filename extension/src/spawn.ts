@@ -38,6 +38,7 @@ import {
   piEnsembleExtensionPath,
 } from "./spawn-extension-forward.ts";
 import { InFlightTools, createInactivityPoll, createStdoutLineHandler } from "./spawn-inflight.ts";
+import { groupSpawnOpts, killProcessTree, registerChild } from "./spawn-kill.ts";
 import { withSpawnSlot } from "./spawn-semaphore.ts";
 import {
   STDERR_TAIL_BYTES,
@@ -188,7 +189,12 @@ async function spawnSpecialistInner(
     // agent_end has fired.
     stdio: ["pipe", "pipe", "pipe"],
     env: childEnv,
+    // #1024 — headless only: own process group, so a kill reaches grandchildren
+    // (spawn-kill.ts). Normal exit still ends the child through the stdin-close
+    // path above.
+    ...groupSpawnOpts(opts.processGroup === true),
   });
+  registerChild(child, opts.processGroup === true);
 
   // #932 — universal EPIPE backstop (stdin-guard.ts): EPIPE fires async as `error`,
   // so without this listener the kickoff write, end(), or any later steer becomes
@@ -353,9 +359,8 @@ async function spawnSpecialistInner(
   const timeoutMs = opts.timeoutMs ?? spawnBackstopMs();
   const timeout = setTimeout(() => {
     timedOut = true;
-    child.kill("SIGTERM");
-    // Escalate to SIGKILL if the child ignores SIGTERM for 5s.
-    setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
+    // Group kill: SIGTERM, then SIGKILL if the tree ignores SIGTERM (#1024).
+    killProcessTree(child);
   }, timeoutMs);
 
   // Inactivity watchdog (#296): kill only on total stdout silence. Coarse
@@ -385,8 +390,7 @@ async function spawnSpecialistInner(
   // execute promise resolves and Pi un-stuck immediately.
   const onAbort = () => {
     aborted = true;
-    child.kill("SIGTERM");
-    setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
+    killProcessTree(child);
   };
   if (opts.signal) {
     if (opts.signal.aborted) {

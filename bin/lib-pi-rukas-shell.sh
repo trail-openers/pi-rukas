@@ -26,3 +26,19 @@ cmd_prune() {
     docker volume rm "$vol" 2>/dev/null && echo "removed $vol" || echo "skip $vol (not present or in use)"
   done
 }
+
+# cmd_run — `pi-rukas run work N…` execs the headless runner (#1024). The
+# runner ships in the image next to this script; absent it, exit 40 with a JSON
+# error on stdout naming the rebuild.
+cmd_run() {
+  local bin="$PI_RUKAS_DIR/pi-rukas-headless"
+  if [ ! -x "$bin" ]; then
+    command -v pi-rukas-headless >/dev/null 2>&1 || {
+      echo '{"error":{"code":"headless-runner-missing","message":"pi-rukas-headless not found; rebuild the image (pi-rukas rebuild)"}}'
+      exit 40
+    }
+    bin="pi-rukas-headless"
+  fi
+  shift
+  exec "$bin" "$@"
+}

@@ -92,7 +92,7 @@ try {
   }
 
   // Test 2 — the SIGTERM→SIGKILL escalation: a child that IGNORES SIGTERM is
-  // still killed by the 5s SIGKILL timer. This was previously uncovered — the
+  // still killed by the 5s SIGKILL timer (spawn-kill.ts INTERACTIVE_KILL_GRACE_MS). This was previously uncovered — the
   // real-spawn sections could not demonstrate it, because a healthy real child
   // exits on SIGTERM before the escalation ever matters.
   //

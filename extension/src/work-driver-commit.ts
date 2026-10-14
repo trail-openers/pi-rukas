@@ -34,7 +34,7 @@ import {
   finalizeCommitPrState,
   runCommitPrPostDispatchGates,
 } from "./work-driver-commit-pr-events.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { deriveConsolidationSubject } from "./work-driver-handoff-subject.ts";
@@ -93,7 +93,7 @@ export { deriveCommitPrTitle, integrationVerifyTimeoutMs };
  * `terminal` (verify failure — #328).
  */
 export async function mechanizedCommitPr(
-  ctx: DriverContext,
+  ctx: CycleContext,
   state: WorkState,
   now: number,
 ): Promise<

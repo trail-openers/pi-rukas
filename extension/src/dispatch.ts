@@ -85,6 +85,14 @@ export function dispatchCore(
     timeoutMs?: number;
     extraArgs?: string[];
     onSlow?: OnSlowCallback;
+    /**
+     * Headless S4 (#1024) — the cycle's AbortSignal. Aborting it kills the
+     * child (spawn's abort handler sends SIGTERM, then SIGKILL after 5s), so a
+     * SIGTERM to the runner leaves no developer process running.
+     */
+    signal?: AbortSignal;
+    /** Headless S4 (#1024): the child leads its own process group (spawn-kill.ts). */
+    processGroup?: boolean;
   } = {},
 ): Promise<DispatchResult> {
   const stripped = stripModelOverride(spec);
@@ -115,7 +123,7 @@ export function dispatchCore(
     onSlow,
     work: (signal, hooks) =>
       spawnSpecialist(stripped, {
-        signal,
+        signal: opts.signal ? AbortSignal.any([signal, opts.signal]) : signal,
         onProgress: hooks.onProgress,
         onRawEvent: hooks.onRawEvent,
         onStdin: hooks.onStdin,
@@ -137,6 +145,7 @@ export function dispatchCore(
         // plan-reporter precedent): the plan driver pins its Phase-2 children
         // to the report_plan_item tool via `--no-skills --extension <path>`.
         extraArgs: opts.extraArgs,
+        processGroup: opts.processGroup,
       }),
   });
   return handle.completion;

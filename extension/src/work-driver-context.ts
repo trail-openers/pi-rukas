@@ -147,6 +147,13 @@ export const STEP_FAILURE_POLICY: Record<WorkStep, StepFailurePolicy> = {
   merged: "HALT",
 };
 
+/**
+ * Headless S4 (#1024) — the context a cycle runs with once `enterCycle` has
+ * created its emit sink. `persistCycle` takes this shape (or a narrower Pick
+ * of it), so a step that writes state cannot be compiled without a sink.
+ */
+export type CycleContext = DriverContext & { emitSink: EmitSink };
+
 export interface DriverContext {
   /** The host the cycle runs in (#1020). Pi-session or a recording test host. */
   host: DriverHost;
@@ -158,6 +165,19 @@ export interface DriverContext {
    * in which case persists write without emitting.
    */
   emitSink?: EmitSink;
+  /**
+   * Headless S4 (#1024) — aborted by the runner's SIGTERM / SIGINT handler (or
+   * its `--timeout`). The driver checks it at each step boundary and records
+   * the interrupt itself (work-driver-interrupt.ts); `signal.reason` is the
+   * `interrupted` event's reason (`signal` or `timeout`).
+   */
+  signal?: AbortSignal;
+  /**
+   * Headless S4 (#1024) — true only for the headless runner: each child then
+   * leads its own process group, so an interrupt reaches its grandchildren.
+   * Interactive /work leaves it unset (Ctrl-C reaches the children as before).
+   */
+  processGroup?: boolean;
   /** Primary issue number — anchors state file path + branch name. For
    * multi-issue cycles this is `issues[0]`. */
   issue: number;
@@ -177,6 +197,9 @@ export interface DriverContext {
       /** #838 — see dispatchCore's deck option. */
       deck?: { cycleKey: string; label: string; deckLabel?: string };
       timeoutMs?: number;
+      /** #1024 — the cycle's abort, and whether the child leads its own group. */
+      signal?: AbortSignal;
+      processGroup?: boolean;
       onSlow?: OnSlowCallback;
     },
   ) => Promise<DispatchResult>;
@@ -235,7 +258,7 @@ export interface DriverContext {
    * children.
    */
   adversarialLoopFn?: (
-    params: { diff: string; context: string; workCwd?: string },
+    params: { diff: string; context: string; workCwd?: string; processGroup?: boolean },
     signal: AbortSignal,
     orchestratorJobId: string,
   ) => Promise<DispatchResult>;
@@ -273,6 +296,7 @@ export interface DriverContext {
     context?: string;
     cwd?: string;
     signal?: AbortSignal;
+    processGroup?: boolean;
     evidence?: string;
     extraFindings?: import("./lens-review.ts").Finding[];
     threshold?: import("./lens-review.ts").Severity;

@@ -13,7 +13,7 @@
 import fs from "node:fs/promises";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import type { DriverHost } from "./work-driver-host.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 // #849 — findDroppedDependencyEdges moved to work-driver-plan-deps.ts (the
@@ -101,7 +101,7 @@ export function planTimeoutKill(
  * corrective budget by skipping the #290 quality gate after this runs.
  */
 export async function planTimeoutCorrective(
-  ctx: DriverContext,
+  ctx: CycleContext,
   pi: DriverHost,
   dispatch:
     | NonNullable<DriverContext["dispatchFn"]>
@@ -441,7 +441,7 @@ export function correctiveTestSubjectSplitSteer(
   ].join("\n");
 }
 
-export async function countFindingsForCycle(ctx: DriverContext, state: WorkState): Promise<number> {
+export async function countFindingsForCycle(ctx: CycleContext, state: WorkState): Promise<number> {
   const artifact = state.pipelineState.issueBodyArtifact;
   if (!artifact) return 0;
   try {

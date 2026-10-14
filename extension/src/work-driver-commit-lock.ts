@@ -18,7 +18,7 @@ import { dispatchCommitPrFallback } from "./work-driver-commit-fallback.ts";
 import { conflictArtifactFromPlumb } from "./work-driver-commit-helpers.ts";
 import { auditCommitPrFallback } from "./work-driver-commit-pr-audit.ts";
 import { mechanizedCommitPr } from "./work-driver-commit.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
 import { appendEvent } from "./workflow-state.ts";
 import type { WorkState } from "./workflow-state.ts";
@@ -39,12 +39,12 @@ export { runCommitPr };
  * `git diff --name-only` and would otherwise validate a sibling group's
  * commits as this group's evidence.
  */
-async function runCommitPr(ctx: DriverContext, state: WorkState, now: number): Promise<WorkState> {
+async function runCommitPr(ctx: CycleContext, state: WorkState, now: number): Promise<WorkState> {
   return withIntegrationLock(ctx.repoRoot, () => runCommitPrLocked(ctx, state, now));
 }
 
 async function runCommitPrLocked(
-  ctx: DriverContext,
+  ctx: CycleContext,
   state: WorkState,
   now: number,
 ): Promise<WorkState> {
