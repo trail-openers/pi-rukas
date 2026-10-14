@@ -30,6 +30,7 @@ import fs from "node:fs/promises";
 import { promisify } from "node:util";
 import { trace } from "./trace.ts";
 import { isDriverManagedDirtLine } from "./work-driver-branch-residue.ts";
+import { readCycleWorktreePaths, refuseDirtyCycleTrees } from "./work-driver-integrate-cycle.ts";
 import { runCreateGuards } from "./worktree-create-guard.ts";
 import { provisionWorktree } from "./worktree-provision.ts";
 import { resolvePath, worktreePath, worktreeRemove } from "./worktree.ts";
@@ -119,6 +120,11 @@ export async function ensureIntegrateWorktree(
     branchHead = undefined;
   }
 
+  // #1170 — the cycle's own worktrees (the develop trees) are excluded from
+  // the sibling scan below; a dirty one still refuses, before any mutation.
+  const cycleTrees = await readCycleWorktreePaths(stateFile);
+  await refuseDirtyCycleTrees(execFn, cycleTrees, abs, repoRoot, baseSha);
+
   // The stale-tree re-entry: driver-owned residue of an earlier attempt of
   // this same cycle. Its HEAD is recorded, then it is force-removed BEFORE
   // the #475 target-path guard runs — the guard is unconditional and
@@ -150,7 +156,7 @@ export async function ensureIntegrateWorktree(
         `work-driver: ${name} registered in the worktree list but gone from disk — removing the stale registration`,
       );
       await worktreeRemove(execFn, repoRoot, name, true);
-    } else if (await isIntegrateTreeInCycle(stateFile, abs)) {
+    } else if (isIntegrateTreeInCycle(cycleTrees, abs)) {
       // Driver-owned re-entry: record the old HEAD (decision (2)'s
       // re-entry evidence), then replace.
       try {
@@ -264,7 +270,7 @@ export async function ensureIntegrateWorktree(
       fromRef: branchHead ?? baseSha,
       callerVerifiedTargetAbsent: true,
     },
-    [abs],
+    [abs, ...cycleTrees],
   );
 
   const ref = branchHead ?? baseSha;
@@ -421,35 +427,9 @@ export async function branchHolders(
  * silently destroyed; a clean one is pre-removed and the fresh creation
  * proceeds — the same shape as the "unregistered directory" case).
  */
-async function isIntegrateTreeInCycle(
-  stateFile: string | undefined,
-  abs: string,
-): Promise<boolean> {
-  if (!stateFile) return false;
-  try {
-    const raw = await fs.readFile(stateFile, "utf8");
-    const parsed = JSON.parse(raw) as {
-      pipelineState?: {
-        worktrees?: Record<string, string>;
-        integrateWorktree?: string;
-      };
-    };
-    const ps = parsed.pipelineState ?? {};
-    const worktrees = ps.worktrees ?? {};
-    const target = resolvePath(abs);
-    if (ps.integrateWorktree !== undefined && resolvePath(ps.integrateWorktree) === target) {
-      return true;
-    }
-    return Object.values(worktrees).some((p) => resolvePath(p) === target);
-  } catch (err) {
-    // An unreadable state file reads as "not this cycle's" (the safe
-    // direction — a dirty one then halts rather than being destroyed), but
-    // the operator needs to be able to tell the two apart.
-    trace(
-      `work-driver: integrate-tree cycle check — could not read state file ${stateFile}: ${(err as Error).message ?? String(err)}`,
-    );
-    return false;
-  }
+function isIntegrateTreeInCycle(cycleTrees: string[], abs: string): boolean {
+  const target = resolvePath(abs);
+  return cycleTrees.some((p) => resolvePath(p) === target);
 }
 
 async function pathExists(p: string): Promise<boolean> {
