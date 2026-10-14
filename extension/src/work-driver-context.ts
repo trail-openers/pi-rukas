@@ -158,6 +158,13 @@ export interface DriverContext {
    * in which case persists write without emitting.
    */
   emitSink?: EmitSink;
+  /**
+   * Headless S4 (#1024) — aborted by the runner's SIGTERM / SIGINT handler (or
+   * its `--timeout`). The driver checks it at each step boundary and records
+   * the interrupt itself (work-driver-interrupt.ts); `signal.reason` is the
+   * `interrupted` event's reason (`signal` or `timeout`).
+   */
+  signal?: AbortSignal;
   /** Primary issue number — anchors state file path + branch name. For
    * multi-issue cycles this is `issues[0]`. */
   issue: number;

@@ -28,6 +28,7 @@
 #   prune         Remove named volumes (DESTROYS sandbox caches — vipune/runs/
 #                 sessions stay safe because they're bind-mounted from host)
 #   logs          Tail container logs (status: list containers)
+#   run work N..  Headless /work runner (pi-rukas-headless; NDJSON on stderr)
 #   --help        Show this help
 
 set -euo pipefail
@@ -490,10 +491,9 @@ case "${1:-}" in
   ""|--)        shift || true; cmd_default "$@" ;;
   shell)        cmd_shell ;;
   rebuild)      cmd_rebuild ;;
-  stop)         cmd_stop ;;
-  prune)        cmd_prune ;;
-  logs)         cmd_logs ;;
-  status)       cmd_status ;;
+  stop) cmd_stop ;; prune) cmd_prune ;;
+  logs) cmd_logs ;; status) cmd_status ;;
+  run)          cmd_run "$@" ;;
   -h|--help|help) usage ;;
   *)            cmd_default "$@" ;;
 esac

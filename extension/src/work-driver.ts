@@ -26,6 +26,7 @@ import { acquireWorkDeckHeader, headerToken } from "./work-driver-deck-header.ts
 import { countPriorStepStarts } from "./work-driver-diff.ts";
 import { runExplore } from "./work-driver-explore.ts";
 import { runHandoff } from "./work-driver-handoff.ts";
+import { interruptIfRequested } from "./work-driver-interrupt.ts";
 import { runLens, runLensFix } from "./work-driver-lens.ts";
 import {
   clearFooter,
@@ -59,7 +60,6 @@ import { type WorkEvent, appendEvent } from "./workflow-state.ts";
 import {
   type WorkState,
   type WorkStep,
-  clearInterruptRequest,
   detectInconsistencies,
   initialState,
   persistCycle,
@@ -155,8 +155,6 @@ export async function runWorkDriver(ctx: DriverContext): Promise<DriverOutcome> 
 async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
   // PR12 — `/work N --restart`: skip readState, start fresh. Branch step
   // handles worktree leftovers at runtime; this flag only wipes state.
-  // S4a (#1162) — a new driver run supersedes any interrupt flagged earlier in this process.
-  clearInterruptRequest(ctx.repoRoot, ctx.issue);
   let state =
     ctx.restart === true
       ? initialState(ctx.issue)
@@ -297,6 +295,10 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
 
   let safety = 0;
   while (state.pipelineState.status === "running") {
+    // Headless S4 (#1024) — an interrupt (SIGTERM / SIGINT) is honoured at the
+    // step boundary, before any further step is paid for.
+    state = await interruptIfRequested(ctx, state);
+    if (state.pipelineState.status !== "running") break;
     safety++;
     if (safety > 64) {
       // Safety: unbounded transition loop guard.

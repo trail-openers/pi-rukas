@@ -182,52 +182,6 @@ function enqueue<T>(file: string, task: () => Promise<T>): Promise<T> {
   return run;
 }
 
-/** An interrupt recorded for one state file (S4a, #1162). */
-interface InterruptRequest {
-  at: number;
-  reason: string;
-}
-
-/** Interrupts requested in this process, keyed by state file. */
-const interruptRequests = new Map<string, InterruptRequest>();
-
-/**
- * S4a (#1162) — flag an issue's cycle as interrupted in this process. Every
- * later write of that issue's state is forced to `interrupted` (see
- * `honourInterrupt`), so a driver persist that holds an older in-memory
- * `running` snapshot cannot erase the record. `markInterrupted` sets it;
- * `clearInterruptRequest` drops it when a new driver run starts.
- */
-export function requestInterrupt(
-  repoRoot: string,
-  issue: number,
-  reason: string,
-  at: number = Date.now(),
-): void {
-  interruptRequests.set(workStateFile(repoRoot, issue), { at, reason });
-}
-
-/** Drop an issue's interrupt flag. A new driver run supersedes the old interrupt. */
-export function clearInterruptRequest(repoRoot: string, issue: number): void {
-  interruptRequests.delete(workStateFile(repoRoot, issue));
-}
-
-/**
- * Keep an interrupted cycle interrupted: status `interrupted` and exactly one
- * `interrupted` event. An event already in the log is kept as it is.
- */
-function honourInterrupt(state: WorkState, req: InterruptRequest | undefined): WorkState {
-  if (!req) return state;
-  const hasEvent = state.eventLog.some((e) => e.kind === "interrupted");
-  return {
-    ...state,
-    pipelineState: { ...state.pipelineState, status: "interrupted" },
-    eventLog: hasEvent
-      ? state.eventLog
-      : [...state.eventLog, { kind: "interrupted", at: req.at, reason: req.reason }],
-  };
-}
-
 /**
  * Atomic write of one snapshot: unique tmp name, then rename. A failed write
  * removes its tmp file and rethrows. Updates `updatedAt`. Must run inside the
@@ -238,7 +192,7 @@ function honourInterrupt(state: WorkState, req: InterruptRequest | undefined): W
  */
 async function writeSnapshot(file: string, state: WorkState, sink?: EmitSink): Promise<WorkState> {
   await fs.mkdir(path.dirname(file), { recursive: true });
-  const next = honourInterrupt({ ...state, updatedAt: Date.now() }, interruptRequests.get(file));
+  const next = { ...state, updatedAt: Date.now() };
   const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
   try {
     await fs.writeFile(tmp, `${JSON.stringify(next, null, 2)}\n`, "utf8");
@@ -274,12 +228,16 @@ export function persistCycle(
 }
 
 /**
- * S4a (#1162) — record an interrupt (SIGTERM / SIGINT). Re-reads the state from
- * disk inside the file's write slot (a caller's snapshot may be stale: another
- * writer may have appended since), sets status to `interrupted`, appends the
- * `interrupted` event carrying `reason`, sets the interrupt flag, and persists.
- * Returns undefined when no state file exists. Re-entry resumes the cycle (see
- * `reenterInterrupted`).
+ * S4a (#1162) — record an interrupt (SIGTERM / SIGINT) on disk. This is the
+ * fallback for a driver that can no longer persist its own interrupt (the
+ * process is exiting): the live driver normally checks its AbortSignal at a
+ * step boundary and persists `interrupted` itself (work-driver.ts).
+ *
+ * Re-reads the state inside the file's write slot (the caller's snapshot may be
+ * stale). Applies only while the cycle is `running`: a terminal status
+ * (`merged`, `handoff`, `aborted`) is never rewritten, and an already
+ * `interrupted` cycle gets no second event. Returns the state as it stands
+ * when nothing was written; undefined when no state file exists.
  */
 export function markInterrupted(
   repoRoot: string,
@@ -292,7 +250,7 @@ export function markInterrupted(
   return enqueue(file, async () => {
     const state = await readState(repoRoot, issue);
     if (!state) return undefined;
-    requestInterrupt(repoRoot, issue, reason, at);
+    if (state.pipelineState.status !== "running") return state;
     const next = appendEvent(
       { ...state, pipelineState: { ...state.pipelineState, status: "interrupted" } },
       { kind: "interrupted", at, reason },

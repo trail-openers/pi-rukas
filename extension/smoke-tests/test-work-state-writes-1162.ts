@@ -114,8 +114,11 @@ function tmpFiles(repo: string): string[] {
   }
 }
 
-// ── 4. Interrupt durability: a driver write of an older `running` snapshot
-//       after markInterrupted leaves the file interrupted, with one event.
+// ── 4. Interrupt durability (headless S4, #1024): markInterrupted applies only
+//       while the cycle is running. A terminal status is never rewritten, and a
+//       second interrupt adds no second event. The driver records its own
+//       interrupt through persistCycle (work-driver-interrupt.ts), so there is no
+//       storage-layer override that could rewrite a later persist.
 {
   const repo = tmpRepo();
   try {
@@ -123,17 +126,33 @@ function tmpFiles(repo: string): string[] {
     const older = stepEvents(initialState(94), 1);
     await writeState(repo, older, sink);
     await markInterrupted(repo, 94, "SIGTERM", sink, 50);
-    await persistCycle({ repoRoot: repo, emitSink: sink }, older);
+    await markInterrupted(repo, 94, "SIGINT", sink, 51);
     const back = await readState(repo, 94);
-    assert(
-      back?.pipelineState.status === "interrupted",
-      "the driver's older write stays interrupted",
-    );
+    assert(back?.pipelineState.status === "interrupted", "markInterrupted sets interrupted");
     const interrupts = back?.eventLog.filter((e) => e.kind === "interrupted") ?? [];
-    assert(interrupts.length === 1, "the file holds exactly one interrupted event");
+    assert(interrupts.length === 1, "a second interrupt adds no second interrupted event");
     assert(
       JSON.stringify(emitted) === JSON.stringify(back?.eventLog),
-      "the emit stream still equals the final log after the interrupt",
+      "the emit stream equals the final log after the interrupt",
+    );
+    // Terminal status is never rewritten.
+    const merged = {
+      ...older,
+      pipelineState: { ...older.pipelineState, status: "merged" as const },
+    };
+    await writeState(repo, merged, sink);
+    await markInterrupted(repo, 94, "SIGTERM", sink, 52);
+    const term = await readState(repo, 94);
+    assert(
+      term?.pipelineState.status === "merged",
+      "markInterrupted never rewrites a terminal status",
+    );
+    // A later driver write is not overridden by an earlier interrupt (no sticky flag).
+    await persistCycle({ repoRoot: repo, emitSink: sink }, older);
+    const after = await readState(repo, 94);
+    assert(
+      after?.pipelineState.status === "running",
+      "no storage-layer override survives a later write",
     );
   } finally {
     rmSync(repo, { recursive: true, force: true });
