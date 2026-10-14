@@ -33,6 +33,12 @@ import {
   finalizeCommitPrState,
   runCommitPrPostDispatchGates,
 } from "./work-driver-commit-pr-events.ts";
+import {
+  branchHeadOf,
+  prGoneRefusal,
+  recordedPrState,
+  worktreesWithNewWork,
+} from "./work-driver-commit-reentry.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
@@ -144,10 +150,23 @@ export async function mechanizedCommitPr(
     // exact branch means the previous attempt completed: short-circuit with
     // the found number; the verify gate after commit-pr still checks
     // commits-ahead + PR resolution. Fails open on an unreadable gh.
-    const existingPr = await findOpenPrForBranch(execFn, ctx.repoRoot, branchName);
-    if (existingPr !== undefined) {
+    //
+    // …UNLESS a worktree holds work the branch lacks. That is the other way
+    // here — `ci-status: failure → develop → adversarial → commit-pr` — and
+    // skipping it reported a CI fix as shipped that was never pushed. That
+    // round integrates onto the branch's own head (see `followupBase`).
+    let existingPr = await findOpenPrForBranch(execFn, ctx.repoRoot, branchName);
+    if (existingPr === undefined) {
+      const recorded = await recordedPrState(ctx, execFn, ps.prNumber, branchName);
+      if (recorded === "OPEN") existingPr = ps.prNumber;
+      else if (recorded !== undefined && ps.prNumber !== undefined) {
+        const gone = prGoneRefusal(state, ps.prNumber, branchName, recorded);
+        return { ok: false, terminal: true, ...gone };
+      }
+    }
+    const reentryNoop = async (pr: number): Promise<{ ok: true; state: WorkState }> => {
       trace(
-        `work-driver: commit-pr re-entry — open PR #${existingPr} already heads ${branchName}; integrate/prCreate skipped`,
+        `work-driver: commit-pr re-entry — open PR #${pr} already heads ${branchName}; integrate/prCreate skipped`,
       );
       const rootState = await inspectCommitPrRoot(execFn, ctx.repoRoot);
       let next = appendEvent(
@@ -159,7 +178,7 @@ export async function mechanizedCommitPr(
         synthesizeDriverCompletion({
           step: "commit-pr",
           label: "driver:commit-pr",
-          summary: `Mechanized commit-pr RE-ENTRY: open PR #${existingPr} already heads ${branchName} — consolidation previously completed; integrate/prCreate skipped.\npr: ${existingPr}`,
+          summary: `Mechanized commit-pr RE-ENTRY: open PR #${pr} already heads ${branchName} — consolidation previously completed; integrate/prCreate skipped.\npr: ${pr}`,
           startedAt,
           now: Date.now(),
         }),
@@ -169,6 +188,17 @@ export async function mechanizedCommitPr(
         pipelineState: { ...next.pipelineState, ...commitPrRootFieldsOf(rootState) },
       };
       return { ok: true, state: next };
+    };
+    // The base a second round integrates onto: the branch's own head, so only
+    // what the branch lacks is picked and the push is a fast-forward.
+    let followupBase: string | undefined;
+    if (existingPr !== undefined) {
+      const pending = await worktreesWithNewWork(execFn, worktrees, branchName);
+      if (pending.length > 0) followupBase = await branchHeadOf(execFn, ctx.repoRoot, branchName);
+      if (followupBase === undefined) return reentryNoop(existingPr);
+      trace(
+        `work-driver: commit-pr second round — ${pending.join(", ")} hold work ${branchName} lacks; integrating onto ${followupBase.slice(0, 8)} for open PR #${existingPr}`,
+      );
     }
     // #818 — the PR title and the commit title are the SAME conventional
     // subject, derived from the issue (never `implement issue #N`).
@@ -197,17 +227,21 @@ export async function mechanizedCommitPr(
     const res = await integrate(execFn, {
       repoRoot: ctx.repoRoot,
       branchName,
-      baseSha: ps.baseSha,
+      baseSha: followupBase ?? ps.baseSha,
       worktrees,
       // #794 — own-range selection (stacked workstreams: see workstreamBaseShas).
-      workstreamBaseShas: ps.workstreamBaseShas,
+      // A second round measures every worktree against the branch head instead:
+      // the first round left each one AT that head, so the per-workstream bases
+      // would re-pick what the branch already carries.
+      workstreamBaseShas: followupBase ? undefined : ps.workstreamBaseShas,
       scratchDir: scratchDir(ctx.repoRoot, ctx.issue),
       commitTitle: title,
       commitBody,
-      mode: "create",
-      requireAllNonEmpty: true,
+      mode: followupBase ? "followup" : "create",
+      // Only the workstream that fixed something has a diff on a second round.
+      requireAllNonEmpty: !followupBase,
       // #453 — skip already-applied.
-      commitShas: ps.commitShas,
+      commitShas: followupBase ? undefined : ps.commitShas,
       verifyCmd: await verifyCmdFor(ctx.repoRoot),
       verifyExecFn: ctx.verifyExecFn,
       verifyTimeoutMs: integrationVerifyTimeoutMs(),
@@ -267,12 +301,32 @@ export async function mechanizedCommitPr(
       };
     }
     if (res.empty) {
+      // A second round whose "new" work was already on the branch (a crash
+      // between the push and the worktree advance) is the plain re-entry.
+      if (existingPr !== undefined) return reentryNoop(existingPr);
       return {
         ok: false,
         reason:
           "every worktree was clean — no uncommitted work to consolidate (developer may not have written)",
         fallbackCause,
       };
+    }
+    // A second round pushed onto the PR that is already open — nothing to create.
+    if (existingPr !== undefined) {
+      const rootState = await inspectCommitPrRoot(execFn, ctx.repoRoot);
+      const next = finalizeCommitPrState(
+        state,
+        now,
+        startedAt,
+        ids,
+        branchName,
+        existingPr,
+        res,
+        rootState,
+        commitPrFlakeEvidence,
+        true,
+      );
+      return { ok: true, state: next };
     }
     // #378 — when the intent resolver filled gaps with defensible defaults,
     // those assumptions belong where review happens; buried in a state file
