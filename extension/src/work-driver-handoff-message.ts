@@ -249,6 +249,15 @@ export function renderHandoffUserMessage(
       // section is indented, so re-prefix instead of inheriting the `- `.
       ...verdictLines.map((v) => `  ${v.text}`),
     );
+  } else if (!commentUrl) {
+    // Label landed, comment did not: not the banner's total failure, but the
+    // comment is what tells the human WHY — say it is missing rather than
+    // print nothing (#1219).
+    lines.push(
+      "",
+      "GitHub handoff comment NOT posted (the label was applied). Post it manually:",
+      `  gh ${ps.prNumber ? "pr" : "issue"} comment ${ps.prNumber ?? issue} --body-file ${handoffBodyPath}`,
+    );
   }
   if (commentUrl) {
     // #798 — state WHERE the artefacts landed explicitly. The label is on
