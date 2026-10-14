@@ -458,6 +458,7 @@ export async function runAdversarialFixPass(
     at: Date.now(),
     workstreamId: p.workstreamId,
     round: p.round,
+    headBefore: plans.find((x) => x.id === p.workstreamId)?.headBefore,
   }));
   return appendEvent(kept, ...applied);
 }

@@ -11,6 +11,7 @@
  */
 
 import { runAdversarialLoop } from "./adversarial.ts";
+import { adversarialFixDelta } from "./fix-delta.ts";
 import { slowRecorder } from "./slow-events.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
@@ -179,6 +180,8 @@ export async function fanOutAdversarial(
           // with the pre-fix diff and the reviewer has to notice for itself
           // that its earlier objections were already addressed.
           getDiff: () => fetchDiff(cwd, baseSha),
+          // What the fix pass before this re-review changed, to be read first.
+          fixDelta: await adversarialFixDelta(state, id, cwd),
           // #278 — the reviewer judges the diff against what was ASKED FOR,
           // not just against generic code quality. Absent on cycles resumed
           // from older state files, which degrade to the previous behaviour.

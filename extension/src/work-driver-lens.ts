@@ -3,7 +3,8 @@
 import { carriedAdversarialFindings } from "./adversarial-findings.ts";
 import { lensCommentBlock } from "./comment-evidence.ts";
 import { detectRepeatSeam } from "./detect-repeat-seam.ts";
-import { type WideningFinding, scanTypeWidening } from "./invariant-scan.ts";
+import { lensFixDelta } from "./fix-delta.ts";
+import { type WideningFinding, scanTypeWidening, wideningContext } from "./invariant-scan.ts";
 import { buildEvidence, runClaimScan } from "./lens-evidence.ts";
 import { execp } from "./lens-exec.ts";
 import { runLensReview } from "./lens-review.ts";
@@ -131,17 +132,11 @@ export async function runLens(
     verifyTimeoutMs(),
     ctx.verifyExecFn,
   );
-  if (wideningScanEnabled && widenings.length > 0) {
-    const findingsSummary = widenings
-      .map(
-        (f) =>
-          `  ${f.file}:${f.line ?? "?"} [${f.kind}]${f.before ? ` before: ${f.before}` : ""}${
-            f.after ? ` after: ${f.after}` : ""
-          }`,
-      )
-      .join("\n");
-    context += `\n\nTYPE-WIDENING DETECTED (route-only to ARCHITECTURE lens):\n${findingsSummary}\n\nMANDATE: the ARCHITECTURE lens must answer: what invariant did this widening remove, and what now guarantees it?`;
-  }
+  if (wideningScanEnabled) context += wideningContext(widenings);
+  // What the last fix pass changed, for every lens to read first: a fix can
+  // break the line beside the one it repairs (fix-delta.ts).
+  const fixDelta = await lensFixDelta(ctx.repoRoot, ps.branchName, ps.lensReviewedHead);
+  context += fixDelta.section;
 
   // Post-change file content for the lenses, and the claim scan. Both need the
   // BRANCH, not `cwd`: under always-worktree the worktrees stay detached at
@@ -213,6 +208,11 @@ export async function runLens(
       at: Date.now(),
       errorTail: (err as Error).message?.slice(-200),
     });
+  }
+
+  // The head this round read, for the next round's delta (not on an incomplete review).
+  if (fixDelta.head && summary.verdict !== "REVIEW_INCOMPLETE") {
+    next = { ...next, pipelineState: { ...next.pipelineState, lensReviewedHead: fixDelta.head } };
   }
 
   // #543 F5 — persist what the review actually observed. The lens
