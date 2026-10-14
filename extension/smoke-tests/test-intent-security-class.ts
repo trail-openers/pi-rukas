@@ -141,6 +141,11 @@ const parkingCanaries: Array<[string, string]> = [
   ["setuid", "Whether the helper binary is setuid \u2014 proposal: no"],
   ["PII", "Whether PII is written to the logs \u2014 proposal: no"],
   ["privacy", "Which privacy policy text applies \u2014 proposal: v2"],
+  // #1171 audit: generic role/token phrases removed from the excludes list, so these park.
+  ["role (of the, admin)", "Which role of the administrators may export the audit log"],
+  ["role (plays a role)", "Which admin plays a role in exporting the audit log"],
+  ["token (tokenizer, moved from benign)", "tokenizer output format \u2014 proposal: JSON"],
+  ["token (tokenization)", "Whether tokenization of card numbers is used \u2014 proposal: yes"],
   // Identifiers: `_` bounds a stem, so these park (#1171 boundary).
   ["identifier db_password", "Where db_password is read from \u2014 proposal: env"],
   ["identifier client_secret", "Whether client_secret rotates \u2014 proposal: monthly"],
@@ -203,7 +208,7 @@ for (const [label, point] of parkingCanaries) {
 // Benign canaries: a stem without its co-word proceeds. `author` and `_`-joined
 // words are checked here too: `auth` is a whole identifier segment, not a prefix.
 const benignCanaries: Array<[string, string]> = [
-  ["token (tokenizer)", "tokenizer output format \u2014 proposal: JSON"],
+  ["token (context window)", "tokens in the context window \u2014 proposal: 8k"],
   ["role (pipeline)", "the reviewer role in the pipeline stays as is \u2014 proposal: keep it"],
   ["eval (harness)", "eval harness runs the tests \u2014 proposal: keep it"],
   [
@@ -261,7 +266,7 @@ for (const term of SECURITY_CLASS_TERMS.filter((t) => t.requires || t.excludes))
 
 // A term with co-words does not match on the stem alone.
 assert(
-  matchSecurityTerm("tokenizer output") === undefined,
+  matchSecurityTerm("cookie banner copy") === undefined,
   "a co-word term does not match its bare stem",
 );
 

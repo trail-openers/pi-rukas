@@ -355,5 +355,28 @@ assert(
   );
 }
 
+// #1171 canaries: a continuation that merely mentions "critical" still joins; a nested
+// security item under a CRITICAL point is not silently dropped.
+{
+  const head = "## Open points (unresolved at the gap-gate cap)\n\n";
+  const mentionsCritical = `${head}- [CRITICAL] Which retry ceiling applies\n  the api key rotation is critical to decide\n`;
+  assert(
+    finaliseSpecVerdict(spec(), mentionsCritical).parkReason === "security-open-point",
+    "canary: a continuation naming critical joins its point and parks (api key)",
+  );
+  const nested = `${head}- [CRITICAL] Which timeout wins\n  - authentication is undecided\n`;
+  assert(
+    finaliseSpecVerdict(spec(), nested).parkReason === "security-open-point",
+    "canary: a nested security item under a CRITICAL point parks",
+  );
+  const nestedBenign = `${head}- [CRITICAL] Which retry ceiling applies\n  - the cache TTL is open\n`;
+  const benign = finaliseSpecVerdict(spec(), nestedBenign);
+  assert(
+    benign.verdict === "proceed-with-assumptions" &&
+      !benign.assumptions.some((a) => /could not parse/.test(a.text)),
+    "canary: a nested non-security item is not reported as unparsed",
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

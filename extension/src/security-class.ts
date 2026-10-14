@@ -57,12 +57,7 @@ export const SECURITY_CLASS_TERMS: readonly SecurityTerm[] = [
   {
     label: "role",
     stem: String.raw`roles?`,
-    excludes: [
-      "role[ _-]in[ _-]the[ _-]pipeline",
-      "reviewer[ _-]role",
-      "role[ _-]of[ _-]the",
-      "plays[ _-]a[ _-]role",
-    ],
+    excludes: ["role[ _-]in[ _-]the[ _-]pipeline", "reviewer[ _-]role"],
   },
   {
     label: "session",
@@ -79,7 +74,6 @@ export const SECURITY_CLASS_TERMS: readonly SecurityTerm[] = [
     label: "token",
     stem: String.raw`token\w*`,
     excludes: [
-      String.raw`tokeni[sz]\w*`,
       String.raw`tokens?[ _-](?:count|budget|limit|usage)`,
       String.raw`tokens?[ _-](?:in|of)[ _-](?:the[ _-])?context[ _-]window`,
     ],

@@ -24,6 +24,7 @@
  * decides what the spec says. work-driver-intent-finalise.ts fixes the order.
  */
 import { CRITICAL_SEVERITY, OPEN_POINTS_HEADING } from "./open-points-contract.ts";
+import { matchSecurityTerm } from "./security-class.ts";
 import type { NormalisedSpec, SpecAssumption, SpecEvidence } from "./work-driver-intent.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 
@@ -177,35 +178,51 @@ export interface OpenPointReading {
 
 const LIST_ITEM_LINE = /^\s*(?:[-*]|\d+[.)])\s+/;
 const HEADING_LINE = /^\s*#{1,6}\s/;
+/** A line that begins with a severity tag starts its own item; it never joins one (#1171). */
+const SEVERITY_TAG_LINE = /^\s*(?:[-*+]|\d+[.)])?\s*\[(?:CRITICAL|HIGH|MEDIUM|LOW)\]/i;
+
+/** One logical line: trimmed text, whether its first physical line was indented, and whether continuations were joined onto it. */
+interface LogicalLine {
+  text: string;
+  indented: boolean;
+  joined: boolean;
+}
 
 /**
  * The body's lines, with indented continuation lines joined onto the list item
  * above them (#1171): `- [CRITICAL] Which timeout wins` followed by an indented
- * `authentication for the endpoint is undecided` is one point. A continuation never
- * joins a line that names CRITICAL or another severity, so a wrapped HIGH item cannot
- * swallow a CRITICAL line. A blank line or a heading ends the item.
+ * `authentication for the endpoint is undecided` is one point. A continuation is
+ * refused only when the line itself begins with a severity tag, so a wrapped HIGH
+ * item cannot swallow a CRITICAL line, while a continuation that merely mentions
+ * "critical" still joins. A blank line or a heading ends the item.
  */
-function logicalLines(issueBody: string): string[] {
-  const out: string[] = [];
+function logicalLines(issueBody: string): LogicalLine[] {
+  const out: LogicalLine[] = [];
   let openItem = false;
   for (const raw of issueBody.split("\n")) {
     const line = raw.trim();
+    const indented = /^\s+\S/.test(raw);
     if (line === "") {
       openItem = false;
-      out.push("");
+      out.push({ text: "", indented: false, joined: false });
       continue;
     }
     const continues =
       openItem &&
-      /^\s+\S/.test(raw) &&
+      indented &&
       !LIST_ITEM_LINE.test(raw) &&
       !HEADING_LINE.test(raw) &&
-      !/critical|\[(?:HIGH|MEDIUM|LOW)\]/i.test(line);
+      !SEVERITY_TAG_LINE.test(line);
     if (continues) {
-      out.push(`${out.pop() ?? ""} ${line}`);
+      const prev = out.pop();
+      out.push({
+        text: `${prev?.text ?? ""} ${line}`,
+        indented: prev?.indented ?? false,
+        joined: true,
+      });
       continue;
     }
-    out.push(line);
+    out.push({ text: line, indented, joined: false });
     openItem = LIST_ITEM_LINE.test(raw);
   }
   return out;
@@ -222,8 +239,8 @@ function logicalLines(issueBody: string): string[] {
 export function readOpenPoints(issueBody: string): OpenPointReading {
   const reading: OpenPointReading = { points: [], resolved: [], unparsed: [] };
   let inSection = false;
-  for (const raw of logicalLines(issueBody)) {
-    const line = raw.trim();
+  for (const entry of logicalLines(issueBody)) {
+    const line = entry.text;
     const heading = line.match(/^#{1,6}\s+(.*)$/)?.[1];
     if (heading !== undefined) {
       inSection = heading.trim().toLowerCase() === OPEN_POINTS_HEADING.toLowerCase();
@@ -252,7 +269,16 @@ export function readOpenPoints(issueBody: string): OpenPointReading {
     // `non-critical` is ordinary prose, not a severity tag, so it is not malformed.
     const malformed =
       item !== undefined ? /(?<!non-)\bcritical\b/i.test(line) : /^\W*critical\b/i.test(line);
-    if (malformed) reading.unparsed.push(line);
+    if (malformed) {
+      reading.unparsed.push(line);
+      continue;
+    }
+    // #1171: an indented line that was not joined onto an item and is not a parsed item
+    // (e.g. a nested `  - authentication is undecided`) must not vanish. It parks only
+    // when it names the security class; other indented prose stays unread.
+    if (entry.indented && !entry.joined && matchSecurityTerm(line) !== undefined) {
+      reading.unparsed.push(line);
+    }
   }
   return reading;
 }
