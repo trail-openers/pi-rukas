@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { runConsolidatedVerify } from "../src/work-driver-consolidated-verify.ts";
+import { realExec } from "./lib/exec-fake.ts";
 
 const execFileP = promisify(execFile);
 
@@ -27,21 +28,6 @@ function assert(cond: boolean, msg: string) {
     exit = 1;
   }
 }
-
-const realExec: NonNullable<Parameters<typeof runConsolidatedVerify>[0]> = async (cmd, o) => {
-  try {
-    const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
-      cwd: o?.cwd,
-      maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
-    });
-    return { stdout };
-  } catch (err) {
-    const e = err as Error & { stderr?: string; stdout?: string };
-    e.stdout = e.stdout ?? "";
-    e.stderr = e.stderr ?? (err as unknown as { stderr?: string }).stderr ?? "";
-    throw e;
-  }
-};
 
 const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 

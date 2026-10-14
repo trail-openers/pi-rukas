@@ -59,6 +59,7 @@ import {
   worktreeList,
   worktreePath,
 } from "../src/worktree.ts";
+import { realExec } from "./lib/exec-fake.ts";
 
 const execFileP = promisify(execFile);
 
@@ -71,18 +72,6 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const realExec: ExecFn = async (cmd, o) => {
-  try {
-    const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
-      cwd: o?.cwd,
-      maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
-    });
-    return { stdout };
-  } catch (e) {
-    const err = e as Error & { stderr?: string };
-    throw new Error(`${err.message}\n${err.stderr ?? ""}`);
-  }
-};
 const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 const gitOut = async (cwd: string, args: string[]): Promise<string> =>
   (await execFileP("git", args, { cwd })).stdout;

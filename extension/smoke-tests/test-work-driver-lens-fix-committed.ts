@@ -25,6 +25,7 @@ import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
+import { realExec } from "./lib/exec-fake.ts";
 import { mkLensSummary, setupSpawnGuard } from "./test-helpers.ts";
 
 let exit = 0;
@@ -72,10 +73,8 @@ async function mkFixture(
   dir: string,
   branch: string,
 ): Promise<{ root: string; wt: string; baseSha: string; execp: (cmd: string, o?: { cwd?: string; shell?: string }) => Promise<{ stdout: string; stderr?: string }> }> {
-  const { promisify } = await import("node:util");
-  const { exec } = await import("node:child_process");
   const fs = await import("node:fs/promises");
-  const execp = promisify(exec) as typeof exec;
+  const execp = realExec;
   const origin = path.join(dir, "origin.git");
   const root = path.join(dir, "root");
   const wt = path.join(dir, "wt");

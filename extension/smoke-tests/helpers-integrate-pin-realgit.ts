@@ -12,6 +12,8 @@ import type { DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { appendEvent, initialState } from "../src/workflow-state.ts";
 import type { WorkState } from "../src/workflow-state.ts";
+import { commandOf } from "./lib/argv-shell.ts";
+import { realExec } from "./lib/exec-fake.ts";
 
 /** The audit's state input: a completed ops:commit-pr dispatch + the branch fields. */
 export function auditStateFor(
@@ -51,18 +53,7 @@ export function auditCtx(repo: string, issue: number): DriverContext {
 
 const execFileP = promisify(execFile);
 
-export const realExec = async (cmd: string, o?: { cwd?: string; maxBuffer?: number }) => {
-  try {
-    const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
-      cwd: o?.cwd,
-      maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
-    });
-    return { stdout };
-  } catch (e) {
-    const err = e as Error & { stderr?: string };
-    throw new Error(`${err.message}\n${err.stderr ?? ""}`);
-  }
-};
+export { realExec };
 export const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 
 export type RealgitRoot = string;
@@ -118,8 +109,8 @@ export function makeCtx(opts: {
 }): DriverContext {
   const { repo, issue, branchName, baseSha, worktreePath } = opts;
   const exec = async (cmd: string, o?: { cwd?: string }) => {
-    if (cmd.startsWith("gh ")) return { stdout: "" };
-    if (cmd.startsWith("git fetch")) return { stdout: "" };
+    if (commandOf(cmd, o).startsWith("gh ")) return { stdout: "" };
+    if (commandOf(cmd, o).startsWith("git fetch")) return { stdout: "" };
     return realExec(cmd, o);
   };
   const dispatchFn: NonNullable<DriverContext["dispatchFn"]> = async (_pi, spec, dOpts) => {

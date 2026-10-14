@@ -26,6 +26,7 @@ import {
   readState,
   writeState,
 } from "../src/workflow-state.ts";
+import { realExec } from "./lib/exec-fake.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -425,7 +426,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         issue: 800,
         dispatchFn: async () =>
           mkResult({ role: "ops", text: "branch: feature/issue-800-wrong-branch\n" }),
-        verifyExecFn: async (cmd: string, opts: object) => execp(cmd, opts),
+        verifyExecFn: realExec,
       };
       const result = await runBranch(ctx, baseState(), 1_000);
       assert(

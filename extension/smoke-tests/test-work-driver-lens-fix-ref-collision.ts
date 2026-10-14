@@ -15,6 +15,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { realExec } from "./lib/exec-fake.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -83,12 +84,7 @@ process.env.PI_ENSEMBLE_HANDOFF_CONSOLIDATE = "0";
       Number.parseInt(bareCount.trim(), 10) === 0,
       "setup: the bare name is tag-shadowed (rev-list against it reports 0)",
     );
-    const execFn = (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) =>
-      new Promise<{ stdout: string; stderr?: string }>((resolve, reject) =>
-        exec(cmd, { cwd: opts?.cwd, maxBuffer: opts?.maxBuffer }, (err, stdout, stderr) =>
-          err ? reject(Object.assign(err, { stderr })) : resolve({ stdout, stderr }),
-        ),
-      );
+    const execFn = realExec;
     const count = await countCommittedAhead(execFn, wt, "feature/ref-collision");
     assert(
       count === 1,

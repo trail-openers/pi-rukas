@@ -5,13 +5,13 @@
  * prefix turned `install.sh` into `nstall.sh`, so a present deliverable read
  * as absent. Runs against a real repository so the record shape is git's own.
  */
-import { exec, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import { readEndOfDevelopDiff } from "../src/work-driver-converge.ts";
 import { initialState } from "../src/workflow-state.ts";
+import { realExec } from "./lib/exec-fake.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -22,7 +22,6 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const execp = promisify(exec);
 const repo = mkdtempSync(path.join(tmpdir(), "converge-porcelain-"));
 const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" });
 try {
@@ -45,7 +44,7 @@ try {
     pipelineState: { ...base.pipelineState, worktrees: { default: "repoRoot" } },
   };
   const { files, unreadable } = await readEndOfDevelopDiff(
-    (cmd, opts) => execp(cmd, opts as { cwd?: string }),
+    realExec,
     state,
     repo,
   );

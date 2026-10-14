@@ -55,6 +55,7 @@ import { runBranch } from "../src/work-driver-branch-develop.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runConsolidatedVerify } from "../src/work-driver-consolidated-verify.ts";
 import type { ExecFn } from "../src/worktree.ts";
+import { realExec } from "./lib/exec-fake.ts";
 
 const execFileP = promisify(execFile);
 
@@ -71,19 +72,6 @@ function assert(cond: boolean, msg: string) {
 // real-git fixtures below keep exercising the (separate) worktree machinery.
 process.env.PI_ENSEMBLE_RESUME = "0";
 process.env.PI_ENSEMBLE_PR_PREFLIGHT = "0";
-
-const realExec: ExecFn = async (cmd, o) => {
-  try {
-    const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
-      cwd: o?.cwd,
-      maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
-    });
-    return { stdout };
-  } catch (e) {
-    const err = e as Error & { stderr?: string };
-    throw new Error(`${err.message}\n${err.stderr ?? ""}`);
-  }
-};
 
 const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 const gitOut = async (cwd: string, args: string[]): Promise<string> =>
