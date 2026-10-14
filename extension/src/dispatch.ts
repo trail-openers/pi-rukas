@@ -4,12 +4,14 @@ import type { DispatchHost } from "./async-jobs-lifecycle.ts";
 import { startBatch, startJob } from "./async-jobs.ts";
 import { type RetryNotice, withProviderBackoff } from "./dispatch-retry.ts";
 import { steerChild } from "./dispatch-steer.ts";
+import { excludeToolsFor } from "./role-tools.ts";
 import { ROLE_NAMES } from "./roles.ts";
 import type { OnSlowCallback } from "./slow-notice.ts";
 import { transcriptPathFor } from "./spawn-support.ts";
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
+import { liveCycleOwning } from "./work-driver-registry.ts";
 
 /**
  * #838 — the per-cycle deck option a driver dispatch threads through
@@ -44,6 +46,25 @@ export function stripModelOverride(spec: DispatchSpec): DispatchSpec {
     return rest as DispatchSpec;
   }
   return spec;
+}
+
+/**
+ * Refuse a PM dispatch of a WRITING role into the worktree of a live /work
+ * cycle. That tree has one writer, the driver's own child; a PM that put a
+ * second developer there had the two revert and overwrite each other's files
+ * for twenty minutes, and the driver's later gates each read a different
+ * tree. Read-only roles (explore, the reviewers) may look — a PM that cannot
+ * see the tree is how the mistake started. The driver dispatches through
+ * `dispatchCore`, never through the tools, so it is not affected.
+ */
+export function assertNotDriverWorktree(spec: DispatchSpec): void {
+  if (excludeToolsFor(spec.role) !== undefined) return;
+  const cwd = spec.cwd ?? process.cwd();
+  const cycle = liveCycleOwning(cwd);
+  if (cycle === undefined) return;
+  throw new Error(
+    `Refused: ${cwd} is the worktree of the running /work driver cycle for #${cycle}. The driver's own child is the only writer there, and a second ${spec.role} corrupts the tree the driver verifies and commits from. Do not hand-dispatch into a live cycle — the driver retries and parks on its own (/work-status ${cycle}). To inspect the tree, dispatch explore.`,
+  );
 }
 
 /**
@@ -173,6 +194,7 @@ export function registerDispatchTools(pi: ExtensionAPI) {
       // we discard any agent-supplied `model` before constructing the spec.
       // Model choice is user-authority-only (see issue #92).
       const spec = stripModelOverride(params as DispatchSpec);
+      assertNotDriverWorktree(spec);
       // #1015 — the report's git-state line runs here; the child still gets spec unchanged.
       const cwd = spec.cwd ?? process.cwd();
       const { jobId } = startJob(pi, {
@@ -236,6 +258,7 @@ export function registerDispatchTools(pi: ExtensionAPI) {
       // Defence in depth: drop any agent-supplied `model` from every spec.
       // Model choice is user-authority-only (see issue #92).
       const specs = rawSpecs.map(stripModelOverride);
+      for (const spec of specs) assertNotDriverWorktree(spec);
       // Share a runId so all children in this batch sort together on disk.
       const runId = makeRunId();
       const { batchId } = startBatch(pi, {

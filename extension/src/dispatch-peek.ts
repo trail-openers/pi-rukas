@@ -16,7 +16,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { getOrchestratorActiveChild, isOrchestratorJob } from "./async-jobs.ts";
+import { getOrchestratorActiveChild, isDriverOwnedJob, isOrchestratorJob } from "./async-jobs.ts";
 import { type DeckEntry, snapshot as deckSnapshot } from "./dispatch-deck.ts";
 import { formatElapsed, formatTokens } from "./progress.ts";
 
@@ -229,6 +229,7 @@ function renderHeader(e: DeckEntry, now: number): string {
   const totalTokens = u.input + u.output + u.cacheRead + u.cacheWrite;
   if (totalTokens > 0) parts.push(`${formatTokens(totalTokens)} toks`);
   if (state.model) parts.push(state.model);
+  if (isDriverOwnedJob(key)) parts.push("owned by the /work driver, not you");
   return parts.join(" · ");
 }
 

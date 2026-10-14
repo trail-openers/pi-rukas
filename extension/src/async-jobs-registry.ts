@@ -250,6 +250,23 @@ export function isOrchestratorJob(jobId: string): boolean {
 }
 
 /**
+ * Probe: does this job belong to a running /work driver cycle rather than to
+ * the PM? The PM-facing surfaces (status, peek, kill, the slow-run notice)
+ * print the answer: a PM once took the driver's develop child for a job it
+ * had mis-dispatched itself, killed it, and put a second developer in the
+ * driver's worktree. Inner adversarial/lens children own no job, so they
+ * are never driver-owned here.
+ */
+export function isDriverOwnedJob(jobId: string): boolean {
+  const state = jobs.get(jobId);
+  return state?.kind === "single" && state.ownerKind === "driver";
+}
+
+/** What every PM-facing surface says about a driver-owned child. */
+export const DRIVER_OWNED_NOTICE =
+  "This is the running /work driver's own child, NOT a job you dispatched: the driver chose its worktree and brief, is awaiting it, and retries or parks by itself when it fails. Slow is not wrong — do not kill it to re-dispatch your own, and never dispatch a developer or ops into the cycle's worktree.";
+
+/**
  * Job-issue mapping — associates a jobId with the GitHub issue(s) it is
  * running for. Populated by the work driver so `/work-status <jobId>`
  * can resolve a running cycle back to its state file on disk.

@@ -44,7 +44,7 @@
 
 import { notifyAgent } from "./agent-message.ts";
 import type { DispatchHost } from "./async-jobs-lifecycle.ts";
-import { getParentExtensionApi } from "./async-jobs-registry.ts";
+import { DRIVER_OWNED_NOTICE, getParentExtensionApi } from "./async-jobs-registry.ts";
 import { steerChild } from "./dispatch-steer.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import type { RunningState } from "./progress.ts";
@@ -119,6 +119,7 @@ interface Watch {
   steerFn?: SlowWatchInput["steerFn"];
   now: () => number;
   onSlow?: OnSlowCallback;
+  driverOwned?: boolean;
   /** Last delivered snapshot — the timer ticks with nothing new to say (the
    * child is silent), so a timer-driven evaluation replays the latest
    * snapshot rather than a stale one. */
@@ -176,7 +177,8 @@ function noticeText(w: Watch, s: RunningState, triggered: string[], excludedMs: 
     `[ensemble:slow] ${w.label} (${w.id}) has been running past a slow-run threshold (level ${w.level})${trigger} ${fmtSlow(s.elapsedMs, s.turns, s.totalTokens, excludedMs)}.`,
     s.lastToolName ? `Last tool: ${s.lastToolName}` : "",
     snippet,
-    `Use dispatch_peek ${w.id} to inspect it or dispatch_steer ${w.id} to course-correct it. A steer only lands once the current tool call returns — if it is hung in one, dispatch_kill ${w.id}.`,
+    w.driverOwned ? DRIVER_OWNED_NOTICE : "",
+    `Use dispatch_peek ${w.id} to inspect it or dispatch_steer ${w.id} to course-correct it. A steer only lands once the current tool call returns — if it is hung in one, dispatch_kill ${w.id}${w.driverOwned ? " with force: true" : ""}.`,
   ]
     .filter(Boolean)
     .join("\n");
@@ -374,6 +376,7 @@ export function watchSlowDispatch(input: SlowWatchInput): SlowWatchHandle {
     ...(input.steerFn ? { steerFn: input.steerFn } : {}),
     now,
     ...(input.onSlow ? { onSlow: input.onSlow } : {}),
+    ...(input.driverOwned ? { driverOwned: true } : {}),
     level: 0,
     lastState: undefined,
     seenProgress: false,
