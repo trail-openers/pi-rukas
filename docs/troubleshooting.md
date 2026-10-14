@@ -240,6 +240,10 @@ Every handoff carries three things it previously withheld.
 
 A lens that exits 0 without calling `report_finding` used to be indistinguishable from one that reviewed carefully and found nothing, so a silent review reported APPROVED. It now reports `REVIEW_INCOMPLETE` unless every lens produced either findings or a closing summary. If you see REVIEW_INCOMPLETE with no obvious failure, check the lens transcripts under `~/.pi/agent/ensemble-runs/<date>/` — a lens that returned only thinking content is the usual cause.
 
+### A lens line says `N malformed report_finding call(s) skipped`
+
+Pi validates `report_finding` arguments against the tool's schema and rejects a call missing `severity`, `path` or `title` with `Validation failed for tool "report_finding"` — that text is Pi's, and it names one missing key per rejection. A rejected call records nothing; the lens normally repeats it, so the count beside the lens's findings usually means wasted turns, not a lost finding. To check, compare the lens's `N findings` with what its closing summary lists: a finding in the prose with no matching entry was rejected and never re-sent. The lens's line `Skill Load Status: SUCCESS` reports that its skill loaded, not its verdict.
+
 ### `/work` parks at explore saying the spec is underspecified
 
 Two new checks can park here, both because explore did not produce a decision the driver can act on:
