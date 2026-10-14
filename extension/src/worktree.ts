@@ -288,9 +288,22 @@ export async function findDirtySameIssueLeftover(
   excludePaths?: string[],
 ): Promise<DirtyWorktreeFinding | undefined> {
   const wtMarker = `.worktrees${path.sep}${issuePrefix}`;
-  const hits = await scanWorktrees(execFn, repoRoot, fromRef, [wtMarker], selfName, {
-    failOnListError: true,
-  });
+  // #1170 — an unreadable listing is a refusal, not "no sibling": it is raised
+  // as a DirtyWorktreeError (fail closed) so the branch step refuses and never
+  // reaches the LLM ops fallback, which would create the worktree unscanned.
+  let hits: Awaited<ReturnType<typeof scanWorktrees>>;
+  try {
+    hits = await scanWorktrees(execFn, repoRoot, fromRef, [wtMarker], selfName, {
+      failOnListError: true,
+    });
+  } catch (err) {
+    throw new DirtyWorktreeError({
+      path: repoRoot,
+      uncommittedFiles: [],
+      unpushedCommitCount: 0,
+      inspectError: `git worktree list failed, so same-issue siblings could not be scanned: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
   // #753 — on macOS, `git worktree list --porcelain` returns symlink-resolved
   // paths (/private/var/...) while our paths are the logical form (/var/...).
   // Resolve both sides before comparing.

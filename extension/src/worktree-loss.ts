@@ -127,7 +127,7 @@ export interface InspectOpts {
 const REGENERABLE_DIR_NAMES = new Set(["node_modules", ".venv", "vendor"]);
 
 /** A ref name made only of characters that are inert inside double quotes. */
-const SAFE_REF = /^[A-Za-z0-9._\/^{}~@-]+$/;
+const SAFE_REF = /^[A-Za-z0-9._\/^{}~@+-]+$/;
 
 /**
  * Throw unless `ref` is a plain ref name safe to interpolate into a shell
