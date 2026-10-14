@@ -13,7 +13,7 @@
  * existing verdicts.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -241,8 +241,8 @@ try {
     return v;
   });
   assert(
-    snap === "cgroup pids.current=4095 of pids.max=4096",
-    `#1277: counters are read (got: ${snap})`,
+    snap?.current === 4095 && snap.max === 4096,
+    `#1277: counters are read as numbers (got: ${JSON.stringify(snap)})`,
   );
   assert(
     pidLimitSnapshot(() => {
@@ -250,9 +250,9 @@ try {
     }) === undefined,
     "#1277: unreadable counters yield no snapshot (never a guess)",
   );
+  const unl = pidLimitSnapshot((f) => (f.endsWith("pids.max") ? "max\n" : "17\n"));
   assert(
-    pidLimitSnapshot((f) => (f.endsWith("pids.max") ? "max\n" : "17\n")) ===
-      "cgroup pids.current=17 of pids.max=max",
+    unl?.current === 17 && unl.max === "max",
     "#1277: an unlimited cgroup is reported as it reads",
   );
   assert(
@@ -279,13 +279,26 @@ try {
     exhausted.includes(HOST_EXHAUSTION_RUNBOOK) && exhausted.includes("docs/troubleshooting.md"),
     "#1277: the failure points at the shared troubleshooting runbook",
   );
+  assert(
+    exhausted.includes("read just after the failure"),
+    "#1277: the message says the counters were read just after the failure",
+  );
+  const named = /under "([^"]+)"/.exec(HOST_EXHAUSTION_RUNBOOK)?.[1];
+  assert(
+    named === `${LABEL}: the gate could not run`,
+    "#1277: the runbook pointer names the troubleshooting heading",
+  );
+  const docs = readFileSync(new URL("../../docs/troubleshooting.md", import.meta.url), "utf8");
+  assert(
+    docs.includes(`#### \`${LABEL}\`: the gate could not run`),
+    "#1277: docs/troubleshooting.md contains the heading the runbook pointer names",
+  );
 
   // Unlimited: pids.max=max → the cgroup is NOT the ceiling; no exhaustion claim.
-  const unlimited = hostExhaustionFailure(
-    "consolidated verify",
-    "detail",
-    "cgroup pids.current=17 of pids.max=max",
-  );
+  const unlimited = hostExhaustionFailure("consolidated verify", "detail", {
+    current: 17,
+    max: "max",
+  });
   assert(
     /NOT the ceiling here \(cgroup pids\.current=17 of pids\.max=max\)/.test(unlimited),
     "#1277: an unlimited cgroup is not claimed as the ceiling",
@@ -300,23 +313,19 @@ try {
   );
 
   // Numeric but with plenty of headroom → also not the ceiling.
-  const roomy = hostExhaustionFailure(
-    "consolidated verify",
-    "detail",
-    "cgroup pids.current=17 of pids.max=4096",
-  );
+  const roomy = hostExhaustionFailure("consolidated verify", "detail", {
+    current: 17,
+    max: 4096,
+  });
   assert(/NOT the ceiling here/.test(roomy), "#1277: a roomy numeric ceiling is not claimed");
 
   // Margin boundary: 10 spare pids is the threshold (strictly under = exhausted).
   assert(
-    pidCeilingExhausted("cgroup pids.current=4087 of pids.max=4096") &&
-      !pidCeilingExhausted("cgroup pids.current=4086 of pids.max=4096"),
+    pidCeilingExhausted({ current: 4087, max: 4096 }) &&
+      !pidCeilingExhausted({ current: 4086, max: 4096 }),
     "#1277: exhaustion is headroom < 10 pids",
   );
-  assert(
-    !pidCeilingExhausted("cgroup pids.current=4096 of pids.max=max"),
-    "#1277: max is never exhausted",
-  );
+  assert(!pidCeilingExhausted({ current: 4096, max: "max" }), "#1277: max is never exhausted");
 
   // Blind: counters unreadable → the message says so, and makes no claim.
   const blind = hostExhaustionFailure("consolidated verify", "detail", undefined);

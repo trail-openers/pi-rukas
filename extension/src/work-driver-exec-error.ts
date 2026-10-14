@@ -121,14 +121,20 @@ export function isHostExhaustionFailure(failure: string): boolean {
  * nothing to raise (#1277). Undefined when the counters cannot
  * be read (no cgroup v2, not Linux).
  */
+export type PidLimitSnapshot = { current: number; max: number | "max" };
+
+function fmtPids(p: PidLimitSnapshot): string {
+  return `cgroup pids.current=${p.current} of pids.max=${p.max}`;
+}
+
 export function pidLimitSnapshot(
   read: (file: string) => string = (f) => readFileSync(f, "utf8"),
-): string | undefined {
+): PidLimitSnapshot | undefined {
   try {
     const current = read("/sys/fs/cgroup/pids.current").trim();
     const max = read("/sys/fs/cgroup/pids.max").trim();
     if (!/^\d+$/.test(current) || !/^(\d+|max)$/.test(max)) return undefined;
-    return `cgroup pids.current=${current} of pids.max=${max}`;
+    return { current: Number(current), max: max === "max" ? "max" : Number(max) };
   } catch {
     return undefined;
   }
@@ -147,13 +153,9 @@ export const HOST_EXHAUSTION_RUNBOOK = `The operator procedure (reading the coun
  */
 const PID_HEADROOM = 10;
 
-const PID_SNAPSHOT_RE = /^cgroup pids\.current=(\d+) of pids\.max=(\d+|max)$/;
-
 /** True only when the snapshot shows a numeric ceiling with no headroom left. */
-export function pidCeilingExhausted(snapshot: string): boolean {
-  const m = PID_SNAPSHOT_RE.exec(snapshot);
-  if (!m || m[2] === "max") return false;
-  return Number(m[2]) - Number(m[1]) < PID_HEADROOM;
+export function pidCeilingExhausted(snapshot: PidLimitSnapshot): boolean {
+  return snapshot.max !== "max" && snapshot.max - snapshot.current < PID_HEADROOM;
 }
 
 const OTHER_CEILINGS =
@@ -169,15 +171,15 @@ const OTHER_CEILINGS =
 export function hostExhaustionFailure(
   what: string,
   detail: string,
-  pids: string | undefined,
+  pids: PidLimitSnapshot | undefined,
 ): string {
   let cause: string;
   if (pids === undefined) {
-    cause = `the process or thread limit where the driver runs is unknown (its cgroup pid counters could not be read); ${OTHER_CEILINGS}`;
+    cause = `the process or thread limit where the driver runs is unknown (its cgroup pid counters could not be read just after the failure); ${OTHER_CEILINGS}`;
   } else if (pidCeilingExhausted(pids)) {
-    cause = `the process limit where the driver runs is exhausted: ${pids}`;
+    cause = `the process limit where the driver runs is exhausted: ${fmtPids(pids)} (counters read just after the failure)`;
   } else {
-    cause = `the cgroup pid limit is NOT the ceiling here (${pids}), so raising it will not help; ${OTHER_CEILINGS}`;
+    cause = `the cgroup pid limit is NOT the ceiling here (${fmtPids(pids)}); the counters were read just after the failure, so raising it will not help; ${OTHER_CEILINGS}`;
   }
   return `${HOST_EXHAUSTION_LABEL} ${what} could not run — the system refused to start a process (fork failed / EAGAIN); ${cause}. This is an environment failure, NOT a verdict on the change: the gate did not execute, so the change is neither confirmed nor refuted. In a container the ceiling is the CONTAINER's pid limit (docker \`--pids-limit\`), not a host ulimit. ${HOST_EXHAUSTION_RUNBOOK} Evidence: ${detail}`;
 }
