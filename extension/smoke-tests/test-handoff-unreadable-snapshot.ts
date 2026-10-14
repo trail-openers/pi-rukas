@@ -74,7 +74,7 @@ function parkedState(snapshot: Record<string, unknown>): WorkState {
         stagedCount: 0,
         branchExists: false,
         branchPushed: false,
-        headSha: "",
+        repoRootHeadSha: "",
         capturedAt: 1000,
         ...snapshot,
       },
@@ -196,8 +196,8 @@ function parkedState(snapshot: Record<string, unknown>): WorkState {
     );
   }
   assert(
-    !/0 file\(s\) modified/.test(surfaces.chat),
-    'chat: no "0 file(s) modified" over unread state',
+    !/0 file\(s\) modified|0 uncommitted file\(s\)/.test(surfaces.chat),
+    'chat: no "0 file(s) modified" / "0 uncommitted file(s)" over unread state',
   );
   assert(
     !/no branch was created/.test(surfaces.chat),

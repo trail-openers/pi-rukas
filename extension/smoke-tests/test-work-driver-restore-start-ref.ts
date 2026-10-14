@@ -248,7 +248,7 @@ import { assert, realExec, shown, buildRepo, head, sha, stateWith, result } from
       stagedCount: 0,
       branchExists: false,
       branchPushed: false,
-      headSha: wtHead.slice(0, 8),
+      repoRootHeadSha: wtHead.slice(0, 8),
       capturedAt: 1000,
       committedWork: [{ worktreeId: "task-a", path: wt, headSha: wtHead, ahead: 1 }],
     };

@@ -324,7 +324,11 @@ The branch step recorded whatever branch `repoRoot` was on, and that value becom
 
 ### The handoff says `Rounds: 0 of 3` but the loop clearly ran
 
-`reviewRound` is the **lens-review** counter and is legitimately 0 when a cycle dies at step 5 without reaching step 7. It used to be printed under an adversarial cap too, so a loop that ran three full rounds reported zero. Fixed: an adversarial cap now reports its own round count, and the handoff quotes the blocking finding instead of the generic *"the diff still has issues the adversarial-developer flagged"*.
+`reviewRound` is the **lens-review** counter and is legitimately 0 when a cycle dies at step 5 without reaching step 7. It used to be printed under an adversarial cap too, so a loop that ran three full rounds reported zero. Fixed: an adversarial cap now reports its own round count, and the handoff quotes the blocking finding instead of the generic *"the diff still has issues the adversarial-developer flagged"*. Under every other cap the line now names its counter — `0 of 3 review rounds (six-lens review; the adversarial gate ran 1 round(s), last: ISSUES_FOUND)` — so a cycle parked at develop after an adversarial round and its fix pass no longer reads as unreviewed.
+
+### The handoff shows the branch at the base commit, or `0 file(s) modified`, beside "the branch holds the work"
+
+The handoff used to print the **repo root's** `HEAD` on the branch line. A successful pre-handoff consolidation puts the commits on the feature branch and then restores your checkout, so that `HEAD` was the base commit and the branch looked empty. The line now carries the branch's own tip and its distance from the base (`· tip 37d1118a, 1 commit(s) ahead of base`), the comment labels the other value `repo-root HEAD`, and beside committed work the file count reads `N uncommitted file(s)` — it only ever counted uncommitted files. A handoff snapshot written before the `headSha` → `repoRootHeadSha` rename shows no repo-root HEAD line at all; re-run the cycle to refresh it, or ignore the missing line — the branch state itself is unaffected.
 
 ### A restarted cycle erased its own history
 
