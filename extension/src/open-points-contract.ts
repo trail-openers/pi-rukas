@@ -13,6 +13,7 @@
  *     secrets, input validation/injection, sandboxing, data deletion) parks the
  *     cycle with reason `security-open-point`; any other point caps a proceed at
  *     `proceed-with-assumptions`;
+ *     the class is defined in security-class.ts, and explainPark derives its text from it.
  *   - a point the author has answered no longer gates. A bullet is resolved only
  *     when `[RESOLVED]` immediately follows the severity tag (e.g.
  *     `- [CRITICAL][RESOLVED] …` or `- [CRITICAL] [RESOLVED] …`). Answer the point

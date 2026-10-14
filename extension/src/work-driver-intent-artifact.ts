@@ -265,6 +265,11 @@ function validateSpec(raw: unknown): NormalisedSpec | undefined {
     verdict: v.verdict,
     rationale: typeof v.rationale === "string" ? v.rationale : "",
   };
+  // Absent in artifacts written before the field existed: read as none, so it stays absent.
+  if (v.securityOpenPoints !== undefined) {
+    if (!isStringArray(v.securityOpenPoints)) return undefined;
+    out.securityOpenPoints = v.securityOpenPoints;
+  }
   if (v.parkReason !== undefined) {
     const pr = v.parkReason;
     if (typeof pr !== "string" || !PARK_REASONS.includes(pr as ParkReason)) return undefined;
