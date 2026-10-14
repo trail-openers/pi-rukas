@@ -65,6 +65,20 @@ const SEAMS: Seam[] = [
     canary: { symbol: "piSessionHost", importer: "commands.ts" },
   },
   {
+    // S4a (#1162) — the workflow-state persistence seam. markInterrupted has
+    // no caller until the headless runner's signal handling lands (#1024).
+    file: "workflow-state.ts",
+    pending: {
+      markInterrupted: "#1024 \u2014 S4 wires SIGTERM/SIGINT to it",
+      requestInterrupt: "#1024 \u2014 set by markInterrupted; has no caller of its own",
+    },
+    testOnly: {
+      writeState:
+        "the write primitive behind persistCycle; driver code persists through persistCycle",
+    },
+    canary: { symbol: "persistCycle", importer: "work-driver-resume.ts" },
+  },
+  {
     file: "vipune.ts",
     pending: {
       // NOT planned for a caller. #394 calibrated `selectResults` as floor AND
@@ -142,7 +156,10 @@ const SEAMS: Seam[] = [
       markDispatchStarted:
         "resume plumbing — write-ahead dispatch-started; exercised by test-resume.ts",
     },
-    canary: { symbol: "beginDispatch", importer: "work-driver-explore-dispatch.ts" },
+    canary: {
+      symbol: "beginDispatch",
+      importer: "work-driver-explore-dispatch.ts",
+    },
   },
   {
     // #594 — spec artifact validation, precedence, and file operations.
@@ -158,7 +175,10 @@ const SEAMS: Seam[] = [
       exploreSpecArtifactPath:
         "#594 — artifact path helper; called by test-work-driver-pr12.ts and internally by readSpecArtifact/deleteSpecArtifact",
     },
-    canary: { symbol: "resolveIntentVerdict", importer: "work-driver-explore-dispatch.ts" },
+    canary: {
+      symbol: "resolveIntentVerdict",
+      importer: "work-driver-explore-dispatch.ts",
+    },
   },
   {
     // #750 — the shared verified-restore helper for consolidation abort
@@ -168,7 +188,10 @@ const SEAMS: Seam[] = [
     // post-condition read confirms the root is clean.
     file: "work-driver-restore.ts",
     pending: {},
-    canary: { symbol: "verifiedRestoreRoot", importer: "work-driver-integrate.ts" },
+    canary: {
+      symbol: "verifiedRestoreRoot",
+      importer: "work-driver-integrate.ts",
+    },
   },
   {
     // #729 — the dispatch deck's single composite widget factory. Replaces
@@ -184,7 +207,10 @@ const SEAMS: Seam[] = [
       buildJobRows:
         "row builder with the #835 key-fragment disambiguator; exercised by test-dispatch-deck.ts block 14",
     },
-    canary: { symbol: "buildCompositeFactory", importer: "dispatch-deck-confirm-row.ts" },
+    canary: {
+      symbol: "buildCompositeFactory",
+      importer: "dispatch-deck-confirm-row.ts",
+    },
   },
   {
     // #912 — the per-clone review ledger. The writer calls live in
@@ -256,7 +282,10 @@ const SEAMS: Seam[] = [
       resolvePiBinarySync:
         "the sync resolver; wired via getPiInvocation; also directly test-asserted",
     },
-    canary: { symbol: "getPiInvocation", importer: "work-driver-resume-reattach.ts" },
+    canary: {
+      symbol: "getPiInvocation",
+      importer: "work-driver-resume-reattach.ts",
+    },
   },
   {
     // #1038 — the version probe split out of pi-binary-resolve.ts. The fire-and-
@@ -303,7 +332,10 @@ const testFiles = readdirSync(TESTS)
 
 const allFiles = readdirSync(SRC)
   .filter((f) => f.endsWith(".ts"))
-  .map((f) => ({ name: f, text: stripComments(readFileSync(path.join(SRC, f), "utf8")) }));
+  .map((f) => ({
+    name: f,
+    text: stripComments(readFileSync(path.join(SRC, f), "utf8")),
+  }));
 
 for (const seam of SEAMS) {
   console.log(`\n── ${seam.file}`);

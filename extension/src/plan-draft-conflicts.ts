@@ -18,17 +18,22 @@
  * line agrees with one of them and contradicts the other: the contradicted item
  * is dropped and the disclosure names the operator line. Only an unsettled
  * clash drops both items and raises an Open Question.
+ *
+ * Single responsibility: stage 1 — operator conflicts and investigation-vs-
+ * investigation clashes. Restatements of an operator line (duplicates) are
+ * removed by the separate stage in plan-draft-dedupe.ts, which runs after this.
  */
 
 import type { OperatorDirectives } from "./plan-directives.ts";
-import type { AngleFindings } from "./plan-draft.ts";
+import type { AngleFindings, PlanItemKind, PlanItemKindName } from "./plan-draft.ts";
+import { OPERATOR_SOURCE, type PriorContextEntry } from "./plan-prior-context.ts";
 
 /**
  * Minimum shared content tokens for two lines to be about the same thing.
  * Three, not two: a 401 line and a 429 line about one response shape share two
  * tokens and carry opposite polarity, and must both survive (#1132 fixture).
  */
-const MIN_SHARED_TOKENS = 3;
+export const MIN_SHARED_TOKENS = 3;
 
 const STOPWORDS = new Set([
   "the",
@@ -93,7 +98,7 @@ const STOPWORDS = new Set([
  * Whole words only: a hyphen or word character on either side disqualifies a
  * match, so `no-op` and `not-applicable` are not negations (#1132).
  */
-const NEGATION_CUE =
+export const NEGATION_CUE =
   /(?<![\w-])(?:not|no|never|none|nothing|without|cannot|can't|don't|doesn't|must not|shall not|excluded?|absent|instead|rather than|forbidden|disallowed|prohibited)(?![\w-])|n't(?![\w-])/i;
 
 /** Content tokens: lowercase words of length ≥ 3, stopwords removed. */
@@ -118,7 +123,7 @@ export function linesConflict(a: string, b: string): boolean {
   return NEGATION_CUE.test(a) !== NEGATION_CUE.test(b);
 }
 
-/** Same topic and same polarity: the operator line restates the investigation item. */
+/** Same topic and same polarity: an operator line settles a clash in this item's favour. */
 function agrees(op: string, item: string): boolean {
   return (
     sharedTokenCount(op, item) >= MIN_SHARED_TOKENS &&
@@ -128,7 +133,7 @@ function agrees(op: string, item: string): boolean {
 
 /** One investigation item as the drafting path sees it. */
 export interface InvestigationLine {
-  kind: string;
+  kind: PlanItemKindName;
   text: string;
   angle: string;
 }
@@ -140,8 +145,9 @@ export interface DroppedInvestigationItem<T extends InvestigationLine = Investig
   /**
    * operator: contradicts an operator line. settled: an operator line agreed
    * with `sibling` and contradicted this item. investigation: an unsettled clash.
+   * duplicate: restates an operator line (same polarity); set by plan-draft-dedupe.ts.
    */
-  reason: "operator" | "investigation" | "settled";
+  reason: "operator" | "investigation" | "settled" | "duplicate";
   /** For "settled": the investigation line the operator line kept. */
   sibling?: string;
 }
@@ -151,6 +157,11 @@ export interface InvestigationConflictResult<T extends InvestigationLine = Inves
   dropped: DroppedInvestigationItem<T>[];
   /** Open Questions for investigation-vs-investigation clashes no operator line settles. */
   openQuestions: string[];
+  /**
+   * Items an operator line settled in their favour. They are already endorsed,
+   * so the duplicate stage must not drop them.
+   */
+  endorsed: Set<T>;
 }
 
 /** The operator line that settles a clash between two items, and which item it keeps. */
@@ -178,6 +189,7 @@ export function filterInvestigationConflicts<T extends InvestigationLine>(
   operatorLines: string[],
 ): InvestigationConflictResult<T> {
   const doomed = new Set<T>();
+  const endorsed = new Set<T>();
   const dropped: DroppedInvestigationItem<T>[] = [];
   const drop = (d: DroppedInvestigationItem<T>): void => {
     if (doomed.has(d.item)) return;
@@ -194,11 +206,15 @@ export function filterInvestigationConflicts<T extends InvestigationLine>(
       if (!a || !b || doomed.has(a) || doomed.has(b)) continue;
       if (!linesConflict(a.text, b.text)) continue;
       const s = settlement(a, b, operatorLines);
-      if (s) drop({ item: s.drop, against: s.line, reason: "settled", sibling: s.keep.text });
+      if (s) {
+        endorsed.add(s.keep);
+        drop({ item: s.drop, against: s.line, reason: "settled", sibling: s.keep.text });
+      }
     }
   }
 
-  // 2. Items that contradict an operator line.
+  // 2. Items that contradict an operator line are conflicts. Restatements of an
+  //    operator line are not conflicts; plan-draft-dedupe.ts decides those.
   for (const item of live()) {
     const op = operatorLines.find((o) => linesConflict(o, item.text));
     if (op !== undefined) drop({ item, against: op, reason: "operator" });
@@ -217,23 +233,30 @@ export function filterInvestigationConflicts<T extends InvestigationLine>(
       openQuestions.push(`Unresolved investigation conflict: "${a.text}" vs "${b.text}"`);
     }
   }
-  return { kept: live(), dropped, openQuestions };
+  return { kept: live(), dropped, openQuestions, endorsed };
 }
+
+/** The clause naming why an item was dropped, per reason. */
+const DROP_CLAUSE: Record<
+  DroppedInvestigationItem["reason"],
+  (d: DroppedInvestigationItem) => string
+> = {
+  operator: (d) => `conflicts with operator decision "${d.against.slice(0, 160)}"`,
+  duplicate: (d) => `duplicate of operator line "${d.against.slice(0, 160)}"`,
+  settled: (d) =>
+    `operator decision "${d.against.slice(0, 160)}" settles its clash with the investigation line "${(d.sibling ?? "").slice(0, 160)}"`,
+  investigation: (d) =>
+    `conflicts with another investigation line "${d.against.slice(0, 160)}" that no operator decision settles`,
+};
 
 /** The disclosure bullet for one dropped item (rendered in the filed body). */
 export function droppedDisclosure(d: DroppedInvestigationItem): string {
   const { item } = d;
-  const why =
-    d.reason === "operator"
-      ? `dropped: conflicts with operator decision "${d.against.slice(0, 160)}"`
-      : d.reason === "settled"
-        ? `dropped: operator decision "${d.against.slice(0, 160)}" settles its clash with the investigation line "${(d.sibling ?? "").slice(0, 160)}"`
-        : `dropped: conflicts with another investigation line "${d.against.slice(0, 160)}" that no operator decision settles`;
-  return `- ${why} — [${item.angle} / ${item.kind}] ${item.text}`;
+  return `- dropped: ${DROP_CLAUSE[d.reason](d)} — [${item.angle} / ${item.kind}] ${item.text}`;
 }
 
 /** Investigation kinds an operator line can contradict (#1132). */
-const CONFLICTABLE_KINDS = new Set([
+export const CONFLICTABLE_KINDS: ReadonlySet<PlanItemKindName> = new Set<PlanItemKindName>([
   "edge-case",
   "test-surface-item",
   "out-of-scope",
@@ -243,44 +266,53 @@ const CONFLICTABLE_KINDS = new Set([
 /** Operator-authored lines: final, never dropped by this rule. */
 export function operatorLinesOf(
   directives: OperatorDirectives,
-  priorContext: { source: string; fact: string }[],
+  priorContext: PriorContextEntry[],
 ): string[] {
   return [
     ...directives.acceptanceCriteria,
     ...directives.outOfScope,
     ...directives.pitfalls,
     ...(directives.testSurface ?? []),
-    ...priorContext.filter((p) => p.source === "context param").map((p) => p.fact),
+    ...priorContext.filter((p) => p.source === OPERATOR_SOURCE).map((p) => p.fact),
   ];
 }
 
-/** The investigation-authored candidate items this rule may drop. */
-function conflictableItems(findings: AngleFindings[]) {
+/** The investigation-authored candidate items the operator-line stages may drop. */
+export function conflictableItems(findings: AngleFindings[]) {
   return findings.flatMap((f) => f.toolUses.filter((i) => CONFLICTABLE_KINDS.has(i.kind)));
+}
+
+/** The findings with the given items removed from their tool uses. */
+export function withoutItems(
+  findings: AngleFindings[],
+  dropped: ReadonlySet<PlanItemKind>,
+): AngleFindings[] {
+  return findings.map((f) => ({
+    ...f,
+    toolUses: f.toolUses.filter((i) => !dropped.has(i)),
+  }));
 }
 
 /**
  * #1132: operator lines are final. Drop every investigation item that
  * contradicts one BEFORE any bullet is written, and return the drops (for
- * disclosure) plus any investigation-vs-investigation Open Questions.
+ * disclosure), any investigation-vs-investigation Open Questions, and the items
+ * an operator line endorsed (for the duplicate stage).
  */
 export function applyOperatorConflicts(
   findings: AngleFindings[],
   directives: OperatorDirectives,
-  priorContext: { source: string; fact: string }[],
+  priorContext: PriorContextEntry[],
 ) {
   const res = filterInvestigationConflicts(
     conflictableItems(findings),
     operatorLinesOf(directives, priorContext),
   );
-  const dropItems = new Set(res.dropped.map((d) => d.item));
   return {
-    findings: findings.map((f) => ({
-      ...f,
-      toolUses: f.toolUses.filter((i) => !dropItems.has(i)),
-    })),
+    findings: withoutItems(findings, new Set(res.dropped.map((d) => d.item))),
     dropped: res.dropped,
     openQuestions: res.openQuestions,
+    endorsed: res.endorsed,
   };
 }
 

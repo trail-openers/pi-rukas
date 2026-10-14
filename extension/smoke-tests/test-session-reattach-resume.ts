@@ -238,7 +238,7 @@ function assert(cond: boolean, msg: string) {
   let state = initialState(123);
   state.pipelineState.currentStep = "explore";
   const begun = await beginDispatch(
-    "/tmp/test-repo",
+    { repoRoot: "/tmp/test-repo" },
     state,
     "explore",
     "explore",

@@ -21,6 +21,7 @@
  */
 import { type OperatorDirectives, parseOperatorDirectivesWithLines } from "./plan-directives.ts";
 import { type MechanicalInventory, VIPUNE_PRIOR_SOURCE } from "./plan-draft.ts";
+import { OPERATOR_SOURCE } from "./plan-prior-context.ts";
 
 export interface PriorContextAssembly {
   /**
@@ -67,8 +68,8 @@ export function assemblePriorContext(
       if (!line) return;
       // D2: no 200-char clipping of operator context — the operator is the
       // authority and the inventory renders it verbatim.
-      priorContext.push({ source: "context param", fact: line });
-      if (!consumed.has(idx)) inventoryContext.push({ source: "context param", fact: line });
+      priorContext.push({ source: OPERATOR_SOURCE, fact: line });
+      if (!consumed.has(idx)) inventoryContext.push({ source: OPERATOR_SOURCE, fact: line });
     });
   }
   const relatedEntries = inv.related

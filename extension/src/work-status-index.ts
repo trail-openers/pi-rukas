@@ -15,6 +15,7 @@
 import fs from "node:fs/promises";
 import { MAX_REVIEW_ROUNDS, STEP_ORDINAL } from "./work-driver-context.ts";
 import { humanActionFor } from "./work-queue.ts";
+import { lastInterruptReason } from "./work-status-interrupted.ts";
 import { type WorkState, readState, workStateDir } from "./workflow-state.ts";
 
 /**
@@ -67,10 +68,20 @@ export function renderCycleIndex(
   const needsInput = cycles.filter(
     (c) => c.state.pipelineState.status === "handoff" || c.state.pipelineState.status === "aborted",
   );
+  const interrupted = cycles.filter((c) => c.state.pipelineState.status === "interrupted");
   const done = cycles.filter((c) => c.state.pipelineState.status === "merged");
+  const interruptedNote = interrupted.length > 0 ? `${interrupted.length} interrupted, ` : "";
   const lines = [
-    `/work — ${running.length} running, ${needsInput.length} needs your input, ${done.length} done`,
+    `/work — ${running.length} running, ${interruptedNote}${needsInput.length} needs your input, ${done.length} done`,
   ];
+  // S4a (#1162) — resumable, not terminal: `/work N` re-enters the cycle.
+  for (const c of interrupted) {
+    const reason = lastInterruptReason(c.state.eventLog);
+    lines.push(
+      `  ⏸ #${c.issue}  interrupted at ${c.state.pipelineState.currentStep}${reason ? ` (${reason})` : ""}`,
+    );
+    lines.push(`      → /work ${c.issue} resumes it`);
+  }
   for (const c of [...running].sort((a, b) => b.state.updatedAt - a.state.updatedAt)) {
     const ps = c.state.pipelineState;
     const ord = STEP_ORDINAL[ps.currentStep];

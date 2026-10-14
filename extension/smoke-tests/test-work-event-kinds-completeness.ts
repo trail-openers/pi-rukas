@@ -79,7 +79,13 @@ const incidentKindEvents: WorkEvent[] = [
     branchName: "feature/x",
     workstreams: ["default"],
   },
-  { kind: "worktree-leftover-handled", at: 1, path: "/wt", action: "adopt", refs: [] },
+  {
+    kind: "worktree-leftover-handled",
+    at: 1,
+    path: "/wt",
+    action: "adopt",
+    refs: [],
+  },
 ];
 
 const everyKindEvent: WorkEvent[] = [
@@ -93,8 +99,20 @@ const everyKindEvent: WorkEvent[] = [
     firstJobId: "j1",
   },
   { kind: "adversarial-approved", at: 1, jobId: "j1", rounds: 1 },
-  { kind: "adversarial-rejected", at: 1, jobId: "j1", rounds: 2, findings: "f" },
-  { kind: "adversarial-round", at: 1, round: 1, status: "APPROVED", verdictParsed: true },
+  {
+    kind: "adversarial-rejected",
+    at: 1,
+    jobId: "j1",
+    rounds: 2,
+    findings: "f",
+  },
+  {
+    kind: "adversarial-round",
+    at: 1,
+    round: 1,
+    status: "APPROVED",
+    verdictParsed: true,
+  },
   {
     kind: "adversarial-workstream-outcome",
     at: 1,
@@ -102,7 +120,14 @@ const everyKindEvent: WorkEvent[] = [
     outcome: "approved",
     roundsExecuted: 1,
   },
-  { kind: "dispatch-started", step: "develop", role: "developer", jobId: "j1", label: "l", at: 1 },
+  {
+    kind: "dispatch-started",
+    step: "develop",
+    role: "developer",
+    jobId: "j1",
+    label: "l",
+    at: 1,
+  },
   {
     kind: "dispatch-completed",
     step: "develop",
@@ -154,11 +179,23 @@ const everyKindEvent: WorkEvent[] = [
     at: 1,
     workstreamId: "default",
   },
-  { kind: "adversarial-fix-requested", at: 1, workstreamId: "default", round: 1, findings: "f" },
+  {
+    kind: "adversarial-fix-requested",
+    at: 1,
+    workstreamId: "default",
+    round: 1,
+    findings: "f",
+  },
   { kind: "adversarial-fix-applied", at: 1, workstreamId: "default", round: 1 },
   { kind: "converge-redispatch", step: "develop", at: 1 },
   { kind: "cap-hit", at: 1, cap: "round-cap", reviewRound: 3, nextStep: "ci" },
-  { kind: "plumb-report", at: 1, step: "develop", role: "developer", body: "b" },
+  {
+    kind: "plumb-report",
+    at: 1,
+    step: "develop",
+    role: "developer",
+    body: "b",
+  },
   { kind: "step-back-triggered", at: 1, theme: "t" },
   {
     kind: "step-back-completed",
@@ -169,10 +206,20 @@ const everyKindEvent: WorkEvent[] = [
     proposedRevision: "p",
   },
   { kind: "handoff-emitted", at: 1, labelApplied: true },
-  { kind: "handoff-consolidated", at: 1, branchName: "feature/x", workstreams: ["default"] },
+  {
+    kind: "handoff-consolidated",
+    at: 1,
+    branchName: "feature/x",
+    workstreams: ["default"],
+  },
   { kind: "ci-status", at: 1, status: "pending" },
   { kind: "merged", at: 1, prNumber: 1 },
-  { kind: "branches-fanned-out", step: "develop", workstreams: ["a", "b"], at: 1 },
+  {
+    kind: "branches-fanned-out",
+    step: "develop",
+    workstreams: ["a", "b"],
+    at: 1,
+  },
   {
     kind: "branch-completed",
     step: "develop",
@@ -181,11 +228,22 @@ const everyKindEvent: WorkEvent[] = [
     ms: 10,
     at: 1,
   },
-  { kind: "branches-converged", step: "develop", verdicts: [{ id: "a", ok: true }], at: 1 },
+  {
+    kind: "branches-converged",
+    step: "develop",
+    verdicts: [{ id: "a", ok: true }],
+    at: 1,
+  },
   { kind: "verify-full-status", at: 1, status: "success", ms: 100 },
   { kind: "verify-flake-recovered", at: 1, step: "develop" },
   { kind: "widening-scan", at: 1, findings: [] },
-  { kind: "memory-write", at: 1, outcome: "written", id: "m1", memoryType: "fact" },
+  {
+    kind: "memory-write",
+    at: 1,
+    outcome: "written",
+    id: "m1",
+    memoryType: "fact",
+  },
   {
     kind: "memory-inject",
     at: 1,
@@ -197,7 +255,13 @@ const everyKindEvent: WorkEvent[] = [
   },
   // The four #986 incident kinds (shared constant above).
   ...incidentKindEvents,
-  { kind: "branch-reset", at: 1, branch: "feature/x", oldSha: "a", newSha: "b" },
+  {
+    kind: "branch-reset",
+    at: 1,
+    branch: "feature/x",
+    oldSha: "a",
+    newSha: "b",
+  },
   {
     kind: "dispatch-slow",
     at: 1,
@@ -210,6 +274,8 @@ const everyKindEvent: WorkEvent[] = [
     tokens: 10,
   },
   { kind: "fence-recovery-started", at: 1, workstreamId: "a", owners: ["b"] },
+  // S4a (#1162) — the interrupt record.
+  { kind: "interrupted", at: 1, reason: "SIGTERM" },
 ];
 
 // The union-derived kind set: the source of truth both directions check

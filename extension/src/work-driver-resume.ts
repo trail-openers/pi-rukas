@@ -40,7 +40,8 @@
 
 import { existsSync } from "node:fs";
 import { trace } from "./trace.ts";
-import { type WorkState, type WorkStep, writeState } from "./workflow-state.ts";
+import type { DriverContext } from "./work-driver-context.ts";
+import { type WorkState, type WorkStep, persistCycle } from "./workflow-state.ts";
 
 /** #382 escape hatch: PI_ENSEMBLE_RESUME=0 restores the pre-#382 behaviour. */
 export function resumeEnabled(): boolean {
@@ -209,7 +210,7 @@ export function markDispatchStarted(
  * step, and a half-finished fan-out is re-entered wholesale.
  */
 export async function beginDispatch(
-  repoRoot: string,
+  ctx: Pick<DriverContext, "repoRoot" | "emitSink">,
   state: WorkState,
   step: WorkStep,
   role: string,
@@ -220,7 +221,7 @@ export async function beginDispatch(
   const jobId = mintJobId(step, label, at);
   if (!resumeEnabled()) return { state, jobId };
   const next = markDispatchStarted(state, step, role, label, jobId, at, transcriptPath);
-  await writeState(repoRoot, next);
+  await persistCycle(ctx, next);
   return { state: next, jobId };
 }
 
@@ -305,6 +306,16 @@ export function clearForResume(state: WorkState): WorkState {
     ...state,
     pipelineState: { ...state.pipelineState, inFlightJobIds: [] },
   };
+}
+
+/**
+ * S4a (#1162) — an `interrupted` cycle is resumable. Re-enter it as `running`
+ * so the classification above (refuse / resume an in-flight dispatch / continue
+ * at the last boundary) applies unchanged. Persisted at the driver's next write.
+ */
+export function reenterInterrupted(state: WorkState): WorkState {
+  if (state.pipelineState.status !== "interrupted") return state;
+  return { ...state, pipelineState: { ...state.pipelineState, status: "running" } };
 }
 
 /** Operator-facing message for a refused re-entry. */

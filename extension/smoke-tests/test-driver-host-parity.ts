@@ -111,7 +111,13 @@ function canon(v: unknown, dir: string): unknown {
 async function runUnder(
   host: DriverHost,
   sink: Sent[],
-): Promise<{ state: unknown; sent: unknown; eventKinds: string[] }> {
+  emittedSink: unknown[],
+): Promise<{
+  state: unknown;
+  sent: unknown;
+  emitted: unknown;
+  eventKinds: string[];
+}> {
   const dir = mkdtempSync(path.join(tmpdir(), "driver-host-parity-"));
   let calls = 0;
   try {
@@ -137,7 +143,12 @@ async function runUnder(
     await runWorkDriver(ctx).catch(() => undefined);
     const state = await readState(dir, 1020);
     const eventKinds = (state?.eventLog ?? []).map((e) => String(e.kind));
-    return { state: canon(state, dir), sent: canon(sink, dir), eventKinds };
+    return {
+      state: canon(state, dir),
+      sent: canon(sink, dir),
+      emitted: canon(emittedSink, dir),
+      eventKinds,
+    };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -154,14 +165,20 @@ const fakePi = {
 
 // Test side: the recording host is itself the bottom, so `testSent` is what it received.
 const testSent: Sent[] = [];
+// S4a (#1162) — the recording host also captures every `emit`, so the emitted
+// sequence can be compared with the final eventLog.
+const testEmitted: unknown[] = [];
 const recordingHost: DriverHost = {
   sendUserMessage: (text, options) => {
     testSent.push({ text, deliverAs: options.deliverAs });
   },
+  emit: (event) => {
+    testEmitted.push(event);
+  },
 };
 
-const piRun = await runUnder(piSessionHost(fakePi), piSent);
-const testRun = await runUnder(recordingHost, testSent);
+const piRun = await runUnder(piSessionHost(fakePi), piSent, []);
+const testRun = await runUnder(recordingHost, testSent, testEmitted);
 
 assert(piRun.eventKinds.length > 0, "the Pi-session run appended events to the eventLog");
 assert(
@@ -171,6 +188,12 @@ assert(
 assert(
   JSON.stringify(piRun.state) === JSON.stringify(testRun.state),
   "Pi-session host and recording host produce identical state + eventLog (timestamps, durations, repo path, job ids normalised)",
+);
+assert(
+  testRun.emitted !== undefined &&
+    JSON.stringify(testRun.emitted) ===
+      JSON.stringify((testRun.state as { eventLog: unknown }).eventLog),
+  "the recording host's emitted events equal the final eventLog, in order (S4a emit choke point)",
 );
 assert(
   piSent.length > 0 && JSON.stringify(piRun.sent) === JSON.stringify(testRun.sent),

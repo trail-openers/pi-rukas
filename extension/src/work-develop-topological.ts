@@ -81,7 +81,12 @@ async function runDevelopTopological(
   const { independent, dependentOrdered } = topologicalDispatchOrder(ids, dependsOnMap);
   const stateRef = { current: next };
   const persistNotes: string[] = [...preserved.notes];
-  const persister = makeBranchCompletedPersister(ctx.repoRoot, stateRef, persistNotes);
+  const persister = makeBranchCompletedPersister(
+    ctx.repoRoot,
+    stateRef,
+    persistNotes,
+    ctx.emitSink,
+  );
   reRecordKeptGreens(persister, independent, preserved.kept);
   // #753 — per-workstream completion timestamps + a shared map of WHY each
   // failed-or-skipped workstream failed (the cascade event names the workstream

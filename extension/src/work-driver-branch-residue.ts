@@ -28,7 +28,7 @@ import { trace } from "./trace.ts";
 import { detectMainline, freshMainlineTip } from "./work-driver-branch-mechanized.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { activeIssuesOf } from "./work-driver-workspace.ts";
-import { type WorkState, appendEvent, writeState } from "./workflow-state.ts";
+import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
 import { handleSameIssueLeftovers } from "./worktree-leftover.ts";
 import type { ExecFn } from "./worktree.ts";
 import { worktreePath } from "./worktree.ts";
@@ -133,7 +133,7 @@ This is residue from a previous cycle or the operator's own in-progress work —
       ...next,
       pipelineState: { ...next.pipelineState, currentStep: "handoff" },
     };
-    await writeState(ctx.repoRoot, next).catch((err) => {
+    await persistCycle(ctx, next).catch((err) => {
       trace(
         `work-driver: failed to persist dirty-root block state (non-fatal): ${(err as Error).message?.slice(0, 200)}`,
       );

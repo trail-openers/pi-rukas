@@ -17,6 +17,7 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { epicSubIssues } from "./plan-angles.ts";
 import { applyOperatorConflicts, droppedSection } from "./plan-draft-conflicts.ts";
+import { applyOperatorDedupe } from "./plan-draft-dedupe.ts";
 import {
   type MechanicalInventory,
   mechanicalInventory,
@@ -81,7 +82,7 @@ export interface AngleFindings {
 }
 
 export interface PlanItemKind {
-  kind: string;
+  kind: PlanItemKindName;
   text: string;
   angle: string;
 }
@@ -264,8 +265,17 @@ export function draftSpec(
   operatorOmitted: OperatorOmission[];
 } {
   const title = planTitle(descriptor, type);
+  // #1151: two stages, in order. Stage 1 drops items that contradict an operator
+  // line; stage 2 drops items that restate one. Both disclose through `dropped`.
   const conflicts = applyOperatorConflicts(rawFindings, directives, priorContext);
-  const findings = conflicts.findings;
+  const duplicates = applyOperatorDedupe(
+    conflicts.findings,
+    directives,
+    priorContext,
+    conflicts.endorsed,
+  );
+  const dropped = [...conflicts.dropped, ...duplicates.dropped];
+  const findings = duplicates.findings;
   const cap = budget?.maxItemsPerSection ?? SECTION_MAX_ITEMS;
   const clip = (s: string) => clipItem(s, budget?.itemClipChars ?? 400);
 
@@ -440,7 +450,7 @@ ${testSurface}
 ## Edge cases & pitfalls
 
 ${edgeCases}
-${droppedSection(conflicts.dropped)}
+${droppedSection(dropped)}
 ## Open Questions
 
 - (none)

@@ -31,7 +31,7 @@ import {
 import { refusedWorkstreams } from "./work-driver-step-refusal.ts";
 import type { CapEvidence } from "./workflow-state-cap.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
-import { type WorkState, type WorkStep, appendEvent, writeState } from "./workflow-state.ts";
+import { type WorkState, type WorkStep, appendEvent, persistCycle } from "./workflow-state.ts";
 
 /**
  * #366 — injectable sleep. Real waits are the point in production (a burst
@@ -56,7 +56,7 @@ export function __setSleepFn(fn: (ms: number) => Promise<void>): () => void {
  * PR5 / PR7 halt-cascade routers. Returns `retry: true` when the caller
  * should `continue` its while-loop without reaching the `nextStep()`
  * transition (a retry re-run or a synthesized cap-hit → handoff
- * re-entry, both of which already persisted state via `writeState`).
+ * re-entry, both of which already persisted state via `persistCycle`).
  */
 /**
  * The dispatch failure this step ended on, if any.
@@ -219,7 +219,7 @@ export async function routeStepOutcome(
       );
     }
   }
-  await writeState(ctx.repoRoot, state);
+  await persistCycle(ctx, state);
 
   // PR5 halt-cascade router. Intercept dispatch-failed at HALT-class
   // steps BEFORE nextStep() — the existing linear table has no
@@ -251,7 +251,7 @@ export async function routeStepOutcome(
               transientRetryAttempts: { ...attempts, [step]: used + 1 },
             },
           };
-          await writeState(ctx.repoRoot, state);
+          await persistCycle(ctx, state);
           const reason = failureCauseReason(tail);
           lifecycle.emitStepRetry(step, stepOrd.num, stepOrd.total, used + 2, reason, ctx.issue);
           trace(
@@ -341,7 +341,7 @@ export async function routeStepOutcome(
           ...state,
           pipelineState: { ...state.pipelineState, currentStep: "handoff" },
         };
-        await writeState(ctx.repoRoot, state);
+        await persistCycle(ctx, state);
         trace(
           `work-driver: HALT on step="${step}" → cap="${cap}" → handoff (status set in runHandoff)`,
         );
@@ -369,7 +369,7 @@ export async function routeStepOutcome(
               ...(infra ? { transientRetryAttempts: bumped } : { retryAttempts: bumped }),
             },
           };
-          await writeState(ctx.repoRoot, state);
+          await persistCycle(ctx, state);
           const reason = failureCauseReason(tail);
           lifecycle.emitStepRetry(step, stepOrd.num, stepOrd.total, used + 2, reason, ctx.issue);
           trace(
@@ -399,7 +399,7 @@ export async function routeStepOutcome(
           ...state,
           pipelineState: { ...state.pipelineState, currentStep: "handoff" },
         };
-        await writeState(ctx.repoRoot, state);
+        await persistCycle(ctx, state);
         trace(
           `work-driver: RETRY_ONCE exhausted on step="${step}" → handoff (status set in runHandoff)`,
         );
@@ -439,7 +439,7 @@ export async function routeStepOutcome(
           ...state,
           pipelineState: { ...state.pipelineState, currentStep: "handoff" },
         };
-        await writeState(ctx.repoRoot, state);
+        await persistCycle(ctx, state);
         const failedCount = tail.verdicts.filter((v) => !v.ok).length;
         trace(
           `work-driver: HALT on step="${step}" — ${failedCount}/${tail.verdicts.length} branches failed → handoff`,
@@ -469,7 +469,7 @@ export async function routeStepOutcome(
         nextStep: "handoff",
       });
       state = { ...state, pipelineState: { ...state.pipelineState, currentStep: "handoff" } };
-      await writeState(ctx.repoRoot, state);
+      await persistCycle(ctx, state);
       trace(
         `work-driver: HALT on step="${step}" — refused: ${refusals.map((r) => `${r.id} (${r.reason})`).join("; ")} → handoff`,
       );
