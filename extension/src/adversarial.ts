@@ -7,7 +7,7 @@ import {
   createFixFence,
   withFixViolations,
 } from "./adversarial-fix-guard.ts";
-import { buildLedgerNote } from "./adversarial-ledger-note.ts";
+import { LEDGER_MISS_NOTE, buildLedgerNote } from "./adversarial-ledger-note.ts";
 import { type ReviewProvenance, writeAdversarialLedgerEntry } from "./adversarial-ledger.ts";
 import { makeRunPhase } from "./adversarial-phase.ts";
 import { type ReportPolicy, isReportOnly, reportPolicyError } from "./adversarial-policy.ts";
@@ -107,6 +107,12 @@ export async function runAdversarialLoop(
      * mutates itself. A fix round needs `workCwd` on every path.
      */
     fixFence?: FixFence;
+    /**
+     * #1161 — the tool path sets this: when the ledger row cannot be written
+     * (the merge guard will refuse it), the result text says so. The driver
+     * leaves it unset; its ledger miss is traced, as before.
+     */
+    reportLedgerMiss?: boolean;
   } & ReportPolicy,
   signal: AbortSignal,
   orchestratorJobId: string,
@@ -147,22 +153,28 @@ export async function runAdversarialLoop(
 
   const fenceRecords: FenceRecord[] = [];
   const fence = createFixFence(params.fixFence, fenceRecords);
-  // #1161 — the diff source (resolveDiffSource) fills this in; a pre-resolution exit is `tree`.
-  const pin: { provenance: ReviewProvenance } = { provenance: { kind: "tree" } };
-  const ledgerWrite = (raw: DispatchResult): DispatchResult => {
+  // #1161 — the provenance of the diff the loop holds (resolveDiffSource or a
+  // per-round re-read supplies it); a pre-resolution exit is `tree`.
+  let provenance: ReviewProvenance = { kind: "tree" };
+  const ledgerWrite = async (raw: DispatchResult): Promise<DispatchResult> => {
     // #1104 — fence findings are prefixed BEFORE the write: the durable ledger
     // row must carry the same text the caller sees.
     const result = withFixViolations(raw, fenceRecords);
-    writeAdversarialLedgerEntry(result, {
+    const recorded = await writeAdversarialLedgerEntry(result, {
       workCwd: params.workCwd,
       // #988 — thread the branch the note resolved (same shared resolution,
       // same args + cwd) so the write does not re-resolve.
       resolvedBranch: branchResolved,
       branch: params.branch,
       head: params.head,
-      provenance: pin.provenance,
+      provenance,
     });
-    return withLedgerNote(result);
+    // #1161 — a branch-less miss already carries NOT_RECORDED_NOTE; only a
+    // keyed row that failed to write (no patch id) gets the extra line.
+    const missed = !recorded && branchResolved !== undefined && params.reportLedgerMiss === true;
+    return withLedgerNote(
+      missed ? { ...result, text: `${result.text}\n\n${LEDGER_MISS_NOTE}` } : result,
+    );
   };
 
   // #1161 — the reportOnly verdict policy is checked and resolved ONCE, at
@@ -207,7 +219,7 @@ export async function runAdversarialLoop(
   // The diff source (a pasted string, or base+head pinned to SHAs) is resolved
   // by resolveDiffSource (adversarial-refs.ts); its errors come back as the
   // result, never as an empty string the loop would approve.
-  const source = await resolveDiffSource(params, pin, rangeDiffFn);
+  const source = await resolveDiffSource(params, rangeDiffFn);
   if (!source.ok) {
     return ledgerWrite(
       synthesizeResult({
@@ -222,7 +234,13 @@ export async function runAdversarialLoop(
     );
   }
   let diff = source.diff;
-  const getDiff = source.getDiff ?? params.getDiff;
+  provenance = source.provenance;
+  // Legacy `params.getDiff` (driver fan-out) returns a bare string; it keeps
+  // the provenance already held.
+  const legacyGetDiff = params.getDiff;
+  const getDiff =
+    source.getDiff ??
+    (legacyGetDiff ? async () => ({ diff: await legacyGetDiff(), provenance }) : undefined);
 
   // Mark this job as orchestrator-shaped so dispatch_peek / dispatch_steer
   // can resolve the orchestrator jobId to its active inner child instead of
@@ -260,7 +278,10 @@ export async function runAdversarialLoop(
     if (round > firstRound && getDiff) {
       try {
         const fresh = await getDiff();
-        if (fresh.trim()) diff = fresh;
+        if (fresh.diff.trim()) {
+          diff = fresh.diff;
+          provenance = fresh.provenance;
+        }
       } catch (err) {
         // A failed re-read is not a reason to abandon the round; the previous
         // diff plus the live worktree is what the reviewer had before this.
@@ -276,7 +297,7 @@ export async function runAdversarialLoop(
     lastComments = await roundComments(
       diff,
       // The head the diff in hand was read from (the pinned SHA for a range).
-      pin.provenance.kind === "range" ? pin.provenance.head : params.head,
+      provenance.kind === "range" ? provenance.head : params.head,
       params.workCwd,
       params.commentTimeoutMs,
       params.commentExecFn,

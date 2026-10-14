@@ -87,6 +87,7 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
               ...params,
               pi,
               fixFence: { callerCwd: process.cwd() },
+              reportLedgerMiss: true,
               ...policy,
             },
             signal,

@@ -48,6 +48,8 @@ export type ReviewProvenance =
  * Write an adversarial-review entry to the review ledger. Fire-and-forget:
  * the caller does not await this; the function is safe to call on every
  * exit path of `runAdversarialLoop`.
+ * #1161 — the promise resolves to true when a row was written, false otherwise;
+ * the loop awaits it so a miss can be surfaced to the tool caller.
  *
  * #1161 — a `pasted` review is recorded as `passed: false` with detail
  * "<outcome> (caller-supplied diff)", so the merge guard refuses it; the same
@@ -66,8 +68,8 @@ export function writeAdversarialLedgerEntry(
     resolvedBranch?: string;
     provenance?: ReviewProvenance;
   },
-): Promise<void> {
-  const write = async () => {
+): Promise<boolean> {
+  const write = async (): Promise<boolean> => {
     const c = params.workCwd ?? process.cwd();
     const provenance: ReviewProvenance = params.provenance ?? { kind: "tree" };
     // #980 — the branch comes from the SHARED resolver (review-branch.ts:
@@ -85,7 +87,7 @@ export function writeAdversarialLedgerEntry(
         .branch;
     if (!branch) {
       trace("adversarial: ledger write skipped — no branch (detached head, no caller branch)");
-      return;
+      return false;
     }
     // #1161 — a range review is bound to the diff the loop reviewed: its own
     // range id, never the working tree's. A narrowed range (base = tip~1) then
@@ -100,7 +102,7 @@ export function writeAdversarialLedgerEntry(
       provenance.kind === "range"
         ? await rangePatchId(execp, c, provenance.base, provenance.head)
         : computed?.patchId;
-    if (!patchId) return;
+    if (!patchId) return false;
     // #1039 — resolve the head to a full 40-char SHA via the shared
     // resolver (review-head-sha.ts — the same one the lens writer and the
     // diff resolvers use). The adversarial writer takes `head` for branch
@@ -125,8 +127,10 @@ export function writeAdversarialLedgerEntry(
       ...(headSha ? { headSha } : {}),
     };
     await appendLedgerEntry(entry, execp, c);
+    return true;
   };
-  return write().catch((err) =>
-    trace(`adversarial: ledger write failed: ${(err as Error).message}`),
-  );
+  return write().catch((err) => {
+    trace(`adversarial: ledger write failed: ${(err as Error).message}`);
+    return false;
+  });
 }

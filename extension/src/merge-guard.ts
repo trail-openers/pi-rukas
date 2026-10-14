@@ -19,7 +19,8 @@
  *   4. Carve-out: release-please / dependabot identities pass through.
  *   5. Fetch the branch: `git fetch <remote> <headRef>` where `<remote>` is
  *      resolved like forge detection (`origin` → `upstream` → first remote;
- *      no remote → refuse) — fail-closed on error.
+ *      no remote → refuse) — fail-closed on error. #1161: the PR's base
+ *      branch is fetched in the same call, so the checks below see it fresh.
  *   6. Head OID check: the fetched head must equal the PR's `headOid`.
  *      A mismatch means the branch moved after the PR was opened; refuse.
  *      This is a FRESHNESS gate: it confirms the branch is where the PR
@@ -275,7 +276,10 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
 
     // Fetch the branch. Fail-closed on error. The remote and branch come from
     // the PR and the git config: validated and passed as argv, never shell text.
-    const refProblem = netRefProblem(remote, target.headBranch);
+    // #1161 — the PR's base branch is fetched in the same call: the ancestry
+    // and patch-id checks below read `<remote>/<base>`, and a stale local base
+    // ref would judge the branch against an old mainline.
+    const refProblem = netRefProblem(remote, target.headBranch, target.baseBranch);
     if (refProblem !== undefined) {
       return block(
         `git fetch refused: ${refProblem} — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
@@ -286,7 +290,7 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
         cwd,
         maxBuffer: 64 * 1024,
         timeoutMs: EXEC_TIMEOUT_MS,
-        argv: ["fetch", remote, target.headBranch],
+        argv: ["fetch", remote, target.headBranch, target.baseBranch],
       });
     } catch (err) {
       return block(
