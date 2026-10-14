@@ -25,6 +25,7 @@ import type { ChildProcess } from "node:child_process";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { type RunningState, ingestEvent } from "./progress.ts";
 import type { CapSession } from "./spawn-caps.ts";
+import { killProcessTree } from "./spawn-kill.ts";
 import { inactivityTimeoutMs, toolInactivityTimeoutMs, willRetryAfter } from "./spawn-support.ts";
 
 /** The per-spawn set of open toolCall ids. A toolCall block opens one; the
@@ -120,8 +121,7 @@ export function createInactivityPoll(opts: {
       if (budget.ms <= 0) return; // this budget is disabled; the other is checked in its own branch
       if (Date.now() - lastActivityAt() >= budget.ms) {
         onKill(budget.cause, budget.ms, inFlightTools.toolNames());
-        child.kill("SIGTERM");
-        setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
+        killProcessTree(child);
       }
     },
     Math.min(30_000, Math.max(250, Math.floor(pollBudgetMs / 2))),

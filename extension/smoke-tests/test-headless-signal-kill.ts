@@ -1,15 +1,17 @@
 #!/usr/bin/env bun
 /**
- * #1024 (headless S4) — an aborted cycle kills its in-flight child. The stub
- * pi binary (PI_ENSEMBLE_PI_BIN) records its pid and execs `sleep`, so the
- * pid it wrote is the process spawn must kill. Aborting the signal dispatchCore
- * was given must end that process; no pid may survive the dispatch.
+ * #1024 (headless S4) — an aborted cycle kills its whole child process tree.
+ * The stub pi binary (PI_ENSEMBLE_PI_BIN) is a shell that backgrounds `sleep`
+ * and waits, so `sleep` is a GRANDCHILD of the process spawn started. It writes
+ * both pids; aborting the signal dispatchCore was given must end the shell AND
+ * the grandchild. Killing only the shell leaves `sleep` alive — the failure
+ * this test exists to catch.
  */
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { dispatchCore } from "../src/dispatch.ts";
 import type { DispatchHost } from "../src/async-jobs-lifecycle.ts";
+import { dispatchCore } from "../src/dispatch.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -36,6 +38,9 @@ function alive(pid: number): boolean {
     return false;
   }
 }
+async function waitGone(pid: number, ms: number): Promise<boolean> {
+  return waitFor(() => !alive(pid), ms);
+}
 
 process.env.PI_ENSEMBLE_QUIET_STATUS = "1";
 process.env.PI_ENSEMBLE_VERIFY = "0";
@@ -45,7 +50,12 @@ process.env.PI_ENSEMBLE_ALLOW_LIVE_SPAWN = "1";
 const dir = mkdtempSync(path.join(tmpdir(), "headless-signal-kill-"));
 const pidFile = path.join(dir, "child.pid");
 const stub = path.join(dir, "pi-stub.sh");
-writeFileSync(stub, `#!/bin/sh\necho $$ > "${pidFile}"\nexec sleep 600\n`);
+// `--version` (the pi-version probe) must exit at once: otherwise the probe's
+// own stub would race the dispatch's pidFile and leak a sleep when the probe kills it.
+writeFileSync(
+  stub,
+  `#!/bin/sh\n[ "$1" = "--version" ] && { echo 0.0.0; exit 0; }\nsleep 600 &\necho "$$ $!" > "${pidFile}"\nwait\n`,
+);
 chmodSync(stub, 0o755);
 process.env.PI_ENSEMBLE_PI_BIN = stub;
 
@@ -58,17 +68,24 @@ const done = dispatchCore(
 );
 
 const started = await waitFor(() => existsSync(pidFile), 10_000);
-assert(started, "the stub child wrote its pid (it is running)");
-const pid = started ? Number(readFileSync(pidFile, "utf8").trim()) : -1;
-assert(pid > 0 && alive(pid), "the stub child is alive before the abort");
+assert(started, "the stub child wrote its pids (it is running)");
+const [shellPid, pid] = started
+  ? readFileSync(pidFile, "utf8").trim().split(/\s+/).map(Number)
+  : [-1, -1];
+assert(shellPid > 0 && alive(shellPid), "the stub shell is alive before the abort");
+assert(pid > 0 && alive(pid), "the grandchild sleep is alive before the abort");
 
 ac.abort("signal");
 const settled = await Promise.race([
-  done.then(() => true, () => true),
+  done.then(
+    () => true,
+    () => true,
+  ),
   sleep(15_000).then(() => false),
 ]);
 assert(settled, "the dispatch settles after its signal aborts");
-assert(pid > 0 && !alive(pid), "no leftover pid: the in-flight child was killed");
+assert(shellPid > 0 && (await waitGone(shellPid, 5_000)), "the stub shell was killed");
+assert(pid > 0 && (await waitGone(pid, 5_000)), "the grandchild sleep was killed with its group");
 
 rmSync(dir, { recursive: true, force: true });
 process.exit(exit);
