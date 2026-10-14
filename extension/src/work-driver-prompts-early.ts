@@ -196,6 +196,8 @@ function intentResolutionBlock(issues: number[]): string {
     "- <claim you checked> — <file:line or URL> — confirmed | contradicted | unverifiable",
     "```",
     "",
+    "`contradicted` means the ISSUE is wrong about the code or the world. A stale vipune row is not that: supersede it, and if you list it, give `memory` as its source so it is not read as a finding against the issue.",
+    "",
     "Then a `## Rationale` section: two or three sentences on why you reached that verdict. On a park this is what the operator reads.",
     "",
     "Deliverables are the units of work, NOT the acceptance criteria — one per separable thing to build. If the issue enumerates them, carry them across; if it does not, derive them.",
