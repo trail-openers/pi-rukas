@@ -21,6 +21,7 @@
 
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
+import { PR_NOT_OPEN_MARKER } from "./work-driver-explain-verify.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
@@ -116,7 +117,11 @@ export function prGoneRefusal(
       ...state,
       pipelineState: {
         ...state.pipelineState,
-        verifyEvidence: { step: "commit-pr", failures: [reason], at: Date.now() },
+        verifyEvidence: {
+          step: "commit-pr",
+          failures: [`${PR_NOT_OPEN_MARKER} ${reason}`],
+          at: Date.now(),
+        },
       },
     },
     { kind: "plumb-report", at: Date.now(), step: "commit-pr", role: "driver", body: reason },

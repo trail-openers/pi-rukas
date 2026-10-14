@@ -302,6 +302,11 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
       cap.includes("origin/main comment") && !cap.includes("evidence detail missing"),
       `G: the cap text names the comment check (got ${cap.slice(0, 200)})`,
     );
+    // The outcome gate did not raise this park and its kill switch is no remedy.
+    assert(
+      !/outcome-verification gate rejected|ran the checks itself|PI_ENSEMBLE_VERIFY=0/.test(cap),
+      `G: the cap text does not blame the verify gate (got ${cap})`,
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
