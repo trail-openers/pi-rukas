@@ -108,6 +108,13 @@ export interface ChildHandle {
   stdin: Writable;
   label: string;
   role: string;
+  /**
+   * Abort for a child that owns no job (adversarial round / lens children):
+   * their id is a deck key, absent from `jobs`, so `killJob` reaches them
+   * only through this. Unset for startJob children — the job's abort is
+   * their kill.
+   */
+  kill?: () => void;
 }
 
 export const childHandles = new Map<string, ChildHandle>();
@@ -150,14 +157,20 @@ export function getParentExtensionApi():
  * so `steerChild` resolves the peeked id to a live handle. `startJob` /
  * `startBatch` keep using `.set` directly (their ids ARE job ids); this
  * helper exists so the non-job paths can share the same map.
+ *
+ * `kill` makes the same id killable: `dispatch_kill` answered "No such job"
+ * for exactly the id a slow-run notice and `dispatch_peek` had just named,
+ * because these children are in no job map and the driver's loop signal is
+ * never aborted — nobody could stop a hung review child.
  */
 export function registerChildHandle(
   id: string,
   stdin: Writable,
   label: string,
   role: string,
+  kill?: () => void,
 ): void {
-  childHandles.set(id, { stdin, label, role });
+  childHandles.set(id, { stdin, label, role, ...(kill ? { kill } : {}) });
 }
 
 /** Test-only: drop the registered parent api (the module singleton is shared

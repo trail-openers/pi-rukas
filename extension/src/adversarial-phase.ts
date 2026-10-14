@@ -60,11 +60,17 @@ export function makeRunPhase(opts: {
       ...(opts.pi ? { pi: opts.pi } : {}),
       onRawEvent: slowRaw,
     });
+    // This child's own abort, so dispatch_kill <deckKey> can stop a hung
+    // round — the driver passes a loop signal that nothing ever aborts.
+    const kill = new AbortController();
+    const onLoopAbort = () => kill.abort();
+    if (signal.aborted) kill.abort();
+    else signal.addEventListener("abort", onLoopAbort, { once: true });
     try {
       return await spawnSpecialist(
         { role, prompt, cwd },
         {
-          signal,
+          signal: kill.signal,
           processGroup,
           runId,
           tag,
@@ -84,11 +90,12 @@ export function makeRunPhase(opts: {
               stdin,
             });
             // #799 — also registered under the deck key (steer from the peek id).
-            registerChildHandle(deckKey, stdin, label, role);
+            registerChildHandle(deckKey, stdin, label, role, () => kill.abort());
           },
         },
       );
     } finally {
+      signal.removeEventListener("abort", onLoopAbort);
       stopSlow.stop();
       dispatchDeck.clearEntry(deckKey);
       childHandles.delete(deckKey);
