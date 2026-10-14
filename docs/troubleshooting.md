@@ -1768,6 +1768,10 @@ The deterministic pre-triage (`plan-precheck.ts`) fired: the descriptor is below
 
 `plan-validate.ts` halted the draft before the gap gate: bug/feature drafts need a non-fallback Acceptance criteria section (otherwise the issue is not /work-consumable), and an epic needs an actual sub-issue decomposition of sane size. This is the partial-junk case the all-angles-failed guard cannot see (some angle items arrived, but not the load-bearing ones). Re-run (the angles are re-dispatched), or supply the missing content directly via the `context` param (e.g. an `ACCEPTANCE CRITERIA` block — operator directives satisfy the check).
 
+### "PLAN NOT FILED — THE REVIEWED SPEC CHANGED"
+
+A confirm echoed a dry run's `reviewedDigest`, but the reviewed spec could not be filed verbatim — the reason is in the result (the dry run expired, origin/<default> moved, or no cached dry run was found, e.g. in a fresh clone). The full pipeline re-ran and drafted different bytes, so nothing was filed: the confirmation covered the reviewed spec, not the new one. Show the new spec and confirm with the new `reviewedDigest`. For long gaps between dry run and confirm, set `PI_ENSEMBLE_PLAN_CACHE_TTL_MS` (`0` = no expiry); for a fresh clone per turn, set `PI_ENSEMBLE_PLAN_CACHE_DIR` to a directory outside the clone; a confirm then files verbatim as long as origin/<default> has not moved since the dry run ([#1224](https://github.com/trail-openers/pi-rukas/issues/1224)).
+
 ### Chore/spike tickets skip the adversarial gap gate
 
 By design (no env knob): chore/spike are low-blast-radius and deterministic validation is their gate. The old `PI_ENSEMBLE_PLAN_GAP_GATE` variable is deleted and inert. Bug/feature/epic always run the gate; its round 2 (fires only on CRITICAL) is a scoped verification of the carried resolutions, not a second full review — multi-round full re-review of the same artifact measurably adds false positives (arXiv:2603.16244).
