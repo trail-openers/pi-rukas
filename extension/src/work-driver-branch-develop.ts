@@ -240,7 +240,7 @@ export async function runBranch(
         if (pr) {
           withProvisions = appendEvent(
             withProvisions,
-            makeWorktreeProvisionedEvent(id, cwd, pr.via, pr.problem),
+            makeWorktreeProvisionedEvent(id, cwd, pr.via, pr.problem, pr.hookFailed),
           );
         }
       }
