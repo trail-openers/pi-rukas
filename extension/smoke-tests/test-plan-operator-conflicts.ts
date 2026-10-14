@@ -8,10 +8,17 @@
  */
 
 import type { OperatorDirectives } from "../src/plan-directives.ts";
-import { filterInvestigationConflicts, linesConflict } from "../src/plan-draft-conflicts.ts";
-import { type AngleFindings, draftSpec } from "../src/plan-draft.ts";
+import {
+  droppedDisclosure,
+  filterInvestigationConflicts,
+  linesConflict,
+  operatorLinesOf,
+} from "../src/plan-draft-conflicts.ts";
+import { dedupeAgainstOperatorLines } from "../src/plan-draft-dedupe.ts";
+import { type AngleFindings, VIPUNE_PRIOR_SOURCE, draftSpec } from "../src/plan-draft.ts";
 import { runGapGateLoop } from "../src/plan-gaps.ts";
 import { gapGatePrompt } from "../src/plan-gate-prompt.ts";
+import { OPERATOR_SOURCE } from "../src/plan-prior-context.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -336,6 +343,38 @@ const CONSISTENT_EDGE = "an absent config file falls back to the default protect
   assert(
     res.kept.length === 1 && res.kept[0]?.text === agreed,
     "once: the agreed item survives both pairs",
+  );
+}
+
+// -------------------------------------------------
+// 12. A duplicate is disclosed as a duplicate, never as a conflict. The drop
+//     cases themselves live in test-plan-draft-dedupe.ts.
+{
+  const op = "a missing reportVerdict must not return a passing review";
+  const restated = "passing review: a missing reportVerdict must not return";
+  const res = dedupeAgainstOperatorLines(
+    [{ kind: "edge-case", text: restated, angle: "e" }],
+    [op],
+  );
+  const dropped = res.dropped[0];
+  assert(
+    dropped !== undefined &&
+      droppedDisclosure(dropped).includes("duplicate of operator line") &&
+      !droppedDisclosure(dropped).includes("conflicts with"),
+    "dedupe: disclosed as a duplicate, never as a conflict",
+  );
+}
+
+// -------------------------------------------------
+// 13. The operator tag is one exported constant: operatorLinesOf selects by it.
+{
+  const lines = operatorLinesOf(NO_DIRS, [
+    { source: OPERATOR_SOURCE, fact: OP_AC },
+    { source: VIPUNE_PRIOR_SOURCE, fact: "a stale fact" },
+  ]);
+  assert(
+    lines.length === 1 && lines[0] === OP_AC,
+    "source: operatorLinesOf selects operator entries via OPERATOR_SOURCE",
   );
 }
 
