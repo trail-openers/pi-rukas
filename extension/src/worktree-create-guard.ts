@@ -48,6 +48,13 @@ export interface CreateGuardOpts {
    * normal workstream path runs the target inspection unconditionally.
    */
   callerVerifiedTargetAbsent?: boolean;
+  /**
+   * #1170 — set ONLY by the branch step (mechanizedBranchSetup): an unreadable
+   * sibling listing refuses with WorktreeScanError. Unset (every other caller,
+   * e.g. the dep-scheduler create path) the sibling scan stays fail-open — the
+   * contract runCreateGuards had before #1170, so its jsdoc is unchanged for them.
+   */
+  strictSiblingListing?: boolean;
 }
 
 /**
@@ -81,9 +88,11 @@ export async function runCreateGuards(
   try {
     assertSafeRef(opts.fromRef);
   } catch (err) {
-    throw new Error(
+    const wrapped = new Error(
       `worktreeCreate: ${opts.name} failed: ${err instanceof Error ? err.message : String(err)}`,
     );
+    wrapped.cause = err;
+    throw wrapped;
   }
   if (!(await baseRefResolves(execFn, opts))) {
     // EARLY RETURN — before the pre-remove below (`worktreeRemove … true`), so an
@@ -106,15 +115,11 @@ export async function runCreateGuards(
   // #753 — the SIBLING scan excludes this cycle's own worktrees (the exclusion
   // happens inside findDirtySameIssueLeftover, which resolves both sides —
   // an earlier workstream's legitimate in-progress dirt is not a leftover).
-  // #753 (six-lens FIX 2) — the sibling scan degrades the SAFE direction:
-  // a transient `git worktree list` failure returns "no finding" and creation
-  // proceeds EXACTLY as pre-#545 did (the raw git error from `git worktree
-  // add`, now plumbed via `gitErrorDetail`). A throw here instead escaped to
-  // `create-error` with no dirty finding AND let `git worktree add` proceed
-  // onto an UNSCANNED dirty sibling — the shape #545 exists to prevent.
-  // This mirrors `scanWorktrees`' documented "unreadable list → empty array
-  // — the safe direction (no action)" and `inspectWorktreeForLoss`'s #475
-  // fail-open ("an unreadable worktree is removed as today").
+  // #1170 — an unreadable `git worktree list` THROWS here and refuses creation.
+  // Strict (branch step only): see CreateGuardOpts.strictSiblingListing.
+  // Non-strict callers proceed on an unreadable listing because `git worktree
+  // add` then surfaces the git error itself (plumbed via gitErrorDetail); the
+  // strict branch step refuses instead.
   const siblingDirty = await findDirtySameIssueLeftover(
     execFn,
     opts.repoRoot,
@@ -122,12 +127,8 @@ export async function runCreateGuards(
     issuePrefix,
     opts.name,
     inCycleWorktrees,
-  ).catch((e) => {
-    trace(
-      `worktree: sibling scan failed for ${opts.name} — proceeding without it (${e instanceof Error ? e.message : String(e)})`,
-    );
-    return undefined;
-  });
+    opts.strictSiblingListing === true,
+  );
   if (siblingDirty) {
     throw new DirtyWorktreeError(siblingDirty);
   }
