@@ -20,8 +20,15 @@ import { realpathSync } from "node:fs";
 import path from "node:path";
 import { trace } from "./trace.ts";
 import { runCreateGuards } from "./worktree-create-guard.ts";
+import {
+  DirtyWorktreeError,
+  type DirtyWorktreeFinding,
+  inspectWorktreeForLoss,
+} from "./worktree-loss.ts";
 import { type ProvisionResult, provisionWorktree } from "./worktree-provision.ts";
 export type { ProvisionResult } from "./worktree-provision.ts";
+export { DirtyWorktreeError, inspectWorktreeForLoss };
+export type { DirtyWorktreeFinding };
 export { salvageUncommittedWork, salvageDirtyWorktree } from "./worktree-salvage.ts";
 
 /** Shell executor, matching `DriverContext.verifyExecFn`. The optional
@@ -87,114 +94,6 @@ export interface WorktreeCreateOpts {
   fromRef: string;
   /** Worktree names that should be retained (not pre-removed) during creation. */
   retainedNames?: string[];
-}
-
-/**
- * A leftover worktree holds work we would otherwise destroy.
- *
- * `worktreeCreate` pre-removes an existing worktree at the same path so a
- * resumed cycle is not wedged by its own leftover — but a `git worktree remove
- * --force` does not check what it is removing. The develop step instructs
- * developers not to commit, so a cycle that died mid-develop leaves its diff
- * uncommitted in the worktree: not in the object database, unrecoverable
- * (#475). The force-remove destroyed it with no warning, and deleting
- * unrecoverable work must never be the silent default.
- */
-export class DirtyWorktreeError extends Error {
-  /** The absolute worktree path and what it holds — the plumb report and the
-   * #545 same-issue salvage use this instead of re-scanning the name. */
-  readonly finding: DirtyWorktreeFinding;
-
-  constructor(finding: DirtyWorktreeFinding) {
-    super(DirtyWorktreeError.messageFor(finding));
-    this.name = "DirtyWorktreeError";
-    this.finding = finding;
-  }
-
-  static messageFor(finding: DirtyWorktreeFinding): string {
-    // If the worktree is being retained, return a retention message.
-    if (finding.retained === true) {
-      return `refusing to pre-remove retained worktree ${finding.path} — it is in the retained names set`;
-    }
-    const fromRef =
-      finding.unpushedCommitCount > 0 ? ` (unpushed commits: ${finding.unpushedCommitCount})` : "";
-    const parts = [
-      `refusing to force-remove existing worktree ${finding.path} — it holds unrecoverable work:`,
-      finding.uncommittedFiles.length > 0
-        ? `${finding.uncommittedFiles.length} uncommitted file(s): ${finding.uncommittedFiles
-            .slice(0, 8)
-            .join(", ")}${finding.uncommittedFiles.length > 8 ? ", …" : ""}`
-        : "",
-      fromRef,
-    ].filter(Boolean);
-    parts.push(
-      "Inspect the worktree (`git status`, `git diff`), salvage the work (e.g. `git diff > patch` or commit it to a branch), then remove it (`git worktree remove --force -- <path>`) and re-run.",
-    );
-    return parts.join(" ");
-  }
-}
-
-export interface DirtyWorktreeFinding {
-  path: string;
-  uncommittedFiles: string[];
-  unpushedCommitCount: number;
-  /** True when the worktree is being retained (not removed) due to being in the retained names set. */
-  retained?: boolean;
-}
-
-/**
- * Inspect an existing worktree for work a force-remove would destroy.
- *
- * Two signals: uncommitted files (`git status --porcelain` in the worktree)
- * and local commits ahead of `fromRef` (`rev-list --count` — a worktree that
- * committed past its base, e.g. cherry-pick integration, would lose those).
- * The check itself must never fail the create: an unreadable worktree is
- * removed as today, because refusing on a git error would reintroduce the
- * wedged-queue leftover class the pre-remove exists to prevent.
- */
-export async function inspectWorktreeForLoss(
-  execFn: ExecFn,
-  repoRoot: string,
-  worktreeAbs: string,
-  fromRef: string,
-): Promise<DirtyWorktreeFinding | undefined> {
-  let exists = false;
-  try {
-    await execFn(`git rev-parse --verify ${JSON.stringify("HEAD")}`, {
-      cwd: worktreeAbs,
-      maxBuffer: 64 * 1024,
-    });
-    exists = true;
-  } catch {
-    return undefined; // no live worktree here — nothing to inspect
-  }
-  if (!exists) return undefined;
-  let porcelain = "";
-  try {
-    ({ stdout: porcelain } = await execFn("git status --porcelain", {
-      cwd: worktreeAbs,
-      maxBuffer: 1024 * 1024,
-    }));
-  } catch {
-    porcelain = "";
-  }
-  let ahead = 0;
-  try {
-    const { stdout } = await execFn(`git rev-list --count ${JSON.stringify(`${fromRef}..HEAD`)}`, {
-      cwd: worktreeAbs,
-      maxBuffer: 64 * 1024,
-    });
-    ahead = Number.parseInt(stdout.trim(), 10);
-    if (!Number.isFinite(ahead) || ahead < 0) ahead = 0;
-  } catch {
-    ahead = 0;
-  }
-  const files = porcelain
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-  if (files.length === 0 && ahead === 0) return undefined;
-  return { path: worktreeAbs, uncommittedFiles: files, unpushedCommitCount: ahead };
 }
 
 /**
