@@ -16,6 +16,8 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { type EmitSink, createEmitSink } from "../src/work-state-emit.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
+import { interruptIfRequested } from "../src/work-driver-interrupt.ts";
 import type { WorkEvent } from "../src/workflow-state-events.ts";
 import type { WorkState } from "../src/workflow-state-schema.ts";
 import { appendEvent } from "../src/workflow-state-update.ts";
@@ -159,18 +161,48 @@ function tmpFiles(repo: string): string[] {
   }
 }
 
-// ── 5. Smoke grep: no driver-path module calls writeState( directly.
+// ── 5. The driver's own interrupt (headless S4, #1024): interruptIfRequested
+//       records the interrupt once; a driver persist after it re-emits nothing.
+{
+  const repo = tmpRepo();
+  try {
+    const { sink, emitted } = recordingSink();
+    const running = stepEvents(initialState(95), 1);
+    await writeState(repo, running, sink);
+    const ac = new AbortController();
+    ac.abort("signal");
+    // Only repoRoot, emitSink and signal are read on this path.
+    const ctx = { repoRoot: repo, emitSink: sink, signal: ac.signal } as unknown as DriverContext;
+    const interrupted = await interruptIfRequested(ctx, running);
+    assert(interrupted.pipelineState.status === "interrupted", "the driver records its own interrupt");
+    const again = await interruptIfRequested(ctx, interrupted);
+    assert(again === interrupted, "a second driver check adds no second interrupted event");
+    const later = appendEvent(interrupted, { kind: "step-started", step: "plan", at: 60 });
+    await persistCycle(ctx, later);
+    const back = await readState(repo, 95);
+    assert(
+      JSON.stringify(emitted) === JSON.stringify(back?.eventLog),
+      "driver persist after its interrupt: emit stream equals the final log exactly once",
+    );
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+}
+
+// ── 6. Smoke grep: no module outside the seam calls writeState( directly.
+//       Comments are stripped first, so prose that names writeState( is not a call.
+//       workflow-state.ts is the seam itself and is the one exempt file.
 {
   const src = path.resolve(import.meta.dir, "../src");
-  const names = readdirSync(src).filter(
-    (f) => /^work-(driver|develop)/.test(f) && f.endsWith(".ts"),
-  );
+  const names = readdirSync(src).filter((f) => f.endsWith(".ts") && f !== "workflow-state.ts");
+  const stripComments = (s: string) =>
+    s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:\\])\/\/.*$/gm, "$1");
   const offenders = names.filter((f) =>
-    /\bwriteState\(/.test(readFileSync(path.join(src, f), "utf8")),
+    /\bwriteState\(/.test(stripComments(readFileSync(path.join(src, f), "utf8"))),
   );
   assert(
     names.length > 0 && offenders.length === 0,
-    `no driver-path module calls writeState( directly (offenders: ${offenders.join(", ") || "none"})`,
+    `no module outside workflow-state.ts calls writeState( directly (offenders: ${offenders.join(", ") || "none"})`,
   );
 }
 
