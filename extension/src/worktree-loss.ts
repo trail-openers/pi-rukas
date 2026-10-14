@@ -14,9 +14,14 @@
  *    entries are loss UNLESS they are (a) a symlink (a provisioned link), or
  *    (b) exactly `node_modules/`, `.venv/` or `vendor/` — the collapsed
  *    directory — at the worktree root, or directly inside a depth-1 directory
- *    that holds a package manifest/lockfile. Everything else ignored (`build/`,
- *    `dist/`, `target/`, any ignored file, any file under any directory) is loss:
- *    refusing is safe, because nothing is deleted on a refusal.
+ *    that holds a package manifest/lockfile. The exemption is for the collapsed
+ *    directory as a whole: an ALL-ignored `vendor/` is exempt by design and git
+ *    never enumerates its contents, so they are neither inspected nor counted as
+ *    loss. A `vendor/` with any tracked file IS enumerated, and its ignored files
+ *    are loss (test 6 in test-worktree-loss-1170.ts). Everything else ignored
+ *    (`build/`, `dist/`, `target/`, any ignored file, and any file inside a
+ *    tracked or partly tracked directory) is loss: refusing is safe, because
+ *    nothing is deleted on a refusal.
  *  - The `--ignored=traditional` collapse keeps the output bounded: an ignored
  *    `target/` tree is one `!! target/` line, not one line per file.
  *  - With no uncommitted work, the worktree is no-loss when HEAD is an ancestor
@@ -96,6 +101,18 @@ export class DirtyWorktreeError extends Error {
   }
 }
 
+/**
+ * #1170 — `git worktree list` could not be read, so the same-issue sibling scan
+ * cannot prove the absence of a dirty sibling. A refusal of its own: there is
+ * no worktree path to name, so it is NOT a DirtyWorktreeError.
+ */
+export class WorktreeScanError extends Error {
+  constructor(detail: string) {
+    super(`git worktree list failed, so same-issue siblings could not be scanned: ${detail}`);
+    this.name = "WorktreeScanError";
+  }
+}
+
 export interface DirtyWorktreeFinding {
   path: string;
   uncommittedFiles: string[];
@@ -124,7 +141,7 @@ export interface InspectOpts {
 const REGENERABLE_DIR_NAMES = new Set(["node_modules", ".venv", "vendor"]);
 
 /** A ref name made only of characters that are inert inside double quotes. */
-const SAFE_REF = /^[A-Za-z0-9._\/^{}~@-]+$/;
+const SAFE_REF = /^[A-Za-z0-9._\/^{}~@+-]+$/;
 
 /**
  * Throw unless `ref` is a plain ref name safe to interpolate into a shell
