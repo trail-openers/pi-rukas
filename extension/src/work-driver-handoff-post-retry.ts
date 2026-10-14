@@ -180,7 +180,10 @@ export async function postHandoffWithRetry(
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       result.commentAttempts = attempt;
       try {
-        const out = await postCommentOnce(opts.issue, opts.body);
+        // The comment goes to the TARGET (the PR when there is one), never
+        // `opts.issue`: an issue number is not a PR number, and `gh pr comment
+        // <issue>` fails every attempt (#1219).
+        const out = await postCommentOnce(opts.targetId, opts.body);
         const parsed = parseHandoffCommentUrl(out) ?? out.trim();
         if (parsed) {
           result.commentUrl = parsed;
