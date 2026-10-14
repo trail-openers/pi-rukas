@@ -12,8 +12,19 @@
  * decision.
  */
 
+/**
+ * Single responsibility: classify contradictions and CRITICAL open points, and
+ * apply them to a resolver's spec verdict (`finaliseSpecVerdict` fixes the
+ * order). It never reads the issue or decides what the spec says.
+ */
+import { CRITICAL_SEVERITY, OPEN_POINTS_HEADING } from "./plan-gap-disclosure.ts";
 import { trace } from "./trace.ts";
-import type { NormalisedSpec, SpecAssumption, SpecEvidence } from "./work-driver-intent.ts";
+import {
+  type NormalisedSpec,
+  type SpecAssumption,
+  type SpecEvidence,
+  reconcileVerdict,
+} from "./work-driver-intent.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 
 /** #574 escape hatch: restore the pre-criticality unconditional park rule. */
@@ -144,24 +155,36 @@ export function criticalOpenPoints(issueBody: string): string[] {
   let inSection = false;
   for (const raw of issueBody.split("\n")) {
     const line = raw.trim();
-    if (/^#{1,6}\s/.test(line)) {
-      inSection = /^#{1,6}\s*open points\b/i.test(line);
+    const heading = line.match(/^#{1,6}\s+(.*)$/)?.[1];
+    if (heading !== undefined) {
+      inSection = heading.trim().toLowerCase() === OPEN_POINTS_HEADING.toLowerCase();
       continue;
     }
     if (!inSection) continue;
     const item = line.match(/^(?:[-*]|\d+[.)])\s+(.*)$/)?.[1];
     if (item === undefined) continue;
-    const tagged = item.match(/^[*_`\s]*\[CRITICAL\][*_`\s:]*(.*)$/i)?.[1]?.trim();
+    const tagged = item.match(CRITICAL_BULLET)?.[1]?.trim();
     if (tagged) points.push(tagged);
   }
   return points;
 }
 
+/** A `[CRITICAL]` bullet tag, optionally emphasised; captures the point text. */
+const CRITICAL_BULLET = new RegExp(`^[*_\`\\s]*\\[${CRITICAL_SEVERITY}\\][*_\`\\s:]*(.*)$`, "i");
+
 /**
  * Words that name a decision the driver must not make on the resolver's behalf.
  * An unresolved CRITICAL point touching one of these parks rather than proceeds.
  */
-const AUTHORIZATION_CLASS = /\b(?:authenticat\w*|authori[sz]\w*|secrets?|permissions?)\b/i;
+const AUTHORIZATION_CLASS =
+  /\b(?:authenticat\w*|authori[sz]\w*|secret\w*|permissions?|credential\w*|token\w*|api[ _-]?keys?\w*|password\w*|(?:en|de)crypt\w*|tls|certificates?|certs?|crypto\w*|sanitiz\w*|validat\w*|inject\w*|sandbox\w*|privilege\w*|access[ _-]control|delet\w*|data[ _-]loss)\b/i;
+
+/** #1151: the assumption text for one CRITICAL point is capped at this many characters. */
+const OPEN_POINT_ASSUMPTION_MAX = 300;
+
+function clipTo(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
 
 /**
  * Apply the filed issue's unresolved CRITICAL open points to the spec (#1151).
@@ -188,9 +211,45 @@ export function applyOpenPointGate(spec: NormalisedSpec, openPoints: string[]): 
     assumptions: [
       ...spec.assumptions,
       ...openPoints.map((point) => ({
-        text: `unresolved CRITICAL open point in the filed issue: ${point}`,
+        // Issue text is untrusted: a code span keeps it inert in the PR body.
+        text: `unresolved CRITICAL open point in the filed issue: \`${clipTo(point.replace(/`/g, "'"), OPEN_POINT_ASSUMPTION_MAX)}\``,
         basis: "named by the intent gate; proceeding on it as an assumption",
       })),
+    ],
+  };
+}
+
+/**
+ * The spec's final verdict at the explore step (#1151): reconcile the resolver's
+ * verdict first, then apply the filed issue's open points. The order matters —
+ * reconciliation can lift an `underspecified` park, and the open-point gate must
+ * still park an authorization point after that.
+ *
+ * `primaryBody` is the primary issue body as read; `undefined` or blank means
+ * the gate could not run, which is recorded rather than silently skipped.
+ */
+export function finaliseSpecVerdict(
+  spec: NormalisedSpec,
+  primaryBody: string | undefined,
+): NormalisedSpec {
+  const reconciled = reconcileVerdict(spec);
+  if (primaryBody !== undefined && primaryBody.trim() !== "") {
+    return applyOpenPointGate(reconciled, criticalOpenPoints(primaryBody));
+  }
+  trace(
+    "open-point-gate-unchecked: the filed issue body was not read; its open points were not checked",
+  );
+  if (reconciled.verdict === "park") return reconciled;
+  return {
+    ...reconciled,
+    verdict: "proceed-with-assumptions",
+    assumptions: [
+      ...reconciled.assumptions,
+      {
+        text: "Open-point gate did not run: issue body unreadable",
+        basis:
+          "open-point-gate-unchecked — the driver could not check the issue for CRITICAL open points",
+      },
     ],
   };
 }

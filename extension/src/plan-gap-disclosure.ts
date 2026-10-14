@@ -41,6 +41,12 @@ export function residualGapsSection(residual: PlanGap[]): string {
   return `## Residual gap-gate findings\n\n${items}\n`;
 }
 
+/** Heading of the open-points section this module renders (#1151 reads it back). */
+export const OPEN_POINTS_HEADING = "Open points (unresolved at the gap-gate cap)";
+
+/** The severity tag of a point that gates the intent resolver (#1151 reads it back). */
+export const CRITICAL_SEVERITY = "CRITICAL";
+
 /**
  * #1132: the open points of a spec filed at the gate's iteration cap: every
  * CRITICAL still unresolved at the cap, each with the gate's proposal when it
@@ -58,7 +64,7 @@ export function openPointsSection(points: PlanGap[]): string {
       return `- [${g.severity}] ${truncateForDisclosure(g.description)} — ${proposal}`;
     })
     .join("\n");
-  return `## Open points (unresolved at the gap-gate cap)\n\nThe gap gate reached its iteration cap with these CRITICAL points still unresolved. The issue is filed so they are visible; the /work intent gate decides whether it is buildable.\n\n${items}\n`;
+  return `## ${OPEN_POINTS_HEADING}\n\nThe gap gate reached its iteration cap with these CRITICAL points still unresolved. The issue is filed so they are visible; the /work intent gate decides whether it is buildable.\n\n${items}\n`;
 }
 
 /**
