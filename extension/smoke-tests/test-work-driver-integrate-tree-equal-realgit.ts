@@ -165,7 +165,7 @@ try {
   {
     const { repo, baseSha, branch, wt, stateFile } = await fixture("unreadable", "tree-equal");
     const failingStatus: typeof realExec = async (cmd, o) => {
-      if (cmd === "git status --porcelain" && o?.cwd === wt) throw new Error("simulated");
+      if (cmd.startsWith("git status --porcelain") && o?.cwd === wt) throw new Error("simulated");
       return realExec(cmd, o);
     };
     let err: unknown;
@@ -179,7 +179,7 @@ try {
       err = e;
     }
     assert(
-      err instanceof Error && /unreadable/.test(err.message),
+      err instanceof Error && /could not read/.test(err.message),
       "an unreadable git status in an in-cycle tree keeps the refusal",
     );
   }

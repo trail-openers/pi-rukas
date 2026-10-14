@@ -123,7 +123,7 @@ export async function ensureIntegrateWorktree(
   // #1170 — the cycle's own worktrees (the develop trees) are excluded from
   // the sibling scan below; a dirty one still refuses, before any mutation.
   const cycleTrees = await readCycleWorktreePaths(stateFile);
-  await refuseDirtyCycleTrees(execFn, cycleTrees, abs, repoRoot);
+  await refuseDirtyCycleTrees(execFn, cycleTrees, abs, repoRoot, baseSha);
 
   // The stale-tree re-entry: driver-owned residue of an earlier attempt of
   // this same cycle. Its HEAD is recorded, then it is force-removed BEFORE

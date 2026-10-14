@@ -18,7 +18,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -166,7 +166,8 @@ function recorder(overrides: Record<string, string>) {
   return { calls, execFn };
 }
 
-const REPO2 = "/repo-sweep";
+// A real directory root, so the dirty holder is on disk and inspectable (#1170).
+const REPO2 = mkdtempSync(path.join(tmpdir(), "pi-ens-sweep-stub-"));
 const HOLDER = path.join(REPO2, ".worktrees", "issue-654-old");
 
 // ------- stub: clean holder removed, sweep returns true
@@ -195,6 +196,8 @@ const HOLDER = path.join(REPO2, ".worktrees", "issue-654-old");
 
 // ------- stub: dirty holder throws DirtyWorktreeError with the path
 {
+  mkdirSync(HOLDER, { recursive: true });
+  writeFileSync(path.join(HOLDER, ".git"), "gitdir: /dev/null\n");
   const { execFn } = recorder({
     "git worktree list --porcelain": [
       `worktree ${HOLDER}`,
@@ -202,6 +205,7 @@ const HOLDER = path.join(REPO2, ".worktrees", "issue-654-old");
       "branch refs/heads/feature/issue-654-task-d",
       "",
     ].join("\n"),
+    "git rev-parse --show-toplevel": `${realpathSync(HOLDER)}\n`,
     "git rev-parse --verify": "\n",
     "git status --porcelain": " M src/wip.ts\n",
     "git rev-list --count": "0\n",
