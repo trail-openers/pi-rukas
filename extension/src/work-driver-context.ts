@@ -197,6 +197,9 @@ export interface DriverContext {
       /** #838 — see dispatchCore's deck option. */
       deck?: { cycleKey: string; label: string; deckLabel?: string };
       timeoutMs?: number;
+      /** #1024 — the cycle's abort, and whether the child leads its own group. */
+      signal?: AbortSignal;
+      processGroup?: boolean;
       onSlow?: OnSlowCallback;
     },
   ) => Promise<DispatchResult>;

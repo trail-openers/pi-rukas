@@ -36,6 +36,10 @@ export function enterCycle(ctx: DriverContext): CycleContext {
   const dispatchFn: NonNullable<DriverContext["dispatchFn"]> =
     ctx.dispatchFn ??
     ((h, spec, opts) =>
-      dispatchCore(h, spec, { ...opts, signal: cycleSignal, processGroup: cycleProcessGroup }));
+      dispatchCore(h, spec, {
+        ...opts,
+        signal: opts?.signal ?? cycleSignal,
+        processGroup: opts?.processGroup ?? cycleProcessGroup,
+      }));
   return { ...ctx, emitSink, dispatchFn };
 }

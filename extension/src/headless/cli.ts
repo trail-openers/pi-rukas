@@ -20,6 +20,7 @@
  * (judged by the policy judge), as it does for start_work_driver.
  */
 
+import { killLiveProcessGroups } from "../spawn-kill.ts";
 import { releaseHeldIntegrationLocks } from "../work-driver-lock.ts";
 import { resolveRepoRoot } from "../work-entry.ts";
 import { EXIT } from "./exit-code.ts";
@@ -107,6 +108,7 @@ if (invokedDirectly) {
     .then((code) => {
       // process.exit skips every pending finally: release the locks first.
       releaseHeldIntegrationLocks();
+      killLiveProcessGroups();
       process.exit(code);
     });
 }

@@ -80,6 +80,9 @@ export async function runHandoffOpsDispatch(
         {
           label: "ops:handoff",
           timeoutMs: boundMs,
+          // #1024 — the cycle's signal and group policy reach the handoff child.
+          signal: ctx.signal,
+          processGroup: ctx.processGroup,
           // #799 — the slow recorder collects into the driver's pending
           // buffer. The child may outlive the race (below) — its crossings
           // are recorded either way and drainSlowEvents at the end of

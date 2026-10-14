@@ -98,11 +98,11 @@ export class InFlightTools {
  * are exclusive by construction.
  */
 export function createInactivityPoll(opts: {
+  /** Headless S4 (#1024): the child leads its own process group (spawn-kill.ts). */
   child: ChildProcess;
   inFlightTools: InFlightTools;
   lastActivityAt: () => number;
   onKill: (cause: "inactivity" | "tool-inactivity", budgetMs: number, toolNames: string[]) => void;
-  /** Headless S4 (#1024): the child leads its own process group (spawn-kill.ts). */
 }): () => void {
   const { child, inFlightTools, lastActivityAt, onKill } = opts;
   const inactivityMs = inactivityTimeoutMs();

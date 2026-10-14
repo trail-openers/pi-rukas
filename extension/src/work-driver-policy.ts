@@ -396,9 +396,9 @@ export type PolicyStatFn = (p: string) => Promise<unknown>;
  */
 export function judgePolicy(
   repoRoot: string,
-  statFn?: PolicyStatFn,
-  processGroup = false,
+  opts: { statFn?: PolicyStatFn; processGroup?: boolean; signal?: AbortSignal } = {},
 ): PolicyJudgeFn {
+  const { statFn, processGroup = false, signal } = opts;
   const extraArgs = ["--no-skills", "--extension", POLICY_REPORTER_PATH];
   const reporterPath = reporterPathFromArgs(extraArgs);
   return async (prompt: string) => {
@@ -414,6 +414,7 @@ export function judgePolicy(
         extraArgs,
         timeoutMs: POLICY_JUDGE_TIMEOUT_MS,
         processGroup,
+        signal,
       },
     );
     return result.ok ? { toolUses: result.toolUses ?? [] } : undefined;

@@ -12,7 +12,11 @@
  *  - If the driver does not reach a boundary within `graceMs` of the abort, the
  *    runner records the interrupt itself (markInterrupted), then waits up to
  *    LATE_DRIVER_MS more for a driver that was mid-step. Only then is the state
- *    read back. A signalled run that expires exits 21 whatever the state says.
+ *    read back. A run that expires exits 21 (30 for `timeout`), unless the state
+ *    is already terminal (merged / handoff / aborted), which keeps its own code.
+ *  - An issue no group reached (the abort landed between groups) is reported
+ *    with its state file's status, or `not-started` when there is no state file,
+ *    and the interrupt code.
  *  - A driver that is still running after the runner stops waiting cannot write
  *    `running` back: once the signal has fired, persistCycle writes `interrupted`.
  *
@@ -55,6 +59,8 @@ export interface HeadlessRunResult {
 }
 
 const DEFAULT_GRACE_MS = 10_000;
+/** States whose exit code is already decided: an expired signal does not override them. */
+const TERMINAL_STATUSES = new Set<string>(["merged", "handoff", "aborted"]);
 /** After grace expires, how long the runner waits for a driver that was mid-step. */
 const LATE_DRIVER_MS = 5_000;
 
@@ -88,8 +94,9 @@ export async function runHeadless(opts: HeadlessRunOptions): Promise<HeadlessRun
 
   const results: IssueResult[] = [];
   const codes: number[] = [];
+  let groups: number[][] = [];
   try {
-    const groups = await planGroups(opts);
+    groups = await planGroups(opts);
     for (const group of groups) {
       if (controller.signal.aborted) break;
       const groupCodes = await runGroup(opts, group, controller.signal, grace, results);
@@ -100,17 +107,35 @@ export async function runHeadless(opts: HeadlessRunOptions): Promise<HeadlessRun
     target.off("SIGTERM", onSignal);
     target.off("SIGINT", onSignal);
     target.off("SIGHUP", onHangup);
-    target.off("exit", onExit);
+    // The exit listener stays registered until the process exits: cli.ts kills
+    // the live groups synchronously just before process.exit (idempotent).
     // A driver may still hold a lockfile past its grace period; it must not
     // outlive this process. Released on every path, not only on a signal.
     releaseHeldIntegrationLocks();
   }
-  // A signal that lands while the issue bodies are being fetched runs no group.
-  if (codes.length === 0 && controller.signal.aborted) {
-    const code = controller.signal.reason === "timeout" ? EXIT.crash : EXIT.interrupted;
-    return { exitCode: code, results };
+  // Between groups, or while the issue bodies are fetched, an abort leaves
+  // issues no group reached. Each is reported; none is dropped.
+  const interruptCode = controller.signal.reason === "timeout" ? EXIT.crash : EXIT.interrupted;
+  const unrun = groups.flat().filter((issue) => !results.some((r) => r.issue === issue));
+  for (const issue of unrun) {
+    results.push(await unrunResult(opts.repoRoot, issue, interruptCode));
   }
+  if (unrun.length > 0) return { exitCode: interruptCode, results };
   return { exitCode: exitCodeForGroup(codes), results };
+}
+
+/** An issue no group reached: its state file's status if one exists, else not-started. */
+async function unrunResult(
+  repoRoot: string,
+  issue: number,
+  exitCode: number,
+): Promise<IssueResult> {
+  const file = workStateFile(repoRoot, issue);
+  const state = await readState(repoRoot, issue);
+  if (!state) {
+    return { issue, status: "not-started", stateFile: file, durationMs: 0, steps: [], exitCode };
+  }
+  return { ...projectIssue(state, file), exitCode };
 }
 
 async function planGroups(opts: HeadlessRunOptions): Promise<number[][]> {
@@ -194,7 +219,13 @@ async function runGroup(
     // The driver missed its boundary: record the interrupt from here (a no-op
     // on a terminal status), then give a driver that was mid-step a bounded
     // moment to finish its persist before the state is read back.
-    await markInterrupted(opts.repoRoot, primary, interruptReasonOf(signal), sink);
+    // A failed record must not stop the read-back below: the state file is the
+    // authority, and whatever it says is what the exit code reports.
+    try {
+      await markInterrupted(opts.repoRoot, primary, interruptReasonOf(signal), sink);
+    } catch (err) {
+      trace(`headless: could not record the interrupt for issue #${primary}: ${errorMessage(err)}`);
+    }
     await waitAtMost(driver, LATE_DRIVER_MS);
     // The integration locks are released in runHeadless's finally; a driver
     // still running here may take one after that, so the release is traced.
@@ -205,8 +236,9 @@ async function runGroup(
 
   // Computed once for the group. A refusal is a driver that did not start.
   const refused = outcome !== "expired" && isRefusal(outcome);
-  // A signalled run that ran out of grace exits 21 whatever the state says.
-  const interruptedExpired = outcome === "expired" && signal.reason !== "timeout";
+  // A signalled run that ran out of grace exits 21 (30 for --timeout), unless
+  // the state is already terminal and decided its own code.
+  const expiredCode = signal.reason === "timeout" ? EXIT.crash : EXIT.interrupted;
   const codes: number[] = [];
   for (const issue of group) {
     const file = workStateFile(opts.repoRoot, issue);
@@ -214,7 +246,7 @@ async function runGroup(
     if (!state) {
       // No state file: the driver never reached its first persist. Reported as
       // not-started, never as a fabricated status.
-      const code = interruptedExpired ? EXIT.interrupted : refused ? EXIT.refused : EXIT.crash;
+      const code = outcome === "expired" ? expiredCode : refused ? EXIT.refused : EXIT.crash;
       codes.push(code);
       results.push({
         issue,
@@ -231,8 +263,9 @@ async function runGroup(
     // a live owner's `running` state is one.
     const refusedHere = refused && state.pipelineState.status === "running";
     let code: number;
-    if (interruptedExpired) code = EXIT.interrupted;
-    else if (refusedHere) code = EXIT.refused;
+    if (outcome === "expired" && !TERMINAL_STATUSES.has(state.pipelineState.status)) {
+      code = expiredCode;
+    } else if (refusedHere) code = EXIT.refused;
     else code = exitCodeForState(state);
     projected.exitCode = code;
     results.push(projected);
