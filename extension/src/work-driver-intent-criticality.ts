@@ -216,7 +216,7 @@ export function criticalOpenPoints(issueBody: string): string[] {
  * An unresolved CRITICAL point touching one of these parks rather than proceeds.
  */
 const AUTHORIZATION_CLASS =
-  /\b(?:(?:un|pre|re|non)?auth\w*|oauth|jwt|acl|rbac|roles?|sessions?|login|signing[ _-]?keys?|private[ _-]?keys?|secret\w*|permissions?|credential\w*|token\w*|api[ _-]?keys?\w*|password\w*|(?:un|pre|re|non)?(?:en|de)crypt\w*|tls|certificates?|certs?|crypto\w*|(?:un|pre|re|non)?(?:sanitiz\w*|validat\w*)|inject\w*|sandbox\w*|privilege\w*|access[ _-]control|delet\w*|data[ _-]loss)\b/i;
+  /\b(?:(?:un|pre|re|non)?auth(?:n|z|s)?(?:_\w*)?\b|(?:un|pre|re|non)?authenticat\w*|(?:un|pre|re|non)?authori[sz](?:e|ed|es|ing|ation|ations)?(?:_\w*)?\b|oauth2?\b|jwt|acl|rbac|roles?|sessions?|login|signing[ _-]?keys?|private[ _-]?keys?|secret\w*|permissions?|credential\w*|token\w*|api[ _-]?keys?\w*|password\w*|(?:un|pre|re|non)?(?:en|de)crypt\w*|tls|certificates?|certs?|crypto\w*|(?:un|pre|re|non)?(?:sanitiz\w*|validat\w*)|inject\w*|sandbox\w*|privilege\w*|access[ _-]control|delet\w*|data[ _-]loss)\b/i;
 
 /** #1151: the assumption text for one CRITICAL point is capped at this many characters. */
 const OPEN_POINT_ASSUMPTION_MAX = 300;
