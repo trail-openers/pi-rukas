@@ -54,15 +54,35 @@ export function stepTotals(events: WorkEvent[]): Record<string, { ms: number; to
   return out;
 }
 
+/**
+ * The last `n` events of a log, one line each. A step-started's round is the
+ * count of its step's starts up to and including it, so it is derived from
+ * position here rather than stored by amending the event after it was recorded
+ * (S4a, #1162: an amended entry no longer matches what the host was emitted).
+ */
+export function fmtRecentEvents(log: WorkEvent[], n: number): string[] {
+  const starts = new Map<string, number>();
+  const rounds = log.map((e) => {
+    if (e.kind !== "step-started") return undefined;
+    const round = (starts.get(e.step) ?? 0) + 1;
+    starts.set(e.step, round);
+    return round;
+  });
+  const from = Math.max(0, log.length - n);
+  return log.slice(from).map((e, i) => fmtEvent(e, rounds[from + i]));
+}
+
 /** Format an event for the "last N" trailing log. Compact one-liner per event. */
-export function fmtEvent(e: WorkEvent): string {
+export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
   switch (e.kind) {
-    case "step-started":
+    case "step-started": {
       // #657 — a step-started with round > 1 is a loop re-entry (adversarial /
       // lens-review / ci): render the round. First entries render unchanged.
+      const round = e.round ?? derivedRound;
       return `  step-started · ${e.step}${
-        e.round !== undefined && e.round > 1 ? ` (round ${e.round})` : ""
+        round !== undefined && round > 1 ? ` (round ${round})` : ""
       }${e.note ? ` · ${e.note}` : ""}`;
+    }
     case "dispatch-started":
       return `  dispatch-started · ${e.step} · ${e.label}`;
     case "explore-retried":
@@ -162,5 +182,8 @@ export function fmtEvent(e: WorkEvent): string {
       // surface: a 3-hour dispatch crossing 20m / 40m / 80m reads as three
       // rows, each one the durable proof that someone was prompted.
       return `  dispatch-slow · ${e.step} · ${e.label} · ${fmtElapsed(e.elapsedMs)} · ${e.turns} turn${e.turns === 1 ? "" : "s"} · ${fmtTokens(e.tokens)} tok`;
+    case "interrupted":
+      // S4a (#1162) — the interrupt record; the cycle resumes on re-entry.
+      return `  interrupted · ${e.reason.slice(0, 80)}`;
   }
 }

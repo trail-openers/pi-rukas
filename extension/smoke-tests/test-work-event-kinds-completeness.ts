@@ -210,6 +210,8 @@ const everyKindEvent: WorkEvent[] = [
     tokens: 10,
   },
   { kind: "fence-recovery-started", at: 1, workstreamId: "a", owners: ["b"] },
+  // S4a (#1162) — the interrupt record.
+  { kind: "interrupted", at: 1, reason: "SIGTERM" },
 ];
 
 // The union-derived kind set: the source of truth both directions check

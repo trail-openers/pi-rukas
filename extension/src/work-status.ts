@@ -16,8 +16,9 @@ import { explainCap } from "./work-driver-explain.ts";
 import { readQueueSummary } from "./work-queue-summary.ts";
 import { humanActionFor } from "./work-queue.ts";
 import { renderDispatchDurations } from "./work-status-dispatch-durations.ts";
-import { fmtElapsed, fmtEvent, fmtTokens, stepTotals } from "./work-status-events.ts";
+import { fmtElapsed, fmtRecentEvents, fmtTokens, stepTotals } from "./work-status-events.ts";
 import { discoverAllCycles, renderCycleIndex } from "./work-status-index.ts";
+import { renderInterruptedStatus } from "./work-status-interrupted.ts";
 import { isIssueNumberArg, resolveJobId } from "./work-status-jobid.ts";
 import { type WorkState, readState, workStateDir } from "./workflow-state.ts";
 const execp = promisify(exec);
@@ -70,10 +71,14 @@ async function discoverActiveIssue(repoRoot: string): Promise<number | undefined
  *   - 'running' → renderRunningStatus (PR4 shape, unchanged)
  *   - 'handoff' | 'aborted' | 'merged' → renderTerminalStatus
  *     (PR5 postmortem layout)
+ *   - 'interrupted' → renderInterruptedStatus (S4a, resumable)
  */
 export function renderStatus(state: WorkState, repoRoot: string): string {
   if (state.pipelineState.status === "running") {
     return renderRunningStatus(state, repoRoot);
+  }
+  if (state.pipelineState.status === "interrupted") {
+    return renderInterruptedStatus(state, repoRoot);
   }
   return renderTerminalStatus(state, repoRoot);
 }
@@ -130,9 +135,7 @@ export function renderRunningStatus(state: WorkState, repoRoot: string): string 
     lines.push(
       `recent events (last ${Math.min(5, state.eventLog.length)} of ${state.eventLog.length}):`,
     );
-    for (const e of state.eventLog.slice(-5)) {
-      lines.push(fmtEvent(e));
-    }
+    lines.push(...fmtRecentEvents(state.eventLog, 5));
   }
 
   lines.push("");
@@ -246,9 +249,7 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
       "",
       `Recent events (last ${Math.min(5, state.eventLog.length)} of ${state.eventLog.length}):`,
     );
-    for (const e of state.eventLog.slice(-5)) {
-      lines.push(fmtEvent(e));
-    }
+    lines.push(...fmtRecentEvents(state.eventLog, 5));
   }
 
   // Artefacts.

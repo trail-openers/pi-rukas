@@ -8,7 +8,6 @@
  * All 9 steps wired; each implementation lives in `work-driver-<step>.ts`.
  */
 import { notifyAgent } from "./agent-message.ts";
-import { dropSlowEvents } from "./slow-events.ts";
 import { trace } from "./trace.ts";
 import { runAdversarial } from "./work-driver-adversarial.ts";
 import { runArtifactSweep } from "./work-driver-artifact-sweep.ts";
@@ -22,6 +21,7 @@ import {
   STEP_ORDINAL,
   nextStep,
 } from "./work-driver-context.ts";
+import { enterCycle } from "./work-driver-cycle-entry.ts";
 import { acquireWorkDeckHeader, headerToken } from "./work-driver-deck-header.ts";
 import { countPriorStepStarts } from "./work-driver-diff.ts";
 import { runExplore } from "./work-driver-explore.ts";
@@ -47,6 +47,7 @@ import {
   resolveReattach,
   resumeEnabled,
 } from "./work-driver-resume-reattach.ts";
+import { reenterInterrupted } from "./work-driver-resume.ts";
 import { routeStepOutcome } from "./work-driver-step-router.ts";
 import { runCi, runStepBack } from "./work-driver-stepback-ci.ts";
 import { deliverTerminalLine } from "./work-driver-terminal-delivery.ts";
@@ -133,12 +134,7 @@ export async function runWorkDriver(ctx: DriverContext): Promise<DriverOutcome> 
     };
   }
   try {
-    // #799 — clear any stale slow-event buffer entry for EVERY issue in the
-    // group before the cycle begins: a previous parked cycle of the same
-    // issue (whose handoff's final drain ran before a late crossing) can
-    // otherwise leak its leftover events into this cycle's log.
-    const groupIssues = [...new Set([ctx.issue, ...(ctx.issues ?? [])])];
-    for (const n of groupIssues) dropSlowEvents(n);
+    const unbindEmitter = enterCycle(ctx);
     // #838 — the per-cycle deck header ("/work #N"): created when the cycle
     // starts, cleared on EVERY terminal path via the finally — merged,
     // handoff, park, halt, thrown error all unwind through it. A second
@@ -149,6 +145,7 @@ export async function runWorkDriver(ctx: DriverContext): Promise<DriverOutcome> 
       return await runWorkDriverInner(ctx);
     } finally {
       header.release();
+      unbindEmitter();
     }
   } finally {
     claimed.claim.release();
@@ -161,7 +158,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
   let state =
     ctx.restart === true
       ? initialState(ctx.issue)
-      : ((await readState(ctx.repoRoot, ctx.issue)) ?? initialState(ctx.issue));
+      : reenterInterrupted((await readState(ctx.repoRoot, ctx.issue)) ?? initialState(ctx.issue));
   if (ctx.restart === true) {
     trace(`work-driver: --restart wiped state for issue #${ctx.issue} (fresh cycle)`);
   }
@@ -322,11 +319,9 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
     // PR4: sub-round labels for iterative steps.
     const stepRound = countPriorStepStarts(state, step) + 1;
     // #657 — the first event of this iteration is the step-started the step
-    // handler appends; backfill its round here (the single chokepoint every
-    // iteration flows through) so renderers can show re-entries as
-    // "adversarial (round 3)". Additive field; absent in the 12 per-step
-    // handler append sites, so nothing there changes.
-    const before = state.eventLog.length;
+    // handler appends; its round is derived at render time (fmtRecentEvents)
+    // so renderers can show re-entries as "adversarial (round 3)". Additive
+    // field; absent in the 12 per-step handler append sites, so nothing there changes.
     emitStepStarted(step, stepOrd.num, stepOrd.total, stepRound, ctx.issue);
     // PR2 O2: footer status cursor (step-level position with live-tick).
     updateFooter(state, stepStartedAt);
@@ -386,30 +381,9 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
     // the router already persisted state and we re-enter.
     const routed = await routeStepOutcome(ctx, state, step, stepOrd, stepRound, stepStartedAt);
     state = routed.state;
-    // #657 — backfill the round onto this iteration's step-started (the
-    // handler's first appended event) so the loop re-entries are visible in
-    // the event log. In-place rewrite of the ORIGINAL event — appending a
-    // second step-started would make it the tail event and shadow the tail
-    // checks nextStep()/routeStepOutcome() read (a trailing step-started is
-    // invisible to the cap-hit branch, so a cap-hit would lose its routing).
-    {
-      const first = state.eventLog[before];
-      if (first && first.kind === "step-started") {
-        const widened = {
-          ...first,
-          round: stepRound,
-        } as typeof first;
-        state = {
-          ...state,
-          updatedAt: Date.now(),
-          eventLog: [
-            ...state.eventLog.slice(0, before),
-            widened,
-            ...state.eventLog.slice(before + 1),
-          ],
-        };
-      }
-    }
+    // #657 — the loop round is derived from log position when rendered
+    // (fmtRecentEvents), not backfilled here: an amended step-started would no
+    // longer match the event the host was already emitted (S4a, #1162).
     // #543 F5 — driver-owned checkpoint after a dispatch-cap kill. Must stay
     // BEFORE the `routed.retry` continue so a retried step never checkpoints
     // the same kill twice. Never throws; failure degrades to the uncommitted.

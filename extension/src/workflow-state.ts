@@ -71,6 +71,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import { emitPersisted } from "./work-state-emit.ts";
 import { WORK_STATE_SCHEMA_VERSION, type WorkState } from "./workflow-state-schema.ts";
 import { appendEvent, detectInconsistencies, initialState } from "./workflow-state-update.ts";
 
@@ -169,6 +170,27 @@ export async function writeState(repoRoot: string, state: WorkState): Promise<vo
   const tmp = `${file}.tmp`;
   await fs.writeFile(tmp, `${JSON.stringify(next, null, 2)}\n`, "utf8");
   await fs.rename(tmp, file);
+  // S4a (#1162) — the emit choke point: events are emitted once they are durable.
+  emitPersisted(file, next);
+}
+
+/**
+ * S4a (#1162) — record an interrupt (SIGTERM / SIGINT). Sets status to
+ * `interrupted`, appends the `interrupted` event carrying `reason`, and
+ * persists. Re-entry resumes the cycle (see `reenterInterrupted`).
+ */
+export async function markInterrupted(
+  repoRoot: string,
+  state: WorkState,
+  reason: string,
+  at: number = Date.now(),
+): Promise<WorkState> {
+  const next = appendEvent(
+    { ...state, pipelineState: { ...state.pipelineState, status: "interrupted" } },
+    { kind: "interrupted", at, reason },
+  );
+  await writeState(repoRoot, next);
+  return next;
 }
 
 /**

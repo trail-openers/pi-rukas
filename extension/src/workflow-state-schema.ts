@@ -446,8 +446,12 @@ export interface PipelineState {
      */
     fenceViolations?: FenceViolation[];
   };
-  /** Terminal status. "running" while active; flips on `merged` or `handoff`. */
-  status: "running" | "merged" | "handoff" | "aborted";
+  /**
+   * Terminal status. "running" while active; flips on `merged` or `handoff`.
+   * S4a (#1162) — "interrupted" is written by `markInterrupted` (SIGTERM /
+   * SIGINT). It is not terminal: re-entry resumes it as "running".
+   */
+  status: "running" | "merged" | "handoff" | "aborted" | "interrupted";
   /**
    * #580 — ISO timestamp of the last terminal in-chat delivery (merged text,
    * handoff message, etc.). Written write-ahead, BEFORE `notifyAgent` fires.

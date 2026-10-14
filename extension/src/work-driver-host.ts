@@ -22,9 +22,19 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { DispatchHost } from "./async-jobs-lifecycle.ts";
+import type { WorkEvent } from "./workflow-state-events.ts";
 
-/** What a driver needs from its host. Same shape as the dispatch-side seam. */
-export type DriverHost = DispatchHost;
+/**
+ * What a driver needs from its host. Same shape as the dispatch-side seam,
+ * plus `emit` (S4a, #1162): the progress channel for every eventLog entry, fed
+ * by `writeState` (see work-state-emit.ts). Optional so hosts with no progress
+ * channel (test fixtures that never reach a persist) need not implement it;
+ * the Pi-session host implements it as a no-op and the headless runner (#1024)
+ * is the first host that uses it.
+ */
+export type DriverHost = DispatchHost & {
+  emit?: (event: WorkEvent) => void;
+};
 
 /**
  * Wrap the interactive Pi session as a DriverHost. This is the only
@@ -38,5 +48,7 @@ export function piSessionHost(pi: Pick<ExtensionAPI, "sendUserMessage">): Driver
     sendUserMessage: (text, options) => {
       pi.sendUserMessage(text, { deliverAs: options.deliverAs });
     },
+    // The Pi session already renders progress through its messages.
+    emit: () => undefined,
   };
 }

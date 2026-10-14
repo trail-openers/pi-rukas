@@ -307,6 +307,16 @@ export function clearForResume(state: WorkState): WorkState {
   };
 }
 
+/**
+ * S4a (#1162) — an `interrupted` cycle is resumable. Re-enter it as `running`
+ * so the classification above (refuse / resume an in-flight dispatch / continue
+ * at the last boundary) applies unchanged. Persisted at the driver's next write.
+ */
+export function reenterInterrupted(state: WorkState): WorkState {
+  if (state.pipelineState.status !== "interrupted") return state;
+  return { ...state, pipelineState: { ...state.pipelineState, status: "running" } };
+}
+
 /** Operator-facing message for a refused re-entry. */
 export function explainRefusal(issue: number, ownerPid: number): string {
   return `pi-rukas: /work for issue #${issue} is already running in process ${ownerPid}. Two drivers on one branch interleave commits and produce a PR nobody can review, so this invocation is refusing rather than joining. If that process is gone, its state file will say so once it exits — or remove .pi/work-state/${issue}.json to force a fresh cycle.`;

@@ -8,6 +8,7 @@
  */
 
 import { type QueueEntry, humanActionFor } from "./work-queue.ts";
+import { lastInterruptReason } from "./work-status-interrupted.ts";
 import { type WorkState, readState } from "./workflow-state.ts";
 
 /**
@@ -41,7 +42,9 @@ export async function singleCycleQueueEntry(
             ? `:${ps.normalisedSpec.parkReason}`
             : ""
         }`
-      : `cycle ended as ${status}`;
+      : status === "interrupted"
+        ? `cycle interrupted: ${lastInterruptReason(state?.eventLog ?? []) ?? "no reason recorded"}`
+        : `cycle ended as ${status}`;
   return status === "merged"
     ? { groupId: `single-${issue}`, issues, outcome: "merged" }
     : status === "running"
@@ -51,12 +54,21 @@ export async function singleCycleQueueEntry(
           outcome: "not-started",
           reason: "still running — this is not a terminal state",
         }
-      : {
-          groupId: `single-${issue}`,
-          issues,
-          outcome: "parked",
-          reason,
-          failedStep,
-          humanAction: humanActionFor(reason, issue),
-        };
+      : status === "interrupted"
+        ? {
+            // S4a (#1162) — resumable, not terminal: the operator resumes it.
+            groupId: `single-${issue}`,
+            issues,
+            outcome: "parked",
+            reason,
+            humanAction: `resume with /work ${issue}`,
+          }
+        : {
+            groupId: `single-${issue}`,
+            issues,
+            outcome: "parked",
+            reason,
+            failedStep,
+            humanAction: humanActionFor(reason, issue),
+          };
 }

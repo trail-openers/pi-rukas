@@ -98,6 +98,8 @@ export const KNOWN_EVENT_KINDS = [
   // dispatch-completed). A state file written by a newer driver must
   // resume on an older one's reader without halting on an unknown kind.
   "dispatch-slow",
+  // S4a (#1162) — the interrupt record (SIGTERM / SIGINT via markInterrupted).
+  "interrupted",
 ] as const;
 
 // #986 — compile-time exhaustiveness. If the `WorkEvent` union gains a kind
@@ -113,7 +115,14 @@ const _eventKindExhaustive: [MissingEventKinds] extends [never] ? true : Missing
 void _eventKindExhaustive;
 
 /** `pipelineState.status` vocabulary. */
-export const KNOWN_STATUSES: readonly unknown[] = ["running", "merged", "handoff", "aborted"];
+export const KNOWN_STATUSES: readonly unknown[] = [
+  "running",
+  "merged",
+  "handoff",
+  "aborted",
+  // S4a (#1162) — resumable; re-entry treats it as running.
+  "interrupted",
+];
 
 /**
  * #540 — `pipelineState.incompleteConsolidation.verdicts[].status`
