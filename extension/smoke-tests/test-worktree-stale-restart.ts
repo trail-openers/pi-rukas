@@ -58,10 +58,10 @@ function assert(cond: boolean, msg: string) {
 }
 
 const realExec: ExecFn = async (cmd, o) => {
-  const opts = { cwd: o?.cwd, maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024 };
-  const { stdout } = o?.argv
-    ? await execFileP(cmd, o.argv, opts)
-    : await execFileP("/bin/sh", ["-c", cmd], opts);
+  const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
+    cwd: o?.cwd,
+    maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
+  });
   return { stdout };
 };
 const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
@@ -195,8 +195,7 @@ try {
  */
 function recorder(overrides: Record<string, string>, targetWt?: string) {
   const wtCalls: Array<{ cmd: string }> = [];
-  const execFn: ExecFn = async (cmdArg, o) => {
-    const cmd = o?.argv ? ["git", ...o.argv].join(" ") : cmdArg;
+  const execFn: ExecFn = async (cmd, o) => {
     // The worktree's own git. The cycle's target path is clean (doesn't
     // exist yet); all other worktrees are dirty.
     if (o?.cwd?.includes(".worktrees/")) {

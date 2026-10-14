@@ -331,8 +331,7 @@ try {
 /** Recorder matching the shape test-work-driver-always-worktree.ts uses. */
 function recorder(overrides: Record<string, string> = {}) {
   const calls: Array<{ cmd: string; cwd: string }> = [];
-  const execFn: ExecFn = async (cmdArg, o) => {
-    const cmd = o?.argv ? ["git", ...o.argv].join(" ") : cmdArg;
+  const execFn: ExecFn = async (cmd, o) => {
     calls.push({ cmd, cwd: o?.cwd ?? "" });
     // A real worktree answers its own toplevel (#1170) — the fake must too.
     if (cmd.startsWith("git rev-parse --show-toplevel")) return toplevelAnswer(o?.cwd);

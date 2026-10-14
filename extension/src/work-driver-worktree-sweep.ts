@@ -6,7 +6,6 @@ import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 import { processAlive } from "./work-driver-resume.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
-import { ignoredLossEntries } from "./worktree-loss.ts";
 
 const defaultExecFn: ExecFn = execp;
 
@@ -153,16 +152,6 @@ export async function decideSweepAction(opts: DecideOpts): Promise<SweepAction> 
   const isIssueInLiveCycles = liveCycles.has(issueNumber);
   if (isIssueInLiveCycles && launchingCycleIssue !== issueNumber) {
     return { type: "skip", reason: `live-issue ${issueNumber}` };
-  }
-
-  // Rule 3b (#1170 round 3): both actions below delete ignored entries —
-  // `git clean -fdX` purges every one, `worktree remove --force` takes the
-  // tree with them. An ignored entry that is not a regenerable dependency
-  // tree or a provisioned link (a credentials file, build output) is work
-  // git cannot recover, so the sweep keeps the worktree.
-  const ignoredLoss = await ignoredLossEntries(execFn, target.realPath);
-  if (ignoredLoss.length > 0) {
-    return { type: "skip", reason: `ignored-loss ${ignoredLoss.slice(0, 3).join(", ")}` };
   }
 
   // Rule 4: State is awaiting-human-merge → artifact purge only

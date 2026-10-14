@@ -51,15 +51,12 @@ export function auditCtx(repo: string, issue: number): DriverContext {
 
 const execFileP = promisify(execFile);
 
-export const realExec = async (
-  cmd: string,
-  o?: { cwd?: string; maxBuffer?: number; argv?: string[] },
-) => {
+export const realExec = async (cmd: string, o?: { cwd?: string; maxBuffer?: number }) => {
   try {
-    const opts = { cwd: o?.cwd, maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024 };
-    const { stdout } = o?.argv
-      ? await execFileP(cmd, o.argv, opts)
-      : await execFileP("/bin/sh", ["-c", cmd], opts);
+    const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
+      cwd: o?.cwd,
+      maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
+    });
     return { stdout };
   } catch (e) {
     const err = e as Error & { stderr?: string };
@@ -120,8 +117,7 @@ export function makeCtx(opts: {
   onOpsCommitPr: (cwd: string | undefined, prompt: string) => Promise<DispatchResult | undefined>;
 }): DriverContext {
   const { repo, issue, branchName, baseSha, worktreePath } = opts;
-  const exec = async (cmdArg: string, o?: { cwd?: string; argv?: string[] }) => {
-    const cmd = o?.argv ? ["git", ...o.argv].join(" ") : cmdArg;
+  const exec = async (cmd: string, o?: { cwd?: string }) => {
     if (cmd.startsWith("gh ")) return { stdout: "" };
     if (cmd.startsWith("git fetch")) return { stdout: "" };
     return realExec(cmd, o);

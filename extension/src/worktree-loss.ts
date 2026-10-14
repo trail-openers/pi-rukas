@@ -29,8 +29,9 @@
  *    unreadable worktree is not evidence that it is clean. Trade-off (#1170):
  *    an unreadable leftover now blocks the cycle instead of being removed —
  *    fail closed beats the old wedged-queue avoidance.
- *  - Every git call passes argv (no shell): a ref or path is data, never shell
- *    syntax.
+ *  - Git calls are shell strings. A ref is JSON-quoted into one, and
+ *    worktree-create-guard rejects any ref outside a safe charset before a
+ *    create runs (no ref reaches a shell unvalidated).
  *  - A path with no directory on disk is not a worktree — nothing to inspect.
  */
 
@@ -217,38 +218,6 @@ async function uncommittedEntries(
   return out;
 }
 
-/** The argv-form git call every read in this module uses (no shell re-parse). */
-function git(execFn: ExecFn, cwd: string, argv: string[]) {
-  return execFn("git", { cwd, maxBuffer: 8 * 1024 * 1024, argv });
-}
-
-/**
- * The ignored entries in a worktree that a removal would destroy (#1170 round 3).
- * Used by the sweep's `git clean -fdX` purge, which deletes every ignored
- * entry: only the regenerable exemptions are removable, so an ignored
- * credentials file (or any build output) blocks it. Fails closed: a directory
- * that is not its own worktree, or an unreadable status, returns a non-empty
- * list naming the reason.
- */
-export async function ignoredLossEntries(execFn: ExecFn, worktreeAbs: string): Promise<string[]> {
-  if (!(await pathExists(path.join(worktreeAbs, ".git")))) return ["not-a-worktree"];
-  try {
-    const { stdout } = await git(execFn, worktreeAbs, [
-      "status",
-      "--porcelain",
-      "--ignored=traditional",
-      "--untracked-files=normal",
-    ]);
-    const ignored = stdout
-      .split("\n")
-      .filter((l) => l.startsWith("!! "))
-      .join("\n");
-    return await uncommittedEntries(worktreeAbs, ignored, true);
-  } catch (err) {
-    return [`unreadable: ${errorText(err)}`];
-  }
-}
-
 /**
  * Inspect an existing worktree for work a force-remove would destroy.
  *
@@ -284,7 +253,10 @@ export async function inspectWorktreeForLoss(
   if (!(await pathExists(path.join(worktreeAbs, ".git")))) return notOwn;
   let toplevel: string;
   try {
-    ({ stdout: toplevel } = await git(execFn, worktreeAbs, ["rev-parse", "--show-toplevel"]));
+    ({ stdout: toplevel } = await execFn("git rev-parse --show-toplevel", {
+      cwd: worktreeAbs,
+      maxBuffer: 64 * 1024,
+    }));
   } catch (err) {
     return unreadable(err);
   }
@@ -292,7 +264,10 @@ export async function inspectWorktreeForLoss(
   const own = await realpathOrUndefined(worktreeAbs);
   if (top === undefined || own === undefined || top !== own) return notOwn;
   try {
-    await git(execFn, worktreeAbs, ["rev-parse", "--verify", "HEAD"]);
+    await execFn(`git rev-parse --verify ${JSON.stringify("HEAD")}`, {
+      cwd: worktreeAbs,
+      maxBuffer: 64 * 1024,
+    });
   } catch (err) {
     return unreadable(err);
   }
@@ -302,17 +277,27 @@ export async function inspectWorktreeForLoss(
   let baseTree: string;
   let ahead: number;
   try {
-    ({ stdout: porcelain } = await git(execFn, worktreeAbs, [
-      "status",
-      "--porcelain",
-      "--ignored=traditional",
-      "--untracked-files=normal",
-    ]));
-    ({ stdout: headTree } = await git(execFn, worktreeAbs, ["rev-parse", "HEAD^{tree}"]));
+    ({ stdout: porcelain } = await execFn(
+      "git status --porcelain --ignored=traditional --untracked-files=normal",
+      {
+        cwd: worktreeAbs,
+        maxBuffer: 8 * 1024 * 1024,
+      },
+    ));
+    ({ stdout: headTree } = await execFn(`git rev-parse ${JSON.stringify("HEAD^{tree}")}`, {
+      cwd: worktreeAbs,
+      maxBuffer: 64 * 1024,
+    }));
     // Worktrees share the repo's object database: the base tree resolves the
     // same from inside the worktree as from repoRoot.
-    ({ stdout: baseTree } = await git(execFn, worktreeAbs, ["rev-parse", `${fromRef}^{tree}`]));
-    const { stdout } = await git(execFn, worktreeAbs, ["rev-list", "--count", `${fromRef}..HEAD`]);
+    ({ stdout: baseTree } = await execFn(`git rev-parse ${JSON.stringify(`${fromRef}^{tree}`)}`, {
+      cwd: worktreeAbs,
+      maxBuffer: 64 * 1024,
+    }));
+    const { stdout } = await execFn(`git rev-list --count ${JSON.stringify(`${fromRef}..HEAD`)}`, {
+      cwd: worktreeAbs,
+      maxBuffer: 64 * 1024,
+    });
     // Zero commits HEAD has and fromRef lacks ⟺ HEAD is an ancestor of fromRef.
     ahead = Number.parseInt(stdout.trim(), 10);
     if (!Number.isFinite(ahead) || ahead < 0) throw new Error(`unreadable commit count: ${stdout}`);

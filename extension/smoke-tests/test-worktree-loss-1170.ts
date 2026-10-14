@@ -217,26 +217,39 @@ try {
     "1170r3: an untracked file in an in-cycle tree still refuses",
   );
 
-  // 12. #1170 r3 — a ref is argv data: a command substitution inside it never runs.
+  // 12. #1170 r3 — a ref outside the safe charset is a create error and runs no command.
   const marker = path.join(root, "pwned");
-  const badRef = await worktreeCreate(realExec, {
-    repoRoot: repo,
-    name: "issue-9-argv",
-    fromRef: `$(touch ${marker})`,
-  }).then(
-    () => undefined,
-    (err: unknown) => err,
-  );
+  const refCalls: string[] = [];
+  const recordExec: ExecFn = async (cmd) => {
+    refCalls.push(cmd);
+    return { stdout: "" };
+  };
+  for (const badRef of [`$(touch ${marker})`, `\`touch ${marker}\``, "-x"]) {
+    const refErr = await worktreeCreate(recordExec, {
+      repoRoot: repo,
+      name: "issue-9-argv",
+      fromRef: badRef,
+    }).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    assert(
+      refErr instanceof Error &&
+        !(refErr instanceof DirtyWorktreeError) &&
+        /not a valid ref name/.test(refErr.message),
+      `1170r3: base ref ${badRef} is rejected with a create error`,
+    );
+  }
   assert(
-    badRef !== undefined && !existsSync(marker),
-    "1170r3: a ref containing $(...) is not shell-evaluated",
+    refCalls.length === 0 && !existsSync(marker),
+    "1170r3: a ref outside the safe charset runs no command",
   );
 
   // 13. #1170 r3 — a probe that times out fails closed: no worktree command runs.
   const calls: string[] = [];
-  const timingOut: ExecFn = async (cmd, o) => {
-    calls.push(`${cmd} ${(o?.argv ?? []).join(" ")}`);
-    if (o?.argv?.includes("--quiet")) {
+  const timingOut: ExecFn = async (cmd) => {
+    calls.push(cmd);
+    if (cmd.includes("--quiet")) {
       throw Object.assign(new Error("timed out"), { code: null, killed: true, signal: "SIGTERM" });
     }
     return { stdout: "" };

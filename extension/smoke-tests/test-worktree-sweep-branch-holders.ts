@@ -38,10 +38,10 @@ function assert(cond: boolean, msg: string) {
 }
 
 const realExec: ExecFn = async (cmd, o) => {
-  const opts = { cwd: o?.cwd, maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024 };
-  const { stdout } = o?.argv
-    ? await execFileP(cmd, o.argv, opts)
-    : await execFileP("/bin/sh", ["-c", cmd], opts);
+  const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
+    cwd: o?.cwd,
+    maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
+  });
   return { stdout };
 };
 const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
@@ -153,8 +153,7 @@ try {
 
 function recorder(overrides: Record<string, string>) {
   const calls: Array<{ cmd: string; cwd: string }> = [];
-  const execFn: ExecFn = async (cmdArg, o) => {
-    const cmd = o?.argv ? ["git", ...o.argv].join(" ") : cmdArg;
+  const execFn: ExecFn = async (cmd, o) => {
     calls.push({ cmd, cwd: o?.cwd ?? "" });
     for (const [prefix, stdout] of Object.entries(overrides)) {
       if (cmd.startsWith(prefix)) {

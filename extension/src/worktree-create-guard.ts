@@ -74,8 +74,18 @@ export async function runCreateGuards(
   // string and must never receive a ref that did not resolve). A timeout, a
   // signal, any other exit code or any stderr text is a probe failure: the
   // guards are not skipped on it, the probe throws.
+  // #1170 — the base ref is interpolated into shell strings below (the probe
+  // and every inspection). Only a plain ref name may reach one: anything else
+  // is refused as a create error before any command runs.
+  if (!SAFE_REF.test(opts.fromRef) || opts.fromRef.startsWith("-")) {
+    throw new Error(
+      `worktreeCreate: ${opts.name} failed: base ref ${JSON.stringify(opts.fromRef)} is not a valid ref name`,
+    );
+  }
   if (!(await baseRefResolves(execFn, opts))) {
-    trace(`worktree: base ref ${opts.fromRef} does not resolve \u2014 deferring to git worktree add`);
+    trace(
+      `worktree: base ref ${opts.fromRef} does not resolve \u2014 deferring to git worktree add`,
+    );
     return;
   }
   // #545 — the mechanism that killed the #540 restart: `worktree add` itself
@@ -150,20 +160,19 @@ export async function runCreateGuards(
 /** Re-export of the finding type for callers of the guard. */
 export type { DirtyWorktreeFinding };
 
+/** A ref name made only of characters that are inert inside double quotes. */
+const SAFE_REF = /^[A-Za-z0-9._/^{}~@-]+$/;
+
 /**
- * Probe `<fromRef>^{tree}` through argv (a ref is data, never shell syntax).
- * `true` = resolves; `false` = cleanly unresolved (exit 1, empty stdout and
- * stderr, no signal or kill). Any other failure throws a create error.
+ * Probe `<fromRef>^{tree}` (the ref is JSON-quoted and pre-validated by
+ * SAFE_REF). `true` = resolves; `false` = cleanly unresolved (exit 1, empty
+ * stdout and stderr, no signal or kill). Any other failure throws a create error.
  */
-async function baseRefResolves(
-  execFn: ExecFn,
-  opts: CreateGuardOpts,
-): Promise<boolean> {
+async function baseRefResolves(execFn: ExecFn, opts: CreateGuardOpts): Promise<boolean> {
   try {
-    await execFn("git", {
+    await execFn(`git rev-parse --verify --quiet ${JSON.stringify(`${opts.fromRef}^{tree}`)}`, {
       cwd: opts.repoRoot,
       maxBuffer: 64 * 1024,
-      argv: ["rev-parse", "--verify", "--quiet", `${opts.fromRef}^{tree}`],
     });
     return true;
   } catch (err) {
