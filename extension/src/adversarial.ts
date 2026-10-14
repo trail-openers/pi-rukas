@@ -98,6 +98,8 @@ export async function runAdversarialLoop(
     fixDelta?: string;
     /** The issue this diff is meant to satisfy (#278). Optional: older state files have none. */
     issueBody?: string;
+    /** The gate the driver already ran green on this tree; the reviewer is told not to re-run it. */
+    gateCmd?: string;
     /** #799 — the slow-run recorder for this loop's inner children (each
      * threshold crossing of a review / fix round appends dispatch-slow), and
      * the parent pi for their slow-run watch (the PM notice half). */
@@ -327,6 +329,7 @@ export async function runAdversarialLoop(
         maxRounds: MAX_ROUNDS,
         issueBody: params.issueBody,
         fixDelta: round === firstRound ? params.fixDelta : undefined,
+        gateCmd: params.gateCmd,
         // #1040 — comments this round's diff removed, for the reviewer to judge.
         commentEvidence: renderCommentEvidence(lastComments),
         // #1137 — scope the review to this workstream (N>1 only; absent on N=1).
