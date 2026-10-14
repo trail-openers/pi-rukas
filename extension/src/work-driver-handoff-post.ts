@@ -23,6 +23,7 @@ import fs from "node:fs/promises";
 import { promisify } from "node:util";
 import type { Forge } from "./forge.ts";
 import { trace } from "./trace.ts";
+import { readError } from "./work-driver-handoff-snapshot.ts";
 import { parseHandoffCommentUrl } from "./work-driver-handoff.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
@@ -261,10 +262,10 @@ export interface HandoffCommittedWorkEntry {
  * recovery print the work's true location (path + HEAD SHA) instead of
  * "0 file(s) modified".
  *
- * Best-effort: every git invocation is try/catch'd; a missing worktree or
- * an unknown base degrades to an absent `committedWork`, which the
- * renderers treat as "no committed work recorded" (the porcelain-based
- * counts still describe any uncommitted dirt).
+ * Best-effort: every git invocation is try/catch'd; an unknown base degrades
+ * to an absent `committedWork`, which the renderers treat as "no committed
+ * work recorded" (the porcelain-based counts still describe any uncommitted
+ * dirt). A read that fails is added to `snapshot.unreadable` instead.
  */
 export async function captureCommittedWork(
   snapshot: NonNullable<WorkState["pipelineState"]["handoffSnapshot"]>,
@@ -291,6 +292,12 @@ export async function captureCommittedWork(
         committedWork.push({ worktreeId: id, path: wt, headSha, ahead });
       }
     } catch (err) {
+      // Not "no committed work": the count was never read. Recorded so the
+      // renderers cannot print the porcelain zeros as the whole truth.
+      snapshot.unreadable = [
+        ...(snapshot.unreadable ?? []),
+        `commits ahead of base in ${wt}: ${readError(err)}`,
+      ];
       trace(
         `work-driver: captureCommittedWork failed for worktree ${id} (${wt}): ${(err as Error).message?.slice(0, 160)}`,
       );
