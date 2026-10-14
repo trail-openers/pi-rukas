@@ -164,6 +164,11 @@ export async function runCommitPrConsolidatedVerify(
     }
   };
 
+  // The project's gate can run for minutes; without this line the step is
+  // silent from its start to its end.
+  trace(
+    `work-driver: commit-pr — verifying the consolidated tree before the push: ${opts.verifyCmd.slice(0, 120)}`,
+  );
   let firstFailure = await runOnce();
   if (firstFailure === undefined) return { ok: true };
 

@@ -459,6 +459,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       maxBuffer: 64 * 1024,
     });
     const headSha = newHead.trim();
+    trace(`work-driver: integrate — pushed ${branchName} @ ${headSha.slice(0, 8)}`);
     if (headSha) {
       for (const id of appliedWorkstreams) {
         const wt = worktrees[id];
