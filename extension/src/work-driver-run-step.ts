@@ -8,6 +8,7 @@ import { runAdversarial } from "./work-driver-adversarial.ts";
 import { runBranch, runDevelop, stampCycleStartRef } from "./work-driver-branch-develop.ts";
 import { runCommitPr } from "./work-driver-commit.ts";
 import type { CycleContext } from "./work-driver-context.ts";
+import { markDraftPrReady } from "./work-driver-draft-pr.ts";
 import { runExplore } from "./work-driver-explore.ts";
 import { runHandoff } from "./work-driver-handoff.ts";
 import { runLensFix } from "./work-driver-lens-fix.ts";
@@ -61,9 +62,10 @@ export async function runStep(
     }
     case "step-back":
       return runStepBack(ctx, state, now);
+    // #1292 — the review is done: a draft PR is marked ready before CI.
     case "ci": {
       const gate = await endIfPrGone(ctx, state, step);
-      return gate.ended ?? runCi(ctx, gate.state, now);
+      return gate.ended ?? runCi(ctx, await markDraftPrReady(ctx, gate.state), now);
     }
     case "handoff":
       return runHandoff(ctx, state, now);

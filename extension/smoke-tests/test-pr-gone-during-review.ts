@@ -444,7 +444,7 @@ try {
     for (const fn of ["runLens", "runLensFix", "runCi"]) {
       assert(
         new RegExp(
-          `await endIfPrGone\\(ctx, state, step\\);\\s*return gate\\.ended \\?\\? ${fn}\\(ctx, gate\\.state, now\\)`,
+          `await endIfPrGone\\(ctx, state, step\\);\\s*return gate\\.ended \\?\\? ${fn}\\(ctx, (?:await markDraftPrReady\\(ctx, )?gate\\.state\\)?, now\\)`,
         ).test(src),
         `runStep checks the PR before ${fn}`,
       );

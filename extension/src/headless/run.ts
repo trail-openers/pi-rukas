@@ -261,6 +261,8 @@ async function runGroup(
     restart: opts.restart,
     signal,
     processGroup: true,
+    // Nobody watches a headless review window: its PR opens as a draft by default.
+    headless: true,
     emitSink: sink,
     onFinalState,
     ...opts.driverSeams,

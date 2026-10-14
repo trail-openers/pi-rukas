@@ -16,6 +16,7 @@ import { deriveCommitPrTitle } from "./work-driver-commit-title.ts";
  * forbids the repo root's checkout and every other .worktrees directory path.
  */
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { draftPrEnabled } from "./work-driver-draft-pr.ts";
 import { ensureIntegrateWorktree } from "./work-driver-integrate-worktree.ts";
 import { integrateWorktreePath } from "./work-driver-integrate-worktree.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
@@ -28,7 +29,7 @@ import type { ExecFn } from "./worktree.ts";
 
 export async function dispatchCommitPrFallback(
   ctx: CycleContext,
-  preDispatch: WorkState,
+  entryState: WorkState,
   now: number,
   execFn: ExecFn,
   // #861 round 2 — the structured conflict-artifact value threaded from the
@@ -37,6 +38,14 @@ export async function dispatchCommitPrFallback(
   // plumb's body (the old event indirection).
   conflictPatch: string | undefined,
 ): Promise<WorkState> {
+  // #1292 — the fallback opens the PR as a draft too; recorded up front (only for
+  // a PR not yet opened) so the later mark-ready points know to act.
+  const draft = draftPrEnabled(ctx);
+  const entry = entryState.pipelineState;
+  const preDispatch: WorkState =
+    draft && entry.prNumber === undefined && !entry.prDraft
+      ? { ...entryState, pipelineState: { ...entry, prDraft: { status: "draft" } } }
+      : entryState;
   // #818 — the ops fallback receives the DERIVED conventional subject (not
   // the raw issue title), so the PR the ops child opens is conventional
   // even when the mechanized path fell back. The prompt instructs it to
@@ -86,6 +95,7 @@ export async function dispatchCommitPrFallback(
           worktrees: ps.worktrees ?? {},
           commitShas: ps.commitShas ?? {},
           workstreams: ps.workstreams ?? {},
+          draft,
         },
       ),
     {

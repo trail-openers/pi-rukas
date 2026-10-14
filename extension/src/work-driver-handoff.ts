@@ -7,6 +7,7 @@ import { type Forge, createForge } from "./forge.ts";
 import { drainSlowEvents } from "./slow-events.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { settleDraftPrAtHandoff } from "./work-driver-draft-pr.ts";
 import {
   consolidateWorktreesToBranch,
   workNotYetOnBranch,
@@ -123,6 +124,9 @@ export async function runHandoff(
     ...next,
     pipelineState: { ...next.pipelineState, handoffSnapshot: snap },
   };
+  // #1292 — a concluded review marks a draft PR ready; a cut-short one leaves it
+  // a draft. Before the render, so the comment states the outcome.
+  next = await settleDraftPrAtHandoff(ctx, next);
   // Build the handoff markdown body. Now consumes handoffSnapshot via
   // the additive sections in renderHandoffMarkdown (PR5 refinements).
   const handoffMd = renderHandoffMarkdown(next);

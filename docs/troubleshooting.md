@@ -1456,6 +1456,15 @@ At the `ci` step a weaker version of gate 2 applies: **narration cannot promote 
 
 Escape hatch: `PI_ENSEMBLE_MERGE_AUTHORITY=0` restores the previous behaviour, where the driver merged whenever an ops child's reply contained the substring `ci-status: success`.
 
+### A `/work` PR is still a draft
+
+With `PI_ENSEMBLE_DRAFT_PR=1` — the default for a headless `/work` — commit-pr opens the PR as a draft so nobody merges it while the six-pass review is still running (#1292). The driver marks it ready once the review has produced a verdict: on entering CI, before its own merge, or at a handoff after the review concluded (an approval, residual findings, critical findings or a round cap alike). A PR that is still a draft at the end of a cycle means one of two things, and the handoff comment says which:
+
+- **"Pull request is still a draft"** — the cycle stopped before the review concluded (a park or halt at commit-pr, during review, or in a fix round). The work is not finished; mark it ready yourself with `gh pr ready <N>` when it is.
+- **"Marking the pull request ready FAILED"** — the review is done but `gh pr ready` failed three times; the last error is quoted. Run `gh pr ready <N>`.
+
+A draft cannot be merged by `gh pr merge` (`mergeStateStatus: DRAFT`), so a ready that keeps failing also shows up as an `awaiting-human-merge` park. Set `PI_ENSEMBLE_DRAFT_PR=0` to open PRs ready, as before. If your CI skips draft PRs (`if: github.event.pull_request.draft == false`), add `ready_for_review` to the workflow's `pull_request` types, or the head commit's checks stay skipped after the PR is marked ready — and the merge gate does not count skipped as passing.
+
 ### Memory searches return the wrong thing (or nothing)
 
 **vipune blends recency into every score by default.** Its config sets `recency_weight = 0.3`, and it returns `(1-w)*raw + w*exp(-1e-6*age)` unless you pass `--recency 0`. The recency term spans 0.3; a whole hybrid top-5 spans about 0.044. So at the default, the ranking is age, not relevance.

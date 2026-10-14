@@ -16,6 +16,7 @@ import { buildCompletionEvent } from "./work-driver-completion-event.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
+import { markDraftPrReady } from "./work-driver-draft-pr.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { detectMainline, restoreCheckout } from "./work-driver-git.ts";
@@ -168,9 +169,13 @@ export async function runSingleDispatch(
  */
 export async function runMerged(
   ctx: CycleContext,
-  state: WorkState,
+  entryState: WorkState,
   now: number,
 ): Promise<WorkState> {
+  // #1292 — a draft cannot be merged (`mergeStateStatus: DRAFT` holds it) and
+  // must not park as awaiting-human-merge looking unfinished. Normally a no-op:
+  // the PR was marked ready on entering ci; this retries a ready that failed.
+  const state = await markDraftPrReady(ctx, entryState);
   const prNumber = state.pipelineState.prNumber ?? 0;
   const issues = activeIssuesOf(state);
   let next: WorkState;

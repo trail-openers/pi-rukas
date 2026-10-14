@@ -414,6 +414,12 @@ export interface PipelineState {
   /** PR number once Step 6 opens one. */
   prNumber?: number;
   /**
+   * #1292 — set when Step 6 opened the PR as a draft: `draft` until the review
+   * is done, `ready` once marked, `ready-failed` (with the last error) when
+   * every `pr ready` attempt failed. Absent = the PR was not opened as a draft.
+   */
+  prDraft?: { status: "draft" | "ready" | "ready-failed"; error?: string };
+  /**
    * PR17 — SHA of the base commit the feature branch grew from, recorded
    * by the branch step (git rev-parse HEAD at repoRoot after ops created
    * the branch). The outcome-verification gate diffs against this to prove

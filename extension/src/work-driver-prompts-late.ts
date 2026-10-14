@@ -73,8 +73,7 @@ export function inlineCommitPrPrompt(
   eventLog: readonly import("./workflow-state-events.ts").WorkEvent[],
   scratchDirAbs: string,
   issueTitle?: string,
-  // #861 — ops-fallback integration context; present when the driver created
-  // the integrate worktree the fallback is pinned to (only permitted tree).
+  // #861 — ops-fallback integration context; present when the driver created the integrate worktree the fallback is pinned to (only permitted tree).
   fallback?: {
     /** The driver-owned integration worktree — the ONLY permitted working tree. */
     integratePath: string;
@@ -90,6 +89,7 @@ export function inlineCommitPrPrompt(
     commitShas: Record<string, string>;
     /** The per-workstream plan (scope / paths), when captured. */
     workstreams: Record<string, Workstream>;
+    draft?: boolean; // #1292 — open the PR with `--draft` (marked ready once the review is done).
   },
 ): string {
   const headline = issues.length === 1 ? `issue #${issues[0]}` : `issues #${issues.join(", #")}`;
@@ -207,11 +207,11 @@ export function inlineCommitPrPrompt(
       "",
       `  4. \`git -C ${fallback.integratePath} commit -m "<concise subject>"\` with a meaningful message. Body should reference all active issues + summarise the ${fbIds.length} workstreams' contributions.`,
       `  5. \`git -C ${fallback.integratePath} push -u origin ${branchName}\`.`,
-      `  6. \`gh pr create --title "<title>" --body "...\\n\\n${fixesLines}${companionLines ? `\\n${companionLines}` : ""}${bodySections ? `\\n\\n${bodySections}` : ""}\` — ${fixesNote}`,
+      `  6. \`gh pr create ${fallback.draft ? "--draft " : ""}--title "<title>" --body "...\\n\\n${fixesLines}${companionLines ? `\\n${companionLines}` : ""}${bodySections ? `\\n\\n${bodySections}` : ""}\` — ${fixesNote}`,
       "  7. End your reply with `pr: <PR-number>` so the driver can capture it.",
       ...droppedNote,
       "",
-      "If you need a longer PR body, write it to a file under the scratch dir and pass via `gh pr create --body-file <path>` — DO NOT write the body file to the repo root.",
+      `If you need a longer PR body, write it to a file under the scratch dir and pass via \`gh pr create ${fallback.draft ? "--draft " : ""}--body-file <path>\` — DO NOT write the body file to the repo root.`,
       scratchHygieneSection(fallback.scratchDir),
     ].join("\n");
   }

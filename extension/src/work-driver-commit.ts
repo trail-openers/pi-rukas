@@ -40,6 +40,7 @@ import {
   worktreesWithNewWork,
 } from "./work-driver-commit-reentry.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { draftPrEnabled } from "./work-driver-draft-pr.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { deriveConsolidationSubject } from "./work-driver-handoff-subject.ts";
@@ -387,7 +388,9 @@ export async function mechanizedCommitPr(
     // failure. We pass the body STRING (the scratch file above is for the
     // ops-fallback prompt) and no base — gh/glab defaults to the repo
     // default branch, which is the base the driver recorded in Step 3.
-    const created = await forge.prCreate(title, branchName, prBody);
+    // #1292 — a draft until the review is done (see work-driver-draft-pr.ts).
+    const draft = draftPrEnabled(ctx);
+    const created = await forge.prCreate(title, branchName, prBody, undefined, { draft });
     const prNumber = created.number;
     if (prNumber === undefined || !Number.isFinite(prNumber)) {
       return {
@@ -395,7 +398,9 @@ export async function mechanizedCommitPr(
         reason: `forge pr create succeeded but returned no PR number (url=${(created.url ?? "").slice(0, 120)})`,
       };
     }
-    trace(`work-driver: commit-pr — opened PR #${prNumber} for ${branchName}`);
+    trace(
+      `work-driver: commit-pr — opened ${draft ? "draft " : ""}PR #${prNumber} for ${branchName}`,
+    );
     // 5. Emit the same event shapes the dispatch path produces so the shared
     // downstream (parsePrNumber + both gates) runs unchanged. #782 — the
     // flake-recovery event (verify-flake-recovered, step: "commit-pr") is
@@ -412,7 +417,9 @@ export async function mechanizedCommitPr(
       rootState,
       commitPrFlakeEvidence,
     );
-    return { ok: true, state: next };
+    if (!draft) return { ok: true, state: next };
+    const prDraft = { status: "draft" as const };
+    return { ok: true, state: { ...next, pipelineState: { ...next.pipelineState, prDraft } } };
   } catch (err) {
     const e = err as Error & { stderr?: string };
     return {
