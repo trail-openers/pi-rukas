@@ -34,6 +34,7 @@ import { type DriverOutcome, runWorkDriver } from "../work-driver.ts";
 import { fetchIssueBodies } from "../work-entry.ts";
 import { createEmitSink } from "../work-state-emit.ts";
 import { interruptReasonOf, markInterrupted, readState, workStateFile } from "../workflow-state.ts";
+import type { WorkState } from "../workflow-state.ts";
 import { EXIT, exitCodeForGroup, exitCodeForState } from "./exit-code.ts";
 import { type LineWriter, createHeadlessHost } from "./host.ts";
 import { type IssueResult, projectIssue } from "./result.ts";
@@ -56,6 +57,14 @@ export interface HeadlessRunOptions {
 export interface HeadlessRunResult {
   exitCode: number;
   results: IssueResult[];
+  /**
+   * #1189 — present when the runner detected a state divergence (the
+   * driver's in-memory terminal state disagreed with the state file on
+   * disk). The CLI emits `error.code: "state-diverged"` in the JSON
+   * output when this is set. The result is projected from the in-memory
+   * state (the runner's own truth), not from the file.
+   */
+  error?: { code: "state-diverged"; message: string };
 }
 
 const DEFAULT_GRACE_MS = 10_000;
@@ -63,6 +72,42 @@ const DEFAULT_GRACE_MS = 10_000;
 const TERMINAL_STATUSES = new Set<string>(["merged", "handoff", "aborted"]);
 /** After grace expires, how long the runner waits for a driver that was mid-step. */
 const LATE_DRIVER_MS = 5_000;
+
+/**
+ * #1189 — compare the driver's in-memory terminal state against the state
+ * file on disk. Returns the field names that differ (empty = agree).
+ * `updatedAt` is excluded: it is a write timestamp, not a state field — the
+ * driver's in-memory copy predates the final persist that rewrote it.
+ */
+export function detectDivergence(memory: WorkState, disk: WorkState): string[] {
+  const fields: (keyof WorkState)[] = [
+    "schemaVersion",
+    "resumable",
+    "owner",
+    "issue",
+    "issues",
+    "startedAt",
+    "upstreamRefs",
+    "pipelineState",
+    "eventLog",
+  ];
+  const diffs: string[] = [];
+  for (const f of fields) {
+    if (JSON.stringify(memory[f]) !== JSON.stringify(disk[f])) diffs.push(f);
+  }
+  return diffs;
+}
+
+/** A compact summary of a state for trace output (not the whole JSON). */
+function summarizeState(s: WorkState): Record<string, unknown> {
+  return {
+    status: s.pipelineState.status,
+    currentStep: s.pipelineState.currentStep,
+    prNumber: s.pipelineState.prNumber,
+    branch: s.pipelineState.branchName,
+    eventLogLength: s.eventLog.length,
+  };
+}
 
 export async function runHeadless(opts: HeadlessRunOptions): Promise<HeadlessRunResult> {
   const controller = new AbortController();
@@ -95,11 +140,14 @@ export async function runHeadless(opts: HeadlessRunOptions): Promise<HeadlessRun
   const results: IssueResult[] = [];
   const codes: number[] = [];
   let groups: number[][] = [];
+  let divergenceError: { code: "state-diverged"; message: string } | undefined;
   try {
     groups = await planGroups(opts);
     for (const group of groups) {
       if (controller.signal.aborted) break;
-      const groupCodes = await runGroup(opts, group, controller.signal, grace, results);
+      const groupCodes = await runGroup(opts, group, controller.signal, grace, results, (msg) => {
+        divergenceError = { code: "state-diverged", message: msg };
+      });
       codes.push(...groupCodes);
     }
   } finally {
@@ -121,7 +169,9 @@ export async function runHeadless(opts: HeadlessRunOptions): Promise<HeadlessRun
     results.push(await unrunResult(opts.repoRoot, issue, interruptCode));
   }
   if (unrun.length > 0) return { exitCode: interruptCode, results };
-  return { exitCode: exitCodeForGroup(codes), results };
+  const base = { exitCode: exitCodeForGroup(codes), results };
+  if (divergenceError) return { ...base, error: divergenceError };
+  return base;
 }
 
 /** An issue no group reached: its state file's status if one exists, else not-started. */
@@ -188,6 +238,7 @@ async function runGroup(
   signal: AbortSignal,
   grace: number,
   results: IssueResult[],
+  onDivergence: (message: string) => void,
 ): Promise<number[]> {
   const primary = group[0];
   if (primary === undefined) return [];
@@ -195,6 +246,17 @@ async function runGroup(
   const host = createHeadlessHost(primary, opts.write);
   // One sink per issue, shared with the driver and the fallback below: the watermark keeps the stream exactly-once.
   const sink = createEmitSink((e, index) => host.emit(e, index));
+  // #1189 — the driver's in-memory terminal state, handed to the runner
+  // for the disk-vs-memory divergence check. The state file lives inside
+  // the tree the agents work in and agents run as the same user, so an
+  // agent can write it — this callback is the runner's own, trusted copy
+  // of the terminal state, captured from the driver rather than read back
+  // from the file. `undefined` means the driver crashed before reaching
+  // a terminal boundary (the file is then the only thing it left behind).
+  let inMemory: WorkState | undefined;
+  const onFinalState = (s: WorkState) => {
+    inMemory = s;
+  };
   const driver: Promise<DriverOutcome | { crashed: string }> = runWorkDriver({
     host,
     repoRoot: opts.repoRoot,
@@ -204,6 +266,7 @@ async function runGroup(
     signal,
     processGroup: true,
     emitSink: sink,
+    onFinalState,
     ...opts.driverSeams,
   }).catch((err: unknown) => ({ crashed: errorMessage(err) }));
 
@@ -267,6 +330,34 @@ async function runGroup(
       code = expiredCode;
     } else if (refusedHere) code = EXIT.refused;
     else code = exitCodeForState(state);
+    // #1189 — divergence check. If the driver reached a terminal boundary
+    // and handed the runner an in-memory snapshot, that snapshot must match
+    // what the state file on disk says. The state file is inside the repo
+    // tree the agents work in and agents run as the same user, so an agent
+    // that edits its own state file could otherwise choose the runner's
+    // exit code and JSON result. On disagreement we exit 30 with
+    // `error.code: "state-diverged"` — the driver's in-memory state is
+    // what we trust, and the file is what we flag.
+    if (inMemory && issue === primary) {
+      const divergences = detectDivergence(inMemory, state);
+      if (divergences.length > 0) {
+        const message =
+          `driver in-memory state and state file disagree on fields: ${divergences.join(", ")}; ` +
+          `driver said ${JSON.stringify(summarizeState(inMemory))}, file says ${JSON.stringify(summarizeState(state))}`;
+        trace(`headless: state divergence on issue #${issue} — ${message}`);
+        onDivergence(message);
+        // The in-memory state is the runner's own truth; the file is the
+        // suspect. Exit 30 with state-diverged, projecting from the
+        // in-memory state (NOT the file) so the result matches what the
+        // driver actually did.
+        const projectedFromMemory = projectIssue(inMemory, file);
+        projectedFromMemory.exitCode = EXIT.crash;
+        projectedFromMemory.diverged = true;
+        results.push(projectedFromMemory);
+        codes.push(EXIT.crash);
+        continue;
+      }
+    }
     projected.exitCode = code;
     results.push(projected);
     codes.push(code);

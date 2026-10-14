@@ -7,6 +7,7 @@
 import { parseHeadlessArgs } from "../src/headless/cli.ts";
 import { EXIT, exitCodeForGroup, exitCodeForState } from "../src/headless/exit-code.ts";
 import { projectIssue, questionsOf } from "../src/headless/result.ts";
+import { detectDivergence } from "../src/headless/run.ts";
 import type { WorkCapLiteral } from "../src/workflow-state-events-caps.ts";
 import {
   type WorkEvent,
@@ -131,6 +132,50 @@ assert(exitCodeForGroup([0, 0]) === 0, "group of merged → 0");
   assert(
     p.questions === undefined && p.cap === undefined,
     "projection: no questions or cap when merged",
+  );
+}
+
+// ── #1189 — divergence detection: in-memory vs. on-disk state.
+{
+  const base = withStatus(50, "merged", [
+    { kind: "step-started", step: "explore", at: 1000 },
+    { kind: "merged", at: 5000, prNumber: 7 },
+  ]);
+  // Identical states → no divergence.
+  assert(detectDivergence(base, structuredClone(base)).length === 0, "identical states → no divergence");
+  // Agent rewrote the status in the file: the file says `merged` but the driver
+  // in-memory said `handoff` → divergence.
+  const tamperedStatus = structuredClone(base);
+  tamperedStatus.pipelineState.status = "handoff" as const;
+  const statusDiffs = detectDivergence(base, tamperedStatus);
+  assert(
+    statusDiffs.length === 1 && statusDiffs[0] === "pipelineState",
+    "status flip in the file → pipelineState divergence",
+  );
+  // Agent rewrote the PR number in the file.
+  const tamperedPr = structuredClone(base);
+  tamperedPr.pipelineState.prNumber = 999;
+  const prDiffs = detectDivergence(base, tamperedPr);
+  assert(
+    prDiffs.length === 1 && prDiffs[0] === "pipelineState",
+    "PR-number flip in the file → pipelineState divergence",
+  );
+  // Agent appended an event to the file that the driver never recorded.
+  const tamperedLog = structuredClone(base);
+  tamperedLog.eventLog = [...tamperedLog.eventLog, { kind: "merged", at: 9999, prNumber: 42 }];
+  const logDiffs = detectDivergence(base, tamperedLog);
+  assert(
+    logDiffs.includes("eventLog"),
+    "appended event in the file → eventLog divergence",
+  );
+  // updatedAt is excluded: the driver's in-memory copy predates the final
+  // persist that rewrote it. A file with a different updatedAt is NOT a
+  // divergence.
+  const tamperedAt = structuredClone(base);
+  tamperedAt.updatedAt = base.updatedAt + 10_000;
+  assert(
+    detectDivergence(base, tamperedAt).length === 0,
+    "updatedAt alone → not a divergence",
   );
 }
 

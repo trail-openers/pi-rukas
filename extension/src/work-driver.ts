@@ -1,10 +1,8 @@
 /**
  * /work driver — the deterministic orchestrator for compiled /work cycles.
- *
  * Code-as-orchestrator: owns step transitions (#393), dispatches via
  * `dispatchCore()` (ownerKind:driver), persists to `.pi/work-state/` via
  * `persistCycle()`, surfaces progress via `notifyAgent()`.
- *
  * All 9 steps wired; each implementation lives in `work-driver-<step>.ts`.
  */
 import { notifyAgent } from "./agent-message.ts";
@@ -22,6 +20,7 @@ import {
 import { enterCycle } from "./work-driver-cycle-entry.ts";
 import { acquireWorkDeckHeader, headerToken } from "./work-driver-deck-header.ts";
 import { countPriorStepStarts } from "./work-driver-diff.ts";
+import { reportFinalState } from "./work-driver-final-state.ts";
 import { interruptIfRequested, recordStepCrash } from "./work-driver-interrupt.ts";
 import {
   clearFooter,
@@ -62,17 +61,14 @@ import {
 } from "./workflow-state.ts";
 
 export { DriverNotImplementedError } from "./work-driver-context.ts";
+
+/** Outcome of a `runWorkDriver` call: `{started: true}` or `{started: false; reason}`. */
+export type DriverOutcome = { started: true } | { started: false; reason: string };
 /**
  * Run one /work cycle: read/create state, loop over steps via `nextStep()`,
  * persist after every transition, surface outcome via `pi.sendUserMessage`.
- *
  * Fire-and-forget: callers start via `void runWorkDriver().catch(reportFatal)`.
  */
-/**
- * Outcome of a `runWorkDriver` call: `{started: true}` or `{started: false; reason}`.
- */
-export type DriverOutcome = { started: true } | { started: false; reason: string };
-
 export async function runWorkDriver(ctx: DriverContext): Promise<DriverOutcome> {
   if (sessionEnding()) {
     const reason = "the session is shutting down";
@@ -133,6 +129,7 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
       ctx.host,
       `pi-rukas:driver-event v1 kind=refused issue=${ctx.issue} at=${at}\npi-rukas: /work for issue #${ctx.issue} already terminated as ${terminalStatus}. To start a fresh cycle (e.g., after revising the issue via /plan), re-run with --restart:\n  /work ${ctx.issue} --restart\nOr rm ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json manually. The prior cycle's event log is preserved in the state file until you restart or remove it.`,
     );
+    reportFinalState(ctx, state);
     return { started: false, reason: `already terminated as ${terminalStatus}` };
   }
 
@@ -147,6 +144,7 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
     });
     if (attention.refuse && attention.message) {
       notifyAgent(ctx.host, attention.message);
+      reportFinalState(ctx, state);
       return { started: false, reason: "issue carries the needs-human-attention label" };
     }
     if (!attention.checked) {
@@ -275,6 +273,7 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
           `Inspect ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json for the state.`,
       );
       // The cycle ran and then aborted — its state file is the real outcome.
+      reportFinalState(ctx, state);
       return { started: true };
     }
     const step = state.pipelineState.currentStep;
@@ -328,6 +327,7 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
           `pi-rukas /work driver halted: step "${err.step}" is not implemented in this build. This is a bug — the state file at .pi/work-state/ has the full cycle for the report.`,
         );
         // The cycle ran and then aborted — its state file is the real outcome.
+        reportFinalState(ctx, state);
         return { started: true };
       }
       // Spawn-level / unexpected error — mark aborted with the error.
@@ -351,6 +351,7 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
           `${(err as Error).message}`,
       );
       // The cycle ran and then aborted — its state file is the real outcome.
+      reportFinalState(ctx, state);
       return { started: true };
     }
     // Headless S4 (#1024): an interrupt that fired during the step ends the
@@ -393,6 +394,7 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
         `pi-rukas:driver-event v1 kind=crash issue=${ctx.issue} at=${new Date().toISOString()}\npi-rukas /work driver halted on issue #${ctx.issue}: pipelineState.currentStep has unknown value ${JSON.stringify(decision.value)}. ` +
           `Inspect ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json or rm to start fresh.`,
       );
+      reportFinalState(ctx, state);
       return { started: true };
     }
     const decisionStep = decision.step;
@@ -444,5 +446,6 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
     // record that the driver reached its terminal boundary at all.
     await persistCycle(ctx, state);
   }
+  reportFinalState(ctx, state);
   return { started: true };
 }

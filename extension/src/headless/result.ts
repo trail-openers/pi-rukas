@@ -26,6 +26,14 @@ export interface IssueResult {
   exitCode: number;
   /** Clarification questions (exit 11): the cap's bullet evidence, numbered q1, q2… */
   questions?: string[];
+  /**
+   * #1189 — the driver's in-memory terminal state disagreed with the state
+   * file on disk. Present only when the runner detected a divergence and
+   * projected from the in-memory state (which it trusts) instead of the
+   * file. `exitCode` is 30 and the result carries the `state-diverged`
+   * error code (see the top-level `error` field on the JSON output).
+   */
+  diverged?: boolean;
 }
 
 /** `- item` bullet lines of a cap's evidence, in order. */

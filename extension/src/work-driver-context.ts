@@ -318,6 +318,17 @@ export interface DriverContext {
    * the fallback path without a real `gh` binary.
    */
   forge?: import("./forge.ts").Forge;
+  /**
+   * #1189 — the driver's in-memory terminal state, handed to the caller for
+   * the disk-vs-memory divergence check. The state file lives inside the
+   * tree the agents work in and agents run as the same user, so an agent
+   * can write it; the callback gives the runner its own, trusted copy of
+   * the terminal state for a divergence check (see work-driver-final-state.ts).
+   * Invoked at most once per cycle, never on a crashed driver. `undefined`
+   * means the driver never reached a terminal boundary. Production callers
+   * omit this; the headless runner (#1189) passes one.
+   */
+  onFinalState?: (state: WorkState) => void;
 }
 
 /**
