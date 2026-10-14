@@ -15,7 +15,7 @@ import { getPiInvocation } from "./pi-binary-resolve.ts";
 import { attachStdinErrorGuard } from "./stdin-guard.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
-import { type DriverContext, nextStep } from "./work-driver-context.ts";
+import { type CycleContext, type DriverContext, nextStep } from "./work-driver-context.ts";
 import {
   FAN_OUT_STEPS,
   classifyRunningState as _classifyRunningState,
@@ -224,7 +224,7 @@ async function defaultSpawnReattach(): Promise<{
  * `dispatch-completed` event and advances to the next step.
  */
 export async function attemptReattachInResume(
-  ctx: Pick<DriverContext, "repoRoot" | "emitSink">,
+  ctx: Pick<CycleContext, "repoRoot" | "emitSink">,
   state: WorkState,
   verdict: { step: WorkStep; jobIds: string[] },
   inFlightEvents: Array<Record<string, unknown>>,

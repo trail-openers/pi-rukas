@@ -26,7 +26,7 @@
 
 import { trace } from "./trace.ts";
 import { detectMainline, freshMainlineTip } from "./work-driver-branch-mechanized.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { activeIssuesOf } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
 import { handleSameIssueLeftovers } from "./worktree-leftover.ts";
@@ -88,7 +88,7 @@ export async function readRepoRootDirt(
  * state, unchanged when the pass found nothing or could not run.
  */
 export async function runBranchResiduePass(
-  ctx: DriverContext,
+  ctx: CycleContext,
   state: WorkState,
   execFn: ExecFn,
   salvageScratch: string,

@@ -221,7 +221,7 @@ export function writeState(repoRoot: string, state: WorkState, sink?: EmitSink):
  * through here so the emit sink is never forgotten at a call site.
  */
 export function persistCycle(
-  ctx: { repoRoot: string; emitSink?: EmitSink },
+  ctx: { repoRoot: string; emitSink: EmitSink },
   state: WorkState,
 ): Promise<void> {
   return writeState(ctx.repoRoot, state, ctx.emitSink);

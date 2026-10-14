@@ -6,7 +6,7 @@
  * `runExplore` so existing imports keep their path.
  */
 import { trace } from "./trace.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import {
   EXPLORE_RETRY_PREFACE,
   dispatchExploreAttempt,
@@ -45,7 +45,7 @@ import { type WorkState, appendEvent, writeDispatchArtifact } from "./workflow-s
  * the smoke test can exercise the runStep path.
  */
 export async function runExplore(
-  ctx: DriverContext,
+  ctx: CycleContext,
   state: WorkState,
   now: number,
 ): Promise<WorkState> {

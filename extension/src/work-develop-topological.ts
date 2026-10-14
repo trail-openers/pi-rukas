@@ -34,7 +34,7 @@ import {
   runDependentWorkstreams,
 } from "./work-develop-run.ts";
 import { appendDevelopVerifyFailure } from "./work-develop-verify-failure.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { runConvergeGateHandler } from "./work-driver-converge-gate.ts";
 import { topologicalDispatchOrder } from "./work-driver-dep-scheduler.ts";
 import { clearDispatch } from "./work-driver-resume.ts";
@@ -52,7 +52,7 @@ import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts
  * #679 — topological-dispatch core of runDevelop (see work-develop-run.ts).
  */
 async function runDevelopTopological(
-  ctx: DriverContext,
+  ctx: CycleContext,
   initialState: WorkState,
   ids: string[],
   workstreams: NonNullable<WorkState["pipelineState"]["workstreams"]>,

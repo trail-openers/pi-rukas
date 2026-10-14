@@ -50,7 +50,7 @@ export function makeBranchCompletedPersister(
   repoRoot: string,
   stateRef: { current: WorkState },
   notes: string[],
-  sink?: EmitSink,
+  sink: EmitSink,
 ): {
   emit: (ev: WorkEvent) => void;
   update: (fn: (s: WorkState) => WorkState) => void;

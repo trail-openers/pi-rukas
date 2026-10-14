@@ -34,7 +34,7 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { trace } from "./trace.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { detectMainline } from "./work-driver-git.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 import { appendEvent } from "./workflow-state.ts";
@@ -305,7 +305,7 @@ export function classifyCoverage(
  * as a warning (never a cap) via `recordAcceptanceCoverage`.
  */
 export async function runAcceptanceCoverageGate(
-  ctx: DriverContext,
+  ctx: CycleContext,
   state: WorkState,
 ): Promise<CoverageVerdict | null> {
   if (!acceptanceCoverageEnabled()) return null;

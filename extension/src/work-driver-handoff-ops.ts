@@ -14,7 +14,7 @@ import { dispatchCore } from "./dispatch.ts";
 import { slowRecorder } from "./slow-events.ts";
 import { transcriptPathFor } from "./spawn-support.ts";
 import { trace } from "./trace.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { handoffDispatchTimeoutMs } from "./work-driver-handoff.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { inlineHandoffOpsPrompt } from "./work-driver-prompts-late.ts";
@@ -31,7 +31,7 @@ import { type WorkState, appendEvent } from "./workflow-state.ts";
  * bound).
  */
 export async function runHandoffOpsDispatch(
-  ctx: DriverContext,
+  ctx: CycleContext,
   state: WorkState,
   handoffBodyPath: string,
 ): Promise<{ next: WorkState; opsReplyText: string }> {

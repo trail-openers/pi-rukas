@@ -16,11 +16,14 @@
  * `.git` is not writable is degraded enough that blocking hard on the lock
  * would cost more than the risk the lock guards against.
  */
+import { rmSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "./trace.ts";
 
 let integrationChain: Promise<unknown> = Promise.resolve();
+/** Lockfiles this process currently holds — released synchronously on signal exit. */
+const heldLockfiles = new Set<string>();
 const LOCK_STALE_MS = 30 * 60 * 1000;
 
 function lockPath(repoRoot: string): string {
@@ -36,7 +39,9 @@ async function acquireLockfile(repoRoot: string): Promise<() => Promise<void>> {
       const fh = await fs.open(file, "wx");
       await fh.writeFile(JSON.stringify({ pid: process.pid, at: Date.now() }));
       await fh.close();
+      heldLockfiles.add(file);
       return async () => {
+        heldLockfiles.delete(file);
         await fs.rm(file, { force: true }).catch(() => undefined);
       };
     } catch (err) {
@@ -85,6 +90,17 @@ async function guarded<T>(repoRoot: string, fn: () => Promise<T>): Promise<T> {
   } finally {
     await release();
   }
+}
+
+/**
+ * Headless S4 (#1024) — remove every integration lockfile this process holds,
+ * synchronously, so a signal exit leaves no lock for the next runner. A
+ * `finally` does not run once `process.exit` is called, so the runner calls
+ * this first. Safe to call when nothing is held.
+ */
+export function releaseHeldIntegrationLocks(): void {
+  for (const file of heldLockfiles) rmSync(file, { force: true });
+  heldLockfiles.clear();
 }
 
 /** Test seam: reset the in-process chain between fixtures. */

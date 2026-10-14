@@ -15,7 +15,7 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { prMergeSubjectFlag } from "./forge-commands.ts";
 import { trace } from "./trace.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import { mergeSubjectForState } from "./work-driver-merge-subject.ts";
@@ -292,7 +292,7 @@ async function executeAndVerifyMergeDirect(
  * derive step.
  */
 export async function mechanizedMerge(
-  ctx: DriverContext,
+  ctx: CycleContext,
   state: WorkState,
 ): Promise<
   | { ok: true; method: MergeMethod; notes: string[] }

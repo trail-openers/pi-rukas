@@ -20,6 +20,7 @@
 
 import type { DriverContext } from "../work-driver-context.ts";
 import { groupIssues } from "../work-driver-grouping.ts";
+import { releaseHeldIntegrationLocks } from "../work-driver-lock.ts";
 import { type DriverOutcome, runWorkDriver } from "../work-driver.ts";
 import { fetchIssueBodies } from "../work-entry.ts";
 import { createEmitSink } from "../work-state-emit.ts";
@@ -87,6 +88,9 @@ export async function runHeadless(opts: HeadlessRunOptions): Promise<HeadlessRun
     if (timer) clearTimeout(timer);
     target.off("SIGTERM", sigterm);
     target.off("SIGINT", sigint);
+    // A signalled run may leave a driver past its grace period; its lockfiles
+    // must not outlive this process (see releaseHeldIntegrationLocks).
+    if (signalled) releaseHeldIntegrationLocks();
   }
   return { exitCode: exitCodeForGroup(codes), results };
 }

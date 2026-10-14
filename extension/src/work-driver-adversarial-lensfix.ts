@@ -6,7 +6,7 @@
  */
 
 import { trace } from "./trace.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { integrate, restoreRepoRoot } from "./work-driver-integrate.ts";
 import {
   detectCommittedFix,
@@ -24,7 +24,7 @@ import type { ExecFn } from "./worktree.ts";
 /** #287 Part C — re-integrate a lens-fix made in a worktree (#654 task-c). */
 async function integrateLensFix(
   execFn: ExecFn,
-  ctx: DriverContext,
+  ctx: CycleContext,
   ps: PipelineState,
   worktrees: Record<string, string>,
 ): Promise<{ committed: boolean; error?: string; pushed?: boolean }> {
@@ -84,7 +84,7 @@ async function integrateLensFix(
 /** #749/#797 — committed-work classification for the `!result.committed` branch. */
 async function handleNoCommittedFix(
   execFn: ExecFn,
-  ctx: DriverContext,
+  ctx: CycleContext,
   ps: PipelineState,
   fixTree: string,
   result: { committed: boolean; error?: string; pushed?: boolean },

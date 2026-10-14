@@ -37,7 +37,7 @@ import {
   type AdversarialOutcome,
   outcomeOf,
 } from "./work-driver-adversarial-types.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { fetchDiff } from "./work-driver-diff.ts";
 import {
   jitteredMs,
@@ -58,7 +58,7 @@ export { capKillOutcomeFields };
  */
 
 export async function fanOutAdversarial(
-  ctx: DriverContext,
+  ctx: CycleContext,
   state: WorkState,
   ids: string[],
   priorOutcomes: Map<string, string>,

@@ -25,7 +25,7 @@ import { isNetGitTimeout } from "./work-driver-net-git.ts";
 import { execp } from "./work-driver-verify.ts";
 
 export { parseWorktreesBlock };
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import { cachedIssueTitle } from "./work-driver-integrate.ts";
 import { findOpenPrForIssue, prPreflightEnabled } from "./work-driver-pr-preflight.ts";
@@ -62,7 +62,7 @@ import { DirtyWorktreeError, gitErrorDetail } from "./worktree.ts";
  * that value is stamped instead: the lock only orders reads, it cannot tell a
  * sibling's failed restore (repoRoot left on its branch) from the operator's.
  */
-export async function stampCycleStartRef(ctx: DriverContext, state: WorkState): Promise<WorkState> {
+export async function stampCycleStartRef(ctx: CycleContext, state: WorkState): Promise<WorkState> {
   if (state.pipelineState.startRef) return state;
   // A failed capture on an earlier run is recorded in plumbReports; a resumed
   // cycle must not recapture (repoRoot may already be on the feature branch).
@@ -100,7 +100,7 @@ export async function stampCycleStartRef(ctx: DriverContext, state: WorkState): 
  * reported name disagrees, a plumb-report is emitted.
  */
 export async function runBranch(
-  ctx: DriverContext,
+  ctx: CycleContext,
   incoming: WorkState,
   now: number,
 ): Promise<WorkState> {
@@ -386,7 +386,7 @@ export async function runBranch(
  * dispatch closure live in work-develop-run.ts.
  */
 export async function runDevelop(
-  ctx: DriverContext,
+  ctx: CycleContext,
   state: WorkState,
   now: number,
 ): Promise<WorkState> {

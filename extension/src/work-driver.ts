@@ -16,6 +16,7 @@ import { runBranch, runDevelop, stampCycleStartRef } from "./work-driver-branch-
 import { checkpointCapedDispatch } from "./work-driver-cap-checkpoint.ts";
 import { runCommitPr } from "./work-driver-commit.ts";
 import {
+  type CycleContext,
   type DriverContext,
   DriverNotImplementedError,
   STEP_ORDINAL,
@@ -78,7 +79,7 @@ import {
  * selection, and event-emission logic is distinct enough that a giant
  * switch becomes harder to read than a dispatch table.
  */
-async function runStep(ctx: DriverContext, state: WorkState, step: WorkStep): Promise<WorkState> {
+async function runStep(ctx: CycleContext, state: WorkState, step: WorkStep): Promise<WorkState> {
   const now = Date.now();
   trace(`work-driver: running step "${step}" for issue ${ctx.issue}`);
 
@@ -152,7 +153,7 @@ export async function runWorkDriver(ctx: DriverContext): Promise<DriverOutcome> 
   }
 }
 
-async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
+async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
   // PR12 — `/work N --restart`: skip readState, start fresh. Branch step
   // handles worktree leftovers at runtime; this flag only wipes state.
   let state =

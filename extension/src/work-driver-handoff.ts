@@ -7,7 +7,7 @@ import { type ForgeType, detectForge } from "./forge-detect.ts";
 import { type Forge, createForge } from "./forge.ts";
 import { drainSlowEvents } from "./slow-events.ts";
 import { trace } from "./trace.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import {
   consolidateWorktreesToBranch,
   workNotYetOnBranch,
@@ -48,7 +48,7 @@ export async function handoffForge(repoRoot: string): Promise<Forge | undefined>
 }
 /** Step 7g — Emit cap-hit handoff artifact. Dispatches @ops to: - render the handoff body (referencing the work-state file) - post `gh pr comment` (or `gh issue comment` if no PR yet) - apply `needs-human-attention` label After the dispatch, set status=handoff to terminate the loop. The in-process fallback (`!commentUrl || !labelApplied`) now routes its gh calls through the forge adapter — the ops child's prompt still names raw `gh` (it is a prose contract with the agent, not an exec seam), but the driver's own mechanical calls are forge-aware. */
 export async function runHandoff(
-  ctx: DriverContext,
+  ctx: CycleContext,
   state: WorkState,
   now: number,
 ): Promise<WorkState> {

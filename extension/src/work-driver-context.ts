@@ -147,6 +147,13 @@ export const STEP_FAILURE_POLICY: Record<WorkStep, StepFailurePolicy> = {
   merged: "HALT",
 };
 
+/**
+ * Headless S4 (#1024) — the context a cycle runs with once `enterCycle` has
+ * created its emit sink. `persistCycle` takes this shape (or a narrower Pick
+ * of it), so a step that writes state cannot be compiled without a sink.
+ */
+export type CycleContext = DriverContext & { emitSink: EmitSink };
+
 export interface DriverContext {
   /** The host the cycle runs in (#1020). Pi-session or a recording test host. */
   host: DriverHost;

@@ -12,6 +12,7 @@
  * state file (exit-code.ts).
  */
 
+import { releaseHeldIntegrationLocks } from "../work-driver-lock.ts";
 import { resolveRepoRoot } from "../work-entry.ts";
 import { EXIT } from "./exit-code.ts";
 import { runHeadless } from "./run.ts";
@@ -97,5 +98,9 @@ async function main(argv: string[]): Promise<number> {
 // Run only when executed directly (bun cli.ts ...), never when imported by a test.
 const invokedDirectly = process.argv[1]?.endsWith("cli.ts") === true;
 if (invokedDirectly) {
-  main(process.argv.slice(2)).then((code) => process.exit(code));
+  main(process.argv.slice(2)).then((code) => {
+    // process.exit skips every pending finally: release the locks first.
+    releaseHeldIntegrationLocks();
+    process.exit(code);
+  });
 }

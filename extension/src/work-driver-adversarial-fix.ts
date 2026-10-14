@@ -43,7 +43,7 @@ import {
   withDeveloperPlumbReplies,
 } from "./work-driver-adversarial-plumb.ts";
 import type { AdversarialOutcome } from "./work-driver-adversarial-types.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { beginDispatch } from "./work-driver-resume.ts";
 import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import { execp as argvExecp } from "./work-driver-verify.ts";
@@ -306,7 +306,7 @@ function parkFixPass(
  * comment. Every pre-pass read fails closed (see the scope module).
  */
 export async function runAdversarialFixPass(
-  ctx: DriverContext,
+  ctx: CycleContext,
   state: WorkState,
   pending: PendingFix[],
   now: number,

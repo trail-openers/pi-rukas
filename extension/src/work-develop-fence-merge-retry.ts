@@ -58,7 +58,7 @@ import {
   applyFenceVerdicts,
   replaceDevelopConvergedVerdicts,
 } from "./work-develop-fence-verdicts.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { runConvergeGateHandler } from "./work-driver-converge-gate.ts";
 import { applySafetyNet } from "./work-driver-safety-net.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
@@ -84,7 +84,7 @@ export { mergeRetryPrompt } from "./work-develop-fence-merge.ts";
  *      cap-hit evidence names the MERGE (both halves, both attempts).
  */
 export async function runMergeRetryFlow(
-  ctx: DriverContext,
+  ctx: CycleContext,
   stateIn: WorkState,
   stateRef: { current: WorkState },
   ids: string[],

@@ -61,7 +61,7 @@ import {
   worktreeStatus,
 } from "./work-develop-git.ts";
 import { withPersistNotes } from "./work-develop-retry.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { execp } from "./work-driver-verify.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 
@@ -102,7 +102,7 @@ function effectiveBaseForWorkstream(
  * a gate is never suppressed on uncertainty. Never throws.
  */
 export async function hasAnyWorktreeEvidence(
-  ctx: DriverContext,
+  ctx: CycleContext,
   state: WorkState,
 ): Promise<boolean> {
   const worktrees = state.pipelineState.worktrees ?? {};
@@ -331,7 +331,7 @@ export async function safetyNetWorktree(
  * pre-safety-net behaviour.
  */
 export async function applySafetyNet(
-  ctx: DriverContext,
+  ctx: CycleContext,
   state: WorkState,
   only?: ReadonlySet<string>,
 ): Promise<WorkState> {

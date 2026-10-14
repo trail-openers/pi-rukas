@@ -130,12 +130,12 @@ export function checkCrossGroupClaimsSync(
  * with a cap-hit event when a conflict is found. When no conflict exists,
  * registers the claim and returns state unchanged.
  */
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { appendEvent } from "./workflow-state.ts";
 
 export async function checkAndRegisterClaims(
-  ctx: DriverContext,
+  ctx: CycleContext,
   state: WorkState,
   workstreams: Record<string, { paths?: string[]; outOfScope?: string[] }>,
 ): Promise<WorkState> {

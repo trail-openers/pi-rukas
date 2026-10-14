@@ -12,7 +12,7 @@
  * one-shot).
  */
 
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { persistCycle } from "./workflow-state.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
@@ -22,7 +22,7 @@ import { type WorkState, appendEvent } from "./workflow-state.ts";
  * return `state` unchanged (no write).
  */
 export async function interruptIfRequested(
-  ctx: DriverContext,
+  ctx: CycleContext,
   state: WorkState,
 ): Promise<WorkState> {
   const signal = ctx.signal;

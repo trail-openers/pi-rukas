@@ -308,6 +308,9 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
   // pinned in the adversarial section.
   const SEAM_PLUMBING = new Set([
     "dispatch.ts",
+    // #1024 — enterCycle binds the default dispatch to the cycle's AbortSignal;
+    // it forwards each caller's spec (and cwd) unchanged, so it adds no site.
+    "work-driver-cycle-entry.ts",
     "work-driver-resume.ts",
     "work-driver-merged.ts",
     "work-driver-adversarial-fanout.ts",

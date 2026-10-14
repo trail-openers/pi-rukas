@@ -6,13 +6,19 @@
  * #1162) and returns the context every step receives. The sink is passed
  * explicitly to `writeState`; there is no module-level registry to unbind, so
  * nothing needs cleaning up on exit.
+ *
+ * Headless S4 (#1024): the returned context is a `CycleContext`, whose
+ * `emitSink` is required — `persistCycle` will not compile without one. The
+ * default dispatch is bound to the cycle's AbortSignal, so a SIGTERM kills the
+ * in-flight child process instead of leaving it running.
  */
 
+import { dispatchCore } from "./dispatch.ts";
 import { dropSlowEvents } from "./slow-events.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { createEmitSink } from "./work-state-emit.ts";
 
-export function enterCycle(ctx: DriverContext): DriverContext {
+export function enterCycle(ctx: DriverContext): CycleContext {
   // #799 — clear any stale slow-event buffer entry for EVERY issue in the
   // group before the cycle begins: a previous parked cycle of the same
   // issue (whose handoff's final drain ran before a late crossing) can
@@ -22,5 +28,11 @@ export function enterCycle(ctx: DriverContext): DriverContext {
   const host = ctx.host;
   // A caller that owns the watermark (the headless runner, #1024) passes its
   // sink in, so a fallback write made outside the driver shares it.
-  return { ...ctx, emitSink: ctx.emitSink ?? createEmitSink((e) => host.emit(e)) };
+  const emitSink = ctx.emitSink ?? createEmitSink((e) => host.emit(e));
+  const cycleSignal = ctx.signal;
+  // Production dispatch is the real dispatchCore, bound to this cycle's signal.
+  // A test-injected dispatchFn is used as given.
+  const dispatchFn: NonNullable<DriverContext["dispatchFn"]> =
+    ctx.dispatchFn ?? ((h, spec, opts) => dispatchCore(h, spec, { ...opts, signal: cycleSignal }));
+  return { ...ctx, emitSink, dispatchFn };
 }

@@ -29,7 +29,7 @@
  */
 import { trace } from "./trace.ts";
 import { runCommitPrPostDispatchGates } from "./work-driver-commit-pr-events.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import {
   branchHolders,
   integrateWorktreeName,
@@ -43,7 +43,7 @@ import { resolvePath } from "./worktree.ts";
 import type { ExecFn } from "./worktree.ts";
 
 export async function auditCommitPrFallback(
-  ctx: DriverContext,
+  ctx: CycleContext,
   execFn: ExecFn,
   next: WorkState,
   fallbackFired: boolean,

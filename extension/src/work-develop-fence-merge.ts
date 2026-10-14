@@ -32,7 +32,7 @@
 import { siblingDeclaredViolators } from "./work-develop-fence-recovery.ts";
 import { FENCE_VIOLATION_CAP } from "./work-develop-fence-recovery.ts";
 import { buildCompletionEvent } from "./work-driver-completion-event.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
@@ -106,7 +106,7 @@ export type MergePrepOutcome =
  * decides the verdict/restore (work-develop-fence-merge-retry.ts).
  */
 export async function runMergePrep(
-  ctx: DriverContext,
+  ctx: CycleContext,
   stateIn: WorkState,
   stateRef: { current: WorkState },
   ids: string[],

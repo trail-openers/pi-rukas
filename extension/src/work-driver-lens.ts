@@ -12,7 +12,7 @@ import { writeFindings } from "./memory-write.ts";
 import { resolveReviewThreshold } from "./review-threshold.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { readAllMergedDiffs } from "./work-driver-diff.ts";
 import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
 import { cachedIssueTitle } from "./work-driver-integrate.ts";
@@ -41,7 +41,7 @@ import { withUsage } from "./workflow-state-events-usage.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 export async function runLens(
-  ctx: DriverContext,
+  ctx: CycleContext,
   state: WorkState,
   now: number,
 ): Promise<WorkState> {
@@ -331,7 +331,7 @@ export async function runLens(
 }
 
 export async function runLensFix(
-  ctx: DriverContext,
+  ctx: CycleContext,
   state: WorkState,
   now: number,
 ): Promise<WorkState> {
@@ -488,7 +488,7 @@ export async function runLensFix(
  * The tree the lens gate works in. #492 — exported so the adversarial gate's
  * lens-fix integration path names the SAME tree. Falls back to repoRoot.
  */
-export function lensWorktree(ctx: DriverContext, state: WorkState): string {
+export function lensWorktree(ctx: CycleContext, state: WorkState): string {
   const wt = state.pipelineState.worktrees ?? {};
   return wt.default ?? wt[Object.keys(wt)[0] ?? ""] ?? ctx.repoRoot;
 }

@@ -17,7 +17,7 @@ import { extractListField, sliceMarkdownSection } from "./work-driver-plan-parse
 export { sliceMarkdownSection, splitOutsideParens } from "./work-driver-plan-parse.ts";
 import { transcriptPathFor } from "./spawn-support.ts";
 import type { DispatchResult } from "./types.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { checkAndRegisterClaims, crossGroupConflictsEnabled } from "./work-driver-path-claims.ts";
 import { mergeCoupledWorkstreams } from "./work-driver-plan-coupling.ts";
@@ -84,7 +84,7 @@ import { type WorkState, appendEvent } from "./workflow-state.ts";
  *    knowing what to develop); event is `dispatch-failed`
  */
 export async function runPlan(
-  ctx: DriverContext,
+  ctx: CycleContext,
   state: WorkState,
   now: number,
 ): Promise<WorkState> {

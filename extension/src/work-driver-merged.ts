@@ -13,7 +13,7 @@ import { slowRecorder } from "./slow-events.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import { buildCompletionEvent } from "./work-driver-completion-event.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
@@ -73,7 +73,7 @@ export function parseMergeCommit(text: string | undefined): string | undefined {
  * directly.
  */
 export async function runSingleDispatch(
-  ctx: DriverContext,
+  ctx: CycleContext,
   state: WorkState,
   step: WorkStep,
   role: string,
@@ -167,7 +167,7 @@ export async function runSingleDispatch(
  * 'step-failed:merged' → handoff. Operator merges manually.
  */
 export async function runMerged(
-  ctx: DriverContext,
+  ctx: CycleContext,
   state: WorkState,
   now: number,
 ): Promise<WorkState> {
