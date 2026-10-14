@@ -330,6 +330,7 @@ export async function mechanizedCommitPr(
         reason: `forge pr create succeeded but returned no PR number (url=${(created.url ?? "").slice(0, 120)})`,
       };
     }
+    trace(`work-driver: commit-pr — opened PR #${prNumber} for ${branchName}`);
     // 5. Emit the same event shapes the dispatch path produces so the shared
     // downstream (parsePrNumber + both gates) runs unchanged. #782 — the
     // flake-recovery event (verify-flake-recovered, step: "commit-pr") is
