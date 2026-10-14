@@ -62,6 +62,24 @@ export async function runCreateGuards(
   inCycleWorktrees?: string[],
 ): Promise<void> {
   const abs = worktreePath(opts.repoRoot, opts.name);
+  // #1170 — an unresolvable base ref is a REF error, not worktree state. Every
+  // inspection below reads `<fromRef>^{tree}`, so with a bad ref each existing
+  // worktree would read as unreadable → "loss" and the failure would be
+  // misclassified as a dirty leftover. Nothing is removed on this path: the
+  // guards return and `git worktree add` itself refuses the ref, surfacing the
+  // real git stderr (create-error). An existing worktree is still refused by
+  // `git worktree add`'s own path-exists check, so nothing is destroyed.
+  const baseResolves = await execFn(
+    `git rev-parse --verify --quiet ${JSON.stringify(`${opts.fromRef}^{tree}`)}`,
+    { cwd: opts.repoRoot, maxBuffer: 64 * 1024 },
+  ).then(
+    () => true,
+    () => false,
+  );
+  if (!baseResolves) {
+    trace(`worktree: base ref ${opts.fromRef} does not resolve — deferring to git worktree add`);
+    return;
+  }
   // #545 — the mechanism that killed the #540 restart: `worktree add` itself
   // refuses against ANY leftover worktree of the same cycle (e.g. the
   // cycle's OWN dead siblings from a parked run, all named
