@@ -14,9 +14,11 @@
  *    entries are loss UNLESS they are (a) a symlink (a provisioned link), or
  *    (b) exactly `node_modules/`, `.venv/` or `vendor/` — the collapsed
  *    directory — at the worktree root, or directly inside a depth-1 directory
- *    that holds a package manifest/lockfile. The exemption is for the
- *    collapsed directory as a whole: git does not enumerate an all-ignored
- *    `vendor/`, so its contents are not inspected. Everything else ignored
+ *    that holds a package manifest/lockfile. The exemption is for the collapsed
+ *    directory as a whole: an ALL-ignored `vendor/` is exempt by design and git
+ *    never enumerates its contents, so they are neither inspected nor counted as
+ *    loss. A `vendor/` with any tracked file IS enumerated, and its ignored files
+ *    are loss (test 6 in test-worktree-loss-1170.ts). Everything else ignored
  *    (`build/`, `dist/`, `target/`, any ignored file, and any file inside a
  *    tracked or partly tracked directory) is loss: refusing is safe, because
  *    nothing is deleted on a refusal.

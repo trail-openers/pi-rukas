@@ -21,6 +21,7 @@ import {
   WorktreeScanError,
   findDirtySameIssueLeftover,
   scanWorktrees,
+  worktreeCreate,
 } from "../src/worktree.ts";
 import { git, realExec } from "./lib/worktree-fake-fixture.ts";
 
@@ -106,7 +107,15 @@ try {
   // ---- the scan's own contracts (#1170)
   let scanErr: unknown;
   try {
-    await findDirtySameIssueLeftover(unreadableListing, repo, "HEAD", "issue-1170", "issue-1170-x");
+    await findDirtySameIssueLeftover(
+      unreadableListing,
+      repo,
+      "HEAD",
+      "issue-1170",
+      "issue-1170-x",
+      undefined,
+      true,
+    );
   } catch (e) {
     scanErr = e;
   }
@@ -120,6 +129,73 @@ try {
   );
   const failOpen = await scanWorktrees(unreadableListing, repo, "HEAD", [".worktrees/issue-1170"]);
   assert(failOpen.length === 0, "scanWorktrees keeps its fail-open contract (no siblings)");
+
+  // ---- the strict listing retries once (#1170 r3): one transient failure proceeds
+  let listCalls = 0;
+  const flakyOnce: ExecFn = async (cmd, o) => {
+    if (cmd.startsWith("git worktree list") && ++listCalls === 1) {
+      throw new Error("fatal: transient lock");
+    }
+    return realExec(cmd, o);
+  };
+  const retried = await findDirtySameIssueLeftover(
+    flakyOnce,
+    repo,
+    "HEAD",
+    "issue-1170",
+    "issue-1170-x",
+    undefined,
+    true,
+  ).then(
+    () => "ok",
+    (e: unknown) => e,
+  );
+  assert(
+    retried === "ok" && listCalls === 2,
+    `a transient listing failure is retried once and proceeds (calls: ${listCalls})`,
+  );
+
+  // Two failures refuse, and the message names the attempt count.
+  listCalls = 0;
+  const alwaysFails: ExecFn = async (cmd, o) => {
+    if (cmd.startsWith("git worktree list")) {
+      listCalls++;
+      throw new Error("fatal: unable to read worktree list");
+    }
+    return realExec(cmd, o);
+  };
+  const twice = await findDirtySameIssueLeftover(
+    alwaysFails,
+    repo,
+    "HEAD",
+    "issue-1170",
+    "issue-1170-x",
+    undefined,
+    true,
+  ).then(
+    () => undefined,
+    (e: unknown) => e,
+  );
+  assert(
+    twice instanceof WorktreeScanError &&
+      listCalls === 2 &&
+      twice.message.includes("after 2 attempts"),
+    `a listing that fails twice refuses after 2 attempts (calls: ${listCalls})`,
+  );
+
+  // ---- a non-branch create caller keeps the fail-open sibling scan (#1170 r3)
+  const depCreate = await worktreeCreate(unreadableListing, {
+    repoRoot: repo,
+    name: "issue-1170-dep",
+    fromRef: "HEAD",
+  }).then(
+    () => undefined,
+    (e: unknown) => e,
+  );
+  assert(
+    !(depCreate instanceof WorktreeScanError),
+    "a non-branch create caller (no strictSiblingListing) is not refused on an unreadable listing",
+  );
 
   // ---- ref charset
   for (const ok of ["fix/issue_12", "feature/a+b", "release/1.2.3", "feature/x-y@{1}"]) {

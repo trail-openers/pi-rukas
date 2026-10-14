@@ -328,27 +328,28 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
   // did not fire.
   const sibling = path.join(repo, ".worktrees", "issue-753-foreign");
   await git(repo, ["worktree", "add", "-q", "--detach", sibling, baseSha]);
-  // Throw on the FIRST `git worktree list` call (the sibling scan) but not
-  // the second (the target-path guard does not call `worktree list`, but
-  // we throw only once to be safe).
-  let listCalls = 0;
+  // Every `git worktree list` fails: the branch-seam strict listing retries once
+  // (#1170 r3) and then refuses, so a persistent failure is what must refuse.
   const broken: ExecFn = async (cmd, o) => {
-    cmd = commandOf(cmd, o);
-    if (cmd.includes("worktree list")) {
-      listCalls++;
-      if (listCalls === 1) throw new Error("git: unable to read worktree list");
+    if (commandOf(cmd, o).includes("worktree list")) {
+      throw new Error("git: unable to read worktree list");
     }
     return realExec(cmd, o);
   };
   let threw = false;
   try {
-    await runCreateGuards(broken, { repoRoot: repo, name: "issue-753-mine", fromRef: baseSha });
+    await runCreateGuards(broken, {
+      repoRoot: repo,
+      name: "issue-753-mine",
+      fromRef: baseSha,
+      strictSiblingListing: true,
+    });
   } catch {
     threw = true;
   }
   assert(
     threw === true,
-    "#1170 (was #753 case 7): a failing sibling scan REFUSES creation — it does not proceed unscanned",
+    "#1170 (was #753 case 7): a failing sibling scan on the branch seam REFUSES creation — it does not proceed unscanned",
   );
   // The sibling worktree is still on disk (the degraded scan did not touch it).
   const { stdout: sibStatus } = await git(sibling, ["status", "--porcelain"]).catch(() => ({

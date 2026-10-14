@@ -48,6 +48,13 @@ export interface CreateGuardOpts {
    * normal workstream path runs the target inspection unconditionally.
    */
   callerVerifiedTargetAbsent?: boolean;
+  /**
+   * #1170 — set ONLY by the branch step (mechanizedBranchSetup): an unreadable
+   * sibling listing refuses with WorktreeScanError. Unset (every other caller,
+   * e.g. the dep-scheduler create path) the sibling scan stays fail-open — the
+   * contract runCreateGuards had before #1170, so its jsdoc is unchanged for them.
+   */
+  strictSiblingListing?: boolean;
 }
 
 /**
@@ -78,7 +85,13 @@ export async function runCreateGuards(
   // #1170 — the base ref is interpolated into shell strings below (the probe
   // and every inspection). Only a plain ref name may reach one: anything else
   // is refused as a create error before any command runs.
-  assertSafeRef(opts.fromRef);
+  try {
+    assertSafeRef(opts.fromRef);
+  } catch (err) {
+    const wrapped = new Error(`worktreeCreate: ${opts.name} failed: ${(err as Error).message}`);
+    wrapped.cause = err;
+    throw wrapped;
+  }
   if (!(await baseRefResolves(execFn, opts))) {
     // EARLY RETURN — before the pre-remove below (`worktreeRemove … true`), so an
     // unresolved ref deletes NOTHING: no sibling or target worktree is touched,
@@ -101,9 +114,7 @@ export async function runCreateGuards(
   // happens inside findDirtySameIssueLeftover, which resolves both sides —
   // an earlier workstream's legitimate in-progress dirt is not a leftover).
   // #1170 — an unreadable `git worktree list` THROWS here and refuses creation.
-  // The sibling scan cannot prove the absence of a dirty sibling without the
-  // listing, and proceeding would hand `git worktree add` an UNSCANNED tree —
-  // the shape #545 exists to prevent. The refusal is the create-error path.
+  // Strict (branch step only): see CreateGuardOpts.strictSiblingListing.
   const siblingDirty = await findDirtySameIssueLeftover(
     execFn,
     opts.repoRoot,
@@ -111,6 +122,7 @@ export async function runCreateGuards(
     issuePrefix,
     opts.name,
     inCycleWorktrees,
+    opts.strictSiblingListing === true,
   );
   if (siblingDirty) {
     throw new DirtyWorktreeError(siblingDirty);

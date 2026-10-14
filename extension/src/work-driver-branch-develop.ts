@@ -280,7 +280,7 @@ export async function runBranch(
       // step-failed:branch cap. #1170 — an unreadable sibling listing is a
       // refusal too: the ops fallback would create the worktree unscanned.
       if (err instanceof DirtyWorktreeError || err instanceof WorktreeScanError) {
-        trace(`work-driver: branch step refused — dirty worktree: ${err.message?.slice(0, 300)}`);
+        trace(`work-driver: branch step refused — ${err.name}: ${err.message?.slice(0, 300)}`);
         const started = appendEvent(
           {
             ...state,

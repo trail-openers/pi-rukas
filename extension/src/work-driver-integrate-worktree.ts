@@ -111,11 +111,12 @@ export async function ensureIntegrateWorktree(
   const { repoRoot, issue, branchName, baseSha } = opts;
   const name = integrateWorktreeName(issue);
   const abs = worktreePath(repoRoot, name);
-  // #1170 — branchName is interpolated into the rev-parse shell string below.
+  // #1170 — branchName and baseSha reach shell strings below.
   try {
     assertSafeRef(branchName);
-  } catch {
-    throw new Error(`integrate branch ${JSON.stringify(branchName)} is not a valid ref name`);
+    assertSafeRef(baseSha);
+  } catch (err) {
+    throw new Error(`integrate ref refused: ${(err as Error).message}`);
   }
 
   // ---- preflight: what holds the branch, and who is where
@@ -130,6 +131,8 @@ export async function ensureIntegrateWorktree(
   } catch {
     branchHead = undefined;
   }
+  // #1170 — branchHead is git output; fail closed before any removal.
+  if (branchHead !== undefined) assertSafeRef(branchHead);
 
   // #1170 — the cycle's own worktrees (the develop trees) are excluded from
   // the sibling scan below; a dirty one still refuses, before any mutation.

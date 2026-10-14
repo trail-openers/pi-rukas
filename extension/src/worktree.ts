@@ -95,6 +95,12 @@ export interface WorktreeCreateOpts {
   fromRef: string;
   /** Worktree names that should be retained (not pre-removed) during creation. */
   retainedNames?: string[];
+  /**
+   * #1170 — the branch step's seam: an unreadable `git worktree list` REFUSES
+   * (WorktreeScanError, after one retry) instead of reading as no siblings.
+   * Every other caller keeps the fail-open sibling scan it always had.
+   */
+  strictSiblingListing?: boolean;
 }
 
 /**
@@ -152,7 +158,12 @@ export async function worktreeCreate(
   // dirty guard.
   await runCreateGuards(
     execFn,
-    { repoRoot: opts.repoRoot, name: opts.name, fromRef: opts.fromRef },
+    {
+      repoRoot: opts.repoRoot,
+      name: opts.name,
+      fromRef: opts.fromRef,
+      strictSiblingListing: opts.strictSiblingListing,
+    },
     inCycleWorktrees,
   );
   // Always detached at baseSha: a named branch in a worktree contradicts
@@ -284,9 +295,10 @@ async function inspectListedWorktrees(
  * #545 — `git worktree add` refuses against any leftover worktree of the
  * same cycle (not just the one at the target path). Find attached
  * worktrees with the same issue prefix that hold work a force-remove would
- * destroy. An unreadable `git worktree list` THROWS (#1170): a listing that
- * cannot be read cannot prove the absence of a dirty sibling, so creation
- * refuses rather than proceeding unscanned.
+ * destroy. `strict` (the branch step, #1170) makes an unreadable
+ * `git worktree list` THROW `WorktreeScanError` after one retry: a listing that
+ * cannot be read cannot prove the absence of a dirty sibling. Non-strict callers
+ * read it as no siblings (the fail-open contract they always had).
  *
  * `excludePaths` — additional worktree paths to skip (in addition to
  * `selfName`). #753: this cycle's own worktrees (created by the branch step
@@ -301,16 +313,20 @@ export async function findDirtySameIssueLeftover(
   issuePrefix: string,
   selfName: string,
   excludePaths?: string[],
+  strict = false,
 ): Promise<DirtyWorktreeFinding | undefined> {
   const wtMarker = `.worktrees${path.sep}${issuePrefix}`;
-  // #1170 — an unreadable listing is a refusal, not "no sibling": it throws
-  // WorktreeScanError (fail closed) so the branch step refuses and never
-  // reaches the LLM ops fallback, which would create the worktree unscanned.
+  // #1170 — strict: an unreadable listing refuses (WorktreeScanError) so the
+  // branch step never reaches the LLM ops fallback unscanned.
   let list: string;
-  try {
-    list = await listWorktreePorcelain(execFn, repoRoot);
-  } catch (err) {
-    throw new WorktreeScanError(gitErrorDetail(err));
+  if (strict) {
+    list = await listWorktreeStrict(execFn, repoRoot);
+  } else {
+    try {
+      list = await listWorktreePorcelain(execFn, repoRoot);
+    } catch {
+      return undefined;
+    }
   }
   const hits = await inspectListedWorktrees(execFn, repoRoot, list, fromRef, [wtMarker], selfName);
   // #753 — on macOS, `git worktree list --porcelain` returns symlink-resolved
@@ -322,6 +338,24 @@ export async function findDirtySameIssueLeftover(
     if (hit.finding) return hit.finding;
   }
   return undefined;
+}
+
+/**
+ * #1170 — the strict listing for the branch step's sibling scan. A transient
+ * `git worktree list` failure is retried once (250ms) before it refuses, so a
+ * single flaky read does not park a clean cycle; the refusal names the attempts.
+ */
+async function listWorktreeStrict(execFn: ExecFn, repoRoot: string): Promise<string> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      return await listWorktreePorcelain(execFn, repoRoot);
+    } catch (err) {
+      lastErr = err;
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+  throw new WorktreeScanError(`${gitErrorDetail(lastErr)} (after 2 attempts)`);
 }
 
 /** Drop administrative records for worktrees whose directories are gone. */

@@ -6,7 +6,9 @@
  *  (a) a stale integrate tree with an uncommitted change is NOT removed and the
  *      step throws DirtyWorktreeError naming its path;
  *  (b) a clean, tree-equal stale integrate tree is removed and recreated as before;
- *  (c) an unsafe branchName is refused before any git command runs.
+ *  (c) an unsafe branchName is refused before any git command runs;
+ *  (i) a plain non-worktree directory at the integrate path is refused as
+ *      DirtyWorktreeError (notOwnWorktree) and never removed.
  */
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -216,7 +218,8 @@ try {
     }
   }
   // (g) every loss channel is judged before the origin exemption: HEAD is already
-  // on origin/<branch>, but a non-regenerable ignored .env is still refused.
+  // on origin/<branch>, but a non-regenerable ignored .env at the root is still
+  // refused. (vendor/ is exempt only as a whole, so this case uses a root .env.)
   {
     const { repo, baseSha, branch, wt, stateFile } = await fixture("remote-env");
     writeFileSync(path.join(repo, ".git", "info", "exclude"), ".env\n", { flag: "a" });
@@ -240,6 +243,34 @@ try {
       `(g) HEAD on origin/<branch> does not exempt a stale tree holding ignored .env (${err ? (err as Error).message.split("\n")[0] : "no error"})`,
     );
     assert(existsSync(path.join(wt, ".env")), "(g) the ignored .env survives");
+  }
+
+  // (i) a plain directory (not a worktree) at the integrate path: git walks up to
+  // the parent repo, so it is refused as notOwnWorktree — and never removed.
+  {
+    const { repo, baseSha, branch, wt, stateFile } = await fixture("plain-dir");
+    await git(repo, ["worktree", "remove", "--force", wt]);
+    mkdirSync(wt, { recursive: true });
+    writeFileSync(path.join(wt, "keep.txt"), "precious\n");
+    let err: unknown;
+    try {
+      await ensureIntegrateWorktree(
+        realExec,
+        { repoRoot: repo, issue: 17, branchName: branch, baseSha },
+        stateFile,
+      );
+    } catch (e) {
+      err = e;
+    }
+    assert(
+      err instanceof DirtyWorktreeError &&
+        (err as { finding?: { notOwnWorktree?: boolean } }).finding?.notOwnWorktree === true,
+      `(i) a plain directory at the integrate path is refused as notOwnWorktree (${err ? (err as Error).message.split("\n")[0] : "no error"})`,
+    );
+    assert(
+      existsSync(path.join(wt, "keep.txt")),
+      "(i) the plain directory's file survives the refusal",
+    );
   }
 
   // (h) git cannot read the stale tree's status: refused (fail closed), nothing removed.

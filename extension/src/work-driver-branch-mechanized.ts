@@ -431,6 +431,7 @@ export async function mechanizedBranchSetup(
         repoRoot,
         name: `issue-${issue}-${id}`,
         fromRef: baseSha,
+        strictSiblingListing: true,
       });
       worktrees[id] = created.path;
       provisions[id] = created.provision;
