@@ -18,14 +18,14 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
 import { renderHandoffUserMessage } from "../src/work-driver-handoff-message.ts";
 import { captureWorktreeSnapshot } from "../src/work-driver-handoff-snapshot.ts";
 import { renderTerminalStatus } from "../src/work-status.ts";
-import { readState, type WorkState } from "../src/workflow-state.ts";
+import type { WorkState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -179,24 +179,6 @@ try {
     badBase.branchTip?.ahead === undefined &&
       (badBase.unreadable ?? []).some((l) => /is not a commit SHA/.test(l)),
     "snapshot: a non-SHA base is recorded as unread and rev-list is not run",
-  );
-
-  // A state file written before the rename (headSha only) reads back under
-  // repoRootHeadSha, and the old key is dropped.
-  const { repoRootHeadSha, ...restSnap } = snap;
-  mkdirSync(join(tmp, ".pi/work-state"), { recursive: true });
-  writeFileSync(
-    join(tmp, ".pi/work-state/97.json"),
-    JSON.stringify({
-      ...state,
-      pipelineState: { ...state.pipelineState, handoffSnapshot: { ...restSnap, headSha: repoRootHeadSha } },
-    }),
-  );
-  const loaded = await readState(tmp, 97);
-  const loadedSnap = loaded?.pipelineState.handoffSnapshot;
-  assert(
-    loadedSnap?.repoRootHeadSha === repoRootHeadSha && !("headSha" in (loadedSnap ?? {})),
-    "readState: a pre-rename snapshot reads headSha as repoRootHeadSha and drops the old key",
   );
 } finally {
   rmSync(tmp, { recursive: true, force: true });

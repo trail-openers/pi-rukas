@@ -25,7 +25,8 @@ import {
 import { fanoutVerdictLines } from "./work-driver-handoff-fanout.ts";
 import { securityOpenPointsMarkdown } from "./work-driver-handoff-open-points.ts";
 import { recoveryCommandsMarkdown } from "./work-driver-handoff-recovery.md.ts";
-import { branchTipText, unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
+import { unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
+import { describeBranchState } from "./work-driver-handoff-view.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
 import { dispatchDurations } from "./work-status-dispatch-durations.ts";
 import { fmtElapsed } from "./work-status-events.ts";
@@ -149,16 +150,15 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
     // be printed as findings (see `handoffSnapshot.unreadable`).
     const notRead = unreadableSnapshotLines(ps);
     const unread = notRead.length > 0 ? " — NOT READ, see below" : "";
+    const view = describeBranchState(snap, (sha) => `\`${sha}\``);
     lines.push(
       "### Worktree state at handoff",
       "",
       `- repo-root HEAD: \`${snap.repoRootHeadSha || "(unknown)"}\``,
-      ...(snap.branchTip
-        ? [`- branch ${branchTipText(snap.branchTip, (sha) => `\`${sha}\``)}`]
-        : []),
+      ...(view.tip ? [`- branch ${view.tip}`] : []),
       `- branch exists locally: ${snap.branchExists ? "yes" : `no${unread}`}`,
       `- branch pushed to origin: ${snap.branchPushed ? "yes" : "no (local only)"}`,
-      `- uncommitted: ${snap.unstagedCount + snap.stagedCount} files (${snap.stagedCount} staged, ${snap.unstagedCount} unstaged)${unread}`,
+      `- ${view.files}${unread}`,
     );
     if (notRead.length > 0) lines.push("", "```text", ...notRead, "```", "");
     if (snap.modifiedFiles.length > 0) {

@@ -328,7 +328,7 @@ The branch step recorded whatever branch `repoRoot` was on, and that value becom
 
 ### The handoff shows the branch at the base commit, or `0 file(s) modified`, beside "the branch holds the work"
 
-The handoff used to print the **repo root's** `HEAD` on the branch line. A successful pre-handoff consolidation puts the commits on the feature branch and then restores your checkout, so that `HEAD` was the base commit and the branch looked empty. The line now carries the branch's own tip and its distance from the base (`· tip 37d1118a, 1 commit(s) ahead of base`), the comment labels the other value `repo-root HEAD`, and beside committed work the file count reads `N uncommitted file(s)` — it only ever counted uncommitted files. A state file written before this change shows `repo-root HEAD <sha>` on the branch line.
+The handoff used to print the **repo root's** `HEAD` on the branch line. A successful pre-handoff consolidation puts the commits on the feature branch and then restores your checkout, so that `HEAD` was the base commit and the branch looked empty. The line now carries the branch's own tip and its distance from the base (`· tip 37d1118a, 1 commit(s) ahead of base`), the comment labels the other value `repo-root HEAD`, and beside committed work the file count reads `N uncommitted file(s)` — it only ever counted uncommitted files. A state file written before this change shows `repo-root HEAD <sha>` on the branch line. A handoff snapshot written before the `headSha` → `repoRootHeadSha` rename shows no repo-root HEAD line at all; re-run the cycle to refresh it, or ignore the missing line — the branch state itself is unaffected.
 
 ### A restarted cycle erased its own history
 

@@ -367,6 +367,9 @@ export interface PipelineState {
      * base when that was readable. Absent when no local branch exists and on
      * state files written before the field. */
     branchTip?: { sha: string; ahead?: number };
+    /** True when reading the branch tip failed for a reason other than the branch
+     * not existing — the tip is unknown, not absent, so no repoRoot fallback is shown. */
+    branchTipNotRead?: boolean;
     /** Epoch ms when the snapshot was captured. */
     capturedAt: number;
     /** Worktrees that were not removed because they contained uncommitted

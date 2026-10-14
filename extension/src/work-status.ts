@@ -13,7 +13,8 @@ import {
 } from "./work-driver-context.ts";
 import { formatCycleTotal } from "./work-driver-cycle-total.ts";
 import { explainCap } from "./work-driver-explain.ts";
-import { branchTipTag, unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
+import { unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
+import { describeBranchState } from "./work-driver-handoff-view.ts";
 import { readQueueSummary } from "./work-queue-summary.ts";
 import { humanActionFor } from "./work-queue.ts";
 import { renderDispatchDurations } from "./work-status-dispatch-durations.ts";
@@ -183,15 +184,12 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
     lines.push("", "Worktree state:");
     if (ps.branchName) {
       const pushedTag = snap ? (snap.branchPushed ? " (pushed)" : " (NOT pushed)") : "";
-      const headTag = branchTipTag(snap);
-      lines.push(`  branch: ${ps.branchName}${pushedTag}${headTag}`);
+      const view = describeBranchState(snap);
+      lines.push(`  branch: ${ps.branchName}${pushedTag}${view.tip ? ` \u00b7 ${view.tip}` : ""}`);
     }
     lines.push(`  ${ps.prNumber ? `PR: #${ps.prNumber}` : "PR: none created"}`);
     if (snap) {
-      const fileCount = snap.unstagedCount + snap.stagedCount;
-      lines.push(
-        `  uncommitted: ${fileCount} file(s)${fileCount > 0 ? ` (${snap.stagedCount} staged, ${snap.unstagedCount} unstaged)` : ""}`,
-      );
+      lines.push(`  ${describeBranchState(snap).files}`);
       if (snap.modifiedFiles.length > 0) {
         const shown = snap.modifiedFiles.slice(0, 10);
         lines.push(
