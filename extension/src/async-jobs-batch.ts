@@ -20,6 +20,7 @@ import * as live from "./dispatch-deck-live.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { type GitLineFor, gitStateLine } from "./git-state.ts";
 import * as lifecycle from "./lifecycle-events.ts";
+import * as pendingJobs from "./pending-jobs-signal.ts";
 import * as sessionAutosave from "./session-autosave.ts";
 import { feedSlowProgress } from "./slow-notice.ts";
 import { trace } from "./trace.ts";
@@ -106,6 +107,8 @@ export function startBatch(
     completed: 0,
   };
   jobs.set(batchId, orchestrator);
+  // #1295 — one batch, one report: counted once, not per member.
+  pendingJobs.jobPending(batchId);
   lifecycle.emitDispatched(batchId, input.batchLabel, input.batchLabel);
 
   // Persistent batch summary row (#139). Registered BEFORE members so its
@@ -222,14 +225,16 @@ export function startBatch(
             memberResults,
             gitMembers,
             input.gitLineFor ?? gitStateLine,
-          ).then(
-            () =>
-              trace(
-                `async batch ${batchId} (${input.batchLabel}) finished in ${Date.now() - startedAt}ms`,
-              ),
-            (err: unknown) =>
-              trace(`async batch ${batchId} (${input.batchLabel}) report failed: ${String(err)}`),
-          );
+          )
+            .then(
+              () =>
+                trace(
+                  `async batch ${batchId} (${input.batchLabel}) finished in ${Date.now() - startedAt}ms`,
+                ),
+              (err: unknown) =>
+                trace(`async batch ${batchId} (${input.batchLabel}) report failed: ${String(err)}`),
+            )
+            .finally(() => pendingJobs.jobReported(batchId));
         }
       });
   }

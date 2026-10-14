@@ -11,6 +11,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type JobKind, childHandles, jobs } from "./async-jobs-registry.ts";
 import { reset as resetDeck } from "./dispatch-deck.ts";
 import { incrementNotice } from "./notice-counter.ts";
+import * as pendingJobs from "./pending-jobs-signal.ts";
 import { markSessionShutdown } from "./session-shutdown.ts";
 import { trace } from "./trace.ts";
 
@@ -162,6 +163,8 @@ export function registerAsyncJobsLifecycle(pi: ExtensionAPI): void {
     // operator with "aborted 1 in-flight async jobs" and no cause.
     const labels = [...jobs.values()].map((j) => j.label).join(", ");
     const n = killAllJobs();
+    // #1295 — the aborted jobs' reports will never reach this session: "0".
+    pendingJobs.shutdown();
     if (n > 0) {
       trace(
         `session_shutdown (reason: ${event?.reason ?? "not given"}): aborted ${n} in-flight async jobs — ${labels}`,
