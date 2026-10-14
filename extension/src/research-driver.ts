@@ -34,8 +34,8 @@ import {
   priorContextHasVipune,
   renderPriorContext,
 } from "./plan-draft.ts";
-import { OPERATOR_SOURCE } from "./plan-prior-context.ts";
 import { PLAN_DISPATCH_TIMEOUT_MS, PLAN_MARKER_CHILD_ARGS } from "./plan-investigate.ts";
+import { OPERATOR_SOURCE } from "./plan-prior-context.ts";
 import { reporterPathFromArgs, statReporterPath } from "./reporter-preflight.ts";
 import { anglesForTier } from "./research-angles.ts";
 import {

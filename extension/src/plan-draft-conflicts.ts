@@ -159,7 +159,8 @@ export interface InvestigationConflictResult<T extends InvestigationLine = Inves
  * Files, paths and line numbers: a restatement that adds one of these is kept,
  * because it carries grounding the operator line lacks.
  */
-const CONCRETE_REFERENCE = /[\w-]+\.(?:ts|tsx|js|mjs|cjs|md|json|sh|rs|py|go|ya?ml)\b|[\w.-]+\/[\w.-]+|:\d+\b/;
+const CONCRETE_REFERENCE =
+  /[\w-]+\.(?:ts|tsx|js|mjs|cjs|md|json|sh|rs|py|go|ya?ml)\b|[\w.-]+\/[\w.-]+|:\d+\b/;
 
 /** The operator line that settles a clash between two items, and which item it keeps. */
 function settlement<T extends InvestigationLine>(
@@ -252,9 +253,9 @@ export function droppedDisclosure(d: DroppedInvestigationItem): string {
       ? `dropped: conflicts with operator decision "${d.against.slice(0, 160)}"`
       : d.reason === "duplicate"
         ? `dropped: duplicate of operator line "${d.against.slice(0, 160)}"`
-      : d.reason === "settled"
-        ? `dropped: operator decision "${d.against.slice(0, 160)}" settles its clash with the investigation line "${(d.sibling ?? "").slice(0, 160)}"`
-        : `dropped: conflicts with another investigation line "${d.against.slice(0, 160)}" that no operator decision settles`;
+        : d.reason === "settled"
+          ? `dropped: operator decision "${d.against.slice(0, 160)}" settles its clash with the investigation line "${(d.sibling ?? "").slice(0, 160)}"`
+          : `dropped: conflicts with another investigation line "${d.against.slice(0, 160)}" that no operator decision settles`;
   return `- ${why} — [${item.angle} / ${item.kind}] ${item.text}`;
 }
 
