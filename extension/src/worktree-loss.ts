@@ -9,18 +9,28 @@
  *    `<abs>/.git` exists and `git rev-parse --show-toplevel` resolves to
  *    `<abs>`. A plain directory inside a repo (git walks up to the parent) is
  *    not a worktree and is never treated as clean.
- *  - Uncommitted work is any `git status --porcelain --ignored
- *    --untracked-files=all` entry, EXCEPT ignored symlinks (provisioned links
- *    such as node_modules) and ignored entries under the regenerable dirs
- *    (node_modules, .venv, vendor, target, dist, build) at any depth.
- *  - With no uncommitted work, the worktree is no-loss when its tree equals
- *    `<fromRef>^{tree}`, OR when HEAD is an ancestor of `<fromRef>` (a worktree
- *    behind the base holds nothing the base lacks). Otherwise HEAD carries
- *    commits the base does not, and that is loss.
+ *  - Uncommitted work is any entry of `git status --porcelain --ignored=traditional
+ *    --untracked-files=normal`: tracked and untracked changes always are. Ignored
+ *    entries are loss UNLESS they are (a) a symlink (a provisioned link), or
+ *    (b) exactly `node_modules/`, `.venv/` or `vendor/` — the collapsed
+ *    directory — at the worktree root, or directly inside a depth-1 directory
+ *    that holds a package manifest/lockfile. Everything else ignored (`build/`,
+ *    `dist/`, `target/`, any ignored file, any file under any directory) is loss:
+ *    refusing is safe, because nothing is deleted on a refusal.
+ *  - The `--ignored=traditional` collapse keeps the output bounded: an ignored
+ *    `target/` tree is one `!! target/` line, not one line per file.
+ *  - With no uncommitted work, the worktree is no-loss when HEAD is an ancestor
+ *    of `<fromRef>` (nothing HEAD has that the base lacks), OR when HEAD is
+ *    exactly one commit ahead of `<fromRef>` and its tree equals `<fromRef>^{tree}`
+ *    (a single tree-identical develop commit). Any other history ahead counts as
+ *    loss — a commit that adds a file and a later commit that removes it leaves
+ *    the tree identical while the history is not.
  *  - ANY git error on those reads counts as loss and keeps the refusal. An
  *    unreadable worktree is not evidence that it is clean. Trade-off (#1170):
  *    an unreadable leftover now blocks the cycle instead of being removed —
  *    fail closed beats the old wedged-queue avoidance.
+ *  - Every git call passes argv (no shell): a ref or path is data, never shell
+ *    syntax.
  *  - A path with no directory on disk is not a worktree — nothing to inspect.
  */
 
@@ -96,8 +106,39 @@ export interface DirtyWorktreeFinding {
   notOwnWorktree?: boolean;
 }
 
-/** Directories a build regenerates; ignored entries under them are not work. */
-const REGENERABLE_DIRS = new Set(["node_modules", ".venv", "vendor", "target", "dist", "build"]);
+export interface InspectOpts {
+  /**
+   * Whether ignored entries count as loss. `true` (default) for every REMOVAL
+   * decision. `false` only for trees the cycle itself owns and never removes
+   * (the integrate step's in-cycle develop trees): an ignored `target/` there
+   * is a build artefact, not a reason to refuse the integration.
+   */
+  ignoredIsLoss?: boolean;
+}
+
+/** Directories whose ignored form is a regenerable dependency tree. */
+const REGENERABLE_DIR_NAMES = new Set(["node_modules", ".venv", "vendor"]);
+
+/** A depth-1 directory holding one of these is a project whose tree may be exempted. */
+const PROJECT_MANIFESTS = [
+  "package.json",
+  "bun.lock",
+  "bun.lockb",
+  "package-lock.json",
+  "yarn.lock",
+  "pnpm-lock.yaml",
+  "Cargo.toml",
+  "pyproject.toml",
+  "requirements.txt",
+  "Pipfile",
+  "poetry.lock",
+  "go.mod",
+  "Gemfile",
+  "composer.json",
+  "pom.xml",
+  "build.gradle",
+  "build.gradle.kts",
+];
 
 async function pathExists(p: string): Promise<boolean> {
   try {
@@ -123,30 +164,89 @@ function errorText(err: unknown): string {
 }
 
 /**
- * Which porcelain entries are uncommitted work. Tracked and untracked changes
- * always are. An ignored entry is work unless it is a symlink (a provisioned
- * link) or lies under a regenerable directory at any depth.
+ * Whether one ignored porcelain entry is a regenerable dependency tree (or a
+ * provisioned link) rather than work. Entries arrive with the collapsed
+ * directory's trailing slash already stripped.
  */
-async function uncommittedEntries(worktreeAbs: string, porcelain: string): Promise<string[]> {
+async function isRegenerableIgnored(worktreeAbs: string, entry: string): Promise<boolean> {
+  const full = path.join(worktreeAbs, entry);
+  let st: Awaited<ReturnType<typeof fs.lstat>>;
+  try {
+    st = await fs.lstat(full);
+  } catch {
+    return false; // unstattable: cannot prove it is a link or a regenerable tree
+  }
+  if (st.isSymbolicLink()) return true;
+  if (!st.isDirectory()) return false; // an ignored FILE is never regenerable
+  const segs = entry.split("/");
+  if (!REGENERABLE_DIR_NAMES.has(segs[segs.length - 1] ?? "")) return false;
+  if (segs.length === 1) return true; // root node_modules/, .venv/, vendor/
+  if (segs.length === 2) {
+    // A dependency tree directly inside a depth-1 project directory.
+    for (const manifest of PROJECT_MANIFESTS) {
+      if (await pathExists(path.join(worktreeAbs, segs[0] ?? "", manifest))) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Which porcelain entries are uncommitted work. Tracked and untracked changes
+ * always are. Ignored entries are work unless `isRegenerableIgnored` exempts
+ * them — and not at all when `ignoredIsLoss` is false.
+ */
+async function uncommittedEntries(
+  worktreeAbs: string,
+  porcelain: string,
+  ignoredIsLoss: boolean,
+): Promise<string[]> {
   const out: string[] = [];
   for (const raw of porcelain.split("\n")) {
     const line = raw.replace(/\r$/, "");
     if (!line.trim()) continue;
     const status = line.slice(0, 2);
-    const entry = line.slice(3).replace(/\/$/, "");
     if (status !== "!!") {
       out.push(line.trim());
       continue;
     }
-    if (entry.split("/").some((seg) => REGENERABLE_DIRS.has(seg))) continue;
-    try {
-      if ((await fs.lstat(path.join(worktreeAbs, entry))).isSymbolicLink()) continue;
-    } catch {
-      // Unstattable ignored entry: cannot prove it is a link — treat as work.
-    }
+    if (!ignoredIsLoss) continue;
+    const entry = line.slice(3).replace(/\/$/, "");
+    if (await isRegenerableIgnored(worktreeAbs, entry)) continue;
     out.push(line.trim());
   }
   return out;
+}
+
+/** The argv-form git call every read in this module uses (no shell re-parse). */
+function git(execFn: ExecFn, cwd: string, argv: string[]) {
+  return execFn("git", { cwd, maxBuffer: 8 * 1024 * 1024, argv });
+}
+
+/**
+ * The ignored entries in a worktree that a removal would destroy (#1170 round 3).
+ * Used by the sweep's `git clean -fdX` purge, which deletes every ignored
+ * entry: only the regenerable exemptions are removable, so an ignored
+ * credentials file (or any build output) blocks it. Fails closed: a directory
+ * that is not its own worktree, or an unreadable status, returns a non-empty
+ * list naming the reason.
+ */
+export async function ignoredLossEntries(execFn: ExecFn, worktreeAbs: string): Promise<string[]> {
+  if (!(await pathExists(path.join(worktreeAbs, ".git")))) return ["not-a-worktree"];
+  try {
+    const { stdout } = await git(execFn, worktreeAbs, [
+      "status",
+      "--porcelain",
+      "--ignored=traditional",
+      "--untracked-files=normal",
+    ]);
+    const ignored = stdout
+      .split("\n")
+      .filter((l) => l.startsWith("!! "))
+      .join("\n");
+    return await uncommittedEntries(worktreeAbs, ignored, true);
+  } catch (err) {
+    return [`unreadable: ${errorText(err)}`];
+  }
 }
 
 /**
@@ -161,7 +261,9 @@ export async function inspectWorktreeForLoss(
   _repoRoot: string,
   worktreeAbs: string,
   fromRef: string,
+  opts: InspectOpts = {},
 ): Promise<DirtyWorktreeFinding | undefined> {
+  const ignoredIsLoss = opts.ignoredIsLoss !== false;
   const unreadable = (err: unknown): DirtyWorktreeFinding => ({
     path: worktreeAbs,
     uncommittedFiles: [],
@@ -182,10 +284,7 @@ export async function inspectWorktreeForLoss(
   if (!(await pathExists(path.join(worktreeAbs, ".git")))) return notOwn;
   let toplevel: string;
   try {
-    ({ stdout: toplevel } = await execFn("git rev-parse --show-toplevel", {
-      cwd: worktreeAbs,
-      maxBuffer: 64 * 1024,
-    }));
+    ({ stdout: toplevel } = await git(execFn, worktreeAbs, ["rev-parse", "--show-toplevel"]));
   } catch (err) {
     return unreadable(err);
   }
@@ -193,10 +292,7 @@ export async function inspectWorktreeForLoss(
   const own = await realpathOrUndefined(worktreeAbs);
   if (top === undefined || own === undefined || top !== own) return notOwn;
   try {
-    await execFn(`git rev-parse --verify ${JSON.stringify("HEAD")}`, {
-      cwd: worktreeAbs,
-      maxBuffer: 64 * 1024,
-    });
+    await git(execFn, worktreeAbs, ["rev-parse", "--verify", "HEAD"]);
   } catch (err) {
     return unreadable(err);
   }
@@ -206,27 +302,17 @@ export async function inspectWorktreeForLoss(
   let baseTree: string;
   let ahead: number;
   try {
-    ({ stdout: porcelain } = await execFn(
-      "git status --porcelain --ignored --untracked-files=all",
-      {
-        cwd: worktreeAbs,
-        maxBuffer: 8 * 1024 * 1024,
-      },
-    ));
-    ({ stdout: headTree } = await execFn(`git rev-parse ${JSON.stringify("HEAD^{tree}")}`, {
-      cwd: worktreeAbs,
-      maxBuffer: 64 * 1024,
-    }));
+    ({ stdout: porcelain } = await git(execFn, worktreeAbs, [
+      "status",
+      "--porcelain",
+      "--ignored=traditional",
+      "--untracked-files=normal",
+    ]));
+    ({ stdout: headTree } = await git(execFn, worktreeAbs, ["rev-parse", "HEAD^{tree}"]));
     // Worktrees share the repo's object database: the base tree resolves the
     // same from inside the worktree as from repoRoot.
-    ({ stdout: baseTree } = await execFn(`git rev-parse ${JSON.stringify(`${fromRef}^{tree}`)}`, {
-      cwd: worktreeAbs,
-      maxBuffer: 64 * 1024,
-    }));
-    const { stdout } = await execFn(`git rev-list --count ${JSON.stringify(`${fromRef}..HEAD`)}`, {
-      cwd: worktreeAbs,
-      maxBuffer: 64 * 1024,
-    });
+    ({ stdout: baseTree } = await git(execFn, worktreeAbs, ["rev-parse", `${fromRef}^{tree}`]));
+    const { stdout } = await git(execFn, worktreeAbs, ["rev-list", "--count", `${fromRef}..HEAD`]);
     // Zero commits HEAD has and fromRef lacks ⟺ HEAD is an ancestor of fromRef.
     ahead = Number.parseInt(stdout.trim(), 10);
     if (!Number.isFinite(ahead) || ahead < 0) throw new Error(`unreadable commit count: ${stdout}`);
@@ -234,11 +320,11 @@ export async function inspectWorktreeForLoss(
     return unreadable(err);
   }
   const treeDiffers = headTree.trim() !== baseTree.trim();
-  const files = await uncommittedEntries(worktreeAbs, porcelain);
+  const files = await uncommittedEntries(worktreeAbs, porcelain, ignoredIsLoss);
   if (files.length > 0) {
     return { path: worktreeAbs, uncommittedFiles: files, unpushedCommitCount: ahead, treeDiffers };
   }
-  if (!treeDiffers) return undefined; // tree-identical: nothing the base lacks
-  if (ahead === 0) return undefined; // behind the base: nothing unique to HEAD
+  if (ahead === 0) return undefined; // HEAD is an ancestor of the base: nothing unique to HEAD
+  if (ahead === 1 && !treeDiffers) return undefined; // one tree-identical commit (the develop output)
   return { path: worktreeAbs, uncommittedFiles: [], unpushedCommitCount: ahead, treeDiffers };
 }

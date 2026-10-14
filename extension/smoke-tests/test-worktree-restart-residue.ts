@@ -73,10 +73,10 @@ function assert(cond: boolean, msg: string) {
 
 const realExec: ExecFn = async (cmd, o) => {
   try {
-    const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
-      cwd: o?.cwd,
-      maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
-    });
+    const opts = { cwd: o?.cwd, maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024 };
+    const { stdout } = o?.argv
+      ? await execFileP(cmd, o.argv, opts)
+      : await execFileP("/bin/sh", ["-c", cmd], opts);
     return { stdout };
   } catch (e) {
     const err = e as Error & { stderr?: string };
@@ -252,7 +252,8 @@ try {
     // Injected exec that delegates to REAL git in the fixture repo (the
     // residue pass and mechanized setup both run against it), with the
     // branch pre-flight's `gh pr list` short-circuited to "none".
-    const execFn: ExecFn = async (cmd, o) => {
+    const execFn: ExecFn = async (cmdArg, o) => {
+      const cmd = o?.argv ? ["git", ...o.argv].join(" ") : cmdArg;
       if (cmd.startsWith("gh ")) return { stdout: "" };
       if (cmd.startsWith("git fetch")) return { stdout: "" };
       return realExec(cmd, o);

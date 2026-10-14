@@ -69,15 +69,13 @@ export async function runCreateGuards(
   // guards return and `git worktree add` itself refuses the ref, surfacing the
   // real git stderr (create-error). An existing worktree is still refused by
   // `git worktree add`'s own path-exists check, so nothing is destroyed.
-  const baseResolves = await execFn(
-    `git rev-parse --verify --quiet ${JSON.stringify(`${opts.fromRef}^{tree}`)}`,
-    { cwd: opts.repoRoot, maxBuffer: 64 * 1024 },
-  ).then(
-    () => true,
-    () => false,
-  );
-  if (!baseResolves) {
-    trace(`worktree: base ref ${opts.fromRef} does not resolve — deferring to git worktree add`);
+  // Fail closed (#1170 round 3): ONLY exit 1 with no output means "unresolved"
+  // (a create error here, with no `worktree add` run — that add builds a shell
+  // string and must never receive a ref that did not resolve). A timeout, a
+  // signal, any other exit code or any stderr text is a probe failure: the
+  // guards are not skipped on it, the probe throws.
+  if (!(await baseRefResolves(execFn, opts))) {
+    trace(`worktree: base ref ${opts.fromRef} does not resolve \u2014 deferring to git worktree add`);
     return;
   }
   // #545 — the mechanism that killed the #540 restart: `worktree add` itself
@@ -151,6 +149,47 @@ export async function runCreateGuards(
 
 /** Re-export of the finding type for callers of the guard. */
 export type { DirtyWorktreeFinding };
+
+/**
+ * Probe `<fromRef>^{tree}` through argv (a ref is data, never shell syntax).
+ * `true` = resolves; `false` = cleanly unresolved (exit 1, empty stdout and
+ * stderr, no signal or kill). Any other failure throws a create error.
+ */
+async function baseRefResolves(
+  execFn: ExecFn,
+  opts: CreateGuardOpts,
+): Promise<boolean> {
+  try {
+    await execFn("git", {
+      cwd: opts.repoRoot,
+      maxBuffer: 64 * 1024,
+      argv: ["rev-parse", "--verify", "--quiet", `${opts.fromRef}^{tree}`],
+    });
+    return true;
+  } catch (err) {
+    const e = err as {
+      code?: unknown;
+      signal?: unknown;
+      killed?: unknown;
+      stdout?: unknown;
+      stderr?: unknown;
+      message?: unknown;
+    };
+    const quietExit1 =
+      e?.code === 1 &&
+      !e.signal &&
+      !e.killed &&
+      String(e.stdout ?? "") === "" &&
+      String(e.stderr ?? "") === "";
+    if (quietExit1) return false;
+    const detail = String(e?.stderr ?? "").trim() || String(e?.message ?? err).trim();
+    const wrapped = new Error(
+      `worktreeCreate: ${opts.name} failed: base ref probe for ${opts.fromRef} did not complete (${detail})`,
+    );
+    (wrapped as Error & { stderr?: string }).stderr = detail;
+    throw wrapped;
+  }
+}
 
 async function pathExists(p: string): Promise<boolean> {
   try {

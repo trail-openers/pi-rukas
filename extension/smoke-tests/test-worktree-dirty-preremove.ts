@@ -245,7 +245,6 @@ try {
     assert(dirty?.uncommittedFiles.length === 1, "#1170: tree-identical + uncommitted edits is loss");
 
     await git(wt, ["checkout", "-q", "--", "a.txt"]);
-    await git(wt, ["checkout", "-q", "--", "a.txt"]);
     writeFileSync(path.join(wt, "untracked.txt"), "x\n");
     const untracked = await inspectWorktreeForLoss(realExec, repo, wt, baseSha);
     assert(
@@ -332,7 +331,8 @@ try {
 /** Recorder matching the shape test-work-driver-always-worktree.ts uses. */
 function recorder(overrides: Record<string, string> = {}) {
   const calls: Array<{ cmd: string; cwd: string }> = [];
-  const execFn: ExecFn = async (cmd, o) => {
+  const execFn: ExecFn = async (cmdArg, o) => {
+    const cmd = o?.argv ? ["git", ...o.argv].join(" ") : cmdArg;
     calls.push({ cmd, cwd: o?.cwd ?? "" });
     // A real worktree answers its own toplevel (#1170) — the fake must too.
     if (cmd.startsWith("git rev-parse --show-toplevel")) return toplevelAnswer(o?.cwd);

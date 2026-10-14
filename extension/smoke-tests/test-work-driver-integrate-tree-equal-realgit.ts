@@ -39,12 +39,15 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const realExec = async (cmd: string, o?: { cwd?: string; maxBuffer?: number }) => {
+const realExec = async (
+  cmd: string,
+  o?: { cwd?: string; maxBuffer?: number; argv?: string[] },
+) => {
   try {
-    const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
-      cwd: o?.cwd,
-      maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
-    });
+    const opts = { cwd: o?.cwd, maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024 };
+    const { stdout } = o?.argv
+      ? await execFileP(cmd, o.argv, opts)
+      : await execFileP("/bin/sh", ["-c", cmd], opts);
     return { stdout };
   } catch (e) {
     const err = e as Error & { stderr?: string };

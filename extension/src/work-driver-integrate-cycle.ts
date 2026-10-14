@@ -70,7 +70,13 @@ export async function refuseDirtyCycleTrees(
   const main = resolvePath(repoRoot);
   for (const p of cycleTrees) {
     if (resolvePath(p) === target || resolvePath(p) === main) continue;
-    const finding = await inspectWorktreeForLoss(execFn, repoRoot, p, baseSha);
+    // Ignored entries are not refused here: in-cycle trees are never removed,
+    // so an ignored build artefact (target/) is not a reason to stop the
+    // integration. Tracked/untracked work, unreadable trees and foreign
+    // directories still refuse.
+    const finding = await inspectWorktreeForLoss(execFn, repoRoot, p, baseSha, {
+      ignoredIsLoss: false,
+    });
     if (finding === undefined) continue;
     // Tree-differs alone is the cycle's own output (a develop commit) — only
     // work the finding actually holds refuses here.
