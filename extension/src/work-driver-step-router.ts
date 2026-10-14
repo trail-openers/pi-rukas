@@ -227,7 +227,15 @@ export async function routeStepOutcome(
   // dispatch-failed branch and would silently advance the cycle into
   // wasted downstream work (the #553 cascade root).
   {
-    const tail = state.eventLog[state.eventLog.length - 1];
+    // The SAME lookup the scrollback block above used. Reading the raw tail
+    // here left a fan-out's transient failure unretried while the block above
+    // had already withheld its ✗ line for the retry: `failureEventOf` was
+    // feeding the message and not the decision.
+    const tail = failureEventOf(state.eventLog);
+    // A fan-out's failure sits behind `branches-converged`. Only the transient
+    // retry applies to it; its halt belongs to the fan-out router below, and
+    // RETRY_ONCE fan-outs (adversarial) keep their own per-workstream budget.
+    const buried = tail !== state.eventLog[state.eventLog.length - 1];
     const isDispatchFail =
       tail?.kind === "dispatch-failed" || tail?.kind === "dispatch-failed-provider";
     if (isDispatchFail) {
@@ -272,7 +280,7 @@ export async function routeStepOutcome(
         }
         // Budget exhausted → fall through to the HALT cap-hit below.
       }
-      if (policy === "HALT") {
+      if (policy === "HALT" && !buried) {
         // #308 — use structured killCause for cap detection instead of
         // regex-matching errorTail. A timeout self-kill is a deliberate
         // budget cap; it should NEVER be retried.
@@ -350,7 +358,7 @@ export async function routeStepOutcome(
         );
         return { state, retry: true };
       }
-      if (policy === "RETRY_ONCE") {
+      if (policy === "RETRY_ONCE" && !buried) {
         // #366 — an infrastructure fault must never decrement the SEMANTIC
         // attempt budget. Pre-fix this branch never consulted the
         // classification, so one 429 on `adversarial` burned the single
