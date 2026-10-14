@@ -145,7 +145,24 @@ export async function readState(repoRoot: string, issue: number): Promise<WorkSt
       `work-state: ${file} is not valid JSON — ${(err as Error).message}. Inspect the file or rm to start fresh under the current schema (your git work is unaffected).`,
     );
   }
-  return assertSchemaVersion(parsed as Record<string, unknown>, file);
+  return upgradeLegacyHandoffSnapshot(assertSchemaVersion(parsed as Record<string, unknown>, file));
+}
+
+/**
+ * `handoffSnapshot.headSha` was renamed `repoRootHeadSha` (it always named
+ * repoRoot's checkout, never the branch). A state file written before the
+ * rename carries only the old key: read it under the new one, and drop the old
+ * key so the next write persists the new shape alone.
+ */
+function upgradeLegacyHandoffSnapshot(state: WorkState): WorkState {
+  const snap = state.pipelineState?.handoffSnapshot;
+  if (!snap || snap.repoRootHeadSha !== undefined) return state;
+  const { headSha: legacy, ...current } = snap as typeof snap & { headSha?: unknown };
+  const upgraded = {
+    ...current,
+    repoRootHeadSha: typeof legacy === "string" ? legacy : "",
+  };
+  return { ...state, pipelineState: { ...state.pipelineState, handoffSnapshot: upgraded } };
 }
 
 /**

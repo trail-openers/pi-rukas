@@ -25,7 +25,7 @@ import {
 import { fanoutVerdictLines } from "./work-driver-handoff-fanout.ts";
 import { securityOpenPointsMarkdown } from "./work-driver-handoff-open-points.ts";
 import { recoveryCommandsMarkdown } from "./work-driver-handoff-recovery.md.ts";
-import { unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
+import { branchTipText, unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
 import { dispatchDurations } from "./work-status-dispatch-durations.ts";
 import { fmtElapsed } from "./work-status-events.ts";
@@ -152,11 +152,9 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
     lines.push(
       "### Worktree state at handoff",
       "",
-      `- repo-root HEAD: \`${snap.headSha || "(unknown)"}\``,
+      `- repo-root HEAD: \`${snap.repoRootHeadSha || "(unknown)"}\``,
       ...(snap.branchTip
-        ? [
-            `- branch tip: \`${snap.branchTip.sha.slice(0, 8)}\`${snap.branchTip.ahead === undefined ? "" : `, ${snap.branchTip.ahead} commit(s) ahead of base`}`,
-          ]
+        ? [`- branch ${branchTipText(snap.branchTip, (sha) => `\`${sha}\``)}`]
         : []),
       `- branch exists locally: ${snap.branchExists ? "yes" : `no${unread}`}`,
       `- branch pushed to origin: ${snap.branchPushed ? "yes" : "no (local only)"}`,

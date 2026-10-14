@@ -18,14 +18,14 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
 import { renderHandoffUserMessage } from "../src/work-driver-handoff-message.ts";
 import { captureWorktreeSnapshot } from "../src/work-driver-handoff-snapshot.ts";
 import { renderTerminalStatus } from "../src/work-status.ts";
-import type { WorkState } from "../src/workflow-state.ts";
+import { readState, type WorkState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -68,11 +68,11 @@ try {
   );
   assert(snap.branchTip?.ahead === 2, "snapshot: records how far the branch is ahead of the base");
   assert(
-    base.startsWith(snap.headSha),
-    "snapshot: headSha is still repoRoot's checkout — the base here",
+    base.startsWith(snap.repoRootHeadSha),
+    "snapshot: repoRootHeadSha is still repoRoot's checkout — the base here",
   );
 
-  const state = {
+  const state: WorkState = {
     schemaVersion: 1,
     resumable: false,
     issue: 97,
@@ -93,7 +93,7 @@ try {
       { kind: "adversarial-round", at: 2, round: 1, status: "ISSUES_FOUND", verdictParsed: true },
       { kind: "cap-hit", at: 3, cap: "verify-failed:develop", reviewRound: 0, nextStep: "handoff" },
     ],
-  } as unknown as WorkState;
+  };
 
   const surfaces = {
     chat: renderHandoffUserMessage(state, tmp, join(tmp, "tmp/issue-97")),
@@ -154,6 +154,50 @@ try {
   // No branch → no tip invented.
   const none = await captureWorktreeSnapshot(tmp, "feature/never-created", undefined, base);
   assert(none.branchTip === undefined, "snapshot: a branch that does not exist has no tip");
+
+  // An unknown distance is said to be unknown, never read as "no commits".
+  const unknownState: WorkState = {
+    ...state,
+    pipelineState: {
+      ...state.pipelineState,
+      handoffSnapshot: { ...snap, branchTip: { sha: tip } },
+    },
+  };
+  const unknownChat = renderHandoffUserMessage(unknownState, tmp, join(tmp, "tmp/issue-97"));
+  assert(
+    !/0 file\(s\) modified/.test(unknownChat) && /commits ahead of base NOT READ/.test(unknownChat),
+    "canary — chat: an unknown branch distance is NOT READ, not '0 file(s) modified'",
+  );
+  assert(
+    /commits ahead of base unknown/.test(renderHandoffMarkdown(unknownState)),
+    "markdown: an unknown branch distance is said to be unknown",
+  );
+
+  // A base that is not a commit SHA is never handed to git; the gap is recorded.
+  const badBase = await captureWorktreeSnapshot(tmp, BRANCH, undefined, "HEAD; echo x");
+  assert(
+    badBase.branchTip?.ahead === undefined &&
+      (badBase.unreadable ?? []).some((l) => /is not a commit SHA/.test(l)),
+    "snapshot: a non-SHA base is recorded as unread and rev-list is not run",
+  );
+
+  // A state file written before the rename (headSha only) reads back under
+  // repoRootHeadSha, and the old key is dropped.
+  const { repoRootHeadSha, ...restSnap } = snap;
+  mkdirSync(join(tmp, ".pi/work-state"), { recursive: true });
+  writeFileSync(
+    join(tmp, ".pi/work-state/97.json"),
+    JSON.stringify({
+      ...state,
+      pipelineState: { ...state.pipelineState, handoffSnapshot: { ...restSnap, headSha: repoRootHeadSha } },
+    }),
+  );
+  const loaded = await readState(tmp, 97);
+  const loadedSnap = loaded?.pipelineState.handoffSnapshot;
+  assert(
+    loadedSnap?.repoRootHeadSha === repoRootHeadSha && !("headSha" in (loadedSnap ?? {})),
+    "readState: a pre-rename snapshot reads headSha as repoRootHeadSha and drops the old key",
+  );
 } finally {
   rmSync(tmp, { recursive: true, force: true });
 }

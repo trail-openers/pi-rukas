@@ -65,7 +65,7 @@ export function adversarialRoundsLine(
   let advRounds = 0;
   let advStatus: string | undefined;
   for (const e of state.eventLog) {
-    if (e.kind !== "adversarial-round") continue;
+    if (e.kind !== "adversarial-round" || typeof e.round !== "number") continue;
     if (e.round >= advRounds) advStatus = e.verdictParsed ? e.status : "no verdict parsed";
     advRounds = Math.max(advRounds, e.round);
   }

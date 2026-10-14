@@ -74,7 +74,7 @@ function parkedState(snapshot: Record<string, unknown>): WorkState {
         stagedCount: 0,
         branchExists: false,
         branchPushed: false,
-        headSha: "",
+        repoRootHeadSha: "",
         capturedAt: 1000,
         ...snapshot,
       },

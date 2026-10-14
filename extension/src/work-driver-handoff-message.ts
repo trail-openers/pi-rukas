@@ -119,6 +119,9 @@ export function renderHandoffUserMessage(
   // was built" (#1286), so there it is labelled as what it is.
   const hasCommits = Boolean(snap?.committedWork?.length) || (snap?.branchTip?.ahead ?? 0) > 0;
   const fileLabel = hasCommits ? "uncommitted file(s)" : "file(s) modified";
+  // A tip whose distance from base is unknown cannot say "no commits", so the
+  // file count is not offered as the branch's content either.
+  const aheadUnknown = snap?.branchTip !== undefined && snap.branchTip.ahead === undefined;
   const prTag = ps.prNumber ? `PR #${ps.prNumber}` : "no PR created";
   const target = ps.prNumber ? `pr ${ps.prNumber}` : `issue ${issue}`;
   const at = new Date().toISOString();
@@ -180,7 +183,9 @@ export function renderHandoffUserMessage(
     `  ${prTag}`,
     snapNotRead
       ? `  modified files: NOT READ (${fileCount} seen)`
-      : `  ${fileCount} ${fileLabel}${snap && snap.stagedCount > 0 ? ` (${snap.stagedCount} staged, ${snap.unstagedCount} unstaged)` : ""}`,
+      : aheadUnknown
+        ? `  ${fileCount} uncommitted file(s); commits ahead of base NOT READ`
+        : `  ${fileCount} ${fileLabel}${snap && snap.stagedCount > 0 ? ` (${snap.stagedCount} staged, ${snap.unstagedCount} unstaged)` : ""}`,
     ...notRead.map((l) => `  ${l}`),
   );
   // The review's own findings, in the surface the operator actually reads.
