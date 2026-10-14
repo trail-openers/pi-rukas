@@ -23,11 +23,12 @@ import { runCreateGuards } from "./worktree-create-guard.ts";
 import {
   DirtyWorktreeError,
   type DirtyWorktreeFinding,
+  WorktreeScanError,
   inspectWorktreeForLoss,
 } from "./worktree-loss.ts";
 import { type ProvisionResult, provisionWorktree } from "./worktree-provision.ts";
 export type { ProvisionResult } from "./worktree-provision.ts";
-export { DirtyWorktreeError, inspectWorktreeForLoss };
+export { DirtyWorktreeError, inspectWorktreeForLoss, WorktreeScanError };
 export type { DirtyWorktreeFinding };
 export { salvageUncommittedWork, salvageDirtyWorktree } from "./worktree-salvage.ts";
 
@@ -235,20 +236,34 @@ export async function scanWorktrees(
   fromRef: string,
   pathSubstrings: string[],
   exclude?: string,
-  opts: { failOnListError?: boolean } = {},
 ): Promise<{ path: string; name: string; finding?: DirtyWorktreeFinding }[]> {
   let list: string;
   try {
-    ({ stdout: list } = await execFn("git worktree list --porcelain", {
-      cwd: repoRoot,
-      maxBuffer: 1024 * 1024,
-    }));
-  } catch (err) {
-    // #1170 — the create-guard sibling scan opts in to a throw: an unreadable
-    // listing must refuse, not read as "no siblings".
-    if (opts.failOnListError) throw err;
-    return [];
+    list = await listWorktreePorcelain(execFn, repoRoot);
+  } catch {
+    return []; // fail open: an unreadable listing reads as no siblings
   }
+  return inspectListedWorktrees(execFn, repoRoot, list, fromRef, pathSubstrings, exclude);
+}
+
+/** The strict listing — an unreadable `git worktree list` throws. */
+async function listWorktreePorcelain(execFn: ExecFn, repoRoot: string): Promise<string> {
+  const { stdout } = await execFn("git worktree list --porcelain", {
+    cwd: repoRoot,
+    maxBuffer: 1024 * 1024,
+  });
+  return stdout;
+}
+
+/** Inspect every listed worktree whose path matches a substring. */
+async function inspectListedWorktrees(
+  execFn: ExecFn,
+  repoRoot: string,
+  list: string,
+  fromRef: string,
+  pathSubstrings: string[],
+  exclude?: string,
+): Promise<{ path: string; name: string; finding?: DirtyWorktreeFinding }[]> {
   const out: { path: string; name: string; finding?: DirtyWorktreeFinding }[] = [];
   for (const line of list.split("\n")) {
     const l = line.trim();
@@ -288,22 +303,16 @@ export async function findDirtySameIssueLeftover(
   excludePaths?: string[],
 ): Promise<DirtyWorktreeFinding | undefined> {
   const wtMarker = `.worktrees${path.sep}${issuePrefix}`;
-  // #1170 — an unreadable listing is a refusal, not "no sibling": it is raised
-  // as a DirtyWorktreeError (fail closed) so the branch step refuses and never
+  // #1170 — an unreadable listing is a refusal, not "no sibling": it throws
+  // WorktreeScanError (fail closed) so the branch step refuses and never
   // reaches the LLM ops fallback, which would create the worktree unscanned.
-  let hits: Awaited<ReturnType<typeof scanWorktrees>>;
+  let list: string;
   try {
-    hits = await scanWorktrees(execFn, repoRoot, fromRef, [wtMarker], selfName, {
-      failOnListError: true,
-    });
+    list = await listWorktreePorcelain(execFn, repoRoot);
   } catch (err) {
-    throw new DirtyWorktreeError({
-      path: repoRoot,
-      uncommittedFiles: [],
-      unpushedCommitCount: 0,
-      inspectError: `git worktree list failed, so same-issue siblings could not be scanned: ${err instanceof Error ? err.message : String(err)}`,
-    });
+    throw new WorktreeScanError(gitErrorDetail(err));
   }
+  const hits = await inspectListedWorktrees(execFn, repoRoot, list, fromRef, [wtMarker], selfName);
   // #753 — on macOS, `git worktree list --porcelain` returns symlink-resolved
   // paths (/private/var/...) while our paths are the logical form (/var/...).
   // Resolve both sides before comparing.

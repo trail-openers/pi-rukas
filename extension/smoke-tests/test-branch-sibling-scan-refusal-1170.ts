@@ -3,21 +3,27 @@
  * #1170 — an unreadable `git worktree list` during the branch step's sibling
  * scan REFUSES the cycle (step-failed:branch → handoff). It must never fall
  * through to the LLM ops fallback, which would create the worktree unscanned.
- * Also pins the ref charset `assertSafeRef` accepts (`_`, `+`) and rejects
- * shell metacharacters.
+ * The refusal is a WorktreeScanError (not a DirtyWorktreeError: there is no
+ * worktree path to name), and the sibling scan's fail-open contract for its
+ * other callers is unchanged. Also pins the ref charset `assertSafeRef`
+ * accepts (`_`, `+`) and rejects shell metacharacters.
  */
-import { execFile } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import { runBranch } from "../src/work-driver-branch-develop.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { initialState } from "../src/workflow-state.ts";
 import { assertSafeRef } from "../src/worktree-loss.ts";
-import type { ExecFn } from "../src/worktree.ts";
+import {
+  DirtyWorktreeError,
+  type ExecFn,
+  WorktreeScanError,
+  findDirtySameIssueLeftover,
+  scanWorktrees,
+} from "../src/worktree.ts";
+import { git, realExec } from "./lib/worktree-fake-fixture.ts";
 
-const execFileP = promisify(execFile);
 let exit = 0;
 function assert(cond: boolean, msg: string) {
   if (cond) console.log(`✓ ${msg}`);
@@ -27,25 +33,22 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const realExec: ExecFn = async (cmd, o) => {
-  const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
-    cwd: o?.cwd,
-    maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
-  });
-  return { stdout };
-};
-const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
-
 const root = mkdtempSync(path.join(tmpdir(), "pi-ens-1170-sibling-"));
 const TITLE = "sibling scan refusal";
 const TITLE_ARTIFACT = path.join(root, "issue-title.txt");
 writeFileSync(TITLE_ARTIFACT, `title: ${TITLE}\n`);
 
+/** Every `git worktree list` fails with a git-style error; everything else is real. */
+const unreadableListing: ExecFn = async (cmd, o) => {
+  if (cmd.includes("worktree list")) throw new Error("git: unable to read worktree list");
+  return realExec(cmd, o);
+};
+
 try {
   // ---- branch step with an unreadable worktree listing
   const originDir = path.join(root, "origin.git");
   const repo = path.join(root, "repo");
-  await execFileP("git", ["init", "--bare", "--initial-branch=main", originDir]);
+  await git(root, ["init", "--bare", "--initial-branch=main", originDir]);
   mkdirSync(repo, { recursive: true });
   await git(repo, ["init", "-q", "--initial-branch=main"]);
   await git(repo, ["config", "user.email", "t@example.com"]);
@@ -60,12 +63,10 @@ try {
   const execFn: ExecFn = async (cmd, o) => {
     if (cmd.startsWith("gh ")) return { stdout: "[]" };
     if (cmd.startsWith("git fetch")) return { stdout: "" };
-    if (cmd.includes("worktree list")) throw new Error("git: unable to read worktree list");
-    return realExec(cmd, o);
+    return unreadableListing(cmd, o);
   };
   const ctx = {
-    // biome-ignore lint/suspicious/noExplicitAny: driver fixture
-    host: {} as any,
+    host: {} as DriverContext["host"],
     issue: 1170,
     issues: [1170],
     restart: true,
@@ -95,6 +96,30 @@ try {
     "the refusal routes to handoff",
   );
   assert(dispatches === 0, "no LLM ops dispatch runs after the refusal (no unscanned creation)");
+  assert(
+    out?.pipelineState.plumbReports?.some((r) =>
+      r.body.includes("unable to read worktree list"),
+    ) === true,
+    "the plumb report carries the git error",
+  );
+
+  // ---- the scan's own contracts (#1170)
+  let scanErr: unknown;
+  try {
+    await findDirtySameIssueLeftover(unreadableListing, repo, "HEAD", "issue-1170", "issue-1170-x");
+  } catch (e) {
+    scanErr = e;
+  }
+  assert(
+    scanErr instanceof WorktreeScanError && !(scanErr instanceof DirtyWorktreeError),
+    "findDirtySameIssueLeftover: an unreadable listing throws WorktreeScanError, not DirtyWorktreeError",
+  );
+  assert(
+    scanErr instanceof Error && scanErr.message.includes("unable to read worktree list"),
+    "WorktreeScanError carries the git error",
+  );
+  const failOpen = await scanWorktrees(unreadableListing, repo, "HEAD", [".worktrees/issue-1170"]);
+  assert(failOpen.length === 0, "scanWorktrees keeps its fail-open contract (no siblings)");
 
   // ---- ref charset
   for (const ok of ["fix/issue_12", "feature/a+b", "release/1.2.3", "feature/x-y@{1}"]) {

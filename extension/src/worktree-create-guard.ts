@@ -78,13 +78,7 @@ export async function runCreateGuards(
   // #1170 — the base ref is interpolated into shell strings below (the probe
   // and every inspection). Only a plain ref name may reach one: anything else
   // is refused as a create error before any command runs.
-  try {
-    assertSafeRef(opts.fromRef);
-  } catch (err) {
-    throw new Error(
-      `worktreeCreate: ${opts.name} failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
+  assertSafeRef(opts.fromRef);
   if (!(await baseRefResolves(execFn, opts))) {
     // EARLY RETURN — before the pre-remove below (`worktreeRemove … true`), so an
     // unresolved ref deletes NOTHING: no sibling or target worktree is touched,

@@ -14,10 +14,8 @@
 
 import fs from "node:fs/promises";
 import { trace } from "./trace.ts";
-import { assertSafeRef } from "./worktree-loss.ts";
 import {
   DirtyWorktreeError,
-  type DirtyWorktreeFinding,
   type ExecFn,
   inspectWorktreeForLoss,
   resolvePath,
@@ -62,9 +60,9 @@ export async function readCycleWorktreePaths(stateFile: string | undefined): Pro
  * or `dist/` here is operator or ops-fallback output, not re-entry residue.
  * Commits are judged against `ref` (the branch tip, else the base), so a re-entry whose HEAD is already
  * on the branch is not loss. A commit that is on neither the local branch nor
- * `remoteRef` (`origin/<branch>`) is unpushed work and refuses. Any finding —
- * or an inspect that throws — refuses with `DirtyWorktreeError` BEFORE anything
- * is removed (fail closed).
+ * `remoteRef` (`origin/<branch>`) is unpushed work and refuses. `inspectWorktreeForLoss`
+ * reports an unreadable read as `inspectError` (it never throws), so any finding
+ * refuses with `DirtyWorktreeError` BEFORE anything is removed (fail closed).
  */
 export async function refuseLossyStaleIntegrateTree(
   execFn: ExecFn,
@@ -73,33 +71,26 @@ export async function refuseLossyStaleIntegrateTree(
   ref: string,
   remoteRef: string,
 ): Promise<void> {
-  let finding: DirtyWorktreeFinding | undefined;
-  try {
-    finding = await inspectWorktreeForLoss(execFn, repoRoot, abs, ref);
-  } catch (err) {
-    finding = {
-      path: abs,
-      uncommittedFiles: [],
-      unpushedCommitCount: 0,
-      inspectError: err instanceof Error ? err.message : String(err),
-    };
-  }
-  if (
-    finding !== undefined &&
+  const finding = await inspectWorktreeForLoss(execFn, repoRoot, abs, ref);
+  if (finding === undefined) return; // provably clean: nothing uncommitted, no unique commits
+  // Every loss channel is judged HERE, before the origin exemption. The exemption
+  // may clear only a finding whose sole content is commits HEAD has and
+  // origin/<branch> already holds.
+  const onlyUnpushedCommits =
     finding.uncommittedFiles.length === 0 &&
     finding.inspectError === undefined &&
-    finding.notOwnWorktree !== true &&
-    (await headReachableFrom(execFn, abs, remoteRef))
-  ) {
-    return; // every commit HEAD has is already on origin/<branch>
-  }
-  if (finding !== undefined) throw new DirtyWorktreeError(finding);
+    finding.notOwnWorktree !== true;
+  if (onlyUnpushedCommits && (await headReachableFrom(execFn, abs, remoteRef))) return;
+  throw new DirtyWorktreeError(finding);
 }
 
-/** True only when HEAD is provably an ancestor of `remoteRef` (any failure = false). */
+/**
+ * True only when HEAD is provably an ancestor of `remoteRef` (any failure = false).
+ * `remoteRef` is built from the branch name `ensureIntegrateWorktree` already
+ * validated with `assertSafeRef`, so it is not re-validated here.
+ */
 async function headReachableFrom(execFn: ExecFn, abs: string, remoteRef: string): Promise<boolean> {
   try {
-    assertSafeRef(remoteRef);
     await execFn(`git merge-base --is-ancestor HEAD ${JSON.stringify(remoteRef)}`, {
       cwd: abs,
       maxBuffer: 64 * 1024,

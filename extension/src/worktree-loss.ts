@@ -99,6 +99,18 @@ export class DirtyWorktreeError extends Error {
   }
 }
 
+/**
+ * #1170 — `git worktree list` could not be read, so the same-issue sibling scan
+ * cannot prove the absence of a dirty sibling. A refusal of its own: there is
+ * no worktree path to name, so it is NOT a DirtyWorktreeError.
+ */
+export class WorktreeScanError extends Error {
+  constructor(detail: string) {
+    super(`git worktree list failed, so same-issue siblings could not be scanned: ${detail}`);
+    this.name = "WorktreeScanError";
+  }
+}
+
 export interface DirtyWorktreeFinding {
   path: string;
   uncommittedFiles: string[];

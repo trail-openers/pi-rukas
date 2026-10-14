@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ensureIntegrateWorktree } from "../src/work-driver-integrate-worktree.ts";
-import { DirtyWorktreeError, worktreePath } from "../src/worktree.ts";
+import { DirtyWorktreeError, type ExecFn, worktreePath } from "../src/worktree.ts";
 import { git, realExecWithStderr as realExec } from "./lib/worktree-fake-fixture.ts";
 
 let exit = 0;
@@ -107,7 +107,9 @@ try {
     ["(b2)", "target/out.bin", "built\n"],
     ["(b3)", ".env", "SECRET=1\n"],
   ] as const) {
-    const { repo, baseSha, branch, wt, stateFile } = await fixture(`ignored-${rel.replace(/\W/g, "_")}`);
+    const { repo, baseSha, branch, wt, stateFile } = await fixture(
+      `ignored-${rel.replace(/\W/g, "_")}`,
+    );
     writeFileSync(path.join(repo, ".git", "info", "exclude"), `${rel.split("/")[0]}\n`, {
       flag: "a",
     });
@@ -212,6 +214,60 @@ try {
         `${tag} a stale tree whose commit is on the ${where === "local" ? "branch ref" : "origin/<branch>"} does not wedge the re-run`,
       );
     }
+  }
+  // (g) every loss channel is judged before the origin exemption: HEAD is already
+  // on origin/<branch>, but a non-regenerable ignored .env is still refused.
+  {
+    const { repo, baseSha, branch, wt, stateFile } = await fixture("remote-env");
+    writeFileSync(path.join(repo, ".git", "info", "exclude"), ".env\n", { flag: "a" });
+    writeFileSync(path.join(wt, ".env"), "SECRET=1\n");
+    writeFileSync(path.join(wt, "a.txt"), "base\nintegrated\n");
+    await git(wt, ["commit", "-q", "-am", "integration"]);
+    const sha = (await git(wt, ["rev-parse", "HEAD"])).stdout.trim();
+    await git(repo, ["update-ref", `refs/remotes/origin/${branch}`, sha]);
+    let err: unknown;
+    try {
+      await ensureIntegrateWorktree(
+        realExec,
+        { repoRoot: repo, issue: 17, branchName: branch, baseSha },
+        stateFile,
+      );
+    } catch (e) {
+      err = e;
+    }
+    assert(
+      err instanceof DirtyWorktreeError && err.message.includes(wt),
+      `(g) HEAD on origin/<branch> does not exempt a stale tree holding ignored .env (${err ? (err as Error).message.split("\n")[0] : "no error"})`,
+    );
+    assert(existsSync(path.join(wt, ".env")), "(g) the ignored .env survives");
+  }
+
+  // (h) git cannot read the stale tree's status: refused (fail closed), nothing removed.
+  {
+    const { repo, baseSha, branch, wt, stateFile } = await fixture("status-fails");
+    const statusFails: ExecFn = async (cmd, o) => {
+      if (cmd.startsWith("git status")) throw new Error("fatal: index file corrupt");
+      return realExec(cmd, o);
+    };
+    let err: unknown;
+    try {
+      await ensureIntegrateWorktree(
+        statusFails,
+        { repoRoot: repo, issue: 17, branchName: branch, baseSha },
+        stateFile,
+      );
+    } catch (e) {
+      err = e;
+    }
+    assert(
+      err instanceof DirtyWorktreeError &&
+        err.message.includes(wt) &&
+        /index file corrupt/.test(err.message),
+      `(h) an unreadable stale tree throws DirtyWorktreeError carrying the git error (${err ? (err as Error).message.split("\n")[0] : "no error"})`,
+    );
+    assert(existsSync(wt), "(h) the unreadable stale tree is not removed");
+    const list = (await git(repo, ["worktree", "list", "--porcelain"])).stdout;
+    assert(list.includes(wt), "(h) the stale tree is still registered");
   }
 } finally {
   rmSync(root, { recursive: true, force: true });
