@@ -40,14 +40,26 @@ export type ReportPolicy =
 
 /**
  * #1161 — the runtime fence behind the `ReportPolicy` type. Returns the named
- * reason when a reportOnly review carries no recognised verdict policy, or
- * undefined when the policy is sound (or the review is not reportOnly).
+ * reason when the policy is unsound, or undefined when it is sound.
+ *
+ * The adversarial_loop tool receives LLM-supplied JSON params, so the TypeScript
+ * union is not enforced at that boundary; this check is what enforces it.
  */
 export function reportPolicyError(policy: {
-  reportOnly?: boolean;
+  reportOnly?: unknown;
   reportVerdict?: unknown;
 }): string | undefined {
-  if (policy.reportOnly !== true) return undefined;
+  if (policy.reportOnly !== undefined && typeof policy.reportOnly !== "boolean") {
+    return "reportOnly must be a boolean when set";
+  }
+  if (policy.reportOnly !== true) {
+    return policy.reportVerdict === undefined ? undefined : "reportVerdict requires reportOnly";
+  }
   if (policy.reportVerdict === "terminal" || policy.reportVerdict === "routed") return undefined;
   return "reportOnly review without a verdict policy";
+}
+
+/** The one predicate every reader of `reportOnly` uses (#1161). */
+export function isReportOnly(policy: { reportOnly?: unknown }): boolean {
+  return policy.reportOnly === true;
 }

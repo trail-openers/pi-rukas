@@ -10,7 +10,7 @@ import {
 import { buildLedgerNote } from "./adversarial-ledger-note.ts";
 import { writeAdversarialLedgerEntry } from "./adversarial-ledger.ts";
 import { makeRunPhase } from "./adversarial-phase.ts";
-import { type ReportPolicy, reportPolicyError } from "./adversarial-policy.ts";
+import { type ReportPolicy, isReportOnly, reportPolicyError } from "./adversarial-policy.ts";
 import {
   type SiblingScope,
   buildAdversarialPrompt,
@@ -109,7 +109,7 @@ export async function runAdversarialLoop(
     /**
      * #1161 — set ONLY by the adversarial_loop tool when the caller pasted a
      * `diff` string. Such a review is recorded in the review ledger as
-     * "caller-supplied diff" and never counts as a passing adversarial review.
+     * caller-supplied and never counts as a passing adversarial review.
      */
     callerSuppliedDiff?: boolean;
   } & ReportPolicy,
@@ -163,7 +163,8 @@ export async function runAdversarialLoop(
       resolvedBranch: branchResolved,
       branch: params.branch,
       head: params.head,
-      callerSuppliedDiff: params.callerSuppliedDiff === true,
+      base: params.base,
+      callerSuppliedDiff: params.callerSuppliedDiff,
     });
     return withLedgerNote(result);
   };
@@ -177,7 +178,7 @@ export async function runAdversarialLoop(
       synthesizeResult({
         ok: false,
         loopOutcome: "infra-failure",
-        text: `Adversarial loop infrastructure failure: ${policyError} (reportVerdict must be "terminal" or "routed"). No verdict was produced — this is NOT a review rejection.`,
+        text: `Adversarial loop infrastructure failure: ${policyError}. No verdict was produced — this is NOT a review rejection.`,
         ms: Date.now() - start,
         usage,
         transcriptPath: lastTranscript,
@@ -185,8 +186,6 @@ export async function runAdversarialLoop(
       }),
     );
   }
-  const reportTerminal = params.reportVerdict === "terminal";
-
   // #859 — resolve the ref range (used by both the diff and the comment check).
   const range = params.base && params.head ? { base: params.base, head: params.head } : null;
 
@@ -348,7 +347,7 @@ export async function runAdversarialLoop(
 
     const verdict = parseVerdict(adv.text);
     rounds.push({ round, verdict, ms: adv.ms });
-    if (params.reportOnly) {
+    if (isReportOnly(params)) {
       if (verdict.verdictParsed !== true) {
         return ledgerWrite(
           infraFailureResult(
@@ -363,7 +362,7 @@ export async function runAdversarialLoop(
       // #912 — the review ledger keys on the latest entry per branch, so every
       // reviewed round records its verdict: a pass is `approved`, anything the
       // driver will route back or reject is `rejected` (replaced by a later pass).
-      const terminalRound = reportTerminal ? MAX_ROUNDS : round;
+      const terminalRound = params.reportVerdict === "terminal" ? MAX_ROUNDS : round;
       const passed = decideLoopAction(verdict.status, terminalRound, MAX_ROUNDS, true) === "pass";
       return ledgerWrite(
         synthesizeResult({

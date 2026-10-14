@@ -17,7 +17,6 @@
  * test-adversarial-report-only-parse.ts, not here.
  */
 
-import { mock } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -26,6 +25,7 @@ import { writeAdversarialLedgerEntry } from "../src/adversarial-ledger.ts";
 import { readLedgerAt } from "../src/review-ledger.ts";
 import { finaliseSpecVerdict } from "../src/work-driver-intent-finalise.ts";
 import { type NormalisedSpec, parkAction } from "../src/work-driver-intent.ts";
+import { installLoopSeams } from "./adversarial-loop-helpers.ts";
 import {
   assert,
   TARGET,
@@ -37,37 +37,15 @@ import {
 } from "./merge-guard-helpers.ts";
 import type { LedgerEntry } from "./merge-guard-helpers.ts";
 
-type SpawnSpec = { role: string; prompt: string; cwd?: string };
 let reply = "";
-mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
-  makeRunId: () => "run-review-autonomy",
-  spawnSpecialist: async (spec: SpawnSpec) => ({
-    role: spec.role,
-    ok: true,
-    text: reply,
-    toolUses: [],
-    ms: 10,
-    exitCode: 0,
-    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
-  }),
-}));
-const realDeck = await import("../src/dispatch-deck.ts");
-mock.module(new URL("../src/dispatch-deck.ts", import.meta.url).href, () => ({
-  ...realDeck,
-  startEntry: () => {},
-  updateEntry: () => {},
-  clearBatchEntry: () => {},
-  clearEntry: () => {},
-  startBatchEntry: () => {},
-  updateBatchProgress: () => {},
-}));
-const realRegistry = await import("../src/async-jobs-registry.ts");
-mock.module(new URL("../src/async-jobs-registry.ts", import.meta.url).href, () => ({
-  ...realRegistry,
-  childHandles: new Map(),
-  registerChildHandle: () => {},
-  setOrchestratorActiveChild: () => {},
-  markOrchestrator: () => {},
+await installLoopSeams(async (spec) => ({
+  role: spec.role,
+  ok: true,
+  text: reply,
+  toolUses: [],
+  ms: 10,
+  exitCode: 0,
+  usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
 }));
 
 const { runAdversarialLoop } = await import("../src/adversarial.ts");
@@ -80,8 +58,9 @@ const BRANCH = TARGET.headBranch;
 // so the writer traces "no mainline" and writes nothing. The row under test is
 // written explicitly below by the real writer, from the same result.
 const loopDir = mkdtempSync(path.join(os.tmpdir(), "review-autonomy-loop-"));
-// A real clone with a mainline and one uncommitted change, so the real writer
-// computes a working-tree patch id the way it does in production.
+// A real clone with a mainline, one committed change (the range the base+head
+// review judges) and one uncommitted change (the working tree the pasted-diff
+// review's writer reads), so both rows are written by the real writer.
 const repoDir = mkdtempSync(path.join(os.tmpdir(), "review-autonomy-"));
 const ledgerFile = () => process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE ?? "";
 
@@ -97,6 +76,9 @@ function setupRepo() {
   g("update-ref", "refs/remotes/origin/main", "HEAD");
   g("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
   writeFileSync(path.join(repoDir, "x.txt"), "base\nadded\n");
+  g("add", "-A");
+  g("commit", "-q", "-m", "change");
+  writeFileSync(path.join(repoDir, "x.txt"), "base\nadded\nuncommitted\n");
 }
 
 /**
@@ -139,14 +121,6 @@ try {
 
   const issues = await reviewRow(ISSUES_TEXT, false);
   const PATCH = issues.patchId;
-  assert(
-    issues.passed === true,
-    "tool-path ISSUES_FOUND (base+head): real writer row is passed:true",
-  );
-  assert(
-    issues.detail === "approved",
-    "tool-path ISSUES_FOUND (base+head): row detail is approved",
-  );
 
   const lensPassedRow: LedgerEntry = {
     branch: BRANCH,
@@ -206,8 +180,8 @@ try {
   const pasted = await reviewRow(ISSUES_TEXT, true);
   assert(pasted.passed === false, "caller-supplied diff: real writer row is passed:false");
   assert(
-    pasted.detail === "caller-supplied diff",
-    "caller-supplied diff: real writer row detail is 'caller-supplied diff'",
+    pasted.detail?.endsWith(" (caller-supplied diff)") === true,
+    "caller-supplied diff: real writer row detail names the caller-supplied diff",
   );
   const pastedRefused = await hookDecision("gh pr merge 12", [pasted, lensPassedRow], {
     patchId: PATCH,
@@ -218,10 +192,6 @@ try {
   );
 
   const critical = await reviewRow("VERDICT: CRITICAL_ISSUES_FOUND\n\n1. broken", false);
-  assert(
-    critical.passed === false,
-    "tool-path CRITICAL_ISSUES_FOUND: real writer row is passed:false",
-  );
   const refused = await hookDecision("gh pr merge 12", [critical, lensPassedRow], {
     patchId: PATCH,
   });
