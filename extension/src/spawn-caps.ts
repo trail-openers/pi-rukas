@@ -28,15 +28,15 @@ import type { SteerSource } from "./dispatch-steer.ts";
 import { type LoopDetector, createLoopDetector, loopDetectorEnabled } from "./loop-detector.ts";
 import type { PiContentBlock } from "./pi-event-shapes.ts";
 import type { LoopObserver } from "./progress.ts";
+import { killProcessTree } from "./spawn-kill.ts";
 import { TokenBudgetTracker, tokenBudgetEnvKey } from "./spawn-support.ts";
 import { trace } from "./trace.ts";
 import { turnNudgeEnabled, turnNudgeText, turnNudgeThreshold } from "./turn-nudge.ts";
 import type { DispatchResult } from "./types.ts";
 
-/** The shared kill: SIGTERM + 5s SIGKILL escalation. */
+/** The shared kill: SIGTERM to the whole process group, then SIGKILL (#1024). */
 function killChild(child: ChildProcess): void {
-  child.kill("SIGTERM");
-  setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
+  killProcessTree(child);
 }
 
 /**

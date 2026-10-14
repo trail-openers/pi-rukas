@@ -73,6 +73,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { type EmitSink, emitPersisted } from "./work-state-emit.ts";
+import type { InterruptReason } from "./workflow-state-events.ts";
 import { WORK_STATE_SCHEMA_VERSION, type WorkState } from "./workflow-state-schema.ts";
 import { appendEvent, detectInconsistencies, initialState } from "./workflow-state-update.ts";
 
@@ -91,6 +92,7 @@ export type {
 export type { CommitPrRootState } from "./workflow-state-schema.ts";
 export type { CapEvidence, CapedPartialState } from "./workflow-state-schema.ts";
 export type { PipelineState, WorkState } from "./workflow-state-schema.ts";
+export type { InterruptReason } from "./workflow-state-events.ts";
 export {
   filesPresentFromConsolidation,
   missingWorkstreamsFromConsolidation,
@@ -182,52 +184,6 @@ function enqueue<T>(file: string, task: () => Promise<T>): Promise<T> {
   return run;
 }
 
-/** An interrupt recorded for one state file (S4a, #1162). */
-interface InterruptRequest {
-  at: number;
-  reason: string;
-}
-
-/** Interrupts requested in this process, keyed by state file. */
-const interruptRequests = new Map<string, InterruptRequest>();
-
-/**
- * S4a (#1162) — flag an issue's cycle as interrupted in this process. Every
- * later write of that issue's state is forced to `interrupted` (see
- * `honourInterrupt`), so a driver persist that holds an older in-memory
- * `running` snapshot cannot erase the record. `markInterrupted` sets it;
- * `clearInterruptRequest` drops it when a new driver run starts.
- */
-export function requestInterrupt(
-  repoRoot: string,
-  issue: number,
-  reason: string,
-  at: number = Date.now(),
-): void {
-  interruptRequests.set(workStateFile(repoRoot, issue), { at, reason });
-}
-
-/** Drop an issue's interrupt flag. A new driver run supersedes the old interrupt. */
-export function clearInterruptRequest(repoRoot: string, issue: number): void {
-  interruptRequests.delete(workStateFile(repoRoot, issue));
-}
-
-/**
- * Keep an interrupted cycle interrupted: status `interrupted` and exactly one
- * `interrupted` event. An event already in the log is kept as it is.
- */
-function honourInterrupt(state: WorkState, req: InterruptRequest | undefined): WorkState {
-  if (!req) return state;
-  const hasEvent = state.eventLog.some((e) => e.kind === "interrupted");
-  return {
-    ...state,
-    pipelineState: { ...state.pipelineState, status: "interrupted" },
-    eventLog: hasEvent
-      ? state.eventLog
-      : [...state.eventLog, { kind: "interrupted", at: req.at, reason: req.reason }],
-  };
-}
-
 /**
  * Atomic write of one snapshot: unique tmp name, then rename. A failed write
  * removes its tmp file and rethrows. Updates `updatedAt`. Must run inside the
@@ -238,7 +194,7 @@ function honourInterrupt(state: WorkState, req: InterruptRequest | undefined): W
  */
 async function writeSnapshot(file: string, state: WorkState, sink?: EmitSink): Promise<WorkState> {
   await fs.mkdir(path.dirname(file), { recursive: true });
-  const next = honourInterrupt({ ...state, updatedAt: Date.now() }, interruptRequests.get(file));
+  const next = { ...state, updatedAt: Date.now() };
   const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
   try {
     await fs.writeFile(tmp, `${JSON.stringify(next, null, 2)}\n`, "utf8");
@@ -267,24 +223,62 @@ export function writeState(repoRoot: string, state: WorkState, sink?: EmitSink):
  * through here so the emit sink is never forgotten at a call site.
  */
 export function persistCycle(
-  ctx: { repoRoot: string; emitSink?: EmitSink },
+  ctx: { repoRoot: string; emitSink: EmitSink; signal?: AbortSignal },
   state: WorkState,
 ): Promise<void> {
-  return writeState(ctx.repoRoot, state, ctx.emitSink);
+  // Headless S4 (#1024): once the cycle's signal has fired, a snapshot that
+  // still reads `running` is written as `interrupted`, with its interrupt event.
+  // The driver's in-memory copy can predate an interrupt the runner already
+  // recorded on disk; this stops that stale copy writing `running` back.
+  // Terminal statuses are never touched.
+  const signal = ctx.signal;
+  const snapshot =
+    signal?.aborted === true ? applyInterrupt(state, interruptReasonOf(signal), Date.now()) : state;
+  return writeState(ctx.repoRoot, snapshot, ctx.emitSink);
+}
+
+/** The interrupt reason an aborted cycle signal carries (`timeout`, else `signal`). */
+export function interruptReasonOf(signal: AbortSignal): InterruptReason {
+  return signal.reason === "timeout" ? "timeout" : "signal";
 }
 
 /**
- * S4a (#1162) — record an interrupt (SIGTERM / SIGINT). Re-reads the state from
- * disk inside the file's write slot (a caller's snapshot may be stale: another
- * writer may have appended since), sets status to `interrupted`, appends the
- * `interrupted` event carrying `reason`, sets the interrupt flag, and persists.
- * Returns undefined when no state file exists. Re-entry resumes the cycle (see
- * `reenterInterrupted`).
+ * Headless S4 (#1024) — the one pure interrupt transition. A no-op unless the
+ * cycle is `running`. Otherwise it sets `interrupted` and appends exactly one
+ * `interrupted` event carrying `reason`. The event is not appended again when
+ * the log already ends with that same interrupt (a re-entered cycle that is
+ * interrupted again before doing anything else). Every interrupt path goes
+ * through here: the driver checkpoint, persistCycle and markInterrupted.
+ */
+export function applyInterrupt(state: WorkState, reason: InterruptReason, at: number): WorkState {
+  if (state.pipelineState.status !== "running") return state;
+  const interrupted = {
+    ...state,
+    pipelineState: { ...state.pipelineState, status: "interrupted" as const },
+  };
+  const last = state.eventLog[state.eventLog.length - 1];
+  if (last?.kind === "interrupted" && last.reason === reason) return interrupted;
+  return appendEvent(interrupted, { kind: "interrupted", at, reason });
+}
+
+/**
+ * S4a (#1162) — record an interrupt (SIGTERM / SIGINT) on disk. This is the
+ * fallback for a driver that can no longer persist its own interrupt (the
+ * process is exiting): the live driver normally checks its AbortSignal at a
+ * step boundary and persists `interrupted` itself (work-driver.ts).
+ *
+ * Re-reads the state inside the file's write slot (the caller's snapshot may be
+ * stale). Applies only while the cycle is `running`: a terminal status
+ * (`merged`, `handoff`, `aborted`) is never rewritten, and an already
+ * `interrupted` cycle gets no second event. Returns the state as it stands
+ * when nothing was written; undefined when no state file exists.
+ *
+ * Re-entry resumes the cycle (see reenterInterrupted in work-driver-resume.ts).
  */
 export function markInterrupted(
   repoRoot: string,
   issue: number,
-  reason: string,
+  reason: InterruptReason,
   sink?: EmitSink,
   at: number = Date.now(),
 ): Promise<WorkState | undefined> {
@@ -292,11 +286,8 @@ export function markInterrupted(
   return enqueue(file, async () => {
     const state = await readState(repoRoot, issue);
     if (!state) return undefined;
-    requestInterrupt(repoRoot, issue, reason, at);
-    const next = appendEvent(
-      { ...state, pipelineState: { ...state.pipelineState, status: "interrupted" } },
-      { kind: "interrupted", at, reason },
-    );
+    const next = applyInterrupt(state, reason, at);
+    if (next === state) return state;
     return writeSnapshot(file, next, sink);
   });
 }

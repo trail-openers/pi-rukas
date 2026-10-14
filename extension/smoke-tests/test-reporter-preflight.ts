@@ -405,7 +405,7 @@ function claimCall(kind: string, text: string, source: string, sourceKind: strin
   // We can't easily mock spawnSpecialist, so we test the statReporterPath
   // integration via judgePolicy's statFn parameter. The judge will throw
   // before calling spawnSpecialist.
-  const judge = judgePolicy("/tmp", rejectStat);
+  const judge = judgePolicy("/tmp", { statFn: rejectStat });
   let caught: string | undefined;
   try {
     await judge("test question");

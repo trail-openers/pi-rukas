@@ -38,13 +38,14 @@ import type { WorkEvent } from "./workflow-state-events.ts";
 import type { WorkState } from "./workflow-state-schema.ts";
 
 export interface EmitSink {
-  emit: (event: WorkEvent) => void;
+  /** `index` is the event's position in the state's eventLog. */
+  emit: (event: WorkEvent, index: number) => void;
   /** One fingerprint per emitted eventLog entry, in log order. Its length is the watermark. */
   fingerprints: string[];
 }
 
 /** A fresh sink for one cycle. The watermark starts empty. */
-export function createEmitSink(emit: (event: WorkEvent) => void): EmitSink {
+export function createEmitSink(emit: (event: WorkEvent, index: number) => void): EmitSink {
   return { emit, fingerprints: [] };
 }
 
@@ -76,7 +77,7 @@ export function emitPersisted(sink: EmitSink, state: WorkState): void {
     // Advance first: a throwing sink must not cause this event to be re-emitted.
     fps.push(fingerprint(event, j));
     try {
-      sink.emit(event);
+      sink.emit(event, j);
     } catch (err) {
       trace(
         `work-state-emit: sink threw on ${event.kind} at index ${j} — ${(err as Error).message}`,

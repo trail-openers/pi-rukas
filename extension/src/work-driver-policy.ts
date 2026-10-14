@@ -394,7 +394,11 @@ export type PolicyStatFn = (p: string) => Promise<unknown>;
  * the judge fails fast with a clear message rather than silently producing
  * an empty `toolUses: []` that `askPolicy` reads as "no permission".
  */
-export function judgePolicy(repoRoot: string, statFn?: PolicyStatFn): PolicyJudgeFn {
+export function judgePolicy(
+  repoRoot: string,
+  opts: { statFn?: PolicyStatFn; processGroup?: boolean; signal?: AbortSignal } = {},
+): PolicyJudgeFn {
+  const { statFn, processGroup = false, signal } = opts;
   const extraArgs = ["--no-skills", "--extension", POLICY_REPORTER_PATH];
   const reporterPath = reporterPathFromArgs(extraArgs);
   return async (prompt: string) => {
@@ -409,6 +413,8 @@ export function judgePolicy(repoRoot: string, statFn?: PolicyStatFn): PolicyJudg
         tag: "policy-judge",
         extraArgs,
         timeoutMs: POLICY_JUDGE_TIMEOUT_MS,
+        processGroup,
+        signal,
       },
     );
     return result.ok ? { toolUses: result.toolUses ?? [] } : undefined;

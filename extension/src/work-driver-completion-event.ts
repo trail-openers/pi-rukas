@@ -16,7 +16,7 @@
 import path from "node:path";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { parseAbort } from "./work-driver-diff.ts";
 import { withUsage } from "./workflow-state-events-usage.ts";
 import { type WorkStep, type appendEvent, writeDispatchArtifact } from "./workflow-state.ts";
@@ -61,7 +61,7 @@ export function overrideEnvForKillCause(
  * for large summaries.
  */
 export async function buildCompletionEvent(
-  ctx: DriverContext,
+  ctx: CycleContext,
   step: WorkStep,
   role: string,
   label: string,

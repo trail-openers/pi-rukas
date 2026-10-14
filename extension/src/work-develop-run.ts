@@ -21,7 +21,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { buildMemoryBrief } from "./memory-brief.ts";
 import { trace } from "./trace.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import {
@@ -35,7 +35,7 @@ import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts
 
 /** Per-run mutable state shared by both dispatch phases. */
 export interface DevelopRunState {
-  ctx: DriverContext;
+  ctx: CycleContext;
   /** The active issue list (NEEDS_WORK subset after explore). */
   activeIssues: number[];
   /** The scratch dir absolute path. */

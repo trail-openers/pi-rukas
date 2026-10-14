@@ -37,7 +37,7 @@ import path from "node:path";
 import { execp } from "./lens-exec.ts";
 import { trace } from "./trace.ts";
 import { detectMainline, freshMainlineTip } from "./work-driver-branch-mechanized.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { parseBranchName } from "./work-driver-diff.ts";
 import { resolvedTheMainline } from "./work-driver-git.ts";
 import { buildCompletionEvent, runSingleDispatch } from "./work-driver-merged.ts";
@@ -125,7 +125,7 @@ export function parseWorktreesBlock(text: string, repoRoot: string): Record<stri
  * #292 — branchName is resolved from git, NOT from the ops reply.
  */
 export async function runBranchViaOpsDispatch(
-  ctx: DriverContext,
+  ctx: CycleContext,
   base: WorkState,
   workstreamIds: string[],
   now: number,

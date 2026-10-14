@@ -31,7 +31,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { recordCommentEvidence } from "./comment-evidence.ts";
 import { trace } from "./trace.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import {
   type ConvergeVerdict,
   buildConvergeCorrectivePrompt,
@@ -50,7 +50,7 @@ const execp = promisify(exec);
  * has passed. Returns the (possibly mutated) state.
  */
 export async function runConvergeGateHandler(
-  ctx: DriverContext,
+  ctx: CycleContext,
   state: WorkState,
   dispatchFn: NonNullable<DriverContext["dispatchFn"]>,
 ): Promise<WorkState> {
@@ -245,7 +245,7 @@ export async function runConvergeGateHandler(
  *     redundant-but-correct re-run beats a silently skipped gate.
  */
 async function treeChangedByCorrective(
-  ctx: DriverContext,
+  ctx: CycleContext,
   cwd: string | undefined,
 ): Promise<"unchanged" | "changed" | "unknown"> {
   if (!cwd) return "unknown";

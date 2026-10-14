@@ -12,7 +12,7 @@
 import type { CommentEvidence } from "./comment-evidence.ts";
 import { COMMENT_RETENTION_PATHS } from "./comment-retention.ts";
 import { runConsolidatedVerify } from "./work-driver-consolidated-verify.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import {
   doctrineProsePathsIn,
   explainProtectedPaths,
@@ -49,7 +49,7 @@ function isValidSha(s: string | undefined) {
  * in each worktree. Mutates `failures` and `notes` in place.
  */
 export async function verifyDevelopOutcome(
-  ctx: DriverContext,
+  ctx: CycleContext,
   state: WorkState,
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
   failures: string[],

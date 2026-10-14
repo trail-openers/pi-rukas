@@ -33,7 +33,7 @@ import { promisify } from "node:util";
 import { excludeToolListFor } from "./role-tools.ts";
 import { isRoleName } from "./roles.ts";
 import { trace } from "./trace.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import {
@@ -107,7 +107,7 @@ async function typecheckWorktree(cwd: string): Promise<boolean | undefined> {
  * half-state.
  */
 export async function checkpointCapedDispatch(
-  ctx: DriverContext,
+  ctx: CycleContext,
   state: WorkState,
   step: WorkStep,
 ): Promise<WorkState> {

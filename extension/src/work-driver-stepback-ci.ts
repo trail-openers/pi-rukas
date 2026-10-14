@@ -14,7 +14,7 @@ import { exec as nodeExec } from "node:child_process";
 import { promisify } from "node:util";
 import { readMarker } from "./reply-markers.ts";
 import { trace } from "./trace.ts";
-import { type DriverContext, MAX_CI_RETRIES } from "./work-driver-context.ts";
+import { type CycleContext, type DriverContext, MAX_CI_RETRIES } from "./work-driver-context.ts";
 import {
   contradictsSuccess,
   gatherMergeEvidence,
@@ -72,7 +72,7 @@ export function parseStepBackReply(text: string): {
 }
 
 export async function runStepBack(
-  ctx: DriverContext,
+  ctx: CycleContext,
   state: WorkState,
   now: number,
 ): Promise<WorkState> {
@@ -165,7 +165,7 @@ function verifyFullEnabled(): boolean {
   return v !== "0" && v !== "false";
 }
 
-export async function runCi(ctx: DriverContext, state: WorkState, now: number): Promise<WorkState> {
+export async function runCi(ctx: CycleContext, state: WorkState, now: number): Promise<WorkState> {
   let next = state;
 
   // #279 — verify-full tier: read `.pi/verify-cmd-full` and execute it

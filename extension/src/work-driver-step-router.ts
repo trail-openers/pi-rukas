@@ -18,7 +18,7 @@ import { drainSlowEvents } from "./slow-events.ts";
 import { trace } from "./trace.ts";
 import { capKilledString } from "./work-driver-cap-killed.ts";
 import { STEP_FAILURE_POLICY } from "./work-driver-context.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { dispatchTokens } from "./work-driver-cycle-total.ts";
 import {
   classifyFailureCause,
@@ -102,7 +102,7 @@ export function failureEventOf(events: readonly WorkEvent[]): WorkEvent | undefi
 }
 
 export async function routeStepOutcome(
-  ctx: DriverContext,
+  ctx: CycleContext,
   stateIn: WorkState,
   step: WorkStep,
   stepOrd: { num: number; total: number },

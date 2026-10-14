@@ -16,15 +16,31 @@
  * `.git` is not writable is degraded enough that blocking hard on the lock
  * would cost more than the risk the lock guards against.
  */
+import { readFileSync, rmSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "./trace.ts";
 
 let integrationChain: Promise<unknown> = Promise.resolve();
+/**
+ * Lockfiles this process currently holds, mapped to the exact contents this
+ * process wrote. A release removes a file only while it still holds that
+ * content: a stale sweep may have handed the lock to another process.
+ */
+const heldLockfiles = new Map<string, string>();
 const LOCK_STALE_MS = 30 * 60 * 1000;
 
 function lockPath(repoRoot: string): string {
   return path.join(repoRoot, ".git", "pi-rukas-integration.lock");
+}
+
+/** True when the lockfile still holds exactly `token` (this process's write). */
+async function holdsLockfile(file: string, token: string): Promise<boolean> {
+  try {
+    return (await fs.readFile(file, "utf8")) === token;
+  } catch {
+    return false;
+  }
 }
 
 async function acquireLockfile(repoRoot: string): Promise<() => Promise<void>> {
@@ -33,11 +49,17 @@ async function acquireLockfile(repoRoot: string): Promise<() => Promise<void>> {
   for (;;) {
     try {
       // `wx` is O_EXCL: the create itself is the atomic test-and-set.
+      const token = JSON.stringify({ pid: process.pid, at: Date.now() });
       const fh = await fs.open(file, "wx");
-      await fh.writeFile(JSON.stringify({ pid: process.pid, at: Date.now() }));
+      await fh.writeFile(token);
       await fh.close();
+      heldLockfiles.set(file, token);
       return async () => {
-        await fs.rm(file, { force: true }).catch(() => undefined);
+        heldLockfiles.delete(file);
+        // Remove only our own lock — never another holder's.
+        if (await holdsLockfile(file, token)) {
+          await fs.rm(file, { force: true }).catch(() => undefined);
+        }
       };
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
@@ -85,6 +107,23 @@ async function guarded<T>(repoRoot: string, fn: () => Promise<T>): Promise<T> {
   } finally {
     await release();
   }
+}
+
+/**
+ * Headless S4 (#1024) — remove every integration lockfile this process holds,
+ * synchronously, so a signal exit leaves no lock for the next runner. A
+ * `finally` does not run once `process.exit` is called, so the runner calls
+ * this first. Safe to call when nothing is held.
+ */
+export function releaseHeldIntegrationLocks(): void {
+  for (const [file, token] of heldLockfiles) {
+    try {
+      if (readFileSync(file, "utf8") === token) rmSync(file, { force: true });
+    } catch {
+      // Already gone, or unreadable: nothing of ours to remove.
+    }
+  }
+  heldLockfiles.clear();
 }
 
 /** Test seam: reset the in-process chain between fixtures. */

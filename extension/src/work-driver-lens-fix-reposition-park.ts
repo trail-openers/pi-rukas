@@ -12,7 +12,7 @@ import { trace } from "./trace.ts";
  * ride on `evidence`; a backup ref (unlanded / diverged) rides on
  * `restoredToRef`.
  */
-import type { DriverContext } from "./work-driver-context.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import type { RepositionResult } from "./work-driver-lens-fix-reposition-gate.ts";
 import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
 
@@ -23,7 +23,7 @@ import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
  * and does NOT dispatch the fixer.
  */
 export async function parkLensFixReposition(
-  ctx: DriverContext,
+  ctx: CycleContext,
   state: WorkState,
   now: number,
   fixTree: string,
