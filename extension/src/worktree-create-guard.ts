@@ -88,7 +88,9 @@ export async function runCreateGuards(
   try {
     assertSafeRef(opts.fromRef);
   } catch (err) {
-    const wrapped = new Error(`worktreeCreate: ${opts.name} failed: ${(err as Error).message}`);
+    const wrapped = new Error(
+      `worktreeCreate: ${opts.name} failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
     wrapped.cause = err;
     throw wrapped;
   }
@@ -115,6 +117,9 @@ export async function runCreateGuards(
   // an earlier workstream's legitimate in-progress dirt is not a leftover).
   // #1170 — an unreadable `git worktree list` THROWS here and refuses creation.
   // Strict (branch step only): see CreateGuardOpts.strictSiblingListing.
+  // Non-strict callers proceed on an unreadable listing because `git worktree
+  // add` then surfaces the git error itself (plumbed via gitErrorDetail); the
+  // strict branch step refuses instead.
   const siblingDirty = await findDirtySameIssueLeftover(
     execFn,
     opts.repoRoot,

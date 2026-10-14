@@ -116,7 +116,7 @@ export async function ensureIntegrateWorktree(
     assertSafeRef(branchName);
     assertSafeRef(baseSha);
   } catch (err) {
-    throw new Error(`integrate ref refused: ${(err as Error).message}`);
+    throw new Error(`integrate ref refused: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   // ---- preflight: what holds the branch, and who is where

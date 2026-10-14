@@ -324,7 +324,10 @@ export async function findDirtySameIssueLeftover(
   } else {
     try {
       list = await listWorktreePorcelain(execFn, repoRoot);
-    } catch {
+    } catch (e) {
+      trace(
+        `worktree: sibling scan unreadable for ${selfName} — proceeding without it (${gitErrorDetail(e)})`,
+      );
       return undefined;
     }
   }
