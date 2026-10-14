@@ -42,6 +42,7 @@ import { reviewedDigestOf } from "./plan-filing-claim.ts";
 import { filedBodyOf, settledGapsSection } from "./plan-gap-disclosure.ts";
 import { type GapGateLoopResult, runGapGateLoop } from "./plan-gaps.ts";
 import { type CarriedCritical, gapGatePrompt, gapGateVerifyPrompt } from "./plan-gate-prompt.ts";
+import { loadPlanImages, planImageLinksSection, withPlanImages } from "./plan-images.ts";
 import {
   type InvestigationResult,
   PLAN_DISPATCH_TIMEOUT_MS,
@@ -102,7 +103,9 @@ async function runPipelineOn(
   repoRoot: string,
   base: PlanBase,
 ): Promise<PlanResult> {
-  const dispatch: PlanDispatchFn = getPlanDispatchOverride() ?? dispatchCore;
+  // The source issue's images (plan-images.ts): with every child, links in the body.
+  const images = await loadPlanImages();
+  const dispatch = withPlanImages(images, getPlanDispatchOverride() ?? dispatchCore);
   const { descriptor, context, dryRun } = input;
   const type = classifyPlanType(descriptor, input.type);
   const depth = input.depth ?? 0;
@@ -414,7 +417,9 @@ async function runPipelineOn(
   // residual disclosure. Append it HERE, before fileIssue, so the single
   // filing pass below sees the final body.
   // #1132: open points and the base fallback are disclosed in the body too.
-  const finalBody = filedBodyOf(body, residualForDisclosure, openPoints, base.baseFallback);
+  const finalBody =
+    filedBodyOf(body, residualForDisclosure, openPoints, base.baseFallback) +
+    planImageLinksSection(images);
 
   const resolvedGaps = gapGateEnabled ? gaps : [];
 
