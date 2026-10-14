@@ -88,6 +88,8 @@ export interface NormalisedSpec {
   outOfScope: string[];
   assumptions: SpecAssumption[];
   openQuestions: string[];
+  /** Security-class CRITICAL open points, quoted; absent = none. Not resolver questions. */
+  securityOpenPoints?: string[];
   evidence: SpecEvidence[];
   verdict: IntentVerdict;
   parkReason?: ParkReason;

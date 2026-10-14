@@ -14,7 +14,7 @@
  * #1151: it also reads the CRITICAL open points from the filed issue body and
  * applies them to the verdict (`applyOpenPointGate`): an authorization point
  * parks, any other caps a proceed at proceed-with-assumptions.
- * (#1171: applyOpenPointGate now lives in work-driver-intent-finalise.ts; this module only reads the points.)
+ * applyOpenPointGate lives in work-driver-intent-finalise.ts; this module only reads the points.
  */
 
 /**
@@ -143,8 +143,8 @@ export function contradictionAssumptions(evidence: SpecEvidence[]): SpecAssumpti
   }));
 }
 
+// Uppercase only: `[critical]` and `[Critical]` are unparsed, so they cap rather than vanish.
 /** A `[CRITICAL]` bullet tag, optionally emphasised; captures the point text. */
-// Uppercase only (#1171): `[critical]` and `[Critical]` are unparsed, so they cap rather than vanish.
 const CRITICAL_BULLET = new RegExp(`^[*_\`\\s]*\\[${CRITICAL_SEVERITY}\\][*_\`\\s:]*(.*)$`);
 
 /** A `[RESOLVED]` marker directly after the severity tag (#1151, open-points-contract.ts). */
@@ -153,10 +153,10 @@ const RESOLVED_MARKER = /^\[RESOLVED\]/i;
 /** A bullet tagged with a non-CRITICAL severity: its text is not a CRITICAL line. */
 const OTHER_SEVERITY_BULLET = /^[*_`\s]*\[(?:HIGH|MEDIUM|LOW)\]/i;
 
-/** Stands in for a bare `- [CRITICAL]` bullet: still a point, just without text. */
 // One CRITICAL open point. A bare `- [CRITICAL]` bullet is still a point (it must not vanish
-// from the gate), so it is a variant of its own rather than an empty string. (#1171: the
-// placeholder is this `empty` variant; openPointText renders it.)
+// from the gate), so it is a variant of its own rather than an empty string. openPointText
+// renders the `empty` variant as a placeholder.
+/** Stands in for a bare `- [CRITICAL]` bullet: still a point, just without text. */
 export type OpenPoint = { kind: "text"; text: string } | { kind: "empty" };
 
 /** Text of an open point for display; the placeholder is produced only here. */
@@ -168,6 +168,7 @@ export function openPointText(point: OpenPoint): string {
 export interface OpenPointReading {
   /** Unresolved CRITICAL points; each one gates. */
   points: OpenPoint[];
+  // A marker with no answer text is unparsed instead: nothing was answered, so nothing is cleared.
   /** Bullets the author marked `[RESOLVED]`, with the marker removed. */
   resolved: OpenPoint[];
   /** Lines that mention CRITICAL but parse as neither a point nor a resolved bullet. */
@@ -199,7 +200,8 @@ export function readOpenPoints(issueBody: string): OpenPointReading {
       const rest = tagged[1]?.trim() ?? "";
       if (RESOLVED_MARKER.test(rest)) {
         const answered = rest.replace(RESOLVED_MARKER, "").trim();
-        reading.resolved.push(answered ? { kind: "text", text: answered } : { kind: "empty" });
+        if (answered) reading.resolved.push({ kind: "text", text: answered });
+        else reading.unparsed.push(line);
       } else {
         // A bare tag is still a CRITICAL point: dropping it would let an empty
         // gate finding stop gating.
@@ -210,7 +212,7 @@ export function readOpenPoints(issueBody: string): OpenPointReading {
     if (item !== undefined && OTHER_SEVERITY_BULLET.test(item)) continue;
     // A list item that mentions CRITICAL, or a line leading with it, is a malformed
     // point. Other prose (e.g. the gap gate's own intro line) is not.
-    // (#1171: the item match is case-insensitive, so lowercase and titlecase tags land here.)
+    // The item match is case-insensitive, so lowercase and titlecase tags land here.
     const malformed =
       item !== undefined ? /\bcritical\b/i.test(line) : /^\W*critical\b/i.test(line);
     if (malformed) reading.unparsed.push(line);

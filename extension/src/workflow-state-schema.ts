@@ -212,6 +212,8 @@ export interface PipelineState {
     outOfScope: string[];
     assumptions: Array<{ text: string; basis: string }>;
     openQuestions: string[];
+    /** Security-class CRITICAL open points of the filed issue; absent = none. */
+    securityOpenPoints?: string[];
     evidence: Array<{ claim: string; source: string; verdict: string }>;
     verdict: "proceed" | "proceed-with-assumptions" | "park";
     parkReason?: string;

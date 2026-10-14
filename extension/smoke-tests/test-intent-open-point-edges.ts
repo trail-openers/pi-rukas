@@ -6,7 +6,7 @@
  * gate), and assumption text is clipped by code point so an emoji run never
  * leaves a lone surrogate. The round trip and authorization canaries live in
  * test-intent-criticality.ts.
- * (#1171: the security park text is checked against every SECURITY_CLASS_LABELS entry.)
+ * The security park text is checked against every SECURITY_CLASS_LABELS entry.
  */
 
 import { openPointsSection } from "../src/plan-gap-disclosure.ts";
@@ -200,7 +200,7 @@ const section = (...lines: string[]) => [HEADING, "", ...lines].join("\n");
   );
 }
 
-// Case variants (#1171): only the uppercase bracketed tag parses. Lowercase and titlecase tags,
+// Case variants: only the uppercase bracketed tag parses. Lowercase and titlecase tags,
 // and a line that leads with CRITICAL in any case, are unparsed, so they cap rather than vanish.
 {
   for (const line of [
@@ -244,7 +244,7 @@ assert(
 );
 
 // The security park names the whole class, not only the first words of it (#1151 review).
-// (#1171: the text is derived from SECURITY_CLASS_LABELS, so a new term cannot go unnamed.)
+// The text is derived from SECURITY_CLASS_LABELS, so a new term cannot go unnamed.
 assert(
   SECURITY_CLASS_LABELS.every((label) => explainPark("security-open-point", 42).includes(label)),
   "explainPark: the security park names every SECURITY_CLASS_TERMS label",
@@ -274,7 +274,7 @@ for (const phrase of [
   );
 }
 
-// Handoff evidence: security points on a parked spec are open questions, one entry each.
+// Security points are typed: they land in securityOpenPoints, never in openQuestions.
 {
   const body = section(
     "- [CRITICAL] Who may call the endpoint \u2014 authentication is undecided",
@@ -289,18 +289,36 @@ for (const phrase of [
     }),
     body,
   );
-  const questions = parked.openQuestions.filter((q) =>
-    q.startsWith("Security open point (unresolved): "),
-  );
   assert(
-    parked.parkReason === "already-implemented" && questions.length === 2,
-    `handoff: a parked spec lists each security open point as an open question (${questions.length})`,
+    parked.parkReason === "already-implemented" &&
+      parked.securityOpenPoints?.length === 2 &&
+      parked.openQuestions.length === 0,
+    `typed: a parked spec keeps each security open point in securityOpenPoints (${parked.securityOpenPoints?.length})`,
   );
   const gatedPark = finaliseSpecVerdict(spec(), body);
   assert(
     gatedPark.parkReason === "security-open-point" &&
-      gatedPark.openQuestions.some((q) => q.includes("authentication is undecided")),
-    "handoff: a security park the gate creates carries its points as open questions",
+      gatedPark.securityOpenPoints?.some((p) => p.includes("authentication is undecided")) === true &&
+      gatedPark.openQuestions.length === 0,
+    "typed: a security park the gate creates carries its points in securityOpenPoints",
+  );
+}
+
+// A [RESOLVED] marker with no answer text clears nothing: the line is unparsed and caps.
+{
+  const body = section("- [CRITICAL][RESOLVED]", "- [CRITICAL] [RESOLVED]");
+  const reading = readOpenPoints(body);
+  assert(
+    reading.resolved.length === 0 && reading.points.length === 0 && reading.unparsed.length === 2,
+    `empty resolution: a bare [RESOLVED] is unparsed, not resolved (${reading.unparsed.length})`,
+  );
+  const capped = finaliseSpecVerdict(spec(), section("- [CRITICAL][RESOLVED]"));
+  assert(
+    capped.verdict === "proceed-with-assumptions" &&
+      capped.assumptions.some((a) =>
+        a.text.startsWith("Open-point gate could not parse a CRITICAL line: "),
+      ),
+    "empty resolution: a bare [RESOLVED] caps a proceed with a named assumption",
   );
 }
 

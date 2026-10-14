@@ -33,6 +33,22 @@ import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent, writeDispatchArtifact } from "./workflow-state.ts";
 
 /**
+ * A fetch rejection reduced to one line that is safe to put in evidence: the
+ * message with control characters flattened and at most 300 characters. A
+ * rejection that carries no message yields "", which the caller reads as unavailable.
+ */
+function fetchFailureReason(reason: unknown): string {
+  let message = "";
+  if (reason instanceof Error) message = reason.message;
+  else if (typeof reason === "string") message = reason;
+  const flat = message
+    .replace(/\p{Cc}+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return Array.from(flat).slice(0, 300).join("");
+}
+
+/**
  * Step 1 — Read the issue and project context.
  *
  * Dispatches `@explore` with a prompt that:
@@ -241,7 +257,7 @@ export async function runExplore(
     // #1151 — the primary body comes from the settled fetch, read here at the
     // gate (not a mutable local). A failed or blank read is passed through as
     // `undefined`, which finaliseSpecVerdict records instead of skipping.
-    // (#1171: a failed read now halts here instead, below; a blank body is still recorded.)
+    // A failed read halts below; a blank body is still recorded by finaliseSpecVerdict.
     // The primary is always in the set on this path (intent is single-issue), so a
     // miss is a wiring bug and must not be read as a blank body.
     const primaryIdx = issues.indexOf(ctx.issue);
@@ -249,13 +265,14 @@ export async function runExplore(
     if (primarySettled?.status !== "fulfilled") {
       // A wiring bug, not a bad issue: report it as a halted step rather than
       // throwing out of the driver.
-      // (#1171: a rejected fetch halts the same way, with its own evidence line.)
-      const evidence =
-        primaryIdx === -1
-          ? `wiring: primary issue missing from issue list [${issues.join(", ")}]`
-          : primarySettled?.status === "rejected"
-            ? `primary issue #${ctx.issue} body fetch failed: ${String(primarySettled.reason)}`
-            : `wiring: primary issue #${ctx.issue} body was not fetched`;
+      // A rejected fetch halts the same way, with its own evidence line.
+      let evidence: string;
+      if (primaryIdx === -1) {
+        evidence = `wiring: primary issue missing from issue list [${issues.join(", ")}]`;
+      } else {
+        const reason = fetchFailureReason(primarySettled?.reason);
+        evidence = `primary issue #${ctx.issue} body fetch failed: ${reason || "body unavailable"}`;
+      }
       trace(`work-driver: explore halted — ${evidence}`);
       return appendEvent(next, {
         kind: "cap-hit",

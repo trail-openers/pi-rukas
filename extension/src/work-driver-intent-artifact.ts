@@ -250,6 +250,8 @@ function validateSpec(raw: unknown): NormalisedSpec | undefined {
   if (!isStringArray(v.outOfScope)) return undefined;
   if (!isAssumptionArray(v.assumptions)) return undefined;
   if (!isStringArray(v.openQuestions)) return undefined;
+  // Absent in artifacts written before the field existed: read as none.
+  if (v.securityOpenPoints !== undefined && !isStringArray(v.securityOpenPoints)) return undefined;
   if (!isEvidenceArray(v.evidence)) return undefined;
   if (v.verdict !== "proceed" && v.verdict !== "proceed-with-assumptions" && v.verdict !== "park") {
     return undefined;
@@ -261,6 +263,7 @@ function validateSpec(raw: unknown): NormalisedSpec | undefined {
     outOfScope: v.outOfScope as string[],
     assumptions: v.assumptions as SpecAssumption[],
     openQuestions: v.openQuestions as string[],
+    securityOpenPoints: (v.securityOpenPoints as string[] | undefined) ?? [],
     evidence: v.evidence as SpecEvidence[],
     verdict: v.verdict,
     rationale: typeof v.rationale === "string" ? v.rationale : "",

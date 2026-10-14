@@ -1,10 +1,12 @@
 /**
- * security-class — the security class of CRITICAL open points (#1151, #1171).
+ * security-class — the security class of CRITICAL open points (#1151).
  *
  * An unresolved CRITICAL open point whose text matches one of these terms parks
  * the cycle as `security-open-point`: the driver will not choose that policy for
  * the resolver. open-points-contract.ts holds the heading and severity constants;
  * this module holds the class itself, so the term list is read in one place.
+ * A stem matches only as a whole identifier segment: letters and digits bound it,
+ * while `_`, `-`, `.` and spaces do not, so `db_password` and `client_secret` match.
  *
  * Ambiguous stems carry co-words so ordinary engineering wording ("dependency
  * injection", "config validate step", "which role reviews the PR", "tokenizer
@@ -15,7 +17,7 @@
 
 /**
  * One family of the security class. `stem` is a regex body matched as a whole
- * word, case-insensitively. When `requires` is set, the term matches only if one
+ * segment, case-insensitively. When `requires` is set, the term matches only if one
  * of the co-words also appears in the same open-point bullet (the whole bullet
  * text, case-insensitive, whole-word).
  */
@@ -28,7 +30,7 @@ export interface SecurityTerm {
 /**
  * Words that name a decision the driver must not make on the resolver's behalf.
  * An unresolved CRITICAL point touching one of these parks rather than proceeds.
- * (#1171: the list lives in this module; the first matching term names the point.)
+ * The first matching term names the point.
  */
 export const SECURITY_CLASS_TERMS: readonly SecurityTerm[] = [
   {
@@ -116,6 +118,15 @@ export const SECURITY_CLASS_TERMS: readonly SecurityTerm[] = [
     ],
   },
   { label: "API key", stem: String.raw`api[ _-]?keys?\w*` },
+  {
+    label: "password hashing",
+    stem: String.raw`bcrypt|scrypt|argon2`,
+  },
+  {
+    label: "password hashing",
+    stem: String.raw`hash(?:es|ed|ing)?`,
+    requires: ["passwords?", "passwd", "credentials?"],
+  },
   { label: "password", stem: String.raw`password\w*` },
   { label: "passwd", stem: String.raw`passwd` },
   {
@@ -123,6 +134,14 @@ export const SECURITY_CLASS_TERMS: readonly SecurityTerm[] = [
     stem: String.raw`(?:un|pre|re|non)?(?:en|de)crypt\w*`,
   },
   { label: "TLS", stem: String.raw`tls` },
+  { label: "TLS", stem: String.raw`ssl` },
+  { label: "HMAC", stem: String.raw`hmac\w*` },
+  {
+    label: "nonce",
+    stem: String.raw`nonces?`,
+    requires: ["replay", "csrf", "auth", "token", "crypto"],
+  },
+  { label: "firewall", stem: String.raw`firewalls?` },
   { label: "certificate", stem: String.raw`certificates?` },
   { label: "cert", stem: String.raw`certs?` },
   { label: "crypto", stem: String.raw`crypto\w*` },
@@ -203,7 +222,7 @@ export const SECURITY_CLASS_TERMS: readonly SecurityTerm[] = [
   },
 ];
 
-/** Distinct security-class labels in declaration order: the list explainPark names (#1171). */
+/** Distinct security-class labels in declaration order: the list explainPark names. */
 export const SECURITY_CLASS_LABELS: readonly string[] = [
   ...new Set(SECURITY_CLASS_TERMS.map((term) => term.label)),
 ];
@@ -216,7 +235,7 @@ interface CompiledTerm {
 
 const COMPILED_TERMS: readonly CompiledTerm[] = SECURITY_CLASS_TERMS.map((term) => ({
   term,
-  stem: new RegExp(`\\b(?:${term.stem})\\b`, "i"),
+  stem: new RegExp(`(?<![a-z0-9])(?:${term.stem})(?![a-z0-9])`, "i"),
   coWords: term.requires
     ? new RegExp(`(?<![a-z0-9])(?:${term.requires.join("|")})(?![a-z0-9])`, "i")
     : undefined,

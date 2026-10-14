@@ -8,7 +8,7 @@
  * The order is the contract: reconcile the resolver's verdict first, then apply
  * the filed issue's open points. Reconciliation can lift an `underspecified`
  * park, and the open-point gate must still park an authorization point after that.
- * (#1171: `finaliseSpecVerdict` is the only export of the open-point gate.)
+ * The open-point gate is reached only through `finaliseSpecVerdict`.
  */
 
 import { matchSecurityTerm } from "./security-class.ts";
@@ -34,9 +34,9 @@ function clipTo(text: string, max: number): string {
   return chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : text;
 }
 
-/** Code-span quoting for untrusted issue text: keeps it inert in the PR body. */
 // Each run of control characters (`\p{Cc}`) and U+2028/U+2029 becomes one space, whitespace is
 // collapsed, then the text is code-span quoted and clipped.
+/** Code-span quoting for untrusted issue text: keeps it inert in the PR body. */
 function quotedIssueText(text: string): string {
   const flat = text
     .replace(/[\p{Cc}\u2028\u2029]+/gu, " ")
@@ -50,7 +50,7 @@ function quotedIssueText(text: string): string {
  *
  * `primaryBody` is the primary issue body as read; `undefined` or blank means
  * the gate could not run, which is recorded rather than silently skipped.
- * (#1171: a blank body caps a proceed, so it cannot pass as a clean read.)
+ * A blank body caps a proceed, so it cannot pass as a clean read.
  */
 export function finaliseSpecVerdict(
   spec: NormalisedSpec,
@@ -88,12 +88,12 @@ function resolvedAssumption(point: OpenPoint): SpecAssumption {
   };
 }
 
+// Also called by the blank-body branch of finaliseSpecVerdict.
 /**
  * The verdict cap shared by the open-point gate and its unread-body branch: a
  * park is final and passes through unchanged; anything else becomes
  * proceed-with-assumptions with `assumptions` appended.
  */
-// (#1171: the unread-body branch is now the blank-body branch of finaliseSpecVerdict.)
 function capToAssumptions(spec: NormalisedSpec, assumptions: SpecAssumption[]): NormalisedSpec {
   if (spec.verdict === "park") return spec;
   return {
@@ -113,10 +113,9 @@ function capToAssumptions(spec: NormalisedSpec, assumptions: SpecAssumption[]): 
  *   secrets, input validation/injection, sandboxing, data deletion): park as
  *   `security-open-point` — the driver will not choose that policy. The #397
  *   complete-spec override lifts only `underspecified`, so this park stands.
- *   (#1171: the class is the term list in security-class.ts, not the parenthetical above.)
- *   An existing park is kept and the security points join its open questions. Either way
- *   each one is recorded as an open question, prefixed `Security open point (unresolved):`,
- *   so the handoff names it.
+ *   The class itself is the term list in security-class.ts; the parenthetical is a summary.
+ *   An existing park is kept and the security points join its `securityOpenPoints`. Either
+ *   way each one is recorded there (quoted and clipped), so the handoff names it.
  * - Any other unresolved point, or a CRITICAL line that did not parse: a
  *   `proceed` is capped at `proceed-with-assumptions`, each named as an
  *   assumption. An existing park is never rewritten here.
@@ -146,14 +145,15 @@ function applyOpenPointGate(spec: NormalisedSpec, reading: OpenPointReading): No
     const term = matchSecurityTerm(text);
     return term ? [{ text, term }] : [];
   });
-  const securityQuestions = securityMatches.map(
-    ({ text }) => `Security open point (unresolved): ${quotedIssueText(text)}`,
-  );
+  const securityPoints = securityMatches.map(({ text }) => quotedIssueText(text));
   if (base.verdict === "park") {
     trace(
       `work-driver: intent — open-point gate skipped: spec already parked (${points.length} CRITICAL point(s), ${securityMatches.length} security-class)`,
     );
-    return { ...base, openQuestions: [...base.openQuestions, ...securityQuestions] };
+    return {
+      ...base,
+      securityOpenPoints: [...(base.securityOpenPoints ?? []), ...securityPoints],
+    };
   }
   const [first] = securityMatches;
   if (first !== undefined) {
@@ -165,7 +165,7 @@ function applyOpenPointGate(spec: NormalisedSpec, reading: OpenPointReading): No
       verdict: "park",
       parkReason: "security-open-point",
       parkReasonSource: "default",
-      openQuestions: [...base.openQuestions, ...securityQuestions],
+      securityOpenPoints: [...(base.securityOpenPoints ?? []), ...securityPoints],
     };
   }
   trace(
