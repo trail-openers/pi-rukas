@@ -14,6 +14,7 @@
  * #1151: it also reads the CRITICAL open points from the filed issue body and
  * applies them to the verdict (`applyOpenPointGate`): an authorization point
  * parks, any other caps a proceed at proceed-with-assumptions.
+ * applyOpenPointGate lives in work-driver-intent-finalise.ts; this module only reads the points.
  */
 
 /**
@@ -23,7 +24,7 @@
  * decides what the spec says. work-driver-intent-finalise.ts fixes the order.
  */
 import { CRITICAL_SEVERITY, OPEN_POINTS_HEADING } from "./open-points-contract.ts";
-import { trace } from "./trace.ts";
+import { matchSecurityTerm } from "./security-class.ts";
 import type { NormalisedSpec, SpecAssumption, SpecEvidence } from "./work-driver-intent.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 
@@ -143,8 +144,9 @@ export function contradictionAssumptions(evidence: SpecEvidence[]): SpecAssumpti
   }));
 }
 
+// Uppercase only: `[critical]` and `[Critical]` are unparsed, so they cap rather than vanish.
 /** A `[CRITICAL]` bullet tag, optionally emphasised; captures the point text. */
-const CRITICAL_BULLET = new RegExp(`^[*_\`\\s]*\\[${CRITICAL_SEVERITY}\\][*_\`\\s:]*(.*)$`, "i");
+const CRITICAL_BULLET = new RegExp(`^[*_\`\\s]*\\[${CRITICAL_SEVERITY}\\][*_\`\\s:]*(.*)$`);
 
 /** A `[RESOLVED]` marker directly after the severity tag (#1151, open-points-contract.ts). */
 const RESOLVED_MARKER = /^\[RESOLVED\]/i;
@@ -152,17 +154,78 @@ const RESOLVED_MARKER = /^\[RESOLVED\]/i;
 /** A bullet tagged with a non-CRITICAL severity: its text is not a CRITICAL line. */
 const OTHER_SEVERITY_BULLET = /^[*_`\s]*\[(?:HIGH|MEDIUM|LOW)\]/i;
 
+// One CRITICAL open point. A bare `- [CRITICAL]` bullet is still a point (it must not vanish
+// from the gate), so it is a variant of its own rather than an empty string. openPointText
+// renders the `empty` variant as a placeholder.
 /** Stands in for a bare `- [CRITICAL]` bullet: still a point, just without text. */
-const EMPTY_CRITICAL_POINT = "(empty CRITICAL open point)";
+export type OpenPoint = { kind: "text"; text: string } | { kind: "empty" };
+
+/** Text of an open point for display; the placeholder is produced only here. */
+export function openPointText(point: OpenPoint): string {
+  return point.kind === "text" ? point.text : "(empty CRITICAL open point)";
+}
 
 /** What the gate read from an issue's "Open points" section (#1151). */
 export interface OpenPointReading {
   /** Unresolved CRITICAL points; each one gates. */
-  points: string[];
+  points: OpenPoint[];
+  // A marker with no answer text is unparsed instead: nothing was answered, so nothing is cleared.
   /** Bullets the author marked `[RESOLVED]`, with the marker removed. */
-  resolved: string[];
+  resolved: OpenPoint[];
   /** Lines that mention CRITICAL but parse as neither a point nor a resolved bullet. */
   unparsed: string[];
+}
+
+const LIST_ITEM_LINE = /^\s*(?:[-*]|\d+[.)])\s+/;
+const HEADING_LINE = /^\s*#{1,6}\s/;
+/** A line that begins with a severity tag starts its own item; it never joins one (#1171). */
+const SEVERITY_TAG_LINE = /^\s*(?:[-*+]|\d+[.)])?\s*\[(?:CRITICAL|HIGH|MEDIUM|LOW)\]/i;
+
+/** One logical line: trimmed text, whether its first physical line was indented, and whether continuations were joined onto it. */
+interface LogicalLine {
+  text: string;
+  indented: boolean;
+  joined: boolean;
+}
+
+/**
+ * The body's lines, with indented continuation lines joined onto the list item
+ * above them (#1171): `- [CRITICAL] Which timeout wins` followed by an indented
+ * `authentication for the endpoint is undecided` is one point. A continuation is
+ * refused only when the line itself begins with a severity tag, so a wrapped HIGH
+ * item cannot swallow a CRITICAL line, while a continuation that merely mentions
+ * "critical" still joins. A blank line or a heading ends the item.
+ */
+function logicalLines(issueBody: string): LogicalLine[] {
+  const out: LogicalLine[] = [];
+  let openItem = false;
+  for (const raw of issueBody.split("\n")) {
+    const line = raw.trim();
+    const indented = /^\s+\S/.test(raw);
+    if (line === "") {
+      openItem = false;
+      out.push({ text: "", indented: false, joined: false });
+      continue;
+    }
+    const continues =
+      openItem &&
+      indented &&
+      !LIST_ITEM_LINE.test(raw) &&
+      !HEADING_LINE.test(raw) &&
+      !SEVERITY_TAG_LINE.test(line);
+    if (continues) {
+      const prev = out.pop();
+      out.push({
+        text: `${prev?.text ?? ""} ${line}`,
+        indented: prev?.indented ?? false,
+        joined: true,
+      });
+      continue;
+    }
+    out.push({ text: line, indented, joined: false });
+    openItem = LIST_ITEM_LINE.test(raw);
+  }
+  return out;
 }
 
 /**
@@ -176,8 +239,8 @@ export interface OpenPointReading {
 export function readOpenPoints(issueBody: string): OpenPointReading {
   const reading: OpenPointReading = { points: [], resolved: [], unparsed: [] };
   let inSection = false;
-  for (const raw of issueBody.split("\n")) {
-    const line = raw.trim();
+  for (const entry of logicalLines(issueBody)) {
+    const line = entry.text;
     const heading = line.match(/^#{1,6}\s+(.*)$/)?.[1];
     if (heading !== undefined) {
       inSection = heading.trim().toLowerCase() === OPEN_POINTS_HEADING.toLowerCase();
@@ -189,139 +252,38 @@ export function readOpenPoints(issueBody: string): OpenPointReading {
     if (item !== undefined && tagged) {
       const rest = tagged[1]?.trim() ?? "";
       if (RESOLVED_MARKER.test(rest)) {
-        reading.resolved.push(rest.replace(RESOLVED_MARKER, "").trim() || EMPTY_CRITICAL_POINT);
+        const answered = rest.replace(RESOLVED_MARKER, "").trim();
+        if (answered) reading.resolved.push({ kind: "text", text: answered });
+        else reading.unparsed.push(line);
       } else {
         // A bare tag is still a CRITICAL point: dropping it would let an empty
         // gate finding stop gating.
-        reading.points.push(rest || EMPTY_CRITICAL_POINT);
+        reading.points.push(rest ? { kind: "text", text: rest } : { kind: "empty" });
       }
       continue;
     }
     if (item !== undefined && OTHER_SEVERITY_BULLET.test(item)) continue;
     // A list item that mentions CRITICAL, or a line leading with it, is a malformed
     // point. Other prose (e.g. the gap gate's own intro line) is not.
-    const malformed = item !== undefined ? /\bCRITICAL\b/.test(line) : /^\W*CRITICAL\b/i.test(line);
-    if (malformed) reading.unparsed.push(line);
+    // The item match is case-insensitive, so lowercase and titlecase tags land here.
+    // `non-critical` is ordinary prose, not a severity tag, so it is not malformed.
+    const malformed =
+      item !== undefined ? /(?<!non-)\bcritical\b/i.test(line) : /^\W*critical\b/i.test(line);
+    if (malformed) {
+      reading.unparsed.push(line);
+      continue;
+    }
+    // #1171: an indented line that was not joined onto an item and is not a parsed item
+    // (e.g. a nested `  - authentication is undecided`) must not vanish. It parks only
+    // when it names the security class; other indented prose stays unread.
+    if (entry.indented && !entry.joined && matchSecurityTerm(line) !== undefined) {
+      reading.unparsed.push(line);
+    }
   }
   return reading;
 }
 
 /** The CRITICAL points of a filed issue's "Open points" section (#1151). */
-export function criticalOpenPoints(issueBody: string): string[] {
+export function criticalOpenPoints(issueBody: string): OpenPoint[] {
   return readOpenPoints(issueBody).points;
-}
-
-/**
- * Words that name a decision the driver must not make on the resolver's behalf.
- * An unresolved CRITICAL point touching one of these parks rather than proceeds.
- */
-const AUTHORIZATION_CLASS =
-  /\b(?:(?:un|pre|re|non)?auth(?:n|z|s)?(?:_\w*)?\b|(?:un|pre|re|non)?authenticat\w*|(?:un|pre|re|non)?authori[sz](?:e|ed|es|ing|ation|ations)?(?:_\w*)?\b|oauth2?\b|jwt|acl|rbac|roles?|sessions?|login|signing[ _-]?keys?|private[ _-]?keys?|secret\w*|permissions?|credential\w*|token\w*|api[ _-]?keys?\w*|password\w*|(?:un|pre|re|non)?(?:en|de)crypt\w*|tls|certificates?|certs?|crypto\w*|(?:un|pre|re|non)?(?:sanitiz\w*|validat\w*)|inject\w*|sandbox\w*|privilege\w*|access[ _-]control|delet\w*|data[ _-]loss)\b/i;
-
-/** #1151: the assumption text for one CRITICAL point is capped at this many characters. */
-const OPEN_POINT_ASSUMPTION_MAX = 300;
-
-/** Clip by code point, so a surrogate pair is never split into a lone half. */
-function clipTo(text: string, max: number): string {
-  const chars = Array.from(text);
-  return chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : text;
-}
-
-/**
- * The verdict cap shared by the open-point gate and its unread-body branch: a
- * park is final and passes through unchanged; anything else becomes
- * proceed-with-assumptions with `assumptions` appended.
- */
-export function capToAssumptions(
-  spec: NormalisedSpec,
-  assumptions: SpecAssumption[],
-): NormalisedSpec {
-  if (spec.verdict === "park") return spec;
-  return {
-    ...spec,
-    verdict: "proceed-with-assumptions",
-    assumptions: [...spec.assumptions, ...assumptions],
-  };
-}
-
-/** Code-span quoting for untrusted issue text: keeps it inert in the PR body. */
-function quotedIssueText(text: string): string {
-  return `\`${clipTo(text.replace(/`/g, "'"), OPEN_POINT_ASSUMPTION_MAX)}\``;
-}
-
-/**
- * Apply the filed issue's CRITICAL open points to the spec (#1151).
- *
- * - Resolved bullets (`[RESOLVED]` after the tag) are traced and recorded as
- *   assumptions, so the answer reaches the PR body. They never gate.
- * - No unresolved or unparsed CRITICAL lines: the spec is otherwise unchanged.
- * - A security-class point, parsed or unparsed (authentication/authorization, credentials and keys,
- *   secrets, input validation/injection, sandboxing, data deletion): park as
- *   `security-open-point` — the driver will not choose that policy. The #397
- *   complete-spec override lifts only `underspecified`, so this park stands.
- * - Any other unresolved point, or a CRITICAL line that did not parse: a
- *   `proceed` is capped at `proceed-with-assumptions`, each named as an
- *   assumption. An existing park is never rewritten here.
- */
-export function applyOpenPointGate(
-  spec: NormalisedSpec,
-  openPoints: string[],
-  extra: Partial<Omit<OpenPointReading, "points">> = {},
-): NormalisedSpec {
-  const resolved = extra.resolved ?? [];
-  const unparsed = extra.unparsed ?? [];
-  for (const text of resolved) {
-    trace(
-      `work-driver: intent — resolved open point skipped: ${clipTo(text, OPEN_POINT_ASSUMPTION_MAX)}`,
-    );
-  }
-  const base: NormalisedSpec =
-    resolved.length === 0
-      ? spec
-      : {
-          ...spec,
-          assumptions: [
-            ...spec.assumptions,
-            ...resolved.map((text) => ({
-              text: `Resolved open point (marked [RESOLVED] in the issue body): ${quotedIssueText(text)}`,
-              basis: "the filed issue marks this CRITICAL point resolved",
-            })),
-          ],
-        };
-  if (unparsed.length > 0) {
-    trace(
-      `open-point-unparsed: ${unparsed.length} CRITICAL line(s) in the Open points section did not parse`,
-    );
-  }
-  if (openPoints.length === 0 && unparsed.length === 0) return base;
-  if (base.verdict === "park") {
-    const security = openPoints.filter((point) => AUTHORIZATION_CLASS.test(point)).length;
-    trace(
-      `work-driver: intent — open-point gate skipped: spec already parked (${openPoints.length} CRITICAL point(s), ${security} security-class)`,
-    );
-    return base;
-  }
-  if ([...openPoints, ...unparsed].some((line) => AUTHORIZATION_CLASS.test(line))) {
-    trace("work-driver: intent — unresolved CRITICAL open point concerns authorization, parking");
-    return {
-      ...base,
-      verdict: "park",
-      parkReason: "security-open-point",
-      parkReasonSource: "default",
-    };
-  }
-  trace(
-    `work-driver: intent — ${openPoints.length} unresolved CRITICAL open point(s), ${unparsed.length} unparsed line(s) carried as assumptions`,
-  );
-  return capToAssumptions(base, [
-    ...openPoints.map((point) => ({
-      text: `unresolved CRITICAL open point in the filed issue: ${quotedIssueText(point)}`,
-      basis: "named by the intent gate; proceeding on it as an assumption",
-    })),
-    ...unparsed.map((line) => ({
-      text: `Open-point gate could not parse a CRITICAL line: ${quotedIssueText(line)}`,
-      basis:
-        "open-point-unparsed — the gate could not read this line; proceeding on it as an assumption",
-    })),
-  ]);
 }

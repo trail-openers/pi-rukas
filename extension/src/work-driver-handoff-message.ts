@@ -14,6 +14,7 @@ import { commitPrRootFactLines } from "./work-driver-commit-inspect.ts";
 import { MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 import { explainCap } from "./work-driver-explain.ts";
 import { fanoutVerdictLines } from "./work-driver-handoff-fanout.ts";
+import { securityOpenPointsChat } from "./work-driver-handoff-open-points.ts";
 import { recoveryCommandsChat } from "./work-driver-handoff-recovery.chat.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
@@ -153,6 +154,7 @@ export function renderHandoffUserMessage(
     `pi-rukas /work for ${headerIssues} — HANDOFF (needs human attention)`,
     "",
     `Why: ${why}`,
+    ...securityOpenPointsChat(ps.normalisedSpec),
     `Last step: ${capLabel}${ps.reviewRound > 0 ? ` · review round ${ps.reviewRound}/${MAX_REVIEW_ROUNDS}` : ""}`,
     `Cycle: ${ps.status}${ps.status === "aborted" ? " (mid-flight failure, not a cap-hit)" : ""}`,
     "",

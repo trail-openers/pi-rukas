@@ -5,6 +5,7 @@
  * union of both files' imports, and `work-driver-explore.ts` re-exports
  * `runExplore` so existing imports keep their path.
  */
+import { flattenAndClip } from "./text-flatten.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import {
@@ -33,6 +34,18 @@ import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent, writeDispatchArtifact } from "./workflow-state.ts";
 
 /**
+ * A fetch rejection reduced to one line that is safe to put in evidence: the
+ * message with control characters flattened and at most 300 characters. A
+ * rejection that carries no message yields "", which the caller reads as unavailable.
+ */
+function fetchFailureReason(reason: unknown): string {
+  let message = "";
+  if (reason instanceof Error) message = reason.message;
+  else if (typeof reason === "string") message = reason;
+  return flattenAndClip(message, 300);
+}
+
+/**
  * Step 1 — Read the issue and project context.
  *
  * Dispatches `@explore` with a prompt that:
@@ -52,7 +65,10 @@ export async function runExplore(
 ): Promise<WorkState> {
   // Mark the step start in the log before dispatch (resume-safety).
   let next = appendEvent(
-    { ...state, pipelineState: { ...state.pipelineState, currentStep: "explore" } },
+    {
+      ...state,
+      pipelineState: { ...state.pipelineState, currentStep: "explore" },
+    },
     { kind: "step-started", step: "explore", at: now },
   );
 
@@ -97,7 +113,11 @@ export async function runExplore(
   // body. Larger bodies get a truncation marker pointing at the cached
   // artifact so the agent can `cat` for the rest if needed.
   const INLINE_BODY_CAP = 16 * 1024;
-  const bodiesForPrompt: Array<{ issue: number; body: string; truncated: boolean }> = [];
+  const bodiesForPrompt: Array<{
+    issue: number;
+    body: string;
+    truncated: boolean;
+  }> = [];
 
   // Persist each issue body as a claim-check artifact (best-effort).
   // For single-issue cycles, the first body is stored under the legacy
@@ -126,7 +146,10 @@ export async function runExplore(
         if (n === ctx.issue) {
           next = {
             ...next,
-            pipelineState: { ...next.pipelineState, issueBodyArtifact: artifactPath },
+            pipelineState: {
+              ...next.pipelineState,
+              issueBodyArtifact: artifactPath,
+            },
           };
         }
       } catch (err) {
@@ -231,28 +254,35 @@ export async function runExplore(
     // #1151 — the primary body comes from the settled fetch, read here at the
     // gate (not a mutable local). A failed or blank read is passed through as
     // `undefined`, which finaliseSpecVerdict records instead of skipping.
+    // A failed read halts below; a blank body is still recorded by finaliseSpecVerdict.
     // The primary is always in the set on this path (intent is single-issue), so a
     // miss is a wiring bug and must not be read as a blank body.
     const primaryIdx = issues.indexOf(ctx.issue);
-    if (primaryIdx === -1) {
+    const primarySettled = primaryIdx === -1 ? undefined : bodySettled[primaryIdx];
+    if (primarySettled?.status !== "fulfilled") {
       // A wiring bug, not a bad issue: report it as a halted step rather than
       // throwing out of the driver.
-      trace(
-        `work-driver: primary issue #${ctx.issue} is not in the explore issue set [${issues.join(", ")}]`,
-      );
+      // A rejected fetch halts the same way, with its own evidence line.
+      let evidence: string;
+      if (primaryIdx === -1) {
+        evidence = `wiring: primary issue missing from issue list [${issues.join(", ")}]`;
+      } else {
+        const reason = fetchFailureReason(primarySettled?.reason);
+        evidence = `primary issue #${ctx.issue} body fetch failed: ${reason || "body unavailable"}`;
+      }
+      trace(`work-driver: explore halted — ${evidence}`);
       return appendEvent(next, {
         kind: "cap-hit",
         at: Date.now(),
         cap: "step-failed:explore",
         reviewRound: 0,
         nextStep: "handoff",
-        evidence: `wiring: primary issue missing from issue list [${issues.join(", ")}]`,
+        evidence,
       });
     }
-    const primarySettled = bodySettled[primaryIdx];
-    const primaryBody =
-      primarySettled?.status === "fulfilled" ? primarySettled.value.stdout : undefined;
-    const finalSpec = resolved ? finaliseSpecVerdict(resolved.spec, primaryBody) : undefined;
+    const finalSpec = resolved
+      ? finaliseSpecVerdict(resolved.spec, primarySettled.value.stdout)
+      : undefined;
     if (resolved !== undefined && finalSpec !== undefined) {
       next = {
         ...next,
