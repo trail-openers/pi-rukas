@@ -307,11 +307,10 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
 }
 
 // ------------------------------------------------ case 7: sibling scan degrades safely
-// #753 (six-lens FIX 2): a transient `git worktree list` failure during the
-// sibling scan must NOT escape to a create-error. It degrades to "no
-// finding" (creation proceeds exactly as pre-#545), mirroring the
-// documented fail-open direction of `scanWorktrees` and
-// `inspectWorktreeForLoss`.
+// #1170 (supersedes #753 six-lens FIX 2): a transient `git worktree list`
+// failure during the sibling scan must REFUSE creation. An unreadable listing
+// cannot prove the absence of a dirty sibling, so proceeding would hand `git
+// worktree add` an unscanned tree.
 {
   const { repo, baseSha } = await (async () => {
     const name = path.join(root, "sibling-scan-degrades");
@@ -348,8 +347,8 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
     threw = true;
   }
   assert(
-    threw === false,
-    "#753 case 7: a failing sibling scan degrades to no-finding (guards resolve) — it does NOT escape to a create-error",
+    threw === true,
+    "#1170 (was #753 case 7): a failing sibling scan REFUSES creation — it does not proceed unscanned",
   );
   // The sibling worktree is still on disk (the degraded scan did not touch it).
   const { stdout: sibStatus } = await git(sibling, ["status", "--porcelain"]).catch(() => ({

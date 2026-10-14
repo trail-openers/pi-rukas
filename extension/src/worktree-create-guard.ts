@@ -106,15 +106,10 @@ export async function runCreateGuards(
   // #753 — the SIBLING scan excludes this cycle's own worktrees (the exclusion
   // happens inside findDirtySameIssueLeftover, which resolves both sides —
   // an earlier workstream's legitimate in-progress dirt is not a leftover).
-  // #753 (six-lens FIX 2) — the sibling scan degrades the SAFE direction:
-  // a transient `git worktree list` failure returns "no finding" and creation
-  // proceeds EXACTLY as pre-#545 did (the raw git error from `git worktree
-  // add`, now plumbed via `gitErrorDetail`). A throw here instead escaped to
-  // `create-error` with no dirty finding AND let `git worktree add` proceed
-  // onto an UNSCANNED dirty sibling — the shape #545 exists to prevent.
-  // This mirrors `scanWorktrees`' documented "unreadable list → empty array
-  // — the safe direction (no action)" and `inspectWorktreeForLoss`'s #475
-  // fail-open ("an unreadable worktree is removed as today").
+  // #1170 — an unreadable `git worktree list` THROWS here and refuses creation.
+  // The sibling scan cannot prove the absence of a dirty sibling without the
+  // listing, and proceeding would hand `git worktree add` an UNSCANNED tree —
+  // the shape #545 exists to prevent. The refusal is the create-error path.
   const siblingDirty = await findDirtySameIssueLeftover(
     execFn,
     opts.repoRoot,
@@ -122,12 +117,7 @@ export async function runCreateGuards(
     issuePrefix,
     opts.name,
     inCycleWorktrees,
-  ).catch((e) => {
-    trace(
-      `worktree: sibling scan failed for ${opts.name} — proceeding without it (${e instanceof Error ? e.message : String(e)})`,
-    );
-    return undefined;
-  });
+  );
   if (siblingDirty) {
     throw new DirtyWorktreeError(siblingDirty);
   }

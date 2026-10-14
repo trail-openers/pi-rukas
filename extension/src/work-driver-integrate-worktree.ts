@@ -30,8 +30,13 @@ import fs from "node:fs/promises";
 import { promisify } from "node:util";
 import { trace } from "./trace.ts";
 import { isDriverManagedDirtLine } from "./work-driver-branch-residue.ts";
-import { readCycleWorktreePaths, refuseDirtyCycleTrees } from "./work-driver-integrate-cycle.ts";
+import {
+  readCycleWorktreePaths,
+  refuseDirtyCycleTrees,
+  refuseLossyStaleIntegrateTree,
+} from "./work-driver-integrate-cycle.ts";
 import { runCreateGuards } from "./worktree-create-guard.ts";
+import { assertSafeRef } from "./worktree-loss.ts";
 import { provisionWorktree } from "./worktree-provision.ts";
 import { resolvePath, worktreePath, worktreeRemove } from "./worktree.ts";
 import type { ExecFn } from "./worktree.ts";
@@ -106,6 +111,12 @@ export async function ensureIntegrateWorktree(
   const { repoRoot, issue, branchName, baseSha } = opts;
   const name = integrateWorktreeName(issue);
   const abs = worktreePath(repoRoot, name);
+  // #1170 — branchName is interpolated into the rev-parse shell string below.
+  try {
+    assertSafeRef(branchName);
+  } catch {
+    throw new Error(`integrate branch ${JSON.stringify(branchName)} is not a valid ref name`);
+  }
 
   // ---- preflight: what holds the branch, and who is where
   let branchHead: string | undefined;
@@ -168,6 +179,15 @@ export async function ensureIntegrateWorktree(
       } catch {
         staleHead = undefined;
       }
+      // #1170 — a stale tree holding uncommitted or unique work is refused,
+      // not force-removed (the force-remove is what destroys it).
+      await refuseLossyStaleIntegrateTree(
+        execFn,
+        repoRoot,
+        abs,
+        branchHead ?? baseSha,
+        `origin/${branchName}`,
+      );
       trace(
         `work-driver: stale ${name} worktree at ${abs} (old HEAD: ${staleHead ?? "unreadable"}) — driver-owned, force-removing and recreating`,
       );

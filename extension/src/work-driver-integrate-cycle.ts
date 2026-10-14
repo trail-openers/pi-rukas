@@ -14,8 +14,10 @@
 
 import fs from "node:fs/promises";
 import { trace } from "./trace.ts";
+import { assertSafeRef } from "./worktree-loss.ts";
 import {
   DirtyWorktreeError,
+  type DirtyWorktreeFinding,
   type ExecFn,
   inspectWorktreeForLoss,
   resolvePath,
@@ -47,6 +49,62 @@ export async function readCycleWorktreePaths(stateFile: string | undefined): Pro
       `work-driver: integrate-tree cycle check — could not read state file ${stateFile}: ${(err as Error).message ?? String(err)}`,
     );
     return [];
+  }
+}
+
+/**
+ * #1170 — the stale integrate tree is inspected before it is removed.
+ *
+ * The driver-owned stale `issue-<N>-integrate` tree is about to be
+ * force-removed, so the #475 no-loss rule applies in full: ignored entries
+ * count as loss (the default, a removal decision). Commits are judged against
+ * `ref` (the branch tip, else the base), so a re-entry whose HEAD is already
+ * on the branch is not loss. A commit that is on neither the local branch nor
+ * `remoteRef` (`origin/<branch>`) is unpushed work and refuses. Any finding —
+ * or an inspect that throws — refuses with `DirtyWorktreeError` BEFORE anything
+ * is removed (fail closed).
+ */
+export async function refuseLossyStaleIntegrateTree(
+  execFn: ExecFn,
+  repoRoot: string,
+  abs: string,
+  ref: string,
+  remoteRef: string,
+): Promise<void> {
+  let finding: DirtyWorktreeFinding | undefined;
+  try {
+    finding = await inspectWorktreeForLoss(execFn, repoRoot, abs, ref);
+  } catch (err) {
+    finding = {
+      path: abs,
+      uncommittedFiles: [],
+      unpushedCommitCount: 0,
+      inspectError: err instanceof Error ? err.message : String(err),
+    };
+  }
+  if (
+    finding !== undefined &&
+    finding.uncommittedFiles.length === 0 &&
+    finding.inspectError === undefined &&
+    finding.notOwnWorktree !== true &&
+    (await headReachableFrom(execFn, abs, remoteRef))
+  ) {
+    return; // every commit HEAD has is already on origin/<branch>
+  }
+  if (finding !== undefined) throw new DirtyWorktreeError(finding);
+}
+
+/** True only when HEAD is provably an ancestor of `remoteRef` (any failure = false). */
+async function headReachableFrom(execFn: ExecFn, abs: string, remoteRef: string): Promise<boolean> {
+  try {
+    assertSafeRef(remoteRef);
+    await execFn(`git merge-base --is-ancestor HEAD ${JSON.stringify(remoteRef)}`, {
+      cwd: abs,
+      maxBuffer: 64 * 1024,
+    });
+    return true;
+  } catch {
+    return false;
   }
 }
 

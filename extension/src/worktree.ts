@@ -235,6 +235,7 @@ export async function scanWorktrees(
   fromRef: string,
   pathSubstrings: string[],
   exclude?: string,
+  opts: { failOnListError?: boolean } = {},
 ): Promise<{ path: string; name: string; finding?: DirtyWorktreeFinding }[]> {
   let list: string;
   try {
@@ -242,7 +243,10 @@ export async function scanWorktrees(
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
     }));
-  } catch {
+  } catch (err) {
+    // #1170 — the create-guard sibling scan opts in to a throw: an unreadable
+    // listing must refuse, not read as "no siblings".
+    if (opts.failOnListError) throw err;
     return [];
   }
   const out: { path: string; name: string; finding?: DirtyWorktreeFinding }[] = [];
@@ -265,9 +269,9 @@ export async function scanWorktrees(
  * #545 — `git worktree add` refuses against any leftover worktree of the
  * same cycle (not just the one at the target path). Find attached
  * worktrees with the same issue prefix that hold work a force-remove would
- * destroy. An unreadable `git worktree list` returns undefined: the
- * refusal then happens the pre-#545 way (the raw git error, now plumbed
- * via `gitErrorDetail`), which is the safe degradation.
+ * destroy. An unreadable `git worktree list` THROWS (#1170): a listing that
+ * cannot be read cannot prove the absence of a dirty sibling, so creation
+ * refuses rather than proceeding unscanned.
  *
  * `excludePaths` — additional worktree paths to skip (in addition to
  * `selfName`). #753: this cycle's own worktrees (created by the branch step
@@ -284,7 +288,9 @@ export async function findDirtySameIssueLeftover(
   excludePaths?: string[],
 ): Promise<DirtyWorktreeFinding | undefined> {
   const wtMarker = `.worktrees${path.sep}${issuePrefix}`;
-  const hits = await scanWorktrees(execFn, repoRoot, fromRef, [wtMarker], selfName);
+  const hits = await scanWorktrees(execFn, repoRoot, fromRef, [wtMarker], selfName, {
+    failOnListError: true,
+  });
   // #753 — on macOS, `git worktree list --porcelain` returns symlink-resolved
   // paths (/private/var/...) while our paths are the logical form (/var/...).
   // Resolve both sides before comparing.
