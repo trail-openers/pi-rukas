@@ -28,270 +28,303 @@ import path from "node:path";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
-  if (cond) console.log(`✓ ${msg}`);
-  else {
-    console.error(`✗ ${msg}`);
-    exit = 1;
-  }
+	if (cond) console.log(`✓ ${msg}`);
+	else {
+		console.error(`✗ ${msg}`);
+		exit = 1;
+	}
 }
 
 const SRC = path.resolve(import.meta.dirname, "..", "src");
 
 interface Seam {
-  file: string;
-  /** Exports with no production caller yet, each naming the issue that will wire it. */
-  pending: Record<string, string>;
-  /**
-   * Exports that exist for testability: called from inside their own module,
-   * exported so the pure core can be asserted directly. Legitimate, but only
-   * while a test actually calls them — an entry here whose test disappears is
-   * dead code wearing a label, so each one is checked against the suite.
-   */
-  testOnly?: Record<string, string>;
-  /**
-   * A symbol known to be wired today. If this stops being imported the seam has
-   * lost its production reachability — exactly the state this file exists to
-   * make visible.
-   */
-  canary: { symbol: string; importer: string };
+	file: string;
+	/** Exports with no production caller yet, each naming the issue that will wire it. */
+	pending: Record<string, string>;
+	/**
+	 * Exports that exist for testability: called from inside their own module,
+	 * exported so the pure core can be asserted directly. Legitimate, but only
+	 * while a test actually calls them — an entry here whose test disappears is
+	 * dead code wearing a label, so each one is checked against the suite.
+	 */
+	testOnly?: Record<string, string>;
+	/**
+	 * A symbol known to be wired today. If this stops being imported the seam has
+	 * lost its production reachability — exactly the state this file exists to
+	 * make visible.
+	 */
+	canary: { symbol: string; importer: string };
 }
 
 const SEAMS: Seam[] = [
-  {
-    // #1020 — the host seam. piSessionHost is the only Pi-touching driver
-    // surface; commands.ts is its production caller.
-    file: "work-driver-host.ts",
-    pending: {},
-    canary: { symbol: "piSessionHost", importer: "commands.ts" },
-  },
-  {
-    // S4a (#1162) — the workflow-state persistence seam. markInterrupted has
-    // no caller until the headless runner's signal handling lands (#1024).
-    file: "workflow-state.ts",
-    pending: {
-      markInterrupted: "#1024 \u2014 S4 wires SIGTERM/SIGINT to it",
-    },
-    canary: { symbol: "writeState", importer: "work-driver-resume.ts" },
-  },
-  {
-    file: "vipune.ts",
-    pending: {
-      // NOT planned for a caller. #394 calibrated `selectResults` as floor AND
-      // agreement, and a later 940-observation sweep showed the floor costs
-      // recall for nothing on this corpus (files-hit 22/24 -> 8/24, zero false
-      // positives removed). The develop read applies the agreement bit directly.
-      // Kept because the rule is correct for the question it was calibrated on.
-      SIM_FLOOR: "superseded for the develop leg — read only by selectResults",
-      readDoctrineFromDisk:
-        "#407 — superseded by readDoctrineAtBase; kept for callers outside the driver",
-      // Consumed inside the seam by functions that are themselves unwired, so
-      // these reach production only once those do.
-      searchArgv: "#422 — called by vipuneSearch (and by the offline argv gate)",
-    },
-    canary: { symbol: "vipuneChildEnv", importer: "spawn.ts" },
-  },
-  {
-    // Shipped in v0.12.32 with no caller at all. `/audit` is now that caller
-    // (memory-panel.ts), so it is enforced from here on.
-    file: "memory-stats.ts",
-    pending: {},
-    testOnly: {
-      renderMemoryStats: "the /audit panel renders its own framing; this is the raw dump",
-      defaultDbPath: "resolved inside readMemoryStats; asserted directly",
-    },
-    canary: { symbol: "readMemoryStats", importer: "memory-panel.ts" },
-  },
-  {
-    file: "retry-config-check.ts",
-    pending: {},
-    testOnly: {
-      judgeRetryConfig: "the pure verdict, called by checkRetryConfig; asserted directly",
-      checkRetryConfig: "file-reading wrapper, called by warnIfRetryConfigTooLow",
-      PI_DEFAULT_MAX_RETRY_DELAY_MS: "asserted equal to the threshold, so it cannot drift",
-      SAFE_MAX_RETRY_DELAY_MS: "asserted equal to Pi's default, so it cannot drift",
-    },
-    canary: { symbol: "warnIfRetryConfigTooLow", importer: "index.ts" },
-  },
-  {
-    // #524 shipped the whole src/agents-md/ core wired by nothing — the prose
-    // command body told PM to shell out to a host-relative path that does not
-    // exist outside this repo. #526's agents-md-tool.ts is the in-process
-    // delivery; this canary pins the shared import line so the core cannot
-    // ship unwired a third time.
-    file: "agents-md/agents-md.ts",
-    pending: {},
-    testOnly: {
-      fileState: "the pure state classifier, asserted directly",
-      runAgentsMd: "script-mode CLI entry (process.exit); the tool calls the verbs directly",
-      runWrap: "the no-markers wrap I/O shell, called only by updateAgent within this module",
-    },
-    canary: { symbol: "createAgent", importer: "agents-md-tool.ts" },
-  },
-  {
-    // #543 F3a — the crash-resume re-attach seam ships as default-off
-    // infrastructure. `resolveReattach` / `reattachArgs` / `reattachPrompt`
-    // have no production caller yet (the resume step does not record
-    // `transcriptPath` on `dispatch-started`); they are wired when the
-    // resume path learns to re-attach a surviving session instead of
-    // re-dispatching. Flag default-off (PI_ENSEMBLE_SESSION_REATTACH=0),
-    // so the seam is inert on every real cycle until then.
-    file: "work-driver-resume.ts",
-    pending: {
-      reattachArgs: "#543 F3a — the crash-resume path will call it",
-    },
-    testOnly: {
-      // #543 F3a — the re-attach floor + fan-out guard + the write-ahead
-      // dispatch markers ship with no production caller yet (the crash-resume
-      // path re-dispatches for now); exercised by test-session-reattach.ts /
-      // test-resume.ts.
-      sessionReattachEnabled: "#543 F3a — flag reader; test-asserted only",
-      FAN_OUT_STEPS: "#543 F3a — re-attach exclusion set; test-asserted only",
-      REATTACH_GRANT_FLOOR_MS: "#543 F3a — re-attach grant floor; test-asserted only",
-      mintJobId: "resume plumbing — jobId minting; exercised by test-resume.ts",
-      markDispatchStarted:
-        "resume plumbing — write-ahead dispatch-started; exercised by test-resume.ts",
-    },
-    canary: { symbol: "beginDispatch", importer: "work-driver-explore-dispatch.ts" },
-  },
-  {
-    // #594 — spec artifact validation, precedence, and file operations.
-    // Wired into runExplore by work-driver-explore.ts. The pure validator
-    // and precedence function are exercised by test-work-driver-pr12.ts.
-    file: "work-driver-intent-artifact.ts",
-    pending: {
-      specArtifactDir: "#594 — test helper for the raw artifact path; no caller yet",
-    },
-    testOnly: {
-      parseNormalisedSpecArtifact:
-        "#594 — strict JSON spec artifact validator; called by test-work-driver-pr12.ts",
-      exploreSpecArtifactPath:
-        "#594 — artifact path helper; called by test-work-driver-pr12.ts and internally by readSpecArtifact/deleteSpecArtifact",
-    },
-    canary: { symbol: "resolveIntentVerdict", importer: "work-driver-explore-dispatch.ts" },
-  },
-  {
-    // #750 — the shared verified-restore helper for consolidation abort
-    // paths. The old per-site restore claimed "repoRoot restored" without
-    // verifying the porcelain; this one preserves the discarded state,
-    // resets, restores the checkout, and reports success only when the
-    // post-condition read confirms the root is clean.
-    file: "work-driver-restore.ts",
-    pending: {},
-    canary: { symbol: "verifiedRestoreRoot", importer: "work-driver-integrate.ts" },
-  },
-  {
-    // #729 — the dispatch deck's single composite widget factory. Replaces
-    // the pre-#729 deck-prompt-label.ts + aboveEditor DECK_PROMPT_KEY widget
-    // with a belowEditor composite that renders ONE widget key. The pure
-    // builders are wired into renderNow by dispatch-deck.ts; declared
-    // test-only so a regression that unwires the composite is visible at
-    // the gate.
-    file: "dispatch-deck-composite.ts",
-    pending: {},
-    testOnly: {
-      buildSteerPrompt: "steer prompt builder; exercised by test-dispatch-deck-interactive.ts",
-      buildJobRows:
-        "row builder with the #835 key-fragment disambiguator; exercised by test-dispatch-deck.ts block 14",
-    },
-    canary: { symbol: "buildCompositeFactory", importer: "dispatch-deck-confirm-row.ts" },
-  },
-  {
-    // #912 — the per-clone review ledger. The writer calls live in
-    // adversarial.ts (runAdversarialLoop) and lens-review.ts
-    // (runLensReview); the guard (merge-guard.ts) is the reader. The shared
-    // predicates + branchPatchId are the seam the guard trusts.
-    file: "review-ledger.ts",
-    pending: {},
-    testOnly: {
-      readLedgerFile: "the raw file reader; exercised by test-review-ledger.ts",
-      validEntries: "the row validator; exercised by test-review-ledger.ts",
-      dedupeLatest: "the bounded-file dedup; exercised by test-review-ledger.ts",
-      readLedgerAt: "the never-throwing reader; exercised by test-merge-guard.ts",
-      lensBlockedByThreshold:
-        "the driver-side threshold predicate; exercised by test-review-ledger.ts",
-      bumpLensRound:
-        "the #973 round counter; wired in appendLedgerEntry (review-ledger.ts) and exercised by test-review-ledger.ts",
-    },
-    canary: { symbol: "appendLedgerEntry", importer: "adversarial-ledger.ts" },
-  },
-  {
-    // #1071 — the per-clone review-ledger lock (O_EXCL lockfile colocated
-    // with the ledger file). Wired into appendLedgerEntry (review-ledger.ts)
-    // so the read → transform → rename window is serialised across
-    // concurrent writers on the same clone.
-    file: "review-ledger-lock.ts",
-    pending: {},
-    testOnly: {
-      LEDGER_LOCK_WAIT_MS:
-        "the default bounded wait (≈5 s); exercised by test-review-ledger-lock.ts",
-      LEDGER_LOCK_STALE_MS:
-        "the default stale window (≈30 s); exercised by test-review-ledger-lock.ts",
-      ledgerLockPath:
-        "the lockfile path (colocated with the ledger file); exercised by test-review-ledger-lock.ts",
-      runLedgerCriticalSectionHook:
-        "ACCEPTED, PERMANENT test seam: a no-op await in appendLedgerEntry (undefined in production) that lets the two-process race test widen the read→rename window deterministically; chosen over an env-var read in the write path (#1071 review); exercised by test-review-ledger-lock.ts",
-      setLedgerCriticalSectionHookForTests:
-        "ACCEPTED, PERMANENT test seam (same hook's setter): never set in production; exercised by test-review-ledger-lock.ts (its child script)",
-    },
-    canary: { symbol: "acquireLedgerLock", importer: "review-ledger.ts" },
-  },
-  {
-    // #912 — the merge target reader (gh/glab) + carve-out predicate.
-    // Wired into merge-guard.ts (the guard's decision path).
-    file: "merge-target.ts",
-    pending: {},
-    testOnly: {
-      resolvePrNumber: "the no-number PR resolution; exercised by test-merge-guard.ts",
-    },
-    canary: { symbol: "readMergeTarget", importer: "merge-guard.ts" },
-  },
-  {
-    // #1019 — the pi binary version probe. The probe half (getPiResolutionInfo)
-    // used to ship with no production caller, so its PATH-source / older-than-
-    // verified warnings never fired. spawn.ts now kicks it fire-and-forget on
-    // the first child spawn in a process; this canary pins that wiring so it
-    // cannot silently ship unwired again.
-    file: "pi-binary-resolve.ts",
-    pending: {},
-    testOnly: {
-      // Pure/low-level helpers asserted directly by test-pi-binary-resolve.ts
-      // or used by the wired exports above. resolvePackageBin's injected-path
-      // overload is called directly by tests (unmemoized by design); the
-      // default-package branch is wired through resolvePiBinarySync.
-      looksLikePiCli: "shared Pi CLI path predicate; exercised by test-pi-binary-resolve.ts",
-      parsePiVersion: "the --version output parser; exercised by test-pi-binary-resolve.ts",
-      resolvePackageBin:
-        "the injected-path overload is test-asserted; the default branch is wired via resolvePiBinarySync",
-      resolvePiBinarySync:
-        "the sync resolver; wired via getPiInvocation; also directly test-asserted",
-    },
-    canary: { symbol: "getPiInvocation", importer: "work-driver-resume-reattach.ts" },
-  },
-  {
-    // #1038 — the version probe split out of pi-binary-resolve.ts. The fire-and-
-    // forget kick stays wired from spawn.ts (first spawn in a process).
-    file: "pi-version-probe.ts",
-    pending: {},
-    testOnly: {
-      probePiVersion: "the async probe; wired via getPiResolutionInfo; also directly test-asserted",
-      getPiResolutionInfo: "the full resolution + probe; also directly test-asserted",
-      isVersionOlder: "the version comparator; exercised by test-pi-binary-resolve.ts",
-      _resetPiVersionProbe:
-        "composed test-only reset (probe + binary cache); exercised by test-pi-binary-hardening.ts",
-      getVerifiedVersion:
-        "the doc-derived verified version; exercised by test-pi-binary-resolve.ts",
-    },
-    canary: { symbol: "kickPiResolutionProbe", importer: "spawn.ts" },
-  },
-  {
-    // The shared verified-line parser, imported by the version probe and the drift gate.
-    file: "pi-doc-parsing.ts",
-    pending: {},
-    testOnly: {
-      parseVerifiedLine: "the shared verified-line parser; exercised by test-pi-version-drift.ts",
-    },
-    canary: { symbol: "parseVerifiedLine", importer: "pi-version-probe.ts" },
-  },
+	{
+		// #1020 — the host seam. piSessionHost is the only Pi-touching driver
+		// surface; commands.ts is its production caller.
+		file: "work-driver-host.ts",
+		pending: {},
+		canary: { symbol: "piSessionHost", importer: "commands.ts" },
+	},
+	{
+		// S4a (#1162) — the workflow-state persistence seam. markInterrupted has
+		// no caller until the headless runner's signal handling lands (#1024).
+		file: "workflow-state.ts",
+		pending: { markInterrupted: "#1024 \u2014 S4 wires SIGTERM/SIGINT to it" },
+		canary: { symbol: "writeState", importer: "work-driver-resume.ts" },
+	},
+	{
+		file: "vipune.ts",
+		pending: {
+			// NOT planned for a caller. #394 calibrated `selectResults` as floor AND
+			// agreement, and a later 940-observation sweep showed the floor costs
+			// recall for nothing on this corpus (files-hit 22/24 -> 8/24, zero false
+			// positives removed). The develop read applies the agreement bit directly.
+			// Kept because the rule is correct for the question it was calibrated on.
+			SIM_FLOOR: "superseded for the develop leg — read only by selectResults",
+			readDoctrineFromDisk:
+				"#407 — superseded by readDoctrineAtBase; kept for callers outside the driver",
+			// Consumed inside the seam by functions that are themselves unwired, so
+			// these reach production only once those do.
+			searchArgv:
+				"#422 — called by vipuneSearch (and by the offline argv gate)",
+		},
+		canary: { symbol: "vipuneChildEnv", importer: "spawn.ts" },
+	},
+	{
+		// Shipped in v0.12.32 with no caller at all. `/audit` is now that caller
+		// (memory-panel.ts), so it is enforced from here on.
+		file: "memory-stats.ts",
+		pending: {},
+		testOnly: {
+			renderMemoryStats:
+				"the /audit panel renders its own framing; this is the raw dump",
+			defaultDbPath: "resolved inside readMemoryStats; asserted directly",
+		},
+		canary: { symbol: "readMemoryStats", importer: "memory-panel.ts" },
+	},
+	{
+		file: "retry-config-check.ts",
+		pending: {},
+		testOnly: {
+			judgeRetryConfig:
+				"the pure verdict, called by checkRetryConfig; asserted directly",
+			checkRetryConfig:
+				"file-reading wrapper, called by warnIfRetryConfigTooLow",
+			PI_DEFAULT_MAX_RETRY_DELAY_MS:
+				"asserted equal to the threshold, so it cannot drift",
+			SAFE_MAX_RETRY_DELAY_MS:
+				"asserted equal to Pi's default, so it cannot drift",
+		},
+		canary: { symbol: "warnIfRetryConfigTooLow", importer: "index.ts" },
+	},
+	{
+		// #524 shipped the whole src/agents-md/ core wired by nothing — the prose
+		// command body told PM to shell out to a host-relative path that does not
+		// exist outside this repo. #526's agents-md-tool.ts is the in-process
+		// delivery; this canary pins the shared import line so the core cannot
+		// ship unwired a third time.
+		file: "agents-md/agents-md.ts",
+		pending: {},
+		testOnly: {
+			fileState: "the pure state classifier, asserted directly",
+			runAgentsMd:
+				"script-mode CLI entry (process.exit); the tool calls the verbs directly",
+			runWrap:
+				"the no-markers wrap I/O shell, called only by updateAgent within this module",
+		},
+		canary: { symbol: "createAgent", importer: "agents-md-tool.ts" },
+	},
+	{
+		// #543 F3a — the crash-resume re-attach seam ships as default-off
+		// infrastructure. `resolveReattach` / `reattachArgs` / `reattachPrompt`
+		// have no production caller yet (the resume step does not record
+		// `transcriptPath` on `dispatch-started`); they are wired when the
+		// resume path learns to re-attach a surviving session instead of
+		// re-dispatching. Flag default-off (PI_ENSEMBLE_SESSION_REATTACH=0),
+		// so the seam is inert on every real cycle until then.
+		file: "work-driver-resume.ts",
+		pending: {
+			reattachArgs: "#543 F3a — the crash-resume path will call it",
+		},
+		testOnly: {
+			// #543 F3a — the re-attach floor + fan-out guard + the write-ahead
+			// dispatch markers ship with no production caller yet (the crash-resume
+			// path re-dispatches for now); exercised by test-session-reattach.ts /
+			// test-resume.ts.
+			sessionReattachEnabled: "#543 F3a — flag reader; test-asserted only",
+			FAN_OUT_STEPS: "#543 F3a — re-attach exclusion set; test-asserted only",
+			REATTACH_GRANT_FLOOR_MS:
+				"#543 F3a — re-attach grant floor; test-asserted only",
+			mintJobId: "resume plumbing — jobId minting; exercised by test-resume.ts",
+			markDispatchStarted:
+				"resume plumbing — write-ahead dispatch-started; exercised by test-resume.ts",
+		},
+		canary: {
+			symbol: "beginDispatch",
+			importer: "work-driver-explore-dispatch.ts",
+		},
+	},
+	{
+		// #594 — spec artifact validation, precedence, and file operations.
+		// Wired into runExplore by work-driver-explore.ts. The pure validator
+		// and precedence function are exercised by test-work-driver-pr12.ts.
+		file: "work-driver-intent-artifact.ts",
+		pending: {
+			specArtifactDir:
+				"#594 — test helper for the raw artifact path; no caller yet",
+		},
+		testOnly: {
+			parseNormalisedSpecArtifact:
+				"#594 — strict JSON spec artifact validator; called by test-work-driver-pr12.ts",
+			exploreSpecArtifactPath:
+				"#594 — artifact path helper; called by test-work-driver-pr12.ts and internally by readSpecArtifact/deleteSpecArtifact",
+		},
+		canary: {
+			symbol: "resolveIntentVerdict",
+			importer: "work-driver-explore-dispatch.ts",
+		},
+	},
+	{
+		// #750 — the shared verified-restore helper for consolidation abort
+		// paths. The old per-site restore claimed "repoRoot restored" without
+		// verifying the porcelain; this one preserves the discarded state,
+		// resets, restores the checkout, and reports success only when the
+		// post-condition read confirms the root is clean.
+		file: "work-driver-restore.ts",
+		pending: {},
+		canary: {
+			symbol: "verifiedRestoreRoot",
+			importer: "work-driver-integrate.ts",
+		},
+	},
+	{
+		// #729 — the dispatch deck's single composite widget factory. Replaces
+		// the pre-#729 deck-prompt-label.ts + aboveEditor DECK_PROMPT_KEY widget
+		// with a belowEditor composite that renders ONE widget key. The pure
+		// builders are wired into renderNow by dispatch-deck.ts; declared
+		// test-only so a regression that unwires the composite is visible at
+		// the gate.
+		file: "dispatch-deck-composite.ts",
+		pending: {},
+		testOnly: {
+			buildSteerPrompt:
+				"steer prompt builder; exercised by test-dispatch-deck-interactive.ts",
+			buildJobRows:
+				"row builder with the #835 key-fragment disambiguator; exercised by test-dispatch-deck.ts block 14",
+		},
+		canary: {
+			symbol: "buildCompositeFactory",
+			importer: "dispatch-deck-confirm-row.ts",
+		},
+	},
+	{
+		// #912 — the per-clone review ledger. The writer calls live in
+		// adversarial.ts (runAdversarialLoop) and lens-review.ts
+		// (runLensReview); the guard (merge-guard.ts) is the reader. The shared
+		// predicates + branchPatchId are the seam the guard trusts.
+		file: "review-ledger.ts",
+		pending: {},
+		testOnly: {
+			readLedgerFile: "the raw file reader; exercised by test-review-ledger.ts",
+			validEntries: "the row validator; exercised by test-review-ledger.ts",
+			dedupeLatest:
+				"the bounded-file dedup; exercised by test-review-ledger.ts",
+			readLedgerAt:
+				"the never-throwing reader; exercised by test-merge-guard.ts",
+			lensBlockedByThreshold:
+				"the driver-side threshold predicate; exercised by test-review-ledger.ts",
+			bumpLensRound:
+				"the #973 round counter; wired in appendLedgerEntry (review-ledger.ts) and exercised by test-review-ledger.ts",
+		},
+		canary: { symbol: "appendLedgerEntry", importer: "adversarial-ledger.ts" },
+	},
+	{
+		// #1071 — the per-clone review-ledger lock (O_EXCL lockfile colocated
+		// with the ledger file). Wired into appendLedgerEntry (review-ledger.ts)
+		// so the read → transform → rename window is serialised across
+		// concurrent writers on the same clone.
+		file: "review-ledger-lock.ts",
+		pending: {},
+		testOnly: {
+			LEDGER_LOCK_WAIT_MS:
+				"the default bounded wait (≈5 s); exercised by test-review-ledger-lock.ts",
+			LEDGER_LOCK_STALE_MS:
+				"the default stale window (≈30 s); exercised by test-review-ledger-lock.ts",
+			ledgerLockPath:
+				"the lockfile path (colocated with the ledger file); exercised by test-review-ledger-lock.ts",
+			runLedgerCriticalSectionHook:
+				"ACCEPTED, PERMANENT test seam: a no-op await in appendLedgerEntry (undefined in production) that lets the two-process race test widen the read→rename window deterministically; chosen over an env-var read in the write path (#1071 review); exercised by test-review-ledger-lock.ts",
+			setLedgerCriticalSectionHookForTests:
+				"ACCEPTED, PERMANENT test seam (same hook's setter): never set in production; exercised by test-review-ledger-lock.ts (its child script)",
+		},
+		canary: { symbol: "acquireLedgerLock", importer: "review-ledger.ts" },
+	},
+	{
+		// #912 — the merge target reader (gh/glab) + carve-out predicate.
+		// Wired into merge-guard.ts (the guard's decision path).
+		file: "merge-target.ts",
+		pending: {},
+		testOnly: {
+			resolvePrNumber:
+				"the no-number PR resolution; exercised by test-merge-guard.ts",
+		},
+		canary: { symbol: "readMergeTarget", importer: "merge-guard.ts" },
+	},
+	{
+		// #1019 — the pi binary version probe. The probe half (getPiResolutionInfo)
+		// used to ship with no production caller, so its PATH-source / older-than-
+		// verified warnings never fired. spawn.ts now kicks it fire-and-forget on
+		// the first child spawn in a process; this canary pins that wiring so it
+		// cannot silently ship unwired again.
+		file: "pi-binary-resolve.ts",
+		pending: {},
+		testOnly: {
+			// Pure/low-level helpers asserted directly by test-pi-binary-resolve.ts
+			// or used by the wired exports above. resolvePackageBin's injected-path
+			// overload is called directly by tests (unmemoized by design); the
+			// default-package branch is wired through resolvePiBinarySync.
+			looksLikePiCli:
+				"shared Pi CLI path predicate; exercised by test-pi-binary-resolve.ts",
+			parsePiVersion:
+				"the --version output parser; exercised by test-pi-binary-resolve.ts",
+			resolvePackageBin:
+				"the injected-path overload is test-asserted; the default branch is wired via resolvePiBinarySync",
+			resolvePiBinarySync:
+				"the sync resolver; wired via getPiInvocation; also directly test-asserted",
+		},
+		canary: {
+			symbol: "getPiInvocation",
+			importer: "work-driver-resume-reattach.ts",
+		},
+	},
+	{
+		// #1038 — the version probe split out of pi-binary-resolve.ts. The fire-and-
+		// forget kick stays wired from spawn.ts (first spawn in a process).
+		file: "pi-version-probe.ts",
+		pending: {},
+		testOnly: {
+			probePiVersion:
+				"the async probe; wired via getPiResolutionInfo; also directly test-asserted",
+			getPiResolutionInfo:
+				"the full resolution + probe; also directly test-asserted",
+			isVersionOlder:
+				"the version comparator; exercised by test-pi-binary-resolve.ts",
+			_resetPiVersionProbe:
+				"composed test-only reset (probe + binary cache); exercised by test-pi-binary-hardening.ts",
+			getVerifiedVersion:
+				"the doc-derived verified version; exercised by test-pi-binary-resolve.ts",
+		},
+		canary: { symbol: "kickPiResolutionProbe", importer: "spawn.ts" },
+	},
+	{
+		// The shared verified-line parser, imported by the version probe and the drift gate.
+		file: "pi-doc-parsing.ts",
+		pending: {},
+		testOnly: {
+			parseVerifiedLine:
+				"the shared verified-line parser; exercised by test-pi-version-drift.ts",
+		},
+		canary: { symbol: "parseVerifiedLine", importer: "pi-version-probe.ts" },
+	},
 ];
 
 /**
@@ -302,124 +335,138 @@ const SEAMS: Seam[] = [
  * mention of it was a sentence explaining what it does.
  */
 function stripComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ");
+	return src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ");
 }
 
 const TESTS = path.resolve(import.meta.dirname);
 const testFiles = readdirSync(TESTS)
-  .filter((f) => f.endsWith(".ts"))
-  .map((f) => stripComments(readFileSync(path.join(TESTS, f), "utf8")));
+	.filter((f) => f.endsWith(".ts"))
+	.map((f) => stripComments(readFileSync(path.join(TESTS, f), "utf8")));
 
 const allFiles = readdirSync(SRC)
-  .filter((f) => f.endsWith(".ts"))
-  .map((f) => ({ name: f, text: stripComments(readFileSync(path.join(SRC, f), "utf8")) }));
+	.filter((f) => f.endsWith(".ts"))
+	.map((f) => ({
+		name: f,
+		text: stripComments(readFileSync(path.join(SRC, f), "utf8")),
+	}));
 
 for (const seam of SEAMS) {
-  console.log(`\n── ${seam.file}`);
+	console.log(`\n── ${seam.file}`);
 
-  const source = readFileSync(path.join(SRC, seam.file), "utf8");
-  const exported = [
-    ...source.matchAll(/^export (?:async )?(?:function|const) ([A-Za-z_]\w*)/gm),
-  ].map((m) => m[1] as string);
+	const source = readFileSync(path.join(SRC, seam.file), "utf8");
+	const exported = [
+		...source.matchAll(
+			/^export (?:async )?(?:function|const) ([A-Za-z_]\w*)/gm,
+		),
+	].map((m) => m[1] as string);
 
-  assert(exported.length > 0, `publishes ${exported.length} function(s)/const(s)`);
+	assert(
+		exported.length > 0,
+		`publishes ${exported.length} function(s)/const(s)`,
+	);
 
-  /** Production sources: everything under src/ except the seam itself. */
-  const production = allFiles.filter((f) => f.name !== seam.file);
-  const importers = production.filter((f) =>
-    new RegExp(`from "\\./${seam.file.replace(".ts", "\\.ts")}"`).test(f.text),
-  );
-  assert(
-    importers.length > 0,
-    `has ${importers.length} production importer(s): ${importers.map((i) => i.name).join(", ") || "NONE"}`,
-  );
+	/** Production sources: everything under src/ except the seam itself. */
+	const production = allFiles.filter((f) => f.name !== seam.file);
+	const importers = production.filter((f) =>
+		new RegExp(`from "\\./${seam.file.replace(".ts", "\\.ts")}"`).test(f.text),
+	);
+	assert(
+		importers.length > 0,
+		`has ${importers.length} production importer(s): ${importers.map((i) => i.name).join(", ") || "NONE"}`,
+	);
 
-  const testOnly = seam.testOnly ?? {};
-  const unwired = exported.filter(
-    (name) =>
-      !(name in seam.pending) &&
-      !(name in testOnly) &&
-      !production.some((f) => new RegExp(`\\b${name}\\b`).test(f.text)),
-  );
-  assert(
-    unwired.length === 0,
-    `every export is wired, test-only, or declared pending${unwired.length ? ` — undeclared: ${unwired.join(", ")}` : ""}`,
-  );
+	const testOnly = seam.testOnly ?? {};
+	const unwired = exported.filter(
+		(name) =>
+			!(name in seam.pending) &&
+			!(name in testOnly) &&
+			!production.some((f) => new RegExp(`\\b${name}\\b`).test(f.text)),
+	);
+	assert(
+		unwired.length === 0,
+		`every export is wired, test-only, or declared pending${unwired.length ? ` — undeclared: ${unwired.join(", ")}` : ""}`,
+	);
 
-  // A test-only export with no test is just dead code with a label on it.
-  const unexercised = Object.keys(testOnly).filter(
-    (name) => !testFiles.some((t) => new RegExp(`\\b${name}\\b`).test(t)),
-  );
-  assert(
-    unexercised.length === 0,
-    `every test-only export is actually exercised${unexercised.length ? ` — no test calls: ${unexercised.join(", ")}` : ""}`,
-  );
+	// A test-only export with no test is just dead code with a label on it.
+	const unexercised = Object.keys(testOnly).filter(
+		(name) => !testFiles.some((t) => new RegExp(`\\b${name}\\b`).test(t)),
+	);
+	assert(
+		unexercised.length === 0,
+		`every test-only export is actually exercised${unexercised.length ? ` — no test calls: ${unexercised.join(", ")}` : ""}`,
+	);
 
-  // The allowlist must not rot: an entry that HAS acquired a caller should be
-  // removed, or the list stops meaning anything.
-  const stale = Object.keys(seam.pending).filter(
-    (name) =>
-      exported.includes(name) && production.some((f) => new RegExp(`\\b${name}\\b`).test(f.text)),
-  );
-  assert(
-    stale.length === 0,
-    `no stale pending entries${stale.length ? ` — now wired, remove: ${stale.join(", ")}` : ""}`,
-  );
+	// The allowlist must not rot: an entry that HAS acquired a caller should be
+	// removed, or the list stops meaning anything.
+	const stale = Object.keys(seam.pending).filter(
+		(name) =>
+			exported.includes(name) &&
+			production.some((f) => new RegExp(`\\b${name}\\b`).test(f.text)),
+	);
+	assert(
+		stale.length === 0,
+		`no stale pending entries${stale.length ? ` — now wired, remove: ${stale.join(", ")}` : ""}`,
+	);
 
-  const importer = production.find((f) => f.name === seam.canary.importer);
-  assert(
-    importer !== undefined && new RegExp(`\\b${seam.canary.symbol}\\b`).test(importer.text),
-    `canary: ${seam.canary.importer} still calls ${seam.canary.symbol}`,
-  );
+	const importer = production.find((f) => f.name === seam.canary.importer);
+	assert(
+		importer !== undefined &&
+			new RegExp(`\\b${seam.canary.symbol}\\b`).test(importer.text),
+		`canary: ${seam.canary.importer} still calls ${seam.canary.symbol}`,
+	);
 
-  const pendingCount = Object.keys(seam.pending).filter((n) => exported.includes(n)).length;
-  if (pendingCount) console.log(`  … ${pendingCount} export(s) still awaiting a caller`);
+	const pendingCount = Object.keys(seam.pending).filter((n) =>
+		exported.includes(n),
+	).length;
+	if (pendingCount)
+		console.log(`  … ${pendingCount} export(s) still awaiting a caller`);
 }
 
 // ------------------------------------ nothing else is quietly shipping dead
 
 {
-  // A module whose ONLY importer is a smoke test is the exact shape all three
-  // seams above had when they shipped. Report any such module, so the next one
-  // is noticed at the gate rather than three releases later.
-  const declared = new Set(SEAMS.map((s) => s.file));
-  // #609 — forge-detect.ts is S1 of epic #608. Its production caller is
-  // forge.ts (S2), not yet shipped. Declared pending so the module-level
-  // orphan check does not fail on it until forge.ts lands.
-  // #610 — forge.ts is S2. Its production caller is work-driver (S4 #612),
-  // not yet shipped. Declared pending for the same reason.
-  const PENDING_PRODUCTION_CALLER = new Set([
-    "forge-detect.ts",
-    "forge.ts",
-    // #660 B2 — companion extension loaded via --extension at dispatch time
-    // (FACTS_EXTRA_ARGS in the /agents-md pre-pass), not via a static import.
-    // Same pattern as policy-reporter.ts / lens-reporter.ts / plan-reporter.ts,
-    // which are also not in this set because they have no named exports
-    // imported by tests. facts-reporter.ts DOES have named exports
-    // (agentFactsToDetectedFacts, extractAgentFacts, FACTS_EXTRA_ARGS) that
-    // the test files import, so the orphan check flags it. The production
-    // caller is the /agents-md pre-pass dispatch (pi-prompts/agents-md.md),
-    // which loads it via FACTS_EXTRA_ARGS — not a static import.
-    "facts-reporter.ts",
-  ]);
-  const orphans: string[] = [];
-  for (const f of allFiles) {
-    if (declared.has(f.name) || f.name === "index.ts" || f.name === "types.ts") continue;
-    if (PENDING_PRODUCTION_CALLER.has(f.name)) continue;
-    if (!/^export /m.test(f.text)) continue;
-    const spec = f.name.replace(".ts", "\\.ts");
-    const imported = allFiles.some(
-      (o) => o.name !== f.name && new RegExp(`from "\\./${spec}"`).test(o.text),
-    );
-    const testImported = testFiles.some((t) => new RegExp(`/${spec}"`).test(t));
-    if (!imported && testImported) orphans.push(f.name);
-  }
-  assert(
-    orphans.length === 0,
-    `no module is reachable ONLY from its own tests${
-      orphans.length ? ` — dead in production: ${orphans.join(", ")}` : ""
-    }`,
-  );
+	// A module whose ONLY importer is a smoke test is the exact shape all three
+	// seams above had when they shipped. Report any such module, so the next one
+	// is noticed at the gate rather than three releases later.
+	const declared = new Set(SEAMS.map((s) => s.file));
+	// #609 — forge-detect.ts is S1 of epic #608. Its production caller is
+	// forge.ts (S2), not yet shipped. Declared pending so the module-level
+	// orphan check does not fail on it until forge.ts lands.
+	// #610 — forge.ts is S2. Its production caller is work-driver (S4 #612),
+	// not yet shipped. Declared pending for the same reason.
+	const PENDING_PRODUCTION_CALLER = new Set([
+		"forge-detect.ts",
+		"forge.ts",
+		// #660 B2 — companion extension loaded via --extension at dispatch time
+		// (FACTS_EXTRA_ARGS in the /agents-md pre-pass), not via a static import.
+		// Same pattern as policy-reporter.ts / lens-reporter.ts / plan-reporter.ts,
+		// which are also not in this set because they have no named exports
+		// imported by tests. facts-reporter.ts DOES have named exports
+		// (agentFactsToDetectedFacts, extractAgentFacts, FACTS_EXTRA_ARGS) that
+		// the test files import, so the orphan check flags it. The production
+		// caller is the /agents-md pre-pass dispatch (pi-prompts/agents-md.md),
+		// which loads it via FACTS_EXTRA_ARGS — not a static import.
+		"facts-reporter.ts",
+	]);
+	const orphans: string[] = [];
+	for (const f of allFiles) {
+		if (declared.has(f.name) || f.name === "index.ts" || f.name === "types.ts")
+			continue;
+		if (PENDING_PRODUCTION_CALLER.has(f.name)) continue;
+		if (!/^export /m.test(f.text)) continue;
+		const spec = f.name.replace(".ts", "\\.ts");
+		const imported = allFiles.some(
+			(o) => o.name !== f.name && new RegExp(`from "\\./${spec}"`).test(o.text),
+		);
+		const testImported = testFiles.some((t) => new RegExp(`/${spec}"`).test(t));
+		if (!imported && testImported) orphans.push(f.name);
+	}
+	assert(
+		orphans.length === 0,
+		`no module is reachable ONLY from its own tests${
+			orphans.length ? ` — dead in production: ${orphans.join(", ")}` : ""
+		}`,
+	);
 }
 
 // ------------------------- the production fetch default carries its deadline
@@ -430,16 +477,24 @@ for (const seam of SEAMS) {
 // fetcher without `timeout:` would restore the unbounded `gh issue view` that
 // killed cycle #700, and the whole suite would still pass.
 {
-  const exploreRun = readFileSync(path.join(SRC, "work-driver-explore-run.ts"), "utf8");
-  const explore = readFileSync(path.join(SRC, "work-driver-explore.ts"), "utf8");
-  assert(
-    /ctx\.issueBodyFetcherFn \?\? fetchIssueBodyViaGh/.test(exploreRun),
-    "runExplore's fetch default is fetchIssueBodyViaGh — the fetcher that carries a deadline",
-  );
-  assert(
-    /export function fetchIssueBodyViaGh[\s\S]{0,400}?timeout: ISSUE_BODY_TIMEOUT_MS/.test(explore),
-    "...and that fetcher sets a per-attempt timeout, so no unbounded gh call reaches production",
-  );
+	const exploreRun = readFileSync(
+		path.join(SRC, "work-driver-explore-run.ts"),
+		"utf8",
+	);
+	const explore = readFileSync(
+		path.join(SRC, "work-driver-explore.ts"),
+		"utf8",
+	);
+	assert(
+		/ctx\.issueBodyFetcherFn \?\? fetchIssueBodyViaGh/.test(exploreRun),
+		"runExplore's fetch default is fetchIssueBodyViaGh — the fetcher that carries a deadline",
+	);
+	assert(
+		/export function fetchIssueBodyViaGh[\s\S]{0,400}?timeout: ISSUE_BODY_TIMEOUT_MS/.test(
+			explore,
+		),
+		"...and that fetcher sets a per-attempt timeout, so no unbounded gh call reaches production",
+	);
 }
 console.log(`\nexit ${exit}`);
 process.exit(exit);

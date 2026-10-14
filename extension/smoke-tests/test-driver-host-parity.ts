@@ -23,36 +23,36 @@ import { readState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
-  if (cond) console.log(`✓ ${msg}`);
-  else {
-    console.error(`✗ ${msg}`);
-    exit = 1;
-  }
+	if (cond) console.log(`✓ ${msg}`);
+	else {
+		console.error(`✗ ${msg}`);
+		exit = 1;
+	}
 }
 
 process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS = "0";
 process.env.PI_ENSEMBLE_VERIFY = "0";
 
 const EXPLORE_REPLY = [
-  "INTENT-VERDICT: proceed",
-  "",
-  "## Spec",
-  "",
-  "### Intent",
-  "Implement issue #1020.",
-  "",
-  "### Deliverables",
-  "- d1: implement the change [paths: src/a.ts]",
+	"INTENT-VERDICT: proceed",
+	"",
+	"## Spec",
+	"",
+	"### Intent",
+	"Implement issue #1020.",
+	"",
+	"### Deliverables",
+	"- d1: implement the change [paths: src/a.ts]",
 ].join("\n");
 
 const mockIssueBody = async (issue: number) => ({
-  stdout: `title:\tmock #${issue}\nstate:\tOPEN\n\nnon-empty mock body`,
+	stdout: `title:\tmock #${issue}\nstate:\tOPEN\n\nnon-empty mock body`,
 });
 
 /** A message as it reached the transport: text plus the deliverAs it carried. */
 interface Sent {
-  text: string;
-  deliverAs: unknown;
+	text: string;
+	deliverAs: unknown;
 }
 
 const ISO_TS = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z/g;
@@ -71,36 +71,40 @@ const JOB_KEY = /^(jobId|inFlightJobIds|jobIds)$/;
  * compares equal. Everything else is compared exactly, including event order.
  */
 function canon(v: unknown, dir: string): unknown {
-  const jobs = new Map<string, string>();
-  const placeholder = (id: string): string => {
-    let p = jobs.get(id);
-    if (p === undefined) {
-      p = `<job${jobs.size + 1}>`;
-      jobs.set(id, p);
-    }
-    return p;
-  };
-  const walk = (x: unknown, key?: string): unknown => {
-    if (Array.isArray(x)) {
-      return x.map((e) =>
-        key !== undefined && JOB_KEY.test(key) && typeof e === "string" ? placeholder(e) : walk(e),
-      );
-    }
-    if (x !== null && typeof x === "object") {
-      return Object.fromEntries(Object.entries(x).map(([k, val]) => [k, walk(val, k)]));
-    }
-    if (typeof x === "string") {
-      if (key !== undefined && JOB_KEY.test(key)) return placeholder(x);
-      if (key === "transcriptPath") return "<transcript>";
-      return x.split(dir).join("<repo>").replace(ISO_TS, "<ts>");
-    }
-    if (typeof x === "number" && key !== undefined) {
-      if (TIME_KEY.test(key)) return "<ts>";
-      if (DURATION_KEY.test(key)) return "<ms>";
-    }
-    return x;
-  };
-  return walk(v);
+	const jobs = new Map<string, string>();
+	const placeholder = (id: string): string => {
+		let p = jobs.get(id);
+		if (p === undefined) {
+			p = `<job${jobs.size + 1}>`;
+			jobs.set(id, p);
+		}
+		return p;
+	};
+	const walk = (x: unknown, key?: string): unknown => {
+		if (Array.isArray(x)) {
+			return x.map((e) =>
+				key !== undefined && JOB_KEY.test(key) && typeof e === "string"
+					? placeholder(e)
+					: walk(e),
+			);
+		}
+		if (x !== null && typeof x === "object") {
+			return Object.fromEntries(
+				Object.entries(x).map(([k, val]) => [k, walk(val, k)]),
+			);
+		}
+		if (typeof x === "string") {
+			if (key !== undefined && JOB_KEY.test(key)) return placeholder(x);
+			if (key === "transcriptPath") return "<transcript>";
+			return x.split(dir).join("<repo>").replace(ISO_TS, "<ts>");
+		}
+		if (typeof x === "number" && key !== undefined) {
+			if (TIME_KEY.test(key)) return "<ts>";
+			if (DURATION_KEY.test(key)) return "<ms>";
+		}
+		return x;
+	};
+	return walk(v);
 }
 
 /**
@@ -109,53 +113,58 @@ function canon(v: unknown, dir: string): unknown {
  * bottom of that host (the transport), not what the driver emitted.
  */
 async function runUnder(
-  host: DriverHost,
-  sink: Sent[],
-  emittedSink: unknown[],
-): Promise<{ state: unknown; sent: unknown; emitted: unknown; eventKinds: string[] }> {
-  const dir = mkdtempSync(path.join(tmpdir(), "driver-host-parity-"));
-  let calls = 0;
-  try {
-    const ctx: DriverContext = {
-      host,
-      repoRoot: dir,
-      issue: 1020,
-      issueBodyFetcherFn: mockIssueBody,
-      dispatchFn: async (_h, spec) => {
-        calls++;
-        if (calls >= 5) throw new Error("parity: halt before adversarial");
-        return {
-          role: spec.role,
-          ok: true,
-          text: spec.role === "explore" ? EXPLORE_REPLY : "stub output",
-          toolUses: [],
-          ms: 1,
-          exitCode: 0,
-          transcriptPath: "/tmp/parity.json",
-        } as never;
-      },
-    } as unknown as DriverContext;
-    await runWorkDriver(ctx).catch(() => undefined);
-    const state = await readState(dir, 1020);
-    const eventKinds = (state?.eventLog ?? []).map((e) => String(e.kind));
-    return {
-      state: canon(state, dir),
-      sent: canon(sink, dir),
-      emitted: canon(emittedSink, dir),
-      eventKinds,
-    };
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+	host: DriverHost,
+	sink: Sent[],
+	emittedSink: unknown[],
+): Promise<{
+	state: unknown;
+	sent: unknown;
+	emitted: unknown;
+	eventKinds: string[];
+}> {
+	const dir = mkdtempSync(path.join(tmpdir(), "driver-host-parity-"));
+	let calls = 0;
+	try {
+		const ctx: DriverContext = {
+			host,
+			repoRoot: dir,
+			issue: 1020,
+			issueBodyFetcherFn: mockIssueBody,
+			dispatchFn: async (_h, spec) => {
+				calls++;
+				if (calls >= 5) throw new Error("parity: halt before adversarial");
+				return {
+					role: spec.role,
+					ok: true,
+					text: spec.role === "explore" ? EXPLORE_REPLY : "stub output",
+					toolUses: [],
+					ms: 1,
+					exitCode: 0,
+					transcriptPath: "/tmp/parity.json",
+				} as never;
+			},
+		} as unknown as DriverContext;
+		await runWorkDriver(ctx).catch(() => undefined);
+		const state = await readState(dir, 1020);
+		const eventKinds = (state?.eventLog ?? []).map((e) => String(e.kind));
+		return {
+			state: canon(state, dir),
+			sent: canon(sink, dir),
+			emitted: canon(emittedSink, dir),
+			eventKinds,
+		};
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 }
 
 // Pi-session side: piSessionHost → recording ExtensionAPI stub. The stub is the
 // bottom of this host, so `piSent` is what reached the Pi API.
 const piSent: Sent[] = [];
 const fakePi = {
-  sendUserMessage: (content: unknown, options?: { deliverAs?: unknown }) => {
-    piSent.push({ text: String(content), deliverAs: options?.deliverAs });
-  },
+	sendUserMessage: (content: unknown, options?: { deliverAs?: unknown }) => {
+		piSent.push({ text: String(content), deliverAs: options?.deliverAs });
+	},
 } as never as Parameters<typeof piSessionHost>[0];
 
 // Test side: the recording host is itself the bottom, so `testSent` is what it received.
@@ -164,42 +173,46 @@ const testSent: Sent[] = [];
 // sequence can be compared with the final eventLog.
 const testEmitted: unknown[] = [];
 const recordingHost: DriverHost = {
-  sendUserMessage: (text, options) => {
-    testSent.push({ text, deliverAs: options.deliverAs });
-  },
-  emit: (event) => {
-    testEmitted.push(event);
-  },
+	sendUserMessage: (text, options) => {
+		testSent.push({ text, deliverAs: options.deliverAs });
+	},
+	emit: (event) => {
+		testEmitted.push(event);
+	},
 };
 
 const piRun = await runUnder(piSessionHost(fakePi), piSent, []);
 const testRun = await runUnder(recordingHost, testSent, testEmitted);
 
-assert(piRun.eventKinds.length > 0, "the Pi-session run appended events to the eventLog");
 assert(
-  piRun.eventKinds.includes("step-started") && piRun.eventKinds.length >= 3,
-  "the cycle progressed past its first step (explore, plan, ... recorded)",
+	piRun.eventKinds.length > 0,
+	"the Pi-session run appended events to the eventLog",
 );
 assert(
-  JSON.stringify(piRun.state) === JSON.stringify(testRun.state),
-  "Pi-session host and recording host produce identical state + eventLog (timestamps, durations, repo path, job ids normalised)",
+	piRun.eventKinds.includes("step-started") && piRun.eventKinds.length >= 3,
+	"the cycle progressed past its first step (explore, plan, ... recorded)",
 );
 assert(
-  testRun.emitted !== undefined &&
-    JSON.stringify(testRun.emitted) ===
-      JSON.stringify((testRun.state as { eventLog: unknown }).eventLog),
-  "the recording host's emitted events equal the final eventLog, in order (S4a emit choke point)",
+	JSON.stringify(piRun.state) === JSON.stringify(testRun.state),
+	"Pi-session host and recording host produce identical state + eventLog (timestamps, durations, repo path, job ids normalised)",
 );
 assert(
-  piSent.length > 0 && JSON.stringify(piRun.sent) === JSON.stringify(testRun.sent),
-  "both hosts' transports receive identical messages (text and deliverAs, normalised)",
+	testRun.emitted !== undefined &&
+		JSON.stringify(testRun.emitted) ===
+			JSON.stringify((testRun.state as { eventLog: unknown }).eventLog),
+	"the recording host's emitted events equal the final eventLog, in order (S4a emit choke point)",
 );
 assert(
-  piSent.length > 0 &&
-    testSent.length > 0 &&
-    piSent.every((m) => m.deliverAs === "steer") &&
-    testSent.every((m) => m.deliverAs === "steer"),
-  'every driver message is delivered with deliverAs "steer" on both hosts',
+	piSent.length > 0 &&
+		JSON.stringify(piRun.sent) === JSON.stringify(testRun.sent),
+	"both hosts' transports receive identical messages (text and deliverAs, normalised)",
+);
+assert(
+	piSent.length > 0 &&
+		testSent.length > 0 &&
+		piSent.every((m) => m.deliverAs === "steer") &&
+		testSent.every((m) => m.deliverAs === "steer"),
+	'every driver message is delivered with deliverAs "steer" on both hosts',
 );
 
 process.exit(exit);
