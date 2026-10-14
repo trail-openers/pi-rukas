@@ -221,6 +221,13 @@ export type WorkEvent =
        */
       restoredToRef?: string;
       /**
+       * The HEAD of the lens-fix worktree when a COMMITTED fix existed and
+       * could not be integrated. Present only on that
+       * `lens-fix-not-integrated` shape: the handoff names the commit to
+       * land, and does not suggest the findings were false positives.
+       */
+      committedFixSha?: string;
+      /**
        * Which cap fired. Covers the handoff-doctrine caps plus the
        * "ci-retry" cap added in PR2 after the live-test infinite-loop bug:
        * ci-status:failure → develop → adversarial → review → ci → ... had no

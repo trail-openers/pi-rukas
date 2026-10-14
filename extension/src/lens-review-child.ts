@@ -166,10 +166,16 @@ export async function runLensChild(opts: {
   // it up in childHandles, so a steer is possible from the moment onStdin
   // fires and is a no-op once the child has exited.
   let lensStdin: Writable | undefined;
+  // This lens's own abort, linked to the batch signal, so dispatch_kill
+  // <deckKey> stops one hung lens (and its retries) without the whole batch.
+  const kill = new AbortController();
+  const onBatchAbort = () => kill.abort();
+  if (runOpts.signal?.aborted) kill.abort();
+  else runOpts.signal?.addEventListener("abort", onBatchAbort, { once: true });
   try {
     while (attempts < MAX_LENS_ATTEMPTS) {
       attempts++;
-      if (runOpts.signal?.aborted) {
+      if (kill.signal.aborted) {
         lastError = "aborted by user";
         break;
       }
@@ -187,7 +193,7 @@ export async function runLensChild(opts: {
             // wall-clock backstop (spawnBackstopMs, spawn-support.ts) and the
             // 25-min inactivity watchdog (inactivityTimeoutMs). No per-role
             // timeout exists; liveness, not wall clock, is the real signal.
-            signal: runOpts.signal,
+            signal: kill.signal,
             processGroup: runOpts.processGroup,
             onProgress: (state) => {
               dispatchDeck.updateEntry(deckKey, state);
@@ -198,7 +204,7 @@ export async function runLensChild(opts: {
               // #799 — register the stdin against the DECK KEY (the id
               // dispatch_peek shows) so the child is steerable directly,
               // not only through the orchestrator's active-child path.
-              registerChildHandle(deckKey, stdin, slowLabel, slowRole);
+              registerChildHandle(deckKey, stdin, slowLabel, slowRole, () => kill.abort());
               // #952 — capture the handle for the onSteer closure below.
               lensStdin = stdin;
             },
@@ -263,6 +269,7 @@ export async function runLensChild(opts: {
     dispatchDeck.clearEntry(deckKey);
     stopSlow.stop();
     childHandles.delete(deckKey);
+    runOpts.signal?.removeEventListener("abort", onBatchAbort);
   }
 
   bumpBatch();

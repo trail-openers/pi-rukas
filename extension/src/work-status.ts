@@ -13,6 +13,7 @@ import {
 } from "./work-driver-context.ts";
 import { formatCycleTotal } from "./work-driver-cycle-total.ts";
 import { explainCap } from "./work-driver-explain.ts";
+import { unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
 import { readQueueSummary } from "./work-queue-summary.ts";
 import { humanActionFor } from "./work-queue.ts";
 import { renderDispatchDurations } from "./work-status-dispatch-durations.ts";
@@ -201,6 +202,7 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
       if (snap.retainedWorktrees?.length) {
         lines.push("  retained worktrees:", ...snap.retainedWorktrees.map((wt) => `    ${wt}`));
       }
+      lines.push(...unreadableSnapshotLines(ps).map((l) => `  ${l}`));
     }
   }
 

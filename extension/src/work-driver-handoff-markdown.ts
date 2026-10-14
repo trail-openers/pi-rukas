@@ -25,6 +25,7 @@ import {
 import { fanoutVerdictLines } from "./work-driver-handoff-fanout.ts";
 import { securityOpenPointsMarkdown } from "./work-driver-handoff-open-points.ts";
 import { recoveryCommandsMarkdown } from "./work-driver-handoff-recovery.md.ts";
+import { unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
 import { dispatchDurations } from "./work-status-dispatch-durations.ts";
 import { fmtElapsed } from "./work-status-events.ts";
@@ -144,14 +145,19 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
   // PR5: Worktree state at handoff (from handoffSnapshot).
   if (ps.handoffSnapshot) {
     const snap = ps.handoffSnapshot;
+    // A failed git read leaves the snapshot's zeros in place; they must not
+    // be printed as findings (see `handoffSnapshot.unreadable`).
+    const notRead = unreadableSnapshotLines(ps);
+    const unread = notRead.length > 0 ? " — NOT READ, see below" : "";
     lines.push(
       "### Worktree state at handoff",
       "",
       `- HEAD: \`${snap.headSha || "(unknown)"}\``,
-      `- branch exists locally: ${snap.branchExists ? "yes" : "no"}`,
+      `- branch exists locally: ${snap.branchExists ? "yes" : `no${unread}`}`,
       `- branch pushed to origin: ${snap.branchPushed ? "yes" : "no (local only)"}`,
-      `- uncommitted: ${snap.unstagedCount + snap.stagedCount} files (${snap.stagedCount} staged, ${snap.unstagedCount} unstaged)`,
+      `- uncommitted: ${snap.unstagedCount + snap.stagedCount} files (${snap.stagedCount} staged, ${snap.unstagedCount} unstaged)${unread}`,
     );
+    if (notRead.length > 0) lines.push("", "```text", ...notRead, "```", "");
     if (snap.modifiedFiles.length > 0) {
       const shown = snap.modifiedFiles.slice(0, 10);
       lines.push(

@@ -25,7 +25,9 @@ import type { WorkState } from "./workflow-state.ts";
  * Best-effort: every git invocation is try/catch'd so a missing branch /
  * gh-auth / network issue degrades gracefully — the snapshot's
  * `branchPushed: false` and empty `modifiedFiles` is meaningful by
- * itself; absence of the snapshot field is not.
+ * itself; absence of the snapshot field is not. A local read that FAILED is
+ * recorded in `unreadable`, because its empty default is otherwise read as
+ * "nothing there".
  *
  * Caps file list at 50 entries to keep state-file readable; the
  * `unstagedCount + stagedCount` totals are always accurate even when
@@ -45,6 +47,7 @@ export async function captureWorktreeSnapshot(
     headSha: "",
     capturedAt: Date.now(),
   };
+  const unreadable: string[] = [];
   // #287 — the developer's uncommitted work lives in the WORKTREES, not at
   // repoRoot. Snapshotting repoRoot alone would report "0 files modified" on
   // exactly the handoffs where the operator needs to know what survived.
@@ -76,6 +79,7 @@ export async function captureWorktreeSnapshot(
         }
       }
     } catch (err) {
+      unreadable.push(`git status in ${dir}: ${readError(err)}`);
       trace(
         `work-driver: captureWorktreeSnapshot git status failed for ${dir}: ${(err as Error).message?.slice(0, 200)}`,
       );
@@ -86,17 +90,25 @@ export async function captureWorktreeSnapshot(
     const { stdout } = await execp("git rev-parse --short HEAD", { cwd: repoRoot });
     snapshot.headSha = stdout.trim();
   } catch (err) {
+    unreadable.push(`git rev-parse HEAD in ${repoRoot}: ${readError(err)}`);
     trace(
       `work-driver: captureWorktreeSnapshot git rev-parse failed: ${(err as Error).message?.slice(0, 200)}`,
     );
   }
   if (branchName) {
-    // Local branch existence.
+    // Local branch existence. `--quiet` makes a missing ref exit 1 with no
+    // output, so any OTHER failure (git could not run at all) is a failed
+    // read rather than proof the branch was never created.
     try {
-      await execp(`git rev-parse --verify ${JSON.stringify(branchName)}`, { cwd: repoRoot });
+      await execp(`git rev-parse --verify --quiet ${JSON.stringify(branchName)}`, {
+        cwd: repoRoot,
+      });
       snapshot.branchExists = true;
-    } catch {
+    } catch (err) {
       snapshot.branchExists = false;
+      if ((err as { code?: unknown }).code !== 1) {
+        unreadable.push(`git rev-parse --verify ${branchName}: ${readError(err)}`);
+      }
     }
     // Remote tracking (best-effort; network may be down). 10s timeout
     // because ls-remote can hang on unreachable remotes (#1095: still 10s,
@@ -114,5 +126,40 @@ export async function captureWorktreeSnapshot(
       snapshot.branchPushed = false;
     }
   }
+  if (unreadable.length > 0) snapshot.unreadable = unreadable;
   return snapshot;
+}
+
+/** One line of a failed git read, for `handoffSnapshot.unreadable`. */
+export function readError(err: unknown): string {
+  const e = err as Error & { stderr?: string };
+  const text = `${e.stderr ?? ""}`.trim() || e.message || "unknown error";
+  return text.replace(/\s+/g, " ").slice(0, 160);
+}
+
+/**
+ * The "this snapshot is not evidence" block, shared by every handoff surface.
+ * Empty when every read succeeded. Names each recorded worktree with the
+ * command that lists its commits and the one that attaches them to a branch,
+ * since the driver could not establish either itself.
+ */
+export function unreadableSnapshotLines(ps: WorkState["pipelineState"]): string[] {
+  const failed = ps.handoffSnapshot?.unreadable ?? [];
+  if (failed.length === 0) return [];
+  const wts = Object.entries(ps.worktrees ?? {});
+  const range = ps.baseSha ? `${ps.baseSha.slice(0, 12)}..HEAD` : "-20";
+  const branch = ps.branchName ?? "<branch>";
+  return [
+    `WORKTREE STATE NOT READ — ${failed.length} git read(s) failed, so the counts above are NOT evidence that no work or no branch exists:`,
+    ...failed.slice(0, 5).map((f) => `  ${f}`),
+    ...(wts.length > 0
+      ? [
+          "Developers commit on detached-HEAD worktrees; once git runs again, list each one's commits and attach them to a branch:",
+          ...wts.flatMap(([id, wt]) => [
+            `  git -C ${wt} log --oneline ${range}`,
+            `  git -C ${wt} branch ${wts.length > 1 ? `${branch}-${id}` : branch} HEAD`,
+          ]),
+        ]
+      : []),
+  ];
 }

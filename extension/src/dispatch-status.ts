@@ -91,7 +91,10 @@ export function registerDispatchStatusTool(pi: ExtensionAPI) {
     description:
       "Abort a running async subagent or batch by jobId. The orchestrator will deliver a FAILED report shortly after. Use sparingly — prefer letting children finish.",
     parameters: Type.Object({
-      jobId: Type.String({ description: "Job id as shown by dispatch_status." }),
+      jobId: Type.String({
+        description:
+          "Job id as shown by dispatch_status, or a child id (`<run>/<label>`) as shown by dispatch_peek or a slow-run notice.",
+      }),
     }),
     async execute(_id, raw) {
       const params = raw as { jobId: string };

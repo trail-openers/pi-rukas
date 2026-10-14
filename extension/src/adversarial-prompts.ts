@@ -120,6 +120,11 @@ export function buildAdversarialPrompt(opts: {
    * and which parts belong to siblings (which are excluded from findings).
    */
   scope?: { own?: SiblingScope; siblings: readonly SiblingScope[] };
+  /**
+   * The "changed by the last fix pass" section (fix-delta.ts); empty when this
+   * review does not follow a fix pass or the delta could not be stated.
+   */
+  fixDelta?: string;
 }): string {
   const commentSection = opts.commentEvidence
     ? `\n\n${opts.commentEvidence}\n\n${COMMENT_JUDGEMENT_PROSE}`
@@ -136,7 +141,7 @@ Attack this implementation. Find edge cases, security holes, race conditions, AP
   VERDICT: ISSUES_FOUND
   VERDICT: CRITICAL_ISSUES_FOUND
 
-Use the severity your role prompt defines. Only CRITICAL_ISSUES_FOUND blocks the commit; the others are recorded and carried into the pull request. Inflating a finding's severity to avoid approving is the worst failure mode of this role.${scopeSection}${issueSection(opts.issueBody)}${commentSection}
+Use the severity your role prompt defines. Only CRITICAL_ISSUES_FOUND blocks the commit; the others are recorded and carried into the pull request. Inflating a finding's severity to avoid approving is the worst failure mode of this role.${scopeSection}${issueSection(opts.issueBody)}${commentSection}${opts.fixDelta ?? ""}
 
 Diff:
 \`\`\`diff

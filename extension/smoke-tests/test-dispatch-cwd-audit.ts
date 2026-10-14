@@ -305,12 +305,16 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
   // resume message, not calls; work-driver-merged.ts DEFINES runSingleDispatch
   // (its three call sites are allowlisted above); the fan-out calls the
   // loopFn seam (ctx.adversarialLoopFn ?? runAdversarialLoop) whose cwd is
-  // pinned in the adversarial section.
+  // pinned in the adversarial section. work-driver-issue-images.ts wraps a
+  // dispatch function to add the issue's images to the spec: it passes the
+  // caller's spec on, cwd included, and decides nothing about where a child
+  // runs.
   const SEAM_PLUMBING = new Set([
     "dispatch.ts",
     // #1024 — enterCycle binds the default dispatch to the cycle's AbortSignal;
     // it forwards each caller's spec (and cwd) unchanged, so it adds no site.
     "work-driver-cycle-entry.ts",
+    "work-driver-issue-images.ts",
     "work-driver-resume.ts",
     "work-driver-merged.ts",
     "work-driver-adversarial-fanout.ts",
