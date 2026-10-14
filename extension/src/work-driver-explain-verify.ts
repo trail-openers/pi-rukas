@@ -11,11 +11,7 @@
  */
 
 import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
-import {
-  HOST_EXHAUSTION_LABEL,
-  HOST_EXHAUSTION_RUNBOOK,
-  isHostExhaustionFailure,
-} from "./work-driver-exec-error.ts";
+import { HOST_EXHAUSTION_LABEL, isHostExhaustionFailure } from "./work-driver-exec-error.ts";
 import { BASELINE_RED_MARKER } from "./work-driver-verify-baseline.ts";
 import { type CapHitEvent, lastCapHit } from "./workflow-state-cap.ts";
 import type { VerifyEvidenceOrigin } from "./workflow-state-schema-verify.ts";
@@ -156,7 +152,7 @@ export function explainVerifyFailed(cap: Cap, state: WorkState): string {
   // Neither a check the host could not fork nor a gate already red at the
   // base judged the change: "inspect the worktree(s)" would be wrong advice.
   if (failures.some(isHostExhaustionFailure)) {
-    return `the driver's outcome-verification gate could not run on the ${step} step — the system refused to start a process (fork failed / EAGAIN):${findings}${suffix}\nThe entries marked ${HOST_EXHAUSTION_LABEL} are environment failures, not defects in the change: those checks never executed. They name the pid count and limit where the driver runs — in a container that is the container's own pid limit, not a host ulimit. Clear the limit that was hit, then re-run the cycle. ${HOST_EXHAUSTION_RUNBOOK}`;
+    return `the driver's outcome-verification gate could not run on the ${step} step — the system refused to start a process (fork failed / EAGAIN):${findings}${suffix}\nThe entries marked ${HOST_EXHAUSTION_LABEL} are environment failures, not defects in the change: those checks never executed. They name the pid count and limit where the driver runs — in a container that is the container's own pid limit, not a host ulimit. Check the ceiling named in the evidence (container pid limit, pid_max, RLIMIT_NPROC, memory), clear it if it was hit, then re-run the cycle.`;
   }
   const advice = failures.some((f) => f.startsWith(BASELINE_RED_MARKER))
     ? "The verify command already fails at the cycle's base commit — fix the gate there (or the host it runs on) before inspecting the worktree(s), then re-run."
