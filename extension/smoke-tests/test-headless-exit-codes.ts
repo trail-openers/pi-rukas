@@ -7,6 +7,7 @@
 import { parseHeadlessArgs } from "../src/headless/cli.ts";
 import { EXIT, exitCodeForGroup, exitCodeForState } from "../src/headless/exit-code.ts";
 import { projectIssue, questionsOf } from "../src/headless/result.ts";
+import type { WorkCapLiteral } from "../src/workflow-state-events-caps.ts";
 import {
   type WorkEvent,
   type WorkState,
@@ -33,11 +34,11 @@ function withStatus(
   return { ...s, pipelineState: { ...s.pipelineState, status } };
 }
 
-function cap(c: string, evidence?: string): WorkEvent {
+function cap(c: WorkCapLiteral, evidence?: string): WorkEvent {
   return {
     kind: "cap-hit",
     at: 2,
-    cap: c as never,
+    cap: c,
     reviewRound: 0,
     ...(evidence ? { evidence } : {}),
   };

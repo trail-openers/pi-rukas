@@ -102,8 +102,10 @@ export function createInactivityPoll(opts: {
   inFlightTools: InFlightTools;
   lastActivityAt: () => number;
   onKill: (cause: "inactivity" | "tool-inactivity", budgetMs: number, toolNames: string[]) => void;
+  /** Headless S4 (#1024): the child leads its own process group (spawn-kill.ts). */
+  processGroup?: boolean;
 }): () => void {
-  const { child, inFlightTools, lastActivityAt, onKill } = opts;
+  const { child, inFlightTools, lastActivityAt, onKill, processGroup } = opts;
   const inactivityMs = inactivityTimeoutMs();
   const toolInactivityMs = toolInactivityTimeoutMs();
   const armedBudget = () =>
@@ -121,7 +123,7 @@ export function createInactivityPoll(opts: {
       if (budget.ms <= 0) return; // this budget is disabled; the other is checked in its own branch
       if (Date.now() - lastActivityAt() >= budget.ms) {
         onKill(budget.cause, budget.ms, inFlightTools.toolNames());
-        killProcessTree(child);
+        killProcessTree(child, processGroup === true);
       }
     },
     Math.min(30_000, Math.max(250, Math.floor(pollBudgetMs / 2))),

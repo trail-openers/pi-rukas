@@ -10,6 +10,15 @@
  * stderr: NDJSON v1 progress lines (ndjson.ts). stdout: one summary line, or
  * with --json exactly one JSON document. The exit code is derived from the
  * state file (exit-code.ts).
+ *
+ * Ctrl-C (SIGINT) and SIGTERM interrupt the cycle: the driver records
+ * `interrupted` at its next step boundary, and every child it started is killed
+ * with its process group (exit 21). Interactive /work is unchanged: its
+ * children stay in the terminal's group, so Ctrl-C reaches them as before.
+ *
+ * `--merge` is refused when the process runs as an agent (PI_ENSEMBLE_ROLE or
+ * PI_ENSEMBLE_SUBAGENT_MODE is set): an agent must not grant itself merge
+ * authority.
  */
 
 import { releaseHeldIntegrationLocks } from "../work-driver-lock.ts";
@@ -23,7 +32,6 @@ export interface ParsedArgs {
   mergeGrant: boolean;
   timeoutMs?: number;
   json: boolean;
-  sandboxed: boolean;
 }
 
 /** Parse argv after the `work` verb. Returns an `error` rather than throwing. */
@@ -32,14 +40,12 @@ export function parseHeadlessArgs(argv: string[]): ParsedArgs | { error: string 
   let restart = false;
   let mergeGrant = false;
   let json = false;
-  let sandboxed = false;
   let timeoutMs: number | undefined;
   for (let i = 0; i < argv.length; i++) {
     const tok = argv[i] as string;
     if (tok === "--restart") restart = true;
     else if (tok === "--merge") mergeGrant = true;
     else if (tok === "--json") json = true;
-    else if (tok === "--sandboxed") sandboxed = true;
     else if (tok === "--timeout") {
       const v = Number(argv[++i]);
       if (!Number.isFinite(v) || v <= 0) return { error: "--timeout needs minutes > 0" };
@@ -53,7 +59,17 @@ export function parseHeadlessArgs(argv: string[]): ParsedArgs | { error: string 
     }
   }
   if (issues.length === 0) return { error: "work needs at least one issue number" };
-  return { issues, restart, mergeGrant, timeoutMs, json, sandboxed };
+  return { issues, restart, mergeGrant, timeoutMs, json };
+}
+
+/** True when the process runs as a pi-rukas agent (a subagent or a role child). */
+export function runsAsAgent(env: NodeJS.ProcessEnv): boolean {
+  const set = (v: string | undefined) => v !== undefined && v !== "";
+  return set(env.PI_ENSEMBLE_ROLE) || set(env.PI_ENSEMBLE_SUBAGENT_MODE);
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -71,9 +87,9 @@ async function main(argv: string[]): Promise<number> {
     );
     return EXIT.refused;
   }
-  if (args.sandboxed) {
+  if (args.mergeGrant && runsAsAgent(process.env)) {
     process.stdout.write(
-      `${JSON.stringify({ error: { code: "sandboxed-refused", message: "--sandboxed is not supported by the headless runner" } })}\n`,
+      `${JSON.stringify({ error: { code: "merge-refused", message: "--merge is refused when an agent runs the headless runner: an agent must not grant itself merge authority" } })}\n`,
     );
     return EXIT.refused;
   }
@@ -98,9 +114,16 @@ async function main(argv: string[]): Promise<number> {
 // Run only when executed directly (bun cli.ts ...), never when imported by a test.
 const invokedDirectly = process.argv[1]?.endsWith("cli.ts") === true;
 if (invokedDirectly) {
-  main(process.argv.slice(2)).then((code) => {
-    // process.exit skips every pending finally: release the locks first.
-    releaseHeldIntegrationLocks();
-    process.exit(code);
-  });
+  main(process.argv.slice(2))
+    .catch((err: unknown) => {
+      process.stdout.write(
+        `${JSON.stringify({ error: { code: "crash", message: errorMessage(err) } })}\n`,
+      );
+      return EXIT.crash;
+    })
+    .then((code) => {
+      // process.exit skips every pending finally: release the locks first.
+      releaseHeldIntegrationLocks();
+      process.exit(code);
+    });
 }

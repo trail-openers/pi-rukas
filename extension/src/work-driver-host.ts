@@ -32,7 +32,8 @@ import type { WorkEvent } from "./workflow-state-events.ts";
  * runner (#1024) is the first host that uses it.
  */
 export type DriverHost = DispatchHost & {
-  emit: (event: WorkEvent) => void;
+  /** `index` is the event's position in the state's eventLog (work-state-emit.ts). */
+  emit: (event: WorkEvent, index: number) => void;
 };
 
 /**

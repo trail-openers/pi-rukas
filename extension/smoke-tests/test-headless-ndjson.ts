@@ -57,7 +57,7 @@ assert(validateNdjsonLine("not an object").length > 0, "a non-object line is rej
 {
   const lines: string[] = [];
   const host = createHeadlessHost(9, (l) => lines.push(l));
-  const sink = createEmitSink((e) => host.emit(e));
+  const sink = createEmitSink((e, index) => host.emit(e, index));
   const s1 = appendEvent(initialState(9), { kind: "step-started", step: "explore", at: 100 });
   const s2 = appendEvent(s1, { kind: "step-started", step: "plan", at: 200 });
   // The state writer calls emitPersisted on every persist; a repeat emits nothing.

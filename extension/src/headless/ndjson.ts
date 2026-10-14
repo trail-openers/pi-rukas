@@ -29,8 +29,6 @@ export interface NdjsonLine {
   key?: string;
   event?: unknown;
   message?: string;
-  path?: string;
-  source?: string;
 }
 
 /** Build the idempotency key for a driver event. */

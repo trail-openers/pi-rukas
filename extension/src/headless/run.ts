@@ -4,20 +4,24 @@
  * Awaits the compiled driver(s) and returns each issue's exit code, derived from
  * the state file the driver left behind. Interrupts:
  *
- *  - SIGTERM / SIGINT (first one only; later signals are ignored) aborts the
- *    cycle's signal with reason `signal`. The driver records the interrupt at its
- *    next step boundary (work-driver-interrupt.ts).
+ *  - SIGTERM / SIGINT / SIGHUP (first one only; later signals are ignored)
+ *    abort the cycle's signal with reason `signal`. The driver records the
+ *    interrupt at its next step boundary (work-driver-interrupt.ts). SIGHUP also
+ *    SIGKILLs every live child process group at once.
  *  - `timeoutMs` aborts with reason `timeout` — the same path, exit 30.
  *  - If the driver does not reach a boundary within `graceMs` of the abort, the
- *    runner writes the interrupt to disk itself (markInterrupted). Nothing else
- *    writes after that, so the disk record cannot be overwritten by a stale
- *    in-memory snapshot.
+ *    runner records the interrupt itself (markInterrupted), then waits up to
+ *    LATE_DRIVER_MS more for a driver that was mid-step. Only then is the state
+ *    read back. A signalled run that expires exits 21 whatever the state says.
+ *  - A driver that is still running after the runner stops waiting cannot write
+ *    `running` back: once the signal has fired, persistCycle writes `interrupted`.
  *
  * Multi-issue invocations are grouped (groupIssues) and run one group at a time;
  * a per-group queue (runWorkQueue) is not used because it needs an interactive
  * host's job registry.
  */
 
+import { killLiveProcessGroups } from "../spawn-kill.ts";
 import type { DriverContext } from "../work-driver-context.ts";
 import { groupIssues } from "../work-driver-grouping.ts";
 import { releaseHeldIntegrationLocks } from "../work-driver-lock.ts";
@@ -51,6 +55,8 @@ export interface HeadlessRunResult {
 }
 
 const DEFAULT_GRACE_MS = 10_000;
+/** After grace expires, how long the runner waits for a driver that was mid-step. */
+const LATE_DRIVER_MS = 5_000;
 
 export async function runHeadless(opts: HeadlessRunOptions): Promise<HeadlessRunResult> {
   const controller = new AbortController();
@@ -59,16 +65,21 @@ export async function runHeadless(opts: HeadlessRunOptions): Promise<HeadlessRun
   let timer: ReturnType<typeof setTimeout> | undefined;
   let signalled = false;
 
-  const onSignal = (name: string) => {
+  const onSignal = () => {
     if (signalled) return;
     signalled = true;
     controller.abort("signal");
-    void name;
   };
-  const sigterm = () => onSignal("SIGTERM");
-  const sigint = () => onSignal("SIGINT");
-  target.on("SIGTERM", sigterm);
-  target.on("SIGINT", sigint);
+  const onHangup = () => {
+    onSignal();
+    killLiveProcessGroups();
+  };
+  // Synchronous last resort: a group child must not outlive the runner.
+  const onExit = () => killLiveProcessGroups();
+  target.on("SIGTERM", onSignal);
+  target.on("SIGINT", onSignal);
+  target.on("SIGHUP", onHangup);
+  target.on("exit", onExit);
   if (opts.timeoutMs !== undefined) {
     timer = setTimeout(() => {
       if (!controller.signal.aborted) controller.abort("timeout");
@@ -86,11 +97,18 @@ export async function runHeadless(opts: HeadlessRunOptions): Promise<HeadlessRun
     }
   } finally {
     if (timer) clearTimeout(timer);
-    target.off("SIGTERM", sigterm);
-    target.off("SIGINT", sigint);
-    // A signalled run may leave a driver past its grace period; its lockfiles
-    // must not outlive this process (see releaseHeldIntegrationLocks).
-    if (signalled) releaseHeldIntegrationLocks();
+    target.off("SIGTERM", onSignal);
+    target.off("SIGINT", onSignal);
+    target.off("SIGHUP", onHangup);
+    target.off("exit", onExit);
+    // A driver may still hold a lockfile past its grace period; it must not
+    // outlive this process. Released on every path, not only on a signal.
+    releaseHeldIntegrationLocks();
+  }
+  // A signal that lands while the issue bodies are being fetched runs no group.
+  if (codes.length === 0 && controller.signal.aborted) {
+    const code = controller.signal.reason === "timeout" ? EXIT.crash : EXIT.interrupted;
+    return { exitCode: code, results };
   }
   return { exitCode: exitCodeForGroup(codes), results };
 }
@@ -99,6 +117,43 @@ async function planGroups(opts: HeadlessRunOptions): Promise<number[][]> {
   if (opts.issues.length <= 1) return opts.issues.map((n) => [n]);
   const bodies = await fetchIssueBodies(opts.repoRoot, opts.issues);
   return Object.values(groupIssues(opts.issues, bodies).groups).map((g) => g.issues);
+}
+
+/** Resolves "expired" once the signal has aborted and `grace` ms have passed. */
+function graceTimer(
+  signal: AbortSignal,
+  grace: number,
+): { expired: Promise<"expired">; cancel: () => void } {
+  let fallback: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<"expired">((resolve) => {
+    const arm = () => {
+      fallback = setTimeout(() => resolve("expired"), grace);
+    };
+    if (signal.aborted) arm();
+    else signal.addEventListener("abort", arm, { once: true });
+  });
+  return {
+    expired,
+    cancel: () => {
+      if (fallback) clearTimeout(fallback);
+    },
+  };
+}
+
+/** Waits for `p` for at most `ms`; never rejects. */
+function waitAtMost(p: Promise<unknown>, ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    const done = () => {
+      clearTimeout(t);
+      resolve();
+    };
+    p.then(done, done);
+  });
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 /** Run one group; returns the exit code of each issue in it and records results. */
@@ -114,7 +169,7 @@ async function runGroup(
   const members = group.length > 1 ? group : undefined;
   const host = createHeadlessHost(primary, opts.write);
   // One sink per issue, shared with the driver and the fallback below: the watermark keeps the stream exactly-once.
-  const sink = createEmitSink((e) => host.emit(e));
+  const sink = createEmitSink((e, index) => host.emit(e, index));
   const driver: Promise<DriverOutcome | { crashed: string }> = runWorkDriver({
     host,
     repoRoot: opts.repoRoot,
@@ -123,45 +178,39 @@ async function runGroup(
     restart: opts.restart,
     mergeGrant: opts.mergeGrant,
     signal,
+    processGroup: true,
     emitSink: sink,
     ...opts.driverSeams,
-  }).catch((err: Error) => ({ crashed: err.message }));
+  }).catch((err: unknown) => ({ crashed: errorMessage(err) }));
 
-  // After an abort the driver gets `grace` ms to reach a boundary; past that the
-  // runner records the interrupt itself and stops waiting.
-  let fallback: ReturnType<typeof setTimeout> | undefined;
-  const expired = new Promise<"expired">((resolve) => {
-    const arm = () => {
-      fallback = setTimeout(() => resolve("expired"), grace);
-    };
-    if (signal.aborted) arm();
-    else signal.addEventListener("abort", arm, { once: true });
-  });
-  const outcome = await Promise.race([driver, expired]);
-  if (fallback) clearTimeout(fallback);
+  const timer = graceTimer(signal, grace);
+  const outcome = await Promise.race([driver, timer.expired]);
+  timer.cancel();
 
   if (outcome === "expired") {
+    // The driver missed its boundary: record the interrupt from here (a no-op
+    // on a terminal status), then give a driver that was mid-step a bounded
+    // moment to finish its persist before the state is read back.
     await markInterrupted(opts.repoRoot, primary, String(signal.reason ?? "signal"), sink);
+    await waitAtMost(driver, LATE_DRIVER_MS);
   }
 
+  // Computed once for the group. A refusal is a driver that did not start.
+  const refused = outcome !== "expired" && isRefusal(outcome);
+  // A signalled run that ran out of grace exits 21 whatever the state says.
+  const interruptedExpired = outcome === "expired" && signal.reason !== "timeout";
   const codes: number[] = [];
   for (const issue of group) {
     const file = workStateFile(opts.repoRoot, issue);
     const state = await readState(opts.repoRoot, issue);
     if (!state) {
-      // A grouped member has no state of its own: it shares the primary's outcome.
-      // Otherwise no state file means a refusal (40) or a crash before the first persist (30).
-      const refused = outcome !== "expired" && isRefusal(outcome);
-      const code =
-        issue !== primary && codes[0] !== undefined
-          ? codes[0]
-          : refused
-            ? EXIT.refused
-            : EXIT.crash;
+      // No state file: the driver never reached its first persist. Reported as
+      // not-started, never as a fabricated status.
+      const code = interruptedExpired ? EXIT.interrupted : refused ? EXIT.refused : EXIT.crash;
       codes.push(code);
       results.push({
         issue,
-        status: "aborted",
+        status: "not-started",
         stateFile: file,
         durationMs: 0,
         steps: [],
@@ -170,13 +219,13 @@ async function runGroup(
       continue;
     }
     const projected = projectIssue(state, file);
-    // A refused start against a state the refusal left untouched keeps the
-    // state's own outcome only when that outcome is terminal; a live owner's
-    // `running` state is a refusal.
-    const code =
-      outcome !== "expired" && isRefusal(outcome) && state.pipelineState.status === "running"
-        ? EXIT.refused
-        : exitCodeForState(state);
+    // A refused start against a state the refusal left untouched is a refusal;
+    // a live owner's `running` state is one.
+    const refusedHere = refused && state.pipelineState.status === "running";
+    let code: number;
+    if (interruptedExpired) code = EXIT.interrupted;
+    else if (refusedHere) code = EXIT.refused;
+    else code = exitCodeForState(state);
     projected.exitCode = code;
     results.push(projected);
     codes.push(code);

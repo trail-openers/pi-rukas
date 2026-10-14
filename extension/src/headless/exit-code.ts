@@ -10,13 +10,14 @@
  *  21  interrupted by a signal
  *  30  the driver threw, or interrupted by the runner's own --timeout
  *  40  refused to start (claimed by a live cycle, needs-human-attention without
- *      --restart, bad arguments, --sandboxed refused)
+ *      --restart, bad arguments, --merge from an agent)
  *
  * A grouped run exits 21 if any issue was interrupted, otherwise the highest
  * per-issue code. The JSON result carries every issue regardless.
  */
 
-import type { WorkState } from "../workflow-state.ts";
+import type { WorkCapLiteral } from "../workflow-state-events-caps.ts";
+import type { WorkEvent, WorkState } from "../workflow-state.ts";
 
 export const EXIT = {
   merged: 0,
@@ -28,24 +29,31 @@ export const EXIT = {
   refused: 40,
 } as const;
 
-const CLARIFICATION_CAPS: readonly string[] = ["intent-park", "explore-needs-clarification"];
+const CLARIFICATION_CAPS = [
+  "intent-park",
+  "explore-needs-clarification",
+] as const satisfies readonly WorkCapLiteral[];
 
-/** The cap of the most recent cap-hit event, if any. */
-export function lastCap(state: WorkState): string | undefined {
+/** The most recent event of `kind` in the state's log, if any. */
+export function lastEvent<K extends WorkEvent["kind"]>(
+  state: WorkState,
+  kind: K,
+): Extract<WorkEvent, { kind: K }> | undefined {
   for (let i = state.eventLog.length - 1; i >= 0; i--) {
     const e = state.eventLog[i];
-    if (e?.kind === "cap-hit") return e.cap;
+    if (e?.kind === kind) return e as Extract<WorkEvent, { kind: K }>;
   }
   return undefined;
 }
 
+/** The cap of the most recent cap-hit event, if any. */
+export function lastCap(state: WorkState): string | undefined {
+  return lastEvent(state, "cap-hit")?.cap;
+}
+
 /** The reason of the most recent `interrupted` event (`signal` or `timeout`). */
 export function lastInterruptReason(state: WorkState): string | undefined {
-  for (let i = state.eventLog.length - 1; i >= 0; i--) {
-    const e = state.eventLog[i];
-    if (e?.kind === "interrupted") return e.reason;
-  }
-  return undefined;
+  return lastEvent(state, "interrupted")?.reason;
 }
 
 /** Exit code for one issue's state file. */
@@ -55,7 +63,7 @@ export function exitCodeForState(state: WorkState): number {
       return EXIT.merged;
     case "handoff": {
       const cap = lastCap(state);
-      return cap !== undefined && CLARIFICATION_CAPS.includes(cap)
+      return cap !== undefined && (CLARIFICATION_CAPS as readonly string[]).includes(cap)
         ? EXIT.clarification
         : EXIT.handoff;
     }

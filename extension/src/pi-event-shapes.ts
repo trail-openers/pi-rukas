@@ -40,6 +40,12 @@ export interface SpawnOptions {
    */
   signal?: AbortSignal;
   /**
+   * Headless S4 (#1024): give the child its own process group, so an abort
+   * reaches its grandchildren (spawn-kill.ts). Interactive spawns leave this
+   * unset: the child stays in the terminal's group and Ctrl-C reaches it.
+   */
+  processGroup?: boolean;
+  /**
    * Group children from the same dispatch_parallel call under a shared id so
    * their session files sort together on disk.
    */

@@ -5,7 +5,7 @@
  */
 
 import type { WorkState } from "../workflow-state.ts";
-import { exitCodeForState, lastCap } from "./exit-code.ts";
+import { exitCodeForState, lastCap, lastEvent } from "./exit-code.ts";
 
 export interface StepTiming {
   step: string;
@@ -15,7 +15,8 @@ export interface StepTiming {
 
 export interface IssueResult {
   issue: number;
-  status: WorkState["pipelineState"]["status"];
+  /** `not-started`: the group member had no state file (the driver never persisted one). */
+  status: WorkState["pipelineState"]["status"] | "not-started";
   cap?: string;
   branch?: string;
   prNumber?: number;
@@ -38,13 +39,8 @@ function bulletsOf(evidence: string | undefined): string[] {
 
 /** Open questions for an exit-11 handoff, numbered q1, q2… */
 export function questionsOf(state: WorkState): string[] {
-  for (let i = state.eventLog.length - 1; i >= 0; i--) {
-    const e = state.eventLog[i];
-    if (e?.kind === "cap-hit") {
-      return bulletsOf(e.evidence).map((q, n) => `q${n + 1}: ${q}`);
-    }
-  }
-  return [];
+  const cap = lastEvent(state, "cap-hit");
+  return cap ? bulletsOf(cap.evidence).map((q, n) => `q${n + 1}: ${q}`) : [];
 }
 
 /** Project one state file into the JSON result for its issue. */
@@ -65,7 +61,7 @@ export function projectIssue(state: WorkState, stateFile: string): IssueResult {
       endedAt: new Date(endAt).toISOString(),
     });
   });
-  const merged = [...log].reverse().find((e) => e.kind === "merged");
+  const merged = lastEvent(state, "merged");
   const exitCode = exitCodeForState(state);
   const cap = lastCap(state);
   const result: IssueResult = {
@@ -78,10 +74,9 @@ export function projectIssue(state: WorkState, stateFile: string): IssueResult {
   };
   if (cap !== undefined) result.cap = cap;
   if (state.pipelineState.branchName !== undefined) result.branch = state.pipelineState.branchName;
-  const prNumber =
-    merged?.kind === "merged"
-      ? merged.prNumber
-      : (state.pipelineState.prNumber ?? state.pipelineState.existingPr?.number);
+  const prNumber = merged
+    ? merged.prNumber
+    : (state.pipelineState.prNumber ?? state.pipelineState.existingPr?.number);
   if (prNumber !== undefined) result.prNumber = prNumber;
   if (exitCode === 11) result.questions = questionsOf(state);
   return result;

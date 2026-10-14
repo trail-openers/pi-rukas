@@ -38,7 +38,7 @@ import {
   piEnsembleExtensionPath,
 } from "./spawn-extension-forward.ts";
 import { InFlightTools, createInactivityPoll, createStdoutLineHandler } from "./spawn-inflight.ts";
-import { killProcessTree } from "./spawn-kill.ts";
+import { groupSpawnOpts, killProcessTree, trackProcessGroup } from "./spawn-kill.ts";
 import { withSpawnSlot } from "./spawn-semaphore.ts";
 import {
   STDERR_TAIL_BYTES,
@@ -189,10 +189,12 @@ async function spawnSpecialistInner(
     // agent_end has fired.
     stdio: ["pipe", "pipe", "pipe"],
     env: childEnv,
-    // #1024 — own process group, so a kill reaches grandchildren (spawn-kill.ts).
-    // Normal exit still ends the child through the stdin-close path above.
-    detached: true,
+    // #1024 — headless only: own process group, so a kill reaches grandchildren
+    // (spawn-kill.ts). Normal exit still ends the child through the stdin-close
+    // path above.
+    ...groupSpawnOpts(opts.processGroup === true),
   });
+  if (opts.processGroup === true) trackProcessGroup(child);
 
   // #932 — universal EPIPE backstop (stdin-guard.ts): EPIPE fires async as `error`,
   // so without this listener the kickoff write, end(), or any later steer becomes
@@ -358,7 +360,7 @@ async function spawnSpecialistInner(
   const timeout = setTimeout(() => {
     timedOut = true;
     // Group kill: SIGTERM, then SIGKILL if the tree ignores SIGTERM (#1024).
-    killProcessTree(child);
+    killProcessTree(child, opts.processGroup === true);
   }, timeoutMs);
 
   // Inactivity watchdog (#296): kill only on total stdout silence. Coarse
@@ -371,6 +373,7 @@ async function spawnSpecialistInner(
   // is armed at any poll, so there is no both-expired race.
   const stopInactivityPoll = createInactivityPoll({
     child,
+    processGroup: opts.processGroup === true,
     inFlightTools,
     lastActivityAt: () => lastActivityAt,
     onKill: (cause, budgetMs, toolNames) => {
@@ -388,7 +391,7 @@ async function spawnSpecialistInner(
   // execute promise resolves and Pi un-stuck immediately.
   const onAbort = () => {
     aborted = true;
-    killProcessTree(child);
+    killProcessTree(child, opts.processGroup === true);
   };
   if (opts.signal) {
     if (opts.signal.aborted) {

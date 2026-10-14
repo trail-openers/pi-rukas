@@ -91,6 +91,8 @@ export function dispatchCore(
      * SIGTERM to the runner leaves no developer process running.
      */
     signal?: AbortSignal;
+    /** Headless S4 (#1024): the child leads its own process group (spawn-kill.ts). */
+    processGroup?: boolean;
   } = {},
 ): Promise<DispatchResult> {
   const stripped = stripModelOverride(spec);
@@ -143,6 +145,7 @@ export function dispatchCore(
         // plan-reporter precedent): the plan driver pins its Phase-2 children
         // to the report_plan_item tool via `--no-skills --extension <path>`.
         extraArgs: opts.extraArgs,
+        processGroup: opts.processGroup,
       }),
   });
   return handle.completion;

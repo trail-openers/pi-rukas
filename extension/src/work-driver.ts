@@ -27,7 +27,7 @@ import { acquireWorkDeckHeader, headerToken } from "./work-driver-deck-header.ts
 import { countPriorStepStarts } from "./work-driver-diff.ts";
 import { runExplore } from "./work-driver-explore.ts";
 import { runHandoff } from "./work-driver-handoff.ts";
-import { interruptIfRequested } from "./work-driver-interrupt.ts";
+import { interruptAfterStep, interruptIfRequested } from "./work-driver-interrupt.ts";
 import { runLens, runLensFix } from "./work-driver-lens.ts";
 import {
   clearFooter,
@@ -294,6 +294,10 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
   const tmpDir = await setupWorkspaceTmp(ctx.repoRoot, ctx.issue);
   trace(`work-driver: scratch dir for issue #${ctx.issue}: ${tmpDir}`);
 
+  // Headless S4 (#1024): an interrupt that arrived before the first step is
+  // recorded here, so the cycle's log says why it stopped.
+  state = await interruptIfRequested(ctx, state);
+
   let safety = 0;
   while (state.pipelineState.status === "running") {
     // Headless S4 (#1024) — an interrupt (SIGTERM / SIGINT) is honoured at the
@@ -330,9 +334,15 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
     emitStepStarted(step, stepOrd.num, stepOrd.total, stepRound, ctx.issue);
     // PR2 O2: footer status cursor (step-level position with live-tick).
     updateFooter(state, stepStartedAt);
+    const priorLength = state.eventLog.length;
     try {
       state = await runStep(ctx, state, step);
     } catch (err) {
+      // An abort that makes the step throw is the interrupt, not a crash.
+      if (ctx.signal?.aborted === true) {
+        state = await interruptIfRequested(ctx, state);
+        break;
+      }
       if (err instanceof DriverNotImplementedError) {
         trace(
           `work-driver: ${err.message} — falling back to PM-driven flow not yet implemented; halting`,
@@ -381,6 +391,13 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
       );
       // The cycle ran and then aborted — its state file is the real outcome.
       return { started: true };
+    }
+    // Headless S4 (#1024): an interrupt that fired during the step ends the
+    // cycle here. The router never sees the aborted step, so no cap-hit or
+    // handoff is recorded for it.
+    if (ctx.signal?.aborted === true) {
+      state = await interruptAfterStep(ctx, state, priorLength);
+      break;
     }
     // Route step outcome (work-driver-step-router.ts); `retry: true` means
     // the router already persisted state and we re-enter.

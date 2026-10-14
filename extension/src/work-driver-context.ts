@@ -172,6 +172,12 @@ export interface DriverContext {
    * `interrupted` event's reason (`signal` or `timeout`).
    */
   signal?: AbortSignal;
+  /**
+   * Headless S4 (#1024) — true only for the headless runner: each child then
+   * leads its own process group, so an interrupt reaches its grandchildren.
+   * Interactive /work leaves it unset (Ctrl-C reaches the children as before).
+   */
+  processGroup?: boolean;
   /** Primary issue number — anchors state file path + branch name. For
    * multi-issue cycles this is `issues[0]`. */
   issue: number;

@@ -35,3 +35,30 @@ export async function interruptIfRequested(
   await persistCycle(ctx, next);
   return next;
 }
+
+/** Events a step appends when its dispatch failed or capped: an aborted step records none of them. */
+const ABORTED_STEP_FAILURE_KINDS: ReadonlySet<string> = new Set([
+  "dispatch-failed",
+  "dispatch-failed-provider",
+  "cap-hit",
+  "handoff-emitted",
+  "handoff-consolidated",
+]);
+
+/**
+ * The cycle's signal fired while `runStep` was in flight. The step may have
+ * recorded its aborted dispatch as a failure or a cap; the interrupt is the
+ * outcome, so those events are dropped from the log before the interrupt is
+ * recorded. `priorLength` is the log length before the step ran: events before
+ * it are never touched. Returns the interrupted state (persisted).
+ */
+export async function interruptAfterStep(
+  ctx: CycleContext,
+  state: WorkState,
+  priorLength: number,
+): Promise<WorkState> {
+  const eventLog = state.eventLog.filter(
+    (e, i) => i < priorLength || !ABORTED_STEP_FAILURE_KINDS.has(e.kind),
+  );
+  return interruptIfRequested(ctx, { ...state, eventLog });
+}

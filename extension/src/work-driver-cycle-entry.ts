@@ -28,11 +28,14 @@ export function enterCycle(ctx: DriverContext): CycleContext {
   const host = ctx.host;
   // A caller that owns the watermark (the headless runner, #1024) passes its
   // sink in, so a fallback write made outside the driver shares it.
-  const emitSink = ctx.emitSink ?? createEmitSink((e) => host.emit(e));
+  const emitSink = ctx.emitSink ?? createEmitSink((e, index) => host.emit(e, index));
   const cycleSignal = ctx.signal;
+  const cycleProcessGroup = ctx.processGroup;
   // Production dispatch is the real dispatchCore, bound to this cycle's signal.
   // A test-injected dispatchFn is used as given.
   const dispatchFn: NonNullable<DriverContext["dispatchFn"]> =
-    ctx.dispatchFn ?? ((h, spec, opts) => dispatchCore(h, spec, { ...opts, signal: cycleSignal }));
+    ctx.dispatchFn ??
+    ((h, spec, opts) =>
+      dispatchCore(h, spec, { ...opts, signal: cycleSignal, processGroup: cycleProcessGroup }));
   return { ...ctx, emitSink, dispatchFn };
 }

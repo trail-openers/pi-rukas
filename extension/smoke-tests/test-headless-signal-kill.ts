@@ -64,7 +64,8 @@ const ac = new AbortController();
 const done = dispatchCore(
   host,
   { role: "developer", prompt: "stub", cwd: dir },
-  { signal: ac.signal, skipDeck: true },
+  // The headless runner is the only caller that asks for a process group (#1024).
+  { signal: ac.signal, skipDeck: true, processGroup: true },
 );
 
 const started = await waitFor(() => existsSync(pidFile), 10_000);

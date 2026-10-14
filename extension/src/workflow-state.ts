@@ -221,10 +221,19 @@ export function writeState(repoRoot: string, state: WorkState, sink?: EmitSink):
  * through here so the emit sink is never forgotten at a call site.
  */
 export function persistCycle(
-  ctx: { repoRoot: string; emitSink: EmitSink },
+  ctx: { repoRoot: string; emitSink: EmitSink; signal?: AbortSignal },
   state: WorkState,
 ): Promise<void> {
-  return writeState(ctx.repoRoot, state, ctx.emitSink);
+  // Headless S4 (#1024): once the cycle's signal has fired, a snapshot that
+  // still reads `running` is written as `interrupted`. The driver's in-memory
+  // copy can predate an interrupt the runner already recorded on disk; this
+  // stops that stale copy writing `running` back. Terminal statuses are never
+  // touched, and no event is added here (work-driver-interrupt.ts records it).
+  const snapshot =
+    ctx.signal?.aborted === true && state.pipelineState.status === "running"
+      ? { ...state, pipelineState: { ...state.pipelineState, status: "interrupted" as const } }
+      : state;
+  return writeState(ctx.repoRoot, snapshot, ctx.emitSink);
 }
 
 /**
@@ -238,6 +247,8 @@ export function persistCycle(
  * (`merged`, `handoff`, `aborted`) is never rewritten, and an already
  * `interrupted` cycle gets no second event. Returns the state as it stands
  * when nothing was written; undefined when no state file exists.
+ *
+ * Re-entry resumes the cycle (see reenterInterrupted in work-driver-resume.ts).
  */
 export function markInterrupted(
   repoRoot: string,
