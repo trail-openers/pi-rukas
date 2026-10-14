@@ -15,6 +15,7 @@ import {
   extractAttributedTail,
   hostExhaustionFailure,
   isHostForkExhaustion,
+  pidLimitSnapshot,
 } from "./work-driver-exec-error.ts";
 
 /** PR17 — bounded wall-clock for the verify command (default 10 min). */
@@ -50,7 +51,11 @@ export function formatExecError(
   // reported evidence, not the whole stream — a passing stage that merely
   // prints the phrase must not relabel a real failure further down.
   if (isHostForkExhaustion(detail)) {
-    return hostExhaustionFailure(failMsg.replace(" failed in ", " in "), detail);
+    return hostExhaustionFailure(
+      failMsg.replace(" failed in ", " in "),
+      detail,
+      pidLimitSnapshot(),
+    );
   }
   return `${failMsg}: ${detail}`;
 }

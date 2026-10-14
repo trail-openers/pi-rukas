@@ -13,12 +13,18 @@
  * existing verdicts.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { appendDevelopVerifyFailure } from "../src/work-develop-verify-failure.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
+import {
+  HOST_EXHAUSTION_RUNBOOK,
+  hostExhaustionFailure,
+  pidCeilingExhausted,
+  pidLimitSnapshot,
+} from "../src/work-driver-exec-error.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import { formatExecError } from "../src/work-driver-verify-develop-helpers.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
@@ -125,7 +131,7 @@ try {
       `preflight cannot fork: the cap is not consolidated-verify-conflict (got: ${p.cap})`,
     );
     assert(
-      /host refused to start a process/.test(p.explain) && !/Inspect the worktree/.test(p.explain),
+      /refused to start a process/.test(p.explain) && !/Inspect the worktree/.test(p.explain),
       `preflight cannot fork: explainCap points at the host, not the worktree (got: ${p.explain.slice(0, 200)})`,
     );
     assert(
@@ -219,6 +225,119 @@ try {
   }
 } finally {
   rmSync(root, { recursive: true, force: true });
+}
+
+// #1277 — the message names the ceiling that was actually hit
+// (the driver's own cgroup pid limit), read without forking, and does not
+// send the operator to the host's ulimits.
+{
+  const files: Record<string, string> = {
+    "/sys/fs/cgroup/pids.current": "4095\n",
+    "/sys/fs/cgroup/pids.max": "4096\n",
+  };
+  const snap = pidLimitSnapshot((f) => {
+    const v = files[f];
+    if (v === undefined) throw new Error("ENOENT");
+    return v;
+  });
+  assert(
+    snap?.current === 4095 && snap.max === 4096,
+    `#1277: counters are read as numbers (got: ${JSON.stringify(snap)})`,
+  );
+  assert(
+    pidLimitSnapshot(() => {
+      throw new Error("ENOENT");
+    }) === undefined,
+    "#1277: unreadable counters yield no snapshot (never a guess)",
+  );
+  const unl = pidLimitSnapshot((f) => (f.endsWith("pids.max") ? "max\n" : "17\n"));
+  assert(
+    unl?.current === 17 && unl.max === "max",
+    "#1277: an unlimited cgroup is reported as it reads",
+  );
+  assert(
+    pidLimitSnapshot((f) => (f.endsWith("pids.max") ? "4096abc\n" : "17\n")) === undefined,
+    "#1277: a malformed pids.max yields no snapshot",
+  );
+
+  // Exhausted: numeric max, headroom under the margin → claims exhaustion.
+  const exhausted = hostExhaustionFailure("consolidated verify", "detail", snap);
+  assert(exhausted.startsWith(LABEL), "#1277: the label still leads the failure");
+  assert(
+    exhausted.includes("pids.current=4095 of pids.max=4096"),
+    "#1277: the failure quotes the pid count and limit",
+  );
+  assert(
+    /exhausted: cgroup pids\.current=4095/.test(exhausted),
+    "#1277: a numeric ceiling with no headroom is claimed as exhausted",
+  );
+  assert(
+    /CONTAINER's pid limit/.test(exhausted) && !/on the host/.test(exhausted),
+    "#1277: it points at the container's limit, not the host",
+  );
+  assert(
+    exhausted.includes(HOST_EXHAUSTION_RUNBOOK) && exhausted.includes("docs/troubleshooting.md"),
+    "#1277: the failure points at the shared troubleshooting runbook",
+  );
+  assert(
+    exhausted.includes("read just after the failure"),
+    "#1277: the message says the counters were read just after the failure",
+  );
+  const named = /under "([^"]+)"/.exec(HOST_EXHAUSTION_RUNBOOK)?.[1];
+  assert(
+    named === `${LABEL}: the gate could not run`,
+    "#1277: the runbook pointer names the troubleshooting heading",
+  );
+  const docs = readFileSync(new URL("../../docs/troubleshooting.md", import.meta.url), "utf8");
+  assert(
+    docs.includes(`#### \`${LABEL}\`: the gate could not run`),
+    "#1277: docs/troubleshooting.md contains the heading the runbook pointer names",
+  );
+
+  // Unlimited: pids.max=max → the cgroup is NOT the ceiling; no exhaustion claim.
+  const unlimited = hostExhaustionFailure("consolidated verify", "detail", {
+    current: 17,
+    max: "max",
+  });
+  assert(
+    /NOT the ceiling here \(cgroup pids\.current=17 of pids\.max=max\)/.test(unlimited),
+    "#1277: an unlimited cgroup is not claimed as the ceiling",
+  );
+  assert(
+    !/is exhausted/.test(unlimited),
+    "#1277: an unlimited cgroup is never reported as exhausted",
+  );
+  assert(
+    /pid_max/.test(unlimited) && /RLIMIT_NPROC/.test(unlimited) && /memory/.test(unlimited),
+    "#1277: the other candidate ceilings are listed",
+  );
+
+  // Numeric with plenty of headroom: the counters were read AFTER the failure,
+  // so a transient burst may already have drained. Do not rule the limit out.
+  const roomy = hostExhaustionFailure("consolidated verify", "detail", {
+    current: 17,
+    max: 4096,
+  });
+  assert(
+    /show headroom \(cgroup pids\.current=17 of pids\.max=4096\)/.test(roomy),
+    "#1277: a roomy numeric ceiling reports the counters as headroom",
+  );
+  assert(/transiently by a burst/.test(roomy), "#1277: a transient burst is named as possible");
+  assert(!/NOT the ceiling/.test(roomy), "#1277: headroom is not ruled out as the ceiling");
+  assert(!/will not help/.test(roomy), "#1277: raising the limit is not dismissed");
+
+  // Margin boundary: 10 spare pids is the threshold (strictly under = exhausted).
+  assert(
+    pidCeilingExhausted({ current: 4087, max: 4096 }) &&
+      !pidCeilingExhausted({ current: 4086, max: 4096 }),
+    "#1277: exhaustion is headroom < 10 pids",
+  );
+  assert(!pidCeilingExhausted({ current: 4096, max: "max" }), "#1277: max is never exhausted");
+
+  // Blind: counters unreadable → the message says so, and makes no claim.
+  const blind = hostExhaustionFailure("consolidated verify", "detail", undefined);
+  assert(/could not be read/.test(blind), "#1277: without counters the message says so");
+  assert(!/exhausted:/.test(blind), "#1277: without counters no exhaustion is claimed");
 }
 
 process.exit(exit);
