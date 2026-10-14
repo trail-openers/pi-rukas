@@ -197,6 +197,49 @@ export class BranchAheadError extends Error {
 }
 
 /**
+ * #1189 — did the branch's ahead commits make it to the remote? Compares the
+ * local ref against `origin/<branch>` (read-only — `rev-parse`, no fetch; the
+ * fresh-fetch guarantee is `mechanizedBranchSetup`'s `sharedFetch` of the
+ * mainline ref, and the remote-tracking ref for the branch itself was written
+ * by whatever pushed it). Returns:
+ *
+ *   - `undefined` — the remote branch ref is UNRESOLVED (never pushed, or its
+ *     tracking ref is absent). The caller keeps the ahead halt: an ahead
+ *     branch with no remote counterpart is the genuine unpushed-work shape
+ *     this guard exists for, and an absent tracking ref proves nothing
+ *     (a deleted remote branch is not evidence of push state).
+ *   - `true` — the local tip IS the remote branch's tip: every ahead commit
+ *     is pushed, so a reset would destroy nothing the operator cannot get
+ *     back from `origin/<branch>`, and the reset is the correct action
+ *     (fresh base = fresh worktree).
+ *   - `false` — the local tip diverges from the remote branch's tip (the
+ *     local holds commits the remote does not, or the remote is ahead):
+ *     the ahead halt stands, and the operator must decide what to do.
+ *
+ * The comparison is exact-equality, not ancestry: "pushed" means the local
+ * ref and the remote ref hold the SAME commit, and only that is provable
+ * from a SHA.
+ */
+async function aheadBranchIsPushed(
+  execFn: ExecFn,
+  repoRoot: string,
+  branchName: string,
+  localSha: string,
+): Promise<boolean | undefined> {
+  try {
+    const { stdout } = await execFn(
+      `git rev-parse --verify --quiet ${JSON.stringify(`refs/remotes/origin/${branchName}`)}`,
+      { cwd: repoRoot, maxBuffer: 64 * 1024 },
+    );
+    const remoteSha = stdout.trim();
+    if (!remoteSha) return undefined;
+    return remoteSha === localSha;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * #844 — inspect a local branch of the resolved name against the freshly
  * fetched base. Returns the pre-reset tip SHA when the branch was force-moved
  * to `baseSha` (a `branch-reset` event must be recorded for it), `undefined`
@@ -212,6 +255,15 @@ export class BranchAheadError extends Error {
  * commit, lock, I/O) retries once, and a second failure HALTS
  * (BranchAheadError with a null ahead count) rather than reset — an
  * unreadable probe must not license destroying an existing branch.
+ *
+ * #1189 — an ahead branch whose commits are ALREADY on `origin/<branch>`
+ * (the local tip equals the remote branch's tip) is NOT unpushed work: the
+ * cycle's own pushed, integrated commits (a `--restart` or `--continue` on
+ * the just-merged issue) trip the ahead check without any work a reset could
+ * lose. The reset below is safe in that case and is what a fresh cycle
+ * needs (worktree at the freshly-fetched base). The ahead halt remains the
+ * action for a genuinely ahead-and-unpushed branch (no remote counterpart,
+ * or a local tip that diverges from the remote branch's tip).
  */
 export async function reconcileExistingLocalBranch(
   execFn: ExecFn,
@@ -281,13 +333,28 @@ export async function reconcileExistingLocalBranch(
     } catch {
       aheadCount = null;
     }
-    throw new BranchAheadError(branchName, aheadCount);
+    // #1189 — "ahead of origin/<mainline>" ≠ "unpushed". When the branch's
+    // ahead commits are the pushed ones (local tip == remote branch's tip),
+    // a reset destroys nothing unique and the branch is reset to the fresh
+    // base like any other stale one (the resetFromSha return carries the
+    // old tip as the recovery handle). An ahead branch with NO remote
+    // counterpart, or one whose local tip DIVERGES from the remote branch's
+    // tip, keeps the ahead halt: the operator's call.
+    const pushed = await aheadBranchIsPushed(execFn, repoRoot, branchName, oldSha);
+    if (pushed === true) {
+      trace(
+        `work-driver: ahead branch ${branchName} is fully pushed (local tip ${oldSha.slice(0, 8)} == origin/${branchName}) — resetting to the fresh base instead of halting`,
+      );
+    } else {
+      throw new BranchAheadError(branchName, aheadCount);
+    }
   }
   // The branch is checked out at repoRoot (a handoff-parked cycle leaves it
-  // there — the #830/#835 shape): `git branch -f` refuses to move the
-  // currently-checked-out ref. Force-move via `update-ref`, which moves any
-  // branch ref regardless of checkout — the working tree is re-read on the
-  // next `git status`, so the operator's checkout is never destroyed.
+  // there — the #830/#835 shape; the #1189 pushed-and-reset shape is the
+  // same): `git branch -f` refuses to move the currently-checked-out ref.
+  // Force-move via `update-ref`, which moves any branch ref regardless of
+  // checkout — the working tree is re-read on the next `git status`, so the
+  // operator's checkout is never destroyed.
   await execFn(
     `git update-ref ${JSON.stringify(`refs/heads/${branchName}`)} ${JSON.stringify(baseSha)}`,
     {
