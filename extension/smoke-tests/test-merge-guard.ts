@@ -138,16 +138,28 @@ assert(!lensPassed("ISSUES_FOUND", "MEDIUM"), "lens ISSUES_FOUND blocks at the M
     "…after fetching the head branch",
   );
   assert(
-    r.calls.some(
-      (c) => c.includes("git diff origin/main..origin/feature/x") && c.includes("patch-id"),
-    ),
-    "…after computing the patch-id over the PR's actual base",
+    r.calls.some((c) => c === "git diff origin/main...origin/feature/x"),
+    "\u2026after computing the range diff over the PR's actual base (three-dot)",
+  );
+  assert(
+    r.calls.some((c) => c === "git patch-id --stable"),
+    "…and feeding that diff to git patch-id",
+  );
+  assert(
+    r.calls.some((c) => c === "git merge-base --is-ancestor origin/main origin/feature/x"),
+    "…and checking the PR base is an ancestor of the head (a moved base is refused)",
   );
 }
 {
   // Passing adversarial (matching patchId) + passing lens → allowed.
   const r = await hookDecision("gh pr merge 12", GOOD_ENTRIES);
   assert(r.block === false, "allowed with passing adversarial (matching patchId) + passing lens");
+}
+{
+  // #1161 — the PR base moved past the fork point: refused by name, before the ledger is read.
+  const moved = await hookDecision("gh pr merge 12", GOOD_ENTRIES, { baseMoved: true });
+  assert(moved.block === true, "refused when the PR base has moved past the branch's fork point");
+  assert(/has moved past the fork point/.test(moved.reason ?? ""), "\u2026naming the moved base");
 }
 {
   // A new commit changes the patchId → refused until adversarial re-runs.

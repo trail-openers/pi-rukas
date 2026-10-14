@@ -12,7 +12,9 @@
 
 /**
  * Whether the loop runs as one reviewer dispatch (#1114) and, if so, how its
- * verdict is judged (#1154).
+ * verdict is judged (#1154). Discriminated: `reportVerdict` is REQUIRED whenever
+ * `reportOnly` is true and must be absent otherwise, so no reportOnly caller
+ * gets a verdict policy by omission.
  */
 export type ReportPolicy =
   | {

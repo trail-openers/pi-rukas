@@ -88,8 +88,6 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
               pi,
               fixFence: { callerCwd: process.cwd() },
               ...policy,
-              // #1161 - set AFTER the raw spread so a caller cannot spoof it.
-              callerSuppliedDiff: Boolean(params.diff),
             },
             signal,
             hooks.jobId,

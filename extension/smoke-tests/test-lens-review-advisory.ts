@@ -206,6 +206,7 @@ try {
       body = readFileSync(file, "utf8");
       return { stdout: "" };
     }
+    if (cmd.startsWith("git diff ")) return { stdout: "diff --git a/x b/x\n+x\n" };
     if (cmd.includes("patch-id")) return { stdout: "p42 0000" };
     if (cmd.includes("git remote")) return { stdout: "origin\n" };
     if (cmd.includes("git config --get remote")) return { stdout: "git@github.com:o/r.git\n" };

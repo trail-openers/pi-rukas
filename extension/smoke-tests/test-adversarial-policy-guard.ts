@@ -33,7 +33,7 @@ function assert(cond: boolean, msg: string) {
 
 let reviewerReply = "";
 const spawnCalls: string[] = [];
-const ledgerResults: Array<{ loopOutcome?: string; callerSuppliedDiff?: boolean }> = [];
+const ledgerResults: Array<{ loopOutcome?: string; provenance?: string }> = [];
 const capturedJobs: Array<{ work: (s: AbortSignal, h: { jobId: string }) => Promise<unknown> }> =
   [];
 
@@ -46,9 +46,9 @@ mock.module(new URL("../src/adversarial-ledger.ts", import.meta.url).href, () =>
   ...realLedger,
   writeAdversarialLedgerEntry: (
     r: { loopOutcome?: string },
-    p: { callerSuppliedDiff?: boolean },
+    p: { provenance?: { kind: string } },
   ): Promise<void> => {
-    ledgerResults.push({ loopOutcome: r.loopOutcome, callerSuppliedDiff: p.callerSuppliedDiff });
+    ledgerResults.push({ loopOutcome: r.loopOutcome, provenance: p.provenance?.kind });
     return Promise.resolve();
   },
 }));
@@ -163,8 +163,8 @@ try {
     REVIEW,
   );
   assert(
-    pasted?.callerSuppliedDiff === true,
-    "L: a pasted diff is recorded as caller-supplied (a raw argument cannot clear the flag)",
+    pasted?.provenance === "pasted",
+    "L: a pasted diff is recorded as pasted provenance (a raw callerSuppliedDiff argument is ignored)",
   );
 
   const ranged = await runTool(
@@ -172,8 +172,8 @@ try {
     REVIEW,
   );
   assert(
-    ranged?.callerSuppliedDiff === false && ranged?.loopOutcome === "approved",
-    "L: the same review via base+head is not caller-supplied and is recorded as approved",
+    ranged?.provenance === "range" && ranged?.loopOutcome === "approved",
+    "L: the same review via base+head is range provenance and is recorded as approved",
   );
 } finally {
   rmSync(workBase, { recursive: true, force: true });

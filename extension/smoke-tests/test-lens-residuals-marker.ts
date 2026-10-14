@@ -83,6 +83,8 @@ function makeStub(opts: { failPost?: boolean } = {}) {
     if (cmd.includes("git fetch")) {
       return { stdout: "" };
     }
+    // #1161 — the range diff the patch id is computed from (three-dot).
+    if (cmd.startsWith("git diff ")) return { stdout: "diff --git a/x b/x\n+x\n" };
     if (cmd.includes("patch-id")) {
       return { stdout: "p42 0000" };
     }

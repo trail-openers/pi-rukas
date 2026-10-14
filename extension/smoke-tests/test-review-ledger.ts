@@ -19,7 +19,7 @@
  * HOME is set to a temp dir by the gate invocation so git works offline.
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -60,12 +60,19 @@ export function assert(cond: boolean, msg: string) {
   }
 }
 
-export const execp = async (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) => {
-  const r = execSync(cmd, {
+// Mirrors the real execp (lens-exec.ts): the argv form runs without a shell and
+// `input` is fed on stdin (git patch-id reads its diff there).
+export const execp = async (
+  cmd: string,
+  opts?: { cwd?: string; maxBuffer?: number; argv?: string[]; input?: string },
+) => {
+  const run = {
     cwd: opts?.cwd,
     maxBuffer: opts?.maxBuffer ?? 1024 * 1024,
-    encoding: "utf8",
-  });
+    encoding: "utf8" as const,
+    input: opts?.input,
+  };
+  const r = opts?.argv ? execFileSync(cmd, opts.argv, run) : execSync(cmd, run);
   return { stdout: r, stderr: "" };
 };
 

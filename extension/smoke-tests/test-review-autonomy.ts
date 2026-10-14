@@ -1,27 +1,30 @@
 #!/usr/bin/env bun
 /**
  * #1154 — review autonomy: a tool-path reportOnly review's verdict feeds the
- * merge guard. The ledger row is the one the REAL writeAdversarialLedgerEntry
- * produced from the REAL runAdversarialLoop result (reportVerdict "terminal"),
- * read back from a temp ledger (PI_ENSEMBLE_REVIEW_LEDGER_FILE). That row is
+ * merge guard. The verdict comes from the REAL runAdversarialLoop tool-path
+ * result (reportVerdict "terminal"). The ledger row is written by the REAL
+ * writeAdversarialLedgerEntry and read back from a temp ledger
+ * (PI_ENSEMBLE_REVIEW_LEDGER_FILE). That row is
  * then driven through the real merge guard hook with two lens shapes:
  *
  *   - strict: the lens row is passed:true → merge allowed.
  *   - round-cap (#973): the lens row is ISSUES_FOUND at the cap with no
- *     hasCritical and no residual disclosure marker → refused.
+ *     hasCritical and no residual disclosure marker → refused (the marker is
+ *     what makes the non-blocking findings visible; without it, no merge).
  *
  * #1161 — a review of a caller-pasted diff is written as a non-passing row, so
  * the guard refuses it; the same review via base+head is written as passing.
+ *
  * A tool-path CRITICAL_ISSUES_FOUND row must stay refused even with a passing
- * lens. The verdict-to-outcome mapping is asserted in
- * test-adversarial-report-only-parse.ts, not here.
+ * lens. The tool-path verdict cases (approved / rejected / infra-failure) are covered
+ * in test-adversarial-report-only-parse.ts and test-adversarial-tool-guards.ts.
  */
 
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { writeAdversarialLedgerEntry } from "../src/adversarial-ledger.ts";
+import { type ReviewProvenance, writeAdversarialLedgerEntry } from "../src/adversarial-ledger.ts";
 import { readLedgerAt } from "../src/review-ledger.ts";
 import { finaliseSpecVerdict } from "../src/work-driver-intent-finalise.ts";
 import { type NormalisedSpec, parkAction } from "../src/work-driver-intent.ts";
@@ -54,10 +57,6 @@ const DIFF = "diff --git a/x.txt b/x.txt\n+added line\n";
 const HEAD = "a".repeat(40);
 const TARGET_HEAD = { ...TARGET, headOid: HEAD };
 const BRANCH = TARGET.headBranch;
-// The loop's own ledger write is a no-op here: its workCwd is not a git repo,
-// so the writer traces "no mainline" and writes nothing. The row under test is
-// written explicitly below by the real writer, from the same result.
-const loopDir = mkdtempSync(path.join(os.tmpdir(), "review-autonomy-loop-"));
 // A real clone with a mainline, one committed change (the range the base+head
 // review judges) and one uncommitted change (the working tree the pasted-diff
 // review's writer reads), so both rows are written by the real writer.
@@ -81,10 +80,15 @@ function setupRepo() {
   writeFileSync(path.join(repoDir, "x.txt"), "base\nadded\nuncommitted\n");
 }
 
+/** A commit SHA for a ref in the test clone. */
+const sha = (ref: string) =>
+  execFileSync("git", ["-C", repoDir, "rev-parse", ref], { stdio: "pipe" }).toString().trim();
+
 /**
  * A tool-path reportOnly review, recorded by the REAL ledger writer. The
  * caller-pasted-diff review and the base+head review differ only in how the
  * diff was supplied (the range diff is stubbed; it is not under test here).
+ * The writer gets the provenance the loop derives from that diff source.
  */
 async function reviewRow(text: string, callerSuppliedDiff: boolean): Promise<LedgerEntry> {
   reply = text;
@@ -93,7 +97,7 @@ async function reviewRow(text: string, callerSuppliedDiff: boolean): Promise<Led
     {
       ...diffSource,
       context: "ctx",
-      workCwd: loopDir,
+      workCwd: repoDir,
       branch: BRANCH,
       reportOnly: true,
       reportRound: 1,
@@ -103,11 +107,10 @@ async function reviewRow(text: string, callerSuppliedDiff: boolean): Promise<Led
     "job-review-autonomy",
     async () => ({ ok: true as const, diff: DIFF }),
   );
-  await writeAdversarialLedgerEntry(result, {
-    workCwd: repoDir,
-    branch: BRANCH,
-    callerSuppliedDiff,
-  });
+  const provenance: ReviewProvenance = callerSuppliedDiff
+    ? { kind: "pasted" }
+    : { kind: "range", base: sha("origin/main"), head: sha("HEAD") };
+  await writeAdversarialLedgerEntry(result, { workCwd: repoDir, branch: BRANCH, provenance });
   const row = latestEntry(readLedgerAt(ledgerFile()), BRANCH, "adversarial");
   if (!row) throw new Error("the real ledger writer recorded no adversarial row");
   return row;
@@ -287,11 +290,9 @@ try {
     "autonomy: [RESOLVED] after the point text does not resolve it",
   );
 } finally {
-  for (const dir of [repoDir, loopDir]) {
-    try {
-      rmSync(dir, { recursive: true, force: true });
-    } catch {}
-  }
+  try {
+    rmSync(repoDir, { recursive: true, force: true });
+  } catch {}
   teardownLedger();
 }
 

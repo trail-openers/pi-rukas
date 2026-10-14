@@ -26,6 +26,8 @@ type ExecOpts = {
   shell?: string;
   env?: NodeJS.ProcessEnv;
   killGroup?: boolean;
+  /** #1161 — stdin bytes (argv form). */
+  input?: string;
 };
 
 /** #1095 — spawn detached, kill the process group on timeout or overflow. */
@@ -102,14 +104,20 @@ function execGroup(
  * and `argv` its arguments, run via execFile (no shell re-parse). When
  * absent, the classic shell path runs. */
 export const execp: VerifyExecFn = (cmd, opts) => {
-  const { argv, killGroup, ...rest } = (opts ?? undefined) as ExecOpts;
+  const { argv, killGroup, input, ...rest } = (opts ?? undefined) as ExecOpts;
   if (killGroup) return execGroup(cmd, argv, rest);
   if (argv) {
-    return new Promise<{ stdout: string; stderr?: string }>((resolve, reject) =>
-      execFile(cmd, argv, { ...rest, encoding: "utf8" }, (err, stdout, stderr) =>
+    return new Promise<{ stdout: string; stderr?: string }>((resolve, reject) => {
+      const child = execFile(cmd, argv, { ...rest, encoding: "utf8" }, (err, stdout, stderr) =>
         err ? reject(err) : resolve({ stdout, stderr }),
-      ),
-    );
+      );
+      if (input !== undefined) {
+        // A child that exits before reading gives EPIPE here; the exec
+        // callback reports the real failure, so the stream error is swallowed.
+        child.stdin?.on("error", () => {});
+        child.stdin?.end(input);
+      }
+    });
   }
   return new Promise<{ stdout: string; stderr?: string }>((resolve, reject) =>
     exec(cmd, { ...rest, encoding: "utf8" }, (err, stdout, stderr) =>

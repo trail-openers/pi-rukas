@@ -77,6 +77,7 @@ const execFn = async (cmd0: string, o?: { argv?: string[] }): Promise<{ stdout: 
   }
   if (cmd.includes("git remote")) return { stdout: "origin\n" };
   if (cmd.includes("git fetch")) return { stdout: "" };
+  if (cmd.startsWith("git diff ")) return { stdout: "diff --git a/x b/x\n+x\n" };
   if (cmd.includes("patch-id")) return { stdout: "p42 0000" };
   if (cmd.includes("pr comment")) {
     // The body travels in a temp file (`--body-file`); capture it before the
