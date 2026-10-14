@@ -22,9 +22,10 @@
  *    work — only a human can decide what to do with it) halts the step
  *    with a `branch-ahead:<N>` cap naming the branch and its ahead count;
  *    nothing is reset and NO ops fallback runs (whose mainline guard would
- *    not catch this shape) — UNLESS #1189's push check shows the ahead
- *    commits are already on `origin/<branch>` (local tip equals the remote
- *    branch's tip), in which case the reset is safe and proceeds.
+ *    not catch this shape).
+ *    #1189 — unless the push check shows the ahead commits are already on
+ *    `origin/<branch>` (local tip equals the remote tip): then the reset is
+ *    safe and proceeds.
  *
  * The tests use REAL git (a bare "origin" on disk) because the whole point
  * is that git does the right thing — a mocked exec cannot prove that
@@ -161,11 +162,13 @@ async function pushedAheadFixture(name: string, fileContent: string) {
   const newSha = await fx.advanceOrigin("main advances\n", "main advances after the branch");
   return { ...fx, pushedSha, newSha };
 }
+
 function makeState(): WorkState {
   const st = initialState(844);
   st.pipelineState.issueBodyArtifact = TITLE_ARTIFACT;
   return st;
 }
+
 try {
   // ----------------------------------------------------------------
   // 1. Stale local branch (behind origin/main) → reset, branch-reset event

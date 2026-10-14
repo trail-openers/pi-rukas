@@ -31,11 +31,11 @@
  * baseSha (`git update-ref`) and a `branch-reset` event records the old tip
  * so the work is recoverable. A branch that IS ahead of
  * `origin/<mainline>` (unpushed work — only a human can decide what to do
- * with it) halts the step via a `branch-ahead:branch` cap unless #1189's
- * push check shows its tip is already on `origin/<branch>`; nothing is
- * reset otherwise. The detection is purely read-only (two `git` probes) and
- * runs only against the resolved branch name, so a fresh cycle with no local
- * branch never sees it.
+ * with it) halts the step via a `branch-ahead:branch` cap; nothing is
+ * reset. The detection is purely read-only (two `git` probes) and runs
+ * only against the resolved branch name, so a fresh cycle with no local
+ * branch never sees it — unless #1189's push check shows the tip is already
+ * on `origin/<branch>`, in which case the reset proceeds.
  */
 import { trace } from "./trace.ts";
 import { ensureWorktreesExcluded } from "./work-driver-git-exclude.ts";
@@ -321,8 +321,7 @@ export async function reconcileExistingLocalBranch(
     }
   }
   // The branch is checked out at repoRoot (a handoff-parked cycle leaves it
-  // there — the #830/#835 shape; #1189's pushed-and-reset shape lands the
-  // same way): `git branch -f` refuses to move the
+  // there — the #830/#835 shape): `git branch -f` refuses to move the
   // currently-checked-out ref. Force-move via `update-ref`, which moves any
   // branch ref regardless of checkout — the working tree is re-read on the
   // next `git status`, so the operator's checkout is never destroyed.
