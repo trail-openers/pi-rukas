@@ -7,6 +7,7 @@
 
 import type { OperatorDirectives } from "../src/plan-directives.ts";
 import { type AngleFindings, draftSpec } from "../src/plan-draft.ts";
+import { linesConflict } from "../src/plan-draft-conflicts.ts";
 import { dedupeAgainstOperatorLines } from "../src/plan-draft-dedupe.ts";
 
 let exit = 0;
@@ -84,6 +85,31 @@ const OP = "Do not change the retry backoff default in provider config";
   assert(
     !r.body.includes("dropped: duplicate of operator line"),
     "render: the AC paraphrase is not dropped by the duplicate stage",
+  );
+}
+
+// -------------------------------------------------
+// 5. Polarity-aware dedupe: a both-negated paraphrase is a duplicate, never a
+//    conflict; a restatement that adds a file or line reference is kept.
+{
+  const op = "a missing reportVerdict must not return a passing review";
+  const restated = "passing review: a missing reportVerdict must not return";
+  assert(!linesConflict(op, restated), "dedupe: both-negated paraphrase is not a conflict");
+  const res = dedupeAgainstOperatorLines(
+    [
+      { kind: "edge-case", text: restated, angle: "e" },
+      { kind: "edge-case", text: `${restated} (src/review-tool.ts:42)`, angle: "e" },
+    ],
+    [op],
+  );
+  const [first] = res.dropped;
+  assert(
+    res.dropped.length === 1 && first?.reason === "duplicate" && first.item.text === restated,
+    "dedupe: the bare restatement is dropped as a duplicate",
+  );
+  assert(
+    res.kept.length === 1 && res.kept[0]?.text.includes("src/review-tool.ts") === true,
+    "dedupe: the restatement with a concrete file reference is kept",
   );
 }
 

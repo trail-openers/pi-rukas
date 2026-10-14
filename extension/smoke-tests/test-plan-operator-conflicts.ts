@@ -347,41 +347,22 @@ const CONSISTENT_EDGE = "an absent config file falls back to the default protect
 }
 
 // -------------------------------------------------
-// 12. Polarity-aware dedupe: a paraphrase of an operator line that shares its
-//     polarity (both negated) is a duplicate, never a conflict; a restatement
-//     that adds a file or line reference is kept.
+// 12. A duplicate is disclosed as a duplicate, never as a conflict. The drop
+//     cases themselves live in test-plan-draft-dedupe.ts.
 {
   const op = "a missing reportVerdict must not return a passing review";
-  // Same content as `op`, reordered: a subset of its content tokens, same polarity.
   const restated = "passing review: a missing reportVerdict must not return";
-  assert(!linesConflict(op, restated), "dedupe: both-negated paraphrase is not a conflict");
   const res = dedupeAgainstOperatorLines(
-    [
-      { kind: "edge-case", text: restated, angle: "e" },
-      {
-        kind: "edge-case",
-        text: `${restated} (src/review-tool.ts:42)`,
-        angle: "e",
-      },
-    ],
+    [{ kind: "edge-case", text: restated, angle: "e" }],
     [op],
   );
-  const [first] = res.dropped;
+  const dropped = res.dropped[0];
   assert(
-    res.dropped.length === 1 && first?.reason === "duplicate" && first.item.text === restated,
-    "dedupe: the bare restatement is dropped as a duplicate",
+    dropped !== undefined &&
+      droppedDisclosure(dropped).includes("duplicate of operator line") &&
+      !droppedDisclosure(dropped).includes("conflicts with"),
+    "dedupe: disclosed as a duplicate, never as a conflict",
   );
-  assert(
-    res.kept.length === 1 && res.kept[0]?.text.includes("src/review-tool.ts"),
-    "dedupe: the restatement with a concrete file reference is kept",
-  );
-  if (first) {
-    const r = droppedDisclosure(first);
-    assert(
-      r.includes("duplicate of operator line") && !r.includes("conflicts with"),
-      "dedupe: disclosed as a duplicate, never as a conflict",
-    );
-  }
 }
 
 // -------------------------------------------------

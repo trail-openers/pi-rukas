@@ -5,6 +5,7 @@
  * AGENTS.md §12). Importers take these names from this module; plan-gaps.ts
  * does not re-export them.
  */
+import { OPEN_POINTS_HEADING } from "./open-points-contract.ts";
 import { GAP_RESOLUTION_PLACEHOLDER } from "./plan-gap-parse.ts";
 import type { PlanGap } from "./plan-types.ts";
 
@@ -40,12 +41,6 @@ export function residualGapsSection(residual: PlanGap[]): string {
     .join("\n");
   return `## Residual gap-gate findings\n\n${items}\n`;
 }
-
-/** Heading of the open-points section this module renders (#1151 reads it back). */
-export const OPEN_POINTS_HEADING = "Open points (unresolved at the gap-gate cap)";
-
-/** The severity tag of a point that gates the intent resolver (#1151 reads it back). */
-export const CRITICAL_SEVERITY = "CRITICAL";
 
 /**
  * #1132: the open points of a spec filed at the gate's iteration cap: every

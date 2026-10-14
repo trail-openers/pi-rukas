@@ -31,7 +31,8 @@ import {
   operatorLinesOf,
   withoutItems,
 } from "./plan-draft-conflicts.ts";
-import type { AngleFindings } from "./plan-draft.ts";
+import type { AngleFindings, PlanItemKind } from "./plan-draft.ts";
+import type { PriorContextEntry } from "./plan-prior-context.ts";
 
 /**
  * Files, paths and line numbers: a restatement that adds one of these is kept,
@@ -40,13 +41,21 @@ import type { AngleFindings } from "./plan-draft.ts";
 const CONCRETE_REFERENCE =
   /[\w-]{1,255}\.(?:ts|tsx|js|mjs|cjs|md|json|sh|rs|py|go|ya?ml)\b|[\w.-]{1,255}\/[\w.-]{1,255}|:\d{1,9}\b/;
 
-/** True when `item` restates `op`: same polarity, and every content token of the item is in the operator line. */
-function restates(op: string, item: string): boolean {
-  if (NEGATION_CUE.test(op) !== NEGATION_CUE.test(item)) return false;
-  const opTokens = contentTokens(op);
-  const itemTokens = contentTokens(item);
-  if (itemTokens.size < MIN_SHARED_TOKENS) return false;
-  for (const token of itemTokens) if (!opTokens.has(token)) return false;
+/** The duplicate test's view of one line: its content tokens and polarity, computed once. */
+interface LineProfile {
+  tokens: Set<string>;
+  negated: boolean;
+}
+
+function profileOf(text: string): LineProfile {
+  return { tokens: contentTokens(text), negated: NEGATION_CUE.test(text) };
+}
+
+/** True when the item restates the operator line: same polarity, and every content token of the item is in the operator line. */
+function restates(op: LineProfile, item: LineProfile): boolean {
+  if (op.negated !== item.negated) return false;
+  if (item.tokens.size < MIN_SHARED_TOKENS) return false;
+  for (const token of item.tokens) if (!op.tokens.has(token)) return false;
   return true;
 }
 
@@ -58,8 +67,9 @@ function restates(op: string, item: string): boolean {
 export function dedupeAgainstOperatorLines<T extends InvestigationLine>(
   items: T[],
   operatorLines: string[],
-  endorsed: ReadonlySet<unknown> = new Set(),
+  endorsed: ReadonlySet<T> = new Set<T>(),
 ): { kept: T[]; dropped: DroppedInvestigationItem<T>[] } {
+  const ops = operatorLines.map((line) => ({ line, profile: profileOf(line) }));
   const kept: T[] = [];
   const dropped: DroppedInvestigationItem<T>[] = [];
   for (const item of items) {
@@ -71,8 +81,9 @@ export function dedupeAgainstOperatorLines<T extends InvestigationLine>(
       kept.push(item);
       continue;
     }
-    const dup = operatorLines.find((o) => restates(o, item.text));
-    if (dup !== undefined) dropped.push({ item, against: dup, reason: "duplicate" });
+    const itemProfile = profileOf(item.text);
+    const dup = ops.find((o) => restates(o.profile, itemProfile));
+    if (dup !== undefined) dropped.push({ item, against: dup.line, reason: "duplicate" });
     else kept.push(item);
   }
   return { kept, dropped };
@@ -85,8 +96,8 @@ export function dedupeAgainstOperatorLines<T extends InvestigationLine>(
 export function applyOperatorDedupe(
   findings: AngleFindings[],
   directives: OperatorDirectives,
-  priorContext: { source: string; fact: string }[],
-  endorsed: ReadonlySet<unknown>,
+  priorContext: PriorContextEntry[],
+  endorsed: ReadonlySet<PlanItemKind>,
 ) {
   const res = dedupeAgainstOperatorLines(
     conflictableItems(findings),

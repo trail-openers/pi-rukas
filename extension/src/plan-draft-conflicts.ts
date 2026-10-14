@@ -25,8 +25,8 @@
  */
 
 import type { OperatorDirectives } from "./plan-directives.ts";
-import type { AngleFindings, PlanItemKindName } from "./plan-draft.ts";
-import { OPERATOR_SOURCE } from "./plan-prior-context.ts";
+import type { AngleFindings, PlanItemKind, PlanItemKindName } from "./plan-draft.ts";
+import { OPERATOR_SOURCE, type PriorContextEntry } from "./plan-prior-context.ts";
 
 /**
  * Minimum shared content tokens for two lines to be about the same thing.
@@ -266,7 +266,7 @@ export const CONFLICTABLE_KINDS: ReadonlySet<PlanItemKindName> = new Set<PlanIte
 /** Operator-authored lines: final, never dropped by this rule. */
 export function operatorLinesOf(
   directives: OperatorDirectives,
-  priorContext: { source: string; fact: string }[],
+  priorContext: PriorContextEntry[],
 ): string[] {
   return [
     ...directives.acceptanceCriteria,
@@ -283,7 +283,10 @@ export function conflictableItems(findings: AngleFindings[]) {
 }
 
 /** The findings with the given items removed from their tool uses. */
-export function withoutItems(findings: AngleFindings[], dropped: Set<unknown>): AngleFindings[] {
+export function withoutItems(
+  findings: AngleFindings[],
+  dropped: ReadonlySet<PlanItemKind>,
+): AngleFindings[] {
   return findings.map((f) => ({
     ...f,
     toolUses: f.toolUses.filter((i) => !dropped.has(i)),
@@ -299,7 +302,7 @@ export function withoutItems(findings: AngleFindings[], dropped: Set<unknown>): 
 export function applyOperatorConflicts(
   findings: AngleFindings[],
   directives: OperatorDirectives,
-  priorContext: { source: string; fact: string }[],
+  priorContext: PriorContextEntry[],
 ) {
   const res = filterInvestigationConflicts(
     conflictableItems(findings),

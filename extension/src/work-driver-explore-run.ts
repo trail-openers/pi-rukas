@@ -21,7 +21,7 @@ import {
   fetchIssueBodyWithRetry,
 } from "./work-driver-explore.ts";
 import { deleteSpecArtifact, persistSpecArtifact } from "./work-driver-intent-artifact.ts";
-import { finaliseSpecVerdict } from "./work-driver-intent-criticality.ts";
+import { finaliseSpecVerdict } from "./work-driver-intent-finalise.ts";
 import { intentResolutionEnabled } from "./work-driver-intent.ts";
 import {
   type ExploreVerdict,
@@ -231,7 +231,15 @@ export async function runExplore(
     // #1151 — the primary body comes from the settled fetch, read here at the
     // gate (not a mutable local). A failed or blank read is passed through as
     // `undefined`, which finaliseSpecVerdict records instead of skipping.
-    const primarySettled = bodySettled[issues.indexOf(ctx.issue)];
+    // The primary is always in the set on this path (intent is single-issue), so a
+    // miss is a wiring bug and must not be read as a blank body.
+    const primaryIdx = issues.indexOf(ctx.issue);
+    if (primaryIdx === -1) {
+      throw new Error(
+        `work-driver: primary issue #${ctx.issue} is not in the explore issue set [${issues.join(", ")}] (wiring bug)`,
+      );
+    }
+    const primarySettled = bodySettled[primaryIdx];
     const primaryBody =
       primarySettled?.status === "fulfilled" ? primarySettled.value.stdout : undefined;
     const finalSpec = resolved ? finaliseSpecVerdict(resolved.spec, primaryBody) : undefined;

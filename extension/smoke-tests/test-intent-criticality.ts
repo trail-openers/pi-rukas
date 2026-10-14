@@ -13,9 +13,9 @@ import type { PlanGap } from "../src/plan-types.ts";
 import {
   applyOpenPointGate,
   criticalOpenPoints,
-  finaliseSpecVerdict,
   intentCriticalityEnabled,
 } from "../src/work-driver-intent-criticality.ts";
+import { finaliseSpecVerdict } from "../src/work-driver-intent-finalise.ts";
 import {
   type NormalisedSpec,
   type SpecEvidence,
