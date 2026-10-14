@@ -168,9 +168,19 @@ try {
     !/0 file\(s\) modified/.test(unknownChat) && /commits ahead of base NOT READ/.test(unknownChat),
     "canary — chat: an unknown branch distance is NOT READ, not '0 file(s) modified'",
   );
+  const unknownMarkdown = renderHandoffMarkdown(unknownState);
   assert(
-    /commits ahead of base unknown/.test(renderHandoffMarkdown(unknownState)),
+    /commits ahead of base unknown/.test(unknownMarkdown),
     "markdown: an unknown branch distance is said to be unknown",
+  );
+  assert(
+    !/file\(s\) modified/.test(unknownMarkdown) && /0 uncommitted file\(s\)/.test(unknownMarkdown),
+    "canary — markdown: an unknown branch distance labels the count uncommitted, not 'file(s) modified'",
+  );
+  const unknownStatus = renderTerminalStatus(unknownState, tmp);
+  assert(
+    !/file\(s\) modified/.test(unknownStatus) && /0 uncommitted file\(s\)/.test(unknownStatus),
+    "canary — status: an unknown branch distance labels the count uncommitted, not 'file(s) modified'",
   );
 
   // A base that is not a commit SHA is never handed to git; the gap is recorded.

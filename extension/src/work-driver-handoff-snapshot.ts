@@ -131,20 +131,18 @@ export async function captureWorktreeSnapshot(
     // reaches git. An unusable base is recorded as unread, never guessed at.
     if (snapshot.branchTip && baseSha) {
       if (!COMMIT_SHA_SHAPE.test(baseSha)) {
-        unreadable.push(
-          `commits on ${branchName} ahead of base: base "${baseSha.slice(0, 40)}" is not a commit SHA`,
-        );
+        unreadable.push(`commits on ${branchName} ahead of base: base is not a commit SHA`);
       } else {
         try {
           const { stdout } = await execp("git", {
             cwd: repoRoot,
             argv: ["rev-list", "--count", `${baseSha}..${snapshot.branchTip.sha}`],
           });
-          const ahead = Number.parseInt(stdout.trim(), 10);
-          if (Number.isFinite(ahead)) snapshot.branchTip.ahead = ahead;
+          const out = stdout.trim();
+          if (/^\d+$/.test(out)) snapshot.branchTip.ahead = Number(out);
           else
             unreadable.push(
-              `commits on ${branchName} ahead of base: unparseable output "${stdout.trim().slice(0, 40)}"`,
+              `commits on ${branchName} ahead of base: unparseable output "${out.slice(0, 40)}"`,
             );
         } catch (err) {
           unreadable.push(`commits on ${branchName} ahead of base: ${readError(err)}`);

@@ -57,7 +57,10 @@ export function describeBranchState(
   // snapshot also reports, "0 file(s) modified" reads as "nothing was built"
   // (#1286), so there the count is labelled as what it is.
   const hasCommits = Boolean(snap?.committedWork?.length) || (snap?.branchTip?.ahead ?? 0) > 0;
-  const fileLabel = hasCommits ? "uncommitted file(s)" : "file(s) modified";
+  // An unknown branch distance is not "nothing committed": the count is still
+  // uncommitted leftovers, so every surface labels it that way.
+  const aheadUnknown = snap?.branchTip !== undefined && snap.branchTip.ahead === undefined;
+  const fileLabel = hasCommits || aheadUnknown ? "uncommitted file(s)" : "file(s) modified";
   const detail =
     snap && fileCount > 0 ? ` (${snap.stagedCount} staged, ${snap.unstagedCount} unstaged)` : "";
   let tip: string | undefined;
@@ -69,7 +72,7 @@ export function describeBranchState(
     files: `${fileCount} ${fileLabel}${detail}`,
     fileCount,
     hasCommits,
-    aheadUnknown: snap?.branchTip !== undefined && snap.branchTip.ahead === undefined,
+    aheadUnknown,
     unread: (snap?.unreadable?.length ?? 0) > 0,
   };
 }

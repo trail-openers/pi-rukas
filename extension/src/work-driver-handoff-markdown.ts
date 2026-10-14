@@ -154,7 +154,7 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
     lines.push(
       "### Worktree state at handoff",
       "",
-      `- repo-root HEAD: \`${snap.repoRootHeadSha || "(unknown)"}\``,
+      ...(snap.repoRootHeadSha ? [`- repo-root HEAD: \`${snap.repoRootHeadSha}\``] : []),
       ...(view.tip ? [`- branch ${view.tip}`] : []),
       `- branch exists locally: ${snap.branchExists ? "yes" : `no${unread}`}`,
       `- branch pushed to origin: ${snap.branchPushed ? "yes" : "no (local only)"}`,
