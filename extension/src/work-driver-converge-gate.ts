@@ -88,6 +88,11 @@ export async function runConvergeGateHandler(
   const owner = ownerWorkstreamId ? next.pipelineState.worktrees?.[ownerWorkstreamId] : undefined;
   const correctiveCwd = owner && owner !== "repoRoot" ? owner : firstWorktreeDir(next);
 
+  // HEAD before the corrective runs: a child that COMMITS its work leaves a
+  // clean tree, so the post-dispatch probe needs this to see the round.
+  const correctiveDir = resolveProbeDir(ctx, correctiveCwd);
+  const headBefore = correctiveDir ? await headOf(ctx, correctiveDir) : undefined;
+
   const prompt = buildConvergeCorrectivePrompt(next, converge);
   // Total partition over the dispatch outcome: { ok: true, ok: false,
   // no-result (undefined/null), threw }. A killed child returns a
@@ -150,14 +155,17 @@ export async function runConvergeGateHandler(
     at: Date.now(),
   });
 
-  // Did the corrective child actually change the tree? A CONFIRMED-clean
-  // tree skips the safety net + full verify re-run (they would prove
-  // nothing new). "unknown" — the cwd was outside repoRoot or the probe
-  // threw — falls through to the re-run: a redundant-but-correct re-run
-  // is the right cost for uncertainty; a skipped gate is not.
-  const treeState = await treeChangedByCorrective(ctx, correctiveCwd);
+  // Did the corrective child actually change the worktree? A CONFIRMED
+  // no-op — clean tree AND HEAD where it was — skips the safety net + full
+  // verify re-run (they would prove nothing new). "unknown" — the cwd was
+  // outside repoRoot or a probe threw — falls through to the re-run: a
+  // redundant-but-correct re-run is the right cost for uncertainty; a
+  // skipped gate is not.
+  const treeState = await correctiveChange(ctx, correctiveDir, headBefore);
   if (treeState === "unchanged") {
-    trace("work-driver: corrective re-dispatch left no tree changes — skipping the verify re-run");
+    trace(
+      "work-driver: corrective re-dispatch left no commits and no tree changes — skipping the verify re-run",
+    );
   } else {
     // The corrective child left new work in the worktree and the diff
     // changed, so the evidence gates must judge the NEW state: safety net
@@ -232,23 +240,13 @@ export async function runConvergeGateHandler(
 }
 
 /**
- * Dirty-tree probe for the corrective's worktree, three states:
- *
- *   - `changed`   — non-empty `git status --porcelain`; the child left
- *     (uncommitted) work behind, the gates must judge the new state.
- *   - `unchanged` — the probe RAN and the tree is clean; the caller may
- *     skip the safety net + verify re-run (nothing new to judge).
- *   - `unknown`   — the probe could not run: no cwd, a persisted worktree
- *     path outside repoRoot (operator data — skipped rather than shelled
- *     into, same stance as readEndOfDevelopDiff's stale-path skip), or
- *     `git status` threw. The caller treats this like `changed`: a
- *     redundant-but-correct re-run beats a silently skipped gate.
+ * The directory the corrective's probes run in, or undefined when there is
+ * no cwd or the persisted worktree path lies outside repoRoot (operator
+ * data — skipped rather than shelled into, same stance as
+ * readEndOfDevelopDiff's stale-path skip).
  */
-async function treeChangedByCorrective(
-  ctx: CycleContext,
-  cwd: string | undefined,
-): Promise<"unchanged" | "changed" | "unknown"> {
-  if (!cwd) return "unknown";
+function resolveProbeDir(ctx: CycleContext, cwd: string | undefined): string | undefined {
+  if (!cwd) return undefined;
   const root = ctx.repoRoot;
   // Resolve EXACTLY as readEndOfDevelopDiff does (work-driver-converge.ts):
   // the "repoRoot" sentinel means the repo root checkout, anything else
@@ -259,8 +257,45 @@ async function treeChangedByCorrective(
   const dir = cwd === "repoRoot" ? root : path.isAbsolute(cwd) ? cwd : path.join(root, cwd);
   if (dir !== root && !dir.startsWith(`${root}${path.sep}`)) {
     trace(`work-driver: converge gate — cannot probe worktree ${dir}: outside repoRoot`);
-    return "unknown";
+    return undefined;
   }
+  return dir;
+}
+
+/** HEAD of the corrective's worktree, or undefined when it cannot be read. */
+async function headOf(ctx: DriverContext, dir: string): Promise<string | undefined> {
+  try {
+    const { stdout } = await (ctx.verifyExecFn ?? execp)("git rev-parse HEAD", {
+      cwd: dir,
+      maxBuffer: 64 * 1024,
+      timeout: 10_000,
+    });
+    return stdout.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Did the corrective child change its worktree? Three states:
+ *
+ *   - `changed`   — non-empty `git status --porcelain` (uncommitted work),
+ *     OR HEAD moved since `headBefore` (the child COMMITTED its work, which
+ *     is what the developer prompt asks for — a clean tree alone says
+ *     nothing; #1203). The gates must judge the new state.
+ *   - `unchanged` — both probes RAN, the tree is clean and HEAD is where it
+ *     was; the caller may skip the safety net + verify re-run.
+ *   - `unknown`   — a probe could not run: no resolvable dir, `git status`
+ *     threw, or HEAD was unreadable before or after. The caller treats this
+ *     like `changed`: a redundant-but-correct re-run beats a silently
+ *     skipped gate.
+ */
+export async function correctiveChange(
+  ctx: DriverContext,
+  dir: string | undefined,
+  headBefore: string | undefined,
+): Promise<"unchanged" | "changed" | "unknown"> {
+  if (!dir) return "unknown";
   try {
     // Same maxBuffer as readEndOfDevelopDiff's porcelain read (a large dirty
     // tree must not overflow ENOBUFS and silently flip the probe to
@@ -271,13 +306,20 @@ async function treeChangedByCorrective(
       maxBuffer: 4 * 1024 * 1024,
       timeout: 10_000,
     });
-    return stdout.trim().length > 0 ? "changed" : "unchanged";
+    if (stdout.trim().length > 0) return "changed";
   } catch (err) {
     trace(
-      `work-driver: converge gate — worktree probe failed in ${cwd}: ${String(err).slice(0, 200)}`,
+      `work-driver: converge gate — worktree probe failed in ${dir}: ${String(err).slice(0, 200)}`,
     );
     return "unknown";
   }
+  const headAfter = await headOf(ctx, dir);
+  if (headBefore === undefined || headAfter === undefined) return "unknown";
+  if (headAfter === headBefore) return "unchanged";
+  trace(
+    `work-driver: corrective re-dispatch committed its work (HEAD ${headBefore.slice(0, 8)} → ${headAfter.slice(0, 8)}) — re-running the gates`,
+  );
+  return "changed";
 }
 
 /** The operator-facing evidence line for the cap-hit event. */
