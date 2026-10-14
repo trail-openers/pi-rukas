@@ -8,7 +8,7 @@
  * (authentication, authorization, unauthorized) must still park.
  */
 
-import { applyOpenPointGate } from "../src/work-driver-intent-criticality.ts";
+import { finaliseSpecVerdict } from "../src/work-driver-intent-finalise.ts";
 import type { NormalisedSpec } from "../src/work-driver-intent.ts";
 
 let exit = 0;
@@ -33,13 +33,17 @@ const spec = (over: Partial<NormalisedSpec> = {}): NormalisedSpec => ({
   ...over,
 });
 
+/** A filed issue whose Open points section holds one CRITICAL bullet. */
+const withPoint = (point: string) =>
+  `## Open points (unresolved at the gap-gate cap)\n\n- [CRITICAL] ${point}\n`;
+
 // Ordinary words sharing the auth stem are plain assumptions, not security decisions.
 for (const point of [
   "the author of the issue decides \u2014 proposal: the maintainer",
   "authority over the roadmap \u2014 proposal: the PM",
   "which authored changes are in scope \u2014 proposal: all",
 ]) {
-  const resolved = applyOpenPointGate(spec({ verdict: "proceed" }), [point]);
+  const resolved = finaliseSpecVerdict(spec(), withPoint(point));
   assert(
     resolved.verdict === "proceed-with-assumptions",
     `author/authority wording does not park: ${point.slice(0, 30)}`,
@@ -59,7 +63,7 @@ for (const point of [
   "authenticated users only \u2014 proposal: yes",
   "auth_token header \u2014 proposal: bearer",
 ]) {
-  const resolved = applyOpenPointGate(spec({ verdict: "proceed" }), [point]);
+  const resolved = finaliseSpecVerdict(spec(), withPoint(point));
   assert(
     resolved.verdict === "park" && resolved.parkReason === "security-open-point",
     `auth-class wording parks: ${point.slice(0, 30)}`,
