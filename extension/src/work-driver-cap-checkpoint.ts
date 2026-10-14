@@ -193,10 +193,10 @@ export async function checkpointCapedDispatch(
         cwd,
         maxBuffer: 256 * 1024,
       });
-      const dirty = porcelain
-        .trim()
-        .split("\n")
-        .filter((l) => l.trim().length > 0);
+      // Split the RAW output: a leading `.trim()` strips the status column
+      // of a first ` M path` record, and `slice(3)` below then drops the
+      // path's first character (#1190).
+      const dirty = porcelain.split("\n").filter((l) => l.trim().length > 0);
       if (dirty.length === 0) {
         tree = "clean";
       } else {
@@ -273,7 +273,6 @@ export async function checkpointCapedDispatch(
           maxBuffer: 256 * 1024,
         });
         remainingFiles = postPorcelain
-          .trim()
           .split("\n")
           .filter((l) => l.trim().length > 0)
           .map((l) => l.slice(3))
