@@ -100,13 +100,42 @@ try {
     assert(list.includes(wt), "(b) the integrate worktree was recreated at its path");
   }
 
-  // (b2) clean stale integrate tree + ignored build output (target/) → still
-  // replaced: ignored regenerable output must not wedge re-entry.
+  // (b2) clean stale integrate tree + ignored build output (target/) → refused:
+  // ignored entries are judged as loss, and nothing in the driver builds here.
+  // The tree is kept, not force-removed.
+  for (const [tag, rel, body] of [
+    ["(b2)", "target/out.bin", "built\n"],
+    ["(b3)", ".env", "SECRET=1\n"],
+  ] as const) {
+    const { repo, baseSha, branch, wt, stateFile } = await fixture(`ignored-${rel.replace(/\W/g, "_")}`);
+    writeFileSync(path.join(repo, ".git", "info", "exclude"), `${rel.split("/")[0]}\n`, {
+      flag: "a",
+    });
+    mkdirSync(path.dirname(path.join(wt, rel)), { recursive: true });
+    writeFileSync(path.join(wt, rel), body);
+    let err: unknown;
+    try {
+      await ensureIntegrateWorktree(
+        realExec,
+        { repoRoot: repo, issue: 17, branchName: branch, baseSha },
+        stateFile,
+      );
+    } catch (e) {
+      err = e;
+    }
+    assert(
+      err instanceof DirtyWorktreeError && err.message.includes(wt),
+      `${tag} a stale integrate tree holding ignored ${rel} throws DirtyWorktreeError (${err ? (err as Error).message.split("\n")[0] : "no error"})`,
+    );
+    assert(existsSync(path.join(wt, rel)), `${tag} the ignored ${rel} survives`);
+  }
+
+  // (b4) a regenerable node_modules/ in the stale tree is still no loss.
   {
-    const { repo, baseSha, branch, wt, stateFile } = await fixture("ignored");
-    writeFileSync(path.join(repo, ".git", "info", "exclude"), "target/\n", { flag: "a" });
-    mkdirSync(path.join(wt, "target"), { recursive: true });
-    writeFileSync(path.join(wt, "target", "out.bin"), "built\n");
+    const { repo, baseSha, branch, wt, stateFile } = await fixture("ignored-nm");
+    writeFileSync(path.join(repo, ".git", "info", "exclude"), "node_modules/\n", { flag: "a" });
+    mkdirSync(path.join(wt, "node_modules"), { recursive: true });
+    writeFileSync(path.join(wt, "node_modules", "pkg.js"), "x\n");
     let err: unknown;
     try {
       await ensureIntegrateWorktree(
@@ -119,7 +148,7 @@ try {
     }
     assert(
       err === undefined,
-      `(b2) a stale integrate tree holding only ignored build output is replaced, not refused (${err ? (err as Error).message.split("\n")[0] : "ok"})`,
+      `(b4) a stale integrate tree whose only ignored entry is node_modules/ is replaced (${err ? (err as Error).message.split("\n")[0] : "ok"})`,
     );
   }
 

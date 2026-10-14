@@ -56,12 +56,11 @@ export async function readCycleWorktreePaths(stateFile: string | undefined): Pro
  * #1170 — the stale integrate tree is inspected before it is removed.
  *
  * The driver-owned stale `issue-<N>-integrate` tree is about to be
- * force-removed. Its work product is committed on the branch, so the judgement
- * is tracked modifications, untracked files and unpushed commits — ignored
- * entries are NOT judged (`ignoredIsLoss: false`). Otherwise regenerable build
- * output the ops fallback left there (`target/`, `dist/`) would wedge every
- * re-entry until an operator cleaned it by hand (#1170 follow-up). Commits are judged against
- * `ref` (the branch tip, else the base), so a re-entry whose HEAD is already
+ * force-removed. Every ignored entry is judged as loss except the regenerable
+ * dependency trees and provisioned links that worktree-loss exempts (#1170).
+ * The driver never builds in this tree (verify runs at repoRoot), so `target/`
+ * or `dist/` here is operator or ops-fallback output, not re-entry residue.
+ * Commits are judged against `ref` (the branch tip, else the base), so a re-entry whose HEAD is already
  * on the branch is not loss. A commit that is on neither the local branch nor
  * `remoteRef` (`origin/<branch>`) is unpushed work and refuses. Any finding —
  * or an inspect that throws — refuses with `DirtyWorktreeError` BEFORE anything
@@ -76,7 +75,7 @@ export async function refuseLossyStaleIntegrateTree(
 ): Promise<void> {
   let finding: DirtyWorktreeFinding | undefined;
   try {
-    finding = await inspectWorktreeForLoss(execFn, repoRoot, abs, ref, { ignoredIsLoss: false });
+    finding = await inspectWorktreeForLoss(execFn, repoRoot, abs, ref);
   } catch (err) {
     finding = {
       path: abs,
