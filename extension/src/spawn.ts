@@ -251,7 +251,9 @@ async function spawnSpecialistInner(
   // measured strength of runtime context vs. system-prompt-only steering.
   const cwdHint = buildCwdHint(spec.cwd);
   try {
-    child.stdin.write(`${JSON.stringify({ type: "prompt", message: cwdHint + spec.prompt })}\n`);
+    child.stdin.write(
+      `${JSON.stringify({ type: "prompt", message: cwdHint + spec.prompt, images: spec.images })}\n`,
+    );
   } catch (err) {
     trace(`spawn[${spec.role}]: initial stdin.write failed: ${(err as Error).message}`);
   }
