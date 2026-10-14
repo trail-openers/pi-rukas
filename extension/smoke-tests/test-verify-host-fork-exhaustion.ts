@@ -312,12 +312,19 @@ try {
     "#1277: the other candidate ceilings are listed",
   );
 
-  // Numeric but with plenty of headroom → also not the ceiling.
+  // Numeric with plenty of headroom: the counters were read AFTER the failure,
+  // so a transient burst may already have drained. Do not rule the limit out.
   const roomy = hostExhaustionFailure("consolidated verify", "detail", {
     current: 17,
     max: 4096,
   });
-  assert(/NOT the ceiling here/.test(roomy), "#1277: a roomy numeric ceiling is not claimed");
+  assert(
+    /show headroom \(cgroup pids\.current=17 of pids\.max=4096\)/.test(roomy),
+    "#1277: a roomy numeric ceiling reports the counters as headroom",
+  );
+  assert(/transiently by a burst/.test(roomy), "#1277: a transient burst is named as possible");
+  assert(!/NOT the ceiling/.test(roomy), "#1277: headroom is not ruled out as the ceiling");
+  assert(!/will not help/.test(roomy), "#1277: raising the limit is not dismissed");
 
   // Margin boundary: 10 spare pids is the threshold (strictly under = exhausted).
   assert(

@@ -113,6 +113,12 @@ export function isHostExhaustionFailure(failure: string): boolean {
   return failure.includes(HOST_EXHAUSTION_LABEL);
 }
 
+export type PidLimitSnapshot = { current: number; max: number | "max" };
+
+function fmtPids(p: PidLimitSnapshot): string {
+  return `cgroup pids.current=${p.current} of pids.max=${p.max}`;
+}
+
 /**
  * Where the pid ceiling actually is, read without forking (a fork is what
  * just failed). In a container the ceiling that was hit is the container's
@@ -121,12 +127,6 @@ export function isHostExhaustionFailure(failure: string): boolean {
  * nothing to raise (#1277). Undefined when the counters cannot
  * be read (no cgroup v2, not Linux).
  */
-export type PidLimitSnapshot = { current: number; max: number | "max" };
-
-function fmtPids(p: PidLimitSnapshot): string {
-  return `cgroup pids.current=${p.current} of pids.max=${p.max}`;
-}
-
 export function pidLimitSnapshot(
   read: (file: string) => string = (f) => readFileSync(f, "utf8"),
 ): PidLimitSnapshot | undefined {
@@ -178,8 +178,10 @@ export function hostExhaustionFailure(
     cause = `the process or thread limit where the driver runs is unknown (its cgroup pid counters could not be read just after the failure); ${OTHER_CEILINGS}`;
   } else if (pidCeilingExhausted(pids)) {
     cause = `the process limit where the driver runs is exhausted: ${fmtPids(pids)} (counters read just after the failure)`;
+  } else if (pids.max === "max") {
+    cause = `the cgroup pid limit is NOT the ceiling here (${fmtPids(pids)}); ${OTHER_CEILINGS}`;
   } else {
-    cause = `the cgroup pid limit is NOT the ceiling here (${fmtPids(pids)}); the counters were read just after the failure, so raising it will not help; ${OTHER_CEILINGS}`;
+    cause = `the cgroup counters read just after the failure show headroom (${fmtPids(pids)}); the limit may have been hit transiently by a burst of parallel processes, or the ceiling is elsewhere; ${OTHER_CEILINGS}`;
   }
   return `${HOST_EXHAUSTION_LABEL} ${what} could not run — the system refused to start a process (fork failed / EAGAIN); ${cause}. This is an environment failure, NOT a verdict on the change: the gate did not execute, so the change is neither confirmed nor refuted. In a container the ceiling is the CONTAINER's pid limit (docker \`--pids-limit\`), not a host ulimit. ${HOST_EXHAUSTION_RUNBOOK} Evidence: ${detail}`;
 }
