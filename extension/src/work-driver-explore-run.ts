@@ -1,4 +1,3 @@
-import { flattenAndClip } from "./text-flatten.ts";
 /**
  * work-driver-explore-run — the `runExplore` step handler, moved VERBATIM
  * from work-driver-explore.ts (the 500-line gate headroom for the #799
@@ -6,6 +5,7 @@ import { flattenAndClip } from "./text-flatten.ts";
  * union of both files' imports, and `work-driver-explore.ts` re-exports
  * `runExplore` so existing imports keep their path.
  */
+import { flattenAndClip } from "./text-flatten.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import {

@@ -125,27 +125,25 @@ const applyOpenPointGate = (s: NormalisedSpec, points: string[]): NormalisedSpec
   );
 }
 
-{
-  // An open point that touches authentication, authorization, secrets or
-  // permissions is not something the driver may decide: park as security-open-point.
-  for (const point of [
-    "Who may call the retry endpoint — authentication is undecided",
-    "Which role has authorization to rotate keys",
-    "Where the API secrets live — proposal: env var",
-    "What permissions the worker needs on the bucket",
-  ]) {
-    const resolved = applyOpenPointGate(spec({ verdict: "proceed" }), [point]);
-    assert(
-      resolved.verdict === "park" && resolved.parkReason === "security-open-point",
-      `an authorization-class open point parks as security-open-point: ${point.slice(0, 40)}`,
-    );
-  }
+// An open point that touches authentication, authorization, secrets or
+// permissions is not something the driver may decide: park as security-open-point.
+for (const point of [
+  "Who may call the retry endpoint — authentication is undecided",
+  "Which role has authorization to rotate keys",
+  "Where the API secrets live — proposal: env var",
+  "What permissions the worker needs on the bucket",
+]) {
+  const resolved = applyOpenPointGate(spec({ verdict: "proceed" }), [point]);
   assert(
-    applyOpenPointGate(spec({ verdict: "proceed" }), ["Which timeout wins"]).verdict ===
-      "proceed-with-assumptions",
-    "canary: a non-authorization open point does not park",
+    resolved.verdict === "park" && resolved.parkReason === "security-open-point",
+    `an authorization-class open point parks as security-open-point: ${point.slice(0, 40)}`,
   );
 }
+assert(
+  applyOpenPointGate(spec({ verdict: "proceed" }), ["Which timeout wins"]).verdict ===
+    "proceed-with-assumptions",
+  "canary: a non-authorization open point does not park",
+);
 
 {
   // No open points: the spec passes through untouched.
@@ -271,13 +269,14 @@ const applyOpenPointGate = (s: NormalisedSpec, points: string[]): NormalisedSpec
 
 {
   // Primary body not read: the gate cannot run. That is recorded, not skipped.
-  // A blank body is the case exercised here; it caps a proceed.
+  // A blank body parks a proceed: the driver cannot say the issue is clean (#1171).
   for (const blank of [undefined, "", "   \n"]) {
     const proceed = finaliseSpecVerdict(spec({ verdict: "proceed" }), blank);
     assert(
-      proceed.verdict === "proceed-with-assumptions" &&
+      proceed.verdict === "park" &&
+        proceed.parkReason === "underspecified" &&
         proceed.assumptions.some((a) => a.text === "Open-point gate did not run: issue body blank"),
-      `unchecked gate: a blank body caps proceed and names the gap (${JSON.stringify(blank)})`,
+      `unchecked gate: a blank body parks proceed as underspecified (${JSON.stringify(blank)})`,
     );
     const parked = spec({
       verdict: "park",
@@ -289,6 +288,26 @@ const applyOpenPointGate = (s: NormalisedSpec, points: string[]): NormalisedSpec
       "unchecked gate: an existing park stays a park",
     );
   }
+  // Reconciliation runs first and would lift this complete spec's underspecified park.
+  // The unchecked-body park is applied after it, so nothing lifts it.
+  const liftable = spec({
+    verdict: "park",
+    parkReason: "underspecified",
+    parkReasonSource: "parsed",
+    evidence: [
+      { claim: "the retry ceiling is unimplemented", source: "x.ts:1", verdict: "confirmed" },
+    ],
+  });
+  assert(
+    finaliseSpecVerdict(liftable, "## Notes\n\nnothing open").verdict ===
+      "proceed-with-assumptions",
+    "precondition: the complete spec is lifted when the body is read",
+  );
+  const unchecked = finaliseSpecVerdict(liftable, "  \n");
+  assert(
+    unchecked.verdict === "park" && unchecked.parkReason === "underspecified",
+    "unchecked gate: a lift by reconciliation does not survive a blank body",
+  );
   // No Open points section: nothing is gated, so a park keeps its reason.
   const parkedNoSection = spec({
     verdict: "park",
@@ -314,6 +333,26 @@ const applyOpenPointGate = (s: NormalisedSpec, points: string[]): NormalisedSpec
     `cap: a CRITICAL point is capped to 300 characters (${span.length})`,
   );
   assert(!span.includes("`"), "cap: a backtick in issue text cannot break the code span");
+}
+
+// ------------------------- wrapped open points (#1171): continuation lines
+
+{
+  // An indented line wrapped onto a CRITICAL point belongs to that point.
+  const wrapped =
+    "## Open points (unresolved at the gap-gate cap)\n\n- [CRITICAL] Which timeout wins\n  authentication for the endpoint is undecided\n";
+  assert(
+    finaliseSpecVerdict(spec({ verdict: "proceed" }), wrapped).parkReason === "security-open-point",
+    "continuation: an indented line wrapped onto a CRITICAL point parks it",
+  );
+  // A wrapped HIGH item cannot swallow a CRITICAL line: the CRITICAL line still gates.
+  const wrappedHigh =
+    "## Open points (unresolved at the gap-gate cap)\n\n- [HIGH] Which timeout wins\n  [CRITICAL] authentication for the endpoint is undecided\n";
+  assert(
+    finaliseSpecVerdict(spec({ verdict: "proceed" }), wrappedHigh).parkReason ===
+      "security-open-point",
+    "continuation: a CRITICAL line under a HIGH item still gates",
+  );
 }
 
 console.log(`\nexit ${exit}`);

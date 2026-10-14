@@ -175,6 +175,42 @@ export interface OpenPointReading {
   unparsed: string[];
 }
 
+const LIST_ITEM_LINE = /^\s*(?:[-*]|\d+[.)])\s+/;
+const HEADING_LINE = /^\s*#{1,6}\s/;
+
+/**
+ * The body's lines, with indented continuation lines joined onto the list item
+ * above them (#1171): `- [CRITICAL] Which timeout wins` followed by an indented
+ * `authentication for the endpoint is undecided` is one point. A continuation never
+ * joins a line that names CRITICAL or another severity, so a wrapped HIGH item cannot
+ * swallow a CRITICAL line. A blank line or a heading ends the item.
+ */
+function logicalLines(issueBody: string): string[] {
+  const out: string[] = [];
+  let openItem = false;
+  for (const raw of issueBody.split("\n")) {
+    const line = raw.trim();
+    if (line === "") {
+      openItem = false;
+      out.push("");
+      continue;
+    }
+    const continues =
+      openItem &&
+      /^\s+\S/.test(raw) &&
+      !LIST_ITEM_LINE.test(raw) &&
+      !HEADING_LINE.test(raw) &&
+      !/critical|\[(?:HIGH|MEDIUM|LOW)\]/i.test(line);
+    if (continues) {
+      out.push(`${out.pop() ?? ""} ${line}`);
+      continue;
+    }
+    out.push(line);
+    openItem = LIST_ITEM_LINE.test(raw);
+  }
+  return out;
+}
+
 /**
  * The CRITICAL bullets of a filed issue's "Open points" section (#1151).
  *
@@ -186,7 +222,7 @@ export interface OpenPointReading {
 export function readOpenPoints(issueBody: string): OpenPointReading {
   const reading: OpenPointReading = { points: [], resolved: [], unparsed: [] };
   let inSection = false;
-  for (const raw of issueBody.split("\n")) {
+  for (const raw of logicalLines(issueBody)) {
     const line = raw.trim();
     const heading = line.match(/^#{1,6}\s+(.*)$/)?.[1];
     if (heading !== undefined) {

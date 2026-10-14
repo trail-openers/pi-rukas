@@ -10,8 +10,8 @@
  *
  * The rule: a bare security stem parks. An ambiguous stem (one that is also ordinary
  * engineering vocabulary, e.g. "injection" in "dependency injection") carries an
- * `excludes` list of its known-ordinary phrases; the stem parks on its own UNLESS the
- * bullet contains one of those phrases. A few non-security stems (hash, nonce) carry
+ * `excludes` list of phrases that contain the stem; the stem parks on its own UNLESS
+ * it survives removal of those phrases. A few non-security stems (hash, nonce) carry
  * a `requires` list instead: they park only alongside a security word. Excludes are
  * deliberately short and named, so a new ordinary phrase is an explicit edit here,
  * not a silent widening of the class. A security point missed is worse than an
@@ -24,9 +24,10 @@
  * - `requires`: the term matches only if one of these co-words also appears in the
  *   bullet (whole-word, case-insensitive). For non-security stems that need a
  *   security word (hash, nonce).
- * - `excludes`: the term does NOT match if one of these known-ordinary phrases
- *   appears in the bullet (whole-word, case-insensitive). Regex bodies; `[ _-]`
- *   stands for a space, underscore or hyphen between words.
+ * - `excludes`: each phrase is a regex body that contains the stem and names an
+ *   ordinary use of it. Every occurrence is removed from the bullet before the stem
+ *   is tested, so a security word elsewhere in the bullet still parks. `[ _-]` stands
+ *   for a space, underscore or hyphen between words.
  */
 export interface SecurityTerm {
   readonly label: string;
@@ -77,7 +78,11 @@ export const SECURITY_CLASS_TERMS: readonly SecurityTerm[] = [
   {
     label: "token",
     stem: String.raw`token\w*`,
-    excludes: ["tokeniz\\w*", "tokens?[ _-](?:count|budget|limit|usage)", "context[ _-]window"],
+    excludes: [
+      String.raw`tokeni[sz]\w*`,
+      String.raw`tokens?[ _-](?:count|budget|limit|usage)`,
+      String.raw`tokens?[ _-](?:in|of)[ _-](?:the[ _-])?context[ _-]window`,
+    ],
   },
   { label: "API key", stem: String.raw`api[ _-]?keys?\w*` },
   {
@@ -111,17 +116,25 @@ export const SECURITY_CLASS_TERMS: readonly SecurityTerm[] = [
   {
     label: "input validation",
     stem: String.raw`(?:un|pre|re|non)?validat\w*`,
-    excludes: ["config[ _-]validat\\w*", "validate[ _-]step", "schema[ _-]version"],
+    excludes: [
+      String.raw`config[ _-]validat\w*`,
+      String.raw`validate[ _-]step`,
+      String.raw`schema[ _-]version[ _-]validat\w*`,
+    ],
   },
   {
     label: "injection",
     stem: String.raw`inject\w*`,
-    excludes: ["dependency", "constructor", "di", "property", "setter"],
+    excludes: [String.raw`(?:dependency|constructor|property|setter|DI)[ _-]injection`],
   },
   {
     label: "sandbox",
     stem: String.raw`sandbox\w*`,
-    excludes: ["feature[ _-]flag", "test[ _-]sandbox", "sandbox[ _-]environment[ _-]for[ _-]tests"],
+    excludes: [
+      String.raw`sandbox[ _-]feature[ _-]flags?`,
+      String.raw`test[ _-]sandbox`,
+      String.raw`sandbox[ _-]environment[ _-]for[ _-]tests`,
+    ],
   },
   { label: "privilege", stem: String.raw`privilege\w*` },
   { label: "access control", stem: String.raw`access[ _-]control` },
@@ -129,14 +142,11 @@ export const SECURITY_CLASS_TERMS: readonly SecurityTerm[] = [
     label: "deletion",
     stem: String.raw`delet\w*`,
     excludes: [
-      "caches?",
-      "cached",
-      "temp",
-      "temporary",
-      "scratch",
-      "worktrees?",
-      "branch(?:es)?",
-      "stale",
+      // A cache/temp modifier, one or two cache/temp nouns, then the verb:
+      // `stale cache entries are deleted`. A customer or user noun is not listed, so
+      // `temporary customer records are deleted` parks.
+      String.raw`(?:stale|cached?|temp(?:orary)?|scratch)[ _-](?:(?:cache|cached|entries|entry|files?|dirs?|directories|directory|artifacts?|copies|outputs?|worktrees?|branch(?:es)?)[ _-]){1,2}(?:(?:is|are|be)[ _-])?delet\w*`,
+      String.raw`(?:worktrees?|branch(?:es)?)[ _-](?:(?:is|are|be)[ _-])?delet\w*`,
     ],
   },
   { label: "data loss", stem: String.raw`data[ _-]loss` },
@@ -183,7 +193,7 @@ interface CompiledTerm {
   readonly term: SecurityTerm;
   readonly stem: RegExp;
   readonly coWords: RegExp | undefined;
-  readonly excludeWords: RegExp | undefined;
+  readonly excludeRe: RegExp | undefined;
 }
 
 /** A whole-word alternation over `words`, as regex bodies. */
@@ -191,19 +201,23 @@ function wordsRe(words: readonly string[]): RegExp {
   return new RegExp(`(?<![a-z0-9])(?:${words.join("|")})(?![a-z0-9])`, "i");
 }
 
+/** Every exclude phrase as one global whole-segment alternation: each occurrence is removed. */
+function phraseRe(phrases: readonly string[]): RegExp {
+  return new RegExp(`(?<![a-z0-9])(?:${phrases.join("|")})(?![a-z0-9])`, "gi");
+}
+
 const COMPILED_TERMS: readonly CompiledTerm[] = SECURITY_CLASS_TERMS.map((term) => ({
   term,
   stem: new RegExp(`(?<![a-z0-9])(?:${term.stem})(?![a-z0-9])`, "i"),
   coWords: term.requires ? wordsRe(term.requires) : undefined,
-  excludeWords: term.excludes ? wordsRe(term.excludes) : undefined,
+  excludeRe: term.excludes ? phraseRe(term.excludes) : undefined,
 }));
 
 /** The first security term the text matches, or undefined when the text is outside the class. */
 export function matchSecurityTerm(text: string): SecurityTerm | undefined {
-  return COMPILED_TERMS.find(
-    (c) =>
-      c.stem.test(text) &&
-      (c.coWords === undefined || c.coWords.test(text)) &&
-      (c.excludeWords === undefined || !c.excludeWords.test(text)),
-  )?.term;
+  return COMPILED_TERMS.find((c) => {
+    // Each exclude phrase is removed where it occurs; the stem must survive the removal.
+    const remainder = c.excludeRe ? text.replace(c.excludeRe, " ") : text;
+    return c.stem.test(remainder) && (c.coWords === undefined || c.coWords.test(text));
+  })?.term;
 }

@@ -250,8 +250,6 @@ function validateSpec(raw: unknown): NormalisedSpec | undefined {
   if (!isStringArray(v.outOfScope)) return undefined;
   if (!isAssumptionArray(v.assumptions)) return undefined;
   if (!isStringArray(v.openQuestions)) return undefined;
-  // Absent in artifacts written before the field existed: read as none.
-  if (v.securityOpenPoints !== undefined && !isStringArray(v.securityOpenPoints)) return undefined;
   if (!isEvidenceArray(v.evidence)) return undefined;
   if (v.verdict !== "proceed" && v.verdict !== "proceed-with-assumptions" && v.verdict !== "park") {
     return undefined;
@@ -267,8 +265,11 @@ function validateSpec(raw: unknown): NormalisedSpec | undefined {
     verdict: v.verdict,
     rationale: typeof v.rationale === "string" ? v.rationale : "",
   };
-  // Absent stays absent: the renderers read undefined as none (one contract with NormalisedSpec).
-  if (v.securityOpenPoints !== undefined) out.securityOpenPoints = v.securityOpenPoints as string[];
+  // Absent in artifacts written before the field existed: read as none, so it stays absent.
+  if (v.securityOpenPoints !== undefined) {
+    if (!isStringArray(v.securityOpenPoints)) return undefined;
+    out.securityOpenPoints = v.securityOpenPoints;
+  }
   if (v.parkReason !== undefined) {
     const pr = v.parkReason;
     if (typeof pr !== "string" || !PARK_REASONS.includes(pr as ParkReason)) return undefined;

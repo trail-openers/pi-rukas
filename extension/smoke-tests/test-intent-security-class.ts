@@ -161,6 +161,39 @@ const parkingCanaries: Array<[string, string]> = [
   ["origin: decrypt", "Who may decrypt the export \u2014 proposal: the owner"],
   ["origin: sanitize", "Whether input is sanitized before logging \u2014 proposal: yes"],
   ["origin: role", "which role may rotate keys \u2014 proposal: admins"],
+  // Deletion: a customer or user noun is not an ordinary cache/temp phrase, so these park.
+  [
+    "deletion (temporary customer records)",
+    "Whether the temporary customer records are deleted on rollback \u2014 proposal: no",
+  ],
+  ["deletion (stale user data)", "Whether stale user data deleted on rollback \u2014 proposal: no"],
+  // Exclude phrases removed, the stem outside them still parks.
+  ["injection (property setter)", "Whether command injection via the property setter is blocked"],
+  ["injection (dependency, SQL)", "Whether SQL injection is possible despite dependency injection"],
+  ["deletion (stale cache, roles)", "Which roles may delete the stale cache and the audit log"],
+  ["role (pairs reviewer role)", "Which role may rotate keys, not the reviewer role"],
+  [
+    "session (pairs session store)",
+    "Whether the session store and the login session expire together \u2014 proposal: yes",
+  ],
+  ["token (pairs token count)", "Whether the token count limit and the bearer token are rotated"],
+  [
+    "validation (pairs config validate)",
+    "Whether config validate and step input validation is strict",
+  ],
+  ["sandbox (pairs feature flag)", "Whether the sandbox feature flag gates the sandbox itself"],
+  [
+    "injection (pairs dependency injection)",
+    "Whether the dependency injection container blocks command injection",
+  ],
+  [
+    "deletion (pairs stale cache)",
+    "Whether the stale cache is deleted and the audit log is deleted",
+  ],
+  // Invisible format characters (Cf) cannot hide a security word (#1171).
+  ["invisible: zero-width space", "Whether the pass\u200Bword is hashed"],
+  ["invisible: soft hyphen", "Whether the pass\u00ADword is hashed"],
+  ["invisible: word joiner", "Whether the pass\u2060word is hashed"],
 ];
 
 for (const [label, point] of parkingCanaries) {
@@ -213,23 +246,17 @@ for (const term of SECURITY_CLASS_TERMS) {
   assert(covered, `every term has a parking canary: ${term.label} (${term.stem})`);
 }
 
-// Every term with co-words has a benign canary: its stem appears without any
-// co-word, in a phrase that names no security term.
+// Every term with co-words or excludes has a benign canary: its stem appears without
+// the co-word, or inside an ordinary exclude phrase, and nothing else in the bullet matches.
 const stemRe = (stem: string) => new RegExp(`(?<![a-z0-9])(?:${stem})(?![a-z0-9])`, "i");
-for (const term of SECURITY_CLASS_TERMS.filter((t) => t.requires)) {
+for (const term of SECURITY_CLASS_TERMS.filter((t) => t.requires || t.excludes)) {
   const covered = benignCanaries.some(
     ([, point]) => stemRe(term.stem).test(point) && matchSecurityTerm(point) === undefined,
   );
-  assert(covered, `every co-word term has a benign canary: ${term.label} (${term.stem})`);
-}
-
-// Every term with excludes has a benign canary: its stem appears in an ordinary phrase the
-// excludes list names, and that phrase is the only security-looking part of the bullet.
-for (const term of SECURITY_CLASS_TERMS.filter((t) => t.excludes)) {
-  const covered = benignCanaries.some(
-    ([, point]) => stemRe(term.stem).test(point) && matchSecurityTerm(point) === undefined,
+  assert(
+    covered,
+    `every co-word or excludes term has a benign canary: ${term.label} (${term.stem})`,
   );
-  assert(covered, `every excludes term has a benign canary: ${term.label} (${term.stem})`);
 }
 
 // A term with co-words does not match on the stem alone.

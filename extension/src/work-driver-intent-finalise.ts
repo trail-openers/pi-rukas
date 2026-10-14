@@ -12,7 +12,7 @@
  */
 
 import { matchSecurityTerm } from "./security-class.ts";
-import { flattenAndClip } from "./text-flatten.ts";
+import { flattenAndClip, flattenIssueText } from "./text-flatten.ts";
 import { trace } from "./trace.ts";
 import {
   type OpenPoint,
@@ -29,10 +29,20 @@ import {
 /** #1151: the assumption text for one CRITICAL point is capped at this many characters. */
 const OPEN_POINT_ASSUMPTION_MAX = 300;
 
-// Shared flatten-and-clip with fetchFailureReason (text-flatten.ts).
-/** Code-span quoting for untrusted issue text: keeps it inert in the PR body. */
+/**
+ * Code-span quoting for untrusted issue text: keeps it inert in the PR body.
+ * Flatten-and-clip is shared with fetchFailureReason (text-flatten.ts).
+ */
 function quotedIssueText(text: string): string {
   return `\`${flattenAndClip(text.replace(/`/g, "'"), OPEN_POINT_ASSUMPTION_MAX)}\``;
+}
+
+/**
+ * The security term a point names. Invisible format characters are removed first,
+ * so `pass\u200Bword` reads as `password` (#1171).
+ */
+function securityTermOf(text: string) {
+  return matchSecurityTerm(flattenIssueText(text));
 }
 
 /**
@@ -40,7 +50,8 @@ function quotedIssueText(text: string): string {
  *
  * `primaryBody` is the primary issue body as read; `undefined` or blank means
  * the gate could not run, which is recorded rather than silently skipped.
- * A blank body caps a proceed, so it cannot pass as a clean read.
+ * A blank body parks a proceed as underspecified, so it cannot pass as a clean read;
+ * an existing park keeps its reason and gains the note.
  */
 export function finaliseSpecVerdict(
   spec: NormalisedSpec,
@@ -52,13 +63,12 @@ export function finaliseSpecVerdict(
       "open-point-gate-unchecked: the filed issue body was blank; its open points were not checked",
     );
     // Recorded even when the spec is already parked: an unchecked body is a fact the PR body must carry.
-    return capToAssumptions(reconciled, [
-      {
-        text: "Open-point gate did not run: issue body blank",
-        basis:
-          "open-point-gate-unchecked — the driver could not check the issue for CRITICAL open points",
-      },
-    ]);
+    // Applied after reconcileVerdict, so no reconciliation can lift this park.
+    return parkUnchecked(reconciled, {
+      text: "Open-point gate did not run: issue body blank",
+      basis:
+        "open-point-gate-unchecked — the driver could not check the issue for CRITICAL open points",
+    });
   }
   return applyOpenPointGate(reconciled, readOpenPoints(primaryBody));
 }
@@ -66,7 +76,7 @@ export function finaliseSpecVerdict(
 /** A resolved point is recorded as an assumption, so the answer reaches the PR body. */
 function resolvedAssumption(point: OpenPoint): SpecAssumption {
   const text = openPointText(point);
-  if (matchSecurityTerm(text)) {
+  if (securityTermOf(text)) {
     return {
       text: `security open point self-resolved in the issue body: ${quotedIssueText(text)}`,
       basis:
@@ -79,11 +89,25 @@ function resolvedAssumption(point: OpenPoint): SpecAssumption {
   };
 }
 
-// Also called by the blank-body branch of finaliseSpecVerdict.
 /**
- * The verdict cap shared by the open-point gate and its unread-body branch: a
- * park is final and passes through unchanged; anything else becomes
- * proceed-with-assumptions with `assumptions` appended.
+ * The unread-body cap (#1171): a proceed the open-point gate never checked is parked
+ * as underspecified, because the driver cannot say the issue is clean. An existing
+ * park keeps its reason and only gains the note.
+ */
+function parkUnchecked(spec: NormalisedSpec, note: SpecAssumption): NormalisedSpec {
+  const withNote = { ...spec, assumptions: [...spec.assumptions, note] };
+  if (spec.verdict === "park") return withNote;
+  return {
+    ...withNote,
+    verdict: "park",
+    parkReason: "underspecified",
+    parkReasonSource: "default",
+  };
+}
+
+/**
+ * The open-point gate's verdict cap: a park is final and passes through unchanged;
+ * anything else becomes proceed-with-assumptions with `assumptions` appended.
  * `assumptions` are appended even to a park, so the note still reaches the PR body.
  */
 function capToAssumptions(spec: NormalisedSpec, assumptions: SpecAssumption[]): NormalisedSpec {
@@ -131,7 +155,7 @@ function applyOpenPointGate(spec: NormalisedSpec, reading: OpenPointReading): No
   if (points.length === 0 && unparsed.length === 0) return base;
 
   const securityMatches = [...points.map(openPointText), ...unparsed].flatMap((text) => {
-    const term = matchSecurityTerm(text);
+    const term = securityTermOf(text);
     return term ? [{ text, term }] : [];
   });
   const securityPoints = securityMatches.map(({ text }) => quotedIssueText(text));
