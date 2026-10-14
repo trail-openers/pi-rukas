@@ -29,6 +29,7 @@ import {
   inlineSpeculativeExplorePrompt,
 } from "./work-driver-prompts-early.ts";
 import { clearDispatch } from "./work-driver-resume.ts";
+import { interruptedDevelopNote } from "./work-driver-retry-context.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
@@ -254,6 +255,7 @@ export function makeRunOneWorkstream(
               verifyCmd,
               issueBodyArtifactPaths,
               ws?.fixFindings,
+              interruptedDevelopNote(s.stateRef.current),
             ),
             cwd,
           },
