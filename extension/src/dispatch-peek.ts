@@ -18,7 +18,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { getOrchestratorActiveChild, isOrchestratorJob } from "./async-jobs.ts";
 import { type DeckEntry, snapshot as deckSnapshot } from "./dispatch-deck.ts";
-import { type RunningState, formatElapsed, formatTokens } from "./progress.ts";
+import { formatElapsed, formatTokens } from "./progress.ts";
 
 const LAST_TEXT_MAX = 200;
 
@@ -158,7 +158,10 @@ interface SerialisedEntry {
   toolUses: number;
   lastToolName?: string;
   lastText?: string;
+  /** Wall-clock age of the child (see `peekTiming`). */
   elapsedMs: number;
+  /** Time since the child's last completed turn. */
+  quietMs: number;
   totalTokens: number;
   model?: string;
 }
@@ -174,7 +177,7 @@ function serialise(e: DeckEntry): SerialisedEntry {
     toolUses: e.state.toolUses,
     lastToolName: e.state.lastToolName,
     lastText: e.state.lastText,
-    elapsedMs: e.state.elapsedMs,
+    ...peekTiming(e, Date.now()),
     totalTokens: u.input + u.output + u.cacheRead + u.cacheWrite,
     model: e.state.model,
   };
@@ -186,12 +189,42 @@ function truncate(s: string, max: number): string {
   return `${oneLine.slice(0, max - 1).trimEnd()}…`;
 }
 
-function renderHeader(state: RunningState, label: string, key: string): string {
+/** Past this long without a completed turn, a peek row says so outright. */
+const QUIET_MS = 5 * 60_000;
+
+/**
+ * Wall-clock timing for a peek row. `state.elapsedMs` is NOT an age: it is
+ * stamped when the child's last assistant turn ended (the deck state only
+ * refreshes on `onProgress`), so a child hung inside one tool call peeked
+ * byte-identically — same "8m36s" — for an hour and read as live. Age is
+ * measured from the deck entry's start instead, and `quietMs` is the time
+ * since that last completed turn.
+ */
+export function peekTiming(
+  e: Pick<DeckEntry, "state" | "startedAt">,
+  now: number,
+): { elapsedMs: number; quietMs: number } {
+  // Entries always carry startedAt in production; a bare state (tests) has
+  // only the stamped value to offer.
+  if (!Number.isFinite(e.startedAt)) return { elapsedMs: e.state.elapsedMs, quietMs: 0 };
+  return {
+    elapsedMs: Math.max(0, now - e.startedAt),
+    quietMs: Math.max(0, now - (e.state.lastEventAt ?? e.startedAt)),
+  };
+}
+
+function renderHeader(e: DeckEntry, now: number): string {
+  const { state, label, key } = e;
   const parts = [`[${key}]`, label, `${state.turns} turn${state.turns === 1 ? "" : "s"}`];
   if (state.lastToolName) {
     parts.push(`last: ${state.lastToolName}`);
   }
-  parts.push(formatElapsed(state.elapsedMs));
+  const { elapsedMs, quietMs } = peekTiming(e, now);
+  parts.push(formatElapsed(elapsedMs));
+  if (quietMs >= QUIET_MS) {
+    // A tool call may legitimately run this long; a hang looks the same.
+    parts.push(`no new turn for ${formatElapsed(quietMs)}`);
+  }
   const u = state.usage;
   const totalTokens = u.input + u.output + u.cacheRead + u.cacheWrite;
   if (totalTokens > 0) parts.push(`${formatTokens(totalTokens)} toks`);
@@ -199,11 +232,11 @@ function renderHeader(state: RunningState, label: string, key: string): string {
   return parts.join(" · ");
 }
 
-export function renderPeek(entries: DeckEntry[]): string {
+export function renderPeek(entries: DeckEntry[], now: number = Date.now()): string {
   if (entries.length === 0) return "no in-flight subagents — call dispatch_status to confirm";
   const lines: string[] = [`peek (${entries.length} in flight):`];
   for (const e of entries) {
-    lines.push(`  ${renderHeader(e.state, e.label, e.key)}`);
+    lines.push(`  ${renderHeader(e, now)}`);
     if (e.state.lastText) {
       lines.push(`    last said: "${truncate(e.state.lastText, LAST_TEXT_MAX)}"`);
     }
@@ -216,9 +249,13 @@ export function renderPeek(entries: DeckEntry[]): string {
  * orchestrator's jobId in the header so PM can tell at a glance "this came
  * from peeking an orchestrator" vs "a single dispatch".
  */
-export function renderOrchestratorPeek(orchestratorJobId: string, entry: DeckEntry): string {
+export function renderOrchestratorPeek(
+  orchestratorJobId: string,
+  entry: DeckEntry,
+  now: number = Date.now(),
+): string {
   const lines: string[] = [`peek (orchestrator '${orchestratorJobId}' → active inner child):`];
-  lines.push(`  ${renderHeader(entry.state, entry.label, entry.key)}`);
+  lines.push(`  ${renderHeader(entry, now)}`);
   if (entry.state.lastText) {
     lines.push(`    last said: "${truncate(entry.state.lastText, LAST_TEXT_MAX)}"`);
   }

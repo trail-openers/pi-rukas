@@ -36,7 +36,7 @@ import {
 } from "./work-driver-merge-authority.ts";
 import { notify } from "./work-notify.ts";
 import { groupPathsOverlap } from "./work-queue-overlap.ts";
-import { parkReason } from "./work-queue-park-reason.ts";
+import { HOST_EXHAUSTION_SUFFIX, parkReason } from "./work-queue-park-reason.ts";
 import { deferredLeftoverAction } from "./work-queue-parks.ts";
 import { mergeQueueSummaryEntries } from "./work-queue-summary.ts";
 // #753 (six-lens FIX 5) — the renderer moved to work-queue-render.ts to keep
@@ -193,6 +193,9 @@ export function humanActionFor(reason: string, primary: number): string {
     return "fix the gh setup (`gh auth status`), then re-run";
   if (/round-cap|adversarial-loop|wall-clock/.test(reason)) {
     return `review the findings on #${primary}'s PR — the fix loop did not converge`;
+  }
+  if (reason.includes(HOST_EXHAUSTION_SUFFIX)) {
+    return `free processes on the host (it could not fork — the gate never ran on #${primary}), then re-run \`/work ${primary} --restart\``;
   }
   if (/verify-failed/.test(reason))
     return `inspect #${primary}'s diff — the outcome gate rejected it`;

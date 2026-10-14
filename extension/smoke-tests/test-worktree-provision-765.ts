@@ -91,7 +91,8 @@ function liveExecFn(): (
   // it linked nothing. Post-#765 the hook path VERIFIES the filesystem: a
   // no-op hook (exit 0, nothing linked) yields a `problem` (the precondition,
   // fork-A: fresh clone — a manifest present, no source tree), which the
-  // event factory maps to `hook-failed` — never an unqualified `hook-ran`.
+  // event carries on a `hook-ran` outcome — never an unqualified one.
+  // (`hook-failed` is reserved for a hook that exited non-zero.)
   const { root, wt } = fixture("w");
   try {
     await initRepo(root, "node_modules/\n", { "package.json": "{\"name\": \"x\"}\n" });
@@ -123,7 +124,7 @@ function liveExecFn(): (
 {
   // Guard against the verification over-firing: when the source tree exists
   // and the hook links it, the strict check must PASS (no problem), not
-  // report a false `hook-failed`. The hook runs for real here (liveExecFn)
+  // report a false problem. The hook runs for real here (liveExecFn)
   // so the link it creates is real filesystem state.
   const { root, wt } = fixture("w");
   try {

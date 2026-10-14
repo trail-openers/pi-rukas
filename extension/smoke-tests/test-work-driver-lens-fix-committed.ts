@@ -162,7 +162,7 @@ const defaultDispatchFn: DriverContext["dispatchFn"] = async (_pi, spec, opts) =
     const ctx: DriverContext = {
       host: makeFakePi().pi, repoRoot: root, issue: 749,
       issueBodyFetcherFn: mockIssueBodyOk, dispatchFn: defaultDispatchFn,
-      adversarialLoopFn: async () => mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", text: "Approved." }),
+      adversarialLoopFn: async () => mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }], text: "Approved." }),
       lensReviewFn: async () => mkLensSummary({ verdict: "APPROVED" }),
     };
     await runWorkDriver(ctx).catch(() => {});
@@ -194,7 +194,7 @@ const defaultDispatchFn: DriverContext["dispatchFn"] = async (_pi, spec, opts) =
     const ctx: DriverContext = {
       host: makeFakePi().pi, repoRoot: root, issue: 750,
       issueBodyFetcherFn: mockIssueBodyOk, dispatchFn: defaultDispatchFn,
-      adversarialLoopFn: async () => mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", text: "Approved." }),
+      adversarialLoopFn: async () => mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }], text: "Approved." }),
       lensReviewFn: async () => mkLensSummary({ verdict: "APPROVED" }),
     };
     await runWorkDriver(ctx).catch(() => {});
@@ -228,7 +228,7 @@ const defaultDispatchFn: DriverContext["dispatchFn"] = async (_pi, spec, opts) =
     const ctx: DriverContext = {
       host: makeFakePi().pi, repoRoot: root, issue: 751,
       issueBodyFetcherFn: mockIssueBodyOk, dispatchFn: defaultDispatchFn,
-      adversarialLoopFn: async () => mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", text: "Approved." }),
+      adversarialLoopFn: async () => mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }], text: "Approved." }),
       lensReviewFn: async () => mkLensSummary({ verdict: "APPROVED" }),
     };
     await runWorkDriver(ctx).catch(() => {});
@@ -270,7 +270,7 @@ const defaultDispatchFn: DriverContext["dispatchFn"] = async (_pi, spec, opts) =
     const ctx: DriverContext = {
       host: makeFakePi().pi, repoRoot: root, issue: 776,
       issueBodyFetcherFn: mockIssueBodyOk, dispatchFn: defaultDispatchFn,
-      adversarialLoopFn: async () => mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", text: "Approved." }),
+      adversarialLoopFn: async () => mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }], text: "Approved." }),
       lensReviewFn: async () => mkLensSummary({ verdict: "APPROVED" }),
     };
     await runWorkDriver(ctx).catch(() => {});
@@ -354,7 +354,7 @@ const defaultDispatchFn: DriverContext["dispatchFn"] = async (_pi, spec, opts) =
     const ctx: DriverContext = {
       host: makeFakePi().pi, repoRoot: root, issue: 797,
       issueBodyFetcherFn: mockIssueBodyOk, dispatchFn: defaultDispatchFn,
-      adversarialLoopFn: async () => mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", text: "Approved." }),
+      adversarialLoopFn: async () => mkResult({ role: "adversarial-loop", ok: true, loopOutcome: "approved", adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }], text: "Approved." }),
       lensReviewFn: async () => mkLensSummary({ verdict: "APPROVED" }),
     };
     await runWorkDriver(ctx).catch(() => {});
@@ -417,3 +417,10 @@ const defaultDispatchFn: DriverContext["dispatchFn"] = async (_pi, spec, opts) =
     // in flight. The OS cleans /tmp on reboot.
   }
 }
+
+// Without this the file could never fail: it recorded failures in `exit` and
+// then fell off the end with status 0, which hid five stale assertions for
+// weeks (#1212). process.exit also ends any git child still
+// running against the temp dirs the scenarios deliberately leave behind.
+console.log(`\nexit ${exit}`);
+process.exit(exit);

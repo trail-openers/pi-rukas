@@ -50,6 +50,7 @@ import { promisify } from "node:util";
 import type { DispatchResult } from "../src/types.ts";
 import { runBranch } from "../src/work-driver-branch-develop.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
+import { ensureIntegrateWorktree } from "../src/work-driver-integrate-worktree.ts";
 import { initialState } from "../src/workflow-state.ts";
 import { findSameIssueLeftovers, handleSameIssueLeftovers } from "../src/worktree-leftover.ts";
 import {
@@ -357,6 +358,36 @@ try {
     assert(res.actions.length === 0, "the pass for issue 730 takes no action on issue 999");
     const { stdout: list } = await git(repo, ["worktree", "list"]);
     assert(list.includes("issue-999-default"), "the foreign worktree is still attached");
+  }
+
+  // =============== 5. #1170 — the integrate step never removes an in-cycle tree
+  // The cycle's own develop tree (recorded in the state file) differs from the
+  // base. The integrate step must proceed past it and leave it attached.
+  {
+    const { repo, baseSha } = await fixture("integrate-in-cycle");
+    const wtCycle = worktreePath(repo, "issue-731-default");
+    await git(repo, ["worktree", "add", "-q", "--detach", wtCycle, baseSha]);
+    writeFileSync(path.join(wtCycle, "a.txt"), "base\ncycle work\n");
+    await git(wtCycle, ["commit", "-q", "-am", "develop"]);
+    const stateFile = path.join(repo, ".pi", "work-state", "731.json");
+    mkdirSync(path.dirname(stateFile), { recursive: true });
+    writeFileSync(
+      stateFile,
+      JSON.stringify({ pipelineState: { worktrees: { default: wtCycle }, baseSha } }),
+    );
+    let err: unknown;
+    try {
+      await ensureIntegrateWorktree(
+        realExec,
+        { repoRoot: repo, issue: 731, branchName: "feature/issue-731-x", baseSha },
+        stateFile,
+      );
+    } catch (e) {
+      err = e;
+    }
+    assert(err === undefined, `the integrate step proceeds past an in-cycle tree (${err ?? "ok"})`);
+    const { stdout: cycleList } = await git(repo, ["worktree", "list"]);
+    assert(cycleList.includes("issue-731-default"), "the in-cycle tree is NOT removed");
   }
 } finally {
   rmSync(root, { recursive: true, force: true });

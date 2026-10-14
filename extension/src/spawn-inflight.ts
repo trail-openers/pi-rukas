@@ -85,6 +85,19 @@ export class InFlightTools {
 }
 
 /**
+ * Stdout lines that are the child's rpc layer answering OUR stdin write, not
+ * the agent doing anything: Pi acks every command with a `response` line and
+ * reports the queued steer with `queue_update`, and it does both while the
+ * agent is stuck inside a tool call. Counted as life, they let every steer
+ * re-arm the watchdog: a review child hung in one bash call was steered by
+ * the slow-run watch at 20 / 40 / 80 min (and by the PM in between), so the
+ * 60-min tool-inactivity bound could first be met at 140 min.
+ */
+export function isStdinEcho(kind: string): boolean {
+  return kind === "response" || kind === "queue_update";
+}
+
+/**
  * #951 — the dual-budget inactivity watchdog. ONE poll, two budgets: while
  * the in-flight set (above) is non-empty the silence belongs to a running
  * tool, so the TOOL-inactivity bound applies (a long bash — the full offline

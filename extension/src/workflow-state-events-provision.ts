@@ -13,7 +13,9 @@
 /**
  * What happened during worktree provisioning.
  *
- * - "hook-ran":                 `.pi/worktree-setup` was found and exited 0.
+ * - "hook-ran":                 `.pi/worktree-setup` was found and exited 0. May still
+ *                               carry a `problem`: the hook ran, but an expected
+ *                               dependency tree is absent from the worktree.
  * - "hook-failed":              `.pi/worktree-setup` was found but exited non-zero.
  * - "symlink":                  No hook; at least one dep directory was symlinked in.
  * - "none":                     No hook; nothing linkable was found (worktree is bare).
@@ -60,34 +62,41 @@ export type WorktreeProvisionedEvent = {
       outcome: Exclude<WorktreeProvisionOutcome, "hook-failed">;
       /**
        * Populated on "none" when a dependency manifest was found but no
-       * usable tree was linkable. The detail lets the operator tell a broken
-       * hook from a merely absent one.
+       * usable tree was linkable, and on "hook-ran" when the hook exited 0
+       * but left an expected tree absent. The detail lets the operator tell
+       * a broken hook from a merely absent one.
        */
       problem?: string;
     }
 );
 
 /**
- * Map a ProvisionResult's via + problem to the event outcome, then build
+ * Map a ProvisionResult to the event outcome, then build
  * a typed WorktreeProvisionedEvent. Moved here from work-driver-branch-develop
  * because the factory is the authority on the hook-failed → problem invariant
  * that the discriminated union encodes.
+ *
+ * "hook-failed" is the hook's EXIT STATUS, not "a problem was recorded": a
+ * hook that exited 0 is "hook-ran" whatever verification found afterwards.
+ * Deriving the outcome from `problem` made "failed" mean "nothing to do", so
+ * a real hook failure was indistinguishable from a no-op.
  */
 export function makeWorktreeProvisionedEvent(
   worktreeId: string,
   worktreePath: string,
   via: "hook" | "symlink" | "none",
   problem: string | undefined,
+  hookFailed = false,
 ): WorktreeProvisionedEvent {
   if (via === "hook") {
-    return problem
+    return hookFailed
       ? {
           kind: "worktree-provisioned",
           at: Date.now(),
           worktreeId,
           worktreePath,
           outcome: "hook-failed",
-          problem,
+          problem: problem ?? "",
         }
       : {
           kind: "worktree-provisioned",
@@ -95,6 +104,7 @@ export function makeWorktreeProvisionedEvent(
           worktreeId,
           worktreePath,
           outcome: "hook-ran",
+          problem,
         };
   }
   return {

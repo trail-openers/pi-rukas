@@ -32,10 +32,7 @@ export function provisionDepsHint(state: WorkState, cwd: string): string {
   }
   switch (event.outcome) {
     case "hook-ran":
-      return (
-        " — provisioning ran via `.pi/worktree-setup` (hook succeeded) but" +
-        " dependencies are still missing; the hook may not install all needed packages"
-      );
+      return ` — provisioning ran via \`.pi/worktree-setup\` (hook succeeded) but dependencies are still missing; the hook may not install all needed packages${event.problem ? ` (${event.problem.slice(0, 200)})` : ""}`;
     case "hook-failed":
       return ` — the \`.pi/worktree-setup\` hook failed during provisioning${event.problem ? `: ${event.problem.slice(0, 200)}` : ""} — fix the hook and re-run`;
     case "symlink":

@@ -13,7 +13,7 @@ import { trace } from "./trace.ts";
 import { isDriverManagedDirtLine } from "./work-driver-branch-residue.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.js";
 import type { DriverContext } from "./work-driver-context.js";
-import { extractAttributedTail } from "./work-driver-exec-error.ts";
+import { extractAttributedTail, isHostForkExhaustion } from "./work-driver-exec-error.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
@@ -129,7 +129,12 @@ export type ConsolidatedVerifyResult =
   // regexing the `detail` prose (a reworded message used to silently
   // re-route the refusal to the conflict cap). The unlocked body below
   // returns this same shape in both cases.
-  | { status: "conflict"; detail: string; kind: "conflict" | "dirty-root" };
+  // `host` — the consolidation was never attempted because the host could
+  // not fork (`/bin/sh: 1: Cannot fork`, `spawn … EAGAIN`). It rides on the
+  // refusal shape because nothing was combined or verified, but it is NOT a
+  // conflict: a single-workstream cycle was told "two workstreams edited the
+  // same lines" when the only thing that failed was `git status`.
+  | { status: "conflict"; detail: string; kind: "conflict" | "dirty-root" | "host" };
 
 /**
  * #861 — the unlocked body of the consolidated verify. The ONLY production
@@ -410,9 +415,12 @@ export async function runConsolidatedVerifyUnlocked(
     trace(
       `work-driver: consolidated verify — unexpected error: ${(err as Error).message?.slice(0, 200)}`,
     );
+    const e = err as Error & { stderr?: string; stdout?: string };
     return {
       status: "conflict",
-      kind: "conflict",
+      kind: isHostForkExhaustion(`${e.stdout ?? ""}\n${e.stderr ?? ""}\n${e.message ?? ""}`)
+        ? "host"
+        : "conflict",
       detail: `consolidation could not be performed: ${(err as Error).message?.slice(0, 200)}. ${restoreClaimFor(restore)}`,
     };
   }

@@ -28,6 +28,7 @@ import {
   transientRetryBackoffMs,
   transientRetryEnabled,
 } from "./work-driver-failure-taxonomy.ts";
+import { lostAttemptLine } from "./work-driver-retry-context.ts";
 import { refusedWorkstreams } from "./work-driver-step-refusal.ts";
 import type { CapEvidence } from "./workflow-state-cap.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
@@ -252,10 +253,12 @@ export async function routeStepOutcome(
             },
           };
           await persistCycle(ctx, state);
-          const reason = failureCauseReason(tail);
+          // The retry is a fresh child: say what the failed one took with it.
+          const lost = lostAttemptLine(step, used + 1, tail);
+          const reason = `${failureCauseReason(tail)} · ${lost}`;
           lifecycle.emitStepRetry(step, stepOrd.num, stepOrd.total, used + 2, reason, ctx.issue);
           trace(
-            `work-driver: retry on step="${step}" (attempt ${used + 2}/${classification.maxRetries + 1}, cause=${classification.cause})`,
+            `work-driver: retry on step="${step}" (attempt ${used + 2}/${classification.maxRetries + 1}, cause=${classification.cause}) — ${lost}`,
           );
           // #366 — honour the provider's own requested delay when it stated
           // one (a rate-limit floor: waiting less is what earns the next 429),
@@ -370,10 +373,11 @@ export async function routeStepOutcome(
             },
           };
           await persistCycle(ctx, state);
-          const reason = failureCauseReason(tail);
+          const lost = lostAttemptLine(step, used + 1, tail);
+          const reason = `${failureCauseReason(tail)} · ${lost}`;
           lifecycle.emitStepRetry(step, stepOrd.num, stepOrd.total, used + 2, reason, ctx.issue);
           trace(
-            `work-driver: RETRY_ONCE on step="${step}" (attempt ${used + 2}, budget=${infra ? "transient" : "semantic"})`,
+            `work-driver: RETRY_ONCE on step="${step}" (attempt ${used + 2}, budget=${infra ? "transient" : "semantic"}) — ${lost}`,
           );
           if (infra) {
             const wait = jitteredMs(

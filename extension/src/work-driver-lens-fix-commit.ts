@@ -176,29 +176,24 @@ export async function landCommittedFix(
         requireAllNonEmpty: false,
         pickScope: { globalBaseSha: ps.baseSha, workstreamBaseShas: ps.workstreamBaseShas },
       });
-      const { stdout: stagedOut } = await execFn("git diff --cached --name-only", {
-        cwd: ctx.repoRoot,
-        maxBuffer: 64 * 1024,
-      });
-      if (stagedOut.trim()) {
-        await execFn(`git commit -q -m 'fix(lens): round 1 review findings'`, {
-          cwd: ctx.repoRoot,
-          maxBuffer: 64 * 1024,
-        });
-      }
+      // The conflict is judged before the commit: a conflicted pick leaves
+      // unmerged index entries, the commit then throws "you have unmerged
+      // files", and that generic throw used to replace the evidence below.
       if (orch._conflict === "conflict" || orch._applyConflict !== undefined) {
-        const restore = await verifiedRestoreRoot(execFn, {
-          repoRoot: ctx.repoRoot,
-          originalRef,
-          scratchDir: scratch,
-          label: "lens-fix-integration",
-        });
+        // Read the conflict BEFORE the restore: the unmerged paths live in
+        // repoRoot's index, and the restore's `reset --hard` empties it.
         const evidence = await collectConflictEvidence(
           execFn,
           ctx.repoRoot,
           tree,
           orch._conflict === "conflict",
         );
+        const restore = await verifiedRestoreRoot(execFn, {
+          repoRoot: ctx.repoRoot,
+          originalRef,
+          scratchDir: scratch,
+          label: "lens-fix-integration",
+        });
         // #981 — the conflict paths lead the error so a downstream 200-char
         // truncation (the caller's msg.slice(0, 200)) keeps the operator-
         // actionable part: WHICH files conflict, not the restore claim.
@@ -207,6 +202,16 @@ export async function landCommittedFix(
             ? `cherry-pick conflict — the batch was aborted. ${evidence.note} ${restoreClaim(restore, { trailing: MANUAL_REPAIR_HINT })} The fix's commits remain in the worktree ${tree}.`
             : `patch-apply failed for the lens-fix worktree: ${orch._applyConflict?.reason ?? "unknown"}. ${restoreClaim(restore, { trailing: MANUAL_REPAIR_HINT })} The fix's commits remain in the worktree ${tree}.${evidence.note}`;
         throw new Error(causeMsg);
+      }
+      const { stdout: stagedOut } = await execFn("git diff --cached --name-only", {
+        cwd: ctx.repoRoot,
+        maxBuffer: 64 * 1024,
+      });
+      if (stagedOut.trim()) {
+        await execFn(`git commit -q -m 'fix(lens): round ${ps.reviewRound} review findings'`, {
+          cwd: ctx.repoRoot,
+          maxBuffer: 64 * 1024,
+        });
       }
       // #749 — the tree-hash dedup skip means the content is already on the
       // branch (not a failure); the caller re-reviews. A genuine no-op —
