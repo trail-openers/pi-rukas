@@ -15,7 +15,7 @@
 import type { DispatchHost } from "./async-jobs-lifecycle.ts";
 import type { LensReviewSummary } from "./lens-review.ts";
 import type { OnSlowCallback } from "./slow-notice.ts";
-import type { DispatchResult } from "./types.ts";
+import type { DispatchImage, DispatchResult } from "./types.ts";
 import type { DriverHost } from "./work-driver-host.ts";
 import type { EmitSink } from "./work-state-emit.ts";
 import { KNOWN_STATUSES } from "./workflow-state-validate.ts";
@@ -190,7 +190,7 @@ export interface DriverContext {
    */
   dispatchFn?: (
     host: DispatchHost,
-    spec: { role: string; prompt: string; cwd?: string },
+    spec: { role: string; prompt: string; cwd?: string; images?: DispatchImage[] },
     opts?: {
       label?: string;
       skipDeck?: boolean;
