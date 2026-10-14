@@ -209,6 +209,33 @@ try {
       `(f) killBudgetMs = the tool bound (got ${r.killBudgetMs})`,
     );
   }
+
+  // Case (g) — a steer written to a child hung in a tool call is acked on
+  // stdout by Pi's rpc layer (`response` + `queue_update`). Those lines are
+  // the echo of OUR write, not life: counted as life, each slow-run
+  // auto-steer re-armed the bound and a hung child outlived it. The fake
+  // child acks a steer every second for 12s; the 3s tool bound still fires.
+  {
+    const ack = `echo '{"type":"response","command":"steer","success":true}'; echo '{"type":"queue_update","steering":["x"],"followUp":[]}'`;
+    process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
+    process.env.PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS = "3000";
+    writeFakePi(`${toolCallEnd}\nfor i in 1 2 3 4 5 6 7 8 9 10 11 12; do sleep 1; ${ack}; done`);
+    console.log("\n[test g] steer acks while a tool call is hung...");
+    const start = Date.now();
+    const r = await spawnSpecialist({ role: "explore", prompt: "irrelevant" });
+    assertLocal(
+      r.killCause === "tool-inactivity",
+      `(g) steer acks do not re-arm the tool bound (got ${r.killCause ?? "none"})`,
+    );
+    assertLocal(
+      Date.now() - start < 9_000,
+      `(g) killed at the bound (took ${Date.now() - start}ms)`,
+    );
+    assertLocal(
+      r.lastActivity?.kind === "toolCall in flight: bash",
+      `(g) lastActivity names the hung tool, not the ack (got ${r.lastActivity?.kind})`,
+    );
+  }
 } finally {
   restoreEnv();
   rmSync(fakeDir, { recursive: true, force: true });

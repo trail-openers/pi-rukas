@@ -70,11 +70,22 @@ export function jobStatusSnapshot(): JobStatusRow[] {
   return out;
 }
 
-/** Kill one job by id (best-effort — AbortSignal propagates to spawnSpecialist). */
+/**
+ * Kill one job by id (best-effort — AbortSignal propagates to spawnSpecialist).
+ * An id that is no job but a registered inner child (an adversarial round or
+ * lens child, keyed by the deck key `dispatch_peek` and the slow-run notice
+ * print) is killed through its handle, so every id those surfaces show is
+ * one this accepts.
+ */
 export function killJob(jobId: string): boolean {
   const job = jobs.get(jobId);
-  if (!job) return false;
-  job.abort.abort();
+  if (job) {
+    job.abort.abort();
+    return true;
+  }
+  const kill = childHandles.get(jobId)?.kill;
+  if (!kill) return false;
+  kill();
   return true;
 }
 
@@ -133,10 +144,20 @@ export function clearJobsForTesting(): void {
  */
 export function registerAsyncJobsLifecycle(pi: ExtensionAPI): void {
   const piWithOn = pi as unknown as {
-    on?: (event: "session_shutdown", handler: () => Promise<void> | void) => void;
+    on?: (
+      event: "session_shutdown",
+      handler: (event?: { reason?: string }) => Promise<void> | void,
+    ) => void;
   };
-  piWithOn.on?.("session_shutdown", () => {
+  piWithOn.on?.("session_shutdown", (event) => {
+    // Name what ended and why Pi says it ended: the bare count left an
+    // operator with "aborted 1 in-flight async jobs" and no cause.
+    const labels = [...jobs.values()].map((j) => j.label).join(", ");
     const n = killAllJobs();
-    if (n > 0) trace(`session_shutdown: aborted ${n} in-flight async jobs`);
+    if (n > 0) {
+      trace(
+        `session_shutdown (reason: ${event?.reason ?? "not given"}): aborted ${n} in-flight async jobs — ${labels}`,
+      );
+    }
   });
 }

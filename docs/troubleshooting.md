@@ -220,6 +220,8 @@ That number separates two failures a bare cause could not:
 
 **A `tool-inactivity` kill** is the same watchdog with its in-flight-awareness on: `last output: toolCall in flight: <tool>` means the silence happened *while a tool call was running* — a long bash (a full offline gate, a CI watch) or a tool that genuinely wedged. Its bound is `PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS` (default 60 min), separate from the model-silence budget below; the two knobs disable independently (`0` on one does not touch the other).
 
+**A child hung inside one tool call** shows in `dispatch_peek` as `no new turn for <duration>` next to its wall-clock age. A steer cannot reach it — a steer lands only when the current tool call returns — so the action is `dispatch_kill <id>` with the id the peek row or the `[ensemble:slow]` notice printed; that works for adversarial round and lens children (`<run>/<label>`) too, and the waiting step then sees a failed dispatch. Steers no longer postpone the tool-inactivity kill: Pi acknowledges each one on stdout, and those acknowledgements used to count as output, so a child steered at every slow-run level outlived the 60-minute bound.
+
 The 30-minute model-silence budget (and the 60-minute tool-inactivity bound) are deliberately sized for the silence shape each owns: model turns at the model-silence budget, long tool executions at the tool-inactivity bound. Raising a wall-clock number to cover a cause you have not identified is exactly the mistake the six per-role timers were deleted for — each was raised twice, and each time the finding was that the number was too small for a *healthy* child.
 
 ### Reading a handoff

@@ -177,5 +177,39 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
   );
 }
 
+// 10. A hung child must not peek as live. `state.elapsedMs` is stamped when
+//     the last assistant turn ended, so a review child stuck inside one bash
+//     call peeked byte-identically ("8m36s") for an hour. The row carries
+//     true wall-clock age and says how long no turn has completed.
+{
+  const startedAt = 1_000_000;
+  const turnEndedAt = startedAt + 516_000; // 8m36s in: the last turn end
+  const entry: DeckEntry = {
+    key: "mv3orc7b-3uc2c5/round1-review",
+    label: "adversarial-developer[round1-review]",
+    seq: 0,
+    startedAt,
+    state: makeState("adversarial-developer", {
+      turns: 24,
+      lastToolName: "bash",
+      elapsedMs: 516_000,
+      lastEventAt: turnEndedAt,
+    }),
+  };
+  const at20 = renderPeek([entry], startedAt + 20 * 60_000);
+  const at80 = renderPeek([entry], startedAt + 80 * 60_000);
+  assert(at20 !== at80, "two peeks an hour apart are not byte-identical");
+  assert(at80.includes("80m0s"), `elapsed is wall-clock age (got: ${at80})`);
+  assert(!at80.includes("8m36s"), "the stamped last-turn time is not shown as elapsed");
+  assert(at80.includes("no new turn for 71m24s"), "a quiet child says so explicitly");
+  assert(
+    renderOrchestratorPeek("loop", entry, startedAt + 80 * 60_000).includes("no new turn for"),
+    "the orchestrator peek carries the same marker",
+  );
+  const fresh = renderPeek([entry], turnEndedAt + 60_000);
+  assert(fresh.includes("9m36s"), "a live child still shows its age");
+  assert(!fresh.includes("no new turn"), "a child that just finished a turn has no marker");
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);
