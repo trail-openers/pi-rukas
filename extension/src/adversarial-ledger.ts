@@ -30,14 +30,25 @@ import type { DispatchResult } from "./types.ts";
 import { execp } from "./lens-exec.ts";
 
 /**
- * Write an adversarial-review entry to the review ledger. Fire-and-forget:
- * the caller does not await this; the function is safe to call on every
- * exit path of `runAdversarialLoop`.
+ * Write an adversarial-review entry to the review ledger. The loop does not
+ * await this (fire-and-forget); the returned promise never rejects, so the
+ * function is safe to call on every exit path of `runAdversarialLoop`.
+ *
+ * #1161 — `callerSuppliedDiff`: the review judged a diff string the caller
+ * pasted, not one the tool computed from base+head. Such a review is recorded
+ * as `passed: false` with detail "caller-supplied diff", so the merge guard
+ * refuses it; the same review via base+head is recorded normally.
  */
 export function writeAdversarialLedgerEntry(
   result: DispatchResult,
-  params: { workCwd?: string; branch?: string; head?: string; resolvedBranch?: string },
-): void {
+  params: {
+    workCwd?: string;
+    branch?: string;
+    head?: string;
+    resolvedBranch?: string;
+    callerSuppliedDiff?: boolean;
+  },
+): Promise<void> {
   const write = async () => {
     const c = params.workCwd ?? process.cwd();
     // #980 — the branch comes from the SHARED resolver (review-branch.ts:
@@ -76,12 +87,17 @@ export function writeAdversarialLedgerEntry(
       branch,
       kind: "adversarial",
       patchId: computed.patchId,
-      passed: adversarialPassed(result),
+      passed: adversarialPassed(result) && params.callerSuppliedDiff !== true,
       at: Date.now(),
-      detail: result.loopOutcome ?? "completed",
+      detail:
+        params.callerSuppliedDiff === true
+          ? "caller-supplied diff"
+          : (result.loopOutcome ?? "completed"),
       ...(headSha ? { headSha } : {}),
     };
     await appendLedgerEntry(entry, execp, c);
   };
-  write().catch((err) => trace(`adversarial: ledger write failed: ${(err as Error).message}`));
+  return write().catch((err) =>
+    trace(`adversarial: ledger write failed: ${(err as Error).message}`),
+  );
 }

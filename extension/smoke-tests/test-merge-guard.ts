@@ -243,6 +243,34 @@ assert(!lensPassed("ISSUES_FOUND", "MEDIUM"), "lens ISSUES_FOUND blocks at the M
   );
 }
 
+// ------------------------- #1161: a caller-pasted diff is not a passing review
+{
+  // The writer records a pasted-diff review as passed:false, detail "caller-supplied diff".
+  const pasted: LedgerEntry = {
+    branch: "feature/x",
+    kind: "adversarial",
+    patchId: "p1",
+    passed: false,
+    detail: "caller-supplied diff",
+    at: 1,
+  };
+  const lens: LedgerEntry = {
+    branch: "feature/x",
+    kind: "lens",
+    patchId: "p1",
+    passed: true,
+    at: 2,
+  };
+  const refused = await hookDecision("gh pr merge 12", [pasted, lens]);
+  assert(
+    refused.block === true,
+    "caller-supplied diff row: refused as a passing adversarial review",
+  );
+  const viaRange: LedgerEntry = { ...pasted, passed: true, detail: "approved" };
+  const allowed = await hookDecision("gh pr merge 12", [viaRange, lens]);
+  assert(allowed.block === false, "the same review via base+head row: accepted");
+}
+
 // ------------------------------------------- the remote is NOT hardcoded
 {
   const entries: LedgerEntry[] = [

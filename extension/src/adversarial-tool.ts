@@ -28,7 +28,7 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
       diff: Type.Optional(
         Type.String({
           description:
-            "Current diff to review (git diff output). Optional when base+head are given — then the diff is computed from the ref range; when both are given, this string wins.",
+            "Current diff to review (git diff output). Optional when base+head are given — then the diff is computed from the ref range; when both are given, this string wins. A pasted diff is recorded as a caller-supplied review: it never counts as a passing adversarial review for the merge guard. Prefer base+head.",
         }),
       ),
       context: Type.String({
@@ -88,6 +88,8 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
               pi,
               fixFence: { callerCwd: process.cwd() },
               ...policy,
+              // #1161 - set AFTER the raw spread so a caller cannot spoof it.
+              callerSuppliedDiff: Boolean(params.diff),
             },
             signal,
             hooks.jobId,
