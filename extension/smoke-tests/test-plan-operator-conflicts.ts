@@ -8,10 +8,17 @@
  */
 
 import type { OperatorDirectives } from "../src/plan-directives.ts";
-import { filterInvestigationConflicts, linesConflict } from "../src/plan-draft-conflicts.ts";
-import { type AngleFindings, draftSpec } from "../src/plan-draft.ts";
+import {
+  type DroppedInvestigationItem,
+  droppedDisclosure,
+  filterInvestigationConflicts,
+  linesConflict,
+  operatorLinesOf,
+} from "../src/plan-draft-conflicts.ts";
+import { type AngleFindings, VIPUNE_PRIOR_SOURCE, draftSpec } from "../src/plan-draft.ts";
 import { runGapGateLoop } from "../src/plan-gaps.ts";
 import { gapGatePrompt } from "../src/plan-gate-prompt.ts";
+import { OPERATOR_SOURCE } from "../src/plan-prior-context.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -336,6 +343,55 @@ const CONSISTENT_EDGE = "an absent config file falls back to the default protect
   assert(
     res.kept.length === 1 && res.kept[0]?.text === agreed,
     "once: the agreed item survives both pairs",
+  );
+}
+
+// -------------------------------------------------
+// 12. Polarity-aware dedupe: a paraphrase of an operator line that shares its
+//     polarity (both negated) is a duplicate, never a conflict; a restatement
+//     that adds a file or line reference is kept.
+{
+  const op = "a missing reportVerdict must not return a passing review";
+  const restated = "a missing reportVerdict must not be accepted as a passing review";
+  assert(!linesConflict(op, restated), "dedupe: both-negated paraphrase is not a conflict");
+  const res = filterInvestigationConflicts(
+    [
+      { kind: "edge-case", text: restated, angle: "e" },
+      {
+        kind: "edge-case",
+        text: `${restated} (src/review-tool.ts:42)`,
+        angle: "e",
+      },
+    ],
+    [op],
+  );
+  assert(
+    res.dropped.length === 1 &&
+      res.dropped[0]?.reason === "duplicate" &&
+      res.dropped[0]?.item.text === restated,
+    "dedupe: the bare restatement is dropped as a duplicate",
+  );
+  assert(
+    res.kept.length === 1 && res.kept[0]?.text.includes("src/review-tool.ts"),
+    "dedupe: the restatement with a concrete file reference is kept",
+  );
+  const r = droppedDisclosure(res.dropped[0] as DroppedInvestigationItem);
+  assert(
+    r.includes("duplicate of operator line") && !r.includes("conflicts with"),
+    "dedupe: disclosed as a duplicate, never as a conflict",
+  );
+}
+
+// -------------------------------------------------
+// 13. The operator tag is one exported constant: operatorLinesOf selects by it.
+{
+  const lines = operatorLinesOf(NO_DIRS, [
+    { source: OPERATOR_SOURCE, fact: OP_AC },
+    { source: VIPUNE_PRIOR_SOURCE, fact: "a stale fact" },
+  ]);
+  assert(
+    lines.length === 1 && lines[0] === OP_AC,
+    "source: operatorLinesOf selects operator entries via OPERATOR_SOURCE",
   );
 }
 

@@ -34,6 +34,7 @@ import {
   priorContextHasVipune,
   renderPriorContext,
 } from "./plan-draft.ts";
+import { OPERATOR_SOURCE } from "./plan-prior-context.ts";
 import { PLAN_DISPATCH_TIMEOUT_MS, PLAN_MARKER_CHILD_ARGS } from "./plan-investigate.ts";
 import { reporterPathFromArgs, statReporterPath } from "./reporter-preflight.ts";
 import { anglesForTier } from "./research-angles.ts";
@@ -156,7 +157,7 @@ export async function runResearchPipeline(
         : [];
     if (input.context?.trim()) {
       for (const line of input.context.trim().split("\n")) {
-        if (line.trim()) prior.push({ source: "context param", fact: line.trim() });
+        if (line.trim()) prior.push({ source: OPERATOR_SOURCE, fact: line.trim() });
       }
     }
     return prior;

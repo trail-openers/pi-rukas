@@ -21,7 +21,8 @@
  */
 
 import type { OperatorDirectives } from "./plan-directives.ts";
-import type { AngleFindings } from "./plan-draft.ts";
+import type { AngleFindings, PlanItemKindName } from "./plan-draft.ts";
+import { OPERATOR_SOURCE } from "./plan-prior-context.ts";
 
 /**
  * Minimum shared content tokens for two lines to be about the same thing.
@@ -128,7 +129,7 @@ function agrees(op: string, item: string): boolean {
 
 /** One investigation item as the drafting path sees it. */
 export interface InvestigationLine {
-  kind: string;
+  kind: PlanItemKindName;
   text: string;
   angle: string;
 }
@@ -140,8 +141,9 @@ export interface DroppedInvestigationItem<T extends InvestigationLine = Investig
   /**
    * operator: contradicts an operator line. settled: an operator line agreed
    * with `sibling` and contradicted this item. investigation: an unsettled clash.
+   * duplicate: restates an operator line (same polarity) with no concrete reference.
    */
-  reason: "operator" | "investigation" | "settled";
+  reason: "operator" | "investigation" | "settled" | "duplicate";
   /** For "settled": the investigation line the operator line kept. */
   sibling?: string;
 }
@@ -152,6 +154,12 @@ export interface InvestigationConflictResult<T extends InvestigationLine = Inves
   /** Open Questions for investigation-vs-investigation clashes no operator line settles. */
   openQuestions: string[];
 }
+
+/**
+ * Files, paths and line numbers: a restatement that adds one of these is kept,
+ * because it carries grounding the operator line lacks.
+ */
+const CONCRETE_REFERENCE = /[\w-]+\.(?:ts|tsx|js|mjs|cjs|md|json|sh|rs|py|go|ya?ml)\b|[\w.-]+\/[\w.-]+|:\d+\b/;
 
 /** The operator line that settles a clash between two items, and which item it keeps. */
 function settlement<T extends InvestigationLine>(
@@ -178,6 +186,8 @@ export function filterInvestigationConflicts<T extends InvestigationLine>(
   operatorLines: string[],
 ): InvestigationConflictResult<T> {
   const doomed = new Set<T>();
+  // Items an operator line settled in their favour: already endorsed, so not deduplicated.
+  const settledKeep = new Set<T>();
   const dropped: DroppedInvestigationItem<T>[] = [];
   const drop = (d: DroppedInvestigationItem<T>): void => {
     if (doomed.has(d.item)) return;
@@ -194,14 +204,28 @@ export function filterInvestigationConflicts<T extends InvestigationLine>(
       if (!a || !b || doomed.has(a) || doomed.has(b)) continue;
       if (!linesConflict(a.text, b.text)) continue;
       const s = settlement(a, b, operatorLines);
-      if (s) drop({ item: s.drop, against: s.line, reason: "settled", sibling: s.keep.text });
+      if (s) {
+        settledKeep.add(s.keep);
+        drop({ item: s.drop, against: s.line, reason: "settled", sibling: s.keep.text });
+      }
     }
   }
 
-  // 2. Items that contradict an operator line.
+  // 2. Items that contradict an operator line are conflicts. Items that restate
+  //    one (same topic, same polarity) are duplicates, kept only when they add a
+  //    concrete reference. A restatement is never labelled a conflict.
   for (const item of live()) {
     const op = operatorLines.find((o) => linesConflict(o, item.text));
-    if (op !== undefined) drop({ item, against: op, reason: "operator" });
+    if (op !== undefined) {
+      drop({ item, against: op, reason: "operator" });
+      continue;
+    }
+    // Acceptance-criterion paraphrases are routed to "Suggested additional criteria"
+    // by the render-time AC suppression (plan-draft), so they are not dropped here.
+    if (settledKeep.has(item) || item.kind === "acceptance-criterion") continue;
+    if (CONCRETE_REFERENCE.test(item.text)) continue;
+    const dup = operatorLines.find((o) => agrees(o, item.text));
+    if (dup !== undefined) drop({ item, against: dup, reason: "duplicate" });
   }
 
   // 3. Unsettled investigation-vs-investigation clashes among the rest.
@@ -226,6 +250,8 @@ export function droppedDisclosure(d: DroppedInvestigationItem): string {
   const why =
     d.reason === "operator"
       ? `dropped: conflicts with operator decision "${d.against.slice(0, 160)}"`
+      : d.reason === "duplicate"
+        ? `dropped: duplicate of operator line "${d.against.slice(0, 160)}"`
       : d.reason === "settled"
         ? `dropped: operator decision "${d.against.slice(0, 160)}" settles its clash with the investigation line "${(d.sibling ?? "").slice(0, 160)}"`
         : `dropped: conflicts with another investigation line "${d.against.slice(0, 160)}" that no operator decision settles`;
@@ -233,7 +259,7 @@ export function droppedDisclosure(d: DroppedInvestigationItem): string {
 }
 
 /** Investigation kinds an operator line can contradict (#1132). */
-const CONFLICTABLE_KINDS = new Set([
+const CONFLICTABLE_KINDS: ReadonlySet<PlanItemKindName> = new Set<PlanItemKindName>([
   "edge-case",
   "test-surface-item",
   "out-of-scope",
@@ -250,7 +276,7 @@ export function operatorLinesOf(
     ...directives.outOfScope,
     ...directives.pitfalls,
     ...(directives.testSurface ?? []),
-    ...priorContext.filter((p) => p.source === "context param").map((p) => p.fact),
+    ...priorContext.filter((p) => p.source === OPERATOR_SOURCE).map((p) => p.fact),
   ];
 }
 

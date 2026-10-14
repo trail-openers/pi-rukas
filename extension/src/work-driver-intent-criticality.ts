@@ -12,6 +12,7 @@
  * decision.
  */
 
+import { trace } from "./trace.ts";
 import type { NormalisedSpec, SpecAssumption, SpecEvidence } from "./work-driver-intent.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 
@@ -129,4 +130,67 @@ export function contradictionAssumptions(evidence: SpecEvidence[]): SpecAssumpti
     text: `issue detail is stale: ${e.claim}`,
     basis: e.source ? `supporting contradiction — ${e.source}` : "supporting contradiction",
   }));
+}
+
+/**
+ * CRITICAL bullets of a filed issue's "Open points" section (#1151).
+ *
+ * The gap gate files unresolved CRITICAL points under that heading, one
+ * `- [CRITICAL] <point> — <proposal>` bullet each. Only that section is read,
+ * and only bullets tagged CRITICAL: HIGH/MEDIUM/LOW residuals never gate.
+ */
+export function criticalOpenPoints(issueBody: string): string[] {
+  const points: string[] = [];
+  let inSection = false;
+  for (const raw of issueBody.split("\n")) {
+    const line = raw.trim();
+    if (/^#{1,6}\s/.test(line)) {
+      inSection = /^#{1,6}\s*open points\b/i.test(line);
+      continue;
+    }
+    if (!inSection) continue;
+    const item = line.match(/^(?:[-*]|\d+[.)])\s+(.*)$/)?.[1];
+    if (item === undefined) continue;
+    const tagged = item.match(/^[*_`\s]*\[CRITICAL\][*_`\s:]*(.*)$/i)?.[1]?.trim();
+    if (tagged) points.push(tagged);
+  }
+  return points;
+}
+
+/**
+ * Words that name a decision the driver must not make on the resolver's behalf.
+ * An unresolved CRITICAL point touching one of these parks rather than proceeds.
+ */
+const AUTHORIZATION_CLASS = /\b(?:authenticat\w*|authori[sz]\w*|secrets?|permissions?)\b/i;
+
+/**
+ * Apply the filed issue's unresolved CRITICAL open points to the spec (#1151).
+ *
+ * - No open points: the spec is unchanged.
+ * - An authentication/authorization/secrets/permissions point: park as
+ *   `underspecified` — the driver will not choose who may do what.
+ * - Any other CRITICAL point: a `proceed` is capped at
+ *   `proceed-with-assumptions`, with each point named as an assumption so it
+ *   reaches the PR body. An existing park is never rewritten here.
+ */
+export function applyOpenPointGate(spec: NormalisedSpec, openPoints: string[]): NormalisedSpec {
+  if (openPoints.length === 0 || spec.verdict === "park") return spec;
+  if (openPoints.some((point) => AUTHORIZATION_CLASS.test(point))) {
+    trace("work-driver: intent — unresolved CRITICAL open point concerns authorization, parking");
+    return { ...spec, verdict: "park", parkReason: "underspecified", parkReasonSource: "default" };
+  }
+  trace(
+    `work-driver: intent — ${openPoints.length} unresolved CRITICAL open point(s) carried as assumptions`,
+  );
+  return {
+    ...spec,
+    verdict: "proceed-with-assumptions",
+    assumptions: [
+      ...spec.assumptions,
+      ...openPoints.map((point) => ({
+        text: `unresolved CRITICAL open point in the filed issue: ${point}`,
+        basis: "named by the intent gate; proceeding on it as an assumption",
+      })),
+    ],
+  };
 }

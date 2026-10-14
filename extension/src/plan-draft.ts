@@ -81,7 +81,7 @@ export interface AngleFindings {
 }
 
 export interface PlanItemKind {
-  kind: string;
+  kind: PlanItemKindName;
   text: string;
   angle: string;
 }

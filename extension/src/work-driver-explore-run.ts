@@ -21,6 +21,7 @@ import {
   fetchIssueBodyWithRetry,
 } from "./work-driver-explore.ts";
 import { deleteSpecArtifact, persistSpecArtifact } from "./work-driver-intent-artifact.ts";
+import { applyOpenPointGate, criticalOpenPoints } from "./work-driver-intent-criticality.ts";
 import { intentResolutionEnabled, reconcileVerdict } from "./work-driver-intent.ts";
 import {
   type ExploreVerdict,
@@ -97,6 +98,8 @@ export async function runExplore(
   // artifact so the agent can `cat` for the rest if needed.
   const INLINE_BODY_CAP = 16 * 1024;
   const bodiesForPrompt: Array<{ issue: number; body: string; truncated: boolean }> = [];
+  // #1151 — the untruncated primary body, for the Open points gate below.
+  let primaryBody = "";
 
   // Persist each issue body as a claim-check artifact (best-effort).
   // For single-issue cycles, the first body is stored under the legacy
@@ -108,6 +111,7 @@ export async function runExplore(
     const result = bodySettled[i];
     if (result?.status === "fulfilled") {
       const body = result.value.stdout;
+      if (n === ctx.issue) primaryBody = body;
       if (!body.trim()) {
         emptyBodyIssues.push({
           issue: n,
@@ -227,7 +231,9 @@ export async function runExplore(
     // park may be refuted by a complete spec. This runs on the WINNER
     // (prose or artifact), so the reconciliation logic is identical
     // regardless of which channel won the precedence rule.
-    const finalSpec = resolved ? reconcileVerdict(resolved.spec) : undefined;
+    const finalSpec = resolved
+      ? applyOpenPointGate(reconcileVerdict(resolved.spec), criticalOpenPoints(primaryBody))
+      : undefined;
     if (resolved !== undefined && finalSpec !== undefined) {
       next = {
         ...next,

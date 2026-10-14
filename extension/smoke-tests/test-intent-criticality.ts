@@ -8,7 +8,11 @@
  * impossible to build remain fail-closed.
  */
 
-import { intentCriticalityEnabled } from "../src/work-driver-intent-criticality.ts";
+import {
+  applyOpenPointGate,
+  criticalOpenPoints,
+  intentCriticalityEnabled,
+} from "../src/work-driver-intent-criticality.ts";
 import {
   type NormalisedSpec,
   type SpecEvidence,
@@ -207,6 +211,95 @@ for (const incident of incidents) {
     !specIsComplete(missingCriticality),
     "missing criticality also fails the complete-spec predicate",
   );
+}
+
+// ------------------------------------------- CRITICAL open points (#1151)
+
+{
+  // A filed issue's "Open points" section lists the CRITICAL points the gap
+  // gate could not resolve. Extraction reads only that section, and only the
+  // bullets tagged [CRITICAL].
+  const body = [
+    "## Context",
+    "- [CRITICAL] not a point: outside the section",
+    "",
+    "## Open points (unresolved at the gap-gate cap)",
+    "",
+    "The gap gate reached its iteration cap with these CRITICAL points still unresolved.",
+    "",
+    "- [CRITICAL] Which timeout wins when both are set — proposal: the shorter one",
+    "- [HIGH] A HIGH point is not gated here",
+    "- **[CRITICAL]** Whether the retry ceiling is per-provider — proposal: global",
+    "",
+    "## Open Questions",
+    "- (none)",
+  ].join("\n");
+  const points = criticalOpenPoints(body);
+  assert(
+    points.length === 2 &&
+      points[0] === "Which timeout wins when both are set — proposal: the shorter one" &&
+      points[1] === "Whether the retry ceiling is per-provider — proposal: global",
+    "criticalOpenPoints reads only CRITICAL bullets in the Open points section",
+  );
+  assert(criticalOpenPoints("## Open Questions\n- [CRITICAL] wrong section").length === 0,
+    "criticalOpenPoints ignores CRITICAL bullets outside the Open points section");
+}
+
+{
+  // An unresolved CRITICAL point caps a proceed at proceed-with-assumptions,
+  // and each point is named as an assumption so it reaches the PR body.
+  const resolved = applyOpenPointGate(spec({ verdict: "proceed" }), [
+    "Which timeout wins when both are set",
+  ]);
+  assert(resolved.verdict === "proceed-with-assumptions", "an open CRITICAL point caps proceed at proceed-with-assumptions");
+  assert(
+    resolved.assumptions.some((a) => a.text.includes("Which timeout wins when both are set")),
+    "each open CRITICAL point is named as an assumption",
+  );
+  const rendered = renderAssumptions(resolved);
+  assert(rendered.includes("Which timeout wins when both are set"), "the named point reaches the rendered PR-body assumptions");
+}
+
+{
+  // A plain proceed-with-assumptions is not downgraded, and a park stays a park.
+  const withAssumption = spec({ verdict: "proceed-with-assumptions" });
+  assert(
+    applyOpenPointGate(withAssumption, ["Which timeout wins"]).verdict === "proceed-with-assumptions",
+    "an open point keeps proceed-with-assumptions",
+  );
+  const parked = spec({ verdict: "park", parkReason: "already-implemented", parkReasonSource: "parsed" });
+  assert(
+    applyOpenPointGate(parked, ["Which timeout wins"]).parkReason === "already-implemented",
+    "an existing park is not rewritten by an open point",
+  );
+}
+
+{
+  // An open point that touches authentication, authorization, secrets or
+  // permissions is not something the driver may decide: park as underspecified.
+  for (const point of [
+    "Who may call the retry endpoint — authentication is undecided",
+    "Which role has authorization to rotate keys",
+    "Where the API secrets live — proposal: env var",
+    "What permissions the worker needs on the bucket",
+  ]) {
+    const resolved = applyOpenPointGate(spec({ verdict: "proceed" }), [point]);
+    assert(
+      resolved.verdict === "park" && resolved.parkReason === "underspecified",
+      `an authorization-class open point parks as underspecified: ${point.slice(0, 40)}`,
+    );
+  }
+  assert(
+    applyOpenPointGate(spec({ verdict: "proceed" }), ["Which timeout wins"]).verdict ===
+      "proceed-with-assumptions",
+    "canary: a non-authorization open point does not park",
+  );
+}
+
+{
+  // No open points: the spec passes through untouched.
+  const plain = spec({ verdict: "proceed" });
+  assert(applyOpenPointGate(plain, []) === plain, "no open points leaves the spec unchanged");
 }
 
 // -------------------------------------------------------------- escape hatch

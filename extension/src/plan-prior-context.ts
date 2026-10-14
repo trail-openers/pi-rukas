@@ -25,7 +25,7 @@
  */
 
 /** The operator-channel source tag (plan-driver context param entries). */
-const OPERATOR_SOURCE = "context param";
+export const OPERATOR_SOURCE = "context param";
 
 /** Cap for NON-operator prior context in child prompts (~2000 chars total). */
 export const PRIOR_CONTEXT_CHILD_PROMPT_CAP = 2000;
