@@ -116,12 +116,16 @@ function renderCandidates(s: MemoryStats): string[] {
     "",
     "Invisible to developer briefs until an operator promotes them. Unpromoted candidates",
     "age out under `vipune prune`. To promote a row you have verified (operator only):",
-    "`vipune update <id> --status active` — denied to every agent role.",
+    "`vipune update <id> --status active` — an operator action: no agent role is granted `vipune update` in agents.json.",
     "",
   ];
   // Ids and types only. Candidate content is LLM-derived from untrusted diffs;
   // printing it here would put attacker-shaped text into the PM's context.
-  for (const c of s.candidates) out.push(`- \`${c.id}\` (${c.type})`);
+  // An id is stored text too: render it only if it cannot break the markdown.
+  for (const c of s.candidates) {
+    const id = /^[A-Za-z0-9_-]+$/.test(c.id) ? `\`${c.id}\`` : "(unprintable id)";
+    out.push(`- ${id} (${c.type})`);
+  }
   if (total > s.candidates.length) out.push(`- …and ${total - s.candidates.length} more`);
   return out;
 }

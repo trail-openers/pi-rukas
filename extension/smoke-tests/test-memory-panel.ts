@@ -133,6 +133,16 @@ const stats = (o: Partial<MemoryStats>): MemoryStats => ({
   );
   assert(!/--force|-t |--text/.test(panel), "canary: the hint never suggests --force or a rewrite");
   assert(/and 10 more/.test(panel), "candidates beyond the listed ones are counted, not hidden");
+  const hostile = renderMemoryPanel(
+    stats({
+      byStatus: { candidate: 1 },
+      candidates: [{ id: "x`\n## injected", type: "observation" }],
+    }),
+  );
+  assert(
+    hostile.includes("(unprintable id)") && !hostile.includes("## injected"),
+    "a stored id that is not a plain token is replaced, never rendered into the markdown",
+  );
   assert(
     !/Candidates awaiting/.test(renderMemoryPanel(stats({}))),
     "a store with no candidates gets no candidate section",
