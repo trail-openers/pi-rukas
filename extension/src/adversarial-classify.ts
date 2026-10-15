@@ -5,7 +5,11 @@
  * returns the cause classification the loop branches on. No behaviour change.
  */
 import type { DispatchFailureCause, DispatchResult } from "./types.ts";
-import { ADVERSARIAL_TRANSIENT_MAX_RETRIES, isRateLimit429Msg } from "./types.ts";
+import { ADVERSARIAL_TRANSIENT_MAX_RETRIES } from "./types.ts";
+import {
+  classifyFailureCause,
+  failureCauseReasonForClass,
+} from "./work-driver-failure-taxonomy.ts";
 
 /**
  * #309/#314 — classify a dispatch result by its ROOT CAUSE so the adversarial
@@ -17,6 +21,8 @@ export function classifyDispatchOutcome(r: DispatchResult): {
   cause: DispatchFailureCause;
   shouldRetry: boolean;
   maxRetries: number;
+  /** #79 — a provider-stated delay (burst 429) to wait before re-spawning. */
+  waitMs?: number;
   headline: string;
 } {
   // killCause (#296) — pi-rukas itself ended the child. Must check first.
@@ -77,23 +83,27 @@ export function classifyDispatchOutcome(r: DispatchResult): {
     };
   }
 
-  // 429 rate-limit — detected from errorStop.message.
-  if (r.errorStop && isRateLimit429Msg(r.errorStop.message)) {
-    return {
-      cause: "rate-limited:429",
-      shouldRetry: false,
-      maxRetries: 0,
-      headline: `provider rate-limited (429) — retrying cannot help (${r.errorStop.message ?? "retry delay requested"})`,
-    };
-  }
-
-  // Provider error-stop (transport severance, provider timeout, etc).
+  // Provider error-stop (transport severance, timeout, 429, missing model).
+  // #79 — the driver's taxonomy decides, so a reviewer child and a step
+  // dispatch cannot disagree about what a given provider error means: a burst
+  // 429 is waited out (`waitMs`), a quota window or a 404 model is not retried.
   if (r.errorStop) {
+    const message = r.errorStop.message ?? r.errorStop.reason;
+    const tax = classifyFailureCause({
+      kind: "dispatch-failed-provider",
+      providerMessage: r.errorStop.message,
+    });
+    const severed = tax.cause === "provider-severed";
     return {
-      cause: "provider-severed",
-      shouldRetry: true,
-      maxRetries: ADVERSARIAL_TRANSIENT_MAX_RETRIES,
-      headline: `provider/transport error: ${r.errorStop.message ?? r.errorStop.reason}`,
+      cause: tax.cause,
+      shouldRetry: tax.shouldRetry,
+      // A severed stream keeps the loop's own depth; runPhaseWithInfraRetry
+      // stops it early when the same error comes back (#79).
+      maxRetries: severed ? ADVERSARIAL_TRANSIENT_MAX_RETRIES : tax.maxRetries,
+      ...(tax.waitMs !== undefined ? { waitMs: tax.waitMs } : {}),
+      headline: severed
+        ? `provider/transport error: ${message}`
+        : `${failureCauseReasonForClass({ providerMessage: message }, tax)} (${message})`,
     };
   }
 

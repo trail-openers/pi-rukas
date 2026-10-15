@@ -26,10 +26,9 @@
  * routed state or the merged state, never a half-state).
  */
 
-import { exec } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
+import { execp as checkpointExecp } from "./exec.ts";
 import { excludeToolListFor } from "./role-tools.ts";
 import { isRoleName } from "./roles.ts";
 import { trace } from "./trace.ts";
@@ -44,8 +43,6 @@ import {
   persistCycle,
   readState,
 } from "./workflow-state.ts";
-
-const checkpointExecp = promisify(exec);
 
 /** #543 (M5) — structurally write-gated roles: the SAME set role-tools.ts
  * passes `--exclude-tools write,edit,multiedit` to (explore /
@@ -193,10 +190,10 @@ export async function checkpointCapedDispatch(
         cwd,
         maxBuffer: 256 * 1024,
       });
-      const dirty = porcelain
-        .trim()
-        .split("\n")
-        .filter((l) => l.trim().length > 0);
+      // Split the RAW output: a leading `.trim()` strips the status column
+      // of a first ` M path` record, and `slice(3)` below then drops the
+      // path's first character (#1190).
+      const dirty = porcelain.split("\n").filter((l) => l.trim().length > 0);
       if (dirty.length === 0) {
         tree = "clean";
       } else {
@@ -273,7 +270,6 @@ export async function checkpointCapedDispatch(
           maxBuffer: 256 * 1024,
         });
         remainingFiles = postPorcelain
-          .trim()
           .split("\n")
           .filter((l) => l.trim().length > 0)
           .map((l) => l.slice(3))

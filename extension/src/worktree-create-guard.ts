@@ -19,6 +19,7 @@
 
 import fs from "node:fs/promises";
 import { trace } from "./trace.ts";
+import { assertSafeRef } from "./worktree-loss.ts";
 import {
   DirtyWorktreeError,
   type DirtyWorktreeFinding,
@@ -47,6 +48,13 @@ export interface CreateGuardOpts {
    * normal workstream path runs the target inspection unconditionally.
    */
   callerVerifiedTargetAbsent?: boolean;
+  /**
+   * #1170 — set ONLY by the branch step (mechanizedBranchSetup): an unreadable
+   * sibling listing refuses with WorktreeScanError. Unset (every other caller,
+   * e.g. the dep-scheduler create path) the sibling scan stays fail-open — the
+   * contract runCreateGuards had before #1170, so its jsdoc is unchanged for them.
+   */
+  strictSiblingListing?: boolean;
 }
 
 /**
@@ -62,6 +70,40 @@ export async function runCreateGuards(
   inCycleWorktrees?: string[],
 ): Promise<void> {
   const abs = worktreePath(opts.repoRoot, opts.name);
+  // #1170 — an unresolvable base ref is a REF error, not worktree state. Every
+  // inspection below reads `<fromRef>^{tree}`, so with a bad ref each existing
+  // worktree would read as unreadable → "loss" and the failure would be
+  // misclassified as a dirty leftover. Nothing is removed on this path: the
+  // guards return and `git worktree add` itself refuses the ref, surfacing the
+  // real git stderr (create-error). An existing worktree is still refused by
+  // `git worktree add`'s own path-exists check, so nothing is destroyed.
+  // Fail closed (#1170 round 3): ONLY exit 1 with no output means "unresolved"
+  // (a create error here, with no `worktree add` run — that add builds a shell
+  // string and must never receive a ref that did not resolve). A timeout, a
+  // signal, any other exit code or any stderr text is a probe failure: the
+  // guards are not skipped on it, the probe throws.
+  // #1170 — the base ref is interpolated into shell strings below (the probe
+  // and every inspection). Only a plain ref name may reach one: anything else
+  // is refused as a create error before any command runs.
+  try {
+    assertSafeRef(opts.fromRef);
+  } catch (err) {
+    const wrapped = new Error(
+      `worktreeCreate: ${opts.name} failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    wrapped.cause = err;
+    throw wrapped;
+  }
+  if (!(await baseRefResolves(execFn, opts))) {
+    // EARLY RETURN — before the pre-remove below (`worktreeRemove … true`), so an
+    // unresolved ref deletes NOTHING: no sibling or target worktree is touched,
+    // and `git worktree add` runs against the existing path, refuses it and
+    // surfaces the real stderr as a create error (#1170).
+    trace(
+      `worktree: base ref ${opts.fromRef} does not resolve \u2014 deferring to git worktree add`,
+    );
+    return;
+  }
   // #545 — the mechanism that killed the #540 restart: `worktree add` itself
   // refuses against ANY leftover worktree of the same cycle (e.g. the
   // cycle's OWN dead siblings from a parked run, all named
@@ -73,15 +115,11 @@ export async function runCreateGuards(
   // #753 — the SIBLING scan excludes this cycle's own worktrees (the exclusion
   // happens inside findDirtySameIssueLeftover, which resolves both sides —
   // an earlier workstream's legitimate in-progress dirt is not a leftover).
-  // #753 (six-lens FIX 2) — the sibling scan degrades the SAFE direction:
-  // a transient `git worktree list` failure returns "no finding" and creation
-  // proceeds EXACTLY as pre-#545 did (the raw git error from `git worktree
-  // add`, now plumbed via `gitErrorDetail`). A throw here instead escaped to
-  // `create-error` with no dirty finding AND let `git worktree add` proceed
-  // onto an UNSCANNED dirty sibling — the shape #545 exists to prevent.
-  // This mirrors `scanWorktrees`' documented "unreadable list → empty array
-  // — the safe direction (no action)" and `inspectWorktreeForLoss`'s #475
-  // fail-open ("an unreadable worktree is removed as today").
+  // #1170 — an unreadable `git worktree list` THROWS here and refuses creation.
+  // Strict (branch step only): see CreateGuardOpts.strictSiblingListing.
+  // Non-strict callers proceed on an unreadable listing because `git worktree
+  // add` then surfaces the git error itself (plumbed via gitErrorDetail); the
+  // strict branch step refuses instead.
   const siblingDirty = await findDirtySameIssueLeftover(
     execFn,
     opts.repoRoot,
@@ -89,12 +127,8 @@ export async function runCreateGuards(
     issuePrefix,
     opts.name,
     inCycleWorktrees,
-  ).catch((e) => {
-    trace(
-      `worktree: sibling scan failed for ${opts.name} — proceeding without it (${e instanceof Error ? e.message : String(e)})`,
-    );
-    return undefined;
-  });
+    opts.strictSiblingListing === true,
+  );
   if (siblingDirty) {
     throw new DirtyWorktreeError(siblingDirty);
   }
@@ -133,6 +167,43 @@ export async function runCreateGuards(
 
 /** Re-export of the finding type for callers of the guard. */
 export type { DirtyWorktreeFinding };
+
+/**
+ * Probe `<fromRef>^{tree}` (the ref is JSON-quoted and pre-validated by
+ * assertSafeRef). `true` = resolves; `false` = cleanly unresolved (exit 1, empty
+ * stdout and stderr, no signal or kill). Any other failure throws a create error.
+ */
+async function baseRefResolves(execFn: ExecFn, opts: CreateGuardOpts): Promise<boolean> {
+  try {
+    await execFn(`git rev-parse --verify --quiet ${JSON.stringify(`${opts.fromRef}^{tree}`)}`, {
+      cwd: opts.repoRoot,
+      maxBuffer: 64 * 1024,
+    });
+    return true;
+  } catch (err) {
+    const e = err as {
+      code?: unknown;
+      signal?: unknown;
+      killed?: unknown;
+      stdout?: unknown;
+      stderr?: unknown;
+      message?: unknown;
+    };
+    const quietExit1 =
+      e?.code === 1 &&
+      !e.signal &&
+      !e.killed &&
+      String(e.stdout ?? "") === "" &&
+      String(e.stderr ?? "") === "";
+    if (quietExit1) return false;
+    const detail = String(e?.stderr ?? "").trim() || String(e?.message ?? err).trim();
+    const wrapped = new Error(
+      `worktreeCreate: ${opts.name} failed: base ref probe for ${opts.fromRef} did not complete (${detail})`,
+    );
+    (wrapped as Error & { stderr?: string }).stderr = detail;
+    throw wrapped;
+  }
+}
 
 async function pathExists(p: string): Promise<boolean> {
   try {

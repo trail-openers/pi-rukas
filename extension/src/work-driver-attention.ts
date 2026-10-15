@@ -15,15 +15,18 @@
  * `--restart` is the override, and it is the right one: it already means "I
  * have revised the issue, start clean", which is exactly what a human resolving
  * the flag would do.
+ *
+ * #1327 — `--restart` also clears the label from every issue in the group, so
+ * the restarted cycle does not leave a stale flag behind. Without that, a
+ * restarted cycle that is interrupted could not resume (the resume, which has
+ * no `--restart`, would be refused), and a host would have to strip the label
+ * itself. The next handoff applies it again.
  */
 
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
+import { execp } from "./exec.ts";
 import { detectForge } from "./forge-detect.ts";
 import { type Forge, createForge } from "./forge.ts";
 import { trace } from "./trace.ts";
-
-const execp = promisify(exec);
 
 export const ATTENTION_LABEL = "needs-human-attention";
 
@@ -115,7 +118,6 @@ export async function checkAttentionLabel(
   issue: number,
   opts: { restart?: boolean; issues?: number[]; forge?: Forge } = {},
 ): Promise<AttentionVerdict> {
-  if (opts.restart === true) return { refuse: false, checked: true };
   // EVERY issue in the group, not just the primary. `claimCycle` keys the
   // in-process registry on all of them — this check was written on the
   // adjacent line and keyed on one, so a grouped cycle for #10+#11 where #11
@@ -123,6 +125,10 @@ export async function checkAttentionLabel(
   // exists to stop.
   const all = [...new Set([issue, ...(opts.issues ?? [])])];
   const forge = opts.forge ?? (await attentionForge(repoRoot));
+  if (opts.restart === true) {
+    if (forge) await clearAttentionLabels(forge, all);
+    return { refuse: false, checked: true };
+  }
   if (!forge) return { refuse: false, checked: false };
   let anyUnchecked = false;
   for (const n of all) {
@@ -137,4 +143,27 @@ export async function checkAttentionLabel(
     }
   }
   return { refuse: false, checked: !anyUnchecked };
+}
+
+/**
+ * #1327 — `--restart` answers the label's question, so the label goes. Only
+ * issues that carry it are edited. Best-effort: a failed read or removal is
+ * traced and never stops the restart.
+ */
+export async function clearAttentionLabels(forge: Forge, issues: number[]): Promise<number[]> {
+  const cleared: number[] = [];
+  for (const n of issues) {
+    try {
+      const labels = (await forge.issueView(n)).labels ?? [];
+      if (!labels.some((l) => l.name === ATTENTION_LABEL)) continue;
+      await forge.labelRemove("issue", n, ATTENTION_LABEL);
+      cleared.push(n);
+      trace(`work-driver: --restart cleared ${ATTENTION_LABEL} from #${n}`);
+    } catch (err) {
+      trace(
+        `work-driver: --restart could not clear ${ATTENTION_LABEL} from #${n}: ${(err as Error).message}`,
+      );
+    }
+  }
+  return cleared;
 }

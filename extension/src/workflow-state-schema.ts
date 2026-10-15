@@ -17,7 +17,7 @@ export type { FenceViolation } from "./workflow-state-schema-verify.ts";
 import type { ConsolidationCompleteness } from "./workflow-state-schema-consolidation-completeness.ts";
 import type { ConvergeEvidence } from "./workflow-state-schema-converge.ts";
 import type { PlanQualityReason } from "./workflow-state-schema-plan-quality.ts";
-import type { FenceViolation } from "./workflow-state-schema-verify.ts";
+import type { FenceViolation, VerifyEvidenceOrigin } from "./workflow-state-schema-verify.ts";
 import type { Workstream, WorkstreamBaseShas } from "./workflow-state-schema-workstreams.ts";
 
 // #861 — PlanQualityReason moved to its own fragment (the 500-line cap);
@@ -325,6 +325,12 @@ export interface PipelineState {
     lenses: Array<{ lens: string; ok: boolean; blocked: boolean; findings: number }>;
   };
   /**
+   * The pushed branch commit the most recent completed lens review read. The
+   * next review round diffs against it to show what the fix pass changed
+   * (fix-delta.ts). Absent before the first review and on older state files.
+   */
+  lensReviewedHead?: string;
+  /**
    * #543 — the most recent cap kill's trigger evidence (F1 loop / F6
    * token-budget), on pipelineState per the #533 tail-invariance rule.
    * Type: workflow-state-cap.ts (§12).
@@ -353,8 +359,18 @@ export interface PipelineState {
     branchExists: boolean;
     /** True when `git ls-remote --heads origin <branch>` returns the branch. */
     branchPushed: boolean;
-    /** Short SHA of HEAD when the snapshot was taken. */
-    headSha: string;
+    /** Short SHA of repoRoot's HEAD (the operator's checkout) when the
+     * snapshot was taken — NOT the feature branch; see `branchTip`. Absent on
+     * snapshots written before the `headSha` → `repoRootHeadSha` rename (no
+     * value was ever recorded under the new name), and the handoff omits the line. */
+    repoRootHeadSha?: string;
+    /** The feature branch's own tip, and its commits ahead of the cycle's
+     * base when that was readable. Absent when no local branch exists and on
+     * state files written before the field. */
+    branchTip?: { sha: string; ahead?: number };
+    /** True when reading the branch tip failed for a reason other than the branch
+     * not existing — the tip is unknown, not absent, so no repoRoot fallback is shown. */
+    branchTipNotRead?: boolean;
     /** Epoch ms when the snapshot was captured. */
     capturedAt: number;
     /** Worktrees that were not removed because they contained uncommitted
@@ -377,6 +393,15 @@ export interface PipelineState {
      * unknown (readers treat absent as "no committed work recorded").
      */
     committedWork?: Array<{ worktreeId: string; path: string; headSha: string; ahead: number }>;
+    /**
+     * git reads that FAILED while the snapshot was taken (`<what>: <error>`).
+     * A failed read leaves its field at the empty default, which is
+     * indistinguishable from a real "0 files / no branch / no commits" — a
+     * fork-exhausted host produced a handoff saying "0 file(s) modified"
+     * over five reviewed commits. Non-empty means the fields above are NOT
+     * evidence of absence; the renderers say so. Absent on older state files.
+     */
+    unreadable?: string[];
   };
   /**
    * Epoch ms when the 90-min wall-clock cap was started. Persists across
@@ -384,10 +409,27 @@ export interface PipelineState {
    * boot to restore in-memory timers.
    */
   reviewCapStartedAt?: number;
+  /** #1238 — the caller's whole-cycle deadline as an absolute epoch ms, so a
+   *  resume keeps it (work-driver-deadline.ts). Absent when none was set. */
+  cycleDeadlineMs?: number;
   /** Surfaced plumb-reports since the cycle began (for handoff body). */
   plumbReports: Array<{ step: WorkStep; role: string; body: string; at: number }>;
   /** PR number once Step 6 opens one. */
   prNumber?: number;
+  /**
+   * #1292 — the PR's draft state, recorded only once the PR number is known:
+   * `draft` until the review is done, `ready` once marked (or found not to be
+   * a draft at all), `ready-failed` (with the last error) when `pr ready`
+   * failed. `attempts` counts `pr ready` calls made this cycle (bounded);
+   * `holdReason` says why the driver deliberately left it a draft. Absent =
+   * no draft fact recorded (the PR was not opened as a draft).
+   */
+  prDraft?: {
+    status: "draft" | "ready" | "ready-failed";
+    error?: string;
+    attempts?: number;
+    holdReason?: string;
+  };
   /**
    * PR17 — SHA of the base commit the feature branch grew from, recorded
    * by the branch step (git rev-parse HEAD at repoRoot after ops created
@@ -425,6 +467,8 @@ export interface PipelineState {
     at: number;
     retries?: number;
     recovered?: boolean;
+    /** Which writer raised this park; see `VerifyEvidenceOrigin`. Absent pre-origin. */
+    origin?: VerifyEvidenceOrigin;
     /**
      * #814 — structured develop-scope-fence violations (see
      * `FenceViolation` below). Absent = none recorded.

@@ -1,9 +1,8 @@
 /** `/work-status` command (PR2 O4) — compact terminal-friendly status snapshot. */
-import { exec } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import {
   MAX_CI_RETRIES,
@@ -13,6 +12,9 @@ import {
 } from "./work-driver-context.ts";
 import { formatCycleTotal } from "./work-driver-cycle-total.ts";
 import { explainCap } from "./work-driver-explain.ts";
+import { unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
+import { describeBranchState } from "./work-driver-handoff-view.ts";
+import { mergedLine } from "./work-driver-terminal-delivery.ts";
 import { readQueueSummary } from "./work-queue-summary.ts";
 import { humanActionFor } from "./work-queue.ts";
 import { renderDispatchDurations } from "./work-status-dispatch-durations.ts";
@@ -21,7 +23,6 @@ import { discoverAllCycles, renderCycleIndex } from "./work-status-index.ts";
 import { renderInterruptedStatus } from "./work-status-interrupted.ts";
 import { isIssueNumberArg, resolveJobId } from "./work-status-jobid.ts";
 import { type WorkState, readState, workStateDir } from "./workflow-state.ts";
-const execp = promisify(exec);
 
 /** Resolve project repo root via `git rev-parse --show-toplevel`. */
 async function resolveRepoRoot(cwd: string): Promise<string> {
@@ -110,6 +111,13 @@ export function renderRunningStatus(state: WorkState, repoRoot: string): string 
   if ((ps.ciRetryCount ?? 0) > 0) {
     lines.push(`  ci retries: ${ps.ciRetryCount}/${MAX_CI_RETRIES}`);
   }
+  // #1238 — the caller-set whole-cycle deadline, rendered beside the loop
+  // caps so the operator sees how much budget is left before the caller
+  // kills the process (the tehas `docker stop` shape this feature closes).
+  if (ps.cycleDeadlineMs) {
+    const remaining = Math.max(0, ps.cycleDeadlineMs - Date.now());
+    lines.push(`  deadline: ${fmtElapsed(remaining)} remaining`);
+  }
 
   const totals = stepTotals(state.eventLog);
   if (Object.keys(totals).length > 0) {
@@ -159,7 +167,7 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
   const issue = state.issue;
   const statusBadge =
     ps.status === "merged"
-      ? "MERGED ✓"
+      ? mergedLine(state)
       : ps.status === "handoff"
         ? "HANDOFF (cap-hit, needs human attention)"
         : "ABORTED (mid-flight failure, needs human attention)";
@@ -182,15 +190,12 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
     lines.push("", "Worktree state:");
     if (ps.branchName) {
       const pushedTag = snap ? (snap.branchPushed ? " (pushed)" : " (NOT pushed)") : "";
-      const headTag = snap?.headSha ? ` · HEAD ${snap.headSha}` : "";
-      lines.push(`  branch: ${ps.branchName}${pushedTag}${headTag}`);
+      const view = describeBranchState(snap);
+      lines.push(`  branch: ${ps.branchName}${pushedTag}${view.tip ? ` \u00b7 ${view.tip}` : ""}`);
     }
     lines.push(`  ${ps.prNumber ? `PR: #${ps.prNumber}` : "PR: none created"}`);
     if (snap) {
-      const fileCount = snap.unstagedCount + snap.stagedCount;
-      lines.push(
-        `  uncommitted: ${fileCount} file(s)${fileCount > 0 ? ` (${snap.stagedCount} staged, ${snap.unstagedCount} unstaged)` : ""}`,
-      );
+      lines.push(`  ${describeBranchState(snap).files}`);
       if (snap.modifiedFiles.length > 0) {
         const shown = snap.modifiedFiles.slice(0, 10);
         lines.push(
@@ -201,12 +206,19 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
       if (snap.retainedWorktrees?.length) {
         lines.push("  retained worktrees:", ...snap.retainedWorktrees.map((wt) => `    ${wt}`));
       }
+      lines.push(...unreadableSnapshotLines(ps).map((l) => `  ${l}`));
     }
   }
 
   // GitHub handoff outcome.
   const handoffEvt = [...state.eventLog].reverse().find((e) => e.kind === "handoff-emitted");
-  if (handoffEvt?.kind === "handoff-emitted") {
+  if (handoffEvt?.kind === "handoff-emitted" && handoffEvt.delivery === "host") {
+    // #1327 — nothing was posted by design: the host delivered the handoff.
+    lines.push(
+      "",
+      "Handoff channel: host — no forge comment or label (PI_ENSEMBLE_HANDOFF_CHANNEL=host)",
+    );
+  } else if (handoffEvt?.kind === "handoff-emitted") {
     const te = handoffEvt;
     // #798 — per-target fields present → label landed on (both) issue+PR;
     // the single-boolean pre-#798 shape renders as before.
@@ -302,7 +314,11 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
             `  git push -u origin ${branchForCmd}`,
           ]),
     );
-    if (handoffEvt?.kind === "handoff-emitted" && !handoffEvt.commentUrl) {
+    if (
+      handoffEvt?.kind === "handoff-emitted" &&
+      !handoffEvt.commentUrl &&
+      handoffEvt.delivery !== "host"
+    ) {
       lines.push(
         "",
         "  # 5. Manually post the handoff comment (the GitHub-side post FAILED above):",

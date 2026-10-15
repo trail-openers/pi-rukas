@@ -24,6 +24,7 @@ import {
 import { deleteSpecArtifact, persistSpecArtifact } from "./work-driver-intent-artifact.ts";
 import { finaliseSpecVerdict } from "./work-driver-intent-finalise.ts";
 import { intentResolutionEnabled } from "./work-driver-intent.ts";
+import { issueImagesFor } from "./work-driver-issue-images.ts";
 import {
   type ExploreVerdict,
   parseExploreVerdict,
@@ -199,12 +200,13 @@ export async function runExplore(
   // return without setting activeIssues/droppedIssues at all — silently
   // dropping per-issue routing so every requested issue proceeded.
   const useIntent = intentResolutionEnabled() && issues.length === 1;
-  const prompt = inlineExplorePrompt(
-    issues,
-    scratchDir(ctx.repoRoot, ctx.issue),
-    bodiesForPrompt,
-    useIntent,
-  );
+  // The issue's own images, where the launcher left any: attached to the
+  // explore prompt (and its retry), with a section that lists them.
+  const img = await issueImagesFor(ctx, issues, "explore");
+  const dctx: CycleContext = { ...ctx, dispatchFn: img.dispatch };
+  const prompt =
+    inlineExplorePrompt(issues, scratchDir(ctx.repoRoot, ctx.issue), bodiesForPrompt, useIntent) +
+    img.section;
   // #1094 — one dispatch attempt, then at most ONE re-dispatch when a
   // COMPLETED reply has no readable `## Spec`. Failed dispatches return here
   // (no reply to route on) and never consume the retry. The prior spec
@@ -213,7 +215,7 @@ export async function runExplore(
   // trace on failure). Gated on useIntent: the artifact is only used on the
   // intent path, so on the legacy path (PI_ENSEMBLE_INTENT=0 or N>1) leave it.
   if (useIntent) await deleteSpecArtifact(ctx.repoRoot, ctx.issue);
-  const first = await dispatchExploreAttempt(ctx, next, prompt);
+  const first = await dispatchExploreAttempt(dctx, next, prompt);
   next = first.state;
   // A failed dispatch has no reply, so it returns here and can never reach the
   // retry below — this early return is what guarantees a failed dispatch never
@@ -236,7 +238,7 @@ export async function runExplore(
       firstJobId: first.jobId,
     });
     if (useIntent) await deleteSpecArtifact(ctx.repoRoot, ctx.issue);
-    const second = await dispatchExploreAttempt(ctx, next, `${EXPLORE_RETRY_PREFACE}${prompt}`);
+    const second = await dispatchExploreAttempt(dctx, next, `${EXPLORE_RETRY_PREFACE}${prompt}`);
     next = second.state;
     if (second.reply === undefined) return next;
     responseText = second.reply.text ?? "";
@@ -281,7 +283,10 @@ export async function runExplore(
       });
     }
     const finalSpec = resolved
-      ? finaliseSpecVerdict(resolved.spec, primarySettled.value.stdout)
+      ? finaliseSpecVerdict(resolved.spec, primarySettled.value.stdout, {
+          repoRoot: ctx.repoRoot,
+          issues: ctx.issues ?? [ctx.issue],
+        })
       : undefined;
     if (resolved !== undefined && finalSpec !== undefined) {
       next = {

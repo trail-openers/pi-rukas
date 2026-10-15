@@ -1,13 +1,14 @@
 /** work-driver-handoff — Step 7g (handoff) handler. #674: worktree consolidation + forge post retry. */
-import { exec } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
+import { execp } from "./exec.ts";
 import { type ForgeType, detectForge } from "./forge-detect.ts";
 import { type Forge, createForge } from "./forge.ts";
 import { drainSlowEvents } from "./slow-events.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { settleDraftPrAtHandoff } from "./work-driver-draft-pr.ts";
+import { handoffChannel, withHandoffMarker } from "./work-driver-handoff-channel.ts";
 import {
   consolidateWorktreesToBranch,
   workNotYetOnBranch,
@@ -23,15 +24,24 @@ import {
   verifyHandoffLabel,
 } from "./work-driver-handoff-post.ts";
 import { captureWorktreeSnapshot } from "./work-driver-handoff-snapshot.ts";
+import { readParkMemory, recordPark } from "./work-driver-park-memory.ts";
 import { releaseClaim } from "./work-driver-path-claims.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { runWorktreeTeardown } from "./work-driver-worktree-sweep.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
+
+// #1263 test seam — module-level handoff-step throw injection (offline tests
+// only), called in runHandoff just before the terminal-status write. A
+// closure rather than an env var: env seams leak into hostile environments.
+let handoffThrowForTest: (() => void) | undefined;
+export function setHandoffThrowForTestForTest(fn: (() => void) | undefined): void {
+  handoffThrowForTest = fn;
+}
+
 // #775 prep — captureWorktreeSnapshot moved to work-driver-handoff-snapshot.ts
 // (§12 file-size split); re-exported so no consumer's import path changes.
 export { captureWorktreeSnapshot } from "./work-driver-handoff-snapshot.ts";
-const execp = promisify(exec);
 export function handoffDispatchTimeoutMs(): number {
   const env = Number(process.env.PI_ENSEMBLE_HANDOFF_TIMEOUT_MS);
   return Number.isFinite(env) && env > 0 ? env : 8 * 60_000;
@@ -81,6 +91,7 @@ export async function runHandoff(
     ctx.repoRoot,
     state.pipelineState.branchName,
     state.pipelineState.worktrees,
+    state.pipelineState.baseSha,
   );
   // #674 — `git status --porcelain` alone reports 0 files for committed work
   // on detached-HEAD worktrees (clean tree, commits ahead of base) — the
@@ -123,9 +134,15 @@ export async function runHandoff(
     ...next,
     pipelineState: { ...next.pipelineState, handoffSnapshot: snap },
   };
+  // #1292 — a concluded review marks a draft PR ready; a cut-short one leaves it
+  // a draft. Before the render, so the comment states the outcome.
+  next = await settleDraftPrAtHandoff(ctx, next);
   // Build the handoff markdown body. Now consumes handoffSnapshot via
-  // the additive sections in renderHandoffMarkdown (PR5 refinements).
-  const handoffMd = renderHandoffMarkdown(next);
+  // the additive sections in renderHandoffMarkdown (PR5 refinements). The
+  // forge type picks the draft's real ready command (GitLab: glab mr update).
+  const handoffForgeType = (ctx.forge ?? (await handoffForge(ctx.repoRoot)))?.forge;
+  // #1327 — the marker lets a host find this comment and extend it.
+  const handoffMd = withHandoffMarker(renderHandoffMarkdown(next, handoffForgeType), next);
   const handoffBodyPath = path.join(scratchDir(ctx.repoRoot, ctx.issue), "handoff-comment.md");
   try {
     await fs.mkdir(path.dirname(handoffBodyPath), { recursive: true });
@@ -142,7 +159,17 @@ export async function runHandoff(
   // completion / dispatch-failed event construction moved verbatim.)
   const prNumber = state.pipelineState.prNumber;
   const target = prNumber ? `pr #${prNumber}` : `issue #${ctx.issue}`;
-  const dispatchResult = await runHandoffOpsDispatch(ctx, next, handoffBodyPath);
+  // A freshly re-resolved intent park that matches the one already reported
+  // (work-driver-park-memory.ts) has its comment on the issue: no ops
+  // dispatch, no second comment. The label is still verified below and
+  // re-applied if someone removed it.
+  const park = await readParkMemory(ctx, next);
+  // #1327 — a host-owned channel: nothing is posted or labelled; the body goes in the result.
+  const host = handoffChannel() === "host";
+  const dispatchResult =
+    park.repeatOf || host
+      ? { next, opsReplyText: "" }
+      : await runHandoffOpsDispatch(ctx, next, handoffBodyPath);
   next = dispatchResult.next;
   const opsReplyText = dispatchResult.opsReplyText;
   // RE-ENTRY DEDUPE (census 2026-09-09): a crash after the comment posted
@@ -161,6 +188,7 @@ export async function runHandoff(
   // The dedupe line, verbatim — re-entry reuses a prior event's URL and
   // never re-posts (the canary above pins the shape):
   let commentUrl = parseHandoffCommentUrl(opsReplyText) ?? priorHandoffCommentUrl(next.eventLog);
+  commentUrl ??= park.repeatOf?.commentUrl;
   if (parsed.commentUrl && !commentUrl) commentUrl = parsed.commentUrl;
   let labelApplied = false;
   // #798 — per-target label state. When prNumber is set, the driver labels
@@ -186,7 +214,7 @@ export async function runHandoff(
         e.role === "ops" &&
         e.label === "ops:handoff",
     );
-  {
+  if (!host) {
     const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
     if (commentUrl) delivery = "dispatch";
     if (forge) {
@@ -213,7 +241,7 @@ export async function runHandoff(
   // commentUrl didn't parse out, the driver itself posts via the forge
   // adapter. postHandoffWithRetry retries with backoff; only after retries
   // are exhausted does the HANDOFF DISPATCH INCOMPLETE banner surface.
-  if (!commentUrl || !labelApplied) {
+  if (!host && (!commentUrl || !labelApplied)) {
     const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
     try {
       if (!forge) {
@@ -291,7 +319,7 @@ export async function runHandoff(
   // #798 — when prNumber is set, the fallback above applies the label to the
   // comment target (PR) via postHandoffWithRetry. The ISSUE label is applied
   // separately here because the retry only targets one object.
-  if (prNumber && !issueLabelApplied) {
+  if (!host && prNumber && !issueLabelApplied) {
     const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
     if (forge) {
       // #798 — the helper APPLIES the issue label (its return is the
@@ -301,7 +329,9 @@ export async function runHandoff(
       const ok = await applyIssueLabelDualTarget(forge, ctx.issue);
       const verified = ok || (await verifyHandoffLabel(forge, "issue", ctx.issue));
       issueLabelApplied = verified;
-      if (verified) labelApplied = true;
+      // Both targets or nothing: the issue label alone must not report the
+      // PR's failed label as applied (#1219).
+      labelApplied = verified && prLabelApplied === true;
     }
   }
   // #674 — carry the consolidation outcome into the handoff-emitted event so the
@@ -319,6 +349,7 @@ export async function runHandoff(
     commentUrl,
     labelApplied,
     handoffBodyPath,
+    body: handoffMd,
     consolidated: consEvent !== undefined,
     consolidatedBranch: consEvent?.branchName,
     consolidatedWorkstreams: consEvent?.workstreams,
@@ -327,21 +358,26 @@ export async function runHandoff(
       : snap.committedWork?.length
         ? "consolidation infeasible (work remains on its worktree detached HEADs)"
         : undefined,
-    delivery,
+    // A repeat delivered nothing this cycle — no provenance to assert.
+    delivery: host ? "host" : park.repeatOf ? undefined : delivery,
+    repeatOf: park.repeatOf,
     targetType: prNumber ? "pr" : "issue",
     targetNumber: prNumber ?? ctx.issue,
     issueLabelApplied,
     prLabelApplied,
   });
   next = appendEvent(next, emitted);
+  await recordPark(ctx, park, commentUrl);
   // #571 — release the path claim so sibling cycles can proceed.
   try {
     await releaseClaim(ctx.repoRoot, ctx.issue);
   } catch {
     /* best-effort; handoff must always emit regardless */
   }
-  // Terminal status: mid-flight halts (developer-timeout, step-failed:*,
-  // loop-detected, token-budget) → 'aborted'; all other caps → 'handoff'.
+  // #1263 test seam (see setHandoffThrowForTestForTest) — called just before
+  // the terminal-status write so a thrown error escapes runHandoff and the
+  // driver's one-shot guard (abort, no re-route to handoff) is exercised.
+  handoffThrowForTest?.();
   const lastCapHit = [...next.eventLog].reverse().find((e) => e.kind === "cap-hit");
   const capShape = lastCapHit?.kind === "cap-hit" ? lastCapHit.cap : undefined;
   const capKilledCap =
@@ -361,7 +397,7 @@ export async function runHandoff(
     },
   };
   trace(
-    `work-driver: handoff for issue #${ctx.issue} (${target}) — commentUrl=${commentUrl ?? "?"} label=${labelApplied}`,
+    `work-driver: handoff for issue #${ctx.issue} (${target}) — commentUrl=${commentUrl ?? "NOT POSTED"} label=${labelApplied}${prNumber ? ` (issue=${issueLabelApplied === true} pr=${prLabelApplied === true})` : ""}`,
   );
   // #799 — final drain: the handoff ops child may outlive the dispatch bound
   // (its slow watch keeps recording until it settles), and the driver's

@@ -198,7 +198,7 @@ function setupRepo(): { repo: string; cleanup: () => void } {
 
 // ------------------- (6) a TIMEOUT-shaped exec failure degrades like any other
 // The stub rejects with a timeout-shaped error (node's exec kills the child
-// with a `Timeout`-named error + a `cmd` field — the shape lens-exec.ts
+// with a `Timeout`-named error + a `cmd` field — the shape exec.ts
 // produces); resolution must fall through exactly like a plain failure:
 // step 2 → rev-parse, and rev-parse timeout → undefined. Never throws, never
 // hangs, never special-cased.

@@ -171,6 +171,8 @@ async function makeHook(env: {
       return { stdout: env.remote + "\n" };
     }
     if (cmd.includes(`rev-parse ${env.remote}/`)) return { stdout: env.fetchedHead };
+    if (cmd.includes("symbolic-ref")) return { stdout: "origin/main\n" };
+    if (cmd.includes("git merge-base")) return { stdout: "mb0000\n" };
     if (cmd.includes("patch-id")) return { stdout: `${env.currentPatchId} 0000` };
     if (cmd.includes("git-common-dir")) {
       return { stdout: env.ledgerCommonDir ?? "" };

@@ -20,7 +20,7 @@
 
 import { type LoopAction, decideLoopAction } from "./adversarial-verdict.ts";
 import { MAX_ROUNDS } from "./adversarial.ts";
-import { roundComments } from "./comment-evidence.ts";
+import { neutraliseEvidence, roundComments } from "./comment-evidence.ts";
 import { commentRetentionEnabled } from "./comment-retention.ts";
 import { dispatchCore } from "./dispatch.ts";
 import { trace } from "./trace.ts";
@@ -288,7 +288,23 @@ function parkFixPass(
   reason: string,
   now: number,
 ): WorkState {
-  return appendEvent(withFixPassReport(state, pending, reason, now), {
+  // The handoff's cap text reads verifyEvidence, not the event: without it the
+  // park reads as one whose reason was never recorded. The prefix is what
+  // keeps that text from blaming the outcome gate.
+  const reported = withFixPassReport(state, pending, reason, now);
+  const evidenced: WorkState = {
+    ...reported,
+    pipelineState: {
+      ...reported.pipelineState,
+      verifyEvidence: {
+        step: "develop",
+        failures: [`${FIX_PASS_EVIDENCE_PREFIX}${reason}`],
+        at: now,
+        origin: "fix-pass",
+      },
+    },
+  };
+  return appendEvent(evidenced, {
     kind: "cap-hit",
     at: Date.now(),
     cap: "verify-failed:develop",
@@ -302,8 +318,9 @@ function parkFixPass(
  * The develop fix pass for the pending workstreams. Reuses their worktrees;
  * named finding paths widen a declared fence for this pass only; all develop
  * gates run unchanged. Parks like a first develop failure: a failed gate or
- * dispatch, a no-op pass, a change outside the fence, or a removed origin/main
- * comment. Every pre-pass read fails closed (see the scope module).
+ * dispatch, a no-op pass, a change outside the fence, or an origin/main comment
+ * the pass removed and did not replace. Every pre-pass read fails closed (see
+ * the scope module).
  */
 export async function runAdversarialFixPass(
   ctx: CycleContext,
@@ -427,15 +444,18 @@ export async function runAdversarialFixPass(
     kept = noteFixPass(restored, note, now);
   } else {
     for (const p of plans) {
-      const lost = await roundComments(
-        post.diffs[p.id] ?? "",
-        undefined,
-        p.worktree,
-        verifyTimeoutMs(),
-        ctx.verifyExecFn,
-      );
+      const read = (diff: string) =>
+        roundComments(diff, undefined, p.worktree, verifyTimeoutMs(), ctx.verifyExecFn);
+      const lost = await read(post.diffs[p.id] ?? "");
+      // A lost line whose hunk adds a comment was reworded or replaced. That is
+      // the reviewers' call (#1056) and the next review round lists it; only a
+      // comment dropped with nothing written in its place can park.
+      const dropped = lost.ok ? lost.lost.filter((l) => l.addedNearby.length === 0) : [];
+      // The diff is against the base, so it also carries what earlier passes
+      // removed: the pre-pass diff, read at the same head, tells those apart.
+      const prior = dropped.length > 0 ? await read(p.before.diff) : lost;
       // A check that could not run reads NOT CHECKED, never silence (AGENTS.md §7).
-      if (!lost.ok) {
+      if (!lost.ok || !prior.ok) {
         return parkFixPass(
           restored,
           pending,
@@ -443,11 +463,14 @@ export async function runAdversarialFixPass(
           now,
         );
       }
-      if (lost.lost.length > 0) {
+      const before = new Set(prior.lost.map((l) => `${l.file}\n${l.text}`));
+      const fresh = dropped.filter((l) => !before.has(`${l.file}\n${l.text}`));
+      if (fresh.length > 0) {
+        const named = fresh.slice(0, 3).map((l) => neutraliseEvidence(`${l.file}: ${l.text}`));
         return parkFixPass(
           restored,
           pending,
-          `the fix pass removed ${lost.lost.length} origin/main comment line(s) in ${p.id}`,
+          `the fix pass removed ${fresh.length} origin/main comment line(s) in ${p.id} and wrote no comment in their place (${named.join(" | ")})`,
           now,
         );
       }
@@ -458,6 +481,7 @@ export async function runAdversarialFixPass(
     at: Date.now(),
     workstreamId: p.workstreamId,
     round: p.round,
+    headBefore: plans.find((x) => x.id === p.workstreamId)?.headBefore,
   }));
   return appendEvent(kept, ...applied);
 }

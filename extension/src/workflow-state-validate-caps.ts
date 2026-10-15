@@ -3,7 +3,15 @@
  * verbatim from workflow-state-validate.ts for the 500-line cap (#861).
  * The validator (validateDiscriminants) reads this tuple; the export
  * keeps the single-source-of-truth invariant.
+ *
+ * #1338 — the tuple is checked against the driver's `WorkCapLiteral` union
+ * at compile time in both directions (the headless/caps.ts pattern): a cap
+ * the driver can emit but the validator does not list fails `tsc`, so a
+ * parked cycle's state file can no longer be rejected on re-entry for a cap
+ * its own driver wrote.
  */
+
+import { CAP_TEMPLATES, type FixedCap } from "./headless/caps.ts";
 
 /**
  * #543 — the FIXED-LITERAL caps (F1 loop / F6 token-budget included). A
@@ -12,7 +20,7 @@
  * `loop-detected:<anything>` / `token-budget:<anything>` suffix (the #533
  * "extend the union, don't smuggle a field" rule applied to cap strings).
  */
-export const CAP_HIT_FIXED_LITERALS: readonly unknown[] = [
+export const CAP_HIT_FIXED_LITERALS = [
   "adversarial-loop",
   "round-cap",
   "wall-clock",
@@ -83,4 +91,34 @@ export const CAP_HIT_FIXED_LITERALS: readonly unknown[] = [
   // dirty, round-1 work is unlanded, or the tree diverged from the branch
   // tip. A deliberate park terminalized as a handoff.
   "lens-fix-reposition",
-];
+  // #1238 — the caller-set whole-cycle deadline parked the cycle at a step
+  // boundary (the deadline was within the handoff grace). A deliberate
+  // park terminalized as a handoff; the evidence names the deadline, the
+  // time remaining, and the step that was not started.
+  "deadline",
+  // #571 — a sibling cycle holds a path claim that overlaps this plan.
+  "cross-group-conflict",
+  // #754 — the plan step's own bound expired on the primary plan dispatch.
+  "plan-timeout",
+  // #280 §B — the same finding shape across ≥3 files routes to step-back.
+  "repeat-finding-seam",
+] as const satisfies readonly FixedCap[];
+
+// Compile-time exhaustiveness: a fixed cap in WorkCapLiteral but not listed
+// above names itself here (#1338). `satisfies` above rejects the reverse.
+type MissingCaps = Exclude<FixedCap, (typeof CAP_HIT_FIXED_LITERALS)[number]>;
+const _validatorCapsExhaustive: [MissingCaps] extends [never] ? true : MissingCaps = true;
+void _validatorCapsExhaustive;
+
+/** `<family>:` template caps (`verify-failed:develop`, `branch-ahead:3`). */
+const CAP_TEMPLATE_RE = new RegExp(`^(${Object.keys(CAP_TEMPLATES).join("|")}):`);
+
+/**
+ * #543 — a cap-hit's `cap` is a known fixed literal or a template value,
+ * nothing else. A fabricated `loop-detected:<anything>` suffix is rejected:
+ * those caps are fixed literals, and a suffix would smuggle a role the
+ * canary does not know (the role travels in the separate `role` field).
+ */
+export function isKnownCap(cap: string): boolean {
+  return (CAP_HIT_FIXED_LITERALS as readonly string[]).includes(cap) || CAP_TEMPLATE_RE.test(cap);
+}

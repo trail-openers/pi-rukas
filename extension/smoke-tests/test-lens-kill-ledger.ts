@@ -70,7 +70,7 @@ mock.module(new URL("../src/review-ledger.ts", import.meta.url).href, () => ({
   },
   workingTreePatchId: async () => ({ patchId: "test-patch-id-0000", warning: undefined }),
   lensPassed: (v: string, t: string) => v === "APPROVED" || (v === "ISSUES_FOUND" && t === "LOW"),
-  adversarialPassed: () => false, branchPatchId: async () => undefined,
+  adversarialPassed: () => false,
   bumpLensRound: (e: unknown) => e, dedupeLatest: (e: unknown[]) => e,
   latestEntry: () => undefined, ledgerPathFor: async () => undefined,
   lensBlockedByThreshold: () => true, readLedgerAt: () => [],

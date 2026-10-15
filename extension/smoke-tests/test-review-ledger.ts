@@ -14,7 +14,7 @@
  *   - A ledger write failure leaves the review result byte-identical
  *     (the write is a side effect, never a gate on the result).
  *   - Writer and guard compute identical patchIds for the same content
- *     (a unit test through the shared branchPatchId function).
+ *     (the merge-base construction in review-patch-identity.ts, #1305).
  *
  * HOME is set to a temp dir by the gate invocation so git works offline.
  */
@@ -41,7 +41,6 @@ import {
   type LedgerEntry,
   adversarialPassed,
   appendLedgerEntry,
-  branchPatchId,
   dedupeLatest,
   lensBlockedByThreshold,
   lensPassed,
@@ -50,6 +49,15 @@ import {
   validEntries,
   workingTreePatchId,
 } from "../src/review-ledger.ts";
+import { committedIdentity } from "../src/review-patch-identity.ts";
+
+/** The committed merge-base identity the merge guard compares (#1305). */
+const committedPatchId = async (
+  execFn: typeof execp,
+  cwd: string,
+  head: string,
+  base: string,
+): Promise<string | undefined> => (await committedIdentity(execFn, cwd, head, base)).patchId;
 
 let exit = 0;
 export function assert(cond: boolean, msg: string) {
@@ -85,12 +93,12 @@ export const execp = async (cmd: string, opts?: { cwd?: string; maxBuffer?: numb
     //
     // Rather than a full runAdversarialLoop (which spawns a real child),
     // this test asserts the writer's output directly via the same code path
-    // the loop calls (appendLedgerEntry + adversarialPassed + branchPatchId),
+    // the loop calls (appendLedgerEntry + adversarialPassed + committedPatchId),
     // which is the unit the acceptance criterion names.
-    const patchId = await branchPatchId(execp, repo, "HEAD", "origin/dev");
+    const patchId = await committedPatchId(execp, repo, "HEAD", "origin/dev");
     assert(
       typeof patchId === "string" && patchId.length > 0,
-      "branchPatchId computes an id for the branch's diff",
+      "committedPatchId computes an id for the branch's diff",
     );
 
     // MINOR_OBSERVATIONS / approved → passed true
@@ -130,14 +138,14 @@ export const execp = async (cmd: string, opts?: { cwd?: string; maxBuffer?: numb
 
     // Writer and guard compute identical patchIds for the same content:
     // re-computing yields the same id (stability).
-    const again = await branchPatchId(execp, repo, "HEAD", "origin/dev");
+    const again = await committedPatchId(execp, repo, "HEAD", "origin/dev");
     assert(again === patchId, "writer and guard compute identical patchIds for the same content");
 
     // A new commit changes the patchId.
     execSync("echo more >> change.txt", { cwd: repo, stdio: "ignore" });
     execSync("git add change.txt", { cwd: repo, stdio: "ignore" });
     execSync('git commit -qm "more"', { cwd: repo, stdio: "ignore" });
-    const newId = await branchPatchId(execp, repo, "HEAD", "origin/dev");
+    const newId = await committedPatchId(execp, repo, "HEAD", "origin/dev");
     assert(newId !== patchId, "a new commit changes the patchId");
 
     // Write-failure isolation: point the writer at a non-writable path by
@@ -229,8 +237,8 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
     }).trim();
     assert(head === "HEAD", "HEAD is detached (the driver worktree shape)");
     // With a caller-supplied branch the writer would use it; without one it
-    // skips. The shared contract: branchPatchId works off refs, not HEAD.
-    const pid = await branchPatchId(execp, repo, "origin/feature/x", "origin/dev");
+    // skips. The shared contract: committedPatchId works off refs, not HEAD.
+    const pid = await committedPatchId(execp, repo, "origin/feature/x", "origin/dev");
     assert(
       typeof pid === "string" && pid.length > 0,
       "a detached worktree with a caller-supplied branch still yields a patchId",
@@ -258,11 +266,11 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
     assert(computed.untracked.length === 0, "no untracked files in the clean working tree");
     assert(computed.warning === undefined, "no warning for a clean working tree");
 
-    // The patchId should match the branchPatchId of the same content.
-    const branchId = await branchPatchId(execp, repo, "HEAD", "origin/dev");
+    // The patchId should match the committedPatchId of the same content.
+    const branchId = await committedPatchId(execp, repo, "HEAD", "origin/dev");
     assert(
       computed.patchId === branchId,
-      "workingTreePatchId matches branchPatchId for the same (committed) content",
+      "workingTreePatchId matches committedPatchId for the same (committed) content",
     );
 
     // An uncommitted change changes the working-tree patchId (item 1: the
@@ -276,7 +284,7 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
       "an uncommitted change changes the working-tree patchId (covers uncommitted fixes)",
     );
     // The branch patchId is unchanged (it only sees commits, not the worktree).
-    const branchIdAfter = await branchPatchId(execp, repo, "HEAD", "origin/dev");
+    const branchIdAfter = await committedPatchId(execp, repo, "HEAD", "origin/dev");
     assert(
       branchIdAfter === branchId,
       "the branch patchId is unchanged by an uncommitted edit (only commits change it)",

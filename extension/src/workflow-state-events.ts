@@ -19,6 +19,7 @@ import type {
 import type { WorktreeLeftoverHandledEvent } from "./workflow-state-events-leftover.ts";
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
+import type { LensResidualsPostFailedEvent } from "./workflow-state-events-residuals.ts";
 import type { SafetyNetCommitEvent } from "./workflow-state-events-safety-net.ts";
 import type { DispatchSlowEvent } from "./workflow-state-events-slow.ts";
 import type {
@@ -126,6 +127,8 @@ export type WorkEvent =
       at: number;
       /** Provider's error message captured from the synthetic stopReason: "error". */
       providerMessage?: string;
+      /** #79 — the adversarial loop stopped after this many identical provider failures in a row; ≥2 is not retried. */
+      providerRepeats?: number;
       transcriptPath?: string;
       /** #534 — tokens flushed before the provider-error stop. */
       usage?: DispatchUsage;
@@ -220,6 +223,13 @@ export type WorkEvent =
        * on caps whose recovery does not depend on the checkout.
        */
       restoredToRef?: string;
+      /**
+       * The HEAD of the lens-fix worktree when a COMMITTED fix existed and
+       * could not be integrated. Present only on that
+       * `lens-fix-not-integrated` shape: the handoff names the commit to
+       * land, and does not suggest the findings were false positives.
+       */
+      committedFixSha?: string;
       /**
        * Which cap fired. Covers the handoff-doctrine caps plus the
        * "ci-retry" cap added in PR2 after the live-test infinite-loop bug:
@@ -329,6 +339,9 @@ export type WorkEvent =
       at: number;
       prNumber: number;
       mergeCommit?: string;
+      /** Set when a person merged the PR while the cycle was at this step —
+       * the driver merged nothing (work-driver-pr-gone.ts). */
+      mergedByOtherDuring?: WorkStep;
     }
   | {
       /**
@@ -395,6 +408,8 @@ export type WorkEvent =
   | WorktreeLeftoverHandledEvent
   | DispatchSlowEvent
   | FenceRecoveryStartedEvent
+  | CycleInterruptedEvent
+  | LensResidualsPostFailedEvent
   /**
    * S4a (#1162) — the cycle was interrupted (SIGTERM / SIGINT, via
    * `markInterrupted`). `reason` is the operator-facing why; renderers read
@@ -407,6 +422,30 @@ export type WorkEvent =
  * the abort reason and the exit code (headless/exit-code.ts).
  */
 export type InterruptReason = "signal" | "timeout";
+
+/**
+ * The session was shut down under a running cycle (Pi's `session_shutdown`).
+ * NOT a failure and never followed by a cap-hit: status stays `running`, and
+ * the next `/work <N>` re-enters `step`.
+ */
+export type CycleInterruptedEvent = {
+  kind: "cycle-interrupted";
+  at: number;
+  /** The step that was running, or about to start. */
+  step: WorkStep;
+  /**
+   * Pi's shutdown reason. The known values are the `session_shutdown` reasons;
+   * `(string & {})` keeps the union open so a new Pi reason is not a type error.
+   */
+  reason: "quit" | "reload" | "new" | "resume" | "fork" | (string & {});
+  /** Where the work is, when the cycle had got that far. */
+  branch?: string;
+  headSha?: string;
+  /** False when the state on disk is one the re-entry check refuses. */
+  resumable: boolean;
+  /** The error text when the step threw during the shutdown (bounded). */
+  error?: string;
+};
 
 /** Discriminator union of event kinds — useful for callers that switch on it. */
 export type WorkEventKind = WorkEvent["kind"];

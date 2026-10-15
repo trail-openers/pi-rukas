@@ -9,6 +9,10 @@
  * invisible to its own reads.** Two lines of argv, and nothing downstream
  * worked without it.
  *
+ * That pins the SEAM's opt-in, not who uses it. The developer brief
+ * deliberately reads active rows only (#1103, `test-memory-brief.ts`) — a
+ * driver candidate reaches no compiled brief until an operator promotes it.
+ *
  * ## 2. Staleness had nowhere to be resolved
  *
  * A retrieved memory is a claim about a codebase that has since changed, and

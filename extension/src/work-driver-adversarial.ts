@@ -11,19 +11,23 @@
  */
 
 import path from "node:path";
-import { execp } from "./lens-exec.ts";
+import { execp } from "./exec.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import { capHitForCapKill } from "./work-driver-adversarial-capkill.ts";
 import { fanOutAdversarial } from "./work-driver-adversarial-fanout.ts";
 import { fixRequestEvents, withParsedSiblings } from "./work-driver-adversarial-fix.ts";
 import { handleNoCommittedFix, integrateLensFix } from "./work-driver-adversarial-lensfix.ts";
-import { reentryPassBatchSpan } from "./work-driver-adversarial-reentry.ts";
+import {
+  classifyAdversarialOutcome,
+  reentryPassBatchSpan,
+} from "./work-driver-adversarial-reentry.ts";
 import {
   ADVERSARIAL_PER_WS_MAX_RETRIES,
   type AdversarialOutcome,
 } from "./work-driver-adversarial-types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { failureCauseReasonForClass } from "./work-driver-failure-taxonomy.ts";
 import { integrate, restoreRepoRoot } from "./work-driver-integrate.ts";
 import {
   detectCommittedFix,
@@ -31,9 +35,11 @@ import {
   noDiffEvidence,
   repoRootOriginalRef,
 } from "./work-driver-lens-fix-commit.ts";
-import { commitLensFixChanges, lensWorktree } from "./work-driver-lens.ts";
+import { lensWorktree } from "./work-driver-lens-fix.ts";
+import { commitLensFixChanges } from "./work-driver-lens.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
 import { runNetGit } from "./work-driver-net-git.ts";
+import { endIfPrGone } from "./work-driver-pr-gone.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
@@ -197,6 +203,11 @@ export async function runAdversarial(
     });
 
     if (state.pipelineState.lastCompletedStep === "lens-fix") {
+      // The fix is pushed below; a PR merged or closed during the fix pass
+      // must not receive it (work-driver-pr-gone.ts).
+      const gate = await endIfPrGone(ctx, next, "adversarial");
+      if (gate.ended) return gate.ended;
+      next = gate.state;
       const execFn = ctx.verifyExecFn ?? execp;
       const psFix = state.pipelineState;
       const fixWorktrees = psFix.worktrees ?? {};
@@ -264,8 +275,12 @@ export async function runAdversarial(
     // re-entry (priorHadInfraFailure) is permanent — park with the DISTINCT
     // cap `adversarial-infra-failure` (NOT a rejection).
     if (!priorHadInfraFailure) {
+      // #79 — say WHY: the reviewer children's provider error, classified.
+      const o = failed[0];
+      const cls = o ? classifyAdversarialOutcome(o) : undefined;
+      const why = o && cls ? `: ${failureCauseReasonForClass(o, cls)} (cause=${cls.cause})` : "";
       trace(
-        "work-driver: adversarial loop infrastructure failure (N=1) — leaving dispatch-failed tail for the RETRY_ONCE router",
+        `work-driver: adversarial loop infrastructure failure (N=1)${why} — leaving dispatch-failed tail for the RETRY_ONCE router`,
       );
     } else {
       const names = failed.map((o) => o.id).join(", ");

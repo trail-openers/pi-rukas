@@ -127,7 +127,7 @@ export async function runBranchResiduePass(
       role: "driver",
       body: `Branch step blocked — repoRoot is dirty before any development dispatch:
 ${paths.map((p) => `  - ${p}`).join("\n")}
-This is residue from a previous cycle or the operator's own in-progress work — it is NOT a defect in this cycle's diff. It is preserved (nothing is deleted or stashed); inspect and clear it (commit, move, or add to .gitignore) and re-run the cycle.`,
+This is residue from a previous cycle or the operator's own in-progress work — it is NOT a defect in this cycle's diff. It is preserved (nothing is deleted or stashed); inspect and clear it (commit, move, or add to .gitignore) and re-run the cycle. A previous cycle whose restore could not save the root's state leaves it like this on purpose — its handoff says so and names the tree; state a restore did save is in that cycle's scratch dir as restored-state-*.diff.`,
     });
     next = {
       ...next,

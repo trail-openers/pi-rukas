@@ -161,6 +161,7 @@ export function mapGhPr(raw: Record<string, unknown>): NormalizedPullRequest {
   const labels = Array.isArray(raw.labels) ? (raw.labels as unknown[]).map(mapGhIssueLabel) : [];
   const mergeable = raw.mergeable;
   const mergeState = raw.mergeStateStatus;
+  const isDraft = typeof raw.isDraft === "boolean" ? raw.isDraft : undefined;
   return {
     number: req<number>(raw, "number", "gh pr view"),
     title: str(raw.title) ?? "",
@@ -173,6 +174,7 @@ export function mapGhPr(raw: Record<string, unknown>): NormalizedPullRequest {
     mergeable:
       mergeable === "TRUE" || mergeable === "FALSE" || mergeable === "UNKNOWN" ? mergeable : null,
     mergeStateStatus: typeof mergeState === "string" ? mergeState : null,
+    isDraft,
     labels,
     createdAt: str(raw.createdAt),
     updatedAt: str(raw.updatedAt),
@@ -191,6 +193,11 @@ export function mapGhPrWithNumber(
   const r = { ...raw };
   if (r.number === undefined || r.number === null) r.number = fallback;
   return mapGhPr(r);
+}
+
+function glDraftOf(raw: Record<string, unknown>): boolean | undefined {
+  if (typeof raw.draft === "boolean") return raw.draft;
+  return typeof raw.work_in_progress === "boolean" ? raw.work_in_progress : undefined;
 }
 
 /** glab `mr view --output json` (snake_case) → NormalizedPullRequest. */
@@ -218,6 +225,8 @@ export function mapGlMr(raw: Record<string, unknown>): NormalizedPullRequest {
     // — readiness is composed separately (see forge-merge.ts).
     mergeable: null,
     mergeStateStatus: null,
+    // #1292 — GitLab's `draft` (or the older `work_in_progress` alias).
+    isDraft: glDraftOf(raw),
     labels,
     createdAt: str(raw.created_at),
     updatedAt: str(raw.updated_at),

@@ -1,20 +1,15 @@
 /**
  * /work driver — the deterministic orchestrator for compiled /work cycles.
- *
  * Code-as-orchestrator: owns step transitions (#393), dispatches via
  * `dispatchCore()` (ownerKind:driver), persists to `.pi/work-state/` via
  * `persistCycle()`, surfaces progress via `notifyAgent()`.
- *
  * All 9 steps wired; each implementation lives in `work-driver-<step>.ts`.
  */
 import { notifyAgent } from "./agent-message.ts";
 import { trace } from "./trace.ts";
-import { runAdversarial } from "./work-driver-adversarial.ts";
 import { runArtifactSweep } from "./work-driver-artifact-sweep.ts";
 import { checkAttentionLabel } from "./work-driver-attention.ts";
-import { runBranch, runDevelop, stampCycleStartRef } from "./work-driver-branch-develop.ts";
 import { checkpointCapedDispatch } from "./work-driver-cap-checkpoint.ts";
-import { runCommitPr } from "./work-driver-commit.ts";
 import {
   type CycleContext,
   type DriverContext,
@@ -23,12 +18,12 @@ import {
   nextStep,
 } from "./work-driver-context.ts";
 import { enterCycle } from "./work-driver-cycle-entry.ts";
+import { parkAtDeadlineBoundary } from "./work-driver-deadline.ts";
 import { acquireWorkDeckHeader, headerToken } from "./work-driver-deck-header.ts";
 import { countPriorStepStarts } from "./work-driver-diff.ts";
-import { runExplore } from "./work-driver-explore.ts";
-import { runHandoff } from "./work-driver-handoff.ts";
+import { reportFinalState } from "./work-driver-final-state.ts";
+import { recordHostHandoffOnCrash } from "./work-driver-handoff-channel.ts";
 import { interruptIfRequested, recordStepCrash } from "./work-driver-interrupt.ts";
-import { runLens, runLensFix } from "./work-driver-lens.ts";
 import {
   clearFooter,
   emitStepCompleted,
@@ -36,8 +31,7 @@ import {
   emitStepStarted,
   updateFooter,
 } from "./work-driver-lifecycle.ts";
-import { runMerged } from "./work-driver-merged.ts";
-import { runPlan } from "./work-driver-plan.ts";
+import { recordProtectedGrant } from "./work-driver-protected-grant.ts";
 import { claimCycle } from "./work-driver-registry.ts";
 import {
   attemptReattach,
@@ -50,8 +44,9 @@ import {
   resumeEnabled,
 } from "./work-driver-resume-reattach.ts";
 import { reenterInterrupted } from "./work-driver-resume.ts";
+import { runStep } from "./work-driver-run-step.ts";
+import { interruptedAfter, interruptedByShutdown, sessionEnding } from "./work-driver-shutdown.ts";
 import { routeStepOutcome } from "./work-driver-step-router.ts";
-import { runCi, runStepBack } from "./work-driver-stepback-ci.ts";
 import { deliverTerminalLine } from "./work-driver-terminal-delivery.ts";
 import { scratchDir, setupWorkspaceTmp, teardownWorkspaceTmp } from "./work-driver-workspace.ts";
 import { runWorktreeSweep } from "./work-driver-worktree-sweep.ts";
@@ -68,62 +63,22 @@ import {
   workStateDir,
 } from "./workflow-state.ts";
 
-/**
- * Run a single step end-to-end: load template (or judge inline for PM-
- * judgment-shaped steps), dispatch via `dispatchCore`, await, append
- * event(s), update pipelineState. Returns the new state. Persistence is
- * the caller's responsibility (so multi-step transitions don't double-write).
- *
- * Per-step implementations are intentionally separated rather than
- * collapsed into one big switch — each step's prompt template, role
- * selection, and event-emission logic is distinct enough that a giant
- * switch becomes harder to read than a dispatch table.
- */
-async function runStep(ctx: CycleContext, state: WorkState, step: WorkStep): Promise<WorkState> {
-  const now = Date.now();
-  trace(`work-driver: running step "${step}" for issue ${ctx.issue}`);
-
-  switch (step) {
-    case "explore":
-      return runExplore(ctx, state, now);
-    case "plan":
-      return runPlan(ctx, state, now);
-    case "branch":
-      return runBranch(ctx, await stampCycleStartRef(ctx, state), now);
-    case "develop":
-      return runDevelop(ctx, state, now);
-    case "adversarial":
-      return runAdversarial(ctx, state, now);
-    case "commit-pr":
-      return runCommitPr(ctx, state, now);
-    case "lens-review":
-      return runLens(ctx, state, now);
-    case "lens-fix":
-      return runLensFix(ctx, state, now);
-    case "step-back":
-      return runStepBack(ctx, state, now);
-    case "ci":
-      return runCi(ctx, state, now);
-    case "handoff":
-      return runHandoff(ctx, state, now);
-    case "merged":
-      return runMerged(ctx, state, now);
-  }
-}
-
 export { DriverNotImplementedError } from "./work-driver-context.ts";
+
+/** Outcome of a `runWorkDriver` call: `{started: true}` or `{started: false; reason}`. */
+export type DriverOutcome = { started: true } | { started: false; reason: string };
 /**
  * Run one /work cycle: read/create state, loop over steps via `nextStep()`,
  * persist after every transition, surface outcome via `pi.sendUserMessage`.
- *
  * Fire-and-forget: callers start via `void runWorkDriver().catch(reportFatal)`.
  */
-/**
- * Outcome of a `runWorkDriver` call: `{started: true}` or `{started: false; reason}`.
- */
-export type DriverOutcome = { started: true } | { started: false; reason: string };
-
 export async function runWorkDriver(ctx: DriverContext): Promise<DriverOutcome> {
+  if (sessionEnding()) {
+    const reason = "the session is shutting down";
+    trace(`work-driver: /work #${ctx.issue} not started — ${reason}`);
+    notifyAgent(ctx.host, `pi-rukas: /work for #${ctx.issue} not started — ${reason}.`);
+    return { started: false, reason };
+  }
   const claimed = claimCycle(ctx.issue, ctx.issues);
   if (!claimed.ok) {
     notifyAgent(
@@ -168,6 +123,8 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
   if (ctx.issues && ctx.issues.length > 0 && state.issues === undefined) {
     state = { ...state, issues: ctx.issues };
   }
+  // #1090 — record this invocation's grant; a resume without the flag clears it.
+  state = recordProtectedGrant(state, ctx.protectedGrant);
 
   // PR12 — surface a clear notify when state is already terminal and no --restart.
   if (state.pipelineState.status !== "running" && ctx.restart !== true) {
@@ -177,6 +134,9 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
       ctx.host,
       `pi-rukas:driver-event v1 kind=refused issue=${ctx.issue} at=${at}\npi-rukas: /work for issue #${ctx.issue} already terminated as ${terminalStatus}. To start a fresh cycle (e.g., after revising the issue via /plan), re-run with --restart:\n  /work ${ctx.issue} --restart\nOr rm ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json manually. The prior cycle's event log is preserved in the state file until you restart or remove it.`,
     );
+    // reportFinalState is called at every terminal path (7 sites) so the runner
+    // always gets the driver's in-memory terminal state — see work-driver-final-state.ts
+    reportFinalState(ctx, state);
     return { started: false, reason: `already terminated as ${terminalStatus}` };
   }
 
@@ -191,6 +151,7 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
     });
     if (attention.refuse && attention.message) {
       notifyAgent(ctx.host, attention.message);
+      reportFinalState(ctx, state);
       return { started: false, reason: "issue carries the needs-human-attention label" };
     }
     if (!attention.checked) {
@@ -319,9 +280,15 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
           `Inspect ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json for the state.`,
       );
       // The cycle ran and then aborted — its state file is the real outcome.
+      reportFinalState(ctx, state);
       return { started: true };
     }
     const step = state.pipelineState.currentStep;
+    // A session shutdown is not a step failure — see work-driver-shutdown.ts.
+    if (interruptedByShutdown(ctx, state, step)) return { started: true };
+    // #1238 — a step that cannot finish before the caller's deadline parks to handoff.
+    state = await parkAtDeadlineBoundary(ctx, state, step);
+    if (state.pipelineState.currentStep !== step) continue;
     // Step-level lifecycle event (PR2 O1): "▶ step N/9 X started".
     const stepOrd = STEP_ORDINAL[step] ?? { num: 0, total: 9 };
     const stepStartedAt = Date.now();
@@ -336,7 +303,10 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
     updateFooter(state, stepStartedAt);
     try {
       state = await runStep(ctx, state, step);
+      if (interruptedAfter(ctx, state, step)) return { started: true };
     } catch (err) {
+      // A throw during a session shutdown is the abort's doing, not a crash (work-driver-shutdown.ts).
+      if (interruptedByShutdown(ctx, state, step, err)) return { started: true };
       // Recorded before the abort branch: a crash that coincides with a signal
       // is still a crash. An abort that makes the step throw is the interrupt.
       state = recordStepCrash(state, step, err);
@@ -367,14 +337,50 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
           `pi-rukas /work driver halted: step "${err.step}" is not implemented in this build. This is a bug — the state file at .pi/work-state/ has the full cycle for the report.`,
         );
         // The cycle ran and then aborted — its state file is the real outcome.
+        reportFinalState(ctx, state);
         return { started: true };
       }
-      // Spawn-level / unexpected error — mark aborted with the error.
-      state = {
-        ...state,
-        pipelineState: { ...state.pipelineState, status: "aborted" },
-      };
-      await persistCycle(ctx, state);
+      // Spawn-level / unexpected error — route through the SAME handoff path a
+      // dispatch failure uses (issue #1263) so the operator gets a comment +
+      // label on the issue, not just a silent `aborted` state file. One-shot
+      // guard: a throw at `handoff` itself means runHandoff already ran and is
+      // crashing on the post — re-routing to handoff would loop forever, so a
+      // handoff crash falls back to the direct abort (still `aborted`, state
+      // file is the record; the handoff body was already attempted).
+      if (step === "handoff") {
+        // #1327 — on the host channel the handoff must still reach the result.
+        state = recordHostHandoffOnCrash(state, err);
+        state = { ...state, pipelineState: { ...state.pipelineState, status: "aborted" } };
+        await persistCycle(ctx, state);
+        emitStepFailed(
+          step,
+          stepOrd.num,
+          stepOrd.total,
+          Date.now() - stepStartedAt,
+          (err as Error).message?.slice(0, 80),
+          stepRound,
+          ctx.issue,
+        );
+        notifyAgent(
+          ctx.host,
+          `pi-rukas /work driver aborted on step "handoff" for issue #${ctx.issue}: ` +
+            `${(err as Error).message}`,
+        );
+        reportFinalState(ctx, state);
+        return { started: true };
+      }
+      // Append the cap-hit (reason = the crash, via cap `driver-crash:<step>`),
+      // point the loop at `handoff`, and leave status running so runHandoff
+      // runs and sets the terminal status itself: `driver-crash:*` is NOT a
+      // mid-flight-halt shape there, so it terminalizes as `handoff` — the
+      // same value the dispatch-failure path uses.
+      state = appendEvent(state, {
+        kind: "cap-hit",
+        at: Date.now(),
+        cap: `driver-crash:${step}` as const,
+        reviewRound: state.pipelineState.reviewRound,
+        nextStep: "handoff",
+      });
       emitStepFailed(
         step,
         stepOrd.num,
@@ -384,13 +390,17 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
         stepRound,
         ctx.issue,
       );
-      notifyAgent(
-        ctx.host,
-        `pi-rukas /work driver aborted on step "${step}" for issue #${ctx.issue}: ` +
-          `${(err as Error).message}`,
+      trace(
+        `work-driver: step "${step}" threw — ${
+          (err as Error).message
+        } → handoff (comment + label before aborting)`,
       );
-      // The cycle ran and then aborted — its state file is the real outcome.
-      return { started: true };
+      state = {
+        ...state,
+        pipelineState: { ...state.pipelineState, currentStep: "handoff" },
+      };
+      await persistCycle(ctx, state);
+      continue;
     }
     // Headless S4 (#1024): an interrupt that fired during the step ends the
     // cycle here, without routing. The step's events stay in the log (they
@@ -432,6 +442,7 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
         `pi-rukas:driver-event v1 kind=crash issue=${ctx.issue} at=${new Date().toISOString()}\npi-rukas /work driver halted on issue #${ctx.issue}: pipelineState.currentStep has unknown value ${JSON.stringify(decision.value)}. ` +
           `Inspect ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json or rm to start fresh.`,
       );
+      reportFinalState(ctx, state);
       return { started: true };
     }
     const decisionStep = decision.step;
@@ -483,15 +494,6 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
     // record that the driver reached its terminal boundary at all.
     await persistCycle(ctx, state);
   }
+  reportFinalState(ctx, state);
   return { started: true };
 }
-
-/**
- * #573 — attempt reattach in the crash-resume path. Returns whether the
- * resumed child produced a valid result (skip runStep) and the updated state.
- *
- * The resume path reads `transcriptPath` from the in-flight `dispatch-started`
- * event, calls `resolveReattach` to check if reattach is possible, and
- * `attemptReattach` to actually reconnect. On success, emits a
- * `dispatch-completed` event and advances to the next step.
- */

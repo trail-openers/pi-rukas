@@ -7,7 +7,6 @@
  */
 
 import fs from "node:fs/promises";
-import { dispatchCore } from "./dispatch.ts";
 import { slowRecorder } from "./slow-events.ts";
 import { trace } from "./trace.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
@@ -18,8 +17,15 @@ export { sliceMarkdownSection, splitOutsideParens } from "./work-driver-plan-par
 import { transcriptPathFor } from "./spawn-support.ts";
 import type { DispatchResult } from "./types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { issueImagesFor } from "./work-driver-issue-images.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { checkAndRegisterClaims, crossGroupConflictsEnabled } from "./work-driver-path-claims.ts";
+import {
+  foldPortPlan,
+  mergeWithContract,
+  portPlanSection,
+  portReferenceForCycle,
+} from "./work-driver-plan-contract.ts";
 import { mergeCoupledWorkstreams } from "./work-driver-plan-coupling.ts";
 import { execp } from "./work-driver-verify.ts";
 // #679 — the CANONICAL planQualityReason / correctivePlanSteer / steer builders
@@ -58,43 +64,46 @@ import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
+// #1263 test seam — module-level plan-step throw injection (offline tests
+// only). A closure rather than an env var: env seams leak into hostile
+// environments. Production never sets it.
+let planThrowForTest: (() => void) | undefined;
+export function setPlanThrowForTestForTest(fn: (() => void) | undefined): void {
+  planThrowForTest = fn;
+}
+
 /**
- * Step 2 — Plan / decompose into workstreams.
+ * Step 2 — Plan / decompose into workstreams (prompt: `pi-prompts/plan.md`).
  *
- * PR3 restores the parallelism doctrine the PR #239 driver silently
- * dropped: the user's /work command treated "default to parallel" as a
- * first principle, exploiting up to 10 parallel slots for multi-
- * workstream issues (e.g., "fix bug X in frontend AND update docs"
- * would dispatch two developers in two worktrees concurrently).
+ * Parallelism is the default: up to 10 slots for multi-workstream issues.
+ * The subagent reads the cached issue body + explore report, decides whether
+ * the issue is 1, 2, or N+ independent workstreams, and returns a fenced
+ * `## Workstreams` block. N=1 is the same path (a `default` workstream is
+ * always written so downstream iterates `Object.keys(workstreams)` uniformly).
  *
- * The decomposition prompt is cribbed from `pi-prompts/plan.md` Phase 2
- * — explore-shaped, structured output. The subagent reads the cached
- * issue body (from Step 1's `issueBodyArtifact`) plus the explore
- * report and decides whether the issue contains 1, 2, or N+
- * independent workstreams. Returns a fenced `## Workstreams` block
- * the driver parses.
- *
- * Single-workstream is `N=1` of the same code path (not a separate
- * branch): a `default` workstream is always written so downstream
- * code can iterate `Object.keys(workstreams)` uniformly.
- *
- * Failure modes:
- *  - parsing returns 0 workstreams → write the synthetic `default`
- *  - dispatch fails → treat as halt (the cycle can't proceed without
- *    knowing what to develop); event is `dispatch-failed`
+ * Failure modes: 0 workstreams → synthetic `default`; dispatch fails → halt
+ * (`dispatch-failed`).
  */
 export async function runPlan(
   ctx: CycleContext,
   state: WorkState,
   now: number,
 ): Promise<WorkState> {
+  // #1263 test seam — a module-level injection (set by offline tests via
+  // setPlanThrowForTestForTest) that makes the plan step THROW from its own
+  // code (not a dispatch failure runPlan catches) so the driver's catch path
+  // is exercised. Production never sets it; closures, not env vars.
+  planThrowForTest?.();
   let next = appendEvent(
     { ...state, pipelineState: { ...state.pipelineState, currentStep: "plan" } },
     { kind: "step-started", step: "plan", at: now },
   );
-  const dispatch = ctx.dispatchFn ?? dispatchCore;
+  const issues = activeIssuesOf(state);
+  const { dispatch, section } = await issueImagesFor(ctx, issues, "plan");
   const startedAt = Date.now();
-  const prompt = inlinePlanPrompt(activeIssuesOf(state), scratchDir(ctx.repoRoot, ctx.issue));
+  // #1322 — an issue naming an existing commit/PR to port plans as one workstream.
+  const port = await portReferenceForCycle(next, issues);
+  const prompt = `${inlinePlanPrompt(issues, scratchDir(ctx.repoRoot, ctx.issue))}${section}${portPlanSection(port)}`;
   // #573 — derive transcript path BEFORE beginDispatch so crash-resume can
   // locate the surviving session file. Single dispatch: seq=undefined.
   const planRunId = `plan:explore:${process.pid}:${startedAt}`;
@@ -216,29 +225,21 @@ export async function runPlan(
       redispatched = true;
     }
   }
-  // #1005 — the coupling merge is a NO-OP on a single-workstream plan (no
-  // pair to check), so the kill-triggered corrective is unaffected by the
-  // #1005 reordering. The gate and the corrective steer reason about the
-  // POST-MERGE plan (which, for a single workstream, is the same as the
-  // pre-merge plan).
+  // #1005 — the coupling merge is a NO-OP on a single-workstream plan; the
+  // gate and the corrective steer reason about the POST-MERGE plan.
   // #1005 — the coupling merge's rule-3 grep (argv form) needs a real
-  // executor. `ctx.verifyExecFn` is test-only (undefined in production),
-  // so fall back to the production `execp` (which honours `opts.argv` via
-  // execFile — see work-driver-verify.ts). The merge runs at plan time,
-  // before the branch step, so the declared paths exist at the cycle's
-  // base commit — `repoRoot` — and the grep runs there (`repoRoot` is
-  // passed as the 4th arg; the empty pre-branch worktrees map is still
-  // threaded for API compatibility, but no longer the grep's only cwd
-  // source — the #1005 adversarial finding was that rule 3 was
-  // unreachable because the empty map left the grep without a cwd).
+  // executor: `ctx.verifyExecFn` is test-only, so fall back to `execp`
+  // (honours `opts.argv` via execFile). The merge runs at plan time, before
+  // the branch step, so the grep runs in `repoRoot` (the 4th arg) — the
+  // empty pre-branch worktrees map alone left rule 3 without a cwd.
   const planExecFn = ctx.verifyExecFn ?? execp;
-  const runCouplingMerge = async (ws: typeof workstreams): Promise<typeof workstreams> => {
+  // #1322 — the port fold and the contract's derived depends-on edges run
+  // first; a plan with neither takes exactly the pre-#1322 single pass.
+  const runCouplingMerge = async (raw: typeof workstreams): Promise<typeof workstreams> => {
+    const ws = foldPortPlan(raw, port);
     if (Object.keys(ws).length <= 1) return ws;
-    const coupling = await mergeCoupledWorkstreams(
-      ws,
-      planExecFn,
-      next.pipelineState.worktrees,
-      ctx.repoRoot,
+    const coupling = await mergeWithContract(ws, (w) =>
+      mergeCoupledWorkstreams(w, planExecFn, next.pipelineState.worktrees, ctx.repoRoot),
     );
     if (coupling.changed) {
       for (const m of coupling.merges) {
@@ -355,6 +356,7 @@ export async function runPlan(
       paths: [],
       outOfScope: [],
     };
+    workstreams = foldPortPlan(workstreams, port); // #1322 — a port keeps its scope
   }
   // #849 — planQuality is written EXACTLY ONCE here: the final reason is
   // computed once (`dropped-dependencies` wins when the corrective dropped an

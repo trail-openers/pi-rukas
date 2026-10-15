@@ -42,15 +42,13 @@
  * PI_ENSEMBLE_VERIFY / PI_ENSEMBLE_SCOPE_GATE / PI_ENSEMBLE_CLAIM_SCAN).
  */
 
-import { exec } from "node:child_process";
 import path from "node:path";
-import { promisify } from "node:util";
+import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { porcelainPaths } from "./work-driver-doctrine.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 import type { WorkState } from "./workflow-state.ts";
-
-const execp = promisify(exec);
 
 /** `PI_ENSEMBLE_CONVERGE=0` (or `false`) disables the gate. */
 export function convergeGateEnabled(): boolean {
@@ -180,17 +178,10 @@ export async function readEndOfDevelopDiff(
     // off.
     try {
       const { stdout } = await execFn("git status --porcelain", opts);
-      for (const line of stdout.split("\n")) {
-        const l = line.trim();
-        if (l.length === 0) continue;
-        const entry = l.slice(3);
-        const arrow = entry.indexOf(" -> ");
-        const targets = arrow >= 0 ? [entry.slice(0, arrow), entry.slice(arrow + 4)] : [entry];
-        for (const t of targets) {
-          const clean = t.startsWith('"') && t.endsWith('"') ? t.slice(1, -1) : t;
-          if (clean.length > 0) files.add(clean);
-        }
-      }
+      // porcelainPaths slices each UNTRIMMED record: trimming a ` M path`
+      // line first shifts the two-column status and costs the path its
+      // first character (#1190).
+      for (const p of porcelainPaths(stdout)) files.add(p);
     } catch {
       // A worktree git error degrades to the committed diff name-set only.
     }

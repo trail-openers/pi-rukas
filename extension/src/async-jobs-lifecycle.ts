@@ -11,6 +11,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type JobKind, childHandles, jobs } from "./async-jobs-registry.ts";
 import { reset as resetDeck } from "./dispatch-deck.ts";
 import { incrementNotice } from "./notice-counter.ts";
+import * as pendingJobs from "./pending-jobs-signal.ts";
+import { markSessionShutdown } from "./session-shutdown.ts";
 import { trace } from "./trace.ts";
 
 /** The narrow host surface startJob / dispatch need: steer delivery only. */
@@ -34,6 +36,45 @@ export function deliverReport(host: DispatchHost, report: string): void {
   }
 }
 
+/**
+ * The one stand-in path for a settle that could not hand its report to Pi: deliver
+ * `standIn(failure)` (naming the job or batch) so the caller's releaseAfter never drops
+ * a count without a report. Never throws — a stand-in that also fails is traced with
+ * both errors, so the caller can still release.
+ */
+export function deliverStandIn(
+  host: DispatchHost,
+  label: string,
+  failure: unknown,
+  standIn: (failure: unknown) => string,
+): void {
+  try {
+    deliverReport(host, standIn(failure));
+  } catch (err) {
+    trace(`${label} stand-in report also failed: ${String(err)} (original: ${String(failure)})`);
+  }
+}
+
+/**
+ * Deliver `build()`; if building throws, fall back to the stand-in. Never throws.
+ */
+export function deliverOrStandIn(
+  host: DispatchHost,
+  label: string,
+  build: () => string,
+  standIn: (failure: unknown) => string,
+): void {
+  let failure: unknown;
+  try {
+    deliverReport(host, build());
+    return;
+  } catch (err) {
+    failure = err;
+    trace(`${label} report failed: ${String(err)}`);
+  }
+  deliverStandIn(host, label, failure, standIn);
+}
+
 /** Snapshot of current jobs for dispatch_status (metadata only — never content). */
 export interface JobStatusRow {
   jobId: string;
@@ -43,6 +84,8 @@ export interface JobStatusRow {
   elapsedMs: number;
   batchId?: string;
   batchProgress?: { completed: number; size: number };
+  /** Set when the job is the /work driver's, not the PM's. */
+  driverOwned?: true;
 }
 
 export function jobStatusSnapshot(): JobStatusRow[] {
@@ -64,17 +107,28 @@ export function jobStatusSnapshot(): JobStatusRow[] {
         batchProgress: { completed: job.completed, size: job.size },
       });
     } else {
-      out.push(base);
+      out.push(job.ownerKind === "driver" ? { ...base, driverOwned: true } : base);
     }
   }
   return out;
 }
 
-/** Kill one job by id (best-effort — AbortSignal propagates to spawnSpecialist). */
+/**
+ * Kill one job by id (best-effort — AbortSignal propagates to spawnSpecialist).
+ * An id that is no job but a registered inner child (an adversarial round or
+ * lens child, keyed by the deck key `dispatch_peek` and the slow-run notice
+ * print) is killed through its handle, so every id those surfaces show is
+ * one this accepts.
+ */
 export function killJob(jobId: string): boolean {
   const job = jobs.get(jobId);
-  if (!job) return false;
-  job.abort.abort();
+  if (job) {
+    job.abort.abort();
+    return true;
+  }
+  const kill = childHandles.get(jobId)?.kill;
+  if (!kill) return false;
+  kill();
   return true;
 }
 
@@ -133,10 +187,32 @@ export function clearJobsForTesting(): void {
  */
 export function registerAsyncJobsLifecycle(pi: ExtensionAPI): void {
   const piWithOn = pi as unknown as {
-    on?: (event: "session_shutdown", handler: () => Promise<void> | void) => void;
+    on?: (
+      event: "session_shutdown",
+      handler: (event?: { reason?: string }) => Promise<void> | void,
+    ) => void;
   };
-  piWithOn.on?.("session_shutdown", () => {
-    const n = killAllJobs();
-    if (n > 0) trace(`session_shutdown: aborted ${n} in-flight async jobs`);
+  piWithOn.on?.("session_shutdown", (event) => {
+    // FIRST, and synchronously: the /work driver reads this flag when its
+    // aborted child comes back, and must find the reason already there — or
+    // it blames the step for the abort below and starts a handoff it cannot
+    // finish (session-shutdown.ts).
+    markSessionShutdown(event?.reason ?? "not given");
+    // Name what ended and why Pi says it ended: the bare count left an
+    // operator with "aborted 1 in-flight async jobs" and no cause.
+    const labels = [...jobs.values()].map((j) => j.label).join(", ");
+    let n = 0;
+    try {
+      n = killAllJobs();
+    } finally {
+      // #1295 — the aborted jobs' reports will never reach this session: "0".
+      // In a finally so a throw from killAllJobs cannot leave the count stuck.
+      pendingJobs.shutdown();
+    }
+    if (n > 0) {
+      trace(
+        `session_shutdown (reason: ${event?.reason ?? "not given"}): aborted ${n} in-flight async jobs — ${labels}`,
+      );
+    }
   });
 }

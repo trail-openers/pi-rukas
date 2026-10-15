@@ -9,12 +9,13 @@
 import os from "node:os";
 import path from "node:path";
 import { neutraliseEvidence } from "./comment-evidence.ts";
-import { type SuppressedFinding, suppressedSection } from "./lens-residuals.ts";
+import { type SuppressedFinding, resolvedSection, suppressedSection } from "./lens-residuals.ts";
 import { advisorySection } from "./lens-review-advisory.ts";
 import { deltaFallbackText } from "./lens-review-diff.ts";
 import { isReviewIncomplete } from "./lens-review-incomplete.ts";
 import type { Finding, FindingSource, LensRunResult } from "./lens-review.ts";
 import { CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE, type RosterEntry } from "./lens-roster.ts";
+import type { ResolvedNotice } from "./review-findings-file.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
 
 /** The finding's severity level. Owned here (the pure leaf both the format
@@ -84,6 +85,12 @@ export interface LensReviewSummary {
    */
   noReview?: boolean;
   /**
+   * #1176 "carried" no-review outcome: the delta was empty and the branch's
+   * patch-id was unchanged, so the recorded verdict (`verdict`, `round`) was
+   * carried onto the head. `renderSummary` says so; it is still `noReview`.
+   */
+  carriedFrom?: { sha: string; verdict: Verdict; round: number };
+  /**
    * #1105 — findings the round dropped as already known: `suppressed-unchanged`
    * (a delta round, cited code untouched) or `suppressed-accepted` (an operator
    * accepted it). They are not in `findings` and do not decide the verdict; the
@@ -96,6 +103,8 @@ export interface LensReviewSummary {
    * the residual comment.
    */
   memoryNote?: string;
+  /** #1125 — rows this round resolved because their cited code is gone, with the reason. */
+  resolved?: ResolvedNotice[];
   /** #1140 — carried rows on files outside the PR's diff: listed, never blocking. */
   advisory?: Finding[];
 }
@@ -161,12 +170,14 @@ Read the supplied content above rather than opening files. Your filesystem is ch
 ## How to report findings
 
 For every issue you identify in your lane, call the \`report_finding\` tool ONCE with these fields:
-  - severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW"
-  - path: file path relative to repo root
+  - severity (required): "CRITICAL" | "HIGH" | "MEDIUM" | "LOW"
+  - path (required): file path relative to repo root
   - line: line number (omit for file-level findings)
-  - title: short title (< 80 chars)
+  - title (required): short title (< 80 chars)
   - description: 1–3 sentence description of the issue
   - suggestion: short suggested fix
+
+A call missing any required field is rejected and records nothing — repeat it with every field, not only the one the error names.
 
 Do NOT batch multiple findings into a single call — one tool call per finding. Do NOT emit findings as JSON in your prose; only the \`report_finding\` tool calls count.
 
@@ -177,50 +188,9 @@ When you have finished all findings, write a short prose summary as your final r
 After writing your summary, STOP — no further tool calls. Do not re-read files, re-run commands or re-scan the diff; the summary is your terminal output.`;
 }
 
-/**
- * Extract findings from the child's tool_use events. Each report_finding
- * invocation becomes one Finding. No text parsing involved — the schema is
- * validated by Pi inside the child process, so malformed calls never reach
- * this code.
- */
-export function extractFindings(
-  toolUses: unknown[],
-  lens: string,
-): { findings: Finding[]; skipped: number } {
-  const out: Finding[] = [];
-  let skipped = 0;
-  for (const tu of toolUses) {
-    if (!tu || typeof tu !== "object") continue;
-    const t = tu as { name?: string; arguments?: unknown };
-    if (t.name !== "report_finding" || !t.arguments || typeof t.arguments !== "object") continue;
-    const i = t.arguments as Record<string, unknown>;
-    const severity = String(i.severity ?? "").toUpperCase();
-    if (!["CRITICAL", "HIGH", "MEDIUM", "LOW"].includes(severity)) {
-      skipped++;
-      continue;
-    }
-    const filePath = typeof i.path === "string" ? i.path : "";
-    const title = typeof i.title === "string" ? i.title : "";
-    if (!filePath || !title) {
-      skipped++;
-      continue;
-    }
-    out.push({
-      lens,
-      severity: severity as Severity,
-      path: normalisePath(filePath),
-      line: typeof i.line === "number" ? i.line : 0,
-      title,
-      description: typeof i.description === "string" ? i.description : undefined,
-      suggestion: typeof i.suggestion === "string" ? i.suggestion : undefined,
-    });
-  }
-  return { findings: out, skipped };
-}
-
-function normalisePath(p: string): string {
-  return p.replace(/^\.\//, "").replace(/\/+$/, "");
-}
+// Turning report_finding calls into findings lives in lens-findings-extract.ts
+// (the 500-line gate); re-exported so existing importers keep working.
+export { extractFindings } from "./lens-findings-extract.ts";
 
 /**
  * Deduplicate findings by (normalised path, line, lowercased title). When
@@ -384,6 +354,14 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
   // review ran. This is NOT an approval — the summary must say "NO REVIEW",
   // never "APPROVED" (a no-review outcome looking like an approval is the
   // #384 silent-approval class in a new shape).
+  if (s.noReview && s.carriedFrom) {
+    const c = s.carriedFrom;
+    return [
+      `NO NEW CHANGES \u2014 verdict carried from ${c.sha.slice(0, 8)} (${c.verdict}, round ${c.round}); the branch patch-id is unchanged, so no lens review ran. The integrated tree of this head (mainline changes merged in) was not re-reviewed by this branch's lenses.`,
+      "",
+      "Re-run dispatch_lens_review with `full: true` to review the full branch diff.",
+    ].join("\n");
+  }
   if (s.noReview) {
     return [
       `NO REVIEW — no changes since the last lens review (${s.deltaReview?.since.slice(0, 8)} at ${s.deltaReview?.head.slice(0, 8)}) — nothing to review, no verdict rendered.`,
@@ -402,7 +380,11 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
       const findingCount = `${r.findings.length} finding${r.findings.length === 1 ? "" : "s"}`;
       const retryNote =
         r.attempts > 1 ? ` (succeeded on attempt ${r.attempts}/${maxLensAttempts})` : "";
-      tag = `${findingCount}${retryNote}`;
+      // A call the tool rejected (or one with an unusable severity) records
+      // nothing; say so beside the count, or a finding the lens lists in its
+      // prose but never re-sent is invisible here.
+      const skippedNote = r.parseError ? ` — ${r.parseError}` : "";
+      tag = `${findingCount}${retryNote}${skippedNote}`;
     } else {
       tag = r.parseError ?? "fail";
     }
@@ -487,6 +469,7 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
       s.suppressed,
       `Suppressed as already known (${s.suppressed?.length ?? 0}, not re-reported):`,
     ),
+    ...resolvedSection(s.resolved),
     ...advisorySection(s.advisory),
     ...(s.memoryNote ? ["", neutraliseEvidence(s.memoryNote)] : []),
     "",

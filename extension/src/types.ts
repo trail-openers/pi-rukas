@@ -1,6 +1,18 @@
+/** One image part of an RPC prompt, as Pi takes it. `data` is base64. */
+export interface DispatchImage {
+  type: "image";
+  data: string;
+  mimeType: string;
+}
+
 export interface DispatchSpec {
   role: string;
   prompt: string;
+  /**
+   * Images sent with the kickoff prompt. Set by the /work and /plan drivers
+   * for the issue's own images (work-driver-issue-images.ts); absent elsewhere.
+   */
+  images?: DispatchImage[];
   cwd?: string;
   /**
    * #573 — caller-supplied runId so the transcript path can be derived BEFORE
@@ -81,6 +93,13 @@ export interface DispatchResult {
     /** errorMessage from the synthetic final assistant message, if any. */
     message?: string;
   };
+  /**
+   * #79 — set only on the synthesized adversarial-loop infra result: how many
+   * reviewer children in a row died on this same provider error before the
+   * loop stopped re-spawning. ≥2 tells every outer retry layer that the
+   * provider is still failing the same way, so none of them re-dispatch it.
+   */
+  providerRepeats?: number;
   /**
    * Set when pi-rukas itself ended the child (#296): "timeout" = per-role
    * wall-clock cap, "inactivity" = no child stdout for the inactivity window,
@@ -249,6 +268,8 @@ export type DispatchFailureCause =
   /** #366 — spend cap. Waiting genuinely does not help. */
   | "rate-limited:quota-terminal"
   | "provider-severed"
+  /** #79 — the provider says the configured model does not exist (404). Re-spawning asks the same question. */
+  | "provider-model-unavailable"
   /** #543 — the F1 loop detector ended the child; a repeating call is not a provider fault. */
   | "self-killed:loop"
   /** #543 — the F6 cumulative token budget was crossed; spend cap, not a provider fault. */

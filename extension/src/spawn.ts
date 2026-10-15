@@ -37,7 +37,12 @@ import {
   discoverInstalledExtensions,
   piEnsembleExtensionPath,
 } from "./spawn-extension-forward.ts";
-import { InFlightTools, createInactivityPoll, createStdoutLineHandler } from "./spawn-inflight.ts";
+import {
+  InFlightTools,
+  createInactivityPoll,
+  createStdoutLineHandler,
+  isStdinEcho,
+} from "./spawn-inflight.ts";
 import { groupSpawnOpts, killProcessTree, registerChild } from "./spawn-kill.ts";
 import { withSpawnSlot } from "./spawn-semaphore.ts";
 import {
@@ -246,7 +251,9 @@ async function spawnSpecialistInner(
   // measured strength of runtime context vs. system-prompt-only steering.
   const cwdHint = buildCwdHint(spec.cwd);
   try {
-    child.stdin.write(`${JSON.stringify({ type: "prompt", message: cwdHint + spec.prompt })}\n`);
+    child.stdin.write(
+      `${JSON.stringify({ type: "prompt", message: cwdHint + spec.prompt, images: spec.images })}\n`,
+    );
   } catch (err) {
     trace(`spawn[${spec.role}]: initial stdin.write failed: ${(err as Error).message}`);
   }
@@ -339,9 +346,10 @@ async function spawnSpecialistInner(
     },
   });
   stdoutRl.on("line", (line) => {
-    lastActivityAt = Date.now();
     stdoutLines += 1;
     const res = lineHandler(line);
+    if (isStdinEcho(res.kind)) return; // our own steer acked — not life
+    lastActivityAt = Date.now();
     if (res.kind) lastActivityKind = res.kind;
     if (res.agentEnd) lastAgentEnd = res.agentEnd;
     if (res.assistantMessageEnd) lastAssistantMessageEnd = res.assistantMessageEnd;

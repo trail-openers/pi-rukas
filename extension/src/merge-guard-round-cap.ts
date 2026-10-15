@@ -41,9 +41,9 @@
  *   5. The PR/MR carries the disclosure marker (see `lensResidualsMarker`
  *      below), posted by `dispatch_lens_review` when its verdict is
  *      ISSUES_FOUND and an open PR/MR exists (design decision 2). The
- *      marker's `patch=` must equal the guard's current `branchPatchId`
- *      (design decision 1 — the SAME id the guard already computes, against
- *      the PR's actual base branch). A stale marker (a different patch)
+ *      marker's `patch=` must equal the guard's current `mergeIdentity`
+ *      (design decision 1 — the SAME id the guard already computes: the
+ *      merge-base identity the ledger writers record, #1305). A stale marker (a different patch)
  *      fails condition 5 — the findings it disclosed are for an older
  *      patch, not the one about to merge.
  *  6. The latest lens entry's `headSha` equals the PR's CURRENT head commit
@@ -96,14 +96,14 @@ export function roundCapMergeEnabled(): boolean {
 
 /**
  * The stable hidden marker a residual-findings disclosure comment carries
- * (design decision 1): the branch and the `branchPatchId` the guard
+ * (design decision 1): the branch and the `mergeIdentity` the guard
  * compares against. The marker is one line, HTML-comment-wrapped so it is
  * invisible in the rendered PR comment but greppable from the raw body.
  *
  * The guard verifies EXACTLY this shape (branch + patch) — a partial match
  * (e.g. a marker for a different patch) is a failed condition 5, not a
  * pass. The branch is compared first (cheap string equality), the patch
- * second (the expensive comparison against the current `branchPatchId`).
+ * second (the expensive comparison against the current `mergeIdentity`).
  */
 export function lensResidualsMarker(branch: string, patchId: string): string {
   return `<!-- pi-rukas:lens-residuals branch=${branch} patch=${patchId} -->`;

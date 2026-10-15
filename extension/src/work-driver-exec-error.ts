@@ -28,6 +28,8 @@
  * this tradeoff stays deliberate and visible.
  */
 
+import { readFileSync } from "node:fs";
+
 /** The exact marker `.pi/verify-cmd`'s smoke-test loop emits on failure. */
 const FAILED_MARKER_RE = /^FAILED: .+$/gm;
 
@@ -73,4 +75,113 @@ export function extractAttributedTail(combined: string, maxLen: number): Attribu
     return { tail, attributed: true };
   }
   return { tail: trimmed.slice(-maxLen), attributed: false };
+}
+
+/**
+ * The label a failure string carries when the command never ran because the
+ * HOST could not start a process. Same convention as the classifier's
+ * `[consolidation-created]` / `[needs-human-decision]` labels: the verify
+ * gate's failures are strings, and the consumers (explainCap, the queue's
+ * human action) route on the label rather than on the prose around it.
+ */
+export const HOST_EXHAUSTION_LABEL = "[host-resource-exhaustion]";
+
+/**
+ * The shapes a fork failure arrives in: dash (`/bin/sh: 1: Cannot fork`),
+ * bash (`fork: retry: Resource temporarily unavailable`), coreutils
+ * (`fork system call failed`), and Node's own spawn error (`spawn /bin/sh
+ * EAGAIN`, `Failed to start worker: EAGAIN`). A bare `EAGAIN` is deliberately
+ * NOT matched — a non-blocking read reports it too, and that is a test's
+ * business, not the host's.
+ */
+const HOST_FORK_FAILURE_RE =
+  /\bCannot fork\b|\bfork: (?:retry: )?(?:Resource temporarily unavailable|Cannot allocate memory)|\bfork system call failed\b|\bspawn\b[^\n]*\bEAGAIN\b|\bFailed to start worker: EAGAIN\b/;
+
+/**
+ * True when `output` shows the host refusing to fork. Three cycles parked
+ * with a verdict about the CODE — `[needs-human-decision]`, and once "two
+ * workstreams edited the same lines" on a single-workstream cycle — when
+ * every command the gate ran had died on `/bin/sh: 1: Cannot fork`. Nothing
+ * was executed, so nothing was learned about the change.
+ */
+export function isHostForkExhaustion(output: string): boolean {
+  return HOST_FORK_FAILURE_RE.test(output);
+}
+
+/** True when a recorded failure string carries the host-exhaustion label. */
+export function isHostExhaustionFailure(failure: string): boolean {
+  return failure.includes(HOST_EXHAUSTION_LABEL);
+}
+
+export type PidLimitSnapshot = { current: number; max: number | "max" };
+
+function fmtPids(p: PidLimitSnapshot): string {
+  return `cgroup pids.current=${p.current} of pids.max=${p.max}`;
+}
+
+/**
+ * Where the pid ceiling actually is, read without forking (a fork is what
+ * just failed). In a container the ceiling that was hit is the container's
+ * cgroup `pids.max` (docker `--pids-limit`), not a host ulimit: an operator
+ * sent to "free processes on the host" found `ulimit -u` unlimited and
+ * nothing to raise (#1277). Undefined when the counters cannot
+ * be read (no cgroup v2, not Linux).
+ */
+export function pidLimitSnapshot(
+  read: (file: string) => string = (f) => readFileSync(f, "utf8"),
+): PidLimitSnapshot | undefined {
+  try {
+    const current = read("/sys/fs/cgroup/pids.current").trim();
+    const max = read("/sys/fs/cgroup/pids.max").trim();
+    if (!/^\d+$/.test(current) || !/^(\d+|max)$/.test(max)) return undefined;
+    return { current: Number(current), max: max === "max" ? "max" : Number(max) };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The operator procedure, named once. The failure string and explainVerifyFailed
+ * both point here, so the procedure lives in exactly one place (troubleshooting).
+ */
+export const HOST_EXHAUSTION_RUNBOOK = `The operator procedure (reading the counters, checking that PID 1 is an init, restarting or raising the limit) is in docs/troubleshooting.md under "${HOST_EXHAUSTION_LABEL}: the gate could not run".`;
+
+/**
+ * Headroom below which a numeric pids.max counts as exhausted. A fork needs
+ * one free slot, but one gate spawns a whole shell tree and parallel
+ * workstreams burst together, so a dozen spare pids is as good as none.
+ */
+const PID_HEADROOM = 10;
+
+/** True only when the snapshot shows a numeric ceiling with no headroom left. */
+export function pidCeilingExhausted(snapshot: PidLimitSnapshot): boolean {
+  return snapshot.max !== "max" && snapshot.max - snapshot.current < PID_HEADROOM;
+}
+
+const OTHER_CEILINGS =
+  "the other ceilings to check are the kernel's pid_max (/proc/sys/kernel/pid_max), the user's RLIMIT_NPROC (`ulimit -u`), and memory pressure";
+
+/**
+ * The failure string for a gate command that could not be started. It stays a
+ * FAILURE — an unrun gate must never read as a pass — but it says what was
+ * and was not established, and points at the process ceiling, not the diff.
+ * `pids` is the caller's snapshot, taken once at the failure site so this
+ * formatter stays free of side effects.
+ */
+export function hostExhaustionFailure(
+  what: string,
+  detail: string,
+  pids: PidLimitSnapshot | undefined,
+): string {
+  let cause: string;
+  if (pids === undefined) {
+    cause = `the process or thread limit where the driver runs is unknown (its cgroup pid counters could not be read just after the failure); ${OTHER_CEILINGS}`;
+  } else if (pidCeilingExhausted(pids)) {
+    cause = `the process limit where the driver runs is exhausted: ${fmtPids(pids)} (counters read just after the failure)`;
+  } else if (pids.max === "max") {
+    cause = `the cgroup pid limit is NOT the ceiling here (${fmtPids(pids)}); ${OTHER_CEILINGS}`;
+  } else {
+    cause = `the cgroup counters read just after the failure show headroom (${fmtPids(pids)}); the limit may have been hit transiently by a burst of parallel processes, or the ceiling is elsewhere; ${OTHER_CEILINGS}`;
+  }
+  return `${HOST_EXHAUSTION_LABEL} ${what} could not run — the system refused to start a process (fork failed / EAGAIN); ${cause}. This is an environment failure, NOT a verdict on the change: the gate did not execute, so the change is neither confirmed nor refuted. In a container the ceiling is the CONTAINER's pid limit (docker \`--pids-limit\`), not a host ulimit. ${HOST_EXHAUSTION_RUNBOOK} Evidence: ${detail}`;
 }

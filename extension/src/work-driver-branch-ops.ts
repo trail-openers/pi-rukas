@@ -34,7 +34,7 @@
  */
 
 import path from "node:path";
-import { execp } from "./lens-exec.ts";
+import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import { detectMainline, freshMainlineTip } from "./work-driver-branch-mechanized.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";

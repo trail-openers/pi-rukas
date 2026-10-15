@@ -11,8 +11,15 @@
  * Kinds: every WorkEvent kind (KNOWN_EVENT_KINDS) plus `log` (a line the driver
  * would have sent to the chat) and `pi-resolved` (the Pi binary the run uses).
  * #1022 documents this schema; this module is its source of truth.
+ *
+ * #1326 — only a declared subset of kinds is a host contract
+ * (NDJSON_STABLE_FIELDS, versioned by NDJSON_STABLE_VERSION): for those, the
+ * named `event` fields keep their name and meaning within the version. Every
+ * other kind is the driver's internal event union passed through, and its
+ * line carries `unstable: true` — it may be renamed or reshaped at any time.
  */
 
+import type { WorkEvent } from "../workflow-state-events.ts";
 import { KNOWN_EVENT_KINDS } from "../workflow-state-validate.ts";
 
 export const NDJSON_VERSION = 1 as const;
@@ -20,6 +27,38 @@ export const NDJSON_VERSION = 1 as const;
 export const NDJSON_EXTRA_KINDS = ["log", "pi-resolved"] as const;
 
 export const NDJSON_KINDS: readonly string[] = [...KNOWN_EVENT_KINDS, ...NDJSON_EXTRA_KINDS];
+
+/** Version of the stable subset. Bump when a stable kind or field is removed or changes meaning. */
+export const NDJSON_STABLE_VERSION = 1 as const;
+
+type EventFields<K extends WorkEvent["kind"]> = readonly Exclude<
+  keyof Extract<WorkEvent, { kind: K }>,
+  "kind"
+>[];
+
+/**
+ * The stable driver-event kinds and the `event` fields guaranteed on each
+ * (optional fields may be absent). Typed against WorkEvent, so renaming one
+ * of these fields in the driver fails `tsc` here instead of breaking a host.
+ */
+export const NDJSON_STABLE_FIELDS = {
+  "step-started": ["step", "at", "round"],
+  "dispatch-started": ["step", "role", "jobId", "at"],
+  "dispatch-completed": ["step", "role", "jobId", "ok", "ms", "at", "usage"],
+  "cap-hit": ["cap", "at", "nextStep"],
+  "handoff-emitted": ["at", "commentUrl", "labelApplied"],
+  "ci-status": ["at", "status", "runUrl"],
+  merged: ["at", "prNumber", "mergeCommit"],
+  interrupted: ["at", "reason"],
+} as const satisfies { [K in WorkEvent["kind"]]?: EventFields<K> };
+
+/** Stable kinds: the driver events above plus the runner's own `log` line. */
+export const NDJSON_STABLE_KINDS: readonly string[] = [...Object.keys(NDJSON_STABLE_FIELDS), "log"];
+
+/** Whether lines of `kind` are part of the stable subset. */
+export function isStableKind(kind: string): boolean {
+  return NDJSON_STABLE_KINDS.includes(kind);
+}
 
 export interface NdjsonLine {
   v: typeof NDJSON_VERSION;
@@ -29,6 +68,8 @@ export interface NdjsonLine {
   key?: string;
   event?: unknown;
   message?: string;
+  /** Present (always `true`) on a line whose kind is outside the stable subset. */
+  unstable?: true;
 }
 
 /** Build the idempotency key for a driver event. */
@@ -56,6 +97,12 @@ export function validateNdjsonLine(value: unknown): string[] {
   else if (!NDJSON_KINDS.includes(o.kind)) errors.push(`kind "${o.kind}" is not a v1 kind`);
   if (typeof o.at !== "string" || Number.isNaN(Date.parse(o.at))) {
     errors.push("at must be an ISO-8601 timestamp");
+  }
+  // Lenient on absence: a line written before #1326 carries no marker.
+  if (o.unstable !== undefined && o.unstable !== true)
+    errors.push("unstable, when present, is true");
+  if (o.unstable === true && typeof o.kind === "string" && isStableKind(o.kind)) {
+    errors.push(`kind "${o.kind}" is stable and must not be marked unstable`);
   }
   if (o.issue !== undefined && (typeof o.issue !== "number" || !Number.isInteger(o.issue))) {
     errors.push("issue, when present, must be an integer");

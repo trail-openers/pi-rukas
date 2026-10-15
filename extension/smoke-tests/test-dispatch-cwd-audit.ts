@@ -198,7 +198,8 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
 // ------------------------------------------- lens review + lens-fix: same tree
 
 {
-  const lens = read("work-driver-lens.ts");
+  // The review (work-driver-lens.ts) and the fix (work-driver-lens-fix.ts).
+  const lens = read("work-driver-lens.ts") + read("work-driver-lens-fix.ts");
   assert(
     /cwd:\s*lensWorktree\(ctx,\s*state\)/.test(lens),
     "canary: the lens-fix dispatch passes the lens worktree as cwd (the #663 defect)",
@@ -282,7 +283,7 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
   const AUDITED: Record<string, number> = {
     "work-develop-run.ts": 2, // developer + speculative explore (dependents go through runOneWorkstream)
     "work-driver-converge-gate.ts": 1, // the corrective re-dispatch
-    "work-driver-lens.ts": 1, // the lens-fix runSingleDispatch (the review is an exec)
+    "work-driver-lens-fix.ts": 1, // the lens-fix runSingleDispatch (the review is an exec)
     "adversarial-phase.ts": 1, // makeRunPhase's inner spawn — cwd threaded by the fan-out
     "lens-review-child.ts": 1, // the lens child — cwd: runOpts.cwd, set by the lens review seam
     "work-driver-explore-dispatch.ts": 1, // runExplore (the integration-point read, no cwd)
@@ -305,12 +306,16 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
   // resume message, not calls; work-driver-merged.ts DEFINES runSingleDispatch
   // (its three call sites are allowlisted above); the fan-out calls the
   // loopFn seam (ctx.adversarialLoopFn ?? runAdversarialLoop) whose cwd is
-  // pinned in the adversarial section.
+  // pinned in the adversarial section. work-driver-issue-images.ts wraps a
+  // dispatch function to add the issue's images to the spec: it passes the
+  // caller's spec on, cwd included, and decides nothing about where a child
+  // runs.
   const SEAM_PLUMBING = new Set([
     "dispatch.ts",
     // #1024 — enterCycle binds the default dispatch to the cycle's AbortSignal;
     // it forwards each caller's spec (and cwd) unchanged, so it adds no site.
     "work-driver-cycle-entry.ts",
+    "work-driver-issue-images.ts",
     "work-driver-resume.ts",
     "work-driver-merged.ts",
     "work-driver-adversarial-fanout.ts",

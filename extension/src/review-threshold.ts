@@ -16,6 +16,7 @@
  * error, a refusal, or a review that blocks on nothing.
  */
 
+import type { DecisionWhere } from "./decision-seam.ts";
 import { type DoctrineDoc, type PolicyJudgeFn, askPolicy } from "./work-driver-policy.ts";
 
 /** The question asked before a code review's verdict is computed. */
@@ -63,6 +64,7 @@ export async function resolveReviewThreshold(
   judge: PolicyJudgeFn,
   docs: readonly DoctrineDoc[],
   defaultSeverity: ReviewSeverity = "MEDIUM",
+  where?: DecisionWhere,
 ): Promise<ReviewThreshold> {
   const env = process.env.PI_ENSEMBLE_REVIEW_THRESHOLD?.trim().toUpperCase();
   if (env && (SEVERITIES as readonly string[]).includes(env)) {
@@ -80,7 +82,7 @@ export async function resolveReviewThreshold(
     };
   }
 
-  const decision = await askPolicy(judge, REVIEW_THRESHOLD_QUESTION, docs);
+  const decision = await askPolicy(judge, REVIEW_THRESHOLD_QUESTION, docs, where);
   const named = decision.quote ? severityFromQuote(decision.quote) : undefined;
   if (!decision.permitted || !named) {
     return {

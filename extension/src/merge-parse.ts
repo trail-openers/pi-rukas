@@ -15,17 +15,20 @@
  * unwrapping in merge-verb-head.ts.
  */
 
+import { parseArgsAfterVerb } from "./merge-args.ts";
 import {
   MAX_CONSTRUCT_DEPTH,
+  gluedRepoValue,
   isValidRepoValue,
   mergeVerbSpanRegex,
-  parseArgsAfterVerb,
   rawTokens,
   shellSegments,
   stripGluedParen,
   unquoteArg,
+  verbForge,
 } from "./merge-tokens.ts";
 import { innerBodies, matchMergeVerb, mergeVerbUnwrapOne } from "./merge-verb-head.ts";
+import { splitGluedSubstitutions } from "./merge-wrappers.ts";
 
 /**
  * The arguments that follow the matched merge verb, verbatim (the raw tail
@@ -72,7 +75,7 @@ export function mergeVerbRepo(
   if (!command.includes("merge")) return undefined;
   const args = mergeVerbArgs(command);
   if (args === undefined) return undefined;
-  const tailRepo = parseArgsAfterVerb(args).repo;
+  const tailRepo = parseArgsAfterVerb(args, verbForge(command)).repo;
   if (tailRepo !== undefined) {
     // A repo value was read (possibly via `--repo=`/`--project=` — the
     // eq form lands in the same field as the space form). Validate it:
@@ -154,6 +157,12 @@ function matchMergeVerbTail(command: string): string | undefined {
   const layers = 3;
   let used = 0;
   while (used < layers) {
+    // #962: the whole-command unwrap replaces `text` with the shell-eval
+    // body, so it is only sound when that invocation IS the whole command.
+    // With a second segment (`bash -c 'true'; gh pr merge 17`) the rest of
+    // the command would be discarded unseen; the per-segment unwrap in
+    // `segmentMergeTail` handles every segment instead.
+    if (shellSegments(text).length !== 1) break;
     const inner = mergeVerbUnwrapOne(text);
     if (inner === undefined) break;
     text = inner;
@@ -258,10 +267,9 @@ function segmentMergeTail(seg: string): string | undefined {
     // word (the old raw-text probe did the same slice).
     const probeSeg = seg.startsWith("(") ? seg.slice(1) : seg;
     const probeToks = rawTokens(probeSeg);
+    const toks = probeToks.terminated ? splitGluedSubstitutions(probeToks.list) : [];
     const probe =
-      probeToks.terminated && probeToks.list.length > 0
-        ? probeToks.list.map(unquoteArg).join(" ")
-        : undefined;
+      probeToks.terminated && toks.length > 0 ? toks.map(unquoteArg).join(" ") : undefined;
     if (probe === undefined) return "";
     const m = mergeVerbSpanRegex().exec(probe);
     if (m) {
@@ -280,7 +288,7 @@ function segmentMergeTail(seg: string): string | undefined {
       // commands it is the old tail verbatim). A glued closing `)` stays
       // in the tail — the number/repo parser strips a trailing `)` from a
       // glued token (`17)` is the number 17 in `(gh pr merge 17)`).
-      return probe.slice(m.index + m[0].length);
+      return tailAfter(toks, probe, m.index + m[0].length);
     }
     // #955 adversarial round 4 (finding 1): `matchMergeVerb` matched via a
     // shell-eval invocation (the glued-paren path — `(sh -c …` — the
@@ -307,6 +315,37 @@ function segmentMergeTail(seg: string): string | undefined {
   // The unwrapped layer is malformed (an unterminated quote in the inner
   // text) — the same fail-closed no-number signal as the top level.
   return "";
+}
+
+/**
+ * The argument tail after the matched span (`end`, an offset into the
+ * unquoted `probe` built from `toks`), rebuilt from the RAW tokens (#1317).
+ * The unquoted probe alone would split a quoted argument (`--subject "fix: a
+ * b"`) into words the parser reads as positionals; each token after the verb
+ * is re-quoted instead, so the parser sees the words bash passes. A span that
+ * ends mid-token falls back to the unquoted remainder.
+ */
+function tailAfter(toks: string[], probe: string, end: number): string {
+  let pos = 0;
+  for (let k = 0; k < toks.length; k++) {
+    pos += unquoteArg(toks[k] ?? "").length;
+    if (end <= pos) {
+      if (end !== pos) return probe.slice(end);
+      return toks
+        .slice(k + 1)
+        .map(requote)
+        .join(" ");
+    }
+    pos += 1; // the joining space
+  }
+  return "";
+}
+
+/** One raw token, quoted so the parser reads it as one word (its value is unchanged). */
+function requote(tok: string): string {
+  if (tok[0] !== "'" && tok[0] !== '"' && !tok.startsWith("$'")) return tok;
+  const v = unquoteArg(tok);
+  return v.includes("'") ? `"${v.replace(/["\\$`]/g, "\\$&")}"` : `'${v}'`;
 }
 
 /** True when the raw command text contains a merge verb (scan-not-anchor). */
@@ -410,11 +449,23 @@ function repoFlagBeforeVerb(command: string): string | undefined {
  * before matching its tokens, where `17)` is the number 17 in
  * `(gh pr merge 17)`).
  */
-function repoFlagInTokens(seg: string): string | undefined {
+export function repoFlagInTokens(seg: string): string | undefined {
   const tokens = rawTokens(seg);
   if (tokens.terminated === false) return undefined;
   for (let i = 0; i < tokens.list.length; i++) {
     const t = tokens.list[i] ?? "";
+    // #962: the `--repo=VALUE` / `-R=VALUE` / `-RVALUE` spellings name the
+    // repo exactly like the space form (gh accepts all of them, before or
+    // after the verb) — reading only the space form verified a merge on
+    // another repo against the CWD's PR. The value is the rest of the token
+    // or, when the token ends at `=` (a quoted value: `--repo="o/r"`), the
+    // next token.
+    const glued = gluedRepoValue(t);
+    if (glued !== undefined) {
+      const v = glued === "" ? (tokens.list[i + 1] ?? "") : glued;
+      const q = v[0];
+      return stripGluedParen(q === "'" || q === '"' ? v.slice(1, -1) : v);
+    }
     if (t === "-R" || t === "--repo" || t === "--project") {
       const v = tokens.list[i + 1];
       if (v === undefined || v.length === 0) continue;

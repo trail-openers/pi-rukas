@@ -11,13 +11,14 @@ import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 import { explainConsolidation } from "./work-driver-explain-consolidation.ts";
 import { explainDetectCaps } from "./work-driver-explain-detect-caps.ts";
 import { explainLens } from "./work-driver-explain-lens.ts";
-import { explainOther } from "./work-driver-explain-other.ts";
+import { adversarialFailureCause, explainOther } from "./work-driver-explain-other.ts";
 import { explainPrSteps } from "./work-driver-explain-pr-steps.ts";
 import { explainReview } from "./work-driver-explain-review.ts";
+import { explainVerifyFailed, explainVerifyTimeout } from "./work-driver-explain-verify.ts";
 import { cherryPickRecoveryFor } from "./work-driver-handoff-cherry-pick.ts";
 import { type ParkReason, explainPark } from "./work-driver-intent.ts";
 import { explainMergeHold } from "./work-driver-merge-authority.ts";
-import { FIX_PASS_EVIDENCE_PREFIX, lastCapHit } from "./workflow-state-cap.ts";
+import { lastCapHit } from "./workflow-state-cap.ts";
 import {
   type WorkEvent,
   type WorkState,
@@ -30,8 +31,13 @@ import {
  * PR5 — single source of truth mapping a cap-hit `cap` value to an
  * operator-readable sentence. Used by every handoff surface so the
  * WHY explanation stays consistent.
- * Exhaustive switch — adding a new cap value to the WorkEvent union
- * forces a typecheck error here, which is the design intent.
+ * Exhaustive switch for FIXED-LITERAL caps — adding a new fixed-literal cap
+ * value to the WorkEvent union forces a typecheck error here, which is the
+ * design intent. TEMPLATE caps (`verify-failed:`, `verify-timeout:`, `step-failed:`,
+ * `branch-ahead:`, `driver-crash:`) do NOT force a case — they are handled
+ * by the prefix branches below the switch, where each gets its own tailored
+ * sentence; adding a new template prefix without a matching branch below
+ * would fall through to the generic "see state-file event log" fallback.
  */
 export function explainCap(
   cap: Extract<WorkEvent, { kind: "cap-hit" }>["cap"] | undefined,
@@ -47,7 +53,8 @@ export function explainCap(
     return "the cycle halted without recording which gate stopped it — check the event log directly";
   }
   const snap = state.pipelineState.handoffSnapshot;
-  const fileCount = snap ? snap.unstagedCount + snap.stagedCount : undefined;
+  const fileCount =
+    snap && !snap.unreadable?.length ? snap.unstagedCount + snap.stagedCount : undefined;
   const fileBlurb =
     fileCount !== undefined ? `${fileCount} file(s) modified-but-uncommitted` : "uncommitted work";
   switch (cap) {
@@ -210,8 +217,6 @@ export function explainCap(
       );
       return `commit-pr's post-dispatch consolidation gate detected that the committed diff is missing files from these workstreams. ${which} Pre-PR14 this would have merged silently (v0.12.13 /work 577 closed an issue with 1 of 3 workstreams' changes shipped). The driver halted before merge; take over the integration manually or follow the recovery below.${rootBlurb}`;
     }
-    case "verify-failed:commit-pr":
-      return explainConsolidation(cap, state);
     case "integration-verify-failed":
       return explainConsolidation(cap, state);
     case "consolidated-verify-consolidation-created": {
@@ -275,6 +280,14 @@ export function explainCap(
       const ev = hit?.evidence ?? "(no detail recorded)";
       return `the lens review returned a no-review outcome — ${ev}. Nothing changed since the last recorded lens run, so there was nothing to re-review; the cycle parked rather than treating the absence of a review as an approval. Re-run the review (with an explicit diff, or \`full: true\`) after a new commit lands on the branch`;
     }
+    case "deadline": {
+      // #1238 — the caller-set whole-cycle deadline: at a step boundary the
+      // deadline was within the handoff grace, so no new step started and
+      // the driver parked; the grace lets this comment post before the kill.
+      const hit = lastCapHit(state, "deadline");
+      const ev = hit?.evidence ?? "(no detail recorded)";
+      return `the caller's whole-cycle deadline (${ev}) was within the handoff grace at a step boundary, so the driver started no new step and parked. The handoff below says where the work is — branch, PR, and the round reached — and posts before the deadline so a caller that kills the process at that point sees a handoff, not an aborted in-flight state. Re-run \`/work <issue> --restart\` with the deadline raised or cleared`;
+    }
   }
   // #844 — a local branch of the resolved name holds commits the freshly
   // fetched origin/<mainline> does not. Deliberate halt: only a human can
@@ -300,59 +313,8 @@ export function explainCap(
     const ev = hit?.evidence ?? "(no detail recorded)";
     return `the branch step's ops fallback recorded a baseSha that does not match the branch's actual merge-base with origin/<mainline>: ${ev}. The branch was not built off the freshly-fetched base — ops likely created it from a stale local ref. Reset the branch to the correct base (\`git branch -f <branch> <correct-sha>\`) and re-run the cycle, or investigate the branch's commit history before proceeding`;
   }
-  // PR17 — `verify-failed:<step>`: the driver-side outcome gate found
-  // the step's claimed result isn't backed by executed evidence. The
-  // per-check findings live in pipelineState.verifyEvidence.
-  if (cap.startsWith("verify-failed:")) {
-    const step = cap.slice("verify-failed:".length);
-    const evidence = state.pipelineState.verifyEvidence;
-    // #1137 — a fix-pass park (parkFixPass) writes its detail on the cap-hit's
-    // own `evidence` string, and `verifyEvidence.failures` is never written on
-    // that path, so the "Why" read "(evidence detail missing from state)".
-    // Prefer the cap's evidence ONLY for fix-pass caps: the generic develop
-    // verify cap also carries evidence, but it is a bounded join of the same
-    // failures, and the per-failure bullets (with fence attribution) are the
-    // richer rendering for it.
-    const capHit = lastCapHit(state, cap);
-    const capEvidence = capHit?.evidence?.startsWith(FIX_PASS_EVIDENCE_PREFIX)
-      ? capHit.evidence
-      : undefined;
-    const findings = capEvidence
-      ? `\n${capEvidence}`
-      : evidence && evidence.failures.length > 0
-        ? `\n${evidence.failures.map((f) => `  - ${f}`).join("\n")}`
-        : " (evidence detail missing from state)";
-    // #841 — when the cap carries the persisted raw-output log paths
-    // STRUCTURALLY (the consolidated verify's run1/run2 logs, recorded on
-    // the cap-hit event's `logPaths` field by the gate's emit site), render
-    // them here. The failure-string bullets above already name the path, but
-    // the operator reads the closing sentence for WHERE to look; an empty
-    // failures list (the "(evidence detail missing)" shape) otherwise leaves
-    // the log path reachable only from the raw event. No prose scanning —
-    // the paths ride on the event, never parsed out of it. Absent on
-    // pre-#841 state files (say nothing rather than guess).
-    let logLine = "";
-    if (step === "develop") {
-      const capHit = lastCapHit(state, `verify-failed:${step}`);
-      const logPaths = capHit?.logPaths;
-      if (logPaths && logPaths.length > 0) {
-        logLine = `\nFull raw verify output: ${logPaths.join(", ")} (scratch dir — inspect it before re-dispatching)`;
-      }
-    }
-    // #782 — the consolidated-verify gate re-runs the verify command once
-    // before classifying. When the re-run happened, say so so the operator
-    // can tell a genuine double failure from one that recovered; absent on
-    // pre-#782 state files (treat absent as "no re-run", no suffix).
-    let retryNote = "";
-    if (evidence && (evidence.retries ?? 0) > 0) {
-      const n = evidence.retries;
-      const verb = n === 1 ? "retried once" : `retried ${n} times`;
-      retryNote = evidence.recovered
-        ? `\nNote: the verify command was ${verb} and RECOVERED — the recorded failure was a transient flake; inspect the worktree(s) to confirm nothing else changed.`
-        : `\nNote: the verify command was ${verb} and still failed — this is a real failure, not a flake.`;
-    }
-    return `the driver's outcome-verification gate rejected the ${step} step's "done" claim — the claimed result is not backed by executed evidence:${findings}${retryNote}${logLine}\nNo LLM judged this; the driver ran the checks itself (git diff/rev-list, the project's verify command, gh pr view). Inspect the worktree(s), fix or re-dispatch, and re-run. Set PI_ENSEMBLE_VERIFY=0 to disable the gate (not recommended)`;
-  }
+  if (cap.startsWith("verify-failed:")) return explainVerifyFailed(cap, state);
+  if (cap.startsWith("verify-timeout:")) return explainVerifyTimeout(cap, state);
   // #753 — deferred worktree-creation failure. Its own sentence, because
   // `step-failed:develop` would be a mislabel (the dispatch itself never
   // failed; the DEPENDENT's deferred worktree creation was refused or
@@ -380,6 +342,15 @@ export function explainCap(
     const path =
       frag && frag.failure.class === "dirty-leftover" ? frag.failure.leftoverPath : undefined;
     return `a DEPENDENT workstream's deferred worktree creation was refused or failed (a dirty same-issue leftover at the target path, or a git error on the add) — the cycle parked so the leftover is inspected and salvaged rather than force-removed${path ? `; the leftover is at ${path}` : ""}; the failed workstream's branch-completed event carries the git detail`;
+  }
+  // #1263 — a step handler THREW (an fs failure, a bug, an uncaught exec
+  // rejection). Distinct from the dispatch-failure `step-failed:<step>`
+  // (that one is a child that failed; this one is the driver itself crashing
+  // inside the step handler). Routed through runHandoff so the operator got a
+  // comment + label, not just a silent `aborted` state file.
+  if (cap.startsWith("driver-crash:")) {
+    const step = cap.slice("driver-crash:".length);
+    return `the driver itself crashed while running the ${step} step (an unhandled error in the step handler — not a subagent failure). The cycle routed the crash through the handoff so the issue carries a comment + label; the crash detail (message + stack) is the last entry in the state file's event log. Fix the underlying error and re-run /work`;
   }
   // Template-literal `step-failed:<step>` values land here. Switch on the
   // step suffix to produce a tailored sentence.
@@ -419,8 +390,12 @@ export function explainCap(
         return "the branch step dispatch failed before creating the feature branch — develop would edit HEAD (likely main), commit-pr has nothing to push, CI has nothing to watch";
       case "develop":
         return `the develop step dispatch failed with ${fileBlurb} on disk${fanoutTag} — adversarial review of partial work is not meaningful, halting cleanly`;
-      case "adversarial":
-        return "the adversarial gate dispatch failed twice (retry exhausted) — cannot commit code that has not passed the adversarial gate";
+      case "adversarial": {
+        // #79 — name the endpoint's fault, not the driver's retry budget: a
+        // quota window or a missing model is not retried at all.
+        const cause = adversarialFailureCause(state);
+        return `the adversarial gate produced no verdict${cause ? ` — reviewer unavailable: ${cause}` : " (dispatch failed, retry exhausted)"} — cannot commit code that has not passed the adversarial gate`;
+      }
       case "commit-pr":
         return "the commit-pr step dispatch failed before pushing the PR — lens-review of uncommitted work would waste hours, CI has nothing to watch";
       case "lens-review":

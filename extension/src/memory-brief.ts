@@ -110,7 +110,9 @@ export async function buildMemoryBrief(
     used.push(q);
     let r: Awaited<ReturnType<typeof vipuneSearch>>;
     try {
-      r = await vipuneSearch(q, { ...opts, hybrid: true, includeCandidates: true });
+      // Active rows only (#1103): a candidate influences nothing until an
+      // operator promotes it — the premise every driver write relies on.
+      r = await vipuneSearch(q, { ...opts, hybrid: true });
     } catch {
       continue;
     }

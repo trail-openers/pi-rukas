@@ -5,6 +5,11 @@
  * Split out of work-driver.ts per AGENTS.md §12 module-size hygiene (#171).
  */
 import { scratchHygieneSection } from "./work-driver-prompts-late.ts";
+import { developVerifyLine } from "./work-driver-verify-fast.ts";
+
+// #1322 — the Step 2 (plan) prompt lives in work-driver-prompts-plan.ts (500-line
+// cap); re-exported so existing importers keep this path.
+export { inlinePlanPrompt } from "./work-driver-prompts-plan.ts";
 
 /**
  * Step 1 explore prompt. PR3 Pattern 1 fetched the body in PARALLEL
@@ -196,6 +201,8 @@ function intentResolutionBlock(issues: number[]): string {
     "- <claim you checked> — <file:line or URL> — confirmed | contradicted | unverifiable",
     "```",
     "",
+    "`contradicted` means the ISSUE is wrong about the code or the world. A stale vipune row is not that: supersede it, and if you list it, give `memory` as its source so it is not read as a finding against the issue.",
+    "",
     "Then a `## Rationale` section: two or three sentences on why you reached that verdict. On a park this is what the operator reads.",
     "",
     "Deliverables are the units of work, NOT the acceptance criteria — one per separable thing to build. If the issue enumerates them, carry them across; if it does not, derive them.",
@@ -203,49 +210,6 @@ function intentResolutionBlock(issues: number[]): string {
     "A deliverable that cannot produce a code diff by design (e.g. a GitHub repo settings toggle, an operator decision, a manual verification step, or external service configuration) gets a `[no-diff: <evidence>]` marker INSTEAD of `[paths: ...]`, where <evidence> is the command, API endpoint, or settings URL that proves it was done. The driver skips the diff check for marked deliverables and surfaces them as operator actions in the PR body — but the marker is honoured ONLY when the evidence string is non-empty, and ONLY when the deliverable declares no code paths (a deliverable with both is malformed and the code paths win). Never use the marker to excuse missing code work, and never write prose like `n/a` into a `[paths: ...]` slot — prose is not a control signal.",
     "",
     "A no-diff deliverable is NOT a workstream candidate — it must not appear in the `## Workstreams` block (it has no paths, so it would fail the empty-paths plan-quality check).",
-  ].join("\n");
-}
-
-/**
- * Step 2 (plan) prompt. PR3: asks for `## Workstreams`; single-workstream
- * issues return one `### default` entry (or zero, which the driver synthesises).
- */
-export function inlinePlanPrompt(issues: number[], scratchDirAbs: string): string {
-  const headline = issues.length === 1 ? `issue #${issues[0]}` : `issues #${issues.join(", #")}`;
-  return [
-    `/work ${headline} — Step 2 (Decomposition).`,
-    "",
-    `The driver has already cached ${issues.length === 1 ? "the issue body" : "each issue body"} and Step 1's explore report. Read ${issues.length === 1 ? "both" : "all of them"}, then work in this order:`,
-    "",
-    "  1. ENUMERATE the discrete findings first. Numbered items and checkboxes in the issue body are the default enumeration — one finding per item. Write the list out before you decide anything about workstreams.",
-    "  2. Split into workstreams ONLY where the work is genuinely independent: no two workstreams may share a file, and NO workstream may have a compile or runtime dependency on another (a type change and every place that uses it is ONE workstream, not two — the consumer does not compile without the producer's commit). Shared files, shared symbols, or one half that cannot build without the other means ONE workstream. A single-file two-line fix is one workstream; that is fine.",
-    "  3. Anything you deliberately are NOT doing goes under an explicit `Deferred:` line with a one-line reason. Silently dropping a finding is worse than deferring it.",
-    "",
-    "Why this matters: each workstream gets its own worktree and its own developer, and every workstream must pass the project's quality gates ALONE, applied to the base commit — a combined run that passes does not excuse a workstream that fails on its own. Workstreams whose changes depend on each other are the dominant cause of a cycle failing to converge: one plan split a type change from its consumers, 0 of 5 workstreams passed their own gate, and re-running the same split failed identically every time. Decompose only where the halves can each stand alone.",
-    "",
-    "Return your enumeration and reasoning, then a fenced workstreams block. Format MUST match exactly:",
-    "",
-    "```markdown",
-    "## Workstreams",
-    "",
-    "### default — <one-line scope label>",
-    "- paths: <comma-separated touchpoint files>",
-    "- out-of-scope: <comma-separated explicit exclusions — what NOT to touch>",
-    "```",
-    "",
-    "For N>1 workstreams, repeat the `###` subheading per workstream (use short ids like `task-a`, `task-b`). The `out-of-scope` line is LOAD-BEARING — issue #553 polluted PR #556 with off-scope files because nothing told the developer what was OUT. Fence the scope explicitly even when you think it's obvious.",
-    "",
-    "EVERY workstream MUST declare a non-empty `paths:`. The driver checks the committed diff against that list to prove each workstream's slice actually landed; an empty list silently disables that check for the slice. `paths` means files the developer is EXPECTED TO MODIFY: a file you list in `paths` but never edit (e.g. a shared or legacy test whose contract you keep green without touching it) counts as a missing slice at the consolidation gate and parks the cycle. Shared tests, legacy tests, or anything you deliberately keep green without editing go in `out-of-scope` — that is what the out-of-scope line is for.",
-    "",
-    "If single-workstream, ALWAYS use `### default` so the driver routes through the same code path uniformly.",
-    "",
-    "Optional per-workstream lines (N>1 plans that declare workstream ORDERING or integration coverage):",
-    "",
-    "  - `depends-on: <id>` — the workstream(s) this one builds on. The develop step defers this workstream's worktree until the referenced one commits, and sources it from that worktree's HEAD rather than the cycle's base. The graph must be a DAG: no workstream may depend on itself or on a chain that loops back to it. A reference to an undeclared id (or to a workstream folded away by the ceiling) is a plan-quality rejection.",
-    "",
-    "Cross-declaration contract for N>1 workstreams: put every sibling workstream's `paths` files in your own `out-of-scope` line (and keep the contract symmetric). The driver's plan-quality gate rejects two workstreams claiming the same file, and the develop scope fence honours the cross-declaration — a `depends-on` workstream is exempted from its sibling's files for exactly that reason. Do not rely on the exemption for paths your workstream genuinely needs to edit; if two workstreams both need to edit a file, that is one workstream, not two.",
-    "  - `integration-test: <path>` — the consolidated-tree test that exercises this workstream TOGETHER with the workstream(s) it depends on. REQUIRED (plan-quality rejection otherwise) when two workstreams are interdependent through DIFFERENT files — i.e. one declares `depends-on: <other>` with a disjoint file set, or one's test file exercises the other's file. The line is a DECLARATION only: the develop step does not execute it; it exists so the plan records that integration coverage was required.",
-    scratchHygieneSection(scratchDirAbs),
   ].join("\n");
 }
 
@@ -309,6 +273,14 @@ export function inlineDevelopPrompt(
    * else. The findings are reviewer data, fenced, never instructions.
    */
   fixFindings?: string,
+  /**
+   * The note for a developer re-dispatched after a transient failure
+   * (`interruptedDevelopNote`): the previous attempt's partial work is still
+   * in this worktree. Absent on a first attempt — the prompt is unchanged.
+   */
+  interruptedNote?: string,
+  /** #1324 — `.pi/verify-cmd-fast`: the developer runs this, the driver runs both tiers. */
+  fastVerifyCmd?: string,
 ): string {
   // PR11 — multi-issue cycles must show the developer the ACTIVE issues
   // (NEEDS_WORK subset after explore), not the primary cycle issue. The
@@ -379,9 +351,8 @@ export function inlineDevelopPrompt(
   } else {
     fetchInstr = `Re-fetch each active issue body — run \`gh issue view <N>\` for each of: ${issues.map((n) => `#${n}`).join(", ")}.`;
   }
-  const verifyLine = verifyCmd
-    ? `Before committing, run the project's verify command — \`${verifyCmd}\` — and make it pass in your worktree; this is the exact command the verify gate will run, so the two cannot diverge. Fix formatting or lint output by RUNNING the formatter/linter, never by hand-guessing.`
-    : "This project has no discoverable verify command, so there is no project-level check to run before committing — rely on the change being correct and complete.";
+  const verifyLine = developVerifyLine(verifyCmd, fastVerifyCmd);
+  if (interruptedNote) lines.push(interruptedNote);
   lines.push(
     `  1. ${fetchInstr}`,
     "  2. Implement the change end-to-end. Your worktree is on a detached HEAD at the base commit — that is correct. Commit your work there; the driver moves the commits to the feature branch during Step 6 consolidation.",

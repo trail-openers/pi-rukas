@@ -31,16 +31,13 @@
  * (consistent with PI_ENSEMBLE_CONVERGE / PI_ENSEMBLE_VERIFY).
  */
 
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
+import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { detectMainline } from "./work-driver-git.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 import { appendEvent } from "./workflow-state.ts";
 import type { WorkState } from "./workflow-state.ts";
-
-const execp = promisify(exec);
 
 /** `PI_ENSEMBLE_ACCEPTANCE_COVERAGE=0` (or `false`) disables the gate. */
 export function acceptanceCoverageEnabled(): boolean {

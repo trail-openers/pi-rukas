@@ -55,7 +55,18 @@ export function explainLens(cap: Cap, state: WorkState): string {
         : ref
           ? `repoRoot was restored to ${ref} (verified) — the repository root is usable again; run \`git status\` and \`git symbolic-ref --short HEAD\` there to confirm (it must show ${ref} and an empty porcelain).`
           : `the repoRoot condition was not recorded (this cycle predates #797) — run \`git status\` in the repository root before re-running; a dirty root will abort the next cycle's branch step.`;
-      return `the lens-fix round did not reach the branch — ${cause}. ${where} ${rootCondition} The cycle halted rather than reviewing again, because the next round would have re-read an unchanged branch and re-reported the identical findings until the round cap fired, which is what burned whole review budgets on already-solved defects. If the fix is still on disk, commit and push it there and re-run; if nothing exists, the findings were likely false positives and should be adjudicated before re-running`;
+      const halted =
+        "The cycle halted rather than reviewing again, because the next round would have re-read an unchanged branch and re-reported the identical findings until the round cap fired, which is what burned whole review budgets on already-solved defects.";
+      // A committed fix that could not be integrated is not a review
+      // deadlock: the work exists, one step from the branch. Say which
+      // commit and where, and never suggest the findings were false
+      // positives — the fixer answered them.
+      const fixSha = hit?.committedFixSha;
+      if (fixSha && worktree) {
+        const branch = state.pipelineState.branchName ?? "the feature branch";
+        return `the lens-fix round did not reach the branch — ${cause}. ${where} ${rootCondition} ${halted} The fix itself is written and committed: \`${fixSha.slice(0, 12)}\` at the HEAD of \`${inlineCodeSafe(worktree)}\`, not yet on ${branch} — the PR does not contain it. \`git log --oneline ${branch}..${fixSha.slice(0, 12)}\` lists what is missing. Land it by hand (check out ${branch}, cherry-pick those commits, resolve whatever the evidence above names, push) before merging the PR or re-running`;
+      }
+      return `the lens-fix round did not reach the branch — ${cause}. ${where} ${rootCondition} ${halted} If the fix is still on disk, commit and push it there and re-run; if nothing exists, the findings were likely false positives and should be adjudicated before re-running`;
     }
     case "lens-fix-reposition": {
       // #981 — the round-2 reposition guard refused to dispatch the fixer

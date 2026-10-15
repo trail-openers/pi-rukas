@@ -125,6 +125,10 @@ export async function makeHook(env: {
   ledgerCommonDir?: string;
   remote?: string;
   ghComments?: string;
+  /** The mainline `git symbolic-ref` reports (default: the PR's base). */
+  mainline?: string;
+  /** What `git merge-base` prints (default `mb0000`; "" = no merge-base). */
+  mergeBase?: string;
 }): Promise<(event: unknown, ctx: unknown) => Promise<unknown>> {
   let handler: ((event: unknown, ctx: unknown) => Promise<unknown>) | undefined;
   const fakePi = {
@@ -183,6 +187,10 @@ export async function makeHook(env: {
       return { stdout: env.remote + "\n" };
     }
     if (cmd.includes(`rev-parse ${env.remote}/`)) return { stdout: env.fetchedHead };
+    if (cmd.includes("symbolic-ref")) {
+      return { stdout: `origin/${env.mainline ?? env.target.baseBranch}\n` };
+    }
+    if (cmd.includes("git merge-base")) return { stdout: `${env.mergeBase ?? "mb0000"}\n` };
     if (cmd.includes("patch-id")) return { stdout: `${env.currentPatchId} 0000` };
     if (cmd.includes("git-common-dir")) {
       return { stdout: env.ledgerCommonDir ?? "" };
@@ -206,6 +214,8 @@ export async function hookDecision(
     ledgerCommonDir?: string;
     remote?: string;
     ghComments?: string;
+    mainline?: string;
+    mergeBase?: string;
   } = {},
 ) {
   const env = {
@@ -218,6 +228,8 @@ export async function hookDecision(
     calls: [] as string[],
     remote: opts.remote ?? "origin",
     ghComments: opts.ghComments,
+    mainline: opts.mainline,
+    mergeBase: opts.mergeBase,
   };
   const handler = await makeHook(env);
   const r = await withLedger(entries, () =>

@@ -13,59 +13,26 @@
  * itself merge authority.
  */
 
-import { exec } from "node:child_process";
 import path from "node:path";
-import { promisify } from "node:util";
 import { notifyAgent } from "./agent-message.ts";
 import { setJobIssues } from "./async-jobs-registry.ts";
 import { startJob } from "./async-jobs.ts";
+import { execp } from "./exec.ts";
 import { detectForge } from "./forge-detect.ts";
 import { type Forge, createForge } from "./forge.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
-import { groupIssues, resolvedParallelGroups } from "./work-driver-grouping.ts";
+import type { WorkInvocation } from "./work-args.ts";
+import { effectiveParallelGroups, groupIssues } from "./work-driver-grouping.ts";
 import type { DriverHost } from "./work-driver-host.ts";
 import { runWorkDriver } from "./work-driver.ts";
 import { singleCycleQueueEntry } from "./work-queue-single-entry.ts";
 import { mergeQueueSummaryEntry } from "./work-queue-summary.ts";
 import { renderQueueSummary, runWorkQueue } from "./work-queue.ts";
 
-const execp = promisify(exec);
+export { parseWorkArgs, type WorkInvocation } from "./work-args.ts";
 
-export interface WorkInvocation {
-  issues: number[];
-  restart: boolean;
-  /** Operator-only. Never settable from a tool — see the module docstring. */
-  mergeGrant: boolean;
-}
-
-/**
- * Parse `/work` arguments.
- *
- * Returns an `error` string rather than throwing, so both the command and the
- * tool can render it in their own idiom.
- */
-export function parseWorkArgs(args: string): WorkInvocation | { error: string } {
-  const tokens = args.trim().split(/\s+/).filter(Boolean);
-  const issues = tokens
-    .filter((t) => !t.startsWith("--"))
-    .map((t) => Number.parseInt(t, 10))
-    .filter((n) => Number.isFinite(n) && n > 0);
-  if (issues.length === 0) {
-    return {
-      error:
-        "pi-rukas: /work needs at least one issue number (e.g., /work 547, or /work 561 562 to analyze + group multi-issue).",
-    };
-  }
-  return {
-    issues,
-    restart: tokens.includes("--restart"),
-    // #380 — the operator's grant of merge authority for this run. The only
-    // other source is an explicit grant in the project's AGENTS.md; with
-    // neither, cycles open their PR and park.
-    mergeGrant: tokens.includes("--merge"),
-  };
-}
+type CycleFlags = Pick<WorkInvocation, "restart" | "mergeGrant" | "protectedGrant" | "headless">;
 
 /**
  * Resolve the repository root for a session directory.
@@ -110,10 +77,9 @@ function runSingleIssue(
   pi: DriverHost,
   repoRoot: string,
   issue: number,
-  restart: boolean,
-  mergeGrant: boolean,
+  flags: CycleFlags,
 ): Promise<import("./work-driver.ts").DriverOutcome> {
-  return runWorkDriver({ host: pi, repoRoot, issue, restart, mergeGrant });
+  return runWorkDriver({ host: pi, repoRoot, issue, ...flags });
 }
 
 /**
@@ -133,17 +99,17 @@ function runSingleIssue(
  * `notify` is the caller-provided delivery function for the grouping-decided
  * line (the slash-command path pipes it through notifyAgent; the tool path
  * pipes it through its sink). `concurrency` is no longer a parameter — it is
- * derived internally from `groupList.length` and `resolvedParallelGroups()`,
+ * derived internally from `groupList.length` and `effectiveParallelGroups()`,
  * so both entry paths share one correct value.
  */
 export async function runGroupedIssues(
   pi: DriverHost,
   repoRoot: string,
   issues: number[],
-  restart: boolean,
-  mergeGrant: boolean,
+  flags: CycleFlags,
   notify: (text: string) => void,
 ): Promise<string> {
+  const { restart, mergeGrant, protectedGrant, headless } = flags;
   const bodiesByIssue = await fetchIssueBodies(repoRoot, issues);
   const { groups, notes } = groupIssues(issues, bodiesByIssue);
   const groupList = Object.values(groups);
@@ -162,10 +128,10 @@ export async function runGroupedIssues(
     notes.length > 0
       ? `\n  rules fired: ${notes.length > 4 ? `${cut(notes.slice(0, 4).join("; "), 800)} (+${notes.length - 4} more)` : cut(notes.join("; "), 800)}`
       : "";
-  const concurrency = Math.min(resolvedParallelGroups(), groupList.length);
+  const concurrency = Math.min(effectiveParallelGroups(), groupList.length);
   const restartTag = restart ? " (restart — prior state wiped)" : "";
   notify(
-    `pi-rukas:driver-event v1 kind=group-result issue=${issues.join(", ")} at=${new Date().toISOString()}\npi-rukas: /work grouping decided K=${groupList.length} group(s) — ${summary}${notesLine}\n${resolvedParallelGroups() > 1 ? `Running up to ${concurrency} cycle(s) concurrently` : "Running cycles sequentially"}${restartTag}; a failed group parks and the queue continues.`,
+    `pi-rukas:driver-event v1 kind=group-result issue=${issues.join(", ")} at=${new Date().toISOString()}\npi-rukas: /work grouping decided K=${groupList.length} group(s) — ${summary}${notesLine}\n${effectiveParallelGroups() > 1 ? `Running up to ${concurrency} cycle(s) concurrently` : "Running cycles sequentially"}${restartTag}; a failed group parks and the queue continues.`,
   );
 
   const summaryResult = await runWorkQueue({
@@ -187,6 +153,8 @@ export async function runGroupedIssues(
             issues: groupIssueNums,
             restart,
             mergeGrant,
+            protectedGrant,
+            headless,
             parallelCycles: concurrency,
             invocationStartRef,
           });
@@ -248,7 +216,8 @@ export async function launchWork(
   },
 ): Promise<WorkLaunch> {
   const { repoRoot, invocation, sink } = opts;
-  const { issues, restart, mergeGrant } = invocation;
+  const { issues, ...flags } = invocation;
+  const { restart } = flags;
   const restartTag = restart ? " (restart — prior state wiped)" : "";
 
   trace(
@@ -274,7 +243,7 @@ export async function launchWork(
       ownerKind: "driver" as const,
       work: async () => {
         try {
-          await runSingleIssue(pi, repoRoot, soleIssue, restart, mergeGrant);
+          await runSingleIssue(pi, repoRoot, soleIssue, flags);
           // #808 — record the outcome in the accumulating queue summary index.
           await recordSingleCycleOutcome(repoRoot, soleIssue);
           return makeResult(true, `Completed issue #${soleIssue}${restartTag}`, Date.now());
@@ -319,7 +288,7 @@ export async function launchWork(
         /* nothing we can do */
       }
     };
-    const summaryResult = await runGroupedIssues(pi, repoRoot, issues, restart, mergeGrant, notify);
+    const summaryResult = await runGroupedIssues(pi, repoRoot, issues, invocation, notify);
     // Best-effort end-of-queue summary delivery — a notification failure must
     // not turn a completed queue into an error.
     try {
@@ -381,7 +350,8 @@ export async function runDriver(
   },
 ): Promise<DispatchResult> {
   const { repoRoot, invocation, sink } = opts;
-  const { issues, restart, mergeGrant } = invocation;
+  const { issues, ...flags } = invocation;
+  const { restart } = flags;
   const restartTag = restart ? " (restart — prior state wiped)" : "";
   const startMs = Date.now();
 
@@ -395,7 +365,7 @@ export async function runDriver(
       `pi-rukas:driver-event v1 kind=work-start issue=${soleIssue} at=${new Date().toISOString()}\npi-rukas: /work driver running for issue #${soleIssue}${restartTag}. State in .pi/work-state/${soleIssue}.json — inspect it any time with /work-status.`,
     );
     try {
-      await runSingleIssue(pi, repoRoot, soleIssue, restart, mergeGrant);
+      await runSingleIssue(pi, repoRoot, soleIssue, flags);
       // #808 — record the outcome in the accumulating queue summary index.
       await recordSingleCycleOutcome(repoRoot, soleIssue);
       return makeResult(
@@ -422,7 +392,7 @@ export async function runDriver(
   trace(`/work (grouped) → ${summary}`);
 
   try {
-    const summaryResult = await runGroupedIssues(pi, repoRoot, issues, restart, mergeGrant, (t) => {
+    const summaryResult = await runGroupedIssues(pi, repoRoot, issues, invocation, (t) => {
       void notifyAgent(pi, t);
     });
     return makeResult(true, summaryResult, startMs);

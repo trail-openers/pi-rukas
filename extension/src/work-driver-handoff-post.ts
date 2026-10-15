@@ -18,16 +18,14 @@
  * Split from work-driver-handoff.ts (AGENTS.md §12 file-size limit).
  */
 
-import { exec } from "node:child_process";
 import fs from "node:fs/promises";
-import { promisify } from "node:util";
+import { execp } from "./exec.ts";
 import type { Forge } from "./forge.ts";
 import { trace } from "./trace.ts";
+import { readError } from "./work-driver-handoff-snapshot.ts";
 import { parseHandoffCommentUrl } from "./work-driver-handoff.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
-
-const execp = promisify(exec);
 
 /** The label the handoff applies — the ops prompt, the fallback and the
  * verification reader must all name the same label. */
@@ -37,7 +35,7 @@ export const HANDOFF_LABEL = "needs-human-attention";
  * #775 — the handoff delivery-provenance field (the `delivery` member of
  * the handoff-emitted event, `workflow-state-events-handoff.ts`).
  */
-export type HandoffDelivery = "dispatch" | "fallback";
+export type HandoffDelivery = "dispatch" | "fallback" | "host";
 
 /**
  * #775 — read the attention label back from the target the handoff posted to
@@ -180,6 +178,8 @@ export function makeHandoffEmittedEvent(opts: {
   commentUrl: string | undefined;
   labelApplied: boolean;
   handoffBodyPath: string;
+  /** #1327 — the rendered body, carried in memory (see HandoffEmittedEvent.body). */
+  body?: string;
   consolidated: boolean;
   consolidatedBranch?: string;
   consolidatedWorkstreams?: string[];
@@ -194,6 +194,8 @@ export function makeHandoffEmittedEvent(opts: {
   issueLabelApplied?: boolean;
   /** #798 — per-target: the PR label was verified on the PR. */
   prLabelApplied?: boolean;
+  /** The earlier intent park this handoff repeats (work-driver-park-memory.ts). */
+  repeatOf?: { at: number; commentUrl: string };
 }): Extract<WorkEvent, { kind: "handoff-emitted" }> {
   const { at, commentUrl, labelApplied, handoffBodyPath, delivery } = opts;
   const ev: Extract<WorkEvent, { kind: "handoff-emitted" }> = {
@@ -203,11 +205,13 @@ export function makeHandoffEmittedEvent(opts: {
     labelApplied,
     handoffBodyPath,
   };
+  if (opts.body !== undefined) ev.body = opts.body;
   if (delivery) ev.delivery = delivery;
   if (opts.targetType) ev.targetType = opts.targetType;
   if (opts.targetNumber !== undefined) ev.targetNumber = opts.targetNumber;
   if (opts.issueLabelApplied !== undefined) ev.issueLabelApplied = opts.issueLabelApplied;
   if (opts.prLabelApplied !== undefined) ev.prLabelApplied = opts.prLabelApplied;
+  if (opts.repeatOf) ev.repeatOf = opts.repeatOf;
   if (opts.consolidated) {
     ev.consolidated = true;
     ev.consolidatedBranch = opts.consolidatedBranch;
@@ -261,10 +265,10 @@ export interface HandoffCommittedWorkEntry {
  * recovery print the work's true location (path + HEAD SHA) instead of
  * "0 file(s) modified".
  *
- * Best-effort: every git invocation is try/catch'd; a missing worktree or
- * an unknown base degrades to an absent `committedWork`, which the
- * renderers treat as "no committed work recorded" (the porcelain-based
- * counts still describe any uncommitted dirt).
+ * Best-effort: every git invocation is try/catch'd; an unknown base degrades
+ * to an absent `committedWork`, which the renderers treat as "no committed
+ * work recorded" (the porcelain-based counts still describe any uncommitted
+ * dirt). A read that fails is added to `snapshot.unreadable` instead.
  */
 export async function captureCommittedWork(
   snapshot: NonNullable<WorkState["pipelineState"]["handoffSnapshot"]>,
@@ -291,6 +295,12 @@ export async function captureCommittedWork(
         committedWork.push({ worktreeId: id, path: wt, headSha, ahead });
       }
     } catch (err) {
+      // Not "no committed work": the count was never read. Recorded so the
+      // renderers cannot print the porcelain zeros as the whole truth.
+      snapshot.unreadable = [
+        ...(snapshot.unreadable ?? []),
+        `commits ahead of base in ${wt}: ${readError(err)}`,
+      ];
       trace(
         `work-driver: captureCommittedWork failed for worktree ${id} (${wt}): ${(err as Error).message?.slice(0, 160)}`,
       );

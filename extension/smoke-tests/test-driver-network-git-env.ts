@@ -212,7 +212,7 @@ const WRAPPED = /\brunNetGit\(/g;
 // Pinned per-file call counts of runNetGit. Adding a network git call site
 // means adding a row here — deliberately, so it cannot skip the wrapper.
 const EXPECTED: Record<string, number> = {
-  "work-driver-branch-mechanized.ts": 1,
+  "work-driver-branch-mechanized.ts": 2,
   "work-driver-git.ts": 2,
   "work-driver-integrate.ts": 1,
   "work-driver-adversarial.ts": 1,
@@ -238,7 +238,7 @@ const rawHits: string[] = [];
 const wrappedCounts: Record<string, number> = {};
 // A runNetGit caller whose executor is promisify(exec) ignores killGroup and
 // argv, so the timeout cannot kill the ssh process group. Callers must use the
-// lens-exec execp (or receive an injected one).
+// exec.ts execp (or receive an injected one).
 const promisifyCallers: string[] = [];
 for (const file of sourceFiles(SRC)) {
   const base = path.basename(file);

@@ -1,16 +1,13 @@
 /**
  * work-driver-branch-mechanized — #287 Part A: branch setup as driver code.
- *
  * Pre-#287 the branch step narrated itself to an LLM ops subagent, which then
  * ran `git fetch/checkout/pull --ff-only` against repoRoot and, for N=1,
  * developed there directly (`worktrees = {default: repoRoot}`). That made
  * repoRoot a development tree, which is why:
  *
  *   - stale repoRoot residue was swept into a merged PR (incident #602);
- *   - an aborted step left a dirty tree that wedged every downstream issue's
- *     branch step;
- *   - parallel groups were impossible — two cycles would fight over one
- *     checkout.
+ *   - an aborted step left a dirty tree that wedged every downstream issue's branch step;
+ *   - parallel groups were impossible — two cycles would fight over one checkout.
  *
  * After #287 repoRoot is an INTEGRATION POINT ONLY. Nothing between branch and
  * commit-pr runs git against it. Every workstream — including the degenerate
@@ -34,18 +31,16 @@
  * with it) halts the step via a `branch-ahead:branch` cap; nothing is
  * reset. The detection is purely read-only (two `git` probes) and runs
  * only against the resolved branch name, so a fresh cycle with no local
- * branch never sees it.
+ * branch never sees it — unless #1189's push check (ls-remote) shows the
+ * tip is already on `origin/<branch>`, in which case the reset proceeds.
  */
-
 import { trace } from "./trace.ts";
 import { ensureWorktreesExcluded } from "./work-driver-git-exclude.ts";
 import { isNetGitTimeout, netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 import type { ExecFn } from "./worktree.ts";
 import { DirtyWorktreeError, worktreeCreate } from "./worktree.ts";
 import type { ProvisionResult } from "./worktree.ts";
-
 export { ensureGitExclude } from "./work-driver-git-exclude.ts";
-
 /**
  * Deterministic branch slug. Replaces the LLM-authored name, which produced
  * `…-thinking-only-output` and `…-thinking-only-model-output` for the same
@@ -64,7 +59,6 @@ export function branchSlug(issues: number[], title: string | undefined): string 
     .join("-");
   return brief ? `feature/${stem}-${brief}` : `feature/${stem}`;
 }
-
 /** Detect the mainline branch name, preferring origin's HEAD over a guess. */
 export async function detectMainline(execFn: ExecFn, repoRoot: string): Promise<string> {
   try {
@@ -90,7 +84,6 @@ export async function detectMainline(execFn: ExecFn, repoRoot: string): Promise<
   }
   return "main";
 }
-
 /**
  * Resolve the mainline to a commit SHA, preferring `origin/<mainline>` over
  * the local `refs/heads/<mainline>`. Returns `""` when neither ref exists
@@ -118,7 +111,6 @@ export async function resolveBaseSha(
   if (local) return { sha: local, fromOrigin: false };
   return { sha: "", fromOrigin: false };
 }
-
 /**
  * Resolve the mainline tip via `resolveBaseSha` and report WHERE the SHA
  * came from: `fromOrigin` is true only when `origin/<mainline>` resolved
@@ -140,9 +132,7 @@ export async function freshMainlineTip(
   const line = mainline ?? (await detectMainline(execFn, repoRoot));
   return resolveBaseSha(execFn, repoRoot, line);
 }
-
 let inFlightFetch: { key: string; p: Promise<unknown> } | undefined;
-
 /** Coalesce concurrent `git fetch origin <ref>` calls into one. */
 async function sharedFetch(execFn: ExecFn, repoRoot: string, ref: string): Promise<void> {
   const refProblem = netRefProblem(ref);
@@ -169,7 +159,6 @@ async function sharedFetch(execFn: ExecFn, repoRoot: string, ref: string): Promi
     if (inFlightFetch?.p === p) inFlightFetch = undefined;
   }
 }
-
 /**
  * #844 — a local branch of the resolved name is AHEAD of the freshly
  * fetched `origin/<mainline>`: it holds unpushed commits a reset would
@@ -190,12 +179,44 @@ export class BranchAheadError extends Error {
     readonly aheadCount: number | null,
   ) {
     super(
-      `branch ${branchName} is ${aheadCount ?? "an unknown number of"} commit(s) ahead of origin/<mainline> — possible unpushed work; only a human can decide`,
+      `branch ${branchName} is ${aheadCount === null ? "an unknown number of" : `${aheadCount}`} commit(s) ahead of the base but not safely push-verifiable (local tip does not match origin/${branchName}, the remote ref is absent, or the push probe could not be read) — possible unpushed or diverged work; reset refused, only a human can decide`,
     );
     this.name = "BranchAheadError";
   }
 }
-
+/**
+ * #1189 — did the branch's ahead commits make it to the remote? Verifies
+ * against the REMOTE itself with `git ls-remote origin refs/heads/<branch>`
+ * (positive proof; the LOCAL tracking ref `refs/remotes/origin/<branch>` can
+ * be stale or wrong — operator edit, hook, partial push — so it is not
+ * trusted). ONE network round-trip, on the rare ahead path only. The returned
+ * sha (first field, trimmed) vs the LOCAL tip: `true` = equality (reset safe);
+ * `false` = divergence; `undefined` = branch absent OR check failed: halt.
+ */
+async function aheadBranchIsPushed(
+  execFn: ExecFn,
+  repoRoot: string,
+  branchName: string,
+  localSha: string,
+): Promise<boolean | undefined> {
+  try {
+    const refProblem = netRefProblem(branchName);
+    if (refProblem !== undefined) throw new Error(`ls-remote refused: ${refProblem}`);
+    const { stdout } = await runNetGit(execFn, "git", {
+      cwd: repoRoot,
+      argv: ["ls-remote", "origin", `refs/heads/${branchName}`],
+      maxBuffer: 64 * 1024,
+    });
+    const remoteSha = stdout.split(/\s+/, 1)[0]?.trim() ?? "";
+    if (!remoteSha || !/^[0-9a-f]{40}$/.test(remoteSha)) return undefined;
+    return remoteSha === localSha;
+  } catch (err) {
+    trace(
+      `work-driver: ls-remote push check for ${branchName} failed — treating as not safely pushed: ${String(err).slice(0, 160)}`,
+    );
+    return undefined;
+  }
+}
 /**
  * #844 — inspect a local branch of the resolved name against the freshly
  * fetched base. Returns the pre-reset tip SHA when the branch was force-moved
@@ -212,6 +233,12 @@ export class BranchAheadError extends Error {
  * commit, lock, I/O) retries once, and a second failure HALTS
  * (BranchAheadError with a null ahead count) rather than reset — an
  * unreadable probe must not license destroying an existing branch.
+ *
+ * #1189 — an ahead branch whose commits are ALREADY pushed (ls-remote sha ==
+ * local tip) is NOT unpushed work: the cycle's own pushed, integrated commits
+ * (`--restart`/`--continue` on the just-merged issue) trip the ahead check with
+ * nothing a reset could lose, so the reset below is safe and is what a fresh
+ * cycle needs.
  */
 export async function reconcileExistingLocalBranch(
   execFn: ExecFn,
@@ -281,7 +308,16 @@ export async function reconcileExistingLocalBranch(
     } catch {
       aheadCount = null;
     }
-    throw new BranchAheadError(branchName, aheadCount);
+    // #1189 — "ahead" ≠ "unpushed": a fully-pushed ahead branch (ls-remote sha ==
+    // local tip) resets; an unpushed or diverged one keeps the ahead halt.
+    const pushed = await aheadBranchIsPushed(execFn, repoRoot, branchName, oldSha);
+    if (pushed === true) {
+      trace(
+        `work-driver: ahead branch ${branchName} is fully pushed (local tip ${oldSha.slice(0, 8)} == remote refs/heads/${branchName}) — resetting to the fresh base instead of halting`,
+      );
+    } else {
+      throw new BranchAheadError(branchName, aheadCount);
+    }
   }
   // The branch is checked out at repoRoot (a handoff-parked cycle leaves it
   // there — the #830/#835 shape): `git branch -f` refuses to move the
@@ -297,7 +333,6 @@ export async function reconcileExistingLocalBranch(
   );
   return oldSha;
 }
-
 export interface MechanizedBranchResult {
   branchName: string;
   baseSha: string;
@@ -333,13 +368,13 @@ export interface MechanizedBranchResult {
    */
   resetFromSha?: string;
 }
-
 /**
  * Resolve the base, name the branch, and create one detached worktree per
  * workstream. Throws on any failure — the caller routes that to a
  * `dispatch-failed` on the branch step, which the router turns into a handoff.
  *
- * `DirtyWorktreeError` (#475) is the one failure that must NOT fall back to
+ * `DirtyWorktreeError` (#475) and `WorktreeScanError` (#1170) are the failures
+ * that must NOT fall back to
  * the LLM ops dispatch: the ops branch prompt instructs `git worktree remove
  * --force` for an existing worktree, so the fallback would destroy exactly
  * the work the guard just refused to destroy. Refusing means refusing.
@@ -393,7 +428,6 @@ export async function mechanizedBranchSetup(
       `could not resolve ${mainline} to a commit (no origin/${mainline} after fetch, no refs/heads/${mainline})`,
     );
   }
-
   const branchName = branchSlug(issues, issueTitle);
   // #844 — before any worktree is created: if a local branch of the resolved
   // name exists and does not contain the freshly-fetched base, reset it
@@ -430,6 +464,7 @@ export async function mechanizedBranchSetup(
         repoRoot,
         name: `issue-${issue}-${id}`,
         fromRef: baseSha,
+        strictSiblingListing: true,
       });
       worktrees[id] = created.path;
       provisions[id] = created.provision;

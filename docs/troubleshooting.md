@@ -66,7 +66,7 @@ This is **independent of the LLM backend**: across recent runs, Anthropic Claude
 cd ~/.config/opencode/pi-rukas && git pull && ./install.sh
 ```
 
-Post-#236 (retuned by #295), `install.sh` writes `retry.provider` defaults into `~/.pi/agent/settings.json` (10 min per request, 3 retries with backoff). If you have non-default settings you want to keep, they're preserved — install.sh only writes the retry block when it's missing, with one exception: the old #236 value of exactly `180000` (3 min) is recognized as our own footprint and repaired to the new default.
+Post-#236 (retuned by #295), `install.sh` writes `retry.provider` defaults into `~/.pi/agent/settings.json` (10 min per request, 3 retries with backoff), plus the top-level `httpIdleTimeoutMs` (300000). If you have non-default settings you want to keep, they're preserved — install.sh only writes the retry block when it's missing, with these exceptions, all our own footprints: the old #236 value of exactly `180000` (3 min) is repaired to the new default, a `maxRetryDelayMs` of exactly `10000` is repaired to `60000`, and a `retry.provider.httpIdleTimeoutMs` (a key Pi never reads, #1347) is removed, its value moved to the top level unless it is our old `120000`.
 
 The dispatch report also now distinguishes the failure mode visually:
 
@@ -82,6 +82,7 @@ Do NOT set this below the longest single turn your subagent models legitimately 
 
 ```json
 {
+  "httpIdleTimeoutMs": 300000,  // top level: Pi does not read it under retry.provider
   "retry": {
     "provider": {
       "timeoutMs": 600000,    // 10 min per request (the #295 default)
@@ -140,14 +141,14 @@ Check the raw transcript under `~/.pi/agent/ensemble-runs/<date>/` before conclu
 
 > **Ledger path override:** `PI_ENSEMBLE_REVIEW_LEDGER_FILE` (an absolute path) makes `ledgerPathFor` return that path verbatim without any git call. The override is re-read from the Pi process environment on every ledger access (it is not cached at startup); a command's own env (`FOO=… gh …`, `export` inside a bash call) never reaches the Pi process, so setting it inside a command still has no effect. Tests set it to a private temp file so their fixture writes never touch the real per-clone ledger (concurrent test runs across worktrees would otherwise race on it and clobber it); operators normally do not set it.
 
-1. The **latest** adversarial entry for the branch to be `passed: true` **and** its `patchId` to match the current `git patch-id` of the branch (a new commit since the review refuses).
+1. The **latest** adversarial entry for the branch to be `passed: true` **and** its `patchId` to match the branch's current merge-base patch-id (a change to the branch since the review refuses; main moving does not — see "The patchId base" below).
 2. The **latest** lens entry for the branch to be `passed: true` (any `patchId` — a passing lens entry may predate a later commit; a later **failing** lens run is what the latest-ness protects against). The lens `passed` boolean follows the project's review threshold (the same bar the driver's verdict used — see `lensBlockedByThreshold` / `lensPassed` in review-ledger.ts).
 
 This is the structural floor for the incident where a PM merged two PRs on a developer's self-report plus CI, skipping both reviews. The prompt doctrine demanded both; the prompt layer is what failed. The guard cannot be bypassed by trust mode, sandbox mode, or `agents.json` overrides — it fires in every mode, for every role, before any short-circuit — and it reaches subagents too: every spawned child is loaded with the child-guards companion extension (`extension/src/child-guards.ts`), which registers the guard in trust mode (where the full pi-rukas extension is not forwarded) and no-ops in strict mode (where the full extension already registers it), so a trust-mode child's `gh pr merge` gets this refusal, never gh's not-found error.
 
 **What this guard is — and is not.** This is a **safeguard** against an agent that *forgets* the gates — a PM who merges on a developer's self-report plus CI without running the reviews. It is **not** a security boundary: anything with shell access to this clone can write or delete the ledger file (it is a plain JSON file under the git common dir), and the head check (the fetched head must equal the PR's `headOid`) is a **freshness gate**, not atomic with the merge — a concurrent push between the check and the merge is not detectable here. The threat model is the honest-but-forgetful agent, not an adversary: an agent with credentials can always merge by other means (a direct `git push` to the base branch, a GraphQL merge mutation). Those paths are **consciously out of scope**: branch protection is the git-level control for pushes, and parsing GraphQL is a large surface with little to gain. The guard's job is to catch the case where the reviews simply weren't run — which the ledger detects.
 
-**The patchId base.** The writers (adversarial-ledger.ts, lens-ledger.ts) store their entries against the **merge-base** of HEAD and `<remote>/<mainline>` (resolved via `detectMainline` + the forge remote, never a hardcoded `origin/main`), over the working tree (so uncommitted fixes the adversarial loop made are covered). When those fixes are committed unchanged, the id the guard recomputes at merge time matches the stored one. The guard computes its patchId against `<remote>/<PR baseBranch>` — the PR's actual base. A PR whose base branch is **not** the mainline will therefore fail the patchId check (the two bases differ); that is deliberate and fails closed — the operator re-runs the reviews on the PR's actual base. The git remote is resolved the same way forge detection does (`origin` → `upstream` → first remote; no remote → refuse), so a repo whose remote is not named `origin` still resolves the same ref on both sides.
+**The patchId base.** The writers (adversarial-ledger.ts, lens-ledger.ts) store their entries against the **merge-base** of HEAD and `<remote>/<mainline>` (resolved via `detectMainline` + the forge remote, never a hardcoded `origin/main`), over the working tree (so uncommitted fixes the adversarial loop made are covered). When those fixes are committed unchanged, the id the guard recomputes at merge time matches the stored one. The guard (and the #973 residual-marker poster) compute the same construction over committed content (#1305): the patch-id of `git merge-base <remote>/<head> <remote>/<mainline>`..`<remote>/<head>`, after fetching both refs. Main moving after the review therefore does **not** make the review stale — only a change to the branch's own content does. (Merging main *into* the branch does move the merge-base, so that does need a re-review.) A residual marker whose `patch=` differs from the guard's identity — including one posted by a pre-#1305 build — is treated as absent until the lens review re-posts it. A PR whose base branch is **not** the mainline has no recorded identity to match: the guard refuses it by name (*"the PR's base … is not the mainline …"*) and the poster posts nothing — fail closed; merge such a PR by hand. Any failure to compute the identity (mainline unresolved, no merge-base, a git error) likewise refuses, naming the cause. The git remote is resolved the same way forge detection does (`origin` → `upstream` → first remote; no remote → refuse), so a repo whose remote is not named `origin` still resolves the same ref on both sides.
 
 **Carve-outs (not agent merges):** release-please branches (`release-please--*` head or `autorelease: pending` label) and dependabot PRs (`dependabot/*` head or `dependabot[bot]` / `app/dependabot` author) pass through without a ledger check. The `autorelease: pending` label leg is settable by any collaborator, which is accepted under the forget-the-gates threat model: the carve-out exists for release-please, and the threat model is the honest-but-forgetful agent, not an adversary.
 
@@ -157,7 +158,16 @@ This is the structural floor for the incident where a PM merged two PRs on a dev
 
 **Escape hatch (operator-set only):** `PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1` disables the guard for the whole session. Use only when you have reviewed by other means and want to merge by hand. It is read once when Pi starts; setting it inside a command (`env …`, `export` in a subshell) has no effect.
 
-**What the matcher does NOT cover (round-2 scope, #955):** GraphQL merges (`gh api graphql -f query='mutation { mergePullRequest … }'`) bypass the guard by design — the ticket scopes the guard to the REST merge doors, and parsing GraphQL queries is a large surface with little to gain (an agent that could compose the mutation could merge anyway). A direct `git push origin HEAD:main` is likewise outside the guard: branch protection is the git-level control for that, and blocking arbitrary pushes would break the driver's own ops paths. A merge driven through `xargs` (`echo 17 | xargs -I{} gh pr merge {}`) is also consciously out of scope — the number arrives only via the `xargs` substitution the guard cannot see, and the verb door does not match the indirection, so the guard does not fire at all (the command passes as "not a merge"). So is an `alias`-indirected merge (`alias m='gh pr merge'; m 17`): the forge verb lives only inside the alias's quoted definition, and the guard cannot expand aliases — the same no-number fallback applies. By contrast, a REST-door call inside a subshell or command substitution — `(gh api repos/o/r/pulls/17/merge)`, `x=$(gh api …/pulls/17/merge)` — IS matched (round-2 hardening, #955): a merge inside `$( … )` is a live merge the guard must catch, fail-closed, and the REST doors now recurse into `( … )` / `$( … )` / backtick bodies exactly as the verb door does. Control-flow and compound-construct shapes — `if true; then gh pr merge 17; fi`, `for …; do gh pr merge 17; done`, `while …; do …; done`, `function f { gh pr merge 17; }; f`, `! gh pr merge 17`, `{ gh pr merge 17; }` — are ALSO matched (round-3, #955): the merge verb is treated as headable by any segment of a compound-list command, not only by the first token, because the merge runs in the same shell with the same credentials. Both are judged acceptable given the incident model (an honest-but-forgetful agent, not an adversary: an agent with credentials can always merge directly — the guard's threat model is "the reviews weren't run", which the ledger detects).
+**What the matcher does NOT cover (round-2 scope, #955):** GraphQL merges (`gh api graphql -f query='mutation { mergePullRequest … }'`) bypass the guard by design — the ticket scopes the guard to the REST merge doors, and parsing GraphQL queries is a large surface with little to gain (an agent that could compose the mutation could merge anyway). A direct `git push origin HEAD:main` is likewise outside the guard: branch protection is the git-level control for that, and blocking arbitrary pushes would break the driver's own ops paths. A merge driven through `xargs` (`echo 17 | xargs -I{} gh pr merge {}`) and one driven through an `alias` (`alias m='gh pr merge'; m 17`) are refused as unrecognised: a pipe into `xargs` is never exempt, and the alias text spells the merge next to `gh`. The guard cannot expand either indirection, so it refuses rather than reads them as "not a merge". By contrast, a REST-door call inside a subshell or command substitution — `(gh api repos/o/r/pulls/17/merge)`, `x=$(gh api …/pulls/17/merge)` — IS matched (round-2 hardening, #955): a merge inside `$( … )` is a live merge the guard must catch, fail-closed, and the REST doors now recurse into `( … )` / `$( … )` / backtick bodies exactly as the verb door does. Control-flow and compound-construct shapes — `if true; then gh pr merge 17; fi`, `for …; do gh pr merge 17; done`, `while …; do …; done`, `function f { gh pr merge 17; }; f`, `! gh pr merge 17`, `{ gh pr merge 17; }` — are ALSO matched (round-3, #955): the merge verb is treated as headable by any segment of a compound-list command, not only by the first token, because the merge runs in the same shell with the same credentials. Both are judged acceptable given the incident model (an honest-but-forgetful agent, not an adversary: an agent with credentials can always merge directly — the guard's threat model is "the reviews weren't run", which the ledger detects).
+
+**The guard reads the words bash runs, not just the text (#962).** A command is analysed twice: once as written (keeping subshells, substitutions and `bash -c`/`eval` bodies), and once as the words bash executes after quote removal, so `\gh pr merge 17`, `g"h" pr merge 17`, `bash -c gh\ pr\ merge\ 17` and `eval $"gh pr merge 17"` are matched. A merge either reading finds is refused unless the ledger passes. When both readings find a merge but name a different PR or repo (`gh pr merge 1"7"` reads as PR 1 but runs PR 17), the guard refuses with *"merge refused: ambiguous merge target"* even with a passing ledger: write the number and repo plainly. Also matched since #962: a merge on a later line of a multi-line command; a merge after a first `bash -c '…'`/`eval '…'` segment; `case … esac` arms; `$( … )` and backticks inside double quotes; a substitution in command position (`$(true) gh pr merge 12`); the `--repo=`/`-R=`/`-RVALUE` repo spellings (a quoted `--repo="o/r;id"` is refused as an unsafe repo value); glab REST `--method GET` with `-f` body fields, and `--method=PUT`/`-XPUT` (a method that is not a literal word counts as a write); ANSI-C escapes (`$'\x67h'`) and brace lists (`{gh,pr,merge,17}`). A verb assembled by an expansion in command or verb position (`gh pr m$X 17`, `gh pr m$(echo e)rge 17`) is refused as unrecognised: the words bash runs are unknown. A command that runs more than one merge (`gh pr merge 17 && gh pr merge 5`, or `bash -c "gh pr merge 17 && gh pr merge 5"`) is refused with *"merge refused: the command runs more than one merge"* — the guard verifies one PR per command, so run each merge as its own command. A merge hidden in a command substitution, subshell, backtick or process substitution (`gh pr merge 17 "$(gh pr merge 5)"`, `echo $(glab mr merge 3)`, `cat <(gh pr merge 5)`, `gh pr view "$(gh pr merge 5)"`) is refused with *"merge refused: a merge runs inside a command substitution, subshell, backtick or process substitution"* — the guard cannot see the whole target, so run the merge as its own plainly written command. A command naming two repos (`gh -R a/b pr merge 17 --repo c/d`, `gh pr merge 17 -R=a/b -R c/d`) is refused with *"merge refused: the command names more than one repo"*: gh and glab use the last selector, the guard would check the first; pass one. A bare subshell `(gh pr merge 17)` is one merge and is checked normally. `bash -c gh pr merge 17` is refused as unrecognised: bash would run only `gh` there, but the guard does not read the words of a `bash -c` body (over-refusal, #1317 review). Forge detection's git calls are bounded at 30s; a stall resolves no remote, so the guard refuses with *"could not determine the forge"*.
+
+**Refused because the guard cannot read the command (#1317).** A merge-like command the guard cannot turn into a readable merge is refused, never allowed. Four named refusals:
+
+- *"merge refused: the guard cannot parse this command's quoting"* — an unclosed quote or a heredoc body the words cannot be rebuilt from (`cat <<'EOF'` … `don't` … `EOF`, then `gh pr merge 17`), or a brace group too large to expand. Split the command so the merge is its own plain command.
+- *"merge refused: unreadable PR number"* — the number argument is not a plain integer (`gh pr merge $PR`, `gh pr merge "$N"`, `gh api pulls/merge`). The guard will not guess the PR from the current branch when a number was given. Write the number literally.
+- *"merge refused: the guard cannot read this command as a merge"* (`unrecognised`) — the backstop. The command spells `merge` next to `gh`/`glab`, or a `/merge` REST path, and no reading turned it into a merge head. **This over-refuses on purpose:** `gh pr comment 5 --body "please merge"` is refused. Put comment and PR bodies in `--body-file`, and issue the merge as a plain `gh pr merge <N>` / `glab mr merge <N>`. Not refused: `gh pr comment 5 --body-file x.md`, `gh pr view 17`, `gh pr checks 17`, `git merge --ff-only origin/main` (`git merge` is not a forge command), `echo "gh pr merge 12"` (`echo` and `printf` never run their arguments), `git commit -m "…gh pr merge 12…"` (a commit message is data), and `bash -c gh pr merge 17` is refused (see above). The exemption rule: a segment is exempt only when it is an `echo`, `printf` or `git commit -m` with no substitution, redirection, here-doc, pipe-out or interpreter word in the command, or a forge REST call the REST door itself reads as a read.
+- A repo selector on a segment that is not the merge (`gh -R a/b pr view 1; gh pr merge 17`) is refused as *"names more than one repo"*: the merge's own repo is read from its own segment only, and another segment's selector must match it.
 
 **To satisfy the guard:** run `adversarial_loop` (the `adversarial_loop` tool) and `dispatch_lens_review` (the `dispatch_lens_review` tool) on the branch, let them complete, then merge. The ledger entries are written automatically at completion.
 
@@ -220,6 +230,10 @@ That number separates two failures a bare cause could not:
 
 **A `tool-inactivity` kill** is the same watchdog with its in-flight-awareness on: `last output: toolCall in flight: <tool>` means the silence happened *while a tool call was running* — a long bash (a full offline gate, a CI watch) or a tool that genuinely wedged. Its bound is `PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS` (default 60 min), separate from the model-silence budget below; the two knobs disable independently (`0` on one does not touch the other).
 
+**A child hung inside one tool call** shows in `dispatch_peek` as `no new turn for <duration>` next to its wall-clock age. A steer cannot reach it — a steer lands only when the current tool call returns — so the action is `dispatch_kill <id>` with the id the peek row or the `[ensemble:slow]` notice printed; that works for adversarial round and lens children (`<run>/<label>`) too, and the waiting step then sees a failed dispatch. Steers no longer postpone the tool-inactivity kill: Pi acknowledges each one on stdout, and those acknowledgements used to count as output, so a child steered at every slow-run level outlived the 60-minute bound.
+
+**`dispatch_kill` answered `Refused`** — the job belongs to a running `/work` driver cycle, which `dispatch_status`, `dispatch_peek` and the `[ensemble:slow]` notice now mark as `owned by the /work driver, not you`. The PM tool kills such a child only with `force: true` (for a hung one; the driver then sees a failed dispatch), and never kills the cycle's own `work-driver` job, whose abort stops nothing. The agent-list `x` is not gated. A PM `dispatch_specialist` / `dispatch_parallel` of `developer` or `ops` with a `cwd` inside `.worktrees/issue-<N>-*` is refused while the cycle for #N is live in that session; `explore` and the reviewer roles are let through, and so is everything once the cycle has ended.
+
 The 30-minute model-silence budget (and the 60-minute tool-inactivity bound) are deliberately sized for the silence shape each owns: model turns at the model-silence budget, long tool executions at the tool-inactivity bound. Raising a wall-clock number to cover a cause you have not identified is exactly the mistake the six per-role timers were deleted for — each was raised twice, and each time the finding was that the number was too small for a *healthy* child.
 
 ### Reading a handoff
@@ -235,6 +249,10 @@ Every handoff carries three things it previously withheld.
 ### The six-pass review said APPROVED but nothing looks reviewed
 
 A lens that exits 0 without calling `report_finding` used to be indistinguishable from one that reviewed carefully and found nothing, so a silent review reported APPROVED. It now reports `REVIEW_INCOMPLETE` unless every lens produced either findings or a closing summary. If you see REVIEW_INCOMPLETE with no obvious failure, check the lens transcripts under `~/.pi/agent/ensemble-runs/<date>/` — a lens that returned only thinking content is the usual cause.
+
+### A lens line says `N malformed report_finding call(s) skipped`
+
+Pi validates `report_finding` arguments against the tool's schema and rejects a call missing `severity`, `path` or `title` with `Validation failed for tool "report_finding"` — that text is Pi's, and it names one missing key per rejection. A rejected call records nothing; the lens normally repeats it, so the count beside the lens's findings usually means wasted turns, not a lost finding. To check, compare the lens's `N findings` with what its closing summary lists: a finding in the prose with no matching entry was rejected and never re-sent. The lens's line `Skill Load Status: SUCCESS` reports that its skill loaded, not its verdict.
 
 ### `/work` parks at explore saying the spec is underspecified
 
@@ -261,10 +279,31 @@ The hook is the escape hatch for the inexpressible: anything the symlink allowli
 - **`cwd` = the new worktree root.** `git worktree add --detach` has just run, so the hook sees a tree of tracked files only.
 - **The hook path skips the symlink loop entirely**, including the `.git/info/exclude` write that loop performs. If your hook creates a symlink (say, `ln -s $repo_root/extension/node_modules extension/node_modules`), it must write its own exclude entry to `$GIT_COMMON_DIR/info/exclude`, or the link surfaces as untracked in `git status --porcelain` and `stagePorcelainPaths` stages it into the PR.
 - **A non-zero exit is reported as `ProvisionResult.problem`** and traced at the branch step; the cycle continues (a bare worktree is the status quo, not a regression). A hook that cannot provision should exit 0 with a diagnostic to stderr, not fail the cycle.
+- **`hook-failed` in a `worktree-provisioned` event means the hook exited non-zero, nothing else.** A hook that exited 0 is recorded `hook-ran`; it carries a `problem` when any non-empty, gitignored dependency location the project expects (`node_modules` / `.venv` at the root or in a depth-1 package dir) does not resolve to a non-empty directory in the worktree. A project with no such location and no manifest/lockfile expects nothing, so it carries none. A project whose toolchain keeps dependencies outside the tree (Cargo, Go, Bundler) expects nothing here, so a `Cargo.toml` alone never raises one.
+
+### Every `/work` cycle on pi-rukas parks at `verify-failed:develop` with a verify timeout (#1146)
+
+**Symptom:** the branch step records `worktree-provisioned` with `outcome: hook-failed` and *"node_modules in the worktree is absent, stale, or empty (source: <repo>/node_modules)"*, and develop parks with *"exceeded its 10-min timeout"* and no specific assertion.
+
+**Cause (fixed):** pi-rukas has two non-empty gitignored `node_modules` — the real tree at `extension/node_modules` and a jiti compile cache at the root. The hook linked only `extension/node_modules`; the post-hook check verified only the first non-empty `node_modules` it found (the root one), so the two disagreed — and a missing nested tree was never checked at all.
+
+**Now:** this repo's hook links both trees (`node_modules` and `extension/node_modules`), the hookless symlink loop links **every** non-empty gitignored `node_modules` at the root and in depth-1 package dirs, and the post-hook check verifies each of those locations. Before running the verify command in a worktree, the develop gate checks the same locations and, if one is missing, fails at once with `<path> missing in <worktree>` instead of running the command into the timeout. The root `node_modules` linked here is Pi's jiti compile cache. **Accepted risk:** processes running in a worktree can now write into the main checkout's jiti cache, and the main Pi process later loads from that cache. Before this fix a worktree had no path to it. Trust mode (same UID, same filesystem access) means a child could already write there by path, so the link widens the reach of a path that was already open rather than granting new access; a worktree child that writes a bad cache entry can affect the next main-checkout run. A worktree provisioned before this fix: run `sh .pi/worktree-setup` in it.
 
 ### The plan step re-dispatches saying two workstreams claim the same file
 
 Each workstream gets its own worktree and its own developer, running in parallel, so a file in two `paths` lists means two developers editing it at once — which used to surface much later as a `git apply` conflict at commit-pr. The plan step now catches it and re-plans once. If it persists, the issue probably needs those workstreams merged.
+
+### A parallel plan parks at `verify-failed:develop` with a type error no workstream caused alone
+
+**Symptom:** every developer reports success, yet develop parks with a type error such as *"Property 'x' does not exist"* or *"Module has no exported member 'y'"*, and the consolidated tree fails with the same error.
+
+**Cause:** the plan split one change that threads a new value through several files (a new field on a shared type, a new export, and the code that uses them) into parallel workstreams. Each workstream starts from the same base commit and cannot see its siblings' commits, so the half that uses the new symbol does not compile alone, and the halves guessed different shapes for it. The plan-time coupling merge only sees edges that exist at the base commit (shared files, a declared `depends-on`, a file name referenced in the other's files), so it cannot see a symbol the change itself creates.
+
+**Now:** the plan step defaults to one workstream and asks for the change's contract. Each workstream may declare `introduces:` (symbols it creates) and `consumes:` (not-yet-existing symbols it uses); a consumed symbol that a sibling introduces becomes a `depends-on` edge, and the coupling merge folds the two into one workstream. An issue that names an existing commit or PR as the fix (*"fixed in owner/repo#N"*, *"cherry-pick <sha>"*, *"port PR #N"*) is planned as one workstream that applies that change and resolves the conflicts. A plan that declares no symbols is handled as before. `PI_ENSEMBLE_PLAN_CONTRACT=0` turns the derived edges and the port fold off.
+
+If a coupled split still reaches develop, the develop step recovers once: when one workstream's verify fails on a symbol that a sibling adds (by its `introduces:` line, or by an export or field in its own diff), the driver folds the two workstreams into one, rebuilds the consumer on the producer's commit, and re-runs develop. The event log shows a `fence-recovery-started` line naming both workstreams and the symbol. If the merged workstream still fails, the cycle parks and the handoff says the split was already merged. `PI_ENSEMBLE_SYMBOL_MERGE_RETRY=0` turns this off.
+
+**Recovery:** the work is committed in the detached worktrees the handoff lists. If a known-good single commit exists, cherry-pick it onto a fresh branch from the mainline. Otherwise apply the workstream diffs in dependency order (the one that introduces the symbol first), fix the mismatch in one place, and run the full gate once on the combined tree. To avoid the split on a re-run, set `PI_ENSEMBLE_MAX_WORKSTREAMS=1`.
 
 ### `/work` parks my issue as "underspecified" but the resolver said it was fine
 
@@ -281,7 +320,7 @@ A timed-out explore produced an empty reply, and the driver read that as "explor
 
 ### Cycles run one at a time now
 
-`PI_ENSEMBLE_PARALLEL_GROUPS` defaults to 1. Measured across 69 cycles, every autonomous merge ran alone, and concurrent cycles ran ~2.4× slower per role — enough to trip the watchdogs — as well as corrupting each other through the shared repo root. Set the env var if you want the old behaviour.
+`PI_ENSEMBLE_PARALLEL_GROUPS` defaults to 1. Measured across 69 cycles, every autonomous merge ran alone, and concurrent cycles ran ~2.4× slower per role — enough to trip the watchdogs — as well as corrupting each other through the shared repo root. Set the env var if you want the old behaviour. *Superseded:* the default went back to 3 once every workstream got its own worktree and integration a single lock (see "Parallel groups" below), and a small host now lowers it ([configuration](configuration.md) → `PI_ENSEMBLE_PARALLEL_GROUPS`).
 
 ### A cycle merged even though the full verification failed
 
@@ -294,6 +333,10 @@ A timed-out explore produced an empty reply, and the driver read that as "explor
 ### `/work` refuses a PR number at commit-pr
 
 The gate now requires the PR to be **open** and to have this cycle's branch as its head. Previously it only checked that `gh pr view <N>` did not error, which proved a PR with that number exists — not that it belongs to this cycle. If you see this, the ops reply's `pr:` marker named a PR from a different branch, or one that is already closed or merged. Check `gh pr list --head <branch>`.
+
+### The PR was merged or closed while `/work` was still reviewing it
+
+The driver reads the cycle's PR before lens-review, lens-fix, ci, and before it pushes a lens fix. **Merged** by a person: the cycle ends `merged`, and the terminal line says *merged by someone else during <step>* — the driver merged nothing and pushes nothing further; unpushed work stays in the cycle's worktree(s). **Closed** without a merge: it parks as `verify-failed:<step>` with a `[pr-not-open]` failure. If the PR's state cannot be read, the step runs as before. The review's residual findings are posted to the recorded PR number (a merged PR still takes comments); if that fails they go to the issue, and `/work-status` shows a `lens-residuals-post-failed` event saying where they went.
 
 ### `/work` halts at the branch step naming the mainline
 
@@ -313,9 +356,19 @@ The branch step recorded whatever branch `repoRoot` was on, and that value becom
 
 **Now:** every unresolved verdict still earns a fix round, but at the last round only `CRITICAL_ISSUES_FOUND` blocks. A pass that left findings behind reports `PASSED WITH FINDINGS` rather than `APPROVED`, and those findings appear in the PR body under *"Adversarial review — non-blocking findings"* and in the six-lens review's context. If your cycle still parks here, the reviewer returned `CRITICAL_ISSUES_FOUND` — read the *"What the reviewer objected to"* section of the handoff comment, which now quotes it.
 
+### The adversarial step aborted with "reviewer unavailable: …"
+
+**Symptom:** the handoff reads *"the adversarial gate produced no verdict — reviewer unavailable: provider/transport error: Request timed out. (×2 in a row — not re-dispatched) [cause=provider-severed]"* (or `provider-model-unavailable`, `rate-limited:quota-window`), and the cycle ends with no PR.
+
+**Cause:** the provider, not the change. Every reviewer child died on the same provider error. The loop now stops after two identical failures in a row, does not retry a 404 model or a quota-window 429 at all, and waits out a burst 429's stated delay. Neither the fan-out nor the step router re-dispatches a fault the taxonomy calls final. Before #79 the same outage spawned up to 16 reviewer children and the handoff only said *"dispatch failed twice (retry exhausted)"*. Fix the endpoint or the model id, then re-run `/work`. The develop work is still in the worktree.
+
 ### The handoff says `Rounds: 0 of 3` but the loop clearly ran
 
-`reviewRound` is the **lens-review** counter and is legitimately 0 when a cycle dies at step 5 without reaching step 7. It used to be printed under an adversarial cap too, so a loop that ran three full rounds reported zero. Fixed: an adversarial cap now reports its own round count, and the handoff quotes the blocking finding instead of the generic *"the diff still has issues the adversarial-developer flagged"*.
+`reviewRound` is the **lens-review** counter and is legitimately 0 when a cycle dies at step 5 without reaching step 7. It used to be printed under an adversarial cap too, so a loop that ran three full rounds reported zero. Fixed: an adversarial cap now reports its own round count, and the handoff quotes the blocking finding instead of the generic *"the diff still has issues the adversarial-developer flagged"*. Under every other cap the line now names its counter — `0 of 3 review rounds (six-lens review; the adversarial gate ran 1 round(s), last: ISSUES_FOUND)` — so a cycle parked at develop after an adversarial round and its fix pass no longer reads as unreviewed.
+
+### The handoff shows the branch at the base commit, or `0 file(s) modified`, beside "the branch holds the work"
+
+The handoff used to print the **repo root's** `HEAD` on the branch line. A successful pre-handoff consolidation puts the commits on the feature branch and then restores your checkout, so that `HEAD` was the base commit and the branch looked empty. The line now carries the branch's own tip and its distance from the base (`· tip 37d1118a, 1 commit(s) ahead of base`), the comment labels the other value `repo-root HEAD`, and beside committed work the file count reads `N uncommitted file(s)` — it only ever counted uncommitted files. A handoff snapshot written before the `headSha` → `repoRootHeadSha` rename shows no repo-root HEAD line at all; re-run the cycle to refresh it, or ignore the missing line — the branch state itself is unaffected.
 
 ### A restarted cycle erased its own history
 
@@ -939,7 +992,35 @@ Fix: pass `--restart` to wipe the prior state file and start a fresh cycle.
 
 Without `--restart`, re-invoking `/work N` on a terminal-state file now emits a clear notify pointing at the recovery: *"`/work` for issue #N already terminated as <status>. To start a fresh cycle (e.g., after revising the issue via /plan), re-run with `--restart`..."*.
 
-`--restart` only wipes the driver's state file (`.pi/work-state/N.json`). Worktrees and feature branches from the prior cycle are NOT removed — the branch step reuses them at runtime: a leftover at the same path with no uncommitted work and no unpushed commits is removed and recreated (the common path, unchanged), but a leftover that HOLDS work is refused instead (see `worktree-dirty-preremove` below). If you want a fully clean slate, salvage any work first, then `git worktree remove --force -- .worktrees/issue-N-*` and `git branch -D feature/issue-N-*` before re-running.
+`--restart` also clears `needs-human-attention` from every issue in the cycle (the restart is the answer to the question the label asks; the next handoff applies it again), so you never have to remove it by hand before restarting.
+
+`--restart` only wipes the driver's state file (`.pi/work-state/N.json`) and that label. Worktrees and feature branches from the prior cycle are NOT removed — the branch step reuses them at runtime: a leftover at the same path with no uncommitted work and no unpushed commits is removed and recreated (the common path, unchanged), but a leftover that HOLDS work is refused instead (see `worktree-dirty-preremove` below). If you want a fully clean slate, salvage any work first, then `git worktree remove --force -- .worktrees/issue-N-*` and `git branch -D feature/issue-N-*` before re-running.
+
+### `/work N --restart` parked again and posted no new comment
+
+**Symptom:** a restarted cycle ends as `intent-park` again, explore ran, but the issue has no second "Cap hit" comment. The handoff reads *"REPEAT of the park reported N min ago (<comment link>) …"*.
+
+**Why:** `--restart` re-resolves the issue from scratch every time. When that fresh resolution parks for the same reason, against the same issue text and the same checked-out commit as the park already reported, a second comment would say nothing new — so the handoff links the earlier one instead (the `needs-human-attention` label is still verified and re-applied). The earlier park is remembered in `.pi/work-state/N/intent-park.txt`, which `--restart` does not wipe. Any difference — another park reason, an edited issue, a moved `HEAD`, a missing or unreadable record — posts a new comment as before.
+
+**Fix:** none needed; act on the linked comment. Delete the record file if you want the next park reported in full regardless.
+
+### An adversarial fix pass parked on "removed N origin/main comment line(s)"
+
+**Symptom:** the handoff reads *"adversarial fix pass (<workstream> round N) parked: the fix pass removed N origin/main comment line(s) in <workstream> and wrote no comment in their place (<file>: <line> | …)"*.
+
+**Why:** a fix pass is told to answer review findings, so it parks when it deletes a comment outright while the code stays. It does not park for a reworded or replaced comment (the same diff hunk adds a comment) or for a comment an earlier develop pass already removed: those are listed for the reviewers under "Comments removed by this change", who judge them. Before this, any comment line the whole workstream diff did not keep verbatim parked the pass, and the cap text read *"(evidence detail missing from state)"*.
+
+The park reuses the `verify-failed:develop` cap but is not a rejection by the outcome-verification gate, so do not set `PI_ENSEMBLE_VERIFY=0` for it; the cap text opens *"the adversarial fix pass did not clear"*.
+
+**Fix:** restore the named lines in the workstream's worktree, or reword them in place, and re-run. `PI_ENSEMBLE_COMMENT_RETENTION=0` disables the check.
+
+### "repoRoot was NOT restored: the discarded state could not be saved"
+
+**Symptom:** a failed consolidation, integration, lens-fix integration or handoff consolidation ends with *"repoRoot was NOT restored: the discarded state could not be saved (`git diff` failed: …), so nothing was reset or checked out — the tree at <path> is left exactly as it was"*. The next `/work` then stops at the branch step with `repo-root-residue`.
+
+**Why:** before a restore resets the repo root it saves what it would discard to `restored-state-*.diff` in the cycle's scratch dir. When that save fails, the root is the only copy of the change, so the restore no longer resets it. Previously a failed save was treated like "nothing to save" and the tree was reset anyway.
+
+**Fix:** the error in the message names the git command that failed and its stderr; fix that first. Then recover the change at the named path by hand (`git status`, `git diff`, `git diff --cached`, and `git cherry-pick --abort` if one is in progress), and clear the root before re-running.
 
 ### `worktree-dirty-preremove` — the branch step refuses a worktree that holds uncommitted work (#475)
 
@@ -1007,6 +1088,28 @@ It used to continue. The failure was recorded in `plumbReports` rather than the 
 
 **The fix may still be on disk.** Check `git -C .worktrees/issue-<N>-<id> status` before re-running — the developer's work is usually there, uncommitted.
 
+**A committed fix that could not be integrated is named.** When the fixer committed and the pick onto the branch failed, the handoff gives the fix's sha, the worktree holding it and the conflicting paths — the PR does not contain that commit, so land it by hand before merging. On an older build the second lens-fix round parked this way on its own: integration re-picked a commit that was already on the branch behind the tip (`Committing is not possible because you have unmerged files` in the evidence), stranding the round's real fix one commit ahead in the worktree. Fixed: a commit already in the branch's history is skipped.
+
+### A second `commit-pr` after `lens-fix`, then `integration-worktree-violation` and a non-fast-forward push
+
+Symptom: after `lens-fix` and a long re-review the driver ran `commit-pr` again instead of `lens-review`, logged `integrate worktree creation failed … refusing to force-remove existing worktree …/issue-<N>-default — it holds unrecoverable work: (unpushed commits: N)` and `! [rejected] … (non-fast-forward)`, and parked. Two causes, both fixed: a `dispatch-slow` event (any dispatch past the slow-run threshold) was appended after the step's verdict, and the driver routes on the last event — so the approval was shadowed and the cycle fell through to `commit-pr` (#1235); and the fallback's integrate worktree treated the cycle's own workstream tree as a foreign leftover (#1185). On an older build the work is intact in `.worktrees/issue-<N>-<id>` (detached HEAD) — cherry-pick it onto the branch.
+
+### The ops fallback committed, nothing was pushed, and the next `commit-pr` refused `issue-<N>-integrate`
+
+Symptom: a `commit-pr` that fell back to the ops dispatch committed in `.worktrees/issue-<N>-integrate` but no new commit reached the PR. A later `commit-pr` (a resume or a CI-fix round) then halted with `integration-worktree-violation`: `refusing to force-remove existing worktree …/issue-<N>-integrate — it holds unrecoverable work: (unpushed commits: N)`. On some builds the tree was removed silently instead, and the commit was lost.
+
+Cause (#1173, #1100): the driver created the integrate tree on a **detached HEAD**, because it passed the branch's SHA to `git worktree add`, not the branch name. The prompt said the tree was on the branch. So the ops child's commit never moved the branch, and `git push -u origin <branch>` pushed nothing. Fixed: the tree is now created on the branch (a missing branch is created at the base). The fallback prompt also forbids creating or switching to any other branch.
+
+A stale integrate tree whose only loss is commits, and which is detached or on the cycle's own branch, no longer refuses. Its commits are kept on `refs/pi-rukas/integrate-backup/issue-<N>/<sha>` and the tree is recreated. The commit-pr plumb report names the ref: `The stale integrate tree's unpushed commits were kept on …`. A tree with uncommitted or non-regenerable ignored files, or one on a different branch, still refuses. Recover a kept commit with `git log <ref>` / `git cherry-pick <ref>`. Delete the ref with `git update-ref -d <ref>` once you no longer need it.
+
+A kept ref is **not** re-applied automatically: the next commit-pr regenerates the consolidation from the develop patches, so the ref exists only for manual recovery. Kept refs are never pruned automatically; list them with `git for-each-ref refs/pi-rukas/integrate-backup` and remove each with `git update-ref -d <ref>`.
+
+### CI failed, the driver "fixed" it, and CI failed on the same commit again
+
+Symptom: after `ci-status: failure` the cycle ran `develop → adversarial → commit-pr`, logged `commit-pr re-entry — open PR #<N> already heads <branch>; integrate/prCreate skipped`, and `ci` then watched the unchanged head until the retry cap. The re-entry guard treated every open PR as a finished `commit-pr` and never pushed the fix. Fixed: a second `commit-pr` now measures the worktrees against the branch, and work the branch lacks is integrated onto the branch's own head and pushed fast-forward to the PR that is already open (`commit-pr second round` in the trace). On an older build the fix is intact in `.worktrees/issue-<N>-<id>` — cherry-pick it onto the branch and push.
+
+If the cycle's PR was **merged or closed** in the meantime, the second `commit-pr` parks (`verify-failed:commit-pr`, "PR #<N> is MERGED, not OPEN") without touching the branch — it used to rebuild the branch from base and push over the remote (the non-fast-forward rejection). The new work is in the worktree; open a new issue or PR for it.
+
 ### `integration-verify-failed` — the consolidated tree does not build
 
 `commit-pr` runs the project's `.pi/verify-cmd` against the **integrated** tree, between the commit and the push. Everything upstream saw one workstream in isolation: the develop gate ran inside a single worktree and adversarial reviewed a single worktree's diff. Two workstreams that each pass alone can still fail together — one renames or deletes what another still refers to — and that defect is *created* by integration, so integration is the only place it can be caught.
@@ -1016,6 +1119,8 @@ When it fires, **nothing was pushed and no PR exists**. The failing output is in
 Unlike other `commit-pr` failures this does **not** fall back to the LLM ops dispatch. That fallback exists to absorb environment variance (an apply conflict, a rejected push); "this does not build" is a verdict, and letting ops push the identical tree would make the gate one that cannot fail.
 
 Projects with no `.pi/verify-cmd` skip the check entirely and are unaffected.
+
+A run killed at its bound (`PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS`, 15 min by default) is not a verdict that the tree does not build. It parks as `verify-timeout:commit-pr` instead, and nothing is pushed.
 
 ### How a subagent's life is bounded
 
@@ -1177,6 +1282,8 @@ Park reasons, each with its own operator action:
 | `too-large` | Not executable as one cycle; split it |
 | `premise-unsound` | It rests on an API or behaviour that could not be substantiated |
 
+A `contradicted` evidence row whose subject is memory — its source is `memory`/`vipune`, or the claim opens with "vipune rows …" — never parks a `proceed`: a stale memory row contradicts the memory, not the issue. It travels as an assumption in the PR body, and a handoff lists it under "Stale memory rows", apart from "Contradicting evidence".
+
 **A missing or unreadable verdict parks.** Before this, an absent token defaulted to "build it" — silence was treated as permission. Parking early is cheap: it costs one explore dispatch rather than a whole cycle ending in a bad PR.
 
 The resolver runs in the `explore` role, which is structurally denied `write`/`edit`/`multiedit`. That is deliberate — an agent holding edit tools rationalises ambiguity away, because building is cheaper than asking.
@@ -1235,6 +1342,14 @@ Resume granularity is the **step**, not the dispatch: the child process died and
 An in-flight job id with **no** matching `dispatch-started` event is not a crash — it cannot have come from the write-ahead. That is corrupt state, and the existing inconsistency halt still fires on it rather than being silently cleared.
 
 Orphaned `dispatch-started` events are deliberately kept in the log. They are the only record that a dispatch was paid for and lost.
+
+**A session shutdown is handled as that crash, not as a step failure.** Quitting, reloading or replacing the Pi session aborts every in-flight child. The driver used to read its own aborted child as the step failing: it recorded `cap-hit: step-failed:<step>` and entered a handoff that cannot finish in an exiting process, leaving `status: running, step: handoff` and no reason. It now stops where it is — no cap, no handoff — appends one `cycle-interrupted` event (step, Pi's reason, branch and head sha) and says so once:
+
+```
+[pi-rukas] cycle interrupted: session shutdown (quit) during lens-fix; state is resumable — run /work 97 — work on feature/issue-97-… at 1d6a5dd0
+```
+
+On `quit` that line goes to stderr; on a reload or session switch it arrives as a `kind=interrupted` driver event. The state file still says `running`, deliberately: `running` with a dead `owner.pid` is what "resumable" already means, so anything reading the file from outside must check owner liveness (or look for a trailing `cycle-interrupted`) before calling the cycle live. This is a different record from the headless runner's SIGTERM / SIGINT handling (the cycle `signal`, event kind `interrupted`, status `interrupted`): a Pi session shutdown never sets that signal, so the two are checked separately. If the line says `/work N will refuse this state` instead, the step that was cut off had not written ahead and the file is at the previous boundary — `resumable: false` on the event.
 
 Escape hatch: `PI_ENSEMBLE_RESUME=0`.
 
@@ -1333,6 +1448,8 @@ Before #398, `intent-park` had no branch in either renderer and inherited a bloc
 
 Recovery commands are also **never chained**. They arrive in the Pi chat, and the permission matcher cannot wildcard a chained shape, so every unique `a && b` re-prompts you. One command per line.
 
+**`WORKTREE STATE NOT READ` means the handoff could not run `git`, not that the cycle produced nothing.** Developers commit on detached-HEAD worktrees by design, so a cycle's commits are reachable from no branch until commit-pr integrates them. When the host cannot start a process at handoff time (`/bin/sh: Cannot fork`, `spawn EAGAIN` — a container at its pid limit), every read fails; the handoff used to print those failures as `no committed work ahead of the base`, `(no branch was created)` and `0 file(s) modified` over a worktree holding reviewed commits. It now lists the failed reads and, per recorded worktree, the two commands to run once `git` works again: `git -C <worktree> log --oneline <base>..HEAD` to see the commits, `git -C <worktree> branch <branch> HEAD` to attach them. The numbered options under it still assume a readable repository — check the worktree first. The pid exhaustion itself is the host's to fix.
+
 ### Merge authority — why `/work` opened a PR and stopped
 
 **`/work` will not merge unless something explicitly permitted it to.** That is the default, and the absence of a prohibition is not permission.
@@ -1371,6 +1488,15 @@ At the `ci` step a weaker version of gate 2 applies: **narration cannot promote 
 
 Escape hatch: `PI_ENSEMBLE_MERGE_AUTHORITY=0` restores the previous behaviour, where the driver merged whenever an ops child's reply contained the substring `ci-status: success`.
 
+### A `/work` PR is still a draft
+
+With `PI_ENSEMBLE_DRAFT_PR=1` — the default for a headless `/work` — commit-pr opens the PR as a draft so nobody merges it while the six-pass review is still running (#1292). The driver marks it ready once the review has produced a verdict: on entering CI, before its own merge, or at a handoff after the review concluded (an approval, or residual findings that a round cap posted to the PR). It is never marked ready over an open CRITICAL finding, nor over residual findings that could not be posted. A PR that is still a draft at the end of a cycle means one of two things, and the handoff comment says which:
+
+- **"Pull request is still a draft"** — the cycle stopped before the review concluded (a park or halt at commit-pr, during review, or in a fix round), or the latest verdict is CRITICAL. The work is not finished; mark it ready yourself with `gh pr ready <N>` when it is.
+- **"Marking the pull request ready FAILED"** — the review is done but `gh pr ready` failed on every attempt (3 per mark point, 6 per cycle); the last error is quoted. Run `gh pr ready <N>`.
+
+A draft cannot be merged by `gh pr merge` (`mergeStateStatus: DRAFT`), so a ready that keeps failing also shows up as an `awaiting-human-merge` park. Set `PI_ENSEMBLE_DRAFT_PR=0` to open PRs ready, as before. If your CI skips draft PRs (`if: github.event.pull_request.draft == false`), add `ready_for_review` to the workflow's `pull_request` types, or the head commit's checks stay skipped after the PR is marked ready — and the merge gate does not count skipped as passing.
+
 ### Memory searches return the wrong thing (or nothing)
 
 **vipune blends recency into every score by default.** Its config sets `recency_weight = 0.3`, and it returns `(1-w)*raw + w*exp(-1e-6*age)` unless you pass `--recency 0`. The recency term spans 0.3; a whole hybrid top-5 spans about 0.044. So at the default, the ranking is age, not relevance.
@@ -1393,7 +1519,9 @@ Three distinct causes, and they are told apart by *when* the child died.
 
 **The child was about to retry and we hung up on it.** Pi retries transient provider failures itself — 3 attempts, 2s/4s/8s backoff — and stamps `willRetry` on `agent_end`. The harness used to close the child's stdin on any `agent_end`, and rpc mode exits when stdin ends, so the retry never ran. Fixed: stdin stays open while `willRetry` is set. The child's retry is the one worth having — it is in-process, so it resumes with its context intact, where a driver-level retry starts over.
 
-**A fan-out step hit a 429 and halted instead of waiting.** The taxonomy honours a provider's `retry-after` — that is why single dispatches recover from throttling. It never ran for fan-out children, because the router classified only the last event and `runDevelop` ends on `branches-converged`. Fixed. Note the deliberate limit: if *any* workstream succeeded, the step is not retried, because re-running it would re-dispatch work that already landed.
+**The driver retried the step with a new child.** When the child's own retries are exhausted the step router re-runs the step (up to 2 more attempts for a severed provider). That is a fresh child with no memory of the first one, and the `↻ … retrying attempt 2` line now says what went with it: `explore attempt 1 lost: 15m09s, 45 turns, 412k tokens — the step restarts from the beginning`. For `develop` only the conversation is lost — the worktree is the same one, so the retried developer is told a previous attempt was interrupted and to read `git status` / `git log` there before implementing anything. Seeing this line means a provider or network fault, not a defect in the change.
+
+**A fan-out step hit a 429 and halted instead of waiting.** The taxonomy honours a provider's `retry-after` — that is why single dispatches recover from throttling. It never ran for fan-out children, because the router classified only the last event and `runDevelop` ends on `branches-converged`. The first fix reached only the scrollback line: the `✗ step failed` line was withheld for a retry the router then never made, so a multi-workstream develop still halted with `transientRetryAttempts: {}`. The retry decision now uses the same lookup, and a fan-out whose workstreams *all* failed transiently waits and re-runs like a single dispatch (up to 2 more attempts). Note the deliberate limit: if *any* workstream succeeded, the step is not retried, because re-running it would re-dispatch work that already landed — the develop step itself re-runs only the failed workstreams, once.
 
 **The machine went to sleep.** This is the most common one on a laptop and it looks exactly like a provider failure — `Provider request error: terminated`. That string is undici's mid-stream body abort, raised when a socket dies; the real cause is discarded upstream. Signs it was a suspend:
 
@@ -1535,7 +1663,15 @@ Two different mechanisms close this, because there are two different threats:
 | `AGENTS.md`, `CLAUDE.md` | **Neutralised** — doctrine is read at the cycle's `baseSha` via `git show`, never from the working tree | A grant written during the cycle is invisible to the gate, but an *honest* docs change still ships in the PR. Blanket-halting would break the rule that documentation ships alongside the behaviour it describes. |
 | `.github/`, `.pi/`, `CODEOWNERS`, `agents.json` | **Halted** — the develop gate fails with `protected path` and the cycle parks | These define what *verified*, *reviewed* and *green* mean, and they take effect within the same cycle: a workflow edited at develop is the workflow the `ci` step then reads. Reading them at base does not help, because the running system uses the working-tree copy. |
 
-If the develop gate halts on a protected path, the message names each path. Either make that change yourself, or — if editing those files genuinely *is* the work you asked for — re-run with the gate off:
+If the develop gate halts on a protected path, the message names each path and prints the exact command to re-run with. A developer re-dispatch can never satisfy this gate, so the remedy is yours. Either make that change yourself, or — if editing those files genuinely *is* the work you asked for — grant exactly those paths for one cycle (#1090):
+
+```text
+/work <issue> --restart --allow-protected .github/workflows/ci.yml
+```
+
+`--allow-protected` (or `--allow-protected=<path>`) is repeatable, takes a comma-separated list, and applies to a single-issue invocation only — a queue would hand it to unrelated cycles. It admits **only the paths it names**, matched exactly — case included — after normalisation (a leading `./`; a trailing `(new)`-style annotation is stripped from what you type, never from the paths develop touched): a grant for `.github/workflows/ci.yml` does not admit `.github/CODEOWNERS`, the `.github/workflows/` directory, or the destination of a rename it does not name. Any ungranted protected path in the same diff still halts, committed or not. The grant does not bypass the scope fence — a granted file outside the workstream's declared scope still trips it. Like `--merge`, it is operator-only: `start_work_driver` has no parameter for it and forces it empty, and nothing in the issue body, the spec or the planner's output is read as a grant. It is recorded in the state file (`protectedGrant`) and shown in the handoff and the PR body, so the reviewer knows to read those files as changes to what verification means. A path the gate never halts on (e.g. `src/a.ts`), or a flag with no path, is refused rather than ignored.
+
+The process-wide escape hatch still exists and turns the gate off for every path, in every cycle that Pi process runs:
 
 ```bash
 PI_ENSEMBLE_PROTECTED_PATHS=0 /work <issue>
@@ -1548,6 +1684,8 @@ A doctrine-prose edit is not a failure; it appears in the verify notes as *"allo
 `/work N M P …` runs up to `PI_ENSEMBLE_PARALLEL_GROUPS` (default **3**) groups concurrently. Each group develops in its own `.worktrees/` tree, so the only shared resource is the repo root, and every operation that touches it — branch creation, patch integration, commit, push, `gh pr create`, the verify gates, lens-fix re-integration, `restoreCheckout`, worktree teardown — runs under a single integration lock. That lock is an in-process promise chain plus an `O_EXCL` lockfile under `.git/`, so a second `/work` invocation or a second Pi process on the same clone is also serialised.
 
 Child-process load is bounded by `PI_ENSEMBLE_SPAWN_CAP` (default 64), **not** by the group count: excess spawns queue FIFO. Each workstream's develop step spends one child — the developer; the speculative explore that used to accompany it is opt-in (`PI_ENSEMBLE_SPECULATIVE_EXPLORE=1`), so develop's default fanout is M, not 2M.
+
+**Verify timeouts in a CPU-limited container** (#1325). Groups × workstreams each running a full suite used to ignore the machine: in a container with a 2-CPU quota, three concurrent cycles' verify runs starved each other past `PI_ENSEMBLE_VERIFY_TIMEOUT_MS`. The driver now reads the host's CPUs and memory (`os.availableParallelism()`, `os.totalmem()`, lowered by a cgroup v2 `cpu.max` / `memory.max` or the v1 equivalents) and lowers the unset group and workstream defaults to fit, and the verify commands it runs queue behind `PI_ENSEMBLE_VERIFY_CONCURRENCY`. Explicit settings win. The group and workstream defaults hold only from about 9 CPUs and 18 GiB up, so an 8-CPU / 16 GiB laptop now runs 2 groups and 4 concurrent verifies; set `PI_ENSEMBLE_PARALLEL_GROUPS`, `PI_ENSEMBLE_MAX_WORKSTREAMS` or `PI_ENSEMBLE_VERIFY_CONCURRENCY=0` to restore the old limits. To see what a cycle chose, run with `PI_ENSEMBLE_DEBUG=1` (the `resource budget` line at cycle start) or read `resources` in `pi-rukas-headless --json`.
 
 Set `PI_ENSEMBLE_PARALLEL_WORK=0` for strictly sequential execution.
 
@@ -1604,6 +1742,28 @@ After the `develop` step (when every branch claims success) and after the `commi
 - At least one worktree has a real diff — uncommitted porcelain entries, or commits ahead of the `baseSha` recorded at the branch step. All worktrees empty = the claim was hollow.
 - The project's **verify command** exits 0 in each changed worktree.
 
+#### `[host-resource-exhaustion]`: the gate could not run
+
+**Symptom:** The develop step ends with `verify-failed:develop` and the evidence lines start with `[host-resource-exhaustion]`, quoting `/bin/sh: 1: Cannot fork`, `fork: retry: Resource temporarily unavailable` or `spawn … EAGAIN`.
+
+**Cause:** The host (or the container's pid limit) had no room to start a process, so the driver's git / verify / smoke commands never executed. This is an environment failure, not a verdict on the change — the gate still fails, because an unrun gate is not a pass, but nothing was learned about the diff. Before this label existed the same condition was reported as `[needs-human-decision] … (no specific assertion could be extracted)`, or as `consolidated-verify-conflict` ("two workstreams edited the same lines") even on a single-workstream cycle.
+
+**Fix:** The evidence line quotes `cgroup pids.current=N of pids.max=M` for wherever the driver runs, with the counters read just after the failure. The quoted counters appear only when they are readable (cgroup v2 on Linux); otherwise the line says the limit is unknown and you read the limit yourself. In a container that is the container's own limit (docker `--pids-limit`), not a host ulimit — `ulimit -u` on the host will show nothing to raise. If the counters show headroom, the limit may have been hit transiently by a burst of parallel processes and drained before they were read; re-run the cycle before changing the limit, and check the other ceilings the evidence names. A count at the limit with a low load average means leaked or unreaped children: inside the container, check that PID 1 is an init (`cat /proc/1/comm` → `tini`), restart the container or raise its pid limit, then re-run the cycle. Do not start by inspecting the diff: it has not been judged either way.
+
+#### `verify-timeout:<step>`: the gate did not finish
+
+**Symptom:** The cycle parks as `verify-timeout:develop` or `verify-timeout:commit-pr`. The evidence lines start with `[verify-timeout]` and say the verify command *exceeded its 10-min timeout* (or whatever bound applied), and the handoff says the command TIMED OUT.
+
+**Cause:** The verify command was killed at its bound, so it reached no verdict about the code. The usual cause is contention: several workstreams, or several cycles, running full suites on the same host at once. This cap is distinct from `verify-failed:<step>`, which means the gate judged the change. It fires only when every failure is a timeout. One real failure next to a timeout still parks as `verify-failed:<step>`, because that failure is a verdict.
+
+**Fix:** Give the gate more time or more of the host, then re-run the cycle:
+
+- Raise `PI_ENSEMBLE_VERIFY_TIMEOUT_MS` (develop), or `PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS` (the consolidated run at commit-pr).
+- Reduce concurrency: fewer workstreams (`PI_ENSEMBLE_MAX_WORKSTREAMS`), fewer cycles at once (`PI_ENSEMBLE_PARALLEL_GROUPS`), or nothing else heavy on the host.
+- Add a `.pi/verify-cmd-fast` (see "Verify command discovery" below). Developers then stop running the full suite in parallel, and a type error fails in seconds instead of after the whole suite.
+
+Do not set `PI_ENSEMBLE_VERIFY=0` for this. The gate did not reject the change; it did not finish.
+
 #### Scope fan-out: the developer changed too many files
 
 **Symptom:** The develop step ends with `verify-failed:develop` even though the developer reported success. The handoff evidence names an out-of-scope path, or says that the workstream changed more files than its plan declared.
@@ -1627,6 +1787,8 @@ git -C .worktrees/issue-<N>-<workstream> diff --name-only <base-sha>..HEAD
 ```
 
 Remove or move changes that violate the workstream's `outOfScope` fence. If the work is genuinely broader than the plan, split the workstream or revise the plan before restarting `/work <N>`. The gate is enabled by default; for a one-off, reviewed recovery you can restore the pre-gate behavior with `PI_ENSEMBLE_SCOPE_GATE=0`. Disabling it does not make an out-of-scope change safe — it only skips the deterministic check.
+
+When the violation is between two sibling workstreams (one edited a file the other declared), develop merges the two and re-runs once instead of parking. Before #1343 the merged workstream's range started at the owner's tip, so the owner's own commits were missing from the consolidated verify and from the PR: the re-run could fail on a file that was plainly in the merged worktree, or the PR shipped the consumer without the producer. The merged workstream now keeps the owner's original base. If a PR from an older build is missing a sibling's files after a `fence-recovery-started` event, cherry-pick that workstream's commits from its worktree.
 
 **commit-pr:**
 - Commits exist on the branch: `git rev-list --count origin/<base>..HEAD` > 0.
@@ -1676,6 +1838,14 @@ If the smoke command exits non-zero, the gate fails with a `smoke:`-prefixed fai
 
 **Escape hatches:** `PI_ENSEMBLE_SMOKE=0` disables the smoke gate; remove `.pi/smoke-cmd` to omit the smoke test from verification.
 
+#### `fork: Resource temporarily unavailable` after a gate timed out
+
+**A timed-out gate no longer leaves its children running.** The driver's verify, smoke and `verify-cmd-full` runs used `child_process.exec`, whose timeout signals the shell alone — the test runner and everything under it kept running, holding pids and the worktree for the rest of the cycle. They now run in their own process group and the whole group gets SIGTERM at the timeout, then SIGKILL 5 s later (`extension/src/exec-tree.ts`). A command that leaves its group on purpose (`setsid`, GNU `timeout` without `--foreground`) is out of reach; the driver no longer waits on it, but it is not killed.
+
+**Killing a tree does not reap it — that needs an init.** If `pi` is PID 1 of its container, every orphaned process is reparented to it and stays a zombie when it exits, because node only waits for children it spawned itself. Measured on `node:22-alpine`: 20 orphans killed under node-as-PID-1 leave 20 zombies; under `docker run --init`, none. Zombies count against the cgroup's `pids.max`, so the symptom is `pids.current` at the limit with a near-zero load average, and every later command failing to fork. The published image now does this itself: its ENTRYPOINT is `tini`, so `pi` is never PID 1 (check with `cat /proc/1/comm` inside the container — it must say `tini`). An image built before that change, or a launch that overrides `--entrypoint`, needs `docker run --init` (or another reaper as PID 1). The same applies to a gate a child agent's own bash tool timed out: Pi kills that process group itself, and the corpses still need reaping.
+
+**The reviewer is told not to re-run the gate.** In a `/work` cycle the adversarial reviewer's prompt names the project's verify command and says the driver already owns it — run targeted checks only. `adversarial_loop` called directly is unchanged: nothing ran a gate there, so the reviewer is still asked to.
+
 ### Verify command discovery
 
 Precedence (PR18 shape):
@@ -1688,9 +1858,12 @@ Precedence (PR18 shape):
 
 The command is capped at 10 minutes (`PI_ENSEMBLE_VERIFY_TIMEOUT_MS` to override).
 
+**Fast tier (optional, #1324).** A `.pi/verify-cmd-fast` holds a cheap check, such as typecheck plus lint, as its first non-empty, non-comment line. The driver runs it before the verify command in every worktree, on the consolidated tree at develop and at commit-pr, and in the baseline probe. If the fast tier fails, the full command is not run; the evidence quotes the fast tier's output and ends with a `[verify-cmd-fast]` line naming it. Both tiers share the one bound. The develop prompt tells each developer to run the fast tier only and leave the full command to the driver. Without the file, nothing changes.
+
 ### If the gate keeps failing
 
-- **Verify command fails on code the developer didn't touch** — the project was already broken before the cycle started. Fix the baseline first, or point `.pi/verify-cmd` at a narrower command (e.g., `cargo check -p <crate>`).
+- **Verify command fails on code the developer didn't touch** — the project was already broken before the cycle started. Fix the baseline first, or point `.pi/verify-cmd` at a narrower command (e.g., `cargo check -p <crate>`). The driver now checks this itself: when the verify command fails at develop it is re-run once on a clean checkout of the cycle's base commit (a temporary `.worktrees/baseline-verify-<N>`, removed afterwards; never on a passing cycle). If it fails there too, the handoff leads with a `[baseline-red]` finding naming the base sha and the assertion, and the cap is still `verify-failed:develop` — the gate cannot pass, so the cycle still parks, but the change is not what to inspect.
+- **`exceeded its 10-min timeout on the CONSOLIDATED tree`** — the run was killed at the bound, so it says nothing about the code (this used to render as `specific assertion: (no specific assertion could be extracted)`). When every failure is a timeout, the cap is `verify-timeout:develop`; see "`verify-timeout:<step>`: the gate did not finish" above. If the `[baseline-red]` finding reports a timeout at the base commit as well, the gate does not fit the bound on this host: raise `PI_ENSEMBLE_VERIFY_TIMEOUT_MS` or make the gate faster.
 - **Verify command too slow / needs services** — put a cheaper command in `.pi/verify-cmd` (typecheck-only is the intent; full test suites belong to CI).
 - **False alarm you need to bypass right now** — `PI_ENSEMBLE_VERIFY=0` disables the gate entirely (not recommended as a steady state; it re-opens the phantom-handoff class the gate exists to catch).
 
@@ -1767,6 +1940,10 @@ The deterministic pre-triage (`plan-precheck.ts`) fired: the descriptor is below
 ### "Not filed (by policy): the drafted body failed deterministic validation" (draft-invalid)
 
 `plan-validate.ts` halted the draft before the gap gate: bug/feature drafts need a non-fallback Acceptance criteria section (otherwise the issue is not /work-consumable), and an epic needs an actual sub-issue decomposition of sane size. This is the partial-junk case the all-angles-failed guard cannot see (some angle items arrived, but not the load-bearing ones). Re-run (the angles are re-dispatched), or supply the missing content directly via the `context` param (e.g. an `ACCEPTANCE CRITERIA` block — operator directives satisfy the check).
+
+### "PLAN NOT FILED — THE REVIEWED SPEC CHANGED"
+
+A confirm echoed a dry run's `reviewedDigest`, but the reviewed spec could not be filed verbatim — the reason is in the result (the dry run expired, origin/<default> moved, or no cached dry run was found, e.g. in a fresh clone). The full pipeline re-ran and drafted different bytes, so nothing was filed: the confirmation covered the reviewed spec, not the new one. Show the new spec and confirm with the new `reviewedDigest`. For long gaps between dry run and confirm, set `PI_ENSEMBLE_PLAN_CACHE_TTL_MS` (`0` = no expiry); for a fresh clone per turn, set `PI_ENSEMBLE_PLAN_CACHE_DIR` to a directory outside the clone; a confirm then files verbatim as long as origin/<default> has not moved since the dry run ([#1224](https://github.com/trail-openers/pi-rukas/issues/1224)).
 
 ### Chore/spike tickets skip the adversarial gap gate
 

@@ -16,11 +16,8 @@
  * nothing to say.
  */
 
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
+import { execp } from "./exec.ts";
 import { type MemoryStats, readMemoryStats } from "./memory-stats.ts";
-
-const execp = promisify(exec);
 
 /**
  * Which project's memory to read.
@@ -97,7 +94,40 @@ export function renderMemoryPanel(s: MemoryStats): string {
   } else {
     lines.push("", ...findings);
   }
+  lines.push(...renderCandidates(s));
   return lines.join("\n");
+}
+
+/**
+ * Candidates awaiting an operator decision.
+ *
+ * The developer brief reads active rows only (#1103), so a candidate the
+ * driver wrote influences nothing until someone promotes it — and this is
+ * where that someone finds it. `vipune promote` takes no id and promotes on
+ * retrieval count, which a `--no-touch` reader never raises, so the per-row
+ * hint is a status update. Unpromoted candidates age out via `vipune prune`.
+ */
+function renderCandidates(s: MemoryStats): string[] {
+  if (s.candidates.length === 0) return [];
+  const total = s.byStatus.candidate ?? s.candidates.length;
+  const out = [
+    "",
+    `### Candidates awaiting promotion (${total})`,
+    "",
+    "Invisible to developer briefs until an operator promotes them. Unpromoted candidates",
+    "age out under `vipune prune`. Promotion is an operator action, not an agent one: no role",
+    "is granted the memory-update verb (see skill/vipune/SKILL.md). Check each row by hand first.",
+    "",
+  ];
+  // Ids and types only. Candidate content is LLM-derived from untrusted diffs;
+  // printing it here would put attacker-shaped text into the PM's context.
+  // An id is stored text too: render it only if it cannot break the markdown.
+  for (const c of s.candidates) {
+    const id = /^[A-Za-z0-9_-]+$/.test(c.id) ? `\`${c.id}\`` : "(unprintable id)";
+    out.push(`- ${id} (${c.type})`);
+  }
+  if (total > s.candidates.length) out.push(`- …and ${total - s.candidates.length} more`);
+  return out;
 }
 
 /**

@@ -11,7 +11,7 @@
  * work-driver-handoff.ts so no consumer's import path changes.
  */
 
-import { execp } from "./lens-exec.ts";
+import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 import type { WorkState } from "./workflow-state.ts";
@@ -25,7 +25,9 @@ import type { WorkState } from "./workflow-state.ts";
  * Best-effort: every git invocation is try/catch'd so a missing branch /
  * gh-auth / network issue degrades gracefully — the snapshot's
  * `branchPushed: false` and empty `modifiedFiles` is meaningful by
- * itself; absence of the snapshot field is not.
+ * itself; absence of the snapshot field is not. A local read that FAILED is
+ * recorded in `unreadable`, because its empty default is otherwise read as
+ * "nothing there".
  *
  * Caps file list at 50 entries to keep state-file readable; the
  * `unstagedCount + stagedCount` totals are always accurate even when
@@ -35,6 +37,7 @@ export async function captureWorktreeSnapshot(
   repoRoot: string,
   branchName: string | undefined,
   worktrees?: Record<string, string>,
+  baseSha?: string,
 ): Promise<NonNullable<WorkState["pipelineState"]["handoffSnapshot"]>> {
   const snapshot: NonNullable<WorkState["pipelineState"]["handoffSnapshot"]> = {
     modifiedFiles: [],
@@ -42,9 +45,10 @@ export async function captureWorktreeSnapshot(
     stagedCount: 0,
     branchExists: false,
     branchPushed: false,
-    headSha: "",
+    repoRootHeadSha: "",
     capturedAt: Date.now(),
   };
+  const unreadable: string[] = [];
   // #287 — the developer's uncommitted work lives in the WORKTREES, not at
   // repoRoot. Snapshotting repoRoot alone would report "0 files modified" on
   // exactly the handoffs where the operator needs to know what survived.
@@ -76,27 +80,77 @@ export async function captureWorktreeSnapshot(
         }
       }
     } catch (err) {
+      unreadable.push(`git status in ${dir}: ${readError(err)}`);
       trace(
         `work-driver: captureWorktreeSnapshot git status failed for ${dir}: ${(err as Error).message?.slice(0, 200)}`,
       );
     }
   }
-  // HEAD short SHA.
+  // repoRoot's HEAD short SHA — the operator's checkout, NOT the feature
+  // branch (see `branchTip` below for that).
   try {
     const { stdout } = await execp("git rev-parse --short HEAD", { cwd: repoRoot });
-    snapshot.headSha = stdout.trim();
+    snapshot.repoRootHeadSha = stdout.trim();
   } catch (err) {
+    unreadable.push(`git rev-parse HEAD in ${repoRoot}: ${readError(err)}`);
     trace(
       `work-driver: captureWorktreeSnapshot git rev-parse failed: ${(err as Error).message?.slice(0, 200)}`,
     );
   }
   if (branchName) {
-    // Local branch existence.
+    // Local branch existence. `--quiet` makes a missing ref exit 1 with no
+    // output, so any OTHER failure (git could not run at all) is a failed
+    // read rather than proof the branch was never created.
     try {
-      await execp(`git rev-parse --verify ${JSON.stringify(branchName)}`, { cwd: repoRoot });
+      // argv form: the branch name is never re-parsed by a shell.
+      const { stdout } = await execp("git", {
+        cwd: repoRoot,
+        argv: ["rev-parse", "--verify", "--quiet", `refs/heads/${branchName}`],
+      });
       snapshot.branchExists = true;
-    } catch {
+      // The branch's OWN tip. `repoRootHeadSha` above is repoRoot's checkout, which
+      // the pre-handoff consolidation restores to where the operator was —
+      // so a branch that had just received the cycle's commits was printed
+      // as sitting at the base commit (#1286).
+      // Exit 0 with no output is not a readable tip: treat it as a failed read.
+      const sha = stdout.trim();
+      if (sha) {
+        snapshot.branchTip = { sha };
+      } else {
+        snapshot.branchTipNotRead = true;
+        unreadable.push(`git rev-parse --verify ${branchName}: exited 0 with no output`);
+      }
+    } catch (err) {
       snapshot.branchExists = false;
+      if ((err as { code?: unknown }).code !== 1) {
+        snapshot.branchTipNotRead = true;
+        unreadable.push(`git rev-parse --verify ${branchName}: ${readError(err)}`);
+      }
+    }
+    // `baseSha` is read from the state file, so it is shape-checked before it
+    // reaches git. An unusable base is recorded as unread, never guessed at.
+    if (snapshot.branchTip && baseSha) {
+      if (!COMMIT_SHA_SHAPE.test(baseSha)) {
+        unreadable.push(`commits on ${branchName} ahead of base: base is not a commit SHA`);
+      } else {
+        try {
+          const { stdout } = await execp("git", {
+            cwd: repoRoot,
+            argv: ["rev-list", "--count", `${baseSha}..${snapshot.branchTip.sha}`],
+          });
+          const out = stdout.trim();
+          if (/^\d+$/.test(out)) snapshot.branchTip.ahead = Number(out);
+          else
+            unreadable.push(
+              `commits on ${branchName} ahead of base: unparseable output "${out.slice(0, 40)}"`,
+            );
+        } catch (err) {
+          unreadable.push(`commits on ${branchName} ahead of base: ${readError(err)}`);
+        }
+      }
+    }
+    if (snapshot.branchTip && !baseSha) {
+      unreadable.push(`commits on ${branchName} ahead of base: no base recorded`);
     }
     // Remote tracking (best-effort; network may be down). 10s timeout
     // because ls-remote can hang on unreachable remotes (#1095: still 10s,
@@ -114,5 +168,43 @@ export async function captureWorktreeSnapshot(
       snapshot.branchPushed = false;
     }
   }
+  if (unreadable.length > 0) snapshot.unreadable = unreadable;
   return snapshot;
 }
+
+/** One line of a failed git read, for `handoffSnapshot.unreadable`. */
+export function readError(err: unknown): string {
+  const e = err as Error & { stderr?: string };
+  const text = `${e.stderr ?? ""}`.trim() || e.message || "unknown error";
+  return text.replace(/\s+/g, " ").slice(0, 160);
+}
+
+/**
+ * The "this snapshot is not evidence" block, shared by every handoff surface.
+ * Empty when every read succeeded. Names each recorded worktree with the
+ * command that lists its commits and the one that attaches them to a branch,
+ * since the driver could not establish either itself.
+ */
+export function unreadableSnapshotLines(ps: WorkState["pipelineState"]): string[] {
+  const failed = ps.handoffSnapshot?.unreadable ?? [];
+  if (failed.length === 0) return [];
+  const wts = Object.entries(ps.worktrees ?? {});
+  const range = ps.baseSha ? `${ps.baseSha.slice(0, 12)}..HEAD` : "-20";
+  const branch = ps.branchName ?? "<branch>";
+  return [
+    `WORKTREE STATE NOT READ — ${failed.length} git read(s) failed, so the counts above are NOT evidence that no work or no branch exists:`,
+    ...failed.slice(0, 5).map((f) => `  ${f}`),
+    ...(wts.length > 0
+      ? [
+          "Developers commit on detached-HEAD worktrees; once git runs again, list each one's commits and attach them to a branch:",
+          ...wts.flatMap(([id, wt]) => [
+            `  git -C ${wt} log --oneline ${range}`,
+            `  git -C ${wt} branch ${wts.length > 1 ? `${branch}-${id}` : branch} HEAD`,
+          ]),
+        ]
+      : []),
+  ];
+}
+
+/** A full or abbreviated commit SHA — the only shape a base may take before git. */
+const COMMIT_SHA_SHAPE = /^[0-9a-f]{7,40}$/;

@@ -31,8 +31,19 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { DispatchImage } from "./types.ts";
 
-/** Send text to the parent agent, queuing it if a turn is in flight. */
-export function notifyAgent(pi: Pick<ExtensionAPI, "sendUserMessage">, text: string): void {
-  pi.sendUserMessage(text, { deliverAs: "steer" });
+/**
+ * Send text to the parent agent, queuing it if a turn is in flight. Images,
+ * when given, travel as image parts of the same message; without them the
+ * call is the plain-string one it always was.
+ */
+export function notifyAgent(
+  pi: Pick<ExtensionAPI, "sendUserMessage">,
+  text: string,
+  images: DispatchImage[] = [],
+): void {
+  pi.sendUserMessage(images.length > 0 ? [{ type: "text", text }, ...images] : text, {
+    deliverAs: "steer",
+  });
 }

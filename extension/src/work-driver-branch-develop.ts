@@ -6,7 +6,7 @@
  */
 import path from "node:path";
 import { dispatchCore } from "./dispatch.ts";
-import { execp as argvExecp } from "./lens-exec.ts";
+import { execp as argvExecp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import { BranchAheadError, mechanizedBranchSetup } from "./work-driver-branch-mechanized.ts";
 import {
@@ -45,7 +45,7 @@ import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import { makeWorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
 import { type WorkEvent, type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
-import { DirtyWorktreeError, gitErrorDetail } from "./worktree.ts";
+import { DirtyWorktreeError, WorktreeScanError, gitErrorDetail } from "./worktree.ts";
 
 /**
  * #1093 — stamp `pipelineState.startRef` (the checkout the cycle found) and
@@ -195,7 +195,7 @@ export async function runBranch(
             cap: `branch-ahead:${aheadLabel}` as const,
             reviewRound: state.pipelineState.reviewRound,
             nextStep: "handoff",
-            evidence: `${aheadErr.branchName} is ${aheadErr.aheadCount === null ? "an unknown number of" : `${aheadErr.aheadCount}`} commit(s) ahead of the fetched base (origin/<mainline>) — possible unpushed work of a live cycle (ahead count ${aheadLabel === "unknown" ? "unreadable — the ancestry probe failed, so the driver refused to reset on a guess" : `confirmed as ${aheadLabel}`})`,
+            evidence: `${aheadErr.message}`,
           });
         }
         throw aheadErr;
@@ -240,7 +240,7 @@ export async function runBranch(
         if (pr) {
           withProvisions = appendEvent(
             withProvisions,
-            makeWorktreeProvisionedEvent(id, cwd, pr.via, pr.problem),
+            makeWorktreeProvisionedEvent(id, cwd, pr.via, pr.problem, pr.hookFailed),
           );
         }
       }
@@ -277,9 +277,10 @@ export async function runBranch(
       // `git worktree remove --force` an existing worktree, so falling
       // back after a dirty-worktree refusal would destroy exactly the
       // work the guard just protected. Refusal goes to handoff via the
-      // step-failed:branch cap.
-      if (err instanceof DirtyWorktreeError) {
-        trace(`work-driver: branch step refused — dirty worktree: ${err.message?.slice(0, 300)}`);
+      // step-failed:branch cap. #1170 — an unreadable sibling listing is a
+      // refusal too: the ops fallback would create the worktree unscanned.
+      if (err instanceof DirtyWorktreeError || err instanceof WorktreeScanError) {
+        trace(`work-driver: branch step refused — ${err.name}: ${err.message?.slice(0, 300)}`);
         const started = appendEvent(
           {
             ...state,

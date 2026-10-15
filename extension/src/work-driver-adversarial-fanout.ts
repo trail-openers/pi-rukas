@@ -11,6 +11,7 @@
  */
 
 import { runAdversarialLoop } from "./adversarial.ts";
+import { adversarialFixDelta } from "./fix-delta.ts";
 import { slowRecorder } from "./slow-events.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
@@ -47,6 +48,7 @@ import {
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { armStepNotice } from "./work-driver-step-notice.ts";
 import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
+import { driverGateCmd } from "./work-driver-verify-pr17.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 export { capKillOutcomeFields };
 
@@ -179,6 +181,8 @@ export async function fanOutAdversarial(
           // with the pre-fix diff and the reviewer has to notice for itself
           // that its earlier objections were already addressed.
           getDiff: () => fetchDiff(cwd, baseSha),
+          // What the fix pass before this re-review changed, to be read first.
+          fixDelta: await adversarialFixDelta(state, id, cwd),
           // #278 — the reviewer judges the diff against what was ASKED FOR,
           // not just against generic code quality. Absent on cycles resumed
           // from older state files, which degrade to the previous behaviour.
@@ -186,6 +190,9 @@ export async function fanOutAdversarial(
           // #1137 — judge this workstream against its OWN scope; sibling
           // criteria are listed as out of scope in the prompt.
           ...(scope !== undefined ? { scope } : {}),
+          // The develop gate (or the fix pass's) passed this command on this
+          // tree to get here; the reviewer must not spend a gate re-proving it.
+          gateCmd: await driverGateCmd(ctx.repoRoot),
           // #799 — the slow-run recorder collects into the driver's pending
           // buffer (keyed by this cycle's primary issue); the step boundary
           // (routeStepOutcome) drains it — the fan-out folds nothing of its
@@ -279,6 +286,7 @@ export async function fanOutAdversarial(
       // A pass that carried unresolved findings says so in its headline.
       passFindings: reading.passFindings,
       errorTail: result.errorStop?.message ?? undefined,
+      providerRepeats: result.providerRepeats,
       // #543 — thread a loop / token-budget cap kill (+ its trigger
       // evidence) so the aggregate parks with the fixed-literal cap
       // INSTEAD of the generic infra cap (see work-driver-adversarial).

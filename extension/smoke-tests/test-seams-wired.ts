@@ -58,6 +58,21 @@ interface Seam {
 
 const SEAMS: Seam[] = [
   {
+    // #1308 — the generic decision seam. The policy judge (S2) is its first
+    // production caller; the shadow seams (S3/S4) reach it via decision-shadow.ts.
+    file: "decision-seam.ts",
+    pending: {},
+    canary: { symbol: "decide", importer: "work-driver-policy.ts" },
+  },
+  {
+    // #1308 S3/S4 — fire-and-forget decisions for the shadow seams. The
+    // failure-cause and security open-point owners are its callers; index.ts
+    // attaches the session model.
+    file: "decision-shadow.ts",
+    pending: {},
+    canary: { symbol: "shadowDecide", importer: "work-driver-failure-taxonomy.ts" },
+  },
+  {
     // #1020 — the host seam. piSessionHost is the only Pi-touching driver
     // surface; commands.ts is its production caller.
     file: "work-driver-host.ts",
@@ -216,7 +231,7 @@ const SEAMS: Seam[] = [
     // #912 — the per-clone review ledger. The writer calls live in
     // adversarial.ts (runAdversarialLoop) and lens-review.ts
     // (runLensReview); the guard (merge-guard.ts) is the reader. The shared
-    // predicates + branchPatchId are the seam the guard trusts.
+    // predicates + review-patch-identity.ts are the seam the guard trusts.
     file: "review-ledger.ts",
     pending: {},
     testOnly: {

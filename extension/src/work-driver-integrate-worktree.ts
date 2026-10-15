@@ -15,7 +15,8 @@
  *    exemption: this tree, by name suffix.
  *  - Re-entry: an existing `issue-<N>-integrate` is driver-owned (an
  *    earlier attempt of this same cycle), not operator residue — its old
- *    HEAD is recorded, it is force-removed, and a fresh one is created.
+ *    HEAD is recorded (its unpushed commits kept on a backup ref, #1173),
+ *    it is force-removed, and a fresh one is created.
  *    The #475/#545 create guards (runCreateGuards) still run on top.
  *  - If repoRoot itself holds the branch, it is detached first (under the
  *    caller's integration lock) when clean, and a dirty repoRoot halts —
@@ -25,17 +26,23 @@
  * driver audits); nothing here runs at process.cwd().
  */
 
-import { exec as execCb } from "node:child_process";
 import fs from "node:fs/promises";
-import { promisify } from "node:util";
+import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import { isDriverManagedDirtLine } from "./work-driver-branch-residue.ts";
+import {
+  backupIntegrateHead,
+  isIntegrateTreeInCycle,
+  isRegisteredWorktree,
+  keepOrRefuseStaleIntegrateTree,
+  readCycleWorktreePaths,
+  refuseDirtyCycleTrees,
+} from "./work-driver-integrate-cycle.ts";
 import { runCreateGuards } from "./worktree-create-guard.ts";
+import { assertSafeRef } from "./worktree-loss.ts";
 import { provisionWorktree } from "./worktree-provision.ts";
-import { resolvePath, worktreePath, worktreeRemove } from "./worktree.ts";
+import { worktreePath, worktreeRemove } from "./worktree.ts";
 import type { ExecFn } from "./worktree.ts";
-
-const execp = promisify(execCb);
 
 /**
  * #861 — the shared porcelain-dirt reader (trimmed, non-empty lines; `[]`
@@ -85,6 +92,8 @@ export interface IntegrateWorktreeCreation {
    * creation (no stale tree existed).
    */
   staleHead?: string;
+  /** #1173 — the ref the stale tree's unpushed commits were kept on, if any. */
+  backupRef?: string;
   /** True when the driver detached repoRoot off the branch to free it. */
   repoRootDetached: boolean;
 }
@@ -102,9 +111,41 @@ export async function ensureIntegrateWorktree(
   opts: { repoRoot: string; issue: number; branchName: string; baseSha: string },
   stateFile?: string,
 ): Promise<IntegrateWorktreeCreation> {
+  // #1173 — a failure AFTER the stale tree's commits were kept must still name
+  // the ref, or the operator's halt has no pointer to the recoverable work.
+  const kept: { ref?: string } = {};
+  try {
+    return await createIntegrateWorktree(execFn, opts, stateFile, kept);
+  } catch (err) {
+    if (kept.ref === undefined || !(err instanceof Error)) throw err;
+    // Annotate in place: the error keeps its class (DirtyWorktreeError stays one).
+    // The ref also travels as a structured field, so the halt report can name
+    // it without parsing the message (which the halt truncates).
+    const note = ` (the stale integrate tree's unpushed commits were kept on ${kept.ref})`;
+    const e = err as Error & { stderr?: unknown; backupRef?: string };
+    e.backupRef = kept.ref;
+    e.message += note;
+    if (typeof e.stderr === "string" && e.stderr) e.stderr += note;
+    throw err;
+  }
+}
+
+async function createIntegrateWorktree(
+  execFn: ExecFn,
+  opts: { repoRoot: string; issue: number; branchName: string; baseSha: string },
+  stateFile: string | undefined,
+  kept: { ref?: string },
+): Promise<IntegrateWorktreeCreation> {
   const { repoRoot, issue, branchName, baseSha } = opts;
   const name = integrateWorktreeName(issue);
   const abs = worktreePath(repoRoot, name);
+  // #1170 — branchName and baseSha reach shell strings below.
+  try {
+    assertSafeRef(branchName);
+    assertSafeRef(baseSha);
+  } catch (err) {
+    throw new Error(`integrate ref refused: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   // ---- preflight: what holds the branch, and who is where
   let branchHead: string | undefined;
@@ -118,6 +159,13 @@ export async function ensureIntegrateWorktree(
   } catch {
     branchHead = undefined;
   }
+  // #1170 — branchHead is git output; fail closed before any removal.
+  if (branchHead !== undefined) assertSafeRef(branchHead);
+
+  // #1170 — the cycle's own worktrees (the develop trees) are excluded from
+  // the sibling scan below; a dirty one still refuses, before any mutation.
+  const cycleTrees = await readCycleWorktreePaths(stateFile);
+  await refuseDirtyCycleTrees(execFn, cycleTrees, abs, repoRoot, baseSha);
 
   // The stale-tree re-entry: driver-owned residue of an earlier attempt of
   // this same cycle. Its HEAD is recorded, then it is force-removed BEFORE
@@ -129,6 +177,7 @@ export async function ensureIntegrateWorktree(
   // "no work to lose", not a refusal).
   let repoRootDetached = false;
   let staleHead: string | undefined;
+  let backupRef: string | undefined;
   const registered = await isRegisteredWorktree(execFn, repoRoot, abs);
   // #861 round 3 — one branch decides the fate of a registered tree at the
   // integrate path: driver-owned (this cycle's state file records it) →
@@ -150,7 +199,7 @@ export async function ensureIntegrateWorktree(
         `work-driver: ${name} registered in the worktree list but gone from disk — removing the stale registration`,
       );
       await worktreeRemove(execFn, repoRoot, name, true);
-    } else if (await isIntegrateTreeInCycle(stateFile, abs)) {
+    } else if (isIntegrateTreeInCycle(cycleTrees, abs)) {
       // Driver-owned re-entry: record the old HEAD (decision (2)'s
       // re-entry evidence), then replace.
       try {
@@ -162,6 +211,16 @@ export async function ensureIntegrateWorktree(
       } catch {
         staleHead = undefined;
       }
+      // #1170 — a stale tree holding uncommitted or foreign work is refused,
+      // not force-removed; #1173 — the cycle's own commits are backed up.
+      backupRef = kept.ref = await keepOrRefuseStaleIntegrateTree(
+        execFn,
+        repoRoot,
+        abs,
+        branchHead ?? baseSha,
+        branchName,
+        issue,
+      );
       trace(
         `work-driver: stale ${name} worktree at ${abs} (old HEAD: ${staleHead ?? "unreadable"}) — driver-owned, force-removing and recreating`,
       );
@@ -179,6 +238,16 @@ export async function ensureIntegrateWorktree(
             .join(", ")}`,
         );
       }
+      // #1173 — clean is not "nothing to lose": a detached HEAD's commits
+      // die with the tree, so they are kept on a backup ref first (a tree on
+      // another branch holding unique commits throws instead).
+      backupRef = kept.ref = await backupIntegrateHead(
+        execFn,
+        abs,
+        branchHead ?? baseSha,
+        branchName,
+        issue,
+      );
       trace(
         `work-driver: registered worktree at ${abs} is NOT this cycle's (state file does not record it) and is clean — force-removing and recreating (the cycle already committed to replacing the integrate tree)`,
       );
@@ -264,18 +333,19 @@ export async function ensureIntegrateWorktree(
       fromRef: branchHead ?? baseSha,
       callerVerifiedTargetAbsent: true,
     },
-    [abs],
+    [abs, ...cycleTrees],
   );
 
   const ref = branchHead ?? baseSha;
-  // ATTACHED (no --detach): this is the one documented exemption from #287's
-  // always-detached invariant — the tree CHECKS OUT the integration branch
-  // so the ops fallback child starts on it (the prompt pins it as the only
-  // permitted working tree).
-  await execFn(`git worktree add ${JSON.stringify(abs)} ${JSON.stringify(ref)}`, {
-    cwd: repoRoot,
-    maxBuffer: 1024 * 1024,
-  });
+  // ATTACHED: the one documented exemption from #287's always-detached
+  // invariant — the ops fallback child starts ON the branch (the prompt says
+  // so). #1100/#1173 — the branch NAME, never its SHA: a SHA detached the
+  // tree, so the child's commit never moved the branch, its `push -u origin
+  // <branch>` pushed nothing, and the commit wedged the next re-entry.
+  const add = branchHead
+    ? `git worktree add ${JSON.stringify(abs)} ${JSON.stringify(branchName)}`
+    : `git worktree add -b ${JSON.stringify(branchName)} ${JSON.stringify(abs)} ${JSON.stringify(baseSha)}`;
+  await execFn(add, { cwd: repoRoot, maxBuffer: 1024 * 1024 });
   // A bare worktree cannot run a project's own commands — the same
   // provisioning the branch step's worktreeCreate gives every workstream
   // tree (provisionWorktree never throws; a failure is a reported problem,
@@ -284,7 +354,13 @@ export async function ensureIntegrateWorktree(
   if (provisioned.problem) {
     trace(`work-driver: ${name} worktree provisioning incomplete — ${provisioned.problem}`);
   }
-  return { path: abs, refHead: ref, ...(staleHead ? { staleHead } : {}), repoRootDetached };
+  return {
+    path: abs,
+    refHead: ref,
+    ...(staleHead ? { staleHead } : {}),
+    ...(backupRef ? { backupRef } : {}),
+    repoRootDetached,
+  };
 }
 
 /**
@@ -407,90 +483,10 @@ export async function branchHolders(
   return { ok: true, holders };
 }
 
-/**
- * #861 round 2 — the stale-tree ownership check. The state file (the cycle's
- * `.pi/work-state/<issue>.json`) records the branch step's worktree map
- * (id → path). If the integrate path appears in that map, the tree at that
- * path is driver-owned re-entry residue (this cycle created it). If it does
- * NOT appear, the tree is NOT this cycle's — it is operator residue the
- * driver must not silently destroy (a dirty one HALTS; a clean one is
- * pre-removed by the #475 target guard below).
- *
- * An unreadable state file returns false (the safe direction: the path is
- * then treated as NOT this cycle's, so a dirty one halts rather than being
- * silently destroyed; a clean one is pre-removed and the fresh creation
- * proceeds — the same shape as the "unregistered directory" case).
- */
-async function isIntegrateTreeInCycle(
-  stateFile: string | undefined,
-  abs: string,
-): Promise<boolean> {
-  if (!stateFile) return false;
-  try {
-    const raw = await fs.readFile(stateFile, "utf8");
-    const parsed = JSON.parse(raw) as {
-      pipelineState?: {
-        worktrees?: Record<string, string>;
-        integrateWorktree?: string;
-      };
-    };
-    const ps = parsed.pipelineState ?? {};
-    const worktrees = ps.worktrees ?? {};
-    const target = resolvePath(abs);
-    if (ps.integrateWorktree !== undefined && resolvePath(ps.integrateWorktree) === target) {
-      return true;
-    }
-    return Object.values(worktrees).some((p) => resolvePath(p) === target);
-  } catch (err) {
-    // An unreadable state file reads as "not this cycle's" (the safe
-    // direction — a dirty one then halts rather than being destroyed), but
-    // the operator needs to be able to tell the two apart.
-    trace(
-      `work-driver: integrate-tree cycle check — could not read state file ${stateFile}: ${(err as Error).message ?? String(err)}`,
-    );
-    return false;
-  }
-}
-
 async function pathExists(p: string): Promise<boolean> {
   try {
     await fs.access(p);
     return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Whether the path is a REGISTERED worktree (`git worktree list --porcelain`
- * contains it). This is the driver's stale-tree discriminator: a registered
- * tree at the integrate path is driver-owned re-entry residue (an earlier
- * attempt of this same cycle created it), so it is force-replaced. A
- * directory that exists but is registered NOWHERE is not driver-owned
- * residue — it is left for the unconditional #475 target guard, which
- * refuses a dirty one.
- *
- * Unreadable list → false (the safe direction: the path, if anything is
- * there, is then left to the guard rather than force-removed).
- */
-async function isRegisteredWorktree(
-  execFn: ExecFn,
-  repoRoot: string,
-  abs: string,
-): Promise<boolean> {
-  try {
-    const { stdout } = await execFn("git worktree list --porcelain", {
-      cwd: repoRoot,
-      maxBuffer: 1024 * 1024,
-    });
-    const target = resolvePath(abs);
-    return stdout
-      .split("\n")
-      .some(
-        (l) =>
-          l.trim().startsWith("worktree ") &&
-          resolvePath(l.trim().slice("worktree ".length)) === target,
-      );
   } catch {
     return false;
   }

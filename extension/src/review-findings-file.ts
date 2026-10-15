@@ -35,14 +35,35 @@ interface StoredBase {
   lens: string;
   line?: number;
   snippetHash: string;
+  /** Hash of the cited line alone (#1300). Absent on rows written before it existed. */
+  lineHash?: string;
   firstSeen: number;
   lastSeen: number;
 }
 
-/** A stored row. Only an `accepted` row carries an acceptance. */
+/** Why a row was resolved (#1125): path gone, cited line past EOF, or the cited line itself changed. */
+export const RESOLVE_REASONS = ["path-gone", "line-past-eof", "code-gone"] as const;
+export type ResolveReason = (typeof RESOLVE_REASONS)[number];
+
+/** A row resolved by this round, with why its cited code is gone. */
+export interface ResolvedNotice {
+  rowId: string;
+  title: string;
+  reason: ResolveReason;
+}
+
+/** A stored row. Only an `accepted` row carries an acceptance; only open/resolved rows carry a resolution reason. */
 export type StoredFinding =
-  | (StoredBase & { status: "open" | "resolved"; acceptance?: undefined })
-  | (StoredBase & { status: "accepted"; acceptance: Acceptance });
+  | (StoredBase & {
+      status: "open" | "resolved";
+      acceptance?: undefined;
+      resolvedReason?: ResolveReason | undefined;
+    })
+  | (StoredBase & {
+      status: "accepted";
+      acceptance: Acceptance;
+      resolvedReason?: undefined;
+    });
 
 /** The shortest reason an operator may give when accepting a finding. */
 export const MIN_REASON_CHARS = 20;
@@ -117,11 +138,17 @@ function isRow(v: unknown): v is StoredFinding {
     typeof r.lens === "string" &&
     (r.line === undefined || typeof r.line === "number") &&
     typeof r.snippetHash === "string" &&
+    (r.lineHash === undefined || typeof r.lineHash === "string") &&
     typeof r.firstSeen === "number" &&
     typeof r.lastSeen === "number";
   if (!common) return false;
-  if (r.status === "accepted") return isAcceptance(r.acceptance);
-  return (r.status === "open" || r.status === "resolved") && r.acceptance === undefined;
+  if (r.status === "accepted") return isAcceptance(r.acceptance) && r.resolvedReason === undefined;
+  if (r.status !== "open" && r.status !== "resolved") return false;
+  if (r.acceptance !== undefined) return false;
+  return (
+    r.resolvedReason === undefined ||
+    (RESOLVE_REASONS as readonly unknown[]).includes(r.resolvedReason)
+  );
 }
 
 /**

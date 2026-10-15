@@ -76,6 +76,11 @@ export interface ProvisionResult {
   linked: string[];
   /** Set when provisioning was attempted and failed. Never throws. */
   problem?: string;
+  /**
+   * The hook exited non-zero. Distinct from `problem`, which a hook that
+   * exited 0 also carries when the worktree still lacks an expected tree.
+   */
+  hookFailed?: boolean;
 }
 
 /**
@@ -174,27 +179,27 @@ function candidatesForDir(dirRel: string): string[] {
  * The non-empty check is per-location — an empty `node_modules/` at the root
  * is ignored, a full `pkg/node_modules` is linked. A non-ignored candidate
  * is skipped (a tracked directory of the same name is already materialised;
- * linking would shadow real content). The first non-empty ignored candidate
- * wins per dep name; `dirRel === ""` is the `repoRoot` itself.
+ * linking would shadow real content). Every non-empty ignored candidate is
+ * returned — #1146: a root `node_modules` must not hide a package dir's own
+ * tree; `dirRel === ""` is the `repoRoot` itself.
  */
 async function findDepDirs(
   execFn: ExecFn,
   repoRoot: string,
   packageDirs: string[],
-): Promise<Map<string, { dirRel: string; source: string }>> {
+): Promise<Array<{ dep: string; dirRel: string; source: string }>> {
   const locations: Array<{ dirRel: string; source: string }> = [
     { dirRel: "", source: repoRoot },
     ...packageDirs.map((d) => ({ dirRel: d, source: path.join(repoRoot, d) })),
   ];
-  const found = new Map<string, { dirRel: string; source: string }>();
+  const found: Array<{ dep: string; dirRel: string; source: string }> = [];
   for (const dep of SHAREABLE_DEPS) {
     for (const { dirRel, source } of locations) {
       if (!candidatesForDir(dirRel).includes(dep)) continue;
       const abs = path.join(source, dep);
       if (!(await isNonEmptyDirectory(abs))) continue;
       if (!(await isIgnored(execFn, repoRoot, path.join(dirRel, dep)))) continue;
-      found.set(dep, { dirRel, source: abs });
-      break;
+      found.push({ dep, dirRel, source: abs });
     }
   }
   return found;
@@ -229,7 +234,7 @@ export async function provisionWorktree(
   const linked: string[] = [];
   const linkedRel: string[] = [];
   const problems: string[] = [];
-  for (const [dep, { dirRel, source }] of found) {
+  for (const { dep, dirRel, source } of found) {
     const target = path.join(worktreeAbs, dirRel, dep);
     try {
       // Nested candidates need their parent directory to exist; `git
@@ -251,7 +256,7 @@ export async function provisionWorktree(
   // is now empty or gone (the #761 fork-B shape). A link that does not
   // resolve to a non-empty directory is pulled from `linked` (so it is
   // never reported as a useful link) and recorded as a `problem`.
-  for (const [dep, { dirRel, source }] of found) {
+  for (const { dep, dirRel, source } of found) {
     const target = path.join(worktreeAbs, dirRel, dep);
     if (await resolvedNonEmptyDirectory(target)) continue;
     const rel = dirRel === "" ? dep : path.join(dirRel, dep);
@@ -264,9 +269,7 @@ export async function provisionWorktree(
     if (di >= 0) linked.splice(di, 1);
   }
   if (linked.length > 0) {
-    const sources = [...found.entries()]
-      .map(([dep, f]) => `${path.join(f.dirRel, dep)} → ${f.source}`)
-      .join(", ");
+    const sources = found.map((f) => `${path.join(f.dirRel, f.dep)} → ${f.source}`).join(", ");
     trace(`worktree: linked ${linkedRel.join(", ")} (source: ${sources})`);
     await hideFromGit(execFn, worktreeAbs, linkedRel);
   }
@@ -276,7 +279,7 @@ export async function provisionWorktree(
   // worktree. Still never throws: the branch step continues, and the
   // develop gate's missing-deps hint (#445) is the backstop that names the
   // failure to the operator.
-  if (found.size === 0 && (await depsExpectedAt(repoRoot, packageDirs))) {
+  if (found.length === 0 && (await depsExpectedAt(repoRoot, packageDirs))) {
     problems.push(
       "no dependency tree found for a project with a manifest/lockfile — " +
         "worktree will be bare; if the verify command needs dependencies it " +

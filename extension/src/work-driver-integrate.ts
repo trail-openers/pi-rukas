@@ -106,10 +106,15 @@ export interface IntegrateOpts {
 export type NoDiff = Record<string, string>;
 
 /**
- * Check if a commit is already reachable from the integration branch.
- * Uses tree-hash comparison: identical trees = the commit is effectively
- * already applied (even if the SHA differs, e.g. from a resume). Returns
- * `false` on any read error (optimistic: cherry-pick if we can't verify).
+ * Check if a commit is already on the integration branch: either it is in
+ * the branch's history, or its tree is the branch head's tree (the commit
+ * is effectively already applied even if the SHA differs, e.g. from a
+ * resume). The tree test alone only ever recognises the commit AT the tip:
+ * a second lens-fix round starts on the integrated tip, so its
+ * `baseSha..HEAD` range holds every commit already on the branch, and
+ * re-picking the ones behind the tip conflicts with the fixes made since.
+ * Returns `false` on any read error (optimistic: cherry-pick if we can't
+ * verify).
  */
 export async function isCommitOnBranch(
   execFn: (cmd: string, o?: { cwd?: string; maxBuffer?: number }) => Promise<{ stdout: string }>,
@@ -117,6 +122,18 @@ export async function isCommitOnBranch(
   branchName: string,
   sha: string,
 ): Promise<boolean> {
+  try {
+    // `0` commits of `sha`'s history missing from HEAD = `sha` is in it. A
+    // count, not `merge-base --is-ancestor`'s exit status, so an executor
+    // that answers nothing is never read as "already there".
+    const { stdout: missing } = await execFn(`git rev-list --count HEAD..${sha}`, {
+      cwd: repoRoot,
+      maxBuffer: 64 * 1024,
+    });
+    if (missing.trim() === "0") return true;
+  } catch {
+    // Unreadable — fall through to the tree test.
+  }
   try {
     const { stdout: commitTree } = await execFn(`git cat-file -p ${sha}`, {
       cwd: repoRoot,
@@ -168,6 +185,8 @@ export type IntegrateResult =
       noDiff?: NoDiff;
       /** #539 — structured failure discriminator. Cause readers MUST read this, never re-parse `reason`. */
       failure?: "dirty-repoRoot" | "apply" | "verify";
+      /** #1324 — the `verify` failure was a run killed at its bound. */
+      timedOut?: boolean;
       /** #654 task-c — dirty-preflight porcelain lines (the caller parks with these). */
       porcelain?: string[];
     };
@@ -422,6 +441,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
           ok: false,
           failure: "verify",
           reason: `${vr.classifiedMessage} — it was not pushed. ${claimFor(restore)}.`,
+          ...(vr.timedOut ? { timedOut: true } : {}),
         };
       }
     }
@@ -442,6 +462,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       maxBuffer: 64 * 1024,
     });
     const headSha = newHead.trim();
+    trace(`work-driver: integrate — pushed ${branchName} @ ${headSha.slice(0, 8)}`);
     if (headSha) {
       for (const id of appliedWorkstreams) {
         const wt = worktrees[id];

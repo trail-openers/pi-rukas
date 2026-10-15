@@ -8,11 +8,10 @@
  * `forge-mapping.ts` (JSON mappers), `forge-merge.ts` (merge readiness).
  */
 
-import { exec } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
+import { execp } from "./exec.ts";
 import { GH_TERMINAL_CI, GL_TERMINAL_CI, terminalCiFor } from "./forge-ci-terminal.ts";
 import { ciRun as ciRunImpl, ciWatch as ciWatchImpl } from "./forge-ci.ts";
 import * as cmds from "./forge-commands.ts";
@@ -54,8 +53,6 @@ import type {
   NormalizedRepo,
 } from "./forge-types.ts";
 
-const execp = promisify(exec);
-
 /** The exec seam — same shape as the driver's `VerifyExecFn`. */
 export type ForgeExecFn = (
   cmd: string,
@@ -90,8 +87,10 @@ export interface Forge {
     title: string,
     headBranch: string,
     body: string,
-    baseBranch?: string,
+    opts?: { baseBranch?: string; draft?: boolean },
   ): Promise<NormalizedPullRequest>;
+  /** #1292 — mark a draft PR/MR ready for review (idempotent on a ready one). */
+  prReady(number: number): Promise<void>;
   prMerge(
     number: number,
     method?: "squash" | "merge" | "rebase",
@@ -138,7 +137,7 @@ export type CiWatchResult =
 // ── The Forge object ─────────────────────────────────────────────────────
 
 export interface CreateForgeOpts {
-  /** The exec seam (default `promisify(exec)`). */
+  /** The exec seam (default `execp`). */
   execFn?: ForgeExecFn;
   /** The repo root (default `process.cwd()`). */
   cwd?: string;
@@ -166,8 +165,23 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
   const owner = det.url ? (parseOwner(det.url) ?? "") : "";
   const repo = det.url ? (parseRepo(det.url) ?? "") : "";
 
+  /**
+   * #1261 — default per-call exec timeout. `gh` calls against a healthy API
+   * complete in well under 60 s; a half-open connection or a stalled proxy
+   * otherwise hangs the driver's entry and handoff paths forever (no event
+   * persisted, no terminal status, no handoff artifact). A caller that
+   * supplies its own `execOpts.timeout` (e.g. the explore body fetch's 45 s)
+   * overrides this via the spread below.
+   */
+  const DEFAULT_EXEC_TIMEOUT_MS = 60_000;
+
   const run = async <T>(cmd: string, map: (stdout: string) => T): Promise<T> => {
-    const { stdout } = await execFn(cmd, { cwd, maxBuffer: 512 * 1024, ...extraOpts });
+    const { stdout } = await execFn(cmd, {
+      cwd,
+      maxBuffer: 512 * 1024,
+      timeout: DEFAULT_EXEC_TIMEOUT_MS,
+      ...extraOpts,
+    });
     return map(stdout);
   };
 
@@ -329,9 +343,9 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
         });
       }),
 
-    prCreate: (title, headBranch, body, baseBranch) =>
+    prCreate: (title, headBranch, body, opts) =>
       withBodyFile(`pr-${headBranch.slice(0, 16)}`, body, (file) =>
-        run(cmds.prCreateCmd(forge, title, headBranch, file, baseBranch), (stdout) => {
+        run(cmds.prCreateCmd(forge, title, headBranch, file, opts ?? {}), (stdout) => {
           // Tolerate both JSON (from --json flag) and plain-text URL responses.
           const parsed = parsePrNumberFromResponse(stdout);
           if (!parsed) {
@@ -356,6 +370,8 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
 
     prMerge: (number, method: "squash" | "merge" | "rebase" = "squash", subject?: string) =>
       run(cmds.prMergeCmd(forge, number, method, subject), (stdout) => stdout),
+
+    prReady: (number) => run(cmds.prReadyCmd(forge, number), () => undefined),
 
     prDiff: (number) => run(cmds.prDiffCmd(forge, number), (stdout) => stdout),
 

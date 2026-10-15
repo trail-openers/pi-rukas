@@ -39,18 +39,6 @@ import type { ExecFn } from "./worktree.ts";
 export const MAX_ROUNDS = 3;
 
 /**
- * Wall-clock budget for all retry attempts in a single adversarial phase. When
- * elapsed time reaches this limit no further retries start, preventing a
- * repeated watchdog kill from consuming its full attempt budget. Set 0 to
- * disable. Override: PI_ENSEMBLE_ADVERSARIAL_PHASE_BUDGET_MS. Default: 30 min.
- */
-export function adversarialPhaseBudgetMs(): number {
-  const env = Number(process.env.PI_ENSEMBLE_ADVERSARIAL_PHASE_BUDGET_MS);
-  if (Number.isFinite(env) && env >= 0) return env;
-  return 30 * 60_000;
-}
-
-/**
  * Run the 3-round adversarial loop directly. Exported so the work-driver can
  * call it without the tool-registration layer (PR1 workflow-graph compilation).
  * The `adversarial_loop` tool wraps this with `startJob` + steer-back; the
@@ -77,8 +65,12 @@ export async function runAdversarialLoop(
     workCwd?: string;
     /** Recompute the diff before each review. Without it rounds 2+ see pre-fix material. */
     getDiff?: () => Promise<string>;
+    /** What the fix pass before this review changed (fix-delta.ts); first round only. */
+    fixDelta?: string;
     /** The issue this diff is meant to satisfy (#278). Optional: older state files have none. */
     issueBody?: string;
+    /** The gate the driver already ran green on this tree; the reviewer is told not to re-run it. */
+    gateCmd?: string;
     /** #799 — the slow-run recorder for this loop's inner children (each
      * threshold crossing of a review / fix round appends dispatch-slow), and
      * the parent pi for their slow-run watch (the PM notice half). */
@@ -333,6 +325,8 @@ export async function runAdversarialLoop(
         round,
         maxRounds: MAX_ROUNDS,
         issueBody: params.issueBody,
+        fixDelta: round === firstRound ? params.fixDelta : undefined,
+        gateCmd: params.gateCmd,
         // #1040 — comments this round's diff removed, for the reviewer to judge.
         commentEvidence: renderCommentEvidence(lastComments),
         // #1137 — scope the review to this workstream (N>1 only; absent on N=1).

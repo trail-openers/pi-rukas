@@ -16,6 +16,7 @@ import { deriveCommitPrTitle } from "./work-driver-commit-title.ts";
  * forbids the repo root's checkout and every other .worktrees directory path.
  */
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { draftPrEnabled } from "./work-driver-draft-pr.ts";
 import { ensureIntegrateWorktree } from "./work-driver-integrate-worktree.ts";
 import { integrateWorktreePath } from "./work-driver-integrate-worktree.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
@@ -37,6 +38,9 @@ export async function dispatchCommitPrFallback(
   // plumb's body (the old event indirection).
   conflictPatch: string | undefined,
 ): Promise<WorkState> {
+  // #1292 — the prompt asks for --draft; the draft fact is recorded once the
+  // PR number is parsed (runCommitPrPostDispatchGates), not claimed here.
+  const draft = draftPrEnabled(ctx);
   // #818 — the ops fallback receives the DERIVED conventional subject (not
   // the raw issue title), so the PR the ops child opens is conventional
   // even when the mechanized path fell back. The prompt instructs it to
@@ -86,6 +90,8 @@ export async function dispatchCommitPrFallback(
           worktrees: ps.worktrees ?? {},
           commitShas: ps.commitShas ?? {},
           workstreams: ps.workstreams ?? {},
+          draft,
+          protectedGrant: ctx.protectedGrant,
         },
       ),
     {
@@ -123,7 +129,10 @@ export async function ensureIntegrateWorktreeOrHalt(
   state: WorkState,
   branchName: string,
   execFn: ExecFn,
-): Promise<{ path: string; state: WorkState } | { halted: WorkState }> {
+  // #1173 — why integrate() failed; the halt otherwise records only the
+  // downstream creation failure, and the operator cannot see the first cause.
+  integrateReason?: string,
+): Promise<{ path: string; state: WorkState; backupRef?: string } | { halted: WorkState }> {
   const ps = state.pipelineState;
   if (!ps.baseSha) {
     return { path: integrateWorktreePath(ctx.repoRoot, ctx.issue), state };
@@ -143,7 +152,7 @@ export async function ensureIntegrateWorktreeOrHalt(
       ...state,
       pipelineState: { ...state.pipelineState, integrateWorktree: created.path },
     };
-    return { path: created.path, state: next };
+    return { path: created.path, state: next, backupRef: created.backupRef };
   } catch (rawErr) {
     const err = rawErr as Error & { stderr?: string };
     const detail = (err.stderr ?? err.message ?? "").toString();
@@ -151,13 +160,17 @@ export async function ensureIntegrateWorktreeOrHalt(
       `work-driver: integrate worktree creation failed — halting (no unpinned ops dispatch): ${detail.slice(0, 200)}`,
     );
     const capBody = `integrate worktree could not be created: ${detail.slice(0, 200)}`;
+    // #1173 — the ref travels on the error (ensureIntegrateWorktree attaches
+    // it), so the handoff names it without parsing the message.
+    const keptRef = (rawErr as { backupRef?: unknown }).backupRef;
+    const backupRef = typeof keptRef === "string" ? keptRef : undefined;
     const halted: WorkState = appendEvent(
       appendEvent(state, {
         kind: "plumb-report",
         at: Date.now(),
         step: "commit-pr",
         role: "driver",
-        body: "The driver-owned integrate worktree could not be created; the commit-pr ops fallback is pinned to it as the ONLY permitted working tree, so no ops dispatch is attempted.",
+        body: `The driver-owned integrate worktree could not be created; the commit-pr ops fallback is pinned to it as the ONLY permitted working tree, so no ops dispatch is attempted.${integrateReason ? ` The mechanized integrate failed first: ${integrateReason.slice(0, 400)}` : ""}${backupRef ? ` The stale integrate tree's unpushed commits were kept on ${backupRef}; they are NOT re-applied automatically (the next commit-pr regenerates the consolidation from the patches), so that ref is for manual recovery.` : ""} Creation error: ${detail.slice(0, 400)}`,
         fallbackCause: "other",
       }),
       {

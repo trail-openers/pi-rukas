@@ -11,6 +11,9 @@
  * The open-point gate is reached only through `finaliseSpecVerdict`.
  */
 
+import { redactClip } from "./decision-log.ts";
+import type { DecisionWhere } from "./decision-seam.ts";
+import { shadowDecide } from "./decision-shadow.ts";
 import { matchSecurityTerm } from "./security-class.ts";
 import { flattenAndClip, flattenIssueText } from "./text-flatten.ts";
 import { trace } from "./trace.ts";
@@ -25,6 +28,9 @@ import {
   type SpecAssumption,
   reconcileVerdict,
 } from "./work-driver-intent.ts";
+
+/** #1308 S4: at most this many open points per issue are asked about in shadow. */
+const MAX_SHADOW_POINTS = 5;
 
 /** #1151: the assumption text for one CRITICAL point is capped at this many characters. */
 const OPEN_POINT_ASSUMPTION_MAX = 300;
@@ -56,6 +62,8 @@ function securityTermOf(text: string) {
 export function finaliseSpecVerdict(
   spec: NormalisedSpec,
   primaryBody: string | undefined,
+  /** #1308 S4 — where the security seam's shadow decisions are logged; omitted, none are asked. */
+  shadow?: DecisionWhere,
 ): NormalisedSpec {
   const reconciled = reconcileVerdict(spec);
   if (primaryBody === undefined || primaryBody.trim() === "") {
@@ -70,7 +78,27 @@ export function finaliseSpecVerdict(
         "open-point-gate-unchecked — the driver could not check the issue for CRITICAL open points",
     });
   }
-  return applyOpenPointGate(reconciled, readOpenPoints(primaryBody));
+  return applyOpenPointGate(reconciled, readOpenPoints(primaryBody), shadow);
+}
+
+/**
+ * #1308 S4 — ask the `security-open-point` seam about one unresolved CRITICAL
+ * point, in shadow: the term rule's answer (`isSecurity`) is what gates, and
+ * the model's answer is only logged, fired without awaiting so the verdict
+ * stays synchronous. The model sees the point's own text, bounded — never the
+ * rest of the issue — and not the rule's answer, so S5 measures two
+ * independent readings.
+ */
+function askSecuritySeam(text: string, isSecurity: boolean, where: DecisionWhere): void {
+  void shadowDecide(
+    "security-open-point",
+    {
+      question: "Is this open point a security decision?",
+      state: { openPoint: redactClip(text, 1000) },
+      rule: isSecurity ? "true" : "false",
+    },
+    where,
+  );
 }
 
 /** A resolved point is recorded as an assumption, so the answer reaches the PR body. */
@@ -133,7 +161,11 @@ function capToAssumptions(spec: NormalisedSpec, assumptions: SpecAssumption[]): 
  *   `proceed` is capped at `proceed-with-assumptions`, each named as an
  *   assumption. An existing park is never rewritten here.
  */
-function applyOpenPointGate(spec: NormalisedSpec, reading: OpenPointReading): NormalisedSpec {
+function applyOpenPointGate(
+  spec: NormalisedSpec,
+  reading: OpenPointReading,
+  shadow: DecisionWhere | undefined,
+): NormalisedSpec {
   for (const point of reading.resolved) {
     trace(
       `work-driver: intent — resolved open point skipped: ${flattenAndClip(openPointText(point), OPEN_POINT_ASSUMPTION_MAX)}`,
@@ -154,10 +186,26 @@ function applyOpenPointGate(spec: NormalisedSpec, reading: OpenPointReading): No
   }
   if (points.length === 0 && unparsed.length === 0) return base;
 
-  const securityMatches = [...points.map(openPointText), ...unparsed].flatMap((text) => {
+  const texts = [...points.map(openPointText), ...unparsed];
+  const securityMatches = texts.flatMap((text) => {
     const term = securityTermOf(text);
     return term ? [{ text, term }] : [];
   });
+  if (shadow) {
+    // A long Open points list must not become a burst of model calls.
+    for (const text of texts.slice(0, MAX_SHADOW_POINTS)) {
+      askSecuritySeam(
+        text,
+        securityMatches.some((m) => m.text === text),
+        shadow,
+      );
+    }
+    if (texts.length > MAX_SHADOW_POINTS) {
+      trace(
+        `security-open-point: ${texts.length - MAX_SHADOW_POINTS} point(s) not asked in shadow`,
+      );
+    }
+  }
   const securityPoints = securityMatches.map(({ text }) => quotedIssueText(text));
   if (base.verdict === "park") {
     trace(

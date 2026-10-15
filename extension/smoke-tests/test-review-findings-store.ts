@@ -13,7 +13,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import os from "node:os";
 import path from "node:path";
 import { acceptRow } from "../scripts/review-accept-row.ts";
-import { execp } from "../src/lens-exec.ts";
+import { execp } from "../src/exec.ts";
 import { partitionDecisions } from "../src/lens-residuals.ts";
 import type { Finding } from "../src/lens-review-types.ts";
 import {
@@ -209,7 +209,7 @@ try {
     branch: "feat/x",
     headSha: c1,
     findings: [finding("Division by zero possible", 4)],
-    complete: true,
+    review: "full",
   });
   const findingsFile = path.join(path.dirname(ledger as string), "review-findings.json");
   assert(
@@ -241,7 +241,7 @@ try {
     headSha: c2,
     findings: [finding("Division by zero possible", 6)],
     deltaDiff,
-    complete: false,
+    review: "delta",
   });
   assert(
     delta?.[0]?.action === "suppressed-unchanged" && delta[0].rowId === rowId,
@@ -267,7 +267,7 @@ try {
     branch: "feat/x",
     headSha: c2,
     findings: [finding("Division by zero possible", 6)],
-    complete: true,
+    review: "full",
   });
   assert(
     later?.[0]?.action === "suppressed-accepted" && later[0].reason.includes("op@example.com"),
@@ -280,7 +280,7 @@ try {
     branch: "feat/x",
     headSha: c2,
     findings: [finding("Division by zero possible", 6, "CRITICAL")],
-    complete: true,
+    review: "full",
   });
   assert(
     crit?.[0]?.action === "matched",
@@ -294,7 +294,7 @@ try {
     branch: "feat/x",
     headSha: c2,
     findings: [finding("Unchecked integer overflow", 6)],
-    complete: true,
+    review: "full",
   });
   assert(
     otherTitle?.[0]?.action === "new",
@@ -317,7 +317,7 @@ try {
     branch: "feat/x",
     headSha: c3,
     findings: [finding("Division by zero possible", 7)],
-    complete: true,
+    review: "full",
   });
   assert(
     lapsed?.[0]?.action === "matched",
@@ -332,7 +332,7 @@ try {
   // A complete full review resolves a row whose cited line was truncated away
   // (a changed line-bearing row is carried; see test-review-findings-resolve.ts).
   const c4 = commit("// header\n");
-  await decide({ cwd: dir, branch: "feat/x", headSha: c4, findings: [], complete: true });
+  await decide({ cwd: dir, branch: "feat/x", headSha: c4, findings: [], review: "full" });
   assert(
     (await readBranchRows(dir, "feat/x"))[0]?.status === "resolved",
     "resolve: an open row whose cited line is past the end of the file resolves",
@@ -368,7 +368,7 @@ try {
         findings: [
           finding(`Unique concurrent finding ${t} with words${i}`, [3, 4, 7, 9, 11][i] ?? 4),
         ],
-        complete: false,
+        review: "incomplete",
       }),
     ),
   );
@@ -394,7 +394,7 @@ try {
         title: "Missing null check on token",
       },
     ],
-    complete: true,
+    review: "full",
   });
   const nlId = nl?.[0]?.rowId ?? "";
   await acceptRow({
@@ -416,7 +416,7 @@ try {
         title: "Missing null check on user",
       },
     ],
-    complete: true,
+    review: "full",
   });
   assert(
     sibling?.[0]?.action === "new",
@@ -434,7 +434,7 @@ try {
         title: "Missing null check on token",
       },
     ],
-    complete: true,
+    review: "full",
   });
   assert(
     sameTitle?.[0]?.action === "suppressed-accepted",
@@ -449,7 +449,7 @@ try {
     branch: "feat/nb",
     headSha: n1,
     findings: [finding("Division by zero possible", 4)],
-    complete: true,
+    review: "full",
   });
   const n2 = commit(SRC.map((l, i) => (i === 2 ? "  const a = x + 9;" : l)).join("\n"));
   const neighbour = await decide({
@@ -465,7 +465,7 @@ try {
       "-  const a = x + 1;",
       "+  const a = x + 9;",
     ].join("\n"),
-    complete: false,
+    review: "delta",
   });
   assert(
     neighbour?.[0]?.action === "matched",
@@ -479,7 +479,7 @@ try {
     branch: "feat/x",
     headSha: c3,
     findings: [finding("Division by zero possible", 6)],
-    complete: true,
+    review: "full",
   });
   assert(corruptRun === undefined, "corrupt: an unparsable findings file records nothing");
   assert(

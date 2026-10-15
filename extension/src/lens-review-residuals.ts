@@ -9,7 +9,8 @@
  *   <!-- pi-rukas:lens-residuals branch=<b> patch=<patchId> -->
  *
  * The `patch=` is the SAME id the merge guard computes and compares —
- * `branchPatchId` against the PR's ACTUAL base branch (design decision 1).
+ * `mergeIdentity` (merge-guard-reads.ts, #1305) — the merge-base identity
+ * the ledger writers record.
  * The guard later reads the PR's comments (its own exec call) and refuses
  * the merge when no comment carries a marker matching the current branch
  * AND the current patch — so a failed post here leaves the guard refusing
@@ -39,16 +40,17 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { neutraliseEvidence } from "./comment-evidence.ts";
+import { execp } from "./exec.ts";
 import * as cmds from "./forge-commands.ts";
 import { postPrComment } from "./forge-comments.ts";
 import { detectForge } from "./forge-detect.ts";
-import { execp } from "./lens-exec.ts";
-import { suppressedSection } from "./lens-residuals.ts";
+import { resolvedSection, suppressedSection } from "./lens-residuals.ts";
 import { advisorySection } from "./lens-review-advisory.ts";
 import { deltaFallbackText } from "./lens-review-diff.ts";
 import type { LensReviewSummary } from "./lens-review.ts";
+import { mergeIdentity } from "./merge-guard-reads.ts";
 import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
-import { branchPatchId, remoteName } from "./review-ledger.ts";
+import { remoteName } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 
@@ -182,7 +184,7 @@ async function doPost(
     }
   }
   // The PR's identity (base branch) — the SAME read the guard uses for its
-  // target, so the patch-id base is the PR's ACTUAL base (design decision 1).
+  // target, so the base the identity checks against the mainline is the PR's (#1305).
   // The marker's `branch=` is the PR's headRefName, NOT the caller's resolved
   // branch — the guard compares the marker's branch against the PR's
   // headRefName, so the marker must carry the same value the guard will see.
@@ -236,7 +238,7 @@ async function doPost(
     );
   }
   // The remote + the patch-id — the SAME computation the guard applies
-  // (review-ledger.ts branchPatchId, the PR's actual base).
+  // (merge-guard-reads.ts mergeIdentity, #1305).
   const remote = await remoteName(execFn, cwd);
   if (!remote) throw new Error("no git remote found (origin/upstream/first)");
   // #973 review — the patch-id is computed against FRESH refs: the guard
@@ -264,15 +266,13 @@ async function doPost(
       `git fetch ${remote} ${headBranch} ${baseBranch} failed: ${(err as Error).message?.slice(0, 200) ?? "unknown error"} — the disclosure was not posted (fail closed; the merge guard will refuse until the disclosure is posted)`,
     );
   }
-  const patchId = await branchPatchId(
-    execFn,
-    cwd,
-    `${remote}/${headBranch}`,
-    `${remote}/${baseBranch}`,
-  );
-  if (!patchId) {
-    throw new Error(`could not compute the patch-id for ${headBranch} against ${baseBranch}`);
+  const identity = await mergeIdentity(execFn, cwd, headBranch, baseBranch);
+  if (!identity.ok) {
+    throw new Error(
+      `could not compute the patch-id for ${headBranch}: ${identity.reason} — the disclosure was not posted (fail closed)`,
+    );
   }
+  const patchId = identity.patchId;
   // The marker + the findings body (severity, path:line, title — the
   // operator-readable list; the marker line is hidden in the render).
   // The marker uses the PR's headRefName AS-IS (already a bare branch name
@@ -296,6 +296,7 @@ async function doPost(
       summary.suppressed,
       `Suppressed as already known (${summary.suppressed?.length ?? 0}) — not re-reported; each names its row id and the reason it was dropped:`,
     ),
+    ...resolvedSection(summary.resolved),
     ...advisorySection(summary.advisory),
     ...(summary.memoryNote ? ["", neutraliseEvidence(summary.memoryNote)] : []),
     ...(summary.deltaReview?.fallback

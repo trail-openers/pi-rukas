@@ -35,7 +35,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -45,6 +45,7 @@ import { salvageKnownDirtyWorktrees } from "../src/work-driver-branch-salvage.ts
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { initialState } from "../src/workflow-state.ts";
 import { DirtyWorktreeError, type ExecFn, worktreeCreate } from "../src/worktree.ts";
+import { realExec } from "./lib/exec-fake.ts";
 
 const execFileP = promisify(execFile);
 
@@ -57,13 +58,6 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const realExec: ExecFn = async (cmd, o) => {
-  const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
-    cwd: o?.cwd,
-    maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
-  });
-  return { stdout };
-};
 const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 
 /** A minimal repo with a committed base, detached at that base. */
@@ -206,6 +200,9 @@ function recorder(overrides: Record<string, string>, targetWt?: string) {
       if (cmd.startsWith("git diff HEAD"))
         return { stdout: "diff --git a/src/wip.ts b/src/wip.ts\n+salvage\n" };
       if (cmd.startsWith("git ls-files --others")) return { stdout: "" };
+      // A real worktree answers its own toplevel (#1170) — the fake must too.
+      if (cmd.startsWith("git rev-parse --show-toplevel"))
+        return { stdout: `${realpathSync(o.cwd ?? "")}\n` };
       if (cmd.startsWith("git rev-parse")) return { stdout: "deadbeef\n" };
       if (cmd.startsWith("git rev-list")) return { stdout: "0\n" };
       if (cmd.startsWith("git worktree")) return { stdout: "" };
@@ -230,7 +227,8 @@ function recorder(overrides: Record<string, string>, targetWt?: string) {
   return { wtCalls, execFn };
 }
 
-const REPO = "/repo";
+// A real directory root, so fake worktrees under it are on disk (#1170).
+const REPO = mkdtempSync(path.join(tmpdir(), "pi-ens-stale-repo-"));
 process.env.PI_ENSEMBLE_RESUME = "0";
 
 function branchCtx(execFn: ExecFn): DriverContext {
@@ -301,6 +299,9 @@ try {
     // names the dirty sibling's path.
     const targetWt = `${REPO}/.worktrees/issue-540-default`;
     const wtSibling = `${REPO}/.worktrees/issue-540-task-b`;
+    // A dirty sibling is a real directory on disk (#1170 "is it its own worktree").
+    mkdirSync(wtSibling, { recursive: true });
+    writeFileSync(path.join(wtSibling, ".git"), "gitdir: /dev/null\n");
     const { execFn, wtCalls } = recorder(
       {
         "git rev-parse --verify --quiet ": "deadbeef\n",

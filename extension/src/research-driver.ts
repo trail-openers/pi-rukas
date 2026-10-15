@@ -22,11 +22,10 @@
  *   5 Memory     — one typed candidate row with supersession
  *                  (research-memory.ts); a memory failure never fails a run
  */
-import { exec } from "node:child_process";
 import { stat } from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 import { dispatchCore } from "./dispatch.ts";
+import { execp } from "./exec.ts";
 import {
   VIPUNE_PRECEDENCE_NOTE,
   VIPUNE_PRIOR_SOURCE,
@@ -80,7 +79,6 @@ import { vipuneSearch } from "./vipune.ts";
 import type { DriverHost } from "./work-driver-host.ts";
 import type { ExecFn } from "./worktree.ts";
 
-const execp = promisify(exec);
 const defaultExec: ExecFn = async (cmd, opts) => {
   const { stdout, stderr } = await execp(cmd, { cwd: opts?.cwd, timeout: opts?.timeout ?? 15_000 });
   return { stdout: String(stdout), stderr: String(stderr) };

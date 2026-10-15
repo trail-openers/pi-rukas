@@ -70,6 +70,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { renameSync, rmSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { type EmitSink, emitPersisted } from "./work-state-emit.ts";
@@ -290,6 +291,34 @@ export function markInterrupted(
     if (next === state) return state;
     return writeSnapshot(file, next, sink);
   });
+}
+
+/**
+ * `writeState`, synchronously — for the one caller that cannot rely on the
+ * event loop outliving its `await`: the session-shutdown record
+ * (work-driver-shutdown.ts) is written from a process that is exiting.
+ *
+ * Caveats: this bypasses the per-file write chain (`enqueue`) and the emit
+ * sink (`emitPersisted`), so the record is not emitted to the host. It can
+ * also race an in-flight async `writeState` on the same file: a snapshot
+ * queued before shutdown can land after this write and overwrite it. Callers
+ * must only use it where no async write to that file is pending.
+ */
+export function writeStateSync(repoRoot: string, state: WorkState): void {
+  const file = workStateFile(repoRoot, state.issue);
+  const tmp = `${file}.${process.pid}.${randomUUID()}.sync.tmp`;
+  try {
+    writeFileSync(tmp, `${JSON.stringify({ ...state, updatedAt: Date.now() }, null, 2)}\n`, "utf8");
+    renameSync(tmp, file);
+  } catch (err) {
+    // Best-effort: the original error is rethrown below, which is the one that matters.
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+      /* the tmp file is left behind; the caller already has the real error */
+    }
+    throw err;
+  }
 }
 
 /**

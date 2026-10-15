@@ -31,7 +31,10 @@
  * `AuthoritySource`s and the only one bypassing the #406/#407 policy judge. An
  * LLM-settable boolean there is a cycle granting itself merge authority. Merge
  * authority stays operator-only: the slash command, or a grant in the project's
- * `AGENTS.md` that the judge verifies by citation.
+ * `AGENTS.md` that the judge verifies by citation. The same holds for
+ * `--allow-protected` (#1090): a grant to edit the files that define
+ * verification is the cycle grading its own work, so there is no parameter for
+ * it either, and the invocation forces it empty.
  *
  * Tools receive an `ExtensionContext` as their fifth `execute` parameter — the
  * same object the command handler uses — so `ctx.cwd` is available and the
@@ -118,13 +121,20 @@ export function registerWorkTools(pi: ExtensionAPI) {
       const params = raw as { issues: number[]; restart?: boolean };
       const parsed = parseWorkArgs(
         [...params.issues.map(String), params.restart ? "--restart" : ""].join(" "),
+        { repoRoot: await resolveRepoRoot(ctx.cwd) },
       );
       if ("error" in parsed) {
         return { content: [{ type: "text", text: parsed.error }], details: { started: false } };
       }
-      // mergeGrant is forced off regardless of what parseWorkArgs derived —
-      // nothing an LLM writes can reach it. See the module docstring.
-      const invocation = { ...parsed, mergeGrant: false };
+      // mergeGrant and protectedGrant (#1090) are forced off regardless of
+      // what parseWorkArgs derived — nothing an LLM writes can reach them.
+      // See the module docstring.
+      const invocation = {
+        ...parsed,
+        mergeGrant: false,
+        protectedGrant: [],
+        headless: !ctx.hasUI,
+      };
 
       armPmMode();
       const repoRoot = await resolveRepoRoot(ctx.cwd);
@@ -157,8 +167,11 @@ export function registerWorkTools(pi: ExtensionAPI) {
         details: {
           started: true,
           jobId: handle.jobId,
+          // #1295 — the async-result contract every report-delivering tool keeps.
+          async: true,
           issues: parsed.issues,
           mergeGrant: false,
+          protectedGrant: [],
         },
       };
     },

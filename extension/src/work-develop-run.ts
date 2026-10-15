@@ -29,7 +29,9 @@ import {
   inlineSpeculativeExplorePrompt,
 } from "./work-driver-prompts-early.ts";
 import { clearDispatch } from "./work-driver-resume.ts";
+import { interruptedDevelopNote } from "./work-driver-retry-context.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
+import { fastVerifyCmdFor } from "./work-driver-verify-fast.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 
@@ -193,6 +195,7 @@ export function makeRunOneWorkstream(
       // can never diverge; the gate itself is unchanged — it still runs and
       // still disbelieves the developer's claim.
       const verifyCmd = await verifyCmdFor(ctx.repoRoot);
+      const fastVerifyCmd = await fastVerifyCmdFor(ctx.repoRoot); // #1324
       s.stateRef.current = appendEvent(s.stateRef.current, {
         kind: "memory-inject",
         at: Date.now(),
@@ -254,6 +257,8 @@ export function makeRunOneWorkstream(
               verifyCmd,
               issueBodyArtifactPaths,
               ws?.fixFindings,
+              interruptedDevelopNote(s.stateRef.current),
+              fastVerifyCmd,
             ),
             cwd,
           },

@@ -13,6 +13,7 @@
  * its dependency's tip (no ancestor replay — the #775 shape).
  */
 import path from "node:path";
+import { withVerifySlot } from "./host-resources.ts";
 import { describeSiblingFenceViolations } from "./work-develop-fence-verdicts.ts";
 import { runConsolidatedVerify } from "./work-driver-consolidated-verify.ts";
 import {
@@ -24,11 +25,23 @@ import {
   sharesAssertion,
 } from "./work-driver-consolidation-classify.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { missingDepsFailure } from "./work-driver-deps-gate.ts";
 import { provisionDepsHint } from "./work-driver-deps-hint.ts";
-import { extractAttributedTail } from "./work-driver-exec-error.ts";
+import {
+  extractAttributedTail,
+  hostExhaustionFailure,
+  isHostExhaustionFailure,
+  isHostForkExhaustion,
+  pidLimitSnapshot,
+} from "./work-driver-exec-error.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
-import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
-import { formatExecError, verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
+import { baselineRedMessage, probeBaselineVerify } from "./work-driver-verify-baseline.ts";
+import {
+  formatExecError,
+  verifyTimeoutFailure,
+  verifyTimeoutMs,
+} from "./work-driver-verify-develop-helpers.ts";
+import { failedVerifyCmd } from "./work-driver-verify-fast.ts";
 import { rawOutputClause } from "./work-driver-verify-flake.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
@@ -101,24 +114,27 @@ export async function runVerifyCommandGate(opts: {
   const isValidSha = (s: string | undefined) => typeof s === "string" && VALID_SHA_RE.test(s);
   const perWorktreeVerifyFailures: string[] = [];
   for (const cwd of changedWorktrees) {
+    const depsMissing = await missingDepsFailure(execFn, state, ctx.repoRoot, cwd, cmd); // #1146
+    if (depsMissing !== undefined) {
+      perWorktreeVerifyFailures.push(depsMissing);
+      continue;
+    }
     try {
-      await execFn(cmd, { cwd, timeout: verifyTimeoutMs(), maxBuffer: 4 * 1024 * 1024 });
+      await withVerifySlot(() =>
+        execFn(cmd, { cwd, timeout: verifyTimeoutMs(), maxBuffer: 4 * 1024 * 1024 }),
+      );
     } catch (err) {
       const e = err as Error & { stdout?: string; stderr?: string; killed?: boolean };
-      // A verify command that fails for want of `node_modules` reports the
-      // same shape as one that fails on a real defect; development happens
-      // in a fresh worktree, so this is the likelier of the two when it
-      // matches — say so rather than implying the diff is at fault. #1005 —
-      // per-worktree failures are kept as failures unconditionally (the
-      // pre-#1005 downgrade to evidence on a consolidated pass is gone);
-      // the consolidated run below adds its own verdict on top.
+      // A missing `node_modules` looks like a real defect; in a fresh worktree say so.
+      // #1005 — per-worktree failures stay failures; the consolidated run adds its own.
       const output = `${e.stdout ?? ""}\n${e.stderr ?? ""}\n${e.message ?? ""}`;
       const depsHint = looksLikeMissingDeps(output) ? provisionDepsHint(state, cwd) : "";
+      const ran = failedVerifyCmd(e, cmd); // #1324 — the fast tier, when it is the one that failed
       perWorktreeVerifyFailures.push(
         formatExecError(
           e,
-          `verify command \`${cmd}\` exceeded its ${Math.round(verifyTimeoutMs() / 60000)}-min timeout in ${cwd}`,
-          `verify command \`${cmd}\` failed in ${cwd}${depsHint}`,
+          verifyTimeoutFailure(ran, `in ${cwd}`, verifyTimeoutMs()),
+          `verify command \`${ran}\` failed in ${cwd}${depsHint}`,
         ),
       );
     }
@@ -261,6 +277,11 @@ export async function runVerifyCommandGate(opts: {
       failures.push(
         `consolidated verify was refused — repoRoot is dirty (${cons.detail}). Leftover residue from an earlier cycle, NOT a workstream conflict or verify failure: run \`git status\` at the repo root, clear the residue, and re-run the cycle`,
       );
+    } else if (cons.kind === "host") {
+      // The host could not fork, so nothing was combined: neither a conflict
+      // nor a verify failure. The message deliberately avoids the conflict
+      // wording the cap router matches on.
+      failures.push(hostExhaustionFailure("consolidated verify", cons.detail, pidLimitSnapshot()));
     } else {
       // #814 — the "incoherent decomposition" claim is asserted ONLY when
       // the driver has NO recorded fence evidence. When a sibling-declared
@@ -350,7 +371,28 @@ export async function runVerifyCommandGate(opts: {
     // #841 — the shared rawOutputClause helper (single home for the
     // sentence so both verify seams render identically).
     const logClause = rawOutputClause(cons.logPath);
-    failures.push(consolidatedFailureMessage(verdict, cmd) + logClause);
+    // A run KILLED at the bound never reached a verdict: its stream stops
+    // wherever the kill landed, and classifying that reported a timeout as
+    // "specific assertion: (no specific assertion could be extracted)" — a
+    // claim about the code. Report the bound instead, as the per-worktree
+    // run above already does.
+    // A verify command the host could not fork never ran, so the classifier's
+    // verdict ("[needs-human-decision] … no specific assertion could be
+    // extracted") would be a judgement about code nobody executed. Read from
+    // the same bounded evidence the classifier saw, not the whole stream — a
+    // passing stage that merely prints the phrase must not relabel a real
+    // failure further down.
+    failures.push(
+      (cons.timedOut === true
+        ? `${verifyTimeoutFailure(cmd, `on the CONSOLIDATED tree at ${ctx.repoRoot}`, verifyTimeoutMs())}.`
+        : isHostForkExhaustion(classifierInput)
+          ? hostExhaustionFailure(
+              `verify command \`${cmd}\` on the CONSOLIDATED tree`,
+              classifierInput,
+              pidLimitSnapshot(),
+            )
+          : consolidatedFailureMessage(verdict, cmd)) + logClause,
+    );
     // #841 — thread the ACTUAL written log path back (the write's own
     // return — undefined when the write failed, in which case there is
     // nothing to record structurally).
@@ -419,9 +461,40 @@ export async function runVerifyCommandGate(opts: {
       );
     }
   }
+  // Baseline comparison — ONLY once the verify command has already failed
+  // (never on the happy path: it costs a full gate run). A command that
+  // also fails on a clean checkout of the base commit was red before the
+  // change existed; the cycle still parks, but the evidence leads with that
+  // instead of blaming the diff. See work-driver-verify-baseline.ts. Not
+  // when the host could not fork: the probe cannot run there either, and its
+  // "red at base" would be the same environment failure read as a verdict.
+  if (
+    (cons.status === "failed" || perWorktreeVerifyFailures.length > 0) &&
+    !failures.some(isHostExhaustionFailure)
+  ) {
+    const base = baseSha as string;
+    const timeoutMs = verifyTimeoutMs();
+    const verdict = await probeBaselineVerify(execFn, {
+      repoRoot: ctx.repoRoot,
+      baseSha: base,
+      issue: ctx.issue,
+      cmd,
+      timeoutMs,
+    });
+    if (verdict.status === "red") {
+      const changeFailure = [
+        cons.status === "failed" ? (cons.rawFailure ?? "") : "",
+        ...perWorktreeVerifyFailures,
+      ].join("\n");
+      failures.unshift(
+        baselineRedMessage(verdict, { cmd, baseSha: base, timeoutMs, changeFailure }),
+      );
+    } else {
+      notes.push(
+        verdict.status === "green"
+          ? `baseline verify passed — \`${cmd}\` exits 0 on a clean checkout of the base commit ${base.slice(0, 12)}, so the gate was green before this change`
+          : `baseline verify not established — ${verdict.reason}`,
+      );
+    }
+  }
 }
-
-// `verifyCmdFor` re-exported so the caller keeps its pre-#794 import
-// surface (it already imports the symbol from work-driver-verify-cmd.ts;
-// this re-export is a no-op safety net, kept for import-graph symmetry).
-export { verifyCmdFor };

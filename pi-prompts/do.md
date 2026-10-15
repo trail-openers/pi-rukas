@@ -41,7 +41,7 @@ This is NOT the deterministic state machine that `/work` runs. Pick the steps th
 
 1. **Establish target.** Which branch, PR, worktree, or set of files is in scope? If the user said "fix the lens findings from the review above" — the target is the same branch the review ran against. If unclear, ask ONE concise question.
 
-2. **Decompose mentally.** Is this one well-bounded chunk of work, or genuinely-independent parallel workstreams? Most `/do` invocations are single-shot. Multi-workstream is the exception; reach for it only if you'd otherwise dispatch the same developer twice in sequence.
+2. **Decompose mentally.** Is this one well-bounded chunk of work, or genuinely-independent parallel workstreams? Most `/do` invocations are single-shot. Multi-workstream is the exception; reach for it only if you'd otherwise dispatch the same developer twice in sequence. A change that creates a symbol (a new field, export or variant) and the code that uses it is ONE workstream even when the files are disjoint; a change that already exists as a commit or PR is ONE workstream that cherry-picks it.
 
 3. **Create the worktree.** Before any implementation dispatch, create a detached worktree so the developer's edits never land at the repo root. The path is `.worktrees/do-slug` where `slug` is the same short-slug used for scratch (derived from the request, e.g. `do-fix-typo`). From the repo root, run:
 

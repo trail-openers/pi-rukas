@@ -108,7 +108,7 @@ export async function withProviderBackoff(
 }
 
 /** Sleep that resolves early when the dispatch is cancelled. */
-function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+export function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal?.aborted) return resolve();
     const timer = setTimeout(done, ms);

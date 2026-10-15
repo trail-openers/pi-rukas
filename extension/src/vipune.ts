@@ -24,13 +24,15 @@
  * worse than either: it is monotone, so it can only add rows.
  *
  * Upstream issues this works around: randomm/vipune#177 (exit code 2 is
- * overloaded between "conflict detected" and clap usage errors), #178
- * (`memory_type` / `status` are settable and filterable but returned by no
- * command, so a supersede cannot read back the type it must preserve), #179
- * (retrieval telemetry is maintained but unreadable).
+ * overloaded between "conflict detected" and clap usage errors). #178
+ * (`memory_type` / `status` returned by no command) and #179 (retrieval
+ * telemetry unreadable) are closed upstream — `search --json` returns both
+ * since v0.15.0 — but this seam does not parse those fields, so `MemoryHit`
+ * still carries neither.
  */
 
 import { execFile } from "node:child_process";
+import { SECRET_PATTERNS } from "./secret-patterns.ts";
 import { trace } from "./trace.ts";
 
 /** The closed enum vipune accepts. A typo here is a compile error, not an exit 1. */
@@ -77,33 +79,6 @@ export const SIM_FLOOR = 0.65;
  */
 export const HYBRID_AGREEMENT = 0.075;
 
-/**
- * Secrets we refuse to store. vipune persists plaintext SQLite.
- *
- * Deliberately keyed on *shape with context*, never on raw entropy. An
- * earlier draft used `[A-Fa-f0-9]{40,}`, which matches every git SHA — so a
- * correction citing a commit, or a CI error line containing a hash, would
- * have been silently refused on the highest-value write path.
- */
-const SECRET_PATTERNS: RegExp[] = [
-  // OpenAI and Anthropic both use `sk-` with an infix segment (`sk-proj-`,
-  // `sk-ant-api03-`), so the token body is NOT alphanumeric-only. Measured: the
-  // previous `sk-[A-Za-z0-9]{16,}` refused a legacy key and passed both current
-  // formats — including this project's own provider.
-  /\bsk-[A-Za-z0-9](?:[A-Za-z0-9-]{15,})\b/,
-  /\b(gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,})\b/,
-  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/,
-  /\bglpat-[A-Za-z0-9_-]{16,}\b/,
-  /\bAIza[0-9A-Za-z_-]{30,}\b/,
-  /\bnpm_[A-Za-z0-9]{30,}\b/,
-  /\bAKIA[0-9A-Z]{16}\b/,
-  /\bBearer\s+[A-Za-z0-9._-]{20,}/,
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
-  /\b(?:api[_-]?key|secret|password|passwd|token)\s*[:=]\s*["']?[A-Za-z0-9._\-/+]{12,}/i,
-  // A password embedded in a URL: scheme://user:pass@host
-  /:\/\/[^\s/:@]+:[^\s/@]+@/,
-];
-
 export function looksLikeSecret(text: string): boolean {
   return SECRET_PATTERNS.some((re) => re.test(text));
 }
@@ -123,7 +98,7 @@ export function isIdentifierShaped(query: string): boolean {
   return /[.\-A-Z]/.test(q);
 }
 
-type ExecFn = (
+export type ExecFn = (
   file: string,
   args: string[],
   opts: { cwd: string; timeout: number; maxBuffer: number },
@@ -183,8 +158,8 @@ export async function vipuneAdd(
     memoryType: MemoryType;
     status?: MemoryStatus;
     /**
-     * When set, `memoryType` must be the ORIGINAL memory's type. vipune#178
-     * makes the stored type unreadable, so a supersede that guesses wrong
+     * When set, `memoryType` must be the ORIGINAL memory's type. `MemoryHit`
+     * does not carry the stored type, so a supersede that guesses wrong
      * silently retypes — e.g. a `guard` becomes a `fact` and is thereafter
      * invisible to every guard-filtered read, unrecoverably. Callers resolve
      * the type by static leg priority, never by which leg scored highest.
@@ -233,11 +208,12 @@ export interface SearchOpts extends VipuneOpts {
   /**
    * Include `candidate` rows. Off by default, matching vipune.
    *
-   * Without this the write side cannot reach the read side at all: vipune
-   * defaults to `--status active`, and every write this driver makes is a
-   * candidate, so 100% of what it stores is invisible to its own reads.
-   * Measured on a probe DB with one active and one candidate row: default
-   * returns 1, `--include-candidates` returns 2.
+   * vipune defaults to `--status active`, and every write this driver makes
+   * is a candidate. Measured on a probe DB with one active and one candidate
+   * row: default returns 1, `--include-candidates` returns 2. The developer
+   * brief deliberately leaves this off (#1103) — a candidate reaches no
+   * compiled brief until an operator promotes it. A lookup for the driver's OWN rows
+   * (research supersession) is what needs it.
    *
    * The boolean is preferred over `--status active,candidate` — measured
    * identical result sets, but a comma list degrades silently when a member is

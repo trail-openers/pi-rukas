@@ -6,8 +6,7 @@
  * parsed verdict(s) via work-driver-plan.ts's parsers.
  */
 
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
+import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import {
   jitteredMs,
@@ -15,8 +14,6 @@ import {
   transientRetryEnabled,
 } from "./work-driver-failure-taxonomy.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
-
-const execp = promisify(exec);
 
 /** Per-attempt deadline for one `gh issue view` (45 s). */
 export const ISSUE_BODY_TIMEOUT_MS = 45_000;

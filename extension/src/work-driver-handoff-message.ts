@@ -16,6 +16,8 @@ import { explainCap } from "./work-driver-explain.ts";
 import { fanoutVerdictLines } from "./work-driver-handoff-fanout.ts";
 import { securityOpenPointsChat } from "./work-driver-handoff-open-points.ts";
 import { recoveryCommandsChat } from "./work-driver-handoff-recovery.chat.ts";
+import { unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
+import { describeBranchState } from "./work-driver-handoff-view.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 /**
@@ -81,6 +83,8 @@ export function renderHandoffUserMessage(
   const snap = ps.handoffSnapshot;
   const commentUrl = handoffEvt?.kind === "handoff-emitted" ? handoffEvt.commentUrl : undefined;
   const labelApplied = handoffEvt?.kind === "handoff-emitted" ? handoffEvt.labelApplied : false;
+  // #1327 — the host owns the channel: an unposted comment is by design, not a failure.
+  const hostOwned = handoffEvt?.kind === "handoff-emitted" && handoffEvt.delivery === "host";
   // #798 — per-target label state (option a: the label lands on both the
   // issue and the PR when a PR exists). Pre-#798 events carry the single
   // `labelApplied` only; `targetType`/`targetNumber` name where the comment
@@ -95,18 +99,28 @@ export function renderHandoffUserMessage(
     (handoffEvt?.kind === "handoff-emitted" ? handoffEvt.handoffBodyPath : undefined) ??
     `${scratchDirAbs}/handoff-comment.md`;
   const branchName = ps.branchName ?? "(branch not captured)";
+  // A failed git read leaves the snapshot's zeros in place; they must not be
+  // printed as findings (see `handoffSnapshot.unreadable`).
+  const notRead = unreadableSnapshotLines(ps);
+  const snapNotRead = notRead.length > 0;
   const branchPushedTag = snap
     ? // #398 — `branchPushed: false` because no branch was ever CREATED used to
       // render "(NOT pushed — local only)", which asserts a local branch
       // exists. `branchExists` is the field that distinguishes them.
       !snap.branchExists
-      ? " (no branch was created)"
+      ? snapNotRead
+        ? " (branch state not read)"
+        : " (no branch was created)"
       : snap.branchPushed
         ? " (pushed)"
         : " (NOT pushed — local only)"
     : "";
-  const headTag = snap?.headSha ? ` · HEAD ${snap.headSha}` : "";
-  const fileCount = snap ? snap.unstagedCount + snap.stagedCount : 0;
+  const view = describeBranchState(snap);
+  const headTag = view.tip ? ` · ${view.tip}` : "";
+  const fileCount = view.fileCount;
+  // A tip whose distance from base is unknown cannot say "no commits", so the
+  // file count is not offered as the branch's content either.
+  const aheadUnknown = view.aheadUnknown;
   const prTag = ps.prNumber ? `PR #${ps.prNumber}` : "no PR created";
   const target = ps.prNumber ? `pr ${ps.prNumber}` : `issue ${issue}`;
   const at = new Date().toISOString();
@@ -124,7 +138,7 @@ export function renderHandoffUserMessage(
   // field. The banner fires only when BOTH fields are missing (true total
   // failure); a partial delivery (one field ok, one lost) does NOT fire the
   // banner — the operator can see which field failed from the section below.
-  const totalFailure = !commentUrl && !labelApplied;
+  const totalFailure = !commentUrl && !labelApplied && !hostOwned;
   if (totalFailure) {
     lines.push(
       `⚠ pi-rukas /work for issue #${issue} — HANDOFF DISPATCH INCOMPLETE`,
@@ -166,7 +180,12 @@ export function renderHandoffUserMessage(
       ? `  branch: ${ps.branchName}${branchPushedTag}${headTag}`
       : `  no branch was created${headTag}`,
     `  ${prTag}`,
-    `  ${fileCount} file(s) modified${snap && snap.stagedCount > 0 ? ` (${snap.stagedCount} staged, ${snap.unstagedCount} unstaged)` : ""}`,
+    snapNotRead
+      ? `  modified files: NOT READ (${fileCount} seen)`
+      : aheadUnknown
+        ? `  ${fileCount} uncommitted file(s); commits ahead of base NOT READ`
+        : `  ${view.files}`,
+    ...notRead.map((l) => `  ${l}`),
   );
   // The review's own findings, in the surface the operator actually reads.
   // This message showed them NOWHERE — not a pointer, not a count — while the
@@ -212,7 +231,7 @@ export function renderHandoffUserMessage(
   // discover it via `git worktree list`.
   if (snap?.committedWork?.length) {
     lines.push(
-      `  committed work in ${snap.committedWork.length} worktree(s) (the counts above are blind to this):`,
+      `  committed work in ${snap.committedWork.length} worktree(s) (committed — not in the uncommitted count above):`,
       ...snap.committedWork.map(
         (w) =>
           `    ${w.path} — HEAD ${w.headSha.slice(0, 8)}, ${w.ahead} commit(s) ahead (workstream: ${w.worktreeId})`,
@@ -238,6 +257,21 @@ export function renderHandoffUserMessage(
       // The shared line text carries the markdown list dash; in chat the
       // section is indented, so re-prefix instead of inheriting the `- `.
       ...verdictLines.map((v) => `  ${v.text}`),
+    );
+  } else if (!commentUrl && !hostOwned) {
+    // Label landed, comment did not: not the banner's total failure, but the
+    // comment is what tells the human WHY — say it is missing rather than
+    // print nothing (#1219).
+    lines.push(
+      "",
+      "GitHub handoff comment NOT posted (the label was applied). Post it manually:",
+      `  gh ${ps.prNumber ? "pr" : "issue"} comment ${ps.prNumber ?? issue} --body-file ${handoffBodyPath}`,
+    );
+  }
+  if (hostOwned) {
+    lines.push(
+      "",
+      "Handoff channel: host (PI_ENSEMBLE_HANDOFF_CHANNEL=host) — no forge comment or label.",
     );
   }
   if (commentUrl) {

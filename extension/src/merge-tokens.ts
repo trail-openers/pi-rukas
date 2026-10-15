@@ -36,7 +36,25 @@ export function rawTokens(raw: string): { list: string[]; terminated: boolean } 
   const n = raw.length;
   while (i < n) {
     const ch = raw[i] ?? "";
+    // #962: a backslash-newline is a line continuation (both vanish); an
+    // unquoted newline ends a command exactly like `;`, so it is emitted as
+    // one — a merge on the second line of a multi-line command is a command
+    // of its own, not an argument of the first line.
+    if (ch === "\\" && raw[i + 1] === "\n") {
+      i += 2;
+      continue;
+    }
+    if (ch === "\n") {
+      list.push(";");
+      i++;
+      continue;
+    }
     if (/\s/.test(ch)) {
+      i++;
+      continue;
+    }
+    if (ch === "&" && raw[i + 1] !== "&" && raw[i + 1] !== ">") {
+      list.push("&");
       i++;
       continue;
     }
@@ -105,11 +123,52 @@ export function rawTokens(raw: string): { list: string[]; terminated: boolean } 
       list.push(q + buf + q);
       continue;
     }
+    // #1317: a redirection is an operator, not a word. The operator is its
+    // own token (`>`, `>>`, `2>`, `2>&1`); a digit run glued to it is the fd
+    // (`17>/dev/null` is fd 17 — bash does not pass 17 to the command), so it
+    // is taken with the operator. The redirect's target is the next token.
+    REDIRECT.lastIndex = i;
+    const redir = REDIRECT.exec(raw);
+    if (redir) {
+      list.push(redir[0]);
+      i += redir[0].length;
+      continue;
+    }
     const start = i;
-    while (i < n && !/\s/.test(raw[i] ?? "") && raw[i] !== "'" && raw[i] !== '"') i++;
+    // #962: `;`, `|` and `&` are shell metacharacters — they end a word even
+    // with no space before them (`…/merge;` is the endpoint then a `;`).
+    // `>&` / `<&` / `&>` are redirections, not separators, and stay glued.
+    while (
+      i < n &&
+      !/\s/.test(raw[i] ?? "") &&
+      raw[i] !== "'" &&
+      raw[i] !== '"' &&
+      raw[i] !== "<" &&
+      raw[i] !== ">"
+    ) {
+      if (i > start && endsWord(raw, i)) break;
+      i++;
+    }
     list.push(raw.slice(start, i));
   }
   return { list, terminated: true };
+}
+
+/** A redirection operator at a word start: optional fd digits, `<`/`>` run, optional `&N`/`&-`. Sticky (`lastIndex` set by the caller). */
+const REDIRECT = /&>>?|\d*[<>]+(?:&(?:\d+|-))?/y;
+
+/** True when `t` is a separator token `rawTokens` emits (one predicate for every walk). */
+export function isSeparatorToken(t: string): boolean {
+  return t === ";" || t === "&&" || t === "|" || t === "||" || t === "&";
+}
+
+/** True when the unquoted character at `i` is a separator that ends a word. */
+function endsWord(raw: string, i: number): boolean {
+  const c = raw[i];
+  if (c === ";" || c === "|") return true;
+  if (c !== "&") return false;
+  const prev = raw[i - 1];
+  return prev !== ">" && prev !== "<" && raw[i + 1] !== ">";
 }
 
 /**
@@ -127,7 +186,7 @@ export function rawTokens(raw: string): { list: string[]; terminated: boolean } 
  * the matcher (bash-merges-pr.ts), the argument-tail extractor (merge-
  * parse.ts) and the verb-head matcher (merge-wrappers.ts).
  */
-export const MERGE_VERB_SPAN_SRC = String.raw`(?:^|[\s;&|])(?:/\S*\/)?(?:gh|glab)(?:\s+(?:-R|--repo|--project)\s+\S+)?\s+(?:pr|mr)\s+merge\b`;
+export const MERGE_VERB_SPAN_SRC = String.raw`(?:^|[\s;&|])(?:/\S*\/)?(?:gh|glab)(?:\s+(?:-R|--repo|--project)\s+\S+|\s+(?:-R=?|--repo=|--project=)\S*(?:\s+\S+)?)?\s+(?:pr|mr)\s+merge\b`;
 
 /** The verb span as a fresh RegExp (re-compiled at every use — stateless). */
 export function mergeVerbSpanRegex(): RegExp {
@@ -159,9 +218,27 @@ export function mergeVerbSpanRegex(): RegExp {
  */
 export const MAX_CONSTRUCT_DEPTH = 256;
 
+/** `>&`, `<&` and `&>` (and `&>>`) are redirections, not the `&` separator, at index `i`. */
+export function isRedirectAmpAt(s: string, i: number): boolean {
+  return s[i - 1] === ">" || s[i - 1] === "<" || s[i + 1] === ">";
+}
+
+const VERB_FORGE =
+  /(?:^|[\s;&|(`/])(gh|glab)\s+(?:(?:-R|--repo|--project)\s+\S+\s+)?(?:pr|mr)\s+merge\b/;
+
+/**
+ * The forge (`gh` or `glab`) of the first merge verb in `text`, or undefined
+ * when no plainly written verb is found. The verb's forge decides which
+ * flags take a value (`-m` is the message for glab, a bare flag for gh).
+ */
+export function verbForge(text: string): "gh" | "glab" | undefined {
+  const m = VERB_FORGE.exec(text);
+  return m?.[1] === "glab" ? "glab" : m?.[1] === "gh" ? "gh" : undefined;
+}
+
 /** The anchored verb-source (the verb-HEAD test in merge-wrappers.ts). */
 export function mergeVerbHeadRegex(): RegExp {
-  return /^(?:gh|glab|\S*\/(?:gh|glab))\s+(?:-R\s+\S+|--repo\s+\S+|--project\s+\S+)?\s*(?:pr|mr)\s+merge(?:\s|$)/;
+  return /^(?:gh|glab|\S*\/(?:gh|glab))\s+(?:-R\s+\S+|--repo\s+\S+|--project\s+\S+|(?:-R=?|--repo=|--project=)\S*(?:\s+\S+)?)?\s*(?:pr|mr)\s+merge(?:\s|$)/;
 }
 
 /**
@@ -259,7 +336,13 @@ export function shellSegments(command: string): string[] {
       cur += command.slice(start, i);
       continue;
     }
-    if (ch === ";" || ch === "|" || (ch === "&" && (command[i + 1] ?? "") === "&")) {
+    // #962: a backslash-newline is a line continuation; an unquoted newline
+    // ends the command like `;` does (see `rawTokens`).
+    if (ch === "\\" && command[i + 1] === "\n") {
+      i += 2;
+      continue;
+    }
+    if (ch === ";" || ch === "|" || ch === "\n" || (ch === "&" && (command[i + 1] ?? "") === "&")) {
       parts.push(cur);
       cur = "";
       i += ch === "&" ? 2 : 1;
@@ -267,7 +350,7 @@ export function shellSegments(command: string): string[] {
     }
     // A bare `&` (not `&&`) ends the current command — job control. It is
     // not part of the command; the next text is its own segment.
-    if (ch === "&") {
+    if (ch === "&" && !isRedirectAmpAt(command, i)) {
       parts.push(cur);
       cur = "";
       i++;
@@ -281,6 +364,18 @@ export function shellSegments(command: string): string[] {
 }
 
 /**
+ * The value glued to a repo flag token — `--repo=V` / `--project=V` /
+ * `-R=V` / `-RV` → `V` (the empty string when the token ends at the `=`,
+ * i.e. the value is the next token) — or `undefined` when the token is not
+ * a glued repo flag (the bare `-R` / `--repo` / `--project` included).
+ */
+export function gluedRepoValue(t: string): string | undefined {
+  const m = /^(?:--repo=|--project=|-R=?)(.*)$/s.exec(t);
+  if (!m || t === "-R") return undefined;
+  return m[1] ?? "";
+}
+
+/**
  * Strip a trailing unbalanced `)` from a raw token — the subshell's closing
  * paren glued to the token by `rawTokens` (the same coping
  * `parseArgsAfterVerb` applies before matching its tokens, where `17)` is
@@ -291,134 +386,4 @@ export function shellSegments(command: string): string[] {
 export function stripGluedParen(value: string): string {
   if (value.endsWith(")") && value.length > 1) return value.slice(0, -1);
   return value;
-}
-
-// ---------------------------------------------------------------------------
-// verb-argument parsing
-
-/**
- * The PR/MR number and forge repo carried by the post-verb arguments.
- *
- * NOTE: an UNTERMINATED token list (a quote never closes) returns
- * `{ number: undefined, repo: undefined }` — indistinguishable from
- * numberless args. Callers that need fail-closed semantics must use
- * `mergeVerbArgs` (which carries the fail-closed empty-string tail signal
- * for that case), not this function directly.
- */
-export function parseArgsAfterVerb(args: string): {
-  number: number | undefined;
-  repo: string | undefined;
-} {
-  // A trailing `&` (job control, `nohup gh pr merge 17 &`) is part of the
-  // invocation — the shell runs the command in the background; it is NOT
-  // a separator that ends the argument list. Trim it before tokenising so
-  // the number / repo in the same invocation still parse.
-  const cleaned = args.replace(/\s+&\s*$/, " ").replace(/\s+&&\s*$/, " ");
-  // Flags whose value is the next token (it must not be read as the number).
-  const TAKES_VALUE = new Set([
-    "-s",
-    "--subject",
-    "-t",
-    "--title",
-    "-b",
-    "--body",
-    "-F",
-    "--body-file",
-    "--match-head-commit",
-    "-m",
-    "--message",
-    "-A",
-    "--author-email",
-    "-R",
-    "--repo",
-    // glab's repo flag (same shape as -R): its value must not be read
-    // as the MR number.
-    "--project",
-  ]);
-  const tokens = rawTokens(cleaned);
-  if (tokens.terminated === false) return { number: undefined, repo: undefined };
-  let repo: string | undefined;
-  for (let i = 0; i < tokens.list.length; i++) {
-    const raw = tokens.list[i] ?? "";
-    let t = raw;
-    // #955 adversarial round 4 (finding 1, repo path): a quoted token whose
-    // quote is unbalanced (a value that, in the UNWRAPPED body the tail came
-    // from, is itself a quoted value — `bash -c 'glab --project \"o/r\" mr
-    // merge 7'` tokenises the value as `\"o/r\"`, a double-quoted run whose
-    // escape closes the quote early) is unquoted the way the shell would
-    // unquote it at the top level (`unquoteArg`): the result is the value
-    // the inner command actually carries, and an unbalanced escape is left
-    // as a literal `\"`, which the `isValidRepoValue` boundary refuses (the
-    // naive `v.slice(1, -1)` would keep the escape inside the value and
-    // validate it as a repo the guard then interpolated — a false-safe).
-    // A trailing `)` (subshell close glued to the token by rawTokens) is
-    // stripped before matching — `17)` is the number 17 in `(gh pr merge 17)`.
-    if (t.endsWith(")") && t.length > 1) t = t.slice(0, -1);
-    if (t === "") continue;
-    if (t.startsWith("-")) {
-      // `--flag=value` form: the value is inside the token and is never a
-      // positional number. The repo flags behave IDENTICALLY to the
-      // space-separated form (below): the value is captured verbatim and
-      // any trailing glued `)` is stripped, so the same string reaches the
-      // `isValidRepoValue` boundary check upstream in both forms — an
-      // invalid value is refused there, never interpolated. A quoted value
-      // (`--repo="o/r"`) keeps its inner quotes in the captured string, so
-      // the boundary check refuses it — the same treatment as an unquoted
-      // invalid value. #955 round 14: the eq branch previously skipped the
-      // validity check the space form applies, so `--repo=o/r;id` passed
-      // where `--repo o/r;id` refused.
-      const eq = t.indexOf("=");
-      if (eq > 0) {
-        const flagName = t.slice(0, eq);
-        if (flagName === "--repo" || flagName === "--project") {
-          const val = t.slice(eq + 1);
-          if (val.length > 0) {
-            const q = val[0];
-            repo = stripGluedParen(q === "'" || q === '"' ? val.slice(1, -1) : val);
-          }
-        }
-        continue;
-      }
-      if (t === "-R" || t === "--repo" || t === "--project") {
-        const v = tokens.list[i + 1];
-        if (v !== undefined && v.length > 0) {
-          const q = v[0];
-          repo = stripGluedParen(q === "'" || q === '"' ? v.slice(1, -1) : v);
-          i++;
-        }
-        continue;
-      }
-      if (TAKES_VALUE.has(t)) {
-        i++; // skip the value token
-        continue;
-      }
-      continue;
-    }
-    if (t === ";" || t === "&&" || t === "|" || t === "||") {
-      // A shell separator ends this invocation's argument list.
-      break;
-    }
-    // Positional argument: a bare integer, a #N, a PR/MR URL, or a quoted
-    // integer (the shell strips the quotes — a quoted number is the number).
-    const bare = /^(\d+)$/.exec(t) ?? /^"(\d+)"$/.exec(t) ?? /^'(\d+)'$/.exec(t);
-    if (bare?.[1]) return { number: Number.parseInt(bare[1], 10), repo };
-    const hash = /^#(\d+)$/.exec(t);
-    if (hash?.[1]) return { number: Number.parseInt(hash[1], 10), repo };
-    const url = /\/(?:pull|pulls|merge_requests)\/(\d+)/.exec(t);
-    if (url?.[1]) {
-      const ownerRepo = /(?:^|\/)(?:github\.com|gitlab\.com)\/([^/?#]+)\/([^/?#]+)/.exec(t);
-      if (ownerRepo?.[1] && ownerRepo?.[2]) {
-        const or = `${ownerRepo[1]}/${ownerRepo[2]}`;
-        return { number: Number.parseInt(url[1], 10), repo: or };
-      }
-      return { number: Number.parseInt(url[1], 10), repo };
-    }
-    if (repo === undefined && !t.startsWith("<")) {
-      // A bare `owner/repo` positional (not a number, not a URL) names the
-      // repo the same way -R does.
-      const r = /^[-\w]+\/[-\w.]+$/.exec(t);
-      if (r?.[0]) repo = r[0];
-    }
-  }
-  return { number: undefined, repo };
 }

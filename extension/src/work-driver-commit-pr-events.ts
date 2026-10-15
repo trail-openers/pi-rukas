@@ -20,6 +20,7 @@ import type { CommitPrRootInspect } from "./work-driver-commit-inspect.ts";
 import { inspectCommitPrRoot } from "./work-driver-commit-inspect.ts";
 import { commitPrRootFieldsOf } from "./work-driver-commit-inspect.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { recordFallbackDraftFact } from "./work-driver-draft-pr.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import type { IntegrateResult } from "./work-driver-integrate.ts";
 import { parsePrNumber } from "./work-driver-merged.ts";
@@ -58,6 +59,8 @@ export async function runCommitPrPostDispatchGates(
   const prNumber = parsePrNumber(last.summary);
   if (prNumber !== undefined) {
     state = { ...state, pipelineState: { ...state.pipelineState, prNumber } };
+    // #1292 — the draft fact, once the number is known: what the forge says.
+    state = await recordFallbackDraftFact(ctx, state, prNumber, execFn);
   }
   if (state.pipelineState.consolidationCompleteness?.droppedPaths.length) {
     return raiseConsolidationIncompleteCap(state);
@@ -146,6 +149,7 @@ export async function runCommitPrPostDispatchGates(
           step: "commit-pr",
           failures: gate.failures,
           at: Date.now(),
+          origin: "outcome-gate",
           ...(commitPrFlake ? { retries: 1, recovered: false } : {}),
         },
       },
@@ -188,6 +192,8 @@ export function finalizeCommitPrState(
   res: NonEmptyIntegrateResult,
   rootState: CommitPrRootInspect,
   commitPrFlakeEvidence: string | undefined,
+  /** A second round: the commits were pushed onto a PR that was already open. */
+  prAlreadyOpen = false,
 ): WorkState {
   let next = appendEvent(
     {
@@ -215,7 +221,7 @@ export function finalizeCommitPrState(
     synthesizeDriverCompletion({
       step: "commit-pr",
       label: "driver:commit-pr",
-      summary: `Mechanized commit-pr: consolidated ${ids.length} worktree(s), committed, pushed ${branchName}, opened PR.\npr: ${prNumber}`,
+      summary: `Mechanized commit-pr: consolidated ${ids.length} worktree(s), committed, pushed ${branchName}, ${prAlreadyOpen ? `updated open PR #${prNumber}` : "opened PR"}.\npr: ${prNumber}`,
       startedAt,
       now: Date.now(),
     }),

@@ -17,11 +17,9 @@
  * Revert `readDoctrineAtBase` to an `fs.readFile` and this file fails.
  */
 
-import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import {
   doctrineProsePathsIn,
@@ -34,8 +32,7 @@ import {
 import { resolveMergeAuthority } from "../src/work-driver-merge-authority.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
-
-const execFileAsync = promisify(execFile);
+import { realExec } from "./lib/exec-fake.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -46,14 +43,8 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-/** Shell seam matching `DriverContext.verifyExecFn`, backed by a real git. */
-const exec = async (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) => {
-  const { stdout, stderr } = await execFileAsync("sh", ["-c", cmd], {
-    cwd: opts?.cwd,
-    maxBuffer: opts?.maxBuffer ?? 1024 * 1024,
-  });
-  return { stdout, stderr };
-};
+/** The `DriverContext.verifyExecFn` seam, backed by a real git. */
+const exec = realExec;
 
 const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "pi-doctrine-"));
 
@@ -265,7 +256,7 @@ const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "pi-doctrine-"));
     repoRoot: tmp,
     issue: 406,
     verifyExecFn: async (cmd) => {
-      if (cmd === "git status --porcelain") return { stdout: porcelain };
+      if (cmd === "git status --porcelain --untracked-files=all") return { stdout: porcelain };
       return { stdout: "" };
     },
   });
@@ -282,6 +273,26 @@ const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "pi-doctrine-"));
   assert(
     halted.failures.some((f) => f.includes(".github/workflows/ci.yml")),
     "...and names the offending path, so the operator is not left grepping a diff",
+  );
+  assert(
+    halted.failures.some(
+      (f) =>
+        f.includes("/work 406 --restart --allow-protected .github/workflows/ci.yml") &&
+        f.includes("PI_ENSEMBLE_PROTECTED_PATHS=0"),
+    ),
+    "...and names the per-cycle --allow-protected grant (#1090), keeping the env escape hatch",
+  );
+  const granted = await verifyStepOutcome(
+    {
+      ...ctx(" M src/fix.ts\n M .github/workflows/ci.yml\n"),
+      protectedGrant: [".github/workflows/ci.yml"],
+    },
+    s,
+    "develop",
+  );
+  assert(
+    !granted.failures.some((f) => /protected path/.test(f)),
+    "...and an operator grant naming that path lets it through (#1090)",
   );
 
   const prose = await verifyStepOutcome(ctx(" M src/fix.ts\n M AGENTS.md\n"), s, "develop");

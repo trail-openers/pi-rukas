@@ -25,6 +25,7 @@
 
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { withVerifySlot } from "./host-resources.ts";
 import { trace } from "./trace.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -147,14 +148,20 @@ export async function rerunConsolidatedVerifyOnce(
   timeoutMs: number,
   scratchDir?: string,
   timestamp?: string,
-): Promise<{ raw: string; logPath?: string } | undefined> {
+): Promise<{ raw: string; logPath?: string; timedOut: boolean } | undefined> {
   trace(`work-driver: verify-flake — re-running \`${cmd}\` once in ${cwd}`);
   let rawFailure: string | undefined;
+  // `killed` is how the executor reports its own timeout: the re-run was
+  // stopped at the bound, so its stream ends wherever it happened to be.
+  let timedOut = false;
   try {
-    await execFn(cmd, { cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 });
+    await withVerifySlot(() =>
+      execFn(cmd, { cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }),
+    );
   } catch (err) {
-    const e = err as Error & { stderr?: string; stdout?: string };
+    const e = err as Error & { stderr?: string; stdout?: string; killed?: boolean };
     rawFailure = combinedExecFailureStream(e);
+    timedOut = e.killed === true;
   }
   if (rawFailure === undefined) return undefined;
   // #841 — persist the RAW run2 stream before the bounded tail is computed:
@@ -164,7 +171,7 @@ export async function rerunConsolidatedVerifyOnce(
   // a precomputed path that does not exist on disk.
   if (scratchDir !== undefined && timestamp !== undefined) {
     const logPath = writeConsolidatedVerifyLog(scratchDir, timestamp, 2, rawFailure);
-    return { raw: rawFailure, logPath };
+    return { raw: rawFailure, logPath, timedOut };
   }
-  return { raw: rawFailure };
+  return { raw: rawFailure, timedOut };
 }

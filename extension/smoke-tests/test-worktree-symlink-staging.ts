@@ -39,7 +39,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { stagePorcelainPaths } from "../src/work-driver-stage.ts";
 import { provisionWorktree } from "../src/worktree-provision.ts";
-import type { ExecFn } from "../src/worktree.ts";
+import { realExec } from "./lib/exec-fake.ts";
 
 const execFileP = promisify(execFile);
 
@@ -52,13 +52,6 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const realExec: ExecFn = async (cmd, o) => {
-  const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
-    cwd: o?.cwd,
-    maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
-  });
-  return { stdout };
-};
 const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 const root = mkdtempSync(path.join(tmpdir(), "pi-ens-symlink-"));
 

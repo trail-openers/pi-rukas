@@ -25,9 +25,14 @@
  *     `problem` at branch time instead of being discovered 61 minutes
  *     later at the commit-pr verify.
  *
- * Behaviour contract, unchanged from the inlined code it replaced:
- * a failed hook run returns `{ via: "hook", problem }` (it never throws);
- * a successful run returns the `via: "hook"` result either way.
+ * Behaviour contract: a hook that exits non-zero returns
+ * `{ via: "hook", problem, hookFailed: true }` (it never throws); a hook
+ * that exits 0 returns `via: "hook"`, with a `problem` only when the project
+ * expects an in-tree dependency directory the worktree does not have. A
+ * project with nothing linkable (Rust, Go — see `IN_TREE_DEP_MARKERS`) is a
+ * clean success, not a finding. Problems are returned, not traced here: every
+ * caller that acts on one traces it, and tracing in both places printed the
+ * same sentence twice.
  */
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -88,7 +93,6 @@ export async function runHookProvisioning(
       const problem =
         `${WORKTREE_SETUP_HOOK} exited 0 but ${rel} in the worktree is absent, stale, or empty ` +
         `(source: ${source}) — the hook linked nothing useful there`;
-      trace(`worktree: ${problem}`);
       return {
         via: "hook",
         linked: verified,
@@ -99,21 +103,17 @@ export async function runHookProvisioning(
       };
     }
     // #765 — if NO source tree existed at hook-run time, the hook could
-    // not have linked anything (fresh-clone fork-A shape).
-    if (locations.length === 0) {
-      const problem =
-        hookPreconditions.length > 0
-          ? hookPreconditions.join("; ")
-          : `${WORKTREE_SETUP_HOOK} exited 0 but no dependency source tree existed at ${repoRoot} — the worktree is bare; the hook linked nothing`;
-      trace(`worktree: ${problem}`);
-      return { via: "hook", linked: [], problem };
+    // not have linked anything (fresh-clone fork-A shape). Only a finding
+    // when the project expects one: with no in-tree dependency directory to
+    // have, an empty `locations` is the normal shape and the hook simply ran.
+    if (hookPreconditions.length > 0) {
+      return { via: "hook", linked: [], problem: hookPreconditions.join("; ") };
     }
     trace(`worktree: provisioned via ${WORKTREE_SETUP_HOOK}`);
     return { via: "hook", linked: verified };
   } catch (err) {
     const problem = `${WORKTREE_SETUP_HOOK} failed: ${(err as Error).message?.slice(0, 200)}`;
-    trace(`worktree: ${problem}`);
-    return { via: "hook", linked: [], problem };
+    return { via: "hook", linked: [], problem, hookFailed: true };
   }
 }
 
@@ -135,8 +135,14 @@ export async function packageDirsAt(repoRoot: string): Promise<string[]> {
     .filter((e) => e.isDirectory() && !e.name.startsWith(".") && e.name !== "node_modules")
     .map((e) => e.name);
   if (dirs.length === 0) return [];
-  const hasMarker = async (dir: string) =>
-    DEPENDENCY_MARKERS.some((m) => fileExists(path.join(repoRoot, dir, m)));
+  // Awaited one by one: `fileExists` returns a Promise, and a Promise is
+  // always truthy — a bare `.some(fileExists)` made every directory a match.
+  const hasMarker = async (dir: string) => {
+    for (const m of DEPENDENCY_MARKERS) {
+      if (await fileExists(path.join(repoRoot, dir, m))) return true;
+    }
+    return false;
+  };
   const marked: string[] = [];
   for (const dir of dirs) {
     if (await hasMarker(dir)) marked.push(dir);
@@ -145,21 +151,21 @@ export async function packageDirsAt(repoRoot: string): Promise<string[]> {
 }
 
 /**
- * Directories under `repoRoot` that "plainly need dependencies" — a manifest
- * or lockfile at the root, or in a discovered package directory. Drives the
- * `problem` field: a project that needs deps and has none findable gets a
- * trace, not a silent bare worktree.
+ * Does the project "plainly need" an in-tree dependency directory — one of
+ * `IN_TREE_DEP_MARKERS` at the root, or in a discovered package directory?
+ * Drives the `problem` field: a project that needs deps and has none findable
+ * gets a trace, not a silent bare worktree.
  */
 export async function depsExpectedAt(repoRoot: string, packageDirs: string[]): Promise<boolean> {
   const rootHit = await Promise.any(
-    DEPENDENCY_MARKERS.map((m) =>
+    IN_TREE_DEP_MARKERS.map((m) =>
       fileExists(path.join(repoRoot, m)).then((ok) => (ok ? true : Promise.reject())),
     ),
   ).catch(() => false);
   if (rootHit) return true;
   for (const dir of packageDirs) {
     const dirHit = await Promise.any(
-      DEPENDENCY_MARKERS.map((m) =>
+      IN_TREE_DEP_MARKERS.map((m) =>
         fileExists(path.join(repoRoot, dir, m)).then((ok) => (ok ? true : Promise.reject())),
       ),
     ).catch(() => false);
@@ -169,12 +175,19 @@ export async function depsExpectedAt(repoRoot: string, packageDirs: string[]): P
 }
 
 /**
- * Manifest/lockfile markers: "this directory is a package", i.e. a place to
- * look for a nested `node_modules`. #481's discovery signal — depth-1
- * directories with any of these are scanned, so a nested-package monorepo
- * provisions without a hook and without knowing its own layout.
+ * Markers of an ecosystem whose dependencies are installed INSIDE the tree,
+ * in a directory on `SHAREABLE_DEPS` (Node → `node_modules`, Python →
+ * `.venv`). Only these can promise a tree a worktree lacks.
+ *
+ * Cargo, Go and Bundler are deliberately absent: by default they resolve
+ * into a per-user cache outside the repository, and Rust's only in-tree
+ * directory is `target/`, which is on `NEVER_SHARED`. A `Cargo.toml` with no
+ * `node_modules` beside it is a complete project — reporting "expects
+ * dependencies here" for one sent an operator after a fault that did not
+ * exist while the worktree's gate ran green. A `vendor/` that does exist is
+ * still linked; it is just not demanded.
  */
-const DEPENDENCY_MARKERS = [
+const IN_TREE_DEP_MARKERS = [
   "package.json",
   "bun.lock",
   "bun.lockb",
@@ -184,11 +197,15 @@ const DEPENDENCY_MARKERS = [
   "pyproject.toml",
   "uv.lock",
   "requirements.txt",
-  "go.mod",
-  "go.sum",
-  "Cargo.toml",
-  "Gemfile",
 ];
+
+/**
+ * Manifest/lockfile markers: "this directory is a package", i.e. a place to
+ * look for a nested `node_modules`. #481's discovery signal — depth-1
+ * directories with any of these are scanned, so a nested-package monorepo
+ * provisions without a hook and without knowing its own layout.
+ */
+const DEPENDENCY_MARKERS = [...IN_TREE_DEP_MARKERS, "go.mod", "go.sum", "Cargo.toml", "Gemfile"];
 
 async function fileExists(abs: string): Promise<boolean> {
   try {

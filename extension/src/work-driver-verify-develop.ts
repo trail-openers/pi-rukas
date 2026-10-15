@@ -21,6 +21,7 @@ import {
   protectedPathsIn,
 } from "./work-driver-doctrine.ts";
 import { runFalsilyGreenCheck } from "./work-driver-falsily-green.ts";
+import { ungrantedProtectedPaths } from "./work-driver-protected-grant.ts";
 import { runScopeFanoutGate } from "./work-driver-scope-fanout.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import {
@@ -34,6 +35,7 @@ import {
   runSmokeGate,
 } from "./work-driver-verify-develop-gates.ts";
 import { normaliseScopePath } from "./work-driver-verify-develop-helpers.ts";
+import { fastVerifyCmdFor, withFastTier } from "./work-driver-verify-fast.ts";
 import { runVerifyCommandGate } from "./work-driver-verify-verify-cmd.ts";
 
 import type { WorkState } from "./workflow-state.ts";
@@ -144,9 +146,15 @@ export async function verifyDevelopOutcome(
     let hasUncommitted = false;
     let assessed = false;
     try {
-      const { stdout } = await execFn("git status --porcelain", {
+      // `--untracked-files=all`: without it a wholly untracked directory is
+      // one `?? dir/` entry, and the protected-path gate would see a directory
+      // rather than the files it contains (#1090).
+      // maxBuffer: `-uall` lists every untracked file, so a large untracked set
+      // exceeds 1 MiB; an overflow must not silently skip the protected-path
+      // inspection of that worktree (see the catch below).
+      const { stdout } = await execFn("git status --porcelain --untracked-files=all", {
         cwd,
-        maxBuffer: 1024 * 1024,
+        maxBuffer: 64 * 1024 * 1024,
       });
       assessed = true;
       if (stdout.trim().length > 0) hasUncommitted = true;
@@ -155,7 +163,16 @@ export async function verifyDevelopOutcome(
       const ownSet = changedPathsByWorkstream.get(id);
       if (ownSet) for (const file of statusPaths) ownSet.add(normaliseScopePath(file));
     } catch (err) {
-      notes.push(`git status failed in ${id} (${(err as Error).message?.slice(0, 100)})`);
+      const msg = (err as Error).message?.slice(0, 200) ?? String(err).slice(0, 200);
+      // #1090 — with the protected-path gate on, an unreadable status means this
+      // worktree's writes are never inspected: fail closed, do not pass with a note.
+      if (protectedPathsEnabled()) {
+        failures.push(
+          `git status failed in worktree "${id}" (${cwd}) — its changed paths cannot be checked against the protected-path gate: ${msg}`,
+        );
+      } else {
+        notes.push(`git status failed in ${id} (${msg.slice(0, 100)})`);
+      }
       gitReadFailedAnyWorktree = true;
     }
     // #725 — diff against THIS workstream's effective base, not the cycle-
@@ -254,7 +271,15 @@ export async function verifyDevelopOutcome(
   // so that this repo's own "docs ship with the PR" rule keeps working.
   if (protectedPathsEnabled()) {
     const protectedHits = protectedPathsIn(touchedPaths);
-    if (protectedHits.length > 0) failures.push(explainProtectedPaths(protectedHits));
+    // #1090 — only the operator's invocation grant (ctx), never the state file.
+    const ungranted = ungrantedProtectedPaths(protectedHits, ctx.protectedGrant);
+    if (ungranted.length > 0) {
+      failures.push(explainProtectedPaths(ungranted, protectedHits, state.issues ?? [state.issue]));
+    }
+    const granted = protectedHits.filter((p) => !ungranted.includes(p));
+    if (granted.length > 0) {
+      notes.push(`operator grant (--allow-protected) admitted ${granted.join(", ")}`);
+    }
     const prose = doctrineProsePathsIn(touchedPaths);
     if (prose.length > 0) {
       notes.push(
@@ -358,7 +383,8 @@ export async function verifyDevelopOutcome(
       // failure messages, the flake-retry precondition and the aggregation
       // semantics all live there unchanged.
       await runVerifyCommandGate({
-        execFn,
+        // #1324 — `.pi/verify-cmd-fast` runs before every full run of `cmd`.
+        execFn: withFastTier(execFn, cmd, await fastVerifyCmdFor(ctx.repoRoot)),
         cmd,
         ctx,
         state,

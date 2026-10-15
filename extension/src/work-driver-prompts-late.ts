@@ -8,6 +8,7 @@ import {
   tldrSectionOf,
 } from "./work-driver-pr-body-definition.ts";
 import { renderLensFindingsSection } from "./work-driver-pr-sections.ts";
+import { protectedGrantSectionOf } from "./work-driver-protected-grant.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
 /**
  * /work driver — inline prompt builders for the late pipeline steps.
@@ -80,8 +81,7 @@ export function inlineCommitPrPrompt(
     integratePath: string;
     /** The scratch dir the conflict / restored-state artifacts live in. */
     scratchDir: string;
-    /** The base the feature branch was created at. */
-    baseSha: string;
+    /** The base the feature branch was created at. */ baseSha: string;
     /** The preserved conflict patch, when integrate() preserved one. */
     conflictPatch?: string;
     /** The workstream map (id → worktree path). */
@@ -90,6 +90,8 @@ export function inlineCommitPrPrompt(
     commitShas: Record<string, string>;
     /** The per-workstream plan (scope / paths), when captured. */
     workstreams: Record<string, Workstream>;
+    draft?: boolean; // #1292 — open the PR with `--draft` (marked ready once the review is done).
+    protectedGrant?: readonly string[]; // #1090 — the operator's --allow-protected record.
   },
 ): string {
   const headline = issues.length === 1 ? `issue #${issues[0]}` : `issues #${issues.join(", #")}`;
@@ -110,18 +112,15 @@ export function inlineCommitPrPrompt(
           ),
         ]
       : [];
-  const assumptionsBlock = assumptionsBlockOf(normalisedSpec);
-  const carriedFindings = carriedFindingsSectionOf(eventLog);
   // #792 — no-diff deliverables surface as their own section in the PR body
   // (see the operatorActionsSectionOf contract); both the multi-worktree
   // and the N=1 flows below splice it into the gh pr create recipe.
   const operatorActions = operatorActionsSectionOf(normalisedSpec);
-  // #1006 — TL;DR section goes at the TOP of the PR body in all three shapes.
-  const tldr = tldrSectionOf(normalisedSpec);
   const bodySections = [
-    tldr,
-    assumptionsBlock,
-    carriedFindings,
+    tldrSectionOf(normalisedSpec), // #1006 — TL;DR at the TOP of the PR body in all three shapes.
+    assumptionsBlockOf(normalisedSpec),
+    protectedGrantSectionOf(fallback?.protectedGrant),
+    carriedFindingsSectionOf(eventLog),
     operatorActions,
     renderLensFindingsSection(eventLog),
   ]
@@ -173,7 +172,7 @@ export function inlineCommitPrPrompt(
     return [
       `/work ${headline} — Step 6 (Commit + PR). **Fallback shape** — the mechanized commit-pr failed, and the driver created a driver-owned integration worktree for you to complete the consolidation.`,
       "",
-      `**INTEGRATION WORKTREE (the ONLY permitted working tree): \`${fallback.integratePath}\`** — it has the integration branch \`${branchName}\` checked out.`,
+      `**INTEGRATION WORKTREE (the ONLY permitted working tree): \`${fallback.integratePath}\`** — it has the integration branch \`${branchName}\` checked out. Commit on \`${branchName}\` and push \`${branchName}\`: NEVER create or switch to another branch (no \`git checkout -b\`, \`git switch -c\`, \`git branch <new>\`, \`git checkout <other>\`) — the PR must head \`${branchName}\`.`,
       "",
       `**HARD BOUNDARIES:** The repo root (its checkout) is OFF LIMITS — the driver verified it clean and will not have it touched. Every other \`.worktrees/*\` path is OFF LIMITS — a sibling worktree is another cycle's ground. ALL git work in this dispatch happens in \`${fallback.integratePath}\` (prefix every command with \`git -C ${fallback.integratePath} \`).`,
       "",
@@ -207,11 +206,11 @@ export function inlineCommitPrPrompt(
       "",
       `  4. \`git -C ${fallback.integratePath} commit -m "<concise subject>"\` with a meaningful message. Body should reference all active issues + summarise the ${fbIds.length} workstreams' contributions.`,
       `  5. \`git -C ${fallback.integratePath} push -u origin ${branchName}\`.`,
-      `  6. \`gh pr create --title "<title>" --body "...\\n\\n${fixesLines}${companionLines ? `\\n${companionLines}` : ""}${bodySections ? `\\n\\n${bodySections}` : ""}\` — ${fixesNote}`,
+      `  6. \`gh pr create ${fallback.draft ? "--draft " : ""}--title "<title>" --body "...\\n\\n${fixesLines}${companionLines ? `\\n${companionLines}` : ""}${bodySections ? `\\n\\n${bodySections}` : ""}\` — ${fixesNote}`,
       "  7. End your reply with `pr: <PR-number>` so the driver can capture it.",
       ...droppedNote,
       "",
-      "If you need a longer PR body, write it to a file under the scratch dir and pass via `gh pr create --body-file <path>` — DO NOT write the body file to the repo root.",
+      `If you need a longer PR body, write it to a file under the scratch dir and pass via \`gh pr create ${fallback.draft ? "--draft " : ""}--body-file <path>\` — DO NOT write the body file to the repo root.`,
       scratchHygieneSection(fallback.scratchDir),
     ].join("\n");
   }

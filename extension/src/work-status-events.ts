@@ -130,7 +130,9 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
     case "ci-status":
       return `  ci-status · ${e.status}${e.runUrl ? ` · ${e.runUrl}` : ""}`;
     case "merged":
-      return `  merged · PR #${e.prNumber}`;
+      return `  merged · PR #${e.prNumber}${e.mergedByOtherDuring ? ` · by someone else during ${e.mergedByOtherDuring}` : ""}`;
+    case "lens-residuals-post-failed":
+      return `  lens-residuals-post-failed · round ${e.round}${e.prNumber ? ` · PR #${e.prNumber}` : ""} · issue fallback ${e.issueFallback}${e.detail ? ` · ${e.detail.slice(0, 80)}` : ""}`;
     case "branches-fanned-out":
       return `  branches-fanned-out · ${e.step} · ${e.workstreams.length} branches: ${e.workstreams.join(", ")}`;
     case "branch-completed":
@@ -149,7 +151,7 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
       // #849 — the discard record: the violator, its owner(s), and the
       // discarded SHA (the operator can `git show <sha>` without reading the
       // state file).
-      return `  fence-recovery-started · [${e.workstreamId}] → ${e.owners.join(", ")} · discarded ${e.discardedSha ? e.discardedSha.slice(0, 8) : "(no commit ahead of base)"}`;
+      return `  fence-recovery-started · [${e.workstreamId}] → ${e.owners.join(", ")} · discarded ${e.discardedSha ? e.discardedSha.slice(0, 8) : "(no commit ahead of base)"}${e.cause === "sibling-symbol" ? ` · sibling symbol ${(e.symbols ?? []).join(", ")}` : ""}`;
     case "adversarial-skipped-empty-diff":
       return `  adversarial-skipped-empty-diff · workstream ${e.workstreamId}`;
     case "verify-full-status":
@@ -185,5 +187,7 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
     case "interrupted":
       // S4a (#1162) — the interrupt record; the cycle resumes on re-entry.
       return `  interrupted · ${e.reason.slice(0, 80)}`;
+    case "cycle-interrupted":
+      return `  cycle-interrupted · ${e.step} · session shutdown (${e.reason})${e.branch ? ` · ${e.branch}${e.headSha ? ` @ ${e.headSha.slice(0, 8)}` : ""}` : ""} · ${e.resumable ? "resumable" : "NOT resumable"}`;
   }
 }

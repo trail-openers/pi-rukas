@@ -4,8 +4,21 @@
  * 500-line gate headroom for the #799 slow-watch wiring).
  */
 import { classifyDispatchOutcome } from "./adversarial-classify.ts";
-import { adversarialPhaseBudgetMs } from "./adversarial.ts";
+import { abortableSleep } from "./dispatch-retry.ts";
 import type { DispatchResult } from "./types.ts";
+import { jitteredMs } from "./work-driver-failure-taxonomy.ts";
+
+/**
+ * Wall-clock budget for all retry attempts in a single adversarial phase. When
+ * elapsed time reaches this limit no further retries start, preventing a
+ * repeated watchdog kill from consuming its full attempt budget. Set 0 to
+ * disable. Override: PI_ENSEMBLE_ADVERSARIAL_PHASE_BUDGET_MS. Default: 30 min.
+ */
+export function adversarialPhaseBudgetMs(): number {
+  const env = Number(process.env.PI_ENSEMBLE_ADVERSARIAL_PHASE_BUDGET_MS);
+  if (Number.isFinite(env) && env >= 0) return env;
+  return 30 * 60_000;
+}
 
 type PhaseRole = "adversarial-developer" | "developer";
 
@@ -20,6 +33,8 @@ export interface RetryCtx {
   runPhase: RunPhaseFn;
   accumulate: (r: DispatchResult) => void;
   signal: AbortSignal;
+  /** Injected in tests so a provider-stated wait does not really elapse. */
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
 
 export interface InfraCtx {
@@ -32,8 +47,9 @@ export interface InfraCtx {
 
 /**
  * #308 — retry loop that respects cause-specific depth.
- * Provider severances get deeper retries (up to maxRetries).
- * Self-kills and 429 get no retries. Inactivity gets one.
+ * Provider severances get deeper retries (up to maxRetries) unless the same
+ * error repeats (#79). Self-kills, quota-window/undated 429s and a missing
+ * model get none; a burst 429 waits its stated delay first. Inactivity gets one.
  */
 export const runPhaseWithInfraRetry = async (
   role: PhaseRole,
@@ -55,6 +71,8 @@ export const runPhaseWithInfraRetry = async (
     if (c.signal.aborted) return current;
     // Budget exhausted — stop retrying before starting another watchdog window.
     if (budget > 0 && Date.now() - phaseStart >= budget) return current;
+    // #79 — a burst 429 stated how long to wait; re-spawning sooner earns the next one.
+    if (cls.waitMs) await (c.sleep ?? abortableSleep)(jitteredMs(0, cls.waitMs), c.signal);
     const retry = await c.runPhase(
       role,
       `${tag}-retry${attempt > 1 ? `-${attempt}` : ""}`,
@@ -65,6 +83,15 @@ export const runPhaseWithInfraRetry = async (
     cls = classifyDispatchOutcome(retry);
     if (cls.cause === "success") return retry;
     if (!cls.shouldRetry) return retry; // cause changed (e.g. severance → self-kill)
+    // #79 — two children in a row severed on the identical provider error
+    // (a timeout chain): the provider is still failing the same way, and the
+    // next child would too. The count travels on the result so no outer
+    // layer re-dispatches it. A burst 429 is not counted — its wait is above.
+    const same =
+      cls.cause === "provider-severed" &&
+      current.errorStop !== undefined &&
+      retry.errorStop?.message === current.errorStop.message;
+    if (same) return { ...retry, providerRepeats: 2 };
     current = retry;
   }
   return current;
@@ -77,10 +104,18 @@ export const infraFailureResult = (
   cls: ReturnType<typeof classifyDispatchOutcome>,
   c: InfraCtx,
 ): DispatchResult => {
+  // #79 — name the cause the reviewer children died of, and carry their
+  // provider error out: without `errorStop` the step event is a bare
+  // `dispatch-failed` the router reads as a crash, and the taxonomy never
+  // sees the timeout / 429 / missing model that actually happened.
+  const repeats = r.providerRepeats ? ` ×${r.providerRepeats} in a row` : "";
+  const cause = cls.cause === "success" ? "" : ` (cause=${cls.cause})`;
   return {
     role: "adversarial-loop",
     ok: false,
-    text: `Adversarial loop infrastructure failure: round ${round} ${phase} dispatch ${cls.headline}. No verdict was produced — this is NOT a review rejection.`,
+    text: `Adversarial loop infrastructure failure: round ${round} ${phase} dispatch ${cls.headline}${repeats}${cause}. No verdict was produced — this is NOT a review rejection.`,
+    ...(r.errorStop && !r.killCause ? { errorStop: r.errorStop } : {}),
+    ...(r.providerRepeats ? { providerRepeats: r.providerRepeats } : {}),
     toolUses: [],
     ms: Date.now() - c.start,
     exitCode: 1,

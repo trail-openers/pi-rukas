@@ -13,7 +13,7 @@
 
 import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
 import { WORK_STATE_SCHEMA_VERSION, WORK_STEPS } from "./workflow-state-schema.ts";
-import { CAP_HIT_FIXED_LITERALS } from "./workflow-state-validate-caps.ts";
+import { isKnownCap } from "./workflow-state-validate-caps.ts";
 
 /**
  * Known event kinds — a literal `as const` tuple (narrower than the
@@ -100,6 +100,12 @@ export const KNOWN_EVENT_KINDS = [
   "dispatch-slow",
   // S4a (#1162) — the interrupt record (SIGTERM / SIGINT via markInterrupted).
   "interrupted",
+  // The session-shutdown record. Absent from the tuple, the one cycle this
+  // event promises is resumable would refuse to resume.
+  "cycle-interrupted",
+  // A residual-findings disclosure that did not reach the PR (and whether the
+  // issue got it instead).
+  "lens-residuals-post-failed",
 ] as const;
 
 // #986 — compile-time exhaustiveness. If the `WorkEvent` union gains a kind
@@ -466,24 +472,11 @@ export function validateDiscriminants(state: unknown): string[] {
           `eventLog[${i}].role has unknown value ${JSON.stringify(e.role)} (cap ${String(e.cap)} names a killed child)`,
         );
       }
-      // #543 — a cap-hit's `cap` must be a known fixed literal, a
-      // `verify-failed:` / `step-failed:` template value, or nothing else. A
-      // fabricated `loop-detected:<anything>` / `token-budget:<anything>`
-      // suffix is REJECTED: those caps are fixed literals, and a suffix would
-      // smuggle a role the canary does not know (the role travels in the
-      // separate `role` field instead).
-      if (e.kind === "cap-hit" && typeof e.cap === "string") {
-        const cap = e.cap as string;
-        // #844 — `branch-ahead:` is a TEMPLATE (the ahead count rides in the
-        // suffix), like `verify-failed:` / `step-failed:`; the other two #844
-        // caps are fixed literals in CAP_HIT_FIXED_LITERALS.
-        const isTemplate =
-          cap.startsWith("verify-failed:") ||
-          cap.startsWith("step-failed:") ||
-          cap.startsWith("branch-ahead:");
-        if (!CAP_HIT_FIXED_LITERALS.includes(cap) && !isTemplate) {
-          out.push(`eventLog[${i}].cap has unknown value ${JSON.stringify(cap)}`);
-        }
+      // #543/#1338 — a cap-hit's `cap` must be a cap the driver can emit
+      // (isKnownCap: the fixed literals, checked against WorkCapLiteral, or
+      // a template value). #1263/#753/#973: an unknown cap fails re-entry.
+      if (e.kind === "cap-hit" && typeof e.cap === "string" && !isKnownCap(e.cap)) {
+        out.push(`eventLog[${i}].cap has unknown value ${JSON.stringify(e.cap)}`);
       }
     });
   }

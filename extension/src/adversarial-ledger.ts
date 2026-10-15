@@ -27,7 +27,7 @@ import {
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 
-import { execp } from "./lens-exec.ts";
+import { execp } from "./exec.ts";
 
 /**
  * Write an adversarial-review entry to the review ledger. The loop does not

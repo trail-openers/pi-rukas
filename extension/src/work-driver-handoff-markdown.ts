@@ -12,6 +12,7 @@ import { killDetail } from "./kill-detail.ts";
 import { renderLensFindings } from "./lens-findings-render.ts";
 import { capedPartialStateLines } from "./work-driver-caped-state.ts";
 import { formatCycleTotal } from "./work-driver-cycle-total.ts";
+import { draftPrHandoffLines } from "./work-driver-draft-pr.ts";
 import { explainCap } from "./work-driver-explain.ts";
 import {
   adversarialOutcomeSection,
@@ -25,6 +26,8 @@ import {
 import { fanoutVerdictLines } from "./work-driver-handoff-fanout.ts";
 import { securityOpenPointsMarkdown } from "./work-driver-handoff-open-points.ts";
 import { recoveryCommandsMarkdown } from "./work-driver-handoff-recovery.md.ts";
+import { unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
+import { describeBranchState } from "./work-driver-handoff-view.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
 import { dispatchDurations } from "./work-status-dispatch-durations.ts";
 import { fmtElapsed } from "./work-status-events.ts";
@@ -108,11 +111,18 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
     `**Branch**: \`${branch}\``,
     `**Issues**: ${issuesHeader}`,
     `**State file**: \`.pi/work-state/${issue}.json\``,
+    // #1090 — an operator grant to write protected paths is worth seeing here.
+    ...(state.protectedGrant?.length
+      ? [
+          `**Protected-path grant** (\`--allow-protected\`): \`${state.protectedGrant.join("`, `")}\``,
+        ]
+      : []),
     "",
     "### What this cap means",
     "",
     explain,
     "",
+    ...draftPrHandoffLines(ps, forge),
     ...commitPrRootFacts(state, capForExplain),
     ...commitPrFallbackPlumbSection(state, capForExplain),
     ...adversarialOutcomeSection(state),
@@ -144,14 +154,21 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
   // PR5: Worktree state at handoff (from handoffSnapshot).
   if (ps.handoffSnapshot) {
     const snap = ps.handoffSnapshot;
+    // A failed git read leaves the snapshot's zeros in place; they must not
+    // be printed as findings (see `handoffSnapshot.unreadable`).
+    const notRead = unreadableSnapshotLines(ps);
+    const unread = notRead.length > 0 ? " — NOT READ, see below" : "";
+    const view = describeBranchState(snap, (sha) => `\`${sha}\``);
     lines.push(
       "### Worktree state at handoff",
       "",
-      `- HEAD: \`${snap.headSha || "(unknown)"}\``,
-      `- branch exists locally: ${snap.branchExists ? "yes" : "no"}`,
+      ...(snap.repoRootHeadSha ? [`- repo-root HEAD: \`${snap.repoRootHeadSha}\``] : []),
+      ...(view.tip ? [`- branch ${view.tip}`] : []),
+      `- branch exists locally: ${snap.branchExists ? "yes" : `no${unread}`}`,
       `- branch pushed to origin: ${snap.branchPushed ? "yes" : "no (local only)"}`,
-      `- uncommitted: ${snap.unstagedCount + snap.stagedCount} files (${snap.stagedCount} staged, ${snap.unstagedCount} unstaged)`,
+      `- ${view.files}${unread}`,
     );
+    if (notRead.length > 0) lines.push("", "```text", ...notRead, "```", "");
     if (snap.modifiedFiles.length > 0) {
       const shown = snap.modifiedFiles.slice(0, 10);
       lines.push(
@@ -170,7 +187,7 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
     // discover it via `git worktree list`.
     if (snap.committedWork?.length) {
       lines.push(
-        "- committed work on detached-HEAD worktrees (the porcelain counts above are blind to this):",
+        "- committed work on detached-HEAD worktrees (committed — not in the uncommitted count above):",
         ...snap.committedWork.map(
           (w) =>
             `    - \`${w.path}\` — HEAD \`${w.headSha.slice(0, 8)}\`, ${w.ahead} commit(s) ahead of base (workstream: ${w.worktreeId})`,

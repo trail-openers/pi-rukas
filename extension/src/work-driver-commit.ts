@@ -10,10 +10,9 @@
  * fallback has no standing to overturn (see `mechanizedCommitPr`).
  */
 
-import { exec } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
+import { execTree } from "./exec-tree.ts";
 import { trace } from "./trace.ts";
 import { raiseConsolidationIncompleteCap } from "./work-driver-commit-completeness.ts";
 import {
@@ -34,7 +33,14 @@ import {
   finalizeCommitPrState,
   runCommitPrPostDispatchGates,
 } from "./work-driver-commit-pr-events.ts";
+import {
+  branchHeadOf,
+  prGoneRefusal,
+  recordedPrState,
+  worktreesWithNewWork,
+} from "./work-driver-commit-reentry.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { draftPrEnabled } from "./work-driver-draft-pr.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { deriveConsolidationSubject } from "./work-driver-handoff-subject.ts";
@@ -58,6 +64,7 @@ import {
 } from "./work-driver-pr-body-definition.ts";
 import { findOpenPrForBranch } from "./work-driver-pr-preflight.ts";
 import { renderLensFindingsSection } from "./work-driver-pr-sections.ts";
+import { protectedGrantSectionOf } from "./work-driver-protected-grant.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { verifyConsolidation, verifyStepOutcome } from "./work-driver-verify.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
@@ -69,7 +76,8 @@ import type {
   IncompleteConsolidation,
   WorkState,
 } from "./workflow-state.ts";
-const execp = promisify(exec);
+// Tree-killing: commit-pr runs the project's verify on the consolidated tree.
+const execp = execTree;
 
 // clipTitle (#507) lives with the PR text builders in
 // work-driver-pr-body-definition.ts; re-exported for existing consumers.
@@ -102,6 +110,8 @@ export async function mechanizedCommitPr(
       ok: false;
       reason: string;
       terminal?: boolean;
+      /** #1324 — the terminal verify failure was a run killed at its bound. */
+      timedOut?: boolean;
       fallbackCause?: CommitPrFallbackCause;
       /**
        * #861 — the structured conflict-patch path preserved by integrate()
@@ -144,10 +154,23 @@ export async function mechanizedCommitPr(
     // exact branch means the previous attempt completed: short-circuit with
     // the found number; the verify gate after commit-pr still checks
     // commits-ahead + PR resolution. Fails open on an unreadable gh.
-    const existingPr = await findOpenPrForBranch(execFn, ctx.repoRoot, branchName);
-    if (existingPr !== undefined) {
+    //
+    // …UNLESS a worktree holds work the branch lacks. That is the other way
+    // here — `ci-status: failure → develop → adversarial → commit-pr` — and
+    // skipping it reported a CI fix as shipped that was never pushed. That
+    // round integrates onto the branch's own head (see `followupBase`).
+    let existingPr = await findOpenPrForBranch(execFn, ctx.repoRoot, branchName);
+    if (existingPr === undefined) {
+      const recorded = await recordedPrState(ctx, execFn, ps.prNumber, branchName);
+      if (recorded === "OPEN") existingPr = ps.prNumber;
+      else if (recorded !== undefined && ps.prNumber !== undefined) {
+        const gone = prGoneRefusal(state, ps.prNumber, branchName, recorded);
+        return { ok: false, terminal: true, ...gone };
+      }
+    }
+    const reentryNoop = async (pr: number): Promise<{ ok: true; state: WorkState }> => {
       trace(
-        `work-driver: commit-pr re-entry — open PR #${existingPr} already heads ${branchName}; integrate/prCreate skipped`,
+        `work-driver: commit-pr re-entry — open PR #${pr} already heads ${branchName}; integrate/prCreate skipped`,
       );
       const rootState = await inspectCommitPrRoot(execFn, ctx.repoRoot);
       let next = appendEvent(
@@ -159,7 +182,7 @@ export async function mechanizedCommitPr(
         synthesizeDriverCompletion({
           step: "commit-pr",
           label: "driver:commit-pr",
-          summary: `Mechanized commit-pr RE-ENTRY: open PR #${existingPr} already heads ${branchName} — consolidation previously completed; integrate/prCreate skipped.\npr: ${existingPr}`,
+          summary: `Mechanized commit-pr RE-ENTRY: open PR #${pr} already heads ${branchName} — consolidation previously completed; integrate/prCreate skipped.\npr: ${pr}`,
           startedAt,
           now: Date.now(),
         }),
@@ -169,6 +192,17 @@ export async function mechanizedCommitPr(
         pipelineState: { ...next.pipelineState, ...commitPrRootFieldsOf(rootState) },
       };
       return { ok: true, state: next };
+    };
+    // The base a second round integrates onto: the branch's own head, so only
+    // what the branch lacks is picked and the push is a fast-forward.
+    let followupBase: string | undefined;
+    if (existingPr !== undefined) {
+      const pending = await worktreesWithNewWork(execFn, worktrees, branchName);
+      if (pending.length > 0) followupBase = await branchHeadOf(execFn, ctx.repoRoot, branchName);
+      if (followupBase === undefined) return reentryNoop(existingPr);
+      trace(
+        `work-driver: commit-pr second round — ${pending.join(", ")} hold work ${branchName} lacks; integrating onto ${followupBase.slice(0, 8)} for open PR #${existingPr}`,
+      );
     }
     // #818 — the PR title and the commit title are the SAME conventional
     // subject, derived from the issue (never `implement issue #N`).
@@ -197,17 +231,21 @@ export async function mechanizedCommitPr(
     const res = await integrate(execFn, {
       repoRoot: ctx.repoRoot,
       branchName,
-      baseSha: ps.baseSha,
+      baseSha: followupBase ?? ps.baseSha,
       worktrees,
       // #794 — own-range selection (stacked workstreams: see workstreamBaseShas).
-      workstreamBaseShas: ps.workstreamBaseShas,
+      // A second round measures every worktree against the branch head instead:
+      // the first round left each one AT that head, so the per-workstream bases
+      // would re-pick what the branch already carries.
+      workstreamBaseShas: followupBase ? undefined : ps.workstreamBaseShas,
       scratchDir: scratchDir(ctx.repoRoot, ctx.issue),
       commitTitle: title,
       commitBody,
-      mode: "create",
-      requireAllNonEmpty: true,
+      mode: followupBase ? "followup" : "create",
+      // Only the workstream that fixed something has a diff on a second round.
+      requireAllNonEmpty: !followupBase,
       // #453 — skip already-applied.
-      commitShas: ps.commitShas,
+      commitShas: followupBase ? undefined : ps.commitShas,
       verifyCmd: await verifyCmdFor(ctx.repoRoot),
       verifyExecFn: ctx.verifyExecFn,
       verifyTimeoutMs: integrationVerifyTimeoutMs(),
@@ -231,6 +269,7 @@ export async function mechanizedCommitPr(
           reason: res.reason,
           terminal: true,
           fallbackCause,
+          ...(res.timedOut ? { timedOut: true } : {}),
         };
       }
       // #861 — on a non-terminal failure the ops fallback takes over, so
@@ -247,7 +286,13 @@ export async function mechanizedCommitPr(
       // halt a child that worked there anyway). A failure to create the
       // integrate worktree is a driver environment failure → a cap, not an
       // LLM judgment call.
-      const worktreeRes = await ensureIntegrateWorktreeOrHalt(ctx, state, branchName, execFn);
+      const worktreeRes = await ensureIntegrateWorktreeOrHalt(
+        ctx,
+        state,
+        branchName,
+        execFn,
+        res.reason || "(integrate() gave no reason)",
+      );
       if ("halted" in worktreeRes) {
         return {
           ok: false,
@@ -259,20 +304,45 @@ export async function mechanizedCommitPr(
       // #861 — the structured conflict-patch value threads to the caller
       // (runCommitPrLocked) instead of being re-parsed from this reason's
       // marker text.
+      // #1173 — the stale integrate tree's kept commits reach the plumb
+      // report (and so the handoff), not only the trace.
+      const kept = worktreeRes.backupRef
+        ? ` The stale integrate tree's unpushed commits were kept on ${worktreeRes.backupRef}.`
+        : "";
       return {
         ok: false,
-        reason: withPatchNote(res.reason, res.conflictPatch),
+        reason: `${withPatchNote(res.reason, res.conflictPatch)}${kept}`,
         fallbackCause,
         conflictPatch: res.conflictPatch,
       };
     }
     if (res.empty) {
+      // A second round whose "new" work was already on the branch (a crash
+      // between the push and the worktree advance) is the plain re-entry.
+      if (existingPr !== undefined) return reentryNoop(existingPr);
       return {
         ok: false,
         reason:
           "every worktree was clean — no uncommitted work to consolidate (developer may not have written)",
         fallbackCause,
       };
+    }
+    // A second round pushed onto the PR that is already open — nothing to create.
+    if (existingPr !== undefined) {
+      const rootState = await inspectCommitPrRoot(execFn, ctx.repoRoot);
+      const next = finalizeCommitPrState(
+        state,
+        now,
+        startedAt,
+        ids,
+        branchName,
+        existingPr,
+        res,
+        rootState,
+        commitPrFlakeEvidence,
+        true,
+      );
+      return { ok: true, state: next };
     }
     // #378 — when the intent resolver filled gaps with defensible defaults,
     // those assumptions belong where review happens; buried in a state file
@@ -296,6 +366,7 @@ export async function mechanizedCommitPr(
       ...companionLines,
       ...workstreamLines,
       assumptionsBlock,
+      protectedGrantSectionOf(ctx.protectedGrant),
       carriedFindings,
       operatorActions,
       renderLensFindingsSection(state.eventLog),
@@ -322,7 +393,9 @@ export async function mechanizedCommitPr(
     // failure. We pass the body STRING (the scratch file above is for the
     // ops-fallback prompt) and no base — gh/glab defaults to the repo
     // default branch, which is the base the driver recorded in Step 3.
-    const created = await forge.prCreate(title, branchName, prBody);
+    // #1292 — a draft until the review is done (see work-driver-draft-pr.ts).
+    const draft = draftPrEnabled(ctx);
+    const created = await forge.prCreate(title, branchName, prBody, { draft });
     const prNumber = created.number;
     if (prNumber === undefined || !Number.isFinite(prNumber)) {
       return {
@@ -330,6 +403,9 @@ export async function mechanizedCommitPr(
         reason: `forge pr create succeeded but returned no PR number (url=${(created.url ?? "").slice(0, 120)})`,
       };
     }
+    trace(
+      `work-driver: commit-pr — opened ${draft ? "draft " : ""}PR #${prNumber} for ${branchName}`,
+    );
     // 5. Emit the same event shapes the dispatch path produces so the shared
     // downstream (parsePrNumber + both gates) runs unchanged. #782 — the
     // flake-recovery event (verify-flake-recovered, step: "commit-pr") is
@@ -346,7 +422,9 @@ export async function mechanizedCommitPr(
       rootState,
       commitPrFlakeEvidence,
     );
-    return { ok: true, state: next };
+    if (!draft) return { ok: true, state: next };
+    const prDraft = { status: "draft" as const };
+    return { ok: true, state: { ...next, pipelineState: { ...next.pipelineState, prDraft } } };
   } catch (err) {
     const e = err as Error & { stderr?: string };
     return {

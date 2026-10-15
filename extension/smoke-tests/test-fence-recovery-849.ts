@@ -26,7 +26,7 @@ import type { DispatchResult } from "../src/types.ts";
 import { runDevelopTopological } from "../src/work-develop-topological.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
-import type { ExecFn } from "../src/worktree.ts";
+import { realExec } from "./lib/exec-fake.ts";
 
 const execFileP = promisify(execFile);
 
@@ -39,13 +39,6 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const realExec: ExecFn = async (cmd, o) => {
-  const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
-    cwd: o?.cwd,
-    maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
-  });
-  return { stdout };
-};
 const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 const gitOut = async (cwd: string, args: string[]): Promise<string> =>
   (await git(cwd, args)).stdout.trim();
@@ -251,6 +244,130 @@ async function setup3WS(
   assert(
     cVerdict?.ok === true && bVerdict === undefined,
     `#849 case 1: the merged workstream c's verdict is ok (the re-run passed) and the absorbed id b is no longer a workstream (got: ${JSON.stringify(conv?.verdicts)})`,
+  );
+}
+
+// ── #1343: an uncommitted re-dispatch is committed by the safety net ───
+// The merged workstream keeps the owner's original base (so its range holds
+// the owner's commit), which the merged tree is already ahead of. The safety
+// net must judge it against the post-merge HEAD instead, or the re-dispatch's
+// uncommitted work silently drops out of the PR.
+{
+  const { repo, baseSha } = await fixture("uncommitted");
+  const { wt } = await setup3WS(repo, baseSha);
+  const calls: Array<{ role: string; cwd?: string; prompt?: string }> = [];
+  const onCall = async (_n: number, cwd: string) => {
+    const last = calls[calls.length - 1];
+    if (cwd === wt.b && (last?.prompt ?? "").includes("FENCE MERGE-AND-RETRY")) {
+      writeFileSync(path.join(cwd, "b-file.txt"), "b, left uncommitted\n");
+    }
+  };
+  const dispatchFn = recordingDispatch(calls, onCall);
+  const ctx = ctxFor(repo, dispatchFn);
+  const workstreams = {
+    a: { id: "a", scope: "a", paths: ["a-file.txt"], outOfScope: ["b-file.txt", "c-file.txt"] },
+    b: { id: "b", scope: "b", paths: ["b-file.txt"], outOfScope: ["a-file.txt", "c-file.txt"] },
+    c: { id: "c", scope: "c", paths: ["c-file.txt"], outOfScope: ["a-file.txt", "b-file.txt"] },
+  };
+  const base = initialState(849);
+  base.pipelineState.baseSha = baseSha;
+  base.pipelineState.worktrees = wt;
+  base.pipelineState.workstreamBaseShas = { a: baseSha, b: baseSha, c: baseSha };
+  base.pipelineState.workstreams = workstreams;
+  base.pipelineState.currentStep = "develop";
+  const after = await runDevelopTopological(
+    ctx,
+    base,
+    ["a", "b", "c"],
+    workstreams,
+    [849],
+    dispatchFn,
+    realExec,
+    Date.now(),
+    "job-849-uncommitted",
+  );
+  const net = after.eventLog.find((e) => e.kind === "safety-net-commit" && e.workstreamId === "c");
+  const committed = await gitOut(wt.b, ["show", "HEAD:b-file.txt"]).catch(() => "");
+  assert(
+    net !== undefined && committed === "b, left uncommitted",
+    `#1343: the merged workstream's uncommitted re-dispatch is committed by the safety net (event: ${net ? "yes" : "no"}, HEAD b-file.txt: ${committed || "absent"})`,
+  );
+  assert(
+    after.pipelineState.workstreamBaseShas?.c === baseSha,
+    "#1343: the merged workstream keeps the owner's original base",
+  );
+}
+
+// ── #1345: two violators of ONE owner — one merged re-dispatch ──────────
+// a and b each edit a different file c declared. Both fold into c, and c
+// must be re-dispatched exactly once, with both violated files and both
+// absorbed halves named in its prompt.
+{
+  const { repo, baseSha } = await fixture("shared-owner");
+  const wt: Record<string, string> = {};
+  for (const id of ["a", "b", "c"] as const) {
+    const p = path.join(repo, ".worktrees", `issue-1345-${id}`);
+    await git(repo, ["worktree", "add", "-q", "--detach", p, baseSha]);
+    wt[id] = p;
+  }
+  const commit = async (cwd: string, file: string, body: string) => {
+    writeFileSync(path.join(cwd, file), body);
+    await git(cwd, ["add", file]);
+    await git(cwd, ["commit", "-q", "-m", file]);
+  };
+  await commit(wt.c, "c1-file.txt", "c1\n");
+  await commit(wt.c, "c2-file.txt", "c2\n");
+  await commit(wt.a, "c1-file.txt", "a annexed c1\n");
+  await commit(wt.b, "c2-file.txt", "b annexed c2\n");
+  const calls: Array<{ role: string; cwd?: string; prompt?: string }> = [];
+  const onCall = async (_n: number, cwd: string) => {
+    const last = calls[calls.length - 1];
+    if ((last?.prompt ?? "").includes("FENCE MERGE-AND-RETRY")) {
+      await commit(cwd, "a-file.txt", "a\n");
+      await commit(cwd, "b-file.txt", "b\n");
+    }
+  };
+  const dispatchFn = recordingDispatch(calls, onCall);
+  const ctx = ctxFor(repo, dispatchFn);
+  const cFiles = ["c1-file.txt", "c2-file.txt"];
+  const workstreams = {
+    a: { id: "a", scope: "a", paths: ["a-file.txt"], outOfScope: ["b-file.txt", ...cFiles] },
+    b: { id: "b", scope: "b", paths: ["b-file.txt"], outOfScope: ["a-file.txt", ...cFiles] },
+    c: { id: "c", scope: "c", paths: cFiles, outOfScope: ["a-file.txt", "b-file.txt"] },
+  };
+  const base = initialState(849);
+  base.pipelineState.baseSha = baseSha;
+  base.pipelineState.worktrees = wt;
+  base.pipelineState.workstreamBaseShas = { a: baseSha, b: baseSha, c: baseSha };
+  base.pipelineState.workstreams = workstreams;
+  base.pipelineState.currentStep = "develop";
+  const after = await runDevelopTopological(
+    ctx,
+    base,
+    ["a", "b", "c"],
+    workstreams,
+    [849],
+    dispatchFn,
+    realExec,
+    Date.now(),
+    "job-1345-shared-owner",
+  );
+  const recoveryCalls = calls.filter((c) => (c.prompt ?? "").includes("FENCE MERGE-AND-RETRY"));
+  assert(
+    recoveryCalls.length === 1,
+    `#1345: two violators of one owner re-dispatch the merged workstream ONCE (got ${recoveryCalls.length})`,
+  );
+  const prompt = recoveryCalls[0]?.prompt ?? "";
+  assert(
+    prompt.includes("merged from: c, a, b") &&
+      prompt.includes("c1-file.txt (declared by c)") &&
+      prompt.includes("c2-file.txt (declared by c)"),
+    `#1345: the single re-dispatch prompt names both violators and both violated paths (got: ${prompt.split("\n").slice(0, 3).join(" | ")})`,
+  );
+  assert(
+    after.eventLog.filter((e) => e.kind === "fence-recovery-started").length === 2 &&
+      after.eventLog.find((e) => e.kind === "cap-hit") === undefined,
+    "#1345: both merges are recorded and the clean re-run proceeds (no cap-hit)",
   );
 }
 

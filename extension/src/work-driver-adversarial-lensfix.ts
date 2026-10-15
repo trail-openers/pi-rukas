@@ -158,6 +158,11 @@ async function handleNoCommittedFix(
     // #797 — the restore outcome rides in `landed.error`; naming the
     // pre-integration ref makes the post-condition checkable.
     const preIntegrationRef = await repoRootOriginalRef(execFn, ctx.repoRoot);
+    // The fix exists and is committed: the park names it, so the handoff can
+    // say what to land instead of wondering whether anything was written.
+    const fixSha = await execFn("git rev-parse HEAD", { cwd: fixTree, maxBuffer: 64 * 1024 })
+      .then((r) => r.stdout.trim() || undefined)
+      .catch(() => undefined);
     return appendEvent(state, {
       kind: "cap-hit",
       at: Date.now(),
@@ -166,7 +171,8 @@ async function handleNoCommittedFix(
       nextStep: "handoff",
       lensWorktreePath: fixTree,
       restoredToRef: preIntegrationRef,
-      evidence: `committed fix in ${fixTree} (${fix.count} commit(s) ahead of ${branchName}) — integration genuinely failed: ${landed.error}. repoRoot condition after the restore: ${landed.error.includes("repoRoot was verified restored") || landed.error.includes("repoRoot was restored") ? "restored" : landed.error.includes("repoRoot was NOT restored") ? "NOT restored — manual repair required" : "unknown"}${preIntegrationRef ? ` (the cycle started from ${preIntegrationRef})` : ""}. The fix's worktree HEAD SHA is recorded in the handoff snapshot's committedWork so it can be recovered (git cherry-pick from ${fixTree}).`,
+      committedFixSha: fixSha,
+      evidence: `committed fix ${fixSha?.slice(0, 8) ?? "(sha unreadable)"} in ${fixTree} (${fix.count} commit(s) ahead of ${branchName}) — integration genuinely failed: ${landed.error}. repoRoot condition after the restore: ${landed.error.includes("repoRoot was verified restored") || landed.error.includes("repoRoot was restored") ? "restored" : landed.error.includes("repoRoot was NOT restored") ? "NOT restored — manual repair required" : "unknown"}${preIntegrationRef ? ` (the cycle started from ${preIntegrationRef})` : ""}. The fix is committed at the worktree's HEAD and survives the park (also recorded in the handoff snapshot's committedWork).`,
     });
   }
   const evidence =

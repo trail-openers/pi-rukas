@@ -21,7 +21,7 @@
  * about the emission, which is where every one of these defects has lived.
  */
 
-import { exec, execFile } from "node:child_process";
+import { execFile } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -30,6 +30,8 @@ import { nextStep } from "../src/work-driver-context.ts";
 import { runLens } from "../src/work-driver-lens.ts";
 import { heldByUnresolvedReview } from "../src/work-driver-merge-authority.ts";
 import type { WorkEvent, WorkState } from "../src/workflow-state.ts";
+import { commandOf } from "./lib/argv-shell.ts";
+import { realExec } from "./lib/exec-fake.ts";
 import { mkLensSummary, setupSpawnGuard } from "./test-helpers.ts";
 
 setupSpawnGuard();
@@ -49,7 +51,6 @@ function stepOf(s: WorkState): string {
 }
 
 const execFileP = promisify(execFile);
-const execP = promisify(exec);
 
 const FINDINGS = [
   { lens: "SIMPLICITY", severity: "MEDIUM", path: "a.txt", line: 1, title: "duplicated guard" },
@@ -118,12 +119,12 @@ function mkCtx(repo: string, verdict: string, ghCalls: string[]) {
         findings: FINDINGS,
         totalFindings: FINDINGS.length,
       }),
-    verifyExecFn: async (cmd: string, opts?: Record<string, unknown>) => {
-      if (/^gh\b/.test(cmd)) {
+    verifyExecFn: async (cmd: string, opts?: { argv?: string[] }) => {
+      if (/^gh\b/.test(commandOf(cmd, opts))) {
         ghCalls.push(cmd);
         return { stdout: "https://example.test/pull/1#issuecomment-1\n" };
       }
-      return execP(cmd, opts);
+      return realExec(cmd, opts);
     },
     // biome-ignore lint/suspicious/noExplicitAny: partial fixture; only the read fields matter
   } as any;
@@ -249,9 +250,9 @@ await withRepo(async (repo) => {
 await withRepo(async (repo) => {
   const ghCalls: string[] = [];
   const ctx = mkCtx(repo, "ISSUES_FOUND", ghCalls);
-  ctx.verifyExecFn = async (cmd: string, opts?: Record<string, unknown>) => {
-    if (/^gh\b/.test(cmd)) throw new Error("gh: not authenticated");
-    return execP(cmd, opts);
+  ctx.verifyExecFn = async (cmd: string, opts?: { argv?: string[] }) => {
+    if (/^gh\b/.test(commandOf(cmd, opts))) throw new Error("gh: not authenticated");
+    return realExec(cmd, opts);
   };
   const after = await runLens(ctx, stateAt(2), Date.now());
   assert(

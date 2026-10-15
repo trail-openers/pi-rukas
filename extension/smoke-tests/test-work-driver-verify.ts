@@ -168,7 +168,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
           pipelineState: { ...s.pipelineState, worktrees: { default: dir }, baseSha: "abc123" },
         };
         const emptyExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-          if (cmd === "git status --porcelain") return { stdout: "" };
+          if (cmd === "git status --porcelain --untracked-files=all") return { stdout: "" };
           if (cmd.includes("rev-parse --verify --quiet --end-of-options origin/")) return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
           return { stdout: "" };
@@ -185,7 +185,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         fsSync.mkdirSync(path.join(dir, ".pi"), { recursive: true });
         fsSync.writeFileSync(path.join(dir, ".pi", "verify-cmd"), "run-verify\n");
         const passExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-          if (cmd === "git status --porcelain") return { stdout: " M src/foo.ts\n" };
+          if (cmd === "git status --porcelain --untracked-files=all") return { stdout: " M src/foo.ts\n" };
           if (cmd === "run-verify") return { stdout: "all good" };
           return { stdout: "" };
         };
@@ -200,7 +200,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         // refuses), so no consolidation runs and the per-worktree verify
         // failure is the verdict — the E0308 tail surfaces as a failure.
         const failExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-          if (cmd === "git status --porcelain") return { stdout: " M src/foo.ts\n" };
+          if (cmd === "git status --porcelain --untracked-files=all") return { stdout: " M src/foo.ts\n" };
           if (cmd.startsWith("git rev-parse HEAD"))
             return { stdout: "b".repeat(40) + "\n" };
           if (cmd.includes("rev-parse --verify --quiet --end-of-options origin/")) return { stdout: "a".repeat(40) + "\n" };

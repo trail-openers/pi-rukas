@@ -16,7 +16,7 @@
  * which fires only on ISSUES_FOUND).
  */
 
-import { execp } from "./lens-exec.ts";
+import { execp } from "./exec.ts";
 import { NOT_RECORDED_NOTE, resolveReviewBranch } from "./review-branch.ts";
 import type { DispatchResult } from "./types.ts";
 

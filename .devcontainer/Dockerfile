@@ -34,6 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ripgrep fd-find \
       docker.io \
       util-linux \
+      tini \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/fdfind /usr/local/bin/fd
 # docker.io: CLI only (we never spawn the daemon inside the container — the
@@ -183,6 +184,19 @@ RUN npm install -g --ignore-scripts wigolo@0.2.1 || true
 ENV PI_ENSEMBLE_DIR=/opt/pi-rukas
 COPY --chown=vscode:vscode . ${PI_ENSEMBLE_DIR}
 
+# #1306 / #1326 — bake the git commit this image was built from, so
+# `pi-rukas-headless --capabilities` and the --json result's `buildCommit`
+# can name it. publish-image.yml passes it as a build arg (a RUN step does
+# not see the workflow's GITHUB_SHA otherwise); a local `docker build`
+# without it bakes nothing and the build reports a null commit. Only a full
+# 40-hex SHA is written: a host runs `git merge-base --is-ancestor` on it.
+# The marker lives under .pi/ (gitignored), so it never lands in a PR.
+ARG GITHUB_SHA=
+RUN set -e; if printf '%s' "$GITHUB_SHA" | grep -Eq '^[0-9a-f]{40}$'; then \
+      mkdir -p ${PI_ENSEMBLE_DIR}/.pi \
+      && printf '%s\n' "$GITHUB_SHA" > ${PI_ENSEMBLE_DIR}/.pi/pi-rukas-commit; \
+    fi
+
 # Drop to vscode user for state setup — install.sh creates symlinks under
 # ~/.pi/agent/ + writes the codebase_memory MCP entry into ~/.pi/agent/mcp.json
 # (native MCP, user's home, not root).
@@ -211,6 +225,15 @@ RUN test ! -e "$HOME/.pi/agent/npm/node_modules/pi-mcp-adapter" \
     && test ! -e "$HOME/.pi/agent/extensions/pi-mcp-adapter" \
     && echo "pi-mcp-adapter absent in both layouts (native MCP active)"
 
+# pi-rukas-headless (#1024, #1189): the repo is baked at /opt/pi-rukas, which
+# is NOT on $PATH — `command -v pi-rukas-headless` in a container found
+# nothing, forcing unattended callers to hard-code the image layout. A
+# /usr/local/bin link (already on PATH) gives a stable name; the wrapper at
+# /opt/pi-rukas/bin is unchanged.
+USER root
+RUN ln -sf ${PI_ENSEMBLE_DIR}/bin/pi-rukas-headless /usr/local/bin/pi-rukas-headless \
+    && echo "pi-rukas-headless on PATH via /usr/local/bin"
+
 # Issue #933 (fresh-host EACCES): bake the state mount points into the image
 # as vscode-owned so Docker creates NEW named volumes vscode-owned when the
 # launcher falls back to them (bin/pi-rukas build_mounts). When a named volume
@@ -220,6 +243,7 @@ RUN test ! -e "$HOME/.pi/agent/npm/node_modules/pi-mcp-adapter" \
 # fresh sandbox. This mkdir (as vscode) fixes volumes created from now on; the
 # entrypoint repairs PRE-EXISTING root-owned volumes. Mirrors the entrypoint
 # allowlist and the launcher's PI_ENSEMBLE_VOLUME_MOUNTS derivation.
+USER vscode
 RUN mkdir -p /home/vscode/.pi/agent/sessions \
              /home/vscode/.pi/agent/ensemble-runs \
              /home/vscode/.vipune \
@@ -280,7 +304,13 @@ ENV PI_ENSEMBLE_SANDBOX_MODE=1
 # before exec'ing the user command.
 # Keeping the entrypoint as root for these one-time fixups is safer than the
 # alternatives (sudoers carve-outs, GID guessing across host platforms).
-ENTRYPOINT ["/usr/local/bin/pi-rukas-entrypoint"]
+#
+# tini is PID 1, not pi. Node never reaps processes it did not spawn, so with
+# pi as PID 1 every orphan — a gate's git children after the gate is killed
+# at a timeout — stays a zombie and keeps its pid. A pid-limited container
+# then cannot fork (`/bin/sh: Cannot fork`, `spawn EAGAIN`) for the rest of
+# the cycle (#1256). tini reaps them and forwards signals to pi.
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/pi-rukas-entrypoint"]
 
 # Default: drop the user into `pi` directly. The wrapper script overrides via
 # `pi-rukas shell` for a bash prompt instead.

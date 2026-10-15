@@ -29,9 +29,14 @@
  * (plan-tool.ts).
  *
  * Storage: one file per lineage (descriptor + context + type) under the clone's
- * git common dir (`<common-dir>/pi-plan-cache/`), so it is never tracked. The
- * stored entry carries the full key; a reader accepts it only on an exact key
- * match, inside INVESTIGATION_CACHE_TTL_MS, and only when every field the
+ * git common dir (`<common-dir>/pi-plan-cache/`), so it is never tracked.
+ * `PI_ENSEMBLE_PLAN_CACHE_DIR` (absolute) moves it outside the clone, for a
+ * launcher that makes a fresh clone per turn (#1224); entries there sit in a
+ * per-repository subdirectory keyed on the origin URL, so two repositories
+ * sharing one directory never see each other's dry runs while two clones of
+ * the same repository do. The stored entry carries the full key; a reader
+ * accepts it only on an exact key match, inside the expiry (planCacheTtlMs,
+ * `PI_ENSEMBLE_PLAN_CACHE_TTL_MS`), and only when every field the
  * pipeline dereferences is well-formed (a malformed entry is a miss, never a
  * crash). Every failure fails open: an unreadable or corrupt entry is a miss,
  * and a failed write costs only the next run's reuse — never the run itself.
@@ -49,8 +54,31 @@ import { trace } from "./trace.ts";
 
 const execFileP = promisify(execFile);
 
-/** Bounded expiry: a dry run older than this is not reused (2 hours). */
+/** Default expiry: a dry run older than this is not reused (2 hours). */
 export const INVESTIGATION_CACHE_TTL_MS = 2 * 60 * 60_000;
+
+/**
+ * The expiry in force, read per call (#1224): `PI_ENSEMBLE_PLAN_CACHE_TTL_MS`
+ * overrides the default. `0` disables the expiry — the convention of the
+ * `*_INACTIVITY_TIMEOUT_MS` knobs, where 0 disables the bound — so an operator
+ * answering hours later from a phone can still confirm the reviewed spec.
+ * Anything that is not a non-negative integer is ignored (traced).
+ */
+export function planCacheTtlMs(): number {
+  const raw = process.env.PI_ENSEMBLE_PLAN_CACHE_TTL_MS;
+  if (raw === undefined || raw.trim() === "") return INVESTIGATION_CACHE_TTL_MS;
+  const n = Number(raw);
+  if (Number.isSafeInteger(n) && n >= 0) return n === 0 ? Number.POSITIVE_INFINITY : n;
+  trace(
+    `plan-investigation-cache: PI_ENSEMBLE_PLAN_CACHE_TTL_MS="${raw}" is not a non-negative integer — using the ${INVESTIGATION_CACHE_TTL_MS}ms default`,
+  );
+  return INVESTIGATION_CACHE_TTL_MS;
+}
+
+/** Whether a dry run of this age is inside the expiry (a negative age — a clock jump — is not). */
+export function withinPlanCacheTtl(ageMs: number): boolean {
+  return ageMs >= 0 && ageMs <= planCacheTtlMs();
+}
 
 /**
  * How long a claim (an in-flight filing) or a filed-marker (a filing that just
@@ -147,7 +175,7 @@ export async function resolvePlanGitState(
     if (!commonDir) return undefined;
     return {
       keySha: base.baseSha,
-      cacheDir: path.join(commonDir, "pi-plan-cache"),
+      cacheDir: await planCacheDir(repoRoot, commonDir),
     };
   } catch (err) {
     trace(
@@ -159,6 +187,31 @@ export async function resolvePlanGitState(
 
 const digest = (parts: unknown[]): string =>
   createHash("sha256").update(JSON.stringify(parts)).digest("hex");
+
+/**
+ * Where this clone's entries live: `<common-dir>/pi-plan-cache` by default, or
+ * `$PI_ENSEMBLE_PLAN_CACHE_DIR/<repo>` (#1224). `<repo>` is a digest of the
+ * origin URL — stable across fresh clones of one repository, distinct between
+ * repositories — or of the common dir when there is no origin. A relative
+ * override is ignored (traced): it would resolve against the process's cwd.
+ */
+async function planCacheDir(repoRoot: string, commonDir: string): Promise<string> {
+  const override = process.env.PI_ENSEMBLE_PLAN_CACHE_DIR?.trim();
+  if (!override) return path.join(commonDir, "pi-plan-cache");
+  if (!path.isAbsolute(override)) {
+    trace(
+      `plan-investigation-cache: PI_ENSEMBLE_PLAN_CACHE_DIR="${override}" is not absolute — using the per-clone cache`,
+    );
+    return path.join(commonDir, "pi-plan-cache");
+  }
+  const origin = await execFileP("git", ["-C", repoRoot, "config", "--get", "remote.origin.url"], {
+    timeout: 10_000,
+  }).then(
+    (r) => r.stdout.trim(),
+    () => "",
+  );
+  return path.join(override, digest(["plan-repo-v1", origin || `local:${commonDir}`]).slice(0, 16));
+}
 
 /**
  * The inputs that name one plan, everything except git HEAD. Depth is part of
@@ -316,7 +369,7 @@ export async function readInvestigationCache(
   const entry = await readEntry(cacheDir, inputs);
   if (!entry || entry.key !== investigationCacheKey(inputs)) return undefined;
   const ageMs = now - entry.createdAt;
-  if (ageMs < 0 || ageMs > INVESTIGATION_CACHE_TTL_MS) return undefined;
+  if (!withinPlanCacheTtl(ageMs)) return undefined;
   if (!consumable(entry, inputs.context)) return undefined;
   return { cached: entry, ageMs };
 }
@@ -386,8 +439,9 @@ export async function writeInvestigationCache(
  */
 async function sweepStale(cacheDir: string, now: number): Promise<void> {
   const names = await fs.readdir(cacheDir).catch(() => [] as string[]);
+  const ttl = planCacheTtlMs();
   for (const name of names) {
-    const limit = name.endsWith(".json") ? INVESTIGATION_CACHE_TTL_MS : RECENT_FILING_WINDOW_MS;
+    const limit = name.endsWith(".json") ? ttl : RECENT_FILING_WINDOW_MS;
     const p = path.join(cacheDir, name);
     const st = await fs.stat(p).catch(() => undefined);
     if (st && now - st.mtimeMs > limit) await fs.rm(p, { force: true }).catch(() => undefined);

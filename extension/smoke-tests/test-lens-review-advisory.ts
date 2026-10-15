@@ -206,6 +206,8 @@ try {
       body = readFileSync(file, "utf8");
       return { stdout: "" };
     }
+    if (cmd.includes("symbolic-ref")) return { stdout: "origin/main\n" };
+    if (cmd.includes("git merge-base")) return { stdout: "mb0000\n" };
     if (cmd.includes("patch-id")) return { stdout: "p42 0000" };
     if (cmd.includes("git remote")) return { stdout: "origin\n" };
     if (cmd.includes("git config --get remote")) return { stdout: "git@github.com:o/r.git\n" };

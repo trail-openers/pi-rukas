@@ -20,10 +20,14 @@
  * (judged by the policy judge), as it does for start_work_driver.
  */
 
+import { resourceReport } from "../resource-budget.ts";
 import { killLiveProcessGroups } from "../spawn-kill.ts";
 import { releaseHeldIntegrationLocks } from "../work-driver-lock.ts";
 import { resolveRepoRoot } from "../work-entry.ts";
+import { readBuildCommit, readBuildVersion } from "./build.ts";
+import { buildCapabilities } from "./capabilities.ts";
 import { EXIT } from "./exit-code.ts";
+import { resultDocument } from "./result.ts";
 import { runHeadless } from "./run.ts";
 
 export interface ParsedArgs {
@@ -65,9 +69,17 @@ function errorMessage(err: unknown): string {
 
 async function main(argv: string[]): Promise<number> {
   const [verb, ...rest] = argv;
+  // #1306 — `--capabilities` answers before any cycle, repo or network is
+  // touched: the whole point is that a caller checks the build it is about
+  // to run without paying for a run. It therefore dispatches before
+  // resolveRepoRoot, which is the first place a repo is read.
+  if (verb === "--capabilities") {
+    process.stdout.write(`${JSON.stringify(buildCapabilities())}\n`);
+    return EXIT.merged;
+  }
   if (verb !== "work") {
     process.stderr.write(
-      "usage: pi-rukas-headless work <issue...> [--restart] [--timeout <min>] [--json]\n",
+      "usage: pi-rukas-headless work <issue...> [--restart] [--timeout <min>] [--json] | --capabilities\n",
     );
     return EXIT.refused;
   }
@@ -87,10 +99,15 @@ async function main(argv: string[]): Promise<number> {
     write: (line) => process.stderr.write(`${line}\n`),
   });
   if (args.json) {
-    process.stdout.write(`${JSON.stringify({ exitCode: run.exitCode, issues: run.results })}\n`);
+    const doc = resultDocument(run, { commit: readBuildCommit(), version: readBuildVersion() });
+    // #1325 — the host budget and the limits this run chose.
+    process.stdout.write(`${JSON.stringify({ ...doc, resources: resourceReport() })}\n`);
   } else {
     const parts = run.results.map((r) => `#${r.issue} ${r.status} (exit ${r.exitCode})`);
     process.stdout.write(`pi-rukas-headless: ${parts.join(", ") || "nothing ran"}\n`);
+    if (run.error) {
+      process.stdout.write(`error: ${run.error.code} — ${run.error.message}\n`);
+    }
   }
   return run.exitCode;
 }

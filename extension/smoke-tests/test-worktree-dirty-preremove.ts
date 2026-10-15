@@ -28,11 +28,9 @@
  * a `worktree-provisioned` event lands in the event log.
  */
 
-import { execFile } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import { runBranch } from "../src/work-driver-branch-develop.ts";
 import { mechanizedBranchSetup } from "../src/work-driver-branch-mechanized.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
@@ -40,8 +38,13 @@ import { initialState } from "../src/workflow-state.ts";
 import { DirtyWorktreeError, inspectWorktreeForLoss, worktreeCreate } from "../src/worktree.ts";
 import type { ExecFn } from "../src/worktree.ts";
 import { runCreateGuards } from "../src/worktree-create-guard.ts";
-
-const execFileP = promisify(execFile);
+import {
+  git,
+  makeFakeRepoRoot,
+  makeFakeWorktreeDir,
+  realExec,
+  toplevelAnswer,
+} from "./lib/worktree-fake-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -51,15 +54,6 @@ function assert(cond: boolean, msg: string) {
     exit = 1;
   }
 }
-
-const realExec: ExecFn = async (cmd, o) => {
-  const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
-    cwd: o?.cwd,
-    maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
-  });
-  return { stdout };
-};
-const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 
 /** A minimal repo with a committed base, detached at that base. */
 async function fixture(name: string): Promise<{ repo: string; baseSha: string }> {
@@ -192,22 +186,85 @@ try {
     );
   }
 
-  // ------------ the check degrades safely: an unreadable worktree is removed
+  // ------------ the check fails closed: an unreadable worktree is refused
   {
     const { repo, baseSha } = await fixture("unreadable");
     const wt = path.join(repo, ".worktrees", "issue-475-default");
     const finding = await inspectWorktreeForLoss(realExec, repo, wt, baseSha);
     assert(
       finding === undefined,
-      "inspect: a path with no live worktree is skipped — an absent directory is not a refusal",
+      "inspect: a path with no directory on disk is skipped — an absent directory is not a refusal",
     );
 
+    await git(repo, ["worktree", "add", "-q", "--detach", wt, baseSha]);
     const broken: ExecFn = async (cmd, o) => {
-      if ((o?.cwd ?? "").startsWith(wt)) throw new Error("git: not a worktree");
+      if ((o?.cwd ?? "").startsWith(wt)) throw new Error("git: index unreadable");
       return realExec(cmd, o);
     };
-    await worktreeCreate(broken, { repoRoot: repo, name: "issue-475-default", fromRef: baseSha });
-    assert(true, "a worktree that cannot be inspected is removed as today — no wedged queue");
+    let refused: DirtyWorktreeError | undefined;
+    try {
+      await worktreeCreate(broken, { repoRoot: repo, name: "issue-475-default", fromRef: baseSha });
+    } catch (err) {
+      if (err instanceof DirtyWorktreeError) refused = err;
+      else throw err;
+    }
+    assert(
+      refused !== undefined && refused.message.includes(wt),
+      "a worktree that cannot be inspected keeps the refusal — it is NOT force-removed",
+    );
+  }
+
+  // ------ #1170: a tree-identical commit ahead of the base is NO loss
+  {
+    const { repo, baseSha } = await fixture("tree-equal");
+    const wt = path.join(repo, ".worktrees", "issue-475-default");
+    await git(repo, ["worktree", "add", "-q", "--detach", wt, baseSha]);
+    await git(wt, ["commit", "-q", "--allow-empty", "-m", "develop commit, same tree"]);
+
+    const clean = await inspectWorktreeForLoss(realExec, repo, wt, baseSha);
+    assert(
+      clean === undefined,
+      "#1170: a clean worktree one commit ahead with an IDENTICAL tree is no-loss",
+    );
+
+    const created = await worktreeCreate(realExec, {
+      repoRoot: repo,
+      name: "issue-475-integrate",
+      fromRef: baseSha,
+    }).then(
+      () => true,
+      () => false,
+    );
+    assert(
+      created,
+      "#1170: a sibling develop worktree with an identical tree does not refuse the integrate worktree",
+    );
+
+    writeFileSync(path.join(wt, "a.txt"), "base\nuncommitted edit on the same tree\n");
+    const dirty = await inspectWorktreeForLoss(realExec, repo, wt, baseSha);
+    assert(dirty?.uncommittedFiles.length === 1, "#1170: tree-identical + uncommitted edits is loss");
+
+    await git(wt, ["checkout", "-q", "--", "a.txt"]);
+    writeFileSync(path.join(wt, "untracked.txt"), "x\n");
+    const untracked = await inspectWorktreeForLoss(realExec, repo, wt, baseSha);
+    assert(
+      untracked !== undefined && untracked.uncommittedFiles.length === 1,
+      "#1170: an untracked file on a tree-identical worktree is still loss",
+    );
+  }
+
+  // ------ #1170: a clean worktree whose tree differs from the base is loss
+  {
+    const { repo, baseSha } = await fixture("tree-differs");
+    const wt = path.join(repo, ".worktrees", "issue-475-default");
+    await git(repo, ["worktree", "add", "-q", "--detach", wt, baseSha]);
+    writeFileSync(path.join(wt, "a.txt"), "other\n");
+    await git(wt, ["commit", "-q", "-am", "different tree"]);
+    const finding = await inspectWorktreeForLoss(realExec, repo, wt, baseSha);
+    assert(
+      finding !== undefined && finding.treeDiffers === true,
+      "#1170: a clean commit whose tree differs from the base is loss (treeDiffers)",
+    );
   }
 } finally {
   rmSync(root, { recursive: true, force: true });
@@ -276,6 +333,8 @@ function recorder(overrides: Record<string, string> = {}) {
   const calls: Array<{ cmd: string; cwd: string }> = [];
   const execFn: ExecFn = async (cmd, o) => {
     calls.push({ cmd, cwd: o?.cwd ?? "" });
+    // A real worktree answers its own toplevel (#1170) — the fake must too.
+    if (cmd.startsWith("git rev-parse --show-toplevel")) return toplevelAnswer(o?.cwd);
     for (const [prefix, stdout] of Object.entries(overrides)) {
       if (cmd.startsWith(prefix)) {
         if (stdout.startsWith("!THROW!")) throw new Error(stdout.slice(7));
@@ -287,8 +346,9 @@ function recorder(overrides: Record<string, string> = {}) {
   return { calls, execFn };
 }
 
-const REPO = "/repo";
-const WT = path.join(REPO, ".worktrees", "issue-475-default");
+// A real directory, so the worktree is on disk and inspectable (#1170).
+const REPO = makeFakeRepoRoot("pi-ens-1170-repo-");
+const WT = makeFakeWorktreeDir(REPO, "issue-475-default");
 
 // ------- mechanizedBranchSetup re-throws the refusal for a dirty leftover
 // (#533: a failed fetch must not divert the refusal — the origin ref still

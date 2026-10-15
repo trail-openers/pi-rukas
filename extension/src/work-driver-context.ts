@@ -15,7 +15,7 @@
 import type { DispatchHost } from "./async-jobs-lifecycle.ts";
 import type { LensReviewSummary } from "./lens-review.ts";
 import type { OnSlowCallback } from "./slow-notice.ts";
-import type { DispatchResult } from "./types.ts";
+import type { DispatchImage, DispatchResult } from "./types.ts";
 import type { DriverHost } from "./work-driver-host.ts";
 import type { EmitSink } from "./work-state-emit.ts";
 import { KNOWN_STATUSES } from "./workflow-state-validate.ts";
@@ -68,86 +68,6 @@ export const MAX_CI_RETRIES = 2;
 export const REVIEW_WALL_CLOCK_MS = 90 * 60 * 1000;
 
 /**
- * Per-step failure policy (PR5 halt-cascade prevention).
- *
- * Background: PR #239 driver continued past `dispatch-failed` because
- * `nextStep()` has no branch for that event kind — the linear table just
- * advanced. On nessie #553, a developer SIGTERM at 30 min cascaded into
- * 2h31m of adversarial review against partial work, then 40 min of
- * provider-timeouting handoff. ~4 hours wasted, opaque outcome.
- *
- * The fix is a routing classifier: when a step body's tail event is
- * `dispatch-failed` (or `dispatch-failed-provider`), the driver loop
- * consults this table BEFORE calling `nextStep()`:
- *
- *  - **HALT**: synthesise a cap-hit `step-failed:<step>` (or the special
- *    `developer-timeout` shape when the errorTail matches the spawn
- *    timeout marker), set `status='aborted'`, route to handoff. There
- *    is no useful downstream past a HALT failure.
- *  - **RETRY_ONCE**: re-run the same step body once. Idempotent steps
- *    (adversarial loop against a stable diff, lens-review 6-way fanout)
- *    can absorb transient provider transport errors. Second failure
- *    HALTs via the same path.
- *  - **DEGRADED_OK**: the existing fall-through to `nextStep()` is fine.
- *    Step-back (informational) and the terminal steps (handoff, merged)
- *    fit here.
- *
- * The verdict paths (adversarial-rejected → cap-hit handoff, the lens
- * round cap → whatever destination `appendReviewCapHit` recorded on the
- * event) are unchanged — those route correctly already. This table only
- * governs dispatch-failed at the step level.
- */
-export type StepFailurePolicy = "HALT" | "RETRY_ONCE" | "DEGRADED_OK";
-
-export const STEP_FAILURE_POLICY: Record<WorkStep, StepFailurePolicy> = {
-  // No spec foundation → plan/branch/develop run blind.
-  explore: "HALT",
-  // No workstreams → silent regression to single-task develop without
-  // out-of-scope fences (PR3 doctrine violated).
-  plan: "HALT",
-  // No branch → develop edits HEAD, commit-pr has nothing to push, CI
-  // has nothing to watch. Was the empirical root of issue #553's first
-  // run cascade.
-  branch: "HALT",
-  // Partial uncommitted work after SIGTERM is not adversarial-reviewable.
-  // For N>1 workstreams: HALT if ANY branch failed (runDevelop's
-  // Promise.allSettled aggregate is the failure signal).
-  develop: "HALT",
-  // Internal 3-round loop is idempotent against a stable diff; transient
-  // transport is realistic. Second failure HALTs. The
-  // REJECTED-after-3-rounds verdict path already routes correctly to
-  // handoff via cap-hit — unchanged.
-  adversarial: "RETRY_ONCE",
-  // No PR → lens-review wastes hours on uncommitted work, CI retries
-  // to no purpose. Was a contributing factor in the #553 spin.
-  "commit-pr": "HALT",
-  // 6 lens children against a stable diff are idempotent. Cannot ship
-  // code that bypassed lens-review.
-  "lens-review": "RETRY_ONCE",
-  // Same shape as develop — partial fix work cannot meaningfully re-
-  // enter adversarial→lens.
-  "lens-fix": "HALT",
-  // Output is informational; an empty step-back reply still produces a
-  // useful handoff.
-  "step-back": "DEGRADED_OK",
-  // Silently marking a cycle merged when CI was never checked is the
-  // worst possible outcome. Marker-missing-but-ops-ran is already
-  // handled via ciRetryCount (PR2).
-  ci: "HALT",
-  // Must never halt the loop — IS the loop terminator. PR5 hardens
-  // handoff itself via in-process gh fallback (see runHandoff).
-  handoff: "DEGRADED_OK",
-  // PR10: was DEGRADED_OK while runMerged was a 0ms state mutation; now
-  // it actually dispatches ops to run `gh pr merge`, which CAN fail
-  // (auth, branch protection, conflicts). Silently flipping status to
-  // 'merged' on dispatch failure would be exactly the bug PR10 fixes
-  // (the empirical /work 561/562 case: driver reported MERGED ✓ while
-  // PRs sat OPEN on GitHub). HALT routes the failure through cap-hit
-  // 'step-failed:merged' → handoff so the operator merges manually.
-  merged: "HALT",
-};
-
-/**
  * Headless S4 (#1024) — the context a cycle runs with once `enterCycle` has
  * created its emit sink. `persistCycle` takes this shape (or a narrower Pick
  * of it), so a step that writes state cannot be compiled without a sink.
@@ -190,7 +110,7 @@ export interface DriverContext {
    */
   dispatchFn?: (
     host: DispatchHost,
-    spec: { role: string; prompt: string; cwd?: string },
+    spec: { role: string; prompt: string; cwd?: string; images?: DispatchImage[] },
     opts?: {
       label?: string;
       skipDeck?: boolean;
@@ -233,6 +153,20 @@ export interface DriverContext {
    * authority implicitly — the absence of a prohibition is not permission.
    */
   mergeGrant?: boolean;
+  /**
+   * #1090 — protected paths the operator granted this cycle with
+   * `/work N --allow-protected <path>`. Operator-only, like `mergeGrant`:
+   * `start_work_driver` forces it empty, and nothing from the issue, explore
+   * or the planner reaches it. The #406 gate reads it from here, never from
+   * the state file, which records it only.
+   */
+  protectedGrant?: readonly string[];
+  /**
+   * #1292 — the invoking session has no UI (`!ctx.hasUI`, e.g. `pi -p`). A
+   * headless cycle opens its PR as a draft by default — nobody is watching
+   * the review window — unless `PI_ENSEMBLE_DRAFT_PR` says otherwise.
+   */
+  headless?: boolean;
   /**
    * How many cycles this invocation runs at once. Set by the queue; the
    * single-issue path leaves it at 1.
@@ -301,6 +235,7 @@ export interface DriverContext {
     extraFindings?: import("./lens-review.ts").Finding[];
     threshold?: import("./lens-review.ts").Severity;
     branch?: string;
+    pr?: number;
   }) => Promise<LensReviewSummary>;
   /**
    * #280 — optional injection point for tests: replace the vipune write
@@ -317,6 +252,15 @@ export interface DriverContext {
    * the fallback path without a real `gh` binary.
    */
   forge?: import("./forge.ts").Forge;
+  /**
+   * #1189 — the driver's in-memory terminal state, handed to the caller for
+   * the disk-vs-memory divergence check. The state file lives inside the tree
+   * agents work in (same user), so the runner needs its own trusted copy.
+   * Invoked at most once per cycle, never on a crashed driver; `undefined`
+   * means the driver never reached a terminal boundary. Production callers
+   * omit this; the headless runner passes one (see work-driver-final-state.ts).
+   */
+  onFinalState?: (state: WorkState) => void;
 }
 
 /**

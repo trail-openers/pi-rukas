@@ -46,6 +46,8 @@ import { raiseConsolidationIncompleteCap } from "../src/work-driver-commit-compl
 import { measureConsolidationCompleteness } from "../src/work-driver-completeness.ts";
 import { initialState } from "../src/workflow-state.ts";
 import type { ExecFn } from "../src/worktree.ts";
+import { commandOf } from "./lib/argv-shell.ts";
+import { realExec } from "./lib/exec-fake.ts";
 
 const execFileP = promisify(execFile);
 
@@ -70,17 +72,6 @@ function assert(cond: boolean, msg: string) {
   assert(lines <= 500, `file size gate: this file is ${lines} lines (hard cap 500, ideal 300)`);
 }
 
-/** Real shell exec, matching the driver's ExecFn contract. */
-// `sh -c`, matching promisify(exec)'s default. NOT a login shell: `-l`
-// sources profile files that may cd, which would silently run git elsewhere.
-const realExec: ExecFn = async (cmd, o) => {
-  const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
-    cwd: o?.cwd,
-    maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
-  });
-  return { stdout };
-};
-
 /**
  * Like realExec, but throws ONLY for the cherry-pick range read
  * (`git rev-list --reverse --first-parent …`). Every other command —
@@ -88,7 +79,7 @@ const realExec: ExecFn = async (cmd, o) => {
  * behaves normally, so the fallback fires and completes.
  */
 const brokenRangeExec: ExecFn = async (cmd, o) => {
-  if (cmd.includes("git rev-list --reverse")) {
+  if (commandOf(cmd, o).includes("git rev-list --reverse")) {
     throw new Error("simulated rev-list failure (range read)");
   }
   return realExec(cmd, o);
