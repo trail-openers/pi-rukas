@@ -117,11 +117,13 @@ export async function ensureIntegrateWorktree(
   try {
     return await createIntegrateWorktree(execFn, opts, stateFile, kept);
   } catch (err) {
-    if (kept.ref === undefined) throw err;
-    const e = err as Error & { stderr?: string };
-    throw new Error(
-      `${(e.stderr ?? e.message ?? String(err)).toString().trim()} (the stale integrate tree's unpushed commits were kept on ${kept.ref})`,
-    );
+    if (kept.ref === undefined || !(err instanceof Error)) throw err;
+    // Annotate in place: the error keeps its class (DirtyWorktreeError stays one).
+    const note = ` (the stale integrate tree's unpushed commits were kept on ${kept.ref})`;
+    const e = err as Error & { stderr?: unknown };
+    e.message += note;
+    if (typeof e.stderr === "string" && e.stderr) e.stderr += note;
+    throw err;
   }
 }
 
