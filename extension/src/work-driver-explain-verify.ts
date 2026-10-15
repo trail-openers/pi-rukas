@@ -181,3 +181,27 @@ export function explainVerifyFailed(cap: Cap, state: WorkState): string {
   const merged = step === "develop" ? mergedSplitNote(state) : "";
   return `the driver's outcome-verification gate rejected the ${step} step's "done" claim — the claimed result is not backed by executed evidence:${findings}${suffix}${merged}\nNo LLM judged this; the driver ran the checks itself (git diff/rev-list, the project's verify command, gh pr view). ${advice} Set PI_ENSEMBLE_VERIFY=0 to disable the gate (not recommended)`;
 }
+
+/**
+ * #1324 — `verify-timeout:<step>`: the verify run was killed at its bound, so
+ * nothing judged the code. The findings carry the bound; the recovery is
+ * about time and host load, not the diff. The develop gate records its
+ * findings on verifyEvidence; the commit-pr seam carries them on the cap.
+ */
+export function explainVerifyTimeout(cap: Cap, state: WorkState): string {
+  const step = cap.slice("verify-timeout:".length);
+  const evidence = state.pipelineState.verifyEvidence;
+  const capEvidence = lastCapHit(state, cap)?.evidence;
+  const failures =
+    evidence?.step === step && evidence.failures.length > 0
+      ? evidence.failures
+      : capEvidence
+        ? [capEvidence]
+        : [];
+  const findings = failures.map((f) => `\n  - ${f}`).join("") || " (no detail recorded)";
+  const knob =
+    step === "commit-pr"
+      ? "PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS"
+      : "PI_ENSEMBLE_VERIFY_TIMEOUT_MS";
+  return `the ${step} step's verify command TIMED OUT — the run was killed at its bound (${knob}) and reached no verdict, so this is not a code failure and the change is neither confirmed nor refuted:${findings}${retryLine(evidence?.step === step ? evidence : undefined)}\nGive the gate more time or more of the host, then re-run the cycle: raise ${knob}, or reduce concurrency (fewer workstreams with PI_ENSEMBLE_MAX_WORKSTREAMS, fewer cycles at once with PI_ENSEMBLE_PARALLEL_GROUPS, nothing else heavy on the host). A \`.pi/verify-cmd-fast\` (typecheck/lint) runs before the full command and fails fast on a type error. Do not set PI_ENSEMBLE_VERIFY=0 for this: the gate did not reject the change, it did not finish`;
+}
