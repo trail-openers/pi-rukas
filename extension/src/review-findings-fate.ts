@@ -54,6 +54,8 @@ export type ReviewKind = "full" | "delta" | "incomplete";
 export interface HeadState {
   /** The row's path is absent at head. */
   pathGone: boolean;
+  /** The row's path cannot name a file at head (unsafe, or a directory): never resolves. */
+  invalid?: boolean;
   /** The head file's lines; undefined when the path is absent. */
   lines?: readonly string[];
 }
@@ -89,6 +91,7 @@ function indexOf(lines: readonly string[]): HeadIndex {
 /** The resolve/carry decision for one untouched open row. */
 export function rowFate(row: StoredFinding, head: HeadState, review: ReviewKind): RowFate {
   const full = review === "full";
+  if (head.invalid) return CARRY;
   if (head.pathGone) return full ? { kind: "resolve", reason: "path-gone" } : CARRY;
   const lines = head.lines;
   if (!lines || row.line === undefined || row.snippetHash === NO_LINE_SNIPPET) return CARRY;

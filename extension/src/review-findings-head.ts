@@ -16,12 +16,15 @@ const execFileP = promisify(execFile);
 /**
  * `lines`: the file exists at the commit. `missing`: the commit is readable but
  * the path is not in it (a lens cited a wrong or stale path) — recorded as a
- * no-line finding. `error`: git itself failed (bad sha, I/O) — the round cannot
- * be recorded.
+ * no-line finding and its rows are path-gone. `invalid`: the path cannot name a
+ * file at the commit (unsafe, or a directory/tree) — a no-line finding, but its
+ * rows are carried, never path-gone. `error`: git itself failed (bad sha, I/O)
+ * — the round cannot be recorded.
  */
 export type HeadLines =
   | { kind: "lines"; lines: string[] }
   | { kind: "missing" }
+  | { kind: "invalid" }
   | { kind: "error"; reason: string };
 
 /** A repo-relative path that git can show at a commit without option injection. */
@@ -39,13 +42,30 @@ const PATH_ABSENT_AT_HEAD = /does not exist in|exists on disk, but not in/;
  * returned for a git failure: it would give every finding a fake identity.
  */
 export async function readHeadLines(cwd: string, sha: string, file: string): Promise<HeadLines> {
-  if (!safeRepoPath(file)) return { kind: "missing" };
+  if (!safeRepoPath(file)) return { kind: "invalid" };
   try {
     await execFileP("git", ["-C", cwd, "cat-file", "-e", `${sha}^{commit}`]);
   } catch (err) {
     return {
       kind: "error",
       reason: `cannot read ${file} at ${sha.slice(0, 12)}: not a commit in this clone (${(err as Error).message.slice(0, 80)})`,
+    };
+  }
+  // `git show` exits 0 with a tree listing for a directory, so the object type
+  // is checked first: only a blob is a file that has lines.
+  try {
+    const { stdout: type } = await execFileP(
+      "git",
+      ["-C", cwd, "cat-file", "-t", `${sha}:${file}`],
+      { env: { ...process.env, LC_ALL: "C" } },
+    );
+    if (type.trim() !== "blob") return { kind: "invalid" };
+  } catch (err) {
+    const stderr = String((err as { stderr?: unknown }).stderr ?? "");
+    if (PATH_ABSENT_AT_HEAD.test(stderr)) return { kind: "missing" };
+    return {
+      kind: "error",
+      reason: `cannot read ${file} at ${sha.slice(0, 12)}: ${(err as Error).message.slice(0, 120)}`,
     };
   }
   try {

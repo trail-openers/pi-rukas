@@ -284,6 +284,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
         : undefined;
     const linesByPath = new Map<string, string[]>();
     const missingPaths = new Set<string>();
+    const invalidPaths = new Set<string>();
     // A git read error refuses the whole round (readHeadLines): nothing is
     // suppressed or resolved on evidence that could not be read.
     // Open rows' paths are read too: a round resolves or carries one forward only
@@ -292,17 +293,18 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
       .filter((r) => r.status === "open")
       .map((r) => r.path);
     for (const p of [...run.findings.map((f) => f.path), ...openPaths]) {
-      if (linesByPath.has(p) || missingPaths.has(p)) continue;
+      if (linesByPath.has(p) || missingPaths.has(p) || invalidPaths.has(p)) continue;
       const head = await readHeadLines(run.cwd, run.headSha, p);
       if (head.kind === "error") return { ok: false, reason: head.reason };
       if (head.kind === "missing") missingPaths.add(p);
+      else if (head.kind === "invalid") invalidPaths.add(p);
       else linesByPath.set(p, head.lines);
     }
-    // A path absent at head has no line to cite: the finding is a no-line one,
-    // and it is never suppressed (there is no code it could be unchanged against).
-    const findings = run.findings.map((f) =>
-      missingPaths.has(f.path) ? { ...f, line: undefined } : f,
-    );
+    // A path absent at head (or not a file at head) has no line to cite: the
+    // finding is a no-line one, and it is never suppressed (there is no code it
+    // could be unchanged against).
+    const noFile = (p: string) => missingPaths.has(p) || invalidPaths.has(p);
+    const findings = run.findings.map((f) => (noFile(f.path) ? { ...f, line: undefined } : f));
     const identities = findings.map((f) => identityOf(f, linesByPath.get(f.path) ?? []));
     const out = await mutateFindings(run.cwd, (all) => {
       const others = all.filter((r) => r.branch !== run.branch);
@@ -313,7 +315,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
       findings.forEach((f, i) => {
         const id = identities[i] as FindingIdentity;
         const critical = f.severity === "CRITICAL";
-        const gone = missingPaths.has(f.path);
+        const gone = noFile(f.path);
         const row = pickMatch(id, mine);
         if (!row) {
           const fresh: StoredFinding = {
@@ -397,7 +399,11 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
         if (r.status !== "open" || touched.has(r.id)) return;
         const fate = rowFate(
           r,
-          { pathGone: missingPaths.has(r.path), lines: linesByPath.get(r.path) },
+          {
+            pathGone: missingPaths.has(r.path),
+            invalid: invalidPaths.has(r.path),
+            lines: linesByPath.get(r.path),
+          },
           run.review,
         );
         if (fate.kind === "resolve") {
