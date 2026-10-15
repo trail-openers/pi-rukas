@@ -23,6 +23,9 @@
  * says: that a claim only becomes permission when its citation checks out.
  */
 
+import { mkdtempSync, readFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { resolveMergeAuthority } from "../src/work-driver-merge-authority.ts";
 import {
   type DoctrineDoc,
@@ -295,6 +298,65 @@ const docs = (text: string, file = "AGENTS.md"): DoctrineDoc[] => [{ file, text 
     !hallucinated.granted && hallucinated.source === "citation-failed",
     "a failed citation is recorded as its own source, distinct from 'no rule found'",
   );
+}
+
+// ------------------------- #1308 S2 — the judge runs through the decision seam
+
+{
+  const root = mkdtempSync(path.join(os.tmpdir(), "policy-seam-"));
+  const where = { repoRoot: root, issues: [42] };
+  const log = () =>
+    readFileSync(path.join(root, ".pi", "work-state", "42", "decisions.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+  const fabricated = judgeSaying({
+    verdict: "permitted",
+    quote: "Agents may merge pull requests whenever they judge it right.",
+    sourceFile: "AGENTS.md",
+  });
+  const HUMAN = docs("Please ask a maintainer to merge on your behalf.\n");
+  const denied = await askPolicy(fabricated, MERGE_POLICY_QUESTION, HUMAN, where);
+  assert(
+    !denied.permitted && denied.citationFailed === true,
+    "the judge says 'permitted' but the citation fails verification → denied",
+  );
+  const rec = log().at(-1);
+  assert(
+    rec?.seam === "policy-judge" &&
+      rec.backends?.[0]?.answer === "permitted" &&
+      rec.evidence?.passed === false &&
+      rec.final?.answer === "unstated",
+    "...and the seam's record shows the judge's 'permitted', the failed evidence and the deny",
+  );
+
+  const GRANT = "Agents may squash-merge a PR to main once CI is green.";
+  const honest = judgeSaying({ verdict: "permitted", quote: GRANT, sourceFile: "AGENTS.md" });
+  const saved = {
+    d: process.env.PI_ENSEMBLE_DECISIONS,
+    m: process.env.PI_ENSEMBLE_DECISION_MODE_POLICY_JUDGE,
+  };
+  process.env.PI_ENSEMBLE_DECISIONS = "0";
+  const killed = await askPolicy(honest, MERGE_POLICY_QUESTION, docs(GRANT), where);
+  assert(
+    killed.permitted,
+    "PI_ENSEMBLE_DECISIONS=0 does NOT change the judge — a verified grant is still honoured",
+  );
+  assert(
+    !(await askPolicy(fabricated, MERGE_POLICY_QUESTION, HUMAN, where)).permitted,
+    "...and a fabricated one is still denied",
+  );
+  delete process.env.PI_ENSEMBLE_DECISIONS;
+  process.env.PI_ENSEMBLE_DECISION_MODE_POLICY_JUDGE = "shadow";
+  assert(
+    (await askPolicy(honest, MERGE_POLICY_QUESTION, docs(GRANT), where)).permitted,
+    "the grandfathered judge ignores a per-seam mode override — only PI_ENSEMBLE_POLICY_JUDGE governs it",
+  );
+  if (saved.d === undefined) delete process.env.PI_ENSEMBLE_DECISIONS;
+  else process.env.PI_ENSEMBLE_DECISIONS = saved.d;
+  if (saved.m === undefined) delete process.env.PI_ENSEMBLE_DECISION_MODE_POLICY_JUDGE;
+  else process.env.PI_ENSEMBLE_DECISION_MODE_POLICY_JUDGE = saved.m;
+  assert(log().length === 4, "every judged call wrote exactly one decision-log record");
 }
 
 console.log(`\nexit ${exit}`);

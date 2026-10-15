@@ -155,6 +155,8 @@ export async function runLens(
   const thresholdDecision = await resolveReviewThreshold(
     judgePolicy(ctx.repoRoot, { processGroup: ctx.processGroup === true, signal: ctx.signal }),
     docs,
+    undefined,
+    { repoRoot: ctx.repoRoot, issues: ctx.issues ?? [ctx.issue] },
   );
   trace(`work-driver: lens-review — blocking severity ${thresholdDecision.severity}`);
   const threshold = thresholdDecision.severity;

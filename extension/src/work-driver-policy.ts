@@ -58,9 +58,14 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import type { Backend } from "./decision-backends.ts";
+import { citationPresent } from "./decision-evidence.ts";
+import { type DecisionWhere, decide } from "./decision-seam.ts";
 import { reporterPathFromArgs, statReporterPath } from "./reporter-preflight.ts";
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import { trace } from "./trace.ts";
+
+export { citationPresent, normaliseForCitation } from "./decision-evidence.ts";
 
 export type PolicyVerdict = "permitted" | "forbidden" | "unstated";
 
@@ -92,31 +97,6 @@ export interface PolicyDecision {
   citationFailed?: boolean;
   /** Operator-facing explanation of the outcome. */
   reason: string;
-}
-
-/**
- * Normalise text for citation comparison.
- *
- * Verbatim "modulo formatting": a judge that copies a sentence spanning a line
- * wrap, or drops the `**` around a bolded word, is quoting honestly and should
- * pass. A judge that invents a sentence should not. Markdown emphasis, list
- * bullets and whitespace runs are therefore flattened, and nothing else is.
- */
-export function normaliseForCitation(s: string): string {
-  return s
-    .replace(/[*_`]/g, "")
-    .replace(/^\s*[-+*>]\s+/gm, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-}
-
-/** Does `quote` actually appear in `text`? */
-export function citationPresent(quote: string, text: string): boolean {
-  const q = normaliseForCitation(quote);
-  // A trivially short "quote" would match almost anything; it is not evidence.
-  if (q.length < 12) return false;
-  return normaliseForCitation(text).includes(q);
 }
 
 /**
@@ -323,6 +303,7 @@ export async function askPolicy(
   judge: PolicyJudgeFn,
   question: string,
   docs: readonly DoctrineDoc[],
+  where: DecisionWhere = {},
 ): Promise<PolicyDecision> {
   if (!policyJudgeEnabled()) {
     return {
@@ -338,17 +319,50 @@ export async function askPolicy(
       reason: "the project has no doctrine documents at the cycle's base commit",
     };
   }
-  let result: { toolUses: unknown[] } | undefined;
-  try {
-    result = await judge(policyPrompt(question, docs));
-  } catch (err) {
+  // #1308 S2 — the judge child is this seam's only backend. decide() applies
+  // the grandfathered replace composition: the judge's answer becomes the
+  // outcome only when its quote verifies in a supplied document.
+  let thrown: { message?: string } | undefined;
+  let answer: PolicyAnswer | undefined;
+  const backend: Backend = {
+    name: "policy-judge",
+    source: "llm",
+    run: async () => {
+      try {
+        answer = extractPolicyAnswer((await judge(policyPrompt(question, docs)))?.toolUses ?? []);
+      } catch (err) {
+        thrown = { message: (err as Error).message };
+        return { ok: false, error: `the judge threw: ${thrown.message}` };
+      }
+      return answer
+        ? { ok: true, answer: answer.verdict, quote: answer.quote, cited: answer.sourceFile }
+        : { ok: false, error: "no report_policy call" };
+    },
+  };
+  const texts = docs.map((d) => ({ name: d.file, text: d.text }));
+  const seam = await decide(
+    "policy-judge",
+    { state: { question, documents: texts }, question, rule: "unstated", evidence: { texts } },
+    { ...where, backends: [backend] },
+  );
+  // Snapshot: a judge still running past decide()'s bound cannot change this.
+  const judged = answer;
+  if (thrown) {
     return {
       permitted: false,
       verdict: "unstated",
-      reason: `the policy judge could not be consulted (${(err as Error).message?.slice(0, 160)}), and an unavailable judge is not permission`,
+      reason: `the policy judge could not be consulted (${thrown.message?.slice(0, 160)}), and an unavailable judge is not permission`,
     };
   }
-  const decision = decidePolicy(extractPolicyAnswer(result?.toolUses ?? []), docs);
+  let decision = decidePolicy(judged, docs);
+  // Both checks must agree before anything is permitted.
+  if (decision.permitted && seam.answer !== "permitted") {
+    decision = {
+      permitted: false,
+      verdict: "unstated",
+      reason: `the decision seam did not confirm the grant (${seam.reason ?? "no reason"}), so it is not honoured`,
+    };
+  }
   if (decision.citationFailed) {
     trace(`work-driver: policy — CITATION FAILED: ${decision.reason}`);
   } else {

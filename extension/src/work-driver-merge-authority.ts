@@ -30,6 +30,7 @@
  * in both directions.
  */
 
+import type { DecisionWhere } from "./decision-seam.ts";
 import { mergeEvidenceViewCmd, prChecksCmd } from "./forge-commands.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import {
@@ -95,11 +96,12 @@ export async function resolveMergeAuthority(
   judge: PolicyJudgeFn,
   docs: readonly DoctrineDoc[],
   operatorGrant?: boolean,
+  where?: DecisionWhere,
 ): Promise<MergeAuthority> {
   if (operatorGrant === true) {
     return { granted: true, source: "operator", quote: "operator granted merge for this run" };
   }
-  const decision = await askPolicy(judge, MERGE_POLICY_QUESTION, docs);
+  const decision = await askPolicy(judge, MERGE_POLICY_QUESTION, docs, where);
   if (decision.permitted) {
     return { granted: true, source: "doctrine", quote: decision.quote, reason: decision.reason };
   }

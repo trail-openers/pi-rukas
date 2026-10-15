@@ -58,6 +58,13 @@ interface Seam {
 
 const SEAMS: Seam[] = [
   {
+    // #1308 — the generic decision seam. The policy judge (S2) is its first
+    // production caller; further seams (S3/S4) register and call it later.
+    file: "decision-seam.ts",
+    pending: {},
+    canary: { symbol: "decide", importer: "work-driver-policy.ts" },
+  },
+  {
     // #1020 — the host seam. piSessionHost is the only Pi-touching driver
     // surface; commands.ts is its production caller.
     file: "work-driver-host.ts",
