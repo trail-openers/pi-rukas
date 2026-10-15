@@ -157,6 +157,7 @@ export async function buildCompletionEvent(
         ms: result.ms,
         at,
         providerMessage: result.errorStop.message,
+        ...(result.providerRepeats ? { providerRepeats: result.providerRepeats } : {}),
         transcriptPath: result.transcriptPath,
       },
       result.usage,
