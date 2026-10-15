@@ -23,6 +23,8 @@
  *     re-pointed to the surviving id (the fold returns the full updated map).
  *   - scope — annotated with the absorbed id.
  *   - integrationTest — the surviving half's, else the absorbed half's.
+ *   - introduces / consumes (#1322) — union of both halves (absent when both
+ *     are empty, so a fold of contract-less halves keeps the old shape).
  *
  * Pure: returns a NEW map; the input is never mutated.
  */
@@ -83,6 +85,11 @@ export function foldTwo(a: Workstream, b: Workstream): Workstream {
   for (const d of [...(a.dependsOn ?? []), ...(b.dependsOn ?? [])]) {
     if (d !== a.id && d !== b.id) mergedDeps.add(d);
   }
+  const union = (x?: string[], y?: string[]): string[] => [
+    ...new Set([...(x ?? []), ...(y ?? [])]),
+  ];
+  const introduces = union(a.introduces, b.introduces);
+  const consumes = union(a.consumes, b.consumes);
   return {
     id: a.id,
     scope: `${a.scope} (+merged: ${b.id})`,
@@ -92,5 +99,7 @@ export function foldTwo(a: Workstream, b: Workstream): Workstream {
     ...((a.integrationTest ?? b.integrationTest)
       ? { integrationTest: a.integrationTest ?? b.integrationTest }
       : {}),
+    ...(introduces.length > 0 ? { introduces } : {}),
+    ...(consumes.length > 0 ? { consumes } : {}),
   };
 }
