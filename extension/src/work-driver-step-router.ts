@@ -24,6 +24,7 @@ import {
   classifyFailureCause,
   failureCauseReason,
   failureCauseReasonForClass,
+  isFinalProviderFault,
   jitteredMs,
   transientRetryBackoffMs,
   transientRetryEnabled,
@@ -138,7 +139,9 @@ export async function routeStepOutcome(
       // provider-blame lines with no retraction on recovery.
       const policy = STEP_FAILURE_POLICY[step];
       const semanticRetryAvailable =
-        policy === "RETRY_ONCE" && (state.pipelineState.retryAttempts?.[step] ?? 0) < 1;
+        policy === "RETRY_ONCE" &&
+        !isFinalProviderFault(classification) &&
+        (state.pipelineState.retryAttempts?.[step] ?? 0) < 1;
       const transientRetryAvailable =
         policy === "HALT" &&
         transientRetryEnabled() &&
@@ -370,7 +373,11 @@ export async function routeStepOutcome(
           ? (state.pipelineState.transientRetryAttempts ?? {})
           : (state.pipelineState.retryAttempts ?? {});
         const used = attempts[step] ?? 0;
-        const budget = infra ? classification.maxRetries : 1;
+        const budget = isFinalProviderFault(classification)
+          ? 0
+          : infra
+            ? classification.maxRetries
+            : 1;
         if (used < budget) {
           const bumped = { ...attempts, [step]: used + 1 };
           state = {

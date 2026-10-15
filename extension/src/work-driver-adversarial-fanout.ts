@@ -286,6 +286,9 @@ export async function fanOutAdversarial(
       // A pass that carried unresolved findings says so in its headline.
       passFindings: reading.passFindings,
       errorTail: result.errorStop?.message ?? undefined,
+      // #1297 — the loop's identical-error ladder count so the in-step retry
+      // and the step router read a repeated provider fault as final.
+      ...(result.providerRepeats ? { providerRepeats: result.providerRepeats } : {}),
       // #543 — thread a loop / token-budget cap kill (+ its trigger
       // evidence) so the aggregate parks with the fixed-literal cap
       // INSTEAD of the generic infra cap (see work-driver-adversarial).

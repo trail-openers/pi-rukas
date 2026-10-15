@@ -70,6 +70,76 @@ export function jitteredMs(baseMs: number, floorMs = 0, rand: () => number = Mat
 }
 
 /**
+ * #1297 — observed: `404: {"message":"model \"qwen3.8-flash-next\" not found",
+ * "type":"not_found"}`. The endpoint is reachable but does not serve the
+ * configured model; re-spawning asks the same question and gets the same
+ * answer. Matched deliberately narrow — a bare 404 (a missing repo, a dead
+ * path) is NOT a model fault and keeps the `provider-severed` treatment.
+ */
+const MODEL_NOT_FOUND_PATTERN =
+  /\b404\b.{0,80}\bnot[ _-]?found\b|\bmodel\b[^\n]{0,80}?\bnot found\b/i;
+
+export function isModelNotFoundMsg(msg: string | undefined): boolean {
+  return msg ? MODEL_NOT_FOUND_PATTERN.test(msg) : false;
+}
+
+/**
+ * #1297 — classify the PROVIDER half of a failure from the provider's own
+ * message (429 family / spend cap / model-not-found / transport severance).
+ * Shared by the step-level `classifyFailureCause` and the adversarial loop's
+ * `classifyDispatchOutcome` so a reviewer child and a step dispatch cannot
+ * disagree about what a given provider error means. KillCause classification
+ * stays in the caller — it wins over the provider half in both.
+ *
+ * `providerMessage` is the structured provider error; `fallback` (a step
+ * event's errorTail) is consulted only for the 429/severance families — the
+ * model-not-found match is read from the provider's own message only, never
+ * from a child's prose.
+ */
+export function classifyProviderFault(
+  message: string,
+  fallback?: string,
+): {
+  cause: DispatchFailureCause;
+  shouldRetry: boolean;
+  maxRetries: number;
+  /** #366 — provider-requested wait, when it stated one. */
+  waitMs?: number;
+} {
+  if (isRateLimit429Msg(message) || (!message && isRateLimit429Msg(fallback))) {
+    if (isSpendCapMsg(message)) {
+      return { cause: "rate-limited:quota-terminal", shouldRetry: false, maxRetries: 0 };
+    }
+    const delayS = parseRetryDelaySeconds(message || (fallback ?? ""));
+    if (delayS === undefined) {
+      // Unreadable message — keep the conservative pre-#366 halt rather than
+      // guessing a wait that might be a day long.
+      return { cause: "rate-limited:429", shouldRetry: false, maxRetries: 0 };
+    }
+    if (delayS <= burstThresholdSeconds()) {
+      return {
+        cause: "rate-limited:burst",
+        shouldRetry: true,
+        maxRetries: TRANSIENT_MAX_RETRIES,
+        waitMs: Math.ceil(delayS * 1000),
+      };
+    }
+    return {
+      cause: "rate-limited:quota-window",
+      shouldRetry: false,
+      maxRetries: 0,
+      waitMs: Math.ceil(delayS * 1000),
+    };
+  }
+  // #1297 — the endpoint does not serve the configured model. Read from the
+  // provider's own message only, never from a child's prose (fallback).
+  if (isModelNotFoundMsg(message)) {
+    return { cause: "provider-model-unavailable", shouldRetry: false, maxRetries: 0 };
+  }
+  return { cause: "provider-severed", shouldRetry: true, maxRetries: TRANSIENT_MAX_RETRIES };
+}
+
+/**
  * #308/#314 — classify a dispatch-failure event by its ROOT CAUSE so the retry
  * router can branch on structure (killCause / 429 / errorStop) instead of
  * regex-matching errorTail strings. Uses shared DispatchFailureCause type
@@ -128,41 +198,11 @@ export function classifyFailureCause(tail: {
     return { cause: "self-killed:plan-timeout", shouldRetry: false, maxRetries: 0 };
   }
 
-  // 429 rate-limit. #366 — read the delay the provider actually asked for
-  // instead of treating every 429 as permanently fatal. A per-minute token
-  // bucket and a 24-hour quota exhaustion arrive as the same status code and
-  // differ only in that number; conflating them is what turned a 60-second
-  // wait into a dead cycle and 11 unstarted issues.
-  const msg = tail.providerMessage ?? tail.errorTail ?? "";
-  if (isRateLimit429Msg(msg)) {
-    if (isSpendCapMsg(msg)) {
-      return { cause: "rate-limited:quota-terminal", shouldRetry: false, maxRetries: 0 };
-    }
-    const delayS = parseRetryDelaySeconds(msg);
-    if (delayS === undefined) {
-      // Unreadable message — keep the conservative pre-#366 halt rather than
-      // guessing a wait that might be a day long.
-      return { cause: "rate-limited:429", shouldRetry: false, maxRetries: 0 };
-    }
-    if (delayS <= burstThresholdSeconds()) {
-      return {
-        cause: "rate-limited:burst",
-        shouldRetry: true,
-        maxRetries: TRANSIENT_MAX_RETRIES,
-        waitMs: Math.ceil(delayS * 1000),
-      };
-    }
-    return {
-      cause: "rate-limited:quota-window",
-      shouldRetry: false,
-      maxRetries: 0,
-      waitMs: Math.ceil(delayS * 1000),
-    };
-  }
-
-  // Provider error-stop (transport severance, provider timeout, etc).
+  // Provider half (429 family / spend cap / model-not-found / transport
+  // severance). #1297 — shared with the adversarial loop's classifier via
+  // classifyProviderFault so the two cannot disagree on a given message.
   if (tail.kind === "dispatch-failed-provider") {
-    return { cause: "provider-severed", shouldRetry: true, maxRetries: TRANSIENT_MAX_RETRIES };
+    return classifyProviderFault(tail.providerMessage ?? "", tail.errorTail);
   }
 
   // Non-zero exit with no structured signal — generic crash. Retry once as safety net.
@@ -211,6 +251,8 @@ export function failureCauseReason(tail: {
       return "provider spend cap reached — waiting will not clear this";
     case "provider-severed":
       return `provider/transport error: ${tail.providerMessage ?? tail.errorTail?.slice(0, 60) ?? "connection lost"}`;
+    case "provider-model-unavailable":
+      return `provider does not serve the configured model (404 / model not found) — re-dispatching cannot help: ${(tail.providerMessage ?? tail.errorTail ?? "").slice(0, 120)}`;
     case "crashed":
       return `subagent failed: ${tail.errorTail?.slice(0, 60) ?? "non-zero exit"}`;
     case "crashed-unknown":
@@ -254,6 +296,8 @@ export function failureCauseReasonForClass(
       return "provider spend cap reached — waiting will not clear this";
     case "provider-severed":
       return `provider/transport error: ${tail.providerMessage ?? tail.errorTail?.slice(0, 60) ?? "connection lost"}`;
+    case "provider-model-unavailable":
+      return `provider does not serve the configured model (404 / model not found) — re-dispatching cannot help: ${(tail.providerMessage ?? tail.errorTail ?? "").slice(0, 120)}`;
     case "crashed":
       return `subagent failed: ${tail.errorTail?.slice(0, 60) ?? "non-zero exit"}`;
     case "crashed-unknown":

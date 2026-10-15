@@ -94,6 +94,13 @@ export interface DispatchResult {
     message?: string;
   };
   /**
+   * #1297 — set only on the synthesized adversarial-loop infra result: how
+   * many reviewer children in a row died on this same provider error before
+   * the loop stopped re-spawning. ≥2 tells every outer retry layer that the
+   * provider is still failing the same way, so none of them re-dispatch it.
+   */
+  providerRepeats?: number;
+  /**
    * Set when pi-rukas itself ended the child (#296): "timeout" = per-role
    * wall-clock cap, "inactivity" = no child stdout for the inactivity window,
    * "abort" = user cancel / driver abort propagated. Downstream classification
@@ -261,6 +268,8 @@ export type DispatchFailureCause =
   /** #366 — spend cap. Waiting genuinely does not help. */
   | "rate-limited:quota-terminal"
   | "provider-severed"
+  /** #1297 — the provider answers that the configured model does not exist (404 / model-not-found). Re-spawning asks the same question. */
+  | "provider-model-unavailable"
   /** #543 — the F1 loop detector ended the child; a repeating call is not a provider fault. */
   | "self-killed:loop"
   /** #543 — the F6 cumulative token budget was crossed; spend cap, not a provider fault. */
