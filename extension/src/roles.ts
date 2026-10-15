@@ -20,6 +20,11 @@ export const ROLE_NAMES = [
 
 export type RoleName = (typeof ROLE_NAMES)[number];
 
+/** The roles a specialist is spawned as: every role but the parent's own. */
+export const SUBAGENT_ROLE_NAMES = ROLE_NAMES.filter(
+  (r): r is Exclude<RoleName, "project-manager"> => r !== "project-manager",
+);
+
 /**
  * The literal role string for the lens-review child, shared by every site
  * that must match it by name (token budget default in spawn-support.ts,
