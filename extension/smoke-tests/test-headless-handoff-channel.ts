@@ -13,14 +13,13 @@
  *   - `--capabilities` lists the input and the features.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Forge } from "../src/forge.ts";
 import { buildCapabilities } from "../src/headless/capabilities.ts";
 import { projectIssue } from "../src/headless/result.ts";
-import { attachHandoffBodies } from "../src/headless/run.ts";
 import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import {
@@ -29,9 +28,18 @@ import {
   parseHandoffMarker,
   withHandoffMarker,
 } from "../src/work-driver-handoff-channel.ts";
+import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
 import { renderHandoffUserMessage } from "../src/work-driver-handoff-message.ts";
-import { runHandoff } from "../src/work-driver-handoff.ts";
-import { type WorkState, appendEvent, initialState } from "../src/workflow-state.ts";
+import { runHandoff, setHandoffThrowForTestForTest } from "../src/work-driver-handoff.ts";
+import { setPlanThrowForTestForTest } from "../src/work-driver-plan.ts";
+import { runWorkDriver } from "../src/work-driver.ts";
+import {
+  type WorkState,
+  appendEvent,
+  initialState,
+  readState,
+  writeState,
+} from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -148,6 +156,32 @@ function mkCtx(dir: string, issue: number, forge: Forge, dispatched: string[]): 
     );
     const ev = next.eventLog.find((e) => e.kind === "handoff-emitted");
     assert(ev?.kind === "handoff-emitted" && ev.delivery !== "host", "forge: delivery is not host");
+    // Byte-identical apart from the marker line: the posted comment, the body
+    // file and the recorded body are one text, and stripping the marker line
+    // gives exactly what the renderer produced for the state it rendered.
+    const posted = bodies[0] ?? "";
+    const file = readFileSync(path.join(dir, "tmp", "issue-501", "handoff-comment.md"), "utf8");
+    assert(
+      file === posted && ev?.kind === "handoff-emitted" && ev.body === posted,
+      "forge: posted = file = recorded body",
+    );
+    const rendered = renderHandoffMarkdown(
+      {
+        ...next,
+        pipelineState: { ...next.pipelineState, status: "running" },
+        eventLog: next.eventLog.filter(
+          // The state as rendered: before the ops dispatch and the emitted event.
+          (e) =>
+            e.kind !== "handoff-emitted" &&
+            !(e.kind.startsWith("dispatch-") && "step" in e && e.step === "handoff"),
+        ),
+      },
+      "github",
+    );
+    assert(
+      posted === `${marker}\n${rendered}`,
+      "forge: the body is the renderer's output with only the marker line added",
+    );
     const r = projectIssue(next, "state.json");
     assert(r.handoff?.channel === "forge", "forge: the result's handoff channel is forge");
     assert(
@@ -188,7 +222,6 @@ function mkCtx(dir: string, issue: number, forge: Forge, dispatched: string[]): 
     assert(msg.includes("Handoff channel: host"), "host: the chat message names the host channel");
 
     const r = projectIssue(next, "state.json");
-    await attachHandoffBodies([r]);
     const marker = handoffMarker(502, "intent-park");
     assert(
       r.cap === "intent-park" && r.parkReason === "too-large",
@@ -209,6 +242,113 @@ function mkCtx(dir: string, issue: number, forge: Forge, dispatched: string[]): 
       "host: the full handoff body (marker first) is in the result",
     );
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ── 6. Host: a failed body-file write loses nothing, and the result never
+//    reads the file, so a stale or overwritten file cannot replace the body.
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "handoff-channel-nofile-"));
+  try {
+    process.env[ENV] = "host";
+    mkdirSync(path.join(dir, "tmp"), { recursive: true });
+    writeFileSync(path.join(dir, "tmp", "issue-504"), "a file where the scratch dir goes");
+    const { forge } = recordingForge();
+    const next = await runHandoff(mkCtx(dir, 504, forge, []), capped(504, "round-cap"), Date.now());
+    const r = projectIssue(next, "state.json");
+    assert(
+      r.handoff?.body?.startsWith(handoffMarker(504, "round-cap")) === true && !r.handoff.bodyError,
+      "host: the body reaches the result even when its file could not be written",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const dir2 = mkdtempSync(path.join(tmpdir(), "handoff-channel-stale-"));
+  try {
+    const { forge } = recordingForge();
+    const next = await runHandoff(
+      mkCtx(dir2, 505, forge, []),
+      capped(505, "round-cap"),
+      Date.now(),
+    );
+    const file = path.join(dir2, "tmp", "issue-505", "handoff-comment.md");
+    writeFileSync(file, "STALE body from another cycle");
+    const r = projectIssue(next, "state.json");
+    assert(
+      r.handoff?.body?.includes("STALE") === false,
+      "host: a rewritten body file does not change the result",
+    );
+    const restarted = projectIssue(initialState(505, Date.now()), "state.json");
+    assert(
+      restarted.handoff === undefined,
+      "host: a restarted cycle reports no earlier cycle's body",
+    );
+    const legacy = {
+      ...next,
+      eventLog: next.eventLog.map((e) =>
+        e.kind === "handoff-emitted" ? { ...e, body: undefined } : e,
+      ),
+    };
+    const lr = projectIssue(legacy as WorkState, "state.json");
+    assert(
+      lr.handoff?.body === undefined && lr.handoff?.bodyError === "not-recorded",
+      "an event without a body says so",
+    );
+  } finally {
+    delete process.env[ENV];
+    rmSync(dir2, { recursive: true, force: true });
+  }
+}
+
+// ── 7. Host: the handoff step itself throws. The cycle aborts (no re-route),
+//    but a handoff with a body is still recorded for the result.
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "handoff-channel-crash-"));
+  try {
+    process.env[ENV] = "host";
+    setPlanThrowForTestForTest(() => {
+      throw new Error("simulated plan step crash");
+    });
+    setHandoffThrowForTestForTest(() => {
+      throw new Error("simulated runHandoff crash");
+    });
+    mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
+    const s0 = initialState(506, 1_000_000);
+    await writeState(dir, {
+      ...s0,
+      pipelineState: {
+        ...s0.pipelineState,
+        currentStep: "plan",
+        lastCompletedStep: "explore",
+        status: "running",
+      },
+    } as WorkState);
+    const { forge, calls } = recordingForge();
+    const dispatched: string[] = [];
+    const ctx = mkCtx(dir, 506, forge, dispatched);
+    ctx.issueBodyFetcherFn = async (n: number) => ({
+      stdout: `title:\tissue #${n}\nstate:\tOPEN\n\nbody`,
+    });
+    await runWorkDriver(ctx);
+    const final = await readState(dir, 506);
+    assert(
+      final?.pipelineState.status === "aborted",
+      `crash: the cycle aborts (got ${final?.pipelineState.status})`,
+    );
+    const r = final ? projectIssue(final, "state.json") : undefined;
+    assert(
+      r?.handoff?.channel === "host" &&
+        r.handoff.body?.startsWith(handoffMarker(506, "driver-crash:plan")) === true &&
+        r.handoff.body.includes("simulated runHandoff crash"),
+      "crash: the result carries a host handoff body naming the crash",
+    );
+    const writes = calls.filter((c) => /comment|label(Add|Create)/.test(c));
+    assert(writes.length === 0, `crash: still nothing posted (saw: ${writes.join(",") || "none"})`);
+  } finally {
+    setPlanThrowForTestForTest(undefined);
+    setHandoffThrowForTestForTest(undefined);
+    delete process.env[ENV];
     rmSync(dir, { recursive: true, force: true });
   }
 }

@@ -178,6 +178,8 @@ export function makeHandoffEmittedEvent(opts: {
   commentUrl: string | undefined;
   labelApplied: boolean;
   handoffBodyPath: string;
+  /** #1327 — the rendered body, carried in memory (see HandoffEmittedEvent.body). */
+  body?: string;
   consolidated: boolean;
   consolidatedBranch?: string;
   consolidatedWorkstreams?: string[];
@@ -203,6 +205,7 @@ export function makeHandoffEmittedEvent(opts: {
     labelApplied,
     handoffBodyPath,
   };
+  if (opts.body !== undefined) ev.body = opts.body;
   if (delivery) ev.delivery = delivery;
   if (opts.targetType) ev.targetType = opts.targetType;
   if (opts.targetNumber !== undefined) ev.targetNumber = opts.targetNumber;

@@ -46,6 +46,12 @@ export type HandoffEmittedEvent = {
   /** Path to the handoff markdown body (PR5; back-compat with PR4 events). */
   handoffBodyPath?: string;
   /**
+   * #1327 — the handoff body itself (marker line first), so the headless
+   * result never depends on the file at `handoffBodyPath`, which a failed
+   * write leaves missing and a later cycle overwrites. Absent on older events.
+   */
+  body?: string;
+  /**
    * #798 — the explicit target object type of the handoff artefacts (where
    * the comment was posted). A reader must not have to infer this from the
    * comment URL or a sibling `prNumber` field.

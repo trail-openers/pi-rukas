@@ -349,6 +349,7 @@ export async function runHandoff(
     commentUrl,
     labelApplied,
     handoffBodyPath,
+    body: handoffMd,
     consolidated: consEvent !== undefined,
     consolidatedBranch: consEvent?.branchName,
     consolidatedWorkstreams: consEvent?.workstreams,

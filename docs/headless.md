@@ -86,7 +86,7 @@ With `--json`, stdout carries exactly one JSON document:
 | `issues[].status` | always | `merged`, `handoff`, `aborted`, `interrupted`, `running` (the driver returned without a terminal state) or `not-started`. |
 | `issues[].cap` | when a cap was hit | The last cap the cycle hit, from the published vocabulary (below). It can be set on a `merged` result too (a cap the cycle recovered from), so a host reads `status` and `exitCode` for the outcome and `cap` for the reason. |
 | `issues[].parkReason` | when `cap` is `intent-park` | Why the cycle parked: `underspecified`, `contradicted-by-code`, `already-implemented`, `too-large`, `premise-unsound` or `security-open-point`. |
-| `issues[].handoff` | once the cycle emitted a handoff | `channel` (`forge` or `host`, see [Handoff channel](#handoff-channel)); `marker`, the machine marker that is the first line of the body; `body`, the full handoff markdown (absent only if its file could not be read); `bodyFile`, a path for a person; `commentUrl`, the comment pi-rukas posted (forge channel); `labelApplied`, whether `needs-human-attention` was verified on the issue (and PR). |
+| `issues[].handoff` | once the cycle emitted a handoff | `channel` (`forge` or `host`, see [Handoff channel](#handoff-channel)); `marker`, the machine marker that is the first line of the body; `body`, the full handoff markdown, taken from the driver's record of this cycle (never re-read from the file); `bodyError` (`not-recorded`) in place of `body` when the cycle recorded none; `bodyFile`, a path for a person; `commentUrl`, the comment pi-rukas posted (forge channel); `labelApplied`, whether `needs-human-attention` was verified on the issue (and PR). |
 | `issues[].failedStep` | when the cycle did not merge and started a step | The step it stopped in: the step a `verify-failed:` / `step-failed:` / `driver-crash:` cap names, else the last step started before the cap, else the last step started. It names where the cycle stopped, not necessarily a failure: for `awaiting-human-merge` it is the last step the cycle ran (e.g. `ci`). |
 | `issues[].branch`, `prNumber`, `prUrl` | when known | `prUrl` is present only when unambiguous: the PR URL the driver recorded (its handoff comment on the PR), else one built from the project's git remote when there is exactly one remote, the forge is GitHub or GitLab, and the web address is certain (an `http(s)` remote, or ssh to github.com / gitlab.com; GitLab subgroups and explicit https ports are kept). Otherwise only `prNumber` is set. |
 | `issues[].usage` | when a state existed | Tokens, cost and turns summed over every dispatch the cycle recorded (`dispatch-completed`, `dispatch-failed` and `dispatch-failed-provider` events), and the dispatch count. It covers the current cycle only: `--restart` discards the state, so earlier cycles' cost is not included. |
@@ -160,7 +160,15 @@ When a cycle stops short of a merge, it hands off: it renders a handoff body (wh
 | Value | pi-rukas does | The host does |
 |---|---|---|
 | `forge` (default) | Posts the body as a comment (on the PR when one exists, else the issue) and applies `needs-human-attention` to the issue and the PR. | Nothing; it may read `issues[].handoff.commentUrl` and extend that comment. |
-| `host` | Posts nothing and applies no label. The cycle still ends in `handoff` with the same exit code. | Delivers `issues[].handoff.body`, using `cap` and `parkReason` to choose how. |
+| `host` | Posts no handoff comment and applies no `needs-human-attention` label (and runs no ops handoff dispatch). The cycle still ends in `handoff` with the same exit code. | Delivers `issues[].handoff.body`, using `cap` and `parkReason` to choose how. |
+
+The `host` channel covers only the handoff. Other forge writes a cycle makes still happen:
+
+- the six-pass review's residual-findings comment on the PR (with its `<!-- pi-rukas:lens-residuals … -->` marker), which the merge guard depends on;
+- the same residual findings posted to the issue when the PR was merged or closed under the cycle, or posting to it failed;
+- marking a draft PR ready for review when the review concluded (`PI_ENSEMBLE_DRAFT_PR`).
+
+The body is recorded on the cycle's `handoff-emitted` event, and the result reads it from there, not from `bodyFile`. A failed write of that file therefore loses nothing, and a later cycle's file never shows up as this cycle's body. If the handoff step itself throws on the `host` channel, the cycle ends `aborted`, but a handoff is still recorded: its body is rendered from the state as it stood, with the crash named at the top. A handoff recorded by a build without the body has `bodyError: "not-recorded"` instead of `body`.
 
 Either way, the body's first line is a machine marker, invisible when rendered:
 
@@ -180,7 +188,7 @@ What `--restart` does:
 
 - **Starts a fresh cycle.** The driver ignores the issue's state file and overwrites it. The previous cycle's event log is lost, so copy the state file first if you need it. Without `--restart`, a terminal cycle (`merged`, `handoff`, `aborted`) is refused with exit 40, and a `running` or `interrupted` one resumes (`issues[].resumable`).
 - **Overrides the attention gate (#408).** Without `--restart`, an issue labelled `needs-human-attention` is refused with exit 40 before any dispatch. With it, the gate does not refuse.
-- **Clears `needs-human-attention`** from every issue in the cycle that carries it. The restart is the answer the label asked for, and the next handoff applies it again. If the restarted cycle is interrupted, a plain re-run resumes it without hitting the gate. Clearing is best-effort and never stops the restart. The PR's copy of the label is left alone.
+- **Clears `needs-human-attention`** from every issue in the cycle that carries it, whoever applied it, including a host on the `host` channel. The restart is the answer the label asked for, and the next `forge` handoff applies it again. If the restarted cycle is interrupted, a plain re-run resumes it without hitting the gate. Clearing is best-effort and never stops the restart. A PR's copy of the label stays in place: the gate does not read it.
 
 What `--restart` does not reset or check:
 

@@ -10,7 +10,7 @@
  */
 
 import type { DispatchUsage } from "../types.ts";
-import { handoffMarker } from "../work-driver-handoff-channel.ts";
+import { handoffMarker, parseHandoffMarker } from "../work-driver-handoff-channel.ts";
 import { resumeEnabled } from "../work-driver-resume.ts";
 import type { WorkStep } from "../workflow-state-events.ts";
 import type { WorkState } from "../workflow-state.ts";
@@ -37,14 +37,20 @@ export interface StepTiming {
 
 /**
  * #1327 — the handoff the cycle emitted. With `channel: "host"` pi-rukas
- * posted nothing and applied no label: delivering `body` is the host's job.
+ * posted no handoff comment and applied no label: delivering `body` is the host's job.
  */
 export interface HandoffResult {
   channel: "forge" | "host";
   /** `<!-- pi-rukas:handoff issue=N cap=<cap> -->`, the first line of `body`. */
   marker: string;
-  /** The full handoff markdown. Absent only when its file could not be read. */
+  /**
+   * The full handoff markdown, from the driver's own record of this cycle's
+   * handoff (never re-read from `bodyFile`, which an earlier cycle may have
+   * written). Absent only on a handoff recorded before #1327: `bodyError` says so.
+   */
   body?: string;
+  /** Present instead of `body` when the cycle recorded no body. */
+  bodyError?: "not-recorded";
   /** Diagnostic path for a person, like `stateFile`. */
   bodyFile?: string;
   /** Forge channel: the comment pi-rukas posted (or an earlier identical park's). */
@@ -273,15 +279,23 @@ export function projectIssue(state: WorkState, stateFile: string): IssueResult {
   return result;
 }
 
-/** The last handoff the cycle emitted, without its body (run.ts reads that). */
+/** The marker the body actually carries, so the two can never disagree. */
+function markerOf(body: string | undefined): string | undefined {
+  const m = body ? parseHandoffMarker(body) : undefined;
+  return m ? handoffMarker(m.issue, m.cap) : undefined;
+}
+
+/** The last handoff the cycle emitted, with its body. */
 export function handoffOf(state: WorkState, cap: string | undefined): HandoffResult | undefined {
   const e = lastEvent(state, "handoff-emitted");
   if (!e) return undefined;
   const h: HandoffResult = {
     channel: e.delivery === "host" ? "host" : "forge",
-    marker: handoffMarker(state.issue, cap),
+    marker: markerOf(e.body) ?? handoffMarker(state.issue, cap),
     labelApplied: e.labelApplied,
   };
+  if (e.body !== undefined) h.body = e.body;
+  else h.bodyError = "not-recorded";
   if (e.handoffBodyPath) h.bodyFile = e.handoffBodyPath;
   if (e.commentUrl) h.commentUrl = e.commentUrl;
   return h;
