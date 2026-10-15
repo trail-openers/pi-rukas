@@ -24,7 +24,7 @@ import {
   renderFenceRecords,
   withFixViolations,
 } from "../src/adversarial-fix-guard.ts";
-import { execp } from "../src/lens-exec.ts";
+import { execp } from "../src/exec.ts";
 import type { DispatchResult } from "../src/types.ts";
 import type { ExecFn } from "../src/worktree.ts";
 

@@ -23,7 +23,7 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { execp } from "./lens-exec.ts";
+import { execp } from "./exec.ts";
 import { resolveHeadSha } from "./review-head-sha.ts";
 
 const execFileP = promisify(execFile);

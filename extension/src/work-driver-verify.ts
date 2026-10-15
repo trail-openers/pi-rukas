@@ -16,8 +16,8 @@ import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { promisify } from "node:util";
 import { execTree } from "./exec-tree.ts";
+import { execp as groupExecp } from "./exec.ts";
 import { prRange, refResolves } from "./git-range.ts";
-import { execp as groupExecp } from "./lens-exec.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { resolveMainline } from "./work-driver-git.ts";
@@ -56,7 +56,7 @@ export async function execp(
     killGroup?: boolean;
   },
 ): Promise<{ stdout: string; stderr?: string }> {
-  // #1095 — a network call (killGroup set) runs through lens-exec's group-
+  // #1095 — a network call (killGroup set) runs through exec.ts's group-
   // killing executor, so an ssh grandchild cannot outlive the timeout. Every
   // other caller takes the classic path below, unchanged.
   if (opts?.killGroup) return groupExecp(cmd, opts);

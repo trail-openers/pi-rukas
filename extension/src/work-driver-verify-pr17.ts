@@ -9,8 +9,8 @@
 
 import type { CommentEvidence } from "./comment-evidence.ts";
 import { execTree } from "./exec-tree.ts";
+import { execp as lensExecp } from "./exec.ts";
 import { countPrCommits, refResolves } from "./git-range.ts";
-import { execp as lensExecp } from "./lens-exec.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { type VerifyExecFn, resolveMainline } from "./work-driver-git.ts";
@@ -22,7 +22,7 @@ import type { WorkState } from "./workflow-state.ts";
 // #1134 follow-up — the argv form must be honoured: the previous
 // `promisify(exec)` dropped `argv`, so countPrCommits ran a bare `git` in
 // production (no verifyExecFn is injected there) and every commit-pr read as
-// unverifiable. The argv form keeps lens-exec's executor; the shell form —
+// unverifiable. The argv form keeps exec.ts's executor; the shell form —
 // the project's verify and smoke commands — is tree-killing (exec-tree.ts).
 const execp: VerifyExecFn = (cmd, opts) =>
   opts?.argv ? lensExecp(cmd, opts) : execTree(cmd, opts);

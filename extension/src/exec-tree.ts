@@ -38,6 +38,13 @@ export interface ExecTreeOpts {
   shell?: string;
   /** The child's environment; the parent's when absent (as `exec`). */
   env?: NodeJS.ProcessEnv;
+  /**
+   * argv form: `cmd` is the executable and `argv` its arguments, run with no
+   * shell. The driver's `ExecFn` type declares it, so an executor standing
+   * in for one must honour it: a dropped `argv` runs a bare `git`, which
+   * prints usage and exits 1 with an empty stderr (`Command failed: git`).
+   */
+  argv?: string[];
   /** Tests shorten the SIGTERM → SIGKILL grace; production omits it. */
   killGraceMs?: number;
 }
@@ -67,11 +74,14 @@ export function execTree(
   opts: ExecTreeOpts = {},
 ): Promise<{ stdout: string; stderr: string }> {
   const maxBuffer = opts.maxBuffer ?? 1024 * 1024;
+  const argv = opts.argv;
+  // What a failure names: the whole command, in either form.
+  const shown = argv ? [cmd, ...argv].join(" ") : cmd;
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, {
+    const child = spawn(cmd, argv ?? [], {
       cwd: opts.cwd,
       env: opts.env,
-      shell: opts.shell ?? true,
+      shell: argv ? false : (opts.shell ?? true),
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -96,12 +106,12 @@ export function execTree(
         spawnError ??
         (overflow
           ? new RangeError(`${overflow} maxBuffer length exceeded`)
-          : new Error(`Command failed: ${cmd}\n${stderr}`));
+          : new Error(`Command failed: ${shown}\n${stderr}`));
       if (overflow) err.code = "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
       else if (!spawnError) err.code = code;
       err.killed = killed;
       err.signal = exited?.signal ?? null;
-      err.cmd = cmd;
+      err.cmd = shown;
       err.stdout = stdout;
       err.stderr = stderr;
       reject(err);

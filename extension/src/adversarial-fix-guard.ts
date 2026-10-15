@@ -35,7 +35,7 @@
 import type { Dirent } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
-import { execp } from "./lens-exec.ts";
+import { execp } from "./exec.ts";
 import type { DispatchResult } from "./types.ts";
 import { type ExecFn, resolvePath } from "./worktree.ts";
 

@@ -6,7 +6,7 @@
  */
 import path from "node:path";
 import { dispatchCore } from "./dispatch.ts";
-import { execp as argvExecp } from "./lens-exec.ts";
+import { execp as argvExecp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import { BranchAheadError, mechanizedBranchSetup } from "./work-driver-branch-mechanized.ts";
 import {

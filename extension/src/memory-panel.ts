@@ -16,11 +16,8 @@
  * nothing to say.
  */
 
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
+import { execp } from "./exec.ts";
 import { type MemoryStats, readMemoryStats } from "./memory-stats.ts";
-
-const execp = promisify(exec);
 
 /**
  * Which project's memory to read.

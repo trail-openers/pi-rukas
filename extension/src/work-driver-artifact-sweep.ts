@@ -23,14 +23,13 @@
  * based removal, trace lines, never throws.
  */
 
-import { exec } from "node:child_process";
 import { lstatSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { promisify } from "node:util";
+import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import type { ExecFn } from "./worktree.ts";
 
-const defaultExecFn: ExecFn = promisify(exec) as unknown as ExecFn;
+const defaultExecFn: ExecFn = execp;
 
 /** Hardcoded age floor for an orphan to be swept (14 days, ms). */
 export const ORPHAN_ARTIFACT_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;

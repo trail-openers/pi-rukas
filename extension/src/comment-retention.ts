@@ -17,9 +17,10 @@
  * supplied by the caller for every git invocation.
  */
 
-import { exec, execFile } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { type LostComment, classifyHunk, hasWord, parseHunks } from "./comment-retention-hunks.ts";
+import { execp } from "./exec.ts";
 import { countPrCommits, prRange } from "./git-range.ts";
 import { trace } from "./trace.ts";
 import type { ExecFn } from "./worktree.ts";
@@ -30,13 +31,12 @@ import type { ExecFn } from "./worktree.ts";
  * an injected `ExecFn` instead; this one is the production default.
  */
 export function makeExecFn(): ExecFn {
-  const shell = promisify(exec);
   const file = promisify(execFile);
   return (cmd, opts) => {
     const common = { cwd: opts?.cwd, timeout: opts?.timeout, maxBuffer: opts?.maxBuffer };
     // #1134 — the argv form runs the executable directly, with no shell re-parse.
     if (opts?.argv) return file(cmd, opts.argv, { ...common, encoding: "utf8" });
-    return shell(cmd, common);
+    return execp(cmd, common);
   };
 }
 

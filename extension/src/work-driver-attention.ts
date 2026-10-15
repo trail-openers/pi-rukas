@@ -17,13 +17,10 @@
  * the flag would do.
  */
 
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
+import { execp } from "./exec.ts";
 import { detectForge } from "./forge-detect.ts";
 import { type Forge, createForge } from "./forge.ts";
 import { trace } from "./trace.ts";
-
-const execp = promisify(exec);
 
 export const ATTENTION_LABEL = "needs-human-attention";
 

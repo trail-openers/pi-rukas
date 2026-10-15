@@ -1,8 +1,7 @@
 /** work-driver-handoff — Step 7g (handoff) handler. #674: worktree consolidation + forge post retry. */
-import { exec } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
+import { execp } from "./exec.ts";
 import { type ForgeType, detectForge } from "./forge-detect.ts";
 import { type Forge, createForge } from "./forge.ts";
 import { drainSlowEvents } from "./slow-events.ts";
@@ -32,7 +31,6 @@ import type { ExecFn } from "./worktree.ts";
 // #775 prep — captureWorktreeSnapshot moved to work-driver-handoff-snapshot.ts
 // (§12 file-size split); re-exported so no consumer's import path changes.
 export { captureWorktreeSnapshot } from "./work-driver-handoff-snapshot.ts";
-const execp = promisify(exec);
 export function handoffDispatchTimeoutMs(): number {
   const env = Number(process.env.PI_ENSEMBLE_HANDOFF_TIMEOUT_MS);
   return Number.isFinite(env) && env > 0 ? env : 8 * 60_000;

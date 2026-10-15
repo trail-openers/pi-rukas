@@ -85,7 +85,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { stripQuotedSegments } from "./bash-command-parser.ts";
 import { mergesPr } from "./bash-merges-pr.ts";
-import { execp } from "./lens-exec.ts";
+import { execp } from "./exec.ts";
 import { lensNotEvaluatedRefusal, readPrCommentBodies } from "./merge-guard-reads.ts";
 import { evaluateRoundCapMerge } from "./merge-guard-round-cap.ts";
 import { extractMergeNumber, mergeVerbArgs, mergeVerbRepo } from "./merge-parse.ts";

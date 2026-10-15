@@ -8,11 +8,10 @@
  * `forge-mapping.ts` (JSON mappers), `forge-merge.ts` (merge readiness).
  */
 
-import { exec } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
+import { execp } from "./exec.ts";
 import { GH_TERMINAL_CI, GL_TERMINAL_CI, terminalCiFor } from "./forge-ci-terminal.ts";
 import { ciRun as ciRunImpl, ciWatch as ciWatchImpl } from "./forge-ci.ts";
 import * as cmds from "./forge-commands.ts";
@@ -53,8 +52,6 @@ import type {
   NormalizedPullRequest,
   NormalizedRepo,
 } from "./forge-types.ts";
-
-const execp = promisify(exec);
 
 /** The exec seam — same shape as the driver's `VerifyExecFn`. */
 export type ForgeExecFn = (
@@ -138,7 +135,7 @@ export type CiWatchResult =
 // ── The Forge object ─────────────────────────────────────────────────────
 
 export interface CreateForgeOpts {
-  /** The exec seam (default `promisify(exec)`). */
+  /** The exec seam (default `execp`). */
   execFn?: ForgeExecFn;
   /** The repo root (default `process.cwd()`). */
   cwd?: string;
