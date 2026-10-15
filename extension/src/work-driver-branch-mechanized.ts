@@ -32,7 +32,8 @@
  * reset. The detection is purely read-only (two `git` probes) and runs
  * only against the resolved branch name, so a fresh cycle with no local
  * branch never sees it — unless #1189's push check shows the tip is
- * already on `origin/<branch>`, in which case the reset proceeds.
+ * already pushed to the remote (verified via `ls-remote`, not the tracking
+ * ref), in which case the reset proceeds.
  */
 import { trace } from "./trace.ts";
 import { ensureWorktreesExcluded } from "./work-driver-git-exclude.ts";
@@ -185,13 +186,13 @@ export class BranchAheadError extends Error {
   }
 }
 /**
- * #1189 — did the branch's ahead commits make it to the remote? Compares the
- * local ref against `origin/<branch>` (read-only `rev-parse`; the tracking
- * ref may be STALE, which only narrows the reset's scope). `undefined` =
- * the remote branch ref is unresolved (never pushed): keep the ahead halt.
- * `true` = the local tip IS the remote branch's tip (exact SHA equality):
- * every ahead commit is pushed, so the reset destroys nothing. `false` =
- * the tips diverge: the ahead halt stands, operator decides.
+ * #1189 — did the branch's ahead commits make it to the remote? Verifies
+ * against the REMOTE itself with `git ls-remote origin refs/heads/<branch>`
+ * (positive proof; the LOCAL tracking ref `refs/remotes/origin/<branch>` can
+ * be stale or wrong — operator edit, hook, partial push — so it is not
+ * trusted). ONE network round-trip, on the rare ahead path only. The returned
+ * sha (first field, trimmed) vs the LOCAL tip: `true` = equality (reset safe);
+ * `false` = divergence; `undefined` = branch absent OR check failed: halt.
  */
 async function aheadBranchIsPushed(
   execFn: ExecFn,
@@ -200,19 +201,19 @@ async function aheadBranchIsPushed(
   localSha: string,
 ): Promise<boolean | undefined> {
   try {
-    const { stdout } = await execFn(
-      `git rev-parse --verify --quiet ${JSON.stringify(`refs/remotes/origin/${branchName}`)}`,
-      {
-        cwd: repoRoot,
-        maxBuffer: 64 * 1024,
-      },
-    );
-    const remoteSha = stdout.trim();
+    const refProblem = netRefProblem(branchName);
+    if (refProblem !== undefined) throw new Error(`ls-remote refused: ${refProblem}`);
+    const { stdout } = await runNetGit(execFn, "git", {
+      cwd: repoRoot,
+      argv: ["ls-remote", "origin", `refs/heads/${branchName}`],
+      maxBuffer: 64 * 1024,
+    });
+    const remoteSha = stdout.split(/\s+/, 1)[0]?.trim() ?? "";
     if (!remoteSha) return undefined;
     return remoteSha === localSha;
   } catch (err) {
     trace(
-      `work-driver: push check for ${branchName} failed — treating as not safely pushed: ${String(err).slice(0, 160)}`,
+      `work-driver: ls-remote push check for ${branchName} failed — treating as not safely pushed: ${String(err).slice(0, 160)}`,
     );
     return undefined;
   }
@@ -234,10 +235,11 @@ async function aheadBranchIsPushed(
  * (BranchAheadError with a null ahead count) rather than reset — an
  * unreadable probe must not license destroying an existing branch.
  *
- * #1189 — an ahead branch whose commits are ALREADY on `origin/<branch>`
- * (local tip == remote branch tip) is NOT unpushed work: the cycle's own pushed,
- * integrated commits (`--restart`/`--continue` on the just-merged issue) trip the
- * ahead check without any work a reset could lose, so the reset below is safe and is what a fresh cycle needs.
+ * #1189 — an ahead branch whose commits are ALREADY pushed (ls-remote sha ==
+ * local tip) is NOT unpushed work: the cycle's own pushed, integrated commits
+ * (`--restart`/`--continue` on the just-merged issue) trip the ahead check with
+ * nothing a reset could lose, so the reset below is safe and is what a fresh
+ * cycle needs.
  */
 export async function reconcileExistingLocalBranch(
   execFn: ExecFn,
@@ -307,13 +309,12 @@ export async function reconcileExistingLocalBranch(
     } catch {
       aheadCount = null;
     }
-    // #1189 — "ahead of origin/<mainline>" ≠ "unpushed": a fully-pushed
-    // ahead branch resets (nothing unique is lost); an unpushed or
-    // diverged one keeps the ahead halt (the operator's call).
+    // #1189 — "ahead" ≠ "unpushed": a fully-pushed ahead branch (ls-remote sha ==
+    // local tip) resets; an unpushed or diverged one keeps the ahead halt.
     const pushed = await aheadBranchIsPushed(execFn, repoRoot, branchName, oldSha);
     if (pushed === true) {
       trace(
-        `work-driver: ahead branch ${branchName} is fully pushed (local tip ${oldSha.slice(0, 8)} == origin/${branchName}) — resetting to the fresh base instead of halting`,
+        `work-driver: ahead branch ${branchName} is fully pushed (local tip ${oldSha.slice(0, 8)} == remote refs/heads/${branchName}) — resetting to the fresh base instead of halting`,
       );
     } else {
       throw new BranchAheadError(branchName, aheadCount);

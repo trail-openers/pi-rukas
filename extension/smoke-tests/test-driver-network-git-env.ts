@@ -212,7 +212,7 @@ const WRAPPED = /\brunNetGit\(/g;
 // Pinned per-file call counts of runNetGit. Adding a network git call site
 // means adding a row here — deliberately, so it cannot skip the wrapper.
 const EXPECTED: Record<string, number> = {
-  "work-driver-branch-mechanized.ts": 1,
+  "work-driver-branch-mechanized.ts": 2,
   "work-driver-git.ts": 2,
   "work-driver-integrate.ts": 1,
   "work-driver-adversarial.ts": 1,
