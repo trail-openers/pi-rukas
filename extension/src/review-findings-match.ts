@@ -85,6 +85,8 @@ export interface FindingIdentity {
   titleClass: string;
   title: string;
   snippetHash: string;
+  /** Hash of the cited line alone; undefined when the finding has no resolvable line. */
+  lineHash?: string;
   /** True only when the cited line exists in the head file. */
   hasLine: boolean;
 }
@@ -97,6 +99,7 @@ export interface MatchableRow {
   titleClass: string;
   title: string;
   snippetHash: string;
+  lineHash?: string | undefined;
   lastSeen: number;
 }
 
@@ -154,16 +157,23 @@ export function anchorAt(lines: readonly string[], line: number | undefined): st
   return "file";
 }
 
+/** A line with its whitespace collapsed and trimmed: the unit both hashes are built from. */
+function normaliseLine(line: string): string {
+  return line.replace(/\s+/g, " ").trim();
+}
+
 /** Whitespace-normalised code of the snippet around the cited line, hashed. */
 export function snippetHashAt(lines: readonly string[], line: number | undefined): string {
   if (!line || line < 1 || line > lines.length) return hashText("");
   const lo = Math.max(0, line - 1 - SNIPPET_RADIUS);
   const hi = Math.min(lines.length, line + SNIPPET_RADIUS);
-  const body = lines
-    .slice(lo, hi)
-    .map((l) => l.replace(/\s+/g, " ").trim())
-    .join("\n");
-  return hashText(body);
+  return hashText(lines.slice(lo, hi).map(normaliseLine).join("\n"));
+}
+
+/** The hash of the normalised cited line alone: its code, wherever it sits in the file. */
+export function lineHashAt(lines: readonly string[], line: number | undefined): string | undefined {
+  if (!line || line < 1 || line > lines.length) return undefined;
+  return hashText(normaliseLine(lines[line - 1] ?? ""));
 }
 
 /**
@@ -183,6 +193,7 @@ export function identityOf(
     titleClass: titleClassOf(f.title),
     title: f.title,
     snippetHash: snippetHashAt(lines, line),
+    lineHash: lineHashAt(lines, line),
     hasLine: resolvable,
   };
 }

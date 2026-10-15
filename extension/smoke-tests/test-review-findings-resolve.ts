@@ -11,9 +11,9 @@
  *      present file, stays open (its cited code still stands);
  *   C. a no-line open row the next complete review DOES re-report → stays open;
  *   D. the cited line is past the end of the file → resolves;
- *   E. a neighbour edit inside the ±2 window → resolves (the window is gone);
+ *   E. a neighbour edit inside the ±2 window → carried (the cited line stands);
  *   F. the cited line is edited, no re-report, complete full review → resolves
- *      and the verdict is APPROVED (#1130);
+ *      (reason code-gone) and the verdict is APPROVED (#1130);
  *   G. unchanged cited code, no re-report → stays open, carried with its title;
  *   H. an insertion above the cited code → stays open (the window moved);
  *   I. an edit outside the cited window → stays open;
@@ -21,19 +21,22 @@
  *   L. a CRITICAL row whose window is edited (no re-report, complete full review)
  *      is carried — a trivial edit cannot clear a CRITICAL;
  *   M. the cited line is past EOF but its code moved up the file: carried, not
- *      resolved ("found anywhere → carried" wins over "line past EOF").
+ *      resolved ("found anywhere → carried" wins over "line past EOF");
+ *   N. a past-EOF row on a delta review: carried (a delta never resolves);
+ *   O. a HIGH row whose window gets a comment, cited line unchanged: carried;
+ *   P. a legacy row without lineHash whose window is edited: carried.
  * Every resolution records its reason on the row and in the summary (#1125).
  */
 
 import { execSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { LensRunResult } from "../src/lens-review-types.ts";
 import { runLensReview } from "../src/lens-review.ts";
 import { renderSummary } from "../src/lens-review-format.ts";
 import { LENS_ROSTER } from "../src/lens-roster.ts";
-import { readBranchRows } from "../src/review-findings-store.ts";
+import { FINDINGS_FILE, readBranchRows } from "../src/review-findings-store.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -182,32 +185,25 @@ try {
   );
   assert(d2.verdict === "APPROVED", `D round 2: the verdict is not blocked (${d2.verdict})`);
 
-  // E — a neighbour edit changes the ±2-line window hash of a line-bearing row,
-  // so the window the row was recorded with is no longer findable at head: the
-  // cited code changed, and a complete review that does not re-report it
-  // resolves it (rowFate: the stored snippet is gone from the head file).
+  // E — a neighbour edit changes the ±2-line window hash, but the cited line
+  // itself is unchanged (its lineHash is still at head): the row is carried.
+  // A window edit alone never resolves a row (#1300).
   sh("git checkout -q main");
   sh("git checkout -q -b feat/neighbour");
   await runRound("feat/neighbour", head(), [
     { severity: "MEDIUM", path: "src/a.ts", line: 3, title: "Unused constant" },
   ]);
+  assert(
+    typeof (await readBranchRows(repo, "feat/neighbour"))[0]?.lineHash === "string",
+    "E round 1: a new row records the hash of its cited line (lineHash)",
+  );
   writeFileSync(path.join(repo, "src", "a.ts"), "// header\nexport const a = 9;\nexport const b = 2;\n");
   sh("git commit -qam neighbour");
   const e2 = await runRound("feat/neighbour", head(), []);
   assert(
-    (await readBranchRows(repo, "feat/neighbour"))[0]?.status === "resolved" &&
-      e2.verdict === "APPROVED",
-    `E round 2: a neighbour edit inside the window resolves the row (verdict ${e2.verdict})`,
-  );
-  assert(
-    (await readBranchRows(repo, "feat/neighbour"))[0]?.resolvedReason === "code-gone" &&
-      e2.resolved?.some((r) => r.reason === "code-gone" && r.title === "Unused constant") === true,
-    "E round 2: the reason code-gone is on the row and in the summary's resolved list",
-  );
-  assert(
-    renderSummary(e2, 1).includes("Resolved since last round") &&
-      renderSummary(e2, 1).includes("code-gone"),
-    "E round 2: the rendered summary shows the Resolved since last round list with its reason",
+    (await readBranchRows(repo, "feat/neighbour"))[0]?.status === "open" &&
+      e2.verdict === "ISSUES_FOUND",
+    `E round 2: a neighbour edit inside the window keeps the row carried (verdict ${e2.verdict})`,
   );
 
   // F — #1130: the cited line itself is edited and a complete full review does
@@ -225,6 +221,12 @@ try {
     "F round 2: an edited cited line with no re-report resolves the row (#1130)",
   );
   assert(f2.verdict === "APPROVED", `F round 2: the verdict is APPROVED (${f2.verdict})`);
+  assert(
+    (await readBranchRows(repo, "feat/edited"))[0]?.resolvedReason === "code-gone" &&
+      renderSummary(f2, 1).includes("Resolved since last round") &&
+      renderSummary(f2, 1).includes("code-gone"),
+    "F round 2: the reason code-gone is on the row and in the rendered summary",
+  );
 
   // G — the cited code is unchanged and no re-report: the row stays open and is
   // carried with its stored, non-empty title.
@@ -358,6 +360,70 @@ try {
   assert(
     mRow?.status === "open" && m2.verdict === "ISSUES_FOUND",
     `M round 2: a cited line past EOF whose code is still in the file stays carried (${m2.verdict})`,
+  );
+  // N — a delta review carries a past-EOF row: the cited line is gone, but a
+  // delta never resolves, so the open finding stays in the verdict.
+  sh("git checkout -q main");
+  sh("git checkout -q -b feat/eof-delta");
+  await runRound("feat/eof-delta", head(), [
+    { severity: "MEDIUM", path: "src/a.ts", line: 3, title: "Unused constant" },
+  ]);
+  const eofBase = head();
+  writeFileSync(path.join(repo, "src", "a.ts"), "// header\n");
+  sh("git commit -qam truncate-delta");
+  const n2 = await runLensReview({
+    cwd: repo,
+    branch: "feat/eof-delta",
+    diff: "diff --git a/src/a.ts b/src/a.ts\n+++ b/src/a.ts\n-export const b = 2;",
+    head: head(),
+    since: eofBase,
+    lensChildFn: stubLens as never,
+  });
+  assert(
+    (await readBranchRows(repo, "feat/eof-delta"))[0]?.status === "open" &&
+      n2.verdict === "ISSUES_FOUND",
+    `N round 2: a past-EOF row on a delta review is carried, not resolved (${n2.verdict})`,
+  );
+
+  // O — a HIGH (security) finding whose ±2 window gets a comment inserted while
+  // its cited line is unchanged: a complete full review that does not re-report
+  // it keeps the row carried, and the HIGH blocks.
+  sh("git checkout -q main");
+  sh("git checkout -q -b feat/high-window");
+  await runRound("feat/high-window", head(), [
+    { lens: "security", severity: "HIGH", path: "src/a.ts", line: 3, title: "Unvalidated export" },
+  ]);
+  writeFileSync(
+    path.join(repo, "src", "a.ts"),
+    "// header\n// a reviewer-visible note\nexport const a = 1;\nexport const b = 2;\n",
+  );
+  sh("git commit -qam insert-comment-in-window");
+  const o2 = await runRound("feat/high-window", head(), []);
+  assert(
+    (await readBranchRows(repo, "feat/high-window"))[0]?.status === "open" &&
+      o2.verdict === "ISSUES_FOUND" &&
+      o2.findings.some((f) => f.title === "Unvalidated export"),
+    `O round 2: a window-only edit keeps a HIGH row carried and blocking (${o2.verdict})`,
+  );
+
+  // P — a legacy row (written before lineHash existed) whose window is edited:
+  // it cannot prove its cited line changed, so it is carried, not resolved.
+  sh("git checkout -q main");
+  sh("git checkout -q -b feat/legacy");
+  await runRound("feat/legacy", head(), [
+    { severity: "MEDIUM", path: "src/a.ts", line: 3, title: "Unused constant" },
+  ]);
+  const findingsFile = path.join(ledgerDir, FINDINGS_FILE);
+  const stored = JSON.parse(readFileSync(findingsFile, "utf8")) as { rows: Array<Record<string, unknown>> };
+  for (const r of stored.rows) if (r.branch === "feat/legacy") delete r.lineHash;
+  writeFileSync(findingsFile, JSON.stringify(stored));
+  writeFileSync(path.join(repo, "src", "a.ts"), "// header\nexport const a = 9;\nexport const b = 2;\n");
+  sh("git commit -qam legacy-window");
+  const p2 = await runRound("feat/legacy", head(), []);
+  assert(
+    (await readBranchRows(repo, "feat/legacy"))[0]?.status === "open" &&
+      p2.verdict === "ISSUES_FOUND",
+    `P round 2: a legacy row without lineHash is carried on a window edit (${p2.verdict})`,
   );
 } finally {
   rmSync(root, { recursive: true, force: true });

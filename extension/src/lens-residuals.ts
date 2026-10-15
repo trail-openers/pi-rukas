@@ -12,7 +12,8 @@
 
 import { neutraliseEvidence } from "./comment-evidence.ts";
 import type { Finding } from "./lens-review-types.ts";
-import type { Decision, ResolvedNotice, StoredFinding } from "./review-findings-store.ts";
+import type { ResolvedNotice } from "./review-findings-file.ts";
+import type { Decision, StoredFinding } from "./review-findings-store.ts";
 
 /** At most this many prior rows reach a lens prompt. */
 export const PRIOR_FINDINGS_MAX_ITEMS = 15;

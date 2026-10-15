@@ -433,7 +433,7 @@ export async function runLensReview(opts: {
   const deduped = dedupeFindings(all, roster);
   // #1105 — record the round against the findings memory: suppressed findings
   // leave the review, and a complete full review resolves rows it no longer reports.
-  const complete = !delta && !isReviewIncomplete(lensResults);
+  const review = delta ? "delta" : isReviewIncomplete(lensResults) ? "incomplete" : "full";
   const recorded =
     branchResolved && headSha
       ? await recordFindingRunOutcome({
@@ -442,7 +442,7 @@ export async function runLensReview(opts: {
           headSha,
           findings: deduped,
           ...(delta ? { deltaDiff: diff } : {}),
-          complete,
+          review,
         })
       : undefined;
   // Fail open: an unrecorded round reports every finding, and the summary and

@@ -8,9 +8,14 @@
  *
  * Rows are `open` (reported, not resolved), `accepted` (an operator accepted it)
  * or `resolved`. An open row's fate is decided by `rowFate`
- * (review-findings-fate.ts), the one place that rule lives. A no-line row is
- * carried while its path is present; a path-gone row resolves on a complete full
- * review. Accepted rows are never evicted (see review-findings-file.ts for the cap).
+ * (review-findings-fate.ts), the one place that rule lives. An untouched open row
+ * resolves only when its CITED LINE itself changed (its `lineHash` is gone from
+ * the head file) on a complete full review; a window edit, a moved line or a
+ * missing `lineHash` carries it. An omission by a lens is not a fix on its own.
+ * Accepted rows are never evicted (see review-findings-file.ts for the cap).
+ *
+ * Head reads live in review-findings-head.ts: a git read error refuses the whole
+ * round, so nothing is suppressed or resolved on evidence that could not be read.
  *
  * Failure policy — fail closed on the file, fail open on the review:
  *   - A file that does not parse is CORRUPT: readers see no memory, and writers
@@ -26,22 +31,21 @@
  * review-accept-guard.ts refuses agent attempts (advisory in trust mode).
  */
 
-import { execFile } from "node:child_process";
 import { copyFileSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
 import { execp } from "./exec.ts";
 import type { Finding } from "./lens-review-types.ts";
 import { changedLineRanges } from "./review-diff.ts";
 import { type ReviewKind, rowFate } from "./review-findings-fate.ts";
 import {
-  type ResolveReason,
+  type ResolvedNotice,
   type StoredFinding,
   capPerBranch,
   parseFindingsFile,
   readFindingsFile,
   reasonProblem,
 } from "./review-findings-file.ts";
+import { readHeadLines } from "./review-findings-head.ts";
 import {
   type FindingIdentity,
   hashText,
@@ -61,8 +65,6 @@ export {
   type RowStatus,
   type StoredFinding,
 } from "./review-findings-file.ts";
-
-const execFileP = promisify(execFile);
 
 /** The findings file's name, beside `review-ledger.json`. */
 export const FINDINGS_FILE = "review-findings.json";
@@ -85,18 +87,11 @@ export interface FindingRun {
   headSha: string;
   /** Deduplicated findings, in the order the decisions must align with. */
   findings: Finding[];
-  /** The delta diff (`git diff since..head`) when this round was a delta review. */
+  /** How this round reviewed the branch, computed once by the caller (lens-review.ts). */
+  review: ReviewKind;
+  /** The delta diff (`git diff since..head`); read only when `review` is `delta`. */
   deltaDiff?: string;
-  /** Whether a full review reached a verdict — only then may open rows resolve or carry forward. */
-  complete: boolean;
   now?: number;
-}
-
-/** A row this round resolved, with why its cited code is gone (#1125). */
-export interface ResolvedNotice {
-  rowId: string;
-  title: string;
-  reason: ResolveReason;
 }
 
 /** The result of recording one round: the decisions, or why nothing was recorded. */
@@ -108,59 +103,6 @@ export type RecordOutcome =
 export type AcceptOutcome = { ok: true; row: StoredFinding } | { ok: false; reason: string };
 
 type MutateOutcome<T> = { ok: true; value: T } | { ok: false; reason: string };
-
-/** A repo-relative path that git can show at a commit without option injection. */
-function safeRepoPath(p: string): boolean {
-  if (!p || p.startsWith("-") || p.startsWith("/") || /[\0\n]/.test(p)) return false;
-  return !p.split("/").includes("..");
-}
-
-/**
- * `lines`: the file exists at the commit. `missing`: the commit is readable but
- * the path is not in it (a lens cited a wrong or stale path) — recorded as a
- * no-line finding. `error`: git itself failed (bad sha, I/O) — the round cannot
- * be recorded.
- */
-type HeadLines =
-  | { kind: "lines"; lines: string[] }
-  | { kind: "missing" }
-  | { kind: "error"; reason: string };
-
-/** git's own wording for "this path is not in that commit" (LC_ALL=C pins it). */
-const PATH_ABSENT_AT_HEAD = /does not exist in|exists on disk, but not in/;
-
-/**
- * The lines of `file` at `sha`. A path absent from a readable commit is
- * `missing`; any other git failure is an `error`, never an empty file: an empty
- * file would give every finding a fake identity and suppress nothing on the
- * wrong evidence. git words "path absent" the same way for an unreadable commit,
- * so the commit is checked first.
- */
-async function readHeadLines(cwd: string, sha: string, file: string): Promise<HeadLines> {
-  if (!safeRepoPath(file)) return { kind: "missing" };
-  try {
-    await execFileP("git", ["-C", cwd, "cat-file", "-e", `${sha}^{commit}`]);
-  } catch (err) {
-    return {
-      kind: "error",
-      reason: `cannot read ${file} at ${sha.slice(0, 12)}: not a commit in this clone (${(err as Error).message.slice(0, 80)})`,
-    };
-  }
-  try {
-    const { stdout } = await execFileP("git", ["-C", cwd, "show", `${sha}:${file}`], {
-      maxBuffer: 8 * 1024 * 1024,
-      env: { ...process.env, LC_ALL: "C" },
-    });
-    return { kind: "lines", lines: stdout.split("\n") };
-  } catch (err) {
-    const stderr = String((err as { stderr?: unknown }).stderr ?? "");
-    if (PATH_ABSENT_AT_HEAD.test(stderr)) return { kind: "missing" };
-    return {
-      kind: "error",
-      reason: `cannot read ${file} at ${sha.slice(0, 12)}: ${(err as Error).message.slice(0, 120)}`,
-    };
-  }
-}
 
 /** A fresh 8-hex row id, unique among `taken`. */
 export function newRowId(taken: ReadonlySet<string>): string {
@@ -285,6 +227,7 @@ export async function acceptFinding(
       ...row,
       status: "accepted",
       acceptance: { by, reason, at: now, snippetHash: row.snippetHash },
+      resolvedReason: undefined,
     };
     return {
       rows: all.map((r, i) => (i === idx ? accepted : r)),
@@ -335,9 +278,14 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
       };
     }
     const now = run.now ?? Date.now();
-    const ranges = run.deltaDiff !== undefined ? changedLineRanges(run.deltaDiff) : undefined;
+    const ranges =
+      run.review === "delta" && run.deltaDiff !== undefined
+        ? changedLineRanges(run.deltaDiff)
+        : undefined;
     const linesByPath = new Map<string, string[]>();
     const missingPaths = new Set<string>();
+    // A git read error refuses the whole round (readHeadLines): nothing is
+    // suppressed or resolved on evidence that could not be read.
     // Open rows' paths are read too: a round resolves or carries one forward only
     // on proof about its cited code (changed, or unchanged), so it needs the head lines.
     const openPaths = (await readBranchRows(run.cwd, run.branch))
@@ -379,6 +327,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
             lens: f.lens,
             ...(f.line ? { line: f.line } : {}),
             snippetHash: id.snippetHash,
+            ...(id.lineHash ? { lineHash: id.lineHash } : {}),
             status: "open",
             firstSeen: now,
             lastSeen: now,
@@ -400,6 +349,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
           ...row,
           lastSeen: now,
           snippetHash: id.snippetHash,
+          lineHash: id.lineHash ?? row.lineHash,
           line: f.line,
         };
         if (kept.status === "resolved") kept = reopen(kept);
@@ -442,16 +392,13 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
       const carried: Finding[] = [];
       const resolved: ResolvedNotice[] = [];
       // Only a complete FULL review may resolve an untouched row (rowFate); a
-      // delta or an incomplete review carries it. A lens omitting a known finding
-      // is not a fix on its own.
-      const review: ReviewKind =
-        run.deltaDiff !== undefined ? "delta" : run.complete ? "full" : "incomplete";
+      // delta or an incomplete review carries it.
       mine.forEach((r, i) => {
         if (r.status !== "open" || touched.has(r.id)) return;
         const fate = rowFate(
           r,
           { pathGone: missingPaths.has(r.path), lines: linesByPath.get(r.path) },
-          review,
+          run.review,
         );
         if (fate.kind === "resolve") {
           mine[i] = {
@@ -461,7 +408,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
             resolvedReason: fate.reason,
           };
           resolved.push({ rowId: r.id, title: r.title, reason: fate.reason });
-        } else if (fate.kind === "carry") {
+        } else {
           carried.push({
             lens: r.lens,
             severity: r.severity,
