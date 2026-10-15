@@ -9,12 +9,9 @@
  */
 import { notifyAgent } from "./agent-message.ts";
 import { trace } from "./trace.ts";
-import { runAdversarial } from "./work-driver-adversarial.ts";
 import { runArtifactSweep } from "./work-driver-artifact-sweep.ts";
 import { checkAttentionLabel } from "./work-driver-attention.ts";
-import { runBranch, runDevelop, stampCycleStartRef } from "./work-driver-branch-develop.ts";
 import { checkpointCapedDispatch } from "./work-driver-cap-checkpoint.ts";
-import { runCommitPr } from "./work-driver-commit.ts";
 import {
   type CycleContext,
   type DriverContext,
@@ -25,10 +22,7 @@ import {
 import { enterCycle } from "./work-driver-cycle-entry.ts";
 import { acquireWorkDeckHeader, headerToken } from "./work-driver-deck-header.ts";
 import { countPriorStepStarts } from "./work-driver-diff.ts";
-import { runExplore } from "./work-driver-explore.ts";
-import { runHandoff } from "./work-driver-handoff.ts";
 import { interruptIfRequested, recordStepCrash } from "./work-driver-interrupt.ts";
-import { runLens, runLensFix } from "./work-driver-lens.ts";
 import {
   clearFooter,
   emitStepCompleted,
@@ -36,9 +30,6 @@ import {
   emitStepStarted,
   updateFooter,
 } from "./work-driver-lifecycle.ts";
-import { runMerged } from "./work-driver-merged.ts";
-import { runPlan } from "./work-driver-plan.ts";
-import { endIfPrGone } from "./work-driver-pr-gone.ts";
 import { claimCycle } from "./work-driver-registry.ts";
 import {
   attemptReattach,
@@ -51,9 +42,9 @@ import {
   resumeEnabled,
 } from "./work-driver-resume-reattach.ts";
 import { reenterInterrupted } from "./work-driver-resume.ts";
+import { runStep } from "./work-driver-run-step.ts";
 import { interruptedAfter, interruptedByShutdown, sessionEnding } from "./work-driver-shutdown.ts";
 import { routeStepOutcome } from "./work-driver-step-router.ts";
-import { runCi, runStepBack } from "./work-driver-stepback-ci.ts";
 import { deliverTerminalLine } from "./work-driver-terminal-delivery.ts";
 import { scratchDir, setupWorkspaceTmp, teardownWorkspaceTmp } from "./work-driver-workspace.ts";
 import { runWorktreeSweep } from "./work-driver-worktree-sweep.ts";
@@ -69,50 +60,6 @@ import {
   readState,
   workStateDir,
 } from "./workflow-state.ts";
-
-/**
- * Run a single step end-to-end: load template (or judge inline for PM-
- * judgment-shaped steps), dispatch via `dispatchCore`, await, append
- * event(s), update pipelineState. Returns the new state. Persistence is
- * the caller's responsibility (so multi-step transitions don't double-write).
- *
- * Per-step implementations are intentionally separated rather than
- * collapsed into one big switch — each step's prompt template, role
- * selection, and event-emission logic is distinct enough that a giant
- * switch becomes harder to read than a dispatch table.
- */
-async function runStep(ctx: CycleContext, state: WorkState, step: WorkStep): Promise<WorkState> {
-  const now = Date.now();
-  trace(`work-driver: running step "${step}" for issue ${ctx.issue}`);
-
-  switch (step) {
-    case "explore":
-      return runExplore(ctx, state, now);
-    case "plan":
-      return runPlan(ctx, state, now);
-    case "branch":
-      return runBranch(ctx, await stampCycleStartRef(ctx, state), now);
-    case "develop":
-      return runDevelop(ctx, state, now);
-    case "adversarial":
-      return runAdversarial(ctx, state, now);
-    case "commit-pr":
-      return runCommitPr(ctx, state, now);
-    // A PR merged or closed under the review ends the cycle before the step.
-    case "lens-review":
-      return (await endIfPrGone(ctx, state, step)) ?? runLens(ctx, state, now);
-    case "lens-fix":
-      return (await endIfPrGone(ctx, state, step)) ?? runLensFix(ctx, state, now);
-    case "step-back":
-      return runStepBack(ctx, state, now);
-    case "ci":
-      return (await endIfPrGone(ctx, state, step)) ?? runCi(ctx, state, now);
-    case "handoff":
-      return runHandoff(ctx, state, now);
-    case "merged":
-      return runMerged(ctx, state, now);
-  }
-}
 
 export { DriverNotImplementedError } from "./work-driver-context.ts";
 /**

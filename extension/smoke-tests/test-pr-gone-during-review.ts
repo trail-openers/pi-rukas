@@ -378,7 +378,7 @@ try {
 
   // ------------------------------------------ the three steps are gated
   {
-    const src = readFileSync(path.join(import.meta.dir, "../src/work-driver.ts"), "utf8");
+    const src = readFileSync(path.join(import.meta.dir, "../src/work-driver-run-step.ts"), "utf8");
     for (const fn of ["runLens", "runLensFix", "runCi"]) {
       assert(
         new RegExp(`\\(await endIfPrGone\\(ctx, state, step\\)\\) \\?\\? ${fn}\\(`).test(src),
