@@ -199,6 +199,7 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("SUBAGENT_MODE", false, "internal"),
   str("SUBAGENT_MODEL", null),
   str("SUBAGENT_PROVIDER", null),
+  flag("SYMBOL_MERGE_RETRY", true),
   int("TEST_DELETE_TOLERANCE", 0),
   // Unset: no budget, except code-review-specialist (8,000,000).
   int("TOKEN_BUDGET_<ROLE>", null, "cycle", { unit: "tokens" }),
