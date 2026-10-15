@@ -24,10 +24,11 @@
  * worse than either: it is monotone, so it can only add rows.
  *
  * Upstream issues this works around: randomm/vipune#177 (exit code 2 is
- * overloaded between "conflict detected" and clap usage errors), #178
- * (`memory_type` / `status` are settable and filterable but returned by no
- * command, so a supersede cannot read back the type it must preserve), #179
- * (retrieval telemetry is maintained but unreadable).
+ * overloaded between "conflict detected" and clap usage errors). #178
+ * (`memory_type` / `status` returned by no command) and #179 (retrieval
+ * telemetry unreadable) are closed upstream — `search --json` returns both
+ * since v0.15.0 — but this seam does not parse those fields, so `MemoryHit`
+ * still carries neither.
  */
 
 import { execFile } from "node:child_process";
@@ -123,7 +124,7 @@ export function isIdentifierShaped(query: string): boolean {
   return /[.\-A-Z]/.test(q);
 }
 
-type ExecFn = (
+export type ExecFn = (
   file: string,
   args: string[],
   opts: { cwd: string; timeout: number; maxBuffer: number },
@@ -183,8 +184,8 @@ export async function vipuneAdd(
     memoryType: MemoryType;
     status?: MemoryStatus;
     /**
-     * When set, `memoryType` must be the ORIGINAL memory's type. vipune#178
-     * makes the stored type unreadable, so a supersede that guesses wrong
+     * When set, `memoryType` must be the ORIGINAL memory's type. `MemoryHit`
+     * does not carry the stored type, so a supersede that guesses wrong
      * silently retypes — e.g. a `guard` becomes a `fact` and is thereafter
      * invisible to every guard-filtered read, unrecoverably. Callers resolve
      * the type by static leg priority, never by which leg scored highest.
@@ -233,11 +234,12 @@ export interface SearchOpts extends VipuneOpts {
   /**
    * Include `candidate` rows. Off by default, matching vipune.
    *
-   * Without this the write side cannot reach the read side at all: vipune
-   * defaults to `--status active`, and every write this driver makes is a
-   * candidate, so 100% of what it stores is invisible to its own reads.
-   * Measured on a probe DB with one active and one candidate row: default
-   * returns 1, `--include-candidates` returns 2.
+   * vipune defaults to `--status active`, and every write this driver makes
+   * is a candidate. Measured on a probe DB with one active and one candidate
+   * row: default returns 1, `--include-candidates` returns 2. The developer
+   * brief deliberately leaves this off (#1103) — a candidate reaches no
+   * compiled brief until an operator promotes it. A lookup for the driver's OWN rows
+   * (research supersession) is what needs it.
    *
    * The boolean is preferred over `--status active,candidate` — measured
    * identical result sets, but a comma list degrades silently when a member is

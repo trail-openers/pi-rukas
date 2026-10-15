@@ -128,6 +128,8 @@ vipune add 'tofu apply takes ~5 min when only user_data changed' \
 
 **Promote candidates only after the fact survives a second confirmation.** Otherwise, let them sit — they're inert until explicitly queried. This is the short-term tier.
 
+The `/work` driver writes its own candidates (lens findings, invariant removals), always typed `observation` so `vipune prune` can age out the unpromoted ones — prune never demotes a `guard`. The developer brief reads active rows only, so a driver candidate reaches no compiled brief until an operator promotes it (an explicit `--include-candidates` sweep still sees it); `/audit` lists the candidates with their ids for that decision.
+
 ## Freshness verification — REQUIRED before acting
 
 Every memory is a snapshot of when it was written. Code moves, files rename, decisions reverse. **Before acting on a retrieved memory, verify it against current state.** This is the single biggest gap in most agentic memory implementations.

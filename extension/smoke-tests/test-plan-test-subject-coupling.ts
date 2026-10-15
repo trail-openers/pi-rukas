@@ -136,14 +136,14 @@ const OK_FINDINGS = 2;
       0,
     "canary: a stem PREFIX (foo vs foobar) is not a split — one test module exercising several subjects is legitimate",
   );
-  // The vipune-seam-live case: the test's stem DOES name the subject
+  // The vipune-seam-loop case: the test's stem DOES name the subject
   // (`vipune` is a token in both the test stem and the subject basename), so
   // the check correctly flags it as a split. This is the right behaviour —
   // a test that names its subject and is in a different workstream is a
   // split, and the corrective re-dispatch should move the test into the
   // subject's workstream.
   const vipuneSplits = findTestSubjectSplits(
-    ws({ a: ["smoke-tests/test-vipune-seam-live.ts"], b: ["src/vipune.ts"] }),
+    ws({ a: ["smoke-tests/test-vipune-seam-loop.ts"], b: ["src/vipune.ts"] }),
   );
   assert(
     vipuneSplits.length === 1,

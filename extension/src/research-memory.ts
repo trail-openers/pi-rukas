@@ -131,7 +131,9 @@ export async function writeResearchMemory(args: {
   }
   const text = researchMemoryText(args.topic, args.takeaway, args.artifactRelPath, args.date);
 
-  // Supersession lookup: only rows carrying the driver's own signature.
+  // Supersession lookup: only rows carrying the driver's own signature. It
+  // reads candidates because research rows ARE candidates; only an id is
+  // taken, never content, so nothing here reaches a prompt (#1103).
   let supersedes: string | undefined;
   const prior = await vipuneSearch(`Research: ${args.topic}`, {
     cwd: args.cwd,

@@ -5,7 +5,8 @@
  * work-driver-lens.ts delegates to keep that file ≤500 lines.
  *
  * Issue #280 — when the widening scan fires (C. Invariant-removal guard
- * memories), write ONE vipune guard memory per (file, symbol). Dedupe:
+ * memories), write ONE vipune candidate memory per (file, symbol), typed
+ * `observation` (#1103). Dedupe:
  * no duplicate write for the same (file, symbol) within a cycle.
  *
  * This module is the thin integration: it receives the widening findings
@@ -13,10 +14,10 @@
  * guard-memory-write's writeGuardMemories, and returns outcomes + dedup
  * keys so the caller can record plumb-reports.
  *
- * The injectable vipuneWriteFn defaults to shelling out to `vipune add`.
- * The default silently returns empty on failure — a missing vipune is not
- * a structural failure, and the widening findings themselves are the
- * source of truth; the guard memories are additive value.
+ * The injectable vipuneWriteFn defaults to `vipuneAdd` through the seam.
+ * The default throws on any failed write, which `writeGuardMemories` records
+ * as an `error` outcome — never a cycle failure: the widening findings
+ * themselves are the source of truth; the memories are additive value.
  *
  * Escape hatch: `PI_ENSEMBLE_INVARIANT_MEMORY=0` restores today's behaviour
  * (no guard writes).
@@ -27,6 +28,7 @@ import {
   defaultVipuneWrite,
   writeGuardMemories,
 } from "./guard-memory-write.ts";
+import { DRIVER_MEMORY_TYPE } from "./memory-write.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
 
 /**
@@ -102,7 +104,7 @@ export function appendGuardWriteEvents(writes: GuardMemoryWrite[]): WorkEvent[] 
       at: Date.now(),
       outcome: w.outcome === "skipped-dedup" ? ("error" as const) : w.outcome,
       id: w.id,
-      memoryType: "guard",
+      memoryType: DRIVER_MEMORY_TYPE,
       detail: w.content ?? undefined,
     });
     if (w.outcome === "written" && w.content) {
