@@ -229,9 +229,13 @@ RUN test ! -e "$HOME/.pi/agent/npm/node_modules/pi-mcp-adapter" \
 # is NOT on $PATH — `command -v pi-rukas-headless` in a container found
 # nothing, forcing unattended callers to hard-code the image layout. A
 # /usr/local/bin link (already on PATH) gives a stable name; the wrapper at
-# /opt/pi-rukas/bin is unchanged.
+# /opt/pi-rukas/bin is unchanged. The script resolves its own symlink (#1366);
+# the build fails if the PATH name cannot answer --capabilities.
 USER root
 RUN ln -sf ${PI_ENSEMBLE_DIR}/bin/pi-rukas-headless /usr/local/bin/pi-rukas-headless \
+    && pi-rukas-headless --capabilities > /tmp/pi-rukas-caps.json \
+    && jq -e .schemaVersion /tmp/pi-rukas-caps.json > /dev/null \
+    && rm -f /tmp/pi-rukas-caps.json \
     && echo "pi-rukas-headless on PATH via /usr/local/bin"
 
 # Issue #933 (fresh-host EACCES): bake the state mount points into the image
