@@ -139,6 +139,15 @@ export function porcelainPaths(stdout: string): string[] {
   return out;
 }
 
+/**
+ * Is a porcelain entry a directory? `git status` (without `-uall`) collapses a
+ * wholly untracked directory to one `?? dir/` entry, and that entry is not a
+ * file. A grant of its key would admit every file under it unseen (#1090).
+ */
+export function isDirectoryEntry(raw: string): boolean {
+  return raw.endsWith("/");
+}
+
 export interface DoctrineRead {
   /** The doctrine text as of the base commit, or undefined if unavailable. */
   text?: string;
@@ -200,6 +209,13 @@ export function explainProtectedPaths(
   const head = `develop wrote to ${ungranted.length} protected path(s) without an operator grant — ${ungranted.join(", ")}. These define what verification, review and permission mean for this cycle, so a cycle that edits them is grading its own work. Make the change yourself`;
   const env = "PI_ENSEMBLE_PROTECTED_PATHS=0 disables the gate for every path instead";
   const paths = [...new Set(allTouched.map(protectedPathKey))].sort();
+  // A directory is never a grant (it would admit every file under it), so a
+  // change set that contains one gets no copy-paste command: the operator is
+  // told to name the files, not handed a command that grants the directory.
+  if (allTouched.some(isDirectoryEntry)) {
+    const dirs = allTouched.filter(isDirectoryEntry).map(protectedPathKey);
+    return `${head}; the change set includes a directory (${dirs.join(", ")}), which a grant cannot name — the files under it must be listed individually, and each granted by its exact path. No grant command is printed for a directory (${env}).`;
+  }
   // The command is built from filenames a developer wrote, so it is printed
   // only when every one is a plain path token, and only for a single issue —
   // the one shape `--allow-protected` accepts.

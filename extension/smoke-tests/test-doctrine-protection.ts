@@ -256,7 +256,7 @@ const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "pi-doctrine-"));
     repoRoot: tmp,
     issue: 406,
     verifyExecFn: async (cmd) => {
-      if (cmd === "git status --porcelain") return { stdout: porcelain };
+      if (cmd === "git status --porcelain --untracked-files=all") return { stdout: porcelain };
       return { stdout: "" };
     },
   });

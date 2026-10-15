@@ -101,7 +101,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         };
         const oneErrOneEmpty: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
           cmd = commandOf(cmd, opts);
-          if (cmd === "git status --porcelain") {
+          if (cmd === "git status --porcelain --untracked-files=all") {
             if (opts?.cwd?.endsWith("/a")) throw new Error("not a git repository");
             return { stdout: "" };
           }
@@ -131,7 +131,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         // All worktrees unassessable → degrade to pass-with-note, no failure.
         const allErr: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, stubOpts) => {
           cmd = commandOf(cmd, stubOpts);
-          if (cmd === "git status --porcelain") throw new Error("not a git repository");
+          if (cmd === "git status --porcelain --untracked-files=all") throw new Error("not a git repository");
           if (cmd.includes("rev-parse --verify --quiet --end-of-options origin/")) return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) throw new Error("bad revision");
           return { stdout: "" };
@@ -177,7 +177,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         const hollowExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, stubOpts) => {
           cmd = commandOf(cmd, stubOpts);
           if (cmd === "git rev-parse HEAD") return { stdout: "1111111111111111111111111111111111111111\n" };
-          if (cmd === "git status --porcelain") return { stdout: "" };
+          if (cmd === "git status --porcelain --untracked-files=all") return { stdout: "" };
           if (cmd.includes("rev-parse --verify --quiet --end-of-options origin/")) return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
@@ -225,7 +225,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, stubOpts) => {
           cmd = commandOf(cmd, stubOpts);
           if (cmd === "git rev-parse HEAD") return { stdout: "1111111111111111111111111111111111111111\n" };
-          if (cmd === "git status --porcelain") return { stdout: " M src/lib.rs\n" };
+          if (cmd === "git status --porcelain --untracked-files=all") return { stdout: " M src/lib.rs\n" };
           if (cmd.includes("rev-parse --verify --quiet --end-of-options origin/")) return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
@@ -283,7 +283,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, stubOpts) => {
           cmd = commandOf(cmd, stubOpts);
           if (cmd === "git rev-parse HEAD") return { stdout: "1111111111111111111111111111111111111111\n" };
-          if (cmd === "git status --porcelain") return { stdout: " M src/lib.rs\n" };
+          if (cmd === "git status --porcelain --untracked-files=all") return { stdout: " M src/lib.rs\n" };
           if (cmd.includes("rev-parse --verify --quiet --end-of-options origin/")) return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "2\n" };
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
@@ -334,7 +334,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       let committedFiles: string[] = [];
       const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, stubOpts) => {
         cmd = commandOf(cmd, stubOpts);
-        if (cmd === "git status --porcelain") {
+        if (cmd === "git status --porcelain --untracked-files=all") {
           return { stdout: files.map((file) => ` M ${file}`).join("\n") };
         }
         if (cmd.includes("rev-parse --verify --quiet --end-of-options origin/")) return { stdout: "a".repeat(40) + "\n" };

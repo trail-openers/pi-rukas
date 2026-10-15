@@ -77,7 +77,7 @@ try {
   // Post-fix, the committed work counts.
   {
     const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-      if (cmd === "git status --porcelain") return { stdout: "" }; // clean tree
+      if (cmd === "git status --porcelain --untracked-files=all") return { stdout: "" }; // clean tree
       if (cmd.startsWith("git rev-list --count")) return { stdout: "1\n" };
       if (cmd.startsWith("git diff --name-only")) return { stdout: "src/foo.ts\n" };
       return { stdout: "" };
@@ -101,7 +101,7 @@ try {
   // the absent global baseSha the pre-fix guard tested.
   {
     const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-      if (cmd === "git status --porcelain") return { stdout: " M src/foo.css\n" };
+      if (cmd === "git status --porcelain --untracked-files=all") return { stdout: " M src/foo.css\n" };
       if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
       if (cmd.startsWith("git diff --name-only")) return { stdout: "" };
       return { stdout: "" };
@@ -126,7 +126,7 @@ try {
   // message that pins wording).
   {
     const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-      if (cmd === "git status --porcelain") return { stdout: " M src/foo.css\n" };
+      if (cmd === "git status --porcelain --untracked-files=all") return { stdout: " M src/foo.css\n" };
       if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
       if (cmd.startsWith("git diff --name-only")) return { stdout: "" };
       return { stdout: "" };
@@ -149,7 +149,7 @@ try {
   // `notes` (the #384 silent-degradation class, made diagnosable).
   {
     const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-      if (cmd === "git status --porcelain") return { stdout: "" };
+      if (cmd === "git status --porcelain --untracked-files=all") return { stdout: "" };
       if (cmd.startsWith("git rev-list --count")) throw new Error("unknown revision");
       if (cmd.startsWith("git diff --name-only")) return { stdout: "" };
       return { stdout: "" };
@@ -169,7 +169,7 @@ try {
   // evidence either way — no note spam).
   {
     const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-      if (cmd === "git status --porcelain") return { stdout: "" };
+      if (cmd === "git status --porcelain --untracked-files=all") return { stdout: "" };
       if (cmd.startsWith("git rev-list --count")) throw new Error("unknown revision");
       if (cmd.startsWith("git diff --name-only")) return { stdout: "" };
       return { stdout: "" };

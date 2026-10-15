@@ -12,7 +12,8 @@
  * tool).
  */
 
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseWorkArgs } from "../src/work-args.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
@@ -138,7 +139,7 @@ function ctx(porcelain: string, grant?: string[], committed = ""): DriverContext
     issue: 1090,
     protectedGrant: grant,
     verifyExecFn: async (cmd) => {
-      if (cmd === "git status --porcelain") return { stdout: porcelain };
+      if (cmd === "git status --porcelain --untracked-files=all") return { stdout: porcelain };
       if (cmd.startsWith("git diff --name-only")) return { stdout: committed };
       return { stdout: "" };
     },
@@ -269,6 +270,49 @@ const isProtectedFailure = (f: string) => /protected path/.test(f);
   assert(
     /protectedGrant:\s*\[\]/.test(src) && !/allow-protected"/.test(src),
     "start_work_driver forces the grant empty and never builds the flag",
+  );
+}
+
+// ------------------- a grant names a file, never a directory (#1090 audit)
+
+{
+  const root = mkdtempSync(path.join(tmpdir(), "grant-dir-"));
+  mkdirSync(path.join(root, ".github", "actions"), { recursive: true });
+  const parseWith = (p: string) => parseWorkArgs(`7 --allow-protected ${p}`, { repoRoot: root });
+  assert("error" in parseWith(".github/actions"), "a grant naming an on-disk directory is refused at parse time");
+  assert("error" in parseWith(".github/"), "a grant ending in / is refused at parse time");
+  assert("error" in parseWith(".github"), "a grant naming the .github root is refused at parse time");
+  assert(!("error" in parseWith(CI)), "a grant naming a file still parses");
+  const bare = parseWorkArgs("7 --allow-protected ./");
+  assert("error" in bare && /needs a path/.test(bare.error), "a bare ./ is still a missing path, not a directory");
+  assert(
+    ungrantedProtectedPaths([".github/actions/"], [".github/actions"]).length === 1,
+    "a collapsed directory entry is never admitted, even by a grant of its key",
+  );
+  const collapsed = await verifyStepOutcome(
+    ctx("?? .github/actions/\n", [".github/actions"]),
+    stateWith(),
+    "develop",
+  );
+  assert(
+    collapsed.failures.some(isProtectedFailure),
+    "a wholly untracked directory halts the develop gate even with a directory grant",
+  );
+  assert(
+    !collapsed.failures.some((f) => f.includes("--allow-protected .github/actions")),
+    "...and no copy-paste grant command is printed for the directory",
+  );
+  const perFile = await verifyStepOutcome(
+    ctx("?? .github/actions/a.yml\n?? .github/actions/b.yml\n", [
+      ".github/actions/a.yml",
+      ".github/actions/b.yml",
+    ]),
+    stateWith(),
+    "develop",
+  );
+  assert(
+    !perFile.failures.some(isProtectedFailure),
+    "the same files listed individually, each granted by name, pass the gate",
   );
 }
 

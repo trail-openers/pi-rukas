@@ -6,7 +6,14 @@
  * nowhere else; `start_work_driver` overrides both after calling this.
  */
 
-import { SAFE_PATH_RE, isProtectedPath, protectedPathKey } from "./work-driver-doctrine.ts";
+import { statSync } from "node:fs";
+import { join } from "node:path";
+import {
+  SAFE_PATH_RE,
+  isDirectoryEntry,
+  isProtectedPath,
+  protectedPathKey,
+} from "./work-driver-doctrine.ts";
 import { ALLOW_PROTECTED_FLAG } from "./work-driver-protected-grant.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 
@@ -26,8 +33,11 @@ export interface WorkInvocation {
  * Returns an `error` string rather than throwing, so both the command and the
  * tool can render it in their own idiom.
  */
-export function parseWorkArgs(args: string): WorkInvocation | { error: string } {
-  const split = splitProtectedGrant(args.trim().split(/\s+/).filter(Boolean));
+export function parseWorkArgs(
+  args: string,
+  opts: { repoRoot?: string } = {},
+): WorkInvocation | { error: string } {
+  const split = splitProtectedGrant(args.trim().split(/\s+/).filter(Boolean), opts.repoRoot);
   if ("error" in split) return split;
   const tokens = split.rest;
   const issues = tokens
@@ -59,6 +69,26 @@ export function parseWorkArgs(args: string): WorkInvocation | { error: string } 
   };
 }
 
+/** Protected roots that are directories by definition, whatever is on disk. */
+const DIRECTORY_ROOTS = [".github", ".pi"];
+
+/** Is a grant key a directory? Roots always are; otherwise ask the checkout. */
+function isDirectoryGrant(key: string, repoRoot: string | undefined): boolean {
+  if (DIRECTORY_ROOTS.includes(key)) return true;
+  if (!repoRoot) return false;
+  try {
+    return statSync(join(repoRoot, key)).isDirectory();
+  } catch {
+    return false; // not on disk yet — a file the developer may create
+  }
+}
+
+function directoryGrantError(raw: string): { error: string } {
+  return {
+    error: `pi-rukas: ${ALLOW_PROTECTED_FLAG} ${raw} names a directory — a grant names one file, exactly, because a directory grant would admit every file under it. Name each file inside it individually.`,
+  };
+}
+
 /** Normalise an operator-written grant entry to the gate's comparison form. */
 function grantKey(raw: string): string {
   return protectedPathKey(normaliseDeclaredPath(raw));
@@ -73,6 +103,7 @@ function grantKey(raw: string): string {
  */
 export function splitProtectedGrant(
   tokens: readonly string[],
+  repoRoot?: string,
 ): { grant: string[]; rest: string[] } | { error: string } {
   const grant: string[] = [];
   const rest: string[] = [];
@@ -92,12 +123,20 @@ export function splitProtectedGrant(
       rest.push(t);
       continue;
     }
-    const keys = value
+    const parts = value
       .split(",")
-      .map(grantKey)
-      .filter((k) => k.length > 0);
+      .map((v) => v.trim())
+      .filter((v) => v.length > 0);
+    // #1090 — a grant names one file. A directory grant would admit every file
+    // under it, so a trailing `/` (the spelling of a directory) is refused here,
+    // before `grantKey` strips it.
+    // A bare `./` normalises to no path at all, so it stays a missing path.
+    const dir = parts.find((v) => isDirectoryEntry(v) && grantKey(v).length > 0);
+    if (dir !== undefined) return directoryGrantError(dir);
+    const keys = parts.map(grantKey).filter((k) => k.length > 0);
     if (keys.length === 0) return needsPath;
     for (const key of keys) {
+      if (isDirectoryGrant(key, repoRoot)) return directoryGrantError(key);
       // A grant names a protected file exactly, as a plain path token; `..`, a
       // path the gate never halts on, or one that cannot be rendered safely in
       // the PR body is a mistake the operator should hear about, not a no-op.

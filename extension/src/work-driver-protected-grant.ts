@@ -23,19 +23,24 @@
  * Granted paths still go through the #285 scope/fanout gate.
  */
 
-import { protectedPathKey } from "./work-driver-doctrine.ts";
+import { isDirectoryEntry, protectedPathKey } from "./work-driver-doctrine.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 export const ALLOW_PROTECTED_FLAG = "--allow-protected";
 
-/** The protected paths in `hits` the grant does not name exactly. */
+/**
+ * The protected paths in `hits` the grant does not name exactly.
+ *
+ * A directory entry is ALWAYS ungranted, whatever the grant says (#1090): a
+ * grant admits one file, and a directory key matching would admit every file
+ * under it. `grant` is already in key form (`splitProtectedGrant`).
+ */
 export function ungrantedProtectedPaths(
   hits: readonly string[],
   grant: readonly string[] | undefined,
 ): string[] {
-  // `grant` is already in key form (`splitProtectedGrant` in work-args.ts).
   const granted = new Set((grant ?? []).map(protectedPathKey));
-  return hits.filter((h) => !granted.has(protectedPathKey(h)));
+  return hits.filter((h) => isDirectoryEntry(h) || !granted.has(protectedPathKey(h)));
 }
 
 /**

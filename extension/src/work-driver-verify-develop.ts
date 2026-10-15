@@ -145,7 +145,10 @@ export async function verifyDevelopOutcome(
     let hasUncommitted = false;
     let assessed = false;
     try {
-      const { stdout } = await execFn("git status --porcelain", {
+      // `--untracked-files=all`: without it a wholly untracked directory is
+      // one `?? dir/` entry, and the protected-path gate would see a directory
+      // rather than the files it contains (#1090).
+      const { stdout } = await execFn("git status --porcelain --untracked-files=all", {
         cwd,
         maxBuffer: 1024 * 1024,
       });

@@ -121,6 +121,7 @@ export function registerWorkTools(pi: ExtensionAPI) {
       const params = raw as { issues: number[]; restart?: boolean };
       const parsed = parseWorkArgs(
         [...params.issues.map(String), params.restart ? "--restart" : ""].join(" "),
+        { repoRoot: await resolveRepoRoot(ctx.cwd) },
       );
       if ("error" in parsed) {
         return { content: [{ type: "text", text: parsed.error }], details: { started: false } };
