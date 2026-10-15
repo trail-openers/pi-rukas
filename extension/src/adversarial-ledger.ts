@@ -30,9 +30,11 @@ import type { DispatchResult } from "./types.ts";
 import { execp } from "./exec.ts";
 
 /**
- * Write an adversarial-review entry to the review ledger. The loop does not
- * await this (fire-and-forget); the returned promise never rejects, so the
- * function is safe to call on every exit path of `runAdversarialLoop`.
+ * Write an adversarial-review entry to the review ledger. Fire-and-forget:
+ * the caller does not await this; the function is safe to call on every
+ * exit path of `runAdversarialLoop`.
+ *
+ * #1161 — the returned promise never rejects (the caller may ignore it).
  *
  * #1161 — `callerSuppliedDiff`: the review judged a diff string the caller
  * pasted, not one the tool computed from base+head. Such a review is recorded
