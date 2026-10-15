@@ -66,7 +66,7 @@ This is **independent of the LLM backend**: across recent runs, Anthropic Claude
 cd ~/.config/opencode/pi-rukas && git pull && ./install.sh
 ```
 
-Post-#236 (retuned by #295), `install.sh` writes `retry.provider` defaults into `~/.pi/agent/settings.json` (10 min per request, 3 retries with backoff). If you have non-default settings you want to keep, they're preserved — install.sh only writes the retry block when it's missing, with one exception: the old #236 value of exactly `180000` (3 min) is recognized as our own footprint and repaired to the new default.
+Post-#236 (retuned by #295), `install.sh` writes `retry.provider` defaults into `~/.pi/agent/settings.json` (10 min per request, 3 retries with backoff), plus the top-level `httpIdleTimeoutMs` (300000). If you have non-default settings you want to keep, they're preserved — install.sh only writes the retry block when it's missing, with these exceptions, all our own footprints: the old #236 value of exactly `180000` (3 min) is repaired to the new default, a `maxRetryDelayMs` of exactly `10000` is repaired to `60000`, and a `retry.provider.httpIdleTimeoutMs` (a key Pi never reads, #1347) is removed, its value moved to the top level unless it is our old `120000`.
 
 The dispatch report also now distinguishes the failure mode visually:
 
@@ -82,6 +82,7 @@ Do NOT set this below the longest single turn your subagent models legitimately 
 
 ```json
 {
+  "httpIdleTimeoutMs": 300000,  // top level: Pi does not read it under retry.provider
   "retry": {
     "provider": {
       "timeoutMs": 600000,    // 10 min per request (the #295 default)
