@@ -18,18 +18,15 @@
  * an identity is built. Both THROW on a git failure; each caller decides the
  * fail-closed meaning.
  *
- * `mergeBasePatchId` is the merge guard's and the residual-marker poster's
- * identity (#1305): the committed form of the writer's construction, against
- * the SAME base the writers use (`<remote>/<mainline>`). The guard used the
- * two-dot `git diff base..branch` until #1305 — that diff contains the
- * reverse of every commit main gained after the branch was cut, so every
- * recorded review went "stale" the moment main moved although the branch had
- * not changed.
+ `committedPatchIdentity` is the committed form of the same construction: the
+ * carry checker (`committedIdentity`) and the merge guard / residual-marker
+ * poster (`mergeIdentity`, merge-guard-reads.ts, #1305) both build on it, so
+ * neither can drift from what the writers record.
  */
 
 import { createHash } from "node:crypto";
 import { trace } from "./trace.ts";
-import { type VerifyExecFn, resolveMainline } from "./work-driver-git.ts";
+import type { VerifyExecFn } from "./work-driver-git.ts";
 
 /** A ref safe to interpolate into a shell command: no leading dash, no metacharacters. */
 const SAFE_REF = /^[A-Za-z0-9_][A-Za-z0-9._/@-]*$/;
@@ -68,22 +65,56 @@ export async function diffDigestOfRange(
   return createHash("sha256").update(stdout).digest("hex");
 }
 
-/** `git merge-base <head> <base>`, trimmed ("" when none). THROWS on a git failure. */
-async function mergeBaseOf(
+/**
+ * The ONE committed identity construction (#1305): merge-base of `head` and
+ * `base`, then the diff from it to `head` — exactly what `workingTreePatchId`
+ * stores, over committed content. `digest` also computes `diffSha256`.
+ *
+ * Every failure — an unsafe ref, no merge-base, a git error, an empty diff —
+ * is `{ ok: false, reason }`, so each caller fails closed with a named cause.
+ */
+export async function committedPatchIdentity(
   execFn: VerifyExecFn,
   cwd: string,
   head: string,
   base: string,
-): Promise<string> {
-  const { stdout } = await execFn(`git merge-base ${head} ${base}`, { cwd, maxBuffer: 8 * 1024 });
-  return stdout.trim();
+  opts: { digest?: boolean } = {},
+): Promise<{ ok: true; patchId: string; diffSha256?: string } | { ok: false; reason: string }> {
+  if (!SAFE_REF.test(head) || !SAFE_REF.test(base)) {
+    return { ok: false, reason: `unsafe ref (${JSON.stringify(head)} / ${JSON.stringify(base)})` };
+  }
+  let mergeBase: string;
+  try {
+    const { stdout } = await execFn(`git merge-base ${head} ${base}`, { cwd, maxBuffer: 8 * 1024 });
+    mergeBase = stdout.trim();
+  } catch (err) {
+    // `git merge-base` exits 1 with no output when the histories share no
+    // ancestor — the common cause here, so it is named.
+    return {
+      ok: false,
+      reason: `no merge-base between ${head} and ${base} (${(err as Error).message?.slice(0, 120)})`,
+    };
+  }
+  if (!mergeBase) return { ok: false, reason: `no merge-base between ${head} and ${base}` };
+  const range = `${mergeBase} ${head}`;
+  const label = `${mergeBase.slice(0, 8)}..${head}`;
+  try {
+    const patchId = await patchIdOfRange(execFn, cwd, range, label);
+    if (!patchId) return { ok: false, reason: `the diff ${label} is empty` };
+    if (!opts.digest) return { ok: true, patchId };
+    return { ok: true, patchId, diffSha256: await diffDigestOfRange(execFn, cwd, range) };
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `git failed on ${label}: ${(err as Error).message?.slice(0, 120)}`,
+    };
+  }
 }
 
 /**
- * The COMMITTED identity of `head` against `base`, built exactly as the
- * ledger's working-tree identity is: merge-base first, then the diff from it
- * to `head`. Any failure — an unsafe ref, no merge-base, a git error — returns
- * `{}`, so the caller fails closed (a carry needs both fields to match).
+ * The carry checker's view of `committedPatchIdentity` (#1176): both fields,
+ * or `{}` on any failure, so the caller fails closed (a carry needs both
+ * fields to match).
  */
 export async function committedIdentity(
   execFn: VerifyExecFn,
@@ -91,77 +122,10 @@ export async function committedIdentity(
   head: string,
   base: string,
 ): Promise<{ patchId?: string; diffSha256?: string }> {
-  if (!SAFE_REF.test(head) || !SAFE_REF.test(base)) return {};
-  try {
-    const mergeBase = await mergeBaseOf(execFn, cwd, head, base);
-    if (!mergeBase) return {};
-    const range = `${mergeBase} ${head}`;
-    const patchId = await patchIdOfRange(
-      execFn,
-      cwd,
-      range,
-      `${mergeBase.slice(0, 8)}..${head.slice(0, 8)}`,
-    );
-    const diffSha256 = await diffDigestOfRange(execFn, cwd, range);
-    return { patchId, diffSha256 };
-  } catch (err) {
-    trace(
-      `review-patch-identity: committed identity of ${head.slice(0, 8)} unavailable: ${(err as Error).message?.slice(0, 120)}`,
-    );
-    return {};
-  }
-}
-
-/**
- * The merge guard's identity of a PR's head (#1305): the patch-id of
- * `merge-base(<remote>/<head>, <remote>/<mainline>)..<remote>/<head>` — the
- * committed form of what `workingTreePatchId` records, against the same base
- * ref, so a review stays current while main moves and goes stale only when the
- * branch's own changes do.
- *
- * The writers only ever record against the MAINLINE. A PR whose base branch is
- * not the mainline therefore has no recorded identity to match and fails
- * closed here, named — the operator re-runs the reviews or merges by hand.
- *
- * Every failure (mainline unresolved, unsafe ref, no merge-base, a git error,
- * an empty diff) is `{ ok: false, reason }`: the guard refuses with the reason,
- * the marker poster posts nothing. The caller fetches both refs first.
- */
-export async function mergeBasePatchId(
-  execFn: VerifyExecFn,
-  cwd: string,
-  remote: string,
-  headBranch: string,
-  prBaseBranch: string,
-): Promise<{ ok: true; patchId: string } | { ok: false; reason: string }> {
-  const mainline = await resolveMainline(cwd, execFn);
-  if (!("branch" in mainline)) {
-    return { ok: false, reason: `the mainline is unresolved (${mainline.reason})` };
-  }
-  if (prBaseBranch !== mainline.branch) {
-    return {
-      ok: false,
-      reason: `the PR's base \`${prBaseBranch}\` is not the mainline \`${mainline.branch}\` — reviews are recorded against the mainline only`,
-    };
-  }
-  const head = `${remote}/${headBranch}`;
-  const base = `${remote}/${mainline.branch}`;
-  if (!SAFE_REF.test(head) || !SAFE_REF.test(base)) {
-    return { ok: false, reason: `unsafe ref (${JSON.stringify(head)} / ${JSON.stringify(base)})` };
-  }
-  try {
-    const mergeBase = await mergeBaseOf(execFn, cwd, head, base);
-    if (!mergeBase) return { ok: false, reason: `no merge-base between ${head} and ${base}` };
-    const patchId = await patchIdOfRange(
-      execFn,
-      cwd,
-      `${mergeBase} ${head}`,
-      `${mergeBase.slice(0, 8)}..${head}`,
-    );
-    if (!patchId)
-      return { ok: false, reason: `the diff ${mergeBase.slice(0, 8)}..${head} is empty` };
-    return { ok: true, patchId };
-  } catch (err) {
-    return { ok: false, reason: `git failed: ${(err as Error).message?.slice(0, 120)}` };
-  }
+  const r = await committedPatchIdentity(execFn, cwd, head, base, { digest: true });
+  if (r.ok) return { patchId: r.patchId, diffSha256: r.diffSha256 };
+  trace(
+    `review-patch-identity: committed identity of ${head.slice(0, 8)} unavailable: ${r.reason}`,
+  );
+  return {};
 }

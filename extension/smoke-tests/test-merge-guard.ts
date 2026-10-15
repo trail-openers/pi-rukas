@@ -320,7 +320,7 @@ assert(!lensPassed("ISSUES_FOUND", "MEDIUM"), "lens ISSUES_FOUND blocks at the M
   // The hook is async and awaits the execs before deciding.
   assert(/async \(event, _ctx\)/.test(mg), "the tool_call handler is async");
   assert(/await readMergeTarget/.test(mg), "…and it awaits the PR read before the ledger check");
-  assert(/await mergeBasePatchId/.test(mg), "…and it awaits the patch-id computation before deciding");
+  assert(/await mergeIdentity/.test(mg), "…and it awaits the patch-id computation before deciding");
 }
 
 // ------------------------------------------------ mechanizedMerge canary

@@ -30,7 +30,7 @@
  *      must be `passed: true` AND its `patchId` must equal the current
  *      patchId — computed as the writers compute theirs (#1305): the diff from
  *      the merge-base of `<remote>/<head>` and `<remote>/<mainline>` to the
- *      head (`mergeBasePatchId`). Main moving does not change it; a change
+ *      head (`mergeIdentity`). Main moving does not change it; a change
  *      to the branch's own content does → refuse. A PR whose base branch is
  *      not the mainline has no matching recorded identity and is refused,
  *      named (fail closed; see docs/troubleshooting.md → "A merge was
@@ -85,7 +85,11 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { stripQuotedSegments } from "./bash-command-parser.ts";
 import { mergesPr } from "./bash-merges-pr.ts";
 import { execp } from "./exec.ts";
-import { lensNotEvaluatedRefusal, readPrCommentBodies } from "./merge-guard-reads.ts";
+import {
+  lensNotEvaluatedRefusal,
+  mergeIdentity,
+  readPrCommentBodies,
+} from "./merge-guard-reads.ts";
 import { evaluateRoundCapMerge } from "./merge-guard-round-cap.ts";
 import { extractMergeNumber, mergeVerbArgs, mergeVerbRepo } from "./merge-parse.ts";
 import { exceedsAnalysisBound } from "./merge-size.ts";
@@ -104,7 +108,6 @@ import {
   readLedgerAt,
   remoteName,
 } from "./review-ledger.ts";
-import { mergeBasePatchId } from "./review-patch-identity.ts";
 import { trace } from "./trace.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 
@@ -318,14 +321,8 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     // merge-base of the head against `<remote>/<mainline>`, diffed to the
     // head. A moved main leaves it unchanged; a change to the branch's own
     // content changes it. A PR whose base is not the mainline has nothing
-    // recorded to match and fails closed (see mergeBasePatchId).
-    const identity = await mergeBasePatchId(
-      execFn,
-      cwd,
-      remote,
-      target.headBranch,
-      target.baseBranch,
-    );
+    // recorded to match and fails closed (see mergeIdentity).
+    const identity = await mergeIdentity(execFn, cwd, remote, target.headBranch, target.baseBranch);
     if (!identity.ok) {
       return block(
         `could not compute the patch-id for ${target.headBranch}: ${identity.reason} — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,

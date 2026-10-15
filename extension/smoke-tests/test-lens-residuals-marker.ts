@@ -7,7 +7,7 @@
  * residual-findings marker comment IFF the verdict is ISSUES_FOUND AND an
  * open PR/MR for the branch is resolved. APPROVED, REVIEW_INCOMPLETE and
  * CRITICAL_ISSUES_FOUND post nothing. The marker embeds the SAME id the
- * guard computes — `mergeBasePatchId`, the merge-base identity (design
+ * guard computes — `mergeIdentity`, the merge-base identity (design
  * decision 1) — and the guard verifies that exact marker string.
  *
  * Covers:

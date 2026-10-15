@@ -9,7 +9,7 @@
  *   <!-- pi-rukas:lens-residuals branch=<b> patch=<patchId> -->
  *
  * The `patch=` is the SAME id the merge guard computes and compares —
- * `mergeBasePatchId` (review-patch-identity.ts, #1305) — the merge-base identity
+ * `mergeIdentity` (merge-guard-reads.ts, #1305) — the merge-base identity
  * the ledger writers record.
  * The guard later reads the PR's comments (its own exec call) and refuses
  * the merge when no comment carries a marker matching the current branch
@@ -48,9 +48,9 @@ import { resolvedSection, suppressedSection } from "./lens-residuals.ts";
 import { advisorySection } from "./lens-review-advisory.ts";
 import { deltaFallbackText } from "./lens-review-diff.ts";
 import type { LensReviewSummary } from "./lens-review.ts";
+import { mergeIdentity } from "./merge-guard-reads.ts";
 import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
 import { remoteName } from "./review-ledger.ts";
-import { mergeBasePatchId } from "./review-patch-identity.ts";
 import { trace } from "./trace.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 
@@ -238,7 +238,7 @@ async function doPost(
     );
   }
   // The remote + the patch-id — the SAME computation the guard applies
-  // (review-patch-identity.ts mergeBasePatchId, #1305).
+  // (merge-guard-reads.ts mergeIdentity, #1305).
   const remote = await remoteName(execFn, cwd);
   if (!remote) throw new Error("no git remote found (origin/upstream/first)");
   // #973 review — the patch-id is computed against FRESH refs: the guard
@@ -266,7 +266,7 @@ async function doPost(
       `git fetch ${remote} ${headBranch} ${baseBranch} failed: ${(err as Error).message?.slice(0, 200) ?? "unknown error"} — the disclosure was not posted (fail closed; the merge guard will refuse until the disclosure is posted)`,
     );
   }
-  const identity = await mergeBasePatchId(execFn, cwd, remote, headBranch, baseBranch);
+  const identity = await mergeIdentity(execFn, cwd, remote, headBranch, baseBranch);
   if (!identity.ok) {
     throw new Error(
       `could not compute the patch-id for ${headBranch}: ${identity.reason} — the disclosure was not posted (fail closed)`,

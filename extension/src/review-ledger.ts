@@ -146,7 +146,7 @@ export { remoteName } from "./review-ledger-path.ts";
  *     not change the content's patch-id).
  *
  * The merge guard recomputes the committed form of this identity against the
- * same `<remote>/<mainline>` (`mergeBasePatchId`, #1305). A PR whose base
+ * same `<remote>/<mainline>` (`mergeIdentity`, #1305). A PR whose base
  * branch is NOT the mainline is refused there by name (fail closed) — the
  * operator re-runs the reviews or merges by hand (see docs/troubleshooting.md
  * → "A merge was refused: review ledger").
