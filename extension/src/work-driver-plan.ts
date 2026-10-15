@@ -59,35 +59,28 @@ import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 /**
- * Step 2 — Plan / decompose into workstreams.
+ * Step 2 — Plan / decompose into workstreams (prompt: `pi-prompts/plan.md`).
  *
- * PR3 restores the parallelism doctrine the PR #239 driver silently
- * dropped: the user's /work command treated "default to parallel" as a
- * first principle, exploiting up to 10 parallel slots for multi-
- * workstream issues (e.g., "fix bug X in frontend AND update docs"
- * would dispatch two developers in two worktrees concurrently).
+ * Parallelism is the default: up to 10 slots for multi-workstream issues.
+ * The subagent reads the cached issue body + explore report, decides whether
+ * the issue is 1, 2, or N+ independent workstreams, and returns a fenced
+ * `## Workstreams` block. N=1 is the same path (a `default` workstream is
+ * always written so downstream iterates `Object.keys(workstreams)` uniformly).
  *
- * The decomposition prompt is cribbed from `pi-prompts/plan.md` Phase 2
- * — explore-shaped, structured output. The subagent reads the cached
- * issue body (from Step 1's `issueBodyArtifact`) plus the explore
- * report and decides whether the issue contains 1, 2, or N+
- * independent workstreams. Returns a fenced `## Workstreams` block
- * the driver parses.
- *
- * Single-workstream is `N=1` of the same code path (not a separate
- * branch): a `default` workstream is always written so downstream
- * code can iterate `Object.keys(workstreams)` uniformly.
- *
- * Failure modes:
- *  - parsing returns 0 workstreams → write the synthetic `default`
- *  - dispatch fails → treat as halt (the cycle can't proceed without
- *    knowing what to develop); event is `dispatch-failed`
+ * Failure modes: 0 workstreams → synthetic `default`; dispatch fails → halt
+ * (`dispatch-failed`).
  */
 export async function runPlan(
   ctx: CycleContext,
   state: WorkState,
   now: number,
 ): Promise<WorkState> {
+  // #1263 test seam — force the plan step to THROW from its own code (not a
+  // dispatch failure runPlan catches) so the driver's catch path is the one
+  // exercised. Production never sets this; offline tests only.
+  if (process.env.PI_ENSEMBLE_TEST_PLAN_THROW === "1") {
+    throw new Error("PI_ENSEMBLE_TEST_PLAN_THROW: simulated plan step crash");
+  }
   let next = appendEvent(
     { ...state, pipelineState: { ...state.pipelineState, currentStep: "plan" } },
     { kind: "step-started", step: "plan", at: now },
