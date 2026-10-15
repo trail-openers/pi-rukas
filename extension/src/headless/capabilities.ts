@@ -18,24 +18,15 @@
  *   - `inputs`     — the env-var inputs this build reads, by name
  *   - `features`   — named features a caller may depend on
  *
- * The sibling `contract-versions` workstream (#1306) owns the named version
- * constants on the contract modules themselves (exit-code.ts, result.ts,
- * ndjson.ts); this module reads whatever they export and keeps its own
- * fallbacks, so the two land independently.
+ * The contract-version constants live on the contract modules themselves
+ * (exit-code.ts, result.ts, ndjson.ts); this module reads whatever they export.
  */
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { EXIT } from "./exit-code.ts";
+import { EXIT, EXIT_CODE_VERSION } from "./exit-code.ts";
 import { NDJSON_VERSION } from "./ndjson.ts";
-
-// #1306 — contract-version constants live on the contract modules themselves
-// (sibling workstream `contract-versions`). If that workstream is not merged
-// yet, the fallback below keeps this file compiling; when it lands, swap the
-// import for `HEADLESS_EXIT_CODES_VERSION` / `HEADLESS_RESULT_VERSION` from
-// the respective module and drop the fallback.
-const EXIT_CODES_VERSION = 1 as const;
-const RESULT_SCHEMA_VERSION = 1 as const;
+import { RESULT_SCHEMA_VERSION } from "./result.ts";
 
 /**
  * The version of the capabilities object itself. Bump on any change to the
@@ -131,7 +122,7 @@ export function buildCapabilities(repoRoot?: string): Capabilities {
     version: readBuildVersion(),
     commit: repoRoot !== undefined ? readBakedCommit(repoRoot) : null,
     contracts: {
-      exitCodes: { version: EXIT_CODES_VERSION, values: EXIT },
+      exitCodes: { version: EXIT_CODE_VERSION, values: EXIT },
       resultSchema: { version: RESULT_SCHEMA_VERSION },
       ndjson: { version: NDJSON_VERSION },
     },

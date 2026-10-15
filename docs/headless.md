@@ -19,7 +19,7 @@ The headless runner's contract with its caller is four independent surfaces, eac
 | Contract | Version constant | Module | Description |
 |---|---|---|---|
 | Exit codes | `EXIT` object (`exit-code.ts`) | `extension/src/headless/exit-code.ts` | The process exit code. 7 named values: `merged` (0), `handoff` (10), `clarification` (11), `aborted` (20), `interrupted` (21), `crash` (30), `refused` (40). |
-| `--json` result schema | `HEADLESS_RESULT_VERSION` | `extension/src/headless/result.ts` | The JSON document on stdout when `--json` is used. One `HeadlessRunResult` object with `exitCode`, `issues[]` (each with `issue`, `status`, `stateFile`, `durationMs`, `steps`, `exitCode`), and an optional `error`. |
+| `--json` result schema | `RESULT_SCHEMA_VERSION` | `extension/src/headless/result.ts` | The JSON document on stdout when `--json` is used. One `HeadlessRunResult` object with `exitCode`, `issues[]` (each with `issue`, `status`, `stateFile`, `durationMs`, `steps`, `exitCode`), and an optional `error`. |
 | NDJSON progress | `NDJSON_VERSION` (1) | `extension/src/headless/ndjson.ts` | One JSON object per line on stderr. Every line carries `v` (1), `kind`, `at` (ISO-8601). Driver event lines additionally carry `issue` and `key` (idempotency key `<issue>:<index>:<at>`). Kinds: all `WorkEvent` kinds plus `log` and `pi-resolved`. |
 | Capabilities | `CAPABILITIES_VERSION` (1) | `extension/src/headless/capabilities.ts` | The JSON object `--capabilities` prints. See below. |
 
