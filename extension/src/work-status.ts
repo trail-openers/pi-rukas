@@ -111,6 +111,13 @@ export function renderRunningStatus(state: WorkState, repoRoot: string): string 
   if ((ps.ciRetryCount ?? 0) > 0) {
     lines.push(`  ci retries: ${ps.ciRetryCount}/${MAX_CI_RETRIES}`);
   }
+  // #1238 — the caller-set whole-cycle deadline, rendered beside the loop
+  // caps so the operator sees how much budget is left before the caller
+  // kills the process (the orchard `docker stop` shape this feature closes).
+  if (ps.cycleDeadlineMs) {
+    const remaining = Math.max(0, ps.cycleDeadlineMs - Date.now());
+    lines.push(`  deadline: ${fmtElapsed(remaining)} remaining`);
+  }
 
   const totals = stepTotals(state.eventLog);
   if (Object.keys(totals).length > 0) {
