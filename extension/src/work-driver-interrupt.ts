@@ -45,7 +45,10 @@ export async function interruptIfRequested(
 
 /**
  * A step threw. Traced and recorded as a plumb note BEFORE the caller decides
- * whether the cycle was interrupted, so a crash that coincides with a signal is
+ * how to route the crash — an interrupt (signal fired), a direct abort
+ * (handoff crash, DriverNotImplemented), or the handoff-cap route (#1263,
+ * where the caller appends a `driver-crash:<step>` cap and `continue`s to
+ * `handoff` rather than returning). So a crash that coincides with a signal is
  * not lost. The returned state carries the note; the caller persists it.
  */
 export function recordStepCrash(

@@ -482,11 +482,14 @@ export function validateDiscriminants(state: unknown): string[] {
         const cap = e.cap as string;
         // #844 — `branch-ahead:` is a TEMPLATE (the ahead count rides in the
         // suffix), like `verify-failed:` / `step-failed:`; the other two #844
-        // caps are fixed literals in CAP_HIT_FIXED_LITERALS.
+        // caps are fixed literals in CAP_HIT_FIXED_LITERALS. #1263 —
+        // `driver-crash:` is likewise a TEMPLATE; without it, a file left
+        // `running` with the cap would fail re-entry validation (#753/#973).
         const isTemplate =
           cap.startsWith("verify-failed:") ||
           cap.startsWith("step-failed:") ||
-          cap.startsWith("branch-ahead:");
+          cap.startsWith("branch-ahead:") ||
+          cap.startsWith("driver-crash:");
         if (!CAP_HIT_FIXED_LITERALS.includes(cap) && !isTemplate) {
           out.push(`eventLog[${i}].cap has unknown value ${JSON.stringify(cap)}`);
         }
