@@ -73,14 +73,14 @@ export function inlineCommitPrPrompt(
   eventLog: readonly import("./workflow-state-events.ts").WorkEvent[],
   scratchDirAbs: string,
   issueTitle?: string,
-  // #861 — ops-fallback integration context; present when the driver created the integrate worktree the fallback is pinned to (only permitted tree).
+  // #861 — ops-fallback integration context; present when the driver created
+  // the integrate worktree the fallback is pinned to (only permitted tree).
   fallback?: {
     /** The driver-owned integration worktree — the ONLY permitted working tree. */
     integratePath: string;
     /** The scratch dir the conflict / restored-state artifacts live in. */
     scratchDir: string;
-    /** The base the feature branch was created at. */
-    baseSha: string;
+    /** The base the feature branch was created at. */ baseSha: string;
     /** The preserved conflict patch, when integrate() preserved one. */
     conflictPatch?: string;
     /** The workstream map (id → worktree path). */

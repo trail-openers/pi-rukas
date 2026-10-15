@@ -146,13 +146,20 @@ export async function markDraftPrReady(
   const draft = current.pipelineState.prDraft;
   if (!draft || draft.status === "ready") return current;
   const forge = await resolveForge(ctx);
-  // Identity first: a PR the cycle cannot prove is its own is neither recorded
-  // as held nor marked ready.
-  if (!forge || !(await readOwnPr(forge, current, prNumber))) return current;
+  // Identity first: a PR the cycle cannot prove is its own is never marked
+  // ready; a known draft records why it stays unverified instead of staying silent.
+  const own = await readOwnPr(forge, current, prNumber);
+  if (!own.ok || !forge) {
+    const reason = own.ok ? "the forge for this repo could not be determined" : own.reason;
+    return withPrDraft(current, {
+      ...draft,
+      holdReason: `the PR could not be read to verify it is this cycle's: ${reason}`,
+    });
+  }
   const hold = readyHoldReason(current.eventLog);
   if (hold) {
     trace(`work-driver: PR #${prNumber} stays a draft — ${hold}`);
-    return withPrDraft(current, { status: "draft", holdReason: hold });
+    return withPrDraft(current, { ...draft, status: "draft", holdReason: hold });
   }
   const used = draft.attempts ?? 0;
   const attempts = Math.min(MAX_READY_ATTEMPTS, MAX_READY_ATTEMPTS_PER_CYCLE - used);
@@ -214,7 +221,7 @@ export async function recordLiveDraftFact(
   const ps = state.pipelineState;
   if (ps.prDraft || ps.prNumber === undefined || !draftPrEnabled(ctx)) return state;
   const pr = await readOwnPr(await resolveForge(ctx), state, ps.prNumber);
-  return pr?.isDraft === true ? withPrDraft(state, { status: "draft" }) : state;
+  return pr.ok && pr.pr.isDraft === true ? withPrDraft(state, { status: "draft" }) : state;
 }
 
 /**
@@ -231,13 +238,18 @@ export async function recordFallbackDraftFact(
   execFn: VerifyExec,
 ): Promise<WorkState> {
   if (!draftPrEnabled(ctx)) return state;
-  const pr = await readOwnPr(await resolveForge(ctx, execFn), state, prNumber);
-  if (pr?.isDraft === true) return withPrDraft(state, { status: "draft" });
-  if (pr?.isDraft === false) {
+  const own = await readOwnPr(await resolveForge(ctx, execFn), state, prNumber);
+  if (!own.ok) return state;
+  if (own.pr.isDraft === true) return withPrDraft(state, { status: "draft" });
+  if (own.pr.isDraft === false) {
     trace(
       `work-driver: ops fallback opened PR #${prNumber} ready, not as a draft — the review window is open`,
     );
-    return withPrDraft(state, { status: "ready" });
+    return withPrDraft(state, {
+      status: "ready",
+      holdReason:
+        "the ops fallback opened the PR ready rather than as a draft, so it was open for review",
+    });
   }
   return state;
 }
@@ -256,7 +268,13 @@ export function draftPrHandoffLines(ps: WorkState["pipelineState"], forge?: Forg
       : `\`gh pr ready ${pr}\` (GitHub) or \`glab mr update ${pr} --ready\` (GitLab)`;
   switch (draft.status) {
     case "ready":
-      return [];
+      if (!draft.holdReason) return [];
+      return [
+        "### Review window was open",
+        "",
+        `PR #${pr} was opened ready: ${draft.holdReason}. The driver does not convert it back to a draft.`,
+        "",
+      ];
     case "draft":
       return [
         "### Pull request is still a draft",
@@ -282,8 +300,15 @@ export function draftPrHandoffLines(ps: WorkState["pipelineState"], forge?: Forg
         "",
       ];
     default: {
-      const unhandled: never = draft.status;
-      throw new Error(`unhandled draft status: ${String(unhandled)}`);
+      // Compile-time exhaustiveness only. A corrupt persisted status must render,
+      // never throw: the handoff is the one place the operator learns the state.
+      const _unhandled: never = draft.status;
+      return [
+        "### Pull request draft state unrecognised",
+        "",
+        `PR #${pr}: draft state unrecognised: ${String(draft.status)}. Check its draft state and mark it ready with ${readyCmd} once the work is finished.`,
+        "",
+      ];
     }
   }
 }
@@ -301,31 +326,34 @@ async function resolveForge(
   }
 }
 
+type OwnPrRead = { ok: true; pr: NormalizedPullRequest } | { ok: false; reason: string };
+
 /**
  * The PR's view, only when the forge reports it as THIS cycle's open PR.
  * Anything else — unreadable, no head, another branch, not OPEN — is traced and
- * yields `undefined`, so the caller records and marks nothing.
+ * yields `ok: false` with a short public reason, so the caller records and marks nothing.
  */
 async function readOwnPr(
   forge: Forge | undefined,
   state: WorkState,
   prNumber: number,
-): Promise<NormalizedPullRequest | undefined> {
-  if (!forge) return undefined;
+): Promise<OwnPrRead> {
+  if (!forge) return { ok: false, reason: "the forge for this repo could not be determined" };
   try {
     const pr = await forge.prView(prNumber);
     const identity = judgePrIdentity(state.pipelineState.branchName, {
       state: pr.state,
       headRefName: pr.headRefName,
     });
-    if (identity.ok) return pr;
+    if (identity.ok) return { ok: true, pr };
     trace(`work-driver: PR #${prNumber} ${identity.failure} — its draft state is left unchanged`);
+    return { ok: false, reason: identity.failure };
   } catch (err) {
     trace(
       `work-driver: could not read PR #${prNumber}: ${rawErrorText(err)} — its draft state is left unchanged`,
     );
+    return { ok: false, reason: forgeFailureReason(rawErrorText(err)) };
   }
-  return undefined;
 }
 
 function withPrDraft(

@@ -25,6 +25,7 @@ import {
   recordFallbackDraftFact,
 } from "../src/work-driver-draft-pr.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
+import { runMerged } from "../src/work-driver-merged.ts";
 import { runStep } from "../src/work-driver-run-step.ts";
 import {
   type WorkEvent,
@@ -239,8 +240,52 @@ const execStub = (async () => ({ stdout: "" })) as unknown as NonNullable<
   const held = await markDraftPrReady(ctx, reviewState([started("commit-pr", 1), approved], { status: "draft" }), noSleep);
   const viaFallback = await recordFallbackDraftFact(ctx, noFactState, PR, execStub);
   assert(
-    readyCalls.length === 0 && viaLive.pipelineState.prDraft === undefined && held.pipelineState.prDraft?.status === "draft" && held.pipelineState.prDraft?.holdReason === undefined && viaFallback.pipelineState.prDraft === undefined,
+    readyCalls.length === 0 && viaLive.pipelineState.prDraft === undefined && held.pipelineState.prDraft?.status === "draft" && /could not be read to verify/.test(held.pipelineState.prDraft?.holdReason ?? "") && viaFallback.pipelineState.prDraft === undefined,
     "a PR whose head is another branch is never recorded, never marked ready",
+  );
+}
+
+{
+  // A corrupt persisted draft status renders a line; the handoff never throws.
+  const corrupt = { status: "bogus" } as unknown as WorkState["pipelineState"]["prDraft"];
+  const ps = reviewState([started("commit-pr", 1)], corrupt).pipelineState;
+  let lines: string[] = [];
+  let threw = false;
+  try {
+    lines = draftPrHandoffLines(ps, "github");
+  } catch {
+    threw = true;
+  }
+  assert(
+    !threw && lines.join("\n").includes("draft state unrecognised: bogus"),
+    "a corrupt persisted draft status renders a line and never throws",
+  );
+}
+
+{
+  // A known draft whose PR cannot be read records why it stays a draft, and the
+  // merge halt names that reason instead of a silent no-op.
+  const forge = {
+    prView: async () => {
+      throw new Error("GraphQL: could not resolve (simulated)");
+    },
+    prReady: async () => {
+      throw new Error("prReady must not be called on an unverified PR");
+    },
+  } as unknown as Forge;
+  const ctx = { host: fakePi, repoRoot: "/nonexistent", issue: ISSUE, headless: true, forge } as unknown as DriverContext;
+  const state = reviewState([started("commit-pr", 1), approved], { status: "draft" });
+  const marked = await markDraftPrReady(ctx, state, noSleep);
+  const hold = marked.pipelineState.prDraft?.holdReason ?? "";
+  assert(
+    marked.pipelineState.prDraft?.status === "draft" && /could not be read to verify it is this cycle's: .+/.test(hold),
+    "an unreadable known draft records an unverified hold reason",
+  );
+  const halted = await runMerged(ctx as unknown as Parameters<typeof runMerged>[0], state, at(9));
+  const last = halted.eventLog[halted.eventLog.length - 1];
+  assert(
+    last?.kind === "cap-hit" && last.cap === "step-failed:merged" && String(last.evidence).includes("could not be read to verify"),
+    "runMerged's halt evidence names the unverified reason",
   );
 }
 

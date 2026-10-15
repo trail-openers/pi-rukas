@@ -180,10 +180,12 @@ export async function runMerged(
   // ready halts here, naming why, before any merge is attempted.
   const draft = state.pipelineState.prDraft;
   if (draft && draft.status !== "ready") {
-    const reason =
-      draft.status === "ready-failed"
-        ? `marking PR ready failed: ${draft.error ?? "no reason recorded"}`
-        : `PR is still a draft: ${draft.holdReason ?? "not marked ready"}`;
+    const failed = `marking PR ready failed: ${draft.error ?? "no reason recorded"}`;
+    const reason = draft.holdReason
+      ? `PR is still a draft: ${draft.holdReason}${draft.status === "ready-failed" ? `; ${failed}` : ""}`
+      : draft.status === "ready-failed"
+        ? failed
+        : "PR is still a draft: not marked ready";
     return appendEvent(
       { ...state, pipelineState: { ...state.pipelineState, currentStep: "merged" } },
       {
