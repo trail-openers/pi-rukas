@@ -140,6 +140,7 @@ Additions do not bump a version: a new cap, a new input or file, a new stable ND
 
 - An unknown `cap` is a generic handoff: act on `status` and `exitCode`, and show the cap to a person.
 - Unknown fields are ignored.
+- An unknown input `scope` is not `cycle`: the name is read, but not by a cycle's runner.
 - An unknown NDJSON kind is treated as unstable.
 
 ### The state file is not a host contract
@@ -255,10 +256,12 @@ Use `--restart` only when a person, or the host acting on a person's answer, has
   "verbs": {
     "work": { "flags": ["--restart", "--json", "--timeout"] }
   },
-  "inputs": [                  // every PI_ENSEMBLE_* input this build reads
+  "inputs": [                  // every PI_ENSEMBLE_* input this build or its wrapper reads
     { "name": "PI_ENSEMBLE_MAX_WORKSTREAMS", "type": "integer", "default": 6, "scope": "cycle" },
     { "name": "PI_ENSEMBLE_VERIFY_TIMEOUT_MS", "type": "duration-ms", "default": 600000, "scope": "cycle" },
-    { "name": "PI_ENSEMBLE_MODEL_<ROLE>", "type": "string", "default": null, "scope": "cycle" },
+    { "name": "PI_ENSEMBLE_MODEL_<ROLE>", "type": "string", "default": null, "scope": "cycle",
+      "members": ["DEVELOPER", "OPS", "EXPLORE", "ADVERSARIAL_DEVELOPER", "CODE_REVIEW_SPECIALIST"] },
+    { "name": "PI_ENSEMBLE_NO_SSH", "type": "boolean", "default": false, "scope": "wrapper" },
     { "name": "PI_ENSEMBLE_ISSUE_IMAGES", "type": "boolean", "default": true, "scope": "cycle", "manifestVersion": 1 },
     …
   ],
@@ -290,10 +293,11 @@ Use `--restart` only when a person, or the host acting on a person's answer, has
 | `contracts.ndjson.version` | `NDJSON_VERSION` | Version of the NDJSON progress schema. |
 | `contracts.ndjson.stable` | `NDJSON_STABLE_VERSION`, `NDJSON_STABLE_FIELDS` | The stable kinds and their guaranteed `event` fields (see "The stable subset"). |
 | `verbs.work.flags` | `WORK_FLAGS` array | The flags the `work` verb accepts, in the order the parser accepts them. An unknown flag in a caller's argv means "not supported" and is refused with exit 40. |
-| `inputs[].name` | `HEADLESS_INPUTS` (`inputs.ts`) | An environment variable the build reads. A name with `<ROLE>` or `<SEAM>` is a family: `<ROLE>` is a role name and `<SEAM>` a decision-seam id, upper-cased with `-` → `_` (e.g. `PI_ENSEMBLE_MODEL_DEVELOPER`). |
+| `inputs[].name` | `HEADLESS_INPUTS` (`inputs.ts`) | An environment variable the build reads. A name with `<ROLE>`, `<SEAM>` or `<LENS>` is a family: `<ROLE>` is a role name, `<SEAM>` a decision-seam id and `<LENS>` a code-review lens name, upper-cased with `-` → `_` (e.g. `PI_ENSEMBLE_MODEL_DEVELOPER`). |
+| `inputs[].members` | The role list (`roles.ts`), the seam registry (`decision-seam-registry.ts`) and the bundled lens roster (`lens-roster.ts`) | Present on every family: the ids its placeholder takes in this build. A name with any other id, such as the typo `PI_ENSEMBLE_MODEL_REVIEWER`, is read by nothing and leaves the default in place. `<ROLE>` lists the spawned roles (the parent session has no per-role variable). `<SEAM>` lists the seams that read env config; the grandfathered policy judge does not. `<LENS>` lists the lenses shipped with the build; a lens added to the installed skills dir is not listed. Independent of `values`: `PI_ENSEMBLE_DECISION_MODE_<SEAM>` has both. |
 | `inputs[].type` | Hardcoded | `boolean` (`1` on, `0` off), `integer`, `number` (see `unit`), `duration-ms`, `string`, `path`, `list` (joined by `separator`) or `enum` (one of `values`). |
 | `inputs[].default` | Hardcoded; about 50 of them are checked against their live reader functions | The behaviour when the variable is unset. `null` means unset by default, with the fallback described in [configuration.md](configuration.md#environment-variables). |
-| `inputs[].scope` | Hardcoded | Who sets it: `cycle` (changes what a cycle does), `sandbox` (the sandbox wrapper), `interactive` (the Pi UI only), `install` (path overrides), `internal` (pi-rukas sets it on its own children; a host must not), `test` (smoke tests only). |
+| `inputs[].scope` | Hardcoded | Who sets it: `cycle` (changes what a cycle does), `sandbox` (the sandbox wrapper), `interactive` (the Pi UI only), `install` (path overrides), `wrapper` (read only by the `bin/pi-rukas` sandbox wrapper on the host, before the container starts; it has no effect on a cycle started without the wrapper, including `pi-rukas-headless` run directly), `internal` (pi-rukas sets it on its own children, or the wrapper on its container; a host must not), `test` (smoke tests only). |
 | `inputs[].manifestVersion` | Hardcoded | Present on the two issue-image inputs: the manifest format version the build understands. |
 | `files[]` | `HEADLESS_FILES` (`inputs.ts`) | The `.pi/*` files a cycle reads from the project (`path`, `kind`: `command` / `hook` / `config`, and what happens `whenAbsent`). Files the driver writes, such as `.pi/work-state/`, are state, not input, and are not listed. |
 | `features.resultFromMemory` | Constant `true` | `true` when the result is taken from the driver's in-memory state rather than re-reading the state file (#1189). |
@@ -313,6 +317,10 @@ for name in PI_ENSEMBLE_MAX_WORKSTREAMS PI_ENSEMBLE_VERIFY_TIMEOUT_MS; do
 done
 echo "$caps" | jq -e '.features.cycleDeadline == true' \
   || { echo "This build has no cycle deadline"; exit 1; }
+# A family member: refuse a role the build does not have.
+echo "$caps" | jq -e --arg m "REVIEWER" \
+  'any(.inputs[]; .name == "PI_ENSEMBLE_MODEL_<ROLE>" and (.members | index($m)))' >/dev/null \
+  || { echo "PI_ENSEMBLE_MODEL_REVIEWER is not a role"; exit 1; }
 ```
 
 An unknown name (no matching key in `features`, `inputs`, `files`, or `verbs.work.flags`) means the build does not support it. The caller fails closed — it does not guess or fall back.
@@ -323,6 +331,6 @@ The image publish workflow passes `GITHUB_SHA` as a build arg, and the Dockerfil
 
 ## Relationship to `docs/configuration.md`
 
-`inputs` is the machine-readable list of every `PI_ENSEMBLE_*` variable read under `extension/src/`; [configuration.md](configuration.md#environment-variables) is the human-readable description. `test-headless-inputs.ts` scans `src/` for env reads (property, index, destructuring and name-literal forms) and fails when a read is missing from `inputs` or an entry is no longer read. A key built at runtime (`` `PI_ENSEMBLE_MODEL_${role}` ``) must be on the test's explicit allowlist, which maps it to its family entry. The test also checks about 50 listed defaults (numeric, list and boolean) against their live reader functions; the others are checked only in review. A new input therefore has to be listed in `inputs.ts` and described in configuration.md in the same change.
+`inputs` is the machine-readable list of every `PI_ENSEMBLE_*` variable read under `extension/src/` or by the sandbox wrapper; [configuration.md](configuration.md#environment-variables) is the human-readable description. `test-headless-inputs.ts` scans `src/` for env reads (property, index, destructuring and name-literal forms) and fails when a read is missing from `inputs` or an entry is no longer read. A key built at runtime (`` `PI_ENSEMBLE_MODEL_${role}` ``) must be on the test's explicit allowlist, which maps it to its family entry. The test also checks about 50 listed defaults (numeric, list and boolean) against their live reader functions; the others are checked only in review. A new input therefore has to be listed in `inputs.ts` and described in configuration.md in the same change.
 
-Variables read only by the shell wrappers in `bin/` (e.g. `PI_ENSEMBLE_HOST_ALIASES`, `PI_ENSEMBLE_IMAGE_DIRS`) configure the sandbox launch, not the runner, and are not listed.
+Variables read only by the sandbox wrapper (`bin/pi-rukas` and the image entrypoint, e.g. `PI_ENSEMBLE_NO_DOCKER_SOCKET`, `PI_ENSEMBLE_NO_SSH`, `PI_ENSEMBLE_IMAGE_DIRS`) configure the sandbox launch, not the runner. They are listed with scope `wrapper`, so a host that fails closed can tell "the wrapper reads this" from "nothing reads this". `test-headless-inputs-wrapper.ts` scans those scripts for expansions (`$PI_ENSEMBLE_X`, `${PI_ENSEMBLE_X…}`) and fails when one is unlisted, when a `wrapper` entry is not read there or is also read in `src/`, or when a family's `members` drift from the list they are derived from.
