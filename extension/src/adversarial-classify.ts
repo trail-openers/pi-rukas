@@ -2,21 +2,35 @@
  * adversarial-classify — the dispatch-outcome classifier for the
  * adversarial loop (#309/#314), extracted from adversarial.ts (the 500-line
  * gate headroom for the #799 slow-watch wiring). Pure: takes a DispatchResult,
- * returns the cause classification the loop branches on. No behaviour change.
+ * returns the cause classification the loop branches on.
+ *
+ * #1297 — the PROVIDER half (429 family, spend cap, 404 model-not-found,
+ * transport severance) is classified by the driver's own taxonomy
+ * (classifyProviderFault) instead of a loop-local 429 pattern, so a reviewer
+ * child and a step dispatch cannot disagree about what a given provider
+ * error means: a burst 429 gets the provider's stated wait (waitMs) and a
+ * re-spawn, a quota-window/undated 429 or a missing model is not retried.
+ * KillCause classification stays here — a self-kill is never a provider fault.
  */
 import type { DispatchFailureCause, DispatchResult } from "./types.ts";
-import { ADVERSARIAL_TRANSIENT_MAX_RETRIES, isRateLimit429Msg } from "./types.ts";
+import { ADVERSARIAL_TRANSIENT_MAX_RETRIES } from "./types.ts";
+import {
+  classifyProviderFault,
+  failureCauseReasonForClass,
+} from "./work-driver-failure-taxonomy.ts";
 
 /**
  * #309/#314 — classify a dispatch result by its ROOT CAUSE so the adversarial
  * loop can branch on structure (self-kill / 429 / provider-severed) instead
- * of collapsing everything into a boolean. Uses shared RATE_LIMIT_429_PATTERN
- * from types.ts. Infra-failure is derived: cause !== "success".
+ * of collapsing everything into a boolean. Infra-failure is derived:
+ * cause !== "success".
  */
 export function classifyDispatchOutcome(r: DispatchResult): {
   cause: DispatchFailureCause;
   shouldRetry: boolean;
   maxRetries: number;
+  /** #1297 — provider-requested wait (burst 429) to sleep before re-spawning. */
+  waitMs?: number;
   headline: string;
 } {
   // killCause (#296) — pi-rukas itself ended the child. Must check first.
@@ -77,23 +91,26 @@ export function classifyDispatchOutcome(r: DispatchResult): {
     };
   }
 
-  // 429 rate-limit — detected from errorStop.message.
-  if (r.errorStop && isRateLimit429Msg(r.errorStop.message)) {
-    return {
-      cause: "rate-limited:429",
-      shouldRetry: false,
-      maxRetries: 0,
-      headline: `provider rate-limited (429) — retrying cannot help (${r.errorStop.message ?? "retry delay requested"})`,
-    };
-  }
-
-  // Provider error-stop (transport severance, provider timeout, etc).
+  // Provider error-stop — #1297: the driver's taxonomy decides the provider
+  // half (429 family / spend cap / 404 model-not-found / transport severance).
+  // A severed stream keeps the loop's own deeper retry depth (runPhaseWithInfraRetry
+  // stops the ladder early on a repeated identical error via the outcome's
+  // providerRepeats, see adversarial-retry); every other provider cause
+  // carries the taxonomy's shouldRetry/maxRetries verbatim, so a quota window
+  // or a missing model is never re-spawned and a burst 429 waits waitMs first.
   if (r.errorStop) {
+    const message = r.errorStop.message ?? r.errorStop.reason;
+    const tax = classifyProviderFault(r.errorStop.message ?? "");
     return {
-      cause: "provider-severed",
-      shouldRetry: true,
-      maxRetries: ADVERSARIAL_TRANSIENT_MAX_RETRIES,
-      headline: `provider/transport error: ${r.errorStop.message ?? r.errorStop.reason}`,
+      cause: tax.cause,
+      shouldRetry: tax.shouldRetry,
+      maxRetries:
+        tax.cause === "provider-severed" ? ADVERSARIAL_TRANSIENT_MAX_RETRIES : tax.maxRetries,
+      ...(tax.waitMs !== undefined ? { waitMs: tax.waitMs } : {}),
+      headline:
+        tax.cause === "provider-severed"
+          ? `provider/transport error: ${message}`
+          : failureCauseReasonForClass({ providerMessage: message }, tax),
     };
   }
 
