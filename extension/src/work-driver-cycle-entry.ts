@@ -14,11 +14,13 @@
  */
 
 import { dispatchCore } from "./dispatch.ts";
+import { traceResourceBudget } from "./resource-budget.ts";
 import { dropSlowEvents } from "./slow-events.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { createEmitSink } from "./work-state-emit.ts";
 
 export function enterCycle(ctx: DriverContext): CycleContext {
+  traceResourceBudget(ctx.issue); // #1325 — the host budget and the limits this cycle runs with
   // #799 — clear any stale slow-event buffer entry for EVERY issue in the
   // group before the cycle begins: a previous parked cycle of the same
   // issue (whose handoff's final drain ran before a late crossing) can

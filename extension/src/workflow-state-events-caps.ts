@@ -130,6 +130,9 @@ export type WorkCapLiteral =
   // shape across ≥3 files → step-back (SDD spec-gap analysis).
   | "repeat-finding-seam"
   | `verify-failed:${WorkStep}`
+  // #1324 — the step's verify run was killed at its bound and reached no
+  // verdict: distinct from verify-failed:<step>, which judged the code.
+  | `verify-timeout:${WorkStep}`
   | `step-failed:${WorkStep}`
   // #844 — a local branch of the resolved name is ahead of the
   // freshly-fetched origin/<mainline>; the ahead count is in the
@@ -171,4 +174,11 @@ export type WorkCapLiteral =
   // this one is the driver itself crashing). NOT a mid-flight-halt shape,
   // so runHandoff terminalizes it as `handoff`, the same value the
   // dispatch-failure path uses.
-  | `driver-crash:${WorkStep}`;
+  | `driver-crash:${WorkStep}`
+  // #1238 — the caller-set whole-cycle deadline (PI_ENSEMBLE_CYCLE_DEADLINE
+  // or PI_ENSEMBLE_CYCLE_BUDGET_MS): at a step boundary the deadline was
+  // within the handoff grace, so the driver started no new step and parked
+  // so the handoff posts before the caller kills the process (the tehas `docker stop` shape: a mid-step kill, no
+  // handoff, state left `running`). Emitted at the step boundary only — no
+  // mid-step hard kill.
+  | "deadline";

@@ -36,8 +36,12 @@ import {
 } from "./work-driver-exec-error.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { baselineRedMessage, probeBaselineVerify } from "./work-driver-verify-baseline.ts";
-import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
-import { formatExecError, verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
+import {
+  formatExecError,
+  verifyTimeoutFailure,
+  verifyTimeoutMs,
+} from "./work-driver-verify-develop-helpers.ts";
+import { failedVerifyCmd } from "./work-driver-verify-fast.ts";
 import { rawOutputClause } from "./work-driver-verify-flake.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
@@ -121,17 +125,16 @@ export async function runVerifyCommandGate(opts: {
       );
     } catch (err) {
       const e = err as Error & { stdout?: string; stderr?: string; killed?: boolean };
-      // A verify failure for want of `node_modules` looks like a real defect;
-      // in a fresh worktree it is the likelier cause when it matches — say so.
-      // #1005 — per-worktree failures are kept as failures unconditionally;
-      // the consolidated run below adds its own verdict on top.
+      // A missing `node_modules` looks like a real defect; in a fresh worktree say so.
+      // #1005 — per-worktree failures stay failures; the consolidated run adds its own.
       const output = `${e.stdout ?? ""}\n${e.stderr ?? ""}\n${e.message ?? ""}`;
       const depsHint = looksLikeMissingDeps(output) ? provisionDepsHint(state, cwd) : "";
+      const ran = failedVerifyCmd(e, cmd); // #1324 — the fast tier, when it is the one that failed
       perWorktreeVerifyFailures.push(
         formatExecError(
           e,
-          `verify command \`${cmd}\` exceeded its ${Math.round(verifyTimeoutMs() / 60000)}-min timeout in ${cwd}`,
-          `verify command \`${cmd}\` failed in ${cwd}${depsHint}`,
+          verifyTimeoutFailure(ran, `in ${cwd}`, verifyTimeoutMs()),
+          `verify command \`${ran}\` failed in ${cwd}${depsHint}`,
         ),
       );
     }
@@ -381,7 +384,7 @@ export async function runVerifyCommandGate(opts: {
     // failure further down.
     failures.push(
       (cons.timedOut === true
-        ? `verify command \`${cmd}\` exceeded its ${Math.round(verifyTimeoutMs() / 60000)}-min timeout on the CONSOLIDATED tree at ${ctx.repoRoot} — the run was killed at the bound (PI_ENSEMBLE_VERIFY_TIMEOUT_MS), so it reached no verdict about the code.`
+        ? `${verifyTimeoutFailure(cmd, `on the CONSOLIDATED tree at ${ctx.repoRoot}`, verifyTimeoutMs())}.`
         : isHostForkExhaustion(classifierInput)
           ? hostExhaustionFailure(
               `verify command \`${cmd}\` on the CONSOLIDATED tree`,
@@ -495,6 +498,3 @@ export async function runVerifyCommandGate(opts: {
     }
   }
 }
-
-// Re-exported for the caller's pre-#794 import surface (a no-op safety net).
-export { verifyCmdFor };

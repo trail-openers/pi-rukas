@@ -78,6 +78,8 @@ type FailureTail = {
   errorTail?: string;
   killCause?: string;
   providerMessage?: string;
+  /** #79 — consecutive identical provider failures the adversarial loop already saw. */
+  providerRepeats?: number;
 };
 
 type FailureClass = {
@@ -136,6 +138,8 @@ function seamLabelFor(
     case "self-killed:token-budget":
     case "self-killed:plan-timeout":
     case "success":
+    // #79 — matched only on the provider's own 404 message: exact.
+    case "provider-model-unavailable":
       return undefined;
     case "rate-limited:429":
     case "rate-limited:burst":
@@ -193,6 +197,15 @@ export function shadowFailureCause(
     return;
   }
   void shadowDecide("failure-cause", req, where);
+}
+
+/** #79 — observed: `404: {"message":"model \"qwen3.8-flash-next\" not found","type":"not_found"}`. */
+const MODEL_NOT_FOUND_PATTERN = /\b404\b.*not[ _]found|\bmodel\b.*\bnot found\b/i;
+
+/** #79 — `×N in a row` when the loop stopped on a repeating provider error. */
+function repeatsNote(tail: { providerRepeats?: number }): string {
+  const n = tail.providerRepeats ?? 0;
+  return n >= 2 ? ` (×${n} in a row — not re-dispatched)` : "";
 }
 
 /**
@@ -275,8 +288,19 @@ export function classifyFailureCause(tail: FailureTail): FailureClass {
     };
   }
 
+  // #79 — the endpoint does not serve the configured model. Read from the
+  // provider's own error only, never from a child's prose.
+  if (tail.providerMessage && MODEL_NOT_FOUND_PATTERN.test(tail.providerMessage)) {
+    return { cause: "provider-model-unavailable", shouldRetry: false, maxRetries: 0 };
+  }
+
   // Provider error-stop (transport severance, provider timeout, etc).
   if (tail.kind === "dispatch-failed-provider") {
+    // #79 — the adversarial loop already re-spawned into this exact error and
+    // got it back unchanged; another re-dispatch lands in the same window.
+    if ((tail.providerRepeats ?? 0) >= 2) {
+      return { cause: "provider-severed", shouldRetry: false, maxRetries: 0 };
+    }
     return { cause: "provider-severed", shouldRetry: true, maxRetries: TRANSIENT_MAX_RETRIES };
   }
 
@@ -290,6 +314,32 @@ export function classifyFailureCause(tail: FailureTail): FailureClass {
 }
 
 /**
+ * #79 — a provider fault the taxonomy declined to retry (a quota window, a
+ * spend cap, an undated 429, a missing model, an error that already repeated).
+ * A RETRY_ONCE step must not spend its semantic retry re-dispatching into it.
+ */
+export function isFinalProviderFault(cls: { cause: DispatchFailureCause; shouldRetry: boolean }) {
+  if (cls.shouldRetry) return false;
+  return (
+    cls.cause.startsWith("rate-limited:") ||
+    cls.cause === "provider-severed" ||
+    cls.cause === "provider-model-unavailable"
+  );
+}
+
+/**
+ * #79 — how many re-dispatches a RETRY_ONCE step may spend on this failure:
+ * none for a final provider fault, the transient budget for infra, else one.
+ */
+export function stepRetryBudget(
+  cls: { cause: DispatchFailureCause; shouldRetry: boolean; maxRetries: number },
+  infra: boolean,
+): number {
+  if (isFinalProviderFault(cls)) return 0;
+  return infra ? cls.maxRetries : 1;
+}
+
+/**
  * #309 — produce the operator-facing reason string for a dispatch failure.
  * Used by lifecycle emitStepRetry and any downstream reporting. Each cause
  * gets a distinct, human-readable headline so the operator can act on it.
@@ -299,6 +349,7 @@ export function failureCauseReason(tail: {
   errorTail?: string;
   providerMessage?: string;
   killCause?: string;
+  providerRepeats?: number;
 }): string {
   const cls = classifyFailureCause(tail);
   switch (cls.cause) {
@@ -325,7 +376,9 @@ export function failureCauseReason(tail: {
     case "rate-limited:quota-terminal":
       return "provider spend cap reached — waiting will not clear this";
     case "provider-severed":
-      return `provider/transport error: ${tail.providerMessage ?? tail.errorTail?.slice(0, 60) ?? "connection lost"}`;
+      return `provider/transport error: ${tail.providerMessage ?? tail.errorTail?.slice(0, 60) ?? "connection lost"}${repeatsNote(tail)}`;
+    case "provider-model-unavailable":
+      return `provider does not serve the configured model — re-dispatching cannot help: ${(tail.providerMessage ?? tail.errorTail)?.slice(0, 120)}`;
     case "crashed":
       return `subagent failed: ${tail.errorTail?.slice(0, 60) ?? "non-zero exit"}`;
     case "crashed-unknown":
@@ -341,7 +394,7 @@ export function failureCauseReason(tail: {
  * same event (e.g. in runWorkDriver's step-completion handler).
  */
 export function failureCauseReasonForClass(
-  tail: { errorTail?: string; providerMessage?: string },
+  tail: { errorTail?: string; providerMessage?: string; providerRepeats?: number },
   cls: { cause: DispatchFailureCause },
 ): string {
   switch (cls.cause) {
@@ -368,7 +421,9 @@ export function failureCauseReasonForClass(
     case "rate-limited:quota-terminal":
       return "provider spend cap reached — waiting will not clear this";
     case "provider-severed":
-      return `provider/transport error: ${tail.providerMessage ?? tail.errorTail?.slice(0, 60) ?? "connection lost"}`;
+      return `provider/transport error: ${tail.providerMessage ?? tail.errorTail?.slice(0, 60) ?? "connection lost"}${repeatsNote(tail)}`;
+    case "provider-model-unavailable":
+      return `provider does not serve the configured model — re-dispatching cannot help: ${(tail.providerMessage ?? tail.errorTail)?.slice(0, 120)}`;
     case "crashed":
       return `subagent failed: ${tail.errorTail?.slice(0, 60) ?? "non-zero exit"}`;
     case "crashed-unknown":

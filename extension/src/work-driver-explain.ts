@@ -11,10 +11,10 @@ import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 import { explainConsolidation } from "./work-driver-explain-consolidation.ts";
 import { explainDetectCaps } from "./work-driver-explain-detect-caps.ts";
 import { explainLens } from "./work-driver-explain-lens.ts";
-import { explainOther } from "./work-driver-explain-other.ts";
+import { adversarialFailureCause, explainOther } from "./work-driver-explain-other.ts";
 import { explainPrSteps } from "./work-driver-explain-pr-steps.ts";
 import { explainReview } from "./work-driver-explain-review.ts";
-import { explainVerifyFailed } from "./work-driver-explain-verify.ts";
+import { explainVerifyFailed, explainVerifyTimeout } from "./work-driver-explain-verify.ts";
 import { cherryPickRecoveryFor } from "./work-driver-handoff-cherry-pick.ts";
 import { type ParkReason, explainPark } from "./work-driver-intent.ts";
 import { explainMergeHold } from "./work-driver-merge-authority.ts";
@@ -33,7 +33,7 @@ import {
  * WHY explanation stays consistent.
  * Exhaustive switch for FIXED-LITERAL caps — adding a new fixed-literal cap
  * value to the WorkEvent union forces a typecheck error here, which is the
- * design intent. TEMPLATE caps (`verify-failed:`, `step-failed:`,
+ * design intent. TEMPLATE caps (`verify-failed:`, `verify-timeout:`, `step-failed:`,
  * `branch-ahead:`, `driver-crash:`) do NOT force a case — they are handled
  * by the prefix branches below the switch, where each gets its own tailored
  * sentence; adding a new template prefix without a matching branch below
@@ -280,6 +280,14 @@ export function explainCap(
       const ev = hit?.evidence ?? "(no detail recorded)";
       return `the lens review returned a no-review outcome — ${ev}. Nothing changed since the last recorded lens run, so there was nothing to re-review; the cycle parked rather than treating the absence of a review as an approval. Re-run the review (with an explicit diff, or \`full: true\`) after a new commit lands on the branch`;
     }
+    case "deadline": {
+      // #1238 — the caller-set whole-cycle deadline: at a step boundary the
+      // deadline was within the handoff grace, so no new step started and
+      // the driver parked; the grace lets this comment post before the kill.
+      const hit = lastCapHit(state, "deadline");
+      const ev = hit?.evidence ?? "(no detail recorded)";
+      return `the caller's whole-cycle deadline (${ev}) was within the handoff grace at a step boundary, so the driver started no new step and parked. The handoff below says where the work is — branch, PR, and the round reached — and posts before the deadline so a caller that kills the process at that point sees a handoff, not an aborted in-flight state. Re-run \`/work <issue> --restart\` with the deadline raised or cleared`;
+    }
   }
   // #844 — a local branch of the resolved name holds commits the freshly
   // fetched origin/<mainline> does not. Deliberate halt: only a human can
@@ -306,6 +314,7 @@ export function explainCap(
     return `the branch step's ops fallback recorded a baseSha that does not match the branch's actual merge-base with origin/<mainline>: ${ev}. The branch was not built off the freshly-fetched base — ops likely created it from a stale local ref. Reset the branch to the correct base (\`git branch -f <branch> <correct-sha>\`) and re-run the cycle, or investigate the branch's commit history before proceeding`;
   }
   if (cap.startsWith("verify-failed:")) return explainVerifyFailed(cap, state);
+  if (cap.startsWith("verify-timeout:")) return explainVerifyTimeout(cap, state);
   // #753 — deferred worktree-creation failure. Its own sentence, because
   // `step-failed:develop` would be a mislabel (the dispatch itself never
   // failed; the DEPENDENT's deferred worktree creation was refused or
@@ -381,8 +390,12 @@ export function explainCap(
         return "the branch step dispatch failed before creating the feature branch — develop would edit HEAD (likely main), commit-pr has nothing to push, CI has nothing to watch";
       case "develop":
         return `the develop step dispatch failed with ${fileBlurb} on disk${fanoutTag} — adversarial review of partial work is not meaningful, halting cleanly`;
-      case "adversarial":
-        return "the adversarial gate dispatch failed twice (retry exhausted) — cannot commit code that has not passed the adversarial gate";
+      case "adversarial": {
+        // #79 — name the endpoint's fault, not the driver's retry budget: a
+        // quota window or a missing model is not retried at all.
+        const cause = adversarialFailureCause(state);
+        return `the adversarial gate produced no verdict${cause ? ` — reviewer unavailable: ${cause}` : " (dispatch failed, retry exhausted)"} — cannot commit code that has not passed the adversarial gate`;
+      }
       case "commit-pr":
         return "the commit-pr step dispatch failed before pushing the PR — lens-review of uncommitted work would waste hours, CI has nothing to watch";
       case "lens-review":
