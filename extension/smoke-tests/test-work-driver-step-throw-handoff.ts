@@ -255,16 +255,21 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
     await writeState(dir, s);
 
     const host = makeFakeHost();
-    const { forge } = makeFakeForge();
+    const { forge, labelAdds } = makeFakeForge();
 
     // The fake forge records comment + label posts — the handoff post must
     // NOT loop even after the second throw.
     let handoffPostCalls = 0;
+    let labelAddCalls = 0;
     const forge2 = {
       ...forge,
       issueComment: async (n: number, body: string) => {
         handoffPostCalls++;
         return `https://github.com/trail-openers/pi-rukas/issues/${n}#issuecomment-2`;
+      },
+      labelAdd: async (target: "issue" | "mr", number: number, name: string) => {
+        labelAddCalls++;
+        return forge.labelAdd(target, number, name);
       },
     } as unknown as Forge;
 
@@ -292,7 +297,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
     // No second handoff: a re-route to handoff would append a second
     // `driver-crash:handoff` cap-hit and re-run the step (second ops
     // dispatch, second comment post, second handoff-emitted). The guard
-    // aborts instead, so the log carries exactly one handoff step.
+    // aborts instead, so the log carries at most one handoff cap-hit.
     const handoffCaps = (final?.eventLog ?? []).filter(
       (e) => e.kind === "cap-hit" && e.cap === "driver-crash:handoff",
     ).length;
@@ -300,16 +305,33 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
       handoffCaps === 0,
       `no driver-crash:handoff cap-hit (the guard aborts, it does NOT re-route to handoff) — got: ${handoffCaps}`,
     );
+
+    // The guard fires mid-runHandoff: the first handoff-emitted event is
+    // appended to the in-memory state AFTER the comment + label posts but the
+    // test seam throws before runHandoff returns, so the driver's
+    // one-shot guard persists a FRESH state object that OMITS that event.
+    // The comment + label ARE posted (the post happens before the throw),
+    // but the persisted state file carries zero handoff-emitted events.
+    // A re-routed second handoff would loop (and re-post); exactly one
+    // post of each is the correct terminal outcome.
     const emittedCount = (final?.eventLog ?? []).filter(
       (e) => e.kind === "handoff-emitted",
     ).length;
     assert(
-      emittedCount <= 1,
-      `at most one handoff-emitted event (no loop) — got: ${emittedCount}`,
+      emittedCount === 0,
+      `guard's direct-abort persist omits the handoff-emitted event — got: ${emittedCount}`,
     );
     assert(
-      handoffPostCalls <= 1,
-      `handoff comment posted at most once — got: ${handoffPostCalls}`,
+      handoffPostCalls === 1,
+      `handoff comment posted exactly once (post happens before the throw, guard aborts after) — got: ${handoffPostCalls}`,
+    );
+    assert(
+      labelAddCalls === 1,
+      `needs-human-attention label posted exactly once (no second handoff post after the guard fires) — got: ${labelAddCalls}`,
+    );
+    assert(
+      labelAdds.length === 1,
+      `fake forge recorded exactly one labelAdd call — got: ${labelAdds.length}`,
     );
   } finally {
     setPlanThrowForTestForTest(undefined);
