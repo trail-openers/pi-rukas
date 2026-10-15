@@ -307,7 +307,7 @@ function parkFixPass(
   return appendEvent(evidenced, {
     kind: "cap-hit",
     at: Date.now(),
-    cap: "verify-failed:develop",
+    cap: "fix-pass-park", // #1349 — the pass's own check, not the outcome gate
     reviewRound: state.pipelineState.reviewRound,
     nextStep: "handoff",
     evidence: `${FIX_PASS_EVIDENCE_PREFIX}${reason}`,

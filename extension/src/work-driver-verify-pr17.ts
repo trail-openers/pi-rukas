@@ -161,6 +161,8 @@ export async function verifyStepOutcome(
   logPath?: string;
   /** #1040 — the develop gate's comment-loss checks, structured (see `recordCommentEvidence`). */
   commentEvidence?: CommentEvidence[];
+  /** #1349 — the verify command is red at base and its failures are the only ones. */
+  baselineRedOnly?: boolean;
 }> {
   const failures: string[] = [];
   const notes: string[] = [];
@@ -180,6 +182,7 @@ export async function verifyStepOutcome(
     let consolidatedLogPath: string | undefined;
     const fenceViolations: FenceViolationRecord[] = [];
     const commentEvidence: CommentEvidence[] = [];
+    let baselineRedOnly = false;
     await verifyDevelopOutcome(
       ctx,
       state,
@@ -194,6 +197,9 @@ export async function verifyStepOutcome(
         consolidatedLogPath = logPath;
       },
       commentEvidence,
+      () => {
+        baselineRedOnly = true;
+      },
     );
     const flakeRecovered = flakeEvidenceTail !== undefined;
     return {
@@ -203,6 +209,7 @@ export async function verifyStepOutcome(
       ...(fenceViolations.length > 0 ? { fenceViolations } : {}),
       ...(flakeRecovered ? { flakeRecovered: true } : {}),
       ...(consolidatedLogPath !== undefined ? { logPath: consolidatedLogPath } : {}),
+      ...(baselineRedOnly ? { baselineRedOnly: true } : {}),
       commentEvidence,
     };
   }
