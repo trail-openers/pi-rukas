@@ -1,5 +1,5 @@
 import { GLOBAL_KEY, type ModelChoice, getOverride } from "./model-config.ts";
-import { ROLE_NAMES, type RoleName } from "./roles.ts";
+import { type RoleName, SUBAGENT_ROLE_NAMES } from "./roles.ts";
 
 /**
  * Model selection for spawned specialists.
@@ -136,7 +136,7 @@ export function resolveModel(role: string, override?: string, lens?: string): Re
 
 /** Snapshot of the current resolution for every role — used by /ensemble-debug. */
 export function modelConfigSnapshot(): Array<{ role: RoleName; choice: ResolvedModelChoice }> {
-  return ROLE_NAMES.filter((r) => r !== "project-manager").map((role) => ({
+  return SUBAGENT_ROLE_NAMES.map((role) => ({
     role,
     choice: resolveModel(role),
   }));
