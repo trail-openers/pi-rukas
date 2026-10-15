@@ -23,7 +23,9 @@
  * discard completed — this is the path case 5 does not exercise), exactly
  * ONE re-dispatch happened, and the violator's verdict stays ok:false (the
  * honest-restore rule: a recovered violator returns to ok:true ONLY when the
- * re-run gate passed — it did not).
+ * re-run gate passed — it did not). #1343: the trees built from the
+ * post-merge state (the consolidated verify's, and the PR branch from
+ * `integrate`) carry the owner's commit as well as the re-dispatch's.
  */
 
 import { exec as cpExec, execFile } from "node:child_process";
@@ -33,7 +35,9 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { DispatchResult } from "../src/types.ts";
 import { runDevelopTopological } from "../src/work-develop-topological.ts";
+import { runConsolidatedVerify } from "../src/work-driver-consolidated-verify.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
+import { integrate } from "../src/work-driver-integrate.ts";
 import { type WorkEvent, initialState } from "../src/workflow-state.ts";
 import type { ExecFn } from "../src/worktree.ts";
 import { realExec } from "./lib/exec-fake.ts";
@@ -365,17 +369,58 @@ function capsOf(events: WorkEvent[]): Array<Extract<WorkEvent, { kind: "cap-hit"
   // The discarded commit is no longer the violator's HEAD (the reset ran);
   // the merge-and-retry's clean commit sits on top of the owner's tip.
   const bHead = await gitOut(wt.b, ["rev-parse", "HEAD"]);
-  // #1005 — the merged workstream's base is the owner's tip (workstreamBaseShas
-  // is keyed by the merged id, the owner c — the violator b's entry was
-  // removed by the merge).
-  const rebased = after.pipelineState.workstreamBaseShas?.c ?? "";
   assert(
     bHead !== bSha,
     `#849 edge case 2 (merged as c): b's worktree HEAD moved from the discarded SHA (the reset ran) (got ${bHead.slice(0, 8)}, discarded ${bSha.slice(0, 8)})`,
   );
+  // #1343 — what the merge SHIPS, not what base it records: the merged
+  // workstream's worktree replaced the owner's in the map, so its range must
+  // still hold the owner's commit. Build both trees the later steps build
+  // from the post-merge pipeline state — the consolidated verify's combined
+  // tree and the PR branch (`integrate`) — and check their contents. The
+  // owner's file (c-file.txt), the re-dispatch's file (b-file.txt) and the
+  // untouched sibling's file (a-file.txt) must all be there.
+  rmSync(path.join(repo, ".pi"), { recursive: true, force: true }); // gate 2's stub verify-cmd
+  const ps = after.pipelineState;
+  const cons = await runConsolidatedVerify(realExec, {
+    repoRoot: repo,
+    baseSha,
+    worktrees: ps.worktrees ?? {},
+    workstreamBaseShas: ps.workstreamBaseShas,
+    scratchDir: path.join(repo, "tmp", "issue-849"),
+    verifyCmd: "test -f a-file.txt && test -f b-file.txt && test -f c-file.txt",
+    timeoutMs: 60_000,
+  });
   assert(
-    /^[0-9a-f]{40}$/.test(rebased),
-    `#849 edge case 2 (merged as c): the merged workstream was re-based onto the owner's tip (workstreamBaseShas[c] is a 40-char SHA) (got: ${rebased})`,
+    cons.status === "passed",
+    `#1343: the consolidated tree after the merge holds the owner's file, the re-dispatch's file and the sibling's (got: ${JSON.stringify(cons).slice(0, 300)})`,
+  );
+  // integrate() pushes the branch: give the fixture a bare origin.
+  const origin = path.join(root, "verifyfail-origin.git");
+  await execFileP("git", ["init", "-q", "--bare", origin]);
+  await git(repo, ["remote", "add", "origin", origin]);
+  const integrated = await integrate(realExec, {
+    repoRoot: repo,
+    branchName: "feat/issue-849",
+    baseSha,
+    worktrees: ps.worktrees ?? {},
+    workstreamBaseShas: ps.workstreamBaseShas,
+    scratchDir: path.join(repo, "tmp", "issue-849"),
+    commitTitle: "feat: x",
+    commitBody: "",
+    mode: "create",
+  });
+  const branchFiles = integrated.ok
+    ? (await gitOut(repo, ["ls-tree", "-r", "--name-only", "feat/issue-849"])).split("\n")
+    : [];
+  assert(
+    ["a-file.txt", "b-file.txt", "c-file.txt"].every((f) => branchFiles.includes(f)),
+    `#1343: the PR branch (integrate) carries the owner's commit as well as the re-dispatch's (got: ${integrated.ok ? branchFiles.join(", ") : JSON.stringify(integrated)})`,
+  );
+  const cContent = await gitOut(repo, ["show", "feat/issue-849:c-file.txt"]).catch(() => "");
+  assert(
+    cContent === "c",
+    `#1343: c-file.txt on the branch is the OWNER's version, not the discarded violation (got: ${cContent})`,
   );
 }
 
