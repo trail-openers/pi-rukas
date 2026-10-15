@@ -42,6 +42,7 @@ interface StartBatchInput {
 /**
  * #1015 — computes the git-state line for each developer/ops member (against its own
  * cwd; failed members and reviewers get none), then delivers the one batch steer.
+ * Rejects only when NOTHING was handed to Pi, so the caller can send a fallback.
  */
 async function deliverBatchReport(
   pi: ExtensionAPI,
@@ -73,6 +74,53 @@ async function deliverBatchReport(
   } catch (err) {
     trace(`async batch ${head.batchId} git-state report failed: ${String(err)}`);
     if (!delivered) send();
+  }
+}
+
+/** The stand-in report for a batch whose settle threw before its report reached Pi. */
+function batchFailureReport(batchLabel: string, batchId: string, err: unknown): string {
+  return `[ensemble:async] Batch \`${batchLabel}\` (batch ${batchId}) FAILED — its report could not be built: ${String(err)}. Its members' results are lost; re-dispatch the batch if they are still needed.`;
+}
+
+/**
+ * The batch's settle: closes the lifecycle row and hands the ONE consolidated report
+ * to Pi. Runs under releaseAfter, so the count drops to 0 only after this returns. If
+ * the body throws before the report is handed over, a failure report naming the batch
+ * is delivered instead — the PM is never left with a silent drop to 0.
+ */
+async function settleBatch(
+  pi: ExtensionAPI,
+  input: StartBatchInput,
+  batchId: string,
+  startedAt: number,
+  memberResults: BatchReportInput["members"],
+  gitMembers: Map<string, string | undefined>,
+): Promise<void> {
+  try {
+    jobs.delete(batchId);
+    dispatchDeck.clearBatchEntry(batchId);
+    const batchMs = Date.now() - startedAt;
+    const anyFailed = memberResults.some((m) => "failed" in m.result || !m.result.ok);
+    const tokens = memberResults.reduce((acc, m) => {
+      if ("failed" in m.result) return acc;
+      return acc + totalTokens(m.result);
+    }, 0);
+    if (anyFailed) {
+      lifecycle.emitFailed(batchId, input.batchLabel, input.batchLabel, batchMs);
+    } else {
+      lifecycle.emitCompleted(batchId, input.batchLabel, input.batchLabel, batchMs, tokens);
+    }
+    await deliverBatchReport(
+      pi,
+      { batchLabel: input.batchLabel, batchId, startedAt },
+      memberResults,
+      gitMembers,
+      input.gitLineFor ?? gitStateLine,
+    );
+    trace(`async batch ${batchId} (${input.batchLabel}) finished in ${Date.now() - startedAt}ms`);
+  } catch (err) {
+    trace(`async batch ${batchId} (${input.batchLabel}) report failed: ${String(err)}`);
+    deliverReport(pi, batchFailureReport(input.batchLabel, batchId, err));
   }
 }
 
@@ -133,126 +181,107 @@ export function startBatch(
   // #1015 — developer/ops members only, keyed by jobId, value = dispatch cwd.
   const gitMembers = new Map<string, string | undefined>();
 
-  for (const m of input.members) {
-    const jobId = newJobId();
-    memberJobIds.push(jobId);
-    const memberAbort = new AbortController();
-    // If the orchestrator aborts (e.g., session_end), cascade to all members.
-    orchestratorAbort.signal.addEventListener("abort", () => memberAbort.abort(), { once: true });
-    const memberState: BatchMemberJobState = {
-      kind: "batch-member",
-      jobId,
-      role: m.role,
-      label: m.label,
-      startedAt,
-      abort: memberAbort,
-      batchId,
-    };
-    jobs.set(jobId, memberState);
-    if (reportsGitState(m.role)) gitMembers.set(jobId, m.cwd);
+  try {
+    for (const m of input.members) {
+      const jobId = newJobId();
+      memberJobIds.push(jobId);
+      const memberAbort = new AbortController();
+      // If the orchestrator aborts (e.g., session_end), cascade to all members.
+      orchestratorAbort.signal.addEventListener("abort", () => memberAbort.abort(), { once: true });
+      const memberState: BatchMemberJobState = {
+        kind: "batch-member",
+        jobId,
+        role: m.role,
+        label: m.label,
+        startedAt,
+        abort: memberAbort,
+        batchId,
+      };
+      jobs.set(jobId, memberState);
+      if (reportsGitState(m.role)) gitMembers.set(jobId, m.cwd);
 
-    dispatchDeck.startEntry(jobId, {
-      label: m.label,
-      role: m.role,
-      batchKey: batchId,
-    });
-    live.startBuffer(jobId);
-    sessionAutosave.recordDispatch(m.role);
-    // #799/#907 — batch members get the same watch + span feed as single
-    // jobs (the batch orchestrator itself gets none — it is a bookkeeping row, not a child).
-    const memberSlow = makeSlowWatch(jobId, m.role, m.label, pi, undefined);
-    const memberHooks: WorkHooks = {
-      onProgress: (progress) => {
-        dispatchDeck.updateEntry(jobId, progress);
-        feedSlowProgress(jobId, progress);
-      },
-      onRawEvent: memberSlow.hooks.onRawEvent,
-      onStdin: (stdin) => {
-        childHandles.set(jobId, { stdin, label: m.label, role: m.role });
-      },
-      jobId,
-    };
-
-    // Wrapping in `new Promise` turns a SYNCHRONOUS throw from `m.work` into
-    // a rejection that settles through the handlers below (as async failures
-    // already do) — no separate synchronous-throw path.
-    void new Promise<DispatchResult>((resolve) => resolve(m.work(memberAbort.signal, memberHooks)))
-      .then(
-        (result) => {
-          jobs.delete(jobId);
-          childHandles.delete(jobId);
-          memberSlow.stop();
-          // #916 — settle outcome for the live view (member finished).
-          live.markSettled(jobId, "finished");
-          dispatchDeck.clearEntry(jobId);
-          sessionAutosave.recordOutcome(result.ok);
-          memberResults.push({ jobId, label: m.label, result });
-        },
-        (err: Error) => {
-          jobs.delete(jobId);
-          childHandles.delete(jobId);
-          memberSlow.stop();
-          // #916 — settle outcome for the live view (member rejected).
-          live.markSettled(jobId, "failed");
-          dispatchDeck.clearEntry(jobId);
-          sessionAutosave.recordOutcome(false);
-          memberResults.push({
-            jobId,
-            label: m.label,
-            result: { failed: true, error: err.message },
-          });
-        },
-      )
-      .finally(() => {
-        orchestrator.completed++;
-        // Advance the batch row's counter so the user sees "1/3 done · 2 running".
-        dispatchDeck.updateBatchProgress(batchId, orchestrator.completed);
-        if (orchestrator.completed === orchestrator.size) {
-          // Single delivery: deliverBatchReport is the batch's only steer. The whole
-          // settle runs under releaseAfter so the batch is released on every path.
-          void pendingJobs
-            .releaseAfter(batchId, async () => {
-              jobs.delete(batchId);
-              dispatchDeck.clearBatchEntry(batchId);
-              const batchMs = Date.now() - startedAt;
-              const anyFailed = memberResults.some((m) => "failed" in m.result || !m.result.ok);
-              const tokens = memberResults.reduce((acc, m) => {
-                if ("failed" in m.result) return acc;
-                return acc + totalTokens(m.result);
-              }, 0);
-              if (anyFailed) {
-                lifecycle.emitFailed(batchId, input.batchLabel, input.batchLabel, batchMs);
-              } else {
-                lifecycle.emitCompleted(
-                  batchId,
-                  input.batchLabel,
-                  input.batchLabel,
-                  batchMs,
-                  tokens,
-                );
-              }
-              await deliverBatchReport(
-                pi,
-                { batchLabel: input.batchLabel, batchId, startedAt },
-                memberResults,
-                gitMembers,
-                input.gitLineFor ?? gitStateLine,
-              ).then(
-                () =>
-                  trace(
-                    `async batch ${batchId} (${input.batchLabel}) finished in ${Date.now() - startedAt}ms`,
-                  ),
-                (err: unknown) =>
-                  trace(
-                    `async batch ${batchId} (${input.batchLabel}) report failed: ${String(err)}`,
-                  ),
-              );
-            })
-            .catch((err: unknown) =>
-              trace(`async batch ${batchId} (${input.batchLabel}) settle failed: ${String(err)}`),
-            );
-        }
+      dispatchDeck.startEntry(jobId, {
+        label: m.label,
+        role: m.role,
+        batchKey: batchId,
       });
+      live.startBuffer(jobId);
+      sessionAutosave.recordDispatch(m.role);
+      // #799/#907 — batch members get the same watch + span feed as single
+      // jobs (the batch orchestrator itself gets none — it is a bookkeeping row, not a child).
+      const memberSlow = makeSlowWatch(jobId, m.role, m.label, pi, undefined);
+      const memberHooks: WorkHooks = {
+        onProgress: (progress) => {
+          dispatchDeck.updateEntry(jobId, progress);
+          feedSlowProgress(jobId, progress);
+        },
+        onRawEvent: memberSlow.hooks.onRawEvent,
+        onStdin: (stdin) => {
+          childHandles.set(jobId, { stdin, label: m.label, role: m.role });
+        },
+        jobId,
+      };
+
+      // Wrapping in `new Promise` turns a SYNCHRONOUS throw from `m.work` into
+      // a rejection that settles through the handlers below (as async failures
+      // already do) — no separate synchronous-throw path.
+      void new Promise<DispatchResult>((resolve) =>
+        resolve(m.work(memberAbort.signal, memberHooks)),
+      )
+        .then(
+          (result) => {
+            jobs.delete(jobId);
+            childHandles.delete(jobId);
+            memberSlow.stop();
+            // #916 — settle outcome for the live view (member finished).
+            live.markSettled(jobId, "finished");
+            dispatchDeck.clearEntry(jobId);
+            sessionAutosave.recordOutcome(result.ok);
+            memberResults.push({ jobId, label: m.label, result });
+          },
+          (err: Error) => {
+            jobs.delete(jobId);
+            childHandles.delete(jobId);
+            memberSlow.stop();
+            // #916 — settle outcome for the live view (member rejected).
+            live.markSettled(jobId, "failed");
+            dispatchDeck.clearEntry(jobId);
+            sessionAutosave.recordOutcome(false);
+            memberResults.push({
+              jobId,
+              label: m.label,
+              result: { failed: true, error: err.message },
+            });
+          },
+        )
+        .finally(() => {
+          orchestrator.completed++;
+          // Advance the batch row's counter so the user sees "1/3 done · 2 running".
+          dispatchDeck.updateBatchProgress(batchId, orchestrator.completed);
+          if (orchestrator.completed === orchestrator.size) {
+            // Single delivery: settleBatch is the batch's only steer. The whole
+            // settle runs under releaseAfter so the batch is released on every path.
+            void pendingJobs
+              .releaseAfter(batchId, () =>
+                settleBatch(pi, input, batchId, startedAt, memberResults, gitMembers),
+              )
+              .catch((err: unknown) =>
+                trace(`async batch ${batchId} (${input.batchLabel}) settle failed: ${String(err)}`),
+              );
+          }
+        });
+    }
+  } catch (err) {
+    // A throw partway through setup: abort the members already started (the cascade
+    // above reaches only those), and close the orchestrator row. Nothing is owed yet
+    // (jobPending runs after this loop) and the aborted members can never complete
+    // the batch, so no report is produced; the caller gets the error.
+    orchestratorAbort.abort();
+    jobs.delete(batchId);
+    dispatchDeck.clearBatchEntry(batchId);
+    lifecycle.emitFailed(batchId, input.batchLabel, input.batchLabel, Date.now() - startedAt);
+    trace(`async batch ${batchId} (${input.batchLabel}) setup failed: ${String(err)}`);
+    throw err;
   }
 
   // #1295 — one batch, one report: counted once, not per member. Marked AFTER the

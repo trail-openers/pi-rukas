@@ -73,8 +73,11 @@ export function jobPending(id: string, ownerKind: "pm" | "driver"): void {
   publish();
 }
 
-/** The job's report was handed to Pi (or could not be): no longer owed. */
-export function jobReported(id: string): void {
+/**
+ * The job's report was handed to Pi (or could not be): no longer owed. Module-private:
+ * `releaseAfter` is the only release path, so every settle exit clears the count.
+ */
+function jobReported(id: string): void {
   if (pending.delete(id)) publish();
 }
 

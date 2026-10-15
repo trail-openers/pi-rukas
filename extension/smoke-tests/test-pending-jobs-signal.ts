@@ -280,6 +280,80 @@ wire.length = 0;
   assert(statuses().length === 0, `an empty batch sends no status (got ${statuses()})`);
 }
 
+// --- A batch whose settle body throws still hands Pi a report before the count drops ---
+{
+  // session_shutdown above detached the context; re-attach so the status channel is live.
+  pendingJobs.attach(rpcCtx());
+  wire.length = 0;
+  const bad = controlled("explore");
+  const { batchId } = startBatch(pi, {
+    batchLabel: "dispatch_parallel",
+    members: [
+      {
+        label: "explore[a]",
+        role: "explore",
+        work: async (signal, hooks) => {
+          const r = await bad.work(signal, hooks);
+          // totalTokens reads usage inside the settle body, after the members have settled.
+          return Object.defineProperty(r, "usage", {
+            get() {
+              throw new Error("usage boom");
+            },
+          });
+        },
+      },
+    ],
+  });
+  bad.finish();
+  await until(() => statuses().length === 2);
+  const r = reports();
+  assert(
+    r.length === 1 && r[0].startsWith("[ensemble:async]") && r[0].includes(`(batch ${batchId})`),
+    "a settle-body throw still hands Pi one [ensemble:async] report naming (batch <id>)",
+  );
+  assert(r[0].includes("FAILED") && r[0].includes("usage boom"), "the stand-in report says the batch failed and why");
+  assert(statuses().join(",") === "1,0", `the count drops to 0 only after that report (got ${statuses()})`);
+  assert(
+    wire.indexOf(`report:${r[0]}`) < wire.lastIndexOf("status:0"),
+    "the stand-in report precedes the 0",
+  );
+}
+
+// --- A batch whose member setup throws partway aborts the members already started ---
+{
+  wire.length = 0;
+  let firstSignal: AbortSignal | undefined;
+  let threw = false;
+  try {
+    startBatch(pi, {
+      batchLabel: "dispatch_parallel",
+      members: [
+        {
+          label: "explore[a]",
+          role: "explore",
+          work: (signal) => {
+            firstSignal = signal;
+            return new Promise<DispatchResult>(() => undefined);
+          },
+        },
+        {
+          get label(): string {
+            throw new Error("second member setup boom");
+          },
+          role: "explore",
+          work: controlled("explore").work,
+        },
+      ],
+    });
+  } catch {
+    threw = true;
+  }
+  assert(threw, "a partway batch setup throw surfaces to the caller");
+  assert(firstSignal?.aborted === true, "the already-started member is aborted");
+  await new Promise((r) => setTimeout(r, 30));
+  assert(statuses().length === 0 && reports().length === 0, `a half-started batch owes nothing (got ${wire})`);
+}
+
 // --- TUI mode: no status at all ---
 {
   wire.length = 0;
