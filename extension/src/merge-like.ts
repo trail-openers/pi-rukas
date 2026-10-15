@@ -22,9 +22,17 @@
  * gh/glab (`gh pr comment 5 --body "please merge"`) is refused. Put such text
  * in `--body-file` (docs/troubleshooting.md → "A merge was refused: the guard
  * cannot read this command").
+ *
+ * The exemption rule (#1317 review): a segment is exempt ONLY when it is an
+ * `echo` / `printf` / `git commit -m` that runs nothing it prints, with no
+ * substitution, redirection, here-doc, pipe-out or interpreter word anywhere
+ * in the command that could make it execute. A forge REST call the door itself
+ * reads as a read is also exempt (isRestRead — the door is the one source of
+ * that verdict). Nothing else is exempt.
  */
 
-import { isSeparatorToken, rawTokens, shellSegments, unquoteArg } from "./merge-tokens.ts";
+import { isRestRead } from "./bash-merges-pr.ts";
+import { isRedirectAmpAt, isSeparatorToken, rawTokens, unquoteArg } from "./merge-tokens.ts";
 
 const FORGE_WORD = /(?<![A-Za-z0-9_])(?:gh|glab)(?![A-Za-z0-9_])/i;
 const MERGE_WORD = /(?<![A-Za-z0-9_])merge(?![A-Za-z0-9_.-])/i;
@@ -51,62 +59,159 @@ export function mergeLike(text: string): boolean {
   return SPELLED_FORM.test(text) && forms.some((s) => FORGE_WORD.test(s));
 }
 
+/** Command words that run another command's text. No exempt segment may contain one. */
+const INTERPRETERS = new Set([
+  "sh",
+  "bash",
+  "zsh",
+  "dash",
+  "ksh",
+  "source",
+  ".",
+  "eval",
+  "xargs",
+  "exec",
+  "env",
+  "command",
+  "builtin",
+  "nohup",
+  "timeout",
+  "nice",
+  "time",
+  "sudo",
+  "busybox",
+  "watch",
+  "parallel",
+]);
+
+/** A substitution, backtick or process substitution: its body runs, and a split cannot see inside it. */
+const SUBSTITUTION = /\$\(|`|<\(|>\(/;
+
 /**
- * The command with its `echo` / `printf` segments removed. Those commands
- * never run their arguments, so a merge-like word inside one is data (the
- * existing inert-quoted-string contract: `echo "gh pr merge 12"` is allowed).
+ * `text` with the parts the shell does NOT expand blanked out: single-quoted
+ * runs, `$'…'` strings and backslash escapes. What remains is the text whose
+ * substitutions and redirections really run (`echo '$(x)'` and `echo "\$(x)"`
+ * run nothing). An unterminated single quote leaves the text whole.
+ */
+function expandable(text: string): string {
+  let out = "";
+  let i = 0;
+  let inDouble = false;
+  while (i < text.length) {
+    const c = text[i] ?? "";
+    if (c === "\\") {
+      out += "_";
+      i += 2;
+      continue;
+    }
+    if (!inDouble && (c === "'" || (c === "$" && text[i + 1] === "'"))) {
+      const ansi = c === "$";
+      let j = i + (ansi ? 2 : 1);
+      while (j < text.length && text[j] !== "'") j += ansi && text[j] === "\\" ? 2 : 1;
+      if (j >= text.length) return text;
+      out += "_".repeat(j + 1 - i);
+      i = j + 1;
+      continue;
+    }
+    if (c === '"') inDouble = !inDouble;
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+/** A segment and the separator that follows it (`""` at the end of the command). */
+interface Piece {
+  text: string;
+  next: string;
+}
+
+/** The separator operator starting at `i`, with its length, or undefined. */
+function separatorAt(s: string, i: number): { op: string; len: number } | undefined {
+  const c = s[i] ?? "";
+  const d = s[i + 1] ?? "";
+  if (c === "\n" || c === ";") return { op: ";", len: 1 };
+  if ((c === "&" && d === "&") || (c === "|" && d === "|")) return { op: c + c, len: 2 };
+  if (c === "|" && d === "&") return { op: "|&", len: 2 };
+  if (c === "|") return { op: "|", len: 1 };
+  if (c === "&" && !isRedirectAmpAt(s, i)) return { op: "&", len: 1 };
+  return undefined;
+}
+
+/** The command split into segments, each with the separator that follows it (quote-aware). */
+function pieces(command: string): Piece[] {
+  const out: Piece[] = [];
+  let cur = "";
+  let i = 0;
+  const n = command.length;
+  while (i < n) {
+    const ch = command[i] ?? "";
+    if (ch === "'" || ch === '"') {
+      const start = i;
+      i++;
+      while (i < n && command[i] !== ch) i += ch === '"' && command[i] === "\\" ? 2 : 1;
+      i++;
+      cur += command.slice(start, i);
+      continue;
+    }
+    if (ch === "\\") {
+      cur += command.slice(i, i + 2);
+      i += 2;
+      continue;
+    }
+    const sep = separatorAt(command, i);
+    if (sep !== undefined) {
+      out.push({ text: cur, next: sep.op });
+      cur = "";
+      i += sep.len;
+      continue;
+    }
+    cur += ch;
+    i++;
+  }
+  out.push({ text: cur, next: "" });
+  return out;
+}
+
+/**
+ * The command with its provably inert segments removed (see the module doc).
  * Unreadable quoting returns the whole command — nothing is exempted when the
  * segments cannot be trusted.
  */
 export function executableText(command: string): string {
   if (rawTokens(command).terminated === false) return command;
-  return shellSegments(command)
-    .filter((seg) => !isInertSegment(seg))
+  // A substitution's body runs whatever the split says, so nothing is exempt
+  // in a command that contains one.
+  const substitution = SUBSTITUTION.test(expandable(command));
+  return pieces(command)
+    .filter((p) => substitution || !dropped(p))
+    .map((p) => p.text)
     .join(";");
 }
 
-/**
- * A segment whose merge-like text is provably NOT executed:
- *   - `echo` / `printf` never run their arguments;
- *   - `git commit`: a message (`-m "…gh pr merge 12"`) is data;
- *   - `sh|bash|zsh|dash -c WORD` with a plain word body: the shell runs only
- *     WORD (the rest are `$0…`), so `bash -c gh pr merge 17` runs `gh`;
- *   - a forge `api` call with an explicit GET and no body fields: the REST
- *     door already reads it as a read (test-merge-guard-962 / -955-rest).
- * Each exemption only applies to the zero-merge-head backstop: a merge the
- * readers DO find is still refused, wherever it sits.
- */
-function isInertSegment(seg: string): boolean {
-  const words = rawTokens(seg)
-    .list.filter((t) => !isSeparatorToken(t))
-    .map(unquoteArg);
-  const [head = "", second = "", third = ""] = words;
-  if (head === "echo" || head === "printf") return true;
-  if (head === "git" && second === "commit") return true;
-  if (/^(?:sh|bash|zsh|dash)$/.test(head) && second === "-c") return /^[\w./-]+$/.test(third);
-  return isExplicitGetApi(words);
+/** True when a segment's text is not executed, or is a REST read the door agrees with. */
+function dropped(p: Piece): boolean {
+  if (p.next === "|" || p.next === "|&") return false;
+  return isInertSegment(p.text) || isRestRead(p.text);
 }
 
 /**
- * A forge `api` call the REST door reads as a read: no body field, and the
- * method is GET. `glab api` defaults to GET; `gh api` defaults to a write, so
- * it needs an explicit GET (the door's own rules, bash-merges-pr.ts).
+ * A segment whose text is provably not executed: its head is `echo` or
+ * `printf` (they run nothing they print), or `git commit` with a message
+ * (`-m` is data). No redirection, here-doc, `${…}` or substitution character
+ * and no interpreter word may appear in it.
  */
-function isExplicitGetApi(words: string[]): boolean {
-  const forge = words.findIndex((w) => /^(?:gh|glab)$/.test(w.split("/").pop() ?? ""));
-  if (forge === -1 || words[forge + 1] !== "api") return false;
-  const rest = words.slice(forge + 2);
-  const bodyField = rest.some(
-    (w) => /^(?:-f|-F|--field|--raw-field|--input)(?:=|$)/.test(w) || /^-[fF]./.test(w),
+function isInertSegment(text: string): boolean {
+  if (/[<>`]|\$\{|\$\(/.test(expandable(text))) return false;
+  const toks = rawTokens(text);
+  if (toks.terminated === false) return false;
+  const words = toks.list.filter((t) => !isSeparatorToken(t)).map(unquoteArg);
+  if (words.some((w) => INTERPRETERS.has(w.split("/").pop() ?? w))) return false;
+  const [head = "", second = ""] = words;
+  if (head === "echo" || head === "printf") return true;
+  return (
+    head === "git" &&
+    second === "commit" &&
+    words.some((w) => w === "-m" || w === "--message" || w.startsWith("--message="))
   );
-  const methods = rest.flatMap((w, k) => {
-    if (/^(?:--method|-X)$/.test(w)) return [rest[k + 1] ?? ""];
-    const inline = /^(?:--method=|-X)(\S+)$/.exec(w);
-    return inline?.[1] ? [inline[1]] : [];
-  });
-  const isGet = (m: string) => /^get$/i.test(m);
-  const isRead = /^glab$/.test(words[forge] ?? "")
-    ? methods.every((m) => isGet(m) || /^head$/i.test(m))
-    : methods.length > 0 && methods.every(isGet);
-  return isRead && !bodyField;
 }

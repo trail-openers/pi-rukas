@@ -126,8 +126,62 @@ benign("git merge --ff-only origin/main");
 benign("gh pr checks 17");
 benign('echo "gh pr merge 12"');
 benign('git commit -m "docs: explain gh pr merge 12"');
-benign("bash -c gh pr merge 17");
 benign("gh pr view 17 --json mergeable,mergeStateStatus");
+// `bash -c WORD` runs `gh` with the merge words as its own $0…: the old
+// exemption let it through. It is refused now (over-refusal, not bypass).
+kind("bash -c gh pr merge 17", "unrecognised");
+
+// ------------------------------------------------------------ review: exemptions are provably inert only
+// echo / printf output piped or redirected into an interpreter runs the merge.
+kind('echo "gh pr merge 12" | sh', "unrecognised");
+kind("printf 'gh pr merge 12' | bash", "unrecognised");
+kind("echo gh pr merge 12 > x.sh; sh x.sh", "unrecognised");
+// A substitution anywhere in the command: nothing is exempt, the merge is refused.
+kind("echo $(\\gh pr merge 12)", "unrecognised");
+kind("printf '%s' $(g\"h\" pr merge 12)", "unrecognised");
+kind("git commit -m x $(\\gh pr merge 12)", "unrecognised");
+kind("bash -c gh $(\\gh pr merge 12)", "unrecognised");
+// Interpreters fed by here-strings / here-docs / process substitution.
+kind('bash <<< "gh pr merge 12"', "unrecognised");
+kind("sh <<EOF\ngh pr merge 12\nEOF", "merge");
+kind("source <(echo gh pr merge 12)", "unrecognised");
+kind("echo gh pr merge 12 | xargs -0 sh -c", "unrecognised");
+// The xargs indirection the docs called out of scope: refused, never "not a merge".
+kind("echo 17 | xargs -I{} gh pr merge {}", "unrecognised");
+// The alias indirection: the verb lives inside a quoted definition, refused.
+kind("alias m='gh pr merge'; m 17", "unrecognised");
+// Still allowed: the exemption applies where nothing executes the text.
+benign('echo "gh pr merge 12"');
+benign('git commit -m "fix: refuse gh pr merge shapes"');
+benign("gh pr view 17");
+benign("gh pr comment 5 --body-file x.md");
+benign("git merge --ff-only origin/main");
+benign("gh api --method GET repos/o/r/pulls/17/merge");
+benign("gh api -XGET repos/o/r/pulls/17/merge");
+
+// ------------------------------------------------------------ review A: value flags per forge
+// `-m` is --merge (bare) for gh: the number after it is the PR.
+merges("gh pr merge -m 17", 17);
+// `-m` takes the message for glab: the number after the message is the MR.
+merges('glab mr merge -m "msg" 17', 17);
+// A glab message flag with no number after it: unreadable, never the branch.
+kind('glab mr merge -m 17', "unreadable");
+
+// ------------------------------------------------------------ review B: `&>` is a redirection
+merges("gh pr merge &>/dev/null 17", 17);
+merges("gh pr merge &>>/dev/null 17", 17);
+
+// ------------------------------------------------------------ review C: expansion in the verb position
+kind("X=erge; gh pr m$X 17", "unrecognised");
+kind("gh pr m$(echo e)rge 17", "unrecognised");
+// An expansion in an argument (not the verb) is still a readable merge.
+merges("gh pr merge 17 --body \"$X\"", 17);
+benign("gh pr view $N");
+
+// ------------------------------------------------------------ review D: the REST door decides reads
+kind("gh api -XPUT repos/o/r/pulls/17/merge", "merge");
+kind("gh api --method GET -f state=merged repos/o/r/pulls/17/merge", "merge");
+kind("bash -c 'gh api -X PUT repos/o/r/pulls/17/merge'", "unrecognised");
 
 // ------------------------------------------------------------ hook: named refusals, no forge call
 await setupLedgerPath();
@@ -141,7 +195,7 @@ for (const [cmd, reason] of [
   assert(r.block && reason.test(r.reason ?? ""), `hook refuses with a named reason: ${JSON.stringify(cmd)} — ${r.reason ?? "allowed"}`);
   assert(r.calls.length === 0, `hook refuses before any forge call: ${JSON.stringify(cmd)}`);
 }
-for (const cmd of ['echo "gh pr merge 12"', "gh pr comment 5 --body-file x.md", "bash -c gh pr merge 17"]) {
+for (const cmd of ['echo "gh pr merge 12"', "gh pr comment 5 --body-file x.md", 'git commit -m "fix: refuse gh pr merge shapes"']) {
   const r = await hookDecision(cmd, []);
   assert(!r.block, `hook allows inert: ${JSON.stringify(cmd)} — ${r.reason ?? ""}`);
 }

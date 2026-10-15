@@ -109,6 +109,10 @@ import {
 import { trace } from "./trace.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 
+/** Refusal for a merge-bearing command over the analysis size bound (#955 round 6). */
+const TOO_LARGE_REFUSAL =
+  "merge refused: command is too large to analyse — the merge guard will not walk a command this large (it could hide a merge behind a long value); split or simplify the command, or set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override";
+
 /** Per-exec timeout for the guard's gh/git calls. */
 const EXEC_TIMEOUT_MS = FORGE_EXEC_TIMEOUT_MS;
 
@@ -147,13 +151,9 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     // through to current-branch PR resolution, which would verify the
     // ledger for a different PR than the one the (unanalysable) command
     // would merge. It is checked first, so no walk runs over such a command.
-    if (exceedsAnalysisBound(command)) {
-      return block(
-        "merge refused: command is too large to analyse — the merge guard will not walk a command this large (it could hide a merge behind a long value); split or simplify the command, or set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override",
-      );
-    }
     let analysis: MergeAnalysis;
     try {
+      if (exceedsAnalysisBound(command)) return block(TOO_LARGE_REFUSAL);
       analysis = analyseMergeCommand(command);
     } catch (err) {
       return block(

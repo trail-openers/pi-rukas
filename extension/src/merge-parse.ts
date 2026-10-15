@@ -25,6 +25,7 @@ import {
   shellSegments,
   stripGluedParen,
   unquoteArg,
+  verbForge,
 } from "./merge-tokens.ts";
 import { innerBodies, matchMergeVerb, mergeVerbUnwrapOne } from "./merge-verb-head.ts";
 import { splitGluedSubstitutions } from "./merge-wrappers.ts";
@@ -74,7 +75,7 @@ export function mergeVerbRepo(
   if (!command.includes("merge")) return undefined;
   const args = mergeVerbArgs(command);
   if (args === undefined) return undefined;
-  const tailRepo = parseArgsAfterVerb(args).repo;
+  const tailRepo = parseArgsAfterVerb(args, verbForge(command)).repo;
   if (tailRepo !== undefined) {
     // A repo value was read (possibly via `--repo=`/`--project=` — the
     // eq form lands in the same field as the space form). Validate it:

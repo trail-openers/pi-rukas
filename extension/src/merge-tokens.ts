@@ -155,7 +155,7 @@ export function rawTokens(raw: string): { list: string[]; terminated: boolean } 
 }
 
 /** A redirection operator at a word start: optional fd digits, `<`/`>` run, optional `&N`/`&-`. Sticky (`lastIndex` set by the caller). */
-const REDIRECT = /\d*[<>]+(?:&(?:\d+|-))?/y;
+const REDIRECT = /&>>?|\d*[<>]+(?:&(?:\d+|-))?/y;
 
 /** True when `t` is a separator token `rawTokens` emits (one predicate for every walk). */
 export function isSeparatorToken(t: string): boolean {
@@ -217,6 +217,24 @@ export function mergeVerbSpanRegex(): RegExp {
  * different budgets.
  */
 export const MAX_CONSTRUCT_DEPTH = 256;
+
+/** `>&`, `<&` and `&>` (and `&>>`) are redirections, not the `&` separator, at index `i`. */
+export function isRedirectAmpAt(s: string, i: number): boolean {
+  return s[i - 1] === ">" || s[i - 1] === "<" || s[i + 1] === ">";
+}
+
+const VERB_FORGE =
+  /(?:^|[\s;&|(`/])(gh|glab)\s+(?:(?:-R|--repo|--project)\s+\S+\s+)?(?:pr|mr)\s+merge\b/;
+
+/**
+ * The forge (`gh` or `glab`) of the first merge verb in `text`, or undefined
+ * when no plainly written verb is found. The verb's forge decides which
+ * flags take a value (`-m` is the message for glab, a bare flag for gh).
+ */
+export function verbForge(text: string): "gh" | "glab" | undefined {
+  const m = VERB_FORGE.exec(text);
+  return m?.[1] === "glab" ? "glab" : m?.[1] === "gh" ? "gh" : undefined;
+}
 
 /** The anchored verb-source (the verb-HEAD test in merge-wrappers.ts). */
 export function mergeVerbHeadRegex(): RegExp {
@@ -332,7 +350,7 @@ export function shellSegments(command: string): string[] {
     }
     // A bare `&` (not `&&`) ends the current command — job control. It is
     // not part of the command; the next text is its own segment.
-    if (ch === "&") {
+    if (ch === "&" && !isRedirectAmpAt(command, i)) {
       parts.push(cur);
       cur = "";
       i++;

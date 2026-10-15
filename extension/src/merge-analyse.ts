@@ -27,7 +27,14 @@ import { canonicalCommand } from "./merge-canonical.ts";
 import { scanMergeHeads } from "./merge-heads.ts";
 import { executableText, mergeLike } from "./merge-like.ts";
 import { mergeVerbArgs, mergeVerbRepo, repoFlagInTokens } from "./merge-parse.ts";
-import { isValidRepoValue, shellSegments } from "./merge-tokens.ts";
+import {
+  isSeparatorToken,
+  isValidRepoValue,
+  rawTokens,
+  shellSegments,
+  unquoteArg,
+  verbForge,
+} from "./merge-tokens.ts";
 import { matchMergeVerb } from "./merge-verb-head.ts";
 
 export type MergeAnalysis =
@@ -55,7 +62,12 @@ export function analyseMergeCommand(command: string): MergeAnalysis {
   // ANSI-C `$'…'` string can spell it in escapes and a brace list can
   // assemble it (`m{e,}rge`), so either one always runs the full analysis.
   const plain = command.replace(/\\\n/g, "").replace(/["'\\]/g, "");
-  if (!plain.includes("merge") && !command.includes("$'") && !/\{[^}]*,/.test(command)) {
+  if (
+    !plain.includes("merge") &&
+    !command.includes("$'") &&
+    !/\{[^}]*,/.test(command) &&
+    !EXPANSION.test(command)
+  ) {
     return { kind: "none" };
   }
   const canonical = canonicalCommand(command);
@@ -65,8 +77,35 @@ export function analyseMergeCommand(command: string): MergeAnalysis {
   // is refused, whatever shape it has. echo/printf segments are inert data.
   const mergish =
     mergeLike(executableText(command)) ||
-    (canonical !== undefined && mergeLike(executableText(canonical)));
+    (canonical !== undefined && mergeLike(executableText(canonical))) ||
+    expansionHidesVerb(command);
   return mergish ? { kind: "unrecognised" } : result;
+}
+
+/** Characters that make a word's value depend on the shell at run time. */
+const EXPANSION = /[$`*?[]/;
+
+/**
+ * A forge command whose command word or verb is built by an expansion
+ * (`gh pr m$X 17`, `gh pr m$(echo e)rge 17`, `g$X pr merge 17`): the words bash
+ * runs are unknown, so the merge it makes cannot be read. Positions are read
+ * from the first plain `gh`/`glab` word (within the first three), so an
+ * expansion in an argument (`gh pr view $N`, `echo $(gh pr view 1)`) is not a
+ * verb. A command word built by an expansion counts when the segment names a
+ * forge verb. Single-quoted words are literal and never count.
+ */
+function expansionHidesVerb(command: string): boolean {
+  if (!EXPANSION.test(command)) return false;
+  return shellSegments(command).some((seg) => {
+    const toks = rawTokens(seg);
+    if (toks.terminated === false) return false;
+    const words = toks.list.filter((t) => !isSeparatorToken(t));
+    const live = (w: string) => !w.startsWith("'") && !w.startsWith("$'") && EXPANSION.test(w);
+    const plain = words.map((w) => unquoteArg(w).split("/").pop() ?? "");
+    const k = plain.slice(0, 3).findIndex((w) => w === "gh" || w === "glab");
+    if (k !== -1) return words.slice(k, k + 3).some(live);
+    return live(words[0] ?? "") && plain.some((w) => /^(?:gh|glab|pr|mr|api)$/.test(w));
+  });
 }
 
 /** Combine the raw reading with the canonical one (see the module doc). */
@@ -130,7 +169,7 @@ function analyseText(command: string): MergeAnalysis {
   // the merge's own repo.
   if (strayRepoSelector(command, repo)) return { kind: "repos" };
   if (fromVerb !== undefined) {
-    const parsed = parseArgsAfterVerb(fromVerb);
+    const parsed = parseArgsAfterVerb(fromVerb, verbForge(command));
     // #1317 item B: a positional that is not a plain number (`$PR`, `x17`) is
     // a PR the guard cannot read — refused, never resolved from the branch.
     if (parsed.unreadable) return { kind: "unreadable" };

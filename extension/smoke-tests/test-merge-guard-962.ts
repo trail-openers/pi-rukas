@@ -63,7 +63,8 @@ benign("case x in 1) gh api repos/o/r/pulls/17;; esac");
 // bash runs only the ONE word after -c: `bash -c gh pr merge 17` runs `gh`
 // with $0=pr — not a merge. A word that IS the merge (escaped spaces,
 // adjacent quoted runs) is one.
-benign("bash -c gh pr merge 17");
+// Over-refused now (#1317 review): the exemption for `bash -c WORD` is gone.
+kind("bash -c gh pr merge 17", "unrecognised");
 merges("bash -c gh\\ pr\\ merge\\ 17", 17);
 merges("bash -c gh' pr merge 17'", 17);
 merges('bash -c "gh pr merge 17"', 17);

@@ -6,11 +6,12 @@
  *
  * `unreadable` is set when the arguments carry a positional that is not a
  * plain number, `#N`, a PR/MR URL or an owner/repo (`$PR`, `"$N"`, `x17`), or
- * a second number. The guard cannot tell which PR such a command merges, so it
- * refuses. Only a head with NO positional argument may resolve its PR from the
- * current branch (#1317 item B). Redirections are not arguments: `>f`, `2>&1`
- * and their target are skipped, and `N>` (fd prefix) is one operator token
- * (see rawTokens).
+ * a second number, and when a bare integer is present but no number was read
+ * (a value flag swallowed it). The guard cannot tell which PR such a command
+ * merges, so it refuses. Only a head with NO positional argument may resolve
+ * its PR from the current branch (#1317 item B). Redirections are not
+ * arguments: `>f`, `2>&1`, `&>f` and their target are skipped, and `N>` (fd
+ * prefix) is one operator token (see rawTokens).
  */
 
 import { gluedRepoValue, isSeparatorToken, rawTokens, stripGluedParen } from "./merge-tokens.ts";
@@ -23,38 +24,42 @@ export interface PostVerbArgs {
 }
 
 /**
- * Flags whose value is the next token (it must not be read as the number).
- * `-s` is NOT here: for `gh pr merge` it is `--squash` (a bare flag), so the
- * number after it is a positional (#1317 — `gh pr merge -s 17` read 17 as the
- * value of `-s` and fell back to the current branch).
+ * Value-taking flags of `gh pr merge`, from gh's own flag table (#1317). The
+ * merge-method flags are BARE for gh: `-m`/`--merge`, `-s`/`--squash`,
+ * `-r`/`--rebase`, `-d`/`--delete-branch`, `--auto`, `--admin`. So
+ * `gh pr merge -m 17` merges PR 17.
  */
-const TAKES_VALUE = new Set([
+const GH_TAKES_VALUE = new Set([
   "-t",
   "--subject",
-  "--title",
   "-b",
   "--body",
   "-F",
   "--body-file",
-  "--match-head-commit",
-  "-m",
-  "--message",
   "-A",
   "--author-email",
-  "-R",
-  "--repo",
-  // glab's repo flag (same shape as -R): its value must not be read as the
-  // MR number.
-  "--project",
+  "--match-head-commit",
 ]);
 
-export function parseArgsAfterVerb(args: string): PostVerbArgs {
+/**
+ * Value-taking flags of `glab mr merge`. `-m` is the MR's merge message here
+ * (bare for gh), so the two forges must not share one table.
+ */
+const GLAB_TAKES_VALUE = new Set(["-m", "--message", "--squash-message", "--sha"]);
+
+/**
+ * The arguments after a merge verb, parsed for the PR/MR number and the repo.
+ * `forge` selects the flag table; when it is unknown, a flag the two forges
+ * read differently (`-m`) is treated as unreadable rather than guessed.
+ */
+export function parseArgsAfterVerb(args: string, forge?: "gh" | "glab"): PostVerbArgs {
   // A trailing `&` (job control, `nohup gh pr merge 17 &`) is part of the
   // invocation, not a separator that ends the argument list.
   const cleaned = args.replace(/\s+&\s*$/, " ").replace(/\s+&&\s*$/, " ");
   const tokens = rawTokens(cleaned);
   if (tokens.terminated === false) return { number: undefined, repo: undefined, unreadable: true };
   const list = tokens.list;
+  const valueFlags = forge === "glab" ? GLAB_TAKES_VALUE : GH_TAKES_VALUE;
   let number: number | undefined;
   let repo: string | undefined;
   let unreadable = false;
@@ -65,10 +70,10 @@ export function parseArgsAfterVerb(args: string): PostVerbArgs {
     if (t.endsWith(")") && t.length > 1) t = t.slice(0, -1);
     if (t === "") continue;
     if (isSeparatorToken(t)) break;
-    // A redirection is not an argument; its target (the next word) is not one
-    // either. `2>&1` carries its target inside the operator.
-    if (/^\d*[<>]/.test(t)) {
-      if (!t.includes("&")) i++;
+    // A redirection is not an argument. Its target (the next word) is not one
+    // either, unless the target is inside the operator (`2>&1`, `>&-`).
+    if (/^(?:\d*[<>]|&>)/.test(t)) {
+      if (!/&(?:\d+|-)$/.test(t)) i++;
       continue;
     }
     if (t.startsWith("-")) {
@@ -98,7 +103,13 @@ export function parseArgsAfterVerb(args: string): PostVerbArgs {
         }
         continue;
       }
-      if (TAKES_VALUE.has(t)) i++;
+      // With no forge known, a flag the two tables disagree on cannot be
+      // parsed safely: refuse rather than guess which token it consumes.
+      if (forge === undefined && GH_TAKES_VALUE.has(t) !== GLAB_TAKES_VALUE.has(t)) {
+        unreadable = true;
+        continue;
+      }
+      if (valueFlags.has(t)) i++;
       continue;
     }
     // Positional: a bare integer, a quoted integer (the shell strips the
@@ -123,6 +134,9 @@ export function parseArgsAfterVerb(args: string): PostVerbArgs {
     }
     unreadable = true;
   }
+  // A bare integer that is not the PR (a value flag swallowed it: `glab mr
+  // merge -m 17`) must never resolve the PR from the current branch.
+  if (number === undefined && list.some((t) => /^["']?\d+["']?\)?$/.test(t))) unreadable = true;
   return { number, repo, unreadable };
 }
 

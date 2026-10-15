@@ -168,6 +168,36 @@ function restDoors(texts: string[]): string | undefined {
 }
 
 /**
+ * The gh `api` method is GET when its LAST `--method` / `-X` value is GET, in
+ * every spelling gh accepts (`-X GET`, `-XGET`, `--method=GET`). gh takes the
+ * last flag, so the last one decides.
+ */
+function ghMethodIsGet(all: string): boolean {
+  const values = [...all.matchAll(/(?:^|\s)(?:--method(?:=|\s+)|-X\s*)(\S+)/gi)].map(
+    (m) => m[1] ?? "",
+  );
+  return values.length > 0 && /^get$/i.test(values[values.length - 1] ?? "");
+}
+
+/**
+ * True when one segment is a forge `api` call on a merge endpoint that the REST
+ * door reads as a READ (`gh api --method GET …/pulls/17/merge`). The door's own
+ * verdict is the source: a segment the door would refuse is never a read here.
+ * A shell-eval or any other command word is not a forge `api` call and returns
+ * false, so `bash -c "gh api … /merge"` stays refused (merge-like.ts).
+ */
+export function isRestRead(segment: string): boolean {
+  const toks = rawTokens(segment);
+  if (toks.terminated === false) return false;
+  const words = toks.list.filter((t) => !isSeparatorToken(t)).map(unquoteArg);
+  const ci = skipLeadingWrappers(words, 0);
+  const cmd = (words[ci] ?? "").split("/").pop() ?? "";
+  if ((cmd !== "gh" && cmd !== "glab") || words.indexOf("api", ci + 1) === -1) return false;
+  const onMergePath = /(?:^|\/)(?:pulls|mr|merge_requests)(?:\/[^\s/?#]+)?\/merge(?:[?&#\s]|$)/;
+  return onMergePath.test(segment) && restDoorTokens(segment) === undefined;
+}
+
+/**
  * The REST doors on ONE command text's raw tokens (quote-aware walk, no
  * quote-stripping — #955 lens round 6: the REST endpoint is matched among
  * the UNQUOTED tokens, because the shell removes quotes around a whole word
@@ -284,7 +314,7 @@ export function restDoorTokens(text: string): string | undefined {
       // no body fields — gh api's `-f`/`-F`/`--field` flags force a PUT
       // regardless of `--method`, so `--method GET --field x` is still the write.
       if (!/(?:^|\/)pulls(?:\/[^\s/?#]+)?\/merge(?:[?&#]|$)/.test(endpoint)) continue;
-      const explicitGet = /(^|\s)(?:--method|-X)\s+get\b/i.test(all);
+      const explicitGet = ghMethodIsGet(all);
       const hasBodyFields = /(^|\s)(?:-f|-F|--field)(?:=|\s)/.test(all);
       if (!explicitGet || hasBodyFields) return `${cmd} api ${endpoint}`;
     } else {
