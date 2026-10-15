@@ -1,6 +1,5 @@
 /**
- * work-driver-step-router — post-step outcome routing for runWorkDriver's
- * main loop.
+ * work-driver-step-router — post-step outcome routing for runWorkDriver's main loop.
  *
  * Extracted from work-driver.ts (issue #171 file-size hygiene). Called
  * once per loop iteration immediately after `runStep` returns (without
@@ -26,6 +25,7 @@ import {
   failureCauseReasonForClass,
   jitteredMs,
   shadowFailureCause,
+  stepRetryBudget,
   transientRetryBackoffMs,
   transientRetryEnabled,
 } from "./work-driver-failure-taxonomy.ts";
@@ -139,7 +139,8 @@ export async function routeStepOutcome(
       // provider-blame lines with no retraction on recovery.
       const policy = STEP_FAILURE_POLICY[step];
       const semanticRetryAvailable =
-        policy === "RETRY_ONCE" && (state.pipelineState.retryAttempts?.[step] ?? 0) < 1;
+        policy === "RETRY_ONCE" &&
+        (state.pipelineState.retryAttempts?.[step] ?? 0) < stepRetryBudget(classification, false);
       const transientRetryAvailable =
         policy === "HALT" &&
         transientRetryEnabled() &&
@@ -376,7 +377,7 @@ export async function routeStepOutcome(
           ? (state.pipelineState.transientRetryAttempts ?? {})
           : (state.pipelineState.retryAttempts ?? {});
         const used = attempts[step] ?? 0;
-        const budget = infra ? classification.maxRetries : 1;
+        const budget = stepRetryBudget(classification, infra);
         if (used < budget) {
           const bumped = { ...attempts, [step]: used + 1 };
           state = {
@@ -391,7 +392,7 @@ export async function routeStepOutcome(
           const reason = `${failureCauseReason(tail)} · ${lost}`;
           lifecycle.emitStepRetry(step, stepOrd.num, stepOrd.total, used + 2, reason, ctx.issue);
           trace(
-            `work-driver: RETRY_ONCE on step="${step}" (attempt ${used + 2}, budget=${infra ? "transient" : "semantic"}) — ${lost}`,
+            `work-driver: RETRY_ONCE on step="${step}" (attempt ${used + 2}, budget=${infra ? "transient" : "semantic"}, cause=${classification.cause}) — ${lost}`,
           );
           if (infra) {
             const wait = jitteredMs(
@@ -419,7 +420,7 @@ export async function routeStepOutcome(
         };
         await persistCycle(ctx, state);
         trace(
-          `work-driver: RETRY_ONCE exhausted on step="${step}" → handoff (status set in runHandoff)`,
+          `work-driver: RETRY_ONCE exhausted on step="${step}" (cause=${classification.cause}) → handoff (status set in runHandoff)`,
         );
         return { state, retry: true };
       }
