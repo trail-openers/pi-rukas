@@ -15,13 +15,20 @@
  * the same handoff path (cap `driver-crash:<step>` → runHandoff), with a
  * one-shot guard so a crash inside runHandoff itself still ends as aborted.
  *
- * Note: `runPlan` dispatches with `role: "explore"` but `label: "plan"`
- * (the plan step reuses the explore subagent). So the fake dispatchFn keys on
- * `spec.label === "plan"` to throw on the plan step, matching the issue's
- * "throws on step plan" precisely.
- *
  * The fake forge records labelAdd + issueComment so the assertions can see
  * the handoff post happened.
+ *
+ * Two scenarios, both wired through function-injection seams (closures, not
+ * env vars, which leak into hostile environments):
+ *   1. `setPlanThrowForTestForTest` makes the plan step throw from inside
+ *      `runPlan` itself, so the driver's catch (cap `driver-crash:plan` →
+ *      handoff) posts the comment + label before the cycle ends. This is the
+ *      issue's test verbatim.
+ *   2. The same plan throw routes to handoff, and
+ *      `setHandoffThrowForTestForTest` makes `runHandoff` throw just before
+ *      its terminal-status write — a crash that escapes the step, exercising
+ *      the one-shot guard's direct-abort fallback (a throw at step `handoff`
+ *      ends as `aborted` and is NOT re-routed to handoff).
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -30,6 +37,8 @@ import path from "node:path";
 import type { DispatchResult } from "../src/types.ts";
 import type { Forge } from "../src/forge.ts";
 import { type DriverContext } from "../src/work-driver-context.ts";
+import { setHandoffThrowForTestForTest } from "../src/work-driver-handoff.ts";
+import { setPlanThrowForTestForTest } from "../src/work-driver-plan.ts";
 import {
   type WorkState,
   initialState,
@@ -136,13 +145,16 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
 
 // 1. The issue's test: a step that THROWS posts the handoff (comment + label).
-//    The plan step throws from its OWN code (via PI_ENSEMBLE_TEST_PLAN_THROW),
-//    so the driver's catch path (work-driver.ts, #1263 fix) routes it through
-//    the handoff — NOT runPlan's internal dispatch-failed handler.
+//    The plan step throws from its OWN code (via the `setPlanThrowForTestForTest`
+//    injection seam), so the driver's catch path (work-driver.ts, #1263 fix)
+//    routes it through the handoff — NOT runPlan's internal dispatch-failed
+//    handler.
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-1263-throw-"));
-  process.env.PI_ENSEMBLE_TEST_PLAN_THROW = "1";
   try {
+    setPlanThrowForTestForTest(() => {
+      throw new Error("simulated plan step crash");
+    });
     const fs = await import("node:fs/promises");
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
 
@@ -206,20 +218,27 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
       `forge received an issue comment (got ${issueComments.length})`,
     );
   } finally {
-    process.env.PI_ENSEMBLE_TEST_PLAN_THROW = "0";
+    setPlanThrowForTestForTest(undefined);
     rmSync(dir, { recursive: true, force: true });
   }
 }
 
 // 2. One-shot guard: a crash INSIDE runHandoff must NOT loop — it ends as
-// aborted with no second handoff post. The plan step throws from its own code
-// (env seam, route to handoff via driver-crash:plan), then the handoff step's
-// ops dispatch throws (simulating a crash inside runHandoff's post). The
-// one-shot guard fires: the second throw ends as aborted, not re-routed.
+// aborted with no second handoff post. The plan step throws from its own
+// code (setPlanThrowForTestForTest, route to handoff via driver-crash:plan);
+// then the handoff step throws from its OWN code (setHandoffThrowForTestForTest,
+// just before its terminal-status write) so the driver's catch fires at step
+// === "handoff" and the one-shot guard's direct-abort fallback runs —
+// re-routing to handoff would loop forever.
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-1263-once-"));
-  process.env.PI_ENSEMBLE_TEST_PLAN_THROW = "1";
   try {
+    setPlanThrowForTestForTest(() => {
+      throw new Error("simulated plan step crash");
+    });
+    setHandoffThrowForTestForTest(() => {
+      throw new Error("simulated runHandoff crash");
+    });
     const fs = await import("node:fs/promises");
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
 
@@ -238,37 +257,63 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
     const host = makeFakeHost();
     const { forge } = makeFakeForge();
 
-    let totalDispatchCalls = 0;
+    // The fake forge records comment + label posts — the handoff post must
+    // NOT loop even after the second throw.
+    let handoffPostCalls = 0;
+    const forge2 = {
+      ...forge,
+      issueComment: async (n: number, body: string) => {
+        handoffPostCalls++;
+        return `https://github.com/trail-openers/pi-rukas/issues/${n}#issuecomment-2`;
+      },
+    } as unknown as Forge;
 
     const ctx: DriverContext = {
       host: host as never,
       repoRoot: dir,
       issue: 1264,
-      forge,
+      forge: forge2,
       issueBodyFetcherFn: async (issue: number) => ({
         stdout: `title:\tissue #${issue}\nstate:\tOPEN\n\nmock body`,
       }),
-      dispatchFn: async (_host, spec) => {
-        totalDispatchCalls++;
-        // Handoff's ops dispatch throws (crash inside runHandoff's post). The
-        // plan step itself throws via the env seam above (driver-crash:plan →
-        // handoff), so this is the second throw the one-shot guard must catch.
-        if (spec.role === "ops" && spec.prompt?.includes("handoff")) {
-          throw new Error("handoff ops crash");
-        }
-        return mkResult({ role: spec.role, text: "stub" });
-      },
+      dispatchFn: async () => mkResult({ role: "explore", text: "stub" }),
     };
 
     await runWorkDriver(ctx);
 
-    // The cycle must terminate (no infinite loop) — dispatch calls are bounded.
+    // The cycle must end as ABORTED — the one-shot guard's direct-abort
+    // fallback, not a re-routed second handoff (which would end 'handoff').
+    const final = await readState(dir, 1264);
     assert(
-      totalDispatchCalls < 10,
-      `dispatch calls are bounded (got ${totalDispatchCalls}) — no infinite loop`,
+      final !== null && final.pipelineState.status === "aborted",
+      `final status is 'aborted' (one-shot guard fired) — got: ${final?.pipelineState.status}`,
+    );
+
+    // No second handoff: a re-route to handoff would append a second
+    // `driver-crash:handoff` cap-hit and re-run the step (second ops
+    // dispatch, second comment post, second handoff-emitted). The guard
+    // aborts instead, so the log carries exactly one handoff step.
+    const handoffCaps = (final?.eventLog ?? []).filter(
+      (e) => e.kind === "cap-hit" && e.cap === "driver-crash:handoff",
+    ).length;
+    assert(
+      handoffCaps === 0,
+      `no driver-crash:handoff cap-hit (the guard aborts, it does NOT re-route to handoff) — got: ${handoffCaps}`,
+    );
+    const emittedCount = (final?.eventLog ?? []).filter(
+      (e) => e.kind === "handoff-emitted",
+    ).length;
+    assert(
+      emittedCount <= 1,
+      `at most one handoff-emitted event (no loop) — got: ${emittedCount}`,
+    );
+    assert(
+      handoffPostCalls <= 1,
+      `handoff comment posted at most once — got: ${handoffPostCalls}`,
     );
   } finally {
-    process.env.PI_ENSEMBLE_TEST_PLAN_THROW = "0";
+    setPlanThrowForTestForTest(undefined);
+    setHandoffThrowForTestForTest(undefined);
     rmSync(dir, { recursive: true, force: true });
   }
 }

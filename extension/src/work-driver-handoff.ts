@@ -28,6 +28,15 @@ import { scratchDir } from "./work-driver-workspace.ts";
 import { runWorktreeTeardown } from "./work-driver-worktree-sweep.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
+
+// #1263 test seam — module-level handoff-step throw injection (offline tests
+// only), called in runHandoff just before the terminal-status write. A
+// closure rather than an env var: env seams leak into hostile environments.
+let handoffThrowForTest: (() => void) | undefined;
+export function setHandoffThrowForTestForTest(fn: (() => void) | undefined): void {
+  handoffThrowForTest = fn;
+}
+
 // #775 prep — captureWorktreeSnapshot moved to work-driver-handoff-snapshot.ts
 // (§12 file-size split); re-exported so no consumer's import path changes.
 export { captureWorktreeSnapshot } from "./work-driver-handoff-snapshot.ts";
@@ -353,8 +362,10 @@ export async function runHandoff(
   } catch {
     /* best-effort; handoff must always emit regardless */
   }
-  // Terminal status: mid-flight halts (developer-timeout, step-failed:*,
-  // loop-detected, token-budget) → 'aborted'; all other caps → 'handoff'.
+  // #1263 test seam (see setHandoffThrowForTestForTest) — called just before
+  // the terminal-status write so a thrown error escapes runHandoff and the
+  // driver's one-shot guard (abort, no re-route to handoff) is exercised.
+  handoffThrowForTest?.();
   const lastCapHit = [...next.eventLog].reverse().find((e) => e.kind === "cap-hit");
   const capShape = lastCapHit?.kind === "cap-hit" ? lastCapHit.cap : undefined;
   const capKilledCap =

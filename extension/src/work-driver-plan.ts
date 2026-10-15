@@ -58,6 +58,14 @@ import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
+// #1263 test seam — module-level plan-step throw injection (offline tests
+// only). A closure rather than an env var: env seams leak into hostile
+// environments. Production never sets it.
+let planThrowForTest: (() => void) | undefined;
+export function setPlanThrowForTestForTest(fn: (() => void) | undefined): void {
+  planThrowForTest = fn;
+}
+
 /**
  * Step 2 — Plan / decompose into workstreams (prompt: `pi-prompts/plan.md`).
  *
@@ -75,12 +83,11 @@ export async function runPlan(
   state: WorkState,
   now: number,
 ): Promise<WorkState> {
-  // #1263 test seam — force the plan step to THROW from its own code (not a
-  // dispatch failure runPlan catches) so the driver's catch path is the one
-  // exercised. Production never sets this; offline tests only.
-  if (process.env.PI_ENSEMBLE_TEST_PLAN_THROW === "1") {
-    throw new Error("PI_ENSEMBLE_TEST_PLAN_THROW: simulated plan step crash");
-  }
+  // #1263 test seam — a module-level injection (set by offline tests via
+  // setPlanThrowForTestForTest) that makes the plan step THROW from its own
+  // code (not a dispatch failure runPlan catches) so the driver's catch path
+  // is exercised. Production never sets it; closures, not env vars.
+  planThrowForTest?.();
   let next = appendEvent(
     { ...state, pipelineState: { ...state.pipelineState, currentStep: "plan" } },
     { kind: "step-started", step: "plan", at: now },
