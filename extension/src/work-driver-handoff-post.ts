@@ -35,7 +35,7 @@ export const HANDOFF_LABEL = "needs-human-attention";
  * #775 — the handoff delivery-provenance field (the `delivery` member of
  * the handoff-emitted event, `workflow-state-events-handoff.ts`).
  */
-export type HandoffDelivery = "dispatch" | "fallback";
+export type HandoffDelivery = "dispatch" | "fallback" | "host";
 
 /**
  * #775 — read the attention label back from the target the handoff posted to
@@ -178,6 +178,8 @@ export function makeHandoffEmittedEvent(opts: {
   commentUrl: string | undefined;
   labelApplied: boolean;
   handoffBodyPath: string;
+  /** #1327 — the rendered body, carried in memory (see HandoffEmittedEvent.body). */
+  body?: string;
   consolidated: boolean;
   consolidatedBranch?: string;
   consolidatedWorkstreams?: string[];
@@ -203,6 +205,7 @@ export function makeHandoffEmittedEvent(opts: {
     labelApplied,
     handoffBodyPath,
   };
+  if (opts.body !== undefined) ev.body = opts.body;
   if (delivery) ev.delivery = delivery;
   if (opts.targetType) ev.targetType = opts.targetType;
   if (opts.targetNumber !== undefined) ev.targetNumber = opts.targetNumber;

@@ -16,6 +16,7 @@ import path from "node:path";
 import {
   CAPABILITIES_VERSION,
   HEADLESS_FEATURES,
+  HEADLESS_FILES,
   HEADLESS_INPUTS,
   WORK_FLAGS,
   buildCapabilities,
@@ -105,20 +106,30 @@ assert(
   caps.inputs.some((i) => i.name === "PI_ENSEMBLE_ISSUE_IMAGES"),
   "inputs include PI_ENSEMBLE_ISSUE_IMAGES",
 );
-for (const input of caps.inputs) {
-  assert(
-    typeof input.name === "string" && input.name.length > 0,
-    `input name is non-empty: ${input.name}`,
+{
+  // #1326 — each entry carries a type, a default and a scope (inputs.ts);
+  // test-headless-inputs.ts checks the list against the reads in src/.
+  const bad = caps.inputs.filter(
+    (i) =>
+      typeof i.name !== "string" ||
+      !i.name.startsWith("PI_ENSEMBLE_") ||
+      typeof i.type !== "string" ||
+      typeof i.scope !== "string" ||
+      !("default" in i),
   );
   assert(
-    typeof input.readBy === "string" && input.readBy.length > 0,
-    `input readBy is non-empty: ${input.name}`,
+    bad.length === 0,
+    `every input has name, type, default and scope${bad.length ? ` — ${bad.map((i) => i.name).join(", ")}` : ""}`,
   );
+  const images = caps.inputs.filter((i) => i.manifestVersion !== undefined);
   assert(
-    typeof input.manifestVersion === "number" && input.manifestVersion >= 1,
-    `input manifestVersion is a positive integer: ${input.name}`,
+    images.map((i) => i.name).join(",") === "PI_ENSEMBLE_EXTRA_IMAGE_DIRS,PI_ENSEMBLE_ISSUE_IMAGES",
+    "the issue-image inputs keep their manifestVersion",
   );
 }
+
+// ── files match the live HEADLESS_FILES.
+assert(deepEqual(caps.files, HEADLESS_FILES), "files match the live HEADLESS_FILES array");
 
 // ── features match the live HEADLESS_FEATURES.
 assert(
@@ -137,6 +148,7 @@ assert(caps.features.cycleDeadline === true, "features.cycleDeadline is true");
     "contracts",
     "verbs",
     "inputs",
+    "files",
     "features",
     "resources",
   ]);

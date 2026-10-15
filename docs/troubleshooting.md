@@ -292,6 +292,18 @@ The hook is the escape hatch for the inexpressible: anything the symlink allowli
 
 Each workstream gets its own worktree and its own developer, running in parallel, so a file in two `paths` lists means two developers editing it at once — which used to surface much later as a `git apply` conflict at commit-pr. The plan step now catches it and re-plans once. If it persists, the issue probably needs those workstreams merged.
 
+### A parallel plan parks at `verify-failed:develop` with a type error no workstream caused alone
+
+**Symptom:** every developer reports success, yet develop parks with a type error such as *"Property 'x' does not exist"* or *"Module has no exported member 'y'"*, and the consolidated tree fails with the same error.
+
+**Cause:** the plan split one change that threads a new value through several files (a new field on a shared type, a new export, and the code that uses them) into parallel workstreams. Each workstream starts from the same base commit and cannot see its siblings' commits, so the half that uses the new symbol does not compile alone, and the halves guessed different shapes for it. The plan-time coupling merge only sees edges that exist at the base commit (shared files, a declared `depends-on`, a file name referenced in the other's files), so it cannot see a symbol the change itself creates.
+
+**Now:** the plan step defaults to one workstream and asks for the change's contract. Each workstream may declare `introduces:` (symbols it creates) and `consumes:` (not-yet-existing symbols it uses); a consumed symbol that a sibling introduces becomes a `depends-on` edge, and the coupling merge folds the two into one workstream. An issue that names an existing commit or PR as the fix (*"fixed in owner/repo#N"*, *"cherry-pick <sha>"*, *"port PR #N"*) is planned as one workstream that applies that change and resolves the conflicts. A plan that declares no symbols is handled as before. `PI_ENSEMBLE_PLAN_CONTRACT=0` turns the derived edges and the port fold off.
+
+If a coupled split still reaches develop, the develop step recovers once: when one workstream's verify fails on a symbol that a sibling adds (by its `introduces:` line, or by an export or field in its own diff), the driver folds the two workstreams into one, rebuilds the consumer on the producer's commit, and re-runs develop. The event log shows a `fence-recovery-started` line naming both workstreams and the symbol. If the merged workstream still fails, the cycle parks and the handoff says the split was already merged. `PI_ENSEMBLE_SYMBOL_MERGE_RETRY=0` turns this off.
+
+**Recovery:** the work is committed in the detached worktrees the handoff lists. If a known-good single commit exists, cherry-pick it onto a fresh branch from the mainline. Otherwise apply the workstream diffs in dependency order (the one that introduces the symbol first), fix the mismatch in one place, and run the full gate once on the combined tree. To avoid the split on a re-run, set `PI_ENSEMBLE_MAX_WORKSTREAMS=1`.
+
 ### `/work` parks my issue as "underspecified" but the resolver said it was fine
 
 The handoff quotes its own resolver saying "the intent is clear, no contradictions" and then says the issue does not say enough to build from. Fixed in v0.12.41 — two causes, both in the gate rather than your issue:
@@ -979,7 +991,9 @@ Fix: pass `--restart` to wipe the prior state file and start a fresh cycle.
 
 Without `--restart`, re-invoking `/work N` on a terminal-state file now emits a clear notify pointing at the recovery: *"`/work` for issue #N already terminated as <status>. To start a fresh cycle (e.g., after revising the issue via /plan), re-run with `--restart`..."*.
 
-`--restart` only wipes the driver's state file (`.pi/work-state/N.json`). Worktrees and feature branches from the prior cycle are NOT removed — the branch step reuses them at runtime: a leftover at the same path with no uncommitted work and no unpushed commits is removed and recreated (the common path, unchanged), but a leftover that HOLDS work is refused instead (see `worktree-dirty-preremove` below). If you want a fully clean slate, salvage any work first, then `git worktree remove --force -- .worktrees/issue-N-*` and `git branch -D feature/issue-N-*` before re-running.
+`--restart` also clears `needs-human-attention` from every issue in the cycle (the restart is the answer to the question the label asks; the next handoff applies it again), so you never have to remove it by hand before restarting.
+
+`--restart` only wipes the driver's state file (`.pi/work-state/N.json`) and that label. Worktrees and feature branches from the prior cycle are NOT removed — the branch step reuses them at runtime: a leftover at the same path with no uncommitted work and no unpushed commits is removed and recreated (the common path, unchanged), but a leftover that HOLDS work is refused instead (see `worktree-dirty-preremove` below). If you want a fully clean slate, salvage any work first, then `git worktree remove --force -- .worktrees/issue-N-*` and `git branch -D feature/issue-N-*` before re-running.
 
 ### `/work N --restart` parked again and posted no new comment
 
@@ -1772,6 +1786,8 @@ git -C .worktrees/issue-<N>-<workstream> diff --name-only <base-sha>..HEAD
 ```
 
 Remove or move changes that violate the workstream's `outOfScope` fence. If the work is genuinely broader than the plan, split the workstream or revise the plan before restarting `/work <N>`. The gate is enabled by default; for a one-off, reviewed recovery you can restore the pre-gate behavior with `PI_ENSEMBLE_SCOPE_GATE=0`. Disabling it does not make an out-of-scope change safe — it only skips the deterministic check.
+
+When the violation is between two sibling workstreams (one edited a file the other declared), develop merges the two and re-runs once instead of parking. Before #1343 the merged workstream's range started at the owner's tip, so the owner's own commits were missing from the consolidated verify and from the PR: the re-run could fail on a file that was plainly in the merged worktree, or the PR shipped the consumer without the producer. The merged workstream now keeps the owner's original base. If a PR from an older build is missing a sibling's files after a `fence-recovery-started` event, cherry-pick that workstream's commits from its worktree.
 
 **commit-pr:**
 - Commits exist on the branch: `git rev-list --count origin/<base>..HEAD` > 0.

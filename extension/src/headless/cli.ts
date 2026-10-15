@@ -24,8 +24,10 @@ import { resourceReport } from "../resource-budget.ts";
 import { killLiveProcessGroups } from "../spawn-kill.ts";
 import { releaseHeldIntegrationLocks } from "../work-driver-lock.ts";
 import { resolveRepoRoot } from "../work-entry.ts";
+import { readBuildCommit, readBuildVersion } from "./build.ts";
 import { buildCapabilities } from "./capabilities.ts";
 import { EXIT } from "./exit-code.ts";
+import { resultDocument } from "./result.ts";
 import { runHeadless } from "./run.ts";
 
 export interface ParsedArgs {
@@ -97,10 +99,9 @@ async function main(argv: string[]): Promise<number> {
     write: (line) => process.stderr.write(`${line}\n`),
   });
   if (args.json) {
-    const body: Record<string, unknown> = { exitCode: run.exitCode, issues: run.results };
-    if (run.error) body.error = run.error;
-    body.resources = resourceReport(); // #1325 — the budget and limits this run chose
-    process.stdout.write(`${JSON.stringify(body)}\n`);
+    const doc = resultDocument(run, { commit: readBuildCommit(), version: readBuildVersion() });
+    // #1325 — the host budget and the limits this run chose.
+    process.stdout.write(`${JSON.stringify({ ...doc, resources: resourceReport() })}\n`);
   } else {
     const parts = run.results.map((r) => `#${r.issue} ${r.status} (exit ${r.exitCode})`);
     process.stdout.write(`pi-rukas-headless: ${parts.join(", ") || "nothing ran"}\n`);

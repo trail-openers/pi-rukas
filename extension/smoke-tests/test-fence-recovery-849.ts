@@ -247,6 +247,57 @@ async function setup3WS(
   );
 }
 
+// ── #1343: an uncommitted re-dispatch is committed by the safety net ───
+// The merged workstream keeps the owner's original base (so its range holds
+// the owner's commit), which the merged tree is already ahead of. The safety
+// net must judge it against the post-merge HEAD instead, or the re-dispatch's
+// uncommitted work silently drops out of the PR.
+{
+  const { repo, baseSha } = await fixture("uncommitted");
+  const { wt } = await setup3WS(repo, baseSha);
+  const calls: Array<{ role: string; cwd?: string; prompt?: string }> = [];
+  const onCall = async (_n: number, cwd: string) => {
+    const last = calls[calls.length - 1];
+    if (cwd === wt.b && (last?.prompt ?? "").includes("FENCE MERGE-AND-RETRY")) {
+      writeFileSync(path.join(cwd, "b-file.txt"), "b, left uncommitted\n");
+    }
+  };
+  const dispatchFn = recordingDispatch(calls, onCall);
+  const ctx = ctxFor(repo, dispatchFn);
+  const workstreams = {
+    a: { id: "a", scope: "a", paths: ["a-file.txt"], outOfScope: ["b-file.txt", "c-file.txt"] },
+    b: { id: "b", scope: "b", paths: ["b-file.txt"], outOfScope: ["a-file.txt", "c-file.txt"] },
+    c: { id: "c", scope: "c", paths: ["c-file.txt"], outOfScope: ["a-file.txt", "b-file.txt"] },
+  };
+  const base = initialState(849);
+  base.pipelineState.baseSha = baseSha;
+  base.pipelineState.worktrees = wt;
+  base.pipelineState.workstreamBaseShas = { a: baseSha, b: baseSha, c: baseSha };
+  base.pipelineState.workstreams = workstreams;
+  base.pipelineState.currentStep = "develop";
+  const after = await runDevelopTopological(
+    ctx,
+    base,
+    ["a", "b", "c"],
+    workstreams,
+    [849],
+    dispatchFn,
+    realExec,
+    Date.now(),
+    "job-849-uncommitted",
+  );
+  const net = after.eventLog.find((e) => e.kind === "safety-net-commit" && e.workstreamId === "c");
+  const committed = await gitOut(wt.b, ["show", "HEAD:b-file.txt"]).catch(() => "");
+  assert(
+    net !== undefined && committed === "b, left uncommitted",
+    `#1343: the merged workstream's uncommitted re-dispatch is committed by the safety net (event: ${net ? "yes" : "no"}, HEAD b-file.txt: ${committed || "absent"})`,
+  );
+  assert(
+    after.pipelineState.workstreamBaseShas?.c === baseSha,
+    "#1343: the merged workstream keeps the owner's original base",
+  );
+}
+
 rmSync(root, { recursive: true, force: true });
 console.log(`\nexit ${exit}`);
 process.exit(exit);

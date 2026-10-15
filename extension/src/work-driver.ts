@@ -22,6 +22,7 @@ import { parkAtDeadlineBoundary } from "./work-driver-deadline.ts";
 import { acquireWorkDeckHeader, headerToken } from "./work-driver-deck-header.ts";
 import { countPriorStepStarts } from "./work-driver-diff.ts";
 import { reportFinalState } from "./work-driver-final-state.ts";
+import { recordHostHandoffOnCrash } from "./work-driver-handoff-channel.ts";
 import { interruptIfRequested, recordStepCrash } from "./work-driver-interrupt.ts";
 import {
   clearFooter,
@@ -347,10 +348,9 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
       // handoff crash falls back to the direct abort (still `aborted`, state
       // file is the record; the handoff body was already attempted).
       if (step === "handoff") {
-        state = {
-          ...state,
-          pipelineState: { ...state.pipelineState, status: "aborted" },
-        };
+        // #1327 — on the host channel the handoff must still reach the result.
+        state = recordHostHandoffOnCrash(state, err);
+        state = { ...state, pipelineState: { ...state.pipelineState, status: "aborted" } };
         await persistCycle(ctx, state);
         emitStepFailed(
           step,
