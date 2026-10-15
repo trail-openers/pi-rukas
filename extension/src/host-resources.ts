@@ -15,9 +15,14 @@
  * root, so a limit set on a parent slice counts. No cgroup files (macOS, an
  * unlimited host) leaves the os values.
  *
- * The budget only LOWERS the static defaults; it never raises them, so on a
- * big unconstrained workstation the limits are what they were. An explicit
- * env setting always wins over the budget (the callers check the env first).
+ * The budget only LOWERS the static defaults; it never raises them. The group
+ * and workstream defaults (3 × 6) survive only from about 9 CPUs and 18 GiB
+ * up (16 / 32 GiB comfortably): an 8-CPU / 16 GiB host runs 2 groups and 4
+ * concurrent verifies, and a 2-3 CPU host serialises verify. Verify runs had
+ * no bound before, so any host can now queue them. An explicit env setting
+ * always wins over the budget (the callers check the env first):
+ * `PI_ENSEMBLE_VERIFY_CONCURRENCY=0`, `PI_ENSEMBLE_PARALLEL_GROUPS`,
+ * `PI_ENSEMBLE_MAX_WORKSTREAMS` restore the old behaviour.
  *
  * Also owns the verify semaphore: a FIFO ceiling on concurrent driver-run
  * verify commands (`PI_ENSEMBLE_VERIFY_CONCURRENCY`), which are the

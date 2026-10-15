@@ -121,6 +121,40 @@ try {
     none.cgroup === "none" && none.cpus === 8 && none.memoryBytes === 16 * GIB,
     "no cgroup files: os values",
   );
+
+  const half = tree("v2half", {
+    "proc/self/cgroup": "0::/\n",
+    "sys/fs/cgroup/cgroup.controllers": "cpu",
+    "sys/fs/cgroup/cpu.max": "50000 100000",
+  });
+  const rh = readHostResources(half, 16, 64 * GIB);
+  assert(
+    rh.cpus === 1 && rh.cpuSource === "cgroup-v2",
+    `v2: a half-CPU quota clamps to 1 (got ${rh.cpus})`,
+  );
+
+  const v1none = tree("v1none", {
+    "sys/fs/cgroup/cpu/cpu.cfs_quota_us": "-1",
+    "sys/fs/cgroup/cpu/cpu.cfs_period_us": "100000",
+  });
+  const r1n = readHostResources(v1none, 16, 64 * GIB);
+  assert(
+    r1n.cgroup === "v1" && r1n.cpus === 16 && r1n.cpuSource === "os",
+    "v1: cfs_quota_us -1 (no quota) keeps the os CPUs",
+  );
+
+  // Unreadable limit files (a directory where the file should be) are skipped, not fatal.
+  const unreadable = tree("v2unreadable", {
+    "proc/self/cgroup": "0::/\n",
+    "sys/fs/cgroup/cgroup.controllers": "cpu memory",
+    "sys/fs/cgroup/cpu.max/x": "",
+    "sys/fs/cgroup/memory.max/x": "",
+  });
+  const rx = readHostResources(unreadable, 8, 16 * GIB);
+  assert(
+    rx.cgroup === "v2" && rx.cpus === 8 && rx.memoryBytes === 16 * GIB && rx.cpuSource === "os",
+    "v2: unreadable cpu.max / memory.max leave the os values",
+  );
 } finally {
   rmSync(root, { recursive: true, force: true });
 }
@@ -137,6 +171,11 @@ try {
     small.workstreamSlots === 4 && small.verifyConcurrency === 1,
     "2 CPU / 4 GiB → 4 slots, verify 1",
   );
+  const mid = host(8, 16);
+  assert(
+    mid.workstreamSlots === 16 && mid.verifyConcurrency === 4,
+    "8 CPU / 16 GiB → 16 slots, verify 4",
+  );
   const tiny = host(1, 0.5);
   assert(tiny.workstreamSlots === 1 && tiny.verifyConcurrency === 1, "never below 1");
 }
@@ -150,6 +189,15 @@ withEnv({}, () => {
   assert(
     r.limits.parallelGroups.source === "default" && r.limits.maxWorkstreams.source === "default",
     "big host: limits report source=default",
+  );
+});
+
+// ── a mid-size host (8 CPU / 16 GiB) already drops to 2 groups.
+__setHostBudget(host(8, 16));
+withEnv({}, () => {
+  assert(
+    effectiveParallelGroups() === 2 && effectiveMaxWorkstreams() === 6 && verifyConcurrency() === 4,
+    "8 CPU / 16 GiB: 2 groups, 6 workstreams, verify 4",
   );
 });
 
