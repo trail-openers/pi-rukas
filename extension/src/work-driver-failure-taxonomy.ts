@@ -91,9 +91,7 @@ type FailureCauseLabel = keyof (typeof SEAMS)["failure-cause"]["labels"];
 
 /**
  * Causes that occur DURING a provider outage: transport severance and every
- * 429 / spend-cap / quota class. A shadow model call here adds load to the
- * failing provider and its answer is worthless, so no backend is invoked
- * (the rule answer stands; the decision log records the skip).
+ * 429 / spend-cap / quota class.
  */
 const PROVIDER_OUTAGE_CAUSES: ReadonlySet<DispatchFailureCause> = new Set<DispatchFailureCause>([
   "provider-severed",
@@ -102,6 +100,18 @@ const PROVIDER_OUTAGE_CAUSES: ReadonlySet<DispatchFailureCause> = new Set<Dispat
   "rate-limited:quota-window",
   "rate-limited:quota-terminal",
 ]);
+
+/**
+ * True when the outage evidence comes from the PROVIDER: a provider error stop
+ * (`dispatch-failed-provider`) or a 429 in the provider's own message. An outage
+ * cause inferred only from the subagent's last words is NOT provider-derived:
+ * the rule may be wrong, which is exactly what the shadow call measures (#1262),
+ * so the model is asked.
+ */
+function isProviderOutage(tail: FailureTail, cause: DispatchFailureCause): boolean {
+  if (!PROVIDER_OUTAGE_CAUSES.has(cause)) return false;
+  return tail.kind === "dispatch-failed-provider" || tail.providerMessage !== undefined;
+}
 
 /**
  * The failure-cause seam's label for a rule cause (#1308 S3). Undefined for a
@@ -175,7 +185,7 @@ export function shadowFailureCause(
     },
     rule,
   };
-  if (PROVIDER_OUTAGE_CAUSES.has(cls.cause)) {
+  if (isProviderOutage(tail, cls.cause)) {
     void shadowSkip("failure-cause", req, where, "skipped: provider-outage class");
     return;
   }
