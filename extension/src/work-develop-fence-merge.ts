@@ -192,7 +192,9 @@ export async function runMergePrep(
     }
     workstreams = foldWorkstream(workstreams, owner, violator, violatorWs);
     merges.push({ into: owner, from: violator });
-    mergedIds.push(owner);
+    // #1345 — several violators of one owner fold into ONE merged workstream,
+    // so its id is recorded once and it is re-dispatched once.
+    if (!mergedIds.includes(owner)) mergedIds.push(owner);
     // Rebase the violator's worktree to the owner's post-commit tip.
     const violatorWt = worktrees[violator];
     const ownerWt = worktrees[owner];
