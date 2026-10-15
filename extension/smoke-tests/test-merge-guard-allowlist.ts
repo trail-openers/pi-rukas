@@ -7,8 +7,9 @@
  * command analysed well inside the hook budget; the forge-detect git bound.
  */
 
+import { readFileSync } from "node:fs";
 import { detectForge } from "../src/forge-detect.ts";
-import { type MergeCommand, readMergeCommand } from "../src/merge-allowlist.ts";
+import { type MergeCommand, mergeFormRefusal, readMergeCommand } from "../src/merge-allowlist.ts";
 import { analyseRefusal } from "../src/merge-guard.ts";
 import { type MergeExecFn, readMergeTarget } from "../src/merge-target.ts";
 import {
@@ -50,7 +51,6 @@ const ACCEPTED: Array<[string, "github" | "gitlab", number | undefined, string |
   // Quote removal is bash's: these run `gh pr merge 17` and are read so.
   ['gh p"r" m"erge" 17', "github", 17, undefined],
   ["gh pr m'erge' 17", "github", 17, undefined],
-  ['g"h" pr merge 17', "github", 17, undefined],
   ['gh pr me""rge 1"7"', "github", 17, undefined],
   ["  gh\tpr  merge   17  ", "github", 17, undefined],
   // glab merges only with --auto-merge=false (a bare merge is refused below).
@@ -75,6 +75,25 @@ for (const [cmd, forge, n, repo] of ACCEPTED) {
 
 // ------------------------------------------------------------ refused shapes
 const REFUSED: string[] = [
+  // #962 review: GraphQL merges by name (GitHub and GitLab), expansion-named
+  // forges, interpreters, GraphQL queries read from a file.
+  "glab api graphql -f query='mutation { mergeRequestAccept(input: {projectPath: \"g/p\", iid: \"12\"}) { mergeRequest { state } } }'",
+  "glab api graphql -f query='mutation { acceptMergeRequest(input: {}) { clientMutationId } }'",
+  "gh api graphql -f query='mutation { mergePullRequest(input:{pullRequestId:\"x\"}) { clientMutationId } }'",
+  "$G api repos/o/r/pulls/17/merge -X PUT",
+  '"$GH" pr merge 17',
+  'g"h" pr merge 17',
+  "node -e \"require('@octokit/rest'); x.pulls.merge({pull_number:17})\"",
+  "python3 scripts/merge.py",
+  "bun run smoke-tests/test-merge-guard.ts",
+  "gh run list --workflow merge.yml",
+  "gh api graphql -F query=@q.graphql",
+  "gh api graphql --input q.json",
+  "gh api graphql -f query=$Q",
+  "curl -d @body.json https://api.github.com/graphql",
+  'gh pr merge 17 --subject "feat!: x"',
+  "gh pr merge 17 --body-file ~/x.md",
+  // Chains, pipes, newlines, background, redirections.
   // Chains, pipes, newlines, background, redirections.
   "cd x && gh pr merge 17",
   "cd /data/3 && gh pr merge",
@@ -266,7 +285,54 @@ for (const cmd of ["glab mr merge 12", "glab -R g/p mr merge 3 --squash", "glab 
   assert(m.kind === "refused" && m.reason === "glab-auto-merge", `glab opt-out refusal: ${JSON.stringify(cmd)} (${show(m)})`);
 }
 assert(readMergeCommand("gh pr merge 17").kind === "merge", "gh merge needs no opt-out");
-assert(readMergeCommand("gh api repos/o/r/pulls/1/merge").kind === "refused" && (readMergeCommand("gh api repos/o/r/pulls/1/merge") as { reason?: string }).reason === undefined, "other refusals keep the generic form");
+assert(readMergeCommand("gh api repos/o/r/pulls/1/merge").kind === "refused" && (readMergeCommand("gh api repos/o/r/pulls/1/merge") as { reason?: string }).reason !== "glab-auto-merge", "other refusals keep the generic form");
+
+// ------------------------------------------------------------ reason codes
+const CODES: Array<[string, string]> = [
+  ["gh pr merge 17 --admin", "unknown-flag:--admin"],
+  ["gh -R o pr merge 17", "repo-value"],
+  ["gh -R host/o/r pr merge 17", "repo-count"],
+  ["gh pr merge feature/x", "not-a-number"],
+  ["gh pr merge 17 18", "extra-command"],
+  ["gh pr merge 17 -R", "repo-value"],
+  ["gh pr merge 17 --subject", "flag-missing-value"],
+  ["cd x && gh pr merge 17", "forbidden-char:&"],
+  ["gh pr merge 17 --body-file ~/x.md", "forbidden-char:~"],
+  ['gh pr merge 17 --subject "feat!: x"', "forbidden-char:!"],
+  ['gh pr merge 17 "unterminated', "quote-unbalanced"],
+  ["gh pr merge 17 --subject é", "control-or-non-ascii"],
+  ["gh api repos/o/r/pulls/1/merge", "not-pr-merge"],
+  ["glab mr merge 12", "glab-auto-merge"],
+  ['g"h" pr merge 17', "expansion-command-word"],
+  ["$G api repos/o/r/pulls/17/merge -X PUT", "expansion-command-word"],
+  ["gh api graphql -F query=@q.graphql", "graphql-indirect"],
+  ["./gh pr merge 17", "not-a-forge-command"],
+];
+for (const [cmd, code] of CODES) {
+  const m = readMergeCommand(cmd);
+  assert(m.kind === "refused" && m.reason === code, `reason ${code}: ${JSON.stringify(cmd)} (${show(m)})`);
+}
+assert(mergeFormRefusal("x").includes("pr merge [N]") && mergeFormRefusal("x").endsWith("[reason: x]"), "the form refusal keeps the accepted form and names the reason");
+
+// ------------------------------------------------------------ granted merges
+// Every merge-shaped bash grant in agents.json must be a command the guard
+// accepts; a grant it refuses (e.g. `oo gh pr merge*`) can never be used.
+{
+  const agents = JSON.parse(readFileSync(new URL("../../agents.json", import.meta.url), "utf8")) as {
+    agent: Record<string, { permission?: { bash?: Record<string, string> } }>;
+  };
+  let checked = 0;
+  for (const [role, cfg] of Object.entries(agents.agent)) {
+    for (const [key, verdict] of Object.entries(cfg.permission?.bash ?? {})) {
+      if (verdict !== "allow") continue;
+      const m = readMergeCommand(key.replace(/\*+$/, "").trimEnd());
+      if (m.kind === "none") continue;
+      checked += 1;
+      assert(m.kind === "merge", `agents.json ${role} grants a merge the guard refuses: ${JSON.stringify(key)} (${show(m)})`);
+    }
+  }
+  console.log(`merge-shaped grants in agents.json checked: ${checked}`);
+}
 
 // ------------------------------------------------------------ not merges
 const NOT_MERGES: string[] = [
@@ -281,7 +347,9 @@ const NOT_MERGES: string[] = [
   "gh pr view 17; gh pr checks 17 && echo done",
   "gh api repos/o/r/pulls/17 --jq .mergeable",
   "cd x && git merge origin/main",
-  "bun run smoke-tests/test-merge-guard.ts",
+  "gh pr view 17 --json mergeable,mergeStateStatus,mergedAt,mergeCommit",
+  "gh api graphql -f query='{ viewer { login } }'",
+  "glab api graphql -f query='{ currentUser { username } }'",
   "gh pr view 17 $'x'",
   "",
 ];

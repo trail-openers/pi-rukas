@@ -89,8 +89,8 @@ import { execp } from "./exec.ts";
 import { FORGE_EXEC_TIMEOUT_MS } from "./forge-detect.ts";
 import {
   GLAB_AUTO_MERGE_REFUSAL,
-  MERGE_FORM_REFUSAL,
   type MergeCommand,
+  mergeFormRefusal,
   readMergeCommand,
 } from "./merge-allowlist.ts";
 import {
@@ -157,7 +157,9 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     // merge form the guard checks (see merge-allowlist.ts).
     if (analysis.kind === "refused") {
       return block(
-        analysis.reason === "glab-auto-merge" ? GLAB_AUTO_MERGE_REFUSAL : MERGE_FORM_REFUSAL,
+        analysis.reason === "glab-auto-merge"
+          ? GLAB_AUTO_MERGE_REFUSAL
+          : mergeFormRefusal(analysis.reason),
       );
     }
     const merging = analysis.forge === "gitlab" ? "glab mr merge" : "gh pr merge";
