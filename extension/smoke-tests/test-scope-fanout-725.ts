@@ -47,6 +47,7 @@ const stubPi: DriverContext["host"] = { sendUserMessage: () => {} } as StubPi;
 import { runScopeFanoutGate } from "../src/work-driver-scope-fanout.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
+import { realExec } from "./lib/exec-fake.ts";
 
 const execFileP = promisify(execFile);
 
@@ -58,24 +59,6 @@ function assert(cond: boolean, msg: string) {
     exit = 1;
   }
 }
-
-const realExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
-  try {
-    const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
-      cwd: o?.cwd,
-      maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
-    });
-    return { stdout };
-  } catch (err) {
-    // Single cast: e IS the same object as err, so there is nothing a
-    // second cast on `err` could recover that `e.stderr` doesn't already
-    // carry — the middle `??` term was dead code.
-    const e = err as Error & { stderr?: string; stdout?: string };
-    e.stdout = e.stdout ?? "";
-    e.stderr = e.stderr ?? "";
-    throw e;
-  }
-};
 
 const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 

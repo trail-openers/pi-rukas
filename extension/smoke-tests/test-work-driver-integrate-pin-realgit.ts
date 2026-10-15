@@ -34,11 +34,11 @@ import {
   fixture,
   git,
   mkResult,
-  realExec,
   runCycle,
   auditStateFor,
   auditCtx,
 } from "./helpers-integrate-pin-realgit.ts";
+import { realExec } from "./lib/exec-fake.ts";
 
 const execFileP = promisify(execFile);
 

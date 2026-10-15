@@ -33,6 +33,7 @@ import { runDevelopTopological } from "../src/work-develop-topological.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import type { DispatchResult } from "../src/types.ts";
 import { initialState, type WorkState } from "../src/workflow-state.ts";
+import { realExec } from "./lib/exec-fake.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -329,17 +330,6 @@ await withEnv("PI_ENSEMBLE_STEP_NOTICE_MS", "0", async () => {
 
 // --------------------------------------------------------------- wiring (6–7)
 
-const realSh = async (cmd: string, o?: { cwd?: string; maxBuffer?: number }) => {
-  const { execFile } = await import("node:child_process");
-  const { promisify } = await import("node:util");
-  const execFileP = promisify(execFile);
-  const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
-    cwd: o?.cwd,
-    maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
-  });
-  return { stdout };
-};
-
 function mkDevelopFixture(): { repo: string; wt: string; state: WorkState } {
   const repo = mkdtempSync(path.join(tmpdir(), "pi-ens-799w-"));
   const wt = path.join(repo, "wt");
@@ -395,7 +385,7 @@ async function runWithRecorder(
     issues: [799],
     repoRoot: repo,
     dispatchFn,
-    verifyExecFn: realSh,
+    verifyExecFn: realExec,
     // biome-ignore lint/suspicious/noExplicitAny: driver fixture — the pi binding is never touched on this path
   } as unknown as DriverContext;
   try {
@@ -406,7 +396,7 @@ async function runWithRecorder(
       state.pipelineState.workstreams as never,
       [799],
       dispatchFn,
-      realSh,
+      realExec,
       Date.now(),
       "job-799",
     );
@@ -450,13 +440,13 @@ await withEnv("PI_ENSEMBLE_STEP_NOTICE_MS", "150", async () => {
   try {
     await runDevelopTopological(
       // biome-ignore lint/suspicious/noExplicitAny: driver fixture — the pi binding is never touched on this path
-      ({ host: {}, issue: 799, issues: [799], repoRoot: repo, dispatchFn, verifyExecFn: realSh }) as any,
+      ({ host: {}, issue: 799, issues: [799], repoRoot: repo, dispatchFn, verifyExecFn: realExec }) as any,
       state,
       ["default"],
       state.pipelineState.workstreams as never,
       [799],
       dispatchFn,
-      realSh,
+      realExec,
       Date.now(),
       "job-799",
     );

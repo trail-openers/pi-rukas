@@ -31,6 +31,7 @@ import { runDevelopTopological } from "../src/work-develop-topological.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
 import type { ExecFn } from "../src/worktree.ts";
+import { realExec } from "./lib/exec-fake.ts";
 
 const execFileP = promisify(execFile);
 
@@ -43,13 +44,6 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const realExec: ExecFn = async (cmd, o) => {
-  const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
-    cwd: o?.cwd,
-    maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
-  });
-  return { stdout };
-};
 const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 const gitOut = async (cwd: string, args: string[]): Promise<string> =>
   (await git(cwd, args)).stdout.trim();

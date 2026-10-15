@@ -15,6 +15,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { provisionWorktree } from "../src/worktree-provision.ts";
+import { commandOf } from "./lib/argv-shell.ts";
+import { realExec } from "./lib/exec-fake.ts";
 
 const pexec = promisify(exec);
 let exit = 0;
@@ -58,31 +60,15 @@ async function initRepo(
  */
 function realExecFn(
   hookRuns?: string[],
-): (cmd: string, opts: { cwd?: string }) => Promise<{ stdout: string }> {
-  const e = (cmd: string, cwd?: string) => pexec(cmd, { cwd }).then(({ stdout }) => ({ stdout }));
-  return async (cmd: string, opts: { cwd?: string }) => {
-    if (cmd.startsWith("sh ")) {
+): (cmd: string, opts: { cwd?: string; argv?: string[] }) => Promise<{ stdout: string }> {
+  return async (cmd: string, opts: { cwd?: string; argv?: string[] }) => {
+    if (commandOf(cmd, opts).startsWith("sh ")) {
       hookRuns?.push(`${cmd} @ ${opts.cwd}`);
       return { stdout: "" };
     }
-    if (cmd.startsWith("git rev-parse")) return { stdout: ".git" };
-    return e(cmd, opts.cwd);
+    if (commandOf(cmd, opts).startsWith("git rev-parse")) return { stdout: ".git" };
+    return realExec(cmd, opts);
   };
-}
-
-/**
- * An `execFn` that runs EVERYTHING for real (including `sh <hook>`), so a
- * fixture hook that actually creates a symlink exercises the post-hook
- * verification against real filesystem state.
- */
-function liveExecFn(): (
-  cmd: string,
-  opts: { cwd?: string; maxBuffer?: number },
-) => Promise<{ stdout: string }> {
-  return async (cmd, opts) =>
-    pexec(cmd, { cwd: opts.cwd, maxBuffer: opts.maxBuffer ?? 64 * 1024 }).then((r) => ({
-      stdout: r.stdout,
-    }));
 }
 
 // -------------------------------------- #765: a hook that links NOTHING is not success
@@ -124,7 +110,7 @@ function liveExecFn(): (
 {
   // Guard against the verification over-firing: when the source tree exists
   // and the hook links it, the strict check must PASS (no problem), not
-  // report a false problem. The hook runs for real here (liveExecFn)
+  // report a false problem. The hook runs for real here (realExec)
   // so the link it creates is real filesystem state.
   const { root, wt } = fixture("w");
   try {
@@ -138,7 +124,7 @@ function liveExecFn(): (
     writeFileSync(path.join(root, "node_modules", "marker"), "x");
     mkdirSync(wt, { recursive: true });
 
-    const result = await provisionWorktree(liveExecFn(), root, wt);
+    const result = await provisionWorktree(realExec, root, wt);
 
     assert(result.problem === undefined, "#765 strict: a hook that linked the expected tree is NOT a problem");
     assert(
@@ -171,7 +157,7 @@ function liveExecFn(): (
     writeFileSync(path.join(root, "node_modules", "marker"), "x");
     mkdirSync(wt, { recursive: true });
 
-    const result = await provisionWorktree(liveExecFn(), root, wt);
+    const result = await provisionWorktree(realExec, root, wt);
 
     assert(result.problem !== undefined, "#765 strict: a hook that left a STALE (non-resolving) link yields a problem");
     assert(

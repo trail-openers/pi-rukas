@@ -25,6 +25,7 @@ import { promisify } from "node:util";
 import { integrate } from "../src/work-driver-integrate.ts";
 import { DirtyWorktreeError, sweepBranchHolders } from "../src/worktree.ts";
 import type { ExecFn } from "../src/worktree.ts";
+import { realExec } from "./lib/exec-fake.ts";
 
 const execFileP = promisify(execFile);
 
@@ -37,13 +38,6 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const realExec: ExecFn = async (cmd, o) => {
-  const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
-    cwd: o?.cwd,
-    maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
-  });
-  return { stdout };
-};
 const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 
 /** A minimal repo with a committed base on main. */

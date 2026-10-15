@@ -17,11 +17,9 @@
  * Revert `readDoctrineAtBase` to an `fs.readFile` and this file fails.
  */
 
-import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import {
   doctrineProsePathsIn,
@@ -34,8 +32,7 @@ import {
 import { resolveMergeAuthority } from "../src/work-driver-merge-authority.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
-
-const execFileAsync = promisify(execFile);
+import { realExec } from "./lib/exec-fake.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -46,14 +43,8 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-/** Shell seam matching `DriverContext.verifyExecFn`, backed by a real git. */
-const exec = async (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) => {
-  const { stdout, stderr } = await execFileAsync("sh", ["-c", cmd], {
-    cwd: opts?.cwd,
-    maxBuffer: opts?.maxBuffer ?? 1024 * 1024,
-  });
-  return { stdout, stderr };
-};
+/** The `DriverContext.verifyExecFn` seam, backed by a real git. */
+const exec = realExec;
 
 const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "pi-doctrine-"));
 
