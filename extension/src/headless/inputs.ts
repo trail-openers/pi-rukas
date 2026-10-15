@@ -155,6 +155,7 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("PLAN_CACHE", true),
   dir("PLAN_CACHE_DIR", null, "cycle"),
   ms("PLAN_CACHE_TTL_MS", 7_200_000),
+  flag("PLAN_CONTRACT", true),
   int("PLAN_ISSUE", null),
   flag("PLAN_QUALITY", true),
   ms("PLAN_TIMEOUT_MS", 1_800_000),
