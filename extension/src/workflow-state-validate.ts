@@ -485,11 +485,9 @@ export function validateDiscriminants(state: unknown): string[] {
         // caps are fixed literals in CAP_HIT_FIXED_LITERALS. #1263 —
         // `driver-crash:` is likewise a TEMPLATE; without it, a file left
         // `running` with the cap would fail re-entry validation (#753/#973).
+        // #1324 — `verify-timeout:` is a TEMPLATE too.
         const isTemplate =
-          cap.startsWith("verify-failed:") ||
-          cap.startsWith("step-failed:") ||
-          cap.startsWith("branch-ahead:") ||
-          cap.startsWith("driver-crash:");
+          /^(verify-failed|verify-timeout|step-failed|branch-ahead|driver-crash):/.test(cap);
         if (!CAP_HIT_FIXED_LITERALS.includes(cap) && !isTemplate) {
           out.push(`eventLog[${i}].cap has unknown value ${JSON.stringify(cap)}`);
         }

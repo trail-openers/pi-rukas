@@ -1107,6 +1107,8 @@ Unlike other `commit-pr` failures this does **not** fall back to the LLM ops dis
 
 Projects with no `.pi/verify-cmd` skip the check entirely and are unaffected.
 
+A run killed at its bound (`PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS`, 15 min by default) is not a verdict that the tree does not build. It parks as `verify-timeout:commit-pr` instead, and nothing is pushed.
+
 ### How a subagent's life is bounded
 
 Two mechanisms, and only one of them is meant to fire in normal operation.
@@ -1733,6 +1735,20 @@ After the `develop` step (when every branch claims success) and after the `commi
 
 **Fix:** The evidence line quotes `cgroup pids.current=N of pids.max=M` for wherever the driver runs, with the counters read just after the failure. The quoted counters appear only when they are readable (cgroup v2 on Linux); otherwise the line says the limit is unknown and you read the limit yourself. In a container that is the container's own limit (docker `--pids-limit`), not a host ulimit — `ulimit -u` on the host will show nothing to raise. If the counters show headroom, the limit may have been hit transiently by a burst of parallel processes and drained before they were read; re-run the cycle before changing the limit, and check the other ceilings the evidence names. A count at the limit with a low load average means leaked or unreaped children: inside the container, check that PID 1 is an init (`cat /proc/1/comm` → `tini`), restart the container or raise its pid limit, then re-run the cycle. Do not start by inspecting the diff: it has not been judged either way.
 
+#### `verify-timeout:<step>`: the gate did not finish
+
+**Symptom:** The cycle parks as `verify-timeout:develop` or `verify-timeout:commit-pr`. The evidence lines start with `[verify-timeout]` and say the verify command *exceeded its 10-min timeout* (or whatever bound applied), and the handoff says the command TIMED OUT.
+
+**Cause:** The verify command was killed at its bound, so it reached no verdict about the code. The usual cause is contention: several workstreams, or several cycles, running full suites on the same host at once. This cap is distinct from `verify-failed:<step>`, which means the gate judged the change. It fires only when every failure is a timeout. One real failure next to a timeout still parks as `verify-failed:<step>`, because that failure is a verdict.
+
+**Fix:** Give the gate more time or more of the host, then re-run the cycle:
+
+- Raise `PI_ENSEMBLE_VERIFY_TIMEOUT_MS` (develop), or `PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS` (the consolidated run at commit-pr).
+- Reduce concurrency: fewer workstreams (`PI_ENSEMBLE_MAX_WORKSTREAMS`), fewer cycles at once (`PI_ENSEMBLE_PARALLEL_GROUPS`), or nothing else heavy on the host.
+- Add a `.pi/verify-cmd-fast` (see "Verify command discovery" below). Developers then stop running the full suite in parallel, and a type error fails in seconds instead of after the whole suite.
+
+Do not set `PI_ENSEMBLE_VERIFY=0` for this. The gate did not reject the change; it did not finish.
+
 #### Scope fan-out: the developer changed too many files
 
 **Symptom:** The develop step ends with `verify-failed:develop` even though the developer reported success. The handoff evidence names an out-of-scope path, or says that the workstream changed more files than its plan declared.
@@ -1825,10 +1841,12 @@ Precedence (PR18 shape):
 
 The command is capped at 10 minutes (`PI_ENSEMBLE_VERIFY_TIMEOUT_MS` to override).
 
+**Fast tier (optional, #1324).** A `.pi/verify-cmd-fast` holds a cheap check, such as typecheck plus lint, as its first non-empty, non-comment line. The driver runs it before the verify command in every worktree, on the consolidated tree at develop and at commit-pr, and in the baseline probe. If the fast tier fails, the full command is not run; the evidence quotes the fast tier's output and ends with a `[verify-cmd-fast]` line naming it. Both tiers share the one bound. The develop prompt tells each developer to run the fast tier only and leave the full command to the driver. Without the file, nothing changes.
+
 ### If the gate keeps failing
 
 - **Verify command fails on code the developer didn't touch** — the project was already broken before the cycle started. Fix the baseline first, or point `.pi/verify-cmd` at a narrower command (e.g., `cargo check -p <crate>`). The driver now checks this itself: when the verify command fails at develop it is re-run once on a clean checkout of the cycle's base commit (a temporary `.worktrees/baseline-verify-<N>`, removed afterwards; never on a passing cycle). If it fails there too, the handoff leads with a `[baseline-red]` finding naming the base sha and the assertion, and the cap is still `verify-failed:develop` — the gate cannot pass, so the cycle still parks, but the change is not what to inspect.
-- **`exceeded its 10-min timeout on the CONSOLIDATED tree`** — the run was killed at the bound, so it says nothing about the code (this used to render as `specific assertion: (no specific assertion could be extracted)`). If the `[baseline-red]` finding reports a timeout at the base commit as well, the gate does not fit the bound on this host: raise `PI_ENSEMBLE_VERIFY_TIMEOUT_MS` or make the gate faster.
+- **`exceeded its 10-min timeout on the CONSOLIDATED tree`** — the run was killed at the bound, so it says nothing about the code (this used to render as `specific assertion: (no specific assertion could be extracted)`). When every failure is a timeout, the cap is `verify-timeout:develop`; see "`verify-timeout:<step>`: the gate did not finish" above. If the `[baseline-red]` finding reports a timeout at the base commit as well, the gate does not fit the bound on this host: raise `PI_ENSEMBLE_VERIFY_TIMEOUT_MS` or make the gate faster.
 - **Verify command too slow / needs services** — put a cheaper command in `.pi/verify-cmd` (typecheck-only is the intent; full test suites belong to CI).
 - **False alarm you need to bypass right now** — `PI_ENSEMBLE_VERIFY=0` disables the gate entirely (not recommended as a steady state; it re-opens the phantom-handoff class the gate exists to catch).
 

@@ -130,6 +130,9 @@ export type WorkCapLiteral =
   // shape across ≥3 files → step-back (SDD spec-gap analysis).
   | "repeat-finding-seam"
   | `verify-failed:${WorkStep}`
+  // #1324 — the step's verify run was killed at its bound and reached no
+  // verdict: distinct from verify-failed:<step>, which judged the code.
+  | `verify-timeout:${WorkStep}`
   | `step-failed:${WorkStep}`
   // #844 — a local branch of the resolved name is ahead of the
   // freshly-fetched origin/<mainline>; the ahead count is in the

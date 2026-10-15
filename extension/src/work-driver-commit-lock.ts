@@ -80,9 +80,11 @@ async function runCommitPrLocked(
           {
             kind: "cap-hit",
             at: Date.now(),
-            cap: "integration-verify-failed",
+            // #1324 — a run killed at its bound reached no verdict about the code.
+            cap: mech.timedOut ? "verify-timeout:commit-pr" : "integration-verify-failed",
             reviewRound: state.pipelineState.reviewRound,
             nextStep: "handoff",
+            ...(mech.timedOut ? { evidence: mech.reason } : {}),
           },
         )
       );
