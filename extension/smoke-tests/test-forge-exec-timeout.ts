@@ -107,7 +107,7 @@ async function main() {
     assert(calls[0].timeout === 45_000, `expected 45_000, got ${calls[0].timeout}`);
   });
 
-  await check("every forge operation carries the default timeout", async () => {
+  await check("run() operations carry the default timeout", async () => {
     const { fn, calls } = mkHangingExec({ hang: false, stdout: issueJson });
     const forge = createForge(det, { execFn: fn });
     await forge.issueView(42);
@@ -190,16 +190,6 @@ async function main() {
     assert(result.labelApplied === false, "should not have the label applied");
   });
 
-  // ── 6. The default timeout constant is 60 s ─────────────────────────────
-
-  console.log("default constant:");
-  await check("the default forge exec timeout is 60 s", async () => {
-    const { fn, calls } = mkHangingExec({ hang: false, stdout: issueJson });
-    const forge = createForge(det, { execFn: fn });
-    await forge.issueView(42);
-    assert(calls.length >= 1, "expected at least one call");
-    assert(calls[0].timeout === 60_000, `expected 60_000, got ${calls[0].timeout}`);
-  });
 }
 
 main().then(() => process.exit(exitCode));

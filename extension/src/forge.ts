@@ -169,7 +169,7 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
    * #1261 — default per-call exec timeout. `gh` calls against a healthy API
    * complete in well under 60 s; a half-open connection or a stalled proxy
    * otherwise hangs the driver's entry and handoff paths forever (no event
-   * persisted, no terminal status, no terminal status). A caller that
+   * persisted, no terminal status, no handoff artifact). A caller that
    * supplies its own `execOpts.timeout` (e.g. the explore body fetch's 45 s)
    * overrides this via the spread below.
    */
