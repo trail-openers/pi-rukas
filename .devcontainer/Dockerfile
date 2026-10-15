@@ -212,6 +212,15 @@ RUN test ! -e "$HOME/.pi/agent/npm/node_modules/pi-mcp-adapter" \
     && test ! -e "$HOME/.pi/agent/extensions/pi-mcp-adapter" \
     && echo "pi-mcp-adapter absent in both layouts (native MCP active)"
 
+# pi-rukas-headless (#1024, #1189): the repo is baked at /opt/pi-rukas, which
+# is NOT on $PATH — `command -v pi-rukas-headless` in a container found
+# nothing, forcing unattended callers to hard-code the image layout. A
+# /usr/local/bin link (already on PATH) gives a stable name; the wrapper at
+# /opt/pi-rukas/bin is unchanged.
+USER root
+RUN ln -sf ${PI_ENSEMBLE_DIR}/bin/pi-rukas-headless /usr/local/bin/pi-rukas-headless \
+    && echo "pi-rukas-headless on PATH via /usr/local/bin"
+
 # Issue #933 (fresh-host EACCES): bake the state mount points into the image
 # as vscode-owned so Docker creates NEW named volumes vscode-owned when the
 # launcher falls back to them (bin/pi-rukas build_mounts). When a named volume
@@ -221,6 +230,7 @@ RUN test ! -e "$HOME/.pi/agent/npm/node_modules/pi-mcp-adapter" \
 # fresh sandbox. This mkdir (as vscode) fixes volumes created from now on; the
 # entrypoint repairs PRE-EXISTING root-owned volumes. Mirrors the entrypoint
 # allowlist and the launcher's PI_ENSEMBLE_VOLUME_MOUNTS derivation.
+USER vscode
 RUN mkdir -p /home/vscode/.pi/agent/sessions \
              /home/vscode/.pi/agent/ensemble-runs \
              /home/vscode/.vipune \

@@ -87,10 +87,15 @@ async function main(argv: string[]): Promise<number> {
     write: (line) => process.stderr.write(`${line}\n`),
   });
   if (args.json) {
-    process.stdout.write(`${JSON.stringify({ exitCode: run.exitCode, issues: run.results })}\n`);
+    const body: Record<string, unknown> = { exitCode: run.exitCode, issues: run.results };
+    if (run.error) body.error = run.error;
+    process.stdout.write(`${JSON.stringify(body)}\n`);
   } else {
     const parts = run.results.map((r) => `#${r.issue} ${r.status} (exit ${r.exitCode})`);
     process.stdout.write(`pi-rukas-headless: ${parts.join(", ") || "nothing ran"}\n`);
+    if (run.error) {
+      process.stdout.write(`error: ${run.error.code} — ${run.error.message}\n`);
+    }
   }
   return run.exitCode;
 }
