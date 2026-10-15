@@ -15,6 +15,7 @@ import { classifyFailureCause, failureCauseReason } from "../work-driver-failure
 import type { WorkEvent, WorkStep } from "../workflow-state-events.ts";
 import type { WorkState } from "../workflow-state.ts";
 import type { HeadlessCap } from "./caps.ts";
+import { lastCapIndex } from "./exit-code.ts";
 
 /**
  * The published `failure.kind` values. Additive: a new kind does not bump the
@@ -177,13 +178,8 @@ export function failureOf(
 ): ResultFailure | undefined {
   if (cap === undefined || state.pipelineState.status === "merged") return undefined;
   const log = state.eventLog;
-  let capIdx = -1;
-  for (let i = log.length - 1; i >= 0; i--) {
-    if (log[i]?.kind === "cap-hit") {
-      capIdx = i;
-      break;
-    }
-  }
+  // The cap-hit `lastCap` reports: one a signal cut off is skipped (#1371).
+  const capIdx = lastCapIndex(state);
   const capHit = capIdx >= 0 ? log[capIdx] : undefined;
   const hit = capHit?.kind === "cap-hit" ? capHit : undefined;
   const failed = isDispatchCap(cap) ? failedDispatchBefore(log, capIdx, step) : undefined;
