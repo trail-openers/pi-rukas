@@ -425,6 +425,41 @@ try {
       p2.verdict === "ISSUES_FOUND",
     `P round 2: a legacy row without lineHash is carried on a window edit (${p2.verdict})`,
   );
+  // Q — the cited path is a DIRECTORY at head. `git show` would list its tree,
+  // so the path is not a file: the row is recorded no-line and carried, never
+  // path-gone, and a complete full review does not resolve it.
+  sh("git checkout -q main");
+  sh("git checkout -q -b feat/dir");
+  mkdirSync(path.join(repo, "src", "pkg"));
+  writeFileSync(path.join(repo, "src", "pkg", "f.ts"), "export const f = 1;\n");
+  sh("git add -A");
+  sh("git commit -qm pkg");
+  await runRound("feat/dir", head(), [
+    { severity: "MEDIUM", path: "src/pkg", line: 1, title: "Directory finding" },
+  ]);
+  const q2 = await runRound("feat/dir", head(), []);
+  const qRow = (await readBranchRows(repo, "feat/dir"))[0];
+  assert(
+    qRow?.status === "open" && qRow.line === undefined && q2.verdict === "ISSUES_FOUND",
+    `Q round 2: a row on a directory path is carried, not resolved (${q2.verdict})`,
+  );
+
+  // R — a stored row whose path is unsafe ("../x") is carried, never path-gone.
+  sh("git checkout -q main");
+  sh("git checkout -q -b feat/unsafe");
+  await runRound("feat/unsafe", head(), [
+    { severity: "MEDIUM", path: "src/a.ts", line: 3, title: "Unused constant" },
+  ]);
+  const unsafeFile = path.join(ledgerDir, FINDINGS_FILE);
+  const unsafeStored = JSON.parse(readFileSync(unsafeFile, "utf8")) as { rows: Array<Record<string, unknown>> };
+  for (const r of unsafeStored.rows) if (r.branch === "feat/unsafe") r.path = "../x";
+  writeFileSync(unsafeFile, JSON.stringify(unsafeStored));
+  const r2 = await runRound("feat/unsafe", head(), []);
+  assert(
+    (await readBranchRows(repo, "feat/unsafe"))[0]?.status === "open" &&
+      r2.verdict === "ISSUES_FOUND",
+    `R round 2: an unsafe stored path is carried, not path-gone (${r2.verdict})`,
+  );
 } finally {
   rmSync(root, { recursive: true, force: true });
 }
