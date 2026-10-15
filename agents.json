@@ -483,6 +483,7 @@
           "oo gh pr list*": "allow",
           "oo gh pr ready*": "allow",
           "oo gh pr close*": "allow",
+          "gh pr merge*": "allow",
           "oo gh run list*": "allow",
           "oo gh run view*": "allow",
           "oo gh run watch*": "allow",

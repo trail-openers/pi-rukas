@@ -336,6 +336,7 @@ assert(mergeFormRefusal("x").includes("pr merge [N]") && mergeFormRefusal("x").e
       assert(m.kind === "merge", `agents.json ${role} grants a merge the guard refuses: ${JSON.stringify(key)} (${show(m)})`);
     }
   }
+  assert(checked >= 1, `agents.json grants at least one merge the guard accepts (${checked} checked)`);
   console.log(`merge-shaped grants in agents.json checked: ${checked}`);
 }
 
