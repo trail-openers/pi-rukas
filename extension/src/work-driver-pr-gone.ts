@@ -195,7 +195,7 @@ function closedDuringReview(
     {
       kind: "cap-hit",
       at: Date.now(),
-      cap: `verify-failed:${step}`,
+      cap: `pr-not-open:${step}`, // #1349 — nothing was judged
       reviewRound: state.pipelineState.reviewRound,
       nextStep: "handoff",
     },

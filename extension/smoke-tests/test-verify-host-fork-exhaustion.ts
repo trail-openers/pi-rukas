@@ -127,8 +127,8 @@ try {
     );
     const p = parked(s, gate);
     assert(
-      p.cap === "verify-failed:develop",
-      `preflight cannot fork: the cap is not consolidated-verify-conflict (got: ${p.cap})`,
+      p.cap === "verify-env:develop",
+      `preflight cannot fork: the cap is verify-env, not consolidated-verify-conflict (#1349) (got: ${p.cap})`,
     );
     assert(
       /refused to start a process/.test(p.explain) && !/Inspect the worktree/.test(p.explain),
@@ -170,7 +170,7 @@ try {
       "verify cannot fork: every recorded failure is a host failure — none blames the diff",
     );
     const p = parked(s, gate);
-    assert(p.cap === "verify-failed:develop", `verify cannot fork: cap (got: ${p.cap})`);
+    assert(p.cap === "verify-env:develop", `verify cannot fork: cap (#1349) (got: ${p.cap})`);
     assert(
       /environment failures, not defects in the change/.test(p.explain),
       "verify cannot fork: explainCap says the change was not judged",
@@ -178,9 +178,10 @@ try {
   }
 
   // ------------------------------------------------------------------ 3
-  // Control: a verify command that really fails keeps its verdict.
+  // Control: a verify command that really fails keeps its verdict. It passes
+  // at the base commit, so the #1349 baseline probe does not excuse it.
   {
-    const { s, ctx } = await singleWorkstream("real-failure", "test -f missing.sh");
+    const { s, ctx } = await singleWorkstream("real-failure", "test ! -f feature.sh");
     const gate = await verifyStepOutcome(ctx(realExec), s, "develop");
     const all = gate.failures.join(" | ");
     assert(!gate.ok, "real failure: the gate fails");

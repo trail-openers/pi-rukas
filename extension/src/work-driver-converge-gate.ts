@@ -189,7 +189,7 @@ export async function runConvergeGateHandler(
       );
       const cap2 = conflictText
         ? ("consolidated-verify-conflict" as const)
-        : verifyCapFor("develop", gate2.failures);
+        : verifyCapFor("develop", gate2.failures, gate2.baselineRedOnly);
       next = {
         ...next,
         pipelineState: {

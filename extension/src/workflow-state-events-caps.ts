@@ -133,6 +133,20 @@ export type WorkCapLiteral =
   // #1324 — the step's verify run was killed at its bound and reached no
   // verdict: distinct from verify-failed:<step>, which judged the code.
   | `verify-timeout:${WorkStep}`
+  // #1349 — the gate could not run: the system refused to start a process
+  // (fork failed / EAGAIN) for every failure that is not a timeout. No
+  // verdict on the code, like verify-timeout.
+  | `verify-env:${WorkStep}`
+  // #1349 — the base-commit probe confirmed the verify command already fails
+  // without the change, and the verify command's failures are the only ones.
+  | `verify-baseline-red:${WorkStep}`
+  // #1349 — the cycle's PR was no longer open when the step started (the
+  // commit-pr re-entry refusal, the PR-gone park). Nothing was judged.
+  | `pr-not-open:${WorkStep}`
+  // #1349 — the adversarial fix pass parked on its own checks (scope fence,
+  // no-op pass, comment retention, a read that failed closed); the outcome
+  // gate rejected nothing.
+  | "fix-pass-park"
   | `step-failed:${WorkStep}`
   // #844 — a local branch of the resolved name is ahead of the
   // freshly-fetched origin/<mainline>; the ahead count is in the

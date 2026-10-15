@@ -35,9 +35,10 @@ import {
   pidLimitSnapshot,
 } from "./work-driver-exec-error.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
-import { baselineRedMessage, probeBaselineVerify } from "./work-driver-verify-baseline.ts";
+import { compareWithBaseline } from "./work-driver-verify-baseline.ts";
 import {
   formatExecError,
+  isVerifyTimeoutFailure,
   verifyTimeoutFailure,
   verifyTimeoutMs,
 } from "./work-driver-verify-develop-helpers.ts";
@@ -94,6 +95,8 @@ export async function runVerifyCommandGate(opts: {
    * sibling) and the "incoherent" claim is not asserted.
    */
   fenceViolations?: FenceViolationRecord[];
+  /** #1349 — the base run demonstrably fails the way the change's run does. */
+  onBaselineAttributed?: () => void;
 }): Promise<void> {
   const {
     execFn,
@@ -462,39 +465,29 @@ export async function runVerifyCommandGate(opts: {
     }
   }
   // Baseline comparison — ONLY once the verify command has already failed
-  // (never on the happy path: it costs a full gate run). A command that
-  // also fails on a clean checkout of the base commit was red before the
-  // change existed; the cycle still parks, but the evidence leads with that
-  // instead of blaming the diff. See work-driver-verify-baseline.ts. Not
-  // when the host could not fork: the probe cannot run there either, and its
-  // "red at base" would be the same environment failure read as a verdict.
+  // (never on the happy path: it costs a full gate run). Not when the host
+  // could not fork: the probe cannot run there either, and its "red at base"
+  // would be the same environment failure read as a verdict. See
+  // work-driver-verify-baseline.ts.
   if (
     (cons.status === "failed" || perWorktreeVerifyFailures.length > 0) &&
     !failures.some(isHostExhaustionFailure)
   ) {
-    const base = baseSha as string;
-    const timeoutMs = verifyTimeoutMs();
-    const verdict = await probeBaselineVerify(execFn, {
+    const attributed = await compareWithBaseline(execFn, {
       repoRoot: ctx.repoRoot,
-      baseSha: base,
+      baseSha: baseSha as string,
       issue: ctx.issue,
       cmd,
-      timeoutMs,
+      timeoutMs: verifyTimeoutMs(),
+      changeFailures: [
+        ...(cons.status === "failed"
+          ? [{ text: cons.rawFailure ?? "", timedOut: cons.timedOut === true }]
+          : []),
+        ...perWorktreeVerifyFailures.map((f) => ({ text: f, timedOut: isVerifyTimeoutFailure(f) })),
+      ],
+      failures,
+      notes,
     });
-    if (verdict.status === "red") {
-      const changeFailure = [
-        cons.status === "failed" ? (cons.rawFailure ?? "") : "",
-        ...perWorktreeVerifyFailures,
-      ].join("\n");
-      failures.unshift(
-        baselineRedMessage(verdict, { cmd, baseSha: base, timeoutMs, changeFailure }),
-      );
-    } else {
-      notes.push(
-        verdict.status === "green"
-          ? `baseline verify passed — \`${cmd}\` exits 0 on a clean checkout of the base commit ${base.slice(0, 12)}, so the gate was green before this change`
-          : `baseline verify not established — ${verdict.reason}`,
-      );
-    }
+    if (attributed) opts.onBaselineAttributed?.();
   }
 }
