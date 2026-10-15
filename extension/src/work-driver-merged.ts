@@ -231,6 +231,7 @@ export async function runMerged(
       judgePolicy(ctx.repoRoot, { processGroup: ctx.processGroup === true, signal: ctx.signal }),
       docs,
       ctx.mergeGrant,
+      { repoRoot: ctx.repoRoot, issues: ctx.issues ?? [ctx.issue] },
     );
     const evidence = authority.granted
       ? await gatherMergeEvidence(execFnAuth, ctx.repoRoot, prNumber)
