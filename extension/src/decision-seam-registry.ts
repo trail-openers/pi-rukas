@@ -19,9 +19,11 @@
  * `PI_ENSEMBLE_DECISION_TIMEOUT_MS_<SEAM>` and
  * `PI_ENSEMBLE_DECISION_BUDGET_<SEAM>` (tokens), where `<SEAM>` is the id
  * upper-cased with `-` → `_`. `PI_ENSEMBLE_DECISIONS=0` makes every seam
- * rule-only. A `grandfathered` seam ignores all of these: its registry values
+ * rule-only. A grandfathered seam (`isGrandfathered`) ignores all of these: its registry values
  * are its behaviour, and it answers only to its own escape hatch.
  */
+
+import { traceWarn } from "./trace.ts";
 
 export type QuestionKind = "choice" | "bool" | "score";
 
@@ -63,8 +65,6 @@ export interface SeamSpec {
   timeoutMs: number;
   /** Token budget per call; an over-budget state or response abstains. */
   tokenBudget: number;
-  /** Pre-dates the seam; env config and the kill switch do not apply. */
-  grandfathered?: true;
 }
 
 const POLICY_LABELS = {
@@ -95,7 +95,6 @@ export const SEAMS = {
     // The judge reads whole doctrine files; today it has no size bound short
     // of the child's context, so neither does this seam in practice.
     tokenBudget: 1_000_000,
-    grandfathered: true,
   },
 } as const satisfies Record<string, SeamSpec>;
 
@@ -110,12 +109,26 @@ export function isFailClosed(spec: SeamSpec): boolean {
   return !isPassing(spec, spec.ruleDefault);
 }
 
-/** Seams that pre-date decide(). Closed: the shadow-first rule must not be one flag away. */
+/**
+ * Seams that pre-date decide(): env config and the kill switch do not apply,
+ * and only they may enforce by default. The one source of the fact — a closed
+ * list in source, so the shadow-first rule is never one field away.
+ */
 const GRANDFATHERED: readonly string[] = ["policy-judge"];
 
-const KINDS: readonly string[] = ["choice", "bool", "score"];
-const COMPOSITIONS: readonly string[] = ["may-add-only", "tie-break", "advisory", "replace"];
-const MODES: readonly string[] = ["off", "shadow", "enforce"];
+export function isGrandfathered(spec: SeamSpec): boolean {
+  return GRANDFATHERED.includes(spec.id);
+}
+
+const KINDS = ["choice", "bool", "score"] as const satisfies readonly QuestionKind[];
+const COMPOSITIONS = [
+  "may-add-only",
+  "tie-break",
+  "advisory",
+  "replace",
+] as const satisfies readonly Composition[];
+const MODES = ["off", "shadow", "enforce"] as const satisfies readonly DecisionMode[];
+const isMode = (m: string): m is DecisionMode => (MODES as readonly string[]).includes(m);
 
 /**
  * Every way an entry can be unsafe or incomplete. Empty means valid.
@@ -144,9 +157,10 @@ export function seamContractViolations(spec: Partial<SeamSpec>): string[] {
   if (v.length > 0) return v;
   const full = spec as SeamSpec;
   const labels = Object.keys(full.labels);
-  if (!KINDS.includes(full.kind)) v.push(`unknown kind: ${full.kind}`);
-  if (!COMPOSITIONS.includes(full.composition)) v.push(`unknown composition: ${full.composition}`);
-  if (!MODES.includes(full.defaultMode)) v.push(`unknown mode: ${full.defaultMode}`);
+  if (!(KINDS as readonly string[]).includes(full.kind)) v.push(`unknown kind: ${full.kind}`);
+  if (!(COMPOSITIONS as readonly string[]).includes(full.composition))
+    v.push(`unknown composition: ${full.composition}`);
+  if (!isMode(full.defaultMode)) v.push(`unknown mode: ${full.defaultMode}`);
   if (labels.length < 2) v.push("fewer than two labels");
   if (labels.includes(UNDECIDED)) v.push(`'${UNDECIDED}' is reserved, not a label`);
   if (
@@ -168,11 +182,7 @@ export function seamContractViolations(spec: Partial<SeamSpec>): string[] {
     (full.composition === "may-add-only" || full.composition === "tie-break")
   )
     v.push(`a score question cannot compose as ${full.composition}`);
-  if (full.grandfathered && !GRANDFATHERED.includes(full.id))
-    v.push(
-      `only ${GRANDFATHERED.join(", ")} may be grandfathered — a new seam earns enforce through its log`,
-    );
-  if (full.defaultMode === "enforce" && !full.grandfathered)
+  if (full.defaultMode === "enforce" && !isGrandfathered(full))
     v.push("a new seam starts in shadow — only a grandfathered seam enforces by default");
   if (!(full.timeoutMs > 0)) v.push("timeoutMs must be positive");
   if (!(full.tokenBudget > 0)) v.push("tokenBudget must be positive");
@@ -183,8 +193,18 @@ function envKey(prefix: string, id: string): string {
   return `${prefix}_${id.toUpperCase().replaceAll("-", "_")}`;
 }
 
-function positiveInt(raw: string | undefined): number | undefined {
-  const n = raw === undefined ? Number.NaN : Number(raw.trim());
+/** An env override, or undefined. A set-but-invalid value is traced, never silently dropped. */
+function envOverride<T>(key: string, parse: (raw: string) => T | undefined): T | undefined {
+  const raw = process.env[key];
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const v = parse(raw.trim());
+  if (v === undefined)
+    traceWarn(`decision-seam: ignoring ${key}=${raw.slice(0, 40)} (invalid value)`);
+  return v;
+}
+
+function positiveInt(raw: string): number | undefined {
+  const n = Number(raw);
   return Number.isInteger(n) && n > 0 ? n : undefined;
 }
 
@@ -203,15 +223,18 @@ export interface SeamConfig {
 /** The effective mode, timeout and budget for one call. */
 export function seamConfig(spec: SeamSpec): SeamConfig {
   const base = { mode: spec.defaultMode, timeoutMs: spec.timeoutMs, tokenBudget: spec.tokenBudget };
-  if (spec.grandfathered) return base;
+  if (isGrandfathered(spec)) return base;
   if (!decisionsEnabled()) return { ...base, mode: "off" };
-  const mode = process.env[envKey("PI_ENSEMBLE_DECISION_MODE", spec.id)]?.trim().toLowerCase();
+  const mode = envOverride(envKey("PI_ENSEMBLE_DECISION_MODE", spec.id), (r) => {
+    const m = r.toLowerCase();
+    return isMode(m) ? m : undefined;
+  });
   return {
-    mode: mode && MODES.includes(mode) ? (mode as DecisionMode) : base.mode,
+    mode: mode ?? base.mode,
     timeoutMs:
-      positiveInt(process.env[envKey("PI_ENSEMBLE_DECISION_TIMEOUT_MS", spec.id)]) ??
+      envOverride(envKey("PI_ENSEMBLE_DECISION_TIMEOUT_MS", spec.id), positiveInt) ??
       base.timeoutMs,
     tokenBudget:
-      positiveInt(process.env[envKey("PI_ENSEMBLE_DECISION_BUDGET", spec.id)]) ?? base.tokenBudget,
+      envOverride(envKey("PI_ENSEMBLE_DECISION_BUDGET", spec.id), positiveInt) ?? base.tokenBudget,
   };
 }

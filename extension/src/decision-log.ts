@@ -62,21 +62,43 @@ export function redactSecrets(text: string): { text: string; count: number } {
  * fragment the patterns no longer recognise; a generous pre-bound (well past
  * any token's length) keeps a whole-document state from being regex-scanned.
  */
-function redactDeep(v: unknown, counter: { n: number }): unknown {
+function redactDeep(v: unknown, counter: { n: number }, bound?: number): unknown {
   if (typeof v === "string") {
-    const r = redactSecrets(v.slice(0, LOG_STRING_CHARS + 2048));
+    const r = redactSecrets(bound === undefined ? v : v.slice(0, bound + 2048));
     counter.n += r.count;
-    return r.text.length > LOG_STRING_CHARS ? `${r.text.slice(0, LOG_STRING_CHARS)}…` : r.text;
+    return bound !== undefined && r.text.length > bound ? `${r.text.slice(0, bound)}…` : r.text;
   }
-  if (Array.isArray(v)) return v.map((x) => redactDeep(x, counter));
+  if (Array.isArray(v)) return v.map((x) => redactDeep(x, counter, bound));
   if (v && typeof v === "object") {
-    return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, redactDeep(x, counter)]));
+    return Object.fromEntries(
+      Object.entries(v).map(([k, x]) => [k, redactDeep(x, counter, bound)]),
+    );
   }
   return v;
 }
 
-/** The main checkout for a linked worktree; `root` itself otherwise. */
+/**
+ * Redact a JSON-shaped state, unbounded. decide() applies this before the
+ * state reaches any backend, so a credential in the state never leaves the
+ * host, and the log, the hash and the model all see the same text.
+ */
+export function redactState(state: unknown): { state: unknown; count: number } {
+  const counter = { n: 0 };
+  return { state: redactDeep(state, counter), count: counter.n };
+}
+
+const checkouts = new Map<string, string>();
+
+/** The main checkout for a linked worktree; `root` itself otherwise. Memoised per root. */
 function mainCheckout(root: string): string {
+  const known = checkouts.get(root);
+  if (known !== undefined) return known;
+  const resolved = resolveMainCheckout(root);
+  checkouts.set(root, resolved);
+  return resolved;
+}
+
+function resolveMainCheckout(root: string): string {
   try {
     const dotGit = path.join(root, ".git");
     if (!statSync(dotGit).isFile()) return root;
@@ -104,9 +126,11 @@ export function decisionLogPath(repoRoot: string, issues?: readonly number[]): s
 export async function appendDecisionRecord(
   where: { repoRoot?: string; issues?: readonly number[] },
   record: Record<string, unknown>,
+  /** Spans already redacted upstream (decide() redacts the state before any backend). */
+  priorRedactions = 0,
 ): Promise<string | undefined> {
-  const counter = { n: 0 };
-  const redacted = redactDeep(record, counter) as Record<string, unknown>;
+  const counter = { n: priorRedactions };
+  const redacted = redactDeep(record, counter, LOG_STRING_CHARS) as Record<string, unknown>;
   const line = `${JSON.stringify({ ...redacted, redactions: counter.n })}\n`;
   if (!where.repoRoot) {
     trace(`decision-log: no repo root, record not written — ${line.slice(0, 300)}`);
@@ -115,12 +139,25 @@ export async function appendDecisionRecord(
   const root = mainCheckout(where.repoRoot);
   const file = decisionLogPath(where.repoRoot, where.issues);
   try {
-    await fs.mkdir(path.dirname(file), { recursive: true });
-    // A symlinked `.pi/` component must not carry the record out of the repo.
+    // A symlinked `.pi/` component must not carry the record — or even the
+    // directories — out of the repo: check the nearest existing ancestor
+    // before creating anything, and the final directory after.
     const realRoot = await fs.realpath(root);
-    const rel = path.relative(realRoot, await fs.realpath(path.dirname(file)));
-    if (rel.startsWith("..") || path.isAbsolute(rel))
-      throw new Error("log directory escapes the repo root");
+    const inside = async (p: string) => {
+      const rel = path.relative(realRoot, await fs.realpath(p));
+      return !(rel.startsWith("..") || path.isAbsolute(rel));
+    };
+    let ancestor = path.dirname(file);
+    while (
+      !(await fs.stat(ancestor).then(
+        () => true,
+        () => false,
+      ))
+    )
+      ancestor = path.dirname(ancestor);
+    if (!(await inside(ancestor))) throw new Error("log directory escapes the repo root");
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    if (!(await inside(path.dirname(file)))) throw new Error("log directory escapes the repo root");
     const st = await fs.lstat(file).catch(() => undefined);
     if (st && !st.isFile()) throw new Error("log path is not a regular file");
     await fs.appendFile(file, line, { flag: "a" });
@@ -134,7 +171,12 @@ export async function appendDecisionRecord(
       (s) => s.isDirectory(),
       () => false,
     );
-    if (isRepo) await ensureGitExclude(root, [".pi/decisions.jsonl"]).catch(() => undefined);
+    // ensureGitExclude is best-effort and traces its own failures; this is a backstop.
+    if (isRepo) {
+      await ensureGitExclude(root, [".pi/decisions.jsonl"]).catch((err: Error) =>
+        trace(`decision-log: could not exclude .pi/decisions.jsonl: ${err.message}`),
+      );
+    }
   }
   return file;
 }

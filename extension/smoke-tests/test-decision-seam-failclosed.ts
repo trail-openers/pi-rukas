@@ -106,7 +106,6 @@ const valid = (s: SeamSpec) => seamContractViolations({ ...s, defaultMode: "shad
         composition,
         evidence: composition === "replace" ? "quote" : real.evidence,
         defaultMode: "shadow",
-        grandfathered: undefined,
       };
       if (seamContractViolations(clone).length > 0) continue;
       const seam = registerFixture(clone);

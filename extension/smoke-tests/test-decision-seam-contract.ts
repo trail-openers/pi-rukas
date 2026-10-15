@@ -116,9 +116,9 @@ for (const f of [
   );
 }
 rejects(
-  { id: "my-new-seam", defaultMode: "enforce", grandfathered: true },
-  /may be grandfathered/,
-  "a new seam that declares itself grandfathered to skip shadow",
+  { ...SEAMS["policy-judge"], id: "my-new-seam" },
+  /starts in shadow/,
+  "a new seam copying the judge's enforcing shape — grandfathering is a closed list, not a field",
 );
 rejects({ defaultMode: "enforce" }, /starts in shadow/, "a new seam that enforces by default");
 rejects(

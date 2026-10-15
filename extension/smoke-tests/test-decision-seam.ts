@@ -218,6 +218,36 @@ enforce("fixture-flag");
   assert(pb.abstained, "probabilities over an undeclared label abstain");
 }
 
+// ------------------------------------------------ secrets never reach a backend
+
+{
+  const secret = `ghp_${"Q7w8E9r0".repeat(4)}`;
+  let sent = "";
+  const { registry } = stubRegistry({
+    llm: (ctx) => {
+      sent = `${ctx.systemPrompt}${String(ctx.messages[0]?.content ?? "")}`;
+      return llmReply(JSON.stringify({ label: "ok", justification: "x" }));
+    },
+  });
+  await decide(
+    flagSeam,
+    { state: { log: `push failed with ${secret}` }, question: "q", rule: "ok" },
+    { modelRegistry: registry, model: STUB_MODEL },
+  );
+  assert(
+    sent.length > 0 && !sent.includes(secret),
+    "a credential in the state is redacted before the LLM sees it",
+  );
+  process.env[envKey("PI_ENSEMBLE_DECISION_MODE", "fixture-flag")] = "enforced";
+  const b = stubBackend({ ok: true, answer: "flag" });
+  const typo = await decide(flagSeam, { state: {}, question: "q", rule: "ok" }, { backends: [b] });
+  assert(
+    typo.answer === "ok",
+    "a mistyped mode falls back to the registry default (shadow), traced",
+  );
+  enforce("fixture-flag");
+}
+
 // ------------------------------------------------ replace needs vouched evidence
 
 {

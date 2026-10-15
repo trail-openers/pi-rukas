@@ -180,6 +180,15 @@ const lines = (f: string) =>
     !existsSync(path.join(elsewhere, "decisions.jsonl")),
     "...and nothing is written outside the root",
   );
+  const d2 = await decide(
+    seam,
+    { state: {}, question: "q", rule: "ok" },
+    { repoRoot: root, issues: [9], backends: [b] },
+  );
+  assert(
+    d2.answer === "flag" && !existsSync(path.join(elsewhere, "work-state")),
+    "...not even the cycle's directories are created through the symlink",
+  );
 }
 
 // ---------------------------------------------- evidence path confinement

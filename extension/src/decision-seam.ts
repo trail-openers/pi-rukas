@@ -33,7 +33,7 @@ import {
 } from "./decision-backends.ts";
 import { compose } from "./decision-compose.ts";
 import { type EvidenceCheck, verifyEvidence } from "./decision-evidence.ts";
-import { appendDecisionRecord } from "./decision-log.ts";
+import { appendDecisionRecord, redactState } from "./decision-log.ts";
 import {
   SEAMS,
   type SeamId,
@@ -179,6 +179,7 @@ export async function decide(
   const attempts: Attempt[] = [];
   const notes: string[] = [];
   let decision: Decision;
+  let stateRedactions = 0;
   let record: Record<string, unknown> = {
     seam,
     question: req.question,
@@ -203,7 +204,12 @@ export async function decide(
       rule = spec.ruleDefault;
     }
 
-    const serialised = serialise(req.state);
+    // Serialise first (a cyclic state fails here, not in the redactor), then
+    // redact: no backend, hash or log line ever sees a credential-shaped span.
+    const raw = serialise(req.state);
+    const clean = raw === undefined ? undefined : redactState(JSON.parse(raw));
+    stateRedactions = clean?.count ?? 0;
+    const serialised = clean ? serialise(clean.state) : undefined;
     const stateText = serialised ?? "";
     const estTokens = Math.ceil((stateText.length + req.question.length) / 4);
     let model: (BackendResult & { ok: true }) | undefined;
@@ -219,7 +225,7 @@ export async function decide(
         const input: BackendInput = {
           spec,
           question: req.question,
-          state: req.state,
+          state: clean?.state,
           stateText,
           timeoutMs: cfg.timeoutMs,
           tokenBudget: cfg.tokenBudget,
@@ -296,25 +302,29 @@ export async function decide(
     // The same core fields as a successful record, so S5 can count error-path calls.
     record = { ...record, ruleAnswer: fallback, error: decision.reason };
   }
-  await appendDecisionRecord(ctx, {
-    ts: new Date().toISOString(),
-    ...record,
-    backends: attempts.map((a) => ({
-      name: a.backend,
-      source: a.source,
-      latencyMs: a.latencyMs,
-      ...(a.result.ok
-        ? {
-            answer: a.result.answer,
-            probabilities: a.result.probabilities,
-            confidence: a.result.confidence,
-            quote: a.result.quote,
-            cited: a.result.cited,
-          }
-        : { error: a.result.error }),
-      usage: a.result.usage,
-    })),
-    final: decision,
-  }).catch(() => undefined);
+  await appendDecisionRecord(
+    ctx,
+    {
+      ts: new Date().toISOString(),
+      ...record,
+      backends: attempts.map((a) => ({
+        name: a.backend,
+        source: a.source,
+        latencyMs: a.latencyMs,
+        ...(a.result.ok
+          ? {
+              answer: a.result.answer,
+              probabilities: a.result.probabilities,
+              confidence: a.result.confidence,
+              quote: a.result.quote,
+              cited: a.result.cited,
+            }
+          : { error: a.result.error }),
+        usage: a.result.usage,
+      })),
+      final: decision,
+    },
+    stateRedactions,
+  ).catch(() => undefined);
   return decision;
 }
