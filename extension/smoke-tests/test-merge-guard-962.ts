@@ -137,7 +137,9 @@ merges("$'\\x67h' pr merge 17", 17);
 merges("$'\\147h' pr merge 17", 17);
 merges("$'\\u0067h' pr merge 17", 17);
 merges("{gh,pr,merge,17}", 17);
-merges("gh pr m{e,}rge 17", 17);
+// #1317 (item B): bash expands `m{e,}rge` to TWO words (`merge mrge`); the
+// second is a positional the guard cannot read, so the head is refused.
+kind("gh pr m{e,}rge 17", "unreadable");
 benign("echo {a,b}; gh pr view 17");
 // A glab method that is not a literal word fails closed.
 merges(`${GL} --method "$M"`, 17);
@@ -150,17 +152,17 @@ merges('$(echo ")") gh pr merge 17', 17);
 // ------------------------------------------------------------ review round 2
 merges("gh pr me\\\nrge 17", 17);
 // The REST repo is the merge segment's own flag, not another segment's.
-merges("gh -R a/b pr view 1; gh api -X PUT repos/o/r/pulls/17/merge", 17);
-{
-  const a = analyseMergeCommand("gh -R a/b pr view 1; gh api -X PUT repos/o/r/pulls/17/merge");
-  assert(a.kind === "merge" && a.repo === undefined, `REST repo not taken from an unrelated segment → ${show(a)}`);
-}
+// #1317 (item 2): a repo selector on a NON-head segment that differs from the
+// head's (here the head has none) is refused, not read as the CWD's repo.
+kind("gh -R a/b pr view 1; gh api -X PUT repos/o/r/pulls/17/merge", "repos");
 // One merge per command: a second merge would run unchecked.
 kind("gh pr merge 17 && gh pr merge 5", "multiple");
 kind("gh pr merge 17\nglab mr merge 5", "multiple");
 merges("gh pr merge 17 && gh pr view 5", 17);
 // A brace word past the expansion bound still yields its alternatives.
-merges("echo {a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b} && gh pr merge 17", 17);
+// #1317 (item 4): past the bound the expansion cannot be enumerated, so a
+// merge-like command is refused (unparsed), never read from a partial expansion.
+kind("echo {a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b} && gh pr merge 17", "unparsed");
 
 // ------------------------------------------------------------ review round 3
 merges("case $(echo x) in x) gh pr merge 17;; esac", 17);

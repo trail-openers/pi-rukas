@@ -197,6 +197,23 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
         "merge refused: the command names more than one repo (-R / --repo / --project) — gh and glab use the last one, the guard would check the first; pass a single repo selector, or set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override",
       );
     }
+    // #1317: a reading the guard could not build, a merge number it cannot
+    // read, and merge-like text no reading turned into a merge head.
+    if (analysis.kind === "unparsed") {
+      return block(
+        "merge refused: the guard cannot parse this command's quoting (an unclosed quote, a heredoc body, or a brace group it cannot expand) and it mentions a merge — issue the merge as a single plain `gh pr merge <N>` / `glab mr merge <N>` command, or set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override",
+      );
+    }
+    if (analysis.kind === "unreadable") {
+      return block(
+        "merge refused: unreadable PR number — the merge's number argument (or REST path) is not a plain integer, so the guard cannot tell which PR it would merge and will not guess from the current branch; write the number literally, or set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override",
+      );
+    }
+    if (analysis.kind === "unrecognised") {
+      return block(
+        "merge refused: the guard cannot read this command as a merge — issue the merge as a single plain `gh pr merge <N>` / `glab mr merge <N>` command; put comment and PR bodies in --body-file rather than inline (text that spells `merge` next to gh/glab is refused on purpose); or set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override",
+      );
+    }
     const merging = analysis.span;
     const repoValue = analysis.repo;
     let prNumber = analysis.prNumber;

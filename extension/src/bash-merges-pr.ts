@@ -9,7 +9,7 @@ import {
   unquoteArg,
 } from "./merge-tokens.ts";
 import { innerBodies, matchMergeVerb, mergeVerbUnwrapOne } from "./merge-verb-head.ts";
-import { skipLeadingWrappers } from "./merge-wrappers.ts";
+import { skipLeadingWrappers, splitGluedSubstitutions } from "./merge-wrappers.ts";
 
 /**
  * The matched verb span inside a segment, or undefined when the segment does
@@ -257,6 +257,9 @@ export function restDoorTokens(text: string): string | undefined {
     // The command word: skip the leading wrappers the same way the verb
     // door does (the walk has already unquoted every token, so
     // `skipLeadingWrappers` only sees bare words).
+    // #1317 item A: a substitution glued to the command word is split in place
+    // (the same array the walk reads), so `$(true)gh api …` lands on `gh`.
+    seg.splice(0, seg.length, ...splitGluedSubstitutions(seg));
     const ci = skipLeadingWrappers(seg, 0);
     const cmd = seg[ci] ?? "";
     const cmdBase = cmd.includes("/") ? (cmd.split("/").pop() ?? "") : cmd;
@@ -280,7 +283,7 @@ export function restDoorTokens(text: string): string | undefined {
       // The door is a WRITE unless the command is an explicit GET AND carries
       // no body fields — gh api's `-f`/`-F`/`--field` flags force a PUT
       // regardless of `--method`, so `--method GET --field x` is still the write.
-      if (!/\/pulls(?:\/[^\s/?#]+)?\/merge(?:[?&#]|$)/.test(endpoint)) continue;
+      if (!/(?:^|\/)pulls(?:\/[^\s/?#]+)?\/merge(?:[?&#]|$)/.test(endpoint)) continue;
       const explicitGet = /(^|\s)(?:--method|-X)\s+get\b/i.test(all);
       const hasBodyFields = /(^|\s)(?:-f|-F|--field)(?:=|\s)/.test(all);
       if (!explicitGet || hasBodyFields) return `${cmd} api ${endpoint}`;
@@ -295,7 +298,8 @@ export function restDoorTokens(text: string): string | undefined {
       // fields force the write even with `--method GET` (the gh door's
       // `hasBodyFields` rule): `--method GET -f state=merged` is not a read
       // the guard may wave through.
-      if (!/\/(?:mr|merge_requests)(?:\/[^\s/?#]+)?\/merge(?:[?&#]|$)/.test(endpoint)) continue;
+      if (!/(?:^|\/)(?:mr|merge_requests)(?:\/[^\s/?#]+)?\/merge(?:[?&#]|$)/.test(endpoint))
+        continue;
       const writesMethod = glabMethods(seg.slice(ci)).some((m) => m !== "GET" && m !== "HEAD");
       const hasBodyFields =
         /(^|\s)(?:-f|-F|--field|--raw-field|--input)(?:=|\s|$)/.test(all) ||
@@ -339,8 +343,11 @@ function glabMethods(tokens: string[]): string[] {
 function restEndpointToken(args: string[]): string | undefined {
   for (let k = 0; k < args.length; k++) {
     const t = args[k] ?? "";
-    if (/^repos\//.test(t)) return t;
+    // #1317 item B: a relative endpoint (`pulls/17/merge`, `merge_requests/…`)
+    // is a REST merge too — the leading slash is optional.
+    if (/^(?:repos|pulls)\//.test(t)) return t;
     if (/^\/?.*projects\//.test(t)) return t;
+    if (/^\/?(?:merge_requests|mr)\//.test(t)) return t;
     if (t.startsWith("-") && !t.includes("=")) {
       // A flag that takes a value: `--method`/`-X` (the token after it is
       // the method), the repo flags, and short flags generally take a

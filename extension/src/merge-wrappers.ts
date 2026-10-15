@@ -315,6 +315,50 @@ export function skipLeadingWrappers(tokens: string[], start: number): number {
 }
 
 /**
+ * Split a substitution token GLUED to a following word (#1317 item A):
+ * `$(true)gh pr merge 12` and `` `true`gh pr merge 4 `` are one shell word,
+ * whose command word is `gh` when the substitution expands to nothing. The
+ * guard cannot know the expansion, so it reads the empty case: the closing
+ * part and the remainder become separate tokens, and the head walk tests the
+ * remainder as a command word. Repeats for every glued substitution.
+ */
+export function splitGluedSubstitutions(list: string[]): string[] {
+  const work = [...list];
+  for (let i = 0; i < work.length; i++) {
+    const t = work[i] ?? "";
+    if (!((t[0] === "$" && t[1] === "(") || t[0] === "`")) continue;
+    const cut = substitutionClose(work, i);
+    if (cut === undefined) continue;
+    const text = work[cut.tok] ?? "";
+    if (cut.pos + 1 >= text.length) continue;
+    work.splice(cut.tok, 1, text.slice(0, cut.pos + 1), text.slice(cut.pos + 1));
+  }
+  return work;
+}
+
+/** The token and character index that close the substitution opened at `start`. */
+function substitutionClose(
+  tokens: string[],
+  start: number,
+): { tok: number; pos: number } | undefined {
+  let depth = 0;
+  let ticks = 0;
+  for (let j = start; j < tokens.length; j++) {
+    const tok = tokens[j] ?? "";
+    const quoted = tok[0] === "'" || tok[0] === '"' || tok.startsWith("$'");
+    for (let p = 0; p < tok.length && !quoted; p++) {
+      const c = tok[p];
+      if (c === "(") depth++;
+      else if (c === ")") depth--;
+      else if (c === "`") ticks++;
+      else continue;
+      if (depth <= 0 && ticks % 2 === 0) return { tok: j, pos: p };
+    }
+  }
+  return undefined;
+}
+
+/**
  * The index just past the substitution token at `start` (and the tokens it
  * spans until its `(`/`)` and backticks balance), bounded by the list end.
  */
@@ -352,7 +396,7 @@ export function matchMergeVerb(text: string): string | undefined {
   // number optionality now also holds for wrapped/inner invocations.)
   const tokens = rawTokens(text);
   if (tokens.terminated === false) return undefined;
-  const list = tokens.list;
+  const list = splitGluedSubstitutions(tokens.list);
   // The wrapper vocabulary (BARE_WRAPPERS, `sudo` flags, `timeout`/
   // `stdbuf`/`nice`/`time`/`env` flag+value skipping, `VAR=VALUE`
   // prefixes, transparent keywords) lives in `skipLeadingWrappers`; the

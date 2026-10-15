@@ -15,18 +15,19 @@
  * unwrapping in merge-verb-head.ts.
  */
 
+import { parseArgsAfterVerb } from "./merge-args.ts";
 import {
   MAX_CONSTRUCT_DEPTH,
   gluedRepoValue,
   isValidRepoValue,
   mergeVerbSpanRegex,
-  parseArgsAfterVerb,
   rawTokens,
   shellSegments,
   stripGluedParen,
   unquoteArg,
 } from "./merge-tokens.ts";
 import { innerBodies, matchMergeVerb, mergeVerbUnwrapOne } from "./merge-verb-head.ts";
+import { splitGluedSubstitutions } from "./merge-wrappers.ts";
 
 /**
  * The arguments that follow the matched merge verb, verbatim (the raw tail
@@ -265,10 +266,9 @@ function segmentMergeTail(seg: string): string | undefined {
     // word (the old raw-text probe did the same slice).
     const probeSeg = seg.startsWith("(") ? seg.slice(1) : seg;
     const probeToks = rawTokens(probeSeg);
+    const toks = probeToks.terminated ? splitGluedSubstitutions(probeToks.list) : [];
     const probe =
-      probeToks.terminated && probeToks.list.length > 0
-        ? probeToks.list.map(unquoteArg).join(" ")
-        : undefined;
+      probeToks.terminated && toks.length > 0 ? toks.map(unquoteArg).join(" ") : undefined;
     if (probe === undefined) return "";
     const m = mergeVerbSpanRegex().exec(probe);
     if (m) {
@@ -287,7 +287,7 @@ function segmentMergeTail(seg: string): string | undefined {
       // commands it is the old tail verbatim). A glued closing `)` stays
       // in the tail — the number/repo parser strips a trailing `)` from a
       // glued token (`17)` is the number 17 in `(gh pr merge 17)`).
-      return probe.slice(m.index + m[0].length);
+      return tailAfter(toks, probe, m.index + m[0].length);
     }
     // #955 adversarial round 4 (finding 1): `matchMergeVerb` matched via a
     // shell-eval invocation (the glued-paren path — `(sh -c …` — the
@@ -314,6 +314,37 @@ function segmentMergeTail(seg: string): string | undefined {
   // The unwrapped layer is malformed (an unterminated quote in the inner
   // text) — the same fail-closed no-number signal as the top level.
   return "";
+}
+
+/**
+ * The argument tail after the matched span (`end`, an offset into the
+ * unquoted `probe` built from `toks`), rebuilt from the RAW tokens (#1317).
+ * The unquoted probe alone would split a quoted argument (`--subject "fix: a
+ * b"`) into words the parser reads as positionals; each token after the verb
+ * is re-quoted instead, so the parser sees the words bash passes. A span that
+ * ends mid-token falls back to the unquoted remainder.
+ */
+function tailAfter(toks: string[], probe: string, end: number): string {
+  let pos = 0;
+  for (let k = 0; k < toks.length; k++) {
+    pos += unquoteArg(toks[k] ?? "").length;
+    if (end <= pos) {
+      if (end !== pos) return probe.slice(end);
+      return toks
+        .slice(k + 1)
+        .map(requote)
+        .join(" ");
+    }
+    pos += 1; // the joining space
+  }
+  return "";
+}
+
+/** One raw token, quoted so the parser reads it as one word (its value is unchanged). */
+function requote(tok: string): string {
+  if (tok[0] !== "'" && tok[0] !== '"' && !tok.startsWith("$'")) return tok;
+  const v = unquoteArg(tok);
+  return v.includes("'") ? `"${v.replace(/["\\$`]/g, "\\$&")}"` : `'${v}'`;
 }
 
 /** True when the raw command text contains a merge verb (scan-not-anchor). */

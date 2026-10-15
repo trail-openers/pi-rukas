@@ -23,7 +23,10 @@ const PLAIN_WORD = /^[A-Za-z0-9_./:=@%+,#-]+$/;
 
 /**
  * The command rebuilt from its shell words, or `undefined` when a quote
- * never closes (the primary walk already fails closed on that shape).
+ * never closes (the primary walk already fails closed on that shape) or a
+ * brace group cannot be fully enumerated (#1317: the words bash runs are
+ * then unknown, and the guard refuses a merge-like command rather than read
+ * a partial expansion).
  */
 export function canonicalCommand(command: string): string | undefined {
   const out: string[] = [];
@@ -32,10 +35,14 @@ export function canonicalCommand(command: string): string | undefined {
   let word = "";
   let start = -1;
   let rewritten = false;
+  let failed = false;
   const flush = (end: number) => {
     if (start === -1) return;
-    if (!rewritten) out.push(...braceExpand(command.slice(start, end)));
-    else if (PLAIN_WORD.test(word)) out.push(word);
+    if (!rewritten) {
+      const expanded = braceExpand(command.slice(start, end));
+      if (expanded === undefined) failed = true;
+      else out.push(...expanded);
+    } else if (PLAIN_WORD.test(word)) out.push(word);
     else out.push(`'${word.replaceAll("'", `'\\''`)}'`);
     word = "";
     start = -1;
@@ -113,7 +120,7 @@ export function canonicalCommand(command: string): string | undefined {
     i++;
   }
   flush(n);
-  return out.join(" ");
+  return failed ? undefined : out.join(" ");
 }
 
 /** `>&`, `<&` and `&>` are redirections, not the `&` separator. */
@@ -159,11 +166,12 @@ function ansiC(body: string): string {
 /**
  * Brace expansion of an unquoted word (`{gh,pr,merge,17}`, `me{r,}ge`):
  * the innermost `{…,…}` group is expanded repeatedly, bounded so a hostile
- * word cannot blow up — past the bound every alternative becomes its own
- * word (a superset). Sequences (`{1..3}`) and words with no comma group are
- * left as written.
+ * word cannot blow up. Past the bound (or nesting deeper than the rounds) the
+ * expansion is NOT enumerated and `undefined` is returned: the canonical
+ * reading fails, and the guard refuses a merge-like command (#1317). Sequences
+ * (`{1..3}`) and words with no comma group are left as written.
  */
-function braceExpand(word: string): string[] {
+function braceExpand(word: string): string[] | undefined {
   let words = [word];
   for (let round = 0; round < 8; round++) {
     let changed = false;
@@ -176,15 +184,13 @@ function braceExpand(word: string): string[] {
       }
       changed = true;
       const alts = (m[1] ?? "").split(",");
-      // Past the bound, fail closed with every alternative as its own word
-      // (a superset of the words bash runs) rather than the unexpanded word.
       // Checked BEFORE the alternatives are built, so a hostile word never
       // materialises its full product.
-      if (next.length + alts.length > 256) return word.split(/[{},]+/).filter((x) => x !== "");
+      if (next.length + alts.length > 256) return undefined;
       for (const alt of alts) next.push(w.slice(0, m.index) + alt + w.slice(m.index + m[0].length));
     }
     words = next;
     if (!changed) return words.filter((w) => w !== "");
   }
-  return words.flatMap((w) => w.split(/[{},]+/)).filter((w) => w !== "");
+  return undefined;
 }

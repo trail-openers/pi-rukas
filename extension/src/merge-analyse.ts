@@ -13,18 +13,22 @@
  *   - when both find a merge but disagree on the number or the repo, the
  *     command is ambiguous and refused — the guard must never check the
  *     ledger for a different PR than the one the command merges.
+ *
+ * #1317: a reading that FAILS (the canonical words cannot be built, a brace
+ * group is not enumerable) and a merge-like command (merge-like.ts) with no
+ * readable merge head are refused, never read as "not a merge". A merge head
+ * whose number argument cannot be read is refused too — only a head with NO
+ * positional argument may resolve its PR from the current branch.
  */
 
-import { mergesPr } from "./bash-merges-pr.ts";
+import { mergesPr, restDoorTokens } from "./bash-merges-pr.ts";
+import { parseArgsAfterVerb } from "./merge-args.ts";
 import { canonicalCommand } from "./merge-canonical.ts";
 import { scanMergeHeads } from "./merge-heads.ts";
-import {
-  extractMergeNumber,
-  mergeVerbArgs,
-  mergeVerbRepo,
-  repoFlagInTokens,
-} from "./merge-parse.ts";
+import { executableText, mergeLike } from "./merge-like.ts";
+import { mergeVerbArgs, mergeVerbRepo, repoFlagInTokens } from "./merge-parse.ts";
 import { isValidRepoValue, shellSegments } from "./merge-tokens.ts";
+import { matchMergeVerb } from "./merge-verb-head.ts";
 
 export type MergeAnalysis =
   | { kind: "none" }
@@ -33,6 +37,12 @@ export type MergeAnalysis =
   | { kind: "multiple" }
   | { kind: "nested" }
   | { kind: "repos" }
+  /** The canonical reading failed and the command is merge-like (#1317). */
+  | { kind: "unparsed" }
+  /** A merge head whose PR number argument (or REST path number) is unreadable (#1317). */
+  | { kind: "unreadable" }
+  /** Merge-like text with no readable merge head (#1317 backstop). */
+  | { kind: "unrecognised" }
   | { kind: "merge"; span: string; prNumber: number | undefined; repo: string | undefined };
 
 /**
@@ -48,23 +58,42 @@ export function analyseMergeCommand(command: string): MergeAnalysis {
   if (!plain.includes("merge") && !command.includes("$'") && !/\{[^}]*,/.test(command)) {
     return { kind: "none" };
   }
-  const raw = analyseText(command);
   const canonical = canonicalCommand(command);
-  // An unclosed quote (`undefined`) is a bash syntax error — nothing runs —
-  // and the raw reading already fails closed on it.
-  if (canonical === undefined || canonical === command) return raw;
+  const result = reconcile(command, analyseText(command), canonical);
+  if (result.kind !== "none") return result;
+  // #1317 backstop: merge-like text that no reading turned into a merge head
+  // is refused, whatever shape it has. echo/printf segments are inert data.
+  const mergish =
+    mergeLike(executableText(command)) ||
+    (canonical !== undefined && mergeLike(executableText(canonical)));
+  return mergish ? { kind: "unrecognised" } : result;
+}
+
+/** Combine the raw reading with the canonical one (see the module doc). */
+function reconcile(
+  command: string,
+  raw: MergeAnalysis,
+  canonical: string | undefined,
+): MergeAnalysis {
+  // The words bash runs are unknown (an unclosed quote, a heredoc body, a
+  // brace group past the bound). A merge-like command is refused; a command
+  // that is not merge-like keeps its raw reading, as before.
+  if (canonical === undefined) return mergeLike(command) ? { kind: "unparsed" } : raw;
+  if (canonical === command) return raw;
   const canon = analyseText(canonical);
   if (raw.kind === "unsafe" || canon.kind === "unsafe") return { kind: "unsafe" };
   if (raw.kind === "nested" || canon.kind === "nested") return { kind: "nested" };
   if (raw.kind === "multiple" || canon.kind === "multiple") return { kind: "multiple" };
   if (raw.kind === "repos" || canon.kind === "repos") return { kind: "repos" };
-  if (raw.kind !== "merge") return canon;
-  if (canon.kind !== "merge") return raw;
-  if (raw.prNumber !== canon.prNumber || raw.repo !== canon.repo) return { kind: "ambiguous" };
-  return raw;
+  if (raw.kind === "merge" && canon.kind === "merge") {
+    if (raw.prNumber !== canon.prNumber || raw.repo !== canon.repo) return { kind: "ambiguous" };
+    return raw;
+  }
+  if (raw.kind === "unreadable" || canon.kind === "unreadable") return { kind: "unreadable" };
+  return raw.kind === "merge" ? raw : canon;
 }
 
-/** One reading of one command text (the guard's #955 extraction, unchanged). */
+/** One reading of one command text (the guard's #955 extraction). */
 function analyseText(command: string): MergeAnalysis {
   const span = mergesPr(command);
   if (!span) return { kind: "none" };
@@ -96,8 +125,31 @@ function analyseText(command: string): MergeAnalysis {
   const rest = fromRepo ?? restRepoFor(merging[0] ?? command);
   if (rest?.kind === "unsafe") return { kind: "unsafe" };
   const repo = rest?.repo;
-  const prNumber = fromVerb !== undefined ? extractMergeNumber(fromVerb) : extractPrNumber(span);
+  // #1317: a repo selector on another segment (`gh -R a/b pr view 1; gh pr
+  // merge 17`) names a repo this merge does not use — refused unless it is
+  // the merge's own repo.
+  if (strayRepoSelector(command, repo)) return { kind: "repos" };
+  if (fromVerb !== undefined) {
+    const parsed = parseArgsAfterVerb(fromVerb);
+    // #1317 item B: a positional that is not a plain number (`$PR`, `x17`) is
+    // a PR the guard cannot read — refused, never resolved from the branch.
+    if (parsed.unreadable) return { kind: "unreadable" };
+    return { kind: "merge", span, prNumber: parsed.number, repo };
+  }
+  // The REST door: the number must be read from the matched path (`pulls/N/merge`,
+  // with or without a leading slash). `pulls/merge` has none — refused.
+  const prNumber = extractPrNumber(span);
+  if (prNumber === undefined) return { kind: "unreadable" };
   return { kind: "merge", span, prNumber, repo };
+}
+
+/** True when a non-merge segment carries a repo selector other than `repo` (#1317). */
+function strayRepoSelector(command: string, repo: string | undefined): boolean {
+  return shellSegments(command).some((seg) => {
+    if (matchMergeVerb(seg) !== undefined || restDoorTokens(seg) !== undefined) return false;
+    const value = repoFlagInTokens(seg);
+    return value !== undefined && value !== repo;
+  });
 }
 
 /**
@@ -117,12 +169,13 @@ function restRepoFor(seg: string): { kind: "repo"; repo: string } | { kind: "uns
 
 /**
  * The PR number inside a REST-door span (`gh api …/pulls/12/merge` → 12,
- * `glab api …/mr/7/merge` → 7). Read from the matched span ONLY — the
- * whole command would pick up unrelated numbers (`cd /data/3 && …`) — and
- * from the path segment before `/merge` (#962: the first number in
- * `projects/1/merge_requests/17/merge` is the project id, not MR 17).
+ * `gh api pulls/12/merge` → 12, `glab api …/mr/7/merge` → 7). Read from the
+ * matched span ONLY — the whole command would pick up unrelated numbers
+ * (`cd /data/3 && …`) — and from the path segment before `/merge` (#962: the
+ * first number in `projects/1/merge_requests/17/merge` is the project id, not
+ * MR 17). The leading slash is optional (#1317).
  */
 function extractPrNumber(matched: string): number | undefined {
-  const m = /\/(\d+)\/merge\b/.exec(matched);
+  const m = /(?:^|\/)(\d+)\/merge\b/.exec(matched);
   return m?.[1] ? Number.parseInt(m[1], 10) : undefined;
 }
