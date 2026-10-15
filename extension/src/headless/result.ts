@@ -7,6 +7,9 @@
 import type { WorkState } from "../workflow-state.ts";
 import { exitCodeForState, lastCap, lastEvent } from "./exit-code.ts";
 
+/** Version of the --json result schema. Bump on any change to the result shape. */
+export const RESULT_SCHEMA_VERSION = 1 as const;
+
 export interface StepTiming {
   step: string;
   startedAt: string;
