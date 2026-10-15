@@ -64,6 +64,7 @@ import {
 } from "./work-driver-pr-body-definition.ts";
 import { findOpenPrForBranch } from "./work-driver-pr-preflight.ts";
 import { renderLensFindingsSection } from "./work-driver-pr-sections.ts";
+import { protectedGrantSectionOf } from "./work-driver-protected-grant.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { verifyConsolidation, verifyStepOutcome } from "./work-driver-verify.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
@@ -362,6 +363,7 @@ export async function mechanizedCommitPr(
       ...companionLines,
       ...workstreamLines,
       assumptionsBlock,
+      protectedGrantSectionOf(state.protectedGrant),
       carriedFindings,
       operatorActions,
       renderLensFindingsSection(state.eventLog),

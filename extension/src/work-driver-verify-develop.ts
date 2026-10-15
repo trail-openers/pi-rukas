@@ -21,6 +21,7 @@ import {
   protectedPathsIn,
 } from "./work-driver-doctrine.ts";
 import { runFalsilyGreenCheck } from "./work-driver-falsily-green.ts";
+import { ungrantedProtectedPaths } from "./work-driver-protected-grant.ts";
 import { runScopeFanoutGate } from "./work-driver-scope-fanout.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import {
@@ -254,7 +255,15 @@ export async function verifyDevelopOutcome(
   // so that this repo's own "docs ship with the PR" rule keeps working.
   if (protectedPathsEnabled()) {
     const protectedHits = protectedPathsIn(touchedPaths);
-    if (protectedHits.length > 0) failures.push(explainProtectedPaths(protectedHits));
+    // #1090 — only the operator's invocation grant (ctx), never the state file.
+    const ungranted = ungrantedProtectedPaths(protectedHits, ctx.protectedGrant);
+    if (ungranted.length > 0) {
+      failures.push(explainProtectedPaths(ungranted, protectedHits, state.issues ?? [state.issue]));
+    }
+    const granted = protectedHits.filter((p) => !ungranted.includes(p));
+    if (granted.length > 0) {
+      notes.push(`operator grant (--allow-protected) admitted ${granted.join(", ")}`);
+    }
     const prose = doctrineProsePathsIn(touchedPaths);
     if (prose.length > 0) {
       notes.push(

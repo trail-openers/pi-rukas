@@ -111,6 +111,12 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
     `**Branch**: \`${branch}\``,
     `**Issues**: ${issuesHeader}`,
     `**State file**: \`.pi/work-state/${issue}.json\``,
+    // #1090 — an operator grant to write protected paths is worth seeing here.
+    ...(state.protectedGrant?.length
+      ? [
+          `**Protected-path grant** (\`--allow-protected\`): \`${state.protectedGrant.join("`, `")}\``,
+        ]
+      : []),
     "",
     "### What this cap means",
     "",

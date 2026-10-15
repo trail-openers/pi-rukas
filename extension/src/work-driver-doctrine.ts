@@ -77,6 +77,11 @@ function segmentsOf(p: string): string[] {
     .map((s) => s.toLowerCase());
 }
 
+/** The comparison form of a path — what a #1090 grant must equal exactly. */
+export function protectedPathKey(p: string): string {
+  return segmentsOf(p).join("/");
+}
+
 /** Does this path define a capability or gate the cycle is judged by? */
 export function isProtectedPath(p: string): boolean {
   const segs = segmentsOf(p);
@@ -175,8 +180,16 @@ export async function readDoctrineAtBase(
  * The develop gate's failure message for a self-modifying patch.
  *
  * Names the paths, because "a protected file changed" without saying which one
- * is the kind of message that sends an operator digging through a diff.
+ * is the kind of message that sends an operator digging through a diff. A
+ * developer re-dispatch can never satisfy this gate, so the remedy is the
+ * operator's: the exact `/work` command that grants every protected path the
+ * patch touched (#1090), or the process-wide escape hatch.
  */
-export function explainProtectedPaths(paths: readonly string[]): string {
-  return `develop wrote to ${paths.length} protected path(s) — ${paths.join(", ")}. These define what verification, review and permission mean for this cycle, so a cycle that edits them is grading its own work. Make the change yourself, or re-run with PI_ENSEMBLE_PROTECTED_PATHS=0 if it is genuinely the work you asked for.`;
+export function explainProtectedPaths(
+  ungranted: readonly string[],
+  allTouched: readonly string[],
+  issues: readonly number[],
+): string {
+  const grant = [...new Set(allTouched.map(protectedPathKey))].sort().join(",");
+  return `develop wrote to ${ungranted.length} protected path(s) without an operator grant — ${ungranted.join(", ")}. These define what verification, review and permission mean for this cycle, so a cycle that edits them is grading its own work. Make the change yourself; or, if it is genuinely the work you asked for, grant the protected paths this patch touched, for one cycle only, with \`/work ${issues.join(" ")} --restart --allow-protected ${grant}\` (re-running with PI_ENSEMBLE_PROTECTED_PATHS=0 disables the gate for every path instead).`;
 }
