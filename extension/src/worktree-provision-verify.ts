@@ -23,11 +23,17 @@ function candidatesForDir(dirRel: string): string[] {
 }
 /**
  * The shareable-dep source locations the hook path must VERIFY afterwards:
- * a non-empty candidate under `repoRoot` or one of the discovered package
- * dirs (the same resolution as `findDepDirs`, minus the gitignore check —
- * on the hook path the source is gitignored by definition). `dirRel === ""`
- * is the `repoRoot` itself; only `node_modules` is conventionally nested in
- * a package dir.
+ * EVERY non-empty candidate under `repoRoot` and the discovered package dirs
+ * (the same resolution as `findDepDirs`, minus the gitignore check — on the
+ * hook path the source is gitignored by definition). `dirRel === ""` is the
+ * `repoRoot` itself; only `node_modules` is conventionally nested in a
+ * package dir.
+ *
+ * #1146 — every location, not the first per dep name: pi-rukas has a
+ * non-empty root `node_modules` (a jiti compile cache) AND its real tree at
+ * `extension/node_modules`. First-wins verified only the root one, so a hook
+ * that linked the tree the verify command needs still read as hook-failed,
+ * and a missing nested tree was never noticed.
  */
 export async function expectedDepLocations(
   repoRoot: string,
@@ -39,17 +45,36 @@ export async function expectedDepLocations(
   ];
   const found: Array<{ dirRel: string; source: string }> = [];
   for (const dep of SHAREABLE_DEPS) {
-    let hit: { dirRel: string; source: string } | undefined;
     for (const { dirRel, source } of locations) {
       if (!candidatesForDir(dirRel).includes(dep)) continue;
       if (await isNonEmptyDirectory(path.join(source, dep))) {
-        hit = { dirRel, source: path.join(source, dep) };
-        break;
+        found.push({ dirRel, source: path.join(source, dep) });
       }
     }
-    if (hit) found.push(hit);
   }
   return found;
+}
+
+/**
+ * #1146 — the expected dependency locations a worktree does NOT have: the
+ * source is non-empty but the worktree path does not resolve to a non-empty
+ * directory. The develop gate reads this before running the verify command,
+ * so a bare worktree fails in seconds with the missing path named instead of
+ * stalling until the verify timeout.
+ */
+export async function missingDepLocations(
+  repoRoot: string,
+  packageDirs: string[],
+  worktreeAbs: string,
+): Promise<Array<{ rel: string; source: string }>> {
+  const missing: Array<{ rel: string; source: string }> = [];
+  for (const { dirRel, source } of await expectedDepLocations(repoRoot, packageDirs)) {
+    const rel = path.join(dirRel, path.basename(source));
+    if (!(await resolvedNonEmptyDirectory(path.join(worktreeAbs, rel)))) {
+      missing.push({ rel, source });
+    }
+  }
+  return missing;
 }
 
 /**
