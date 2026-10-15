@@ -165,8 +165,23 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
   const owner = det.url ? (parseOwner(det.url) ?? "") : "";
   const repo = det.url ? (parseRepo(det.url) ?? "") : "";
 
+  /**
+   * #1261 — default per-call exec timeout. `gh` calls against a healthy API
+   * complete in well under 60 s; a half-open connection or a stalled proxy
+   * otherwise hangs the driver's entry and handoff paths forever (no event
+   * persisted, no terminal status, no terminal status). A caller that
+   * supplies its own `execOpts.timeout` (e.g. the explore body fetch's 45 s)
+   * overrides this via the spread below.
+   */
+  const DEFAULT_EXEC_TIMEOUT_MS = 60_000;
+
   const run = async <T>(cmd: string, map: (stdout: string) => T): Promise<T> => {
-    const { stdout } = await execFn(cmd, { cwd, maxBuffer: 512 * 1024, ...extraOpts });
+    const { stdout } = await execFn(cmd, {
+      cwd,
+      maxBuffer: 512 * 1024,
+      timeout: DEFAULT_EXEC_TIMEOUT_MS,
+      ...extraOpts,
+    });
     return map(stdout);
   };
 
