@@ -167,6 +167,9 @@ const REFUSED: string[] = [
   "gh pr mer\\\nge 17",
   "gh pr m$'\\x65'rge 17",
   "$'\\x67h' pr merge 17",
+  "$'\\x67h' pr $'\\x6d\\x65rge' 17",
+  "$'\\147\\150' pr $'\\155erge' 17",
+  "$'\\u0067h' pr $'\\U0000006derge' 17",
   'gh pr m$"erge" 17',
   'gh pr merge 17 "unterminated',
   "gh pr merge '17",
@@ -215,6 +218,9 @@ const REFUSED: string[] = [
   "glab mr merge -m",
   "glab mr merge 12 --delete-branch",
   "glab pr merge 12",
+  "glab mr accept 17",
+  "glab mr accept 17 --squash",
+  "glab -R g/p mr accept",
   "gh mr merge 12",
   // REST, GraphQL, other clients — refused whatever the method.
   "gh api repos/o/r/pulls/12/merge",
@@ -259,6 +265,7 @@ const NOT_MERGES: string[] = [
   "gh api repos/o/r/pulls/17 --jq .mergeable",
   "cd x && git merge origin/main",
   "bun run smoke-tests/test-merge-guard.ts",
+  "gh pr view 17 $'x'",
   "",
 ];
 for (const cmd of NOT_MERGES) {

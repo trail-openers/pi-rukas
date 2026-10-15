@@ -11,8 +11,8 @@
  *      `https`, `api.github.com`, `gitlab`) AND a merge word (`merge` as a
  *      whole word, `mergepullrequest`, `enablepullrequestautomerge`). The
  *      words are also looked for after quote and backslash removal, so
- *      `g"h"` and `m"erge"` trigger; so does `pr merge` / `mr merge` alone (a
- *      forge CLI run under another name). No trigger → `none`: not a merge.
+ *      `g"h"`, `m"erge"` and `$'\x6d'erge` trigger; so does `pr merge` /
+ *      `mr merge` / `mr accept` alone. No trigger → `none`: not a merge.
  *   2. A triggered command must be EXACTLY one simple command in the grammar
  *      below, or it is `refused`:
  *
@@ -46,29 +46,51 @@ export function isValidRepoValue(value: string): boolean {
 
 const FORGE_WORD =
   /(?:^|[^a-z0-9_])(?:gh|glab|hub|curl|wget|https?)(?![a-z0-9_])|api\.github\.com|gitlab/i;
-/** `pr merge` / `mr merge` — a forge CLI run under another name (`./g pr merge 17`). */
-const VERB_PAIR = /(?:^|[^a-z0-9_])[pm]r\s+merge(?![a-z0-9_])/i;
+/**
+ * `pr merge` / `mr merge` / `mr accept` (glab's alias) — a merge verb even
+ * when the forge CLI runs under another name (`./g pr merge 17`).
+ */
+const VERB_PAIR = /(?:^|[^a-z0-9_])[pm]r\s+(?:merge|accept)(?![a-z0-9_])/i;
 const MERGE_WORD =
   /(?:^|[^a-z0-9_])merge(?![a-z0-9_])|mergepullrequest|enablepullrequestautomerge/i;
 
 /** Outside single quotes, any of these refuses (metacharacters, expansions, comments). */
 const FORBIDDEN = new Set("$`\\;|&<>(){}*?[#");
 
+/** Decode the escapes of an ANSI-C `$'…'` body that can spell a letter. */
+function ansiC(body: string): string {
+  return body.replace(
+    /\\(x[0-9a-fA-F]{1,2}|u[0-9a-fA-F]{1,4}|U[0-9a-fA-F]{1,8}|[0-7]{1,3}|[\s\S])/g,
+    (_, e: string) => {
+      const code = /^[xuU]/.test(e)
+        ? Number.parseInt(e.slice(1), 16)
+        : /^[0-7]/.test(e)
+          ? Number.parseInt(e, 8)
+          : -1;
+      if (code < 0) return e;
+      return code <= 0x10ffff ? String.fromCodePoint(code) : "";
+    },
+  );
+}
+
 /**
  * Step 1: does this command need the strict grammar at all? Each word is
- * looked for in the raw text and after quote and backslash removal (`g"h"`,
- * `m'erge'`, `mer\⏎ge`); an ANSI-C `$'…'` string, whose escapes can spell
- * either word, stands in for whichever one is missing.
+ * looked for in the raw text and in a widened view that undoes what bash's
+ * quoting can do to a word: ANSI-C `$'…'` escapes decoded, backslash-newline
+ * joined, quotes and backslashes removed (`g"h"`, `m'erge'`, `$'\x6d'erge`).
+ * The view only widens the trigger; the grammar in `lex` decides.
  */
 function triggers(command: string): boolean {
-  const dequoted = command
+  const widened = command
+    .replace(/\$'((?:[^'\\]|\\[\s\S])*)'/g, (_, body: string) => ansiC(body))
     .replace(/\\\r?\n/g, "")
     .replace(/\$(?=['"])/g, "")
     .replace(/['"\\]/g, "");
-  const forge = FORGE_WORD.test(command) || FORGE_WORD.test(dequoted);
-  const merge = MERGE_WORD.test(command) || MERGE_WORD.test(dequoted);
-  if (VERB_PAIR.test(command) || VERB_PAIR.test(dequoted)) return true;
-  return (forge && merge) || ((forge || merge) && command.includes("$'"));
+  for (const text of [command, widened]) {
+    if (VERB_PAIR.test(text)) return true;
+  }
+  const forge = FORGE_WORD.test(command) || FORGE_WORD.test(widened);
+  return forge && (MERGE_WORD.test(command) || MERGE_WORD.test(widened));
 }
 
 /**
