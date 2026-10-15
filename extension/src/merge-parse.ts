@@ -417,7 +417,7 @@ function repoFlagBeforeVerb(command: string): string | undefined {
  * before matching its tokens, where `17)` is the number 17 in
  * `(gh pr merge 17)`).
  */
-function repoFlagInTokens(seg: string): string | undefined {
+export function repoFlagInTokens(seg: string): string | undefined {
   const tokens = rawTokens(seg);
   if (tokens.terminated === false) return undefined;
   for (let i = 0; i < tokens.list.length; i++) {

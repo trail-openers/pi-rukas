@@ -124,6 +124,29 @@ benign('echo "\\$(gh pr merge 17)"');
 merges('gh pr merge 17 --subject "fix: a b" 2>&1 &', 17);
 merges('gh pr merge "17"', 17);
 
+// ------------------------------------------------------------ review round 1
+// The REST door reads the repo with the verb door's token reader.
+merges("gh -Ro/r api -X PUT repos/o/r/pulls/17/merge", 17, "o/r");
+merges('gh --repo="o/r" api -X PUT repos/o/r/pulls/17/merge', 17, "o/r");
+kind('gh --repo="o/r;id" api -X PUT repos/o/r/pulls/17/merge', "unsafe");
+// An empty repo value is refused, not replaced by the CWD's repo.
+kind("gh pr merge 17 --repo=", "unsafe");
+kind('gh pr merge 17 --repo=""', "unsafe");
+// ANSI-C escapes and brace expansion are what bash runs.
+merges("$'\\x67h' pr merge 17", 17);
+merges("$'\\147h' pr merge 17", 17);
+merges("$'\\u0067h' pr merge 17", 17);
+merges("{gh,pr,merge,17}", 17);
+merges("gh pr m{e,}rge 17", 17);
+benign("echo {a,b}; gh pr view 17");
+// A glab method that is not a literal word fails closed.
+merges(`${GL} --method "$M"`, 17);
+merges(`${GL} -X`, 17);
+// The case-arm scan stops at a separator; quoted parens inside a
+// substitution do not end it early.
+merges("case x in esac; gh pr merge 17; echo $(date)", 17);
+merges('$(echo ")") gh pr merge 17', 17);
+
 // ------------------------------------------------------------ the REAL hook refuses
 await setupLedgerPath();
 for (const cmd of [

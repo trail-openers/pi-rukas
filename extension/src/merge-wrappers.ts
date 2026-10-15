@@ -9,7 +9,7 @@
  * imports the head match back.
  */
 
-import { rawTokens, unquoteArg } from "./merge-tokens.ts";
+import { isSeparatorToken, rawTokens, unquoteArg } from "./merge-tokens.ts";
 import { mergeVerbHeadRegex } from "./merge-tokens.ts";
 // Intentional cycle: merge-verb-head.ts imports `matchMergeVerb` and
 // `skipLeadingWrappers` back from this file. Safe — both directions are
@@ -141,7 +141,10 @@ export function skipLeadingWrappers(tokens: string[], start: number): number {
     if (t === "case") {
       let j = i + 2;
       if (tokens[j] === "in") j++;
-      while (j < tokens.length && !(tokens[j] ?? "").endsWith(")")) j++;
+      while (j < tokens.length && !(tokens[j] ?? "").endsWith(")")) {
+        if (isSeparatorToken(tokens[j] ?? "")) return i;
+        j++;
+      }
       if (j >= tokens.length) return i;
       i = j + 1;
       continue;
@@ -313,7 +316,10 @@ function skipSubstitution(tokens: string[], start: number): number {
   let ticks = 0;
   let i = start;
   while (i < tokens.length) {
-    for (const c of tokens[i] ?? "") {
+    const tok = tokens[i] ?? "";
+    // A quoted token is data — its parens/backticks do not count.
+    const quoted = tok[0] === "'" || tok[0] === '"' || tok.startsWith("$'");
+    for (const c of quoted ? "" : tok) {
       if (c === "(") depth++;
       else if (c === ")") depth--;
       else if (c === "`") ticks++;

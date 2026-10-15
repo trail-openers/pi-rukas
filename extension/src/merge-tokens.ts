@@ -136,6 +136,11 @@ export function rawTokens(raw: string): { list: string[]; terminated: boolean } 
   return { list, terminated: true };
 }
 
+/** True when `t` is a separator token `rawTokens` emits (one predicate for every walk). */
+export function isSeparatorToken(t: string): boolean {
+  return t === ";" || t === "&&" || t === "|" || t === "||" || t === "&";
+}
+
 /** True when the unquoted character at `i` is a separator that ends a word. */
 function endsWord(raw: string, i: number): boolean {
   const c = raw[i];
@@ -430,10 +435,11 @@ export function parseArgsAfterVerb(args: string): {
           val = tokens.list[i + 1] ?? "";
           i++;
         }
-        if (val.length > 0) {
-          const q = val[0];
-          repo = stripGluedParen(q === "'" || q === '"' ? val.slice(1, -1) : val);
-        }
+        // An empty value (`--repo=` / `--repo=""`) is kept as "" — the
+        // `isValidRepoValue` boundary refuses it instead of the guard
+        // silently falling back to the CWD's repo.
+        const q = val[0];
+        repo = stripGluedParen(q === "'" || q === '"' ? val.slice(1, -1) : val);
         continue;
       }
       if (t.indexOf("=") > 0) continue;
@@ -452,7 +458,7 @@ export function parseArgsAfterVerb(args: string): {
       }
       continue;
     }
-    if (t === ";" || t === "&&" || t === "|" || t === "||") {
+    if (isSeparatorToken(t)) {
       // A shell separator ends this invocation's argument list.
       break;
     }

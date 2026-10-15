@@ -34,7 +34,7 @@ export function canonicalCommand(command: string): string | undefined {
   let rewritten = false;
   const flush = (end: number) => {
     if (start === -1) return;
-    if (!rewritten) out.push(command.slice(start, end));
+    if (!rewritten) out.push(...braceExpand(command.slice(start, end)));
     else if (PLAIN_WORD.test(word)) out.push(word);
     else out.push(`'${word.replaceAll("'", `'\\''`)}'`);
     word = "";
@@ -113,9 +113,64 @@ function isRedirectAmp(s: string, i: number): boolean {
   return prev === ">" || prev === "<" || s[i + 1] === ">";
 }
 
-/** The common ANSI-C escapes of a `$'…'` body (the rest stay verbatim). */
+/** A `$'…'` body with bash's ANSI-C escapes decoded (\xHH, \NNN, \uHHHH, \UHHHHHHHH, \cX, …). */
 function ansiC(body: string): string {
-  return body.replace(/\\(.)/g, (_m, e: string) =>
-    e === "n" ? "\n" : e === "t" ? "\t" : e === "\\" || e === "'" || e === '"' ? e : `\\${e}`,
+  const simple: Record<string, string> = {
+    a: "\x07",
+    b: "\b",
+    e: "\x1b",
+    E: "\x1b",
+    f: "\f",
+    n: "\n",
+    r: "\r",
+    t: "\t",
+    v: "\v",
+    "\\": "\\",
+    "'": "'",
+    '"': '"',
+    "?": "?",
+  };
+  return body.replace(
+    /\\(x[0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]{1,4}|U[0-9A-Fa-f]{1,8}|[0-7]{1,3}|c.|.)/gs,
+    (m, e: string) => {
+      const code =
+        e[0] === "x" || e[0] === "u" || e[0] === "U"
+          ? Number.parseInt(e.slice(1), 16)
+          : /^[0-7]/.test(e)
+            ? Number.parseInt(e, 8)
+            : e[0] === "c" && e.length === 2
+              ? e.charCodeAt(1) & 0x1f
+              : undefined;
+      if (code !== undefined) return code <= 0x10ffff ? String.fromCodePoint(code) : m;
+      return simple[e] ?? m;
+    },
   );
+}
+
+/**
+ * Brace expansion of an unquoted word (`{gh,pr,merge,17}`, `me{r,}ge`):
+ * the innermost `{…,…}` group is expanded repeatedly, bounded so a hostile
+ * word cannot blow up. Sequences (`{1..3}`) and words with no comma group
+ * are left as written.
+ */
+function braceExpand(word: string): string[] {
+  let words = [word];
+  for (let round = 0; round < 8; round++) {
+    let changed = false;
+    const next: string[] = [];
+    for (const w of words) {
+      const m = /\{([^{}]*,[^{}]*)\}/.exec(w);
+      if (!m) {
+        next.push(w);
+        continue;
+      }
+      changed = true;
+      for (const alt of (m[1] ?? "").split(","))
+        next.push(w.slice(0, m.index) + alt + w.slice(m.index + m[0].length));
+    }
+    if (next.length > 256) return [word];
+    words = next;
+    if (!changed) break;
+  }
+  return words.filter((w) => w !== "");
 }

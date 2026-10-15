@@ -15,11 +15,15 @@
  *     ledger for a different PR than the one the command merges.
  */
 
-import { stripQuotedSegments } from "./bash-command-parser.ts";
 import { mergesPr } from "./bash-merges-pr.ts";
 import { canonicalCommand } from "./merge-canonical.ts";
-import { extractMergeNumber, mergeVerbArgs, mergeVerbRepo } from "./merge-parse.ts";
-import { REPO_VALUE_PATTERN } from "./merge-tokens.ts";
+import {
+  extractMergeNumber,
+  mergeVerbArgs,
+  mergeVerbRepo,
+  repoFlagInTokens,
+} from "./merge-parse.ts";
+import { isValidRepoValue, shellSegments } from "./merge-tokens.ts";
 
 export type MergeAnalysis =
   | { kind: "none" }
@@ -32,6 +36,14 @@ export type MergeAnalysis =
  * throws on pathological input; the caller refuses on a throw.
  */
 export function analyseMergeCommand(command: string): MergeAnalysis {
+  // Cheap pre-filter for the common non-merge call: every merge shape names
+  // `merge` once quotes and escapes are removed. An ANSI-C `$'…'` string can
+  // spell it in escapes and a brace list can assemble it (`m{e,}rge`), so
+  // either one always runs the full analysis.
+  const plain = command.replace(/["'\\]/g, "");
+  if (!plain.includes("merge") && !command.includes("$'") && !/\{[^}]*,/.test(command)) {
+    return { kind: "none" };
+  }
   const raw = analyseText(command);
   const canonical = canonicalCommand(command);
   if (canonical === undefined || canonical === command) return raw;
@@ -60,28 +72,28 @@ function analyseText(command: string): MergeAnalysis {
   // `api`, not the merge verb), so the REST invocation's own repo flag
   // (`gh -R o/r api …/pulls/N/merge`) is threaded instead (#955 adversarial
   // round 5).
-  const repo = fromRepo?.kind === "repo" ? fromRepo.repo : restRepoFor(command);
+  const rest = fromRepo?.kind === "repo" ? fromRepo.repo : restRepoFor(command);
+  if (typeof rest === "object") return rest;
+  const repo = rest;
   const prNumber = fromVerb !== undefined ? extractMergeNumber(fromVerb) : extractPrNumber(span);
   return { kind: "merge", span, prNumber, repo };
 }
 
 /**
  * The repo flag on a REST-door invocation (`gh -R o/r api …`, `glab
- * --project o/r api …`, and the `=` spellings), anchored to the repo shape
- * (`REPO_VALUE_PATTERN`) so an injected value can never be threaded into an
- * exec string. A REST READ never reaches here (`mergesPr` returns
- * undefined first). `--project` is the repo flag the verb door already
- * accepts for glab (#962: the REST thread read only `-R`/`--repo`).
+ * --project o/r api …`), read by the SAME token reader the verb door uses
+ * (`repoFlagInTokens`: every `=` / glued `-RVALUE` / quoted spelling, #962)
+ * over each segment. A REST READ never reaches here (`mergesPr` returns
+ * undefined first). An invalid or empty value is unsafe — refused, never
+ * interpolated and never silently replaced by the CWD's repo.
  */
-function restRepoFor(command: string): string | undefined {
-  const c = stripQuotedSegments(command);
-  // No `\b` before the flag: `-R` / `--repo` begin with a non-word
-  // character, so a leading word-boundary assertion never matches (the
-  // guard would silently read no repo and verify the PR in the CWD's repo).
-  const m = new RegExp(
-    `(?:^|[;&|\\s])(?:-R|--repo|--project)(?:\\s+|=)(${REPO_VALUE_PATTERN.source.slice(1, -1)})`,
-  ).exec(c);
-  return m?.[1];
+function restRepoFor(command: string): MergeAnalysis | string | undefined {
+  for (const seg of shellSegments(command)) {
+    const v = repoFlagInTokens(seg);
+    if (v === undefined) continue;
+    return isValidRepoValue(v) ? v : { kind: "unsafe" };
+  }
+  return undefined;
 }
 
 /**
@@ -92,6 +104,6 @@ function restRepoFor(command: string): string | undefined {
  * `projects/1/merge_requests/17/merge` is the project id, not MR 17).
  */
 function extractPrNumber(matched: string): number | undefined {
-  const m = /\/(\d+)\/merge(?:[?&#]|$)/.exec(matched);
+  const m = /\/(\d+)\/merge\b/.exec(matched);
   return m?.[1] ? Number.parseInt(m[1], 10) : undefined;
 }

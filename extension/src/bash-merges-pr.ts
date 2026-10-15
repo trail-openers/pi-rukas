@@ -2,6 +2,7 @@ import { mergeVerbArgs } from "./merge-parse.ts";
 import { exceedsAnalysisBound } from "./merge-size.ts";
 import {
   MAX_CONSTRUCT_DEPTH,
+  isSeparatorToken,
   mergeVerbSpanRegex,
   rawTokens,
   shellSegments,
@@ -209,7 +210,7 @@ function restDoorTokens(text: string): string | undefined {
     }
   }
   const n = list.length;
-  const isSep = (t: string) => t === ";" || t === "&&" || t === "||" || t === "|" || t === "&";
+  const isSep = isSeparatorToken;
   for (let i = 0; i < n; i++) {
     if (i > 0 && !isSep(unquoteArg(list[i - 1] ?? ""))) continue;
     // The segment's unquoted tokens, up to the next separator.
@@ -295,10 +296,7 @@ function restDoorTokens(text: string): string | undefined {
       // `hasBodyFields` rule): `--method GET -f state=merged` is not a read
       // the guard may wave through.
       if (!/\/(?:mr|merge_requests)(?:\/[^\s/?#]+)?\/merge(?:[?&#]|$)/.test(endpoint)) continue;
-      const methods = [...all.matchAll(/(?:^|\s)(?:--method|-X)(?:=|\s+)?([A-Za-z]+)/g)].map((m) =>
-        (m[1] ?? "").toUpperCase(),
-      );
-      const writesMethod = methods.some((m) => m !== "GET" && m !== "HEAD");
+      const writesMethod = glabMethods(seg.slice(ci)).some((m) => m !== "GET" && m !== "HEAD");
       const hasBodyFields =
         /(^|\s)(?:-f|-F|--field|--raw-field|--input)(?:=|\s|$)/.test(all) ||
         /(^|\s)-[fF]\S/.test(all);
@@ -306,6 +304,26 @@ function restDoorTokens(text: string): string | undefined {
     }
   }
   return undefined;
+}
+
+/**
+ * The methods a glab `api` invocation names, upper-cased, in every spelling
+ * (`-X PUT`, `-XPUT`, `--method PUT`, `--method=PUT`). A flag with no value,
+ * or a value that is not a literal word (`--method "$M"`), yields "?" —
+ * which the caller treats as a write: an unreadable method fails closed.
+ */
+function glabMethods(tokens: string[]): string[] {
+  const out: string[] = [];
+  for (let k = 0; k < tokens.length; k++) {
+    const t = tokens[k] ?? "";
+    let v: string | undefined;
+    if (t === "-X" || t === "--method") v = tokens[k + 1] ?? "";
+    else if (t.startsWith("--method=")) v = t.slice("--method=".length);
+    else if (t.startsWith("-X")) v = t.slice(2);
+    else continue;
+    out.push(/^[A-Za-z]+$/.test(v) ? v.toUpperCase() : "?");
+  }
+  return out;
 }
 
 /**

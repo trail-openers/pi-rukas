@@ -43,7 +43,7 @@
  * back would be a cycle.
  */
 
-import { rawTokens, unquoteArg } from "./merge-tokens.ts";
+import { isSeparatorToken, rawTokens, unquoteArg } from "./merge-tokens.ts";
 import { matchMergeVerb, skipLeadingWrappers } from "./merge-wrappers.ts";
 
 export { matchMergeVerb };
@@ -120,7 +120,7 @@ function unwrapOneLayer(command: string): string | undefined {
   const n = list.length;
   while (i < n) {
     const t = list[i] ?? "";
-    if (t === ";" || t === "&&" || t === "|" || t === "||" || t === "&") {
+    if (isSeparatorToken(t)) {
       i++;
       continue; // a new segment starts — the invocation must head a segment
     }
@@ -249,7 +249,7 @@ function unwrapOneLayer(command: string): string | undefined {
       let anyQuoted = false;
       for (let k = i + 1; k < n; k++) {
         const a = tokens.list[k] ?? "";
-        if (a === ";" || a === "&&" || a === "|" || a === "||" || a === "&") break;
+        if (isSeparatorToken(a)) break;
         const q = a[0];
         if (q === "'" || q === '"' || a.startsWith("$'")) anyQuoted = true;
         args.push(q === "'" || q === '"' || a.startsWith("$'") ? unquoteArg(a) : a);
