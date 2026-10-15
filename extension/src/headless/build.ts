@@ -5,8 +5,9 @@
  *
  * The commit is, in order: the marker the image build bakes into
  * `<installRoot>/.pi/pi-rukas-commit`; else the HEAD of the install root when
- * it is itself a git checkout (a dev tree); else none. `buildCommit` falls
- * back to the release (`v<version>`) so a result always names its build.
+ * it is itself a git checkout (a dev tree); else null. It is only ever a full
+ * 40-hex SHA, so a host can run `git merge-base --is-ancestor` on it safely;
+ * the release version is reported separately, never in its place.
  */
 
 import { execFileSync } from "node:child_process";
@@ -30,14 +31,19 @@ export function readBuildVersion(pkgJsonPath?: string): string {
   }
 }
 
+const SHA = /^[0-9a-f]{40}$/;
+
 /**
  * Read the commit baked into `<root>/.pi/pi-rukas-commit` by the image build.
- * `null` when the file is missing or empty — never a fabricated string.
+ * `null` when the file is missing, empty or not a 40-hex SHA — never a
+ * fabricated or partial string.
  */
 export function readBakedCommit(root: string): string | null {
   try {
-    const raw = readFileSync(path.join(root, ".pi", "pi-rukas-commit"), "utf8").trim();
-    return raw.length > 0 ? raw : null;
+    const raw = readFileSync(path.join(root, ".pi", "pi-rukas-commit"), "utf8")
+      .trim()
+      .toLowerCase();
+    return SHA.test(raw) ? raw : null;
   } catch {
     return null;
   }
@@ -57,20 +63,13 @@ export function readCheckoutCommit(root: string): string | null {
     });
     const [top, head] = out.trim().split("\n");
     if (!top || !head || path.resolve(top) !== path.resolve(root)) return null;
-    return /^[0-9a-f]{40}$/.test(head) ? head : null;
+    return SHA.test(head) ? head : null;
   } catch {
     return null;
   }
 }
 
 /** The commit this build was made from, or `null` when nothing records it. */
-export function readBuildCommitSha(root: string = INSTALL_ROOT): string | null {
+export function readBuildCommit(root: string = INSTALL_ROOT): string | null {
   return readBakedCommit(root) ?? readCheckoutCommit(root);
-}
-
-/** The commit, else `v<version>`: always names the build. */
-export function readBuildCommit(root: string = INSTALL_ROOT): string {
-  return (
-    readBuildCommitSha(root) ?? `v${readBuildVersion(path.join(root, "extension", "package.json"))}`
-  );
 }

@@ -165,11 +165,14 @@ export async function runHeadless(opts: HeadlessRunOptions): Promise<HeadlessRun
   for (const issue of unrun) {
     results.push(await unrunResult(opts.repoRoot, issue, interruptCode));
   }
-  // #1326 — the PR's URL, resolved once from the local remote (no network).
-  if (results.some((r) => r.prNumber !== undefined)) {
+  // #1326 — a refused start is not resumable while its owner lives; a PR URL
+  // the driver did not record is resolved once from the local remote.
+  for (const r of results) if (r.exitCode === EXIT.refused) r.resumable = false;
+  if (results.some((r) => r.prNumber !== undefined && r.prUrl === undefined)) {
     const prUrlFor = await prUrlResolver(opts.repoRoot);
     for (const r of results) {
-      const url = r.prNumber !== undefined ? prUrlFor(r.prNumber) : undefined;
+      if (r.prNumber === undefined || r.prUrl !== undefined) continue;
+      const url = prUrlFor(r.prNumber);
       if (url) r.prUrl = url;
     }
   }

@@ -23,7 +23,7 @@
 import { killLiveProcessGroups } from "../spawn-kill.ts";
 import { releaseHeldIntegrationLocks } from "../work-driver-lock.ts";
 import { resolveRepoRoot } from "../work-entry.ts";
-import { readBuildCommit } from "./build.ts";
+import { readBuildCommit, readBuildVersion } from "./build.ts";
 import { buildCapabilities } from "./capabilities.ts";
 import { EXIT } from "./exit-code.ts";
 import { resultDocument } from "./result.ts";
@@ -98,7 +98,9 @@ async function main(argv: string[]): Promise<number> {
     write: (line) => process.stderr.write(`${line}\n`),
   });
   if (args.json) {
-    process.stdout.write(`${JSON.stringify(resultDocument(run, readBuildCommit()))}\n`);
+    process.stdout.write(
+      `${JSON.stringify(resultDocument(run, { commit: readBuildCommit(), version: readBuildVersion() }))}\n`,
+    );
   } else {
     const parts = run.results.map((r) => `#${r.issue} ${r.status} (exit ${r.exitCode})`);
     process.stdout.write(`pi-rukas-headless: ${parts.join(", ") || "nothing ran"}\n`);

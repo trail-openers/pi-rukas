@@ -13,10 +13,10 @@
  * Offline: temp directories only, and one `--capabilities` run of the CLI.
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { readBuildCommit, readBuildCommitSha } from "../src/headless/build.ts";
+import { readBuildCommit, readBuildVersion } from "../src/headless/build.ts";
 import { buildCapabilities } from "../src/headless/capabilities.ts";
 import { FIXED_CAPS, capStep, capVocabulary } from "../src/headless/caps.ts";
 import { createHeadlessHost } from "../src/headless/host.ts";
@@ -26,7 +26,7 @@ import {
   NDJSON_STABLE_VERSION,
   validateNdjsonLine,
 } from "../src/headless/ndjson.ts";
-import { formatPrUrl } from "../src/headless/pr-url.ts";
+import { formatPrUrl, prUrlFromComment } from "../src/headless/pr-url.ts";
 import { RESULT_SCHEMA_VERSION, projectIssue, resultDocument } from "../src/headless/result.ts";
 import type { WorkEvent } from "../src/workflow-state-events.ts";
 import { WORK_STEPS } from "../src/workflow-state-schema.ts";
@@ -144,6 +144,14 @@ const capHit = (cap: string, at: number): WorkEvent =>
   );
   const r = projectIssue(s, "f");
   assert(r.resumable === true && r.failedStep === "ci", "an interrupted cycle is resumable at ci");
+  const saved = process.env.PI_ENSEMBLE_RESUME;
+  process.env.PI_ENSEMBLE_RESUME = "0";
+  try {
+    assert(projectIssue(s, "f").resumable === false, "PI_ENSEMBLE_RESUME=0: nothing is resumable");
+  } finally {
+    if (saved === undefined) delete process.env.PI_ENSEMBLE_RESUME;
+    else process.env.PI_ENSEMBLE_RESUME = saved;
+  }
   assert(r.usage?.dispatches === 0, "a cycle with no dispatch sums to zero");
 }
 {
@@ -161,14 +169,17 @@ const capHit = (cap: string, at: number): WorkEvent =>
 
 // ── The --json document.
 {
-  const doc = resultDocument({ exitCode: 0, results: [] }, "abc123");
+  const doc = resultDocument({ exitCode: 0, results: [] }, { commit: null, version: "1.0.0" });
   assert(
-    doc.schemaVersion === 2 && doc.buildCommit === "abc123" && !("error" in doc),
-    "the document carries schemaVersion and buildCommit",
+    doc.schemaVersion === 2 &&
+      doc.buildCommit === null &&
+      doc.buildVersion === "1.0.0" &&
+      !("error" in doc),
+    "the document carries schemaVersion, buildCommit (SHA or null) and buildVersion",
   );
   const withErr = resultDocument(
     { exitCode: 30, results: [], error: { code: "state-diverged", message: "m" } },
-    "x",
+    { commit: null, version: "x" },
   );
   assert(withErr.error?.code === "state-diverged", "a runner error is kept");
 }
@@ -195,13 +206,16 @@ const capHit = (cap: string, at: number): WorkEvent =>
       "-m",
       "x",
     ]);
-    assert(readBuildCommitSha(root) === null, "a parent repository's HEAD is not reported");
-    assert(readBuildCommit(root) === "v9.9.9", "with no commit, buildCommit is the release");
+    assert(readBuildCommit(root) === null, "a parent repository's HEAD is not reported");
+    assert(readBuildVersion(path.join(root, "extension", "package.json")) === "9.9.9", "version");
     mkdirSync(path.join(root, ".pi"));
     writeFileSync(path.join(root, ".pi", "pi-rukas-commit"), "deadbeef\n");
-    assert(readBuildCommit(root) === "deadbeef", "the baked marker wins");
+    assert(readBuildCommit(root) === null, "a marker that is not a 40-hex SHA is ignored");
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    writeFileSync(path.join(root, ".pi", "pi-rukas-commit"), `${sha}\n`);
+    assert(readBuildCommit(root) === sha, "the baked marker wins");
     const head = execFileSync("git", ["-C", tmp, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-    assert(readBuildCommitSha(tmp) === head, "an install root that is a checkout reports its HEAD");
+    assert(readBuildCommit(tmp) === head, "an install root that is a checkout reports its HEAD");
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -214,25 +228,107 @@ const capHit = (cap: string, at: number): WorkEvent =>
   );
   const caps = JSON.parse(out) as { commit: string | null; schemaVersion: number };
   assert(
-    caps.commit === readBuildCommitSha(),
+    caps.commit === readBuildCommit(),
     `--capabilities reports this checkout's commit (${caps.commit})`,
   );
 }
 
-// ── prUrl.
-assert(
-  formatPrUrl("github", "git@github.com:o/r.git", 5) === "https://github.com/o/r/pull/5",
-  "a GitHub PR URL",
-);
-assert(
-  formatPrUrl("gitlab", "https://gitlab.example.com/g/p.git", 5) ===
-    "https://gitlab.example.com/g/p/-/merge_requests/5",
-  "a GitLab MR URL",
-);
-assert(
-  formatPrUrl("unknown", "https://x.example/o/r", 5) === undefined,
-  "no URL for an unknown forge",
-);
+// ── The image path: the Dockerfile's own bake step, fed the build arg the
+// publish workflow passes, writes a marker readBuildCommit accepts.
+{
+  const repoRoot = path.resolve(import.meta.dirname, "..", "..");
+  const docker = readFileSync(path.join(repoRoot, ".devcontainer", "Dockerfile"), "utf8");
+  const workflow = readFileSync(
+    path.join(repoRoot, ".github", "workflows", "publish-image.yml"),
+    "utf8",
+  );
+  assert(
+    /build-args: \|\s*\n\s*GITHUB_SHA=\$\{\{ github\.sha \}\}/.test(workflow),
+    "publish-image.yml passes GITHUB_SHA as a build arg",
+  );
+  const lines = docker.split("\n");
+  const argAt = lines.findIndex((l) => /^ARG GITHUB_SHA\b/.test(l));
+  const runAt = lines.findIndex((l) => l.startsWith("RUN") && l.includes("GITHUB_SHA"));
+  assert(
+    argAt >= 0 && runAt > argAt,
+    "the Dockerfile declares ARG GITHUB_SHA before the bake step",
+  );
+  let body = "";
+  for (let i = runAt; i < lines.length; i++) {
+    const l = lines[i] as string;
+    // Docker joins a `\`-continued line to the next with no newline.
+    body += l.replace(/\\$/, "");
+    if (!l.endsWith("\\")) break;
+  }
+  body = body.replace(/^RUN /, "");
+  const bake = (sha: string): string | null => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "pi-bake-"));
+    try {
+      execFileSync("bash", ["-c", body], {
+        env: { ...process.env, GITHUB_SHA: sha, PI_ENSEMBLE_DIR: dir },
+      });
+      return readBuildCommit(dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const sha = "89abcdef0123456789abcdef0123456789abcdef";
+  assert(bake(sha) === sha, "the image bake step writes a commit the build reports");
+  assert(bake("") === null, "no build arg bakes nothing");
+  assert(bake("v1.2.3") === null, "a non-SHA build arg bakes nothing");
+}
+
+// ── prUrl: only when unambiguous.
+{
+  const cases: [string, string, string | undefined][] = [
+    ["github", "git@github.com:o/r.git", "https://github.com/o/r/pull/5"],
+    ["github", "ssh://git@github.com:22/o/r.git", "https://github.com/o/r/pull/5"],
+    ["github", "https://ghe.example.com:8443/o/r", "https://ghe.example.com:8443/o/r/pull/5"],
+    ["github", "https://github.com/o/r/extra", undefined],
+    [
+      "gitlab",
+      "https://gitlab.example.com/g/sub/p.git",
+      "https://gitlab.example.com/g/sub/p/-/merge_requests/5",
+    ],
+    ["gitlab", "git@gitlab.com:g/sub/p.git", "https://gitlab.com/g/sub/p/-/merge_requests/5"],
+    // An ssh alias host (or a self-hosted ssh host) has no certain web address.
+    ["github", "git@github-work:o/r.git", undefined],
+    ["gitlab", "ssh://git@gitlab.example.com:2222/g/p.git", undefined],
+    ["gitlab", "https://gitlab.example.com/g/../p", undefined],
+    ["unknown", "https://x.example/o/r", undefined],
+  ];
+  for (const [forge, remote, want] of cases) {
+    const got = formatPrUrl(forge, remote, 5);
+    assert(got === want, `${forge} ${remote} → ${want ?? "no URL"} (${got ?? "none"})`);
+  }
+  assert(
+    prUrlFromComment("https://github.com/o/r/pull/5#issuecomment-1", 5) ===
+      "https://github.com/o/r/pull/5",
+    "a recorded PR comment URL yields the PR URL",
+  );
+  assert(
+    prUrlFromComment("https://github.com/o/r/pull/6#issuecomment-1", 5) === undefined,
+    "a comment on another PR is not used",
+  );
+  const s = build(
+    [
+      { kind: "merged", at: 1, prNumber: 5 },
+      {
+        kind: "handoff-emitted",
+        at: 2,
+        labelApplied: true,
+        targetType: "pr",
+        targetNumber: 5,
+        commentUrl: "https://gitlab.example.com/a/b/c/-/merge_requests/5#note_9",
+      } as WorkEvent,
+    ],
+    "merged",
+  );
+  assert(
+    projectIssue(s, "f").prUrl === "https://gitlab.example.com/a/b/c/-/merge_requests/5",
+    "the result prefers the PR URL the driver recorded",
+  );
+}
 
 // ── NDJSON stable subset.
 {
