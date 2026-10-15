@@ -20,6 +20,12 @@ import path from "node:path";
 import { execp } from "../src/exec.ts";
 import { cleanup, mergeMainFixture, writeLedger } from "./lib/auto-delta-fixture.ts";
 
+// The lens roster reads the installed skills dir (~/.pi/agent/skills), which CI
+// does not have. With no roster, runLensReview blocks before any lens child
+// runs, so the "lens children run" assertions would fail there. Point it at the
+// repo's own skill/ dir (the offline stand-in, as test-auto-delta-sha-head.ts does).
+process.env.PI_ENSEMBLE_SKILLS_DIR = path.resolve(import.meta.dirname, "..", "..", "skill");
+
 let exit = 0;
 function assert(cond: boolean, msg: string) {
   if (cond) console.log(`✓ ${msg}`);
