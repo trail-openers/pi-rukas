@@ -118,8 +118,8 @@ export async function routeStepOutcome(
       // 429, spend cap, model-not-found). Neither kind may be re-dispatched
       // by the SEMANTIC one-shot below or the transient budget.
       const finalProviderFault =
-        ((lastEvent as { providerRepeats?: number }).providerRepeats ?? 0) >= 2 ||
-        classification.maxRetries === 0;
+        (lastEvent.kind === "dispatch-failed-provider" ? (lastEvent.providerRepeats ?? 0) : 0) >=
+          2 || classification.maxRetries === 0;
       const semanticRetryAvailable =
         !finalProviderFault &&
         policy === "RETRY_ONCE" &&
@@ -240,7 +240,7 @@ export async function routeStepOutcome(
       // is never re-dispatched: waiting cannot clear a provider still failing
       // the same way, so the step halts straight through to the cap below.
       const finalFault =
-        ((tail as { providerRepeats?: number }).providerRepeats ?? 0) >= 2 ||
+        (tail.kind === "dispatch-failed-provider" ? (tail.providerRepeats ?? 0) : 0) >= 2 ||
         classification.maxRetries === 0;
       if (
         policy === "HALT" &&
@@ -369,7 +369,7 @@ export async function routeStepOutcome(
         // cause cannot be cleared by waiting), so no budget applies and the
         // step parks immediately via the exhausted branch below.
         const finalFault =
-          ((tail as { providerRepeats?: number }).providerRepeats ?? 0) >= 2 ||
+          (tail.kind === "dispatch-failed-provider" ? (tail.providerRepeats ?? 0) : 0) >= 2 ||
           classification.maxRetries === 0;
         const infra =
           !finalFault && classification.cause !== "crashed-unknown" && classification.shouldRetry;
