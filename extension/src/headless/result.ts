@@ -16,7 +16,7 @@ import { resumeEnabled } from "../work-driver-resume.ts";
 import type { WorkStep } from "../workflow-state-events.ts";
 import type { WorkState } from "../workflow-state.ts";
 import { type HeadlessCap, capStep } from "./caps.ts";
-import { EXIT, exitCodeForState, lastCap, lastEvent } from "./exit-code.ts";
+import { EXIT, exitCodeForState, lastCap, lastCapIndex, lastEvent } from "./exit-code.ts";
 import { recordedPrUrl } from "./pr-url.ts";
 
 /**
@@ -196,15 +196,7 @@ export function failedStepOf(state: WorkState): WorkStep | undefined {
   const named = cap !== undefined ? capStep(cap) : undefined;
   if (named) return named;
   const log = state.eventLog;
-  let end = log.length;
-  if (cap !== undefined) {
-    for (let i = log.length - 1; i >= 0; i--) {
-      if (log[i]?.kind === "cap-hit") {
-        end = i;
-        break;
-      }
-    }
-  }
+  const end = cap !== undefined ? lastCapIndex(state) : log.length;
   for (let i = end - 1; i >= 0; i--) {
     const e = log[i];
     if (e?.kind === "step-started" && e.step !== "handoff") return e.step;

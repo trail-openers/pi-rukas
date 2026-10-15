@@ -49,7 +49,7 @@ export const NDJSON_STABLE_FIELDS = {
   "handoff-emitted": ["at", "commentUrl", "labelApplied"],
   "ci-status": ["at", "status", "runUrl"],
   merged: ["at", "prNumber", "mergeCommit"],
-  interrupted: ["at", "reason"],
+  interrupted: ["at", "reason", "step"],
 } as const satisfies { [K in WorkEvent["kind"]]?: EventFields<K> };
 
 /** Stable kinds: the driver events above plus the runner's own `log` line. */
