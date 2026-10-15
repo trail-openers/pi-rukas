@@ -1,0 +1,279 @@
+#!/usr/bin/env bun
+/**
+ * #1349 — parks that reached no verdict on the code no longer share
+ * `verify-failed:<step>` with a real code failure.
+ *
+ *   - verifyCapFor: an environment failure parks verify-env, a red baseline
+ *     whose failures are the only ones parks verify-baseline-red, and one
+ *     real failure among them keeps verify-failed
+ *   - verifyDevelopOutcome reports baseline-red-only only when the verify
+ *     command's failures are the gate's only ones
+ *   - the fix-pass, commit-pr re-entry and PR-gone parks carry their own caps
+ *   - each new cap is published, validated, explained and mapped to a queue action
+ *   - a state file written before #1349 still renders as it did
+ *
+ * Offline: temp git repos and a stub verify command.
+ */
+import { execFile } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
+import { CAP_TEMPLATES, FIXED_CAPS, capStep } from "../src/headless/caps.ts";
+import { prGoneRefusal } from "../src/work-driver-commit-reentry.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
+import { HOST_EXHAUSTION_LABEL } from "../src/work-driver-exec-error.ts";
+import { explainCap } from "../src/work-driver-explain.ts";
+import { BASELINE_RED_MARKER } from "../src/work-driver-verify-baseline.ts";
+import { VERIFY_TIMEOUT_LABEL, verifyCapFor } from "../src/work-driver-verify-develop-helpers.ts";
+import { verifyDevelopOutcome } from "../src/work-driver-verify-develop.ts";
+import { humanActionFor } from "../src/work-queue.ts";
+import { FIX_PASS_EVIDENCE_PREFIX, PR_NOT_OPEN_MARKER } from "../src/workflow-state-cap.ts";
+import type { WorkCapLiteral } from "../src/workflow-state-events-caps.ts";
+import type { VerifyEvidenceOrigin } from "../src/workflow-state-schema-verify.ts";
+import { validateDiscriminants } from "../src/workflow-state-validate.ts";
+import { type WorkState, appendEvent, initialState } from "../src/workflow-state.ts";
+import { commandOf } from "./lib/argv-shell.ts";
+
+let exit = 0;
+function assert(cond: boolean, msg: string) {
+  if (cond) console.log(`✓ ${msg}`);
+  else {
+    console.error(`✗ ${msg}`);
+    exit = 1;
+  }
+}
+
+const ENV = `${HOST_EXHAUSTION_LABEL} consolidated verify could not run: /bin/sh: 1: Cannot fork`;
+const TIMEOUT = `${VERIFY_TIMEOUT_LABEL} verify command \`x\` exceeded its 10-min timeout`;
+const BASE = `${BASELINE_RED_MARKER} verify command \`x\` ALSO FAILS on a clean checkout`;
+const REAL = "verify command `x` failed in worktree default: expected 1, got 2";
+
+// ── verifyCapFor.
+{
+  assert(verifyCapFor("develop", [ENV]) === "verify-env:develop", "env only → verify-env");
+  assert(
+    verifyCapFor("develop", [ENV, TIMEOUT]) === "verify-env:develop",
+    "env plus a timeout → verify-env (neither judged the code)",
+  );
+  assert(
+    verifyCapFor("develop", [ENV, REAL]) === "verify-failed:develop",
+    "one real failure among env failures → verify-failed",
+  );
+  assert(
+    verifyCapFor("develop", [TIMEOUT]) === "verify-timeout:develop",
+    "timeouts only → verify-timeout (unchanged)",
+  );
+  assert(
+    verifyCapFor("develop", [BASE, REAL], true) === "verify-baseline-red:develop",
+    "baseline-red only → verify-baseline-red",
+  );
+  assert(
+    verifyCapFor("develop", [BASE, REAL], false) === "verify-failed:develop",
+    "a red baseline next to another check's failure → verify-failed",
+  );
+  assert(
+    verifyCapFor("develop", [`${BASE} ${VERIFY_TIMEOUT_LABEL}`, TIMEOUT], true) ===
+      "verify-timeout:develop",
+    "timed out at base and on the change → verify-timeout (the bound, not the base)",
+  );
+  assert(
+    verifyCapFor("develop", [REAL]) === "verify-failed:develop",
+    "a real failure → verify-failed",
+  );
+}
+
+// ── verifyDevelopOutcome reports baseline-red-only.
+const execFileP = promisify(execFile);
+const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
+const sh = (cwd: string, cmd: string) => execFileP("/bin/sh", ["-c", cmd], { cwd });
+const root = mkdtempSync(path.join(tmpdir(), "pi-no-verdict-"));
+const CARGO = "running 41 tests\nerror: test failed, to rerun pass `--bin console`\n";
+
+async function develop(name: string, baseRed: boolean, strayUncommitted: boolean) {
+  const repo = path.join(root, name);
+  mkdirSync(path.join(repo, ".pi"), { recursive: true });
+  writeFileSync(path.join(repo, ".pi", "verify-cmd"), "bash scripts/verify.sh\n");
+  writeFileSync(path.join(repo, "tracked.txt"), "base\n");
+  await execFileP("git", ["init", "-q", "--initial-branch=main", repo]);
+  await git(repo, ["config", "user.email", "t@example.com"]);
+  await git(repo, ["config", "user.name", "T"]);
+  await git(repo, ["add", "."]);
+  await git(repo, ["commit", "-q", "-m", "base"]);
+  const baseSha = (await git(repo, ["rev-parse", "HEAD"])).stdout.trim();
+  writeFileSync(path.join(repo, ".git", "info", "exclude"), ".worktrees/\ntmp/\n");
+  const wts: Record<string, string> = {};
+  for (const id of strayUncommitted ? ["a", "b"] : ["a"]) {
+    const wt = path.join(repo, ".worktrees", `issue-9-${id}`);
+    await git(repo, ["worktree", "add", "-q", "--detach", wt, baseSha]);
+    writeFileSync(path.join(wt, `${id}.txt`), "new\n");
+    // Workstream b leaves its change uncommitted: a failure of its own.
+    if (id === "a") {
+      await git(wt, ["add", "."]);
+      await git(wt, ["commit", "-q", "-m", "change"]);
+    }
+    wts[id] = wt;
+  }
+  const baselineDir = path.join(repo, ".worktrees", "baseline-verify-9");
+  const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
+    cmd = commandOf(cmd, o);
+    if (!cmd.includes("scripts/verify.sh"))
+      return { stdout: (await sh(o?.cwd ?? repo, cmd)).stdout };
+    if (o?.cwd === baselineDir && !baseRed) return { stdout: "" };
+    const e = new Error(`Command failed: ${cmd}`) as Error & { stdout?: string; stderr?: string };
+    e.stdout = CARGO;
+    e.stderr = "";
+    throw e;
+  };
+  const state = initialState(9);
+  state.pipelineState.worktrees = wts;
+  state.pipelineState.baseSha = baseSha;
+  const failures: string[] = [];
+  let baselineRedOnly = false;
+  await verifyDevelopOutcome(
+    { host: {} as unknown as DriverContext["host"], repoRoot: repo, issue: 9 } as DriverContext,
+    state,
+    execFn,
+    failures,
+    [],
+    undefined,
+    undefined,
+    undefined,
+    [],
+    () => {
+      baselineRedOnly = true;
+    },
+  );
+  return { failures, baselineRedOnly };
+}
+
+{
+  const red = await develop("red", true, false);
+  assert(
+    red.failures[0]?.startsWith(BASELINE_RED_MARKER) === true,
+    "red at base: the probe finding leads",
+  );
+  assert(red.baselineRedOnly, "red at base, verify failures only → baseline-red-only reported");
+  const green = await develop("green", false, false);
+  assert(
+    green.failures.length > 0 && !green.baselineRedOnly,
+    "green at base → not baseline-red-only",
+  );
+  const mixed = await develop("mixed", true, true);
+  assert(
+    mixed.failures.some((f) => f.startsWith(BASELINE_RED_MARKER)) && !mixed.baselineRedOnly,
+    `red at base plus another check's failure → not baseline-red-only (${mixed.failures.length} failures)`,
+  );
+}
+rmSync(root, { recursive: true, force: true });
+
+// ── The parks that never judged the change carry their own caps.
+{
+  const s = initialState(9002, 1000);
+  s.pipelineState.branchName = "feat/x";
+  const { haltedAfter } = prGoneRefusal(s, 12, "feat/x", "MERGED");
+  const cap = [...haltedAfter.eventLog].reverse().find((e) => e.kind === "cap-hit");
+  assert(
+    cap?.kind === "cap-hit" && cap.cap === "pr-not-open:commit-pr",
+    "the commit-pr re-entry refusal parks pr-not-open:commit-pr",
+  );
+  const text = explainCap("pr-not-open:commit-pr", haltedAfter);
+  assert(
+    /no longer open/.test(text) && text.includes("PR #12"),
+    "pr-not-open: the refusal is explained",
+  );
+  assert(!/outcome-verification gate rejected/.test(text), "pr-not-open: no gate claim");
+}
+
+function capped(
+  cap: WorkCapLiteral,
+  step: string,
+  failures: string[],
+  origin?: VerifyEvidenceOrigin,
+) {
+  let s: WorkState = initialState(9003, 1000);
+  s = {
+    ...s,
+    pipelineState: {
+      ...s.pipelineState,
+      verifyEvidence: { step: step as "develop", failures, at: 0, ...(origin ? { origin } : {}) },
+    },
+  };
+  return appendEvent(s, { kind: "cap-hit", at: 1, cap, reviewRound: 0, nextStep: "handoff" });
+}
+
+{
+  const env = explainCap("verify-env:develop", capped("verify-env:develop", "develop", [ENV]));
+  assert(
+    /could not run/.test(env) && env.includes(ENV),
+    "verify-env: explained as the gate not running",
+  );
+  const base = explainCap(
+    "verify-baseline-red:develop",
+    capped("verify-baseline-red:develop", "develop", [BASE, REAL]),
+  );
+  assert(
+    /already fails at the cycle's base commit/.test(base) && base.includes(REAL),
+    "verify-baseline-red: explained as red at base, failures listed",
+  );
+  const reason = `${FIX_PASS_EVIDENCE_PREFIX}the fix pass removed 3 origin/main comment line(s)`;
+  const fix = explainCap("fix-pass-park", capped("fix-pass-park", "develop", [reason], "fix-pass"));
+  assert(
+    /adversarial fix pass did not clear/.test(fix) && fix.includes(reason),
+    "fix-pass-park: explained as the fix pass's own park",
+  );
+  // A state file written before #1349 still routes on origin.
+  const old = explainCap(
+    "verify-failed:develop",
+    capped("verify-failed:develop", "develop", [reason], "fix-pass"),
+  );
+  assert(
+    /adversarial fix pass did not clear/.test(old),
+    "a pre-#1349 fix-pass park still renders as before",
+  );
+  const oldPr = explainCap(
+    "verify-failed:commit-pr",
+    capped(
+      "verify-failed:commit-pr",
+      "commit-pr",
+      [`${PR_NOT_OPEN_MARKER} PR #3 is CLOSED`],
+      "pr-not-open",
+    ),
+  );
+  assert(/no longer open/.test(oldPr), "a pre-#1349 pr-not-open park still renders as before");
+}
+
+// ── Published, validated, and mapped to a queue action.
+{
+  for (const t of ["verify-env", "verify-baseline-red", "pr-not-open"]) {
+    assert(t in CAP_TEMPLATES, `${t}: is a published template`);
+    assert(capStep(`${t}:develop`) === "develop", `${t}: names its step`);
+  }
+  assert((FIXED_CAPS as readonly string[]).includes("fix-pass-park"), "fix-pass-park is published");
+  for (const cap of [
+    "verify-env:develop",
+    "verify-baseline-red:develop",
+    "pr-not-open:ci",
+    "fix-pass-park",
+  ] as const) {
+    const findings = validateDiscriminants(capped(cap, "develop", []));
+    assert(findings.length === 0, `${cap}: validates (${findings.join("; ")})`);
+  }
+  const action = (cap: string) => humanActionFor(`cap ${cap}`, 7);
+  assert(
+    /free processes on the host/.test(action("verify-env:develop")),
+    "queue: verify-env → the host",
+  );
+  assert(
+    /base commit/.test(action("verify-baseline-red:develop")),
+    "queue: baseline-red → the base",
+  );
+  assert(/no longer open/.test(action("pr-not-open:commit-pr")), "queue: pr-not-open → the PR");
+  assert(/fix pass/.test(action("fix-pass-park")), "queue: fix-pass-park → the fix pass's reason");
+  assert(
+    /inspect #7's diff/.test(action("verify-failed:develop")),
+    "queue: verify-failed → the diff",
+  );
+}
+
+process.exit(exit);

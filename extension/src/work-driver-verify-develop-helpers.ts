@@ -14,6 +14,7 @@ import { trace } from "./trace.ts";
 import {
   extractAttributedTail,
   hostExhaustionFailure,
+  isHostExhaustionFailure,
   isHostForkExhaustion,
   pidLimitSnapshot,
 } from "./work-driver-exec-error.ts";
@@ -52,17 +53,29 @@ export function isVerifyTimeoutFailure(failure: string): boolean {
 }
 
 /**
- * #1324 — the cap for a failed verify gate: `verify-timeout:<step>` when
- * every failure is a run killed at its bound (nothing judged the code), else
- * `verify-failed:<step>`. One real failure among timeouts is a code failure.
+ * #1324/#1349 — the cap for a failed verify gate. `verify-failed:<step>`
+ * means the gate ran and judged the code; the others reached no verdict:
+ *
+ *   - `verify-env:<step>` — every failure is the system refusing to start a
+ *     process or a run killed at its bound, and at least one is the former;
+ *   - `verify-timeout:<step>` — every failure is a run killed at its bound;
+ *   - `verify-baseline-red:<step>` — `baselineRedOnly`: the base-commit probe
+ *     confirmed the verify command fails without the change, and its failures
+ *     are the only ones (the caller decides; see verifyDevelopOutcome).
+ *
+ * One real failure among them is a code failure, so the cap stays verify-failed.
  */
 export function verifyCapFor<S extends string>(
   step: S,
   failures: readonly string[],
-): `verify-failed:${S}` | `verify-timeout:${S}` {
-  return failures.length > 0 && failures.every(isVerifyTimeoutFailure)
-    ? `verify-timeout:${step}`
-    : `verify-failed:${step}`;
+  baselineRedOnly = false,
+): `verify-failed:${S}` | `verify-timeout:${S}` | `verify-env:${S}` | `verify-baseline-red:${S}` {
+  if (failures.length === 0) return `verify-failed:${step}`;
+  const noVerdict = (f: string) => isHostExhaustionFailure(f) || isVerifyTimeoutFailure(f);
+  if (failures.every(noVerdict) && failures.some(isHostExhaustionFailure))
+    return `verify-env:${step}`;
+  if (failures.every(isVerifyTimeoutFailure)) return `verify-timeout:${step}`;
+  return baselineRedOnly ? `verify-baseline-red:${step}` : `verify-failed:${step}`;
 }
 
 /**

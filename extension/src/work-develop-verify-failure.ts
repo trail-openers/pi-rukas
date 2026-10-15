@@ -54,7 +54,7 @@ export function appendDevelopVerifyFailure(state: WorkState, gate: DevelopVerify
     ? "consolidated-verify-conflict"
     : consolidationCreatedFailure
       ? "consolidated-verify-consolidation-created"
-      : verifyCapFor("develop", gate.failures); // #1324 — a run killed at its bound is not a code failure
+      : verifyCapFor("develop", gate.failures, gate.baselineRedOnly); // #1324 — a run killed at its bound is not a code failure
   trace(`work-driver: ${cap} — ${gate.failures.join(" | ")}`);
   // #782 — when the consolidated verify recovered from a flake but the
   // converge gate then parks, record the retry so the handoff shows

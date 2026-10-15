@@ -333,7 +333,7 @@ The gate now requires the PR to be **open** and to have this cycle's branch as i
 
 ### The PR was merged or closed while `/work` was still reviewing it
 
-The driver reads the cycle's PR before lens-review, lens-fix, ci, and before it pushes a lens fix. **Merged** by a person: the cycle ends `merged`, and the terminal line says *merged by someone else during <step>* — the driver merged nothing and pushes nothing further; unpushed work stays in the cycle's worktree(s). **Closed** without a merge: it parks as `verify-failed:<step>` with a `[pr-not-open]` failure. If the PR's state cannot be read, the step runs as before. The review's residual findings are posted to the recorded PR number (a merged PR still takes comments); if that fails they go to the issue, and `/work-status` shows a `lens-residuals-post-failed` event saying where they went.
+The driver reads the cycle's PR before lens-review, lens-fix, ci, and before it pushes a lens fix. **Merged** by a person: the cycle ends `merged`, and the terminal line says *merged by someone else during <step>* — the driver merged nothing and pushes nothing further; unpushed work stays in the cycle's worktree(s). **Closed** without a merge: it parks as `pr-not-open:<step>` with a `[pr-not-open]` failure (`verify-failed:<step>` before #1349). If the PR's state cannot be read, the step runs as before. The review's residual findings are posted to the recorded PR number (a merged PR still takes comments); if that fails they go to the issue, and `/work-status` shows a `lens-residuals-post-failed` event saying where they went.
 
 ### `/work` halts at the branch step naming the mainline
 
@@ -1005,7 +1005,7 @@ Without `--restart`, re-invoking `/work N` on a terminal-state file now emits a 
 
 **Why:** a fix pass is told to answer review findings, so it parks when it deletes a comment outright while the code stays. It does not park for a reworded or replaced comment (the same diff hunk adds a comment) or for a comment an earlier develop pass already removed: those are listed for the reviewers under "Comments removed by this change", who judge them. Before this, any comment line the whole workstream diff did not keep verbatim parked the pass, and the cap text read *"(evidence detail missing from state)"*.
 
-The park reuses the `verify-failed:develop` cap but is not a rejection by the outcome-verification gate, so do not set `PI_ENSEMBLE_VERIFY=0` for it; the cap text opens *"the adversarial fix pass did not clear"*.
+The park has its own cap, `fix-pass-park` (it reused `verify-failed:develop` before #1349). It is not a rejection by the outcome-verification gate, so do not set `PI_ENSEMBLE_VERIFY=0` for it; the cap text opens *"the adversarial fix pass did not clear"*.
 
 **Fix:** restore the named lines in the workstream's worktree, or reword them in place, and re-run. `PI_ENSEMBLE_COMMENT_RETENTION=0` disables the check.
 
@@ -1103,7 +1103,7 @@ A kept ref is **not** re-applied automatically: the next commit-pr regenerates t
 
 Symptom: after `ci-status: failure` the cycle ran `develop → adversarial → commit-pr`, logged `commit-pr re-entry — open PR #<N> already heads <branch>; integrate/prCreate skipped`, and `ci` then watched the unchanged head until the retry cap. The re-entry guard treated every open PR as a finished `commit-pr` and never pushed the fix. Fixed: a second `commit-pr` now measures the worktrees against the branch, and work the branch lacks is integrated onto the branch's own head and pushed fast-forward to the PR that is already open (`commit-pr second round` in the trace). On an older build the fix is intact in `.worktrees/issue-<N>-<id>` — cherry-pick it onto the branch and push.
 
-If the cycle's PR was **merged or closed** in the meantime, the second `commit-pr` parks (`verify-failed:commit-pr`, "PR #<N> is MERGED, not OPEN") without touching the branch — it used to rebuild the branch from base and push over the remote (the non-fast-forward rejection). The new work is in the worktree; open a new issue or PR for it.
+If the cycle's PR was **merged or closed** in the meantime, the second `commit-pr` parks (`pr-not-open:commit-pr`, "PR #<N> is MERGED, not OPEN"; `verify-failed:commit-pr` before #1349) without touching the branch — it used to rebuild the branch from base and push over the remote (the non-fast-forward rejection). The new work is in the worktree; open a new issue or PR for it.
 
 ### `integration-verify-failed` — the consolidated tree does not build
 
@@ -1735,13 +1735,35 @@ After the `develop` step (when every branch claims success) and after the `commi
 - At least one worktree has a real diff — uncommitted porcelain entries, or commits ahead of the `baseSha` recorded at the branch step. All worktrees empty = the claim was hollow.
 - The project's **verify command** exits 0 in each changed worktree.
 
+#### What `verify-failed:<step>` means, and the caps that split from it (#1349)
+
+`verify-failed:<step>` means the gate ran and judged the change. Parks that reached no verdict on the code have their own caps:
+
+| Cap | Meaning | Before #1349 |
+|---|---|---|
+| `verify-timeout:<step>` | Every failure is a verify run killed at its bound. | (#1324) `verify-failed:<step>` |
+| `verify-env:<step>` | The system refused to start a process (`[host-resource-exhaustion]`). Every failure is that or a timeout. | `verify-failed:<step>` |
+| `verify-baseline-red:<step>` | The base-commit probe found the verify command red without the change (`[baseline-red]`), and the verify command's failures are the gate's only ones. | `verify-failed:<step>` |
+| `pr-not-open:<step>` | The cycle's PR was merged or closed when the step started: the commit-pr re-entry refusal, or the PR-gone park. | `verify-failed:<step>` |
+| `fix-pass-park` | The adversarial fix pass parked on its own check (scope fence, no-op pass, comment retention, a read that failed closed). | `verify-failed:develop` |
+
+One real failure next to any of these is a code failure, so the cap stays `verify-failed:<step>`. A tool that counts or routes parks by cap (a queue, a dashboard, a headless host) used to file all of these as code failures. If it matched `verify-failed:` to mean "the gate parked", match the new caps too.
+
 #### `[host-resource-exhaustion]`: the gate could not run
 
-**Symptom:** The develop step ends with `verify-failed:develop` and the evidence lines start with `[host-resource-exhaustion]`, quoting `/bin/sh: 1: Cannot fork`, `fork: retry: Resource temporarily unavailable` or `spawn … EAGAIN`.
+**Symptom:** The develop step ends with `verify-env:develop` (`verify-failed:develop` before #1349) and the evidence lines start with `[host-resource-exhaustion]`, quoting `/bin/sh: 1: Cannot fork`, `fork: retry: Resource temporarily unavailable` or `spawn … EAGAIN`. A real failure among them keeps the cap `verify-failed:develop`, and the handoff still says which checks never ran.
 
 **Cause:** The host (or the container's pid limit) had no room to start a process, so the driver's git / verify / smoke commands never executed. This is an environment failure, not a verdict on the change — the gate still fails, because an unrun gate is not a pass, but nothing was learned about the diff. Before this label existed the same condition was reported as `[needs-human-decision] … (no specific assertion could be extracted)`, or as `consolidated-verify-conflict` ("two workstreams edited the same lines") even on a single-workstream cycle.
 
 **Fix:** The evidence line quotes `cgroup pids.current=N of pids.max=M` for wherever the driver runs, with the counters read just after the failure. The quoted counters appear only when they are readable (cgroup v2 on Linux); otherwise the line says the limit is unknown and you read the limit yourself. In a container that is the container's own limit (docker `--pids-limit`), not a host ulimit — `ulimit -u` on the host will show nothing to raise. If the counters show headroom, the limit may have been hit transiently by a burst of parallel processes and drained before they were read; re-run the cycle before changing the limit, and check the other ceilings the evidence names. A count at the limit with a low load average means leaked or unreaped children: inside the container, check that PID 1 is an init (`cat /proc/1/comm` → `tini`), restart the container or raise its pid limit, then re-run the cycle. Do not start by inspecting the diff: it has not been judged either way.
+
+#### `verify-baseline-red:<step>`: the gate was already red at the base commit
+
+**Symptom:** The develop step ends with `verify-baseline-red:develop` (`verify-failed:develop` before #1349), and the first evidence line starts with `[baseline-red]` and names the base sha and the assertion that fails there.
+
+**Cause:** The verify command failed on the change, so the driver re-ran it once on a clean checkout of the cycle's base commit, and it failed there too. The gate was red before the change was written, so no change can pass it. The cap fires only when the verify command's failures are the gate's only ones. A scope-fence, empty-diff, smoke or skip-ratchet failure next to it is a verdict on the change, so the cap stays `verify-failed:develop` (the handoff still leads with the `[baseline-red]` finding).
+
+**Fix:** Fix the gate on the mainline (or the host it runs on), then re-run the cycle. Do not inspect the diff first, and do not set `PI_ENSEMBLE_VERIFY=0`.
 
 #### `verify-timeout:<step>`: the gate did not finish
 
@@ -1787,7 +1809,7 @@ When the violation is between two sibling workstreams (one edited a file the oth
 - Commits exist on the branch: `git rev-list --count origin/<base>..HEAD` > 0.
 - The parsed PR number resolves via `gh pr view`. If ops forgot the `pr: <N>` marker, the gate tries `gh pr list --head <branch>` and **adopts** the found number (bonus repair — pre-PR17 a missing marker silently degraded handoff/CI targeting).
 
-On failure the driver emits cap `verify-failed:<step>` → handoff, with the per-check evidence in `pipelineState.verifyEvidence` (rendered into the handoff body).
+On failure the driver emits cap `verify-failed:<step>` (or one of the no-verdict caps above) → handoff, with the per-check evidence in `pipelineState.verifyEvidence` (rendered into the handoff body).
 
 #### Skip-ratchet check (PR277)
 
@@ -1855,7 +1877,7 @@ The command is capped at 10 minutes (`PI_ENSEMBLE_VERIFY_TIMEOUT_MS` to override
 
 ### If the gate keeps failing
 
-- **Verify command fails on code the developer didn't touch** — the project was already broken before the cycle started. Fix the baseline first, or point `.pi/verify-cmd` at a narrower command (e.g., `cargo check -p <crate>`). The driver now checks this itself: when the verify command fails at develop it is re-run once on a clean checkout of the cycle's base commit (a temporary `.worktrees/baseline-verify-<N>`, removed afterwards; never on a passing cycle). If it fails there too, the handoff leads with a `[baseline-red]` finding naming the base sha and the assertion, and the cap is still `verify-failed:develop` — the gate cannot pass, so the cycle still parks, but the change is not what to inspect.
+- **Verify command fails on code the developer didn't touch** — the project was already broken before the cycle started. Fix the baseline first, or point `.pi/verify-cmd` at a narrower command (e.g., `cargo check -p <crate>`). The driver now checks this itself: when the verify command fails at develop it is re-run once on a clean checkout of the cycle's base commit (a temporary `.worktrees/baseline-verify-<N>`, removed afterwards; never on a passing cycle). If it fails there too, the handoff leads with a `[baseline-red]` finding naming the base sha and the assertion, and the cap is `verify-baseline-red:develop` (see above; `verify-failed:develop` when another check failed too, and before #1349). The gate cannot pass, so the cycle still parks, but the change is not what to inspect.
 - **`exceeded its 10-min timeout on the CONSOLIDATED tree`** — the run was killed at the bound, so it says nothing about the code (this used to render as `specific assertion: (no specific assertion could be extracted)`). When every failure is a timeout, the cap is `verify-timeout:develop`; see "`verify-timeout:<step>`: the gate did not finish" above. If the `[baseline-red]` finding reports a timeout at the base commit as well, the gate does not fit the bound on this host: raise `PI_ENSEMBLE_VERIFY_TIMEOUT_MS` or make the gate faster.
 - **Verify command too slow / needs services** — put a cheaper command in `.pi/verify-cmd` (typecheck-only is the intent; full test suites belong to CI).
 - **False alarm you need to bypass right now** — `PI_ENSEMBLE_VERIFY=0` disables the gate entirely (not recommended as a steady state; it re-opens the phantom-handoff class the gate exists to catch).

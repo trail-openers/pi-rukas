@@ -102,6 +102,8 @@ export const CAP_HIT_FIXED_LITERALS = [
   "plan-timeout",
   // #280 §B — the same finding shape across ≥3 files routes to step-back.
   "repeat-finding-seam",
+  // #1349 — the adversarial fix pass parked on its own checks.
+  "fix-pass-park",
 ] as const satisfies readonly FixedCap[];
 
 // Compile-time exhaustiveness: a fixed cap in WorkCapLiteral but not listed

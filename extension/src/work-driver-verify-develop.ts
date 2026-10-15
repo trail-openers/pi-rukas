@@ -24,6 +24,7 @@ import { runFalsilyGreenCheck } from "./work-driver-falsily-green.ts";
 import { ungrantedProtectedPaths } from "./work-driver-protected-grant.ts";
 import { runScopeFanoutGate } from "./work-driver-scope-fanout.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
+import { BASELINE_RED_MARKER } from "./work-driver-verify-baseline.ts";
 import {
   declaredPathsHaveSource,
   shouldSkipVerifyForFrontendOnly,
@@ -68,6 +69,10 @@ export async function verifyDevelopOutcome(
   // #1040 — out-parameter for the structured comment-loss checks (the
   // note and its result), so the caller plumbs them without matching note text.
   commentEvidence: CommentEvidence[] = [],
+  // #1349 — fires when the base-commit probe found the verify command red
+  // at base AND the verify command's failures are the gate's only ones, so
+  // the caller can park with verify-baseline-red instead of verify-failed.
+  onBaselineRedOnly?: () => void,
 ): Promise<void> {
   const worktrees =
     Object.keys(state.pipelineState.worktrees ?? {}).length > 0
@@ -348,6 +353,7 @@ export async function verifyDevelopOutcome(
   // passes — the consolidated result is what decides whether a per-worktree
   // failure was a cross-worktree artifact.
   const cmd = await verifyCmdFor(ctx.repoRoot);
+  let verifyCmdEnd: number | undefined;
   if (!cmd) {
     notes.push(
       "no verify command discoverable (.pi/verify-cmd, package.json scripts, Cargo.toml) — diff evidence only",
@@ -382,6 +388,7 @@ export async function verifyDevelopOutcome(
       // extracted to work-driver-verify-verify-cmd.ts (500-line gate); the
       // failure messages, the flake-retry precondition and the aggregation
       // semantics all live there unchanged.
+      const before = failures.length;
       await runVerifyCommandGate({
         // #1324 — `.pi/verify-cmd-fast` runs before every full run of `cmd`.
         execFn: withFastTier(execFn, cmd, await fastVerifyCmdFor(ctx.repoRoot)),
@@ -402,6 +409,7 @@ export async function verifyDevelopOutcome(
         ...(fenceViolations !== undefined ? { fenceViolations } : {}),
         ...(onConsolidatedLogPath !== undefined ? { onConsolidatedLogPath } : {}),
       });
+      verifyCmdEnd = before === 0 ? failures.length : undefined;
     }
   }
 
@@ -425,5 +433,10 @@ export async function verifyDevelopOutcome(
     commentEvidence.push(check);
   }
   await runSmokeGate(execFn, ctx.repoRoot, changedWorktrees, failures, notes);
+  // The probe's marker leads the list (it is unshifted); no check before or
+  // after the verify command added a failure of its own.
+  if (failures.length === verifyCmdEnd && failures[0]?.startsWith(BASELINE_RED_MARKER)) {
+    onBaselineRedOnly?.();
+  }
   return undefined;
 }
