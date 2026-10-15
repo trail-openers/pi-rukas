@@ -311,7 +311,7 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
       // is still a crash. An abort that makes the step throw is the interrupt.
       state = recordStepCrash(state, step, err);
       if (ctx.signal?.aborted === true) {
-        state = await interruptIfRequested(ctx, state);
+        state = await interruptIfRequested(ctx, state, step);
         break;
       }
       if (err instanceof DriverNotImplementedError) {
@@ -402,11 +402,11 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
       await persistCycle(ctx, state);
       continue;
     }
-    // Headless S4 (#1024): an interrupt that fired during the step ends the
-    // cycle here, without routing. The step's events stay in the log (they
-    // happened); the router never sees its outcome, so no handoff follows.
+    // Headless S4 (#1024): an interrupt during the step ends the cycle here, unrouted, so
+    // no handoff follows. The step's events stay in the log; the interrupt names the step,
+    // so a cap it hit (the abort's doing) is not reported as the cycle's cap (#1371).
     if (ctx.signal?.aborted === true) {
-      state = await interruptIfRequested(ctx, state);
+      state = await interruptIfRequested(ctx, state, step);
       break;
     }
     // Route step outcome (work-driver-step-router.ts); `retry: true` means

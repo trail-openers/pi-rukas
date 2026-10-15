@@ -37,6 +37,8 @@ The headless runner's contract with its caller is four independent surfaces, eac
 
 A grouped run exits 21 if any issue was interrupted, otherwise the highest per-issue code. The `--json` result carries every issue regardless.
 
+A signal outranks the failure of the step it lands in. The step that was running when the signal fired is not routed: no cap, no handoff, exit 21, `resumable: true`, and its `interrupted` event names it (`step`). A cap that step recorded on its way out (an aborted child, an issue-body fetch cut short) is the abort's doing, so the result does not report it as `cap`; running `work <issue>` again re-runs the step. The one exception is the `handoff` step itself: a signal that lands there arrives after the cycle has already stopped on its cap, so the handoff finishes and the run exits with the handoff's code.
+
 ### `--json` result schema (v3)
 
 With `--json`, stdout carries exactly one JSON document:
@@ -97,7 +99,7 @@ With `--json`, stdout carries exactly one JSON document:
 | `buildCommit` | always | The full 40-hex commit the running build was made from (the image's baked `.pi/pi-rukas-commit`, else the HEAD of the pi-rukas checkout), or `null` when nothing records it. Never anything else, so a host can safely run `git merge-base --is-ancestor <fix> <buildCommit>` when it is non-null. |
 | `buildVersion` | always | The release version of the running build (`extension/package.json`). |
 | `issues[].status` | always | `merged`, `handoff`, `aborted`, `interrupted`, `running` (the driver returned without a terminal state) or `not-started`. |
-| `issues[].cap` | when a cap was hit | The last cap the cycle hit, from the published vocabulary (below). It can be set on a `merged` result too (a cap the cycle recovered from), so a host reads `status` and `exitCode` for the outcome and `cap` for the reason. |
+| `issues[].cap` | when a cap was hit | The last cap the cycle hit, from the published vocabulary (below). It can be set on a `merged` result too (a cap the cycle recovered from), so a host reads `status` and `exitCode` for the outcome and `cap` for the reason. A cap recorded by a step that a signal then cut off is not reported (see [Exit codes](#exit-codes)). |
 | `issues[].parkReason` | when `cap` is `intent-park` | Why the cycle parked: `underspecified`, `contradicted-by-code`, `already-implemented`, `too-large`, `premise-unsound` or `security-open-point`. |
 | `issues[].handoff` | once the cycle emitted a handoff | `channel` (`forge` or `host`, see [Handoff channel](#handoff-channel)); `marker`, the machine marker that is the first line of the body; `body`, the full handoff markdown, taken from the driver's record of this cycle (never re-read from the file); `bodyError` (`not-recorded`) in place of `body` when the cycle recorded none; `bodyFile`, a path for a person; `commentUrl`, the comment pi-rukas posted (forge channel); `labelApplied`, whether `needs-human-attention` was verified on the issue (and PR). |
 | `issues[].failure` | when `cap` is set and the cycle did not merge | Why the cycle stopped on `cap`, as stable fields (#1367, added in this release). See [The `failure` object](#the-failure-object). |
@@ -237,7 +239,7 @@ Only these kinds are a host contract, versioned by `NDJSON_STABLE_VERSION` (1) a
 | `handoff-emitted` | `at`, `commentUrl`, `labelApplied` |
 | `ci-status` | `at`, `status`, `runUrl` |
 | `merged` | `at`, `prNumber`, `mergeCommit` |
-| `interrupted` | `at`, `reason` |
+| `interrupted` | `at`, `reason`, `step` (only when the signal fired mid-step) |
 | `log` | `message`, and `level` when set (on the line, not under `event`) |
 
 Every other line carries `unstable: true`. A host may display it, but must not branch on it. The field lists are typed against the driver's event union, so renaming a stable field fails the build.
