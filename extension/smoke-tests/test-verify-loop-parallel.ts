@@ -13,13 +13,15 @@
  *      failing one, even though it finishes later).
  *   3. The timed-out test's process tree is gone after the run (no orphan).
  *   4. JOBS=3 wall-clock is below the sum of the slow tests' durations.
+ *   5. SIGTERM during a run exits promptly (143) and leaves no job process.
  */
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
 import { runLoopEnv } from "./verify-loop-lib.ts";
 
 const __dirname = path.dirname(new URL(import.meta.url).pathname);
+const LOOP = path.join(__dirname, "lib", "verify-loop.sh");
 const FIXTURES = path.join(__dirname, "fixtures", "verify-loop");
 const SLOW = path.join(FIXTURES, "fixture-slow.ts");
 const HANG = path.join(FIXTURES, "fixture-hang.ts");
@@ -101,6 +103,55 @@ assert(timed.status === 0, "case 4: three slow passing tests exit 0 at JOBS=3");
 assert(
   wall < sumSlow,
   `case 4: JOBS=3 wall-clock ${wall.toFixed(1)}s is below the slow-test sum ${sumSlow}s`,
+);
+
+// --- Case 5: SIGTERM mid-run interrupts the pool.
+// The hang fixture keeps two jobs alive, so the interrupt lands while jobs
+// are running. The interrupt path must return within 10s even though the
+// watchdog bound is 60s, and must take the hung bun processes with it.
+const interruptToken = `parallel-interrupt-${process.pid}-${Date.now()}`;
+const child = spawn("bash", [LOOP, HANG, HANG], {
+  cwd: path.join(__dirname, ".."),
+  env: {
+    ...process.env,
+    PI_ENSEMBLE_VERIFY_TEST_JOBS: "2",
+    PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S: "60",
+    FIXTURE_HANG_TOKEN: interruptToken,
+  },
+  stdio: "ignore",
+});
+const closed = new Promise<{ code: number | null; signal: string | null }>((resolve) => {
+  child.on("close", (code, signal) => resolve({ code, signal }));
+});
+await new Promise((resolve) => setTimeout(resolve, 1500));
+child.kill("SIGTERM");
+const deadline = new Promise<null>((resolve) => {
+  setTimeout(() => resolve(null), 10_000);
+});
+const settled = await Promise.race([closed, deadline]);
+if (settled === null) {
+  child.kill("SIGKILL");
+  assert(false, "case 5: loop exits within 10s of SIGTERM");
+} else {
+  assert(
+    settled.code === 143 || settled.signal === "SIGTERM",
+    `case 5: loop exits with 143/SIGTERM (got code ${settled.code}, signal ${settled.signal})`,
+  );
+}
+// The job trees must be gone; pgrep can lag a fraction behind the close event.
+let orphansAfterInterrupt = "";
+for (let i = 0; i < 30; i++) {
+  const probe = spawnSync("pgrep", ["-f", interruptToken], { encoding: "utf-8" });
+  if (probe.status !== 0) {
+    orphansAfterInterrupt = "";
+    break;
+  }
+  orphansAfterInterrupt = probe.stdout.trim();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+}
+assert(
+  orphansAfterInterrupt === "",
+  `case 5: no process of the interrupted jobs survives (got ${JSON.stringify(orphansAfterInterrupt)})`,
 );
 
 process.exit(exit);
