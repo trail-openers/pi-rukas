@@ -20,6 +20,7 @@
  * (judged by the policy judge), as it does for start_work_driver.
  */
 
+import { resourceReport } from "../resource-budget.ts";
 import { killLiveProcessGroups } from "../spawn-kill.ts";
 import { releaseHeldIntegrationLocks } from "../work-driver-lock.ts";
 import { resolveRepoRoot } from "../work-entry.ts";
@@ -98,9 +99,9 @@ async function main(argv: string[]): Promise<number> {
     write: (line) => process.stderr.write(`${line}\n`),
   });
   if (args.json) {
-    process.stdout.write(
-      `${JSON.stringify(resultDocument(run, { commit: readBuildCommit(), version: readBuildVersion() }))}\n`,
-    );
+    const doc = resultDocument(run, { commit: readBuildCommit(), version: readBuildVersion() });
+    // #1325 — the host budget and the limits this run chose.
+    process.stdout.write(`${JSON.stringify({ ...doc, resources: resourceReport() })}\n`);
   } else {
     const parts = run.results.map((r) => `#${r.issue} ${r.status} (exit ${r.exitCode})`);
     process.stdout.write(`pi-rukas-headless: ${parts.join(", ") || "nothing ran"}\n`);

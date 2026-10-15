@@ -22,6 +22,7 @@ on:
       - 'extension/**'
       - 'bin/pi-rukas'
       - 'install.sh'
+      - 'install-retry-defaults.sh'
       - 'agents-base/**'
       - 'modules/**'
       - 'manifests/**'

@@ -7,6 +7,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import { withVerifySlot } from "./host-resources.ts";
 
 /** Read the first non-empty, non-comment line from a config file. */
 function readFirstConfigLine(content: string): string | undefined {
@@ -63,11 +64,13 @@ async function execVerifyOnce(
 ): Promise<VerifyRun> {
   const startedAt = Date.now();
   try {
-    const { stdout, stderr } = await execFn(cmd, {
-      cwd,
-      timeout: timeoutMs,
-      maxBuffer: 1024 * 1024, // 1 MiB cap for evidence tail
-    });
+    const { stdout, stderr } = await withVerifySlot(() =>
+      execFn(cmd, {
+        cwd,
+        timeout: timeoutMs,
+        maxBuffer: 1024 * 1024, // 1 MiB cap for evidence tail
+      }),
+    );
     const ms = Date.now() - startedAt;
     const output = (stdout || stderr || "").trim();
     return { ms, ok: true, output };

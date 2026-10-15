@@ -214,6 +214,8 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   int("TURN_NUDGE", 0, "cycle", { unit: "turns" }),
   str("USER_EXTENSION", null),
   flag("VERIFY", true),
+  // Unset: derived from the host budget (CPUs, memory, cgroup limits); 0 = unbounded.
+  int("VERIFY_CONCURRENCY", null),
   flag("VERIFY_FULL", true),
   ms("VERIFY_FULL_TIMEOUT_MS", 1_800_000),
   ms("VERIFY_TIMEOUT_MS", 600_000),
