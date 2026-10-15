@@ -33,6 +33,7 @@ import {
   makeRunOneWorkstream,
   runDependentWorkstreams,
 } from "./work-develop-run.ts";
+import { runSymbolMergeRetry } from "./work-develop-symbol-merge.ts";
 import { appendDevelopVerifyFailure } from "./work-develop-verify-failure.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { runConvergeGateHandler } from "./work-driver-converge-gate.ts";
@@ -438,7 +439,19 @@ async function runDevelopTopological(
       // no normalised spec, or when the diff is unreadable.
       next = await runConvergeGateHandler(ctx, next, dispatch);
     } else {
-      next = appendDevelopVerifyFailure(next, gate);
+      // #1323 — a failure naming a symbol a sibling's diff adds merges the
+      // pair and retries once (work-develop-symbol-merge.ts); otherwise park.
+      const merged = await runSymbolMergeRetry(
+        ctx,
+        next,
+        stateRef,
+        ids,
+        verdicts,
+        gate,
+        execFn,
+        dispatch,
+      );
+      next = merged ?? appendDevelopVerifyFailure(next, gate);
     }
   }
   return endStep(next);

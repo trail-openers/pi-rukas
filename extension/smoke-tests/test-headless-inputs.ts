@@ -57,6 +57,7 @@ import {
   transientRetryBackoffMs,
 } from "../src/work-driver-failure-taxonomy.ts";
 import { resolvedParallelGroups } from "../src/work-driver-grouping.ts";
+import { handoffChannel } from "../src/work-driver-handoff-channel.ts";
 import { handoffPostRetryEnabled } from "../src/work-driver-handoff-post-retry.ts";
 import { handoffPostBackoffMs } from "../src/work-driver-handoff-post-retry.ts";
 import { handoffDispatchTimeoutMs } from "../src/work-driver-handoff.ts";
@@ -293,6 +294,7 @@ const LIVE: [string, () => unknown][] = [
   ["PI_ENSEMBLE_CAP_KILL_GRACE_MS", capKillGraceMs],
   ["PI_ENSEMBLE_COMMENT_RETENTION_PATHS", () => COMMENT_RETENTION_PATHS.join(",")],
   ["PI_ENSEMBLE_GIT_NET_TIMEOUT_MS", () => NET_GIT_TIMEOUT_DEFAULT_MS],
+  ["PI_ENSEMBLE_HANDOFF_CHANNEL", handoffChannel],
   ["PI_ENSEMBLE_HANDOFF_POST_RETRY_BACKOFF_MS", handoffPostBackoffMs],
   ["PI_ENSEMBLE_HANDOFF_TIMEOUT_MS", handoffDispatchTimeoutMs],
   ["PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS", inactivityTimeoutMs],

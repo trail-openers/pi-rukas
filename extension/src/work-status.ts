@@ -212,7 +212,13 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
 
   // GitHub handoff outcome.
   const handoffEvt = [...state.eventLog].reverse().find((e) => e.kind === "handoff-emitted");
-  if (handoffEvt?.kind === "handoff-emitted") {
+  if (handoffEvt?.kind === "handoff-emitted" && handoffEvt.delivery === "host") {
+    // #1327 — nothing was posted by design: the host delivered the handoff.
+    lines.push(
+      "",
+      "Handoff channel: host — no forge comment or label (PI_ENSEMBLE_HANDOFF_CHANNEL=host)",
+    );
+  } else if (handoffEvt?.kind === "handoff-emitted") {
     const te = handoffEvt;
     // #798 — per-target fields present → label landed on (both) issue+PR;
     // the single-boolean pre-#798 shape renders as before.
@@ -308,7 +314,11 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
             `  git push -u origin ${branchForCmd}`,
           ]),
     );
-    if (handoffEvt?.kind === "handoff-emitted" && !handoffEvt.commentUrl) {
+    if (
+      handoffEvt?.kind === "handoff-emitted" &&
+      !handoffEvt.commentUrl &&
+      handoffEvt.delivery !== "host"
+    ) {
       lines.push(
         "",
         "  # 5. Manually post the handoff comment (the GitHub-side post FAILED above):",

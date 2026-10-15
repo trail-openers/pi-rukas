@@ -298,6 +298,79 @@ async function setup3WS(
   );
 }
 
+// ── #1345: two violators of ONE owner — one merged re-dispatch ──────────
+// a and b each edit a different file c declared. Both fold into c, and c
+// must be re-dispatched exactly once, with both violated files and both
+// absorbed halves named in its prompt.
+{
+  const { repo, baseSha } = await fixture("shared-owner");
+  const wt: Record<string, string> = {};
+  for (const id of ["a", "b", "c"] as const) {
+    const p = path.join(repo, ".worktrees", `issue-1345-${id}`);
+    await git(repo, ["worktree", "add", "-q", "--detach", p, baseSha]);
+    wt[id] = p;
+  }
+  const commit = async (cwd: string, file: string, body: string) => {
+    writeFileSync(path.join(cwd, file), body);
+    await git(cwd, ["add", file]);
+    await git(cwd, ["commit", "-q", "-m", file]);
+  };
+  await commit(wt.c, "c1-file.txt", "c1\n");
+  await commit(wt.c, "c2-file.txt", "c2\n");
+  await commit(wt.a, "c1-file.txt", "a annexed c1\n");
+  await commit(wt.b, "c2-file.txt", "b annexed c2\n");
+  const calls: Array<{ role: string; cwd?: string; prompt?: string }> = [];
+  const onCall = async (_n: number, cwd: string) => {
+    const last = calls[calls.length - 1];
+    if ((last?.prompt ?? "").includes("FENCE MERGE-AND-RETRY")) {
+      await commit(cwd, "a-file.txt", "a\n");
+      await commit(cwd, "b-file.txt", "b\n");
+    }
+  };
+  const dispatchFn = recordingDispatch(calls, onCall);
+  const ctx = ctxFor(repo, dispatchFn);
+  const cFiles = ["c1-file.txt", "c2-file.txt"];
+  const workstreams = {
+    a: { id: "a", scope: "a", paths: ["a-file.txt"], outOfScope: ["b-file.txt", ...cFiles] },
+    b: { id: "b", scope: "b", paths: ["b-file.txt"], outOfScope: ["a-file.txt", ...cFiles] },
+    c: { id: "c", scope: "c", paths: cFiles, outOfScope: ["a-file.txt", "b-file.txt"] },
+  };
+  const base = initialState(849);
+  base.pipelineState.baseSha = baseSha;
+  base.pipelineState.worktrees = wt;
+  base.pipelineState.workstreamBaseShas = { a: baseSha, b: baseSha, c: baseSha };
+  base.pipelineState.workstreams = workstreams;
+  base.pipelineState.currentStep = "develop";
+  const after = await runDevelopTopological(
+    ctx,
+    base,
+    ["a", "b", "c"],
+    workstreams,
+    [849],
+    dispatchFn,
+    realExec,
+    Date.now(),
+    "job-1345-shared-owner",
+  );
+  const recoveryCalls = calls.filter((c) => (c.prompt ?? "").includes("FENCE MERGE-AND-RETRY"));
+  assert(
+    recoveryCalls.length === 1,
+    `#1345: two violators of one owner re-dispatch the merged workstream ONCE (got ${recoveryCalls.length})`,
+  );
+  const prompt = recoveryCalls[0]?.prompt ?? "";
+  assert(
+    prompt.includes("merged from: c, a, b") &&
+      prompt.includes("c1-file.txt (declared by c)") &&
+      prompt.includes("c2-file.txt (declared by c)"),
+    `#1345: the single re-dispatch prompt names both violators and both violated paths (got: ${prompt.split("\n").slice(0, 3).join(" | ")})`,
+  );
+  assert(
+    after.eventLog.filter((e) => e.kind === "fence-recovery-started").length === 2 &&
+      after.eventLog.find((e) => e.kind === "cap-hit") === undefined,
+    "#1345: both merges are recorded and the clean re-run proceeds (no cap-hit)",
+  );
+}
+
 rmSync(root, { recursive: true, force: true });
 console.log(`\nexit ${exit}`);
 process.exit(exit);

@@ -19,7 +19,7 @@ The headless runner's contract with its caller is four independent surfaces, eac
 | Contract | Version constant | Module | Description |
 |---|---|---|---|
 | Exit codes | `EXIT` object (`exit-code.ts`) | `extension/src/headless/exit-code.ts` | The process exit code. 7 named values: `merged` (0), `handoff` (10), `clarification` (11), `aborted` (20), `interrupted` (21), `crash` (30), `refused` (40). |
-| `--json` result schema | `RESULT_SCHEMA_VERSION` (2) | `extension/src/headless/result.ts` | The JSON document on stdout when `--json` is used. See below. Its `cap` values come from a published vocabulary (`extension/src/headless/caps.ts`). |
+| `--json` result schema | `RESULT_SCHEMA_VERSION` (3) | `extension/src/headless/result.ts` | The JSON document on stdout when `--json` is used. See below. Its `cap` values come from a published vocabulary (`extension/src/headless/caps.ts`). |
 | NDJSON progress | `NDJSON_VERSION` (1); stable subset `NDJSON_STABLE_VERSION` (1) | `extension/src/headless/ndjson.ts` | One JSON object per line on stderr. Every line carries `v` (1), `kind`, `at` (ISO-8601). Driver event lines additionally carry `issue` and `key` (idempotency key `<issue>:<index>:<at>`). Only a declared subset of kinds is stable; every other line is marked `unstable: true`. |
 | Capabilities | `CAPABILITIES_VERSION` (2) | `extension/src/headless/capabilities.ts` | The JSON object `--capabilities` prints. See below. |
 
@@ -37,13 +37,13 @@ The headless runner's contract with its caller is four independent surfaces, eac
 
 A grouped run exits 21 if any issue was interrupted, otherwise the highest per-issue code. The `--json` result carries every issue regardless.
 
-### `--json` result schema (v2)
+### `--json` result schema (v3)
 
 With `--json`, stdout carries exactly one JSON document:
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "buildCommit": "d39f8731f34d…",
   "buildVersion": "0.12.79",
   "exitCode": 10,
@@ -64,6 +64,14 @@ With `--json`, stdout carries exactly one JSON document:
         { "step": "explore", "startedAt": "…", "endedAt": "…" },
         { "step": "plan",    "startedAt": "…", "endedAt": "…" }
       ],
+      "handoff": {
+        "channel": "forge",
+        "marker": "<!-- pi-rukas:handoff issue=42 cap=verify-failed:develop -->",
+        "body": "<!-- pi-rukas:handoff issue=42 cap=verify-failed:develop -->\n## …",
+        "bodyFile": "/path/to/handoff-comment.md",
+        "commentUrl": "https://github.com/owner/repo/issues/42#issuecomment-1",
+        "labelApplied": true
+      },
       "exitCode": 10
     }
   ]
@@ -72,11 +80,13 @@ With `--json`, stdout carries exactly one JSON document:
 
 | Field | Present | Meaning |
 |---|---|---|
-| `schemaVersion` | always | `RESULT_SCHEMA_VERSION`. Version 2 (#1326) added `schemaVersion`, `buildCommit`, `buildVersion`, `failedStep`, `prUrl`, `usage` and `resumable`. |
+| `schemaVersion` | always | `RESULT_SCHEMA_VERSION`. Version 2 (#1326) added `schemaVersion`, `buildCommit`, `buildVersion`, `failedStep`, `prUrl`, `usage` and `resumable`. Version 3 (#1327) added `parkReason` and `handoff`. |
 | `buildCommit` | always | The full 40-hex commit the running build was made from (the image's baked `.pi/pi-rukas-commit`, else the HEAD of the pi-rukas checkout), or `null` when nothing records it. Never anything else, so a host can safely run `git merge-base --is-ancestor <fix> <buildCommit>` when it is non-null. |
 | `buildVersion` | always | The release version of the running build (`extension/package.json`). |
 | `issues[].status` | always | `merged`, `handoff`, `aborted`, `interrupted`, `running` (the driver returned without a terminal state) or `not-started`. |
 | `issues[].cap` | when a cap was hit | The last cap the cycle hit, from the published vocabulary (below). It can be set on a `merged` result too (a cap the cycle recovered from), so a host reads `status` and `exitCode` for the outcome and `cap` for the reason. |
+| `issues[].parkReason` | when `cap` is `intent-park` | Why the cycle parked: `underspecified`, `contradicted-by-code`, `already-implemented`, `too-large`, `premise-unsound` or `security-open-point`. |
+| `issues[].handoff` | once the cycle emitted a handoff | `channel` (`forge` or `host`, see [Handoff channel](#handoff-channel)); `marker`, the machine marker that is the first line of the body; `body`, the full handoff markdown, taken from the driver's record of this cycle (never re-read from the file); `bodyError` (`not-recorded`) in place of `body` when the cycle recorded none; `bodyFile`, a path for a person; `commentUrl`, the comment pi-rukas posted (forge channel); `labelApplied`, whether `needs-human-attention` was verified on the issue (and PR). |
 | `issues[].failedStep` | when the cycle did not merge and started a step | The step it stopped in: the step a `<template>:<step>` cap names (`verify-failed:`, `verify-timeout:`, `verify-env:`, `verify-baseline-red:`, `pr-not-open:`, `step-failed:`, `driver-crash:`), else the last step started before the cap, else the last step started. It names where the cycle stopped, not necessarily a failure: for `awaiting-human-merge` it is the last step the cycle ran (e.g. `ci`). |
 | `issues[].branch`, `prNumber`, `prUrl` | when known | `prUrl` is present only when unambiguous: the PR URL the driver recorded (its handoff comment on the PR), else one built from the project's git remote when there is exactly one remote, the forge is GitHub or GitLab, and the web address is certain (an `http(s)` remote, or ssh to github.com / gitlab.com; GitLab subgroups and explicit https ports are kept). Otherwise only `prNumber` is set. |
 | `issues[].usage` | when a state existed | Tokens, cost and turns summed over every dispatch the cycle recorded (`dispatch-completed`, `dispatch-failed` and `dispatch-failed-provider` events), and the dispatch count. It covers the current cycle only: `--restart` discards the state, so earlier cycles' cost is not included. |
@@ -145,6 +155,52 @@ Only these kinds are a host contract, versioned by `NDJSON_STABLE_VERSION` (1) a
 
 Every other line carries `unstable: true`. A host may display it, but must not branch on it. The field lists are typed against the driver's event union, so renaming a stable field fails the build.
 
+## Handoff channel
+
+When a cycle stops short of a merge, it hands off: it renders a handoff body (why it stopped, where the work is, what to do next). `PI_ENSEMBLE_HANDOFF_CHANNEL` decides who delivers it.
+
+| Value | pi-rukas does | The host does |
+|---|---|---|
+| `forge` (default) | Posts the body as a comment (on the PR when one exists, else the issue) and applies `needs-human-attention` to the issue and the PR. | Nothing; it may read `issues[].handoff.commentUrl` and extend that comment. |
+| `host` | Posts no handoff comment and applies no `needs-human-attention` label (and runs no ops handoff dispatch). The cycle still ends in `handoff` with the same exit code. | Delivers `issues[].handoff.body`, using `cap` and `parkReason` to choose how. |
+
+The `host` channel covers only the handoff. Other forge writes a cycle makes still happen:
+
+- the six-pass review's residual-findings comment on the PR (with its `<!-- pi-rukas:lens-residuals … -->` marker), which the merge guard depends on;
+- the same residual findings posted to the issue when the PR was merged or closed under the cycle, or posting to it failed;
+- marking a draft PR ready for review when the review concluded (`PI_ENSEMBLE_DRAFT_PR`).
+
+The body is recorded on the cycle's `handoff-emitted` event, and the result reads it from there, not from `bodyFile`. A failed write of that file therefore loses nothing, and a later cycle's file never shows up as this cycle's body. If the handoff step itself throws on the `host` channel, the cycle ends `aborted`, but a handoff is still recorded: its body is rendered from the state as it stood, with the crash named at the top. A handoff recorded by a build without the body has `bodyError: "not-recorded"` instead of `body`.
+
+Either way, the body's first line is a machine marker, invisible when rendered:
+
+```
+<!-- pi-rukas:handoff issue=42 cap=verify-failed:develop -->
+```
+
+`cap` is the result's typed `cap` (`none` when the cycle recorded none). A host that finds this marker in a comment on the issue or PR knows pi-rukas already posted the handoff, and edits or replies to that comment instead of posting a second one. A host on the `host` channel should keep the marker in what it posts, so a later `forge` run, or another reader, can find it the same way.
+
+On the `host` channel the attention gate still reads `needs-human-attention`, but pi-rukas never applies it. A host that wants a handed-off issue to refuse plain re-runs applies the label itself; [`--restart`](#--restart-for-hosts) is then how it runs the issue again.
+
+## `--restart` for hosts
+
+`work <issue> --restart` is the supported way to run an issue again after a handoff that a person has dealt with. A host passes it; it never removes labels itself.
+
+What `--restart` does:
+
+- **Starts a fresh cycle.** The driver ignores the issue's state file and overwrites it. The previous cycle's event log is lost, so copy the state file first if you need it. Without `--restart`, a terminal cycle (`merged`, `handoff`, `aborted`) is refused with exit 40, and a `running` or `interrupted` one resumes (`issues[].resumable`).
+- **Overrides the attention gate (#408).** Without `--restart`, an issue labelled `needs-human-attention` is refused with exit 40 before any dispatch. With it, the gate does not refuse.
+- **Clears `needs-human-attention`** from every issue in the cycle that carries it, whoever applied it, including a host on the `host` channel. The restart is the answer the label asked for, and the next `forge` handoff applies it again. If the restarted cycle is interrupted, a plain re-run resumes it without hitting the gate. Clearing is best-effort and never stops the restart. A PR's copy of the label stays in place: the gate does not read it.
+
+What `--restart` does not reset or check:
+
+- **The forge.** An open PR for the issue is found and reused (`PI_ENSEMBLE_PR_PREFLIGHT`), not duplicated.
+- **Worktrees and branches.** A leftover worktree with no uncommitted or unpushed work is recreated, and one that holds work is refused (see [troubleshooting.md](troubleshooting.md)).
+- **The intent-park record.** A restart that parks again for the same reason, on the same issue text and commit, links the earlier park comment instead of posting a new one.
+- **Nothing about a live cycle.** `--restart` skips the check for another live process that owns the issue (that check is part of resuming). A host must never restart an issue it is still running; wait for the first run to exit.
+
+Use `--restart` only when a person, or the host acting on a person's answer, has dealt with the handoff. Passing it on every run turns the gate off entirely, and the same handoff repeats.
+
 ## `--capabilities` answer
 
 `pi-rukas-headless --capabilities` prints one JSON object to stdout and exits 0. The object describes what **this specific build** of pi-rukas-headless supports.
@@ -162,7 +218,7 @@ Every other line carries `unstable: true`. A host may display it, but must not b
       "values": { "merged": 0, "handoff": 10, … }  // the full EXIT object
     },
     "resultSchema": {
-      "version": 2,
+      "version": 3,
       "caps": { "fixed": ["adversarial-infra-failure", …], "templates": [{ "prefix": "verify-failed:", "parameter": "step", "values": ["explore", …] }, …] }
     },
     "ndjson": {
@@ -186,7 +242,9 @@ Every other line carries `unstable: true`. A host may display it, but must not b
   ],
   "features": {
     "resultFromMemory": true,   // #1189 — result from in-memory state, not the state file
-    "cycleDeadline": true       // #1238 — a cycle deadline that parks with a handoff
+    "cycleDeadline": true,      // #1238 — a cycle deadline that parks with a handoff
+    "handoffChannel": true,     // #1327 — PI_ENSEMBLE_HANDOFF_CHANNEL=host
+    "restartClearsAttention": true // #1327 — --restart clears needs-human-attention
   }
 }
 ```
@@ -213,6 +271,8 @@ Every other line carries `unstable: true`. A host may display it, but must not b
 | `files[]` | `HEADLESS_FILES` (`inputs.ts`) | The `.pi/*` files a cycle reads from the project (`path`, `kind`: `command` / `hook` / `config`, and what happens `whenAbsent`). Files the driver writes, such as `.pi/work-state/`, are state, not input, and are not listed. |
 | `features.resultFromMemory` | Constant `true` | `true` when the result is taken from the driver's in-memory state rather than re-reading the state file (#1189). |
 | `features.cycleDeadline` | Constant `true` | `true` when a cycle that hits its deadline parks with a handoff rather than being killed (#1238). |
+| `features.handoffChannel` | Constant `true` | `true` when the build honours `PI_ENSEMBLE_HANDOFF_CHANNEL` and carries the handoff in the result (#1327). |
+| `features.restartClearsAttention` | Constant `true` | `true` when `--restart` overrides the attention gate and clears `needs-human-attention` (#1327). See [`--restart` for hosts](#--restart-for-hosts). |
 
 ### How a caller uses this
 
