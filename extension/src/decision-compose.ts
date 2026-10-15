@@ -5,7 +5,9 @@
  * leak a pass:
  *
  *   A model answer never turns a non-passing rule outcome into a pass, except
- *   under `replace` WITH a passing evidence check.
+ *   under `replace` WITH a passing evidence check. Evidence gates a grant only:
+ *   a non-passing model answer (a denial) stands without it, because it cannot
+ *   loosen anything.
  *
  * An abstained model (no valid answer) always yields the rule's answer, and
  * so does every mode other than `enforce` — `shadow` logs the model only.
@@ -62,9 +64,15 @@ export function compose(
       break;
     case "replace":
       picked =
-        spec.evidence === "quote" && evidencePassed
-          ? { answer: model, fromModel: true, result: "replace: evidence verified" }
-          : keep("replace: no verified evidence, so the rule's answer stands");
+        (spec.evidence === "quote" && evidencePassed) || !isPassing(spec, model)
+          ? {
+              answer: model,
+              fromModel: true,
+              result: evidencePassed
+                ? "replace: evidence verified"
+                : "replace: a non-passing answer needs no evidence",
+            }
+          : keep("replace: no verified evidence for a pass, so the rule's answer stands");
       break;
     default:
       picked = keep("unknown composition: the rule's answer stands");

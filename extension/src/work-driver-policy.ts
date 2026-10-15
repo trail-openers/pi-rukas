@@ -33,8 +33,8 @@
  *     text and the proposed action, never the developer's argument for why it
  *     should be allowed — otherwise it can be talked into a yes.
  *   - **Citation-verified.** The judge must quote the sentence that grants the
- *     permission, and `decidePolicy` checks that sentence actually appears in
- *     the file the judge named. A fabricated quote is not just ignored, it is
+ *     permission, and the decision seam's evidence check (decision-evidence.ts)
+ *     confirms that sentence actually appears in the file the judge named. A fabricated quote is not just ignored, it is
  *     surfaced: a hallucinating judge is a thing the operator should know
  *     about, not something to paper over with a silent fallback.
  *
@@ -59,8 +59,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { Backend } from "./decision-backends.ts";
-import { citationPresent } from "./decision-evidence.ts";
-import { type DecisionWhere, decide } from "./decision-seam.ts";
+import { type Decision, type DecisionWhere, decide } from "./decision-seam.ts";
 import { reporterPathFromArgs, statReporterPath } from "./reporter-preflight.ts";
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import { trace } from "./trace.ts";
@@ -100,96 +99,54 @@ export interface PolicyDecision {
 }
 
 /**
- * Turn the judge's claim into a decision, deterministically.
+ * The outcome of one judged question, read off the seam's final answer.
  *
- * No regex, no language assumption, and no path where a missing or unparseable
- * answer yields permission. The whole function is a chain of denials with one
- * narrow exit: an explicit `permitted` whose quote was found in a document the
- * driver itself supplied.
+ * `decide()` is the only verifier: it decided the answer, and the evidence check
+ * behind it (decision-evidence.ts) is the only citation check. This function
+ * maps that answer to a verdict and says why, and nothing else. A `permitted`
+ * the composition refused is recorded as a citation failure, never as a grant.
  */
-export function decidePolicy(
-  answer: PolicyAnswer | undefined,
-  docs: readonly DoctrineDoc[],
-): PolicyDecision {
-  if (!answer) {
+export function policyOutcome(seam: Decision): PolicyDecision {
+  const quote = seam.model?.quote?.trim();
+  const sourceFile = seam.evidence?.matchedName ?? seam.model?.cited?.trim();
+  if (seam.answer === "permitted" && seam.evidence?.passed === true) {
     return {
-      permitted: false,
-      verdict: "unstated",
-      reason:
-        "the policy judge produced no usable answer (no report_policy call), and an absent answer is not permission",
+      permitted: true,
+      verdict: "permitted",
+      quote: quote?.slice(0, 400),
+      sourceFile,
+      reason: `${sourceFile ?? "a document"} permits it ("${(quote ?? "").slice(0, 200)}")`,
     };
   }
-
-  if (answer.verdict === "forbidden") {
-    // A denial is honoured whether or not it cites cleanly. Requiring a valid
-    // citation to *deny* would mean a sloppy judge could unblock an action the
-    // documents prohibit — the failure direction that must never exist.
+  if (seam.answer === "forbidden") {
+    // A denial needs no citation: a sloppy judge must not be able to unblock an
+    // action the documents prohibit.
     return {
       permitted: false,
       verdict: "forbidden",
-      quote: answer.quote,
-      sourceFile: answer.sourceFile,
-      reason: answer.quote
-        ? `the project's documents prohibit it ("${answer.quote.trim().slice(0, 200)}")`
+      quote,
+      sourceFile,
+      reason: quote
+        ? `the project's documents prohibit it ("${quote.slice(0, 200)}")`
         : "the project's documents prohibit it",
     };
   }
-
-  if (answer.verdict !== "permitted") {
+  if (seam.model?.answer === "permitted") {
     return {
       permitted: false,
       verdict: "unstated",
-      reason:
-        "the project's documents do not address this action, and the absence of a rule is not permission",
-    };
-  }
-
-  if (!answer.quote?.trim()) {
-    return {
-      permitted: false,
-      verdict: "permitted",
       citationFailed: true,
-      reason:
-        "the judge answered 'permitted' but cited no sentence — an uncited grant is not evidence of one",
+      quote,
+      sourceFile,
+      reason: `the judge answered 'permitted' citing "${(quote ?? "nothing").slice(0, 120)}", but ${seam.evidence?.reason ?? "no evidence was checked"} — the citation failed, so the grant is not honoured`,
     };
   }
-
-  // The judge names the file; only files the driver supplied are eligible. A
-  // judge that cites `POLICY.md` when it was handed `AGENTS.md` is describing
-  // a document nobody read.
-  const named = answer.sourceFile?.trim();
-  const candidates = named
-    ? docs.filter((d) => d.file.toLowerCase() === named.toLowerCase())
-    : docs;
-  if (named && candidates.length === 0) {
-    return {
-      permitted: false,
-      verdict: "permitted",
-      quote: answer.quote,
-      sourceFile: named,
-      citationFailed: true,
-      reason: `the judge cited '${named}', which is not one of the documents it was given (${docs.map((d) => d.file).join(", ") || "none"})`,
-    };
-  }
-
-  const hit = candidates.find((d) => citationPresent(answer.quote ?? "", d.text));
-  if (!hit) {
-    return {
-      permitted: false,
-      verdict: "permitted",
-      quote: answer.quote,
-      sourceFile: named,
-      citationFailed: true,
-      reason: `the judge answered 'permitted' citing "${answer.quote.trim().slice(0, 120)}", but that sentence does not appear in ${named ?? "any supplied document"} — the citation failed, so the grant is not honoured`,
-    };
-  }
-
   return {
-    permitted: true,
-    verdict: "permitted",
-    quote: answer.quote.trim().slice(0, 400),
-    sourceFile: hit.file,
-    reason: `${hit.file} permits it ("${answer.quote.trim().slice(0, 200)}")`,
+    permitted: false,
+    verdict: "unstated",
+    reason: seam.abstained
+      ? `the policy judge produced no usable answer (${seam.reason ?? "no reason"}), and an absent answer is not permission`
+      : "the project's documents do not address this action, and the absence of a rule is not permission",
   };
 }
 
@@ -284,7 +241,10 @@ const POLICY_REPORTER_PATH = path.join(
 );
 
 /** Injectable spawn seam, so the decision path is testable offline. */
-export type PolicyJudgeFn = (prompt: string) => Promise<{ toolUses: unknown[] } | undefined>;
+export type PolicyJudgeFn = (
+  prompt: string,
+  signal?: AbortSignal,
+) => Promise<{ toolUses: unknown[] } | undefined>;
 
 /** #407 escape hatch: fall back to nothing — the gate simply denies. */
 export function policyJudgeEnabled(): boolean {
@@ -319,51 +279,33 @@ export async function askPolicy(
       reason: "the project has no doctrine documents at the cycle's base commit",
     };
   }
-  // #1308 S2 — the judge child is this seam's only backend; decide() makes its
-  // answer the outcome only when its quote verifies in a supplied document.
-  const out: { answer?: PolicyAnswer; thrown?: { message?: string } } = {};
+  // #1308 S2 — the judge child is this seam's only backend. decide() decides the
+  // outcome and verifies the quote against the documents supplied here; this
+  // function only reads the answer back. decide()'s bound and abort reach the
+  // child, so a judge that wedges is killed rather than left running.
   const backend: Backend = {
     name: "policy-judge",
     source: "llm",
-    run: async () => {
+    run: async (_input, signal) => {
       try {
-        out.answer = extractPolicyAnswer(
-          (await judge(policyPrompt(question, docs)))?.toolUses ?? [],
+        const answer = extractPolicyAnswer(
+          (await judge(policyPrompt(question, docs), signal))?.toolUses ?? [],
         );
+        return answer
+          ? { ok: true, answer: answer.verdict, quote: answer.quote, cited: answer.sourceFile }
+          : { ok: false, error: "no report_policy call" };
       } catch (err) {
-        out.thrown = { message: (err as Error).message };
-        return { ok: false, error: `the judge threw: ${out.thrown.message}` };
+        return { ok: false, error: `the judge threw: ${(err as Error).message}` };
       }
-      const a = out.answer;
-      return a
-        ? { ok: true, answer: a.verdict, quote: a.quote, cited: a.sourceFile }
-        : { ok: false, error: "no report_policy call" };
     },
   };
   const texts = docs.map((d) => ({ name: d.file, text: d.text }));
   const seam = await decide(
     "policy-judge",
     { state: { question, documents: texts }, question, rule: "unstated", evidence: { texts } },
-    { ...where, backends: [backend] },
+    { timeoutMs: POLICY_JUDGE_TIMEOUT_MS, ...where, backends: [backend] },
   );
-  // Snapshot: a judge still running past decide()'s bound cannot change these.
-  const { answer: judged, thrown } = out;
-  if (thrown) {
-    return {
-      permitted: false,
-      verdict: "unstated",
-      reason: `the policy judge could not be consulted (${thrown.message?.slice(0, 160)}), and an unavailable judge is not permission`,
-    };
-  }
-  let decision = decidePolicy(judged, docs);
-  // Both checks must agree before anything is permitted.
-  if (decision.permitted && seam.answer !== "permitted") {
-    decision = {
-      permitted: false,
-      verdict: "unstated",
-      reason: `the decision seam did not confirm the grant (${seam.reason ?? "no reason"}), so it is not honoured`,
-    };
-  }
+  const decision = policyOutcome(seam);
   if (decision.citationFailed) {
     trace(`work-driver: policy — CITATION FAILED: ${decision.reason}`);
   } else {
@@ -416,7 +358,10 @@ export function judgePolicy(
   const { statFn, processGroup = false, signal } = opts;
   const extraArgs = ["--no-skills", "--extension", POLICY_REPORTER_PATH];
   const reporterPath = reporterPathFromArgs(extraArgs);
-  return async (prompt: string) => {
+  return async (prompt: string, callSignal?: AbortSignal) => {
+    // The cycle's signal and the caller's bound: either one kills the judge.
+    const killSignal =
+      signal && callSignal ? AbortSignal.any([signal, callSignal]) : (callSignal ?? signal);
     // #893 — pre-spawn stat; missing path → named error, no spawn.
     if (reporterPath) {
       await statReporterPath(reporterPath, statFn);
@@ -429,7 +374,7 @@ export function judgePolicy(
         extraArgs,
         timeoutMs: POLICY_JUDGE_TIMEOUT_MS,
         processGroup,
-        signal,
+        signal: killSignal,
       },
     );
     return result.ok ? { toolUses: result.toolUses ?? [] } : undefined;

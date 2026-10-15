@@ -59,6 +59,8 @@ export interface EvidenceCheck {
 export interface EvidenceResult {
   passed: boolean;
   reason: string;
+  /** The supplied text the quote was found in, named as the caller supplied it. */
+  matchedName?: string;
 }
 
 /** Read a repo-confined file, bounded. Undefined on anything unsafe or unreadable. */
@@ -90,15 +92,17 @@ export async function verifyEvidence(
   const texts = check.texts ?? [];
   const named = cited?.trim();
   if (!named) {
-    return texts.some((t) => citationPresent(quote, t.text))
-      ? { passed: true, reason: "the quote was found in a supplied text" }
-      : { passed: false, reason: "the quote is not in any supplied text" };
+    const hit = texts.find((t) => citationPresent(quote, t.text));
+    return hit
+      ? { passed: true, reason: "the quote was found in a supplied text", matchedName: hit.name }
+      : { passed: false, reason: "the quote does not appear in any supplied text" };
   }
   const candidates = texts.filter((t) => t.name.toLowerCase() === named.toLowerCase());
   if (candidates.length > 0) {
-    return candidates.some((t) => citationPresent(quote, t.text))
-      ? { passed: true, reason: `the quote was found in ${named}` }
-      : { passed: false, reason: `the quote is not in ${named}` };
+    const hit = candidates.find((t) => citationPresent(quote, t.text));
+    return hit
+      ? { passed: true, reason: `the quote was found in ${hit.name}`, matchedName: hit.name }
+      : { passed: false, reason: `the quote does not appear in ${named}` };
   }
   if (!check.repoRoot) {
     return { passed: false, reason: `'${named}' is not one of the supplied texts` };
@@ -111,6 +115,6 @@ export async function verifyEvidence(
     };
   }
   return citationPresent(quote, file)
-    ? { passed: true, reason: `the quote was found in ${named}` }
-    : { passed: false, reason: `the quote is not in ${named}` };
+    ? { passed: true, reason: `the quote was found in ${named}`, matchedName: named }
+    : { passed: false, reason: `the quote does not appear in ${named}` };
 }

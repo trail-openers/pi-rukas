@@ -89,8 +89,8 @@ export const SEAMS = {
     defaultMode: "enforce",
     evidence: "quote",
     owner: "work-driver-policy.ts",
-    // The judge child's own spawn timeout is 5 min; this bound sits above it
-    // so the spawn's timeout, not this one, is what fires in practice.
+    // askPolicy caps this at the judge child's own 5-minute bound, so decide()'s
+    // abort is what kills a wedged judge; this is only the seam's ceiling.
     timeoutMs: 6 * 60_000,
     // The judge reads whole doctrine files; today it has no size bound short
     // of the child's context, so neither does this seam in practice.

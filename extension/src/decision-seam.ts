@@ -32,13 +32,14 @@ import {
   defaultBackends,
 } from "./decision-backends.ts";
 import { compose } from "./decision-compose.ts";
-import { type EvidenceCheck, verifyEvidence } from "./decision-evidence.ts";
+import { type EvidenceCheck, type EvidenceResult, verifyEvidence } from "./decision-evidence.ts";
 import { appendDecisionRecord, redactState } from "./decision-log.ts";
 import {
   SEAMS,
   type SeamId,
   type SeamSpec,
   UNDECIDED,
+  isGrandfathered,
   seamConfig,
   seamContractViolations,
 } from "./decision-seam-registry.ts";
@@ -65,11 +66,13 @@ export interface DecideCtx {
   repoRoot?: string;
   /** The /work cycle's issues; the lowest one names the log directory. */
   issues?: readonly number[];
+  /** A tighter bound for this call. It can only shorten the seam's own timeout. */
+  timeoutMs?: number;
   signal?: AbortSignal;
 }
 
-/** Where a seam's decision log goes: the cycle's repo root and issues. */
-export type DecisionWhere = Pick<DecideCtx, "repoRoot" | "issues">;
+/** Where a seam's decision log goes, and how long its backends may run. */
+export type DecisionWhere = Pick<DecideCtx, "repoRoot" | "issues" | "timeoutMs">;
 
 export interface Decision {
   answer: string;
@@ -80,6 +83,13 @@ export interface Decision {
   backend: string;
   /** No backend produced a valid answer. */
   abstained: boolean;
+  /**
+   * The valid model answer and what it cited, whether or not composition let
+   * it stand. Callers read a refused answer here, never from a side channel.
+   */
+  model?: { answer: string; quote?: string; cited?: string };
+  /** The evidence check, when the seam ran one on the model's answer. */
+  evidence?: EvidenceResult;
   reason?: string;
   latencyMs: number;
   usage?: DecisionUsage;
@@ -135,15 +145,31 @@ async function runBounded(
   const onAbort = () => ac.abort();
   outer?.addEventListener("abort", onAbort, { once: true });
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  // A run that settles after the bound is discarded, but traced: a judge that
+  // answers late is exactly the event an operator needs to be able to see.
+  const late = () =>
+    traceWarn(`decision-seam: ${b.name} settled after its ${input.timeoutMs}ms bound; discarded`);
   try {
     if (outer?.aborted) throw new Error("aborted");
     const timeout = new Promise<BackendResult>((resolve) => {
       timer = setTimeout(() => {
+        timedOut = true;
         ac.abort();
         resolve({ ok: false, error: `timed out after ${input.timeoutMs}ms` });
       }, input.timeoutMs);
     });
-    const result = await Promise.race([b.run(input, ac.signal), timeout]);
+    const run = b.run(input, ac.signal).then(
+      (r) => {
+        if (timedOut) late();
+        return r;
+      },
+      (e) => {
+        if (timedOut) late();
+        throw e;
+      },
+    );
+    const result = await Promise.race([run, timeout]);
     return { backend: b.name, source: b.source, latencyMs: Date.now() - t0, result };
   } catch (err) {
     const error = `threw: ${(err as Error)?.message ?? String(err)}`.slice(0, 300);
@@ -175,7 +201,8 @@ export async function decide(
   ctx: DecideCtx = {},
 ): Promise<Decision> {
   const t0 = Date.now();
-  const spec = (SEAMS as Record<string, SeamSpec>)[seam];
+  // An own-property check: `constructor` and friends are not seams.
+  const spec = Object.hasOwn(SEAMS, seam) ? (SEAMS as Record<string, SeamSpec>)[seam] : undefined;
   const attempts: Attempt[] = [];
   const notes: string[] = [];
   let decision: Decision;
@@ -197,6 +224,10 @@ export async function decide(
       );
     }
     const labels = Object.keys(spec.labels);
+    const timeoutMs =
+      ctx.timeoutMs !== undefined && ctx.timeoutMs > 0
+        ? Math.min(cfg.timeoutMs, ctx.timeoutMs)
+        : cfg.timeoutMs;
     const undecided = req.rule === UNDECIDED;
     let rule = undecided ? spec.ruleDefault : req.rule;
     if (!labels.includes(rule)) {
@@ -227,11 +258,21 @@ export async function decide(
           question: req.question,
           state: clean?.state,
           stateText,
-          timeoutMs: cfg.timeoutMs,
+          timeoutMs,
           tokenBudget: cfg.tokenBudget,
         };
-        const backends = ctx.backends ?? defaultBackends(ctx.modelRegistry, ctx.model);
-        if (backends.length === 0) notes.push("no model backend available");
+        // A grandfathered seam's only backend is its owner's. With none supplied it
+        // answers from the rule, never from the generic classifier / session llm.
+        let backends: readonly Backend[];
+        if (ctx.backends) backends = ctx.backends;
+        else if (isGrandfathered(spec)) {
+          backends = [];
+          notes.push("grandfathered seam has no owner backend; the rule stands");
+          traceWarn(`decision-seam: '${seam}' has no owner backend; rule only`);
+        } else backends = defaultBackends(ctx.modelRegistry, ctx.model);
+        if (backends.length === 0 && !isGrandfathered(spec)) {
+          notes.push("no model backend available");
+        }
         for (const b of backends) {
           const a = await runBounded(b, input, ctx.signal);
           attempts.push(a);
@@ -265,6 +306,8 @@ export async function decide(
       .join("; ");
     decision = {
       answer: composed.answer,
+      model: model && { answer: model.answer, quote: model.quote, cited: model.cited },
+      evidence,
       ...(composed.fromModel && model?.probabilities ? { probabilities: model.probabilities } : {}),
       ...(composed.fromModel && model?.confidence !== undefined
         ? { confidence: model.confidence }
@@ -288,15 +331,21 @@ export async function decide(
       compositionResult: composed.result,
     };
   } catch (err) {
-    // A rule answer that is not a label falls to the seam default, as above.
+    // A seam we do not know has no labels to check the rule against, so it gets
+    // the fixed non-passing UNDECIDED answer — never the caller's rule. A rule
+    // that is not a label falls to the seam default, as above.
     const fallback =
-      spec && !Object.keys(spec.labels).includes(req.rule) ? spec.ruleDefault : req.rule;
+      spec === undefined
+        ? UNDECIDED
+        : Object.keys(spec.labels).includes(req.rule)
+          ? req.rule
+          : spec.ruleDefault;
     decision = {
       answer: fallback,
       source: "rule",
       backend: "rule",
       abstained: true,
-      reason: `decide failed, rule answer used: ${(err as Error)?.message ?? String(err)}`,
+      reason: `decide failed, ${spec === undefined ? "fixed fail-closed answer" : "rule answer"} used: ${(err as Error)?.message ?? String(err)}`,
       latencyMs: Date.now() - t0,
     };
     // The same core fields as a successful record, so S5 can count error-path calls.
