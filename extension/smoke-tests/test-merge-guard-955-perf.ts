@@ -344,12 +344,14 @@ await setupLedgerPath();
 // future matcher changes that could throw on new pathological shapes).
 {
   const src = readFileSync(path.join(import.meta.dirname, "../src/merge-guard.ts"), "utf8");
-  const idx = src.indexOf("merging = mergesPr(command);");
+  // #962: the matcher calls moved behind `analyseMergeCommand` (raw +
+  // canonical reading, merge-analyse.ts); the guard wraps that one call.
+  const idx = src.indexOf("analysis = analyseMergeCommand(command);");
   const tryBefore =
     idx !== -1 &&
-    /try\s*\{[\s\S]{0,200}merging = mergesPr\(command\);/.test(src.slice(0, idx + 100));
+    /try\s*\{[\s\S]{0,200}analysis = analyseMergeCommand\(command\);/.test(src.slice(0, idx + 100));
   const catchBlocks = /catch\s*\([\s\S]*?\)\s*\{\s*return block\(/.test(src);
-  assert(tryBefore, "fail-closed (source-shape): the `mergesPr` call is wrapped in a try block");
+  assert(tryBefore, "fail-closed (source-shape): the `analyseMergeCommand` call is wrapped in a try block");
   assert(catchBlocks, "fail-closed (source-shape): the catch block returns a block() refusal");
   console.log(
     "note: no natural throwing input found; source-shape assertion used for the try/catch",

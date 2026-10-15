@@ -82,16 +82,15 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { stripQuotedSegments } from "./bash-command-parser.ts";
-import { mergesPr } from "./bash-merges-pr.ts";
 import { execp } from "./exec.ts";
+import { FORGE_EXEC_TIMEOUT_MS } from "./forge-detect.ts";
+import { type MergeAnalysis, analyseMergeCommand } from "./merge-analyse.ts";
 import {
   lensNotEvaluatedRefusal,
   mergeIdentity,
   readPrCommentBodies,
 } from "./merge-guard-reads.ts";
 import { evaluateRoundCapMerge } from "./merge-guard-round-cap.ts";
-import { extractMergeNumber, mergeVerbArgs, mergeVerbRepo } from "./merge-parse.ts";
 import { exceedsAnalysisBound } from "./merge-size.ts";
 import {
   type MergeExecFn,
@@ -100,7 +99,6 @@ import {
   readMergeTarget,
   resolvePrNumber,
 } from "./merge-target.ts";
-import { REPO_VALUE_PATTERN } from "./merge-tokens.ts";
 import {
   type LedgerEntry,
   latestEntry,
@@ -112,7 +110,7 @@ import { trace } from "./trace.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 
 /** Per-exec timeout for the guard's gh/git calls. */
-const EXEC_TIMEOUT_MS = 30_000;
+const EXEC_TIMEOUT_MS = FORGE_EXEC_TIMEOUT_MS;
 
 /** Opt-out for an operator who has reviewed by other means. */
 function unreviewedMergeAllowed(): boolean {
@@ -138,103 +136,57 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     if (event.toolName !== "bash") return;
     const command = (event.input as { command?: string })?.command ?? "";
     // #955 (fail closed): wrap all parse/match calls in try/catch. The
-    // matcher and its helpers (mergesPr, mergeVerbArgs, mergeVerbRepo,
-    // extractMergeNumber, extractPrNumber, restRepoFor) can throw on
+    // matcher and its helpers (`analyseMergeCommand`, merge-analyse.ts) can throw on
     // pathological input (a ~30k-level nested `$(…)` throws RangeError:
     // Maximum call stack size exceeded). An uncaught throw OUT of the
     // tool_call hook is a crash — the command passes the guard and runs.
     // Catching it and blocking is fail-closed: the guard cannot analyse
     // the command, so it refuses.
-    let merging: string | undefined;
-    try {
-      merging = mergesPr(command);
-    } catch (err) {
-      return block(
-        `merge guard could not analyse this command (${analyseRefusal(err)}) — refusing; split or simplify the command`,
-      );
-    }
     // #955 lens round 6: a merge-bearing command over the size bound is
     // REFUSED explicitly ("too large to analyse") — it must not fall
     // through to current-branch PR resolution, which would verify the
     // ledger for a different PR than the one the (unanalysable) command
-    // would merge.
+    // would merge. It is checked first, so no walk runs over such a command.
     if (exceedsAnalysisBound(command)) {
       return block(
         "merge refused: command is too large to analyse — the merge guard will not walk a command this large (it could hide a merge behind a long value); split or simplify the command, or set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override",
       );
     }
-    if (!merging) return;
+    let analysis: MergeAnalysis;
+    try {
+      analysis = analyseMergeCommand(command);
+    } catch (err) {
+      return block(
+        `merge guard could not analyse this command (${analyseRefusal(err)}) — refusing; split or simplify the command`,
+      );
+    }
+    if (analysis.kind === "none") return;
+    // #955 lens fix 1 (HIGH): an invalid repo value (e.g. `o/r; touch
+    // /tmp/x`) is a shell injection. The guard refuses and NEVER
+    // interpolates it into any exec string — nor echoes it back (it can
+    // carry shell metacharacters the agent typed).
+    if (analysis.kind === "unsafe") {
+      return block(
+        "merge refused: unsafe repo value (contains characters outside owner/repo) — the guard will not interpolate this value into a forge command; set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override",
+      );
+    }
+    // #962: the command's raw text and the words bash executes (after
+    // quote removal) name different merge targets — the guard cannot tell
+    // which PR it would be checking, so it checks none.
+    if (analysis.kind === "ambiguous") {
+      return block(
+        "merge refused: ambiguous merge target — the command's quoting or escaping changes which PR/repo it names; write the PR number and repo plainly, or set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override",
+      );
+    }
+    const merging = analysis.span;
+    const repoValue = analysis.repo;
+    let prNumber = analysis.prNumber;
 
     const cwd = process.cwd();
     // The injectable exec seam: `opts.execFn` (tests drive the real hook
     // through it); production uses execp.
     const execFn: MergeExecFn = opts.execFn ?? execp;
 
-    // Resolve the PR number (from the command or the current branch).
-    // Resolve the PR number. The verb door (`gh pr merge …` / `glab mr
-    // merge …`) carries the number in the arguments AFTER the matched verb
-    // (#955: the legacy span-based extraction only saw the verb itself, so
-    // every numbered merge fell back to current-branch resolution). The
-    // REST doors (`gh api …/pulls/N/merge`) carry the number inside the
-    // matched span — `extractPrNumber` (span-scoped) still applies there.
-    // The `-R`/`--repo` flag (or a PR-URL) names the repo — threaded to the
-    // gh/glab reads so the guard resolves the PR in the right repo.
-    let fromVerb: string | undefined;
-    let fromRepo: { kind: "repo"; repo: string } | { kind: "unsafe"; raw: string } | undefined;
-    try {
-      fromVerb = mergeVerbArgs(command);
-      // The repo is extracted from the WHOLE command (not just the post-verb
-      // tail) because the -R flag can appear BEFORE the verb (`gh -R o/r pr
-      // merge 17`). `mergeVerbRepo` handles both positions plus PR-URLs.
-      fromRepo = mergeVerbRepo(command);
-    } catch (err) {
-      return block(
-        `merge guard could not analyse this command (${analyseRefusal(err)}) — refusing; split or simplify the command`,
-      );
-    }
-    // #955 lens fix 1 (HIGH): an invalid repo value (e.g. `o/r; touch
-    // /tmp/x`) is a shell injection. The guard refuses and NEVER
-    // interpolates it into any exec string.
-    if (fromRepo?.kind === "unsafe") {
-      // A fixed message — do NOT echo `fromRepo.raw` (it can carry shell
-      // metacharacters the agent typed; echoing it back is itself a
-      // reflection of untrusted input).
-      return block(
-        "merge refused: unsafe repo value (contains characters outside owner/repo) — the guard will not interpolate this value into a forge command; set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override",
-      );
-    }
-    let prNumber: number | undefined;
-    let repoValue: string | undefined;
-    try {
-      // The repo the guard verifies the PR in. The verb door's -R/--repo (or
-      // PR-URL) value wins when `mergeVerbRepo` yields one. On the REST
-      // doors, `mergeVerbRepo` cannot see the command (they use `api`, not
-      // the merge verb), so the repo flag carried by the REST invocation
-      // (`gh -R o/r api …/pulls/N/merge`) is threaded too — otherwise the
-      // guard would verify the PR in the CWD's repo while the merge writes a
-      // different one (#955 adversarial round 5, MINOR #1). A REST READ never
-      // reaches here (mergesPr returns undefined first), and a verb-door -R
-      // already wins above — the scan is anchored to the repo shape, so it
-      // fires only on the REST door's own flag.
-      repoValue = fromRepo?.kind === "repo" ? fromRepo.repo : restRepoFor(command);
-      if (fromVerb !== undefined) {
-        // The verb door matched — parse the number from the argument tail.
-        prNumber = extractMergeNumber(fromVerb);
-      } else {
-        // No verb door — try the REST-door span extraction (the number is
-        // inside the matched endpoint path for those shapes). The repo is the
-        // REST door's own -R/--repo flag (see repoValue above), so the
-        // fallback resolves the PR in the same repo the merge writes.
-        const fromSpan = extractPrNumber(merging);
-        if (fromSpan !== undefined) {
-          prNumber = fromSpan;
-        }
-      }
-    } catch (err) {
-      return block(
-        `merge guard could not analyse this command (${analyseRefusal(err)}) — refusing; split or simplify the command`,
-      );
-    }
     // No number in the tail → fall back to current-branch resolution.
     if (prNumber === undefined) {
       prNumber = await resolvePrNumber(execFn, cwd, undefined, undefined, repoValue);
@@ -413,48 +365,4 @@ function block(reason: string) {
 export function analyseRefusal(err: unknown, limit = 100): string {
   if (err instanceof Error) return `${err.name}: ${err.message.slice(0, limit)}`;
   return String(err).slice(0, limit);
-}
-
-/**
- * The repo flag carried by a REST-door invocation (`gh -R o/r api
- * repos/o/r/pulls/17/merge`), scanned over the quote-stripped command —
- * `mergeVerbRepo` cannot see REST-door commands (they use `api`, not the
- * merge verb), so without this a REST door's `-R` would verify the PR in
- * the CWD's repo while the merge writes a different one (#955 adversarial
- * round 5, MINOR #1). Only the REST doors reach here (the verb door's repo
- * already wins via `mergeVerbRepo`), and only the repo flag is read (the
- * number comes from the endpoint path); the value is anchored to the repo
- * shape (`REPO_VALUE_PATTERN`) so an injected value can never be threaded
- * into an exec string. A REST READ (`…/pulls/17` without the /merge
- * suffix) does not merge — `mergesPr` returns undefined before this is
- * called — so the -R here never fires on a non-merge.
- */
-function restRepoFor(command: string): string | undefined {
-  const c = stripQuotedSegments(command);
-  // No `\b` before the flag: `-R` / `--repo` begin with a non-word
-  // character, so a leading word-boundary assertion never matches (the
-  // guard would silently read no repo and verify the PR in the CWD's repo).
-  const m = new RegExp(
-    `(?:^|[;&|\\s])(?:-R|--repo)\\s+(${REPO_VALUE_PATTERN.source.slice(1, -1)})`,
-  ).exec(c);
-  return m?.[1];
-}
-
-/**
- * Extract the PR number from the matched merge span.
- *
- * `gh pr merge 12` → 12. `gh pr merge` → undefined (resolve via gh pr view).
- * `glab mr merge 7` → 7. The number is read from the matched span ONLY —
- * scoping to the whole command would pick up unrelated numbers (a `cd
- * /data/3 && gh pr merge` extracts `3` from the path) and validate the
- * ledger for the wrong PR.
- * #955 — the verb door no longer reaches here: its number is read from the
- * post-verb arguments (merge-parse.ts `extractMergeNumber`); this span-scoped
- * read now covers only the REST doors, whose endpoint path carries the number
- * as a path segment (`gh api …/pulls/12/merge` → 12, `glab api …/mr/7/merge`
- * → 7).
- */
-function extractPrNumber(matched: string): number | undefined {
-  const m = /\b(\d+)\b/.exec(matched);
-  return m?.[1] ? Number.parseInt(m[1], 10) : undefined;
 }

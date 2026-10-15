@@ -133,6 +133,37 @@ export function skipLeadingWrappers(tokens: string[], start: number): number {
       i++;
       continue;
     }
+    // #962: `case WORD in PATTERN) cmd ;; … esac` — the word, `in` and the
+    // first arm's pattern list (up to the `)` that closes it) are not
+    // commands; the arm's command follows. A later arm starts a new segment
+    // (after `;;`) with its pattern at the head: a head token closed by `)`
+    // (`2)`, `*)`, `(a)`), or a pattern followed by a lone `)` (`2 )`).
+    if (t === "case") {
+      let j = i + 2;
+      if (tokens[j] === "in") j++;
+      while (j < tokens.length && !(tokens[j] ?? "").endsWith(")")) j++;
+      if (j >= tokens.length) return i;
+      i = j + 1;
+      continue;
+    }
+    if (t.length > 1 && t.endsWith(")") && !t.includes("$(")) {
+      i++;
+      continue;
+    }
+    if (tokens[i + 1] === ")" && t !== "(") {
+      i += 2;
+      continue;
+    }
+    // #962: a command or variable substitution in command position expands
+    // to words the guard cannot see — possibly none, in which case the NEXT
+    // word is the command (`$() gh pr merge 12`, `$(true) gh pr merge 12`).
+    // Skip the substitution (its tokens, until its parens / backticks
+    // balance) so a merge behind it is still matched; quoted `$'…'` / `$"…"`
+    // strings are data, not substitutions.
+    if ((t[0] === "$" && t[1] !== "'" && t[1] !== '"' && t.length > 1) || t[0] === "`") {
+      i = skipSubstitution(tokens, i);
+      continue;
+    }
     if (TRANSPARENT_KEYWORDS.has(t)) {
       i++;
       continue;
@@ -274,6 +305,26 @@ export function skipLeadingWrappers(tokens: string[], start: number): number {
 }
 
 /**
+ * The index just past the substitution token at `start` (and the tokens it
+ * spans until its `(`/`)` and backticks balance), bounded by the list end.
+ */
+function skipSubstitution(tokens: string[], start: number): number {
+  let depth = 0;
+  let ticks = 0;
+  let i = start;
+  while (i < tokens.length) {
+    for (const c of tokens[i] ?? "") {
+      if (c === "(") depth++;
+      else if (c === ")") depth--;
+      else if (c === "`") ticks++;
+    }
+    i++;
+    if (depth <= 0 && ticks % 2 === 0) break;
+  }
+  return i;
+}
+
+/**
  * Scan a segment's leading tokens and return the forge command word when
  * the segment HEAD is a merge invocation under any number of wrappers.
  *
@@ -308,9 +359,6 @@ export function matchMergeVerb(text: string): string | undefined {
     // rawTokens keeps whole-word quotes on the token, and bash treats
     // `"gh"` exactly like `gh` — the quote check would defeat the fix.)
     const t = unquoteArg(raw);
-    // A variable-substituted command word is not the bare shape the guard
-    // unwraps — no forge word to match, and not a wrapper.
-    if (t[0] === "$" || t === "`") return undefined;
     // A leading `(` or `)` (subshell delimiter) is not a command word.
     // `rawTokens` glues an adjacent paren to the next word (`(gh`), so
     // strip it and re-test the remainder as the command head (#955

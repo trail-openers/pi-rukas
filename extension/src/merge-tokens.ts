@@ -36,7 +36,25 @@ export function rawTokens(raw: string): { list: string[]; terminated: boolean } 
   const n = raw.length;
   while (i < n) {
     const ch = raw[i] ?? "";
+    // #962: a backslash-newline is a line continuation (both vanish); an
+    // unquoted newline ends a command exactly like `;`, so it is emitted as
+    // one — a merge on the second line of a multi-line command is a command
+    // of its own, not an argument of the first line.
+    if (ch === "\\" && raw[i + 1] === "\n") {
+      i += 2;
+      continue;
+    }
+    if (ch === "\n") {
+      list.push(";");
+      i++;
+      continue;
+    }
     if (/\s/.test(ch)) {
+      i++;
+      continue;
+    }
+    if (ch === "&" && raw[i + 1] !== "&" && raw[i + 1] !== ">") {
+      list.push("&");
       i++;
       continue;
     }
@@ -106,10 +124,25 @@ export function rawTokens(raw: string): { list: string[]; terminated: boolean } 
       continue;
     }
     const start = i;
-    while (i < n && !/\s/.test(raw[i] ?? "") && raw[i] !== "'" && raw[i] !== '"') i++;
+    // #962: `;`, `|` and `&` are shell metacharacters — they end a word even
+    // with no space before them (`…/merge;` is the endpoint then a `;`).
+    // `>&` / `<&` / `&>` are redirections, not separators, and stay glued.
+    while (i < n && !/\s/.test(raw[i] ?? "") && raw[i] !== "'" && raw[i] !== '"') {
+      if (i > start && endsWord(raw, i)) break;
+      i++;
+    }
     list.push(raw.slice(start, i));
   }
   return { list, terminated: true };
+}
+
+/** True when the unquoted character at `i` is a separator that ends a word. */
+function endsWord(raw: string, i: number): boolean {
+  const c = raw[i];
+  if (c === ";" || c === "|") return true;
+  if (c !== "&") return false;
+  const prev = raw[i - 1];
+  return prev !== ">" && prev !== "<" && raw[i + 1] !== ">";
 }
 
 /**
@@ -127,7 +160,7 @@ export function rawTokens(raw: string): { list: string[]; terminated: boolean } 
  * the matcher (bash-merges-pr.ts), the argument-tail extractor (merge-
  * parse.ts) and the verb-head matcher (merge-wrappers.ts).
  */
-export const MERGE_VERB_SPAN_SRC = String.raw`(?:^|[\s;&|])(?:/\S*\/)?(?:gh|glab)(?:\s+(?:-R|--repo|--project)\s+\S+)?\s+(?:pr|mr)\s+merge\b`;
+export const MERGE_VERB_SPAN_SRC = String.raw`(?:^|[\s;&|])(?:/\S*\/)?(?:gh|glab)(?:\s+(?:-R|--repo|--project)\s+\S+|\s+(?:-R=?|--repo=|--project=)\S*(?:\s+\S+)?)?\s+(?:pr|mr)\s+merge\b`;
 
 /** The verb span as a fresh RegExp (re-compiled at every use — stateless). */
 export function mergeVerbSpanRegex(): RegExp {
@@ -161,7 +194,7 @@ export const MAX_CONSTRUCT_DEPTH = 256;
 
 /** The anchored verb-source (the verb-HEAD test in merge-wrappers.ts). */
 export function mergeVerbHeadRegex(): RegExp {
-  return /^(?:gh|glab|\S*\/(?:gh|glab))\s+(?:-R\s+\S+|--repo\s+\S+|--project\s+\S+)?\s*(?:pr|mr)\s+merge(?:\s|$)/;
+  return /^(?:gh|glab|\S*\/(?:gh|glab))\s+(?:-R\s+\S+|--repo\s+\S+|--project\s+\S+|(?:-R=?|--repo=|--project=)\S*(?:\s+\S+)?)?\s*(?:pr|mr)\s+merge(?:\s|$)/;
 }
 
 /**
@@ -259,7 +292,13 @@ export function shellSegments(command: string): string[] {
       cur += command.slice(start, i);
       continue;
     }
-    if (ch === ";" || ch === "|" || (ch === "&" && (command[i + 1] ?? "") === "&")) {
+    // #962: a backslash-newline is a line continuation; an unquoted newline
+    // ends the command like `;` does (see `rawTokens`).
+    if (ch === "\\" && command[i + 1] === "\n") {
+      i += 2;
+      continue;
+    }
+    if (ch === ";" || ch === "|" || ch === "\n" || (ch === "&" && (command[i + 1] ?? "") === "&")) {
       parts.push(cur);
       cur = "";
       i += ch === "&" ? 2 : 1;
@@ -278,6 +317,18 @@ export function shellSegments(command: string): string[] {
   }
   if (closed) parts.push(cur);
   return parts;
+}
+
+/**
+ * The value glued to a repo flag token — `--repo=V` / `--project=V` /
+ * `-R=V` / `-RV` → `V` (the empty string when the token ends at the `=`,
+ * i.e. the value is the next token) — or `undefined` when the token is not
+ * a glued repo flag (the bare `-R` / `--repo` / `--project` included).
+ */
+export function gluedRepoValue(t: string): string | undefined {
+  const m = /^(?:--repo=|--project=|-R=?)(.*)$/s.exec(t);
+  if (!m || t === "-R") return undefined;
+  return m[1] ?? "";
 }
 
 /**
@@ -367,18 +418,25 @@ export function parseArgsAfterVerb(args: string): {
       // invalid value. #955 round 14: the eq branch previously skipped the
       // validity check the space form applies, so `--repo=o/r;id` passed
       // where `--repo o/r;id` refused.
-      const eq = t.indexOf("=");
-      if (eq > 0) {
-        const flagName = t.slice(0, eq);
-        if (flagName === "--repo" || flagName === "--project") {
-          const val = t.slice(eq + 1);
-          if (val.length > 0) {
-            const q = val[0];
-            repo = stripGluedParen(q === "'" || q === '"' ? val.slice(1, -1) : val);
-          }
+      // #962: the value of a quoted eq form (`--repo="o/r;id"`) is its own
+      // token — `rawTokens` ends a word at a quote — so a token ending at
+      // `=` takes the NEXT token as the value; reading it as empty dropped
+      // the repo and the guard verified the CWD's PR instead. `-R=VALUE` and
+      // `-RVALUE` are the same flag (pflag shorthand forms).
+      const glued = gluedRepoValue(t);
+      if (glued !== undefined) {
+        let val = glued;
+        if (val === "") {
+          val = tokens.list[i + 1] ?? "";
+          i++;
+        }
+        if (val.length > 0) {
+          const q = val[0];
+          repo = stripGluedParen(q === "'" || q === '"' ? val.slice(1, -1) : val);
         }
         continue;
       }
+      if (t.indexOf("=") > 0) continue;
       if (t === "-R" || t === "--repo" || t === "--project") {
         const v = tokens.list[i + 1];
         if (v !== undefined && v.length > 0) {

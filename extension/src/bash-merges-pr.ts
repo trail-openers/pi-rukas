@@ -54,9 +54,10 @@ function segmentSpanOrUnwrapped(seg: string): string | undefined {
  *     `gh api repos/{o}/{r}/pulls/merge` shape is the same door,
  *   - the glab REST door: `glab api /projects/{id}/mr/{n}/merge` —
  *     method-AWARE (glab api does NOT default to POST, exactly the
- *     issues-door rule): only an EXPLICIT PUT/POST (`-X PUT`, `--method
- *     POST`, …) or body fields (`-f`/`-F`/`--field`) is a merge; an
- *     unqualified call or an explicit GET stays open.
+ *     issues-door rule): only an explicit non-GET method (`-X PUT`,
+ *     `--method=POST`, …) or body fields (`-f`/`-F`/`--field`, which force
+ *     the write even beside `--method GET`, #962) is a merge; an
+ *     unqualified call or a bare explicit GET stays open.
  *
  * Reads stay open: `gh pr view`, `gh pr checks`, `gh api repos/o/r/pulls/42`
  * (no `/merge` suffix), `glab mr view`, and anything only quoted (`echo
@@ -208,7 +209,7 @@ function restDoorTokens(text: string): string | undefined {
     }
   }
   const n = list.length;
-  const isSep = (t: string) => t === ";" || t === "&&" || t === "||" || t === "|";
+  const isSep = (t: string) => t === ";" || t === "&&" || t === "||" || t === "|" || t === "&";
   for (let i = 0; i < n; i++) {
     if (i > 0 && !isSep(unquoteArg(list[i - 1] ?? ""))) continue;
     // The segment's unquoted tokens, up to the next separator.
@@ -288,13 +289,20 @@ function restDoorTokens(text: string): string | undefined {
       // blocked only when the command EXPLICITLY writes (glab api does not
       // default to POST the way gh api does; copying the gh rule here would
       // over-block legitimate reads). Method names are case-insensitive.
+      // #962: any method other than GET/HEAD — in every spelling glab
+      // accepts (`-X PUT`, `-XPUT`, `--method=PUT`) — is the write, and body
+      // fields force the write even with `--method GET` (the gh door's
+      // `hasBodyFields` rule): `--method GET -f state=merged` is not a read
+      // the guard may wave through.
       if (!/\/(?:mr|merge_requests)(?:\/[^\s/?#]+)?\/merge(?:[?&#]|$)/.test(endpoint)) continue;
-      const explicitGet = /(^|\s)(?:--method|-X)\s+get\b/i.test(all);
-      const writes =
-        /(^|\s)(?:-X|-f|-F)\s+(?:put|post)\b/i.test(all) ||
-        /(^|\s)--method\s+(?:put|post)\b/i.test(all) ||
-        /(^|\s)(?:-f|-F|--field)(?:=|\s)/.test(all);
-      if (!explicitGet && writes) return `${cmd} api ${endpoint}`;
+      const methods = [...all.matchAll(/(?:^|\s)(?:--method|-X)(?:=|\s+)?([A-Za-z]+)/g)].map((m) =>
+        (m[1] ?? "").toUpperCase(),
+      );
+      const writesMethod = methods.some((m) => m !== "GET" && m !== "HEAD");
+      const hasBodyFields =
+        /(^|\s)(?:-f|-F|--field|--raw-field|--input)(?:=|\s|$)/.test(all) ||
+        /(^|\s)-[fF]\S/.test(all);
+      if (writesMethod || hasBodyFields) return `${cmd} api ${endpoint}`;
     }
   }
   return undefined;

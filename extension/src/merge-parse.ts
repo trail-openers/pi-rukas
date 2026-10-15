@@ -17,6 +17,7 @@
 
 import {
   MAX_CONSTRUCT_DEPTH,
+  gluedRepoValue,
   isValidRepoValue,
   mergeVerbSpanRegex,
   parseArgsAfterVerb,
@@ -154,6 +155,12 @@ function matchMergeVerbTail(command: string): string | undefined {
   const layers = 3;
   let used = 0;
   while (used < layers) {
+    // #962: the whole-command unwrap replaces `text` with the shell-eval
+    // body, so it is only sound when that invocation IS the whole command.
+    // With a second segment (`bash -c 'true'; gh pr merge 17`) the rest of
+    // the command would be discarded unseen; the per-segment unwrap in
+    // `segmentMergeTail` handles every segment instead.
+    if (shellSegments(text).length !== 1) break;
     const inner = mergeVerbUnwrapOne(text);
     if (inner === undefined) break;
     text = inner;
@@ -415,6 +422,18 @@ function repoFlagInTokens(seg: string): string | undefined {
   if (tokens.terminated === false) return undefined;
   for (let i = 0; i < tokens.list.length; i++) {
     const t = tokens.list[i] ?? "";
+    // #962: the `--repo=VALUE` / `-R=VALUE` / `-RVALUE` spellings name the
+    // repo exactly like the space form (gh accepts all of them, before or
+    // after the verb) — reading only the space form verified a merge on
+    // another repo against the CWD's PR. The value is the rest of the token
+    // or, when the token ends at `=` (a quoted value: `--repo="o/r"`), the
+    // next token.
+    const glued = gluedRepoValue(t);
+    if (glued !== undefined) {
+      const v = glued === "" ? (tokens.list[i + 1] ?? "") : glued;
+      const q = v[0];
+      return stripGluedParen(q === "'" || q === '"' ? v.slice(1, -1) : v);
+    }
     if (t === "-R" || t === "--repo" || t === "--project") {
       const v = tokens.list[i + 1];
       if (v === undefined || v.length === 0) continue;

@@ -95,7 +95,18 @@ export interface DetectForgeOpts {
   probe?: ProbeFn;
   /** Force-enable or force-disable the probe, overriding `shouldProbe`. */
   allowProbe?: boolean;
+  /** The per-call bound on the remote-resolution git calls (default `FORGE_EXEC_TIMEOUT_MS`). */
+  execTimeoutMs?: number;
 }
+
+/**
+ * The bound on each forge-side exec the merge guard waits on (#962) — the
+ * remote-resolution git calls here, and the guard's gh/glab/git reads
+ * (merge-target.ts, merge-guard.ts). A stalled call must not hang the
+ * tool_call hook; a git call that times out resolves no remote, and no
+ * remote is an unknown forge — which the guard refuses.
+ */
+export const FORGE_EXEC_TIMEOUT_MS = 30_000;
 
 const FORGE_ENV_KEY = "PI_ENSEMBLE_FORGE";
 
@@ -294,13 +305,26 @@ const defaultProbe: ProbeFn = async (
 async function resolveRemote(
   execFn: typeof execp,
   cwd: string,
+  timeoutMs: number,
 ): Promise<{ remote: string; url: string } | undefined> {
+  // The timeout is passed to the exec AND raced here: an exec that ignores
+  // it (or never settles) still cannot outlive the bound (#962).
+  const git = (cmd: string) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`${cmd} timed out after ${timeoutMs}ms`)),
+        timeoutMs,
+      );
+    });
+    return Promise.race([
+      execFn(cmd, { cwd, maxBuffer: 64 * 1024, timeout: timeoutMs }),
+      deadline,
+    ]).finally(() => clearTimeout(timer));
+  };
   const urlOf = async (name: string): Promise<string | undefined> => {
     try {
-      const { stdout } = await execFn(`git config --get remote.${name}.url`, {
-        cwd,
-        maxBuffer: 64 * 1024,
-      });
+      const { stdout } = await git(`git config --get remote.${name}.url`);
       const url = stdout.trim();
       return url || undefined;
     } catch {
@@ -313,7 +337,7 @@ async function resolveRemote(
   }
   // Fall back to the first remote in `git remote` order.
   try {
-    const { stdout } = await execFn("git remote", { cwd, maxBuffer: 64 * 1024 });
+    const { stdout } = await git("git remote");
     const first = stdout.trim().split("\n")[0]?.trim();
     if (first) {
       const url = await urlOf(first);
@@ -337,6 +361,7 @@ export async function detectForge(
   opts: DetectForgeOpts = {},
 ): Promise<ForgeDetection> {
   const execFn = opts.execFn ?? execp;
+  const timeoutMs = opts.execTimeoutMs ?? FORGE_EXEC_TIMEOUT_MS;
   const env = opts.env ?? process.env;
   const probeEnv = opts.probeEnv ?? env;
 
@@ -345,7 +370,7 @@ export async function detectForge(
   if (envForge) {
     if (envForge === "github" || envForge === "gitlab") {
       // Still try to parse the remote for host/owner/repo context (best-effort).
-      const remote = await resolveRemote(execFn, repoRoot);
+      const remote = await resolveRemote(execFn, repoRoot, timeoutMs);
       const parsed = remote?.url ? parseRemoteUrl(remote.url) : undefined;
       return {
         forge: envForge,
@@ -376,7 +401,7 @@ export async function detectForge(
   }
 
   // 3. Resolve the remote URL.
-  const remote = await resolveRemote(execFn, repoRoot);
+  const remote = await resolveRemote(execFn, repoRoot, timeoutMs);
   const parsed = remote?.url ? parseRemoteUrl(remote.url) : undefined;
   const host = parsed?.host;
 
