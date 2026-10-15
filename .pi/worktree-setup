@@ -84,25 +84,17 @@ link_tree() {
   echo "worktree-setup: linked $dst -> $src"
 }
 
-# #1146 — link EVERY non-empty, gitignored node_modules at repoRoot and in
-# depth-1 package dirs (a dir with a manifest/lockfile), the same places the
-# driver's post-hook check looks. Linking only extension/node_modules left a
-# non-empty root node_modules (Pi's jiti cache) unlinked, which the driver
-# reported as hook-failed. Untracked-but-not-ignored trees are never linked
-# over: a tracked directory of the same name is already materialised.
+# #1146 — link every non-empty, gitignored dependency tree this repo has:
+# the real one at extension/node_modules AND the root node_modules (Pi's
+# jiti cache). The driver's post-hook check verifies every non-empty
+# node_modules at repoRoot and in depth-1 package dirs; linking only
+# extension/node_modules made every cycle on this repo record hook-failed.
+# A tree that is absent, empty or not gitignored is skipped — never linked
+# over a tracked directory of the same name.
 linked=0
-for src in "$repo_root/node_modules" "$repo_root"/*/node_modules; do
-  [ -d "$src" ] || continue
-  rel=${src#"$repo_root/"}
+for rel in node_modules extension/node_modules; do
+  src="$repo_root/$rel"
   [ -n "$(ls -A "$src" 2>/dev/null)" ] || continue
-  pkg=${rel%node_modules}
-  if [ -n "$pkg" ]; then
-    has_marker=0
-    for m in package.json bun.lock bun.lockb package-lock.json yarn.lock pnpm-lock.yaml; do
-      [ -f "$repo_root/$pkg$m" ] && has_marker=1
-    done
-    [ "$has_marker" = 1 ] || continue
-  fi
   git -C "$repo_root" check-ignore -q -- "$rel" || continue
   link_tree "$rel"
   linked=$((linked + 1))

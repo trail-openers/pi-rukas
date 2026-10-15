@@ -277,7 +277,7 @@ The hook is the escape hatch for the inexpressible: anything the symlink allowli
 
 **Cause (fixed):** pi-rukas has two non-empty gitignored `node_modules` — the real tree at `extension/node_modules` and a jiti compile cache at the root. The hook linked only `extension/node_modules`; the post-hook check verified only the first non-empty `node_modules` it found (the root one), so the two disagreed — and a missing nested tree was never checked at all.
 
-**Now:** provisioning — the hook and the hookless symlink loop alike — links **every** non-empty gitignored `node_modules` at the root and in depth-1 package dirs, and the post-hook check verifies each of them. Before running the verify command in a worktree, the develop gate checks the same locations and, if one is missing, fails at once with `<path> missing in <worktree>` instead of running the command into the timeout. A worktree provisioned before this fix: run `sh .pi/worktree-setup` in it.
+**Now:** this repo's hook links both trees (`node_modules` and `extension/node_modules`), the hookless symlink loop links **every** non-empty gitignored `node_modules` at the root and in depth-1 package dirs, and the post-hook check verifies each of those locations. Before running the verify command in a worktree, the develop gate checks the same locations and, if one is missing, fails at once with `<path> missing in <worktree>` instead of running the command into the timeout. The root `node_modules` linked here is Pi's jiti compile cache, so worktrees share one cache directory; jiti writes content-addressed files, which is safe to share. A worktree provisioned before this fix: run `sh .pi/worktree-setup` in it.
 
 ### The plan step re-dispatches saying two workstreams claim the same file
 

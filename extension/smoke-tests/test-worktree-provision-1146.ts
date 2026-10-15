@@ -25,7 +25,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { missingDepsFailure } from "../src/work-driver-deps-hint.ts";
+import { missingDepsFailure } from "../src/work-driver-deps-gate.ts";
 import { runVerifyCommandGate } from "../src/work-driver-verify-verify-cmd.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 import { provisionWorktree } from "../src/worktree-provision.ts";
@@ -108,7 +108,7 @@ async function repoShapedFixture(hook: string | undefined): Promise<{ root: stri
     const { stdout } = await pexec("git status --porcelain", { cwd: wt });
     assert(stdout.trim() === "", `no link surfaces in git status (got: ${JSON.stringify(stdout)})`);
     assert(
-      (await missingDepsFailure({ eventLog: [] } as unknown as WorkState, root, wt, "v")) ===
+      (await missingDepsFailure(realExec, { eventLog: [] } as WorkState, root, wt, "v")) ===
         undefined,
       "a provisioned worktree is not reported as missing dependencies",
     );
@@ -162,7 +162,8 @@ async function repoShapedFixture(hook: string | undefined): Promise<{ root: stri
     const ran: string[] = [];
     const failures: string[] = [];
     await runVerifyCommandGate({
-      execFn: async (cmd) => {
+      execFn: async (cmd, opts) => {
+        if (cmd === "git") return realExec(cmd, opts);
         ran.push(cmd);
         return { stdout: "", stderr: "" };
       },
@@ -188,6 +189,22 @@ async function repoShapedFixture(hook: string | undefined): Promise<{ root: stri
     assert(
       failures[0]?.includes("timeout") === false,
       "the failure is not a timeout — it is reported before any command runs",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// ---- a non-empty tree provisioning never links (not gitignored) does not block the gate
+{
+  const { root, wt } = await repoShapedFixture(undefined);
+  try {
+    writeFileSync(path.join(root, ".gitignore"), "extension/node_modules/\n.worktrees/\n");
+    rmSync(path.join(root, "extension", "node_modules"), { recursive: true });
+    const failure = await missingDepsFailure(realExec, { eventLog: [] } as WorkState, root, wt, "v");
+    assert(
+      failure === undefined,
+      `an untracked, non-ignored root node_modules is not reported missing (got: ${failure})`,
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
