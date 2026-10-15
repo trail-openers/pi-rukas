@@ -93,7 +93,6 @@ const REFUSED: string[] = [
   'gh pr merge 17 --subject "feat!: x"',
   "gh pr merge 17 --body-file ~/x.md",
   // Chains, pipes, newlines, background, redirections.
-  // Chains, pipes, newlines, background, redirections.
   "cd x && gh pr merge 17",
   "cd /data/3 && gh pr merge",
   "git status; gh pr merge 12 --squash",
@@ -195,8 +194,16 @@ const REFUSED: string[] = [
   "{gh,pr,merge,17}",
   "gh pr {merge,view} 17",
   "gh pr merge 17 --subject é",
-  "gh pr merge 17",
   "gh pr merge\v17",
+  // Non-read gh verbs carrying a merge word: refused (use --body-file for prose).
+  "gh pr comment 5 --body \"please merge\"",
+  "gh pr comment 5 --body 'we will gh pr merge 12 later'",
+  "gh pr edit 17 --add-label automerge",
+  "gh pr review 17 --body '/merge'",
+  "gh workflow run merge-release.yml",
+  "gh run list --workflow merge.yml",
+  "gh run rerun 42 --job merge",
+  "gh release create v1 --notes merge",
   // Wrong targets and flags.
   "gh pr merge https://github.com/o/r/pull/17",
   "gh pr merge feature/x",
@@ -282,7 +289,8 @@ for (const cmd of ["glab mr merge 12", "glab -R g/p mr merge 3 --squash", "glab 
   assert(m.kind === "refused" && m.reason === "glab-auto-merge", `glab opt-out refusal: ${JSON.stringify(cmd)} (${show(m)})`);
 }
 assert(readMergeCommand("gh pr merge 17").kind === "merge", "gh merge needs no opt-out");
-assert(readMergeCommand("gh api repos/o/r/pulls/1/merge").kind === "refused" && (readMergeCommand("gh api repos/o/r/pulls/1/merge") as { reason?: string }).reason !== "glab-auto-merge", "other refusals keep the generic form");
+const apiMerge = readMergeCommand("gh api repos/o/r/pulls/1/merge");
+assert(apiMerge.kind === "refused" && apiMerge.reason !== "glab-auto-merge", "other refusals keep the generic form");
 
 // ------------------------------------------------------------ reason codes
 const CODES: Array<[string, string]> = [
@@ -348,9 +356,9 @@ const NOT_MERGES: string[] = [
   "gh api graphql -f query='{ viewer { login } }'",
   "glab api graphql -f query='{ currentUser { username } }'",
   "gh pr view 17 $'x'",
-  'gh pr comment 5 --body "please merge"',
-  "gh pr comment 5 --body 'we will gh pr merge 12 later'",
-  "gh run list --workflow merge.yml",
+  "gh pr ready 17",
+  "gh pr review 17 --approve",
+  "gh issue create --title merge-bot --body-file x.md",
   "",
 ];
 for (const cmd of NOT_MERGES) {
@@ -425,10 +433,13 @@ assert(analyseRefusal(new RangeError("deep")) === "RangeError: deep", "…and an
 {
   const big = `gh pr merge 17 --subject '${"merge ".repeat(5000)}'`;
   const flood = `gh ${"$(merge ".repeat(5000)}`;
+  // Quadratic under an unbounded brace-expansion pattern (#962 review).
+  const braces = `gh {${"a,".repeat(15_000)}`;
   const plain = `git commit -m '${"x".repeat(30_000)}'`;
   for (const [label, cmd, kind] of [
     ["30 kB accepted merge", big, "merge"],
     ["30 kB substitution flood", flood, "refused"],
+    ["30 kB brace-run flood", braces, "none"],
     ["30 kB non-merge", plain, "none"],
   ] as const) {
     const t0 = performance.now();

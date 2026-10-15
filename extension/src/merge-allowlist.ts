@@ -7,9 +7,14 @@
  * module replaces that with a strict allowlist, in two steps:
  *
  *   0. READ-ONLY GH. A command that lexes as ONE simple command under the
- *      strict lexer, whose words are `gh` followed by a known non-merging
- *      subcommand (`pr create|view|…`, `issue *`, `run *`, …) is not a merge,
- *      whatever merge words its titles, bodies or searches carry.
+ *      strict lexer, whose words are `gh` followed by a genuine read or a
+ *      creation (`pr view|list|checks|diff|status|create`, `issue view|list|create`,
+ *      `release list|view`, `search *`, `label list`, `repo view`) is not a
+ *      merge, whatever merge words its titles, bodies or searches carry.
+ *      Comments, edits, reviews, workflow dispatches and run re-runs are NOT
+ *      exempt: they fall through to step 1, so they are refused only when they
+ *      carry a merge word (use `--body-file` for prose).
+
  *   1. TRIGGER (cheap, on the raw text, case-insensitive). A command is
  *      refused outright, without reading it, when:
  *        - it names a forge, HTTP client or interpreter (`gh`, `glab`, `hub`,
@@ -84,8 +89,12 @@ const FORGE_HOST = /api\.github\.com|github\.com|gitlab|graphql/i;
  */
 const BODY_FILE =
   /(?:^|\s)[^\s=]*=@|(?:^|\s)-[dFT]\s*@|(?:^|\s)-T\b|--(?:data[\w-]*|form)\s+@|--data-urlencode\s+[^\s=@"']*@|--(?:upload-file|post-file|input)\b/;
-/** A `{a,b}` or `{a..b}` pattern bash would expand (matched on the unquoted view). */
-const BRACE_EXPANSION = /\{[^{}\s]*(?:,|\.\.)[^{}\s]*\}/;
+/**
+ * A `{a,b}` or `{a..b}` pattern bash would expand (matched on the unquoted
+ * view). Runs are bounded so the match is linear: an unbounded pair of runs
+ * backtracks quadratically on `{` followed by a long `a,a,a,…` (#962 review).
+ */
+const BRACE_EXPANSION = /\{[^{}\s,]{0,256}(?:,|\.\.)[^{}\s]{0,256}\}/;
 
 /** Outside quotes, any of these refuses (metacharacters, expansions, comments). */
 const FORBIDDEN = new Set("$`\\;|&<>(){}*?[#~!");
@@ -276,30 +285,35 @@ function lex(command: string): { words: string[] } | { code: string } {
   return { words };
 }
 
-/** gh subcommands that never merge: a merge word in their arguments is prose. */
-const READ_ONLY_GH_PR = new Set([
-  "create",
-  "view",
-  "list",
-  "checks",
-  "edit",
-  "comment",
-  "diff",
-  "status",
-  "ready",
-  "close",
-  "reopen",
-  "review",
+/**
+ * gh subcommands that are genuine reads or creations: a merge word in their
+ * arguments is prose. Everything else (comment, edit, review, ready, close,
+ * reopen, workflow, run, release create|upload|delete, label create|edit,
+ * issue edit|comment|close) is judged by the trigger, so a merge word in it
+ * refuses — those verbs can mutate a PR, or fire a merge bot or workflow.
+ */
+const READ_ONLY_GH = new Set([
+  "pr view",
+  "pr list",
+  "pr checks",
+  "pr diff",
+  "pr status",
+  "pr create",
+  "issue view",
+  "issue list",
+  "issue create",
+  "release list",
+  "release view",
+  "label list",
+  "repo view",
 ]);
-const READ_ONLY_GH_GROUPS = new Set(["issue", "run", "workflow", "release", "search", "label"]);
 
-/** Whether the words are one of the known non-merging gh subcommands. */
+/** Whether the words are one of the known read-only or creating gh subcommands. */
 function isReadOnlyGh(words: string[]): boolean {
   if (words[0] !== "gh") return false;
   const [, noun = "", verb = ""] = words;
-  if (noun === "pr") return READ_ONLY_GH_PR.has(verb);
-  if (noun === "repo") return verb === "view";
-  return READ_ONLY_GH_GROUPS.has(noun) && verb !== "";
+  if (noun === "search") return true;
+  return READ_ONLY_GH.has(`${noun} ${verb}`);
 }
 
 interface ForgeGrammar {

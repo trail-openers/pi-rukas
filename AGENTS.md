@@ -44,6 +44,8 @@ The fix loop is bounded, and what happens at the bound depends on severity. A `C
 
 **The round-cap merge path (#973)** lets the guard allow a capped, merge-worthy PR (ISSUES_FOUND at the round cap, approving adversarial gate, residuals posted to the PR). Its conditions and escape hatch are documented in `extension/src/merge-guard-round-cap.ts`.
 
+**Child guards.** `buildChildArgs` appends the child-guards companion (`extension/src/child-guards.ts`) to every child in every mode. The companion no-ops under `PI_ENSEMBLE_SUBAGENT_MODE=1`, and a missing companion file fails the spawn with a named error rather than producing an unguarded child.
+
 ---
 
 ## 2. Two change paths (READ FIRST before editing)
