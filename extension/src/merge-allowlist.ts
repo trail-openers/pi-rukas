@@ -37,7 +37,7 @@ export type MergeCommand =
   | { kind: "merge"; forge: "github" | "gitlab"; prNumber?: number; repo?: string };
 
 /** A repo value safe to pass to gh/glab: `owner/repo` (GitLab: `group/sub/repo`). */
-export const REPO_VALUE_PATTERN = /^[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.-]+)+$/;
+export const REPO_VALUE_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_.-]*(\/[A-Za-z0-9_.-]+)+$/;
 
 /** Whether a repo value is safe to interpolate into a forge exec string. */
 export function isValidRepoValue(value: string): boolean {
@@ -122,6 +122,9 @@ interface ForgeGrammar {
   repoEq: boolean;
 }
 
+// Deferred merges (gh `--auto`, glab `--when-pipeline-succeeds`/`--auto-merge`)
+// are refused: they run later, against whatever head the PR has by then, so
+// the guard's one-time ledger and head check would not cover them.
 const GH: ForgeGrammar = {
   forge: "github",
   tool: "gh",
@@ -138,7 +141,6 @@ const GH: ForgeGrammar = {
     "-d",
     "--delete-branch=true",
     "--delete-branch=false",
-    "--auto",
     "--disable-auto",
   ]),
   valued: new Set([
@@ -168,7 +170,7 @@ const GLAB: ForgeGrammar = {
     "-r",
     "--yes",
     "-y",
-    "--when-pipeline-succeeds",
+    "--auto-merge=false",
   ]),
   valued: new Set(["--message", "-m", "--squash-message", "--sha"]),
   repoEq: false,
@@ -242,4 +244,4 @@ export function readMergeCommand(command: string): MergeCommand {
 
 /** The guard's refusal for a triggered command outside the grammar. */
 export const MERGE_FORM_REFUSAL =
-  "merge refused: the merge guard checks only one plain merge command — `gh [-R OWNER/REPO] pr merge [N] [flags]` or `glab [-R GROUP/REPO] mr merge [N] [flags]`, run on its own: no pipes, chains, substitutions, variables, wrappers (env/sudo/nice/time/exec/oo), `bash -c`, `eval`, `gh api`/curl REST or GraphQL merges. A command that names gh/glab/curl and the word `merge` anywhere (even in prose) is held to this form: put a PR or comment body in a file (`--body-file <file>`) and a commit message in `git commit -F <file>`. Operator override: PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1";
+  "merge refused: the merge guard checks only one plain merge command — `gh [-R OWNER/REPO] pr merge [N] [flags]` or `glab [-R GROUP/REPO] mr merge [N] [flags]`, run on its own: no pipes, chains, substitutions, variables, wrappers (env/sudo/nice/time/exec/oo), `bash -c`, `eval`, `gh api`/curl REST or GraphQL merges, no deferred `--auto` merge. A command that names gh/glab/curl and the word `merge` anywhere (even in prose) is held to this form: put a PR or comment body in a file (`--body-file <file>`) and a commit message in `git commit -F <file>`. Operator override: PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1";
