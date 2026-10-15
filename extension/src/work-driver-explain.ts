@@ -280,6 +280,17 @@ export function explainCap(
       const ev = hit?.evidence ?? "(no detail recorded)";
       return `the lens review returned a no-review outcome — ${ev}. Nothing changed since the last recorded lens run, so there was nothing to re-review; the cycle parked rather than treating the absence of a review as an approval. Re-run the review (with an explicit diff, or \`full: true\`) after a new commit lands on the branch`;
     }
+    case "deadline": {
+      // #1238 — the caller-set whole-cycle deadline: at a step boundary the
+      // driver saw the step could not finish before it (its own bound + the
+      // handoff grace would cross it) and parked so the handoff comment
+      // posts BEFORE the caller kills the process. The handoff grace is
+      // kept back from the deadline precisely so this comment is the thing
+      // the caller sees, not a mid-step kill with state left `running`.
+      const hit = lastCapHit(state, "deadline");
+      const ev = hit?.evidence ?? "(no detail recorded)";
+      return `the caller's whole-cycle deadline (${ev}) left less than this step's bound plus the handoff grace, so the driver parked at the step boundary rather than start a step that would run past it. The handoff below says where the work is — branch, PR, and the round reached — and posts before the deadline so a caller that kills the process at that point sees a handoff, not an aborted in-flight state. Re-run /work (the deadline is re-read each boundary, so raise or clear it for the re-run)`;
+    }
   }
   // #844 — a local branch of the resolved name holds commits the freshly
   // fetched origin/<mainline> does not. Deliberate halt: only a human can

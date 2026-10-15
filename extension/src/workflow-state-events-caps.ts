@@ -171,4 +171,12 @@ export type WorkCapLiteral =
   // this one is the driver itself crashing). NOT a mid-flight-halt shape,
   // so runHandoff terminalizes it as `handoff`, the same value the
   // dispatch-failure path uses.
-  | `driver-crash:${WorkStep}`;
+  | `driver-crash:${WorkStep}`
+  // #1238 — the caller-set whole-cycle deadline (PI_ENSEMBLE_CYCLE_DEADLINE
+  // or PI_ENSEMBLE_CYCLE_BUDGET_MS): before a step, the driver saw the step
+  // could not finish before the deadline (its own bound + the handoff grace
+  // would cross it) and parked so the handoff posts before the caller kills
+  // the process (the tehas `docker stop` shape: a mid-step kill, no
+  // handoff, state left `running`). Emitted at the step boundary only — no
+  // mid-step hard kill.
+  | "deadline";

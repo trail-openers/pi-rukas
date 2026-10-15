@@ -83,4 +83,9 @@ export const CAP_HIT_FIXED_LITERALS: readonly unknown[] = [
   // dirty, round-1 work is unlanded, or the tree diverged from the branch
   // tip. A deliberate park terminalized as a handoff.
   "lens-fix-reposition",
+  // #1238 — the caller-set whole-cycle deadline parked the cycle at a step
+  // boundary (the step could not finish before the deadline). A deliberate
+  // park terminalized as a handoff; the evidence names the deadline, the
+  // remaining budget, and the step that could not fit.
+  "deadline",
 ];

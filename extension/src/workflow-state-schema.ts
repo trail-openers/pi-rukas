@@ -325,9 +325,8 @@ export interface PipelineState {
     lenses: Array<{ lens: string; ok: boolean; blocked: boolean; findings: number }>;
   };
   /**
-   * The pushed branch commit the most recent completed lens review read. The
-   * next review round diffs against it to show what the fix pass changed
-   * (fix-delta.ts). Absent before the first review and on older state files.
+   * The pushed branch commit the most recent completed lens review read;
+   * the next round diffs against it (fix-delta.ts). Absent pre-first-review.
    */
   lensReviewedHead?: string;
   /**
@@ -409,17 +408,23 @@ export interface PipelineState {
    * boot to restore in-memory timers.
    */
   reviewCapStartedAt?: number;
-  /** Surfaced plumb-reports since the cycle began (for handoff body). */
+  /**
+   * #1238 — the caller-set whole-cycle deadline as an ABSOLUTE epoch ms
+   * (PI_ENSEMBLE_CYCLE_DEADLINE, or PI_ENSEMBLE_CYCLE_BUDGET_MS resolved
+   * once at cycle start). Absolute so a resumed cycle keeps the same
+   * deadline; absent when the caller set nothing. The boundary check
+   * (work-driver-deadline.ts) keeps the handoff grace back from it.
+   */
+  cycleDeadlineMs?: number;
   plumbReports: Array<{ step: WorkStep; role: string; body: string; at: number }>;
   /** PR number once Step 6 opens one. */
   prNumber?: number;
   /**
-   * #1292 — the PR's draft state, recorded only once the PR number is known:
-   * `draft` until the review is done, `ready` once marked (or found not to be
-   * a draft at all), `ready-failed` (with the last error) when `pr ready`
-   * failed. `attempts` counts `pr ready` calls made this cycle (bounded);
-   * `holdReason` says why the driver deliberately left it a draft. Absent =
-   * no draft fact recorded (the PR was not opened as a draft).
+   * #1292 — the PR's draft state, recorded once the PR number is known:
+   * `draft` until the review is done, `ready` once marked (or found not a
+   * draft), `ready-failed` (with the last error) when `pr ready` failed.
+   * `attempts` counts `pr ready` calls this cycle; `holdReason` says why the
+   * driver left it a draft. Absent = no draft fact recorded.
    */
   prDraft?: {
     status: "draft" | "ready" | "ready-failed";
