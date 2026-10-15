@@ -18,6 +18,7 @@ import {
   nextStep,
 } from "./work-driver-context.ts";
 import { enterCycle } from "./work-driver-cycle-entry.ts";
+import { parkAtDeadlineBoundary } from "./work-driver-deadline.ts";
 import { acquireWorkDeckHeader, headerToken } from "./work-driver-deck-header.ts";
 import { countPriorStepStarts } from "./work-driver-diff.ts";
 import { reportFinalState } from "./work-driver-final-state.ts";
@@ -285,6 +286,9 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
     const step = state.pipelineState.currentStep;
     // A session shutdown is not a step failure — see work-driver-shutdown.ts.
     if (interruptedByShutdown(ctx, state, step)) return { started: true };
+    // #1238 — a step that cannot finish before the caller's deadline parks to handoff.
+    state = await parkAtDeadlineBoundary(ctx, state, step);
+    if (state.pipelineState.currentStep !== step) continue;
     // Step-level lifecycle event (PR2 O1): "▶ step N/9 X started".
     const stepOrd = STEP_ORDINAL[step] ?? { num: 0, total: 9 };
     const stepStartedAt = Date.now();

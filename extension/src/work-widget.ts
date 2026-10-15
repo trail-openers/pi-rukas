@@ -131,6 +131,12 @@ export function renderStatus(
   if ((ps.ciRetryCount ?? 0) > 0) {
     parts.push(`ci-retry ${ps.ciRetryCount}/2`);
   }
+  // #1238 — the caller-set whole-cycle deadline, shown beside the loop cap so
+  // the operator sees how much budget is left before the caller kills.
+  if (ps.cycleDeadlineMs) {
+    const remaining = Math.max(0, ps.cycleDeadlineMs - now);
+    parts.push(`deadline ${fmtElapsed(remaining)}`);
+  }
   return parts.join(" · ");
 }
 
