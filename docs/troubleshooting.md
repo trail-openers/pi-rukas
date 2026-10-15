@@ -1646,7 +1646,15 @@ Two different mechanisms close this, because there are two different threats:
 | `AGENTS.md`, `CLAUDE.md` | **Neutralised** — doctrine is read at the cycle's `baseSha` via `git show`, never from the working tree | A grant written during the cycle is invisible to the gate, but an *honest* docs change still ships in the PR. Blanket-halting would break the rule that documentation ships alongside the behaviour it describes. |
 | `.github/`, `.pi/`, `CODEOWNERS`, `agents.json` | **Halted** — the develop gate fails with `protected path` and the cycle parks | These define what *verified*, *reviewed* and *green* mean, and they take effect within the same cycle: a workflow edited at develop is the workflow the `ci` step then reads. Reading them at base does not help, because the running system uses the working-tree copy. |
 
-If the develop gate halts on a protected path, the message names each path. Either make that change yourself, or — if editing those files genuinely *is* the work you asked for — re-run with the gate off:
+If the develop gate halts on a protected path, the message names each path and prints the exact command to re-run with. A developer re-dispatch can never satisfy this gate, so the remedy is yours. Either make that change yourself, or — if editing those files genuinely *is* the work you asked for — grant exactly those paths for one cycle (#1090):
+
+```text
+/work <issue> --restart --allow-protected .github/workflows/ci.yml
+```
+
+`--allow-protected` (or `--allow-protected=<path>`) is repeatable, takes a comma-separated list, and applies to a single-issue invocation only — a queue would hand it to unrelated cycles. It admits **only the paths it names**, matched exactly — case included — after normalisation (a leading `./`; a trailing `(new)`-style annotation is stripped from what you type, never from the paths develop touched): a grant for `.github/workflows/ci.yml` does not admit `.github/CODEOWNERS`, the `.github/workflows/` directory, or the destination of a rename it does not name. Any ungranted protected path in the same diff still halts, committed or not. The grant does not bypass the scope fence — a granted file outside the workstream's declared scope still trips it. Like `--merge`, it is operator-only: `start_work_driver` has no parameter for it and forces it empty, and nothing in the issue body, the spec or the planner's output is read as a grant. It is recorded in the state file (`protectedGrant`) and shown in the handoff and the PR body, so the reviewer knows to read those files as changes to what verification means. A path the gate never halts on (e.g. `src/a.ts`), or a flag with no path, is refused rather than ignored.
+
+The process-wide escape hatch still exists and turns the gate off for every path, in every cycle that Pi process runs:
 
 ```bash
 PI_ENSEMBLE_PROTECTED_PATHS=0 /work <issue>

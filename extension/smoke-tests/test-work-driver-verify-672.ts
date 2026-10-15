@@ -65,7 +65,7 @@ const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
   const wsEntry = worktreesForScope.find((entry) => worktree?.endsWith(entry.id));
   const status = filesByWorktree?.[wsEntry?.id ?? ""] ?? [];
   const committed = committedByWorktree?.[wsEntry?.id ?? ""] ?? [];
-  if (cmd === "git status --porcelain") {
+  if (cmd === "git status --porcelain --untracked-files=all") {
     return { stdout: status.map((file) => ` M ${file}`).join("\n") };
   }
   if (cmd.startsWith("git rev-list --count")) {

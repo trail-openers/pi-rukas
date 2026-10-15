@@ -44,8 +44,9 @@ for (const [key, spec] of entries) {
     continue;
   }
   assert(
-    new RegExp(`decide\\(\\s*"${key}"`).test(owner),
-    `seam ${key}: its owner ${spec.owner} calls decide("${key}")`,
+    // A shadow seam's owner fires decide() through shadowDecide (decision-shadow.ts).
+    new RegExp(`(?:\\bdecide|\\bshadowDecide)\\(\\s*"${key}"`).test(owner),
+    `seam ${key}: its owner ${spec.owner} calls decide("${key}") or shadowDecide("${key}")`,
   );
 }
 

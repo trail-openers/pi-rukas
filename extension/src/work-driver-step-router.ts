@@ -1,6 +1,5 @@
 /**
- * work-driver-step-router — post-step outcome routing for runWorkDriver's
- * main loop.
+ * work-driver-step-router — post-step outcome routing for runWorkDriver's main loop.
  *
  * Extracted from work-driver.ts (issue #171 file-size hygiene). Called
  * once per loop iteration immediately after `runStep` returns (without
@@ -24,8 +23,9 @@ import {
   classifyFailureCause,
   failureCauseReason,
   failureCauseReasonForClass,
-  isFinalProviderFault,
   jitteredMs,
+  shadowFailureCause,
+  stepRetryBudget,
   transientRetryBackoffMs,
   transientRetryEnabled,
 } from "./work-driver-failure-taxonomy.ts";
@@ -140,8 +140,7 @@ export async function routeStepOutcome(
       const policy = STEP_FAILURE_POLICY[step];
       const semanticRetryAvailable =
         policy === "RETRY_ONCE" &&
-        !isFinalProviderFault(classification) &&
-        (state.pipelineState.retryAttempts?.[step] ?? 0) < 1;
+        (state.pipelineState.retryAttempts?.[step] ?? 0) < stepRetryBudget(classification, false);
       const transientRetryAvailable =
         policy === "HALT" &&
         transientRetryEnabled() &&
@@ -252,6 +251,11 @@ export async function routeStepOutcome(
       // evidence-carrying replay fires from its own router branch and
       // this generic path becomes develop's fallback.)
       const classification = classifyFailureCause(tail);
+      // #1308 S3 — acted on here, so the failure-cause seam is asked (in shadow).
+      shadowFailureCause(tail, classification, {
+        repoRoot: ctx.repoRoot,
+        issues: ctx.issues ?? [ctx.issue],
+      });
       if (policy === "HALT" && transientRetryEnabled() && classification.shouldRetry) {
         const attempts = state.pipelineState.transientRetryAttempts ?? {};
         const used = attempts[step] ?? 0;
@@ -373,11 +377,7 @@ export async function routeStepOutcome(
           ? (state.pipelineState.transientRetryAttempts ?? {})
           : (state.pipelineState.retryAttempts ?? {});
         const used = attempts[step] ?? 0;
-        const budget = isFinalProviderFault(classification)
-          ? 0
-          : infra
-            ? classification.maxRetries
-            : 1;
+        const budget = stepRetryBudget(classification, infra);
         if (used < budget) {
           const bumped = { ...attempts, [step]: used + 1 };
           state = {

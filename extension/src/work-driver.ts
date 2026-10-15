@@ -29,6 +29,7 @@ import {
   emitStepStarted,
   updateFooter,
 } from "./work-driver-lifecycle.ts";
+import { recordProtectedGrant } from "./work-driver-protected-grant.ts";
 import { claimCycle } from "./work-driver-registry.ts";
 import {
   attemptReattach,
@@ -120,6 +121,8 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
   if (ctx.issues && ctx.issues.length > 0 && state.issues === undefined) {
     state = { ...state, issues: ctx.issues };
   }
+  // #1090 — record this invocation's grant; a resume without the flag clears it.
+  state = recordProtectedGrant(state, ctx.protectedGrant);
 
   // PR12 — surface a clear notify when state is already terminal and no --restart.
   if (state.pipelineState.status !== "running" && ctx.restart !== true) {
