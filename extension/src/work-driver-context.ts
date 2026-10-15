@@ -67,9 +67,6 @@ export const MAX_CI_RETRIES = 2;
  */
 export const REVIEW_WALL_CLOCK_MS = 90 * 60 * 1000;
 
-// The per-step failure policy lives in work-driver-failure-policy.ts (500-line cap).
-export { STEP_FAILURE_POLICY, type StepFailurePolicy } from "./work-driver-failure-policy.ts";
-
 /**
  * Headless S4 (#1024) — the context a cycle runs with once `enterCycle` has
  * created its emit sink. `persistCycle` takes this shape (or a narrower Pick

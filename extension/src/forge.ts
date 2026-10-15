@@ -331,7 +331,7 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
 
     prCreate: (title, headBranch, body, baseBranch, opts) =>
       withBodyFile(`pr-${headBranch.slice(0, 16)}`, body, (file) =>
-        run(cmds.prCreateCmd(forge, title, headBranch, file, baseBranch, opts?.draft), (stdout) => {
+        run(cmds.prCreateCmd(forge, title, headBranch, file, { baseBranch, ...opts }), (stdout) => {
           // Tolerate both JSON (from --json flag) and plain-text URL responses.
           const parsed = parsePrNumberFromResponse(stdout);
           if (!parsed) {

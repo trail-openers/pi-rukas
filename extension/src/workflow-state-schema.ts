@@ -414,11 +414,19 @@ export interface PipelineState {
   /** PR number once Step 6 opens one. */
   prNumber?: number;
   /**
-   * #1292 — set when Step 6 opened the PR as a draft: `draft` until the review
-   * is done, `ready` once marked, `ready-failed` (with the last error) when
-   * every `pr ready` attempt failed. Absent = the PR was not opened as a draft.
+   * #1292 — the PR's draft state, recorded only once the PR number is known:
+   * `draft` until the review is done, `ready` once marked (or found not to be
+   * a draft at all), `ready-failed` (with the last error) when `pr ready`
+   * failed. `attempts` counts `pr ready` calls made this cycle (bounded);
+   * `holdReason` says why the driver deliberately left it a draft. Absent =
+   * no draft fact recorded (the PR was not opened as a draft).
    */
-  prDraft?: { status: "draft" | "ready" | "ready-failed"; error?: string };
+  prDraft?: {
+    status: "draft" | "ready" | "ready-failed";
+    error?: string;
+    attempts?: number;
+    holdReason?: string;
+  };
   /**
    * PR17 — SHA of the base commit the feature branch grew from, recorded
    * by the branch step (git rev-parse HEAD at repoRoot after ops created

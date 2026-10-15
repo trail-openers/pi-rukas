@@ -172,9 +172,9 @@ export async function runMerged(
   entryState: WorkState,
   now: number,
 ): Promise<WorkState> {
-  // #1292 — a draft cannot be merged (`mergeStateStatus: DRAFT` holds it) and
-  // must not park as awaiting-human-merge looking unfinished. Normally a no-op:
-  // the PR was marked ready on entering ci; this retries a ready that failed.
+  // #1292 — the final safeguard, not the usual mark point: the PR was marked
+  // ready on entering ci. A draft cannot merge (`mergeStateStatus: DRAFT` holds
+  // it), so this retries a ready that failed and no merge proceeds on a draft.
   const state = await markDraftPrReady(ctx, entryState);
   const prNumber = state.pipelineState.prNumber ?? 0;
   const issues = activeIssuesOf(state);

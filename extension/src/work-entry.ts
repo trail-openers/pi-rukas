@@ -25,22 +25,18 @@ import type { DispatchResult } from "./types.ts";
 import { groupIssues, resolvedParallelGroups } from "./work-driver-grouping.ts";
 import type { DriverHost } from "./work-driver-host.ts";
 import { runWorkDriver } from "./work-driver.ts";
-import { recordSingleCycleOutcome } from "./work-queue-single-entry.ts";
+import { singleCycleQueueEntry } from "./work-queue-single-entry.ts";
+import { mergeQueueSummaryEntry } from "./work-queue-summary.ts";
 import { renderQueueSummary, runWorkQueue } from "./work-queue.ts";
-
-// #808's outcome recorder lives with the entry mapping it writes; re-exported.
-export { recordSingleCycleOutcome };
 
 export interface WorkInvocation {
   issues: number[];
   restart: boolean;
   /** Operator-only. Never settable from a tool — see the module docstring. */
   mergeGrant: boolean;
-  /** #1292 — the invoking session has no UI; see `DriverContext.headless`. */
   headless?: boolean;
 }
 
-/** The per-invocation flags every cycle of one `/work` call shares. */
 type CycleFlags = Pick<WorkInvocation, "restart" | "mergeGrant" | "headless">;
 
 /**
@@ -437,6 +433,32 @@ export async function runDriver(
       `/work driver crashed (grouped): ${(err as Error).message}`,
       startMs,
       (err as Error).message,
+    );
+  }
+}
+
+/**
+ * #808 — every terminal cycle leaves its outcome in `queue-summary.json`, not
+ * just grouped queue runs. Under the old whole-file overwrite a single-issue
+ * cycle (which never passes through `runWorkQueue`) never wrote the file at
+ * all, so `/work-status` and `/start` were blind to it — and a later grouped
+ * run would have erased it anyway. Reads the terminal state the driver just
+ * persisted, maps it to the same entry shape the queue builds, and MERGES it
+ * into the existing index (never overwriting rows for other issues).
+ *
+ * Best-effort: a failure at ANY point in this path — reading the state file,
+ * mapping it to an entry, merging it into the summary — must never turn a
+ * completed cycle into an "unexpected throw": the driver's catch turns a
+ * throw into a crash notification and a failed result, and the cycle did not
+ * crash. The state file remains the authoritative record.
+ */
+export async function recordSingleCycleOutcome(repoRoot: string, issue: number): Promise<void> {
+  try {
+    const entry = await singleCycleQueueEntry(repoRoot, issue);
+    if (entry) await mergeQueueSummaryEntry(repoRoot, entry);
+  } catch (err) {
+    trace(
+      `work-driver: could not record single-cycle outcome for #${issue}: ${(err as Error).message?.slice(0, 160)}`,
     );
   }
 }

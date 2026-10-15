@@ -29,7 +29,7 @@ import type { ExecFn } from "./worktree.ts";
 
 export async function dispatchCommitPrFallback(
   ctx: CycleContext,
-  entryState: WorkState,
+  preDispatch: WorkState,
   now: number,
   execFn: ExecFn,
   // #861 round 2 — the structured conflict-artifact value threaded from the
@@ -38,14 +38,9 @@ export async function dispatchCommitPrFallback(
   // plumb's body (the old event indirection).
   conflictPatch: string | undefined,
 ): Promise<WorkState> {
-  // #1292 — the fallback opens the PR as a draft too; recorded up front (only for
-  // a PR not yet opened) so the later mark-ready points know to act.
+  // #1292 — the prompt asks for --draft; the draft fact is recorded once the
+  // PR number is parsed (runCommitPrPostDispatchGates), not claimed here.
   const draft = draftPrEnabled(ctx);
-  const entry = entryState.pipelineState;
-  const preDispatch: WorkState =
-    draft && entry.prNumber === undefined && !entry.prDraft
-      ? { ...entryState, pipelineState: { ...entry, prDraft: { status: "draft" } } }
-      : entryState;
   // #818 — the ops fallback receives the DERIVED conventional subject (not
   // the raw issue title), so the PR the ops child opens is conventional
   // even when the mechanized path fell back. The prompt instructs it to

@@ -128,8 +128,10 @@ export async function runHandoff(
   // a draft. Before the render, so the comment states the outcome.
   next = await settleDraftPrAtHandoff(ctx, next);
   // Build the handoff markdown body. Now consumes handoffSnapshot via
-  // the additive sections in renderHandoffMarkdown (PR5 refinements).
-  const handoffMd = renderHandoffMarkdown(next);
+  // the additive sections in renderHandoffMarkdown (PR5 refinements). The
+  // forge type picks the draft's real ready command (GitLab: glab mr update).
+  const handoffForgeType = (ctx.forge ?? (await handoffForge(ctx.repoRoot)))?.forge;
+  const handoffMd = renderHandoffMarkdown(next, handoffForgeType);
   const handoffBodyPath = path.join(scratchDir(ctx.repoRoot, ctx.issue), "handoff-comment.md");
   try {
     await fs.mkdir(path.dirname(handoffBodyPath), { recursive: true });

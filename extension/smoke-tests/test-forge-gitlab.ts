@@ -34,7 +34,7 @@ async function main() {
     }
   });
   await check("prCreateCmd uses --target-branch (no --head flag)", () => {
-    const cmd = forgeCommands.prCreateCmd("gitlab", "T", "branch", "/tmp/b", "main");
+    const cmd = forgeCommands.prCreateCmd("gitlab", "T", "branch", "/tmp/b", { baseBranch: "main" });
     assert(cmd.includes("--target-branch main"), `got ${cmd}`);
     assert(!cmd.includes("--head"), `should not have --head: ${cmd}`);
     assert(cmd.includes("glab mr create branch"), `positional source branch: ${cmd}`);

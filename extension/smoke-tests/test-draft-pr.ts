@@ -72,13 +72,13 @@ const PR = 7;
 
 // ---------------------------------------------------------------- 1. commands
 {
-  const gh = prCreateCmd("github", "T", BRANCH, "/tmp/b", undefined, true);
+  const gh = prCreateCmd("github", "T", BRANCH, "/tmp/b", { draft: true });
   assert(gh.includes(" --draft"), `gh pr create carries --draft (${gh})`);
   assert(
-    !prCreateCmd("github", "T", BRANCH, "/tmp/b").includes("--draft"),
+    !prCreateCmd("github", "T", BRANCH, "/tmp/b", {}).includes("--draft"),
     "…and not when the PR is not a draft",
   );
-  const gl = prCreateCmd("gitlab", "T", BRANCH, "/tmp/b", "main", true);
+  const gl = prCreateCmd("gitlab", "T", BRANCH, "/tmp/b", { baseBranch: "main", draft: true });
   assert(/ --draft --output json$/.test(gl), `glab mr create carries --draft (${gl})`);
   assert(prReadyCmd("github", PR) === "gh pr ready 7", "GitHub ready: gh pr ready <N>");
   assert(
@@ -96,6 +96,9 @@ const PR = 7;
   assert(!draftPrEnabled({ headless: true }), "PI_ENSEMBLE_DRAFT_PR=0 turns it off for headless");
   process.env.PI_ENSEMBLE_DRAFT_PR = "1";
   assert(draftPrEnabled({ headless: false }), "PI_ENSEMBLE_DRAFT_PR=1 turns it on interactively");
+  process.env.PI_ENSEMBLE_DRAFT_PR = "true";
+  assert(draftPrEnabled({ headless: true }), "only 1/0 are read: 'true' is ignored (headless default holds)");
+  assert(!draftPrEnabled({ headless: false }), "…and does not turn drafts on interactively");
   delete process.env.PI_ENSEMBLE_DRAFT_PR;
 }
 
@@ -272,6 +275,7 @@ const critical: WorkEvent = {
   findings: "x",
   verdict: "CRITICAL_ISSUES_FOUND",
 };
+const approved: WorkEvent = { kind: "lens-approved", at: at(3), jobId: "j", round: 1 };
 
 async function handoff(state: WorkState, failures = 0) {
   const dir = mkdtempSync(path.join(os.tmpdir(), "pi-ens-draft-handoff-"));
@@ -293,17 +297,14 @@ async function handoff(state: WorkState, failures = 0) {
 }
 
 {
-  // 5. A concluded review — CRITICAL findings, then the park — marks it ready.
+  // 5. A concluded review (approved, then a park) marks it ready.
   const concluded = [
     started("commit-pr", 1),
     started("lens-review", 2),
-    critical,
-    cap("round-cap", 4),
+    approved,
+    cap("step-failed:ci", 4),
   ];
-  assert(
-    reviewConcluded(concluded),
-    "a CRITICAL verdict followed only by a cap is a concluded review",
-  );
+  assert(reviewConcluded(concluded), "an approved verdict followed only by a cap is concluded");
   const h = await handoff(reviewState(concluded, { status: "draft" }));
   assert(h.ready.length === 1 && h.ready[0] === PR, "handoff after the review: gh pr ready <N>");
   assert(h.next.pipelineState.prDraft?.status === "ready", "…recorded as ready");
@@ -365,8 +366,8 @@ async function handoff(state: WorkState, failures = 0) {
   const events = [
     started("commit-pr", 1),
     started("lens-review", 2),
-    critical,
-    cap("round-cap", 4),
+    approved,
+    cap("step-failed:ci", 4),
   ];
   const h = await handoff(reviewState(events, { status: "draft" }), 99);
   assert(h.ready.length === 3, `a failing gh pr ready is retried (attempts=${h.ready.length})`);
@@ -383,8 +384,30 @@ async function handoff(state: WorkState, failures = 0) {
   );
   // A ready that failed at ci is retried at a later park even mid-fix.
   const midFix = [...events, started("lens-fix", 5), cap("step-failed:lens-fix", 6)];
-  const retried = await handoff(reviewState(midFix, { status: "ready-failed", error: "e" }));
-  assert(retried.ready.length === 1, "an earlier ready-failed is retried at any later handoff");
+  const held = await handoff(reviewState(midFix, { status: "ready-failed", error: "e" }));
+  assert(held.ready.length === 0, "an earlier ready-failed is NOT retried while a fix round is open");
+  const retried = await handoff(reviewState(events, { status: "ready-failed", error: "e" }));
+  assert(retried.ready.length === 1, "…but is retried at a handoff after the review concluded");
+}
+
+{
+  // 5b. CRITICAL, then the round cap: never marked ready over a critical finding.
+  const h = await handoff(
+    reviewState(
+      [started("commit-pr", 1), started("lens-review", 2), critical, cap("round-cap", 4)],
+      { status: "draft" },
+    ),
+  );
+  assert(h.ready.length === 0, "CRITICAL then cap: gh pr ready is NOT run");
+  assert(
+    h.next.pipelineState.prDraft?.status === "draft" &&
+      /CRITICAL/.test(h.next.pipelineState.prDraft?.holdReason ?? ""),
+    "…the PR stays a draft, with the reason recorded",
+  );
+  assert(
+    h.body.includes("### Pull request is still a draft") && h.body.includes("CRITICAL"),
+    "…and the handoff comment says why",
+  );
 }
 
 // ---------------------------------------------------------- ci entry + merge

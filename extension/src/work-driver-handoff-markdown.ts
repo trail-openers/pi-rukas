@@ -116,7 +116,7 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
     "",
     explain,
     "",
-    ...draftPrHandoffLines(ps),
+    ...draftPrHandoffLines(ps, forge),
     ...commitPrRootFacts(state, capForExplain),
     ...commitPrFallbackPlumbSection(state, capForExplain),
     ...adversarialOutcomeSection(state),
