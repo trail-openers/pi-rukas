@@ -70,18 +70,39 @@
 # gathered ~305k characters between them; at 60000 the same 429 is slept
 # through and the work survives.
 #
-# Idempotent + non-clobbering: writes the block only when
+# Idempotent + non-clobbering: the `retry.provider` block is written only when
 # `retry.provider.timeoutMs` is absent (or null). Three exceptions, all our
 # own footprints rather than operator choices, repaired wherever they are
 # found: `timeoutMs` of exactly 180000 (#236), `maxRetryDelayMs` of exactly
 # 10000 (the value documented above), and any `retry.provider.httpIdleTimeoutMs`
 # (a key Pi never reads, #1347). That last one is removed; a value other than
 # our own 120000 is an operator's choice made in the wrong place, so it moves
-# to the top level unless a top-level value is already set. Any other value
-# is preserved.
+# to the top level unless a top-level value is already set. The move runs
+# BEFORE the top-level default, so an operator's nested value is never lost
+# to it. Any other value is preserved.
+#
+# The write is careful because this is the operator's own file: all repairs
+# are one jq program (one write per run), a symlink is followed and its
+# target written, the temp file sits next to the target so the mv is an
+# atomic rename, the target's mode is kept, and a failed jq leaves the file
+# untouched. A shape we do not understand (top level, `retry` or
+# `retry.provider` not an object) is skipped with a message, never an abort.
+
+# Follow a symlink chain to the real file (portable: no `readlink -f`).
+_retry_settings_target() {
+  local p="$1" link
+  while [ -L "$p" ]; do
+    link="$(readlink "$p")"
+    case "$link" in
+      /*) p="$link" ;;
+      *) p="$(dirname "$p")/$link" ;;
+    esac
+  done
+  printf '%s\n' "$p"
+}
 
 apply_provider_retry_defaults() {
-  local settings="$1" tmp existing bad_delay
+  local settings="$1" target tmp mode existing nested bad_delay changed=0
   local timeout_ms=600000
   local max_retries=3
   local max_delay_ms=60000      # Pi's own default; see the note above before lowering
@@ -89,66 +110,90 @@ apply_provider_retry_defaults() {
   local idle_ms=300000          # Pi's own default; see the note above before lowering
   local bad_nested_idle_ms=120000  # our own past footprint under retry.provider
 
-  if [ ! -f "$settings" ]; then
+  if [ ! -e "$settings" ]; then
     echo "==> No $settings yet — Pi will create it on first run. Re-run ./install.sh after to set retry defaults."
     return 0
   fi
-  if ! jq empty "$settings" >/dev/null 2>&1; then
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "!! jq not found — skipping provider-retry defaults in $settings. Install jq and re-run install.sh."
+    return 0
+  fi
+  target="$(_retry_settings_target "$settings")"
+  if [ ! -s "$target" ]; then
+    echo "!! $settings is empty — skipping provider-retry defaults. Re-run install.sh once Pi has written it."
+    return 0
+  fi
+  if ! jq empty "$target" >/dev/null 2>&1; then
     echo "!! $settings is not valid JSON — skipping provider-retry defaults."
     echo "   Fix the file and re-run install.sh, or add manually:"
     echo "     httpIdleTimeoutMs = $idle_ms (top level)"
     echo "     retry.provider = { timeoutMs: $timeout_ms, maxRetries: $max_retries, maxRetryDelayMs: $max_delay_ms }"
     return 0
   fi
+  if ! jq -e 'type == "object"
+      and ((.retry | type) as $r | $r == "null" or $r == "object")
+      and ((.retry.provider? | type) as $p | $p == "null" or $p == "object")' \
+      "$target" >/dev/null 2>&1; then
+    echo "!! $settings: the top level, .retry or .retry.provider is not an object — skipping provider-retry defaults."
+    return 0
+  fi
 
-  existing="$(jq -r '.retry.provider.timeoutMs // "null"' "$settings")"
+  # The shape is known-good from here on, so these reads cannot fail.
+  nested="$(jq -r '.retry.provider // {} | has("httpIdleTimeoutMs")' "$target")"
+  existing="$(jq -r '.retry.provider.timeoutMs // "null"' "$target")"
+  bad_delay="$(jq -r '.retry.provider.maxRetryDelayMs // "null"' "$target")"
+  if [ "$nested" = "true" ]; then
+    echo "==> Repairing httpIdleTimeoutMs placement in $settings (retry.provider → top level; Pi reads only the top level)"
+    changed=1
+  fi
   if [ "$existing" = "null" ] || [ "$existing" = "180000" ]; then
     if [ "$existing" = "180000" ]; then
       echo "==> Repairing provider-retry timeout in $settings (old 180000ms default from #236 → ${timeout_ms}ms)"
     else
       echo "==> Setting provider-retry defaults in $settings"
     fi
-    echo "    timeoutMs=$timeout_ms (10 min/request), maxRetries=$max_retries, httpIdleTimeoutMs=$idle_ms"
-    tmp="$(mktemp)"
-    jq --argjson t "$timeout_ms" --argjson r "$max_retries" --argjson d "$max_delay_ms" \
-      --argjson i "$idle_ms" '
-      .retry //= {} |
-      .retry.provider //= {} |
-      .retry.provider.timeoutMs = $t |
-      .retry.provider.maxRetries //= $r |
-      .retry.provider.maxRetryDelayMs //= $d |
-      .httpIdleTimeoutMs //= $i
-    ' "$settings" > "$tmp" && mv "$tmp" "$settings"
-    chmod 600 "$settings"
+    echo "    timeoutMs=$timeout_ms (10 min/request), maxRetries=$max_retries, httpIdleTimeoutMs=$idle_ms unless already set"
+    changed=1
   else
     echo "==> Keeping existing retry.provider.timeoutMs=$existing in $settings"
   fi
-
-  # Repair our own 10000 footprint independently of the branch above. A host
-  # that already had `timeoutMs` set never entered it, so the bad ceiling
-  # survived every re-install — which is exactly how it persisted long enough
-  # to kill five dispatches.
-  bad_delay="$(jq -r '.retry.provider.maxRetryDelayMs // "null"' "$settings")"
+  # Repaired independently of the timeoutMs branch: a host that already had
+  # `timeoutMs` set never entered it, so the bad ceiling survived every
+  # re-install — which is how it persisted long enough to kill five dispatches.
   if [ "$bad_delay" = "$bad_max_delay_ms" ]; then
     echo "==> Repairing provider retry ceiling in $settings (${bad_max_delay_ms}ms → ${max_delay_ms}ms)"
     echo "    At ${bad_max_delay_ms}ms a provider asking for the usual 59s is discarded without waiting at all."
-    tmp="$(mktemp)"
-    jq --argjson d "$max_delay_ms" '.retry.provider.maxRetryDelayMs = $d' \
-      "$settings" > "$tmp" && mv "$tmp" "$settings"
-    chmod 600 "$settings"
+    changed=1
   fi
+  [ "$changed" = 1 ] || return 0
 
-  # #1347 — `retry.provider.httpIdleTimeoutMs` is a key Pi never reads. Our
-  # own 120000 is dropped for the top-level default; any other value moves to
-  # the top level unless one is already set there.
-  if [ "$(jq '[.retry.provider? | objects | has("httpIdleTimeoutMs")] | any' "$settings")" = "true" ]; then
-    echo "==> Repairing httpIdleTimeoutMs placement in $settings (retry.provider → top level; Pi reads only the top level)"
-    tmp="$(mktemp)"
-    jq --argjson i "$idle_ms" --argjson bad "$bad_nested_idle_ms" '
-      .retry.provider.httpIdleTimeoutMs as $n |
-      .httpIdleTimeoutMs //= (if $n == null or $n == $bad then $i else $n end) |
-      del(.retry.provider.httpIdleTimeoutMs)
-    ' "$settings" > "$tmp" && mv "$tmp" "$settings"
-    chmod 600 "$settings"
+  tmp="$(mktemp "$(dirname "$target")/.settings.json.XXXXXX")" || {
+    echo "!! could not create a temp file next to $target — skipping provider-retry defaults."
+    return 0
+  }
+  mode="$(stat -c %a "$target" 2>/dev/null || stat -f %Lp "$target" 2>/dev/null || echo 600)"
+  if jq --argjson t "$timeout_ms" --argjson r "$max_retries" --argjson d "$max_delay_ms" \
+      --argjson bd "$bad_max_delay_ms" --argjson i "$idle_ms" --argjson bi "$bad_nested_idle_ms" '
+      # 1. move a nested idle timeout first, so the default below cannot hide it
+      (if (.retry.provider // {} | has("httpIdleTimeoutMs")) then
+        .retry.provider.httpIdleTimeoutMs as $n
+        | .httpIdleTimeoutMs //= (if $n == null or $n == $bi then $i else $n end)
+        | del(.retry.provider.httpIdleTimeoutMs)
+      else . end)
+      # 2. the defaults block, only when timeoutMs is unset or our 180000
+      | (if (.retry.provider.timeoutMs // null) == null or .retry.provider.timeoutMs == 180000 then
+          .retry //= {} | .retry.provider //= {}
+          | .retry.provider.timeoutMs = $t
+          | .retry.provider.maxRetries //= $r
+          | .retry.provider.maxRetryDelayMs //= $d
+          | .httpIdleTimeoutMs //= $i
+        else . end)
+      # 3. our old 10000 ceiling
+      | (if .retry.provider.maxRetryDelayMs == $bd then .retry.provider.maxRetryDelayMs = $d else . end)
+    ' "$target" > "$tmp" && chmod "$mode" "$tmp" && mv "$tmp" "$target"; then
+    :
+  else
+    rm -f "$tmp"
+    echo "!! could not rewrite $settings — left unchanged."
   fi
 }

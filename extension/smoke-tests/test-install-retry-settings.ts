@@ -15,7 +15,18 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
@@ -48,11 +59,13 @@ function agentDir(initial?: Json | string): { dir: string; file: string } {
   return { dir, file };
 }
 
-function apply(file: string): void {
-  execFileSync(
-    "bash",
+/** Runs the helper under install.sh's own `set -euo pipefail` (a throw here
+ * means it would have aborted install.sh); returns its stdout. */
+function apply(file: string, env?: NodeJS.ProcessEnv): string {
+  return execFileSync(
+    "/bin/bash",
     ["-c", 'set -euo pipefail; source "$1"; apply_provider_retry_defaults "$2"', "_", HELPER, file],
-    { stdio: "pipe" },
+    { stdio: "pipe", encoding: "utf8", ...(env ? { env } : {}) },
   );
 }
 
@@ -159,6 +172,113 @@ const pi = (dir: string) => SettingsManager.create(dir, dir);
   assert(
     s.httpIdleTimeoutMs === 200000 && !("httpIdleTimeoutMs" in provider(s)),
     `operator top-level value: kept; the nested leftover is removed (got ${JSON.stringify(s)})`,
+  );
+}
+
+// ── review of #1354: the nested move runs before the top-level default ─
+{
+  const { dir, file } = agentDir({ retry: { provider: { httpIdleTimeoutMs: 240000 } } });
+  apply(file);
+  const s = read(file);
+  assert(
+    s.httpIdleTimeoutMs === 240000 && !("httpIdleTimeoutMs" in provider(s)),
+    `nested 240000, no timeoutMs: the operator's value moves up, not replaced by 300000 (got ${JSON.stringify(s)})`,
+  );
+  assert(
+    pi(dir).getProviderRetrySettings().timeoutMs === 600000,
+    "...and the defaults block is still written",
+  );
+}
+{
+  const { file } = agentDir({
+    retry: { provider: { timeoutMs: 180000, httpIdleTimeoutMs: 250000 } },
+  });
+  apply(file);
+  const s = read(file);
+  assert(
+    s.httpIdleTimeoutMs === 250000 && provider(s).timeoutMs === 600000,
+    `timeoutMs 180000 + nested 250000: timeout repaired, nested value kept at the top level (got ${JSON.stringify(s)})`,
+  );
+}
+{
+  const { file } = agentDir({ httpIdleTimeoutMs: 120000, theme: "dark" });
+  apply(file);
+  const s = read(file);
+  assert(
+    s.httpIdleTimeoutMs === 120000 && provider(s).timeoutMs === 600000,
+    `an operator's own top-level 120000 is kept (got ${JSON.stringify(s)})`,
+  );
+}
+
+{
+  const { file } = agentDir({ retry: { provider: { timeoutMs: 900000, maxRetryDelayMs: 10000 } } });
+  apply(file);
+  const r = provider(read(file));
+  assert(
+    r.timeoutMs === 900000 && r.maxRetryDelayMs === 60000,
+    `our old 10000 ceiling is repaired even when timeoutMs is the operator's (got ${JSON.stringify(r)})`,
+  );
+}
+
+// ── the write: symlink, mode, one atomic rename, no leftovers ───────────
+{
+  const real = path.join(root, "dotfiles");
+  mkdirSync(real, { recursive: true });
+  const realFile = path.join(real, "settings.json");
+  writeFileSync(realFile, JSON.stringify({ theme: "dark" }));
+  const { file } = agentDir();
+  symlinkSync(path.relative(path.dirname(file), realFile), file);
+  apply(file);
+  assert(
+    lstatSync(file).isSymbolicLink(),
+    "symlink: the link itself is kept, not replaced by a file",
+  );
+  assert(
+    read(realFile).httpIdleTimeoutMs === 300000 && read(realFile).theme === "dark",
+    "symlink: the link's target is the file that was updated",
+  );
+  assert(
+    readdirSync(real).length === 1,
+    `symlink: no temp file is left next to the target (got ${readdirSync(real).join(", ")})`,
+  );
+}
+{
+  const { file } = agentDir({ theme: "dark" });
+  execFileSync("chmod", ["644", file]);
+  apply(file);
+  assert(
+    (statSync(file).mode & 0o777) === 0o644 && read(file).httpIdleTimeoutMs === 300000,
+    `mode: an existing 644 is kept (got ${(statSync(file).mode & 0o777).toString(8)})`,
+  );
+}
+{
+  const { file } = agentDir({ theme: "dark" });
+  const out = apply(file, { PATH: "/nonexistent" });
+  assert(
+    /jq not found/.test(out) && !/not valid JSON/.test(out),
+    `jq missing: says so, not "not valid JSON" (got ${out.trim()})`,
+  );
+  assert(read(file).httpIdleTimeoutMs === undefined, "jq missing: the file is untouched");
+}
+
+// ── shapes we do not understand are skipped, never an abort ─────────────
+for (const [label, body] of [
+  ["empty file", ""],
+  ["top-level array", "[1,2]"],
+  ["top-level string", '"x"'],
+  ["non-object retry", '{"retry":"fast"}'],
+  ["non-object retry.provider", '{"retry":{"provider":3}}'],
+] as const) {
+  const { file } = agentDir(body);
+  let threw = false;
+  try {
+    apply(file);
+  } catch {
+    threw = true;
+  }
+  assert(
+    !threw && readFileSync(file, "utf8") === body,
+    `${label}: skipped under set -e and left untouched`,
   );
 }
 
