@@ -66,7 +66,7 @@ export function routeVerifyFailed(cap: Cap, state: WorkState): VerifyFailedRoute
 }
 
 function prNotOpenText(step: string, failures: readonly string[]): string {
-  const when = step === 'commit-pr' ? 'commit-pr ran again' : `the ${step} step started`;
+  const when = step === "commit-pr" ? "commit-pr ran again" : `the ${step} step started`;
   return `the cycle's pull request was no longer open when ${when}, so the driver refused before rebuilding or pushing anything:\n${failures.map((f) => `  - ${f}`).join("\n")}\nThe driver read the PR's state from the forge. Nothing was committed, pushed or claimed done on this round, so no "done" claim was rejected and there is no worktree defect to look for. Whether the new work belongs in a new pull request is a human decision`;
 }
 
