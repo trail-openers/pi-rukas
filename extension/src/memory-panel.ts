@@ -115,8 +115,8 @@ function renderCandidates(s: MemoryStats): string[] {
     `### Candidates awaiting promotion (${total})`,
     "",
     "Invisible to developer briefs until an operator promotes them. Unpromoted candidates",
-    "age out under `vipune prune`. To promote a row you have verified (operator only):",
-    "`vipune update <id> --status active` — an operator action: no agent role is granted `vipune update` in agents.json.",
+    "age out under `vipune prune`. Promotion is an operator action, not an agent one: no role",
+    "is granted the memory-update verb (see skill/vipune/SKILL.md). Check each row by hand first.",
     "",
   ];
   // Ids and types only. Candidate content is LLM-derived from untrusted diffs;

@@ -128,8 +128,8 @@ const stats = (o: Partial<MemoryStats>): MemoryStats => ({
   assert(/`cand-1` \(observation\)/.test(panel), "...and listed with their ids and type");
   assert(/`cand-2`/.test(panel), "...every listed candidate, not just the first");
   assert(
-    /vipune update <id> --status active/.test(panel),
-    "the operator is told how to promote one (`vipune promote` takes no id)",
+    /an operator action/.test(panel) && panel.includes("skill/vipune/SKILL.md"),
+    "the operator is told promotion is theirs, with a pointer to the doctrine (no verb taught)",
   );
   assert(!/--force|-t |--text/.test(panel), "canary: the hint never suggests --force or a rewrite");
   assert(/and 10 more/.test(panel), "candidates beyond the listed ones are counted, not hidden");
@@ -190,7 +190,7 @@ const stats = (o: Partial<MemoryStats>): MemoryStats => ({
     );
     assert(panel.includes("`cand-evil` (observation)"), "...but its id is still listed for promotion");
     assert(
-      panel.includes("vipune update <id> --status active"),
+      panel.includes("an operator action"),
       "...with the promotion hint",
     );
   } finally {
