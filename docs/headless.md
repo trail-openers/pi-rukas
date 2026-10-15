@@ -21,7 +21,7 @@ The headless runner's contract with its caller is four independent surfaces, eac
 | Exit codes | `EXIT` object (`exit-code.ts`) | `extension/src/headless/exit-code.ts` | The process exit code. 7 named values: `merged` (0), `handoff` (10), `clarification` (11), `aborted` (20), `interrupted` (21), `crash` (30), `refused` (40). |
 | `--json` result schema | `RESULT_SCHEMA_VERSION` (3) | `extension/src/headless/result.ts` | The JSON document on stdout when `--json` is used. See below. Its `cap` values come from a published vocabulary (`extension/src/headless/caps.ts`). |
 | NDJSON progress | `NDJSON_VERSION` (1); stable subset `NDJSON_STABLE_VERSION` (1) | `extension/src/headless/ndjson.ts` | One JSON object per line on stderr. Every line carries `v` (1), `kind`, `at` (ISO-8601). Driver event lines additionally carry `issue` and `key` (idempotency key `<issue>:<index>:<at>`). Only a declared subset of kinds is stable; every other line is marked `unstable: true`. |
-| Capabilities | `CAPABILITIES_VERSION` (1) | `extension/src/headless/capabilities.ts` | The JSON object `--capabilities` prints. See below. |
+| Capabilities | `CAPABILITIES_VERSION` (2) | `extension/src/headless/capabilities.ts` | The JSON object `--capabilities` prints. See below. |
 
 ### Exit codes
 
@@ -44,7 +44,8 @@ With `--json`, stdout carries exactly one JSON document:
 ```json
 {
   "schemaVersion": 3,
-  "buildCommit": "d39f873…",
+  "buildCommit": "d39f8731f34d…",
+  "buildVersion": "0.12.79",
   "exitCode": 10,
   "issues": [
     {
@@ -79,16 +80,17 @@ With `--json`, stdout carries exactly one JSON document:
 
 | Field | Present | Meaning |
 |---|---|---|
-| `schemaVersion` | always | `RESULT_SCHEMA_VERSION`. Version 2 (#1326) added `schemaVersion`, `buildCommit`, `failedStep`, `prUrl`, `usage` and `resumable`. Version 3 (#1327) added `parkReason` and `handoff`. |
-| `buildCommit` | always | The commit the running build was made from: the image's baked `.pi/pi-rukas-commit`, else the HEAD of the pi-rukas checkout, else the release as `v<version>`. A host checks whether a fix is in the build with `git merge-base --is-ancestor <fix> <buildCommit>`. |
+| `schemaVersion` | always | `RESULT_SCHEMA_VERSION`. Version 2 (#1326) added `schemaVersion`, `buildCommit`, `buildVersion`, `failedStep`, `prUrl`, `usage` and `resumable`. Version 3 (#1327) added `parkReason` and `handoff`. |
+| `buildCommit` | always | The full 40-hex commit the running build was made from (the image's baked `.pi/pi-rukas-commit`, else the HEAD of the pi-rukas checkout), or `null` when nothing records it. Never anything else, so a host can safely run `git merge-base --is-ancestor <fix> <buildCommit>` when it is non-null. |
+| `buildVersion` | always | The release version of the running build (`extension/package.json`). |
 | `issues[].status` | always | `merged`, `handoff`, `aborted`, `interrupted`, `running` (the driver returned without a terminal state) or `not-started`. |
-| `issues[].cap` | when a cap was hit | The last cap the cycle hit, from the published vocabulary (below). |
+| `issues[].cap` | when a cap was hit | The last cap the cycle hit, from the published vocabulary (below). It can be set on a `merged` result too (a cap the cycle recovered from), so a host reads `status` and `exitCode` for the outcome and `cap` for the reason. |
 | `issues[].parkReason` | when `cap` is `intent-park` | Why the cycle parked: `underspecified`, `contradicted-by-code`, `already-implemented`, `too-large`, `premise-unsound` or `security-open-point`. |
 | `issues[].handoff` | once the cycle emitted a handoff | `channel` (`forge` or `host`, see [Handoff channel](#handoff-channel)); `marker`, the machine marker that is the first line of the body; `body`, the full handoff markdown (absent only if its file could not be read); `bodyFile`, a path for a person; `commentUrl`, the comment pi-rukas posted (forge channel); `labelApplied`, whether `needs-human-attention` was verified on the issue (and PR). |
-| `issues[].failedStep` | when the cycle did not merge and started a step | The step it stopped in: the step a `verify-failed:` / `step-failed:` / `driver-crash:` cap names, else the last step started before the cap, else the last step started. |
-| `issues[].branch`, `prNumber`, `prUrl` | when known | `prUrl` is built from the project's git remote for GitHub and GitLab, and omitted for any other forge. |
-| `issues[].usage` | when a state existed | Tokens, cost and turns summed over every dispatch the cycle recorded, and the dispatch count. |
-| `issues[].resumable` | always | `true` when running `work <issue>` again **without** `--restart` continues this cycle (it was interrupted, or stopped while running). A terminal cycle needs `--restart` for a fresh one. |
+| `issues[].failedStep` | when the cycle did not merge and started a step | The step it stopped in: the step a `verify-failed:` / `step-failed:` / `driver-crash:` cap names, else the last step started before the cap, else the last step started. It names where the cycle stopped, not necessarily a failure: for `awaiting-human-merge` it is the last step the cycle ran (e.g. `ci`). |
+| `issues[].branch`, `prNumber`, `prUrl` | when known | `prUrl` is present only when unambiguous: the PR URL the driver recorded (its handoff comment on the PR), else one built from the project's git remote when there is exactly one remote, the forge is GitHub or GitLab, and the web address is certain (an `http(s)` remote, or ssh to github.com / gitlab.com; GitLab subgroups and explicit https ports are kept). Otherwise only `prNumber` is set. |
+| `issues[].usage` | when a state existed | Tokens, cost and turns summed over every dispatch the cycle recorded (`dispatch-completed`, `dispatch-failed` and `dispatch-failed-provider` events), and the dispatch count. It covers the current cycle only: `--restart` discards the state, so earlier cycles' cost is not included. |
+| `issues[].resumable` | always | `true` when running `work <issue>` again **without** `--restart` continues this cycle (it was interrupted, or stopped while running). Always `false` on a refusal (exit 40: another live process owns the cycle, so a re-run is refused again until it ends) and when `PI_ENSEMBLE_RESUME=0`. A terminal cycle needs `--restart` for a fresh one. |
 | `issues[].stateFile` | always | A path for a person to inspect. Not a host contract: see below. |
 | `issues[].questions` | exit 11 only | The clarification questions, numbered `q1`, `q2`, … |
 | `issues[].diverged` | on divergence | The in-memory and on-disk states disagreed; the exit code is 30. |
@@ -103,6 +105,14 @@ An optional top-level `error` (`{ code, message }`) is present when the runner d
 - `templates` — a prefix plus one parameter: `verify-failed:<step>`, `step-failed:<step>`, `driver-crash:<step>` (with the step list in `values`), and `branch-ahead:<count>`.
 
 A host switches on these values instead of strings found in pi-rukas source. The list is checked against the driver's cap type at compile time, so the build cannot record a cap the vocabulary omits. Exit code 11 is reserved for `intent-park` and `explore-needs-clarification`.
+
+### Versioning rule
+
+Additions do not bump a version: a new cap, a new input or file, a new stable NDJSON kind or field, or a new optional result field. Removing or renaming one, or changing its meaning, does bump the version of the contract it belongs to. A host must therefore tolerate the unknown:
+
+- An unknown `cap` is a generic handoff: act on `status` and `exitCode`, and show the cap to a person.
+- Unknown fields are ignored.
+- An unknown NDJSON kind is treated as unstable.
 
 ### The state file is not a host contract
 
@@ -245,7 +255,7 @@ Use `--restart` only when a person, or the host acting on a person's answer, has
 | `verbs.work.flags` | `WORK_FLAGS` array | The flags the `work` verb accepts, in the order the parser accepts them. An unknown flag in a caller's argv means "not supported" and is refused with exit 40. |
 | `inputs[].name` | `HEADLESS_INPUTS` (`inputs.ts`) | An environment variable the build reads. A name with `<ROLE>` or `<SEAM>` is a family: `<ROLE>` is a role name and `<SEAM>` a decision-seam id, upper-cased with `-` → `_` (e.g. `PI_ENSEMBLE_MODEL_DEVELOPER`). |
 | `inputs[].type` | Hardcoded | `boolean` (`1` on, `0` off), `integer`, `number` (see `unit`), `duration-ms`, `string`, `path`, `list` (joined by `separator`) or `enum` (one of `values`). |
-| `inputs[].default` | Hardcoded; checked against the live readers | The behaviour when the variable is unset. `null` means unset by default, with the fallback described in [configuration.md](configuration.md#environment-variables). |
+| `inputs[].default` | Hardcoded; about 50 of them are checked against their live reader functions | The behaviour when the variable is unset. `null` means unset by default, with the fallback described in [configuration.md](configuration.md#environment-variables). |
 | `inputs[].scope` | Hardcoded | Who sets it: `cycle` (changes what a cycle does), `sandbox` (the sandbox wrapper), `interactive` (the Pi UI only), `install` (path overrides), `internal` (pi-rukas sets it on its own children; a host must not), `test` (smoke tests only). |
 | `inputs[].manifestVersion` | Hardcoded | Present on the two issue-image inputs: the manifest format version the build understands. |
 | `files[]` | `HEADLESS_FILES` (`inputs.ts`) | The `.pi/*` files a cycle reads from the project (`path`, `kind`: `command` / `hook` / `config`, and what happens `whenAbsent`). Files the driver writes, such as `.pi/work-state/`, are state, not input, and are not listed. |
@@ -271,10 +281,10 @@ An unknown name (no matching key in `features`, `inputs`, `files`, or `verbs.wor
 
 ### Baking the commit
 
-The Docker image build bakes the commit it was built from into `.pi/pi-rukas-commit` under the install root. Without the marker, a pi-rukas git checkout reports its own HEAD (a root that only sits inside another repository does not). With neither, `commit` is `null` and the result's `buildCommit` falls back to `v<version>`.
+The image publish workflow passes `GITHUB_SHA` as a build arg, and the Dockerfile bakes it into `.pi/pi-rukas-commit` under the install root, but only when it is a full 40-hex SHA. Without the marker, a pi-rukas git checkout reports its own HEAD (a root that only sits inside another repository does not). With neither, `commit` and the result's `buildCommit` are `null`; the version is always in `version` / `buildVersion`.
 
 ## Relationship to `docs/configuration.md`
 
-`inputs` is the machine-readable list of every `PI_ENSEMBLE_*` variable read under `extension/src/`; [configuration.md](configuration.md#environment-variables) is the human-readable description. `test-headless-inputs.ts` scans `src/` for env reads and fails when a read is missing from `inputs` or an entry is no longer read, and checks listed defaults against the live readers. A new input therefore has to be listed in `inputs.ts` and described in configuration.md in the same change.
+`inputs` is the machine-readable list of every `PI_ENSEMBLE_*` variable read under `extension/src/`; [configuration.md](configuration.md#environment-variables) is the human-readable description. `test-headless-inputs.ts` scans `src/` for env reads (property, index, destructuring and name-literal forms) and fails when a read is missing from `inputs` or an entry is no longer read. A key built at runtime (`` `PI_ENSEMBLE_MODEL_${role}` ``) must be on the test's explicit allowlist, which maps it to its family entry. The test also checks about 50 listed defaults (numeric, list and boolean) against their live reader functions; the others are checked only in review. A new input therefore has to be listed in `inputs.ts` and described in configuration.md in the same change.
 
 Variables read only by the shell wrappers in `bin/` (e.g. `PI_ENSEMBLE_HOST_ALIASES`, `PI_ENSEMBLE_IMAGE_DIRS`) configure the sandbox launch, not the runner, and are not listed.

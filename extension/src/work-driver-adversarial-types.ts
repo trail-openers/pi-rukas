@@ -49,6 +49,8 @@ export interface AdversarialOutcome {
   /** Non-blocking findings outstanding when this workstream passed. */
   passFindings?: string;
   errorTail?: string;
+  /** #79 — identical provider failures in a row the loop already saw; ≥2 is not retried in-step. */
+  providerRepeats?: number;
   /** #543 — a loop / token-budget cap kill, threaded from the inner spawn. */
   killCause?: "loop" | "token-budget";
   /** #543 — the F1 streak evidence for a loop kill, threaded from the inner

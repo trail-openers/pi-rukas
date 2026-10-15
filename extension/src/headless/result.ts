@@ -11,15 +11,17 @@
 
 import type { DispatchUsage } from "../types.ts";
 import { handoffMarker } from "../work-driver-handoff-channel.ts";
+import { resumeEnabled } from "../work-driver-resume.ts";
 import type { WorkStep } from "../workflow-state-events.ts";
 import type { WorkState } from "../workflow-state.ts";
 import { type HeadlessCap, capStep } from "./caps.ts";
-import { exitCodeForState, lastCap, lastEvent } from "./exit-code.ts";
+import { EXIT, exitCodeForState, lastCap, lastEvent } from "./exit-code.ts";
+import { recordedPrUrl } from "./pr-url.ts";
 
 /**
  * Version of the --json result schema. Bump on any change to the result shape.
- * v2 (#1326): top-level `schemaVersion` and `buildCommit`; per issue a typed
- * `cap`, `failedStep`, `prUrl`, `usage` and `resumable`.
+ * v2 (#1326): top-level `schemaVersion`, `buildCommit` and `buildVersion`; per
+ * issue a typed `cap`, `failedStep`, `prUrl`, `usage` and `resumable`.
  * v3 (#1327): per issue `parkReason` and `handoff` (channel, marker, body).
  */
 export const RESULT_SCHEMA_VERSION = 3 as const;
@@ -63,11 +65,15 @@ export interface IssueResult {
   failedStep?: WorkStep;
   branch?: string;
   prNumber?: number;
-  /** The PR's web URL, when the forge is GitHub or GitLab. */
+  /** The PR's web URL, only when it is unambiguous (pr-url.ts). */
   prUrl?: string;
   /** Present whenever a state existed to sum. */
   usage?: ResultUsage;
-  /** Re-running `work <issue>` without `--restart` continues this cycle. */
+  /**
+   * Re-running `work <issue>` without `--restart` continues this cycle. False
+   * on a refusal (exit 40: a live process owns the cycle) and when
+   * PI_ENSEMBLE_RESUME=0.
+   */
   resumable: boolean;
   /** Diagnostic path for a person. Not a host contract: do not parse the file. */
   stateFile: string;
@@ -93,8 +99,10 @@ export interface IssueResult {
 /** The JSON document `--json` writes to stdout. */
 export interface ResultDocument {
   schemaVersion: typeof RESULT_SCHEMA_VERSION;
-  /** The commit the running build was made from, else `v<version>` (build.ts). */
-  buildCommit: string;
+  /** The 40-hex commit the running build was made from, or null (build.ts). */
+  buildCommit: string | null;
+  /** The release version of the running build (extension/package.json). */
+  buildVersion: string;
   exitCode: number;
   issues: IssueResult[];
   error?: { code: string; message: string };
@@ -102,11 +110,12 @@ export interface ResultDocument {
 
 export function resultDocument(
   run: { exitCode: number; results: IssueResult[]; error?: { code: string; message: string } },
-  buildCommit: string,
+  build: { commit: string | null; version: string },
 ): ResultDocument {
   const doc: ResultDocument = {
     schemaVersion: RESULT_SCHEMA_VERSION,
-    buildCommit,
+    buildCommit: build.commit,
+    buildVersion: build.version,
     exitCode: run.exitCode,
     issues: run.results,
   };
@@ -239,7 +248,9 @@ export function projectIssue(state: WorkState, stateFile: string): IssueResult {
     usage: usageOf(state),
     // An interrupted cycle re-enters as running; a running one resumes (#382).
     resumable:
-      state.pipelineState.status === "running" || state.pipelineState.status === "interrupted",
+      exitCode !== EXIT.refused &&
+      resumeEnabled() &&
+      (state.pipelineState.status === "running" || state.pipelineState.status === "interrupted"),
   };
   if (cap !== undefined) result.cap = cap;
   const failedStep = failedStepOf(state);
@@ -248,7 +259,11 @@ export function projectIssue(state: WorkState, stateFile: string): IssueResult {
   const prNumber = merged
     ? merged.prNumber
     : (state.pipelineState.prNumber ?? state.pipelineState.existingPr?.number);
-  if (prNumber !== undefined) result.prNumber = prNumber;
+  if (prNumber !== undefined) {
+    result.prNumber = prNumber;
+    const url = recordedPrUrl(state, prNumber);
+    if (url) result.prUrl = url;
+  }
   if (exitCode === 11) result.questions = questionsOf(state);
   const capHit = lastEvent(state, "cap-hit");
   const parkReason = capHit?.parkReason ?? state.pipelineState.normalisedSpec?.parkReason;

@@ -184,13 +184,15 @@ RUN npm install -g --ignore-scripts wigolo@0.2.1 || true
 ENV PI_ENSEMBLE_DIR=/opt/pi-rukas
 COPY --chown=vscode:vscode . ${PI_ENSEMBLE_DIR}
 
-# #1306 — bake the git commit this image was built from so
-# `pi-rukas-headless --capabilities` can report it. The build context (the
-# repo, checked out by the publish workflow) exposes GITHUB_SHA. The marker
-# lives under .pi/ (gitignored per-clone convention), so it never lands in a
-# PR. `|| true` keeps the image build resilient if the variable is ever
-# absent (e.g. a local `docker build` without the workflow's env).
-RUN set -e; if [ -n "$GITHUB_SHA" ]; then \
+# #1306 / #1326 — bake the git commit this image was built from, so
+# `pi-rukas-headless --capabilities` and the --json result's `buildCommit`
+# can name it. publish-image.yml passes it as a build arg (a RUN step does
+# not see the workflow's GITHUB_SHA otherwise); a local `docker build`
+# without it bakes nothing and the build reports a null commit. Only a full
+# 40-hex SHA is written: a host runs `git merge-base --is-ancestor` on it.
+# The marker lives under .pi/ (gitignored), so it never lands in a PR.
+ARG GITHUB_SHA=
+RUN set -e; if printf '%s' "$GITHUB_SHA" | grep -Eq '^[0-9a-f]{40}$'; then \
       mkdir -p ${PI_ENSEMBLE_DIR}/.pi \
       && printf '%s\n' "$GITHUB_SHA" > ${PI_ENSEMBLE_DIR}/.pi/pi-rukas-commit; \
     fi

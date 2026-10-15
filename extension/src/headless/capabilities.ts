@@ -26,7 +26,7 @@
  */
 
 import path from "node:path";
-import { INSTALL_ROOT, readBuildCommitSha, readBuildVersion } from "./build.ts";
+import { INSTALL_ROOT, readBuildCommit, readBuildVersion } from "./build.ts";
 import { capVocabulary } from "./caps.ts";
 import { EXIT, EXIT_CODE_VERSION } from "./exit-code.ts";
 import { HEADLESS_FILES, HEADLESS_INPUTS } from "./inputs.ts";
@@ -88,7 +88,7 @@ export function buildCapabilities(installRoot: string = INSTALL_ROOT): Capabilit
   return {
     schemaVersion: CAPABILITIES_VERSION,
     version: readBuildVersion(path.join(installRoot, "extension", "package.json")),
-    commit: readBuildCommitSha(installRoot),
+    commit: readBuildCommit(installRoot),
     contracts: {
       exitCodes: { version: EXIT_CODE_VERSION, values: EXIT },
       resultSchema: { version: RESULT_SCHEMA_VERSION, caps: capVocabulary() },
