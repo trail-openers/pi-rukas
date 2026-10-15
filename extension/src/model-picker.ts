@@ -31,9 +31,7 @@ import {
   setOverride,
 } from "./model-config.ts";
 import { resolveModel } from "./models.ts";
-import { ROLE_NAMES } from "./roles.ts";
-
-const SUBAGENT_ROLES = ROLE_NAMES.filter((r) => r !== "project-manager");
+import { SUBAGENT_ROLE_NAMES } from "./roles.ts";
 
 // Sentinel values returned by the picker. Real role names cannot collide
 // with these (no role contains "__" prefix in our naming).
@@ -183,7 +181,7 @@ export function buildRoleItems(overrides: Record<string, ModelChoice>): SelectIt
     label: "all subagents (default for unset roles)",
     description: describeOverride(overrides[GLOBAL_KEY]),
   });
-  for (const role of SUBAGENT_ROLES) {
+  for (const role of SUBAGENT_ROLE_NAMES) {
     items.push({
       value: role,
       label: role,
@@ -306,5 +304,5 @@ function formatChoiceForNotify(c: ModelChoice): string {
 
 /** Re-export used by ensemble-debug for status rendering. */
 export function currentResolution() {
-  return SUBAGENT_ROLES.map((role) => ({ role, choice: resolveModel(role) }));
+  return SUBAGENT_ROLE_NAMES.map((role) => ({ role, choice: resolveModel(role) }));
 }
