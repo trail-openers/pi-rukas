@@ -159,6 +159,8 @@ const REFUSED: string[] = [
   "/usr/bin/gh pr merge 17",
   "./gh pr merge 17",
   "GH pr merge 17",
+  "./g pr merge 17",
+  "hubcli mr merge 4",
   "gh pr MERGE 17",
   // Quoting and escaping that hides the verb or the number.
   "\\gh pr merge 17",
@@ -259,7 +261,7 @@ for (const cmd of NOT_MERGES) {
 // ------------------------------------------------------------ the residual
 // A merge assembled entirely from expansions spells no merge word: outside the
 // honest-agent threat model, documented in docs/troubleshooting.md.
-for (const cmd of ["gh pr m$X 17", "$G pr m$X 17", "gh pr m$(echo e)rge 17", "gh pr m?rge 17"]) {
+for (const cmd of ["gh pr m$X 17", "$G pr m$X 17", "gh pr m$(echo e)rge 17", "gh pr m?rge 17", "bash x.sh"]) {
   assert(readMergeCommand(cmd).kind === "none", `documented residual (not read as a merge): ${cmd}`);
 }
 
@@ -294,6 +296,17 @@ for (const cmd of [
   const r = await hookDecision("gh pr merge --squash", GOOD_ENTRIES);
   assert(!r.block, "hook resolves a number-less merge from the current branch");
   assert(r.calls.some((c) => c.includes("--json number")), "…via gh pr view --json number");
+}
+{
+  // The PR read follows the repo's forge (github here); a glab merge would act
+  // on a GitLab MR the guard never read.
+  const r = await hookDecision("glab mr merge 12", GOOD_ENTRIES);
+  assert(r.block && /merges on gitlab but this repo's forge is github/.test(r.reason ?? ""), "hook refuses a merge aimed at the other forge");
+}
+{
+  // Fail closed: a reader that throws (here on a non-string command) refuses.
+  const r = await hookDecision({} as never, GOOD_ENTRIES);
+  assert(r.block && /could not analyse this command/.test(r.reason ?? ""), "hook refuses when the reader throws");
 }
 for (const cmd of ["gh pr view 17 --json mergeable", "git merge --ff-only origin/main"]) {
   const r = await hookDecision(cmd, []);

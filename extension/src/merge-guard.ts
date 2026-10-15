@@ -177,6 +177,13 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
       return block(`merge refused: ${targetResult.reason}`);
     }
     const target = targetResult.target;
+    // The PR read follows this repo's forge; a merge aimed at the other forge
+    // would act on a different PR/MR than the one just read.
+    if (target.forge !== analysis.forge) {
+      return block(
+        `merge refused: \`${merging}\` merges on ${analysis.forge} but this repo's forge is ${target.forge} — the guard would check a different PR/MR than the one merged; set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override`,
+      );
+    }
 
     // Carve-out: release-please / dependabot are not agent merges.
     if (isCarveOut(target)) {

@@ -11,7 +11,8 @@
  *      `https`, `api.github.com`, `gitlab`) AND a merge word (`merge` as a
  *      whole word, `mergepullrequest`, `enablepullrequestautomerge`). The
  *      words are also looked for after quote and backslash removal, so
- *      `g"h"` and `m"erge"` trigger. No trigger → `none`: not a merge.
+ *      `g"h"` and `m"erge"` trigger; so does `pr merge` / `mr merge` alone (a
+ *      forge CLI run under another name). No trigger → `none`: not a merge.
  *   2. A triggered command must be EXACTLY one simple command in the grammar
  *      below, or it is `refused`:
  *
@@ -24,8 +25,9 @@
  *      would see is exactly the word read here.
  *
  * Threat model (docs/troubleshooting.md): an honest-but-forgetful agent, not
- * an adversary. A merge assembled entirely from expansions (`$G pr m$X 17`)
- * never triggers and is a documented residual.
+ * an adversary. A merge whose words never appear in the command text — one
+ * assembled from expansions (`$G pr m$X 17`), or run from a script file
+ * (`bash x.sh`) — never triggers and is a documented residual.
  */
 
 /** What the guard does with a bash command. */
@@ -36,7 +38,6 @@ export type MergeCommand =
 
 /** A repo value safe to pass to gh/glab: `owner/repo` (GitLab: `group/sub/repo`). */
 export const REPO_VALUE_PATTERN = /^[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.-]+)+$/;
-const GH_REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 /** Whether a repo value is safe to interpolate into a forge exec string. */
 export function isValidRepoValue(value: string): boolean {
@@ -45,6 +46,8 @@ export function isValidRepoValue(value: string): boolean {
 
 const FORGE_WORD =
   /(?:^|[^a-z0-9_])(?:gh|glab|hub|curl|wget|https?)(?![a-z0-9_])|api\.github\.com|gitlab/i;
+/** `pr merge` / `mr merge` — a forge CLI run under another name (`./g pr merge 17`). */
+const VERB_PAIR = /(?:^|[^a-z0-9_])[pm]r\s+merge(?![a-z0-9_])/i;
 const MERGE_WORD =
   /(?:^|[^a-z0-9_])merge(?![a-z0-9_])|mergepullrequest|enablepullrequestautomerge/i;
 
@@ -64,6 +67,7 @@ function triggers(command: string): boolean {
     .replace(/['"\\]/g, "");
   const forge = FORGE_WORD.test(command) || FORGE_WORD.test(dequoted);
   const merge = MERGE_WORD.test(command) || MERGE_WORD.test(dequoted);
+  if (VERB_PAIR.test(command) || VERB_PAIR.test(dequoted)) return true;
   return (forge && merge) || ((forge || merge) && command.includes("$'"));
 }
 
@@ -108,7 +112,8 @@ interface ForgeGrammar {
   forge: "github" | "gitlab";
   tool: string;
   noun: string;
-  repoPattern: RegExp;
+  /** Exact `/`-separated segment count of a repo value; undefined = any (≥ 2). */
+  repoSegments?: number;
   /** Flags that take no value. A `--long=value` entry is matched whole. */
   bool: ReadonlySet<string>;
   /** Flags whose value is the next word, or `--long=value`. */
@@ -121,7 +126,7 @@ const GH: ForgeGrammar = {
   forge: "github",
   tool: "gh",
   noun: "pr",
-  repoPattern: GH_REPO_PATTERN,
+  repoSegments: 2,
   bool: new Set([
     "--squash",
     "-s",
@@ -154,7 +159,6 @@ const GLAB: ForgeGrammar = {
   forge: "gitlab",
   tool: "glab",
   noun: "mr",
-  repoPattern: REPO_VALUE_PATTERN,
   bool: new Set([
     "--squash",
     "-s",
@@ -187,7 +191,8 @@ function parse(g: ForgeGrammar, words: string[]): MergeCommand {
   const refused: MergeCommand = { kind: "refused" };
   let repo: string | undefined;
   const takeRepo = (sel: { repo: string }) => {
-    if (repo !== undefined || !g.repoPattern.test(sel.repo)) return false;
+    if (repo !== undefined || !isValidRepoValue(sel.repo)) return false;
+    if (g.repoSegments !== undefined && sel.repo.split("/").length !== g.repoSegments) return false;
     repo = sel.repo;
     return true;
   };
@@ -237,4 +242,4 @@ export function readMergeCommand(command: string): MergeCommand {
 
 /** The guard's refusal for a triggered command outside the grammar. */
 export const MERGE_FORM_REFUSAL =
-  "merge refused: the merge guard checks only one plain merge command — `gh [-R OWNER/REPO] pr merge [N] [flags]` or `glab [-R GROUP/REPO] mr merge [N] [flags]`, run on its own: no pipes, chains, substitutions, variables, wrappers (env/sudo/nice/time/exec), `bash -c`, `eval`, `gh api`/curl REST or GraphQL merges. A command that names gh/glab/curl and the word `merge` anywhere (even in prose) is held to this form: put a PR or comment body in a file (`--body-file <file>`) and a commit message in `git commit -F <file>`. Operator override: PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1";
+  "merge refused: the merge guard checks only one plain merge command — `gh [-R OWNER/REPO] pr merge [N] [flags]` or `glab [-R GROUP/REPO] mr merge [N] [flags]`, run on its own: no pipes, chains, substitutions, variables, wrappers (env/sudo/nice/time/exec/oo), `bash -c`, `eval`, `gh api`/curl REST or GraphQL merges. A command that names gh/glab/curl and the word `merge` anywhere (even in prose) is held to this form: put a PR or comment body in a file (`--body-file <file>`) and a commit message in `git commit -F <file>`. Operator override: PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1";
