@@ -1,12 +1,13 @@
 /**
- * git-range — the one typed git entry point and the PR range it names (#1134,
- * #1153).
+ * git-range — the PR range and its commit count (#1134).
  *
  * `execGit` is how driver git plumbing invokes git: argv always, a bounded
- * timeout always, never a command string. Shared by the driver's diff reader,
- * the verify gates and the comment-retention check, so every PR-shaped read
- * names its range the same way. Imports nothing from work-driver-*: it is a
- * neutral leaf, which keeps those modules from depending on each other.
+ * timeout always, never a command string.
+ *
+ * Shared by the driver's diff reader, the verify gates and the comment-retention
+ * check, so every PR-shaped git read names its range the same way. Imports
+ * nothing from work-driver-*: it is a neutral leaf, which keeps those modules
+ * from depending on each other through it.
  */
 
 import type { ExecFn } from "./worktree.ts";
