@@ -119,7 +119,9 @@ fi
 # hardcodes PI_ENSEMBLE_BASE=$PWD — so run it with cwd = THIS WORKTREE.
 # (Running it from the main checkout would overwrite the main checkout's
 # dist/, which the NEVER_SHARED rule exists to prevent.)
-if ! build_out=$( (builtin cd "$PWD" && bun run build) 2>&1 ); then
+# NOT `builtin cd`: `builtin` is not POSIX. On Linux /bin/sh is dash, which
+# rejects it (exit 127) and the build never runs -- the CI failure of #1146.
+if ! build_out=$( (cd "$PWD" && bun run build) 2>&1 ); then
   echo "worktree-setup: ERROR: bun run build failed (ran in $PWD):" >&2
   printf '%s\n' "$build_out" | tail -20 >&2
   exit 1

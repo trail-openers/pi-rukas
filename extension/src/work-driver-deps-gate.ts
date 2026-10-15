@@ -9,9 +9,11 @@
  * pi-rukas's own verify command used to run in such a worktree until the
  * 10-min timeout and park with no assertion.
  *
- * Fail-open: an unreadable location or a failing `git check-ignore` never
- * blocks — the verify command runs as it did before, and its own failure
- * (plus `provisionDepsHint`) is the backstop.
+ * Fail-open: an unreadable location never blocks — the verify command runs
+ * as it did before, and its own failure (plus `provisionDepsHint`) is the
+ * backstop. A location whose ignore status `git check-ignore` cannot give is
+ * NAMED as undetermined, never silently dropped: exit 0 = ignored (provisioning
+ * would link it), exit 1 = not ignored (never linked), anything else = unknown.
  */
 import type { DriverContext } from "./work-driver-context.ts";
 import { provisionDepsHint } from "./work-driver-deps-hint.ts";
@@ -33,19 +35,41 @@ export async function missingDepsFailure(
     for (const m of missing) {
       // Only what provisioning links: a tree that is not gitignored is
       // never linked, so its absence is not a provisioning failure.
-      const ignored = await execFn("git", {
-        cwd: repoRoot,
-        argv: ["check-ignore", "-q", "--", m.rel],
-        maxBuffer: 64 * 1024,
-      }).then(
-        () => true,
-        () => false,
+      const status = await checkIgnoreStatus(execFn, repoRoot, m.rel);
+      if (status === "not-ignored") continue;
+      const base = `${m.rel} missing in ${cwd} (source: ${m.source})`;
+      named.push(
+        status === "ignored"
+          ? base
+          : `${base}; ignore status could not determine (git error: ${status.error})`,
       );
-      if (ignored) named.push(`${m.rel} missing in ${cwd} (source: ${m.source})`);
     }
     if (named.length === 0) return undefined;
     return `verify command \`${cmd}\` not run — dependencies missing: ${named.join("; ")}${provisionDepsHint(state, cwd)}`;
   } catch {
     return undefined;
+  }
+}
+
+type IgnoreStatus = "ignored" | "not-ignored" | { error: string };
+
+/** `git check-ignore -q`: exit 0 ignored, exit 1 not ignored, anything else unknown. */
+async function checkIgnoreStatus(
+  execFn: NonNullable<DriverContext["verifyExecFn"]>,
+  repoRoot: string,
+  rel: string,
+): Promise<IgnoreStatus> {
+  try {
+    await execFn("git", {
+      cwd: repoRoot,
+      argv: ["check-ignore", "-q", "--", rel],
+      maxBuffer: 64 * 1024,
+    });
+    return "ignored";
+  } catch (err) {
+    const code = (err as { code?: unknown })?.code;
+    if (code === 1) return "not-ignored";
+    const detail = (err as Error)?.message ?? String(err);
+    return { error: `${typeof code === "number" ? `exit ${code}: ` : ""}${detail.slice(0, 160)}` };
   }
 }

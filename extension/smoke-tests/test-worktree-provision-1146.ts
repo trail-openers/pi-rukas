@@ -211,4 +211,56 @@ async function repoShapedFixture(hook: string | undefined): Promise<{ root: stri
   }
 }
 
+// ---- #1146 CI root cause: /bin/sh is dash on Linux (CI) and bash on macOS.
+// The hook must run under dash — `builtin` is not POSIX and dash exits 127.
+if (existsSync("/bin/dash")) {
+  const { root, wt } = await repoShapedFixture(REAL_HOOK);
+  try {
+    const underDash: typeof realExec = (cmd, opts) =>
+      realExec(cmd.replace(/^sh /, "/bin/dash "), opts);
+    const result = await provisionWorktree(underDash, root, wt);
+    assert(
+      result.problem === undefined && result.hookFailed !== true,
+      `the real hook runs under dash, the Linux /bin/sh (problem: ${result.problem})`,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+} else {
+  console.log("· /bin/dash not installed — the dash hook check is skipped");
+}
+
+// ---- an ignore status git cannot give is NAMED, not silently dropped
+{
+  const { root, wt } = await repoShapedFixture(undefined);
+  try {
+    rmSync(path.join(root, "extension", "node_modules"), { recursive: true });
+    const failing = (code: number) => async (cmd: string, opts: Parameters<typeof realExec>[1]) => {
+      if (cmd !== "git") return realExec(cmd, opts);
+      throw Object.assign(new Error("fatal: boom"), { code });
+    };
+    const unknown = await missingDepsFailure(
+      failing(128),
+      { eventLog: [] } as unknown as WorkState,
+      root,
+      wt,
+      "v",
+    );
+    assert(
+      unknown?.includes("could not determine (git error: exit 128: fatal: boom)") === true,
+      `a git error on check-ignore is named as undetermined (got: ${unknown})`,
+    );
+    const notIgnored = await missingDepsFailure(
+      failing(1),
+      { eventLog: [] } as unknown as WorkState,
+      root,
+      wt,
+      "v",
+    );
+    assert(notIgnored === undefined, "exit 1 (not ignored) is never linked, so never named");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 process.exit(exit);
