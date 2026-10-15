@@ -38,6 +38,14 @@ export function parseWorkArgs(args: string): WorkInvocation | { error: string } 
         "pi-rukas: /work needs at least one issue number (e.g., /work 547, or /work 561 562 to analyze + group multi-issue).",
     };
   }
+  // #1090 — a grant is for one issue's cycle; a queue would hand it to
+  // unrelated cycles too.
+  if (split.grant.length > 0 && issues.length > 1) {
+    return {
+      error:
+        "pi-rukas: --allow-protected applies to a single issue — run the issue that needs it on its own (e.g., /work 123 --allow-protected .github/workflows/ci.yml).",
+    };
+  }
   return {
     issues,
     restart: tokens.includes("--restart"),

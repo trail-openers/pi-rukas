@@ -69,17 +69,24 @@ export function protectedPathsEnabled(): boolean {
 
 /** Normalise a repo-relative path to lowercase forward-slash segments. */
 function segmentsOf(p: string): string[] {
+  return protectedPathKey(p)
+    .split("/")
+    .filter((s) => s.length > 0)
+    .map((s) => s.toLowerCase());
+}
+
+/**
+ * The comparison form of a path — what a #1090 grant must equal exactly.
+ * Case is kept (unlike classification): on a case-sensitive filesystem
+ * `CI.yml` and `ci.yml` are different files, and a grant names one of them.
+ */
+export function protectedPathKey(p: string): string {
   return p
     .replace(/\\/g, "/")
     .replace(/^\.\//, "")
     .split("/")
     .filter((s) => s.length > 0 && s !== ".")
-    .map((s) => s.toLowerCase());
-}
-
-/** The comparison form of a path — what a #1090 grant must equal exactly. */
-export function protectedPathKey(p: string): string {
-  return segmentsOf(p).join("/");
+    .join("/");
 }
 
 /** Does this path define a capability or gate the cycle is judged by? */
@@ -190,6 +197,17 @@ export function explainProtectedPaths(
   allTouched: readonly string[],
   issues: readonly number[],
 ): string {
-  const grant = [...new Set(allTouched.map(protectedPathKey))].sort().join(",");
-  return `develop wrote to ${ungranted.length} protected path(s) without an operator grant — ${ungranted.join(", ")}. These define what verification, review and permission mean for this cycle, so a cycle that edits them is grading its own work. Make the change yourself; or, if it is genuinely the work you asked for, grant the protected paths this patch touched, for one cycle only, with \`/work ${issues.join(" ")} --restart --allow-protected ${grant}\` (re-running with PI_ENSEMBLE_PROTECTED_PATHS=0 disables the gate for every path instead).`;
+  const head = `develop wrote to ${ungranted.length} protected path(s) without an operator grant — ${ungranted.join(", ")}. These define what verification, review and permission mean for this cycle, so a cycle that edits them is grading its own work. Make the change yourself`;
+  const env = "PI_ENSEMBLE_PROTECTED_PATHS=0 disables the gate for every path instead";
+  const paths = [...new Set(allTouched.map(protectedPathKey))].sort();
+  // The command is built from filenames a developer wrote, so it is printed
+  // only when every one is a plain path token, and only for a single issue —
+  // the one shape `--allow-protected` accepts.
+  if (issues.length !== 1 || !paths.every((p) => SAFE_PATH_RE.test(p))) {
+    return `${head}; or, if it is genuinely the work you asked for, grant the paths for one single-issue cycle with \`/work <issue> --restart --allow-protected <path>[,<path>]\` (${env}).`;
+  }
+  return `${head}; or, if it is genuinely the work you asked for, grant the protected paths this patch touched, for one cycle only, with \`/work ${issues[0]} --restart --allow-protected ${paths.join(",")}\` (${env}).`;
 }
+
+/** A path safe to print inside a copy-paste `/work` command. */
+const SAFE_PATH_RE = /^[A-Za-z0-9._/@+-]+$/;

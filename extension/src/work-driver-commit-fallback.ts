@@ -91,7 +91,7 @@ export async function dispatchCommitPrFallback(
           commitShas: ps.commitShas ?? {},
           workstreams: ps.workstreams ?? {},
           draft,
-          protectedGrant: preDispatch.protectedGrant,
+          protectedGrant: ctx.protectedGrant,
         },
       ),
     {

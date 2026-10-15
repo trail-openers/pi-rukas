@@ -71,6 +71,17 @@ const CI = ".github/workflows/ci.yml";
   );
   const dotdot = parseWorkArgs("7 --allow-protected .github/../.pi/verify-cmd");
   assert("error" in dotdot, "a grant containing `..` is refused");
+  const eq = parseWorkArgs(`7 --allow-protected=${CI}`);
+  assert(!("error" in eq) && eq.protectedGrant.join() === CI, "the `=` form is accepted too");
+  for (const empty of ["7 --allow-protected ./", "7 --allow-protected ,", "7 --allow-protected="]) {
+    const r = parseWorkArgs(empty);
+    assert("error" in r && /needs a path/.test(r.error), `an empty grant errors, never passes silently: ${empty}`);
+  }
+  const queue = parseWorkArgs(`7 8 --allow-protected ${CI}`);
+  assert(
+    "error" in queue && /single issue/.test(queue.error),
+    "a grant on a multi-issue invocation is refused — it would reach unrelated cycles",
+  );
 }
 
 // ----------------------------------------------------------- matching
@@ -88,6 +99,10 @@ const CI = ".github/workflows/ci.yml";
   assert(
     ungrantedProtectedPaths([`${CI} (evil)`], [CI]).length === 1,
     "a touched path is not annotation-stripped, so `ci.yml (evil)` is not `ci.yml`",
+  );
+  assert(
+    ungrantedProtectedPaths([".github/workflows/CI.yml"], [CI]).length === 1,
+    "matching keeps case — a ci.yml grant does not admit CI.yml",
   );
   assert(
     ungrantedProtectedPaths([".github/workflows/ci.yml"], [".github/workflows"]).length === 1,
@@ -147,6 +162,26 @@ const isProtectedFailure = (f: string) => /protected path/.test(f);
   assert(
     hit.includes("PI_ENSEMBLE_PROTECTED_PATHS=0"),
     "...and still mentions PI_ENSEMBLE_PROTECTED_PATHS=0",
+  );
+
+  const unsafe = await verifyStepOutcome(
+    ctx(`?? ".github/workflows/x \`y\`.yml"\n`),
+    stateWith(),
+    "develop",
+  );
+  const unsafeHit = unsafe.failures.find(isProtectedFailure) ?? "";
+  assert(
+    unsafeHit.includes("--allow-protected <path>") && !unsafeHit.includes("--allow-protected .github"),
+    "a filename that is not a plain path token is never pasted into the command",
+  );
+  const grouped = await verifyStepOutcome(
+    ctx(`?? ${CI}\n`),
+    { ...stateWith(), issues: [1090, 1091] },
+    "develop",
+  );
+  assert(
+    (grouped.failures.find(isProtectedFailure) ?? "").includes("/work <issue> --restart --allow-protected"),
+    "a grouped cycle is told to grant on a single-issue run, not given a command that would be refused",
   );
 
   const ok = await verifyStepOutcome(ctx(`?? ${CI}\n`, [CI]), stateWith(), "develop");
@@ -268,8 +303,8 @@ const isProtectedFailure = (f: string) => /protected path/.test(f);
     "utf8",
   );
   assert(
-    commitSrc.includes("protectedGrantSectionOf(state.protectedGrant)"),
-    "the mechanized PR body includes the grant section",
+    commitSrc.includes("protectedGrantSectionOf(ctx.protectedGrant)"),
+    "the mechanized PR body renders the invocation's grant, not the state copy",
   );
   const prompt = inlineCommitPrPrompt([1090], [], {}, {}, "b", undefined, [], "/tmp/s", "fix: x", {
     integratePath: "/tmp/i",

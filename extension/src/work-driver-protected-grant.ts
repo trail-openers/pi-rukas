@@ -35,36 +35,44 @@ function grantKey(raw: string): string {
 }
 
 /**
- * Split `--allow-protected <path>` pairs out of `/work` tokens. The flag is
- * repeatable and its value may be comma-separated. The values are removed from
- * `rest` so a path is never read as an issue number (`parseInt("2fa/…") === 2`).
+ * Split `--allow-protected <path>` (or `--allow-protected=<path>`) out of
+ * `/work` tokens. The flag is repeatable and its value may be comma-separated.
+ * The values are removed from `rest` so a path is never read as an issue
+ * number (`parseInt("2fa/…") === 2`). A flag that yields no path is an error,
+ * never a silently empty grant.
  */
 export function splitProtectedGrant(
   tokens: readonly string[],
 ): { grant: string[]; rest: string[] } | { error: string } {
   const grant: string[] = [];
   const rest: string[] = [];
+  const needsPath = {
+    error: `pi-rukas: ${ALLOW_PROTECTED_FLAG} needs a path (e.g., /work 123 ${ALLOW_PROTECTED_FLAG} .github/workflows/ci.yml).`,
+  };
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i] ?? "";
-    if (t !== ALLOW_PROTECTED_FLAG) {
+    let value: string | undefined;
+    if (t.startsWith(`${ALLOW_PROTECTED_FLAG}=`)) {
+      value = t.slice(ALLOW_PROTECTED_FLAG.length + 1);
+    } else if (t === ALLOW_PROTECTED_FLAG) {
+      value = tokens[i + 1];
+      if (value === undefined || value.startsWith("--")) return needsPath;
+      i++;
+    } else {
       rest.push(t);
       continue;
     }
-    const value = tokens[i + 1];
-    if (value === undefined || value.startsWith("--")) {
-      return {
-        error: `pi-rukas: ${ALLOW_PROTECTED_FLAG} needs a path (e.g., /work 123 ${ALLOW_PROTECTED_FLAG} .github/workflows/ci.yml).`,
-      };
-    }
-    i++;
-    for (const raw of value.split(",")) {
-      const key = grantKey(raw);
-      if (key.length === 0) continue;
+    const keys = value
+      .split(",")
+      .map(grantKey)
+      .filter((k) => k.length > 0);
+    if (keys.length === 0) return needsPath;
+    for (const key of keys) {
       // A grant names a protected file exactly; `..` or a path the gate never
       // halts on is a typo the operator should hear about, not a silent no-op.
       if (key.split("/").includes("..") || !isProtectedPath(key)) {
         return {
-          error: `pi-rukas: ${ALLOW_PROTECTED_FLAG} ${raw} is not a protected path — it grants only files under .github/ or .pi/, CODEOWNERS or agents.json, named exactly.`,
+          error: `pi-rukas: ${ALLOW_PROTECTED_FLAG} ${key} is not a protected path — it grants only files under .github/ or .pi/, CODEOWNERS or agents.json, named exactly.`,
         };
       }
       grant.push(key);

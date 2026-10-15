@@ -363,7 +363,7 @@ export async function mechanizedCommitPr(
       ...companionLines,
       ...workstreamLines,
       assumptionsBlock,
-      protectedGrantSectionOf(state.protectedGrant),
+      protectedGrantSectionOf(ctx.protectedGrant),
       carriedFindings,
       operatorActions,
       renderLensFindingsSection(state.eventLog),
