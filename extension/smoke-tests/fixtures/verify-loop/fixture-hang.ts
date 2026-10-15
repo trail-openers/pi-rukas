@@ -19,11 +19,13 @@ console.log("fixture-hang: starting, will hang until killed");
 console.log("fixture-hang: pid", process.pid);
 
 const token = process.env.FIXTURE_HANG_TOKEN ?? "hang-default";
-const hangSeconds = parseInt(process.env.FIXTURE_HANG_S ?? "300", 10);
+const hangSeconds = Number.parseInt(process.env.FIXTURE_HANG_S ?? "300", 10);
 
 // Spawn a long-lived child with the run-unique token in its command line
 // so the no-orphan test can find it after the kill.
-spawn("sleep", [String(hangSeconds), token], { stdio: "ignore" });
+// #1365: GNU sleep rejects a second operand (`sleep 300 <token>` exits at once),
+// so the token rides in a `sh -c` command line instead, and the sleep is its child.
+spawn("sh", ["-c", `sleep ${hangSeconds}; : ${token}`], { stdio: "ignore" });
 
 // Keep alive indefinitely. The verify-loop watchdog must kill us.
 setInterval(() => {}, 1000);
