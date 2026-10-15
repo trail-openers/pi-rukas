@@ -78,14 +78,13 @@ export async function reconcileHandoffConsolidateBranch(
   }
   if (!fetchedTip) return undefined;
   // The single shared predicate (ancestry probe + ahead refusal +
-  // `git update-ref` move). The ahead refusal is far less likely in the
-  // normal flow: follow-up mode only reaches here for a branch that is NOT
-  // checked out at repoRoot, and a local branch AHEAD of the freshly-fetched
-  // tip was just reset (or is this cycle's own work, created at the tip) —
-  // so a BranchAheadError here would usually mean a concurrent cycle raced
-  // the fetch. Note #1189: the shared predicate now RESETS a pushed ahead
-  // branch (local tip == origin/<branch>) instead of refusing it, so the
-  // ahead refusal here means only the diverged/unpushed case — those still
-  // halt the handoff.
+  // `git update-ref` move). The ahead refusal cannot fire in the normal
+  // flow: follow-up mode only reaches here for a branch that is NOT checked
+  // out at repoRoot, and a local branch AHEAD of the freshly-fetched tip was
+  // just reset (or is this cycle's own work, created at the tip) — so a
+  // BranchAheadError here would mean a concurrent cycle raced the fetch.
+  // Note #1189: the shared predicate now RESETS a pushed ahead branch (local
+  // tip == origin/<branch>) instead of refusing it, so the ahead refusal here
+  // means only the diverged/unpushed case — those still halt the handoff.
   return reconcileExistingLocalBranch(execFn, repoRoot, branchName, fetchedTip);
 }
