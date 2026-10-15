@@ -84,13 +84,12 @@ process.env.PI_ENSEMBLE_HANDOFF_CONSOLIDATE = "0";
       Number.parseInt(bareCount.trim(), 10) === 0,
       "setup: the bare name is tag-shadowed (rev-list against it reports 0)",
     );
-    const execFn = realExec;
-    const count = await countCommittedAhead(execFn, wt, "feature/ref-collision");
+    const count = await countCommittedAhead(realExec, wt, "feature/ref-collision");
     assert(
       count === 1,
       `the count is the TRUE committed count despite the tag shadow (got: ${count})`,
     );
-    const fix = await detectCommittedFix(execFn, wt, "feature/ref-collision");
+    const fix = await detectCommittedFix(realExec, wt, "feature/ref-collision");
     assert(
       fix.status === "committed" && fix.count === 1 && fix.diffEmpty === false,
       `detectCommittedFix reports the fix as committed with content NOT on the branch (got: ${JSON.stringify(fix)})`,

@@ -109,8 +109,9 @@ export function makeCtx(opts: {
 }): DriverContext {
   const { repo, issue, branchName, baseSha, worktreePath } = opts;
   const exec = async (cmd: string, o?: { cwd?: string }) => {
-    if (commandOf(cmd, o).startsWith("gh ")) return { stdout: "" };
-    if (commandOf(cmd, o).startsWith("git fetch")) return { stdout: "" };
+    const line = commandOf(cmd, o);
+    if (line.startsWith("gh ")) return { stdout: "" };
+    if (line.startsWith("git fetch")) return { stdout: "" };
     return realExec(cmd, o);
   };
   const dispatchFn: NonNullable<DriverContext["dispatchFn"]> = async (_pi, spec, dOpts) => {

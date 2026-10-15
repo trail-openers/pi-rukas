@@ -74,25 +74,24 @@ async function mkFixture(
   branch: string,
 ): Promise<{ root: string; wt: string; baseSha: string; execp: (cmd: string, o?: { cwd?: string; shell?: string }) => Promise<{ stdout: string; stderr?: string }> }> {
   const fs = await import("node:fs/promises");
-  const execp = realExec;
   const origin = path.join(dir, "origin.git");
   const root = path.join(dir, "root");
   const wt = path.join(dir, "wt");
-  await execp(`git init -q --bare --initial-branch=main origin.git`, { cwd: dir });
-  await execp("git init -q --initial-branch=main root", { cwd: dir });
-  await execp('git config user.email "t@t" && git config user.name "T"', { cwd: root, shell: "/bin/bash" });
+  await realExec(`git init -q --bare --initial-branch=main origin.git`, { cwd: dir });
+  await realExec("git init -q --initial-branch=main root", { cwd: dir });
+  await realExec('git config user.email "t@t" && git config user.name "T"', { cwd: root, shell: "/bin/bash" });
   writeFileSync(path.join(root, ".git", "info", "exclude"), "\n.pi/\n");
   await fs.writeFile(path.join(root, "base.txt"), "hello\n");
-  await execp("git add base.txt && git commit -q -m initial", { cwd: root, shell: "/bin/bash" });
-  await execp(`git remote add origin ${JSON.stringify(origin)}`, { cwd: root });
-  await execp("git push -q -u origin main", { cwd: root });
-  await execp("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main", { cwd: root });
-  await execp(`git checkout -qb ${branch}`, { cwd: root });
-  const baseSha = (await execp("git rev-parse HEAD", { cwd: root })).stdout.trim();
+  await realExec("git add base.txt && git commit -q -m initial", { cwd: root, shell: "/bin/bash" });
+  await realExec(`git remote add origin ${JSON.stringify(origin)}`, { cwd: root });
+  await realExec("git push -q -u origin main", { cwd: root });
+  await realExec("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main", { cwd: root });
+  await realExec(`git checkout -qb ${branch}`, { cwd: root });
+  const baseSha = (await realExec("git rev-parse HEAD", { cwd: root })).stdout.trim();
   await fs.writeFile(path.join(root, "feature.txt"), "buggy\n");
-  await execp(`git add feature.txt && git commit -q -m 'feature' && git push -q -u origin ${branch}`, { cwd: root, shell: "/bin/bash" });
-  await execp(`git worktree add --detach ${JSON.stringify(wt)} HEAD`, { cwd: root });
-  return { root, wt, baseSha, execp };
+  await realExec(`git add feature.txt && git commit -q -m 'feature' && git push -q -u origin ${branch}`, { cwd: root, shell: "/bin/bash" });
+  await realExec(`git worktree add --detach ${JSON.stringify(wt)} HEAD`, { cwd: root });
+  return { root, wt, baseSha, execp: realExec };
 }
 
 function mkLensState(

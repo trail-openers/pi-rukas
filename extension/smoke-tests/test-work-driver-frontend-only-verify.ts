@@ -301,7 +301,8 @@ try {
     // The ratchet reads `git diff ${base} -U0` — route the marker-laden diff
     // there (distinct from the --name-only form handled by the base fake).
     const wrapped: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
-      if (commandOf(cmd, o).startsWith("git diff") && commandOf(cmd, o).includes("-U0"))
+      const line = commandOf(cmd, o);
+      if (line.startsWith("git diff") && line.includes("-U0"))
         return { stdout: '+#[ignore]\n+it.skip("test1");\n+test.skip("test2");\n' };
       return r.exec(cmd, o);
     };

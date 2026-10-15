@@ -67,7 +67,7 @@ export function argvDroppingFakes(source: string): string[] {
     /(?:async\s*)?\(\s*(\w+)(?:\s*:\s*string)?\s*,\s*\w+\??(\s*:[^)]*)?\)\s*(?::[^=]*)?=>\s*/g;
   const found: string[] = [];
   for (const m of source.matchAll(fnRe)) {
-    const [head, cmd, optsType = ""] = m;
+    const [head = "", cmd = "", optsType = ""] = m;
     if (/^\s*:\s*string\s*$/.test(optsType)) continue;
     const body = arrowBody(source, (m.index ?? 0) + head.length);
     // `(?<!\.)`: a method call (`re.exec(line)`) is not node's `exec`.

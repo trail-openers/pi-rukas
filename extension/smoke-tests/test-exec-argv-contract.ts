@@ -28,6 +28,7 @@ import { execp as sharedExecp } from "../src/exec.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { execp as verifyExecp, verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
+import { realExec } from "./lib/exec-fake.ts";
 import { commitIn, fixture } from "./test-work-driver-verify-consolidated.ts";
 
 let exit = 0;
@@ -98,6 +99,27 @@ async function main() {
       failure.message.includes("git rev-parse --verify no-such-ref-32") &&
       (failure.stderr ?? "").trim().length > 0,
     `execTree: an argv-form failure names the whole command and carries stderr (got: ${failure?.message.slice(0, 80)})`,
+  );
+
+  // ------------- 1b. the smoke tests' realExec: rejection shape (#1283)
+  const gitRejected = await realExec("git", { argv: ["no-such-subcommand-1283"] }).then(
+    () => undefined,
+    (e: Error & { stdout?: unknown; stderr?: unknown }) => e,
+  );
+  assert(
+    typeof gitRejected?.stdout === "string" &&
+      typeof gitRejected.stderr === "string" &&
+      gitRejected.stderr.trim().length > 0 &&
+      gitRejected.message.includes(gitRejected.stderr.trim()),
+    `realExec: a rejected git call carries string stdout/stderr and its stderr is in the message (got: ${gitRejected?.message.slice(0, 80)})`,
+  );
+  const spawnFailed = await realExec("no-such-binary-1283", { argv: [] }).then(
+    () => undefined,
+    (e: Error & { stdout?: unknown; stderr?: unknown }) => e,
+  );
+  assert(
+    typeof spawnFailed?.stdout === "string" && typeof spawnFailed.stderr === "string",
+    `realExec: a spawn failure (ENOENT) still carries string stdout/stderr (got: ${typeof spawnFailed?.stdout}/${typeof spawnFailed?.stderr})`,
   );
 
   // ------------------------- 2. one shell-only seam: no other bare promisify(exec)
