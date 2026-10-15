@@ -5,12 +5,13 @@
  * the idempotency key is the event's position in the state's eventLog, supplied
  * by the emit sink, so a resumed cycle re-emits identical keys.
  * `sendUserMessage` — the chat channel in Pi — becomes a `log` line, so nothing
- * the driver would have shown a human is lost in headless mode.
+ * the driver would have shown a human is lost in headless mode. A driver event
+ * outside the stable subset is marked `unstable: true` (ndjson.ts).
  */
 
 import type { DriverHost } from "../work-driver-host.ts";
 import type { WorkEvent } from "../workflow-state-events.ts";
-import { type NdjsonLine, eventKey, formatLine } from "./ndjson.ts";
+import { type NdjsonLine, eventKey, formatLine, isStableKind } from "./ndjson.ts";
 
 export type LineWriter = (line: string) => void;
 
@@ -31,6 +32,7 @@ export function createHeadlessHost(issue: number, write: LineWriter): DriverHost
         issue,
         key: eventKey(issue, index, eventAt),
         event,
+        ...(isStableKind(event.kind) ? {} : { unstable: true as const }),
       });
     },
   };
