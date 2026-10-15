@@ -55,17 +55,12 @@ export function retryDecision(result: DispatchResult): {
   cause: string;
 } {
   if (result.ok) return { retry: false, waitMs: 0, cause: "success" };
-  // #1308 S3 — the tool path acts on this classification, so the failure-cause
-  // seam is asked in shadow; `{}` logs under the session's repo.
-  const cls = classifyFailureCause(
-    {
-      kind: result.errorStop ? "dispatch-failed-provider" : "dispatch-failed",
-      killCause: result.killCause,
-      providerMessage: result.errorStop?.message,
-      errorTail: result.text,
-    },
-    {},
-  );
+  const cls = classifyFailureCause({
+    kind: result.errorStop ? "dispatch-failed-provider" : "dispatch-failed",
+    killCause: result.killCause,
+    providerMessage: result.errorStop?.message,
+    errorTail: result.text,
+  });
   // A provider that stated no delay gives us nothing to wait for; the taxonomy
   // already declines those rather than guessing a duration.
   const waitMs = Math.min(cls.waitMs ?? 0, MAX_WAIT_MS);

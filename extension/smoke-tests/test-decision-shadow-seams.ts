@@ -11,7 +11,7 @@
  *     model's answer with the rule's answer as the final one;
  *   - exact rule matches (killCause, a 429 on the provider's own message)
  *     ask no model; a 429 only in the subagent's own words is asked (#1262);
- *   - render-only callers (no `shadow`) ask nothing;
+ *   - `classifyFailureCause` alone stays pure: only `shadowFailureCause` asks;
  *   - PI_ENSEMBLE_DECISIONS=0 is rule-only: no backend is called;
  *   - an env override to `enforce` cannot make a shadow call act;
  *   - secrets in the error text never reach the model.
@@ -20,7 +20,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { attach, detach, shadowDecide } from "../src/decision-shadow.ts";
-import { classifyFailureCause } from "../src/work-driver-failure-taxonomy.ts";
+import { classifyFailureCause, shadowFailureCause } from "../src/work-driver-failure-taxonomy.ts";
 import { finaliseSpecVerdict } from "../src/work-driver-intent-finalise.ts";
 import type { NormalisedSpec } from "../src/work-driver-intent.ts";
 import { STUB_MODEL, llmReply, makeAssert, stubRegistry, tmpDir } from "./lib/decision-fixtures.ts";
@@ -43,7 +43,17 @@ async function awaitRecords(file: string, n: number): Promise<Record<string, unk
   return records(file);
 }
 
-const failures = [
+type Tail = Parameters<typeof classifyFailureCause>[0];
+type Where = Parameters<typeof shadowFailureCause>[2];
+
+/** What an acting caller (the step router) does: classify, then ask in shadow. */
+function act(tail: Tail, where: Where) {
+  const cls = classifyFailureCause(tail);
+  shadowFailureCause(tail, cls, where);
+  return cls;
+}
+
+const failures: Tail[] = [
   { kind: "dispatch-failed", errorTail: "exit 1" },
   { kind: "dispatch-failed-provider", providerMessage: "socket hang up" },
   { kind: "dispatch-failed", killCause: "timeout" },
@@ -78,7 +88,7 @@ const baselineSpecs = [ordinary, security].map((b) => finaliseSpecVerdict(spec()
   const root = tmpDir("shadow-nosession");
   const where = { repoRoot: root, issues: [7] };
   const same = failures.every(
-    (f, i) => JSON.stringify(classifyFailureCause(f, where)) === JSON.stringify(baseline[i]),
+    (f, i) => JSON.stringify(act(f, where)) === JSON.stringify(baseline[i]),
   );
   assert(same, "no session model: classifyFailureCause returns exactly the rule's answer");
   const specsSame = [ordinary, security].every(
@@ -117,9 +127,9 @@ const baselineSpecs = [ordinary, security].map((b) => finaliseSpecVerdict(spec()
       return llmReply(JSON.stringify({ label, justification: "stub disagrees" }));
     },
   });
-  attach({ modelRegistry: registry, model: STUB_MODEL, cwd: root } as never);
+  attach({ modelRegistry: registry, model: STUB_MODEL, cwd: root });
 
-  const out = classifyFailureCause({ kind: "dispatch-failed", errorTail: "exit 1" }, where);
+  const out = act({ kind: "dispatch-failed", errorTail: "exit 1" }, where);
   assert(calls.llm === 0, "the call is synchronous: no backend has run when it returns");
   assert(
     JSON.stringify(out) === JSON.stringify(baseline[0]),
@@ -146,7 +156,7 @@ const baselineSpecs = [ordinary, security].map((b) => finaliseSpecVerdict(spec()
 
   // Exact matches stay rule-authoritative: no model is asked, no record.
   for (const f of [failures[2], failures[3], failures[4], failures[5]]) {
-    if (f) classifyFailureCause(f, where);
+    if (f) act(f, where);
   }
   await sleep(100);
   assert(
@@ -155,7 +165,10 @@ const baselineSpecs = [ordinary, security].map((b) => finaliseSpecVerdict(spec()
   );
 
   // #1262 — a 429 only in the subagent's own words is not exact: asked, rule kept.
-  const words = classifyFailureCause(failures[6] as never, where);
+  const words = act(
+    { kind: "dispatch-failed", errorTail: "tests for the 429 status path pass" },
+    where,
+  );
   assert(words.cause === baseline[6]?.cause, "an errorTail-only 429 keeps the rule's cause");
   recs = await awaitRecords(log, 2);
   assert(
@@ -163,11 +176,11 @@ const baselineSpecs = [ordinary, security].map((b) => finaliseSpecVerdict(spec()
     "an errorTail-only 429 is asked about, with the rule's label logged",
   );
 
-  // Render-only callers ask nothing.
+  // Render-only callers (classifyFailureCause alone) ask nothing.
   const before = calls.llm;
   for (const f of failures) classifyFailureCause(f);
   await sleep(100);
-  assert(calls.llm === before, "a caller without `shadow` asks no model");
+  assert(calls.llm === before, "classifyFailureCause alone is pure: it asks no model");
 
   // Security: an ordinary point the model calls security still proceeds.
   const specs = [ordinary, security].map((b) => finaliseSpecVerdict(spec(), b, where));
@@ -176,11 +189,10 @@ const baselineSpecs = [ordinary, security].map((b) => finaliseSpecVerdict(spec()
     "a model that calls every point security does not change the verdict",
   );
   recs = await awaitRecords(log, 4);
-  const sec = recs.slice(2) as {
-    seam?: string;
-    ruleAnswer?: string;
-    final?: { answer?: string };
-  }[];
+  // The two appends are concurrent, so their order is not fixed: sort by the rule's answer.
+  const sec = (
+    recs.slice(2) as { seam?: string; ruleAnswer?: string; final?: { answer?: string } }[]
+  ).sort((a, b) => String(a.ruleAnswer).localeCompare(String(b.ruleAnswer)));
   assert(
     sec.length === 2 &&
       sec.every((x) => x.seam === "security-open-point") &&
@@ -196,7 +208,7 @@ const baselineSpecs = [ordinary, security].map((b) => finaliseSpecVerdict(spec()
 
   // Secrets in the error text are redacted before any model sees them.
   const key = `sk-ant-api03-${"A".repeat(40)}`;
-  classifyFailureCause({ kind: "dispatch-failed", errorTail: `failed with key ${key}` }, where);
+  act({ kind: "dispatch-failed", errorTail: `failed with key ${key}` }, where);
   await awaitRecords(log, 5);
   assert(
     !prompts.some((p) => p.includes(key)),
@@ -206,7 +218,7 @@ const baselineSpecs = [ordinary, security].map((b) => finaliseSpecVerdict(spec()
   // The kill switch: rule-only, no backend.
   process.env.PI_ENSEMBLE_DECISIONS = "0";
   const n = calls.llm;
-  classifyFailureCause({ kind: "dispatch-failed", errorTail: "exit 1" }, where);
+  act({ kind: "dispatch-failed", errorTail: "exit 1" }, where);
   recs = await awaitRecords(log, 6);
   assert(
     calls.llm === n && (recs[5] as { mode?: string }).mode === "off",

@@ -28,12 +28,18 @@
  * the log; without one the session's cwd does.
  */
 
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SEAMS, type SeamId, type SeamSpec, seamConfig } from "./decision-seam-registry.ts";
-import { type DecideRequest, type Decision, type DecisionWhere, decide } from "./decision-seam.ts";
+import {
+  type DecideCtx,
+  type DecideRequest,
+  type Decision,
+  type DecisionWhere,
+  decide,
+} from "./decision-seam.ts";
 import { traceWarn } from "./trace.ts";
 
-type SessionCtx = Pick<ExtensionContext, "modelRegistry" | "model" | "cwd">;
+/** What the shadow calls need from the session; an ExtensionContext satisfies it. */
+type SessionCtx = Pick<DecideCtx, "modelRegistry" | "model"> & { cwd?: string };
 
 let session: SessionCtx | undefined;
 let inFlight = 0;
@@ -61,7 +67,8 @@ function sessionNow(): {
     return session
       ? { modelRegistry: session.modelRegistry, model: session.model, cwd: session.cwd }
       : {};
-  } catch {
+  } catch (err) {
+    traceWarn(`decision-shadow: session context unreadable, rule only: ${(err as Error)?.message}`);
     return {};
   }
 }
@@ -84,8 +91,16 @@ export function shadowDecide(
   req: DecideRequest,
   where: DecisionWhere = {},
 ): Promise<Decision | undefined> {
-  const spec: SeamSpec = SEAMS[seam];
-  if (seamConfig(spec).mode === "enforce") {
+  let mode: string;
+  try {
+    const spec: SeamSpec = SEAMS[seam];
+    mode = seamConfig(spec).mode;
+  } catch (err) {
+    // The caller's rule answer must not depend on the shadow call.
+    traceWarn(`decision-shadow: '${seam}' not fired: ${(err as Error)?.message ?? String(err)}`);
+    return Promise.resolve(undefined);
+  }
+  if (mode === "enforce") {
     traceWarn(
       `decision-shadow: '${seam}' is configured to enforce; a shadow call cannot act, skipped`,
     );

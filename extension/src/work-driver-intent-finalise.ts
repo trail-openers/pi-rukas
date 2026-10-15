@@ -182,11 +182,14 @@ function applyOpenPointGate(
   }
   if (points.length === 0 && unparsed.length === 0) return base;
 
-  const securityMatches = [...points.map(openPointText), ...unparsed].flatMap((text) => {
+  const texts = [...points.map(openPointText), ...unparsed];
+  const securityMatches = texts.flatMap((text) => {
     const term = securityTermOf(text);
-    if (shadow) askSecuritySeam(text, term !== undefined, shadow);
     return term ? [{ text, term }] : [];
   });
+  if (shadow) {
+    for (const text of texts) askSecuritySeam(text, securityTermOf(text) !== undefined, shadow);
+  }
   const securityPoints = securityMatches.map(({ text }) => quotedIssueText(text));
   if (base.verdict === "park") {
     trace(
