@@ -11,6 +11,28 @@
 
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
 import type { WorkState } from "./workflow-state.ts";
+import { packageDirsAt } from "./worktree-provision-hook.ts";
+import { missingDepLocations } from "./worktree-provision-verify.ts";
+
+/**
+ * #1146 — the develop gate's fail-fast: when the worktree lacks a dependency
+ * tree the main checkout has (a non-empty `node_modules` at `repoRoot` or in
+ * a depth-1 package dir that does not resolve in the worktree), the verify
+ * command is not run and this names the missing tree. pi-rukas's own verify
+ * command used to stall in such a worktree until the 10-min timeout and park
+ * with no assertion. `undefined` = nothing missing, run the command.
+ */
+export async function missingDepsFailure(
+  state: WorkState,
+  repoRoot: string,
+  cwd: string,
+  cmd: string,
+): Promise<string | undefined> {
+  const missing = await missingDepLocations(repoRoot, await packageDirsAt(repoRoot), cwd);
+  if (missing.length === 0) return undefined;
+  const named = missing.map((m) => `${m.rel} missing in ${cwd} (source: ${m.source})`);
+  return `verify command \`${cmd}\` not run — dependencies missing: ${named.join("; ")}${provisionDepsHint(state, cwd)}`;
+}
 
 /**
  * Build a missing-deps hint message tailored to what the provisioner

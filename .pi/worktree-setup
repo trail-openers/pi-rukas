@@ -43,28 +43,26 @@ repo_root=${git_common_dir%/.git}
 [ -d "$repo_root/extension" ] \
   || die "$repo_root does not look like the pi-ensemble checkout (no extension/)"
 
-src="$repo_root/extension/node_modules"
-dst="$PWD/extension/node_modules"
+exclude="$git_common_dir/info/exclude"
 
-if [ ! -d "$src" ]; then
-  echo "worktree-setup: $src not found; leaving worktree un-provisioned"
-  exit 0
-fi
-
-# Idempotency: a correct link is a no-op; anything else we did not create
-# (a real dir, a broken/stale link) must not be clobbered — fail loudly.
-if [ -L "$dst" ]; then
-  [ "$(readlink "$dst")" = "$src" ] \
-    || die "$dst is a link to $(readlink "$dst"), not $src"
-  echo "worktree-setup: $dst already linked; nothing to do"
-else
+# Link one dependency tree, <rel> relative to both roots. Idempotent: a
+# correct link is a no-op; anything else we did not create (a real dir, a
+# broken/stale link) must not be clobbered — fail loudly.
+link_tree() {
+  rel=$1
+  src="$repo_root/$rel"
+  dst="$PWD/$rel"
+  if [ -L "$dst" ]; then
+    [ "$(readlink "$dst")" = "$src" ] \
+      || die "$dst is a link to $(readlink "$dst"), not $src"
+    echo "worktree-setup: $dst already linked; nothing to do"
+    return 0
+  fi
   if [ -e "$dst" ]; then
     die "$dst exists and is not a link to $src; not clobbering"
   fi
-  mkdir -p "$PWD/extension" \
-    || die "cannot create $PWD/extension"
-  ln -s "$src" "$dst" \
-    || die "symlink $dst -> $src failed"
+  mkdir -p "$(dirname "$dst")" || die "cannot create $(dirname "$dst")"
+  ln -s "$src" "$dst" || die "symlink $dst -> $src failed"
   # Cheap proof the link resolves to a real tree.
   [ -d "$dst" ] || die "symlink $dst does not resolve to a directory"
 
@@ -72,18 +70,47 @@ else
   # its own symlinks, but the hook path skips that loop entirely — and
   # .gitignore patterns ending in / match directories, not symlinks, so the
   # link would surface as untracked and stagePorcelainPaths would stage it.
-  exclude="$git_common_dir/info/exclude"
+  # No trailing slash: the entry must match the symlink.
   mkdir -p "$git_common_dir/info" || die "cannot create $git_common_dir/info"
-  have=$(grep -cxF 'extension/node_modules' "$exclude" 2>/dev/null) || have=0
+  have=$(grep -cxF "$rel" "$exclude" 2>/dev/null) || have=0
   if [ "$have" = 0 ]; then
     {
       # Newline before the entry if the file's last byte is not already one.
       last=$(tail -c 1 "$exclude" 2>/dev/null) || last=""
       [ -z "$last" ] && echo ""
-      echo "extension/node_modules"
+      echo "$rel"
     } >> "$exclude" || die "cannot append to $exclude"
   fi
   echo "worktree-setup: linked $dst -> $src"
+}
+
+# #1146 — link EVERY non-empty, gitignored node_modules at repoRoot and in
+# depth-1 package dirs (a dir with a manifest/lockfile), the same places the
+# driver's post-hook check looks. Linking only extension/node_modules left a
+# non-empty root node_modules (Pi's jiti cache) unlinked, which the driver
+# reported as hook-failed. Untracked-but-not-ignored trees are never linked
+# over: a tracked directory of the same name is already materialised.
+linked=0
+for src in "$repo_root/node_modules" "$repo_root"/*/node_modules; do
+  [ -d "$src" ] || continue
+  rel=${src#"$repo_root/"}
+  [ -n "$(ls -A "$src" 2>/dev/null)" ] || continue
+  pkg=${rel%node_modules}
+  if [ -n "$pkg" ]; then
+    has_marker=0
+    for m in package.json bun.lock bun.lockb package-lock.json yarn.lock pnpm-lock.yaml; do
+      [ -f "$repo_root/$pkg$m" ] && has_marker=1
+    done
+    [ "$has_marker" = 1 ] || continue
+  fi
+  git -C "$repo_root" check-ignore -q -- "$rel" || continue
+  link_tree "$rel"
+  linked=$((linked + 1))
+done
+
+if [ "$linked" = 0 ]; then
+  echo "worktree-setup: no non-empty node_modules under $repo_root; leaving worktree un-provisioned"
+  exit 0
 fi
 
 # Generate dist/prompts/standard/ IN THIS WORKTREE.

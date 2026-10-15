@@ -24,7 +24,7 @@ import {
   sharesAssertion,
 } from "./work-driver-consolidation-classify.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
-import { provisionDepsHint } from "./work-driver-deps-hint.ts";
+import { missingDepsFailure, provisionDepsHint } from "./work-driver-deps-hint.ts";
 import {
   extractAttributedTail,
   hostExhaustionFailure,
@@ -108,17 +108,21 @@ export async function runVerifyCommandGate(opts: {
   const isValidSha = (s: string | undefined) => typeof s === "string" && VALID_SHA_RE.test(s);
   const perWorktreeVerifyFailures: string[] = [];
   for (const cwd of changedWorktrees) {
+    const depsMissing = await missingDepsFailure(state, ctx.repoRoot, cwd, cmd); // #1146
+    if (depsMissing !== undefined) {
+      perWorktreeVerifyFailures.push(depsMissing);
+      continue;
+    }
     try {
       await execFn(cmd, { cwd, timeout: verifyTimeoutMs(), maxBuffer: 4 * 1024 * 1024 });
     } catch (err) {
       const e = err as Error & { stdout?: string; stderr?: string; killed?: boolean };
       // A verify command that fails for want of `node_modules` reports the
-      // same shape as one that fails on a real defect; development happens
-      // in a fresh worktree, so this is the likelier of the two when it
-      // matches — say so rather than implying the diff is at fault. #1005 —
-      // per-worktree failures are kept as failures unconditionally (the
-      // pre-#1005 downgrade to evidence on a consolidated pass is gone);
-      // the consolidated run below adds its own verdict on top.
+      // same shape as one that fails on a real defect; in a fresh worktree the
+      // former is likelier when it matches — say so. #1005 — per-worktree
+      // failures are kept as failures unconditionally (the pre-#1005
+      // downgrade to evidence on a consolidated pass is gone); the
+      // consolidated run below adds its own verdict on top.
       const output = `${e.stdout ?? ""}\n${e.stderr ?? ""}\n${e.message ?? ""}`;
       const depsHint = looksLikeMissingDeps(output) ? provisionDepsHint(state, cwd) : "";
       perWorktreeVerifyFailures.push(

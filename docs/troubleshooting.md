@@ -271,6 +271,14 @@ The hook is the escape hatch for the inexpressible: anything the symlink allowli
 - **A non-zero exit is reported as `ProvisionResult.problem`** and traced at the branch step; the cycle continues (a bare worktree is the status quo, not a regression). A hook that cannot provision should exit 0 with a diagnostic to stderr, not fail the cycle.
 - **`hook-failed` in a `worktree-provisioned` event means the hook exited non-zero, nothing else.** A hook that exited 0 is recorded `hook-ran`; it carries a `problem` only when the project has a Node or Python manifest/lockfile and the worktree still has no `node_modules` / `.venv`. A project whose toolchain keeps dependencies outside the tree (Cargo, Go, Bundler) expects nothing here, so a `Cargo.toml` alone never raises one.
 
+### Every `/work` cycle on pi-rukas parks at `verify-failed:develop` with a verify timeout (#1146)
+
+**Symptom:** the branch step records `worktree-provisioned` with `outcome: hook-failed` and *"node_modules in the worktree is absent, stale, or empty (source: <repo>/node_modules)"*, and develop parks with *"exceeded its 10-min timeout"* and no specific assertion.
+
+**Cause (fixed):** pi-rukas has two non-empty gitignored `node_modules` — the real tree at `extension/node_modules` and a jiti compile cache at the root. The hook linked only `extension/node_modules`; the post-hook check verified only the first non-empty `node_modules` it found (the root one), so the two disagreed — and a missing nested tree was never checked at all.
+
+**Now:** provisioning — the hook and the hookless symlink loop alike — links **every** non-empty gitignored `node_modules` at the root and in depth-1 package dirs, and the post-hook check verifies each of them. Before running the verify command in a worktree, the develop gate checks the same locations and, if one is missing, fails at once with `<path> missing in <worktree>` instead of running the command into the timeout. A worktree provisioned before this fix: run `sh .pi/worktree-setup` in it.
+
 ### The plan step re-dispatches saying two workstreams claim the same file
 
 Each workstream gets its own worktree and its own developer, running in parallel, so a file in two `paths` lists means two developers editing it at once — which used to surface much later as a `git apply` conflict at commit-pr. The plan step now catches it and re-plans once. If it persists, the issue probably needs those workstreams merged.
