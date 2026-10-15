@@ -208,7 +208,7 @@ async function aheadBranchIsPushed(
       maxBuffer: 64 * 1024,
     });
     const remoteSha = stdout.split(/\s+/, 1)[0]?.trim() ?? "";
-    if (!remoteSha) return undefined;
+    if (!remoteSha || !/^[0-9a-f]{40}$/.test(remoteSha)) return undefined;
     return remoteSha === localSha;
   } catch (err) {
     trace(
