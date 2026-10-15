@@ -85,7 +85,7 @@ export function writeLensLedgerEntry(
     // The shared working-tree patch id (review-ledger.ts). When untracked
     // files exist the entry is still written for the tracked content, but the
     // gap is traced — see the warning's wording in workingTreePatchId.
-    const computed = await workingTreePatchId(execp, c);
+    const computed = await workingTreePatchId(execp, c, { digest: true });
     if (computed.warning) trace(`lens-review: ${computed.warning}`);
     if (!computed.patchId) {
       traceWarn(
@@ -103,6 +103,7 @@ export function writeLensLedgerEntry(
       ...(hasCritical !== undefined ? { hasCritical } : {}),
       ...(headSha ? { headSha } : {}),
       ...(overrideCap ? { overrideCap: true } : {}),
+      ...(computed.diffSha256 ? { diffSha256: computed.diffSha256 } : {}),
     };
     const failure = await appendLedgerEntry(entry, execp, c);
     return failure ? { recorded: false, reason: failure } : { recorded: true };

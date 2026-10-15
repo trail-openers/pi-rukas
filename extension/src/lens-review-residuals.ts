@@ -48,7 +48,8 @@ import { advisorySection } from "./lens-review-advisory.ts";
 import { deltaFallbackText } from "./lens-review-diff.ts";
 import type { LensReviewSummary } from "./lens-review.ts";
 import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
-import { branchPatchId, remoteName } from "./review-ledger.ts";
+import { remoteName } from "./review-ledger.ts";
+import { branchPatchId } from "./review-patch-identity.ts";
 import { trace } from "./trace.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 
