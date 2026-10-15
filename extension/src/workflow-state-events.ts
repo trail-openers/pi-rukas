@@ -438,6 +438,13 @@ export type CycleInterruptedEvent = {
    * `(string & {})` keeps the union open so a new Pi reason is not a type error.
    */
   reason: "quit" | "reload" | "new" | "resume" | "fork" | (string & {});
+  /**
+   * #1247 — where the shutdown actually came from: a signal (`signal:SIGTERM`),
+   * a closed stdin (`stdin-eof`), or `unknown` when nothing observable did. Pi's
+   * `reason` field cannot distinguish these, so this is tracked at the process
+   * level (exit-cause.ts) and recorded here. Additive: old readers ignore it.
+   */
+  origin: string;
   /** Where the work is, when the cycle had got that far. */
   branch?: string;
   headSha?: string;

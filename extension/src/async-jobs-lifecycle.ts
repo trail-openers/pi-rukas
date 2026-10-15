@@ -10,6 +10,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type JobKind, childHandles, jobs } from "./async-jobs-registry.ts";
 import { reset as resetDeck } from "./dispatch-deck.ts";
+import { exitOrigin } from "./exit-cause.ts";
 import { incrementNotice } from "./notice-counter.ts";
 import * as pendingJobs from "./pending-jobs-signal.ts";
 import { markSessionShutdown } from "./session-shutdown.ts";
@@ -196,10 +197,14 @@ export function registerAsyncJobsLifecycle(pi: ExtensionAPI): void {
     // FIRST, and synchronously: the /work driver reads this flag when its
     // aborted child comes back, and must find the reason already there — or
     // it blames the step for the abort below and starts a handoff it cannot
-    // finish (session-shutdown.ts).
-    markSessionShutdown(event?.reason ?? "not given");
-    // Name what ended and why Pi says it ended: the bare count left an
-    // operator with "aborted 1 in-flight async jobs" and no cause.
+    // finish (session-shutdown.ts). The origin is what actually closed the
+    // session (a signal, a dead stdin, or nothing observable): Pi's `reason`
+    // is only `quit`/`reload` and does not say where the quit came from.
+    const origin = exitOrigin();
+    markSessionShutdown(event?.reason ?? "not given", origin);
+    // Name what ended, why Pi says it ended, and where it came from: the bare
+    // count and the bare reason left an operator with "aborted 1 in-flight
+    // async jobs (reason: quit)" and no cause.
     const labels = [...jobs.values()].map((j) => j.label).join(", ");
     let n = 0;
     try {
@@ -211,7 +216,7 @@ export function registerAsyncJobsLifecycle(pi: ExtensionAPI): void {
     }
     if (n > 0) {
       trace(
-        `session_shutdown (reason: ${event?.reason ?? "not given"}): aborted ${n} in-flight async jobs — ${labels}`,
+        `session_shutdown (reason: ${event?.reason ?? "not given"}, origin: ${origin}): aborted ${n} in-flight async jobs — ${labels}`,
       );
     }
   });
