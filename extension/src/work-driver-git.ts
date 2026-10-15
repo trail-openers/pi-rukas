@@ -71,7 +71,7 @@ void (execp satisfies VerifyExecFn);
 export async function detectMainline(
   repoRoot: string,
   execFn: VerifyExecFn,
-): Promise<{ branch: string } | { ok: false; reason: string }> {
+): Promise<{ ok: true; branch: string } | { ok: false; reason: string }> {
   // 1. git symbolic-ref — no network, instant.
   try {
     const { stdout } = await execFn("git symbolic-ref --short refs/remotes/origin/HEAD", {
@@ -82,7 +82,7 @@ export async function detectMainline(
     if (ref) {
       // Returns "origin/main" — strip the leading origin/.
       const branch = ref.startsWith("origin/") ? ref.slice(7) : ref;
-      if (branch) return { branch };
+      if (branch) return { ok: true, branch };
     }
   } catch {
     // refs/remotes/origin/HEAD may be absent; fall through.
@@ -100,7 +100,7 @@ export async function detectMainline(
       { cwd: repoRoot, maxBuffer: 64 * 1024 },
     );
     const branch = stdout.trim();
-    if (branch) return { branch };
+    if (branch) return { ok: true, branch };
   } catch {
     // Both methods failed.
   }
@@ -123,7 +123,7 @@ export async function resolveMainline(
   repoRoot: string,
   execFn: VerifyExecFn,
   detect: typeof detectMainline = detectMainline,
-): Promise<{ branch: string } | { ok: false; reason: string }> {
+): Promise<{ ok: true; branch: string } | { ok: false; reason: string }> {
   let m: unknown;
   try {
     m = await detect(repoRoot, execFn);
@@ -133,7 +133,7 @@ export async function resolveMainline(
   }
   if (m && typeof m === "object") {
     if ("branch" in m && typeof m.branch === "string" && m.branch.length > 0) {
-      return { branch: m.branch };
+      return { ok: true, branch: m.branch };
     }
     if ("reason" in m && typeof m.reason === "string" && m.reason.length > 0) {
       return { ok: false, reason: m.reason };

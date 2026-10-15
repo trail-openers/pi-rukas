@@ -59,13 +59,13 @@ function makeFakePi(): { pi: ExtensionAPI; sent: string[] } {
   return { pi, sent };
 }
 
+import { argvAwareExec } from "./lib/argv-exec.ts";
+
 process.env.PI_ENSEMBLE_VERIFY = "1";
 
 {
   const fs = await import("node:fs/promises");
-  const { exec: execChild } = await import("node:child_process");
-  const { promisify: promisifyUtil } = await import("node:util");
-  const execp2 = promisifyUtil(execChild);
+  const execp2 = argvAwareExec;
 
   // mkGitRepo: baseline commit → origin/main, then a feature-branch commit
   // holding committedFiles (the integration-diff fixture).
