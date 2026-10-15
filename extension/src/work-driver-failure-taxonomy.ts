@@ -96,6 +96,45 @@ export function isModelNotFoundMsg(msg: string | undefined): boolean {
  * model-not-found match is read from the provider's own message only, never
  * from a child's prose.
  */
+/**
+ * #366/#1297 — the 429 decision tree, extracted so the provider-side and
+ * the `dispatch-failed`-shape branches of the classifier below share one
+ * implementation instead of a copy-paste that can drift. Takes the resolved
+ * message string (already chosen by the caller: the provider message, or the
+ * errorTail for the shape that carries only an errorTail).
+ */
+function classify429(msg: string): {
+  cause: DispatchFailureCause;
+  shouldRetry: boolean;
+  maxRetries: number;
+  /** #366 — provider-requested wait, when it stated one. */
+  waitMs?: number;
+} {
+  if (isSpendCapMsg(msg)) {
+    return { cause: "rate-limited:quota-terminal", shouldRetry: false, maxRetries: 0 };
+  }
+  const delayS = parseRetryDelaySeconds(msg);
+  if (delayS === undefined) {
+    // Unreadable message — keep the conservative pre-#366 halt rather than
+    // guessing a wait that might be a day long.
+    return { cause: "rate-limited:429", shouldRetry: false, maxRetries: 0 };
+  }
+  if (delayS <= burstThresholdSeconds()) {
+    return {
+      cause: "rate-limited:burst",
+      shouldRetry: true,
+      maxRetries: TRANSIENT_MAX_RETRIES,
+      waitMs: Math.ceil(delayS * 1000),
+    };
+  }
+  return {
+    cause: "rate-limited:quota-window",
+    shouldRetry: false,
+    maxRetries: 0,
+    waitMs: Math.ceil(delayS * 1000),
+  };
+}
+
 export function classifyProviderFault(
   message: string,
   fallback?: string,
@@ -107,29 +146,7 @@ export function classifyProviderFault(
   waitMs?: number;
 } {
   if (isRateLimit429Msg(message) || (!message && isRateLimit429Msg(fallback))) {
-    if (isSpendCapMsg(message)) {
-      return { cause: "rate-limited:quota-terminal", shouldRetry: false, maxRetries: 0 };
-    }
-    const delayS = parseRetryDelaySeconds(message || (fallback ?? ""));
-    if (delayS === undefined) {
-      // Unreadable message — keep the conservative pre-#366 halt rather than
-      // guessing a wait that might be a day long.
-      return { cause: "rate-limited:429", shouldRetry: false, maxRetries: 0 };
-    }
-    if (delayS <= burstThresholdSeconds()) {
-      return {
-        cause: "rate-limited:burst",
-        shouldRetry: true,
-        maxRetries: TRANSIENT_MAX_RETRIES,
-        waitMs: Math.ceil(delayS * 1000),
-      };
-    }
-    return {
-      cause: "rate-limited:quota-window",
-      shouldRetry: false,
-      maxRetries: 0,
-      waitMs: Math.ceil(delayS * 1000),
-    };
+    return classify429(message || (fallback ?? ""));
   }
   // #1297 — the endpoint does not serve the configured model. Read from the
   // provider's own message only, never from a child's prose (fallback).
@@ -227,29 +244,7 @@ export function classifyFailureCause(tail: {
   // here `kind` is `dispatch-failed` and only `errorTail` is declared.
   const msg = tail.errorTail ?? "";
   if (isRateLimit429Msg(msg)) {
-    if (isSpendCapMsg(msg)) {
-      return { cause: "rate-limited:quota-terminal", shouldRetry: false, maxRetries: 0 };
-    }
-    const delayS = parseRetryDelaySeconds(msg);
-    if (delayS === undefined) {
-      // Unreadable message — keep the conservative pre-#366 halt rather than
-      // guessing a wait that might be a day long.
-      return { cause: "rate-limited:429", shouldRetry: false, maxRetries: 0 };
-    }
-    if (delayS <= burstThresholdSeconds()) {
-      return {
-        cause: "rate-limited:burst",
-        shouldRetry: true,
-        maxRetries: TRANSIENT_MAX_RETRIES,
-        waitMs: Math.ceil(delayS * 1000),
-      };
-    }
-    return {
-      cause: "rate-limited:quota-window",
-      shouldRetry: false,
-      maxRetries: 0,
-      waitMs: Math.ceil(delayS * 1000),
-    };
+    return classify429(msg);
   }
 
   // Non-zero exit with no structured signal — generic crash. Retry once as safety net.

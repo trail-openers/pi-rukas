@@ -30,6 +30,21 @@ import type { CapEvidence } from "./workflow-state-cap.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
 import { type WorkState, type WorkStep, appendEvent, persistCycle } from "./workflow-state.ts";
 
+/**
+ * #1297 — a taxonomy-final provider fault: the loop saw the same error ≥2
+ * children in a row (providerRepeats ≥ 2), or the classified cause carries
+ * zero retries. Neither kind may be re-dispatched by the semantic one-shot
+ * or the transient budget below; the kind narrowing lives in
+ * providerRepeatsOf so the three call sites below stay identical.
+ */
+function isFinalProviderFault(repeats: number | undefined, cls: { maxRetries: number }): boolean {
+  return (repeats ?? 0) >= 2 || cls.maxRetries === 0;
+}
+/** #1297 — the provider-repeats ladder count, if the event carries one. */
+function providerRepeatsOf(ev: WorkEvent | undefined): number | undefined {
+  return ev?.kind === "dispatch-failed-provider" ? ev.providerRepeats : undefined;
+}
+
 /** #366 — injectable sleep; the offline suite must never actually sleep. */
 let sleepFn: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -108,18 +123,10 @@ export async function routeStepOutcome(
       const reason = failureCauseReasonForClass(lastEvent, classification);
       // #299 — when the halt-cascade router below is about to RETRY this
       // failure, skip the ✗ step-failed line: the single ↻ retry line
-      // carries the reason, and pre-#299 one transient produced multiple
-      // provider-blame lines with no retraction on recovery.
+      // carries the reason (pre-#299 one transient produced multiple
+      // provider-blame lines with no retraction on recovery).
       const policy = STEP_FAILURE_POLICY[step];
-      // #1297 — a taxonomy-final provider fault is one the retry budget
-      // cannot clear: either the loop saw the same error ≥2 children in a row
-      // (providerRepeats ≥ 2 — the provider is still failing the same way),
-      // or the classified cause carries zero retries (quota-window, undated
-      // 429, spend cap, model-not-found). Neither kind may be re-dispatched
-      // by the SEMANTIC one-shot below or the transient budget.
-      const finalProviderFault =
-        (lastEvent.kind === "dispatch-failed-provider" ? (lastEvent.providerRepeats ?? 0) : 0) >=
-          2 || classification.maxRetries === 0;
+      const finalProviderFault = isFinalProviderFault(providerRepeatsOf(lastEvent), classification);
       const semanticRetryAvailable =
         !finalProviderFault &&
         policy === "RETRY_ONCE" &&
@@ -235,13 +242,9 @@ export async function routeStepOutcome(
       // evidence-carrying replay fires from its own router branch and
       // this generic path becomes develop's fallback.)
       const classification = classifyFailureCause(tail);
-      // #1297 — a taxonomy-final provider fault (the loop saw the same error
-      // ≥2 children in a row, or the classified cause carries zero retries)
-      // is never re-dispatched: waiting cannot clear a provider still failing
-      // the same way, so the step halts straight through to the cap below.
-      const finalFault =
-        (tail.kind === "dispatch-failed-provider" ? (tail.providerRepeats ?? 0) : 0) >= 2 ||
-        classification.maxRetries === 0;
+      // #1297 — a taxonomy-final provider fault (isFinalProviderFault) is
+      // never re-dispatched; the step halts straight through to the cap below.
+      const finalFault = isFinalProviderFault(providerRepeatsOf(tail), classification);
       if (
         policy === "HALT" &&
         !finalFault &&
@@ -363,14 +366,11 @@ export async function routeStepOutcome(
         // semantic retry and the next failure — of any kind — halted the
         // cycle. Infra faults on RETRY_ONCE steps use the transient budget,
         // same as HALT-class steps do.
-        // #1297 — a taxonomy-final provider fault (the loop saw the same error
-        // ≥2 children in a row, or the classified cause carries zero retries)
-        // is not infra: the provider is still failing the same way (or the
+        // #1297 — a taxonomy-final provider fault (isFinalProviderFault) is
+        // not infra: the provider is still failing the same way (or the
         // cause cannot be cleared by waiting), so no budget applies and the
         // step parks immediately via the exhausted branch below.
-        const finalFault =
-          (tail.kind === "dispatch-failed-provider" ? (tail.providerRepeats ?? 0) : 0) >= 2 ||
-          classification.maxRetries === 0;
+        const finalFault = isFinalProviderFault(providerRepeatsOf(tail), classification);
         const infra =
           !finalFault && classification.cause !== "crashed-unknown" && classification.shouldRetry;
         const attempts = infra
