@@ -271,7 +271,7 @@ async function driverRun(issue: number, script: (string | undefined)[]) {
     await writeState(dir, s);
     let loops = 0;
     const ctx: DriverContext = {
-      pi: makeFakePi(),
+      host: makeFakePi(),
       repoRoot: dir,
       issue,
       issueBodyFetcherFn: async (n: number) => ({
