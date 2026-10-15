@@ -125,7 +125,12 @@ export { DriverNotImplementedError } from "./work-driver-context.ts";
 export type DriverOutcome = { started: true } | { started: false; reason: string };
 
 export async function runWorkDriver(ctx: DriverContext): Promise<DriverOutcome> {
-  if (sessionEnding()) return { started: false, reason: "the session is shutting down" };
+  if (sessionEnding()) {
+    const reason = "the session is shutting down";
+    trace(`work-driver: /work #${ctx.issue} not started — ${reason}`);
+    notifyAgent(ctx.host, `pi-rukas: /work for #${ctx.issue} not started — ${reason}.`);
+    return { started: false, reason };
+  }
   const claimed = claimCycle(ctx.issue, ctx.issues);
   if (!claimed.ok) {
     notifyAgent(
@@ -342,7 +347,8 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
       state = await runStep(ctx, state, step);
       if (interruptedByShutdown(ctx, state, step)) return { started: true };
     } catch (err) {
-      if (interruptedByShutdown(ctx, state, step)) return { started: true };
+      // A throw during a session shutdown is the abort's doing, not a crash (work-driver-shutdown.ts).
+      if (interruptedByShutdown(ctx, state, step, err)) return { started: true };
       // Recorded before the abort branch: a crash that coincides with a signal
       // is still a crash. An abort that makes the step throw is the interrupt.
       state = recordStepCrash(state, step, err);

@@ -26,8 +26,10 @@ import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerAsyncJobsLifecycle } from "../src/async-jobs-lifecycle.ts";
 import { clearSessionShutdownForTesting } from "../src/session-shutdown.ts";
+import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { interruptedByShutdown } from "../src/work-driver-shutdown.ts";
 import { classifyRunningState } from "../src/work-driver-resume.ts";
@@ -390,6 +392,10 @@ async function captureStderr(fn: () => Promise<unknown>): Promise<string[]> {
     assert(
       outcome.started === false && dispatched === 0 && !existsSync(workStateFile(dir, 583)),
       "D: a cycle asked to start during shutdown does not start, and writes no state",
+    );
+    assert(
+      fake.sent.some((m) => m.includes("#583 not started") && m.includes("shutting down")),
+      "D: the refusal tells the operator the cycle did not start and why",
     );
   } finally {
     clearSessionShutdownForTesting();

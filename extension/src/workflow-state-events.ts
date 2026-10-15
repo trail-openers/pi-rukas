@@ -419,6 +419,8 @@ export type WorkEvent =
       headSha?: string;
       /** False when the state on disk is one the re-entry check refuses. */
       resumable: boolean;
+      /** The error text when the step threw during the shutdown (bounded). */
+      error?: string;
     }
   /**
    * S4a (#1162) — the cycle was interrupted (SIGTERM / SIGINT, via

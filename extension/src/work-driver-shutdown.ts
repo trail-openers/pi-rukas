@@ -62,6 +62,51 @@ function headShaOf(repoRoot: string, branch: string | undefined): string | undef
   }
 }
 
+/** The state file as it stands on disk, or why it cannot be appended to. */
+type DiskState = { ok: true; state: WorkState } | { ok: false; why: string };
+
+/**
+ * Read the state file the interruption will be appended to. An unreadable
+ * file and one written under another schema version need different operator
+ * action, so they are named differently.
+ */
+function readDiskState(file: string): DiskState {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(file, "utf8"));
+  } catch (err) {
+    return {
+      ok: false,
+      why: `state file unreadable: ${(err as Error).message}`,
+    };
+  }
+  const version = (raw as { schemaVersion?: unknown } | null)?.schemaVersion;
+  if (version !== WORK_STATE_SCHEMA_VERSION) {
+    return {
+      ok: false,
+      why: `state file has schemaVersion ${String(version)}, this build expects ${WORK_STATE_SCHEMA_VERSION}`,
+    };
+  }
+  const shape = raw as Partial<WorkState>;
+  if (
+    !Array.isArray(shape.eventLog) ||
+    typeof shape.pipelineState !== "object" ||
+    shape.pipelineState === null
+  ) {
+    return {
+      ok: false,
+      why: "state file is malformed (eventLog or pipelineState missing)",
+    };
+  }
+  return { ok: true, state: raw as WorkState };
+}
+
+/** Error text for the record and the trace, bounded so the state file stays small. */
+function errorText(cause: unknown): string {
+  const text = cause instanceof Error ? cause.message : String(cause);
+  return text.slice(0, 200);
+}
+
 /**
  * If the session is shutting down, record that this cycle was interrupted at
  * `step` and tell the caller to stop — before a step starts, and when one
@@ -70,26 +115,39 @@ function headShaOf(repoRoot: string, branch: string | undefined): string | undef
  * or a handoff that got its comment out has finished, and the loop's own
  * terminal path records it.
  *
+ * `cause` is the error a step threw, when there was one; its text is kept on
+ * the record and traced, never dropped. A crash that coincides with a signal
+ * is still a crash: only a throw while the session is shutting down is the
+ * abort's doing, and the caller does not record it as a step crash.
+ *
  * The event is appended to the state ON DISK, not to `state`: a step that was
  * cut off returns a state describing the abort as its own failure.
  */
-export function interruptedByShutdown(ctx: DriverContext, state: WorkState, step: WorkStep) {
+export function interruptedByShutdown(
+  ctx: DriverContext,
+  state: WorkState,
+  step: WorkStep,
+  cause?: unknown,
+): boolean {
   const reason = sessionShutdownReason();
   if (reason === undefined || state.pipelineState.status !== "running") return false;
   workWidget.clear(ctx.issue);
   const branch = state.pipelineState.branchName;
   const headSha = headShaOf(ctx.repoRoot, branch);
+  const detail = cause === undefined ? undefined : errorText(cause);
+  if (detail !== undefined) trace(`work-driver: ${step} threw during session shutdown: ${detail}`);
   // Why re-entry would refuse this file, if it would. A step that does not
   // write-ahead leaves the previous boundary on disk, which the resume check
   // reads as drift — true of a crash there too, and said rather than hidden.
-  let refusal: string | undefined = "no readable state file";
-  try {
-    const disk = JSON.parse(readFileSync(workStateFile(ctx.repoRoot, ctx.issue), "utf8"));
-    if (disk?.schemaVersion === WORK_STATE_SCHEMA_VERSION) {
-      refusal = detectInconsistencies(disk as WorkState)[0];
+  const disk = readDiskState(workStateFile(ctx.repoRoot, ctx.issue));
+  let recorded: { kind: "recorded"; refusal: string | undefined } | { kind: "failed"; why: string };
+  if (!disk.ok) recorded = { kind: "failed", why: disk.why };
+  else {
+    const refusal = detectInconsistencies(disk.state)[0];
+    try {
       writeStateSync(
         ctx.repoRoot,
-        appendEvent(disk as WorkState, {
+        appendEvent(disk.state, {
           kind: "cycle-interrupted",
           at: Date.now(),
           step,
@@ -97,17 +155,23 @@ export function interruptedByShutdown(ctx: DriverContext, state: WorkState, step
           ...(branch ? { branch } : {}),
           ...(headSha ? { headSha } : {}),
           resumable: refusal === undefined,
+          ...(detail !== undefined ? { error: detail } : {}),
         }),
       );
+      recorded = { kind: "recorded", refusal };
+    } catch (err) {
+      const why = `write failed: ${errorText(err)}`;
+      trace(`work-driver: could not record the interruption: ${why}`);
+      recorded = { kind: "failed", why };
     }
-  } catch (err) {
-    trace(`work-driver: could not record the interruption: ${(err as Error).message}`);
   }
   const where = branch ? ` — work on ${branch}${headSha ? ` at ${headSha.slice(0, 8)}` : ""}` : "";
   const next =
-    refusal === undefined
-      ? `state is resumable — run /work ${ctx.issue}`
-      : `/work ${ctx.issue} will refuse this state (${refusal})`;
+    recorded.kind === "failed"
+      ? `could not record the interruption (${recorded.why})`
+      : recorded.refusal === undefined
+        ? `state is resumable — run /work ${ctx.issue}`
+        : `/work ${ctx.issue} will refuse this state (${recorded.refusal})`;
   const line = `cycle interrupted: session shutdown (${reason}) during ${step}; ${next}${where}`;
   // `quit` tears the session down, so stderr is the one channel still read;
   // any other reason leaves a live TUI that a raw write would corrupt.
@@ -118,8 +182,8 @@ export function interruptedByShutdown(ctx: DriverContext, state: WorkState, step
         ctx.host,
         `pi-rukas:driver-event v1 kind=interrupted issue=${ctx.issue} at=${new Date().toISOString()}\npi-rukas: /work ${line}`,
       );
-    } catch {
-      /* the runtime that would deliver it is the one going away */
+    } catch (err) {
+      trace(`work-driver: could not deliver the shutdown line: ${errorText(err)}`);
     }
   }
   return true;
