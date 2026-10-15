@@ -107,8 +107,8 @@ function assert(cond: boolean, msg: string) {
     "reads are UNFILTERED — the type filter is what missed permission-guard.ts",
   );
   assert(
-    found.calls.every((c) => c.includes("--include-candidates")),
-    "...and include candidates, so the driver's own writes are reachable",
+    found.calls.length > 0 && found.calls.every((c) => !c.includes("--include-candidates")),
+    "...and ACTIVE-only: a candidate influences no brief until promoted (#1103)",
   );
   assert(
     found.calls.every((c) => c.includes("--recency") && c.includes("0.0")),
@@ -164,8 +164,8 @@ function assert(cond: boolean, msg: string) {
 // preferNewest's near-duplicate collapse has nothing to fold. Two of the
 // distractors are deliberately BM25-invisible to the query (they share no
 // token with it), so the agreement bit — not the store's shape — is what
-// admits the target. All five are `fact` so they are reachable unfiltered
-// and through --include-candidates alike.
+// admits the target. All five are active `fact` rows, so they are reachable
+// by the brief's unfiltered, active-only read.
 const FIXTURE: string[] = [
   "permission-guard.ts: trust mode returns immediately from the tool_call handler — no verdict resolution",
   "dispatch-deck.ts: render the dispatch list through pi-tui Text and SelectList widgets",

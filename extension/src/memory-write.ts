@@ -26,11 +26,24 @@
  * A candidate is invisible to a default read, so a wrong row influences nothing
  * until something promotes it. That is the whole safety argument for writing
  * automatically at all: the blast radius of a bad write is zero until a human
- * or a later rule acts on it.
+ * or a later rule acts on it. The developer brief reads active rows only, so a
+ * candidate reaches no compiled brief until an operator promotes it (#1103).
+ * An agent's own broad sweep may still opt into `--include-candidates` —
+ * the tier's documented use, and a choice the agent makes, not the driver.
+ *
+ * ## Why every row is an `observation`
+ *
+ * `vipune prune` demotes stale, unretrieved candidates — but never a `guard`.
+ * A driver candidate typed `guard` could therefore never age out, and an
+ * unpromoted automatic write is exactly what pruning exists for. A row an
+ * operator judges durable can be retyped when it is promoted.
  */
 
 import path from "node:path";
 import { type MemoryType, type VipuneOpts, type VipuneResult, vipuneAdd } from "./vipune.ts";
+
+/** The type of every row the driver writes — see "Why every row is an `observation`". */
+export const DRIVER_MEMORY_TYPE = "observation" as const satisfies MemoryType;
 
 /**
  * Hard cap per cycle.
@@ -115,7 +128,7 @@ export interface WriteOutcome {
 export async function writeFindings(
   findings: readonly FindingLike[],
   meta: { src: "pi-rukas"; issue: number; kind: "lens-finding"; cycle?: string },
-  opts: VipuneOpts & { memoryType?: MemoryType },
+  opts: VipuneOpts,
 ): Promise<WriteOutcome[]> {
   const out: WriteOutcome[] = [];
   for (const f of findings) {
@@ -132,7 +145,7 @@ export async function writeFindings(
     try {
       r = await vipuneAdd(memoryContentFor(f), {
         ...opts,
-        memoryType: opts.memoryType ?? "guard",
+        memoryType: DRIVER_MEMORY_TYPE,
         status: "candidate",
         metadata,
       });

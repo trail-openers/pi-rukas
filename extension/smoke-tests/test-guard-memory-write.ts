@@ -205,14 +205,44 @@ function assert(cond: boolean, msg: string) {
   );
 }
 
-// ------------------------------------------ defaultVipuneWrite returns empty when absent
+// ------------- a failed default write is an `error` outcome, never `written` (#1103)
 
 {
-  const r = await defaultVipuneWrite("test content", { cwd: "/repo", issue: 1 });
-  assert(
-    r.id === undefined,
-    "defaultVipuneWrite returns {} when vipune is absent (does not throw)",
+  const failing = async () => {
+    throw Object.assign(new Error("spawn vipune ENOENT"), { code: "ENOENT" });
+  };
+  const results = await writeGuardMemories(
+    [{ file: "a.ts", kind: "type-erasure", after: "any" }],
+    1,
+    "/repo",
+    (text, o) => defaultVipuneWrite(text, { ...o, execFn: failing }),
   );
+  assert(
+    results[0]?.outcome === "error" && results[0]?.id === undefined,
+    `an absent vipune is recorded as 'error', not 'written' with no id (${results[0]?.outcome})`,
+  );
+}
+
+// ------------- defaultVipuneWrite goes through the seam as an observation (#1103)
+
+{
+  const calls: string[][] = [];
+  const fakeExec = async (_f: string, args: string[]) => {
+    calls.push(args);
+    return { stdout: JSON.stringify({ status: "added", id: "inv-1" }), stderr: "" };
+  };
+  const r = await defaultVipuneWrite("[invariant-removal] a.ts: constraint x", {
+    cwd: "/repo",
+    issue: 1,
+    execFn: fakeExec,
+  });
+  const argv = calls[0]?.join(" ") ?? "";
+  assert(r.id === "inv-1", "the id the seam returns is passed back");
+  assert(
+    argv.includes("--memory-type observation") && argv.includes("--status candidate"),
+    "invariant-removal rows are observation-typed candidates, so prune can age them out",
+  );
+  assert(!argv.includes("guard") && !argv.includes("--force"), "canary: never guard, never --force");
 }
 
 console.log(`\nexit ${exit}`);

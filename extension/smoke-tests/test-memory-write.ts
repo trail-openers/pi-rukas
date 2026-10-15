@@ -131,8 +131,12 @@ function assert(cond: boolean, msg: string) {
     "every driver write is a CANDIDATE — invisible to a default read until promoted",
   );
   assert(
-    calls.every((c) => c.includes("--memory-type guard")),
-    "...and typed, so it is never an untyped row",
+    calls.every((c) => c.includes("--memory-type observation")),
+    "...and typed `observation`, so `vipune prune` can age an unpromoted one out (#1103)",
+  );
+  assert(
+    !calls.some((c) => c.includes("--memory-type guard")),
+    "canary: never `guard` — prune never demotes a guard, so it would never age out",
   );
   assert(!calls.some((c) => c.includes("--force")), "never --force");
   assert(
