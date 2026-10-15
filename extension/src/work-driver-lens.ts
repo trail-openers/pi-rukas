@@ -268,7 +268,7 @@ export async function runLens(
         at: Date.now(),
         outcome: w.outcome,
         id: w.id,
-        memoryType: "guard",
+        memoryType: "observation",
         detail: w.detail,
       });
     }

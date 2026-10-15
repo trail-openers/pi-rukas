@@ -6,15 +6,15 @@
  * now it could not be: nothing in pi-rukas recorded whether an injected
  * memory was read, ignored or contradicted.
  *
- * vipune maintains the answer and surfaces none of it. `retrieval_count` and
- * `last_retrieved_at` are real columns, kept up to date on every read that does
- * not pass `--no-touch` — but no subcommand prints them (upstream
- * randomm/vipune#179). `search --json` and `list --json` both return only
- * `content`, `created_at` and `id`.
+ * vipune maintains the answer: `retrieval_count` and `last_retrieved_at` are
+ * real columns, kept up to date on every read that does not pass
+ * `--no-touch`. Since v0.15.0 `search --json` returns them per hit (upstream
+ * randomm/vipune#179, closed) — but only for rows a query matched, and no
+ * command aggregates a whole project.
  *
  * So this reads the SQLite file directly, **read-only**, and computes what the
  * CLI will not. That is a deliberate and bounded exception to "go through the
- * seam": the seam spawns a binary that cannot answer this question, and opening
+ * seam": the seam spawns a binary that does not answer this question, and opening
  * the database `mode=ro` cannot alter a byte of it.
  *
  * Measured on the live store for `randomm/pi-rukas`: 111 rows (103 active,
@@ -39,7 +39,16 @@ export interface MemoryStats {
   neverRetrieved: number;
   /** Median content length — the injection-cost driver. */
   medianChars: number;
+  /**
+   * Newest candidates, up to `MAX_LISTED_CANDIDATES`. A candidate reaches no
+   * brief until an operator promotes it (#1103), so `/audit` must name them —
+   * with ids, because promotion is per row.
+   */
+  candidates: Array<{ id: string; type: string; content: string }>;
 }
+
+/** Candidates listed by `/audit`. The count in `byStatus` covers the rest. */
+const MAX_LISTED_CANDIDATES = 10;
 
 /** Where vipune keeps its store. `VIPUNE_DB_PATH` wins, as it does for the CLI. */
 export function defaultDbPath(): string {
@@ -96,6 +105,11 @@ export async function readMemoryStats(
       lens.push(r.len);
     }
     lens.sort((a, b) => a - b);
+    const candidates = db
+      .query(
+        "select id, type, content from memories where project_id = ? and status = 'candidate' order by created_at desc limit ?",
+      )
+      .all(project, MAX_LISTED_CANDIDATES) as MemoryStats["candidates"];
     return {
       project,
       rows: rows.length,
@@ -105,6 +119,7 @@ export async function readMemoryStats(
       maxRetrievals: max,
       neverRetrieved: never,
       medianChars: lens[Math.floor(lens.length / 2)] ?? 0,
+      candidates,
     };
   } catch {
     return undefined;

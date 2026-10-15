@@ -119,8 +119,8 @@ export function isTestPath(path: string): boolean {
  *     `foo` ∉ `{foobar}` → NOT coupled. ✓
  *     (a test named `test-foobar.ts` is about `foobar.ts`, a different module)
  *
- *   - `src/vipune.ts` vs `smoke-tests/test-vipune-seam-live.ts`
- *     subject basename: `vipune`; stem tokens: `vipune`, `seam`, `live`.
+ *   - `src/vipune.ts` vs `smoke-tests/test-vipune-seam-loop.ts`
+ *     subject basename: `vipune`; stem tokens: `vipune`, `seam`, `loop`.
  *     `vipune` ∈ stem tokens → COUPLED. ✓
  *     (this repo's own live test genuinely exercises `vipune.ts`)
  *
@@ -130,7 +130,7 @@ export function isTestPath(path: string): boolean {
  *     (anti-false-positive: a shared token is not enough)
  *
  * One test module exercising several subjects is legitimate (this repo's own
- * `test-vipune-seam-live.ts` does exactly that): when it does NOT name any
+ * `test-vipune-seam-loop.ts` does exactly that): when it does NOT name any
  * single subject, the inference finds no coupling and does not flag it, which
  * is the correct behaviour — the check must not collapse every plan into N=1.
  */

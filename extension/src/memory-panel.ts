@@ -94,7 +94,37 @@ export function renderMemoryPanel(s: MemoryStats): string {
   } else {
     lines.push("", ...findings);
   }
+  lines.push(...renderCandidates(s));
   return lines.join("\n");
+}
+
+/**
+ * Candidates awaiting an operator decision.
+ *
+ * The developer brief reads active rows only (#1103), so a candidate the
+ * driver wrote influences nothing until someone promotes it — and this is
+ * where that someone finds it. `vipune promote` takes no id and promotes on
+ * retrieval count, which a `--no-touch` reader never raises, so the per-row
+ * hint is a status update. Unpromoted candidates age out via `vipune prune`.
+ */
+function renderCandidates(s: MemoryStats): string[] {
+  if (s.candidates.length === 0) return [];
+  const total = s.byStatus.candidate ?? s.candidates.length;
+  const out = [
+    "",
+    `### Candidates awaiting promotion (${total})`,
+    "",
+    "Invisible to developer briefs until an operator promotes them. Unpromoted candidates",
+    "age out under `vipune prune`. To promote a row you have verified (operator only):",
+    "`vipune update <id> --status active` — denied to every agent role.",
+    "",
+  ];
+  for (const c of s.candidates) {
+    const text = c.content.length > 120 ? `${c.content.slice(0, 119)}…` : c.content;
+    out.push(`- \`${c.id}\` (${c.type}) ${text.replace(/\s+/g, " ")}`);
+  }
+  if (total > s.candidates.length) out.push(`- …and ${total - s.candidates.length} more`);
+  return out;
 }
 
 /**

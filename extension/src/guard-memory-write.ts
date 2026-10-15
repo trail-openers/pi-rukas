@@ -1,8 +1,9 @@
 /**
- * guard-memory-write — write guard memories from type-widening findings.
+ * guard-memory-write — write invariant-removal memories from type-widening findings.
  *
- * Issue #280 — when the widening scan fires, write ONE vipune guard memory
- * per (file, symbol) so future cycles know what invariant just died.
+ * Issue #280 — when the widening scan fires, write ONE vipune candidate memory
+ * per (file, symbol) so future cycles know what invariant just died. Typed
+ * `observation` since #1103 — see `defaultVipuneWrite`.
  *
  * The memory reads:
  *
@@ -17,6 +18,7 @@
 
 import path from "node:path";
 import type { WideningFinding } from "./invariant-scan.ts";
+import { type ExecFn, vipuneAdd } from "./vipune.ts";
 
 /**
  * A single guard-memory write result.
@@ -37,16 +39,17 @@ export interface GuardWriteOutcome {
 }
 
 /**
- * A function that writes a guard memory.
+ * A function that writes an invariant-removal memory.
  *
- * Default: shells out to `vipune add … --memory-type guard --status candidate`.
- * Injected in tests to assert on argv without forking the binary.
+ * Default: `vipune add … --memory-type observation --status candidate` through
+ * the `vipune.ts` seam. Injected in tests to assert on argv without forking
+ * the binary.
  *
  * Returns an opaque string so the caller cannot assume a particular CLI
  * output format; the outcome is determined by whether the call succeeded.
  */
 export type VipuneWriteFn = (
-  /** Full guard-memory content (≤1000 chars). */
+  /** Full memory content (≤1000 chars). */
   text: string,
   opts: { cwd: string; issue: number },
 ) => Promise<{ id?: string }>;
@@ -54,32 +57,28 @@ export type VipuneWriteFn = (
 /**
  * Default vipune-write implementation.
  *
- * Spawns `vipune add <text> --memory-type guard --status candidate`.
  * The "candidate" tier means invisible to a default read, so a wrong write
- * influences nothing until a human or a later rule acts on it.
+ * influences nothing until an operator promotes it. Typed `observation`, not
+ * `guard`, for the same reason as every driver write (#1103): `vipune prune`
+ * never demotes a guard, so an unpromoted guard candidate could never age out.
+ *
+ * Never throws: vipune absent or erroring returns `{}`. The caller already
+ * holds the widening findings; the memory is additive value, not structural.
  */
 export async function defaultVipuneWrite(
   text: string,
-  opts: { cwd: string; issue: number },
+  opts: { cwd: string; issue: number; execFn?: ExecFn },
 ): Promise<{ id?: string }> {
   try {
-    // The vipune binary may not be in PATH (e.g., inside the sandbox before
-    // skills symlink). Return a no-op result rather than throwing — the
-    // caller already captured the widening findings; the guard write is
-    // additive value, not load-bearing.
-    const { execFile } = await import("node:child_process");
-    const { promisify } = await import("node:util");
-    const execFileP = promisify(execFile);
-    const { stdout } = await execFileP(
-      "vipune",
-      ["add", text, "--memory-type", "guard", "--status", "candidate", "--json"],
-      { cwd: opts.cwd, timeout: 15000, maxBuffer: 1024 * 1024 },
-    );
-    const parsed = JSON.parse(stdout) as { id?: string };
-    return parsed.id ? { id: parsed.id } : {};
+    const r = await vipuneAdd(text, {
+      cwd: opts.cwd,
+      timeoutMs: 15000,
+      execFn: opts.execFn,
+      memoryType: "observation",
+      status: "candidate",
+    });
+    return r.kind === "added" ? { id: r.id } : {};
   } catch {
-    // vipune absent or errored — return silently. The caller already has the
-    // widening findings; this is additive value, not structural.
     return {};
   }
 }

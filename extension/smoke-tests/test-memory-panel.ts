@@ -11,10 +11,14 @@
  * to the prompt body.
  */
 
+import { Database } from "bun:sqlite";
 import { exec } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { promisify } from "node:util";
 import { renderMemoryPanel, resolveProject } from "../src/memory-panel.ts";
-import type { MemoryStats } from "../src/memory-stats.ts";
+import { type MemoryStats, readMemoryStats } from "../src/memory-stats.ts";
 
 const execp = promisify(exec);
 
@@ -49,6 +53,7 @@ const stats = (o: Partial<MemoryStats>): MemoryStats => ({
   maxRetrievals: 12,
   neverRetrieved: 10,
   medianChars: 480,
+  candidates: [],
   ...o,
 });
 
@@ -105,6 +110,66 @@ const stats = (o: Partial<MemoryStats>): MemoryStats => ({
   assert(/Nothing anomalous/.test(panel), "a healthy store gets one line, not a report");
   assert(panel.split("\n").length <= 6, `...and stays short (${panel.split("\n").length} lines)`);
   assert(/250 retrievals/.test(panel), "the headline numbers are still there");
+}
+
+// ------------------------------------- candidates are listed for promotion (#1103)
+
+{
+  const panel = renderMemoryPanel(
+    stats({
+      byStatus: { active: 88, candidate: 12 },
+      candidates: [
+        { id: "cand-1", type: "observation", content: "spawn.ts: stdin closes too early" },
+        { id: "cand-2", type: "observation", content: `vipune.ts: ${"x".repeat(300)}` },
+      ],
+    }),
+  );
+  assert(/Candidates awaiting promotion \(12\)/.test(panel), "candidates are counted");
+  assert(
+    /`cand-1` \(observation\) spawn\.ts: stdin closes too early/.test(panel),
+    "...and listed with their ids, type and content",
+  );
+  assert(/`cand-2`/.test(panel), "...every listed candidate, not just the first");
+  assert(!panel.includes("x".repeat(200)), "...with long content truncated");
+  assert(
+    /vipune update <id> --status active/.test(panel),
+    "the operator is told how to promote one (`vipune promote` takes no id)",
+  );
+  assert(!/--force|-t |--text/.test(panel), "canary: the hint never suggests --force or a rewrite");
+  assert(/and 10 more/.test(panel), "candidates beyond the listed ones are counted, not hidden");
+  assert(
+    !/Candidates awaiting/.test(renderMemoryPanel(stats({}))),
+    "a store with no candidates gets no candidate section",
+  );
+}
+
+// ------------------------- candidates are read from the store, read-only (#1103)
+
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "memory-panel-"));
+  const dbPath = path.join(dir, "m.db");
+  const db = new Database(dbPath);
+  db.run(
+    "create table memories (id text primary key, project_id text, content text, type text, status text, retrieval_count integer, created_at text)",
+  );
+  const ins = db.prepare("insert into memories values (?, 'p/r', ?, ?, ?, 0, ?)");
+  ins.run("act-1", "an active row", "fact", "active", "2026-10-01T00:00:00Z");
+  ins.run("cand-old", "older candidate", "observation", "candidate", "2026-10-02T00:00:00Z");
+  ins.run("cand-new", "newer candidate", "observation", "candidate", "2026-10-03T00:00:00Z");
+  db.close();
+  try {
+    const s = await readMemoryStats("p/r", dbPath);
+    assert(
+      s?.candidates.map((c) => c.id).join(",") === "cand-new,cand-old",
+      `candidates are read with ids, newest first (got ${s?.candidates.map((c) => c.id)})`,
+    );
+    assert(
+      !s?.candidates.some((c) => c.id === "act-1"),
+      "...and an active row is never listed as a candidate",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 // ------------------------------------------------------- project resolution

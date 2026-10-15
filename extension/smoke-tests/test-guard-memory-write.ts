@@ -215,5 +215,27 @@ function assert(cond: boolean, msg: string) {
   );
 }
 
+// ------------- defaultVipuneWrite goes through the seam as an observation (#1103)
+
+{
+  const calls: string[][] = [];
+  const fakeExec = async (_f: string, args: string[]) => {
+    calls.push(args);
+    return { stdout: JSON.stringify({ status: "added", id: "inv-1" }), stderr: "" };
+  };
+  const r = await defaultVipuneWrite("[invariant-removal] a.ts: constraint x", {
+    cwd: "/repo",
+    issue: 1,
+    execFn: fakeExec,
+  });
+  const argv = calls[0]?.join(" ") ?? "";
+  assert(r.id === "inv-1", "the id the seam returns is passed back");
+  assert(
+    argv.includes("--memory-type observation") && argv.includes("--status candidate"),
+    "invariant-removal rows are observation-typed candidates, so prune can age them out",
+  );
+  assert(!argv.includes("guard") && !argv.includes("--force"), "canary: never guard, never --force");
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);
