@@ -179,7 +179,7 @@ export class BranchAheadError extends Error {
     readonly aheadCount: number | null,
   ) {
     super(
-      `branch ${branchName} is ${aheadCount === null ? "an unknown number of" : `${aheadCount}`} commit(s) ahead of the base but not safely push-verifiable (local tip does not match origin/${branchName}, or the remote ref is absent) — possible unpushed or diverged work; reset refused, only a human can decide`,
+      `branch ${branchName} is ${aheadCount === null ? "an unknown number of" : `${aheadCount}`} commit(s) ahead of the base but not safely push-verifiable (local tip does not match origin/${branchName}, the remote ref is absent, or the push probe could not be read) — possible unpushed or diverged work; reset refused, only a human can decide`,
     );
     this.name = "BranchAheadError";
   }
