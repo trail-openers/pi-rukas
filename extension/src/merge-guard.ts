@@ -100,12 +100,12 @@ import {
 import { REPO_VALUE_PATTERN } from "./merge-tokens.ts";
 import {
   type LedgerEntry,
-  branchPatchId,
   latestEntry,
   ledgerPathFor,
   readLedgerAt,
   remoteName,
 } from "./review-ledger.ts";
+import { branchPatchId } from "./review-patch-identity.ts";
 import { trace } from "./trace.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 

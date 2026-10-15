@@ -6,6 +6,7 @@ import { resolveBudgetKey } from "./lens-budget-key.ts";
 import type { LensLedgerOutcome } from "./lens-ledger.ts";
 import { partitionDecisions, renderPriorFindingsBlock } from "./lens-residuals.ts";
 import { splitCarried } from "./lens-review-advisory.ts";
+import { carriedSummary, noReviewSummary } from "./lens-review-auto-delta.ts";
 import { resolveLensReviewBranch } from "./lens-review-branch-resolve.ts";
 import { capKillSummary } from "./lens-review-capkill.ts";
 import { runLensChild } from "./lens-review-child.ts";
@@ -310,30 +311,22 @@ export async function runLensReview(opts: {
     // production; the await seam is for tests, not for the driver).
     return finishWith(blocked);
   }
+  if (resolved.kind === "carry") {
+    // #1176 — the carried entry was written AND awaited by the resolver
+    // (lens-review-diff.ts emptyAutoDelta); no review runs. The round
+    // reservation settles on that recorded outcome.
+    opts.onLedgerWrite?.(Promise.resolve(resolved.written));
+    return carriedSummary(resolved.from, resolved.head, resolved.prev, resolved.verdict);
+  }
   if (resolved.kind === "noReview") {
-    trace(
-      `lens-review: delta review skipped — no changes since ${resolved.since} (${resolved.reason})`,
-    );
-    // #980 — the noReview path bypasses `finish()`'s ledger write and
-    // #973 disclosure post, so there is nothing this run could record — the
-    // generic NOT_RECORDED_NOTE is deliberately NOT appended (only
-    // runLensReview's normal paths record, and 5b's not-posted note
-    // covers them).
-    const noReviewNote = `No changes since the last lens review (${resolved.since.slice(0, 8)}) — no re-review needed (nothing to review).`;
-    return {
-      verdict: "APPROVED",
-      totalFindings: 0,
-      bySeverity: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 },
-      lenses: [],
-      findings: [],
-      usage: undefined,
-      // #973 — decision 4: nothing changed since the last recorded lens run.
-      // #973 review — noReview: this is NOT an approval (the summary renders
-      // "NO REVIEW — …", never "APPROVED"); every consumer branches on it.
-      note: noReviewNote,
-      deltaReview: { since: resolved.since, head: resolved.head },
-      noReview: true,
-    };
+    // #980 — the noReview path records nothing: no ledger write, no #973
+    // disclosure post (see noReviewSummary).
+    return noReviewSummary(resolved.since, resolved.head, resolved.reason);
+  }
+  // Exhaustive over ReviewDiffOutcome: a new variant must be handled above.
+  if (resolved.kind !== "ok") {
+    const unhandled: never = resolved;
+    throw new Error(`lens review: unhandled diff outcome ${JSON.stringify(unhandled)}`);
   }
   // #966 — the empty-roster guard: a skills dir that resolves to ZERO
   // lenses (missing dir, empty dir, no `code-review-*` skill, OR an

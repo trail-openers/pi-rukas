@@ -31,9 +31,21 @@ import type { LedgerEntry } from "./review-ledger.ts";
  * reaches the cap. The input rows are the deduped contents of the
  * ledger file as re-read immediately before this write, so the number is
  * deterministic in the file's state.
+ *
+ * #1176 — the carry marker. A carried entry (lens-review-auto-delta.ts
+ * writeCarriedEntry) is a copy of a recorded verdict onto a new head, not a
+ * review, so it must not advance the counter. It is recognised by
+ * `carriedFrom` — and ONLY by that field: the round it copies is already on
+ * the entry, so the counter is skipped and the entry is returned as written.
+ * Nothing else bypasses the advance. A normal lens append that happens to
+ * arrive with a `round` set (no `carriedFrom`) still advances from the
+ * previous latest entry, so a stale or caller-supplied round can never freeze
+ * the counter. Adversarial writes never reach the lens path below.
  */
 export function bumpLensRound(entry: LedgerEntry, existing: LedgerEntry[]): LedgerEntry {
   if (entry.kind !== "lens") return entry;
+  // #1176 — the explicit carry marker (see the jsdoc): a carry adds no review round.
+  if (entry.carriedFrom !== undefined) return entry;
   let prev: LedgerEntry | undefined;
   for (const e of existing) {
     if (e.branch !== entry.branch || e.kind !== "lens") continue;

@@ -53,6 +53,7 @@ import { acquireLedgerLock, runLedgerCriticalSectionHook } from "./review-ledger
 import { mergeAfterRace } from "./review-ledger-merge.ts";
 import { ledgerPathFor, remoteName } from "./review-ledger-path.ts";
 import { bumpLensRound } from "./review-ledger-round.ts";
+import { diffDigestOfRange, patchIdOfRange } from "./review-patch-identity.ts";
 import { trace } from "./trace.ts";
 import { type VerifyExecFn, detectMainline } from "./work-driver-git.ts";
 
@@ -98,6 +99,15 @@ export interface LedgerEntry {
    * last completed round. An incomplete run does not advance `round`, so this
    * is the budget's only record that the branch keeps spending six-lens runs. */
   incompleteRuns?: number;
+  /** #1176 — lens entries only: sha256 of the whitespace-sensitive `git diff --binary`
+   * against the merge-base (review-patch-identity.ts). An empty-delta carry needs an
+   * exact match; absent → no carry (a full review runs). */
+  diffSha256?: string;
+  /** #1176 — carried entries only: the head whose recorded verdict this entry carries.
+   * Its presence is the ONLY signal bumpLensRound uses to skip the round advance. */
+  carriedFrom?: string;
+  /** #1176 round 2 \u2014 carried entries only: the trust assumption the row states (mainline changes merged in were not re-reviewed by this branch). */
+  carryNote?: string;
 }
 
 interface LedgerFile {
@@ -116,42 +126,6 @@ export { bumpLensRound } from "./review-ledger-round.ts";
 export { dedupeLatest } from "./review-ledger-core.ts";
 export { mergeAfterRace } from "./review-ledger-merge.ts";
 export { remoteName } from "./review-ledger-path.ts";
-
-/**
- * The patch id of a branch's changes: the diff from `baseRef` to the branch
- * head, fed through `git patch-id --stable`. The writer and the guard both
- * call this, so the same content always yields the same id (and a new commit
- * always changes it).
- *
- * Returns undefined when the diff is empty or patch-id fails — the caller
- * decides the fail-closed meaning.
- */
-export async function branchPatchId(
-  execFn: LedgerExecFn,
-  cwd: string,
-  branchRef: string,
-  baseRef: string,
-): Promise<string | undefined> {
-  try {
-    // `git patch-id --stable` over the diff of the branch's own commits.
-    // Piping here is intentional: patch-id reads the diff from stdin.
-    const { stdout } = await execFn(`git diff ${baseRef}..${branchRef} | git patch-id --stable`, {
-      cwd,
-      maxBuffer: 1024 * 1024,
-    });
-    return parsePatchId(stdout, `${baseRef}..${branchRef}`);
-  } catch (err) {
-    trace(`review-ledger: patch-id failed for ${branchRef}: ${(err as Error).message}`);
-    return undefined;
-  }
-}
-
-/** One `git patch-id` line (`<id> <path>`) → the id, or undefined when empty. */
-function parsePatchId(stdout: string, label: string): string | undefined {
-  const id = stdout.trim().split(/\s+/)[0]?.trim();
-  if (!id) trace(`review-ledger: patch-id was empty for ${label}`);
-  return id;
-}
 
 /**
  * The WORKING-tree patch id against the mainline — the one number the #912
@@ -176,6 +150,11 @@ function parsePatchId(stdout: string, label: string): string | undefined {
  * patchId differs, and the mismatch fails closed — the operator re-runs the
  * reviews (see docs/troubleshooting.md → "A merge was refused: review ledger").
  *
+ * `opts.digest` (default false) also computes `diffSha256` — a second
+ * `git diff --binary` run. Only the lens writer stores it (the carry needs
+ * it); the merge-guard and round-cap paths never read it, so they do not pay
+ * for it.
+ *
  * `untracked` names the untracked files the worktree diff could not cover.
  * The entry is still written for the tracked content, but the warning is
  * returned so the caller traces it — the gap is visible to the operator.
@@ -183,7 +162,8 @@ function parsePatchId(stdout: string, label: string): string | undefined {
 export async function workingTreePatchId(
   execFn: LedgerExecFn,
   cwd: string,
-): Promise<{ patchId?: string; untracked: string[]; warning?: string }> {
+  opts: { digest?: boolean } = {},
+): Promise<{ patchId?: string; untracked: string[]; warning?: string; diffSha256?: string }> {
   const mainline = await detectMainline(cwd, execFn);
   if ("branch" in mainline === false) {
     return {
@@ -223,11 +203,12 @@ export async function workingTreePatchId(
     // The diff runs from the merge-base to the WORKING TREE (a single ref =
     // index + worktree), so uncommitted fixes made by the adversarial loop
     // are covered. `git patch-id --stable` reads the diff from stdin.
-    const { stdout } = await execFn(`git diff ${mergeBase} | git patch-id --stable`, {
+    patchId = await patchIdOfRange(
+      execFn,
       cwd,
-      maxBuffer: 1024 * 1024,
-    });
-    patchId = parsePatchId(stdout, `working tree vs ${mergeBase.slice(0, 8)}`);
+      mergeBase,
+      `working tree vs ${mergeBase.slice(0, 8)}`,
+    );
   } catch (err) {
     return {
       untracked: [],
@@ -235,6 +216,16 @@ export async function workingTreePatchId(
     };
   }
   if (!patchId) return { patchId: undefined, untracked: [] };
+  // The digest is best-effort for the WRITER: without it the entry is still
+  // recorded, and a later carry falls back to a full review (fail closed).
+  let diffSha256: string | undefined;
+  if (opts.digest) {
+    try {
+      diffSha256 = await diffDigestOfRange(execFn, cwd, mergeBase);
+    } catch (err) {
+      trace(`review-ledger: diff digest unavailable (${(err as Error).message?.slice(0, 120)})`);
+    }
+  }
   // Untracked files are invisible to a worktree diff. The entry is still
   // written for the tracked content, but the gap is surfaced — and anything
   // untracked that later lands in a commit will fail closed at merge time
@@ -255,12 +246,13 @@ export async function workingTreePatchId(
     return {
       patchId,
       untracked,
+      diffSha256,
       warning: `untracked files not covered by the ledger patchId: ${untracked
         .slice(0, 5)
         .join(", ")}${untracked.length > 5 ? ` (+${untracked.length - 5} more)` : ""}`,
     };
   }
-  return { patchId, untracked: [] };
+  return { patchId, untracked: [], diffSha256 };
 }
 
 /**
