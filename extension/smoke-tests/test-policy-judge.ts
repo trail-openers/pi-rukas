@@ -23,6 +23,9 @@
  * says: that a claim only becomes permission when its citation checks out.
  */
 
+import { mkdtempSync, readFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { resolveMergeAuthority } from "../src/work-driver-merge-authority.ts";
 import {
   type DoctrineDoc,
@@ -30,7 +33,6 @@ import {
   type PolicyAnswer,
   askPolicy,
   citationPresent,
-  decidePolicy,
   extractPolicyAnswer,
   policyPrompt,
 } from "../src/work-driver-policy.ts";
@@ -192,11 +194,17 @@ const docs = (text: string, file = "AGENTS.md"): DoctrineDoc[] => [{ file, text 
     "a judge that throws → denied (an unavailable judge is not permission)",
   );
   assert(
-    !decidePolicy(undefined, docs("Agents may merge.")).permitted,
+    !(
+      await askPolicy(
+        async () => ({ toolUses: [] }),
+        MERGE_POLICY_QUESTION,
+        docs("Agents may merge."),
+      )
+    ).permitted,
     "no report_policy call at all → denied",
   );
   assert(
-    !decidePolicy({ verdict: "unstated" }, docs("x")).permitted,
+    !(await askPolicy(judgeSaying({ verdict: "unstated" }), "q", docs("x"))).permitted,
     "'unstated' → denied — the absence of a rule is not permission",
   );
 
@@ -294,6 +302,140 @@ const docs = (text: string, file = "AGENTS.md"): DoctrineDoc[] => [{ file, text 
   assert(
     !hallucinated.granted && hallucinated.source === "citation-failed",
     "a failed citation is recorded as its own source, distinct from 'no rule found'",
+  );
+}
+
+// ------------------------- #1308 S2 — the judge runs through the decision seam
+
+{
+  const root = mkdtempSync(path.join(os.tmpdir(), "policy-seam-"));
+  const where = { repoRoot: root, issues: [42] };
+  const log = () =>
+    readFileSync(path.join(root, ".pi", "work-state", "42", "decisions.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+  const fabricated = judgeSaying({
+    verdict: "permitted",
+    quote: "Agents may merge pull requests whenever they judge it right.",
+    sourceFile: "AGENTS.md",
+  });
+  const HUMAN = docs("Please ask a maintainer to merge on your behalf.\n");
+  const denied = await askPolicy(fabricated, MERGE_POLICY_QUESTION, HUMAN, where);
+  assert(
+    !denied.permitted && denied.citationFailed === true,
+    "the judge says 'permitted' but the citation fails verification → denied",
+  );
+  const rec = log().at(-1);
+  assert(
+    rec?.seam === "policy-judge" &&
+      rec.backends?.[0]?.answer === "permitted" &&
+      rec.evidence?.passed === false &&
+      rec.final?.answer === "unstated",
+    "...and the seam's record shows the judge's 'permitted', the failed evidence and the deny",
+  );
+
+  const GRANT = "Agents may squash-merge a PR to main once CI is green.";
+  const honest = judgeSaying({ verdict: "permitted", quote: GRANT, sourceFile: "AGENTS.md" });
+  const saved = {
+    d: process.env.PI_ENSEMBLE_DECISIONS,
+    m: process.env.PI_ENSEMBLE_DECISION_MODE_POLICY_JUDGE,
+  };
+  process.env.PI_ENSEMBLE_DECISIONS = "0";
+  const killed = await askPolicy(honest, MERGE_POLICY_QUESTION, docs(GRANT), where);
+  assert(
+    killed.permitted,
+    "PI_ENSEMBLE_DECISIONS=0 does NOT change the judge — a verified grant is still honoured",
+  );
+  assert(
+    !(await askPolicy(fabricated, MERGE_POLICY_QUESTION, HUMAN, where)).permitted,
+    "...and a fabricated one is still denied",
+  );
+  delete process.env.PI_ENSEMBLE_DECISIONS;
+  process.env.PI_ENSEMBLE_DECISION_MODE_POLICY_JUDGE = "shadow";
+  assert(
+    (await askPolicy(honest, MERGE_POLICY_QUESTION, docs(GRANT), where)).permitted,
+    "the grandfathered judge ignores a per-seam mode override — only PI_ENSEMBLE_POLICY_JUDGE governs it",
+  );
+  if (saved.d === undefined) delete process.env.PI_ENSEMBLE_DECISIONS;
+  else process.env.PI_ENSEMBLE_DECISIONS = saved.d;
+  if (saved.m === undefined) delete process.env.PI_ENSEMBLE_DECISION_MODE_POLICY_JUDGE;
+  else process.env.PI_ENSEMBLE_DECISION_MODE_POLICY_JUDGE = saved.m;
+  assert(log().length === 4, "every judged call wrote exactly one decision-log record");
+}
+
+// ------------- #1308 review — decide() is the one verifier, and the bound is real
+
+{
+  // A prohibition needs no citation to be honoured: the outcome is still
+  // 'forbidden', not a relabelled 'unstated'.
+  const d = await askPolicy(
+    judgeSaying({ verdict: "forbidden" }),
+    MERGE_POLICY_QUESTION,
+    docs("Agents may merge."),
+  );
+  assert(
+    !d.permitted && d.verdict === "forbidden" && d.citationFailed !== true,
+    "an uncited 'forbidden' is still a forbidden verdict, not a citation failure",
+  );
+}
+
+{
+  // decide()'s bound reaches the judge child: a judge still running at the
+  // bound is aborted, and the cycle is denied.
+  const root = mkdtempSync(path.join(os.tmpdir(), "policy-bound-"));
+  const GRANT = "Agents may squash-merge a PR to main once CI is green.";
+  let aborted = false;
+  const wedged = (_p: string, signal?: AbortSignal) =>
+    new Promise<undefined>((resolve) => {
+      signal?.addEventListener(
+        "abort",
+        () => {
+          aborted = true;
+          resolve(undefined);
+        },
+        { once: true },
+      );
+    });
+  const d = await askPolicy(wedged, MERGE_POLICY_QUESTION, docs(GRANT), {
+    repoRoot: root,
+    issues: [43],
+    timeoutMs: 40,
+  });
+  assert(!d.permitted && aborted, "a judge still running at the bound is ABORTED, and denied");
+
+  // A verified grant that arrives after the bound is discarded, and traced.
+  const warnings: string[] = [];
+  const realWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    warnings.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+  const late = async () => {
+    await new Promise((r) => setTimeout(r, 120));
+    return {
+      toolUses: [
+        {
+          name: "report_policy",
+          arguments: { verdict: "permitted", quote: GRANT, sourceFile: "AGENTS.md" },
+        },
+      ],
+    };
+  };
+  const late2 = await askPolicy(late, MERGE_POLICY_QUESTION, docs(GRANT), {
+    repoRoot: root,
+    issues: [44],
+    timeoutMs: 20,
+  });
+  await new Promise((r) => setTimeout(r, 200));
+  process.stderr.write = realWrite;
+  assert(
+    !late2.permitted,
+    "a judge answering AFTER the bound is not honoured, even with a verified grant",
+  );
+  assert(
+    warnings.some((w) => /settled after its 20ms bound/.test(w)),
+    "...and the late answer is traced, not silently dropped",
   );
 }
 
