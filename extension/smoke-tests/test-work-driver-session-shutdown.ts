@@ -31,8 +31,8 @@ import { registerAsyncJobsLifecycle } from "../src/async-jobs-lifecycle.ts";
 import { clearSessionShutdownForTesting } from "../src/session-shutdown.ts";
 import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import { interruptedByShutdown } from "../src/work-driver-shutdown.ts";
 import { classifyRunningState } from "../src/work-driver-resume.ts";
+import { interruptedByShutdown } from "../src/work-driver-shutdown.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import {
   detectInconsistencies,
@@ -230,6 +230,7 @@ async function captureStderr(fn: () => Promise<unknown>): Promise<string[]> {
       tail?.kind === "cycle-interrupted" &&
         tail.step === "lens-fix" &&
         tail.reason === "quit" &&
+        typeof tail.origin === "string" &&
         tail.resumable === true,
       `A: the tail event says the cycle was interrupted by the shutdown (got ${JSON.stringify(tail)})`,
     );
@@ -239,11 +240,12 @@ async function captureStderr(fn: () => Promise<unknown>): Promise<string[]> {
         tail.headSha === head,
       "A: ...and names the branch and its head sha",
     );
+    const originOfA = tail?.kind === "cycle-interrupted" ? tail.origin : "?";
     const said = stderr.filter((l) => l.includes("cycle interrupted"));
     assert(
       said.length === 1 &&
         said[0]?.includes(
-          `cycle interrupted: session shutdown (quit) during lens-fix; state is resumable — run /work ${issue}`,
+          `cycle interrupted: session shutdown (quit, origin: ${originOfA}) during lens-fix; state is resumable — run /work ${issue}`,
         ) === true,
       `A: exactly one line says why the cycle ended (got ${JSON.stringify(said)})`,
     );
@@ -398,7 +400,9 @@ async function captureStderr(fn: () => Promise<unknown>): Promise<string[]> {
       eventLog: [],
     });
     // The lens review reads the branch's diff from its origin ref.
-    await execp(`git -C ${dir} update-ref refs/remotes/origin/feature/shutdown-test refs/heads/feature/shutdown-test`);
+    await execp(
+      `git -C ${dir} update-ref refs/remotes/origin/feature/shutdown-test refs/heads/feature/shutdown-test`,
+    );
     const fake = makeFakePi();
     const labels: string[] = [];
     let lensRuns = 0;
@@ -426,7 +430,9 @@ async function captureStderr(fn: () => Promise<unknown>): Promise<string[]> {
     // The flag must agree with the re-entry check, whichever way it falls.
     const reentryRefuses = after ? detectInconsistencies(after).length > 0 : true;
     assert(
-      tail?.kind === "cycle-interrupted" && tail.step === "ci" && tail.resumable === !reentryRefuses,
+      tail?.kind === "cycle-interrupted" &&
+        tail.step === "ci" &&
+        tail.resumable === !reentryRefuses,
       `E: the record names the NEXT step, ci, and its resumable flag matches re-entry (resumable=${tail?.kind === "cycle-interrupted" ? tail.resumable : "?"}, re-entry refuses=${reentryRefuses})`,
     );
     assert(

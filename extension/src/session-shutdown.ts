@@ -17,9 +17,17 @@
 
 let reason: string | undefined;
 
+/**
+ * The origin the `session_shutdown` actually came from (stdin EOF, a signal,
+ * or `unknown`), or `undefined` while the session lives. Tracked at the
+ * process level by exit-cause.ts because Pi's event does not say.
+ */
+let origin: string | undefined;
+
 /** Called by the `session_shutdown` hook, before the jobs are aborted. */
-export function markSessionShutdown(why: string): void {
+export function markSessionShutdown(why: string, originOfShutdown: string): void {
   reason = why;
+  origin = originOfShutdown;
 }
 
 /** Pi's shutdown reason (`quit`, `reload`, …), or undefined while the session lives. */
@@ -27,7 +35,13 @@ export function sessionShutdownReason(): string | undefined {
   return reason;
 }
 
+/** The origin of the shutdown (`stdin-eof`, `signal:SIGTERM`, `unknown`), or undefined. */
+export function sessionShutdownOrigin(): string | undefined {
+  return origin;
+}
+
 /** Test-only: the offline suite shares one module instance across cases. */
 export function clearSessionShutdownForTesting(): void {
   reason = undefined;
+  origin = undefined;
 }

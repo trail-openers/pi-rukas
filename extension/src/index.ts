@@ -12,6 +12,7 @@ import { registerDispatchPeekTool } from "./dispatch-peek.ts";
 import { registerDispatchStatusTool } from "./dispatch-status.ts";
 import { registerDispatchSteerTool } from "./dispatch-steer.ts";
 import { registerDispatchTools } from "./dispatch.ts";
+import { armExitCause } from "./exit-cause.ts";
 import { registerLensReviewTool } from "./lens-review-tool.ts";
 import * as lifecycle from "./lifecycle-events.ts";
 import { loadOverrides } from "./model-config.ts";
@@ -128,6 +129,9 @@ export default async function (pi: ExtensionAPI) {
   // any event handler scope. Pi passes ctx into every event listener; we
   // hold the reference until session_shutdown.
   pi.on("session_start", (_event, ctx) => {
+    // #1247 — arm the process-level trackers (signal / stdin-EOF) so the
+    // session_shutdown line can name the quit's origin, not just `quit`.
+    armExitCause();
     dispatchDeck.attach(ctx);
     workWidget.attach(ctx);
     pendingJobs.attach(ctx);
