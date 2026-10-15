@@ -100,6 +100,9 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   list("COMMENT_RETENTION_PATHS", ",", "extension/src,extension/smoke-tests,agents-base"),
   flag("CONVERGE", true),
   flag("CROSS_GROUP_CONFLICTS", true),
+  // Unset: no whole-cycle bound. CYCLE_DEADLINE (absolute epoch ms) wins over the budget.
+  ms("CYCLE_BUDGET_MS", null),
+  int("CYCLE_DEADLINE", null),
   flag("DEBUG", false),
   int("DECISION_BUDGET_<SEAM>", null, "cycle", { unit: "tokens" }),
   input("DECISION_MODE_<SEAM>", "enum", "shadow", "cycle", {

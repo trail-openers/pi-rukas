@@ -38,6 +38,7 @@ export const FIXED_CAPS = [
   "consolidated-verify-consolidation-created",
   "consolidation-incomplete",
   "cross-group-conflict",
+  "deadline",
   "deferred-creation:develop",
   "develop-incomplete-deliverables",
   "developer-timeout",
