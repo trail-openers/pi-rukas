@@ -173,7 +173,7 @@ export function inlineCommitPrPrompt(
     return [
       `/work ${headline} — Step 6 (Commit + PR). **Fallback shape** — the mechanized commit-pr failed, and the driver created a driver-owned integration worktree for you to complete the consolidation.`,
       "",
-      `**INTEGRATION WORKTREE (the ONLY permitted working tree): \`${fallback.integratePath}\`** — it has the integration branch \`${branchName}\` checked out.`,
+      `**INTEGRATION WORKTREE (the ONLY permitted working tree): \`${fallback.integratePath}\`** — it has the integration branch \`${branchName}\` checked out. Commit on \`${branchName}\` and push \`${branchName}\`: NEVER create or switch to another branch (no \`git checkout -b\`, \`git switch -c\`, \`git branch <new>\`, \`git checkout <other>\`) — the PR must head \`${branchName}\`.`,
       "",
       `**HARD BOUNDARIES:** The repo root (its checkout) is OFF LIMITS — the driver verified it clean and will not have it touched. Every other \`.worktrees/*\` path is OFF LIMITS — a sibling worktree is another cycle's ground. ALL git work in this dispatch happens in \`${fallback.integratePath}\` (prefix every command with \`git -C ${fallback.integratePath} \`).`,
       "",
