@@ -185,6 +185,8 @@ export type IntegrateResult =
       noDiff?: NoDiff;
       /** #539 — structured failure discriminator. Cause readers MUST read this, never re-parse `reason`. */
       failure?: "dirty-repoRoot" | "apply" | "verify";
+      /** #1324 — the `verify` failure was a run killed at its bound. */
+      timedOut?: boolean;
       /** #654 task-c — dirty-preflight porcelain lines (the caller parks with these). */
       porcelain?: string[];
     };
@@ -439,6 +441,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
           ok: false,
           failure: "verify",
           reason: `${vr.classifiedMessage} — it was not pushed. ${claimFor(restore)}.`,
+          ...(vr.timedOut ? { timedOut: true } : {}),
         };
       }
     }

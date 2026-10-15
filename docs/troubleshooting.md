@@ -292,6 +292,16 @@ The hook is the escape hatch for the inexpressible: anything the symlink allowli
 
 Each workstream gets its own worktree and its own developer, running in parallel, so a file in two `paths` lists means two developers editing it at once — which used to surface much later as a `git apply` conflict at commit-pr. The plan step now catches it and re-plans once. If it persists, the issue probably needs those workstreams merged.
 
+### A parallel plan parks at `verify-failed:develop` with a type error no workstream caused alone
+
+**Symptom:** every developer reports success, yet develop parks with a type error such as *"Property 'x' does not exist"* or *"Module has no exported member 'y'"*, and the consolidated tree fails with the same error.
+
+**Cause:** the plan split one change that threads a new value through several files (a new field on a shared type, a new export, and the code that uses them) into parallel workstreams. Each workstream starts from the same base commit and cannot see its siblings' commits, so the half that uses the new symbol does not compile alone, and the halves guessed different shapes for it. The plan-time coupling merge only sees edges that exist at the base commit (shared files, a declared `depends-on`, a file name referenced in the other's files), so it cannot see a symbol the change itself creates.
+
+**Now:** the plan step defaults to one workstream and asks for the change's contract. Each workstream may declare `introduces:` (symbols it creates) and `consumes:` (not-yet-existing symbols it uses); a consumed symbol that a sibling introduces becomes a `depends-on` edge, and the coupling merge folds the two into one workstream. An issue that names an existing commit or PR as the fix (*"fixed in owner/repo#N"*, *"cherry-pick <sha>"*, *"port PR #N"*) is planned as one workstream that applies that change and resolves the conflicts. A plan that declares no symbols is handled as before. `PI_ENSEMBLE_PLAN_CONTRACT=0` turns the derived edges and the port fold off.
+
+**Recovery:** the work is committed in the detached worktrees the handoff lists. If a known-good single commit exists, cherry-pick it onto a fresh branch from the mainline. Otherwise apply the workstream diffs in dependency order (the one that introduces the symbol first), fix the mismatch in one place, and run the full gate once on the combined tree. To avoid the split on a re-run, set `PI_ENSEMBLE_MAX_WORKSTREAMS=1`.
+
 ### `/work` parks my issue as "underspecified" but the resolver said it was fine
 
 The handoff quotes its own resolver saying "the intent is clear, no contradictions" and then says the issue does not say enough to build from. Fixed in v0.12.41 — two causes, both in the gate rather than your issue:
@@ -1105,6 +1115,8 @@ Unlike other `commit-pr` failures this does **not** fall back to the LLM ops dis
 
 Projects with no `.pi/verify-cmd` skip the check entirely and are unaffected.
 
+A run killed at its bound (`PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS`, 15 min by default) is not a verdict that the tree does not build. It parks as `verify-timeout:commit-pr` instead, and nothing is pushed.
+
 ### How a subagent's life is bounded
 
 Two mechanisms, and only one of them is meant to fire in normal operation.
@@ -1731,6 +1743,20 @@ After the `develop` step (when every branch claims success) and after the `commi
 
 **Fix:** The evidence line quotes `cgroup pids.current=N of pids.max=M` for wherever the driver runs, with the counters read just after the failure. The quoted counters appear only when they are readable (cgroup v2 on Linux); otherwise the line says the limit is unknown and you read the limit yourself. In a container that is the container's own limit (docker `--pids-limit`), not a host ulimit — `ulimit -u` on the host will show nothing to raise. If the counters show headroom, the limit may have been hit transiently by a burst of parallel processes and drained before they were read; re-run the cycle before changing the limit, and check the other ceilings the evidence names. A count at the limit with a low load average means leaked or unreaped children: inside the container, check that PID 1 is an init (`cat /proc/1/comm` → `tini`), restart the container or raise its pid limit, then re-run the cycle. Do not start by inspecting the diff: it has not been judged either way.
 
+#### `verify-timeout:<step>`: the gate did not finish
+
+**Symptom:** The cycle parks as `verify-timeout:develop` or `verify-timeout:commit-pr`. The evidence lines start with `[verify-timeout]` and say the verify command *exceeded its 10-min timeout* (or whatever bound applied), and the handoff says the command TIMED OUT.
+
+**Cause:** The verify command was killed at its bound, so it reached no verdict about the code. The usual cause is contention: several workstreams, or several cycles, running full suites on the same host at once. This cap is distinct from `verify-failed:<step>`, which means the gate judged the change. It fires only when every failure is a timeout. One real failure next to a timeout still parks as `verify-failed:<step>`, because that failure is a verdict.
+
+**Fix:** Give the gate more time or more of the host, then re-run the cycle:
+
+- Raise `PI_ENSEMBLE_VERIFY_TIMEOUT_MS` (develop), or `PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS` (the consolidated run at commit-pr).
+- Reduce concurrency: fewer workstreams (`PI_ENSEMBLE_MAX_WORKSTREAMS`), fewer cycles at once (`PI_ENSEMBLE_PARALLEL_GROUPS`), or nothing else heavy on the host.
+- Add a `.pi/verify-cmd-fast` (see "Verify command discovery" below). Developers then stop running the full suite in parallel, and a type error fails in seconds instead of after the whole suite.
+
+Do not set `PI_ENSEMBLE_VERIFY=0` for this. The gate did not reject the change; it did not finish.
+
 #### Scope fan-out: the developer changed too many files
 
 **Symptom:** The develop step ends with `verify-failed:develop` even though the developer reported success. The handoff evidence names an out-of-scope path, or says that the workstream changed more files than its plan declared.
@@ -1823,10 +1849,12 @@ Precedence (PR18 shape):
 
 The command is capped at 10 minutes (`PI_ENSEMBLE_VERIFY_TIMEOUT_MS` to override).
 
+**Fast tier (optional, #1324).** A `.pi/verify-cmd-fast` holds a cheap check, such as typecheck plus lint, as its first non-empty, non-comment line. The driver runs it before the verify command in every worktree, on the consolidated tree at develop and at commit-pr, and in the baseline probe. If the fast tier fails, the full command is not run; the evidence quotes the fast tier's output and ends with a `[verify-cmd-fast]` line naming it. Both tiers share the one bound. The develop prompt tells each developer to run the fast tier only and leave the full command to the driver. Without the file, nothing changes.
+
 ### If the gate keeps failing
 
 - **Verify command fails on code the developer didn't touch** — the project was already broken before the cycle started. Fix the baseline first, or point `.pi/verify-cmd` at a narrower command (e.g., `cargo check -p <crate>`). The driver now checks this itself: when the verify command fails at develop it is re-run once on a clean checkout of the cycle's base commit (a temporary `.worktrees/baseline-verify-<N>`, removed afterwards; never on a passing cycle). If it fails there too, the handoff leads with a `[baseline-red]` finding naming the base sha and the assertion, and the cap is still `verify-failed:develop` — the gate cannot pass, so the cycle still parks, but the change is not what to inspect.
-- **`exceeded its 10-min timeout on the CONSOLIDATED tree`** — the run was killed at the bound, so it says nothing about the code (this used to render as `specific assertion: (no specific assertion could be extracted)`). If the `[baseline-red]` finding reports a timeout at the base commit as well, the gate does not fit the bound on this host: raise `PI_ENSEMBLE_VERIFY_TIMEOUT_MS` or make the gate faster.
+- **`exceeded its 10-min timeout on the CONSOLIDATED tree`** — the run was killed at the bound, so it says nothing about the code (this used to render as `specific assertion: (no specific assertion could be extracted)`). When every failure is a timeout, the cap is `verify-timeout:develop`; see "`verify-timeout:<step>`: the gate did not finish" above. If the `[baseline-red]` finding reports a timeout at the base commit as well, the gate does not fit the bound on this host: raise `PI_ENSEMBLE_VERIFY_TIMEOUT_MS` or make the gate faster.
 - **Verify command too slow / needs services** — put a cheaper command in `.pi/verify-cmd` (typecheck-only is the intent; full test suites belong to CI).
 - **False alarm you need to bypass right now** — `PI_ENSEMBLE_VERIFY=0` disables the gate entirely (not recommended as a steady state; it re-opens the phantom-handoff class the gate exists to catch).
 

@@ -25,6 +25,46 @@ export function verifyTimeoutMs() {
   return 10 * 60_000;
 }
 
+/** Leads a failure string for a verify run killed at its bound (#1324). */
+export const VERIFY_TIMEOUT_LABEL = "[verify-timeout]";
+
+/** The bound as a person reads it: whole minutes, else seconds. */
+function boundText(ms: number): string {
+  return ms >= 60_000 && ms % 60_000 === 0 ? `${ms / 60_000}-min` : `${Math.round(ms / 1000)}s`;
+}
+
+/**
+ * #1324 — the failure string for a verify run killed at its bound. A killed
+ * run reached no verdict, so the string names the bound and the knob, never
+ * an assertion about the code. `where` completes "exceeded its bound <where>".
+ */
+export function verifyTimeoutFailure(
+  cmd: string,
+  where: string,
+  timeoutMs: number,
+  knob = "PI_ENSEMBLE_VERIFY_TIMEOUT_MS",
+): string {
+  return `${VERIFY_TIMEOUT_LABEL} verify command \`${cmd}\` exceeded its ${boundText(timeoutMs)} timeout ${where} — the run was killed at the bound (${knob}), so it reached no verdict about the code`;
+}
+
+export function isVerifyTimeoutFailure(failure: string): boolean {
+  return failure.includes(VERIFY_TIMEOUT_LABEL);
+}
+
+/**
+ * #1324 — the cap for a failed verify gate: `verify-timeout:<step>` when
+ * every failure is a run killed at its bound (nothing judged the code), else
+ * `verify-failed:<step>`. One real failure among timeouts is a code failure.
+ */
+export function verifyCapFor<S extends string>(
+  step: S,
+  failures: readonly string[],
+): `verify-failed:${S}` | `verify-timeout:${S}` {
+  return failures.length > 0 && failures.every(isVerifyTimeoutFailure)
+    ? `verify-timeout:${step}`
+    : `verify-failed:${step}`;
+}
+
 /**
  * PR338 — format an exec error with a bounded, attribution-aware output
  * tail. #723 — anchors on the last sub-command's `FAILED: <file>` marker

@@ -1,0 +1,5 @@
+# Fast verify tier (#1324): typecheck + lint, seconds instead of the whole
+# suite. The driver runs it before .pi/verify-cmd in every worktree and on the
+# consolidated tree; a failure here skips the full run. Developers run only
+# this one and leave .pi/verify-cmd to the driver.
+cd extension && bunx tsc --noEmit && bun run check
