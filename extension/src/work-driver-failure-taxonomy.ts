@@ -150,6 +150,9 @@ export function classifyFailureCause(tail: {
   errorTail?: string;
   killCause?: string;
   providerMessage?: string;
+  /** #1297 — the adversarial loop's identical-error ladder count; ≥2 means the
+   * provider is still failing the same way, so the fault is treated as final. */
+  providerRepeats?: number;
 }): {
   cause: DispatchFailureCause;
   shouldRetry: boolean;
@@ -198,11 +201,53 @@ export function classifyFailureCause(tail: {
     return { cause: "self-killed:plan-timeout", shouldRetry: false, maxRetries: 0 };
   }
 
-  // Provider half (429 family / spend cap / model-not-found / transport
-  // severance). #1297 — shared with the adversarial loop's classifier via
+  // Provider error-stop (transport severance, provider timeout, etc).
+  // #1297 — shared with the adversarial loop's classifier via
   // classifyProviderFault so the two cannot disagree on a given message.
   if (tail.kind === "dispatch-failed-provider") {
-    return classifyProviderFault(tail.providerMessage ?? "", tail.errorTail);
+    const cls = classifyProviderFault(tail.providerMessage ?? "", tail.errorTail);
+    // #1297 — the loop already saw this exact provider error ≥2 children in a
+    // row: the provider is still failing the same way, so no outer retry layer
+    // may re-dispatch it. Independent of the provider-half cause, which the
+    // taxonomy above has already decided (quota terminal, missing model, etc.
+    // are already maxRetries 0; this covers the repeated provider-severed case).
+    if ((tail.providerRepeats ?? 0) >= 2) {
+      return { cause: cls.cause, shouldRetry: false, maxRetries: 0, waitMs: cls.waitMs };
+    }
+    return cls;
+  }
+
+  // 429 rate-limit (dispatch-failed shape — the provider-error message in
+  // errorTail only). #366 — read the delay the provider actually asked for
+  // instead of treating every 429 as permanently fatal. A per-minute token
+  // bucket and a 24-hour quota exhaustion arrive as the same status code and
+  // differ only in that number; conflating them is what turned a 60-second
+  // wait into a dead cycle and 11 unstarted issues.
+  const msg = tail.providerMessage ?? tail.errorTail ?? "";
+  if (isRateLimit429Msg(msg)) {
+    if (isSpendCapMsg(msg)) {
+      return { cause: "rate-limited:quota-terminal", shouldRetry: false, maxRetries: 0 };
+    }
+    const delayS = parseRetryDelaySeconds(msg);
+    if (delayS === undefined) {
+      // Unreadable message — keep the conservative pre-#366 halt rather than
+      // guessing a wait that might be a day long.
+      return { cause: "rate-limited:429", shouldRetry: false, maxRetries: 0 };
+    }
+    if (delayS <= burstThresholdSeconds()) {
+      return {
+        cause: "rate-limited:burst",
+        shouldRetry: true,
+        maxRetries: TRANSIENT_MAX_RETRIES,
+        waitMs: Math.ceil(delayS * 1000),
+      };
+    }
+    return {
+      cause: "rate-limited:quota-window",
+      shouldRetry: false,
+      maxRetries: 0,
+      waitMs: Math.ceil(delayS * 1000),
+    };
   }
 
   // Non-zero exit with no structured signal — generic crash. Retry once as safety net.
