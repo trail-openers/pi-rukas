@@ -86,7 +86,7 @@ export const HYBRID_AGREEMENT = 0.075;
  * correction citing a commit, or a CI error line containing a hash, would
  * have been silently refused on the highest-value write path.
  */
-const SECRET_PATTERNS: RegExp[] = [
+export const SECRET_PATTERNS: readonly RegExp[] = [
   // OpenAI and Anthropic both use `sk-` with an infix segment (`sk-proj-`,
   // `sk-ant-api03-`), so the token body is NOT alphanumeric-only. Measured: the
   // previous `sk-[A-Za-z0-9]{16,}` refused a legacy key and passed both current
