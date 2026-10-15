@@ -97,6 +97,8 @@ async function until(cond: () => boolean) {
 }
 
 pendingJobs.attach(rpcCtx());
+assert(statuses().join(",") === "0", `attach in RPC mode publishes an initial 0 (got ${statuses()})`);
+wire.length = 0;
 
 // --- Two PM jobs: '1', '2'; one settles → '1'; the other is killed → '0' ---
 {
@@ -223,6 +225,59 @@ pendingJobs.attach(rpcCtx());
   assert(statuses().join(",") === "1,0", `session_shutdown → 0 (got ${statuses()})`);
   await new Promise((r) => setTimeout(r, 30));
   assert(statuses().join(",") === "1,0", "nothing is sent after shutdown");
+}
+
+// --- Setup that throws after the job is registered never leaves it owed ---
+{
+  wire.length = 0;
+  const bad = controlled("explore");
+  let threw = false;
+  try {
+    startJob(pi, {
+      label: "explore",
+      role: "explore",
+      work: bad.work,
+      get deckLabel(): string {
+        throw new Error("setup boom");
+      },
+    });
+  } catch {
+    threw = true;
+  }
+  assert(threw, "a setup throw surfaces to the caller");
+  assert(statuses().length === 0, `a setup throw sends no status (got ${statuses()})`);
+}
+
+// --- A batch whose member setup throws never becomes owed; an empty batch is refused ---
+{
+  wire.length = 0;
+  let threw = false;
+  try {
+    startBatch(pi, {
+      batchLabel: "dispatch_parallel",
+      members: [
+        {
+          get label(): string {
+            throw new Error("member setup boom");
+          },
+          role: "explore",
+          work: controlled("explore").work,
+        },
+      ],
+    });
+  } catch {
+    threw = true;
+  }
+  assert(threw, "a batch member setup throw surfaces to the caller");
+  assert(statuses().length === 0, `a batch member setup throw sends no status (got ${statuses()})`);
+  let emptyRefused = false;
+  try {
+    startBatch(pi, { batchLabel: "dispatch_parallel", members: [] });
+  } catch {
+    emptyRefused = true;
+  }
+  assert(emptyRefused, "an empty batch is refused");
+  assert(statuses().length === 0, `an empty batch sends no status (got ${statuses()})`);
 }
 
 // --- TUI mode: no status at all ---

@@ -85,6 +85,11 @@ export function startBatch(
   pi: ExtensionAPI,
   input: StartBatchInput,
 ): { batchId: string; jobIds: string[] } {
+  // An empty batch would never settle (no member completes the orchestrator), so
+  // it would hold its pending slot forever. Refuse it up-front.
+  if (input.members.length === 0) {
+    throw new Error("async-jobs: refusing to start an empty batch (no members).");
+  }
   // Batch slot count: 1 orchestrator + N members. Reject up-front rather than
   // letting some members land and others fail mid-construction.
   const required = 1 + input.members.length;
@@ -107,8 +112,6 @@ export function startBatch(
     completed: 0,
   };
   jobs.set(batchId, orchestrator);
-  // #1295 — one batch, one report: counted once, not per member.
-  pendingJobs.jobPending(batchId);
   lifecycle.emitDispatched(batchId, input.batchLabel, input.batchLabel);
 
   // Persistent batch summary row (#139). Registered BEFORE members so its
@@ -205,40 +208,57 @@ export function startBatch(
         // Advance the batch row's counter so the user sees "1/3 done · 2 running".
         dispatchDeck.updateBatchProgress(batchId, orchestrator.completed);
         if (orchestrator.completed === orchestrator.size) {
-          jobs.delete(batchId);
-          dispatchDeck.clearBatchEntry(batchId);
-          const batchMs = Date.now() - startedAt;
-          const anyFailed = memberResults.some((m) => "failed" in m.result || !m.result.ok);
-          const tokens = memberResults.reduce((acc, m) => {
-            if ("failed" in m.result) return acc;
-            return acc + totalTokens(m.result);
-          }, 0);
-          if (anyFailed) {
-            lifecycle.emitFailed(batchId, input.batchLabel, input.batchLabel, batchMs);
-          } else {
-            lifecycle.emitCompleted(batchId, input.batchLabel, input.batchLabel, batchMs, tokens);
-          }
-          // Single delivery: deliverBatchReport is the batch's only steer.
-          void deliverBatchReport(
-            pi,
-            { batchLabel: input.batchLabel, batchId, startedAt },
-            memberResults,
-            gitMembers,
-            input.gitLineFor ?? gitStateLine,
-          )
-            .then(
-              () =>
-                trace(
-                  `async batch ${batchId} (${input.batchLabel}) finished in ${Date.now() - startedAt}ms`,
-                ),
-              (err: unknown) =>
-                trace(`async batch ${batchId} (${input.batchLabel}) report failed: ${String(err)}`),
-            )
-            .finally(() => pendingJobs.jobReported(batchId));
+          // Single delivery: deliverBatchReport is the batch's only steer. The whole
+          // settle runs under releaseAfter so the batch is released on every path.
+          void pendingJobs
+            .releaseAfter(batchId, async () => {
+              jobs.delete(batchId);
+              dispatchDeck.clearBatchEntry(batchId);
+              const batchMs = Date.now() - startedAt;
+              const anyFailed = memberResults.some((m) => "failed" in m.result || !m.result.ok);
+              const tokens = memberResults.reduce((acc, m) => {
+                if ("failed" in m.result) return acc;
+                return acc + totalTokens(m.result);
+              }, 0);
+              if (anyFailed) {
+                lifecycle.emitFailed(batchId, input.batchLabel, input.batchLabel, batchMs);
+              } else {
+                lifecycle.emitCompleted(
+                  batchId,
+                  input.batchLabel,
+                  input.batchLabel,
+                  batchMs,
+                  tokens,
+                );
+              }
+              await deliverBatchReport(
+                pi,
+                { batchLabel: input.batchLabel, batchId, startedAt },
+                memberResults,
+                gitMembers,
+                input.gitLineFor ?? gitStateLine,
+              ).then(
+                () =>
+                  trace(
+                    `async batch ${batchId} (${input.batchLabel}) finished in ${Date.now() - startedAt}ms`,
+                  ),
+                (err: unknown) =>
+                  trace(
+                    `async batch ${batchId} (${input.batchLabel}) report failed: ${String(err)}`,
+                  ),
+              );
+            })
+            .catch((err: unknown) =>
+              trace(`async batch ${batchId} (${input.batchLabel}) settle failed: ${String(err)}`),
+            );
         }
       });
   }
 
+  // #1295 — one batch, one report: counted once, not per member. Marked AFTER the
+  // member loop: a throw during member setup leaves the count untouched, and no
+  // member can settle before this line (their settle callbacks are always async).
+  pendingJobs.jobPending(batchId, "pm");
   trace(`async batch ${batchId} (${input.batchLabel}, n=${input.members.length}) started`);
   return { batchId, jobIds: memberJobIds };
 }

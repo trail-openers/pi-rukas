@@ -162,9 +162,14 @@ export function registerAsyncJobsLifecycle(pi: ExtensionAPI): void {
     // Name what ended and why Pi says it ended: the bare count left an
     // operator with "aborted 1 in-flight async jobs" and no cause.
     const labels = [...jobs.values()].map((j) => j.label).join(", ");
-    const n = killAllJobs();
-    // #1295 — the aborted jobs' reports will never reach this session: "0".
-    pendingJobs.shutdown();
+    let n = 0;
+    try {
+      n = killAllJobs();
+    } finally {
+      // #1295 — the aborted jobs' reports will never reach this session: "0".
+      // In a finally so a throw from killAllJobs cannot leave the count stuck.
+      pendingJobs.shutdown();
+    }
     if (n > 0) {
       trace(
         `session_shutdown (reason: ${event?.reason ?? "not given"}): aborted ${n} in-flight async jobs — ${labels}`,

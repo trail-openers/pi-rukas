@@ -9,21 +9,25 @@
  * the quiet for "done" stopped the container and killed the job.
  *
  * The signal: `ctx.ui.setStatus("pi-rukas-jobs", "<n>")`, which Pi forwards
- * in RPC mode as an `extension_ui_request` with method `setStatus`, sent
- * every time `n` changes — including the transition to "0".
+ * in RPC mode as an `extension_ui_request` with method `setStatus` and
+ * fields `statusKey` / `statusText`. Sent on attach (as "0"), then every time
+ * `n` changes — including the transition to "0".
  *
- * What `n` counts is "reports the PM is still owed", so:
+ * What `n` counts is "reports the PM is still owed":
  *   - a PM-owned single job counts once, from start until its report has
  *     been handed to Pi (not merely until the child exits — a developer/ops
  *     report waits for its git-state line first);
  *   - a batch (`dispatch_parallel`) counts ONCE, not per member, because it
  *     delivers one consolidated report;
- *   - driver-owned jobs (the /work driver's own children) never count: their
- *     results go to the in-process driver, never to the PM. The
- *     `start_work_driver` job itself is PM-owned and does count — its report
- *     does reach the PM.
- *   - session_shutdown drops everything to "0": the aborted jobs' reports
- *     will never be delivered to this session.
+ *   - driver-owned jobs never count (see `jobPending`).
+ *   - session_shutdown drops everything to "0".
+ *
+ * Invariant: the Set below is the only source of truth for `n`. It is NOT
+ * derived from the `jobs` registry — the registry drops a job at settle
+ * time, but the report can still be owed (git-state line pending). Deriving
+ * the count would need a separate "owed" state in the registry (follow-up).
+ * Callers must mark a job pending only once setup has succeeded, and must
+ * release it through `releaseAfter` so every settle path clears it.
  *
  * RPC mode only. In the TUI the dispatch deck already shows every job, and a
  * bare number in the footer would be noise; print/json modes have no status
@@ -48,17 +52,23 @@ function publish(): void {
   try {
     ctx.ui.setStatus(PENDING_JOBS_STATUS_KEY, String(pending.size));
   } catch (err) {
-    trace(`pending-jobs: setStatus failed: ${(err as Error).message}`);
+    trace(`pending-jobs: setStatus failed: ${String(err)}`);
   }
 }
 
-/** Capture the context from session_start; ignored outside RPC mode. */
+/** Capture the context from session_start; RPC only. Publishes the initial count. */
 export function attach(c: StatusContext): void {
   ctx = c.mode === "rpc" ? c : undefined;
+  publish();
 }
 
-/** A PM-owned job or batch started: its report is now owed. */
-export function jobPending(id: string): void {
+/**
+ * A job or batch's report is now owed. Driver-owned jobs are ignored here —
+ * their results go to the in-process driver, never to the PM — so the owner
+ * rule lives in one place for every caller.
+ */
+export function jobPending(id: string, ownerKind: "pm" | "driver"): void {
+  if (ownerKind !== "pm") return;
   pending.add(id);
   publish();
 }
@@ -66,6 +76,19 @@ export function jobPending(id: string): void {
 /** The job's report was handed to Pi (or could not be): no longer owed. */
 export function jobReported(id: string): void {
   if (pending.delete(id)) publish();
+}
+
+/**
+ * Run `settle` and release `id` once it has finished — on every exit path,
+ * including a throw. `settle` must not resolve before its report is handed
+ * to Pi, or the count would drop ahead of the report it waits for.
+ */
+export async function releaseAfter<T>(id: string, settle: () => Promise<T> | T): Promise<T> {
+  try {
+    return await settle();
+  } finally {
+    jobReported(id);
+  }
 }
 
 /** session_shutdown: nothing in flight will report to this session. */
