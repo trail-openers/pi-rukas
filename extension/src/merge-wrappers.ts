@@ -9,7 +9,7 @@
  * imports the head match back.
  */
 
-import { rawTokens, unquoteArg } from "./merge-tokens.ts";
+import { isSeparatorToken, rawTokens, unquoteArg } from "./merge-tokens.ts";
 import { mergeVerbHeadRegex } from "./merge-tokens.ts";
 // Intentional cycle: merge-verb-head.ts imports `matchMergeVerb` and
 // `skipLeadingWrappers` back from this file. Safe — both directions are
@@ -131,6 +131,47 @@ export function skipLeadingWrappers(tokens: string[], start: number): number {
     if (t === "function") {
       if (i + 1 < tokens.length && (tokens[i + 1] ?? "") !== "{") i++;
       i++;
+      continue;
+    }
+    // #962: `case WORD in PATTERN) cmd ;; … esac` — the word, `in` and the
+    // first arm's pattern list (up to the `)` that closes it) are not
+    // commands; the arm's command follows. A later arm starts a new segment
+    // (after `;;`) with its pattern at the head: a head token closed by `)`
+    // (`2)`, `*)`, `(a)`), or a pattern followed by a lone `)` (`2 )`).
+    if (t === "case") {
+      // The subject may itself end in `)` (`case $(echo x) in …`), so skip
+      // to the `in` keyword first, then to the arm's closing `)`.
+      let j = i + 1;
+      while (j < tokens.length && tokens[j] !== "in") {
+        if (isSeparatorToken(tokens[j] ?? "")) return i;
+        j++;
+      }
+      if (j >= tokens.length) return i;
+      j++;
+      while (j < tokens.length && !(tokens[j] ?? "").endsWith(")")) {
+        if (isSeparatorToken(tokens[j] ?? "")) return i;
+        j++;
+      }
+      if (j >= tokens.length) return i;
+      i = j + 1;
+      continue;
+    }
+    if (t.length > 1 && t.endsWith(")") && !t.includes("$(")) {
+      i++;
+      continue;
+    }
+    if (tokens[i + 1] === ")" && t !== "(") {
+      i += 2;
+      continue;
+    }
+    // #962: a command or variable substitution in command position expands
+    // to words the guard cannot see — possibly none, in which case the NEXT
+    // word is the command (`$() gh pr merge 12`, `$(true) gh pr merge 12`).
+    // Skip the substitution (its tokens, until its parens / backticks
+    // balance) so a merge behind it is still matched; quoted `$'…'` / `$"…"`
+    // strings are data, not substitutions.
+    if ((t[0] === "$" && t[1] !== "'" && t[1] !== '"' && t.length > 1) || t[0] === "`") {
+      i = skipSubstitution(tokens, i);
       continue;
     }
     if (TRANSPARENT_KEYWORDS.has(t)) {
@@ -274,6 +315,73 @@ export function skipLeadingWrappers(tokens: string[], start: number): number {
 }
 
 /**
+ * Split a substitution token GLUED to a following word (#1317 item A):
+ * `$(true)gh pr merge 12` and `` `true`gh pr merge 4 `` are one shell word,
+ * whose command word is `gh` when the substitution expands to nothing. The
+ * guard cannot know the expansion, so it reads the empty case: the closing
+ * part and the remainder become separate tokens, and the head walk tests the
+ * remainder as a command word. Repeats for every glued substitution.
+ */
+export function splitGluedSubstitutions(list: string[]): string[] {
+  const work = [...list];
+  for (let i = 0; i < work.length; i++) {
+    const t = work[i] ?? "";
+    if (!((t[0] === "$" && t[1] === "(") || t[0] === "`")) continue;
+    const cut = substitutionClose(work, i);
+    if (cut === undefined) continue;
+    const text = work[cut.tok] ?? "";
+    if (cut.pos + 1 >= text.length) continue;
+    work.splice(cut.tok, 1, text.slice(0, cut.pos + 1), text.slice(cut.pos + 1));
+  }
+  return work;
+}
+
+/** The token and character index that close the substitution opened at `start`. */
+function substitutionClose(
+  tokens: string[],
+  start: number,
+): { tok: number; pos: number } | undefined {
+  let depth = 0;
+  let ticks = 0;
+  for (let j = start; j < tokens.length; j++) {
+    const tok = tokens[j] ?? "";
+    const quoted = tok[0] === "'" || tok[0] === '"' || tok.startsWith("$'");
+    for (let p = 0; p < tok.length && !quoted; p++) {
+      const c = tok[p];
+      if (c === "(") depth++;
+      else if (c === ")") depth--;
+      else if (c === "`") ticks++;
+      else continue;
+      if (depth <= 0 && ticks % 2 === 0) return { tok: j, pos: p };
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The index just past the substitution token at `start` (and the tokens it
+ * spans until its `(`/`)` and backticks balance), bounded by the list end.
+ */
+function skipSubstitution(tokens: string[], start: number): number {
+  let depth = 0;
+  let ticks = 0;
+  let i = start;
+  while (i < tokens.length) {
+    const tok = tokens[i] ?? "";
+    // A quoted token is data — its parens/backticks do not count.
+    const quoted = tok[0] === "'" || tok[0] === '"' || tok.startsWith("$'");
+    for (const c of quoted ? "" : tok) {
+      if (c === "(") depth++;
+      else if (c === ")") depth--;
+      else if (c === "`") ticks++;
+    }
+    i++;
+    if (depth <= 0 && ticks % 2 === 0) break;
+  }
+  return i;
+}
+
+/**
  * Scan a segment's leading tokens and return the forge command word when
  * the segment HEAD is a merge invocation under any number of wrappers.
  *
@@ -288,7 +396,7 @@ export function matchMergeVerb(text: string): string | undefined {
   // number optionality now also holds for wrapped/inner invocations.)
   const tokens = rawTokens(text);
   if (tokens.terminated === false) return undefined;
-  const list = tokens.list;
+  const list = splitGluedSubstitutions(tokens.list);
   // The wrapper vocabulary (BARE_WRAPPERS, `sudo` flags, `timeout`/
   // `stdbuf`/`nice`/`time`/`env` flag+value skipping, `VAR=VALUE`
   // prefixes, transparent keywords) lives in `skipLeadingWrappers`; the
@@ -308,9 +416,6 @@ export function matchMergeVerb(text: string): string | undefined {
     // rawTokens keeps whole-word quotes on the token, and bash treats
     // `"gh"` exactly like `gh` — the quote check would defeat the fix.)
     const t = unquoteArg(raw);
-    // A variable-substituted command word is not the bare shape the guard
-    // unwraps — no forge word to match, and not a wrapper.
-    if (t[0] === "$" || t === "`") return undefined;
     // A leading `(` or `)` (subshell delimiter) is not a command word.
     // `rawTokens` glues an adjacent paren to the next word (`(gh`), so
     // strip it and re-test the remainder as the command head (#955

@@ -23,12 +23,12 @@
  * fakeGh pattern in test-merge-authority.ts.
  */
 
-import { type DetectForgeOpts, detectForge } from "./forge-detect.ts";
+import { type DetectForgeOpts, FORGE_EXEC_TIMEOUT_MS, detectForge } from "./forge-detect.ts";
 import { isValidRepoValue } from "./merge-tokens.ts";
 import { trace } from "./trace.ts";
 
 /** Timeout for the guard's gh/glab exec calls (a network-stalled `gh pr view` must not hang the tool_call hook). */
-const GH_TIMEOUT_MS = 30_000;
+const GH_TIMEOUT_MS = FORGE_EXEC_TIMEOUT_MS;
 
 /**
  * The forge detection options the guard uses for its own decisions (#926
