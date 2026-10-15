@@ -168,7 +168,7 @@ const stepOf = (s: WorkState) => {
           stagedCount: 0,
           branchExists: true,
           branchPushed,
-          headSha: "5c1c543",
+          repoRootHeadSha: "5c1c543",
           capturedAt: 3000,
           committedWork: [{ worktreeId: "default", path: "/w", headSha: "17b7f3ab", ahead: 3 }],
         },

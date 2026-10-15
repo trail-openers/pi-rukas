@@ -50,6 +50,8 @@ import {
   reconcileExistingLocalBranch,
 } from "../src/work-driver-branch-mechanized.ts";
 import type { ExecFn } from "../src/worktree.ts";
+import { commandOf } from "./lib/argv-shell.ts";
+import { realExec } from "./lib/exec-fake.ts";
 
 const execFileP = promisify(execFile);
 let exit = 0;
@@ -60,14 +62,6 @@ function assert(cond: boolean, msg: string) {
     exit = 1;
   }
 }
-/** Real shell exec, matching the driver's ExecFn contract. */
-const realExec: ExecFn = async (cmd, o) => {
-  const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
-    cwd: o?.cwd,
-    maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
-  });
-  return { stdout };
-};
 const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 const TITLE = "stale branch reset ahead halt";
 const BRANCH = branchSlug([844], TITLE);
@@ -139,8 +133,9 @@ function makeCtx(repo: string, execFn: ExecFn) {
  */
 async function e2eRun(repo: string) {
   const execFn: ExecFn = async (cmd, o) => {
-    if (cmd.startsWith("gh ")) return { stdout: "[]" };
-    if (cmd.startsWith("git fetch")) return { stdout: "" };
+    const line = commandOf(cmd, o);
+    if (line.startsWith("gh ")) return { stdout: "[]" };
+    if (line.startsWith("git fetch")) return { stdout: "" };
     return realExec(cmd, o);
   };
   const { runBranch } = await import("../src/work-driver-branch-develop.ts");
@@ -399,7 +394,7 @@ try {
     await advanceOrigin("advance\n", "advance main"); // base != oldSha
     let probeCalls = 0;
     const stubExec: ExecFn = async (cmd, o) => {
-      if (cmd.includes("merge-base --is-ancestor")) {
+      if (commandOf(cmd, o).includes("merge-base --is-ancestor")) {
         probeCalls++;
         throw Object.assign(new Error("git: unable to read tree (probe damage)"), { code: 128 });
       }

@@ -17,6 +17,7 @@ import { fanoutVerdictLines } from "./work-driver-handoff-fanout.ts";
 import { securityOpenPointsChat } from "./work-driver-handoff-open-points.ts";
 import { recoveryCommandsChat } from "./work-driver-handoff-recovery.chat.ts";
 import { unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
+import { describeBranchState } from "./work-driver-handoff-view.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 /**
@@ -112,8 +113,12 @@ export function renderHandoffUserMessage(
         ? " (pushed)"
         : " (NOT pushed — local only)"
     : "";
-  const headTag = snap?.headSha ? ` · HEAD ${snap.headSha}` : "";
-  const fileCount = snap ? snap.unstagedCount + snap.stagedCount : 0;
+  const view = describeBranchState(snap);
+  const headTag = view.tip ? ` · ${view.tip}` : "";
+  const fileCount = view.fileCount;
+  // A tip whose distance from base is unknown cannot say "no commits", so the
+  // file count is not offered as the branch's content either.
+  const aheadUnknown = view.aheadUnknown;
   const prTag = ps.prNumber ? `PR #${ps.prNumber}` : "no PR created";
   const target = ps.prNumber ? `pr ${ps.prNumber}` : `issue ${issue}`;
   const at = new Date().toISOString();
@@ -175,7 +180,9 @@ export function renderHandoffUserMessage(
     `  ${prTag}`,
     snapNotRead
       ? `  modified files: NOT READ (${fileCount} seen)`
-      : `  ${fileCount} file(s) modified${snap && snap.stagedCount > 0 ? ` (${snap.stagedCount} staged, ${snap.unstagedCount} unstaged)` : ""}`,
+      : aheadUnknown
+        ? `  ${fileCount} uncommitted file(s); commits ahead of base NOT READ`
+        : `  ${view.files}`,
     ...notRead.map((l) => `  ${l}`),
   );
   // The review's own findings, in the surface the operator actually reads.
@@ -222,7 +229,7 @@ export function renderHandoffUserMessage(
   // discover it via `git worktree list`.
   if (snap?.committedWork?.length) {
     lines.push(
-      `  committed work in ${snap.committedWork.length} worktree(s) (the counts above are blind to this):`,
+      `  committed work in ${snap.committedWork.length} worktree(s) (committed — not in the uncommitted count above):`,
       ...snap.committedWork.map(
         (w) =>
           `    ${w.path} — HEAD ${w.headSha.slice(0, 8)}, ${w.ahead} commit(s) ahead (workstream: ${w.worktreeId})`,

@@ -17,6 +17,9 @@ import type { WorkState } from "./workflow-state-schema.ts";
  */
 export const FIX_PASS_EVIDENCE_PREFIX = "adversarial fix pass: ";
 
+/** Leads the failure string of a commit-pr re-entry refused on a PR that is not open. */
+export const PR_NOT_OPEN_MARKER = "[pr-not-open]";
+
 export type CapHitEvent = Extract<WorkEvent, { kind: "cap-hit" }>;
 
 /**

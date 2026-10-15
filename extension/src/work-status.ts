@@ -1,9 +1,8 @@
 /** `/work-status` command (PR2 O4) — compact terminal-friendly status snapshot. */
-import { exec } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import {
   MAX_CI_RETRIES,
@@ -14,6 +13,7 @@ import {
 import { formatCycleTotal } from "./work-driver-cycle-total.ts";
 import { explainCap } from "./work-driver-explain.ts";
 import { unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
+import { describeBranchState } from "./work-driver-handoff-view.ts";
 import { readQueueSummary } from "./work-queue-summary.ts";
 import { humanActionFor } from "./work-queue.ts";
 import { renderDispatchDurations } from "./work-status-dispatch-durations.ts";
@@ -22,7 +22,6 @@ import { discoverAllCycles, renderCycleIndex } from "./work-status-index.ts";
 import { renderInterruptedStatus } from "./work-status-interrupted.ts";
 import { isIssueNumberArg, resolveJobId } from "./work-status-jobid.ts";
 import { type WorkState, readState, workStateDir } from "./workflow-state.ts";
-const execp = promisify(exec);
 
 /** Resolve project repo root via `git rev-parse --show-toplevel`. */
 async function resolveRepoRoot(cwd: string): Promise<string> {
@@ -183,15 +182,12 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
     lines.push("", "Worktree state:");
     if (ps.branchName) {
       const pushedTag = snap ? (snap.branchPushed ? " (pushed)" : " (NOT pushed)") : "";
-      const headTag = snap?.headSha ? ` · HEAD ${snap.headSha}` : "";
-      lines.push(`  branch: ${ps.branchName}${pushedTag}${headTag}`);
+      const view = describeBranchState(snap);
+      lines.push(`  branch: ${ps.branchName}${pushedTag}${view.tip ? ` \u00b7 ${view.tip}` : ""}`);
     }
     lines.push(`  ${ps.prNumber ? `PR: #${ps.prNumber}` : "PR: none created"}`);
     if (snap) {
-      const fileCount = snap.unstagedCount + snap.stagedCount;
-      lines.push(
-        `  uncommitted: ${fileCount} file(s)${fileCount > 0 ? ` (${snap.stagedCount} staged, ${snap.unstagedCount} unstaged)` : ""}`,
-      );
+      lines.push(`  ${describeBranchState(snap).files}`);
       if (snap.modifiedFiles.length > 0) {
         const shown = snap.modifiedFiles.slice(0, 10);
         lines.push(

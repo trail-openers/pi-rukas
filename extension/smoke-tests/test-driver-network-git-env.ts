@@ -238,7 +238,7 @@ const rawHits: string[] = [];
 const wrappedCounts: Record<string, number> = {};
 // A runNetGit caller whose executor is promisify(exec) ignores killGroup and
 // argv, so the timeout cannot kill the ssh process group. Callers must use the
-// lens-exec execp (or receive an injected one).
+// exec.ts execp (or receive an injected one).
 const promisifyCallers: string[] = [];
 for (const file of sourceFiles(SRC)) {
   const base = path.basename(file);

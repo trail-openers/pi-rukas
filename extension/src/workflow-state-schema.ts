@@ -17,7 +17,7 @@ export type { FenceViolation } from "./workflow-state-schema-verify.ts";
 import type { ConsolidationCompleteness } from "./workflow-state-schema-consolidation-completeness.ts";
 import type { ConvergeEvidence } from "./workflow-state-schema-converge.ts";
 import type { PlanQualityReason } from "./workflow-state-schema-plan-quality.ts";
-import type { FenceViolation } from "./workflow-state-schema-verify.ts";
+import type { FenceViolation, VerifyEvidenceOrigin } from "./workflow-state-schema-verify.ts";
 import type { Workstream, WorkstreamBaseShas } from "./workflow-state-schema-workstreams.ts";
 
 // #861 — PlanQualityReason moved to its own fragment (the 500-line cap);
@@ -359,8 +359,18 @@ export interface PipelineState {
     branchExists: boolean;
     /** True when `git ls-remote --heads origin <branch>` returns the branch. */
     branchPushed: boolean;
-    /** Short SHA of HEAD when the snapshot was taken. */
-    headSha: string;
+    /** Short SHA of repoRoot's HEAD (the operator's checkout) when the
+     * snapshot was taken — NOT the feature branch; see `branchTip`. Absent on
+     * snapshots written before the `headSha` → `repoRootHeadSha` rename (no
+     * value was ever recorded under the new name), and the handoff omits the line. */
+    repoRootHeadSha?: string;
+    /** The feature branch's own tip, and its commits ahead of the cycle's
+     * base when that was readable. Absent when no local branch exists and on
+     * state files written before the field. */
+    branchTip?: { sha: string; ahead?: number };
+    /** True when reading the branch tip failed for a reason other than the branch
+     * not existing — the tip is unknown, not absent, so no repoRoot fallback is shown. */
+    branchTipNotRead?: boolean;
     /** Epoch ms when the snapshot was captured. */
     capturedAt: number;
     /** Worktrees that were not removed because they contained uncommitted
@@ -440,6 +450,8 @@ export interface PipelineState {
     at: number;
     retries?: number;
     recovered?: boolean;
+    /** Which writer raised this park; see `VerifyEvidenceOrigin`. Absent pre-origin. */
+    origin?: VerifyEvidenceOrigin;
     /**
      * #814 — structured develop-scope-fence violations (see
      * `FenceViolation` below). Absent = none recorded.

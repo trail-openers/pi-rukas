@@ -324,7 +324,11 @@ The branch step recorded whatever branch `repoRoot` was on, and that value becom
 
 ### The handoff says `Rounds: 0 of 3` but the loop clearly ran
 
-`reviewRound` is the **lens-review** counter and is legitimately 0 when a cycle dies at step 5 without reaching step 7. It used to be printed under an adversarial cap too, so a loop that ran three full rounds reported zero. Fixed: an adversarial cap now reports its own round count, and the handoff quotes the blocking finding instead of the generic *"the diff still has issues the adversarial-developer flagged"*.
+`reviewRound` is the **lens-review** counter and is legitimately 0 when a cycle dies at step 5 without reaching step 7. It used to be printed under an adversarial cap too, so a loop that ran three full rounds reported zero. Fixed: an adversarial cap now reports its own round count, and the handoff quotes the blocking finding instead of the generic *"the diff still has issues the adversarial-developer flagged"*. Under every other cap the line now names its counter — `0 of 3 review rounds (six-lens review; the adversarial gate ran 1 round(s), last: ISSUES_FOUND)` — so a cycle parked at develop after an adversarial round and its fix pass no longer reads as unreviewed.
+
+### The handoff shows the branch at the base commit, or `0 file(s) modified`, beside "the branch holds the work"
+
+The handoff used to print the **repo root's** `HEAD` on the branch line. A successful pre-handoff consolidation puts the commits on the feature branch and then restores your checkout, so that `HEAD` was the base commit and the branch looked empty. The line now carries the branch's own tip and its distance from the base (`· tip 37d1118a, 1 commit(s) ahead of base`), the comment labels the other value `repo-root HEAD`, and beside committed work the file count reads `N uncommitted file(s)` — it only ever counted uncommitted files. A handoff snapshot written before the `headSha` → `repoRootHeadSha` rename shows no repo-root HEAD line at all; re-run the cycle to refresh it, or ignore the missing line — the branch state itself is unaffected.
 
 ### A restarted cycle erased its own history
 
@@ -964,6 +968,8 @@ Without `--restart`, re-invoking `/work N` on a terminal-state file now emits a 
 
 **Why:** a fix pass is told to answer review findings, so it parks when it deletes a comment outright while the code stays. It does not park for a reworded or replaced comment (the same diff hunk adds a comment) or for a comment an earlier develop pass already removed: those are listed for the reviewers under "Comments removed by this change", who judge them. Before this, any comment line the whole workstream diff did not keep verbatim parked the pass, and the cap text read *"(evidence detail missing from state)"*.
 
+The park reuses the `verify-failed:develop` cap but is not a rejection by the outcome-verification gate, so do not set `PI_ENSEMBLE_VERIFY=0` for it; the cap text opens *"the adversarial fix pass did not clear"*.
+
 **Fix:** restore the named lines in the workstream's worktree, or reword them in place, and re-run. `PI_ENSEMBLE_COMMENT_RETENTION=0` disables the check.
 
 ### "repoRoot was NOT restored: the discarded state could not be saved"
@@ -1282,6 +1288,14 @@ Resume granularity is the **step**, not the dispatch: the child process died and
 An in-flight job id with **no** matching `dispatch-started` event is not a crash — it cannot have come from the write-ahead. That is corrupt state, and the existing inconsistency halt still fires on it rather than being silently cleared.
 
 Orphaned `dispatch-started` events are deliberately kept in the log. They are the only record that a dispatch was paid for and lost.
+
+**A session shutdown is handled as that crash, not as a step failure.** Quitting, reloading or replacing the Pi session aborts every in-flight child. The driver used to read its own aborted child as the step failing: it recorded `cap-hit: step-failed:<step>` and entered a handoff that cannot finish in an exiting process, leaving `status: running, step: handoff` and no reason. It now stops where it is — no cap, no handoff — appends one `cycle-interrupted` event (step, Pi's reason, branch and head sha) and says so once:
+
+```
+[pi-rukas] cycle interrupted: session shutdown (quit) during lens-fix; state is resumable — run /work 97 — work on feature/issue-97-… at 1d6a5dd0
+```
+
+On `quit` that line goes to stderr; on a reload or session switch it arrives as a `kind=interrupted` driver event. The state file still says `running`, deliberately: `running` with a dead `owner.pid` is what "resumable" already means, so anything reading the file from outside must check owner liveness (or look for a trailing `cycle-interrupted`) before calling the cycle live. This is a different record from the headless runner's SIGTERM / SIGINT handling (the cycle `signal`, event kind `interrupted`, status `interrupted`): a Pi session shutdown never sets that signal, so the two are checked separately. If the line says `/work N will refuse this state` instead, the step that was cut off had not written ahead and the file is at the previous boundary — `resumable: false` on the event.
 
 Escape hatch: `PI_ENSEMBLE_RESUME=0`.
 
@@ -1661,7 +1675,7 @@ After the `develop` step (when every branch claims success) and after the `commi
 
 **Cause:** The host (or the container's pid limit) had no room to start a process, so the driver's git / verify / smoke commands never executed. This is an environment failure, not a verdict on the change — the gate still fails, because an unrun gate is not a pass, but nothing was learned about the diff. Before this label existed the same condition was reported as `[needs-human-decision] … (no specific assertion could be extracted)`, or as `consolidated-verify-conflict` ("two workstreams edited the same lines") even on a single-workstream cycle.
 
-**Fix:** Free processes on the host or raise its pid/thread limit, then re-run the cycle. Do not start by inspecting the diff: it has not been judged either way.
+**Fix:** The evidence line quotes `cgroup pids.current=N of pids.max=M` for wherever the driver runs, with the counters read just after the failure. The quoted counters appear only when they are readable (cgroup v2 on Linux); otherwise the line says the limit is unknown and you read the limit yourself. In a container that is the container's own limit (docker `--pids-limit`), not a host ulimit — `ulimit -u` on the host will show nothing to raise. If the counters show headroom, the limit may have been hit transiently by a burst of parallel processes and drained before they were read; re-run the cycle before changing the limit, and check the other ceilings the evidence names. A count at the limit with a low load average means leaked or unreaped children: inside the container, check that PID 1 is an init (`cat /proc/1/comm` → `tini`), restart the container or raise its pid limit, then re-run the cycle. Do not start by inspecting the diff: it has not been judged either way.
 
 #### Scope fan-out: the developer changed too many files
 

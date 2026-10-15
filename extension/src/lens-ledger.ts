@@ -24,7 +24,7 @@ import {
 } from "./review-ledger.ts";
 import { trace, traceWarn } from "./trace.ts";
 
-import { execp } from "./lens-exec.ts";
+import { execp } from "./exec.ts";
 
 /**
  * Write a lens-review entry to the review ledger. Fire-and-forget in

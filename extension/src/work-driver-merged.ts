@@ -8,7 +8,7 @@
  */
 
 import { dispatchCore } from "./dispatch.ts";
-import { execp } from "./lens-exec.ts";
+import { execp } from "./exec.ts";
 import { slowRecorder } from "./slow-events.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";

@@ -13,12 +13,11 @@
  * itself merge authority.
  */
 
-import { exec } from "node:child_process";
 import path from "node:path";
-import { promisify } from "node:util";
 import { notifyAgent } from "./agent-message.ts";
 import { setJobIssues } from "./async-jobs-registry.ts";
 import { startJob } from "./async-jobs.ts";
+import { execp } from "./exec.ts";
 import { detectForge } from "./forge-detect.ts";
 import { type Forge, createForge } from "./forge.ts";
 import { trace } from "./trace.ts";
@@ -29,8 +28,6 @@ import { runWorkDriver } from "./work-driver.ts";
 import { singleCycleQueueEntry } from "./work-queue-single-entry.ts";
 import { mergeQueueSummaryEntry } from "./work-queue-summary.ts";
 import { renderQueueSummary, runWorkQueue } from "./work-queue.ts";
-
-const execp = promisify(exec);
 
 export interface WorkInvocation {
   issues: number[];

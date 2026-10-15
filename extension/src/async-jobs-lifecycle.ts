@@ -11,6 +11,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type JobKind, childHandles, jobs } from "./async-jobs-registry.ts";
 import { reset as resetDeck } from "./dispatch-deck.ts";
 import { incrementNotice } from "./notice-counter.ts";
+import { markSessionShutdown } from "./session-shutdown.ts";
 import { trace } from "./trace.ts";
 
 /** The narrow host surface startJob / dispatch need: steer delivery only. */
@@ -152,6 +153,11 @@ export function registerAsyncJobsLifecycle(pi: ExtensionAPI): void {
     ) => void;
   };
   piWithOn.on?.("session_shutdown", (event) => {
+    // FIRST, and synchronously: the /work driver reads this flag when its
+    // aborted child comes back, and must find the reason already there — or
+    // it blames the step for the abort below and starts a handoff it cannot
+    // finish (session-shutdown.ts).
+    markSessionShutdown(event?.reason ?? "not given");
     // Name what ended and why Pi says it ended: the bare count left an
     // operator with "aborted 1 in-flight async jobs" and no cause.
     const labels = [...jobs.values()].map((j) => j.label).join(", ");

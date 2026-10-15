@@ -25,18 +25,20 @@
  * driver audits); nothing here runs at process.cwd().
  */
 
-import { exec as execCb } from "node:child_process";
 import fs from "node:fs/promises";
-import { promisify } from "node:util";
+import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import { isDriverManagedDirtLine } from "./work-driver-branch-residue.ts";
-import { readCycleWorktreePaths, refuseDirtyCycleTrees } from "./work-driver-integrate-cycle.ts";
+import {
+  readCycleWorktreePaths,
+  refuseDirtyCycleTrees,
+  refuseLossyStaleIntegrateTree,
+} from "./work-driver-integrate-cycle.ts";
 import { runCreateGuards } from "./worktree-create-guard.ts";
+import { assertSafeRef } from "./worktree-loss.ts";
 import { provisionWorktree } from "./worktree-provision.ts";
 import { resolvePath, worktreePath, worktreeRemove } from "./worktree.ts";
 import type { ExecFn } from "./worktree.ts";
-
-const execp = promisify(execCb);
 
 /**
  * #861 — the shared porcelain-dirt reader (trimmed, non-empty lines; `[]`
@@ -106,6 +108,13 @@ export async function ensureIntegrateWorktree(
   const { repoRoot, issue, branchName, baseSha } = opts;
   const name = integrateWorktreeName(issue);
   const abs = worktreePath(repoRoot, name);
+  // #1170 — branchName and baseSha reach shell strings below.
+  try {
+    assertSafeRef(branchName);
+    assertSafeRef(baseSha);
+  } catch (err) {
+    throw new Error(`integrate ref refused: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   // ---- preflight: what holds the branch, and who is where
   let branchHead: string | undefined;
@@ -119,6 +128,8 @@ export async function ensureIntegrateWorktree(
   } catch {
     branchHead = undefined;
   }
+  // #1170 — branchHead is git output; fail closed before any removal.
+  if (branchHead !== undefined) assertSafeRef(branchHead);
 
   // #1170 — the cycle's own worktrees (the develop trees) are excluded from
   // the sibling scan below; a dirty one still refuses, before any mutation.
@@ -168,6 +179,15 @@ export async function ensureIntegrateWorktree(
       } catch {
         staleHead = undefined;
       }
+      // #1170 — a stale tree holding uncommitted or unique work is refused,
+      // not force-removed (the force-remove is what destroys it).
+      await refuseLossyStaleIntegrateTree(
+        execFn,
+        repoRoot,
+        abs,
+        branchHead ?? baseSha,
+        `origin/${branchName}`,
+      );
       trace(
         `work-driver: stale ${name} worktree at ${abs} (old HEAD: ${staleHead ?? "unreadable"}) — driver-owned, force-removing and recreating`,
       );

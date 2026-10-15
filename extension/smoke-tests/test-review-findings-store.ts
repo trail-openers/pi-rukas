@@ -13,7 +13,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import os from "node:os";
 import path from "node:path";
 import { acceptRow } from "../scripts/review-accept-row.ts";
-import { execp } from "../src/lens-exec.ts";
+import { execp } from "../src/exec.ts";
 import { partitionDecisions } from "../src/lens-residuals.ts";
 import type { Finding } from "../src/lens-review-types.ts";
 import {

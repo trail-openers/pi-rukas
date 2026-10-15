@@ -33,6 +33,7 @@ import type { DriverContext } from "../src/work-driver-context.ts";
 import { runBranchViaOpsDispatch } from "../src/work-driver-branch-ops.ts";
 import { initialState } from "../src/workflow-state.ts";
 import type { ExecFn } from "../src/worktree.ts";
+import { realExec } from "./lib/exec-fake.ts";
 
 const execFileP = promisify(execFile);
 // Disable resume state writes + PR preflight (no real remote setup needed).
@@ -47,15 +48,6 @@ function assert(cond: boolean, msg: string) {
     exit = 1;
   }
 }
-
-/** Real shell exec, matching the driver's ExecFn contract. */
-const realExec: ExecFn = async (cmd, o) => {
-  const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
-    cwd: o?.cwd,
-    maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
-  });
-  return { stdout };
-};
 
 const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 

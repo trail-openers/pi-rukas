@@ -28,6 +28,7 @@ import type { DriverContext } from "../src/work-driver-context.ts";
 import { pathsAreFrontendOnly } from "../src/work-driver-verify-cmd.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
+import { commandOf } from "./lib/argv-shell.ts";
 
 const execFileP = promisify(execFile);
 
@@ -83,7 +84,8 @@ try {
     if (opts.pkg) writeFileSync(path.join(dir, "package.json"), JSON.stringify(opts.pkg));
     const commands: string[] = [];
     const verifyCommands = ["cargo check --quiet", "npm run test", "bun run test", "pnpm run test", "bun run typecheck", "npm run typecheck", "echo explicit-verify"];
-    const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
+    const exec: NonNullable<DriverContext["verifyExecFn"]> = async (argvCmd, o) => {
+      const cmd = commandOf(argvCmd, o);
       if (verifyCommands.includes(cmd)) commands.push(cmd);
       if (cmd === "git status --porcelain") return { stdout: porcelain };
       if (cmd.startsWith("git rev-list --count")) return { stdout: porcelain.trim() ? "1\n" : "0\n" };
@@ -299,7 +301,8 @@ try {
     // The ratchet reads `git diff ${base} -U0` — route the marker-laden diff
     // there (distinct from the --name-only form handled by the base fake).
     const wrapped: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
-      if (cmd.startsWith("git diff") && cmd.includes("-U0"))
+      const line = commandOf(cmd, o);
+      if (line.startsWith("git diff") && line.includes("-U0"))
         return { stdout: '+#[ignore]\n+it.skip("test1");\n+test.skip("test2");\n' };
       return r.exec(cmd, o);
     };

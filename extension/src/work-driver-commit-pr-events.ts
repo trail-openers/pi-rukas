@@ -146,6 +146,7 @@ export async function runCommitPrPostDispatchGates(
           step: "commit-pr",
           failures: gate.failures,
           at: Date.now(),
+          origin: "outcome-gate",
           ...(commitPrFlake ? { retries: 1, recovered: false } : {}),
         },
       },

@@ -402,6 +402,7 @@ export type WorkEvent =
   | WorktreeLeftoverHandledEvent
   | DispatchSlowEvent
   | FenceRecoveryStartedEvent
+  | CycleInterruptedEvent
   /**
    * S4a (#1162) — the cycle was interrupted (SIGTERM / SIGINT, via
    * `markInterrupted`). `reason` is the operator-facing why; renderers read
@@ -414,6 +415,30 @@ export type WorkEvent =
  * the abort reason and the exit code (headless/exit-code.ts).
  */
 export type InterruptReason = "signal" | "timeout";
+
+/**
+ * The session was shut down under a running cycle (Pi's `session_shutdown`).
+ * NOT a failure and never followed by a cap-hit: status stays `running`, and
+ * the next `/work <N>` re-enters `step`.
+ */
+export type CycleInterruptedEvent = {
+  kind: "cycle-interrupted";
+  at: number;
+  /** The step that was running, or about to start. */
+  step: WorkStep;
+  /**
+   * Pi's shutdown reason. The known values are the `session_shutdown` reasons;
+   * `(string & {})` keeps the union open so a new Pi reason is not a type error.
+   */
+  reason: "quit" | "reload" | "new" | "resume" | "fork" | (string & {});
+  /** Where the work is, when the cycle had got that far. */
+  branch?: string;
+  headSha?: string;
+  /** False when the state on disk is one the re-entry check refuses. */
+  resumable: boolean;
+  /** The error text when the step threw during the shutdown (bounded). */
+  error?: string;
+};
 
 /** Discriminator union of event kinds — useful for callers that switch on it. */
 export type WorkEventKind = WorkEvent["kind"];

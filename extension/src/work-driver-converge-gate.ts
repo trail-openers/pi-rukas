@@ -26,10 +26,9 @@
  * Escape hatch: PI_ENSEMBLE_CONVERGE=0 (checked in runConvergeGate).
  */
 
-import { exec } from "node:child_process";
 import path from "node:path";
-import { promisify } from "node:util";
 import { recordCommentEvidence } from "./comment-evidence.ts";
+import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import {
@@ -42,8 +41,6 @@ import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { applySafetyNet } from "./work-driver-safety-net.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
-
-const execp = promisify(exec);
 
 /**
  * Run the converge gate at end-of-develop, after the existing verify gate
@@ -203,6 +200,7 @@ export async function runConvergeGateHandler(
             step: "develop",
             failures: gate2.failures,
             at: Date.now(),
+            origin: "outcome-gate",
             ...(gate2.flakeRecovered ? { retries: 1, recovered: true } : {}),
           },
         },

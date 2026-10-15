@@ -58,7 +58,20 @@ export function adversarialRoundsLine(
     }
     return "**Rounds**: adversarial loop ran, round count unrecorded";
   }
-  return `**Rounds**: ${reviewRound} of 3 review rounds`;
+  // `reviewRound` counts six-lens review rounds only, and says so: a cycle
+  // parked at develop after an adversarial round and its fix pass printed a
+  // bare "0 of 3 review rounds" (#1286). The adversarial rounds
+  // that ran are already in the log as `adversarial-round` records.
+  let advRounds = 0;
+  let advStatus: string | undefined;
+  for (const e of state.eventLog) {
+    if (e.kind !== "adversarial-round" || typeof e.round !== "number") continue;
+    if (e.round >= advRounds) advStatus = e.verdictParsed ? e.status : "no verdict parsed";
+    advRounds = Math.max(advRounds, e.round);
+  }
+  const adv =
+    advRounds > 0 ? `; the adversarial gate ran ${advRounds} round(s), last: ${advStatus}` : "";
+  return `**Rounds**: ${reviewRound} of 3 review rounds (six-lens review${adv})`;
 }
 
 /**

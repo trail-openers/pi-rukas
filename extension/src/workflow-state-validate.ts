@@ -100,6 +100,9 @@ export const KNOWN_EVENT_KINDS = [
   "dispatch-slow",
   // S4a (#1162) — the interrupt record (SIGTERM / SIGINT via markInterrupted).
   "interrupted",
+  // The session-shutdown record. Absent from the tuple, the one cycle this
+  // event promises is resumable would refuse to resume.
+  "cycle-interrupted",
 ] as const;
 
 // #986 — compile-time exhaustiveness. If the `WorkEvent` union gains a kind

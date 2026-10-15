@@ -31,9 +31,8 @@
  * with it) halts the step via a `branch-ahead:branch` cap; nothing is
  * reset. The detection is purely read-only (two `git` probes) and runs
  * only against the resolved branch name, so a fresh cycle with no local
- * branch never sees it — unless #1189's push check shows the tip is
- * already pushed to the remote (verified via `ls-remote`, not the tracking
- * ref), in which case the reset proceeds.
+ * branch never sees it — unless #1189's push check (ls-remote) shows the
+ * tip is already on `origin/<branch>`, in which case the reset proceeds.
  */
 import { trace } from "./trace.ts";
 import { ensureWorktreesExcluded } from "./work-driver-git-exclude.ts";
@@ -374,7 +373,8 @@ export interface MechanizedBranchResult {
  * workstream. Throws on any failure — the caller routes that to a
  * `dispatch-failed` on the branch step, which the router turns into a handoff.
  *
- * `DirtyWorktreeError` (#475) is the one failure that must NOT fall back to
+ * `DirtyWorktreeError` (#475) and `WorktreeScanError` (#1170) are the failures
+ * that must NOT fall back to
  * the LLM ops dispatch: the ops branch prompt instructs `git worktree remove
  * --force` for an existing worktree, so the fallback would destroy exactly
  * the work the guard just refused to destroy. Refusing means refusing.
@@ -464,6 +464,7 @@ export async function mechanizedBranchSetup(
         repoRoot,
         name: `issue-${issue}-${id}`,
         fromRef: baseSha,
+        strictSiblingListing: true,
       });
       worktrees[id] = created.path;
       provisions[id] = created.provision;
