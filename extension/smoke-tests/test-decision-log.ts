@@ -160,6 +160,28 @@ const lines = (f: string) =>
   assert(d.answer === "flag", "an unwritable log location leaves the decision unchanged");
 }
 
+// ---------------------------------------------- a symlinked .pi cannot carry the log out
+
+{
+  const root = tmpDir("symlog");
+  const elsewhere = tmpDir("elsewhere");
+  symlinkSync(elsewhere, path.join(root, ".pi"));
+  const b = stubBackend({ ok: true, answer: "flag" });
+  const d = await decide(
+    seam,
+    { state: {}, question: "q", rule: "ok" },
+    { repoRoot: root, backends: [b] },
+  );
+  assert(
+    d.answer === "flag",
+    "a log directory escaping the repo root leaves the decision unchanged",
+  );
+  assert(
+    !existsSync(path.join(elsewhere, "decisions.jsonl")),
+    "...and nothing is written outside the root",
+  );
+}
+
 // ---------------------------------------------- evidence path confinement
 
 {
@@ -171,7 +193,7 @@ const lines = (f: string) =>
   symlinkSync(path.join(outside, "evil.md"), path.join(root, "link.md"));
   writeFileSync(path.join(root, "huge.md"), `${Q}\n${"x".repeat(MAX_EVIDENCE_FILE_BYTES)}`);
   const check = { repoRoot: root, texts: [] };
-  const ok = async (cited: string) => (await verifyEvidence(check, {}, Q, cited)).passed;
+  const ok = async (cited: string) => (await verifyEvidence(check, Q, cited)).passed;
   assert(await ok("POLICY.md"), "a quote in a file inside the repo root verifies");
   assert(!(await ok(path.join(outside, "evil.md"))), "an absolute path outside the root does not");
   assert(!(await ok(`../${path.basename(outside)}/evil.md`)), "a ../ traversal does not");
@@ -179,19 +201,21 @@ const lines = (f: string) =>
   assert(!(await ok("huge.md")), "a file over the size bound is not read");
   assert(!(await ok("missing.md")), "a missing file does not");
   assert(
-    !(await verifyEvidence({ texts: [] }, {}, Q, "POLICY.md")).passed,
+    !(await verifyEvidence({ texts: [] }, Q, "POLICY.md")).passed,
     "with no repo root, a cited file is never read",
   );
+  assert(!(await verifyEvidence(undefined, Q, undefined)).passed, "no evidence check → no pass");
+  const vouched = { texts: [{ name: "AGENTS.md", text: Q }] };
   assert(
-    !(await verifyEvidence(undefined, { t: Q }, Q, undefined)).passed,
-    "no evidence check → no pass",
+    (await verifyEvidence(vouched, Q, undefined)).passed,
+    "an uncited quote verifies against a text the caller vouched for",
   );
   assert(
-    (await verifyEvidence({}, { nested: [{ t: Q }] }, Q, undefined)).passed,
-    "an uncited quote verifies against the state's strings",
+    !(await verifyEvidence({}, Q, undefined)).passed,
+    "...but never against the raw state: a quote of injected state text cannot justify a replace",
   );
   assert(
-    !(await verifyEvidence({}, { t: Q }, "short", undefined)).passed,
+    !(await verifyEvidence(vouched, "short", undefined)).passed,
     "a trivially short quote is not evidence",
   );
 }

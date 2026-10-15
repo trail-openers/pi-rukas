@@ -42,6 +42,7 @@ import {
   seamConfig,
   seamContractViolations,
 } from "./decision-seam-registry.ts";
+import { traceWarn } from "./trace.ts";
 
 export interface DecideRequest {
   /** The data the question is about. Untrusted: fenced, bounded, never instructions. */
@@ -158,11 +159,12 @@ async function runBounded(
   }
 }
 
-function serialise(state: unknown): string {
+/** Undefined when the state is not JSON (cyclic, BigInt): a model must not be handed a placeholder. */
+function serialise(state: unknown): string | undefined {
   try {
     return JSON.stringify(state) ?? "null";
   } catch {
-    return String(state);
+    return undefined;
   }
 }
 
@@ -187,8 +189,12 @@ export async function decide(
     const violations = seamContractViolations(spec);
     const cfg = seamConfig(spec);
     const mode = violations.length > 0 ? "off" : cfg.mode;
-    if (violations.length > 0)
+    if (violations.length > 0) {
       notes.push(`contract violations, rule only: ${violations.join("; ")}`);
+      traceWarn(
+        `decision-seam: '${seam}' violates its contract, rule only: ${violations.join("; ")}`,
+      );
+    }
     const labels = Object.keys(spec.labels);
     const undecided = req.rule === UNDECIDED;
     let rule = undecided ? spec.ruleDefault : req.rule;
@@ -197,12 +203,15 @@ export async function decide(
       rule = spec.ruleDefault;
     }
 
-    const stateText = serialise(req.state);
+    const serialised = serialise(req.state);
+    const stateText = serialised ?? "";
     const estTokens = Math.ceil((stateText.length + req.question.length) / 4);
     let model: (BackendResult & { ok: true }) | undefined;
     let used: Attempt | undefined;
     if (mode !== "off") {
-      if (estTokens > cfg.tokenBudget) {
+      if (serialised === undefined) {
+        notes.push("state is not serialisable as JSON; abstained");
+      } else if (estTokens > cfg.tokenBudget) {
         notes.push(
           `state is oversized (~${estTokens} tokens > budget ${cfg.tokenBudget}); abstained, not truncated`,
         );
@@ -234,10 +243,18 @@ export async function decide(
 
     const evidence =
       model && spec.evidence === "quote"
-        ? await verifyEvidence(req.evidence, req.state, model.quote, model.cited)
+        ? await verifyEvidence(req.evidence, model.quote, model.cited)
         : undefined;
     const composed = compose(spec, mode, rule, undecided, model?.answer, evidence?.passed === true);
-    const reason = [composed.result, evidence ? `evidence: ${evidence.reason}` : "", ...notes]
+    const failures = model
+      ? []
+      : attempts.map((a) => `${a.backend}: ${a.result.ok ? "" : a.result.error}`);
+    const reason = [
+      composed.result,
+      evidence ? `evidence: ${evidence.reason}` : "",
+      ...notes,
+      ...failures,
+    ]
       .filter(Boolean)
       .join("; ");
     decision = {
@@ -276,6 +293,8 @@ export async function decide(
       reason: `decide failed, rule answer used: ${(err as Error)?.message ?? String(err)}`,
       latencyMs: Date.now() - t0,
     };
+    // The same core fields as a successful record, so S5 can count error-path calls.
+    record = { ...record, ruleAnswer: fallback, error: decision.reason };
   }
   await appendDecisionRecord(ctx, {
     ts: new Date().toISOString(),

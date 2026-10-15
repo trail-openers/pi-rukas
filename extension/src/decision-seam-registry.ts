@@ -110,6 +110,9 @@ export function isFailClosed(spec: SeamSpec): boolean {
   return !isPassing(spec, spec.ruleDefault);
 }
 
+/** Seams that pre-date decide(). Closed: the shadow-first rule must not be one flag away. */
+const GRANDFATHERED: readonly string[] = ["policy-judge"];
+
 const KINDS: readonly string[] = ["choice", "bool", "score"];
 const COMPOSITIONS: readonly string[] = ["may-add-only", "tie-break", "advisory", "replace"];
 const MODES: readonly string[] = ["off", "shadow", "enforce"];
@@ -165,6 +168,10 @@ export function seamContractViolations(spec: Partial<SeamSpec>): string[] {
     (full.composition === "may-add-only" || full.composition === "tie-break")
   )
     v.push(`a score question cannot compose as ${full.composition}`);
+  if (full.grandfathered && !GRANDFATHERED.includes(full.id))
+    v.push(
+      `only ${GRANDFATHERED.join(", ")} may be grandfathered — a new seam earns enforce through its log`,
+    );
   if (full.defaultMode === "enforce" && !full.grandfathered)
     v.push("a new seam starts in shadow — only a grandfathered seam enforces by default");
   if (!(full.timeoutMs > 0)) v.push("timeoutMs must be positive");

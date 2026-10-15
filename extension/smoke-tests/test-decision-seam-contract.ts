@@ -115,6 +115,11 @@ for (const f of [
     `rejects a seam missing '${f}'`,
   );
 }
+rejects(
+  { id: "my-new-seam", defaultMode: "enforce", grandfathered: true },
+  /may be grandfathered/,
+  "a new seam that declares itself grandfathered to skip shadow",
+);
 rejects({ defaultMode: "enforce" }, /starts in shadow/, "a new seam that enforces by default");
 rejects(
   { labels: { true: "t", maybe: "m" }, kind: "bool", ruleDefault: "true", passing: ["true"] },

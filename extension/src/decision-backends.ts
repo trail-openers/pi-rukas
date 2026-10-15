@@ -77,6 +77,7 @@ export interface Backend {
 
 export type DecisionRegistry = Pick<ModelRegistry, "classify" | "streamSimple" | "getModelOfType">;
 type ChatModel = Parameters<ModelRegistry["streamSimple"]>[0];
+type ClassifierState = Parameters<ModelRegistry["classify"]>[1]["state"];
 
 function usageOf(
   u: { input: number; output: number; totalTokens: number; cost?: { total?: number } } | undefined,
@@ -119,10 +120,13 @@ function classifierBackend(registry: DecisionRegistry | undefined): Backend | un
     source: "classifier",
     run: async (input, signal) => {
       const { spec } = input;
-      const state =
-        input.state && typeof input.state === "object" && !Array.isArray(input.state)
-          ? (input.state as Record<string, never>)
-          : { value: input.state as never };
+      // Re-parsed from the serialised text, so the classifier gets exactly the
+      // JSON the budget was measured on; the parse result is JSON by construction.
+      const parsed: ClassifierState[string] = JSON.parse(input.stateText);
+      const state: ClassifierState =
+        parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          ? (parsed as ClassifierState)
+          : { value: parsed };
       const r = await registry.classify(
         model,
         { state, questions: { [spec.id]: classifierQuestion(spec, input.question) } },

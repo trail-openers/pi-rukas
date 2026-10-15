@@ -3,8 +3,8 @@
  * generalised from the policy judge's verbatim-citation rule (#407).
  *
  * A model answer that is allowed to *become* the outcome must quote the text
- * it relied on, and that text must be found — modulo formatting — in the
- * state it was given or in a file it names. Existence is a hallucination
+ * it relied on, and that text must be found — modulo formatting — in a
+ * text the caller vouched for or in a file it names. Existence is a hallucination
  * guard, not a relevance guard; that limit is accepted (see
  * work-driver-policy.ts).
  *
@@ -47,8 +47,9 @@ export const MAX_EVIDENCE_FILE_BYTES = 256 * 1024;
 
 export interface EvidenceCheck {
   /**
-   * Named texts the quote may come from — e.g. the documents placed in the
-   * state. When absent, every string in the state is a candidate.
+   * The parts of the state the caller vouches for as evidence — e.g. the
+   * documents it read itself. Never the whole state: state carries untrusted
+   * text, and a quote of injected text must not be able to justify a replace.
    */
   texts?: readonly { name: string; text: string }[];
   /** Enables citing a file by path. Without it, a cited name must be one of `texts`. */
@@ -58,14 +59,6 @@ export interface EvidenceCheck {
 export interface EvidenceResult {
   passed: boolean;
   reason: string;
-}
-
-function stateStrings(state: unknown, out: string[] = []): string[] {
-  if (typeof state === "string") out.push(state);
-  else if (Array.isArray(state)) for (const v of state) stateStrings(v, out);
-  else if (state && typeof state === "object")
-    for (const v of Object.values(state)) stateStrings(v, out);
-  return out;
 }
 
 /** Read a repo-confined file, bounded. Undefined on anything unsafe or unreadable. */
@@ -89,19 +82,17 @@ async function readConfined(repoRoot: string, cited: string): Promise<string | u
  */
 export async function verifyEvidence(
   check: EvidenceCheck | undefined,
-  state: unknown,
   quote: string | undefined,
   cited: string | undefined,
 ): Promise<EvidenceResult> {
   if (!check) return { passed: false, reason: "the seam supplied no evidence check" };
   if (!quote?.trim()) return { passed: false, reason: "the answer quoted nothing" };
-  const texts =
-    check.texts ?? stateStrings(state).map((text, i) => ({ name: `state[${i}]`, text }));
+  const texts = check.texts ?? [];
   const named = cited?.trim();
   if (!named) {
     return texts.some((t) => citationPresent(quote, t.text))
-      ? { passed: true, reason: "the quote was found in the state" }
-      : { passed: false, reason: "the quote is not in the state" };
+      ? { passed: true, reason: "the quote was found in a supplied text" }
+      : { passed: false, reason: "the quote is not in any supplied text" };
   }
   const candidates = texts.filter((t) => t.name.toLowerCase() === named.toLowerCase());
   if (candidates.length > 0) {

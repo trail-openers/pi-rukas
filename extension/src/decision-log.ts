@@ -31,8 +31,8 @@
 import { readFileSync, statSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { SECRET_PATTERNS } from "./secret-patterns.ts";
 import { trace } from "./trace.ts";
-import { SECRET_PATTERNS } from "./vipune.ts";
 import { ensureGitExclude } from "./work-driver-git-exclude.ts";
 
 export const REDACTED = "[REDACTED]";
@@ -57,13 +57,14 @@ export function redactSecrets(text: string): { text: string; count: number } {
 }
 
 /**
- * Redact every string inside a JSON-shaped value, then bound it. Redacting
- * first means a bound can never cut a secret into a fragment the patterns no
- * longer recognise.
+ * Redact every string inside a JSON-shaped value, then bound it. The final
+ * bound is applied after redaction, so it can never cut a secret into a
+ * fragment the patterns no longer recognise; a generous pre-bound (well past
+ * any token's length) keeps a whole-document state from being regex-scanned.
  */
 function redactDeep(v: unknown, counter: { n: number }): unknown {
   if (typeof v === "string") {
-    const r = redactSecrets(v);
+    const r = redactSecrets(v.slice(0, LOG_STRING_CHARS + 2048));
     counter.n += r.count;
     return r.text.length > LOG_STRING_CHARS ? `${r.text.slice(0, LOG_STRING_CHARS)}…` : r.text;
   }
@@ -83,6 +84,8 @@ function mainCheckout(root: string): string {
     const wt = m?.[1]
       ? /^(.*)[\\/]\.git[\\/]worktrees[\\/][^\\/]+$/.exec(path.resolve(root, m[1]))
       : null;
+    if (!wt?.[1])
+      trace(`decision-log: ${root}/.git is not a linked worktree pointer; logging under it`);
     return wt?.[1] ?? root;
   } catch {
     return root;
@@ -109,22 +112,29 @@ export async function appendDecisionRecord(
     trace(`decision-log: no repo root, record not written — ${line.slice(0, 300)}`);
     return undefined;
   }
+  const root = mainCheckout(where.repoRoot);
   const file = decisionLogPath(where.repoRoot, where.issues);
   try {
     await fs.mkdir(path.dirname(file), { recursive: true });
+    // A symlinked `.pi/` component must not carry the record out of the repo.
+    const realRoot = await fs.realpath(root);
+    const rel = path.relative(realRoot, await fs.realpath(path.dirname(file)));
+    if (rel.startsWith("..") || path.isAbsolute(rel))
+      throw new Error("log directory escapes the repo root");
+    const st = await fs.lstat(file).catch(() => undefined);
+    if (st && !st.isFile()) throw new Error("log path is not a regular file");
     await fs.appendFile(file, line, { flag: "a" });
-    if (!where.issues?.length) {
-      // Outside a cycle the log is not under the driver's gitignored state dir.
-      const root = mainCheckout(where.repoRoot);
-      const isRepo = await fs.stat(path.join(root, ".git")).then(
-        (s) => s.isDirectory(),
-        () => false,
-      );
-      if (isRepo) await ensureGitExclude(root, [".pi/decisions.jsonl"]);
-    }
-    return file;
   } catch (err) {
     trace(`decision-log: append to ${file} failed: ${(err as Error).message}`);
     return undefined;
   }
+  if (file === path.join(root, ".pi", "decisions.jsonl")) {
+    // Outside a cycle the log is not under the driver's gitignored state dir.
+    const isRepo = await fs.stat(path.join(root, ".git")).then(
+      (s) => s.isDirectory(),
+      () => false,
+    );
+    if (isRepo) await ensureGitExclude(root, [".pi/decisions.jsonl"]).catch(() => undefined);
+  }
+  return file;
 }

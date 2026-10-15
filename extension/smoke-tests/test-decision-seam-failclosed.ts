@@ -42,8 +42,8 @@ const SHAPES: Partial<SeamSpec>[] = [
   { kind: "score", labels: { low: "l", mid: "m", high: "h" }, passing: ["high"] },
 ];
 
-/** Contract-valid apart from defaultMode, which the property does not depend on. */
-const valid = (s: SeamSpec) => seamContractViolations({ ...s, grandfathered: true }).length === 0;
+/** Contract-valid as a shadow seam; the property varies the mode itself. */
+const valid = (s: SeamSpec) => seamContractViolations({ ...s, defaultMode: "shadow" }).length === 0;
 
 // 1 — compose(), exhaustively.
 {
