@@ -31,8 +31,13 @@ import {
  * PR5 — single source of truth mapping a cap-hit `cap` value to an
  * operator-readable sentence. Used by every handoff surface so the
  * WHY explanation stays consistent.
- * Exhaustive switch — adding a new cap value to the WorkEvent union
- * forces a typecheck error here, which is the design intent.
+ * Exhaustive switch for FIXED-LITERAL caps — adding a new fixed-literal cap
+ * value to the WorkEvent union forces a typecheck error here, which is the
+ * design intent. TEMPLATE caps (`verify-failed:`, `step-failed:`,
+ * `branch-ahead:`, `driver-crash:`) do NOT force a case — they are handled
+ * by the prefix branches below the switch, where each gets its own tailored
+ * sentence; adding a new template prefix without a matching branch below
+ * would fall through to the generic "see state-file event log" fallback.
  */
 export function explainCap(
   cap: Extract<WorkEvent, { kind: "cap-hit" }>["cap"] | undefined,
@@ -328,6 +333,15 @@ export function explainCap(
     const path =
       frag && frag.failure.class === "dirty-leftover" ? frag.failure.leftoverPath : undefined;
     return `a DEPENDENT workstream's deferred worktree creation was refused or failed (a dirty same-issue leftover at the target path, or a git error on the add) — the cycle parked so the leftover is inspected and salvaged rather than force-removed${path ? `; the leftover is at ${path}` : ""}; the failed workstream's branch-completed event carries the git detail`;
+  }
+  // #1263 — a step handler THREW (an fs failure, a bug, an uncaught exec
+  // rejection). Distinct from the dispatch-failure `step-failed:<step>`
+  // (that one is a child that failed; this one is the driver itself crashing
+  // inside the step handler). Routed through runHandoff so the operator got a
+  // comment + label, not just a silent `aborted` state file.
+  if (cap.startsWith("driver-crash:")) {
+    const step = cap.slice("driver-crash:".length);
+    return `the driver itself crashed while running the ${step} step (an unhandled error in the step handler — not a subagent failure). The cycle routed the crash through the handoff so the issue carries a comment + label; the crash detail (message + stack) is the last entry in the state file's event log. Fix the underlying error and re-run /work`;
   }
   // Template-literal `step-failed:<step>` values land here. Switch on the
   // step suffix to produce a tailored sentence.
