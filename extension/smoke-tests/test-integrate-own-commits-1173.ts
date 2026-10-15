@@ -312,6 +312,34 @@ try {
       `(k) the creation error names the kept backup ref (${res.slice(0, 160)})`,
     );
   }
+
+  // (l) the halt's plumb report (what the handoff renders) names the kept ref,
+  // even when the creation error is long enough to truncate.
+  {
+    const { repo, baseSha, wt } = await fixture("halt-body-ref");
+    const sha = await staleDetachedWithCommit(repo, wt, baseSha);
+    const addFails: typeof realExec = async (cmd, o) => {
+      if (cmd.startsWith("git worktree add"))
+        throw new Error(`fatal: simulated add failure ${"x".repeat(500)}`);
+      return realExec(cmd, o);
+    };
+    const base = initialState(17);
+    const state = { ...base, pipelineState: { ...base.pipelineState, baseSha } };
+    const ctx = { repoRoot: repo, issue: 17 } as unknown as CycleContext;
+    const res = await ensureIntegrateWorktreeOrHalt(ctx, state, BRANCH, addFails, "conflict");
+    const plumb =
+      "halted" in res ? res.halted.eventLog.find((e) => e.kind === "plumb-report") : undefined;
+    const body = (plumb as { body?: string } | undefined)?.body ?? "";
+    const ref = `refs/pi-rukas/integrate-backup/issue-17/${sha}`;
+    assert(
+      "halted" in res && body.includes(ref) && body.includes("simulated add failure"),
+      `(l) the halt plumb report names the kept backup ref (${body.slice(0, 80)})`,
+    );
+    assert(
+      body.length < 1200,
+      `(l) the creation error in the halt body is bounded (${body.length} chars)`,
+    );
+  }
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

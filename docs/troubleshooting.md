@@ -1072,6 +1072,8 @@ Cause (#1173, #1100): the driver created the integrate tree on a **detached HEAD
 
 A stale integrate tree whose only loss is commits, and which is detached or on the cycle's own branch, no longer refuses. Its commits are kept on `refs/pi-rukas/integrate-backup/issue-<N>/<sha>` and the tree is recreated. The commit-pr plumb report names the ref: `The stale integrate tree's unpushed commits were kept on …`. A tree with uncommitted or non-regenerable ignored files, or one on a different branch, still refuses. Recover a kept commit with `git log <ref>` / `git cherry-pick <ref>`. Delete the ref with `git update-ref -d <ref>` once you no longer need it.
 
+A kept ref is **not** re-applied automatically: the next commit-pr regenerates the consolidation from the develop patches, so the ref exists only for manual recovery. Kept refs are never pruned automatically; list them with `git for-each-ref refs/pi-rukas/integrate-backup` and remove each with `git update-ref -d <ref>`.
+
 ### CI failed, the driver "fixed" it, and CI failed on the same commit again
 
 Symptom: after `ci-status: failure` the cycle ran `develop → adversarial → commit-pr`, logged `commit-pr re-entry — open PR #<N> already heads <branch>; integrate/prCreate skipped`, and `ci` then watched the unchanged head until the retry cap. The re-entry guard treated every open PR as a finished `commit-pr` and never pushed the fix. Fixed: a second `commit-pr` now measures the worktrees against the branch, and work the branch lacks is integrated onto the branch's own head and pushed fast-forward to the PR that is already open (`commit-pr second round` in the trace). On an older build the fix is intact in `.worktrees/issue-<N>-<id>` — cherry-pick it onto the branch and push.

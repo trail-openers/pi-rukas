@@ -154,13 +154,17 @@ export async function ensureIntegrateWorktreeOrHalt(
       `work-driver: integrate worktree creation failed — halting (no unpinned ops dispatch): ${detail.slice(0, 200)}`,
     );
     const capBody = `integrate worktree could not be created: ${detail.slice(0, 200)}`;
+    // #1173 — the ref travels on the error (ensureIntegrateWorktree attaches
+    // it), so the handoff names it without parsing the message.
+    const keptRef = (rawErr as { backupRef?: unknown }).backupRef;
+    const backupRef = typeof keptRef === "string" ? keptRef : undefined;
     const halted: WorkState = appendEvent(
       appendEvent(state, {
         kind: "plumb-report",
         at: Date.now(),
         step: "commit-pr",
         role: "driver",
-        body: `The driver-owned integrate worktree could not be created; the commit-pr ops fallback is pinned to it as the ONLY permitted working tree, so no ops dispatch is attempted.${integrateReason ? ` The mechanized integrate failed first: ${integrateReason.slice(0, 400)}` : ""}`,
+        body: `The driver-owned integrate worktree could not be created; the commit-pr ops fallback is pinned to it as the ONLY permitted working tree, so no ops dispatch is attempted.${integrateReason ? ` The mechanized integrate failed first: ${integrateReason.slice(0, 400)}` : ""}${backupRef ? ` The stale integrate tree's unpushed commits were kept on ${backupRef}; they are NOT re-applied automatically (the next commit-pr regenerates the consolidation from the patches), so that ref is for manual recovery.` : ""} Creation error: ${detail.slice(0, 400)}`,
         fallbackCause: "other",
       }),
       {

@@ -119,8 +119,11 @@ export async function ensureIntegrateWorktree(
   } catch (err) {
     if (kept.ref === undefined || !(err instanceof Error)) throw err;
     // Annotate in place: the error keeps its class (DirtyWorktreeError stays one).
+    // The ref also travels as a structured field, so the halt report can name
+    // it without parsing the message (which the halt truncates).
     const note = ` (the stale integrate tree's unpushed commits were kept on ${kept.ref})`;
-    const e = err as Error & { stderr?: unknown };
+    const e = err as Error & { stderr?: unknown; backupRef?: string };
+    e.backupRef = kept.ref;
     e.message += note;
     if (typeof e.stderr === "string" && e.stderr) e.stderr += note;
     throw err;
