@@ -35,6 +35,7 @@ import {
   runSmokeGate,
 } from "./work-driver-verify-develop-gates.ts";
 import { normaliseScopePath } from "./work-driver-verify-develop-helpers.ts";
+import { fastVerifyCmdFor, withFastTier } from "./work-driver-verify-fast.ts";
 import { runVerifyCommandGate } from "./work-driver-verify-verify-cmd.ts";
 
 import type { WorkState } from "./workflow-state.ts";
@@ -382,7 +383,8 @@ export async function verifyDevelopOutcome(
       // failure messages, the flake-retry precondition and the aggregation
       // semantics all live there unchanged.
       await runVerifyCommandGate({
-        execFn,
+        // #1324 — `.pi/verify-cmd-fast` runs before every full run of `cmd`.
+        execFn: withFastTier(execFn, cmd, await fastVerifyCmdFor(ctx.repoRoot)),
         cmd,
         ctx,
         state,

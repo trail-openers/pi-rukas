@@ -35,8 +35,12 @@ import {
 } from "./work-driver-exec-error.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { baselineRedMessage, probeBaselineVerify } from "./work-driver-verify-baseline.ts";
-import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
-import { formatExecError, verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
+import {
+  formatExecError,
+  verifyTimeoutFailure,
+  verifyTimeoutMs,
+} from "./work-driver-verify-develop-helpers.ts";
+import { failedVerifyCmd } from "./work-driver-verify-fast.ts";
 import { rawOutputClause } from "./work-driver-verify-flake.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
@@ -125,11 +129,12 @@ export async function runVerifyCommandGate(opts: {
       // consolidated run below adds its own verdict on top.
       const output = `${e.stdout ?? ""}\n${e.stderr ?? ""}\n${e.message ?? ""}`;
       const depsHint = looksLikeMissingDeps(output) ? provisionDepsHint(state, cwd) : "";
+      const ran = failedVerifyCmd(e, cmd); // #1324 — the fast tier, when it is the one that failed
       perWorktreeVerifyFailures.push(
         formatExecError(
           e,
-          `verify command \`${cmd}\` exceeded its ${Math.round(verifyTimeoutMs() / 60000)}-min timeout in ${cwd}`,
-          `verify command \`${cmd}\` failed in ${cwd}${depsHint}`,
+          verifyTimeoutFailure(ran, `in ${cwd}`, verifyTimeoutMs()),
+          `verify command \`${ran}\` failed in ${cwd}${depsHint}`,
         ),
       );
     }
@@ -379,7 +384,7 @@ export async function runVerifyCommandGate(opts: {
     // failure further down.
     failures.push(
       (cons.timedOut === true
-        ? `verify command \`${cmd}\` exceeded its ${Math.round(verifyTimeoutMs() / 60000)}-min timeout on the CONSOLIDATED tree at ${ctx.repoRoot} — the run was killed at the bound (PI_ENSEMBLE_VERIFY_TIMEOUT_MS), so it reached no verdict about the code.`
+        ? `${verifyTimeoutFailure(cmd, `on the CONSOLIDATED tree at ${ctx.repoRoot}`, verifyTimeoutMs())}.`
         : isHostForkExhaustion(classifierInput)
           ? hostExhaustionFailure(
               `verify command \`${cmd}\` on the CONSOLIDATED tree`,
@@ -493,8 +498,3 @@ export async function runVerifyCommandGate(opts: {
     }
   }
 }
-
-// `verifyCmdFor` re-exported so the caller keeps its pre-#794 import
-// surface (it already imports the symbol from work-driver-verify-cmd.ts;
-// this re-export is a no-op safety net, kept for import-graph symmetry).
-export { verifyCmdFor };
