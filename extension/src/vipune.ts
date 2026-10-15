@@ -238,7 +238,7 @@ export interface SearchOpts extends VipuneOpts {
    * is a candidate. Measured on a probe DB with one active and one candidate
    * row: default returns 1, `--include-candidates` returns 2. The developer
    * brief deliberately leaves this off (#1103) — a candidate reaches no
-   * prompt until an operator promotes it. A lookup for the driver's OWN rows
+   * compiled brief until an operator promotes it. A lookup for the driver's OWN rows
    * (research supersession) is what needs it.
    *
    * The boolean is preferred over `--status active,candidate` — measured

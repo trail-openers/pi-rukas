@@ -11,7 +11,7 @@
  *
  * That pins the SEAM's opt-in, not who uses it. The developer brief
  * deliberately reads active rows only (#1103, `test-memory-brief.ts`) — a
- * driver candidate reaches no prompt until an operator promotes it.
+ * driver candidate reaches no compiled brief until an operator promotes it.
  *
  * ## 2. Staleness had nowhere to be resolved
  *

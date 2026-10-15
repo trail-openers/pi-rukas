@@ -27,7 +27,9 @@
  * until something promotes it. That is the whole safety argument for writing
  * automatically at all: the blast radius of a bad write is zero until a human
  * or a later rule acts on it. The developer brief reads active rows only, so a
- * candidate reaches no prompt until an operator promotes it (#1103).
+ * candidate reaches no compiled brief until an operator promotes it (#1103).
+ * An agent's own broad sweep may still opt into `--include-candidates` —
+ * the tier's documented use, and a choice the agent makes, not the driver.
  *
  * ## Why every row is an `observation`
  *
