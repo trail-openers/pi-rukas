@@ -22,7 +22,7 @@
  * instead and recorded as an event either way.
  */
 
-import { execp } from "./lens-exec.ts";
+import { execp } from "./exec.ts";
 import type { LensReviewSummary } from "./lens-review-format.ts";
 import { trace } from "./trace.ts";
 import { recordedPrState } from "./work-driver-commit-reentry.ts";
@@ -34,24 +34,79 @@ import type { WorkStep } from "./workflow-state-events.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 /**
- * The state the cycle ends in when its PR is no longer open, or `undefined`
- * when the step should run: no PR recorded yet, the PR is open, or its state
- * could not be read.
+ * What the gate decided. `ended` is set when the cycle must stop; `state` is
+ * what the step runs on (it carries a plumb note when the PR state could not
+ * be read).
  */
+export type PrGate = { ended?: WorkState; state: WorkState };
+
+/** Backoff before each re-read of an unreadable PR state (two retries). */
+const PR_STATE_RETRY_DELAYS_MS = [500, 1500];
+
 export async function endIfPrGone(
   ctx: DriverContext,
   state: WorkState,
   step: WorkStep,
-): Promise<WorkState | undefined> {
+): Promise<PrGate> {
   const ps = state.pipelineState;
-  if (ps.prNumber === undefined || !ps.branchName) return undefined;
+  if (ps.prNumber === undefined || !ps.branchName) return { state };
   const execFn = ctx.verifyExecFn ?? execp;
-  const prState = await recordedPrState(ctx, execFn, ps.prNumber, ps.branchName);
-  if (prState === "MERGED") return mergedDuringReview(ctx, state, ps.prNumber, step);
-  if (prState === "CLOSED") return closedDuringReview(state, ps.prNumber, ps.branchName, step);
-  return undefined;
+  const prState = await readPrStateWithRetry(ctx, execFn, ps.prNumber, ps.branchName);
+  if (prState === "MERGED") {
+    return { state, ended: await mergedDuringReview(ctx, state, ps.prNumber, step) };
+  }
+  if (prState === "CLOSED") {
+    return { state, ended: closedDuringReview(state, ps.prNumber, ps.branchName, step) };
+  }
+  if (prState === undefined) return { state: unreadablePrNote(state, ps.prNumber, step) };
+  return { state };
 }
 
+/** `recordedPrState` folds a thrown `gh` error into `undefined`, so retry on that. */
+async function readPrStateWithRetry(
+  ctx: DriverContext,
+  execFn: NonNullable<DriverContext["verifyExecFn"]>,
+  prNumber: number,
+  branchName: string,
+) {
+  let prState = await recordedPrState(ctx, execFn, prNumber, branchName);
+  for (const delay of PR_STATE_RETRY_DELAYS_MS) {
+    if (prState !== undefined) break;
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    prState = await recordedPrState(ctx, execFn, prNumber, branchName);
+  }
+  return prState;
+}
+
+/**
+ * The PR state stayed unreadable through every attempt: the step runs anyway
+ * (a cycle is never ended on a guess), but the operator is told the check did
+ * not run, in the state file's plumbReports the handoff renders.
+ */
+function unreadablePrNote(state: WorkState, prNumber: number, step: WorkStep): WorkState {
+  const attempts = PR_STATE_RETRY_DELAYS_MS.length + 1;
+  const body = `PR #${prNumber}'s state could not be read before the ${step} step (${attempts} attempts), so the merged/closed check did not run and the step ran anyway. If the PR was merged or closed meanwhile, the step's push is refused or lands on a merged branch — check the PR.`;
+  trace(`work-driver: ${body}`);
+  return {
+    ...state,
+    pipelineState: {
+      ...state.pipelineState,
+      plumbReports: [
+        ...(state.pipelineState.plumbReports ?? []),
+        { step, role: "driver", body, at: Date.now() },
+      ],
+    },
+  };
+}
+
+// `mergedDuringReview` shares status "merged" with the driver's own merge. The
+// consumers that key on it were checked and none counts the human merge as the
+// driver's: terminal delivery and work-status render mergedByOtherDuring ("by
+// someone else during <step>"); work-queue / work-queue-summary record outcome
+// "merged", which is true of the PR; work-notify never notifies a merged group
+// (the person who merged it knows); headless exit-code 0 means the work landed;
+// the resume guard (work-driver.ts) refuses any non-running status without
+// --restart; the worktree sweep deletes only work proven on the remote.
 async function mergedDuringReview(
   ctx: DriverContext,
   state: WorkState,
@@ -143,7 +198,7 @@ export async function recordResidualsPost(
     detail = (await forge.issueComment(ctx.issue, body)).trim() || undefined;
     issueFallback = "posted";
   } catch (err) {
-    detail = (err as Error).message?.slice(0, 200);
+    detail = (err instanceof Error ? err.message : String(err)).slice(0, 200);
     trace(`work-driver: residual findings could not be posted to issue #${ctx.issue}: ${detail}`);
   }
   return appendEvent(state, {

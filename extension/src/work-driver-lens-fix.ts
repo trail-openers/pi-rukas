@@ -1,10 +1,10 @@
 /**
  * work-driver-lens-fix — the lens-fix step (Step 7f): the developer dispatch
  * that answers the lens findings, in the tree the review read. Split from
- * work-driver-lens.ts (500-line limit), which re-exports it.
+ * work-driver-lens.ts (500-line limit); importers take it from here.
  */
 
-import { execp } from "./lens-exec.ts";
+import { execp } from "./exec.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";

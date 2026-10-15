@@ -10,7 +10,8 @@ import { runCommitPr } from "./work-driver-commit.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { runExplore } from "./work-driver-explore.ts";
 import { runHandoff } from "./work-driver-handoff.ts";
-import { runLens, runLensFix } from "./work-driver-lens.ts";
+import { runLensFix } from "./work-driver-lens-fix.ts";
+import { runLens } from "./work-driver-lens.ts";
 import { runMerged } from "./work-driver-merged.ts";
 import { runPlan } from "./work-driver-plan.ts";
 import { endIfPrGone } from "./work-driver-pr-gone.ts";
@@ -50,14 +51,20 @@ export async function runStep(
     case "commit-pr":
       return runCommitPr(ctx, state, now);
     // A PR merged or closed under the review ends the cycle before the step.
-    case "lens-review":
-      return (await endIfPrGone(ctx, state, step)) ?? runLens(ctx, state, now);
-    case "lens-fix":
-      return (await endIfPrGone(ctx, state, step)) ?? runLensFix(ctx, state, now);
+    case "lens-review": {
+      const gate = await endIfPrGone(ctx, state, step);
+      return gate.ended ?? runLens(ctx, gate.state, now);
+    }
+    case "lens-fix": {
+      const gate = await endIfPrGone(ctx, state, step);
+      return gate.ended ?? runLensFix(ctx, gate.state, now);
+    }
     case "step-back":
       return runStepBack(ctx, state, now);
-    case "ci":
-      return (await endIfPrGone(ctx, state, step)) ?? runCi(ctx, state, now);
+    case "ci": {
+      const gate = await endIfPrGone(ctx, state, step);
+      return gate.ended ?? runCi(ctx, gate.state, now);
+    }
     case "handoff":
       return runHandoff(ctx, state, now);
     case "merged":

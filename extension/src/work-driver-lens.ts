@@ -30,7 +30,6 @@ import { type WorkState, appendEvent } from "./workflow-state.ts";
 // (AGENTS.md §12) — importers (work-driver-adversarial.ts) keep their path.
 export { commitLensFixChanges, countLensFixEmptyResends } from "./work-driver-lens-fix-commit.ts";
 import { lensWorktree } from "./work-driver-lens-fix.ts";
-export { lensWorktree, runLensFix } from "./work-driver-lens-fix.ts";
 
 export async function runLens(
   ctx: CycleContext,

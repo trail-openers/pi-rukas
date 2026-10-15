@@ -13,12 +13,12 @@
  */
 
 import { execFile } from "node:child_process";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { postLensResidualDisclosure } from "../src/lens-review-residuals.ts";
+import type { Finding } from "../src/lens-review-types.ts";
 import { runAdversarial } from "../src/work-driver-adversarial.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { nextStep } from "../src/work-driver-context.ts";
@@ -49,7 +49,7 @@ const root = mkdtempSync(path.join(os.tmpdir(), "pi-ens-pr-gone-"));
 const ISSUE = 1290;
 const BRANCH = "feature/issue-1290-x";
 const PR = 7;
-const FINDING = {
+const FINDING: Finding = {
   path: "a.txt",
   line: 1,
   severity: "MEDIUM" as const,
@@ -77,6 +77,8 @@ async function cycle(name: string) {
     repo,
     baseSha,
     pr: "OPEN" as PrState,
+    /** Fail this many `gh pr view` calls with a transient error before answering. */
+    failPrReads: 0,
     issueCommentFails: false,
     gh: [] as string[],
     pushes: [] as string[],
@@ -100,6 +102,10 @@ async function cycle(name: string) {
     if (!cmd.startsWith("gh ")) return realExec(cmd, o);
     c.gh.push(cmd);
     if (cmd.startsWith("gh pr view")) {
+      if (c.failPrReads > 0) {
+        c.failPrReads -= 1;
+        throw new Error("gh: HTTP 502");
+      }
       if (c.pr === "unreadable") throw new Error("gh: could not resolve to a PullRequest");
       return {
         stdout: JSON.stringify({
@@ -141,11 +147,9 @@ async function cycle(name: string) {
       reviewRound: 1,
     },
   });
-  const remoteHead = async () =>
-    (await git(repo, ["rev-parse", `refs/remotes/origin/${BRANCH}`])).stdout.trim();
   const remoteTip = async () =>
     (await git(repo, ["ls-remote", "origin", `refs/heads/${BRANCH}`])).stdout.split("\t")[0];
-  return { c, ctx, state, exec, remoteHead, remoteTip };
+  return { c, ctx, state, exec, remoteTip };
 }
 
 try {
@@ -153,7 +157,7 @@ try {
   {
     const t = await cycle("merged-before-lens");
     t.c.pr = "MERGED";
-    const ended = await endIfPrGone(t.ctx, t.state("lens-review"), "lens-review");
+    const ended = (await endIfPrGone(t.ctx, t.state("lens-review"), "lens-review")).ended;
     const last = ended?.eventLog[ended.eventLog.length - 1];
     assert(ended?.pipelineState.status === "merged", "merged before lens review: status merged");
     assert(
@@ -195,7 +199,7 @@ try {
       "a review with findings routes to lens-fix",
     );
     t.c.pr = "MERGED";
-    const ended = await endIfPrGone(t.ctx, reviewed, "lens-fix");
+    const ended = (await endIfPrGone(t.ctx, reviewed, "lens-fix")).ended;
     const last = ended?.eventLog[ended.eventLog.length - 1];
     assert(
       ended?.pipelineState.status === "merged" &&
@@ -256,7 +260,7 @@ try {
   for (const step of ["lens-review", "ci"] as const) {
     const t = await cycle(`closed-${step}`);
     t.c.pr = "CLOSED";
-    const ended = await endIfPrGone(t.ctx, t.state(step), step);
+    const ended = (await endIfPrGone(t.ctx, t.state(step), step)).ended;
     const last = ended?.eventLog[ended.eventLog.length - 1];
     assert(
       ended?.pipelineState.status === "running" &&
@@ -282,20 +286,46 @@ try {
   {
     const t = await cycle("unreadable");
     t.c.pr = "unreadable";
+    const unread = await endIfPrGone(t.ctx, t.state("lens-review"), "lens-review");
+    assert(unread.ended === undefined, "an unreadable PR state: the step runs as before");
     assert(
-      (await endIfPrGone(t.ctx, t.state("lens-review"), "lens-review")) === undefined,
-      "an unreadable PR state: the step runs as before",
+      unread.state.pipelineState.plumbReports.some(
+        (r) => r.step === "lens-review" && /could not be read/.test(r.body),
+      ),
+      "an unreadable PR state: the state file records that the check did not run",
     );
     t.c.pr = "OPEN";
     assert(
-      (await endIfPrGone(t.ctx, t.state("ci"), "ci")) === undefined,
+      (await endIfPrGone(t.ctx, t.state("ci"), "ci")).ended === undefined,
       "an open PR: the step runs as before",
     );
+  }
+
+  // ------------------------------------- one transient failure, then MERGED
+  {
+    const t = await cycle("transient-read");
+    t.c.pr = "MERGED";
+    t.c.failPrReads = 1;
+    const gate = await endIfPrGone(t.ctx, t.state("lens-review"), "lens-review");
+    assert(
+      gate.ended?.pipelineState.status === "merged",
+      "a transient read failure is retried: the merged-during-review exit fires",
+    );
+    assert(
+      t.c.gh.filter((g) => g.startsWith("gh pr view")).length === 2,
+      "…after exactly one retry",
+    );
+  }
+
+  // ------------------------------------------------ no PR recorded yet
+  {
+    const t = await cycle("no-pr");
     const noPr = t.state("lens-review");
     noPr.pipelineState.prNumber = undefined;
     const ghBefore = t.c.gh.length;
     assert(
-      (await endIfPrGone(t.ctx, noPr, "lens-review")) === undefined && t.c.gh.length === ghBefore,
+      (await endIfPrGone(t.ctx, noPr, "lens-review")).ended === undefined &&
+        t.c.gh.length === ghBefore,
       "no PR recorded: no lookup, the step runs",
     );
   }
@@ -304,7 +334,7 @@ try {
   {
     const t = await cycle("residuals-by-number");
     t.c.pr = "MERGED";
-    const summary = mkLensSummary({ verdict: "ISSUES_FOUND", findings: [FINDING] as never });
+    const summary = mkLensSummary({ verdict: "ISSUES_FOUND", findings: [FINDING] });
     const note = await postLensResidualDisclosure({
       summary,
       branch: BRANCH,
@@ -335,7 +365,7 @@ try {
       lensReviewFn: async (o: { pr?: number }) => {
         seen.push(o.pr);
         return {
-          ...mkLensSummary({ verdict: "ISSUES_FOUND", findings: [FINDING] as never }),
+          ...mkLensSummary({ verdict: "ISSUES_FOUND", findings: [FINDING] }),
           note: "residual-findings disclosure FAILED: gh: HTTP 404",
         };
       },
@@ -381,7 +411,9 @@ try {
     const src = readFileSync(path.join(import.meta.dir, "../src/work-driver-run-step.ts"), "utf8");
     for (const fn of ["runLens", "runLensFix", "runCi"]) {
       assert(
-        new RegExp(`\\(await endIfPrGone\\(ctx, state, step\\)\\) \\?\\? ${fn}\\(`).test(src),
+        new RegExp(
+          `await endIfPrGone\\(ctx, state, step\\);\\s*return gate\\.ended \\?\\? ${fn}\\(ctx, gate\\.state, now\\)`,
+        ).test(src),
         `runStep checks the PR before ${fn}`,
       );
     }
