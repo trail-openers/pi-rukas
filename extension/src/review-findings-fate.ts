@@ -33,6 +33,12 @@
  *
  * Pure: the caller supplies the row, the head state and the review kind. A delta
  * or an incomplete review never resolves a row; it carries it.
+ *
+ * An invalid path (unsafe, or a directory/tree at head) has NO automatic exit:
+ * its rows are carried until a re-report matches them, the operator accepts them,
+ * or the path becomes a readable file at head. A path that is not a file at head
+ * is not evidence the code is gone (a directory can be renamed or re-rooted), so
+ * it never resolves as `path-gone`; only a path absent from a readable commit does.
  */
 
 import type { ResolveReason, StoredFinding } from "./review-findings-file.ts";
@@ -50,15 +56,15 @@ export type RowFate = { kind: "resolve"; reason: ResolveReason } | { kind: "carr
  */
 export type ReviewKind = "full" | "delta" | "incomplete";
 
-/** The head state a row's cited code is judged against. */
-export interface HeadState {
-  /** The row's path is absent at head. */
-  pathGone: boolean;
-  /** The row's path cannot name a file at head (unsafe, or a directory): never resolves. */
-  invalid?: boolean;
-  /** The head file's lines; undefined when the path is absent. */
-  lines?: readonly string[];
-}
+/**
+ * The head state a row's cited code is judged against. Tagged so each case is
+ * handled by name: `missing` is absent from a readable commit, `invalid` cannot
+ * name a file at head (unsafe, or a directory), `lines` is a readable blob.
+ */
+export type HeadState =
+  | { kind: "lines"; lines: string[] }
+  | { kind: "missing" }
+  | { kind: "invalid" };
 
 const CARRY: RowFate = { kind: "carry" };
 
@@ -91,10 +97,19 @@ function indexOf(lines: readonly string[]): HeadIndex {
 /** The resolve/carry decision for one untouched open row. */
 export function rowFate(row: StoredFinding, head: HeadState, review: ReviewKind): RowFate {
   const full = review === "full";
-  if (head.invalid) return CARRY;
-  if (head.pathGone) return full ? { kind: "resolve", reason: "path-gone" } : CARRY;
-  const lines = head.lines;
-  if (!lines || row.line === undefined || row.snippetHash === NO_LINE_SNIPPET) return CARRY;
+  switch (head.kind) {
+    case "invalid":
+      return CARRY;
+    case "missing":
+      return full ? { kind: "resolve", reason: "path-gone" } : CARRY;
+    case "lines":
+      return linesFate(row, head.lines, full);
+  }
+}
+
+/** The fate of a row whose path is a readable file at head. */
+function linesFate(row: StoredFinding, lines: string[], full: boolean): RowFate {
+  if (row.line === undefined || row.snippetHash === NO_LINE_SNIPPET) return CARRY;
   const index = indexOf(lines);
   if (index.windows.has(row.snippetHash)) return CARRY;
   if (row.lineHash !== undefined && index.lineHashes.has(row.lineHash)) return CARRY;

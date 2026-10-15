@@ -36,7 +36,7 @@ import path from "node:path";
 import { execp } from "./exec.ts";
 import type { Finding } from "./lens-review-types.ts";
 import { changedLineRanges } from "./review-diff.ts";
-import { type ReviewKind, rowFate } from "./review-findings-fate.ts";
+import { type HeadState, type ReviewKind, rowFate } from "./review-findings-fate.ts";
 import {
   type ResolvedNotice,
   type StoredFinding,
@@ -282,9 +282,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
       run.review === "delta" && run.deltaDiff !== undefined
         ? changedLineRanges(run.deltaDiff)
         : undefined;
-    const linesByPath = new Map<string, string[]>();
-    const missingPaths = new Set<string>();
-    const invalidPaths = new Set<string>();
+    const heads = new Map<string, HeadState>();
     // A git read error refuses the whole round (readHeadLines): nothing is
     // suppressed or resolved on evidence that could not be read.
     // Open rows' paths are read too: a round resolves or carries one forward only
@@ -293,19 +291,24 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
       .filter((r) => r.status === "open")
       .map((r) => r.path);
     for (const p of [...run.findings.map((f) => f.path), ...openPaths]) {
-      if (linesByPath.has(p) || missingPaths.has(p) || invalidPaths.has(p)) continue;
+      if (heads.has(p)) continue;
       const head = await readHeadLines(run.cwd, run.headSha, p);
       if (head.kind === "error") return { ok: false, reason: head.reason };
-      if (head.kind === "missing") missingPaths.add(p);
-      else if (head.kind === "invalid") invalidPaths.add(p);
-      else linesByPath.set(p, head.lines);
+      heads.set(p, head);
     }
     // A path absent at head (or not a file at head) has no line to cite: the
     // finding is a no-line one, and it is never suppressed (there is no code it
     // could be unchanged against).
-    const noFile = (p: string) => missingPaths.has(p) || invalidPaths.has(p);
+    const noFile = (p: string) => {
+      const kind = heads.get(p)?.kind;
+      return kind === "missing" || kind === "invalid";
+    };
+    const linesOf = (p: string): string[] => {
+      const head = heads.get(p);
+      return head?.kind === "lines" ? head.lines : [];
+    };
     const findings = run.findings.map((f) => (noFile(f.path) ? { ...f, line: undefined } : f));
-    const identities = findings.map((f) => identityOf(f, linesByPath.get(f.path) ?? []));
+    const identities = findings.map((f) => identityOf(f, linesOf(f.path)));
     const out = await mutateFindings(run.cwd, (all) => {
       const others = all.filter((r) => r.branch !== run.branch);
       const mine = all.filter((r) => r.branch === run.branch);
@@ -397,15 +400,9 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
       // delta or an incomplete review carries it.
       mine.forEach((r, i) => {
         if (r.status !== "open" || touched.has(r.id)) return;
-        const fate = rowFate(
-          r,
-          {
-            pathGone: missingPaths.has(r.path),
-            invalid: invalidPaths.has(r.path),
-            lines: linesByPath.get(r.path),
-          },
-          run.review,
-        );
+        // Every open row's path was read above; no head state carries the row.
+        const head: HeadState = heads.get(r.path) ?? { kind: "invalid" };
+        const fate = rowFate(r, head, run.review);
         if (fate.kind === "resolve") {
           mine[i] = {
             ...r,

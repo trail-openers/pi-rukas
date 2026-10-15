@@ -33,13 +33,13 @@ function safeRepoPath(p: string): boolean {
   return !p.split("/").includes("..");
 }
 
-/** git's own wording for "this path is not in that commit" (LC_ALL=C pins it). */
-const PATH_ABSENT_AT_HEAD = /does not exist in|exists on disk, but not in/;
-
 /**
- * The lines of `file` at `sha`. git words "path absent" the same way for an
- * unreadable commit, so the commit is checked first. An empty file is never
- * returned for a git failure: it would give every finding a fake identity.
+ * The lines of `file` at `sha`. The commit is checked first, so a git failure
+ * after that is never read as "path absent". Absence is decided by output, not by
+ * git's error wording: `ls-tree` prints nothing for a path that is not in the
+ * commit (exit 0), and `--literal-pathspecs` stops a glob-looking path matching
+ * other entries. An empty file is never returned for a git failure: it would give
+ * every finding a fake identity.
  */
 export async function readHeadLines(cwd: string, sha: string, file: string): Promise<HeadLines> {
   if (!safeRepoPath(file)) return { kind: "invalid" };
@@ -51,23 +51,30 @@ export async function readHeadLines(cwd: string, sha: string, file: string): Pro
       reason: `cannot read ${file} at ${sha.slice(0, 12)}: not a commit in this clone (${(err as Error).message.slice(0, 80)})`,
     };
   }
-  // `git show` exits 0 with a tree listing for a directory, so the object type
-  // is checked first: only a blob is a file that has lines.
+  // `ls-tree` on the path itself lists that one entry: empty output means the
+  // path is not in the commit, and the entry's type says whether it is a blob.
+  // `git show` exits 0 with a tree listing for a directory, so only a blob is read.
+  let entry: string;
   try {
-    const { stdout: type } = await execFileP(
-      "git",
-      ["-C", cwd, "cat-file", "-t", `${sha}:${file}`],
-      { env: { ...process.env, LC_ALL: "C" } },
-    );
-    if (type.trim() !== "blob") return { kind: "invalid" };
+    const { stdout } = await execFileP("git", [
+      "-C",
+      cwd,
+      "--literal-pathspecs",
+      "ls-tree",
+      sha,
+      "--",
+      file,
+    ]);
+    entry = stdout.split("\n")[0] ?? "";
   } catch (err) {
-    const stderr = String((err as { stderr?: unknown }).stderr ?? "");
-    if (PATH_ABSENT_AT_HEAD.test(stderr)) return { kind: "missing" };
     return {
       kind: "error",
       reason: `cannot read ${file} at ${sha.slice(0, 12)}: ${(err as Error).message.slice(0, 120)}`,
     };
   }
+  if (entry === "") return { kind: "missing" };
+  // Format: `<mode> SP <type> SP <object> TAB <path>`.
+  if (entry.split(/\s/)[1] !== "blob") return { kind: "invalid" };
   try {
     const { stdout } = await execFileP("git", ["-C", cwd, "show", `${sha}:${file}`], {
       maxBuffer: 8 * 1024 * 1024,
@@ -75,8 +82,6 @@ export async function readHeadLines(cwd: string, sha: string, file: string): Pro
     });
     return { kind: "lines", lines: stdout.split("\n") };
   } catch (err) {
-    const stderr = String((err as { stderr?: unknown }).stderr ?? "");
-    if (PATH_ABSENT_AT_HEAD.test(stderr)) return { kind: "missing" };
     return {
       kind: "error",
       reason: `cannot read ${file} at ${sha.slice(0, 12)}: ${(err as Error).message.slice(0, 120)}`,
