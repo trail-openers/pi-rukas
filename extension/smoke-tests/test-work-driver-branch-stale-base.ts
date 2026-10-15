@@ -224,6 +224,18 @@ try {
     let aheadErr: BranchAheadError | undefined;
     try {
       await mechanizedBranchSetup(realExec, repo, 844, [844], [], TITLE);
+    } catch (err) {
+      threw = true;
+      if (err instanceof BranchAheadError) aheadErr = err;
+    }
+    assert(threw, "a local branch ahead of origin/main throws BranchAheadError");
+    assert(aheadErr?.branchName === BRANCH, `the error names the branch (${BRANCH})`);
+    assert(aheadErr?.aheadCount === 1, "the error carries the ahead count (1)");
+    {
+      const { stdout } = await git(repo, ["rev-parse", BRANCH]);
+      assert(stdout.trim() === oldAheadSha, "nothing was reset — the ahead branch's tip is unchanged");
+    }
+    }
   // 10. #1189 — local branch AHEAD of origin/main BUT fully pushed (local tip
   //     == origin/<branch>) → reset to fresh base, no halt.
   {
@@ -289,18 +301,6 @@ try {
     {
       const { stdout } = await git(repo, ["rev-parse", BRANCH]);
       assert(stdout.trim() === newSha, "the branch is at the fresh base after the reset");
-    }
-  }
-} catch (err) {
-      threw = true;
-      if (err instanceof BranchAheadError) aheadErr = err;
-    }
-    assert(threw, "a local branch ahead of origin/main throws BranchAheadError");
-    assert(aheadErr?.branchName === BRANCH, `the error names the branch (${BRANCH})`);
-    assert(aheadErr?.aheadCount === 1, "the error carries the ahead count (1)");
-    {
-      const { stdout } = await git(repo, ["rev-parse", BRANCH]);
-      assert(stdout.trim() === oldAheadSha, "nothing was reset — the ahead branch's tip is unchanged");
     }
   }
   // ----------------------------------------------------------------
