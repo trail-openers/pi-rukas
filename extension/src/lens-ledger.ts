@@ -103,6 +103,7 @@ export function writeLensLedgerEntry(
       ...(hasCritical !== undefined ? { hasCritical } : {}),
       ...(headSha ? { headSha } : {}),
       ...(overrideCap ? { overrideCap: true } : {}),
+      ...(computed.diffSha256 ? { diffSha256: computed.diffSha256 } : {}),
     };
     const failure = await appendLedgerEntry(entry, execp, c);
     return failure ? { recorded: false, reason: failure } : { recorded: true };

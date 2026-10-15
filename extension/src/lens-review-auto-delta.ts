@@ -22,11 +22,11 @@ import { isFullCommitSha } from "./review-head-sha.ts";
 import {
   type LedgerEntry,
   appendLedgerEntry,
-  branchPatchId,
   latestEntry,
   ledgerPathFor,
   readLedgerAt,
 } from "./review-ledger.ts";
+import { committedIdentity } from "./review-patch-identity.ts";
 import { trace } from "./trace.ts";
 
 const execFileP = promisify(execFile);
@@ -149,21 +149,36 @@ export async function decideEmptyDelta(opts: {
   if (!prev?.headSha || !prev.patchId) {
     return { kind: "full", reason: "no recorded lens entry with a headSha and patch-id" };
   }
+  // Same head as the recorded run: nothing to record, no identity needed.
   if (prev.headSha === opts.head) return { kind: "noReview" };
+  // No round is never defaulted: a carry keeps the recorded round, so an entry
+  // without one cannot be carried faithfully (#1176 review "no `?? 1` guess").
+  if (prev.round === undefined) {
+    return { kind: "full", reason: "the recorded lens entry has no round" };
+  }
+  // Entries written before the whitespace-sensitive digest existed cannot prove
+  // an identical diff, so they are never carried.
+  if (!prev.diffSha256) {
+    return { kind: "full", reason: "the recorded lens entry predates the diff digest" };
+  }
   if (!isFullCommitSha(opts.head)) {
     return { kind: "full", reason: "the reviewed head is not a full commit SHA" };
   }
   if (!isVerdict(prev.detail)) {
     return { kind: "full", reason: "the recorded verdict is unreadable" };
   }
-  const current = await branchPatchId(execp, opts.cwd, opts.head, opts.base);
-  if (!current) {
-    return { kind: "full", reason: "the current patch-id could not be computed (fail closed)" };
-  }
-  if (current !== prev.patchId) {
+  // The SAME construction the writer stored (merge-base → head): see review-patch-identity.ts.
+  const current = await committedIdentity(execp, opts.cwd, opts.head, opts.base);
+  if (!current.patchId || !current.diffSha256) {
     return {
       kind: "full",
-      reason: `the patch-id changed since ${prev.headSha.slice(0, 8)} (${prev.patchId.slice(0, 8)} → ${current.slice(0, 8)})`,
+      reason: "the current patch identity could not be computed (fail closed)",
+    };
+  }
+  if (current.patchId !== prev.patchId || current.diffSha256 !== prev.diffSha256) {
+    return {
+      kind: "full",
+      reason: `the branch diff changed since ${prev.headSha.slice(0, 8)} (patch-id ${prev.patchId.slice(0, 8)} → ${current.patchId.slice(0, 8)})`,
     };
   }
   return { kind: "carry", from: prev.headSha, prev, verdict: prev.detail };
@@ -174,26 +189,25 @@ export async function decideEmptyDelta(opts: {
  * verdict, `passed`, `round` and `hasCritical` (a carry adds no review round,
  * and a non-passed or CRITICAL verdict stays blocking). It goes through
  * `appendLedgerEntry`, so the per-(branch, kind) dedupe still applies.
+ *
+ * The entry is the previous one with only `at`, `headSha` and the explicit
+ * `carriedFrom` marker overridden, so no field is hand-copied. It never throws:
+ * a failed append is reported as `recorded: false`, and the caller then runs a
+ * full review rather than claiming a carry it did not record.
  */
 export async function writeCarriedEntry(
   cwd: string,
   prev: LedgerEntry,
   head: string,
+  from: string,
 ): Promise<LensLedgerOutcome> {
-  const entry: LedgerEntry = {
-    branch: prev.branch,
-    kind: "lens",
-    patchId: prev.patchId,
-    passed: prev.passed,
-    at: Date.now(),
-    detail: prev.detail,
-    round: prev.round ?? 1,
-    headSha: head,
-    ...(prev.hasCritical !== undefined ? { hasCritical: prev.hasCritical } : {}),
-    ...(prev.incompleteRuns !== undefined ? { incompleteRuns: prev.incompleteRuns } : {}),
-  };
-  const failure = await appendLedgerEntry(entry, execp, cwd);
-  return failure ? { recorded: false, reason: failure } : { recorded: true };
+  try {
+    const entry: LedgerEntry = { ...prev, at: Date.now(), headSha: head, carriedFrom: from };
+    const failure = await appendLedgerEntry(entry, execp, cwd);
+    return failure ? { recorded: false, reason: failure } : { recorded: true };
+  } catch (err) {
+    return { recorded: false, reason: (err as Error).message };
+  }
 }
 
 /** The summary of a carried verdict: `noReview` (never an approval of the

@@ -24,7 +24,12 @@ import { promisify } from "node:util";
 import { neutraliseEvidence } from "./comment-evidence.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { execp } from "./exec.ts";
-import { decideEmptyDelta, resolveDeltaSince } from "./lens-review-auto-delta.ts";
+import type { LensLedgerOutcome } from "./lens-ledger.ts";
+import {
+  decideEmptyDelta,
+  resolveDeltaSince,
+  writeCarriedEntry,
+} from "./lens-review-auto-delta.ts";
 import { bySeverityCounts, computeVerdict, dedupeFindings } from "./lens-review-format.ts";
 import type { LensRunResult, Severity, Verdict } from "./lens-review.ts";
 import type { Finding } from "./lens-review.ts";
@@ -34,8 +39,6 @@ import { computeDeltaDiff, computeRangeDiff } from "./review-diff.ts";
 import { resolveHeadSha } from "./review-head-sha.ts";
 import type { LedgerEntry } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
-
-export { resolveDeltaSince };
 
 const execFileP = promisify(execFile);
 /**
@@ -214,7 +217,15 @@ export async function resolveReviewDiff(opts: {
   | { kind: "ok"; diff: string; delta?: AutoDeltaInfo }
   | { kind: "blocked"; problem: string }
   | { kind: "noReview"; since: string; head: string; reason: string }
-  | { kind: "carry"; from: string; head: string; prev: LedgerEntry; verdict: Verdict }
+  | {
+      kind: "carry";
+      from: string;
+      head: string;
+      prev: LedgerEntry;
+      verdict: Verdict;
+      /** #1176 \u2014 the carried entry, already written and awaited by the resolver. */
+      written: LensLedgerOutcome & { recorded: true };
+    }
 > {
   const hasDiffString = typeof opts.diff === "string" && opts.diff.length > 0;
   if (hasDiffString) {
@@ -291,9 +302,17 @@ async function resolveAutoDelta(
 
 /**
  * #1176 — an EMPTY automatic delta (nothing but mainline hunks, or no change).
- * The recorded verdict is carried onto the head when the branch's patch-id is
- * unchanged; any other shape reviews the full branch (no `since`). With no
- * mainline base the patch-id cannot be compared, so the empty outcome stands.
+ * Outcomes, in order:
+ *   - no recorded run with a matching identity, or no mainline base: the empty
+ *     outcome stands — `noReview`, which runs no re-review and writes NO ledger
+ *     entry for the new head. The merge guard then judges the branch against the
+ *     entries it already has. (The no-base case is not a carry: the identity
+ *     cannot be computed without a mainline to diff against.)
+ *   - recorded run, identity unchanged (patch-id AND digest): the verdict is
+ *     written onto the head FIRST and awaited; only a recorded write becomes a
+ *     `carry`.
+ *   - anything else (identity changed or undecidable, write not recorded): a
+ *     full review of the branch (no `since`).
  */
 async function emptyAutoDelta(
   opts: { cwd?: string; branch?: string },
@@ -308,12 +327,24 @@ async function emptyAutoDelta(
   const e = await decideEmptyDelta({ cwd, branch: opts.branch, head, base });
   if (e.kind === "noReview") return noReview;
   if (e.kind === "carry") {
-    return { kind: "carry", from: e.from, head, prev: e.prev, verdict: e.verdict };
+    const written = await writeCarriedEntry(cwd, e.prev, head, e.from);
+    if (written.recorded) {
+      return { kind: "carry", from: e.from, head, prev: e.prev, verdict: e.verdict, written };
+    }
+    trace(`lens-review: carry not recorded (${written.reason}) — full review`);
+  } else {
+    trace(`lens-review: empty automatic delta not carried (${e.reason}) — full review`);
   }
-  trace(`lens-review: empty automatic delta not carried (${e.reason}) — full review`);
   const full = await resolveLensDiff({ base, head, cwd });
   if (full.problem) return { kind: "blocked", problem: full.problem };
-  return { kind: "ok", diff: full.diff ?? "" };
+  // #384 — an undefined diff is an unreadable result, never an empty one.
+  if (full.diff === undefined) {
+    return {
+      kind: "blocked",
+      problem: "lens review: the full diff returned no content; it is not treated as empty (#384)",
+    };
+  }
+  return { kind: "ok", diff: full.diff };
 }
 
 /**

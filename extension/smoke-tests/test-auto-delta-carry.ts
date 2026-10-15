@@ -15,6 +15,8 @@
  *   - an undecidable patch-id (unresolvable base) fails closed to a full review
  */
 
+import { chmodSync } from "node:fs";
+import path from "node:path";
 import { execp } from "../src/exec.ts";
 import { cleanup, mergeMainFixture, writeLedger } from "./lib/auto-delta-fixture.ts";
 
@@ -30,7 +32,10 @@ function assert(cond: boolean, msg: string) {
 const { runLensReview } = await import("../src/lens-review.ts");
 const { renderSummary } = await import("../src/lens-review-format.ts");
 const { decideEmptyDelta } = await import("../src/lens-review-auto-delta.ts");
-const { branchPatchId, latestEntry, readLedgerAt } = await import("../src/review-ledger.ts");
+import type { LedgerEntry } from "../src/review-ledger.ts";
+
+const { latestEntry, readLedgerAt, workingTreePatchId } = await import("../src/review-ledger.ts");
+const { writeLensLedgerEntry } = await import("../src/lens-ledger.ts");
 const { evaluateRoundCapMerge, lensResidualsMarker } = await import(
   "../src/merge-guard-round-cap.ts"
 );
@@ -40,9 +45,28 @@ const THROWING_LENS = async () => {
   throw new Error("lensChildFn must not run on a carried verdict");
 };
 
+/** A real bare `origin` with origin/HEAD → main, so the writer resolves <remote>/<mainline>
+ * the way it does in production (a `.` remote leaves origin/HEAD unset). */
+async function addOrigin(dir: string): Promise<void> {
+  const bare = path.join(path.dirname(dir), "origin.git");
+  await execp(
+    `git clone -q --bare ${dir} ${bare} && git remote add origin ${bare} && git fetch -q origin && git remote set-head origin main`,
+    { cwd: dir, shell: "/bin/bash" },
+  );
+}
+
+/** The identity the REAL writer (workingTreePatchId) computes at `sha`. */
+async function identityAt(dir: string, sha: string) {
+  await execp(`git checkout -q ${sha}`, { cwd: dir });
+  const w = await workingTreePatchId(execp, dir);
+  await execp(`git checkout -q ${branch}`, { cwd: dir });
+  if (!w.patchId || !w.diffSha256) throw new Error(`writer produced no identity at ${sha}`);
+  return { patchId: w.patchId, diffSha256: w.diffSha256 };
+}
+
 /** Fixture: the branch was last reviewed at c2 with `entry`'s verdict; HEAD is
- * the merge of main (an empty automatic delta). The recorded patch-id is the
- * one the branch had when c2 was reviewed (base c0), which the merge preserves. */
+ * the merge of main (an empty automatic delta). The recorded identity is the one
+ * the writer computes at c2 (base c0), which the merge preserves. */
 async function carryFixture(entry: {
   detail: string;
   round: number;
@@ -50,12 +74,14 @@ async function carryFixture(entry: {
   passed: boolean;
 }) {
   const r = await mergeMainFixture();
-  const patchId = (await branchPatchId(execp, r.dir, r.c2, r.c0)) as string;
+  await addOrigin(r.dir);
+  const { patchId, diffSha256 } = await identityAt(r.dir, r.c2);
   writeLedger(r.ledgerFile, [
     {
       branch,
       kind: "lens",
       patchId,
+      diffSha256,
       passed: entry.passed,
       at: 1000,
       detail: entry.detail,
@@ -245,6 +271,90 @@ async function reviewAndAwaitLedger(
     });
     assert(e.kind === "full", "undecidable patch-id (unresolvable base) → full review, not carry");
   } finally {
+    cleanup(r.dir, r.ledgerFile);
+  }
+}
+
+// (G) same patch-id, different whitespace-sensitive digest → full review
+{
+  const { r, patchId } = await carryFixture({
+    detail: "APPROVED",
+    round: 1,
+    hasCritical: false,
+    passed: true,
+  });
+  writeLedger(r.ledgerFile, [
+    {
+      branch,
+      kind: "lens",
+      patchId,
+      diffSha256: "0".repeat(64),
+      passed: true,
+      at: 1000,
+      detail: "APPROVED",
+      hasCritical: false,
+      headSha: r.c2,
+      round: 1,
+    },
+  ]);
+  try {
+    const e = await decideEmptyDelta({ cwd: r.dir, branch, head: r.merge, base: "main" });
+    assert(e.kind === "full", "a digest mismatch with an equal patch-id → full review, not carry");
+  } finally {
+    cleanup(r.dir, r.ledgerFile);
+  }
+}
+
+// (H) the REAL writer path: writeLensLedgerEntry records the reviewed head, and
+// the checker recomputes the same identity on the merge → carry.
+{
+  const r = await mergeMainFixture();
+  await addOrigin(r.dir);
+  await execp(`git checkout -q ${r.c2}`, { cwd: r.dir });
+  const recorded = await writeLensLedgerEntry("APPROVED", "MEDIUM", r.dir, branch, false, r.c2, undefined, branch);
+  await execp(`git checkout -q ${branch}`, { cwd: r.dir });
+  try {
+    assert(recorded.recorded === true, "the real writer records the reviewed head c2");
+    const stored = latestEntry(readLedgerAt(r.ledgerFile), branch, "lens");
+    assert(typeof stored?.diffSha256 === "string", "the real writer stores diffSha256");
+    const e = await decideEmptyDelta({ cwd: r.dir, branch, head: r.merge, base: "main" });
+    assert(e.kind === "carry", "decideEmptyDelta recomputes the writer's identity → carry");
+    writeLedger(r.ledgerFile, [{ ...(stored as LedgerEntry), diffSha256: "0".repeat(64) }]);
+    const t = await decideEmptyDelta({ cwd: r.dir, branch, head: r.merge, base: "main" });
+    assert(t.kind === "full", "the same stored row with a tampered digest → full review");
+  } finally {
+    cleanup(r.dir, r.ledgerFile);
+  }
+}
+
+// (I) the carried write is NOT recorded (ledger dir read-only) → no carry claimed
+{
+  const { r } = await carryFixture({
+    detail: "APPROVED",
+    round: 1,
+    hasCritical: false,
+    passed: true,
+  });
+  const ledgerDir = path.dirname(r.ledgerFile);
+  chmodSync(ledgerDir, 0o555);
+  let calls = 0;
+  try {
+    const s = await reviewAndAwaitLedger(r.dir, (async () => {
+      calls += 1;
+      return {
+        lens: "SECURITY",
+        ok: true,
+        ms: 0,
+        startMs: Date.now(),
+        findings: [],
+        attempts: 1,
+        blocked: false,
+      };
+    }) as never);
+    assert(s.carriedFrom === undefined, "an unrecorded carry write is never reported as a carry");
+    assert(calls > 0, "an unrecorded carry write falls back to a full review (lens children run)");
+  } finally {
+    chmodSync(ledgerDir, 0o755);
     cleanup(r.dir, r.ledgerFile);
   }
 }

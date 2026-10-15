@@ -6,7 +6,7 @@ import { resolveBudgetKey } from "./lens-budget-key.ts";
 import type { LensLedgerOutcome } from "./lens-ledger.ts";
 import { partitionDecisions, renderPriorFindingsBlock } from "./lens-residuals.ts";
 import { splitCarried } from "./lens-review-advisory.ts";
-import { carriedSummary, noReviewSummary, writeCarriedEntry } from "./lens-review-auto-delta.ts";
+import { carriedSummary, noReviewSummary } from "./lens-review-auto-delta.ts";
 import { resolveLensReviewBranch } from "./lens-review-branch-resolve.ts";
 import { capKillSummary } from "./lens-review-capkill.ts";
 import { runLensChild } from "./lens-review-child.ts";
@@ -312,17 +312,21 @@ export async function runLensReview(opts: {
     return finishWith(blocked);
   }
   if (resolved.kind === "carry") {
-    // #1176 — an empty automatic delta with an unchanged patch-id: the
-    // recorded verdict is carried onto this head; no review runs.
-    opts.onLedgerWrite?.(
-      writeCarriedEntry(opts.cwd ?? process.cwd(), resolved.prev, resolved.head),
-    );
+    // #1176 — the carried entry was written AND awaited by the resolver
+    // (lens-review-diff.ts emptyAutoDelta); no review runs. The round
+    // reservation settles on that recorded outcome.
+    opts.onLedgerWrite?.(Promise.resolve(resolved.written));
     return carriedSummary(resolved.from, resolved.head, resolved.prev, resolved.verdict);
   }
   if (resolved.kind === "noReview") {
     // #980 — the noReview path records nothing: no ledger write, no #973
     // disclosure post (see noReviewSummary).
     return noReviewSummary(resolved.since, resolved.head, resolved.reason);
+  }
+  // Exhaustive over ReviewDiffOutcome: a new variant must be handled above.
+  if (resolved.kind !== "ok") {
+    const unhandled: never = resolved;
+    throw new Error(`lens review: unhandled diff outcome ${JSON.stringify(unhandled)}`);
   }
   // #966 — the empty-roster guard: a skills dir that resolves to ZERO
   // lenses (missing dir, empty dir, no `code-review-*` skill, OR an
