@@ -87,8 +87,7 @@ export interface Forge {
     title: string,
     headBranch: string,
     body: string,
-    baseBranch?: string,
-    opts?: { draft?: boolean },
+    opts?: { baseBranch?: string; draft?: boolean },
   ): Promise<NormalizedPullRequest>;
   /** #1292 — mark a draft PR/MR ready for review (idempotent on a ready one). */
   prReady(number: number): Promise<void>;
@@ -329,9 +328,9 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
         });
       }),
 
-    prCreate: (title, headBranch, body, baseBranch, opts) =>
+    prCreate: (title, headBranch, body, opts) =>
       withBodyFile(`pr-${headBranch.slice(0, 16)}`, body, (file) =>
-        run(cmds.prCreateCmd(forge, title, headBranch, file, { baseBranch, ...opts }), (stdout) => {
+        run(cmds.prCreateCmd(forge, title, headBranch, file, opts ?? {}), (stdout) => {
           // Tolerate both JSON (from --json flag) and plain-text URL responses.
           const parsed = parsePrNumberFromResponse(stdout);
           if (!parsed) {

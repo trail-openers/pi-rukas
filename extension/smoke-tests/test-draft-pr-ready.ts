@@ -59,7 +59,7 @@ function mkForge(failures: number) {
       ready.push(n);
       if (ready.length <= failures) throw new Error("GraphQL: Could not mark ready (simulated)");
     },
-    prView: async () => ({ labels: [] }),
+    prView: async () => ({ labels: [], state: "OPEN", headRefName: BRANCH }),
     prComments: async () => [],
     issueComments: async () => [],
     labelCreate: async () => undefined,
@@ -118,7 +118,7 @@ const execStub = (async () => ({ stdout: "" })) as unknown as NonNullable<
     const calls: number[] = [];
     const readyCalls: number[] = [];
     const forge = {
-      prView: async () => (calls.push(1), { isDraft }),
+      prView: async () => (calls.push(1), { isDraft, state: "OPEN", headRefName: BRANCH }),
       prReady: async (n: number) => void readyCalls.push(n),
     } as unknown as Forge;
     return { forge, calls, readyCalls };
@@ -158,14 +158,14 @@ const execStub = (async () => ({ stdout: "" })) as unknown as NonNullable<
     }) as DriverContext;
   const base = reviewState([started("commit-pr", 1)]);
   const asDraft = await recordFallbackDraftFact(
-    ctxWith(async () => ({ isDraft: true })),
+    ctxWith(async () => ({ isDraft: true, state: "OPEN", headRefName: BRANCH })),
     base,
     PR,
     execStub,
   );
   assert(asDraft.pipelineState.prDraft?.status === "draft", "fallback: a draft PR is recorded as draft");
   const asReady = await recordFallbackDraftFact(
-    ctxWith(async () => ({ isDraft: false })),
+    ctxWith(async () => ({ isDraft: false, state: "OPEN", headRefName: BRANCH })),
     base,
     PR,
     execStub,
@@ -221,6 +221,26 @@ const execStub = (async () => ({ stdout: "" })) as unknown as NonNullable<
   assert(
     order[0] === "ready" && next?.pipelineState.prDraft?.status === "ready",
     `runStep(ci) marks the draft ready before any ci work (${order.join(" → ")})`,
+  );
+}
+
+{
+  // Identity (#1292 round 2): a wrong PR number — another branch's draft — is
+  // never recorded and never marked ready, at any mark point or in the fallback.
+  const foreign = { isDraft: true, state: "OPEN", headRefName: "feature/issue-999-other" };
+  const readyCalls: number[] = [];
+  const forge = {
+    prView: async () => foreign,
+    prReady: async (n: number) => void readyCalls.push(n),
+  } as unknown as Forge;
+  const ctx = { host: fakePi, repoRoot: "/nonexistent", issue: ISSUE, headless: true, forge } as DriverContext;
+  const noFactState = reviewState([started("commit-pr", 1), approved]);
+  const viaLive = await markDraftPrReady(ctx, noFactState, noSleep);
+  const held = await markDraftPrReady(ctx, reviewState([started("commit-pr", 1), approved], { status: "draft" }), noSleep);
+  const viaFallback = await recordFallbackDraftFact(ctx, noFactState, PR, execStub);
+  assert(
+    readyCalls.length === 0 && viaLive.pipelineState.prDraft === undefined && held.pipelineState.prDraft?.status === "draft" && held.pipelineState.prDraft?.holdReason === undefined && viaFallback.pipelineState.prDraft === undefined,
+    "a PR whose head is another branch is never recorded, never marked ready",
   );
 }
 

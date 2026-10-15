@@ -210,7 +210,7 @@ async function main() {
     });
     const forge = createForge(det, { execFn: fn });
     await check("mrCreate uses positional source + --target-branch", async () => {
-      const mr = await forge.prCreate("T", "branch", "body", "main");
+      const mr = await forge.prCreate("T", "branch", "body", { baseBranch: "main" });
       assert(mr.number === 17, "round-tripped");
       const cmd = calls.find((c) => c.includes("glab mr create"));
       assert(cmd !== undefined, `no create cmd: ${calls}`);

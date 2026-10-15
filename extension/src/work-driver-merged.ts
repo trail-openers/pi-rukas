@@ -176,6 +176,26 @@ export async function runMerged(
   // ready on entering ci. A draft cannot merge (`mergeStateStatus: DRAFT` holds
   // it), so this retries a ready that failed and no merge proceeds on a draft.
   const state = await markDraftPrReady(ctx, entryState);
+  // The merge does not rely on the forge refusing a draft: a PR that is not
+  // ready halts here, naming why, before any merge is attempted.
+  const draft = state.pipelineState.prDraft;
+  if (draft && draft.status !== "ready") {
+    const reason =
+      draft.status === "ready-failed"
+        ? `marking PR ready failed: ${draft.error ?? "no reason recorded"}`
+        : `PR is still a draft: ${draft.holdReason ?? "not marked ready"}`;
+    return appendEvent(
+      { ...state, pipelineState: { ...state.pipelineState, currentStep: "merged" } },
+      {
+        kind: "cap-hit",
+        at: Date.now(),
+        cap: "step-failed:merged",
+        reviewRound: state.pipelineState.reviewRound,
+        evidence: reason,
+        nextStep: "handoff",
+      },
+    );
+  }
   const prNumber = state.pipelineState.prNumber ?? 0;
   const issues = activeIssuesOf(state);
   let next: WorkState;

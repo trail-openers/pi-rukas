@@ -247,7 +247,11 @@ function mkForge(failures: number) {
     prComments: async () => [],
     issueComments: async () => [],
     issueView: async () => ({ labels: [{ name: "needs-human-attention" }] }),
-    prView: async () => ({ labels: [{ name: "needs-human-attention" }] }),
+    prView: async () => ({
+      labels: [{ name: "needs-human-attention" }],
+      state: "OPEN",
+      headRefName: BRANCH,
+    }),
     labelCreate: async () => undefined,
     labelAdd: async () => undefined,
   } as unknown as Forge;
@@ -374,8 +378,9 @@ async function handoff(state: WorkState, failures = 0) {
   assert(h.next.pipelineState.prDraft?.status === "ready-failed", "…recorded as ready-failed");
   assert(
     h.body.includes("### Marking the pull request ready FAILED") &&
-      h.body.includes("Could not mark ready"),
-    "…and reported in the handoff comment with the error",
+      h.body.includes("the forge command failed") &&
+      !h.body.includes("Could not mark ready"),
+    "…and reported in the handoff comment with a short reason (raw stderr stays in the trace)",
   );
   const flaky = await handoff(reviewState(events, { status: "draft" }), 2);
   assert(

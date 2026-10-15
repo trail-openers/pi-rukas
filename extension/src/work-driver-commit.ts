@@ -390,7 +390,7 @@ export async function mechanizedCommitPr(
     // default branch, which is the base the driver recorded in Step 3.
     // #1292 — a draft until the review is done (see work-driver-draft-pr.ts).
     const draft = draftPrEnabled(ctx);
-    const created = await forge.prCreate(title, branchName, prBody, undefined, { draft });
+    const created = await forge.prCreate(title, branchName, prBody, { draft });
     const prNumber = created.number;
     if (prNumber === undefined || !Number.isFinite(prNumber)) {
       return {

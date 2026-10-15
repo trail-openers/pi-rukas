@@ -150,7 +150,7 @@ async function main() {
     });
     const forge = createForge(det, { execFn: fn });
     await check("prCreate maps a plain-text URL stdout (number 17, full url)", async () => {
-      const pr = await forge.prCreate("A PR", "feature/issue-17-x", "the PR body", "main");
+      const pr = await forge.prCreate("A PR", "feature/issue-17-x", "the PR body", { baseBranch: "main" });
       assert(pr.number === 17, `expected 17, got ${pr.number}`);
       assert(pr.url === "https://github.com/acme/widget/pull/17", `url: ${pr.url}`);
     });
@@ -161,7 +161,7 @@ async function main() {
     });
     const forge = createForge(det, { execFn: fn });
     await check("prCreate tolerates surrounding whitespace and trailing tab", async () => {
-      const pr = await forge.prCreate("A PR", "feature/issue-17-x", "the PR body", "main");
+      const pr = await forge.prCreate("A PR", "feature/issue-17-x", "the PR body", { baseBranch: "main" });
       assert(pr.number === 77, `expected 77, got ${pr.number}`);
       assert(pr.url === "https://github.com/acme/widget/pull/77", `url: ${pr.url}`);
     });
@@ -174,7 +174,7 @@ async function main() {
     try {
       await (label === "issue"
         ? forge.issueCreate("A new issue", "the body")
-        : forge.prCreate("A PR", "feature/issue-17-x", "the PR body", "main"));
+        : forge.prCreate("A PR", "feature/issue-17-x", "the PR body", { baseBranch: "main" }));
     } catch {
       threw = true;
     }
@@ -348,7 +348,7 @@ async function main() {
     });
     const forge = createForge(det, { execFn: fn });
     await check("prCreate passes --head base...branch and --body-file", async () => {
-      const pr = await forge.prCreate("A PR", "feature/issue-17-x", "the PR body", "main");
+      const pr = await forge.prCreate("A PR", "feature/issue-17-x", "the PR body", { baseBranch: "main" });
       assert(pr.number === 17, "round-tripped");
       const cmd = calls.find((c) => c.includes("gh pr create"));
       assert(cmd !== undefined, `no create cmd: ${calls}`);
