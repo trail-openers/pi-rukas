@@ -82,15 +82,33 @@ start_job() {
 # which is what makes the second walk cheap. The exit code is the shell
 # convention: 128 + signal (130 = SIGINT, 143 = SIGTERM).
 interrupt_now() {
-  local code="$1" i
+  local code="$1" i alive polls
   for i in "${!JOB_TESTS[@]}"; do
     if [ "${JOB_STATE[$i]}" -eq 1 ]; then
       kill_process_tree "${JOB_PID[$i]}"
     fi
   done
-  # Reap whatever is still ours so no job of this run is left running.
+  # Reap whatever is still ours so no job of this run is left running. The
+  # wait is bounded rather than unconditional: a job subshell that does not
+  # die after the tree-kill above would otherwise block this handler forever,
+  # so the polls stop after ~5s and the second walk below SIGKILLs whatever
+  # is left. A pid is reaped only once `kill -0` says it is gone.
+  polls=0
+  while [ "$polls" -lt 50 ]; do
+    alive=0
+    for i in "${!JOB_PID[@]}"; do
+      if [ "${JOB_PID[$i]}" -ne 0 ] && kill -0 "${JOB_PID[$i]}" 2>/dev/null; then
+        alive=1
+      fi
+    done
+    [ "$alive" -eq 0 ] && break
+    sleep 0.1
+    polls=$((polls + 1))
+  done
   for i in "${!JOB_PID[@]}"; do
-    if [ "${JOB_PID[$i]}" -ne 0 ]; then wait "${JOB_PID[$i]}" 2>/dev/null; fi
+    if [ "${JOB_PID[$i]}" -ne 0 ] && ! kill -0 "${JOB_PID[$i]}" 2>/dev/null; then
+      wait "${JOB_PID[$i]}" 2>/dev/null
+    fi
   done
   for i in "${!JOB_TESTS[@]}"; do
     if [ "${JOB_STATE[$i]}" -eq 1 ]; then
