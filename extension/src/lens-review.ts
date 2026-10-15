@@ -431,10 +431,8 @@ export async function runLensReview(opts: {
   // same threshold, same rendering. They are findings, not a side channel.
   const all = [...lensResults.flatMap((r) => r.findings), ...(opts.extraFindings ?? [])];
   const deduped = dedupeFindings(all, roster);
-  // #1105 — record the round against the branch's findings memory. Suppressed
-  // findings (already known on untouched code, or accepted by the operator)
-  // leave the review; a complete full review resolves rows it no longer
-  // reports. Undefined decisions (nothing recorded) keep every finding.
+  // #1105 — record the round against the findings memory: suppressed findings
+  // leave the review, and a complete full review resolves rows it no longer reports.
   const complete = !delta && !isReviewIncomplete(lensResults);
   const recorded =
     branchResolved && headSha
@@ -479,6 +477,7 @@ export async function runLensReview(opts: {
       lenses: lensResults,
       findings: reported,
       ...(suppressed.length > 0 ? { suppressed } : {}),
+      ...(recorded?.ok && recorded.resolved.length > 0 ? { resolved: recorded.resolved } : {}),
       ...(memoryNote ? { memoryNote } : {}),
       ...carried.fields,
       usage: aggregateLensUsage(lensResults),

@@ -9,12 +9,13 @@
 import os from "node:os";
 import path from "node:path";
 import { neutraliseEvidence } from "./comment-evidence.ts";
-import { type SuppressedFinding, suppressedSection } from "./lens-residuals.ts";
+import { type SuppressedFinding, resolvedSection, suppressedSection } from "./lens-residuals.ts";
 import { advisorySection } from "./lens-review-advisory.ts";
 import { deltaFallbackText } from "./lens-review-diff.ts";
 import { isReviewIncomplete } from "./lens-review-incomplete.ts";
 import type { Finding, FindingSource, LensRunResult } from "./lens-review.ts";
 import { CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE, type RosterEntry } from "./lens-roster.ts";
+import type { ResolvedNotice } from "./review-findings-store.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
 
 /** The finding's severity level. Owned here (the pure leaf both the format
@@ -102,6 +103,8 @@ export interface LensReviewSummary {
    * the residual comment.
    */
   memoryNote?: string;
+  /** #1125 — rows this round resolved because their cited code is gone, with the reason. */
+  resolved?: ResolvedNotice[];
   /** #1140 — carried rows on files outside the PR's diff: listed, never blocking. */
   advisory?: Finding[];
 }
@@ -466,6 +469,7 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
       s.suppressed,
       `Suppressed as already known (${s.suppressed?.length ?? 0}, not re-reported):`,
     ),
+    ...resolvedSection(s.resolved),
     ...advisorySection(s.advisory),
     ...(s.memoryNote ? ["", neutraliseEvidence(s.memoryNote)] : []),
     "",

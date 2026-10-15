@@ -18,6 +18,11 @@
  *   H. an insertion above the cited code → stays open (the window moved);
  *   I. an edit outside the cited window → stays open;
  *   J. a delta review never resolves; K. an incomplete review never resolves.
+ *   L. a CRITICAL row whose window is edited (no re-report, complete full review)
+ *      is carried — a trivial edit cannot clear a CRITICAL;
+ *   M. the cited line is past EOF but its code moved up the file: carried, not
+ *      resolved ("found anywhere → carried" wins over "line past EOF").
+ * Every resolution records its reason on the row and in the summary (#1125).
  */
 
 import { execSync } from "node:child_process";
@@ -26,6 +31,7 @@ import os from "node:os";
 import path from "node:path";
 import type { LensRunResult } from "../src/lens-review-types.ts";
 import { runLensReview } from "../src/lens-review.ts";
+import { renderSummary } from "../src/lens-review-format.ts";
 import { LENS_ROSTER } from "../src/lens-roster.ts";
 import { readBranchRows } from "../src/review-findings-store.ts";
 
@@ -116,8 +122,8 @@ try {
   const a2 = await runRound("feat/gone", head(), []);
   const aRows = await readBranchRows(repo, "feat/gone");
   assert(
-    aRows.length === 1 && aRows[0]?.status === "resolved",
-    "A round 2: the open row whose path is gone at head resolves",
+    aRows.length === 1 && aRows[0]?.status === "resolved" && aRows[0]?.resolvedReason === "path-gone",
+    "A round 2: the open row whose path is gone at head resolves, reason path-gone",
   );
   assert(
     a2.verdict === "APPROVED" && a2.findings.length === 0,
@@ -169,8 +175,10 @@ try {
   const d2 = await runRound("feat/trunc", head(), []);
   const dRows = await readBranchRows(repo, "feat/trunc");
   assert(
-    dRows.length === 1 && dRows[0]?.status === "resolved",
-    "D round 2: an open row whose cited line is past the end of the file resolves",
+    dRows.length === 1 &&
+      dRows[0]?.status === "resolved" &&
+      dRows[0]?.resolvedReason === "line-past-eof",
+    "D round 2: an open row whose cited line is past the end of the file resolves, reason line-past-eof",
   );
   assert(d2.verdict === "APPROVED", `D round 2: the verdict is not blocked (${d2.verdict})`);
 
@@ -190,6 +198,16 @@ try {
     (await readBranchRows(repo, "feat/neighbour"))[0]?.status === "resolved" &&
       e2.verdict === "APPROVED",
     `E round 2: a neighbour edit inside the window resolves the row (verdict ${e2.verdict})`,
+  );
+  assert(
+    (await readBranchRows(repo, "feat/neighbour"))[0]?.resolvedReason === "code-gone" &&
+      e2.resolved?.some((r) => r.reason === "code-gone" && r.title === "Unused constant") === true,
+    "E round 2: the reason code-gone is on the row and in the summary's resolved list",
+  );
+  assert(
+    renderSummary(e2, 1).includes("Resolved since last round") &&
+      renderSummary(e2, 1).includes("code-gone"),
+    "E round 2: the rendered summary shows the Resolved since last round list with its reason",
   );
 
   // F — #1130: the cited line itself is edited and a complete full review does
@@ -222,7 +240,7 @@ try {
   assert(gRow?.status === "open", "G round 2: unchanged cited code stays open");
   assert(
     g2.verdict === "ISSUES_FOUND" &&
-      g2.findings.some((f) => f.title === "Unused constant" && f.title.length > 0),
+      g2.findings.some((f) => f.title === "Unused constant"),
     `G round 2: the carried finding blocks with its stored title (${g2.verdict})`,
   );
 
@@ -302,6 +320,44 @@ try {
   assert(
     (await readBranchRows(repo, "feat/incomplete"))[0]?.status === "open",
     `K round 2: an incomplete review does not resolve a changed-code row (verdict ${k2.verdict})`,
+  );
+
+  // L — a CRITICAL row whose ±2 window is edited (a comment on line 1, inside the
+  // window of line 3), no re-report, complete full review: carried, still blocks.
+  sh("git checkout -q main");
+  sh("git checkout -q -b feat/critical-edit");
+  await runRound("feat/critical-edit", head(), [
+    { severity: "CRITICAL", path: "src/a.ts", line: 3, title: "Unused constant" },
+  ]);
+  writeFileSync(path.join(repo, "src", "a.ts"), "// header v2\nexport const a = 1;\nexport const b = 2;\n");
+  sh("git commit -qam window-edit");
+  const l2 = await runRound("feat/critical-edit", head(), []);
+  const lRow = (await readBranchRows(repo, "feat/critical-edit"))[0];
+  assert(
+    lRow?.status === "open" && l2.verdict === "CRITICAL_ISSUES_FOUND",
+    `L round 2: a window edit does not clear a CRITICAL row; it stays carried and blocks (${l2.verdict})`,
+  );
+
+  // M — the cited line 50 is past EOF after 40 lines are deleted above it, but the
+  // window of line 50 is still at head (now line 10): carried, not resolved.
+  const fifty = Array.from({ length: 60 }, (_, i) =>
+    i + 1 === 50 ? "export const target = 50;" : `export const f${i + 1} = ${i + 1};`,
+  );
+  sh("git checkout -q main");
+  sh("git checkout -q -b feat/moved-up");
+  writeFileSync(path.join(repo, "src", "fifty.ts"), `${fifty.join("\n")}\n`);
+  sh("git add -A");
+  sh("git commit -qm fifty");
+  await runRound("feat/moved-up", head(), [
+    { severity: "MEDIUM", path: "src/fifty.ts", line: 50, title: "Unused target" },
+  ]);
+  writeFileSync(path.join(repo, "src", "fifty.ts"), `${fifty.slice(40).join("\n")}\n`);
+  sh("git commit -qam delete-above");
+  const m2 = await runRound("feat/moved-up", head(), []);
+  const mRow = (await readBranchRows(repo, "feat/moved-up"))[0];
+  assert(
+    mRow?.status === "open" && m2.verdict === "ISSUES_FOUND",
+    `M round 2: a cited line past EOF whose code is still in the file stays carried (${m2.verdict})`,
   );
 } finally {
   rmSync(root, { recursive: true, force: true });

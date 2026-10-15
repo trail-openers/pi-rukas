@@ -7,12 +7,10 @@
  * under the ledger's lock (review-ledger-lock.ts); the ledger itself is untouched.
  *
  * Rows are `open` (reported, not resolved), `accepted` (an operator accepted it)
- * or `resolved`. An open row is resolved only by `rowFate`
- * (review-findings-fate.ts): a complete full review no longer reported it AND
- * its cited code is gone — its path is absent at head, its cited line is past
- * the end of the head file, or its snippet no longer appears in the head file.
- * Any other open row is carried forward, including a row with no line.
- * Accepted rows are never evicted (see review-findings-file.ts for the cap).
+ * or `resolved`. An open row's fate is decided by `rowFate`
+ * (review-findings-fate.ts), the one place that rule lives. A no-line row is
+ * carried while its path is present; a path-gone row resolves on a complete full
+ * review. Accepted rows are never evicted (see review-findings-file.ts for the cap).
  *
  * Failure policy — fail closed on the file, fail open on the review:
  *   - A file that does not parse is CORRUPT: readers see no memory, and writers
@@ -35,8 +33,9 @@ import { promisify } from "node:util";
 import { execp } from "./exec.ts";
 import type { Finding } from "./lens-review-types.ts";
 import { changedLineRanges } from "./review-diff.ts";
-import { rowFate } from "./review-findings-fate.ts";
+import { type ReviewKind, rowFate } from "./review-findings-fate.ts";
 import {
+  type ResolveReason,
   type StoredFinding,
   capPerBranch,
   parseFindingsFile,
@@ -93,9 +92,16 @@ export interface FindingRun {
   now?: number;
 }
 
+/** A row this round resolved, with why its cited code is gone (#1125). */
+export interface ResolvedNotice {
+  rowId: string;
+  title: string;
+  reason: ResolveReason;
+}
+
 /** The result of recording one round: the decisions, or why nothing was recorded. */
 export type RecordOutcome =
-  | { ok: true; decisions: Decision[]; carried: Finding[] }
+  | { ok: true; decisions: Decision[]; carried: Finding[]; resolved: ResolvedNotice[] }
   | { ok: false; reason: string };
 
 /** The result of an acceptance: the accepted row, or why nothing was accepted. */
@@ -303,7 +309,7 @@ function outsideDelta(
 
 /** The row with its acceptance withdrawn: open again, so it is reported again. */
 function reopen(r: StoredFinding): StoredFinding {
-  return { ...r, status: "open", acceptance: undefined };
+  return { ...r, status: "open", acceptance: undefined, resolvedReason: undefined };
 }
 
 /**
@@ -434,20 +440,28 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
         decisions.push({ action: "matched", rowId: row.id });
       });
       const carried: Finding[] = [];
+      const resolved: ResolvedNotice[] = [];
       // Only a complete FULL review may resolve an untouched row (rowFate); a
       // delta or an incomplete review carries it. A lens omitting a known finding
       // is not a fix on its own.
-      const completeFull = run.complete && run.deltaDiff === undefined;
+      const review: ReviewKind =
+        run.deltaDiff !== undefined ? "delta" : run.complete ? "full" : "incomplete";
       mine.forEach((r, i) => {
         if (r.status !== "open" || touched.has(r.id)) return;
         const fate = rowFate(
           r,
           { pathGone: missingPaths.has(r.path), lines: linesByPath.get(r.path) },
-          completeFull,
+          review,
         );
-        if (fate === "resolve") {
-          mine[i] = { ...r, status: "resolved", acceptance: undefined };
-        } else if (fate === "carry") {
+        if (fate.kind === "resolve") {
+          mine[i] = {
+            ...r,
+            status: "resolved",
+            acceptance: undefined,
+            resolvedReason: fate.reason,
+          };
+          resolved.push({ rowId: r.id, title: r.title, reason: fate.reason });
+        } else if (fate.kind === "carry") {
           carried.push({
             lens: r.lens,
             severity: r.severity,
@@ -457,9 +471,16 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
           });
         }
       });
-      return { rows: [...others, ...mine], result: { decisions, carried } };
+      return { rows: [...others, ...mine], result: { decisions, carried, resolved } };
     });
-    return out.ok ? { ok: true, decisions: out.value.decisions, carried: out.value.carried } : out;
+    return out.ok
+      ? {
+          ok: true,
+          decisions: out.value.decisions,
+          carried: out.value.carried,
+          resolved: out.value.resolved,
+        }
+      : out;
   } catch (err) {
     trace(`review-findings: record failed: ${(err as Error).message}`);
     return { ok: false, reason: (err as Error).message.slice(0, 160) };

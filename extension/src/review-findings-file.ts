@@ -39,9 +39,17 @@ interface StoredBase {
   lastSeen: number;
 }
 
-/** A stored row. Only an `accepted` row carries an acceptance. */
+/** Why a row was resolved (#1125): path gone, cited line past EOF, or cited code changed. */
+export type ResolveReason = "path-gone" | "line-past-eof" | "code-gone";
+const RESOLVE_REASONS: readonly unknown[] = ["path-gone", "line-past-eof", "code-gone"];
+
+/** A stored row. Only an `accepted` row carries an acceptance; only open/resolved rows carry a resolution reason. */
 export type StoredFinding =
-  | (StoredBase & { status: "open" | "resolved"; acceptance?: undefined })
+  | (StoredBase & {
+      status: "open" | "resolved";
+      acceptance?: undefined;
+      resolvedReason?: ResolveReason | undefined;
+    })
   | (StoredBase & { status: "accepted"; acceptance: Acceptance });
 
 /** The shortest reason an operator may give when accepting a finding. */
@@ -121,7 +129,9 @@ function isRow(v: unknown): v is StoredFinding {
     typeof r.lastSeen === "number";
   if (!common) return false;
   if (r.status === "accepted") return isAcceptance(r.acceptance);
-  return (r.status === "open" || r.status === "resolved") && r.acceptance === undefined;
+  if (r.status !== "open" && r.status !== "resolved") return false;
+  if (r.acceptance !== undefined) return false;
+  return r.resolvedReason === undefined || RESOLVE_REASONS.includes(r.resolvedReason);
 }
 
 /**

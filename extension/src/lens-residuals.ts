@@ -12,7 +12,7 @@
 
 import { neutraliseEvidence } from "./comment-evidence.ts";
 import type { Finding } from "./lens-review-types.ts";
-import type { Decision, StoredFinding } from "./review-findings-store.ts";
+import type { Decision, ResolvedNotice, StoredFinding } from "./review-findings-store.ts";
 
 /** At most this many prior rows reach a lens prompt. */
 export const PRIOR_FINDINGS_MAX_ITEMS = 15;
@@ -90,6 +90,22 @@ export function suppressedSection(
       neutraliseEvidence(
         `- suppressed (row ${s.rowId}): [${s.finding.severity}] ${s.finding.path}:${s.finding.line ?? "?"} — ${s.finding.title} — ${s.reason}`,
       ),
+    ),
+  ];
+}
+
+/**
+ * The "Resolved since last round" block (#1125): each row this round closed
+ * because its cited code is gone, with the reason, so an operator can see a row
+ * that closed by hash mismatch. Empty input renders nothing.
+ */
+export function resolvedSection(resolved: readonly ResolvedNotice[] | undefined): string[] {
+  if (!resolved || resolved.length === 0) return [];
+  return [
+    "",
+    neutraliseEvidence(`Resolved since last round (${resolved.length}):`),
+    ...resolved.map((r) =>
+      neutraliseEvidence(`- resolved (row ${r.rowId}): ${r.title} — ${r.reason}`),
     ),
   ];
 }
