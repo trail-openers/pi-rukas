@@ -17,6 +17,7 @@ const COMMIT_PR_CAPS = [
   "commit-pr-incomplete-consolidation",
   "verify-failed:commit-pr",
   "integration-verify-failed",
+  "verify-timeout:commit-pr",
 ] as const;
 
 function isCommitPrCap(cap: string | undefined): boolean {

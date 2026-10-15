@@ -38,6 +38,13 @@ import {
 } from "./work-driver-consolidation-classify.ts";
 import type { ConsolidationFailureVerdict } from "./work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
+import { verifyTimeoutFailure } from "./work-driver-verify-develop-helpers.ts";
+import {
+  FAST_TIER_LABEL,
+  failedVerifyCmd,
+  fastVerifyCmdFor,
+  withFastTier,
+} from "./work-driver-verify-fast.ts";
 import {
   combinedExecFailureStream,
   rerunConsolidatedVerifyOnce,
@@ -69,6 +76,8 @@ export type CommitPrConsolidatedVerifyResult =
       verdict: ConsolidationFailureVerdict;
       /** Handoff-ready message naming classification + assertion + workstreams. */
       classifiedMessage: string;
+      /** #1324 — the run was killed at its bound: no verdict, so no classification. */
+      timedOut?: boolean;
     };
 
 /**
@@ -148,9 +157,14 @@ export async function runCommitPrConsolidatedVerify(
     opts.workstreamCount > 1 &&
     Object.keys(opts.perWorktreeFailuresByWs ?? {}).length === 0;
 
+  // #1324 — `.pi/verify-cmd-fast` runs first on the consolidated tree too.
+  const fastCmd = await fastVerifyCmdFor(opts.repoRoot);
+  const verifyExec = withFastTier(execFn, opts.verifyCmd, fastCmd);
+  let timedOut = false;
+  let ranCmd = opts.verifyCmd;
   const runOnce = async (): Promise<string | undefined> => {
     try {
-      await execFn(opts.verifyCmd, {
+      await verifyExec(opts.verifyCmd, {
         cwd: opts.repoRoot,
         maxBuffer: 8 * 1024 * 1024,
         timeout: opts.timeoutMs,
@@ -160,6 +174,8 @@ export async function runCommitPrConsolidatedVerify(
       // #841 — classify on stdout AND stderr (the shared helper), not on
       // stderr-with-stdout-dropped: a failure that prints its assertion on
       // stdout and a warning on stderr must still classify on the assertion.
+      timedOut = (err as { killed?: boolean }).killed === true;
+      ranCmd = failedVerifyCmd(err, opts.verifyCmd);
       return combinedExecFailureStream(err as Error & { stderr?: string; stdout?: string });
     }
   };
@@ -186,7 +202,7 @@ export async function runCommitPrConsolidatedVerify(
     // returns the RAW stream; the caller bounds it with the pre-existing
     // `extractAttributedTail` below — nothing multi-MB reaches the evidence.
     const secondRun = await rerunConsolidatedVerifyOnce(
-      execFn,
+      verifyExec,
       opts.verifyCmd,
       opts.repoRoot,
       opts.timeoutMs ?? 30 * 60_000,
@@ -207,6 +223,8 @@ export async function runCommitPrConsolidatedVerify(
     // single-run failure would be classified (a test that fails twice is
     // not a flake, so the cycle parks as today).
     firstFailure = secondRun.raw;
+    timedOut = secondRun.timedOut;
+    ranCmd = fastCmd && secondRun.raw.includes(FAST_TIER_LABEL) ? fastCmd : opts.verifyCmd;
   }
 
   const failure = firstFailure;
@@ -227,6 +245,15 @@ export async function runCommitPrConsolidatedVerify(
     failureTail + (attributed ? "" : " (unattributed — best-effort tail)"),
     opts.perWorktreeFailuresByWs ?? {},
   );
-  const classifiedMessage = consolidatedFailureMessage(verdict, opts.verifyCmd);
+  // #1324 — a killed run's stream stops wherever the kill landed: report
+  // the bound, never a classification of the code.
+  if (timedOut) {
+    const where = `on the CONSOLIDATED tree at ${opts.repoRoot}`;
+    const bound = opts.timeoutMs ?? 30 * 60_000;
+    const knob = "PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS";
+    const classifiedMessage = verifyTimeoutFailure(ranCmd, where, bound, knob);
+    return { ok: false, failureTail, attributed, verdict, classifiedMessage, timedOut };
+  }
+  const classifiedMessage = consolidatedFailureMessage(verdict, ranCmd);
   return { ok: false, failureTail, attributed, verdict, classifiedMessage };
 }

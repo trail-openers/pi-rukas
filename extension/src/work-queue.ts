@@ -200,6 +200,8 @@ export function humanActionFor(reason: string, primary: number): string {
   if (reason.includes(HOST_EXHAUSTION_SUFFIX)) {
     return `free processes on the host (it could not fork — the gate never ran on #${primary}), then re-run \`/work ${primary} --restart\``;
   }
+  if (/verify-timeout/.test(reason))
+    return `the verify command timed out on #${primary} — raise PI_ENSEMBLE_VERIFY_TIMEOUT_MS or reduce concurrency, then re-run \`/work ${primary} --restart\``;
   if (/verify-failed/.test(reason))
     return `inspect #${primary}'s diff — the outcome gate rejected it`;
   return `inspect .pi/work-state/${primary}.json and re-run \`/work ${primary} --restart\``;

@@ -5,6 +5,7 @@
  * Split out of work-driver.ts per AGENTS.md §12 module-size hygiene (#171).
  */
 import { scratchHygieneSection } from "./work-driver-prompts-late.ts";
+import { developVerifyLine } from "./work-driver-verify-fast.ts";
 
 /**
  * Step 1 explore prompt. PR3 Pattern 1 fetched the body in PARALLEL
@@ -317,6 +318,8 @@ export function inlineDevelopPrompt(
    * in this worktree. Absent on a first attempt — the prompt is unchanged.
    */
   interruptedNote?: string,
+  /** #1324 — `.pi/verify-cmd-fast`: the developer runs this, the driver runs both tiers. */
+  fastVerifyCmd?: string,
 ): string {
   // PR11 — multi-issue cycles must show the developer the ACTIVE issues
   // (NEEDS_WORK subset after explore), not the primary cycle issue. The
@@ -387,9 +390,7 @@ export function inlineDevelopPrompt(
   } else {
     fetchInstr = `Re-fetch each active issue body — run \`gh issue view <N>\` for each of: ${issues.map((n) => `#${n}`).join(", ")}.`;
   }
-  const verifyLine = verifyCmd
-    ? `Before committing, run the project's verify command — \`${verifyCmd}\` — and make it pass in your worktree; this is the exact command the verify gate will run, so the two cannot diverge. Run it when the change is complete, not after every edit: the driver runs it again on your worktree the moment you finish, so a re-run that only re-confirms a green result buys nothing. Fix formatting or lint output by RUNNING the formatter/linter, never by hand-guessing.`
-    : "This project has no discoverable verify command, so there is no project-level check to run before committing — rely on the change being correct and complete.";
+  const verifyLine = developVerifyLine(verifyCmd, fastVerifyCmd);
   if (interruptedNote) lines.push(interruptedNote);
   lines.push(
     `  1. ${fetchInstr}`,
