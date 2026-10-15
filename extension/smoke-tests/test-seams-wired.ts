@@ -216,7 +216,7 @@ const SEAMS: Seam[] = [
     // #912 — the per-clone review ledger. The writer calls live in
     // adversarial.ts (runAdversarialLoop) and lens-review.ts
     // (runLensReview); the guard (merge-guard.ts) is the reader. The shared
-    // predicates + branchPatchId are the seam the guard trusts.
+    // predicates + review-patch-identity.ts are the seam the guard trusts.
     file: "review-ledger.ts",
     pending: {},
     testOnly: {

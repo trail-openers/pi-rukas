@@ -134,15 +134,35 @@ assert(!lensPassed("ISSUES_FOUND", "MEDIUM"), "lens ISSUES_FOUND blocks at the M
     "…after issuing the pinned gh pr view argv",
   );
   assert(
-    r.calls.some((c) => c.includes("git fetch origin feature/x")),
-    "…after fetching the head branch",
+    r.calls.some((c) => c.includes("git fetch origin feature/x main")),
+    "…after fetching the head and the base branch",
   );
   assert(
-    r.calls.some(
-      (c) => c.includes("git diff origin/main..origin/feature/x") && c.includes("patch-id"),
-    ),
-    "…after computing the patch-id over the PR's actual base",
+    r.calls.some((c) => c.includes("git merge-base origin/feature/x origin/main")),
+    "…after taking the merge-base of the head and the mainline (#1305)",
   );
+  assert(
+    r.calls.some((c) => c.includes("git diff mb0000 origin/feature/x") && c.includes("patch-id")),
+    "…and computing the patch-id from the merge-base, not two-dot base..head (#1305)",
+  );
+  assert(
+    !r.calls.some((c) => c.includes("origin/main..origin/feature/x")),
+    "…never the two-dot range, which goes stale whenever main moves (#1305)",
+  );
+}
+{
+  // #1305: a PR whose base is not the mainline has no recorded identity to
+  // match — refused by name, never compared.
+  const r = await hookDecision("gh pr merge 12", GOOD_ENTRIES, { mainline: "trunk" });
+  assert(r.block === true, "refused when the PR's base is not the mainline (#1305)");
+  assert(/is not the mainline/.test(r.reason ?? ""), "…naming the non-mainline base");
+  assert(!r.calls.some((c) => c.includes("patch-id")), "…without computing a patch-id");
+}
+{
+  // #1305: no merge-base (unrelated history) → no identity → refused, named.
+  const r = await hookDecision("gh pr merge 12", GOOD_ENTRIES, { mergeBase: "" });
+  assert(r.block === true, "refused when the head has no merge-base with the mainline (#1305)");
+  assert(/no merge-base/.test(r.reason ?? ""), "…naming the missing merge-base");
 }
 {
   // Passing adversarial (matching patchId) + passing lens → allowed.
@@ -300,7 +320,7 @@ assert(!lensPassed("ISSUES_FOUND", "MEDIUM"), "lens ISSUES_FOUND blocks at the M
   // The hook is async and awaits the execs before deciding.
   assert(/async \(event, _ctx\)/.test(mg), "the tool_call handler is async");
   assert(/await readMergeTarget/.test(mg), "…and it awaits the PR read before the ledger check");
-  assert(/await branchPatchId/.test(mg), "…and it awaits the patch-id computation before deciding");
+  assert(/await mergeIdentity/.test(mg), "…and it awaits the patch-id computation before deciding");
 }
 
 // ------------------------------------------------ mechanizedMerge canary

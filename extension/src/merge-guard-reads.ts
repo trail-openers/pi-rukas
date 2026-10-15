@@ -9,6 +9,8 @@
  *   path's disclosure check reads (the guard's own exec call through the
  *   injectable `execFn`, no new forge seam). Refuses a malformed repo
  *   value or PR number up front (fail closed → []).
+ * - `mergeIdentity` (#1305): the branch identity the guard compares and the
+ *   residual-marker poster embeds — one function, so the two cannot disagree.
  * - `lensNotEvaluatedRefusal` (#1000): the refusal text the `applies: false`
  *   fall-through must use — "the round-cap path was not evaluated" —
  *   distinct from the `applies: true` path, where the rule WAS evaluated
@@ -20,11 +22,50 @@ import { prCommentsCmd } from "./forge-commands.ts";
 import { extractCommentRows } from "./forge-comments.ts";
 import type { MergeExecFn, MergeTarget } from "./merge-target.ts";
 import { isValidRepoValue } from "./merge-tokens.ts";
+import { identityBase } from "./review-ledger-path.ts";
 import type { LedgerEntry } from "./review-ledger.ts";
+import { committedPatchIdentity } from "./review-patch-identity.ts";
 import { trace } from "./trace.ts";
+import type { VerifyExecFn } from "./work-driver-git.ts";
 
 /** Per-exec timeout for the guard's gh/git calls. */
 const EXEC_TIMEOUT_MS = 30_000;
+
+/**
+ * #1305 — the identity of a PR's head as the review ledger records it:
+ * `merge-base(<remote>/<head>, <remote>/<mainline>)..<remote>/<head>`
+ * (`committedPatchIdentity`), against the SAME base the writers use
+ * (`identityBase`, review-ledger-path.ts), so a
+ * review stays current while main moves and goes stale only when the branch's
+ * own content changes. The caller fetches both refs first.
+ *
+ * The writers only ever record against the MAINLINE, so a PR whose base is not
+ * the mainline has no recorded identity to match: it fails closed here, named.
+ * Every failure is `{ ok: false, reason }` — the guard refuses with it, the
+ * marker poster posts nothing.
+ */
+export async function mergeIdentity(
+  execFn: VerifyExecFn,
+  cwd: string,
+  headBranch: string,
+  prBaseBranch: string,
+): Promise<{ ok: true; patchId: string } | { ok: false; reason: string }> {
+  const base = await identityBase(execFn, cwd);
+  if (!base.ok) return base;
+  if (prBaseBranch !== base.mainline) {
+    return {
+      ok: false,
+      reason: `the PR's base \`${prBaseBranch}\` is not the mainline \`${base.mainline}\` — reviews are recorded against the mainline only`,
+    };
+  }
+  const r = await committedPatchIdentity(
+    execFn,
+    cwd,
+    `${base.remote}/${headBranch}`,
+    `${base.remote}/${base.mainline}`,
+  );
+  return r.ok ? { ok: true, patchId: r.patchId } : r;
+}
 
 /**
  * #973 — the PR/MR comment bodies the round-cap path's disclosure check

@@ -88,6 +88,8 @@ function stubForBranch(branchName: string): Stub {
     }
     if (cmd.includes("git remote")) return { stdout: "origin\n" };
     if (cmd.includes("git fetch")) return { stdout: "" };
+    if (cmd.includes("symbolic-ref")) return { stdout: "origin/main\n" };
+    if (cmd.includes("git merge-base")) return { stdout: "mb0000\n" };
     if (cmd.includes("patch-id")) return { stdout: "p42 0000" };
     throw new Error(`unexpected exec: ${cmd}`);
   };
@@ -263,6 +265,8 @@ function repoDir(): string {
       }
       if (cmd.includes("git remote")) return { stdout: "origin\n" };
       if (cmd.includes("git fetch")) return { stdout: "" };
+      if (cmd.includes("symbolic-ref")) return { stdout: "origin/main\n" };
+      if (cmd.includes("git merge-base")) return { stdout: "mb0000\n" };
       if (cmd.includes("patch-id")) return { stdout: "p42 0000" };
       if (cmd.includes("pr comment")) {
         throw new Error("a pr comment call MUST NOT happen for an unsafe branch name");
