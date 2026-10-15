@@ -7,16 +7,15 @@ import {
   createFixFence,
   withFixViolations,
 } from "./adversarial-fix-guard.ts";
-import { LEDGER_MISS_NOTE, buildLedgerNote } from "./adversarial-ledger-note.ts";
-import { type ReviewProvenance, writeAdversarialLedgerEntry } from "./adversarial-ledger.ts";
+import { buildLedgerNote } from "./adversarial-ledger-note.ts";
+import { writeAdversarialLedgerEntry } from "./adversarial-ledger.ts";
 import { makeRunPhase } from "./adversarial-phase.ts";
-import { type ReportPolicy, isReportOnly, reportPolicyError } from "./adversarial-policy.ts";
+import { type ReportPolicy, reportPolicyError } from "./adversarial-policy.ts";
 import {
   type SiblingScope,
   buildAdversarialPrompt,
   buildFixPrompt,
 } from "./adversarial-prompts.ts";
-import { resolveDiffSource } from "./adversarial-refs.ts";
 import { type InfraCtx, infraFailureResult, runPhaseWithInfraRetry } from "./adversarial-retry.ts";
 import {
   decideLoopAction,
@@ -108,11 +107,11 @@ export async function runAdversarialLoop(
      */
     fixFence?: FixFence;
     /**
-     * #1161 — the tool path sets this: when the ledger row cannot be written
-     * (the merge guard will refuse it), the result text says so. The driver
-     * leaves it unset; its ledger miss is traced, as before.
+     * #1161 — set ONLY by the adversarial_loop tool when the caller pasted a
+     * `diff` string. Such a review is recorded in the review ledger as
+     * "caller-supplied diff" and never counts as a passing adversarial review.
      */
-    reportLedgerMiss?: boolean;
+    callerSuppliedDiff?: boolean;
   } & ReportPolicy,
   signal: AbortSignal,
   orchestratorJobId: string,
@@ -153,28 +152,20 @@ export async function runAdversarialLoop(
 
   const fenceRecords: FenceRecord[] = [];
   const fence = createFixFence(params.fixFence, fenceRecords);
-  // #1161 — the provenance of the diff the loop holds (resolveDiffSource or a
-  // per-round re-read supplies it); a pre-resolution exit is `tree`.
-  let provenance: ReviewProvenance = { kind: "tree" };
-  const ledgerWrite = async (raw: DispatchResult): Promise<DispatchResult> => {
+  const ledgerWrite = (raw: DispatchResult): DispatchResult => {
     // #1104 — fence findings are prefixed BEFORE the write: the durable ledger
     // row must carry the same text the caller sees.
     const result = withFixViolations(raw, fenceRecords);
-    const recorded = await writeAdversarialLedgerEntry(result, {
+    writeAdversarialLedgerEntry(result, {
       workCwd: params.workCwd,
       // #988 — thread the branch the note resolved (same shared resolution,
       // same args + cwd) so the write does not re-resolve.
       resolvedBranch: branchResolved,
       branch: params.branch,
       head: params.head,
-      provenance,
+      callerSuppliedDiff: params.callerSuppliedDiff === true,
     });
-    // #1161 — a branch-less miss already carries NOT_RECORDED_NOTE; only a
-    // keyed row that failed to write (no patch id) gets the extra line.
-    const missed = !recorded && branchResolved !== undefined && params.reportLedgerMiss === true;
-    return withLedgerNote(
-      missed ? { ...result, text: `${result.text}\n\n${LEDGER_MISS_NOTE}` } : result,
-    );
+    return withLedgerNote(result);
   };
 
   // #1161 — the reportOnly verdict policy is checked and resolved ONCE, at
@@ -186,7 +177,7 @@ export async function runAdversarialLoop(
       synthesizeResult({
         ok: false,
         loopOutcome: "infra-failure",
-        text: `Adversarial loop infrastructure failure: ${policyError}. No verdict was produced — this is NOT a review rejection.`,
+        text: `Adversarial loop infrastructure failure: ${policyError} (reportVerdict must be "terminal" or "routed"). No verdict was produced — this is NOT a review rejection.`,
         ms: Date.now() - start,
         usage,
         transcriptPath: lastTranscript,
@@ -194,6 +185,10 @@ export async function runAdversarialLoop(
       }),
     );
   }
+  const reportTerminal = params.reportVerdict === "terminal";
+
+  // #859 — resolve the ref range (used by both the diff and the comment check).
+  const range = params.base && params.head ? { base: params.base, head: params.head } : null;
 
   // #948 / #1040 — the comment check runs ONCE per round, on the diff that round
   // reviews; that single result feeds both the reviewer's prompt and the
@@ -216,31 +211,62 @@ export async function runAdversarialLoop(
     toRoundRecords,
   });
 
-  // The diff source (a pasted string, or base+head pinned to SHAs) is resolved
-  // by resolveDiffSource (adversarial-refs.ts); its errors come back as the
-  // result, never as an empty string the loop would approve.
-  const source = await resolveDiffSource(params, rangeDiffFn);
-  if (!source.ok) {
-    return ledgerWrite(
+  // #859 — resolve the diff: a pasted string wins over a ref range (traced);
+  // with no string, base+head compute the range in workCwd (else the process
+  // cwd). An error (invalid ref naming the ref, confirmed-empty range, cap
+  // overflow) is returned AS the result — never a fallback to an empty
+  // string, which the loop would review as "nothing to change" and approve.
+  let diff: string;
+  let getDiff = params.getDiff;
+  const noDiffResult = (text: string): DispatchResult =>
+    ledgerWrite(
       synthesizeResult({
         ok: false,
-        loopOutcome: source.loopOutcome,
-        text: source.text,
+        loopOutcome: "rejected",
+        text,
         ms: Date.now() - start,
         usage,
         transcriptPath: lastTranscript,
         model: lastModel,
       }),
     );
+  if (params.diff && range) {
+    trace(
+      `adversarial: diff string supplied alongside base=${range.base} head=${range.head} — the diff string wins`,
+    );
+    diff = params.diff;
+  } else if (params.diff) {
+    diff = params.diff;
+  } else if (range) {
+    const cwd = params.workCwd ?? process.cwd();
+    // Round 1 uses the diff computed once here at tool entry.
+    const initial = await rangeDiffFn(cwd, range.base, range.head);
+    if (!initial.ok) {
+      return noDiffResult(
+        `Adversarial loop could not compute the diff for ${range.base}...${range.head}: ${initial.reason}`,
+      );
+    }
+    diff = initial.diff;
+    // Rounds 2+ re-compute the SAME range, so a fix round's changes are
+    // reviewed (same rule as the driver's per-round getDiff re-read).
+    getDiff = async () => {
+      const r = await rangeDiffFn(cwd, range.base, range.head);
+      if (!r.ok) {
+        // #859 — a re-read failure is no longer a silent "" (which the loop
+        // would ignore and review the STALE diff on). Name it in the trace;
+        // the caller surfaces it in the final result.
+        trace(
+          `adversarial: diff re-read failed for range ${range.base}...${range.head}: ${r.reason} — reviewing the previous diff`,
+        );
+        throw new Error(r.reason);
+      }
+      return r.diff;
+    };
+  } else {
+    return noDiffResult(
+      "Adversarial loop: provide `diff`, or both `base` and `head` (with `workCwd`) — nothing to review was supplied.",
+    );
   }
-  let diff = source.diff;
-  provenance = source.provenance;
-  // Legacy `params.getDiff` (driver fan-out) returns a bare string; it keeps
-  // the provenance already held.
-  const legacyGetDiff = params.getDiff;
-  const getDiff =
-    source.getDiff ??
-    (legacyGetDiff ? async () => ({ diff: await legacyGetDiff(), provenance }) : undefined);
 
   // Mark this job as orchestrator-shaped so dispatch_peek / dispatch_steer
   // can resolve the orchestrator jobId to its active inner child instead of
@@ -278,10 +304,7 @@ export async function runAdversarialLoop(
     if (round > firstRound && getDiff) {
       try {
         const fresh = await getDiff();
-        if (fresh.diff.trim()) {
-          diff = fresh.diff;
-          provenance = fresh.provenance;
-        }
+        if (fresh.trim()) diff = fresh;
       } catch (err) {
         // A failed re-read is not a reason to abandon the round; the previous
         // diff plus the live worktree is what the reviewer had before this.
@@ -296,8 +319,7 @@ export async function runAdversarialLoop(
     }
     lastComments = await roundComments(
       diff,
-      // The head the diff in hand was read from (the pinned SHA for a range).
-      provenance.kind === "range" ? provenance.head : params.head,
+      params.head,
       params.workCwd,
       params.commentTimeoutMs,
       params.commentExecFn,
@@ -326,7 +348,7 @@ export async function runAdversarialLoop(
 
     const verdict = parseVerdict(adv.text);
     rounds.push({ round, verdict, ms: adv.ms });
-    if (isReportOnly(params)) {
+    if (params.reportOnly) {
       if (verdict.verdictParsed !== true) {
         return ledgerWrite(
           infraFailureResult(
@@ -341,7 +363,7 @@ export async function runAdversarialLoop(
       // #912 — the review ledger keys on the latest entry per branch, so every
       // reviewed round records its verdict: a pass is `approved`, anything the
       // driver will route back or reject is `rejected` (replaced by a later pass).
-      const terminalRound = params.reportVerdict === "terminal" ? MAX_ROUNDS : round;
+      const terminalRound = reportTerminal ? MAX_ROUNDS : round;
       const passed = decideLoopAction(verdict.status, terminalRound, MAX_ROUNDS, true) === "pass";
       return ledgerWrite(
         synthesizeResult({

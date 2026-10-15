@@ -17,10 +17,10 @@
  */
 
 import { mock } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { git, installLoopSeams, newRepo } from "./adversarial-loop-helpers.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -42,25 +42,28 @@ let devThrow = false;
 const spawnCalls: Array<{ role: string; cwd?: string }> = [];
 const ledgerResults: Array<{ loopOutcome?: string; text: string }> = [];
 
-await installLoopSeams(async (spec: SpawnSpec) => {
-  spawnCalls.push({ role: spec.role, cwd: spec.cwd });
-  if (spec.role === "developer") {
-    if (devThrow) {
-      devThrow = false;
+mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
+  makeRunId: () => "run-1104",
+  spawnSpecialist: async (spec: SpawnSpec) => {
+    spawnCalls.push({ role: spec.role, cwd: spec.cwd });
+    if (spec.role === "developer") {
+      if (devThrow) {
+        devThrow = false;
+        developerWrite?.(spec.cwd ?? process.cwd());
+        throw new Error("spawn exploded");
+      }
+      if (devFailures > 0) {
+        devFailures--;
+        return { role: "developer", ok: false, text: "", toolUses: [], ms: 1, exitCode: 1 };
+      }
       developerWrite?.(spec.cwd ?? process.cwd());
-      throw new Error("spawn exploded");
+      return { role: "developer", ok: true, text: "Applied.", toolUses: [], ms: 1, exitCode: 0 };
     }
-    if (devFailures > 0) {
-      devFailures--;
-      return { role: "developer", ok: false, text: "", toolUses: [], ms: 1, exitCode: 1 };
-    }
-    developerWrite?.(spec.cwd ?? process.cwd());
-    return { role: "developer", ok: true, text: "Applied.", toolUses: [], ms: 1, exitCode: 0 };
-  }
-  const text = reviewerReplies.length > 1 ? reviewerReplies.shift() : reviewerReplies[0];
-  if (text === undefined) throw new Error("test mock: no reviewer reply queued");
-  return { role: spec.role, ok: true, text, toolUses: [], ms: 1, exitCode: 0 };
-});
+    const text = reviewerReplies.length > 1 ? reviewerReplies.shift() : reviewerReplies[0];
+    if (text === undefined) throw new Error("test mock: no reviewer reply queued");
+    return { role: spec.role, ok: true, text, toolUses: [], ms: 1, exitCode: 0 };
+  },
+}));
 const realLedger = await import("../src/adversarial-ledger.ts");
 mock.module(new URL("../src/adversarial-ledger.ts", import.meta.url).href, () => ({
   ...realLedger,
@@ -68,11 +71,42 @@ mock.module(new URL("../src/adversarial-ledger.ts", import.meta.url).href, () =>
     ledgerResults.push({ loopOutcome: r.loopOutcome, text: r.text });
   },
 }));
+const realDeck = await import("../src/dispatch-deck.ts");
+mock.module(new URL("../src/dispatch-deck.ts", import.meta.url).href, () => ({
+  ...realDeck,
+  startEntry: () => {},
+  updateEntry: () => {},
+  clearEntry: () => {},
+  startBatchEntry: () => {},
+  updateBatchProgress: () => {},
+  clearBatchEntry: () => {},
+}));
+const realRegistry = await import("../src/async-jobs-registry.ts");
+mock.module(new URL("../src/async-jobs-registry.ts", import.meta.url).href, () => ({
+  ...realRegistry,
+  childHandles: new Map(),
+  registerChildHandle: () => {},
+  setOrchestratorActiveChild: () => {},
+  markOrchestrator: () => {},
+}));
+
 const { runAdversarialLoop } = await import("../src/adversarial.ts");
 
 const APPROVED = "VERDICT: APPROVED\n\nlooks good";
 const ISSUES = "VERDICT: CRITICAL_ISSUES_FOUND\n\n1. fix the thing";
 
+const git = (dir: string, ...args: string[]) =>
+  execFileSync("git", ["-C", dir, ...args], { stdio: "pipe" });
+const newRepo = (tag: string) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), `adv-1104-${tag}-`));
+  git(dir, "init", "-q", "-b", "main");
+  git(dir, "config", "user.email", "t@example.com");
+  git(dir, "config", "user.name", "test");
+  writeFileSync(path.join(dir, "f.txt"), "one\n");
+  git(dir, "add", "-A");
+  git(dir, "commit", "-q", "-m", "base");
+  return dir;
+};
 const signal = () => new AbortController().signal;
 const reset = () => {
   spawnCalls.length = 0;
@@ -82,7 +116,7 @@ const reset = () => {
   devThrow = false;
 };
 
-const callerRepo = newRepo("adv-1104-caller-");
+const callerRepo = newRepo("caller");
 // The fence requires workCwd to be a worktree of the caller's repository (#1104 r2).
 const workBase = mkdtempSync(path.join(os.tmpdir(), "adv-1104-wt-"));
 const workRepo = path.join(workBase, "wt");

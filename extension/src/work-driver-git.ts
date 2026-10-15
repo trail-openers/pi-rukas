@@ -40,9 +40,6 @@ export type VerifyExecFn = (
     // merge's rule-3 grep uses this so planner-controlled paths arrive
     // verbatim.
     argv?: string[];
-    // #1161 — bytes fed to the child's stdin (argv form only). `git patch-id`
-    // reads its diff there; no shell pipe is involved.
-    input?: string;
   },
 ) => Promise<{ stdout: string; stderr?: string }>;
 

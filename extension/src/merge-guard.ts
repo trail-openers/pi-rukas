@@ -19,8 +19,7 @@
  *   4. Carve-out: release-please / dependabot identities pass through.
  *   5. Fetch the branch: `git fetch <remote> <headRef>` where `<remote>` is
  *      resolved like forge detection (`origin` → `upstream` → first remote;
- *      no remote → refuse) — fail-closed on error. #1161: the PR's base
- *      branch is fetched in the same call, so the checks below see it fresh.
+ *      no remote → refuse) — fail-closed on error.
  *   6. Head OID check: the fetched head must equal the PR's `headOid`.
  *      A mismatch means the branch moved after the PR was opened; refuse.
  *      This is a FRESHNESS gate: it confirms the branch is where the PR
@@ -86,7 +85,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { stripQuotedSegments } from "./bash-command-parser.ts";
 import { mergesPr } from "./bash-merges-pr.ts";
-import { shq } from "./forge-commands.ts";
 import { execp } from "./lens-exec.ts";
 import { lensNotEvaluatedRefusal, readPrCommentBodies } from "./merge-guard-reads.ts";
 import { evaluateRoundCapMerge } from "./merge-guard-round-cap.ts";
@@ -276,10 +274,7 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
 
     // Fetch the branch. Fail-closed on error. The remote and branch come from
     // the PR and the git config: validated and passed as argv, never shell text.
-    // #1161 — the PR's base branch is fetched in the same call: the ancestry
-    // and patch-id checks below read `<remote>/<base>`, and a stale local base
-    // ref would judge the branch against an old mainline.
-    const refProblem = netRefProblem(remote, target.headBranch, target.baseBranch);
+    const refProblem = netRefProblem(remote, target.headBranch);
     if (refProblem !== undefined) {
       return block(
         `git fetch refused: ${refProblem} — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
@@ -290,7 +285,7 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
         cwd,
         maxBuffer: 64 * 1024,
         timeoutMs: EXEC_TIMEOUT_MS,
-        argv: ["fetch", remote, target.headBranch, target.baseBranch],
+        argv: ["fetch", remote, target.headBranch],
       });
     } catch (err) {
       return block(
@@ -333,25 +328,6 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     if (!currentPatchId) {
       return block(
         `could not compute the patch-id for ${target.headBranch} — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
-      );
-    }
-
-    // #1161 — the patch id above is three-dot: the branch's own changes from its
-    // fork point, the change a merge lands. The two-dot value this guard compared
-    // before matched only while the PR base had not moved past the fork point, so
-    // a moved base is refused here by name. Exit 1 from --is-ancestor is the moved
-    // case; any other failure is an unreadable base and refuses the same way.
-    try {
-      await execFn(
-        `git merge-base --is-ancestor ${shq(`${remote}/${target.baseBranch}`)} ${shq(`${remote}/${target.headBranch}`)}`,
-        { cwd, maxBuffer: 8 * 1024, timeout: EXEC_TIMEOUT_MS },
-      );
-    } catch (err) {
-      const moved = (err as { code?: unknown }).code === 1;
-      return block(
-        moved
-          ? `${remote}/${target.baseBranch} has moved past the fork point of ${target.headBranch} — rebase the branch onto it and re-run the reviews (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`
-          : `could not check ${target.headBranch} against ${remote}/${target.baseBranch}: ${analyseRefusal(err, 120)} — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
       );
     }
 

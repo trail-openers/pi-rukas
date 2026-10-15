@@ -53,7 +53,6 @@ import { acquireLedgerLock, runLedgerCriticalSectionHook } from "./review-ledger
 import { mergeAfterRace } from "./review-ledger-merge.ts";
 import { ledgerPathFor, remoteName } from "./review-ledger-path.ts";
 import { bumpLensRound } from "./review-ledger-round.ts";
-import { parsePatchId } from "./review-patch-id.ts";
 import { trace } from "./trace.ts";
 import { type VerifyExecFn, detectMainline } from "./work-driver-git.ts";
 
@@ -117,9 +116,42 @@ export { bumpLensRound } from "./review-ledger-round.ts";
 export { dedupeLatest } from "./review-ledger-core.ts";
 export { mergeAfterRace } from "./review-ledger-merge.ts";
 export { remoteName } from "./review-ledger-path.ts";
-// #1161 — the one patch-id definition lives in review-patch-id.ts (split out
-// for the 500-line cap); the guard and the writers import it from there.
-export { branchPatchId } from "./review-patch-id.ts";
+
+/**
+ * The patch id of a branch's changes: the diff from `baseRef` to the branch
+ * head, fed through `git patch-id --stable`. The writer and the guard both
+ * call this, so the same content always yields the same id (and a new commit
+ * always changes it).
+ *
+ * Returns undefined when the diff is empty or patch-id fails — the caller
+ * decides the fail-closed meaning.
+ */
+export async function branchPatchId(
+  execFn: LedgerExecFn,
+  cwd: string,
+  branchRef: string,
+  baseRef: string,
+): Promise<string | undefined> {
+  try {
+    // `git patch-id --stable` over the diff of the branch's own commits.
+    // Piping here is intentional: patch-id reads the diff from stdin.
+    const { stdout } = await execFn(`git diff ${baseRef}..${branchRef} | git patch-id --stable`, {
+      cwd,
+      maxBuffer: 1024 * 1024,
+    });
+    return parsePatchId(stdout, `${baseRef}..${branchRef}`);
+  } catch (err) {
+    trace(`review-ledger: patch-id failed for ${branchRef}: ${(err as Error).message}`);
+    return undefined;
+  }
+}
+
+/** One `git patch-id` line (`<id> <path>`) → the id, or undefined when empty. */
+function parsePatchId(stdout: string, label: string): string | undefined {
+  const id = stdout.trim().split(/\s+/)[0]?.trim();
+  if (!id) trace(`review-ledger: patch-id was empty for ${label}`);
+  return id;
+}
 
 /**
  * The WORKING-tree patch id against the mainline — the one number the #912

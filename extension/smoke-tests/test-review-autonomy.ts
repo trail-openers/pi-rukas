@@ -1,34 +1,31 @@
 #!/usr/bin/env bun
 /**
  * #1154 — review autonomy: a tool-path reportOnly review's verdict feeds the
- * merge guard. The verdict comes from the REAL runAdversarialLoop tool-path
- * result (reportVerdict "terminal"). The ledger row is written by the REAL
- * writeAdversarialLedgerEntry and read back from a temp ledger
- * (PI_ENSEMBLE_REVIEW_LEDGER_FILE). That row is
+ * merge guard. The ledger row is the one the REAL writeAdversarialLedgerEntry
+ * produced from the REAL runAdversarialLoop result (reportVerdict "terminal"),
+ * read back from a temp ledger (PI_ENSEMBLE_REVIEW_LEDGER_FILE). That row is
  * then driven through the real merge guard hook with two lens shapes:
  *
  *   - strict: the lens row is passed:true → merge allowed.
  *   - round-cap (#973): the lens row is ISSUES_FOUND at the cap with no
- *     hasCritical and no residual disclosure marker → refused (the marker is
- *     what makes the non-blocking findings visible; without it, no merge).
+ *     hasCritical and no residual disclosure marker → refused.
  *
  * #1161 — a review of a caller-pasted diff is written as a non-passing row, so
  * the guard refuses it; the same review via base+head is written as passing.
- *
  * A tool-path CRITICAL_ISSUES_FOUND row must stay refused even with a passing
- * lens. The tool-path verdict cases (approved / rejected / infra-failure) are covered
- * in test-adversarial-report-only-parse.ts and test-adversarial-tool-guards.ts.
+ * lens. The verdict-to-outcome mapping is asserted in
+ * test-adversarial-report-only-parse.ts, not here.
  */
 
+import { mock } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { type ReviewProvenance, writeAdversarialLedgerEntry } from "../src/adversarial-ledger.ts";
+import { writeAdversarialLedgerEntry } from "../src/adversarial-ledger.ts";
 import { readLedgerAt } from "../src/review-ledger.ts";
 import { finaliseSpecVerdict } from "../src/work-driver-intent-finalise.ts";
 import { type NormalisedSpec, parkAction } from "../src/work-driver-intent.ts";
-import { installLoopSeams } from "./adversarial-loop-helpers.ts";
 import {
   assert,
   TARGET,
@@ -40,15 +37,37 @@ import {
 } from "./merge-guard-helpers.ts";
 import type { LedgerEntry } from "./merge-guard-helpers.ts";
 
+type SpawnSpec = { role: string; prompt: string; cwd?: string };
 let reply = "";
-await installLoopSeams(async (spec) => ({
-  role: spec.role,
-  ok: true,
-  text: reply,
-  toolUses: [],
-  ms: 10,
-  exitCode: 0,
-  usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
+mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
+  makeRunId: () => "run-review-autonomy",
+  spawnSpecialist: async (spec: SpawnSpec) => ({
+    role: spec.role,
+    ok: true,
+    text: reply,
+    toolUses: [],
+    ms: 10,
+    exitCode: 0,
+    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
+  }),
+}));
+const realDeck = await import("../src/dispatch-deck.ts");
+mock.module(new URL("../src/dispatch-deck.ts", import.meta.url).href, () => ({
+  ...realDeck,
+  startEntry: () => {},
+  updateEntry: () => {},
+  clearBatchEntry: () => {},
+  clearEntry: () => {},
+  startBatchEntry: () => {},
+  updateBatchProgress: () => {},
+}));
+const realRegistry = await import("../src/async-jobs-registry.ts");
+mock.module(new URL("../src/async-jobs-registry.ts", import.meta.url).href, () => ({
+  ...realRegistry,
+  childHandles: new Map(),
+  registerChildHandle: () => {},
+  setOrchestratorActiveChild: () => {},
+  markOrchestrator: () => {},
 }));
 
 const { runAdversarialLoop } = await import("../src/adversarial.ts");
@@ -57,9 +76,12 @@ const DIFF = "diff --git a/x.txt b/x.txt\n+added line\n";
 const HEAD = "a".repeat(40);
 const TARGET_HEAD = { ...TARGET, headOid: HEAD };
 const BRANCH = TARGET.headBranch;
-// A real clone with a mainline, one committed change (the range the base+head
-// review judges) and one uncommitted change (the working tree the pasted-diff
-// review's writer reads), so both rows are written by the real writer.
+// The loop's own ledger write is a no-op here: its workCwd is not a git repo,
+// so the writer traces "no mainline" and writes nothing. The row under test is
+// written explicitly below by the real writer, from the same result.
+const loopDir = mkdtempSync(path.join(os.tmpdir(), "review-autonomy-loop-"));
+// A real clone with a mainline and one uncommitted change, so the real writer
+// computes a working-tree patch id the way it does in production.
 const repoDir = mkdtempSync(path.join(os.tmpdir(), "review-autonomy-"));
 const ledgerFile = () => process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE ?? "";
 
@@ -75,20 +97,12 @@ function setupRepo() {
   g("update-ref", "refs/remotes/origin/main", "HEAD");
   g("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
   writeFileSync(path.join(repoDir, "x.txt"), "base\nadded\n");
-  g("add", "-A");
-  g("commit", "-q", "-m", "change");
-  writeFileSync(path.join(repoDir, "x.txt"), "base\nadded\nuncommitted\n");
 }
-
-/** A commit SHA for a ref in the test clone. */
-const sha = (ref: string) =>
-  execFileSync("git", ["-C", repoDir, "rev-parse", ref], { stdio: "pipe" }).toString().trim();
 
 /**
  * A tool-path reportOnly review, recorded by the REAL ledger writer. The
  * caller-pasted-diff review and the base+head review differ only in how the
  * diff was supplied (the range diff is stubbed; it is not under test here).
- * The writer gets the provenance the loop derives from that diff source.
  */
 async function reviewRow(text: string, callerSuppliedDiff: boolean): Promise<LedgerEntry> {
   reply = text;
@@ -97,7 +111,7 @@ async function reviewRow(text: string, callerSuppliedDiff: boolean): Promise<Led
     {
       ...diffSource,
       context: "ctx",
-      workCwd: repoDir,
+      workCwd: loopDir,
       branch: BRANCH,
       reportOnly: true,
       reportRound: 1,
@@ -107,10 +121,11 @@ async function reviewRow(text: string, callerSuppliedDiff: boolean): Promise<Led
     "job-review-autonomy",
     async () => ({ ok: true as const, diff: DIFF }),
   );
-  const provenance: ReviewProvenance = callerSuppliedDiff
-    ? { kind: "pasted" }
-    : { kind: "range", base: sha("origin/main"), head: sha("HEAD") };
-  await writeAdversarialLedgerEntry(result, { workCwd: repoDir, branch: BRANCH, provenance });
+  await writeAdversarialLedgerEntry(result, {
+    workCwd: repoDir,
+    branch: BRANCH,
+    callerSuppliedDiff,
+  });
   const row = latestEntry(readLedgerAt(ledgerFile()), BRANCH, "adversarial");
   if (!row) throw new Error("the real ledger writer recorded no adversarial row");
   return row;
@@ -124,6 +139,14 @@ try {
 
   const issues = await reviewRow(ISSUES_TEXT, false);
   const PATCH = issues.patchId;
+  assert(
+    issues.passed === true,
+    "tool-path ISSUES_FOUND (base+head): real writer row is passed:true",
+  );
+  assert(
+    issues.detail === "approved",
+    "tool-path ISSUES_FOUND (base+head): row detail is approved",
+  );
 
   const lensPassedRow: LedgerEntry = {
     branch: BRANCH,
@@ -183,8 +206,8 @@ try {
   const pasted = await reviewRow(ISSUES_TEXT, true);
   assert(pasted.passed === false, "caller-supplied diff: real writer row is passed:false");
   assert(
-    pasted.detail?.endsWith(" (caller-supplied diff)") === true,
-    "caller-supplied diff: real writer row detail names the caller-supplied diff",
+    pasted.detail === "caller-supplied diff",
+    "caller-supplied diff: real writer row detail is 'caller-supplied diff'",
   );
   const pastedRefused = await hookDecision("gh pr merge 12", [pasted, lensPassedRow], {
     patchId: PATCH,
@@ -195,6 +218,10 @@ try {
   );
 
   const critical = await reviewRow("VERDICT: CRITICAL_ISSUES_FOUND\n\n1. broken", false);
+  assert(
+    critical.passed === false,
+    "tool-path CRITICAL_ISSUES_FOUND: real writer row is passed:false",
+  );
   const refused = await hookDecision("gh pr merge 12", [critical, lensPassedRow], {
     patchId: PATCH,
   });
@@ -290,9 +317,11 @@ try {
     "autonomy: [RESOLVED] after the point text does not resolve it",
   );
 } finally {
-  try {
-    rmSync(repoDir, { recursive: true, force: true });
-  } catch {}
+  for (const dir of [repoDir, loopDir]) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {}
+  }
   teardownLedger();
 }
 

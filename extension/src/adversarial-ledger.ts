@@ -24,40 +24,20 @@ import {
   appendLedgerEntry,
   workingTreePatchId,
 } from "./review-ledger.ts";
-import { rangePatchId } from "./review-patch-id.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 
 import { execp } from "./lens-exec.ts";
 
 /**
- * #1161 — where the diff the review judged came from. Derived by the loop
- * (adversarial.ts), never supplied by a caller:
- *   - `pasted`: a diff string was pasted. Recorded as passed:false.
- *   - `range`: the loop resolved base+head to these commit SHAs and reviewed
- *     `base...head`. The row's patch id is that range's own patch id.
- *   - `tree`: no diff was reviewed (an early exit). The row carries the
- *     working-tree patch id; it cannot pass, because nothing was approved.
- */
-export type ReviewProvenance =
-  | { kind: "pasted" }
-  | { kind: "range"; base: string; head: string }
-  | { kind: "tree" };
-
-/**
- * Write an adversarial-review entry to the review ledger. Fire-and-forget:
- * the caller does not await this; the function is safe to call on every
- * exit path of `runAdversarialLoop`.
- * #1161 — the promise resolves to true when a row was written, false otherwise;
- * the loop awaits it so a miss can be surfaced to the tool caller.
+ * Write an adversarial-review entry to the review ledger. The loop does not
+ * await this (fire-and-forget); the returned promise never rejects, so the
+ * function is safe to call on every exit path of `runAdversarialLoop`.
  *
- * #1161 — a `pasted` review is recorded as `passed: false` with detail
- * "<outcome> (caller-supplied diff)", so the merge guard refuses it; the same
- * review via base+head is recorded normally.
- *
- * #1161 — a `range` review: the patchId is the range's own patch id
- * (rangePatchId), not the working tree's, so the row covers the diff the loop
- * reviewed and nothing else. `base` and `head` are the loop's pinned SHAs.
+ * #1161 — `callerSuppliedDiff`: the review judged a diff string the caller
+ * pasted, not one the tool computed from base+head. Such a review is recorded
+ * as `passed: false` with detail "caller-supplied diff", so the merge guard
+ * refuses it; the same review via base+head is recorded normally.
  */
 export function writeAdversarialLedgerEntry(
   result: DispatchResult,
@@ -66,12 +46,11 @@ export function writeAdversarialLedgerEntry(
     branch?: string;
     head?: string;
     resolvedBranch?: string;
-    provenance?: ReviewProvenance;
+    callerSuppliedDiff?: boolean;
   },
-): Promise<boolean> {
-  const write = async (): Promise<boolean> => {
+): Promise<void> {
+  const write = async () => {
     const c = params.workCwd ?? process.cwd();
-    const provenance: ReviewProvenance = params.provenance ?? { kind: "tree" };
     // #980 — the branch comes from the SHARED resolver (review-branch.ts:
     // explicit `branch` → branch-named `head` → rev-parse) — the same one
     // the lens review and the residual poster use — so all three key on the
@@ -87,50 +66,38 @@ export function writeAdversarialLedgerEntry(
         .branch;
     if (!branch) {
       trace("adversarial: ledger write skipped — no branch (detached head, no caller branch)");
-      return false;
+      return;
     }
-    // #1161 — a range review is bound to the diff the loop reviewed: its own
-    // range id, never the working tree's. A narrowed range (base = tip~1) then
-    // records an id that never matches the whole branch at merge time, so the
-    // guard refuses it. Only the other provenances use the working-tree id.
     // The shared working-tree patch id (review-ledger.ts). When untracked
     // files exist the entry is still written for the tracked content, but the
     // gap is traced — see the warning's wording in workingTreePatchId.
-    const computed = provenance.kind === "range" ? undefined : await workingTreePatchId(execp, c);
-    if (computed?.warning) trace(`adversarial: ${computed.warning}`);
-    const patchId =
-      provenance.kind === "range"
-        ? await rangePatchId(execp, c, provenance.base, provenance.head)
-        : computed?.patchId;
-    if (!patchId) return false;
+    const computed = await workingTreePatchId(execp, c);
+    if (computed.warning) trace(`adversarial: ${computed.warning}`);
+    if (!computed.patchId) return;
     // #1039 — resolve the head to a full 40-char SHA via the shared
     // resolver (review-head-sha.ts — the same one the lens writer and the
     // diff resolvers use). The adversarial writer takes `head` for branch
     // resolution; now it also uses it (or HEAD) for the headSha field. An
     // unresolvable head leaves headSha undefined (omitted from the entry) —
     // the write succeeds without the field, matching the lens writer's
-    // behaviour. A range review already holds the SHA the loop pinned.
-    const headSha =
-      provenance.kind === "range"
-        ? provenance.head
-        : await resolveHeadSha(c, params.head ?? "HEAD", execp);
-    const pasted = provenance.kind === "pasted";
+    // behaviour.
+    const headRef = params.head ?? "HEAD";
+    const headSha = await resolveHeadSha(c, headRef, execp);
     const entry: LedgerEntry = {
       branch,
       kind: "adversarial",
-      patchId,
-      passed: adversarialPassed(result) && !pasted,
+      patchId: computed.patchId,
+      passed: adversarialPassed(result) && params.callerSuppliedDiff !== true,
       at: Date.now(),
-      detail: pasted
-        ? `${result.loopOutcome ?? "completed"} (caller-supplied diff)`
-        : (result.loopOutcome ?? "completed"),
+      detail:
+        params.callerSuppliedDiff === true
+          ? "caller-supplied diff"
+          : (result.loopOutcome ?? "completed"),
       ...(headSha ? { headSha } : {}),
     };
     await appendLedgerEntry(entry, execp, c);
-    return true;
   };
-  return write().catch((err) => {
-    trace(`adversarial: ledger write failed: ${(err as Error).message}`);
-    return false;
-  });
+  return write().catch((err) =>
+    trace(`adversarial: ledger write failed: ${(err as Error).message}`),
+  );
 }

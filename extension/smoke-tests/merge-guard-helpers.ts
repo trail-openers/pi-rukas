@@ -122,7 +122,6 @@ export async function makeHook(env: {
   calls: string[];
   failFetch?: boolean;
   failGh?: boolean;
-  baseMoved?: boolean;
   ledgerCommonDir?: string;
   remote?: string;
   ghComments?: string;
@@ -184,13 +183,6 @@ export async function makeHook(env: {
       return { stdout: env.remote + "\n" };
     }
     if (cmd.includes(`rev-parse ${env.remote}/`)) return { stdout: env.fetchedHead };
-    // #1161 — the range diff the patch id is computed from (three-dot).
-    if (cmd.startsWith("git diff ")) return { stdout: "diff --git a/x b/x\n+x\n" };
-    // #1161 — the PR base is an ancestor of the head (exit 1 = moved past the fork point).
-    if (cmd.includes("merge-base --is-ancestor")) {
-      if (env.baseMoved) throw Object.assign(new Error("not an ancestor"), { code: 1 });
-      return { stdout: "" };
-    }
     if (cmd.includes("patch-id")) return { stdout: `${env.currentPatchId} 0000` };
     if (cmd.includes("git-common-dir")) {
       return { stdout: env.ledgerCommonDir ?? "" };
@@ -211,14 +203,12 @@ export async function hookDecision(
     fetchedHead?: string;
     failGh?: boolean;
     failFetch?: boolean;
-    baseMoved?: boolean;
     ledgerCommonDir?: string;
     remote?: string;
     ghComments?: string;
   } = {},
 ) {
   const env = {
-    baseMoved: opts.baseMoved,
     target: opts.target ?? TARGET,
     currentPatchId: opts.patchId ?? "p1",
     fetchedHead: opts.fetchedHead ?? "abc123",

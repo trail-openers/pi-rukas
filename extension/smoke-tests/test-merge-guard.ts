@@ -8,16 +8,16 @@ import path from "node:path";
 import { mergesPr } from "../src/bash-command-parser.ts";
 import {
   assert,
-  GOOD_ENTRIES,
-  TARGET,
-  adversarialPassed,
   exit,
-  hookDecision,
-  latestEntry,
-  lensPassed,
   setupLedgerPath,
   teardownLedger,
+  hookDecision,
   withLedger,
+  TARGET,
+  GOOD_ENTRIES,
+  adversarialPassed,
+  lensPassed,
+  latestEntry,
 } from "./merge-guard-helpers.ts";
 import type { LedgerEntry } from "./merge-guard-helpers.ts";
 
@@ -138,28 +138,16 @@ assert(!lensPassed("ISSUES_FOUND", "MEDIUM"), "lens ISSUES_FOUND blocks at the M
     "…after fetching the head branch",
   );
   assert(
-    r.calls.some((c) => c === "git diff origin/main...origin/feature/x"),
-    "\u2026after computing the range diff over the PR's actual base (three-dot)",
-  );
-  assert(
-    r.calls.some((c) => c === "git patch-id --stable"),
-    "…and feeding that diff to git patch-id",
-  );
-  assert(
-    r.calls.some((c) => c === "git merge-base --is-ancestor origin/main origin/feature/x"),
-    "…and checking the PR base is an ancestor of the head (a moved base is refused)",
+    r.calls.some(
+      (c) => c.includes("git diff origin/main..origin/feature/x") && c.includes("patch-id"),
+    ),
+    "…after computing the patch-id over the PR's actual base",
   );
 }
 {
   // Passing adversarial (matching patchId) + passing lens → allowed.
   const r = await hookDecision("gh pr merge 12", GOOD_ENTRIES);
   assert(r.block === false, "allowed with passing adversarial (matching patchId) + passing lens");
-}
-{
-  // #1161 — the PR base moved past the fork point: refused by name, before the ledger is read.
-  const moved = await hookDecision("gh pr merge 12", GOOD_ENTRIES, { baseMoved: true });
-  assert(moved.block === true, "refused when the PR base has moved past the branch's fork point");
-  assert(/has moved past the fork point/.test(moved.reason ?? ""), "\u2026naming the moved base");
 }
 {
   // A new commit changes the patchId → refused until adversarial re-runs.
@@ -224,16 +212,11 @@ assert(!lensPassed("ISSUES_FOUND", "MEDIUM"), "lens ISSUES_FOUND blocks at the M
       { ...TARGET, headBranch: "release-please--branches--main", author: "release-please[bot]" },
       false,
     ],
-    [
-      "release-please branch alone",
-      { ...TARGET, headBranch: "release-please--branches--main" },
-      true,
-    ],
+    ["release-please branch alone", { ...TARGET, headBranch: "release-please--branches--main" }, true],
   ];
   for (const [label, target, expectBlock] of carveTargets) {
     const r = await hookDecision("gh pr merge 12", [], { target });
-    if (expectBlock)
-      assert(r.block === true, `carve-out: ${label} is NOT a carve-out (bot ID required)`);
+    if (expectBlock) assert(r.block === true, `carve-out: ${label} is NOT a carve-out (bot ID required)`);
     else {
       assert(r.block === false, `carve-out: ${label} allowed`);
       assert(
@@ -262,13 +245,13 @@ assert(!lensPassed("ISSUES_FOUND", "MEDIUM"), "lens ISSUES_FOUND blocks at the M
 
 // ------------------------- #1161: a caller-pasted diff is not a passing review
 {
-  // The writer records a pasted-diff review as passed:false, detail "<outcome> (caller-supplied diff)".
+  // The writer records a pasted-diff review as passed:false, detail "caller-supplied diff".
   const pasted: LedgerEntry = {
     branch: "feature/x",
     kind: "adversarial",
     patchId: "p1",
     passed: false,
-    detail: "approved (caller-supplied diff)",
+    detail: "caller-supplied diff",
     at: 1,
   };
   const lens: LedgerEntry = {
@@ -298,10 +281,7 @@ assert(!lensPassed("ISSUES_FOUND", "MEDIUM"), "lens ISSUES_FOUND blocks at the M
     target: { ...TARGET, headBranch: "feature/up" },
     remote: "upstream",
   });
-  assert(
-    r.calls.some((c) => c.includes("upstream/feature/up")),
-    "remote resolved via git config",
-  );
+  assert(r.calls.some((c) => c.includes("upstream/feature/up")), "remote resolved via git config");
   assert(!r.calls.some((c) => c.includes("origin/feature/up")), "no hardcoded origin");
   assert(r.block === false, "merge allowed when remote is upstream and patchId matches");
 }
@@ -330,14 +310,8 @@ assert(!lensPassed("ISSUES_FOUND", "MEDIUM"), "lens ISSUES_FOUND blocks at the M
   const subSandboxIdx = subSrc.indexOf("PI_ENSEMBLE_SANDBOX_MODE");
   const subTrustIdx = subSrc.indexOf("PI_ENSEMBLE_TRUST_MODE");
   assert(subGuardIdx > 0, "canary: subagent path registers the shared guard block");
-  assert(
-    subGuardIdx < subSandboxIdx && subGuardIdx < subTrustIdx,
-    "subagent: before both bypasses",
-  );
-  assert(
-    subBlock.includes("registerMergeGuard(pi)"),
-    "canary: the shared block registers the merge guard",
-  );
+  assert(subGuardIdx < subSandboxIdx && subGuardIdx < subTrustIdx, "subagent: before both bypasses");
+  assert(subBlock.includes("registerMergeGuard(pi)"), "canary: the shared block registers the merge guard");
   // Role-agnostic, mode-agnostic, escape hatch present.
   assert(
     !/PI_ENSEMBLE_ROLE/.test(mg),
@@ -361,18 +335,9 @@ assert(!lensPassed("ISSUES_FOUND", "MEDIUM"), "lens ISSUES_FOUND blocks at the M
 {
   const SRC = path.resolve(import.meta.dirname, "..", "src");
   const merged = readFileSync(path.join(SRC, "work-driver-merged-mechanized.ts"), "utf8");
-  assert(
-    /import \{ exec \} from "node:child_process"/.test(merged),
-    "canary: mechanizedMerge merges via in-process exec",
-  );
-  assert(
-    /execp\(|forge\.prMerge\(|forge\.prView\(/.test(merged),
-    "…executing gh directly in-process",
-  );
-  assert(
-    !merged.includes("tool_call"),
-    "the driver's merge path does not route through the bash tool_call hook",
-  );
+  assert(/import \{ exec \} from "node:child_process"/.test(merged), "canary: mechanizedMerge merges via in-process exec");
+  assert(/execp\(|forge\.prMerge\(|forge\.prView\(/.test(merged), "…executing gh directly in-process");
+  assert(!merged.includes("tool_call"), "the driver's merge path does not route through the bash tool_call hook");
 }
 
 teardownLedger();

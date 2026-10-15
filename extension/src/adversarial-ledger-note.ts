@@ -20,10 +20,6 @@ import { execp } from "./lens-exec.ts";
 import { NOT_RECORDED_NOTE, resolveReviewBranch } from "./review-branch.ts";
 import type { DispatchResult } from "./types.ts";
 
-/** #1161 — the tool path's line when a keyed review row could not be written. */
-export const LEDGER_MISS_NOTE =
-  "ledger: row NOT recorded — the merge guard will refuse; re-run the review";
-
 export interface LedgerNoteHelpers {
   /** The branch the loop's ledger write and note are keyed on — the SAME
    * shared resolution (explicit `branch` → branch-named `head` → rev-parse);
