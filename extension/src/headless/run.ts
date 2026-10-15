@@ -76,16 +76,19 @@ const LATE_DRIVER_MS = 5_000;
 /**
  * #1189 — compare the driver's in-memory terminal state against the state
  * file on disk. Returns the field names that differ (empty = agree).
- * The comparison set is derived from the in-memory object rather than
- * hand-enumerated, so a future WorkState field is covered automatically.
- * `updatedAt` is the only exclusion: it is a write timestamp, not state —
- * the driver's in-memory copy predates the final persist that rewrote it.
+ * Compares the UNION of keys present on either side, so a field added to
+ * disk but absent from the snapshot is also caught (undefined vs a value
+ * diverges). `updatedAt` is the only exclusion: it is a write timestamp,
+ * not state — the driver's in-memory copy predates the final persist that
+ * rewrote it.
  */
 export function detectDivergence(memory: WorkState, disk: WorkState): string[] {
   const excluded = new Set<keyof WorkState>(["updatedAt"]);
-  const fields = (Object.keys(memory) as (keyof WorkState)[]).filter((k) => !excluded.has(k));
+  const keys = new Set<string>([...Object.keys(memory), ...Object.keys(disk)]);
   const diffs: string[] = [];
-  for (const f of fields) {
+  for (const k of keys) {
+    if (excluded.has(k as keyof WorkState)) continue;
+    const f = k as keyof WorkState;
     if (JSON.stringify(memory[f]) !== JSON.stringify(disk[f])) diffs.push(f);
   }
   return diffs;
@@ -298,27 +301,47 @@ async function runGroup(
   const codes: number[] = [];
   for (const issue of group) {
     const file = workStateFile(opts.repoRoot, issue);
-    const state = await readState(opts.repoRoot, issue);
+    let state: WorkState | undefined;
+    try {
+      state = await readState(opts.repoRoot, issue);
+    } catch (err) {
+      // #1189 — a corrupt or unreadable state file is exactly the tamper case
+      // the divergence check exists for. Report it as a divergence for THIS
+      // issue (not-started + exit 30 + diverged) instead of letting the throw
+      // escape and crash the run with every prior result lost.
+      const message = `state file for issue #${issue} is corrupt or unreadable (${errorMessage(err)}); result reported as not-started`;
+      trace(`headless: state file for #${issue} unreadable: ${errorMessage(err)}`);
+      onDivergence(message);
+      results.push({
+        issue,
+        status: "not-started",
+        stateFile: file,
+        durationMs: 0,
+        steps: [],
+        exitCode: EXIT.crash,
+        diverged: true,
+      });
+      codes.push(EXIT.crash);
+      continue;
+    }
     if (!state) {
       // Fix 6: driver completed (in-memory snapshot present) but its state
       // file was deleted between the driver's final persist and this re-read.
       // Reporting "not-started" would fabricate a state the driver never
       // had; instead project from the snapshot and flag the divergence —
       // the file is missing where the driver says it should be, so exit 30.
-      if (inMemory) {
+      // Primary-scoped: the snapshot describes the primary's state, so only
+      // the primary is projected from it. A secondary with a missing file has
+      // no snapshot of its own → not-started.
+      if (inMemory !== undefined && issue === primary) {
         const message =
           "driver completed but its state file was deleted before the runner could read it; " +
           "result projected from the driver's in-memory state";
-        trace(`headless: state divergence on issue #${issue} — ${message}`);
-        onDivergence(message);
-        const projected = projectIssue(inMemory, file);
-        projected.exitCode = EXIT.crash;
-        projected.diverged = true;
-        results.push(projected);
-        codes.push(EXIT.crash);
+        pushDiverged(issue, file, inMemory, message, results, codes, onDivergence);
         continue;
       }
-      // No state file and no snapshot: the driver never reached its first persist.
+      // No state file and no snapshot (or a secondary, which the snapshot does
+      // not describe): the driver never reached its first persist for this issue.
       // Reported as not-started, never as a fabricated status.
       const code = outcome === "expired" ? expiredCode : refused ? EXIT.refused : EXIT.crash;
       codes.push(code);
@@ -341,37 +364,35 @@ async function runGroup(
       code = expiredCode;
     } else if (refusedHere) code = EXIT.refused;
     else code = exitCodeForState(state);
-    // #1189 — divergence check. If the driver reached a terminal boundary
-    // and handed the runner an in-memory snapshot, that snapshot must match
-    // what the state file on disk says. The state file is inside the repo
-    // tree the agents work in and agents run as the same user, so an agent
-    // that edits its own state file could otherwise choose the runner's
-    // exit code and JSON result. On disagreement we exit 30 with
-    // `error.code: "state-diverged"` — the driver's in-memory state is
-    // what we trust, and the file is what we flag.
+    // #1189 — divergence check, PRIMARY-SCOPED.
     //
-    // The driver reports its final state for the cycle's primary issue; in a
-    // grouped run the secondary issues' state files are not driver-written,
-    // but if one is present (pre-seeded or a driver invariant is ever
-    // broken) the same agent-tampering exposure applies, so the check runs
-    // for any issue that has a snapshot.
-    if (inMemory !== undefined) {
+    // The driver's onFinalState snapshot describes the cycle's PRIMARY issue
+    // (ctx.issue). It is therefore only a valid comparison baseline for the
+    // primary's state file. In a grouped run, a secondary issue's state file
+    // (if present — e.g. a pre-existing file from a prior completed cycle)
+    // is a DIFFERENT issue's state and is NOT compared against the primary's
+    // snapshot; comparing it would spuriously report state-diverged on a
+    // legitimate, untampered file. The narrow exposure this leaves — a
+    // tampered secondary state file choosing that secondary's exit code — is
+    // accepted: the driver does not write secondary state files, so a present
+    // secondary file is pre-existing, and the pre-PR behaviour (file is the
+    // authority for non-primary issues) is restored for them.
+    //
+    // For the primary: if the driver reached a terminal boundary and handed
+    // the runner an in-memory snapshot, that snapshot must match what the
+    // state file on disk says. The state file is inside the repo tree the
+    // agents work in and agents run as the same user, so an agent that edits
+    // its own state file could otherwise choose the runner's exit code and
+    // JSON result. On disagreement we exit 30 with
+    // `error.code: "state-diverged"` — the driver's in-memory state is what
+    // we trust, and the file is what we flag.
+    if (inMemory !== undefined && issue === primary) {
       const divergences = detectDivergence(inMemory, state);
       if (divergences.length > 0) {
         const message =
           `driver in-memory state and state file disagree on fields: ${divergences.join(", ")}; ` +
           `driver said ${JSON.stringify(summarizeState(inMemory))}, file says ${JSON.stringify(summarizeState(state))}`;
-        trace(`headless: state divergence on issue #${issue} — ${message}`);
-        onDivergence(message);
-        // The in-memory state is the runner's own truth; the file is the
-        // suspect. Exit 30 with state-diverged, projecting from the
-        // in-memory state (NOT the file) so the result matches what the
-        // driver actually did.
-        const projectedFromMemory = projectIssue(inMemory, file);
-        projectedFromMemory.exitCode = EXIT.crash;
-        projectedFromMemory.diverged = true;
-        results.push(projectedFromMemory);
-        codes.push(EXIT.crash);
+        pushDiverged(issue, file, inMemory, message, results, codes, onDivergence);
         continue;
       }
     }
@@ -380,6 +401,32 @@ async function runGroup(
     codes.push(code);
   }
   return codes;
+}
+
+/**
+ * #1189 — one divergence outcome, shared by the missing-file-with-snapshot
+ * and present-file-disagree branches. The in-memory snapshot is the runner's
+ * own truth; the file (or its absence) is the suspect. Projects from the
+ * in-memory state (NOT the file), flags the result diverged, and exits 30.
+ * `file` is only used for the projected result's `stateFile` field. The
+ * message is constructed at the call site because the two branches differ.
+ */
+function pushDiverged(
+  issue: number,
+  file: string,
+  inMemory: WorkState,
+  message: string,
+  results: IssueResult[],
+  codes: number[],
+  onDivergence: (message: string) => void,
+): void {
+  trace(`headless: state divergence on issue #${issue} — ${message}`);
+  onDivergence(message);
+  const projected = projectIssue(inMemory, file);
+  projected.exitCode = EXIT.crash;
+  projected.diverged = true;
+  results.push(projected);
+  codes.push(EXIT.crash);
 }
 
 /** A driver that did not start: claimed by a live cycle, labelled, or invalid. */

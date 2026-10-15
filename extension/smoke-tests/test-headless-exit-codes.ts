@@ -5,10 +5,14 @@
  * Also exercises #1189 divergence paths (secondary-issue tamper, missing file
  * with in-memory state) via `runHeadless` with a stubbed driver.
  */
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { parseHeadlessArgs } from "../src/headless/cli.ts";
 import { EXIT, exitCodeForGroup, exitCodeForState } from "../src/headless/exit-code.ts";
 import { projectIssue, questionsOf } from "../src/headless/result.ts";
-import { detectDivergence } from "../src/headless/run.ts";
+import { detectDivergence, runHeadless } from "../src/headless/run.ts";
+import { workStateFile } from "../src/workflow-state.ts";
 import type { WorkCapLiteral } from "../src/workflow-state-events-caps.ts";
 import {
   type WorkEvent,
@@ -199,33 +203,101 @@ assert(exitCodeForGroup([0, 0]) === 0, "group of merged → 0");
   );
 }
 
-// ── #1189 — divergence: secondary issue (not primary) tampered state file.
-// The gate is now `inMemory !== undefined` (not `issue === primary`), so
-// the secondary's file IS checked against the driver's in-memory snapshot.
-// The driver reports one final state (for the primary). If the secondary's
-// file (pre-seeded or a driver invariant broken) differs from the primary's
-// in-memory snapshot, the check fires → exit 30 + diverged.
-//
-// We verify the logic directly: the primary's in-memory snapshot (merged)
-// vs the secondary's tampered file (handoff) → detectDivergence finds a
-// pipelineState divergence. The runner would then set exit 30 + diverged.
+// ── #1189 — divergence gate is PRIMARY-SCOPED (round 3).
+// The driver's onFinalState snapshot describes the cycle's PRIMARY issue only.
+// In a grouped run, a secondary issue's state file (legitimately different —
+// e.g. a pre-existing file from a prior completed cycle) is NOT compared
+// against the primary's snapshot. `detectDivergence` still finds the
+// field-level diff (it is pure), but the runner's gate is
+// `inMemory !== undefined && issue === primary`, so a legitimately-different
+// secondary is reported from its own file with NO diverged flag and its own
+// exit code. The round-2 false positive (any issue vs the snapshot) is fixed.
 {
   const primaryInMemory = withStatus(60, "merged");
-  const secondaryTampered = withStatus(61, "handoff");
-  const diffs = detectDivergence(primaryInMemory, secondaryTampered);
+  const secondaryFile = withStatus(61, "handoff");
+  // The pure comparison still sees the field-level difference (no longer the
+  // runner's concern for a secondary — the gate simply does not reach it).
   assert(
-    diffs.includes("pipelineState"),
-    "secondary's tampered file vs primary's in-memory → pipelineState divergence (gate no longer requires issue === primary)",
+    detectDivergence(primaryInMemory, secondaryFile).includes("pipelineState"),
+    "detectDivergence is field-pure: a different secondary state still diffs",
   );
-  // The runner would set exitCode 30 and diverged: true for the secondary.
-  // Verify the projection shape the runner would produce:
-  const projected = projectIssue(secondaryTampered, "/state/61.json");
-  projected.exitCode = EXIT.crash;
-  projected.diverged = true;
+  // The runner's gate is primary-scoped, so the secondary is NOT compared:
+  const gateRunsForPrimary = primaryInMemory !== undefined && 60 === 60;
+  const gateRunsForSecondary = primaryInMemory !== undefined && 61 === 60;
+  assert(gateRunsForPrimary, "gate runs for the primary (issue === primary)");
   assert(
-    projected.exitCode === 30 && projected.diverged === true,
-    "secondary tamper: projected result has exit 30 + diverged",
+    !gateRunsForSecondary,
+    "gate does NOT run for a secondary (issue !== primary) → no divergence",
   );
+  // The secondary is therefore projected from its own file: its own status,
+  // its own exit code, no diverged flag.
+  const projected = projectIssue(secondaryFile, "/state/61.json");
+  assert(
+    projected.status === "handoff" && projected.exitCode === EXIT.handoff,
+    "legitimately-different secondary: status/exitCode from its own file",
+  );
+  assert(projected.diverged === undefined, "legitimately-different secondary: no diverged flag");
+}
+
+// ── #1189 — corrupt state file: per-issue readState throw is caught.
+// A state file with malformed JSON is exactly the tamper case the divergence
+// gate addresses. The runner must report not-started + exit 30 + diverged for
+// THAT issue and keep the loop alive — a prior issue's result in the same
+// grouped run must survive, instead of the throw escaping to a generic crash
+// that loses every prior result.
+{
+  const repo = mkdtempSync(path.join(tmpdir(), "headless-corrupt-"));
+  const lines: string[] = [];
+  const sig: Pick<NodeJS.Process, "on" | "off"> = {
+    on: () => {},
+    off: () => {},
+  };
+  try {
+    // Pre-seed a clean, terminal state for the PRIMARY (issue 63): the driver
+    // (stubbed, refuses immediately) does not touch it, so the loop reads it
+    // back cleanly. The secondary (issue 64) gets a malformed-JSON file.
+    mkdirSync(path.join(repo, ".pi", "work-state"), { recursive: true });
+    writeFileSync(
+      workStateFile(repo, 63),
+      JSON.stringify(withStatus(63, "merged")),
+    );
+    writeFileSync(workStateFile(repo, 64), "{ not valid json");
+    const result = await runHeadless({
+      repoRoot: repo,
+      issues: [63, 64],
+      restart: false,
+      signalTarget: sig,
+      driverSeams: {
+        dispatchFn: () => new Promise<never>(() => undefined),
+        issueBodyFetcherFn: async () => ({ stdout: "title:\tmock\nstate:\tOPEN\n\nbody" }),
+      },
+      write: (l) => {
+        lines.push(l);
+      },
+    });
+    const primary = result.results.find((r) => r.issue === 63);
+    const corrupt = result.results.find((r) => r.issue === 64);
+    assert(
+      primary !== undefined && primary.status === "merged" && primary.exitCode === EXIT.merged,
+      "prior (primary) result is preserved: merged, exit 0",
+    );
+    assert(
+      corrupt?.status === "not-started" && corrupt?.exitCode === EXIT.crash,
+      "corrupt state file: not-started + exit 30",
+    );
+    assert(corrupt?.diverged === true, "corrupt state file: diverged is true");
+    assert(
+      result.error?.code === "state-diverged" &&
+        result.error.message.includes("corrupt or unreadable"),
+      "corrupt state file: top-level error is state-diverged naming the corrupt issue",
+    );
+    assert(
+      result.exitCode === EXIT.crash,
+      `group exit is 30 (got ${result.exitCode})`,
+    );
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
 }
 
 // ── #1189 — missing state file with in-memory snapshot → exit 30 + diverged.
