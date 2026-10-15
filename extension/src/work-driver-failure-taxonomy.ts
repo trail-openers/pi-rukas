@@ -10,7 +10,7 @@
 
 import type { SEAMS } from "./decision-seam-registry.ts";
 import type { DecisionWhere } from "./decision-seam.ts";
-import { boundText, shadowDecide } from "./decision-shadow.ts";
+import { shadowDecide } from "./decision-shadow.ts";
 import {
   type DispatchFailureCause,
   isRateLimit429Msg,
@@ -157,7 +157,7 @@ export function shadowFailureCause(
       question: "What caused this dispatch failure?",
       state: {
         kind: tail.kind,
-        providerMessage: boundText(tail.providerMessage, 600),
+        providerMessage: tail.providerMessage?.slice(0, 600),
         // The END of the output: a failure shows in the last words.
         lastOutput: tail.errorTail?.slice(-600),
       },

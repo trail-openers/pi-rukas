@@ -13,7 +13,9 @@
  *     ask no model; a 429 only in the subagent's own words is asked (#1262);
  *   - `classifyFailureCause` alone stays pure: only `shadowFailureCause` asks;
  *   - PI_ENSEMBLE_DECISIONS=0 is rule-only: no backend is called;
- *   - an env override to `enforce` cannot make a shadow call act;
+ *   - an env override to `enforce` cannot make a shadow call act, and a
+ *     call that is not fired still leaves one stateless record;
+ *   - at most five open points per issue are asked;
  *   - secrets in the error text never reach the model.
  */
 
@@ -235,6 +237,32 @@ const baselineSpecs = [ordinary, security].map((b) => finaliseSpecVerdict(spec()
   );
   assert(skipped === undefined, "a shadow call refuses an enforce override");
   Reflect.deleteProperty(process.env, "PI_ENSEMBLE_DECISION_MODE_FAILURE_CAUSE");
+  recs = await awaitRecords(log, 7);
+  const skip = recs[6] as { skipped?: string; state?: unknown; ruleAnswer?: string };
+  assert(
+    typeof skip?.skipped === "string" && skip.state === undefined && skip.ruleAnswer === "unknown",
+    "a refused shadow call still writes one stateless record saying why",
+  );
+
+  // A long Open points list is capped: at most five points are asked.
+  const many = issueWith(
+    ...Array.from(
+      { length: 7 },
+      (_, i) => `Which retry backoff for queue ${i} \u2014 proposal: 5s`,
+    ),
+  );
+  const asked = calls.llm;
+  const capped = finaliseSpecVerdict(spec(), many, where);
+  assert(
+    JSON.stringify(capped) === JSON.stringify(finaliseSpecVerdict(spec(), many)),
+    "the capped list's verdict is the rule's",
+  );
+  recs = await awaitRecords(log, 12);
+  await sleep(100);
+  assert(
+    records(log).length === 12 && calls.llm - asked === 5,
+    "seven open points: five asked in shadow, the rest traced",
+  );
 
   detach();
 }

@@ -15,7 +15,9 @@
  *   - **Never throws, never changes an outcome.** The answer is discarded; a
  *     rejection is traced. Only a seam whose effective mode is not `enforce`
  *     is fired, so an env override cannot turn a fire-and-forget call into an
- *     acted-on one — such a call is refused and traced.
+ *     acted-on one — such a call is refused and traced. A call that is not
+ *     fired (refused, dropped, unreadable config) still writes one stateless
+ *     record saying why, so S5 sees the gap.
  *   - **Bounded.** `decide()` bounds every backend by the seam's timeout, and
  *     at most `MAX_IN_FLIGHT` shadow decisions run at once; a burst beyond
  *     that is dropped and traced rather than queued behind a slow model.
@@ -28,6 +30,7 @@
  * the log; without one the session's cwd does.
  */
 
+import { appendDecisionRecord } from "./decision-log.ts";
 import { SEAMS, type SeamId, type SeamSpec, seamConfig } from "./decision-seam-registry.ts";
 import {
   type DecideCtx,
@@ -74,15 +77,6 @@ function sessionNow(): {
 }
 
 /**
- * Bound one free-text field of a seam's state. The state goes to a model, so
- * a caller passes only what the question needs, never a whole transcript.
- */
-export function boundText(text: string | undefined, max: number): string | undefined {
-  if (text === undefined) return undefined;
-  return text.length > max ? `${text.slice(0, max)}…` : text;
-}
-
-/**
  * Fire a shadow decision. Returns the settled decision (or undefined when it
  * was not run) for tests; production callers ignore it.
  */
@@ -91,25 +85,33 @@ export function shadowDecide(
   req: DecideRequest,
   where: DecisionWhere = {},
 ): Promise<Decision | undefined> {
+  // A call that is not fired still leaves one record (no state, so nothing to
+  // redact): S5 must see a gap in its sample, not silently lose it.
+  const skipped = (reason: string): Promise<undefined> => {
+    traceWarn(`decision-shadow: '${seam}' not fired: ${reason}`);
+    return appendDecisionRecord(
+      { repoRoot: where.repoRoot ?? sessionNow().cwd, issues: where.issues },
+      {
+        ts: new Date().toISOString(),
+        seam,
+        question: req.question,
+        ruleAnswer: req.rule,
+        skipped: reason,
+      },
+    ).then(
+      () => undefined,
+      () => undefined,
+    );
+  };
   let mode: string;
   try {
-    const spec: SeamSpec = SEAMS[seam];
-    mode = seamConfig(spec).mode;
+    mode = seamConfig(SEAMS[seam] as SeamSpec).mode;
   } catch (err) {
     // The caller's rule answer must not depend on the shadow call.
-    traceWarn(`decision-shadow: '${seam}' not fired: ${(err as Error)?.message ?? String(err)}`);
-    return Promise.resolve(undefined);
+    return skipped(`seam config unreadable: ${(err as Error)?.message ?? String(err)}`);
   }
-  if (mode === "enforce") {
-    traceWarn(
-      `decision-shadow: '${seam}' is configured to enforce; a shadow call cannot act, skipped`,
-    );
-    return Promise.resolve(undefined);
-  }
-  if (inFlight >= MAX_IN_FLIGHT) {
-    traceWarn(`decision-shadow: ${inFlight} shadow decisions in flight; '${seam}' dropped`);
-    return Promise.resolve(undefined);
-  }
+  if (mode === "enforce") return skipped("configured to enforce; a shadow call cannot act");
+  if (inFlight >= MAX_IN_FLIGHT) return skipped(`${inFlight} shadow decisions already in flight`);
   inFlight++;
   return new Promise<void>((resolve) => setImmediate(resolve))
     .then(() => {
@@ -119,7 +121,6 @@ export function shadowDecide(
         model: s.model,
         repoRoot: where.repoRoot ?? s.cwd,
         issues: where.issues,
-        timeoutMs: where.timeoutMs,
       });
     })
     .catch((err: unknown) => {
