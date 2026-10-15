@@ -6,6 +6,12 @@ import { ROLE_NAMES, type RoleName } from "./roles.ts";
  *
  * Resolution order (first hit wins):
  *   1. Per-call override   — `model` field on a DispatchSpec (string)
+ *   1b. Per-lens env vars  — `PI_ENSEMBLE_MODEL_LENS_<LENS>` plus the optional
+ *                            `PI_ENSEMBLE_PROVIDER_LENS_<LENS>`, for a lens
+ *                            child of the code review (`lens` set: the lens
+ *                            name, e.g. `SECURITY`). Lets the six lenses,
+ *                            which all run as one role, use different models.
+ *                            Same pairing rule as the per-role vars.
  *   2. /ensemble-model     — per-role choice saved to ensemble-models.json
  *                            (or its all-subagents default). Carries both
  *                            `provider` and `model` for custom OpenAI-
@@ -37,7 +43,14 @@ import { ROLE_NAMES, type RoleName } from "./roles.ts";
 export interface ResolvedModelChoice {
   provider: string | undefined;
   model: string | undefined;
-  source: "spec" | "config" | "config-default" | "role-env" | "subagent-env" | "default";
+  source:
+    | "spec"
+    | "lens-env"
+    | "config"
+    | "config-default"
+    | "role-env"
+    | "subagent-env"
+    | "default";
   envVar?: string;
   configKey?: string;
 }
@@ -49,6 +62,14 @@ function roleProviderEnvKey(role: string): string {
   return `PI_ENSEMBLE_PROVIDER_${role.toUpperCase().replaceAll("-", "_")}`;
 }
 
+/** `lens` is a lens name (`ERROR_HANDLING`) or its tag form (`error-handling`). */
+function lensEnvKey(lens: string): string {
+  return `PI_ENSEMBLE_MODEL_LENS_${lens.toUpperCase().replaceAll("-", "_")}`;
+}
+function lensProviderEnvKey(lens: string): string {
+  return `PI_ENSEMBLE_PROVIDER_LENS_${lens.toUpperCase().replaceAll("-", "_")}`;
+}
+
 function envValue(key: string): string | undefined {
   const raw = process.env[key];
   if (!raw) return undefined;
@@ -56,13 +77,25 @@ function envValue(key: string): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-export function resolveModel(role: string, override?: string): ResolvedModelChoice {
+export function resolveModel(role: string, override?: string, lens?: string): ResolvedModelChoice {
   if (override && override.trim().length > 0) {
     return {
       provider: undefined,
       model: override.trim(),
       source: "spec",
     };
+  }
+  if (lens) {
+    const lensKey = lensEnvKey(lens);
+    const lensModel = envValue(lensKey);
+    if (lensModel) {
+      return {
+        provider: envValue(lensProviderEnvKey(lens)),
+        model: lensModel,
+        source: "lens-env",
+        envVar: lensKey,
+      };
+    }
   }
   const cfg = getOverride(role);
   if (cfg.choice) {

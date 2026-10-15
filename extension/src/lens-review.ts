@@ -4,6 +4,7 @@ import * as dispatchDeck from "./dispatch-deck.ts";
 import { execp } from "./exec.ts";
 import { resolveBudgetKey } from "./lens-budget-key.ts";
 import type { LensLedgerOutcome } from "./lens-ledger.ts";
+import { withLensModelSlot } from "./lens-model-slots.ts";
 import { partitionDecisions, renderPriorFindingsBlock } from "./lens-residuals.ts";
 import { splitCarried } from "./lens-review-advisory.ts";
 import { carriedSummary, noReviewSummary } from "./lens-review-auto-delta.ts";
@@ -400,16 +401,18 @@ export async function runLensReview(opts: {
   const healthy = roster.filter((e) => e.error === undefined);
   const results = await Promise.all(
     healthy.map((lens) =>
-      lensChildFn({
-        lens,
-        runId,
-        skillsDir,
-        context,
-        roster,
-        opts: { ...opts, diff: diff ?? "", priorFindings },
-        bumpBatch,
-        ...(opts.pi ? { pi: opts.pi } : {}),
-      }),
+      withLensModelSlot(lens.name, () =>
+        lensChildFn({
+          lens,
+          runId,
+          skillsDir,
+          context,
+          roster,
+          opts: { ...opts, diff: diff ?? "", priorFindings },
+          bumpBatch,
+          ...(opts.pi ? { pi: opts.pi } : {}),
+        }),
+      ),
     ),
   );
   const blockedRows = blocked.map(
