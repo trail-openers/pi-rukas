@@ -89,7 +89,7 @@ The full set of valid `kind` values is exported as `NDJSON_KINDS` (= `KNOWN_EVEN
 
 ```
 {
-  "schemaVersion": 1,          // the version of the capabilities object itself
+  "schemaVersion": 2,          // the version of the capabilities object itself
   "version": "0.12.79",        // the pi-rukas build version (extension/package.json)
   "commit": "abc1234…" | null, // the baked commit; null when not baked (bare worktree)
   "contracts": {
@@ -103,17 +103,16 @@ The full set of valid `kind` values is exported as `NDJSON_KINDS` (= `KNOWN_EVEN
   "verbs": {
     "work": { "flags": ["--restart", "--json", "--timeout"] }
   },
-  "inputs": [
-    {
-      "name": "PI_ENSEMBLE_EXTRA_IMAGE_DIRS",
-      "readBy": "explore,plan",
-      "manifestVersion": 1
-    },
-    {
-      "name": "PI_ENSEMBLE_ISSUE_IMAGES",
-      "readBy": "explore,plan",
-      "manifestVersion": 1
-    }
+  "inputs": [                  // every PI_ENSEMBLE_* input this build reads
+    { "name": "PI_ENSEMBLE_MAX_WORKSTREAMS", "type": "integer", "default": 6, "scope": "cycle" },
+    { "name": "PI_ENSEMBLE_VERIFY_TIMEOUT_MS", "type": "duration-ms", "default": 600000, "scope": "cycle" },
+    { "name": "PI_ENSEMBLE_MODEL_<ROLE>", "type": "string", "default": null, "scope": "cycle" },
+    { "name": "PI_ENSEMBLE_ISSUE_IMAGES", "type": "boolean", "default": true, "scope": "cycle", "manifestVersion": 1 },
+    …
+  ],
+  "files": [                   // the .pi/* project files a cycle reads
+    { "path": ".pi/verify-cmd", "kind": "command", "whenAbsent": "verify command derived from the repo" },
+    …
   ],
   "features": {
     "resultFromMemory": true,   // #1189 — result from in-memory state, not the state file
@@ -126,7 +125,7 @@ The full set of valid `kind` values is exported as `NDJSON_KINDS` (= `KNOWN_EVEN
 
 | Field | Source | Meaning |
 |---|---|---|
-| `schemaVersion` | `CAPABILITIES_VERSION` constant | Version of the capabilities object shape. Bump when the top-level shape changes. A caller that knows `schemaVersion: 1` can parse this object; a future `schemaVersion: 2` with a new field is a caller-visible change. |
+| `schemaVersion` | `CAPABILITIES_VERSION` constant | Version of the capabilities object shape. Bump when the shape changes. Version 2 (#1326) gave each `inputs[]` entry a `type`, `default` and `scope`, dropped `readBy`, and added `files`. |
 | `version` | `extension/package.json` `version` | The pi-rukas version of the build. |
 | `commit` | `.pi/pi-rukas-commit` (baked by `install.sh` / the image) | The git commit the build was made from. `null` when the checkout has no baked marker (e.g. a bare worktree or dev tree). |
 | `contracts.exitCodes.version` | Named constant in `exit-code.ts` | Version of the exit-code contract. The 7 named values are stable within a version. |
@@ -134,9 +133,12 @@ The full set of valid `kind` values is exported as `NDJSON_KINDS` (= `KNOWN_EVEN
 | `contracts.resultSchema.version` | Named constant in `result.ts` | Version of the `--json` result schema. |
 | `contracts.ndjson.version` | `NDJSON_VERSION` | Version of the NDJSON progress schema. |
 | `verbs.work.flags` | `WORK_FLAGS` array | The flags the `work` verb accepts, in the order the parser accepts them. An unknown flag in a caller's argv means "not supported" and is refused with exit 40. |
-| `inputs[].name` | Hardcoded in `capabilities.ts` | The environment variable name the runner reads. A caller that passes an env var not listed here means "not read by this build" and should fail closed. |
-| `inputs[].readBy` | Hardcoded | The comma-separated list of steps that receive the input (e.g. `explore,plan`). |
-| `inputs[].manifestVersion` | Hardcoded | The manifest format version the runner understands. |
+| `inputs[].name` | `HEADLESS_INPUTS` (`inputs.ts`) | An environment variable the build reads. A name with `<ROLE>` or `<SEAM>` is a family: `<ROLE>` is a role name and `<SEAM>` a decision-seam id, upper-cased with `-` → `_` (e.g. `PI_ENSEMBLE_MODEL_DEVELOPER`). |
+| `inputs[].type` | Hardcoded | `boolean` (`1` on, `0` off), `integer`, `number` (see `unit`), `duration-ms`, `string`, `path`, `list` (joined by `separator`) or `enum` (one of `values`). |
+| `inputs[].default` | Hardcoded; about 50 of them are checked against their live reader functions | The behaviour when the variable is unset. `null` means unset by default, with the fallback described in [configuration.md](configuration.md#environment-variables). |
+| `inputs[].scope` | Hardcoded | Who sets it: `cycle` (changes what a cycle does), `sandbox` (the sandbox wrapper), `interactive` (the Pi UI only), `install` (path overrides), `internal` (pi-rukas sets it on its own children; a host must not), `test` (smoke tests only). |
+| `inputs[].manifestVersion` | Hardcoded | Present on the two issue-image inputs: the manifest format version the build understands. |
+| `files[]` | `HEADLESS_FILES` (`inputs.ts`) | The `.pi/*` files a cycle reads from the project (`path`, `kind`: `command` / `hook` / `config`, and what happens `whenAbsent`). Files the driver writes, such as `.pi/work-state/`, are state, not input, and are not listed. |
 | `features.resultFromMemory` | Constant `true` | `true` when the result is taken from the driver's in-memory state rather than re-reading the state file (#1189). |
 | `features.cycleDeadline` | Constant `true` | `true` when a cycle that hits its deadline parks with a handoff rather than being killed (#1238). |
 
@@ -145,13 +147,15 @@ The full set of valid `kind` values is exported as `NDJSON_KINDS` (= `KNOWN_EVEN
 ```bash
 # Check before starting a cycle:
 caps=$(pi-rukas-headless --capabilities)
-echo "$caps" | jq -e '.inputs[].name == "PI_ENSEMBLE_EXTRA_IMAGE_DIRS"' \
-  || { echo "This build does not read PI_ENSEMBLE_EXTRA_IMAGE_DIRS"; exit 1; }
+for name in PI_ENSEMBLE_MAX_WORKSTREAMS PI_ENSEMBLE_VERIFY_TIMEOUT_MS; do
+  echo "$caps" | jq -e --arg n "$name" 'any(.inputs[]; .name == $n)' >/dev/null \
+    || { echo "This build does not read $name"; exit 1; }
+done
 echo "$caps" | jq -e '.features.cycleDeadline == true' \
   || { echo "This build has no cycle deadline"; exit 1; }
 ```
 
-An unknown name (no matching key in `features`, `inputs`, or `verbs.work.flags`) means the build does not support it. The caller fails closed — it does not guess or fall back.
+An unknown name (no matching key in `features`, `inputs`, `files`, or `verbs.work.flags`) means the build does not support it. The caller fails closed — it does not guess or fall back.
 
 ### Baking the commit
 
@@ -159,4 +163,6 @@ An unknown name (no matching key in `features`, `inputs`, or `verbs.work.flags`)
 
 ## Relationship to `docs/configuration.md`
 
-The inputs listed in the capabilities answer (`PI_ENSEMBLE_EXTRA_IMAGE_DIRS`, `PI_ENSEMBLE_ISSUE_IMAGES`) are documented in [configuration.md](configuration.md#environment-variables). The capabilities answer is the machine-readable form; the documentation table is the human-readable form. Both must agree — the drift test (`test-headless-capabilities.ts`) re-derives the capabilities answer from the live constants and fails when they diverge.
+`inputs` is the machine-readable list of every `PI_ENSEMBLE_*` variable read under `extension/src/`; [configuration.md](configuration.md#environment-variables) is the human-readable description. `test-headless-inputs.ts` scans `src/` for env reads (property, index, destructuring and name-literal forms) and fails when a read is missing from `inputs` or an entry is no longer read. A key built at runtime (`` `PI_ENSEMBLE_MODEL_${role}` ``) must be on the test's explicit allowlist, which maps it to its family entry. The test also checks about 50 listed defaults (numeric, list and boolean) against their live reader functions; the others are checked only in review. A new input therefore has to be listed in `inputs.ts` and described in configuration.md in the same change.
+
+Variables read only by the shell wrappers in `bin/` (e.g. `PI_ENSEMBLE_HOST_ALIASES`, `PI_ENSEMBLE_IMAGE_DIRS`) configure the sandbox launch, not the runner, and are not listed.

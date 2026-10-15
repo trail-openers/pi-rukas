@@ -2,7 +2,7 @@
 
 All optional. Defaults are reasonable for typical use. This file holds the full environment-variable reference (moved from the README) plus the file/directory layout table.
 
-> The **headless runner** (`pi-rukas-headless`) has its own contract documentation in [headless.md](headless.md), which covers the exit-code contract, the `--json` result schema, the NDJSON progress stream, and the `--capabilities` answer. The `PI_ENSEMBLE_EXTRA_IMAGE_DIRS` and `PI_ENSEMBLE_ISSUE_IMAGES` entries below are the human-readable form of what the machine-readable `--capabilities` answer reports under `inputs`.
+> The **headless runner** (`pi-rukas-headless`) has its own contract documentation in [headless.md](headless.md), which covers the exit-code contract, the `--json` result schema, the NDJSON progress stream, and the `--capabilities` answer. The machine-readable list of every `PI_ENSEMBLE_*` variable the extension reads, with its type, default and scope, is the `inputs` field of `pi-rukas-headless --capabilities` (source: `extension/src/headless/inputs.ts`). A variable this page does not describe is still listed there.
 
 ## Paths
 
