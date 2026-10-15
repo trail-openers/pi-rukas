@@ -310,7 +310,10 @@ ENV PI_ENSEMBLE_SANDBOX_MODE=1
 # at a timeout — stays a zombie and keeps its pid. A pid-limited container
 # then cannot fork (`/bin/sh: Cannot fork`, `spawn EAGAIN`) for the rest of
 # the cycle (#1256). tini reaps them and forwards signals to pi.
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/pi-rukas-entrypoint"]
+# `-s` registers tini as a child subreaper, so it still reaps when it is not
+# PID 1 (`docker run --init` puts docker's own init there), and does not print
+# its "not running as PID 1" warning onto the headless NDJSON stderr (#1370).
+ENTRYPOINT ["/usr/bin/tini", "-s", "--", "/usr/local/bin/pi-rukas-entrypoint"]
 
 # Default: drop the user into `pi` directly. The wrapper script overrides via
 # `pi-rukas shell` for a bash prompt instead.
