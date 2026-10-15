@@ -98,7 +98,12 @@ export function shadowSkip(
     },
   ).then(
     () => undefined,
-    () => undefined,
+    (err: unknown) => {
+      traceWarn(
+        `decision-shadow: '${seam}' skip record not written: ${(err as Error)?.message ?? String(err)}`,
+      );
+      return undefined;
+    },
   );
 }
 
@@ -110,6 +115,20 @@ export function shadowDecide(
   seam: SeamId,
   req: DecideRequest,
   where: DecisionWhere = {},
+): Promise<Decision | undefined> {
+  // The synchronous prefix must never throw into the caller's rule path.
+  try {
+    return shadowDecideUnguarded(seam, req, where);
+  } catch (err) {
+    traceWarn(`decision-shadow: '${seam}' not fired: ${(err as Error)?.message ?? String(err)}`);
+    return Promise.resolve(undefined);
+  }
+}
+
+function shadowDecideUnguarded(
+  seam: SeamId,
+  req: DecideRequest,
+  where: DecisionWhere,
 ): Promise<Decision | undefined> {
   // A call that is not fired still leaves one record (no state, so nothing to
   // redact): S5 must see a gap in its sample, not silently lose it.

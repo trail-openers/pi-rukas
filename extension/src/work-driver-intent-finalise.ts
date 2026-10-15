@@ -11,6 +11,7 @@
  * The open-point gate is reached only through `finaliseSpecVerdict`.
  */
 
+import { redactClip } from "./decision-log.ts";
 import type { DecisionWhere } from "./decision-seam.ts";
 import { shadowDecide } from "./decision-shadow.ts";
 import { matchSecurityTerm } from "./security-class.ts";
@@ -93,7 +94,7 @@ function askSecuritySeam(text: string, isSecurity: boolean, where: DecisionWhere
     "security-open-point",
     {
       question: "Is this open point a security decision?",
-      state: { openPoint: flattenAndClip(text, 1000) },
+      state: { openPoint: redactClip(text, 1000) },
       rule: isSecurity ? "true" : "false",
     },
     where,

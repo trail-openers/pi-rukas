@@ -8,6 +8,7 @@
  * decide retry vs. halt behaviour per PR5/#297/#308/#314.
  */
 
+import { redactClip } from "./decision-log.ts";
 import type { SEAMS } from "./decision-seam-registry.ts";
 import type { DecisionWhere } from "./decision-seam.ts";
 import { shadowDecide, shadowSkip } from "./decision-shadow.ts";
@@ -179,9 +180,11 @@ export function shadowFailureCause(
     question: "What caused this dispatch failure?",
     state: {
       kind: tail.kind,
-      providerMessage: tail.providerMessage?.slice(0, 600),
+      // Redacted over the whole text before clipping (decision-log.ts).
+      providerMessage:
+        tail.providerMessage === undefined ? undefined : redactClip(tail.providerMessage, 600),
       // The END of the output: a failure shows in the last words.
-      lastOutput: tail.errorTail?.slice(-600),
+      lastOutput: tail.errorTail === undefined ? undefined : redactClip(tail.errorTail, 600, "end"),
     },
     rule,
   };

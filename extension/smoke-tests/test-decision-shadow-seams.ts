@@ -318,4 +318,85 @@ const baselineSpecs = [ordinary, security].map((b) => finaliseSpecVerdict(spec()
   detach();
 }
 
+// ------------------------------------------------ redact the WHOLE text, then clip
+
+/** True when any 12-char run of `key` appears in `s` (a fragment that could still leak). */
+function leaksKey(s: string, key: string): boolean {
+  for (let i = 0; i + 12 <= key.length; i++) {
+    if (s.includes(key.slice(i, i + 12))) return true;
+  }
+  return false;
+}
+
+const SHADOW_KEY = `sk-ant-api03-${"aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0xY2zA4bC6d"}`;
+{
+  // The key's prefix sits ~10 chars before the 600-char tail boundary: a clip
+  // before redaction would leave a fragment no pattern matches.
+  const root = tmpDir("shadow-redact-tail");
+  const where = { repoRoot: root, issues: [9] };
+  const log = path.join(root, ".pi", "work-state", "9", "decisions.jsonl");
+  const prompts: string[] = [];
+  const { registry, calls } = stubRegistry({
+    llm: (ctx) => {
+      prompts.push(String(ctx.messages[0]?.content ?? ""));
+      return llmReply(JSON.stringify({ label: "subagent-failure", justification: "stub" }));
+    },
+  });
+  attach({ modelRegistry: registry, model: STUB_MODEL, cwd: root });
+  // Spaces around the key: the pattern needs word boundaries at both ends.
+  const errorTail = `${"f".repeat(99)} ${SHADOW_KEY} ${"t".repeat(556)}`;
+  assert(
+    errorTail.length - 600 === 100 + 10,
+    "fixture: the 600-char tail boundary falls 10 chars into the key",
+  );
+  act({ kind: "dispatch-failed", errorTail }, where);
+  const recs = await awaitRecords(log, 1);
+  assert(calls.llm === 1 && recs.length === 1, "fixture: the failure-cause call reached the backend");
+  assert(
+    !prompts.some((p) => leaksKey(p, SHADOW_KEY)),
+    "tail clip: no 12+ char run of the key reaches the backend",
+  );
+  assert(
+    !leaksKey(readFileSync(log, "utf8"), SHADOW_KEY),
+    "tail clip: no 12+ char run of the key reaches the decision log",
+  );
+
+  // The 1000-char open-point clip, same placement from the start.
+  const point = `${"p".repeat(989)} ${SHADOW_KEY} ${"q".repeat(49)}`;
+  finaliseSpecVerdict(spec(), issueWith(point), where);
+  await awaitRecords(log, 2);
+  await sleep(50);
+  assert(
+    !prompts.some((p) => leaksKey(p, SHADOW_KEY)),
+    "open-point clip: no 12+ char run of the key reaches the backend",
+  );
+  assert(
+    !leaksKey(readFileSync(log, "utf8"), SHADOW_KEY),
+    "open-point clip: no 12+ char run of the key reaches the decision log",
+  );
+  detach();
+}
+
+// ------------------------------------------------ the shadow call never throws
+
+{
+  const root = tmpDir("shadow-nothrow");
+  const where = { repoRoot: root, issues: [11] };
+  // A request-less enforce-mode call takes the synchronous skip path, which
+  // throws on the missing request; the caller must get a resolved undefined.
+  process.env.PI_ENSEMBLE_DECISION_MODE_FAILURE_CAUSE = "enforce";
+  let threw = false;
+  let out: unknown = "pending";
+  try {
+    out = await shadowDecide("failure-cause", undefined as never, where);
+  } catch {
+    threw = true;
+  }
+  Reflect.deleteProperty(process.env, "PI_ENSEMBLE_DECISION_MODE_FAILURE_CAUSE");
+  assert(!threw && out === undefined, "a throwing synchronous prefix resolves undefined, never throws");
+
+  const unknownSeam = await shadowDecide("no-such-seam" as never, { question: "q", state: {}, rule: "x" }, where).catch(() => "rejected");
+  assert(unknownSeam === undefined, "an unknown seam id is not fired and does not reject");
+}
+
 process.exit(state.exit);
