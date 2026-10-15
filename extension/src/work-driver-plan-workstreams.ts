@@ -6,6 +6,7 @@
  * module is the permanent home).
  */
 
+import { hostBudget } from "./host-resources.ts";
 import { trace } from "./trace.ts";
 import { extractListField, sliceMarkdownSection } from "./work-driver-plan-parse.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
@@ -103,7 +104,7 @@ export function parseWorkstreams(text: string): Record<string, Workstream> {
     // minus the merged paths, scope annotated — so the work is never
     // silently dropped, which is the failure mode a hard truncation would
     // introduce.
-    if (Object.keys(out).length >= maxWorkstreams()) {
+    if (Object.keys(out).length >= effectiveMaxWorkstreams()) {
       const lastId = Object.keys(out)[Object.keys(out).length - 1];
       if (!lastId) continue;
       const last = out[lastId];
@@ -126,4 +127,14 @@ export function parseWorkstreams(text: string): Record<string, Workstream> {
 export function maxWorkstreams(): number {
   const env = Number(process.env.PI_ENSEMBLE_MAX_WORKSTREAMS);
   return Number.isFinite(env) && env >= 1 ? env : 6;
+}
+
+/**
+ * #1325 — the ceiling a plan is actually folded to: `maxWorkstreams()` lowered
+ * to the host's workstream slots. An explicit `PI_ENSEMBLE_MAX_WORKSTREAMS`
+ * wins over the budget.
+ */
+export function effectiveMaxWorkstreams(): number {
+  if (Number(process.env.PI_ENSEMBLE_MAX_WORKSTREAMS) >= 1) return maxWorkstreams();
+  return Math.min(maxWorkstreams(), hostBudget().workstreamSlots);
 }

@@ -74,7 +74,8 @@ With `--json`, stdout carries exactly one JSON document:
       },
       "exitCode": 10
     }
-  ]
+  ],
+  "resources": { "host": { … }, "budget": { … }, "limits": { … } }
 }
 ```
 
@@ -94,8 +95,33 @@ With `--json`, stdout carries exactly one JSON document:
 | `issues[].stateFile` | always | A path for a person to inspect. Not a host contract: see below. |
 | `issues[].questions` | exit 11 only | The clarification questions, numbered `q1`, `q2`, … |
 | `issues[].diverged` | on divergence | The in-memory and on-disk states disagreed; the exit code is 30. |
+| `resources` | always | The host budget and the parallelism limits the run chose (#1325, added in this release). See [Resource report](#resource-report). |
 
 An optional top-level `error` (`{ code, message }`) is present when the runner detected a divergence (e.g. `state-diverged`) or another runner-level failure.
+
+`resources` (#1325, added in this release; an additive field, so no schema bump) is the host budget and the parallelism limits the run chose — see [Resource report](#resource-report).
+
+### Resource report
+
+The same object appears in the `--json` result and in `--capabilities` (`extension/src/resource-budget.ts`):
+
+```
+{
+  "host": {
+    "cpus": 4, "cpuSource": "cgroup-v2",          // os | cgroup-v2 | cgroup-v1
+    "memoryBytes": 8589934592, "memorySource": "cgroup-v2",
+    "cgroup": "v2"                                 // v2 | v1 | none
+  },
+  "budget": { "workstreamSlots": 8, "verifyConcurrency": 2 },
+  "limits": {
+    "parallelGroups":    { "value": 1, "source": "budget" },  // env | budget | default
+    "maxWorkstreams":    { "value": 6, "source": "default" },
+    "verifyConcurrency": { "value": 2, "source": "budget" }   // 0 = unbounded
+  }
+}
+```
+
+`host` is what the machine allows: `os.availableParallelism()` and `os.totalmem()`, each lowered by a cgroup CPU quota or memory limit when one is set. `budget` is derived from it: `workstreamSlots` is two per CPU or one per GiB, whichever is lower; `verifyConcurrency` is one per two CPUs or per 2 GiB, at least 1. `limits` are what a cycle runs with. `source: "env"` means an explicit setting decided the value, `"budget"` that the host budget lowered the default, `"default"` that the static default applied. The budget never raises a default. The group and workstream defaults hold from about 9 CPUs and 18 GiB up.
 
 ### The `cap` vocabulary
 
@@ -243,7 +269,8 @@ Use `--restart` only when a person, or the host acting on a person's answer, has
     "cycleDeadline": true,      // #1238 — a cycle deadline that parks with a handoff
     "handoffChannel": true,     // #1327 — PI_ENSEMBLE_HANDOFF_CHANNEL=host
     "restartClearsAttention": true // #1327 — --restart clears needs-human-attention
-  }
+  },
+  "resources": { … }            // #1325 — the host budget and limits; see Resource report
 }
 ```
 
@@ -271,6 +298,7 @@ Use `--restart` only when a person, or the host acting on a person's answer, has
 | `features.cycleDeadline` | Constant `true` | `true` when a cycle that hits its deadline parks with a handoff rather than being killed (#1238). |
 | `features.handoffChannel` | Constant `true` | `true` when the build honours `PI_ENSEMBLE_HANDOFF_CHANNEL` and carries the handoff in the result (#1327). |
 | `features.restartClearsAttention` | Constant `true` | `true` when `--restart` overrides the attention gate and clears `needs-human-attention` (#1327). See [`--restart` for hosts](#--restart-for-hosts). |
+| `resources` | `resourceReport()` (`resource-budget.ts`) | The host budget and the limits a cycle started now would run with, read when the answer is built. See [Resource report](#resource-report). |
 
 ### How a caller uses this
 

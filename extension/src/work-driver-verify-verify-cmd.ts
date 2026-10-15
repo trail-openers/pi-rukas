@@ -13,6 +13,7 @@
  * its dependency's tip (no ancestor replay — the #775 shape).
  */
 import path from "node:path";
+import { withVerifySlot } from "./host-resources.ts";
 import { describeSiblingFenceViolations } from "./work-develop-fence-verdicts.ts";
 import { runConsolidatedVerify } from "./work-driver-consolidated-verify.ts";
 import {
@@ -119,14 +120,13 @@ export async function runVerifyCommandGate(opts: {
       continue;
     }
     try {
-      await execFn(cmd, { cwd, timeout: verifyTimeoutMs(), maxBuffer: 4 * 1024 * 1024 });
+      await withVerifySlot(() =>
+        execFn(cmd, { cwd, timeout: verifyTimeoutMs(), maxBuffer: 4 * 1024 * 1024 }),
+      );
     } catch (err) {
       const e = err as Error & { stdout?: string; stderr?: string; killed?: boolean };
-      // A verify failure for want of `node_modules` looks like a real defect;
-      // in a fresh worktree it is the likelier cause when it matches — say so.
-      // #1005 — per-worktree failures are kept as failures unconditionally
-      // (no pre-#1005 downgrade to evidence on a consolidated pass); the
-      // consolidated run below adds its own verdict on top.
+      // A missing `node_modules` looks like a real defect; in a fresh worktree say so.
+      // #1005 — per-worktree failures stay failures; the consolidated run adds its own.
       const output = `${e.stdout ?? ""}\n${e.stderr ?? ""}\n${e.message ?? ""}`;
       const depsHint = looksLikeMissingDeps(output) ? provisionDepsHint(state, cwd) : "";
       const ran = failedVerifyCmd(e, cmd); // #1324 — the fast tier, when it is the one that failed

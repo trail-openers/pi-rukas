@@ -150,6 +150,7 @@ assert(caps.features.cycleDeadline === true, "features.cycleDeadline is true");
     "inputs",
     "files",
     "features",
+    "resources",
   ]);
   const actualKeys = new Set(Object.keys(caps));
   const missing = [...expectedKeys].filter((k) => !actualKeys.has(k));
