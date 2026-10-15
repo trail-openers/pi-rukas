@@ -50,7 +50,7 @@ export async function deliverTerminalLine(
   const alreadyDelivered = state.pipelineState.handoffDeliveredAt !== undefined;
   const message =
     final === "merged"
-      ? `pi-rukas:driver-event v1 kind=merged issue=${ctx.issue} at=${new Date().toISOString()}\npi-rukas /work for issue #${ctx.issue} — MERGED ✓`
+      ? `pi-rukas:driver-event v1 kind=merged issue=${ctx.issue} at=${new Date().toISOString()}\npi-rukas /work for issue #${ctx.issue} — ${mergedLine(state)}`
       : renderHandoffUserMessage(state, ctx.repoRoot, scratchDir(ctx.repoRoot, ctx.issue));
 
   // The guard is the RESUME guard: skip only when this line demonstrably
@@ -83,4 +83,14 @@ export async function deliverTerminalLine(
     };
   }
   return state;
+}
+
+/**
+ * "MERGED ✓" for the driver's own merge. A PR someone else merged during the
+ * review is not the driver's merge, and the line must not say it was.
+ */
+export function mergedLine(state: WorkState): string {
+  const ev = [...state.eventLog].reverse().find((e) => e.kind === "merged");
+  if (ev?.kind !== "merged" || !ev.mergedByOtherDuring) return "MERGED ✓";
+  return `PR #${ev.prNumber} was MERGED by someone else during ${ev.mergedByOtherDuring}; the driver merged nothing and pushed nothing after. Review findings it had not addressed are on the PR or the issue — check them`;
 }

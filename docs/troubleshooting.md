@@ -304,6 +304,10 @@ A timed-out explore produced an empty reply, and the driver read that as "explor
 
 The gate now requires the PR to be **open** and to have this cycle's branch as its head. Previously it only checked that `gh pr view <N>` did not error, which proved a PR with that number exists — not that it belongs to this cycle. If you see this, the ops reply's `pr:` marker named a PR from a different branch, or one that is already closed or merged. Check `gh pr list --head <branch>`.
 
+### The PR was merged or closed while `/work` was still reviewing it
+
+The driver reads the cycle's PR before lens-review, lens-fix, ci, and before it pushes a lens fix. **Merged** by a person: the cycle ends `merged`, and the terminal line says *merged by someone else during <step>* — the driver merged nothing and pushes nothing further; unpushed work stays in the cycle's worktree(s). **Closed** without a merge: it parks as `verify-failed:<step>` with a `[pr-not-open]` failure. If the PR's state cannot be read, the step runs as before. The review's residual findings are posted to the recorded PR number (a merged PR still takes comments); if that fails they go to the issue, and `/work-status` shows a `lens-residuals-post-failed` event saying where they went.
+
 ### `/work` halts at the branch step naming the mainline
 
 The branch step recorded whatever branch `repoRoot` was on, and that value becomes the branch the cycle force-pushes to. If an ops child creates the branch and then returns `repoRoot` to `main`, the cycle would have adopted `main`. It now halts. Re-run with `--restart` after checking `git -C <repo> branch --show-current`.
