@@ -18,6 +18,7 @@
 
 import path from "node:path";
 import type { WideningFinding } from "./invariant-scan.ts";
+import { DRIVER_MEMORY_TYPE } from "./memory-write.ts";
 import { type ExecFn, vipuneAdd } from "./vipune.ts";
 
 /**
@@ -62,25 +63,24 @@ export type VipuneWriteFn = (
  * `guard`, for the same reason as every driver write (#1103): `vipune prune`
  * never demotes a guard, so an unpromoted guard candidate could never age out.
  *
- * Never throws: vipune absent or erroring returns `{}`. The caller already
- * holds the widening findings; the memory is additive value, not structural.
+ * Throws on anything but a stored row (absent binary, conflict, refusal,
+ * error), so `writeGuardMemories` records an `error` outcome rather than a
+ * `written` one with no id. That is never a cycle failure: the caller already
+ * holds the widening findings, and the memory is additive value.
  */
 export async function defaultVipuneWrite(
   text: string,
   opts: { cwd: string; issue: number; execFn?: ExecFn },
 ): Promise<{ id?: string }> {
-  try {
-    const r = await vipuneAdd(text, {
-      cwd: opts.cwd,
-      timeoutMs: 15000,
-      execFn: opts.execFn,
-      memoryType: "observation",
-      status: "candidate",
-    });
-    return r.kind === "added" ? { id: r.id } : {};
-  } catch {
-    return {};
-  }
+  const r = await vipuneAdd(text, {
+    cwd: opts.cwd,
+    timeoutMs: 15000,
+    execFn: opts.execFn,
+    memoryType: DRIVER_MEMORY_TYPE,
+    status: "candidate",
+  });
+  if (r.kind === "added" || r.kind === "superseded") return { id: r.id };
+  throw new Error(`vipune add: ${r.kind}`);
 }
 
 /**

@@ -15,9 +15,9 @@
  * keys so the caller can record plumb-reports.
  *
  * The injectable vipuneWriteFn defaults to `vipuneAdd` through the seam.
- * The default silently returns empty on failure — a missing vipune is not
- * a structural failure, and the widening findings themselves are the
- * source of truth; the guard memories are additive value.
+ * The default throws on any failed write, which `writeGuardMemories` records
+ * as an `error` outcome — never a cycle failure: the widening findings
+ * themselves are the source of truth; the memories are additive value.
  *
  * Escape hatch: `PI_ENSEMBLE_INVARIANT_MEMORY=0` restores today's behaviour
  * (no guard writes).
@@ -28,6 +28,7 @@ import {
   defaultVipuneWrite,
   writeGuardMemories,
 } from "./guard-memory-write.ts";
+import { DRIVER_MEMORY_TYPE } from "./memory-write.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
 
 /**
@@ -103,7 +104,7 @@ export function appendGuardWriteEvents(writes: GuardMemoryWrite[]): WorkEvent[] 
       at: Date.now(),
       outcome: w.outcome === "skipped-dedup" ? ("error" as const) : w.outcome,
       id: w.id,
-      memoryType: "observation",
+      memoryType: DRIVER_MEMORY_TYPE,
       detail: w.content ?? undefined,
     });
     if (w.outcome === "written" && w.content) {

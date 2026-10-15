@@ -205,13 +205,21 @@ function assert(cond: boolean, msg: string) {
   );
 }
 
-// ------------------------------------------ defaultVipuneWrite returns empty when absent
+// ------------- a failed default write is an `error` outcome, never `written` (#1103)
 
 {
-  const r = await defaultVipuneWrite("test content", { cwd: "/repo", issue: 1 });
+  const failing = async () => {
+    throw Object.assign(new Error("spawn vipune ENOENT"), { code: "ENOENT" });
+  };
+  const results = await writeGuardMemories(
+    [{ file: "a.ts", kind: "type-erasure", after: "any" }],
+    1,
+    "/repo",
+    (text, o) => defaultVipuneWrite(text, { ...o, execFn: failing }),
+  );
   assert(
-    r.id === undefined,
-    "defaultVipuneWrite returns {} when vipune is absent (does not throw)",
+    results[0]?.outcome === "error" && results[0]?.id === undefined,
+    `an absent vipune is recorded as 'error', not 'written' with no id (${results[0]?.outcome})`,
   );
 }
 

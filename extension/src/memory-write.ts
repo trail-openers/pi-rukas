@@ -38,7 +38,10 @@
  */
 
 import path from "node:path";
-import { type VipuneOpts, type VipuneResult, vipuneAdd } from "./vipune.ts";
+import { type MemoryType, type VipuneOpts, type VipuneResult, vipuneAdd } from "./vipune.ts";
+
+/** The type of every row the driver writes — see "Why every row is an `observation`". */
+export const DRIVER_MEMORY_TYPE: MemoryType = "observation";
 
 /**
  * Hard cap per cycle.
@@ -140,7 +143,7 @@ export async function writeFindings(
     try {
       r = await vipuneAdd(memoryContentFor(f), {
         ...opts,
-        memoryType: "observation",
+        memoryType: DRIVER_MEMORY_TYPE,
         status: "candidate",
         metadata,
       });

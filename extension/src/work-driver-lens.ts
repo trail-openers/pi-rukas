@@ -13,7 +13,7 @@ import { type WideningFinding, scanTypeWidening, wideningContext } from "./invar
 import { buildEvidence, runClaimScan } from "./lens-evidence.ts";
 import { runLensReview } from "./lens-review.ts";
 import { appendGuardWriteEvents, runGuardMemoryWrites } from "./lens-vipune-write.ts";
-import { writeFindings } from "./memory-write.ts";
+import { DRIVER_MEMORY_TYPE, writeFindings } from "./memory-write.ts";
 import { resolveReviewThreshold } from "./review-threshold.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
@@ -268,7 +268,7 @@ export async function runLens(
         at: Date.now(),
         outcome: w.outcome,
         id: w.id,
-        memoryType: "observation",
+        memoryType: DRIVER_MEMORY_TYPE,
         detail: w.detail,
       });
     }
