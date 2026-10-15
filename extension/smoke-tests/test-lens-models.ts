@@ -79,7 +79,9 @@ mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
 
 const { resolveModel } = await import("../src/models.ts");
 const { loadOverrides, setOverride, clearAllOverrides } = await import("../src/model-config.ts");
-const { lensModelConcurrency } = await import("../src/lens-model-slots.ts");
+const { lensModelConcurrency, lensModelSlotStats, withLensModelSlot } = await import(
+  "../src/lens-model-slots.ts"
+);
 const { runLensReview } = await import("../src/lens-review.ts");
 const { LENS_ROSTER } = await import("../src/lens-roster.ts");
 await loadOverrides();
@@ -131,6 +133,8 @@ const ROLE = "code-review-specialist";
   assert(r.model === "eh-model", "the tag form `error-handling` names ERROR_HANDLING", r);
   r = resolveModel(ROLE, "spec-model", "SECURITY");
   assert(r.source === "spec", "a per-call spec model still wins", r);
+  r = resolveModel("developer", undefined, "SECURITY");
+  assert(r.source === "default", "a non-lens role ignores `lens` (no borrowed lens model)", r);
   for (const v of VARS) delete process.env[v];
 }
 
@@ -189,6 +193,60 @@ async function review(): Promise<void> {
   assert(lensModelConcurrency() === 0, "an invalid bound means no bound");
   process.env.PI_ENSEMBLE_LENS_MODEL_CONCURRENCY = "0";
   assert(lensModelConcurrency() === 0, "0 means no bound");
+}
+
+// ── 4. Slots are released on a throw and on an abort.
+{
+  process.env.PI_ENSEMBLE_LENS_MODEL_CONCURRENCY = "1";
+  const L = "SECURITY";
+  let threw = false;
+  try {
+    await withLensModelSlot(L, async () => {
+      throw new Error("child blew up");
+    });
+  } catch {
+    threw = true;
+  }
+  const afterThrow = lensModelSlotStats(L);
+  assert(threw && afterThrow.active === 0, "a throwing lens child frees its slot", afterThrow);
+
+  // A lens queued behind a running one leaves the queue on abort and runs at once.
+  let release = () => {};
+  const holder = withLensModelSlot(L, () => new Promise<void>((r) => (release = r)));
+  const ac = new AbortController();
+  let ranQueued = false;
+  const queued = withLensModelSlot(
+    L,
+    async () => {
+      ranQueued = true;
+    },
+    ac.signal,
+  );
+  await new Promise((r) => setTimeout(r, 10));
+  const waiting = lensModelSlotStats(L);
+  assert(
+    waiting.active === 1 && waiting.queued === 1 && !ranQueued,
+    "a second lens queues",
+    waiting,
+  );
+  ac.abort();
+  await queued;
+  const afterAbort = lensModelSlotStats(L);
+  assert(
+    ranQueued && afterAbort.queued === 0,
+    "an abort lets the queued lens leave at once",
+    afterAbort,
+  );
+  assert(
+    afterAbort.active === 1,
+    "the aborted waiter took no slot from the running lens",
+    afterAbort,
+  );
+  release();
+  await holder;
+  const done = lensModelSlotStats(L);
+  assert(done.active === 0 && done.queued === 0, "the running lens frees its slot", done);
+  delete process.env.PI_ENSEMBLE_LENS_MODEL_CONCURRENCY;
 }
 
 process.exit(exit);

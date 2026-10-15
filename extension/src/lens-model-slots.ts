@@ -38,29 +38,55 @@ interface Slots {
 }
 const slots = new Map<string, Slots>();
 
-/** Run `fn` holding one of the lens's model slots, queueing FIFO when the bound is reached. */
-export async function withLensModelSlot<T>(lens: string, fn: () => Promise<T>): Promise<T> {
+/**
+ * Run `fn` holding one of the lens's model slots, queueing FIFO when the bound
+ * is reached. An abort of `signal` while queued leaves the queue and runs `fn`
+ * without a slot: the lens child sees the aborted signal and returns at once,
+ * so the run still gets its "aborted" result row instead of waiting out the
+ * lenses ahead of it.
+ */
+export async function withLensModelSlot<T>(
+  lens: string,
+  fn: () => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
   const cap = lensModelConcurrency();
   if (cap === 0) return fn();
   const key = lensModelKey(lens);
   const s = slots.get(key) ?? { active: 0, waiting: [] };
   slots.set(key, s);
+  let holding = true;
   if (s.active >= cap) {
     trace(`lens-model-slots: ${lens} waits for ${key} (${s.active}/${cap} running)`);
     // The releaser hands its slot straight over, so `active` is not decremented
     // and re-taken: a new arrival cannot overtake a queued lens.
-    await new Promise<void>((resolve) => s.waiting.push(resolve));
+    holding = await new Promise<boolean>((resolve) => {
+      if (signal?.aborted) return resolve(false);
+      const take = () => {
+        signal?.removeEventListener("abort", leave);
+        resolve(true);
+      };
+      const leave = () => {
+        const i = s.waiting.indexOf(take);
+        if (i >= 0) s.waiting.splice(i, 1);
+        resolve(false);
+      };
+      s.waiting.push(take);
+      signal?.addEventListener("abort", leave, { once: true });
+    });
   } else {
     s.active += 1;
   }
   try {
     return await fn();
   } finally {
-    const next = s.waiting.shift();
-    if (next) next();
-    else {
-      s.active -= 1;
-      if (s.active === 0) slots.delete(key);
+    if (holding) {
+      const next = s.waiting.shift();
+      if (next) next();
+      else {
+        s.active -= 1;
+        if (s.active === 0) slots.delete(key);
+      }
     }
   }
 }

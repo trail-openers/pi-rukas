@@ -401,17 +401,20 @@ export async function runLensReview(opts: {
   const healthy = roster.filter((e) => e.error === undefined);
   const results = await Promise.all(
     healthy.map((lens) =>
-      withLensModelSlot(lens.name, () =>
-        lensChildFn({
-          lens,
-          runId,
-          skillsDir,
-          context,
-          roster,
-          opts: { ...opts, diff: diff ?? "", priorFindings },
-          bumpBatch,
-          ...(opts.pi ? { pi: opts.pi } : {}),
-        }),
+      withLensModelSlot(
+        lens.name,
+        () =>
+          lensChildFn({
+            lens,
+            runId,
+            skillsDir,
+            context,
+            roster,
+            opts: { ...opts, diff: diff ?? "", priorFindings },
+            bumpBatch,
+            ...(opts.pi ? { pi: opts.pi } : {}),
+          }),
+        opts.signal,
       ),
     ),
   );

@@ -12,6 +12,7 @@ import { ROLE_NAMES, type RoleName } from "./roles.ts";
  *                            name, e.g. `SECURITY`). Lets the six lenses,
  *                            which all run as one role, use different models.
  *                            Same pairing rule as the per-role vars.
+ *                            Applies to `code-review-specialist` only.
  *   2. /ensemble-model     — per-role choice saved to ensemble-models.json
  *                            (or its all-subagents default). Carries both
  *                            `provider` and `model` for custom OpenAI-
@@ -62,6 +63,8 @@ function roleProviderEnvKey(role: string): string {
   return `PI_ENSEMBLE_PROVIDER_${role.toUpperCase().replaceAll("-", "_")}`;
 }
 
+const LENS_ROLE = "code-review-specialist";
+
 /** `lens` is a lens name (`ERROR_HANDLING`) or its tag form (`error-handling`). */
 function lensEnvKey(lens: string): string {
   return `PI_ENSEMBLE_MODEL_LENS_${lens.toUpperCase().replaceAll("-", "_")}`;
@@ -85,7 +88,9 @@ export function resolveModel(role: string, override?: string, lens?: string): Re
       source: "spec",
     };
   }
-  if (lens) {
+  // Only a lens child of the code review has a lens tier; any other role
+  // ignores `lens`, so it can never borrow a lens's model.
+  if (lens && role === LENS_ROLE) {
     const lensKey = lensEnvKey(lens);
     const lensModel = envValue(lensKey);
     if (lensModel) {
