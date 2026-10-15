@@ -39,7 +39,12 @@ import {
 import type { ConsolidationFailureVerdict } from "./work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import { verifyTimeoutFailure } from "./work-driver-verify-develop-helpers.ts";
-import { fastVerifyCmdFor, withFastTier } from "./work-driver-verify-fast.ts";
+import {
+  FAST_TIER_LABEL,
+  failedVerifyCmd,
+  fastVerifyCmdFor,
+  withFastTier,
+} from "./work-driver-verify-fast.ts";
 import {
   combinedExecFailureStream,
   rerunConsolidatedVerifyOnce,
@@ -153,8 +158,10 @@ export async function runCommitPrConsolidatedVerify(
     Object.keys(opts.perWorktreeFailuresByWs ?? {}).length === 0;
 
   // #1324 — `.pi/verify-cmd-fast` runs first on the consolidated tree too.
-  const verifyExec = withFastTier(execFn, opts.verifyCmd, await fastVerifyCmdFor(opts.repoRoot));
+  const fastCmd = await fastVerifyCmdFor(opts.repoRoot);
+  const verifyExec = withFastTier(execFn, opts.verifyCmd, fastCmd);
   let timedOut = false;
+  let ranCmd = opts.verifyCmd;
   const runOnce = async (): Promise<string | undefined> => {
     try {
       await verifyExec(opts.verifyCmd, {
@@ -168,6 +175,7 @@ export async function runCommitPrConsolidatedVerify(
       // stderr-with-stdout-dropped: a failure that prints its assertion on
       // stdout and a warning on stderr must still classify on the assertion.
       timedOut = (err as { killed?: boolean }).killed === true;
+      ranCmd = failedVerifyCmd(err, opts.verifyCmd);
       return combinedExecFailureStream(err as Error & { stderr?: string; stdout?: string });
     }
   };
@@ -216,6 +224,7 @@ export async function runCommitPrConsolidatedVerify(
     // not a flake, so the cycle parks as today).
     firstFailure = secondRun.raw;
     timedOut = secondRun.timedOut;
+    ranCmd = fastCmd && secondRun.raw.includes(FAST_TIER_LABEL) ? fastCmd : opts.verifyCmd;
   }
 
   const failure = firstFailure;
@@ -242,9 +251,9 @@ export async function runCommitPrConsolidatedVerify(
     const where = `on the CONSOLIDATED tree at ${opts.repoRoot}`;
     const bound = opts.timeoutMs ?? 30 * 60_000;
     const knob = "PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS";
-    const classifiedMessage = verifyTimeoutFailure(opts.verifyCmd, where, bound, knob);
+    const classifiedMessage = verifyTimeoutFailure(ranCmd, where, bound, knob);
     return { ok: false, failureTail, attributed, verdict, classifiedMessage, timedOut };
   }
-  const classifiedMessage = consolidatedFailureMessage(verdict, opts.verifyCmd);
+  const classifiedMessage = consolidatedFailureMessage(verdict, ranCmd);
   return { ok: false, failureTail, attributed, verdict, classifiedMessage };
 }

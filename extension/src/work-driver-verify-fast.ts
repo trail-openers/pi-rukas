@@ -22,6 +22,11 @@ import { readFirstConfigLine } from "./work-driver-verify-cmd.ts";
 /** Ends the failure stream of a fast-tier run; the handoff quotes it. */
 export const FAST_TIER_LABEL = "[verify-cmd-fast]";
 
+/** The command a verify error came from: the fast tier's when it failed, else `fullCmd`. */
+export function failedVerifyCmd(err: unknown, fullCmd: string): string {
+  return (err as { fastTier?: string } | undefined)?.fastTier ?? fullCmd;
+}
+
 /** The fast tier's command, or undefined when `.pi/verify-cmd-fast` is absent or empty. */
 export async function fastVerifyCmdFor(repoRoot: string): Promise<string | undefined> {
   try {
@@ -42,7 +47,8 @@ type Exec<O extends { timeout?: number }> = (
  * Wrap `execFn` so a call that runs `fullCmd` runs `fastCmd` first in the
  * same cwd. Every other call (git, the smoke command) passes through. A fast
  * failure is rethrown with the fast run's own stream and `killed` flag, plus
- * a closing line naming the tier, so the gate's existing failure handling
+ * a closing line naming the tier (and `fastTier` set, see `failedVerifyCmd`),
+ * so the gate's existing failure handling
  * (timeout, missing deps, host exhaustion, tail extraction) applies as is.
  */
 export function withFastTier<O extends { timeout?: number }>(
@@ -57,7 +63,8 @@ export function withFastTier<O extends { timeout?: number }>(
     try {
       await execFn(fastCmd, opts);
     } catch (err) {
-      const e = err as Error & { stderr?: string };
+      const e = err as Error & { stderr?: string; fastTier?: string };
+      e.fastTier = fastCmd;
       e.stderr = `${e.stderr ?? ""}\n${FAST_TIER_LABEL} the fast tier \`${fastCmd}\` failed, so the full verify \`${fullCmd}\` was not run`;
       trace(`work-driver: fast verify tier failed — full verify skipped: ${fastCmd.slice(0, 120)}`);
       throw e;

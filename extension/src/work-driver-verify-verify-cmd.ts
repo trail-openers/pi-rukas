@@ -40,6 +40,7 @@ import {
   verifyTimeoutFailure,
   verifyTimeoutMs,
 } from "./work-driver-verify-develop-helpers.ts";
+import { failedVerifyCmd } from "./work-driver-verify-fast.ts";
 import { rawOutputClause } from "./work-driver-verify-flake.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
@@ -128,11 +129,12 @@ export async function runVerifyCommandGate(opts: {
       // consolidated run below adds its own verdict on top.
       const output = `${e.stdout ?? ""}\n${e.stderr ?? ""}\n${e.message ?? ""}`;
       const depsHint = looksLikeMissingDeps(output) ? provisionDepsHint(state, cwd) : "";
+      const ran = failedVerifyCmd(e, cmd); // #1324 — the fast tier, when it is the one that failed
       perWorktreeVerifyFailures.push(
         formatExecError(
           e,
-          verifyTimeoutFailure(cmd, `in ${cwd}`, verifyTimeoutMs()),
-          `verify command \`${cmd}\` failed in ${cwd}${depsHint}`,
+          verifyTimeoutFailure(ran, `in ${cwd}`, verifyTimeoutMs()),
+          `verify command \`${ran}\` failed in ${cwd}${depsHint}`,
         ),
       );
     }

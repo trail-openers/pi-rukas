@@ -154,12 +154,31 @@ async function developGate(
     cmds.length === 4 && cmds.join(",") === [FAST, FULL, FAST, FULL].join(","),
     `fast green: fast then full in the worktree AND on the consolidated tree (${cmds.join(", ")})`,
   );
-  const [fastCall, fullCall] = r.calls;
+}
+
+// 3b — the shared bound: the full run gets what a measurably slow fast run left,
+// and never less than 1 ms (a zero or negative timeout would mean "no bound").
+{
+  const budget = async (bound: number, fastMs: number) => {
+    const seen: number[] = [];
+    const exec = async (cmd: string, o?: { timeout?: number }) => {
+      if (cmd === FAST) await new Promise((r) => setTimeout(r, fastMs));
+      else seen.push(o?.timeout ?? Number.NaN);
+      return { stdout: "" };
+    };
+    const started = Date.now();
+    await withFastTier(exec, FULL, FAST)(FULL, { timeout: bound });
+    return { full: seen[0] ?? Number.NaN, elapsed: Date.now() - started };
+  };
+  const r = await budget(10_000, 150);
   assert(
-    fastCall?.timeout !== undefined &&
-      fullCall?.timeout !== undefined &&
-      fullCall.timeout <= fastCall.timeout,
-    "fast green: the full run gets what the fast run left of the shared bound",
+    r.full < 10_000 - 140 && r.full >= 10_000 - r.elapsed,
+    `shared bound: the full run's timeout is the bound minus the fast run's time (got ${r.full}, elapsed ${r.elapsed})`,
+  );
+  const clamped = await budget(50, 120);
+  assert(
+    clamped.full === 1,
+    `shared bound: an exhausted budget clamps to 1 ms (got ${clamped.full})`,
   );
 }
 
@@ -177,6 +196,27 @@ async function developGate(
   assert(
     verifyCapFor("develop", r.failures) === "verify-failed:develop",
     "fast red: a code failure stays verify-failed",
+  );
+  assert(
+    r.failures.some((f) => f.includes(`verify command \`${FAST}\` failed in`)) &&
+      !r.failures.some((f) => f.includes(`verify command \`${FULL}\` failed in`)),
+    "fast red: the per-worktree headline names the fast command, not the full one",
+  );
+}
+
+// 4b — the FAST tier killed at the bound: still a timeout, through the rethrow.
+{
+  const r = await developGate("fast-killed", FAST, (c) =>
+    c === FAST ? { ok: false, stdout: "", killed: true } : { ok: true },
+  );
+  assert(!r.calls.some((c) => c.cmd === FULL), "fast killed: the full verify is short-circuited");
+  assert(
+    verifyCapFor("develop", r.failures) === "verify-timeout:develop",
+    `fast killed: the cap is verify-timeout:develop (failures: ${r.failures.join(" | ").slice(0, 300)})`,
+  );
+  assert(
+    r.failures.some((f) => f.includes(VERIFY_TIMEOUT_LABEL) && f.includes(`\`${FAST}\` exceeded`)),
+    "fast killed: the per-worktree headline names the fast command as the one that timed out",
   );
 }
 
@@ -261,6 +301,28 @@ async function developGate(
       killed.classifiedMessage.includes("15-min") &&
       killed.classifiedMessage.includes("PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS"),
     "commit-pr timeout: flagged, with the bound and the integration knob",
+  );
+  const fastKilled = await runCommitPrConsolidatedVerify(
+    stubExec([], (c) => (c === FAST ? { ok: false, stdout: "", killed: true } : { ok: true })),
+    {
+      verifyCmd: FULL,
+      repoRoot: repo,
+      workstreamCount: 1,
+      workstreamIds: ["default"],
+      timeoutMs: 900_000,
+    },
+  );
+  assert(
+    fastKilled.ok === false &&
+      fastKilled.timedOut === true &&
+      fastKilled.classifiedMessage.includes(`\`${FAST}\` exceeded`),
+    "commit-pr fast killed: a timeout, and the headline names the fast command",
+  );
+  assert(
+    red.ok === false &&
+      red.classifiedMessage.includes(FAST) &&
+      !red.classifiedMessage.includes(FULL),
+    "commit-pr fast red: the headline names the fast command, not the full one",
   );
   let st = initialState(9);
   st = appendEvent(st, {
