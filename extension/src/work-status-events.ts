@@ -151,7 +151,7 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
       // #849 — the discard record: the violator, its owner(s), and the
       // discarded SHA (the operator can `git show <sha>` without reading the
       // state file).
-      return `  fence-recovery-started · [${e.workstreamId}] → ${e.owners.join(", ")} · discarded ${e.discardedSha ? e.discardedSha.slice(0, 8) : "(no commit ahead of base)"}`;
+      return `  fence-recovery-started · [${e.workstreamId}] → ${e.owners.join(", ")} · discarded ${e.discardedSha ? e.discardedSha.slice(0, 8) : "(no commit ahead of base)"}${e.cause === "sibling-symbol" ? ` · sibling symbol ${(e.symbols ?? []).join(", ")}` : ""}`;
     case "adversarial-skipped-empty-diff":
       return `  adversarial-skipped-empty-diff · workstream ${e.workstreamId}`;
     case "verify-full-status":
