@@ -59,10 +59,18 @@ interface Seam {
 const SEAMS: Seam[] = [
   {
     // #1308 — the generic decision seam. The policy judge (S2) is its first
-    // production caller; further seams (S3/S4) register and call it later.
+    // production caller; the shadow seams (S3/S4) reach it via decision-shadow.ts.
     file: "decision-seam.ts",
     pending: {},
     canary: { symbol: "decide", importer: "work-driver-policy.ts" },
+  },
+  {
+    // #1308 S3/S4 — fire-and-forget decisions for the shadow seams. The
+    // failure-cause and security open-point owners are its callers; index.ts
+    // attaches the session model.
+    file: "decision-shadow.ts",
+    pending: {},
+    canary: { symbol: "shadowDecide", importer: "work-driver-failure-taxonomy.ts" },
   },
   {
     // #1020 — the host seam. piSessionHost is the only Pi-touching driver
