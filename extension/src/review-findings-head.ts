@@ -37,13 +37,15 @@ export function hasFile(h: HeadState): boolean {
 
 /**
  * A repo-relative path that git can show at a commit without option injection.
- * Empty, `.`, absolute, trailing-slash and `..` paths are refused: `git show`
- * of such a path can yield a tree listing that would be read as file lines.
+ * Empty, `.`, absolute, trailing-slash, `..`, and non-canonical paths (`./x`,
+ * `a//b`, `a/./b`) are refused: `git show` of such a path can yield a tree
+ * listing that would be read as file lines, and a lens-cited spelling of a real
+ * file must never resolve as path-gone.
  */
 function safeRepoPath(p: string): boolean {
-  if (!p || p === "." || p.endsWith("/") || p.startsWith("-") || p.startsWith("/")) return false;
+  if (!p || p.startsWith("-") || p.startsWith("/")) return false;
   if (/[\0\n]/.test(p)) return false;
-  return !p.split("/").includes("..");
+  return p.split("/").every((seg) => seg !== "" && seg !== "." && seg !== "..");
 }
 
 /**
@@ -80,6 +82,7 @@ export async function readHeadLines(cwd: string, sha: string, file: string): Pro
       cwd,
       "--literal-pathspecs",
       "ls-tree",
+      "--full-tree",
       sha,
       "--",
       file,

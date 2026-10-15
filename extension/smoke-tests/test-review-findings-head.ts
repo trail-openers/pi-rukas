@@ -47,10 +47,18 @@ try {
   const dir = await readHeadLines(repo, sha, "src");
   assert(dir.kind === "invalid", "a directory is invalid, never read as lines");
 
-  for (const p of ["", ".", "/etc/passwd", "src/", "../x", "-x", "a\0b"]) {
+  for (const p of ["", ".", "/etc/passwd", "src/", "../x", "-x", "a\0b", "./src/a.ts", "src//a.ts", "src/./a.ts"]) {
     const out = await readHeadLines(repo, sha, p);
     assert(out.kind === "invalid", `path ${JSON.stringify(p)} is invalid`);
   }
+
+  // The path is repo-root-relative even when git runs from a subdirectory: a
+  // cwd-relative ls-tree would look for src/src/a.ts and report a false missing.
+  const fromSub = await readHeadLines(path.join(repo, "src"), sha, "src/a.ts");
+  assert(
+    fromSub.kind === "lines" && fromSub.lines[1] === "two",
+    "a root-relative path reads as lines when cwd is a subdirectory",
+  );
 
   const badSha = await readHeadLines(repo, "not-a-sha", "src/a.ts");
   assert(badSha.kind === "error", "a malformed sha is an error, not a read");
