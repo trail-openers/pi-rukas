@@ -24,7 +24,6 @@ import {
   classifyFailureCause,
   failureCauseReason,
   failureCauseReasonForClass,
-  isFinalProviderFault,
   jitteredMs,
   transientRetryBackoffMs,
   transientRetryEnabled,
@@ -138,11 +137,19 @@ export async function routeStepOutcome(
       // carries the reason, and pre-#299 one transient produced multiple
       // provider-blame lines with no retraction on recovery.
       const policy = STEP_FAILURE_POLICY[step];
+      // #1297 — a provider fault the adversarial loop saw ≥2 children in a row
+      // (providerRepeats ≥ 2) is final: the taxonomy already zeroes its
+      // maxRetries, so neither the SEMANTIC one-shot below nor the transient
+      // budget may re-dispatch a provider still failing the same way.
+      const finalProviderFault =
+        (lastEvent as { providerRepeats?: number }).providerRepeats !== undefined &&
+        ((lastEvent as { providerRepeats?: number }).providerRepeats ?? 0) >= 2;
       const semanticRetryAvailable =
+        !finalProviderFault &&
         policy === "RETRY_ONCE" &&
-        !isFinalProviderFault(classification) &&
         (state.pipelineState.retryAttempts?.[step] ?? 0) < 1;
       const transientRetryAvailable =
+        !finalProviderFault &&
         policy === "HALT" &&
         transientRetryEnabled() &&
         classification.shouldRetry &&
@@ -252,7 +259,19 @@ export async function routeStepOutcome(
       // evidence-carrying replay fires from its own router branch and
       // this generic path becomes develop's fallback.)
       const classification = classifyFailureCause(tail);
-      if (policy === "HALT" && transientRetryEnabled() && classification.shouldRetry) {
+      // #1297 — a taxonomy-final provider fault (the loop saw the same error
+      // ≥2 children in a row, or the cause carries zero retries) is never
+      // re-dispatched: waiting cannot clear a provider still failing the same
+      // way, so the step halts straight through to the cap below.
+      const finalFault =
+        (tail as { providerRepeats?: number }).providerRepeats !== undefined &&
+        ((tail as { providerRepeats?: number }).providerRepeats ?? 0) >= 2;
+      if (
+        policy === "HALT" &&
+        !finalFault &&
+        transientRetryEnabled() &&
+        classification.shouldRetry
+      ) {
         const attempts = state.pipelineState.transientRetryAttempts ?? {};
         const used = attempts[step] ?? 0;
         if (used < classification.maxRetries) {
@@ -368,16 +387,19 @@ export async function routeStepOutcome(
         // semantic retry and the next failure — of any kind — halted the
         // cycle. Infra faults on RETRY_ONCE steps use the transient budget,
         // same as HALT-class steps do.
-        const infra = classification.cause !== "crashed-unknown" && classification.shouldRetry;
+        // #1297 — a final provider fault (providerRepeats ≥ 2) is not infra:
+        // the provider is still failing the same way, so no budget applies
+        // and the step parks immediately via the exhausted branch below.
+        const finalFault =
+          (tail as { providerRepeats?: number }).providerRepeats !== undefined &&
+          ((tail as { providerRepeats?: number }).providerRepeats ?? 0) >= 2;
+        const infra =
+          !finalFault && classification.cause !== "crashed-unknown" && classification.shouldRetry;
         const attempts = infra
           ? (state.pipelineState.transientRetryAttempts ?? {})
           : (state.pipelineState.retryAttempts ?? {});
         const used = attempts[step] ?? 0;
-        const budget = isFinalProviderFault(classification)
-          ? 0
-          : infra
-            ? classification.maxRetries
-            : 1;
+        const budget = finalFault ? 0 : infra ? classification.maxRetries : 1;
         if (used < budget) {
           const bumped = { ...attempts, [step]: used + 1 };
           state = {

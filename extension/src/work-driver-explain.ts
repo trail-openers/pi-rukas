@@ -15,6 +15,7 @@ import { explainOther } from "./work-driver-explain-other.ts";
 import { explainPrSteps } from "./work-driver-explain-pr-steps.ts";
 import { explainReview } from "./work-driver-explain-review.ts";
 import { explainVerifyFailed } from "./work-driver-explain-verify.ts";
+import { classifyFailureCause } from "./work-driver-failure-taxonomy.ts";
 import { cherryPickRecoveryFor } from "./work-driver-handoff-cherry-pick.ts";
 import { type ParkReason, explainPark } from "./work-driver-intent.ts";
 import { explainMergeHold } from "./work-driver-merge-authority.ts";
@@ -367,8 +368,41 @@ export function explainCap(
         return "the branch step dispatch failed before creating the feature branch — develop would edit HEAD (likely main), commit-pr has nothing to push, CI has nothing to watch";
       case "develop":
         return `the develop step dispatch failed with ${fileBlurb} on disk${fanoutTag} — adversarial review of partial work is not meaningful, halting cleanly`;
-      case "adversarial":
-        return "the adversarial gate dispatch failed twice (retry exhausted) — cannot commit code that has not passed the adversarial gate";
+      case "adversarial": {
+        // #1297 — a final provider fault (the loop saw the same error ≥2
+        // children in a row) parks with the cause the reviewer children died
+        // of, not "the driver's retry budget": the event log carries the
+        // dispatch-failed event with the provider's own message.
+        // #1297 — a final provider fault (the loop saw the same error ≥2
+        // children in a row, or the cause names a fault re-dispatching cannot
+        // clear) parks with the cause the reviewer children died of, not
+        // "the driver's retry budget": the event log carries the dispatch-failed
+        // event with the provider's own message.
+        const advFail = [...state.eventLog]
+          .reverse()
+          .find(
+            (e) =>
+              (e.kind === "dispatch-failed" || e.kind === "dispatch-failed-provider") &&
+              e.step === "adversarial",
+          );
+        const msg = String(
+          advFail
+            ? "providerMessage" in advFail
+              ? advFail.providerMessage
+              : "errorTail" in advFail
+                ? advFail.errorTail
+                : undefined
+            : undefined,
+        ).slice(0, 120);
+        const cause = advFail ? classifyFailureCause(advFail).cause : undefined;
+        const why =
+          cause === "provider-model-unavailable"
+            ? `the adversarial gate could not be reviewed (the provider does not serve the configured model: ${msg || "404 / model not found"}; cause=provider-model-unavailable) — re-dispatching asks the same question, so the cycle parked without burning the driver's retry budget`
+            : cause
+              ? `the adversarial gate dispatch failed (${msg || "provider error"}; cause=${cause}) — cannot commit code that has not passed the adversarial gate`
+              : "the adversarial gate dispatch failed twice (retry exhausted) — cannot commit code that has not passed the adversarial gate";
+        return why;
+      }
       case "commit-pr":
         return "the commit-pr step dispatch failed before pushing the PR — lens-review of uncommitted work would waste hours, CI has nothing to watch";
       case "lens-review":
