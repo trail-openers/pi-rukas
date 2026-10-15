@@ -160,8 +160,21 @@ One JSON object per line on stderr. Fields:
 | `key` | `string` | on driver event lines | Idempotency key `<issue>:<index>:<at>` — a resumed cycle re-emits its prior event log, so a consumer dedupes on `key` |
 | `event` | `object` | on driver event lines | The WorkEvent itself (its own `kind` would collide with the envelope's) |
 | `message` | `string` | on `log` lines | The log message |
+| `level` | `"warn"` | on `log` lines that carry a warning | Set on a diagnostic the runner rerouted from a warning (see below); absent on every other line |
 
 The full set of valid `kind` values is exported as `NDJSON_KINDS` (= `KNOWN_EVENT_KINDS` + `log` + `pi-resolved`).
+
+#### Every line pi-rukas writes is JSON
+
+pi-rukas's own plain-text diagnostics, such as the `PI_ENSEMBLE_DEBUG` trace, `[pi-rukas] WARN …` lines and the `pi-binary-resolve` PATH warning, would otherwise reach stderr as plain text. The runner reroutes them: each line becomes a `log` line with no `issue`, and with `level: "warn"` when it is a warning. Its `message` is the original text, e.g.:
+
+```json
+{"v":1,"kind":"log","at":"2026-10-15T09:00:00.000Z","message":"[pi-rukas] pi-binary-resolve: WARNING — pi resolved from PATH, no integrity check performed","level":"warn"}
+```
+
+`console.log` output is rerouted the same way, so stdout carries only the summary line or the `--json` document.
+
+Lines written by something other than pi-rukas can still reach stderr. Examples are an init or wrapper that shares the file descriptor, the runtime (bun) itself, or a launcher script. **A consumer must skip a stderr line that does not parse as JSON**, and must not treat it as a broken stream. The published image's `tini` runs with `-s`, so `docker run --init` no longer adds its "not running as PID 1" warning. A usage error printed before `work` starts (an unknown verb) is plain text and exits 40.
 
 #### The stable subset
 
@@ -177,7 +190,7 @@ Only these kinds are a host contract, versioned by `NDJSON_STABLE_VERSION` (1) a
 | `ci-status` | `at`, `status`, `runUrl` |
 | `merged` | `at`, `prNumber`, `mergeCommit` |
 | `interrupted` | `at`, `reason` |
-| `log` | `message` (on the line, not under `event`) |
+| `log` | `message`, and `level` when set (on the line, not under `event`) |
 
 Every other line carries `unstable: true`. A host may display it, but must not branch on it. The field lists are typed against the driver's event union, so renaming a stable field fails the build.
 
