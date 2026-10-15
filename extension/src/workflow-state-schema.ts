@@ -409,6 +409,9 @@ export interface PipelineState {
    * boot to restore in-memory timers.
    */
   reviewCapStartedAt?: number;
+  /** #1238 — the caller's whole-cycle deadline as an absolute epoch ms, so a
+   *  resume keeps it (work-driver-deadline.ts). Absent when none was set. */
+  cycleDeadlineMs?: number;
   /** Surfaced plumb-reports since the cycle began (for handoff body). */
   plumbReports: Array<{ step: WorkStep; role: string; body: string; at: number }>;
   /** PR number once Step 6 opens one. */
