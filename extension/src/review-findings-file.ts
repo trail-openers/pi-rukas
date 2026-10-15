@@ -142,7 +142,7 @@ function isRow(v: unknown): v is StoredFinding {
     typeof r.firstSeen === "number" &&
     typeof r.lastSeen === "number";
   if (!common) return false;
-  if (r.status === "accepted") return isAcceptance(r.acceptance);
+  if (r.status === "accepted") return isAcceptance(r.acceptance) && r.resolvedReason === undefined;
   if (r.status !== "open" && r.status !== "resolved") return false;
   if (r.acceptance !== undefined) return false;
   return (

@@ -45,7 +45,7 @@ import {
   readFindingsFile,
   reasonProblem,
 } from "./review-findings-file.ts";
-import { readHeadLines } from "./review-findings-head.ts";
+import { type HeadState, hasFile, readHeadLines } from "./review-findings-head.ts";
 import {
   type FindingIdentity,
   hashText,
@@ -261,12 +261,12 @@ function reopen(r: StoredFinding): StoredFinding {
  * longer reported. Returns the decisions (one per input finding) or the reason
  * nothing was recorded. Never throws.
  *
- * Suppression (CRITICAL is never suppressed; a finding on a path missing at
- * head is never suppressed):
+ * Suppression (CRITICAL is never suppressed):
  *   - `suppressed-accepted`: the matched row is accepted, the title agrees, and
  *     for a line-bearing finding the cited code still has the accepted snippet;
  *   - `suppressed-unchanged`: a delta round, the title agrees, the cited code's
  *     snippet is unchanged, and the cited line lies outside the delta.
+ * A finding on a path missing or invalid at head is never suppressed.
  * An accepted row whose snippet changed lapses to open and is reported again.
  */
 export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOutcome> {
@@ -282,8 +282,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
       run.review === "delta" && run.deltaDiff !== undefined
         ? changedLineRanges(run.deltaDiff)
         : undefined;
-    const linesByPath = new Map<string, string[]>();
-    const missingPaths = new Set<string>();
+    const heads = new Map<string, HeadState>();
     // A git read error refuses the whole round (readHeadLines): nothing is
     // suppressed or resolved on evidence that could not be read.
     // Open rows' paths are read too: a round resolves or carries one forward only
@@ -292,18 +291,24 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
       .filter((r) => r.status === "open")
       .map((r) => r.path);
     for (const p of [...run.findings.map((f) => f.path), ...openPaths]) {
-      if (linesByPath.has(p) || missingPaths.has(p)) continue;
+      if (heads.has(p)) continue;
       const head = await readHeadLines(run.cwd, run.headSha, p);
       if (head.kind === "error") return { ok: false, reason: head.reason };
-      if (head.kind === "missing") missingPaths.add(p);
-      else linesByPath.set(p, head.lines);
+      heads.set(p, head);
     }
-    // A path absent at head has no line to cite: the finding is a no-line one,
-    // and it is never suppressed (there is no code it could be unchanged against).
-    const findings = run.findings.map((f) =>
-      missingPaths.has(f.path) ? { ...f, line: undefined } : f,
-    );
-    const identities = findings.map((f) => identityOf(f, linesByPath.get(f.path) ?? []));
+    // A path absent at head (or not a file at head) has no line to cite: the
+    // finding is a no-line one, and it is never suppressed (there is no code it
+    // could be unchanged against).
+    const noFile = (p: string) => {
+      const head = heads.get(p);
+      return head !== undefined && !hasFile(head);
+    };
+    const linesOf = (p: string): string[] => {
+      const head = heads.get(p);
+      return head?.kind === "lines" ? head.lines : [];
+    };
+    const findings = run.findings.map((f) => (noFile(f.path) ? { ...f, line: undefined } : f));
+    const identities = findings.map((f) => identityOf(f, linesOf(f.path)));
     const out = await mutateFindings(run.cwd, (all) => {
       const others = all.filter((r) => r.branch !== run.branch);
       const mine = all.filter((r) => r.branch === run.branch);
@@ -313,7 +318,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
       findings.forEach((f, i) => {
         const id = identities[i] as FindingIdentity;
         const critical = f.severity === "CRITICAL";
-        const gone = missingPaths.has(f.path);
+        const gone = noFile(f.path);
         const row = pickMatch(id, mine);
         if (!row) {
           const fresh: StoredFinding = {
@@ -395,11 +400,16 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
       // delta or an incomplete review carries it.
       mine.forEach((r, i) => {
         if (r.status !== "open" || touched.has(r.id)) return;
-        const fate = rowFate(
-          r,
-          { pathGone: missingPaths.has(r.path), lines: linesByPath.get(r.path) },
-          run.review,
-        );
+        // Open rows' paths are read in the read phase. A row added concurrently
+        // (after that read, before this mutate re-read the file under the lock) has
+        // no head state. Carrying it is the safe outcome: nothing is resolved on
+        // evidence never read. Throwing would fail the whole round for a row we
+        // did not decide about.
+        const head: HeadState | undefined = heads.get(r.path);
+        if (head === undefined) {
+          trace(`review-findings: no head state for ${r.path} (row added concurrently?) — carried`);
+        }
+        const fate = head === undefined ? { kind: "carry" as const } : rowFate(r, head, run.review);
         if (fate.kind === "resolve") {
           mine[i] = {
             ...r,
