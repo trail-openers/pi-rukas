@@ -9,8 +9,10 @@
  * the driver took its failure path while the test reported success.
  *
  * Two scans over every file under smoke-tests/ (lib/ included):
- *   1. no fake executor hands `cmd` to a shell without looking at `argv`
- *      (use `realExec` from lib/exec-fake.ts, or match via `commandOf`);
+ *   1. no arrow-function fake executor `(cmd, opts) => …` hands `cmd` to a
+ *      shell without looking at `argv` (use `realExec` from lib/exec-fake.ts,
+ *      or match via `commandOf`). Scope: two-parameter arrow functions only —
+ *      `function` declarations and cmd-only stubs are outside this scan;
  *   2. no bare `promisify(exec)` is handed on as a value.
  * Each scan is also run against inline fixtures, so it is seen to fail.
  */
@@ -98,7 +100,7 @@ const fakes = [
 const caught = argvDroppingFakes(fakes).map((h) => Number(h.split(":")[0]));
 assert(
   caught.join(",") === "1,6,10",
-  `the scan catches the sh -c fake, the forwarding-to-promisify(exec) fake and the callback-exec fake — and nothing else (got lines: ${caught.join(",") || "none"})`,
+  `the scan catches the arrow-function sh -c, promisify(exec) and callback-exec fakes, and nothing else; function declarations and cmd-only stubs are outside its scope (got lines: ${caught.join(",") || "none"})`,
 );
 assert(
   shellOnlyEscapes("const execp = promisify(exec);\nconst ctx = { verifyExecFn: execp };")

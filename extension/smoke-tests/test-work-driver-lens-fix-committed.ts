@@ -72,7 +72,7 @@ setupSpawnGuard();
 async function mkFixture(
   dir: string,
   branch: string,
-): Promise<{ root: string; wt: string; baseSha: string; execp: (cmd: string, o?: { cwd?: string; shell?: string }) => Promise<{ stdout: string; stderr?: string }> }> {
+): Promise<{ root: string; wt: string; baseSha: string; execp: typeof realExec }> {
   const fs = await import("node:fs/promises");
   const origin = path.join(dir, "origin.git");
   const root = path.join(dir, "root");

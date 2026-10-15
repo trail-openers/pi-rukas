@@ -53,7 +53,6 @@ export function auditCtx(repo: string, issue: number): DriverContext {
 
 const execFileP = promisify(execFile);
 
-export { realExec };
 export const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 
 export type RealgitRoot = string;

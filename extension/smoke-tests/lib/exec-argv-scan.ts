@@ -56,6 +56,11 @@ function arrowBody(source: string, from: number): string {
  * A body that reads `argv`, or matches via `commandOf` / `asShellForm`
  * (lib/argv-shell.ts), is argv-aware. A second parameter typed `string` (a
  * fixture's own `sh(cmd, cwd)`) is not an executor and is skipped.
+ *
+ * Scope — arrow functions with exactly two parameters (`(cmd, opts) => …`)
+ * only. NOT caught: `function` declarations, one-parameter (cmd-only) stubs,
+ * and anything that forwards `cmd` to a shared executor such as `realExec`
+ * (that executor is checked where it is defined, lib/exec-fake.ts).
  */
 export function argvDroppingFakes(source: string): string[] {
   const shells = ["exec"];
