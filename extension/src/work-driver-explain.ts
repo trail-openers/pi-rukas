@@ -282,14 +282,11 @@ export function explainCap(
     }
     case "deadline": {
       // #1238 — the caller-set whole-cycle deadline: at a step boundary the
-      // driver saw the step could not finish before it (its own bound + the
-      // handoff grace would cross it) and parked so the handoff comment
-      // posts BEFORE the caller kills the process. The handoff grace is
-      // kept back from the deadline precisely so this comment is the thing
-      // the caller sees, not a mid-step kill with state left `running`.
+      // deadline was within the handoff grace, so no new step started and
+      // the driver parked; the grace lets this comment post before the kill.
       const hit = lastCapHit(state, "deadline");
       const ev = hit?.evidence ?? "(no detail recorded)";
-      return `the caller's whole-cycle deadline (${ev}) left less than this step's bound plus the handoff grace, so the driver parked at the step boundary rather than start a step that would run past it. The handoff below says where the work is — branch, PR, and the round reached — and posts before the deadline so a caller that kills the process at that point sees a handoff, not an aborted in-flight state. Re-run \`/work <issue> --restart\` with the deadline raised or cleared (a resumed cycle keeps the deadline it resolved)`;
+      return `the caller's whole-cycle deadline (${ev}) was within the handoff grace at a step boundary, so the driver started no new step and parked. The handoff below says where the work is — branch, PR, and the round reached — and posts before the deadline so a caller that kills the process at that point sees a handoff, not an aborted in-flight state. Re-run \`/work <issue> --restart\` with the deadline raised or cleared`;
     }
   }
   // #844 — a local branch of the resolved name holds commits the freshly

@@ -9,124 +9,84 @@
  * (janit/tehas#47/#61, #119).
  *
  * This is the driver-side half: the caller sets `PI_ENSEMBLE_CYCLE_DEADLINE`
- * (an absolute epoch ms, so it survives a resume) or `PI_ENSEMBLE_CYCLE_BUDGET_MS`
- * (resolved to an epoch once, at cycle start, then persisted in
- * `pipelineState.cycleDeadlineMs`). Before EACH step the driver asks
- * `deadlineCheck`: if the step cannot finish before the deadline (its own
- * bound + the handoff grace would cross it), the driver parks with cap
- * `deadline` and a handoff that says where the work is.
+ * (an absolute epoch ms) or `PI_ENSEMBLE_CYCLE_BUDGET_MS` (resolved to an
+ * epoch once, then persisted in `pipelineState.cycleDeadlineMs`).
  *
- * Design constraints (see the issue):
+ * Semantics: the deadline means "do not START a new step after this point".
+ * At each step boundary the driver parks with cap `deadline` (and routes to
+ * handoff) once `now + handoff grace >= deadline`. It does not reserve a
+ * step's worst-case bound — those bounds are backstops measured in hours,
+ * and reserving them would park a 6-hour cycle after 3. A step that started
+ * before the deadline may finish past it; the caller picks the deadline with
+ * its own margin (its hard kill minus its longest tolerable step).
  *
- * - The deadline is a FLOOR that parks, never a lower bound: every existing
- *   per-step bound still applies, unchanged.
- * - NO mid-step hard kill: the check runs at the step boundary only. A step
- *   that started before the deadline is allowed to run out its own bound;
- *   the boundary check parks the NEXT step.
- * - The handoff grace: `handoffDispatchTimeoutMs()` is kept back from the
- *   deadline, so the handoff comment is posted BEFORE the caller kills the
- *   process — the whole point of the feature (the tehas incident was a kill
- *   with no handoff, not a kill with a late one). `PI_ENSEMBLE_HANDOFF_TIMEOUT_MS`
- *   itself is never lowered: the grace is only the amount kept back, and
- *   the handoff step runs with its full bound.
- * - The check is a no-op when no deadline is set: the default behaviour is
- *   unchanged.
+ * - NO mid-step hard kill: the check runs at the step boundary only.
+ * - The handoff grace (`handoffDispatchTimeoutMs()`) is kept back so the
+ *   park's handoff comment posts before the deadline. The handoff step
+ *   itself runs with its full bound and is never parked.
+ * - No env var set → no deadline: the default behaviour is unchanged.
  */
 
 import { notifyAgent } from "./agent-message.ts";
-import { spawnBackstopMs } from "./spawn-support.ts";
 import { trace } from "./trace.ts";
-import { type CycleContext, REVIEW_WALL_CLOCK_MS } from "./work-driver-context.ts";
+import type { CycleContext } from "./work-driver-context.ts";
 import { handoffDispatchTimeoutMs } from "./work-driver-handoff.ts";
-import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import { type WorkState, type WorkStep, appendEvent, persistCycle } from "./workflow-state.ts";
 
-/**
- * The review loop's per-pass bound, used for the review/fix/re-adversarial
- * steps. The 90-minute wall clock is the loop's TOTAL, so a single pass
- * cannot spend more than that on itself — the conservative reading of
- * "the step's own bound" for those steps.
- */
-const REVIEW_PASS_BOUND_MS = REVIEW_WALL_CLOCK_MS;
-
-/**
- * The step's own bound, in ms. The dispatch steps are bounded by the spawn
- * backstop; develop and ci add the verify command's bound (the dispatch and
- * the verify run back to back). The lens / fix / re-adversarial passes are
- * bounded by the review loop's wall clock. `handoff` and `merged` are
- * special-cased by the caller (the grace / the in-process merge gate) and
- * are not consulted as a parking bound.
- */
-function stepOwnBoundMs(step: WorkStep): number {
-  switch (step) {
-    case "develop":
-    case "ci":
-      return spawnBackstopMs() + verifyTimeoutMs();
-    case "lens-review":
-    case "lens-fix":
-    case "adversarial":
-      return REVIEW_PASS_BOUND_MS;
-    default:
-      // explore, plan, branch, commit-pr, step-back: a single dispatch
-      // bounded by the spawn backstop (merged / handoff are never asked).
-      return spawnBackstopMs();
-  }
-}
+/** Below this an epoch is in seconds, not ms (1e12 ms is September 2001). */
+const EPOCH_MS_FLOOR = 1e12;
 
 /**
  * Read the caller's deadline. `PI_ENSEMBLE_CYCLE_DEADLINE` is an absolute
- * epoch ms (survives resume by construction). `PI_ENSEMBLE_CYCLE_BUDGET_MS`
- * is a duration resolved to an epoch ONCE, then persisted in
- * `pipelineState.cycleDeadlineMs` so a resumed cycle keeps the same absolute
- * deadline (re-resolving the budget would restart the clock).
+ * epoch ms. `PI_ENSEMBLE_CYCLE_BUDGET_MS` is a duration resolved to an epoch
+ * ONCE; the persisted `pipelineState.cycleDeadlineMs` is used only while the
+ * budget is still set, so a resume keeps the budget's clock but a cleared
+ * env var clears the deadline (no env var → no deadline, as standalone).
  *
- * Returns the absolute deadline, or undefined when nothing is set (no
- * deadline — the default, unchanged behaviour). A malformed value is
- * treated as unset (traced, never a cycle failure): the deadline is an
- * operator affordance, not a correctness gate.
+ * Returns the absolute deadline, or undefined. A malformed value — including
+ * an epoch in seconds — is treated as unset (traced, never a cycle failure):
+ * the deadline is an operator affordance, not a correctness gate.
  */
 export function readCycleDeadline(state: WorkState, now: number): number | undefined {
   const abs = process.env.PI_ENSEMBLE_CYCLE_DEADLINE;
   if (abs !== undefined && abs !== "") {
     const v = Number(abs);
-    if (Number.isFinite(v) && v > 0) return v;
+    if (Number.isFinite(v) && v >= EPOCH_MS_FLOOR) return v;
     trace(
-      `work-driver: PI_ENSEMBLE_CYCLE_DEADLINE=${abs} is not a finite positive epoch ms — ignored`,
+      Number.isFinite(v) && v > 0
+        ? `work-driver: PI_ENSEMBLE_CYCLE_DEADLINE=${abs} looks like epoch SECONDS — it must be epoch ms; ignored`
+        : `work-driver: PI_ENSEMBLE_CYCLE_DEADLINE=${abs} is not a finite positive epoch ms — ignored`,
     );
     return undefined;
   }
-  // The persisted absolute wins over the budget: re-resolving the budget at
+  const budget = process.env.PI_ENSEMBLE_CYCLE_BUDGET_MS;
+  if (budget === undefined || budget === "") return undefined;
+  const v = Number(budget);
+  if (!Number.isFinite(v) || v <= 0) {
+    trace(
+      `work-driver: PI_ENSEMBLE_CYCLE_BUDGET_MS=${budget} is not a finite positive duration — ignored`,
+    );
+    return undefined;
+  }
+  // The persisted absolute wins while the budget is set: re-resolving it at
   // every boundary (or on resume) would restart the clock and never park.
   const persisted = state.pipelineState.cycleDeadlineMs;
   if (typeof persisted === "number" && Number.isFinite(persisted) && persisted > 0) {
     return persisted;
   }
-  const budget = process.env.PI_ENSEMBLE_CYCLE_BUDGET_MS;
-  if (budget !== undefined && budget !== "") {
-    const v = Number(budget);
-    if (Number.isFinite(v) && v > 0) return now + v;
-    trace(
-      `work-driver: PI_ENSEMBLE_CYCLE_BUDGET_MS=${budget} is not a finite positive duration — ignored`,
-    );
-  }
-  return undefined;
+  return now + v;
 }
 
 /**
- * The pre-step boundary check (#1238). Before each step the driver asks
- * whether that step can finish before the deadline: its own bound + the
- * handoff grace (the comment must post before the caller kills). When it
- * cannot, the cycle parks with cap `deadline` and routes to handoff.
+ * The pre-step boundary check (#1238). Parks with cap `deadline` (routing to
+ * handoff) once `now + handoff grace >= deadline` — the deadline means "do
+ * not start a new step after this point", so a step's own worst case is not
+ * reserved. Returns `{ parked, state, deadline }`; `state` carries the
+ * resolved deadline (persisted so a budget resolves exactly once), or drops
+ * a stale persisted one when no deadline applies any more.
  *
- * Returns `{ parked: true, state }` when the cycle must park (the caller
- * persists, notifies, and the loop routes to handoff via the cap-hit), or
- * `{ parked: false, state, deadline }` when the step may run (with the
- * resolved deadline persisted so a budget resolves exactly once).
- *
- * The check is a NO-OP for: no deadline set; the `handoff` step itself (the
- * grace IS the handoff's bound, and the comment is the whole point); the
- * `merged` step (its in-process `gh` evidence is fast, and parking a green
- * PR over a boundary race would defeat the caller's deadline).
+ * Never parks `handoff` (the comment is the whole point) or `merged` (its
+ * in-process `gh` evidence is fast; parking a green PR would defeat it).
  */
 export async function deadlineCheck(
   ctx: CycleContext,
@@ -136,8 +96,11 @@ export async function deadlineCheck(
 ): Promise<{ parked: boolean; state: WorkState; deadline?: number }> {
   void ctx; // the caller persists the returned state; the check itself never writes
   const deadline = readCycleDeadline(state, now);
-  if (deadline === undefined) return { parked: false, state };
-  // Persist the resolved deadline (budget → absolute) so a resume keeps it.
+  if (deadline === undefined) {
+    if (state.pipelineState.cycleDeadlineMs === undefined) return { parked: false, state };
+    const { cycleDeadlineMs: _stale, ...ps } = state.pipelineState;
+    return { parked: false, state: { ...state, pipelineState: ps } };
+  }
   const next =
     state.pipelineState.cycleDeadlineMs === deadline
       ? state
@@ -145,26 +108,23 @@ export async function deadlineCheck(
   if (step === "handoff" || step === "merged") {
     return { parked: false, state: next, deadline };
   }
-  const bound = stepOwnBoundMs(step);
   const grace = handoffDispatchTimeoutMs();
   const remaining = deadline - now;
-  if (remaining < bound + grace) {
-    trace(
-      `work-driver: deadline park before ${step} — remaining ${remaining}ms < bound ${bound}ms + handoff grace ${grace}ms (deadline ${deadline})`,
-    );
-    const capped = appendEvent(next, {
-      kind: "cap-hit",
-      at: now,
-      cap: "deadline",
-      reviewRound: next.pipelineState.reviewRound,
-      nextStep: "handoff",
-      evidence:
-        `caller deadline ${deadline} (absolute epoch ms); ${remaining}ms remained; ` +
-        `step "${step}" needs ~${bound}ms plus the ${grace}ms handoff grace`,
-    });
-    return { parked: true, state: capped, deadline };
-  }
-  return { parked: false, state: next, deadline };
+  if (now + grace < deadline) return { parked: false, state: next, deadline };
+  trace(
+    `work-driver: deadline park before ${step} — remaining ${remaining}ms <= handoff grace ${grace}ms (deadline ${deadline})`,
+  );
+  const capped = appendEvent(next, {
+    kind: "cap-hit",
+    at: now,
+    cap: "deadline",
+    reviewRound: next.pipelineState.reviewRound,
+    nextStep: "handoff",
+    evidence:
+      `caller deadline ${deadline} (absolute epoch ms); ${remaining}ms remained, ` +
+      `within the ${grace}ms handoff grace — step "${step}" not started`,
+  });
+  return { parked: true, state: capped, deadline };
 }
 
 /**
@@ -188,7 +148,7 @@ export async function parkAtDeadlineBoundary(
   }
   notifyAgent(
     ctx.host,
-    `pi-rukas: /work for issue #${ctx.issue} parked at the ${step} boundary — the caller's deadline left less than this step's bound plus the handoff grace. Routing to handoff so the comment posts before the deadline.`,
+    `pi-rukas: /work for issue #${ctx.issue} parked at the ${step} boundary — the caller's deadline is within the handoff grace, so no new step starts. Routing to handoff so the comment posts before the deadline.`,
   );
   const toHandoff: WorkState = {
     ...checked.state,

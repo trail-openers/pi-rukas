@@ -11,7 +11,10 @@
  *  3. the queue gives a deadline-specific human action (not the generic
  *     "inspect the state file and --restart");
  *  4. `readCycleDeadline` / `deadlineCheck` resolve the two env forms and
- *     park only when the bound + handoff grace would cross the deadline.
+ *     park only once the deadline is within the handoff grace ("do not start
+ *     a new step after this point" — a step's worst case is not reserved);
+ *  5. the driver loop: a running step finishes, and the park lands at the
+ *     NEXT boundary, routing to handoff.
  */
 
 import { explainCap } from "../src/work-driver-explain.ts";
@@ -118,134 +121,130 @@ function parkedState(): WorkState {
 }
 
 // 4. readCycleDeadline: the two env forms + the persisted absolute.
+const T0 = 1_800_000_000_000; // a realistic epoch ms (2027)
 {
   const s = initialState(1238, 1) as WorkState;
+  const setPersisted = (v?: number) => {
+    (s.pipelineState as { cycleDeadlineMs?: number }).cycleDeadlineMs = v;
+  };
   delete process.env.PI_ENSEMBLE_CYCLE_DEADLINE;
   delete process.env.PI_ENSEMBLE_CYCLE_BUDGET_MS;
   assert(
-    readCycleDeadline(s, 1_000_000) === undefined,
+    readCycleDeadline(s, T0) === undefined,
     "no env + no persisted value → no deadline (default behaviour unchanged)",
   );
 
-  process.env.PI_ENSEMBLE_CYCLE_DEADLINE = "2000000";
+  process.env.PI_ENSEMBLE_CYCLE_DEADLINE = String(T0 + 1_000_000);
   assert(
-    readCycleDeadline(s, 1_000_000) === 2_000_000,
-    "PI_ENSEMBLE_CYCLE_DEADLINE is read as an absolute epoch",
+    readCycleDeadline(s, T0) === T0 + 1_000_000,
+    "PI_ENSEMBLE_CYCLE_DEADLINE is read as an absolute epoch ms",
+  );
+  process.env.PI_ENSEMBLE_CYCLE_DEADLINE = String(Math.floor((T0 + 1_000_000) / 1000));
+  assert(
+    readCycleDeadline(s, T0) === undefined,
+    "an epoch in SECONDS (< 1e12) is ignored, not read as a 1970 deadline that parks at once",
+  );
+  process.env.PI_ENSEMBLE_CYCLE_DEADLINE = "not-a-number";
+  assert(
+    readCycleDeadline(s, T0) === undefined,
+    "a malformed deadline env value is ignored (traced, never a cycle failure)",
   );
   delete process.env.PI_ENSEMBLE_CYCLE_DEADLINE;
 
   process.env.PI_ENSEMBLE_CYCLE_BUDGET_MS = "500000";
   assert(
-    readCycleDeadline(s, 1_000_000) === 1_500_000,
+    readCycleDeadline(s, T0) === T0 + 500_000,
     "PI_ENSEMBLE_CYCLE_BUDGET_MS is a duration resolved from now",
   );
+  setPersisted(T0 + 7_000);
+  assert(
+    readCycleDeadline(s, T0 + 5_000) === T0 + 7_000,
+    "with the budget still set, the persisted deadline is kept (the clock carries across a resume)",
+  );
   delete process.env.PI_ENSEMBLE_CYCLE_BUDGET_MS;
-
-  (s.pipelineState as { cycleDeadlineMs?: number }).cycleDeadlineMs = 7_777_000;
   assert(
-    readCycleDeadline(s, 1_000_000) === 7_777_000,
-    "a persisted cycleDeadlineMs survives resume as the same absolute epoch",
+    readCycleDeadline(s, T0) === undefined,
+    "with both env vars cleared, a persisted deadline does NOT outlive them (no deadline)",
   );
-
-  process.env.PI_ENSEMBLE_CYCLE_DEADLINE = "not-a-number";
-  delete (s.pipelineState as { cycleDeadlineMs?: number }).cycleDeadlineMs;
-  assert(
-    readCycleDeadline(s, 1_000_000) === undefined,
-    "a malformed deadline env value is ignored (traced, never a cycle failure)",
-  );
-  delete process.env.PI_ENSEMBLE_CYCLE_DEADLINE;
 }
 
-// 4b. deadlineCheck: parks when bound + grace would cross the deadline,
-// does not park when there is room, and never parks handoff/merged (the
-// grace is the handoff's own bound; the merge gate is in-process).
+// 4b. deadlineCheck: parks only once the deadline is within the handoff
+// grace; never parks handoff/merged.
 {
   const makeCtx = () =>
     ({
       repoRoot: "/tmp/x",
       issue: 1238,
-      host: {
-        sendUserMessage: () => {},
-        sendUserMessageAsync: () => {},
-        emit: () => {},
-      },
+      host: { sendUserMessage: () => {}, sendUserMessageAsync: () => {}, emit: () => {} },
     }) as unknown as Parameters<typeof deadlineCheck>[0];
-  // The handoff grace is 8 minutes by default; the spawn backstop is 2 h by
-  // default. A dispatch step (explore) needs ~2h + 8m.
-  delete process.env.PI_ENSEMBLE_CYCLE_DEADLINE;
   delete process.env.PI_ENSEMBLE_CYCLE_BUDGET_MS;
+  delete process.env.PI_ENSEMBLE_HANDOFF_TIMEOUT_MS; // grace = 8 min default
+  const GRACE = 8 * 60_000;
+  const withDeadline = (d: number) => {
+    process.env.PI_ENSEMBLE_CYCLE_DEADLINE = String(d);
+    return initialState(1238, 1) as WorkState;
+  };
 
-  const s1 = initialState(1238, 1) as WorkState;
-  (s1.pipelineState as { cycleDeadlineMs?: number }).cycleDeadlineMs =
-    1_000_000 + 3_600_000; // 1h from now — less than 2h + 8m
   {
-    const r = await deadlineCheck(makeCtx(), s1, "explore", 1_000_000);
-    assert(r.parked === true, "deadline check parks explore when 1h < backstop + grace");
+    // 1h left: far less than the 2h spawn backstop, but more than the grace.
+    const r = await deadlineCheck(makeCtx(), withDeadline(T0 + 3_600_000), "develop", T0);
+    assert(r.parked === false, "1h left does not park develop — its worst-case bound is not reserved");
+    assert(r.state.eventLog.at(-1)?.kind !== "cap-hit", "no cap-hit appended when a step may start");
+    assert(
+      r.state.pipelineState.cycleDeadlineMs === T0 + 3_600_000,
+      "the resolved deadline rides on the returned state (status line, persistence)",
+    );
+  }
+  {
+    const r = await deadlineCheck(makeCtx(), withDeadline(T0 + GRACE), "lens-fix", T0);
+    assert(r.parked === true, "now + grace >= deadline parks before a new step");
     const tail = r.state.eventLog.at(-1);
     assert(
       tail?.kind === "cap-hit" && tail.cap === "deadline" && tail.nextStep === "handoff",
       "the park appends cap-hit deadline → handoff",
     );
   }
-
-  const s2 = initialState(1238, 1) as WorkState;
-  (s2.pipelineState as { cycleDeadlineMs?: number }).cycleDeadlineMs =
-    1_000_000 + 3_000_000_000; // far in the future
   {
-    const r = await deadlineCheck(makeCtx(), s2, "explore", 1_000_000);
-    assert(r.parked === false, "deadline check does not park when the deadline is far off");
-    assert(
-      r.state.eventLog.at(-1)?.kind !== "cap-hit",
-      "no cap-hit appended when there is room",
-    );
+    const r = await deadlineCheck(makeCtx(), withDeadline(T0 + GRACE + 1), "lens-fix", T0);
+    assert(r.parked === false, "1 ms beyond the grace still starts the step");
   }
-
-  // The handoff is never parked (the grace IS its bound — the comment is the
-  // whole point), and the deadline is still returned for persistence.
   {
-    const r = await deadlineCheck(makeCtx(), s2, "handoff", 1_000_000);
-    assert(r.parked === false, "the handoff step is never parked (it is the grace itself)");
-    assert(r.deadline === s2.pipelineState.cycleDeadlineMs, "the resolved deadline is returned");
+    const r = await deadlineCheck(makeCtx(), withDeadline(T0 - 1), "handoff", T0);
+    assert(r.parked === false, "the handoff step is never parked, even past the deadline");
+    const m = await deadlineCheck(makeCtx(), withDeadline(T0 - 1), "merged", T0);
+    assert(m.parked === false, "the merged step is never parked");
   }
-
-  // The budget is persisted as an absolute epoch by the check itself, so a
-  // resume keeps the same deadline.
+  delete process.env.PI_ENSEMBLE_CYCLE_DEADLINE;
+  {
+    // A stale persisted deadline with no env var is dropped from the state.
+    const s = initialState(1238, 1) as WorkState;
+    (s.pipelineState as { cycleDeadlineMs?: number }).cycleDeadlineMs = T0;
+    const r = await deadlineCheck(makeCtx(), s, "develop", T0 + 1);
+    assert(r.parked === false, "no env var → a stale persisted deadline never parks");
+    assert(r.state.pipelineState.cycleDeadlineMs === undefined, "...and is dropped from the state");
+  }
   {
     process.env.PI_ENSEMBLE_CYCLE_BUDGET_MS = "3600000";
-    const s3 = initialState(1238, 1) as WorkState;
-    const r = await deadlineCheck(makeCtx(), s3, "explore", 1_000_000);
+    const r = await deadlineCheck(makeCtx(), initialState(1238, 1) as WorkState, "explore", T0);
     assert(
-      (r.state.pipelineState as { cycleDeadlineMs?: number }).cycleDeadlineMs === 4_600_000,
-      "a budget is persisted as an absolute epoch (now + budget), so a resume does not restart the clock",
+      r.state.pipelineState.cycleDeadlineMs === T0 + 3_600_000 && r.parked === false,
+      "a 1h budget resolves to an absolute epoch and lets explore start",
     );
-    assert(r.parked === true, "a 1h budget parks a step that needs ~2h + grace");
     delete process.env.PI_ENSEMBLE_CYCLE_BUDGET_MS;
   }
 }
 
-// 4c. A persisted deadline wins over the budget env: re-resolving the budget
-// at every boundary would restart the clock and the cycle would never park.
-{
-  delete process.env.PI_ENSEMBLE_CYCLE_DEADLINE;
-  process.env.PI_ENSEMBLE_CYCLE_BUDGET_MS = "3600000";
-  const s = initialState(1238, 1) as WorkState;
-  (s.pipelineState as { cycleDeadlineMs?: number }).cycleDeadlineMs = 4_600_000;
-  assert(
-    readCycleDeadline(s, 2_000_000) === 4_600_000,
-    "with a budget set, the persisted absolute deadline is kept (the clock does not restart)",
-  );
-  delete process.env.PI_ENSEMBLE_CYCLE_BUDGET_MS;
-}
-
-// 5. The driver loop: a deadline too close for explore parks BEFORE explore
-// is dispatched, routes to handoff (the handoff dispatch runs), and leaves
-// the state terminal with cap `deadline` — not `running`, not a safety abort.
+// 5. The driver loop: explore starts with time left, runs PAST the point
+// where the deadline enters the grace, finishes, and the park lands at the
+// NEXT boundary — that step is never dispatched, the handoff runs, and the
+// state ends parked with cap `deadline` (not running, not safety-aborted).
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-deadline-loop-"));
   mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
-  process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = "2000";
+  process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = "5000";
   process.env.PI_ENSEMBLE_VERIFY = "0";
-  process.env.PI_ENSEMBLE_CYCLE_DEADLINE = String(Date.now() + 60_000);
+  process.env.PI_ENSEMBLE_HANDOFF_TIMEOUT_MS = "1000";
+  process.env.PI_ENSEMBLE_CYCLE_DEADLINE = String(Date.now() + 3_000);
   try {
     const labels: string[] = [];
     const ctx: DriverContext = {
@@ -256,11 +255,14 @@ function parkedState(): WorkState {
         stdout: `title:\tissue #${n}\nstate:\tOPEN\n\nbody for #${n}`,
       }),
       dispatchFn: async (_pi, spec, opts) => {
-        labels.push(String(opts?.label ?? spec.role));
+        const label = String(opts?.label ?? spec.role);
+        labels.push(label);
+        // The first step outlives the grace window: it started in time, so it finishes.
+        if (label === "explore") await new Promise((r) => setTimeout(r, 2_100));
         return {
           role: spec.role,
           ok: true,
-          text: "Posted.",
+          text: "VERDICT: NEEDS_WORK",
           toolUses: [],
           ms: 1,
           exitCode: 0,
@@ -271,19 +273,25 @@ function parkedState(): WorkState {
     await runWorkDriver(ctx);
     const after = await readState(dir, 1238);
     const caps = (after?.eventLog ?? []).flatMap((e) => (e.kind === "cap-hit" ? [e.cap] : []));
-    assert(!labels.includes("explore"), `explore is never dispatched (dispatched: ${labels.join(",")})`);
+    const parkEv = (after?.eventLog ?? []).find((e) => e.kind === "cap-hit" && e.cap === "deadline");
+    assert(labels[0] === "explore", `the first step starts and runs (dispatched: ${labels.join(",")})`);
+    assert(
+      labels.filter((l) => l !== "explore" && l !== "ops:handoff").length === 0,
+      `no step after explore is dispatched (dispatched: ${labels.join(",")})`,
+    );
     assert(labels.includes("ops:handoff"), "the park routes to the handoff dispatch");
     assert(caps.includes("deadline"), `the state carries cap-hit deadline (caps: ${caps.join(",")})`);
+    assert(
+      parkEv?.kind === "cap-hit" && !String(parkEv.evidence).includes('"explore"'),
+      `the park lands at a LATER boundary, not before explore (${parkEv?.kind === "cap-hit" ? parkEv.evidence : "none"})`,
+    );
     assert(
       after?.pipelineState.status !== "running" && after?.pipelineState.status !== "aborted",
       `the cycle ends parked, not running or safety-aborted (status: ${after?.pipelineState.status})`,
     );
-    assert(
-      typeof after?.pipelineState.cycleDeadlineMs === "number",
-      "the resolved deadline is persisted on the state file",
-    );
   } finally {
     delete process.env.PI_ENSEMBLE_CYCLE_DEADLINE;
+    delete process.env.PI_ENSEMBLE_HANDOFF_TIMEOUT_MS;
     rmSync(dir, { recursive: true, force: true });
   }
 }
