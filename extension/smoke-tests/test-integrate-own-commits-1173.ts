@@ -27,7 +27,8 @@
  *  (i) a branch already checked out in another worktree fails creation loudly;
  *  (j) an UNRECORDED stale tree on a different branch with unique commits is
  *      refused too (one admission rule on both paths), and a kept backup ref
- *      is returned to the commit-pr caller.
+ *      is returned to the commit-pr caller;
+ *  (k) a creation failure after the backup still names the kept ref.
  */
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -286,6 +287,29 @@ try {
     assert(
       "backupRef" in res && res.backupRef === `refs/pi-rukas/integrate-backup/issue-17/${sha}`,
       "(j) ensureIntegrateWorktreeOrHalt hands the backup ref to commit-pr (for the plumb report)",
+    );
+  }
+
+  // (k) the backup was written, then `git worktree add` failed: the error names the ref.
+  {
+    const { repo, baseSha, wt, stateFile } = await fixture("fail-after-backup");
+    const sha = await staleDetachedWithCommit(repo, wt, baseSha);
+    const addFails: typeof realExec = async (cmd, o) => {
+      if (cmd.startsWith("git worktree add")) throw new Error("fatal: simulated add failure");
+      return realExec(cmd, o);
+    };
+    const res = await ensureIntegrateWorktree(
+      addFails,
+      { repoRoot: repo, issue: 17, branchName: BRANCH, baseSha },
+      stateFile,
+    ).then(
+      () => "ok",
+      (err: unknown) => String((err as Error).message),
+    );
+    assert(
+      res.includes("simulated add failure") &&
+        res.includes(`refs/pi-rukas/integrate-backup/issue-17/${sha}`),
+      `(k) the creation error names the kept backup ref (${res.slice(0, 160)})`,
     );
   }
 } finally {

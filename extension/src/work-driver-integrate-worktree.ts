@@ -111,6 +111,26 @@ export async function ensureIntegrateWorktree(
   opts: { repoRoot: string; issue: number; branchName: string; baseSha: string },
   stateFile?: string,
 ): Promise<IntegrateWorktreeCreation> {
+  // #1173 — a failure AFTER the stale tree's commits were kept must still name
+  // the ref, or the operator's halt has no pointer to the recoverable work.
+  const kept: { ref?: string } = {};
+  try {
+    return await createIntegrateWorktree(execFn, opts, stateFile, kept);
+  } catch (err) {
+    if (kept.ref === undefined) throw err;
+    const e = err as Error & { stderr?: string };
+    throw new Error(
+      `${(e.stderr ?? e.message ?? String(err)).toString().trim()} (the stale integrate tree's unpushed commits were kept on ${kept.ref})`,
+    );
+  }
+}
+
+async function createIntegrateWorktree(
+  execFn: ExecFn,
+  opts: { repoRoot: string; issue: number; branchName: string; baseSha: string },
+  stateFile: string | undefined,
+  kept: { ref?: string },
+): Promise<IntegrateWorktreeCreation> {
   const { repoRoot, issue, branchName, baseSha } = opts;
   const name = integrateWorktreeName(issue);
   const abs = worktreePath(repoRoot, name);
@@ -188,7 +208,7 @@ export async function ensureIntegrateWorktree(
       }
       // #1170 — a stale tree holding uncommitted or foreign work is refused,
       // not force-removed; #1173 — the cycle's own commits are backed up.
-      backupRef = await keepOrRefuseStaleIntegrateTree(
+      backupRef = kept.ref = await keepOrRefuseStaleIntegrateTree(
         execFn,
         repoRoot,
         abs,
@@ -216,7 +236,13 @@ export async function ensureIntegrateWorktree(
       // #1173 — clean is not "nothing to lose": a detached HEAD's commits
       // die with the tree, so they are kept on a backup ref first (a tree on
       // another branch holding unique commits throws instead).
-      backupRef = await backupIntegrateHead(execFn, abs, branchHead ?? baseSha, branchName, issue);
+      backupRef = kept.ref = await backupIntegrateHead(
+        execFn,
+        abs,
+        branchHead ?? baseSha,
+        branchName,
+        issue,
+      );
       trace(
         `work-driver: registered worktree at ${abs} is NOT this cycle's (state file does not record it) and is clean — force-removing and recreating (the cycle already committed to replacing the integrate tree)`,
       );
