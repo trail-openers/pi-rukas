@@ -22,6 +22,7 @@
  * for want of dependencies — is `unknown` and reported as a note, never as
  * a red baseline: a wrong "the change is not implicated" is worse than none.
  */
+import { withVerifySlot } from "./host-resources.ts";
 import { trace } from "./trace.ts";
 import {
   NO_SPECIFIC_ASSERTION,
@@ -74,7 +75,9 @@ export async function probeBaselineVerify(
     await provisionWorktree(execFn, repoRoot, abs);
     trace(`work-driver: baseline verify — running \`${cmd}\` at base ${baseSha.slice(0, 12)}`);
     try {
-      await execFn(cmd, { cwd: abs, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 });
+      await withVerifySlot(() =>
+        execFn(cmd, { cwd: abs, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }),
+      );
       return { status: "green" };
     } catch (err) {
       const e = err as Error & { stdout?: string; stderr?: string; killed?: boolean };

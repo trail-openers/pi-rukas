@@ -320,7 +320,7 @@ A timed-out explore produced an empty reply, and the driver read that as "explor
 
 ### Cycles run one at a time now
 
-`PI_ENSEMBLE_PARALLEL_GROUPS` defaults to 1. Measured across 69 cycles, every autonomous merge ran alone, and concurrent cycles ran ~2.4× slower per role — enough to trip the watchdogs — as well as corrupting each other through the shared repo root. Set the env var if you want the old behaviour.
+`PI_ENSEMBLE_PARALLEL_GROUPS` defaults to 1. Measured across 69 cycles, every autonomous merge ran alone, and concurrent cycles ran ~2.4× slower per role — enough to trip the watchdogs — as well as corrupting each other through the shared repo root. Set the env var if you want the old behaviour. *Superseded:* the default went back to 3 once every workstream got its own worktree and integration a single lock (see "Parallel groups" below), and a small host now lowers it ([configuration](configuration.md) → `PI_ENSEMBLE_PARALLEL_GROUPS`).
 
 ### A cycle merged even though the full verification failed
 
@@ -1684,6 +1684,8 @@ A doctrine-prose edit is not a failure; it appears in the verify notes as *"allo
 `/work N M P …` runs up to `PI_ENSEMBLE_PARALLEL_GROUPS` (default **3**) groups concurrently. Each group develops in its own `.worktrees/` tree, so the only shared resource is the repo root, and every operation that touches it — branch creation, patch integration, commit, push, `gh pr create`, the verify gates, lens-fix re-integration, `restoreCheckout`, worktree teardown — runs under a single integration lock. That lock is an in-process promise chain plus an `O_EXCL` lockfile under `.git/`, so a second `/work` invocation or a second Pi process on the same clone is also serialised.
 
 Child-process load is bounded by `PI_ENSEMBLE_SPAWN_CAP` (default 64), **not** by the group count: excess spawns queue FIFO. Each workstream's develop step spends one child — the developer; the speculative explore that used to accompany it is opt-in (`PI_ENSEMBLE_SPECULATIVE_EXPLORE=1`), so develop's default fanout is M, not 2M.
+
+**Verify timeouts in a CPU-limited container** (#1325). Groups × workstreams each running a full suite used to ignore the machine: in a container with a 2-CPU quota, three concurrent cycles' verify runs starved each other past `PI_ENSEMBLE_VERIFY_TIMEOUT_MS`. The driver now reads the host's CPUs and memory (`os.availableParallelism()`, `os.totalmem()`, lowered by a cgroup v2 `cpu.max` / `memory.max` or the v1 equivalents) and lowers the unset group and workstream defaults to fit, and the verify commands it runs queue behind `PI_ENSEMBLE_VERIFY_CONCURRENCY`. Explicit settings win. The group and workstream defaults hold only from about 9 CPUs and 18 GiB up, so an 8-CPU / 16 GiB laptop now runs 2 groups and 4 concurrent verifies; set `PI_ENSEMBLE_PARALLEL_GROUPS`, `PI_ENSEMBLE_MAX_WORKSTREAMS` or `PI_ENSEMBLE_VERIFY_CONCURRENCY=0` to restore the old limits. To see what a cycle chose, run with `PI_ENSEMBLE_DEBUG=1` (the `resource budget` line at cycle start) or read `resources` in `pi-rukas-headless --json`.
 
 Set `PI_ENSEMBLE_PARALLEL_WORK=0` for strictly sequential execution.
 

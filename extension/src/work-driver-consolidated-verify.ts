@@ -9,6 +9,7 @@
 // afterwards (the combined tree is a transient probe; leaving it on a
 // scratch ref would break the next integration's dirty-preflight).
 
+import { withVerifySlot } from "./host-resources.ts";
 import { trace } from "./trace.ts";
 import { isDriverManagedDirtLine } from "./work-driver-branch-residue.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.js";
@@ -291,7 +292,9 @@ export async function runConsolidatedVerifyUnlocked(
     let verifyFailure: string | undefined;
     let timedOut = false;
     try {
-      await execFn(verifyCmd, { cwd: repoRoot, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 });
+      await withVerifySlot(() =>
+        execFn(verifyCmd, { cwd: repoRoot, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }),
+      );
     } catch (err) {
       const e = err as Error & { stderr?: string; stdout?: string; killed?: boolean };
       verifyFailure = combinedExecFailureStream(e);

@@ -9,6 +9,7 @@
  * file or pi-rukas source.
  */
 
+import type { ResourceReport } from "../resource-budget.ts";
 import type { DispatchUsage } from "../types.ts";
 import { handoffMarker, parseHandoffMarker } from "../work-driver-handoff-channel.ts";
 import { resumeEnabled } from "../work-driver-resume.ts";
@@ -23,6 +24,7 @@ import { recordedPrUrl } from "./pr-url.ts";
  * v2 (#1326): top-level `schemaVersion`, `buildCommit` and `buildVersion`; per
  * issue a typed `cap`, `failedStep`, `prUrl`, `usage` and `resumable`.
  * v3 (#1327): per issue `parkReason` and `handoff` (channel, marker, body).
+ * Additive, no bump: top-level `resources` (#1325).
  */
 export const RESULT_SCHEMA_VERSION = 3 as const;
 
@@ -112,6 +114,8 @@ export interface ResultDocument {
   exitCode: number;
   issues: IssueResult[];
   error?: { code: string; message: string };
+  /** #1325 — the host budget and parallelism limits (added by the CLI; additive). */
+  resources?: ResourceReport;
 }
 
 export function resultDocument(

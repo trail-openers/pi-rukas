@@ -20,12 +20,15 @@
  *                    type, default and scope (inputs.ts, #1326)
  *   - `files`      — the `.pi/*` project files a cycle reads (inputs.ts)
  *   - `features`   — named features a caller may depend on
+ *   - `resources`  — the host budget and the parallelism limits a cycle
+ *                    started now would run with (#1325, resource-budget.ts)
  *
  * The contract-version constants live on the contract modules themselves
  * (exit-code.ts, result.ts, ndjson.ts); this module reads whatever they export.
  */
 
 import path from "node:path";
+import { type ResourceReport, resourceReport } from "../resource-budget.ts";
 import { INSTALL_ROOT, readBuildCommit, readBuildVersion } from "./build.ts";
 import { capVocabulary } from "./caps.ts";
 import { EXIT, EXIT_CODE_VERSION } from "./exit-code.ts";
@@ -38,6 +41,7 @@ import { RESULT_SCHEMA_VERSION } from "./result.ts";
  * answer's shape (added/removed top-level fields); the caller's drift test
  * (#1306) reads this and re-derives the answer from the live constants.
  * v2 (#1326): every input with type/default/scope, and `files`.
+ * Additive, no bump (docs/headless.md versioning rule): `resources` (#1325).
  */
 export const CAPABILITIES_VERSION = 2 as const;
 
@@ -77,6 +81,8 @@ export interface Capabilities {
   inputs: typeof HEADLESS_INPUTS;
   files: typeof HEADLESS_FILES;
   features: typeof HEADLESS_FEATURES;
+  /** #1325 — read from this host when the answer is built. */
+  resources: ResourceReport;
 }
 
 /**
@@ -103,5 +109,6 @@ export function buildCapabilities(installRoot: string = INSTALL_ROOT): Capabilit
     inputs: HEADLESS_INPUTS,
     files: HEADLESS_FILES,
     features: HEADLESS_FEATURES,
+    resources: resourceReport(),
   };
 }

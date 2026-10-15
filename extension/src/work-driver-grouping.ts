@@ -6,6 +6,9 @@
  * dispatching cycles.
  */
 
+import { hostBudget } from "./host-resources.ts";
+import { effectiveMaxWorkstreams } from "./work-driver-plan-workstreams.ts";
+
 /**
  * PR16 — Deterministic multi-issue grouping.
  *
@@ -74,14 +77,28 @@ export const MAX_ISSUES_PER_GROUP = 3;
 export const MAX_PARALLEL_GROUPS_DEFAULT = 3;
 
 /**
- * The concurrency the queue will actually use. Exported so anything that must
- * size itself against it reads the same number the pool does rather than
- * re-deriving the env parse and drifting.
+ * The configured concurrency: the env setting or the default, before the host
+ * budget. The queue runs at `effectiveParallelGroups()`; this is exported so
+ * nothing re-derives the env parse and drifts.
  */
 export function resolvedParallelGroups(): number {
   if (process.env.PI_ENSEMBLE_PARALLEL_WORK === "0") return 1;
   const env = Number(process.env.PI_ENSEMBLE_PARALLEL_GROUPS);
   return Number.isFinite(env) && env > 0 ? env : MAX_PARALLEL_GROUPS_DEFAULT;
+}
+
+/**
+ * #1325 — the concurrency the queue runs at: `resolvedParallelGroups()`
+ * lowered so groups × the workstream ceiling fits the host's workstream
+ * slots. An explicit `PI_ENSEMBLE_PARALLEL_GROUPS` (or `PARALLEL_WORK=0`) wins;
+ * the budget never raises the default.
+ */
+export function effectiveParallelGroups(): number {
+  const groups = resolvedParallelGroups();
+  if (process.env.PI_ENSEMBLE_PARALLEL_WORK === "0") return groups;
+  if (Number(process.env.PI_ENSEMBLE_PARALLEL_GROUPS) > 0) return groups;
+  const perGroup = effectiveMaxWorkstreams();
+  return Math.min(groups, Math.max(1, Math.floor(hostBudget().workstreamSlots / perGroup)));
 }
 
 export interface GroupingResult {
@@ -404,13 +421,10 @@ export function groupIssues(
     };
   }
 
-  // Fanout mode: parallel up to MAX_PARALLEL_GROUPS_DEFAULT; sequential
+  // Fanout mode: parallel up to the effective group cap; sequential
   // if K exceeds it (excess groups still get their own worktree, just
   // run in batches).
-  const parallelCap =
-    Number(process.env.PI_ENSEMBLE_PARALLEL_GROUPS) > 0
-      ? Number(process.env.PI_ENSEMBLE_PARALLEL_GROUPS)
-      : MAX_PARALLEL_GROUPS_DEFAULT;
+  const parallelCap = effectiveParallelGroups();
   const K = Object.keys(groups).length;
   const fanout: GroupingResult["fanout"] =
     K <= parallelCap

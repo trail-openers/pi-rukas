@@ -25,6 +25,7 @@
 
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { withVerifySlot } from "./host-resources.ts";
 import { trace } from "./trace.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -154,7 +155,9 @@ export async function rerunConsolidatedVerifyOnce(
   // stopped at the bound, so its stream ends wherever it happened to be.
   let timedOut = false;
   try {
-    await execFn(cmd, { cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 });
+    await withVerifySlot(() =>
+      execFn(cmd, { cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }),
+    );
   } catch (err) {
     const e = err as Error & { stderr?: string; stdout?: string; killed?: boolean };
     rawFailure = combinedExecFailureStream(e);

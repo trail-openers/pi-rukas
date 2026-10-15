@@ -12,6 +12,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { type CommentEvidence, formatLostComments } from "./comment-evidence.ts";
 import { checkComments, commentRetentionEnabled } from "./comment-retention.ts";
+import { withVerifySlot } from "./host-resources.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import {
   TEST_BLOCK_MARKERS,
@@ -167,11 +168,13 @@ export async function runSmokeGate(
   if (smokeCmd) {
     const smokeCwd = changedWorktrees[0] ?? repoRoot;
     try {
-      await execFn(smokeCmd, {
-        cwd: smokeCwd,
-        timeout: verifyTimeoutMs(),
-        maxBuffer: 4 * 1024 * 1024,
-      });
+      await withVerifySlot(() =>
+        execFn(smokeCmd, {
+          cwd: smokeCwd,
+          timeout: verifyTimeoutMs(),
+          maxBuffer: 4 * 1024 * 1024,
+        }),
+      );
     } catch (err) {
       const e = err as Error & {
         stdout?: string;
