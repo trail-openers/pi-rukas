@@ -25,6 +25,7 @@
  * host's job registry.
  */
 
+import fs from "node:fs/promises";
 import { killLiveProcessGroups } from "../spawn-kill.ts";
 import { trace } from "../trace.ts";
 import type { DriverContext } from "../work-driver-context.ts";
@@ -173,10 +174,20 @@ export async function runHeadless(opts: HeadlessRunOptions): Promise<HeadlessRun
       if (url) r.prUrl = url;
     }
   }
+  await attachHandoffBodies(results);
   if (unrun.length > 0) return { exitCode: interruptCode, results };
   const base = { exitCode: exitCodeForGroup(codes), results };
   if (divergenceError) return { ...base, error: divergenceError };
   return base;
+}
+
+/** #1327 — the full handoff body, so a host that owns the channel can deliver it. */
+export async function attachHandoffBodies(results: IssueResult[]): Promise<void> {
+  for (const r of results) {
+    if (!r.handoff?.bodyFile) continue;
+    const body = await fs.readFile(r.handoff.bodyFile, "utf8").catch(() => undefined);
+    if (body !== undefined) r.handoff.body = body;
+  }
 }
 
 /** An issue no group reached: its state file's status if one exists, else not-started. */

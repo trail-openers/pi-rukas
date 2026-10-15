@@ -14,7 +14,7 @@
  *   - A flagged issue (the attention label in the forge's response) is refused.
  *   - An unflagged issue proceeds.
  *   - The forge is called once per issue in the group.
- *   - `--restart` short-circuits before the forge is called.
+ *   - `--restart` overrides the gate and clears the label (#1327).
  *   - A forge that rejects one issue yields `checked: false` (not a crash,
  *     not a silent pass).
  */
@@ -96,14 +96,30 @@ function mkFakeForge(
   assert(!v.refuse, "a label that merely contains the name does not trigger it (exact match)");
 }
 
-// 4. --restart short-circuits before the forge is called.
+// 4. --restart overrides the gate and clears the label (#1327): the restarted
+//    cycle leaves no stale flag, so its own resume is not refused and a host
+//    never has to strip the label itself.
 {
   const { forge, calls } = mkFakeForge({
     10: [{ name: ATTENTION_LABEL }],
+    11: [{ name: "bug" }],
   });
-  const v = await checkAttentionLabel("/repo", 10, { forge, restart: true });
+  const removed: string[] = [];
+  (forge as unknown as { labelRemove: Forge["labelRemove"] }).labelRemove = async (t, n, name) => {
+    removed.push(`${t}#${n}:${name}`);
+  };
+  const v = await checkAttentionLabel("/repo", 10, { forge, restart: true, issues: [10, 11] });
   assert(!v.refuse, "--restart overrides a flagged issue");
-  assert(calls.length === 0, "the forge is NOT called on --restart (short-circuit)");
+  assert(calls.length === 2, "--restart reads every issue in the group");
+  assert(
+    removed.length === 1 && removed[0] === `issue#10:${ATTENTION_LABEL}`,
+    "--restart removes the label only from the issue that carries it",
+  );
+}
+{
+  const { forge } = mkFakeForge({ 10: new Error("gh: down") });
+  const v = await checkAttentionLabel("/repo", 10, { forge, restart: true });
+  assert(!v.refuse && v.checked, "a failed clear never stops a restart");
 }
 
 // 5. A forge that rejects one issue in a group yields checked: false.

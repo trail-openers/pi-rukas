@@ -10,6 +10,7 @@
  */
 
 import type { DispatchUsage } from "../types.ts";
+import { handoffMarker } from "../work-driver-handoff-channel.ts";
 import type { WorkStep } from "../workflow-state-events.ts";
 import type { WorkState } from "../workflow-state.ts";
 import { type HeadlessCap, capStep } from "./caps.ts";
@@ -19,8 +20,9 @@ import { exitCodeForState, lastCap, lastEvent } from "./exit-code.ts";
  * Version of the --json result schema. Bump on any change to the result shape.
  * v2 (#1326): top-level `schemaVersion` and `buildCommit`; per issue a typed
  * `cap`, `failedStep`, `prUrl`, `usage` and `resumable`.
+ * v3 (#1327): per issue `parkReason` and `handoff` (channel, marker, body).
  */
-export const RESULT_SCHEMA_VERSION = 2 as const;
+export const RESULT_SCHEMA_VERSION = 3 as const;
 
 /** Token and cost totals summed over every dispatch the cycle recorded. */
 export type ResultUsage = DispatchUsage & { dispatches: number };
@@ -31,12 +33,32 @@ export interface StepTiming {
   endedAt: string;
 }
 
+/**
+ * #1327 — the handoff the cycle emitted. With `channel: "host"` pi-rukas
+ * posted nothing and applied no label: delivering `body` is the host's job.
+ */
+export interface HandoffResult {
+  channel: "forge" | "host";
+  /** `<!-- pi-rukas:handoff issue=N cap=<cap> -->`, the first line of `body`. */
+  marker: string;
+  /** The full handoff markdown. Absent only when its file could not be read. */
+  body?: string;
+  /** Diagnostic path for a person, like `stateFile`. */
+  bodyFile?: string;
+  /** Forge channel: the comment pi-rukas posted (or an earlier identical park's). */
+  commentUrl?: string;
+  /** Forge channel: `needs-human-attention` was verified on the issue (and PR). */
+  labelApplied: boolean;
+}
+
 export interface IssueResult {
   issue: number;
   /** `not-started`: the group member had no state file (the driver never persisted one). */
   status: WorkState["pipelineState"]["status"] | "not-started";
   /** The last cap hit, from the vocabulary `--capabilities` publishes (caps.ts). */
   cap?: HeadlessCap;
+  /** An intent park's machine reason (`underspecified`, `too-large`, …). */
+  parkReason?: string;
   /** The step the cycle stopped in, when it did not merge. */
   failedStep?: WorkStep;
   branch?: string;
@@ -52,6 +74,8 @@ export interface IssueResult {
   durationMs: number;
   steps: StepTiming[];
   exitCode: number;
+  /** Present once the cycle emitted a handoff (#1327). */
+  handoff?: HandoffResult;
   /** Clarification questions (exit 11): the cap's bullet evidence, numbered q1, q2… */
   questions?: string[];
   /**
@@ -226,5 +250,24 @@ export function projectIssue(state: WorkState, stateFile: string): IssueResult {
     : (state.pipelineState.prNumber ?? state.pipelineState.existingPr?.number);
   if (prNumber !== undefined) result.prNumber = prNumber;
   if (exitCode === 11) result.questions = questionsOf(state);
+  const capHit = lastEvent(state, "cap-hit");
+  const parkReason = capHit?.parkReason ?? state.pipelineState.normalisedSpec?.parkReason;
+  if (parkReason && cap === "intent-park") result.parkReason = parkReason;
+  const handoff = handoffOf(state, cap);
+  if (handoff) result.handoff = handoff;
   return result;
+}
+
+/** The last handoff the cycle emitted, without its body (run.ts reads that). */
+export function handoffOf(state: WorkState, cap: string | undefined): HandoffResult | undefined {
+  const e = lastEvent(state, "handoff-emitted");
+  if (!e) return undefined;
+  const h: HandoffResult = {
+    channel: e.delivery === "host" ? "host" : "forge",
+    marker: handoffMarker(state.issue, cap),
+    labelApplied: e.labelApplied,
+  };
+  if (e.handoffBodyPath) h.bodyFile = e.handoffBodyPath;
+  if (e.commentUrl) h.commentUrl = e.commentUrl;
+  return h;
 }

@@ -122,6 +122,8 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("FORGE_PROBE", null),
   list("FRONTEND_ONLY_GLOBS", ",", null),
   ms("GIT_NET_TIMEOUT_MS", 300_000),
+  // forge: the driver posts the handoff comment and label; host: the result carries it instead.
+  input("HANDOFF_CHANNEL", "enum", "forge", "cycle", { values: ["forge", "host"] }),
   flag("HANDOFF_CONSOLIDATE", true),
   flag("HANDOFF_POST_RETRY", true),
   ms("HANDOFF_POST_RETRY_BACKOFF_MS", 1_000),

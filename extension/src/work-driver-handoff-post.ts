@@ -35,7 +35,7 @@ export const HANDOFF_LABEL = "needs-human-attention";
  * #775 — the handoff delivery-provenance field (the `delivery` member of
  * the handoff-emitted event, `workflow-state-events-handoff.ts`).
  */
-export type HandoffDelivery = "dispatch" | "fallback";
+export type HandoffDelivery = "dispatch" | "fallback" | "host";
 
 /**
  * #775 — read the attention label back from the target the handoff posted to

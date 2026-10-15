@@ -31,9 +31,11 @@ export type HandoffEmittedEvent = {
   /**
    * #775 — how the recorded comment/label state was established. Absent on
    * events written before #775 (readers must treat absent as "unknown —
-   * trust the fields, don't trust the provenance").
+   * trust the fields, don't trust the provenance"). #1327 — `host`: the
+   * handoff channel was the host's (`PI_ENSEMBLE_HANDOFF_CHANNEL=host`), so
+   * nothing was posted and no label applied by design, not by failure.
    */
-  delivery?: "dispatch" | "fallback";
+  delivery?: "dispatch" | "fallback" | "host";
   /**
    * Set when a freshly re-resolved intent park matched the one a previous
    * cycle already reported (same park reason, issue text and commit): no new
