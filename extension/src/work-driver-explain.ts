@@ -14,7 +14,7 @@ import { explainLens } from "./work-driver-explain-lens.ts";
 import { adversarialFailureCause, explainOther } from "./work-driver-explain-other.ts";
 import { explainPrSteps } from "./work-driver-explain-pr-steps.ts";
 import { explainReview } from "./work-driver-explain-review.ts";
-import { explainVerifyFailed } from "./work-driver-explain-verify.ts";
+import { explainVerifyFailed, explainVerifyTimeout } from "./work-driver-explain-verify.ts";
 import { cherryPickRecoveryFor } from "./work-driver-handoff-cherry-pick.ts";
 import { type ParkReason, explainPark } from "./work-driver-intent.ts";
 import { explainMergeHold } from "./work-driver-merge-authority.ts";
@@ -33,7 +33,7 @@ import {
  * WHY explanation stays consistent.
  * Exhaustive switch for FIXED-LITERAL caps — adding a new fixed-literal cap
  * value to the WorkEvent union forces a typecheck error here, which is the
- * design intent. TEMPLATE caps (`verify-failed:`, `step-failed:`,
+ * design intent. TEMPLATE caps (`verify-failed:`, `verify-timeout:`, `step-failed:`,
  * `branch-ahead:`, `driver-crash:`) do NOT force a case — they are handled
  * by the prefix branches below the switch, where each gets its own tailored
  * sentence; adding a new template prefix without a matching branch below
@@ -314,6 +314,7 @@ export function explainCap(
     return `the branch step's ops fallback recorded a baseSha that does not match the branch's actual merge-base with origin/<mainline>: ${ev}. The branch was not built off the freshly-fetched base — ops likely created it from a stale local ref. Reset the branch to the correct base (\`git branch -f <branch> <correct-sha>\`) and re-run the cycle, or investigate the branch's commit history before proceeding`;
   }
   if (cap.startsWith("verify-failed:")) return explainVerifyFailed(cap, state);
+  if (cap.startsWith("verify-timeout:")) return explainVerifyTimeout(cap, state);
   // #753 — deferred worktree-creation failure. Its own sentence, because
   // `step-failed:develop` would be a mislabel (the dispatch itself never
   // failed; the DEPENDENT's deferred worktree creation was refused or
