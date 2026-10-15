@@ -109,7 +109,7 @@ parallel-cli research run "detailed research question"
 **Deep research async** (get task ID immediately, poll for results):
 ```bash
 parallel-cli research run "question" --no-wait  # returns RUN_ID immediately
-parallel-cli research poll RUN_ID               # blocks until done
+parallel-cli research poll RUN_ID               # blocks until done — wrap in a timeout (see below)
 ```
 
 ❌ Do NOT use `parallel-search_*` or `parallel-task_*` as MCP tool calls — those servers are removed.
@@ -127,6 +127,7 @@ wigolo research "q" --depth standard --json 2>/dev/null
 - If the preflight prints `wigolo not installed`, DO NOT report `empty-result` — end your reply with `backend: wigolo` and `parallel-outcome: network-failed` with the text "wigolo not installed".
 - With `WIGOLO_LLM_API_KEY` set, `research` returns a SYNTHESIZED brief; without it, a RAW brief. State which one ran.
 - An empty Parallel result is a valid answer and NEVER triggers the fallback.
+- **Bounded-timeout doctrine for blocking commands:** any command here that blocks until complete (`parallel-cli research run`, `parallel-cli search --mode agentic`, `wigolo research`) may stall on a half-open network connection with no error at all. Run it with a time bound (e.g. `timeout 120 wigolo research "q" --depth standard --json`) so a stuck call settles on its own instead of holding the dispatch open-ended. A command that exits on its timeout is handled exactly like a provider failure: report the gap it left (`parallel-outcome: network-failed`) and move on — a bounded failure is always better than a silent stall.
 - monitor / findall / enrichment: no fallback available — report a gap instead.
 - On any Parallel failure, end your reply with `parallel-outcome: <class>` where `<class>` is one of `success`, `credit-exhausted`, `auth-missing`, `network-failed`, `empty-result`, `unparseable` (anchor credit-exhausted on the verbatim `Insufficient credit` / exit 4; wigolo's `blocked_by_challenge` is network-failed, not empty). Always end with `backend: parallel|wigolo`.
 
