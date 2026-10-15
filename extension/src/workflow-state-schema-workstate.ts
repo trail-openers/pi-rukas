@@ -40,6 +40,12 @@ export interface WorkState {
    */
   issue: number;
   issues?: number[];
+  /**
+   * #1090 — the protected paths the operator granted the current invocation
+   * (`--allow-protected`). A record for the handoff and PR body, rewritten on
+   * every entry; the gate never reads it (see work-driver-protected-grant.ts).
+   */
+  protectedGrant?: string[];
   /** Epoch ms when the cycle started. */
   startedAt: number;
   /** Latest write; for "did the user just nudge this?" UX heuristics. */

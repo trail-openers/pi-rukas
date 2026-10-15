@@ -8,6 +8,7 @@ import {
   tldrSectionOf,
 } from "./work-driver-pr-body-definition.ts";
 import { renderLensFindingsSection } from "./work-driver-pr-sections.ts";
+import { protectedGrantSectionOf } from "./work-driver-protected-grant.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
 /**
  * /work driver — inline prompt builders for the late pipeline steps.
@@ -90,6 +91,7 @@ export function inlineCommitPrPrompt(
     /** The per-workstream plan (scope / paths), when captured. */
     workstreams: Record<string, Workstream>;
     draft?: boolean; // #1292 — open the PR with `--draft` (marked ready once the review is done).
+    protectedGrant?: readonly string[]; // #1090 — the operator's --allow-protected record.
   },
 ): string {
   const headline = issues.length === 1 ? `issue #${issues[0]}` : `issues #${issues.join(", #")}`;
@@ -110,18 +112,15 @@ export function inlineCommitPrPrompt(
           ),
         ]
       : [];
-  const assumptionsBlock = assumptionsBlockOf(normalisedSpec);
-  const carriedFindings = carriedFindingsSectionOf(eventLog);
   // #792 — no-diff deliverables surface as their own section in the PR body
   // (see the operatorActionsSectionOf contract); both the multi-worktree
   // and the N=1 flows below splice it into the gh pr create recipe.
   const operatorActions = operatorActionsSectionOf(normalisedSpec);
-  // #1006 — TL;DR section goes at the TOP of the PR body in all three shapes.
-  const tldr = tldrSectionOf(normalisedSpec);
   const bodySections = [
-    tldr,
-    assumptionsBlock,
-    carriedFindings,
+    tldrSectionOf(normalisedSpec), // #1006 — TL;DR at the TOP of the PR body in all three shapes.
+    assumptionsBlockOf(normalisedSpec),
+    protectedGrantSectionOf(fallback?.protectedGrant),
+    carriedFindingsSectionOf(eventLog),
     operatorActions,
     renderLensFindingsSection(eventLog),
   ]

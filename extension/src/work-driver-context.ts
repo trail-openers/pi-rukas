@@ -154,6 +154,14 @@ export interface DriverContext {
    */
   mergeGrant?: boolean;
   /**
+   * #1090 — protected paths the operator granted this cycle with
+   * `/work N --allow-protected <path>`. Operator-only, like `mergeGrant`:
+   * `start_work_driver` forces it empty, and nothing from the issue, explore
+   * or the planner reaches it. The #406 gate reads it from here, never from
+   * the state file, which records it only.
+   */
+  protectedGrant?: readonly string[];
+  /**
    * #1292 — the invoking session has no UI (`!ctx.hasUI`, e.g. `pi -p`). A
    * headless cycle opens its PR as a draft by default — nobody is watching
    * the review window — unless `PI_ENSEMBLE_DRAFT_PR` says otherwise.

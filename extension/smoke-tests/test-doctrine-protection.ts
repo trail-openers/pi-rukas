@@ -256,7 +256,7 @@ const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "pi-doctrine-"));
     repoRoot: tmp,
     issue: 406,
     verifyExecFn: async (cmd) => {
-      if (cmd === "git status --porcelain") return { stdout: porcelain };
+      if (cmd === "git status --porcelain --untracked-files=all") return { stdout: porcelain };
       return { stdout: "" };
     },
   });
@@ -273,6 +273,26 @@ const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "pi-doctrine-"));
   assert(
     halted.failures.some((f) => f.includes(".github/workflows/ci.yml")),
     "...and names the offending path, so the operator is not left grepping a diff",
+  );
+  assert(
+    halted.failures.some(
+      (f) =>
+        f.includes("/work 406 --restart --allow-protected .github/workflows/ci.yml") &&
+        f.includes("PI_ENSEMBLE_PROTECTED_PATHS=0"),
+    ),
+    "...and names the per-cycle --allow-protected grant (#1090), keeping the env escape hatch",
+  );
+  const granted = await verifyStepOutcome(
+    {
+      ...ctx(" M src/fix.ts\n M .github/workflows/ci.yml\n"),
+      protectedGrant: [".github/workflows/ci.yml"],
+    },
+    s,
+    "develop",
+  );
+  assert(
+    !granted.failures.some((f) => /protected path/.test(f)),
+    "...and an operator grant naming that path lets it through (#1090)",
   );
 
   const prose = await verifyStepOutcome(ctx(" M src/fix.ts\n M AGENTS.md\n"), s, "develop");

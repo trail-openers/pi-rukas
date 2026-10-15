@@ -122,7 +122,7 @@ async function mkCommittedWorktree(): Promise<{ root: string; wt: string; baseSh
         },
       };
       const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-        if (cmd === "git status --porcelain") return { stdout: " M src/foo.css\n" };
+        if (cmd === "git status --porcelain --untracked-files=all") return { stdout: " M src/foo.css\n" };
         if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
         return { stdout: "" };
       };
@@ -164,7 +164,7 @@ async function mkCommittedWorktree(): Promise<{ root: string; wt: string; baseSh
         },
       };
       const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-        if (cmd === "git status --porcelain") return { stdout: "" }; // clean tree
+        if (cmd === "git status --porcelain --untracked-files=all") return { stdout: "" }; // clean tree
         if (cmd.startsWith("git rev-list --count")) return { stdout: "1\n" }; // 1 commit
         if (cmd.startsWith("git diff --name-only")) return { stdout: "src/foo.ts\n" };
         return { stdout: "" };
@@ -190,7 +190,7 @@ async function mkCommittedWorktree(): Promise<{ root: string; wt: string; baseSh
         },
       };
       const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-        if (cmd === "git status --porcelain") return { stdout: " M src/foo.css\n" };
+        if (cmd === "git status --porcelain --untracked-files=all") return { stdout: " M src/foo.css\n" };
         return { stdout: "" };
       };
       const failures: string[] = [];
@@ -337,7 +337,7 @@ async function mainFalsilyGreen(): Promise<void> {
     // docs — falsely green.
     {
       const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-        if (cmd === "git status --porcelain")
+        if (cmd === "git status --porcelain --untracked-files=all")
           return { stdout: " M docs/notes.md\n" }; // uncommitted docs
         if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" }; // no commits
         if (cmd.startsWith("git diff --name-only")) return { stdout: "" }; // no committed changes
@@ -366,7 +366,7 @@ async function mainFalsilyGreen(): Promise<void> {
     // produced nothing at all, which the generic empty-diff message catches.
     {
       const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-        if (cmd === "git status --porcelain") return { stdout: "" }; // clean tree
+        if (cmd === "git status --porcelain --untracked-files=all") return { stdout: "" }; // clean tree
         if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" }; // no commits
         if (cmd.startsWith("git diff --name-only")) return { stdout: "" };
         return { stdout: "" };
@@ -400,7 +400,7 @@ async function mainFalsilyGreen(): Promise<void> {
     // fire against it.
     {
       const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-        if (cmd === "git status --porcelain") return { stdout: " M docs/guide.md\n" }; // uncommitted doc
+        if (cmd === "git status --porcelain --untracked-files=all") return { stdout: " M docs/guide.md\n" }; // uncommitted doc
         if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" }; // no commits
         if (cmd.startsWith("git diff --name-only")) return { stdout: "" };
         return { stdout: "" };
@@ -434,7 +434,7 @@ async function mainFalsilyGreen(): Promise<void> {
     // (3) Source workstream that DID commit → not falsely green.
     {
       const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
-        if (cmd === "git status --porcelain") return { stdout: "" };
+        if (cmd === "git status --porcelain --untracked-files=all") return { stdout: "" };
         if (cmd.startsWith("git rev-list --count")) return { stdout: "1\n" }; // 1 commit
         if (cmd.startsWith("git diff --name-only")) return { stdout: "src/foo.ts\n" };
         return { stdout: "" };

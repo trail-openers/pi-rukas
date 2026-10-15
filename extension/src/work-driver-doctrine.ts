@@ -69,12 +69,24 @@ export function protectedPathsEnabled(): boolean {
 
 /** Normalise a repo-relative path to lowercase forward-slash segments. */
 function segmentsOf(p: string): string[] {
+  return protectedPathKey(p)
+    .split("/")
+    .filter((s) => s.length > 0)
+    .map((s) => s.toLowerCase());
+}
+
+/**
+ * The comparison form of a path — what a #1090 grant must equal exactly.
+ * Case is kept (unlike classification): on a case-sensitive filesystem
+ * `CI.yml` and `ci.yml` are different files, and a grant names one of them.
+ */
+export function protectedPathKey(p: string): string {
   return p
     .replace(/\\/g, "/")
     .replace(/^\.\//, "")
     .split("/")
     .filter((s) => s.length > 0 && s !== ".")
-    .map((s) => s.toLowerCase());
+    .join("/");
 }
 
 /** Does this path define a capability or gate the cycle is judged by? */
@@ -127,6 +139,15 @@ export function porcelainPaths(stdout: string): string[] {
   return out;
 }
 
+/**
+ * Is a porcelain entry a directory? `git status` (without `-uall`) collapses a
+ * wholly untracked directory to one `?? dir/` entry, and that entry is not a
+ * file. A grant of its key would admit every file under it unseen (#1090).
+ */
+export function isDirectoryEntry(raw: string): boolean {
+  return raw.endsWith("/");
+}
+
 export interface DoctrineRead {
   /** The doctrine text as of the base commit, or undefined if unavailable. */
   text?: string;
@@ -175,8 +196,35 @@ export async function readDoctrineAtBase(
  * The develop gate's failure message for a self-modifying patch.
  *
  * Names the paths, because "a protected file changed" without saying which one
- * is the kind of message that sends an operator digging through a diff.
+ * is the kind of message that sends an operator digging through a diff. A
+ * developer re-dispatch can never satisfy this gate, so the remedy is the
+ * operator's: the exact `/work` command that grants every protected path the
+ * patch touched (#1090), or the process-wide escape hatch.
  */
-export function explainProtectedPaths(paths: readonly string[]): string {
-  return `develop wrote to ${paths.length} protected path(s) — ${paths.join(", ")}. These define what verification, review and permission mean for this cycle, so a cycle that edits them is grading its own work. Make the change yourself, or re-run with PI_ENSEMBLE_PROTECTED_PATHS=0 if it is genuinely the work you asked for.`;
+export function explainProtectedPaths(
+  ungranted: readonly string[],
+  allTouched: readonly string[],
+  issues: readonly number[],
+): string {
+  const head = `develop wrote to ${ungranted.length} protected path(s) without an operator grant — ${ungranted.join(", ")}. These define what verification, review and permission mean for this cycle, so a cycle that edits them is grading its own work. Make the change yourself`;
+  const env = "PI_ENSEMBLE_PROTECTED_PATHS=0 disables the gate for every path instead";
+  const paths = [...new Set(allTouched.map(protectedPathKey))].sort();
+  // A directory is never a grant (it would admit every file under it), so a
+  // change set that contains one gets no copy-paste command: the operator is
+  // told to name the files, not handed a command that grants the directory.
+  if (allTouched.some(isDirectoryEntry)) {
+    const dirs = allTouched.filter(isDirectoryEntry).map(protectedPathKey);
+    return `${head}; the change set includes a directory (${dirs.join(", ")}), which a grant cannot name — the files under it must be listed individually, and each granted by its exact path. No grant command is printed for a directory (${env}).`;
+  }
+  // The command is built from filenames a developer wrote, so it is printed
+  // only when every one is a plain path token, and only for a single issue —
+  // the one shape `--allow-protected` accepts.
+  const plain = (p: string) => SAFE_PATH_RE.test(p) && !p.split("/").includes("..");
+  if (issues.length !== 1 || !paths.every(plain)) {
+    return `${head}; or, if it is genuinely the work you asked for, grant the paths for one single-issue cycle with \`/work <issue> --restart --allow-protected <path>[,<path>]\` (${env}).`;
+  }
+  return `${head}; or, if it is genuinely the work you asked for, review each path's diff first — a granted path is trusted for the whole cycle, so grant none you did not mean to change — then grant the protected paths this patch touched, for one cycle only, with \`/work ${issues[0]} --restart --allow-protected ${paths.join(",")}\` (${env}).`;
 }
+
+/** A path safe to print inside a copy-paste `/work` command (and to grant). */
+export const SAFE_PATH_RE = /^[A-Za-z0-9._/@+-]+$/;
