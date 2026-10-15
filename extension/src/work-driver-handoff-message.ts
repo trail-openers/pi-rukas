@@ -83,6 +83,8 @@ export function renderHandoffUserMessage(
   const snap = ps.handoffSnapshot;
   const commentUrl = handoffEvt?.kind === "handoff-emitted" ? handoffEvt.commentUrl : undefined;
   const labelApplied = handoffEvt?.kind === "handoff-emitted" ? handoffEvt.labelApplied : false;
+  // #1327 — the host owns the channel: an unposted comment is by design, not a failure.
+  const hostOwned = handoffEvt?.kind === "handoff-emitted" && handoffEvt.delivery === "host";
   // #798 — per-target label state (option a: the label lands on both the
   // issue and the PR when a PR exists). Pre-#798 events carry the single
   // `labelApplied` only; `targetType`/`targetNumber` name where the comment
@@ -136,7 +138,7 @@ export function renderHandoffUserMessage(
   // field. The banner fires only when BOTH fields are missing (true total
   // failure); a partial delivery (one field ok, one lost) does NOT fire the
   // banner — the operator can see which field failed from the section below.
-  const totalFailure = !commentUrl && !labelApplied;
+  const totalFailure = !commentUrl && !labelApplied && !hostOwned;
   if (totalFailure) {
     lines.push(
       `⚠ pi-rukas /work for issue #${issue} — HANDOFF DISPATCH INCOMPLETE`,
@@ -256,7 +258,7 @@ export function renderHandoffUserMessage(
       // section is indented, so re-prefix instead of inheriting the `- `.
       ...verdictLines.map((v) => `  ${v.text}`),
     );
-  } else if (!commentUrl) {
+  } else if (!commentUrl && !hostOwned) {
     // Label landed, comment did not: not the banner's total failure, but the
     // comment is what tells the human WHY — say it is missing rather than
     // print nothing (#1219).
@@ -264,6 +266,12 @@ export function renderHandoffUserMessage(
       "",
       "GitHub handoff comment NOT posted (the label was applied). Post it manually:",
       `  gh ${ps.prNumber ? "pr" : "issue"} comment ${ps.prNumber ?? issue} --body-file ${handoffBodyPath}`,
+    );
+  }
+  if (hostOwned) {
+    lines.push(
+      "",
+      "Handoff channel: host (PI_ENSEMBLE_HANDOFF_CHANNEL=host) — no forge comment or label.",
     );
   }
   if (commentUrl) {

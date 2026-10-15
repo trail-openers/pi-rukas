@@ -8,6 +8,7 @@ import { drainSlowEvents } from "./slow-events.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { settleDraftPrAtHandoff } from "./work-driver-draft-pr.ts";
+import { handoffChannel, withHandoffMarker } from "./work-driver-handoff-channel.ts";
 import {
   consolidateWorktreesToBranch,
   workNotYetOnBranch,
@@ -140,7 +141,8 @@ export async function runHandoff(
   // the additive sections in renderHandoffMarkdown (PR5 refinements). The
   // forge type picks the draft's real ready command (GitLab: glab mr update).
   const handoffForgeType = (ctx.forge ?? (await handoffForge(ctx.repoRoot)))?.forge;
-  const handoffMd = renderHandoffMarkdown(next, handoffForgeType);
+  // #1327 — the marker lets a host find this comment and extend it.
+  const handoffMd = withHandoffMarker(renderHandoffMarkdown(next, handoffForgeType), next);
   const handoffBodyPath = path.join(scratchDir(ctx.repoRoot, ctx.issue), "handoff-comment.md");
   try {
     await fs.mkdir(path.dirname(handoffBodyPath), { recursive: true });
@@ -162,9 +164,12 @@ export async function runHandoff(
   // dispatch, no second comment. The label is still verified below and
   // re-applied if someone removed it.
   const park = await readParkMemory(ctx, next);
-  const dispatchResult = park.repeatOf
-    ? { next, opsReplyText: "" }
-    : await runHandoffOpsDispatch(ctx, next, handoffBodyPath);
+  // #1327 — a host-owned channel: nothing is posted or labelled; the body goes in the result.
+  const host = handoffChannel() === "host";
+  const dispatchResult =
+    park.repeatOf || host
+      ? { next, opsReplyText: "" }
+      : await runHandoffOpsDispatch(ctx, next, handoffBodyPath);
   next = dispatchResult.next;
   const opsReplyText = dispatchResult.opsReplyText;
   // RE-ENTRY DEDUPE (census 2026-09-09): a crash after the comment posted
@@ -209,7 +214,7 @@ export async function runHandoff(
         e.role === "ops" &&
         e.label === "ops:handoff",
     );
-  {
+  if (!host) {
     const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
     if (commentUrl) delivery = "dispatch";
     if (forge) {
@@ -236,7 +241,7 @@ export async function runHandoff(
   // commentUrl didn't parse out, the driver itself posts via the forge
   // adapter. postHandoffWithRetry retries with backoff; only after retries
   // are exhausted does the HANDOFF DISPATCH INCOMPLETE banner surface.
-  if (!commentUrl || !labelApplied) {
+  if (!host && (!commentUrl || !labelApplied)) {
     const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
     try {
       if (!forge) {
@@ -314,7 +319,7 @@ export async function runHandoff(
   // #798 — when prNumber is set, the fallback above applies the label to the
   // comment target (PR) via postHandoffWithRetry. The ISSUE label is applied
   // separately here because the retry only targets one object.
-  if (prNumber && !issueLabelApplied) {
+  if (!host && prNumber && !issueLabelApplied) {
     const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
     if (forge) {
       // #798 — the helper APPLIES the issue label (its return is the
@@ -344,6 +349,7 @@ export async function runHandoff(
     commentUrl,
     labelApplied,
     handoffBodyPath,
+    body: handoffMd,
     consolidated: consEvent !== undefined,
     consolidatedBranch: consEvent?.branchName,
     consolidatedWorkstreams: consEvent?.workstreams,
@@ -353,7 +359,7 @@ export async function runHandoff(
         ? "consolidation infeasible (work remains on its worktree detached HEADs)"
         : undefined,
     // A repeat delivered nothing this cycle — no provenance to assert.
-    delivery: park.repeatOf ? undefined : delivery,
+    delivery: host ? "host" : park.repeatOf ? undefined : delivery,
     repeatOf: park.repeatOf,
     targetType: prNumber ? "pr" : "issue",
     targetNumber: prNumber ?? ctx.issue,
