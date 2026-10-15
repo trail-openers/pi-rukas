@@ -15,7 +15,9 @@
  *                    checkout has no baked marker (e.g. a bare worktree)
  *   - `contracts`  — exit codes (exit-code.ts), the `--json` result schema
  *                    (result.ts), NDJSON progress (ndjson.ts)
- *   - `inputs`     — the env-var inputs this build reads, by name
+ *   - `inputs`     — every `PI_ENSEMBLE_*` env input this build reads, with
+ *                    type, default and scope (inputs.ts, #1326)
+ *   - `files`      — the `.pi/*` project files a cycle reads (inputs.ts)
  *   - `features`   — named features a caller may depend on
  *
  * The contract-version constants live on the contract modules themselves
@@ -25,6 +27,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { EXIT, EXIT_CODE_VERSION } from "./exit-code.ts";
+import { HEADLESS_FILES, HEADLESS_INPUTS } from "./inputs.ts";
 import { NDJSON_VERSION } from "./ndjson.ts";
 import { RESULT_SCHEMA_VERSION } from "./result.ts";
 
@@ -32,30 +35,14 @@ import { RESULT_SCHEMA_VERSION } from "./result.ts";
  * The version of the capabilities object itself. Bump on any change to the
  * answer's shape (added/removed top-level fields); the caller's drift test
  * (#1306) reads this and re-derives the answer from the live constants.
+ * v2 (#1326): every input with type/default/scope, and `files`.
  */
-export const CAPABILITIES_VERSION = 1 as const;
+export const CAPABILITIES_VERSION = 2 as const;
 
 /** The flags `work` accepts, in the order the parser accepts them. */
 export const WORK_FLAGS = ["--restart", "--json", "--timeout"] as const;
 
-/**
- * The inputs this build reads, by env-var name, with the steps each reaches.
- * Derived from the live sources: `PI_ENSEMBLE_ISSUE_IMAGES` gates
- * `loadIssueImages` (work-driver-issue-images.ts) and `PI_ENSEMBLE_EXTRA_IMAGE_DIRS`
- * names the directories `manifestIssue` reads from.
- */
-export const HEADLESS_INPUTS: { name: string; readBy: string; manifestVersion: number }[] = [
-  {
-    name: "PI_ENSEMBLE_EXTRA_IMAGE_DIRS",
-    readBy: "explore,plan",
-    manifestVersion: 1,
-  },
-  {
-    name: "PI_ENSEMBLE_ISSUE_IMAGES",
-    readBy: "explore,plan",
-    manifestVersion: 1,
-  },
-];
+export { HEADLESS_FILES, HEADLESS_INPUTS } from "./inputs.ts";
 
 /** The features a caller may depend on, as named booleans. */
 export const HEADLESS_FEATURES = {
@@ -78,6 +65,7 @@ export interface Capabilities {
     work: { flags: (typeof WORK_FLAGS)[number][] };
   };
   inputs: typeof HEADLESS_INPUTS;
+  files: typeof HEADLESS_FILES;
   features: typeof HEADLESS_FEATURES;
 }
 
@@ -130,6 +118,7 @@ export function buildCapabilities(repoRoot?: string): Capabilities {
       work: { flags: [...WORK_FLAGS] },
     },
     inputs: HEADLESS_INPUTS,
+    files: HEADLESS_FILES,
     features: HEADLESS_FEATURES,
   };
 }
