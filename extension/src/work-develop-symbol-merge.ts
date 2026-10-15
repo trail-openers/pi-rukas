@@ -39,16 +39,18 @@
  */
 
 import { recordCommentEvidence } from "./comment-evidence.ts";
-import { type MergePrepPlan, runMergePrep } from "./work-develop-fence-merge.ts";
+import {
+  type MergePrepPlan,
+  applyMergedSafetyNet,
+  runMergePrep,
+} from "./work-develop-fence-merge.ts";
 import { replaceDevelopConvergedVerdicts } from "./work-develop-fence-verdicts.ts";
-import { withPersistNotes } from "./work-develop-retry.ts";
 import { type SymbolCoupling, findSymbolCouplings } from "./work-develop-symbol-couplings.ts";
 import { appendDevelopVerifyFailure } from "./work-develop-verify-failure.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { runConvergeGateHandler } from "./work-driver-converge-gate.ts";
-import { applySafetyNet, safetyNetWorktree } from "./work-driver-safety-net.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
-import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
+import type { WorkState } from "./workflow-state.ts";
 
 type DevelopVerifyGate = Awaited<ReturnType<typeof verifyStepOutcome>>;
 type ExecFn = NonNullable<DriverContext["verifyExecFn"]>;
@@ -183,28 +185,8 @@ export async function runSymbolMergeRetry(
   next = prep.state;
   if (prep.outcome.parked) return next;
   const { mergedIds, merges, mergeHeads } = prep.outcome;
-  // The merged workstream keeps the producer's original base (so its range
-  // holds both halves), which is already behind HEAD: judged against it the
-  // safety net would see "commits ahead" and skip an uncommitted re-dispatch.
-  // Judge the merged worktrees against their pre-re-dispatch HEAD instead.
-  const netEvents: WorkEvent[] = [];
-  const netNotes: string[] = [];
-  for (const id of mergedIds) {
-    const cwd = next.pipelineState.worktrees?.[id];
-    const head = mergeHeads[id];
-    if (typeof cwd !== "string" || !head) continue;
-    const ev = await safetyNetWorktree(id, ctx.repoRoot, cwd, head, execFn, netNotes);
-    if (ev) netEvents.push(ev);
-  }
-  if (netEvents.length > 0) next = appendEvent(next, ...netEvents);
-  if (netNotes.length > 0) next = withPersistNotes(next, netNotes);
-  next = await applySafetyNet(
-    ctx,
-    next,
-    new Set(
-      Object.keys(next.pipelineState.worktrees ?? {}).filter((id) => !mergedIds.includes(id)),
-    ),
-  );
+  // The merged worktree is judged against its post-merge HEAD (#1343).
+  next = await applyMergedSafetyNet(ctx, next, mergedIds, mergeHeads, execFn);
   const gate2 = await verifyStepOutcome(ctx, next, "develop");
   next = recordCommentEvidence(next, gate2.commentEvidence);
   // The surviving (producer) id carries the re-run's verdict; the absorbed

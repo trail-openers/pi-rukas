@@ -25,9 +25,17 @@
  * workstream reuses the VIOLATOR's worktree, rebased to the owner's tip —
  * the owner's tree is only read, never written). This is intentional: the
  * owner's tree is the base the merged work builds on, and moving or deleting
- * it would break the owner's own committed work. The merged workstream's
- * effective base is the owner's post-commit SHA (the `workstreamBaseShas`
- * update below records it).
+ * it would break the owner's own committed work.
+ *
+ * #1343 — the merged workstream KEEPS the owner's original base in
+ * `workstreamBaseShas`. Its worktree replaces the owner's in the map, so its
+ * range (`base..HEAD`) is the only place the owner's commits are picked
+ * from: the consolidated verify and the PR (`integrate`) both read it. The
+ * pre-#1343 code moved the base to the owner's tip, so both dropped the
+ * owner's work. The safety net is the one reader that wants the post-merge
+ * HEAD instead (`mergeHeads`, `applyMergedSafetyNet`): judged against the
+ * original base the merged tree is always "ahead", and an uncommitted
+ * re-dispatch would never be committed.
  *
  * #1323 — the same merge runs for a sibling-symbol coupling (a workstream's
  * verify names a symbol a sibling's diff adds): the caller passes the pairs
@@ -36,8 +44,10 @@
  */
 import { siblingDeclaredViolators } from "./work-develop-fence-recovery.ts";
 import { FENCE_VIOLATION_CAP } from "./work-develop-fence-recovery.ts";
+import { withPersistNotes } from "./work-develop-retry.ts";
 import { buildCompletionEvent } from "./work-driver-completion-event.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { applySafetyNet, safetyNetWorktree } from "./work-driver-safety-net.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import type { WorkCapLiteral } from "./workflow-state-events-caps.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
@@ -278,10 +288,8 @@ export async function runMergePrep(
     // (the owner's own worktree is untouched — the merged work builds on
     // the owner's commit, which is now the violator's tree base).
     worktrees[owner] = violatorWt;
-    // #1323 — a planned (sibling-symbol) merge keeps the owner's original
-    // base: the merged range must still hold the owner's commits, or the
-    // consolidated tree drops the very symbols the merge was for.
-    if (!plan) workstreamBaseShas[owner] = ownerSha;
+    // #1343 — workstreamBaseShas[owner] stays at the owner's ORIGINAL base,
+    // so the merged range still holds the owner's commits (module header).
     // Record the merge on a fence-recovery-started event (the durable
     // record; the shape is reused from #849 so the handoff renderer's
     // existing fence-cap explanation still reads the discarded SHA).
@@ -378,6 +386,36 @@ export async function runMergePrep(
     state: stateRef.current,
     outcome: { parked: false, mergedIds, merges, discardedShas, mergeHeads },
   };
+}
+
+/**
+ * #1343 — the safety net after a merge's re-dispatch: each merged worktree
+ * is judged against its pre-re-dispatch HEAD (`mergeHeads`), every other
+ * worktree against its recorded base as usual.
+ */
+export async function applyMergedSafetyNet(
+  ctx: CycleContext,
+  state: WorkState,
+  mergedIds: string[],
+  mergeHeads: Record<string, string>,
+  execFn: ExecFn,
+): Promise<WorkState> {
+  let next = state;
+  const events: WorkEvent[] = [];
+  const notes: string[] = [];
+  for (const id of mergedIds) {
+    const cwd = next.pipelineState.worktrees?.[id];
+    const head = mergeHeads[id];
+    if (typeof cwd !== "string" || !head) continue;
+    const ev = await safetyNetWorktree(id, ctx.repoRoot, cwd, head, execFn, notes);
+    if (ev) events.push(ev);
+  }
+  if (events.length > 0) next = appendEvent(next, ...events);
+  if (notes.length > 0) next = withPersistNotes(next, notes);
+  const others = Object.keys(next.pipelineState.worktrees ?? {}).filter(
+    (id) => !mergedIds.includes(id),
+  );
+  return applySafetyNet(ctx, next, new Set(others));
 }
 
 /** #1005 — the cap-hit for a merge-and-retry park/handoff (same cap as #849;
