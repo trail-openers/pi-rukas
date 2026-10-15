@@ -266,7 +266,7 @@ try {
     assert(
       ended?.pipelineState.status === "running" &&
         last?.kind === "cap-hit" &&
-        last.cap === `verify-failed:${step}` &&
+        last.cap === `pr-not-open:${step}` &&
         last.nextStep === "handoff",
       `closed before ${step}: parks to handoff (got ${JSON.stringify(last)})`,
     );
@@ -275,7 +275,7 @@ try {
       failures.length === 1 && failures[0]?.startsWith("[pr-not-open] PR #7 is CLOSED"),
       "…with the [pr-not-open] marker",
     );
-    const text = ended ? explainCap(`verify-failed:${step}`, ended) : "";
+    const text = ended ? explainCap(`pr-not-open:${step}`, ended) : "";
     assert(
       text.includes(`when the ${step} step started`) && !/rejected the .* "done" claim/.test(text),
       `…explained as a PR that is no longer open, not a rejected claim (got: ${text.slice(0, 160)})`,
