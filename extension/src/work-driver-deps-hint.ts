@@ -11,6 +11,7 @@
 
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
 import type { WorkState } from "./workflow-state.ts";
+
 /**
  * Build a missing-deps hint message tailored to what the provisioner
  * actually did for this worktree, using the `worktree-provisioned` event
