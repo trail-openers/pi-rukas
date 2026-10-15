@@ -17,6 +17,7 @@ import type { WorkStep } from "../workflow-state-events.ts";
 import type { WorkState } from "../workflow-state.ts";
 import { type HeadlessCap, capStep } from "./caps.ts";
 import { EXIT, exitCodeForState, lastCap, lastEvent } from "./exit-code.ts";
+import { type ResultFailure, failureOf } from "./failure.ts";
 import { recordedPrUrl } from "./pr-url.ts";
 
 /**
@@ -24,12 +25,19 @@ import { recordedPrUrl } from "./pr-url.ts";
  * v2 (#1326): top-level `schemaVersion`, `buildCommit` and `buildVersion`; per
  * issue a typed `cap`, `failedStep`, `prUrl`, `usage` and `resumable`.
  * v3 (#1327): per issue `parkReason` and `handoff` (channel, marker, body).
- * Additive, no bump: top-level `resources` (#1325).
+ * Additive, no bump: top-level `resources` (#1325); per issue `failure`
+ * (#1367) and `usage.byRole` (#1368).
  */
 export const RESULT_SCHEMA_VERSION = 3 as const;
 
-/** Token and cost totals summed over every dispatch the cycle recorded. */
-export type ResultUsage = DispatchUsage & { dispatches: number };
+/** Token and cost totals over a set of dispatches, and how many there were. */
+export type UsageTotals = DispatchUsage & { dispatches: number };
+
+/**
+ * Totals over every dispatch the cycle recorded, and the same sums per dispatch
+ * `role` (#1368), so the rows add up to the total.
+ */
+export type ResultUsage = UsageTotals & { byRole: Record<string, UsageTotals> };
 
 export interface StepTiming {
   step: string;
@@ -71,6 +79,8 @@ export interface IssueResult {
   parkReason?: string;
   /** The step the cycle stopped in, when it did not merge. */
   failedStep?: WorkStep;
+  /** #1367 — why the cycle stopped on `cap`, as stable fields (failure.ts). */
+  failure?: ResultFailure;
   branch?: string;
   prNumber?: number;
   /** The PR's web URL, only when it is unambiguous (pr-url.ts). */
@@ -152,17 +162,30 @@ export function notStartedResult(
   };
 }
 
-/** Sum the usage of every dispatch event in the log. */
+const zeroUsage = (): UsageTotals => ({
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  cost: 0,
+  turns: 0,
+  dispatches: 0,
+});
+
+function addUsage(t: UsageTotals, u: DispatchUsage | undefined): void {
+  t.dispatches++;
+  if (!u) return;
+  t.input += u.input;
+  t.output += u.output;
+  t.cacheRead += u.cacheRead;
+  t.cacheWrite += u.cacheWrite;
+  t.cost += u.cost;
+  t.turns += u.turns;
+}
+
+/** Sum the usage of every dispatch event in the log, in total and per role. */
 export function usageOf(state: WorkState): ResultUsage {
-  const total: ResultUsage = {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-    cost: 0,
-    turns: 0,
-    dispatches: 0,
-  };
+  const total: ResultUsage = { ...zeroUsage(), byRole: {} };
   for (const e of state.eventLog) {
     if (
       e.kind !== "dispatch-completed" &&
@@ -171,15 +194,10 @@ export function usageOf(state: WorkState): ResultUsage {
     ) {
       continue;
     }
-    total.dispatches++;
-    const u = e.usage;
-    if (!u) continue;
-    total.input += u.input;
-    total.output += u.output;
-    total.cacheRead += u.cacheRead;
-    total.cacheWrite += u.cacheWrite;
-    total.cost += u.cost;
-    total.turns += u.turns;
+    addUsage(total, e.usage);
+    const row = total.byRole[e.role] ?? zeroUsage();
+    total.byRole[e.role] = row;
+    addUsage(row, e.usage);
   }
   return total;
 }
@@ -265,6 +283,8 @@ export function projectIssue(state: WorkState, stateFile: string): IssueResult {
   if (cap !== undefined) result.cap = cap;
   const failedStep = failedStepOf(state);
   if (failedStep !== undefined) result.failedStep = failedStep;
+  const failure = failureOf(state, cap, failedStep);
+  if (failure) result.failure = failure;
   if (state.pipelineState.branchName !== undefined) result.branch = state.pipelineState.branchName;
   const prNumber = merged
     ? merged.prNumber
