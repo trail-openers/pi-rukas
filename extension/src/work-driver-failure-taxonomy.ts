@@ -8,6 +8,8 @@
  * decide retry vs. halt behaviour per PR5/#297/#308/#314.
  */
 
+import type { DecisionWhere } from "./decision-seam.ts";
+import { boundText, shadowDecide } from "./decision-shadow.ts";
 import {
   type DispatchFailureCause,
   isRateLimit429Msg,
@@ -69,24 +71,79 @@ export function jitteredMs(baseMs: number, floorMs = 0, rand: () => number = Mat
   return Math.ceil(rand() * Math.max(baseMs, 0));
 }
 
-/**
- * #308/#314 — classify a dispatch-failure event by its ROOT CAUSE so the retry
- * router can branch on structure (killCause / 429 / errorStop) instead of
- * regex-matching errorTail strings. Uses shared DispatchFailureCause type
- * and RATE_LIMIT_429_PATTERN from types.ts for consistency with adversarial.ts.
- */
-export function classifyFailureCause(tail: {
+type FailureTail = {
   kind: string;
   errorTail?: string;
   killCause?: string;
   providerMessage?: string;
-}): {
+};
+
+type FailureClass = {
   cause: DispatchFailureCause;
   shouldRetry: boolean;
   maxRetries: number;
   /** #366 — provider-requested wait, when it stated one. */
   waitMs?: number;
-} {
+};
+
+/**
+ * The failure-cause seam's label for a rule cause (#1308 S3). Undefined for a
+ * cause the rule reads EXACTLY — a structured `killCause` (pi-rukas ended the
+ * child itself), or a 429 / spend-cap pattern matched on the provider's own
+ * error message. Those stay rule-authoritative and no model is asked.
+ * A 429 pattern matched only on `errorTail` is NOT exact: that is the
+ * subagent's own last words, which can talk about 429s (#1262), so the model
+ * is asked there — in shadow, which is how S5 will see how often it happens.
+ */
+function seamLabelFor(tail: FailureTail, cause: DispatchFailureCause): string | undefined {
+  if (tail.killCause !== undefined && cause.startsWith("self-killed:")) return undefined;
+  if (cause.startsWith("rate-limited:")) {
+    return tail.providerMessage !== undefined ? undefined : "rate-limited";
+  }
+  if (cause === "provider-severed") return "provider-transient";
+  if (cause === "crashed") return "subagent-failure";
+  return "unknown";
+}
+
+/**
+ * #308/#314 — classify a dispatch-failure event by its ROOT CAUSE so the retry
+ * router can branch on structure (killCause / 429 / errorStop) instead of
+ * regex-matching errorTail strings. Uses shared DispatchFailureCause type
+ * and RATE_LIMIT_429_PATTERN from types.ts for consistency with adversarial.ts.
+ *
+ * #1308 S3 — with `shadow` (where the decision is logged), a caller that ACTS
+ * on the classification also asks the `failure-cause` seam in shadow mode.
+ * The rule's answer below is always the returned, acted-on outcome and stays
+ * synchronous: this runs on every dispatch failure, so the seam call is fired
+ * without awaiting (decision-shadow.ts) and can neither slow nor change it.
+ * Callers that only render a classification omit `shadow`, so one failure is
+ * asked about once, not once per renderer. The model sees only the event
+ * kind and bounded error text, redacted by the seam.
+ */
+export function classifyFailureCause(tail: FailureTail, shadow?: DecisionWhere): FailureClass {
+  const cls = classifyByRule(tail);
+  const rule = shadow ? seamLabelFor(tail, cls.cause) : undefined;
+  if (shadow && rule !== undefined) {
+    void shadowDecide(
+      "failure-cause",
+      {
+        question: "What caused this dispatch failure?",
+        state: {
+          kind: tail.kind,
+          providerMessage: boundText(tail.providerMessage, 600),
+          // The END of the output: a failure shows in the last words, and the
+          // tool path hands over the whole reply, not a tail.
+          lastOutput: tail.errorTail?.slice(-600),
+        },
+        rule,
+      },
+      shadow,
+    );
+  }
+  return cls;
+}
+
+function classifyByRule(tail: FailureTail): FailureClass {
   // Structured killCause (#296) — pi-rukas itself ended the child.
   // MUST be checked first; a self-kill is never a provider failure.
   if (tail.killCause === "timeout") {

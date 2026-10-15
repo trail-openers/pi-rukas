@@ -96,6 +96,54 @@ export const SEAMS = {
     // of the child's context, so neither does this seam in practice.
     tokenBudget: 1_000_000,
   },
+  // S3 (#1262) — the root cause of a dispatch failure, asked only where the
+  // rule is not exact (see classifyFailureCause). Advisory: S5 decides what,
+  // if anything, the model may ever change.
+  "failure-cause": {
+    id: "failure-cause",
+    kind: "choice",
+    instructions:
+      "A coding subagent's dispatch failed. From the provider's error message and the last output, what caused the failure?",
+    labels: {
+      "provider-transient":
+        "a provider or transport error (timeout, connection reset, overload, 5xx): a retry may succeed",
+      "rate-limited": "the provider refused for a rate limit, quota or spend cap",
+      "subagent-failure":
+        "the subagent itself failed (its own error or exit), not the provider; the output merely describes its work",
+      unknown: "there is not enough information to tell",
+    },
+    ruleDefault: "unknown",
+    passing: ["provider-transient", "subagent-failure"],
+    composition: "advisory",
+    defaultMode: "shadow",
+    evidence: "none",
+    owner: "work-driver-failure-taxonomy.ts",
+    timeoutMs: 30_000,
+    tokenBudget: 4_000,
+  },
+  // S4 (#1187) — whether an unresolved CRITICAL open point is a security
+  // decision. may-add-only once S5's promotion bar is met: the model may add
+  // a park, never remove one.
+  "security-open-point": {
+    id: "security-open-point",
+    kind: "bool",
+    instructions:
+      "An issue lists an unresolved CRITICAL open point. Is it a security decision (authentication, authorization, credentials, secrets, encryption, input validation, sandboxing, data deletion, privacy) that an automated driver must not settle on its own?",
+    labels: {
+      true: "the point is a security decision",
+      false: "the point is ordinary engineering, not a security decision",
+    },
+    // A point the rule cannot read is treated as security: a missed security
+    // point is worse than an ordinary one that parks (security-class.ts).
+    ruleDefault: "true",
+    passing: ["false"],
+    composition: "may-add-only",
+    defaultMode: "shadow",
+    evidence: "none",
+    owner: "work-driver-intent-finalise.ts",
+    timeoutMs: 30_000,
+    tokenBudget: 4_000,
+  },
 } as const satisfies Record<string, SeamSpec>;
 
 export type SeamId = keyof typeof SEAMS;

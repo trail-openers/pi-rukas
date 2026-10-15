@@ -6,6 +6,7 @@ import { registerAgentsMdTools } from "./agents-md-tool.ts";
 import { setParentExtensionApi } from "./async-jobs-registry.ts";
 import { registerAsyncJobsLifecycle } from "./async-jobs.ts";
 import { registerCommands, stripPmTools } from "./commands.ts";
+import * as decisionShadow from "./decision-shadow.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { registerDispatchPeekTool } from "./dispatch-peek.ts";
 import { registerDispatchStatusTool } from "./dispatch-status.ts";
@@ -130,6 +131,7 @@ export default async function (pi: ExtensionAPI) {
     dispatchDeck.attach(ctx);
     workWidget.attach(ctx);
     pendingJobs.attach(ctx);
+    decisionShadow.attach(ctx);
   });
   // #916 SLICE B — the "PM active" badge seam: the parent agent's streaming
   // state is exposed on the ExtensionContext (ctx.isIdle), not on the TUI.
@@ -143,6 +145,7 @@ export default async function (pi: ExtensionAPI) {
     dispatchDeck.detach();
     workWidget.detach();
     lifecycle.detach();
+    decisionShadow.detach();
   });
 
   // Fire-and-forget housekeeping: age-based retention for subagent transcripts
