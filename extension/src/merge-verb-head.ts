@@ -43,7 +43,7 @@
  * back would be a cycle.
  */
 
-import { rawTokens, unquoteArg } from "./merge-tokens.ts";
+import { isSeparatorToken, rawTokens, unquoteArg } from "./merge-tokens.ts";
 import { matchMergeVerb, skipLeadingWrappers } from "./merge-wrappers.ts";
 
 export { matchMergeVerb };
@@ -120,7 +120,7 @@ function unwrapOneLayer(command: string): string | undefined {
   const n = list.length;
   while (i < n) {
     const t = list[i] ?? "";
-    if (t === ";" || t === "&&" || t === "|" || t === "||") {
+    if (isSeparatorToken(t)) {
       i++;
       continue; // a new segment starts — the invocation must head a segment
     }
@@ -220,8 +220,14 @@ function unwrapOneLayer(command: string): string | undefined {
       if (!sawC) return undefined;
       const arg = tokens.list[j];
       if (arg === undefined) return undefined;
+      // #962: an UNQUOTED -c body is one shell word, and bash runs only that
+      // word: `bash -c gh pr merge 17` runs `gh` with $0=pr $1=merge — not a
+      // merge — so it is not unwrapped (the walk sees `bash`, not a merge).
+      // A word spelled with escapes or adjacent quotes (`gh\ pr\ merge\ 17`,
+      // `gh' pr merge 17'`) is one quoted body in the canonical second
+      // reading (merge-canonical.ts), which unwraps it.
       const aq = arg[0];
-      if (aq !== "'" && aq !== '"' && !arg.startsWith("$'")) return undefined; // unquoted -c body is not the shape the guard unwraps
+      if (aq !== "'" && aq !== '"' && !arg.startsWith("$'")) return undefined;
       const inner = unquoteArg(arg);
       return inner.length > 0 ? inner : undefined;
     }
@@ -243,7 +249,7 @@ function unwrapOneLayer(command: string): string | undefined {
       let anyQuoted = false;
       for (let k = i + 1; k < n; k++) {
         const a = tokens.list[k] ?? "";
-        if (a === ";" || a === "&&" || a === "|" || a === "||") break;
+        if (isSeparatorToken(a)) break;
         const q = a[0];
         if (q === "'" || q === '"' || a.startsWith("$'")) anyQuoted = true;
         args.push(q === "'" || q === '"' || a.startsWith("$'") ? unquoteArg(a) : a);
@@ -356,10 +362,49 @@ export function innerBodies(text: string): string[] {
     }
     return undefined; // unterminated backtick — the caller fails closed
   };
+  // #962: a double-quoted run is NOT inert — bash expands `$( … )` and
+  // backticks inside it (`echo "$(gh pr merge 17)"` runs the merge). Walk
+  // the run and collect those bodies; a single-quoted run stays literal.
+  const scanDoubleQuoted = (start: number): number | undefined => {
+    let i = start + 1;
+    while (i < n) {
+      const c = text[i] ?? "";
+      if (c === "\\" && i + 1 < n) {
+        i += 2;
+        continue;
+      }
+      if (c === '"') return i + 1;
+      if (c === "$" && text[i + 1] === "(") {
+        const end = scanParen(i + 1, i + 1);
+        if (end === undefined) return undefined;
+        bodies.push(text.slice(i + 2, end - 1));
+        i = end;
+        continue;
+      }
+      if (c === "`") {
+        const end = scanBacktick(i);
+        if (end === undefined) return undefined;
+        bodies.push(text.slice(i + 1, end));
+        i = end + 1;
+        continue;
+      }
+      i++;
+    }
+    return undefined;
+  };
   let i = 0;
   while (i < n && !error) {
     const c = text[i] ?? "";
-    if (c === "'" || c === '"') {
+    if (c === '"') {
+      const end = scanDoubleQuoted(i);
+      if (end === undefined) {
+        error = true;
+        break;
+      }
+      i = end;
+      continue;
+    }
+    if (c === "'") {
       const end = skipQuote(i);
       if (end === undefined) {
         error = true;

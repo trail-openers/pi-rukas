@@ -2,13 +2,14 @@ import { mergeVerbArgs } from "./merge-parse.ts";
 import { exceedsAnalysisBound } from "./merge-size.ts";
 import {
   MAX_CONSTRUCT_DEPTH,
+  isSeparatorToken,
   mergeVerbSpanRegex,
   rawTokens,
   shellSegments,
   unquoteArg,
 } from "./merge-tokens.ts";
 import { innerBodies, matchMergeVerb, mergeVerbUnwrapOne } from "./merge-verb-head.ts";
-import { skipLeadingWrappers } from "./merge-wrappers.ts";
+import { skipLeadingWrappers, splitGluedSubstitutions } from "./merge-wrappers.ts";
 
 /**
  * The matched verb span inside a segment, or undefined when the segment does
@@ -54,9 +55,10 @@ function segmentSpanOrUnwrapped(seg: string): string | undefined {
  *     `gh api repos/{o}/{r}/pulls/merge` shape is the same door,
  *   - the glab REST door: `glab api /projects/{id}/mr/{n}/merge` —
  *     method-AWARE (glab api does NOT default to POST, exactly the
- *     issues-door rule): only an EXPLICIT PUT/POST (`-X PUT`, `--method
- *     POST`, …) or body fields (`-f`/`-F`/`--field`) is a merge; an
- *     unqualified call or an explicit GET stays open.
+ *     issues-door rule): only an explicit non-GET method (`-X PUT`,
+ *     `--method=POST`, …) or body fields (`-f`/`-F`/`--field`, which force
+ *     the write even beside `--method GET`, #962) is a merge; an
+ *     unqualified call or a bare explicit GET stays open.
  *
  * Reads stay open: `gh pr view`, `gh pr checks`, `gh api repos/o/r/pulls/42`
  * (no `/merge` suffix), `glab mr view`, and anything only quoted (`echo
@@ -166,6 +168,36 @@ function restDoors(texts: string[]): string | undefined {
 }
 
 /**
+ * The gh `api` method is GET when its LAST `--method` / `-X` value is GET, in
+ * every spelling gh accepts (`-X GET`, `-XGET`, `--method=GET`). gh takes the
+ * last flag, so the last one decides.
+ */
+function ghMethodIsGet(all: string): boolean {
+  const values = [...all.matchAll(/(?:^|\s)(?:--method(?:=|\s+)|-X\s*)(\S+)/gi)].map(
+    (m) => m[1] ?? "",
+  );
+  return values.length > 0 && /^get$/i.test(values[values.length - 1] ?? "");
+}
+
+/**
+ * True when one segment is a forge `api` call on a merge endpoint that the REST
+ * door reads as a READ (`gh api --method GET …/pulls/17/merge`). The door's own
+ * verdict is the source: a segment the door would refuse is never a read here.
+ * A shell-eval or any other command word is not a forge `api` call and returns
+ * false, so `bash -c "gh api … /merge"` stays refused (merge-like.ts).
+ */
+export function isRestRead(segment: string): boolean {
+  const toks = rawTokens(segment);
+  if (toks.terminated === false) return false;
+  const words = toks.list.filter((t) => !isSeparatorToken(t)).map(unquoteArg);
+  const ci = skipLeadingWrappers(words, 0);
+  const cmd = (words[ci] ?? "").split("/").pop() ?? "";
+  if ((cmd !== "gh" && cmd !== "glab") || words.indexOf("api", ci + 1) === -1) return false;
+  const onMergePath = /(?:^|\/)(?:pulls|mr|merge_requests)(?:\/[^\s/?#]+)?\/merge(?:[?&#\s]|$)/;
+  return onMergePath.test(segment) && restDoorTokens(segment) === undefined;
+}
+
+/**
  * The REST doors on ONE command text's raw tokens (quote-aware walk, no
  * quote-stripping — #955 lens round 6: the REST endpoint is matched among
  * the UNQUOTED tokens, because the shell removes quotes around a whole word
@@ -190,7 +222,7 @@ function restDoors(texts: string[]): string | undefined {
  * body fields stays a read), `glab api` is method-aware (only an explicit
  * PUT/POST or a body field is the write).
  */
-function restDoorTokens(text: string): string | undefined {
+export function restDoorTokens(text: string): string | undefined {
   const tokens = rawTokens(text);
   if (tokens.terminated === false) return undefined;
   const list = tokens.list;
@@ -208,7 +240,7 @@ function restDoorTokens(text: string): string | undefined {
     }
   }
   const n = list.length;
-  const isSep = (t: string) => t === ";" || t === "&&" || t === "||" || t === "|";
+  const isSep = isSeparatorToken;
   for (let i = 0; i < n; i++) {
     if (i > 0 && !isSep(unquoteArg(list[i - 1] ?? ""))) continue;
     // The segment's unquoted tokens, up to the next separator.
@@ -255,6 +287,9 @@ function restDoorTokens(text: string): string | undefined {
     // The command word: skip the leading wrappers the same way the verb
     // door does (the walk has already unquoted every token, so
     // `skipLeadingWrappers` only sees bare words).
+    // #1317 item A: a substitution glued to the command word is split in place
+    // (the same array the walk reads), so `$(true)gh api …` lands on `gh`.
+    seg.splice(0, seg.length, ...splitGluedSubstitutions(seg));
     const ci = skipLeadingWrappers(seg, 0);
     const cmd = seg[ci] ?? "";
     const cmdBase = cmd.includes("/") ? (cmd.split("/").pop() ?? "") : cmd;
@@ -278,8 +313,8 @@ function restDoorTokens(text: string): string | undefined {
       // The door is a WRITE unless the command is an explicit GET AND carries
       // no body fields — gh api's `-f`/`-F`/`--field` flags force a PUT
       // regardless of `--method`, so `--method GET --field x` is still the write.
-      if (!/\/pulls(?:\/[^\s/?#]+)?\/merge(?:[?&#]|$)/.test(endpoint)) continue;
-      const explicitGet = /(^|\s)(?:--method|-X)\s+get\b/i.test(all);
+      if (!/(?:^|\/)pulls(?:\/[^\s/?#]+)?\/merge(?:[?&#]|$)/.test(endpoint)) continue;
+      const explicitGet = ghMethodIsGet(all);
       const hasBodyFields = /(^|\s)(?:-f|-F|--field)(?:=|\s)/.test(all);
       if (!explicitGet || hasBodyFields) return `${cmd} api ${endpoint}`;
     } else {
@@ -288,16 +323,41 @@ function restDoorTokens(text: string): string | undefined {
       // blocked only when the command EXPLICITLY writes (glab api does not
       // default to POST the way gh api does; copying the gh rule here would
       // over-block legitimate reads). Method names are case-insensitive.
-      if (!/\/(?:mr|merge_requests)(?:\/[^\s/?#]+)?\/merge(?:[?&#]|$)/.test(endpoint)) continue;
-      const explicitGet = /(^|\s)(?:--method|-X)\s+get\b/i.test(all);
-      const writes =
-        /(^|\s)(?:-X|-f|-F)\s+(?:put|post)\b/i.test(all) ||
-        /(^|\s)--method\s+(?:put|post)\b/i.test(all) ||
-        /(^|\s)(?:-f|-F|--field)(?:=|\s)/.test(all);
-      if (!explicitGet && writes) return `${cmd} api ${endpoint}`;
+      // #962: any method other than GET/HEAD — in every spelling glab
+      // accepts (`-X PUT`, `-XPUT`, `--method=PUT`) — is the write, and body
+      // fields force the write even with `--method GET` (the gh door's
+      // `hasBodyFields` rule): `--method GET -f state=merged` is not a read
+      // the guard may wave through.
+      if (!/(?:^|\/)(?:mr|merge_requests)(?:\/[^\s/?#]+)?\/merge(?:[?&#]|$)/.test(endpoint))
+        continue;
+      const writesMethod = glabMethods(seg.slice(ci)).some((m) => m !== "GET" && m !== "HEAD");
+      const hasBodyFields =
+        /(^|\s)(?:-f|-F|--field|--raw-field|--input)(?:=|\s|$)/.test(all) ||
+        /(^|\s)-[fF]\S/.test(all);
+      if (writesMethod || hasBodyFields) return `${cmd} api ${endpoint}`;
     }
   }
   return undefined;
+}
+
+/**
+ * The methods a glab `api` invocation names, upper-cased, in every spelling
+ * (`-X PUT`, `-XPUT`, `--method PUT`, `--method=PUT`). A flag with no value,
+ * or a value that is not a literal word (`--method "$M"`), yields "?" —
+ * which the caller treats as a write: an unreadable method fails closed.
+ */
+function glabMethods(tokens: string[]): string[] {
+  const out: string[] = [];
+  for (let k = 0; k < tokens.length; k++) {
+    const t = tokens[k] ?? "";
+    let v: string | undefined;
+    if (t === "-X" || t === "--method") v = tokens[k + 1] ?? "";
+    else if (t.startsWith("--method=")) v = t.slice("--method=".length);
+    else if (t.startsWith("-X")) v = t.slice(2);
+    else continue;
+    out.push(/^[A-Za-z]+$/.test(v) ? v.toUpperCase() : "?");
+  }
+  return out;
 }
 
 /**
@@ -313,8 +373,11 @@ function restDoorTokens(text: string): string | undefined {
 function restEndpointToken(args: string[]): string | undefined {
   for (let k = 0; k < args.length; k++) {
     const t = args[k] ?? "";
-    if (/^repos\//.test(t)) return t;
+    // #1317 item B: a relative endpoint (`pulls/17/merge`, `merge_requests/…`)
+    // is a REST merge too — the leading slash is optional.
+    if (/^(?:repos|pulls)\//.test(t)) return t;
     if (/^\/?.*projects\//.test(t)) return t;
+    if (/^\/?(?:merge_requests|mr)\//.test(t)) return t;
     if (t.startsWith("-") && !t.includes("=")) {
       // A flag that takes a value: `--method`/`-X` (the token after it is
       // the method), the repo flags, and short flags generally take a
