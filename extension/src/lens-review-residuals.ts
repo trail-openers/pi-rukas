@@ -266,7 +266,7 @@ async function doPost(
       `git fetch ${remote} ${headBranch} ${baseBranch} failed: ${(err as Error).message?.slice(0, 200) ?? "unknown error"} — the disclosure was not posted (fail closed; the merge guard will refuse until the disclosure is posted)`,
     );
   }
-  const identity = await mergeIdentity(execFn, cwd, remote, headBranch, baseBranch);
+  const identity = await mergeIdentity(execFn, cwd, headBranch, baseBranch);
   if (!identity.ok) {
     throw new Error(
       `could not compute the patch-id for ${headBranch}: ${identity.reason} — the disclosure was not posted (fail closed)`,

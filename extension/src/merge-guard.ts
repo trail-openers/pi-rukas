@@ -322,7 +322,7 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     // head. A moved main leaves it unchanged; a change to the branch's own
     // content changes it. A PR whose base is not the mainline has nothing
     // recorded to match and fails closed (see mergeIdentity).
-    const identity = await mergeIdentity(execFn, cwd, remote, target.headBranch, target.baseBranch);
+    const identity = await mergeIdentity(execFn, cwd, target.headBranch, target.baseBranch);
     if (!identity.ok) {
       return block(
         `could not compute the patch-id for ${target.headBranch}: ${identity.reason} — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,

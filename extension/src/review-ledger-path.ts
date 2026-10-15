@@ -7,11 +7,16 @@
  * `PI_ENSEMBLE_REVIEW_LEDGER_FILE` override. review-ledger.ts re-exports
  * `ledgerPathFor` so importers are unchanged; this module only imports a type
  * from review-ledger.ts (no runtime cycle), so importers are unchanged.
+ *
+ * It also owns `identityBase` (#1305): the ONE answer to "which ref is a
+ * review's patch identity taken against", shared by the ledger writer and the
+ * merge guard so the two cannot resolve different bases.
  */
 
 import path from "node:path";
 import type { LedgerExecFn } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
+import { resolveMainline } from "./work-driver-git.ts";
 
 /**
  * #955 lens fix 6: tracks which override paths have been traced in this
@@ -101,4 +106,25 @@ export async function remoteName(execFn: LedgerExecFn, cwd: string): Promise<str
   } catch {
     return undefined;
   }
+}
+
+/**
+ * #1305 — the base every review identity is taken against:
+ * `<remote>/<mainline>` (mainline via `resolveMainline`, remote via
+ * `remoteName`). The writer (`workingTreePatchId`) and the merge guard
+ * (`mergeIdentity`) both call this, so the identity the guard recomputes is
+ * built against the same ref the ledger entry was. A failure is
+ * `{ ok: false, reason }` — every caller fails closed.
+ */
+export async function identityBase(
+  execFn: LedgerExecFn,
+  cwd: string,
+): Promise<{ ok: true; remote: string; mainline: string } | { ok: false; reason: string }> {
+  const mainline = await resolveMainline(cwd, execFn);
+  if (!("branch" in mainline)) {
+    return { ok: false, reason: `cannot resolve the mainline branch (${mainline.reason})` };
+  }
+  const remote = await remoteName(execFn, cwd);
+  if (!remote) return { ok: false, reason: "no git remote found (origin/upstream/first)" };
+  return { ok: true, remote, mainline: mainline.branch };
 }

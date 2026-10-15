@@ -22,10 +22,11 @@ import { prCommentsCmd } from "./forge-commands.ts";
 import { extractCommentRows } from "./forge-comments.ts";
 import type { MergeExecFn, MergeTarget } from "./merge-target.ts";
 import { isValidRepoValue } from "./merge-tokens.ts";
+import { identityBase } from "./review-ledger-path.ts";
 import type { LedgerEntry } from "./review-ledger.ts";
 import { committedPatchIdentity } from "./review-patch-identity.ts";
 import { trace } from "./trace.ts";
-import { type VerifyExecFn, resolveMainline } from "./work-driver-git.ts";
+import type { VerifyExecFn } from "./work-driver-git.ts";
 
 /** Per-exec timeout for the guard's gh/git calls. */
 const EXEC_TIMEOUT_MS = 30_000;
@@ -33,7 +34,8 @@ const EXEC_TIMEOUT_MS = 30_000;
 /**
  * #1305 — the identity of a PR's head as the review ledger records it:
  * `merge-base(<remote>/<head>, <remote>/<mainline>)..<remote>/<head>`
- * (`committedPatchIdentity`), against the SAME base the writers use, so a
+ * (`committedPatchIdentity`), against the SAME base the writers use
+ * (`identityBase`, review-ledger-path.ts), so a
  * review stays current while main moves and goes stale only when the branch's
  * own content changes. The caller fetches both refs first.
  *
@@ -45,25 +47,22 @@ const EXEC_TIMEOUT_MS = 30_000;
 export async function mergeIdentity(
   execFn: VerifyExecFn,
   cwd: string,
-  remote: string,
   headBranch: string,
   prBaseBranch: string,
 ): Promise<{ ok: true; patchId: string } | { ok: false; reason: string }> {
-  const mainline = await resolveMainline(cwd, execFn);
-  if (!("branch" in mainline)) {
-    return { ok: false, reason: `the mainline is unresolved (${mainline.reason})` };
-  }
-  if (prBaseBranch !== mainline.branch) {
+  const base = await identityBase(execFn, cwd);
+  if (!base.ok) return base;
+  if (prBaseBranch !== base.mainline) {
     return {
       ok: false,
-      reason: `the PR's base \`${prBaseBranch}\` is not the mainline \`${mainline.branch}\` — reviews are recorded against the mainline only`,
+      reason: `the PR's base \`${prBaseBranch}\` is not the mainline \`${base.mainline}\` — reviews are recorded against the mainline only`,
     };
   }
   const r = await committedPatchIdentity(
     execFn,
     cwd,
-    `${remote}/${headBranch}`,
-    `${remote}/${mainline.branch}`,
+    `${base.remote}/${headBranch}`,
+    `${base.remote}/${base.mainline}`,
   );
   return r.ok ? { ok: true, patchId: r.patchId } : r;
 }

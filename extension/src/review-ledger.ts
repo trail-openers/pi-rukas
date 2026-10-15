@@ -51,11 +51,11 @@ import path from "node:path";
 import { dedupeLatest } from "./review-ledger-core.ts";
 import { acquireLedgerLock, runLedgerCriticalSectionHook } from "./review-ledger-lock.ts";
 import { mergeAfterRace } from "./review-ledger-merge.ts";
-import { ledgerPathFor, remoteName } from "./review-ledger-path.ts";
+import { identityBase, ledgerPathFor, remoteName } from "./review-ledger-path.ts";
 import { bumpLensRound } from "./review-ledger-round.ts";
 import { diffDigestOfRange, patchIdOfRange } from "./review-patch-identity.ts";
 import { trace } from "./trace.ts";
-import { type VerifyExecFn, detectMainline } from "./work-driver-git.ts";
+import type { VerifyExecFn } from "./work-driver-git.ts";
 
 /** The two review kinds the ledger tracks — and what a merge needs of each. */
 export type ReviewKind = "adversarial" | "lens";
@@ -132,8 +132,8 @@ export { remoteName } from "./review-ledger-path.ts";
  * writers (adversarial-ledger.ts, lens-ledger.ts) store in the ledger,
  * computed by ONE shared function so both writers agree with each other.
  *
- * The base is `<remote>/<mainline>`, resolved via `detectMainline`
- * (work-driver-git.ts) and `remoteName` — never a hardcoded `origin/main`,
+ * The base is `<remote>/<mainline>`, resolved via `identityBase`
+ * (review-ledger-path.ts — the guard uses the same) — never a hardcoded `origin/main`,
  * never a `HEAD~1` fallback — and the diff runs from the MERGE-BASE of HEAD
  * and that base, over the working tree (uncommitted changes included). Two
  * properties fall out of that:
@@ -165,21 +165,9 @@ export async function workingTreePatchId(
   cwd: string,
   opts: { digest?: boolean } = {},
 ): Promise<{ patchId?: string; untracked: string[]; warning?: string; diffSha256?: string }> {
-  const mainline = await detectMainline(cwd, execFn);
-  if ("branch" in mainline === false) {
-    return {
-      untracked: [],
-      warning: `cannot resolve the mainline branch (${mainline.reason}) — no ledger entry written`,
-    };
-  }
-  const remote = await remoteName(execFn, cwd);
-  if (!remote) {
-    return {
-      untracked: [],
-      warning: "no git remote found (origin/upstream/first) — no ledger entry written",
-    };
-  }
-  const baseRef = `${remote}/${mainline.branch}`;
+  const base = await identityBase(execFn, cwd);
+  if (!base.ok) return { untracked: [], warning: `${base.reason} — no ledger entry written` };
+  const baseRef = `${base.remote}/${base.mainline}`;
   let mergeBase = "";
   try {
     const { stdout } = await execFn(`git merge-base HEAD ${baseRef}`, {

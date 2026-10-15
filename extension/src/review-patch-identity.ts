@@ -18,7 +18,7 @@
  * an identity is built. Both THROW on a git failure; each caller decides the
  * fail-closed meaning.
  *
- `committedPatchIdentity` is the committed form of the same construction: the
+ * `committedPatchIdentity` is the committed form of the same construction: the
  * carry checker (`committedIdentity`) and the merge guard / residual-marker
  * poster (`mergeIdentity`, merge-guard-reads.ts, #1305) both build on it, so
  * neither can drift from what the writers record.
@@ -89,10 +89,10 @@ export async function committedPatchIdentity(
     mergeBase = stdout.trim();
   } catch (err) {
     // `git merge-base` exits 1 with no output when the histories share no
-    // ancestor — the common cause here, so it is named.
+    // ancestor; any other git failure lands here too, so both are named.
     return {
       ok: false,
-      reason: `no merge-base between ${head} and ${base} (${(err as Error).message?.slice(0, 120)})`,
+      reason: `git merge-base ${head} ${base} failed — no merge-base, or a git error (${(err as Error).message?.slice(0, 120)})`,
     };
   }
   if (!mergeBase) return { ok: false, reason: `no merge-base between ${head} and ${base}` };
