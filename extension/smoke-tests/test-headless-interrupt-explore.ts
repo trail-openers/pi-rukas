@@ -20,6 +20,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { lastCap } from "../src/headless/exit-code.ts";
+import { failureOf } from "../src/headless/failure.ts";
 import { projectIssue } from "../src/headless/result.ts";
 import { runHeadless } from "../src/headless/run.ts";
 import type { DispatchResult } from "../src/types.ts";
@@ -235,7 +236,13 @@ const GRACE_MS = 20_000;
   });
   // The router took that cap; then a step started and the signal cut it off.
   s = appendEvent(s, { kind: "step-started", step: "develop", at });
-  s = appendEvent(s, { kind: "cap-hit", at, cap: "step-failed:develop", reviewRound: 0 });
+  s = appendEvent(s, {
+    kind: "cap-hit",
+    at,
+    cap: "step-failed:develop",
+    reviewRound: 0,
+    evidence: "cut-off step's evidence",
+  });
   const cutOff = appendEvent(
     { ...s, pipelineState: { ...s.pipelineState, status: "interrupted" } },
     { kind: "interrupted", at, reason: "signal", step: "develop" },
@@ -243,6 +250,11 @@ const GRACE_MS = 20_000;
   assert(
     lastCap(cutOff) === "verify-failed:develop",
     `the interrupted step's own cap is skipped, the routed one kept (got ${lastCap(cutOff)})`,
+  );
+  const cutOffFailure = failureOf(cutOff, lastCap(cutOff), "develop");
+  assert(
+    cutOffFailure?.kind === "verify" && !JSON.stringify(cutOffFailure).includes("cut-off"),
+    `the failure describes the reported cap, not the skipped one (got ${JSON.stringify(cutOffFailure)})`,
   );
   const atBoundary = appendEvent(
     { ...s, pipelineState: { ...s.pipelineState, status: "interrupted" } },
