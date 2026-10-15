@@ -269,8 +269,14 @@ export function failureCauseReason(tail: {
   errorTail?: string;
   providerMessage?: string;
   killCause?: string;
+  providerRepeats?: number;
 }): string {
   const cls = classifyFailureCause(tail);
+  // #1297 — the adversarial loop's identical-error ladder count: when the
+  // provider repeated the same error ≥2 children in a row, the operator-facing
+  // reason names the repeat so the handoff says WHAT happened, not just that
+  // it happened.
+  const repeats = (tail.providerRepeats ?? 0) >= 2 ? ` ×${tail.providerRepeats} in a row` : "";
   switch (cls.cause) {
     case "self-killed:timeout":
       return "killed by pi-rukas (wall-clock timeout)";
@@ -295,7 +301,7 @@ export function failureCauseReason(tail: {
     case "rate-limited:quota-terminal":
       return "provider spend cap reached — waiting will not clear this";
     case "provider-severed":
-      return `provider/transport error: ${tail.providerMessage ?? tail.errorTail?.slice(0, 60) ?? "connection lost"}`;
+      return `provider/transport error: ${tail.providerMessage ?? tail.errorTail?.slice(0, 60) ?? "connection lost"}${repeats}`;
     case "provider-model-unavailable":
       return `provider does not serve the configured model (404 / model not found) — re-dispatching cannot help: ${(tail.providerMessage ?? tail.errorTail ?? "").slice(0, 120)}`;
     case "crashed":
