@@ -1,14 +1,29 @@
 /**
  * headless/result — the JSON projection of one issue's state file (headless S4,
  * #1024). Pure: reads a WorkState, never writes. `stdout` carries exactly one
- * JSON document built from these projections.
+ * JSON document built from these projections (resultDocument).
+ *
+ * #1326 — the result is the host contract; the state file is not. Everything a
+ * host needs to act on an outcome is projected here (typed `cap`, `failedStep`,
+ * `branch`, `prUrl`, summed `usage`, `resumable`) so it never reads the state
+ * file or pi-rukas source.
  */
 
+import type { DispatchUsage } from "../types.ts";
+import type { WorkStep } from "../workflow-state-events.ts";
 import type { WorkState } from "../workflow-state.ts";
+import { type HeadlessCap, capStep } from "./caps.ts";
 import { exitCodeForState, lastCap, lastEvent } from "./exit-code.ts";
 
-/** Version of the --json result schema. Bump on any change to the result shape. */
-export const RESULT_SCHEMA_VERSION = 1 as const;
+/**
+ * Version of the --json result schema. Bump on any change to the result shape.
+ * v2 (#1326): top-level `schemaVersion` and `buildCommit`; per issue a typed
+ * `cap`, `failedStep`, `prUrl`, `usage` and `resumable`.
+ */
+export const RESULT_SCHEMA_VERSION = 2 as const;
+
+/** Token and cost totals summed over every dispatch the cycle recorded. */
+export type ResultUsage = DispatchUsage & { dispatches: number };
 
 export interface StepTiming {
   step: string;
@@ -20,9 +35,19 @@ export interface IssueResult {
   issue: number;
   /** `not-started`: the group member had no state file (the driver never persisted one). */
   status: WorkState["pipelineState"]["status"] | "not-started";
-  cap?: string;
+  /** The last cap hit, from the vocabulary `--capabilities` publishes (caps.ts). */
+  cap?: HeadlessCap;
+  /** The step the cycle stopped in, when it did not merge. */
+  failedStep?: WorkStep;
   branch?: string;
   prNumber?: number;
+  /** The PR's web URL, when the forge is GitHub or GitLab. */
+  prUrl?: string;
+  /** Present whenever a state existed to sum. */
+  usage?: ResultUsage;
+  /** Re-running `work <issue>` without `--restart` continues this cycle. */
+  resumable: boolean;
+  /** Diagnostic path for a person. Not a host contract: do not parse the file. */
   stateFile: string;
   durationMs: number;
   steps: StepTiming[];
@@ -39,6 +64,109 @@ export interface IssueResult {
    * top-level `HeadlessRunResult.error`, not on this result.
    */
   diverged?: boolean;
+}
+
+/** The JSON document `--json` writes to stdout. */
+export interface ResultDocument {
+  schemaVersion: typeof RESULT_SCHEMA_VERSION;
+  /** The commit the running build was made from, else `v<version>` (build.ts). */
+  buildCommit: string;
+  exitCode: number;
+  issues: IssueResult[];
+  error?: { code: string; message: string };
+}
+
+export function resultDocument(
+  run: { exitCode: number; results: IssueResult[]; error?: { code: string; message: string } },
+  buildCommit: string,
+): ResultDocument {
+  const doc: ResultDocument = {
+    schemaVersion: RESULT_SCHEMA_VERSION,
+    buildCommit,
+    exitCode: run.exitCode,
+    issues: run.results,
+  };
+  if (run.error) doc.error = run.error;
+  return doc;
+}
+
+/** The result for an issue that has no state to project. */
+export function notStartedResult(
+  issue: number,
+  stateFile: string,
+  exitCode: number,
+  extra: Partial<IssueResult> = {},
+): IssueResult {
+  return {
+    issue,
+    status: "not-started",
+    stateFile,
+    durationMs: 0,
+    steps: [],
+    exitCode,
+    resumable: false,
+    ...extra,
+  };
+}
+
+/** Sum the usage of every dispatch event in the log. */
+export function usageOf(state: WorkState): ResultUsage {
+  const total: ResultUsage = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: 0,
+    turns: 0,
+    dispatches: 0,
+  };
+  for (const e of state.eventLog) {
+    if (
+      e.kind !== "dispatch-completed" &&
+      e.kind !== "dispatch-failed" &&
+      e.kind !== "dispatch-failed-provider"
+    ) {
+      continue;
+    }
+    total.dispatches++;
+    const u = e.usage;
+    if (!u) continue;
+    total.input += u.input;
+    total.output += u.output;
+    total.cacheRead += u.cacheRead;
+    total.cacheWrite += u.cacheWrite;
+    total.cost += u.cost;
+    total.turns += u.turns;
+  }
+  return total;
+}
+
+/**
+ * The step a cycle that did not merge stopped in: the step a step-template cap
+ * names (`verify-failed:develop`), else the last step started before the last
+ * cap hit, else the last step started. The `handoff` step is the driver
+ * reporting the stop, never the step that stopped.
+ */
+export function failedStepOf(state: WorkState): WorkStep | undefined {
+  if (state.pipelineState.status === "merged") return undefined;
+  const cap = lastCap(state);
+  const named = cap !== undefined ? capStep(cap) : undefined;
+  if (named) return named;
+  const log = state.eventLog;
+  let end = log.length;
+  if (cap !== undefined) {
+    for (let i = log.length - 1; i >= 0; i--) {
+      if (log[i]?.kind === "cap-hit") {
+        end = i;
+        break;
+      }
+    }
+  }
+  for (let i = end - 1; i >= 0; i--) {
+    const e = log[i];
+    if (e?.kind === "step-started" && e.step !== "handoff") return e.step;
+  }
+  return undefined;
 }
 
 /** `- item` bullet lines of a cap's evidence, in order. */
@@ -84,8 +212,14 @@ export function projectIssue(state: WorkState, stateFile: string): IssueResult {
     durationMs,
     steps,
     exitCode,
+    usage: usageOf(state),
+    // An interrupted cycle re-enters as running; a running one resumes (#382).
+    resumable:
+      state.pipelineState.status === "running" || state.pipelineState.status === "interrupted",
   };
   if (cap !== undefined) result.cap = cap;
+  const failedStep = failedStepOf(state);
+  if (failedStep !== undefined) result.failedStep = failedStep;
   if (state.pipelineState.branchName !== undefined) result.branch = state.pipelineState.branchName;
   const prNumber = merged
     ? merged.prNumber
