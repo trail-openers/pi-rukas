@@ -50,7 +50,7 @@ export function lastEvent<K extends WorkEvent["kind"]>(
 }
 
 /** The cap of the most recent cap-hit event, if any. */
-export function lastCap(state: WorkState): string | undefined {
+export function lastCap(state: WorkState): WorkCapLiteral | undefined {
   return lastEvent(state, "cap-hit")?.cap;
 }
 

@@ -36,6 +36,11 @@
  * HEAD instead (`mergeHeads`, `applyMergedSafetyNet`): judged against the
  * original base the merged tree is always "ahead", and an uncommitted
  * re-dispatch would never be committed.
+ *
+ * #1323 — the same merge runs for a sibling-symbol coupling (a workstream's
+ * verify names a symbol a sibling's diff adds): the caller passes the pairs
+ * and the prompt as a `MergePrepPlan` instead of the merge reading the fence
+ * records (work-develop-symbol-merge.ts).
  */
 import { siblingDeclaredViolators } from "./work-develop-fence-recovery.ts";
 import { FENCE_VIOLATION_CAP } from "./work-develop-fence-recovery.ts";
@@ -44,6 +49,7 @@ import { buildCompletionEvent } from "./work-driver-completion-event.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { applySafetyNet, safetyNetWorktree } from "./work-driver-safety-net.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
+import type { WorkCapLiteral } from "./workflow-state-events-caps.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 import { appendEvent } from "./workflow-state.ts";
@@ -103,6 +109,24 @@ export type MergePrepOutcome =
     };
 
 /**
+ * #1323 — a merge the caller has already decided: each pair folds `violator`
+ * (absorbed) into `owner`, the re-dispatch prompt comes from `prompt`, and a
+ * park uses `cap`. `symbols` rides on the merge's event.
+ */
+export interface MergePrepPlan {
+  pairs: Array<{ violator: string; owner: string; symbols: string[] }>;
+  prompt: (mergedId: string, halves: string[], carried: boolean) => string;
+  cap: WorkCapLiteral;
+  /** Runs in the violator's worktree right after the reset to the owner's
+   * tip; returns whether the violator's own commits were carried onto it. */
+  afterReset?: (
+    cwd: string,
+    violatorBase: string | undefined,
+    violatorSha: string,
+  ) => Promise<boolean>;
+}
+
+/**
  * #1005 — the full merge-prep flow. `runMergePrep` is called from
  * runMergeRetryFlow when the gate records a `sibling-declared` fence
  * violation (and no `issue-fenced` one, which still blocks as today).
@@ -125,10 +149,13 @@ export async function runMergePrep(
   ids: string[],
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
   dispatch: NonNullable<DriverContext["dispatchFn"]>,
+  plan?: MergePrepPlan,
 ): Promise<{ state: WorkState; outcome: MergePrepOutcome }> {
   const wsIn = stateIn.pipelineState.workstreams ?? {};
-  const fenceViolations = stateIn.pipelineState.verifyEvidence?.fenceViolations ?? [];
-  const violators = siblingDeclaredViolators(fenceViolations);
+  const fenceViolations = plan ? [] : (stateIn.pipelineState.verifyEvidence?.fenceViolations ?? []);
+  const violators = plan
+    ? plan.pairs.map((p) => p.violator)
+    : siblingDeclaredViolators(fenceViolations);
   if (violators.length === 0) {
     return {
       state: stateIn,
@@ -145,19 +172,21 @@ export async function runMergePrep(
   const mergedIds: string[] = []; // the post-merge ids (owner ids)
   const merges: Array<{ into: string; from: string }> = [];
   const mergeHeads: Record<string, string> = {};
+  const carried: Record<string, boolean> = {};
   let next = stateIn;
   // #1005 — park builds from `next`, which is kept in sync with
   // `stateRef.current` after every successful iteration. The pre-#1005
   // code persisted to `next`/`stateRef.current` only after the loop, so a
   // mid-loop park lost every merge recorded up to that point.
   const park = (evidence: string): { state: WorkState; outcome: MergePrepOutcome } => {
-    const st = appendEvent(next, fenceCapHit(next, evidence));
+    const st = appendEvent(next, fenceCapHit(next, evidence, plan?.cap));
     stateRef.current = st;
     return { state: st, outcome: { parked: true } };
   };
   for (const violator of violators) {
     // The declaring owner(s) for this violator.
-    const owners = new Set<string>();
+    const pair = plan?.pairs.find((p) => p.violator === violator);
+    const owners = new Set<string>(pair ? [pair.owner] : []);
     for (const v of fenceViolations) {
       if (v.kind === "sibling-declared" && v.workstreamId === violator) owners.add(v.declaredById);
     }
@@ -241,6 +270,12 @@ export async function runMergePrep(
       );
     }
     if (violatorSha) discardedShas.push(violatorSha);
+    // #1323 — a planned merge may carry the violator's commits onto the
+    // owner's tip (a conflict leaves the plain reset in place).
+    if (plan?.afterReset && violatorSha) {
+      const vBase = workstreamBaseShas[violator] ?? stateIn.pipelineState.baseSha;
+      carried[owner] = await plan.afterReset(violatorWt, vBase, violatorSha);
+    }
     try {
       const { stdout } = await execFn("git rev-parse HEAD", {
         cwd: violatorWt,
@@ -266,6 +301,7 @@ export async function runMergePrep(
       workstreamId: owner,
       owners: [violator],
       ...(violatorSha ? { discardedSha: violatorSha } : {}),
+      ...(pair ? { cause: "sibling-symbol" as const, symbols: pair.symbols } : {}),
     });
     // Drop the absorbed workstream from the worktrees map (its id is gone).
     delete worktrees[violator];
@@ -300,7 +336,9 @@ export async function runMergePrep(
           merges.some((m) => m.from === v.workstreamId && m.into === mergedId)),
     );
     const halves = [mergedId, ...merges.filter((m) => m.into === mergedId).map((m) => m.from)];
-    const prompt = mergeRetryPrompt(mergedId, halves, violatedRecords);
+    const prompt = plan
+      ? plan.prompt(mergedId, halves, carried[mergedId] === true)
+      : mergeRetryPrompt(mergedId, halves, violatedRecords);
     const startedAt = Date.now();
     try {
       // #1005 — the re-dispatch is pinned to the merged workstream's worktree
@@ -387,11 +425,12 @@ export async function applyMergedSafetyNet(
 export function fenceCapHit(
   state: WorkState,
   evidence: string,
+  cap: WorkCapLiteral = FENCE_VIOLATION_CAP,
 ): Extract<WorkEvent, { kind: "cap-hit" }> {
   return {
     kind: "cap-hit",
     at: Date.now(),
-    cap: FENCE_VIOLATION_CAP,
+    cap,
     reviewRound: state.pipelineState.reviewRound,
     nextStep: "handoff",
     evidence,
