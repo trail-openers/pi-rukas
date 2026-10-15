@@ -22,6 +22,7 @@ import { detectForge } from "./forge-detect.ts";
 import { type Forge, createForge } from "./forge.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
+import type { WorkInvocation } from "./work-args.ts";
 import { groupIssues, resolvedParallelGroups } from "./work-driver-grouping.ts";
 import type { DriverHost } from "./work-driver-host.ts";
 import { runWorkDriver } from "./work-driver.ts";
@@ -29,43 +30,9 @@ import { singleCycleQueueEntry } from "./work-queue-single-entry.ts";
 import { mergeQueueSummaryEntry } from "./work-queue-summary.ts";
 import { renderQueueSummary, runWorkQueue } from "./work-queue.ts";
 
-export interface WorkInvocation {
-  issues: number[];
-  restart: boolean;
-  /** Operator-only. Never settable from a tool — see the module docstring. */
-  mergeGrant: boolean;
-  headless?: boolean;
-}
+export { parseWorkArgs, type WorkInvocation } from "./work-args.ts";
 
-type CycleFlags = Pick<WorkInvocation, "restart" | "mergeGrant" | "headless">;
-
-/**
- * Parse `/work` arguments.
- *
- * Returns an `error` string rather than throwing, so both the command and the
- * tool can render it in their own idiom.
- */
-export function parseWorkArgs(args: string): WorkInvocation | { error: string } {
-  const tokens = args.trim().split(/\s+/).filter(Boolean);
-  const issues = tokens
-    .filter((t) => !t.startsWith("--"))
-    .map((t) => Number.parseInt(t, 10))
-    .filter((n) => Number.isFinite(n) && n > 0);
-  if (issues.length === 0) {
-    return {
-      error:
-        "pi-rukas: /work needs at least one issue number (e.g., /work 547, or /work 561 562 to analyze + group multi-issue).",
-    };
-  }
-  return {
-    issues,
-    restart: tokens.includes("--restart"),
-    // #380 — the operator's grant of merge authority for this run. The only
-    // other source is an explicit grant in the project's AGENTS.md; with
-    // neither, cycles open their PR and park.
-    mergeGrant: tokens.includes("--merge"),
-  };
-}
+type CycleFlags = Pick<WorkInvocation, "restart" | "mergeGrant" | "protectedGrant" | "headless">;
 
 /**
  * Resolve the repository root for a session directory.
@@ -142,7 +109,7 @@ export async function runGroupedIssues(
   flags: CycleFlags,
   notify: (text: string) => void,
 ): Promise<string> {
-  const { restart, mergeGrant, headless } = flags;
+  const { restart, mergeGrant, protectedGrant, headless } = flags;
   const bodiesByIssue = await fetchIssueBodies(repoRoot, issues);
   const { groups, notes } = groupIssues(issues, bodiesByIssue);
   const groupList = Object.values(groups);
@@ -186,6 +153,7 @@ export async function runGroupedIssues(
             issues: groupIssueNums,
             restart,
             mergeGrant,
+            protectedGrant,
             headless,
             parallelCycles: concurrency,
             invocationStartRef,
@@ -248,7 +216,8 @@ export async function launchWork(
   },
 ): Promise<WorkLaunch> {
   const { repoRoot, invocation, sink } = opts;
-  const { issues, restart, mergeGrant, headless } = invocation;
+  const { issues, ...flags } = invocation;
+  const { restart } = flags;
   const restartTag = restart ? " (restart — prior state wiped)" : "";
 
   trace(
@@ -274,7 +243,7 @@ export async function launchWork(
       ownerKind: "driver" as const,
       work: async () => {
         try {
-          await runSingleIssue(pi, repoRoot, soleIssue, { restart, mergeGrant, headless });
+          await runSingleIssue(pi, repoRoot, soleIssue, flags);
           // #808 — record the outcome in the accumulating queue summary index.
           await recordSingleCycleOutcome(repoRoot, soleIssue);
           return makeResult(true, `Completed issue #${soleIssue}${restartTag}`, Date.now());
@@ -381,7 +350,8 @@ export async function runDriver(
   },
 ): Promise<DispatchResult> {
   const { repoRoot, invocation, sink } = opts;
-  const { issues, restart, mergeGrant, headless } = invocation;
+  const { issues, ...flags } = invocation;
+  const { restart } = flags;
   const restartTag = restart ? " (restart — prior state wiped)" : "";
   const startMs = Date.now();
 
@@ -395,7 +365,7 @@ export async function runDriver(
       `pi-rukas:driver-event v1 kind=work-start issue=${soleIssue} at=${new Date().toISOString()}\npi-rukas: /work driver running for issue #${soleIssue}${restartTag}. State in .pi/work-state/${soleIssue}.json — inspect it any time with /work-status.`,
     );
     try {
-      await runSingleIssue(pi, repoRoot, soleIssue, { restart, mergeGrant, headless });
+      await runSingleIssue(pi, repoRoot, soleIssue, flags);
       // #808 — record the outcome in the accumulating queue summary index.
       await recordSingleCycleOutcome(repoRoot, soleIssue);
       return makeResult(

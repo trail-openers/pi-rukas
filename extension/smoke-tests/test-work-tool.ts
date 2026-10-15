@@ -67,6 +67,10 @@ registerWorkTools(fakePi);
     `canary: no merge parameter exists — params are ${props.join(", ")}`,
   );
   assert(
+    !props.some((p) => /protect|grant|allow/i.test(p)),
+    `canary: no protected-path grant parameter exists (#1090) — params are ${props.join(", ")}`,
+  );
+  assert(
     props.includes("issues") && props.includes("restart"),
     "...but issues and restart do, so the tool is actually usable",
   );
@@ -98,6 +102,11 @@ registerWorkTools(fakePi);
   assert(
     /mergeGrant:\s*false/.test(src),
     "canary: mergeGrant is forced to false, not just left unset",
+  );
+  // #1090 — the protected-path grant is operator-only for the same reason.
+  assert(
+    /protectedGrant:\s*\[\]/.test(src),
+    "canary: protectedGrant is forced empty, not just left unset",
   );
   assert(
     !src.includes("Merge authority was NOT granted"),

@@ -213,7 +213,7 @@ export function registerCommands(pi: ExtensionAPI) {
           //
           // Also accept `--restart` (order-independent) — applied to
           // every cycle in the queue.
-          const parsed = parseWorkArgs(args);
+          const parsed = parseWorkArgs(args, { repoRoot: await resolveRepoRoot(ctx.cwd) });
           if ("error" in parsed) {
             ctx.ui.notify(parsed.error, "warning");
             return;
