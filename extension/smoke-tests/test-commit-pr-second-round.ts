@@ -23,7 +23,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execp as realExec } from "../src/lens-exec.ts";
+import { execp as realExec } from "../src/exec.ts";
 import { mechanizedCommitPr } from "../src/work-driver-commit.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { nextStep } from "../src/work-driver-context.ts";

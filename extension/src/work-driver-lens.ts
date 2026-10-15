@@ -3,10 +3,10 @@
 import { carriedAdversarialFindings } from "./adversarial-findings.ts";
 import { lensCommentBlock } from "./comment-evidence.ts";
 import { detectRepeatSeam } from "./detect-repeat-seam.ts";
+import { execp } from "./exec.ts";
 import { lensFixDelta } from "./fix-delta.ts";
 import { type WideningFinding, scanTypeWidening, wideningContext } from "./invariant-scan.ts";
 import { buildEvidence, runClaimScan } from "./lens-evidence.ts";
-import { execp } from "./lens-exec.ts";
 import { runLensReview } from "./lens-review.ts";
 import { appendGuardWriteEvents, runGuardMemoryWrites } from "./lens-vipune-write.ts";
 import { writeFindings } from "./memory-write.ts";

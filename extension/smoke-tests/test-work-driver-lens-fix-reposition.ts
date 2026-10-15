@@ -50,9 +50,9 @@ function assert(cond: boolean, msg: string) {
     });
 
     // The gate's git calls use the argv form (no shell re-parse) — the test
-    // executor must honour it, mirroring lens-exec.ts's execp contract.
+    // executor must honour it, mirroring exec.ts's execp contract.
     // The argv form is `cmd = executable, argv = arguments` (see #1005 in
-    // work-driver-verify.ts and lens-exec.ts).
+    // work-driver-verify.ts and exec.ts).
     const repositionExec = async (cmd: string, o?: { cwd?: string; argv?: string[] }) => {
       if (o?.argv) {
         const { stdout } = await new Promise<{ stdout: string }>((resolve, reject) =>

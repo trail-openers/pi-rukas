@@ -39,7 +39,7 @@ export { salvageUncommittedWork, salvageDirtyWorktree } from "./worktree-salvage
  * be re-parsed and `$(…)`, backticks or `;` inside the data would
  * execute. Implementations that do not honour `argv` are the caller's
  * risk; the driver's production executors (work-driver-verify.ts and
- * lens-exec.ts) both honour it via `execFile`. */
+ * exec.ts) both honour it via `execFile`. */
 export type ExecFn = (
   cmd: string,
   opts?: {

@@ -28,11 +28,9 @@
  * `pi -p "/cmd …"` invocations — see earendil-works/pi#5423.
  */
 
-import { exec } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 import type {
   BeforeAgentStartEvent,
   BeforeAgentStartEventResult,
@@ -40,6 +38,7 @@ import type {
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import { notifyAgent } from "./agent-message.ts";
+import { execp } from "./exec.ts";
 import { buildMemoryPanel } from "./memory-panel.ts";
 import { GLOBAL_KEY, getAllOverrides } from "./model-config.ts";
 import { modelConfigSnapshot } from "./models.ts";
@@ -116,8 +115,6 @@ export function stripPmTools(pi: ExtensionAPI): void {
 export function getPmModeStripInfo(): typeof _pmModeStripInfo {
   return _pmModeStripInfo;
 }
-
-const execp = promisify(exec);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 

@@ -13,7 +13,7 @@
  * rather than by inspecting the fire-and-forget ledger file afterwards.
  */
 
-import { execp } from "./lens-exec.ts";
+import { execp } from "./exec.ts";
 import { resolveReviewBranch } from "./review-branch.ts";
 
 export interface LensBranchResolution {

@@ -42,16 +42,13 @@
  * PI_ENSEMBLE_VERIFY / PI_ENSEMBLE_SCOPE_GATE / PI_ENSEMBLE_CLAIM_SCAN).
  */
 
-import { exec } from "node:child_process";
 import path from "node:path";
-import { promisify } from "node:util";
+import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { porcelainPaths } from "./work-driver-doctrine.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 import type { WorkState } from "./workflow-state.ts";
-
-const execp = promisify(exec);
 
 /** `PI_ENSEMBLE_CONVERGE=0` (or `false`) disables the gate. */
 export function convergeGateEnabled(): boolean {

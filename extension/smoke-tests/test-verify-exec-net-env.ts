@@ -4,7 +4,7 @@
  * the production default for the branch-step mechanized fetch and the
  * handoff-consolidate fetch. A network call routed through it must carry the
  * non-interactive env (BatchMode via GIT_SSH_COMMAND) and the group-killing
- * executor, exactly as lens-exec's execp does.
+ * executor, exactly as exec.ts's execp does.
  *
  * Real git: origin is ssh://, GIT_SSH_COMMAND points at a script named `ssh`
  * that records its argv and exits non-zero at once (no network needed).

@@ -1,8 +1,8 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as dispatchDeck from "./dispatch-deck.ts";
+import { execp } from "./exec.ts";
 import { resolveBudgetKey } from "./lens-budget-key.ts";
-import { execp } from "./lens-exec.ts";
 import type { LensLedgerOutcome } from "./lens-ledger.ts";
 import { partitionDecisions, renderPriorFindingsBlock } from "./lens-residuals.ts";
 import { splitCarried } from "./lens-review-advisory.ts";

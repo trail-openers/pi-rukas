@@ -18,17 +18,14 @@
  * Split from work-driver-handoff.ts (AGENTS.md §12 file-size limit).
  */
 
-import { exec } from "node:child_process";
 import fs from "node:fs/promises";
-import { promisify } from "node:util";
+import { execp } from "./exec.ts";
 import type { Forge } from "./forge.ts";
 import { trace } from "./trace.ts";
 import { readError } from "./work-driver-handoff-snapshot.ts";
 import { parseHandoffCommentUrl } from "./work-driver-handoff.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
-
-const execp = promisify(exec);
 
 /** The label the handoff applies — the ops prompt, the fallback and the
  * verification reader must all name the same label. */

@@ -25,9 +25,8 @@
  * driver audits); nothing here runs at process.cwd().
  */
 
-import { exec as execCb } from "node:child_process";
 import fs from "node:fs/promises";
-import { promisify } from "node:util";
+import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import { isDriverManagedDirtLine } from "./work-driver-branch-residue.ts";
 import {
@@ -40,8 +39,6 @@ import { assertSafeRef } from "./worktree-loss.ts";
 import { provisionWorktree } from "./worktree-provision.ts";
 import { resolvePath, worktreePath, worktreeRemove } from "./worktree.ts";
 import type { ExecFn } from "./worktree.ts";
-
-const execp = promisify(execCb);
 
 /**
  * #861 — the shared porcelain-dirt reader (trimmed, non-empty lines; `[]`

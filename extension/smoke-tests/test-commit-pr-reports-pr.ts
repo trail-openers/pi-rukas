@@ -35,7 +35,7 @@ const { addLocalRemote, fixture, git, mkResult } = await import(
 );
 // Production's executor: driver git calls use the argv form, which the
 // helper's `sh -c` executor ignores (it would turn them into a bare `git`).
-const { execp: realExec } = await import("../src/lens-exec.ts");
+const { execp: realExec } = await import("../src/exec.ts");
 const { commandOf } = await import("./lib/argv-shell.ts");
 type DriverContext = import("../src/work-driver-context.ts").DriverContext;
 type WorkState = import("../src/workflow-state.ts").WorkState;
