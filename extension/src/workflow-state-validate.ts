@@ -103,6 +103,9 @@ export const KNOWN_EVENT_KINDS = [
   // The session-shutdown record. Absent from the tuple, the one cycle this
   // event promises is resumable would refuse to resume.
   "cycle-interrupted",
+  // A residual-findings disclosure that did not reach the PR (and whether the
+  // issue got it instead).
+  "lens-residuals-post-failed",
 ] as const;
 
 // #986 — compile-time exhaustiveness. If the `WorkEvent` union gains a kind

@@ -301,6 +301,7 @@ export interface DriverContext {
     extraFindings?: import("./lens-review.ts").Finding[];
     threshold?: import("./lens-review.ts").Severity;
     branch?: string;
+    pr?: number;
   }) => Promise<LensReviewSummary>;
   /**
    * #280 — optional injection point for tests: replace the vipune write

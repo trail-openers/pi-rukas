@@ -57,7 +57,8 @@ const read = (f: string) =>
 // ------------------------------------------- lens-fix uses it
 
 {
-  const lens = read("work-driver-lens.ts");
+  // The review (work-driver-lens.ts) and the fix (work-driver-lens-fix.ts).
+  const lens = read("work-driver-lens.ts") + read("work-driver-lens-fix.ts");
   assert(
     /lens-fix[\s\S]{0,600}cwd:\s*lensWorktree\(/.test(lens),
     "canary: the lens-fix dispatch passes a cwd — its absence silently discarded every fix",
