@@ -123,3 +123,62 @@ export function baselineRedMessage(
       : "";
   return `${BASELINE_RED_MARKER} verify command \`${opts.cmd}\` ALSO FAILS ${where} — assertion at base: ${verdict.assertion ?? NO_SPECIFIC_ASSERTION}${same}. The gate was red before this change was written, so no change can pass it; the failures below cannot be attributed to this diff until the base is green. Fix the gate at the base commit (or the host it runs on), then re-run`;
 }
+
+/** One failure of the change's own verify run, for the baseline comparison. */
+export interface ChangeFailure {
+  text: string;
+  timedOut: boolean;
+}
+
+/**
+ * #1349 — true only when the change's failures are demonstrably the base's:
+ * every one shares the (extracted, non-null) base assertion, or the base and
+ * every change run were killed at the bound. A base that is red some other
+ * way says nothing about a failure the change added, so it never excuses one.
+ */
+export function baselineExplainsChange(
+  verdict: Extract<BaselineVerdict, { status: "red" }>,
+  changeFailures: readonly ChangeFailure[],
+): boolean {
+  if (changeFailures.length === 0) return false;
+  if (verdict.timedOut) return changeFailures.every((f) => f.timedOut);
+  const assertion = verdict.assertion;
+  return (
+    assertion !== null &&
+    changeFailures.every((f) => !f.timedOut && sharesAssertion(f.text, assertion))
+  );
+}
+
+/**
+ * Runs the probe after the verify command has failed (moved out of
+ * work-driver-verify-verify-cmd.ts for the 500-line cap). A red base leads
+ * `failures` with its finding; anything else is a note. Returns whether the
+ * base explains every change failure (`baselineExplainsChange`).
+ */
+export async function compareWithBaseline(
+  execFn: ExecFn,
+  opts: {
+    repoRoot: string;
+    baseSha: string;
+    issue: number;
+    cmd: string;
+    timeoutMs: number;
+    changeFailures: readonly ChangeFailure[];
+    failures: string[];
+    notes: string[];
+  },
+): Promise<boolean> {
+  const { cmd, baseSha, timeoutMs } = opts;
+  const verdict = await probeBaselineVerify(execFn, opts);
+  if (verdict.status !== "red") {
+    opts.notes.push(
+      verdict.status === "green"
+        ? `baseline verify passed — \`${cmd}\` exits 0 on a clean checkout of the base commit ${baseSha.slice(0, 12)}, so the gate was green before this change`
+        : `baseline verify not established — ${verdict.reason}`,
+    );
+    return false;
+  }
+  const changeFailure = opts.changeFailures.map((f) => f.text).join("\n");
+  opts.failures.unshift(baselineRedMessage(verdict, { cmd, baseSha, timeoutMs, changeFailure }));
+  return baselineExplainsChange(verdict, opts.changeFailures);
+}

@@ -19,6 +19,12 @@ export const CAP_TEMPLATES = {
   "verify-failed": "step",
   /** #1324 — the step's verify command hit its time bound (not a code failure). */
   "verify-timeout": "step",
+  /** #1349 — the system refused to start a process, so the gate never ran. */
+  "verify-env": "step",
+  /** #1349 — the verify command already fails at the cycle's base commit. */
+  "verify-baseline-red": "step",
+  /** #1349 — the cycle's PR was not open when the step started. */
+  "pr-not-open": "step",
   "step-failed": "step",
   "driver-crash": "step",
   /** The number of commits the local branch is ahead of origin. */
@@ -49,6 +55,7 @@ export const FIXED_CAPS = [
   "explore-bodies-empty",
   "explore-needs-clarification",
   "fence-violation:develop",
+  "fix-pass-park",
   "integration-verify-failed",
   "integration-worktree-violation",
   "intent-park",

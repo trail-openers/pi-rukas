@@ -372,7 +372,7 @@ function seededLog(): WorkState["eventLog"] {
 
 // E — #1137: a plumb-report with no file change routes to a handoff that
 // names the plumb question, not the generic "byte-identical" failure.
-// The cap routes to handoff (verify-failed:develop), and the evidence carries
+// The cap routes to handoff (fix-pass-park since #1349), and the evidence carries
 // the plumb question so the operator answers it.
 {
   const dir = tmpDir("plumb-nochange");
@@ -408,8 +408,8 @@ function seededLog(): WorkState["eventLog"] {
     const out = await runAdversarialFixPass(ctx, st, pending, Date.now());
     const tail = out.eventLog[out.eventLog.length - 1];
     assert(
-      tail?.kind === "cap-hit" && tail.cap === "verify-failed:develop",
-      `E: plumb-with-no-change parks as verify-failed:develop (tail: ${tail?.kind})`,
+      tail?.kind === "cap-hit" && tail.cap === "fix-pass-park",
+      `E: plumb-with-no-change parks as fix-pass-park (tail: ${tail?.kind})`,
     );
     assert(
       tail?.kind === "cap-hit" &&
