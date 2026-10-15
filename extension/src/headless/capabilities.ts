@@ -32,6 +32,7 @@ import { type ResourceReport, resourceReport } from "../resource-budget.ts";
 import { INSTALL_ROOT, readBuildCommit, readBuildVersion } from "./build.ts";
 import { capVocabulary } from "./caps.ts";
 import { EXIT, EXIT_CODE_VERSION } from "./exit-code.ts";
+import { FAILURE_KINDS } from "./failure.ts";
 import { HEADLESS_FILES, HEADLESS_INPUTS } from "./inputs.ts";
 import { NDJSON_STABLE_FIELDS, NDJSON_STABLE_VERSION, NDJSON_VERSION } from "./ndjson.ts";
 import { RESULT_SCHEMA_VERSION } from "./result.ts";
@@ -41,7 +42,8 @@ import { RESULT_SCHEMA_VERSION } from "./result.ts";
  * answer's shape (added/removed top-level fields); the caller's drift test
  * (#1306) reads this and re-derives the answer from the live constants.
  * v2 (#1326): every input with type/default/scope, and `files`.
- * Additive, no bump (docs/headless.md versioning rule): `resources` (#1325).
+ * Additive, no bump (docs/headless.md versioning rule): `resources` (#1325),
+ * `contracts.resultSchema.failureKinds` (#1367).
  */
 export const CAPABILITIES_VERSION = 2 as const;
 
@@ -61,6 +63,10 @@ export const HEADLESS_FEATURES = {
   handoffChannel: true,
   /** #1327 — `--restart` overrides the attention gate and clears `needs-human-attention`. */
   restartClearsAttention: true,
+  /** #1367 — the result's `failure` gives the reason behind its `cap` as stable fields. */
+  failureReason: true,
+  /** #1368 — the result's `usage.byRole` sums usage per role, failed dispatches included. */
+  usageByRole: true,
 } as const;
 
 export interface Capabilities {
@@ -69,7 +75,11 @@ export interface Capabilities {
   commit: string | null;
   contracts: {
     exitCodes: { version: number; values: typeof EXIT };
-    resultSchema: { version: number; caps: ReturnType<typeof capVocabulary> };
+    resultSchema: {
+      version: number;
+      caps: ReturnType<typeof capVocabulary>;
+      failureKinds: typeof FAILURE_KINDS;
+    };
     ndjson: {
       version: number;
       stable: { version: number; kinds: typeof NDJSON_STABLE_FIELDS };
@@ -97,7 +107,11 @@ export function buildCapabilities(installRoot: string = INSTALL_ROOT): Capabilit
     commit: readBuildCommit(installRoot),
     contracts: {
       exitCodes: { version: EXIT_CODE_VERSION, values: EXIT },
-      resultSchema: { version: RESULT_SCHEMA_VERSION, caps: capVocabulary() },
+      resultSchema: {
+        version: RESULT_SCHEMA_VERSION,
+        caps: capVocabulary(),
+        failureKinds: FAILURE_KINDS,
+      },
       ndjson: {
         version: NDJSON_VERSION,
         stable: { version: NDJSON_STABLE_VERSION, kinds: NDJSON_STABLE_FIELDS },

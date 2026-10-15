@@ -74,25 +74,38 @@ export function fetchIssueBodyViaGh(
  * The cap itself is unchanged and still fails closed: a body that is still
  * empty (or still failing) after the last attempt is returned/thrown as-is and
  * halts the cycle.
+ *
+ * #1371 — `signal` is the cycle's abort. Once it fires, no further attempt or
+ * backoff runs and an attempt still in flight is abandoned: the fetch rejects
+ * with `IssueBodyFetchAborted`, and the caller reads the abort, not the empty
+ * result, as the outcome.
  */
 export async function fetchIssueBodyWithRetry(
   fetchBody: (issue: number, cwd: string) => Promise<{ stdout: string }>,
   issue: number,
   cwd: string,
-  opts: { attempts?: number; sleep?: (ms: number) => Promise<void>; rand?: () => number } = {},
+  opts: {
+    attempts?: number;
+    sleep?: (ms: number) => Promise<void>;
+    rand?: () => number;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<{ stdout: string }> {
   const attempts = transientRetryEnabled() ? (opts.attempts ?? ISSUE_BODY_ATTEMPTS) : 1;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const signal = opts.signal;
   let lastError: unknown;
   let lastEmpty: { stdout: string } | undefined;
   for (let attempt = 1; attempt <= attempts; attempt++) {
+    if (signal?.aborted) throw new IssueBodyFetchAborted(issue);
     try {
-      const result = await fetchBody(issue, cwd);
+      const result = await untilAborted(fetchBody(issue, cwd), signal, issue);
       if (result.stdout.trim()) return result;
       lastEmpty = result;
       lastError = undefined;
       trace(`work-driver: gh issue view ${issue} returned empty stdout (${attempt}/${attempts})`);
     } catch (err) {
+      if (err instanceof IssueBodyFetchAborted) throw err;
       lastError = err;
       lastEmpty = undefined;
       trace(
@@ -100,11 +113,51 @@ export async function fetchIssueBodyWithRetry(
       );
     }
     if (attempt < attempts) {
-      await sleep(jitteredMs(transientRetryBackoffMs() * attempt, 0, opts.rand ?? Math.random));
+      const ms = jitteredMs(transientRetryBackoffMs() * attempt, 0, opts.rand ?? Math.random);
+      await untilAborted(sleep(ms), signal, issue);
     }
   }
   if (lastError !== undefined) throw lastError;
   return lastEmpty ?? { stdout: "" };
+}
+
+/** #1371 — the issue-body fetch stopped because the cycle's signal fired. */
+export class IssueBodyFetchAborted extends Error {
+  constructor(issue: number) {
+    super(`gh issue view ${issue} abandoned: the cycle was interrupted`);
+    this.name = "IssueBodyFetchAborted";
+  }
+}
+
+/**
+ * `p`, or a rejection with `IssueBodyFetchAborted` as soon as `signal` fires.
+ * An abandoned `gh` keeps its own 45 s deadline; nothing waits for it.
+ */
+function untilAborted<T>(
+  p: Promise<T>,
+  signal: AbortSignal | undefined,
+  issue: number,
+): Promise<T> {
+  if (!signal) return p;
+  if (signal.aborted) {
+    // Abandoned: its own settlement must not surface as an unhandled rejection.
+    p.catch(() => undefined);
+    return Promise.reject(new IssueBodyFetchAborted(issue));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new IssueBodyFetchAborted(issue));
+    signal.addEventListener("abort", onAbort, { once: true });
+    p.then(
+      (v) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(v);
+      },
+      (err: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      },
+    );
+  });
 }
 
 /**
