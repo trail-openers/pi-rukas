@@ -59,7 +59,10 @@ assert(
   `no smoke test hands driver code an executor that drops argv — use realExec from lib/exec-fake.ts (offenders: ${offenders.join(" | ") || "none"})`,
 );
 const stale = Object.keys(ALLOWED).filter((f) => !seen.has(f));
-assert(stale.length === 0, `every allowlisted file still needs its entry (stale: ${stale.join(", ") || "none"})`);
+assert(
+  stale.length === 0,
+  `every allowlisted file still needs its entry (stale: ${stale.join(", ") || "none"})`,
+);
 
 // ------------------------------------------------- the scan, failing direction
 const fakes = [
@@ -98,11 +101,13 @@ assert(
   `the scan catches the sh -c fake, the forwarding-to-promisify(exec) fake and the callback-exec fake — and nothing else (got lines: ${caught.join(",") || "none"})`,
 );
 assert(
-  shellOnlyEscapes("const execp = promisify(exec);\nconst ctx = { verifyExecFn: execp };").length === 1,
+  shellOnlyEscapes("const execp = promisify(exec);\nconst ctx = { verifyExecFn: execp };")
+    .length === 1,
   "a bare promisify(exec) handed on as verifyExecFn is caught",
 );
 assert(
-  shellOnlyEscapes('const execp = promisify(exec);\nimport { execp as other } from "./x.ts";').length === 0,
+  shellOnlyEscapes('const execp = promisify(exec);\nimport { execp as other } from "./x.ts";')
+    .length === 0,
   "an import line naming the same binding is not a hand-on",
 );
 

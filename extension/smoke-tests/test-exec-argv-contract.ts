@@ -23,8 +23,8 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { execp as sharedExecp } from "../src/exec.ts";
 import { execTree } from "../src/exec-tree.ts";
+import { execp as sharedExecp } from "../src/exec.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { execp as verifyExecp, verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
@@ -110,7 +110,9 @@ async function main() {
     `no bare promisify(exec) outside exec.ts and the shell-only seam in work-driver-merged-mechanized.ts (offenders: ${offenders.join(", ") || "none"})`,
   );
   assert(
-    bareExecLines("const execp = promisify(exec);\n// promisify(exec) in prose\n* promisify(exec)\nconst f = promisify(execFile);") === 1,
+    bareExecLines(
+      "const execp = promisify(exec);\n// promisify(exec) in prose\n* promisify(exec)\nconst f = promisify(execFile);",
+    ) === 1,
     "the check counts a code use of promisify(exec) and nothing else (comments, prose and execFile are not counted)",
   );
   assert(

@@ -59,7 +59,9 @@ function arrowBody(source: string, from: number): string {
  */
 export function argvDroppingFakes(source: string): string[] {
   const shells = ["exec"];
-  for (const m of source.matchAll(/\b(?:const|let)\s+(\w+)(?::[^=]+)?\s*=\s*promisify\(\s*exec\s*\)/g))
+  for (const m of source.matchAll(
+    /\b(?:const|let)\s+(\w+)(?::[^=]+)?\s*=\s*promisify\(\s*exec\s*\)/g,
+  ))
     if (m[1]) shells.push(m[1]);
   const fnRe =
     /(?:async\s*)?\(\s*(\w+)(?:\s*:\s*string)?\s*,\s*\w+\??(\s*:[^)]*)?\)\s*(?::[^=]*)?=>\s*/g;
@@ -69,7 +71,9 @@ export function argvDroppingFakes(source: string): string[] {
     if (/^\s*:\s*string\s*$/.test(optsType)) continue;
     const body = arrowBody(source, (m.index ?? 0) + head.length);
     // `(?<!\.)`: a method call (`re.exec(line)`) is not node's `exec`.
-    const toShell = new RegExp(`"-c",\\s*${cmd}\\b|(?<!\\.)\\b(?:${shells.join("|")})\\(\\s*${cmd}\\s*[,)]`);
+    const toShell = new RegExp(
+      `"-c",\\s*${cmd}\\b|(?<!\\.)\\b(?:${shells.join("|")})\\(\\s*${cmd}\\s*[,)]`,
+    );
     if (!toShell.test(body) || /\bargv\b|\bcommandOf\b|\basShellForm\b/.test(body)) continue;
     const line = source.slice(0, m.index).split("\n").length;
     found.push(`${line}: ${(source.split("\n")[line - 1] ?? "").trim()}`);
