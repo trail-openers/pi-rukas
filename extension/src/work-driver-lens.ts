@@ -1,6 +1,7 @@
 /**
  * work-driver-lens — Step 7 (lens review). The Step 7f lens-fix handler lives
- * in work-driver-lens-fix.ts (500-line limit) and is re-exported here.
+ * in work-driver-lens-fix.ts (500-line limit); its commit helpers live in
+ * work-driver-lens-fix-commit.ts and are re-exported from this module.
  */
 
 import { carriedAdversarialFindings } from "./adversarial-findings.ts";

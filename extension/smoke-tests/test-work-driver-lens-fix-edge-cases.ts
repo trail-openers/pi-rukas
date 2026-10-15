@@ -257,9 +257,7 @@ setupSpawnGuard();
         `the cap names the worktree it inspected (got: ${cap.lensWorktreePath})`,
       );
       assert(
-        (after492?.pipelineState.plumbReports ?? []).filter(
-          (r) => !/could not be read/.test(r.body), // the PR-gate note, not an integration failure
-        ).length === 0,
+        (after492?.pipelineState.plumbReports ?? []).length === 0,
         "a no-diff outcome is NOT an integration failure — it carries no plumb-report",
       );
     }

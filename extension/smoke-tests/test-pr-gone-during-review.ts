@@ -301,6 +301,28 @@ try {
     );
   }
 
+  // ------------------- unreadable once per cycle: one note, no repeat retries
+  {
+    const t = await cycle("unreadable-again");
+    t.c.pr = "unreadable";
+    const first = await endIfPrGone(t.ctx, t.state("lens-review"), "lens-review");
+    const ghBefore = t.c.gh.length;
+    const second = await endIfPrGone(t.ctx, t.state("ci"), "ci");
+    assert(
+      (second.state.pipelineState.plumbReports ?? []).length ===
+        (t.state("ci").pipelineState.plumbReports ?? []).length,
+      "a second unreadable gate in the same cycle writes no second plumb note",
+    );
+    assert(
+      t.c.gh.length - ghBefore === 1 && second.ended === undefined,
+      "…and makes one read with no retry backoff",
+    );
+    assert(
+      first.state.pipelineState.plumbReports.some((r) => r.role === "pr-gate"),
+      "the note is typed role pr-gate",
+    );
+  }
+
   // ------------------------------------- one transient failure, then MERGED
   {
     const t = await cycle("transient-read");
@@ -398,6 +420,15 @@ try {
           ev.issueFallback === "failed" &&
           (ev.detail ?? "").includes("502"),
         `the issue post failing too is recorded, not dropped (got ${JSON.stringify(ev)})`,
+      );
+      assert(
+        (after.pipelineState.plumbReports ?? []).some(
+          (r) =>
+            r.role === "residuals-post" &&
+            r.body.includes(`${FINDING.path}:`) &&
+            r.body.includes(FINDING.title),
+        ),
+        "both posts failing: the findings are kept in plumbReports for the handoff",
       );
     }
     assert(

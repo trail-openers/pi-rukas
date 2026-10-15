@@ -90,12 +90,14 @@ export async function recordedPrState(
   execFn: VerifyExecFn,
   prNumber: number | undefined,
   branchName: string,
+  onError?: (message: string) => void,
 ): Promise<"OPEN" | "MERGED" | "CLOSED" | undefined> {
   if (prNumber === undefined) return undefined;
   try {
     const pr = await (await forgeForCycle(ctx, execFn))?.prView(prNumber);
     return pr?.headRefName === branchName ? pr.state : undefined;
-  } catch {
+  } catch (err) {
+    onError?.(err instanceof Error ? err.message : String(err));
     return undefined;
   }
 }

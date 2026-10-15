@@ -43,49 +43,84 @@ export type PrGate = { ended?: WorkState; state: WorkState };
 /** Backoff before each re-read of an unreadable PR state (two retries). */
 const PR_STATE_RETRY_DELAYS_MS = [500, 1500];
 
+/**
+ * Cycles whose PR state has already been found unreadable. Once a cycle has
+ * seen it, later gates make one read each (a merge is still caught) with no
+ * backoff and no second plumb note — so an unreadable forge costs the
+ * retries and the note once per cycle, not once per gated step.
+ */
+const unreadableCycles = new WeakSet<DriverContext>();
+
 export async function endIfPrGone(
   ctx: DriverContext,
   state: WorkState,
   step: WorkStep,
 ): Promise<PrGate> {
   const ps = state.pipelineState;
+  // No forge configured: there is no PR to read, so no lookup, no retries, no note.
   if (ps.prNumber === undefined || !ps.branchName) return { state };
+  if (process.env.PI_ENSEMBLE_FORGE === "none") return { state };
   const execFn = ctx.verifyExecFn ?? execp;
-  const prState = await readPrStateWithRetry(ctx, execFn, ps.prNumber, ps.branchName);
-  if (prState === "MERGED") {
+  const seen = unreadableCycles.has(ctx);
+  const read = await readPrState(ctx, execFn, ps.prNumber, ps.branchName, !seen);
+  if (read.prState === "MERGED") {
     return { state, ended: await mergedDuringReview(ctx, state, ps.prNumber, step) };
   }
-  if (prState === "CLOSED") {
+  if (read.prState === "CLOSED") {
     return { state, ended: closedDuringReview(state, ps.prNumber, ps.branchName, step) };
   }
-  if (prState === undefined) return { state: unreadablePrNote(state, ps.prNumber, step) };
+  if (read.prState === undefined && !seen) {
+    unreadableCycles.add(ctx);
+    return { state: unreadablePrNote(state, ps.prNumber, step, read) };
+  }
   return { state };
 }
 
+type PrRead = {
+  prState?: "OPEN" | "MERGED" | "CLOSED";
+  attempts: number;
+  /** The last thrown `gh` error, when the read itself failed. */
+  error?: string;
+};
+
 /** `recordedPrState` folds a thrown `gh` error into `undefined`, so retry on that. */
-async function readPrStateWithRetry(
+async function readPrState(
   ctx: DriverContext,
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
   prNumber: number,
   branchName: string,
-) {
-  let prState = await recordedPrState(ctx, execFn, prNumber, branchName);
-  for (const delay of PR_STATE_RETRY_DELAYS_MS) {
+  retry: boolean,
+): Promise<PrRead> {
+  let error: string | undefined;
+  const readOnce = () =>
+    recordedPrState(ctx, execFn, prNumber, branchName, (m) => {
+      error = m;
+    });
+  let prState = await readOnce();
+  let attempts = 1;
+  for (const delay of retry ? PR_STATE_RETRY_DELAYS_MS : []) {
     if (prState !== undefined) break;
     await new Promise((resolve) => setTimeout(resolve, delay));
-    prState = await recordedPrState(ctx, execFn, prNumber, branchName);
+    prState = await readOnce();
+    attempts++;
   }
-  return prState;
+  return { prState, attempts, error };
 }
 
 /**
  * The PR state stayed unreadable through every attempt: the step runs anyway
  * (a cycle is never ended on a guess), but the operator is told the check did
- * not run, in the state file's plumbReports the handoff renders.
+ * not run, in the state file's plumbReports the handoff renders. The report's
+ * role is `pr-gate`, so readers can tell it from an integration failure.
  */
-function unreadablePrNote(state: WorkState, prNumber: number, step: WorkStep): WorkState {
-  const attempts = PR_STATE_RETRY_DELAYS_MS.length + 1;
-  const body = `PR #${prNumber}'s state could not be read before the ${step} step (${attempts} attempts), so the merged/closed check did not run and the step ran anyway. If the PR was merged or closed meanwhile, the step's push is refused or lands on a merged branch — check the PR.`;
+function unreadablePrNote(
+  state: WorkState,
+  prNumber: number,
+  step: WorkStep,
+  read: PrRead,
+): WorkState {
+  const last = read.error ? `last error: ${read.error}` : "the PR is not on this branch";
+  const body = `PR #${prNumber}'s state could not be read before the ${step} step (${read.attempts} attempt(s); ${last}), so the merged/closed check did not run and the step ran anyway. If the PR was merged or closed meanwhile, the step's push is refused or lands on a merged branch — check the PR.`;
   trace(`work-driver: ${body}`);
   return {
     ...state,
@@ -93,7 +128,7 @@ function unreadablePrNote(state: WorkState, prNumber: number, step: WorkStep): W
       ...state.pipelineState,
       plumbReports: [
         ...(state.pipelineState.plumbReports ?? []),
-        { step, role: "driver", body, at: Date.now() },
+        { step, role: "pr-gate", body, at: Date.now() },
       ],
     },
   };
@@ -116,8 +151,9 @@ async function mergedDuringReview(
   trace(`work-driver: PR #${prNumber} was merged by someone else before ${step} — cycle ends`);
   try {
     await releaseClaim(ctx.repoRoot, ctx.issue);
-  } catch {
-    /* best-effort, as on the driver's own merge */
+  } catch (err) {
+    // best-effort, as on the driver's own merge — but traced, not invisible
+    trace(`work-driver: releaseClaim after the human merge failed: ${String(err)}`);
   }
   return appendEvent(
     {
@@ -201,7 +237,7 @@ export async function recordResidualsPost(
     detail = (err instanceof Error ? err.message : String(err)).slice(0, 200);
     trace(`work-driver: residual findings could not be posted to issue #${ctx.issue}: ${detail}`);
   }
-  return appendEvent(state, {
+  const next = appendEvent(state, {
     kind: "lens-residuals-post-failed",
     at: Date.now(),
     round,
@@ -210,4 +246,26 @@ export async function recordResidualsPost(
     issueFallback,
     ...(detail ? { detail } : {}),
   });
+  if (issueFallback === "posted") return next;
+  // Both posts failed: the findings would otherwise exist only in the event
+  // log, which the handoff does not render. Keep them in plumbReports.
+  const list = summary.findings.map(
+    (f) => `- ${f.path}:${f.line ?? "?"} ${f.severity} ${f.title} (${f.lens})`,
+  );
+  const report = {
+    step: "lens-review" as const,
+    role: "residuals-post",
+    body: [
+      `Round ${round} residual findings were not posted to ${prNumber ? `PR #${prNumber}` : "the PR"} or to issue #${ctx.issue}; kept here so the handoff shows them:`,
+      ...list,
+    ].join("\n"),
+    at: Date.now(),
+  };
+  return {
+    ...next,
+    pipelineState: {
+      ...next.pipelineState,
+      plumbReports: [...(next.pipelineState.plumbReports ?? []), report],
+    },
+  };
 }

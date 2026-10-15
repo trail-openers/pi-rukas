@@ -92,6 +92,9 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
 // gate tests re-enable it with an injected verifyExecFn.
 process.env.PI_ENSEMBLE_VERIFY = "0";
 
+// No forge: the PR-state gate is skipped entirely, so it writes no plumb note.
+process.env.PI_ENSEMBLE_FORGE = "none";
+
 setupSpawnGuard();
 
 // 49b. Issue #492 — a lens-fix whose diff EXISTS but staging fails is
@@ -221,10 +224,7 @@ setupSpawnGuard();
       // plumb-report; the cap carries the verbatim git error and the
       // inspected worktree. The no-diff classification (a git status
       // reading) must not be used for an integration failure.
-      // The PR-gate note ("could not be read") is not an integration failure.
-      const reports = (after?.pipelineState.plumbReports ?? []).filter(
-        (r) => !/could not be read/.test(r.body),
-      );
+      const reports = after?.pipelineState.plumbReports ?? [];
       assert(
         reports.length === 1 && (reports[0].body ?? "").includes("staging or integration failed"),
         "the integration failure is surfaced as a plumb-report (not flattened into the cap only)",
