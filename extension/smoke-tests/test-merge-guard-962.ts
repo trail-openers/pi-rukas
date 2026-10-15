@@ -162,6 +162,19 @@ merges("gh pr merge 17 && gh pr view 5", 17);
 // A brace word past the expansion bound still yields its alternatives.
 merges("echo {a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b} && gh pr merge 17", 17);
 
+// ------------------------------------------------------------ review round 3
+merges("case $(echo x) in x) gh pr merge 17;; esac", 17);
+// A comment is inert: the apostrophe in it does not hide the number (the
+// raw reading sees an unclosed quote, the canonical one sees PR 17).
+kind("gh pr merge 17 # it's", "ambiguous");
+benign("echo hi # gh pr merge 17");
+{
+  const t0 = performance.now();
+  const a = analyseMergeCommand(`echo {${"a,".repeat(255)}a}{${"b,".repeat(999)}b} merge`);
+  const dt = performance.now() - t0;
+  assert(a.kind === "none" && dt < 1000, `a hostile brace word stays bounded (${dt.toFixed(0)}ms) → ${show(a)}`);
+}
+
 // ------------------------------------------------------------ the REAL hook refuses
 await setupLedgerPath();
 for (const cmd of [

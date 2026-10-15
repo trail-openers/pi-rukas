@@ -60,6 +60,14 @@ export function canonicalCommand(command: string): string | undefined {
       i++;
       continue;
     }
+    // An unquoted `#` at the start of a word begins a comment to the end of
+    // the line (`gh pr merge 17 # it's` merges PR 17 — the apostrophe is
+    // inert). The raw reading sees an unclosed quote there; this reading
+    // sees the merge, and their disagreement refuses.
+    if (start === -1 && c === "#") {
+      while (i < n && command[i] !== "\n") i++;
+      continue;
+    }
     if (start === -1) start = i;
     if (c === "\\") {
       word += command[i + 1] ?? "";
@@ -167,12 +175,14 @@ function braceExpand(word: string): string[] {
         continue;
       }
       changed = true;
-      for (const alt of (m[1] ?? "").split(","))
-        next.push(w.slice(0, m.index) + alt + w.slice(m.index + m[0].length));
+      const alts = (m[1] ?? "").split(",");
+      // Past the bound, fail closed with every alternative as its own word
+      // (a superset of the words bash runs) rather than the unexpanded word.
+      // Checked BEFORE the alternatives are built, so a hostile word never
+      // materialises its full product.
+      if (next.length + alts.length > 256) return word.split(/[{},]+/).filter((x) => x !== "");
+      for (const alt of alts) next.push(w.slice(0, m.index) + alt + w.slice(m.index + m[0].length));
     }
-    // Past the bound, fail closed with every alternative as its own word
-    // (a superset of the words bash runs) rather than the unexpanded word.
-    if (next.length > 256) return word.split(/[{},]+/).filter((w) => w !== "");
     words = next;
     if (!changed) return words.filter((w) => w !== "");
   }

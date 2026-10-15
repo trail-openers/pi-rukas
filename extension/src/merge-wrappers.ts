@@ -139,8 +139,15 @@ export function skipLeadingWrappers(tokens: string[], start: number): number {
     // (after `;;`) with its pattern at the head: a head token closed by `)`
     // (`2)`, `*)`, `(a)`), or a pattern followed by a lone `)` (`2 )`).
     if (t === "case") {
-      let j = i + 2;
-      if (tokens[j] === "in") j++;
+      // The subject may itself end in `)` (`case $(echo x) in …`), so skip
+      // to the `in` keyword first, then to the arm's closing `)`.
+      let j = i + 1;
+      while (j < tokens.length && tokens[j] !== "in") {
+        if (isSeparatorToken(tokens[j] ?? "")) return i;
+        j++;
+      }
+      if (j >= tokens.length) return i;
+      j++;
       while (j < tokens.length && !(tokens[j] ?? "").endsWith(")")) {
         if (isSeparatorToken(tokens[j] ?? "")) return i;
         j++;
