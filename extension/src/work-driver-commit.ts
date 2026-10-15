@@ -281,7 +281,13 @@ export async function mechanizedCommitPr(
       // halt a child that worked there anyway). A failure to create the
       // integrate worktree is a driver environment failure → a cap, not an
       // LLM judgment call.
-      const worktreeRes = await ensureIntegrateWorktreeOrHalt(ctx, state, branchName, execFn);
+      const worktreeRes = await ensureIntegrateWorktreeOrHalt(
+        ctx,
+        state,
+        branchName,
+        execFn,
+        res.reason,
+      );
       if ("halted" in worktreeRes) {
         return {
           ok: false,

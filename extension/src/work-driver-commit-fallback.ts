@@ -123,6 +123,9 @@ export async function ensureIntegrateWorktreeOrHalt(
   state: WorkState,
   branchName: string,
   execFn: ExecFn,
+  // #1173 — why integrate() failed; the halt otherwise records only the
+  // downstream creation failure, and the operator cannot see the first cause.
+  integrateReason?: string,
 ): Promise<{ path: string; state: WorkState } | { halted: WorkState }> {
   const ps = state.pipelineState;
   if (!ps.baseSha) {
@@ -157,7 +160,7 @@ export async function ensureIntegrateWorktreeOrHalt(
         at: Date.now(),
         step: "commit-pr",
         role: "driver",
-        body: "The driver-owned integrate worktree could not be created; the commit-pr ops fallback is pinned to it as the ONLY permitted working tree, so no ops dispatch is attempted.",
+        body: `The driver-owned integrate worktree could not be created; the commit-pr ops fallback is pinned to it as the ONLY permitted working tree, so no ops dispatch is attempted.${integrateReason ? ` The mechanized integrate failed first: ${integrateReason.slice(0, 400)}` : ""}`,
         fallbackCause: "other",
       }),
       {

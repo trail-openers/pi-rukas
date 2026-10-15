@@ -7,6 +7,7 @@
  *      step throws DirtyWorktreeError naming its path;
  *  (b) a clean, tree-equal stale integrate tree is removed and recreated as before;
  *  (c) an unsafe branchName is refused before any git command runs;
+ *  (e) a commit on neither the branch nor origin is kept on a backup ref (#1173);
  *  (i) a plain non-worktree directory at the integrate path is refused as
  *      DirtyWorktreeError (notOwnWorktree) and never removed.
  */
@@ -204,11 +205,15 @@ try {
       err = e;
     }
     if (where === "unpushed") {
+      // #1173 — the detached tree's own commit is no longer refused (that wedged
+      // every re-entry); it is kept on a backup ref, so nothing is lost.
+      const kept = (
+        await git(repo, ["rev-parse", "--verify", `refs/pi-rukas/integrate-backup/issue-17/${sha}`])
+      ).stdout.trim();
       assert(
-        err instanceof DirtyWorktreeError && err.message.includes(wt),
-        "(e) a stale tree with a commit on neither the branch nor origin is refused",
+        err === undefined && kept === sha,
+        "(e) a stale tree with a commit on neither the branch nor origin is kept on a backup ref, not refused",
       );
-      assert(existsSync(wt), "(e) the unpushed stale tree is not removed");
     } else {
       const tag = where === "local" ? "(d)" : "(f)";
       assert(
