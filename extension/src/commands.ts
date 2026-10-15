@@ -231,7 +231,7 @@ export function registerCommands(pi: ExtensionAPI) {
           stripPmTools(pi);
           await launchWork(piSessionHost(pi), {
             repoRoot: await resolveRepoRoot(ctx.cwd),
-            invocation: parsed,
+            invocation: { ...parsed, headless: !ctx.hasUI },
             sink: { notify: (t) => ctx.ui.notify(t, "info") },
           });
           return;

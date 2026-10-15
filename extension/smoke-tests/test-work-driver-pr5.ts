@@ -11,7 +11,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { type DriverContext, STEP_FAILURE_POLICY, nextStep } from "../src/work-driver-context.ts";
+import { type DriverContext, nextStep } from "../src/work-driver-context.ts";
+import { STEP_FAILURE_POLICY } from "../src/work-driver-failure-policy.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
 import { renderHandoffUserMessage } from "../src/work-driver-handoff-message.ts";

@@ -108,7 +108,7 @@ export function issueEditCmd(forge: ForgeType, number: number, bodyFile?: string
 
 export function prViewCmd(forge: ForgeType, number: number): string {
   if (forge === "github") {
-    return `gh pr view ${number} --json number,title,body,state,url,headRefName,baseRefName,author,mergeable,mergeStateStatus,labels,createdAt,updatedAt`;
+    return `gh pr view ${number} --json number,title,body,state,url,headRefName,baseRefName,author,mergeable,mergeStateStatus,isDraft,labels,createdAt,updatedAt`;
   }
   return `glab mr view ${number} --output json`;
 }
@@ -139,16 +139,29 @@ export function prCreateCmd(
   title: string,
   headBranch: string,
   bodyFile: string,
-  baseBranch?: string,
+  opts: { baseBranch?: string; draft?: boolean } = {},
 ): string {
+  // #1292 — both CLIs spell it `--draft`; a draft is still state OPEN/opened.
+  const draftFlag = opts.draft ? " --draft" : "";
+  const baseBranch = opts.baseBranch;
   if (forge === "github") {
     const head = baseBranch ? `${shq(baseBranch)}...${shq(headBranch)}` : shq(headBranch);
-    return `gh pr create --title ${shq(title)} --head ${head} --body-file ${shq(bodyFile)}`;
+    return `gh pr create --title ${shq(title)} --head ${head} --body-file ${shq(bodyFile)}${draftFlag}`;
   }
   // GitLab: NO --head flag — the source branch is positional, and the
   // target is `--target-branch`.
   const target = baseBranch ? ` --target-branch ${shq(baseBranch)}` : "";
-  return `glab mr create ${shq(headBranch)} -t ${shq(title)} --description-file ${shq(bodyFile)}${target} --output json`;
+  return `glab mr create ${shq(headBranch)} -t ${shq(title)} --description-file ${shq(bodyFile)}${target}${draftFlag} --output json`;
+}
+
+/**
+ * #1292 — mark a draft PR/MR ready for review. `gh pr ready` on a PR that is
+ * already ready warns and exits 0, as does `glab mr update --ready` on an MR
+ * without the draft marker, so a repeat is harmless.
+ */
+export function prReadyCmd(forge: ForgeType, number: number): string {
+  if (forge === "github") return `gh pr ready ${number}`;
+  return `glab mr update ${number} --ready`;
 }
 
 /**

@@ -20,6 +20,7 @@ import type { CommitPrRootInspect } from "./work-driver-commit-inspect.ts";
 import { inspectCommitPrRoot } from "./work-driver-commit-inspect.ts";
 import { commitPrRootFieldsOf } from "./work-driver-commit-inspect.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { recordFallbackDraftFact } from "./work-driver-draft-pr.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import type { IntegrateResult } from "./work-driver-integrate.ts";
 import { parsePrNumber } from "./work-driver-merged.ts";
@@ -58,6 +59,8 @@ export async function runCommitPrPostDispatchGates(
   const prNumber = parsePrNumber(last.summary);
   if (prNumber !== undefined) {
     state = { ...state, pipelineState: { ...state.pipelineState, prNumber } };
+    // #1292 — the draft fact, once the number is known: what the forge says.
+    state = await recordFallbackDraftFact(ctx, state, prNumber, execFn);
   }
   if (state.pipelineState.consolidationCompleteness?.droppedPaths.length) {
     return raiseConsolidationIncompleteCap(state);

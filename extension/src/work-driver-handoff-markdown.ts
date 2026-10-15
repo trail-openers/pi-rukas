@@ -12,6 +12,7 @@ import { killDetail } from "./kill-detail.ts";
 import { renderLensFindings } from "./lens-findings-render.ts";
 import { capedPartialStateLines } from "./work-driver-caped-state.ts";
 import { formatCycleTotal } from "./work-driver-cycle-total.ts";
+import { draftPrHandoffLines } from "./work-driver-draft-pr.ts";
 import { explainCap } from "./work-driver-explain.ts";
 import {
   adversarialOutcomeSection,
@@ -115,6 +116,7 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
     "",
     explain,
     "",
+    ...draftPrHandoffLines(ps, forge),
     ...commitPrRootFacts(state, capForExplain),
     ...commitPrFallbackPlumbSection(state, capForExplain),
     ...adversarialOutcomeSection(state),

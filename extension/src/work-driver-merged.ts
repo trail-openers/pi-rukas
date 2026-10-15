@@ -16,6 +16,7 @@ import { buildCompletionEvent } from "./work-driver-completion-event.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
+import { markDraftPrReady } from "./work-driver-draft-pr.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { detectMainline, restoreCheckout } from "./work-driver-git.ts";
@@ -168,9 +169,35 @@ export async function runSingleDispatch(
  */
 export async function runMerged(
   ctx: CycleContext,
-  state: WorkState,
+  entryState: WorkState,
   now: number,
 ): Promise<WorkState> {
+  // #1292 — the final safeguard, not the usual mark point: the PR was marked
+  // ready on entering ci. A draft cannot merge (`mergeStateStatus: DRAFT` holds
+  // it), so this retries a ready that failed and no merge proceeds on a draft.
+  const state = await markDraftPrReady(ctx, entryState);
+  // The merge does not rely on the forge refusing a draft: a PR that is not
+  // ready halts here, naming why, before any merge is attempted.
+  const draft = state.pipelineState.prDraft;
+  if (draft && draft.status !== "ready") {
+    const failed = `marking PR ready failed: ${draft.error ?? "no reason recorded"}`;
+    const reason = draft.holdReason
+      ? `PR is still a draft: ${draft.holdReason}${draft.status === "ready-failed" ? `; ${failed}` : ""}`
+      : draft.status === "ready-failed"
+        ? failed
+        : "PR is still a draft: not marked ready";
+    return appendEvent(
+      { ...state, pipelineState: { ...state.pipelineState, currentStep: "merged" } },
+      {
+        kind: "cap-hit",
+        at: Date.now(),
+        cap: "step-failed:merged",
+        reviewRound: state.pipelineState.reviewRound,
+        evidence: reason,
+        nextStep: "handoff",
+      },
+    );
+  }
   const prNumber = state.pipelineState.prNumber ?? 0;
   const issues = activeIssuesOf(state);
   let next: WorkState;
