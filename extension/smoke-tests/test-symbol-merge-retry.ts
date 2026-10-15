@@ -18,7 +18,9 @@
  *   3. no sibling adds the symbol → no merge, parks as before (here the
  *      consolidation-created cap, since neither tree has the symbol).
  *   4. PI_ENSEMBLE_SYMBOL_MERGE_RETRY=0 → no merge on the case-1 shape.
- * Plus the two text scans in isolation.
+ *   5. the re-dispatch leaves its fix uncommitted → the safety net commits
+ *      it against the post-merge HEAD, so the work is not dropped.
+ * The text scans are tested in test-symbol-scan.ts.
  */
 
 import { execFile } from "node:child_process";
@@ -27,7 +29,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { DispatchResult } from "../src/types.ts";
-import { addedSymbolsInDiff, missingSymbolsIn } from "../src/work-develop-symbol-scan.ts";
 import { runDevelopTopological } from "../src/work-develop-topological.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { explainVerifyFailed } from "../src/work-driver-explain-verify.ts";
@@ -43,69 +44,6 @@ function assert(cond: boolean, msg: string) {
   else {
     console.error(`✗ ${msg}`);
     exit = 1;
-  }
-}
-
-// ── the scans ────────────────────────────────────────────────────────────
-{
-  const tsc = [
-    `src/b.ts(1,10): error TS2305: Module '"./a.ts"' has no exported member 'newThing'.`,
-    `src/c.ts(4,7): error TS2339: Property 'providerRepeats' does not exist on type 'ErrorStop'.`,
-    `src/d.ts(9,3): error TS2353: Object literal may only specify known properties, and 'introduces' does not exist in type 'Workstream'.`,
-    `src/e.ts(2,1): error TS2307: Cannot find module './work-new-thing.ts' or its corresponding type declarations.`,
-    "error[E0425]: cannot find value `max_depth` in this scope",
-    "ImportError: cannot import name 'parse_contract' from 'mod'",
-    "./x.go:3:2: undefined: pkg.NewWidget",
-  ].join("\n");
-  const got = missingSymbolsIn(tsc);
-  for (const s of [
-    "newThing",
-    "providerRepeats",
-    "introduces",
-    "work-new-thing",
-    "max_depth",
-    "parse_contract",
-    "NewWidget",
-  ]) {
-    assert(
-      got.includes(s),
-      `scan: a verify failure naming \`${s}\` is read (got ${got.join(",")})`,
-    );
-  }
-  assert(
-    missingSymbolsIn("1 test failed: expected 2, got 3").length === 0,
-    "scan: a plain test failure names no symbol",
-  );
-  const diff = [
-    "diff --git a/src/a.ts b/src/a.ts",
-    "--- a/src/a.ts",
-    "+++ b/src/a.ts",
-    "@@ -1 +1,6 @@",
-    "+export const newThing = 1;",
-    "+export { helper as renamedHelper, other };",
-    "+export interface ErrorStop {",
-    "+  providerRepeats?: number;",
-    "+}",
-    " const unchanged = 2;",
-    "-export const removedThing = 3;",
-    "--- /dev/null",
-    "+++ b/src/work-new-thing.ts",
-    "+pub fn max_depth() -> u32 { 3 }",
-  ].join("\n");
-  const added = addedSymbolsInDiff(diff);
-  for (const s of [
-    "newThing",
-    "renamedHelper",
-    "other",
-    "ErrorStop",
-    "providerRepeats",
-    "work-new-thing",
-    "max_depth",
-  ]) {
-    assert(added.includes(s), `scan: a diff adding \`${s}\` is read (got ${added.join(",")})`);
-  }
-  for (const s of ["unchanged", "removedThing", "helper"]) {
-    assert(!added.includes(s), `scan: \`${s}\` (not an added symbol) is not read`);
   }
 }
 
@@ -178,7 +116,7 @@ function recordingDispatch(
 async function run(
   name: string,
   aBody: string,
-  opts: { introduces?: string[]; retryBody?: string } = {},
+  opts: { introduces?: string[]; retryBody?: string; leaveUncommitted?: boolean } = {},
 ): Promise<{ after: WorkState; calls: Call[]; wt: Record<string, string>; aSha: string }> {
   const { repo, baseSha } = await fixture(name);
   const wt: Record<string, string> = {};
@@ -192,7 +130,11 @@ async function run(
   const calls: Call[] = [];
   const dispatchFn = recordingDispatch(calls, async (spec) => {
     if (spec.cwd === wt.b && (spec.prompt ?? "").includes("SIBLING-SYMBOL MERGE-AND-RETRY")) {
-      await commitFile(spec.cwd as string, "b.ts", opts.retryBody ?? "", "b-retry");
+      if (opts.retryBody === undefined) return;
+      writeFileSync(path.join(spec.cwd as string, "b.ts"), opts.retryBody);
+      if (opts.leaveUncommitted) return;
+      await git(spec.cwd as string, ["add", "b.ts"]);
+      await git(spec.cwd as string, ["commit", "-q", "--allow-empty", "-m", "b-retry"]);
     }
   });
   const ctx = {
@@ -262,6 +204,11 @@ const retries = (calls: Call[]) =>
     .then(() => true)
     .catch(() => false);
   assert(aInB, "case 1: the merged worktree builds on a's commit");
+  const subjects = await gitOut(wt.b as string, ["log", "--format=%s", `${aSha}..HEAD`]);
+  assert(
+    subjects.split("\n").includes("b") && (r[0]?.prompt ?? "").includes("replayed on top"),
+    `case 1: b's first-attempt commit is replayed onto a's tip, and the prompt says so (got ${subjects})`,
+  );
   const cap = after.eventLog.find((e) => e.kind === "cap-hit");
   assert(
     cap === undefined,
@@ -323,6 +270,23 @@ const retries = (calls: Call[]) =>
   assert(
     mergeEvents(after).length === 0 && retries(calls).length === 0,
     "case 4: PI_ENSEMBLE_SYMBOL_MERGE_RETRY=0 parks without merging",
+  );
+}
+
+// ── case 5: an uncommitted re-dispatch is committed by the safety net ───
+{
+  const fix = 'import { newThing } from "./a.ts";\nexport const used = newThing;\n';
+  const { after, wt } = await run("uncommitted", "export const newThing = 1;\n", {
+    retryBody: fix,
+    leaveUncommitted: true,
+  });
+  const net = after.eventLog.find((e) => e.kind === "safety-net-commit" && e.workstreamId === "a");
+  assert(net !== undefined, "case 5: the safety net commits the merged workstream's leftover work");
+  const committed = await gitOut(wt.b as string, ["show", "HEAD:b.ts"]);
+  const dirty = await gitOut(wt.b as string, ["status", "--porcelain", "--", "b.ts"]);
+  assert(
+    committed.includes("export const used") && dirty === "",
+    `case 5: the re-dispatch's fix is in the merged HEAD, nothing left behind (status: ${dirty})`,
   );
 }
 

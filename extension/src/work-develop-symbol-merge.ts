@@ -20,13 +20,20 @@
  *      producer's tip, one re-dispatch), recording a
  *      `fence-recovery-started` event with `cause: "sibling-symbol"` that
  *      names both workstreams and the symbols.
+ *      Unlike a fence merge, the consumer's own commits are then
+ *      cherry-picked back on top (`carryCommits`): its work was sound apart
+ *      from the missing symbol, so the re-dispatch is a fix-up of real work
+ *      rather than a redo from a prompt. A conflict aborts the pick and
+ *      leaves the plain reset, and the prompt says which one happened.
  *   4. Re-run the develop gate once. A pass continues to the converge gate;
  *      a failure parks as `verify-failed:develop` exactly as before, and the
  *      handoff explanation says the split was merged and still failed
  *      (`mergedSplitNote` in work-driver-explain-verify.ts).
  *
  * Bounded: one merge-and-retry per cycle (any earlier merge event in the
- * cycle's log — fence or symbol — disables it), only on a multi-workstream
+ * cycle's log — fence or symbol — disables it; the state file's event log
+ * IS the cycle: a resume continues it, and a finished cycle only runs again
+ * under `--restart`, which starts a fresh log), only on a multi-workstream
  * develop, and pairs are disjoint (a workstream is in at most one merge per
  * round). `PI_ENSEMBLE_SYMBOL_MERGE_RETRY=0` turns it off.
  */
@@ -34,14 +41,14 @@
 import { recordCommentEvidence } from "./comment-evidence.ts";
 import { type MergePrepPlan, runMergePrep } from "./work-develop-fence-merge.ts";
 import { replaceDevelopConvergedVerdicts } from "./work-develop-fence-verdicts.ts";
-import { addedSymbolsInDiff, missingSymbolsIn } from "./work-develop-symbol-scan.ts";
+import { withPersistNotes } from "./work-develop-retry.ts";
+import { type SymbolCoupling, findSymbolCouplings } from "./work-develop-symbol-couplings.ts";
 import { appendDevelopVerifyFailure } from "./work-develop-verify-failure.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { runConvergeGateHandler } from "./work-driver-converge-gate.ts";
-import { symbolKey } from "./work-driver-plan-contract.ts";
-import { applySafetyNet } from "./work-driver-safety-net.ts";
+import { applySafetyNet, safetyNetWorktree } from "./work-driver-safety-net.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
-import type { WorkState } from "./workflow-state.ts";
+import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 
 type DevelopVerifyGate = Awaited<ReturnType<typeof verifyStepOutcome>>;
 type ExecFn = NonNullable<DriverContext["verifyExecFn"]>;
@@ -52,100 +59,19 @@ export function symbolMergeRetryEnabled(): boolean {
   return v !== "0" && v !== "false";
 }
 
-/** One coupling: `consumer`'s failure names `symbols`, which `producer` adds. */
-export interface SymbolCoupling {
-  consumer: string;
-  producer: string;
-  symbols: string[];
-}
-
 const VALID_SHA = /^[0-9a-f]{40}$/;
-
-/**
- * The workstream a per-worktree failure string belongs to. The gate writes
- * `… failed in <cwd>: <output>` (work-driver-verify-verify-cmd.ts); the
- * longest matching worktree path wins, so `/wt/ws-1` never claims a failure
- * from `/wt/ws-10`.
- */
-function failureOwner(failure: string, worktrees: Record<string, string>): string | undefined {
-  let best: { id: string; len: number } | undefined;
-  for (const [id, cwd] of Object.entries(worktrees)) {
-    const at = failure.indexOf(` in ${cwd}`);
-    if (at < 0) continue;
-    const after = failure.charAt(at + 4 + cwd.length);
-    if (after !== "" && after !== ":" && after !== " " && after !== "\n") continue;
-    if (!best || cwd.length > best.len) best = { id, len: cwd.length };
-  }
-  return best?.id;
-}
-
-/**
- * #1323 — the consumer → producer couplings in a failed develop gate. Pure
- * apart from `diffOf`, which is called at most once per sibling and only
- * when a failure needs a symbol its declared `introduces` does not cover.
- * The result is disjoint: once a workstream is in a coupling it is not
- * paired again this round.
- */
-export async function findSymbolCouplings(
-  failures: string[],
-  worktrees: Record<string, string>,
-  introducesOf: (id: string) => string[] | undefined,
-  diffOf: (id: string) => Promise<string>,
-): Promise<SymbolCoupling[]> {
-  const missingBy = new Map<string, Set<string>>();
-  for (const f of failures) {
-    const id = failureOwner(f, worktrees);
-    if (id === undefined) continue;
-    const syms = missingSymbolsIn(f);
-    if (syms.length === 0) continue;
-    const set = missingBy.get(id) ?? new Set<string>();
-    for (const s of syms) set.add(s);
-    missingBy.set(id, set);
-  }
-  if (missingBy.size === 0) return [];
-  const diffCache = new Map<string, Set<string>>();
-  const diffAdds = async (id: string): Promise<Set<string>> => {
-    const cached = diffCache.get(id);
-    if (cached) return cached;
-    let added = new Set<string>();
-    try {
-      added = new Set(addedSymbolsInDiff(await diffOf(id)));
-    } catch {
-      // An unreadable diff is no evidence: this sibling just never matches.
-    }
-    diffCache.set(id, added);
-    return added;
-  };
-  const used = new Set<string>();
-  const out: SymbolCoupling[] = [];
-  for (const [consumer, missing] of missingBy) {
-    if (used.has(consumer)) continue;
-    for (const producer of Object.keys(worktrees)) {
-      if (producer === consumer || used.has(producer)) continue;
-      const declared = new Set(
-        (introducesOf(producer) ?? []).map(symbolKey).filter((k): k is string => !!k),
-      );
-      let hits = [...missing].filter((s) => declared.has(s));
-      if (hits.length === 0) {
-        const added = await diffAdds(producer);
-        hits = [...missing].filter((s) => added.has(s));
-      }
-      if (hits.length === 0) continue;
-      out.push({ consumer, producer, symbols: hits });
-      used.add(consumer);
-      used.add(producer);
-      break;
-    }
-  }
-  return out;
-}
 
 /** The re-dispatch prompt for a sibling-symbol merge. */
 export function symbolMergePrompt(
   mergedId: string,
   halves: string[],
   couplings: SymbolCoupling[],
+  carried: boolean,
 ): string {
+  const consumers = couplings.filter((c) => c.producer === mergedId).map((c) => c.consumer);
+  const state = carried
+    ? `The worktree now holds ${mergedId}'s commit with ${consumers.join(", ")}'s first-attempt commits replayed on top, so your earlier work is still there. Fix it up to use the symbols above as ${mergedId} defined them`
+    : `The worktree now holds ${mergedId}'s commit; ${consumers.join(", ")}'s first-attempt commits did not replay cleanly on it and were set aside, so redo that half ON TOP of ${mergedId}'s work, using the symbols above as ${mergedId} defined them`;
   const named = couplings
     .filter((c) => c.producer === mergedId)
     .map(
@@ -158,8 +84,33 @@ export function symbolMergePrompt(
     "",
     `Your first attempt was split across ${halves.length} workstreams that each started from the same base commit, so neither saw the other's symbols: ${named}. The halves are COUPLED, so the driver MERGED them into a single workstream: ${mergedId}.`,
     "",
-    `This is your ONLY re-dispatch. The merged scope is the UNION of both halves' declared paths. The worktree now contains ${mergedId}'s commit, so the symbols above exist — build the consuming half's work ON TOP of it, use those symbols as ${mergedId} defined them, do NOT re-implement them, and do NOT touch any file outside the merged scope. Then run the project's verify command and commit.`,
+    `This is your ONLY re-dispatch. The merged scope is the UNION of both halves' declared paths. ${state}. Do NOT re-implement those symbols, and do NOT touch any file outside the merged scope. Then run the project's verify command and commit.`,
   ].join("\n");
+}
+
+/**
+ * Replay `base..sha` (the consumer's first attempt) onto the producer's tip
+ * the worktree was just reset to. True when every commit applied; on any
+ * failure the pick is aborted and the worktree is put back on that tip.
+ */
+async function carryCommits(
+  execFn: ExecFn,
+  cwd: string,
+  base: string | undefined,
+  sha: string,
+): Promise<boolean> {
+  if (!base || !VALID_SHA.test(base) || !VALID_SHA.test(sha)) return false;
+  const opts = { cwd, maxBuffer: 1024 * 1024 };
+  let tip = "";
+  try {
+    tip = (await execFn("git rev-parse HEAD", opts)).stdout.trim();
+    await execFn(`git cherry-pick --allow-empty ${base}..${sha}`, opts);
+    return true;
+  } catch {
+    await execFn("git cherry-pick --abort", opts).catch(() => undefined);
+    if (VALID_SHA.test(tip)) await execFn(`git reset --hard ${tip}`, opts).catch(() => undefined);
+    return false;
+  }
 }
 
 /** One merge-and-retry per cycle: any earlier merge event disables it. */
@@ -224,14 +175,36 @@ export async function runSymbolMergeRetry(
       owner: c.producer,
       symbols: c.symbols,
     })),
-    prompt: (mergedId, halves) => symbolMergePrompt(mergedId, halves, couplings),
+    prompt: (mergedId, halves, carried) => symbolMergePrompt(mergedId, halves, couplings, carried),
     cap: "verify-failed:develop",
+    afterReset: (cwd, base, sha) => carryCommits(execFn, cwd, base, sha),
   };
   const prep = await runMergePrep(ctx, next, stateRef, ids, execFn, dispatch, plan);
   next = prep.state;
   if (prep.outcome.parked) return next;
-  const { mergedIds, merges } = prep.outcome;
-  next = await applySafetyNet(ctx, next);
+  const { mergedIds, merges, mergeHeads } = prep.outcome;
+  // The merged workstream keeps the producer's original base (so its range
+  // holds both halves), which is already behind HEAD: judged against it the
+  // safety net would see "commits ahead" and skip an uncommitted re-dispatch.
+  // Judge the merged worktrees against their pre-re-dispatch HEAD instead.
+  const netEvents: WorkEvent[] = [];
+  const netNotes: string[] = [];
+  for (const id of mergedIds) {
+    const cwd = next.pipelineState.worktrees?.[id];
+    const head = mergeHeads[id];
+    if (typeof cwd !== "string" || !head) continue;
+    const ev = await safetyNetWorktree(id, ctx.repoRoot, cwd, head, execFn, netNotes);
+    if (ev) netEvents.push(ev);
+  }
+  if (netEvents.length > 0) next = appendEvent(next, ...netEvents);
+  if (netNotes.length > 0) next = withPersistNotes(next, netNotes);
+  next = await applySafetyNet(
+    ctx,
+    next,
+    new Set(
+      Object.keys(next.pipelineState.worktrees ?? {}).filter((id) => !mergedIds.includes(id)),
+    ),
+  );
   const gate2 = await verifyStepOutcome(ctx, next, "develop");
   next = recordCommentEvidence(next, gate2.commentEvidence);
   // The surviving (producer) id carries the re-run's verdict; the absorbed

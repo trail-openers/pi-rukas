@@ -85,7 +85,9 @@ export function mergeRetryPrompt(
  * merged ids plus the merge pairs (owner → absorbed violator) and the
  * discarded SHAs (the handoff evidence names both halves of every merge).
  * `absorbed` is the original violator id (its entry is gone from the
- * post-merge map, so it cannot be recovered from state). */
+ * post-merge map, so it cannot be recovered from state). `mergeHeads` is
+ * each merged workstream's HEAD just before its re-dispatch: the base the
+ * safety net judges the re-dispatch's own work against. */
 export type MergePrepOutcome =
   | { parked: true }
   | {
@@ -93,6 +95,7 @@ export type MergePrepOutcome =
       mergedIds: string[];
       merges: Array<{ into: string; from: string }>;
       discardedShas: string[];
+      mergeHeads: Record<string, string>;
     };
 
 /**
@@ -102,8 +105,15 @@ export type MergePrepOutcome =
  */
 export interface MergePrepPlan {
   pairs: Array<{ violator: string; owner: string; symbols: string[] }>;
-  prompt: (mergedId: string, halves: string[]) => string;
+  prompt: (mergedId: string, halves: string[], carried: boolean) => string;
   cap: WorkCapLiteral;
+  /** Runs in the violator's worktree right after the reset to the owner's
+   * tip; returns whether the violator's own commits were carried onto it. */
+  afterReset?: (
+    cwd: string,
+    violatorBase: string | undefined,
+    violatorSha: string,
+  ) => Promise<boolean>;
 }
 
 /**
@@ -139,7 +149,7 @@ export async function runMergePrep(
   if (violators.length === 0) {
     return {
       state: stateIn,
-      outcome: { parked: false, mergedIds: [], merges: [], discardedShas: [] },
+      outcome: { parked: false, mergedIds: [], merges: [], discardedShas: [], mergeHeads: {} },
     };
   }
   // Merge each (violator, owner) pair. The owner is the declaring sibling
@@ -151,6 +161,8 @@ export async function runMergePrep(
   const discardedShas: string[] = [];
   const mergedIds: string[] = []; // the post-merge ids (owner ids)
   const merges: Array<{ into: string; from: string }> = [];
+  const mergeHeads: Record<string, string> = {};
+  const carried: Record<string, boolean> = {};
   let next = stateIn;
   // #1005 — park builds from `next`, which is kept in sync with
   // `stateRef.current` after every successful iteration. The pre-#1005
@@ -246,6 +258,21 @@ export async function runMergePrep(
       );
     }
     if (violatorSha) discardedShas.push(violatorSha);
+    // #1323 — a planned merge may carry the violator's commits onto the
+    // owner's tip (a conflict leaves the plain reset in place).
+    if (plan?.afterReset && violatorSha) {
+      const vBase = workstreamBaseShas[violator] ?? stateIn.pipelineState.baseSha;
+      carried[owner] = await plan.afterReset(violatorWt, vBase, violatorSha);
+    }
+    try {
+      const { stdout } = await execFn("git rev-parse HEAD", {
+        cwd: violatorWt,
+        maxBuffer: 64 * 1024,
+      });
+      if (stdout.trim()) mergeHeads[owner] = stdout.trim();
+    } catch {
+      // Unreadable: the safety net falls back to the workstream's recorded base.
+    }
     // The violator's worktree is now the merged workstream's worktree.
     // The merged id is the owner; the violator's worktree path is reused
     // (the owner's own worktree is untouched — the merged work builds on
@@ -300,7 +327,7 @@ export async function runMergePrep(
     );
     const halves = [mergedId, ...merges.filter((m) => m.into === mergedId).map((m) => m.from)];
     const prompt = plan
-      ? plan.prompt(mergedId, halves)
+      ? plan.prompt(mergedId, halves, carried[mergedId] === true)
       : mergeRetryPrompt(mergedId, halves, violatedRecords);
     const startedAt = Date.now();
     try {
@@ -349,7 +376,7 @@ export async function runMergePrep(
   }
   return {
     state: stateRef.current,
-    outcome: { parked: false, mergedIds, merges, discardedShas },
+    outcome: { parked: false, mergedIds, merges, discardedShas, mergeHeads },
   };
 }
 
