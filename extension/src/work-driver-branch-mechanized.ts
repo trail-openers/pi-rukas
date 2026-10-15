@@ -235,10 +235,9 @@ async function aheadBranchIsPushed(
  * unreadable probe must not license destroying an existing branch.
  *
  * #1189 — an ahead branch whose commits are ALREADY on `origin/<branch>`
- * (local tip == remote branch tip) is NOT unpushed work: the cycle's own
- * pushed, integrated commits (`--restart`/`--continue` on the just-merged
- * issue) trip the ahead check without any work a reset could lose, so the
- * reset below is safe and is what a fresh cycle needs.
+ * (local tip == remote branch tip) is NOT unpushed work: the cycle's own pushed,
+ * integrated commits (`--restart`/`--continue` on the just-merged issue) trip the
+ * ahead check without any work a reset could lose, so the reset below is safe and is what a fresh cycle needs.
  */
 export async function reconcileExistingLocalBranch(
   execFn: ExecFn,
