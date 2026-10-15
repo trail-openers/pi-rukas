@@ -184,6 +184,17 @@ RUN npm install -g --ignore-scripts wigolo@0.2.1 || true
 ENV PI_ENSEMBLE_DIR=/opt/pi-rukas
 COPY --chown=vscode:vscode . ${PI_ENSEMBLE_DIR}
 
+# #1306 — bake the git commit this image was built from so
+# `pi-rukas-headless --capabilities` can report it. The build context (the
+# repo, checked out by the publish workflow) exposes GITHUB_SHA. The marker
+# lives under .pi/ (gitignored per-clone convention), so it never lands in a
+# PR. `|| true` keeps the image build resilient if the variable is ever
+# absent (e.g. a local `docker build` without the workflow's env).
+RUN set -e; if [ -n "$GITHUB_SHA" ]; then \
+      mkdir -p ${PI_ENSEMBLE_DIR}/.pi \
+      && printf '%s\n' "$GITHUB_SHA" > ${PI_ENSEMBLE_DIR}/.pi/pi-rukas-commit; \
+    fi
+
 # Drop to vscode user for state setup — install.sh creates symlinks under
 # ~/.pi/agent/ + writes the codebase_memory MCP entry into ~/.pi/agent/mcp.json
 # (native MCP, user's home, not root).

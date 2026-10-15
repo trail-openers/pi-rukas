@@ -23,6 +23,7 @@
 import { killLiveProcessGroups } from "../spawn-kill.ts";
 import { releaseHeldIntegrationLocks } from "../work-driver-lock.ts";
 import { resolveRepoRoot } from "../work-entry.ts";
+import { buildCapabilities } from "./capabilities.ts";
 import { EXIT } from "./exit-code.ts";
 import { runHeadless } from "./run.ts";
 
@@ -65,9 +66,17 @@ function errorMessage(err: unknown): string {
 
 async function main(argv: string[]): Promise<number> {
   const [verb, ...rest] = argv;
+  // #1306 — `--capabilities` answers before any cycle, repo or network is
+  // touched: the whole point is that a caller checks the build it is about
+  // to run without paying for a run. It therefore dispatches before
+  // resolveRepoRoot, which is the first place a repo is read.
+  if (verb === "--capabilities") {
+    process.stdout.write(`${JSON.stringify(buildCapabilities())}\n`);
+    return EXIT.merged;
+  }
   if (verb !== "work") {
     process.stderr.write(
-      "usage: pi-rukas-headless work <issue...> [--restart] [--timeout <min>] [--json]\n",
+      "usage: pi-rukas-headless work <issue...> [--restart] [--timeout <min>] [--json] | --capabilities\n",
     );
     return EXIT.refused;
   }

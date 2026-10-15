@@ -19,6 +19,9 @@
 import type { WorkCapLiteral } from "../workflow-state-events-caps.ts";
 import type { InterruptReason, WorkEvent, WorkState } from "../workflow-state.ts";
 
+/** Version of the exit-code contract. Bump on any change to the code values or their meanings. */
+export const EXIT_CODE_VERSION = 1 as const;
+
 export const EXIT = {
   merged: 0,
   handoff: 10,
