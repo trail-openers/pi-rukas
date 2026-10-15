@@ -27,6 +27,7 @@ import {
   startBatch,
   startJob,
 } from "../src/async-jobs.ts";
+import { deliverOrStandIn, deliverStandIn } from "../src/async-jobs-lifecycle.ts";
 import * as pendingJobs from "../src/pending-jobs-signal.ts";
 import type { DispatchResult } from "../src/types.ts";
 
@@ -148,6 +149,53 @@ wire.length = 0;
     r.startsWith("[ensemble:async]") && r.includes(`(job ${j.jobId})`),
     "a failed job's report starts [ensemble:async] and names (job <id>)",
   );
+}
+
+// --- A single-job settle that throws before its report is built still owes one report ---
+{
+  wire.length = 0;
+  const bad = fakeResult("explore", "x");
+  // totalTokens reads usage inside emitCompleted, before the report is built.
+  Object.defineProperty(bad, "usage", {
+    get() {
+      throw new Error("usage unreadable");
+    },
+  });
+  const j = startJob(pi, { label: "explore", role: "explore", work: async () => bad });
+  await until(() => statuses().length === 2);
+  assert(statuses().join(",") === "1,0", `a throwing settle still drops to 0 (got ${statuses()})`);
+  const r = reports();
+  assert(
+    r.length === 1 &&
+      r[0].startsWith("[ensemble:async]") &&
+      r[0].includes("FAILED") &&
+      r[0].includes(`(job ${j.jobId})`),
+    `a throwing settle delivers exactly one FAILED stand-in naming the job (got ${r.length})`,
+  );
+}
+
+// --- The stand-in helpers never throw, even when the stand-in itself fails ---
+{
+  wire.length = 0;
+  const boom = (): string => {
+    throw new Error("stand-in boom");
+  };
+  let threw = false;
+  try {
+    deliverStandIn(pi, "probe", new Error("original"), boom);
+    deliverOrStandIn(
+      pi,
+      "probe",
+      () => {
+        throw new Error("build boom");
+      },
+      boom,
+    );
+  } catch {
+    threw = true;
+  }
+  assert(!threw, "deliverStandIn / deliverOrStandIn never throw");
+  assert(reports().length === 0, "a failing stand-in sends nothing (and does not throw)");
 }
 
 // --- A developer report waits for its git-state line; "0" waits for the report ---

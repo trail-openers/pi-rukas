@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { deliverReport } from "./async-jobs-lifecycle.ts";
+import { deliverReport, deliverStandIn } from "./async-jobs-lifecycle.ts";
 import {
   type BatchMemberJobState,
   type BatchOrchestratorJobState,
@@ -120,7 +120,9 @@ async function settleBatch(
     trace(`async batch ${batchId} (${input.batchLabel}) finished in ${Date.now() - startedAt}ms`);
   } catch (err) {
     trace(`async batch ${batchId} (${input.batchLabel}) report failed: ${String(err)}`);
-    deliverReport(pi, batchFailureReport(input.batchLabel, batchId, err));
+    deliverStandIn(pi, `async batch ${batchId}`, err, (e) =>
+      batchFailureReport(input.batchLabel, batchId, e),
+    );
   }
 }
 
@@ -276,10 +278,15 @@ export function startBatch(
     // above reaches only those), and close the orchestrator row. Nothing is owed yet
     // (jobPending runs after this loop) and the aborted members can never complete
     // the batch, so no report is produced; the caller gets the error.
-    orchestratorAbort.abort();
-    jobs.delete(batchId);
-    dispatchDeck.clearBatchEntry(batchId);
-    lifecycle.emitFailed(batchId, input.batchLabel, input.batchLabel, Date.now() - startedAt);
+    // Cleanup runs in its own try: a cleanup throw must not replace the original error.
+    try {
+      orchestratorAbort.abort();
+      jobs.delete(batchId);
+      dispatchDeck.clearBatchEntry(batchId);
+      lifecycle.emitFailed(batchId, input.batchLabel, input.batchLabel, Date.now() - startedAt);
+    } catch (cleanupErr) {
+      trace(`async batch ${batchId} (${input.batchLabel}) cleanup failed: ${String(cleanupErr)}`);
+    }
     trace(`async batch ${batchId} (${input.batchLabel}) setup failed: ${String(err)}`);
     throw err;
   }

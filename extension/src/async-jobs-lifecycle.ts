@@ -36,6 +36,45 @@ export function deliverReport(host: DispatchHost, report: string): void {
   }
 }
 
+/**
+ * The one stand-in path for a settle that could not hand its report to Pi: deliver
+ * `standIn(failure)` (naming the job or batch) so the caller's releaseAfter never drops
+ * a count without a report. Never throws — a stand-in that also fails is traced with
+ * both errors, so the caller can still release.
+ */
+export function deliverStandIn(
+  host: DispatchHost,
+  label: string,
+  failure: unknown,
+  standIn: (failure: unknown) => string,
+): void {
+  try {
+    deliverReport(host, standIn(failure));
+  } catch (err) {
+    trace(`${label} stand-in report also failed: ${String(err)} (original: ${String(failure)})`);
+  }
+}
+
+/**
+ * Deliver `build()`; if building throws, fall back to the stand-in. Never throws.
+ */
+export function deliverOrStandIn(
+  host: DispatchHost,
+  label: string,
+  build: () => string,
+  standIn: (failure: unknown) => string,
+): void {
+  let failure: unknown;
+  try {
+    deliverReport(host, build());
+    return;
+  } catch (err) {
+    failure = err;
+    trace(`${label} report failed: ${String(err)}`);
+  }
+  deliverStandIn(host, label, failure, standIn);
+}
+
 /** Snapshot of current jobs for dispatch_status (metadata only — never content). */
 export interface JobStatusRow {
   jobId: string;

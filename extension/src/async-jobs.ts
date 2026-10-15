@@ -1,5 +1,5 @@
 import type { Writable } from "node:stream";
-import { type DispatchHost, deliverReport } from "./async-jobs-lifecycle.ts";
+import { type DispatchHost, deliverOrStandIn, deliverStandIn } from "./async-jobs-lifecycle.ts";
 import {
   MAX_JOBS,
   type SingleJobState,
@@ -170,6 +170,11 @@ export interface StartJobHandle {
   completion: Promise<DispatchResult>;
 }
 
+/** The stand-in for a single job whose report could not be built or handed to Pi. */
+function jobStandIn(jobId: string, label: string, err: unknown): string {
+  return `[ensemble:async] Job \`${label}\` (job ${jobId}) FAILED \u2014 its report could not be built: ${String(err)}. Its result is lost; re-dispatch the job if it is still needed.`;
+}
+
 /**
  * Fire a single async job. Returns immediately with the jobId; the tool's
  * execute() should also return immediately. The report is delivered to the
@@ -244,110 +249,138 @@ export function startJob(pi: DispatchHost, input: StartJobInput): StartJobHandle
   ).then(
     (result) =>
       pendingJobs.releaseAfter(jobId, async () => {
-        jobs.delete(jobId);
-        childHandles.delete(jobId);
-        clearJobIssues(jobId);
-        slow.stop();
-        // #916 — record the settle outcome before the deck entry clears, so
-        // an open live view can show finished/failed/killed in its header.
-        // Uses the SAME five-way classification as the lifecycle emits below.
-        {
+        try {
+          jobs.delete(jobId);
+          childHandles.delete(jobId);
+          clearJobIssues(jobId);
+          slow.stop();
           // #916 — record the settle outcome for the live view (kill → killed,
           // any error stop → failed, ok → finished). Deliberately coarser than
           // the lifecycle's five-way classification: the header only needs the
           // three operator-visible states.
           const status = result.killCause ? "killed" : result.errorStop ? "failed" : "finished";
           live.markSettled(jobId, status);
-        }
-        if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
-        // Five-way: ok / killCause / 429 / FAILED-PROVIDER-ERROR / process-exit-failed.
-        // #309/#314 — killCause (#296) wins over errorStop. A self-kill is NOT a
-        // provider/transport error and must not emit the "terminated mid-stream" badge.
-        // Uses shared isRateLimit429Msg (types.ts) so lifecycle + formatSingleReport
-        // cannot disagree on what is a 429.
-        const is429 = result.errorStop && isRateLimit429Msg(result.errorStop.message);
-        if (result.killCause) {
-          // Self-kill: treat as process-level failure, not provider error.
-          lifecycle.emitFailed(
-            jobId,
-            input.label,
-            input.role,
-            result.ms,
-            result.exitCode ?? undefined,
-          );
-        } else if (result.errorStop && !is429) {
-          // Genuine provider/transport error (not 429).
-          // #299 — driver-owned jobs skip the per-child "terminated
-          // mid-stream" line: the driver emits its own step-failed /
-          // step-retry line for the same event, and pre-#299 a single
-          // error-stop produced three provider-blame lines in scrollback.
-          if (ownerKind === "pm") {
-            lifecycle.emitErrored(jobId, input.label, input.role, result.ms, totalTokens(result));
+          if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
+          // Five-way: ok / killCause / 429 / FAILED-PROVIDER-ERROR / process-exit-failed.
+          // #309/#314 — killCause (#296) wins over errorStop. A self-kill is NOT a
+          // provider/transport error and must not emit the "terminated mid-stream" badge.
+          // Uses shared isRateLimit429Msg (types.ts) so lifecycle + formatSingleReport
+          // cannot disagree on what is a 429.
+          const is429 = result.errorStop && isRateLimit429Msg(result.errorStop.message);
+          if (result.killCause) {
+            // Self-kill: treat as process-level failure, not provider error.
+            lifecycle.emitFailed(
+              jobId,
+              input.label,
+              input.role,
+              result.ms,
+              result.exitCode ?? undefined,
+            );
+          } else if (result.errorStop && !is429) {
+            // Genuine provider/transport error (not 429).
+            // #299 — driver-owned jobs skip the per-child "terminated
+            // mid-stream" line: the driver emits its own step-failed /
+            // step-retry line for the same event, and pre-#299 a single
+            // error-stop produced three provider-blame lines in scrollback.
+            if (ownerKind === "pm") {
+              lifecycle.emitErrored(jobId, input.label, input.role, result.ms, totalTokens(result));
+            }
+          } else if (is429) {
+            // #309 — 429 with ok=true must NOT emit a "finished" badge.
+            // The child technically exited ok (it produced output), but the
+            // provider rate-limited the request. Emit as failed so the
+            // operator sees a consistent failure signal.
+            lifecycle.emitFailed(
+              jobId,
+              input.label,
+              input.role,
+              result.ms,
+              result.exitCode ?? undefined,
+            );
+          } else if (result.ok) {
+            lifecycle.emitCompleted(jobId, input.label, input.role, result.ms, totalTokens(result));
+          } else {
+            lifecycle.emitFailed(
+              jobId,
+              input.label,
+              input.role,
+              result.ms,
+              result.exitCode ?? undefined,
+            );
           }
-        } else if (is429) {
-          // #309 — 429 with ok=true must NOT emit a "finished" badge.
-          // The child technically exited ok (it produced output), but the
-          // provider rate-limited the request. Emit as failed so the
-          // operator sees a consistent failure signal.
-          lifecycle.emitFailed(
-            jobId,
-            input.label,
-            input.role,
-            result.ms,
-            result.exitCode ?? undefined,
-          );
-        } else if (result.ok) {
-          lifecycle.emitCompleted(jobId, input.label, input.role, result.ms, totalTokens(result));
-        } else {
-          lifecycle.emitFailed(
-            jobId,
-            input.label,
-            input.role,
-            result.ms,
-            result.exitCode ?? undefined,
-          );
+          sessionAutosave.recordOutcome(result.ok);
+        } catch (settleErr) {
+          // The settle threw before its report reached Pi: the PM is still owed one.
+          trace(`async job ${jobId} (${input.label}) settle failed: ${String(settleErr)}`);
+          if (ownerKind === "pm") {
+            deliverStandIn(pi, `async job ${jobId}`, settleErr, (e) =>
+              jobStandIn(jobId, input.label, e),
+            );
+          }
+          return result;
         }
-        sessionAutosave.recordOutcome(result.ok);
         // Driver-owned jobs skip the steer: the in-process caller is awaiting
         // `completion` and will route the result through the work-driver's
         // state machine. Posting a steer too would inject a duplicate
         // [ensemble:async] message into PM's session and confuse the next turn.
         if (ownerKind === "pm") {
-          let delivered = false;
-          const deliver = (gitLine?: string) => {
-            deliverReport(pi, formatSingleReport(jobId, input.label, result, gitLine));
-            delivered = true;
-          };
+          // The annotated report is preferred; if the git line or its formatting throws,
+          // the unannotated report is delivered instead.
+          let gitLine: string | undefined;
           if (reportsGitState(input.role)) {
-            // The annotated report is preferred; if the git line or its formatting throws,
-            // the unannotated report is delivered instead — exactly once (`delivered`).
-            await Promise.resolve()
-              .then(() => (input.gitLineFor ?? gitStateLine)(input.cwd))
-              .then((line) => deliver(line))
-              .catch((err: unknown) => {
-                trace(`async job ${jobId} git-state report failed: ${String(err)}`);
-                if (!delivered) deliver();
-              })
-              .catch((err: unknown) => trace(`async job ${jobId} report failed: ${String(err)}`));
-          } else {
-            deliver();
+            try {
+              gitLine = await (input.gitLineFor ?? gitStateLine)(input.cwd);
+            } catch (err) {
+              trace(`async job ${jobId} git-state report failed: ${String(err)}`);
+            }
           }
+          deliverOrStandIn(
+            pi,
+            `async job ${jobId}`,
+            () => {
+              try {
+                return formatSingleReport(jobId, input.label, result, gitLine);
+              } catch (err) {
+                if (gitLine === undefined) throw err;
+                trace(`async job ${jobId} annotated report failed: ${String(err)}`);
+                return formatSingleReport(jobId, input.label, result);
+              }
+            },
+            (e) => jobStandIn(jobId, input.label, e),
+          );
         }
         trace(`async job ${jobId} (${input.label}, owner=${ownerKind}) finished in ${result.ms}ms`);
         return result;
       }),
     (err: Error) =>
       pendingJobs.releaseAfter(jobId, async () => {
-        jobs.delete(jobId);
-        childHandles.delete(jobId);
-        clearJobIssues(jobId);
-        slow.stop();
-        // #916 — settle outcome for the live view (rejection = failed).
-        live.markSettled(jobId, "failed");
-        if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
-        lifecycle.emitFailed(jobId, input.label, input.role, Date.now() - state.startedAt);
-        sessionAutosave.recordOutcome(false);
-        if (ownerKind === "pm") deliverReport(pi, formatFailReport(jobId, input.label, err));
+        try {
+          jobs.delete(jobId);
+          childHandles.delete(jobId);
+          clearJobIssues(jobId);
+          slow.stop();
+          // #916 — settle outcome for the live view (rejection = failed).
+          live.markSettled(jobId, "failed");
+          if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
+          lifecycle.emitFailed(jobId, input.label, input.role, Date.now() - state.startedAt);
+          sessionAutosave.recordOutcome(false);
+        } catch (settleErr) {
+          trace(`async job ${jobId} (${input.label}) settle failed: ${String(settleErr)}`);
+          if (ownerKind === "pm") {
+            deliverStandIn(pi, `async job ${jobId}`, settleErr, (e) =>
+              jobStandIn(jobId, input.label, e),
+            );
+          }
+          throw err;
+        }
+        if (ownerKind === "pm") {
+          deliverOrStandIn(
+            pi,
+            `async job ${jobId}`,
+            () => formatFailReport(jobId, input.label, err),
+            (e) => jobStandIn(jobId, input.label, e),
+          );
+        }
         trace(`async job ${jobId} (${input.label}, owner=${ownerKind}) failed: ${err.message}`);
         // Driver-owned callers want the error surfaced via the promise so
         // they can route it into the state machine; PM-owned callers had the
