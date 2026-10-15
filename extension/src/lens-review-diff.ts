@@ -26,6 +26,7 @@ import * as dispatchDeck from "./dispatch-deck.ts";
 import { execp } from "./exec.ts";
 import type { LensLedgerOutcome } from "./lens-ledger.ts";
 import {
+  type CarriedEntry,
   decideEmptyDelta,
   resolveDeltaSince,
   writeCarriedEntry,
@@ -37,7 +38,6 @@ import type { RosterEntry } from "./lens-roster.ts";
 import { resolveAutoHunkDelta, resolveMainlineBase } from "./review-delta-hunks.ts";
 import { computeDeltaDiff, computeRangeDiff } from "./review-diff.ts";
 import { resolveHeadSha } from "./review-head-sha.ts";
-import type { LedgerEntry } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
 
 const execFileP = promisify(execFile);
@@ -221,7 +221,7 @@ export async function resolveReviewDiff(opts: {
       kind: "carry";
       from: string;
       head: string;
-      prev: LedgerEntry;
+      prev: CarriedEntry;
       verdict: Verdict;
       /** #1176 \u2014 the carried entry, already written and awaited by the resolver. */
       written: LensLedgerOutcome & { recorded: true };
@@ -258,7 +258,15 @@ export async function resolveReviewDiff(opts: {
   if (resolution.problem) {
     return { kind: "blocked", problem: resolution.problem };
   }
-  return { kind: "ok", diff: resolution.diff ?? "" };
+  // #384 — the explicit-full path gets the same guard as the auto path: an
+  // undefined diff is unreadable, never an empty (approving) one.
+  if (resolution.diff === undefined) {
+    return {
+      kind: "blocked",
+      problem: "lens review: the full diff returned no content; it is not treated as empty (#384)",
+    };
+  }
+  return { kind: "ok", diff: resolution.diff };
 }
 
 type ReviewDiffOutcome = Awaited<ReturnType<typeof resolveReviewDiff>>;

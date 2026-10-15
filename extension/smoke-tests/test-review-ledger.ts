@@ -41,7 +41,6 @@ import {
   type LedgerEntry,
   adversarialPassed,
   appendLedgerEntry,
-  branchPatchId,
   dedupeLatest,
   lensBlockedByThreshold,
   lensPassed,
@@ -50,6 +49,7 @@ import {
   validEntries,
   workingTreePatchId,
 } from "../src/review-ledger.ts";
+import { branchPatchId } from "../src/review-patch-identity.ts";
 
 let exit = 0;
 export function assert(cond: boolean, msg: string) {

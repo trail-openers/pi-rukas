@@ -3,6 +3,16 @@
  * and the empty-delta carry-forward (#1176), split from lens-review-diff.ts
  * (the 500-line gate).
  *
+ * Trust assumption (#1176 round 2): a carry reuses the branch-diff verdict
+ * recorded at the previous head. A `merge origin/main` that lands mainline
+ * changes on the branch is therefore NOT re-reviewed by this branch's lenses
+ * — those changes were reviewed in their own PRs. The carried entry and the
+ * "NO NEW CHANGES" summary say so explicitly.
+ *
+ * Legacy ledger rows without `diffSha256` (written before the digest existed)
+ * can never be carried: the next empty delta forces ONE full review (fail
+ * closed), which then records a digest-bearing row.
+ *
  * `resolveDeltaSince` picks the commit a follow-up review's delta starts from:
  * the branch's latest lens ledger entry's `headSha`, when it is a strict
  * ancestor of the reviewed head. When that delta is EMPTY after the mainline
@@ -107,23 +117,35 @@ export async function resolveDeltaSince(
 }
 
 /** The verdicts a recorded lens entry can carry (the `detail` of a lens row). */
-const VERDICTS: readonly string[] = [
+const VERDICTS = [
   "APPROVED",
   "ISSUES_FOUND",
   "CRITICAL_ISSUES_FOUND",
   "REVIEW_INCOMPLETE",
-];
+] as const satisfies readonly Verdict[];
 
 function isVerdict(value: string | undefined): value is Verdict {
-  return value !== undefined && VERDICTS.includes(value);
+  return VERDICTS.some((v) => v === value);
 }
+
+/** A recorded lens entry that can be carried: it carries the round a carry keeps. */
+export type CarriedEntry = LedgerEntry & { round: number };
+
+function isCarried(entry: LedgerEntry): entry is CarriedEntry {
+  return entry.round !== undefined;
+}
+
+/** The trust assumption a carried row states (#1176 round 2): mainline changes
+ * merged into the branch were not re-reviewed by this branch's lenses. */
+export const CARRY_NOTE =
+  "the integrated tree of this head (mainline changes merged in) was not re-reviewed by this branch's lenses; the branch-diff verdict is carried from the recorded run";
 
 /** What an EMPTY automatic delta resolves to (#1176). */
 export type EmptyDeltaOutcome =
   /** Same head as the recorded run — nothing to record, no review. */
   | { kind: "noReview" }
   /** Patch-id unchanged: the recorded verdict is carried onto `head`. */
-  | { kind: "carry"; from: string; prev: LedgerEntry; verdict: Verdict }
+  | { kind: "carry"; from: string; prev: CarriedEntry; verdict: Verdict }
   /** Anything else (patch-id changed or unreadable): a full review runs. */
   | { kind: "full"; reason: string };
 
@@ -153,7 +175,7 @@ export async function decideEmptyDelta(opts: {
   if (prev.headSha === opts.head) return { kind: "noReview" };
   // No round is never defaulted: a carry keeps the recorded round, so an entry
   // without one cannot be carried faithfully (#1176 review "no `?? 1` guess").
-  if (prev.round === undefined) {
+  if (!isCarried(prev)) {
     return { kind: "full", reason: "the recorded lens entry has no round" };
   }
   // Entries written before the whitespace-sensitive digest existed cannot prove
@@ -166,6 +188,11 @@ export async function decideEmptyDelta(opts: {
   }
   if (!isVerdict(prev.detail)) {
     return { kind: "full", reason: "the recorded verdict is unreadable" };
+  }
+  // A REVIEW_INCOMPLETE run never reviewed the branch: carrying it would turn an
+  // incomplete review into a verdict.
+  if (prev.detail === "REVIEW_INCOMPLETE") {
+    return { kind: "full", reason: "the recorded review was incomplete" };
   }
   // The SAME construction the writer stored (merge-base → head): see review-patch-identity.ts.
   const current = await committedIdentity(execp, opts.cwd, opts.head, opts.base);
@@ -197,12 +224,27 @@ export async function decideEmptyDelta(opts: {
  */
 export async function writeCarriedEntry(
   cwd: string,
-  prev: LedgerEntry,
+  prev: CarriedEntry,
   head: string,
   from: string,
 ): Promise<LensLedgerOutcome> {
   try {
-    const entry: LedgerEntry = { ...prev, at: Date.now(), headSha: head, carriedFrom: from };
+    // Verdict and identity fields only: a grant-style flag (overrideCap) or a
+    // budget counter (incompleteRuns) from the previous head is never inherited.
+    const entry: LedgerEntry = {
+      branch: prev.branch,
+      kind: prev.kind,
+      patchId: prev.patchId,
+      passed: prev.passed,
+      at: Date.now(),
+      detail: prev.detail,
+      round: prev.round,
+      hasCritical: prev.hasCritical,
+      headSha: head,
+      diffSha256: prev.diffSha256,
+      carriedFrom: from,
+      carryNote: CARRY_NOTE,
+    };
     const failure = await appendLedgerEntry(entry, execp, cwd);
     return failure ? { recorded: false, reason: failure } : { recorded: true };
   } catch (err) {
@@ -215,7 +257,7 @@ export async function writeCarriedEntry(
 export function carriedSummary(
   from: string,
   head: string,
-  prev: LedgerEntry,
+  prev: CarriedEntry,
   verdict: Verdict,
 ): LensReviewSummary {
   return {
@@ -227,7 +269,7 @@ export function carriedSummary(
     usage: undefined,
     deltaReview: { since: from, head },
     noReview: true,
-    carriedFrom: { sha: from, verdict, round: prev.round ?? 1 },
+    carriedFrom: { sha: from, verdict, round: prev.round },
   };
 }
 
@@ -236,7 +278,8 @@ export function noReviewSummary(since: string, head: string, reason: string): Le
   trace(`lens-review: delta review skipped — no changes since ${since} (${reason})`);
   // #980 — the noReview path bypasses `finish()`'s ledger write and #973
   // disclosure post, so nothing is recorded — the generic NOT_RECORDED_NOTE
-  // is deliberately not appended.
+  // is deliberately not appended (only runLensReview's normal paths record;
+  // 5b's not-posted note covers them).
   const noReviewNote = `No changes since the last lens review (${since.slice(0, 8)}) — no re-review needed (nothing to review).`;
   return {
     verdict: "APPROVED",

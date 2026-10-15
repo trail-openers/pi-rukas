@@ -58,7 +58,7 @@ async function addOrigin(dir: string): Promise<void> {
 /** The identity the REAL writer (workingTreePatchId) computes at `sha`. */
 async function identityAt(dir: string, sha: string) {
   await execp(`git checkout -q ${sha}`, { cwd: dir });
-  const w = await workingTreePatchId(execp, dir);
+  const w = await workingTreePatchId(execp, dir, { digest: true });
   await execp(`git checkout -q ${branch}`, { cwd: dir });
   if (!w.patchId || !w.diffSha256) throw new Error(`writer produced no identity at ${sha}`);
   return { patchId: w.patchId, diffSha256: w.diffSha256 };
@@ -128,6 +128,10 @@ async function reviewAndAwaitLedger(
     const text = renderSummary(s, 4);
     assert(text.startsWith("NO NEW CHANGES"), "render says NO NEW CHANGES, not a fresh review");
     assert(!/APPROVED/.test(text), "render never shows APPROVED for a carried ISSUES_FOUND");
+    assert(
+      /not re-reviewed by this branch's lenses/.test(text),
+      "summary states the merged-in mainline tree was not re-reviewed",
+    );
     const latest = latestEntry(readLedgerAt(r.ledgerFile), branch, "lens");
     assert(latest?.headSha === r.merge, "ledger gains an entry for the current head (merge)");
     assert(latest?.detail === "ISSUES_FOUND", "carried entry keeps the ISSUES_FOUND verdict");
@@ -135,6 +139,10 @@ async function reviewAndAwaitLedger(
     assert(latest?.hasCritical === false, "carried entry keeps hasCritical false");
     assert(latest?.passed === false, "carried entry keeps passed false");
     assert(latest?.patchId === patchId, "carried entry keeps the recorded patch-id");
+    assert(
+      /not re-reviewed by this branch's lenses/.test(latest?.carryNote ?? ""),
+      "carried ledger row states the merged-in mainline tree was not re-reviewed",
+    );
   } finally {
     cleanup(r.dir, r.ledgerFile);
   }
@@ -178,6 +186,31 @@ async function reviewAndAwaitLedger(
     assert(
       latest?.passed === true && latest?.headSha === r.merge,
       "APPROVED prior → passed entry for HEAD",
+    );
+  } finally {
+    cleanup(r.dir, r.ledgerFile);
+  }
+}
+
+// (E) a recorded REVIEW_INCOMPLETE run is never carried (#1176 round 2)
+{
+  const { decideEmptyDelta } = await import("../src/lens-review-auto-delta.ts");
+  const { r } = await carryFixture({
+    detail: "REVIEW_INCOMPLETE",
+    round: 1,
+    hasCritical: false,
+    passed: false,
+  });
+  try {
+    const e = await decideEmptyDelta({
+      cwd: r.dir,
+      branch,
+      head: r.merge,
+      base: "origin/main",
+    });
+    assert(
+      e.kind === "full" && e.reason === "the recorded review was incomplete",
+      "REVIEW_INCOMPLETE is never carried — the empty delta falls back to a full review",
     );
   } finally {
     cleanup(r.dir, r.ledgerFile);

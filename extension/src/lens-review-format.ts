@@ -354,7 +354,7 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
   if (s.noReview && s.carriedFrom) {
     const c = s.carriedFrom;
     return [
-      `NO NEW CHANGES \u2014 verdict carried from ${c.sha.slice(0, 8)} (${c.verdict}, round ${c.round}); the branch patch-id is unchanged, so no lens review ran.`,
+      `NO NEW CHANGES \u2014 verdict carried from ${c.sha.slice(0, 8)} (${c.verdict}, round ${c.round}); the branch patch-id is unchanged, so no lens review ran. The integrated tree of this head (mainline changes merged in) was not re-reviewed by this branch's lenses.`,
       "",
       "Re-run dispatch_lens_review with `full: true` to review the full branch diff.",
     ].join("\n");

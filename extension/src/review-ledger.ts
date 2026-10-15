@@ -106,6 +106,8 @@ export interface LedgerEntry {
   /** #1176 — carried entries only: the head whose recorded verdict this entry carries.
    * Its presence is the ONLY signal bumpLensRound uses to skip the round advance. */
   carriedFrom?: string;
+  /** #1176 round 2 \u2014 carried entries only: the trust assumption the row states (mainline changes merged in were not re-reviewed by this branch). */
+  carryNote?: string;
 }
 
 interface LedgerFile {
@@ -124,8 +126,6 @@ export { bumpLensRound } from "./review-ledger-round.ts";
 export { dedupeLatest } from "./review-ledger-core.ts";
 export { mergeAfterRace } from "./review-ledger-merge.ts";
 export { remoteName } from "./review-ledger-path.ts";
-/** The patch-identity helpers live in review-patch-identity.ts (file-size split). */
-export { branchPatchId } from "./review-patch-identity.ts";
 
 /**
  * The WORKING-tree patch id against the mainline — the one number the #912
@@ -150,6 +150,11 @@ export { branchPatchId } from "./review-patch-identity.ts";
  * patchId differs, and the mismatch fails closed — the operator re-runs the
  * reviews (see docs/troubleshooting.md → "A merge was refused: review ledger").
  *
+ * `opts.digest` (default false) also computes `diffSha256` — a second
+ * `git diff --binary` run. Only the lens writer stores it (the carry needs
+ * it); the merge-guard and round-cap paths never read it, so they do not pay
+ * for it.
+ *
  * `untracked` names the untracked files the worktree diff could not cover.
  * The entry is still written for the tracked content, but the warning is
  * returned so the caller traces it — the gap is visible to the operator.
@@ -157,6 +162,7 @@ export { branchPatchId } from "./review-patch-identity.ts";
 export async function workingTreePatchId(
   execFn: LedgerExecFn,
   cwd: string,
+  opts: { digest?: boolean } = {},
 ): Promise<{ patchId?: string; untracked: string[]; warning?: string; diffSha256?: string }> {
   const mainline = await detectMainline(cwd, execFn);
   if ("branch" in mainline === false) {
@@ -213,10 +219,12 @@ export async function workingTreePatchId(
   // The digest is best-effort for the WRITER: without it the entry is still
   // recorded, and a later carry falls back to a full review (fail closed).
   let diffSha256: string | undefined;
-  try {
-    diffSha256 = await diffDigestOfRange(execFn, cwd, mergeBase);
-  } catch (err) {
-    trace(`review-ledger: diff digest unavailable (${(err as Error).message?.slice(0, 120)})`);
+  if (opts.digest) {
+    try {
+      diffSha256 = await diffDigestOfRange(execFn, cwd, mergeBase);
+    } catch (err) {
+      trace(`review-ledger: diff digest unavailable (${(err as Error).message?.slice(0, 120)})`);
+    }
   }
   // Untracked files are invisible to a worktree diff. The entry is still
   // written for the tracked content, but the gap is surfaced — and anything
