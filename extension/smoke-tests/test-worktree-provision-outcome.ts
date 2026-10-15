@@ -17,6 +17,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { realExec } from "./lib/exec-fake.ts";
 
 // `trace` reads the flag at import time, so it is set before the modules load.
 process.env.PI_ENSEMBLE_DEBUG = "1";
@@ -34,12 +35,6 @@ function assert(cond: boolean, msg: string) {
     exit = 1;
   }
 }
-
-/** Everything real, including `sh <hook>` — the exit status is the subject. */
-const liveExec = (cmd: string, opts: { cwd?: string; maxBuffer?: number }) =>
-  pexec(cmd, { cwd: opts.cwd, maxBuffer: opts.maxBuffer ?? 64 * 1024 }).then((r) => ({
-    stdout: r.stdout,
-  }));
 
 /** A committed repo with the given files; `hook` writes `.pi/worktree-setup`. */
 async function repo(files: Record<string, string>, hook?: string) {
@@ -68,7 +63,7 @@ async function provision(root: string, wt: string) {
     return true;
   }) as typeof process.stderr.write;
   try {
-    const result = await provisionWorktree(liveExec, root, wt);
+    const result = await provisionWorktree(realExec, root, wt);
     const event = makeWorktreeProvisionedEvent(
       "default",
       wt,

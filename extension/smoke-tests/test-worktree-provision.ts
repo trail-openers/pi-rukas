@@ -13,6 +13,9 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { mechanizedBranchSetup } from "../src/work-driver-branch-mechanized.ts";
 import { NEVER_SHARED, SHAREABLE_DEPS, looksLikeMissingDeps, provisionWorktree } from "../src/worktree-provision.ts";
+import type { ExecFn } from "../src/worktree.ts";
+import { commandOf } from "./lib/argv-shell.ts";
+import { realExec } from "./lib/exec-fake.ts";
 
 const pexec = promisify(exec);
 
@@ -33,15 +36,14 @@ function assert(cond: boolean, msg: string) {
 function realExecFn(
   hookRuns?: string[],
   hookOutput = "",
-): (cmd: string, opts: { cwd?: string }) => Promise<{ stdout: string }> {
-  const e = (cmd: string, cwd?: string) => pexec(cmd, { cwd }).then(({ stdout }) => ({ stdout }));
-  return async (cmd: string, opts: { cwd?: string }) => {
-    if (cmd.startsWith("sh ")) {
+): (cmd: string, opts: { cwd?: string; argv?: string[] }) => Promise<{ stdout: string }> {
+  return async (cmd: string, opts: { cwd?: string; argv?: string[] }) => {
+    if (commandOf(cmd, opts).startsWith("sh ")) {
       hookRuns?.push(`${cmd} @ ${opts.cwd}`);
       return { stdout: hookOutput };
     }
-    if (cmd.startsWith("git rev-parse")) return { stdout: ".git" };
-    return e(cmd, opts.cwd);
+    if (commandOf(cmd, opts).startsWith("git rev-parse")) return { stdout: ".git" };
+    return realExec(cmd, opts);
   };
 }
 
@@ -412,16 +414,13 @@ async function makeWorktreeFixture(root: string, name: string): Promise<string> 
     await initRepo(root, "node_modules/\n", { "package.json": "{}\n" });
     await pexec("git checkout -q -B main", { cwd: root, env: { ...process.env, HOME: root } });
     const runs: string[] = [];
-    const execFn = async (cmd0: string, opts: { cwd?: string; maxBuffer?: number; argv?: string[] }) => {
-      const cmd = opts.argv ? [cmd0, ...opts.argv].join(" ") : cmd0;
-      runs.push(cmd);
-      if (cmd.startsWith("git fetch")) throw new Error("Permission denied (publickey)");
-      return pexec(cmd, { cwd: opts.cwd, maxBuffer: opts.maxBuffer ?? 64 * 1024 }).then((r) => ({
-        stdout: r.stdout,
-      }));
+    const execFn: ExecFn = async (cmd, opts) => {
+      runs.push(commandOf(cmd, opts));
+      if (commandOf(cmd, opts).startsWith("git fetch")) throw new Error("Permission denied (publickey)");
+      return realExec(cmd, opts);
     };
     const setup = await mechanizedBranchSetup(
-      execFn as never,
+      execFn,
       root,
       533,
       [533],
@@ -468,14 +467,12 @@ async function makeWorktreeFixture(root: string, name: string): Promise<string> 
       let threw = "";
       try {
         await mechanizedBranchSetup(
-          (async (cmd0: string, opts: { cwd?: string; maxBuffer?: number; argv?: string[] }) => {
-            const cmd = opts.argv ? [cmd0, ...opts.argv].join(" ") : cmd0;
-            if (cmd.startsWith("git fetch")) throw new Error("Permission denied (publickey)");
-            if (cmd.includes("rev-parse --verify --quiet")) return { stdout: "" };
-            return pexec(cmd, { cwd: opts.cwd, maxBuffer: opts.maxBuffer ?? 64 * 1024 }).then(
-              (r) => ({ stdout: r.stdout }),
-            );
-          }) as never,
+          (async (cmd, opts) => {
+            const line = commandOf(cmd, opts);
+            if (line.startsWith("git fetch")) throw new Error("Permission denied (publickey)");
+            if (line.includes("rev-parse --verify --quiet")) return { stdout: "" };
+            return realExec(cmd, opts);
+          }) satisfies ExecFn,
           root2,
           533,
           [533],
