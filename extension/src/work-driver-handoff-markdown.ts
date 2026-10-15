@@ -127,6 +127,7 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
     ...commitPrFallbackPlumbSection(state, capForExplain),
     ...adversarialOutcomeSection(state),
     ...plumbReportSection(state),
+    ...consolidationNotesSection(state),
     "### What was attempted",
     ...dispatchRows,
     "",
@@ -294,6 +295,16 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
   );
 
   return lines.join("\n");
+}
+
+/**
+ * #1153 — consolidation checks that did not run. A skipped check is recorded
+ * as a note (never a silent pass), and the operator must see it here.
+ */
+function consolidationNotesSection(state: WorkState): string[] {
+  const notes = state.pipelineState.consolidationNotes ?? [];
+  if (notes.length === 0) return [];
+  return ["### Consolidation checks that did not run", "", ...notes.map((n) => `- ${n}`), ""];
 }
 
 /**

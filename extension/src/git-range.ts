@@ -1,13 +1,37 @@
 /**
- * git-range — the PR range and its commit count (#1134).
+ * git-range — the one typed git entry point and the PR range it names (#1134,
+ * #1153).
  *
- * Shared by the driver's diff reader, the verify gates and the comment-retention
- * check, so every PR-shaped git read names its range the same way. Imports
- * nothing from work-driver-*: it is a neutral leaf, which keeps those modules
- * from depending on each other through it.
+ * `execGit` is how driver git plumbing invokes git: argv always, a bounded
+ * timeout always, never a command string. Shared by the driver's diff reader,
+ * the verify gates and the comment-retention check, so every PR-shaped read
+ * names its range the same way. Imports nothing from work-driver-*: it is a
+ * neutral leaf, which keeps those modules from depending on each other.
  */
 
 import type { ExecFn } from "./worktree.ts";
+
+/** Per-git-call timeout when the caller does not pass one (a hung git must not hang the cycle). */
+export const DEFAULT_GIT_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * Run git with argv (never a shell string) and return its stdout. Rejects on
+ * any exec failure, carrying the exec error shape (`code`, `stderr`).
+ */
+export async function execGit(
+  exec: ExecFn,
+  cwd: string,
+  args: string[],
+  opts: { timeout?: number; maxBuffer?: number } = {},
+): Promise<string> {
+  const { stdout } = await exec("git", {
+    argv: args,
+    cwd,
+    timeout: opts.timeout ?? DEFAULT_GIT_TIMEOUT_MS,
+    maxBuffer: opts.maxBuffer ?? 1024 * 1024,
+  });
+  return stdout;
+}
 
 /**
  * The PR range as one string: `<base>...<head>`, the diff from the merge base to
@@ -21,50 +45,101 @@ export function prRange(base: string, head: string): string {
 }
 
 /**
- * Does `ref` resolve to a commit in this clone? Runs through argv, so a branch
- * name never reaches a shell. Any failure is "does not resolve" — the caller
- * names what that means for its gate (#1134 follow-up: a pushed-ref precondition).
+ * Tri-state ref probe (#1134 follow-up). `absent` is git's own "not a valid
+ * object" answer (exit 1 under `--quiet`); any other failure — a spawn error,
+ * a timeout, a non-repo cwd — is `unknown` and carries the error, because it
+ * says nothing about whether the ref exists.
  */
-export async function refResolves(exec: ExecFn, cwd: string, ref: string): Promise<boolean> {
+export type RefState =
+  | { state: "resolves" }
+  | { state: "absent" }
+  | { state: "unknown"; error: string };
+
+export async function refResolves(
+  exec: ExecFn,
+  cwd: string,
+  ref: string,
+  timeout?: number,
+): Promise<RefState> {
   try {
-    const { stdout } = await exec("git", {
-      argv: ["rev-parse", "--verify", "--quiet", "--end-of-options", ref],
-      cwd,
+    // A zero exit is the answer: `rev-parse --verify` prints the object id it resolved.
+    await execGit(exec, cwd, ["rev-parse", "--verify", "--quiet", "--end-of-options", ref], {
+      timeout,
       maxBuffer: 64 * 1024,
     });
-    return /^[0-9a-f]{40,64}$/.test(stdout.trim());
-  } catch {
-    return false;
+    return { state: "resolves" };
+  } catch (err) {
+    if (exitCodeOf(err) === 1) return { state: "absent" };
+    return { state: "unknown", error: errorText(err) };
   }
 }
 
 /**
- * The PR's own commits: `rev-list --count --right-only <range>`, i.e. commits
- * reachable from `head` and not from `base`. Returns NaN when git's reply is not
- * a plain count; callers treat NaN as unknown, never as zero. An exec failure
- * rejects. `--end-of-options` keeps the refs from being read as flags.
+ * How far `head` is ahead of `base` (#1134 follow-up). One place that decides
+ * "commits ahead of base, and can we tell?"; each caller maps the kind to its
+ * own policy. `unknown` and `unresolved` carry a sentence naming what could not
+ * be read, so no caller has to invent one.
  */
-export async function countPrCommits(
+export type AheadOfBase =
+  | { kind: "ahead"; n: number }
+  | { kind: "empty" }
+  | { kind: "unpushed" }
+  | { kind: "unresolved"; reason: string }
+  | { kind: "unknown"; error: string };
+
+export async function aheadOfBase(
   exec: ExecFn,
   cwd: string,
   base: string,
   head: string,
   opts: { pathspec?: string[]; timeout?: number } = {},
-): Promise<number> {
-  const pathspec = opts.pathspec ?? [];
-  const { stdout } = await exec("git", {
-    argv: [
-      "rev-list",
-      "--count",
-      "--right-only",
-      "--end-of-options",
-      prRange(base, head),
-      ...(pathspec.length > 0 ? ["--", ...pathspec] : []),
-    ],
-    cwd,
-    timeout: opts.timeout,
-    maxBuffer: 64 * 1024,
-  });
+): Promise<AheadOfBase> {
+  const h = await refResolves(exec, cwd, head, opts.timeout);
+  if (h.state === "absent") return { kind: "unpushed" };
+  if (h.state === "unknown")
+    return { kind: "unknown", error: `could not check ${head}: ${h.error}` };
+  const b = await refResolves(exec, cwd, base, opts.timeout);
+  if (b.state === "absent")
+    return { kind: "unresolved", reason: `${base} does not resolve in this clone` };
+  if (b.state === "unknown")
+    return { kind: "unknown", error: `could not check ${base}: ${b.error}` };
+  let stdout: string;
+  try {
+    stdout = await execGit(
+      exec,
+      cwd,
+      [
+        "rev-list",
+        "--count",
+        "--right-only",
+        "--end-of-options",
+        prRange(base, head),
+        ...(opts.pathspec?.length ? ["--", ...opts.pathspec] : []),
+      ],
+      { timeout: opts.timeout, maxBuffer: 64 * 1024 },
+    );
+  } catch (err) {
+    return {
+      kind: "unknown",
+      error: `could not count commits ahead of ${base}: ${errorText(err)}`,
+    };
+  }
   const t = stdout.trim();
-  return /^\d+$/.test(t) ? Number(t) : Number.NaN;
+  if (!/^\d+$/.test(t)) {
+    return {
+      kind: "unknown",
+      error: `could not count commits ahead of ${base}: git printed "${t.slice(0, 80)}", not a count`,
+    };
+  }
+  const n = Number(t);
+  return n === 0 ? { kind: "empty" } : { kind: "ahead", n };
+}
+
+function exitCodeOf(err: unknown): number | undefined {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === "number" ? code : undefined;
+}
+
+function errorText(err: unknown): string {
+  return ((err as Error)?.message ?? String(err)).slice(0, 200);
 }

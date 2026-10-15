@@ -67,6 +67,11 @@ export async function runCommitPrPostDispatchGates(
   }
   const consolidationCheck = await verifyConsolidation(ctx, state);
   for (const note of consolidationCheck.notes) trace(`work-driver: ${note}`);
+  if (consolidationCheck.notes.length > 0) {
+    const prior = state.pipelineState.consolidationNotes ?? [];
+    const merged = [...new Set([...prior, ...consolidationCheck.notes])];
+    state = { ...state, pipelineState: { ...state.pipelineState, consolidationNotes: merged } };
+  }
   if (consolidationCheck.missing.length > 0) {
     trace(
       `work-driver: commit-pr partial-consolidation detected — missing workstreams: ${consolidationCheck.missing.map((m) => m.id).join(", ")}`,
