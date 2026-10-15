@@ -203,11 +203,12 @@ export function explainProtectedPaths(
   // The command is built from filenames a developer wrote, so it is printed
   // only when every one is a plain path token, and only for a single issue —
   // the one shape `--allow-protected` accepts.
-  if (issues.length !== 1 || !paths.every((p) => SAFE_PATH_RE.test(p))) {
+  const plain = (p: string) => SAFE_PATH_RE.test(p) && !p.split("/").includes("..");
+  if (issues.length !== 1 || !paths.every(plain)) {
     return `${head}; or, if it is genuinely the work you asked for, grant the paths for one single-issue cycle with \`/work <issue> --restart --allow-protected <path>[,<path>]\` (${env}).`;
   }
-  return `${head}; or, if it is genuinely the work you asked for, grant the protected paths this patch touched, for one cycle only, with \`/work ${issues[0]} --restart --allow-protected ${paths.join(",")}\` (${env}).`;
+  return `${head}; or, if it is genuinely the work you asked for, review each path's diff first — a granted path is trusted for the whole cycle, so grant none you did not mean to change — then grant the protected paths this patch touched, for one cycle only, with \`/work ${issues[0]} --restart --allow-protected ${paths.join(",")}\` (${env}).`;
 }
 
-/** A path safe to print inside a copy-paste `/work` command. */
-const SAFE_PATH_RE = /^[A-Za-z0-9._/@+-]+$/;
+/** A path safe to print inside a copy-paste `/work` command (and to grant). */
+export const SAFE_PATH_RE = /^[A-Za-z0-9._/@+-]+$/;

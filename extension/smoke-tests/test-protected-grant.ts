@@ -66,7 +66,7 @@ const CI = ".github/workflows/ci.yml";
   assert("error" in missing && /needs a path/.test(missing.error), "a flag without a path errors");
   const notProtected = parseWorkArgs("7 --allow-protected src/a.ts");
   assert(
-    "error" in notProtected && /not a protected path/.test(notProtected.error),
+    "error" in notProtected && /not a grantable path/.test(notProtected.error),
     "a grant for a path the gate never halts on is refused as a typo",
   );
   const dotdot = parseWorkArgs("7 --allow-protected .github/../.pi/verify-cmd");
@@ -91,11 +91,14 @@ const CI = ".github/workflows/ci.yml";
     ungrantedProtectedPaths([CI, ".github/CODEOWNERS"], [CI]).join() === ".github/CODEOWNERS",
     "a grant for one workflow does not admit .github/CODEOWNERS",
   );
+  const annotated = parseWorkArgs("7 --allow-protected ./.github/workflows/ci.yml(new)");
   assert(
-    ungrantedProtectedPaths([".github/workflows/ci.yml"], ["./.github/workflows/ci.yml (new)"])
-      .length === 0,
+    !("error" in annotated) &&
+      ungrantedProtectedPaths([".github/workflows/ci.yml"], annotated.protectedGrant).length === 0,
     "a granted path matches through the declared-path normalisation",
   );
+  const tick = parseWorkArgs("7 --allow-protected .github/x`y.yml");
+  assert("error" in tick, "a grant that is not a plain path token is refused");
   assert(
     ungrantedProtectedPaths([`${CI} (evil)`], [CI]).length === 1,
     "a touched path is not annotation-stripped, so `ci.yml (evil)` is not `ci.yml`",
@@ -159,6 +162,7 @@ const isProtectedFailure = (f: string) => /protected path/.test(f);
     hit.includes(`/work 1090 --restart --allow-protected ${CI},.pi/verify-cmd`),
     "the failure names --allow-protected with the exact command for every protected path touched",
   );
+  assert(hit.includes("review each path's diff first"), "...and tells the operator to review before granting");
   assert(
     hit.includes("PI_ENSEMBLE_PROTECTED_PATHS=0"),
     "...and still mentions PI_ENSEMBLE_PROTECTED_PATHS=0",
