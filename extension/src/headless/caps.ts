@@ -17,7 +17,7 @@ import { WORK_STEPS } from "../workflow-state-schema.ts";
 /** Template caps: the prefix before `:` and what the parameter after it is. */
 export const CAP_TEMPLATES = {
   "verify-failed": "step",
-  /** #1324 — the step's verify run hit its bound without a verdict. */
+  /** #1324 — the step's verify command hit its time bound (not a code failure). */
   "verify-timeout": "step",
   "step-failed": "step",
   "driver-crash": "step",

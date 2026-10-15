@@ -50,7 +50,7 @@ export interface HostInput {
   /** `list` only: the separator between values. */
   separator?: string;
   /** `number` / `integer`: the unit, when not obvious from the name. */
-  unit?: "s" | "days" | "tokens" | "turns";
+  unit?: "s" | "days" | "tokens" | "turns" | "epoch-ms";
   /** The issue-image manifest format version the input reads (#1306). */
   manifestVersion?: number;
 }
@@ -100,9 +100,9 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   list("COMMENT_RETENTION_PATHS", ",", "extension/src,extension/smoke-tests,agents-base"),
   flag("CONVERGE", true),
   flag("CROSS_GROUP_CONFLICTS", true),
-  // Unset: no whole-cycle bound. CYCLE_DEADLINE (absolute epoch ms) wins over the budget.
   ms("CYCLE_BUDGET_MS", null),
-  int("CYCLE_DEADLINE", null),
+  // An absolute deadline; a value below 1e12 (epoch seconds) is ignored.
+  int("CYCLE_DEADLINE", null, "cycle", { unit: "epoch-ms" }),
   flag("DEBUG", false),
   int("DECISION_BUDGET_<SEAM>", null, "cycle", { unit: "tokens" }),
   input("DECISION_MODE_<SEAM>", "enum", "shadow", "cycle", {
@@ -242,11 +242,7 @@ export const HEADLESS_FILES: readonly HostFile[] = [
   { path: ".pi/permissions.json", kind: "config", whenAbsent: "~/.pi/agent/permissions.json" },
   { path: ".pi/smoke-cmd", kind: "command", whenAbsent: "no product smoke gate" },
   { path: ".pi/verify-cmd", kind: "command", whenAbsent: "verify command derived from the repo" },
-  {
-    path: ".pi/verify-cmd-fast",
-    kind: "command",
-    whenAbsent: "no fast tier; the verify command runs first",
-  },
+  { path: ".pi/verify-cmd-fast", kind: "command", whenAbsent: "no fast verify tier" },
   { path: ".pi/verify-cmd-full", kind: "command", whenAbsent: "verify-full tier skipped" },
   {
     path: ".pi/worktree-setup",

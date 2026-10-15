@@ -67,6 +67,8 @@ function assert(cond: boolean, msg: string) {
   assert(caps.contracts.resultSchema.version === RESULT_SCHEMA_VERSION, "result schema version");
   assert(RESULT_SCHEMA_VERSION === 3, "the result schema version is bumped to 3");
   assert(capStep("verify-failed:develop") === "develop", "capStep reads a step template");
+  assert(capStep("verify-timeout:develop") === "develop", "verify-timeout: is a step template");
+  assert(fixed.includes("deadline"), "the cycle-deadline cap is published");
   assert(capStep("branch-ahead:3") === undefined, "capStep ignores a count template");
   assert(capStep("fence-violation:develop") === undefined, "capStep ignores a fixed literal");
 }

@@ -1783,6 +1783,8 @@ git -C .worktrees/issue-<N>-<workstream> diff --name-only <base-sha>..HEAD
 
 Remove or move changes that violate the workstream's `outOfScope` fence. If the work is genuinely broader than the plan, split the workstream or revise the plan before restarting `/work <N>`. The gate is enabled by default; for a one-off, reviewed recovery you can restore the pre-gate behavior with `PI_ENSEMBLE_SCOPE_GATE=0`. Disabling it does not make an out-of-scope change safe — it only skips the deterministic check.
 
+When the violation is between two sibling workstreams (one edited a file the other declared), develop merges the two and re-runs once instead of parking. Before #1343 the merged workstream's range started at the owner's tip, so the owner's own commits were missing from the consolidated verify and from the PR: the re-run could fail on a file that was plainly in the merged worktree, or the PR shipped the consumer without the producer. The merged workstream now keeps the owner's original base. If a PR from an older build is missing a sibling's files after a `fence-recovery-started` event, cherry-pick that workstream's commits from its worktree.
+
 **commit-pr:**
 - Commits exist on the branch: `git rev-list --count origin/<base>..HEAD` > 0.
 - The parsed PR number resolves via `gh pr view`. If ops forgot the `pr: <N>` marker, the gate tries `gh pr list --head <branch>` and **adopts** the found number (bonus repair — pre-PR17 a missing marker silently degraded handoff/CI targeting).

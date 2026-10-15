@@ -67,6 +67,7 @@ import { issueImagesEnabled } from "../src/work-driver-issue-images.ts";
 import { mergeAuthorityEnabled } from "../src/work-driver-merge-authority.ts";
 import { NET_GIT_TIMEOUT_DEFAULT_MS } from "../src/work-driver-net-git.ts";
 import { crossGroupConflictsEnabled } from "../src/work-driver-path-claims.ts";
+import { planContractEnabled } from "../src/work-driver-plan-contract.ts";
 import { planQualityEnabled } from "../src/work-driver-plan-helpers.ts";
 import { planDispatchTimeoutMs } from "../src/work-driver-plan-helpers.ts";
 import { maxWorkstreams } from "../src/work-driver-plan-workstreams.ts";
@@ -330,6 +331,7 @@ const LIVE: [string, () => unknown][] = [
   ["PI_ENSEMBLE_LENS_ROUND_CAP_MERGE", roundCapMergeEnabled],
   ["PI_ENSEMBLE_LOOP_DETECTOR", loopDetectorEnabled],
   ["PI_ENSEMBLE_MERGE_AUTHORITY", mergeAuthorityEnabled],
+  ["PI_ENSEMBLE_PLAN_CONTRACT", planContractEnabled],
   ["PI_ENSEMBLE_PLAN_QUALITY", planQualityEnabled],
   ["PI_ENSEMBLE_POLICY_JUDGE", policyJudgeEnabled],
   ["PI_ENSEMBLE_PR_PREFLIGHT", prPreflightEnabled],

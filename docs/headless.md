@@ -101,8 +101,8 @@ An optional top-level `error` (`{ code, message }`) is present when the runner d
 
 `--capabilities` publishes every value `cap` can take under `contracts.resultSchema.caps`:
 
-- `fixed` — literal caps such as `round-cap`, `intent-park`, `awaiting-human-merge`, `fence-violation:develop`.
-- `templates` — a prefix plus one parameter: `verify-failed:<step>`, `verify-timeout:<step>`, `step-failed:<step>`, `driver-crash:<step>` (with the step list in `values`), and `branch-ahead:<count>`.
+- `fixed` — literal caps such as `round-cap`, `intent-park`, `awaiting-human-merge`, `deadline` (the cycle deadline was reached; parked at a step boundary), `fence-violation:develop`.
+- `templates` — a prefix plus one parameter: `verify-failed:<step>`, `verify-timeout:<step>` (the verify command hit its time bound, not a code failure), `step-failed:<step>`, `driver-crash:<step>` (with the step list in `values`), and `branch-ahead:<count>`.
 
 A host switches on these values instead of strings found in pi-rukas source. The list is checked against the driver's cap type at compile time, so the build cannot record a cap the vocabulary omits. Exit code 11 is reserved for `intent-park` and `explore-needs-clarification`.
 
