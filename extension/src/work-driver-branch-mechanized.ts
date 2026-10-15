@@ -1,16 +1,13 @@
 /**
  * work-driver-branch-mechanized — #287 Part A: branch setup as driver code.
- *
  * Pre-#287 the branch step narrated itself to an LLM ops subagent, which then
  * ran `git fetch/checkout/pull --ff-only` against repoRoot and, for N=1,
  * developed there directly (`worktrees = {default: repoRoot}`). That made
  * repoRoot a development tree, which is why:
  *
  *   - stale repoRoot residue was swept into a merged PR (incident #602);
- *   - an aborted step left a dirty tree that wedged every downstream issue's
- *     branch step;
- *   - parallel groups were impossible — two cycles would fight over one
- *     checkout.
+ *   - an aborted step left a dirty tree that wedged every downstream issue's branch step;
+ *   - parallel groups were impossible — two cycles would fight over one checkout.
  *
  * After #287 repoRoot is an INTEGRATION POINT ONLY. Nothing between branch and
  * commit-pr runs git against it. Every workstream — including the degenerate
@@ -34,8 +31,8 @@
  * with it) halts the step via a `branch-ahead:branch` cap; nothing is
  * reset. The detection is purely read-only (two `git` probes) and runs
  * only against the resolved branch name, so a fresh cycle with no local
- * branch never sees it — unless #1189's push check shows the tip is already
- * on `origin/<branch>`, in which case the reset proceeds.
+ * branch never sees it — unless #1189's push check shows the tip is
+ * already on `origin/<branch>`, in which case the reset proceeds.
  */
 import { trace } from "./trace.ts";
 import { ensureWorktreesExcluded } from "./work-driver-git-exclude.ts";
@@ -182,7 +179,7 @@ export class BranchAheadError extends Error {
     readonly aheadCount: number | null,
   ) {
     super(
-      `branch ${branchName} is ahead of the base but not safely push-verifiable (local tip does not match origin/${branchName}, or the remote ref is absent) — possible unpushed or diverged work; reset refused, only a human can decide`,
+      `branch ${branchName} is ${aheadCount === null ? "an unknown number of" : `${aheadCount}`} commit(s) ahead of the base but not safely push-verifiable (local tip does not match origin/${branchName}, or the remote ref is absent) — possible unpushed or diverged work; reset refused, only a human can decide`,
     );
     this.name = "BranchAheadError";
   }
@@ -213,7 +210,10 @@ async function aheadBranchIsPushed(
     const remoteSha = stdout.trim();
     if (!remoteSha) return undefined;
     return remoteSha === localSha;
-  } catch {
+  } catch (err) {
+    trace(
+      `work-driver: push check for ${branchName} failed — treating as not safely pushed: ${String(err).slice(0, 160)}`,
+    );
     return undefined;
   }
 }

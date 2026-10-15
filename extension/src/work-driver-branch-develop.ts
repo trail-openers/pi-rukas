@@ -195,7 +195,7 @@ export async function runBranch(
             cap: `branch-ahead:${aheadLabel}` as const,
             reviewRound: state.pipelineState.reviewRound,
             nextStep: "handoff",
-            evidence: `${aheadErr.branchName} — ${aheadErr.message}`,
+            evidence: `${aheadErr.message}`,
           });
         }
         throw aheadErr;
