@@ -77,6 +77,32 @@ function sessionNow(): {
 }
 
 /**
+ * Record that a shadow call was deliberately NOT made (no model is asked).
+ * One stateless record, so S5 sees the gap in its sample. Never throws.
+ */
+export function shadowSkip(
+  seam: SeamId,
+  req: Pick<DecideRequest, "question" | "rule">,
+  where: DecisionWhere,
+  reason: string,
+): Promise<undefined> {
+  traceWarn(`decision-shadow: '${seam}' not fired: ${reason}`);
+  return appendDecisionRecord(
+    { repoRoot: where.repoRoot ?? sessionNow().cwd, issues: where.issues },
+    {
+      ts: new Date().toISOString(),
+      seam,
+      question: req.question,
+      ruleAnswer: req.rule,
+      skipped: reason,
+    },
+  ).then(
+    () => undefined,
+    () => undefined,
+  );
+}
+
+/**
  * Fire a shadow decision. Returns the settled decision (or undefined when it
  * was not run) for tests; production callers ignore it.
  */
@@ -87,22 +113,7 @@ export function shadowDecide(
 ): Promise<Decision | undefined> {
   // A call that is not fired still leaves one record (no state, so nothing to
   // redact): S5 must see a gap in its sample, not silently lose it.
-  const skipped = (reason: string): Promise<undefined> => {
-    traceWarn(`decision-shadow: '${seam}' not fired: ${reason}`);
-    return appendDecisionRecord(
-      { repoRoot: where.repoRoot ?? sessionNow().cwd, issues: where.issues },
-      {
-        ts: new Date().toISOString(),
-        seam,
-        question: req.question,
-        ruleAnswer: req.rule,
-        skipped: reason,
-      },
-    ).then(
-      () => undefined,
-      () => undefined,
-    );
-  };
+  const skipped = (reason: string): Promise<undefined> => shadowSkip(seam, req, where, reason);
   let mode: string;
   try {
     mode = seamConfig(SEAMS[seam] as SeamSpec).mode;

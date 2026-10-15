@@ -10,7 +10,9 @@
  *   - an acting caller gets one decision-log record per call, carrying the
  *     model's answer with the rule's answer as the final one;
  *   - exact rule matches (killCause, a 429 on the provider's own message)
- *     ask no model; a 429 only in the subagent's own words is asked (#1262);
+ *     ask no model; provider-outage classes (provider-severed, every 429 /
+ *     spend-cap / quota class, including one only in the subagent's words,
+ *     #1262) ask no model either and write one skip record;
  *   - `classifyFailureCause` alone stays pure: only `shadowFailureCause` asks;
  *   - PI_ENSEMBLE_DECISIONS=0 is rule-only: no backend is called;
  *   - an env override to `enforce` cannot make a shadow call act, and a
@@ -166,17 +168,59 @@ const baselineSpecs = [ordinary, security].map((b) => finaliseSpecVerdict(spec()
     "killCause and provider-message 429/spend-cap matches ask no model",
   );
 
-  // #1262 — a 429 only in the subagent's own words is not exact: asked, rule kept.
+  // #1262 — a 429 only in the subagent's own words is a rate-limit class:
+  // a provider-outage class is never asked (PM decision), so one skip record.
+  const beforeWords = calls.llm;
   const words = act(
     { kind: "dispatch-failed", errorTail: "tests for the 429 status path pass" },
     where,
   );
   assert(words.cause === baseline[6]?.cause, "an errorTail-only 429 keeps the rule's cause");
   recs = await awaitRecords(log, 2);
+  const wordsRec = recs[1] as { ruleAnswer?: string; skipped?: string };
   assert(
-    (recs[1] as { ruleAnswer?: string }).ruleAnswer === "rate-limited",
-    "an errorTail-only 429 is asked about, with the rule's label logged",
+    wordsRec.ruleAnswer === "rate-limited" &&
+      wordsRec.skipped === "skipped: provider-outage class" &&
+      calls.llm === beforeWords,
+    "an errorTail-only 429 is a rate-limit class: no model asked, skip recorded",
   );
+
+  // Provider-outage classes (transport severance, 429 burst/quota, spend cap):
+  // no backend is invoked even with a live session model; each writes one skip.
+  {
+    const outRoot = tmpDir("shadow-outage");
+    const outLog = path.join(outRoot, ".pi", "work-state", "7", "decisions.jsonl");
+    const outWhere = { repoRoot: outRoot, issues: [7] };
+    // A 429 on the provider's own message is an exact match (silent, above);
+    // these are the classes that reach the seam as a skip record.
+    const outage: Tail[] = [
+      { kind: "dispatch-failed-provider", providerMessage: "socket hang up" },
+      { kind: "dispatch-failed", errorTail: "429 status code, retry delay 30s" },
+      { kind: "dispatch-failed", errorTail: "429 status: spend cap reached" },
+      { kind: "dispatch-failed", errorTail: "429 status code, retry delay 86400s" },
+    ];
+    const before = calls.llm;
+    for (const f of outage) {
+      const cls = classifyFailureCause(f);
+      assert(
+        cls.cause === "provider-severed" || cls.cause.startsWith("rate-limited:"),
+        `fixture is a provider-outage class (${cls.cause})`,
+      );
+      act(f, outWhere);
+    }
+    const outRecs = await awaitRecords(outLog, outage.length);
+    await sleep(100);
+    assert(
+      calls.llm === before && records(outLog).length === outage.length,
+      "provider-outage classes invoke no backend and write one skip record each",
+    );
+    assert(
+      outRecs.every(
+        (r) => (r as { skipped?: string }).skipped === "skipped: provider-outage class",
+      ),
+      "each provider-outage skip records the reason",
+    );
+  }
 
   // Render-only callers (classifyFailureCause alone) ask nothing.
   const before = calls.llm;

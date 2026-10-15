@@ -10,7 +10,7 @@
 
 import type { SEAMS } from "./decision-seam-registry.ts";
 import type { DecisionWhere } from "./decision-seam.ts";
-import { shadowDecide } from "./decision-shadow.ts";
+import { shadowDecide, shadowSkip } from "./decision-shadow.ts";
 import {
   type DispatchFailureCause,
   isRateLimit429Msg,
@@ -90,6 +90,20 @@ type FailureClass = {
 type FailureCauseLabel = keyof (typeof SEAMS)["failure-cause"]["labels"];
 
 /**
+ * Causes that occur DURING a provider outage: transport severance and every
+ * 429 / spend-cap / quota class. A shadow model call here adds load to the
+ * failing provider and its answer is worthless, so no backend is invoked
+ * (the rule answer stands; the decision log records the skip).
+ */
+const PROVIDER_OUTAGE_CAUSES: ReadonlySet<DispatchFailureCause> = new Set<DispatchFailureCause>([
+  "provider-severed",
+  "rate-limited:429",
+  "rate-limited:burst",
+  "rate-limited:quota-window",
+  "rate-limited:quota-terminal",
+]);
+
+/**
  * The failure-cause seam's label for a rule cause (#1308 S3). Undefined for a
  * cause the rule reads EXACTLY — a structured kill (pi-rukas ended the child
  * itself), or a 429 / spend-cap pattern matched on the provider's own error
@@ -151,20 +165,21 @@ export function shadowFailureCause(
 ): void {
   const rule = seamLabelFor(tail, cls.cause);
   if (rule === undefined) return;
-  void shadowDecide(
-    "failure-cause",
-    {
-      question: "What caused this dispatch failure?",
-      state: {
-        kind: tail.kind,
-        providerMessage: tail.providerMessage?.slice(0, 600),
-        // The END of the output: a failure shows in the last words.
-        lastOutput: tail.errorTail?.slice(-600),
-      },
-      rule,
+  const req = {
+    question: "What caused this dispatch failure?",
+    state: {
+      kind: tail.kind,
+      providerMessage: tail.providerMessage?.slice(0, 600),
+      // The END of the output: a failure shows in the last words.
+      lastOutput: tail.errorTail?.slice(-600),
     },
-    where,
-  );
+    rule,
+  };
+  if (PROVIDER_OUTAGE_CAUSES.has(cls.cause)) {
+    void shadowSkip("failure-cause", req, where, "skipped: provider-outage class");
+    return;
+  }
+  void shadowDecide("failure-cause", req, where);
 }
 
 /**
