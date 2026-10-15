@@ -7,9 +7,11 @@
  * under the ledger's lock (review-ledger-lock.ts); the ledger itself is untouched.
  *
  * Rows are `open` (reported, not resolved), `accepted` (an operator accepted it)
- * or `resolved` (a complete full review no longer reported it AND its path is
- * gone at head or its cited line is past the end of the head file; any other
- * open row is carried forward, including a row with no line).
+ * or `resolved`. An open row is resolved only by `rowFate`
+ * (review-findings-fate.ts): a complete full review no longer reported it AND
+ * its cited code is gone — its path is absent at head, its cited line is past
+ * the end of the head file, or its snippet no longer appears in the head file.
+ * Any other open row is carried forward, including a row with no line.
  * Accepted rows are never evicted (see review-findings-file.ts for the cap).
  *
  * Failure policy — fail closed on the file, fail open on the review:
@@ -33,6 +35,7 @@ import { promisify } from "node:util";
 import { execp } from "./exec.ts";
 import type { Finding } from "./lens-review-types.ts";
 import { changedLineRanges } from "./review-diff.ts";
+import { rowFate } from "./review-findings-fate.ts";
 import {
   type StoredFinding,
   capPerBranch,
@@ -285,14 +288,6 @@ export async function acceptFinding(
   return out.ok ? out.value : { ok: false, reason: out.reason };
 }
 
-/**
- * True when the file is present at head but the row's cited line is past its end
- * (the code was truncated away). A missing path is `pathGone`, not this.
- */
-function citedLineGone(r: StoredFinding, lines: string[] | undefined): boolean {
-  return !!lines && r.line !== undefined && r.line > lines.length;
-}
-
 /** Would a finding on `line` of `file` fall outside the delta's changed lines? */
 function outsideDelta(
   f: Finding,
@@ -439,23 +434,20 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
         decisions.push({ action: "matched", rowId: row.id });
       });
       const carried: Finding[] = [];
+      // Only a complete FULL review may resolve an untouched row (rowFate); a
+      // delta or an incomplete review carries it. A lens omitting a known finding
+      // is not a fix on its own.
+      const completeFull = run.complete && run.deltaDiff === undefined;
       mine.forEach((r, i) => {
         if (r.status !== "open" || touched.has(r.id)) return;
-        const pathGone = missingPaths.has(r.path);
-        const truncated = citedLineGone(r, linesByPath.get(r.path));
-        // A complete full review resolves an untouched open row only when its
-        // cited code is gone: the path is absent at head, or its cited line no
-        // longer exists. A row on a present file is never resolved here, even when
-        // its code changed, and a lens omitting it is not a fix. A git read error
-        // never reaches here (the whole round is refused).
-        if (run.complete && (pathGone || truncated)) {
+        const fate = rowFate(
+          r,
+          { pathGone: missingPaths.has(r.path), lines: linesByPath.get(r.path) },
+          completeFull,
+        );
+        if (fate === "resolve") {
           mine[i] = { ...r, status: "resolved", acceptance: undefined };
-          return;
-        }
-        // Otherwise it stands while its path is present and its cited line exists,
-        // on a complete review and on a delta alike. A lens omitting a known
-        // finding is not a fix.
-        if (!pathGone && !truncated) {
+        } else if (fate === "carry") {
           carried.push({
             lens: r.lens,
             severity: r.severity,
