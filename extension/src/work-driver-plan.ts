@@ -356,6 +356,7 @@ export async function runPlan(
       paths: [],
       outOfScope: [],
     };
+    workstreams = foldPortPlan(workstreams, port); // #1322 — a port keeps its scope
   }
   // #849 — planQuality is written EXACTLY ONCE here: the final reason is
   // computed once (`dropped-dependencies` wins when the corrective dropped an
