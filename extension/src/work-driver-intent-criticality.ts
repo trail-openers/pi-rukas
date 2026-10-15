@@ -24,7 +24,7 @@
  * decides what the spec says. work-driver-intent-finalise.ts fixes the order.
  */
 import { CRITICAL_SEVERITY, OPEN_POINTS_HEADING } from "./open-points-contract.ts";
-import { matchSecurityTerm } from "./security-class.ts";
+import { flattenIssueText } from "./text-flatten.ts";
 import type { NormalisedSpec, SpecAssumption, SpecEvidence } from "./work-driver-intent.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 
@@ -178,146 +178,159 @@ export function contradictionAssumptions(evidence: SpecEvidence[]): SpecAssumpti
   );
 }
 
-// Uppercase only: `[critical]` and `[Critical]` are unparsed, so they cap rather than vanish.
-/** A `[CRITICAL]` bullet tag, optionally emphasised; captures the point text. */
-const CRITICAL_BULLET = new RegExp(`^[*_\`\\s]*\\[${CRITICAL_SEVERITY}\\][*_\`\\s:]*(.*)$`);
+/** Severity words a bullet may lead with. Only CRITICAL gates; the others are read and set aside (#1187). */
+const SEVERITY_WORDS: readonly string[] = [CRITICAL_SEVERITY, "HIGH", "MEDIUM", "LOW"];
 
-/** A `[RESOLVED]` marker directly after the severity tag (#1151, open-points-contract.ts). */
-const RESOLVED_MARKER = /^\[RESOLVED\]/i;
-
-/** A bullet tagged with a non-CRITICAL severity: its text is not a CRITICAL line. */
-const OTHER_SEVERITY_BULLET = /^[*_`\s]*\[(?:HIGH|MEDIUM|LOW)\]/i;
-
-// One CRITICAL open point. A bare `- [CRITICAL]` bullet is still a point (it must not vanish
-// from the gate), so it is a variant of its own rather than an empty string. openPointText
-// renders the `empty` variant as a placeholder.
-/** Stands in for a bare `- [CRITICAL]` bullet: still a point, just without text. */
-export type OpenPoint = { kind: "text"; text: string } | { kind: "empty" };
-
-/** Text of an open point for display; the placeholder is produced only here. */
-export function openPointText(point: OpenPoint): string {
-  return point.kind === "text" ? point.text : "(empty CRITICAL open point)";
+/** Case-folded token without spaces or hyphens: `[CRIT ICAL]` and `[critical]` both fold to `critical`. */
+function foldToken(token: string): string {
+  return token.toLowerCase().replace(/[\s-]/g, "");
 }
 
-/** What the gate read from an issue's "Open points" section (#1151). */
+/** Tag-like: folds to a severity word without being that word exactly. Such a tag parks; it never passes. */
+function isTagLike(token: string): boolean {
+  return SEVERITY_WORDS.some((word) => word !== token && word.toLowerCase() === foldToken(token));
+}
+
+/** One list item or prose line of the section. `kind` is fixed when the item starts; `text` takes joined continuations. */
+interface Entry {
+  kind: "point" | "resolved" | "parked" | "plain";
+  text: string;
+}
+
+/** An ATX heading: 1-6 hashes, then a space or the end of the line. */
+const ATX_HEADING = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$/;
+/** A list item, bullet or ordered, with content after the marker. */
+const LIST_ITEM = /^[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+(.*)$/;
+/** A setext underline. Inside the section it parks: it is a heading or a thematic break, never a point. */
+const SETEXT_UNDERLINE = /^ {0,3}(?:=+|-+)[ \t]*$/;
+/** A code fence opener: three or more backticks or tildes. */
+const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})/;
+
+/** Whether `line` closes a fence opened with `opener`: same character, at least as long. */
+function closesFence(line: string, opener: string): boolean {
+  const closer = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/)?.[1];
+  return closer !== undefined && closer[0] === opener[0] && closer.length >= opener.length;
+}
+
+/**
+ * The disposition of one list item, from its flattened text with any task checkbox removed.
+ * Severity is recognised only at the start of the text (#1187): a tag behind emphasis or
+ * strikethrough is not read, and a CRITICAL-shaped tag anywhere else in the text parks.
+ */
+function classifyItem(text: string): Entry["kind"] {
+  const lead = text.match(/^\[([^\]]*)\]/);
+  if (lead) {
+    const token = lead[1] ?? "";
+    const after = text.slice(lead[0].length);
+    if (token === CRITICAL_SEVERITY) {
+      // `[RESOLVED]` must follow the tag on this line; an empty answer is not an answer.
+      const answer = after.match(/^\s*\[RESOLVED\](.*)$/);
+      if (answer === null) return "point";
+      return (answer[1] ?? "").trim() ? "resolved" : "parked";
+    }
+    if (SEVERITY_WORDS.includes(token)) return "plain";
+    if (isTagLike(token)) return "parked";
+    // A markdown link is an ordinary bullet. Any other bracketed token is one we cannot read.
+    return after.startsWith("(") ? "plain" : "parked";
+  }
+  if (/^\W*critical\b/i.test(text)) return "parked";
+  const anywhere = [...text.matchAll(/\[([^\]]*)\]/g)];
+  return anywhere.some((m) => foldToken(m[1] ?? "") === foldToken(CRITICAL_SEVERITY))
+    ? "parked"
+    : "plain";
+}
+
+/** What the gate read from an issue's Open points section (#1151, #1187). Every text is flattenIssueText output. */
 export interface OpenPointReading {
-  /** Unresolved CRITICAL points; each one gates. */
-  points: OpenPoint[];
-  // A marker with no answer text is unparsed instead: nothing was answered, so nothing is cleared.
-  /** Bullets the author marked `[RESOLVED]`, with the marker removed. */
-  resolved: OpenPoint[];
-  /** Lines that mention CRITICAL but parse as neither a point nor a resolved bullet. */
+  /** Unresolved CRITICAL points. Each one gates. */
+  points: string[];
+  /** CRITICAL points answered by an unemphasised `[RESOLVED]` right after the tag. */
+  resolved: string[];
+  /** Section lines that block the cycle: anything that is not a plain bullet, a checkbox, a link or a HIGH/MEDIUM/LOW tag. */
   unparsed: string[];
 }
 
-const LIST_ITEM_LINE = /^\s*(?:[-*]|\d+[.)])\s+/;
-const HEADING_LINE = /^\s*#{1,6}\s/;
-/** A line that begins with a severity tag starts its own item; it never joins one (#1171). */
-const SEVERITY_TAG_LINE = /^\s*(?:[-*+]|\d+[.)])?\s*\[(?:CRITICAL|HIGH|MEDIUM|LOW)\]/i;
-
-/** One logical line: trimmed text, whether its first physical line was indented, and whether continuations were joined onto it. */
-interface LogicalLine {
-  text: string;
-  indented: boolean;
-  joined: boolean;
-}
-
 /**
- * The body's lines, with indented continuation lines joined onto the list item
- * above them (#1171): `- [CRITICAL] Which timeout wins` followed by an indented
- * `authentication for the endpoint is undecided` is one point. A continuation is
- * refused only when the line itself begins with a severity tag, so a wrapped HIGH
- * item cannot swallow a CRITICAL line, while a continuation that merely mentions
- * "critical" still joins. A blank line or a heading ends the item.
- */
-function logicalLines(issueBody: string): LogicalLine[] {
-  const out: LogicalLine[] = [];
-  let openItem = false;
-  for (const raw of issueBody.split("\n")) {
-    const line = raw.trim();
-    const indented = /^\s+\S/.test(raw);
-    if (line === "") {
-      openItem = false;
-      out.push({ text: "", indented: false, joined: false });
-      continue;
-    }
-    const continues =
-      openItem &&
-      indented &&
-      !LIST_ITEM_LINE.test(raw) &&
-      !HEADING_LINE.test(raw) &&
-      !SEVERITY_TAG_LINE.test(line);
-    if (continues) {
-      const prev = out.pop();
-      out.push({
-        text: `${prev?.text ?? ""} ${line}`,
-        indented: prev?.indented ?? false,
-        joined: true,
-      });
-      continue;
-    }
-    out.push({ text: line, indented, joined: false });
-    openItem = LIST_ITEM_LINE.test(raw);
-  }
-  return out;
-}
-
-/**
- * The CRITICAL bullets of a filed issue's "Open points" section (#1151).
+ * Read the Open points section of a filed issue (#1151, #1187).
  *
- * The gap gate files unresolved CRITICAL points under that heading, one
- * `- [CRITICAL] <point> — <proposal>` bullet each. Only that section is read.
- * HIGH/MEDIUM/LOW bullets never gate; a line that mentions CRITICAL but is
- * not a recognised bullet is reported as `unparsed` rather than ignored.
+ * The section starts at an exact OPEN_POINTS_HEADING and ends at the next heading of the
+ * same or higher level outside a fenced block, or at the end of the body. Inside it:
+ * blank lines never park; plain bullets, task checkboxes and link bullets do not park;
+ * a CRITICAL point parks unless `[RESOLVED]` follows its tag on the same line; and any
+ * other line that is not a plain item parks (non-bullet prose, unindented continuation,
+ * a sub-heading, a setext underline, a fenced block, an unreadable leading token).
+ * Indented lines continue the item above them, and only that item, with no blank line between.
  */
 export function readOpenPoints(issueBody: string): OpenPointReading {
-  const reading: OpenPointReading = { points: [], resolved: [], unparsed: [] };
-  let inSection = false;
-  for (const entry of logicalLines(issueBody)) {
-    const line = entry.text;
-    const heading = line.match(/^#{1,6}\s+(.*)$/)?.[1];
-    if (heading !== undefined) {
-      inSection = heading.trim().toLowerCase() === OPEN_POINTS_HEADING.toLowerCase();
-      continue;
-    }
-    if (!inSection || line === "") continue;
-    const item = line.match(/^(?:[-*]|\d+[.)])\s+(.*)$/)?.[1];
-    const tagged = item?.match(CRITICAL_BULLET);
-    if (item !== undefined && tagged) {
-      const rest = tagged[1]?.trim() ?? "";
-      if (RESOLVED_MARKER.test(rest)) {
-        const answered = rest.replace(RESOLVED_MARKER, "").trim();
-        if (answered) reading.resolved.push({ kind: "text", text: answered });
-        else reading.unparsed.push(line);
-      } else {
-        // A bare tag is still a CRITICAL point: dropping it would let an empty
-        // gate finding stop gating.
-        reading.points.push(rest ? { kind: "text", text: rest } : { kind: "empty" });
+  const entries: Entry[] = [];
+  const park = (raw: string): Entry => {
+    const entry: Entry = { kind: "parked", text: flattenIssueText(raw) };
+    entries.push(entry);
+    return entry;
+  };
+  let level = 0; // heading level of the open section; 0 = outside it
+  let fence: string | undefined; // the opener of the fence we are inside
+  let fenceEntry: Entry | undefined; // the one entry a fenced block inside the section becomes
+  let cur: Entry | undefined; // the item an indented continuation line joins
+  for (const raw of issueBody.split(/\r?\n/)) {
+    if (fence !== undefined) {
+      if (fenceEntry !== undefined && raw.trim() !== "") {
+        fenceEntry.text = flattenIssueText(`${fenceEntry.text} ${raw}`);
       }
+      if (closesFence(raw, fence)) fence = undefined;
       continue;
     }
-    if (item !== undefined && OTHER_SEVERITY_BULLET.test(item)) continue;
-    // A list item that mentions CRITICAL, or a line leading with it, is a malformed
-    // point. Other prose (e.g. the gap gate's own intro line) is not.
-    // The item match is case-insensitive, so lowercase and titlecase tags land here.
-    // `non-critical` is ordinary prose, not a severity tag, so it is not malformed.
-    const malformed =
-      item !== undefined ? /(?<!non-)\bcritical\b/i.test(line) : /^\W*critical\b/i.test(line);
-    if (malformed) {
-      reading.unparsed.push(line);
+    const opener = raw.match(FENCE_OPEN)?.[1];
+    if (opener !== undefined) {
+      fence = opener;
+      cur = undefined;
+      fenceEntry = level > 0 ? park(raw) : undefined;
       continue;
     }
-    // #1171: an indented line that was not joined onto an item and is not a parsed item
-    // (e.g. a nested `  - authentication is undecided`) must not vanish. It parks only
-    // when it names the security class; other indented prose stays unread.
-    if (entry.indented && !entry.joined && matchSecurityTerm(line) !== undefined) {
-      reading.unparsed.push(line);
+    const heading = raw.match(ATX_HEADING);
+    if (heading) {
+      const depth = heading[1]?.length ?? 0;
+      cur = undefined;
+      // A deeper heading inside the section is a sub-heading, and it parks.
+      if (level > 0 && depth > level) {
+        park(raw);
+        continue;
+      }
+      level = flattenIssueText(heading[2] ?? "") === OPEN_POINTS_HEADING ? depth : 0;
+      continue;
     }
+    if (raw.trim() === "") {
+      cur = undefined;
+      continue;
+    }
+    if (level === 0) continue;
+    if (SETEXT_UNDERLINE.test(raw)) {
+      park(raw);
+      cur = undefined;
+      continue;
+    }
+    const item = raw.match(LIST_ITEM)?.[1];
+    if (item !== undefined) {
+      const text = flattenIssueText(item)
+        .replace(/^\[[ xX]\](?: |$)/, "")
+        .trim();
+      cur = { kind: classifyItem(text), text };
+      entries.push(cur);
+      continue;
+    }
+    const piece = flattenIssueText(raw);
+    // An indented line continues the item above it; one that opens with a bracketed token is not prose to fold in.
+    if (/^[ \t]/.test(raw) && cur !== undefined && !piece.startsWith("[")) {
+      cur.text = flattenIssueText(`${cur.text} ${piece}`);
+      continue;
+    }
+    cur = park(raw);
+  }
+  const reading: OpenPointReading = { points: [], resolved: [], unparsed: [] };
+  for (const entry of entries) {
+    if (entry.kind === "point") reading.points.push(entry.text);
+    else if (entry.kind === "resolved") reading.resolved.push(entry.text);
+    else if (entry.kind === "parked") reading.unparsed.push(entry.text);
   }
   return reading;
-}
-
-/** The CRITICAL points of a filed issue's "Open points" section (#1151). */
-export function criticalOpenPoints(issueBody: string): OpenPoint[] {
-  return readOpenPoints(issueBody).points;
 }

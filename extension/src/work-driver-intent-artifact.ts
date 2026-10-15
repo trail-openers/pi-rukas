@@ -265,10 +265,13 @@ function validateSpec(raw: unknown): NormalisedSpec | undefined {
     verdict: v.verdict,
     rationale: typeof v.rationale === "string" ? v.rationale : "",
   };
+  // #1187 — the keyword-classifier field is retired. An artifact still carrying it was
+  // written by the old gate, so it is refused: the caller re-runs intent from the issue body.
+  if (v.securityOpenPoints !== undefined) return undefined;
   // Absent in artifacts written before the field existed: read as none, so it stays absent.
-  if (v.securityOpenPoints !== undefined) {
-    if (!isStringArray(v.securityOpenPoints)) return undefined;
-    out.securityOpenPoints = v.securityOpenPoints;
+  if (v.openPoints !== undefined) {
+    if (!isStringArray(v.openPoints)) return undefined;
+    out.openPoints = v.openPoints;
   }
   if (v.parkReason !== undefined) {
     const pr = v.parkReason;

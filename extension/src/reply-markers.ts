@@ -129,7 +129,8 @@ export const MARKER_CONTRACTS: readonly MarkerContract[] = [
       "already-implemented",
       "too-large",
       "premise-unsound",
-      "security-open-point",
+      "unresolved-critical-open-point",
+      "blank-issue-body",
     ],
     consumer: "work-driver-intent.ts",
     onAbsence:

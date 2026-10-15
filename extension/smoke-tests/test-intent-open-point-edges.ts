@@ -1,26 +1,19 @@
 #!/usr/bin/env bun
 /**
- * #1151 review — open-point edge cases for the intent gate.
+ * #1187 — the Open points reader, one assertion per form the acceptance criteria name.
  *
- * A bare `- [CRITICAL]` bullet is still a point (it must not vanish from the
- * gate), and assumption text is clipped by code point so an emoji run never
- * leaves a lone surrogate. The round trip and authorization canaries live in
- * test-intent-criticality.ts.
- * The security park text is checked against every SECURITY_CLASS_LABELS entry.
+ * The gate is topic-neutral: an unresolved CRITICAL point parks whatever it says.
+ * What is tested here is the SHAPE rules: which lines are points, which are resolved,
+ * which block (unparsed), and which never park. The gate's verdict is in
+ * test-intent-open-point-gate.ts.
  */
 
 import { openPointsSection } from "../src/plan-gap-disclosure.ts";
 import { GAP_RESOLUTION_PLACEHOLDER } from "../src/plan-gap-parse.ts";
 import type { PlanGap } from "../src/plan-types.ts";
-import { SECURITY_CLASS_LABELS } from "../src/security-class.ts";
-import { parseNormalisedSpecArtifact } from "../src/work-driver-intent-artifact.ts";
-import {
-  criticalOpenPoints,
-  openPointText,
-  readOpenPoints,
-} from "../src/work-driver-intent-criticality.ts";
+import { readOpenPoints } from "../src/work-driver-intent-criticality.ts";
 import { finaliseSpecVerdict } from "../src/work-driver-intent-finalise.ts";
-import { type NormalisedSpec, PARK_REASONS, explainPark } from "../src/work-driver-intent.ts";
+import type { NormalisedSpec } from "../src/work-driver-intent.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -30,6 +23,11 @@ function assert(cond: boolean, msg: string) {
     exit = 1;
   }
 }
+
+const HEADING = "## Open points (unresolved at the gap-gate cap)";
+
+/** An issue body whose Open points section carries the given raw lines. */
+const section = (...lines: string[]) => [HEADING, "", ...lines].join("\n");
 
 const spec = (over: Partial<NormalisedSpec> = {}): NormalisedSpec => ({
   intent: "Preserve the requested intent while applying the change.",
@@ -44,311 +42,225 @@ const spec = (over: Partial<NormalisedSpec> = {}): NormalisedSpec => ({
   ...over,
 });
 
-const HEADING = "## Open points (unresolved at the gap-gate cap)";
-
-/** An issue body whose Open points section carries the given raw lines. */
-const section = (...lines: string[]) => [HEADING, "", ...lines].join("\n");
-
-// A bare `- [CRITICAL]` is still a point; it must not vanish from the gate.
-{
-  const bare = criticalOpenPoints(section("- [CRITICAL]", "- [CRITICAL] "));
-  assert(
-    bare.length === 2 && bare.every((p) => p.kind === "empty"),
-    `empty CRITICAL bullet is a typed empty point (${bare.length})`,
-  );
-  const gated = finaliseSpecVerdict(spec(), section("- [CRITICAL]", "- [CRITICAL] "));
-  assert(
-    gated.verdict === "proceed-with-assumptions" &&
-      gated.assumptions.some((a) => a.text.includes("(empty CRITICAL open point)")),
-    "an empty CRITICAL bullet caps a proceed and renders its placeholder",
-  );
+/** Reads a section and reports (points, resolved, unparsed) counts. */
+function counts(...lines: string[]) {
+  const r = readOpenPoints(section(...lines));
+  return { p: r.points.length, r: r.resolved.length, u: r.unparsed.length };
 }
 
-// Clipping counts code points, so an emoji run is never split into a lone surrogate.
-{
-  const emoji = "\u{1F600}".repeat(400);
-  const capped = finaliseSpecVerdict(spec(), section(`- [CRITICAL] ${emoji}`));
-  const text = capped.assumptions.at(-1)?.text ?? "";
-  const span = text.match(/`([^`]*)`$/)?.[1] ?? "";
-  const codePoints = Array.from(span);
-  assert(
-    codePoints.length === 300 && span.endsWith("\u2026"),
-    `clip: an emoji point is clipped to 300 code points (${codePoints.length})`,
-  );
-  assert(
-    codePoints.slice(0, -1).every((c) => c === "\u{1F600}"),
-    "clip: no lone surrogate is left before the ellipsis",
-  );
-}
+/** The verdict the gate reaches for the same section. */
+const verdictOf = (...lines: string[]) => finaliseSpecVerdict(spec(), section(...lines)).verdict;
 
-// Issue text quoted into assumptions: each control/line-separator run becomes one space.
-// An unparsed line is quoted raw, so it can carry U+2028/U+2029; a parsed point cannot (the
-// item regex does not match across them), so a tab is the control character that reaches a point.
-{
-  const unparsed = section("- CRITICAL: Which\u2028timeout\u0007wins\u2029\u0000now");
-  const text =
-    finaliseSpecVerdict(spec(), unparsed).assumptions.find((a) =>
-      a.text.startsWith("Open-point gate could not parse a CRITICAL line: "),
-    )?.text ?? "";
-  assert(
-    text.includes("`- CRITICAL: Which timeout wins now`"),
-    `flatten: control characters and line separators become single spaces (${JSON.stringify(text)})`,
-  );
-  assert(
-    !/[\p{Cc}\u2028\u2029]/u.test(text),
-    "flatten: the quoted assumption holds no control characters or line separators",
-  );
-  const tabbed = finaliseSpecVerdict(
-    spec(),
-    section("- [CRITICAL] Which\ttimeout wins"),
-  ).assumptions.some(
-    (a) => a.text === "unresolved CRITICAL open point in the filed issue: `Which timeout wins`",
-  );
-  assert(tabbed, "flatten: a tab inside a point is one space in the quoted assumption");
-}
+// --- Forms that PARK -------------------------------------------------------
 
-// The artifact reader accepts every park reason the intent gate can emit (#1151 review:
-// one shared list, so a new reason cannot be written and then silently refused on read).
-{
-  const accepted = PARK_REASONS.filter((reason) => {
-    const parsed = parseNormalisedSpecArtifact(
-      JSON.stringify({ ...spec(), verdict: "park", parkReason: reason }),
-    );
-    return parsed?.parkReason === reason;
-  });
-  assert(
-    accepted.length === PARK_REASONS.length,
-    `artifact reader accepts every ParkReason (${accepted.length}/${PARK_REASONS.length})`,
-  );
-}
+assert(
+  counts("- ~~[CRITICAL] Who may call the endpoint~~").u === 1,
+  "struck-through severity bullet parks (unparsed)",
+);
+assert(
+  counts("- [CRITICAL] Which timeout wins", "wrapped onto an unindented line").u === 1,
+  "unindented continuation line parks",
+);
+assert(
+  counts("- [CRITICAL][RESOLVED] Which timeout wins", "unindented wrap").u === 1 &&
+    counts("- [CRITICAL][RESOLVED] Which timeout wins", "unindented wrap").r === 1,
+  "unindented continuation after a [RESOLVED] bullet parks, and the resolved point still resolves",
+);
+assert(
+  counts("- [CRI\u200BTICAL] retry timeout").p === 1,
+  "zero-width character inside [CRITICAL] is stripped, so the point parks",
+);
+assert(
+  counts("- [HI\u200BGH] retry timeout").p === 0 && counts("- [HI\u200BGH] retry timeout").u === 0,
+  "zero-width character inside [HIGH] is stripped, and a HIGH bullet does not park",
+);
+assert(
+  counts("- [critical] retry timeout").u === 1 && counts("- [critical] retry timeout").p === 0,
+  "lowercase [critical] is tag-like and parks",
+);
+assert(counts("- [CRIT ICAL] retry timeout").u === 1, "split [CRIT ICAL] is tag-like and parks");
+assert(
+  counts("- [CRIT-ICAL] retry timeout").u === 1,
+  "hyphen-split [CRIT-ICAL] is tag-like and parks",
+);
+assert(
+  counts("- [\u0421RITICAL] retry timeout").u === 1 &&
+    counts("- [\u0421RITICAL] retry timeout").p === 0,
+  "a homoglyph tag (Cyrillic С) is an unknown token and parks as unparsed",
+);
+assert(
+  counts("- [CRITICAL] [RESOLVED] Which timeout wins").r === 1,
+  "[CRITICAL] [RESOLVED] with a space resolves (spaced form)",
+);
+assert(
+  counts("- [CRITICAL] **[RESOLVED]** Which timeout wins").p === 1,
+  "emphasised **[RESOLVED]** does not count: the point still gates",
+);
+assert(
+  counts("- **[CRITICAL]** Which timeout wins").u === 1,
+  "a severity tag behind emphasis is unparsed, so it parks",
+);
+assert(
+  counts("The gap gate found one thing in the design.").u === 1,
+  "a non-bullet prose line parks",
+);
+assert(
+  counts("```", "# not a heading", "```", "- [CRITICAL] after the fence").p === 1 &&
+    counts("```", "# not a heading", "```").u >= 1,
+  "a fenced block parks, and a # line inside it neither ends the section nor is a heading",
+);
+assert(
+  counts("### Details", "- [CRITICAL] after the sub-heading").p === 1 &&
+    counts("### Details").u === 1,
+  "a sub-heading inside the section parks and does not end the section",
+);
+assert(counts("Setext title", "---").u >= 1, "a setext underline inside the section parks");
+assert(
+  counts("```", "- [CRITICAL] never closed").u >= 1 &&
+    counts("```", "- [CRITICAL] never closed").p === 0,
+  "an unclosed fence runs to end of body and its lines park",
+);
+assert(
+  counts("  indented with no bullet above it").u === 1,
+  "an indented line with no preceding bullet parks",
+);
+assert(
+  counts("- [docs-ish] see the note").u === 1,
+  "a bracketed token at bullet start that is not a known token parks",
+);
+assert(
+  counts("critical: the retry ceiling").u === 1,
+  "a bullet that opens with the word critical (no brackets) parks",
+);
 
-// Resolution: only [RESOLVED] right after the severity tag counts; it is recorded as an assumption.
-{
-  const body = section(
-    "- [CRITICAL][RESOLVED] Which timeout wins \u2014 answered: the shorter",
-    "- [CRITICAL] [RESOLVED] Who owns retries \u2014 answered: the driver",
-    "- [CRITICAL] Which backoff applies [RESOLVED]",
-    "- ~~[CRITICAL] struck point~~",
-  );
-  const reading = readOpenPoints(body);
-  assert(
-    reading.resolved.length === 2 &&
-      openPointText(reading.resolved[0] ?? { kind: "empty" }).startsWith("Which timeout wins"),
-    `resolved: [RESOLVED] after the tag is resolved, both spellings (${reading.resolved.length})`,
-  );
-  assert(
-    reading.points.length === 1 &&
-      openPointText(reading.points[0] ?? { kind: "empty" }).includes("[RESOLVED]"),
-    "resolved: [RESOLVED] elsewhere in the text does not resolve the point",
-  );
-  assert(
-    reading.unparsed.length === 1,
-    "resolved: a struck-through CRITICAL line is unparsed, not resolved",
-  );
-  const gated = finaliseSpecVerdict(spec(), body);
-  assert(
-    gated.assumptions.some((a) =>
-      a.text.startsWith("Resolved open point (marked [RESOLVED] in the issue body): "),
-    ),
-    "resolved: a skipped resolved bullet reaches the assumptions (PR body)",
-  );
-}
+// --- Forms that PASS (never park) ------------------------------------------
 
-// A resolved security point is recorded as self-resolved, and it does not park.
-{
-  const gated = finaliseSpecVerdict(
-    spec(),
-    section(
-      "- [CRITICAL][RESOLVED] Who may call the endpoint \u2014 authentication: bearer tokens",
-    ),
-  );
-  assert(
-    gated.verdict === "proceed" &&
-      gated.assumptions.some((a) =>
-        a.text.startsWith("security open point self-resolved in the issue body: "),
-      ),
-    "resolved security point: recorded as self-resolved in the issue body, and does not park",
-  );
-}
+assert(counts("- plain untagged note").u === 0, "plain untagged bullet does not park");
+assert(counts("- [ ] an open task").u === 0, "unchecked task checkbox does not park");
+assert(counts("- [x] a done task").u === 0, "checked task checkbox does not park");
+assert(
+  counts("- [docs](https://example.com) note").u === 0,
+  "bullet starting with a link does not park",
+);
+assert(
+  counts("- [HIGH] a high point").u === 0 && counts("- [HIGH] a high point").p === 0,
+  "[HIGH] does not gate",
+);
+assert(
+  counts("1) an ordered plain item").u === 0,
+  "an ordered item counts as a bullet and does not park",
+);
+assert(counts("- plain note", "", "", "- another note").u === 0, "blank lines never park");
+assert(
+  counts("- plain note", "  wrapped with indent").u === 0,
+  "an indented line after a plain bullet continues it and does not park",
+);
+assert(
+  counts("- [CRITICAL] Which timeout wins", "  wrapped with indent").p === 1,
+  "an indented continuation joins its CRITICAL point",
+);
 
-// Malformed section: a CRITICAL line that does not parse caps the proceed; a HIGH line or a line
-// outside the section does not.
+// --- Points, resolutions and the gate's verdict ----------------------------
+
+assert(counts("- [CRITICAL]").p === 1, "a bare [CRITICAL] bullet is still a point");
+assert(counts("1. [CRITICAL] an ordered point").p === 1, "an ordered CRITICAL item is a point");
+assert(
+  counts("- [CRITICAL](https://example.com) retry timeout").p === 1,
+  "an exact [CRITICAL] tag wins over a following link: a point",
+);
+assert(
+  counts("- [CRITICAL] Which timeout wins", "  - nested plain note").p === 1 &&
+    counts("- [CRITICAL] Which timeout wins", "  - nested plain note").u === 0,
+  "a nested plain bullet is its own item and does not park",
+);
+assert(
+  verdictOf("- [CRITICAL] Which timeout wins") === "park",
+  "a topic-neutral CRITICAL point (retry timeout) parks",
+);
+assert(
+  verdictOf("- [CRITICAL][RESOLVED] Which timeout wins") === "proceed",
+  "a resolved CRITICAL point proceeds",
+);
+assert(
+  verdictOf("- [CRITICAL] Which timeout wins", "wrapped") === "park",
+  "a wrapped point with unindented continuation parks",
+);
+
+// --- Section boundaries ----------------------------------------------------
+
 {
   const body = [
-    "Some CRITICAL context outside the section.",
     HEADING,
-    "- CRITICAL: missing the bracket tag",
-    "- [HIGH] a high point that mentions CRITICAL",
+    "",
+    "- plain note",
+    "",
+    "## Some other section",
+    "- [CRITICAL] outside the section",
   ].join("\n");
-  const reading = readOpenPoints(body);
-  assert(
-    reading.unparsed.length === 1 && reading.unparsed[0]?.startsWith("- CRITICAL"),
-    `malformed: one unparsed CRITICAL line, nothing from HIGH or outside the section (${reading.unparsed.length})`,
-  );
-  const capped = finaliseSpecVerdict(spec(), body);
-  assert(
-    capped.verdict === "proceed-with-assumptions" &&
-      capped.assumptions.some((a) =>
-        a.text.startsWith("Open-point gate could not parse a CRITICAL line: "),
-      ),
-    "malformed: an unparsed CRITICAL line caps proceed with a named assumption",
-  );
-  const parked = finaliseSpecVerdict(spec({ verdict: "park", parkReason: "too-large" }), body);
-  assert(
-    parked.verdict === "park" && parked.parkReason === "too-large",
-    "malformed: an existing park is not rewritten",
-  );
+  assert(readOpenPoints(body).points.length === 0, "a same-level heading ends the section");
 }
-
-// Case variants: only the uppercase bracketed tag parses. Lowercase and titlecase tags,
-// and a line that leads with CRITICAL in any case, are unparsed, so they cap rather than vanish.
 {
-  for (const line of [
-    "- [critical] Which timeout wins",
-    "- [Critical] Which timeout wins",
-    "- [critical][RESOLVED] Which timeout wins",
-  ]) {
-    const reading = readOpenPoints(section(line));
-    assert(
-      reading.points.length === 0 && reading.resolved.length === 0 && reading.unparsed.length === 1,
-      `case variant routes to unparsed: ${line}`,
-    );
-    const capped = finaliseSpecVerdict(spec(), section(line));
-    assert(capped.verdict === "proceed-with-assumptions", `case variant caps a proceed: ${line}`);
-  }
-  for (const line of ["critical: a lowercase label", "Critical review of the gap gate"]) {
-    assert(
-      readOpenPoints(section(line)).unparsed.length === 1,
-      `a line leading with critical in any case is unparsed: ${line}`,
-    );
-  }
+  const body = "## Open questions\n\n- [CRITICAL] outside any section\n";
   assert(
-    readOpenPoints(section("The gap gate found one critical point in the design.")).unparsed
-      .length === 0,
-    "mid-sentence lowercase critical in plain prose is still ignored",
-  );
-  const lowerSecurity = finaliseSpecVerdict(
-    spec(),
-    section("- [critical] Who may call the endpoint \u2014 authentication is undecided"),
+    readOpenPoints(body).points.length === 0 && readOpenPoints(body).unparsed.length === 0,
+    "no exact Open points heading: no section, nothing parks",
   );
   assert(
-    lowerSecurity.verdict === "park" && lowerSecurity.parkReason === "security-open-point",
-    "case variant of a security point still parks",
+    finaliseSpecVerdict(spec(), body).verdict === "proceed",
+    "no exact Open points heading: the spec is not parked by this gate",
   );
 }
-
-// Prose outside the section that leads with CRITICAL is not read at all.
-assert(
-  readOpenPoints("CRITICAL: outside any section").unparsed.length === 0,
-  "a CRITICAL line outside the Open points section is not read",
-);
-
-// The security park names the whole class, not only the first words of it (#1151 review).
-// The text is derived from SECURITY_CLASS_LABELS, so a new term cannot go unnamed.
-assert(
-  SECURITY_CLASS_LABELS.every((label) => explainPark("security-open-point", 42).includes(label)),
-  "explainPark: the security park names every SECURITY_CLASS_TERMS label",
-);
-
-// #1151 review: an unparsed CRITICAL line naming a security class parks, as a parsed one does.
 {
-  const gated = finaliseSpecVerdict(spec(), section("- CRITICAL: authentication is undecided"));
+  const near = "## Open points (unresolved at the gap-gate)\n\n- [CRITICAL] mangled heading\n";
   assert(
-    gated.verdict === "park" && gated.parkReason === "security-open-point",
-    "unparsed security line parks as security-open-point",
+    readOpenPoints(near).points.length === 0,
+    "a near-miss heading is not detected (no section, no park)",
   );
 }
 
-// Prefixed forms of the security stems are security-class too.
-for (const phrase of [
-  "unencrypted payload",
-  "preauth hook",
-  "reauth window",
-  "unvalidated input",
-  "unsanitized input",
-]) {
-  const gated = finaliseSpecVerdict(spec(), section(`- [CRITICAL] the ${phrase} is undecided`));
-  assert(
-    gated.verdict === "park" && gated.parkReason === "security-open-point",
-    `prefixed security form parks: ${phrase}`,
-  );
-}
+// --- Flattened, verbatim text ----------------------------------------------
 
-// Security points are typed: they land in securityOpenPoints, never in openQuestions.
 {
-  const body = section(
-    "- [CRITICAL] Who may call the endpoint \u2014 authentication is undecided",
-    "- [CRITICAL] Which timeout wins \u2014 proposal: the shorter",
-    "- CRITICAL: authorization for the export is undecided",
-  );
-  const parked = finaliseSpecVerdict(
-    spec({
-      verdict: "park",
-      parkReason: "already-implemented",
-      parkReasonSource: "parsed",
-    }),
-    body,
-  );
+  const long = `- [CRITICAL] ${"x".repeat(400)} tail`;
+  const point = readOpenPoints(section(long)).points[0] ?? "";
   assert(
-    parked.parkReason === "already-implemented" &&
-      parked.securityOpenPoints?.length === 2 &&
-      parked.openQuestions.length === 0,
-    `typed: a parked spec keeps each security open point in securityOpenPoints (${parked.securityOpenPoints?.length})`,
-  );
-  const gatedPark = finaliseSpecVerdict(spec(), body);
-  assert(
-    gatedPark.parkReason === "security-open-point" &&
-      gatedPark.securityOpenPoints?.some((p) => p.includes("authentication is undecided")) === true &&
-      gatedPark.openQuestions.length === 0,
-    "typed: a security park the gate creates carries its points in securityOpenPoints",
+    point.endsWith("tail") && point.length > 400,
+    "open point text is unclipped flattenIssueText output",
   );
 }
-
-// A [RESOLVED] marker with no answer text clears nothing: the line is unparsed and caps.
 {
-  const body = section("- [CRITICAL][RESOLVED]", "- [CRITICAL] [RESOLVED]");
-  const reading = readOpenPoints(body);
+  const r = readOpenPoints(section("- [CRITICAL] line\u202Eone\u0007two"));
   assert(
-    reading.resolved.length === 0 && reading.points.length === 0 && reading.unparsed.length === 2,
-    `empty resolution: a bare [RESOLVED] is unparsed, not resolved (${reading.unparsed.length})`,
+    r.points[0] === "[CRITICAL] lineone two",
+    "bidi and control characters are flattened out of the point text",
   );
-  const capped = finaliseSpecVerdict(spec(), section("- [CRITICAL][RESOLVED]"));
+}
+{
+  const r = readOpenPoints(section("- [CRITICAL][RESOLVED] Which timeout wins"));
   assert(
-    capped.verdict === "proceed-with-assumptions" &&
-      capped.assumptions.some((a) =>
-        a.text.startsWith("Open-point gate could not parse a CRITICAL line: "),
-      ),
-    "empty resolution: a bare [RESOLVED] caps a proceed with a named assumption",
+    r.resolved[0] === "[CRITICAL][RESOLVED] Which timeout wins",
+    "a resolved point keeps its flattened text",
   );
 }
 
-// Round trip: the gap gate's own rendered section reads back with nothing unparsed, and a
-// non-security section caps a proceed without a "could not parse" assumption.
+// --- Round trip with the /plan gap gate's own rendering --------------------
+
 {
   const gaps: PlanGap[] = [
     {
       severity: "CRITICAL",
-      description: "Which timeout wins",
-      resolution: "the shorter",
-    },
-    {
-      severity: "CRITICAL",
-      description: "Which backoff applies",
+      description: "Which timeout wins when both are set",
       resolution: GAP_RESOLUTION_PLACEHOLDER,
-    },
+    } as PlanGap,
   ];
   const rendered = openPointsSection(gaps);
+  // The gap gate's intro sentence is non-bullet prose under the heading, so it parks too.
+  // That write side is out of scope for #1187 (see the PR); the point itself is read once.
   assert(
-    readOpenPoints(rendered).unparsed.length === 0,
-    "round trip: rendered section has no unparsed lines",
-  );
-  const finalised = finaliseSpecVerdict(spec(), rendered);
-  assert(
-    finalised.verdict === "proceed-with-assumptions" &&
-      finalised.assumptions.length === 2 &&
-      !finalised.assumptions.some((a) => /could not parse/.test(a.text)),
-    `round trip: non-security section gives proceed-with-assumptions with no parse assumption (${finalised.verdict})`,
+    readOpenPoints(rendered).points.length === 1 && readOpenPoints(rendered).unparsed.length === 1,
+    "the gap gate's rendered section reads back as one point, plus its intro prose line (parks)",
   );
 }
 
+console.log(`\nexit ${exit}`);
 process.exit(exit);
