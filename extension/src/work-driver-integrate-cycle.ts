@@ -69,14 +69,13 @@ export async function readCycleWorktreePaths(stateFile: string | undefined): Pro
  * `inspectError` (it never throws), so any such finding refuses with
  * `DirtyWorktreeError` BEFORE anything is removed (fail closed).
  *
- * #1173 — a finding whose ONLY content is commits, in a tree that is detached
- * or on the cycle's own branch, is the cycle's own consolidation work (an
- * earlier ops fallback's commit that never reached the branch). Refusing it
- * wedged every re-entry, so those commits are kept on a backup ref
- * (`backupIntegrateHead`) and the tree is replaced. A tree on any OTHER branch
- * still refuses. Returns the backup ref when one was written.
+ * #1173 — a finding whose ONLY content is commits goes to
+ * `backupIntegrateHead`, the one place that decides whether those commits are
+ * the cycle's own (kept on a backup ref, the tree replaced) or foreign (a tree
+ * on another branch — refused). Refusing the cycle's own commits wedged every
+ * re-entry. Returns the backup ref when one was written.
  */
-export async function refuseLossyStaleIntegrateTree(
+export async function keepOrRefuseStaleIntegrateTree(
   execFn: ExecFn,
   repoRoot: string,
   abs: string,
@@ -86,24 +85,12 @@ export async function refuseLossyStaleIntegrateTree(
 ): Promise<string | undefined> {
   const finding = await inspectWorktreeForLoss(execFn, repoRoot, abs, ref);
   if (finding === undefined) return undefined; // provably clean: nothing uncommitted, no unique commits
-  // Every loss channel is judged HERE, before the commits-only path.
+  // Every other loss channel is judged HERE, before the commits-only path.
   const onlyCommits =
     finding.uncommittedFiles.length === 0 &&
     finding.inspectError === undefined &&
     finding.notOwnWorktree !== true;
   if (!onlyCommits) throw new DirtyWorktreeError(finding);
-  if (await headReachableFrom(execFn, abs, `origin/${branchName}`)) return undefined;
-  let head: string;
-  try {
-    ({ stdout: head } = await execFn("git rev-parse --symbolic-full-name HEAD", {
-      cwd: abs,
-      maxBuffer: 64 * 1024,
-    }));
-  } catch {
-    throw new DirtyWorktreeError(finding); // unreadable: fail closed
-  }
-  head = head.trim();
-  if (head !== "HEAD" && head !== `refs/heads/${branchName}`) throw new DirtyWorktreeError(finding);
   try {
     return await backupIntegrateHead(execFn, abs, ref, branchName, issue);
   } catch (err) {
@@ -119,9 +106,10 @@ export async function refuseLossyStaleIntegrateTree(
  * HEAD's commits that neither `ref` (the branch tip, else the base) nor
  * `origin/<branch>` already holds are written to
  * `refs/pi-rukas/integrate-backup/issue-<N>/<sha>` (keyed by SHA, so a repeat
- * re-entry rewrites the same ref). Returns that ref, or `undefined` when there
- * was nothing to keep. Throws when git cannot answer — the caller then
- * removes nothing.
+ * re-entry rewrites the same ref). Only a detached HEAD or one on the cycle's
+ * own branch is the cycle's work: a tree on another branch holding unique
+ * commits throws. Returns the ref, or `undefined` when there was nothing to
+ * keep. Throws when git cannot answer — the caller then removes nothing.
  */
 export async function backupIntegrateHead(
   execFn: ExecFn,
@@ -130,12 +118,17 @@ export async function backupIntegrateHead(
   branchName: string,
   issue: number,
 ): Promise<string | undefined> {
+  assertSafeRef(ref);
   const opts = { cwd: abs, maxBuffer: 64 * 1024 };
   const sha = (await execFn("git rev-parse --verify HEAD", opts)).stdout.trim();
   assertSafeRef(sha);
   const { stdout } = await execFn(`git rev-list --count ${JSON.stringify(`${ref}..${sha}`)}`, opts);
   if (Number.parseInt(stdout.trim(), 10) === 0) return undefined;
   if (await headReachableFrom(execFn, abs, `origin/${branchName}`)) return undefined;
+  const head = (await execFn("git rev-parse --symbolic-full-name HEAD", opts)).stdout.trim();
+  if (head !== "HEAD" && head !== `refs/heads/${branchName}`) {
+    throw new Error(`HEAD is on ${head}, not ${branchName} — not this cycle's work`);
+  }
   const backup = `refs/pi-rukas/integrate-backup/issue-${issue}/${sha}`;
   await execFn(`git update-ref ${JSON.stringify(backup)} ${JSON.stringify(sha)}`, opts);
   trace(`work-driver: kept the stale integrate tree's unpushed commits on ${backup}`);

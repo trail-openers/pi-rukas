@@ -34,9 +34,9 @@ import {
   backupIntegrateHead,
   isIntegrateTreeInCycle,
   isRegisteredWorktree,
+  keepOrRefuseStaleIntegrateTree,
   readCycleWorktreePaths,
   refuseDirtyCycleTrees,
-  refuseLossyStaleIntegrateTree,
 } from "./work-driver-integrate-cycle.ts";
 import { runCreateGuards } from "./worktree-create-guard.ts";
 import { assertSafeRef } from "./worktree-loss.ts";
@@ -188,7 +188,7 @@ export async function ensureIntegrateWorktree(
       }
       // #1170 — a stale tree holding uncommitted or foreign work is refused,
       // not force-removed; #1173 — the cycle's own commits are backed up.
-      backupRef = await refuseLossyStaleIntegrateTree(
+      backupRef = await keepOrRefuseStaleIntegrateTree(
         execFn,
         repoRoot,
         abs,
@@ -214,7 +214,8 @@ export async function ensureIntegrateWorktree(
         );
       }
       // #1173 — clean is not "nothing to lose": a detached HEAD's commits
-      // die with the tree, so they are kept on a backup ref first.
+      // die with the tree, so they are kept on a backup ref first (a tree on
+      // another branch holding unique commits throws instead).
       backupRef = await backupIntegrateHead(execFn, abs, branchHead ?? baseSha, branchName, issue);
       trace(
         `work-driver: registered worktree at ${abs} is NOT this cycle's (state file does not record it) and is clean — force-removing and recreating (the cycle already committed to replacing the integrate tree)`,

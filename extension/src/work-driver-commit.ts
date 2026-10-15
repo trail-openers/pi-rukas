@@ -286,7 +286,7 @@ export async function mechanizedCommitPr(
         state,
         branchName,
         execFn,
-        res.reason,
+        res.reason || "(integrate() gave no reason)",
       );
       if ("halted" in worktreeRes) {
         return {
@@ -299,9 +299,14 @@ export async function mechanizedCommitPr(
       // #861 — the structured conflict-patch value threads to the caller
       // (runCommitPrLocked) instead of being re-parsed from this reason's
       // marker text.
+      // #1173 — the stale integrate tree's kept commits reach the plumb
+      // report (and so the handoff), not only the trace.
+      const kept = worktreeRes.backupRef
+        ? ` The stale integrate tree's unpushed commits were kept on ${worktreeRes.backupRef}.`
+        : "";
       return {
         ok: false,
-        reason: withPatchNote(res.reason, res.conflictPatch),
+        reason: `${withPatchNote(res.reason, res.conflictPatch)}${kept}`,
         fallbackCause,
         conflictPatch: res.conflictPatch,
       };

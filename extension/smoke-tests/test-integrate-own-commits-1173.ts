@@ -23,7 +23,11 @@
  *      backup (nothing to keep);
  *  (g) when the tree cannot be created, the halt records why integrate()
  *      failed first, not only the downstream creation failure;
- *  (h) the fallback prompt forbids creating or switching to another branch.
+ *  (h) the fallback prompt forbids creating or switching to another branch;
+ *  (i) a branch already checked out in another worktree fails creation loudly;
+ *  (j) an UNRECORDED stale tree on a different branch with unique commits is
+ *      refused too (one admission rule on both paths), and a kept backup ref
+ *      is returned to the commit-pr caller.
  */
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -245,6 +249,44 @@ try {
     ]) {
       assert(prompt.includes(needle), `(h) the fallback prompt names ${needle}`);
     }
+  }
+
+  // (i) the branch is checked out elsewhere: creation fails naming it, no silent detach.
+  {
+    const { repo, baseSha, stateFile } = await fixture("held-elsewhere");
+    const other = path.join(root, "held-elsewhere-other");
+    await git(repo, ["worktree", "add", "-q", other, BRANCH]);
+    const res = await run(repo, baseSha, stateFile);
+    assert(
+      !res.ok && /already (checked out|used by worktree)/.test(String(res.err)),
+      `(i) creation refuses a branch held by another worktree (${res.ok ? "ok" : String(res.err).slice(0, 120)})`,
+    );
+  }
+
+  // (j) unrecorded tree on another branch with unique commits: refused, not removed.
+  {
+    const { repo, baseSha, wt, stateFile } = await fixture("residue-other", { recordTree: false });
+    await git(repo, ["worktree", "add", "-q", "-b", "someone-else", wt, baseSha]);
+    writeFileSync(path.join(wt, "a.txt"), "base\nforeign\n");
+    await git(wt, ["commit", "-q", "-am", "foreign"]);
+    const res = await run(repo, baseSha, stateFile);
+    assert(
+      !res.ok,
+      "(j) an unrecorded stale tree on another branch with unique commits is refused",
+    );
+    assert((await headRef(wt)) === "refs/heads/someone-else", "(j) and it is not removed");
+  }
+  {
+    const { repo, baseSha, wt } = await fixture("halt-backup");
+    const sha = await staleDetachedWithCommit(repo, wt, baseSha);
+    const base = initialState(17);
+    const state = { ...base, pipelineState: { ...base.pipelineState, baseSha } };
+    const ctx = { repoRoot: repo, issue: 17 } as unknown as CycleContext;
+    const res = await ensureIntegrateWorktreeOrHalt(ctx, state, BRANCH, realExec, "conflict");
+    assert(
+      "backupRef" in res && res.backupRef === `refs/pi-rukas/integrate-backup/issue-17/${sha}`,
+      "(j) ensureIntegrateWorktreeOrHalt hands the backup ref to commit-pr (for the plumb report)",
+    );
   }
 } finally {
   rmSync(root, { recursive: true, force: true });

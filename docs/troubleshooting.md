@@ -1070,7 +1070,7 @@ Symptom: a `commit-pr` that fell back to the ops dispatch committed in `.worktre
 
 Cause (#1173, #1100): the driver created the integrate tree on a **detached HEAD**, because it passed the branch's SHA to `git worktree add`, not the branch name. The prompt said the tree was on the branch. So the ops child's commit never moved the branch, and `git push -u origin <branch>` pushed nothing. Fixed: the tree is now created on the branch (a missing branch is created at the base). The fallback prompt also forbids creating or switching to any other branch.
 
-A stale integrate tree whose only loss is commits, and which is detached or on the cycle's own branch, no longer refuses. Its commits are kept on `refs/pi-rukas/integrate-backup/issue-<N>/<sha>` and the tree is recreated. The trace says `kept the stale integrate tree's unpushed commits on …`. A tree with uncommitted or non-regenerable ignored files, or one on a different branch, still refuses. Recover a kept commit with `git log <ref>` / `git cherry-pick <ref>`. Delete the ref with `git update-ref -d <ref>` once you no longer need it.
+A stale integrate tree whose only loss is commits, and which is detached or on the cycle's own branch, no longer refuses. Its commits are kept on `refs/pi-rukas/integrate-backup/issue-<N>/<sha>` and the tree is recreated. The commit-pr plumb report names the ref: `The stale integrate tree's unpushed commits were kept on …`. A tree with uncommitted or non-regenerable ignored files, or one on a different branch, still refuses. Recover a kept commit with `git log <ref>` / `git cherry-pick <ref>`. Delete the ref with `git update-ref -d <ref>` once you no longer need it.
 
 ### CI failed, the driver "fixed" it, and CI failed on the same commit again
 

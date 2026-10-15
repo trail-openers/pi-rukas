@@ -126,7 +126,7 @@ export async function ensureIntegrateWorktreeOrHalt(
   // #1173 — why integrate() failed; the halt otherwise records only the
   // downstream creation failure, and the operator cannot see the first cause.
   integrateReason?: string,
-): Promise<{ path: string; state: WorkState } | { halted: WorkState }> {
+): Promise<{ path: string; state: WorkState; backupRef?: string } | { halted: WorkState }> {
   const ps = state.pipelineState;
   if (!ps.baseSha) {
     return { path: integrateWorktreePath(ctx.repoRoot, ctx.issue), state };
@@ -146,7 +146,7 @@ export async function ensureIntegrateWorktreeOrHalt(
       ...state,
       pipelineState: { ...state.pipelineState, integrateWorktree: created.path },
     };
-    return { path: created.path, state: next };
+    return { path: created.path, state: next, backupRef: created.backupRef };
   } catch (rawErr) {
     const err = rawErr as Error & { stderr?: string };
     const detail = (err.stderr ?? err.message ?? "").toString();
