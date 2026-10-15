@@ -41,5 +41,33 @@ assert(
   `the backend file is matched by the pattern (${allowedHits} calls), so the gate can fail`,
 );
 
+// #1308 — the grandfathered policy judge's only backend is its judge child. Its
+// decide() call lives in one file, and that call supplies `[backend]`, the judge.
+const JUDGE_DECIDE = /decide\(\s*"policy-judge"[\s\S]*?\n\s*\);/g;
+const judgeCallers: string[] = [];
+let judgeCalls = 0;
+let judgeBackendOnly = true;
+for (const f of readdirSync(SRC).filter((n) => n.endsWith(".ts"))) {
+  const text = strip(readFileSync(path.join(SRC, f), "utf8"));
+  for (const m of text.matchAll(JUDGE_DECIDE)) {
+    judgeCalls++;
+    judgeCallers.push(f);
+    if (
+      !/backends:\s*\[backend\]/.test(m[0]) ||
+      /defaultBackends|classify|streamSimple/.test(m[0])
+    ) {
+      judgeBackendOnly = false;
+    }
+  }
+}
+assert(
+  judgeCalls === 1 && judgeCallers[0] === "work-driver-policy.ts",
+  `the policy judge is decided in one place (${judgeCallers.join(", ") || "none"})`,
+);
+assert(
+  judgeBackendOnly,
+  "the policy judge's decide() call supplies only its judge child as a backend (no defaultBackends, classifier or llm)",
+);
+
 console.log(`\nexit ${state.exit}`);
 process.exit(state.exit);

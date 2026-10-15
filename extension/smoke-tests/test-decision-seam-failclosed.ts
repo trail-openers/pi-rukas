@@ -15,22 +15,26 @@
  */
 
 import { compose } from "../src/decision-compose.ts";
-import { decide } from "../src/decision-seam.ts";
 import {
   type Composition,
   type DecisionMode,
   SEAMS,
+  type SeamId,
   type SeamSpec,
   UNDECIDED,
   isPassing,
   seamContractViolations,
 } from "../src/decision-seam-registry.ts";
+import { decide } from "../src/decision-seam.ts";
 import {
+  STUB_MODEL,
   envKey,
   fixtureSpec,
+  llmReply,
   makeAssert,
   registerFixture,
   stubBackend,
+  stubRegistry,
 } from "./lib/decision-fixtures.ts";
 
 const { assert, state } = makeAssert();
@@ -163,6 +167,67 @@ const valid = (s: SeamSpec) => seamContractViolations({ ...s, defaultMode: "shad
     d.answer === "unstated",
     "policy-judge: 'permitted' with a quote not in the documents → the rule's deny",
   );
+}
+
+// #1308 review — an unknown seam never passes the caller's rule and never throws.
+{
+  const unknown = await decide(
+    "no-such-seam" as SeamId,
+    { state: {}, question: "q", rule: "permitted" },
+    {},
+  );
+  assert(
+    unknown.answer === UNDECIDED && unknown.answer !== "permitted" && unknown.abstained,
+    "an unknown seam with rule 'permitted' answers the fixed non-passing UNDECIDED, not the rule",
+  );
+  const ctor = await decide(
+    "constructor" as SeamId,
+    { state: {}, question: "q", rule: "permitted" },
+    {},
+  );
+  assert(
+    ctor.answer === UNDECIDED && ctor.abstained,
+    "seam 'constructor' (an Object prototype key) does not throw and does not pass",
+  );
+}
+
+// #1308 review — a grandfathered seam's only backend is its owner's: with none
+// supplied, the generic classifier and the session llm are never asked.
+{
+  const prev = process.env.PI_ENSEMBLE_DECISION_MODEL;
+  process.env.PI_ENSEMBLE_DECISION_MODEL = "stub/cls";
+  const { registry, calls } = stubRegistry({
+    classifier: () => ({
+      stopReason: "stop",
+      answers: {
+        "policy-judge": { type: "choice", choice: "permitted", probabilities: {}, confidence: 1 },
+      },
+    }),
+    llm: () =>
+      llmReply(
+        JSON.stringify({
+          label: "permitted",
+          justification: "x",
+          quote: "Agents may merge whenever.",
+        }),
+      ),
+  });
+  const g = await decide(
+    "policy-judge",
+    {
+      state: {},
+      question: "q",
+      rule: "unstated",
+      evidence: { texts: [{ name: "AGENTS.md", text: "Agents may merge whenever." }] },
+    },
+    { modelRegistry: registry, model: STUB_MODEL },
+  );
+  assert(
+    g.answer === "unstated" && g.abstained && calls.classify === 0 && calls.llm === 0,
+    "policy-judge with no owner backend: the rule stands and no generic backend is asked",
+  );
+  if (prev === undefined) Reflect.deleteProperty(process.env, "PI_ENSEMBLE_DECISION_MODEL");
+  else process.env.PI_ENSEMBLE_DECISION_MODEL = prev;
 }
 
 console.log(`\nexit ${state.exit}`);

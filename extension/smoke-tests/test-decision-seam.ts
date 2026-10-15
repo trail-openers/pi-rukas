@@ -376,8 +376,8 @@ enforce("fixture-flag");
 {
   const d = await decide("no-such-seam" as never, { state: {}, question: "q", rule: "x" });
   assert(
-    d.answer === "x" && d.abstained,
-    "an unknown seam returns the rule answer instead of throwing",
+    d.answer === UNDECIDED && d.abstained,
+    "an unknown seam returns the fixed non-passing answer (never the caller's rule) instead of throwing",
   );
   const silent = stubBackend({ ok: false } as never);
   const nul = stubBackend(null as never);
