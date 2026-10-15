@@ -129,6 +129,8 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
       ctx.host,
       `pi-rukas:driver-event v1 kind=refused issue=${ctx.issue} at=${at}\npi-rukas: /work for issue #${ctx.issue} already terminated as ${terminalStatus}. To start a fresh cycle (e.g., after revising the issue via /plan), re-run with --restart:\n  /work ${ctx.issue} --restart\nOr rm ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json manually. The prior cycle's event log is preserved in the state file until you restart or remove it.`,
     );
+    // reportFinalState is called at every terminal path (7 sites) so the runner
+    // always gets the driver's in-memory terminal state — see work-driver-final-state.ts
     reportFinalState(ctx, state);
     return { started: false, reason: `already terminated as ${terminalStatus}` };
   }

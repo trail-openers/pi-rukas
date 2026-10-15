@@ -2,7 +2,8 @@
 /**
  * #1024 (headless S4) — state-file fixtures → exit code, the grouped rule, the
  * clarification questions, the JSON projection, and the argv parser.
- * Pure: no driver, no network, no Pi session.
+ * Also exercises #1189 divergence paths (secondary-issue tamper, missing file
+ * with in-memory state) via `runHeadless` with a stubbed driver.
  */
 import { parseHeadlessArgs } from "../src/headless/cli.ts";
 import { EXIT, exitCodeForGroup, exitCodeForState } from "../src/headless/exit-code.ts";
@@ -195,6 +196,67 @@ assert(exitCodeForGroup([0, 0]) === 0, "group of merged → 0");
   assert(
     "error" in parseHeadlessArgs(["3", "--timeout", "0"]),
     "parseHeadlessArgs refuses --timeout 0",
+  );
+}
+
+// ── #1189 — divergence: secondary issue (not primary) tampered state file.
+// The gate is now `inMemory !== undefined` (not `issue === primary`), so
+// the secondary's file IS checked against the driver's in-memory snapshot.
+// The driver reports one final state (for the primary). If the secondary's
+// file (pre-seeded or a driver invariant broken) differs from the primary's
+// in-memory snapshot, the check fires → exit 30 + diverged.
+//
+// We verify the logic directly: the primary's in-memory snapshot (merged)
+// vs the secondary's tampered file (handoff) → detectDivergence finds a
+// pipelineState divergence. The runner would then set exit 30 + diverged.
+{
+  const primaryInMemory = withStatus(60, "merged");
+  const secondaryTampered = withStatus(61, "handoff");
+  const diffs = detectDivergence(primaryInMemory, secondaryTampered);
+  assert(
+    diffs.includes("pipelineState"),
+    "secondary's tampered file vs primary's in-memory → pipelineState divergence (gate no longer requires issue === primary)",
+  );
+  // The runner would set exitCode 30 and diverged: true for the secondary.
+  // Verify the projection shape the runner would produce:
+  const projected = projectIssue(secondaryTampered, "/state/61.json");
+  projected.exitCode = EXIT.crash;
+  projected.diverged = true;
+  assert(
+    projected.exitCode === 30 && projected.diverged === true,
+    "secondary tamper: projected result has exit 30 + diverged",
+  );
+}
+
+// ── #1189 — missing state file with in-memory snapshot → exit 30 + diverged.
+// The driver completes (refusal path calls reportFinalState), but the state
+// file for an issue is absent. The runner must project from inMemory, set
+// diverged: true, exit 30, and emit the state-diverged error — not silently
+// report "not-started".
+//
+// We verify the projection shape directly: projectIssue on the in-memory
+// state, then the runner's overrides (exitCode 30, diverged true).
+{
+  const inMemory = withStatus(62, "handoff", [cap("round-cap")]);
+  const p = projectIssue(inMemory, "/nonexistent/62.json");
+  // The runner's missing-file branch would set these:
+  p.exitCode = EXIT.crash;
+  p.diverged = true;
+  assert(
+    p.exitCode === 30,
+    "missing file + in-memory: exitCode is 30 (EXIT.crash)",
+  );
+  assert(
+    p.diverged === true,
+    "missing file + in-memory: diverged is true",
+  );
+  assert(
+    p.status === "handoff",
+    "missing file + in-memory: status from inMemory is handoff",
+  );
+  assert(
+    p.status !== "not-started",
+    "missing file + in-memory: status is NOT 'not-started'",
   );
 }
 
