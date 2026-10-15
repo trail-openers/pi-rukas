@@ -53,6 +53,10 @@ export const HEADLESS_FEATURES = {
   resultFromMemory: true,
   /** #1238 — a cycle that hits its deadline parks with a handoff (not a kill). */
   cycleDeadline: true,
+  /** #1327 — `PI_ENSEMBLE_HANDOFF_CHANNEL=host` hands the handoff to the host via the result. */
+  handoffChannel: true,
+  /** #1327 — `--restart` overrides the attention gate and clears `needs-human-attention`. */
+  restartClearsAttention: true,
 } as const;
 
 export interface Capabilities {

@@ -92,6 +92,9 @@ function canon(v: unknown, dir: string): unknown {
     if (typeof x === "string") {
       if (key !== undefined && JOB_KEY.test(key)) return placeholder(x);
       if (key === "transcriptPath") return "<transcript>";
+      // The handoff body (#1327) renders the state compared here, with its
+      // wall-clock durations; comparing it again would only compare timing.
+      if (key === "body") return "<body>";
       return x.split(dir).join("<repo>").replace(ISO_TS, "<ts>");
     }
     if (typeof x === "number" && key !== undefined) {
