@@ -20,6 +20,12 @@ import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { issueImagesFor } from "./work-driver-issue-images.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { checkAndRegisterClaims, crossGroupConflictsEnabled } from "./work-driver-path-claims.ts";
+import {
+  foldPortPlan,
+  mergeWithContract,
+  portPlanSection,
+  portReferenceForCycle,
+} from "./work-driver-plan-contract.ts";
 import { mergeCoupledWorkstreams } from "./work-driver-plan-coupling.ts";
 import { execp } from "./work-driver-verify.ts";
 // #679 — the CANONICAL planQualityReason / correctivePlanSteer / steer builders
@@ -95,7 +101,9 @@ export async function runPlan(
   const issues = activeIssuesOf(state);
   const { dispatch, section } = await issueImagesFor(ctx, issues, "plan");
   const startedAt = Date.now();
-  const prompt = inlinePlanPrompt(issues, scratchDir(ctx.repoRoot, ctx.issue)) + section;
+  // #1322 — an issue naming an existing commit/PR to port plans as one workstream.
+  const port = await portReferenceForCycle(next, issues);
+  const prompt = `${inlinePlanPrompt(issues, scratchDir(ctx.repoRoot, ctx.issue))}${section}${portPlanSection(port)}`;
   // #573 — derive transcript path BEFORE beginDispatch so crash-resume can
   // locate the surviving session file. Single dispatch: seq=undefined.
   const planRunId = `plan:explore:${process.pid}:${startedAt}`;
@@ -217,29 +225,21 @@ export async function runPlan(
       redispatched = true;
     }
   }
-  // #1005 — the coupling merge is a NO-OP on a single-workstream plan (no
-  // pair to check), so the kill-triggered corrective is unaffected by the
-  // #1005 reordering. The gate and the corrective steer reason about the
-  // POST-MERGE plan (which, for a single workstream, is the same as the
-  // pre-merge plan).
+  // #1005 — the coupling merge is a NO-OP on a single-workstream plan; the
+  // gate and the corrective steer reason about the POST-MERGE plan.
   // #1005 — the coupling merge's rule-3 grep (argv form) needs a real
-  // executor. `ctx.verifyExecFn` is test-only (undefined in production),
-  // so fall back to the production `execp` (which honours `opts.argv` via
-  // execFile — see work-driver-verify.ts). The merge runs at plan time,
-  // before the branch step, so the declared paths exist at the cycle's
-  // base commit — `repoRoot` — and the grep runs there (`repoRoot` is
-  // passed as the 4th arg; the empty pre-branch worktrees map is still
-  // threaded for API compatibility, but no longer the grep's only cwd
-  // source — the #1005 adversarial finding was that rule 3 was
-  // unreachable because the empty map left the grep without a cwd).
+  // executor: `ctx.verifyExecFn` is test-only, so fall back to `execp`
+  // (honours `opts.argv` via execFile). The merge runs at plan time, before
+  // the branch step, so the grep runs in `repoRoot` (the 4th arg) — the
+  // empty pre-branch worktrees map alone left rule 3 without a cwd.
   const planExecFn = ctx.verifyExecFn ?? execp;
-  const runCouplingMerge = async (ws: typeof workstreams): Promise<typeof workstreams> => {
+  // #1322 — the port fold and the contract's derived depends-on edges run
+  // first; a plan with neither takes exactly the pre-#1322 single pass.
+  const runCouplingMerge = async (raw: typeof workstreams): Promise<typeof workstreams> => {
+    const ws = foldPortPlan(raw, port);
     if (Object.keys(ws).length <= 1) return ws;
-    const coupling = await mergeCoupledWorkstreams(
-      ws,
-      planExecFn,
-      next.pipelineState.worktrees,
-      ctx.repoRoot,
+    const coupling = await mergeWithContract(ws, (w) =>
+      mergeCoupledWorkstreams(w, planExecFn, next.pipelineState.worktrees, ctx.repoRoot),
     );
     if (coupling.changed) {
       for (const m of coupling.merges) {

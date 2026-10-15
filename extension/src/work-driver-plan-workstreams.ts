@@ -35,29 +35,13 @@ import { foldTwo } from "./workstream-fold.ts";
  * `extractListField` + `splitOutsideParens` tolerance class as `paths:` /
  * `out-of-scope:`). Both are OPTIONAL: a plan that omits them parses
  * identically to the pre-#679 shape.
+ *
+ * #1322 — also parses the optional `- introduces: <symbols>` and
+ * `- consumes: <symbols>` lines (the change's contract; see
+ * work-driver-plan-contract.ts). Same tolerance, same optionality.
  */
-export function parseWorkstreams(text: string): Record<
-  string,
-  {
-    id: string;
-    scope: string;
-    paths: string[];
-    outOfScope: string[];
-    dependsOn?: string[];
-    integrationTest?: string;
-  }
-> {
-  const out: Record<
-    string,
-    {
-      id: string;
-      scope: string;
-      paths: string[];
-      outOfScope: string[];
-      dependsOn?: string[];
-      integrationTest?: string;
-    }
-  > = {};
+export function parseWorkstreams(text: string): Record<string, Workstream> {
+  const out: Record<string, Workstream> = {};
   const section = sliceMarkdownSection(text, "Workstreams");
   if (section === undefined) return out;
   // Each workstream begins with a ### subheading. Slice between consecutive
@@ -95,6 +79,11 @@ export function parseWorkstreams(text: string): Record<
     // existing pattern; the planner gets a steer naming the fix).
     const dependsOn = extractListField(body, "depends[- _]on");
     const integrationTest = extractListField(body, "integration[- _]test")[0];
+    // #1322 — the change's contract: symbols created / used that do not exist
+    // at base. Optional, same tolerance class; absent lines add no keys, so a
+    // plan without them parses exactly as before.
+    const introduces = extractListField(body, "introduces");
+    const consumes = extractListField(body, "consumes");
     const entry = {
       id: h.id,
       scope: h.scope,
@@ -102,6 +91,8 @@ export function parseWorkstreams(text: string): Record<
       outOfScope: extractListField(body, "out[- ]of[- ]scope"),
       ...(dependsOn.length > 0 ? { dependsOn } : {}),
       ...(integrationTest ? { integrationTest } : {}),
+      ...(introduces.length > 0 ? { introduces } : {}),
+      ...(consumes.length > 0 ? { consumes } : {}),
     };
     // #290 — ceiling. Each workstream becomes a worktree AND a developer
     // child, so M is a direct multiplier on process count; parallel groups

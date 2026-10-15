@@ -39,6 +39,19 @@ export interface Workstream {
   integrationTest?: string;
   /** #1114 — the adversarial findings a fix pass resolves (absent on a first pass). */
   fixFindings?: string;
+  /**
+   * #1322 — the symbols this workstream CREATES that do not exist at the base
+   * commit (a new field, export, variant), from a `- introduces:` line.
+   * Optional: a plan that declares no symbols takes the pre-#1322 path.
+   */
+  introduces?: string[];
+  /**
+   * #1322 — the not-yet-existing symbols this workstream USES, from a
+   * `- consumes:` line. One introduced by a sibling becomes a derived
+   * `dependsOn` edge (work-driver-plan-contract.ts), which the coupling merge
+   * then folds like a declared one.
+   */
+  consumes?: string[];
 }
 
 /**

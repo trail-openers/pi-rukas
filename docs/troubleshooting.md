@@ -292,6 +292,16 @@ The hook is the escape hatch for the inexpressible: anything the symlink allowli
 
 Each workstream gets its own worktree and its own developer, running in parallel, so a file in two `paths` lists means two developers editing it at once — which used to surface much later as a `git apply` conflict at commit-pr. The plan step now catches it and re-plans once. If it persists, the issue probably needs those workstreams merged.
 
+### A parallel plan parks at `verify-failed:develop` with a type error no workstream caused alone
+
+**Symptom:** every developer reports success, yet develop parks with a type error such as *"Property 'x' does not exist"* or *"Module has no exported member 'y'"*, and the consolidated tree fails with the same error.
+
+**Cause:** the plan split one change that threads a new value through several files (a new field on a shared type, a new export, and the code that uses them) into parallel workstreams. Each workstream starts from the same base commit and cannot see its siblings' commits, so the half that uses the new symbol does not compile alone, and the halves guessed different shapes for it. The plan-time coupling merge only sees edges that exist at the base commit (shared files, a declared `depends-on`, a file name referenced in the other's files), so it cannot see a symbol the change itself creates.
+
+**Now:** the plan step defaults to one workstream and asks for the change's contract. Each workstream may declare `introduces:` (symbols it creates) and `consumes:` (not-yet-existing symbols it uses); a consumed symbol that a sibling introduces becomes a `depends-on` edge, and the coupling merge folds the two into one workstream. An issue that names an existing commit or PR as the fix (*"fixed in owner/repo#N"*, *"cherry-pick <sha>"*, *"port PR #N"*) is planned as one workstream that applies that change and resolves the conflicts. A plan that declares no symbols is handled as before. `PI_ENSEMBLE_PLAN_CONTRACT=0` turns the derived edges and the port fold off.
+
+**Recovery:** the work is committed in the detached worktrees the handoff lists. If a known-good single commit exists, cherry-pick it onto a fresh branch from the mainline. Otherwise apply the workstream diffs in dependency order (the one that introduces the symbol first), fix the mismatch in one place, and run the full gate once on the combined tree. To avoid the split on a re-run, set `PI_ENSEMBLE_MAX_WORKSTREAMS=1`.
+
 ### `/work` parks my issue as "underspecified" but the resolver said it was fine
 
 The handoff quotes its own resolver saying "the intent is clear, no contradictions" and then says the issue does not say enough to build from. Fixed in v0.12.41 — two causes, both in the gate rather than your issue:
