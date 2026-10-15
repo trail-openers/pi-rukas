@@ -241,6 +241,11 @@ export const HEADLESS_FILES: readonly HostFile[] = [
   { path: ".pi/permissions.json", kind: "config", whenAbsent: "~/.pi/agent/permissions.json" },
   { path: ".pi/smoke-cmd", kind: "command", whenAbsent: "no product smoke gate" },
   { path: ".pi/verify-cmd", kind: "command", whenAbsent: "verify command derived from the repo" },
+  {
+    path: ".pi/verify-cmd-fast",
+    kind: "command",
+    whenAbsent: "no fast tier; the verify command runs first",
+  },
   { path: ".pi/verify-cmd-full", kind: "command", whenAbsent: "verify-full tier skipped" },
   {
     path: ".pi/worktree-setup",
