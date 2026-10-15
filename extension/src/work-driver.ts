@@ -332,12 +332,48 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
         reportFinalState(ctx, state);
         return { started: true };
       }
-      // Spawn-level / unexpected error — mark aborted with the error.
-      state = {
-        ...state,
-        pipelineState: { ...state.pipelineState, status: "aborted" },
-      };
-      await persistCycle(ctx, state);
+      // Spawn-level / unexpected error — route through the SAME handoff path a
+      // dispatch failure uses (issue #1263) so the operator gets a comment +
+      // label on the issue, not just a silent `aborted` state file. One-shot
+      // guard: a throw at `handoff` itself means runHandoff already ran and is
+      // crashing on the post — re-routing to handoff would loop forever, so a
+      // handoff crash falls back to the direct abort (still `aborted`, state
+      // file is the record; the handoff body was already attempted).
+      if (step === "handoff") {
+        state = {
+          ...state,
+          pipelineState: { ...state.pipelineState, status: "aborted" },
+        };
+        await persistCycle(ctx, state);
+        emitStepFailed(
+          step,
+          stepOrd.num,
+          stepOrd.total,
+          Date.now() - stepStartedAt,
+          (err as Error).message?.slice(0, 80),
+          stepRound,
+          ctx.issue,
+        );
+        notifyAgent(
+          ctx.host,
+          `pi-rukas /work driver aborted on step "handoff" for issue #${ctx.issue}: ` +
+            `${(err as Error).message}`,
+        );
+        reportFinalState(ctx, state);
+        return { started: true };
+      }
+      // Append the cap-hit (reason = the crash, via cap `driver-crash:<step>`),
+      // point the loop at `handoff`, and leave status running so runHandoff
+      // runs and sets the terminal status itself: `driver-crash:*` is NOT a
+      // mid-flight-halt shape there, so it terminalizes as `handoff` — the
+      // same value the dispatch-failure path uses.
+      state = appendEvent(state, {
+        kind: "cap-hit",
+        at: Date.now(),
+        cap: `driver-crash:${step}` as const,
+        reviewRound: state.pipelineState.reviewRound,
+        nextStep: "handoff",
+      });
       emitStepFailed(
         step,
         stepOrd.num,
@@ -347,14 +383,17 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
         stepRound,
         ctx.issue,
       );
-      notifyAgent(
-        ctx.host,
-        `pi-rukas /work driver aborted on step "${step}" for issue #${ctx.issue}: ` +
-          `${(err as Error).message}`,
+      trace(
+        `work-driver: step "${step}" threw — ${
+          (err as Error).message
+        } → handoff (comment + label before aborting)`,
       );
-      // The cycle ran and then aborted — its state file is the real outcome.
-      reportFinalState(ctx, state);
-      return { started: true };
+      state = {
+        ...state,
+        pipelineState: { ...state.pipelineState, currentStep: "handoff" },
+      };
+      await persistCycle(ctx, state);
+      continue;
     }
     // Headless S4 (#1024): an interrupt that fired during the step ends the
     // cycle here, without routing. The step's events stay in the log (they

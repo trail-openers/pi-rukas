@@ -163,4 +163,12 @@ export type WorkCapLiteral =
   // stale tree is inspected and repaired, never re-dispatched. The detail
   // (kind + git evidence) rides on the cap's evidence; the backup ref for
   // an unlanded/diverged tree rides on the `restoredToRef` field.
-  | "lens-fix-reposition";
+  | "lens-fix-reposition"
+  // #1263 — a step handler THREW (an fs failure, a bug, an uncaught exec
+  // rejection). Routed through runHandoff so the operator gets a comment +
+  // label, not just a silent `aborted` state file. Distinct from the
+  // dispatch-failure `step-failed:<step>` (that one is a child that failed;
+  // this one is the driver itself crashing). NOT a mid-flight-halt shape,
+  // so runHandoff terminalizes it as `handoff`, the same value the
+  // dispatch-failure path uses.
+  | `driver-crash:${WorkStep}`;
