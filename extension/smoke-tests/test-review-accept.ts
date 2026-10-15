@@ -114,7 +114,7 @@ try {
         title: "Division by zero",
       },
     ],
-    complete: true,
+    review: "full",
   });
   const rowId = run?.[0]?.rowId ?? "";
   assert(/^[0-9a-f]{8}$/.test(rowId), "setup: a finding row exists");

@@ -204,7 +204,7 @@ try {
     branch: "feat/x",
     headSha: head,
     findings: [finding("Unchecked division", 3, "CRITICAL")],
-    complete: true,
+    review: "full",
   });
   const critId = crit?.[0]?.rowId ?? "";
   const critRefused = await acceptRow({
@@ -225,7 +225,7 @@ try {
     findings: [finding("Unchecked division", 3, "CRITICAL")],
     deltaDiff:
       "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,1 +1,1 @@\n-x\n+y\n",
-    complete: false,
+    review: "delta",
   });
   assert(
     critDelta?.[0]?.action === "matched",
@@ -240,7 +240,7 @@ try {
         branch: "feat/x",
         headSha: head,
         findings: [finding("Shadowed variable", 2)],
-        complete: true,
+        review: "full",
       })
     )?.[0]?.rowId ?? "";
   const shortReason = await acceptRow({
@@ -295,7 +295,7 @@ try {
     branch: "feat/x",
     headSha: head,
     findings: [finding("Shadowed variable", 2)],
-    complete: true,
+    review: "full",
   });
   assert(badRound.ok, "corrupt row: a round still records when one row is malformed");
   assert(
@@ -338,7 +338,7 @@ try {
     branch: "feat/x",
     headSha: head,
     findings: [finding("Shadowed variable", 2)],
-    complete: true,
+    review: "full",
   });
   assert(
     !corruptRound.ok,
@@ -353,7 +353,7 @@ try {
     branch: "feat/x",
     headSha: head,
     findings: [finding("Gone file", 1)].map((f) => ({ ...f, path: "src/missing.ts" })),
-    complete: true,
+    review: "full",
   });
   assert(
     missing.ok && missing.decisions[0]?.action === "new",
@@ -365,7 +365,7 @@ try {
     branch: "feat/x",
     headSha: "0".repeat(40),
     findings: [finding("Gone file", 1)],
-    complete: true,
+    review: "full",
   });
   assert(
     !badSha.ok && badSha.reason.includes("cannot read src/a.ts"),
