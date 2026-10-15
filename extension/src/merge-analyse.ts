@@ -29,6 +29,7 @@ export type MergeAnalysis =
   | { kind: "none" }
   | { kind: "unsafe" }
   | { kind: "ambiguous" }
+  | { kind: "multiple" }
   | { kind: "merge"; span: string; prNumber: number | undefined; repo: string | undefined };
 
 /**
@@ -37,18 +38,21 @@ export type MergeAnalysis =
  */
 export function analyseMergeCommand(command: string): MergeAnalysis {
   // Cheap pre-filter for the common non-merge call: every merge shape names
-  // `merge` once quotes and escapes are removed. An ANSI-C `$'…'` string can
-  // spell it in escapes and a brace list can assemble it (`m{e,}rge`), so
-  // either one always runs the full analysis.
-  const plain = command.replace(/["'\\]/g, "");
+  // `merge` once line continuations, quotes and escapes are removed. An
+  // ANSI-C `$'…'` string can spell it in escapes and a brace list can
+  // assemble it (`m{e,}rge`), so either one always runs the full analysis.
+  const plain = command.replace(/\\\n/g, "").replace(/["'\\]/g, "");
   if (!plain.includes("merge") && !command.includes("$'") && !/\{[^}]*,/.test(command)) {
     return { kind: "none" };
   }
   const raw = analyseText(command);
   const canonical = canonicalCommand(command);
+  // An unclosed quote (`undefined`) is a bash syntax error — nothing runs —
+  // and the raw reading already fails closed on it.
   if (canonical === undefined || canonical === command) return raw;
   const canon = analyseText(canonical);
   if (raw.kind === "unsafe" || canon.kind === "unsafe") return { kind: "unsafe" };
+  if (raw.kind === "multiple" || canon.kind === "multiple") return { kind: "multiple" };
   if (raw.kind !== "merge") return canon;
   if (canon.kind !== "merge") return raw;
   if (raw.prNumber !== canon.prNumber || raw.repo !== canon.repo) return { kind: "ambiguous" };
@@ -59,6 +63,11 @@ export function analyseMergeCommand(command: string): MergeAnalysis {
 function analyseText(command: string): MergeAnalysis {
   const span = mergesPr(command);
   if (!span) return { kind: "none" };
+  // #962: the number and repo come from the FIRST merge, so a second merge
+  // in the same command (`gh pr merge 17 && gh pr merge 5`) would run
+  // unchecked. One merge per command; more is refused.
+  const merging = shellSegments(command).filter((seg) => mergesPr(seg) !== undefined);
+  if (merging.length > 1) return { kind: "multiple" };
   // The verb door (`gh pr merge …` / `glab mr merge …`) carries the number
   // in the arguments AFTER the matched verb; the REST doors
   // (`gh api …/pulls/N/merge`) carry it inside the matched span.
@@ -72,9 +81,9 @@ function analyseText(command: string): MergeAnalysis {
   // `api`, not the merge verb), so the REST invocation's own repo flag
   // (`gh -R o/r api …/pulls/N/merge`) is threaded instead (#955 adversarial
   // round 5).
-  const rest = fromRepo?.kind === "repo" ? fromRepo.repo : restRepoFor(command);
-  if (typeof rest === "object") return rest;
-  const repo = rest;
+  const rest = fromRepo ?? restRepoFor(merging[0] ?? command);
+  if (rest?.kind === "unsafe") return { kind: "unsafe" };
+  const repo = rest?.repo;
   const prNumber = fromVerb !== undefined ? extractMergeNumber(fromVerb) : extractPrNumber(span);
   return { kind: "merge", span, prNumber, repo };
 }
@@ -83,17 +92,15 @@ function analyseText(command: string): MergeAnalysis {
  * The repo flag on a REST-door invocation (`gh -R o/r api …`, `glab
  * --project o/r api …`), read by the SAME token reader the verb door uses
  * (`repoFlagInTokens`: every `=` / glued `-RVALUE` / quoted spelling, #962)
- * over each segment. A REST READ never reaches here (`mergesPr` returns
+ * over the segment that carries the merge (never an unrelated segment's
+ * flag: `gh -R a/b pr view 1; gh api …/merge`). A REST READ never reaches here (`mergesPr` returns
  * undefined first). An invalid or empty value is unsafe — refused, never
  * interpolated and never silently replaced by the CWD's repo.
  */
-function restRepoFor(command: string): MergeAnalysis | string | undefined {
-  for (const seg of shellSegments(command)) {
-    const v = repoFlagInTokens(seg);
-    if (v === undefined) continue;
-    return isValidRepoValue(v) ? v : { kind: "unsafe" };
-  }
-  return undefined;
+function restRepoFor(seg: string): { kind: "repo"; repo: string } | { kind: "unsafe" } | undefined {
+  const v = repoFlagInTokens(seg);
+  if (v === undefined) return undefined;
+  return isValidRepoValue(v) ? { kind: "repo", repo: v } : { kind: "unsafe" };
 }
 
 /**

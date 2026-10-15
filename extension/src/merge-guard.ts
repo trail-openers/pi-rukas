@@ -178,6 +178,11 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
         "merge refused: ambiguous merge target — the command's quoting or escaping changes which PR/repo it names; write the PR number and repo plainly, or set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override",
       );
     }
+    if (analysis.kind === "multiple") {
+      return block(
+        "merge refused: the command runs more than one merge — the guard verifies one PR per command; run each merge as its own command, or set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override",
+      );
+    }
     const merging = analysis.span;
     const repoValue = analysis.repo;
     let prNumber = analysis.prNumber;

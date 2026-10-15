@@ -147,6 +147,21 @@ merges(`${GL} -X`, 17);
 merges("case x in esac; gh pr merge 17; echo $(date)", 17);
 merges('$(echo ")") gh pr merge 17', 17);
 
+// ------------------------------------------------------------ review round 2
+merges("gh pr me\\\nrge 17", 17);
+// The REST repo is the merge segment's own flag, not another segment's.
+merges("gh -R a/b pr view 1; gh api -X PUT repos/o/r/pulls/17/merge", 17);
+{
+  const a = analyseMergeCommand("gh -R a/b pr view 1; gh api -X PUT repos/o/r/pulls/17/merge");
+  assert(a.kind === "merge" && a.repo === undefined, `REST repo not taken from an unrelated segment → ${show(a)}`);
+}
+// One merge per command: a second merge would run unchecked.
+kind("gh pr merge 17 && gh pr merge 5", "multiple");
+kind("gh pr merge 17\nglab mr merge 5", "multiple");
+merges("gh pr merge 17 && gh pr view 5", 17);
+// A brace word past the expansion bound still yields its alternatives.
+merges("echo {a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b} && gh pr merge 17", 17);
+
 // ------------------------------------------------------------ the REAL hook refuses
 await setupLedgerPath();
 for (const cmd of [
