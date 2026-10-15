@@ -225,23 +225,24 @@ kill_process_tree() {
 # Prepend the `✗ timed out after <N>s` line to the capture (front, so
 # extractSpecificAssertion names it; partial output stays after it).
 prepend_timeout_line() {
-  local bound="$1"
+  # #1365: the capture is the job's own file, passed as $2.
+  local bound="$1" cap="$2"
   {
     echo "✗ timed out after ${bound}s"
-    cat "$CAPTURE" 2>/dev/null
-  } >"$CAPTURE.tmp" 2>/dev/null && mv "$CAPTURE.tmp" "$CAPTURE" 2>/dev/null || {
-    rm -f "$CAPTURE.tmp"
+    cat "$cap" 2>/dev/null
+  } >"$cap.tmp" 2>/dev/null && mv "$cap.tmp" "$cap" 2>/dev/null || {
+    rm -f "$cap.tmp"
     echo "warn: verify-loop: could not prepend the timeout line to the capture of this test" >&2
   }
 }
 
 # Run one test under the watchdog. Returns the test's exit code, or 214 (the
 # watchdog's own sentinel, distinct from a test that exits 124 itself) if the
-# bound fired.
+# bound fired. #1365: the third argument is this job's capture file.
 run_test_with_timeout() {
-  local bound="$1" t="$2" pid=0 start rc=0
+  local bound="$1" t="$2" cap="$3" pid=0 start rc=0
   start=$SECONDS
-  bun run "$t" >"$CAPTURE" 2>&1 &
+  bun run "$t" >"$cap" 2>&1 &
   pid=$!
   # Poll every 0.1s (sleep 0.1 works on macOS and GNU coreutils), comparing
   # elapsed wall-clock via SECONDS (second resolution — the bound is still
@@ -263,7 +264,7 @@ run_test_with_timeout() {
         # coincidental self-exit-124. The `✗ timed out after <N>s` line
         # prepended to the capture is what the #827 echo /
         # extractSpecificAssertion surface as the specific assertion.
-        prepend_timeout_line "$bound"
+        prepend_timeout_line "$bound" "$cap"
         return 214
       fi
     else
@@ -275,6 +276,11 @@ run_test_with_timeout() {
   rc=$?
   return "$rc"
 }
+
+# #1365 — the bounded job pool (verify-pool.sh) runs the tests collected below.
+# It calls run_test_with_timeout and kill_process_tree, so it is sourced here,
+# after both are defined.
+. "$(dirname "${BASH_SOURCE[0]}")/verify-pool.sh"
 
 # pgrep powers the descendant kill; without it only the top-level test
 # process would be killed (descendants orphaned). Warn, do not fail.
@@ -302,23 +308,30 @@ CAPTURE="$(mktemp "${TMPDIR:-/tmp}/verify-loop.XXXXXX")" || exit 2
 # #1028/​#827 failure captures, and the #1069 ledger temp dir (empty when an
 # operator-supplied override was honoured).
 _extra_captures=()
+# #1365: per-job captures ($CAPTURE.<n>) and exit-code files are in JOB_FILES.
 _extra_cleanup() {
-  rm -f "$CAPTURE" ${_extra_captures[*]:-}
+  rm -f "$CAPTURE" ${_extra_captures[*]:-} ${JOB_FILES[*]:-}
   if [ -n "${_ledger_tmp_dir:-}" ]; then rm -rf "${_ledger_tmp_dir}"; fi
 }
 trap '_extra_cleanup' EXIT
 
 names=()
-total=0
-for t in "$@"; do
-  case "$t" in *-live.ts) continue;; esac
-  total=$((total + 1))
-  rc=0
-  run_test_with_timeout "$VERIFY_TEST_TIMEOUT_S" "$t"
-  rc=$?
+# #1365: collect the tests, run them through the pool, then replay each job's
+# result in argument order. A job's capture is its own file, not $CAPTURE.
+pool_collect "$@"
+total=${#JOB_TESTS[@]}
+# Interrupt: every running job's process tree is killed, and the loop does not
+# return until each tree is reaped (see interrupt_now).
+trap 'interrupt_now 130' INT
+trap 'interrupt_now 143' TERM
+run_pool "$VERIFY_TEST_JOBS"
+for ((i = 0; i < total; i++)); do
+  t="${JOB_TESTS[$i]}"
+  cap="${JOB_CAP[$i]}"
+  rc="${JOB_EXIT[$i]}"
   if [ "$rc" -eq 0 ]; then
     if [ "$DIGEST" -eq 0 ]; then
-      cat "$CAPTURE"
+      cat "$cap"
     fi
   else
     names+=("$t")
@@ -328,13 +341,13 @@ for t in "$@"; do
       else
         echo "FAILED: $t"
       fi
-      cat "$CAPTURE"
+      cat "$cap"
     fi
     # #827 — keep this test's capture so its `✗` lines can be repeated
     # after the summary (below); removed on exit like $CAPTURE. Also used
     # by #1028 digest mode to emit ✗ lines + indented detail.
     capfile="$(mktemp "${TMPDIR:-/tmp}/verify-loop.XXXXXX")" || exit 2
-    if ! cp "$CAPTURE" "$capfile"; then
+    if ! cp "$cap" "$capfile"; then
       # Capture failed — degrade gracefully: the test has already failed and
       # its per-test output was printed above, so a missing echo is a
       # cosmetic gap in the tail, not a new failure. Do NOT register the
