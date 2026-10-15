@@ -40,11 +40,12 @@ export interface MemoryStats {
   /** Median content length — the injection-cost driver. */
   medianChars: number;
   /**
-   * Newest candidates, up to `MAX_LISTED_CANDIDATES`. A candidate reaches no
-   * brief until an operator promotes it (#1103), so `/audit` must name them —
-   * with ids, because promotion is per row.
+   * Newest candidates' ids and types, up to `MAX_LISTED_CANDIDATES`. A candidate
+   * reaches no brief until an operator promotes it (#1103), so `/audit` names
+   * them by id. Content is deliberately NOT read: it is LLM-derived from
+   * untrusted diffs and would reach the PM's context verbatim.
    */
-  candidates: Array<{ id: string; type: string; content: string }>;
+  candidates: Array<{ id: string; type: string }>;
 }
 
 /** Candidates listed by `/audit`. The count in `byStatus` covers the rest. */
@@ -107,7 +108,7 @@ export async function readMemoryStats(
     lens.sort((a, b) => a - b);
     const candidates = db
       .query(
-        "select id, type, content from memories where project_id = ? and status = 'candidate' order by created_at desc limit ?",
+        "select id, type from memories where project_id = ? and status = 'candidate' order by created_at desc limit ?",
       )
       .all(project, MAX_LISTED_CANDIDATES) as MemoryStats["candidates"];
     return {

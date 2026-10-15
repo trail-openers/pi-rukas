@@ -119,10 +119,9 @@ function renderCandidates(s: MemoryStats): string[] {
     "`vipune update <id> --status active` — denied to every agent role.",
     "",
   ];
-  for (const c of s.candidates) {
-    const text = c.content.length > 120 ? `${c.content.slice(0, 119)}…` : c.content;
-    out.push(`- \`${c.id}\` (${c.type}) ${text.replace(/\s+/g, " ")}`);
-  }
+  // Ids and types only. Candidate content is LLM-derived from untrusted diffs;
+  // printing it here would put attacker-shaped text into the PM's context.
+  for (const c of s.candidates) out.push(`- \`${c.id}\` (${c.type})`);
   if (total > s.candidates.length) out.push(`- …and ${total - s.candidates.length} more`);
   return out;
 }

@@ -145,6 +145,17 @@ if (!haveVipune) {
       brief.emptyBrief && !brief.hits.some((h) => h.id === written[0]?.id),
       "the brief is silent about an unpromoted candidate",
     );
+
+    // Positive control: the exclusion above is only meaningful if the same row
+    // IS returned once an operator promotes it. Status-only update — never -t.
+    const id = written[0]?.id;
+    if (id === undefined) throw new Error("driver write returned no id");
+    await execFileAsync("vipune", [...base, "update", id, "--status", "active"]);
+    const promoted = await buildMemoryBrief(["src/spawn-probe.ts"], opts);
+    assert(
+      promoted.hits.some((h) => h.id === id),
+      "positive control: once promoted to active, the brief returns the same row",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
