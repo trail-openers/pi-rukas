@@ -24,15 +24,18 @@ import { promisify } from "node:util";
 import { neutraliseEvidence } from "./comment-evidence.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { execp } from "./exec.ts";
+import { decideEmptyDelta, resolveDeltaSince } from "./lens-review-auto-delta.ts";
 import { bySeverityCounts, computeVerdict, dedupeFindings } from "./lens-review-format.ts";
 import type { LensRunResult, Severity, Verdict } from "./lens-review.ts";
 import type { Finding } from "./lens-review.ts";
 import type { RosterEntry } from "./lens-roster.ts";
 import { resolveAutoHunkDelta, resolveMainlineBase } from "./review-delta-hunks.ts";
 import { computeDeltaDiff, computeRangeDiff } from "./review-diff.ts";
-import { isFullCommitSha, resolveHeadSha } from "./review-head-sha.ts";
-import { latestEntry, ledgerPathFor, readLedgerAt } from "./review-ledger.ts";
+import { resolveHeadSha } from "./review-head-sha.ts";
+import type { LedgerEntry } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
+
+export { resolveDeltaSince };
 
 const execFileP = promisify(execFile);
 /**
@@ -64,81 +67,6 @@ export async function resolveLensDiff(opts: {
   return {
     problem: "lens review: no diff supplied (pass `diff`, or both `base` and `head`)",
   };
-}
-
-/**
- * #973 — design decision 6: the AUTOMATIC delta base. When no explicit
- * `since` is given, a follow-up review on a branch defaults its `since` to
- * the branch's latest lens ledger entry's `headSha` — the commit the last
- * recorded lens run reviewed — so a confirmation round re-reviews only what
- * changed since then instead of the whole branch diff (the churn #973
- * exists to stop).
- *
- * The default applies ONLY when the stored `headSha` is a STRICT ancestor
- * of the reviewed head (`git merge-base --is-ancestor <sha> <head>` and
- * `sha !== head`). Every other shape is a FULL review: the first review on
- * a branch (no ledger entry), a missing/unreadable ledger, a legacy entry
- * without `headSha`, and a `headSha` that is not an ancestor (e.g. after a
- * rebase — reviewing the delta against a foreign commit would miss history).
- * The caller applies the #973 no-review outcome (decision 4) when the
- * resulting delta is empty.
- */
-export async function resolveDeltaSince(
-  branch: string | undefined,
-  head: string | undefined,
-  cwd: string | undefined,
-): Promise<string | undefined> {
-  if (!branch) return undefined;
-  const c = cwd ?? process.cwd();
-  let file: string | undefined;
-  try {
-    file = await ledgerPathFor(execp, c);
-  } catch {
-    file = undefined;
-  }
-  if (!file) return undefined;
-  const headSha = latestEntry(readLedgerAt(file), branch, "lens")?.headSha;
-  if (!headSha) return undefined;
-  // #1039 — a legacy entry whose headSha is a branch name (pre-#1039
-  // wrote the raw ref) must be treated as UNKNOWN (full review), never
-  // matched by string equality or passed to git as a commit ref.
-  if (!isFullCommitSha(headSha)) {
-    trace(
-      `lens-review: auto since skipped — stored headSha "${headSha.slice(0, 20)}" is not a 40-char SHA (legacy/malformed entry; full review)`,
-    );
-    return undefined;
-  }
-  let headRef: string;
-  if (head) {
-    headRef = head;
-  } else {
-    try {
-      const { stdout } = await execFileP("git", ["-C", c, "rev-parse", "HEAD"], {
-        maxBuffer: 8 * 1024,
-      });
-      headRef = stdout.trim();
-    } catch {
-      return undefined;
-    }
-  }
-  if (headSha === headRef) return undefined;
-  let isAncestor: boolean;
-  try {
-    await execFileP("git", ["-C", c, "merge-base", "--is-ancestor", headSha, headRef], {
-      maxBuffer: 8 * 1024,
-    });
-    isAncestor = true;
-  } catch {
-    isAncestor = false;
-  }
-  if (!isAncestor) {
-    trace(
-      `lens-review: auto since skipped — ${headSha.slice(0, 8)} is not an ancestor of ${headRef.slice(0, 8)} (full review)`,
-    );
-    return undefined;
-  }
-  trace(`lens-review: auto since — delta review since ${headSha.slice(0, 8)}`);
-  return headSha;
 }
 
 /**
@@ -286,6 +214,7 @@ export async function resolveReviewDiff(opts: {
   | { kind: "ok"; diff: string; delta?: AutoDeltaInfo }
   | { kind: "blocked"; problem: string }
   | { kind: "noReview"; since: string; head: string; reason: string }
+  | { kind: "carry"; from: string; head: string; prev: LedgerEntry; verdict: Verdict }
 > {
   const hasDiffString = typeof opts.diff === "string" && opts.diff.length > 0;
   if (hasDiffString) {
@@ -331,7 +260,7 @@ type ReviewDiffOutcome = Awaited<ReturnType<typeof resolveReviewDiff>>;
  * ledger uses). Every fallback is recorded on the delta, never silent.
  */
 async function resolveAutoDelta(
-  opts: { base?: string; head?: string; cwd?: string },
+  opts: { base?: string; head?: string; cwd?: string; branch?: string },
   since: string,
 ): Promise<ReviewDiffOutcome> {
   const cwd = opts.cwd ?? process.cwd();
@@ -344,20 +273,47 @@ async function resolveAutoDelta(
   } else {
     const r = await resolveAutoHunkDelta({ since, head: h.head, base, cwd });
     if (r.kind === "problem" && opts.base) return { kind: "blocked", problem: r.problem };
-    if (r.kind === "empty") return { kind: "noReview", since, head: h.head, reason: r.reason };
+    if (r.kind === "empty") return emptyAutoDelta(opts, base, since, h.head, r.reason);
     if (r.kind === "diff") {
       return { kind: "ok", diff: r.diff, delta: { since, head: h.head, auto: true } };
     }
     fallback = r.kind === "problem" ? r.problem : r.reason;
   }
   const d = await resolveDeltaDiff(since, h.head, cwd);
-  if (d.noReview) return { kind: "noReview", since: d.since, head: d.head, reason: d.reason };
+  if (d.noReview) return emptyAutoDelta(opts, base, d.since, d.head, d.reason);
   if (d.problem) return { kind: "blocked", problem: d.problem };
   return {
     kind: "ok",
     diff: d.diff ?? "",
     delta: { since: d.since, head: d.head, auto: true, fallback },
   };
+}
+
+/**
+ * #1176 — an EMPTY automatic delta (nothing but mainline hunks, or no change).
+ * The recorded verdict is carried onto the head when the branch's patch-id is
+ * unchanged; any other shape reviews the full branch (no `since`). With no
+ * mainline base the patch-id cannot be compared, so the empty outcome stands.
+ */
+async function emptyAutoDelta(
+  opts: { cwd?: string; branch?: string },
+  base: string | undefined,
+  since: string,
+  head: string,
+  reason: string,
+): Promise<ReviewDiffOutcome> {
+  const noReview: ReviewDiffOutcome = { kind: "noReview", since, head, reason };
+  if (!opts.branch || !base) return noReview;
+  const cwd = opts.cwd ?? process.cwd();
+  const e = await decideEmptyDelta({ cwd, branch: opts.branch, head, base });
+  if (e.kind === "noReview") return noReview;
+  if (e.kind === "carry") {
+    return { kind: "carry", from: e.from, head, prev: e.prev, verdict: e.verdict };
+  }
+  trace(`lens-review: empty automatic delta not carried (${e.reason}) — full review`);
+  const full = await resolveLensDiff({ base, head, cwd });
+  if (full.problem) return { kind: "blocked", problem: full.problem };
+  return { kind: "ok", diff: full.diff ?? "" };
 }
 
 /**

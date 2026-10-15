@@ -84,6 +84,12 @@ export interface LensReviewSummary {
    */
   noReview?: boolean;
   /**
+   * #1176 "carried" no-review outcome: the delta was empty and the branch's
+   * patch-id was unchanged, so the recorded verdict (`verdict`, `round`) was
+   * carried onto the head. `renderSummary` says so; it is still `noReview`.
+   */
+  carriedFrom?: { sha: string; verdict: Verdict; round: number };
+  /**
    * #1105 — findings the round dropped as already known: `suppressed-unchanged`
    * (a delta round, cited code untouched) or `suppressed-accepted` (an operator
    * accepted it). They are not in `findings` and do not decide the verdict; the
@@ -345,6 +351,14 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
   // review ran. This is NOT an approval — the summary must say "NO REVIEW",
   // never "APPROVED" (a no-review outcome looking like an approval is the
   // #384 silent-approval class in a new shape).
+  if (s.noReview && s.carriedFrom) {
+    const c = s.carriedFrom;
+    return [
+      `NO NEW CHANGES \u2014 verdict carried from ${c.sha.slice(0, 8)} (${c.verdict}, round ${c.round}); the branch patch-id is unchanged, so no lens review ran.`,
+      "",
+      "Re-run dispatch_lens_review with `full: true` to review the full branch diff.",
+    ].join("\n");
+  }
   if (s.noReview) {
     return [
       `NO REVIEW — no changes since the last lens review (${s.deltaReview?.since.slice(0, 8)} at ${s.deltaReview?.head.slice(0, 8)}) — nothing to review, no verdict rendered.`,

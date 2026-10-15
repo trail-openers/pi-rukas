@@ -338,7 +338,10 @@ const branch = "feature/work";
   }
 }
 
-// (7) A round after `merge main` (no fix) reviews no main-only hunks → no-review
+// (7) A round after `merge main` (no fix) reviews no main-only hunks. The
+// recorded patch-id here does not match the branch's (#1176: a changed
+// patch-id is never carried), so the empty delta becomes a FULL review. The
+// matching-patch-id carry is in test-auto-delta-carry.ts.
 {
   const r = await mergeMainFixture();
   writeLedger(r.ledgerFile, [
@@ -357,8 +360,8 @@ const branch = "feature/work";
   try {
     const d = await resolveReviewDiff({ base: "main", head: "feature/work", branch, cwd: r.dir });
     assert(
-      d.kind === "noReview",
-      "merge-of-main round (no fix) → no-review, main-only hunks excluded",
+      d.kind === "ok" && d.delta === undefined,
+      "merge-of-main round with a changed patch-id → full review, not a carry (#1176)",
     );
   } finally {
     cleanup(r.dir, r.ledgerFile);

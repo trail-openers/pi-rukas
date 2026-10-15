@@ -34,6 +34,9 @@ import type { LedgerEntry } from "./review-ledger.ts";
  */
 export function bumpLensRound(entry: LedgerEntry, existing: LedgerEntry[]): LedgerEntry {
   if (entry.kind !== "lens") return entry;
+  // #1176 — carried entries arrive with the round they were recorded at; a carry
+  // adds no review round, so the counter is not advanced for them.
+  if (entry.round !== undefined) return entry;
   let prev: LedgerEntry | undefined;
   for (const e of existing) {
     if (e.branch !== entry.branch || e.kind !== "lens") continue;
