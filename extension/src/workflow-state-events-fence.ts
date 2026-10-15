@@ -26,4 +26,9 @@ export type FenceRecoveryStartedEvent = {
   /** The discarded commit — reachable in the object store, named here
    * (absent only if the violator's HEAD could not be read pre-reset). */
   discardedSha?: string;
+  /** #1323 — set when the merge came from a verify failure naming a symbol
+   * the owner's diff adds (absent: a fence-violation merge). */
+  cause?: "sibling-symbol";
+  /** #1323 — the symbols that coupled the pair (with `cause`). */
+  symbols?: string[];
 };

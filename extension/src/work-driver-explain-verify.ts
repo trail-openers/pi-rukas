@@ -121,6 +121,26 @@ function retryLine(evidence: WorkState["pipelineState"]["verifyEvidence"]): stri
     : `\nNote: the verify command was ${verb} and still failed — this is a real failure, not a flake.`;
 }
 
+/**
+ * #1323 — the handoff sentence for a park after a sibling-symbol merge, or
+ * "" when this cycle did not merge one. Read by the verify-failed
+ * explanation so the operator sees the split was merged and still failed.
+ */
+export function mergedSplitNote(state: WorkState): string {
+  const merges = state.eventLog.filter(
+    (e): e is Extract<WorkState["eventLog"][number], { kind: "fence-recovery-started" }> =>
+      e.kind === "fence-recovery-started" && e.cause === "sibling-symbol",
+  );
+  if (merges.length === 0) return "";
+  const what = merges
+    .map(
+      (e) =>
+        `${e.owners.join(", ")} into ${e.workstreamId} (on ${(e.symbols ?? []).map((s) => `\`${s}\``).join(", ")})`,
+    )
+    .join("; ");
+  return `\nThe driver already merged the split workstreams ${what} and re-ran develop once; the merged workstream still failed, so another re-split or retry will not converge.`;
+}
+
 // PR17 — `verify-failed:<step>`: the driver-side outcome gate found
 // the step's claimed result isn't backed by executed evidence. The
 // per-check findings live in pipelineState.verifyEvidence.
@@ -158,5 +178,6 @@ export function explainVerifyFailed(cap: Cap, state: WorkState): string {
   const advice = failures.some((f) => f.startsWith(BASELINE_RED_MARKER))
     ? "The verify command already fails at the cycle's base commit — fix the gate there (or the host it runs on) before inspecting the worktree(s), then re-run."
     : "Inspect the worktree(s), fix or re-dispatch, and re-run.";
-  return `the driver's outcome-verification gate rejected the ${step} step's "done" claim — the claimed result is not backed by executed evidence:${findings}${suffix}\nNo LLM judged this; the driver ran the checks itself (git diff/rev-list, the project's verify command, gh pr view). ${advice} Set PI_ENSEMBLE_VERIFY=0 to disable the gate (not recommended)`;
+  const merged = step === "develop" ? mergedSplitNote(state) : "";
+  return `the driver's outcome-verification gate rejected the ${step} step's "done" claim — the claimed result is not backed by executed evidence:${findings}${suffix}${merged}\nNo LLM judged this; the driver ran the checks itself (git diff/rev-list, the project's verify command, gh pr view). ${advice} Set PI_ENSEMBLE_VERIFY=0 to disable the gate (not recommended)`;
 }
