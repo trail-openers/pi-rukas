@@ -1,14 +1,10 @@
 /**
  * work-driver-step-router — post-step outcome routing for runWorkDriver's
- * main loop.
- *
- * Extracted from work-driver.ts (issue #171 file-size hygiene). Called
- * once per loop iteration immediately after `runStep` returns (without
- * throwing): emits the scrollback lifecycle line for the step's outcome,
- * then applies the PR5 single-dispatch halt-cascade router and the PR7
- * multi-workstream halt-cascade router. Returns the (possibly mutated)
- * state plus whether the caller should `continue` the loop immediately
- * (retry / re-entered-via-handoff) rather than fall through to the
+ * main loop. Extracted from work-driver.ts (issue #171 file-size hygiene).
+ * Called once per loop iteration after `runStep` returns: emits the
+ * scrollback lifecycle line, applies the PR5 single-dispatch and PR7
+ * multi-workstream halt-cascade routers, and returns whether the caller
+ * should `continue` (retry / re-entry) rather than fall through to the
  * `nextStep()` transition.
  */
 
@@ -34,11 +30,7 @@ import type { CapEvidence } from "./workflow-state-cap.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
 import { type WorkState, type WorkStep, appendEvent, persistCycle } from "./workflow-state.ts";
 
-/**
- * #366 — injectable sleep. Real waits are the point in production (a burst
- * 429 clears by waiting), but the offline suite must never actually sleep, so
- * the seam is here rather than a bare setTimeout at each call site.
- */
+/** #366 — injectable sleep; the offline suite must never actually sleep. */
 let sleepFn: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** Test seam. Returns a restore function. */
@@ -50,35 +42,17 @@ export function __setSleepFn(fn: (ms: number) => Promise<void>): () => void {
   };
 }
 
-/**
- * Step completed — figure out if it ended in a step-failure-shaped
- * event so the lifecycle line marks failure even though runStep
- * didn't throw. Most-recent event drives the decision. Then apply the
+/** Step completed — mark failure in the lifecycle line, then apply the
  * PR5 / PR7 halt-cascade routers. Returns `retry: true` when the caller
- * should `continue` its while-loop without reaching the `nextStep()`
- * transition (a retry re-run or a synthesized cap-hit → handoff
- * re-entry, both of which already persisted state via `persistCycle`).
- */
+ * should `continue` (retry / re-entry) rather than reach `nextStep()`. */
 /**
  * The dispatch failure this step ended on, if any.
- *
- * A single-dispatch step ends ON its failure, so the last event is the answer.
- * A FAN-OUT step does not: `runDevelop` finishes by appending a
- * `branch-completed` per workstream and then `branches-converged`, which buries
- * the per-child failures several events back. Reading only the last event
- * therefore classified fan-out failures as nothing at all.
- *
- * Measured consequence: three developers hit a 429 carrying a 59-second
- * retry-after — a delay the taxonomy already knows how to wait out, and does
- * wait out for single dispatches — and the step halted with
- * `transientRetryAttempts: {}`. Never attempted, not exhausted. A transient
- * throttle and "the developer genuinely failed" collapsed into the same
- * `ok:false`, and the cap tripped on the latter's semantics.
- *
- * The scan is bounded by `branches-fanned-out`, the marker that opens the
- * fan-out, so it can never reach back into a previous step. All children must
- * have failed for this to return a failure: if any workstream succeeded, the
- * step's problem is not purely transient and re-running it is not the answer.
+ * A single-dispatch step ends ON its failure; a fan-out step ends on
+ * `branches-converged` with the per-child failures several events back.
+ * The scan is bounded by `branches-fanned-out` so it never reaches back
+ * into a previous step. All children must have failed for this to
+ * return a failure: if any workstream succeeded, the step's problem is
+ * not purely transient and re-running it is not the answer.
  */
 export function failureEventOf(events: readonly WorkEvent[]): WorkEvent | undefined {
   const last = events[events.length - 1];
