@@ -110,6 +110,27 @@ broad allow rule.
 the prefix `vipune add` and matches `"vipune add *"`. Quote characters
 inside argument values are not injection vectors.
 
+**Decision-cache drop of unsafe-prefix patterns**: the drop of an unsafe
+prefix happens in the decision-cache layer
+(`extension/src/permission-decision-cache.ts`), not in pattern authoring.
+`agents.json`-side matching (`matchBashSubcommand` in
+`extension/src/bash-pattern-wildcard.ts`) matches whatever pattern the
+operator wrote against the incoming command — an operator-authored pattern is
+not rejected at the matcher level. The drop applies only to the persisted
+`"Allow always"` / `"Deny always"` cache in `.pi/decisions.json`. At load time,
+`classifyDecisionKey` marks a `bash:<prefix> *` key whose prefix contains an
+unsafe character as `"unsafe-pattern"` and `loadPersistedDecisions` drops the
+entry silently (trace-only). At lookup time, `isSafeBashPatternKey` is checked
+in both `lookupCachedToolDecision` and `lookupCachedBrokerDecision`, so a
+residual unsafe-pattern key is skipped at match time even if it had survived a
+load. The unsafe set is `BASH_PATTERN_UNSAFE_CHARS`
+(`['"`*?\[\]{}|&;<>\$]`), a different — larger — set than the matcher-level
+injection chars above. The write path degrades rather than silently drops:
+`getBashAlwaysScope` returns `null` for a command whose extracted prefix
+contains an unsafe character, the UI label falls back to a bare
+`"Allow always"` (no `(prefix *)` suffix), and the stored key is
+`bash:exact:<sha256>` of the full command rather than a pattern key.
+
 The extractor knows about a small set of process wrappers (`timeout`, `time`,
 `nice -n N`, `nohup`, `stdbuf`, `command`, `builtin`, `exec`, `env`) and
 leading `KEY=value` env-var assignments — these are stripped before the prefix
