@@ -37,7 +37,8 @@ import { interruptReasonOf, markInterrupted, readState, workStateFile } from "..
 import type { WorkState } from "../workflow-state.ts";
 import { EXIT, exitCodeForGroup, exitCodeForState } from "./exit-code.ts";
 import { type LineWriter, createHeadlessHost } from "./host.ts";
-import { type IssueResult, projectIssue } from "./result.ts";
+import { prUrlResolver } from "./pr-url.ts";
+import { type IssueResult, notStartedResult, projectIssue } from "./result.ts";
 
 export interface HeadlessRunOptions {
   repoRoot: string;
@@ -164,6 +165,17 @@ export async function runHeadless(opts: HeadlessRunOptions): Promise<HeadlessRun
   for (const issue of unrun) {
     results.push(await unrunResult(opts.repoRoot, issue, interruptCode));
   }
+  // #1326 — a refused start is not resumable while its owner lives; a PR URL
+  // the driver did not record is resolved once from the local remote.
+  for (const r of results) if (r.exitCode === EXIT.refused) r.resumable = false;
+  if (results.some((r) => r.prNumber !== undefined && r.prUrl === undefined)) {
+    const prUrlFor = await prUrlResolver(opts.repoRoot);
+    for (const r of results) {
+      if (r.prNumber === undefined || r.prUrl !== undefined) continue;
+      const url = prUrlFor(r.prNumber);
+      if (url) r.prUrl = url;
+    }
+  }
   if (unrun.length > 0) return { exitCode: interruptCode, results };
   const base = { exitCode: exitCodeForGroup(codes), results };
   if (divergenceError) return { ...base, error: divergenceError };
@@ -179,7 +191,7 @@ async function unrunResult(
   const file = workStateFile(repoRoot, issue);
   const state = await readState(repoRoot, issue);
   if (!state) {
-    return { issue, status: "not-started", stateFile: file, durationMs: 0, steps: [], exitCode };
+    return notStartedResult(issue, file, exitCode);
   }
   return { ...projectIssue(state, file), exitCode };
 }
@@ -314,15 +326,7 @@ async function runGroup(
       const message = `state file for issue #${issue} is corrupt or unreadable (${errorMessage(err)}); result reported as not-started`;
       trace(`headless: state file for #${issue} unreadable: ${errorMessage(err)}`);
       onDivergence(message);
-      results.push({
-        issue,
-        status: "not-started",
-        stateFile: file,
-        durationMs: 0,
-        steps: [],
-        exitCode: EXIT.crash,
-        diverged: true,
-      });
+      results.push(notStartedResult(issue, file, EXIT.crash, { diverged: true }));
       codes.push(EXIT.crash);
       continue;
     }
@@ -347,14 +351,7 @@ async function runGroup(
       // Reported as not-started, never as a fabricated status.
       const code = outcome === "expired" ? expiredCode : refused ? EXIT.refused : EXIT.crash;
       codes.push(code);
-      results.push({
-        issue,
-        status: "not-started",
-        stateFile: file,
-        durationMs: 0,
-        steps: [],
-        exitCode: code,
-      });
+      results.push(notStartedResult(issue, file, code));
       continue;
     }
     const projected = projectIssue(state, file);

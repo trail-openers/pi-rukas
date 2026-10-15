@@ -6,15 +6,16 @@
  *
  *   pi-rukas-headless --capabilities   (prints the object to stdout, exit 0)
  *
- * It starts no cycle, reads no repository and makes no network call. The
+ * It starts no cycle, reads no project repository and makes no network call. The
  * shape is derived from the same live constants the runner itself reads:
  *
  *   - `version`    — package.json `version` (extension/package.json)
- *   - `commit`     — baked by install.sh / the image into
- *                    `<repoRoot>/.pi/pi-rukas-commit`; absent when the
- *                    checkout has no baked marker (e.g. a bare worktree)
+ *   - `commit`     — the commit the build was made from (build.ts): the
+ *                    image's baked marker, else the install checkout's HEAD,
+ *                    else null
  *   - `contracts`  — exit codes (exit-code.ts), the `--json` result schema
- *                    (result.ts), NDJSON progress (ndjson.ts)
+ *                    with its `cap` vocabulary (result.ts, caps.ts), NDJSON
+ *                    progress with its stable kind subset (ndjson.ts)
  *   - `inputs`     — every `PI_ENSEMBLE_*` env input this build reads, with
  *                    type, default and scope (inputs.ts, #1326)
  *   - `files`      — the `.pi/*` project files a cycle reads (inputs.ts)
@@ -24,11 +25,12 @@
  * (exit-code.ts, result.ts, ndjson.ts); this module reads whatever they export.
  */
 
-import { readFileSync } from "node:fs";
 import path from "node:path";
+import { INSTALL_ROOT, readBuildCommit, readBuildVersion } from "./build.ts";
+import { capVocabulary } from "./caps.ts";
 import { EXIT, EXIT_CODE_VERSION } from "./exit-code.ts";
 import { HEADLESS_FILES, HEADLESS_INPUTS } from "./inputs.ts";
-import { NDJSON_VERSION } from "./ndjson.ts";
+import { NDJSON_STABLE_FIELDS, NDJSON_STABLE_VERSION, NDJSON_VERSION } from "./ndjson.ts";
 import { RESULT_SCHEMA_VERSION } from "./result.ts";
 
 /**
@@ -43,6 +45,7 @@ export const CAPABILITIES_VERSION = 2 as const;
 export const WORK_FLAGS = ["--restart", "--json", "--timeout"] as const;
 
 export { HEADLESS_FILES, HEADLESS_INPUTS } from "./inputs.ts";
+export { readBakedCommit, readBuildVersion } from "./build.ts";
 
 /** The features a caller may depend on, as named booleans. */
 export const HEADLESS_FEATURES = {
@@ -58,8 +61,11 @@ export interface Capabilities {
   commit: string | null;
   contracts: {
     exitCodes: { version: number; values: typeof EXIT };
-    resultSchema: { version: number };
-    ndjson: { version: number };
+    resultSchema: { version: number; caps: ReturnType<typeof capVocabulary> };
+    ndjson: {
+      version: number;
+      stable: { version: number; kinds: typeof NDJSON_STABLE_FIELDS };
+    };
   };
   verbs: {
     work: { flags: (typeof WORK_FLAGS)[number][] };
@@ -70,49 +76,22 @@ export interface Capabilities {
 }
 
 /**
- * Read the version baked into extension/package.json. `null` when the file is
- * missing or unreadable (the caller reports it as-is; the schema does not
- * require it to be non-null).
+ * Build the full capabilities object. No network and no driver; the only
+ * process it may start is one `git rev-parse` in pi-rukas's own install root
+ * (build.ts), never in the project. `installRoot` is a test seam.
  */
-export function readBuildVersion(pkgJsonPath?: string): string {
-  const p = pkgJsonPath ?? path.resolve(import.meta.dirname, "..", "..", "package.json");
-  try {
-    const pkg = JSON.parse(readFileSync(p, "utf8")) as { version?: string };
-    return typeof pkg.version === "string" && pkg.version.length > 0 ? pkg.version : "0.0.0";
-  } catch {
-    return "0.0.0";
-  }
-}
-
-/**
- * Read the commit baked into `<repoRoot>/.pi/pi-rukas-commit` by install.sh /
- * the image build. Returns `null` when the file is missing or empty — a
- * checkout without a baked marker (a bare worktree, a dev tree) reports
- * `null`, not a fabricated string.
- */
-export function readBakedCommit(repoRoot: string): string | null {
-  try {
-    const raw = readFileSync(path.join(repoRoot, ".pi", "pi-rukas-commit"), "utf8").trim();
-    return raw.length > 0 ? raw : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Build the full capabilities object. Pure given the inputs: no network, no
- * spawn, no driver. `repoRoot` is used only for the baked-commit lookup;
- * pass any path when the caller has no repo root (the commit is `null`).
- */
-export function buildCapabilities(repoRoot?: string): Capabilities {
+export function buildCapabilities(installRoot: string = INSTALL_ROOT): Capabilities {
   return {
     schemaVersion: CAPABILITIES_VERSION,
-    version: readBuildVersion(),
-    commit: repoRoot !== undefined ? readBakedCommit(repoRoot) : null,
+    version: readBuildVersion(path.join(installRoot, "extension", "package.json")),
+    commit: readBuildCommit(installRoot),
     contracts: {
       exitCodes: { version: EXIT_CODE_VERSION, values: EXIT },
-      resultSchema: { version: RESULT_SCHEMA_VERSION },
-      ndjson: { version: NDJSON_VERSION },
+      resultSchema: { version: RESULT_SCHEMA_VERSION, caps: capVocabulary() },
+      ndjson: {
+        version: NDJSON_VERSION,
+        stable: { version: NDJSON_STABLE_VERSION, kinds: NDJSON_STABLE_FIELDS },
+      },
     },
     verbs: {
       work: { flags: [...WORK_FLAGS] },
