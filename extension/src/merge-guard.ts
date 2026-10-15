@@ -28,14 +28,13 @@
  *      here, and branch protection is the git-level control for that.
  *   7. Adversarial ledger: the LATEST adversarial entry for this branch
  *      must be `passed: true` AND its `patchId` must equal the current
- *      patchId (computed from `<remote>/<base>..<remote>/<head>`, the PR's
- *      ACTUAL base branch). A new commit since the review changes the
- *      patchId → refuse. Note the asymmetry with the writers: the ledger
- *      entries are stored against the MERGE-BASE of `<remote>/<mainline>`,
- *      so a PR whose base branch is not the mainline will fail this check
- *      (patchId mismatch) — that is deliberate and fails closed; the
- *      operator re-runs the reviews on the PR's actual base (see
- *      docs/troubleshooting.md → "A merge was refused: review ledger").
+ *      patchId — computed as the writers compute theirs (#1305): the diff from
+ *      the merge-base of `<remote>/<head>` and `<remote>/<mainline>` to the
+ *      head (`mergeBasePatchId`). Main moving does not change it; a change
+ *      to the branch's own content does → refuse. A PR whose base branch is
+ *      not the mainline has no matching recorded identity and is refused,
+ *      named (fail closed; see docs/troubleshooting.md → "A merge was
+ *      refused: review ledger").
  *   8. Lens ledger: the LATEST lens entry for this branch must be
  *      `passed: true` (any patchId — a passing lens entry may predate a
  *      later commit; a later FAILING lens entry is what the latest-ness
@@ -105,7 +104,7 @@ import {
   readLedgerAt,
   remoteName,
 } from "./review-ledger.ts";
-import { branchPatchId } from "./review-patch-identity.ts";
+import { mergeBasePatchId } from "./review-patch-identity.ts";
 import { trace } from "./trace.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 
@@ -272,9 +271,11 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
       );
     }
 
-    // Fetch the branch. Fail-closed on error. The remote and branch come from
-    // the PR and the git config: validated and passed as argv, never shell text.
-    const refProblem = netRefProblem(remote, target.headBranch);
+    // Fetch the head AND the base. Fail-closed on error. The remote and
+    // branches come from the PR and the git config: validated and passed as
+    // argv, never shell text. The base is fetched so the merge-base below is
+    // taken against the same fresh refs the marker poster uses (#1305).
+    const refProblem = netRefProblem(remote, target.headBranch, target.baseBranch);
     if (refProblem !== undefined) {
       return block(
         `git fetch refused: ${refProblem} — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
@@ -285,7 +286,7 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
         cwd,
         maxBuffer: 64 * 1024,
         timeoutMs: EXEC_TIMEOUT_MS,
-        argv: ["fetch", remote, target.headBranch],
+        argv: ["fetch", remote, target.headBranch, target.baseBranch],
       });
     } catch (err) {
       return block(
@@ -313,23 +314,24 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
       );
     }
 
-    // Compute the current patchId against the PR's ACTUAL base branch
-    // (`<remote>/<baseBranch>`) — NOT the mainline. The writers store their
-    // entries against the mainline's merge-base, so a PR based off a
-    // non-mainline branch will not match and fails closed (see the module
-    // header, step 7). The guard keeps using the PR's baseBranch because
-    // that is the ref the merge will actually run against.
-    const currentPatchId = await branchPatchId(
+    // The current identity, built as the ledger writers build theirs (#1305):
+    // merge-base of the head against `<remote>/<mainline>`, diffed to the
+    // head. A moved main leaves it unchanged; a change to the branch's own
+    // content changes it. A PR whose base is not the mainline has nothing
+    // recorded to match and fails closed (see mergeBasePatchId).
+    const identity = await mergeBasePatchId(
       execFn,
       cwd,
-      `${remote}/${target.headBranch}`,
-      `${remote}/${target.baseBranch}`,
+      remote,
+      target.headBranch,
+      target.baseBranch,
     );
-    if (!currentPatchId) {
+    if (!identity.ok) {
       return block(
-        `could not compute the patch-id for ${target.headBranch} — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
+        `could not compute the patch-id for ${target.headBranch}: ${identity.reason} — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
       );
     }
+    const currentPatchId = identity.patchId;
 
     // Read the ledger.
     const ledgerPath = await ledgerPathFor(execFn, cwd);

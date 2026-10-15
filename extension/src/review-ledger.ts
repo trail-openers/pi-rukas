@@ -64,7 +64,7 @@ export interface LedgerEntry {
   /** The branch the review covered. */
   branch: string;
   kind: ReviewKind;
-  /** `branchPatchId` of the changes at review time (adversarial entries must
+  /** Merge-base patch id of the changes at review time (adversarial entries must
    * MATCH the current patchId; a passing lens entry may carry an earlier one). */
   patchId: string;
   /** Computed by the shared predicates at write time — the guard trusts it. */
@@ -145,10 +145,11 @@ export { remoteName } from "./review-ledger-path.ts";
  *     merge time matches the stored one (committing identical content does
  *     not change the content's patch-id).
  *
- * A PR whose base branch is NOT the mainline will not match: the guard
- * computes its patchId against `<remote>/<PR base>` (merge-guard.ts), the
- * patchId differs, and the mismatch fails closed — the operator re-runs the
- * reviews (see docs/troubleshooting.md → "A merge was refused: review ledger").
+ * The merge guard recomputes the committed form of this identity against the
+ * same `<remote>/<mainline>` (`mergeBasePatchId`, #1305). A PR whose base
+ * branch is NOT the mainline is refused there by name (fail closed) — the
+ * operator re-runs the reviews or merges by hand (see docs/troubleshooting.md
+ * → "A merge was refused: review ledger").
  *
  * `opts.digest` (default false) also computes `diffSha256` — a second
  * `git diff --binary` run. Only the lens writer stores it (the carry needs

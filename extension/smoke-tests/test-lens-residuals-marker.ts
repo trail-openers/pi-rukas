@@ -7,7 +7,7 @@
  * residual-findings marker comment IFF the verdict is ISSUES_FOUND AND an
  * open PR/MR for the branch is resolved. APPROVED, REVIEW_INCOMPLETE and
  * CRITICAL_ISSUES_FOUND post nothing. The marker embeds the SAME id the
- * guard computes — `branchPatchId` against the PR's ACTUAL base (design
+ * guard computes — `mergeBasePatchId`, the merge-base identity (design
  * decision 1) — and the guard verifies that exact marker string.
  *
  * Covers:
@@ -83,6 +83,8 @@ function makeStub(opts: { failPost?: boolean } = {}) {
     if (cmd.includes("git fetch")) {
       return { stdout: "" };
     }
+    if (cmd.includes("symbolic-ref")) return { stdout: "origin/main\n" };
+    if (cmd.includes("git merge-base")) return { stdout: "mb0000\n" };
     if (cmd.includes("patch-id")) {
       return { stdout: "p42 0000" };
     }
@@ -144,6 +146,11 @@ function repoDir(): string {
     assert(
       calls.some((c) => c.includes("patch-id")),
       "…after computing the patch-id (the marker's patch)",
+    );
+    assert(
+      calls.some((c) => c.includes("git merge-base origin/feature/x origin/main")) &&
+        calls.some((c) => c.includes("git diff mb0000 origin/feature/x")),
+      "…over the merge-base range the guard compares, not two-dot base..head (#1305)",
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
