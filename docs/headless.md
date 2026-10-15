@@ -53,10 +53,22 @@ With `--json`, stdout carries exactly one JSON document:
       "status": "handoff",
       "cap": "verify-failed:develop",
       "failedStep": "develop",
+      "failure": {
+        "kind": "verify",
+        "step": "develop",
+        "message": "verify command exited 1: 2 tests failed",
+        "evidence": "verify command exited 1: 2 tests failed\n…"
+      },
       "branch": "feature/issue-42-foo",
       "prNumber": 99,
       "prUrl": "https://github.com/owner/repo/pull/99",
-      "usage": { "input": 812000, "output": 41000, "cacheRead": 2900000, "cacheWrite": 0, "cost": 3.12, "turns": 214, "dispatches": 9 },
+      "usage": {
+        "input": 812000, "output": 41000, "cacheRead": 2900000, "cacheWrite": 0, "cost": 3.12, "turns": 214, "dispatches": 9,
+        "byRole": {
+          "developer": { "input": 640000, "output": 33000, "cacheRead": 2400000, "cacheWrite": 0, "cost": 2.5, "turns": 170, "dispatches": 4 },
+          "…": { }
+        }
+      },
       "resumable": false,
       "stateFile": "/path/to/.pi/work-state/42.json",
       "durationMs": 42000,
@@ -88,9 +100,10 @@ With `--json`, stdout carries exactly one JSON document:
 | `issues[].cap` | when a cap was hit | The last cap the cycle hit, from the published vocabulary (below). It can be set on a `merged` result too (a cap the cycle recovered from), so a host reads `status` and `exitCode` for the outcome and `cap` for the reason. |
 | `issues[].parkReason` | when `cap` is `intent-park` | Why the cycle parked: `underspecified`, `contradicted-by-code`, `already-implemented`, `too-large`, `premise-unsound` or `security-open-point`. |
 | `issues[].handoff` | once the cycle emitted a handoff | `channel` (`forge` or `host`, see [Handoff channel](#handoff-channel)); `marker`, the machine marker that is the first line of the body; `body`, the full handoff markdown, taken from the driver's record of this cycle (never re-read from the file); `bodyError` (`not-recorded`) in place of `body` when the cycle recorded none; `bodyFile`, a path for a person; `commentUrl`, the comment pi-rukas posted (forge channel); `labelApplied`, whether `needs-human-attention` was verified on the issue (and PR). |
+| `issues[].failure` | when `cap` is set and the cycle did not merge | Why the cycle stopped on `cap`, as stable fields (#1367, added in this release). See [The `failure` object](#the-failure-object). |
 | `issues[].failedStep` | when the cycle did not merge and started a step | The step it stopped in: the step a `<template>:<step>` cap names (`verify-failed:`, `verify-timeout:`, `verify-env:`, `verify-baseline-red:`, `pr-not-open:`, `step-failed:`, `driver-crash:`), else the last step started before the cap, else the last step started. It names where the cycle stopped, not necessarily a failure: for `awaiting-human-merge` it is the last step the cycle ran (e.g. `ci`). |
 | `issues[].branch`, `prNumber`, `prUrl` | when known | `prUrl` is present only when unambiguous: the PR URL the driver recorded (its handoff comment on the PR), else one built from the project's git remote when there is exactly one remote, the forge is GitHub or GitLab, and the web address is certain (an `http(s)` remote, or ssh to github.com / gitlab.com; GitLab subgroups and explicit https ports are kept). Otherwise only `prNumber` is set. |
-| `issues[].usage` | when a state existed | Tokens, cost and turns summed over every dispatch the cycle recorded (`dispatch-completed`, `dispatch-failed` and `dispatch-failed-provider` events), and the dispatch count. It covers the current cycle only: `--restart` discards the state, so earlier cycles' cost is not included. |
+| `issues[].usage` | when a state existed | Tokens, cost and turns summed over every dispatch the cycle recorded (`dispatch-completed`, `dispatch-failed` and `dispatch-failed-provider` events), and the dispatch count. It covers the current cycle only: `--restart` discards the state, so earlier cycles' cost is not included. `usage.byRole` (#1368, added in this release) holds the same seven numbers per dispatch `role` (the `role` on the `dispatch-*` events, e.g. `developer`, `adversarial`), summed over the same dispatches, failed ones included, so its rows add up to the total. |
 | `issues[].resumable` | always | `true` when running `work <issue>` again **without** `--restart` continues this cycle (it was interrupted, or stopped while running). Always `false` on a refusal (exit 40: another live process owns the cycle, so a re-run is refused again until it ends) and when `PI_ENSEMBLE_RESUME=0`. A terminal cycle needs `--restart` for a fresh one. |
 | `issues[].stateFile` | always | A path for a person to inspect. Not a host contract: see below. |
 | `issues[].questions` | exit 11 only | The clarification questions, numbered `q1`, `q2`, … |
@@ -99,7 +112,41 @@ With `--json`, stdout carries exactly one JSON document:
 
 An optional top-level `error` (`{ code, message }`) is present when the runner detected a divergence (e.g. `state-diverged`) or another runner-level failure.
 
-`resources` (#1325, added in this release; an additive field, so no schema bump) is the host budget and the parallelism limits the run chose — see [Resource report](#resource-report).
+`resources` (#1325, added in this release; an additive field, so no schema bump) is the host budget and the parallelism limits the run chose — see [Resource report](#resource-report). `failure` (#1367) and `usage.byRole` (#1368) are additive fields too, so the schema stays at 3; a host detects them with `features.failureReason` and `features.usageByRole` in `--capabilities`.
+
+### The `failure` object
+
+`issues[].failure` is the reason behind the result's `cap`, so a host never reads the unstable `dispatch-failed` / `dispatch-failed-provider` lines or the cap's prose to tell a provider outage from a real failure. It is present when the cycle hit a cap and did not merge.
+
+| Field | Present | Meaning |
+|---|---|---|
+| `kind` | always | A coarse class, from `contracts.resultSchema.failureKinds` in `--capabilities` (below). |
+| `step` | when known | The step it belongs to, the same as `failedStep`. |
+| `role` | when a dispatch failed, or a guard cap names one | The failed dispatch's role (or the role a `loop-detected` / `token-budget` cap killed). |
+| `cause` | when a dispatch failed | The driver's root-cause reading of the failed dispatch, the one its retry router acts on: `provider-severed`, `rate-limited:429`, `rate-limited:burst`, `rate-limited:quota-window`, `rate-limited:quota-terminal`, `provider-model-unavailable`, `self-killed:<timeout\|inactivity\|tool-inactivity\|abort\|loop\|token-budget\|plan-timeout>`, `crashed` or `crashed-unknown`. Additive: show an unknown one to a person. |
+| `message` | always | One plain-text sentence, at most 500 characters: the failed dispatch's cause in words, else the first line of the cap's evidence, else the cap. |
+| `providerMessage` | provider failures | The provider's own error message, at most 1000 characters. |
+| `errorTail` | process failures | The end of the failed child's output, at most 2000 characters. |
+| `killCause` | when pi-rukas ended the child | `timeout`, `inactivity`, `tool-inactivity`, `abort`, `loop`, `token-budget` or `plan-timeout`. |
+| `exitCode` | when the failed child exited | Its exit code (`null` when killed by a signal). |
+| `evidence` | when the cap recorded some | The cap's evidence, at most 2000 characters. Plain text for a person; do not parse it. |
+
+Every text field has secrets redacted before it is cut to its bound.
+
+A failed dispatch is read only for the caps a failed dispatch causes (`step-failed:<step>`, `adversarial-infra-failure`, `developer-timeout`, `review-incomplete`, `loop-detected`, `token-budget`, `plan-timeout`): the last `dispatch-failed*` event between the start of the stopped step's last run and the cap. Its kind wins over the cap's:
+
+| `kind` | Meaning |
+|---|---|
+| `provider` | A dispatch stopped on a provider error: an outage, a 429, a spend cap, an unknown model (`cause` says which). The case a host may retry later on its own. |
+| `timeout` | A time bound ended it: a child killed for time or silence, `verify-timeout:<step>`, `developer-timeout`, `plan-timeout`, `wall-clock`, `deadline`. |
+| `guard` | pi-rukas ended the child on a guard: a loop, the token budget, an abort. |
+| `process` | The child process failed with no structured cause (a dispatch cap with no failed dispatch recorded is `process` too). |
+| `verify` | The verify gate ran and judged the code red: `verify-failed:<step>`, `verify-baseline-red:<step>`, `integration-verify-failed`, `consolidated-verify-consolidation-created`. |
+| `environment` | `verify-env:<step>`: the system refused to start a process, so the gate never ran. |
+| `driver` | `driver-crash:<step>`: a driver step handler threw. |
+| `cap` | Nothing failed: the cap's own rule stopped the cycle (a round cap, an intent park, awaiting merge, a fence violation, …). `evidence` says why. |
+
+A new kind is additive and does not bump the schema: a host treats an unknown kind like `cap`.
 
 ### Resource report
 
@@ -245,7 +292,8 @@ Use `--restart` only when a person, or the host acting on a person's answer, has
     },
     "resultSchema": {
       "version": 3,
-      "caps": { "fixed": ["adversarial-infra-failure", …], "templates": [{ "prefix": "verify-failed:", "parameter": "step", "values": ["explore", …] }, …] }
+      "caps": { "fixed": ["adversarial-infra-failure", …], "templates": [{ "prefix": "verify-failed:", "parameter": "step", "values": ["explore", …] }, …] },
+      "failureKinds": ["provider", "timeout", "guard", "process", "verify", "environment", "driver", "cap"]
     },
     "ndjson": {
       "version": 1,
@@ -270,7 +318,9 @@ Use `--restart` only when a person, or the host acting on a person's answer, has
     "resultFromMemory": true,   // #1189 — result from in-memory state, not the state file
     "cycleDeadline": true,      // #1238 — a cycle deadline that parks with a handoff
     "handoffChannel": true,     // #1327 — PI_ENSEMBLE_HANDOFF_CHANNEL=host
-    "restartClearsAttention": true // #1327 — --restart clears needs-human-attention
+    "restartClearsAttention": true, // #1327 — --restart clears needs-human-attention
+    "failureReason": true,      // #1367 — issues[].failure in the result
+    "usageByRole": true         // #1368 — issues[].usage.byRole in the result
   },
   "resources": { … }            // #1325 — the host budget and limits; see Resource report
 }
@@ -287,6 +337,7 @@ Use `--restart` only when a person, or the host acting on a person's answer, has
 | `contracts.exitCodes.values` | The `EXIT` object | The complete mapping of exit-code names to values. A caller can check for the presence of a named code. |
 | `contracts.resultSchema.version` | Named constant in `result.ts` | Version of the `--json` result schema. |
 | `contracts.resultSchema.caps` | `caps.ts` | Every value the result's `cap` can take (see "The `cap` vocabulary"). |
+| `contracts.resultSchema.failureKinds` | `FAILURE_KINDS` (`failure.ts`) | Every value the result's `failure.kind` can take (see "The `failure` object"). |
 | `contracts.ndjson.version` | `NDJSON_VERSION` | Version of the NDJSON progress schema. |
 | `contracts.ndjson.stable` | `NDJSON_STABLE_VERSION`, `NDJSON_STABLE_FIELDS` | The stable kinds and their guaranteed `event` fields (see "The stable subset"). |
 | `verbs.work.flags` | `WORK_FLAGS` array | The flags the `work` verb accepts, in the order the parser accepts them. An unknown flag in a caller's argv means "not supported" and is refused with exit 40. |
@@ -300,6 +351,8 @@ Use `--restart` only when a person, or the host acting on a person's answer, has
 | `features.cycleDeadline` | Constant `true` | `true` when a cycle that hits its deadline parks with a handoff rather than being killed (#1238). |
 | `features.handoffChannel` | Constant `true` | `true` when the build honours `PI_ENSEMBLE_HANDOFF_CHANNEL` and carries the handoff in the result (#1327). |
 | `features.restartClearsAttention` | Constant `true` | `true` when `--restart` overrides the attention gate and clears `needs-human-attention` (#1327). See [`--restart` for hosts](#--restart-for-hosts). |
+| `features.failureReason` | Constant `true` | `true` when the result carries `issues[].failure`, the reason behind its `cap` (#1367). |
+| `features.usageByRole` | Constant `true` | `true` when the result's `usage` carries `byRole`, failed dispatches included (#1368). |
 | `resources` | `resourceReport()` (`resource-budget.ts`) | The host budget and the limits a cycle started now would run with, read when the answer is built. See [Resource report](#resource-report). |
 
 ### How a caller uses this
