@@ -109,8 +109,8 @@ merges("eval 'true'; gh pr merge 17", 17);
 merges("\\gh pr merge 17", 17);
 merges('g"h" pr merge 17', 17);
 merges('gh p"r" merge 17', 17);
-merges('echo "$(gh pr merge 17)"', 17);
-merges('echo "`gh pr merge 17`"', 17);
+kind('echo "$(gh pr merge 17)"', "nested");
+kind('echo "`gh pr merge 17`"', "nested");
 merges("gh api -X PUT repos/o/r/pulls/17/merge; echo", 17);
 merges("gh api -X PUT repos/o/r/pulls/17/merge|cat", 17);
 // The raw tokens read PR 1, bash runs PR 17: the readings disagree.
@@ -209,6 +209,16 @@ for (const cmd of ["case x in 1) gh pr view 17;; esac", "gh pr view 17\ngh pr ch
   const r = await hookDecision(cmd, []);
   assert(!r.block && r.calls.length === 0, `hook allows benign: ${JSON.stringify(cmd)}`);
 }
+for (const [cmd, reason] of [
+  ['gh pr merge 17 "$(gh pr merge 5)"', /runs inside a command substitution/],
+  ["echo $(glab mr merge 3)", /runs inside a command substitution/],
+  ["gh -R a/b pr merge 17 --repo c/d", /more than one repo/],
+  ["glab mr merge 3 -R a/b --repo c/d", /more than one repo/],
+] as const) {
+  const r = await hookDecision(cmd, GOOD_ENTRIES);
+  assert(r.block && reason.test(r.reason ?? ""), `hook refuses with a named reason: ${JSON.stringify(cmd)} — ${r.reason ?? "allowed"}`);
+  assert(r.calls.length === 0, `hook refuses before any forge call: ${JSON.stringify(cmd)}`);
+}
 teardownLedger();
 
 // ------------------------------------------------------------ 7. detectForge git timeout
@@ -237,5 +247,27 @@ teardownLedger();
   assert(!r.ok && /could not determine the forge/.test(r.ok ? "" : r.reason), "stalled git → the merge target read refuses");
 }
 
+// ------------------------------------------------------------ 8. nested merges + repeated repo selectors (#1317)
+// Every merge head is judged at every depth; a head inside a substitution or
+// process substitution is refused as nested, and two repo selectors are
+// refused (gh/glab take the last one, the guard reads the first).
+kind('gh pr merge 17 "$(gh pr merge 5)"', "nested");
+kind("gh pr merge 17 `gh pr merge 5`", "nested");
+kind('gh pr view "$(gh pr merge 5)"', "nested");
+kind("echo $(glab mr merge 3)", "nested");
+kind('echo "$(gh pr merge 5)"', "nested");
+kind("cat <(gh pr merge 5)", "nested");
+kind("gh pr view 1 >(gh pr merge 5)", "nested");
+kind("gh -R a/b pr merge 17 --repo c/d", "repos");
+kind("gh pr merge 17 -R=a/b -R c/d", "repos");
+kind("glab mr merge 3 -R a/b --repo c/d", "repos");
+kind("glab mr merge 3 --repo=a/b -R c/d", "repos");
+kind('bash -c "gh pr merge 17 && gh pr merge 5"', "multiple");
+benign("gh pr view 17 --json title");
+benign('echo "$(date)"');
+merges('gh pr merge 17 --subject "$(date)"', 17);
+merges("(gh pr merge 17)", 17);
+merges("gh -R a/b pr merge 17", 17, "a/b");
+merges("glab mr merge 3 -R a/b", 3, "a/b");
 console.log(`\nexit ${exit}`);
 process.exit(exit);

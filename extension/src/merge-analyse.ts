@@ -17,6 +17,7 @@
 
 import { mergesPr } from "./bash-merges-pr.ts";
 import { canonicalCommand } from "./merge-canonical.ts";
+import { scanMergeHeads } from "./merge-heads.ts";
 import {
   extractMergeNumber,
   mergeVerbArgs,
@@ -30,6 +31,8 @@ export type MergeAnalysis =
   | { kind: "unsafe" }
   | { kind: "ambiguous" }
   | { kind: "multiple" }
+  | { kind: "nested" }
+  | { kind: "repos" }
   | { kind: "merge"; span: string; prNumber: number | undefined; repo: string | undefined };
 
 /**
@@ -52,7 +55,9 @@ export function analyseMergeCommand(command: string): MergeAnalysis {
   if (canonical === undefined || canonical === command) return raw;
   const canon = analyseText(canonical);
   if (raw.kind === "unsafe" || canon.kind === "unsafe") return { kind: "unsafe" };
+  if (raw.kind === "nested" || canon.kind === "nested") return { kind: "nested" };
   if (raw.kind === "multiple" || canon.kind === "multiple") return { kind: "multiple" };
+  if (raw.kind === "repos" || canon.kind === "repos") return { kind: "repos" };
   if (raw.kind !== "merge") return canon;
   if (canon.kind !== "merge") return raw;
   if (raw.prNumber !== canon.prNumber || raw.repo !== canon.repo) return { kind: "ambiguous" };
@@ -63,11 +68,18 @@ export function analyseMergeCommand(command: string): MergeAnalysis {
 function analyseText(command: string): MergeAnalysis {
   const span = mergesPr(command);
   if (!span) return { kind: "none" };
-  // #962: the number and repo come from the FIRST merge, so a second merge
-  // in the same command (`gh pr merge 17 && gh pr merge 5`) would run
-  // unchecked. One merge per command; more is refused.
+  // #962 / #1317: the number and repo come from the FIRST merge read, so
+  // every merge head must be found and judged — at every depth. A second
+  // merge (`gh pr merge 17 && gh pr merge 5`, `bash -c "… && …"`) or one
+  // hidden in a substitution (`gh pr merge 17 "$(gh pr merge 5)"`) would
+  // otherwise run unchecked. merge-heads.ts walks all of them.
+  const scan = scanMergeHeads(command);
+  if (scan.deep || scan.nested) return { kind: "nested" };
+  if (scan.heads > 1) return { kind: "multiple" };
+  // #1317: gh and glab take the LAST repo selector; the guard reads the
+  // first. A merge naming two repos is refused, never checked against one.
+  if (scan.repoSelectors > 1) return { kind: "repos" };
   const merging = shellSegments(command).filter((seg) => mergesPr(seg) !== undefined);
-  if (merging.length > 1) return { kind: "multiple" };
   // The verb door (`gh pr merge …` / `glab mr merge …`) carries the number
   // in the arguments AFTER the matched verb; the REST doors
   // (`gh api …/pulls/N/merge`) carry it inside the matched span.

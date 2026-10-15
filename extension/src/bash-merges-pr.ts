@@ -192,7 +192,7 @@ function restDoors(texts: string[]): string | undefined {
  * body fields stays a read), `glab api` is method-aware (only an explicit
  * PUT/POST or a body field is the write).
  */
-function restDoorTokens(text: string): string | undefined {
+export function restDoorTokens(text: string): string | undefined {
   const tokens = rawTokens(text);
   if (tokens.terminated === false) return undefined;
   const list = tokens.list;

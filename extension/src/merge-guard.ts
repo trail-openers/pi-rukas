@@ -183,6 +183,20 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
         "merge refused: the command runs more than one merge — the guard verifies one PR per command; run each merge as its own command, or set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override",
       );
     }
+    // #1317: a merge inside a substitution, subshell, backtick or process
+    // substitution (or nested deeper than the guard walks) — the guard cannot
+    // see the whole merge target, so it checks none of it.
+    if (analysis.kind === "nested") {
+      return block(
+        "merge refused: a merge runs inside a command substitution, subshell, backtick or process substitution (or is nested deeper than the guard reads) — the guard verifies one plainly written PR per command; run the merge as its own command, or set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override",
+      );
+    }
+    // #1317: gh and glab take the last -R/--repo; the guard reads the first.
+    if (analysis.kind === "repos") {
+      return block(
+        "merge refused: the command names more than one repo (-R / --repo / --project) — gh and glab use the last one, the guard would check the first; pass a single repo selector, or set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override",
+      );
+    }
     const merging = analysis.span;
     const repoValue = analysis.repo;
     let prNumber = analysis.prNumber;
