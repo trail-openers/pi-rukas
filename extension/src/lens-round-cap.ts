@@ -54,8 +54,8 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { execp } from "./exec.ts";
 import { resolveBudgetKey } from "./lens-budget-key.ts";
-import { execp } from "./lens-exec.ts";
 import type { LensLedgerOutcome } from "./lens-ledger.ts";
 import type { LensReviewSummary } from "./lens-review-format.ts";
 import { acquireLedgerLock } from "./review-ledger-lock.ts";

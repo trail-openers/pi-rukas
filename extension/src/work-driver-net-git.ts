@@ -16,7 +16,7 @@
  *     bound is enforced by a race, not just the exec `timeout`, because the
  *     exec callback waits for stdio to close and an ssh grandchild can hold
  *     the pipe open after git is killed. The call also passes `killGroup`, so
- *     an executor that honours it (lens-exec) SIGKILLs the whole process group
+ *     an executor that honours it (exec.ts) SIGKILLs the whole process group
  *     and no ssh grandchild outlives the bound. A timeout rejects with
  *     `NetGitTimeoutError`, whose message begins "network git timed out".
  *
@@ -40,7 +40,7 @@ export type NetExec = (
     maxBuffer?: number;
     argv?: string[];
     env?: NodeJS.ProcessEnv;
-    /** Run in its own process group and kill the group on timeout (lens-exec). */
+    /** Run in its own process group and kill the group on timeout (exec.ts). */
     killGroup?: boolean;
   },
 ) => Promise<{ stdout: string; stderr?: string }>;

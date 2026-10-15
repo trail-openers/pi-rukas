@@ -15,7 +15,7 @@
  * 3. the whole process group is killed on timeout: the script backgrounds a
  *    `sleep` grandchild that inherits the stdout pipe (the ssh-holds-the-pipe
  *    shape). Node's exec would never call back, and the grandchild would
- *    outlive the call. lens-exec's killGroup executor must SIGKILL it.
+ *    outlive the call. exec.ts's killGroup executor must SIGKILL it.
  */
 
 import { exec } from "node:child_process";
@@ -23,7 +23,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { execp as groupExecp } from "../src/lens-exec.ts";
+import { execp as groupExecp } from "../src/exec.ts";
 import { isNetGitTimeout, runNetGit } from "../src/work-driver-net-git.ts";
 
 const execp = promisify(exec);

@@ -11,7 +11,7 @@
  * work-driver-handoff.ts so no consumer's import path changes.
  */
 
-import { execp } from "./lens-exec.ts";
+import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 import type { WorkState } from "./workflow-state.ts";

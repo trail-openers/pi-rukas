@@ -11,7 +11,7 @@
  * seam as `integrate()`, `runConsolidatedVerify`, handoff-consolidate, and
  * the merged teardown).
  */
-import { execp } from "./lens-exec.ts";
+import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import { dispatchCommitPrFallback } from "./work-driver-commit-fallback.ts";
 import { conflictArtifactFromPlumb } from "./work-driver-commit-helpers.ts";

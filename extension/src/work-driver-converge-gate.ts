@@ -28,7 +28,7 @@
 
 import path from "node:path";
 import { recordCommentEvidence } from "./comment-evidence.ts";
-import { execp } from "./lens-exec.ts";
+import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import {

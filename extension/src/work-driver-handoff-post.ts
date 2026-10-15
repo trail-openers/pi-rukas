@@ -19,8 +19,8 @@
  */
 
 import fs from "node:fs/promises";
+import { execp } from "./exec.ts";
 import type { Forge } from "./forge.ts";
-import { execp } from "./lens-exec.ts";
 import { trace } from "./trace.ts";
 import { readError } from "./work-driver-handoff-snapshot.ts";
 import { parseHandoffCommentUrl } from "./work-driver-handoff.ts";

@@ -31,13 +31,12 @@ import type { ExecFn } from "./worktree.ts";
  * an injected `ExecFn` instead; this one is the production default.
  */
 export function makeExecFn(): ExecFn {
-  const shell = execp;
   const file = promisify(execFile);
   return (cmd, opts) => {
     const common = { cwd: opts?.cwd, timeout: opts?.timeout, maxBuffer: opts?.maxBuffer };
     // #1134 — the argv form runs the executable directly, with no shell re-parse.
     if (opts?.argv) return file(cmd, opts.argv, { ...common, encoding: "utf8" });
-    return shell(cmd, common);
+    return execp(cmd, common);
   };
 }
 

@@ -44,8 +44,11 @@ const SRC = path.join(import.meta.dir, "..", "src");
 /** Files allowed one bare `promisify(exec)`: the shared executor, and the shell-only seam. */
 const BARE_EXEC_OWNERS = new Set(["exec.ts", "work-driver-merged-mechanized.ts"]);
 
-/** A bare `promisify(exec)` (or its `execCb` alias) in code — comments and prose excluded. */
-const BARE_EXEC = /\bpromisify\(\s*exec(?:Cb)?\s*\)/;
+/**
+ * A bare `promisify(exec)` (or its `execCb` alias, or a namespaced
+ * `promisify(child_process.exec)` / `promisify(cp.exec)`) in code — comments and prose excluded.
+ */
+const BARE_EXEC = /\bpromisify\(\s*(?:[A-Za-z_$][\w$]*\.)?exec(?:Cb)?\s*\)/;
 
 function bareExecLines(source: string): number {
   return source
@@ -109,6 +112,10 @@ async function main() {
   assert(
     bareExecLines("const execp = promisify(exec);\n// promisify(exec) in prose\n* promisify(exec)\nconst f = promisify(execFile);") === 1,
     "the check counts a code use of promisify(exec) and nothing else (comments, prose and execFile are not counted)",
+  );
+  assert(
+    bareExecLines("const e = promisify(child_process.exec);") === 1,
+    "the check also counts a namespaced promisify(child_process.exec)",
   );
 
   // ---------------- 3. the incident: consolidated verify on the default executor

@@ -31,7 +31,7 @@
  * (consistent with PI_ENSEMBLE_CONVERGE / PI_ENSEMBLE_VERIFY).
  */
 
-import { execp } from "./lens-exec.ts";
+import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { detectMainline } from "./work-driver-git.ts";

@@ -35,7 +35,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { adversarialGateApproved } from "./adversarial-findings.ts";
-import { execp } from "./lens-exec.ts";
+import { execp } from "./exec.ts";
 import { renderLensFindings } from "./lens-findings-render.ts";
 import { trace } from "./trace.ts";
 import {

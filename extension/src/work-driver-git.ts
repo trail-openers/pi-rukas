@@ -10,7 +10,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { execp } from "./lens-exec.ts";
+import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import { runNetGit } from "./work-driver-net-git.ts";
 import { restoreRefProblem, restoreRootToRef } from "./work-driver-restore.ts";
@@ -42,6 +42,10 @@ export type VerifyExecFn = (
     argv?: string[];
   },
 ) => Promise<{ stdout: string; stderr?: string }>;
+
+// Compile-time seam check: the shared executor must satisfy VerifyExecFn, so an
+// argv-aware executor can never be swapped for one that silently drops `argv`.
+void (execp satisfies VerifyExecFn);
 
 /**
  * Resolve the mainline branch name for the current repo (e.g. "main",

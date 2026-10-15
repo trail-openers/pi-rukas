@@ -11,8 +11,8 @@
  * bare `git`, which prints usage and exits 1 (#1279). Every seam that may
  * receive an argv form should default to `execp`. The only bare
  * `promisify(exec)` left is the documented shell-only seam in
- * work-driver-merged-mechanized.ts, and test-exec-argv-contract.ts fails on
- * any other.
+ * work-driver-merged-mechanized.ts (typed `ShellExecFn`), and
+ * test-exec-argv-contract.ts fails on any other.
  *
  * #1095 — `killGroup` runs the command in its own process group and, on
  * `timeout` or stdout overflow, SIGKILLs the whole group. Node's exec timeout
@@ -20,6 +20,7 @@
  * keeps the pipe open, so the callback never fires and the orphan lives on.
  *
  * No driver imports: this module is a leaf, so any module may depend on it.
+ * The driver's `VerifyExecFn` compatibility is checked in work-driver-git.ts.
  */
 
 import { exec, execFile, spawn } from "node:child_process";
@@ -37,11 +38,20 @@ export interface ExecOpts {
   /** Shell-string form only; the argv form has no shell and ignores it. */
   shell?: string;
   env?: NodeJS.ProcessEnv;
-  /** #1095 — kill the whole process group on timeout or overflow. */
+  /**
+   * #1095 — kill the whole process group on timeout or overflow. Set only by
+   * the driver's network git calls (work-driver-net-git.ts).
+   */
   killGroup?: boolean;
 }
 
 export type ExecResult = { stdout: string; stderr: string };
+
+/** The shell-only executor shape: no `argv`, so an argv-form call on it is a compile error. */
+export type ShellExecFn = (
+  cmd: string,
+  opts?: { cwd?: string; timeout?: number; maxBuffer?: number },
+) => Promise<{ stdout: string; stderr?: string }>;
 
 /** #1095 — spawn detached, kill the process group on timeout or overflow. */
 function execGroup(cmd: string, argv: string[] | undefined, opts: ExecOpts): Promise<ExecResult> {
@@ -58,6 +68,16 @@ function execGroup(cmd: string, argv: string[] | undefined, opts: ExecOpts): Pro
     let stderr = "";
     let done = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // A group kill carries the exec error shape: execFile's timeout error has
+    // `killed` and `signal`, and every rejection carries the captured output.
+    const groupKillError = (message: string) =>
+      Object.assign(new Error(message), {
+        killed: true,
+        signal: "SIGKILL",
+        code: null,
+        stdout,
+        stderr,
+      });
     const killGroup = () => {
       if (child.pid === undefined) return;
       try {
@@ -75,7 +95,7 @@ function execGroup(cmd: string, argv: string[] | undefined, opts: ExecOpts): Pro
     if (opts.timeout !== undefined) {
       timer = setTimeout(() => {
         killGroup();
-        finish(() => reject(new Error(`command timed out after ${opts.timeout}ms: ${cmd}`)));
+        finish(() => reject(groupKillError(`command timed out after ${opts.timeout}ms: ${cmd}`)));
       }, opts.timeout);
     }
     child.stdout.setEncoding("utf8");
@@ -84,7 +104,7 @@ function execGroup(cmd: string, argv: string[] | undefined, opts: ExecOpts): Pro
       stdout += d;
       if (stdout.length > maxBuffer) {
         killGroup();
-        finish(() => reject(new Error(`stdout maxBuffer exceeded: ${cmd}`)));
+        finish(() => reject(groupKillError(`stdout maxBuffer exceeded: ${cmd}`)));
       }
     });
     child.stderr.on("data", (d: string) => {
@@ -92,13 +112,15 @@ function execGroup(cmd: string, argv: string[] | undefined, opts: ExecOpts): Pro
       if (stderr.length < maxBuffer) stderr += d;
     });
     child.on("error", (err) => finish(() => reject(err)));
-    child.on("close", (code) =>
+    child.on("close", (code, signal) =>
       finish(() =>
         code === 0
           ? resolve({ stdout, stderr })
           : reject(
               Object.assign(new Error(`Command failed: ${cmd}\n${stderr}`), {
                 code,
+                signal: signal ?? null,
+                killed: false,
                 stdout,
                 stderr,
               }),
@@ -111,9 +133,9 @@ function execGroup(cmd: string, argv: string[] | undefined, opts: ExecOpts): Pro
 /** The shared executor. The argv form never reaches a shell, so `opts.shell` is not forwarded to it. */
 export function execp(cmd: string, opts: ExecOpts = {}): Promise<ExecResult> {
   if (opts.killGroup) return execGroup(cmd, opts.argv, opts);
+  const { cwd, timeout, maxBuffer, env, shell } = opts;
   if (opts.argv) {
-    const { cwd, timeout, maxBuffer, env } = opts;
     return execFileP(cmd, opts.argv, { cwd, timeout, maxBuffer, env, encoding: "utf8" });
   }
-  return execShell(cmd, { ...opts, encoding: "utf8" });
+  return execShell(cmd, { cwd, timeout, maxBuffer, env, shell, encoding: "utf8" });
 }

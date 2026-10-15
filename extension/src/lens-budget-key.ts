@@ -17,7 +17,7 @@
  * refuses (no unbudgeted path remains). Never throws.
  */
 
-import { execp } from "./lens-exec.ts";
+import { execp } from "./exec.ts";
 import { resolveLensReviewBranch } from "./lens-review-branch-resolve.ts";
 import { resolveHeadSha } from "./review-head-sha.ts";
 import { trace } from "./trace.ts";

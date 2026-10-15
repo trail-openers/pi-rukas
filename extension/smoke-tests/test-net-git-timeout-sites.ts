@@ -16,7 +16,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { execp as groupExecp } from "../src/lens-exec.ts";
+import { execp as groupExecp } from "../src/exec.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runBranchViaOpsDispatch } from "../src/work-driver-branch-ops.ts";
 import { reconcileHandoffConsolidateBranch } from "../src/work-driver-handoff-consolidate-branch.ts";

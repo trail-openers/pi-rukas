@@ -9,13 +9,11 @@
  */
 
 import { createHash } from "node:crypto";
+import { execp } from "./exec.ts";
 import { countPrCommits, prRange } from "./git-range.ts";
-import { execp as gitExec } from "./lens-exec.ts";
 import { trace } from "./trace.ts";
 import { resolveMainline } from "./work-driver-git.ts";
 import type { WorkState, WorkStep } from "./workflow-state.ts";
-
-const execp = gitExec;
 
 /** Validate a git SHA before shell interpolation. */
 const VALID_BASEDIFF_SHA_RE = /^[0-9a-f]{40}$/;
@@ -209,7 +207,7 @@ export async function readIntegratedDiff(
   // makes, so both read one base. Unresolved means there is no base to diff
   // against: unreadable, not a guessed "main". A throw or unexpected shape is
   // the same unresolved outcome, never an escaping exception.
-  const mainline = await resolveMainline(repoRoot, gitExec);
+  const mainline = await resolveMainline(repoRoot, execp);
   if (!("branch" in mainline)) return { ok: false, reason: mainline.reason };
   const base = mainline.branch;
   try {
@@ -217,7 +215,7 @@ export async function readIntegratedDiff(
     // after the branch was cut contributes nothing. Two-dot would diff the
     // branch tip against the base tip and report the base's new commits as
     // reversed (phantom CRITICAL findings, #1134).
-    const { stdout } = await gitExec("git", {
+    const { stdout } = await execp("git", {
       argv: ["diff", "--end-of-options", prRange(`origin/${base}`, `origin/${branchName}`)],
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
@@ -234,7 +232,7 @@ export async function readIntegratedDiff(
   // exists to separate.
   try {
     // The PR's own commits, whatever the base has done since (#1134).
-    const ahead = await countPrCommits(gitExec, repoRoot, `origin/${base}`, `origin/${branchName}`);
+    const ahead = await countPrCommits(execp, repoRoot, `origin/${base}`, `origin/${branchName}`);
     if (Number.isNaN(ahead)) {
       return {
         ok: false,

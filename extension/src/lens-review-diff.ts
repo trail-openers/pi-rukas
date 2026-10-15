@@ -23,7 +23,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { neutraliseEvidence } from "./comment-evidence.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
-import { execp } from "./lens-exec.ts";
+import { execp } from "./exec.ts";
 import { bySeverityCounts, computeVerdict, dedupeFindings } from "./lens-review-format.ts";
 import type { LensRunResult, Severity, Verdict } from "./lens-review.ts";
 import type { Finding } from "./lens-review.ts";
