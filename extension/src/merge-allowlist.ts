@@ -33,7 +33,7 @@
 /** What the guard does with a bash command. */
 export type MergeCommand =
   | { kind: "none" }
-  | { kind: "refused" }
+  | { kind: "refused"; reason?: "glab-auto-merge" }
   | { kind: "merge"; forge: "github" | "gitlab"; prNumber?: number; repo?: string };
 
 /** A repo value safe to pass to gh/glab: `owner/repo` (GitLab: `group/sub/repo`). */
@@ -142,11 +142,14 @@ interface ForgeGrammar {
   valued: ReadonlySet<string>;
   /** Whether `--repo=VALUE` is accepted. */
   repoEq: boolean;
+  /** A flag every merge must carry (the deferred-merge opt-out, glab). */
+  requiredFlag?: string;
 }
 
 // Deferred merges (gh `--auto`, glab `--when-pipeline-succeeds`/`--auto-merge`)
 // are refused: they run later, against whatever head the PR has by then, so
-// the guard's one-time ledger and head check would not cover them.
+// the guard's one-time ledger and head check would not cover them. Recent glab
+// queues one by default, so a glab merge must carry `--auto-merge=false`.
 const GH: ForgeGrammar = {
   forge: "github",
   tool: "gh",
@@ -196,6 +199,7 @@ const GLAB: ForgeGrammar = {
   ]),
   valued: new Set(["--message", "-m", "--squash-message", "--sha"]),
   repoEq: false,
+  requiredFlag: "--auto-merge=false",
 };
 
 /** Read a repo selector at `words[i]`: the words it spans and its value, or undefined. */
@@ -229,6 +233,7 @@ function parse(g: ForgeGrammar, words: string[]): MergeCommand {
   if (words[i] !== g.noun || words[i + 1] !== "merge") return refused;
   i += 2;
   let prNumber: number | undefined;
+  let optedOut = false;
   const n = words[i];
   if (n !== undefined && /^[1-9][0-9]*$/.test(n)) {
     prNumber = Number(n);
@@ -242,6 +247,7 @@ function parse(g: ForgeGrammar, words: string[]): MergeCommand {
       if (!takeRepo(sel)) return refused;
       i += sel.span;
     } else if (g.bool.has(w)) {
+      if (w === g.requiredFlag) optedOut = true;
       i += 1;
     } else if (g.valued.has(w)) {
       if (i + 1 >= words.length) return refused;
@@ -252,6 +258,8 @@ function parse(g: ForgeGrammar, words: string[]): MergeCommand {
       return refused;
     }
   }
+  if (g.requiredFlag !== undefined && !optedOut)
+    return { kind: "refused", reason: "glab-auto-merge" };
   return { kind: "merge", forge: g.forge, prNumber, repo };
 }
 
@@ -263,6 +271,10 @@ export function readMergeCommand(command: string): MergeCommand {
   const g = words[0] === GH.tool ? GH : words[0] === GLAB.tool ? GLAB : undefined;
   return g ? parse(g, words) : { kind: "refused" };
 }
+
+/** The refusal for a glab merge that does not opt out of deferred auto-merge. */
+export const GLAB_AUTO_MERGE_REFUSAL =
+  "merge refused: `glab mr merge` without `--auto-merge=false` queues a deferred auto-merge when the pipeline is still running, so it can merge commits pushed after the review. Use the accepted form, run on its own: `glab mr merge <N> --auto-merge=false` (or `glab -R GROUP/REPO mr merge <N> --auto-merge=false`). Operator override: PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1";
 
 /** The guard's refusal for a triggered command outside the grammar. */
 export const MERGE_FORM_REFUSAL =

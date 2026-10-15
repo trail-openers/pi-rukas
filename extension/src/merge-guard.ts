@@ -87,7 +87,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execp } from "./exec.ts";
 import { FORGE_EXEC_TIMEOUT_MS } from "./forge-detect.ts";
-import { MERGE_FORM_REFUSAL, type MergeCommand, readMergeCommand } from "./merge-allowlist.ts";
+import {
+  GLAB_AUTO_MERGE_REFUSAL,
+  MERGE_FORM_REFUSAL,
+  type MergeCommand,
+  readMergeCommand,
+} from "./merge-allowlist.ts";
 import {
   lensNotEvaluatedRefusal,
   mergeIdentity,
@@ -150,7 +155,11 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     if (analysis.kind === "none") return;
     // #962: a command that names a forge and a merge but is not the one plain
     // merge form the guard checks (see merge-allowlist.ts).
-    if (analysis.kind === "refused") return block(MERGE_FORM_REFUSAL);
+    if (analysis.kind === "refused") {
+      return block(
+        analysis.reason === "glab-auto-merge" ? GLAB_AUTO_MERGE_REFUSAL : MERGE_FORM_REFUSAL,
+      );
+    }
     const merging = analysis.forge === "gitlab" ? "glab mr merge" : "gh pr merge";
     const repoValue = analysis.repo;
     let prNumber = analysis.prNumber;

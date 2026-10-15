@@ -53,16 +53,17 @@ const ACCEPTED: Array<[string, "github" | "gitlab", number | undefined, string |
   ['g"h" pr merge 17', "github", 17, undefined],
   ['gh pr me""rge 1"7"', "github", 17, undefined],
   ["  gh\tpr  merge   17  ", "github", 17, undefined],
-  ["glab mr merge 12", "gitlab", 12, undefined],
-  ["glab mr merge", "gitlab", undefined, undefined],
+  // glab merges only with --auto-merge=false (a bare merge is refused below).
+  ["glab mr merge 12 --auto-merge=false", "gitlab", 12, undefined],
+  ["glab mr merge --auto-merge=false", "gitlab", undefined, undefined],
   ["glab mr merge 12 --squash -d --rebase -y --auto-merge=false", "gitlab", 12, undefined],
-  ["glab mr merge 12 -s --remove-source-branch -r --yes", "gitlab", 12, undefined],
-  ['glab mr merge 12 -m "msg here" --squash-message s --sha abc', "gitlab", 12, undefined],
-  ["glab mr merge -m 17", "gitlab", undefined, undefined],
-  ["glab mr merge 12 --message=x --sha=abc", "gitlab", 12, undefined],
-  ["glab -R group/sub/proj mr merge 12", "gitlab", 12, "group/sub/proj"],
-  ["glab --repo g/p mr merge 3", "gitlab", 3, "g/p"],
-  ["glab mr merge 3 -R a/b", "gitlab", 3, "a/b"],
+  ["glab mr merge 12 -s --remove-source-branch -r --yes --auto-merge=false", "gitlab", 12, undefined],
+  ['glab mr merge 12 -m "msg here" --squash-message s --sha abc --auto-merge=false', "gitlab", 12, undefined],
+  ["glab mr merge -m 17 --auto-merge=false", "gitlab", undefined, undefined],
+  ["glab mr merge 12 --message=x --sha=abc --auto-merge=false", "gitlab", 12, undefined],
+  ["glab -R group/sub/proj mr merge 12 --auto-merge=false", "gitlab", 12, "group/sub/proj"],
+  ["glab --repo g/p mr merge 3 --auto-merge=false", "gitlab", 3, "g/p"],
+  ["glab mr merge 3 -R a/b --auto-merge=false", "gitlab", 3, "a/b"],
 ];
 for (const [cmd, forge, n, repo] of ACCEPTED) {
   const m = readMergeCommand(cmd);
@@ -222,6 +223,15 @@ const REFUSED: string[] = [
   "glab mr accept 17 --squash",
   "glab -R g/p mr accept",
   "gh mr merge 12",
+  // glab without the deferred-merge opt-out (#962 PM decision): refused.
+  "glab mr merge 12",
+  "glab mr merge",
+  "glab -R g/p mr merge 3",
+  "glab mr merge 12 --squash",
+  "glab mr merge 12 --auto-merge false",
+  "glab mr merge 12 -m --auto-merge=false",
+  "glab mr merge 12 --sha --auto-merge=false",
+  "glab mr merge 12 --message=--auto-merge=false",
   // REST, GraphQL, other clients — refused whatever the method.
   "gh api repos/o/r/pulls/12/merge",
   "gh api -X PUT repos/o/r/pulls/17/merge",
@@ -250,6 +260,13 @@ for (const cmd of REFUSED) {
   const m = readMergeCommand(cmd);
   assert(m.kind === "refused", `refused: ${JSON.stringify(cmd)} (${show(m)})`);
 }
+// A glab merge missing the opt-out gets its own refusal, naming the accepted form.
+for (const cmd of ["glab mr merge 12", "glab -R g/p mr merge 3 --squash", "glab mr merge 12 -m --auto-merge=false"]) {
+  const m = readMergeCommand(cmd);
+  assert(m.kind === "refused" && m.reason === "glab-auto-merge", `glab opt-out refusal: ${JSON.stringify(cmd)} (${show(m)})`);
+}
+assert(readMergeCommand("gh pr merge 17").kind === "merge", "gh merge needs no opt-out");
+assert(readMergeCommand("gh api repos/o/r/pulls/1/merge").kind === "refused" && (readMergeCommand("gh api repos/o/r/pulls/1/merge") as { reason?: string }).reason === undefined, "other refusals keep the generic form");
 
 // ------------------------------------------------------------ not merges
 const NOT_MERGES: string[] = [
@@ -315,8 +332,12 @@ for (const cmd of [
 {
   // The PR read follows the repo's forge (github here); a glab merge would act
   // on a GitLab MR the guard never read.
-  const r = await hookDecision("glab mr merge 12", GOOD_ENTRIES);
+  const r = await hookDecision("glab mr merge 12 --auto-merge=false", GOOD_ENTRIES);
   assert(r.block && /merges on gitlab but this repo's forge is github/.test(r.reason ?? ""), "hook refuses a merge aimed at the other forge");
+}
+{
+  const r = await hookDecision("glab mr merge 12", GOOD_ENTRIES);
+  assert(r.block && /without `--auto-merge=false`/.test(r.reason ?? "") && r.calls.length === 0, "hook refuses a bare glab merge with the accepted form named");
 }
 {
   // Fail closed: a reader that throws (here on a non-string command) refuses.
