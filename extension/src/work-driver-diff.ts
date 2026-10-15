@@ -204,6 +204,7 @@ export async function readIntegratedDiff(
   // against: unreadable, not a guessed "main". A throw or unexpected shape is
   // the same unresolved outcome, never an escaping exception.
   const mainline = await resolveMainline(repoRoot, execp);
+  // The mainline is unknowable, so the diff below would be meaningless.
   if (!mainline.ok) return { ok: false, reason: mainline.reason };
   const base = mainline.branch;
   let diffOut: string;
@@ -227,6 +228,7 @@ export async function readIntegratedDiff(
   // Empty output. Confirm it means "no commits ahead" rather than "the read
   // silently produced nothing" — those are the two cases this whole type
   // exists to separate.
+  // The PR's own commits, whatever the base has done since (#1134).
   const ahead = await aheadOfBase(execp, repoRoot, `origin/${base}`, `origin/${branchName}`);
   switch (ahead.kind) {
     case "empty":
