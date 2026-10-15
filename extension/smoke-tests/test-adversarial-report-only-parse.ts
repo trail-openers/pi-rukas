@@ -230,6 +230,7 @@ try {
 
   // 7. #1154 coupling: the terminal rule applies only WITH reportOnly. A
   // non-reportOnly loop (the tool's fix-capable path) whose round 1 is
+  // (#1161: it carries no verdict policy, so reportVerdict is not passed here)
   // ISSUES_FOUND must NOT record that round as passed: it routes to a fix round
   // and only a later round can approve. Here every round repeats ISSUES_FOUND,
   // so the loop runs all 3 rounds and rejects.
@@ -240,19 +241,18 @@ try {
       context: "ctx",
       workCwd: repoDir,
       branch: "fix/report-only-parse-nonterminal",
-      reportVerdict: "terminal",
     },
     new AbortController().signal,
     "job-report-only-parse-nonterminal",
   );
   assert(
     nonReportOnly.adversarialRounds?.length === 3,
-    "non-reportOnly loop with reportVerdict terminal set: ISSUES_FOUND round 1 routes to a fix round (3 rounds run)",
+    "non-reportOnly loop: ISSUES_FOUND round 1 routes to a fix round (3 rounds run)",
   );
   assert(
     nonReportOnly.text.includes("PASSED WITH FINDINGS after round 3") &&
       !nonReportOnly.text.includes("after round 1"),
-    "non-reportOnly loop with reportVerdict terminal set: round 1 ISSUES_FOUND is not passed (only the final round passes it)",
+    "non-reportOnly loop: round 1 ISSUES_FOUND is not passed (only the final round passes it)",
   );
 } finally {
   try {

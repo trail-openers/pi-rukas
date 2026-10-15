@@ -19,8 +19,9 @@
  *   - `enum`        — one of `values` (case-insensitive where the reader folds case).
  *   - `default: null` — unset by default; the behaviour without it is the
  *                     documented fallback (docs/configuration.md).
- *   - a name containing `<ROLE>` or `<SEAM>` is a family: `<ROLE>` is a role
- *     name and `<SEAM>` a decision-seam id, upper-cased with `-` → `_`.
+ *   - a name containing `<ROLE>`, `<SEAM>` or `<LENS>` is a family: `<ROLE>`
+ *     is a role name, `<SEAM>` a decision-seam id and `<LENS>` a code-review
+ *     lens name (`SECURITY`, `ERROR_HANDLING`), upper-cased with `-` → `_`.
  *
  * `scope` says who sets it: `cycle` (changes what a /work cycle does),
  * `sandbox` (set by the sandbox wrapper), `interactive` (the Pi UI only),
@@ -138,6 +139,8 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("INVARIANT_MEMORY", true),
   input("ISSUE_IMAGES", "boolean", true, "cycle", { manifestVersion: 1 }),
   flag("LENS_EVIDENCE", true),
+  // Unset or 0: no bound on concurrent lens children per model.
+  int("LENS_MODEL_CONCURRENCY", null),
   int("LENS_ROUND_CAP", 3),
   flag("LENS_ROUND_CAP_MERGE", true),
   flag("LENS_ROUND_CAP_OVERRIDE", false),
@@ -145,6 +148,7 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   int("MAX_WORKSTREAMS", 6),
   flag("MERGE_AUTHORITY", true),
   str("MODEL_<ROLE>", null),
+  str("MODEL_LENS_<LENS>", null),
   dir("MODELS_CONFIG", "~/.pi/agent/ensemble-models.json"),
   str("NOTIFY_CMD", null),
   int("PARALLEL_GROUPS", 3),
@@ -166,6 +170,7 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   dir("PROMPTS_DIR", null),
   flag("PROTECTED_PATHS", true),
   str("PROVIDER_<ROLE>", null),
+  str("PROVIDER_LENS_<LENS>", null),
   flag("QUEUE_HALT_ON_FAILURE", false),
   flag("QUIET_LIFECYCLE", false, "interactive"),
   flag("QUIET_STATUS", false, "interactive"),
