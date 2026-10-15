@@ -27,9 +27,22 @@ export type HeadLines =
   | { kind: "invalid" }
   | { kind: "error"; reason: string };
 
-/** A repo-relative path that git can show at a commit without option injection. */
+/** A head state the store can judge a row against: every `HeadLines` but a git failure. */
+export type HeadState = Exclude<HeadLines, { kind: "error" }>;
+
+/** True when the head state names a readable file (the only state a row can be judged on). */
+export function hasFile(h: HeadState): boolean {
+  return h.kind === "lines";
+}
+
+/**
+ * A repo-relative path that git can show at a commit without option injection.
+ * Empty, `.`, absolute, trailing-slash and `..` paths are refused: `git show`
+ * of such a path can yield a tree listing that would be read as file lines.
+ */
 function safeRepoPath(p: string): boolean {
-  if (!p || p.startsWith("-") || p.startsWith("/") || /[\0\n]/.test(p)) return false;
+  if (!p || p === "." || p.endsWith("/") || p.startsWith("-") || p.startsWith("/")) return false;
+  if (/[\0\n]/.test(p)) return false;
   return !p.split("/").includes("..");
 }
 
@@ -42,6 +55,12 @@ function safeRepoPath(p: string): boolean {
  * every finding a fake identity.
  */
 export async function readHeadLines(cwd: string, sha: string, file: string): Promise<HeadLines> {
+  if (!/^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(sha)) {
+    return {
+      kind: "error",
+      reason: `cannot read ${file}: "${sha.slice(0, 40)}" is not a commit SHA`,
+    };
+  }
   if (!safeRepoPath(file)) return { kind: "invalid" };
   try {
     await execFileP("git", ["-C", cwd, "cat-file", "-e", `${sha}^{commit}`]);
@@ -73,8 +92,16 @@ export async function readHeadLines(cwd: string, sha: string, file: string): Pro
     };
   }
   if (entry === "") return { kind: "missing" };
-  // Format: `<mode> SP <type> SP <object> TAB <path>`.
-  if (entry.split(/\s/)[1] !== "blob") return { kind: "invalid" };
+  // Format: `<mode> SP <type> SP <object> TAB <path>`. Anything else is not git
+  // output we understand, so it is an error, not a guess about the type.
+  const parsed = /^\d{6} (blob|tree|commit) [0-9a-f]+\t/.exec(entry);
+  if (!parsed) {
+    return {
+      kind: "error",
+      reason: `cannot read ${file} at ${sha.slice(0, 12)}: unrecognised ls-tree output`,
+    };
+  }
+  if (parsed[1] !== "blob") return { kind: "invalid" };
   try {
     const { stdout } = await execFileP("git", ["-C", cwd, "show", `${sha}:${file}`], {
       maxBuffer: 8 * 1024 * 1024,

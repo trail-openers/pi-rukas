@@ -42,6 +42,7 @@
  */
 
 import type { ResolveReason, StoredFinding } from "./review-findings-file.ts";
+import type { HeadState } from "./review-findings-head.ts";
 import { hashText, lineHashAt, snippetHashAt } from "./review-findings-match.ts";
 
 /** What the rule decided for one untouched open row. */
@@ -55,16 +56,6 @@ export type RowFate = { kind: "resolve"; reason: ResolveReason } | { kind: "carr
  *   - `incomplete`: a lens was blocked, so no verdict was reached.
  */
 export type ReviewKind = "full" | "delta" | "incomplete";
-
-/**
- * The head state a row's cited code is judged against. Tagged so each case is
- * handled by name: `missing` is absent from a readable commit, `invalid` cannot
- * name a file at head (unsafe, or a directory), `lines` is a readable blob.
- */
-export type HeadState =
-  | { kind: "lines"; lines: string[] }
-  | { kind: "missing" }
-  | { kind: "invalid" };
 
 const CARRY: RowFate = { kind: "carry" };
 
