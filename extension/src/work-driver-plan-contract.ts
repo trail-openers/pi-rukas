@@ -45,20 +45,50 @@ export function planContractEnabled(): boolean {
 }
 
 /**
- * Normalise a declared symbol to the key two workstreams are matched on:
- * backticks, a trailing call `()` and any trailing annotation are dropped,
- * and a qualified name (`errorStop.providerRepeats`, `Mod::name`,
- * `Type#field`) is matched on its last segment — one workstream says
- * "adds `providerRepeats` to errorStop", the other "reads
- * errorStop.providerRepeats", and they mean the same symbol. A false match
- * only merges two workstreams, which is the safe direction.
+ * Normalise a declared symbol to the key two workstreams are matched on.
+ * Planners write symbols the way they read in code, so the key tolerates
+ * that: backticks are dropped, leading declaration keywords are skipped
+ * (`export function foo` keys on `foo`), a type annotation and trailing
+ * punctuation go (`providerRepeats?: number` → `providerRepeats`), as do a
+ * call `()` and any trailing prose. A qualified name
+ * (`errorStop.providerRepeats`, `Mod::name`, `Type#field`) is matched on its
+ * last segment — one workstream says "adds `providerRepeats` to errorStop",
+ * the other "reads errorStop.providerRepeats", and they mean the same
+ * symbol. A false match only merges two workstreams, which is the safe
+ * direction.
  */
+const DECL_KEYWORDS = new Set([
+  "export",
+  "default",
+  "new",
+  "function",
+  "type",
+  "const",
+  "let",
+  "var",
+  "interface",
+  "field",
+  "class",
+  "enum",
+  "async",
+  "readonly",
+  "static",
+]);
 export function symbolKey(raw: string): string | undefined {
-  const head = raw.replace(/`/g, "").trim().split(/\s|\(/)[0];
-  const last = head
-    ?.split(/\.|::|#/)
+  const tokens = raw
+    .replace(/`/g, "")
+    .trim()
+    .split(/[\s(]+/)
+    .filter(Boolean);
+  const head = tokens.find((t) => !DECL_KEYWORDS.has(t.toLowerCase()));
+  if (!head) return undefined;
+  // A single `:` starts a type annotation; `::` is a path separator.
+  const name = head.replace(/(?<!:):(?!:).*$/, "").replace(/[?!:,;]+$/, "");
+  const last = name
+    .split(/\.|::|#/)
     .filter(Boolean)
-    .pop();
+    .pop()
+    ?.replace(/[?!]+$/, "");
   return last && /^[A-Za-z_$][\w$]*$/.test(last) ? last : undefined;
 }
 
@@ -158,18 +188,30 @@ const PORT_RES = [
     "i",
   ),
 ];
+// A negation within the two words before the port verb.
+const NEGATED = /(?:\b(?:not|never|without|avoid|no)|n't)\s+(?:[\w-]+\s+){0,2}$/i;
 
 /**
  * #1322 — the commit or PR an issue body names as the fix to port, or
  * undefined. Deliberately narrow: a reference counts only next to a port
  * verb ("port", "cherry-pick", "backport") or a "fixed / landed in" phrase,
  * and a same-repo `#N` only after a port verb — a "Related: #1005" line is
- * context, not a port.
+ * context, not a port. A negated verb and a sentence about a regression are
+ * never a port.
  */
 export function detectPortReference(body: string): string | undefined {
-  for (const re of PORT_RES) {
-    const m = body.match(re);
-    if (m?.[1]) return m[1].replace(/^commit\s+/i, "").trim();
+  for (const sentence of body.split(/(?<=[.!?])\s+|\n+/)) {
+    // A sentence about a regression names the commit that BROKE things, not
+    // the one to port ("fixed in abc1234, regressed by def5678").
+    if (/\bregress/i.test(sentence)) continue;
+    for (const re of PORT_RES) {
+      const m = re.exec(sentence);
+      if (!m?.[1] || m.index === undefined) continue;
+      // "do not cherry-pick #12", "don't port it", "never backported" — a
+      // negated verb is the issue saying NOT to port.
+      if (NEGATED.test(sentence.slice(0, m.index))) continue;
+      return m[1].replace(/^commit\s+/i, "").trim();
+    }
   }
   return undefined;
 }

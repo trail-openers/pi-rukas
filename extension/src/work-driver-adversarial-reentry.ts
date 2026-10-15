@@ -108,13 +108,7 @@ export function roundsRecords(result: DispatchResult): AdversarialRoundRecord[] 
  * other cause is a genuine failure that the retry cannot fix.
  */
 export function isTransientAdversarialOutcome(o: AdversarialOutcome): boolean {
-  if (!o.ok && o.infra) {
-    const cls = classifyFailureCause({
-      kind: "dispatch-failed-provider",
-      providerMessage: o.errorTail,
-    });
-    return cls.shouldRetry;
-  }
+  if (!o.ok && o.infra) return classifyAdversarialOutcome(o).shouldRetry;
   if (!o.ok && o.threw) {
     const cls = classifyFailureCause({ kind: "dispatch-failed", errorTail: o.errorTail });
     return cls.shouldRetry && cls.cause === "provider-severed";
@@ -130,7 +124,11 @@ export function isTransientAdversarialOutcome(o: AdversarialOutcome): boolean {
  */
 export function classifyAdversarialOutcome(o: AdversarialOutcome) {
   return o.infra
-    ? classifyFailureCause({ kind: "dispatch-failed-provider", providerMessage: o.errorTail })
+    ? classifyFailureCause({
+        kind: "dispatch-failed-provider",
+        providerMessage: o.errorTail,
+        providerRepeats: o.providerRepeats,
+      })
     : classifyFailureCause({ kind: "dispatch-failed", errorTail: o.errorTail });
 }
 

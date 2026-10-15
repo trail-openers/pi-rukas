@@ -102,10 +102,31 @@ const DISJOINT = [
 }
 
 // ── symbol keys ─────────────────────────────────────────────────────────
-assert(symbolKey("`errorStop.providerRepeats`") === "providerRepeats", "key: qualified → last segment");
+assert(
+  symbolKey("`errorStop.providerRepeats`") === "providerRepeats",
+  "key: qualified → last segment",
+);
 assert(symbolKey("isFinalProviderFault()") === "isFinalProviderFault", "key: call parens dropped");
 assert(symbolKey("Mod::thing (new)") === "thing", "key: :: and annotation handled");
 assert(symbolKey("(none)") === undefined, "key: prose is not a symbol");
+for (const [raw, want] of [
+  ["providerRepeats: number", "providerRepeats"],
+  ["errorStop.providerRepeats?: number", "providerRepeats"],
+  ["`providerRepeats`: number", "providerRepeats"],
+  ["foo?", "foo"],
+  ["foo!,", "foo"],
+  ["export function isFinalProviderFault", "isFinalProviderFault"],
+  ["export const LIMIT", "LIMIT"],
+  ["new type Cause", "Cause"],
+  ["interface Workstream", "Workstream"],
+  ["field providerRepeats", "providerRepeats"],
+  ["class Foo", "Foo"],
+  ["enum Kind", "Kind"],
+  ["let x1", "x1"],
+] as const) {
+  assert(symbolKey(raw) === want, `key: "${raw}" → ${want} (got ${symbolKey(raw)})`);
+}
+assert(symbolKey("export function") === undefined, "key: only keywords → no symbol");
 
 // ── derived edges ───────────────────────────────────────────────────────
 {
@@ -172,6 +193,30 @@ assert(symbolKey("(none)") === undefined, "key: prose is not a symbol");
   delete process.env.PI_ENSEMBLE_PLAN_CONTRACT;
 }
 
+// ── the #1297 shape written with type annotations still merges ─────────
+{
+  const typed = PLAN_1297.replace(
+    "- introduces: `errorStop.providerRepeats`",
+    "- introduces: `errorStop.providerRepeats?: number`",
+  )
+    .replace(
+      "- introduces: isFinalProviderFault()",
+      "- introduces: export function isFinalProviderFault",
+    )
+    .replace(
+      "- consumes: providerRepeats, isFinalProviderFault",
+      "- consumes: `providerRepeats`: number, isFinalProviderFault",
+    )
+    .replace("- consumes: errorStop.providerRepeats", "- consumes: providerRepeats: number");
+  const merged = await mergeWithContract(parseWorkstreams(typed), (w) =>
+    mergeCoupledWorkstreams(w),
+  );
+  assert(
+    Object.keys(merged.workstreams).length === 1,
+    `#1297 shape, typed symbols: ends as ONE workstream (got ${Object.keys(merged.workstreams).join(", ")})`,
+  );
+}
+
 // ── fold keeps the contract ─────────────────────────────────────────────
 {
   const f = foldTwo(
@@ -196,11 +241,9 @@ assert(symbolKey("(none)") === undefined, "key: prose is not a symbol");
     ["Please cherry-pick 1a2b3c4d onto main.", "1a2b3c4d"],
     ["Port the fix from PR #81.", "PR #81"],
     ["Backport #412 to the release line.", "#412"],
+    ["It regressed last week. Port janit/pi-rukas#81 to fix it.", "janit/pi-rukas#81"],
     ["This was already fixed upstream in commit 0f9e8d7c6b.", "0f9e8d7c6b"],
-    [
-      "Landed as https://github.com/o/r/pull/12 in the fork.",
-      "https://github.com/o/r/pull/12",
-    ],
+    ["Landed as https://github.com/o/r/pull/12 in the fork.", "https://github.com/o/r/pull/12"],
   ];
   for (const [body, ref] of yes) {
     const got = detectPortReference(body);
@@ -212,9 +255,17 @@ assert(symbolKey("(none)") === undefined, "key: prose is not a symbol");
     "Fixed in #1200 but it regressed.",
     "Implement the port scanner for #33.",
     "Add a deadbeef constant.",
+    "Do not cherry-pick #12; it is the wrong fix.",
+    "Don't port janit/pi-rukas#81 — rewrite it.",
+    "We should never backport 1a2b3c4d.",
+    "This regressed by 0f9e8d7c6b.",
+    "Fixed in 1a2b3c4d, then regressed by janit/pi-rukas#90.",
   ];
   for (const body of no) {
-    assert(detectPortReference(body) === undefined, `port: no reference in "${body.slice(0, 50)}…"`);
+    assert(
+      detectPortReference(body) === undefined,
+      `port: no reference in "${body.slice(0, 50)}…"`,
+    );
   }
   const folded = foldPortPlan(parseWorkstreams(DISJOINT), "o/r#9");
   const ids = Object.keys(folded);
@@ -301,6 +352,16 @@ async function plan(
   assert(
     ids.length === 1 && /^Port janit\/pi-rukas#81: /.test(r.ws[ids[0] ?? ""]?.scope ?? ""),
     "runPlan: a port issue is planned as one cherry-pick workstream",
+  );
+}
+{
+  const r = await plan("Already fixed in janit/pi-rukas#81; port it upstream.", "No workstreams.");
+  const only = Object.values(r.ws);
+  assert(
+    only.length === 1 &&
+      only[0]?.id === "default" &&
+      /^Port janit\/pi-rukas#81: /.test(only[0]?.scope ?? ""),
+    "runPlan: an empty plan on a port issue still gets the Port scope on the synthetic default",
   );
 }
 

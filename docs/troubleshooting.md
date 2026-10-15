@@ -355,6 +355,12 @@ The branch step recorded whatever branch `repoRoot` was on, and that value becom
 
 **Now:** every unresolved verdict still earns a fix round, but at the last round only `CRITICAL_ISSUES_FOUND` blocks. A pass that left findings behind reports `PASSED WITH FINDINGS` rather than `APPROVED`, and those findings appear in the PR body under *"Adversarial review — non-blocking findings"* and in the six-lens review's context. If your cycle still parks here, the reviewer returned `CRITICAL_ISSUES_FOUND` — read the *"What the reviewer objected to"* section of the handoff comment, which now quotes it.
 
+### The adversarial step aborted with "reviewer unavailable: …"
+
+**Symptom:** the handoff reads *"the adversarial gate produced no verdict — reviewer unavailable: provider/transport error: Request timed out. (×2 in a row — not re-dispatched) [cause=provider-severed]"* (or `provider-model-unavailable`, `rate-limited:quota-window`), and the cycle ends with no PR.
+
+**Cause:** the provider, not the change. Every reviewer child died on the same provider error. The loop now stops after two identical failures in a row, does not retry a 404 model or a quota-window 429 at all, and waits out a burst 429's stated delay. Neither the fan-out nor the step router re-dispatches a fault the taxonomy calls final. Before #79 the same outage spawned up to 16 reviewer children and the handoff only said *"dispatch failed twice (retry exhausted)"*. Fix the endpoint or the model id, then re-run `/work`. The develop work is still in the worktree.
+
 ### The handoff says `Rounds: 0 of 3` but the loop clearly ran
 
 `reviewRound` is the **lens-review** counter and is legitimately 0 when a cycle dies at step 5 without reaching step 7. It used to be printed under an adversarial cap too, so a loop that ran three full rounds reported zero. Fixed: an adversarial cap now reports its own round count, and the handoff quotes the blocking finding instead of the generic *"the diff still has issues the adversarial-developer flagged"*. Under every other cap the line now names its counter — `0 of 3 review rounds (six-lens review; the adversarial gate ran 1 round(s), last: ISSUES_FOUND)` — so a cycle parked at develop after an adversarial round and its fix pass no longer reads as unreviewed.
