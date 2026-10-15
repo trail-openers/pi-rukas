@@ -29,7 +29,8 @@ import { mergedLine } from "../src/work-driver-terminal-delivery.ts";
 import { validateDiscriminants } from "../src/workflow-state-validate.ts";
 import { appendEvent, initialState } from "../src/workflow-state.ts";
 import type { WorkState } from "../src/workflow-state.ts";
-import { addLocalRemote, fixture, git, realExec } from "./helpers-integrate-pin-realgit.ts";
+import { addLocalRemote, fixture, git } from "./helpers-integrate-pin-realgit.ts";
+import { realExec } from "./lib/exec-fake.ts";
 import { mkLensSummary } from "./test-helpers.ts";
 
 process.env.PI_ENSEMBLE_FORGE = "github";
