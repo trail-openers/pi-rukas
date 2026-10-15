@@ -90,7 +90,17 @@ const sh = (cwd: string, cmd: string) => execFileP("/bin/sh", ["-c", cmd], { cwd
 const root = mkdtempSync(path.join(tmpdir(), "pi-no-verdict-"));
 const CARGO = "running 41 tests\nerror: test failed, to rerun pass `--bin console`\n";
 
-async function develop(name: string, baseRed: boolean, strayUncommitted: boolean) {
+/** How the verify command fails at the base commit. */
+type Base = "green" | "same" | "different" | "no-assertion" | "timeout";
+const BASE_OUTPUT: Record<Exclude<Base, "green" | "timeout">, string> = {
+  same: CARGO,
+  different: "running 7 tests\nerror: test failed, to rerun pass `--bin other`\n",
+  "no-assertion": "something went wrong\n",
+};
+
+async function develop(name: string, base: Base | boolean, strayUncommitted: boolean) {
+  const baseRed = base !== false && base !== "green";
+  const baseKind: Base = base === true ? "same" : base === false ? "green" : base;
   const repo = path.join(root, name);
   mkdirSync(path.join(repo, ".pi"), { recursive: true });
   writeFileSync(path.join(repo, ".pi", "verify-cmd"), "bash scripts/verify.sh\n");
@@ -119,9 +129,16 @@ async function develop(name: string, baseRed: boolean, strayUncommitted: boolean
     cmd = commandOf(cmd, o);
     if (!cmd.includes("scripts/verify.sh"))
       return { stdout: (await sh(o?.cwd ?? repo, cmd)).stdout };
-    if (o?.cwd === baselineDir && !baseRed) return { stdout: "" };
-    const e = new Error(`Command failed: ${cmd}`) as Error & { stdout?: string; stderr?: string };
-    e.stdout = CARGO;
+    const atBase = o?.cwd === baselineDir;
+    if (atBase && !baseRed) return { stdout: "" };
+    const e = new Error(`Command failed: ${cmd}`) as Error & {
+      stdout?: string;
+      stderr?: string;
+      killed?: boolean;
+    };
+    if (atBase && baseKind === "timeout") e.killed = true;
+    e.stdout =
+      atBase && baseKind !== "timeout" && baseKind !== "green" ? BASE_OUTPUT[baseKind] : CARGO;
     e.stderr = "";
     throw e;
   };
@@ -164,6 +181,21 @@ async function develop(name: string, baseRed: boolean, strayUncommitted: boolean
     mixed.failures.some((f) => f.startsWith(BASELINE_RED_MARKER)) && !mixed.baselineRedOnly,
     `red at base plus another check's failure → not baseline-red-only (${mixed.failures.length} failures)`,
   );
+}
+
+// A red base excuses the change only when it demonstrably fails the same way.
+for (const [base, why] of [
+  ["different", "base and change fail on different assertions"],
+  ["no-assertion", "the base assertion could not be extracted"],
+  ["timeout", "the base timed out while the change fails on a real assertion"],
+] as const) {
+  const r = await develop(base, base, false);
+  assert(
+    r.failures[0]?.startsWith(BASELINE_RED_MARKER) === true,
+    `${why}: the baseline finding still leads the evidence`,
+  );
+  const cap = verifyCapFor("develop", r.failures, r.baselineRedOnly);
+  assert(cap === "verify-failed:develop", `${why}: parks verify-failed:develop (got ${cap})`);
 }
 rmSync(root, { recursive: true, force: true });
 

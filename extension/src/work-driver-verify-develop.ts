@@ -389,6 +389,7 @@ export async function verifyDevelopOutcome(
       // failure messages, the flake-retry precondition and the aggregation
       // semantics all live there unchanged.
       const before = failures.length;
+      let attributed = false;
       await runVerifyCommandGate({
         // #1324 — `.pi/verify-cmd-fast` runs before every full run of `cmd`.
         execFn: withFastTier(execFn, cmd, await fastVerifyCmdFor(ctx.repoRoot)),
@@ -408,8 +409,12 @@ export async function verifyDevelopOutcome(
         // decomposition.
         ...(fenceViolations !== undefined ? { fenceViolations } : {}),
         ...(onConsolidatedLogPath !== undefined ? { onConsolidatedLogPath } : {}),
+        onBaselineAttributed: () => {
+          attributed = true;
+        },
       });
-      verifyCmdEnd = before === 0 ? failures.length : undefined;
+      // #1349 — only a base that fails the way the change does excuses it.
+      verifyCmdEnd = before === 0 && attributed ? failures.length : undefined;
     }
   }
 

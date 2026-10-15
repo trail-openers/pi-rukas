@@ -1743,7 +1743,7 @@ After the `develop` step (when every branch claims success) and after the `commi
 |---|---|---|
 | `verify-timeout:<step>` | Every failure is a verify run killed at its bound. | (#1324) `verify-failed:<step>` |
 | `verify-env:<step>` | The system refused to start a process (`[host-resource-exhaustion]`). Every failure is that or a timeout. | `verify-failed:<step>` |
-| `verify-baseline-red:<step>` | The base-commit probe found the verify command red without the change (`[baseline-red]`), and the verify command's failures are the gate's only ones. | `verify-failed:<step>` |
+| `verify-baseline-red:<step>` | The base-commit probe found the verify command red without the change (`[baseline-red]`) in the same way: every failure of the change's run shares the base's assertion, or both timed out. The verify command's failures are also the gate's only ones. | `verify-failed:<step>` |
 | `pr-not-open:<step>` | The cycle's PR was merged or closed when the step started: the commit-pr re-entry refusal, or the PR-gone park. | `verify-failed:<step>` |
 | `fix-pass-park` | The adversarial fix pass parked on its own check (scope fence, no-op pass, comment retention, a read that failed closed). | `verify-failed:develop` |
 
@@ -1761,7 +1761,7 @@ One real failure next to any of these is a code failure, so the cap stays `verif
 
 **Symptom:** The develop step ends with `verify-baseline-red:develop` (`verify-failed:develop` before #1349), and the first evidence line starts with `[baseline-red]` and names the base sha and the assertion that fails there.
 
-**Cause:** The verify command failed on the change, so the driver re-ran it once on a clean checkout of the cycle's base commit, and it failed there too. The gate was red before the change was written, so no change can pass it. The cap fires only when the verify command's failures are the gate's only ones. A scope-fence, empty-diff, smoke or skip-ratchet failure next to it is a verdict on the change, so the cap stays `verify-failed:develop` (the handoff still leads with the `[baseline-red]` finding).
+**Cause:** The verify command failed on the change, so the driver re-ran it once on a clean checkout of the cycle's base commit, and it failed there too. The gate was red before the change was written, so no change can pass it. The cap fires only when the base demonstrably fails the way the change does: every failure of the change's run contains the assertion extracted at base, or the base run and every change run timed out. A base that fails on a different assertion, on one that cannot be extracted, or by timing out while the change fails on a real assertion does not excuse the change. The cap is then `verify-failed:develop`, and the `[baseline-red]` finding still leads the evidence. It also fires only when the verify command's failures are the gate's only ones. A scope-fence, empty-diff, smoke or skip-ratchet failure next to it is a verdict on the change, so the cap stays `verify-failed:develop` (the handoff still leads with the `[baseline-red]` finding).
 
 **Fix:** Fix the gate on the mainline (or the host it runs on), then re-run the cycle. Do not inspect the diff first, and do not set `PI_ENSEMBLE_VERIFY=0`.
 
