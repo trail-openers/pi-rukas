@@ -83,5 +83,8 @@ export async function reconcileHandoffConsolidateBranch(
   // out at repoRoot, and a local branch AHEAD of the freshly-fetched tip was
   // just reset (or is this cycle's own work, created at the tip) — so a
   // BranchAheadError here would mean a concurrent cycle raced the fetch.
+  // Note #1189: the shared predicate now RESETS a pushed ahead branch (local
+  // tip == origin/<branch>) instead of refusing it, so the ahead refusal here
+  // means only the diverged/unpushed case — those still halt the handoff.
   return reconcileExistingLocalBranch(execFn, repoRoot, branchName, fetchedTip);
 }

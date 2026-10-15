@@ -195,7 +195,7 @@ export async function runBranch(
             cap: `branch-ahead:${aheadLabel}` as const,
             reviewRound: state.pipelineState.reviewRound,
             nextStep: "handoff",
-            evidence: `${aheadErr.branchName} is ${aheadErr.aheadCount === null ? "an unknown number of" : `${aheadErr.aheadCount}`} commit(s) ahead of the fetched base (origin/<mainline>) — possible unpushed work of a live cycle (ahead count ${aheadLabel === "unknown" ? "unreadable — the ancestry probe failed, so the driver refused to reset on a guess" : `confirmed as ${aheadLabel}`})`,
+            evidence: `${aheadErr.message}`,
           });
         }
         throw aheadErr;
