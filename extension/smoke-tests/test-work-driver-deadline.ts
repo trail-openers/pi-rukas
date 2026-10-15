@@ -21,7 +21,12 @@ import {
   deadlineCheck,
   readCycleDeadline,
 } from "../src/work-driver-deadline.ts";
-import { type WorkState, initialState } from "../src/workflow-state.ts";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import type { DriverContext } from "../src/work-driver-context.ts";
+import { runWorkDriver } from "../src/work-driver.ts";
+import { type WorkState, initialState, readState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -215,6 +220,71 @@ function parkedState(): WorkState {
     );
     assert(r.parked === true, "a 1h budget parks a step that needs ~2h + grace");
     delete process.env.PI_ENSEMBLE_CYCLE_BUDGET_MS;
+  }
+}
+
+// 4c. A persisted deadline wins over the budget env: re-resolving the budget
+// at every boundary would restart the clock and the cycle would never park.
+{
+  delete process.env.PI_ENSEMBLE_CYCLE_DEADLINE;
+  process.env.PI_ENSEMBLE_CYCLE_BUDGET_MS = "3600000";
+  const s = initialState(1238, 1) as WorkState;
+  (s.pipelineState as { cycleDeadlineMs?: number }).cycleDeadlineMs = 4_600_000;
+  assert(
+    readCycleDeadline(s, 2_000_000) === 4_600_000,
+    "with a budget set, the persisted absolute deadline is kept (the clock does not restart)",
+  );
+  delete process.env.PI_ENSEMBLE_CYCLE_BUDGET_MS;
+}
+
+// 5. The driver loop: a deadline too close for explore parks BEFORE explore
+// is dispatched, routes to handoff (the handoff dispatch runs), and leaves
+// the state terminal with cap `deadline` — not `running`, not a safety abort.
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-deadline-loop-"));
+  mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
+  process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = "2000";
+  process.env.PI_ENSEMBLE_VERIFY = "0";
+  process.env.PI_ENSEMBLE_CYCLE_DEADLINE = String(Date.now() + 60_000);
+  try {
+    const labels: string[] = [];
+    const ctx: DriverContext = {
+      host: { sendUserMessage: () => {} } as unknown as DriverContext["host"],
+      repoRoot: dir,
+      issue: 1238,
+      issueBodyFetcherFn: async (n) => ({
+        stdout: `title:\tissue #${n}\nstate:\tOPEN\n\nbody for #${n}`,
+      }),
+      dispatchFn: async (_pi, spec, opts) => {
+        labels.push(String(opts?.label ?? spec.role));
+        return {
+          role: spec.role,
+          ok: true,
+          text: "Posted.",
+          toolUses: [],
+          ms: 1,
+          exitCode: 0,
+          transcriptPath: "/tmp/stub-transcript.json",
+        } as Awaited<ReturnType<NonNullable<DriverContext["dispatchFn"]>>>;
+      },
+    };
+    await runWorkDriver(ctx);
+    const after = await readState(dir, 1238);
+    const caps = (after?.eventLog ?? []).flatMap((e) => (e.kind === "cap-hit" ? [e.cap] : []));
+    assert(!labels.includes("explore"), `explore is never dispatched (dispatched: ${labels.join(",")})`);
+    assert(labels.includes("ops:handoff"), "the park routes to the handoff dispatch");
+    assert(caps.includes("deadline"), `the state carries cap-hit deadline (caps: ${caps.join(",")})`);
+    assert(
+      after?.pipelineState.status !== "running" && after?.pipelineState.status !== "aborted",
+      `the cycle ends parked, not running or safety-aborted (status: ${after?.pipelineState.status})`,
+    );
+    assert(
+      typeof after?.pipelineState.cycleDeadlineMs === "number",
+      "the resolved deadline is persisted on the state file",
+    );
+  } finally {
+    delete process.env.PI_ENSEMBLE_CYCLE_DEADLINE;
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 

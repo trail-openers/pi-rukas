@@ -38,6 +38,7 @@ import { spawnBackstopMs } from "./spawn-support.ts";
 import { trace } from "./trace.ts";
 import { type CycleContext, REVIEW_WALL_CLOCK_MS } from "./work-driver-context.ts";
 import { handoffDispatchTimeoutMs } from "./work-driver-handoff.ts";
+import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import { type WorkState, type WorkStep, appendEvent, persistCycle } from "./workflow-state.ts";
 
 /**
@@ -47,12 +48,6 @@ import { type WorkState, type WorkStep, appendEvent, persistCycle } from "./work
  * "the step's own bound" for those steps.
  */
 const REVIEW_PASS_BOUND_MS = REVIEW_WALL_CLOCK_MS;
-
-/** The verify command's own bound (0 when unset), for develop / ci. */
-function verifyTimeoutMs(): number {
-  const v = Number(process.env.PI_ENSEMBLE_VERIFY_TIMEOUT_MS);
-  return Number.isFinite(v) && v > 0 ? v : 0;
-}
 
 /**
  * The step's own bound, in ms. The dispatch steps are bounded by the spawn
@@ -100,6 +95,12 @@ export function readCycleDeadline(state: WorkState, now: number): number | undef
     );
     return undefined;
   }
+  // The persisted absolute wins over the budget: re-resolving the budget at
+  // every boundary (or on resume) would restart the clock and never park.
+  const persisted = state.pipelineState.cycleDeadlineMs;
+  if (typeof persisted === "number" && Number.isFinite(persisted) && persisted > 0) {
+    return persisted;
+  }
   const budget = process.env.PI_ENSEMBLE_CYCLE_BUDGET_MS;
   if (budget !== undefined && budget !== "") {
     const v = Number(budget);
@@ -107,12 +108,8 @@ export function readCycleDeadline(state: WorkState, now: number): number | undef
     trace(
       `work-driver: PI_ENSEMBLE_CYCLE_BUDGET_MS=${budget} is not a finite positive duration — ignored`,
     );
-    return undefined;
   }
-  const persisted = state.pipelineState.cycleDeadlineMs;
-  return typeof persisted === "number" && Number.isFinite(persisted) && persisted > 0
-    ? persisted
-    : undefined;
+  return undefined;
 }
 
 /**
@@ -171,33 +168,32 @@ export async function deadlineCheck(
 }
 
 /**
- * The loop-side deadline boundary handler (#1238). Runs `deadlineCheck` and,
- * when it parks, persists the capped state, notifies the operator, points the
- * loop at `handoff` (so the comment posts before the caller's kill), and
- * returns `true` — the caller `continue`s so the handoff runs before the
- * next boundary re-check. `false` means the step may proceed (the deadline,
- * if any, was persisted on the returned state via the check's output, which
- * the caller assigns before calling this for the parking case only — on the
- * non-park path the caller re-persists the same state on its normal boundary
- * write, so the deadline lands on disk either way).
+ * The loop-side deadline boundary handler (#1238). Runs `deadlineCheck` and
+ * returns the state the loop continues with. When the check parks, the
+ * capped state is persisted with `currentStep: "handoff"` (so the comment
+ * posts before the caller's kill) and the operator is notified; the caller
+ * sees the step change and `continue`s. Otherwise the returned state carries
+ * the resolved deadline (persisted once, when it first appears), so a budget
+ * resolves exactly once per cycle.
  */
 export async function parkAtDeadlineBoundary(
   ctx: CycleContext,
   state: WorkState,
   step: WorkStep,
-): Promise<boolean> {
+): Promise<WorkState> {
   const checked = await deadlineCheck(ctx, state, step, Date.now());
-  if (!checked.parked) return false;
-  const capped = checked.state;
-  await persistCycle(ctx, capped);
+  if (!checked.parked) {
+    if (checked.state !== state) await persistCycle(ctx, checked.state);
+    return checked.state;
+  }
   notifyAgent(
     ctx.host,
     `pi-rukas: /work for issue #${ctx.issue} parked at the ${step} boundary — the caller's deadline left less than this step's bound plus the handoff grace. Routing to handoff so the comment posts before the deadline.`,
   );
   const toHandoff: WorkState = {
-    ...capped,
-    pipelineState: { ...capped.pipelineState, currentStep: "handoff" },
+    ...checked.state,
+    pipelineState: { ...checked.state.pipelineState, currentStep: "handoff" },
   };
   await persistCycle(ctx, toHandoff);
-  return true;
+  return toHandoff;
 }

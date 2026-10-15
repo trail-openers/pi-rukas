@@ -289,7 +289,7 @@ export function explainCap(
       // the caller sees, not a mid-step kill with state left `running`.
       const hit = lastCapHit(state, "deadline");
       const ev = hit?.evidence ?? "(no detail recorded)";
-      return `the caller's whole-cycle deadline (${ev}) left less than this step's bound plus the handoff grace, so the driver parked at the step boundary rather than start a step that would run past it. The handoff below says where the work is — branch, PR, and the round reached — and posts before the deadline so a caller that kills the process at that point sees a handoff, not an aborted in-flight state. Re-run /work (the deadline is re-read each boundary, so raise or clear it for the re-run)`;
+      return `the caller's whole-cycle deadline (${ev}) left less than this step's bound plus the handoff grace, so the driver parked at the step boundary rather than start a step that would run past it. The handoff below says where the work is — branch, PR, and the round reached — and posts before the deadline so a caller that kills the process at that point sees a handoff, not an aborted in-flight state. Re-run \`/work <issue> --restart\` with the deadline raised or cleared (a resumed cycle keeps the deadline it resolved)`;
     }
   }
   // #844 — a local branch of the resolved name holds commits the freshly
