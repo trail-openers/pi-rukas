@@ -34,7 +34,7 @@ async function main() {
     }
   });
   await check("prCreateCmd uses --target-branch (no --head flag)", () => {
-    const cmd = forgeCommands.prCreateCmd("gitlab", "T", "branch", "/tmp/b", "main");
+    const cmd = forgeCommands.prCreateCmd("gitlab", "T", "branch", "/tmp/b", { baseBranch: "main" });
     assert(cmd.includes("--target-branch main"), `got ${cmd}`);
     assert(!cmd.includes("--head"), `should not have --head: ${cmd}`);
     assert(cmd.includes("glab mr create branch"), `positional source branch: ${cmd}`);
@@ -210,7 +210,7 @@ async function main() {
     });
     const forge = createForge(det, { execFn: fn });
     await check("mrCreate uses positional source + --target-branch", async () => {
-      const mr = await forge.prCreate("T", "branch", "body", "main");
+      const mr = await forge.prCreate("T", "branch", "body", { baseBranch: "main" });
       assert(mr.number === 17, "round-tripped");
       const cmd = calls.find((c) => c.includes("glab mr create"));
       assert(cmd !== undefined, `no create cmd: ${calls}`);

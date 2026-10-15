@@ -34,7 +34,10 @@ export interface WorkInvocation {
   restart: boolean;
   /** Operator-only. Never settable from a tool — see the module docstring. */
   mergeGrant: boolean;
+  headless?: boolean;
 }
+
+type CycleFlags = Pick<WorkInvocation, "restart" | "mergeGrant" | "headless">;
 
 /**
  * Parse `/work` arguments.
@@ -107,10 +110,9 @@ function runSingleIssue(
   pi: DriverHost,
   repoRoot: string,
   issue: number,
-  restart: boolean,
-  mergeGrant: boolean,
+  flags: CycleFlags,
 ): Promise<import("./work-driver.ts").DriverOutcome> {
-  return runWorkDriver({ host: pi, repoRoot, issue, restart, mergeGrant });
+  return runWorkDriver({ host: pi, repoRoot, issue, ...flags });
 }
 
 /**
@@ -137,10 +139,10 @@ export async function runGroupedIssues(
   pi: DriverHost,
   repoRoot: string,
   issues: number[],
-  restart: boolean,
-  mergeGrant: boolean,
+  flags: CycleFlags,
   notify: (text: string) => void,
 ): Promise<string> {
+  const { restart, mergeGrant, headless } = flags;
   const bodiesByIssue = await fetchIssueBodies(repoRoot, issues);
   const { groups, notes } = groupIssues(issues, bodiesByIssue);
   const groupList = Object.values(groups);
@@ -184,6 +186,7 @@ export async function runGroupedIssues(
             issues: groupIssueNums,
             restart,
             mergeGrant,
+            headless,
             parallelCycles: concurrency,
             invocationStartRef,
           });
@@ -245,7 +248,7 @@ export async function launchWork(
   },
 ): Promise<WorkLaunch> {
   const { repoRoot, invocation, sink } = opts;
-  const { issues, restart, mergeGrant } = invocation;
+  const { issues, restart, mergeGrant, headless } = invocation;
   const restartTag = restart ? " (restart — prior state wiped)" : "";
 
   trace(
@@ -271,7 +274,7 @@ export async function launchWork(
       ownerKind: "driver" as const,
       work: async () => {
         try {
-          await runSingleIssue(pi, repoRoot, soleIssue, restart, mergeGrant);
+          await runSingleIssue(pi, repoRoot, soleIssue, { restart, mergeGrant, headless });
           // #808 — record the outcome in the accumulating queue summary index.
           await recordSingleCycleOutcome(repoRoot, soleIssue);
           return makeResult(true, `Completed issue #${soleIssue}${restartTag}`, Date.now());
@@ -316,7 +319,7 @@ export async function launchWork(
         /* nothing we can do */
       }
     };
-    const summaryResult = await runGroupedIssues(pi, repoRoot, issues, restart, mergeGrant, notify);
+    const summaryResult = await runGroupedIssues(pi, repoRoot, issues, invocation, notify);
     // Best-effort end-of-queue summary delivery — a notification failure must
     // not turn a completed queue into an error.
     try {
@@ -378,7 +381,7 @@ export async function runDriver(
   },
 ): Promise<DispatchResult> {
   const { repoRoot, invocation, sink } = opts;
-  const { issues, restart, mergeGrant } = invocation;
+  const { issues, restart, mergeGrant, headless } = invocation;
   const restartTag = restart ? " (restart — prior state wiped)" : "";
   const startMs = Date.now();
 
@@ -392,7 +395,7 @@ export async function runDriver(
       `pi-rukas:driver-event v1 kind=work-start issue=${soleIssue} at=${new Date().toISOString()}\npi-rukas: /work driver running for issue #${soleIssue}${restartTag}. State in .pi/work-state/${soleIssue}.json — inspect it any time with /work-status.`,
     );
     try {
-      await runSingleIssue(pi, repoRoot, soleIssue, restart, mergeGrant);
+      await runSingleIssue(pi, repoRoot, soleIssue, { restart, mergeGrant, headless });
       // #808 — record the outcome in the accumulating queue summary index.
       await recordSingleCycleOutcome(repoRoot, soleIssue);
       return makeResult(
@@ -419,7 +422,7 @@ export async function runDriver(
   trace(`/work (grouped) → ${summary}`);
 
   try {
-    const summaryResult = await runGroupedIssues(pi, repoRoot, issues, restart, mergeGrant, (t) => {
+    const summaryResult = await runGroupedIssues(pi, repoRoot, issues, invocation, (t) => {
       void notifyAgent(pi, t);
     });
     return makeResult(true, summaryResult, startMs);

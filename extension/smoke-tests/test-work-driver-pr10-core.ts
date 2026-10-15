@@ -11,7 +11,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { type DriverContext, STEP_FAILURE_POLICY } from "../src/work-driver-context.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
+import { STEP_FAILURE_POLICY } from "../src/work-driver-failure-policy.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import { parseMergeCommit } from "../src/work-driver-merged.ts";
 import { parsePerIssueVerdicts } from "../src/work-driver-plan.ts";

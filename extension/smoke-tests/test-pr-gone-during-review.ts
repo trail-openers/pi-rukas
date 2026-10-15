@@ -441,14 +441,25 @@ try {
   // ------------------------------------------ the three steps are gated
   {
     const src = readFileSync(path.join(import.meta.dir, "../src/work-driver-run-step.ts"), "utf8");
-    for (const fn of ["runLens", "runLensFix", "runCi"]) {
+    // The ci argument is the draft mark point (#1292): mandatory, not optional.
+    const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const gated: Array<[string, string]> = [
+      ["runLens", "gate.state"],
+      ["runLensFix", "gate.state"],
+      ["runCi", "await markDraftPrReady(ctx, gate.state)"],
+    ];
+    for (const [fn, arg] of gated) {
       assert(
         new RegExp(
-          `await endIfPrGone\\(ctx, state, step\\);\\s*return gate\\.ended \\?\\? ${fn}\\(ctx, gate\\.state, now\\)`,
+          `await endIfPrGone\\(ctx, state, step\\);\\s*return gate\\.ended \\?\\? ${fn}\\(ctx, ${esc(arg)}, now\\)`,
         ).test(src),
         `runStep checks the PR before ${fn}`,
       );
     }
+    assert(
+      src.includes("await markDraftPrReady(ctx, gate.state)"),
+      "runStep marks a draft PR ready before the ci step (#1292)",
+    );
   }
 } finally {
   rmSync(root, { recursive: true, force: true });

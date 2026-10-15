@@ -56,6 +56,8 @@ export interface NormalizedPullRequest {
   mergeable: "TRUE" | "FALSE" | "UNKNOWN" | null;
   /** GitHub: `mergeStateStatus` (CLEAN/DIRTY/BLOCKED/...). GitLab: null (composed instead). */
   mergeStateStatus: string | null;
+  /** #1292 — a draft PR/MR. `undefined` when the forge's view did not say. */
+  isDraft?: boolean;
   labels: NormalizedLabel[];
   createdAt: string | undefined;
   updatedAt: string | undefined;
