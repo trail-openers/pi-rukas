@@ -49,6 +49,7 @@
  */
 import { recordCommentEvidence } from "./comment-evidence.ts";
 import {
+  applyMergedSafetyNet,
   fenceCapHit,
   mergeEvidence,
   runMergePrep,
@@ -60,7 +61,6 @@ import {
 } from "./work-develop-fence-verdicts.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { runConvergeGateHandler } from "./work-driver-converge-gate.ts";
-import { applySafetyNet } from "./work-driver-safety-net.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { appendEvent } from "./workflow-state.ts";
@@ -94,12 +94,13 @@ export async function runMergeRetryFlow(
 ): Promise<WorkState> {
   const { state, outcome } = await runMergePrep(ctx, stateIn, stateRef, ids, execFn, dispatch);
   if (outcome.parked) return state;
-  const { mergedIds, merges, discardedShas } = outcome;
+  const { mergedIds, merges, discardedShas, mergeHeads } = outcome;
   if (mergedIds.length === 0) return state; // no sibling-declared violation — nothing to merge
   // The re-run always gates: the merge produced evidence (the re-dispatch
   // committed work, or the rebase reset the worktree to the owner's tip).
   let next = state;
-  next = await applySafetyNet(ctx, next);
+  // #1343 — merged worktrees are judged against their post-merge HEAD.
+  next = await applyMergedSafetyNet(ctx, next, mergedIds, mergeHeads, execFn);
   const gate2 = await verifyStepOutcome(ctx, next, "develop");
   // #1040 — lost-comment evidence persists from the re-run's develop note.
   next = recordCommentEvidence(next, gate2.commentEvidence);
