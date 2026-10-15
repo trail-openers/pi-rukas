@@ -369,19 +369,17 @@ export function explainCap(
       case "develop":
         return `the develop step dispatch failed with ${fileBlurb} on disk${fanoutTag} — adversarial review of partial work is not meaningful, halting cleanly`;
       case "adversarial": {
-        // #1297 — a final provider fault (the loop saw the same error ≥2
-        // children in a row) parks with the cause the reviewer children died
-        // of, not "the driver's retry budget": the event log carries the
-        // dispatch-failed event with the provider's own message.
-        // #1297 — a final provider fault (the loop saw the same error ≥2
-        // children in a row, or the cause names a fault re-dispatching cannot
-        // clear) parks with the cause the reviewer children died of, not
-        // "the driver's retry budget": the event log carries the dispatch-failed
-        // event with the provider's own message.
+        // #1297 — the adversarial gate parks with the cause the reviewer
+        // children died of, not "the driver's retry budget": the event log
+        // carries the dispatch-failed event with the provider's own message.
+        // The only special case is a missing model (404) — re-dispatching asks
+        // the same question, so the cause text says so explicitly.
         const advFail = [...state.eventLog]
           .reverse()
           .find(
-            (e) =>
+            (
+              e,
+            ): e is Extract<WorkEvent, { kind: "dispatch-failed" | "dispatch-failed-provider" }> =>
               (e.kind === "dispatch-failed" || e.kind === "dispatch-failed-provider") &&
               e.step === "adversarial",
           );
@@ -393,7 +391,9 @@ export function explainCap(
                 ? advFail.errorTail
                 : undefined
             : undefined,
-        ).slice(0, 120);
+        )
+          .replace(/[\r\n]+/g, " ")
+          .slice(0, 120);
         const cause = advFail ? classifyFailureCause(advFail).cause : undefined;
         const why =
           cause === "provider-model-unavailable"

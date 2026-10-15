@@ -122,7 +122,7 @@ export const infraFailureResult = (
     // #1297 — a child killed by pi-rukas (killCause) already reports itself; the
     // provider-error stop is what the router and handoff need to name the cause.
     ...(r.errorStop && !r.killCause ? { errorStop: r.errorStop } : {}),
-    ...(r.providerRepeats ? { providerRepeats: r.providerRepeats } : {}),
+    ...(r.providerRepeats !== undefined ? { providerRepeats: r.providerRepeats } : {}),
     toolUses: [],
     ms: Date.now() - c.start,
     exitCode: 1,

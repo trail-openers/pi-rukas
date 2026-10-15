@@ -146,7 +146,7 @@ export function classifyProviderFault(
  * and RATE_LIMIT_429_PATTERN from types.ts for consistency with adversarial.ts.
  */
 export function classifyFailureCause(tail: {
-  kind: string;
+  kind: "dispatch-failed" | "dispatch-failed-provider";
   errorTail?: string;
   killCause?: string;
   providerMessage?: string;
@@ -223,7 +223,9 @@ export function classifyFailureCause(tail: {
   // bucket and a 24-hour quota exhaustion arrive as the same status code and
   // differ only in that number; conflating them is what turned a 60-second
   // wait into a dead cycle and 11 unstarted issues.
-  const msg = tail.providerMessage ?? tail.errorTail ?? "";
+  // #1297 — the `dispatch-failed-provider` branch above returns first, so by
+  // here `kind` is `dispatch-failed` and only `errorTail` is declared.
+  const msg = tail.errorTail ?? "";
   if (isRateLimit429Msg(msg)) {
     if (isSpendCapMsg(msg)) {
       return { cause: "rate-limited:quota-terminal", shouldRetry: false, maxRetries: 0 };
@@ -265,7 +267,7 @@ export function classifyFailureCause(tail: {
  * gets a distinct, human-readable headline so the operator can act on it.
  */
 export function failureCauseReason(tail: {
-  kind: string;
+  kind: "dispatch-failed" | "dispatch-failed-provider";
   errorTail?: string;
   providerMessage?: string;
   killCause?: string;

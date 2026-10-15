@@ -160,7 +160,9 @@ export async function buildCompletionEvent(
         transcriptPath: result.transcriptPath,
         // #1297 — thread the identical-error ladder count so the step router
         // and handoff can read a repeated provider fault as final.
-        ...(result.providerRepeats ? { providerRepeats: result.providerRepeats } : {}),
+        ...(result.providerRepeats !== undefined
+          ? { providerRepeats: result.providerRepeats }
+          : {}),
       },
       result.usage,
     );
