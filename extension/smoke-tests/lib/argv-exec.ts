@@ -10,9 +10,9 @@ const execShell = promisify(exec);
 const execFileP = promisify(execFile);
 
 export const argvAwareExec = (
-	cmd: string,
-	o?: { cwd?: string; shell?: string; maxBuffer?: number; argv?: string[] },
+  cmd: string,
+  o?: { cwd?: string; shell?: string; maxBuffer?: number; argv?: string[] },
 ) =>
-	o?.argv
-		? execFileP(cmd, o.argv, { cwd: o.cwd, maxBuffer: o.maxBuffer })
-		: execShell(cmd, { cwd: o?.cwd, shell: o?.shell, maxBuffer: o?.maxBuffer });
+  o?.argv
+    ? execFileP(cmd, o.argv, { cwd: o.cwd, maxBuffer: o.maxBuffer })
+    : execShell(cmd, { cwd: o?.cwd, shell: o?.shell, maxBuffer: o?.maxBuffer });

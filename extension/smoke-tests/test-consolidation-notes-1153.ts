@@ -53,12 +53,18 @@ const NOTE =
 
 {
   const md = renderHandoffMarkdown(stateWith([NOTE]), "/repo");
-  assert(md.includes("### Consolidation checks that did not run"), "handoff: the skipped-check section is rendered");
+  assert(
+    md.includes("### Consolidation checks that did not run"),
+    "handoff: the skipped-check section is rendered",
+  );
   assert(md.includes(NOTE), "handoff: the skipped check's note appears verbatim");
 }
 {
   const md = renderHandoffMarkdown(stateWith(undefined), "/repo");
-  assert(!md.includes("Consolidation checks that did not run"), "handoff: no section when no check was skipped");
+  assert(
+    !md.includes("Consolidation checks that did not run"),
+    "handoff: no section when no check was skipped",
+  );
 }
 
 process.exit(exit);
