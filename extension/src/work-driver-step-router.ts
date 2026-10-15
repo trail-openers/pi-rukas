@@ -25,6 +25,7 @@ import {
   failureCauseReason,
   failureCauseReasonForClass,
   jitteredMs,
+  shadowFailureCause,
   transientRetryBackoffMs,
   transientRetryEnabled,
 } from "./work-driver-failure-taxonomy.ts";
@@ -249,6 +250,11 @@ export async function routeStepOutcome(
       // evidence-carrying replay fires from its own router branch and
       // this generic path becomes develop's fallback.)
       const classification = classifyFailureCause(tail);
+      // #1308 S3 — acted on here, so the failure-cause seam is asked (in shadow).
+      shadowFailureCause(tail, classification, {
+        repoRoot: ctx.repoRoot,
+        issues: ctx.issues ?? [ctx.issue],
+      });
       if (policy === "HALT" && transientRetryEnabled() && classification.shouldRetry) {
         const attempts = state.pipelineState.transientRetryAttempts ?? {};
         const used = attempts[step] ?? 0;

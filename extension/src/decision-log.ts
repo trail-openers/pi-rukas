@@ -57,6 +57,16 @@ export function redactSecrets(text: string): { text: string; count: number } {
 }
 
 /**
+ * Redact the WHOLE text, then keep a window of it (`from` = which end). Clipping
+ * first can cut a credential into a fragment no pattern recognises, so the
+ * shadow seams' bounded inputs go through here rather than slicing raw text.
+ */
+export function redactClip(text: string, max: number, from: "start" | "end" = "start"): string {
+  const { text: clean } = redactSecrets(text);
+  return from === "end" ? clean.slice(-max) : clean.slice(0, max);
+}
+
+/**
  * Redact every string inside a JSON-shaped value, then bound it. The final
  * bound is applied after redaction, so it can never cut a secret into a
  * fragment the patterns no longer recognise; a generous pre-bound (well past
