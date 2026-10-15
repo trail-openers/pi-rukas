@@ -319,23 +319,24 @@ export async function askPolicy(
       reason: "the project has no doctrine documents at the cycle's base commit",
     };
   }
-  // #1308 S2 — the judge child is this seam's only backend. decide() applies
-  // the grandfathered replace composition: the judge's answer becomes the
-  // outcome only when its quote verifies in a supplied document.
-  let thrown: { message?: string } | undefined;
-  let answer: PolicyAnswer | undefined;
+  // #1308 S2 — the judge child is this seam's only backend; decide() makes its
+  // answer the outcome only when its quote verifies in a supplied document.
+  const out: { answer?: PolicyAnswer; thrown?: { message?: string } } = {};
   const backend: Backend = {
     name: "policy-judge",
     source: "llm",
     run: async () => {
       try {
-        answer = extractPolicyAnswer((await judge(policyPrompt(question, docs)))?.toolUses ?? []);
+        out.answer = extractPolicyAnswer(
+          (await judge(policyPrompt(question, docs)))?.toolUses ?? [],
+        );
       } catch (err) {
-        thrown = { message: (err as Error).message };
-        return { ok: false, error: `the judge threw: ${thrown.message}` };
+        out.thrown = { message: (err as Error).message };
+        return { ok: false, error: `the judge threw: ${out.thrown.message}` };
       }
-      return answer
-        ? { ok: true, answer: answer.verdict, quote: answer.quote, cited: answer.sourceFile }
+      const a = out.answer;
+      return a
+        ? { ok: true, answer: a.verdict, quote: a.quote, cited: a.sourceFile }
         : { ok: false, error: "no report_policy call" };
     },
   };
@@ -345,8 +346,8 @@ export async function askPolicy(
     { state: { question, documents: texts }, question, rule: "unstated", evidence: { texts } },
     { ...where, backends: [backend] },
   );
-  // Snapshot: a judge still running past decide()'s bound cannot change this.
-  const judged = answer;
+  // Snapshot: a judge still running past decide()'s bound cannot change these.
+  const { answer: judged, thrown } = out;
   if (thrown) {
     return {
       permitted: false,
