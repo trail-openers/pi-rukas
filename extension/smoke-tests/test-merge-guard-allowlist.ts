@@ -86,7 +86,6 @@ const REFUSED: string[] = [
   "node -e \"require('@octokit/rest'); x.pulls.merge({pull_number:17})\"",
   "python3 scripts/merge.py",
   "bun run smoke-tests/test-merge-guard.ts",
-  "gh run list --workflow merge.yml",
   "gh api graphql -F query=@q.graphql",
   "gh api graphql --input q.json",
   "gh api graphql -f query=$Q",
@@ -268,8 +267,6 @@ const REFUSED: string[] = [
   "http PUT api.github.com/repos/o/r/pulls/1/merge",
   "hub merge https://github.com/o/r/pull/1",
   // Prose that names a merge next to a forge.
-  'gh pr comment 5 --body "please merge"',
-  "gh pr comment 5 --body 'we will gh pr merge 12 later'",
   'echo "gh pr merge 12"',
   'git commit -m "docs: explain gh pr merge 12"',
   "grep -rn 'gh pr merge' .",
@@ -305,7 +302,7 @@ const CODES: Array<[string, string]> = [
   ["glab mr merge 12", "glab-auto-merge"],
   ['g"h" pr merge 17', "expansion-command-word"],
   ["$G api repos/o/r/pulls/17/merge -X PUT", "expansion-command-word"],
-  ["gh api graphql -F query=@q.graphql", "graphql-indirect"],
+  ["gh api graphql -F query=@q.graphql", "body-indirect"],
   ["./gh pr merge 17", "not-a-forge-command"],
 ];
 for (const [cmd, code] of CODES) {
@@ -351,6 +348,9 @@ const NOT_MERGES: string[] = [
   "gh api graphql -f query='{ viewer { login } }'",
   "glab api graphql -f query='{ currentUser { username } }'",
   "gh pr view 17 $'x'",
+  'gh pr comment 5 --body "please merge"',
+  "gh pr comment 5 --body 'we will gh pr merge 12 later'",
+  "gh run list --workflow merge.yml",
   "",
 ];
 for (const cmd of NOT_MERGES) {
@@ -370,7 +370,6 @@ await setupLedgerPath();
 for (const cmd of [
   "cd x && gh pr merge 17",
   "gh api repos/o/r/pulls/12/merge",
-  'gh pr comment 5 --body "please merge"',
 ]) {
   const r = await hookDecision(cmd, GOOD_ENTRIES);
   assert(r.block, `hook refuses even with a passing ledger: ${JSON.stringify(cmd)}`);

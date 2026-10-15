@@ -6,6 +6,10 @@
  * hid; every review round found a shape it read differently from bash. This
  * module replaces that with a strict allowlist, in two steps:
  *
+ *   0. READ-ONLY GH. A command that lexes as ONE simple command under the
+ *      strict lexer, whose words are `gh` followed by a known non-merging
+ *      subcommand (`pr create|view|…`, `issue *`, `run *`, …) is not a merge,
+ *      whatever merge words its titles, bodies or searches carry.
  *   1. TRIGGER (cheap, on the raw text, case-insensitive). A command is
  *      refused outright, without reading it, when:
  *        - it names a forge, HTTP client or interpreter (`gh`, `glab`, `hub`,
@@ -18,8 +22,12 @@
  *        - a merge word appears and a segment's command word (after `VAR=…`
  *          assignments) is an expansion or quoted/escaped (`"$GH" pr merge`,
  *          `$G api …/merge`, `g"h" pr merge`);
- *        - a forge names a GraphQL call whose query is read from a file,
- *          stdin or a variable (`-F query=@q`, `--input`, `query=$Q`).
+ *        - a forge `api`/`graphql` call or an HTTP client aimed at a forge
+ *          reads its body from a file, stdin or a shell expansion
+ *          (`body-indirect`: `-f query="$(cat q)"`, `-d @body`, `-T f`,
+ *          `--post-file f`);
+ *        - a forge name appears with an unquoted `{a,b}` or `{a..b}` pattern
+ *          that bash would expand (`brace-expansion`: `gh pr m{erge,} 17`).
  *      The words are looked for in the raw text and in a widened view that
  *      undoes bash quoting (`g"h"`, `m"erge"`, `$'\x6d'erge`). No trigger →
  *      `none`: not a merge.
@@ -31,7 +39,8 @@
  *
  *      Words are split on blanks; quotes are removed as bash removes them.
  *      Outside single quotes the text may not contain any shell
- *      metacharacter, expansion or control character, so every word bash
+ *      metacharacter, expansion or control character (inside double quotes
+ *      only `$`, backtick, `\` and `!` are dangerous), so every word bash
  *      would see is exactly the word read here.
  *
  * Threat model (docs/troubleshooting.md): an honest-but-forgetful agent, not
@@ -63,29 +72,110 @@ const FORGE_WORD =
 const VERB_PAIR = /(?:^|[^a-z0-9_])[pm]r\s+(?:merge|accept)(?![a-z0-9_])/i;
 const MERGE_WORD =
   /(?:^|[^a-z0-9_])merge(?![a-z0-9_])|mergepullrequest|enablepullrequestautomerge|mergerequestaccept|acceptmergerequest|mergerequestmerge|mergemergerequest|automerge|mergebranch|mergequeue|enqueuepullrequest/i;
-const GRAPHQL_WORD = /(?:^|[^a-z0-9_])graphql(?![a-z0-9_])/i;
-/** A GraphQL query read from a file, stdin or a variable — the merge is not in the text. */
-const INDIRECT_QUERY =
-  /--input\b|query=[@$]|(?:^|\s)-[dfFT]\s*@|--(?:data[\w-]*|form|field|raw-field)[=\s]+@/i;
+const FORGE_NAME = /(?:^|[^a-z0-9_])(?:gh|glab)(?![a-z0-9_])/i;
+const API_WORD = /(?:^|[\s'"])(?:api|graphql)(?![a-z0-9_])/i;
+const HTTP_CLIENT = /(?:^|[^a-z0-9_])(?:curl|wget|https?|httpie)(?![a-z0-9_])/i;
+const FORGE_HOST = /api\.github\.com|github\.com|gitlab|graphql/i;
+/**
+ * A body the request reads from a file or stdin: `k=@f` (gh -F, curl -F,
+ * httpie), `-d @f`, `-T f`, `--data-binary @f`, `--data-urlencode name@f`,
+ * `--input f`, `--post-file f`, `--upload-file f`. Matched on the raw text,
+ * so a file reference inside single quotes (which gh still reads) counts.
+ */
+const BODY_FILE =
+  /(?:^|\s)[^\s=]*=@|(?:^|\s)-[dFT]\s*@|(?:^|\s)-T\b|--(?:data[\w-]*|form)\s+@|--data-urlencode\s+[^\s=@"']*@|--(?:upload-file|post-file|input)\b/;
+/** A `{a,b}` or `{a..b}` pattern bash would expand (matched on the unquoted view). */
+const BRACE_EXPANSION = /\{[^{}\s]*(?:,|\.\.)[^{}\s]*\}/;
 
-/** Outside single quotes, any of these refuses (metacharacters, expansions, comments). */
+/** Outside quotes, any of these refuses (metacharacters, expansions, comments). */
 const FORBIDDEN = new Set("$`\\;|&<>(){}*?[#~!");
+/** Inside double quotes only these still expand, escape or history-expand. */
+const DQ_FORBIDDEN = new Set("$`\\!");
 
-/** Decode the escapes of an ANSI-C `$'…'` body that can spell a letter. */
+/** ANSI-C escapes that spell one character. Anything else stays literal. */
+const ANSI_ESCAPES: Readonly<Record<string, string>> = {
+  a: "\x07",
+  b: "\b",
+  e: "\x1b",
+  E: "\x1b",
+  f: "\f",
+  n: "\n",
+  r: "\r",
+  t: "\t",
+  v: "\v",
+  "\\": "\\",
+  "'": "'",
+  '"': '"',
+  "?": "?",
+};
+const ANSI_ESCAPE_PATTERN =
+  /\\(x[0-9a-fA-F]{1,2}|u[0-9a-fA-F]{1,4}|U[0-9a-fA-F]{1,8}|[0-7]{1,3}|[\s\S])/g;
+
+/**
+ * Decode the escapes of an ANSI-C `$'…'` body. An escape bash would not
+ * decode (out-of-range code point, `\x` with no digits, unknown letter) is
+ * kept literal as `\` plus its text, never dropped.
+ */
 function ansiC(body: string): string {
-  return body.replace(
-    /\\(x[0-9a-fA-F]{1,2}|u[0-9a-fA-F]{1,4}|U[0-9a-fA-F]{1,8}|[0-7]{1,3}|[\s\S])/g,
-    (_, e: string) => {
-      if (/^[xuU]/.test(e)) {
-        const code = Number.parseInt(e.slice(1), 16);
-        // `\x` / `\u` with no hex digits is literal text in bash.
-        if (Number.isNaN(code)) return `\\${e}`;
-        return code <= 0x10ffff ? String.fromCodePoint(code) : "";
+  return body.replace(ANSI_ESCAPE_PATTERN, (whole, e: string) => {
+    if (e.length > 1 && /^[xuU]/.test(e)) {
+      const code = Number.parseInt(e.slice(1), 16);
+      return code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+    }
+    if (/^[0-7]/.test(e)) return String.fromCodePoint(Number.parseInt(e, 8));
+    return ANSI_ESCAPES[e] ?? whole;
+  });
+}
+
+/**
+ * The command with the contents of single quotes removed (they are literal
+ * to bash), and of double quotes too unless `keepDouble`. The quote marks
+ * stay, so a removed word still leaves its `''` / `""` behind. Escaped
+ * characters are skipped whole so a `\"` cannot open or close a quote.
+ */
+function quotedView(command: string, keepDouble: boolean): string {
+  let out = "";
+  let quote: "'" | '"' | undefined;
+  const chars = [...command];
+  for (let i = 0; i < chars.length; i += 1) {
+    const ch = chars[i] ?? "";
+    if (ch === "\\" && quote !== "'") {
+      const next = chars[i + 1] ?? "";
+      i += 1;
+      if (quote === undefined || keepDouble) out += ch + next;
+      continue;
+    }
+    if (quote === "'") {
+      if (ch === "'") {
+        quote = undefined;
+        out += ch;
       }
-      if (/^[0-7]/.test(e)) return String.fromCodePoint(Number.parseInt(e, 8));
-      return e;
-    },
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === '"') {
+        quote = undefined;
+        out += ch;
+      } else if (keepDouble) out += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') quote = ch;
+    out += ch;
+  }
+  return out;
+}
+
+/** Whether the command calls a forge's API or an HTTP client aimed at a forge. */
+function isForgeOrHttpCall(command: string): boolean {
+  return (
+    (FORGE_NAME.test(command) && API_WORD.test(command)) ||
+    (HTTP_CLIENT.test(command) && FORGE_HOST.test(command))
   );
+}
+
+/** A request body that is not a literal: a file, stdin or a shell expansion. */
+function bodyIndirect(command: string): boolean {
+  return /[$`]|<\(/.test(quotedView(command, true)) || BODY_FILE.test(command);
 }
 
 /** Split on unquoted command separators; each piece is the raw text of one simple command. */
@@ -125,9 +215,9 @@ function hasComplexCommandWord(command: string): boolean {
 /**
  * Step 1: does this command need the strict grammar at all? Returns the
  * refusal code for a trigger that refuses without reading (`expansion-command-word`,
- * `graphql-indirect`), `""` for an ordinary trigger the grammar judges, or
- * undefined for no trigger. The widened view only widens the trigger; the
- * grammar in `lex` decides.
+ * `body-indirect`, `brace-expansion`), `""` for an ordinary trigger the grammar
+ * judges, or undefined for no trigger. The widened view only widens the
+ * trigger; the grammar in `lex` decides.
  */
 function triggerCode(command: string): string | undefined {
   const widened = command
@@ -138,12 +228,11 @@ function triggerCode(command: string): string | undefined {
   const texts = [command, widened];
   const verb = texts.some((t) => VERB_PAIR.test(t));
   const merge = texts.some((t) => MERGE_WORD.test(t));
-  if ((merge || verb) && hasComplexCommandWord(command)) return "expansion-command-word";
-  if (verb) return "";
   const forge = texts.some((t) => FORGE_WORD.test(t));
-  if (forge && texts.some((t) => GRAPHQL_WORD.test(t) && INDIRECT_QUERY.test(t))) {
-    return "graphql-indirect";
-  }
+  if ((merge || verb) && hasComplexCommandWord(command)) return "expansion-command-word";
+  if (isForgeOrHttpCall(command) && bodyIndirect(command)) return "body-indirect";
+  if (forge && BRACE_EXPANSION.test(quotedView(command, false))) return "brace-expansion";
+  if (verb) return "";
   const graphqlMutation = texts.some((t) => /mutation/i.test(t) && /merge/i.test(t));
   return forge && (merge || graphqlMutation) ? "" : undefined;
 }
@@ -151,8 +240,8 @@ function triggerCode(command: string): string | undefined {
 /**
  * Split into words with bash's quote removal, or a reason code when the text
  * holds anything this reading could get wrong: a forbidden character outside
- * single quotes, a control or non-ASCII character outside single quotes, or
- * an unbalanced quote.
+ * single quotes (or one of `$` `` ` `` `\` `!` inside double quotes), a
+ * control or non-ASCII character outside single quotes, or an unbalanced quote.
  */
 function lex(command: string): { words: string[] } | { code: string } {
   const words: string[] = [];
@@ -164,8 +253,9 @@ function lex(command: string): { words: string[] } | { code: string } {
       else word += ch;
       continue;
     }
+    const forbidden = quote === '"' ? DQ_FORBIDDEN : FORBIDDEN;
+    if (forbidden.has(ch)) return { code: `forbidden-char:${ch}` };
     const code = ch.codePointAt(0) ?? 0;
-    if (FORBIDDEN.has(ch)) return { code: `forbidden-char:${ch}` };
     if ((code < 0x20 && ch !== "\t") || code > 0x7e) return { code: "control-or-non-ascii" };
     if (quote === '"') {
       if (ch === '"') quote = undefined;
@@ -184,6 +274,32 @@ function lex(command: string): { words: string[] } | { code: string } {
   if (quote !== undefined) return { code: "quote-unbalanced" };
   if (word !== undefined) words.push(word);
   return { words };
+}
+
+/** gh subcommands that never merge: a merge word in their arguments is prose. */
+const READ_ONLY_GH_PR = new Set([
+  "create",
+  "view",
+  "list",
+  "checks",
+  "edit",
+  "comment",
+  "diff",
+  "status",
+  "ready",
+  "close",
+  "reopen",
+  "review",
+]);
+const READ_ONLY_GH_GROUPS = new Set(["issue", "run", "workflow", "release", "search", "label"]);
+
+/** Whether the words are one of the known non-merging gh subcommands. */
+function isReadOnlyGh(words: string[]): boolean {
+  if (words[0] !== "gh") return false;
+  const [, noun = "", verb = ""] = words;
+  if (noun === "pr") return READ_ONLY_GH_PR.has(verb);
+  if (noun === "repo") return verb === "view";
+  return READ_ONLY_GH_GROUPS.has(noun) && verb !== "";
 }
 
 interface ForgeGrammar {
@@ -328,11 +444,12 @@ function parse(g: ForgeGrammar, words: string[]): MergeCommand {
 
 /** Classify a bash command for the merge guard. Linear in the command length. */
 export function readMergeCommand(command: string): MergeCommand {
+  const lexed = lex(command);
+  if ("words" in lexed && isReadOnlyGh(lexed.words)) return { kind: "none" };
   const trigger = triggerCode(command);
   if (trigger === undefined) return { kind: "none" };
   if (trigger !== "") return refuse(trigger);
-  const lexed = lex(command);
-  if ("code" in lexed) return refuse(lexed.code);
+  if (!("words" in lexed)) return refuse(lexed.code);
   const words = lexed.words;
   const g = words[0] === GH.tool ? GH : words[0] === GLAB.tool ? GLAB : undefined;
   return g ? parse(g, words) : refuse("not-a-forge-command");
@@ -344,7 +461,7 @@ export const GLAB_AUTO_MERGE_REFUSAL =
 
 /** The guard's refusal for a triggered command outside the grammar. */
 export const MERGE_FORM_REFUSAL =
-  "merge refused: the merge guard checks only one plain merge command — `gh [-R OWNER/REPO] pr merge [N] [flags]` or `glab [-R GROUP/REPO] mr merge [N] [flags]`, run on its own: no pipes, chains, substitutions, variables, wrappers (env/sudo/nice/time/exec/oo), `bash -c`, `eval`, `gh api`/curl REST or GraphQL merges (a GraphQL query read from a file is refused too), no deferred `--auto` merge. A command that names gh/glab/curl/an interpreter and the word `merge` anywhere (even in prose) is held to this form: put a PR or comment body in a file (`--body-file <file>`) and a commit message in `git commit -F <file>`. Operator override: PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1";
+  "merge refused: the merge guard checks only one plain merge command — `gh [-R OWNER/REPO] pr merge [N] [flags]` or `glab [-R GROUP/REPO] mr merge [N] [flags]`, run on its own: no pipes, chains, substitutions, variables, wrappers (env/sudo/nice/time/exec/oo), `bash -c`, `eval`, `gh api`/curl REST or GraphQL merges, a request body read from a file, stdin or a shell expansion, no deferred `--auto` merge. A command that names gh/glab/curl/an interpreter and the word `merge` anywhere (even in prose) is held to this form: put a PR or comment body in a file (`--body-file <file>`) and a commit message in `git commit -F <file>`. Operator override: PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1";
 
 /** The form refusal, with the reason code that says what to change. */
 export function mergeFormRefusal(reason?: string): string {
