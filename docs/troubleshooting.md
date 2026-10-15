@@ -1289,6 +1289,14 @@ An in-flight job id with **no** matching `dispatch-started` event is not a crash
 
 Orphaned `dispatch-started` events are deliberately kept in the log. They are the only record that a dispatch was paid for and lost.
 
+**A session shutdown is handled as that crash, not as a step failure.** Quitting, reloading or replacing the Pi session aborts every in-flight child. The driver used to read its own aborted child as the step failing: it recorded `cap-hit: step-failed:<step>` and entered a handoff that cannot finish in an exiting process, leaving `status: running, step: handoff` and no reason. It now stops where it is — no cap, no handoff — appends one `cycle-interrupted` event (step, Pi's reason, branch and head sha) and says so once:
+
+```
+[pi-rukas] cycle interrupted: session shutdown (quit) during lens-fix; state is resumable — run /work 97 — work on feature/issue-97-… at 1d6a5dd0
+```
+
+On `quit` that line goes to stderr; on a reload or session switch it arrives as a `kind=interrupted` driver event. The state file still says `running`, deliberately: `running` with a dead `owner.pid` is what "resumable" already means, so anything reading the file from outside must check owner liveness (or look for a trailing `cycle-interrupted`) before calling the cycle live. This is a different record from the headless runner's SIGTERM / SIGINT handling (the cycle `signal`, event kind `interrupted`, status `interrupted`): a Pi session shutdown never sets that signal, so the two are checked separately. If the line says `/work N will refuse this state` instead, the step that was cut off had not written ahead and the file is at the previous boundary — `resumable: false` on the event.
+
 Escape hatch: `PI_ENSEMBLE_RESUME=0`.
 
 ### Memory (vipune) — what the flags actually do
