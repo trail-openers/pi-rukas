@@ -101,7 +101,7 @@ export async function runAdversarialLoop(
     /**
      * #1161 — set ONLY by the adversarial_loop tool when the caller pasted a
      * `diff` string. Such a review is recorded in the review ledger as
-     * "caller-supplied diff" and never counts as a passing adversarial review.
+     * "<outcome> (caller-supplied diff)" and never counts as a passing adversarial review.
      */
     callerSuppliedDiff?: boolean;
   } & ReportPolicy,

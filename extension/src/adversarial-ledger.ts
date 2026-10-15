@@ -36,8 +36,8 @@ import { execp } from "./exec.ts";
  *
  * #1161 — `callerSuppliedDiff`: the review judged a diff string the caller
  * pasted, not one the tool computed from base+head. Such a review is recorded
- * as `passed: false` with detail "caller-supplied diff", so the merge guard
- * refuses it; the same review via base+head is recorded normally.
+ * as `passed: false` with detail "<outcome> (caller-supplied diff)", so the
+ * merge guard refuses it; the same review via base+head is recorded normally.
  */
 export function writeAdversarialLedgerEntry(
   result: DispatchResult,
@@ -83,16 +83,15 @@ export function writeAdversarialLedgerEntry(
     // behaviour.
     const headRef = params.head ?? "HEAD";
     const headSha = await resolveHeadSha(c, headRef, execp);
+    const callerSupplied = params.callerSuppliedDiff === true;
+    const outcome = result.loopOutcome ?? "completed";
     const entry: LedgerEntry = {
       branch,
       kind: "adversarial",
       patchId: computed.patchId,
-      passed: adversarialPassed(result) && params.callerSuppliedDiff !== true,
+      passed: adversarialPassed(result) && !callerSupplied,
       at: Date.now(),
-      detail:
-        params.callerSuppliedDiff === true
-          ? "caller-supplied diff"
-          : (result.loopOutcome ?? "completed"),
+      detail: callerSupplied ? `${outcome} (caller-supplied diff)` : outcome,
       ...(headSha ? { headSha } : {}),
     };
     await appendLedgerEntry(entry, execp, c);

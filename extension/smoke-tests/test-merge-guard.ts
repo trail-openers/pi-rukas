@@ -8,16 +8,16 @@ import path from "node:path";
 import { mergesPr } from "../src/bash-command-parser.ts";
 import {
   assert,
+  GOOD_ENTRIES,
+  TARGET,
+  adversarialPassed,
   exit,
+  hookDecision,
+  latestEntry,
+  lensPassed,
   setupLedgerPath,
   teardownLedger,
-  hookDecision,
   withLedger,
-  TARGET,
-  GOOD_ENTRIES,
-  adversarialPassed,
-  lensPassed,
-  latestEntry,
 } from "./merge-guard-helpers.ts";
 import type { LedgerEntry } from "./merge-guard-helpers.ts";
 
@@ -232,11 +232,16 @@ assert(!lensPassed("ISSUES_FOUND", "MEDIUM"), "lens ISSUES_FOUND blocks at the M
       { ...TARGET, headBranch: "release-please--branches--main", author: "release-please[bot]" },
       false,
     ],
-    ["release-please branch alone", { ...TARGET, headBranch: "release-please--branches--main" }, true],
+    [
+      "release-please branch alone",
+      { ...TARGET, headBranch: "release-please--branches--main" },
+      true,
+    ],
   ];
   for (const [label, target, expectBlock] of carveTargets) {
     const r = await hookDecision("gh pr merge 12", [], { target });
-    if (expectBlock) assert(r.block === true, `carve-out: ${label} is NOT a carve-out (bot ID required)`);
+    if (expectBlock)
+      assert(r.block === true, `carve-out: ${label} is NOT a carve-out (bot ID required)`);
     else {
       assert(r.block === false, `carve-out: ${label} allowed`);
       assert(
@@ -265,13 +270,13 @@ assert(!lensPassed("ISSUES_FOUND", "MEDIUM"), "lens ISSUES_FOUND blocks at the M
 
 // ------------------------- #1161: a caller-pasted diff is not a passing review
 {
-  // The writer records a pasted-diff review as passed:false, detail "caller-supplied diff".
+  // The writer records a pasted-diff review as passed:false, detail "<outcome> (caller-supplied diff)".
   const pasted: LedgerEntry = {
     branch: "feature/x",
     kind: "adversarial",
     patchId: "p1",
     passed: false,
-    detail: "caller-supplied diff",
+    detail: "approved (caller-supplied diff)",
     at: 1,
   };
   const lens: LedgerEntry = {
@@ -301,7 +306,10 @@ assert(!lensPassed("ISSUES_FOUND", "MEDIUM"), "lens ISSUES_FOUND blocks at the M
     target: { ...TARGET, headBranch: "feature/up" },
     remote: "upstream",
   });
-  assert(r.calls.some((c) => c.includes("upstream/feature/up")), "remote resolved via git config");
+  assert(
+    r.calls.some((c) => c.includes("upstream/feature/up")),
+    "remote resolved via git config",
+  );
   assert(!r.calls.some((c) => c.includes("origin/feature/up")), "no hardcoded origin");
   assert(r.block === false, "merge allowed when remote is upstream and patchId matches");
 }
@@ -330,8 +338,14 @@ assert(!lensPassed("ISSUES_FOUND", "MEDIUM"), "lens ISSUES_FOUND blocks at the M
   const subSandboxIdx = subSrc.indexOf("PI_ENSEMBLE_SANDBOX_MODE");
   const subTrustIdx = subSrc.indexOf("PI_ENSEMBLE_TRUST_MODE");
   assert(subGuardIdx > 0, "canary: subagent path registers the shared guard block");
-  assert(subGuardIdx < subSandboxIdx && subGuardIdx < subTrustIdx, "subagent: before both bypasses");
-  assert(subBlock.includes("registerMergeGuard(pi)"), "canary: the shared block registers the merge guard");
+  assert(
+    subGuardIdx < subSandboxIdx && subGuardIdx < subTrustIdx,
+    "subagent: before both bypasses",
+  );
+  assert(
+    subBlock.includes("registerMergeGuard(pi)"),
+    "canary: the shared block registers the merge guard",
+  );
   // Role-agnostic, mode-agnostic, escape hatch present.
   assert(
     !/PI_ENSEMBLE_ROLE/.test(mg),
@@ -355,9 +369,18 @@ assert(!lensPassed("ISSUES_FOUND", "MEDIUM"), "lens ISSUES_FOUND blocks at the M
 {
   const SRC = path.resolve(import.meta.dirname, "..", "src");
   const merged = readFileSync(path.join(SRC, "work-driver-merged-mechanized.ts"), "utf8");
-  assert(/import \{ exec \} from "node:child_process"/.test(merged), "canary: mechanizedMerge merges via in-process exec");
-  assert(/execp\(|forge\.prMerge\(|forge\.prView\(/.test(merged), "…executing gh directly in-process");
-  assert(!merged.includes("tool_call"), "the driver's merge path does not route through the bash tool_call hook");
+  assert(
+    /import \{ exec \} from "node:child_process"/.test(merged),
+    "canary: mechanizedMerge merges via in-process exec",
+  );
+  assert(
+    /execp\(|forge\.prMerge\(|forge\.prView\(/.test(merged),
+    "…executing gh directly in-process",
+  );
+  assert(
+    !merged.includes("tool_call"),
+    "the driver's merge path does not route through the bash tool_call hook",
+  );
 }
 
 teardownLedger();

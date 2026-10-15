@@ -8,12 +8,14 @@
  *
  *   - strict: the lens row is passed:true → merge allowed.
  *   - round-cap (#973): the lens row is ISSUES_FOUND at the cap with no
- *     hasCritical and no residual disclosure marker → refused.
+ *     hasCritical and no residual disclosure marker → refused (the marker is
+ *     what makes the non-blocking findings visible; without it, no merge).
  *
- * #1161 — a review of a caller-pasted diff is written as a non-passing row, so
- * the guard refuses it; the same review via base+head is written as passing.
  * A tool-path CRITICAL_ISSUES_FOUND row must stay refused even with a passing
- * lens. The verdict-to-outcome mapping is asserted in
+ * lens. The tool-path verdict cases (approved / rejected / infra-failure) are covered
+ * in test-adversarial-report-only-parse.ts and test-adversarial-tool-guards.ts.
+ * #1161 — a caller-pasted diff is written as a non-passing row, so the guard
+ * refuses it; the verdict-to-outcome mapping is asserted only in
  * test-adversarial-report-only-parse.ts, not here.
  */
 
@@ -139,14 +141,6 @@ try {
 
   const issues = await reviewRow(ISSUES_TEXT, false);
   const PATCH = issues.patchId;
-  assert(
-    issues.passed === true,
-    "tool-path ISSUES_FOUND (base+head): real writer row is passed:true",
-  );
-  assert(
-    issues.detail === "approved",
-    "tool-path ISSUES_FOUND (base+head): row detail is approved",
-  );
 
   const lensPassedRow: LedgerEntry = {
     branch: BRANCH,
@@ -204,11 +198,6 @@ try {
 
   // #1161 — the same review of a caller-pasted diff is not a passing review.
   const pasted = await reviewRow(ISSUES_TEXT, true);
-  assert(pasted.passed === false, "caller-supplied diff: real writer row is passed:false");
-  assert(
-    pasted.detail === "caller-supplied diff",
-    "caller-supplied diff: real writer row detail is 'caller-supplied diff'",
-  );
   const pastedRefused = await hookDecision("gh pr merge 12", [pasted, lensPassedRow], {
     patchId: PATCH,
   });
@@ -218,10 +207,6 @@ try {
   );
 
   const critical = await reviewRow("VERDICT: CRITICAL_ISSUES_FOUND\n\n1. broken", false);
-  assert(
-    critical.passed === false,
-    "tool-path CRITICAL_ISSUES_FOUND: real writer row is passed:false",
-  );
   const refused = await hookDecision("gh pr merge 12", [critical, lensPassedRow], {
     patchId: PATCH,
   });

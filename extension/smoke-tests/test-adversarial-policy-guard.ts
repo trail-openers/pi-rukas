@@ -6,6 +6,8 @@
  *   - K: a reportOnly review with no recognised verdict policy (an untyped JS
  *     caller) is an infra-failure naming the policy. It dispatches nothing and
  *     is never judged as a routed round.
+ *   - M: a reportOnly that is not a boolean, or a reportVerdict without
+ *     reportOnly (untyped callers), is an infra-failure naming the reason.
  *   - L: a diff pasted into the tool is recorded as caller-supplied; the same
  *     review via base+head is not. The tool sets the flag after the raw
  *     arguments, so a raw argument cannot clear it.
@@ -156,6 +158,33 @@ try {
       ledgerResults.at(-1)?.loopOutcome === "infra-failure",
       `K(${label}): the ledger row is an infra-failure`,
     );
+  }
+
+  // ------------------------------- M. malformed reportOnly / orphan verdict → infra
+  const malformed: Array<[Record<string, unknown>, string]> = [
+    [{ reportOnly: "yes", reportVerdict: "terminal" }, "reportOnly must be a boolean when set"],
+    [{ reportOnly: null }, "reportOnly must be a boolean when set"],
+    [{ reportVerdict: "terminal" }, "reportVerdict requires reportOnly"],
+    [{ reportOnly: false, reportVerdict: "routed" }, "reportVerdict requires reportOnly"],
+  ];
+  for (const [policy, reason] of malformed) {
+    spawnCalls.length = 0;
+    const m = await runAdversarialLoop(
+      {
+        diff: "diff --git a/f b/f\n+x",
+        context: "malformed",
+        workCwd: workRepo,
+        ...policy,
+      } as never,
+      signal(),
+      "job-m",
+    );
+    const label = JSON.stringify(policy);
+    assert(
+      m.loopOutcome === "infra-failure" && m.text.includes(reason),
+      `M(${label}): infra-failure naming "${reason}"`,
+    );
+    assert(spawnCalls.length === 0, `M(${label}): no reviewer or developer is dispatched`);
   }
 
   // ------------------------------------- L. the tool boundary sets the flag
