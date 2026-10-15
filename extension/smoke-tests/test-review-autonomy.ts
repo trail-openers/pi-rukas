@@ -174,9 +174,8 @@ try {
     refused.block === true,
     "tool-path CRITICAL_ISSUES_FOUND + strict lens passed: merge refused",
   );
-  // #1151 — intent-gate autonomy. A non-security CRITICAL open point must not
-  // stall a buildable issue; a security one parks with its own reason; and the
-  // answer (marked [RESOLVED] in the body, then --restart) clears the park.
+  // #1151 — intent-gate autonomy. A buildable issue parks on any unresolved CRITICAL
+  // open point (#1187), and a [RESOLVED] answer plus --restart clears the park.
   const buildable: NormalisedSpec = {
     intent: "Keep the retry timeout configurable.",
     deliverables: [
@@ -202,26 +201,27 @@ try {
   };
   const body = (point: string) => `## Open points (unresolved at the gap-gate cap)\n\n- ${point}\n`;
 
-  const nonSecurity = finaliseSpecVerdict(
+  // #1187 — topic-neutral: every unresolved CRITICAL point parks, whatever its topic.
+  const retry = finaliseSpecVerdict(
     buildable,
     body("[CRITICAL] Which timeout wins when both are set \u2014 proposed: the shorter"),
   );
   assert(
-    nonSecurity.verdict === "proceed-with-assumptions",
-    "autonomy: a non-security CRITICAL open point still proceeds to the PR path",
+    retry.verdict === "park" && retry.parkReason === "unresolved-critical-open-point",
+    "autonomy: a topic-neutral CRITICAL open point (a retry timeout) parks",
   );
-
-  const security = finaliseSpecVerdict(
+  assert(
+    /--restart/.test(parkAction("unresolved-critical-open-point", 42)) &&
+      /\[RESOLVED\]/.test(parkAction("unresolved-critical-open-point", 42)),
+    "autonomy: the park names the [RESOLVED] answer and the --restart way out",
+  );
+  const authz = finaliseSpecVerdict(
     buildable,
     body("[CRITICAL] Who may change the retry timeout \u2014 authorization is undecided"),
   );
   assert(
-    security.verdict === "park" && security.parkReason === "security-open-point",
-    "autonomy: a security CRITICAL open point parks with security-open-point",
-  );
-  assert(
-    /--restart/.test(parkAction("security-open-point", 42)),
-    "autonomy: the security park names the answer-and-restart way out",
+    authz.verdict === "park" && authz.openPoints?.length === 1,
+    "autonomy: a CRITICAL point the old classifier named parks the same way, and is recorded",
   );
 
   const answered = finaliseSpecVerdict(
@@ -229,8 +229,13 @@ try {
     body("[CRITICAL][RESOLVED] Who may change the retry timeout \u2014 maintainers only"),
   );
   assert(
-    answered.verdict !== "park",
-    "autonomy: the same point marked [RESOLVED] does not park after --restart",
+    answered.verdict === "proceed" &&
+      answered.assumptions.some(
+        (a) =>
+          a.text ===
+          "[CRITICAL][RESOLVED] Who may change the retry timeout \u2014 maintainers only",
+      ),
+    "autonomy: the same point marked [RESOLVED] proceeds, recorded as an assumption",
   );
   const spacedResolved = finaliseSpecVerdict(
     buildable,
@@ -238,18 +243,23 @@ try {
   );
   assert(
     spacedResolved.verdict === "proceed" &&
-      spacedResolved.assumptions.some((a) => /Resolved open point/.test(a.text)),
+      spacedResolved.assumptions.some((a) => /Who may change/.test(a.text)),
     "autonomy: [CRITICAL] [RESOLVED] (spaced) is resolved and recorded as an assumption",
   );
-  // Strikethrough is no longer a resolution convention: the line is unparsed and caps the proceed.
+  // A blank body is its own park, and a complete spec cannot lift it (#1187).
+  const blank = finaliseSpecVerdict(buildable, "  \n");
+  assert(
+    blank.verdict === "park" && blank.parkReason === "blank-issue-body",
+    "autonomy: a blank issue body parks as blank-issue-body, not lifted by a complete spec",
+  );
+  // Strikethrough: a struck severity tag is not a readable tag, so the point parks.
   const struck = finaliseSpecVerdict(
     buildable,
     body("~~[CRITICAL] Who may change the retry timeout~~ \u2014 answered: maintainers"),
   );
   assert(
-    struck.verdict === "proceed-with-assumptions" &&
-      struck.assumptions.some((a) => /could not parse a CRITICAL line/.test(a.text)),
-    "autonomy: a struck-through point is not resolved; it caps the proceed as unparsed",
+    struck.verdict === "park" && struck.openPoints?.length === 1,
+    "autonomy: a struck-through severity point parks",
   );
   // [RESOLVED] must sit right after the tag; anywhere else the point still gates.
   const trailing = finaliseSpecVerdict(
@@ -257,7 +267,8 @@ try {
     body("[CRITICAL] Who may change the retry timeout \u2014 maintainers only [RESOLVED]"),
   );
   assert(
-    trailing.assumptions.some((a) => /unresolved CRITICAL open point/.test(a.text)),
+    trailing.verdict === "park" &&
+      trailing.openPoints?.some((p) => p.endsWith("[RESOLVED]")) === true,
     "autonomy: [RESOLVED] after the point text does not resolve it",
   );
 } finally {

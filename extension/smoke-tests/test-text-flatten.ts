@@ -67,8 +67,8 @@ const blankProceed = finaliseSpecVerdict(
   undefined,
 );
 assert(
-  blankProceed.verdict === "park" && blankProceed.parkReason === "underspecified",
-  "blank body on a proceed spec: parked as underspecified (#1171)",
+  blankProceed.verdict === "park" && blankProceed.parkReason === "blank-issue-body",
+  "blank body on a proceed spec: parked as blank-issue-body, not underspecified (#1171, #1187)",
 );
 
 // Non-critical prose is not a malformed CRITICAL line; a real malformed one still is.

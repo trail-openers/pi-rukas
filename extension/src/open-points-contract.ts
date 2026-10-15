@@ -8,18 +8,15 @@
  * one side cannot silently stop the other from reading what it wrote.
  *
  * Reading rules the intent gate applies:
- *   - only bullets under the heading, and only those tagged `[CRITICAL]`, gate;
- *   - a security-class point (authentication/authorization, credentials and keys,
- *     secrets, input validation/injection, sandboxing, data deletion) parks the
- *     cycle with reason `security-open-point`; any other point caps a proceed at
- *     `proceed-with-assumptions`;
- *     the class is defined in security-class.ts, and explainPark derives its text from it.
- *   - a point the author has answered no longer gates. A bullet is resolved only
- *     when `[RESOLVED]` immediately follows the severity tag (e.g.
- *     `- [CRITICAL][RESOLVED] …` or `- [CRITICAL] [RESOLVED] …`). Answer the point
- *     in the issue body, mark it resolved, and re-run with `/work N --restart`.
- *   - a line in the section that mentions CRITICAL but does not parse as a point
- *     or a resolved bullet caps a proceed rather than being ignored.
+ *   - every unresolved CRITICAL point parks the cycle, whatever its topic (#1187).
+ *     No keyword or topic classification decides it: the park reason is
+ *     `unresolved-critical-open-point`.
+ *   - a point is answered only when `[RESOLVED]` appears unemphasised, right after
+ *     the severity tag on the bullet's own first line (`- [CRITICAL][RESOLVED] …` or
+ *     `- [CRITICAL] [RESOLVED] …`). `**[RESOLVED]**` does not count and parks.
+ *     Answer the point in the issue body, then re-run with `/work N --restart`.
+ *   - any other line in the section that is not a plain bullet, checkbox or link
+ *     bullet parks as unparsed, rather than being ignored (work-driver-intent-criticality.ts).
  */
 
 /** Heading of the open-points section the gap gate renders. */
