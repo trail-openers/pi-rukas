@@ -34,13 +34,19 @@ export const ALLOW_PROTECTED_FLAG = "--allow-protected";
  * A directory entry is ALWAYS ungranted, whatever the grant says (#1090): a
  * grant admits one file, and a directory key matching would admit every file
  * under it. `grant` is already in key form (`splitProtectedGrant`).
+ *
+ * Matching compares the RAW touched string (only a leading `./` stripped), not
+ * `protectedPathKey`: that key folds `\` to `/`, so a grant for
+ * `.github/workflows/ci.yml` would otherwise admit a root file literally named
+ * `.github\workflows\ci.yml`. Grant keys cannot contain `\`, so they match
+ * the raw form exactly.
  */
 export function ungrantedProtectedPaths(
   hits: readonly string[],
   grant: readonly string[] | undefined,
 ): string[] {
   const granted = new Set((grant ?? []).map(protectedPathKey));
-  return hits.filter((h) => isDirectoryEntry(h) || !granted.has(protectedPathKey(h)));
+  return hits.filter((h) => isDirectoryEntry(h) || !granted.has(h.replace(/^\.\//, "")));
 }
 
 /**

@@ -316,6 +316,53 @@ const isProtectedFailure = (f: string) => /protected path/.test(f);
   );
 }
 
+// ------- fail closed on an unreadable status; exact grant (#1090 audit 2)
+
+{
+  const BACKSLASH = ".github\\workflows\\ci.yml";
+  assert(
+    ungrantedProtectedPaths([BACKSLASH], [CI]).length === 1,
+    "a backslash file is not admitted by a real-path grant (raw match, not the folded key)",
+  );
+  const backslashRun = await verifyStepOutcome(ctx(`?? ${BACKSLASH}\n`, [CI]), stateWith(), "develop");
+  assert(
+    backslashRun.failures.some(isProtectedFailure),
+    "a root file literally named with backslashes halts under a grant for the forward-slash path",
+  );
+
+  const statusThrows = (seen: { maxBuffer?: number }): DriverContext =>
+    ({
+      ...ctx(""),
+      verifyExecFn: async (cmd: string, opts?: { maxBuffer?: number }) => {
+        if (cmd === "git status --porcelain --untracked-files=all") {
+          seen.maxBuffer = opts?.maxBuffer;
+          throw new Error("stdout maxBuffer length exceeded");
+        }
+        return { stdout: "" };
+      },
+    }) as DriverContext;
+  const seen: { maxBuffer?: number } = {};
+  const failClosed = await verifyStepOutcome(statusThrows(seen), stateWith(), "develop");
+  assert(
+    failClosed.failures.some(
+      (f) => f.includes('worktree "task-a"') && f.includes("maxBuffer length exceeded"),
+    ),
+    "an unreadable status halts the develop step, naming the worktree and the error (gate on)",
+  );
+  assert(
+    (seen.maxBuffer ?? 0) >= 64 * 1024 * 1024,
+    "the status read allows a large untracked set (-uall) — at least 64 MiB",
+  );
+  process.env.PI_ENSEMBLE_PROTECTED_PATHS = "0";
+  const passNote = await verifyStepOutcome(statusThrows({}), stateWith(), "develop");
+  assert(
+    !passNote.failures.some((f) => f.includes("git status failed")) &&
+      passNote.notes.some((n) => n.includes("git status failed in task-a")),
+    "with PI_ENSEMBLE_PROTECTED_PATHS=0 the unreadable status is a note, not a failure",
+  );
+  delete process.env.PI_ENSEMBLE_PROTECTED_PATHS;
+}
+
 // ------------------------------------------ persistence and rendering
 
 {

@@ -123,9 +123,11 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           !gate.ok && gate.failures.some((f) => /empty diff/.test(f)),
           "R1: one worktree erroring does NOT suppress the hollow-diff failure for the assessed one",
         );
+        // #1090 — with the protected-path gate on, an unreadable status fails
+        // closed (its writes cannot be inspected), naming the worktree.
         assert(
-          gate.notes.some((n) => /git status failed/.test(n)),
-          "R1: the erroring worktree is still surfaced as a note",
+          gate.failures.some((f) => /git status failed in worktree "task-a"/.test(f)),
+          "R1: the erroring worktree is surfaced as a failure naming it (gate on)",
         );
 
         // All worktrees unassessable → degrade to pass-with-note, no failure.
@@ -138,9 +140,19 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         };
         const degraded = await verifyStepOutcome({ ...ctx, verifyExecFn: allErr }, s, "develop");
         assert(
-          degraded.ok && degraded.notes.some((n) => /no worktree could be assessed/.test(n)),
-          "R1: ALL worktrees unassessable → degrade to pass-with-note (no evidence either way)",
+          !degraded.ok && degraded.failures.some((f) => /git status failed in worktree/.test(f)),
+          "R1: ALL worktrees unreadable → fails closed on the protected-path gate (gate on)",
         );
+        process.env.PI_ENSEMBLE_PROTECTED_PATHS = "0";
+        try {
+          const passNote = await verifyStepOutcome({ ...ctx, verifyExecFn: allErr }, s, "develop");
+          assert(
+            passNote.ok && passNote.notes.some((n) => /no worktree could be assessed/.test(n)),
+            "R1: ALL worktrees unassessable → degrade to pass-with-note when the gate is off",
+          );
+        } finally {
+          delete process.env.PI_ENSEMBLE_PROTECTED_PATHS;
+        }
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
