@@ -50,7 +50,7 @@ import {
   resumeEnabled,
 } from "./work-driver-resume-reattach.ts";
 import { reenterInterrupted } from "./work-driver-resume.ts";
-import { interruptedByShutdown, sessionEnding } from "./work-driver-shutdown.ts";
+import { interruptedAfter, interruptedByShutdown, sessionEnding } from "./work-driver-shutdown.ts";
 import { routeStepOutcome } from "./work-driver-step-router.ts";
 import { runCi, runStepBack } from "./work-driver-stepback-ci.ts";
 import { deliverTerminalLine } from "./work-driver-terminal-delivery.ts";
@@ -345,7 +345,7 @@ async function runWorkDriverInner(ctx: CycleContext): Promise<DriverOutcome> {
     updateFooter(state, stepStartedAt);
     try {
       state = await runStep(ctx, state, step);
-      if (interruptedByShutdown(ctx, state, step)) return { started: true };
+      if (interruptedAfter(ctx, state, step)) return { started: true };
     } catch (err) {
       // A throw during a session shutdown is the abort's doing, not a crash (work-driver-shutdown.ts).
       if (interruptedByShutdown(ctx, state, step, err)) return { started: true };

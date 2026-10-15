@@ -34,7 +34,13 @@ import type { DriverContext } from "../src/work-driver-context.ts";
 import { interruptedByShutdown } from "../src/work-driver-shutdown.ts";
 import { classifyRunningState } from "../src/work-driver-resume.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
-import { initialState, readState, workStateFile, writeState } from "../src/workflow-state.ts";
+import {
+  detectInconsistencies,
+  initialState,
+  readState,
+  workStateFile,
+  writeState,
+} from "../src/workflow-state.ts";
 import { mkLensSummary, setupSpawnGuard } from "./test-helpers.ts";
 
 const execp = promisify(exec);
@@ -363,6 +369,74 @@ async function captureStderr(fn: () => Promise<unknown>): Promise<string[]> {
         "merged",
       ) === false,
       "C: a step that reached a terminal status is left to the loop's terminal path",
+    );
+  } finally {
+    clearSessionShutdownForTesting();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// E. Shutdown while a step SUCCEEDS. The lens review passes and the shutdown
+//    lands during it. The completed step must not be recorded as interrupted
+//    (re-entry would re-run it); the boundary persists and the record names
+//    the NEXT step, which never starts.
+// ---------------------------------------------------------------------------
+{
+  const issue = 584;
+  const { dir } = await seedAtLensFix(issue);
+  try {
+    const seeded = await readState(dir, issue);
+    if (!seeded) throw new Error("seed missing");
+    await writeState(dir, {
+      ...seeded,
+      pipelineState: {
+        ...seeded.pipelineState,
+        currentStep: "lens-review" as const,
+        lastCompletedStep: "lens-fix" as const,
+      },
+      eventLog: [],
+    });
+    // The lens review reads the branch's diff from its origin ref.
+    await execp(`git -C ${dir} update-ref refs/remotes/origin/feature/shutdown-test refs/heads/feature/shutdown-test`);
+    const fake = makeFakePi();
+    const labels: string[] = [];
+    let lensRuns = 0;
+    const ctx: DriverContext = {
+      host: fake.pi,
+      repoRoot: dir,
+      issue,
+      issueBodyFetcherFn: mockIssueBodyOk,
+      dispatchFn: async (_pi, spec, opts) => {
+        labels.push(opts?.label ?? spec.role);
+        throw new Error(`smoke: stop at ${spec.role} / ${opts?.label}`);
+      },
+      lensReviewFn: async () => {
+        lensRuns += 1;
+        fake.quit();
+        return mkLensSummary({ verdict: "APPROVED" });
+      },
+    };
+    await captureStderr(() => runWorkDriver(ctx).catch(() => {}));
+    const after = await readState(dir, issue);
+    const events = after?.eventLog ?? [];
+    const tail = events[events.length - 1];
+    assert(lensRuns === 1, `E: the lens review that succeeded ran once (ran ${lensRuns}x)`);
+    assert(labels.length === 0, `E: the next step never starts (dispatches: ${labels.join(", ")})`);
+    // The flag must agree with the re-entry check, whichever way it falls.
+    const reentryRefuses = after ? detectInconsistencies(after).length > 0 : true;
+    assert(
+      tail?.kind === "cycle-interrupted" && tail.step === "ci" && tail.resumable === !reentryRefuses,
+      `E: the record names the NEXT step, ci, and its resumable flag matches re-entry (resumable=${tail?.kind === "cycle-interrupted" ? tail.resumable : "?"}, re-entry refuses=${reentryRefuses})`,
+    );
+    assert(
+      after?.pipelineState.currentStep === "ci" && after?.pipelineState.status === "running",
+      `E: the success boundary is persisted (got ${after?.pipelineState.currentStep}/${after?.pipelineState.status})`,
+    );
+    assert(
+      !events.some((e) => e.kind === "cap-hit") &&
+        !events.some((e) => e.kind === "cycle-interrupted" && e.step === "lens-review"),
+      "E: the completed lens-review is not recorded as interrupted or failed",
     );
   } finally {
     clearSessionShutdownForTesting();

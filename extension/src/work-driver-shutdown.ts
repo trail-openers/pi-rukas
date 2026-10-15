@@ -20,6 +20,14 @@
  * that wants to know whether a `running` file is live must read
  * `owner.pid`, as `classifyRunningState` does.
  *
+ * Two snapshots, and the DISK one is authoritative. Re-entry reads the state
+ * file, so `resumable`, the refusal reason and the disk-status gate are all
+ * judged against what `readDiskState` returns. The in-memory `state` is used
+ * only for the early exit (has the cycle already terminalised in memory?), the
+ * branch name, and the failed-step test in `interruptedAfter`. It can be stale:
+ * a step that was cut off returns a state describing the abort as its own
+ * failure, which is why the event is appended to disk, never to memory.
+ *
  * Everything here is synchronous. The process may not outlive an `await`.
  */
 
@@ -29,7 +37,10 @@ import { notifyAgent } from "./agent-message.ts";
 import { sessionShutdownReason } from "./session-shutdown.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
+import { refusedWorkstreams } from "./work-driver-step-refusal.ts";
+import { failureEventOf } from "./work-driver-step-router.ts";
 import * as workWidget from "./work-widget.ts";
+import { validateDiscriminants } from "./workflow-state-validate.ts";
 import {
   WORK_STATE_SCHEMA_VERSION,
   type WorkState,
@@ -57,7 +68,8 @@ function headShaOf(repoRoot: string, branch: string | undefined): string | undef
         stdio: ["ignore", "pipe", "ignore"],
       }).trim() || undefined
     );
-  } catch {
+  } catch (err) {
+    trace(`work-driver: could not read the tip of ${branch}: ${errorText(err)}`);
     return undefined;
   }
 }
@@ -142,8 +154,25 @@ export function interruptedByShutdown(
   const disk = readDiskState(workStateFile(ctx.repoRoot, ctx.issue));
   let recorded: { kind: "recorded"; refusal: string | undefined } | { kind: "failed"; why: string };
   if (!disk.ok) recorded = { kind: "failed", why: disk.why };
-  else {
-    const refusal = detectInconsistencies(disk.state)[0];
+  else if (disk.state.pipelineState.status !== "running") {
+    // Already interrupted or terminal on disk: a second record is a second stop.
+    recorded = {
+      kind: "failed",
+      why: `state file is already ${disk.state.pipelineState.status}, not running`,
+    };
+  } else {
+    // Inside the guarded region: a throw from the checks must still record,
+    // with the refusal named, rather than escape with no record and no line.
+    // Re-entry's verdict is classifyRunningState plus the halts after it. Only
+    // the state checks can be evaluated here: classifyRunningState's refuse arm
+    // needs an owner pid other than this process, and the owner on this file is
+    // this process.
+    let refusal: string | undefined;
+    try {
+      refusal = [...detectInconsistencies(disk.state), ...validateDiscriminants(disk.state)][0];
+    } catch (err) {
+      refusal = `state could not be checked (${errorText(err)})`;
+    }
     try {
       writeStateSync(
         ctx.repoRoot,
@@ -187,4 +216,31 @@ export function interruptedByShutdown(
     }
   }
   return true;
+}
+
+/**
+ * Did the step that just returned end in a failure? The same signals
+ * `routeStepOutcome` routes on: a failure event at the tail (or behind a
+ * fan-out), a cap-hit, or a driver refusal.
+ */
+function stepFailed(state: WorkState, step: WorkStep): boolean {
+  const last = state.eventLog[state.eventLog.length - 1];
+  return (
+    failureEventOf(state.eventLog) !== undefined ||
+    last?.kind === "cap-hit" ||
+    refusedWorkstreams(state.eventLog, step).length > 0
+  );
+}
+
+/**
+ * The post-step check, after `runStep` returned without throwing. A shutdown
+ * ends the cycle here only when the step FAILED, because a failure under
+ * shutdown is the abort's doing. A step that SUCCEEDED is not interrupted: it
+ * routes and persists its boundary normally, and the loop's pre-step check
+ * records the shutdown on the NEXT step. Recording a succeeded step as
+ * interrupted would leave it at `currentStep`, and re-entry would run it again.
+ */
+export function interruptedAfter(ctx: DriverContext, state: WorkState, step: WorkStep): boolean {
+  if (!stepFailed(state, step)) return false;
+  return interruptedByShutdown(ctx, state, step);
 }
