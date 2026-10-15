@@ -6,6 +6,7 @@
  * All 9 steps wired; each implementation lives in `work-driver-<step>.ts`.
  */
 import { notifyAgent } from "./agent-message.ts";
+import { traceResourceBudget } from "./resource-budget.ts";
 import { trace } from "./trace.ts";
 import { runArtifactSweep } from "./work-driver-artifact-sweep.ts";
 import { checkAttentionLabel } from "./work-driver-attention.ts";
@@ -89,6 +90,7 @@ export async function runWorkDriver(ctx: DriverContext): Promise<DriverOutcome> 
     };
   }
   try {
+    traceResourceBudget(ctx.issue); // #1325
     const cycleCtx = enterCycle(ctx);
     // #838 — the per-cycle deck header ("/work #N"): created when the cycle
     // starts, cleared on EVERY terminal path via the finally — merged,

@@ -17,6 +17,8 @@
  *                    (result.ts), NDJSON progress (ndjson.ts)
  *   - `inputs`     — the env-var inputs this build reads, by name
  *   - `features`   — named features a caller may depend on
+ *   - `resources`  — the host budget and the parallelism limits a cycle
+ *                    started now would run with (#1325, resource-budget.ts)
  *
  * The contract-version constants live on the contract modules themselves
  * (exit-code.ts, result.ts, ndjson.ts); this module reads whatever they export.
@@ -24,6 +26,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { type ResourceReport, resourceReport } from "../resource-budget.ts";
 import { EXIT, EXIT_CODE_VERSION } from "./exit-code.ts";
 import { NDJSON_VERSION } from "./ndjson.ts";
 import { RESULT_SCHEMA_VERSION } from "./result.ts";
@@ -33,7 +36,7 @@ import { RESULT_SCHEMA_VERSION } from "./result.ts";
  * answer's shape (added/removed top-level fields); the caller's drift test
  * (#1306) reads this and re-derives the answer from the live constants.
  */
-export const CAPABILITIES_VERSION = 1 as const;
+export const CAPABILITIES_VERSION = 2 as const;
 
 /** The flags `work` accepts, in the order the parser accepts them. */
 export const WORK_FLAGS = ["--restart", "--json", "--timeout"] as const;
@@ -79,6 +82,8 @@ export interface Capabilities {
   };
   inputs: typeof HEADLESS_INPUTS;
   features: typeof HEADLESS_FEATURES;
+  /** #1325 — read from this host when the answer is built. */
+  resources: ResourceReport;
 }
 
 /**
@@ -131,5 +136,6 @@ export function buildCapabilities(repoRoot?: string): Capabilities {
     },
     inputs: HEADLESS_INPUTS,
     features: HEADLESS_FEATURES,
+    resources: resourceReport(),
   };
 }

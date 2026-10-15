@@ -13,6 +13,7 @@
  * its dependency's tip (no ancestor replay — the #775 shape).
  */
 import path from "node:path";
+import { withVerifySlot } from "./host-resources.ts";
 import { describeSiblingFenceViolations } from "./work-develop-fence-verdicts.ts";
 import { runConsolidatedVerify } from "./work-driver-consolidated-verify.ts";
 import {
@@ -115,14 +116,15 @@ export async function runVerifyCommandGate(opts: {
       continue;
     }
     try {
-      await execFn(cmd, { cwd, timeout: verifyTimeoutMs(), maxBuffer: 4 * 1024 * 1024 });
+      await withVerifySlot(() =>
+        execFn(cmd, { cwd, timeout: verifyTimeoutMs(), maxBuffer: 4 * 1024 * 1024 }),
+      );
     } catch (err) {
       const e = err as Error & { stdout?: string; stderr?: string; killed?: boolean };
       // A verify failure for want of `node_modules` looks like a real defect;
       // in a fresh worktree it is the likelier cause when it matches — say so.
-      // #1005 — per-worktree failures are kept as failures unconditionally
-      // (no pre-#1005 downgrade to evidence on a consolidated pass); the
-      // consolidated run below adds its own verdict on top.
+      // #1005 — per-worktree failures are kept as failures unconditionally;
+      // the consolidated run below adds its own verdict on top.
       const output = `${e.stdout ?? ""}\n${e.stderr ?? ""}\n${e.message ?? ""}`;
       const depsHint = looksLikeMissingDeps(output) ? provisionDepsHint(state, cwd) : "";
       perWorktreeVerifyFailures.push(
@@ -494,7 +496,5 @@ export async function runVerifyCommandGate(opts: {
   }
 }
 
-// `verifyCmdFor` re-exported so the caller keeps its pre-#794 import
-// surface (it already imports the symbol from work-driver-verify-cmd.ts;
-// this re-export is a no-op safety net, kept for import-graph symmetry).
+// Re-exported for the caller's pre-#794 import surface (a no-op safety net).
 export { verifyCmdFor };

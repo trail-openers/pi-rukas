@@ -19,9 +19,9 @@ The headless runner's contract with its caller is four independent surfaces, eac
 | Contract | Version constant | Module | Description |
 |---|---|---|---|
 | Exit codes | `EXIT` object (`exit-code.ts`) | `extension/src/headless/exit-code.ts` | The process exit code. 7 named values: `merged` (0), `handoff` (10), `clarification` (11), `aborted` (20), `interrupted` (21), `crash` (30), `refused` (40). |
-| `--json` result schema | `RESULT_SCHEMA_VERSION` | `extension/src/headless/result.ts` | The JSON document on stdout when `--json` is used. One `HeadlessRunResult` object with `exitCode`, `issues[]` (each with `issue`, `status`, `stateFile`, `durationMs`, `steps`, `exitCode`), and an optional `error`. |
+| `--json` result schema | `RESULT_SCHEMA_VERSION` | `extension/src/headless/result.ts` | The JSON document on stdout when `--json` is used. One `HeadlessRunResult` object with `exitCode`, `issues[]` (each with `issue`, `status`, `stateFile`, `durationMs`, `steps`, `exitCode`), an optional `error`, and `resources` (see [Resource report](#resource-report)). |
 | NDJSON progress | `NDJSON_VERSION` (1) | `extension/src/headless/ndjson.ts` | One JSON object per line on stderr. Every line carries `v` (1), `kind`, `at` (ISO-8601). Driver event lines additionally carry `issue` and `key` (idempotency key `<issue>:<index>:<at>`). Kinds: all `WorkEvent` kinds plus `log` and `pi-resolved`. |
-| Capabilities | `CAPABILITIES_VERSION` (1) | `extension/src/headless/capabilities.ts` | The JSON object `--capabilities` prints. See below. |
+| Capabilities | `CAPABILITIES_VERSION` (2) | `extension/src/headless/capabilities.ts` | The JSON object `--capabilities` prints. See below. |
 
 ### Exit codes
 
@@ -59,11 +59,36 @@ With `--json`, stdout carries exactly one JSON document:
       ],
       "exitCode": 10
     }
-  ]
+  ],
+  "resources": { "host": { … }, "budget": { … }, "limits": { … } }
 }
 ```
 
 An optional top-level `error` (`{ code, message }`) is present when the runner detected a divergence (e.g. `state-diverged`) or another runner-level failure.
+
+`resources` (result schema 2, #1325) is the host budget and the parallelism limits the run chose — see [Resource report](#resource-report).
+
+### Resource report
+
+The same object appears in the `--json` result and in `--capabilities` (`extension/src/resource-budget.ts`):
+
+```
+{
+  "host": {
+    "cpus": 4, "cpuSource": "cgroup-v2",          // os | cgroup-v2 | cgroup-v1
+    "memoryBytes": 8589934592, "memorySource": "cgroup-v2",
+    "cgroup": "v2"                                 // v2 | v1 | none
+  },
+  "budget": { "workstreamSlots": 8, "verifyConcurrency": 2 },
+  "limits": {
+    "parallelGroups":    { "value": 1, "source": "budget" },  // env | budget | default
+    "maxWorkstreams":    { "value": 6, "source": "default" },
+    "verifyConcurrency": { "value": 2, "source": "budget" }   // 0 = unbounded
+  }
+}
+```
+
+`host` is what the machine allows: `os.availableParallelism()` and `os.totalmem()`, each lowered by a cgroup CPU quota or memory limit when one is set. `budget` is derived from it: `workstreamSlots` is two per CPU or one per GiB, whichever is lower; `verifyConcurrency` is one per two CPUs or per 2 GiB, at least 1. `limits` are what a cycle runs with. `source: "env"` means an explicit setting decided the value, `"budget"` that the host budget lowered the default, `"default"` that the static default applied. The budget never raises a default, so on a large unconstrained host every limit is its default.
 
 ### NDJSON progress (v1)
 
@@ -89,7 +114,7 @@ The full set of valid `kind` values is exported as `NDJSON_KINDS` (= `KNOWN_EVEN
 
 ```
 {
-  "schemaVersion": 1,          // the version of the capabilities object itself
+  "schemaVersion": 2,          // the version of the capabilities object itself
   "version": "0.12.79",        // the pi-rukas build version (extension/package.json)
   "commit": "abc1234…" | null, // the baked commit; null when not baked (bare worktree)
   "contracts": {
@@ -97,7 +122,7 @@ The full set of valid `kind` values is exported as `NDJSON_KINDS` (= `KNOWN_EVEN
       "version": 1,             // the exit-code contract version
       "values": { "merged": 0, "handoff": 10, … }  // the full EXIT object
     },
-    "resultSchema": { "version": 1 },
+    "resultSchema": { "version": 2 },
     "ndjson": { "version": 1 }
   },
   "verbs": {
@@ -118,7 +143,8 @@ The full set of valid `kind` values is exported as `NDJSON_KINDS` (= `KNOWN_EVEN
   "features": {
     "resultFromMemory": true,   // #1189 — result from in-memory state, not the state file
     "cycleDeadline": true       // #1238 — a cycle deadline that parks with a handoff
-  }
+  },
+  "resources": { … }            // #1325 — the host budget and limits; see Resource report
 }
 ```
 
@@ -126,7 +152,7 @@ The full set of valid `kind` values is exported as `NDJSON_KINDS` (= `KNOWN_EVEN
 
 | Field | Source | Meaning |
 |---|---|---|
-| `schemaVersion` | `CAPABILITIES_VERSION` constant | Version of the capabilities object shape. Bump when the top-level shape changes. A caller that knows `schemaVersion: 1` can parse this object; a future `schemaVersion: 2` with a new field is a caller-visible change. |
+| `schemaVersion` | `CAPABILITIES_VERSION` constant | Version of the capabilities object shape. Bump when the top-level shape changes. Version 2 (#1325) added `resources`. |
 | `version` | `extension/package.json` `version` | The pi-rukas version of the build. |
 | `commit` | `.pi/pi-rukas-commit` (baked by `install.sh` / the image) | The git commit the build was made from. `null` when the checkout has no baked marker (e.g. a bare worktree or dev tree). |
 | `contracts.exitCodes.version` | Named constant in `exit-code.ts` | Version of the exit-code contract. The 7 named values are stable within a version. |
@@ -139,6 +165,7 @@ The full set of valid `kind` values is exported as `NDJSON_KINDS` (= `KNOWN_EVEN
 | `inputs[].manifestVersion` | Hardcoded | The manifest format version the runner understands. |
 | `features.resultFromMemory` | Constant `true` | `true` when the result is taken from the driver's in-memory state rather than re-reading the state file (#1189). |
 | `features.cycleDeadline` | Constant `true` | `true` when a cycle that hits its deadline parks with a handoff rather than being killed (#1238). |
+| `resources` | `resourceReport()` (`resource-budget.ts`) | The host budget and the limits a cycle started now would run with, read when the answer is built. See [Resource report](#resource-report). |
 
 ### How a caller uses this
 

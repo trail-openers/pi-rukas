@@ -20,6 +20,7 @@
  * (judged by the policy judge), as it does for start_work_driver.
  */
 
+import { resourceReport } from "../resource-budget.ts";
 import { killLiveProcessGroups } from "../spawn-kill.ts";
 import { releaseHeldIntegrationLocks } from "../work-driver-lock.ts";
 import { resolveRepoRoot } from "../work-entry.ts";
@@ -98,6 +99,7 @@ async function main(argv: string[]): Promise<number> {
   if (args.json) {
     const body: Record<string, unknown> = { exitCode: run.exitCode, issues: run.results };
     if (run.error) body.error = run.error;
+    body.resources = resourceReport(); // #1325 — the budget and limits this run chose
     process.stdout.write(`${JSON.stringify(body)}\n`);
   } else {
     const parts = run.results.map((r) => `#${r.issue} ${r.status} (exit ${r.exitCode})`);

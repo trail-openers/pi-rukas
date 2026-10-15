@@ -23,7 +23,7 @@ import { type Forge, createForge } from "./forge.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { WorkInvocation } from "./work-args.ts";
-import { groupIssues, resolvedParallelGroups } from "./work-driver-grouping.ts";
+import { effectiveParallelGroups, groupIssues } from "./work-driver-grouping.ts";
 import type { DriverHost } from "./work-driver-host.ts";
 import { runWorkDriver } from "./work-driver.ts";
 import { singleCycleQueueEntry } from "./work-queue-single-entry.ts";
@@ -99,7 +99,7 @@ function runSingleIssue(
  * `notify` is the caller-provided delivery function for the grouping-decided
  * line (the slash-command path pipes it through notifyAgent; the tool path
  * pipes it through its sink). `concurrency` is no longer a parameter — it is
- * derived internally from `groupList.length` and `resolvedParallelGroups()`,
+ * derived internally from `groupList.length` and `effectiveParallelGroups()`,
  * so both entry paths share one correct value.
  */
 export async function runGroupedIssues(
@@ -128,10 +128,10 @@ export async function runGroupedIssues(
     notes.length > 0
       ? `\n  rules fired: ${notes.length > 4 ? `${cut(notes.slice(0, 4).join("; "), 800)} (+${notes.length - 4} more)` : cut(notes.join("; "), 800)}`
       : "";
-  const concurrency = Math.min(resolvedParallelGroups(), groupList.length);
+  const concurrency = Math.min(effectiveParallelGroups(), groupList.length);
   const restartTag = restart ? " (restart — prior state wiped)" : "";
   notify(
-    `pi-rukas:driver-event v1 kind=group-result issue=${issues.join(", ")} at=${new Date().toISOString()}\npi-rukas: /work grouping decided K=${groupList.length} group(s) — ${summary}${notesLine}\n${resolvedParallelGroups() > 1 ? `Running up to ${concurrency} cycle(s) concurrently` : "Running cycles sequentially"}${restartTag}; a failed group parks and the queue continues.`,
+    `pi-rukas:driver-event v1 kind=group-result issue=${issues.join(", ")} at=${new Date().toISOString()}\npi-rukas: /work grouping decided K=${groupList.length} group(s) — ${summary}${notesLine}\n${effectiveParallelGroups() > 1 ? `Running up to ${concurrency} cycle(s) concurrently` : "Running cycles sequentially"}${restartTag}; a failed group parks and the queue continues.`,
   );
 
   const summaryResult = await runWorkQueue({

@@ -31,6 +31,7 @@
  * two concerns separate.
  */
 
+import { withVerifySlot } from "./host-resources.ts";
 import { trace } from "./trace.ts";
 import {
   classifyConsolidatedVerifyFailure,
@@ -150,11 +151,13 @@ export async function runCommitPrConsolidatedVerify(
 
   const runOnce = async (): Promise<string | undefined> => {
     try {
-      await execFn(opts.verifyCmd, {
-        cwd: opts.repoRoot,
-        maxBuffer: 8 * 1024 * 1024,
-        timeout: opts.timeoutMs,
-      });
+      await withVerifySlot(() =>
+        execFn(opts.verifyCmd, {
+          cwd: opts.repoRoot,
+          maxBuffer: 8 * 1024 * 1024,
+          timeout: opts.timeoutMs,
+        }),
+      );
       return undefined;
     } catch (err) {
       // #841 — classify on stdout AND stderr (the shared helper), not on
