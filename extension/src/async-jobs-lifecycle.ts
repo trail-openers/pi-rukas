@@ -11,6 +11,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type JobKind, childHandles, jobs } from "./async-jobs-registry.ts";
 import { reset as resetDeck } from "./dispatch-deck.ts";
 import { incrementNotice } from "./notice-counter.ts";
+import * as pendingJobs from "./pending-jobs-signal.ts";
 import { markSessionShutdown } from "./session-shutdown.ts";
 import { trace } from "./trace.ts";
 
@@ -33,6 +34,45 @@ export function deliverReport(host: DispatchHost, report: string): void {
   } catch (err) {
     trace(`async report delivery failed: ${(err as Error).message}`);
   }
+}
+
+/**
+ * The one stand-in path for a settle that could not hand its report to Pi: deliver
+ * `standIn(failure)` (naming the job or batch) so the caller's releaseAfter never drops
+ * a count without a report. Never throws — a stand-in that also fails is traced with
+ * both errors, so the caller can still release.
+ */
+export function deliverStandIn(
+  host: DispatchHost,
+  label: string,
+  failure: unknown,
+  standIn: (failure: unknown) => string,
+): void {
+  try {
+    deliverReport(host, standIn(failure));
+  } catch (err) {
+    trace(`${label} stand-in report also failed: ${String(err)} (original: ${String(failure)})`);
+  }
+}
+
+/**
+ * Deliver `build()`; if building throws, fall back to the stand-in. Never throws.
+ */
+export function deliverOrStandIn(
+  host: DispatchHost,
+  label: string,
+  build: () => string,
+  standIn: (failure: unknown) => string,
+): void {
+  let failure: unknown;
+  try {
+    deliverReport(host, build());
+    return;
+  } catch (err) {
+    failure = err;
+    trace(`${label} report failed: ${String(err)}`);
+  }
+  deliverStandIn(host, label, failure, standIn);
 }
 
 /** Snapshot of current jobs for dispatch_status (metadata only — never content). */
@@ -161,7 +201,14 @@ export function registerAsyncJobsLifecycle(pi: ExtensionAPI): void {
     // Name what ended and why Pi says it ended: the bare count left an
     // operator with "aborted 1 in-flight async jobs" and no cause.
     const labels = [...jobs.values()].map((j) => j.label).join(", ");
-    const n = killAllJobs();
+    let n = 0;
+    try {
+      n = killAllJobs();
+    } finally {
+      // #1295 — the aborted jobs' reports will never reach this session: "0".
+      // In a finally so a throw from killAllJobs cannot leave the count stuck.
+      pendingJobs.shutdown();
+    }
     if (n > 0) {
       trace(
         `session_shutdown (reason: ${event?.reason ?? "not given"}): aborted ${n} in-flight async jobs — ${labels}`,
