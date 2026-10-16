@@ -16,8 +16,9 @@
  *      the re-entry check would refuse; a terminalized step is left alone.
  *   D. no cycle starts once the session is shutting down.
  *
- * The shutdown is delivered through the real `session_shutdown` hook, so the
- * test also proves the hook is what sets the flag. No Pi spawn happens.
+ * Delivered through the real `session_shutdown` hook, so this also proves the
+ * hook sets the flag. No Pi spawn; the origin itself (a real signal or EOF)
+ * needs a child per case: test-exit-cause.ts.
  */
 
 import { exec } from "node:child_process";
@@ -28,6 +29,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerAsyncJobsLifecycle } from "../src/async-jobs-lifecycle.ts";
+import { resetExitCauseForTesting } from "../src/exit-cause.ts";
 import { clearSessionShutdownForTesting } from "../src/session-shutdown.ts";
 import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
@@ -59,6 +61,12 @@ process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_VERIFY = "0";
 setupSpawnGuard();
+
+// Process-scoped trackers `fake.quit()` / `armExitCause()` set; shared across cases.
+function clearShutdownStateForTesting(): void {
+  clearSessionShutdownForTesting();
+  resetExitCauseForTesting();
+}
 
 /** A fake Pi that keeps the `session_shutdown` handler the extension registers. */
 function makeFakePi() {
@@ -109,6 +117,18 @@ async function seedAtLensFix(issue: number): Promise<{ dir: string; head: string
   await fs.writeFile(path.join(dir, "feature.txt"), "const x = eval(input);\n");
   await sh("git add feature.txt && git commit -q -m feature");
   const head = (await sh("git rev-parse HEAD")).stdout.trim();
+  // The lens summary is stored as JSON text: one eval() row here.
+  const findings = JSON.stringify([
+    {
+      lens: "SECURITY",
+      severity: "MEDIUM",
+      path: "feature.txt",
+      line: 1,
+      title: "eval() usage",
+      description: "Use of eval is unsafe",
+      suggestion: "Replace with safe alternative",
+    },
+  ]);
   let s = initialState(issue, 1_000_000);
   s = {
     ...s,
@@ -128,17 +148,7 @@ async function seedAtLensFix(issue: number): Promise<{ dir: string; head: string
         at: 2_000_000,
         jobId: "j-lens-1",
         round: 1,
-        findings: JSON.stringify([
-          {
-            lens: "SECURITY",
-            severity: "MEDIUM",
-            path: "feature.txt",
-            line: 1,
-            title: "eval() usage",
-            description: "Use of eval is unsafe",
-            suggestion: "Replace with safe alternative",
-          },
-        ]),
+        findings,
         verdict: "ISSUES_FOUND" as const,
       },
     ],
@@ -226,13 +236,17 @@ async function captureStderr(fn: () => Promise<unknown>): Promise<string[]> {
       `A: the write-ahead record survives, so re-entry resolves to resume (got ${verdict?.action})`,
     );
     const tail = events[events.length - 1];
+    // The tail's shape and its origin in one assertion: the origin is pinned to a
+    // FIXED value rather than read out of the record and interpolated into the
+    // expectation, which passes whatever the code records (the pre-fix bug).
+    const originOfA = tail?.kind === "cycle-interrupted" ? tail.origin : "?";
     assert(
       tail?.kind === "cycle-interrupted" &&
         tail.step === "lens-fix" &&
         tail.reason === "quit" &&
-        typeof tail.origin === "string" &&
-        tail.resumable === true,
-      `A: the tail event says the cycle was interrupted by the shutdown (got ${JSON.stringify(tail)})`,
+        tail.resumable === true &&
+        originOfA === "unknown",
+      `A: the tail event says the cycle was interrupted, origin pinned to unknown (got ${JSON.stringify(tail)})`,
     );
     assert(
       tail?.kind === "cycle-interrupted" &&
@@ -240,18 +254,21 @@ async function captureStderr(fn: () => Promise<unknown>): Promise<string[]> {
         tail.headSha === head,
       "A: ...and names the branch and its head sha",
     );
-    const originOfA = tail?.kind === "cycle-interrupted" ? tail.origin : "?";
     const said = stderr.filter((l) => l.includes("cycle interrupted"));
+    // The printed line carries the same `unknown`, spelled literally rather than
+    // interpolated: the event and the line must both say it.
     assert(
       said.length === 1 &&
         said[0]?.includes(
-          `cycle interrupted: session shutdown (quit, origin: ${originOfA}) during lens-fix; state is resumable — run /work ${issue}`,
+          `cycle interrupted: session shutdown (quit, origin: unknown) during lens-fix; state is resumable — run /work ${issue}`,
         ) === true,
       `A: exactly one line says why the cycle ended (got ${JSON.stringify(said)})`,
     );
     assert(!existsSync(`${workStateFile(dir, issue)}.sync.tmp`), "A: no temp file is left behind");
 
-    // The next `/work <N>` — a new session, so the flag is gone.
+    // A new session for the next `/work <N>`: the shutdown flag is gone. The
+    // origin tracker is NOT reset — the fake Pi's stdin is this test's own, at
+    // EOF, and the seam keeps the first origin it saw (test-exit-cause.ts).
     clearSessionShutdownForTesting();
     shuttingDown = false;
     labels.length = 0;
@@ -259,12 +276,9 @@ async function captureStderr(fn: () => Promise<unknown>): Promise<string[]> {
     await runWorkDriver({ ...ctx, host: next.pi }).catch(() => {});
     const resumed = await readState(dir, issue);
     assert(
-      next.sent.some((m) => m.includes("kind=resume")),
-      "A: the next run announces a resume",
-    );
-    assert(
-      labels[0]?.startsWith("developer:lens-fix") === true,
-      `A: ...and re-dispatches the interrupted lens-fix (got ${labels[0]})`,
+      next.sent.some((m) => m.includes("kind=resume")) &&
+        labels[0]?.startsWith("developer:lens-fix") === true,
+      `A: the next run announces a resume and re-dispatches lens-fix (got ${labels[0]})`,
     );
     assert(
       (resumed?.eventLog ?? []).some(
@@ -273,7 +287,7 @@ async function captureStderr(fn: () => Promise<unknown>): Promise<string[]> {
       "A: ...which completes this time",
     );
   } finally {
-    clearSessionShutdownForTesting();
+    clearShutdownStateForTesting();
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -322,9 +336,8 @@ async function captureStderr(fn: () => Promise<unknown>): Promise<string[]> {
 }
 
 // ---------------------------------------------------------------------------
-// C. A step with no write-ahead (lens-review, adversarial): what is on disk is
-//    the previous boundary, which the re-entry check reads as drift. The
-//    record must not promise a resume that check would refuse.
+// C. A step with no write-ahead: the record must not promise a resume the
+//    re-entry check would refuse (the disk holds the previous boundary).
 // ---------------------------------------------------------------------------
 {
   const issue = 582;
@@ -373,16 +386,15 @@ async function captureStderr(fn: () => Promise<unknown>): Promise<string[]> {
       "C: a step that reached a terminal status is left to the loop's terminal path",
     );
   } finally {
-    clearSessionShutdownForTesting();
+    clearShutdownStateForTesting();
     rmSync(dir, { recursive: true, force: true });
   }
 }
 
 // ---------------------------------------------------------------------------
-// E. Shutdown while a step SUCCEEDS. The lens review passes and the shutdown
-//    lands during it. The completed step must not be recorded as interrupted
-//    (re-entry would re-run it); the boundary persists and the record names
-//    the NEXT step, which never starts.
+// E. Shutdown while a step SUCCEEDS: the completed step must not be recorded as
+//    interrupted (re-entry would re-run it); the boundary persists and the
+//    record names the NEXT step, which never starts.
 // ---------------------------------------------------------------------------
 {
   const issue = 584;
@@ -445,7 +457,7 @@ async function captureStderr(fn: () => Promise<unknown>): Promise<string[]> {
       "E: the completed lens-review is not recorded as interrupted or failed",
     );
   } finally {
-    clearSessionShutdownForTesting();
+    clearShutdownStateForTesting();
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -470,15 +482,14 @@ async function captureStderr(fn: () => Promise<unknown>): Promise<string[]> {
       },
     });
     assert(
-      outcome.started === false && dispatched === 0 && !existsSync(workStateFile(dir, 583)),
-      "D: a cycle asked to start during shutdown does not start, and writes no state",
-    );
-    assert(
-      fake.sent.some((m) => m.includes("#583 not started") && m.includes("shutting down")),
-      "D: the refusal tells the operator the cycle did not start and why",
+      outcome.started === false &&
+        dispatched === 0 &&
+        !existsSync(workStateFile(dir, 583)) &&
+        fake.sent.some((m) => m.includes("#583 not started") && m.includes("shutting down")),
+      "D: a cycle asked to start during shutdown does not start, writes no state, and says why",
     );
   } finally {
-    clearSessionShutdownForTesting();
+    clearShutdownStateForTesting();
     rmSync(dir, { recursive: true, force: true });
   }
 }
