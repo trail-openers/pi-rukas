@@ -5,33 +5,20 @@
  * Both functions share the same filtering rule (the `integrate()` preflight
  * and the `restoreRepoRoot` caller both read porcelain through here, so the
  * two cannot drift): `.worktrees/` scaffolding is not dirt (driver's own
- * scaffolding, never staged), and untracked `??` entries ARE dirt (the
- * N=1 pre-#287 shape develops directly at repoRoot, and `stagePorcelainPaths`
- * can sweep untracked files into the PR — so an untracked-only root must
- * refuse, not pass, and the refusal parks rather than stash).
+ * scaffolding, never staged), an untracked `??` entry under one of the project's
+ * configured `.pi/dirty-root-exempt` prefixes is not dirt either (#1362), and
+ * any other untracked `??` entry IS dirt (the N=1 pre-#287 shape develops
+ * directly at repoRoot, and `stagePorcelainPaths` can sweep untracked files
+ * into the PR — so an untracked-only root must refuse, not pass, and the
+ * refusal parks rather than stash).
+ *
+ * #1362 deleted the third export this file used to hold,
+ * `porcelainHasUntrackedOnly`: it had zero callers anywhere — not in `src/`, not
+ * in a smoke test — and a filter no reader consults cannot keep its rule in
+ * step with the two readers beside it.
  */
 import { isConfiguredExemptDirtLine } from "./work-driver-dirty-root-exempt.ts";
 import type { ExecFn } from "./worktree.ts";
-
-/**
- * #776 — true when every dirty line is `??` (untracked) — no tracked changes,
- * no staged, no deleted. The caller uses this to decide whether untracked
- * debris alone makes integration infeasible. In the worktree shape (workstream
- * work lives in a separate worktree) untracked debris at repoRoot is NOT
- * blocking because integration (cherry-pick / patch-apply) never touches
- * untracked files; only the N=1 pre-#287 shape (worktree IS repoRoot, where
- * `stagePorcelainPaths` can sweep untracked files into the PR) needs to keep
- * treating untracked as dirt.
- */
-export function porcelainHasUntrackedOnly(
-  porcelain: string[],
-  exempt?: readonly string[],
-): boolean {
-  const lines = porcelain.filter(
-    (l) => l.trim() && !/^..\s+"?\.worktrees\//.test(l) && !isConfiguredExemptDirtLine(l, exempt),
-  );
-  return lines.length > 0 && lines.every((l) => l.startsWith("??"));
-}
 
 /**
  * #654 task-c — the dirty-repoRoot preflight as a reusable, single
