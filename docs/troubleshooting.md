@@ -2162,3 +2162,17 @@ The acceptance boundary is layered:
 Layers 1 and 3 are **advisory in trust mode**. They are environment and string checks, so an agent with a shell can still bypass them. They stop an agent that is not trying to bypass them; the operator's terminal is the real boundary.
 
 A corrupt `review-findings.json` is never overwritten. The reader and the writer both copy it to `review-findings.json.corrupt-<hash>` — the hash is of the bytes that were copied, so a repeat of the same fault names the same file and never duplicates it — and the round then REFUSES: it does not read the corrupt file as "no memory", because a round recorded on no memory would resolve open rows the unreadable file may still hold. The refusal names the copy and the cause and says `repair or remove <file>, or set PI_ENSEMBLE_REVIEW_LEDGER_FILE to a healthy ledger`; the summary carries it as `findings memory unavailable: …`, and every finding is still reported. Fix or remove the file, then re-run the review. A single malformed row is handled the same way on its own (`<file>.corrupt-<hash of the row>`) while the valid rows carry on.
+
+## The offline smoke suite
+
+### The offline suite is slow, or a test interferes with its neighbours
+
+Since #1365 `extension/smoke-tests/lib/verify-loop.sh` runs tests through a bounded job pool (`lib/verify-pool.sh`), default `PI_ENSEMBLE_VERIFY_TEST_JOBS=2`. Two symptoms mean the pool, not the tests:
+
+- **The suite is slower than it used to be**, or a run is thrashing on a busy host — the ceiling is 16 and the count is also clamped to the number of collected tests, either clamp warned on stderr.
+- **A test fails only in the full run and passes alone** — it shares state with a neighbour (a temp path, a port, a per-clone file the neighbour also writes).
+
+**Fix for both:** `PI_ENSEMBLE_VERIFY_TEST_JOBS=1 bash extension/smoke-tests/lib/verify-loop.sh extension/smoke-tests/test-*.ts` restores strictly sequential execution — the pre-#1365 shape, same output and exit codes (pinned by `test-verify-loop-parallel.ts` cases 1-2, which compare JOBS=1 and JOBS=3 byte-for-byte). If one test still fails alone, it is the test.
+
+The other knob is the per-test bound, unchanged by the pool: `PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S` (default 300s, positive integer, else 300 with a warning). A test that hits it is reported `FAILED: <file> (timed out after <N>s)` with a `✗ timed out after <N>s` line prepended to its capture; the whole descendant tree is killed, so a hung test does not take the pool with it. Both variables are read once at startup.
+
