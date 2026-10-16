@@ -51,6 +51,7 @@ import {
   combinedExecFailureStream,
   rerunConsolidatedVerifyOnce,
 } from "./work-driver-verify-flake.ts";
+import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
@@ -72,7 +73,7 @@ export type CommitPrConsolidatedVerifyResult =
        * is the tree the develop gate already verified green. The caller
        * renders the visible note from it. Absent on every real run.
        */
-      skipped?: { treeHash: string; worktree: string };
+      skipped?: AlreadyVerifiedTree;
     }
   | {
       ok: false;
@@ -164,7 +165,7 @@ export async function runCommitPrConsolidatedVerify(
      * equals it, the verify command is skipped and `skipped` reports the
      * identity. A read failure, a mismatch, or no pair → the run happens.
      */
-    alreadyVerifiedTree?: { treeHash: string; worktree: string };
+    alreadyVerifiedTree?: AlreadyVerifiedTree;
   },
 ): Promise<CommitPrConsolidatedVerifyResult> {
   // The single flake retry is allowed only when: (a) this is the first

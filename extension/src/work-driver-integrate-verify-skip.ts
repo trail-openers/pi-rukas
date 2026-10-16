@@ -27,10 +27,9 @@
  */
 
 import { trace } from "./trace.ts";
+import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { consolidatedVerifySkipEnabled, verifyTreeId } from "./work-driver-verify-tree.ts";
 import type { ExecFn } from "./worktree.ts";
-
-export type AlreadyVerifiedTree = { treeHash: string; worktree: string };
 
 export async function commitPrSkipDecision(
   execFn: ExecFn,

@@ -10,6 +10,7 @@ import { verifyIntegration } from "./work-driver-integrate-verify-step.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
+import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import type { WorkState } from "./workflow-state-schema.ts";
 import type { ExecFn } from "./worktree.ts";
 import { sweepBranchHolders } from "./worktree.ts";
@@ -183,7 +184,7 @@ export type IntegrateResult =
        * verified green. The caller records the visible event from it; absent
        * on every run that executed the command.
        */
-      verifySkipped?: { treeHash: string; worktree: string };
+      verifySkipped?: AlreadyVerifiedTree;
     }
   /** Nothing to integrate — every worktree was clean. Not an error. #492. */
   | {
@@ -228,7 +229,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
   let originalRef: string | undefined;
   // #1240 — set only when step 4 skipped its verify run; carried on the
   // success result so the caller can record the visible event.
-  let verifySkipped: { treeHash: string; worktree: string } | undefined;
+  let verifySkipped: AlreadyVerifiedTree | undefined;
   // #750 — the restore is verified, not assumed (see work-driver-restore.ts).
   const restoreRoot = async (): Promise<VerifiedRestoreResult> =>
     originalRef

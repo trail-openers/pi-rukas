@@ -26,6 +26,11 @@
  *
  * Cases a-h: the develop step. The commit-pr half of the same rule
  * (`integrate()` step 4) is covered by `test-work-driver-integrate-verify-skip.ts`.
+ * What COUNTS AS DIRT — the content that denies a tree its identity, which is
+ * the other half of "a gate that cannot prove equivalence runs the check" —
+ * is covered by `test-work-driver-verify-tree-dirt.ts` (the §12 size cap
+ * split). The two eligibility seams are unit-tested directly in
+ * `test-work-driver-verify-eligibility-unit.ts`.
  */
 
 import { execFile } from "node:child_process";
@@ -35,9 +40,11 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { execp } from "../src/exec.ts";
 import { runConsolidatedVerify } from "../src/work-driver-consolidated-verify.ts";
+import type { AlreadyVerifiedTree } from "../src/work-driver-verify-tree.ts";
 import { verifyTreeId } from "../src/work-driver-verify-tree.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import {
+  type Counts,
   type Runs,
   ctxFor,
   installVerifyCmd,
@@ -64,13 +71,6 @@ function assert(cond: boolean, msg: string) {
 }
 
 const root = mkdtempSync(path.join(tmpdir(), "pi-ens-1240-"));
-
-/** The per-case executor bookkeeping: counted verify runs + the repoRoot the
- * `breakAtRepoRoot` predicate applies to. */
-interface Counts {
-  runs: Runs;
-  repoRoot: string;
-}
 
 /** At least one verify run happened at repoRoot (the consolidated probe). */
 const ranAtRoot = (runs: Runs, repo: string) => ranAt(runs, repo);
@@ -322,7 +322,7 @@ try {
       alreadyVerifiedTree: {
         treeHash: treeHash as string,
         worktree: f.worktrees.default as string,
-      },
+      } as AlreadyVerifiedTree,
     });
     assert(
       result.status === "passed" && result.skipped !== undefined,
@@ -345,7 +345,7 @@ try {
       alreadyVerifiedTree: {
         treeHash: "0000000000000000000000000000000000000000",
         worktree: f.worktrees.default as string,
-      },
+      } as AlreadyVerifiedTree,
     });
     assert(
       wrong.status === "passed" && wrong.skipped === undefined && runs2.length === 1,

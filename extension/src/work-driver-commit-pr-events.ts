@@ -227,12 +227,19 @@ export function finalizeCommitPrState(
   // Via the shared builder (work-driver-events.ts): unique jobId — the old
   // inline literal "mechanized" appeared twice per fan-out cycle, making
   // jobId useless as a correlation key (census 2026-09-09).
+  // #1240 — the skip is named in the summary as well as in the event: the
+  // step's operator-facing line is the thing a reader scans when a commit-pr
+  // came back fast, and "it was quick, or it skipped" must have one answer.
+  const skipNote =
+    res.verifySkipped === undefined
+      ? ""
+      : `\nconsolidated verify skipped: tree ${res.verifySkipped.treeHash} already passed in ${res.verifySkipped.worktree}`;
   next = appendEvent(
     next,
     synthesizeDriverCompletion({
       step: "commit-pr",
       label: "driver:commit-pr",
-      summary: `Mechanized commit-pr: consolidated ${ids.length} worktree(s), committed, pushed ${branchName}, ${prAlreadyOpen ? `updated open PR #${prNumber}` : "opened PR"}.\npr: ${prNumber}`,
+      summary: `Mechanized commit-pr: consolidated ${ids.length} worktree(s), committed, pushed ${branchName}, ${prAlreadyOpen ? `updated open PR #${prNumber}` : "opened PR"}.${skipNote}\npr: ${prNumber}`,
       startedAt,
       now: Date.now(),
     }),

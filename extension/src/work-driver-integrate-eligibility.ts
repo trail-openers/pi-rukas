@@ -34,6 +34,7 @@
  * governs the develop step's copy of the same duplicate run.
  */
 
+import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { verifyTreeId } from "./work-driver-verify-tree.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -48,7 +49,7 @@ export async function commitPrVerifiedTree(
     patchApplied: string[];
     noDiff: Record<string, unknown>;
   },
-): Promise<{ treeHash: string; worktree: string } | undefined> {
+): Promise<AlreadyVerifiedTree | undefined> {
   const worktree = opts.verifiedWorktree;
   if (worktree === undefined) return undefined;
   const eligible =

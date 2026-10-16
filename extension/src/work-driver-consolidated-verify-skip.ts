@@ -30,11 +30,9 @@
  * the comparison succeeded on both sides with real hashes.
  */
 
+import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { consolidatedVerifySkipEnabled, verifyTreeId } from "./work-driver-verify-tree.ts";
 import type { ExecFn } from "./worktree.ts";
-
-/** The tree that already passed, plus the worktree it came from. */
-export type AlreadyVerifiedTree = { treeHash: string; worktree: string };
 
 /**
  * The skip to take for this probe, or `undefined` to run the verify command.

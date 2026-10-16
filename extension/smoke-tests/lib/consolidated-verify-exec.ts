@@ -21,6 +21,16 @@ const execFileP = promisify(execFile);
 /** A counted verify invocation: where the project's command ran. */
 export type Runs = Array<{ cwd: string }>;
 
+/**
+ * The per-case executor bookkeeping: counted verify runs plus the repoRoot a
+ * `breakAtRepoRoot` predicate applies to. Declared ONCE here because both
+ * #1240 tests build the same value for the same executor factory.
+ */
+export interface Counts {
+  runs: Runs;
+  repoRoot: string;
+}
+
 /** The verify command: append one line to a counter in the cwd, then pass or
  * fail per `opts.fail`. The harness counts runs in the executor, not by
  * reading the counter, so a counted run never touches the tree being hashed. */

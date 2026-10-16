@@ -31,6 +31,7 @@ import { commitPrVerifiedTree } from "./work-driver-integrate-eligibility.ts";
 import { runCommitPrConsolidatedVerify } from "./work-driver-integrate-verify.ts";
 import type { IntegrateOpts, IntegrateResult } from "./work-driver-integrate.ts";
 import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
+import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import type { ExecFn } from "./worktree.ts";
 
 export interface IntegrationVerifyOpts {
@@ -56,7 +57,7 @@ export interface IntegrationVerifyOutcome {
   /** A failure the caller returns verbatim; `undefined` means proceed to push. */
   failure?: Extract<IntegrateResult, { ok: false }>;
   /** The identity that justified skipping the run, when the run was skipped. */
-  skipped?: { treeHash: string; worktree: string };
+  skipped?: AlreadyVerifiedTree;
 }
 
 export async function verifyIntegration(

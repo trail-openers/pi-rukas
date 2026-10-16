@@ -34,6 +34,7 @@ import { isHostForkExhaustion, pidLimitSnapshot } from "./work-driver-exec-error
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { verifyTimeoutFailure, verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import { rawOutputClause } from "./work-driver-verify-flake.ts";
+import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 
 export interface ConsolidatedVerifyReporting {
   cmd: string;
@@ -49,7 +50,7 @@ export interface ConsolidatedVerifyReporting {
   fenceViolations?: FenceViolationRecord[];
   onConsolidatedLogPath?: (logPath: string) => void;
   /** #1240 — the skip's identity, handed to the caller to record as an event. */
-  onConsolidatedVerifySkipped?: (skipped: { treeHash: string; worktree: string }) => void;
+  onConsolidatedVerifySkipped?: (skipped: AlreadyVerifiedTree) => void;
   onVerifyFlakeRecovered?: (evidenceTail?: string) => void;
 }
 
