@@ -211,6 +211,12 @@ export async function verifyStepOutcome(
       () => {
         baselineRedOnly = true;
       },
+      // #1240 review r2 — without this callback the identity the probe
+      // recorded is DROPPED: `verifyDevelopOutcome` threads the out-parameter
+      // to the report layer, which calls it, and `consolidatedVerifySkipped`
+      // would stay undefined so no caller appended the event. The note still
+      // appeared, which is exactly how the gap hid: the note is rendered from
+      // `cons.skipped` independently of the callback.
       (skipped) => {
         consolidatedVerifySkipped = skipped;
       },

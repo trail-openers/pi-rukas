@@ -1284,7 +1284,9 @@ and the develop event log keeps its `verifyEvidence` / duration recording untouc
 
 **The fast tier is covered by the skip as well:** `.pi/verify-cmd-fast` is skipped together with the full command, because both tiers already ran per-worktree on the same content (`PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP=0` restores both).
 
-**Escape hatch:** `PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP=0` restores the always-run behaviour (for example, to reproduce a gate failure that only appears in the probe's checkout).
+**The named assumption — ignored dependency directories are unchanged between the two runs.** The tree hash covers tracked and staged content only, so an ignored directory (`node_modules`, `target`, `dist`) can never make the two sides differ. That is sound only because those directories are *shared* into each worktree by symlink (`worktree-provision.ts`): the per-worktree run and the repoRoot probe read the same dependency tree, so the run that passed judged the same content the skip declines to re-judge. If that assumption does not hold for your project — a per-checkout install, or a gitignored generated directory the verify reads and the probe produces differently — the skip is wrong for you and `PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP=0` disables it. Untracked-but-not-ignored paths are the opposite case and are never exempt: only the driver's own artefacts (`.pi/work-state/`, `.worktrees/`, `tmp/issue-<N>/`) are invisible to the dirt check, so a stray `?? tmp/evil.ts` denies the identity and the command runs.
+
+**Escape hatch:** `PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP` set to `0`, `false`, `off` or `no` (trimmed, case-insensitive) restores the always-run behaviour (for example, to reproduce a gate failure that only appears in the probe's checkout).
 
 ### Type-widening scan
 

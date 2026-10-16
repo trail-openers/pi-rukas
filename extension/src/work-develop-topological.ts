@@ -45,9 +45,9 @@ import {
   safetyNetWorktree,
 } from "./work-driver-safety-net.ts";
 import { armStepNotice } from "./work-driver-step-notice.ts";
+import { recordConsolidatedVerifySkip } from "./work-driver-verify-events.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
-import { recordConsolidatedVerifySkip } from "./workflow-state-events-verify-flake.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 
 /**

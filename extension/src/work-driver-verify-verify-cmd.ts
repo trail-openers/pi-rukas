@@ -121,6 +121,14 @@ export async function runVerifyCommandGate(opts: {
     onVerifyFlakeRecovered,
     fenceViolations,
     onConsolidatedLogPath,
+    // #1240 review r2 — the callback must be destructured AND forwarded:
+    // `reportConsolidatedVerifyOutcome` is the only caller, and until now it
+    // was never passed `onConsolidatedVerifySkipped`, so the skip identity
+    // died here. The note still printed (it renders from `cons.skipped` on
+    // its own), which is exactly how the gap hid — every develop caller's
+    // `consolidatedVerifySkipped` stayed undefined and no skip event was ever
+    // appended, while the state file looked explained.
+    onConsolidatedVerifySkipped,
   } = opts;
   const VALID_SHA_RE = /^[0-9a-f]{40}$/;
   const isValidSha = (s: string | undefined) => typeof s === "string" && VALID_SHA_RE.test(s);
@@ -297,6 +305,10 @@ export async function runVerifyCommandGate(opts: {
     fenceViolations,
     onConsolidatedLogPath: opts.onConsolidatedLogPath,
     onVerifyFlakeRecovered: opts.onVerifyFlakeRecovered,
+    // #1240 review r2 — forwarded, or the skip is invisible to the caller.
+    ...(opts.onConsolidatedVerifySkipped !== undefined
+      ? { onConsolidatedVerifySkipped: opts.onConsolidatedVerifySkipped }
+      : {}),
   });
   // Aggregation: a consolidated FAILURE keeps per-worktree failures as
   // failures. A consolidated PASS does NOT downgrade them (#1005 reverses
