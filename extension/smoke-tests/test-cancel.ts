@@ -24,29 +24,62 @@
  *
  * #1382 removed the last two wall-clock assertions this file kept after that
  * move — Test 2's `elapsedMs >= 5_000` floor and Test 3's `elapsed < 15_000`
- * ceiling — and replaced them with outcome assertions (`diedToSigkill` and
- * `killedByInactivityBudget`) evaluated directly on the settled result. There
- * is no poll and no clock in this file: each caller awaits the spawn, so a
- * genuinely hung child is already bounded by the spawn's own `timeoutMs` and
- * by the verify-loop watchdog. The rationale for why an absolute bound is
- * worse than useless on both sides of that pair is in `lib/kill-outcome.ts`.
+ * ceiling — and replaced them with assertions on the DEATH and the
+ * ATTRIBUTION. What replaced them is bounded, in two places, and the bound is
+ * the whole point of this header:
  *
- * Self-check (bottom of file): the abort probe's predicate AND both outcome
- * predicates are asserted against fabricated results in BOTH directions —
- * each passes the shape it is supposed to pass and fails the shapes it is
- * not, including a bare `exitCode: null` with no attribution — so this test
- * goes RED when a broken kill path would stop attributing. Same shape
- * test-file-size-limit.ts applies to itself.
+ *  - **The kill is proven, not assumed.** `killCause: "abort"` +
+ *    `exitCode: null` is what a SIGKILLed leader reports AND what a leader
+ *    that never exited reports, because the abort resolves the spawn as soon
+ *    as it fires. So Test 2 records the fake child's pids and polls them to
+ *    GONE with `lib/poll-until-killed.ts`'s `pollUntilGone`, bounded at
+ *    `KILL_GRACE_MS * 4` — the product constant the group escalation itself
+ *    reads, times four (twice for the pair of polls; see that module). A pid
+ *    still alive at that deadline is a named RED, never a hang. The poll
+ *    targets the group path (`processGroup: true`) for
+ *    the reason in Test 2's own comment: on the interactive (lone-leader) shape
+ *    the escalation timer is `unref()`'d, can never be observed firing, and a
+ *    probe over that shape cannot tell a working escalation from a deleted one.
+ *  - **Every probe await is bounded.** Each `spawnSpecialist` wait is wrapped
+ *    in a `Promise.race` ceiling (`PROBE_CEILING_MS`, 30 s — generous next to
+ *    the 2 s group escalation and the 2 s budgets it watches, and sized so
+ *    probe + both polls clear it together). A ceiling is
+ *    load-tolerant: a descheduled host costs it nothing unless something is
+ *    genuinely stuck. A FLOOR is neither, which is exactly what #1382 deleted
+ *    (why the 5 s floor and the 15 s ceiling were worse than useless on both
+ *    sides of that pair is in `lib/kill-outcome.ts`). There is no floor in
+ *    this file and none in the predicates.
+ *
+ * The ceiling ENDS the run, it does not only report: a `Promise.race` resolves
+ * but cannot cancel its loser, and on the group path the product's escalation
+ * timer is ref'd by design, so a reporting-only ceiling printed its RED and then
+ * sat on the pinned loop until an outside watchdog killed it — the very hang
+ * this issue exists to remove (measured at 82 s under a 60 s ceiling). See
+ * `bounded`.
+ *
+ * So a direct `bun smoke-tests/test-cancel.ts` cannot hang, with or without
+ * the verify-loop watchdog behind it.
+ *
+ * Self-check (bottom of file): the abort probe's predicate, both outcome
+ * predicates and the reaped-pid predicate are asserted against fabricated
+ * results in BOTH directions — each passes the shape it is supposed to pass
+ * and fails the shapes it is not, including a bare `exitCode: null` with no
+ * attribution and a still-alive pid. Same shape test-file-size-limit.ts
+ * applies to itself.
  */
 
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSpecialist } from "../src/spawn.ts";
 import type { DispatchResult } from "../src/types.ts";
+import { assertSigtermEscalationKillsGroup } from "./lib/cancel-escalation.ts";
+import { writeFakePi } from "./lib/cancel-fixture.ts";
 import { diedToSigkill, killedByInactivityBudget } from "./lib/kill-outcome.ts";
+import { pidAlive } from "./lib/poll-until-killed.ts";
 import {
   ABORT_PROMPT,
+  type ProbeResult,
   abortProbePasses,
   runAbortProbe,
   assert as sharedAssert,
@@ -58,18 +91,126 @@ function assert(cond: boolean, msg: string) {
   if (!cond) exit = 1;
 }
 
+/**
+ * The ceiling on any single probe's await. A CEILING, not a floor: it only
+ * fires when a child that was asked to die has not settled the spawn, and 30 s
+ * is ~9× the 3.5 s the escalation probe measures on a healthy run and 15× the
+ * 2 s inactivity budget it watches, so no amount of host descheduling reaches
+ * it on a healthy path. Its only job is to make an unbounded wait impossible.
+ *
+ * It is an OVERALL bound, not a per-call one. `assertSigtermEscalationKillsGroup`
+ * calls `bounded` once and then polls twice against deadlines derived from the
+ * kill grace; at 12 s each those polls alone would outlast a 60 s per-call
+ * ceiling and leave the run unbounded. 30 s is set so probe + both polls clear
+ * it together (~3.5 s + 12 s + 12 s ≈ 28 s on this box), and the grace is
+ * halved for the same reason.
+ */
+const PROBE_CEILING_MS = 30_000;
+
+/**
+ * A result the caller can assert on, even when the probe itself timed out.
+ * `ProbeResult.ok` is the probe's own aggregate (`abortProbePasses`), which is
+ * TRUE for a correctly-killed child — so it is not a failure sentinel, and
+ * `undefined` is: it means the spawn never settled inside `PROBE_CEILING_MS`.
+ */
+type Settled = ProbeResult | undefined;
+
+/**
+ * Await a probe under `PROBE_CEILING_MS`, and END THE RUN only if the child is
+ * genuinely still alive when that ceiling expires.
+ *
+ * `Promise.race` resolves but cannot cancel its loser, and on the group path the
+ * product's escalation timer is REF'd by design (see `killProcessTree` — an
+ * unref'd one can never be observed firing). A reporting-only ceiling therefore
+ * printed its own RED and then sat on the pinned loop until an outside watchdog
+ * killed it — the very hang #1382 exists to remove (measured: the break-proof
+ * printed `spawn did not settle within 60000ms` at 60 s and stayed alive to
+ * 82 s). So the ceiling exits the process, writing its verdict to stderr first
+ * so a killed process whose output was still buffered does not look like a
+ * crash. `process.exit` over `process.abort` for the same reason.
+ *
+ * Nothing else in the file can end the run: by definition a hung probe never
+ * returns, so the `exit` counter would never reach the bottom of the file.
+ *
+ * The liveness test is what keeps this from being a false-positive machine.
+ * A settled spawn whose child is gone is HEALTHY no matter what still holds the
+ * event loop — an orphaned `sleep` from a best-effort fixture reaper, a pipe the
+ * loser never closed, bun's own housekeeping. Exiting on a bare ceiling expiry
+ * would fail the suite for a hang that did not happen, and did exactly that
+ * before the check was added (test 1 settled at 1.5 s with the kill attributed
+ * and still got killed at the ceiling). `pidsOf` is injected because the pids
+ * are the fixture's own, recorded by the child; the harness has no other way to
+ * name them.
+ */
+async function bounded(
+  label: string,
+  p: Promise<ProbeResult>,
+  pidsOf?: () => number[],
+): Promise<Settled> {
+  const ceiling = new Promise<undefined>((resolve) => {
+    const t = setTimeout(() => {
+      const live = (pidsOf?.() ?? []).filter(
+        (pid) => Number.isFinite(pid) && pid > 0 && pidAlive(pid),
+      );
+      if (live.length === 0) {
+        // Nothing of ours is running: this is a ref'd handle, not a hung child.
+        // Report it and let the run continue to its own verdict.
+        console.error(
+          `  (note) ${label}: spawn settled but the loop stayed busy past ${PROBE_CEILING_MS}ms`,
+        );
+        resolve(undefined);
+        return;
+      }
+      console.error(
+        `✗ ${label}: spawn did not settle within ${PROBE_CEILING_MS}ms and its pids ${live.join(", ")} were still alive — aborting run`,
+      );
+      process.exit(1);
+    }, PROBE_CEILING_MS);
+    t.unref();
+  });
+  const settled = await Promise.race([
+    p.then(
+      (v) => ({ v }),
+      (e: unknown) => ({ e }),
+    ),
+    ceiling,
+  ]);
+  if (settled === undefined) {
+    assert(false, `${label}: spawn did not settle within ${PROBE_CEILING_MS}ms`);
+    return undefined;
+  }
+  if ("e" in settled) {
+    assert(false, `${label}: spawn threw — ${(settled as { e: unknown }).e}`);
+    return undefined;
+  }
+  return (settled as { v: ProbeResult }).v;
+}
+
+/**
+ * The pids a fixture recorded for itself (leader, and grandchild when it has
+ * one). Empty when the child never got far enough to write them — the ceiling
+ * treats that as "nothing of ours is running", which is the honest reading: a
+ * pid file that was never written cannot name a hung child.
+ */
+function recordedPids(...files: string[]): number[] {
+  const pids: number[] = [];
+  for (const f of files) {
+    try {
+      const n = Number(readFileSync(f, "utf8").trim());
+      if (Number.isFinite(n) && n > 0) pids.push(n);
+    } catch {
+      // Not written yet — nothing to poll.
+    }
+  }
+  return pids;
+}
+
+/** Test 3's armed inactivity budget, named once so predicate and asserts agree. */
+const INACTIVITY_BUDGET_MS = 2_000;
+
 const fakeDir = mkdtempSync(join(tmpdir(), "pi-ensemble-fake-pi-"));
 const savedPath = process.env.PATH;
 const savedInactivity = process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS;
-
-/** A fake `pi` that stays alive until killed (TERM-trapping variant included). */
-function writeFakePi(trapTerm = false) {
-  writeFileSync(
-    join(fakeDir, "pi"),
-    ["#!/bin/sh", trapTerm ? "trap '' TERM" : "true", "exec sleep 300"].join("\n"),
-  );
-  chmodSync(join(fakeDir, "pi"), 0o755);
-}
 
 process.env.PATH = `${fakeDir}:${savedPath}`;
 // #1017 — the offline gate (verify-loop.sh) exports
@@ -97,57 +238,42 @@ try {
   // subject is the attribution; the watchdog poll loop itself is tests 3–4).
   // The wall clock is logged for observability and never fails.
   {
-    writeFakePi();
+    writeFakePi(fakeDir, "exec", join(fakeDir, "t1.pid"));
     console.log("[test] fake child, abort after 1500ms...");
-    const p = await runAbortProbe(ABORT_PROMPT);
-    for (const l of p.lines) console.log(l);
-    assert(
-      p.ok,
-      `aborted fake child: killCause='abort' + ok=false (got killCause=${p.killCause} ok=${p.ok})`,
+    const p = await bounded("test 1 (abort probe)", runAbortProbe(ABORT_PROMPT), () =>
+      recordedPids(join(fakeDir, "t1.pid")),
     );
+    if (p) {
+      for (const l of p.lines) console.log(l);
+      // Test 1's subject is the ATTRIBUTION of a child-killing signal: the
+      // killCause the spawn reports, and the CHILD's `ok`, which the kill
+      // contract forces false (spawn.ts sets `ok = false` whenever a killCause
+      // exists). `p.ok` is deliberately not asserted here: it is the probe's
+      // own aggregate of `abortProbePasses`, so it is TRUE for a correctly
+      // killed child, and quoting it next to "ok=false" read as a
+      // contradiction (the #1382 round-2 finding). `ProbeResult.childOk` now
+      // carries the child's value under a name that cannot be confused, and
+      // `abortProbePasses` is exercised in both directions by the self-check.
+      assert(p.killCause === "abort", `aborted fake child: killCause='abort' (got ${p.killCause})`);
+      assert(p.childOk === false, `...and the killed child reports ok=false (got ${p.childOk})`);
+    }
   }
+  writeFakePi(fakeDir, "trap", join(fakeDir, "t2.pid"), join(fakeDir, "t2.grand.pid"));
+  await assertSigtermEscalationKillsGroup({
+    fakeDir,
+    assert,
+    bounded,
+    recordedPids,
+  });
 
-  // Test 2 — the SIGTERM→SIGKILL escalation: a child that IGNORES SIGTERM is
-  // still killed by the SIGKILL timer (spawn-kill.ts INTERACTIVE_KILL_GRACE_MS). This was previously uncovered — the
-  // real-spawn sections could not demonstrate it, because a healthy real child
-  // exits on SIGTERM before the escalation ever matters.
-  //
-  // #1382 — this used to prove the escalation by asserting
-  // `p.elapsedMs >= 5_000`. That bound proved nothing about the product at
-  // either end: a saturated host clears 5 s easily, so it never fails for the
-  // right reason, and if the escalation were ever SHORTENED below the grace
-  // period the fake child would exit on SIGTERM and the floor would still
-  // pass while the SIGKILL path went unexercised. It is replaced by an
-  // assertion on the death itself: the child died to SIGKILL and the kill was
-  // attributed to the abort (`diedToSigkill`). The ~5 s the fake child now
-  // costs is the price of covering the escalation; INTERACTIVE_KILL_GRACE_MS
-  // is a hardcoded export with no env override and product code is out of
-  // scope here.
+  // Test 3 — a totally silent child is killed by the inactivity watchdog.
   {
-    writeFakePi(true);
-    console.log("\n[test] fake child traps SIGTERM; SIGKILL escalation expected...");
-    const p = await runAbortProbe(ABORT_PROMPT);
-    for (const l of p.lines) console.log(l);
-    // `p.ok` is the probe's own aggregate of `abortProbePasses`, so asserting
-    // it again after `diedToSigkill` duplicates the ok=false + abort facts.
-    // Keep it in Test 1 (where it is the only assertion) and let Test 2 assert
-    // the two things Test 1 does not: the death shape and its attribution.
-    assert(
-      diedToSigkill(p),
-      `TERM-trapping child died to SIGKILL via the abort (got killCause=${p.killCause} exitCode=${p.exitCode})`,
-    );
-  }
-
-  // Test 3 — a totally silent child is killed by the inactivity watchdog long
-  // before the wall-clock cap.
-  {
-    writeFileSync(join(fakeDir, "pi"), "#!/bin/sh\nexec sleep 300\n");
-    chmodSync(join(fakeDir, "pi"), 0o755);
-    process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
-    console.log("\n[test] silent fake child, 2000ms inactivity budget...");
-    const r = await spawnSpecialist(
-      { role: "explore", prompt: "irrelevant" },
-      { timeoutMs: 60_000 },
+    writeFakePi(fakeDir, "exec", join(fakeDir, "t3.pid"));
+    process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = String(INACTIVITY_BUDGET_MS);
+    console.log(`\n[test] silent fake child, ${INACTIVITY_BUDGET_MS}ms inactivity budget...`);
+    const r = await bounded(
+      "test 3 (inactivity probe)",
+      spawnSpecialist({ role: "explore", prompt: "irrelevant" }, { timeoutMs: 60_000 }),
     );
     // #1382 — `assert(elapsed < 15_000)` against a 2000 ms budget was the
     // load-fragile one: 7.5× headroom is still a bound on the HOST (bun
@@ -155,25 +281,18 @@ try {
     // started #1365 a healthy 2000 ms kill was measured 15 s+ away. What
     // proves the watchdog fired is its own attribution — killCause and the
     // budget it recorded — never how long the parent waited to notice. The
-    // granular assertions below are the per-fact evidence; the composite
-    // predicate is their conjunction, asserted once so a regression that
-    // breaks any single fact also fails the predicate's own self-check below.
+    // three facts are asserted individually so a failure names the missing
+    // one; the composite predicate in the self-check below keeps its own
+    // conjunction honest.
     assert(
-      killedByInactivityBudget(r, 2000),
-      `#296: silent child killed by the inactivity watchdog on the armed budget (got killCause=${r.killCause} killBudgetMs=${r.killBudgetMs} ok=${r.ok})`,
+      r?.killCause === "inactivity",
+      `#296: silent child carries killCause='inactivity' (got ${r?.killCause})`,
     );
     assert(
-      r.killCause === "inactivity",
-      `#296: silent child carries killCause='inactivity' (got ${r.killCause})`,
+      r?.killBudgetMs === INACTIVITY_BUDGET_MS,
+      `#296: inactivity killBudgetMs records the armed ${INACTIVITY_BUDGET_MS}ms budget (got ${r?.killBudgetMs})`,
     );
-    assert(
-      r.killBudgetMs === 2000,
-      `#296: inactivity killBudgetMs records the armed 2000ms budget (got ${r.killBudgetMs})`,
-    );
-    assert(
-      r.ok === false,
-      `#296: inactivity-killed child reports ok=false (got killCause=${r.killCause} ok=${r.ok})`,
-    );
+    assert(r?.ok === false, `#296: inactivity-killed child reports ok=false (got ${r?.ok})`);
   }
 
   // Test 4 — a child that keeps streaming stdout OUTLIVES the inactivity
@@ -190,40 +309,44 @@ try {
       ].join("\n"),
     );
     chmodSync(join(fakeDir, "pi"), 0o755);
-    process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
-    console.log("\n[test] streaming fake child (5s of 500ms-spaced output, 2000ms budget)...");
-    const r = await spawnSpecialist(
-      { role: "explore", prompt: "irrelevant" },
-      { timeoutMs: 60_000 },
+    process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = String(INACTIVITY_BUDGET_MS);
+    console.log(
+      `\n[test] streaming fake child (5s of 500ms-spaced output, ${INACTIVITY_BUDGET_MS}ms budget)...`,
     );
-    assert(r.killCause === undefined, "#296: streaming child is NOT killed by the watchdog");
-    assert(r.exitCode === 0 && r.ok === true, "#296: streaming child completes cleanly");
-    assert(r.text.includes("survived"), "#296: streaming child's final text survives");
+    const r = await bounded(
+      "test 4 (streaming probe)",
+      spawnSpecialist({ role: "explore", prompt: "irrelevant" }, { timeoutMs: 60_000 }),
+    );
+    assert(r?.killCause === undefined, "#296: streaming child is NOT killed by the watchdog");
+    assert(r?.exitCode === 0 && r?.ok === true, "#296: streaming child completes cleanly");
+    assert(r?.text.includes("survived") === true, "#296: streaming child's final text survives");
   }
 
   // Test 5 (#296) — wall-clock cap kill carries killCause='timeout' + budget.
   // Deterministic: silent fake child, inactivity watchdog disabled.
   {
-    writeFileSync(join(fakeDir, "pi"), "#!/bin/sh\nexec sleep 300\n");
-    chmodSync(join(fakeDir, "pi"), 0o755);
+    writeFakePi(fakeDir, "exec", join(fakeDir, "t5.pid"));
     process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "0";
     console.log("\n[test] silent fake child, 1500ms wall-clock cap, watchdog off...");
-    const r = await spawnSpecialist({ role: "explore", prompt: "irrelevant" }, { timeoutMs: 1500 });
-    assert(r.ok === false, "#296: cap-killed child reports ok=false");
-    assert(r.killCause === "timeout", "#296: cap-killed child carries killCause='timeout'");
-    assert(r.killBudgetMs === 1500, "#296: killBudgetMs records the expired wall-clock budget");
+    const r = await bounded(
+      "test 5 (timeout probe)",
+      spawnSpecialist({ role: "explore", prompt: "irrelevant" }, { timeoutMs: 1500 }),
+    );
+    assert(r?.ok === false, "#296: cap-killed child reports ok=false");
+    assert(r?.killCause === "timeout", "#296: cap-killed child carries killCause='timeout'");
+    assert(r?.killBudgetMs === 1500, "#296: killBudgetMs records the expired wall-clock budget");
   }
 
   // Self-check — every predicate this file asserts on must discriminate in
   // BOTH directions: the shape it exists to accept passes, and each broken-
   // path shape fails. Same shape test-file-size-limit.ts applies to itself: a
-  // test that cannot go RED is decorative. #1382 extends it to the two outcome
+  // test that cannot go RED is decorative. #1382 extends it to the outcome
   // predicates that replaced the wall-clock bounds — without these,
   // `diedToSigkill` could degrade into `return true` and Tests 2/3 would go
   // silently green.
   {
     const fabricated = (killCause: DispatchResult["killCause"], ok: boolean) =>
-      abortProbePasses({ ok, lines: [], killCause, exitCode: null, elapsedMs: 0 });
+      abortProbePasses({ ok, killCause });
     assert(
       fabricated("abort", false) === true,
       "self-check: attributed abort (killCause + ok=false) passes",
@@ -232,43 +355,38 @@ try {
     assert(fabricated("timeout", false) === false, "self-check: wrong cause fails");
     assert(fabricated("abort", true) === false, "self-check: ok=true abort fails");
 
-    // diedToSigkill: a SIGKILL death attributed to the abort passes — in each
-    // of the three exit encodings (-9, shell-forwarded 137, and the null the
-    // TERM-trapping fake actually reports). Everything the escalation did NOT
-    // cause fails: a child that exits 0 answered SIGTERM, a SIGTERM death is
-    // the well-behaved exit, and an unattributed death says nothing about
-    // this kill path.
+    // diedToSigkill: the abort attribution AND a reaped pid are both required.
+    // The reaped flag is what the OS poll said, so it is the part that can
+    // distinguish a SIGKILLed leader from one that never exited at all —
+    // therefore a still-alive pid fails even with the perfect-looking result
+    // (exitCode null + abort), which is the exact hole round 2 found.
     assert(
-      diedToSigkill({ exitCode: -9, killCause: "abort" }) === true,
-      "self-check: SIGKILL death (-9) + abort passes",
+      diedToSigkill({ exitCode: null, killCause: "abort" }, true) === true,
+      "self-check: reaped leader + abort attribution passes (the shape Test 2 measures)",
     );
     assert(
-      diedToSigkill({ exitCode: 137, killCause: "abort" }) === true,
-      "self-check: shell-forwarded 137 + abort passes",
+      diedToSigkill({ exitCode: null, killCause: "abort" }, false) === false,
+      "self-check: leader still alive at the deadline fails, even with abort + exit=null",
     );
     assert(
-      diedToSigkill({ exitCode: null, killCause: "abort" }) === true,
-      "self-check: exit=null + abort passes (measured shape of the TERM-trapping death)",
+      diedToSigkill({ exitCode: -9, killCause: "abort" }, true) === true,
+      "self-check: signal-death encoding (-9) with a reaped pid passes",
     );
     assert(
-      diedToSigkill({ exitCode: 0, killCause: "abort" }) === false,
-      "self-check: clean SIGTERM exit fails",
+      diedToSigkill({ exitCode: 0, killCause: "abort" }, false) === false,
+      "self-check: a leader that answered SIGTERM and is still running fails",
     );
     assert(
-      diedToSigkill({ exitCode: 1, killCause: "abort" }) === false,
-      "self-check: plain failure exit fails",
+      diedToSigkill({ exitCode: null, killCause: undefined }, true) === false,
+      "self-check: reaped but unattributed fails (an unrelated death is not this kill path)",
     );
     assert(
-      diedToSigkill({ exitCode: -15, killCause: "abort" }) === false,
-      "self-check: a SIGTERM death fails",
+      diedToSigkill({ exitCode: null, killCause: "inactivity" }, true) === false,
+      "self-check: a reaped death attributed elsewhere fails",
     );
     assert(
-      diedToSigkill({ exitCode: null, killCause: undefined }) === false,
-      "self-check: exit=null with no killCause fails (null alone is not a SIGKILL)",
-    );
-    assert(
-      diedToSigkill({ exitCode: -9, killCause: "inactivity" }) === false,
-      "self-check: SIGKILL-shaped death attributed elsewhere fails",
+      diedToSigkill({ exitCode: 0, killCause: "abort" }, true) === true,
+      "self-check: a reaped pid, not the exit code, is the death evidence (exit 0 with a reaped leader passes)",
     );
 
     // killedByInactivityBudget: the watchdog's own attribution passes; every
@@ -278,18 +396,33 @@ try {
       killCause: DispatchResult["killCause"],
       killBudgetMs: number | undefined,
       ok: boolean,
-    ) => killedByInactivityBudget({ ok, killCause, killBudgetMs }, 2000);
-    assert(inactivity("inactivity", 2000, false) === true, "self-check: inactivity kill passes");
-    assert(inactivity(undefined, 2000, false) === false, "self-check: missing cause fails");
-    assert(inactivity("timeout", 2000, false) === false, "self-check: wrong cause fails");
-    assert(inactivity("abort", 2000, false) === false, "self-check: abort cause fails");
-    assert(inactivity("inactivity", 1500, false) === false, "self-check: wrong budget fails");
+    ) => killedByInactivityBudget({ ok, killCause, killBudgetMs }, INACTIVITY_BUDGET_MS);
+    assert(
+      inactivity("inactivity", INACTIVITY_BUDGET_MS, false) === true,
+      "self-check: inactivity kill passes",
+    );
+    assert(
+      inactivity(undefined, INACTIVITY_BUDGET_MS, false) === false,
+      "self-check: missing cause fails",
+    );
+    assert(
+      inactivity("timeout", INACTIVITY_BUDGET_MS, false) === false,
+      "self-check: wrong cause fails",
+    );
+    assert(
+      inactivity("abort", INACTIVITY_BUDGET_MS, false) === false,
+      "self-check: abort cause fails",
+    );
+    assert(
+      inactivity("inactivity", INACTIVITY_BUDGET_MS + 1, false) === false,
+      "self-check: wrong budget fails",
+    );
     assert(
       inactivity("inactivity", undefined, false) === false,
       "self-check: missing budget fails",
     );
     assert(
-      inactivity("inactivity", 2000, true) === false,
+      inactivity("inactivity", INACTIVITY_BUDGET_MS, true) === false,
       "self-check: ok=true inactivity kill fails",
     );
   }

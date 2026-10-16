@@ -13,17 +13,22 @@
  * under test manufactures false parks (the #777/#798 shape #809 removed for
  * the real-spawn variants).
  *
- * So the tests assert the death and the attribution, on the settled result,
- * with no clock in between: each caller awaits `spawnSpecialist` to
- * completion, and that await is already bounded twice over — by the spawn's
- * own `timeoutMs` (the wall-clock cap, which attributes `killCause: "timeout"`)
- * and by `lib/verify-loop.sh`'s per-test watchdog
- * (`PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S`, default 300 s, exit 214). A genuinely
- * hung child therefore surfaces as a bounded failure rather than an infinite
- * wait, which is why the generous settle poll this file used to carry was
- * decorative: both callers polled AFTER the await had resolved, so the
- * predicate was evaluated once on a frozen value and the poll's `timedOut`
- * could never become true.
+ * What replaced them reads the DEATH and the ATTRIBUTION. Two facts, and the
+ * division of labour between them is the whole design:
+ *
+ *  - the ATTRIBUTION (`killCause`) says pi-rukas ended this child (#296);
+ *  - the DEATH is read from the OS — the leader's own recorded pid, polled to
+ *    gone by `lib/poll-until-killed.ts`'s `pollUntilGone` — because the result
+ *    shape alone cannot say it. `killCause: "abort"` + `exitCode: null` is
+ *    what a SIGKILLed leader reports AND what a leader that never exited
+ *    reports, since the abort resolves the spawn before the reaping. A
+ *    predicate over the result alone was therefore satisfied by a child that
+ *    was never killed at all: with the escalation deleted from spawn-kill.ts,
+ *    Test 2 still printed ✓ and the file then hung to the watchdog.
+ *
+ * So these predicates take the reaped-pid verdict as an argument rather than
+ * trying to infer it, and the caller bounds both the poll and the spawn await
+ * (see test-cancel.ts's header). Nothing here reads a clock.
  *
  * Intentionally NOT named `test-*.ts` — CI's smoke-tests glob must not
  * self-execute this (same shape as `lib/poll-until-killed.ts` and
@@ -34,35 +39,37 @@
 import type { DispatchResult } from "../../src/types.ts";
 
 /**
- * Did a SIGTERM-trapping child die to the SIGKILL escalation, rather than
- * exiting on SIGTERM the way a well-behaved child does?
+ * Did the abort actually KILL the TERM-trapping leader?
  *
- * The replacement for the `elapsedMs >= 5_000` floor. That floor was
- * load-INSENSITIVE in the dangerous direction: a saturated host delays the
- * escalation past 5 s so it passes, and if the escalation were ever shortened
- * below 5 s the fake child would exit on SIGTERM and the floor would STILL
- * pass — a decorative assertion. This one reads the death itself.
+ * The replacement for the `elapsedMs >= 5_000` floor, which was load-INSENSITIVE
+ * in the dangerous direction: a saturated host delays the escalation past 5 s
+ * so it passes, and if the escalation were ever shortened below 5 s the fake
+ * child would exit on SIGTERM and the floor would STILL pass — a decorative
+ * assertion.
  *
- * The attribution is required, not optional: `killCause === "abort"` is what
- * says pi-rukas ended this child (#296), and without it any unrelated
- * signal-death or crash of the fake `pi` would read as a covered escalation.
- * Given that attribution, three exit shapes count as a SIGKILL death:
- * `-9` (Node's encoding of a signal death, 0 − 9), `137` (the 128 + 9 a
- * wrapper shell forwards instead of the raw negative), and `null` — which is
- * what the TERM-trapping fake `pi` actually reports here, measured as
- * `exit=null` on a real SIGKILL death, because Node gives no code for a
- * leader whose `exit` event arrives without one.
+ * Two facts, both required, neither sufficient alone:
  *
- * What it must NOT accept is a shape the escalation did not cause: exit 0 (the
- * child answered SIGTERM, so Test 2 covered nothing), any other code, a
- * signal death attributed to something other than the abort, or a bare
- * `exitCode === null` with no attribution at all. The self-check at the bottom
- * of test-cancel.ts asserts exactly that discrimination, which is what keeps
- * this predicate from degrading into `return true`.
+ *  - `reaped` — the caller polled the leader's pid to gone inside the deadline
+ *    it derived from `INTERACTIVE_KILL_GRACE_MS`. This is the death evidence,
+ *    read from live OS state. It is what a result shape can never supply: an
+ *    un-exited leader and a SIGKILLed one look identical in `exitCode`.
+ *  - `killCause === "abort"` — pi-rukas ended the child, not an unrelated
+ *    signal or a crash of the fake `pi`. Without it any death reads as a
+ *    covered escalation.
+ *
+ * `exitCode` is deliberately NOT part of the predicate. The round-2 version
+ * accepted `-9`, `137` and `null`; `-9` is Node's signal-death encoding and
+ * `null` is what the measured TERM-trapping death reports, but `137` has no
+ * producer here at all (nothing in this path forwards 128+9), and asserting on
+ * it implied a shape the code never emits. Requiring nothing of it also keeps
+ * the predicate honest about what it can and cannot see: the pid poll is the
+ * evidence, and the exit code is context the caller prints.
  */
-export function diedToSigkill(p: Pick<DispatchResult, "exitCode" | "killCause">): boolean {
-  if (p.killCause !== "abort") return false;
-  return p.exitCode === -9 || p.exitCode === 137 || p.exitCode === null;
+export function diedToSigkill(
+  p: Pick<DispatchResult, "exitCode" | "killCause">,
+  reaped: boolean,
+): boolean {
+  return reaped && p.killCause === "abort";
 }
 
 /**
