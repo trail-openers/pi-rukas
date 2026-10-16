@@ -151,6 +151,16 @@ for (const c of [
   "bun test -r ./x.ts smoke-tests/review-findings-store*",
   // The operator script is not a test file, even under a test runner.
   "bun test smoke-tests/review-accept-row.ts",
+  // #1125 — a git/gh command carrying a file-writing (`--output`, `-o`) or
+  // config/alias (`-c`) argument is scanned like any other: those arguments
+  // can create the store or run a shell, so the prose-argument exemption does
+  // not cover them.
+  "git show HEAD:blob --output=review-findings.json",
+  "git -c alias.dump='!cat /tmp/payload review-findings.json' dump",
+  // #1125 — the runtime match used to require one line, so a here-doc body or
+  // a program piped into `bun -` reached the store untouched.
+  'bun <<EOF\nimport { acceptFinding } from "./src/review-findings-store.ts"\nEOF',
+  "printf 'import \"./src/review-findings-store.ts\"' | bun -",
 ]) {
   assert(
     runsReviewAccept(c) !== undefined,
@@ -169,6 +179,21 @@ assert(
   runsReviewAccept('git commit -m "fix: note review-findings.json (#1)"') === undefined,
   "guard: a git commit message naming the findings file is allowed",
 );
+// #1125 — the hardening must not swallow the reads the exemption exists for.
+for (const c of [
+  "git log --oneline -- extension/src/review-findings-store.ts",
+  "git diff HEAD -- extension/src/review-accept-guard.ts",
+  "gh pr view 1105",
+  // The argument shape alone is not a route: --output that names no store path.
+  "git show HEAD:README.md --output=/tmp/readme.txt",
+  // A runtime that names no store path is not a route either, stdin included.
+  "cat payload.js | bun -",
+]) {
+  assert(
+    runsReviewAccept(c) === undefined,
+    `guard: a plain git/gh read or a runtime naming no store path is allowed — ${c.slice(0, 44)}`,
+  );
+}
 
 // ── temp clone for the store-backed rules ───────────────────────────────────
 
