@@ -25,15 +25,15 @@
  * recompute goes through the real `computeRangeDiff`.
  */
 
+import { mock } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { mock } from "bun:test";
 
-// Debug must be ON before adversarial.ts is imported: trace.ts reads
-// PI_ENSEMBLE_DEBUG at module load, and the re-read trace only lands when it
-// was on at import time (the env set later in the test would be too late).
+// Debug must be ON for the re-read trace to land. trace.ts reads PI_ENSEMBLE_DEBUG on
+// every call, not at module load, so setting it here is enough whenever it happens to
+// run relative to the imports below.
 const priorDebug = process.env.PI_ENSEMBLE_DEBUG;
 process.env.PI_ENSEMBLE_DEBUG = "1";
 
