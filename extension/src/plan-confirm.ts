@@ -289,12 +289,17 @@ async function fileClaimed(
   // does not re-run: the dry run already refused to call these fileable unless
   // every label existed.
   const labels = claimed.reviewed.labels ?? [];
+  // #1377: the forge is resolved ONCE and the same adapter files — the label
+  // gate does not re-run here (the dry run already refused to call these
+  // fileable unless every label existed), but a filing that resolved its forge
+  // per call would pay the detection read again for no benefit.
+  const forge = (await (getPlanForge() ?? (() => planForgeFor(repoRoot)))()) ?? undefined;
   // A throw from the forge releases the claim before propagating.
   const {
     url,
     number: issueNumber,
     failure,
-  } = await fileIssue(title, spec, getPlanForge() ?? (() => planForgeFor(repoRoot, labels)), {
+  } = await fileIssue(title, spec, () => Promise.resolve(forge), {
     labels,
   }).catch(async (err: unknown) => {
     await claimed.release();

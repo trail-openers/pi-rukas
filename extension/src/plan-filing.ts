@@ -10,6 +10,13 @@
  *   - `setPlanForge`: the injectable forge-resolution seam (tests),
  *   - the `FilingFailure` / `FilingResult` types (D7: discriminated reasons).
  *
+ * The label existence gate that runs before the create call lives in
+ * `plan-labels.ts` and takes the SAME adapter object `fileIssue` was handed, so
+ * one filing resolves its forge once. This module declares no label path of its
+ * own — labels reach the forge as `fileIssue`'s `opts`, which is the single
+ * channel (#1377), and `FileIssueOpts` itself is declared once, in
+ * `forge-types.ts`, and imported from there.
+ *
  * The `FilingFailure.reason` union is declared ONCE here and re-exported;
  * `PlanResult.filingFailure` (plan-types.ts) references this type, so a
  * reason added on the filing side is forced onto the type side.
@@ -17,7 +24,6 @@
 import { detectForge } from "./forge-detect.ts";
 import type { FileIssueOpts } from "./forge-types.ts";
 import { type Forge, createForge } from "./forge.ts";
-import { missingLabels } from "./plan-labels.ts";
 import { trace } from "./trace.ts";
 
 /**
@@ -66,13 +72,6 @@ export interface FilingResult {
 }
 
 /**
- * Options a filing may carry beyond the title and body (#1377). Re-exported from
- * `forge-types.ts` — the single declaration lives there next to `NormalizedIssue`,
- * so the forge adapter never imports from the plan layer.
- */
-export type { FileIssueOpts };
-
-/**
  * File the spec via the forge adapter's `issueCreate`. The forge is resolved
  * through the seam `setPlanForge` (tests inject a stub; production uses
  * `planForgeFor`), and every failure path is DISCRIMINATED and carried on
@@ -80,10 +79,18 @@ export type { FileIssueOpts };
  * included in the detail for `create-error` so the operator sees WHY the
  * issue did not file.
  *
- * #1377: `labels` reaches the create call through `createForge`'s opts (the
- * adapter renders one `--label` per label on gh, `--label a,b` on glab), and
- * the created issue's number travels back on the result so a caller does not
- * have to parse the URL itself.
+ * The options type is `FileIssueOpts` from `forge-types.ts` — declared there,
+ * imported from there, and deliberately NOT re-exported here: a re-export is a
+ * second import path to one type, and the two drift. The declaration lives on
+ * the forge side of the seam because the adapter must never import from the
+ * plan layer.
+ *
+ * #1377: `opts.labels` is the ONLY channel labels travel — the adapter carries
+ * none from construction (a `labels` field on `createForge` plus a per-call
+ * `opts` meant two sources that could disagree, and the construction one won
+ * silently). The adapter renders one `--label` per label on gh, `--label a,b`
+ * on glab, and the created issue's number travels back on the result so a
+ * caller does not have to parse the URL itself.
  */
 export async function fileIssue(
   title: string,
@@ -119,51 +126,21 @@ export async function fileIssue(
 }
 
 /**
- * #1377 — check the requested labels exist on the target repo BEFORE anything
- * files. The check itself (read the label list, diff it, fail-open on a read
- * error) lives in `missingLabels` (plan-labels.ts); this is the filing-side
- * half that turns the answer into the discriminated `label-missing` reason.
- *
- * A missing label is NEVER created as a side effect of filing (that would let a
- * caller mutate repo configuration through a ticket) and the issue is never
- * filed unlabelled (the whole point is that the marker is there from the first
- * moment). So nothing files. An unreadable label list is reported as such
- * rather than as "missing" — a flaky CLI must not refuse legitimate filings.
- */
-export async function labelGate(
-  labels: string[],
-  resolveForge: () => Promise<Forge | undefined>,
-): Promise<FilingFailure | undefined> {
-  if (labels.length === 0) return undefined;
-  const missing = await missingLabels(labels, resolveForge);
-  if (missing === null) {
-    return {
-      reason: "label-missing",
-      detail: `could not read the repository's labels to verify ${labels.join(", ")} — nothing was filed (fix the forge CLI access and re-run start_plan_driver)`,
-    };
-  }
-  if (missing.length === 0) return undefined;
-  return {
-    reason: "label-missing",
-    detail: `the requested label(s) do not exist on the target repo: ${missing.join(", ")} — nothing was filed and no label was created (create the label(s), or drop them from the call)`,
-  };
-}
-
-/**
  * Resolve the forge adapter for the plan driver's filing step
  * (#612 S4 task-b). `PI_ENSEMBLE_FORGE=none` refuses; unknown detection
  * falls back to raw `gh` (pre-migration behaviour). Detection errors are no
  * longer swallowed silently (D7): they propagate to `fileIssue`'s catch and
  * are carried through the `create-error` failure.
+ *
+ * #1377: no `labels` parameter. Labels are arguments to the create call, not
+ * properties of the adapter, so a filing that resolved its forge once and then
+ * filed under labels the gate never saw is not representable.
  */
-export async function planForgeFor(
-  repoRoot: string,
-  labels: string[] = [],
-): Promise<Forge | undefined> {
+export async function planForgeFor(repoRoot: string): Promise<Forge | undefined> {
   if (process.env.PI_ENSEMBLE_FORGE === "none") return undefined;
   const det = await detectForge(repoRoot, {});
   if (det.forge === "unknown") return undefined;
-  return createForge(det, { cwd: repoRoot, labels });
+  return createForge(det, { cwd: repoRoot });
 }
 
 /**

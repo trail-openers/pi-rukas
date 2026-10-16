@@ -19,11 +19,14 @@
  * Run: cd extension && bun run smoke-tests/test-forge-labels.ts
  */
 import {
+  GH_LABEL_LIST_LIMIT,
+  GL_LABEL_LIST_PER_PAGE,
   issueCreateCmd,
   labelAddCmd,
   labelCreateCmd,
   labelFlags,
   labelListCmd,
+  labelListPageLimit,
 } from "../src/forge-commands.ts";
 import { labelOps } from "../src/forge-label-ops.ts";
 import { parseLabelNames } from "../src/forge-labels.ts";
@@ -197,22 +200,68 @@ async function main() {
 
   console.log("labelListCmd + labelOps:");
 
-  await check("the list read is one unchained command per forge", () => {
-    const gh = labelListCmd("github");
-    const gl = labelListCmd("gitlab");
-    assert(gh === "gh label list --limit 500 --json name", `got ${gh}`);
-    assert(gl === "glab label list --per-page 100 --output json", `got ${gl}`);
-    for (const cmd of [gh, gl]) {
-      assert(!/[;&|`$<>]/.test(cmd), `the #408 single-command rule (no chains): ${cmd}`);
-    }
-  });
+  await check(
+    "the list read is one unchained command per forge, at the largest page each CLI offers",
+    () => {
+      // Neither `gh label list` nor `glab label list` has a read-all flag, so
+      // the read asks for the biggest page available and the plan layer treats a
+      // page-full result as possibly truncated. These literals are the pin: a
+      // silent drop back to a small page would make an existing label beyond it
+      // read as "missing" and refuse a legitimate filing.
+      const gh = labelListCmd("github");
+      const gl = labelListCmd("gitlab");
+      assert(gh === `gh label list --limit ${GH_LABEL_LIST_LIMIT} --json name`, `got ${gh}`);
+      assert(
+        gl === `glab label list --page 1 --per-page ${GL_LABEL_LIST_PER_PAGE} --output json`,
+        `got ${gl}`,
+      );
+      assert(
+        GH_LABEL_LIST_LIMIT >= 500 && GL_LABEL_LIST_PER_PAGE >= 100,
+        "page size did not shrink",
+      );
+      assert(
+        labelListPageLimit("github") === GH_LABEL_LIST_LIMIT &&
+          labelListPageLimit("gitlab") === GL_LABEL_LIST_PER_PAGE,
+        "the caller compares against the page the command actually asks for",
+      );
+      for (const cmd of [gh, gl]) {
+        assert(!/[;&|`$<>]/.test(cmd), `the #408 single-command rule (no chains): ${cmd}`);
+      }
+    },
+  );
 
   await check("Forge.labelList runs the list command and parses it", async () => {
     const { run, seen } = runStub({ [labelListCmd("github")]: '[{"name":"auto-filed"}]' });
     const ops = labelOps({ forge: "github", run });
-    const names = await ops.labelList();
-    assert(JSON.stringify(names) === '["auto-filed"]', `got ${JSON.stringify(names)}`);
+    const read = await ops.labelList();
+    assert(JSON.stringify(read.names) === '["auto-filed"]', `got ${JSON.stringify(read.names)}`);
+    assert(read.truncated === false, "a short page is not a truncated read");
     assert(seen.length === 1 && seen[0] === labelListCmd("github"), `one call: ${seen}`);
+  });
+
+  await check(
+    "a page-FULL read reports truncated — the CLI cannot say there is no more",
+    async () => {
+      // The exact shape that made an existing label read as missing: the repo
+      // has more labels than the page, the CLI answers one page, exits 0, and
+      // nothing in the payload distinguishes it from the whole set.
+      const rows = Array.from({ length: GH_LABEL_LIST_LIMIT }, (_, i) => ({
+        name: `l${i}`,
+      }));
+      const { run } = runStub({ [labelListCmd("github")]: JSON.stringify(rows) });
+      const ops = labelOps({ forge: "github", run });
+      const read = await ops.labelList();
+      assert(read.names.length === GH_LABEL_LIST_LIMIT, `rows: ${read.names.length}`);
+      assert(read.truncated === true, "a page-full read must be flagged, not trusted as complete");
+    },
+  );
+
+  await check("one row under the page is a complete set, not a truncated read", async () => {
+    const rows = Array.from({ length: GH_LABEL_LIST_LIMIT - 1 }, (_, i) => ({ name: `l${i}` }));
+    const { run } = runStub({ [labelListCmd("github")]: JSON.stringify(rows) });
+    const ops = labelOps({ forge: "github", run });
+    const read = await ops.labelList();
+    assert(read.truncated === false, "just under the page is the honest whole set");
   });
 
   await check("a failing list read propagates — it is a halt, not an empty set", async () => {

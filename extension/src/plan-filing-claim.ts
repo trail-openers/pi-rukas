@@ -51,7 +51,13 @@ export interface DigestInputs {
   provenance?: PlanProvenance;
 }
 
-/** The digest tuple: version tag, title, body, sorted deduped labels, rendered provenance lines. */
+/**
+ * The digest tuple: version tag, title, body, sorted deduped labels, rendered
+ * provenance lines. The provenance term is the RENDERED lines, not the caller's
+ * object — which is what makes render and digest agree by construction: both
+ * read the same own keys through `markerLineOf`, so a marker the render would
+ * not print cannot be covered by the digest either.
+ */
 function digestTuple(i: DigestInputs): string[] {
   return [
     "plan-reviewed-v2",

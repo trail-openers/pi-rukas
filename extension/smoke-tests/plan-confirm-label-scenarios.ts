@@ -12,11 +12,13 @@
  */
 import {
   GAP_HIGH,
+  type RawCacheEntry,
   cacheFiles,
   forgeStub,
   installCountingDispatch,
   installForgeStub,
   installOfflineVipuneStub,
+  mutateEntry,
   newPlanCache,
   pipeline,
 } from "./plan-test-stubs.ts";
@@ -94,5 +96,64 @@ export async function confirmDigestScenarios(assert: ConfirmAssert): Promise<voi
       (await cacheFiles()).length === 1,
       "confirm: a digest miss never consumes the entry (a correct confirm can still file)",
     );
+  }
+}
+
+/**
+ * The entry guard on the two #1377 fields. A hand-edited cache file must be a
+ * MISS, never a verbatim filing of bytes no validator admitted — the guard runs
+ * before the digest, so a malformed `labels` or `provenance` cannot reach the
+ * create call by echoing a digest that was computed over honest bytes.
+ *
+ * The provenance cases are the ones where the two shape checks used to drift:
+ * the cache guard read inherited bytes while the render and the digest enumerated
+ * only own ones, so a fileable entry could carry a marker that rendered nothing
+ * while its digest claimed pairs. Both readers now go through `isProvenanceShape`.
+ */
+export async function cacheGuardScenarios(assert: ConfirmAssert): Promise<void> {
+  {
+    await newPlanCache();
+    installOfflineVipuneStub();
+    installCountingDispatch(GAP_HIGH);
+    const dry = await pipeline({ dryRun: true });
+    await mutateEntry((e: RawCacheEntry) => {
+      (e.reviewed as Record<string, unknown>).labels = [42];
+    });
+    forgeStub.created.length = 0;
+    const conf = await pipeline({ reviewedDigest: dry.reviewedDigest });
+    assert(
+      conf.filedFromDryRun === undefined,
+      "cache guard: a malformed labels field is not filed verbatim",
+    );
+  }
+
+  {
+    await newPlanCache();
+    installOfflineVipuneStub();
+    installCountingDispatch(GAP_HIGH);
+    const dry = await pipeline({
+      dryRun: true,
+      provenance: { line: "filed by the loop", marker: { run: "cron" } },
+    });
+    for (const [name, badMarker] of [
+      ["a __proto__-keyed marker", JSON.parse('{"__proto__":"x"}')],
+      ["an array marker", []],
+      ["a null marker", null],
+      ["a marker with a non-string value", { run: 7 }],
+      ["a marker with no own pairs", Object.create({ run: "cron" })],
+    ] as [string, unknown][]) {
+      await mutateEntry((e: RawCacheEntry) => {
+        (e.reviewed as Record<string, unknown>).provenance = {
+          line: "filed by the loop",
+          marker: badMarker,
+        };
+      });
+      forgeStub.created.length = 0;
+      const again = await pipeline({ reviewedDigest: dry.reviewedDigest });
+      assert(
+        again.filedFromDryRun === undefined && forgeStub.created.length === 0,
+        `cache guard: ${name} makes the entry a miss, never a verbatim filing`,
+      );
+    }
   }
 }

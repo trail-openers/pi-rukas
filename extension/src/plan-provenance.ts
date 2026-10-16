@@ -51,8 +51,17 @@ export const MAX_PROVENANCE_LINE = 300;
  * body a human reads, so a caller that wants to mention an account has to say
  * so in a field the reviewer can see, and an escaped `<script>` is exactly the
  * "we escaped it for you" trap this refuses.
+ *
+ * `\n` and `\r` are on the same list because the line is rendered as the body's
+ * FIRST line, `_${line}_`, above the driver's own headings. A newline would let
+ * a caller end its line and write the next one, so `line: "ok\n## Open points"
+ * files a body carrying a heading the driver never wrote — and `## Open points`
+ * is exactly the heading the /work intent gate reads for blocking gaps. The
+ * shape is enforced by rejection, not by stripping: a line that renders as
+ * exactly one line has no newline to remove, and a validator that quietly
+ * removed bytes would let the caller's intent differ from what files.
  */
-const FORBIDDEN_LINE_CHARS = /[@<>`]/;
+const FORBIDDEN_LINE_CHARS = /[@<>`\r\n]/;
 
 export interface PlanProvenance {
   /** One line of visible text, rendered italic as the body's FIRST line. */
@@ -63,15 +72,74 @@ export interface PlanProvenance {
 
 /** A caller-supplied input shape — nothing here is trusted until validated. */
 export function isLabelArray(v: unknown): v is string[] {
-  return Array.isArray(v) && v.every((x) => typeof x === "string");
+  // `Array.isArray` accepts a SPARSE array, and `Array.prototype.every` skips
+  // holes — so `[,"a"]` would pass this predicate and then throw inside
+  // `normalizeLabels` on `raw.trim()` of `undefined`. A rejected shape must
+  // reach the caller as an `invalid-input` problem, never as an exception.
+  if (!Array.isArray(v)) return false;
+  for (let i = 0; i < v.length; i++) {
+    if (!Object.prototype.hasOwnProperty.call(v, i)) return false;
+    if (typeof v[i] !== "string") return false;
+  }
+  return true;
 }
 
 export function isProvenanceShape(v: unknown): v is PlanProvenance {
-  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+  if (!isPlainObject(v)) return false;
   const o = v as Record<string, unknown>;
-  if (typeof o.line !== "string") return false;
-  if (!o.marker || typeof o.marker !== "object" || Array.isArray(o.marker)) return false;
-  return Object.values(o.marker as Record<string, unknown>).every((x) => typeof x === "string");
+  // `hasOwnProperty` rather than a bare `typeof o.line`: an inherited `line`
+  // (an `Object.create({ line: "x" })`) must not satisfy the shape — the object
+  // has no line of its own, and nothing downstream would enumerate one.
+  if (!Object.prototype.hasOwnProperty.call(o, "line") || typeof o.line !== "string") return false;
+  if (!isPlainObject(o.marker)) return false;
+  // Own enumerable string keys, each with a string value — see
+  // `ownStringEntries` for why the prototype chain and symbol keys stay out of
+  // both halves of this feature (the render and the digest enumerate own string
+  // keys, so anything else validates without ever appearing).
+  const keys = Object.keys(o.marker);
+  // A symbol-keyed pair is invisible to `Object.keys`, so it would validate here
+  // and render/digest as nothing — the gate would approve bytes the body never
+  // carries. A marker may hold only what this feature can actually print.
+  if (Object.getOwnPropertySymbols(o.marker).length > 0) return false;
+  // A JSON payload carrying `"__proto__"` parses to a marker with that as an
+  // OWN key (verified on Bun and Node: `hasOwnProperty` is true, and the value
+  // is an own data property that `Object.keys` lists). It is therefore not a
+  // prototype-poisoning vector here — but it is a pair the caller can write and
+  // no reader can round-trip: `structuredClone` and JSON re-parsing route it
+  // onto the prototype instead, so the bytes that validate would not be the
+  // bytes a later reader renders. Reject it as the reserved name it is.
+  if (keys.includes("__proto__")) return false;
+  return ownStringEntries(o.marker).length === keys.length;
+}
+
+/**
+ * A plain object: an `Object` prototype (or a bare `Object.create(null)`) and
+ * not an array. This is what excludes the shapes a hand-edited cache entry or
+ * an in-process caller can produce — `Object.create({ line: "x" })` has no OWN
+ * `line`, and reading inherited properties is how a validator comes to approve
+ * bytes nothing ever renders.
+ */
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+  const proto = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * The own enumerable string-keyed pairs of a marker, rejecting a non-string
+ * value up front. `Object.keys` (not `Object.entries`) keeps the symbol-keyed
+ * case out by construction: a symbol key is never rendered and never digested,
+ * so one must never validate either — a one-element `ownStringEntries` against
+ * a two-element `Object.keys` is the refusal.
+ */
+function ownStringEntries(o: Record<string, unknown>): [string, string][] {
+  const out: [string, string][] = [];
+  for (const k of Object.keys(o)) {
+    const val = o[k];
+    if (typeof val !== "string") return [];
+    out.push([k, val]);
+  }
+  return out;
 }
 
 /**
@@ -131,10 +199,10 @@ export function validateProvenance(
     );
   } else if (FORBIDDEN_LINE_CHARS.test(line)) {
     problems.push(
-      "provenance.line contains a forbidden character (@, <, > or backtick) — it is rejected, not escaped",
+      "provenance.line contains a forbidden character (@, <, >, backtick, CR or LF) — it is rejected, not escaped or stripped: the line renders as ONE line of the body and can never open a heading",
     );
   }
-  const entries = Object.entries(v.marker);
+  const entries = ownStringEntries(v.marker);
   if (entries.length > MAX_MARKER_PAIRS) {
     problems.push(
       `provenance.marker has ${entries.length} pairs, over the ${MAX_MARKER_PAIRS}-pair limit`,
@@ -153,8 +221,14 @@ export function validateProvenance(
   if (problems.length > 0) return { ok: false, problems };
   // Sort once, here: the rendered marker order is then a property of this
   // module, not of the caller's object key order or of the digest.
-  const marker: Record<string, string> = {};
-  for (const [k, val] of [...entries].sort((a, b) => (a[0] < b[0] ? -1 : 1))) marker[k] = val;
+  // Assignment is the OTHER half of the own-key rule: `marker[k] = val` with a
+  // `__proto__` key sets the prototype rather than adding a pair, so
+  // `JSON.stringify` of the result would enumerate nothing and the render and
+  // the digest would silently disagree. `Object.fromEntries` on a fresh literal
+  // cannot be steered by a key name.
+  const sorted = [...entries].sort((a, b) => (a[0] < b[0] ? -1 : 1));
+  const marker = Object.fromEntries(sorted) as Record<string, string>;
+  if (Object.keys(marker).length !== sorted.length) return { ok: false, problems };
   return { ok: true, provenance: { line, marker } };
 }
 
@@ -163,7 +237,11 @@ export const PROVENANCE_MARKER_PREFIX = "<!-- pi-rukas:provenance v1";
 
 /** The rendered marker line: pairs in sorted key order, one HTML comment. */
 export function markerLineOf(provenance: PlanProvenance): string {
-  const pairs = Object.entries(provenance.marker).map(([k, v]) => `${k}=${v}`);
+  // `Object.keys` — the SAME own-key enumeration `validateProvenance` admitted
+  // and `reviewedDigestOf` hashes. `Object.entries` would walk the prototype
+  // chain too, so an object whose prototype carries pairs (a hand-edited cache
+  // entry, an in-process caller) would render pairs the digest never covered.
+  const pairs = Object.keys(provenance.marker).map((k) => `${k}=${provenance.marker[k]}`);
   return pairs.length === 0
     ? `${PROVENANCE_MARKER_PREFIX} -->`
     : `${PROVENANCE_MARKER_PREFIX} ${pairs.join(" ")} -->`;

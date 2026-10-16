@@ -17,7 +17,7 @@ import { ciRun as ciRunImpl, ciWatch as ciWatchImpl } from "./forge-ci.ts";
 import * as cmds from "./forge-commands.ts";
 import { listIssueComments, listPrComments, postPrComment } from "./forge-comments.ts";
 import type { ForgeDetection, ForgeType } from "./forge-detect.ts";
-import { labelOps } from "./forge-label-ops.ts";
+import { type LabelListResult, labelOps } from "./forge-label-ops.ts";
 import {
   ForgeFieldError,
   asArray,
@@ -75,9 +75,12 @@ export interface Forge {
   issueView(number: number): Promise<NormalizedIssue>;
   /**
    * #1377 — labels to create the issue with, passed to the create call so the
-   * issue carries them from its first moment. `opts` is optional and its
-   * default is what keeps every existing `issueCreate(title, body)` call site —
-   * and every test stub cast to `Forge` — compiling and behaving unchanged.
+   * issue carries them from its first moment. This is the ONLY label channel:
+   * the adapter deliberately has no construction-time `labels` field, which
+   * would be a second source that could disagree with the per-call one (and
+   * quietly win). `opts` is optional and its default is what keeps every
+   * existing `issueCreate(title, body)` call site — and every test stub cast to
+   * `Forge` — compiling and behaving unchanged.
    */
   issueCreate(title: string, body: string, opts?: FileIssueOpts): Promise<NormalizedIssue>;
   issueEdit(number: number, body: string): Promise<NormalizedIssue>;
@@ -118,11 +121,13 @@ export interface Forge {
 
   // Labels
   /**
-   * #1377 — the repo's label NAMES, for the pre-filing existence check. Returns
-   * `[]` for a repo with no labels; THROWS when the CLI output is not a JSON
-   * array, so an unreadable list can never read as "these labels don't exist".
+   * #1377 — the repo's label NAMES and whether the read may have stopped at a
+   * page boundary, for the pre-filing existence check. Returns `{ names: [],
+   * truncated: false }` for a repo with no labels; THROWS when the CLI output is
+   * not a JSON array, so an unreadable list can never read as "these labels
+   * don't exist". See `LabelListResult` in `forge-label-ops.ts`.
    */
-  labelList(): Promise<string[]>;
+  labelList(): Promise<LabelListResult>;
   labelCreate(name: string, color: string): Promise<NormalizedLabel | undefined>;
   labelAdd(target: "issue" | "mr", number: number, name: string): Promise<void>;
   labelRemove(target: "issue" | "mr", number: number, name: string): Promise<void>;
@@ -159,13 +164,6 @@ export interface CreateForgeOpts {
    * issue-body fetch's 45s timeout). `cwd` is always the forge's repo root.
    */
   execOpts?: { timeout?: number; maxBuffer?: number };
-  /**
-   * #1377 — labels the caller asked the filing to carry, forwarded by
-   * `plan-filing.ts` and rendered by `issueCreateCmd`. The default `[]` is what
-   * keeps every other `createForge` call site's argv byte-identical (the work
-   * driver's `gh issue edit`/comment path passes nothing).
-   */
-  labels?: string[];
 }
 
 /**
@@ -180,7 +178,6 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
   const execFn = opts.execFn ?? execp;
   const cwd = opts.cwd ?? process.cwd();
   const extraOpts = opts.execOpts ?? {};
-  const labels = opts.labels ?? [];
   const forge = det.forge;
   const owner = det.url ? (parseOwner(det.url) ?? "") : "";
   const repo = det.url ? (parseRepo(det.url) ?? "") : "";
@@ -246,9 +243,9 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
         return mapGlIssue(asRecord(stdout));
       }),
 
-    issueCreate: (title, body) =>
+    issueCreate: (title, body, createOpts) =>
       withBodyFile(`create-${title.slice(0, 16)}`, body, (file) =>
-        run(cmds.issueCreateCmd(forge, title, file, labels), (stdout) => {
+        run(cmds.issueCreateCmd(forge, title, file, createOpts?.labels ?? []), (stdout) => {
           if (forge === "github") {
             // `gh issue create` has no `--json` — it prints the created issue's URL
             // as plain text. `parsePrNumberFromResponse` handles both the plain
