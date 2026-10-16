@@ -92,13 +92,6 @@ export function makeKillStdin(): KillSpy {
 }
 
 /**
- * The host's own signature. `DispatchHost` requires both parameters; typing the
- * fake against them (rather than `(text)` alone) is what makes a missing or
- * wrong `deliverAs` a compile error rather than an unasserted detail.
- */
-export type HostSend = DispatchHost["sendUserMessage"];
-
-/**
  * A host whose `sendUserMessage` throws on the `throwOn`-indexed call.
  *
  * Omit `throwOn` (or pass `[]`) and the host ACCEPTS every send — that is the
@@ -156,7 +149,6 @@ export function makePi(
   throwOn?: number[],
 ): {
   pi: ExtensionAPI;
-  host: DispatchHost;
   stdin: KillSpy;
   fireShutdown: (reason?: string) => void;
 } {
@@ -178,7 +170,6 @@ export function makePi(
   } as unknown as ExtensionAPI;
   return {
     pi,
-    host,
     stdin,
     fireShutdown: (reason?: string) => {
       for (const handler of handlers.get("session_shutdown") ?? []) handler({ reason });
@@ -207,24 +198,9 @@ export function attachRpc(w: Wire, mode: "rpc" | "tui" = "rpc"): void {
  *
  * `attach()` always publishes the current count first, so a "<n>" assertion that
  * counted from index 0 would be reading the channel's baseline as if the case
- * had published it. A case that re-attaches mid-run (the shutdown-generation
- * case must — `shutdown()` detaches the context, so asserting on a channel
- * nobody can write to would let a missing "0" read as compliance) resets the
- * log through `resetLog()` so its frames are counted from its own baseline.
+ * had published it.
  */
 export const sent = (w: Wire): string[] => w.statuses.slice(1);
-
-/**
- * Drop everything the channel published so far, as if a fresh session had just
- * attached. Pair with `attachRpc()`: the two together are how a case declares
- * "everything after this point is mine".
- */
-export function resetLog(w: Wire): void {
-  w.reports.length = 0;
-  w.deliverAs.length = 0;
-  w.threwAt.length = 0;
-  w.statuses.length = 0;
-}
 
 /** A complete `DispatchResult` — every required field, no cast at the call site. */
 export function fakeResult(
@@ -293,7 +269,80 @@ export function withStderrCapture<T>(fn: () => T): { value: T; lines: string[] }
   }
 }
 
+/**
+ * Install a stderr tap that lives until the returned `stop()` runs.
+ *
+ * #1389 — the shape `withStderrCapture`/`withStderrCaptureAsync` cannot
+ * express. The batch's settle is `void`-ed in a `.finally` on a member promise:
+ * nothing hands the caller a promise to await, so every `await until(...)` in a
+ * case resolves while the settle is still mid-flight, and a capture scoped to
+ * the case body restores `process.stderr.write` before the WARN the assertions
+ * are about is ever written. The case then reads an empty log and every stderr
+ * assertion "passes" for the wrong reason — the worst kind of green.
+ *
+ * `startTap` opens the tap BEFORE `startBatch` and the case calls `stop()` only
+ * after its last `until` has observed the settle's effect, so the window covers
+ * the whole detached run. Both helpers tap the SAME slot on purpose: a case that
+ * nests them sees one tap win (the outermost) rather than two writes per line,
+ * which would double-count what the assertions match on.
+ */
+export interface StderrTap {
+  lines: string[];
+  stop: () => void;
+}
+
+/** The tap that currently owns `process.stderr.write`, and what it replaced. */
+let activeTap: { lines: string[]; prev: typeof process.stderr.write } | undefined;
+
+export function startStderrTap(): StderrTap {
+  if (activeTap) {
+    // Nested tap: share the outer's sink so the single installed writer feeds
+    // both, and let the OUTER `stop()` be the one that restores stderr.
+    const shared = activeTap.lines;
+    return {
+      lines: shared,
+      stop: () => undefined,
+    };
+  }
+  const lines: string[] = [];
+  const prev = process.stderr.write;
+  activeTap = { lines, prev };
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    lines.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+  return {
+    lines,
+    stop: () => {
+      if (!activeTap || activeTap.lines !== lines) return;
+      process.stderr.write = activeTap.prev;
+      activeTap = undefined;
+    },
+  };
+}
+
 /** True when `lines` contains an unconditional WARN carrying `needle`. */
 export function warned(lines: readonly string[], needle: string): boolean {
   return lines.some((l) => l.startsWith("[pi-rukas] WARN") && l.includes(needle));
+}
+
+/**
+ * Keep a tap open until it has actually seen a WARN carrying `needle`, then close
+ * it. Returns whether the line arrived inside the bound.
+ *
+ * Why this exists rather than `await until(...)` + `tap.stop()`: the batch's
+ * settle is `void`-ed in a detached `.finally` on a member promise, and the WARNs
+ * under test are written AFTER the last awaitable effect (the release publishes
+ * "0", the stand-in lands, and only then does the tail speak). So every predicate
+ * a case can build from the wire is already satisfied before the line is written,
+ * and a `stop()` right after them closes the window early — the case reads an
+ * empty log and its stderr assertion "passes" for the wrong reason. Polling the
+ * tap itself is the only predicate that can see the late line.
+ */
+export async function waitWarn(tap: StderrTap, needle: string, tries = 100): Promise<boolean> {
+  for (let i = 0; i < tries; i++) {
+    if (warned(tap.lines, needle)) return true;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  return warned(tap.lines, needle);
 }

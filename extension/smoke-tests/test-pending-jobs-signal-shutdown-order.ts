@@ -345,6 +345,68 @@ function assert(cond: boolean, msg: string) {
   pendingJobs.resetForTesting();
 }
 
+// ---------------------------------------------------------------------------
+// 6. A re-attach publishes "0" whatever the module state left by the last
+//    session happens to hold.
+//
+//    WHY THIS IS A SOURCE PIN AND NOT A BEHAVIOUR CASE, and why the fix it pins
+//    is a cheap one. `attach()` republishes `pending.size`, so a stale count
+//    would be published as the new session's own — the "stuck 1" this was filed
+//    as. The question is whether `pending` can be non-empty across an attach.
+//    It cannot, and the reason is the invariant case 2 already pins from the
+//    other side: every shutdown path that LEAVES the Set non-empty is an arm's
+//    callback, which calls `finish()`, and `finish()` clears before it publishes
+//    (there is no observable difference between clearing at the top of `finish()`
+//    and at its bottom — the arm's WARN reads the snapshot, and `publish()` reads
+//    the live Set — which is why the guard sits where it is readable next to the
+//    comment rather than being load-bearing on ordering nobody can test). The
+//    early "0" path is not reached with a non-empty Set, and the armed path
+//    always runs `finish()`.
+//
+//    So this case pins the two halves of the guarantee separately, because that
+//    is the only form that fails when either is removed. 6a pins that every
+//    publish of the closing frame is preceded by the release of the Set — delete
+//    `pending.clear()` from `finish()` and the arm's 0 would be a publish of a
+//    count that still holds ids. 6b pins that `attach()` publishes the live Set
+//    unconditionally rather than, say, skipping a frame it believes unchanged —
+//    a re-attach that inherited a count would then go silent, which is the "stuck
+//    1" shape, and it fails if the clear is removed AND if `publish()` is made
+//    conditional. What it cannot pin is a state the module never reaches; a
+//    behaviour test for that would be a test of a stub.
+// ---------------------------------------------------------------------------
+{
+  const signalSource = await Bun.file(
+    new URL("../src/pending-jobs-signal.ts", import.meta.url),
+  ).text();
+  // `finish()` is the only body the closing frame has, and it releases the count
+  // before it emits. The slice is from the arm's own function so a `clear()` in
+  // some other helper cannot satisfy it.
+  const finishBody = signalSource.slice(
+    signalSource.indexOf("const finish = (): void => {"),
+    signalSource.indexOf("already carries the count this"),
+  );
+  assert(
+    /pending\.clear\(\);[\s\S]*?publishToClient\(\)/.test(finishBody),
+    "6a: the closing frame is preceded by the release of the count it is about to contradict",
+  );
+  // `attach()` publishes unconditionally, so a re-attach always writes a frame —
+  // the client is never left reading whatever the previous session last wrote.
+  // The bounds matter: `publish()` appears in the doc comments around
+  // `attach()`, so a slice that reaches the next declaration would satisfy this
+  // from a comment. Bounded on the function's own closing brace instead.
+  const attachStart = signalSource.indexOf("export function attach(");
+  const attachBody = signalSource.slice(
+    attachStart,
+    signalSource.indexOf("\n}", attachStart) + 2,
+  );
+  assert(attachBody.includes("pending.clear();"), "6b: a re-attach starts its own count");
+  assert(/\n  publish\(\);/.test(attachBody), "6c: a re-attach always publishes its frame");
+  assert(
+    /generation\+\+/.test(attachBody),
+    "6d: a re-attach invalidates an arm the previous session scheduled",
+  );
+}
+
 clearJobsForTesting();
 clearSlowWatchesForTesting();
 pendingJobs.resetForTesting();

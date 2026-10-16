@@ -371,9 +371,52 @@ function assert(cond: boolean, msg: string) {
   );
 }
 
-clearJobsForTesting();
-clearSlowWatchesForTesting();
-pendingJobs.resetForTesting();
+// ---------------------------------------------------------------------------
+// 9. The registration site is guarded against overwriting a handle that another
+//    owner is still using.
+//
+//    `childHandles` is the one surface that OUTLIVES the `jobs` entry on the
+//    PI_ENSEMBLE_QUIET_STATUS path, where `dispatchDeck.clearEntry` is a no-op:
+//    a row can keep an id whose registry entry is gone, so an id drawn again
+//    (`newJobId` is date-plus-six-random-base36) can land on a slot somebody
+//    else still expects to be able to kill. An unguarded `set` there replaces
+//    that owner's `kill` and leaves its child unabortable — with no error and
+//    nothing in the log. So the write is conditional.
+//
+//    WHY THIS IS A SOURCE PIN AND NOT A BEHAVIOUR CASE: ESM imports are
+//    read-only live bindings, so a test cannot reassign `newJobId` to force a
+//    collision, and the guard is reachable only through one. A behaviour test
+//    here would be an assertion about a stub, not about the product — the
+//    earlier draft of this case was exactly that (its "collision" never
+//    collided, and the assertions it emitted were satisfied by the map being
+//    empty). The pin below is the honest version: it fails the moment the guard
+//    is removed, which is the mutation it exists to catch. The two registration
+//    sites are covered separately because they fail differently — the member's
+//    own slot must not clobber a pre-existing entry, while `onStdin` MUST
+//    overwrite (that is how a real stdin replaces the dead one) and preserves
+//    the installed `kill` explicitly instead.
+// ---------------------------------------------------------------------------
+{
+  const batchSource = await Bun.file(
+    new URL("../src/async-jobs-batch.ts", import.meta.url),
+  ).text();
+  assert(
+    /if \(!childHandles\.has\(jobId\)\) \{\s*childHandles\.set\(jobId, \{/.test(
+      batchSource,
+    ),
+    "9a: the member's handle registration refuses to overwrite an existing entry",
+  );
+  // The companion pin: `onStdin` still writes unconditionally, because a spawned
+  // member's real stdin is supposed to replace the dead placeholder. If the
+  // guard were lifted to cover that site too, members would keep a dead stdin
+  // forever and `dispatch_steer` would write its RPC frames into nowhere.
+  assert(
+    /const previous = childHandles\.get\(jobId\);/.test(batchSource) &&
+      /previous\?\.kill \? \{ kill: previous\.kill \}/.test(batchSource),
+    "9b: the spawn-time registration still overwrites, and carries the installed kill forward",
+  );
+}
+
 clearJobsForTesting();
 clearSlowWatchesForTesting();
 pendingJobs.resetForTesting();

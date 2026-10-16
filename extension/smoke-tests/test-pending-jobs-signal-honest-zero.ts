@@ -43,7 +43,9 @@ import {
   makeHost,
   makePi,
   sent,
+  startStderrTap,
   until,
+  waitWarn,
   warned,
   withStderrCapture,
   withStderrCaptureAsync,
@@ -71,6 +73,13 @@ function assert(cond: boolean, msg: string) {
     return deliverReport(host, "the report");
   });
   assert(w.reports.length === 0, "1a: a throwing host received nothing");
+  // The badge is `deliverReport`'s own business, asserted by its own line — not
+  // a bracket the batch reads around its send. #1389 removed the
+  // `getNotices()` before/after comparison from `send()`: the OUTCOME of a send
+  // is the return value of that call, and a counter some other deliverer may
+  // have moved can never answer a question about this one. This case still
+  // pins the documented behaviour (the increment runs before the send, so an
+  // attempted-but-rejected delivery badges) at the one site that owns it.
   assert(
     getNotices() - noticesBefore === 1,
     "1b: the attempted delivery still counts for the badge (the send was attempted)",
@@ -261,7 +270,8 @@ function assert(cond: boolean, msg: string) {
 //     that would never print is worse than an honest 0), so the ONLY thing left
 //     to say is the WARN — and it must name the batch, so an operator staring at
 //     "0" in a session that received nothing can find why. Delete the
-//     `if (!standInLanded)` block in async-jobs-batch.ts and 5b-c goes red: the
+//     `if (!standInLanded)` block in async-jobs-batch-delivery.ts and 5b-c goes
+//     red: the
 //     count prints 0 and stderr says nothing that distinguishes it from a clean
 //     delivery.
 // ---------------------------------------------------------------------------
@@ -375,39 +385,89 @@ function assert(cond: boolean, msg: string) {
 }
 
 // ---------------------------------------------------------------------------
-// 8. The two globals #1389 first reached for are gone. `deliverReport` answers
-//    its own caller, so a second process-wide failure counter is not merely
-//    unused — it is the wrong shape: a counter another deliverer moved would be
-//    read as this send's verdict. Pinned so it cannot come back as a convenience.
+// 7b. A batch whose report can never be BUILT (a member's `usage` throws on
+//     read, so `formatBatchReport` throws inside `send()`) must not end silently.
+//
+//     This is the branch the round-2 union hid. The old state had one value for
+//     "the send never ran" and the tail tested only `=== "rejected"`, so a batch
+//     whose formatter threw looked exactly like one that had delivered: the
+//     count printed "0", nothing reached the PM, stderr said nothing. Now the
+//     build failure is recorded with its cause, and the batch answers it with the
+//     build-failure stand-in — the text that says "could not be built", not
+//     "re-read /runs" (there is no report to re-read; the members were never
+//     formatted).
+//
+//     Two things make this case easy to write wrongly. `startBatch` is
+//     SYNCHRONOUS and the settle runs detached under `releaseAfter`, so the
+//     capture must stay installed across the `await until(...)`s — a capture
+//     opened and closed around `startBatch` alone restores stderr before the
+//     settle has run, and every stderr assertion then reads an empty log and
+//     "passes" for the wrong reason. And the count assertion has to be the
+//     ordering claim (`1,0` with the stand-in already on the wire), because the
+//     whole settle is what `releaseAfter` waits on.
 // ---------------------------------------------------------------------------
 {
-  const source = await Bun.file(new URL("../src/notice-counter.ts", import.meta.url)).text();
+  const w = freshWire();
+  clearJobsForTesting();
+  clearSlowWatchesForTesting();
+  const { pi } = makePi(w);
+  attachRpc(w);
+  const boom = () =>
+    Object.defineProperty(fakeResult("explore", "a"), "usage", {
+      get() {
+        throw new Error("usage unreadable");
+      },
+    });
+  // The tap goes in BEFORE `startBatch` and comes out only after the settle's
+  // effect has been observed. `startBatch` is synchronous and its settle runs
+  // detached under `releaseAfter`, so a capture opened around the case body
+  // restores stderr while the settle is still mid-flight and every stderr
+  // assertion below reads an empty log — green for the wrong reason.
+  const tap = startStderrTap();
+  try {
+    startBatch(pi, {
+      batchLabel: "dispatch_parallel",
+      members: [{ label: "explore[a]", role: "explore", work: async () => boom() }],
+    });
+    await until(() => w.threwAt.length >= 1);
+    await until(() => sent(w).length >= 2);
+    // The tail's WARN is written after the last awaitable effect, so the tap
+    // waits on the line itself rather than on the wire.
+    await waitWarn(tap, "report never reached the host");
+  } finally {
+    tap.stop();
+  }
+  const lines = tap.lines;
+  const standIn = w.reports.find((r) => r.includes("(batch ")) ?? "";
   assert(
-    !/failedCount|getFailedNotices|incrementFailedNotice/.test(source),
-    "8a: notice-counter.ts carries no failed-delivery tally",
+    standIn.includes("FAILED") &&
+      standIn.includes("could not be built") &&
+      standIn.includes("usage unreadable"),
+    `7b-a: a batch whose formatter threw still hands Pi one FAILED stand-in naming the batch and its cause (got ${JSON.stringify(w.reports.map((r) => r.slice(0, 90)))})`,
   );
-  const batchSource = await Bun.file(new URL("../src/async-jobs-batch.ts", import.meta.url)).text();
   assert(
-    !/getFailedNotices|sendSucceeded|DeliveryTally/.test(batchSource),
-    "8b: the batch reads its send's result, not a counter delta",
+    w.reports.length === 1,
+    `7b-b: exactly one message reached the host — the stand-in, not a doomed retry of the unbuildable report too (got ${w.reports.length})`,
   );
-  const lifecycleSource = await Bun.file(
-    new URL("../src/async-jobs-lifecycle.ts", import.meta.url),
-  ).text();
   assert(
-    /export function deliverReport\(host: DispatchHost, report: string\): boolean/.test(
-      lifecycleSource,
-    ),
-    "8c: deliverReport returns its outcome",
+    !standIn.includes("could not be delivered"),
+    "7b-c: the build-failure stand-in does not tell the PM to re-read /runs for a report that was never built",
   );
-  // And the batch's own send state is a named union, not a tri-state boolean.
   assert(
-    /type BatchSendState = "sent" \| "rejected" \| "not-attempted"/.test(batchSource),
-    "8d: the batch's send state is the named three-valued union",
+    sent(w).join(",") === "1,0",
+    `7b-d: the count reaches 0 only after the stand-in was handed over (got ${sent(w)})`,
   );
-  const host: DispatchHost = { sendUserMessage: () => undefined };
-  assert(deliverReport(host, "x") === true, "8e: an accepting host reports true");
+  assert(
+    warned(lines, "report never reached the host"),
+    `7b-e: the never-delivered report is a WARN, not a debug-gated trace (got ${JSON.stringify(lines)})`,
+  );
+  assert(
+    w.threwAt.length === 1,
+    `7b-f: exactly one send was attempted — the stand-in (calls ${w.threwAt})`,
+  );
+  pendingJobs.resetForTesting();
 }
+
 
 clearJobsForTesting();
 clearSlowWatchesForTesting();

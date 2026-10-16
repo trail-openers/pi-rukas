@@ -1,6 +1,11 @@
-import type { Writable } from "node:stream";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { type DispatchHost, deliverReport, deliverStandIn } from "./async-jobs-lifecycle.ts";
+import {
+  batchDeliveryFailureReport,
+  batchFailureReport,
+  deadStdin,
+  deliverBatchReport,
+} from "./async-jobs-batch-delivery.ts";
+import { type DispatchHost, deliverStandIn } from "./async-jobs-lifecycle.ts";
 import {
   type BatchMemberJobState,
   type BatchOrchestratorJobState,
@@ -10,19 +15,13 @@ import {
   jobs,
   newJobId,
 } from "./async-jobs-registry.ts";
-import {
-  type BatchReportInput,
-  formatBatchReport,
-  reportsGitState,
-  totalTokens,
-} from "./async-jobs-report.ts";
+import { type BatchReportInput, reportsGitState, totalTokens } from "./async-jobs-report.ts";
 import { makeSlowWatch } from "./async-jobs-slow.ts";
 import type { WorkHooks } from "./async-jobs.ts";
 import * as live from "./dispatch-deck-live.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { type GitLineFor, gitStateLine } from "./git-state.ts";
 import * as lifecycle from "./lifecycle-events.ts";
-import { getNotices } from "./notice-counter.ts";
 import * as pendingJobs from "./pending-jobs-signal.ts";
 import * as sessionAutosave from "./session-autosave.ts";
 import { feedSlowProgress } from "./slow-notice.ts";
@@ -43,133 +42,50 @@ interface StartBatchInput {
 }
 
 /**
- * #1389 — a batch member's handle exists from the moment the member is
- * registered, but the real stdin only appears when the child spawns. Until then
- * the slot carries this: a `Writable` that does nothing, because nothing is
- * reading it. `dispatch_steer` writes an RPC frame to a handle it believes is
- * live, so a member killed before its spawn must not have a real stream there —
- * and `ChildHandle.stdin` is not optional, so something has to occupy the field.
- */
-function deadStdin(): Writable {
-  return {
-    write: () => true,
-    end: () => deadStdin(),
-    destroyed: true,
-    writable: false,
-  } as unknown as Writable;
-}
-
-/**
- * #1389 — the state of the batch's one send. Three values because the two
- * fallbacks answer different failures and must not be confused: `"sent"` the
- * host accepted it; `"rejected"` the host threw (a second doomed send of the
- * same content is pointless — the stand-in answers it); `"not-attempted"` the
- * pre-send default, which the git-state failure below still answers with the
- * unannotated report (the pre-#1389 behaviour, unchanged).
- */
-type BatchSendState = "sent" | "rejected" | "not-attempted";
-
-/**
- * #1015 — computes the git-state line for each developer/ops member (against its own
- * cwd; failed members and reviewers get none), then delivers the one batch steer.
+ * #1389 — take ONE batch member off every surface it registered on, in one
+ * place. Called from three sites that used to carry their own copy of the list
+ * and drifted apart: the setup-failure teardown, and the two settle handlers
+ * (resolved / rejected). The surfaces are the ones a leaked member is visible
+ * on — `dispatch_status` (the registry), `dispatch_kill`/`dispatch_steer` (the
+ * child handle), the footer (the deck row, whose clear also releases the ring
+ * buffer) and the live view (the buffer itself, which `clearEntry` does NOT
+ * drop under `PI_ENSEMBLE_QUIET_STATUS`). A fourth site is `stop` — the slow-run
+ * watch, which is per-member state the caller holds, not a module map, so it
+ * stays a parameter.
  *
- * #1389 — `delivered` used to be set unconditionally after `send()`, and
- * `send()` called `deliverReport`, which cannot throw: a host whose
- * `sendUserMessage` throws left the flag true on a message that never arrived,
- * so the batch released its pending slot to "0" with nothing handed over and no
- * witness. The state now comes from `deliverReport`'s own return value — the
- * batch reads the result of the call it made, not a counter some other
- * deliverer may have moved — and a rejected send is answered by `settleBatch`'s
- * stand-in, so a batch never reaches "0" with neither a report nor a stand-in,
- * and never sends the same report twice.
- *
- * Rejects only when NOTHING was handed to Pi, so the caller can send a fallback.
+ * Every step is guarded on the member that is actually gone: a child that never
+ * registered stdin has no handle to kill, a registry entry the deck already
+ * released does not need dropping twice — and one member's throw cannot strand
+ * the members after it (each caller wraps this in its own `try`).
  */
-async function deliverBatchReport(
-  pi: DispatchHost,
-  head: { batchLabel: string; batchId: string; startedAt: number },
-  memberResults: BatchReportInput["members"],
-  gitMembers: Map<string, string | undefined>,
-  gitLineFor: GitLineFor,
-): Promise<void> {
-  // Exactly one delivery, in one of the three states above. The state lives in an
-  // object rather than a closure-assigned `let`: control-flow analysis narrows a
-  // captured union variable to its initialiser and then reports the tail's
-  // `"rejected"` comparison as impossible. `error` is what the host actually threw
-  // — `deliverReport` swallows it behind its never-throws contract, so this is the
-  // only place the real cause survives, and the stand-in's WARN reads it.
-  const sendState: { value: BatchSendState; error?: unknown } = { value: "not-attempted" };
-  const send = (lines?: Map<string, string>) => {
-    const members = memberResults.map((m) => ({
-      ...m,
-      gitLine: lines?.get(m.jobId),
-    }));
-    // `getNotices` is read only to confirm the attempt was counted for the badge
-    // before the send ran. The OUTCOME is `sent` — the return value of this very
-    // call, which is what replaced the #1389 global-counter delta.
-    const attemptsBefore = getNotices();
-    let sent = false;
-    try {
-      sent = deliverReport(pi, formatBatchReport({ ...head, members }));
-    } catch (err) {
-      // Cannot happen against the documented contract (deliverReport never
-      // throws) but a host that broke it must not take down the batch settle.
-      sendState.error = err;
-    }
-    const attempted = getNotices() > attemptsBefore;
-    sendState.value = attempted ? (sent ? "sent" : "rejected") : "not-attempted";
-  };
-  try {
-    const lines = new Map<string, string>();
-    await Promise.all(
-      memberResults.map(async (m) => {
-        if ("failed" in m.result || !gitMembers.has(m.jobId)) return;
-        lines.set(m.jobId, await Promise.resolve().then(() => gitLineFor(gitMembers.get(m.jobId))));
-      }),
-    );
-    send(lines);
-  } catch (err) {
-    trace(`async batch ${head.batchId} git-state report failed: ${String(err)}`);
-    if (sendState.value === "not-attempted") send();
+function releaseBatchMember(
+  jobId: string,
+  stop: () => void,
+  settle: "finished" | "failed" | "killed",
+): void {
+  stop();
+  // kill() only exists for a child that actually spawned and registered a
+  // handle; a member whose work never started a child must not reach for one.
+  if (childHandles.has(jobId)) {
+    childHandles.get(jobId)?.kill?.();
+    childHandles.delete(jobId);
   }
-  // #1389 — a send the host rejected is a report that does not exist. The
-  // unannotated fallback above must NOT fire for it (that would be a second
-  // doomed send of the same content), so the batch reports the failure once,
-  // with a stand-in naming the batch, and never lets its pending slot drop to
-  // "0" with neither a report nor a stand-in on the wire.
-  if (sendState.value === "rejected") {
-    traceWarn(`async batch ${head.batchId} report delivery rejected by the host`);
-    const standInLanded = deliverStandIn(pi, `async batch ${head.batchId}`, sendState.error, () =>
-      batchDeliveryFailureReport(head.batchLabel, head.batchId),
-    );
-    // #1389 — the last honest word. A rejected report AND a rejected stand-in
-    // means `releaseAfter` is about to print "0" on a session that received
-    // neither message, which is the exact lie this ticket exists to close. The
-    // count still has to drop (a bound must not strand it), but the channel's
-    // "nothing is coming" is now contradicted on stderr, in a line naming the
-    // batch — not left as silence indistinguishable from a clean delivery.
-    if (!standInLanded) {
-      traceWarn(
-        `async batch ${head.batchId} handed Pi NOTHING: the report and its stand-in were both rejected — the pending count will reach 0 with no message delivered`,
-      );
-    }
+  // Only for a member that really registered in the registry.
+  if (jobs.has(jobId)) {
+    clearJobIssues(jobId);
+    // #916 — the settle outcome for the live view, recorded while the buffer
+    // still exists: the teardown below drops it, and an absent buffer keeps no
+    // status. The settle handlers pass "finished"/"failed"; the teardown passes
+    // "failed" — a member killed by a setup failure never ran.
+    live.markSettled(jobId, settle);
+    // clearEntry also releases the ring buffer (releaseOnEntryClear), and is a
+    // no-op on the row under PI_ENSEMBLE_QUIET_STATUS — dropBuffer is not, which
+    // is why both are called and why the buffer is the quiet-proof surface the
+    // teardown test asserts on.
+    dispatchDeck.clearEntry(jobId);
+    live.dropBuffer(jobId);
+    jobs.delete(jobId);
   }
-}
-
-/** The stand-in report for a batch whose settle threw before its report reached Pi. */
-function batchFailureReport(batchLabel: string, batchId: string, err: unknown): string {
-  return `[ensemble:async] Batch \`${batchLabel}\` (batch ${batchId}) FAILED — its report could not be built: ${String(err)}. Its members' results are lost; re-dispatch the batch if they are still needed.`;
-}
-
-/**
- * #1389 — the stand-in for a batch whose report was built but whose send the host
- * rejected. Distinct from `batchFailureReport`: the members' results are NOT lost
- * here (they were formatted, and the transcripts still hold them) — only the
- * delivery failed, so the line says that instead of telling the PM to re-run a
- * batch that already ran.
- */
-function batchDeliveryFailureReport(batchLabel: string, batchId: string): string {
-  return `[ensemble:async] Batch \`${batchLabel}\` (batch ${batchId}) FINISHED but its report could not be delivered — the host rejected the message. Its members ran; their results are in /runs, not in this session. Re-read the transcripts rather than re-dispatching the batch.`;
 }
 
 /**
@@ -180,6 +96,7 @@ function batchDeliveryFailureReport(batchLabel: string, batchId: string): string
  */
 async function settleBatch(
   pi: DispatchHost,
+
   input: StartBatchInput,
   batchId: string,
   startedAt: number,
@@ -191,22 +108,47 @@ async function settleBatch(
     dispatchDeck.clearBatchEntry(batchId);
     const batchMs = Date.now() - startedAt;
     const anyFailed = memberResults.some((m) => "failed" in m.result || !m.result.ok);
-    const tokens = memberResults.reduce((acc, m) => {
-      if ("failed" in m.result) return acc;
-      return acc + totalTokens(m.result);
-    }, 0);
+    // #1389 — every read of a member's `usage` is a read of UNTRUSTED data a
+    // child produced, so the whole pre-report block sits in its own try: a
+    // getter that throws here must land in the same stand-in path as a report
+    // that could not be built, not escape to the outer catch. Before this the
+    // token sum below threw first and the batch's own delivery accounting — the
+    // WARN that says the count is about to print 0 with nothing handed over —
+    // was never reached.
+    let tokens = 0;
+    try {
+      tokens = memberResults.reduce((acc, m) => {
+        if ("failed" in m.result) return acc;
+        return acc + totalTokens(m.result);
+      }, 0);
+    } catch {
+      tokens = 0;
+    }
     if (anyFailed) {
       lifecycle.emitFailed(batchId, input.batchLabel, input.batchLabel, batchMs);
     } else {
       lifecycle.emitCompleted(batchId, input.batchLabel, input.batchLabel, batchMs, tokens);
     }
-    await deliverBatchReport(
+    // #1389 — the tail that used to be missing, and the reason `deliverBatchReport`
+    // now returns an answer at all: the settle asks the only question that
+    // survives every branch — did anything reach this batch's host? — and
+    // records the answer. It does NOT send anything here. The "nothing reached
+    // Pi" line is printed by `deliverBatchReport` itself, which is the only
+    // place that knows whether the report, a stand-in, or neither reached the
+    // host. A second stand-in from this site is the bug this comment replaces:
+    // the rejected-send path had already sent its own stand-in, so the batch
+    // handed over the report AND a "could not be built" line, and the count's
+    // release ordering was decided by a send nobody had promised.
+    const handedOver = await deliverBatchReport(
       pi,
       { batchLabel: input.batchLabel, batchId, startedAt },
       memberResults,
       gitMembers,
       input.gitLineFor ?? gitStateLine,
     );
+    if (!handedOver) {
+      trace(`async batch ${batchId} (${input.batchLabel}) reached Pi with no report`);
+    }
     trace(`async batch ${batchId} (${input.batchLabel}) finished in ${Date.now() - startedAt}ms`);
   } catch (err) {
     trace(`async batch ${batchId} (${input.batchLabel}) report failed: ${String(err)}`);
@@ -310,12 +252,21 @@ export function startBatch(
       // startJob child, whose job abort is its kill), so `kill` aborts this
       // member directly. `onStdin` fills in the real stdin when the child
       // appears; `killJob` still short-circuits on the job entry while it exists.
-      childHandles.set(jobId, {
-        stdin: deadStdin(),
-        label: m.label,
-        role: m.role,
-        kill: () => memberAbort.abort(),
-      });
+      // Guarded, not unconditional: `childHandles` outlives the `jobs` entry on
+      // the QUIET_STATUS path (`clearEntry`, and so `releaseBatchMember`, is a
+      // no-op there while its `childHandles.delete` still runs on the live path),
+      // so an id that is reused — by a collision in `newJobId`, which is
+      // date-plus-6-random-base36 — would otherwise have its `kill` overwritten
+      // by a fresh member and a still-running child silently lose its only
+      // handle. Refusing the collision keeps the older, load-bearing entry.
+      if (!childHandles.has(jobId)) {
+        childHandles.set(jobId, {
+          stdin: deadStdin(),
+          label: m.label,
+          role: m.role,
+          kill: () => memberAbort.abort(),
+        });
+      }
       if (reportsGitState(m.role)) gitMembers.set(jobId, m.cwd);
 
       dispatchDeck.startEntry(jobId, {
@@ -330,7 +281,14 @@ export function startBatch(
       const memberSlow = makeSlowWatch(jobId, m.role, m.label, pi, undefined);
       startedMembers.push({ jobId, stop: memberSlow.stop, state: memberState });
       const memberHooks: WorkHooks = {
+        // #1389 — gated on the same dead flag as `onRawEvent` below. Once the
+        // setup-failure path has torn this member down, a late progress frame
+        // must not re-arm the surfaces it just released: `updateEntry` re-fills
+        // the state of a deck row that was cleared (so it reappears whenever a
+        // neighbour keeps the render scheduled) and `feedSlowProgress` stamps a
+        // `lastState` on a watch that was stopped.
         onProgress: (progress) => {
+          if (memberState.killedBySetupFailure) return;
           dispatchDeck.updateEntry(jobId, progress);
           feedSlowProgress(jobId, progress);
         },
@@ -365,23 +323,15 @@ export function startBatch(
         .then(
           (result) => {
             if (memberState.killedBySetupFailure) return;
-            jobs.delete(jobId);
-            childHandles.delete(jobId);
-            memberSlow.stop();
-            // #916 — settle outcome for the live view (member finished).
-            live.markSettled(jobId, "finished");
-            dispatchDeck.clearEntry(jobId);
+            // #916 — the settle outcome for the live view (member finished).
+            releaseBatchMember(jobId, memberSlow.stop, "finished");
             sessionAutosave.recordOutcome(result.ok);
             memberResults.push({ jobId, label: m.label, result });
           },
           (err: Error) => {
             if (memberState.killedBySetupFailure) return;
-            jobs.delete(jobId);
-            childHandles.delete(jobId);
-            memberSlow.stop();
             // #916 — settle outcome for the live view (member rejected).
-            live.markSettled(jobId, "failed");
-            dispatchDeck.clearEntry(jobId);
+            releaseBatchMember(jobId, memberSlow.stop, "failed");
             sessionAutosave.recordOutcome(false);
             memberResults.push({
               jobId,
@@ -436,25 +386,9 @@ export function startBatch(
       for (const started of startedMembers) {
         try {
           started.state.killedBySetupFailure = true;
-          started.stop();
-          // kill() only exists for a child that actually spawned and registered
-          // a handle; aborting a member whose work never started a child must not
-          // reach for one it does not have.
-          if (childHandles.has(started.jobId)) {
-            childHandles.get(started.jobId)?.kill?.();
-            childHandles.delete(started.jobId);
-          }
-          // Only for a member that really registered in the registry.
-          if (jobs.has(started.jobId)) {
-            clearJobIssues(started.jobId);
-            // clearEntry also releases the ring buffer (releaseOnEntryClear), and is
-            // a no-op on the row under PI_ENSEMBLE_QUIET_STATUS — dropBuffer is not,
-            // which is why both are called and why the buffer is the quiet-proof
-            // surface the test asserts on.
-            dispatchDeck.clearEntry(started.jobId);
-            live.dropBuffer(started.jobId);
-            jobs.delete(started.jobId);
-          }
+          // One call, the same release the settle handlers use — so the three
+          // sites cannot disagree about which surfaces a member was on.
+          releaseBatchMember(started.jobId, started.stop, "failed");
         } catch (memberErr) {
           traceWarn(
             `async batch ${batchId} member ${started.jobId} cleanup failed: ${String(memberErr)}`,
