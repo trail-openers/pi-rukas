@@ -1,16 +1,30 @@
 #!/usr/bin/env bun
 /**
- * #1151 — the CRITICAL open-point gate, split out of test-intent-criticality.ts
- * to keep that file under the 500-line gate. Reads the Open points section,
- * parks the security class, caps other points, and round-trips the gap gate's
- * own rendered section.
+ * #1187 — the topic-neutral open-point gate, end to end at the verdict.
+ *
+ * Covers: any unresolved CRITICAL point parks (no classifier); [RESOLVED] answers it
+ * and is recorded as an assumption whose text is the flattened point; an existing park
+ * keeps its reason and gains the points; a blank body parks with its own reason that the
+ * #397 override cannot lift; a retired artifact is refused and never yields proceed; and
+ * the park/handoff text carries the escape.
  */
 
+import { OPEN_POINT_CHAR_CAP, OPEN_POINT_ENTRY_CAP } from "../src/open-points-reader.ts";
 import { openPointsSection } from "../src/plan-gap-disclosure.ts";
+import { GAP_RESOLUTION_PLACEHOLDER } from "../src/plan-gap-parse.ts";
 import type { PlanGap } from "../src/plan-types.ts";
-import { criticalOpenPoints, openPointText } from "../src/work-driver-intent-criticality.ts";
+import {
+  SPEC_ARTIFACT_GATE_VERSION,
+  parseNormalisedSpecArtifact,
+  resolveIntentVerdict,
+} from "../src/work-driver-intent-artifact.ts";
 import { finaliseSpecVerdict } from "../src/work-driver-intent-finalise.ts";
-import { type NormalisedSpec, renderAssumptions } from "../src/work-driver-intent.ts";
+import {
+  type NormalisedSpec,
+  PARK_REASONS,
+  explainPark,
+  parkAction,
+} from "../src/work-driver-intent.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -21,360 +35,409 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const spec = (over: Partial<NormalisedSpec> = {}): NormalisedSpec => ({
-  intent: "Preserve the requested intent while applying the change.",
+/**
+ * Capture `trace` output while running `fn` (trace writes `[pi-rukas] …` to stderr).
+ *
+ * The gate's diagnostics are load-bearing here — "the artifact was refused" and "there
+ * was no artifact" look identical downstream — so these assertions read the actual stderr
+ * rather than trusting a comment. `trace()` consults the env var per call, so toggling it
+ * around `fn` is enough; no import-order dance (the `bun:test` mock in
+ * test-adversarial-reread-failure.ts exists for a different harness).
+ */
+async function withTrace<T>(fn: () => Promise<T> | T): Promise<{ result: T; traced: string }> {
+  const prior = process.env.PI_ENSEMBLE_DEBUG;
+  process.env.PI_ENSEMBLE_DEBUG = "1";
+  const write = process.stderr.write.bind(process.stderr);
+  let captured = "";
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    captured += chunk.toString();
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    const result = await fn();
+    return { result, traced: captured };
+  } finally {
+    process.stderr.write = write;
+    // Assign, do not `delete`: biome's noDelete refuses the operator and assigning
+    // undefined makes the `=== "1"` comparison false, which is the state we restore to.
+    process.env.PI_ENSEMBLE_DEBUG = prior;
+  }
+}
+const HEADING = "## Open points (unresolved at the gap-gate cap)";
+const body = (...lines: string[]) => [HEADING, "", ...lines, ""].join("\n");
+
+/** What `persistSpecArtifact` writes, so artifact assertions read the real bytes. */
+const artifactJson = (spec: NormalisedSpec): string =>
+  JSON.stringify({ ...spec, gateVersion: SPEC_ARTIFACT_GATE_VERSION });
+
+const complete = (over: Partial<NormalisedSpec> = {}): NormalisedSpec => ({
+  intent: "Keep the retry timeout configurable.",
   deliverables: [
-    {
-      id: "d1",
-      description: "apply the requested change",
-      paths: ["extension/src/work-driver-intent.ts"],
-    },
+    { id: "d1", description: "make the timeout configurable", paths: ["src/retry.ts"] },
   ],
-  acceptanceCriteria: ["the requested behavior is preserved"],
+  acceptanceCriteria: ["the timeout is read from configuration"],
   outOfScope: [],
   assumptions: [],
   openQuestions: [],
-  evidence: [],
+  evidence: [{ claim: "the timeout is hard-coded", source: "retry.ts:1", verdict: "confirmed" }],
   verdict: "proceed",
-  rationale: "the requested change is actionable",
+  rationale: "actionable",
   ...over,
 });
 
-/** The gate over raw CRITICAL point texts, as a filed issue carries them. */
-const applyOpenPointGate = (s: NormalisedSpec, points: string[]): NormalisedSpec =>
-  finaliseSpecVerdict(
-    s,
-    [
-      "## Open points (unresolved at the gap-gate cap)",
-      "",
-      ...points.map((p) => `- [CRITICAL] ${p}`),
-    ].join("\n"),
-  );
-
-// ------------------------------------------- CRITICAL open points (#1151)
-
+// Topic-neutral: a retry timeout is as much a park as an authorization point.
 {
-  // A filed issue's "Open points" section lists the CRITICAL points the gap
-  // gate could not resolve. Extraction reads only that section, and only the
-  // bullets tagged [CRITICAL].
-  const body = [
-    "## Context",
-    "- [CRITICAL] not a point: outside the section",
-    "",
-    "## Open points (unresolved at the gap-gate cap)",
-    "",
-    "The gap gate reached its iteration cap with these CRITICAL points still unresolved.",
-    "",
-    "- [CRITICAL] Which timeout wins when both are set — proposal: the shorter one",
-    "- [HIGH] A HIGH point is not gated here",
-    "- **[CRITICAL]** Whether the retry ceiling is per-provider — proposal: global",
-    "",
-    "## Open Questions",
-    "- (none)",
-  ].join("\n");
-  const points = criticalOpenPoints(body).map(openPointText);
-  assert(
-    points.length === 2 &&
-      points[0] === "Which timeout wins when both are set — proposal: the shorter one" &&
-      points[1] === "Whether the retry ceiling is per-provider — proposal: global",
-    "criticalOpenPoints reads only CRITICAL bullets in the Open points section",
+  const gated = finaliseSpecVerdict(
+    complete(),
+    body("- [CRITICAL] Which timeout wins when both are set"),
   );
   assert(
-    criticalOpenPoints("## Open Questions\n- [CRITICAL] wrong section").length === 0,
-    "criticalOpenPoints ignores CRITICAL bullets outside the Open points section",
+    gated.verdict === "park" && gated.parkReason === "unresolved-critical-open-point",
+    "a topic-neutral CRITICAL point (a retry timeout) parks as unresolved-critical-open-point",
+  );
+  assert(
+    gated.parkReasonSource === "default" &&
+      JSON.stringify(gated.openPoints) ===
+        JSON.stringify(["[CRITICAL] Which timeout wins when both are set"]),
+    "the park records each point as flattened text, with default provenance",
   );
 }
 
+// [RESOLVED] answers the point: proceed, recorded as an assumption whose text is the flattened point.
 {
-  // An unresolved CRITICAL point caps a proceed at proceed-with-assumptions,
-  // and each point is named as an assumption so it reaches the PR body.
-  const resolved = applyOpenPointGate(spec({ verdict: "proceed" }), [
-    "Which timeout wins when both are set",
-  ]);
+  const answered = finaliseSpecVerdict(
+    complete(),
+    body("- [CRITICAL][RESOLVED] Which timeout wins \u2014 the shorter one"),
+  );
+  assert(answered.verdict === "proceed", "a [RESOLVED] CRITICAL point yields proceed");
   assert(
-    resolved.verdict === "proceed-with-assumptions",
-    "an open CRITICAL point caps proceed at proceed-with-assumptions",
+    answered.assumptions.some(
+      (a) =>
+        a.text ===
+        "resolved open point: [CRITICAL][RESOLVED] Which timeout wins \u2014 the shorter one",
+    ),
+    "a resolved point is recorded as an assumption: the flattened text, prefixed so the meaning survives rendering",
+  );
+  assert(answered.openPoints === undefined, "a resolved point is not a blocking open point");
+}
+
+// An emphasised [RESOLVED] does not count: the point still parks (the escape documented in parkAction).
+{
+  const emphasised = finaliseSpecVerdict(
+    complete(),
+    body("- [CRITICAL] **[RESOLVED]** Which timeout wins"),
   );
   assert(
-    resolved.assumptions.some((a) => a.text.includes("Which timeout wins when both are set")),
-    "each open CRITICAL point is named as an assumption",
+    emphasised.verdict === "park",
+    "an emphasised **[RESOLVED]** does not resolve; the point parks",
   );
-  const rendered = renderAssumptions(resolved);
   assert(
-    rendered.includes("Which timeout wins when both are set"),
-    "the named point reaches the rendered PR-body assumptions",
+    /mark it \[RESOLVED\] right after its severity tag, unemphasised/.test(
+      parkAction("unresolved-critical-open-point", 42),
+    ),
+    "parkAction documents the unemphasised, immediately-after-the-tag rule",
   );
 }
 
+// An existing park keeps its reason; the points are appended and provenance becomes default.
 {
-  // A plain proceed-with-assumptions is not downgraded, and a park stays a park.
-  const withAssumption = spec({ verdict: "proceed-with-assumptions" });
-  assert(
-    applyOpenPointGate(withAssumption, ["Which timeout wins"]).verdict ===
-      "proceed-with-assumptions",
-    "an open point keeps proceed-with-assumptions",
+  const parked = finaliseSpecVerdict(
+    complete({ verdict: "park", parkReason: "too-large", parkReasonSource: "parsed" }),
+    body("- [CRITICAL] Which timeout wins"),
   );
-  const parked = spec({
-    verdict: "park",
-    parkReason: "already-implemented",
-    parkReasonSource: "parsed",
-  });
   assert(
-    applyOpenPointGate(parked, ["Which timeout wins"]).parkReason === "already-implemented",
-    "an existing park is not rewritten by an open point",
+    parked.verdict === "park" && parked.parkReason === "too-large",
+    "an existing park keeps its reason",
+  );
+  assert(
+    parked.parkReasonSource === "default" && parked.openPoints?.length === 1,
+    "an existing park gains the points and its provenance becomes default",
   );
 }
 
-// An open point that touches authentication, authorization, secrets or
-// permissions is not something the driver may decide: park as security-open-point.
-for (const point of [
-  "Who may call the retry endpoint — authentication is undecided",
-  "Which role has authorization to rotate keys",
-  "Where the API secrets live — proposal: env var",
-  "What permissions the worker needs on the bucket",
-]) {
-  const resolved = applyOpenPointGate(spec({ verdict: "proceed" }), [point]);
-  assert(
-    resolved.verdict === "park" && resolved.parkReason === "security-open-point",
-    `an authorization-class open point parks as security-open-point: ${point.slice(0, 40)}`,
-  );
-}
-assert(
-  applyOpenPointGate(spec({ verdict: "proceed" }), ["Which timeout wins"]).verdict ===
-    "proceed-with-assumptions",
-  "canary: a non-authorization open point does not park",
-);
-
+// The gap gate's OWN section, once every point is answered, must proceed (#1187 fix round 1).
+// The writer put a non-bullet intro sentence under the heading and the reader parked on it,
+// so a gap-gate-filed issue could never be cleared by [RESOLVED].
 {
-  // No open points: the spec passes through untouched.
-  const plain = spec({ verdict: "proceed" });
-  const gated = applyOpenPointGate(plain, []);
-  assert(
-    gated.verdict === "proceed" && gated.assumptions.length === 0,
-    "no open points leaves the spec unchanged",
-  );
-}
-
-// ----------------------------------- authorization class canaries (#1151 widened)
-
-{
-  // One canary per widened class: each CRITICAL point touching it parks.
-  const classes: Array<[string, string]> = [
-    ["credential", "Where the credential is read from \u2014 proposal: env"],
-    ["token", "Which token lifetime applies \u2014 proposal: one hour"],
-    ["api key", "Whether the api key rotates \u2014 proposal: monthly"],
-    ["password", "Whether the password is hashed \u2014 proposal: bcrypt"],
-    ["encrypt", "Whether the payload is encrypted at rest \u2014 proposal: yes"],
-    ["decrypt", "Who may decrypt the export \u2014 proposal: the owner"],
-    ["tls", "Whether the TLS config is pinned \u2014 proposal: yes"],
-    ["certificate", "Which certificate chain is trusted \u2014 proposal: system store"],
-    ["crypto", "Which crypto library to use \u2014 proposal: node:crypto"],
-    ["sanitize", "Whether input is sanitized before logging \u2014 proposal: yes"],
-    ["validate", "Whether schema validation is strict \u2014 proposal: strict"],
-    ["inject", "Whether prompt injection is guarded \u2014 proposal: yes"],
-    ["sandbox", "Whether the sandbox is enabled for the child \u2014 proposal: yes"],
-    ["privilege", "Which privilege level the worker runs at \u2014 proposal: least"],
-    ["access control", "Who is covered by the access control list \u2014 proposal: admins"],
-    ["delete", "Whether records are deleted or soft-deleted \u2014 proposal: soft"],
-    ["data loss", "Whether this risks data loss on rollback \u2014 proposal: none"],
-    ["secret", "Where the secrets live \u2014 proposal: env var"],
-    ["auth", "Whether auth is required on the retry endpoint \u2014 proposal: yes"],
-    ["oauth", "OAuth scopes for the webhook \u2014 proposal: read-only"],
-    ["jwt", "JWT expiry for the worker \u2014 proposal: 15 minutes"],
-    ["acl", "ACL for the bucket \u2014 proposal: private"],
-    ["rbac", "RBAC mapping for reviewers \u2014 proposal: maintainer"],
-    ["role", "which role may rotate keys \u2014 proposal: admins"],
-    ["session", "How long a session stays valid \u2014 proposal: 1 hour"],
-    ["login", "Whether login is rate limited \u2014 proposal: yes"],
-    ["signing key", "Where the signing key is stored \u2014 proposal: KMS"],
-    ["private key", "Whether the private key is rotated \u2014 proposal: yearly"],
-  ];
-  for (const [cls, point] of classes) {
-    const resolved = applyOpenPointGate(spec({ verdict: "proceed" }), [point]);
-    assert(
-      resolved.verdict === "park" && resolved.parkReason === "security-open-point",
-      `canary: a ${cls} open point parks as security-open-point`,
-    );
-  }
-  // Non-security CRITICAL points are still carried as assumptions, not parked.
-  const perProvider = applyOpenPointGate(spec({ verdict: "proceed" }), [
-    "Whether the retry ceiling is per-provider \u2014 proposal: global",
-  ]);
-  assert(
-    perProvider.verdict === "proceed-with-assumptions",
-    "canary: a non-security CRITICAL point caps proceed to proceed-with-assumptions",
-  );
-}
-
-// -------------------------- open-point producer round trip (#1151 shared constants)
-
-{
-  // The gap gate renders the section; criticalOpenPoints must read it back.
   const gaps: PlanGap[] = [
     {
       severity: "CRITICAL",
       description: "Which timeout wins when both are set",
-      resolution: "use the shorter one",
-    },
-    {
-      severity: "HIGH",
-      description: "A HIGH residual that never gates",
-      resolution: "later",
-    },
+      resolution: "the shorter one",
+    } as PlanGap,
     {
       severity: "CRITICAL",
-      description: "Whether the retry ceiling is per-provider",
-      resolution: "address during /work plan phase",
-    },
+      description: "Who may change the retry timeout",
+      resolution: GAP_RESOLUTION_PLACEHOLDER,
+    } as PlanGap,
   ];
-  const points = criticalOpenPoints(openPointsSection(gaps)).map(openPointText);
+  const filed = openPointsSection(gaps);
   assert(
-    points.length === 2 &&
-      points[0] === "Which timeout wins when both are set \u2014 proposed: use the shorter one" &&
-      points[1] === "Whether the retry ceiling is per-provider \u2014 no proposed resolution",
-    "round trip: the rendered open-points section parses back to its CRITICAL points",
+    finaliseSpecVerdict(complete(), filed).verdict === "park",
+    "the gap gate's own section parks while its points are open",
+  );
+  const answered = filed.replace(/^- \[CRITICAL\] /gm, "- [CRITICAL][RESOLVED] ");
+  const cleared = finaliseSpecVerdict(complete(), answered);
+  assert(
+    cleared.verdict === "proceed" && cleared.openPoints === undefined,
+    "marking every point of the gap gate's rendered section [RESOLVED] clears the park (the intro no longer parks)",
+  );
+  assert(
+    cleared.assumptions.length === 2 &&
+      cleared.assumptions.every((a) => a.text.startsWith("resolved open point: ")),
+    "both answered points reach the PR body as prefixed assumptions",
   );
 }
 
-// ------------------- finaliseSpecVerdict: reconcile first, then the open-point gate
-
-{
-  // A complete spec refutes an underspecified park, and the authorization open
-  // point must still park it afterwards. The order is the point of the function.
-  const complete = spec({
-    verdict: "park",
-    parkReason: "underspecified",
-    parkReasonSource: "parsed",
-    evidence: [
-      {
-        claim: "the retry ceiling is unimplemented",
-        source: "x.ts:1",
-        verdict: "confirmed",
-      },
-    ],
-  });
-  const body =
-    "## Open points (unresolved at the gap-gate cap)\n\n- [CRITICAL] Who may call the endpoint \u2014 authentication is undecided\n";
-  const finalised = finaliseSpecVerdict(complete, body);
-  assert(
-    finalised.verdict === "park" && finalised.parkReason === "security-open-point",
-    "finalise: an authorization open point parks a spec that reconciliation had lifted",
-  );
-  assert(
-    finaliseSpecVerdict(complete, "## Notes\n\nnothing open").verdict ===
-      "proceed-with-assumptions",
-    "finalise: a complete spec with no open points is lifted to proceed-with-assumptions",
-  );
-}
-
-{
-  // Primary body not read: the gate cannot run. That is recorded, not skipped.
-  // A blank body parks a proceed: the driver cannot say the issue is clean (#1171).
-  for (const blank of [undefined, "", "   \n"]) {
-    const proceed = finaliseSpecVerdict(spec({ verdict: "proceed" }), blank);
-    assert(
-      proceed.verdict === "park" &&
-        proceed.parkReason === "underspecified" &&
-        proceed.assumptions.some((a) => a.text === "Open-point gate did not run: issue body blank"),
-      `unchecked gate: a blank body parks proceed as underspecified (${JSON.stringify(blank)})`,
-    );
-    const parked = spec({
+// A blank or whitespace-only body parks with its own reason (not underspecified), and #397 cannot lift it.
+for (const blank of ["", "   \n\t ", "\u200B\u200B"]) {
+  const gated = finaliseSpecVerdict(
+    complete({
       verdict: "park",
-      parkReason: "already-implemented",
+      parkReason: "underspecified",
       parkReasonSource: "parsed",
-    });
-    assert(
-      finaliseSpecVerdict(parked, blank).parkReason === "already-implemented",
-      "unchecked gate: an existing park stays a park",
-    );
-  }
-  // Reconciliation runs first and would lift this complete spec's underspecified park.
-  // The unchecked-body park is applied after it, so nothing lifts it.
-  const liftable = spec({
+      verdictSource: "default",
+    }),
+    blank,
+  );
+  assert(
+    gated.verdict === "park" &&
+      gated.parkReason === "blank-issue-body" &&
+      gated.parkReasonSource === "default",
+    `a blank body (${JSON.stringify(blank)}) parks as blank-issue-body, source default, not lifted by #397`,
+  );
+}
+{
+  const gated = finaliseSpecVerdict(complete(), undefined);
+  assert(
+    gated.parkReason === "blank-issue-body",
+    "an unread body (undefined) parks as blank-issue-body",
+  );
+}
+
+// A credential in a RESOLVED point must not reach the PR body through the assumption
+// either (#1187 fix round 2): assumptions are rendered publicly, so redaction is on the
+// stored text, not only on the blocking list.
+{
+  const token = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123";
+  const answered = finaliseSpecVerdict(
+    complete(),
+    body(`- [CRITICAL][RESOLVED] rotate the ${token} key, owners only`),
+  );
+  assert(
+    answered.verdict === "proceed" &&
+      answered.assumptions.some(
+        (a) => a.text.includes("[REDACTED]") && a.text.includes("sk-ant-api03") === false,
+      ),
+    "a resolved point's assumption is redacted too",
+  );
+}
+
+// The entry cap keeps the park readable and says what it dropped (#1187 fix round 2).
+{
+  const lines = Array.from({ length: 25 }, (_, i) => `- [CRITICAL] point ${i}`);
+  const gated = finaliseSpecVerdict(complete(), body(...lines));
+  assert(
+    gated.verdict === "park" &&
+      gated.openPoints?.length === OPEN_POINT_ENTRY_CAP + 1 &&
+      gated.openPoints[OPEN_POINT_ENTRY_CAP] === "…and 5 more open-point lines",
+    "openPoints caps at 20 entries plus one '…and N more open-point lines' note",
+  );
+}
+{
+  const huge = `- [CRITICAL] ${"z".repeat(4000)} tail`;
+  const gated = finaliseSpecVerdict(complete(), body(huge));
+  const stored = gated.openPoints?.[0] ?? "";
+  assert(
+    gated.verdict === "park" && stored.endsWith("…(clipped)") && Array.from(stored).length <= 2000,
+    "each entry is capped at 2000 characters with the '…(clipped)' marker",
+  );
+}
+
+// The park reasons are declared in one place and carry their text.
+assert(
+  PARK_REASONS.includes("unresolved-critical-open-point") &&
+    PARK_REASONS.includes("blank-issue-body") &&
+    !(PARK_REASONS as readonly string[]).includes("security-open-point"),
+  "PARK_REASONS: the two new reasons are declared and the retired security reason is gone",
+);
+for (const reason of ["unresolved-critical-open-point", "blank-issue-body"] as const) {
+  assert(
+    explainPark(reason, 42).includes("#42") && parkAction(reason, 42).includes("--restart"),
+    `${reason}: explainPark and parkAction name the issue and the --restart escape`,
+  );
+}
+
+// A retired artifact is refused, so its verdict is never restored; a rejected artifact never yields proceed.
+{
+  const legacy = JSON.stringify({
+    ...complete(),
     verdict: "park",
     parkReason: "underspecified",
-    parkReasonSource: "parsed",
-    evidence: [
-      { claim: "the retry ceiling is unimplemented", source: "x.ts:1", verdict: "confirmed" },
-    ],
+    gateVersion: SPEC_ARTIFACT_GATE_VERSION,
+    securityOpenPoints: ["`x`"],
   });
   assert(
-    finaliseSpecVerdict(liftable, "## Notes\n\nnothing open").verdict ===
-      "proceed-with-assumptions",
-    "precondition: the complete spec is lifted when the body is read",
+    parseNormalisedSpecArtifact(legacy) === undefined,
+    "an artifact carrying securityOpenPoints is refused",
   );
-  const unchecked = finaliseSpecVerdict(liftable, "  \n");
-  assert(
-    unchecked.verdict === "park" && unchecked.parkReason === "underspecified",
-    "unchecked gate: a lift by reconciliation does not survive a blank body",
-  );
-  // No Open points section: nothing is gated, so a park keeps its reason.
-  const parkedNoSection = spec({
+  const legacyReason = JSON.stringify({
+    ...complete(),
     verdict: "park",
-    parkReason: "already-implemented",
-    parkReasonSource: "parsed",
+    parkReason: "security-open-point",
+    gateVersion: SPEC_ARTIFACT_GATE_VERSION,
   });
   assert(
-    finaliseSpecVerdict(parkedNoSection, "## Notes\n\nnothing open").parkReason ===
-      "already-implemented",
-    "no open-points section: an existing park stays a park",
+    parseNormalisedSpecArtifact(legacyReason) === undefined,
+    "an artifact with the retired security-open-point reason is refused",
+  );
+  const prose = complete({
+    verdict: "park",
+    parkReason: "underspecified",
+    parkReasonSource: "default",
+    verdictSource: "default",
+  });
+  const restored = resolveIntentVerdict(prose, parseNormalisedSpecArtifact(legacy));
+  assert(
+    restored.spec?.verdict === "park",
+    "a refused artifact cannot turn a default park into proceed (intent re-runs from the issue body)",
   );
 }
 
+// The rejections are TRACED with the reason, so "refused artifact" and "no artifact" are
+// distinguishable downstream (#1187 fix round 2).
 {
-  // Assumption text is capped and rendered in a code span, so issue text cannot
-  // break out of the PR body.
-  const long = `Which \`timeout\` wins ${"x".repeat(400)}`;
-  const capped = applyOpenPointGate(spec({ verdict: "proceed" }), [long]);
-  const text = capped.assumptions.at(-1)?.text ?? "";
-  const span = text.match(/`([^`]*)`$/)?.[1] ?? "";
+  const legacy = JSON.stringify({
+    ...complete(),
+    gateVersion: SPEC_ARTIFACT_GATE_VERSION,
+    securityOpenPoints: ["x"],
+  });
+  const { result, traced } = await withTrace(() => parseNormalisedSpecArtifact(legacy));
   assert(
-    span.length > 0 && span.length <= 300,
-    `cap: a CRITICAL point is capped to 300 characters (${span.length})`,
+    result === undefined && traced.includes("securityOpenPoints") && traced.includes("refused"),
+    "a retired-field artifact is refused AND the trace names the field that caused it",
   );
-  assert(!span.includes("`"), "cap: a backtick in issue text cannot break the code span");
-}
-
-// ------------------------- wrapped open points (#1171): continuation lines
-
-{
-  // An indented line wrapped onto a CRITICAL point belongs to that point.
-  const wrapped =
-    "## Open points (unresolved at the gap-gate cap)\n\n- [CRITICAL] Which timeout wins\n  authentication for the endpoint is undecided\n";
+  const legacyReason = JSON.stringify({
+    ...complete(),
+    gateVersion: SPEC_ARTIFACT_GATE_VERSION,
+    verdict: "park",
+    parkReason: "security-open-point",
+  });
+  const second = await withTrace(() => parseNormalisedSpecArtifact(legacyReason));
   assert(
-    finaliseSpecVerdict(spec({ verdict: "proceed" }), wrapped).parkReason === "security-open-point",
-    "continuation: an indented line wrapped onto a CRITICAL point parks it",
-  );
-  // A wrapped HIGH item cannot swallow a CRITICAL line: the CRITICAL line still gates.
-  const wrappedHigh =
-    "## Open points (unresolved at the gap-gate cap)\n\n- [HIGH] Which timeout wins\n  [CRITICAL] authentication for the endpoint is undecided\n";
-  assert(
-    finaliseSpecVerdict(spec({ verdict: "proceed" }), wrappedHigh).parkReason ===
-      "security-open-point",
-    "continuation: a CRITICAL line under a HIGH item still gates",
+    second.result === undefined &&
+      second.traced.includes("parkReason") &&
+      second.traced.includes("security-open-point"),
+    "an artifact with a retired park reason is refused AND the trace quotes the reason",
   );
 }
 
-// #1171 canaries: a continuation that merely mentions "critical" still joins; a nested
-// security item under a CRITICAL point is not silently dropped.
+// The blank-body trace reports the RAW LENGTH of a body that flattened to nothing, which is
+// how an operator tells "no issue body" from "a body of invisible characters" (#1187 fix
+// round 2): a boolean would report the same `true` for one zero-width character and for a
+// megabyte of them, which is exactly the case this trace exists to separate.
 {
-  const head = "## Open points (unresolved at the gap-gate cap)\n\n";
-  const mentionsCritical = `${head}- [CRITICAL] Which retry ceiling applies\n  the api key rotation is critical to decide\n`;
+  const { traced } = await withTrace(() => finaliseSpecVerdict(complete(), "\u200B\u200B"));
   assert(
-    finaliseSpecVerdict(spec(), mentionsCritical).parkReason === "security-open-point",
-    "canary: a continuation naming critical joins its point and parks (api key)",
+    traced.includes("open-point-gate-unchecked") &&
+      traced.includes("raw length 2, flattened empty"),
+    "the blank-body trace prints the raw length of a body that flattened to nothing",
   );
-  const nested = `${head}- [CRITICAL] Which timeout wins\n  - authentication is undecided\n`;
+  const undef = await withTrace(() => finaliseSpecVerdict(complete(), undefined));
   assert(
-    finaliseSpecVerdict(spec(), nested).parkReason === "security-open-point",
-    "canary: a nested security item under a CRITICAL point parks",
+    undef.traced.includes("unread (undefined)"),
+    "the blank-body trace says an unread body is undefined rather than blank",
   );
-  const nestedBenign = `${head}- [CRITICAL] Which retry ceiling applies\n  - the cache TTL is open\n`;
-  const benign = finaliseSpecVerdict(spec(), nestedBenign);
+}
+
+// A heading the reader cannot read is a gate that silently did not run. The settlement says
+// a mangled heading opens no section and does NOT park — behaviour unchanged — but the
+// operator is told, because "clean" and "never scanned" look identical downstream (#1187
+// fix round 2).
+{
+  // The heading text appears in the body but NOT as an ATX heading — here as a fence info
+  // string. No section opens, so the gate does not park (settlement: no cross-section scan)
+  // and the trace says the section was not read.
+  const fenceInfo = "``` Open points (unresolved at the gap-gate cap)\ncode\n```\n";
+  const { result, traced } = await withTrace(() => finaliseSpecVerdict(complete(), fenceInfo));
   assert(
-    benign.verdict === "proceed-with-assumptions" &&
-      !benign.assumptions.some((a) => /could not parse/.test(a.text)),
-    "canary: a nested non-security item is not reported as unparsed",
+    result.verdict === "proceed",
+    "a heading text that is not an ATX heading opens no section and does not park (settled behaviour)",
+  );
+  assert(
+    traced.includes("no Open points section was read") &&
+      traced.includes("Open points (unresolved at the gap-gate cap)"),
+    "the trace says no Open points section was read while naming the heading the body mentioned",
+  );
+  const clean = await withTrace(() =>
+    finaliseSpecVerdict(complete(), "## Open questions\n\n- plain\n"),
+  );
+  assert(
+    !clean.traced.includes("no Open points section was read"),
+    "a body that never mentions the heading produces no misleading trace",
+  );
+  const read = await withTrace(() => finaliseSpecVerdict(complete(), body("- [HIGH] fine")));
+  assert(
+    !read.traced.includes("no Open points section was read"),
+    "a body with an EXACT heading produces no not-read trace, even when nothing parks",
+  );
+}
+
+// The openPoints field round-trips through the artifact.
+{
+  const kept = complete({
+    verdict: "park",
+    parkReason: "unresolved-critical-open-point",
+    openPoints: ["[CRITICAL] x"],
+  });
+  const back = parseNormalisedSpecArtifact(artifactJson(kept));
+  assert(back?.openPoints?.[0] === "[CRITICAL] x", "openPoints round-trips through the artifact");
+  assert(
+    parseNormalisedSpecArtifact(artifactJson({ ...kept, openPoints: [1] })) === undefined,
+    "a non-string openPoints is refused",
+  );
+  // The write-side bound is a READ-side check too (#1187 fix round 2): the reader used to
+  // validate elements and not length, so a list the gate could never have written was
+  // restored verbatim into the handoff.
+  const tooMany = Array.from({ length: 22 }, (_, i) => `[CRITICAL] point ${i}`);
+  const { result: over, traced: overTrace } = await withTrace(() =>
+    parseNormalisedSpecArtifact(artifactJson({ ...kept, openPoints: tooMany })),
+  );
+  assert(
+    over === undefined && overTrace.includes("openPoints") && overTrace.includes("refused"),
+    "an openPoints list longer than the write-side cap plus its note is refused, with a trace",
+  );
+  assert(
+    parseNormalisedSpecArtifact(
+      artifactJson({
+        ...kept,
+        openPoints: Array.from({ length: OPEN_POINT_ENTRY_CAP + 1 }, (_, i) => `p${i}`),
+      }),
+    )?.openPoints?.length ===
+      OPEN_POINT_ENTRY_CAP + 1,
+    "the cap plus one '…and N more' note is exactly what the reader accepts",
+  );
+  // Assumption text reaches the PR body, so both fields are bounded and redacted on READ,
+  // not only on the gate's write path (#1187 fix round 2).
+  const token = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123";
+  const leaky = complete({
+    assumptions: [{ text: `rotate the ${token} key`, basis: `via ${token}` }],
+  });
+  const scrubbed = parseNormalisedSpecArtifact(artifactJson(leaky));
+  assert(
+    scrubbed?.assumptions[0]?.text.includes("sk-ant-api03") === false &&
+      scrubbed?.assumptions[0]?.basis.includes("sk-ant-api03") === false &&
+      scrubbed?.assumptions[0]?.text.includes("[REDACTED]") === true,
+    "artifact assumptions have their credential redacted on read, in text and in basis",
+  );
+  const longAssumption = complete({
+    assumptions: [{ text: "z".repeat(6000), basis: "b".repeat(6000) }],
+  });
+  const bounded = parseNormalisedSpecArtifact(artifactJson(longAssumption));
+  assert(
+    (bounded?.assumptions[0]?.text.length ?? 0) <= OPEN_POINT_CHAR_CAP &&
+      (bounded?.assumptions[0]?.basis.length ?? 0) <= OPEN_POINT_CHAR_CAP,
+    "artifact assumption text and basis are both bounded on read",
   );
 }
 

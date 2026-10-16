@@ -25,6 +25,17 @@
  *    may legitimately write nothing on a detached head, and a 30 s wait on
  *    a negative case would burn a full budget per case).
  *
+ * `until` (waiting for a PROPERTY of an already-present file, e.g. a later
+ * round of a ledger that exists from round 1) has its own failure mode, which
+ * the file-exists rule cannot express: at the deadline the file IS readable, so
+ * returning its entries would hand the caller a STALE row and let a "the entry
+ * must exist" assertion pass on an older entry. A `until` whose predicate was
+ * never satisfied therefore returns null — the same "nothing arrived" signal a
+ * missing file gives — while a file that was never readable for the whole budget
+ * still re-raises (a torn write is a failure, not an absence). That is why the
+ * flag below records "was the file readable", not "was the predicate true":
+ * the predicate's own falseness is exactly what null must report.
+ *
  * Intentionally NOT named `test-*.ts` — CI's smoke-tests glob must not
  * self-execute this (same shape as `lib/poll-until-killed.ts`, #846);
  * coverage comes through the test files that import it.
@@ -44,23 +55,35 @@ const LEDGER_WAIT_BUDGET_MS = 30_000;
  */
 export function waitForLedger(
   file: string,
-  budgetMs: number = LEDGER_WAIT_BUDGET_MS,
+  opts: number | { budgetMs?: number; until?: (entries: LedgerEntry[]) => boolean } = {},
 ): LedgerEntry[] | null {
+  const o = typeof opts === "number" ? { budgetMs: opts } : opts;
+  const budgetMs = o.budgetMs ?? LEDGER_WAIT_BUDGET_MS;
   const read = (): LedgerEntry[] => {
     const parsed = JSON.parse(readFileSync(file, "utf8"));
     if (!Array.isArray((parsed as { entries?: unknown } | null)?.entries)) {
-      throw new SyntaxError(
-        "malformed ledger file (expected an object with an entries array)",
-      );
+      throw new SyntaxError("malformed ledger file (expected an object with an entries array)");
     }
     return validEntries((parsed as { entries: unknown[] }).entries);
   };
+  // `until` lets a caller wait for a PROPERTY of the file rather than for the
+  // file itself (a later round of an already-existing ledger). The poll checks
+  // it first and only sleeps on a miss, so the passing path costs one read.
+  const satisfied = (entries: LedgerEntry[]): boolean => (o.until ? o.until(entries) : true);
   const deadline = Date.now() + budgetMs;
   let silentReads = 0;
+  // Whether the file was EVER readable during the poll. A caller waiting for a
+  // property (`until`) that never appeared must get `null` — not the stale
+  // entries a final read would hand back, which would let an "entry expected"
+  // assertion pass on an older row. A file that stayed unparseable for the whole
+  // budget is a different failure and re-raises, so the two are tracked apart.
+  let everReadable = false;
   while (Date.now() < deadline) {
     if (existsSync(file)) {
       try {
-        return read();
+        const entries = read();
+        everReadable = true;
+        if (satisfied(entries)) return entries;
       } catch {
         // Not parseable yet (mid-rename/torn write) — count it for the
         // deadline re-raise and keep polling (the rename is atomic).
@@ -70,6 +93,7 @@ export function waitForLedger(
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
   }
   if (!existsSync(file)) return null;
+  if (o.until && everReadable) return null;
   try {
     return read();
   } catch (err) {

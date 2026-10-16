@@ -28,7 +28,7 @@ import { resolveHeadSha } from "./review-head-sha.ts";
 
 const execFileP = promisify(execFile);
 
-const DIFF_MAX_BUFFER = 1024 * 1024;
+export const DIFF_MAX_BUFFER = 1024 * 1024;
 
 export type RangeDiff = { ok: true; diff: string } | { ok: false; reason: string };
 

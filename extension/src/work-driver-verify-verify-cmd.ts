@@ -235,6 +235,9 @@ export async function runVerifyCommandGate(opts: {
     scratchDir,
     verifyCmd: cmd,
     timeoutMs: verifyTimeoutMs(),
+    // #1362 — the repoRoot dirty-root preflight inside honours the project's
+    // exemption list, so a tool's local file no longer refuses the batch.
+    dirtyRootExempt: ctx.dirtyRootExempt,
     retry: {
       canRetry: flakeRetryPrecondition,
       onFirstFailure: (raw) => {
