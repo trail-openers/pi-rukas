@@ -61,8 +61,8 @@ import {
 } from "./work-develop-fence-verdicts.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { runConvergeGateHandler } from "./work-driver-converge-gate.ts";
+import { recordConsolidatedVerifySkip } from "./work-driver-verify-events.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
-import { recordConsolidatedVerifySkip } from "./workflow-state-events-verify-flake.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { appendEvent } from "./workflow-state.ts";
 

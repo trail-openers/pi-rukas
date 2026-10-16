@@ -40,8 +40,8 @@ import {
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { applySafetyNet } from "./work-driver-safety-net.ts";
 import { verifyCapFor } from "./work-driver-verify-develop-helpers.ts";
+import { recordConsolidatedVerifySkip } from "./work-driver-verify-events.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
-import { recordConsolidatedVerifySkip } from "./workflow-state-events-verify-flake.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 /**

@@ -17,6 +17,11 @@
  *  2. A PR that does not resolve as OPEN on the cycle's branch halts the step
  *     with the evidence; it is never reported as done.
  *  3. No PR at all (create failed, the ops fallback opened none) halts too.
+ *  4. #1240 — when the commit-pr consolidated verify SKIPPED its run (the
+ *     committed integration tree is the tree develop already judged), the skip
+ *     is named in the step's operator-facing summary AND recorded as a
+ *     `consolidated-verify-skipped` event — both are produced by
+ *     `finalizeCommitPrState`, which is what the mechanized path writes.
  *
  * Offline: real git in temp dirs, a scripted `gh`, no network, no model.
  */
@@ -29,6 +34,7 @@ import path from "node:path";
 process.env.PI_ENSEMBLE_DEBUG = "1";
 process.env.PI_ENSEMBLE_FORGE = "github";
 const { runCommitPr } = await import("../src/work-driver-commit.ts");
+const { finalizeCommitPrState } = await import("../src/work-driver-commit-pr-events.ts");
 const { initialState } = await import("../src/workflow-state.ts");
 const { addLocalRemote, fixture, git, mkResult } = await import(
   "./helpers-integrate-pin-realgit.ts"
@@ -203,6 +209,77 @@ async function run(name: string, forge: Forge) {
   assert(
     (r.state.pipelineState.verifyEvidence?.failures ?? []).some((f) => /no PR exists/.test(f)),
     "…and the evidence says no PR exists for the branch",
+  );
+}
+
+// ------------- 4. #1240 — the commit-pr skip is visible in the state finalizeCommitPrState writes
+{
+  // The mechanized path's own event builder, driven with the integrate()
+  // result the skip seam produces. Both halves of "never silent" are asserted
+  // here because BOTH are produced by this one function: the event (which is
+  // what survives in the state file) and the summary line (which is what an
+  // operator reads when commit-pr came back fast). The negative control is the
+  // same call with no `verifySkipped` — a run that happened must claim no skip.
+  const { initialState: init } = await import("../src/workflow-state.ts");
+  const base = init(ISSUE, 1000);
+  const res = {
+    ok: true as const,
+    empty: false as const,
+    workstreams: ["default"],
+    verifySkipped: {
+      treeHash: "a".repeat(40),
+      worktree: "/tmp/wt-issue-1299-default",
+    },
+  };
+  const rootInspect = { ok: false as const, error: "root inspect not exercised here" };
+  const skipped = finalizeCommitPrState(
+    base,
+    2000,
+    1500,
+    ["default"],
+    BRANCH,
+    NEW_PR,
+    res as never,
+    rootInspect as never,
+    undefined,
+  );
+  const skipEvents = skipped.eventLog.filter((e) => e.kind === "consolidated-verify-skipped");
+  assert(
+    skipEvents.length === 1 &&
+      skipEvents[0]?.kind === "consolidated-verify-skipped" &&
+      skipEvents[0].step === "commit-pr" &&
+      skipEvents[0].workstreamCount === 1 &&
+      skipEvents[0].treeHash === "a".repeat(40),
+    `#1240: a skipped commit-pr verify records a consolidated-verify-skipped event, step commit-pr (${JSON.stringify(skipEvents)})`,
+  );
+  const completion = [...skipped.eventLog].reverse().find((e) => e.kind === "dispatch-completed");
+  assert(
+    completion?.kind === "dispatch-completed" &&
+      (completion.summary as string).includes("consolidated verify skipped") &&
+      (completion.summary as string).includes("a".repeat(40)) &&
+      (completion.summary as string).includes("/tmp/wt-issue-1299-default"),
+    `#1240: the same skip is named in the step summary the operator reads (${JSON.stringify((completion as { summary?: string } | undefined)?.summary)})`,
+  );
+  const ran = finalizeCommitPrState(
+    base,
+    2000,
+    1500,
+    ["default"],
+    BRANCH,
+    NEW_PR,
+    { ...res, verifySkipped: undefined } as never,
+    rootInspect as never,
+    undefined,
+  );
+  assert(
+    !ran.eventLog.some((e) => e.kind === "consolidated-verify-skipped"),
+    "#1240 (control): a commit-pr that RAN the verify records no skip event",
+  );
+  const ranCompletion = [...ran.eventLog].reverse().find((e) => e.kind === "dispatch-completed");
+  assert(
+    ranCompletion?.kind === "dispatch-completed" &&
+      !(ranCompletion.summary as string).includes("consolidated verify skipped"),
+    `#1240 (control): …and its summary claims no skip (${JSON.stringify((ranCompletion as { summary?: string } | undefined)?.summary)})`,
   );
 }
 

@@ -49,8 +49,8 @@ import { type SymbolCoupling, findSymbolCouplings } from "./work-develop-symbol-
 import { appendDevelopVerifyFailure } from "./work-develop-verify-failure.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { runConvergeGateHandler } from "./work-driver-converge-gate.ts";
+import { recordConsolidatedVerifySkip } from "./work-driver-verify-events.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
-import { recordConsolidatedVerifySkip } from "./workflow-state-events-verify-flake.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 type DevelopVerifyGate = Awaited<ReturnType<typeof verifyStepOutcome>>;
