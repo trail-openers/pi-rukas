@@ -303,23 +303,31 @@ operator actions. Correct a memory by writing a new one with
 preserves the original row, so the change is auditable and reversible. Retire one
 by reporting its id (see Periodic consolidation).
 
-`export`, `backup` and `import` are operator commands too — never run them. They
-copy or load the whole plaintext store (every project, uncapped), which is both a
-secrets-exposure path and a way to rewrite memory outside `--supersedes`.
+`export`, `backup`, `import`, `reindex` and `project` are operator commands too —
+never run them. The first three copy or load the whole plaintext store (every
+project, uncapped), which is both a secrets-exposure path and a way to rewrite
+memory outside `--supersedes`.
 
-What is actually enforced, per mode — the doctrine is stricter than any single
-gate, so behave as if the whole rule is live:
+What is actually enforced, per mode. The enforcement layer is a mode-independent
+`tool_call` hook (`registerMemoryWriteGuard` in `extension/src/memory-write-guard.ts`),
+registered before the trust/sandbox bypasses and loaded into every spawned child
+by the child-guards companion — so since #1437 the refusal does not depend on
+which mode you are in. It is a string match on the quote-stripped command: an
+agent determined to bypass it can still write its own argv, so treat the whole
+rule as live.
 
 | Verb | Enforcement |
 |---|---|
-| `update` with `-t`/`--text` | Refused by code — `isDestructiveMemoryWrite` in `extension/src/bash-pattern-wildcard.ts`, reached from `matchBashSubcommand`. The refusal applies to the parent in strict/headless mode, and to the PM parent's mode-independent bash guard. Subagent children in trust/sandbox mode get no refusal at all. |
-| `delete`, `prune`, `promote`, `mcp`, and `update` with any other flag | **No code refusal in trust mode** (the default on an interactive host and in the sandbox). Doctrine is the only gate there. |
-| All of these verbs | Granted to no role in `agents.json`. In trust mode that grant is doctrine, not a runtime gate. |
-| `mcp` | Launches an MCP server exposing the write verbs; granted to no role; no code refusal in trust mode. |
+| `delete`, `prune`, `promote`, `export`, `backup`, `import`, `reindex`, `project`, `mcp` | Refused by code in every mode and for every role, including trust-mode and sandbox children. `test-memory-write-guard.ts` proves each verb, the `oo` prefix, chained commands, and the trust-mode child. |
+| `update` with any of `-t`/`--text`, `-m`/`--metadata`, `--memory-type`, `--status`, `--importance` (prefix or `=` form) | Refused by code in every mode. `update` is refused for its flags, not as a bare verb — an update carrying no mutating flag changes nothing. |
+| `update` with no mutating flag, and `hook` | Not refused. The first does nothing; `hook` is the lifecycle handler the binary itself invokes from a hook, so refusing it would refuse plumbing, not a memory write. |
+| `add` (with `--memory-type`, `--status`, `-m`, `--supersedes`) | Never refused — the driver writes memory through it. A predicate that scanned for mutating flags without binding them to `update` would break every driver write. |
+| All of the above | Also granted to no role in `agents.json`. In trust mode that grant is doctrine, not a runtime gate — which is why the guard, not the allowlist, is the layer that holds. An operator who genuinely needs a refused verb from an agent sets `PI_ENSEMBLE_ALLOW_MEMORY_WRITES=1`. |
 
 `update --text` replaces content in place — same id, no lineage, no undo — so
 anything that cited that memory would silently point at new text. That is why it
-is the one verb with a code refusal ahead of the allowlist.
+was the one verb with a code refusal ahead of the allowlist before #1437 widened
+the refusal to the whole ungranted set.
 
 ## Quick reference
 

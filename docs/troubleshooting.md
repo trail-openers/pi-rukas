@@ -1677,10 +1677,35 @@ Escape: nothing to disable here — if vipune is missing, slow or broken, the br
 
 ### An agent tried to edit a memory and was refused
 
-`vipune update <id> --text "…"` is denied to every role, and the refusal is enforced in
-`bash-command-parser.ts` ahead of the permission allowlist so it holds even if the allowlist changes.
+Every vipune write verb is refused to every role, in every mode, by a
+mode-independent `tool_call` hook: `registerMemoryWriteGuard` in
+`memory-write-guard.ts`, registered inside `registerModeIndependentGuards` (so the
+child-guards companion loads it into every spawned child) and again on the parent
+path above the sandbox short-circuit. The refused verbs are the ones no role is
+granted — `delete`, `prune`, `promote`, `export`, `backup`, `import`, `reindex`,
+`project`, `mcp` — plus `update` carrying any row-mutating flag (`-t`/`--text`,
+`-m`/`--metadata`, `--memory-type`, `--status`, `--importance`; prefix and `=`
+forms). An operator who genuinely needs one of them from an agent sets
+`PI_ENSEMBLE_ALLOW_MEMORY_WRITES=1`.
 
-The reason is that `update --text` **replaces content in place**: one row before, one row after, no
+Before #1437 the only code refusal was `isDestructiveMemoryWrite`, reached from
+the permission layers that trust mode and sandbox mode both skip and from the
+parent-PM-only bash guard — so on an interactive host (trust mode is the default)
+the whole boundary was doctrine. The predicate now lives in `memory-write-guard.ts`
+and `isDestructiveMemoryWrite` is a delegating export, so the permission-layer
+call keeps working.
+
+The refusal is **advisory, not a security boundary**: every rule is a string
+match on the quote-stripped command, and an agent determined to bypass it can
+write its own argv. It stops the accidental case — an agent following an outdated
+prompt — and the deliberate bypass is still the operator's terminal.
+
+`vipune hook` is the one listed verb deliberately **not** refused. It is the
+lifecycle-hook handler the binary invokes from a hook; refusing it from inside
+the child that calls it would refuse plumbing, not a memory write.
+
+The reason `update` is refused for its flags rather than as a bare verb is that
+`update --text` **replaces content in place**: one row before, one row after, no
 new row, no `superseded_by` lineage, no undo. The id survives, so any prior citation of that memory
 now points at different text — which makes it quieter than `delete`, and worse.
 
@@ -1708,7 +1733,13 @@ Near-duplicate is judged on content overlap, not on score: two rows that say opp
 
 ### Agents can no longer delete your memories
 
-`agents.json` granted `"vipune *": "allow"` to all six roles. `vipune delete <ID>` takes no confirmation flag, and the wildcard also reached `vipune mcp`. The allowlist is explicit: `search`, `add`, `get`, `list`, `validate`, `doctor`, `version`. `delete`, `update`, `mcp`, `reindex` and `project` are granted to no role — an operator runs those. (`update` was allowed until it was measured to replace content in place with no lineage; see below.)
+`agents.json` granted `"vipune *": "allow"` to all six roles. `delete <ID>` takes
+no confirmation flag, and the wildcard also reached `mcp`. The allowlist is
+explicit: `search`, `add`, `get`, `list`, `validate`, `doctor`, `version`. The
+write verbs are granted to no role — an operator runs them. (`update` was allowed
+until it was measured to replace content in place with no lineage; see above.)
+The allowlist is only one layer, and in trust mode it is the softest one: the
+refusal that actually runs is the mode-independent guard above.
 
 ### False claims in a diff — and why there is no seventh lens
 
