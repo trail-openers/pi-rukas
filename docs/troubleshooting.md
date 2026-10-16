@@ -423,6 +423,16 @@ PR: [#215](https://github.com/trail-openers/pi-rukas/pull/215)
 
 PR: [#215](https://github.com/trail-openers/pi-rukas/pull/215)
 
+### `pi-rukas-headless` refuses `--merge` or `--sandboxed`
+
+**Symptom:** `pi-rukas-headless work 42 --merge` (or `--sandboxed`) exits 40 with `unknown argument "--merge"`, and the cycle never starts.
+
+**Cause:** deliberate (#1025). Both flags name an escalation a caller must not be able to request. `--merge` is the one authority source that bypasses the policy judge, so a host that could pass it could grant its own cycle permission to merge; `--sandboxed` would claim the container's trust mode from outside the container. Trust is an environment fact the image bakes (`PI_ENSEMBLE_SANDBOX_MODE=1` in `.devcontainer/Dockerfile`), not a request.
+
+**Fix:** nothing to pass. Merge authority comes from the project's `AGENTS.md` read at the cycle's base commit and needs `gh` merge evidence alongside it, so a cycle with neither parks as `awaiting-human-merge` (exit 10) with the PR open — which is the outcome, not a failure to work around. For sandbox behaviour, run the binary inside the image. See [headless.md](headless.md#what-the-runner-refuses-to-accept).
+
+Related: a child of a headless run outside the image denies every `ask`-class tool with `no broker socket — headless deny`. That is the same design one layer down — with no sandbox and no human, fail closed rather than guess — and the mode-independent guards (merge, issue-creation) still run ahead of it.
+
 ## Image acquisition
 
 ### `./install.sh` takes 10+ minutes (cold local build)

@@ -58,6 +58,11 @@ export function parseHeadlessArgs(argv: string[]): ParsedArgs | { error: string 
       if (n <= 0) return { error: `invalid issue number "${tok}"` };
       issues.push(n);
     } else {
+      // S5 (#1025) — there is deliberately no `--merge` (nor `--sandboxed`).
+      // Headless merge authority comes only from AGENTS.md through the policy
+      // judge, and trust mode only from PI_ENSEMBLE_SANDBOX_MODE=1 in the
+      // image entrypoint. A flag an agent could pass is a flag an agent could
+      // pass, so the rejection is exact and names the argument.
       return { error: `unknown argument "${tok}"` };
     }
   }
