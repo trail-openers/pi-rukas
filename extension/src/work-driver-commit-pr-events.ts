@@ -25,6 +25,7 @@ import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import type { IntegrateResult } from "./work-driver-integrate.ts";
 import { parsePrNumber } from "./work-driver-merged.ts";
 import { verifyConsolidation, verifyStepOutcome } from "./work-driver-verify.ts";
+import { makeConsolidatedVerifySkippedEvent } from "./workflow-state-events-verify-flake.ts";
 import type { ConsolidationVerdict } from "./workflow-state.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { appendEvent } from "./workflow-state.ts";
@@ -202,6 +203,16 @@ export function finalizeCommitPrState(
     },
     { kind: "step-started", step: "commit-pr", at: now },
   );
+  // #1240 — the commit-pr consolidated verify skipped its run because the
+  // committed integration tree is the tree develop already judged. Emitted
+  // alongside (not instead of) the flake marker: they describe different
+  // facts, and the skip's absence is the only evidence a run happened.
+  if (res.verifySkipped !== undefined) {
+    next = appendEvent(
+      next,
+      makeConsolidatedVerifySkippedEvent("commit-pr", res.verifySkipped, ids.length),
+    );
+  }
   // #782 — the commit-pr consolidated verify recovered from a flake: emit
   // the audit trail BEFORE the dispatch-completion event so the ordering
   // in the event log matches the temporal order.

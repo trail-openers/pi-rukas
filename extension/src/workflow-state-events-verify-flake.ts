@@ -56,3 +56,60 @@ export type VerifyFullStatusEvent = {
    */
   recovered?: boolean;
 };
+
+/**
+ * Issue #1240 — the consolidated verify's duplicate-run skip.
+ *
+ * The develop step verifies twice per pass: once per changed worktree, then
+ * once against a probe tree the consolidated run builds at repoRoot by
+ * cherry-picking each workstream's own commits onto the base. With ONE
+ * workstream whose per-worktree verify just passed, the probe holds the same
+ * content the run above already judged, so the second execution proves nothing
+ * and costs the full gate a second time (~21 min per pass on the orchard
+ * factory). The gate now compares git's own tree object ids and, when it can
+ * prove the probe tree IS the tree that passed, records this event instead of
+ * running the command.
+ *
+ * **Why an event and not only a note.** The gate's `notes[]` reach the state
+ * file only on a failure path, so a note explaining a fast `develop` would be
+ * the one kind of note that never survives to be read — which is precisely the
+ * condition the event exists to explain. A fast step must be explainable from
+ * the state file rather than inferred from the absence of a 20-minute gap.
+ *
+ * Deliberately NOT the `verify-flake-recovered` shape: nothing failed and
+ * nothing was re-run here. And a skip is not a pass — the event names the
+ * identity that justified it, so a reader can confirm the claim rather than
+ * take it.
+ */
+export type ConsolidatedVerifySkippedEvent = {
+  kind: "consolidated-verify-skipped";
+  at: number;
+  /** The step whose consolidated verify was skipped. */
+  step: "develop" | "commit-pr";
+  /** The tree object id both runs agree on (git's own hash). */
+  treeHash: string;
+  /** The worktree whose per-worktree verify judged that tree. */
+  worktree: string;
+  /** How many workstreams the cycle has — the skip requires exactly one. */
+  workstreamCount: number;
+};
+
+/**
+ * Build the #1240 skip event. A factory (rather than a literal at each call
+ * site) so the two seams cannot drift on `step`, and so `at` is stamped at
+ * the moment of the decision rather than whenever the caller appends.
+ */
+export function makeConsolidatedVerifySkippedEvent(
+  step: "develop" | "commit-pr",
+  skipped: { treeHash: string; worktree: string },
+  workstreamCount: number,
+): ConsolidatedVerifySkippedEvent {
+  return {
+    kind: "consolidated-verify-skipped",
+    at: Date.now(),
+    step,
+    treeHash: skipped.treeHash,
+    worktree: skipped.worktree,
+    workstreamCount,
+  };
+}

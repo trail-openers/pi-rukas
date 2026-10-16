@@ -73,6 +73,13 @@ export async function verifyDevelopOutcome(
   // at base AND the verify command's failures are the gate's only ones, so
   // the caller can park with verify-baseline-red instead of verify-failed.
   onBaselineRedOnly?: () => void,
+  // #1240 — out-parameter carrying the identity that justified skipping the
+  // consolidated run (the single workstream's tree, already verified green).
+  // The caller appends the `consolidated-verify-skipped` EVENT from it: a
+  // note would be the one kind of note that never survives to the state
+  // file, and the event lives where the caller appends so the log stays
+  // append-only.
+  onConsolidatedVerifySkipped?: (skipped: { treeHash: string; worktree: string }) => void,
 ): Promise<void> {
   const worktrees =
     Object.keys(state.pipelineState.worktrees ?? {}).length > 0
@@ -412,6 +419,7 @@ export async function verifyDevelopOutcome(
         onBaselineAttributed: () => {
           attributed = true;
         },
+        ...(onConsolidatedVerifySkipped !== undefined ? { onConsolidatedVerifySkipped } : {}),
       });
       // #1349 — only a base that fails the way the change does excuses it.
       verifyCmdEnd = before === 0 && attributed ? failures.length : undefined;

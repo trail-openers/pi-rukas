@@ -1266,6 +1266,24 @@ The command runs in the group's worktree, never the repo root — under parallel
 
 Escape hatches: `PI_ENSEMBLE_VERIFY_FULL=0`, `PI_ENSEMBLE_VERIFY_FULL_TIMEOUT_MS`.
 
+### The develop gate ran the verify command twice on the same tree (#1240)
+
+**Symptom:** `develop` completes many minutes after its developer child finished, with nothing between them but the driver's consolidated verify. On a project whose gate is slow (the orchard factory: `scripts/test.sh`, ~18 min of serial shell tests) an N=1 cycle pays that twice per gate pass — once in the develop worktree and once again at repoRoot for the consolidated probe — and the second run checks content the first already judged. Four gate passes per cycle meant eight runs where four sufficed.
+
+**Cause:** with one workstream, the consolidated probe cherry-picks that workstream's *own* commits onto the cycle's base. The result is the same tree, so the second run is duplicate work, not a second opinion. It was never redundant at N>1, where the combination genuinely is a tree no worktree held.
+
+**Fix:** the probe now establishes identity positively, from git's own tree object ids, and skips the command only when it can prove the probe tree is the tree that just passed. Both sides include staged content and exclude untracked files, and neither is trusted when the working tree holds content no tree object describes (unstaged edits, untracked sources) — there the run happens. Any read failure, any mismatch, more than one workstream, a per-worktree failure, or the degenerate root-as-worktree shape runs the consolidated verify exactly as before: a gate that cannot prove equivalence runs the check.
+
+**What you see:** the skip is not silent. The state file's notes and the trace carry
+
+```
+consolidated verify skipped: tree <hash> already passed in <worktree> — …
+```
+
+and the develop event log keeps its `verifyEvidence` / duration recording untouched, so a fast `develop` is explainable from the state file rather than inferred from the absence of a 20-minute gap.
+
+**Escape hatch:** `PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP=0` restores the always-run behaviour (for example, to reproduce a gate failure that only appears in the probe's checkout).
+
 ### Type-widening scan
 
 Before each lens review the integrated diff is scanned for removed compiler-enforced invariants: `T` → `Option<T>` (Rust), `T` → `T | null` / `| undefined` and added `?:` (TS), removed `readonly`/`final`/`const`, narrowing to `any`/`unknown`, removed `assert`/`debug_assert!`, removed `pub`/`mut`.

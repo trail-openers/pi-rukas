@@ -47,6 +47,7 @@ import {
 import { armStepNotice } from "./work-driver-step-notice.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
+import { makeConsolidatedVerifySkippedEvent } from "./workflow-state-events-verify-flake.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 
 /**
@@ -362,6 +363,21 @@ async function runDevelopTopological(
     const gate = await verifyStepOutcome(ctx, next, "develop");
     // #1040 — lost-comment evidence persists from the develop note (handoff even with no reviewer).
     next = recordCommentEvidence(next, gate.commentEvidence);
+    // #1240 — the consolidated verify skipped its run because the probe tree
+    // is the tree the single workstream's own verify just judged. Recorded as
+    // an event so a fast `develop` is explainable from the state file rather
+    // than inferred from the absence of a 20-minute gap. Appended here, where
+    // the caller owns the event log, so the log stays append-only.
+    if (gate.consolidatedVerifySkipped !== undefined) {
+      next = appendEvent(
+        next,
+        makeConsolidatedVerifySkippedEvent(
+          "develop",
+          gate.consolidatedVerifySkipped,
+          Object.keys(next.pipelineState.worktrees ?? {}).length,
+        ),
+      );
+    }
     stateRef.current = next;
     // #814 — a fence violator must not report a bare "ok" here: replace the
     // event with the flipped verdicts via replaceDevelopConvergedVerdicts

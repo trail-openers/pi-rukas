@@ -248,6 +248,14 @@ export async function mechanizedCommitPr(
       commitShas: followupBase ? undefined : ps.commitShas,
       verifyCmd: await verifyCmdFor(ctx.repoRoot),
       verifyExecFn: ctx.verifyExecFn,
+      // #1240 — the N=1 create-mode shape: one workstream, first integration
+      // of the cycle. Its develop worktree is the tree the develop gate ran
+      // `verifyCmd` green on, and this integration is that content alone, so
+      // `integrate()` may skip its own run when the trees provably match.
+      // Every other shape (fan-out, followup/second round) passes nothing and
+      // the commit-pr verify runs as before.
+      verifiedWorktree:
+        followupBase === undefined && ids.length === 1 ? Object.values(worktrees)[0] : undefined,
       verifyTimeoutMs: integrationVerifyTimeoutMs(),
       verifyRetry: {
         ciRetryCount: ps.ciRetryCount,
