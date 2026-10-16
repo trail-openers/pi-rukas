@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { integrateBackupRef } from "../../src/work-driver-integrate-cycle.ts";
 import type { ExecFn } from "../../src/worktree.ts";
 
 /**
@@ -66,3 +67,14 @@ export function makeFakeWorktreeDir(root: string, name: string): string {
 export function toplevelAnswer(cwd: string | undefined): { stdout: string } {
   return { stdout: realpathSync(cwd ?? "") + "\n" };
 }
+
+/**
+ * The per-issue integrate backup ref (#1173 / #1396), from the ONE producer
+ * (`integrateBackupRef` in `work-driver-integrate-cycle.ts`) — so a test that
+ * asserts a ref name cannot drift from the ref the code writes. Tests assert
+ * against this rather than a literal.
+ */
+export const integrateBackupRefFor = (issue: number): string => integrateBackupRef(issue);
+
+/** The ref under which every integrate backup for issue 17 lives in the fixtures. */
+export const ISSUE_17_BACKUP_REF = integrateBackupRef(17);

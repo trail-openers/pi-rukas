@@ -59,6 +59,20 @@ export function worktreePath(repoRoot: string, name: string): string {
 }
 
 /**
+ * #1396 — the bound on every `git worktree list` the worktree helpers run.
+ * `ExecFn`'s `timeout` is only honoured when the executor passes it to
+ * `execFile`, so a listing that hangs — a stale `worktree` lock, an
+ * uninterruptible I/O wait — never rejects, and the retry in
+ * `listWorktreeStrict` never gets a first attempt to fail. The call sits
+ * inside the integration lock, so a hang there holds the lock forever.
+ * Passing the bound makes a hang a bounded rejection, which the strict
+ * listing turns into a `WorktreeScanError` naming the attempts. Same 30s as
+ * the other local git reads (`GIT_TIMEOUT_MS` in
+ * `work-driver-lens-fix-reposition-queries.ts`).
+ */
+export const WORKTREE_LIST_TIMEOUT_MS = 30_000;
+
+/**
  * Resolve a path to its canonical form (handles macOS /var → /private/var).
  * No-op for paths that do not exist yet — the worktree target is resolved
  * before `git worktree add` creates it, so this must not throw.
@@ -257,11 +271,22 @@ export async function scanWorktrees(
   return inspectListedWorktrees(execFn, repoRoot, list, fromRef, pathSubstrings, exclude);
 }
 
-/** The strict listing — an unreadable `git worktree list` throws. */
-async function listWorktreePorcelain(execFn: ExecFn, repoRoot: string): Promise<string> {
+/**
+ * The strict listing — an unreadable `git worktree list` throws.
+ *
+ * #1396 — `timeoutMs` is a seam for tests that inject a never-resolving
+ * executor (a real 30s wait would not belong in the offline suite); every
+ * production caller leaves it at `WORKTREE_LIST_TIMEOUT_MS`.
+ */
+async function listWorktreePorcelain(
+  execFn: ExecFn,
+  repoRoot: string,
+  timeoutMs = WORKTREE_LIST_TIMEOUT_MS,
+): Promise<string> {
   const { stdout } = await execFn("git worktree list --porcelain", {
     cwd: repoRoot,
     maxBuffer: 1024 * 1024,
+    timeout: timeoutMs,
   });
   return stdout;
 }
@@ -352,12 +377,22 @@ export async function findDirtySameIssueLeftover(
  * (`isRegisteredWorktree`): every read whose failure would let a removal
  * through uses THIS helper, so "could not read the listing" is one
  * `WorktreeScanError` shape everywhere, not a per-caller invention.
+ *
+ * #1396 (six-lens round) — each attempt carries `WORKTREE_LIST_TIMEOUT_MS`, so
+ * a HANG is a failure too. Without it the retry loop could only ever see a
+ * command that *rejected*: a `git worktree list` that never answered held the
+ * integration lock indefinitely and the 250ms retry never fired, which is the
+ * same unbounded wait the rest of the git seams bound.
  */
-export async function listWorktreeStrict(execFn: ExecFn, repoRoot: string): Promise<string> {
+export async function listWorktreeStrict(
+  execFn: ExecFn,
+  repoRoot: string,
+  timeoutMs = WORKTREE_LIST_TIMEOUT_MS,
+): Promise<string> {
   let lastErr: unknown;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      return await listWorktreePorcelain(execFn, repoRoot);
+      return await listWorktreePorcelain(execFn, repoRoot, timeoutMs);
     } catch (err) {
       lastErr = err;
       if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 250));
@@ -375,6 +410,10 @@ export async function worktreeList(execFn: ExecFn, repoRoot: string): Promise<st
   const { stdout } = await execFn("git worktree list --porcelain", {
     cwd: repoRoot,
     maxBuffer: 1024 * 1024,
+    // #1396 — the same bound every other listing carries: this one is called
+    // from the #654 branch-holder sweep, which runs inside the integration
+    // path, and an unbounded hang there is the same lock-holding defect.
+    timeout: WORKTREE_LIST_TIMEOUT_MS,
   });
   return stdout;
 }
