@@ -49,7 +49,7 @@ export const NDJSON_STABLE_FIELDS = {
   "handoff-emitted": ["at", "commentUrl", "labelApplied"],
   "ci-status": ["at", "status", "runUrl"],
   merged: ["at", "prNumber", "mergeCommit"],
-  interrupted: ["at", "reason"],
+  interrupted: ["at", "reason", "step"],
 } as const satisfies { [K in WorkEvent["kind"]]?: EventFields<K> };
 
 /** Stable kinds: the driver events above plus the runner's own `log` line. */
@@ -68,6 +68,8 @@ export interface NdjsonLine {
   key?: string;
   event?: unknown;
   message?: string;
+  /** On a `log` line the runner rerouted from a warning (#1370); absent otherwise. */
+  level?: "warn";
   /** Present (always `true`) on a line whose kind is outside the stable subset. */
   unstable?: true;
 }
@@ -104,6 +106,7 @@ export function validateNdjsonLine(value: unknown): string[] {
   if (o.unstable === true && typeof o.kind === "string" && isStableKind(o.kind)) {
     errors.push(`kind "${o.kind}" is stable and must not be marked unstable`);
   }
+  if (o.level !== undefined && o.level !== "warn") errors.push('level, when present, is "warn"');
   if (o.issue !== undefined && (typeof o.issue !== "number" || !Number.isInteger(o.issue))) {
     errors.push("issue, when present, must be an integer");
   }

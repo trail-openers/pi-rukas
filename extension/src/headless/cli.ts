@@ -7,8 +7,9 @@
  *   pi-rukas-headless work <issue> [more issues] [--restart]
  *                          [--timeout <minutes>] [--json]
  *
- * stderr: NDJSON v1 progress lines (ndjson.ts). stdout: one summary line, or
- * with --json exactly one JSON document. The exit code is derived from the
+ * stderr: NDJSON v1 progress lines (ndjson.ts), and nothing else: the driver's
+ * own plain-text diagnostics are rerouted as `log` lines (stderr.ts, #1370).
+ * stdout: one summary line, or with --json exactly one JSON document. The exit code is derived from the
  * state file (exit-code.ts).
  *
  * Ctrl-C (SIGINT) and SIGTERM interrupt the cycle: the driver records
@@ -29,6 +30,7 @@ import { buildCapabilities } from "./capabilities.ts";
 import { EXIT } from "./exit-code.ts";
 import { resultDocument } from "./result.ts";
 import { runHeadless } from "./run.ts";
+import { type StderrCapture, captureStrayOutput } from "./stderr.ts";
 
 export interface ParsedArgs {
   issues: number[];
@@ -63,6 +65,9 @@ export function parseHeadlessArgs(argv: string[]): ParsedArgs | { error: string 
   return { issues, restart, timeoutMs, json };
 }
 
+/** Set once `work` starts; flushed before the process exits. */
+let capture: StderrCapture | undefined;
+
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -90,13 +95,14 @@ async function main(argv: string[]): Promise<number> {
     );
     return EXIT.refused;
   }
+  capture = captureStrayOutput();
   const repoRoot = await resolveRepoRoot(process.cwd());
   const run = await runHeadless({
     repoRoot,
     issues: args.issues,
     restart: args.restart,
     timeoutMs: args.timeoutMs,
-    write: (line) => process.stderr.write(`${line}\n`),
+    write: capture.write,
   });
   if (args.json) {
     const doc = resultDocument(run, { commit: readBuildCommit(), version: readBuildVersion() });
@@ -126,6 +132,7 @@ if (invokedDirectly) {
       // process.exit skips every pending finally: release the locks first.
       releaseHeldIntegrationLocks();
       killLiveProcessGroups();
+      capture?.flush();
       process.exit(code);
     });
 }

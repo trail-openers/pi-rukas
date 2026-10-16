@@ -10,8 +10,10 @@
  *
  * ## What it checks (in order, all fail-closed)
  *
- *   1. Is this command a merge? (`mergesPr` — the matcher in
- *      bash-command-parser.ts). If not, the hook is inert.
+ *   1. Is this command a merge? (`readMergeCommand`, merge-allowlist.ts).
+ *      A command naming no forge and no merge word is inert; one that names
+ *      both must be the single plain `gh pr merge` / `glab mr merge` form, or
+ *      it is refused.
  *   2. Escape hatch: `PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1` (operator-set
  *      only). If set, the hook is inert for the whole session.
  *   3. Resolve the merge target: `gh pr view N --json …` (or `glab mr view
@@ -51,10 +53,11 @@
  * git common dir), and the head check is not atomic with the merge. The
  * threat model is the honest-but-forgetful agent, not an adversary: an
  * agent with credentials can always merge by other means (a direct
- * `git push` to the base branch, a GraphQL merge mutation) — those are
- * CONSCIOUSLY out of scope (branch protection covers pushes; parsing
- * GraphQL is a large surface with little to gain). See
- * docs/troubleshooting.md for the full statement.
+ * `git push` to the base branch, a merge spelled entirely from shell
+ * expansions) — those are CONSCIOUSLY out of scope (branch protection
+ * covers pushes). REST and GraphQL merges that spell the word are refused
+ * outright rather than checked. See docs/troubleshooting.md for the full
+ * statement.
  *
  * ## Mode-independence
  *
@@ -84,14 +87,18 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execp } from "./exec.ts";
 import { FORGE_EXEC_TIMEOUT_MS } from "./forge-detect.ts";
-import { type MergeAnalysis, analyseMergeCommand } from "./merge-analyse.ts";
+import {
+  GLAB_AUTO_MERGE_REFUSAL,
+  type MergeCommand,
+  mergeFormRefusal,
+  readMergeCommand,
+} from "./merge-allowlist.ts";
 import {
   lensNotEvaluatedRefusal,
   mergeIdentity,
   readPrCommentBodies,
 } from "./merge-guard-reads.ts";
 import { evaluateRoundCapMerge } from "./merge-guard-round-cap.ts";
-import { exceedsAnalysisBound } from "./merge-size.ts";
 import {
   type MergeExecFn,
   type MergeTarget,
@@ -108,10 +115,6 @@ import {
 } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
-
-/** Refusal for a merge-bearing command over the analysis size bound (#955 round 6). */
-const TOO_LARGE_REFUSAL =
-  "merge refused: command is too large to analyse — the merge guard will not walk a command this large (it could hide a merge behind a long value); split or simplify the command, or set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override";
 
 /** Per-exec timeout for the guard's gh/git calls. */
 const EXEC_TIMEOUT_MS = FORGE_EXEC_TIMEOUT_MS;
@@ -139,82 +142,27 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
   pi.on("tool_call", async (event, _ctx) => {
     if (event.toolName !== "bash") return;
     const command = (event.input as { command?: string })?.command ?? "";
-    // #955 (fail closed): wrap all parse/match calls in try/catch. The
-    // matcher and its helpers (`analyseMergeCommand`, merge-analyse.ts) can throw on
-    // pathological input (a ~30k-level nested `$(…)` throws RangeError:
-    // Maximum call stack size exceeded). An uncaught throw OUT of the
-    // tool_call hook is a crash — the command passes the guard and runs.
-    // Catching it and blocking is fail-closed: the guard cannot analyse
-    // the command, so it refuses.
-    // #955 lens round 6: a merge-bearing command over the size bound is
-    // REFUSED explicitly ("too large to analyse") — it must not fall
-    // through to current-branch PR resolution, which would verify the
-    // ledger for a different PR than the one the (unanalysable) command
-    // would merge. It is checked first, so no walk runs over such a command.
-    let analysis: MergeAnalysis;
+    // Fail closed: a throw out of the tool_call hook would let the command
+    // run, so anything the reader throws refuses.
+    let analysis: MergeCommand;
     try {
-      if (exceedsAnalysisBound(command)) return block(TOO_LARGE_REFUSAL);
-      analysis = analyseMergeCommand(command);
+      analysis = readMergeCommand(command);
     } catch (err) {
       return block(
         `merge guard could not analyse this command (${analyseRefusal(err)}) — refusing; split or simplify the command`,
       );
     }
     if (analysis.kind === "none") return;
-    // #955 lens fix 1 (HIGH): an invalid repo value (e.g. `o/r; touch
-    // /tmp/x`) is a shell injection. The guard refuses and NEVER
-    // interpolates it into any exec string — nor echoes it back (it can
-    // carry shell metacharacters the agent typed).
-    if (analysis.kind === "unsafe") {
+    // #962: a command that names a forge and a merge but is not the one plain
+    // merge form the guard checks (see merge-allowlist.ts).
+    if (analysis.kind === "refused") {
       return block(
-        "merge refused: unsafe repo value (contains characters outside owner/repo) — the guard will not interpolate this value into a forge command; set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override",
+        analysis.reason === "glab-auto-merge"
+          ? GLAB_AUTO_MERGE_REFUSAL
+          : mergeFormRefusal(analysis.reason),
       );
     }
-    // #962: the command's raw text and the words bash executes (after
-    // quote removal) name different merge targets — the guard cannot tell
-    // which PR it would be checking, so it checks none.
-    if (analysis.kind === "ambiguous") {
-      return block(
-        "merge refused: ambiguous merge target — the command's quoting or escaping changes which PR/repo it names; write the PR number and repo plainly, or set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override",
-      );
-    }
-    if (analysis.kind === "multiple") {
-      return block(
-        "merge refused: the command runs more than one merge — the guard verifies one PR per command; run each merge as its own command, or set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override",
-      );
-    }
-    // #1317: a merge inside a substitution, subshell, backtick or process
-    // substitution (or nested deeper than the guard walks) — the guard cannot
-    // see the whole merge target, so it checks none of it.
-    if (analysis.kind === "nested") {
-      return block(
-        "merge refused: a merge runs inside a command substitution, subshell, backtick or process substitution (or is nested deeper than the guard reads) — the guard verifies one plainly written PR per command; run the merge as its own command, or set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override",
-      );
-    }
-    // #1317: gh and glab take the last -R/--repo; the guard reads the first.
-    if (analysis.kind === "repos") {
-      return block(
-        "merge refused: the command names more than one repo (-R / --repo / --project) — gh and glab use the last one, the guard would check the first; pass a single repo selector, or set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override",
-      );
-    }
-    // #1317: a reading the guard could not build, a merge number it cannot
-    // read, and merge-like text no reading turned into a merge head.
-    if (analysis.kind === "unparsed") {
-      return block(
-        "merge refused: the guard cannot parse this command's quoting (an unclosed quote, a heredoc body, or a brace group it cannot expand) and it mentions a merge — issue the merge as a single plain `gh pr merge <N>` / `glab mr merge <N>` command, or set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override",
-      );
-    }
-    if (analysis.kind === "unreadable") {
-      return block(
-        "merge refused: unreadable PR number — the merge's number argument (or REST path) is not a plain integer, so the guard cannot tell which PR it would merge and will not guess from the current branch; write the number literally, or set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override",
-      );
-    }
-    if (analysis.kind === "unrecognised") {
-      return block(
-        "merge refused: the guard cannot read this command as a merge — issue the merge as a single plain `gh pr merge <N>` / `glab mr merge <N>` command; put comment and PR bodies in --body-file rather than inline (text that spells `merge` next to gh/glab is refused on purpose); or set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override",
-      );
-    }
-    const merging = analysis.span;
+    const merging = analysis.forge === "gitlab" ? "glab mr merge" : "gh pr merge";
     const repoValue = analysis.repo;
     let prNumber = analysis.prNumber;
 
@@ -223,27 +171,30 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     // through it); production uses execp.
     const execFn: MergeExecFn = opts.execFn ?? execp;
 
-    // No number in the tail → fall back to current-branch resolution.
+    // No number in the command → fall back to current-branch resolution.
     if (prNumber === undefined) {
       prNumber = await resolvePrNumber(execFn, cwd, undefined, undefined, repoValue);
     }
     if (prNumber === undefined) {
       return block(
-        `could not resolve the PR number for \`${merging}\` (parsed number: ${prNumber ?? "none"}; repo: ${repoValue ?? "none"}; matched span: \`${merging}\`; fallback cwd: ${cwd}) — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
+        `could not resolve the PR number for \`${merging}\` (repo: ${repoValue ?? "none"}; fallback cwd: ${cwd}) — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
       );
     }
 
-    // Read the merge target (gh/glab). Fail-closed on unreadable. `repo`
-    // is the VERB door's repo (the -R/--repo flag or PR-URL of the matched
-    // merge verb): the REST doors name the repo in the endpoint path (and
-    // glab's `mr view <n>` does not take a `-R` in the same shape), so the
-    // REST path verifies in the CWD's repo — an agent merging via REST from
-    // its CWD is merging its own PR.
+    // Read the merge target (gh/glab) in the command's -R/--repo repo, or
+    // the CWD's. Fail-closed on unreadable.
     const targetResult = await readMergeTarget(execFn, cwd, prNumber, undefined, repoValue);
     if (!targetResult.ok) {
       return block(`merge refused: ${targetResult.reason}`);
     }
     const target = targetResult.target;
+    // The PR read follows this repo's forge; a merge aimed at the other forge
+    // would act on a different PR/MR than the one just read.
+    if (target.forge !== analysis.forge) {
+      return block(
+        `merge refused: \`${merging}\` merges on ${analysis.forge} but this repo's forge is ${target.forge} — the guard would check a different PR/MR than the one merged; set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override`,
+      );
+    }
 
     // Carve-out: release-please / dependabot are not agent merges.
     if (isCarveOut(target)) {

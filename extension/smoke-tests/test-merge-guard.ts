@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
 /**
- * #912 — the merge guard: matcher table, decision matrix, registration canaries.
+ * #912 — the merge guard: decision matrix, registration canaries. Which
+ * commands count as a merge is test-merge-guard-allowlist.ts.
  */
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { mergesPr } from "../src/bash-command-parser.ts";
 import {
   assert,
   GOOD_ENTRIES,
@@ -28,45 +28,6 @@ await setupLedgerPath();
 // path. The env override below points it at a private temp file BEFORE the
 // resolution, so the real per-clone ledger under the git common dir is never
 // touched; the temp dir is removed at the end.
-
-// ------------------------------------------------------------ it catches
-
-for (const cmd of [
-  // The plain verb, with the shapes agents actually emit.
-  "gh pr merge 12 --squash",
-  "glab mr merge 12",
-  "oo gh pr merge 12 --squash",
-  "oo glab mr merge 7",
-  // Wrappers + chains — the predicate scans, it does not anchor.
-  "timeout 60 gh pr merge 12",
-  "cd x && gh pr merge 12",
-  "git status; gh pr merge 12 --squash",
-  "nice -n 5 glab mr merge 3",
-  "env FOO=1 gh pr merge 12",
-  // No PR number — resolved via `gh pr view --json number` on the current branch.
-  "gh pr merge",
-  // The gh REST door: gh api defaults to POST/PUT, so /pulls/N/merge IS the write.
-  "gh api repos/o/r/pulls/12/merge",
-  "gh api repos/o/r/pulls/12/merge --dry-run",
-  "gh api repos/o/r/pulls/merge -f a=b",
-  // Body fields force a PUT regardless of --method — a GET with -f is the write.
-  "gh api repos/o/r/pulls/12/merge --method GET --field merge_method=squash",
-  "gh api repos/o/r/pulls/12/merge -X GET -f merge_method=squash",
-  // The glab REST door: method-AWARE — only an explicit PUT/POST or body fields.
-  "glab api /projects/1/mr/12/merge -X PUT",
-  "glab api /projects/1/mr/12/merge --method POST",
-  "glab api /projects/1/mr/12/merge -f squash=true",
-  "glab api /projects/1/mr/merge --method PUT",
-  // The repo's canonical glab shape: /merge_requests/{n}/merge (unquoted).
-  "glab api /projects/1/merge_requests/12/merge -X PUT",
-  "glab api /projects/1/merge_requests/12/merge --method put",
-  "glab api /projects/1/merge_requests/12/merge -f squash=true",
-  "glab api /projects/123/merge_requests/45/merge --method POST",
-  // Lowercase method names — the CLIs normalise case, the matcher must too.
-  "glab api /projects/1/mr/12/merge -X put",
-]) {
-  assert(mergesPr(cmd) !== undefined, `canary: blocked — ${cmd}`);
-}
 
 // ----------------------------------- the shared predicates (writer == guard)
 
@@ -252,20 +213,16 @@ assert(!lensPassed("ISSUES_FOUND", "MEDIUM"), "lens ISSUES_FOUND blocks at the M
   }
 }
 {
-  // The gh REST /merge door goes through the same decision path.
-  const r = await hookDecision("gh api repos/o/r/pulls/12/merge", []);
-  assert(r.block === true, "the gh REST /merge door is gated by the same decision path");
-  assert(/no passing adversarial/.test(r.reason ?? ""), "…with the same refusal text");
+  // The gh REST /merge door is refused outright (#962), before any forge call.
+  const r = await hookDecision("gh api repos/o/r/pulls/12/merge", GOOD_ENTRIES);
+  assert(r.block === true, "the gh REST /merge door is refused even with a passing ledger");
+  assert(/checks only one plain merge command/.test(r.reason ?? ""), "…as outside the accepted form");
+  assert(r.calls.length === 0, "…without reading the PR");
 }
 {
-  // PR-number scoping: a digit inside an EARLIER command of the chain (the
-  // `cd /data/3` path) is not a PR number — the hook must not validate the
-  // ledger for PR #3 (the stub would throw on an unexpected `gh pr view 3`).
+  // A chained merge is refused (#962): the guard checks one plain command.
   const r = await hookDecision("cd /data/3 && gh pr merge", GOOD_ENTRIES);
-  assert(
-    r.block === false,
-    "a chained `cd /N && gh pr merge` does not pick the digit up as the PR number",
-  );
+  assert(r.block === true && r.calls.length === 0, "a chained `cd /N && gh pr merge` is refused");
 }
 
 // ------------------------- #1161: a caller-pasted diff is not a passing review
