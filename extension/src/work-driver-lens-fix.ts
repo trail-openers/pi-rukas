@@ -18,6 +18,7 @@ import { repositionLensFixWorktree } from "./work-driver-lens-fix-reposition-gat
 import { parkLensFixReposition } from "./work-driver-lens-fix-reposition-park.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
 import { inlineLensFixPrompt, scratchHygieneSection } from "./work-driver-prompts-late.ts";
+import { interruptedLensFixNote, lostAttemptOnStep } from "./work-driver-retry-context.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
@@ -102,7 +103,12 @@ export async function runLensFix(
     }
   }
   const isResend = next !== state;
-  const prompt = isResend
+  // #1391 — a lens-fix child the driver LOST leaves its half-written edits in
+  // this tree, and the retry's prompt used to be byte-identical to the dead
+  // child's. Tell the fixer what is already there, the way the develop step
+  // tells its retried developer.
+  const lostNote = interruptedLensFixNote(state);
+  const body = isResend
     ? [
         `RE-DISPATCH — the previous lens-fix dispatch produced no committed fix: no commits ahead of the feature branch in the lens-fix worktree ${JSON.stringify(fixTree)}.`,
         `Either the findings are already resolved in the committed diff (in which case say so with \`nothing-to-fix: <one-line reason>\` and make no changes), or the previous attempt left uncommitted work in that tree that it never committed. Inspect the tree — \`git -C ${fixTree} status\` — and commit any uncommitted fix work there: \`git add -A\` followed by \`git commit -m "<type>(scope): concise subject"\`. Do NOT push.`,
@@ -114,6 +120,7 @@ export async function runLensFix(
         scratchHygieneSection(scratchDir(ctx.repoRoot, ctx.issue)),
       ].join("\n")
     : inlineLensFixPrompt(findings, scratchDir(ctx.repoRoot, ctx.issue));
+  const prompt = lostNote === undefined ? body : `${lostNote}${body}`;
 
   // #981 (task-b) — reposition the lens-fix worktree to the branch's
   // current tip BEFORE the fix dispatch. The worktree was created at the
@@ -133,12 +140,22 @@ export async function runLensFix(
     // repoRoot; the reposition gate only makes sense for a separate worktree.
     const execFn: ExecFn = ctx.verifyExecFn ?? execp;
     const issueTitle = await cachedIssueTitle(state);
+    // #1391 — the gate must know whether the dirt in this tree is the residue of
+    // a lens-fix child THIS cycle already lost. Without the flag a dirty tree is
+    // the operator's and parks (unchanged); with it the gate preserves the
+    // residue to a scratch patch, cleans the tree, and re-reads — so the retry
+    // reaches the fixer instead of parking one second into its round, which is
+    // how cycle 109 lost its third round with the findings still open.
+    const attemptLost = lostAttemptOnStep(state, "lens-fix");
     const rep = await repositionLensFixWorktree(
       execFn,
       fixTree,
       branchName,
       [ctx.issue],
       issueTitle,
+      attemptLost,
+      ctx.repoRoot,
+      scratchDir(ctx.repoRoot, ctx.issue),
     );
     if (rep.kind === "already-at-tip" || rep.kind === "repositioned") {
       trace(
