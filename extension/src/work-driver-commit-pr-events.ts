@@ -32,6 +32,19 @@ import { appendEvent } from "./workflow-state.ts";
 /** The successful, non-empty IntegrateResult — the only shape this function handles. */
 type NonEmptyIntegrateResult = Extract<IntegrateResult, { ok: true; empty: false }>;
 
+/** How many consolidation notes the state file keeps (#1153 round 3; newest win). */
+const MAX_PERSISTED_NOTES = 20;
+
+/**
+ * The prior notes as a usable string list: a well-formed array, or `undefined`
+ * for anything else. A legacy non-array on the field is not merged (there is
+ * nothing to merge out of it) and is dropped by the bound below — it would
+ * otherwise be spread into a list the renderer assumes is strings.
+ */
+function toNotes(prior: string[] | undefined): string[] | undefined {
+  return Array.isArray(prior) ? prior : undefined;
+}
+
 /**
  * The post-dispatch gate sequence for an LLM-ops commit-pr fallback.
  * Extracted from work-driver-commit.ts to keep that file under the
@@ -78,15 +91,38 @@ export async function runCommitPrPostDispatchGates(
   // earlier commit-pr attempt survive into a cycle whose consolidation is
   // genuinely clean, and the handoff tells the operator a check was skipped
   // that in fact ran.
+  //
+  // The predicate is `priorNotes !== undefined`, not `priorNotes?.length`: a
+  // state file written before the validator guarded this field can carry a
+  // non-array (the validator reports it, and a resumed cycle still runs this
+  // gate). `?.length` is falsy for `"a note"`, which would leave that value on
+  // the field of a cycle the gate just called clean — the exact stale-note
+  // shape the clear exists to remove. Anything present, of any shape, goes.
+  //
+  // The key is DELETED, not assigned `undefined`: the state's real life is
+  // JSON on disk. An assigned-undefined key drops out of `JSON.stringify` so
+  // the round trip happens to agree, but in memory the object still reports
+  // `"consolidationNotes" in pipelineState`, which is what the tolerant readers
+  // and the validator's presence check look at. Deleting is the honest shape.
   const priorNotes = state.pipelineState.consolidationNotes;
   if (consolidationCheck.notes.length > 0) {
-    const merged = [...new Set([...(priorNotes ?? []), ...consolidationCheck.notes])];
-    state = { ...state, pipelineState: { ...state.pipelineState, consolidationNotes: merged } };
-  } else if (priorNotes?.length) {
+    // #1153 round 3 — the PERSISTED list is bounded too, not just the rendered
+    // one (`MAX_RENDERED_NOTES` in the handoff markdown). A cycle that re-enters
+    // commit-pr with a broken git state appends a fresh note each time, and the
+    // state file has no other bound. Newest 20 is kept: the newest notes
+    // describe the state the operator is being handed off on, and the render
+    // bound keeps the oldest of those visible in the comment.
+    const merged = [...new Set([...(toNotes(priorNotes) ?? []), ...consolidationCheck.notes])];
     state = {
       ...state,
-      pipelineState: { ...state.pipelineState, consolidationNotes: undefined },
+      pipelineState: {
+        ...state.pipelineState,
+        consolidationNotes: merged.slice(-MAX_PERSISTED_NOTES),
+      },
     };
+  } else if (priorNotes !== undefined) {
+    const { consolidationNotes: _cleared, ...rest } = state.pipelineState;
+    state = { ...state, pipelineState: rest };
   }
   if (consolidationCheck.missing.length > 0) {
     trace(

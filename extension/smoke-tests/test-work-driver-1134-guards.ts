@@ -17,13 +17,13 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { readIntegratedDiff } from "../src/work-driver-diff.ts";
 import { resolveMainline } from "../src/work-driver-git.ts";
-import { verifyConsolidation, verifyStepOutcome } from "../src/work-driver-verify.ts";
+import { consolidationNote, verifyConsolidation, verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
 
 let exit = 0;
@@ -293,6 +293,66 @@ const ws = (id: string, paths: string[]) => ({
         cons.notes.length === 1 &&
         cons.notes[0]?.startsWith("consolidation check skipped: mainline unresolved: ") === true,
       "G6 consolidation: unresolved mainline → best-effort result + named note, no origin/main diff",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ── G7: the note composer is one contract, not five sites ─────────────────────
+//
+// Every skip site in `verifyConsolidation` composes through
+// `consolidationNote`, which is where redaction, flattening and the bound live.
+// Before round 3 each site did its own `replaceAll` + slice (and three did
+// neither), so a note from the less-defended site carried the host path and a
+// multi-line stderr into the state file and the forge comment. These are the
+// properties the G3/G4a/G6 notes above do not exercise.
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "g7-note-composer-"));
+  try {
+    // The un-redacted path is the whole point of the assertion, so the fixture
+    // is a real directory (a fake `/repo` would pass a redaction bug that
+    // misses one spelling).
+    const real = realpathSync(dir);
+    const note = consolidationNote(
+      `diff of origin/main...origin/x failed at ${dir}: hint: look here\n${real} again\r\nfatal: bad object \u0007\u2028line`,
+      { repoRoot: dir },
+    );
+    assert(
+      note.startsWith("consolidation check skipped: "),
+      `G7 composer: every note carries the skipped-check prefix (got ${JSON.stringify(note)})`,
+    );
+    assert(
+      !note.includes(dir) && !note.includes(real),
+      `G7 composer: both repoRoot spellings are redacted (got ${JSON.stringify(note)})`,
+    );
+    assert(
+      note.includes("<repo>"),
+      "G7 composer: the redaction leaves a marker rather than deleting the path",
+    );
+    assert(
+      !/[\r\n\u2028\u2029\u0085]/.test(note),
+      `G7 composer: every line terminator collapses (got ${JSON.stringify(note)})`,
+    );
+    assert(!note.includes("\u0007"), "G7 composer: C0 controls are stripped");
+    assert(
+      note.length <= "consolidation check skipped: ".length + 500,
+      `G7 composer: the note is bounded to 500 content chars (got ${note.length})`,
+    );
+
+    // The bound is applied to the content, so an unbounded stderr cannot
+    // stretch the note past it however long the path prefix is.
+    const huge = consolidationNote(`x${"y".repeat(10_000)}${dir}`, { repoRoot: dir });
+    assert(
+      huge.length === "consolidation check skipped: ".length + 500,
+      `G7 composer: a megabyte stderr is bounded at the source (got ${huge.length})`,
+    );
+    // Control: the same call with nothing to redact and nothing to flatten is
+    // returned verbatim, so the composer is not mangling honest notes.
+    assert(
+      consolidationNote("no branch recorded", { repoRoot: dir }) ===
+        "consolidation check skipped: no branch recorded",
+      "G7 composer: control — a plain note passes through unchanged",
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

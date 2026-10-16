@@ -25,13 +25,28 @@ export async function execGit(
   args: string[],
   opts: { timeout?: number; maxBuffer?: number } = {},
 ): Promise<string> {
-  const { stdout } = await exec("git", {
+  const { stdout } = await execGitRaw(exec, cwd, args, opts);
+  return stdout;
+}
+
+/**
+ * `execGit`'s transport, with the payload kept. A caller that only wants
+ * stdout-as-text uses `execGit`; one whose verdict DEPENDS on what was printed
+ * (`refResolves`) needs the stdout alongside the exit, so it reads the source
+ * rather than the string projection.
+ */
+async function execGitRaw(
+  exec: ExecFn,
+  cwd: string,
+  args: string[],
+  opts: { timeout?: number; maxBuffer?: number } = {},
+): Promise<{ stdout: string; stderr?: string }> {
+  return exec("git", {
     argv: args,
     cwd,
     timeout: opts.timeout ?? DEFAULT_GIT_TIMEOUT_MS,
     maxBuffer: opts.maxBuffer ?? 1024 * 1024,
   });
-  return stdout;
 }
 
 /**
@@ -57,6 +72,19 @@ export type RefState =
   | { state: "absent" }
   | { state: "unknown"; error: string };
 
+/** The object id `rev-parse --verify` prints on success (hex, 40 for SHA-1, 64 for SHA-256). */
+const OBJECT_ID = /^[0-9a-f]{40,64}$/;
+
+/**
+ * The stdout a successful `rev-parse --verify` is required to carry: one line,
+ * the object id. Anything else — empty, a name, a warning — did not come from
+ * a resolver that resolved, so the probe has no answer.
+ */
+function printedObjectId(stdout: string): boolean {
+  const t = stdout.trim();
+  return !t.includes("\n") && OBJECT_ID.test(t);
+}
+
 export async function refResolves(
   exec: ExecFn,
   cwd: string,
@@ -64,17 +92,28 @@ export async function refResolves(
   timeout?: number,
 ): Promise<RefState> {
   try {
-    // A zero exit is the answer: `rev-parse --verify` prints the object id it resolved.
-    // No `--quiet`, deliberately (#1153 fix round): `--quiet` suppresses the
-    // stderr that is the only real evidence for `absent`, AND it changes the
-    // exit code — measured on git 2.53, a missing ref exits 1 with an empty
+    // `rev-parse --verify` prints the object id it resolved; the id IS the
+    // answer, so this reads the exec payload rather than `execGit`'s string
+    // view. No `--quiet`, deliberately (#1153 fix round): `--quiet` suppresses
+    // the stderr that is the only real evidence for `absent`, AND it changes
+    // the exit code — measured on git 2.53, a missing ref exits 1 with an empty
     // stderr under `--quiet` and 128 with `fatal: Needed a single revision`
     // without it. Probing without the flag is what lets `gitSaysAbsent` read
     // git's wording instead of guessing from a bare code.
-    await execGit(exec, cwd, ["rev-parse", "--verify", "--end-of-options", ref], {
-      timeout,
-      maxBuffer: 64 * 1024,
-    });
+    const { stdout } = await execGitRaw(
+      exec,
+      cwd,
+      ["rev-parse", "--verify", "--end-of-options", ref],
+      { timeout, maxBuffer: 64 * 1024 },
+    );
+    // #1153 round 3 — the exit code alone is not the answer. A shim, a
+    // wrapper, or a git that prints a warning instead of an id exits 0 while
+    // telling us nothing about the ref; reading that as `resolves` would tell
+    // a caller "the branch is pushed" on the word of a process that said
+    // nothing. The object id IS the evidence, so its absence is `unknown`.
+    if (!printedObjectId(stdout)) {
+      return { state: "unknown", error: "git exited 0 without an object id" };
+    }
     return { state: "resolves" };
   } catch (err) {
     // #1153 — only git's OWN "this ref is not there" answer is `absent`. A
@@ -109,8 +148,10 @@ export async function aheadOfBase(
   opts: { pathspec?: string[]; timeout?: number } = {},
 ): Promise<AheadOfBase> {
   // #1153 — the two probes are independent: neither result changes how the
-  // other is run. Sequentially they cost two git spawns (and two timeouts on
-  // a hung fs); together they cost one.
+  // other is run. Awaited in sequence each pays its own latency (and its own
+  // timeout on a hung fs), so running them together halves that wall clock. It
+  // does not reduce the number of git spawns — both still run — it just stops
+  // waiting for one before starting the other.
   const [h, b] = await Promise.all([
     refResolves(exec, cwd, head, opts.timeout),
     refResolves(exec, cwd, base, opts.timeout),
@@ -199,15 +240,36 @@ function gitWordingSaysRefMissing(err: unknown): boolean {
 }
 
 /**
- * A short description of an exec failure. `stderr` is preferred over
- * `message`: node's generic `Command failed: git …` prefix names the command
- * and says nothing, while git's own stderr names the reason (`fatal: not a
- * git repository`, `ambiguous argument`). Falls back to `message` when the
- * stream is empty or absent.
+ * A short description of an exec failure, safe to splice into a persisted
+ * note. `stderr` is preferred over `message`: node's generic `Command failed:
+ * git …` prefix names the command and says nothing, while git's own stderr
+ * names the reason (`fatal: not a git repository`, `ambiguous argument`).
+ * Falls back to `message` when the stream is empty or absent.
+ *
+ * When stderr has several lines the LAST INFORMATIVE one wins. git prints its
+ * verdict first (`fatal: …`) and the advice below it (`To add an exception…`,
+ * the tab-indented `git config …`), so a plain last-non-empty rule reports the
+ * remediation command as the reason a probe failed — which is what this used to
+ * do. So: take the last line, then prefer the last `error:`/`fatal:`/`warning:`
+ * line over it when one appears anywhere in the stream. That keeps git's
+ * verdict (always first) and stays last-line for a stream with no verdict
+ * marker. Coercion is left to `String()` — the fields are `unknown`, and an
+ * error object carrying a non-string `stderr` is data, not a type error.
  */
+const VERDICT_LINE = /^(?:fatal|error|warning):/i;
+
 export function errorText(err: unknown): string {
   const e = err as { stderr?: unknown; message?: unknown } | null;
-  const stderr = typeof e?.stderr === "string" ? e.stderr.trim() : "";
-  const text = stderr || ((e?.message ?? String(err)) as string);
+  const lines = (typeof e?.stderr === "string" ? e.stderr : "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  const last = lines[lines.length - 1];
+  const verdict = [...lines].reverse().find((l) => VERDICT_LINE.test(l));
+  const text =
+    verdict ??
+    last ??
+    (typeof e?.message === "string" && e.message.trim().length > 0 ? e.message : "") ??
+    String(err);
   return String(text).slice(0, 200);
 }

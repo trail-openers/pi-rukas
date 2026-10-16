@@ -298,6 +298,17 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
 }
 
 /**
+ * How many consolidation bullets the handoff prints. A cycle whose git reads
+ * all fail can accumulate one note per skipped check per commit-pr attempt;
+ * the first twenty say what broke and the tail is a count, so the operator
+ * sees the bound rather than scrolling past it. The state file keeps its own
+ * bound, `MAX_PERSISTED_NOTES` in work-driver-commit-pr-events.ts — this one
+ * is about the comment, not the record.
+ */
+const MAX_RENDERED_NOTES = 20;
+
+/** The bounded consolidation-notes section (see MAX_RENDERED_NOTES). */
+/**
  * #1153 — consolidation checks that did not run. A skipped check is recorded
  * as a note (never a silent pass), and the operator must see it here.
  *
@@ -309,15 +320,6 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
  *
  * The list is bounded by MAX_RENDERED_NOTES below.
  */
-/**
- * How many consolidation bullets the handoff prints. A cycle whose git reads
- * all fail can accumulate one note per skipped check per commit-pr attempt;
- * the first twenty say what broke and the tail is a count, so the operator
- * sees the bound rather than scrolling past it. The state file keeps them all.
- */
-const MAX_RENDERED_NOTES = 20;
-
-/** The bounded consolidation-notes section (see MAX_RENDERED_NOTES). */
 function consolidationNotesSection(state: WorkState): string[] {
   const notes = state.pipelineState.consolidationNotes ?? [];
   if (notes.length === 0) return [];

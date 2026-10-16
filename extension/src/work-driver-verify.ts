@@ -218,6 +218,48 @@ async function workstreamTouchedSet(
   return touched;
 }
 
+/** How long a persisted consolidation note is allowed to be (see `consolidationNote`). */
+const MAX_NOTE_CHARS = 500;
+
+/**
+ * The ONE composer for a "this check did not run" note (#1153 round 3).
+ *
+ * Every skip site in `verifyConsolidation` goes through here — mainline
+ * unresolved, no recorded branch, an unreadable ref probe, an absent ref, a
+ * failed diff read — because each of them splices in something it does not
+ * control: git's stderr, an operator-supplied branch name, a reason string from
+ * the mainline resolver. The three things that used to be each site's own
+ * business are now one site's contract:
+ *
+ * - **The host path is redacted.** The note is persisted to the state file and
+ *   rendered into a forge comment; `ctx.repoRoot` is neither useful to a reader
+ *   there nor ours to publish. Both spellings are stripped, because a git error
+ *   echoes the cwd as git resolved it, which is the REALPATH — a symlinked or
+ *   case-varying root survives a `replaceAll` of the raw string alone.
+ * - **Line terminators collapse, controls go.** One note is one line: a
+ *   multi-line stderr would break the bullet list the renderer puts it in, and
+ *   a bare `\r` re-positions the terminal cursor when an operator reads the
+ *   comment. `\u2028`/`\u2029`/`\u0085` are line terminators to some renderers,
+ *   so they collapse too; the remaining C0 controls are stripped (C1 is left
+ *   alone — invisible, not structurally dangerous).
+ * - **The length is bounded.** At the source, where the note is written to the
+ *   state file as well as rendered: a git stderr can be megabytes, and the
+ *   render-side bound in `renderNoteBullet` protects the comment but not the
+ *   file. The two bounds are complementary, not redundant.
+ */
+export function consolidationNote(text: string, ctx: { repoRoot: string }): string {
+  let out = text;
+  for (const root of [ctx.repoRoot, realpathSync(ctx.repoRoot)]) {
+    if (root.length > 0) out = out.replaceAll(root, "<repo>");
+  }
+  out = out
+    .replace(/[\r\n\u2028\u2029\u0085]+/g, " ")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .trim()
+    .slice(0, MAX_NOTE_CHARS);
+  return `consolidation check skipped: ${out}`;
+}
+
 /**
  * PR14 + #540 + #875 — Verify the integration branch's committed diff
  * (vs origin/main) covers every active workstream. Used as the
@@ -280,7 +322,7 @@ export async function verifyConsolidation(
   // named note on the best-effort result, never a guessed "main".
   const mainline = await resolveMainline(ctx.repoRoot, execp);
   if (!mainline.ok) {
-    const note = `consolidation check skipped: mainline unresolved: ${mainline.reason}`;
+    const note = consolidationNote(`mainline unresolved: ${mainline.reason}`, ctx);
     trace(`work-driver: ${note}`);
     return { missing: [], filesPresent: [], verdicts: [], notes: [note] };
   }
@@ -295,19 +337,22 @@ export async function verifyConsolidation(
   // No recorded branch: unknowable, so the best-effort path below (no-missing).
   // (#1134 follow-up: that path is now an explicit early return carrying a note.)
   if (!branch) {
-    const note = "consolidation check skipped: no branch recorded";
+    const note = consolidationNote("no branch recorded", ctx);
     trace(`work-driver: ${note}`);
     return { missing: [], filesPresent: [], verdicts: [], notes: [note] };
   }
   const pushed = await refResolves(execp, ctx.repoRoot, `origin/${branch}`);
   if (pushed.state === "unknown") {
     // Unreadable is not absent: a failed probe must not read as "not pushed".
-    const note = `consolidation check skipped: could not check origin/${branch}: ${pushed.error}`;
+    const note = consolidationNote(`could not check origin/${branch}: ${pushed.error}`, ctx);
     trace(`work-driver: ${note}`);
     return { missing: [], filesPresent: [], verdicts: [], notes: [note] };
   }
   if (pushed.state === "absent") {
-    const note = `consolidation check skipped: origin/${branch} not found in this clone — the branch was not pushed from here`;
+    const note = consolidationNote(
+      `origin/${branch} not found in this clone — the branch was not pushed from here`,
+      ctx,
+    );
     trace(`work-driver: ${note}`);
     return { missing: [], filesPresent: [], verdicts: [], notes: [note] };
   }
@@ -330,17 +375,17 @@ export async function verifyConsolidation(
     ]);
   } catch (err) {
     // A failed read is a NOTE, never a silent empty result (#1153): the
-    // handoff must say the check did not run.
-    // #1153 fix round — `errorText`, not `(err as Error).message`: node's
-    // message is `Command failed: git … ` plus the argv, which is 120 chars
-    // of command name and leaves one character of git's actual reason. git's
-    // own stderr is the useful half. `prRange` renders the same range that was
-    // passed to git, so the note names the refs without a second template.
-    // The absolute repoRoot is redacted: the note is persisted to the state
-    // file and rendered into a forge comment, and a host path is neither
-    // useful to a reader there nor ours to publish.
-    const reason = errorText(err).replaceAll(ctx.repoRoot, "<repo>");
-    const note = `consolidation check skipped: diff of ${prRange(`origin/${base}`, `origin/${branch}`)} failed: ${reason}`;
+    // handoff must say the check did not run. `errorText`, not
+    // `(err as Error).message`: node's message is `Command failed: git … ` plus
+    // the argv, which is 120 chars of command name and leaves one character of
+    // git's actual reason; git's own stderr is the useful half. `prRange`
+    // renders the same range that was passed to git, so the note names the refs
+    // without a second template. Redaction, flattening and the bound are
+    // `consolidationNote`'s contract, not this site's.
+    const note = consolidationNote(
+      `diff of ${prRange(`origin/${base}`, `origin/${branch}`)} failed: ${errorText(err)}`,
+      ctx,
+    );
     trace(`work-driver: ${note}`);
     return { missing: [], filesPresent: [], verdicts: [], notes: [note] };
   }
