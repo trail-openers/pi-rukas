@@ -194,12 +194,13 @@ export async function landCommittedFix(
           scratchDir: scratch,
           label: "lens-fix-integration",
         });
-        // #981 — the conflict paths lead the error so a downstream 200-char
-        // truncation (the caller's msg.slice(0, 200)) keeps the operator-
-        // actionable part: WHICH files conflict, not the restore claim.
+        // #981 — the restore claim leads the error (the same order the
+        // patch-apply branch below uses) so a downstream 300-char truncation
+        // (the caller's msg.slice(0, 300)) keeps the operator-actionable part:
+        // whether repoRoot needs manual repair, not the conflict note.
         const causeMsg =
           orch._conflict === "conflict"
-            ? `cherry-pick conflict — the batch was aborted. ${evidence.note} ${restoreClaim(restore, { trailing: MANUAL_REPAIR_HINT })} The fix's commits remain in the worktree ${tree}.`
+            ? `cherry-pick conflict — the batch was aborted. ${restoreClaim(restore, { trailing: MANUAL_REPAIR_HINT })} ${evidence.note} The fix's commits remain in the worktree ${tree}.`
             : `patch-apply failed for the lens-fix worktree: ${orch._applyConflict?.reason ?? "unknown"}. ${restoreClaim(restore, { trailing: MANUAL_REPAIR_HINT })} The fix's commits remain in the worktree ${tree}.${evidence.note}`;
         throw new Error(causeMsg);
       }
