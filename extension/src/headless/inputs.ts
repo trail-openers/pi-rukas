@@ -39,6 +39,7 @@
 
 import { SEAMS, isGrandfathered } from "../decision-seam-registry.ts";
 import { LENS_ROSTER } from "../lens-roster.ts";
+import { SHUTDOWN_SETTLE_MS } from "../pending-jobs-signal.ts";
 import { SUBAGENT_ROLE_NAMES } from "../roles.ts";
 
 export type InputType =
@@ -205,6 +206,9 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   str("NOTIFY_CMD", null),
   int("PARALLEL_GROUPS", 3),
   flag("PARALLEL_WORK", true),
+  // How long the pending-reports signal defers its "0" at session_shutdown for a
+  // killed PM job's report still in flight; `SHUTDOWN_SETTLE_MS` in the reader.
+  ms("PENDING_SHUTDOWN_MS", SHUTDOWN_SETTLE_MS),
   dir("PERM_SOCKET", null, "internal"),
   dir("PI_BIN", null),
   dir("PI_PROMPTS_DIR", null),
