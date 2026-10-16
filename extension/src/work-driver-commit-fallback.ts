@@ -145,6 +145,9 @@ export async function ensureIntegrateWorktreeOrHalt(
         issue: ctx.issue,
         branchName,
         baseSha: ps.baseSha,
+        // #1362 — only the repoRoot dirt check inside uses it (see
+        // createIntegrateWorktree); the integrate tree's own dirt never does.
+        dirtyRootExempt: ctx.dirtyRootExempt,
       },
       workStateFile(ctx.repoRoot, ctx.issue),
     );
