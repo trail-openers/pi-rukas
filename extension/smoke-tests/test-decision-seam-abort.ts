@@ -29,7 +29,7 @@ import path from "node:path";
 import type { Backend, BackendInput, BackendResult } from "../src/decision-backends.ts";
 import { SEAMS, type SeamSpec } from "../src/decision-seam-registry.ts";
 import { decide } from "../src/decision-seam.ts";
-import { makeAssert, records, tmpDir } from "./lib/decision-fixtures.ts";
+import { envKey, makeAssert, records, tmpDir } from "./lib/decision-fixtures.ts";
 
 const { assert, state } = makeAssert();
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -49,6 +49,12 @@ const seam = "fixture-abort";
   labels: { ok: "fine", flag: "needs a human" },
   ruleDefault: "flag",
   passing: ["ok"],
+  // The default `advisory` is right for the abort cases below, which inspect
+  // only the ABORT path — but it cannot be used for the answered case, so that
+  // case registers its own seam. Under `advisory` and `may-add-only` a model
+  // answer is discarded whenever it agrees with the rule, and `replace` is
+  // refused without a quote-evidence contract; only `off` lets an `llm` backend's
+  // answer become the Decision, which is what the answered case has to observe.
   composition: "advisory",
   defaultMode: "shadow",
   evidence: "none",
@@ -78,6 +84,30 @@ function wedgedBackend(): Backend & { calls: number; signals: AbortSignal[] } {
   return b;
 }
 
+const seamAnswered = "fixture-abort-answered";
+(SEAMS as Record<string, SeamSpec>)[seamAnswered] = {
+  id: seamAnswered,
+  kind: "choice",
+  instructions: "Does the thing look ok?",
+  labels: { ok: "fine", flag: "needs a human" },
+  ruleDefault: "flag",
+  passing: ["ok"],
+  // `may-add-only`, which is the one composition that lets an `llm` backend's
+  // answer BECOME the Decision without a quote-evidence contract: `advisory`
+  // always keeps the rule, and `replace` is refused outright unless the seam
+  // declares `evidence: "quote"`. Under a policy that always keeps the rule the
+  // distinction this case asserts — the backend's Decision survived the late
+  // abort, versus no backend answered at all — does not exist, and the assertion
+  // would pass for the wrong reason. The other cases here read only the ABORT
+  // path, where composition is never consulted, so they keep the fixture seam.
+  composition: "may-add-only",
+  defaultMode: "shadow",
+  evidence: "none",
+  owner: "test-decision-seam-abort.ts",
+  timeoutMs: SEAM_BOUND_MS,
+  tokenBudget: 8_000,
+};
+
 /** Wait until a predicate sees the record it wants, or 4 s have passed. */
 async function awaitRecord(
   file: string,
@@ -92,6 +122,151 @@ async function awaitRecord(
 }
 
 const req = { state: { probe: "value" }, question: "q", rule: "ok" };
+
+// ------------------------------------------------- answered first, aborted after
+//
+// The race settling must remove the abort racer's listener (#1393).
+//
+// The mirror of every other case here: the backend answers NORMALLY and the
+// caller aborts later. Two things follow, and neither was covered. The Decision
+// must be the backend's answer, unaltered — a late abort on a signal nobody is
+// waiting on any more must not rewrite an answered decision into an abstention.
+// And the race must write no late trace: the racer that lost has to take its
+// `abort` handler off the signal, or a driver that holds one signal across a
+// whole cycle accumulates a closure per decision, each pinning the controller,
+// the timer and the backend's input for the life of the signal.
+{
+  const root = tmpDir("seam-abort-after");
+  const log = path.join(root, ".pi", "decisions.jsonl");
+  mkdirSync(path.dirname(log), { recursive: true });
+  // `enforce`, not the fixture seam's default `shadow`: under shadow the rule's
+  // answer always stands and no backend answer could be observed at all, so the
+  // case would assert the same thing whether the abort arrived early, late, or
+  // never. Enforce is the only mode where "the Decision the backend produced"
+  // is a distinguishable outcome — which is exactly what a late abort must not
+  // disturb.
+  // The answered path needs a label the RULE would not have produced, or the
+  // composition step has nothing to change and the assertion degenerates.
+  // The rule says `ok`; the backend adds the `flag` the rule did not, so the
+  // composed answer is the backend's and "unchanged" has content to it.
+  const lateAbortReq = { state: { probe: "value" }, question: "q", rule: "ok" };
+  const answered: Backend & { calls: number; signals: AbortSignal[] } = {
+    name: "answers-immediately",
+    source: "llm",
+    calls: 0,
+    signals: [],
+    run: (_input: BackendInput, signal: AbortSignal) => {
+      answered.calls++;
+      // The FIRST run's signal only. The listener-removal case below decides a
+      // second time to prove the claim is not carried by history, and that
+      // second run's controller is aborted by its own teardown — recording it
+      // here would have this assertion read the wrong run and fail on a
+      // cancellation that belongs to a different call.
+      if (answered.signals.length === 0) answered.signals.push(signal);
+      return Promise.resolve<BackendResult>({
+        ok: true,
+        answer: "flag",
+        justification: "answered before any abort",
+      });
+    },
+  };
+  // The removal itself is observable without spying on the module. `addEventListener
+  // with `{ once: true }` does not deduplicate — a second `addEventListener` for
+  // the same type is a second handler, counted separately — so a SECOND signal
+  // handed to the same code path reports what THIS call's race registered on it,
+  // not what an earlier call left behind. Without that, the first call's stale
+  // handlers would make a later `removed >= added` true for a race that removed
+  // nothing at all, and the claim would be vacuously satisfied by history.
+  const probeSignal = (): AbortSignal & { __added: number; __removed: number } => {
+    const s = new AbortController().signal as AbortSignal & { __added: number; __removed: number };
+    s.__added = 0;
+    s.__removed = 0;
+    const realAdd = s.addEventListener.bind(s);
+    const realRemove = s.removeEventListener.bind(s);
+    s.addEventListener = ((...args: Parameters<AbortSignal["addEventListener"]>) => {
+      if (args[0] === "abort") s.__added++;
+      realAdd(...args);
+    }) as AbortSignal["addEventListener"];
+    s.removeEventListener = ((...args: Parameters<AbortSignal["removeEventListener"]>) => {
+      if (args[0] === "abort") s.__removed++;
+      realRemove(...args);
+    }) as AbortSignal["removeEventListener"];
+    return s;
+  };
+  const signal = probeSignal();
+  process.env[envKey("PI_ENSEMBLE_DECISION_MODE", seamAnswered)] = "enforce";
+  const d = await decide(seamAnswered as never, lateAbortReq, {
+    backends: [answered],
+    signal,
+    repoRoot: root,
+  });
+  delete process.env[envKey("PI_ENSEMBLE_DECISION_MODE", seamAnswered)];
+  assert(
+    signal.__added >= 1,
+    `the race really registered an abort listener while it was live (${signal.__added} added) — otherwise the next claim is vacuous`,
+  );
+  assert(
+    signal.__removed >= signal.__added,
+    `a settled race takes back off every abort listener it added, so a long-lived driver signal does not accumulate one closure per decision (${signal.__removed} removed of ${signal.__added} added)`,
+  );
+  // And the second call on a fresh signal is the same story: an earlier call's
+  // handlers must not be what carries this one's bookkeeping.
+  const signal2 = probeSignal();
+  process.env[envKey("PI_ENSEMBLE_DECISION_MODE", seamAnswered)] = "enforce";
+  await decide(seamAnswered as never, lateAbortReq, {
+    backends: [answered],
+    signal: signal2,
+    repoRoot: root,
+  });
+  delete process.env[envKey("PI_ENSEMBLE_DECISION_MODE", seamAnswered)];
+  assert(
+    signal2.__added >= 1 && signal2.__removed >= signal2.__added,
+    `the same holds for a second race on its own fresh signal, so history is not carrying the claim (${signal2.__removed} removed of ${signal2.__added} added)`,
+  );
+  assert(
+    d.answer === "flag" && d.source === "llm" && d.backend === "answers-immediately",
+    `an abort arriving AFTER the backend answered leaves the Decision alone (${d.answer}/${d.source}/${d.backend})`,
+  );
+  // The late abort lands on a signal of its own: the case is about an abort
+  // arriving after the race settled, and the races above each owned their own
+  // signal, so `ac` is free for the purpose.
+  // Snapshotted HERE, not at `d`'s birth: the listener assertions above run
+  // between the decision and the abort, and a clone taken before them would
+  // compare a stale copy against a mutated original and fail on the test's own
+  // bookkeeping rather than on anything the abort did.
+  const beforeLateAbort = JSON.stringify(d);
+  const late = new AbortController();
+  late.abort();
+  await sleep(50);
+  assert(
+    JSON.stringify(d) === beforeLateAbort,
+    "the late abort changes nothing about the record or the answer it carries",
+  );
+  // The run answered normally, so the late abort must not have reached it: the
+  // inner controller was never aborted, which is the difference between "the race
+  // settled and untangled itself" and "the race resolved and left its teardown
+  // half-done".
+  assert(
+    answered.calls === 2 && !answered.signals[0]?.aborted,
+    `a run that answered normally is not cancelled by an abort nobody was waiting on (${answered.calls} runs, first signal aborted=${answered.signals[0]?.aborted})`,
+  );
+  // No late trace: the discarded-settled warning is the only thing a losing racer
+  // could still emit, and there is nothing left to settle.
+  let traceWarned = false;
+  const realWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+    const line = typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+    if (line.includes("settled after its")) traceWarned = true;
+    else realWrite(chunk as never, ...(rest as []));
+    return true;
+  }) as typeof process.stderr.write;
+  // Past the seam bound, so a timer left armed from the settled race would fire.
+  await sleep(SEAM_BOUND_MS * 0.12);
+  process.stderr.write = realWrite;
+  assert(!traceWarned, "a settled race leaves no armed timer and traces nothing after the fact");
+  const rec = records(log).find((r) => r.seam === seamAnswered);
+  assert(rec !== undefined, "the answered decision still wrote exactly its one record");
+}
 
 {
   const root = tmpDir("seam-abort");

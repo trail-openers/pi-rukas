@@ -106,44 +106,58 @@ const SCAN_CAP = PRE_BOUND_SLACK + CUT_TOKEN_BUDGET;
  * clamping only the first leg would let a 2 MB whitespace-free run drag the scan
  * to offset 0 and make the bound decorative. Returns an offset on the dropped
  * side of `from`, no further from it than `SCAN_CAP` (#1393).
+ *
+ * When the walk finds no whitespace inside `SCAN_CAP` it stops AT the cap rather
+ * than sweeping to offset 0 for the answer — the run is unbounded, so a scan over
+ * it is, and a window that wide is what made the bound decorative.
+ *
+ * The offset it returns is a TOKEN START, not merely a token boundary, and that
+ * distinction is load-bearing rather than tidy: `SECRET_PATTERNS` anchor their
+ * prefixes with `^`, so a scan whose slice opens one character into a run matches
+ * nothing at all and reports zero redactions over a window full of keys. Walking
+ * to the whitespace and then stopping ON the delimiter leaves the walk one short
+ * of the character that begins the token; the `+1`/`-1` below is the step onto
+ * it. A window that begins mid-token is the shape that hid the glued credential
+ * from both the bounded scan and — because the same anchoring governs the whole
+ * document — from the log's own count (#1393).
  */
 function widenPastCut(text: string, from: number, side: "head" | "tail"): number {
   const isSpace = (i: number) => /\s/.test(text[i] ?? "");
-  // `budget` is the walk's LENGTH limit, and `stop` the offset it may never
-  // pass. The two are not the same: clamping the offset alone (an earlier cut
-  // here did) turns the widening into a no-op on a short text, where the cap
-  // would place the stop at 0 and every walk back to 0 is then legal.
-  const budget = SCAN_CAP;
+  // One clamp, not two. The walk may never pass `stop`, and `stop` is already
+  // `SCAN_CAP` away from `from`, so the offset IS the length bound: a separate
+  // `walked < budget` counter walked in lockstep with it and could only ever
+  // agree. Clamping the offset alone (an earlier cut here did) turns the
+  // widening into a no-op on a short text, where the cap would place the stop at
+  // 0 and every walk back to 0 is then legal — which is what `stop` is derived
+  // from `from` for, rather than from the text's own ends.
   if (side === "head") {
     const stop = Math.max(0, from - SCAN_CAP);
     let i = from;
-    let walked = 0;
-    while (i > stop && walked < budget && !isSpace(i)) {
-      i--;
-      walked++;
-    }
+    while (i > stop && !isSpace(i)) i--;
+    // Out of budget with no whitespace found: the run is unbounded, so stop.
+    if (i === stop) return stop;
+    // `i` sits ON the delimiter; step back onto the token's first character.
+    i--;
     let tokens = 0;
-    while (i > stop && walked < budget && tokens < 2) {
+    while (i > stop && tokens < 2) {
       if (isSpace(i - 1)) tokens++;
       i--;
-      walked++;
     }
-    return i;
+    // The last decrement crossed a token start, so land back on the delimiter
+    // and hand the caller a slice that opens on a token.
+    return tokens === 2 ? i + 1 : i;
   }
   const stop = Math.min(text.length, from + SCAN_CAP);
   let i = from;
-  let walked = 0;
-  while (i < stop && walked < budget && !isSpace(i - 1)) {
-    i++;
-    walked++;
-  }
+  while (i < stop && !isSpace(i - 1)) i++;
+  if (i === stop) return stop;
+  // `i` sits just past the delimiter; step back onto the token's first character.
   let tokens = 0;
-  while (i < stop && walked < budget && tokens < 2) {
+  while (i < stop && tokens < 2) {
     if (isSpace(i)) tokens++;
     i++;
-    walked++;
   }
-  return i;
+  return tokens === 2 ? i - 1 : i;
 }
 
 /**
@@ -161,10 +175,7 @@ function widenPastCut(text: string, from: number, side: "head" | "tail"): number
  * `PRE_BOUND_SLACK` allowance plus the token walk's `CUT_TOKEN_BUDGET`), with its
  * edge pulled back to a token boundary so the scan never begins mid-token. The
  * window is then cut from `clean` — AFTER the replacement, which is the half that
- * matters — so the cut position is compensated for everything redaction removed
- * inside the window. That compensation is what makes the two orderings different:
- * clip-then-redact leaves a fragment, redact-then-clip-without-compensation drops
- * a secret the marker shrank past the cut, and both report zero redactions.
+ * matters — so the kept text is exactly `max` of the already-redacted scan.
  *
  * Returns the count of the pass that actually produced the text, so a caller
  * can report redactions over what it shipped rather than over the whole input.

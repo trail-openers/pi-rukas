@@ -181,6 +181,134 @@ for (const { name, secret, body } of CASES) {
   );
 }
 
+// --------------------------- glued credentials: no separator on EITHER side (#1393)
+
+/**
+ * The lens's second shape, and the one that was a `SECRET_PATTERNS` gap rather
+ * than a clip bug: the credential welded directly onto a run of non-whitespace,
+ * with more non-whitespace after it, so no token boundary exists anywhere near
+ * it and the only whitespace in the document is megabytes away.
+ *
+ * The check that settles which kind it is runs FIRST — the same string through
+ * `redactSecrets` with no bound at all. A shape that survives THAT is not
+ * something any scan window could have caught, and labelling it a clip bug sends
+ * the next reader to widen a window that was never the problem. Measured before
+ * the fix: an unbounded pass returned `count: 0` for all four shapes here, and
+ * the log recorded `redactions: 0` while shipping the key.
+ *
+ * Both directions, at both cut edges, at bounds small enough that the secret sits
+ * deep inside the kept half and large enough that the scan reaches it: an
+ * assertion at one bound would have passed while the other leaked.
+ */
+const GLUE = 2048;
+
+for (const { name, secret, body } of CASES) {
+  for (const max of [600, 1000, 4000]) {
+    // Bounded so the credential sits INSIDE the window each `from` keeps. A
+    // credential the clip discards cannot leak, and asserting a redaction for it
+    // would test the cut rather than the pattern — which is the distinction this
+    // whole file exists to keep. The filler on the NEAR side is what the clip
+    // drops, so it stays short; the run on the FAR side is what pushes the
+    // credential toward the middle and is what makes `from` matter.
+    const pad = Math.max(8, Math.floor(max / 8));
+    const near = "f".repeat(pad);
+    const far = "t".repeat(4 * max);
+    // Glued BEFORE, glued AFTER: `fff…fsk-ant-…ttt…`, the shape a provider emits
+    // when it dumps a payload with no separators at all.
+    const both = `${near}${secret}${far}`;
+    // Glued before, whitespace after — the half the original repro used.
+    const preOnly = `${near}${secret} ${far}`;
+    // Glued after, whitespace before — the mirror, which fails on its own when
+    // only the trailing boundary of a pattern is wrong.
+    const postOnly = `${near} ${secret}${far}`;
+    // The same three with the credential toward the TAIL, so `from: "end"` keeps
+    // it: the leading run is the long one and the short run trails. A glued
+    // prefix is glued on BOTH sides by construction, so `postOnly` is the same
+    // string as `both` for any prefix rule whose token begins at the prefix — it
+    // is kept because a rule that ends its own token (`Bearer `, the PEM arm)
+    // differs there, and the two must not be collapsed into one fixture.
+    const bothEnd = `${"f".repeat(4 * max)}${secret}${near}`;
+    // Only a rule whose keyword may sit mid-token — a key/value pair pasted into
+    // a URL path or a JSON blob — has a "whitespace before, glued after" shape
+    // distinct from "glued both sides"; for a prefix rule the two coincide, and
+    // counting the duplicate would report four fixtures where there are three.
+    const postEnd = `${"f".repeat(4 * max)}${secret} ${near}`;
+
+    // The key/value rule is the one shape whose LEFT context the pattern itself
+    // does not constrain: `password=` is the credential's own context, and a
+    // keyword welded onto a run of filler (`fffpassword=`) is a substring of an
+    // identifier, not a credential. `\b` refusing it is the shape-with-context
+    // rule working — the same judgement that keeps a git SHA out of the log — so
+    // the glued-before half is a pattern gap that is CORRECT here, and asserting
+    // it would demand the pattern eat identifiers. The mirror image (whitespace
+    // before the keyword, filler after the value) is the one it must match, does
+    // match, and is asserted instead. For a prefix rule the two coincide, so its
+    // glued-before shapes stand and the duplicate is not counted twice.
+    const shapes: [string, string][] =
+      name === "key-value"
+        ? [
+            ["glued after", postOnly],
+            ["glued after, at the tail", `${"f".repeat(4 * max)} ${secret}${near}`],
+          ]
+        : [
+            ["glued both sides", both],
+            ["glued before", preOnly],
+            ["glued after", postOnly],
+            ["glued both sides at the tail", bothEnd],
+          ];
+
+    for (const [shape, text] of shapes) {
+      const unb = redactSecrets(text);
+      if (unb.count === 0) {
+        console.error(
+          `\u2717 PATTERN GAP (not a clip bug): SECRET_PATTERNS does not match '${name}' ${shape} even unbounded — file a pattern issue, do not re-cut this fixture`,
+        );
+        state.exit = 1;
+        continue;
+      }
+      for (const from of ["start", "end"] as const) {
+        const r = redactBounded(text, max, from);
+        // The claim is that no credential window SHIPS. Whether the scan also
+        // COUNTED it is asserted where the count is the unit under test
+        // (test-decision-log.ts) and above, in the unbounded pass: a bounded scan
+        // that redacts a secret its kept half then drops has done its job, and
+        // demanding a count for a replacement the clip discarded would make the
+        // bound itself a failure.
+        assert(
+          !leaksKey(r.text, body),
+          `${name} ${shape} (from="${from}", max ${max}): no 12-char window of the credential survives`,
+        );
+        assert(
+          r.text.length <= max,
+          `${name} ${shape} (from="${from}", max ${max}): still bounded by the field bound (${r.text.length})`,
+        );
+        // And when the credential IS in the kept half, the scan that produced that
+        // half must have seen it — the count describing the text that shipped.
+        assert(
+          !r.text.includes(body.slice(0, 6)) || r.count >= 1,
+          `${name} ${shape} (from="${from}", max ${max}): a credential still in the kept half was counted (${r.count})`,
+        );
+      }
+    }
+  }
+}
+
+// The lens's exact repro, verbatim: a 2 KB run, the credential welded to its
+// end, and a whitespace tail — reported as `count: 0` with the key intact.
+for (const { name, secret, body } of CASES) {
+  if (name === "key-value") continue; // see the glued-before note above
+  for (const max of [600, 1000, 4000]) {
+    for (const k of [0, 40, 2000]) {
+      const text = `${"f".repeat(2048)}${secret}${" ".repeat(k)}${"t".repeat(4 * max)}`;
+      const r = redactBounded(text, max, "start");
+      assert(
+        !leaksKey(r.text, body),
+        `${name} lens repro @ max ${max}, ${k}-char tail (from="start"): no credential window in the kept half`,
+      );
+    }
+  }
+}
+
 // A pathological run: no whitespace at all, so the walk can only stop at its cap.
 {
   const blob = `https://user:hunter2Sup3rSecretValue@origin.internal/${"z".repeat(400_000)}`;
