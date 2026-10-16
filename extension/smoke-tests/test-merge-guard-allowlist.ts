@@ -285,13 +285,24 @@ for (const cmd of ["cd x && gh pr merge 17", "gh api repos/o/r/pulls/12/merge"])
   const longMerge = `gh pr merge 17 ${"y".repeat(9000)}`;
   for (const [cmd, code] of [
     // Classifier refusal: the grammar stopped at an unknown flag.
-    ["gh pr merge 17 --auto", "reason=unknown-flag"],
+    ["gh pr merge 17 --auto", "unknown-flag"],
     // The size bound: too long to read, so nothing was analysed.
-    [longMerge, "reason=too-large"],
+    [longMerge, "too-large"],
   ] as Array<[string, string]>) {
     const r = await hookDecision(cmd, GOOD_ENTRIES);
     assert(
-      r.block && r.holds.length === 1 && r.holds[0]?.includes(code),
+      // Anchored on the `reason=` FIELD the trace line emits: `reason=<code>`
+      // followed by a SPACE (the line is `reason=<code> commandLength=<n>`).
+      // Deliberately not `includes(code)` and not `\b`: the trace line carries
+      // codes that themselves contain `-`, and `\b` after a trailing `-`
+      // matches the colon of a code-plus-detail spelling (`unknown-flag` would
+      // match inside `unknown-flag:--auto`), so a prefix match silently passes
+      // a mislabelled cause — the exact failure mode this block exists to catch.
+      // (`\\s`, not `\s`: inside a template literal the pattern is a string and
+      // needs the doubled backslash to reach the regex as `\s`.)
+      r.block &&
+        r.holds.length === 1 &&
+        new RegExp(`reason=${code}(?=\\s)`).test(r.holds[0] ?? ""),
       `hold logs ${code}: ${cmd.slice(0, 30)}… (${JSON.stringify(r.holds)})`,
     );
     // The secret-leak invariant from the earlier round: the hold line carries
@@ -308,7 +319,7 @@ for (const cmd of ["cd x && gh pr merge 17", "gh api repos/o/r/pulls/12/merge"])
     // cause `earlyRefuse` could ever report, whatever had actually failed.
     const r = await hookDecision("gh pr merge", GOOD_ENTRIES, { branchNumber: "empty" });
     assert(
-      r.block && r.holds.length === 1 && r.holds[0]?.includes("reason=unresolved-pr-number"),
+      r.block && r.holds.length === 1 && /reason=unresolved-pr-number(?=\s)/.test(r.holds[0] ?? ""),
       "early refusal logs the cause that fired (unresolved-pr-number)",
     );
     assert(
