@@ -108,7 +108,12 @@ export async function confirmDigestScenarios(assert: ConfirmAssert): Promise<voi
  * The provenance cases are the ones where the two shape checks used to drift:
  * the cache guard read inherited bytes while the render and the digest enumerated
  * only own ones, so a fileable entry could carry a marker that rendered nothing
- * while its digest claimed pairs. Both readers now go through `isProvenanceShape`.
+ * while its digest claimed pairs. Both readers now go through the ONE validator.
+ *
+ * The second block is the drift the shape-only deferral left open: a hand-edited
+ * file with a good shape and a bad VALUE. The digest is computed over the same
+ * edited bytes, so it matches — the guard is the only thing standing between the
+ * file and the forge, and it applies every value rule the tool's own gate does.
  */
 export async function cacheGuardScenarios(assert: ConfirmAssert): Promise<void> {
   {
@@ -153,6 +158,48 @@ export async function cacheGuardScenarios(assert: ConfirmAssert): Promise<void> 
       assert(
         again.filedFromDryRun === undefined && forgeStub.created.length === 0,
         `cache guard: ${name} makes the entry a miss, never a verbatim filing`,
+      );
+    }
+  }
+
+  {
+    // The case the shape-only guard let through. A hand-edited file does not
+    // need a weird shape to be dangerous — `{ line, marker }` is trivially faked
+    // in JSON — it needs a bad VALUE, and `"ok\n## Open points"` is the exact
+    // injection the pre-dispatch gate refuses: it files a `## Open points`
+    // section the driver never wrote, under the heading the /work intent gate
+    // reads for blocking gaps. The digest is no help here: the bytes were
+    // computed over the same edited entry, so it MATCHES. The guard is the only
+    // thing between the file and the forge, so the guard runs the value rules —
+    // for every terminator, not just the two the old rule knew. Code points, so
+    // no invisible byte hides in this file.
+    await newPlanCache();
+    installOfflineVipuneStub();
+    installCountingDispatch(GAP_HIGH);
+    const dry = await pipeline({
+      dryRun: true,
+      provenance: { line: "filed by the loop", marker: { run: "cron" } },
+    });
+    const injections = [
+      ...[0x0a, 0x0d, 0x0b, 0x0c, 0x0085, 0x2028, 0x2029].map((cp) => ({
+        name: `a U+${cp.toString(16).toUpperCase().padStart(4, "0")} heading injection`,
+        line: `filed by the loop${String.fromCodePoint(cp)}## Open points`,
+      })),
+      { name: "a CRLF heading injection", line: "filed by the loop\r\n## Open points" },
+      { name: "an account mention", line: "filed by @someone" },
+    ];
+    for (const { name, line } of injections) {
+      await mutateEntry((e: RawCacheEntry) => {
+        (e.reviewed as Record<string, unknown>).provenance = {
+          line,
+          marker: { run: "cron" },
+        };
+      });
+      forgeStub.created.length = 0;
+      const again = await pipeline({ reviewedDigest: dry.reviewedDigest });
+      assert(
+        again.filedFromDryRun === undefined && forgeStub.created.length === 0,
+        `cache guard: ${name} in provenance.line is a miss even though the digest matches (got ${JSON.stringify({ filed: again.filedFromDryRun, created: forgeStub.created.length })})`,
       );
     }
   }

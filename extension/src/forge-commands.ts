@@ -282,18 +282,19 @@ export function pipelineListCmd(limit = 1): string {
  * `gh label list --help` on 2.102.0), so the read asks for the largest page the
  * CLI will carry. The caller caps a filing at 5 labels, so a page this size is
  * comfortably the whole set for any real repo — but "comfortably" is not a
- * guarantee, so `LABEL_LIST_PAGE_LIMIT` is exported and the plan layer compares
- * the row count against it: a read that lands EXACTLY on the page size is
- * treated as possibly truncated and halts the filing rather than reporting a
- * label missing. A misread here is not cosmetic — "that label does not exist"
- * refuses legitimate work, and the driver never creates the label to fix it.
+ * guarantee, so `GH_LABEL_LIST_LIMIT` is exported and `labelListPageLimit()`
+ * answers the number the plan layer compares the row count against: a read that
+ * lands EXACTLY on the page size is treated as possibly truncated and halts the
+ * filing rather than reporting a label missing. A misread here is not cosmetic —
+ * "that label does not exist" refuses legitimate work, and the driver never
+ * creates the label to fix it.
  *
  * GitLab: `glab label list --page 1 --per-page 1000 --output json`. glab has no
  * `--all` (verified against the `glab-label-list(1)` man page: the flag list is
  * `-g/--group`, `-F/--output`, `-p/--page`, `-P/--per-page`), so the same
  * largest-page + completeness-signal shape applies. `--page 1` is explicit
  * rather than left to the default so the read is visibly one page of a known
- * size, and `glabLabelListPageLimit()` exports the number the caller compares.
+ * size, and `GL_LABEL_LIST_PER_PAGE` is the GitLab page number.
  *
  * Both are single unchained reads (#408 recovery-command rule) so the
  * pre-filing check never re-prompts the permission matcher.

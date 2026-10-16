@@ -26,7 +26,7 @@ import type { ForgeType } from "./forge-detect.ts";
  * not a JSON array IS an error: silently reporting "no labels exist" would make
  * every caller's labels come back missing and refuse a filing that should run.
  */
-export function parseLabelNames(stdout: string, forge: ForgeType): string[] {
+export function parseLabelRows(stdout: string, forge: ForgeType): unknown[] {
   const trimmed = stdout.trim();
   if (trimmed === "" || /^no labels found/i.test(trimmed)) return [];
   let parsed: unknown;
@@ -40,13 +40,30 @@ export function parseLabelNames(stdout: string, forge: ForgeType): string[] {
   if (!Array.isArray(parsed)) {
     throw new Error(`forge label list: ${forge} returned a JSON ${typeof parsed}, not an array`);
   }
+  return parsed;
+}
+
+/**
+ * The `name` of every row that has one. Rows without a usable name are skipped
+ * rather than becoming an empty-string label — the CLI's own rows are
+ * `{name}` (`gh label list --json name`) or `{id, name, color, description}`
+ * (glab), so a row without a name is not a label this feature can compare.
+ */
+export function labelNamesFromRows(rows: unknown[]): string[] {
   const names: string[] = [];
-  for (const row of parsed) {
-    // `gh label list --json name` rows are `{name}`; glab's rows are
-    // `{id, name, color, description}`. Either way `name` is the field, and a
-    // row without one is skipped rather than becoming an empty-string label.
+  for (const row of rows) {
     const name = (row as Record<string, unknown> | null)?.name;
     if (typeof name === "string" && name !== "") names.push(name);
   }
   return names;
+}
+
+/**
+ * Rows → names, the shape the tests drive directly. The list read itself uses
+ * the two halves separately: `truncated` has to be judged on the RAW row count
+ * (see `labelOps.labelList`), and one helper that returns only names cannot say
+ * how many rows it dropped.
+ */
+export function parseLabelNames(stdout: string, forge: ForgeType): string[] {
+  return labelNamesFromRows(parseLabelRows(stdout, forge));
 }

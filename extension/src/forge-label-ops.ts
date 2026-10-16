@@ -10,7 +10,7 @@ import * as cmds from "./forge-commands.ts";
  * the `mr`→`pr` subcommand mapping) in one file instead of four sites.
  */
 import type { ForgeType } from "./forge-detect.ts";
-import { parseLabelNames } from "./forge-labels.ts";
+import { labelNamesFromRows, parseLabelRows } from "./forge-labels.ts";
 import { asRecord, mapGhIssueLabel, mapGlIssueLabel } from "./forge-mapping.ts";
 import type { NormalizedLabel } from "./forge-types.ts";
 
@@ -47,11 +47,20 @@ export function labelOps(deps: LabelOpsDeps) {
      * "one page of a longer list" through these CLIs (neither has an `--all`),
      * and a caller that answered "that label does not exist" from a truncated
      * page would refuse a filing over a pagination artefact.
+     *
+     * The comparison is on the RAW row count, not on the filtered names: a CLI
+     * that answers a full page where some rows carry no usable `name` has still
+     * filled the page, and there may be more beyond it. Judging on the names
+     * count would report such a read as the honest whole set, which is the one
+     * answer this flag exists to withhold.
      */
     labelList: (): Promise<LabelListResult> =>
       run(cmds.labelListCmd(forge), (stdout) => {
-        const names = parseLabelNames(stdout, forge);
-        return { names, truncated: names.length >= cmds.labelListPageLimit(forge) };
+        const rows = parseLabelRows(stdout, forge);
+        return {
+          names: labelNamesFromRows(rows),
+          truncated: rows.length >= cmds.labelListPageLimit(forge),
+        };
       }),
 
     /**

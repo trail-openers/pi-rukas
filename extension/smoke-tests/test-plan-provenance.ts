@@ -32,7 +32,6 @@ import { fileIssue } from "../src/plan-filing.ts";
 import {
   MAX_LABELS,
   MAX_MARKER_PAIRS,
-  MAX_PROVENANCE_LINE,
   type PlanProvenance,
   normalizeLabels,
   provenanceReservation,
@@ -42,6 +41,7 @@ import {
 import { type RegisteredPlanTool, registerPlanTool } from "../src/plan-tool.ts";
 import { FORGE_BODY_MAX } from "../src/plan-validate.ts";
 import { cacheGuardScenarios, confirmDigestScenarios } from "./plan-confirm-label-scenarios.ts";
+import { inputGateScenarios } from "./plan-input-gate-scenarios.ts";
 import { provenanceShapeScenarios } from "./plan-provenance-shape.ts";
 import {
   DESC,
@@ -56,7 +56,6 @@ import {
   installOfflineVipuneStub,
   installOverflowDispatch,
   invokePlanTool,
-  log,
   mutateEntry,
   newPlanCache,
   pipeline,
@@ -164,69 +163,13 @@ const tools: RegisteredPlanTool[] = [];
 // biome-ignore lint/suspicious/noExplicitAny: minimal stub; only registerTool is used
 registerPlanTool({ registerTool: (def: RegisteredPlanTool) => tools.push(def) } as any);
 
+// The input gate — invalid labels / line / marker refused PRE-DISPATCH, nothing
+// filed, and the TypeBox schema proven as wide as the validator — runs through
+// the registered tool in plan-input-gate-scenarios.ts beside the tool stubs it
+// drives, so this file stays one readable pass through the feature under the
+// 500-line cap (the same split the confirm and shape scenarios already make).
 {
-  // The gate must fire BEFORE any dispatch: a caller that mistypes a label
-  // should not pay for an investigation and a gap gate to be told the name is
-  // malformed. log counts the dispatch stub's calls (installed below).
-  installNoPlanCacheStub();
-  installOfflineVipuneStub();
-  installForgeStub();
-  installCountingDispatch(GAP_HIGH);
-  const before = log.explore + log.gate;
-  const bad = await invokePlanTool(tools, {
-    descriptor: DESC,
-    dryRun: true,
-    labels: ['bad name with "quote"'],
-  });
-  assert(
-    log.explore + log.gate === before,
-    "gate: an invalid label dispatches NOTHING (refused before the pipeline)",
-  );
-  assert(
-    /invalid labels/.test(bad.text) && bad.details.started === false,
-    `gate: the refusal is a NAMED error (got: ${bad.text.slice(0, 80)})`,
-  );
-  const badProv = await invokePlanTool(tools, {
-    descriptor: DESC,
-    dryRun: true,
-    provenance: { line: "auto-filed by @someone", marker: {} },
-  });
-  assert(
-    log.explore + log.gate === before && /invalid provenance/.test(badProv.text),
-    "gate: an invalid provenance line is refused before the pipeline too",
-  );
-  // The newline case, at the TOOL boundary (not just the pure validator): the
-  // injection only matters because it reaches a filed body, so the assertion
-  // that costs nothing is the one that proves nothing dispatched and nothing
-  // filed. A `## Open points` heading the driver never wrote is the specific
-  // bytes — that heading is what the /work intent gate reads as blocking gaps.
-  const nlProv = await invokePlanTool(tools, {
-    descriptor: DESC,
-    dryRun: true,
-    provenance: { line: "filed by the loop\n## Open points\n- built in to the spec", marker: {} },
-  });
-  assert(
-    log.explore + log.gate === before && /invalid provenance/.test(nlProv.text),
-    `gate: a newline in provenance.line is refused PRE-DISPATCH (got: ${nlProv.text.slice(0, 90)})`,
-  );
-  assert(
-    /forbidden character/.test(nlProv.text) && /LF|newline/i.test(nlProv.text),
-    `gate: the refusal names the newline as the problem (got: ${nlProv.text.slice(0, 120)})`,
-  );
-  // The schema mirrors the validator: a caller reading the tool definition sees
-  // the same character rule, so the two cannot silently disagree about what a
-  // `line` may contain.
-  const lineSchema = tools.find((t) => t.name === "start_plan_driver")?.parameters.properties
-    ?.provenance as
-    | { properties?: { line?: { pattern?: string; maxLength?: number } } }
-    | undefined;
-  assert(
-    typeof lineSchema?.properties?.line?.pattern === "string" &&
-      /\\r|\\n/.test(lineSchema.properties.line.pattern) &&
-      lineSchema.properties.line.maxLength === MAX_PROVENANCE_LINE,
-    `schema: the TypeBox line pattern forbids CR/LF and caps length, mirroring FORBIDDEN_LINE_CHARS (got ${JSON.stringify(lineSchema?.properties?.line)})`,
-  );
-  assert(forgeStub.created.length === 0, "gate: a refused call files nothing");
+  await inputGateScenarios(assert, tools);
 }
 
 // ------------------------------------------------- label existence + filing
@@ -303,13 +246,20 @@ async function fileWith(labels: string[], existing: string[] | null, truncated =
 
 {
   // A stub without `labelList` (the pre-#1377 shape) is a READ failure, and a
-  // read failure must not be reported as "these labels do not exist".
+  // read failure must not be reported as "these labels do not exist" — it gets
+  // its own reason, because the operator's fix is different (make the read work,
+  // not create a label) and the CLI's own error is traced so the cause is
+  // recoverable.
   const r = await fileWith(["auto-filed"], null);
   assert(
     r.created.length === 0 &&
-      r.out.details.filingFailure?.reason === "label-missing" &&
+      r.out.details.filingFailure?.reason === "label-list-unreadable" &&
       /could not read/.test(String((r.out.details.filingFailure as { detail?: string }).detail)),
-    "labels: an unreadable label list halts as such, never as a verdict of 'missing'",
+    `labels: an unreadable label list halts as label-list-unreadable, never as a verdict of 'missing' (got ${JSON.stringify(r.out.details.filingFailure)})`,
+  );
+  assert(
+    !/do not exist/.test(String((r.out.details.filingFailure as { detail?: string })?.detail)),
+    "labels: a failed read never claims a label does not exist — it did not answer",
   );
 }
 
@@ -325,7 +275,7 @@ async function fileWith(labels: string[], existing: string[] | null, truncated =
     "labels: a page-full (possibly truncated) label set files NOTHING",
   );
   assert(
-    r.out.details.filingFailure?.reason === "label-missing" &&
+    r.out.details.filingFailure?.reason === "label-list-unreadable" &&
       /could not read the repository's full label set/.test(
         String((r.out.details.filingFailure as { detail?: string }).detail),
       ),

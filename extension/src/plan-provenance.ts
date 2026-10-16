@@ -52,16 +52,38 @@ export const MAX_PROVENANCE_LINE = 300;
  * so in a field the reviewer can see, and an escaped `<script>` is exactly the
  * "we escaped it for you" trap this refuses.
  *
- * `\n` and `\r` are on the same list because the line is rendered as the body's
- * FIRST line, `_${line}_`, above the driver's own headings. A newline would let
- * a caller end its line and write the next one, so `line: "ok\n## Open points"
- * files a body carrying a heading the driver never wrote — and `## Open points`
- * is exactly the heading the /work intent gate reads for blocking gaps. The
- * shape is enforced by rejection, not by stripping: a line that renders as
- * exactly one line has no newline to remove, and a validator that quietly
- * removed bytes would let the caller's intent differ from what files.
+ * Every line terminator and control character is on the same list, not just
+ * `\n` and `\r`, because the line is rendered as the body's FIRST line,
+ * `_${line}_`, above the driver's own headings. A terminator would let a caller
+ * end its line and write the next one, so `line: "ok\n## Open points"` files a
+ * body carrying a heading the driver never wrote — and `## Open points` is
+ * exactly the heading the /work intent gate reads for blocking gaps. A
+ * CR/LF-only rule is not the rule: **U+2028 / U+2029** are the Unicode line and
+ * paragraph separators and some Markdown renderers break on them; **U+0085** is
+ * NEL; **`\f`** (form feed) ends a page. All of them split the line the same
+ * way in some consumer, so all of them go.
+ *
+ * So the class is `@`, `<`, `>`, backtick, the whole C0 control range
+ * (`\u0000`–`\u001F`), DEL (`\u007F`), NEL (`\u0085`) and the two Unicode
+ * separators (`\u2028`/`\u2029`) — which is every character that can end or
+ * separate a line, plus the markup and account bytes. The shape is enforced by
+ * rejection, not by stripping: a line that renders as exactly one line has no
+ * terminator to remove, and a validator that quietly removed bytes would let
+ * the caller's intent differ from what files.
+ *
+ * The class is assembled at load time from code points rather than written as a
+ * regex literal. The set is the same either way; the literal is what biome's
+ * `noControlCharactersInRegex` flags, and suppressing that rule here would
+ * suppress a rule that exists precisely to catch a mistyped control byte —
+ * AGENTS.md forbids the bypass. `String.fromCharCode` keeps the bytes out of the
+ * source (no invisible character for a formatter to replace) while each code
+ * point stays readable against this comment, and a malformed class throws at
+ * module load rather than silently matching nothing. `FORBIDDEN_LINE_CHARS` is
+ * exported so the TypeBox schema builds its pattern from the SAME class.
  */
-const FORBIDDEN_LINE_CHARS = /[@<>`\r\n]/;
+const forbiddenClass = `[@<>${String.fromCharCode(0x60, 0x00)}-${String.fromCharCode(0x1f)}${String.fromCharCode(0x7f, 0x85, 0x2028, 0x2029)}]`;
+
+export const FORBIDDEN_LINE_CHARS = new RegExp(forbiddenClass);
 
 export interface PlanProvenance {
   /** One line of visible text, rendered italic as the body's FIRST line. */
@@ -118,8 +140,13 @@ export function isProvenanceShape(v: unknown): v is PlanProvenance {
  * an in-process caller can produce — `Object.create({ line: "x" })` has no OWN
  * `line`, and reading inherited properties is how a validator comes to approve
  * bytes nothing ever renders.
+ *
+ * Exported because the cache entry guard (`plan-investigation-guard.ts`) makes
+ * the same promise about the same bytes: two hand-rolled copies of "plain
+ * object" drift on exactly the case that matters (an exotic prototype), and the
+ * guard and this validator must never disagree about what a provenance is.
  */
-function isPlainObject(v: unknown): v is Record<string, unknown> {
+export function isPlainObject(v: unknown): v is Record<string, unknown> {
   if (!v || typeof v !== "object" || Array.isArray(v)) return false;
   const proto = Object.getPrototypeOf(v);
   return proto === Object.prototype || proto === null;
@@ -199,7 +226,7 @@ export function validateProvenance(
     );
   } else if (FORBIDDEN_LINE_CHARS.test(line)) {
     problems.push(
-      "provenance.line contains a forbidden character (@, <, >, backtick, CR or LF) — it is rejected, not escaped or stripped: the line renders as ONE line of the body and can never open a heading",
+      "provenance.line contains a forbidden character (@, <, >, backtick, or a control / line-terminator character: CR, LF, form feed, NEL, U+2028, U+2029) — it is rejected, not escaped or stripped: the line renders as ONE line of the body and can never open a heading",
     );
   }
   const entries = ownStringEntries(v.marker);

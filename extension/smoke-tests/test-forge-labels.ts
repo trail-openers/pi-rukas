@@ -30,6 +30,21 @@ import {
 } from "../src/forge-commands.ts";
 import { labelOps } from "../src/forge-label-ops.ts";
 import { parseLabelNames } from "../src/forge-labels.ts";
+import { labelGate, readLabelNames } from "../src/plan-labels.ts";
+
+/** A Forge-shaped object whose `labelList` answers each queued result in turn. */
+function fakeForge(
+  results: { names: unknown; truncated: boolean }[],
+): Parameters<typeof readLabelNames>[0] {
+  let i = 0;
+  return {
+    labelList: () => {
+      const r = results[Math.min(i, results.length - 1)];
+      i++;
+      return Promise.resolve({ names: r.names, truncated: r.truncated });
+    },
+  } as unknown as Parameters<typeof readLabelNames>[0];
+}
 
 let exitCode = 0;
 function check(name: string, fn: () => void | Promise<void>) {
@@ -264,6 +279,31 @@ async function main() {
     assert(read.truncated === false, "just under the page is the honest whole set");
   });
 
+  await check(
+    "truncated is judged on the RAW rows, not the name-filtered list",
+    async () => {
+      // The page is full, but some rows carry no usable `name` — a CLI that
+      // answers `{}` or `{name: null}` for a row still filled the page, so more
+      // may follow. Comparing the FILTERED count would report this as the honest
+      // whole set, and an `auto-filed` living past the page would then be read as
+      // MISSING: the wrong answer in the direction the driver cannot correct.
+      const rows: unknown[] = Array.from({ length: GH_LABEL_LIST_LIMIT }, (_, i) =>
+        i % 10 === 0 ? {} : { name: `l${i}` },
+      );
+      const { run } = runStub({ [labelListCmd("github")]: JSON.stringify(rows) });
+      const ops = labelOps({ forge: "github", run });
+      const read = await ops.labelList();
+      assert(
+        read.names.length < GH_LABEL_LIST_LIMIT,
+        `the fixture must actually drop rows (names: ${read.names.length})`,
+      );
+      assert(
+        read.truncated === true,
+        "a page-full read with dropped rows is still truncated (raw row count, not names)",
+      );
+    },
+  );
+
   await check("a failing list read propagates — it is a halt, not an empty set", async () => {
     const { run } = runStub({});
     const ops = labelOps({ forge: "github", run });
@@ -294,6 +334,100 @@ async function main() {
       labelAddCmd("github", "issue", 7, "a").startsWith("gh issue edit 7"),
       "issue stays issue",
     );
+  });
+
+  // ── readLabelNames: the three arms the plan layer routes on (#1377) ──────
+  // The bare `string[] | null` this replaced could not say WHICH non-answer
+  // happened, and the two non-answers have opposite fixes: "create the label"
+  // versus "the read never answered — create nothing". The bare catch dropped
+  // the CLI's words entirely, so an auth failure and a page-full read looked
+  // identical to the operator and in the log.
+  console.log("readLabelNames:");
+
+  await check("a good read returns the names on the ok arm", async () => {
+    const read = await readLabelNames(fakeForge([{ names: ["a", "b"], truncated: false }]))
+    assert(
+      read.ok === true && JSON.stringify(read.names) === '["a","b"]',
+      `got ${JSON.stringify(read)}`,
+    );
+  });
+
+  await check("a page-full read is its own arm, not a read failure", async () => {
+    const read = await readLabelNames(fakeForge([{ names: [], truncated: true }]));
+    assert(
+      read.ok === false && read.reason === "truncated",
+      `got ${JSON.stringify(read)}`,
+    );
+  });
+
+  await check("a throwing CLI is read-failed AND carries the CLI's own message", async () => {
+    const read = await readLabelNames({
+      labelList: () => Promise.reject(new Error("gh: HTTP 401 (bad token)")),
+    } as never);
+    assert(
+      read.ok === false && read.reason === "read-failed" && /401/.test(read.detail),
+      `the CLI error must survive the catch (got ${JSON.stringify(read)})`,
+    );
+  });
+
+  await check("a stub with no labelList is read-failed, never an empty set", async () => {
+    // The pre-#1377 plan-test stub shape: a partial object cast to Forge. A
+    // missing method that answered `[]` would make every label "missing".
+    const read = await readLabelNames({} as never);
+    assert(
+      read.ok === false && read.reason === "read-failed" && read.detail.length > 0,
+      `got ${JSON.stringify(read)}`,
+    );
+  });
+
+  await check("a non-array names payload is read-failed with a detail", async () => {
+    const read = await readLabelNames(fakeForge([{ names: "nope", truncated: false }]));
+    assert(
+      read.ok === false && read.reason === "read-failed" && /no label list/.test(read.detail),
+      `got ${JSON.stringify(read)}`,
+    );
+  });
+
+  console.log("labelGate:");
+
+  await check("labelGate distinguishes a missing label from an unreadable list", async () => {
+    const missing = await labelGate(["nope"], fakeForge([{ names: ["main"], truncated: false }]));
+    const unreadable = await labelGate(["nope"], fakeForge([{ names: [], truncated: true }]));
+    const failed = await labelGate(["nope"], {
+      labelList: () => Promise.reject(new Error("gh: HTTP 429 (rate limit)")),
+    } as never);
+    assert(
+      missing?.reason === "label-missing" && /nope/.test(missing.detail ?? ""),
+      `a genuinely absent label is label-missing naming it (got ${JSON.stringify(missing)})`,
+    );
+    assert(
+      unreadable?.reason === "label-list-unreadable" &&
+        /larger than the largest page/.test(unreadable.detail ?? ""),
+      `a page-full read is label-list-unreadable, not label-missing (got ${JSON.stringify(unreadable)})`,
+    );
+    assert(
+      failed?.reason === "label-list-unreadable" &&
+        /unreadable/.test(failed.detail ?? "") &&
+        !/do not exist/.test(failed.detail ?? ""),
+      `a failed CLI is label-list-unreadable and never claims a label is absent (got ${JSON.stringify(failed)})`,
+    );
+    assert(
+      unreadable?.reason !== missing?.reason,
+      "the two non-answers are DIFFERENT reasons — one tells the operator to create a label, the other says do not",
+    );
+  });
+
+  await check("labelGate passes when every label exists, and never reads with none", async () => {
+    const ok = await labelGate(["a", "b"], fakeForge([{ names: ["a", "b", "main"], truncated: false }]));
+    assert(ok === undefined, `all-present labels pass (got ${JSON.stringify(ok)})`);
+    let calls = 0;
+    const none = await labelGate([], {
+      labelList: () => {
+        calls++;
+        return Promise.resolve({ names: [], truncated: false });
+      },
+    } as never);
+    assert(none === undefined && calls === 0, "no labels requested → no read, no failure");
   });
 
   console.log(`\n${exitCode === 0 ? "PASS" : "FAIL"} test-forge-labels`);
