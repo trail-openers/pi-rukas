@@ -68,12 +68,12 @@ export const FIXED_CAPS = [
   "plan-timeout",
   "repeat-finding-seam",
   "repo-root-residue",
-  "worktree-listing-unreadable",
   "review-incomplete",
   "round-cap",
   "step-back-revise-spec",
   "token-budget",
   "wall-clock",
+  "worktree-listing-unreadable",
 ] as const satisfies readonly FixedCap[];
 
 // Compile-time exhaustiveness (the #986 pattern): a fixed cap in the union
