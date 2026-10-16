@@ -200,7 +200,13 @@ async function workstreamTouchedSet(
   // cumulative set file-granular.
   let porcelainOut: string;
   try {
-    porcelainOut = await execGit(fn, wt, ["status", "--porcelain", "--untracked-files=all"]);
+    // 16 MiB (not execGit's 1 MiB default): a worktree with a large generated
+    // or vendored untracked tree prints one porcelain line per file, and a
+    // maxBuffer overrun throws — which this site reads as "unreadable" and
+    // fails closed, so a big-but-legal tree would otherwise fail the gate.
+    porcelainOut = await execGit(fn, wt, ["status", "--porcelain", "--untracked-files=all"], {
+      maxBuffer: 16 * 1024 * 1024,
+    });
   } catch {
     return undefined; // unreadable worktree → fail closed
   }

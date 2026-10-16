@@ -67,10 +67,21 @@ export async function runCommitPrPostDispatchGates(
   }
   const consolidationCheck = await verifyConsolidation(ctx, state);
   for (const note of consolidationCheck.notes) trace(`work-driver: ${note}`);
+  // #1153 — notes are the record of checks that DID NOT RUN, so they persist
+  // on pipelineState for the handoff renderer. A clean run (the check ran and
+  // produced no notes) CLEARS any stale notes: without this, notes from an
+  // earlier commit-pr attempt survive into a cycle whose consolidation is
+  // genuinely clean, and the handoff tells the operator a check was skipped
+  // that in fact ran.
+  const priorNotes = state.pipelineState.consolidationNotes;
   if (consolidationCheck.notes.length > 0) {
-    const prior = state.pipelineState.consolidationNotes ?? [];
-    const merged = [...new Set([...prior, ...consolidationCheck.notes])];
+    const merged = [...new Set([...(priorNotes ?? []), ...consolidationCheck.notes])];
     state = { ...state, pipelineState: { ...state.pipelineState, consolidationNotes: merged } };
+  } else if (priorNotes?.length) {
+    state = {
+      ...state,
+      pipelineState: { ...state.pipelineState, consolidationNotes: undefined },
+    };
   }
   if (consolidationCheck.missing.length > 0) {
     trace(

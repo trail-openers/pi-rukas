@@ -64,7 +64,7 @@ export async function fetchDiff(cwd: string | undefined, baseSha?: string): Prom
   // which `git diff HEAD` misses once the working tree is clean.
   if (baseSha && VALID_BASEDIFF_SHA_RE.test(baseSha)) {
     try {
-      const stdout = await execGit(execp, cwd, ["diff", `${baseSha}..HEAD`], {
+      const stdout = await execGit(execp, cwd, ["diff", "--end-of-options", `${baseSha}..HEAD`], {
         maxBuffer: 1024 * 1024,
       });
       if (stdout.trim()) return stdout;
@@ -81,8 +81,11 @@ export async function fetchDiff(cwd: string | undefined, baseSha?: string): Prom
     // Prefer `git diff <baseSha>..HEAD` when baseSha is available — this
     // captures committed work. Without baseSha, fall back to `git diff HEAD`
     // (uncommitted changes only), which is correct for pre-commit scenarios.
-    const diffRange = baseSha ? `${baseSha}..HEAD` : "HEAD";
-    return await execGit(execp, cwd, ["diff", diffRange], {
+    // #1153 — the SHA gate applies here too: the primary branch above already
+    // refuses an invalid baseSha, and interpolating one into the fallback
+    // would just move the unsanitised value to the other call site.
+    const diffRange = baseSha && VALID_BASEDIFF_SHA_RE.test(baseSha) ? `${baseSha}..HEAD` : "HEAD";
+    return await execGit(execp, cwd, ["diff", "--end-of-options", diffRange], {
       maxBuffer: 1024 * 1024, // 1 MiB cap
     });
   } catch (err) {

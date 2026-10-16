@@ -114,6 +114,7 @@ const ws = (id: string, paths: string[]) => ({
     "G1 undefined result → unresolved, no TypeError",
   );
   const empty = await resolveMainline("/x", noExec, async () => ({
+    ok: true as const,
     branch: "",
   }));
   assert(
@@ -129,6 +130,7 @@ const ws = (id: string, paths: string[]) => ({
     "G1 detector reason passes through",
   );
   const ok = await resolveMainline("/x", noExec, async () => ({
+    ok: true as const,
     branch: "main",
   }));
   assert("branch" in ok && ok.branch === "main", "G1 resolved branch passes through");

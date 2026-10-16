@@ -8,10 +8,14 @@
  *    proves the scanner can fail.
  * 2. REAL GIT — `aheadOfBase` returns each of its five kinds against a real
  *    repository, and `refResolves` separates "absent" from "unknown".
+ * 3. FIXTURES — a killed/timed-out probe is `unknown`, never `absent` (#1153
+ *    review): a `code: 1` produced by the harness says nothing about the ref.
+ * 4. COVERAGE — every module that imports `./git-range.ts` is in the canary's
+ *    LISTED set, so a new caller cannot join the "argv only" rule by silence.
  */
 
 import { execFile } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -57,6 +61,28 @@ assert(
   commandStringLines('await exec("git diff HEAD", {})').length === 1,
   "control: the scanner flags a git command string",
 );
+
+// Every module that imports git-range must be one the canary actually scans.
+// A caller that joins later and is not added to LISTED gets argv discipline
+// by imitation only — nothing fails when it passes a command string.
+{
+  const importers = [];
+  for (const entry of readdirSync(srcDir)) {
+    if (!entry.endsWith(".ts")) continue;
+    const source = readFileSync(path.join(srcDir, entry), "utf8");
+    if (/from "\.\/git-range\.ts"/.test(source)) importers.push(entry);
+  }
+  const unlisted = importers.filter((f) => !LISTED.includes(f));
+  assert(
+    unlisted.length === 0,
+    `canary covers every git-range importer (unlisted: ${unlisted.join(", ") || "none"})`,
+  );
+  // The control: a scanner blind to a real importer would pass silently.
+  assert(
+    LISTED.includes("work-driver-diff.ts"),
+    "control: LISTED covers a known git-range importer",
+  );
+}
 
 // ── 2. real git ──────────────────────────────────────────────────────────────
 
@@ -132,6 +158,104 @@ try {
   assert(resolves.state === "resolves", "refResolves: a present ref resolves");
 } finally {
   rmSync(dir, { recursive: true, force: true });
+}
+
+// ── 3. fixtures: a killed probe is never "absent" ───────────────────────────
+
+/** An exec that rejects with a caller-supplied error shape. */
+const failingExec =
+  (err: unknown): ExecFn =>
+  async () => {
+    throw err;
+  };
+
+{
+  // node's child_process reports a killed child as `code: 1` + `killed: true`
+  // + a `signal`. Reading that as "git says the ref does not exist" would tell
+  // the operator the branch was never pushed, about a ref nobody read.
+  const killed = await refResolves(
+    failingExec({ code: 1, killed: true, signal: "SIGTERM", message: "killed" }),
+    "/repo",
+    "origin/feat",
+  );
+  assert(
+    killed.state === "unknown",
+    `refResolves: a killed probe is unknown (got ${JSON.stringify(killed)})`,
+  );
+
+  const signalled = await refResolves(
+    failingExec({ code: 1, killed: false, signal: "SIGKILL", message: "signalled" }),
+    "/repo",
+    "origin/feat",
+  );
+  assert(
+    signalled.state === "unknown",
+    `refResolves: a probe that died of a signal is unknown (got ${JSON.stringify(signalled)})`,
+  );
+
+  // No numeric code at all — a spawn failure (`ENOENT`), not a git verdict.
+  const noCode = await refResolves(
+    failingExec({ code: "ENOENT", message: "spawn git ENOENT" }),
+    "/repo",
+    "origin/feat",
+  );
+  assert(
+    noCode.state === "unknown",
+    `refResolves: an error with no numeric code is unknown (got ${JSON.stringify(noCode)})`,
+  );
+
+  // The control: git's OWN exit 1, with nothing killed, IS absent.
+  const gitSaysNo = await refResolves(
+    failingExec({ code: 1, killed: false, signal: null, message: "Command failed: git rev-parse" }),
+    "/repo",
+    "origin/feat",
+  );
+  assert(
+    gitSaysNo.state === "absent",
+    `control: a clean git exit 1 is absent (got ${JSON.stringify(gitSaysNo)})`,
+  );
+
+  // errorText prefers the captured stderr over the generic node message, so
+  // the note the operator reads names git's reason rather than the command.
+  const stderrCarrying = await refResolves(
+    failingExec({
+      code: "ENOENT",
+      message: "Command failed: git rev-parse --verify",
+      stderr: "  fatal: not a git repository (or any of the parent directories): .git  \n",
+    }),
+    "/repo",
+    "origin/feat",
+  );
+  assert(
+    stderrCarrying.state === "unknown" &&
+      stderrCarrying.error.startsWith("fatal: not a git repository") &&
+      !stderrCarrying.error.includes("Command failed"),
+    `errorText: stderr is preferred over message (got ${JSON.stringify(stderrCarrying)})`,
+  );
+
+  // A stderr longer than the bound is sliced, never interpolated whole.
+  const long = await refResolves(
+    failingExec({ code: "ENOENT", message: "m", stderr: "x".repeat(500) }),
+    "/repo",
+    "origin/feat",
+  );
+  assert(
+    long.state === "unknown" && long.error.length === 200,
+    `errorText: bounded to 200 chars (got ${long.state === "unknown" ? long.error.length : "-"})`,
+  );
+
+  // aheadOfBase propagates the distinction: a killed head probe is unknown,
+  // not the "the branch was not pushed from here" reading `absent` produces.
+  const aheadKilled = await aheadOfBase(
+    failingExec({ code: 1, killed: true, signal: "SIGTERM", message: "killed" }),
+    "/repo",
+    "origin/main",
+    "origin/feat",
+  );
+  assert(
+    aheadKilled.kind === "unknown",
+    `aheadOfBase: a killed probe is unknown, not unpushed (got ${JSON.stringify(aheadKilled)})`,
+  );
 }
 
 process.exit(exit);
