@@ -104,7 +104,8 @@ export function boundField(text: string, bound: { max: number; from?: "start" | 
  * fragment the patterns no longer recognise; a generous pre-bound (well past
  * any token's length) keeps a whole-document state from being regex-scanned.
  *
- * Exported for `decision-seam.ts`, which must redact a state BEFORE it reaches
+ * The two callers are `appendDecisionRecord` below and `boundedState` in
+ * decision-seam.ts, which must redact a state BEFORE it reaches
  * a backend — the record-level pass in `appendDecisionRecord` only ever guards
  * the log line, so an undeclared or nested string left unredacted here would
  * show the model a credential while the log looked clean (#1393).
@@ -130,17 +131,16 @@ export function redactDeep(v: unknown, counter: { n: number }, bound?: number): 
 }
 
 /**
- * Redact a JSON-shaped state BEFORE the caller's token-budget check, so a
- * credential in the state never leaves the host and the log, the hash and the
- * model all see the same text. Unbounded by design: it is the pre-budget
- * redaction, and the seam's per-field bounds (`boundField`) are what cap a
- * field's length.
+ * The main checkout for a linked worktree; `root` itself otherwise. Memoised
+ * per root.
+ *
+ * #1393 removed `redactState`, the unbounded wrapper over `redactDeep` that
+ * stood here. `boundedState` (decision-seam.ts) is the one pre-budget redaction
+ * now, and it is bounded: each field the seam declares is redacted over its
+ * complete text and then clipped by the registry's `FieldBound`, and every other
+ * string at the record-wide bound. An unbounded regex pass over a whole-document
+ * state, run by up to 16 concurrent shadow callers, is what that seam replaced.
  */
-export function redactState(state: unknown): { state: unknown; count: number } {
-  const counter = { n: 0 };
-  return { state: redactDeep(state, counter), count: counter.n };
-}
-
 const checkouts = new Map<string, string>();
 
 /** The main checkout for a linked worktree; `root` itself otherwise. Memoised per root. */
