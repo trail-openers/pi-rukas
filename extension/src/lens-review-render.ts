@@ -22,7 +22,7 @@
 import { neutraliseEvidence } from "./comment-evidence.ts";
 import { resolvedSection, setAsideSection, suppressedSection } from "./lens-residuals.ts";
 import { advisorySection } from "./lens-review-advisory.ts";
-import { deltaFallbackText } from "./lens-review-diff.ts";
+import { deltaFallbackText } from "./lens-review-delta-disclose.ts";
 import { type LensReviewSummary, type Severity, findingDescription } from "./lens-review-format.ts";
 import type { LensRunResult } from "./lens-review-types.ts";
 

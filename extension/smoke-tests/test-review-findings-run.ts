@@ -16,7 +16,9 @@
  *   5. a full review where the lens omits that open finding on unchanged code
  *      carries it forward — the row stays open and the verdict stays ISSUES_FOUND;
  *   6. a delta review of an unrelated file: the open finding on unchanged code
- *      still blocks the delta verdict (ISSUES_FOUND).
+ *      still blocks the delta verdict (ISSUES_FOUND). #1125 decision 5 scopes
+ *      what a delta may RESOLVE, not what blocks: the changed lines are always
+ *      the PR's whole `base...head`.
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -139,17 +141,26 @@ try {
     "round 5: the carried row stays open",
   );
 
-  // Round 6 — a delta review of an unrelated file: the open row on unchanged
-  // code is carried into the delta's verdict too.
+  // Round 6 — a delta review of an UNRELATED file: the open row on unchanged
+  // code inside the PR's range is carried into the delta's verdict too.
+  // #1125 decision 5 scopes what a delta may RESOLVE, not what blocks: the
+  // changed lines a finding is judged against are always the PR's whole
+  // `base...head`, so a delta of one file does not disarm a finding the branch
+  // itself introduced. `base: c1^` names that range: the round's own `since` is
+  // NOT it (that would make the delta the measure of what blocks), and this
+  // clone has no mainline for the split to resolve on its own — a range it
+  // cannot read discounts nothing, it does not guess. `c1^` is the empty tree,
+  // so the whole branch is inside the range.
   writeFileSync(path.join(repo, "src", "b.ts"), "export const z = 1;\n");
   sh("git add -A");
   sh("git commit -qm three");
   const c3 = sh("git rev-parse HEAD");
-  const r6 = await runLensReview({ ...common, since: c2, head: c3 });
+  const r6 = await runLensReview({ ...common, since: c2, head: c3, base: `${c1}^` });
   assert(
     r6.verdict === "ISSUES_FOUND" && r6.findings.some((f) => f.title === "Unchecked slice bound"),
     `round 6: an open row on unchanged code still blocks a delta verdict (verdict ${r6.verdict})`,
   );
+  assert(!r6.advisory, "round 6: a delta of another file does not make an in-range row advisory");
 } finally {
   fixture.cleanup();
 }
