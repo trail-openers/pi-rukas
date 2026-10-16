@@ -244,6 +244,41 @@ Only these kinds are a host contract, versioned by `NDJSON_STABLE_VERSION` (1) a
 
 Every other line carries `unstable: true`. A host may display it, but must not branch on it. The field lists are typed against the driver's event union, so renaming a stable field fails the build.
 
+## What the runner refuses to accept
+
+The headless runner is the surface a host — not a person — drives, so the two
+things that would let it escalate are refused at argument parsing, before any
+cycle starts (exit 40, `error.code: "bad-arguments"`):
+
+| Refused | Why |
+|---|---|
+| `--merge` (and `--auto-merge`, `--allow-unreviewed`) | `--merge` is the one `AuthoritySource` that bypasses the policy judge. A flag an agent can pass is a flag an agent can pass, so a host that could set it could grant its own cycle permission to merge. Merge authority comes from the project's `AGENTS.md` read at the cycle's **base commit** (#406) and is citation-verified by the judge (#407) — nothing on the command line replaces either. |
+| `--sandboxed` | Would claim a trust mode the sandbox image never granted. Trust is an **environment** fact, not a request: `.devcontainer/Dockerfile` bakes `PI_ENSEMBLE_SANDBOX_MODE=1` into the image, and a caller outside that image gets children that fail closed (hard deny on any `ask`-class tool — see [children fail closed](#children-fail-closed-outside-the-sandbox)). A flag that sets the same variable would let any caller declare itself sandboxed. |
+
+`--capabilities` publishes no `--sandboxed` or `--merge` input for the same
+reason: an unknown name means "not supported", and a host failing closed on it
+is the intended outcome. `PI_ENSEMBLE_SANDBOX_MODE` **is** listed — as scope
+`internal`, which the wrapper and the image set and a host must not.
+
+The practical consequence at the merge step: a cycle parked there in a repository
+whose doctrine grants nothing exits **10** (`awaiting-human-merge`) having run no
+forge merge, even with every `gh` answer green. Authority is decided first, and
+evidence is gathered only when authority granted — a denied cycle does not get
+to ask `gh` whether it may merge. That short-circuit is what "a green PR is not
+permission" (#380) means on this surface.
+
+### Children fail closed outside the sandbox
+
+A specialist child spawned by the runner inherits the runner's environment. If
+neither `PI_ENSEMBLE_SANDBOX_MODE` nor `PI_ENSEMBLE_TRUST_MODE` is set, the
+child's permission guard has no broker socket to escalate to and denies every
+`ask`-class tool outright (`Tool '<name>' denied (subagent ask → no broker
+socket — headless deny)`) rather than waiting for a verdict nobody can give.
+Inside the image, the baked variable passes through untouched and the guard
+short-circuits as it does for any sandboxed session. Mode-independent guards —
+the merge guard, the issue-creation guard — run **before** that short-circuit
+either way, so the container default does not disarm them.
+
 ## Handoff channel
 
 When a cycle stops short of a merge, it hands off: it renders a handoff body (why it stopped, where the work is, what to do next). `PI_ENSEMBLE_HANDOFF_CHANNEL` decides who delivers it.
