@@ -83,7 +83,9 @@ export class TokenBudgetTracker {
   private killArmed = false;
   private steered = false;
   killed = false;
-  private lastMessageEndAt = 0;
+  /** When the kill was ARMED. The grace window is measured from HERE, not
+   * from the last `message_end` — see `poll()`. */
+  private killArmedAt = 0;
   private readonly budget: number;
   /** #544 — the grace window the tracker was armed with, snapshotted at
    * construction. Reading `capKillGraceMs()` again on every poll would let a
@@ -120,7 +122,6 @@ export class TokenBudgetTracker {
     if (this.budget <= 0 || this.triggered || this.killed) return;
     if (this.tokens() < this.budget) return;
     this.triggered = true;
-    this.lastMessageEndAt = now;
     // One courtesy steer per dispatch per cap. Routes through the caller's
     // onSteer (dispatchCore wires it to steerChild → lifecycle 'steered').
     if (!this.steered && this.onSteer) {
@@ -133,23 +134,33 @@ export class TokenBudgetTracker {
     }
     if (this.capKillGraceMs > 0) {
       this.killArmed = true;
+      this.killArmedAt = now;
     } else {
       this.killed = true;
       this.kill();
     }
   }
 
-  /** Grace-window poll: kill once grace ms elapse with no new message_end. */
+  /**
+   * Grace-window poll: kill once `capKillGraceMs` has elapsed since the budget
+   * was crossed. The window is ABSOLUTE from the trigger — `message_end`
+   * traffic does not defer it.
+   *
+   * The earlier shape deferred on the last `message_end`, and the spawn path
+   * calls `onMessageEnd()` on every assistant turn — so a child that kept
+   * producing turns reset the clock on every turn and the kill could never
+   * fire. A budget-exceeded child is by definition chatty (each turn costs
+   * tokens), which meant the ONLY child this cap was built to stop was the one
+   * child it could not stop: the steer landed, the kill never did, and only
+   * the 2 h backstop ended the run. Deferral made sense for the LOOP detector,
+   * where new work means the loop may have ended and killing discards it; here
+   * new turns ARE the violation, so there is nothing to preserve.
+   */
   poll(): void {
     if (!this.killArmed || this.killed) return;
-    if (Date.now() - this.lastMessageEndAt >= this.capKillGraceMs) {
+    if (Date.now() - this.killArmedAt >= this.capKillGraceMs) {
       this.killed = true;
       this.kill();
     }
-  }
-
-  /** A new turn while armed resets the grace clock. */
-  onMessageEnd(now: number): void {
-    if (this.triggered && !this.killed) this.lastMessageEndAt = now;
   }
 }

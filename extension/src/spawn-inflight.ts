@@ -205,9 +205,12 @@ export function createStdoutLineHandler(opts: {
         caps.toolResultObserver,
       )
     ) {
-      // #543 F6 — check the token budget on every assistant turn end.
+      // #543 F6 — check the token budget on every assistant turn end. There is
+      // deliberately NO onMessageEnd() call here: the budget's grace window is
+      // absolute from the trigger, because new turns ARE the violation (each
+      // one costs tokens). Resetting it per turn made the kill unreachable for
+      // exactly the chatty child the cap exists to stop.
       caps.tokenBudgetTracker?.check(Date.now());
-      caps.tokenBudgetTracker?.onMessageEnd(Date.now());
       caps.turnNudge?.(runningState.turns);
       onProgress?.({ ...runningState, usage: { ...runningState.usage } });
     }
