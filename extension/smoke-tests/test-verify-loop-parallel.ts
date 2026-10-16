@@ -13,7 +13,12 @@
  *      failing one, even though it finishes later).
  *   3. The timed-out test's process tree is gone after the run (no orphan).
  *   4. JOBS=3 wall-clock is below the sum of the slow tests' durations.
- *   5. SIGTERM during a run exits promptly (143) and leaves no job process.
+ *   5. SIGTERM during a run exits promptly (143, no signal) and leaves no job
+ *      process.
+ *
+ * Every case pins PI_ENSEMBLE_VERIFY_TEST_JOBS and
+ * PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S in the child env, so an operator's
+ * ambient pool settings cannot change what a case measures.
  */
 
 import { spawn, spawnSync } from "node:child_process";
@@ -37,11 +42,39 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
+// `pgrep -f` answers 0 (matches), 1 (no matches) and 2 (an error: bad pattern,
+// or pgrep unavailable). Only 1 means "no orphans"; 2 must never be read as
+// "clean", or the orphan checks would pass on a broken probe.
+function probeOrphans(pattern: string): { ok: boolean; pids: string; status: number } {
+  const r = spawnSync("pgrep", ["-f", "--", pattern], { encoding: "utf-8" });
+  if (r.status !== 0 && r.status !== 1) {
+    return { ok: false, pids: "", status: r.status ?? -1 };
+  }
+  return { ok: true, pids: r.stdout.trim(), status: r.status };
+}
+
+// Bound for the interrupt case, derived from interrupt_now's own work rather
+// than a guessed number: 1.5s of settling before SIGTERM is sent, plus the
+// handler's worst-case poll (20 × 0.1s), plus slack for a loaded host where a
+// 0.1s sleep and two `kill -0` rounds are not instantaneous. The handler itself
+// costs at most ~2s; the rest is tolerance, not budget.
+const INTERRUPT_BOUND_MS =
+  1500 /* signal delay */ + 2000 /* 20×0.1s poll */ + 5000 /* slack for a loaded host */;
+
+// Every case pins both pool knobs explicitly: an operator's ambient
+// PI_ENSEMBLE_VERIFY_TEST_JOBS (or _TIMEOUT_S) would otherwise change what the
+// case measures — and at JOBS=1 the "parallel" cases would compare a run with
+// itself.
+const POOL_ENV: Record<string, string> = {
+  PI_ENSEMBLE_VERIFY_TEST_JOBS: "3",
+  PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S: "3",
+};
+
 // Unique per run: the hang fixture bakes it into its orphan `sleep` command line.
 const token = `parallel-hang-${process.pid}-${Date.now()}`;
 const mixedEnv = (jobs: number): Record<string, string> => ({
+  ...POOL_ENV,
   PI_ENSEMBLE_VERIFY_TEST_JOBS: String(jobs),
-  PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S: "3",
   FIXTURE_SLOW_MS: "1000",
   FIXTURE_HANG_TOKEN: token,
 });
@@ -86,13 +119,37 @@ assert(
 );
 
 // --- Case 3: no orphan of the timed-out test survives the run.
-const orphans = spawnSync("pgrep", ["-f", token], { encoding: "utf-8" });
-assert(orphans.status !== 0, "case 3: no process of the timed-out test survives");
+// Same bounded poll as case 5: the watchdog kills asynchronously, so a single
+// immediate probe can race the kill and report a survivor that is already dying.
+let case3Orphans = "";
+let case3ProbeBroken = false;
+for (let i = 0; i < 10; i++) {
+  const probe = probeOrphans(token);
+  if (!probe.ok) {
+    case3ProbeBroken = true;
+    break;
+  }
+  if (probe.status !== 0) {
+    case3Orphans = "";
+    break;
+  }
+  case3Orphans = probe.pids;
+  await new Promise((resolve) => setTimeout(resolve, 100));
+}
+if (case3ProbeBroken) {
+  assert(false, "case 3: the orphan probe (pgrep -f) ran without error");
+} else {
+  assert(
+    case3Orphans === "",
+    `case 3: no process of the timed-out test survives (got ${JSON.stringify(case3Orphans)})`,
+  );
+}
 
 // --- Case 4: JOBS=3 overlaps slow tests (wall-clock below their summed duration).
 const slowOnly = [SLOW, SLOW, SLOW];
 const t0 = Date.now();
 const timed = runLoopEnv(slowOnly, {
+  ...POOL_ENV,
   PI_ENSEMBLE_VERIFY_TEST_JOBS: "3",
   PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S: "10",
   FIXTURE_SLOW_MS: "2000",
@@ -107,13 +164,16 @@ assert(
 
 // --- Case 5: SIGTERM mid-run interrupts the pool.
 // The hang fixture keeps two jobs alive, so the interrupt lands while jobs
-// are running. The interrupt path must return within 10s even though the
-// watchdog bound is 60s, and must take the hung bun processes with it.
+// are running. interrupt_now makes ONE pass (SIGTERM the collected tree, poll
+// ≤2s, SIGKILL, reap), so the loop must return well inside INTERRUPT_BOUND_MS
+// even though the watchdog bound is 60s — and must take the hung `sh -c`/sleep
+// processes with it.
 const interruptToken = `parallel-interrupt-${process.pid}-${Date.now()}`;
 const child = spawn("bash", [LOOP, HANG, HANG], {
   cwd: path.join(__dirname, ".."),
   env: {
     ...process.env,
+    ...POOL_ENV,
     PI_ENSEMBLE_VERIFY_TEST_JOBS: "2",
     PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S: "60",
     FIXTURE_HANG_TOKEN: interruptToken,
@@ -126,32 +186,44 @@ const closed = new Promise<{ code: number | null; signal: string | null }>((reso
 await new Promise((resolve) => setTimeout(resolve, 1500));
 child.kill("SIGTERM");
 const deadline = new Promise<null>((resolve) => {
-  setTimeout(() => resolve(null), 10_000);
+  setTimeout(() => resolve(null), INTERRUPT_BOUND_MS);
 });
 const settled = await Promise.race([closed, deadline]);
 if (settled === null) {
   child.kill("SIGKILL");
-  assert(false, "case 5: loop exits within 10s of SIGTERM");
+  assert(false, `case 5: loop exits within ${INTERRUPT_BOUND_MS}ms of SIGTERM`);
 } else {
+  // The handler exits with `exit 143`, so the shell exits NORMALLY with 143 —
+  // the shell was not killed by the signal (it trapped it), so `signal` is
+  // null and a pass on `signal === "SIGTERM"` would mean the handler never ran.
   assert(
-    settled.code === 143 || settled.signal === "SIGTERM",
-    `case 5: loop exits with 143/SIGTERM (got code ${settled.code}, signal ${settled.signal})`,
+    settled.code === 143 && settled.signal === null,
+    `case 5: loop exits 143 with no signal (got code ${settled.code}, signal ${settled.signal})`,
   );
 }
 // The job trees must be gone; pgrep can lag a fraction behind the close event.
 let orphansAfterInterrupt = "";
+let interruptProbeBroken = false;
 for (let i = 0; i < 30; i++) {
-  const probe = spawnSync("pgrep", ["-f", interruptToken], { encoding: "utf-8" });
+  const probe = probeOrphans(interruptToken);
+  if (!probe.ok) {
+    interruptProbeBroken = true;
+    break;
+  }
   if (probe.status !== 0) {
     orphansAfterInterrupt = "";
     break;
   }
-  orphansAfterInterrupt = probe.stdout.trim();
+  orphansAfterInterrupt = probe.pids;
   await new Promise((resolve) => setTimeout(resolve, 100));
 }
-assert(
-  orphansAfterInterrupt === "",
-  `case 5: no process of the interrupted jobs survives (got ${JSON.stringify(orphansAfterInterrupt)})`,
-);
+if (interruptProbeBroken) {
+  assert(false, "case 5: the orphan probe (pgrep -f) ran without error");
+} else {
+  assert(
+    orphansAfterInterrupt === "",
+    `case 5: no process of the interrupted jobs survives (got ${JSON.stringify(orphansAfterInterrupt)})`,
+  );
+}
 
 process.exit(exit);

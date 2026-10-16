@@ -71,6 +71,18 @@
 # The caller expands the glob; the script receives the file list.
 # Live tests (suffix -live.ts) are skipped in both modes, matching the legacy
 # `case "$t" in *-live.ts) continue;; esac` exclusion.
+#
+# --- #1365 — bounded job pool (lib/verify-pool.sh).
+# Tests run concurrently, at most PI_ENSEMBLE_VERIFY_TEST_JOBS at once
+# (${VERIFY_TEST_JOBS:-2}; 1 restores the strictly sequential pre-#1365
+# shape). The count is clamped to the number of collected tests and to 16,
+# with a warning naming the clamp — more than 16 concurrent `bun` processes
+# compete with each other for CPU and the suite gets slower, not faster.
+# Every job still runs under the per-test watchdog above. Output is replayed
+# in ARGUMENT order after the pool drains, so both modes' output (and the
+# digest) are byte-identical to a sequential run regardless of finish order.
+# All per-job temp files live in one private per-run directory (0700, under
+# TMPDIR) that the EXIT trap removes.
 
 set -u
 
@@ -170,34 +182,15 @@ fi
 # parent, so polling on liveness here is the right check — and survivors are
 # named so a leak is diagnosable, not silently dropped.
 kill_process_tree() {
-  local root_pid="$1" queue current_pid child_pids pids_to_kill visited alive_count waited
-  pids_to_kill="$root_pid"
-  visited="$root_pid"
-  queue="$root_pid"
-  while [ -n "$queue" ]; do
-    child_pids=""
-    for current_pid in $queue; do
-      child_pids="$child_pids $(pgrep -P "$current_pid" 2>/dev/null)"
-    done
-    child_pids="${child_pids# }"
-    # Prune pids already collected (visited) so each is walked exactly once.
-    local fresh_child
-    fresh_child=""
-    for child_pid in $child_pids; do
-      case " $visited " in
-        *" $child_pid "*) : ;;
-        *) fresh_child="$fresh_child $child_pid" ;;
-      esac
-    done
-    fresh_child="${fresh_child# }"
-    if [ -n "$fresh_child" ]; then
-      pids_to_kill="$pids_to_kill $fresh_child"
-      visited="$visited $fresh_child"
-      queue="$fresh_child"
-    else
-      queue=""
-    fi
-  done
+  local root_pid="$1" current_pid pids_to_kill alive_count waited
+  # #1365: the BFS now lives in collect_tree (verify-pool.sh), shared with the
+  # interrupt handler so the two cannot disagree about what a job's tree
+  # contains. Called for its side effect, NOT through $(...) — a substitution
+  # would run the walk in a subshell, where `pgrep -P` sees the substitution's
+  # pid instead of this shell's and reports the job subshell as childless.
+  pids_to_kill=""
+  collect_tree pids_to_kill "$root_pid"
+  if [ -z "$pids_to_kill" ]; then pids_to_kill="$root_pid"; fi
   for current_pid in $pids_to_kill; do kill -TERM "$current_pid" 2>/dev/null; done
   sleep 2
   for current_pid in $pids_to_kill; do kill -KILL "$current_pid" 2>/dev/null; done
@@ -225,13 +218,23 @@ kill_process_tree() {
 # Prepend the `✗ timed out after <N>s` line to the capture (front, so
 # extractSpecificAssertion names it; partial output stays after it).
 prepend_timeout_line() {
-  # #1365: the capture is the job's own file, passed as $2.
-  local bound="$1" cap="$2"
+  # #1365: the capture is the job's own file, passed as $2. The scratch file
+  # goes inside the caller's per-run private directory (the capture's own
+  # dirname) rather than beside the capture by name, so nothing writes to a
+  # predictable path outside the 0700 directory and the whole run's temp state
+  # is removed as one unit. A missing cap argument is a bug in the caller, not
+  # a reason to write a file named `.tmp` in the CWD.
+  local bound="$1" cap="$2" tmp
+  if [ -z "$cap" ]; then
+    echo "warn: verify-loop: no capture file for this test; the timeout line was not prepended" >&2
+    return 0
+  fi
+  tmp="$(dirname "$cap")/$$.$RANDOM.tmp"
   {
     echo "✗ timed out after ${bound}s"
     cat "$cap" 2>/dev/null
-  } >"$cap.tmp" 2>/dev/null && mv "$cap.tmp" "$cap" 2>/dev/null || {
-    rm -f "$cap.tmp"
+  } >"$tmp" 2>/dev/null && mv "$tmp" "$cap" 2>/dev/null || {
+    rm -f "$tmp"
     echo "warn: verify-loop: could not prepend the timeout line to the capture of this test" >&2
   }
 }
@@ -303,28 +306,38 @@ fi
 
 # Single-execution capture (DECISION 3): every test runs exactly once; its
 # output is captured to a temp file that is removed on every exit path.
-CAPTURE="$(mktemp "${TMPDIR:-/tmp}/verify-loop.XXXXXX")" || exit 2
+# #1365 — one private directory for the whole run instead of a temp file per
+# job. The pool writes $RUN_DIR/<n>.out and $RUN_DIR/<n>.rc into it and the
+# timeout prepend keeps its scratch file there; mktemp -d creates it 0700, so
+# no other user of the host can read a test's output, and cleanup is one
+# recursive removal rather than a list of derived names. The old shape derived
+# `$CAPTURE.<n>` from a single mktemp base, which scattered predictable paths
+# across TMPDIR and needed JOB_FILES to remember them.
+RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/verify-loop.XXXXXX")" || exit 2
+chmod 700 "$RUN_DIR" 2>/dev/null || true
 # One trap cleans everything on every exit path: the per-test capture, the
 # #1028/​#827 failure captures, and the #1069 ledger temp dir (empty when an
 # operator-supplied override was honoured).
+# #1365: the per-test capture is now the whole $RUN_DIR, removed as one unit.
 _extra_captures=()
-# #1365: per-job captures ($CAPTURE.<n>) and exit-code files are in JOB_FILES.
 _extra_cleanup() {
-  rm -f "$CAPTURE" ${_extra_captures[*]:-} ${JOB_FILES[*]:-}
+  rm -f ${_extra_captures[*]:-}
+  if [ -n "$RUN_DIR" ]; then rm -rf "$RUN_DIR"; fi
   if [ -n "${_ledger_tmp_dir:-}" ]; then rm -rf "${_ledger_tmp_dir}"; fi
 }
 trap '_extra_cleanup' EXIT
 
 names=()
 # #1365: collect the tests, run them through the pool, then replay each job's
-# result in argument order. A job's capture is its own file, not $CAPTURE.
-pool_collect "$@"
+# result in argument order. RUN_DIR is passed explicitly so the pool never
+# depends on an ambient temp name.
+pool_collect "$RUN_DIR" "$@"
 total=${#JOB_TESTS[@]}
 # Interrupt: every running job's process tree is killed, and the loop does not
 # return until each tree is reaped (see interrupt_now).
 trap 'interrupt_now 130' INT
 trap 'interrupt_now 143' TERM
-run_pool "$VERIFY_TEST_JOBS"
+run_pool "$VERIFY_TEST_JOBS" "$@"
 for ((i = 0; i < total; i++)); do
   t="${JOB_TESTS[$i]}"
   cap="${JOB_CAP[$i]}"
@@ -346,6 +359,7 @@ for ((i = 0; i < total; i++)); do
     # #827 — keep this test's capture so its `✗` lines can be repeated
     # after the summary (below); removed on exit like $CAPTURE. Also used
     # by #1028 digest mode to emit ✗ lines + indented detail.
+    # #1365: the source of this copy is the job's own capture, not $CAPTURE.
     capfile="$(mktemp "${TMPDIR:-/tmp}/verify-loop.XXXXXX")" || exit 2
     if ! cp "$cap" "$capfile"; then
       # Capture failed — degrade gracefully: the test has already failed and
