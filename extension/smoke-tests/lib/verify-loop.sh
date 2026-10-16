@@ -86,6 +86,15 @@
 
 set -u
 
+# Fixed locale for the whole file. Every digit and range test in this script
+# and in verify-pool.sh is written `[0-9]`, and under some locales that class
+# is not ASCII digits alone — a collating sequence can pull other codepoints in
+# and let a value like `٢` through a `^[0-9]+$` check. LC_ALL=C makes those
+# classes mean what they look like. Set here rather than at each test because
+# this file is both sourced (by the pool's callers through the smoke harness) and
+# run directly, and a script cannot set a variable its caller will not inherit.
+export LC_ALL=C
+
 # The tests build throwaway repositories (`git init --bare <tmp>/origin.git`,
 # `git config user.email "t@t"`). With GIT_DIR in the environment — git sets
 # it for every hook and for `git rebase --exec` — those commands act on the
@@ -182,7 +191,7 @@ fi
 # parent, so polling on liveness here is the right check — and survivors are
 # named so a leak is diagnosable, not silently dropped.
 kill_process_tree() {
-  local root_pid="$1" current_pid pids_to_kill alive_count waited
+  local root_pid="$1" current_pid pids_to_kill alive_count waited polls_to_kill
   # #1365: the BFS now lives in collect_tree (verify-pool.sh), shared with the
   # interrupt handler so the two cannot disagree about what a job's tree
   # contains. Called for its side effect, NOT through $(...) — a substitution
@@ -192,7 +201,22 @@ kill_process_tree() {
   collect_tree pids_to_kill "$root_pid"
   if [ -z "$pids_to_kill" ]; then pids_to_kill="$root_pid"; fi
   for current_pid in $pids_to_kill; do kill -TERM "$current_pid" 2>/dev/null; done
-  sleep 2
+  # Grace: poll for liveness to clear rather than sleeping a fixed 2s. The
+  # fixed sleep cost every timeout two seconds even when the tree died in
+  # 50ms, and still could not tell a clean exit from a process that ignored
+  # SIGTERM for the whole 2s. Same shape as interrupt_now's poll: bounded
+  # (20 × 0.1s), exits the moment nothing answers `kill -0`, and falls through
+  # to the SIGKILL round when something does not.
+  polls_to_kill=0
+  while [ "$polls_to_kill" -lt 20 ]; do
+    alive_count=0
+    for current_pid in $pids_to_kill; do
+      if kill -0 "$current_pid" 2>/dev/null; then alive_count=$((alive_count + 1)); fi
+    done
+    if [ "$alive_count" -eq 0 ]; then break; fi
+    sleep 0.1
+    polls_to_kill=$((polls_to_kill + 1))
+  done
   for current_pid in $pids_to_kill; do kill -KILL "$current_pid" 2>/dev/null; done
   # Bounded wait (≤5s, 0.1s polls) for the whole tree to actually die; name
   # survivors so a leaked descendant is visible in the output.
@@ -285,6 +309,37 @@ run_test_with_timeout() {
 # after both are defined.
 . "$(dirname "${BASH_SOURCE[0]}")/verify-pool.sh"
 
+# #1365 — the reporting half (summary, digest, #827 echo) lives in
+# verify-report.sh so each file stays under the §12 500-line cap. Sourced
+# unconditionally: `report_results` below is the only exit path for a run that
+# collected tests, so a missing half would otherwise surface as "the suite
+# printed nothing and exited 0". The same named check the pool gets.
+. "$(dirname "${BASH_SOURCE[0]}")/verify-report.sh"
+for _verify_fn in report_results emit_tally; do
+  if [ "$(type -t "$_verify_fn")" != function ]; then
+    echo "error: verify-loop: lib/verify-report.sh did not define $_verify_fn — the reporter is broken; refusing to run" >&2
+    exit 2
+  fi
+done
+unset _verify_fn
+
+# The source above is not optional and not best-effort. If verify-pool.sh is
+# missing, truncated, or a stale copy from before #1365, `set -u` alone will
+# not stop the loop: the missing functions would surface as command-not-found
+# and the tests would still be reported as passing. Each name is checked and
+# the failure is named, so a broken pool is a hard stop rather than a suite
+# whose verdict nobody earned. `collect_tree` is checked too — it is the
+# descendant walk both the watchdog and the interrupt handler depend on, so a
+# pool that loads without it can kill a hung test's top process and orphan the
+# rest of its tree while still reporting the timeout correctly.
+for _pool_fn in pool_collect run_pool interrupt_now collect_tree; do
+  if [ "$(type -t "$_pool_fn")" != function ]; then
+    echo "error: verify-loop: lib/verify-pool.sh did not define $_pool_fn — the test pool is broken; refusing to run" >&2
+    exit 2
+  fi
+done
+unset _pool_fn
+
 # pgrep powers the descendant kill; without it only the top-level test
 # process would be killed (descendants orphaned). Warn, do not fail.
 if ! command -v pgrep >/dev/null 2>&1; then
@@ -337,7 +392,7 @@ total=${#JOB_TESTS[@]}
 # return until each tree is reaped (see interrupt_now).
 trap 'interrupt_now 130' INT
 trap 'interrupt_now 143' TERM
-run_pool "$VERIFY_TEST_JOBS" "$@"
+run_pool "$VERIFY_TEST_JOBS"
 for ((i = 0; i < total; i++)); do
   t="${JOB_TESTS[$i]}"
   cap="${JOB_CAP[$i]}"
@@ -386,112 +441,7 @@ if [ "$total" -eq 0 ]; then
   exit 3
 fi
 
-# The pass/fail tally line — the one emitter for both digest paths (failure
-# and all-pass). Usage: emit_tally <pass-count> <fail-count>.
-emit_tally() {
-  echo "P: $1  F: $2"
-}
-
-if [ "${#names[@]}" -gt 0 ]; then
-  # Build `FAILED: <n> test(s) — <list>`, capping the name list so the whole
-  # line fits the 800-char tail budget. Names that no longer fit are
-  # collapsed to `…and <m> more` so the count survives even when the list
-  # itself cannot.
-  summary="FAILED: ${#names[@]} test(s) —"
-  # Reserve 20 chars for the `…and NNN more` suffix.
-  budget=780
-  emitted=0
-  for name in "${names[@]}"; do
-    if [ "$emitted" -eq 0 ]; then
-      sep=" "
-    else
-      sep=", "
-    fi
-    if [ $(( ${#summary} + ${#sep} + ${#name} )) -gt "$budget" ]; then
-      summary="$summary… and $(( ${#names[@]} - emitted )) more"
-      break
-    fi
-    summary="$summary$sep$name"
-    emitted=$((emitted + 1))
-  done
-
-  if [ "$DIGEST" -eq 1 ]; then
-    # #1028 — digest mode: emit per-failure markers, every ✗ line with its
-    # indented detail, then the summary. The 3×200 bound from normal mode's
-    # #827 echo does NOT apply here — the digest is the full failure detail.
-    # names and _extra_captures are pushed in lockstep (a cp failure pushes an
-    # empty placeholder), so index $i of each array is the same test.
-    # Filter contract (shared with the #827 tail, see header): a line is
-    # kept when it is a `✗` marker at line start, or when it is an indented
-    # detail line (leading whitespace) following a kept ✗ marker; the
-    # indented-detail attribution stops at the first non-indented line.
-    # Pass/fail counts + exit code are printed below: `FAILED:` is the
-    # canonical failure-count marker (extractAttributedTail anchors on it),
-    # the `P`/`F` tally is the pass/fail summary the acceptance criteria
-    # name, and the exit code (0 all-pass / 1 any failure) is identical to
-    # normal mode.
-    for i in "${!names[@]}"; do
-      echo "FAILED: ${names[$i]}"
-      capfile="${_extra_captures[$i]:-}"
-      if [ -n "$capfile" ] && [ -f "$capfile" ]; then
-        in_block=0
-        while IFS= read -r line; do
-          if [[ "$line" == "✗ "* ]]; then
-            echo "$line"
-            in_block=1
-            continue
-          fi
-          if [ "$in_block" -eq 1 ]; then
-            # Indented detail lines belong to the most recent ✗ block.
-            if [[ "$line" =~ ^[[:space:]]+ ]]; then
-              echo "$line"
-              continue
-            else
-              in_block=0
-            fi
-          fi
-          # Everything else (✓ lines, noise, passing output) is dropped.
-        done < "$capfile"
-      fi
-    done
-    echo "$summary"
-    emit_tally "$((total - ${#names[@]}))" "${#names[@]}"
-    exit 1
-  fi
-
-  echo "$summary"
-  # #827 — repeat each failing test's `✗` lines AFTER the summary. WHY: the
-  # driver's marker-anchored tail window (extractAttributedTail in
-  # work-driver-exec-error.ts, maxLen=800 — the smallest of its call sites)
-  # keeps only what comes at/after the LAST `FAILED:` marker, so with per-test
-  # output first and the summary last, a failing test's real `✗` assertion
-  # lines sat thousands of chars BEFORE the summary and were elided out of
-  # every consumer's window (the #772 shape). Repeating them here, inside the
-  # window, is what makes the tail name the actual assertion; the per-test
-  # output above remains the full first occurrence, this is a bounded echo.
-  # The bound (first 3 ✗ lines per test, each truncated to 200 chars) keeps
-  # a single failing test's echo inside that 800-char window; with several
-  # failing tests the consumer (extractAttributedTail) keeps the summary
-  # marker line plus the LAST part of the echo, eliding the middle — so at
-  # least the last failing test's assertion lines are guaranteed in the
-  # tail. Only `✗` lines qualify — warnings (`!`
-  # lines) and other output are intentionally excluded.
-  for capfile in "${_extra_captures[@]}"; do
-    cap=0
-    while IFS= read -r line; do
-      cap=$((cap + 1))
-      if [ "$cap" -gt 3 ]; then
-        break
-      fi
-      if [ ${#line} -gt 200 ]; then
-        line="${line:0:199}…"
-      fi
-      echo "$line"
-    done < <(grep -F -- "✗" "$capfile" || true)
-  done
-  exit 1
-fi
-if [ "$DIGEST" -eq 1 ]; then
-  emit_tally "$total" 0
-fi
-exit 0
+# The pass/fail tally line and the whole reporting half live in
+# verify-report.sh (sourced above) — see that file for the digest/echo
+# contract and the 800-char tail-window rationale.
+report_results "$total"
