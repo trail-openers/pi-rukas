@@ -6,7 +6,7 @@
  * the only caller.
  */
 
-import { NO_TEXT_PLACEHOLDER } from "./lens-review-format.ts";
+import { NO_TEXT_PLACEHOLDER } from "./lens-review-incomplete.ts";
 import { adapterFor } from "./model-adapters.ts";
 import type { PiContentBlock, PiJsonEvent, PiMessage } from "./pi-event-shapes.ts";
 import { addUsage } from "./pi-usage.ts";

@@ -11,6 +11,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import fs from "node:fs";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
@@ -32,6 +33,40 @@ export function readBuildVersion(pkgJsonPath?: string): string {
 }
 
 const SHA = /^[0-9a-f]{40}$/;
+
+/**
+ * Git environment variables removed from the checkout probe's child env.
+ * Each one redirects a git command at some OTHER repository, and each is
+ * honoured ahead of `-C <root>`:
+ *
+ *   - `GIT_DIR` / `GIT_WORK_TREE` / `GIT_COMMON_DIR` — object database and
+ *     work tree (`GIT_DIR` alone makes a non-checkout answer with some other
+ *     repository's HEAD, the example-owner/pi-rukas#32 shape);
+ *   - `GIT_INDEX_FILE` — which index a status/revision read consults;
+ *   - `GIT_NAMESPACE` — rewrites every ref name before lookup;
+ *   - `GIT_OBJECT_DIRECTORY` / `GIT_ALTERNATE_OBJECT_DIRECTORIES` — where
+ *     objects are read from, so a foreign ODB answers `rev-parse HEAD`;
+ *   - `GIT_CEILING_DIRECTORIES` — changes where git decides the repository
+ *     ENDS, which is what `--show-toplevel` reports;
+ *   - `GIT_CONFIG_GLOBAL` / `GIT_CONFIG_SYSTEM` — can set `core.worktree` /
+ *     `extensions.*` and change what the probe resolves at all.
+ *
+ * They are inherited into a pi-rukas process by any harness that itself ran
+ * inside a git hook or a `git -C` wrapper, so scrubbing them is what makes
+ * the probe answer for `root` alone.
+ */
+const GIT_ENV_SCRUB = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_NAMESPACE",
+  "GIT_COMMON_DIR",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_CEILING_DIRECTORIES",
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_SYSTEM",
+];
 
 /**
  * Read the commit baked into `<root>/.pi/pi-rukas-commit` by the image build.
@@ -56,13 +91,38 @@ export function readBakedCommit(root: string): string | null {
  */
 export function readCheckoutCommit(root: string): string | null {
   try {
+    // The git environment can point every one of these probes at another
+    // repository (GIT_DIR/GIT_WORK_TREE are honoured ahead of `-C` for the
+    // object database and the work tree). They are removed from the child env
+    // so the probe answers for `root` alone — an inherited GIT_DIR otherwise
+    // makes a non-checkout report some other repository's HEAD.
+    const env = { ...process.env } as NodeJS.ProcessEnv;
+    for (const name of GIT_ENV_SCRUB) delete env[name];
     const out = execFileSync("git", ["-C", root, "rev-parse", "--show-toplevel", "HEAD"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 5_000,
+      env,
     });
     const [top, head] = out.trim().split("\n");
-    if (!top || !head || path.resolve(top) !== path.resolve(root)) return null;
+    if (!top || !head) return null;
+    // macOS publishes $TMPDIR (and /tmp) through symlinks: `--show-toplevel`
+    // canonicalises ("/private/var/…") where the caller passed "/var/…", so
+    // both sides are realpath'd before comparing — a plain string compare
+    // misreads a checkout as "merely inside some other repository". Each side
+    // is realpath'd ONCE, and a side whose realpath throws falls back to
+    // `resolve` for that side only; when both throw, the uncanonicalised
+    // strings are all that is left to compare.
+    const realpathOr = (p: string): string | null => {
+      try {
+        return fs.realpathSync(p);
+      } catch {
+        return null;
+      }
+    };
+    const want = realpathOr(root) ?? path.resolve(root);
+    const got = realpathOr(top) ?? path.resolve(top);
+    if (want !== got) return null;
     return SHA.test(head) ? head : null;
   } catch {
     return null;

@@ -17,25 +17,21 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { acceptRow } from "../scripts/review-accept-row.ts";
 import { agentContext, runReviewAccept } from "../scripts/review-accept.ts";
 import { suppressedSection } from "../src/lens-residuals.ts";
-import {
-  type LensReviewSummary,
-  type LensRunResult,
-  renderSummary,
-} from "../src/lens-review-format.ts";
+import type { LensReviewSummary, LensRunResult } from "../src/lens-review-format.ts";
 import { isReviewIncomplete } from "../src/lens-review-incomplete.ts";
+import { renderSummary } from "../src/lens-review-render.ts";
 import type { Finding } from "../src/lens-review-types.ts";
 import { editsFindingsFile, runsReviewAccept } from "../src/review-accept-guard.ts";
+import { capRows } from "../src/review-findings-file.ts";
 import {
-  type FindingRun,
   type StoredFinding,
   acceptFinding,
-  capRows,
   readBranchRows,
   recordFindingRunOutcome,
 } from "../src/review-findings-store.ts";
+import { decide } from "./lib/review-findings-fixtures.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -47,12 +43,6 @@ function assert(cond: boolean, msg: string) {
 }
 
 const repoExt = path.join(import.meta.dir, "..");
-
-/** A round's decisions, or undefined when nothing was recorded. */
-const decide = async (run: FindingRun) => {
-  const out = await recordFindingRunOutcome(run);
-  return out.ok ? out.decisions : undefined;
-};
 
 // ── layer 1: agent context ──────────────────────────────────────────────────
 
@@ -88,7 +78,9 @@ assert(
 
 const srcFiles = readdirSync(path.join(repoExt, "src")).filter((f) => f.endsWith(".ts"));
 const importers = srcFiles.filter((f) =>
-  /from\s+["'][^"']*review-accept-row/.test(readFileSync(path.join(repoExt, "src", f), "utf8")),
+  /from\s+["'][^"']*scripts\/review-accept/.test(
+    readFileSync(path.join(repoExt, "src", f), "utf8"),
+  ),
 );
 assert(importers.length === 0, "boundary: no src/ module imports the acceptance write path");
 const storeSrc = readFileSync(path.join(repoExt, "src", "review-findings-store.ts"), "utf8");
@@ -139,7 +131,6 @@ assert(
 for (const c of [
   `cat ${storeFile}`,
   'bun -e \'require("fs").writeFileSync("review-findings-store", "")\'',
-  "bun extension/scripts/review-accept-row.ts",
   // A multi-line command starting with git is scanned, not waved through as plain git.
   'git status\nbun -e \'require("fs").writeFileSync("review-findings-store", "")\'',
   // A git/gh command with a shell operator is not plain: its store mention is scanned.
@@ -150,7 +141,7 @@ for (const c of [
   "bun test --preload ./x.ts smoke-tests/review-findings-store*",
   "bun test -r ./x.ts smoke-tests/review-findings-store*",
   // The operator script is not a test file, even under a test runner.
-  "bun test smoke-tests/review-accept-row.ts",
+  "bun test smoke-tests/review-accept.ts",
 ]) {
   assert(
     runsReviewAccept(c) !== undefined,
@@ -207,12 +198,9 @@ try {
     review: "full",
   });
   const critId = crit?.[0]?.rowId ?? "";
-  const critRefused = await acceptRow({
-    cwd: dir,
-    branch: "feat/x",
-    rowId: critId,
-    reason: "a long enough reason to pass the rule",
+  const critRefused = await acceptFinding(dir, "feat/x", critId, {
     by: "op@example.com",
+    reason: "a long enough reason to pass the rule",
   });
   assert(
     !critRefused.ok && critRefused.reason.includes("CRITICAL"),
@@ -243,20 +231,14 @@ try {
         review: "full",
       })
     )?.[0]?.rowId ?? "";
-  const shortReason = await acceptRow({
-    cwd: dir,
-    branch: "feat/x",
-    rowId,
-    reason: "short",
+  const shortReason = await acceptFinding(dir, "feat/x", rowId, {
     by: "op",
+    reason: "short",
   });
   assert(!shortReason.ok, "accept: acceptRow itself refuses a short reason");
-  const secret = await acceptRow({
-    cwd: dir,
-    branch: "feat/x",
-    rowId,
-    reason: "token=abcdefghijklmnop123456 is what we use here",
+  const secret = await acceptFinding(dir, "feat/x", rowId, {
     by: "op",
+    reason: "token=abcdefghijklmnop123456 is what we use here",
   });
   assert(!secret.ok, "accept: acceptRow itself refuses a secret-shaped reason");
   assert(
@@ -314,12 +296,9 @@ try {
 
   // A file that does not parse at all is fail-closed: never overwritten, no memory.
   writeFileSync(findingsFile, "{not json");
-  const unparseable = await acceptRow({
-    cwd: dir,
-    branch: "feat/x",
-    rowId,
-    reason: "a long enough reason to pass the rule",
+  const unparseable = await acceptFinding(dir, "feat/x", rowId, {
     by: "op@example.com",
+    reason: "a long enough reason to pass the rule",
   });
   assert(
     !unparseable.ok && unparseable.reason.includes("copied to"),
