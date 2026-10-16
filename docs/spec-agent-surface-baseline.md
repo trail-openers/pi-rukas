@@ -75,78 +75,90 @@ Each fact has exactly one deciding location. Everything else in the repo is a pr
 | Declared tool grants + bash allowlist | `agents.json` → `agent.<role>.permission` | Per-role map. `bash` is **object-valued** (a nested subcommand allowlist consulted only on the bash-with-command path); every other key is a string verdict `allow`/`ask`/`deny`; `task` is object-valued for developer / adversarial-developer / project-manager. A top-level `"*": "ask"` catch-all exists for **project-manager only** — the five child roles declare no `"*"` at `permission` level; their catch-all lives at `permission.bash["*"] = "ask"`, which is a different map. A role absent from a config layer contributes nothing at that layer — `checkConfig()` returns null when `config[role]?.permission` is missing — and a miss on *all* layers yields `ask` from the single terminal default, not per layer. **There is no inheritance from another role's map, and there is no `tools` key anywhere in `agents.json` or in the resolver.** See "How a role's verdict is resolved" below. |
 | Structural tool removal | `extension/src/role-tools.ts` — `ROLE_TOOL_EXCLUDES`, `excludeToolsFor()`, `excludeToolListFor()` | The only fence that binds MCP and codemode tools, and the only one an operator overlay cannot widen. |
 | Child argv (builtins, MCP, codemode) | `extension/src/spawn-support.ts` — `childArgsBase()`, and the `--exclude-tools` push in `spawnChildArgs()` where `excludeToolsFor(role)` is read | `--mode rpc --no-extensions -e builtin:mcp`, plus `-e builtin:codemode` unless `PI_ENSEMBLE_CHILD_CODEMODE=0`. |
-| MCP roster a child actually sees | the installed `codebase-memory-mcp` binary's own tool surface — **outside this repository** | `install.sh`'s `mcpServers.codebase_memory` block (`install.sh:273`) writes only `{command, args: [], exposure: "direct"}` — **no tool list at all** — so nothing in this repo names the roster: it is whatever the installed server exposes, admitted unfiltered because the block sets `exposure: "direct"` with no allowlist key. It is also an **installation-time** fact: the block is written only inside `if [ -n "$CBM_BIN" ]`, so on a host without the binary on `PATH` (or in `~/.local/bin/`) there is no `codebase_memory` entry and no roster. `extension/smoke-tests/test-codemode-activation.ts` — `BASE_ROSTER` — is a **test fixture** that stands in for that surface so the activation paths can be exercised offline; nothing pins it to the server's real tool list, and it must not be cited as the deciding location. |
+| MCP roster a child actually sees | the installed `codebase-memory-mcp` binary's own tool surface — **outside this repository** | `install.sh`'s `mcpServers.codebase_memory` block (`install.sh:273`) writes only `{command, args: [], exposure: "direct"}` — **no tool list at all** — so the roster is whatever the installed server exposes, admitted unfiltered because that block carries no allowlist key. It is also an **installation-time** fact: the block is written only inside `if [ -n "$CBM_BIN" ]`, so on a host without the binary on `PATH` (or in `~/.local/bin/`) there is no `codebase_memory` entry and no roster. `BASE_ROSTER` in `test-codemode-activation.ts` is a test fixture for the activation paths, not the deciding location. |
 | Working directory | `extension/src/spawn.ts` — `const cwd = spec.cwd ?? process.cwd()` | Absent `cwd` silently means the Pi process directory, not the worktree. |
 | Model | `extension/src/models.ts` — `resolveModel(spec.role, spec.model)` (called from `spawnSpecialistInner()` in `spawn.ts`) | Precedence: spec → config → `PI_ENSEMBLE_MODEL_<ROLE>` → `PI_ENSEMBLE_SUBAGENT_MODEL` → Pi default. `agents.json` holds no model config. |
 | Lens / lens-fix tree | `extension/src/work-driver-lens-fix.ts` — `lensWorktree()` | Review and fix must name the SAME tree; `worktrees.default` first, `repoRoot` fallback. |
 
 ## Declared surface per role
 
-Counts are read from `agents.json` with `jq`, from `extension/src/role-tools.ts`
-(`--exclude-tools`), and the undeclared column names the `mcp__codebase_memory__*` tools no role's
-`permission` map mentions — derived from the surface `install.sh`'s written `mcp.json` block lets
-through (`exposure: "direct"`, no allowlist), **not** from the `BASE_ROSTER` fixture. MCP and
-codemode additions arrive without ever passing through the map — the map is a verdict layer, not a
-roster filter (and there is **no `tools` key** in `agents.json` for them to pass through) — so they
-are listed separately rather than folded into the declared columns.
+This section transcribes **nothing derivable**. Seven counts are a `jq` away, so they are not
+written down here — a hand-maintained copy of them *is* the drift mechanism this document exists to
+retire. Retiring the copy is what §Doctrine single-source rule and canary 1 are for; only the two
+columns `jq` cannot produce are kept as literals.
 
-**Counting convention** (a future canary is written against these numbers, so the convention is
-stated next to them rather than implied): each role's `permission` map is partitioned by verdict,
-with the object-valued `bash` sub-map **excluded** from every count below (it is counted separately
-in its own column), and a `"*"` key counted only where the role declares it at `permission` level
-— which is `project-manager` alone. `allow` / `ask` / `deny` count string-valued keys only;
-object-valued non-`bash` keys (`task` for developer, adversarial-developer and project-manager)
-are counted in their own `obj` column. So `MCP + allow + ask + deny + obj = Object.keys(permission) − 1`
-exactly, with nothing dropped. `Bash patterns` counts every key of `permission.bash`, the `"*"`
-catch-all included (the five child roles' `bash["*"] = "ask"` and PM's too); subtract 1 per role
-for the excluding convention.
+**Counting convention** (a future canary is written against these numbers, so the convention sits
+beside the command that reproduces them rather than as a preamble to transcribed literals): each
+role's `permission` map is partitioned by verdict, with the object-valued `bash` sub-map **excluded**
+from every count (it is counted in its own column), and a `"*"` key counted only where the role
+declares it at `permission` level — which is `project-manager` alone. `allow` / `ask` / `deny` count
+string-valued keys only; object-valued non-`bash` keys (`task` for developer, adversarial-developer
+and project-manager) are counted in their own `obj` column. So
+`MCP + allow + ask + deny + obj = Object.keys(permission) − 1` exactly, with nothing dropped.
+`Bash patterns` counts every key of `permission.bash`, the `"*"` catch-all included (the five child
+roles' `bash["*"] = "ask"` and PM's too); subtract 1 per role for the excluding convention.
 
-| Role | MCP keys (all `allow`) | non-MCP `allow` | `ask` | `deny` | obj | `"*"` at `permission`? | Bash patterns | `--exclude-tools` |
-|---|---|---|---|---|---|---|---|---|
-| developer | 7 | 11 | 1 | 2 | 1 | no | 207 | — (none) |
-| ops | 3 | 5 | 1 | 11 | 0 | no | 208 | — (none) |
-| adversarial-developer | 7 | 4 | 1 | 6 | 1 | no | 75 | `write,edit,multiedit` |
-| code-review-specialist | 7 | 7 | 1 | 4 | 0 | no | 78 | `write,edit,multiedit` |
-| explore | 7 | 7 | 1 | 4 | 0 | no | 105 | `write,edit,multiedit` |
-| project-manager | 8 | 24 | 2 | 6 | 1 | **yes** (`"*": "ask"`) | 114 | — (parent is never gated) |
+Regenerate the 7 derivable columns — MCP keys / non-MCP `allow` / `ask` / `deny` / `obj` /
+`"*"` at `permission` / Bash patterns — from the checked-in file, never from this page. Run at repo
+root (`jq -r '…' agents.json`, formatted one column per line; the `# …` comments are annotations, not
+part of the program). `…` repeats the two `select`s of the `allow` column verbatim — the predicate
+that keeps `bash` and the MCP keys out of the non-MCP verdict counts, so copy the whole block:
 
-What the partitioned columns hide, spelled out: the single `ask` on every child role is
-`external_directory: ask`, declared identically in all six maps. `deny` is `hashline_read` /
-`hashline_edit` on developer; `edit`/`write`/`webfetch` + `list_tasks`/`check_task`/`cancel_task`
-on adversarial-developer; `edit`/`write`/`multiedit`/`task` on code-review-specialist and explore;
-`edit`/`write`/`multiedit`/`webfetch`/`task` + 6 `parallel-*` on ops; and `write`/`edit`/
-`webfetch`/`websearch` + 2 `parallel-*` on project-manager. The `obj` column is `task:
-{"*": "deny"}` for developer and adversarial-developer, and PM's `task` map (catch-all deny with
-five role grants).
+```console
+$ jq -r '.agent | to_entries[] | [.key,
+    ( [.value.permission | to_entries[]
+       | select(.key | startswith("mcp__codebase_memory__"))] | length),             # MCP keys
+    ( [.value.permission | to_entries[]
+       | select(.key != "bash" and (.key | startswith("mcp__codebase_memory__") | not))
+       | select(.value == "allow")] | length),                                       # non-MCP allow
+    ( … | select(.value == "ask")] | length),                                        # ask
+    ( … | select(.value == "deny")] | length),                                       # deny
+    ( … | select(.value | type == "object")] | length),                              # obj
+    (.value.permission | if has("*") then "yes" else "no" end),                      # "*" at permission?
+    (.value.permission.bash | length)] | @tsv' agents.json                           # Bash patterns
+```
 
-The MCP keys named per role: developer / adversarial-developer / code-review-specialist / explore
-all name the same seven (`search_code`, `search_graph`, `trace_path`, `detect_changes`,
-`get_code_snippet`, `get_architecture`, `query_graph`); ops names only `search_code`,
-`get_code_snippet`, `get_architecture`; project-manager names those seven **plus**
-`index_repository` — the one explicit grant of it, at
-`agent["project-manager"].permission["mcp__codebase_memory__index_repository"]`. Note that the
-per-role undeclared set is NOT this table's business: arrival is unconditional, so the same 14
-reach every child regardless of which of them the map names (see the paragraph below the roster).
+The two columns `agents.json` cannot produce at all — `--exclude-tools` from
+`ROLE_TOOL_EXCLUDES` (`extension/src/role-tools.ts`) and whether the role declares `"*"` at
+`permission` level:
+
+| Role | `--exclude-tools` | `"*"` at `permission`? |
+|---|---|---|
+| developer | — (none) | no |
+| ops | — (none) | no |
+| adversarial-developer | `write,edit,multiedit` | no |
+| code-review-specialist | `write,edit,multiedit` | no |
+| explore | `write,edit,multiedit` | no |
+| project-manager | — (never gated: PM is the parent, not a spawned child) | **yes** (`"*": "ask"`) |
+
+The `deny` / `ask` / `obj` membership of each map is `agents.json`'s business and is not enumerated
+here — read it off the command above (drop `| @tsv` and print the keys) rather than restating a copy.
+
+The per-role MCP naming is a `jq` away too, so only the verdict that depends on it is stated here:
+the three reader roles and `developer` name the 7 search/trace tools, `ops` names 3, and
+`project-manager` names those 7 **plus** `index_repository` — the single explicit grant, at
+`agent["project-manager"].permission["mcp__codebase_memory__index_repository"]`. The 7 admin verbs
+(`list_projects`, `delete_project`, `index_status`, `check_index_coverage`, `compare_graphs`,
+`manage_adr`, `index_repository`) are named by **no role** except that one grant. Which tools sit on
+a roster is unaffected by any of it: arrival is unconditional, so the same 14 reach every child
+regardless of which of them the map names (see the paragraph below the roster).
 
 The 14 names below are the MCP tools whose arrival this baseline tracks. **This list is prose,
 not a constant**: nothing pins it to the server's real surface, and canary 3 must derive it from
 what the installed server exposes (the `install.sh` block only proves the surface arrives
-unfiltered — see the Authoritative-sources row above) rather than restating it.
+unfiltered — see the Authoritative-sources row above) rather than restating it. It is also
+**this document's own accounting, not a citation**: `docs/mcp.md`, `README.md` and
+`docs/troubleshooting.md` each describe a **seven**-tool direct surface plus separately-named admin
+tools, and none of them contains this 14-name list, so this document does not cite them for it. The
+seven are what those files call *direct*; the further seven are what this baseline adds to the
+tracked set because they reach the same child roster by the same unfiltered `exposure: "direct"`
+path — which is why the tracked set is wider than the *direct* set and the two are not in conflict.
+Correcting those four files to carry the 14-roster is deliberately **out of scope** for this PR
+(they are cited, never changed).
 
 `search_code`, `trace_path`, `detect_changes`, `get_architecture`, `get_code_snippet`,
 `query_graph`, `search_graph`, `index_repository`, `list_projects`, `delete_project`,
 `index_status`, `check_index_coverage`, `compare_graphs`, `manage_adr`.
-
-This grouping — 14 names — is **this document's own accounting, not a citation**. `docs/mcp.md`,
-`README.md` and `docs/troubleshooting.md` each describe a **seven**-tool direct surface
-(`search_code`, `search_graph`, `trace_path`, `detect_changes`, `get_code_snippet`,
-`get_architecture`, `query_graph`) plus separately-named admin tools; none of them contains this
-14-name list, so this document does not cite them for it. The two are counting different things:
-the seven are what those files call *direct*, and the further seven (`index_repository`,
-`list_projects`, `delete_project`, `index_status`, `check_index_coverage`, `compare_graphs`,
-`manage_adr`) are what this baseline adds to the tracked set because they reach the same child
-roster by the same unfiltered `exposure: "direct"` path. Correcting those four files to carry the
-14-roster is deliberately **out of scope** for this PR (they are cited, never changed).
 
 The `BASE_ROSTER` fixture adds `bash`/`read`/`edit`/`write` to those 14 — the four core tools a
 child carries; `--exclude-tools write,edit,multiedit` is what structurally removes two of them
@@ -168,21 +180,28 @@ revocation of that fence fails the test, not a silent pass). What the role *keep
 is an explicit acknowledgement that a reader role holds a real write/egress path (`git remote
 set-url`, `git worktree add`, forge verbs) that no `permission` entry gates — in trust mode (the
 default) the call never consults the map, so `codemode: allow` records neither a grant nor a limit.
-`delete_project` — destructive, and never granted to any role in `agents.json` — is the
-undeclared name an earlier note had guessed as `get_file_outline`; the roster refutes that.
-**`get_file_outline` is not in the roster.**
+
+**"Never granted" is a verdict-layer statement, not a roster-filter statement.** Arrival is a
+roster fact, and the roster is filtered only by `--exclude-tools`. `childArgsBase()`
+(`spawn-support.ts`) passes `-e builtin:mcp`; `ROLE_TOOL_EXCLUDES` (`role-tools.ts`) is the only
+roster filter and names no MCP verb — mechanism detail in `tmp/issue-1076/followups.md`.
+`grep delete_project extension/src/` returns ZERO hits — the sole enforcement in the codebase is the
+prose line at `agents-base/developer.md:144`. And **`get_file_outline` is not in the roster** — the
+name an earlier note had guessed at is `delete_project`.
 
 For a child, every name its `permission` map omits resolves the same way — there is no per-role
 catch-all to fall back to, because five of the six maps declare none — so the difference between
 `ops` (which names 3 MCP tools) and `developer` (which names 7) is a difference in the verdict a
 strict-mode parent would give, never in which tools sit on the roster. Being absent from the
-`permission` map is not the point, and is not the same as being unavailable. **Arrival is unconditional; usability is mode-dependent.** All 14
-`mcp__codebase_memory__*` tools reach every child's roster in every permission state, because the
-only fence that removes a tool from the roster is `--exclude-tools`
-(`extension/src/role-tools.ts` — `excludeToolsFor()`), and that fence currently names only
-`write`/`edit`/`multiedit` — no role excludes any MCP tool, so all 14 reach every child that
-`spawn.ts` starts. Whether arrival equals usability depends on the guard state:
-`permission` is a verdict layer, not a roster filter. Trust mode — the default for interactive host
+`permission` map is not the point, and is not the same as being unavailable.
+
+**Arrival is unconditional; usability is mode-dependent.** All 14
+`mcp__codebase_memory__*` tools reach every child's roster in every permission state: the only fence
+that removes a tool from the roster is `--exclude-tools`
+(`extension/src/role-tools.ts` — `excludeToolsFor()`), and that fence names only
+`write`/`edit`/`multiedit`, so no role excludes any MCP tool and all 14 reach every child that
+`spawn.ts` starts. Whether arrival equals usability depends on the guard state — `permission` is a
+verdict layer, not a roster filter. Trust mode — the default for interactive host
 and sandbox — returns from the `tool_call` handler before any lookup
 (`isInTrustMode` early return in `extension/src/permission-guard.ts`), so an arriving MCP tool is
 usable; strict mode falls through to `resolveToolPermission()` (reached from
@@ -379,14 +398,7 @@ aimed at the driver's integration path) but an agent that reads both gets two re
 one situation. Changing that refusal string is out of scope here — it lives under `extension/src/`
 and is asserted verbatim elsewhere — so it is noted as a #1421/#1422 follow-up rather than fixed.
 
-## Follow-ups recorded (structural items deliberately not taken this round)
+## Follow-ups recorded
 
-- **Lift `withEnv` / `withEnvAsync` into `extension/smoke-tests/lib/`.** Deferred: it touches the
-  other caps suites in the same change, and the duplication is two copies of a 15-line helper whose
-  behaviour both files already pin.
-- **Widen the timing margins in `test-dispatch-caps-timing.ts`.** Deferred: the 500 ms poll against
-  400/600 ms grace windows passes reproducibly today, and widening them trades a fast suite for a
-  slow one without removing the race — the vacuity guard added in the H1 block is the fix that
-  matters, because it makes a non-firing cap visible instead of merely passing.
-- **`let session` definite-assignment in the H2 / spawn#6 blocks.** Deferred: TypeScript accepts the
-  current shape, and `strictNullChecks` would want a refactor of both blocks for no behavioural gain.
+Not doctrine, so not transcribed here: the three structural items deliberately not taken this round
+and the reader-role MCP-admin hardening item are recorded in `tmp/issue-1076/followups.md`.
