@@ -20,10 +20,12 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { consolidationNote } from "../src/work-driver-consolidation-note.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { readIntegratedDiff } from "../src/work-driver-diff.ts";
 import { resolveMainline } from "../src/work-driver-git.ts";
-import { consolidationNote, verifyConsolidation, verifyStepOutcome } from "../src/work-driver-verify.ts";
+import { verifyStepOutcome } from "../src/work-driver-verify.ts";
+import { verifyConsolidation } from "../src/work-driver-verify.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
 
 let exit = 0;

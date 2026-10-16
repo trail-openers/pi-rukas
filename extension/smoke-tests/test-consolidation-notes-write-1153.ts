@@ -312,10 +312,7 @@ function singleWorkstreamState(staleNotes?: string[]): WorkState {
     // Newest kept, oldest dropped: the 45 stale notes plus this fixture's one
     // fresh note are 46 distinct strings, so the surviving window is the last
     // 19 stale ones (notes 26…44) followed by the fresh note.
-    assert(
-      kept.length === 20,
-      `writer: the persisted list is bounded to 20 (got ${kept.length})`,
-    );
+    assert(kept.length === 20, `writer: the persisted list is bounded to 20 (got ${kept.length})`);
     assert(
       kept[0] === `${SKIPPED_PREFIX}stale note 26` &&
         kept[18] === `${SKIPPED_PREFIX}stale note 44` &&

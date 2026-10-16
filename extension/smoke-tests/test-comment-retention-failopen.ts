@@ -96,7 +96,9 @@ function execError(code: number, msg: string): Error {
         stdout: "--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1,2 +1,1 @@\n-// gone\n function f() {}\n",
       };
     if (cmd.startsWith("git grep")) throw execError(1, "no match");
-    if (cmd.startsWith("git rev-parse")) return { stdout: "abc\n" };
+    // #1153 round 3 — `refResolves` requires the object id a real
+    // `rev-parse --verify` prints, so the resolving stub prints a 40-hex id.
+    if (cmd.startsWith("git rev-parse")) return { stdout: `${"a".repeat(40)}\n` };
     return { stdout: "" };
   };
   const res = await findLostComments(exec, "/tmp", "a".repeat(40), "HEAD", ["src"]);

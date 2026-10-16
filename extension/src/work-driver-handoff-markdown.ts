@@ -307,7 +307,6 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
  */
 const MAX_RENDERED_NOTES = 20;
 
-/** The bounded consolidation-notes section (see MAX_RENDERED_NOTES). */
 /**
  * #1153 — consolidation checks that did not run. A skipped check is recorded
  * as a note (never a silent pass), and the operator must see it here.
@@ -318,7 +317,7 @@ const MAX_RENDERED_NOTES = 20;
  * backtick run, so a note containing `` ` `` or a fence cannot break out of
  * the span and have the remainder read as markdown by `gh pr comment`.
  *
- * The list is bounded by MAX_RENDERED_NOTES below.
+ * The list is bounded by MAX_RENDERED_NOTES above.
  */
 function consolidationNotesSection(state: WorkState): string[] {
   const notes = state.pipelineState.consolidationNotes ?? [];
