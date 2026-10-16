@@ -9,17 +9,13 @@
  * is only read by the view that is open, and a delivery while no view
  * is open is unbadged by design (resetOnOpen wipes it).
  *
- * #1389 adds a second tally beside it: how many of those attempted
- * deliveries the host rejected. `deliverReport` cannot throw (its callers'
- * never-throws contracts depend on that), so a caller that must know whether
- * its send reached Pi has no try/catch to write — it compares the two
- * counters across the call. The pair is read as a delta, which is what makes
- * it safe as a process-global: an unrelated deliverer's failure cannot be
- * blamed on the send being judged.
+ * The badge counts an ATTEMPTED delivery, and that is all it counts. Whether
+ * a particular send reached Pi is not bookkeeping a process-global should hold:
+ * `deliverReport` returns that answer to its own caller (#1389), which is the
+ * only party that can judge the send it made.
  */
 
 let count = 0;
-let failedCount = 0;
 
 /** Increment the notice count (async-jobs deliverReport). */
 export function incrementNotice(): void {
@@ -34,23 +30,4 @@ export function resetNotices(): void {
 /** The current count (the view header). */
 export function getNotices(): number {
   return count;
-}
-
-/**
- * Record that a delivery attempt did not reach the host (async-jobs
- * `deliverReport`'s catch). Counted separately from the badge: the badge is
- * an ATTEMPTED-delivery count and must stay byte-identical for the view.
- */
-export function incrementFailedNotice(): void {
-  failedCount += 1;
-}
-
-/**
- * How many delivery attempts so far were rejected by the host. Read as a
- * delta around a `deliverReport` call — never as an absolute (see the module
- * header), and never reset: the view's `resetNotices` clears what the operator
- * reads, not the ledger a caller judges its own send by.
- */
-export function getFailedNotices(): number {
-  return failedCount;
 }

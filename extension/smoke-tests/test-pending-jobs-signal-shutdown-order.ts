@@ -1,36 +1,50 @@
-#!/usr/bin/env bun
 /**
- * #1389 — session_shutdown must not publish "0" ahead of the reports it killed.
+ * #1389 — the headless pending-reports signal's shutdown semantics.
  *
- * The third of the three #1389 defects, split from test-pending-jobs-signal.ts
- * (and its honest-zero companion) by the 500-line cap test-file-size-limit.ts
- * enforces — the same split that earlier moved sections 3/4 out of
- * test-dispatch-deck-live.ts into test-dispatch-deck-live-sync-throw.ts. All
- * three files drive the same `pi-rukas-jobs` channel; a fake of their own would
- * fail open on exactly this defect, because shutdown() drops `ctx` and every
- * publish after it is a silent no-op.
+ * Second of the three `pi-rukas-jobs` companions (test-pending-jobs-signal.ts is
+ * the #1295 contract; -honest-zero.ts the failed-send paths;
+ * -batch-teardown.ts the half-started batch), split by the 500-line cap
+ * test-file-size-limit.ts enforces — the same split that earlier moved sections
+ * 3/4 out of test-dispatch-deck-live.ts into
+ * test-dispatch-deck-live-sync-throw.ts. All four drive the same channel; a fake
+ * of their own would fail open on exactly the shutdown defect, because
+ * shutdown() drops `ctx` and every publish after it is a silent no-op.
  *
- * The pre-#1389 handler cleared the pending Set and published "0" synchronously
- * — while the jobs it had just aborted were still settling (a developer report
- * awaits its git-state line before the steer) — and dropped `ctx`, so the
- * report nobody received was also the last thing anyone could see. `shutdown()`
- * now defers that publish for a bounded window (SHUTDOWN_SETTLE_MS, overridable
- * via PI_ENSEMBLE_PENDING_SHUTDOWN_MS so these cases pin an outcome rather than
- * race a sleep), then publishes unconditionally and records each still-owed id
- * as never-arrived. The bound is what keeps a job that ignores `abort` from
- * holding a quitting session open.
+ * Pinned here:
+ *   1-2. `session_shutdown` does not publish "0" ahead of the reports it
+ *        killed — the pre-#1389 handler cleared the Set and published "0"
+ *        synchronously while the jobs it had just aborted were still settling
+ *        (a developer report awaits its git-state line before the steer), then
+ *        dropped `ctx`, so the report nobody received was also the last thing
+ *        anyone could see. Now the publish is deferred for a bounded window
+ *        (pendingShutdownBoundMs(), read from PI_ENSEMBLE_PENDING_SHUTDOWN_MS so
+ *        these cases pin an outcome rather than race a sleep) and each report
+ *        that still never landed is named on stderr.
+ *   3.   The deferred arm belongs to the session that scheduled it — it cannot
+ *        publish into a later one.
+ *   4.   With nothing owed, shutdown publishes no redundant extra "0", and a
+ *        release arriving after the channel closed is refused by name.
+ *   5.   The bound is read inside shutdown() and clamped.
  *
- * No Pi process spawned, no network.
+ * The fakes are in lib/pending-jobs-harness.ts, shared with the honest-zero
+ * file. No Pi process spawned, no network.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerAsyncJobsLifecycle } from "../src/async-jobs-lifecycle.ts";
-import { clearJobsForTesting, jobStatusSnapshot, startBatch, startJob } from "../src/async-jobs.ts";
-import * as live from "../src/dispatch-deck-live.ts";
-import * as dispatchDeck from "../src/dispatch-deck.ts";
+import { clearJobsForTesting, startJob } from "../src/async-jobs.ts";
 import * as pendingJobs from "../src/pending-jobs-signal.ts";
 import { clearSlowWatchesForTesting } from "../src/slow-notice.ts";
 import type { DispatchResult } from "../src/types.ts";
+import {
+  attachRpc,
+  fakeResult,
+  freshWire,
+  makePi,
+  sent,
+  until,
+  warned,
+  withStderrCaptureAsync,
+} from "./lib/pending-jobs-harness.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -41,113 +55,23 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-/** Everything the fake host and the status channel would have shown. */
-interface Wire {
-  reports: string[];
-  statuses: string[];
-}
-
-function freshWire(): Wire {
-  return { reports: [], statuses: [] };
-}
-
-/** attach() publishes an initial "0"; every "<n>" assertion counts past it. */
-const sent = (w: Wire) => w.statuses.slice(1);
-
-/** A host that accepts everything it is given, and records what it received. */
-function makeHost(w: Wire): DispatchHostLike {
-  return {
-    sendUserMessage(text: string) {
-      w.reports.push(text);
-    },
-  };
-}
-type DispatchHostLike = { sendUserMessage(text: string): void };
-
-function attachRpc(w: Wire) {
-  pendingJobs.attach({
-    mode: "rpc",
-    ui: {
-      setStatus: (key: string, text: string | undefined) => {
-        if (key === pendingJobs.PENDING_JOBS_STATUS_KEY) w.statuses.push(text ?? "");
-      },
-    },
-  } as never);
-}
-
-function fakeResult(role: string, text: string): DispatchResult {
-  return {
-    role,
-    ok: true,
-    text,
-    toolUses: [],
-    ms: 10,
-    exitCode: 0,
-    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
-  } as DispatchResult;
-}
-
-/** A `pi` double for the batch paths: accepts every send, ignores `on`. */
-function batchHost(w: Wire): ExtensionAPI {
-  return {
-    sendUserMessage(text: string) {
-      w.reports.push(text);
-    },
-    on: () => {},
-  } as unknown as ExtensionAPI;
-}
-
-async function until(cond: () => boolean) {
-  for (let i = 0; i < 300 && !cond(); i++) await new Promise((r) => setTimeout(r, 10));
-}
-
-async function withStderrCaptureAsync<T>(
-  fn: () => Promise<T>,
-): Promise<{ value: T; lines: string[] }> {
-  const lines: string[] = [];
-  const real = process.stderr.write;
-  process.stderr.write = ((chunk: string | Uint8Array) => {
-    lines.push(String(chunk));
-    return true;
-  }) as typeof process.stderr.write;
-  try {
-    return { value: await fn(), lines };
-  } finally {
-    process.stderr.write = real;
-  }
-}
-
-/** A fake pi carrying `on` so the real session_shutdown hook can be fired. */
-function makeShutdownPi(host: DispatchHostLike): {
-  pi: ExtensionAPI;
-  fire: (reason?: string) => void;
-} {
-  let hook: ((event?: { reason?: string }) => void) | undefined;
-  const pi = {
-    ...host,
-    on: (_event: string, handler: (event?: { reason?: string }) => void) => {
-      hook = handler;
-    },
-  } as unknown as ExtensionAPI;
-  registerAsyncJobsLifecycle(pi);
-  return { pi, fire: (reason?: string) => hook?.({ reason: reason ?? "quit" }) };
-}
-
 // ---------------------------------------------------------------------------
-// 1. Inside the bound: "0" waits for the report the abort
-//    still owes. The pre-#1389 code cleared the Set and published "0"
-//    synchronously, ahead of the aborted job's async settle (a developer report
-//    awaits its git-state line first) — and then dropped `ctx`, so the report
-//    nobody saw was also the last thing anyone could see.
+// 1. Inside the bound: "0" waits for the report the abort still owes.
 // ---------------------------------------------------------------------------
 {
   const w = freshWire();
-  const { pi, fire } = makeShutdownPi(makeHost(w));
+  const { pi, fireShutdown } = makePi(w);
+  registerAsyncJobsLifecycle(pi);
+  // Drain first. Earlier cases leave jobs whose work never reacts to `abort`,
+  // and `shutdown()` aborts every job in the registry — including those, on
+  // whatever host started them. `startJob`'s host is the module singleton's
+  // `parentApi`, so a neighbour's settle would push its report into THIS case's
+  // wire and its count into this channel. An assertion here must be about the
+  // job this case started, so the registry has to start empty.
+  clearJobsForTesting();
+  clearSlowWatchesForTesting();
   attachRpc(w);
-  process.env.PI_ENSEMBLE_PENDING_SHUTDOWN_MS = "150";
-  // Abort resolves the work, but the settle's report path is async — so the
-  // report is genuinely still owed at the moment the hook runs.
-  const { value: atHook } = await withStderrCaptureAsync(async () => {
+  const { value: atHook, lines } = await withStderrCaptureAsync(async () => {
     startJob(pi, {
       label: "explore",
       role: "explore",
@@ -155,176 +79,270 @@ function makeShutdownPi(host: DispatchHostLike): {
         new Promise<DispatchResult>((resolve) => {
           signal.addEventListener("abort", () => {
             void Promise.resolve().then(() =>
-              resolve({
-                role: "explore",
-                ok: false,
-                text: "",
-                toolUses: [],
-                ms: 1,
-                exitCode: null,
-                killCause: "abort",
-              } as DispatchResult),
+              resolve(fakeResult("explore", "", { ok: false, exitCode: null, killCause: "abort" })),
             );
           });
         }),
     });
     await until(() => sent(w).length >= 1);
-    fire();
+    // The bound is read INSIDE shutdown(), so it must be set before the hook
+    // fires, not merely before the case started.
+    process.env.PI_ENSEMBLE_PENDING_SHUTDOWN_MS = "150";
+    fireShutdown("quit");
     const at = sent(w).join(",");
     await until(() => sent(w).length >= 2);
     return at;
   });
-  assert(atHook === "1", `8a: shutdown does not drop a job still owed (got ${atHook})`);
-  assert(sent(w).join(",") === "1,0", `8b: "0" arrives once the owed report has (got ${sent(w)})`);
+  assert(atHook === "1", `1a: shutdown does not drop a job still owed (got ${atHook})`);
+  assert(sent(w).join(",") === "1,0", `1b: "0" arrives once the owed report has (got ${sent(w)})`);
+  // `w.reports` is deliberately NOT asserted here: startJob delivers through
+  // `notifyAgent` -> `getParentExtensionApi()`, a MODULE SINGLETON set at
+  // extension load (registry.ts `setParentExtensionApi`), not the `pi` this case
+  // passed. A bare test process never sets it, so the late report is delivered
+  // nowhere and a `w.reports` claim would be about the harness, not the product.
+  // What the product guarantees is observable two ways: the channel stayed at
+  // "1" until that report ran (1a/1b) and the release was accepted rather than
+  // refused (1c below). The delivered text itself is pinned by the honest-zero
+  // file, which drives a host of its own end to end.
   assert(
-    w.reports.length === 1 && w.reports[0]?.startsWith("[ensemble:async]"),
-    `8c: the killed job's late report reaches the host, not the bin (got ${JSON.stringify(w.reports.map((r) => r.slice(0, 40)))})`,
+    !lines.some((l) => l.includes("late-settle") || l.includes("ignored report release")),
+    `1c: the killed job's release was ACCEPTED, not refused as post-shutdown (got ${JSON.stringify(lines)})`,
   );
   assert(
-    w.reports.length > 0,
-    "8d: the report exists on the wire before the count released its slot",
+    w.deliverAs.every((d) => d === "steer"),
+    `1d: every send this case made was a steer (got ${JSON.stringify(w.deliverAs)})`,
   );
+  // NOT `indexOf("0") > indexOf("1")` — `attach()` publishes "0" as the very
+  // first frame, so that comparison is true whatever the product does. The
+  // falsifiable form is the count of frames *after* the owed job was registered:
+  // exactly one, the closing "0". A pre-fix shutdown published it synchronously
+  // and 1a would already have caught that; this catches the other direction (a
+  // second frame, or the arm firing after the release and publishing again).
+  const afterOwed = w.statuses.slice(2);
+  assert(
+    afterOwed.join(",") === "0",
+    `1e: exactly one frame follows the owed job, and it is the closing "0" (got ${afterOwed})`,
+  );
+  // `delete` is the correct "reset to unset": assigning undefined leaves the key
+  // present with the string value "undefined", which the next case's parse would
+  // read as a bound rather than as absent.
+  // biome-ignore lint/performance/noDelete: unset is what this resets.
   delete process.env.PI_ENSEMBLE_PENDING_SHUTDOWN_MS;
   pendingJobs.resetForTesting();
 }
 
 // ---------------------------------------------------------------------------
-// 2. Past the bound: a job whose work ignores `abort` must
-//    neither hold a quitting session open nor strand the count above 0, and the
-//    report it never delivered is named on stderr.
+// 2. Past the bound: jobs whose work ignores `abort` must neither hold a
+//    quitting session open nor strand the count above 0, and the reports they
+//    never delivered are named on stderr — in ONE line, so a killed fan-out
+//    does not print one WARN per child into the shutdown output.
 // ---------------------------------------------------------------------------
 {
   const w = freshWire();
-  const { pi, fire } = makeShutdownPi(makeHost(w));
+  const { pi, fireShutdown } = makePi(w);
+  registerAsyncJobsLifecycle(pi);
+  clearJobsForTesting();
+  clearSlowWatchesForTesting();
   attachRpc(w);
   process.env.PI_ENSEMBLE_PENDING_SHUTDOWN_MS = "120";
   const { value: outcome, lines } = await withStderrCaptureAsync(async () => {
-    startJob(pi, {
-      label: "explore",
-      role: "explore",
-      work: () => new Promise<DispatchResult>(() => undefined),
-    });
-    await until(() => sent(w).length >= 1);
+    const stuck = () => new Promise<DispatchResult>(() => undefined);
+    startJob(pi, { label: "explore", role: "explore", work: stuck });
+    startJob(pi, { label: "explore", role: "explore", work: stuck });
+    startJob(pi, { label: "explore", role: "explore", work: stuck });
+    await until(() => sent(w).length >= 3);
     const t0 = Date.now();
-    fire();
+    fireShutdown("quit");
     const returnedMs = Date.now() - t0;
     const atHook = sent(w).join(",");
-    await until(() => sent(w).length >= 2);
+    await until(() => sent(w).length >= 4);
     return { atHook, returnedMs };
   });
-  assert(outcome.atHook === "1", `9a: the stuck job holds the "0" back (got ${outcome.atHook})`);
+  assert(outcome.atHook === "1,2,3", `2a: owed jobs hold the "0" back (got ${outcome.atHook})`);
   assert(
     outcome.returnedMs < 60,
-    `9b: shutdown() returns without waiting on the stuck job (${outcome.returnedMs}ms)`,
+    `2b: shutdown() returns without waiting on the stuck jobs (${outcome.returnedMs}ms)`,
   );
-  assert(sent(w).join(",") === "1,0", `9c: the bound publishes "0" regardless (got ${sent(w)})`);
   assert(
-    lines.some((l) => l.includes("never arrived") && l.startsWith("[pi-rukas] WARN")),
-    `9d: the report that never landed is named, ungated by PI_ENSEMBLE_DEBUG (got ${JSON.stringify(lines.slice(0, 2))})`,
+    sent(w).join(",") === "1,2,3,0",
+    `2c: the bound publishes "0" regardless (got ${sent(w)})`,
   );
+  const neverArrived = lines.filter((l) => warned([l], "never arrived"));
+  assert(
+    neverArrived.length === 1,
+    `2d: the killed reports are named in ONE line, not one per id (got ${neverArrived.length}: ${JSON.stringify(lines.slice(0, 4))})`,
+  );
+  assert(
+    neverArrived[0]?.includes("3 report") === true,
+    `2e: that line carries the count so an operator sees the scale (got ${neverArrived[0]})`,
+  );
+  // `delete` is the correct "reset to unset": assigning undefined leaves the key
+  // present with the string value "undefined", which the next case's parse would
+  // read as a bound rather than as absent.
+  // biome-ignore lint/performance/noDelete: unset is what this resets.
   delete process.env.PI_ENSEMBLE_PENDING_SHUTDOWN_MS;
   pendingJobs.resetForTesting();
 }
 
 // ---------------------------------------------------------------------------
-// 8. A batch whose member setup throws partway removes the members it started.
-//     #1389: the abort alone left the started member in the registry
-//     (dispatch_status reporting a slot in flight, killAllJobs counting a child
-//     that was gone), in the deck, and in the live buffers — and
-//     dispatch-deck-confirm.ts opens a live view for any key that still has a
-//     buffer, so a leaked buffer is a user-visible empty view, not a
-//     bookkeeping nit. Asserted BEFORE the next test boundary:
-//     clearJobsForTesting()/reset() drain these maps wholesale, so an assertion
-//     after the next case would pass with no cleanup code at all.
-//     reporting a slot in flight, killAllJobs counting a child that was gone), in
-//     the deck, and in the live buffers — and dispatch-deck-confirm.ts will open
-//     a live view for any key that still has a buffer, so a leaked buffer is a
-//     user-visible empty view, not a bookkeeping nit. Asserted BEFORE the next
-//     test boundary: clearJobsForTesting()/reset() drain these maps wholesale, so
-//     an assertion after the next case would pass with no cleanup code at all.
+// 3. A deferred arm belongs to the session that scheduled it.
+//
+//    (a) Re-entrant shutdown — Pi fires the hook on both the quit and reload
+//        paths. The second call re-arms rather than leaving the first bound to
+//        fire mid-teardown, and the closing frame arrives exactly once.
+//    (b) An arm that is still in flight when a new session attaches must not
+//        publish a stale "0" into the new channel, and a late settle for a job
+//        the killed session owned must never re-open a count that session's
+//        client already watched reach "0".
+//
+//    Waited out with real `await`s past each bound: the arm is deliberately
+//    `unref`'d (a quitting session must not be held open by its own bookkeeping
+//    timer), so a synchronous sleep would be a trap — an unref'd timer does not
+//    run while the event loop is blocked, and the case would "pass" only
+//    because the arm was never given the chance to fire.
 // ---------------------------------------------------------------------------
 {
   const w = freshWire();
-  let firstSignal: AbortSignal | undefined;
-  let firstJobId = "";
-  let threw = false;
-  let firstStdinRegistered = false;
-  // Baselines, not zeros: earlier cases in this file reach the shared deck and
-  // buffer maps through startJob, and their never-settling jobs are drained only
-  // by the end-of-file clearJobsForTesting(). A zero-equality assertion would
-  // blame this case for its neighbours' residue.
-  const deckBefore = dispatchDeck.snapshot().length;
-  const batchDeckBefore = dispatchDeck.batchSnapshot().length;
-  const buffersBefore = live.bufferCount();
-  // The batch row's id, recovered from the member's: job ids are
-  // `${Date-base36}-${random}` (async-jobs-registry.newJobId), so the prefix is
-  // the one the orchestrator row was registered under — and startBatch throws,
-  // so its return value never reaches this scope to be read.
-  let observedBatchId = "";
-  try {
-    startBatch(batchHost(w), {
-      batchLabel: "dispatch_parallel",
-      members: [
-        {
-          label: "explore[a]-half-started",
-          role: "explore",
-          work: (signal, hooks) => {
-            firstSignal = signal;
-            // The handle a real spawn registers: the cleanup must clear
-            // childHandles too, not just `jobs`.
-            hooks.onStdin({} as never);
-            firstStdinRegistered = true;
-            firstJobId = hooks.jobId;
-            observedBatchId = hooks.jobId.split("-")[0] ?? "";
-            hooks.onProgress({
-              role: "explore",
-              turns: 1,
-              totalTokens: 0,
-              lastText: "",
-              elapsedMs: 10,
-            } as never);
-            return new Promise<DispatchResult>(() => undefined);
-          },
-        },
-        {
-          get label(): string {
-            throw new Error("second member setup boom");
-          },
-          role: "explore",
-          work: async () => fakeResult("explore", "never started"),
-        },
-      ],
-    });
-  } catch {
-    threw = true;
+  const { pi, fireShutdown } = makePi(w);
+  registerAsyncJobsLifecycle(pi);
+  clearJobsForTesting();
+  clearSlowWatchesForTesting();
+  attachRpc(w);
+  process.env.PI_ENSEMBLE_PENDING_SHUTDOWN_MS = "120";
+  const { value } = await withStderrCaptureAsync(async () => {
+    const stuck = () => new Promise<DispatchResult>(() => undefined);
+    startJob(pi, { label: "explore", role: "explore", work: stuck });
+    await until(() => sent(w).join(",") === "1");
+    fireShutdown("quit");
+    fireShutdown("quit");
+    await until(() => sent(w).includes("0"));
+    await new Promise((r) => setTimeout(r, 200));
+    const afterReentrant = sent(w).join(",");
+
+    // (b) An arm that is still in flight when the module is reset (a test
+    // boundary, or a new session that attaches clean) must publish nothing at
+    // all. This is the case that pre-fix could not be written: the old arm
+    // cleared whatever Set existed and published through whatever `ctx` existed,
+    // so a stale arm reaching a later channel printed "0" for work it did not
+    // own — and with `ctx` already dropped, the reverse failure (a real "0"
+    // swallowed) was equally invisible.
+    const w3 = freshWire();
+    const s3 = makePi(w3);
+    registerAsyncJobsLifecycle(s3.pi);
+    attachRpc(w3);
+    startJob(s3.pi, { label: "explore", role: "explore", work: stuck });
+    await until(() => sent(w3).join(",") === "1");
+    fireShutdown("quit");
+    pendingJobs.resetForTesting();
+    const afterReset = sent(w3).join(",");
+    await new Promise((r) => setTimeout(r, 220));
+    return {
+      afterReentrant,
+      afterReset,
+      finalReset: sent(w3).join(","),
+      late3: w3.reports.length,
+    };
+  });
+  assert(
+    value.afterReentrant === "1,0",
+    `3a: two shutdowns leave one owed job's count reaching "0" exactly once (got ${value.afterReentrant})`,
+  );
+  assert(
+    value.afterReset === "1",
+    `3b: the owed job still holds its own session's "0" back at the moment of reset (got ${value.afterReset})`,
+  );
+  assert(
+    value.finalReset === "1",
+    `3c: once the module is reset the expired arm publishes nothing at all (got ${value.finalReset})`,
+  );
+  assert(
+    value.late3 === 0,
+    `3d: and it handed no report to a channel its session no longer owns (got ${value.late3})`,
+  );
+  // `delete` is the correct "reset to unset": assigning undefined leaves the key
+  // present with the string value "undefined", which the next case's parse would
+  // read as a bound rather than as absent.
+  // biome-ignore lint/performance/noDelete: unset is what this resets.
+  delete process.env.PI_ENSEMBLE_PENDING_SHUTDOWN_MS;
+  pendingJobs.resetForTesting();
+}
+
+// ---------------------------------------------------------------------------
+// 4. With nothing owed, shutdown publishes no redundant extra "0" (attach
+//    already published the count the channel carries), and a release that
+//    arrives after the channel closed is refused with a WARN naming the id
+//    rather than silently resurrecting a count the client watched reach "0".
+// ---------------------------------------------------------------------------
+{
+  const w = freshWire();
+  const { pi, fireShutdown } = makePi(w);
+  registerAsyncJobsLifecycle(pi);
+  attachRpc(w);
+  const { value, lines } = await withStderrCaptureAsync(async () => {
+    const before = sent(w).join(",");
+    fireShutdown("quit");
+    const after = sent(w).join(",");
+    // A job opened, and a settle that lands, after the count closed: both
+    // refused, and both say so by name.
+    pendingJobs.jobPending("late-owe-id", "pm");
+    await pendingJobs.releaseAfter("late-settle-id", async () => undefined);
+    const afterLate = sent(w).join(",");
+    return { before, after, afterLate };
+  });
+  assert(value.before === "", `4a: attach published its initial 0 only (got ${value.before})`);
+  assert(
+    value.after === "",
+    `4b: shutdown with nothing owed publishes no redundant extra 0 (got ${value.after})`,
+  );
+  assert(
+    value.afterLate === "",
+    `4c: nothing re-opens the count once the channel is closed (got ${value.afterLate})`,
+  );
+  assert(
+    warned(lines, "after shutdown") && lines.some((l) => l.includes("late-owe-id")),
+    `4d: an owed report refused after the channel closed names the id (got ${JSON.stringify(lines)})`,
+  );
+  assert(
+    lines.some((l) => l.startsWith("[pi-rukas] WARN") && l.includes("late-settle-id")),
+    `4e: a release refused after the channel closed names the id it refused (got ${JSON.stringify(lines)})`,
+  );
+  pendingJobs.resetForTesting();
+}
+
+// ---------------------------------------------------------------------------
+// 5. The bound is read inside shutdown(), not passed to it, and a runaway value
+//    cannot make a quitting session schedule an absurd timer. Pinned against the
+//    public reader so the clamp cannot silently disappear.
+// ---------------------------------------------------------------------------
+{
+  const cases: Array<[string, number]> = [
+    ["5000", 5000],
+    ["45000", 30000],
+    ["999999999", 30000],
+    ["0", 0],
+    ["-5", 1000],
+    ["not-a-number", 1000],
+  ];
+  for (const [raw, expected] of cases) {
+    process.env.PI_ENSEMBLE_PENDING_SHUTDOWN_MS = raw;
+    assert(
+      pendingJobs.pendingShutdownBoundMs() === expected,
+      `5: PI_ENSEMBLE_PENDING_SHUTDOWN_MS="${raw}" → ${expected}ms (got ${pendingJobs.pendingShutdownBoundMs()})`,
+    );
   }
-  assert(threw, "a partway batch setup throw surfaces to the caller");
-  assert(firstSignal?.aborted === true, "the already-started member is aborted");
+  // `delete` is the correct "reset to unset": assigning undefined leaves the key
+  // present with the string value "undefined", which the next case's parse would
+  // read as a bound rather than as absent.
+  // biome-ignore lint/performance/noDelete: unset is what this resets.
+  delete process.env.PI_ENSEMBLE_PENDING_SHUTDOWN_MS;
+  const signalSource = await Bun.file(
+    new URL("../src/pending-jobs-signal.ts", import.meta.url),
+  ).text();
   assert(
-    firstStdinRegistered && firstJobId !== "" && observedBatchId !== "",
-    "the started member registered a handle, so both ids are known to assert on",
+    /export function shutdown\(\): void/.test(signalSource),
+    "5z: shutdown() takes no settleMs parameter — the bound is the session's, not the caller's",
   );
-  const leaked = jobStatusSnapshot().filter(
-    (r) => r.jobId === firstJobId || r.jobId === observedBatchId,
-  );
-  assert(
-    leaked.length === 0,
-    `the started member and the orchestrator are gone from the registry (got ${leaked.map((r) => r.jobId)})`,
-  );
-  assert(
-    dispatchDeck.snapshot().length === deckBefore &&
-      dispatchDeck.batchSnapshot().length === batchDeckBefore,
-    "no deck row (member or batch) survives the failed setup",
-  );
-  assert(live.bufferCount() === buffersBefore, "no live buffer survives the failed setup");
-  assert(!live.hasBuffer(firstJobId), "the started member's live buffer is released");
-  // The member's work promise never reacts to abort; its .finally must not
-  // settle a batch the caller was already told about. Let any microtask run.
-  await new Promise((r) => setTimeout(r, 30));
-  assert(
-    w.reports.length === 0 && sent(w).length === 0,
-    `a half-started batch owes nothing (got ${JSON.stringify(w.reports.concat(w.statuses.map((s) => `status:${s}`)))})`,
-  );
+  pendingJobs.resetForTesting();
 }
 
 clearJobsForTesting();
