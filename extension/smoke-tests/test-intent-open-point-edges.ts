@@ -254,13 +254,131 @@ assert(
     } as PlanGap,
   ];
   const rendered = openPointsSection(gaps);
-  // The gap gate's intro sentence is non-bullet prose under the heading, so it parks too.
-  // That write side is out of scope for #1187 (see the PR); the point itself is read once.
+  // #1187 fix round 1: the writer's intro sentence is OPEN_POINTS_INTRO and the reader
+  // skips it, so the gap gate's own section reads back as exactly the points it wrote.
+  // Nothing in the section is prose that parks — which is what makes [RESOLVED] able to
+  // clear a gap-gate-filed issue at all (see test-intent-open-point-gate.ts).
   assert(
-    readOpenPoints(rendered).points.length === 1 && readOpenPoints(rendered).unparsed.length === 1,
-    "the gap gate's rendered section reads back as one point, plus its intro prose line (parks)",
+    readOpenPoints(rendered).points.length === 1 && readOpenPoints(rendered).unparsed.length === 0,
+    "the gap gate's rendered section reads back as exactly one point, with no prose line parking",
   );
 }
+
+// --- Fence state is scoped to the section (#1187 fix round 2) ---------------
+
+{
+  const fence = "```";
+  const unclosed = `${fence}\nsome code that never closes\n\n${section(
+    "- [CRITICAL] a",
+    "- [CRITICAL] b",
+    "- [CRITICAL] c",
+  )}`;
+  const r = readOpenPoints(unclosed);
+  assert(
+    r.points.length === 3 && finaliseSpecVerdict(spec(), unclosed).verdict === "park",
+    "an unclosed fence ABOVE the heading does not swallow it: all 3 CRITICAL points read, and the gate parks",
+  );
+}
+{
+  const fence = "```";
+  const closed = `${fence}\nfenced code\n${fence}\n\n${section("- [CRITICAL] after the fence")}`;
+  assert(
+    readOpenPoints(closed).points.length === 1 && readOpenPoints(closed).unparsed.length === 0,
+    "a CLOSED fence above the heading leaves the section clean",
+  );
+}
+{
+  // A fence inside the section is still a fence: its # line is not a heading and does not end it.
+  const body = [HEADING, "", "```", "## Some other section", "```", "- [CRITICAL] after"].join(
+    "\n",
+  );
+  const r = readOpenPoints(body);
+  assert(
+    r.points.length === 1 && r.unparsed.length === 1,
+    "inside the section a fence still hides its # line and the block parks as one entry",
+  );
+}
+
+// --- Bounded, redacted blocking lines (#1187 fix round 2) -------------------
+
+{
+  const token = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123";
+  const r = readOpenPoints(section(`- [CRITICAL] rotate the ${token} key now`));
+  assert(
+    r.points.length === 1 && r.points[0]?.includes("sk-ant-api03") === false,
+    "a provider token inside a blocking line is redacted out of the point text",
+  );
+  assert(
+    r.points[0]?.includes("[REDACTED]") === true,
+    "the redaction replaces the token with the fixed marker rather than dropping the point",
+  );
+  const gated = finaliseSpecVerdict(spec(), section(`- [CRITICAL] rotate the ${token} key now`));
+  assert(
+    gated.verdict === "park" &&
+      gated.openPoints?.length === 1 &&
+      gated.openPoints[0]?.includes("sk-ant-api03") === false,
+    "the parked spec's openPoints carry no credential for the public handoff to quote",
+  );
+}
+
+{
+  // 25 points: 20 are kept, the 21st slot says how many were dropped, and the drop is traced.
+  const many = section(...Array.from({ length: 25 }, (_, i) => `- [CRITICAL] point ${i}`));
+  const gated = finaliseSpecVerdict(spec(), many);
+  const points = gated.openPoints ?? [];
+  assert(
+    points.length === 21 && points[20] === "…and 5 more open-point lines",
+    "blocking lines are capped at 20 entries plus one '…and N more' note",
+  );
+  assert(
+    points[19] === "[CRITICAL] point 19" &&
+      points.some((p) => p === "[CRITICAL] point 20") === false,
+    "the cap keeps the first 20 points and drops the rest",
+  );
+}
+
+{
+  const huge = `- [CRITICAL] ${"y".repeat(5000)} tail`;
+  const gated = finaliseSpecVerdict(spec(), section(huge));
+  const stored = gated.openPoints?.[0] ?? "";
+  assert(
+    gated.verdict === "park" && stored.endsWith("…(clipped)") && Array.from(stored).length <= 2000,
+    "an enormous entry is clipped to the bound with the '…(clipped)' marker",
+  );
+}
+
+// --- An indented list item is its own entry (#1187 fix round 2) -------------
+
+assert(
+  counts("- [CRITICAL][RESOLVED] top point", "  - [CRITICAL] nested point").p === 1 &&
+    counts("- [CRITICAL][RESOLVED] top point", "  - [CRITICAL] nested point").u === 0,
+  "a nested CRITICAL bullet under a resolved point is its own point, so it parks",
+);
+assert(
+  verdictOf("- [CRITICAL][RESOLVED] top point", "  - [CRITICAL] nested point") === "park",
+  "the gate parks on a nested CRITICAL bullet hidden under a resolved one",
+);
+assert(
+  counts("- [CRITICAL][RESOLVED] top point", "  - plain nested note").p === 0 &&
+    counts("- [CRITICAL][RESOLVED] top point", "  - plain nested note").u === 0 &&
+    counts("- [CRITICAL][RESOLVED] top point", "  - plain nested note").r === 1,
+  "a nested plain bullet follows the same rule as a top-level plain bullet: it does not park",
+);
+assert(
+  verdictOf("- [CRITICAL][RESOLVED] top point", "  - plain nested note") === "proceed",
+  "a resolved point with a nested plain note proceeds",
+);
+assert(
+  counts("- [CRITICAL][RESOLVED] top point", "  plain wrapped prose").u === 0 &&
+    readOpenPoints(section("- [CRITICAL][RESOLVED] top point", "  plain wrapped prose"))
+      .resolved[0] === "[CRITICAL][RESOLVED] top point plain wrapped prose",
+  "an indented plain PROSE line still continues its bullet (joined into the point text, not its own entry)",
+);
+assert(
+  readOpenPoints(section("- [CRITICAL] top point", "  plain wrapped prose")).points[0] ===
+    "[CRITICAL] top point plain wrapped prose",
+  "an indented prose continuation joins its CRITICAL point, whose text is stored redacted and bounded",
+);
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

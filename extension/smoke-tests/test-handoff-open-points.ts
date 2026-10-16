@@ -99,6 +99,32 @@ assert(
   );
 }
 
+// A credential must not reach the public handoff, even from a `openPoints` list written by
+// an older cycle that stored it verbatim (#1187 fix round 2).
+{
+  const token = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123";
+  const leaky = spec({ openPoints: [`[CRITICAL] rotate the ${token} key now`] });
+  const md = openPointsMarkdown(leaky, 9).join("\n");
+  const chat = openPointsChat(leaky, 9).join("\n");
+  assert(
+    md.includes("sk-ant-api03") === false && chat.includes("sk-ant-api03") === false,
+    "handoff: neither surface posts the credential, whatever the stored field contains",
+  );
+  assert(
+    md.includes("[REDACTED]") && chat.includes("[REDACTED]"),
+    "handoff: the point is still shown, with the token replaced by the redaction marker",
+  );
+  const viaGate = finaliseSpecVerdict(
+    spec({ verdict: "proceed", parkReason: undefined }),
+    `## Open points (unresolved at the gap-gate cap)\n\n- [CRITICAL] rotate the ${token} key now\n`,
+  );
+  assert(
+    viaGate.openPoints?.[0]?.includes("sk-ant-api03") === false &&
+      viaGate.openPoints?.[0]?.includes("[REDACTED]") === true,
+    "gate: the stored openPoints are redacted at write time, not only at render time",
+  );
+}
+
 // The persisted artifact keeps the field and drops the retired one.
 {
   const kept = JSON.stringify(spec({ openPoints: ["[CRITICAL] x"] }));
