@@ -31,7 +31,8 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { DispatchResult } from "../src/types.ts";
 import { runBranch } from "../src/work-driver-branch-develop.ts";
-import type { DriverContext } from "../src/work-driver-context.ts";
+import type { CycleContext } from "../src/work-driver-context.ts";
+import { createEmitSink } from "../src/work-state-emit.ts";
 import type { ExecFn } from "../src/worktree.ts";
 import { realExec } from "./lib/exec-fake.ts";
 
@@ -78,7 +79,12 @@ function branchCtx(
     verifyExecFn: execFn,
     dispatchFn,
     dirtyRootExempt,
-  } as unknown as DriverContext;
+    // The sink a real cycle owns (created by `enterCycle`). Sibling driver
+    // tests supply one the same way — `createEmitSink(() => undefined)` — so
+    // every `persistCycle` in the step has a watermark instead of writing
+    // silently, and the context types as the `CycleContext` the step takes.
+    emitSink: createEmitSink(() => undefined),
+  } as unknown as CycleContext;
 }
 
 /** Injected exec for runBranch: delegates to REAL git, stubs out `gh`/fetch. */

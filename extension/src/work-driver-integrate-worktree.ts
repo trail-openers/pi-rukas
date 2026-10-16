@@ -291,6 +291,11 @@ async function createIntegrateWorktree(
     // is DETACHED first (decision (1)), and a DIRTY one HALTS — the
     // driver never moves operator residue. The probe runs through the
     // production exec seam, so a test fake cannot fake the checkout.
+    // #1362 — the UNFILTERED read, and the filter is applied to its result two
+    // lines down rather than inside the reader: the raw lines are what the halt
+    // message quotes, so an exempt line stays visible in the evidence while
+    // being excluded from the decision. Deliberate asymmetry with the other
+    // dirt gates, which filter inside the reader.
     const dirt = await readDirtyPorcelainLines(execFn, repoRoot);
     if (
       dirt.some(

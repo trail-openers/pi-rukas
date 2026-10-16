@@ -47,6 +47,11 @@ async function integrateLensFix(
   );
   if (!res.ok) {
     if (res.failure === "dirty-repoRoot" && res.porcelain) {
+      // #1362 — `res.porcelain` is already exemption-filtered: it comes from
+      // integrate()'s dirty-root preflight, which drops both the driver's own
+      // scaffolding and the cycle's configured `.pi/dirty-root-exempt` lines
+      // before it refuses. So an exempt tool file neither refuses the
+      // integration nor reaches the stash below.
       const outcome = await restoreRepoRoot(execFn, ctx.repoRoot, res.porcelain);
       if (outcome.restored) {
         const retry = await integrate(execFn, {

@@ -115,8 +115,16 @@ const gitOut = async (cwd: string, args: string[]): Promise<string> =>
       // to its top-level entry, so this read names `.claude/`, not the file
       // inside it. The exemption is a PREFIX match precisely so the collapsed
       // form and the expanded form both fall under it.
+      // An explicit presence test, not `?.some(...)`: an optional chain yields
+      // `undefined` when the list is empty, and `assert(undefined)` reads as a
+      // generic failure rather than as "the dirt was missing". Kept as two
+      // comparisons (`!== undefined &&`) rather than the optional chain biome
+      // prefers, because the truthiness of `some()`'s return is not what is being
+      // asserted here — the presence of the list is.
+      const listWasPresent = unexempted !== undefined;
+      const namesTheToolFile = listWasPresent && unexempted.some((l) => l.includes(".claude"));
       assert(
-        unexempted?.some((l) => l.includes(".claude")),
+        namesTheToolFile,
         `#1362 preflight, no config: the tool's untracked file IS dirt (got ${JSON.stringify(unexempted)})`,
       );
       const exempted = await readDirtyPorcelain(realExec, repoE, EXEMPT);
@@ -216,9 +224,11 @@ const gitOut = async (cwd: string, args: string[]): Promise<string> =>
           mode: "followup",
           dirtyRootExempt: EXEMPT,
         });
+        // Narrow on `ok` before reading `failure`: the failure/reason fields
+        // only exist on the refused arm of the discriminated result.
         assert(
           !trackedDirty.ok && trackedDirty.failure === "dirty-repoRoot",
-          `#1362 integrate: a MODIFIED tracked file refuses the integration even with the list in force (got ${JSON.stringify([trackedDirty.ok, trackedDirty.failure])})`,
+          `#1362 integrate: a MODIFIED tracked file refuses the integration even with the list in force (got ${JSON.stringify(trackedDirty.ok ? [trackedDirty.ok] : [trackedDirty.ok, trackedDirty.failure])})`,
         );
         assert(
           existsSync(path.join(repoC, "extension-stray-src.ts")),
@@ -245,7 +255,7 @@ const gitOut = async (cwd: string, args: string[]): Promise<string> =>
       });
       assert(
         allowed.ok,
-        `#1362 integrate, .claude/ listed: the integration proceeds (got ${JSON.stringify([allowed.ok, allowed.reason])})`,
+        `#1362 integrate, .claude/ listed: the integration proceeds (got ${JSON.stringify(allowed.ok ? [allowed.ok] : [allowed.ok, allowed.reason])})`,
       );
       // The exempt file is invisible to the gate, not to the filesystem:
       // integration must not have deleted, moved or stashed it. Asserted here,
