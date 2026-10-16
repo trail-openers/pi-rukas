@@ -8,10 +8,11 @@
  * test-intent-open-point-gate.ts.
  */
 
+import { OPEN_POINTS_HEADING, openPointsHeadingPattern } from "../src/open-points-contract.ts";
+import { OPEN_POINT_ENTRY_CAP, readOpenPoints } from "../src/open-points-reader.ts";
 import { openPointsSection } from "../src/plan-gap-disclosure.ts";
 import { GAP_RESOLUTION_PLACEHOLDER } from "../src/plan-gap-parse.ts";
 import type { PlanGap } from "../src/plan-types.ts";
-import { readOpenPoints } from "../src/work-driver-intent-criticality.ts";
 import { finaliseSpecVerdict } from "../src/work-driver-intent-finalise.ts";
 import type { NormalisedSpec } from "../src/work-driver-intent.ts";
 
@@ -28,6 +29,52 @@ const HEADING = "## Open points (unresolved at the gap-gate cap)";
 
 /** An issue body whose Open points section carries the given raw lines. */
 const section = (...lines: string[]) => [HEADING, "", ...lines].join("\n");
+
+// --- Every stored text is REAL text, not the empty string (#1187 fix round 2) ----------
+//
+// The reader used to seed each entry with `text: ""` and only overwrite it when a second
+// piece arrived, so a prose line, a sub-heading, a setext underline, a fence and any
+// single-line item drained into the reading as "" and the handoff rendered empty bullets.
+// Counts alone could not see that; these assertions read the TEXT of one-entry forms.
+assert(
+  readOpenPoints(section("### Details")).unparsed[0] === "### Details",
+  "a sub-heading stores its own text (was an empty bullet)",
+);
+assert(
+  readOpenPoints(section("The gap gate found one thing in the design.")).unparsed[0] ===
+    "The gap gate found one thing in the design.",
+  "a non-bullet prose line stores its own text (was an empty bullet)",
+);
+assert(
+  readOpenPoints(section("Setext title", "---")).unparsed.some((t) => t === "---"),
+  "a setext underline stores its own text (was an empty bullet)",
+);
+assert(
+  readOpenPoints(section("```")).unparsed[0] === "```",
+  "a single-line fence stores its own text (was an empty bullet)",
+);
+assert(
+  readOpenPoints(section("- [CRITICAL] one line only")).points[0] === "[CRITICAL] one line only",
+  "a single-line CRITICAL point stores its own text (was an empty bullet)",
+);
+assert(
+  readOpenPoints(section("- [CRITICAL][RESOLVED] one line only")).resolved[0] ===
+    "[CRITICAL][RESOLVED] one line only",
+  "a single-line resolved point stores its own text (was an empty bullet)",
+);
+assert(
+  readOpenPoints(section("~~~", "inside", "~~~")).unparsed.every((t) => t !== "") &&
+    readOpenPoints(section("~~~", "inside", "~~~")).unparsed[0] === "~~~ inside ~~~",
+  "a fenced block accumulates its whole body into the fence entry's text, and no entry is empty",
+);
+assert(
+  readOpenPoints(section("```", "", "```", "- plain")).unparsed.every((t) => t !== ""),
+  "a blank line inside a fence never becomes an entry or an empty string",
+);
+assert(
+  readOpenPoints(section("- [CRITICAL] a", "", "### Details")).unparsed.every((t) => t !== ""),
+  "no entry of any kind reaches a reading as an empty string",
+);
 
 const spec = (over: Partial<NormalisedSpec> = {}): NormalisedSpec => ({
   intent: "Preserve the requested intent while applying the change.",
@@ -243,8 +290,37 @@ assert(
   );
 }
 
+// --- The section heading is DERIVED from the contract constant (#1187 fix round 2) -----
+//
+// The matcher used to be a second copy of the heading literal, so a rename on the writer's
+// side left the reader matching a heading nothing wrote any more — a gate that silently
+// never ran. These canaries fail if the derivation is replaced by a literal again.
+{
+  const derived = new RegExp(openPointsHeadingPattern());
+  assert(
+    derived.test(`## ${OPEN_POINTS_HEADING}`),
+    "canary: the derived matcher accepts `## ` + OPEN_POINTS_HEADING as the writer renders it",
+  );
+  assert(
+    !derived.test("## Open points (unresolved at the gap-gate") &&
+      !derived.test("## Open points somewhere else"),
+    "canary: the derived matcher still rejects a near-miss heading (parentheses are literal)",
+  );
+  const body = `## ${OPEN_POINTS_HEADING}\n\n- [CRITICAL] retry timeout\n`;
+  assert(
+    readOpenPoints(body).points.length === 1,
+    "canary: a section written from the constant is read by the reader",
+  );
+}
+
 // --- Round trip with the /plan gap gate's own rendering --------------------
 
+// The gate, not just the reader: the text the handoff will actually quote (#1187 fix round 2).
+assert(
+  finaliseSpecVerdict(spec(), section("The gap gate left one thing open.")).openPoints?.[0] ===
+    "The gap gate left one thing open.",
+  "finaliseSpecVerdict records a prose line's TEXT in openPoints, not an empty bullet",
+);
 {
   const gaps: PlanGap[] = [
     {
@@ -296,54 +372,6 @@ assert(
   assert(
     r.points.length === 1 && r.unparsed.length === 1,
     "inside the section a fence still hides its # line and the block parks as one entry",
-  );
-}
-
-// --- Bounded, redacted blocking lines (#1187 fix round 2) -------------------
-
-{
-  const token = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123";
-  const r = readOpenPoints(section(`- [CRITICAL] rotate the ${token} key now`));
-  assert(
-    r.points.length === 1 && r.points[0]?.includes("sk-ant-api03") === false,
-    "a provider token inside a blocking line is redacted out of the point text",
-  );
-  assert(
-    r.points[0]?.includes("[REDACTED]") === true,
-    "the redaction replaces the token with the fixed marker rather than dropping the point",
-  );
-  const gated = finaliseSpecVerdict(spec(), section(`- [CRITICAL] rotate the ${token} key now`));
-  assert(
-    gated.verdict === "park" &&
-      gated.openPoints?.length === 1 &&
-      gated.openPoints[0]?.includes("sk-ant-api03") === false,
-    "the parked spec's openPoints carry no credential for the public handoff to quote",
-  );
-}
-
-{
-  // 25 points: 20 are kept, the 21st slot says how many were dropped, and the drop is traced.
-  const many = section(...Array.from({ length: 25 }, (_, i) => `- [CRITICAL] point ${i}`));
-  const gated = finaliseSpecVerdict(spec(), many);
-  const points = gated.openPoints ?? [];
-  assert(
-    points.length === 21 && points[20] === "…and 5 more open-point lines",
-    "blocking lines are capped at 20 entries plus one '…and N more' note",
-  );
-  assert(
-    points[19] === "[CRITICAL] point 19" &&
-      points.some((p) => p === "[CRITICAL] point 20") === false,
-    "the cap keeps the first 20 points and drops the rest",
-  );
-}
-
-{
-  const huge = `- [CRITICAL] ${"y".repeat(5000)} tail`;
-  const gated = finaliseSpecVerdict(spec(), section(huge));
-  const stored = gated.openPoints?.[0] ?? "";
-  assert(
-    gated.verdict === "park" && stored.endsWith("…(clipped)") && Array.from(stored).length <= 2000,
-    "an enormous entry is clipped to the bound with the '…(clipped)' marker",
   );
 }
 

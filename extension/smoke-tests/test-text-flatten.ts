@@ -6,7 +6,7 @@
  */
 
 import { flattenAndClip, flattenIssueText } from "../src/text-flatten.ts";
-import { readOpenPoints } from "../src/work-driver-intent-criticality.ts";
+import { readOpenPoints } from "../src/open-points-reader.ts";
 import { finaliseSpecVerdict } from "../src/work-driver-intent-finalise.ts";
 import type { NormalisedSpec } from "../src/work-driver-intent.ts";
 
