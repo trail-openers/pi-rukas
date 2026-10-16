@@ -190,7 +190,7 @@ export async function consolidateWorktreesToBranch(
       const resolved = await resolveRestoreTarget({
         execFn,
         repoRoot: ctx.repoRoot,
-        mainline: "branch" in mainlineResult ? mainlineResult.branch : undefined,
+        mainline: mainlineResult.ok ? mainlineResult.branch : undefined,
         startRef: ps.startRef,
       });
       originalRef = resolved.target;

@@ -20,10 +20,10 @@
  * token-budget keep the #952 "already produced" semantics.
  */
 
+import { mock } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { mock } from "bun:test";
 import * as dispatchDeck from "../src/dispatch-deck.ts";
 import { isolateLedger } from "./lib/review-ledger-test-helpers.ts";
 
@@ -65,7 +65,7 @@ mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
   spawnSpecialist: async () => spawnResponder(),
 }));
 
-const { NO_TEXT_PLACEHOLDER } = await import("../src/lens-review-format.ts");
+const { NO_TEXT_PLACEHOLDER } = await import("../src/lens-review-incomplete.ts");
 const { runLensChild } = await import("../src/lens-review-child.ts");
 const { LENS_ROSTER } = await import("../src/lens-roster.ts");
 
@@ -200,7 +200,10 @@ const childLens = { name: "SECURITY", skill: "code-review-security", precedence:
     opts: { diff: "d" },
     bumpBatch: () => {},
   });
-  assert(r.blocked === true, "failed thinking-only child (placeholder text, no findings) → blocked");
+  assert(
+    r.blocked === true,
+    "failed thinking-only child (placeholder text, no findings) → blocked",
+  );
   eq(r.summary, undefined, "the placeholder is not kept as the lens summary");
 }
 
@@ -267,15 +270,17 @@ const childLens = { name: "SECURITY", skill: "code-review-security", precedence:
   controller.abort();
   let spawnerCalls = 0;
   const { runLensReview } = await import("../src/lens-review.ts");
-  const summary = await withSkillsDir(childFixture.dir, async () =>
-    await runLensReview({
-      diff: "d",
-      signal: controller.signal,
-      lensChildFn: async () => {
-        spawnerCalls++;
-        throw new Error("lensChildFn must not be called on an aborted run");
-      },
-    } as never),
+  const summary = await withSkillsDir(
+    childFixture.dir,
+    async () =>
+      await runLensReview({
+        diff: "d",
+        signal: controller.signal,
+        lensChildFn: async () => {
+          spawnerCalls++;
+          throw new Error("lensChildFn must not be called on an aborted run");
+        },
+      } as never),
   );
   eq(spawnerCalls, 0, "aborted run never reaches the per-lens spawner");
   eq(
@@ -289,7 +294,11 @@ const childLens = { name: "SECURITY", skill: "code-review-security", precedence:
       .some((b) => b.key === "run-966-2/leftover-batch" && b.size === 1 && b.completed === 0),
     "canary: an unrelated pre-existing deck batch entry is untouched by the abort path",
   );
-  eq(summary.verdict, "REVIEW_INCOMPLETE", "aborted run → REVIEW_INCOMPLETE (same finish path as all-fail)");
+  eq(
+    summary.verdict,
+    "REVIEW_INCOMPLETE",
+    "aborted run → REVIEW_INCOMPLETE (same finish path as all-fail)",
+  );
   assert(
     summary.lenses.length > 0 &&
       summary.lenses.every((l) => l.blocked && l.parseError === "aborted before start"),
@@ -309,17 +318,23 @@ const childLens = { name: "SECURITY", skill: "code-review-security", precedence:
   mkdirSync(empty, { recursive: true });
   let spawnerCalls = 0;
   const { runLensReview } = await import("../src/lens-review.ts");
-  const summary = await withSkillsDir(empty, async () =>
-    await runLensReview({
-      diff: "d",
-      lensChildFn: async () => {
-        spawnerCalls++;
-        throw new Error("lensChildFn must not be called on an empty roster");
-      },
-    } as never),
+  const summary = await withSkillsDir(
+    empty,
+    async () =>
+      await runLensReview({
+        diff: "d",
+        lensChildFn: async () => {
+          spawnerCalls++;
+          throw new Error("lensChildFn must not be called on an empty roster");
+        },
+      } as never),
   );
   try {
-    eq(summary.verdict, "REVIEW_INCOMPLETE", "empty roster (no lens skills installed) → REVIEW_INCOMPLETE");
+    eq(
+      summary.verdict,
+      "REVIEW_INCOMPLETE",
+      "empty roster (no lens skills installed) → REVIEW_INCOMPLETE",
+    );
     assert(
       summary.lenses.length >= 1 && summary.lenses.every((l) => l.blocked),
       "empty roster records a blocked row (never zero rows → never APPROVED)",

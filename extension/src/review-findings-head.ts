@@ -1,7 +1,9 @@
 /**
  * review-findings-head — reads a file's lines at the reviewed commit for the
  * findings memory (#1105). The one git seam of review-findings-store.ts, kept
- * apart so the store stays under the file-size cap. Nothing here writes to disk.
+ * apart so the store stays under the file-size cap. Nothing here writes to disk,
+ * and the `HeadState` judgement (which state a row may be judged on) lives with
+ * the rule that makes it, in review-findings-fate.ts / review-findings-round.ts.
  *
  * A path absent from a readable commit is `missing`; any other git failure is an
  * `error`, which refuses the whole round — no finding is suppressed or resolved
@@ -29,11 +31,6 @@ export type HeadLines =
 
 /** A head state the store can judge a row against: every `HeadLines` but a git failure. */
 export type HeadState = Exclude<HeadLines, { kind: "error" }>;
-
-/** True when the head state names a readable file (the only state a row can be judged on). */
-export function hasFile(h: HeadState): boolean {
-  return h.kind === "lines";
-}
 
 /**
  * A repo-relative path that git can show at a commit without option injection.
