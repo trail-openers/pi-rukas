@@ -56,6 +56,13 @@ import { trace } from "./trace.ts";
  *     deliberately out of #1093's scope: it resets the driver's own integration
  *     root, not the operator's checkout.
  */
+import { isConfiguredExemptDirtLine } from "./work-driver-dirty-root-exempt.ts";
+import {
+  type StatusEntry,
+  isClaimCountedEntry,
+  isExcludedStatusPath,
+  isTrackedEntry,
+} from "./work-driver-restore-entry.ts";
 import { preserveDiscardedState } from "./work-driver-restore-save.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -104,23 +111,6 @@ export async function restoreRefProblem(
   }
 }
 
-/** One record of the structured `git status` read at repoRoot. */
-interface StatusEntry {
-  /** The two-character XY porcelain code (`??` for untracked). */
-  code: string;
-  path: string;
-  /** A rename or copy's original path (the record after the entry). */
-  origPath?: string;
-}
-
-/** Paths the driver never counts as checkout dirt: its scaffolding and state. */
-function isExcludedStatusPath(p: string): boolean {
-  return p.startsWith(".worktrees/") || p.startsWith(".pi/work-state/");
-}
-
-/** A tracked entry: anything git knows about, staged, unstaged or unmerged. */
-const isTracked = (e: StatusEntry): boolean => e.code !== "??";
-
 /**
  * #1093 — the ONE structured status read at repoRoot. The abort path's
  * changed-path list and every restore post-condition derive from it, so they
@@ -153,10 +143,15 @@ async function readStatus(execFn: ExecFn, repoRoot: string): Promise<StatusEntry
  * them indistinguishable from the operator's own untracked files. Throws when
  * git cannot be read.
  */
-async function cycleChangedPaths(execFn: ExecFn, repoRoot: string): Promise<string[]> {
+async function cycleChangedPaths(
+  execFn: ExecFn,
+  repoRoot: string,
+  exempt?: readonly string[],
+): Promise<string[]> {
   const entries = await readStatus(execFn, repoRoot);
   return entries
-    .filter(isTracked)
+    .filter(isTrackedEntry)
+    .filter((e) => isClaimCountedEntry(e, exempt))
     .flatMap((e) => (e.origPath !== undefined ? [e.path, e.origPath] : [e.path]));
 }
 
@@ -248,15 +243,22 @@ function saveFailedRestore(repoRoot: string, error: string): VerifiedRestoreResu
  */
 export async function restoreRootToRefPreserving(
   execFn: ExecFn,
-  opts: { repoRoot: string; ref: string; scratchDir: string; label: string },
+  opts: {
+    repoRoot: string;
+    ref: string;
+    scratchDir: string;
+    label: string;
+    /** #1362 — the cycle's `.pi/dirty-root-exempt` list (see `isExemptStatusEntry`). */
+    dirtyRootExempt?: readonly string[];
+  },
 ): Promise<VerifiedRestoreResult> {
-  const { repoRoot, ref, scratchDir, label } = opts;
+  const { repoRoot, ref, scratchDir, label, dirtyRootExempt } = opts;
   const save = await preserveDiscardedState(execFn, repoRoot, scratchDir, label);
   if (save.kind === "failed") return saveFailedRestore(repoRoot, save.error);
   const preservedAt = save.kind === "saved" ? save.path : undefined;
   let paths: string[];
   try {
-    paths = await cycleChangedPaths(execFn, repoRoot);
+    paths = await cycleChangedPaths(execFn, repoRoot, dirtyRootExempt);
   } catch (err) {
     return {
       restored: false,
@@ -291,7 +293,16 @@ export async function restoreRootToRefPreserving(
       };
     }
   }
-  const restore = await restoreRootToRef(execFn, { repoRoot, ref, label, paths });
+  const restore = await restoreRootToRef(execFn, {
+    repoRoot,
+    ref,
+    label,
+    paths,
+    // #1362 — forwarded, not just accepted: the untracked list the claim prints
+    // is built inside restoreRootToRef, so a list that stopped here would exempt
+    // the stash pathspec and leave the claim naming the tool's file anyway.
+    dirtyRootExempt,
+  });
   return { ...restore, preservedAt };
 }
 
@@ -305,9 +316,16 @@ export async function restoreRootToRefPreserving(
  */
 export async function restoreRootToRef(
   execFn: ExecFn,
-  opts: { repoRoot: string; ref: string; label: string; paths?: string[] },
+  opts: {
+    repoRoot: string;
+    ref: string;
+    label: string;
+    paths?: string[];
+    /** #1362 — the cycle's `.pi/dirty-root-exempt` list (see `isExemptStatusEntry`). */
+    dirtyRootExempt?: readonly string[];
+  },
 ): Promise<VerifiedRestoreResult> {
-  const { repoRoot, ref, label, paths } = opts;
+  const { repoRoot, ref, label, paths, dirtyRootExempt } = opts;
   // The ref is validated first, so showing it verbatim as the operator's
   // command is safe. `--` is part of the command the operator is told to run:
   // without it git reads a deleted branch name as a pathspec.
@@ -353,7 +371,9 @@ export async function restoreRootToRef(
     };
   }
   const scope = paths === undefined ? undefined : new Set(paths);
-  const dirt = entries.filter((e) => isTracked(e) && (scope === undefined || scope.has(e.path)));
+  const dirt = entries.filter(
+    (e) => isTrackedEntry(e) && (scope === undefined || scope.has(e.path)),
+  );
   if (dirt.length > 0) {
     return {
       restored: false,
@@ -364,7 +384,9 @@ export async function restoreRootToRef(
         .join(", ")}); nothing was reset \u2014 run \`git status\` at the repo root`,
     };
   }
-  const untracked = entries.filter((e) => !isTracked(e)).map((e) => e.path);
+  const untracked = entries
+    .filter((e) => !isTrackedEntry(e) && isClaimCountedEntry(e, dirtyRootExempt))
+    .map((e) => e.path);
   return { restored: true, checkedOut: true, untracked };
 }
 
@@ -384,9 +406,11 @@ export async function verifiedRestoreRoot(
     scratchDir: string;
     /** Label for trace lines and the preserved file (identifies the caller). */
     label: string;
+    /** #1362 — the cycle's `.pi/dirty-root-exempt` list (see `isExemptStatusEntry`). */
+    dirtyRootExempt?: readonly string[];
   },
 ): Promise<VerifiedRestoreResult> {
-  const { repoRoot, originalRef, scratchDir, label } = opts;
+  const { repoRoot, originalRef, scratchDir, label, dirtyRootExempt } = opts;
 
   // #750 — capture the root's staged/unstaged/unmerged state to a scratch
   // file BEFORE anything destructive. The discarded content may be the only
@@ -435,7 +459,13 @@ export async function verifiedRestoreRoot(
     });
     dirt = stdout
       .split("\n")
-      .filter((l) => l.trim() && !l.startsWith("??") && !/^..\s+"?\.worktrees\//.test(l));
+      .filter(
+        (l) =>
+          l.trim() &&
+          !l.startsWith("??") &&
+          !/^..\s+"?\.worktrees\//.test(l) &&
+          !isConfiguredExemptDirtLine(l, dirtyRootExempt),
+      );
   } catch (err) {
     return {
       restored: false,

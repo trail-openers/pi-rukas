@@ -11,7 +11,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { restoreClaim, restoreRootToRefPreserving } from "../src/work-driver-restore.ts";
@@ -70,6 +70,76 @@ const git = (dir: string, args: string[]) =>
     assert(
       !claim.includes("verified restored") && claim.includes("operator-notes.txt"),
       `operator-untracked: the claim lists the operator's file (got ${JSON.stringify(claim)})`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+// ---- 2b. #1362 — an exempt untracked file is neither named nor stashed -----
+//
+// The restore claim prints the untracked files it found, and the abort path
+// builds its stash pathspec from the same read. The project's
+// `.pi/dirty-root-exempt` list removes a tool's own file from BOTH: the claim
+// says "verified restored" instead of naming it, and nothing is stashed under
+// it. A non-exempt untracked file beside it is still named — the exemption is
+// a list, not a wildcard.
+{
+  const dir = buildRepo();
+  const scratch = mkdtempSync(join(tmpdir(), "issue1362-claim-exempt-scratch-"));
+  try {
+    git(dir, ["checkout", "-q", "feature/merged"]);
+    mkdirSync(join(dir, ".claude"), { recursive: true });
+    const exemptFile = join(dir, ".claude", "settings.local.json");
+    writeFileSync(exemptFile, "{}\n");
+    writeFileSync(join(dir, "operator-notes.txt"), "mine\n");
+    const r = await restoreRootToRefPreserving(realExec, {
+      repoRoot: dir,
+      ref: "feature/x",
+      scratchDir: scratch,
+      label: "exempt",
+      dirtyRootExempt: [".claude"],
+    });
+    const claim = restoreClaim(r);
+    assert(
+      !claim.includes("settings.local.json"),
+      `exempt: the claim does not name the exempt tool file (got ${JSON.stringify(claim)})`,
+    );
+    assert(
+      claim.includes("operator-notes.txt"),
+      `exempt: a NON-exempt untracked file is still named (got ${JSON.stringify(claim)})`,
+    );
+    // Nothing was stashed under the exempt prefix: the operator's file is on
+    // disk and the exempt one was never moved into a stash.
+    assert(
+      git(dir, ["status", "--porcelain", "-uall"]).includes(".claude/settings.local.json"),
+      "exempt: the exempt file is left in the checkout, not stashed away",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+// ---- 2c. #1362 — with no list the claim is byte-identical to case 2 --------
+{
+  const dir = buildRepo();
+  const scratch = mkdtempSync(join(tmpdir(), "issue1362-claim-nolist-scratch-"));
+  try {
+    git(dir, ["checkout", "-q", "feature/merged"]);
+    mkdirSync(join(dir, ".claude"), { recursive: true });
+    writeFileSync(join(dir, ".claude", "settings.local.json"), "{}\n");
+    const r = await restoreRootToRefPreserving(realExec, {
+      repoRoot: dir,
+      ref: "feature/x",
+      scratchDir: scratch,
+      label: "nolist",
+    });
+    const claim = restoreClaim(r);
+    assert(
+      claim.includes("1 untracked file(s) remain") && claim.includes(".claude/settings.local.json"),
+      `no-list: without the config the exempt-looking path is named as before (got ${JSON.stringify(claim)})`,
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

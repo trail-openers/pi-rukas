@@ -27,6 +27,7 @@
 import { trace } from "./trace.ts";
 import { detectMainline, freshMainlineTip } from "./work-driver-branch-mechanized.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { isConfiguredExemptDirtLine } from "./work-driver-dirty-root-exempt.ts";
 import { activeIssuesOf } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
 import { handleSameIssueLeftovers } from "./worktree-leftover.ts";
@@ -73,12 +74,17 @@ export function isDriverManagedDirtLine(line: string): boolean {
 export async function readRepoRootDirt(
   execFn: ExecFn,
   repoRoot: string,
+  exempt?: readonly string[],
 ): Promise<string[] | undefined> {
   const { stdout } = await execFn("git status --porcelain -uall", {
     cwd: repoRoot,
     maxBuffer: 1024 * 1024,
   });
-  const dirt = stdout.split("\n").filter((l) => l.trim() && !isDriverManagedDirtLine(l));
+  const dirt = stdout
+    .split("\n")
+    .filter(
+      (l) => l.trim() && !isDriverManagedDirtLine(l) && !isConfiguredExemptDirtLine(l, exempt),
+    );
   return dirt.length > 0 ? dirt : undefined;
 }
 
@@ -107,12 +113,14 @@ export async function runBranchResiduePass(
   // design worth keeping, and the operator's own working tree is not ours
   // to move. A failure of this read degrades to no-op (the post-develop
   // gate still fires) rather than masking a clean root.
-  const rootDirt = await readRepoRootDirt(execFn, ctx.repoRoot).catch((err) => {
-    trace(
-      `work-driver: branch-step dirty-root pre-check failed (non-fatal): ${(err as Error).message?.slice(0, 200)}`,
-    );
-    return undefined;
-  });
+  const rootDirt = await readRepoRootDirt(execFn, ctx.repoRoot, ctx.dirtyRootExempt).catch(
+    (err) => {
+      trace(
+        `work-driver: branch-step dirty-root pre-check failed (non-fatal): ${(err as Error).message?.slice(0, 200)}`,
+      );
+      return undefined;
+    },
+  );
   if (rootDirt !== undefined) {
     const paths = rootDirt.map((l) => l.slice(3).trim());
     const pathsShown = paths.slice(0, 5).join(", ");

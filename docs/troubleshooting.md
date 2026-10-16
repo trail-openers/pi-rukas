@@ -1038,6 +1038,37 @@ The park has its own cap, `fix-pass-park` (it reused `verify-failed:develop` bef
 
 **Fix:** the error in the message names the git command that failed and its stderr; fix that first. Then recover the change at the named path by hand (`git status`, `git diff`, `git diff --cached`, and `git cherry-pick --abort` if one is in progress), and clear the root before re-running.
 
+### `/work` refuses on a dirty repo root caused by a tool's own local files (#1362)
+
+**Symptom:** `/work N` halts at step 3 (branch) with cap `repo-root-residue` and a plumb report naming a file you never wrote — `.claude/settings.local.json`, an editor's workspace file, an agent's local config. The same file also trips the consolidated-verify and integrate dirty-root gates, so clearing it once by hand only moves the refusal to the next cycle.
+
+**Why:** a repo-root read of `git status --porcelain` cannot tell "the operator's in-progress work, which is a correctness hazard for integration" from "some tool's local settings". Both are dirt, and the branch step hard-blocks on any of it before paying for a develop dispatch. The built-in exemptions are the driver's own scaffolding (`.worktrees/`, `.pi/`, `tmp/`) and no more; nothing about a third-party tool's files is assumed.
+
+**Fix:** opt in, per project, by committing a list of repo-relative prefixes the dirty-root checks and repo-root staging should ignore:
+
+```
+# .pi/dirty-root-exempt — one repo-relative prefix per line
+.claude/
+.vscode/
+```
+
+Rules, all enforced by the parser and each covered in `extension/smoke-tests/test-dirty-root-exempt-config.ts`:
+
+- **Untracked paths only.** A modified, staged or deleted *tracked* file under an exempt prefix is still dirt, and a rename always is — so the list cannot hide real uncommitted source.
+- **Prefix + `/` boundary.** `.claude` exempts `.claude/settings.local.json`, never `.claudefoo/x`.
+- **Protected paths cannot be exempted.** An entry naming `.github/`, `.pi/`, `CODEOWNERS` or `agents.json` is rejected with a trace and contributes nothing; you cannot list away the files that define how your own cycle is judged.
+- **Repo root only.** A workstream worktree stages its output exactly as before, so a deliverable inside an exempt prefix is still committed.
+- **Rejected with a trace:** absolute paths, any `..` segment, glob characters, anything that normalises to empty, and protected paths. A rejected line is skipped — the good lines beside it still apply.
+- **The file is read once per cycle**, before the branch step, from the working tree; `.pi/` is a protected path, so a develop patch cannot widen the exemption mid-cycle. An absent file is an empty list (behaviour unchanged); an unreadable file is an empty list **plus a trace** — a broken config never blocks a cycle that is otherwise clean, and never fails silently.
+
+```bash
+cat .pi/dirty-root-exempt            # what this project exempts
+# rejected entries and read failures are traced as:
+# [pi-rukas] WARN work-driver: .pi/dirty-root-exempt (<repoRoot>) — entry "…" rejected (glob)
+```
+
+**Do not** use this to work around a genuinely dirty root. If the named file is source you or another workstream wrote, commit or move it — that is what the gate is for.
+
 ### `worktree-dirty-preremove` — the branch step refuses a worktree that holds uncommitted work (#475)
 
 **Symptom:** `/work N --restart` (or a fresh `/work N` over a surviving worktree directory) halts at step 3 (branch) with cap `step-failed:branch` and a plumb report reading *“refusing to force-remove existing worktree <path> — it holds unrecoverable work: …”*. No subagent ran; nothing was pushed.

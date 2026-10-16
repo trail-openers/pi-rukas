@@ -162,6 +162,19 @@ export interface DriverContext {
    */
   protectedGrant?: readonly string[];
   /**
+   * #1362 — the project's `.pi/dirty-root-exempt` list, parsed once per cycle
+   * before the branch step. Paths here are not repo-root dirt and are never
+   * staged at repoRoot, which is how a tool's own local file
+   * (`.claude/settings.local.json`) stops blocking a cycle.
+   *
+   * Carried on the context rather than read at module scope: up to
+   * `PI_ENSEMBLE_PARALLEL_GROUPS` cycles run concurrently in one process and
+   * each has its own project, so a shared list would leak exemptions between
+   * them. Absent is an empty list — every consumer behaves as it did before
+   * the file existed.
+   */
+  dirtyRootExempt?: readonly string[];
+  /**
    * #1292 — the invoking session has no UI (`!ctx.hasUI`, e.g. `pi -p`). A
    * headless cycle opens its PR as a draft by default — nobody is watching
    * the review window — unless `PI_ENSEMBLE_DRAFT_PR` says otherwise.

@@ -320,6 +320,67 @@ if (isEntry) {
         "#750 regression 3: the untracked file SURVIVED the refusal (no git clean)",
       );
     }
+
+    // --------------------------------------------------------------- #1362
+    //
+    // The same gate, the same shape as regression 3, with the project's
+    // `.pi/dirty-root-exempt` list carrying the untracked tool file: the batch
+    // is no longer refused. This is the pair that makes the feature mean
+    // something — regression 3 pins that untracked IS dirt with no config, and
+    // this pins that a configured prefix is what changes the answer. The file
+    // still survives (an exemption is a filter, never a delete).
+    {
+      const f4 = await fixture(root, "exempt-untracked", ["a"], {
+        "shared.txt": "line1\nline2\nline3\n",
+      });
+      writeFileSync(path.join(f4.worktrees.a, "shared.txt"), "line1\nA says hi\nline3\n");
+      await commitIn(f4.worktrees.a, "task-a: edit line2");
+      writeFileSync(path.join(f4.repo, ".pi", "verify-cmd"), "true\n");
+      // A tool's own local file, in the main checkout, untracked.
+      mkdirSync(path.join(f4.repo, ".claude"), { recursive: true });
+      writeFileSync(path.join(f4.repo, ".claude", "settings.local.json"), "{}\n");
+      let s4 = initialState(669, 1_000_000);
+      s4 = {
+        ...s4,
+        pipelineState: {
+          ...s4.pipelineState,
+          branchName: "feature/issue-669",
+          baseSha: f4.baseSha,
+          worktrees: f4.worktrees,
+          workstreams: {
+            a: { id: "a", scope: "edit line2 A", paths: [], outOfScope: [] },
+          },
+        },
+      };
+      const ctx4: DriverContext = {
+        host: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
+        repoRoot: f4.repo,
+        issue: 669,
+        verifyExecFn: realExec,
+        // What runWorkDriver stamps on the real cycle context after reading the
+        // file once; the gate receives it on the context and never re-reads it.
+        dirtyRootExempt: [".claude"],
+      };
+      const gate4 = await verifyStepOutcome(ctx4, s4, "develop");
+      assert(
+        !gate4.failures.some((f) => /refused — repoRoot is dirty/.test(f)),
+        `#1362: an exempt untracked file does NOT trip the dirty-root refusal (got: ${gate4.failures.join("; ").slice(0, 200)})`,
+      );
+      const { stdout: after4 } = await git(f4.repo, ["status", "--porcelain", "-uall"]);
+      assert(
+        after4.split("\n").some((l) => l.includes(".claude/settings.local.json")),
+        "#1362: the exempt file SURVIVED the gate (an exemption never deletes)",
+      );
+      // And without the list the very same fixture IS refused — the exemption
+      // is the only difference between the two outcomes.
+      const s5 = s4;
+      const ctx5: DriverContext = { ...ctx4, dirtyRootExempt: undefined };
+      const gate5 = await verifyStepOutcome(ctx5, s5, "develop");
+      assert(
+        gate5.failures.some((f) => /refused — repoRoot is dirty/.test(f)),
+        `#1362 no config: the same file IS dirt when nothing is configured (got: ${gate5.failures.join("; ").slice(0, 200)})`,
+      );
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

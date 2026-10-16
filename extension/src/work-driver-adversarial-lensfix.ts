@@ -42,6 +42,7 @@ async function integrateLensFix(
       commitTitle: `fix(lens): round ${round} review findings`,
       commitBody: `Addresses six-pass review findings from round ${round}.`,
       mode: "followup",
+      dirtyRootExempt: ctx.dirtyRootExempt,
     }),
   );
   if (!res.ok) {
@@ -58,6 +59,7 @@ async function integrateLensFix(
           commitTitle: `fix(lens): round ${round} review findings`,
           commitBody: `Addresses six-pass review findings from round ${round}.`,
           mode: "followup",
+          dirtyRootExempt: ctx.dirtyRootExempt,
         });
         if (!retry.ok) {
           return {

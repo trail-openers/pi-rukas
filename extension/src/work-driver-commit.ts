@@ -239,6 +239,9 @@ export async function mechanizedCommitPr(
       // would re-pick what the branch already carries.
       workstreamBaseShas: followupBase ? undefined : ps.workstreamBaseShas,
       scratchDir: scratchDir(ctx.repoRoot, ctx.issue),
+      // #1362 — the repoRoot dirty-root preflight and restore claims honour the
+      // project's exemption list; the worktree staging inside does not.
+      dirtyRootExempt: ctx.dirtyRootExempt,
       commitTitle: title,
       commitBody,
       mode: followupBase ? "followup" : "create",

@@ -29,7 +29,9 @@
 import fs from "node:fs/promises";
 import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
+import { repoRootHoldsBranch } from "./work-driver-branch-holder.ts";
 import { isDriverManagedDirtLine } from "./work-driver-branch-residue.ts";
+import { isConfiguredExemptDirtLine } from "./work-driver-dirty-root-exempt.ts";
 import {
   backupIntegrateHead,
   isIntegrateTreeInCycle,
@@ -108,7 +110,14 @@ export interface IntegrateWorktreeCreation {
  */
 export async function ensureIntegrateWorktree(
   execFn: ExecFn,
-  opts: { repoRoot: string; issue: number; branchName: string; baseSha: string },
+  opts: {
+    repoRoot: string;
+    issue: number;
+    branchName: string;
+    baseSha: string;
+    /** #1362 — the cycle's `.pi/dirty-root-exempt` list (see `createIntegrateWorktree`). */
+    dirtyRootExempt?: readonly string[];
+  },
   stateFile?: string,
 ): Promise<IntegrateWorktreeCreation> {
   // #1173 — a failure AFTER the stale tree's commits were kept must still name
@@ -132,7 +141,19 @@ export async function ensureIntegrateWorktree(
 
 async function createIntegrateWorktree(
   execFn: ExecFn,
-  opts: { repoRoot: string; issue: number; branchName: string; baseSha: string },
+  opts: {
+    repoRoot: string;
+    issue: number;
+    branchName: string;
+    baseSha: string;
+    /**
+     * #1362 — the cycle's exemption list. Read ONLY for the repoRoot dirt check
+     * below: the integrate tree at `abs` is the driver's own integration
+     * point, not the operator's checkout, so its dirt is judged with no list
+     * — an exempted prefix never hides work from the commit that runs there.
+     */
+    dirtyRootExempt?: readonly string[];
+  },
   stateFile: string | undefined,
   kept: { ref?: string },
 ): Promise<IntegrateWorktreeCreation> {
@@ -271,7 +292,11 @@ async function createIntegrateWorktree(
     // driver never moves operator residue. The probe runs through the
     // production exec seam, so a test fake cannot fake the checkout.
     const dirt = await readDirtyPorcelainLines(execFn, repoRoot);
-    if (dirt.some((l) => !isDriverManagedDirtLine(l))) {
+    if (
+      dirt.some(
+        (l) => !isDriverManagedDirtLine(l) && !isConfiguredExemptDirtLine(l, opts.dirtyRootExempt),
+      )
+    ) {
       throw new Error(
         `repoRoot holds ${branchName} and is dirty — cannot detach it for the ${name} worktree: ${dirt
           .slice(0, 5)
@@ -361,126 +386,6 @@ async function createIntegrateWorktree(
     ...(backupRef ? { backupRef } : {}),
     repoRootDetached,
   };
-}
-
-/**
- * Whether the MAIN working tree (repoRoot) currently holds the branch.
- * `git worktree list --porcelain` never lists the main tree, so the
- * branch-holder audit and the repoRoot-detach path can both see it only
- * via this direct probe of its own checkout.
- *
- * Error classes are distinguished, because "cannot answer" and "holds the
- * branch" have OPPOSITE consequences:
- *  - "not a git repository" (stderr) or ENOENT (the directory is gone) →
- *    FALSE. A directory that is not a repository cannot hold a branch, so
- *    reading it as holding would halt clean cycles with a spurious
- *    `integration-worktree-violation` (the #861 shape: the fallback audit
- *    probed a temp repoRoot that is not a repo and the fail-closed default
- *    read it as the offending holder).
- *  - ANY OTHER git error (a lock, permission, timeout) → TRUE (fail closed
- *    with a trace): there is a repo there we simply could not read, and a
- *    possibly-holding tree must not be exculpated (the #861 defect: a
- *    failing probe read as "does not hold").
- */
-export async function repoRootHoldsBranch(repoRoot: string, branchName: string): Promise<boolean> {
-  if (!branchName) return false;
-  // The probe ALWAYS runs through the production exec seam (not execFn):
-  // the repoRoot holder is the one `git worktree list` refuses to report,
-  // and a test fake's `git symbolic-ref` short-circuit must not be able to
-  // make the probe fail and exculpate that holder. The primary probe is
-  // `symbolic-ref`; a DETACHED HEAD returns non-empty output but the wrong
-  // ref, so a detached root reads as not-holding. A truly unreadable
-  // symbolic-ref (not a clean empty) cannot be distinguished from a
-  // detached HEAD via that command, so the `git status` fallback
-  // disambiguates: its "## branch..." line carries the checkout name.
-  const probe = async (cmd: string): Promise<string | undefined> => {
-    try {
-      const { stdout } = await execp(cmd, {
-        cwd: repoRoot,
-        maxBuffer: 1024 * 1024,
-        timeout: 60_000,
-      });
-      return stdout;
-    } catch (err) {
-      const e = err as Error & { code?: string; stderr?: string };
-      const detail = e.stderr ?? e.message ?? "";
-      if (/not a git repository/i.test(detail) || e.code === "ENOENT") {
-        // A directory that is not a repository (or is gone) cannot hold a
-        // branch — the fail-closed default would halt clean cycles over
-        // what is actually nothing (the #861 spurious-violation shape).
-        trace(
-          `work-driver: repoRoot holder probe for ${branchName} — ${repoRoot} is not a git repository (or is gone) — it cannot hold the branch`,
-        );
-        return "not-a-repo";
-      }
-      trace(
-        `work-driver: repoRoot holder probe failed for ${branchName} — treating as possibly holding (fail closed): ${String(detail).slice(0, 200)}`,
-      );
-      return undefined;
-    }
-  };
-  const refProbe = await probe("git symbolic-ref --quiet --short HEAD");
-  if (refProbe === "not-a-repo") return false;
-  if (refProbe !== undefined) return refProbe.trim() === branchName;
-  const statusOut = await probe("git status --porcelain=v1 -b --untracked-files=normal");
-  if (statusOut === "not-a-repo") return false;
-  if (statusOut === undefined) return true;
-  const line = statusOut.split("\n")[0] ?? "";
-  const m = /^## ([^\s.]+)/.exec(line);
-  return m !== null && m[1] === branchName;
-}
-
-/**
- * The branch-holder audit (decision (4)). Parses `git worktree list
- * --porcelain` and REALPATH-resolves every listed path (the macOS
- * /private/var shape — #753) and returns the worktrees whose `branch`
- * attribute is `refs/heads/<branchName>`. The driver's post-dispatch audit
- * requires that list to contain only the integrate worktree (or be empty);
- * any other holder halts the cycle. Sibling worktree HEADs are NOT
- * compared — concurrent cycles legitimately commit in their own worktrees.
- *
- * Unreadable list → empty array (the safe direction: nothing to halt on;
- * the PR-verification gates still run the executed-evidence checks).
- */
-export type BranchHoldersResult = { ok: true; holders: string[] } | { ok: false; error: string };
-
-export async function branchHolders(
-  execFn: ExecFn,
-  repoRoot: string,
-  branchName: string,
-): Promise<BranchHoldersResult> {
-  let list: string;
-  try {
-    ({ stdout: list } = await execFn("git worktree list --porcelain", {
-      cwd: repoRoot,
-      maxBuffer: 1024 * 1024,
-    }));
-  } catch (err) {
-    return { ok: false, error: (err as Error).message ?? String(err) };
-  }
-  const lines = list.split("\n");
-  const holders: string[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    const l = lines[i]?.trim() ?? "";
-    if (!l.startsWith("worktree ")) continue;
-    // The worktree line is followed by its attribute lines (HEAD, branch,
-    // detached) up to the next `worktree` marker — the branch we care about
-    // is in the `branch` line, so walk forward (the #654 sweep pattern).
-    let j = i + 1;
-    let found = false;
-    while (j < lines.length) {
-      const attr = lines[j]?.trim() ?? "";
-      if (attr.startsWith("worktree ")) break;
-      if (attr === `branch refs/heads/${branchName}`) {
-        holders.push(lines[i]?.slice("worktree ".length).trim() ?? "");
-        found = true;
-        break;
-      }
-      j++;
-    }
-    if (found) i = j;
-  }
-  return { ok: true, holders };
 }
 
 async function pathExists(p: string): Promise<boolean> {
