@@ -8,15 +8,10 @@
  * No Pi spawns — just exercises the synthesis logic.
  */
 
-import {
-  LENS_REVIEW_DIFF_DESCRIPTION,
-  type Finding,
-  type LensName,
-  computeVerdict,
-  dedupeFindings,
-  extractFindings,
-  renderSummary,
-} from "../src/lens-review.ts";
+import { LENS_REVIEW_DIFF_DESCRIPTION, type Finding, type LensName } from "../src/lens-review.ts";
+import { extractFindings } from "../src/lens-findings-extract.ts";
+import { computeVerdict, dedupeFindings } from "../src/lens-review-format.ts";
+import { renderSummary } from "../src/lens-review-render.ts";
 import { buildLensRoster } from "../src/lens-roster.ts";
 import path from "node:path";
 
