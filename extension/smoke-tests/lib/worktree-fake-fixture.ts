@@ -24,7 +24,14 @@ const execFileP = promisify(execFile);
  * program directly (no shell), as the production exec does for JSON-free calls.
  */
 export const realExec: ExecFn = async (cmd, o) => {
-  const opts = { cwd: o?.cwd, maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024 };
+  const opts = {
+    cwd: o?.cwd,
+    maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
+    // #1396 round 3 — the fixture honours the caller's bound, so a test that
+    // asserts a timeout was threaded through is asserting something real about
+    // this executor rather than about an ignored option.
+    ...(o?.timeout !== undefined ? { timeout: o.timeout } : {}),
+  };
   const { stdout } = o?.argv
     ? await execFileP(cmd, o.argv, opts)
     : await execFileP("/bin/sh", ["-c", cmd], opts);
@@ -37,7 +44,7 @@ export const realExec: ExecFn = async (cmd, o) => {
  */
 export const realExecWithStderr = async (
   cmd: string,
-  o?: { cwd?: string; maxBuffer?: number },
+  o?: { cwd?: string; maxBuffer?: number; timeout?: number },
 ): Promise<{ stdout: string }> => {
   try {
     return await realExec(cmd, o);
