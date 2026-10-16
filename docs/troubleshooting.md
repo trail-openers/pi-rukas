@@ -2077,4 +2077,16 @@ The acceptance boundary is layered:
 
 Layers 1 and 3 are **advisory in trust mode**. They are environment and string checks, so an agent with a shell can still bypass them. They stop an agent that is not trying to bypass them; the operator's terminal is the real boundary.
 
+#### An ordinary git/gh read got blocked by the accept guard (#1125)
+
+Layer 3 hardening closed three routes, and a legitimate command can be caught by the shape test. It now refuses:
+
+- **a git/gh argument that writes or execs**, naming a protected file — `--output` / `-o` (spaced `-o <file>` or attached `-o<file>`), `-c`, `gh alias set`, `gh config set alias`, `git config alias.`. Those arguments make the tool write a file or run a shell, so they are outside the plain-git exemption that lets a commit message name the store.
+- **a JS runtime invoked in a command that names the store**, on any line — a `bun <<EOF` here-doc importing the module, a program piped into `bun -`, or the `-e` / `-p` / `--print` / `--eval` forms.
+- **a plain git that removes the data file** — `checkout` / `restore` / `rm` / `stash` / `clean` naming `review-findings.json`. The data file dominates the exemption.
+
+Remedy: drop the write-capable argument — `git show HEAD:x` without `--output`, `git -c core.pager=cat log` without a protected path — and the read is allowed again. To commit, write the message to a file and use `git commit -F <file>` rather than carrying the store's name in `-m` prose that also contains an `-o`-shaped word. Reads of the store module (`git log -- extension/src/review-findings-store.ts`, `grep`/`wc`/`sed -n` on it) are allowed.
+
+Three shapes are refused **on purpose** and have no workaround inside the guard, because a string match cannot tell them from a command: a fenced `bun run build` line followed by prose naming the store, a quoted markdown table whose cells hold `|` and name the store, and a regex literal `/bun|node|deno/` beside a store path. Write the prose without naming the file, or run the read separately. All three are asserted as refusals in `test-review-accept-guard-hardened.ts`. What the guard does not cover at all is in the module header — most load-bearing: it does not guard writes to the store module's own **source** (`sed -i`, `cp`, `tee`, a redirect, `edit`/`write`), only the findings data file and its `.tmp` / `.corrupt` siblings.
+
 A corrupt `review-findings.json` is never overwritten. The writer copies it to `review-findings.json.corrupt-<ms>`, the review reads it as no memory, and the summary shows `findings memory unavailable: …`. Fix or remove the file, then re-run the review.
