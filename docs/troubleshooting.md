@@ -1182,7 +1182,14 @@ A stale integrate tree whose only loss is commits, and which is detached or on t
 
 **One ref per issue (#1396).** The namespace holds at most `refs/pi-rukas/integrate-backup/issue-<N>` — one ref per issue, replaced in place on every re-entry — so a cycle that re-enters `commit-pr` twenty times leaves one ref, not twenty (`git for-each-ref refs/pi-rukas/integrate-backup` counted refs growing one per SHA before the fix). It therefore names the **last** kept HEAD only, and an older re-entry's backup is replaced. That is not a new loss channel: the driver force-removes the tree that held the older HEAD immediately after writing the ref, and every removal decision refuses first whenever a tree holds uncommitted or non-regenerable work — so nothing the ref protected had survived anyway. To drop the ref when you are done with it: `git update-ref -d refs/pi-rukas/integrate-backup/issue-<N>`.
 
-**The replaced sha is named (#1396).** When a re-entry overwrites a ref that pointed at a *different* commit, the commit-pr plumb report and the handoff name it: `It replaces an older backup of \`<sha>\`, now named by no ref`. After that write nothing in the ref namespace points at the older commit, so recover it while the object is still in the store — `git fsck --unreachable` (look for a commit with the consolidation message) or `git reflog` in the integrate worktree. A re-entry that writes the same sha again names nothing superseded: nothing was lost.
+**The replaced sha is named (#1396).** When a re-entry overwrites a ref that pointed at a *different* commit, the commit-pr plumb report and the handoff name it: `It replaces an older backup of \`<sha>\`, which no ref now names`. After that write nothing in the ref namespace points at the older commit.
+
+**Recover it promptly — `git reflog` is not a route (#1396 adversarial round).** The tree that held the older HEAD is force-removed immediately after the ref is written, and `git worktree remove --force` deletes `.git/worktrees/<name>` — **its reflogs included**. So the reflog of the integrate worktree does not exist by the time the halt is read, and "check the reflog there" is a dead instruction. What still works, in this order:
+
+1. `git fsck --unreachable` at the repo root, and look for a commit carrying the consolidation message.
+2. Pin it the moment you have the sha: `git branch rescue-<sha> <sha>` — any ref makes it reachable, and gc skips it thereafter.
+
+Both race **auto-gc**: an unreachable commit is pruned once it ages out of the reflog-expiry window (`gc.reflogExpire`, 90 days by default but immediate for objects that were never in a reflog), so "later" is not a plan. A re-entry that writes the same sha again names nothing superseded: nothing was lost.
 
 A kept ref is **not** re-applied automatically: the next commit-pr regenerates the consolidation from the develop patches, so the ref exists only for manual recovery.
 

@@ -37,7 +37,9 @@ import { repoRootHoldsBranch } from "./work-driver-branch-holder.ts";
 import { isDriverManagedDirtLine } from "./work-driver-branch-residue.ts";
 import { isConfiguredExemptDirtLine } from "./work-driver-dirty-root-exempt.ts";
 import {
+  type IntegrateBackupError,
   backupIntegrateHead,
+  isCommitSha,
   isIntegrateTreeInCycle,
   isRegisteredWorktree,
   keepOrRefuseStaleIntegrateTree,
@@ -133,17 +135,19 @@ export async function ensureIntegrateWorktree(
 ): Promise<IntegrateWorktreeCreation> {
   // #1173 — a failure AFTER the stale tree's commits were kept must still name
   // the ref, or the operator's halt has no pointer to the recoverable work.
-  const kept: { ref?: string; supersededSha?: string } = {};
+  // #1396 (six-lens round 3) — `kept` is the shared error shape itself, so the
+  // fields written here are the fields the halt report reads; no second cast.
+  const kept: IntegrateBackupError = new Error("integrate backup evidence");
   try {
     return await createIntegrateWorktree(execFn, opts, stateFile, kept);
   } catch (err) {
-    if (kept.ref === undefined || !(err instanceof Error)) throw err;
+    if (kept.backupRef === undefined || !(err instanceof Error)) throw err;
     // Annotate in place: the error keeps its class (DirtyWorktreeError stays one).
     // The ref also travels as a structured field, so the halt report can name
     // it without parsing the message (which the halt truncates).
-    const note = ` (the stale integrate tree's unpushed commits were kept on ${kept.ref})`;
-    const e = err as Error & { stderr?: unknown; backupRef?: string; supersededSha?: string };
-    e.backupRef = kept.ref;
+    const note = ` (the stale integrate tree's unpushed commits were kept on ${kept.backupRef})`;
+    const e = err as IntegrateBackupError;
+    e.backupRef = kept.backupRef;
     if (kept.supersededSha !== undefined) e.supersededSha = kept.supersededSha;
     e.message += note;
     if (typeof e.stderr === "string" && e.stderr) e.stderr += note;
@@ -167,7 +171,7 @@ async function createIntegrateWorktree(
     dirtyRootExempt?: readonly string[];
   },
   stateFile: string | undefined,
-  kept: { ref?: string; supersededSha?: string },
+  kept: IntegrateBackupError,
 ): Promise<IntegrateWorktreeCreation> {
   const { repoRoot, issue, branchName, baseSha } = opts;
   const name = integrateWorktreeName(issue);
@@ -255,7 +259,7 @@ async function createIntegrateWorktree(
         branchName,
         issue,
       );
-      kept.ref = backup?.ref;
+      kept.backupRef = backup?.ref;
       kept.supersededSha = backup?.supersededSha;
       backupRef = backup?.ref;
       supersededSha = backup?.supersededSha;
@@ -287,7 +291,7 @@ async function createIntegrateWorktree(
         issue,
         repoRoot,
       );
-      kept.ref = backup?.ref;
+      kept.backupRef = backup?.ref;
       kept.supersededSha = backup?.supersededSha;
       backupRef = backup?.ref;
       supersededSha = backup?.supersededSha;
@@ -411,7 +415,7 @@ async function createIntegrateWorktree(
     refHead: ref,
     ...(staleHead ? { staleHead } : {}),
     ...(backupRef ? { backupRef } : {}),
-    ...(supersededSha ? { supersededSha } : {}),
+    ...(supersededSha && isCommitSha(supersededSha) ? { supersededSha } : {}),
     repoRootDetached,
   };
 }

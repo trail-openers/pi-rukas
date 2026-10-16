@@ -111,6 +111,14 @@ export async function keepOrRefuseStaleIntegrateTree(
  * composed name before it reaches `git update-ref`.
  */
 export function integrateBackupRef(issue: number): string {
+  // #1396 (round 3) — the ref is the operator's only pointer to recoverable
+  // commits, so a garbage issue number must not quietly compose
+  // `…/issue-undefined` / `…/issue--3` / `…/issue-1.5`: the write succeeds,
+  // the halt names a ref that resolves to nothing, and the recovery path is
+  // dead on the occasion it is needed. Throw at the composition point instead.
+  if (!Number.isInteger(issue) || issue <= 0) {
+    throw new Error(`integrateBackupRef: issue must be a positive integer, got ${String(issue)}`);
+  }
   return `refs/pi-rukas/integrate-backup/issue-${issue}`;
 }
 
@@ -215,7 +223,20 @@ export async function backupIntegrateHead(
     if (quietExit1) previous = "";
     else throw err;
   }
-  const supersededSha = previous && previous !== sha ? previous : undefined;
+  // #1396 (six-lens round 3) — the sha is only worth reporting if it is a
+  // sha. `git rev-parse --verify` canonicalises, so a value that is not a full
+  // hex object id means the ref store answered something other than "here is
+  // an object" (a packed-refs corruption, a non-git executor). Reporting a
+  // garbage value as "the backup you are about to lose" sends the operator to
+  // `git fsck` with a token that names nothing, so it is dropped and the drop
+  // is traced rather than dressed up as a superseded backup.
+  const supersededSha =
+    previous && previous !== sha && isCommitSha(previous) ? previous : undefined;
+  if (previous && previous !== sha && supersededSha === undefined) {
+    trace(
+      `work-driver: the existing ${backup} holds a non-sha value (${previous.slice(0, 40)}) — not reported as superseded`,
+    );
+  }
   // #1396 six-lens — the write runs at `repoRoot` for the same reason the read
   // above does: `abs` is the tree about to be force-removed, and `git update-ref`
   // there writes through a `.git` file that points at a gitdir the driver is
@@ -248,6 +269,62 @@ export interface IntegrateBackup {
    * reference.
    */
   supersededSha?: string;
+}
+
+/**
+ * #1396 (six-lens round 3) — the ONE error type the integrate-backup path
+ * throws. `ensureIntegrateWorktree` annotates the failure it caught with what
+ * it had already kept, and `ensureIntegrateWorktreeOrHalt` reads those fields
+ * back. Before this there were three shapes in play — the `kept` bag, an
+ * inline `Error & { stderr?; backupRef?; supersededSha? }` cast at the write
+ * site, and a second `as { backupRef?: unknown }` cast at the read site — and
+ * a field added to one was invisible to the others.
+ *
+ * It is an intersection, not a class: the annotation runs IN PLACE on whatever
+ * error `createIntegrateWorktree` threw, so a `DirtyWorktreeError` stays one
+ * (`err instanceof DirtyWorktreeError` still holds for every downstream
+ * branch) while carrying the backup evidence.
+ *
+ * `backupRef` is spelled out rather than inherited from `Partial<IntegrateBackup>`
+ * because the two names differ on purpose: `IntegrateBackup.ref` is what the
+ * write returned, `IntegrateBackupError.backupRef` is what the halt report
+ * reads. A union of the two under one name would let the write site and the
+ * read site disagree silently — the exact drift this type exists to prevent.
+ */
+export type IntegrateBackupError = Error & {
+  stderr?: string;
+  /** The ref the stale tree's kept commits were written to, if a write happened. */
+  backupRef?: string;
+  /** The sha that ref held before this call replaced it, if any. */
+  supersededSha?: string;
+};
+
+/** A full lowercase hex object id (sha-1 40, sha-256 up to 64). */
+export function isCommitSha(value: string): boolean {
+  return /^[0-9a-f]{40,64}$/.test(value);
+}
+
+/**
+ * #1396 (six-lens round 3) — the ONE wording of the sentence an operator sees
+ * when the driver kept a stale integrate tree's commits. It appears in two
+ * reports (the commit-pr plumb reason and the ops-fallback halt body) that had
+ * drifted to two different sentences describing the same fact; one function,
+ * one wording. Returns "" when nothing was kept.
+ */
+export function integrateBackupNote(
+  backupRef: string | undefined,
+  supersededSha: string | undefined,
+): string {
+  if (!backupRef) return "";
+  // PM adversarial (round 3): `git reflog` is NOT a route to this commit. The
+  // tree that held it is force-removed and `git worktree remove --force` deletes
+  // `.git/worktrees/<name>` — reflogs included — so the only things that can
+  // still name the object are `git fsck --unreachable` and an immediate rescue
+  // ref, and both race auto-gc. The wording says that, in that order.
+  const superseded = supersededSha
+    ? ` It replaces an older backup of \`${supersededSha}\`, which no ref now names — run \`git fsck --unreachable\` (or \`git branch rescue-<sha> <sha>\`) PROMPTLY: the worktree that held it was force-removed, so its reflogs are gone, and auto-gc can prune the object.`
+    : "";
+  return ` The stale integrate tree's unpushed commits were kept on ${backupRef}; they are NOT re-applied automatically (the next commit-pr regenerates the consolidation from the patches), so that ref is for manual recovery.${superseded}`;
 }
 
 /**
