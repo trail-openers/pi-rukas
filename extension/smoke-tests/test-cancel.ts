@@ -156,11 +156,13 @@ function restoreEnv(): void {
   // later spawn in the same process).
   process.env.PATH = savedPath;
   process.env.PI_ENSEMBLE_ALLOW_LIVE_SPAWN = "";
-  // `undefined` rather than `delete`: biome's noDelete rejects the operator on
-  // a member expression, and for `process.env` the two are the same observable
-  // shape — an unset variable reads back as `undefined` either way.
+  // `Reflect.deleteProperty` rather than `= undefined`: in Bun 1.4 the
+  // assignment STORES the literal string "undefined", so the watchdog reads a
+  // non-numeric override and stays armed — the exact flake #1382 removes. The
+  // env-clear gate (`test-env-clear-gate.ts`) forbids the assignment form, and
+  // `Reflect.deleteProperty` is biome-clean (no `noDelete` suppression needed).
   if (savedInactivity) process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = savedInactivity;
-  else process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = undefined;
+  else Reflect.deleteProperty(process.env, "PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS");
   // Round-3 MEDIUM: the fixtures' sleep reapers are best-effort (dash defers
   // its EXIT trap while blocked in `wait`), so a descendant can outlive its
   // leader and be reparented to init. The ceiling's `pidsOf` liveness test
