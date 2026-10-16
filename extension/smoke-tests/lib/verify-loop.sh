@@ -334,15 +334,20 @@ fi
 # The pass/fail tally line and the whole reporting half live in
 # verify-report.sh (sourced above) — see that file for the digest/echo
 # contract and the 800-char tail-window rationale.
-report_results "$total"
-
+#
 # #1365 — `names` and `_extra_captures` are index-aligned (both pushed once per
 # failing test, in order; the digest reads them by shared index in
 # verify-report.sh). A mismatch would attach one test's ✗ lines to another's
 # marker and read as a real assertion failure, so it fails loudly rather than
 # reporting. (An EMPTY placeholder from a cp failure is still paired; a LENGTH
 # mismatch is the bug.)
+#
+# The check runs BEFORE `report_results`, which exits: after that call it is
+# unreachable, so a mispaired digest would already have been printed and the
+# run's verdict handed out before the mismatch was noticed.
 if [ "${#names[@]}" -ne "${#_extra_captures[@]}" ]; then
   echo "error: verify-loop: internal error — ${#names[@]} failure names against ${#_extra_captures[@]} captured outputs; the summary tail is unreliable" >&2
   exit 1
 fi
+
+report_results "$total"

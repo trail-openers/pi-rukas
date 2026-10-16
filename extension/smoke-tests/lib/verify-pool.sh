@@ -194,7 +194,7 @@ unset _tree_fn
 # forever. Elapsed time is read from SECONDS (whole seconds) rather than a
 # nanosecond clock, which is also what keeps this portable to bash 3.2.
 run_pool() {
-  local max_jobs="$1" next=0 done_n=0 i total="${#JOB_TESTS[@]}" retries started elapsed outer_bound rc
+  local max_jobs="$1" next=0 done_n=0 i total="${#JOB_TESTS[@]}" retries started elapsed outer_bound rc landed
   if [ "$max_jobs" -lt 1 ]; then max_jobs=1; fi
   POOL_RUNNING=0
   while [ "$done_n" -lt "$total" ]; do
@@ -294,11 +294,23 @@ run_pool() {
           # caller read it as "timed out", which is exactly the collision a
           # test that exits 214 itself would hit. mark_timeout is the same
           # routine the inner watchdog calls, so both timeout paths report
-          # identically. The job's rc file never lands (the subshell was
-          # killed), so JOB_EXIT stays at the non-zero placeholder below.
-          mark_timeout "$POOL_RUN_DIR" "$i"
-          if ! [[ "${JOB_EXIT[$i]}" =~ ^[1-9][0-9]*$ ]]; then
-            JOB_EXIT[$i]=1
+          # identically. Normally the job's rc file never lands (the subshell
+          # was killed) and JOB_EXIT stays at the placeholder below. The latch
+          # is set BEFORE the kill, so it also skips the completion branch for a
+          # job that finished in its final moment and left a real rc behind —
+          # and a pass must not be reported as a timeout. So the rc wins when it
+          # is there and numeric, and only an absent or non-numeric rc is a
+          # timeout. `head -n1` because a truncated write can leave junk on a
+          # later line, which the numeric test alone would not catch.
+          landed="$(head -n1 "${JOB_RC[$i]}" 2>/dev/null)"
+          if [[ "$landed" =~ ^[0-9]+$ ]]; then
+            JOB_EXIT[$i]="$landed"
+            echo "note: verify-loop: job for ${JOB_TESTS[$i]} wrote its exit code (${landed}) past the ${outer_bound}s bound; reporting it rather than a timeout" >&2
+          else
+            mark_timeout "$POOL_RUN_DIR" "$i"
+            if ! [[ "${JOB_EXIT[$i]}" =~ ^[1-9][0-9]*$ ]]; then
+              JOB_EXIT[$i]=1
+            fi
           fi
           done_n=$((done_n + 1))
         fi
