@@ -1,18 +1,15 @@
 /**
  * adversarial-policy — the verdict policy a reportOnly adversarial review is
  * judged by (#1114 / #1154), split out of adversarial.ts (500-line cap).
- *
- * The type alone does not bind the `adversarial_loop` tool boundary, which
- * receives LLM-supplied JSON. `reportPolicyError` is the runtime fence that
- * does (#1161): a reportOnly review without a recognised policy fails as an
- * infra failure instead of being silently judged as a routed round.
  */
 
 /**
  * Whether the loop runs as one reviewer dispatch (#1114) and, if so, how its
- * verdict is judged (#1154). Discriminated: `reportVerdict` is REQUIRED whenever
- * `reportOnly` is true and must be absent otherwise, so no reportOnly caller
- * gets a verdict policy by omission.
+ * verdict is judged (#1154).
+ *
+ * The rule, stated once: `reportVerdict` is REQUIRED whenever `reportOnly` is
+ * true and must be absent otherwise. A caller cannot get a reportOnly review
+ * that judges its verdict with neither value set nor with only one of them.
  */
 export type ReportPolicy =
   | {
@@ -31,8 +28,7 @@ export type ReportPolicy =
        * (ISSUES_FOUND passes; only CRITICAL_ISSUES_FOUND or an unreadable reply
        * fails) — the tool path. "routed": judged as round N of 3, so ISSUES_FOUND
        * routes to a fix pass — the /work driver's per-round reviews. Set by the
-       * adversarial_loop tool (terminal) and by the /work fan-out (routed);
-       * required whenever reportOnly is true.
+       * adversarial_loop tool (terminal) and by the /work fan-out (routed).
        */
       reportVerdict: "terminal" | "routed";
     }
@@ -41,8 +37,11 @@ export type ReportPolicy =
 /**
  * #1161 — the runtime fence behind the `ReportPolicy` type. Returns the named
  * reason when the policy is unsound, or undefined when it is sound.
- * The adversarial_loop tool receives LLM-supplied JSON, so the union is not
- * enforced at that boundary; this check is what enforces it.
+ *
+ * The type alone does not bind the `adversarial_loop` tool boundary, which
+ * receives LLM-supplied JSON; this check is what enforces the union at that
+ * boundary. A reportOnly review without a recognised policy fails as an infra
+ * failure instead of being silently judged as a routed round.
  */
 export function reportPolicyError(policy: {
   reportOnly?: unknown;
