@@ -11,7 +11,7 @@ import path from "node:path";
 import { neutraliseEvidence } from "./comment-evidence.ts";
 import { type SuppressedFinding, resolvedSection, suppressedSection } from "./lens-residuals.ts";
 import { advisorySection } from "./lens-review-advisory.ts";
-import { deltaFallbackText } from "./lens-review-diff.ts";
+import { deltaFallbackText } from "./lens-review-delta-disclose.ts";
 import { isReviewIncomplete } from "./lens-review-incomplete.ts";
 import type { Finding, FindingSource, LensRunResult } from "./lens-review.ts";
 import { CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE, type RosterEntry } from "./lens-roster.ts";

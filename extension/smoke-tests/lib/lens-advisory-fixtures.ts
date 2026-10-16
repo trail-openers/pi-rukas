@@ -17,6 +17,11 @@
  * The stub lens reports whatever `report` holds (the round's FRESH findings)
  * and nothing else; the carried half of the round's list comes from the
  * findings store, seeded by the caller through the shared `seedFindings` seam.
+ *
+ * The builder sets the two env vars the review reads (`PI_ENSEMBLE_REVIEW_LEDGER_FILE`
+ * and `PI_ENSEMBLE_SKILLS_DIR`) and hands back a `restore` that puts BOTH back as
+ * it found them — a fixture that leaves them set leaks a ledger path and a skills
+ * dir into every later test in the same process.
  */
 
 import { execSync } from "node:child_process";
@@ -43,6 +48,9 @@ export interface AdvisoryFixture {
   stubLens: (args: { lens: { name: string } }) => Promise<LensRunResult>;
   /** The `runLensReview` options every round in the suite shares. */
   common: Record<string, unknown>;
+  /** Restore the two env vars this fixture set (a `finally` seam): each one goes
+   * back to its exact prior value, including "was not set at all". */
+  restore: () => void;
 }
 
 /** The diff of the round that changed one line of `src/a.ts` — the value the
@@ -72,6 +80,8 @@ export function buildAdvisoryFixture(root: string): AdvisoryFixture {
     );
     prec += 10;
   }
+  const priorLedger = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+  const priorSkills = process.env.PI_ENSEMBLE_SKILLS_DIR;
   process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = ledgerFile;
   process.env.PI_ENSEMBLE_SKILLS_DIR = skills;
 
@@ -122,6 +132,21 @@ export function buildAdvisoryFixture(root: string): AdvisoryFixture {
       report = rows;
     },
     stubLens,
+    // Both vars the fixture set, each back to its exact prior value — `delete`
+    // for one that was unset, since assigning `undefined` to process.env stores
+    // the string "undefined" rather than removing it.
+    restore: () => {
+      // `delete` is the only correct "reset to unset": assigning `undefined` to
+      // process.env stores the STRING "undefined", which `piSkillsDir()` and the
+      // ledger-path getter then treat as a real value (and the next caller's
+      // save/restore sees as a set prior).
+      // biome-ignore lint/performance/noDelete: delete is the correct "reset to unset"
+      if (priorLedger === undefined) delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+      else process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = priorLedger;
+      // biome-ignore lint/performance/noDelete: delete is the correct "reset to unset"
+      if (priorSkills === undefined) delete process.env.PI_ENSEMBLE_SKILLS_DIR;
+      else process.env.PI_ENSEMBLE_SKILLS_DIR = priorSkills;
+    },
     common: {
       cwd: repo,
       branch: "feat/x",
@@ -130,4 +155,24 @@ export function buildAdvisoryFixture(root: string): AdvisoryFixture {
       lensChildFn: stubLens as never,
     },
   };
+}
+
+/**
+ * Rename `from` to `to` on the branch and return the diff real git computes for
+ * `base...HEAD`. The rename-pinning test asserts against git's OWN output on
+ * both sides of the rule: a pasted rename diff would pin the fixture's string
+ * rather than what `git diff` emits, which is the whole question (a split that
+ * trusted `rename from/to` would read a rename as no changed lines, and only
+ * real git says what git does). `from` must be a file whose content git can pair
+ * byte-for-byte, so rename detection is actually engaged.
+ */
+export function renameOnBranch(
+  fixture: AdvisoryFixture,
+  from: string,
+  to: string,
+  base = "main",
+): string {
+  fixture.sh(`git mv ${from} ${to}`);
+  fixture.sh("git commit -qm rename");
+  return fixture.sh(`git diff ${base}...HEAD`);
 }

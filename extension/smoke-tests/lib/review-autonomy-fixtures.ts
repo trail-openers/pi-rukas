@@ -13,6 +13,8 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { skillsDirUsable } from "../../src/lens-review-skills.ts";
 import type { MergeTarget } from "../../src/merge-target.ts";
 import { FINDINGS_FILE } from "../../src/review-findings-store.ts";
 import type { LedgerEntry } from "../../src/review-ledger.ts";
@@ -72,35 +74,63 @@ export function seedFindings(storeFile: string, branch: string, rows: readonly S
   writeFileSync(storeFile, JSON.stringify({ rows: [...others, ...onBranch] }, null, 2), "utf8");
 }
 
+/** A file reader: how a suite turns the ledger path into validated entries.
+ * `readLedgerAt` is the default; the advisory suite passes its own because it
+ * asserts on rows the writer keyed differently. */
+export type LedgerReader = (file: string) => LedgerEntry[];
+
 /** The branch's latest lens entry — the row the round-cap rule and the merge
- * guard read. */
-export function latestLensEntry(ledgerFile: string, branch: string): LedgerEntry | undefined {
-  return latestEntry(readLedgerAt(ledgerFile), branch, "lens");
+ * guard read. `rows` selects which entries a suite counts (default: this
+ * branch's lens rows). */
+export function latestLensEntry(
+  ledgerFile: string,
+  branch: string,
+  rows: (entries: LedgerEntry[]) => LedgerEntry[] = (entries) =>
+    entries.filter((e) => e.kind === "lens" && e.branch === branch),
+  read = readLedgerAt,
+): LedgerEntry | undefined {
+  return latestEntry(rows(read(ledgerFile)), branch, "lens");
 }
 
 /** Wait until the branch's lens entry records round `n`. The ledger write is
  * fire-and-forget (#984), so a scenario reads the entry through this seam
- * rather than racing it. */
+ * rather than racing it.
+ *
+ * Built on `waitForLedger`'s own predicate seam: the poll returns the ENTRIES it
+ * accepted, so the row this helper hands back is the one the poll actually read.
+ * The old shape polled through `waitForLedger` and then re-read the file through
+ * its own copy of the row lookup — a second reader whose parse errors swallow to
+ * `[]`, so a torn or malformed file at the deadline read as "no such round" and
+ * the scenario threw its own 'recorded no lens entry' instead of the poll's
+ * report of an unreadable ledger. A predicate never satisfied by the deadline
+ * returns null (the shared poll's contract), never the stale file. */
 export async function waitForLensRound(
   ledgerFile: string,
   branch: string,
   n: number,
+  rows: (entries: LedgerEntry[]) => LedgerEntry[] = (entries) =>
+    entries.filter((e) => e.kind === "lens" && e.branch === branch),
+  read: LedgerReader = readLedgerAt,
 ): Promise<LedgerEntry | undefined> {
-  const row = (): LedgerEntry | undefined => latestLensEntry(ledgerFile, branch);
   // One sleep between ticks, and only when the previous check missed: the
-  // passing path reads the ledger once and returns.
+  // passing path reads the ledger once and returns (the shared poll's own idiom).
   const tick = () => new Promise((r) => setTimeout(r, 20));
-  if (row()?.round === n) return row();
+  const settled = (entries: LedgerEntry[]): boolean => rows(entries).some((e) => e.round === n);
+  const rowOf = (entries: LedgerEntry[]): LedgerEntry | undefined =>
+    latestEntry(rows(entries), branch, "lens");
+  if (settled(read(ledgerFile))) return rowOf(read(ledgerFile));
   for (let i = 0; i < 250; i++) {
-    // The shared poll (#984 — a fixed budget that child-process startup can
-    // eat, which makes the file look "late") reads the file; the round
-    // predicate keeps the semantics this helper has always had: return the
-    // moment the round is there, and the latest row at the deadline.
-    waitForLedger(ledgerFile, { budgetMs: 200, until: () => row()?.round === n });
-    if (row()?.round === n) return row();
+    // The shared poll (#984 — a fixed budget that child-process startup can eat,
+    // which makes the file look "late") does the reading AND the deciding: its
+    // `until` is the round predicate, so a hit costs one read.
+    const entries = waitForLedger(ledgerFile, { budgetMs: 200, until: settled });
+    const row = entries ? rowOf(entries) : undefined;
+    if (row?.round === n) return row;
     await tick();
   }
-  return row();
+  // Timed out with the predicate never satisfied: null, so the caller's assertion
+  // fails on the missing round rather than on whatever older row is on disk.
+  return undefined;
 }
 
 /**
@@ -115,17 +145,26 @@ export async function waitForLensRound(
  */
 export async function withBundledSkillsDir<T>(fn: () => Promise<T>): Promise<T> {
   // This file lives in extension/smoke-tests/lib/, so ../../../ is the repo
-  // root — where the bundled skill/ dir lives.
-  const pinned = path.resolve(new URL("../../../skill", import.meta.url).pathname);
+  // root — where the bundled skill/ dir lives. `fileURLToPath` (not
+  // `.pathname`, which leaves percent-escapes in a path containing them).
+  const pinned = fileURLToPath(new URL("../../../skill", import.meta.url));
+  // Pinning a dir the review cannot use would make every lens blocked and the
+  // verdict REVIEW_INCOMPLETE — a failure about the fixture, not the pipeline.
+  // Ask the same predicate the review asks before pinning it.
+  const unusable = skillsDirUsable(pinned);
+  if (unusable) throw new Error(`withBundledSkillsDir: refusing to pin ${pinned}: ${unusable}`);
   const prior = process.env.PI_ENSEMBLE_SKILLS_DIR;
   process.env.PI_ENSEMBLE_SKILLS_DIR = pinned;
   try {
     return await fn();
   } finally {
-    // `undefined` restores the unset state: `process.env` treats an undefined
-    // value as absent, and the lint rule against `delete` is right that a
-    // property assignment is the cheaper way back to it.
-    process.env.PI_ENSEMBLE_SKILLS_DIR = prior;
+    // An UNSET prior is restored to UNSET. Assigning `undefined` to process.env
+    // does not remove the variable — it stores the string "undefined", which
+    // `piSkillsDir()` then hands to the roster as a real path (and the next
+    // caller's save/restore sees as a set value). `delete` is the only way back.
+    // biome-ignore lint/performance/noDelete: delete is the correct "reset to unset"
+    if (prior === undefined) delete process.env.PI_ENSEMBLE_SKILLS_DIR;
+    else process.env.PI_ENSEMBLE_SKILLS_DIR = prior;
   }
 }
 

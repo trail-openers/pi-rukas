@@ -27,7 +27,7 @@
 import { partitionDecisions } from "./lens-residuals.ts";
 import type { SuppressedFinding } from "./lens-residuals.ts";
 import { splitAdvisory } from "./lens-review-advisory.ts";
-import type { AutoDeltaInfo } from "./lens-review-diff.ts";
+import type { AutoDeltaInfo } from "./lens-review-delta-disclose.ts";
 import { isReviewIncomplete } from "./lens-review-incomplete.ts";
 import type { Finding, LensRunResult } from "./lens-review-types.ts";
 import type { ResolvedNotice } from "./review-findings-file.ts";
@@ -35,9 +35,10 @@ import { recordFindingRunOutcome } from "./review-findings-store.ts";
 
 /** The kind of review the findings memory records this round as (#1105): a
  * delta covers only its range, an incomplete one re-reported nothing reliably,
- * and only a `full` review may resolve rows it did not re-report. */
-export function reviewKind(
-  delta: unknown,
+ * and only a `full` review may resolve rows it did not re-report. File-local:
+ * the one caller is below, and a named export invited a second definition. */
+function reviewKind(
+  delta: AutoDeltaInfo | undefined,
   lensResults: readonly LensRunResult[],
 ): "delta" | "incomplete" | "full" {
   if (delta) return "delta";
@@ -76,6 +77,16 @@ export async function resolveReportedFindings(opts: {
   branchResolved: string | undefined;
   headSha: string | undefined;
   diff: string;
+  /** The diff the review RESOLVED (`resolveReviewDiff`'s ok outcome): who
+   * produced the text above, and which range it covers. A `"caller"` diff is a
+   * pasted string the review never read from git; a `"computed"` one was read
+   * from refs, and `resolved.base` names the base it was read against (`head`
+   * is that ref as the caller named it, which is not necessarily `headSha`).
+   * The split trusts the TEXT only for a full review — a computed diff over the
+   * very range the split would otherwise read, i.e. the one whose base is known.
+   * A pasted string, and a delta's `since..head` (whose base is the delta's,
+   * never the PR's), are both judged against the git `base...head` read. */
+  resolved: { diffSource: "caller" | "computed"; base?: string; head?: string };
 }): Promise<ReportedFindings> {
   const { deduped, lensResults, delta, branchResolved, headSha } = opts;
   const review = reviewKind(delta, lensResults);
@@ -102,19 +113,30 @@ export async function resolveReportedFindings(opts: {
   // lines. The discount is earned only by a range actually READ (headSha
   // resolved); with none, nothing is discounted — #1143's invariant is "out of
   // range", never "range unknown". The changed lines come from the diff THIS
-  // review ran (`opts.diff` — the value the lenses were handed, so the split and
-  // the review cannot disagree); the git range read is the fallback for a round
-  // with no diff string, and a delta round's range is the delta's own.
+  // review computed from refs (`opts.diff` when `diffSource` says so — the value
+  // the lenses were handed, so the split and the review cannot disagree); a
+  // caller-pasted string and a delta's own range are both judged against the
+  // PR's whole `base...head`, which the split reads itself.
   const advisory = await splitAdvisory({
     reported: [...kept, ...(recorded?.ok ? (recorded.carried ?? []) : [])],
     cwd: opts.cwd,
     base: opts.base,
     head: headSha,
-    // A delta round's diff is only `since..head`, so the split ignores it as a
-    // source and reads the PR's whole `base...head` (blocking is never
-    // delta-scoped; #1125 decision 5 scopes resolution, which the store does).
-    ...(opts.diff ? { diff: opts.diff } : {}),
-    isDelta: delta !== undefined,
+    // The reviewed range is the one the split would itself read: a computed diff
+    // whose base is the range's base (`diffBaseOf` hands that up, and a delta's
+    // is its `since`, so a delta never matches) and whose head is the head now
+    // resolved to a SHA. A pasted string is not evidence of what the PR changed
+    // — it omits and contradicts — so it is judged against the `base...head`
+    // read like any other shape.
+    ...(opts.resolved.diffSource === "computed" &&
+    // No base named means no range to match the diff against, so the split's own
+    // `base...head` read is the source whatever the diff claims to be.
+    opts.base !== undefined &&
+    opts.resolved.base === opts.base &&
+    opts.resolved.base !== undefined &&
+    opts.resolved.head === (headSha ?? opts.resolved.head)
+      ? { diff: opts.diff, diffComputed: true }
+      : {}),
   });
   const fields: ReportedFindings["fields"] = {};
   if (advisory.fields.advisory) fields.advisory = advisory.fields.advisory;

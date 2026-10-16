@@ -46,7 +46,7 @@ import { postPrComment } from "./forge-comments.ts";
 import { detectForge } from "./forge-detect.ts";
 import { resolvedSection, suppressedSection } from "./lens-residuals.ts";
 import { advisorySection } from "./lens-review-advisory.ts";
-import { deltaFallbackText } from "./lens-review-diff.ts";
+import { deltaFallbackText } from "./lens-review-delta-disclose.ts";
 import type { LensReviewSummary } from "./lens-review.ts";
 import { mergeIdentity } from "./merge-guard-reads.ts";
 import { lensResidualsMarker } from "./merge-guard-round-cap.ts";

@@ -10,10 +10,21 @@
  * environment where it is unavailable must not turn every round fail-closed.
  * The raw diff text goes to `changedLineRanges` (review-diff.ts), the same
  * parser the delta path uses, so both read one definition of "changed line".
- * The caller may instead hand the split the DIFF THE REVIEW ACTUALLY RAN (the
- * #859 rule: the value the lenses saw is the value the split judges), and the
- * git read below is the fallback for a review that has no diff string of its
- * own — the range then being the one that diff was computed from.
+ * The caller may instead hand the split the DIFF THE REVIEW COMPUTED ITSELF (the
+ * #859 rule: the value the lenses saw is the value the split judges — but only
+ * when the review produced it, never a string a caller pasted; see
+ * lens-review-advisory.ts), and the git read below is the source for every other
+ * shape: a pasted diff, a delta's own range, or a review with no diff string, the
+ * range then being the one that diff was computed from.
+ *
+ * RENAME HANDLING IS ONE RULE FOR BOTH PATHS. `RANGE_ARGS` passes `--no-renames`
+ * and the review's own computed diff (`computeRangeDiff` in review-diff.ts)
+ * passes no rename flag either, so git's default rename detection already splits
+ * a rename into a deletion plus an addition on BOTH reads — the git range and the
+ * diff the review computed. A pure rename therefore contributes no changed lines
+ * on the new side whichever source the split used; the two paths cannot disagree
+ * about a renamed file. `test-lens-review-advisory.ts` pins the shape against
+ * real git rather than against a pasted string.
  *
  * A ref beginning with `-` would be parsed by git as an option, so such a name
  * is refused as unreadable rather than passed on the argv. Failure is
@@ -45,17 +56,13 @@ export function rangesFromDiff(
   stdout: string,
   range: string,
 ): { ok: true; ranges: Map<string, Array<[number, number]>> } | { ok: false; reason: string } {
-  if (!stdout.trim()) {
-    // An EMPTY range is not "nothing changed" here: the review that got this
-    // diff would have skipped (a full review blocks on an empty range, #384),
-    // so an empty one reaching the split is a read that produced no evidence.
-    return { ok: false, reason: `the range diff (${range}) yielded no changed lines` };
-  }
   const ranges = changedLineRanges(stdout);
   if (ranges.size === 0) {
-    // A non-empty diff with no file sections is a diff this parser could not
-    // read, not a change that touched no lines — the `unparseable` rule of
-    // review-delta-hunks.ts, applied to the same shape.
+    // Neither shape is "nothing changed": an EMPTY diff is a read that produced
+    // no evidence (a full review blocks on an empty range, #384, so one never
+    // legitimately reaches the split), and a non-empty diff with no file sections
+    // is a diff this parser could not read — the `unparseable` rule of
+    // review-delta-hunks.ts, applied to the same shape. Both fail closed.
     return { ok: false, reason: `the range diff (${range}) yielded no changed lines` };
   }
   return { ok: true, ranges };
@@ -102,10 +109,12 @@ export async function changedRanges(
  * automatic/explicit delta's `since`, which IS the base of the range it covers.
  * Undefined for a caller-supplied diff string or a full-branch review, where
  * the review carries no base to hand on. */
-export function diffBaseOf(resolved: { kind: string; delta?: { since?: string } }):
-  | string
-  | undefined {
-  return resolved.kind === "ok" ? resolved.delta?.since : undefined;
+export function diffBaseOf(resolved: {
+  kind: string;
+  base?: string;
+  delta?: { since?: string };
+}): string | undefined {
+  return resolved.kind === "ok" ? (resolved.delta?.since ?? resolved.base) : undefined;
 }
 
 /** The range a round's changed lines are ABOUT, in the reason text: always the

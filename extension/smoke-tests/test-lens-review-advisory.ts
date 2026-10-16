@@ -30,15 +30,24 @@ import { ADVISORY_HEADING, type RangeList, splitAdvisory } from "../src/lens-rev
 import { rangesFromDiff } from "../src/lens-review-changed-ranges.ts";
 import { resolveReportedFindings } from "../src/lens-review-findings.ts";
 import { postLensResidualDisclosure } from "../src/lens-review-residuals.ts";
+import type { Finding } from "../src/lens-review-types.ts";
 import { renderSummary, runLensReview } from "../src/lens-review.ts";
 import { readBranchRows } from "../src/review-findings-store.ts";
+import type { LedgerEntry } from "../src/review-ledger.ts";
+import { validEntries } from "../src/review-ledger.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 import {
   CHANGED_LINE_DIFF as DIFF,
   type Raw,
   buildAdvisoryFixture,
+  renameOnBranch,
 } from "./lib/lens-advisory-fixtures.ts";
-import { seedFindings, storeFileOf } from "./lib/review-autonomy-fixtures.ts";
+import {
+  latestLensEntry as latestLensEntryOf,
+  seedFindings,
+  storeFileOf,
+  waitForLensRound,
+} from "./lib/review-autonomy-fixtures.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -61,28 +70,39 @@ const setReport = fixture.setReport;
 const storeFile = storeFileOf(ledgerFile);
 const seedStore = (rows: Raw[]) => seedFindings(storeFile, "feat/x", rows);
 const common = fixture.common;
-const latestLensEntry = (): Record<string, unknown> | undefined => {
-  const entries = JSON.parse(readFileSync(ledgerFile, "utf8")).entries as Record<string, unknown>[];
-  return entries.filter((e) => e.kind === "lens").at(-1);
-};
+/** The `resolved` shape `runLensReview` hands the seam for these options: a
+ * caller-pasted diff string (`common.diff`), the shape a `/review` call makes. */
+const callerDiff = { diffSource: "caller" as const };
+/** Same, for a review that read `base...head` from refs it resolved — the only
+ * shape whose diff text the advisory split trusts as the reviewed range. */
+const computedRange = (base: string, head: string) => ({
+  diffSource: "computed" as const,
+  base,
+  head,
+});
+// The ledger rows the split's decisions are asserted on, read through the shared
+// poll's `until` seam (#984) rather than a raw read of the file: `latestLensEntry`
+// and `waitForLensRound` are the autonomy fixtures' ONE implementation (the local
+// copies this suite used to carry re-read the file through readers that swallow a
+// parse error and return a stale row), with this suite's row selector.
+const lensRows = (entries: LedgerEntry[]): LedgerEntry[] =>
+  entries.filter((e) => e.kind === "lens");
 /** Wait until the branch's lens entry records round `n` (one lens row per
- * branch): check first, sleep only on a miss (the shared seam's idiom). */
-const waitForRound = async (n: number) => {
-  if (latestLensEntry()?.round === n) return;
-  for (let i = 0; i < 250; i++) {
-    try {
-      if (latestLensEntry()?.round === n) return;
-    } catch {
-      // not written yet
-    }
-    await new Promise((r) => setTimeout(r, 20));
-  }
-};
+ * branch). The poll returns the entries it accepted; a timeout is a null. */
+const waitForRound = (n: number): Promise<LedgerEntry | undefined> =>
+  waitForLensRound(ledgerFile, "feat/x", n, lensRows, (file) =>
+    validEntries(JSON.parse(readFileSync(file, "utf8")).entries as unknown[]),
+  );
+/** The branch's latest lens row — the one `hasCritical` is asserted on. */
+const latestLensEntry = (): LedgerEntry | undefined =>
+  latestLensEntryOf(ledgerFile, "feat/x", lensRows, (file) =>
+    validEntries(JSON.parse(readFileSync(file, "utf8")).entries as unknown[]),
+  );
 
 try {
   // A finding literal, for the shapes no lens produces (no path, no line, a
   // malformed line, a delta's own hunk): exactly what `splitAdvisory` accepts.
-  const asFinding = (f: Record<string, unknown>): never => f as never;
+  const asFinding = (f: Record<string, unknown>): Finding => f as unknown as Finding;
   // 1. An in-range HIGH (carried by the store) and a CRITICAL on a file the PR
   // never touches (the #1133 phantom-row shape). The split is what is under
   // test: the CRITICAL is advisory, so it neither decides the verdict nor sets
@@ -188,7 +208,10 @@ try {
   // 4a. The same shape through the REAL review, at the seam that decides the
   // verdict. The round's finding comes from the LENS, not the store; `full: true`
   // keeps the automatic delta (#973) from narrowing it. `base` names a ref that
-  // does not exist, and the range is named in the note.
+  // does not exist, so the range cannot be read and everything blocks. The note
+  // assertion is NOT duplicated here at the split's seam (a third round would
+  // only re-run the read 4 already pins): what this round proves is that the
+  // fail-closed behaviour reaches the VERDICT, which case 4 cannot show.
   setReport([{ severity: "CRITICAL", path: "src/a.ts", line: 11, title: "range unreadable" }]);
   seedStore([]);
   const r4 = await runLensReview({
@@ -201,52 +224,12 @@ try {
     r4.verdict === "CRITICAL_ISSUES_FOUND" && !r4.advisory,
     "an unreadable changed-line list keeps every finding blocking (today's behaviour)",
   );
-  // The note comes from the split, which the review only calls when it recorded
-  // the round — so the assertion is made at the split's own seam, on the same
-  // range the round used: a fail-closed round says so in its note.
-  const closed4 = await splitAdvisory({
-    reported: r4.findings.length > 0 ? r4.findings : [],
-    cwd: repo,
-    base: "no-such-ref",
-    head: HEAD_SHA,
-  });
-  assert(
-    /changed lines could not be read/.test(closed4.fields.memoryNote ?? ""),
-    "…and the round's note says the ranges could not be read",
-  );
   assert(
     r4.findings.length === 1 && r4.findings[0]?.title === "range unreadable",
     "…and the finding that blocked is the round's own, not a carried row",
   );
 
-  // 4b. A supplied diff that yields no changed lines falls back to the refs;
-  // when those resolve, the range still decides (a pasted string that parses to
-  // nothing is not evidence that nothing changed), and when they do not, the
-  // round fails closed with the note.
-  const junk = await splitAdvisory({
-    reported: [asFinding({ lens: "SECURITY", severity: "HIGH", path: "src/a.ts", line: 11 })],
-    cwd: repo,
-    base: "main",
-    head: HEAD_SHA,
-    diff: "this is not a unified diff at all\n",
-  });
-  assert(
-    junk.blocking.length === 1 && !junk.fields.advisory && !junk.fields.memoryNote,
-    "a junk diff falls back to the range, which keeps the changed-line finding blocking",
-  );
-  const junkBadRef = await splitAdvisory({
-    reported: [asFinding({ lens: "SECURITY", severity: "HIGH", path: "src/a.ts", line: 11 })],
-    cwd: repo,
-    base: "no-such-ref",
-    head: HEAD_SHA,
-    diff: "this is not a unified diff at all\n",
-  });
-  assert(
-    junkBadRef.blocking.length === 1 &&
-      /changed lines could not be read/.test(junkBadRef.fields.memoryNote ?? ""),
-    "a junk diff with an unreadable range fails closed with a note",
-  );
-
+  // (4b: the supplied-diff cases live in test-lens-review-split-source.ts)
   // 5a. A finding with no path stays blocking; a line-less finding blocks only
   // on a changed file; and nothing reported means no git read and no note.
   const split = await splitAdvisory({
@@ -277,127 +260,14 @@ try {
     cwd: repo,
     base: "no-such-ref",
     diff: DIFF,
+    diffComputed: true,
   });
   assert(
     none.blocking.length === 0 && !none.fields.memoryNote,
     "no reported findings → no git read and no note",
   );
 
-  // 5a-bis. No range to speak of (a run whose head never resolved): the split
-  // discounts NOTHING and says nothing — the discount is earned by a range that
-  // was read, never assumed. The same out-of-range finding that 5b calls
-  // advisory here blocks.
-  const noRange = await splitAdvisory({
-    reported: [asFinding({ lens: "SIMPLICITY", severity: "MEDIUM", path: "src/a.ts", line: 3 })],
-    cwd: repo,
-    base: "main",
-    head: undefined,
-    diff: DIFF,
-  });
-  assert(
-    noRange.blocking.length === 1 && !noRange.fields.advisory && !noRange.fields.memoryNote,
-    "with no readable range nothing is discounted and no note is emitted",
-  );
-
-  // 5b. A line-bearing finding is placed by its line alone, never by its file:
-  // a changed file contributes its changed LINES, so a finding on an untouched
-  // line of that file is advisory.
-  const untouchedLine = await splitAdvisory({
-    reported: [asFinding({ lens: "SIMPLICITY", severity: "MEDIUM", path: "src/a.ts", line: 3 })],
-    cwd: repo,
-    base: "main",
-    head: HEAD_SHA,
-  });
-  assert(
-    untouchedLine.blocking.length === 0 && untouchedLine.fields.advisory?.length === 1,
-    "a finding on an untouched line of a CHANGED file is advisory",
-  );
-
-  // 5b-bis. A `line` of 0 or less is MALFORMED, not out of range: treating it
-  // as line-less asks the file rule, so it blocks on a changed file instead of
-  // matching no span and being silently discounted.
-  const badLine = await splitAdvisory({
-    reported: [
-      asFinding({ lens: "SECURITY", severity: "HIGH", path: "src/a.ts", line: 0 }),
-      asFinding({ lens: "SECURITY", severity: "HIGH", path: "src/a.ts", line: -3 }),
-    ],
-    cwd: repo,
-    base: "main",
-    head: HEAD_SHA,
-  });
-  assert(
-    badLine.blocking.length === 2 && !badLine.fields.advisory,
-    "a malformed line (<= 0) is treated as line-less and blocks when its file changed",
-  );
-  const badLineUntouched = await splitAdvisory({
-    reported: [asFinding({ lens: "SECURITY", severity: "HIGH", path: "src/other.ts", line: 0 })],
-    cwd: repo,
-    base: "main",
-    head: HEAD_SHA,
-  });
-  assert(
-    badLineUntouched.blocking.length === 0 && badLineUntouched.fields.advisory?.length === 1,
-    "…and on an untouched file the same malformed line is advisory, as a line-less finding is",
-  );
-
-  // 5b-ter. A DELTA round is judged against the PR's WHOLE range, never the
-  // delta's own: the diff it was handed covers only src/other.ts, yet the
-  // carried finding on the branch-changed line 11 of src/a.ts still blocks —
-  // a delta of one file must not disarm a finding the branch introduced
-  // (#1125 decision 5 scopes what a delta RESOLVES, not what blocks).
-  const DELTA_DIFF =
-    "diff --git a/src/other.ts b/src/other.ts\n--- a/src/other.ts\n+++ b/src/other.ts\n@@ -10,1 +10,2 @@\n // other 10\n+// delta change";
-  const deltaRound = await splitAdvisory({
-    reported: [
-      asFinding({ lens: "SECURITY", severity: "MEDIUM", path: "src/a.ts", line: 11 }),
-      asFinding({ lens: "SECURITY", severity: "MEDIUM", path: "src/a.ts", line: 3 }),
-    ],
-    cwd: repo,
-    base: "main",
-    head: HEAD_SHA,
-    isDelta: true,
-    diff: DELTA_DIFF,
-  });
-  assert(
-    deltaRound.blocking.length === 1 &&
-      deltaRound.blocking[0]?.line === 11 &&
-      deltaRound.fields.advisory?.[0]?.line === 3,
-    "on a delta round a carried MEDIUM on a branch-changed line outside the delta still blocks",
-  );
-  const fullRound = await splitAdvisory({
-    reported: [asFinding({ lens: "SECURITY", severity: "MEDIUM", path: "src/a.ts", line: 11 })],
-    cwd: repo,
-    base: "main",
-    head: HEAD_SHA,
-    // The same round WITHOUT the delta flag judges the diff it was handed, which
-    // does not mention src/a.ts at all — so the finding is advisory there.
-    diff: DELTA_DIFF,
-  });
-  assert(
-    fullRound.blocking.length === 0 && fullRound.fields.advisory?.length === 1,
-    "a full round judges the diff it was handed, not a re-read of the refs",
-  );
-
-  // 5b-quater. The diff the review RAN is the source, not a re-read of refs:
-  // this diff names a line the branch does not change, and the split trusts the
-  // diff (that is what the lenses reviewed) rather than the git range.
-  const reviewedDiff =
-    "diff --git a/src/other.ts b/src/other.ts\n--- a/src/other.ts\n+++ b/src/other.ts\n@@ -1,1 +1,2 @@\n // other 1\n+// reviewed";
-  const fromReviewed = await splitAdvisory({
-    reported: [
-      asFinding({ lens: "SECURITY", severity: "HIGH", path: "src/other.ts", line: 2 }),
-      asFinding({ lens: "SECURITY", severity: "HIGH", path: "src/other.ts", line: 9 }),
-    ],
-    cwd: repo,
-    base: "main",
-    head: HEAD_SHA,
-    diff: reviewedDiff,
-  });
-  assert(
-    fromReviewed.blocking.length === 1 && fromReviewed.blocking[0]?.line === 2,
-    "the changed lines come from the diff the review ran, not from a re-read of the refs",
-  );
-
+  // (5a-bis..5b-quater: the split's own-source cases live in test-lens-review-split-source.ts)
   // 5c. (the unreadable-range cases are 4/4a/4b above)
   //
   // 5c-bis. The same rule at the seam that decides the verdict: a REAL delta
@@ -424,6 +294,52 @@ try {
     `a delta round keeps a carried MEDIUM on a branch-changed line blocking (verdict ${rDelta.verdict})`,
   );
   setReport([]);
+
+  // 5c-ter. RENAME AGREEMENT (#1125 round 3): the two sources of changed lines —
+  // the diff the review computed and the `base...head` git read — must answer the
+  // same way about a rename, or which one the split used would decide whether a
+  // finding on renamed content blocks. Both are `git diff` runs with no rename
+  // collapsing (`--no-renames` on the range read; the review's own computed read
+  // passes no rename flag and git's default splits a rename into delete + add),
+  // so a pure rename contributes NO changed lines on the new side on both paths.
+  // Asserted against real git output on each side, not a pasted rename diff: a
+  // fixture string would pin the fixture, not git.
+  const renamedDiff = renameOnBranch(fixture, "src/other.ts", "src/renamed.ts");
+  assert(
+    /^rename from src\/other\.ts$/m.test(renamedDiff) &&
+      /^rename to src\/renamed\.ts$/m.test(renamedDiff),
+    "rename setup: git really paired the change into a rename",
+  );
+  const renamedFindings = (): Finding[] => [
+    asFinding({ lens: "SECURITY", severity: "MEDIUM", path: "src/renamed.ts", line: 3 }),
+  ];
+  // (a) The diff-computed path, judged from git's own rename diff.
+  const renameFromDiff = await splitAdvisory({
+    reported: renamedFindings(),
+    cwd: repo,
+    base: "main",
+    head: HEAD_SHA,
+    diff: renamedDiff,
+    diffComputed: true,
+  });
+  // (b) The git range read, on the same commit.
+  const renameFromGit = await splitAdvisory({
+    reported: renamedFindings(),
+    cwd: repo,
+    base: "main",
+    head: HEAD_SHA,
+  });
+  assert(
+    renameFromDiff.blocking.length === 0 && renameFromGit.blocking.length === 0,
+    "a finding on renamed content is advisory on BOTH paths — the two reads agree",
+  );
+  assert(
+    renameFromDiff.fields.advisory?.length === 1 &&
+      renameFromGit.fields.advisory?.length === 1 &&
+      !renameFromDiff.fields.memoryNote &&
+      !renameFromGit.fields.memoryNote,
+    "…and both list it as advisory rather than failing closed on an unreadable range",
+  );
 
   const emptyList = await rangesFromDiff("", "main...head");
   assert(
@@ -454,6 +370,10 @@ try {
     // diff it was handed is empty of file sections.
     headSha: "not-a-sha",
     diff: "",
+    // A caller-pasted diff (there is none here — the empty string is what a
+    // review with no range of its own hands), so the split goes to the range read
+    // and `no-such-ref` makes it fail closed.
+    resolved: callerDiff,
   });
   assert(
     /findings memory unavailable/.test(both.fields.memoryNote ?? "") &&
@@ -491,6 +411,10 @@ try {
   );
   assert(body.includes("pi-rukas:lens-residuals"), "the disclosure marker is unchanged");
 } finally {
+  // Both env vars the fixture set go back as they were found (unset stays
+  // unset), so a later test in this process does not inherit this clone's
+  // ledger path and skills dir.
+  fixture.restore();
   rmSync(root, { recursive: true, force: true });
 }
 

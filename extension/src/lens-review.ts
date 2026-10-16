@@ -5,7 +5,7 @@ import { execp } from "./exec.ts";
 import { resolveBudgetKey } from "./lens-budget-key.ts";
 import type { LensLedgerOutcome } from "./lens-ledger.ts";
 import { withLensModelSlot } from "./lens-model-slots.ts";
-import { partitionDecisions, renderPriorFindingsBlock } from "./lens-residuals.ts";
+import { renderPriorFindingsBlock } from "./lens-residuals.ts";
 import { carriedSummary, noReviewSummary } from "./lens-review-auto-delta.ts";
 import { resolveLensReviewBranch } from "./lens-review-branch-resolve.ts";
 import { capKillSummary } from "./lens-review-capkill.ts";
@@ -13,11 +13,12 @@ import { diffBaseOf } from "./lens-review-changed-ranges.ts";
 import { runLensChild } from "./lens-review-child.ts";
 import {
   type AutoDeltaInfo,
-  blockedReviewSummary,
-  blockedRowsForRoster,
-  buildDeltaFullContext,
   deltaFallbackNote,
   deltaReviewOf,
+} from "./lens-review-delta-disclose.ts";
+import { blockedReviewSummary, blockedRowsForRoster } from "./lens-review-diff-blocked.ts";
+import {
+  buildDeltaFullContext,
   resolveReviewDiff,
   startPersistentBatch,
 } from "./lens-review-diff.ts";
@@ -38,11 +39,10 @@ import {
   piSkillsDir,
   renderSummary,
 } from "./lens-review-format.ts";
-import { isReviewIncomplete } from "./lens-review-incomplete.ts";
 import { installBlockRowsForRoster, skillsDirUsable } from "./lens-review-skills.ts";
 import type { Finding, LensRunResult } from "./lens-review-types.ts";
 import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
-import { readBranchRows, recordFindingRunOutcome } from "./review-findings-store.ts";
+import { readBranchRows } from "./review-findings-store.ts";
 import { isFullCommitSha, resolveHeadSha } from "./review-head-sha.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
@@ -451,6 +451,14 @@ export async function runLensReview(opts: {
     branchResolved,
     headSha,
     diff,
+    // Who produced the diff above and over which range: the split trusts the text
+    // only for a computed full-range review (#1125 — a pasted diff is not
+    // evidence of what the PR changed).
+    resolved: {
+      diffSource: resolved.diffSource,
+      ...(resolved.base !== undefined ? { base: resolved.base } : {}),
+      ...(resolved.head !== undefined ? { head: resolved.head } : {}),
+    },
   });
   const reported = found.reported;
   const verdict = computeVerdict(reported, lensResults, threshold);
