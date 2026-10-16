@@ -22,6 +22,7 @@
  */
 import { eventsSinceDevelopStart } from "./work-develop-greens.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
+import { appendEvent } from "./workflow-state.ts";
 
 /** One line of the handoff's "Workstream verdicts" section. */
 export interface VerdictLine {
@@ -122,4 +123,37 @@ export function developVerdictLines(state: WorkState): VerdictLine[] {
       : latestCompletionPerWorkstream(state);
   const attempts = developAttemptCounts(state);
   return raw.map((v) => verdictLine(v, attempts.get(v.id) ?? 0));
+}
+
+/**
+ * #814 / #1403 — the ONE place the develop step publishes its per-workstream
+ * verdicts, so both fan-out shapes go through one expression and neither can
+ * be forgotten again.
+ *
+ * N>1 emitted `branches-converged` unconditionally (#814). N=1 emitted
+ * NOTHING: with one workstream there was no `branch-completed` either, so a
+ * dead child left the step with no per-workstream record at all —
+ * `failureEventOf` had nothing to read, both handoff renderers fell back to
+ * the absent events, and the step printed `step-completed … recovered: false`
+ * for a pass whose process had exited 1. A step whose ONE developer returned
+ * a verdict has a verdict to publish, whatever the fan-out size.
+ *
+ * The N=1 guard `verdicts.length > 0` is load-bearing: a step that dispatched
+ * nothing (every workstream refused up front) has no verdict to claim and
+ * must not acquire a converged-`ok` it never earned. Exactly one event per
+ * step; `replaceDevelopConvergedVerdicts` (work-develop-fence-verdicts.ts)
+ * still replaces it in place when the fence gate flips verdicts.
+ */
+export function appendDevelopConverged(
+  state: WorkState,
+  ids: readonly string[],
+  verdicts: readonly RawVerdict[],
+): WorkState {
+  if (ids.length <= 1 && verdicts.length === 0) return state;
+  return appendEvent(state, {
+    kind: "branches-converged",
+    step: "develop",
+    verdicts: verdicts.map((v) => ({ ...v })),
+    at: Date.now(),
+  });
 }

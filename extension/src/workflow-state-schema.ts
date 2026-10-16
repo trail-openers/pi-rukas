@@ -6,6 +6,7 @@
 import type { Verdict } from "./lens-review.ts";
 import type { NormalisedSpec } from "./work-driver-intent.ts";
 import type { CapEvidence, CapedPartialState, EvidenceFailureKind } from "./workflow-state-cap.ts";
+import type { ChildCrashRecord } from "./workflow-state-events-child-crash.ts";
 import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
 // #679/#728 — workstream shape + consolidation record, split for the 500-line gate.
 // Re-exported so existing importers keep their paths.
@@ -41,20 +42,7 @@ export const WORK_STATE_SCHEMA_VERSION = 1 as const;
  * discriminant validator) can test membership — types are erased by the
  * untyped cast in `readState`, which is exactly why the validator needs it.
  */
-export const WORK_STEPS: readonly WorkStep[] = [
-  "explore",
-  "plan",
-  "branch",
-  "develop",
-  "adversarial",
-  "commit-pr",
-  "lens-review",
-  "lens-fix",
-  "step-back",
-  "handoff",
-  "ci",
-  "merged",
-];
+export { WORK_STEPS } from "./workflow-state-schema-steps.ts";
 
 export type { CapedPartialState, CapEvidence } from "./workflow-state-cap.ts";
 
@@ -416,6 +404,8 @@ export interface PipelineState {
   cycleDeadlineMs?: number;
   /** Surfaced plumb-reports since the cycle began (for handoff body). */
   plumbReports: Array<{ step: WorkStep; role: string; body: string; at: number }>;
+  /** #1403 — one record per develop child whose engine died mid-pass. */
+  childCrash?: ChildCrashRecord[];
   /** PR number once Step 6 opens one. */
   prNumber?: number;
   /**

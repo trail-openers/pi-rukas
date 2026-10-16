@@ -172,6 +172,15 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
       return `  worktree-provisioned · [${e.worktreeId}] · ${e.outcome}${e.problem ? ` · ${e.problem.slice(0, 60)}` : ""}`;
     case "safety-net-commit":
       return `  safety-net-commit · [${e.workstreamId}] · ${e.filesCommitted} file(s) · ${e.commitSha.slice(0, 7)}`;
+    case "child-crash":
+      // #1403 — a dead child is its own fact, so it renders as one: the crash
+      // kind + exit code, and what the worktree still holds (or what the
+      // driver committed from it) once the step has judged the tree.
+      return `  child-crash · [${e.workstreamId}] · ${e.crash}${
+        e.exitCode !== null && e.exitCode !== undefined ? ` exit=${e.exitCode}` : ""
+      } · ${fmtElapsed(e.ms)}${
+        e.committed && e.committed.length > 0 ? ` · committed ${e.committed.length}` : ""
+      }${e.paths && e.paths.length > 0 ? ` · ${e.paths.length} uncommitted` : ""}`;
     case "worktree-leftover-handled":
       return `  worktree-leftover-handled · ${e.path.split("/").pop()} · ${e.action}${e.refs.length ? ` · refs: ${e.refs.join(", ")}` : ""}${e.salvageDir ? ` · salvage: ${e.salvageDir}` : ""}`;
     case "branch-reset":

@@ -21,6 +21,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { buildMemoryBrief } from "./memory-brief.ts";
 import { trace } from "./trace.ts";
+import {
+  buildChildCrash,
+  childCrashKind,
+  childCrashReason,
+  recordChildCrash,
+} from "./work-develop-crash.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
@@ -318,6 +324,31 @@ export function makeRunOneWorkstream(
       }
       const res = developerSettled.value;
       const ok = res.ok && !res.errorStop;
+      // #1403 — a child whose ENGINE died mid-pass is recorded as a crash the
+      // moment it returns, before anything downstream decides policy. In the
+      // incident the death produced a `dispatch-failed` event and a reasonless
+      // `ok: false`, and because N=1 emits no `branch-completed` the step
+      // accounting had nothing left to read: the fan-out converged `ok: true`
+      // and the pass was logged as an ordinary success.
+      const crashKind = childCrashKind(res);
+      if (crashKind) {
+        s.stateRef.current = recordChildCrash(
+          s.stateRef.current,
+          buildChildCrash({
+            step: "develop",
+            workstreamId: id,
+            label: developerLabel,
+            kind: crashKind,
+            result: res,
+          }),
+        );
+        trace(
+          `work-driver: develop child ${developerLabel} (${id}) died mid-pass — ${childCrashReason(
+            crashKind,
+            res.exitCode,
+          )}`,
+        );
+      }
       const completionEvent = await buildCompletionEvent(
         ctx,
         "develop",
@@ -337,10 +368,19 @@ export function makeRunOneWorkstream(
         });
       }
       // #1016 — a first-pass failure carries its reason into the verdicts.
+      // #1403 — a DEAD child's reason names the death, not the generic
+      // "did not complete ok": the errorTail of a crash event whose text was
+      // empty used to be undefined, so a dead pass looked like a shrug in the
+      // verdict, the handoff and the console.
       const tail = "errorTail" in completionEvent ? completionEvent.errorTail : undefined;
-      const reason = ok ? undefined : (tail ?? "developer did not complete ok");
+      const reason = ok
+        ? undefined
+        : (tail ??
+          (crashKind
+            ? childCrashReason(crashKind, res.exitCode)
+            : "developer did not complete ok"));
       s.verdicts.push(ok ? { id, ok } : { id, ok, reason });
-      return ok ? { id, ok } : { id, ok, reason };
+      return ok ? { id, ok, reason } : { id, ok, reason };
     } catch (err) {
       const errMsg = (err as Error).message?.slice(0, 200);
       s.branchEvents.push({
@@ -364,8 +404,8 @@ export function makeRunOneWorkstream(
           error: errMsg,
         });
       }
-      s.verdicts.push({ id, ok: false });
-      return { id, ok: false };
+      s.verdicts.push({ id, ok: false, reason: childCrashReason("dispatch-threw", null) });
+      return { id, ok: false, reason: childCrashReason("dispatch-threw", null) };
     }
   };
 }

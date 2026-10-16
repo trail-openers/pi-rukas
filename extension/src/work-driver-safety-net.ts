@@ -137,6 +137,46 @@ export async function hasAnyWorktreeEvidence(
 }
 
 /**
+ * #1403 — does THIS workstream have develop evidence the gates must judge?
+ *
+ * `hasAnyWorktreeEvidence` answers the step-level question ("did the fan-out
+ * produce anything at all?"), and its conservatism is right there: an
+ * unreadable read keeps the gates running. But it is an OR across every
+ * worktree, so it cannot answer the per-workstream question the safety net
+ * needs — and that is the exact hole the incident fell through: the dead
+ * pass's verdict was `ok: false`, the ok-filter excluded it, and the net
+ * never ran for round 3 at all.
+ *
+ * The per-workstream rule is the conjunction, and it is deliberately narrow:
+ * uncommitted non-driver changes AND no commits ahead of the workstream's
+ * own effective base. That is the shape the develop verify gate already
+ * rejects ("has uncommitted changes but no commit ahead of …"), so the net
+ * and the gate agree, and it is what the incident describes: the fix sitting
+ * in `libexec/stop` with the branch one commit behind.
+ *
+ * A workstream that merely claimed success with an empty tree does NOT drag
+ * a sibling's evidence into its own commit — committing a pass that was
+ * judged, and judged empty, is what the ok-filter exists to prevent.
+ *
+ * Reads are conservative in the gate's direction: an unreadable status or
+ * commit count means "judge it", because the alternative is a silent pass.
+ */
+export async function hasWorktreeEvidenceFor(
+  wsId: string,
+  cwd: string,
+  effectiveBase: string | undefined,
+  execFn: ExecFn = execp,
+): Promise<boolean> {
+  const git = runGit(execFn);
+  const status = await worktreeStatus(git, cwd);
+  if (!Array.isArray(status)) return true; // cannot read → judge it
+  if (commitEntriesOf(status).length === 0) return false; // nothing of ours to judge
+  const ahead = await commitsAheadOfBase(git, cwd, effectiveBase);
+  if (!("commits" in ahead)) return true; // cannot read → judge it
+  return ahead.commits === 0;
+}
+
+/**
  * #1016 — the safety-net commit for ONE workstream worktree, shared by the
  * per-workstream green check (runAt) and the post-fan-out sweep. Returns the
  * `safety-net-commit` event when it committed, undefined otherwise. Never throws.

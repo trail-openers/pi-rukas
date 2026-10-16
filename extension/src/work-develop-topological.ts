@@ -9,6 +9,7 @@
  */
 import { recordCommentEvidence } from "./comment-evidence.ts";
 import { boundJoinFailures } from "./work-develop-cap-evidence.ts";
+import { attachCrashedWorktreeState, childCrashesFor } from "./work-develop-crash.ts";
 import { runMergeRetryFlow } from "./work-develop-fence-merge-retry.ts";
 import { siblingDeclaredViolators } from "./work-develop-fence-recovery.ts";
 import {
@@ -34,6 +35,7 @@ import {
   runDependentWorkstreams,
 } from "./work-develop-run.ts";
 import { runSymbolMergeRetry } from "./work-develop-symbol-merge.ts";
+import { appendDevelopConverged } from "./work-develop-verdict-source.ts";
 import { appendDevelopVerifyFailure } from "./work-develop-verify-failure.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { runConvergeGateHandler } from "./work-driver-converge-gate.ts";
@@ -42,6 +44,7 @@ import { clearDispatch } from "./work-driver-resume.ts";
 import {
   applySafetyNet,
   hasAnyWorktreeEvidence,
+  hasWorktreeEvidenceFor,
   safetyNetWorktree,
 } from "./work-driver-safety-net.ts";
 import { armStepNotice } from "./work-driver-step-notice.ts";
@@ -315,21 +318,7 @@ async function runDevelopTopological(
   // memory-inject events and the gate operate on); keep it in sync with the
   // local `next` (the branchEvents + worktrees merge just applied).
   stateRef.current = next;
-  if (ids.length > 1) {
-    // #814 — the develop branches-converged emits here (after the
-    // branch-completed batch, before the safety net and the develop verify
-    // gate), unconditionally, carrying a COPY of the current verdicts (the
-    // no-evidence path emits here too); exactly one per cycle. If the gate
-    // below records fence violations, replaceDevelopConvergedVerdicts replaces
-    // THIS event in place with the flipped verdicts (see work-develop-
-    // fence-verdicts.ts).
-    next = appendEvent(next, {
-      kind: "branches-converged",
-      step: "develop",
-      verdicts: [...verdicts],
-      at: Date.now(),
-    });
-  }
+  next = appendDevelopConverged(next, ids, verdicts);
   // #679 (task-evidence) — the safety net and the develop verify gate are no
   // longer gated on the AGGREGATE verdict `verdicts.every(v => v.ok)`. That
   // old condition skipped BOTH gates for the whole fanout the moment any
@@ -346,8 +335,27 @@ async function runDevelopTopological(
   // net for a legitimate uncommitted workstream. Escape hatch:
   // PI_ENSEMBLE_SAFETY_NET_COMMIT=0 disables it.
   if (hasDevelopEvidence) {
-    // Only workstreams whose verdict is ok: a failed one's partial work stays uncommitted.
-    next = await applySafetyNet(ctx, next, new Set(verdicts.filter((v) => v.ok).map((v) => v.id)));
+    // #622 / #1403 — the eligible set is "whose verdict is ok" UNION "whose
+    // own worktree holds uncommitted work with no commit behind it". The ok
+    // half is the pre-existing rule (a pass that was JUDGED and judged empty
+    // gets nothing committed for it); the evidence half is what the incident
+    // was missing: a dead child's verdict is `ok: false`, the old filter
+    // excluded it, and the net never ran for that round at all. Same
+    // predicate `hasAnyWorktreeEvidence` answers one level up, so the net and
+    // the verify gate cannot disagree about what "evidence" means.
+    const eligible = new Set(verdicts.filter((v) => v.ok).map((v) => v.id));
+    for (const v of verdicts) {
+      if (eligible.has(v.id)) continue;
+      const cwd = worktrees[v.id];
+      if (typeof cwd !== "string") continue;
+      const base = workstreamBaseShas[v.id] ?? globalBaseSha;
+      if (await hasWorktreeEvidenceFor(v.id, cwd, base, execFn)) eligible.add(v.id);
+    }
+    next = await applySafetyNet(ctx, next, eligible);
+    // #1403 — say what the dead child left behind, on the crash record rather
+    // than only in a trace line: which paths the driver committed, or that it
+    // left them uncommitted. Absent a crash this is a no-op.
+    next = await attachCrashedWorktreeState(next, execFn);
     // #849 — the gate (and the fence flip below) operate on `stateRef.current`
     // (the shared state the memory-inject events accumulate into); keep the
     // local alias and the shared ref in sync so the flip's verdict replacement

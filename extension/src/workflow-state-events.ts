@@ -8,6 +8,7 @@ import type { DispatchUsage } from "./types.ts";
 import type { AdversarialEventFragment } from "./workflow-state-events-adversarial.ts";
 import type { BranchResetEvent } from "./workflow-state-events-branch-reset.ts";
 import type { WorkCapLiteral } from "./workflow-state-events-caps.ts";
+import type { ChildCrashEvent } from "./workflow-state-events-child-crash.ts";
 import type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
 import type { DeferredCreationEventFragment } from "./workflow-state-events-deferred.ts";
 import type { FenceRecoveryStartedEvent } from "./workflow-state-events-fence.ts";
@@ -404,6 +405,7 @@ export type WorkEvent =
   | MemoryEventFragment
   | WorktreeProvisionedEvent
   | SafetyNetCommitEvent
+  | ChildCrashEvent
   | BranchResetEvent
   | WorktreeLeftoverHandledEvent
   | DispatchSlowEvent

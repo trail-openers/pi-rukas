@@ -80,6 +80,8 @@ export const KNOWN_EVENT_KINDS = [
   // #625 — the develop step's safety-net commit record (the driver writes it
   // when it commits a workstream's in-scope work on a cap/failure exit).
   "safety-net-commit",
+  // #1403 — the develop child-crash record (a dead child is a fact, not a cap).
+  "child-crash",
   // #674 — the handoff consolidation record (the driver writes it when it
   // consolidates parallel workstreams into a single handoff).
   "handoff-consolidated",
