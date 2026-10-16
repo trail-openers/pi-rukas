@@ -117,16 +117,15 @@ Vipune has no built-in TTL. Use `--status` instead:
 | `candidate` | Hidden unless `--include-candidates` is passed | Provisional observations, hypotheses, things that may not outlast this session |
 
 ```bash
-# Provisional — won't show in default searches until promoted
+# Provisional — won't show in default searches until an operator promotes it
 vipune add 'tofu apply takes ~5 min when only user_data changed' \
   --memory-type observation --status candidate
 
-# You cannot promote or edit a memory: `vipune update` is denied to every role,
-# because it replaces content in place with no lineage and no undo. Correct a
+# You cannot promote, delete, prune, or rewrite a memory. Correct a
 # memory by writing a new one with `--supersedes <id>`.
 ```
 
-**Promote candidates only after the fact survives a second confirmation.** Otherwise, let them sit — they're inert until explicitly queried. This is the short-term tier.
+**An operator promotes a candidate only after the fact survives a second confirmation.** Report the row's id for promotion; do not run it yourself. Otherwise, let candidates sit — they're inert until explicitly queried. This is the short-term tier.
 
 The `/work` driver writes its own candidates (lens findings, invariant removals), always typed `observation` so `vipune prune` can age out the unpromoted ones — prune never demotes a `guard`. The developer brief reads active rows only, so a driver candidate reaches no compiled brief until an operator promotes it (an explicit `--include-candidates` sweep still sees it); `/audit` lists the candidates with their ids for that decision.
 
@@ -142,14 +141,14 @@ Every memory is a snapshot of when it was written. Code moves, files rename, dec
 | A version is pinned at X | Read the lockfile / image tag / pin |
 | A user preference is current | If context suggests it may have changed, ask |
 
-If verification fails: **update or delete the stale memory immediately.** Don't just ignore it — the next session will hit the same trap.
+If verification fails: **supersede the stale memory immediately.** Don't just ignore it — the next session will hit the same trap.
 
 ```bash
 # Memory was wrong — supersede atomically
 vipune add 'New corrected statement' --supersedes <old-id> --memory-type fact
 
-# Memory is fully obsolete — delete
-# (`vipune delete` is denied to every role — superseding is the correction.)
+# Superseding is the correction — it preserves the original row. Removal is not
+# yours to do: see the memory-write boundary in Quick reference.
 ```
 
 ## Contradiction handling — supersede, don't duplicate
@@ -217,14 +216,14 @@ These bands apply to **semantic mode only** (`--no-hybrid --recency 0.0`). A hyb
 
 **NEVER** (defeats the purpose, causes bloat or actual harm):
 
-- **Secrets of any kind** — API tokens, passwords, SSH private keys, .env contents. Vipune stores in plaintext SQLite. **This is a hard line.** If you discover a secret in memory, **tell the operator immediately and say which memory id** so they can remove it, and treat the credential as compromised — it must be rotated. You cannot delete it yourself: `vipune delete` is denied to every role.
+- **Secrets of any kind** — API tokens, passwords, SSH private keys, .env contents. Vipune stores in plaintext SQLite. **This is a hard line.** If you discover a secret in memory, **tell the operator immediately and say which memory id** so they can remove it, and treat the credential as compromised — it must be rotated. You cannot remove it yourself: removal is an operator action.
 - Raw conversation turns
 - One-off file paths likely to move
 - Intermediate debugging hypotheses
 - Ephemeral stack traces
 - Anything reconstructible cheaply from `git log` or current code state
 
-**CONDITIONAL** (use `--status candidate`, promote only if it survives):
+**CONDITIONAL** (use `--status candidate`, report for promotion only if it survives):
 
 - Tentative explanations for observed behavior
 - Performance numbers (they drift)
@@ -262,10 +261,19 @@ vipune list --limit 50 --json | jq .
 Look for:
 
 - **Duplicates** (≥ 2 memories saying nearly the same thing) → supersede the older ones
-- **Stale facts** (still `active` but contradicted by current code) → delete or supersede
-- **Drift** (multiple `observation`-type memories on the same theme) → consolidate into one `fact` or `procedure`, then delete the originals
-- **Candidates** that have survived 5+ sessions → promote to `active`
-- **Candidates** untouched for months → delete
+- **Stale facts** (still `active` but contradicted by current code) → supersede
+- **Drift** (multiple `observation`-type memories on the same theme) → consolidate into one `fact` or `procedure`, then supersede the originals
+- **Candidates** that have survived 5+ sessions → report for promotion
+- **Candidates** untouched for months → report for pruning
+
+The two "report" lines go in **your final report**, one line per row, with the id verbatim:
+
+```text
+candidate <id> — promote
+candidate <id> — prune
+```
+
+Where the age and retrieval evidence comes from: the `/audit` memory panel (`extension/src/memory-stats.ts` reads `retrieval_count` and `last_retrieved_at` read-only from SQLite). `vipune list --json` returns neither column, so it is not the evidence for either call. "Untouched" means `last_retrieved_at` older than ~90 days. `vipune prune` is an operator command.
 
 This is the reflection pattern from the agentic memory literature (Park et al. 2023, A-MEM 2025, MemoryBank). It prevents the bloat-driven degradation that hits unbounded memory stores around 50+ sessions.
 
@@ -275,10 +283,10 @@ Real failure patterns documented in agentic memory systems — don't repeat them
 
 1. **Stale-fact citation** — Quoting a memory that no longer matches reality. *Mitigation*: freshness verification before acting (above).
 2. **Contradiction accumulation** — Two memories that disagree, both surfacing in search. *Mitigation*: `--supersedes`, never `--force` unless they truly address different angles.
-3. **Context bloat** — So many memories surface that the context window saturates and reasoning quality drops. *Mitigation*: aggressive pruning, candidate status, tight `--limit`.
+3. **Context bloat** — So many memories surface that the context window saturates and reasoning quality drops. *Mitigation*: report untouched rows for operator pruning, use candidate status, keep `--limit` tight.
 4. **Ephemeral leakage** — Persisting raw conversation-context as memory. *Mitigation*: only save *distilled* conclusions, never raw turns.
 5. **Premature commit** — Saving a hypothesis mid-debug. *Mitigation*: save only at task close, after the conclusion holds.
-6. **Secret leakage** — A single token or password committed to memory is a breach. *Mitigation*: the explicit NEVER list above + immediate delete + rotate if found.
+6. **Secret leakage** — A single token or password committed to memory is a breach. *Mitigation*: the explicit NEVER list above + report the memory id to the operator immediately + rotate the credential if found.
 
 ## Quick reference
 
@@ -299,10 +307,16 @@ vipune list --limit 50
 # row's type, and guessing wrong silently retypes it out of every typed read.
 vipune add '<new content>' --supersedes <old-id> --memory-type <type>
 
-# NOT AVAILABLE: `vipune update --text` and `vipune delete` are denied to every
-# role. `update --text` replaces content in place — same id, no lineage, no
-# undo — so anything that cited that memory would silently point at new text.
-# Deleting or editing a memory is an operator action.
+# NOT AVAILABLE: no agent role promotes, deletes, prunes, or rewrites memory
+# content — those are operator actions, so never run `vipune update`, `delete` or
+# `prune`. Three layers say so, and you must behave as if all three are live:
+# `update`/`delete`/`prune` are granted to no role in agents.json; an `update`
+# carrying -t/--text is refused ahead of the allowlist by isDestructiveMemoryWrite
+# (extension/src/bash-pattern-wildcard.ts); and in trust mode — the default on an
+# interactive host and in the sandbox — the agents.json grant is doctrine, not a
+# runtime gate, so nothing stops a verb the doctrine forbids. `update --text`
+# replaces content in place — same id, no lineage, no undo — so anything that
+# cited that memory would silently point at new text.
 
 # VALIDATE (check before adding long content)
 vipune validate '<text>'           # exits 3 if over 512-token embedding limit

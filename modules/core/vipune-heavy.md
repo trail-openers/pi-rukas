@@ -78,12 +78,12 @@ Every memory is a snapshot. Code moves, files rename, decisions reverse. **Befor
 | Flag is supported | Check `--help` |
 | Version pinned at X | Read the lockfile |
 
-If verification fails: **supersede or delete the stale memory immediately**. Don't ignore it — the next session hits the same trap.
+If verification fails: **supersede the stale memory immediately**. Don't ignore it — the next session hits the same trap.
 
 ```bash
 vipune add 'corrected statement' --supersedes <old-id> --memory-type fact
-# (Never run `vipune delete`: no role is granted the verb in agents.json, and
-# superseding is the correction anyway — it preserves the original row.)
+# Superseding is the correction — it preserves the original row. Removal is not
+# yours to do: see the memory-write boundary in Quick reference.
 ```
 
 ## Conflict handling — supersede, don't duplicate
@@ -126,7 +126,16 @@ Every ~10–15 sessions on a project, run a reflection pass:
 vipune list --limit 50 --json | jq .
 ```
 
-Look for: duplicates (supersede the older), stale facts (supersede), drift across multiple `observation`-typed entries on the same theme (consolidate into one `fact`/`procedure`). Two findings you **report rather than act on**, because both need the memory-update verb no role is granted — promotion and removal are operator actions (`/audit` lists candidates with their ids): candidates that survived ≥5 sessions (report for promotion), candidates untouched for months (report for pruning).
+Look for: duplicates (supersede the older), stale facts (supersede), drift across multiple `observation`-typed entries on the same theme (consolidate into one `fact`/`procedure`).
+
+Two findings you **report rather than act on**, because promotion and removal are operator actions. Put them in your **final report to the dispatcher**, one line per row, with the id verbatim:
+
+```text
+candidate <id> — promote
+candidate <id> — prune
+```
+
+The age and retrieval evidence is the `/audit` memory panel (`extension/src/memory-stats.ts` reads `retrieval_count` and `last_retrieved_at` read-only from SQLite) — the list command returns neither column. "Untouched" means `last_retrieved_at` older than ~90 days. Candidates that survived ≥5 sessions go up for promotion; untouched ones go up for operator removal.
 
 ## Quick reference
 
@@ -134,10 +143,15 @@ Look for: duplicates (supersede the older), stale facts (supersede), drift acros
 vipune search '<term>' --no-hybrid --recency 0.0 --limit 5 --no-touch --json
 vipune add '<distilled fact>' --memory-type <type> [--status candidate] [--supersedes <id>]
 vipune list --limit 50
-# No role is granted the `vipune update` or `vipune delete` verb in agents.json,
-# and an update carrying -t/--text is refused outright ahead of the allowlist.
+# MEMORY-WRITE BOUNDARY (stated once; every other mention defers to this).
+# No agent role promotes, deletes, prunes, or rewrites memory content — those
+# are operator actions. `vipune update`, `delete` and `prune` are granted to no
+# role in agents.json, and an `update` carrying -t/--text is refused ahead of
+# the allowlist by isDestructiveMemoryWrite (extension/src/bash-pattern-wildcard.ts).
+# In trust mode (the default) the agents.json grant is doctrine, not a runtime
+# gate — so never run these verbs, regardless of what the gate appears to allow.
 # To correct a memory, write a new one with `--supersedes <id>`, which preserves
-# the original. To retire one, report it — removal is an operator action.
+# the original. To retire one, report it (see Periodic consolidation).
 ```
 
 **One atomic fact per `vipune add` call.** For the full doctrine (deep search recipes, failure-mode catalogue, all examples), load the bundled skill via `--skill <skills-dir>/vipune` (pi-rukas installs it to `~/.pi/agent/skills/vipune`).
