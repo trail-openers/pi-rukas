@@ -90,6 +90,13 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
               ...policy,
               // #1161 - set AFTER the raw spread so a caller cannot spoof it.
               callerSuppliedDiff: Boolean(params.diff),
+              // #1360 - set AFTER the raw spread so a caller cannot set or
+              // clear it: this is the provenance marker that puts the row
+              // through the range/head/tree bindings. The /work driver calls
+              // runAdversarialLoop directly and never sets it, so its reviews
+              // keep their existing identity. Provenance is never inferred
+              // from the presence of a `diff` string.
+              toolPath: true,
             },
             signal,
             hooks.jobId,

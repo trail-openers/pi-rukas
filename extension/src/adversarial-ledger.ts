@@ -15,8 +15,21 @@
  * hardcoded `origin/main`), so
  * the entry covers the uncommitted fixes the loop made; when those fixes are
  * committed unchanged, the id the guard recomputes at merge time matches.
+ *
+ * #1360 — on the TOOL path (`toolPath: true`, set by `adversarial-tool.ts` and
+ * nothing else) that working-tree identity alone is not enough evidence that
+ * the review covered the branch: a narrowed `base` produced a full-branch row.
+ * A tool-path row now passes the range/head/tree bindings in
+ * `adversarial-ledger-binding.ts` or it is written NON-PASSING with a named
+ * detail. The `/work` driver path never sets `toolPath` and is unchanged.
  */
 
+import {
+  type LedgerBinding,
+  decideToolPathRow,
+  toolPathFields,
+} from "./adversarial-ledger-binding.ts";
+import { execp } from "./exec.ts";
 import { resolveReviewBranch } from "./review-branch.ts";
 import { resolveHeadSha } from "./review-head-sha.ts";
 import {
@@ -27,8 +40,6 @@ import {
 } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
-
-import { execp } from "./exec.ts";
 
 /**
  * Write an adversarial-review entry to the review ledger. Fire-and-forget:
@@ -41,6 +52,11 @@ import { execp } from "./exec.ts";
  * pasted, not one the tool computed from base+head. Such a review is recorded
  * as `passed: false` with detail "<outcome> (caller-supplied diff)", so the
  * merge guard refuses it; the same review via base+head is recorded normally.
+ *
+ * #1360 — `toolPath` + `binding` + `base`: the tool path's provenance marker
+ * and the range/content the approving round actually judged. `toolPath` is set
+ * ONLY by `adversarial-tool.ts` after the raw params spread, so a caller cannot
+ * set it; the driver's rows carry none and keep their pre-#1360 semantics.
  */
 export function writeAdversarialLedgerEntry(
   result: DispatchResult,
@@ -50,6 +66,14 @@ export function writeAdversarialLedgerEntry(
     head?: string;
     resolvedBranch?: string;
     callerSuppliedDiff?: boolean;
+    /** #1360 — the reviewed base ref, and whether this row came from the
+     * `adversarial_loop` tool rather than the /work driver. */
+    base?: string;
+    toolPath?: boolean;
+    /** #1360 — what the approving round captured (range SHAs + the working-tree
+     * identity at the time its diff was read). Absent = nothing was captured,
+     * which a tool-path row reads as unverifiable, never as a pass. */
+    binding?: LedgerBinding;
   },
 ): Promise<void> {
   const write = async () => {
@@ -88,14 +112,39 @@ export function writeAdversarialLedgerEntry(
     const headSha = await resolveHeadSha(c, headRef, execp);
     const callerSupplied = params.callerSuppliedDiff === true;
     const outcome = result.loopOutcome ?? "completed";
+    const verdictPassed = adversarialPassed(result);
+    const toolPath = params.toolPath === true;
+    // #1360 — the tool path's bindings. A row that was never going to pass
+    // keeps its own verdict detail: a rejection is not relabelled as a binding
+    // failure, and the guard's refusal for it is the ordinary one.
+    const binding =
+      toolPath && verdictPassed && !callerSupplied
+        ? await decideToolPathRow({
+            workCwd: c,
+            baseRef: params.base,
+            headRef,
+            binding: params.binding ?? {
+              bindingUnavailable: "no round capture reached the writer",
+            },
+            currentTreePatchId: computed.patchId,
+            currentHeadSha: headSha ?? "",
+          })
+        : undefined;
+    const refusedByBinding = binding !== undefined && !binding.ok;
+    const detail = callerSupplied
+      ? `${outcome} (caller-supplied diff)`
+      : refusedByBinding
+        ? (binding.detail ?? `${outcome} (review range unverifiable)`)
+        : outcome;
     const entry: LedgerEntry = {
       branch,
       kind: "adversarial",
       patchId: computed.patchId,
-      passed: adversarialPassed(result) && !callerSupplied,
+      passed: verdictPassed && !callerSupplied && !refusedByBinding,
       at: Date.now(),
-      detail: callerSupplied ? `${outcome} (caller-supplied diff)` : outcome,
+      detail,
       ...(headSha ? { headSha } : {}),
+      ...toolPathFields(params.binding ?? {}, toolPath),
     };
     await appendLedgerEntry(entry, execp, c);
   };
