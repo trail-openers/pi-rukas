@@ -307,7 +307,8 @@ export async function runLensChild(opts: {
     const findings = result ? extractFindings(result.toolUses, lens.name).findings : [];
     const summary = result?.text?.trim() || undefined;
     const capKill = result?.killCause === "loop" || result?.killCause === "token-budget";
-    // #966 — one source for the placeholder: NO_TEXT_PLACEHOLDER (lens-review-format.ts).
+    // #966 — one source for the placeholder: NO_TEXT_PLACEHOLDER
+    // (lens-review-incomplete.ts, where `collapseEvents` declares it).
     const textIsReviewOutput =
       !!summary && summary !== NO_TEXT_PLACEHOLDER && (result?.thinkingOnly === true || capKill);
     const hasEvidence = findings.length > 0 || (!!summary && textIsReviewOutput);

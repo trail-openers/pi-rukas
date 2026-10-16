@@ -14,8 +14,10 @@
  * them in either one made the two modules import each other.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { Severity } from "./lens-review-format.ts";
+import { hashText } from "./review-findings-match.ts";
+import { trace } from "./trace.ts";
 import { looksLikeSecret } from "./vipune.ts";
 
 export type RowStatus = "open" | "accepted" | "resolved";
@@ -77,7 +79,9 @@ export interface SetAsideNotice {
   /** The malformed row's id, when it carried one. */
   rowId?: string;
   path: string;
-  severity: string;
+  /** `?` when the row carried no usable severity — the schema's own type, not
+   * a widening: a malformed row's severity is exactly the field that failed. */
+  severity: Severity | "?";
   title: string;
   /** The first validation failure, when the row is an object. */
   problem?: string;
@@ -210,6 +214,11 @@ function rowProblem(v: unknown): string | undefined {
 /** How much of an untrusted field one disclosure line carries. */
 const SET_ASIDE_FIELD_CHARS = 200;
 
+/** One of the schema's severities, or `?` when the field is not one. */
+function severityOrUnknown(v: unknown): Severity | "?" {
+  return (SEVERITIES as readonly unknown[]).includes(v) ? (v as Severity) : "?";
+}
+
 /**
  * What one malformed row was, for the operator disclosure: enough identity to
  * find it again in the `.corrupt-<hash>` copy, and whether it held an acceptance.
@@ -224,11 +233,64 @@ export function describeSetAside(v: unknown): SetAsideNotice {
   return {
     ...(rowId ? { rowId } : {}),
     path: text("path"),
-    severity: text("severity"),
+    severity: severityOrUnknown(o.severity),
     title: text("title"),
     ...(problem ? { problem } : {}),
     wasAcceptance: o.status === "accepted",
   };
+}
+
+/** The result of `copyBytesAside`: where the bytes are, or why they are not there. */
+export type CorruptCopy = { copied: true; path: string } | { copied: false; reason: string };
+
+/**
+ * Copy bytes that the store refuses to act on to `<file>.corrupt-<hash of the
+ * bytes>`, and say so. The ONE copy-aside primitive: the writer's corrupt file,
+ * the writer's malformed row and the reader's unreadable file all go through it,
+ * so all three name their copy the same way (one hash, one byte convention,
+ * one trailing newline) and one repair recipe covers every site. Idempotent:
+ * an existing copy is not rewritten — which is also what makes the two
+ * disclosure sites that see the SAME bad file (the round's fail-closed read, and
+ * the writer's re-read under the lock) agree on ONE copy rather than leaving two
+ * hashes beside the file an operator has to reconcile.
+ *
+ * `label` names what was copied in the trace (`the unreadable file`, `a malformed
+ * row`), because the sites differ in what an operator is being told about.
+ *
+ * A copy that cannot be made is a RESULT, never a throw — the caller is already
+ * on a fault path, and a disclosure that cannot be delivered must still be
+ * delivered as a disclosure.
+ */
+export function copyBytesAside(file: string, bytes: string, label = "the bytes"): CorruptCopy {
+  const copy = `${file}.corrupt-${hashText(bytes)}`;
+  try {
+    if (!existsSync(copy)) writeFileSync(copy, `${bytes}\n`, "utf8");
+    return { copied: true, path: copy };
+  } catch (err) {
+    trace(
+      `review-findings: could not copy ${label} aside from ${file}: ${(err as Error).message.slice(0, 120)}`,
+    );
+    return { copied: false, reason: (err as Error).message.slice(0, 80) };
+  }
+}
+
+/**
+ * The ONE corrupt-copy disclosure line: names the copy that holds the bytes (or
+ * says the copy could not be made) and what the operator does about it. The
+ * action leads and the copy closes, because the reason is clipped downstream and
+ * a truncated message must keep both halves an operator can still act on.
+ */
+export function corruptDisclosure(file: string, copy: CorruptCopy): string {
+  const where = copy.copied
+    ? `the bytes are copied to ${copy.path}`
+    : // No copy exists (an unreadable file yielded no bytes, or the copy itself
+      // failed). Say what was attempted, so the refusal never claims the operator
+      // can find bytes that were never written.
+      `a copy could not be made (${copy.reason}) — the file itself was left untouched`;
+  return (
+    `repair or remove ${file}, or set PI_ENSEMBLE_REVIEW_LEDGER_FILE to a healthy ledger; ` +
+    `${where}`
+  );
 }
 
 /** A fresh 8-hex row id, unique among `taken`. */

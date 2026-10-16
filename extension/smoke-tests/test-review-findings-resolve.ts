@@ -60,10 +60,6 @@ const repo = fixture.repo;
 const ledgerDir = fixture.ledgerDir;
 const sh = fixture.sh;
 
-// A stub that reports nothing at all (the scenarios that need a silent first
-// lens pass an empty `reportNow`); the shared stub already keeps every other
-// lens complete.
-const FULL_DIFF = "diff --git a/src/a.ts b/src/a.ts\n+++ b/src/a.ts\n+export const a = 1;";
 const runRound = (branch: string, head: string, findings: StubFinding[]) => {
   reportNow = findings;
   return runLensReview({

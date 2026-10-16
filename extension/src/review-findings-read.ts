@@ -3,7 +3,7 @@
  * review-findings-store.ts (AGENTS.md §12 file-size gate). The store keeps every
  * write; this module reads, and reads differently on purpose.
  *
- * Two read policies, and the difference between them is the whole module:
+ * Three read policies, and the difference between them is the whole module:
  *
  *   - `parseFindingsFile` (review-findings-file.ts) is the writer's read: it
  *     reports an unreadable file as corrupt, and the store refuses to overwrite
@@ -14,30 +14,37 @@
  *     "what does this branch already know?". A caller that cannot tell them apart
  *     reviews a branch as though nothing had ever been found on it, silently. The
  *     caller turns the throw into a `memoryNote` the operator sees.
+ *   - `readBranchRowsFailOpen` below reads the same file with the OPPOSITE
+ *     policy: unreadable means no memory, traced. Only a caller that cannot fail
+ *     anything (a prompt block) uses it.
  *
  * A malformed row is never returned as a row — a reader must not act on a row the
  * writer would set aside — but it IS returned as a notice, because a malformed
  * row that held an operator acceptance silently stops suppressing.
  *
- * A file that cannot be parsed is copied aside to `<file>.corrupt-<hash>` and
- * named in the throw, mirroring the writer's disclosure: the round refuses, and
- * the reason tells the operator where the bytes are and what to do.
+ * What this module writes: the `.corrupt-<hash>` copy a fail-closed read makes of
+ * an unreadable file, and nothing else. It is a disclosure copy, not a store
+ * write: the file itself is left exactly as it was, and the copy goes through the
+ * store's own `copyBytesAside` so one naming scheme covers every copy-aside site.
+ * The copy is named in the throw, mirroring the writer's disclosure: the round
+ * refuses, and the reason tells the operator where the bytes are and what to do.
  *
- * Nothing here writes to disk, and nothing here calls git or reads the
- * environment: the caller that resolved the ledger path (the store's `locate`)
- * passes it in. A read therefore performs no second lookup, invents no second
- * resolution rule, and cannot be served a stale path by a hidden cache.
+ * Nothing here calls git or reads the environment: the caller that resolved the
+ * ledger path (the store's `locate`) passes it in. A read therefore performs no
+ * second lookup, invents no second resolution rule, and cannot be served a stale
+ * path by a hidden cache.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import {
   type SetAsideNotice,
   type StoredFinding,
+  copyBytesAside,
+  corruptDisclosure,
   describeSetAside,
   splitRows,
 } from "./review-findings-file.ts";
-import { hashText } from "./review-findings-match.ts";
 import { trace } from "./trace.ts";
 
 /** The findings file's name, beside `review-ledger.json` — re-exported by the store. */
@@ -57,33 +64,40 @@ export function findingsFileFor(ledger: string): string {
 /**
  * Read the findings file's raw rows. Throwing IS the point — see the module
  * header. A missing file is the genuine empty store (undefined), not a failure.
+ *
+ * The bytes are RETURNED with the rows even when parsing fails: a caller that
+ * has to disclose a bad file must disclose the bytes it actually read, because a
+ * second read is a second chance to fail and a file replaced between the two
+ * would be copied aside under a hash of content nobody read.
  */
-function readRawRows(file: string): unknown[] | undefined {
-  if (!existsSync(file)) return undefined;
-  const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+function readRawRows(file: string): { rows: unknown[] | undefined; bytes?: string } {
+  if (!existsSync(file)) return { rows: undefined };
+  const bytes = readFileSync(file, "utf8");
+  // The parse is INSIDE its own try: unparseable bytes ARE the bytes the
+  // disclosure copies, so the throw carries them rather than losing them. A
+  // failure of the READ itself (EISDIR, EACCES) propagates with no bytes, and
+  // the caller says so rather than copying an empty file nobody read.
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bytes);
+  } catch (err) {
+    throw Object.assign(new Error((err as Error).message), { findingsBytes: bytes } as {
+      findingsBytes: string;
+    });
+  }
   const rows = (parsed as { rows?: unknown } | null)?.rows;
-  if (!Array.isArray(rows)) throw new Error(`${FINDINGS_FILE} has no rows array`);
-  return rows as unknown[];
+  if (!Array.isArray(rows)) {
+    throw Object.assign(new Error(`${FINDINGS_FILE} has no rows array`), {
+      findingsBytes: bytes,
+    } as { findingsBytes: string });
+  }
+  return { rows: rows as unknown[], bytes };
 }
 
-/**
- * Copy an unreadable findings file aside and name the copy, so a fail-CLOSED
- * read discloses exactly like the store's fail-closed write: the operator sees
- * WHERE the bytes still are, and what to do about them. Same
- * `.corrupt-<hash>` scheme as the write path, so one repair recipe covers both.
- */
-function copyAsideUnreadable(file: string, err: unknown): string {
-  const junk = readFileSync(file, "utf8");
-  const copy = `${file}.corrupt-${hashText(junk)}`;
-  try {
-    if (!existsSync(copy)) writeFileSync(copy, `${junk}\n`, "utf8");
-    return copy;
-  } catch (copyErr) {
-    trace(
-      `review-findings: could not copy ${file} aside: ${(copyErr as Error).message.slice(0, 120)}`,
-    );
-    return `(the copy could not be made: ${(copyErr as Error).message.slice(0, 80)})`;
-  }
+/** The bytes an unreadable-file throw carried, or undefined when the read itself failed. */
+function carriedBytes(err: unknown): string | undefined {
+  const b = (err as { findingsBytes?: unknown })?.findingsBytes;
+  return typeof b === "string" ? b : undefined;
 }
 
 /**
@@ -94,20 +108,32 @@ function copyAsideUnreadable(file: string, err: unknown): string {
  * resolved path the caller obtained from its own `locate` — this module never
  * resolves it, so a read cannot be served a path a cache kept from an earlier
  * value of `PI_ENSEMBLE_REVIEW_LEDGER_FILE`.
+ *
+ * The bytes are captured in the SAME try as the failure — `readFileSync` on a
+ * directory (EISDIR), a file with no read permission (EACCES) and a file that
+ * does not parse all fail here with the bytes it did get, if any — and the
+ * disclosure names the cause. A present-but-unreadable file therefore produces
+ * the same fail-closed "repair or remove …" message as an unparseable one,
+ * rather than a bare OS error the operator cannot act on.
  */
 export function readBranchRowsRaw(file: string, branch: string): BranchRows | undefined {
   let raw: unknown[] | undefined;
   try {
-    raw = readRawRows(file);
+    raw = readRawRows(file).rows;
   } catch (err) {
-    // Fail closed, and disclose: the operator action leads and the copy closes,
-    // because the reason is clipped downstream and a truncated message must keep
-    // both halves it can still act on.
-    const copy = copyAsideUnreadable(file, err);
     const cause = (err as Error).message.replace(/\s+/g, " ").slice(0, 100);
+    // A failure BEFORE any bytes were read (EISDIR, EACCES) has no bytes to
+    // disclose, so no copy is made: writing an empty file would put a
+    // `.corrupt-<hash of nothing>` next to the real one, and a later stage that
+    // copies the actual bytes would leave two copies with two hashes, one of
+    // them a lie. The disclosure says so instead.
+    const bytes = carriedBytes(err);
+    const copy =
+      bytes === undefined
+        ? ({ copied: false, reason: "nothing could be read from the file" } as const)
+        : copyBytesAside(file, bytes, "the unreadable findings file");
     throw new Error(
-      `repair or remove ${file}, or set PI_ENSEMBLE_REVIEW_LEDGER_FILE to a healthy ledger. ` +
-        `Unreadable (${cause}); the bytes are copied to ${copy}`,
+      `${corruptDisclosure(file, copy)}. Unreadable (${cause}) — the round recorded nothing`,
     );
   }
   if (!raw) return { rows: [], malformed: [] };

@@ -43,21 +43,11 @@ export interface StubFinding {
   lens?: string;
 }
 
-/** What a stubbed round reports, and how complete it is. */
-export interface StubState {
-  /** The findings the FIRST roster lens reports each round. */
-  report: () => StubFinding[];
-  /** When true, every lens but the first is blocked: the round is incomplete. */
-  blockNonFirst?: () => boolean;
-}
-
 export interface ReviewFixture {
   /** The temp clone (a real git repo, one commit on `main` unless noted). */
   repo: string;
   /** The dir holding the ledger and, beside it, `review-findings.json`. */
   ledgerDir: string;
-  /** Absolute path of the ledger file (the isolation marker). */
-  ledgerFile: string;
   /** Run one git command inside `repo` and return trimmed stdout. */
   sh: (cmd: string) => string;
   /** The stub lens spawner to pass to `runLensReview` as `lensChildFn`. */
@@ -160,7 +150,6 @@ export function setupReviewFixture(opts: {
   return {
     repo,
     ledgerDir,
-    ledgerFile,
     sh,
     stubLens,
     seenPrior,
@@ -187,12 +176,3 @@ export async function decide(run: FindingRun) {
 
 /** A plausible full-review diff string (the stubs never read it). */
 export const FULL_DIFF = "diff --git a/src/a.ts b/src/a.ts\n+++ b/src/a.ts\n+export const a = 1;";
-
-/** The canonical clone's `src/a.ts`: 5 lines, one function, cited line 3. */
-export const SRC_A = [
-  "// header",
-  "export function alpha(x: number) {",
-  "  const a = x + 1;",
-  "  return a * 2;",
-  "}",
-];

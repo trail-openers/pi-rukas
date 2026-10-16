@@ -202,16 +202,26 @@ export function applyFindingRound(opts: {
   const resolved: ResolvedNotice[] = [];
   mine.forEach((r, i) => {
     if (r.status === "accepted") {
-      // #1125 — an acceptance does not immortalise a row. A row whose path is
-      // ABSENT from the reviewed commit is evicted exactly as an open row is: the
-      // set-aside was about code that exists, and code that is not in the tree
-      // has nothing to set aside. Two restrictions, both from rowFate's own
-      // doctrine: only a FULL round may do it (a delta's silence about a path is
-      // not evidence the path is gone), and only `missing` counts — an INVALID
-      // path (unsafe spelling, or a directory/tree) has no automatic exit at all,
-      // so its accepted rows carry rather than being evicted.
-      if (!touched.has(r.id) && review === "full" && headOf(r.path)?.kind === "missing") {
-        const fate = rowFate(r, { kind: "missing" }, review, { deltaRanges });
+      // #1125 — an acceptance does not immortalise a row. An UNTOUCHED accepted
+      // row goes through the SAME rule as an untouched open row: `rowFate`, with
+      // the same head state and the same delta ranges. A row whose path is absent
+      // at head is therefore evicted (`path-gone`) rather than kept alive forever
+      // by its acceptance — the set-aside was about code that exists, and code
+      // that is not in the tree has nothing to set aside — while an INVALID path
+      // (unsafe spelling, a directory/tree) has no automatic exit and a DELTA
+      // round, which never saw the deletion, carries it. Those are not rules this
+      // file adds: they are `rowFate`'s, and reading a second copy of them here
+      // is how the two halves of a round start to disagree.
+      if (!touched.has(r.id)) {
+        // A row whose path the store never read (added after the round's head
+        // read) has no evidence, and `rowFate` carries it exactly as the open-row
+        // branch below does — an accepted row is never evicted on absence of
+        // evidence, only on proof.
+        const head = headOf(r.path);
+        const fate =
+          head === undefined
+            ? ({ kind: "carry" } as const)
+            : rowFate(r, head, review, { deltaRanges });
         if (fate.kind === "resolve") {
           mine[i] = {
             ...r,

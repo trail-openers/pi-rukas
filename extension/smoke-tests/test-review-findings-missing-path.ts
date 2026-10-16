@@ -54,8 +54,6 @@ const sh = fixture.sh;
 const c1 = sh("git rev-parse HEAD");
 
 const common = { cwd: repo, branch: "feat/x", lensChildFn: fixture.stubLens };
-const FULL_DIFF =
-  "diff --git a/src/a.ts b/src/a.ts\n+++ b/src/a.ts\n+export function alpha(x: number) {";
 
 try {
   // Round 1 — the run records despite the missing path.

@@ -97,6 +97,25 @@ export function suppressedSection(
 }
 
 /**
+ * A finding's severity rendered for a line that stays one line: the value, or
+ * `UNKNOWN` when it is not one of the four the schema allows.
+ *
+ * A stored row's severity is file content, not a checked field: `rowProblem`
+ * rejects a bad one, but a `Finding` that reaches a renderer straight from a
+ * lens — or from a truncated `lens-issues-found` blob — has not been through it.
+ * A bare `${severity}` would then print `undefined` beside the finding, which
+ * reads like a formatting bug and not like "this row carries no severity".
+ */
+export function severityLabel(severity: string | undefined): string {
+  return severity === "CRITICAL" ||
+    severity === "HIGH" ||
+    severity === "MEDIUM" ||
+    severity === "LOW"
+    ? severity
+    : "UNKNOWN";
+}
+
+/**
  * The "Resolved since last round" block (#1125): each row this round closed
  * because its cited code is gone, with the reason, so an operator can see a row
  * that closed by hash mismatch. Empty input renders nothing.
@@ -130,6 +149,10 @@ export function setAsideSection(setAside: readonly SetAsideNotice[] | undefined)
       `Findings memory set aside (${setAside.length}) — these rows no longer suppress anything:`,
     ),
     ...setAside.map((s) =>
+      // `severity` is already narrowed to the schema's four or `?` by
+      // `describeSetAside`, and `problem` is this module's own vocabulary, so
+      // the whole line — the row's untrusted path and title included — goes
+      // through the one neutraliser rather than field by field.
       neutraliseEvidence(
         `- ${s.wasAcceptance ? "acceptance lapsed" : "malformed row"} (row ${s.rowId ?? "?"}): [${s.severity}] ${s.path} — ${s.title}${s.problem ? ` (${s.problem})` : ""}`,
       ),
