@@ -40,6 +40,14 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "@sinclair/typebox";
 import { runPlanPipeline } from "./plan-driver.ts";
 import { truncateForDisclosure } from "./plan-gap-disclosure.ts";
+import {
+  MAX_LABELS,
+  MAX_MARKER_PAIRS,
+  MAX_PROVENANCE_LINE,
+  type PlanProvenance,
+  normalizeLabels,
+  validateProvenance,
+} from "./plan-provenance.ts";
 import type { PlanResult } from "./plan-types.ts";
 import { trace } from "./trace.ts";
 import { piSessionHost } from "./work-driver-host.ts";
@@ -97,8 +105,29 @@ export function registerPlanTool(pi: ExtensionAPI) {
       reviewedDigest: Type.Optional(
         Type.String({
           description:
-            "The reviewedDigest a dry run reported. Echo it on the confirming call to file that exact reviewed spec verbatim; without it, or on a mismatch, the full pipeline runs.",
+            "The reviewedDigest a dry run reported. Echo it on the confirming call to file that exact reviewed spec verbatim; without it, or on a mismatch, the full pipeline runs. The digest also covers labels and provenance: a confirm that changes either is a digest mismatch and files nothing.",
         }),
+      ),
+      labels: Type.Optional(
+        Type.Array(Type.String(), {
+          description: `Labels to create the filed issue with, in the same single forge call — so they are on the issue from its first moment (a follow-up edit leaves a window where an auto-filed ticket reads as manual work to everything watching the tracker). At most ${MAX_LABELS}; each 1-50 chars matching ^[A-Za-z0-9][A-Za-z0-9:._ /-]*$ (spaces and ':' allowed, no comma). Invalid input is refused BEFORE any dispatch with an invalid-input error naming what is wrong. Every label must already exist on the target repo: a missing one halts filing with filingFailure.reason "label-missing" and NOTHING is filed — the driver never creates a label as a side effect of filing. The result gains issueNumber alongside issueUrl. Omit for today's behaviour exactly.`,
+        }),
+      ),
+      provenance: Type.Optional(
+        Type.Object(
+          {
+            line: Type.String({
+              description: `One line of at most ${MAX_PROVENANCE_LINE} chars, rendered as the FIRST line of the issue body in italics followed by a blank line. Any '@', '<', '>' or backtick is REJECTED (not escaped), so the line can never mention an account or inject markup.`,
+            }),
+            marker: Type.Record(Type.String(), Type.String(), {
+              description: `Structured pairs, rendered as the LAST line of the body as \`<!-- pi-rukas:provenance v1 k1=v1 k2=v2 ... -->\` in sorted key order. At most ${MAX_MARKER_PAIRS}; keys match ^[a-z][a-z0-9_-]{0,31}$, values match ^[A-Za-z0-9._,:/#@+=-]{1,200}$ (no spaces or newlines; '@' IS allowed in a value — the account prohibition is on \`line\` only). Written by code after drafting, never by an LLM stage, and reserved out of the body budget so compaction cannot trim it.`,
+            }),
+          },
+          {
+            description:
+              "Mark a filed issue as machine-filed: an italic line atop the body and an HTML-comment marker at its foot. Both are appended by code after drafting.",
+          },
+        ),
       ),
     }),
     async execute(_id, raw, _signal, _onUpdate, ctx: ExtensionContext) {
@@ -108,6 +137,8 @@ export function registerPlanTool(pi: ExtensionAPI) {
         context?: string;
         dryRun?: boolean;
         reviewedDigest?: string;
+        labels?: string[];
+        provenance?: PlanProvenance;
       };
       if (!params.descriptor || params.descriptor.trim().length === 0) {
         return {
@@ -115,12 +146,35 @@ export function registerPlanTool(pi: ExtensionAPI) {
           details: { started: false },
         };
       }
+      // #1377: labels and provenance are validated here, BEFORE any dispatch.
+      // A caller that mistypes a label name gets a named error for the cost of
+      // one tool call, not a five-minute pipeline that then halts at the forge;
+      // and nothing can reach the create call with bytes this module did not
+      // check (a label with a comma would break glab's comma-separated list, a
+      // '@' in the line would name an account in visible text).
+      const labelCheck = normalizeLabels(params.labels ?? []);
+      if (!labelCheck.ok) {
+        return invalidInput("labels", labelCheck.problems);
+      }
+      const provenanceCheck =
+        params.provenance === undefined
+          ? { ok: true as const, provenance: undefined }
+          : validateProvenance(params.provenance);
+      if (!provenanceCheck.ok) {
+        return invalidInput("provenance", provenanceCheck.problems);
+      }
+      const labels = labelCheck.labels;
+      const provenance = provenanceCheck.provenance;
       const repoRoot = await resolveRepoRoot(ctx.cwd);
       trace(
-        `start_plan_driver → descriptor="${params.descriptor.slice(0, 60)}" type=${params.type ?? "inferred"} dryRun=${!!params.dryRun} repoRoot=${repoRoot}`,
+        `start_plan_driver → descriptor="${params.descriptor.slice(0, 60)}" type=${params.type ?? "inferred"} dryRun=${!!params.dryRun} labels=${labels.length} provenance=${provenance ? "yes" : "no"} repoRoot=${repoRoot}`,
       );
       try {
-        const result = await runPlanPipeline(piSessionHost(pi), params, repoRoot);
+        const result = await runPlanPipeline(
+          piSessionHost(pi),
+          { ...params, labels, provenance },
+          repoRoot,
+        );
         return {
           content: [
             {
@@ -144,6 +198,20 @@ export function registerPlanTool(pi: ExtensionAPI) {
       }
     },
   });
+}
+
+/**
+ * #1377: the pre-dispatch rejection of malformed labels / provenance. A NAMED
+ * error (`invalid-input`) with every problem listed, and `started: false` so a
+ * caller can tell a refused call from a run that filed nothing.
+ */
+function invalidInput(field: string, problems: string[]) {
+  const text = `start_plan_driver refused: invalid ${field}. ${problems.join("; ")}`;
+  trace(`start_plan_driver: invalid ${field} — ${problems.join("; ")}`);
+  return {
+    content: [{ type: "text" as const, text }],
+    details: { started: false, error: `invalid-input: ${field}`, problems },
+  };
 }
 
 function renderPlanResult(r: PlanResult, dryRun: boolean): string {
@@ -309,6 +377,9 @@ function resultDetails(r: PlanResult, dryRun: boolean): Record<string, unknown> 
     residualForDisclosure: r.residualForDisclosure,
   };
   if (r.issueUrl) d.issueUrl = r.issueUrl;
+  // #1377: the number the driver parsed from the created issue's URL, so an
+  // automated caller does not have to. Absent when the URL carried no number.
+  if (typeof r.issueNumber === "number") d.issueNumber = r.issueNumber;
   if (r.capReason) d.capReason = r.capReason;
   if (r.filingFailure) d.filingFailure = r.filingFailure;
   if (r.failedAngles) d.failedAngles = r.failedAngles;
