@@ -44,11 +44,24 @@
  * set or clear it. The `/work` driver path (`work-driver-adversarial-fanout.ts`:
  * a `diff` string + `getDiff`, `reportVerdict: "routed"`) never sets it, keeps
  * its existing identity, and keeps recording passing rows. Provenance is never
- * inferred from the presence of a `diff` string.
+ * inferred from the presence of a `diff` string. The driver path also runs no
+ * capture at all: every git read in this module is paid for only where the
+ * answer is consulted.
+ *
+ * ## Known residual — the lens row is NOT bound by this change
+ *
+ * `writeLensLedgerEntry` (`lens-ledger.ts`, driven from `lens-review.ts`) records
+ * the same whole-working-tree patch identity from a range the caller also names,
+ * so the narrowed-range defect above exists on the lens side too. It is
+ * deliberately OUT OF SCOPE here: this module's rule applies to the
+ * `adversarial_loop` row only, `lens-review*.ts` and `lens-ledger.ts` are
+ * untouched, and the `dispatch_lens_review` row stays unbound. Tracked
+ * separately by PM as the follow-up; until it lands, the lens half of the #912
+ * gate is as strong as it was before #1360.
  */
 
 import { execp } from "./exec.ts";
-import { identityBase } from "./review-ledger-path.ts";
+import { type IdentityBase, identityBase } from "./review-ledger-path.ts";
 import { workingTreePatchId } from "./review-ledger.ts";
 import type { LedgerEntry } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
@@ -97,9 +110,27 @@ export interface LedgerBinding extends ReviewedRange {
   bindingUnavailable?: string;
 }
 
+/** One of the refusal prefixes this module is allowed to emit — the same array
+ * the merge guard's renderer and the tests read, so a refusal the guard does
+ * not recognise as a binding refusal cannot be constructed. */
+export type BindingRefusalPrefix = (typeof BINDING_REFUSAL_PREFIXES)[number];
+
+/** The shape `identityBase` returns on failure. Declared so the discriminated
+ * union below (and its narrowing) type-checks without re-declaring the return
+ * type at two sites. */
+type IdentityBaseFailure = { ok: false; reason: string };
+
+/** Narrow an `identityBase` answer that a caller may have pre-resolved. Checks
+ * the fields rather than an `ok` flag so a threaded `{remote, mainline}` and a
+ * freshly resolved `{ok: true, remote, mainline}` take the same path. */
+function isIdentityBase(value: IdentityBase | IdentityBaseFailure): value is IdentityBase {
+  const candidate = value as Partial<IdentityBase>;
+  return typeof candidate.remote === "string" && typeof candidate.mainline === "string";
+}
+
 /** Refuse a tool-path row, naming why. One shape for every refusal so the
  * detail the guard quotes is never built two different ways. */
-function refuse(prefix: string, reason: string): BindingDecision {
+function refuse(prefix: BindingRefusalPrefix, reason: string): BindingDecision {
   return { ok: false, detail: `${prefix}: ${reason}` };
 }
 
@@ -149,6 +180,13 @@ async function mergeBaseOf(
  * cannot satisfy the gate whatever else matches, because the base they name is
  * not the base the identity came from.
  *
+ * `mainline` is the identity base (`identityBase`, review-ledger-path.ts — the
+ * same `{remote, mainline}` pair `workingTreePatchId` takes the patch id
+ * against), resolved by the CALLER once and threaded in. Resolving it here
+ * instead would give the range check and the patch id two separate answers to
+ * "which ref is the mainline", and a `trunk`/`develop` repo is where that
+ * disagreement would show up.
+ *
  * Resolves refs and the merge-base only; it never reads a diff, so it adds no
  * size limit. Every failure is a refusal with a named reason.
  */
@@ -156,14 +194,13 @@ export async function reviewRangeDecision(
   cwd: string,
   baseRef: string | undefined,
   headRef: string,
+  mainline: IdentityBase,
   execFn: VerifyExecFn = execp,
 ): Promise<BindingDecision & ReviewedRange> {
   if (!baseRef || !baseRef.trim()) {
     return refuse("range-not-branch", "no base was reviewed, so the branch range was not reviewed");
   }
-  const base = await identityBase(execFn, cwd);
-  if (!base.ok) return refuse("range-unverifiable", base.reason);
-  const mainlineRef = `${base.remote}/${base.mainline}`;
+  const mainlineRef = `${mainline.remote}/${mainline.mainline}`;
   let resolvedBase = "";
   let resolvedHead = "";
   let mergeBase = "";
@@ -208,16 +245,37 @@ export async function reviewRangeDecision(
  * SHA in the first place, and asking "did the tip move?" of a ref that already
  * resolved to the tip would be the wrong question — that case never reaches
  * this function, since the two SHAs match.
+ *
+ * "The tip" is spelled from the RESOLVED mainline, not from a hardcoded
+ * `main`/`master`: on a `trunk`- or `develop`-based repo a caller who names the
+ * mainline by name (or as `<remote>/<mainline>`) means the current tip exactly
+ * as much as one who writes `HEAD`, and calling that `head-not-current` would
+ * refuse a review of the tip.
  */
-function headPrefix(reviewedHeadRef: string | undefined, currentHead: string): string {
-  const namedTheTip =
-    reviewedHeadRef === undefined ||
-    reviewedHeadRef === "HEAD" ||
-    reviewedHeadRef === "main" ||
-    reviewedHeadRef === "master" ||
-    reviewedHeadRef === "origin/main" ||
-    reviewedHeadRef === "origin/master";
-  return namedTheTip ? "head-moved" : "head-not-current";
+function headPrefix(
+  reviewedHeadRef: string | undefined,
+  mainline: IdentityBase,
+): BindingRefusalPrefix {
+  return namedHeadIsTip(reviewedHeadRef, mainline) ? "head-moved" : "head-not-current";
+}
+
+/** Whether a ref the caller named is one of the ways of saying "the commit I am
+ * standing on": `HEAD`, the mainline, or `<remote>/<mainline>` on a repo whose
+ * mainline is not `main`/`master`. #1360 lens 2: the writer used to string-match
+ * `main`/`master` here, so on a `trunk` or `develop` repo a tip-named head was
+ * refused `head-not-current` for a review that WAS of the tip.
+ *
+ * Exported because the WRITER decides which head the binding compares against and
+ * has to make the same call from the same rule — two copies would drift, and the
+ * drift is a refusal an honest review cannot explain. `headPrefix` above is the
+ * only other reader, and it is in this file. */
+export function namedHeadIsTip(
+  named: string | undefined,
+  mainline: IdentityBase | undefined,
+): boolean {
+  if (named === undefined || named === "HEAD" || named === "") return true;
+  if (!mainline) return false;
+  return named === mainline.mainline || named === `${mainline.remote}/${mainline.mainline}`;
 }
 
 /**
@@ -236,6 +294,22 @@ export async function decideToolPathRow(opts: {
   currentTreePatchId: string;
   /** The row's write-time HEAD SHA ("" when unresolvable). */
   currentHeadSha: string;
+  /** #1360 — set ONLY when the caller's `head` names a ref that does not
+   * resolve to the checkout's tip: the review is of some other commit, and the
+   * head check must refuse it `head-not-current` rather than forgiving it as "the
+   * HEAD simply moved". Absent means the caller named the tip (`HEAD`, the
+   * mainline, or nothing), so a mismatch there is a moved HEAD. The WRITER
+   * decides this by resolving the named ref and comparing — not by string
+   * matching the name, which is what made a `trunk`/`develop` repo read a
+   * tip-named head as a moved one. */
+  namedHeadSha?: string;
+  /** The ref the caller named, for the refusal's wording. */
+  namedHeadRef?: string;
+  /** OPTIONAL only because a direct caller (or a test) may leave it out; every
+   * production writer resolves it once via `identityBase` and threads it in,
+   * because it is the SAME pair the patch id was taken against. Absent, this
+   * function resolves it itself — one extra pair of git reads, same answer. */
+  mainline?: IdentityBase;
   execFn?: VerifyExecFn;
 }): Promise<BindingDecision & ReviewedRange> {
   const execFn = opts.execFn ?? execp;
@@ -250,7 +324,17 @@ export async function decideToolPathRow(opts: {
       "workCwd's HEAD could not be resolved, so the reviewed head cannot be bound",
     );
   }
-  const range = await reviewRangeDecision(opts.workCwd, opts.baseRef, headRef, execFn);
+  // Threaded in by the writer (the same pair its patch id came from); resolved
+  // here only for a direct caller that did not thread it.
+  let mainline: IdentityBase;
+  if (opts.mainline) {
+    mainline = opts.mainline;
+  } else {
+    const resolved = await identityBase(execFn, opts.workCwd);
+    if (!isIdentityBase(resolved)) return refuse("range-unverifiable", resolved.reason);
+    mainline = resolved;
+  }
+  const range = await reviewRangeDecision(opts.workCwd, opts.baseRef, headRef, mainline, execFn);
   if (!range.ok) return range;
   // The compared head is the commit the row's identity was taken from — the
   // worktree's own HEAD at capture time — never whatever ref the caller named.
@@ -259,9 +343,20 @@ export async function decideToolPathRow(opts: {
   if (!binding.headAtCapture) {
     return refuse("range-unverifiable", "the reviewed head was never resolved");
   }
+  // A caller that named a ref resolving somewhere other than the checkout's tip
+  // reviewed a different commit; that is a refusal its own argument caused, and
+  // it is refused whatever the capture says, because a capture taken against that
+  // older commit would otherwise match itself and pass on an identity covering
+  // nothing the merge is about to ship.
+  if (opts.namedHeadSha !== undefined && binding.headAtCapture !== opts.namedHeadSha) {
+    return refuse(
+      "head-not-current",
+      `reviewed ${binding.headAtCapture}, ${opts.namedHeadRef ?? "the named head"} is ${opts.namedHeadSha}`,
+    );
+  }
   if (binding.headAtCapture !== opts.currentHeadSha) {
     return refuse(
-      headPrefix(binding.reviewedHeadRef, opts.currentHeadSha),
+      headPrefix(binding.reviewedHeadRef, mainline),
       `reviewed ${binding.headAtCapture}, workCwd at ${opts.currentHeadSha}`,
     );
   }
@@ -274,7 +369,14 @@ export async function decideToolPathRow(opts: {
       `reviewed ${binding.reviewedTreePatchId}, now ${opts.currentTreePatchId}`,
     );
   }
-  return { ok: true, reviewedBase: range.reviewedBase, reviewedHead: binding.reviewedHead };
+  // Both stored SHAs are the ones THIS function resolved and compared, never
+  // the capture's own (#1360 lens 3): a capture is what a round recorded, this
+  // decision is what the module confirmed. Echoing `binding.reviewedHead` (or
+  // `.reviewedBase`) would let a capture that named a different commit — stale,
+  // truncated, or simply another round's — land on the row as though the range
+  // check had vouched for it. The head that survived the comparison above is
+  // `currentHeadSha`; the base that survived is the merge-base `range` computed.
+  return { ok: true, reviewedBase: range.reviewedBase, reviewedHead: opts.currentHeadSha };
 }
 
 /** The #1360 identifiability fields a tool-path row stores. Empty for a row
@@ -299,6 +401,10 @@ export function toolPathFields(
  * `bindingUnavailable` rather than failing the loop, because the reviewer's own
  * diff read is what a round actually needs. The fail-closed rule lives in the
  * DECISION (`decideToolPathRow`), where a missing capture is a refusal.
+ *
+ * Callers gate on provenance: only the tool path consults the result, so only
+ * the tool path calls this. On the driver path it is not "taken and thrown
+ * away" — it is never called, and the loop spends no git subprocess on it.
  */
 export async function captureBinding(
   cwd: string,
@@ -308,7 +414,9 @@ export async function captureBinding(
 ): Promise<LedgerBinding> {
   try {
     const head = headRef ?? "HEAD";
-    const range = await reviewRangeDecision(cwd, baseRef, head, execFn);
+    const base = await identityBase(execFn, cwd);
+    if (!base.ok) return { bindingUnavailable: base.reason };
+    const range = await reviewRangeDecision(cwd, baseRef, head, base, execFn);
     const [headOfTree, computed] = await Promise.all([
       // The TIP, always — never the ref the caller named. `workingTreePatchId`
       // takes the row's identity from the worktree's own HEAD, so the captured

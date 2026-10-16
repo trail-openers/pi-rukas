@@ -14,6 +14,7 @@ import {
 } from "./adversarial-ledger-capture.ts";
 import { buildLedgerNote } from "./adversarial-ledger-note.ts";
 import type { AdversarialLoopParams } from "./adversarial-loop-params.ts";
+import { isToolPathProvenance } from "./adversarial-loop-params.ts";
 import { makeRunPhase } from "./adversarial-phase.ts";
 import { policyInfraFailureText, reportPolicyError } from "./adversarial-policy.ts";
 import { buildAdversarialPrompt, buildFixPrompt } from "./adversarial-prompts.ts";
@@ -96,6 +97,10 @@ export async function runAdversarialLoop(
   // that moment. `ledgerWrite` threads it into the writer, which refuses the
   // row when the tool-path bindings do not hold.
   const ledgerBinding: BindingState = { capturedHeadRef: params.head };
+  // #1360 — provenance is the branded marker the tool mints; an untyped caller
+  // cannot produce the string, so this narrow IS the provenance check (see
+  // `ToolPathProvenance`). The driver path carries none and runs no capture.
+  const toolPath = isToolPathProvenance(params.toolPath);
   const ledgerWrite = makeLedgerWrite({
     state: ledgerBinding,
     workCwd: params.workCwd,
@@ -105,8 +110,12 @@ export async function runAdversarialLoop(
     resolvedBranch: branchResolved,
     callerSuppliedDiff: params.callerSuppliedDiff,
     // #1360 — provenance is set only at the tool boundary, never inferred.
-    toolPath: params.toolPath,
+    toolPath,
     baseRef: params.base,
+    // #1360 — one executor for the whole binding: the per-round capture and the
+    // write consult it, so a caller with its own git seam has ONE to give
+    // (same shape as `commentExecFn` for the comment check).
+    execFn: params.commentExecFn,
     // #1104 — fence findings are prefixed BEFORE the write: the durable ledger
     // row must carry the same text the caller sees.
     decorate: (raw) => withFixViolations(raw, fenceRecords),
@@ -170,9 +179,20 @@ export async function runAdversarialLoop(
   let getDiff = params.getDiff;
   /** #1360 — capture what THIS round is about to review, before its reviewer
    * dispatch, so the identity is the tree the reviewer's prompt carried and not
-   * the tree a later fix round left behind. */
+   * the tree a later fix round left behind.
+   *
+   * TOOL PATH ONLY. The bindings are consulted only for a `toolPath` row, so on
+   * the driver path this call would be a round of git subprocesses whose answer
+   * nothing reads — `captureRound` is not called there at all, and the writer
+   * receives the row it recorded before #1360. */
   const captureForRound = async () =>
-    captureRound(ledgerBinding, params.workCwd ?? process.cwd(), params.base, headRef);
+    captureRound(
+      ledgerBinding,
+      params.workCwd ?? process.cwd(),
+      params.base,
+      headRef,
+      params.commentExecFn,
+    );
   const noDiffResult = (text: string): DispatchResult =>
     ledgerWrite(
       synthesizeResult({
@@ -287,10 +307,10 @@ export async function runAdversarialLoop(
       params.commentExecFn,
     );
     // #1360 — capture what THIS round is about to review, immediately before
-    // the reviewer dispatch. On the driver path (no `toolPath`) the capture is
-    // still taken and simply never consulted: the writer's range/head/tree
-    // bindings apply to tool rows only.
-    await captureForRound();
+    // the reviewer dispatch. Gated on the provenance marker: the driver path
+    // never consults a binding, so it pays for none (no capture, no extra git
+    // subprocess, and its row is byte-identical to the pre-#1360 one).
+    if (toolPath) await captureForRound();
     const adv = await runPhaseWithInfraRetry(
       "adversarial-developer",
       `round${round}-review`,
