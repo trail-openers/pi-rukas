@@ -58,3 +58,16 @@ export function reportPolicyError(policy: {
     ? "reportOnly review without a verdict policy"
     : "reportVerdict is not a recognised verdict policy";
 }
+
+/**
+ * #1161 — the infra-failure sentence `runAdversarialLoop` returns for a reason
+ * from `reportPolicyError`: the reason, then the two values a policy is allowed
+ * to take, then the disclaimer that says this is not a review rejection.
+ *
+ * Exported so the smoke test asserts against the sentence the caller actually
+ * sees rather than a copy of it: the reason stays a literal in the test (the
+ * spec) and the wrapper stays production text.
+ */
+export function policyInfraFailureText(reason: string): string {
+  return `Adversarial loop infrastructure failure: ${reason} (reportVerdict must be "terminal" or "routed"). No verdict was produced — this is NOT a review rejection.`;
+}
