@@ -1,11 +1,11 @@
 /**
- * secret-patterns — the one secret-shape pattern set, and the redactor built on it.
+ * secret-patterns — the one secret-shape pattern set, shared by vipune.ts
+ * (`looksLikeSecret`) and the redactor below.
  *
- * Dependency-free by design: vipune.ts (`looksLikeSecret`), decision-log.ts
- * (`redactSecrets`) and the open-point reader all import from here, and the reader
- * must not pull `node:fs` / `node:child_process` into its closure just to redact a
- * bullet (#1187 fix round 2). `decision-log.ts` re-exports `redactSecrets` so its
- * existing callers are untouched.
+ * Dependency-free by design: vipune.ts, decision-log.ts (`redactSecrets`, re-exported
+ * from here for its existing callers) and the open-point reader all import from this file,
+ * and the reader must not pull `node:fs` / `node:child_process` into its closure just to
+ * redact a bullet (#1187 fix round 2).
  */
 
 /**
