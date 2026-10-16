@@ -83,9 +83,10 @@ vipune add 'corrected statement' --supersedes <old-id> --memory-type fact
 # yours to do: see the memory-write boundary in Quick reference.
 ```
 
-**Memory-write boundary:** never run vipune update, delete, prune or promote — those
-are operator actions; correct with `add --supersedes`. The full per-mode statement
-lives under the `Memory-write boundary` heading of the bundled skill.
+**Memory-write boundary:** never run vipune update, delete, prune, promote or
+mcp — those are operator actions; correct with `add --supersedes`. The full
+per-mode statement lives under the `Memory-write boundary` heading of the bundled
+skill.
 
 ## Conflict handling — supersede, don't duplicate
 
@@ -144,8 +145,8 @@ candidate <id> prune
 vipune search '<term>' --no-hybrid --recency 0.0 --limit 5 --no-touch --json
 vipune add '<distilled fact>' --memory-type <type> [--status candidate] [--supersedes <id>]
 vipune list --limit 50 --include-candidates
-# MEMORY-WRITE BOUNDARY: never run `vipune update`, `delete`, `prune` or
-# `promote` — operator actions; correct with `add --supersedes <id>`, which
+# MEMORY-WRITE BOUNDARY: never run `vipune update`, `delete`, `prune`, `promote`
+# or `mcp` — operator actions; correct with `add --supersedes <id>`, which
 # preserves the original row. Report one to retire it (Periodic consolidation).
 ```
 
