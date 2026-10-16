@@ -121,13 +121,13 @@ Vipune has no built-in TTL. Use `--status` instead:
 vipune add 'tofu apply takes ~5 min when only user_data changed' \
   --memory-type observation --status candidate
 
-# You cannot promote, delete, prune, or rewrite a memory. Correct a
-# memory by writing a new one with `--supersedes <id>`.
+# Leave the row a candidate. Promotion is an operator action — report the
+# id. Correct a memory by writing a new one with `--supersedes <id>`.
 ```
 
 **An operator promotes a candidate only after the fact survives a second confirmation.** Report the row's id for promotion; do not run it yourself. Otherwise, let candidates sit — they're inert until explicitly queried. This is the short-term tier.
 
-The `/work` driver writes its own candidates (lens findings, invariant removals), always typed `observation` so `vipune prune` can age out the unpromoted ones — prune never demotes a `guard`. The developer brief reads active rows only, so a driver candidate reaches no compiled brief until an operator promotes it (an explicit `--include-candidates` sweep still sees it); `/audit` lists the candidates with their ids for that decision.
+The `/work` driver writes its own candidates (lens findings, invariant removals), always typed `observation` so the operator's `prune` command can age out the unpromoted ones — it never demotes a `guard`. The developer brief reads active rows only, so a driver candidate reaches no compiled brief until an operator promotes it (an explicit `--include-candidates` sweep still sees it); `/audit` lists the candidates with their ids for that decision.
 
 ## Freshness verification — REQUIRED before acting
 
@@ -148,7 +148,7 @@ If verification fails: **supersede the stale memory immediately.** Don't just ig
 vipune add 'New corrected statement' --supersedes <old-id> --memory-type fact
 
 # Superseding is the correction — it preserves the original row. Removal is not
-# yours to do: see the memory-write boundary in Quick reference.
+# yours to do: see "Memory-write boundary" below.
 ```
 
 ## Contradiction handling — supersede, don't duplicate
@@ -266,16 +266,18 @@ Look for:
 - **Candidates** that have survived 5+ sessions → report for promotion
 - **Candidates** never (or barely) retrieved and old → report for pruning
 
-The two "report" lines go in **your final report**, one line per row, with the id verbatim:
+The report itself is **free prose in your final reply to the operator** — PM includes it in its reply to them. There is no parser; what matters is that each row is one line with the id verbatim, and the two words name the action wanted:
 
 ```text
-candidate <id> — promote
-candidate <id> — prune
+candidate <id> promote
+candidate <id> prune
 ```
 
-Where the age and retrieval evidence comes from: `vipune list --json` — each row carries `retrieval_count`, `last_retrieved_at`, `created_at`, `memory_type`, `status` and `importance`. That listing is the evidence for both calls. The `/audit` memory panel (`extension/src/memory-panel.ts` / `memory-stats.ts`) is the aggregate view (rows by status/type, total/max retrievals, never-retrieved count, candidate ids + types) — it has no per-row age column.
+Report only rows you did not write in this session. Where the age and retrieval evidence comes from: `vipune list --json` — each row carries `retrieval_count`, `last_retrieved_at`, `created_at`, `memory_type`, `status` and `importance`. That listing is the evidence for both calls. The `/audit` memory panel (`extension/src/memory-panel.ts` / `memory-stats.ts`) is the aggregate view (rows by status/type, total/max retrievals, never-retrieved count, candidate ids + types) — it has no per-row age column.
 
-Report a candidate for pruning when it matches what `vipune prune` actually demotes: `status = 'candidate' AND retrieval_count < N AND age(created_at) > T`. `vipune prune` is an operator command, and it **hard-excludes** `guard`-type rows and rows with `importance` high/critical — never propose pruning one of those, since the operator's own tool would refuse it.
+Report a candidate for pruning when it matches what the operator's `prune` command keys on: `status = 'candidate' AND retrieval_count < N AND age(created_at) > T` — candidate, never (or barely) retrieved, and old. `prune` is an operator command, and it **hard-excludes** `guard`-type rows and rows with `importance` high/critical — never propose pruning one of those, since the operator's own tool would refuse it.
+
+When a memory is obsolete and there is **nothing to correct it to**, do not add a row: report its id for pruning (`candidate <id> prune`) — or, if it is `active`, report it for operator removal.
 
 This is the reflection pattern from the agentic memory literature (Park et al. 2023, A-MEM 2025, MemoryBank). It prevents the bloat-driven degradation that hits unbounded memory stores around 50+ sessions.
 
@@ -289,6 +291,30 @@ Real failure patterns documented in agentic memory systems — don't repeat them
 4. **Ephemeral leakage** — Persisting raw conversation-context as memory. *Mitigation*: only save *distilled* conclusions, never raw turns.
 5. **Premature commit** — Saving a hypothesis mid-debug. *Mitigation*: save only at task close, after the conclusion holds.
 6. **Secret leakage** — A single token or password committed to memory is a breach. *Mitigation*: the explicit NEVER list above + report the memory id to the operator immediately + rotate the credential if found.
+
+## Memory-write boundary
+
+This is the full statement of the rule, and it lives here — every other mention
+in this skill and in the role modules is the one-line operative rule.
+
+**Never run `vipune update`, `delete`, `prune` or `promote`.** Those are operator
+actions. Correct a memory by writing a new one with
+`vipune add '<new content>' --supersedes <old-id> --memory-type <type>`, which
+preserves the original row, so the change is auditable and reversible. Retire one
+by reporting its id (see Periodic consolidation).
+
+What is actually enforced, per mode — the doctrine is stricter than any single
+gate, so behave as if the whole rule is live:
+
+| Verb | Enforcement |
+|---|---|
+| `update` with `-t`/`--text` | Refused by code — `isDestructiveMemoryWrite` in `extension/src/bash-pattern-wildcard.ts`, reached from `matchBashSubcommand`. Enforced in strict/headless mode and on the PM's mode-independent bash guard. |
+| `delete`, `prune`, `promote`, and `update` with any other flag | **No code refusal in trust mode** (the default on an interactive host and in the sandbox). Doctrine is the only gate there. |
+| All four verbs | Granted to no role in `agents.json`. In trust mode that grant is doctrine, not a runtime gate. |
+
+`update --text` replaces content in place — same id, no lineage, no undo — so
+anything that cited that memory would silently point at new text. That is why it
+is the one verb with a code refusal ahead of the allowlist.
 
 ## Quick reference
 
@@ -309,16 +335,9 @@ vipune list --limit 50
 # row's type, and guessing wrong silently retypes it out of every typed read.
 vipune add '<new content>' --supersedes <old-id> --memory-type <type>
 
-# NOT AVAILABLE: no agent role promotes, deletes, prunes, or rewrites memory
-# content — those are operator actions, so never run `vipune update`, `delete` or
-# `prune`. Three layers say so, and you must behave as if all three are live:
-# `update`/`delete`/`prune` are granted to no role in agents.json; an `update`
-# carrying -t/--text is refused ahead of the allowlist by isDestructiveMemoryWrite
-# (extension/src/bash-pattern-wildcard.ts); and in trust mode — the default on an
-# interactive host and in the sandbox — the agents.json grant is doctrine, not a
-# runtime gate, so nothing stops a verb the doctrine forbids. `update --text`
-# replaces content in place — same id, no lineage, no undo — so anything that
-# cited that memory would silently point at new text.
+# NOT AVAILABLE: never run `vipune update`, `delete`, `prune` or `promote` —
+# operator actions. Correct with `add --supersedes <id>`. See
+# "Memory-write boundary" above for what each mode actually enforces.
 
 # VALIDATE (check before adding long content)
 vipune validate '<text>'           # exits 3 if over 512-token embedding limit
