@@ -104,8 +104,11 @@ export function setupReviewFixture(opts: {
   withSkills?: boolean;
 }): ReviewFixture {
   const root = mkdtempSync(path.join(os.tmpdir(), `${opts.prefix}-`));
-  // What the ledger redirect was before this fixture, so cleanup() can undo it.
+  // What the two process env vars were before this fixture, so cleanup() can
+  // undo BOTH: a leaked PI_ENSEMBLE_SKILLS_DIR points a later test at a skills
+  // dir this fixture has already removed.
   const savedLedger = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+  const savedSkills = process.env.PI_ENSEMBLE_SKILLS_DIR;
   const repo = path.join(root, "repo");
   const skills = path.join(root, "skills");
   const ledgerDir = path.join(root, "ledger");
@@ -165,6 +168,8 @@ export function setupReviewFixture(opts: {
       rmSync(root, { recursive: true, force: true });
       if (savedLedger === undefined) delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
       else process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = savedLedger;
+      if (savedSkills === undefined) delete process.env.PI_ENSEMBLE_SKILLS_DIR;
+      else process.env.PI_ENSEMBLE_SKILLS_DIR = savedSkills;
     },
   };
 }

@@ -5,7 +5,7 @@ import { execp } from "./exec.ts";
 import { resolveBudgetKey } from "./lens-budget-key.ts";
 import type { LensLedgerOutcome } from "./lens-ledger.ts";
 import { withLensModelSlot } from "./lens-model-slots.ts";
-import { partitionDecisions, renderPriorFindingsBlock } from "./lens-residuals.ts";
+import { partitionDecisions } from "./lens-residuals.ts";
 import { splitCarried } from "./lens-review-advisory.ts";
 import { carriedSummary, noReviewSummary } from "./lens-review-auto-delta.ts";
 import { resolveLensReviewBranch } from "./lens-review-branch-resolve.ts";
@@ -33,10 +33,10 @@ import {
   piSkillsDir,
 } from "./lens-review-format.ts";
 import { isReviewIncomplete } from "./lens-review-incomplete.ts";
+import { memoryDisclosure, priorFindingsFor, recordRound } from "./lens-review-memory.ts";
 import { installBlockRowsForRoster, skillsDirUsable } from "./lens-review-skills.ts";
 import type { Finding, LensRunResult } from "./lens-review-types.ts";
 import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
-import { readBranchRows, recordFindingRunOutcome } from "./review-findings-store.ts";
 import { isFullCommitSha, resolveHeadSha } from "./review-head-sha.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
@@ -50,8 +50,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * an overall verdict.
  *
  * Mirrors the Step 7 contract of the opencode `/work` command. Lens roster,
- * prompt construction, parsing, and rendering live in lens-review-format.ts;
- * this module owns spawning, retries, and the async-job/tool wiring.
+ * prompt construction, parsing, and dedup live in lens-review-format.ts, the
+ * operator-facing report in lens-review-render.ts; this module owns spawning,
+ * retries, and the async-job/tool wiring.
  */
 
 import { aggregateLensUsage } from "./lens-review-usage.ts";
@@ -383,10 +384,7 @@ export async function runLensReview(opts: {
   const { batchKey, bumpBatch } = startPersistentBatch(runId, roster.length);
   // #1105 — the branch's open and accepted findings from earlier rounds, as a
   // fenced DATA block every lens receives (empty on a first review).
-  const priorFindings =
-    branchResolved && headSha
-      ? renderPriorFindingsBlock(await readBranchRows(opts.cwd ?? process.cwd(), branchResolved))
-      : "";
+  const priorFindings = await priorFindingsFor(opts.cwd ?? process.cwd(), branchResolved, headSha);
   // #873 — blocked roster entries become blocked lens results (no spawn,
   // the named error as parseError) and feed REVIEW_INCOMPLETE via
   // computeVerdict; healthy entries fan out as before.
@@ -434,23 +432,19 @@ export async function runLensReview(opts: {
   // #1105 — record the round against the findings memory: suppressed findings
   // leave the review, and a complete full review resolves rows it no longer reports.
   const review = delta ? "delta" : isReviewIncomplete(lensResults) ? "incomplete" : "full";
-  const recorded =
-    branchResolved && headSha
-      ? await recordFindingRunOutcome({
-          cwd: opts.cwd ?? process.cwd(),
-          branch: branchResolved,
-          headSha,
-          findings: deduped,
-          ...(delta ? { deltaDiff: diff } : {}),
-          review,
-        })
-      : undefined;
+  const recorded = await recordRound({
+    cwd: opts.cwd ?? process.cwd(),
+    branch: branchResolved,
+    headSha,
+    findings: deduped,
+    review,
+    ...(delta ? { deltaDiff: diff } : {}),
+  });
   // Fail open: an unrecorded round reports every finding, and the summary and
   // the residual comment say why memory was not used — including the case where
   // the round refused to record BECAUSE the branch's rows could not be read.
   // "no memory" and "memory unreadable" must not render the same (#1125).
-  const memoryNote =
-    recorded && !recorded.ok ? `findings memory unavailable: ${recorded.reason}` : undefined;
+  const memory = memoryDisclosure(recorded);
   const decisions = recorded?.ok ? recorded.decisions : undefined;
   const { kept, suppressed } = partitionDecisions(deduped, decisions);
   // #1105 — open rows this round did not re-report, whose cited code is
@@ -480,8 +474,7 @@ export async function runLensReview(opts: {
       findings: reported,
       ...(suppressed.length > 0 ? { suppressed } : {}),
       ...(recorded?.ok && recorded.resolved.length > 0 ? { resolved: recorded.resolved } : {}),
-      ...(recorded?.ok && recorded.setAside ? { setAside: recorded.setAside } : {}),
-      ...(memoryNote ? { memoryNote } : {}),
+      ...memory,
       ...carried.fields,
       usage: aggregateLensUsage(lensResults),
       // #543 — a dispatch-cap kill on any lens child (loop detector / token

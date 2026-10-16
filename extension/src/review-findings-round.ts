@@ -18,14 +18,19 @@
 
 import type { Finding } from "./lens-review-types.ts";
 import type { ChangedRanges } from "./review-diff.ts";
-import { type ReviewKind, rowFate } from "./review-findings-fate.ts";
-import type { ResolvedNotice, SetAsideNotice, StoredFinding } from "./review-findings-file.ts";
+import { type ReviewKind, outsideDelta, rowFate } from "./review-findings-fate.ts";
+import type {
+  Decision,
+  ResolvedNotice,
+  SetAsideNotice,
+  StoredFinding,
+} from "./review-findings-file.ts";
+import { newRowId } from "./review-findings-file.ts";
 import type { HeadState } from "./review-findings-head.ts";
 import { type FindingIdentity, identityOf, pickMatch, sameTitle } from "./review-findings-match.ts";
-import { type Decision, newRowId } from "./review-findings-store.ts";
 
 /** What this round decided about one finding, aligned by index with its input. */
-export type { Decision } from "./review-findings-store.ts";
+export type { Decision } from "./review-findings-file.ts";
 
 /** What one round's pass over the rows produced. */
 export interface RoundOutcome {
@@ -41,15 +46,6 @@ export interface RoundOutcome {
 
 /** The head state of one path, as read by the store before the round ran. */
 export type HeadOf = (path: string) => HeadState | undefined;
-
-/** Would a finding on `line` of `file` fall outside the delta's changed lines? */
-function outsideDelta(f: Finding, identity: FindingIdentity, ranges: ChangedRanges): boolean {
-  const spans = ranges.get(f.path);
-  if (!spans) return true;
-  if (!identity.hasLine) return false;
-  const line = f.line ?? 0;
-  return !spans.some(([lo, hi]) => line >= lo && line <= hi);
-}
 
 /** The row with its acceptance withdrawn: open again, so it is reported again. */
 function reopen(r: StoredFinding): StoredFinding {
@@ -195,7 +191,7 @@ export function applyFindingRound(opts: {
     }
     if (!critical && !gone && same && deltaRanges && priorHash === id.snippetHash) {
       const reason = `cited line ${f.line ?? "?"} is outside the delta since the last recorded review`;
-      if (outsideDelta(f, id, deltaRanges)) {
+      if (outsideDelta(f, id.hasLine, deltaRanges)) {
         decisions.push({ action: "suppressed-unchanged", rowId: row.id, reason });
         return;
       }

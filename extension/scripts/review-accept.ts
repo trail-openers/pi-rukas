@@ -21,7 +21,7 @@
  *      was deleted rather than kept as a shim the boundary tests had to know
  *      about (#1125 cleanup).
  *   3. review-accept-guard.ts refuses agent bash that names this script, the
- *      findings file or the write module, and agent edit/write of the file.
+ *      findings file or the store module, and agent edit/write of the file.
  * Layers 1 and 3 are advisory in trust mode: they are environment and string
  * checks, so an agent with a shell can still bypass them. The guard is a
  * tripwire, not a security boundary.
