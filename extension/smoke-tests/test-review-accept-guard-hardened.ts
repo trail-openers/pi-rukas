@@ -108,7 +108,18 @@ const TEST_RUN_REFUSALS: Case[] = [
 
 const TEST_RUN_ALLOWANCES: Case[] = [
   { c: `bun test smoke-tests/test-${STORE}*.ts`, why: "a glob naming the store's test file" },
-  { c: `bash smoke-tests/lib/verify-loop.sh smoke-tests/test-*.ts`, why: "the offline glob" },
+  {
+    c: `bash smoke-tests/lib/verify-loop.sh smoke-tests/test-*.ts`,
+    why: "the offline glob",
+  },
+  {
+    c: `bun smoke-tests/test-vipune-capability.ts`,
+    why: "the vipune capability arm of .pi/verify-cmd-full",
+  },
+  {
+    c: `PI_ENSEMBLE_VIPUNE_REQUIRED=1 bun smoke-tests/test-vipune-capability.ts`,
+    why: "the same arm with its env prefix (an env word is inert once stripped)",
+  },
   {
     c: `bash smoke-tests/lib/verify-loop.sh smoke-tests/test-${STORE}*.ts --digest`,
     why: "a --digest-style switch",
@@ -195,10 +206,8 @@ const POSITION_ALLOWANCES: Case[] = [
   },
   { c: `echo review-acceptance-notes`, why: "a word containing the script name" },
   { c: `git commit -m "feat: review-accept guard"`, why: "a commit naming the operator script" },
-  {
-    c: `gh pr create --body "Adds the review-accept acceptance path"`,
-    why: "a PR body naming the operator script",
-  },
+  // A gh subcommand no arm spells (`pr create`) is refused, even when its only store
+  // mention sits inside quotes: clause (a) makes the allowlist authoritative.
 ];
 
 const RUNTIME_REFUSALS: Case[] = [
@@ -251,8 +260,6 @@ const WRITE_ARG_REFUSALS: Case[] = [
 ];
 
 const VCS_ALLOWANCES: Case[] = [
-  { c: `git show HEAD:README.md --output=/tmp/readme.txt`, why: "--output naming no protected file" },
-  { c: `git -c core.pager=cat log --oneline`, why: "-c naming no protected file" },
   { c: `gh api /repos/o/r --jq .name`, why: "gh api with no write argument" },
   { c: `git log --oneline`, why: "a plain log" },
   { c: `git --no-pager log --oneline`, why: "the remedy the refusal names" },
@@ -262,7 +269,21 @@ const VCS_ALLOWANCES: Case[] = [
   { c: `gh pr view 1105`, why: "gh pr view" },
   { c: `gh pr view --json number,title`, why: "gh pr view --json" },
   { c: `glab mr view 1105`, why: "glab mr view" },
+  { c: `glab mr diff 1105`, why: "glab mr diff" },
+  { c: `gh repo view`, why: "gh repo view" },
   { c: "git status", why: "git status" },
+  // OVER-REFUSALS 1-2 of the module header: -o/--output and -c are refused whether or
+  // not they name a protected path, and the remedy names the flag to drop.
+  {
+    c: `git show HEAD:README.md --output=/tmp/readme.txt`,
+    why: "--output naming no protected file (over-refusal)",
+  },
+  { c: `git -c core.pager=cat log --oneline`, why: "-c naming no protected file (over-refusal)" },
+  // `gh pr create` is not an arm, so it is refused whatever its body says.
+  {
+    c: `gh pr create --body "Adds the review-accept acceptance path"`,
+    why: "a gh write subcommand naming the script in prose",
+  },
 ];
 
 // ── 6. documented over-refusals ───────────────────────────────────────────────
