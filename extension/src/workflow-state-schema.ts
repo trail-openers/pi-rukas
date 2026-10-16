@@ -36,7 +36,7 @@ import type { IncompleteConsolidation } from "./workflow-state-consolidation.ts"
 export const WORK_STATE_SCHEMA_VERSION = 1 as const;
 
 export type { CapedPartialState, CapEvidence } from "./workflow-state-cap.ts";
-export { WORK_STEPS } from "./workflow-state-validate-caps.ts";
+export { WORK_STEPS } from "./workflow-state-events.ts";
 
 export type { CommitPrRootState } from "./workflow-state-schema-commitpr-root.ts";
 import type { CommitPrRootState } from "./workflow-state-schema-commitpr-root.ts";
@@ -479,10 +479,11 @@ export interface PipelineState {
   handoffDeliveredAt?: string;
 }
 
-// #1362 — WORK_STEPS' home moved to workflow-state-validate-caps.ts (the #861
-// sibling holding the other fixed vocabularies the #533 validator reads), for this
-// module's 500-line gate; the tuple and its doc came across verbatim, and it is
-// re-exported above so every importer keeps its path.
+// #1362 — WORK_STEPS' home is workflow-state-events.ts, beside the WorkStep union
+// it mirrors (that module has no value imports, so a runtime reader can reach the
+// tuple without pulling a value edge through the validator's cap vocabulary — see
+// the comment on the tuple). It moved out of this module for the 500-line gate and
+// is re-exported above so every importer keeps its path.
 // WorkState moved to workflow-state-schema-workstate.ts (500-line gate); re-exported.
 export type { WorkState } from "./workflow-state-schema-workstate.ts";
 

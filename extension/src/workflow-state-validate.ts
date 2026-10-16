@@ -11,7 +11,7 @@
  * kind must still load (a parked cycle's history has to stay observable).
  */
 
-import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
+import { WORK_STEPS, type WorkEvent, type WorkStep } from "./workflow-state-events.ts";
 import { WORK_STATE_SCHEMA_VERSION } from "./workflow-state-schema.ts";
 import {
   CAP_EVIDENCE_KINDS,
@@ -20,7 +20,6 @@ import {
   KNOWN_CAPPED_PARTIAL_TREES,
   KNOWN_CONSOLIDATION_STATUSES,
   KNOWN_STATUSES,
-  WORK_STEPS,
   isKnownCap,
 } from "./workflow-state-validate-caps.ts";
 export { KNOWN_STATUSES } from "./workflow-state-validate-caps.ts";

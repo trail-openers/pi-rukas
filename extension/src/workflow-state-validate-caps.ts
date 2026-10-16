@@ -128,31 +128,7 @@ export function isKnownCap(cap: string): boolean {
 
 // --- #1362: moved from workflow-state-validate.ts for the 500-line gate (the same
 // #861 seam that brought the cap vocabulary here). Values verbatim; the validator
-// imports them, and workflow-state-schema.ts re-exports WORK_STEPS for importers.
-
-/**
- * The WorkStep vocabulary as a runtime value. The union type is the source
- * of truth for TS callers; this tuple exists so runtime readers (the #533
- * discriminant validator) can test membership — types are erased by the
- * untyped cast in `readState`, which is exactly why the validator needs it.
- *
- * #1362 — moved verbatim from workflow-state-schema.ts for the 500-line gate;
- * that module re-exports it, so importers keep their path.
- */
-export const WORK_STEPS: readonly WorkStep[] = [
-  "explore",
-  "plan",
-  "branch",
-  "develop",
-  "adversarial",
-  "commit-pr",
-  "lens-review",
-  "lens-fix",
-  "step-back",
-  "handoff",
-  "ci",
-  "merged",
-];
+// imports them.
 
 /** `pipelineState.status` vocabulary. */
 export const KNOWN_STATUSES: readonly unknown[] = [
