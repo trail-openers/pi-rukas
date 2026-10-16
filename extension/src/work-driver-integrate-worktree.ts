@@ -44,17 +44,8 @@ import {
   readCycleWorktreePaths,
   refuseDirtyCycleTrees,
 } from "./work-driver-integrate-cycle.ts";
-// The branch-holder audit lives in work-driver-integrate-holders.ts (§12 size
-// split) and is re-exported here so the audit's importers keep one home for the
-// integrate tree's whole surface: path, creation, and who holds its branch.
-import {
-  type BranchHoldersResult,
-  branchHolders,
-  repoRootHoldsBranch,
-} from "./work-driver-integrate-holders.ts";
 import { runCreateGuards } from "./worktree-create-guard.ts";
 import { assertSafeRef } from "./worktree-loss.ts";
-export { type BranchHoldersResult, branchHolders, repoRootHoldsBranch };
 import { provisionWorktree } from "./worktree-provision.ts";
 import { worktreePath, worktreeRemove } from "./worktree.ts";
 import type { ExecFn } from "./worktree.ts";
