@@ -6,13 +6,13 @@ import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
 import type { ConsolidationCompleteness } from "./work-driver-completeness.ts";
 import { isConfiguredExemptDirtLine } from "./work-driver-dirty-root-exempt.ts";
 import { integrationEmptiness } from "./work-driver-integrate-emptiness.ts";
+import { sweepBeforeFollowupCheckout } from "./work-driver-integrate-sweep.ts";
 import { verifyIntegration } from "./work-driver-integrate-verify-step.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import type { ExecFn } from "./worktree.ts";
-import { sweepBranchHolders } from "./worktree.ts";
 // Re-exported for backward compatibility (callers imported these from
 // work-driver-integrate.ts pre-#750; the implementations now live in
 // work-driver-preflight.ts).
@@ -301,10 +301,10 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
         { cwd: repoRoot, maxBuffer: 256 * 1024 },
       );
     } else {
-      // #654 — a clean worktree holding the branch blocks the checkout
-      // ("fatal: '<branch>' is already used by worktree at '…'"); a dirty
-      // one throws DirtyWorktreeError. Runs under withIntegrationLock.
-      await sweepBranchHolders(execFn, repoRoot, branchName);
+      // #654 / #1396 (round 3) — the sweep and its refusal contract live in
+      // work-driver-integrate-sweep.ts: only a repoRoot that is not a
+      // repository degrades to "no holder"; a hang/lock/kill halts.
+      await sweepBeforeFollowupCheckout(execFn, repoRoot, branchName);
       await execFn(`git checkout ${JSON.stringify(branchName)}`, {
         cwd: repoRoot,
         maxBuffer: 256 * 1024,

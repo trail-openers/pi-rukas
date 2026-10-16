@@ -14,6 +14,14 @@
  * that records (command, cwd) pairs and asserts no git command runs with
  * `cwd === repoRoot` between branch and commit-pr, which is only observable if
  * these calls go through that seam.
+ *
+ * Timeout policy (#1396): every `git worktree list` this module and its
+ * branch-holder sibling run carries `WORKTREE_LIST_TIMEOUT_MS`, so a HANG is a
+ * rejection — the strict listing turns it into `WorktreeScanError`, and the
+ * callers that used to read an unreadable list as "nothing there" distinguish
+ * "genuinely absent git" from "could not answer". The branch-holder audit in
+ * `work-driver-branch-holder.ts` runs through the same seam and passes the same
+ * bound; a listing with no timeout is a bug, not a fast path.
  */
 
 import { realpathSync } from "node:fs";
@@ -60,17 +68,10 @@ export function worktreePath(repoRoot: string, name: string): string {
 
 /**
  * #1396 — the bound on every `git worktree list` the worktree helpers run.
- * `ExecFn`'s `timeout` is only honoured when the executor passes it to
- * `execFile`, so a listing that hangs — a stale `worktree` lock, an
- * uninterruptible I/O wait — never rejects, and the retry in
- * `listWorktreeStrict` never gets a first attempt to fail. The call sits
- * inside the integration lock, so a hang there holds the lock forever.
- * Passing the bound makes a hang a bounded rejection, which the strict
- * listing turns into a `WorktreeScanError` naming the attempts. Same 30s as
- * the other local git reads (`GIT_TIMEOUT_MS` in
- * `work-driver-lens-fix-reposition-queries.ts`).
+ * Lives with the listing itself in `worktree-listing.ts`; re-exported here so
+ * every caller keeps one import path. See that module's header for the policy.
  */
-export const WORKTREE_LIST_TIMEOUT_MS = 30_000;
+export { WORKTREE_LIST_TIMEOUT_MS } from "./worktree-listing.ts";
 
 /**
  * Resolve a path to its canonical form (handles macOS /var → /private/var).
@@ -245,160 +246,19 @@ export async function worktreeRemove(
 }
 
 /**
- * Scan `git worktree list` for attached worktrees whose path contains any of
- * the given path substrings, skipping any name in `exclude`. An unreadable
- * list returns an empty array — the safe direction (no action) for every
- * caller (a #545 refusal degrades to the raw git error; a residue pass
- * degrades to no-op).
+ * #1396 — the one rejection shape that means "there is no git here": `ENOENT`
+ * from `execFile`/`exec` (no binary, directory gone). Everything else — a
+ * timeout, a kill, a signal, a lock — is "could not answer", and a caller that
+ * reads that as an absence is the fail-open this discriminates against.
  *
- * Shared by `findDirtySameIssueLeftover` (returns the first dirty hit) and
- * `findSameIssueLeftovers` (returns all) so the porcelain parsing and the
- * `inspectWorktreeForLoss` loop live in one place.
+ * "Genuinely absent git" is decided on the CODE, never on the message: a test
+ * fake (or a wrapper that folds stderr into `message`) can put the words
+ * "not a git repository" in a rejection that is otherwise unremarkable, and an
+ * error-text match would then degrade a real refusal to silence.
  */
-export async function scanWorktrees(
-  execFn: ExecFn,
-  repoRoot: string,
-  fromRef: string,
-  pathSubstrings: string[],
-  exclude?: string,
-): Promise<{ path: string; name: string; finding?: DirtyWorktreeFinding }[]> {
-  let list: string;
-  try {
-    list = await listWorktreePorcelain(execFn, repoRoot);
-  } catch {
-    return []; // fail open: an unreadable listing reads as no siblings
-  }
-  return inspectListedWorktrees(execFn, repoRoot, list, fromRef, pathSubstrings, exclude);
-}
-
-/**
- * The strict listing — an unreadable `git worktree list` throws.
- *
- * #1396 — `timeoutMs` is a seam for tests that inject a never-resolving
- * executor (a real 30s wait would not belong in the offline suite); every
- * production caller leaves it at `WORKTREE_LIST_TIMEOUT_MS`.
- */
-async function listWorktreePorcelain(
-  execFn: ExecFn,
-  repoRoot: string,
-  timeoutMs = WORKTREE_LIST_TIMEOUT_MS,
-): Promise<string> {
-  const { stdout } = await execFn("git worktree list --porcelain", {
-    cwd: repoRoot,
-    maxBuffer: 1024 * 1024,
-    timeout: timeoutMs,
-  });
-  return stdout;
-}
-
-/** Inspect every listed worktree whose path matches a substring. */
-async function inspectListedWorktrees(
-  execFn: ExecFn,
-  repoRoot: string,
-  list: string,
-  fromRef: string,
-  pathSubstrings: string[],
-  exclude?: string,
-): Promise<{ path: string; name: string; finding?: DirtyWorktreeFinding }[]> {
-  const out: { path: string; name: string; finding?: DirtyWorktreeFinding }[] = [];
-  for (const line of list.split("\n")) {
-    const l = line.trim();
-    if (!l.startsWith("worktree ")) continue;
-    const wtPath = l.slice("worktree ".length);
-    if (!pathSubstrings.some((p) => wtPath.includes(p))) continue;
-    const name = path.basename(wtPath);
-    if (name === exclude) continue;
-    const finding = await inspectWorktreeForLoss(execFn, repoRoot, wtPath, fromRef).catch(
-      () => undefined,
-    );
-    out.push({ path: wtPath, name, finding });
-  }
-  return out;
-}
-
-/**
- * #545 — `git worktree add` refuses against any leftover worktree of the
- * same cycle (not just the one at the target path). Find attached
- * worktrees with the same issue prefix that hold work a force-remove would
- * destroy. `strict` (the branch step, #1170) makes an unreadable
- * `git worktree list` THROW `WorktreeScanError` after one retry: a listing that
- * cannot be read cannot prove the absence of a dirty sibling. Non-strict callers
- * read it as no siblings (the fail-open contract they always had).
- *
- * `excludePaths` — additional worktree paths to skip (in addition to
- * `selfName`). #753: this cycle's own worktrees (created by the branch step
- * or by an earlier dependent) are legitimate in-progress work, not
- * "leftover" — without this exclusion the scan would park the cycle on a
- * false positive.
- */
-export async function findDirtySameIssueLeftover(
-  execFn: ExecFn,
-  repoRoot: string,
-  fromRef: string,
-  issuePrefix: string,
-  selfName: string,
-  excludePaths?: string[],
-  strict = false,
-): Promise<DirtyWorktreeFinding | undefined> {
-  const wtMarker = `.worktrees${path.sep}${issuePrefix}`;
-  // #1170 — strict: an unreadable listing refuses (WorktreeScanError) so the
-  // branch step never reaches the LLM ops fallback unscanned.
-  let list: string;
-  if (strict) {
-    list = await listWorktreeStrict(execFn, repoRoot);
-  } else {
-    try {
-      list = await listWorktreePorcelain(execFn, repoRoot);
-    } catch (e) {
-      trace(
-        `worktree: sibling scan unreadable for ${selfName} — proceeding without it (${gitErrorDetail(e)})`,
-      );
-      return undefined;
-    }
-  }
-  const hits = await inspectListedWorktrees(execFn, repoRoot, list, fromRef, [wtMarker], selfName);
-  // #753 — on macOS, `git worktree list --porcelain` returns symlink-resolved
-  // paths (/private/var/...) while our paths are the logical form (/var/...).
-  // Resolve both sides before comparing.
-  const excludeSet = new Set((excludePaths ?? []).map((p) => resolvePath(p)));
-  for (const hit of hits) {
-    if (excludeSet.has(resolvePath(hit.path))) continue;
-    if (hit.finding) return hit.finding;
-  }
-  return undefined;
-}
-
-/**
- * #1170 — the strict listing for the branch step's sibling scan. A transient
- * `git worktree list` failure is retried once (250ms) before it refuses, so a
- * single flaky read does not park a clean cycle; the refusal names the attempts.
- *
- * #1396 — shared with the integrate step's stale-tree discriminator
- * (`isRegisteredWorktree`): every read whose failure would let a removal
- * through uses THIS helper, so "could not read the listing" is one
- * `WorktreeScanError` shape everywhere, not a per-caller invention.
- *
- * #1396 (six-lens round) — each attempt carries `WORKTREE_LIST_TIMEOUT_MS`, so
- * a HANG is a failure too. Without it the retry loop could only ever see a
- * command that *rejected*: a `git worktree list` that never answered held the
- * integration lock indefinitely and the 250ms retry never fired, which is the
- * same unbounded wait the rest of the git seams bound.
- */
-export async function listWorktreeStrict(
-  execFn: ExecFn,
-  repoRoot: string,
-  timeoutMs = WORKTREE_LIST_TIMEOUT_MS,
-): Promise<string> {
-  let lastErr: unknown;
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      return await listWorktreePorcelain(execFn, repoRoot, timeoutMs);
-    } catch (err) {
-      lastErr = err;
-      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 250));
-    }
-  }
-  throw new WorktreeScanError(`${gitErrorDetail(lastErr)} (after 2 attempts)`);
+export function isMissingGit(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return code === "ENOENT" || code === "enoent";
 }
 
 /** Drop administrative records for worktrees whose directories are gone. */
@@ -406,92 +266,16 @@ export async function worktreePrune(execFn: ExecFn, repoRoot: string): Promise<v
   await execFn("git worktree prune", { cwd: repoRoot, maxBuffer: 256 * 1024 });
 }
 
-export async function worktreeList(execFn: ExecFn, repoRoot: string): Promise<string> {
-  const { stdout } = await execFn("git worktree list --porcelain", {
-    cwd: repoRoot,
-    maxBuffer: 1024 * 1024,
-    // #1396 — the same bound every other listing carries: this one is called
-    // from the #654 branch-holder sweep, which runs inside the integration
-    // path, and an unbounded hang there is the same lock-holding defect.
-    timeout: WORKTREE_LIST_TIMEOUT_MS,
-  });
-  return stdout;
-}
-
 /**
- * #654 — the target branch for `git checkout <branch>` is held by another
- * worktree. git refuses the checkout outright ("fatal: '<branch>' is
- * already used by worktree at '<path>'") — the census found 2 cycles
- * parking exactly on this string. The worktree machinery already knows how
- * to remove clean holders safely; a DIRTY holder must never be force-removed
- * (the #475 convention) — refuse with the existing `DirtyWorktreeError`.
- *
- * Called from `integrate()` in followup mode, BEFORE the checkout. A cycle
- * whose own worktree map still holds the branch (a parked prior cycle's
- * leftover, or a sibling group that hasn't torn down yet) blocks the
- * checkout; removing the clean holder unblocks it mechanically. A dirty
- * holder holds work that is not in the object database — force-removing it
- * would be exactly the #475 incident, so the refusal carries the absolute
- * path and the operator's salvage instructions.
- *
- * Returns true when the branch was held and is now free (a clean holder was
- * removed); false when no holder exists (the normal case); throws
- * `DirtyWorktreeError` when the holder holds uncommitted work or local
- * commits. An unreadable `git worktree list` is treated as "no holder" —
- * the checkout will then fail with the raw git error (plumbed via the
- * existing catch in `integrate()`), which is the safe degradation: refusing
- * the whole integration on a git error would be a worse failure.
+ * #1396 (round 3) — the read side of `git worktree list` lives in
+ * `worktree-listing.ts` (split for the AGENTS.md §12 line cap). Re-exported here
+ * so every caller — production and smoke test — keeps importing from this module:
+ * the split is a file-seam, not an API change.
  */
-export async function sweepBranchHolders(
-  execFn: ExecFn,
-  repoRoot: string,
-  branchName: string,
-): Promise<boolean> {
-  const list = await worktreeList(execFn, repoRoot).catch(() => "");
-  const lines = list.split("\n");
-  let holderPath: string | undefined;
-  for (let i = 0; i < lines.length; i++) {
-    const l = lines[i]?.trim() ?? "";
-    if (l.startsWith("worktree ")) {
-      // The worktree line is followed by one or more attribute lines
-      // (e.g. "HEAD <sha>", "branch refs/heads/<name>", "detached"). The
-      // branch we care about is in the `branch` line, not the worktree line
-      // itself, so we must walk forward from each worktree marker.
-      const start = i;
-      let j = i + 1;
-      let found: string | undefined;
-      while (j < lines.length) {
-        const attr = lines[j]?.trim() ?? "";
-        if (attr.startsWith("worktree ")) break; // next worktree entry
-        if (attr === `branch refs/heads/${branchName}`) {
-          found = lines[start]?.slice("worktree ".length).trim();
-          break;
-        }
-        j++;
-      }
-      if (found !== undefined) {
-        holderPath = found;
-        break;
-      }
-    }
-  }
-  if (!holderPath) return false;
-  // The main working tree (repoRoot itself) is not a worktree that can be
-  // removed — if it's holding the branch, that's the normal state and there
-  // is nothing to sweep. macOS /tmp is a symlink to /private/tmp, so
-  // normalise both sides before comparing.
-  if (resolvePath(holderPath) === resolvePath(repoRoot)) {
-    return false;
-  }
-  const finding = await inspectWorktreeForLoss(execFn, repoRoot, holderPath, "HEAD");
-  if (finding) {
-    throw new DirtyWorktreeError(finding);
-  }
-  // Clean holder — remove it so the checkout can proceed.
-  await execFn(`git worktree remove ${JSON.stringify(holderPath)}`, {
-    cwd: repoRoot,
-    maxBuffer: 256 * 1024,
-  });
-  trace(`worktree: removed clean holder ${holderPath} for branch ${branchName}`);
-  return true;
-}
+export {
+  findDirtySameIssueLeftover,
+  listWorktreeStrict,
+  scanWorktrees,
+  sweepBranchHolders,
+  worktreeList,
+} from "./worktree-listing.ts";

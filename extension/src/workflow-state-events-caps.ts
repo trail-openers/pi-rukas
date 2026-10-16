@@ -195,4 +195,11 @@ export type WorkCapLiteral =
   // so the handoff posts before the caller kills the process (the orchard `docker stop` shape: a mid-step kill, no
   // handoff, state left `running`). Emitted at the step boundary only — no
   // mid-step hard kill.
-  | "deadline";
+  | "deadline"
+  // #1396 (round 3) — the branch step's same-issue residue pass could not read
+  // `git worktree list` (the listing is bounded since #1396, so a hang is a
+  // rejection). The pass cannot tell whether a same-issue tree holds work, and
+  // "could not look" must not degrade to "nothing to clean" — the branch step
+  // parks with the git error as evidence rather than removing nothing and
+  // reporting a clean pass.
+  | "worktree-listing-unreadable";
