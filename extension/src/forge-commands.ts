@@ -25,6 +25,21 @@ export function issueViewCmd(forge: ForgeType, number: number): string {
 }
 
 /**
+ * One label flag per label, each through `shq` — the same quoting the title
+ * gets. A label name may contain a space and a `:` (`auto-filed`, `kind: bug`),
+ * and this seam is a shell string, so an unquoted label would split into extra
+ * argv elements (`--label kind :` `bug`) or worse. GitHub takes one `--label`
+ * per label; GitLab's `glab issue create --label` takes a comma-separated list
+ * (`--label a,b`), so a label containing a comma cannot be expressed there and
+ * never reaches this builder: `normalizeLabels`' pattern excludes `,`.
+ */
+export function labelFlags(forge: ForgeType, labels: string[]): string {
+  if (labels.length === 0) return "";
+  if (forge === "github") return labels.map((l) => ` --label ${shq(l)}`).join("");
+  return ` --label ${labels.map((l) => shq(l)).join(",")}`;
+}
+
+/**
  * `gh issue create` does NOT support `--json` (verified: `gh issue create
  * --help` — the flag list has no `--json`). On success gh prints the created
  * issue's URL as a single plain-text line to stdout. The mapper in `forge.ts`
@@ -32,14 +47,23 @@ export function issueViewCmd(forge: ForgeType, number: number): string {
  * `parsePrNumberFromResponse` (which handles both `/issues/N` and
  * `/-/merge_requests/N` URL shapes, and also tolerates a JSON payload for
  * forward-compat with a `gh` release that adds `--json` to create).
+ *
+ * #1377: `labels` is optional and renders NOTHING when empty, so an existing
+ * caller's argv is byte-for-byte the command it always ran.
  */
-export function issueCreateCmd(forge: ForgeType, title: string, bodyFile: string): string {
+export function issueCreateCmd(
+  forge: ForgeType,
+  title: string,
+  bodyFile: string,
+  labels: string[] = [],
+): string {
+  const labelFlags_ = labelFlags(forge, labels);
   if (forge === "github")
-    return `gh issue create --title ${shq(title)} --body-file ${shq(bodyFile)}`;
+    return `gh issue create --title ${shq(title)} --body-file ${shq(bodyFile)}${labelFlags_}`;
   // glab issue create takes the description as a literal string. The file
   // content is expanded by the caller (the forge object reads the file and
   // passes the content); the `-d` value here is the *expanded* content.
-  return `glab issue create -t ${shq(title)} -d ${shq(`@${bodyFile}`)}`;
+  return `glab issue create -t ${shq(title)} -d ${shq(`@${bodyFile}`)}${labelFlags_}`;
 }
 
 export function issueCommentCmd(forge: ForgeType, number: number, bodyFile: string): string {
@@ -249,6 +273,18 @@ export function pipelineListCmd(limit = 1): string {
 }
 
 // ── Labels ────────────────────────────────────────────────────────────────
+
+/**
+ * #1377 — list the repo's label NAMES, the read behind `Forge.labelList`.
+ * GitHub: `gh label list --limit 500 --json name` (a filing caps a caller at 5
+ * labels, so 500 rows is the whole set with room to spare). GitLab:
+ * `glab label list --per-page 100 --output json`. Both single unchained reads
+ * (#408 recovery-command rule) so the pre-filing check never re-prompts.
+ */
+export function labelListCmd(forge: ForgeType): string {
+  if (forge === "github") return "gh label list --limit 500 --json name";
+  return "glab label list --per-page 100 --output json";
+}
 
 /** Create a label (GitLab auto-creates missing labels on add, but explicit create is the normalized path). */
 export function labelCreateCmd(forge: ForgeType, name: string, color: string): string {

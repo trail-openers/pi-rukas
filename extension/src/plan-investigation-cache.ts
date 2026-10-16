@@ -49,6 +49,7 @@ import { promisify } from "node:util";
 import type { MechanicalInventory } from "./plan-draft.ts";
 import type { InvestigationResult } from "./plan-investigate.ts";
 import { assemblePriorContext } from "./plan-prior-context-assembly.ts";
+import type { PlanProvenance } from "./plan-provenance.ts";
 import type { PlanGap, PlanType } from "./plan-types.ts";
 import { trace } from "./trace.ts";
 
@@ -119,6 +120,16 @@ export interface ReviewedDryRun {
   priorContext: { source: string; fact: string }[];
   /** Angles that failed in the dry run — disclosed again on a verbatim filing. */
   failedAngles?: { name: string; detail: string }[];
+  /**
+   * #1377: the labels the dry run would file with, and its provenance. Stored on
+   * the reviewed entry (NOT on `CacheInputs` — a different label set is the same
+   * plan, and the reviewedDigest is the guard) because they are part of what the
+   * operator reviewed and part of that digest, so a verbatim filing must send
+   * exactly these and no others. Absent on entries written before #1377; a
+   * missing pair means "none was asked for", which is the pre-#1377 behaviour.
+   */
+  labels?: string[];
+  provenance?: PlanProvenance;
 }
 
 export interface InvestigationCacheEntry extends CachedInvestigation {
@@ -285,9 +296,17 @@ const isBarrier = (x: unknown): boolean =>
   (x.duplicateRisk === undefined ||
     (isObj(x.duplicateRisk) && isStr(x.duplicateRisk.level) && isStr(x.duplicateRisk.rationale)));
 
+const isProvenance = (x: unknown): boolean => {
+  if (!isObj(x)) return false;
+  if (!isStr(x.line)) return false;
+  const marker = x.marker;
+  if (!isObj(marker)) return false;
+  return Object.values(marker).every(isStr);
+};
+
 const isReviewed = (x: unknown): boolean => {
   if (!isObj(x)) return false;
-  const { fileable, title, spec, priorContext, failedAngles } = x;
+  const { fileable, title, spec, priorContext, failedAngles, labels, provenance } = x;
   return (
     typeof fileable === "boolean" &&
     isStr(title) &&
@@ -297,6 +316,13 @@ const isReviewed = (x: unknown): boolean => {
     (failedAngles === undefined ||
       (Array.isArray(failedAngles) &&
         failedAngles.every((a) => isObj(a) && isStr(a.name) && isStr(a.detail)))) &&
+    // #1377: optional on both sides — an entry written before labels existed is
+    // well-formed and files with no labels. But when they ARE present they must
+    // be the shapes the digest and the create call assume, or a hand-edited
+    // entry would send a malformed argv / hash a tuple nothing produced.
+    (labels === undefined ||
+      (Array.isArray(labels) && labels.every((l) => isStr(l) && l.trim().length > 0))) &&
+    (provenance === undefined || isProvenance(provenance)) &&
     // A fileable entry must carry something to file.
     (!fileable || (title.trim().length > 0 && spec.trim().length > 0))
   );
