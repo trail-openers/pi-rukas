@@ -22,8 +22,10 @@ import {
 import { runFalsilyGreenCheck } from "./work-driver-falsily-green.ts";
 import { ungrantedProtectedPaths } from "./work-driver-protected-grant.ts";
 import {
+  changedPaths,
   readCommittedProtectedPaths,
   readProtectedStatusPaths,
+  renameSourcePaths,
 } from "./work-driver-protected-paths-read.ts";
 import { runScopeFanoutGate } from "./work-driver-scope-fanout.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
@@ -45,9 +47,10 @@ import { runVerifyCommandGate } from "./work-driver-verify-verify-cmd.ts";
 
 import type { WorkState } from "./workflow-state.ts";
 
-/** PR338 — validate a git SHA before shell interpolation. */
+/** PR338 — validate a git SHA before shell interpolation. A type guard, so a
+ *  caller that has checked one does not re-cast it to satisfy the diff reader. */
 const VALID_SHA_RE = /^[0-9a-f]{40}$/;
-function isValidSha(s: string | undefined) {
+function isValidSha(s: string | undefined): s is string {
   return typeof s === "string" && VALID_SHA_RE.test(s);
 }
 
@@ -180,7 +183,7 @@ export async function verifyDevelopOutcome(
     // exceeds 1 MiB; an overflow must not silently skip the protected-path
     // inspection of that worktree (see the fail-closed branch below).
     const status = await readProtectedStatusPaths(execFn, cwd);
-    if ("unreadable" in status) {
+    if (!status.ok) {
       // #1090 — with the protected-path gate on, an unreadable status means this
       // worktree's writes are never inspected: fail closed, do not pass with a note.
       if (protectedPathsEnabled()) {
@@ -228,8 +231,8 @@ export async function verifyDevelopOutcome(
           );
         }
       }
-      const committed = await readCommittedProtectedPaths(execFn, cwd, effBase as string);
-      if ("unreadable" in committed) {
+      const committed = await readCommittedProtectedPaths(execFn, cwd, effBase);
+      if (!committed.ok) {
         // #1378 — the committed read is fail-closed on the same reasoning as the
         // status read: a rename or a C-quoted name is exactly what this read now
         // exists to catch, and a `catch {}` that only set the flag let an
@@ -245,12 +248,12 @@ export async function verifyDevelopOutcome(
         gitReadFailedAnyWorktree = true;
       } else {
         const ownSet = changedPathsByWorkstream.get(id);
-        for (const file of committed.targets) {
+        for (const file of changedPaths(committed.targets)) {
           touchedPaths.push(file);
           if (ownSet) ownSet.add(normaliseScopePath(file));
         }
         // Rename sources stay out of the union above (#1378).
-        protectedOnlyPaths.push(...committed.renameSources);
+        protectedOnlyPaths.push(...renameSourcePaths(committed.targets));
       }
     }
     if (assessed) assessedCount++;
@@ -323,7 +326,7 @@ export async function verifyDevelopOutcome(
     if (granted.length > 0) {
       notes.push(`operator grant (--allow-protected) admitted ${granted.join(", ")}`);
     }
-    const prose = doctrineProsePathsIn(touchedPaths);
+    const prose = doctrineProsePathsIn([...touchedPaths, ...protectedOnlyPaths]);
     if (prose.length > 0) {
       notes.push(
         `develop changed policy prose (${prose.join(", ")}) — allowed, and inert for this cycle: merge authority is read at the base commit, so a grant added here cannot take effect until an operator merges it`,
