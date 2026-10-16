@@ -1,20 +1,16 @@
 /**
  * adversarial-policy — the verdict policy a reportOnly adversarial review is
  * judged by (#1114 / #1154), split out of adversarial.ts (500-line cap).
- *
- * `ReportPolicy` is discriminated: `reportVerdict` is REQUIRED whenever
- * `reportOnly` is true and must be absent otherwise, so no reportOnly caller
- * gets a verdict policy by omission. Untyped JS callers can still omit it, so
- * `reportPolicyError` is the runtime fence (#1161): a reportOnly review without
- * a recognised policy fails as an infra failure instead of being silently
- * judged as a routed round.
  */
 
 /**
  * Whether the loop runs as one reviewer dispatch (#1114) and, if so, how its
- * verdict is judged (#1154). Discriminated: `reportVerdict` is REQUIRED whenever
- * `reportOnly` is true and must be absent otherwise, so no reportOnly caller
- * gets a verdict policy by omission.
+ * verdict is judged (#1154).
+ *
+ * The rule, stated once: `reportVerdict` is REQUIRED whenever `reportOnly` is
+ * true and must be absent otherwise — a reportOnly review with neither value
+ * set is rejected as a missing policy, one with only `reportVerdict` as an
+ * orphan.
  */
 export type ReportPolicy =
   | {
@@ -33,8 +29,7 @@ export type ReportPolicy =
        * (ISSUES_FOUND passes; only CRITICAL_ISSUES_FOUND or an unreadable reply
        * fails) — the tool path. "routed": judged as round N of 3, so ISSUES_FOUND
        * routes to a fix pass — the /work driver's per-round reviews. Set by the
-       * adversarial_loop tool (terminal) and by the /work fan-out (routed);
-       * required whenever reportOnly is true.
+       * adversarial_loop tool (terminal) and by the /work fan-out (routed).
        */
       reportVerdict: "terminal" | "routed";
     }
@@ -43,8 +38,10 @@ export type ReportPolicy =
 /**
  * #1161 — the runtime fence behind the `ReportPolicy` type. Returns the named
  * reason when the policy is unsound, or undefined when it is sound.
- * The adversarial_loop tool receives LLM-supplied JSON, so the union is not
- * enforced at that boundary; this check is what enforces it.
+ *
+ * What the fence adds over the type: the `adversarial_loop` tool boundary
+ * receives LLM-supplied JSON, which no type binds, so this check is what
+ * enforces the rule there.
  */
 export function reportPolicyError(policy: {
   reportOnly?: unknown;
@@ -57,5 +54,20 @@ export function reportPolicyError(policy: {
     return policy.reportVerdict === undefined ? undefined : "reportVerdict requires reportOnly";
   }
   if (policy.reportVerdict === "terminal" || policy.reportVerdict === "routed") return undefined;
-  return "reportOnly review without a verdict policy";
+  return policy.reportVerdict === undefined
+    ? "reportOnly review without a verdict policy"
+    : "reportVerdict is not a recognised verdict policy";
+}
+
+/**
+ * #1161 — the infra-failure sentence `runAdversarialLoop` returns for a reason
+ * from `reportPolicyError`: the reason, then the two values a policy is allowed
+ * to take, then the disclaimer that says this is not a review rejection.
+ *
+ * Exported so the smoke test asserts against the sentence the caller actually
+ * sees rather than a copy of it: the reason stays a literal in the test (the
+ * spec) and the wrapper stays production text.
+ */
+export function policyInfraFailureText(reason: string): string {
+  return `Adversarial loop infrastructure failure: ${reason} (reportVerdict must be "terminal" or "routed"). No verdict was produced — this is NOT a review rejection.`;
 }
