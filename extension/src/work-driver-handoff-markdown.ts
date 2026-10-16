@@ -300,11 +300,43 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
 /**
  * #1153 — consolidation checks that did not run. A skipped check is recorded
  * as a note (never a silent pass), and the operator must see it here.
+ *
+ * The note is UNTRUSTED data on its way to a forge comment: it is composed
+ * from a git error's stderr, an operator-supplied branch name, or a path. It
+ * is rendered in a code span whose fence is longer than the note's longest
+ * backtick run, so a note containing `` ` `` or a fence cannot break out of
+ * the span and have the remainder read as markdown by `gh pr comment`.
  */
 function consolidationNotesSection(state: WorkState): string[] {
   const notes = state.pipelineState.consolidationNotes ?? [];
   if (notes.length === 0) return [];
-  return ["### Consolidation checks that did not run", "", ...notes.map((n) => `- ${n}`), ""];
+  return ["### Consolidation checks that did not run", "", ...notes.map(renderNoteBullet), ""];
+}
+
+/** Longest run of consecutive backticks in `s` (0 when it has none). */
+function longestBacktickRun(s: string): number {
+  let longest = 0;
+  const runs = s.match(/`+/g);
+  if (runs) {
+    for (const run of runs) longest = Math.max(longest, run.length);
+  }
+  return longest;
+}
+
+/**
+ * One consolidation note as a bullet: coerced to a string (a state file that
+ * predates the validator can carry a number or a nested object), collapsed to
+ * one line, bounded to 500 chars, and fenced in a code span with more
+ * backticks than the note contains. Markdown code spans ignore leading and
+ * trailing whitespace, so the padding spaces keep a note that begins or ends
+ * with a backtick from merging with its own fence.
+ */
+export function renderNoteBullet(note: unknown): string {
+  const text = String(note)
+    .replace(/[\r\n]+/g, " ")
+    .slice(0, 500);
+  const fence = "`".repeat(longestBacktickRun(text) + 1);
+  return `- ${fence} ${text} ${fence}`;
 }
 
 /**

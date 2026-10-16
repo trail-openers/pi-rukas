@@ -114,10 +114,10 @@ export async function detectMainline(
 /**
  * #1134 follow-up — detectMainline as a total function for its callers.
  *
- * A caller that reads `"branch" in mainline` on a value that is undefined, or
- * on an unexpected shape, gets a TypeError rather than a verdict, and a throw
- * from the detector escapes the gate that asked. Both become the same
- * unresolved result a failed detection produces, carrying the reason.
+ * A caller that reads `.branch` off a value that is undefined, or off an
+ * unexpected shape, gets a TypeError rather than a verdict, and a throw from
+ * the detector escapes the gate that asked. Both become the same unresolved
+ * result a failed detection produces, carrying the reason.
  */
 export async function resolveMainline(
   repoRoot: string,
@@ -131,12 +131,17 @@ export async function resolveMainline(
     const msg = ((err as Error)?.message ?? String(err)).slice(0, 200);
     return { ok: false, reason: `mainline detection threw: ${msg}` };
   }
+  // #1153 — read the discriminated result by its DISCRIMINANT. A `"branch" in m`
+  // test passes for any object carrying a `branch` key, including a failure
+  // record that happens to have one; `ok` is the only field whose presence is
+  // load-bearing for the verdict.
   if (m && typeof m === "object") {
-    if ("branch" in m && typeof m.branch === "string" && m.branch.length > 0) {
-      return { ok: true, branch: m.branch };
+    const mo = m as { ok?: unknown; branch?: unknown; reason?: unknown };
+    if (mo.ok === true && typeof mo.branch === "string" && mo.branch.length > 0) {
+      return { ok: true, branch: mo.branch };
     }
-    if ("reason" in m && typeof m.reason === "string" && m.reason.length > 0) {
-      return { ok: false, reason: m.reason };
+    if (mo.ok === false && typeof mo.reason === "string" && mo.reason.length > 0) {
+      return { ok: false, reason: mo.reason };
     }
   }
   return {
@@ -442,5 +447,5 @@ export async function resolvedTheMainline(
 ): Promise<boolean> {
   if (!branch) return false;
   const mainline = await detectMainline(repoRoot, execFn);
-  return "branch" in mainline && mainline.branch === branch;
+  return mainline.ok && mainline.branch === branch;
 }

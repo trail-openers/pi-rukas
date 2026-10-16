@@ -70,7 +70,12 @@ export async function refResolves(
     });
     return { state: "resolves" };
   } catch (err) {
-    if (exitCodeOf(err) === 1) return { state: "absent" };
+    // #1153 — only git's OWN "not a valid object" answer is `absent`. A probe
+    // the harness killed (a timeout, a signal) exits 1 as well — node's child
+    // process reports `code: 1` alongside `killed: true` — and says nothing
+    // about whether the ref exists. Reading that as absent would tell the
+    // operator "the branch was not pushed from here" about a ref nobody read.
+    if (gitSaysAbsent(err)) return { state: "absent" };
     return { state: "unknown", error: errorText(err) };
   }
 }
@@ -95,11 +100,16 @@ export async function aheadOfBase(
   head: string,
   opts: { pathspec?: string[]; timeout?: number } = {},
 ): Promise<AheadOfBase> {
-  const h = await refResolves(exec, cwd, head, opts.timeout);
+  // #1153 — the two probes are independent: neither result changes how the
+  // other is run. Sequentially they cost two git spawns (and two timeouts on
+  // a hung fs); together they cost one.
+  const [h, b] = await Promise.all([
+    refResolves(exec, cwd, head, opts.timeout),
+    refResolves(exec, cwd, base, opts.timeout),
+  ]);
   if (h.state === "absent") return { kind: "unpushed" };
   if (h.state === "unknown")
     return { kind: "unknown", error: `could not check ${head}: ${h.error}` };
-  const b = await refResolves(exec, cwd, base, opts.timeout);
   if (b.state === "absent")
     return { kind: "unresolved", reason: `${base} does not resolve in this clone` };
   if (b.state === "unknown")
@@ -136,11 +146,29 @@ export async function aheadOfBase(
   return n === 0 ? { kind: "empty" } : { kind: "ahead", n };
 }
 
-function exitCodeOf(err: unknown): number | undefined {
-  const code = (err as { code?: unknown } | null)?.code;
-  return typeof code === "number" ? code : undefined;
+/**
+ * Did git itself say "not a valid object"? Exit code 1 alone is not enough:
+ * a killed or timed-out probe carries `code: 1` too, with `killed` set and a
+ * `signal` naming what terminated it. Both must be absent for the exit code
+ * to be git's answer rather than the harness's.
+ */
+function gitSaysAbsent(err: unknown): boolean {
+  const e = err as { code?: unknown; killed?: unknown; signal?: unknown } | null;
+  if (e?.code !== 1) return false;
+  if (e.killed === true) return false;
+  return e.signal === null || e.signal === undefined;
 }
 
+/**
+ * A short description of an exec failure. `stderr` is preferred over
+ * `message`: node's generic `Command failed: git …` prefix names the command
+ * and says nothing, while git's own stderr names the reason (`fatal: not a
+ * git repository`, `ambiguous argument`). Falls back to `message` when the
+ * stream is empty or absent.
+ */
 function errorText(err: unknown): string {
-  return ((err as Error)?.message ?? String(err)).slice(0, 200);
+  const e = err as { stderr?: unknown; message?: unknown } | null;
+  const stderr = typeof e?.stderr === "string" ? e.stderr.trim() : "";
+  const text = stderr || ((e?.message ?? String(err)) as string);
+  return String(text).slice(0, 200);
 }
