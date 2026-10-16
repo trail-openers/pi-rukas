@@ -52,6 +52,21 @@ export interface DigestInputs {
 }
 
 /**
+ * The optional digest inputs, so the two positional args stay the common call.
+ *
+ * Declared as `Omit<DigestInputs, ...>` and not as a second literal, which is
+ * the whole point: `DigestInputs` is what `digestTuple` hashes, so a new digest
+ * term added there is a member of THIS type too — a caller that forgot to pass
+ * it is a type error, not a digest that silently omits a term on one side only.
+ * A parallel hand-written shape drifts precisely when it matters (a new field is
+ * hashed by the dry run and not by the confirm, and the confirm then refuses a
+ * correct digest). The pre-#1377 digest is the cautionary case: labels and
+ * provenance were arguments to the create call that a hand-written pair of
+ * shapes could carry on one side.
+ */
+export type DigestExtra = Omit<DigestInputs, "title" | "spec">;
+
+/**
  * The digest tuple: version tag, title, body, sorted deduped labels, rendered
  * provenance lines. The provenance term is the RENDERED lines, not the caller's
  * object — which is what makes render and digest agree by construction: both
@@ -80,12 +95,6 @@ export function reviewedDigestOf(title: string, spec: string, extra: DigestExtra
     .update(JSON.stringify(digestTuple({ title, spec, ...extra })))
     .digest("hex")
     .slice(0, 16);
-}
-
-/** The optional digest inputs, so the two positional args stay the common call. */
-export interface DigestExtra {
-  labels?: string[];
-  provenance?: PlanProvenance;
 }
 
 /** A FILEABLE dry run this call holds exclusively until it commits or releases it. */

@@ -41,6 +41,7 @@ import { Type } from "@sinclair/typebox";
 import { runPlanPipeline } from "./plan-driver.ts";
 import { truncateForDisclosure } from "./plan-gap-disclosure.ts";
 import {
+  FORBIDDEN_LINE_CHARS,
   MAX_LABELS,
   MAX_MARKER_PAIRS,
   MAX_PROVENANCE_LINE,
@@ -109,24 +110,28 @@ export function registerPlanTool(pi: ExtensionAPI) {
       ),
       labels: Type.Optional(
         Type.Array(Type.String(), {
-          description: `Labels to create the filed issue with, in the same single forge call — so they are on the issue from its first moment (a follow-up edit leaves a window where an auto-filed ticket reads as manual work to everything watching the tracker). At most ${MAX_LABELS}; each 1-50 chars matching ^[A-Za-z0-9][A-Za-z0-9:._ /-]*$ (spaces and ':' allowed, no comma). Invalid input is refused BEFORE any dispatch with an invalid-input error naming what is wrong. Every label must already exist on the target repo: a missing one halts filing with filingFailure.reason "label-missing" and NOTHING is filed — the driver never creates a label as a side effect of filing. The result gains issueNumber alongside issueUrl. Omit for today's behaviour exactly.`,
+          description: `Labels to create the filed issue with, in the same single forge call — so they are on the issue from its first moment (a follow-up edit leaves a window where an auto-filed ticket reads as manual work to everything watching the tracker). At most ${MAX_LABELS}; each 1-50 chars matching ^[A-Za-z0-9][A-Za-z0-9:._ /-]*$ (spaces and ':' allowed, no comma). Invalid input is refused BEFORE any dispatch with an invalid-input error naming what is wrong. Every label must already exist on the target repo: a missing one halts filing with filingFailure.reason "label-missing" and NOTHING is filed — the driver never creates a label as a side effect of filing. When the repo's label list cannot be read in full (a CLI failure, or more labels than either CLI reads in one page) the halt reason is "label-list-unreadable" instead, and nothing is filed either — the driver never guesses that a label exists. The result gains issueNumber alongside issueUrl. Omit for today's behaviour exactly.`,
         }),
       ),
       provenance: Type.Optional(
         Type.Object(
           {
             line: Type.String({
-              description: `One line of at most ${MAX_PROVENANCE_LINE} chars, rendered as the FIRST line of the issue body in italics followed by a blank line. Any '@', '<', '>', backtick, CR or LF is REJECTED (not escaped, not stripped), so the line can never mention an account, inject markup, or open a heading of the body the driver did not write.`,
+              description: `One line of at most ${MAX_PROVENANCE_LINE} chars, rendered as the FIRST line of the issue body in italics followed by a blank line. Any '@', '<', '>', backtick, or control / line-terminator character (CR, LF, form feed, NEL, U+2028, U+2029) is REJECTED (not escaped, not stripped), so the line can never mention an account, inject markup, or open a heading of the body the driver did not write.`,
               // The schema MIRRORS `FORBIDDEN_LINE_CHARS` rather than relying on
               // it alone: the validators in plan-provenance.ts are the authority
               // (they produce the named `invalid-input` problems), and this is
               // the second net — a caller reading the tool schema sees the shape
               // it must send, and a caller that bypasses the validators (a future
-              // in-process path) still cannot get a newline into the first line.
+              // in-process path) still cannot get a terminator into the first line.
               // A `\n` here is a heading-injection: `"ok\n## Open points"` files a
               // section the driver never wrote, under the heading the /work intent
-              // gate reads for blocking gaps.
-              pattern: "^[^@<>`\\r\\n]+$",
+              // gate reads for blocking gaps — and `\f`, U+0085, U+2028 and U+2029
+              // do the same in any consumer that honours them as terminators, so
+              // the negated class is the WHOLE control range plus the three
+              // Unicode separators, not just CR/LF. It is the exported regex's
+              // source, so the two cannot drift.
+              pattern: `^[^${FORBIDDEN_LINE_CHARS.source.slice(1, -1)}]+$`,
               maxLength: MAX_PROVENANCE_LINE,
             }),
             marker: Type.Record(Type.String(), Type.String(), {

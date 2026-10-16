@@ -17,11 +17,15 @@
  *     digest enumerate — ignores the prototype and symbol keys. A guard that
  *     reads inherited bytes while the render reads own ones calls an entry
  *     well-formed and then files something other than what it validated. The
- *     provenance half of this defers to `isProvenanceShape` rather than
- *     restating it: two hand-rolled checks over one object drift, silently.
+ *     provenance half of this defers to the ONE validator the feature has
+ *     (`validateProvenance`) rather than restating it, and defers to the whole
+ *     of it: shape alone is not enough, because a hand-edited file can be a
+ *     perfectly shaped object carrying a line terminator in `line` or a marker
+ *     key nothing admitted — and shape-only here would file those bytes
+ *     verbatim through the door the pre-dispatch gate closed.
  */
 import type { InvestigationCacheEntry } from "./plan-investigation-cache.ts";
-import { isProvenanceShape } from "./plan-provenance.ts";
+import { isPlainObject, validateProvenance } from "./plan-provenance.ts";
 
 const isStr = (x: unknown): x is string => typeof x === "string";
 const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
@@ -31,12 +35,12 @@ const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
  * not an array. This is what excludes the shapes `JSON.parse` of a well-formed
  * file cannot produce but a hand-edited cache file can: an object whose fields
  * live on the prototype rather than on the object itself.
+ *
+ * The ONE copy lives in `plan-provenance.ts` and is imported here: this guard
+ * and that validator judge the same provenance bytes, and two definitions of
+ * "plain object" drift on exactly the exotic-prototype case they exist to catch.
  */
-const isPlainObj = (x: unknown): x is Record<string, unknown> => {
-  if (!x || typeof x !== "object" || Array.isArray(x)) return false;
-  const proto = Object.getPrototypeOf(x);
-  return proto === Object.prototype || proto === null;
-};
+const isPlainObj = isPlainObject;
 
 /**
  * Every OWN key of an object is an enumerable string key. `JSON.parse` routes a
@@ -96,11 +100,21 @@ const isBarrier = (x: unknown): boolean =>
 
 /**
  * The provenance half defers to the ONE validator the feature has, rather than
- * restating its shape here. The drift this prevents is invisible: this guard
- * would call an entry well-formed that `validateProvenance` refuses, and the
- * verbatim filing would render bytes no gate ever admitted.
+ * restating it. The drift this prevents is invisible: this guard would call an
+ * entry well-formed that `validateProvenance` refuses, and the verbatim filing
+ * would render bytes no gate ever admitted.
+ *
+ * It defers to `validateProvenance` and not merely to `isProvenanceShape`, and
+ * the difference is the whole point: the shape check answers "is this the right
+ * KIND of object", and the cache file is JSON, so its shape is nearly always
+ * right. What a hand-edited entry actually carries is a shaped object with a bad
+ * VALUE — `line: "ok\n## Open points"`, or a marker key the pre-dispatch gate
+ * refuses — and a shape-only guard files those verbatim while the same bytes are
+ * refused on the fresh-call path. `!ok` is the miss, on every rule the tool's own
+ * gate applies: line length, forbidden characters, marker key/value patterns and
+ * the pair cap.
  */
-const isProvenance = (x: unknown): boolean => isProvenanceShape(x);
+const isProvenance = (x: unknown): boolean => validateProvenance(x).ok === true;
 
 const isReviewed = (x: unknown): boolean => {
   if (!isShape(x)) return false;

@@ -59,7 +59,7 @@ import {
 import { phase5FilingFailure } from "./plan-phase5.ts";
 import { precheckDescriptor } from "./plan-precheck.ts";
 import { assemblePriorContext } from "./plan-prior-context-assembly.ts";
-import { provenanceReservation, withProvenance } from "./plan-provenance.ts";
+import { withProvenance } from "./plan-provenance.ts";
 import {
   type PlanDriverInput,
   type PlanGap,
@@ -67,12 +67,7 @@ import {
   classifyPlanType,
   planTitle,
 } from "./plan-types.ts";
-import {
-  FORGE_BODY_MAX,
-  fitDraftToBudget,
-  parsePinnedSubIssueCount,
-  validateDraft,
-} from "./plan-validate.ts";
+import { FORGE_BODY_MAX, parsePinnedSubIssueCount, validateDraft } from "./plan-validate.ts";
 import { type ResolvedDecision, buildResolvedDecisions } from "./plan-writeback.ts";
 import { trace } from "./trace.ts";
 import type { DriverHost } from "./work-driver-host.ts";

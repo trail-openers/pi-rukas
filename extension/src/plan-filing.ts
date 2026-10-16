@@ -42,6 +42,14 @@ import { trace } from "./trace.ts";
  * `label-missing` (#1377) is a third deterministic skip: a caller asked for
  * labels the target repo does not have. Nothing is filed and no label is
  * created — the detail names the missing ones.
+ *
+ * `label-list-unreadable` (#1377) is the fourth, and deliberately NOT folded
+ * into `label-missing`: the two read the same in the log but say opposite things
+ * to the operator. One means "create this label", the other means "the read
+ * never answered — do not create anything" (the CLI failed, or the set is larger
+ * than one page either CLI can enumerate). Reporting a failure to read as a
+ * verdict about the labels would send the operator to fix a problem that does
+ * not exist.
  */
 export interface FilingFailure {
   reason:
@@ -56,7 +64,8 @@ export interface FilingFailure {
     | "review-unparseable"
     | "body-too-large"
     | "filing-in-progress"
-    | "label-missing";
+    | "label-missing"
+    | "label-list-unreadable";
   detail?: string;
 }
 
