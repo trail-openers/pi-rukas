@@ -10,6 +10,7 @@
  * can sweep untracked files into the PR — so an untracked-only root must
  * refuse, not pass, and the refusal parks rather than stash).
  */
+import { isConfiguredExemptDirtLine } from "./work-driver-dirty-root-exempt.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
@@ -22,8 +23,13 @@ import type { ExecFn } from "./worktree.ts";
  * `stagePorcelainPaths` can sweep untracked files into the PR) needs to keep
  * treating untracked as dirt.
  */
-export function porcelainHasUntrackedOnly(porcelain: string[]): boolean {
-  const lines = porcelain.filter((l) => l.trim() && !/^..\s+"?\.worktrees\//.test(l));
+export function porcelainHasUntrackedOnly(
+  porcelain: string[],
+  exempt?: readonly string[],
+): boolean {
+  const lines = porcelain.filter(
+    (l) => l.trim() && !/^..\s+"?\.worktrees\//.test(l) && !isConfiguredExemptDirtLine(l, exempt),
+  );
   return lines.length > 0 && lines.every((l) => l.startsWith("??"));
 }
 
@@ -38,12 +44,17 @@ export function porcelainHasUntrackedOnly(porcelain: string[]): boolean {
 export async function readDirtyPorcelain(
   execFn: ExecFn,
   repoRoot: string,
+  exempt?: readonly string[],
 ): Promise<string[] | undefined> {
   const { stdout } = await execFn("git status --porcelain", {
     cwd: repoRoot,
     maxBuffer: 1024 * 1024,
   });
-  const dirt = stdout.split("\n").filter((l) => l.trim() && !/^..\s+"?\.worktrees\//.test(l));
+  const dirt = stdout
+    .split("\n")
+    .filter(
+      (l) => l.trim() && !/^..\s+"?\.worktrees\//.test(l) && !isConfiguredExemptDirtLine(l, exempt),
+    );
   return dirt.length > 0 ? dirt : undefined;
 }
 

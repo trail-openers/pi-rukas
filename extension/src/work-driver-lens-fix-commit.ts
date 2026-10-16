@@ -118,7 +118,12 @@ export async function diffAgainstBranch(
  */
 export async function landCommittedFix(
   execFn: ExecFn,
-  ctx: { repoRoot: string; issue: number },
+  ctx: {
+    repoRoot: string;
+    issue: number;
+    /** #1362 — forwarded to the verified restores' repoRoot reads (see there). */
+    dirtyRootExempt?: readonly string[];
+  },
   ps: PipelineState,
   tree: string,
 ): Promise<{ ok: true; sha: string } | { ok: false; error: string }> {
@@ -193,6 +198,7 @@ export async function landCommittedFix(
           originalRef,
           scratchDir: scratch,
           label: "lens-fix-integration",
+          dirtyRootExempt: ctx.dirtyRootExempt,
         });
         // #981 — the conflict paths lead the error so a downstream 200-char
         // truncation (the caller's msg.slice(0, 200)) keeps the operator-
@@ -222,6 +228,7 @@ export async function landCommittedFix(
           originalRef,
           scratchDir: scratch,
           label: "lens-fix-integration",
+          dirtyRootExempt: ctx.dirtyRootExempt,
         });
         throw new Error(
           `nothing landed on the branch. ${restoreClaim(restore, { trailing: MANUAL_REPAIR_HINT })}`,
@@ -242,6 +249,7 @@ export async function landCommittedFix(
         originalRef,
         scratchDir: scratchDir(ctx.repoRoot, ctx.issue),
         label: "lens-fix-integration",
+        dirtyRootExempt: ctx.dirtyRootExempt,
       });
       return {
         ok: false,

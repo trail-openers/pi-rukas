@@ -382,6 +382,7 @@ export async function runMerged(
             mergedBranch: state.pipelineState.branchName,
             execFn,
             startRef,
+            dirtyRootExempt: ctx.dirtyRootExempt,
           }),
         );
         for (const note of restorationNotes) {
