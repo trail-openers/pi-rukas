@@ -19,13 +19,22 @@ console.log("fixture-hang: starting, will hang until killed");
 console.log("fixture-hang: pid", process.pid);
 
 const token = process.env.FIXTURE_HANG_TOKEN ?? "hang-default";
-const hangSeconds = Number.parseInt(process.env.FIXTURE_HANG_S ?? "300", 10);
+// A non-numeric or non-positive bound would make `sleep` exit at once and the
+// watchdog would have nothing to kill, turning the no-orphan case into a
+// silent pass. Fall back to the 300s the fixture has always used.
+const parsed = Number.parseInt(process.env.FIXTURE_HANG_S ?? "300", 10);
+const hangSeconds = Number.isFinite(parsed) && parsed > 0 ? parsed : 300;
 
 // Spawn a long-lived child with the run-unique token in its command line
 // so the no-orphan test can find it after the kill.
 // #1365: GNU sleep rejects a second operand (`sleep 300 <token>` exits at once),
-// so the token rides in a `sh -c` command line instead, and the sleep is its child.
-spawn("sh", ["-c", `sleep ${hangSeconds}; : ${token}`], { stdio: "ignore" });
+// so the token rides in a `sh -c` command line instead, and the sleep is its
+// child. Both values are POSITIONAL ($1/$2), never interpolated: the token is
+// caller-supplied text and this is a shell command line, so interpolation would
+// hand the caller a way to run commands in the fixture.
+spawn("sh", ["-c", 'sleep "$1"; : "$2"', "sh", String(hangSeconds), token], {
+  stdio: "ignore",
+});
 
 // Keep alive indefinitely. The verify-loop watchdog must kill us.
 setInterval(() => {}, 1000);
