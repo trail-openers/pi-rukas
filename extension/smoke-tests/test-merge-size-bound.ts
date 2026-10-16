@@ -13,7 +13,9 @@
  *
  * The three questions this file asks of `exceedsAnalysisBound` directly:
  *   1. short never bounds, whatever it contains;
- *   2. long + forge + merge word bounds;
+ *   2. long + forge + merge word bounds — including the doors spelled with an
+ *      HTTP client or a script runner rather than `gh`/`glab` (the REST merge
+ *      of #955, the reason the forge test is the trigger's `FORGE_WORD`);
  *   3. long + forge + NO merge word does not (the round-1 widening — a long
  *      read is a read), and long without a forge word never does.
  * Plus: the bound's own refusal is the bare code plus its detail, and nothing
@@ -57,6 +59,14 @@ for (const cmd of [
   `gh ${"$(merge ".repeat(5000)}`,
   `bash -c 'gh pr merge 17' ${pad()}`,
   `env gh pr merge 17 ${pad()}`,
+  // #1417 round 2 (security): the same door spelled without `gh`/`glab`. The
+  // bound's forge test is `FORGE_WORD` — the trigger's own set — so these take
+  // the ledger-checked `too-large` path instead of running unbounded and
+  // landing on the classifier's `not-a-forge-command` hold.
+  `curl -X PUT https://api.github.com/repos/o/r/pulls/1/merge ${pad()}`,
+  `wget --method=PUT https://api.github.com/repos/o/r/pulls/1/merge ${pad()}`,
+  `hub merge o/r/1 ${pad()}`,
+  `node -e 'octokit.pulls.merge({owner:"o",repo:"r",pull_number:1})' ${pad()}`,
 ]) {
   assert(
     exceedsAnalysisBound(cmd) === true,
@@ -102,20 +112,43 @@ assert(
   MERGE_COMMAND_SIZE_BOUND === 8000,
   `the bound is the documented 8000 (got ${MERGE_COMMAND_SIZE_BOUND})`,
 );
-// An HTTP client is not a forge word: the bound's forge test is `gh`/`glab`
-// only, so a 9 kB `curl …/merge` is read by the classifier rather than bounded
-// — and the classifier already refuses that door by name. Pinned so nobody
-// "widens" the bound to forge-adjacent words it cannot be wrong about.
+// An HTTP client aimed at a forge merge endpoint IS bounded: the bound's forge
+// test is the trigger's own `FORGE_WORD` set (curl/wget/http/hub/node/octokit/
+// api.github.com/gitlab, …), so a 9 kB REST merge door takes the
+// ledger-checked `too-large` path rather than running unbounded. Asserted in
+// the block above; pinned here alongside the two exemptions that must NOT
+// widen — a long read that spells no merge word, and a long command with no
+// forge word at all.
 assert(
   exceedsAnalysisBound(`curl -X PUT https://api.github.com/repos/o/r/pulls/1/merge ${pad()}`) ===
-    false,
-  "the bound's forge test is gh/glab, not every forge-adjacent word",
+    true,
+  "a long curl merge door is bounded by the forge-word test, not left to the classifier",
 );
-assert(
-  readMergeCommand(`curl -X PUT https://api.github.com/repos/o/r/pulls/1/merge ${pad()}`).kind ===
-    "refused",
-  "…and the REST door is still refused, by the classifier rather than the bound",
-);
+// The exemption that must never widen: a long forge-naming READ that spells no
+// merge word is a read, whatever length it reaches — this is the #1417 symptom
+// the round-1 widening removed, and it survives the forge-word widening above
+// because the merge-word exemption is the second gate, not the first.
+for (const cmd of [
+  `http GET https://api.github.com/repos/o/r/pulls/1 ${pad()}`,
+  `hub api repos/o/r/pulls/1 ${pad()}`,
+  `curl https://api.github.com/repos/o/r/pulls/17 ${pad()}`,
+]) {
+  assert(
+    exceedsAnalysisBound(cmd) === false && readMergeCommand(cmd).kind === "none",
+    `a long forge READ with no merge word stays a read: ${cmd.slice(0, 45)}…`,
+  );
+}
+// …and a long command naming NO forge word at all is never bounded, however
+// many merge words it spells — length alone is not a reason.
+for (const cmd of [
+  `echo ${pad()} merge mergebranch automerge`,
+  `git log ${pad()} merge pr merge`,
+]) {
+  assert(
+    exceedsAnalysisBound(cmd) === false,
+    `a long command with no forge word is never bounded: ${cmd.slice(0, 45)}…`,
+  );
+}
 
 {
   const justUnder = `gh pr merge 17 ${"x".repeat(MERGE_COMMAND_SIZE_BOUND - "gh pr merge 17 ".length)}`;
