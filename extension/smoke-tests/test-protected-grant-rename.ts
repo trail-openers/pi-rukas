@@ -128,6 +128,45 @@ const isProtectedFailure = (f: string) => /protected path/.test(f);
     "a committed deletion of a protected file still halts (the `D` record is a first-class path)",
   );
 
+  // #1378 fix round — a COPY out of a protected path. `git cp .github/workflows/ci.yml
+  // src/copied.yml` leaves the workflow where it is and hands a duplicate over as the
+  // developer's own artifact; git reports it as `C100\0from\0to`, not `R100`. If the
+  // parser only recognised `R`, the protected source never reached the gate.
+  const committedCopy = await verifyStepOutcome(
+    ctx("", undefined, `C\t${CI}\tsrc/copied.yml\n`),
+    stateWith(),
+    "develop",
+  );
+  assert(
+    committedCopy.failures.some((f) => isProtectedFailure(f) && f.includes(`— ${CI}`)),
+    "#1378: a COMMITTED copy OUT of a protected path halts, naming the source (`C100`, not `R100`)",
+  );
+  assert(
+    !committedCopy.failures.some((f) => f.includes("git diff failed")),
+    "...as a protected-path finding, not an unreadable-read failure",
+  );
+  const copyGranted = await verifyStepOutcome(
+    ctx("", [CI], `C\t${CI}\tsrc/copied.yml\n`),
+    stateWith(),
+    "develop",
+  );
+  assert(
+    !copyGranted.failures.some(isProtectedFailure) &&
+      copyGranted.notes.some((n) => n.includes("--allow-protected") && n.includes(CI)),
+    "#1378: a grant naming the copy SOURCE admits it, and the admission is noted",
+  );
+  const copyInto = await verifyStepOutcome(
+    ctx("", undefined, "C\tsrc/app.ts\t.github/workflows/copied-in.yml\n"),
+    stateWith(),
+    "develop",
+  );
+  assert(
+    copyInto.failures.some(
+      (f) => isProtectedFailure(f) && f.includes(".github/workflows/copied-in.yml"),
+    ),
+    "#1378: a committed copy INTO a protected path halts on the destination too",
+  );
+
   // #1378 — a name git C-quotes. `-z` carries the bytes verbatim, so the halt names
   // the real path and SAFE_PATH_RE correctly refuses to print a grant for it.
   const NON_ASCII = ".github/workflows/wörkflows.yml";

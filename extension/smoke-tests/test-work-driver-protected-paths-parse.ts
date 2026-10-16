@@ -202,6 +202,46 @@ function fake(stdout: string, onCall?: (argv: string[]) => void) {
     "fake fidelity: nulNameStatus emits the kind the test spelled (M/A/D survive, R keeps both sides)",
   );
 
+  // A COPY is not a rename: `git cp .github/workflows/ci.yml src/ci.yml` leaves the
+  // workflow in place and duplicates it, and git reports `C100\0from\0to`. The
+  // protected gate must consult the source exactly as it does a rename's, or a
+  // developer reads a protected file out and hands it over as their own artifact.
+  const copied = await readCommittedProtectedPaths(
+    fake(nulNameStatus(`C\t${CI}\tsrc/copied.yml`)),
+    "/wt",
+    BASE,
+  );
+  assert(
+    copied.ok === true &&
+      copied.targets[0]?.kind === "R" &&
+      copied.targets[0].kind === "R" &&
+      copied.targets[0].score === "100" &&
+      copied.targets[0].from === CI &&
+      copied.targets[0].to === "src/copied.yml",
+    "diff -z: a `C` record is parsed as a rename-shaped record with its score, source and destination",
+  );
+  const copiedLowScore = await readCommittedProtectedPaths(
+    fake(nulNameStatus(`C75\t.pi/verify-cmd\tsrc/x`)),
+    "/wt",
+    BASE,
+  );
+  assert(
+    copiedLowScore.ok === true &&
+      copiedLowScore.targets[0]?.kind === "R" &&
+      copiedLowScore.targets[0].kind === "R" &&
+      copiedLowScore.targets[0].score === "75",
+    "fake fidelity: nulNameStatus emits a C record with the score the test spelled (C75, not C100)",
+  );
+  const copyOnlyStream = await readCommittedProtectedPaths(
+    fake(nulNameStatus(`C\t${CI}\tsrc/copied.yml`)),
+    "/wt",
+    BASE,
+  );
+  assert(
+    copyOnlyStream.ok === true && renameSourcePaths(copyOnlyStream.targets).join() === CI,
+    "fake fidelity: a copy's SOURCE reaches renameSourcePaths, the list only the protected gate reads",
+  );
+
   // The fakes in lib/nul-porcelain.ts match these two reads by comparing the
   // command line `commandOf` builds against the argv constants. If the reader ever
   // sends something the matchers do not recognise, EVERY scripted fake falls through
