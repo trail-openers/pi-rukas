@@ -273,7 +273,9 @@ export async function verifyEvidence(
   // Only what the judge was actually shown, and checked BEFORE the read: the
   // read comes off the live tree, so a name the judge was never shown must not
   // reach it. Comparison is on normalised repo-relative paths, so "./AGENTS.md",
-  // "AGENTS.md" and "docs/../AGENTS.md" all name the same document.
+  // "AGENTS.md" and "docs/../AGENTS.md" all name the same document — but
+  // EXACT-CASE, because on a case-sensitive filesystem "AGENTS.MD" is a
+  // different file, and the read below runs after this gate.
   const rel = normaliseCitedPath(named);
   if (check.shownFiles && !check.shownFiles.some((f) => normaliseCitedPath(f) === rel)) {
     return {
@@ -290,10 +292,11 @@ export async function verifyEvidence(
     ? {
         passed: true,
         reason: `the quote was found in ${rel}`,
-        // The normalised repo-relative path, not the string the model typed:
-        // callers record this as the file the grant came from, and a judge that
-        // typed "./AGENTS.md" should not leave the operator looking for a file
-        // spelled that way.
+        // The cited path with its traversal hops resolved and the repo's own
+        // spelling kept: callers record this as the file the grant came from, and
+        // a judge that typed "./AGENTS.md" should not leave the operator looking
+        // for a file spelled that way. Case is preserved so the name is the file
+        // that was actually read on a case-sensitive filesystem.
         matchedName: rel,
       }
     : { passed: false, reason: citationReason(named, finding) };
@@ -301,16 +304,21 @@ export async function verifyEvidence(
 
 /**
  * A cited path as the repo spells it: backslashes to slashes, `./` and `..` hops
- * resolved, lowercased.
+ * resolved, case preserved.
  *
  * Used both to compare a citation against the shown set and as the name the
  * result carries, so the two cannot disagree about which file was read.
+ *
+ * Case is deliberately NOT folded. `readConfined` resolves the cited path
+ * against the live tree, and there a different-case name is a different file —
+ * on Linux `AGENTS.MD` either does not exist or is not the document that was
+ * shown. Folding here would let a citation pass the shown-set gate as
+ * `agents.md` and then read whatever `AGENTS.MD` actually is on disk, which is
+ * the read the gate exists to prevent. macOS's case-insensitive filesystem
+ * hides that divergence; it is not a licence to rely on it.
  */
 function normaliseCitedPath(cited: string): string {
-  return path.posix
-    .normalize(cited.replace(/\\/g, "/"))
-    .replace(/^\.\/+/, "")
-    .toLowerCase();
+  return path.posix.normalize(cited.replace(/\\/g, "/")).replace(/^\.\/+/, "");
 }
 
 /**

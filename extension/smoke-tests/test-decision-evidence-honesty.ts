@@ -89,8 +89,8 @@ const docs = (text: string, file = "AGENTS.md"): DoctrineDoc[] => [{ file, text 
   writeFileSync(path.join(root, "AGENTS.md"), `# Policy\n\n${GRANT}\n`);
   const typed = await verifyEvidence({ repoRoot: root, texts: [] }, GRANT, "./AGENTS.md");
   assert(
-    typed.passed && typed.matchedName === "agents.md",
-    `the file branch reports the normalised repo-relative path it read, not "./AGENTS.md" (got ${JSON.stringify(typed.matchedName)})`,
+    typed.passed && typed.matchedName === "AGENTS.md",
+    `the file branch reports the path it read with the repo's own spelling, not "./AGENTS.md" (got ${JSON.stringify(typed.matchedName)})`,
   );
   // And through the grant path, where the name becomes the operator's evidence.
   // The judge cites the document that carried the grant; the point is that the
@@ -158,13 +158,24 @@ const docs = (text: string, file = "AGENTS.md"): DoctrineDoc[] => [{ file, text 
     "and an unseen-file refusal never turns a partial quote of a SHOWN file into a pass",
   );
   // Spelling must not be an escape hatch: three ways of naming the same shown
-  // file are the same citation.
-  for (const spelling of ["./AGENTS.md", "docs/../AGENTS.md", "AGENTS.MD"]) {
+  // file are the same citation. Case is NOT one of them — see the block below.
+  for (const spelling of ["./AGENTS.md", "docs/../AGENTS.md"]) {
     assert(
       (await verifyEvidence(shown, Q, spelling)).passed,
       `a shown file cited as ${JSON.stringify(spelling)} is still the shown file`,
     );
   }
+  // …and a different-case name is a DIFFERENT file, so it is not the shown file.
+  // The shown-set gate runs before the read, so this refuses identically on
+  // macOS (where a read of "AGENTS.MD" would have found the file) and on Linux
+  // (where it would not have existed). The old lowercasing normalisation passed
+  // here on macOS by accident and failed on CI.
+  const wrongCase = await verifyEvidence(shown, Q, "AGENTS.MD");
+  assert(
+    !wrongCase.passed &&
+      /not one of the documents the answer was shown/.test(wrongCase.reason),
+    `MUST-FAIL: a shown file cited with different case is a different file and is refused unread (${wrongCase.reason})`,
+  );
   // Through the real grant path: the judge cites a file the caller never read.
   const GRANT = REAL_GRANT_LINE as string;
   const authority = await resolveMergeAuthority(
