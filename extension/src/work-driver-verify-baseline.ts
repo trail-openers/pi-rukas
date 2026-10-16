@@ -30,7 +30,7 @@ import {
   sharesAssertion,
 } from "./work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
-import { VERIFY_TIMEOUT_LABEL } from "./work-driver-verify-develop-helpers.ts";
+import { VERIFY_TIMEOUT_LABEL, boundText } from "./work-driver-verify-develop-helpers.ts";
 import { combinedExecFailureStream } from "./work-driver-verify-flake.ts";
 import { looksLikeMissingDeps, provisionWorktree } from "./worktree-provision.ts";
 import { type ExecFn, worktreePath } from "./worktree.ts";
@@ -115,7 +115,7 @@ export function baselineRedMessage(
 ): string {
   const where = `on a clean checkout of the cycle's base commit ${opts.baseSha.slice(0, 12)}, without this change`;
   if (verdict.timedOut) {
-    return `${BASELINE_RED_MARKER} ${VERIFY_TIMEOUT_LABEL} verify command \`${opts.cmd}\` exceeded its ${Math.round(opts.timeoutMs / 60000)}-min timeout ${where} — the gate cannot finish inside its bound on this host whatever the diff contains. Raise PI_ENSEMBLE_VERIFY_TIMEOUT_MS or make the gate faster; the failures below do not implicate this change`;
+    return `${BASELINE_RED_MARKER} ${VERIFY_TIMEOUT_LABEL} verify command \`${opts.cmd}\` exceeded its ${boundText(opts.timeoutMs)} timeout ${where} — the gate cannot finish inside its bound on this host whatever the diff contains. Raise PI_ENSEMBLE_VERIFY_TIMEOUT_MS or make the gate faster; the failures below do not implicate this change`;
   }
   const same =
     verdict.assertion !== null && sharesAssertion(opts.changeFailure, verdict.assertion)
