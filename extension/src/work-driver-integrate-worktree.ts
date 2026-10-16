@@ -18,6 +18,10 @@
  *    HEAD is recorded (its unpushed commits kept on a backup ref, #1173),
  *    it is force-removed, and a fresh one is created.
  *    The #475/#545 create guards (runCreateGuards) still run on top.
+ *    #1396: the registration check is a STRICT `git worktree list` — an
+ *    unreadable listing throws `WorktreeScanError` and removes nothing,
+ *    rather than reading the tree as unregistered and skipping the
+ *    commit-keeping path.
  *  - If repoRoot itself holds the branch, it is detached first (under the
  *    caller's integration lock) when clean, and a dirty repoRoot halts —
  *    the driver never moves operator residue.

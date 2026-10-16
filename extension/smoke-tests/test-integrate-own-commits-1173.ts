@@ -28,9 +28,14 @@
  *  (j) an UNRECORDED stale tree on a different branch with unique commits is
  *      refused too (one admission rule on both paths), and a kept backup ref
  *      is returned to the commit-pr caller;
- *  (k) a creation failure after the backup still names the kept ref.
+ *  (k) a creation failure after the backup still names the kept ref;
+ *  (l) the halt's plumb report names the kept ref even when the error truncates;
+ *  (m) #1396 — repeated re-entries that each keep a DIFFERENT unpushed HEAD
+ *      leave exactly ONE ref under `refs/pi-rukas/integrate-backup/issue-17`
+ *      (the namespace holds at most one ref per issue, overwritten in place),
+ *      and the docs naming that namespace agree with the ref the code writes.
  */
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ensureIntegrateWorktreeOrHalt } from "../src/work-driver-commit-fallback.ts";
@@ -157,7 +162,7 @@ try {
       `${tag} re-entry over the cycle's own unpushed commit does not refuse (${res.ok ? "ok" : (res.err as Error).message.split(" Inspect")[0]})`,
     );
     const refs = await reachable(repo, sha);
-    const backup = `refs/pi-rukas/integrate-backup/issue-17/${sha}`;
+    const backup = "refs/pi-rukas/integrate-backup/issue-17";
     assert(refs.includes(backup), `${tag} the unpushed commit is kept on ${backup}`);
     assert(
       res.ok && res.r.backupRef === backup,
@@ -285,7 +290,7 @@ try {
     const ctx = { repoRoot: repo, issue: 17 } as unknown as CycleContext;
     const res = await ensureIntegrateWorktreeOrHalt(ctx, state, BRANCH, realExec, "conflict");
     assert(
-      "backupRef" in res && res.backupRef === `refs/pi-rukas/integrate-backup/issue-17/${sha}`,
+      "backupRef" in res && res.backupRef === "refs/pi-rukas/integrate-backup/issue-17",
       "(j) ensureIntegrateWorktreeOrHalt hands the backup ref to commit-pr (for the plumb report)",
     );
   }
@@ -308,7 +313,7 @@ try {
     );
     assert(
       res.includes("simulated add failure") &&
-        res.includes(`refs/pi-rukas/integrate-backup/issue-17/${sha}`),
+        res.includes("refs/pi-rukas/integrate-backup/issue-17"),
       `(k) the creation error names the kept backup ref (${res.slice(0, 160)})`,
     );
   }
@@ -330,7 +335,7 @@ try {
     const plumb =
       "halted" in res ? res.halted.eventLog.find((e) => e.kind === "plumb-report") : undefined;
     const body = (plumb as { body?: string } | undefined)?.body ?? "";
-    const ref = `refs/pi-rukas/integrate-backup/issue-17/${sha}`;
+    const ref = "refs/pi-rukas/integrate-backup/issue-17";
     assert(
       "halted" in res && body.includes(ref) && body.includes("simulated add failure"),
       `(l) the halt plumb report names the kept backup ref (${body.slice(0, 80)})`,
@@ -338,6 +343,88 @@ try {
     assert(
       body.length < 1200,
       `(l) the creation error in the halt body is bounded (${body.length} chars)`,
+    );
+  }
+
+  // (m) #1396 — the ref namespace holds AT MOST ONE ref per issue. Before the
+  // fix the ref was keyed by HEAD SHA (`…/issue-17/<sha>`), so every re-entry
+  // whose stale tree held a NEW unpushed commit added a ref and nothing ever
+  // deleted one: five re-entries left six refs. Each round below makes a real
+  // detached stale tree with its own commit, runs the re-entry, and repeats.
+  {
+    const { repo, baseSha, wt, stateFile } = await fixture("ref-growth", { recordTree: true });
+    const shas: string[] = [];
+    for (let round = 1; round <= 3; round++) {
+      // The driver recreates its tree ATTACHED, so a re-entry whose commit is
+      // on the branch has nothing to keep (case (f)). The accumulation this
+      // case pins is the pre-fix driver leaving a DETACHED tree whose commit
+      // reaches neither the branch nor origin — so each round first removes
+      // the tree the previous round left, then rebuilds that residue shape
+      // with unique content (a distinct HEAD sha each round: the pre-fix code
+      // wrote one new `…/issue-17/<sha>` ref per round and deleted none).
+      await git(repo, ["worktree", "remove", "--force", wt]).catch(() => undefined);
+      await git(repo, ["update-ref", `refs/heads/${BRANCH}`, baseSha]).catch(() => undefined);
+      await staleDetachedWithCommit(repo, wt, baseSha);
+      writeFileSync(path.join(wt, "a.txt"), `base\nconsolidated round ${round}\n`);
+      await git(wt, ["commit", "-q", "-am", `consolidation ${round}`]);
+      const head = (await git(wt, ["rev-parse", "HEAD"])).stdout.trim();
+      shas.push(head);
+      const res = await run(repo, baseSha, stateFile);
+      assert(
+        res.ok && res.r.backupRef === "refs/pi-rukas/integrate-backup/issue-17",
+        `(m) round ${round} keeps HEAD on the single per-issue ref (${res.ok ? res.r.backupRef : (res.err as Error).message.split("\n")[0]})`,
+      );
+    }
+    const refs = (
+      await git(repo, ["for-each-ref", "--format=%(refname)", "refs/pi-rukas/integrate-backup"])
+    ).stdout
+      .split("\n")
+      .filter(Boolean);
+    assert(
+      refs.length === 1 && refs[0] === "refs/pi-rukas/integrate-backup/issue-17",
+      `(m) three re-entries with three different unpushed HEADs leave exactly ONE ref (${refs.join(", ") || "none"})`,
+    );
+    const surviving = (
+      await git(repo, ["rev-parse", "refs/pi-rukas/integrate-backup/issue-17"])
+    ).stdout.trim();
+    assert(
+      surviving === shas[shas.length - 1],
+      `(m) the surviving ref names the NEWEST kept HEAD (${surviving.slice(0, 8)} = ${shas[shas.length - 1]?.slice(0, 8)})`,
+    );
+    // The discarded backup's commit is still in the object database reachable
+    // from the surviving ref's history only when it truly was an ancestor; the
+    // point of the assertion is that the replaced ref is GONE, not that the
+    // commit is — the driver force-removed the tree that held it.
+    assert(
+      shas.length === 3 && shas[0] !== shas[2],
+      "(m) the three rounds really were distinct HEADs",
+    );
+  }
+
+  // (m2) #1396 — the docs state the one-ref-per-issue rule and name the
+  // ref shape the code actually writes (they used to document the SHA-keyed
+  // namespace and "never pruned automatically" as intended behaviour).
+  {
+    const docs = readFileSync(new URL("../../docs/troubleshooting.md", import.meta.url), "utf8");
+    assert(
+      docs.includes("refs/pi-rukas/integrate-backup/issue-<N>"),
+      "(m2) docs/troubleshooting.md names the per-issue ref shape the code writes",
+    );
+    assert(
+      !docs.includes("refs/pi-rukas/integrate-backup/issue-<N>/<sha>"),
+      "(m2) the docs no longer document the SHA-keyed (unbounded) namespace",
+    );
+    assert(
+      !docs.includes("never pruned automatically"),
+      "(m2) the docs no longer present unbounded ref growth as intended behaviour",
+    );
+    assert(
+      docs.includes("git update-ref -d refs/pi-rukas/integrate-backup/issue-<N>"),
+      "(m2) the docs name the cleanup command for the single ref",
+    );
+    assert(
+      docs.includes("WorktreeScanError") && docs.includes("git worktree list"),
+      "(m2) the docs state the failed-listing refusal",
     );
   }
 } finally {

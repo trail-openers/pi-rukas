@@ -347,8 +347,13 @@ export async function findDirtySameIssueLeftover(
  * #1170 — the strict listing for the branch step's sibling scan. A transient
  * `git worktree list` failure is retried once (250ms) before it refuses, so a
  * single flaky read does not park a clean cycle; the refusal names the attempts.
+ *
+ * #1396 — shared with the integrate step's stale-tree discriminator
+ * (`isRegisteredWorktree`): every read whose failure would let a removal
+ * through uses THIS helper, so "could not read the listing" is one
+ * `WorktreeScanError` shape everywhere, not a per-caller invention.
  */
-async function listWorktreeStrict(execFn: ExecFn, repoRoot: string): Promise<string> {
+export async function listWorktreeStrict(execFn: ExecFn, repoRoot: string): Promise<string> {
   let lastErr: unknown;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {

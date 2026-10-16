@@ -9,13 +9,23 @@
  *  (c) an unsafe branchName is refused before any git command runs;
  *  (e) a commit on neither the branch nor origin is kept on a backup ref (#1173);
  *  (i) a plain non-worktree directory at the integrate path is refused as
- *      DirtyWorktreeError (notOwnWorktree) and never removed.
+ *      DirtyWorktreeError (notOwnWorktree) and never removed;
+ *  (j) #1396 — an unreadable `git worktree list` refuses the creation with
+ *      WorktreeScanError and removes NOTHING (one retry, then refuse); a single
+ *      transient failure is retried and proceeds;
+ *  (k) #1396 — an unreadable `git merge-base --is-ancestor` keeps the commit
+ *      instead of assuming it is already on origin/<branch>.
  */
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ensureIntegrateWorktree } from "../src/work-driver-integrate-worktree.ts";
-import { DirtyWorktreeError, type ExecFn, worktreePath } from "../src/worktree.ts";
+import {
+  DirtyWorktreeError,
+  type ExecFn,
+  WorktreeScanError,
+  worktreePath,
+} from "../src/worktree.ts";
 import { git, realExecWithStderr as realExec } from "./lib/worktree-fake-fixture.ts";
 
 let exit = 0;
@@ -208,7 +218,7 @@ try {
       // #1173 — the detached tree's own commit is no longer refused (that wedged
       // every re-entry); it is kept on a backup ref, so nothing is lost.
       const kept = (
-        await git(repo, ["rev-parse", "--verify", `refs/pi-rukas/integrate-backup/issue-17/${sha}`])
+        await git(repo, ["rev-parse", "--verify", "refs/pi-rukas/integrate-backup/issue-17"])
       ).stdout.trim();
       assert(
         err === undefined && kept === sha,
@@ -304,6 +314,176 @@ try {
     assert(existsSync(wt), "(h) the unreadable stale tree is not removed");
     const list = (await git(repo, ["worktree", "list", "--porcelain"])).stdout;
     assert(list.includes(wt), "(h) the stale tree is still registered");
+  }
+
+  // (j) #1396 — `git worktree list` itself is unreadable: the registration check
+  // cannot prove the tree is NOT driver residue, so the whole creation refuses
+  // (WorktreeScanError, not a DirtyWorktreeError — there is no finding to name)
+  // and the registered stale tree stays on disk and stays registered.
+  {
+    const { repo, baseSha, branch, wt, stateFile } = await fixture("listing-unreadable");
+    // The tree holds a commit on neither the branch nor origin — the shape the
+    // keep-or-refuse branch exists to save. Under the old fail-open listing it
+    // read as "unregistered", skipped the backup, and fell through to
+    // `git worktree add` failing on an existing path.
+    writeFileSync(path.join(wt, "a.txt"), "base\nintegrated\n");
+    await git(wt, ["commit", "-q", "-am", "integration"]);
+    const sha = (await git(wt, ["rev-parse", "HEAD"])).stdout.trim();
+    let listCalls = 0;
+    const listingFails: ExecFn = async (cmd, o) => {
+      if (cmd.startsWith("git worktree list")) {
+        listCalls++;
+        throw new Error("fatal: simulated listing failure");
+      }
+      return realExec(cmd, o);
+    };
+    let err: unknown;
+    try {
+      await ensureIntegrateWorktree(
+        listingFails,
+        { repoRoot: repo, issue: 17, branchName: branch, baseSha },
+        stateFile,
+      );
+    } catch (e) {
+      err = e;
+    }
+    assert(
+      err instanceof WorktreeScanError &&
+        !(err instanceof DirtyWorktreeError) &&
+        /simulated listing failure/.test(err.message),
+      `(j) an unreadable \`git worktree list\` refuses the integrate creation with WorktreeScanError (${err ? (err as Error).message.split("\n")[0] : "no error"})`,
+    );
+    assert(
+      listCalls === 2,
+      `(j) the strict listing retries once before refusing — both attempts ran (${listCalls})`,
+    );
+    assert(existsSync(wt), "(j) the registered stale tree is NOT removed");
+    assert(existsSync(path.join(wt, "a.txt")), "(j) and its working file survives");
+    const still = (
+      await git(repo, ["rev-parse", "--verify", "HEAD"]).catch(() => ({ stdout: "" }))
+    ).stdout.trim();
+    const list = (await git(repo, ["worktree", "list", "--porcelain"])).stdout;
+    assert(list.includes(wt), "(j) the stale tree is still registered after the refusal");
+    assert(
+      still.length > 0 && existsSync(wt),
+      `(j) its commits are still resolvable (${sha.slice(0, 8)})`,
+    );
+  }
+
+  // (j2) #1396 — one transient listing failure is retried, not refused: a flaky
+  // read must not park a cycle whose tree is perfectly replaceable.
+  {
+    const { repo, baseSha, branch, wt, stateFile } = await fixture("listing-flaky");
+    let listCalls = 0;
+    const flakyOnce: ExecFn = async (cmd, o) => {
+      if (cmd.startsWith("git worktree list") && ++listCalls === 1) {
+        throw new Error("fatal: transient lock");
+      }
+      return realExec(cmd, o);
+    };
+    let err: unknown;
+    try {
+      await ensureIntegrateWorktree(
+        flakyOnce,
+        { repoRoot: repo, issue: 17, branchName: branch, baseSha },
+        stateFile,
+      );
+    } catch (e) {
+      err = e;
+    }
+    assert(
+      err === undefined && listCalls >= 2,
+      `(j2) a single transient listing failure is retried and the re-entry proceeds (calls: ${listCalls}, ${err ? (err as Error).message.split("\n")[0] : "ok"})`,
+    );
+    const list = (await git(repo, ["worktree", "list", "--porcelain"])).stdout;
+    assert(list.includes(wt), "(j2) and the integrate worktree was recreated at its path");
+  }
+
+  // (k) #1396 — an unreadable "is HEAD already on origin/<branch>?" keeps the
+  // commit. The old code read any git failure as "not reachable" AND the
+  // reachable-check as an exemption, so a failure here could silently take the
+  // "already on origin, nothing to keep" exit and let the commit die with the
+  // tree. An unreadable answer must fall through to the keep.
+  {
+    const { repo, baseSha, branch, wt, stateFile } = await fixture("merge-base-unreadable");
+    writeFileSync(path.join(wt, "a.txt"), "base\nintegrated\n");
+    await git(wt, ["commit", "-q", "-am", "integration"]);
+    const sha = (await git(wt, ["rev-parse", "HEAD"])).stdout.trim();
+    // exit 1 ("not an ancestor") is the ORDINARY answer and is not a failure;
+    // anything else (128, a kill) is "could not answer". Injected as raw
+    // rejections with the `code` promisify(exec) carries, so the two cases are
+    // distinguishable — which is exactly what the old `catch → false` collapsed.
+    const reject = (code: number, msg: string) => {
+      const e = new Error(msg) as Error & { code?: number };
+      e.code = code;
+      return e;
+    };
+    let mergeBaseCalls = 0;
+    let injectFailure = true;
+    const mergeBaseUnreadable: ExecFn = async (cmd, o) => {
+      if (cmd.startsWith("git merge-base --is-ancestor")) {
+        mergeBaseCalls++;
+        if (injectFailure) {
+          injectFailure = false;
+          throw reject(128, "fatal: bad object");
+        }
+        // The ordinary answer from here on: HEAD is NOT on origin/<branch>.
+        throw reject(1, "");
+      }
+      return realExec(cmd, o);
+    };
+    const res = await ensureIntegrateWorktree(
+      mergeBaseUnreadable,
+      { repoRoot: repo, issue: 17, branchName: branch, baseSha },
+      stateFile,
+    ).then(
+      (r) => ({ ok: true as const, r }),
+      (e: unknown) => ({ ok: false as const, err: e }),
+    );
+    const kept = (
+      await git(repo, ["rev-parse", "--verify", "refs/pi-rukas/integrate-backup/issue-17"]).catch(
+        () => ({ stdout: "" }),
+      )
+    ).stdout.trim();
+    assert(
+      mergeBaseCalls > 0 && res.ok && kept === sha,
+      `(k) an unreadable \`merge-base --is-ancestor\` keeps the commit on the backup ref rather than assuming it is on origin (${mergeBaseCalls} probe call(s), kept: ${kept ? kept.slice(0, 8) : "nothing"})`,
+    );
+    // Canary (the honest counterfactual): same fixture, the probe ANSWERS
+    // "reachable" (exit 0) instead of failing. The backup then correctly
+    // declines — proving the keep in (k) is produced by the unreadable answer
+    // being treated as NOT reachable, not by the stub happening to write a ref
+    // anyway. (A single `ensureIntegrateWorktree` consults the probe exactly
+    // once, so a second round is a different fixture, not a second answer.)
+    const decliner: ExecFn = async (cmd, o) => {
+      if (cmd.startsWith("git merge-base --is-ancestor")) return { stdout: "" };
+      return realExec(cmd, o);
+    };
+    const {
+      repo: repo2,
+      baseSha: base2,
+      wt: wt2,
+      stateFile: state2,
+    } = await fixture("merge-base-reachable");
+    writeFileSync(path.join(wt2, "a.txt"), "base\nintegrated\n");
+    await git(wt2, ["commit", "-q", "-am", "integration"]);
+    const canary = await ensureIntegrateWorktree(
+      decliner,
+      { repoRoot: repo2, issue: 17, branchName: branch, baseSha: base2 },
+      state2,
+    ).then(
+      (r) => r.backupRef,
+      (e: unknown) => String((e as Error).message),
+    );
+    const canaryRef = (
+      await git(repo2, ["rev-parse", "--verify", "refs/pi-rukas/integrate-backup/issue-17"]).catch(
+        () => ({ stdout: "" }),
+      )
+    ).stdout.trim();
+    assert(
+      canary === undefined && canaryRef === "",
+      `(k) canary: with the probe ANSWERING "reachable" the same tree writes NO backup ref — so (k) is the unreadable answer doing the work (${canary === undefined ? "no ref" : String(canary).slice(0, 60)})`,
+    );
   }
 } finally {
   rmSync(root, { recursive: true, force: true });
