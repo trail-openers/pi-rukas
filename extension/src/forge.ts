@@ -40,8 +40,13 @@ import {
   parsePrNumberFromResponse,
 } from "./forge-mapping.ts";
 import { checkGithubReadiness, checkGitlabReadiness, composeGlReadiness } from "./forge-merge.ts";
+export type { CiWatchOpts, CiWatchResult, Forge, ForgeExecFn } from "./forge-types.ts";
 import type {
+  CiWatchOpts,
+  CiWatchResult,
   FileIssueOpts,
+  Forge,
+  ForgeExecFn,
   MergeReadiness,
   MergeReadinessResult,
   NormalizedCICheck,
@@ -52,104 +57,6 @@ import type {
   NormalizedPullRequest,
   NormalizedRepo,
 } from "./forge-types.ts";
-
-/** The exec seam — same shape as the driver's `VerifyExecFn`. */
-export type ForgeExecFn = (
-  cmd: string,
-  opts?: { cwd?: string; timeout?: number; maxBuffer?: number; shell?: string },
-) => Promise<{ stdout: string; stderr?: string }>;
-
-export interface Forge {
-  /** The resolved forge type (`unknown` → every operation rejects). */
-  forge: ForgeType;
-  /** The resolved host (from S1). */
-  host: string | undefined;
-  /** The owner (first path segment of the remote URL). */
-  owner: string;
-  /** The repo (last path segment of the remote URL). */
-  repo: string;
-  /** The repo root the commands run in. */
-  cwd: string;
-
-  // Issues
-  issueView(number: number): Promise<NormalizedIssue>;
-  /**
-   * #1377 — labels to create the issue with, passed to the create call so the
-   * issue carries them from its first moment. This is the ONLY label channel:
-   * the adapter deliberately has no construction-time `labels` field, which
-   * would be a second source that could disagree with the per-call one (and
-   * quietly win). `opts` is optional and its default is what keeps every
-   * existing `issueCreate(title, body)` call site — and every test stub cast to
-   * `Forge` — compiling and behaving unchanged.
-   */
-  issueCreate(title: string, body: string, opts?: FileIssueOpts): Promise<NormalizedIssue>;
-  issueEdit(number: number, body: string): Promise<NormalizedIssue>;
-  issueComment(number: number, body: string): Promise<string>;
-  /** #775 — list the issue's comments (idempotency check before re-posting). */
-  issueComments(number: number): Promise<NormalizedComment[]>;
-  issueSearch(query: string): Promise<NormalizedIssue[]>;
-
-  // Pull requests / MRs
-  prView(number: number): Promise<NormalizedPullRequest>;
-  prList(opts?: { state?: string; sourceBranch?: string }): Promise<NormalizedPullRequest[]>;
-  prCreate(
-    title: string,
-    headBranch: string,
-    body: string,
-    opts?: { baseBranch?: string; draft?: boolean },
-  ): Promise<NormalizedPullRequest>;
-  /** #1292 — mark a draft PR/MR ready for review (idempotent on a ready one). */
-  prReady(number: number): Promise<void>;
-  prMerge(
-    number: number,
-    method?: "squash" | "merge" | "rebase",
-    subject?: string,
-  ): Promise<string>;
-  prDiff(number: number): Promise<string>;
-  prChecks(number: number): Promise<NormalizedCICheck[]>;
-  /** #775 — list the PR/MR's review comments (the seam for PR handoff posts). */
-  prComments(number: number): Promise<NormalizedComment[]>;
-  /** #775 — post a comment on the PR (the in-process handoff fallback seam). */
-  prComment(number: number, body: string): Promise<string>;
-
-  // CI
-  ciWatch(runId: number, opts?: CiWatchOpts): Promise<CiWatchResult>;
-  ciRun(id: number): Promise<NormalizedCIRun>;
-
-  // Merge readiness (SAFETY-CRITICAL)
-  mergeReadiness(number: number, opts?: { maxBuffer?: number }): Promise<MergeReadinessResult>;
-
-  // Labels
-  /**
-   * #1377 — the repo's label NAMES and whether the read may have stopped at a
-   * page boundary, for the pre-filing existence check. Returns `{ names: [],
-   * truncated: false }` for a repo with no labels; THROWS when the CLI output is
-   * not a JSON array, so an unreadable list can never read as "these labels
-   * don't exist". See `LabelListResult` in `forge-label-ops.ts`.
-   */
-  labelList(): Promise<LabelListResult>;
-  labelCreate(name: string, color: string): Promise<NormalizedLabel | undefined>;
-  labelAdd(target: "issue" | "mr", number: number, name: string): Promise<void>;
-  labelRemove(target: "issue" | "mr", number: number, name: string): Promise<void>;
-
-  // Repo settings
-  repoSettings(): Promise<NormalizedRepo>;
-}
-
-export interface CiWatchOpts {
-  /** Poll interval in ms (default 30_000). */
-  pollMs?: number;
-  /** Overall timeout in ms (default 30 min = 1_800_000). */
-  timeoutMs?: number;
-  /** Injectable clock (default `Date.now`). For tests. */
-  now?: () => number;
-  /** Injectable sleep (default `setTimeout`-based). For tests. */
-  sleep?: (ms: number) => Promise<void>;
-}
-
-export type CiWatchResult =
-  | { ok: true; run: NormalizedCIRun; terminal: boolean; timedOut: false }
-  | { ok: true; run: NormalizedCIRun | undefined; terminal: false; timedOut: true };
 
 // ── The Forge object ─────────────────────────────────────────────────────
 
@@ -389,6 +296,12 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
       run(cmds.prMergeCmd(forge, number, method, subject), (stdout) => stdout),
 
     prReady: (number) => run(cmds.prReadyCmd(forge, number), () => undefined),
+
+    // #1398 — the draft direction. Unlike `prReady` this must NOT be a
+    // fire-and-forget: a command that exits 0 without changing anything would
+    // leave the PR mergeable and the cycle believing otherwise, so
+    // `rearmDraftForReview` reads the forge back after it.
+    prDraft: (number) => run(cmds.prDraftCmd(forge, number), () => undefined),
 
     prDiff: (number) => run(cmds.prDiffCmd(forge, number), (stdout) => stdout),
 

@@ -19,7 +19,10 @@ import type {
 import type { WorktreeLeftoverHandledEvent } from "./workflow-state-events-leftover.ts";
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
-import type { LensResidualsPostFailedEvent } from "./workflow-state-events-residuals.ts";
+import type {
+  LensResidualsPostFailedEvent,
+  LensResidualsPostedEvent,
+} from "./workflow-state-events-residuals.ts";
 import type { SafetyNetCommitEvent } from "./workflow-state-events-safety-net.ts";
 import type { DispatchSlowEvent } from "./workflow-state-events-slow.ts";
 import type {
@@ -443,6 +446,7 @@ export type WorkEvent =
   | FenceRecoveryStartedEvent
   | CycleInterruptedEvent
   | LensResidualsPostFailedEvent
+  | LensResidualsPostedEvent
   /**
    * S4a (#1162) — the cycle was interrupted (SIGTERM / SIGINT, via
    * `markInterrupted`). `reason` is the operator-facing why; renderers read

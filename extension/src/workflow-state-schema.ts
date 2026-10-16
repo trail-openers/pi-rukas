@@ -40,6 +40,7 @@ export { WORK_STEPS } from "./workflow-state-events.ts";
 
 export type { CommitPrRootState } from "./workflow-state-schema-commitpr-root.ts";
 import type { CommitPrRootState } from "./workflow-state-schema-commitpr-root.ts";
+import type { PrDraftState } from "./workflow-state-schema-pr-draft.ts";
 // #1362 — cycle-start exempt-untracked baseline: type + #533 validator in workflow-state-dirty-root.ts (#540/#861 seam).
 export {
   type DirtyRootExemptBaseline,
@@ -411,12 +412,7 @@ export interface PipelineState {
    * `holdReason` says why the driver deliberately left it a draft. Absent =
    * no draft fact recorded (the PR was not opened as a draft).
    */
-  prDraft?: {
-    status: "draft" | "ready" | "ready-failed";
-    error?: string;
-    attempts?: number;
-    holdReason?: string;
-  };
+  prDraft?: PrDraftState;
   /**
    * PR17 — SHA of the base commit the feature branch grew from, recorded
    * by the branch step (git rev-parse HEAD at repoRoot after ops created

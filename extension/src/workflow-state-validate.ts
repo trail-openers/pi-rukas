@@ -122,6 +122,9 @@ export const KNOWN_EVENT_KINDS = [
   // A residual-findings disclosure that did not reach the PR (and whether the
   // issue got it instead).
   "lens-residuals-post-failed",
+  // #1398 — a residual-findings disclosure that DID reach the PR, keyed on the
+  // reviewed patch: the fact the draft-ready gate holds on.
+  "lens-residuals-posted",
 ] as const;
 
 // #986 — compile-time exhaustiveness. If the `WorkEvent` union gains a kind
