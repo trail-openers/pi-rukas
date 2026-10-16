@@ -16,7 +16,7 @@
  * Offline: no child is spawned; the ledger is a temp dir.
  */
 
-import { chmodSync, existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { SetAsideNotice } from "../src/review-findings-file.ts";
 import { FINDINGS_FILE, recordFindingRunOutcome } from "../src/review-findings-store.ts";
@@ -91,28 +91,22 @@ try {
     }),
     "utf8",
   );
-  // The write is made to fail by the store's test-only fault seam: a failed
-  // write means the round records nothing and never reaches its summary, which
-  // is precisely when the set-asides the round had ALREADY disclosed would be
-  // lost if they rode only on the success path.
-  const { setFindingsWriteFaultForTests } = await import("../src/review-findings-faults.ts");
-  let faultedTo = "";
-  setFindingsWriteFaultForTests((file) => {
-    faultedTo = file;
+  // The write is made to fail by the caller's own injected `writeFn`: the store
+  // swallows every fault into `{ok:false}`, so a failed write is otherwise
+  // unreachable from a test — and the set-asides a failed write must STILL carry
+  // is the rule this exercises. The seam is a parameter of THIS call, not
+  // process-global state: no other round in this process can be faulted by it.
+  const failingWrite = () => {
     throw new Error("simulated disk failure (test)");
+  };
+  const out = await recordFindingRunOutcome({
+    cwd: fixture.repo,
+    branch: "feat/x",
+    headSha: head,
+    findings: [],
+    review: "full",
+    writeFn: failingWrite,
   });
-  let out: Awaited<ReturnType<typeof recordFindingRunOutcome>>;
-  try {
-    out = await recordFindingRunOutcome({
-      cwd: fixture.repo,
-      branch: "feat/x",
-      headSha: head,
-      findings: [],
-      review: "full",
-    });
-  } finally {
-    setFindingsWriteFaultForTests(undefined);
-  }
   assert(out.ok === false, `the round refuses when the write cannot parse (${out.ok})`);
   const notices: SetAsideNotice[] | undefined = out.ok === false ? out.setAside : undefined;
   assert(

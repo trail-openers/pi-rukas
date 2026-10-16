@@ -19,7 +19,7 @@
  * Offline: no Pi child is spawned; both ledgers are temp dirs.
  */
 
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
   FINDINGS_FILE,
@@ -75,7 +75,6 @@ try {
   // A second ledger dir in the same temp root: re-pointing the env var is the
   // only thing that separates the two rounds below.
   const dirB = path.join(path.dirname(fixture.ledgerDir), "ledger-b");
-  const { mkdirSync } = await import("node:fs");
   mkdirSync(dirB, { recursive: true });
   const ledgerB = path.join(dirB, "review-ledger.json");
   const fileB = findingsFileFor(ledgerB);
@@ -164,6 +163,7 @@ try {
     const bFile = path.join(broken.ledgerDir, FINDINGS_FILE);
     const junk = "{ not json at all";
     writeFileSync(bFile, junk, "utf8");
+
     const out = await recordFindingRunOutcome({
       cwd: broken.repo,
       branch: "feat/x",
@@ -192,9 +192,13 @@ try {
     const copies = readdirSync(broken.ledgerDir).filter((f) =>
       f.startsWith(`${FINDINGS_FILE}.corrupt-`),
     );
+
     assert(
+      // The one byte convention every copy-aside site shares: the bytes as read,
+      // plus the trailing newline the helper appends. `.trim()` would let a copy
+      // of anything else pass.
       copies.length === 1 &&
-        readFileSync(path.join(broken.ledgerDir, copies[0] ?? ""), "utf8").trim() === junk,
+        readFileSync(path.join(broken.ledgerDir, copies[0] ?? ""), "utf8") === `${junk}\n`,
       "the bad file is copied aside with its bytes intact, same scheme as the write path",
     );
     assert(
@@ -206,6 +210,49 @@ try {
       (await readBranchRows(broken.repo, "feat/x")).length === 0,
       "the prompt read treats the corrupt file as no memory and does not throw",
     );
+
+    // ── 4. present but UNREADABLE (EISDIR) is the same fail-closed disclosure ─
+    // A directory where the findings file should be is not "no file": it exists,
+    // it cannot be read, and a round that treated that as an empty store would
+    // resolve every row the branch has. The reason must be the operator's repair
+    // message naming the cause, not a raw OS error.
+    const dirShape = setupReviewFixture({
+      prefix: "findings-read-isdir",
+      files: { "src/a.ts": `${SRC.join("\n")}\n` },
+      report: () => [],
+      withSkills: false,
+    });
+    try {
+      const dFile = path.join(dirShape.ledgerDir, FINDINGS_FILE);
+      mkdirSync(dFile);
+      const dRound = await recordFindingRunOutcome({
+        cwd: dirShape.repo,
+        branch: "feat/x",
+        headSha: dirShape.sh("git rev-parse HEAD"),
+        findings: [],
+        review: "full",
+      });
+      const dReason = dRound.ok === false ? dRound.reason : "";
+      assert(dRound.ok === false, "an unreadable (directory) findings file fails the round");
+      assert(
+        dReason.includes("could not be read"),
+        `the refusal says the rows could not be read (${JSON.stringify(dReason.slice(0, 80))})`,
+      );
+      assert(
+        /repair or remove/i.test(dReason),
+        `the refusal is the operator's repair message, not a bare OS error (${JSON.stringify(dReason.slice(0, 120))})`,
+      );
+      assert(
+        /EISDIR|is a directory/i.test(dReason),
+        `the refusal names the cause it hit (${JSON.stringify(dReason.slice(-160))})`,
+      );
+      assert(
+        (await readBranchRows(dirShape.repo, "feat/x")).length === 0,
+        "the prompt read treats the unreadable file as no memory and does not throw",
+      );
+    } finally {
+      dirShape.cleanup();
+    }
   } finally {
     broken.cleanup();
   }

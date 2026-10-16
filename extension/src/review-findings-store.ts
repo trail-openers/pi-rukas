@@ -22,9 +22,11 @@
  * round, so nothing is suppressed or resolved on evidence that could not be read.
  *
  * Failure policy — fail closed on the file, fail open on the review:
- *   - A file that does not parse is CORRUPT: readers see no memory, and writers
- *     refuse to overwrite it and copy it aside to `<file>.corrupt-<hash>`, which
- *     the refusal names so the operator knows what to repair.
+ *   - A file that does not parse is CORRUPT: the round's own read refuses, and a
+ *     writer refuses to overwrite it and copies it aside to `<file>.corrupt-<hash>`,
+ *     which the refusal names so the operator knows what to repair. Every copy
+ *     aside goes through one helper (`copyBytesAside` / `corruptDisclosure` in
+ *     review-findings-file.ts), so all three sites name their copy identically.
  *   - A malformed row is set aside on its own (`<file>.corrupt-<hash of the row>`)
  *     and the valid rows are kept and written back.
  *   - A fault while recording a round (no clone, corrupt file, a git error other
@@ -33,24 +35,31 @@
  *     Any set-aside the round had already disclosed before the fault rides on the
  *     refusal too, so a failed write never hides memory that had already gone.
  *
+ * The write is a per-call parameter (`writeFn`, defaulting to the real atomic
+ * write), not a module-global seam: a test that must exercise the failed-write
+ * disclosure injects it on its own call and no other round in the process can be
+ * affected by it.
+ *
  * The ONLY acceptance write is `acceptFinding`; `mutateFindings` is private.
  * extension/scripts/review-accept.ts (human-only) calls `acceptFinding`, and
  * review-accept-guard.ts refuses agent attempts (advisory in trust mode).
  */
 
-import { copyFileSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { execp } from "./exec.ts";
 import type { Finding } from "./lens-review-types.ts";
 import { type ChangedRanges, changedLineRanges } from "./review-diff.ts";
 import type { ReviewKind } from "./review-findings-fate.ts";
-import { raiseFindingsWriteFault } from "./review-findings-faults.ts";
 import {
+  type CorruptCopy,
   type Decision,
   type ResolvedNotice,
   type SetAsideNotice,
   type StoredFinding,
   capPerBranch,
+  copyBytesAside,
+  corruptDisclosure,
   parseFindingsFile,
   reasonProblem,
 } from "./review-findings-file.ts";
@@ -68,10 +77,6 @@ import { acquireLedgerLock } from "./review-ledger-lock.ts";
 import { ledgerPathFor } from "./review-ledger-path.ts";
 import { trace } from "./trace.ts";
 
-export { FINDINGS_FILE } from "./review-findings-read.ts";
-const FULL_SHA = /^[0-9a-f]{40}$/;
-const ROW_ID = /^[0-9a-f]{8}$/;
-
 /**
  * What a round decided for one finding, aligned by index with the findings it
  * was given. Declared in the leaf (review-findings-file.ts) and re-exported here
@@ -79,6 +84,36 @@ const ROW_ID = /^[0-9a-f]{8}$/;
  * the two modules import each other.
  */
 export type { Decision } from "./review-findings-file.ts";
+
+/** The findings file's name, beside `review-ledger.json` — re-exported by the store. */
+export { FINDINGS_FILE } from "./review-findings-read.ts";
+
+const FULL_SHA = /^[0-9a-f]{40}$/;
+const ROW_ID = /^[0-9a-f]{8}$/;
+
+/**
+ * The write primitive, injectable per CALL (never module-global): a test that
+ * must exercise the failed-write disclosure hands `recordFindingRunOutcome` /
+ * `acceptFinding` its own `writeFn`, and every other caller gets `defaultWriteRows`.
+ *
+ * A module-global fault hook would have made "which round failed to write" a
+ * property of process state rather than of the call, so two rounds in one
+ * process — or a test that forgot to clear it — would fault a round nobody
+ * meant to fault.
+ */
+export type WriteRows = (file: string, rows: StoredFinding[]) => void;
+
+/** The real write: serialize, cap per branch, tmp file, atomic rename. */
+function defaultWriteRows(file: string, rows: StoredFinding[]): void {
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    writeFileSync(tmp, JSON.stringify({ rows: capPerBranch(rows) }, null, 2), "utf8");
+    renameSync(tmp, file);
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw err;
+  }
+}
 
 export interface FindingRun {
   cwd: string;
@@ -95,13 +130,13 @@ export interface FindingRun {
    * quoted separately could disagree with the diff they came from (#1125
    * decision 5). */
   deltaDiff?: string;
-  /**
-   * The changed line ranges of `deltaDiff`. A delta round that supplies the diff
-   * but not these ranges resolves NOTHING: the ranges are what separate a line
-   * the round reviewed from one it never saw (#1125 decision 5).
-   */
-  deltaRanges?: ChangedRanges;
+  /** When to stamp the rows (defaults to `Date.now()`). */
   now?: number;
+  /**
+   * The write to perform, supplied per call (tests inject a failing one). A
+   * module-global fault seam is not a thing: this is the only seam.
+   */
+  writeFn?: WriteRows;
 }
 
 /** The result of recording one round: the decisions, or why nothing was recorded. */
@@ -132,26 +167,12 @@ type MutateOutcome<T> =
 /** Copy one malformed row aside, named by its content, so a repeat never duplicates it. */
 function setAside(file: string, row: unknown): void {
   const text = JSON.stringify(row, null, 2);
-  const copy = `${file}.corrupt-${hashText(text)}`;
-  if (!existsSync(copy)) writeFileSync(copy, `${text}\n`, "utf8");
-  trace(`review-findings: a malformed row was set aside in ${copy}`);
-}
-
-/** Write the rows atomically; a failed write leaves no tmp file behind. */
-function writeRows(file: string, rows: StoredFinding[]): void {
-  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-  try {
-    // Test-only fault injection (review-findings-faults.ts): the store swallows
-    // every fault into `{ok:false}`, so a failed write is otherwise unreachable
-    // from a test — and the set-aside disclosure a failed write must still carry
-    // is the rule this exercises.
-    raiseFindingsWriteFault(file);
-    writeFileSync(tmp, JSON.stringify({ rows: capPerBranch(rows) }, null, 2), "utf8");
-    renameSync(tmp, file);
-  } catch (err) {
-    rmSync(tmp, { force: true });
-    throw err;
-  }
+  const copy = copyBytesAside(file, text, "a malformed findings row");
+  trace(
+    copy.copied
+      ? `review-findings: a malformed row was set aside in ${copy.path}`
+      : `review-findings: a malformed row was set aside but the copy failed (${copy.reason})`,
+  );
 }
 
 /**
@@ -159,35 +180,48 @@ function writeRows(file: string, rows: StoredFinding[]): void {
  * stored rows and returns the rows to keep plus a value. Private: the only
  * callers are `acceptFinding` and `recordFindingRunOutcome` in this module.
  * Never throws.
+ *
+ * `loc` is the pair the CALLER resolved, threaded in so the read it acted on and
+ * the write this performs cannot name two different files — a second `locate`
+ * here would re-read the environment between the two, and a round whose read
+ * came from one ledger and whose write landed in another is exactly the shape
+ * #1125 spent a round removing elsewhere. `writeFn` is likewise the caller's,
+ * per call, defaulting to the real atomic write.
  */
 async function mutateFindings<T>(
-  cwd: string,
+  loc: { ledger: string; file: string },
   fn: (rows: StoredFinding[]) => { rows: StoredFinding[]; result: T },
   /** Memory the caller had already read and set aside BEFORE this write: on a
    * failed write the round never reaches its summary, so these notices would be
    * lost with it (#1125). Attaching them to the `{ok:false}` outcome keeps the
    * disclosure alive exactly as far as the successful one's does. */
   preLockSetAside?: SetAsideNotice[],
+  writeFn: WriteRows = defaultWriteRows,
 ): Promise<MutateOutcome<T>> {
-  const loc = await locate(cwd);
-  if (!loc) return { ok: false, reason: "not a git clone (no git common dir)" };
   let release: (() => void) | undefined;
   try {
     release = await acquireLedgerLock(loc.ledger);
     const parsed = parseFindingsFile(loc.file);
     if (!parsed.ok) {
-      const copy = `${loc.file}.corrupt-${hashText(readFileSync(loc.file, "utf8"))}`;
-      copyFileSync(loc.file, copy);
-      trace(`review-findings: ${loc.file} is corrupt (${parsed.reason}) — copied to ${copy}`);
+      // The bytes are re-read here rather than reused from the caller's read:
+      // this is the read UNDER THE LOCK, and the copy must be of what the writer
+      // was about to overwrite. A copy that cannot be made still refuses, and
+      // says the copy failed rather than pretending the bytes are safe.
+      const copy: CorruptCopy = copyBytesAside(
+        loc.file,
+        readFileSync(loc.file, "utf8"),
+        "the corrupt findings file",
+      );
+      trace(`review-findings: ${loc.file} is corrupt (${parsed.reason})`);
       return {
         ok: false,
-        reason: `the findings file is corrupt (${parsed.reason}); it was not overwritten and was copied to ${copy}; repair or remove that file, or point PI_ENSEMBLE_REVIEW_LEDGER_FILE at a healthy ledger`,
+        reason: `the findings file is corrupt (${parsed.reason}); it was not overwritten — ${corruptDisclosure(loc.file, copy)}`,
         ...(preLockSetAside && preLockSetAside.length > 0 ? { setAside: preLockSetAside } : {}),
       };
     }
     for (const bad of parsed.malformed) setAside(loc.file, bad);
     const { rows, result } = fn(parsed.rows);
-    writeRows(loc.file, rows);
+    writeFn(loc.file, rows);
     return { ok: true, value: result };
   } catch (err) {
     // The disclosure outlives the write: a failed write means the round records
@@ -214,6 +248,8 @@ async function mutateFindings<T>(
  * The resolved path is RETURNED, never cached: the read path takes it as an
  * argument from whoever called `locate`, so changing `PI_ENSEMBLE_REVIEW_LEDGER_FILE`
  * between two rounds cannot leave a later round reading the first round's file.
+ * Each entry point calls this ONCE and threads the result through its read and
+ * its write, so neither half of a round can diverge onto another file.
  */
 async function locate(cwd: string): Promise<{ ledger: string; file: string } | undefined> {
   const ledger = await ledgerPathFor(execp, cwd);
@@ -260,7 +296,9 @@ export async function acceptFinding(
     (by ? undefined : "an acceptance needs an operator identity");
   if (problem) return { ok: false, reason: problem };
   const now = opts.now ?? Date.now();
-  const out = await mutateFindings<AcceptOutcome>(cwd, (all) => {
+  const loc = await locate(cwd);
+  if (!loc) return { ok: false, reason: "not a git clone (no git common dir)" };
+  const out = await mutateFindings<AcceptOutcome>(loc, (all) => {
     const idx = all.findIndex((r) => r.branch === branch && r.id === rowId);
     const refuse = (why: string) => ({ rows: all, result: { ok: false, reason: why } as const });
     const row = all[idx];
@@ -319,13 +357,18 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
     // read cannot be trusted to prevent. A round that finds no file at all
     // legitimately has no memory; a round that cannot read one does not.
     let branchRows: BranchRows;
-    let file: string | undefined;
+    // ONE resolution of the ledger and the findings file, threaded into both the
+    // read below and the write further down: two `locate` calls would re-read
+    // `PI_ENSEMBLE_REVIEW_LEDGER_FILE` between them, and a round whose read came
+    // from one file and whose write landed in another is a round whose decisions
+    // describe memory it did not modify.
+    let loc: { ledger: string; file: string } | undefined;
     try {
-      file = (await locate(run.cwd))?.file;
-      if (!file) {
+      loc = await locate(run.cwd);
+      if (!loc) {
         return { ok: false, reason: "not a git clone (no git common dir)" };
       }
-      branchRows = readBranchRowsRaw(file, run.branch) ?? { rows: [], malformed: [] };
+      branchRows = readBranchRowsRaw(loc.file, run.branch) ?? { rows: [], malformed: [] };
     } catch (err) {
       // The prefix is short and the tail is the load-bearing part (the operator
       // action and the copy the bytes are in), so this clip keeps the actionable
@@ -358,7 +401,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
     // round never reaches its summary, and without these the operator loses the
     // disclosure of memory that had already been set aside (#1125).
     const out = await mutateFindings(
-      run.cwd,
+      loc,
       (all) => {
         const others = all.filter((r) => r.branch !== run.branch);
         const mine = all.filter((r) => r.branch === run.branch);
@@ -381,6 +424,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
         };
       },
       branchRows.malformed,
+      run.writeFn,
     );
     if (!out.ok) {
       return out.setAside && out.setAside.length > 0

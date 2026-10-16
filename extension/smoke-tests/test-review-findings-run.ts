@@ -66,10 +66,6 @@ const seenPrior = fixture.seenPrior;
 const c1 = sh("git rev-parse HEAD");
 
 const common = { cwd: repo, branch: "feat/x", lensChildFn: fixture.stubLens };
-// A pasted diff satisfies the full-review path (the stubs never read it).
-const FULL_DIFF =
-  "diff --git a/src/a.ts b/src/a.ts\n+++ b/src/a.ts\n+export function alpha(x: number) {";
-
 try {
   // Round 1 — a first review.
   const r1 = await runLensReview({ ...common, diff: FULL_DIFF });

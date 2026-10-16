@@ -1,9 +1,13 @@
 /**
- * Pure formatting/parsing helpers for the code-review lens roster: the lens
- * roster, prompt construction, report_finding parsing, precedence-based
- * dedup, and the human-readable summary renderer. No `ExtensionAPI`
+ * Pure helpers for the code-review lens roster: the lens roster, prompt
+ * construction, report_finding parsing, precedence-based dedup, the verdict
+ * rule, the severity type, and the `LensReviewSummary` shape. No `ExtensionAPI`
  * coupling — orchestration (spawning, retries, job wiring) lives in
- * lens-review.ts.
+ * lens-review.ts, and the one function that turns a finished summary into the
+ * text an operator reads lives in lens-review-render.ts (#1125 split): this
+ * module declares what a summary CONTAINS, the render module decides how it
+ * reads. AGENTS.md §12's file-size gate is why the two are separate files, not
+ * why they are separate concerns — the seam is data versus presentation.
  */
 
 import os from "node:os";
@@ -44,11 +48,6 @@ export function findingDescription(f: Finding): string {
  */
 export function piSkillsDir(): string {
   return process.env.PI_ENSEMBLE_SKILLS_DIR ?? path.join(os.homedir(), ".pi", "agent", "skills");
-}
-
-/** Severity type guard. Moved here from lens-review.ts for the 500-line gate. */
-export function isSeverity(s: string): s is Severity {
-  return s === "CRITICAL" || s === "HIGH" || s === "MEDIUM" || s === "LOW";
 }
 
 /** The lens review's summary. Moved here from lens-review.ts for the 500-line gate. */
