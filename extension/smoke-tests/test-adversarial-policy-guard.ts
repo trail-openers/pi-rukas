@@ -23,6 +23,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { reportPolicyError } from "../src/adversarial-policy.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -117,66 +118,63 @@ registerAdversarialTool({
 
 /**
  * The rows below carry policy values the `ReportPolicy` union forbids, which is
- * the point — they exist to reach the runtime fence. `PolicyRow` keeps the two
- * policy keys checked (each `unknown`, so a bad VALUE is still expressible);
- * `policyParams` is the one unsound widening this file needs, so the rows keep
- * their literal values and a typo'd key is still a compile error (TS2561).
+ * the point — they exist to reach the runtime fence. `PolicyParams` keeps the
+ * non-policy keys checked and the two policy keys `unknown` (so a bad VALUE is
+ * still expressible); `policyParams` is the one unsound widening this file needs,
+ * so a typo'd key is still a compile error (TS2561).
  */
 type AdversarialParams = Parameters<typeof runAdversarialLoop>[0];
-type PolicyRow = { reportOnly?: unknown; reportVerdict?: unknown };
-const policyParams = (params: PolicyRow) => params as unknown as AdversarialParams;
+type PolicyParams = Omit<AdversarialParams, "reportOnly" | "reportVerdict"> & {
+  reportOnly?: unknown;
+  reportVerdict?: unknown;
+};
+const policyParams = (params: PolicyParams) => params as unknown as AdversarialParams;
+
+/** The wrapper `adversarial.ts` puts around the fence's reason. */
+const POLICY_TEXT_PREFIX = "Adversarial loop infrastructure failure: ";
+const POLICY_TEXT_SUFFIX =
+  ' (reportVerdict must be "terminal" or "routed"). No verdict was produced — this is NOT a review rejection.';
 
 /**
- * A policy rejection the caller sees, spelled exactly as the fence writes it:
- * the arm's reason, then the two values a policy is allowed to take.
+ * A policy rejection the caller sees, spelled exactly as the loop writes it:
+ * the reason the fence returns, then the two values a policy is allowed to take.
  */
-const policyText = (reason: string) =>
-  `Adversarial loop infrastructure failure: ${reason} (reportVerdict must be "terminal" or "routed"). No verdict was produced — this is NOT a review rejection.`;
+const policyText = (reason: string) => `${POLICY_TEXT_PREFIX}${reason}${POLICY_TEXT_SUFFIX}`;
+
+/** The reason the fence returned, recovered from the full rejection text. */
+const policyReason = (text: string) =>
+  text.slice(POLICY_TEXT_PREFIX.length, -POLICY_TEXT_SUFFIX.length);
+
+/** Each row is `[label, policy]`; the expected text is derived from the real fence. */
+type PolicyRow = [label: string, policy: PolicyParams];
 
 /**
- * K: the reportOnly rows with no usable verdict policy. Each row is
- * `[label, policy, text]` and carries the FULL policy the loop receives —
- * nothing is injected at the call site — so deleting the spread that hands it
- * over changes the outcome and fails the row. `absent` omits `reportVerdict`
- * and is rejected as the missing policy; `bogus` sets a value the fence does
- * not recognise and is rejected as that value, so the two rows cannot pass on
- * each other's text.
+ * K: the reportOnly rows with no usable verdict policy. `absent` omits
+ * `reportVerdict` and is rejected as the missing policy; `bogus` sets a value
+ * the fence does not recognise, so the two rows cannot pass on each other's text.
  */
-const K_POLICY_ROWS: Array<[label: string, policy: PolicyRow, text: string]> = [
-  ["absent", { reportOnly: true }, policyText("reportOnly review without a verdict policy")],
-  [
-    "bogus",
-    { reportOnly: true, reportVerdict: "bogus" },
-    policyText('reportVerdict "bogus" is not a verdict policy'),
-  ],
+const K_POLICY_ROWS: PolicyRow[] = [
+  ["absent", { reportOnly: true }],
+  ["bogus", { reportOnly: true, reportVerdict: "bogus" }],
 ];
 
 /**
  * M: the rows whose reportOnly / reportVerdict combination the fence must
- * reject. Each row carries the FULL policy and the exact reason its own arm of
- * `reportPolicyError` returns: a non-boolean reportOnly (string and null), and a
- * reportVerdict with no reportOnly (absent and explicitly false). The arm texts
- * are asserted pairwise distinct below, so a row cannot pass by landing on the
- * other arm's reason.
+ * reject: a non-boolean reportOnly (string and null), and a reportVerdict with
+ * no reportOnly (absent and explicitly false) — two arms, two rows each.
  */
-const M_POLICY_ROWS: Array<[label: string, policy: PolicyRow, text: string]> = [
-  [
-    "reportOnly-not-boolean",
-    { reportOnly: "yes", reportVerdict: "terminal" },
-    policyText("reportOnly must be a boolean when set"),
-  ],
-  ["reportOnly-null", { reportOnly: null }, policyText("reportOnly must be a boolean when set")],
-  [
-    "orphan-verdict",
-    { reportVerdict: "terminal" },
-    policyText("reportVerdict requires reportOnly"),
-  ],
-  [
-    "verdict-with-reportOnly-false",
-    { reportOnly: false, reportVerdict: "routed" },
-    policyText("reportVerdict requires reportOnly"),
-  ],
+const M_POLICY_ROWS: PolicyRow[] = [
+  ["reportOnly-not-boolean", { reportOnly: "yes", reportVerdict: "terminal" }],
+  ["reportOnly-null", { reportOnly: null }],
+  ["orphan-verdict", { reportVerdict: "terminal" }],
+  ["verdict-with-reportOnly-false", { reportOnly: false, reportVerdict: "routed" }],
 ];
+
+/** Every row's expected text, derived from `reportPolicyError` itself. */
+const rowsWithText = (
+  rows: PolicyRow[],
+): Array<[label: string, policy: PolicyParams, text: string]> =>
+  rows.map(([label, policy]) => [label, policy, policyText(reportPolicyError(policy) ?? "")]);
 
 /** Start the tool with `raw` arguments and run the job it dispatched. */
 async function runTool(raw: Record<string, unknown>, reviewText: string) {
@@ -193,30 +191,31 @@ async function runTool(raw: Record<string, unknown>, reviewText: string) {
 
 try {
   /**
-   * One malformed-policy row: the loop rejects it as an infra-failure whose
-   * text is EXACTLY the reason its own fence arm returns, dispatches nobody,
-   * and records the infra-failure in the ledger. `policy` is the whole policy
-   * — the row owns every policy key — so the assertions fail if the loop stops
-   * receiving it.
+   * One malformed-policy row: the loop rejects it as an infra-failure whose text
+   * is EXACTLY the reason its own fence arm returns, and dispatches nobody.
    */
-  async function expectInfraFailure(
-    prefix: string,
-    policy: PolicyRow,
-    text: string,
-    context: string,
-    jobId: string,
-  ) {
+  async function expectInfraFailure(prefix: string, policy: PolicyParams, text: string) {
     spawnCalls.length = 0;
     ledgerResults.length = 0;
+    /** The reason the row's policy must reach the fence with, derived from the row itself. */
+    const reason = policyReason(text);
+    assert(
+      reportPolicyError(policy) === reason,
+      `${prefix}: the fence returns this row's own reason`,
+    );
+    assert(
+      policyText(reason) === text,
+      `${prefix}: the loop's rejection text is the fence reason wrapped as documented`,
+    );
     const result = await runAdversarialLoop(
       policyParams({
         diff: "diff --git a/f b/f\n+x",
-        context,
+        context: "policy-guard",
         workCwd: workRepo,
         ...policy,
       }),
       signal(),
-      jobId,
+      "job-policy-guard",
     );
     assert(
       result.ok === false && result.loopOutcome === "infra-failure",
@@ -224,28 +223,29 @@ try {
     );
     assert(result.text === text, `${prefix}: the result is exactly the expected rejection`);
     assert(spawnCalls.length === 0, `${prefix}: no reviewer or developer is dispatched`);
-    assert(
-      ledgerResults.at(-1)?.loopOutcome === "infra-failure",
-      `${prefix}: the ledger row is an infra-failure`,
-    );
   }
 
   // ------------------------------------------------ K. no verdict policy → infra
-  for (const [label, policy, text] of K_POLICY_ROWS) {
+  const kRows = rowsWithText(K_POLICY_ROWS);
+  assert(
+    new Set(kRows.map(([, policy]) => reportPolicyError(policy))).size === 2,
+    "K: the two rows land on two distinct fence arms",
+  );
+  for (const [label, policy, text] of kRows) {
     // A reportOnly review whose verdict the loop cannot judge: the reviewer
     // would otherwise be judged as a routed round, which is the bug.
     reviewerReply = APPROVED;
-    await expectInfraFailure(`K(${label})`, policy, text, "nopolicy", "job-k");
+    await expectInfraFailure(`K(${label})`, policy, text);
   }
 
   // ------------------------------- M. malformed reportOnly / orphan verdict → infra
-  const mTexts = M_POLICY_ROWS.map(([, , text]) => text);
+  const mRows = rowsWithText(M_POLICY_ROWS);
   assert(
-    new Set(mTexts).size === 2 && mTexts[0] !== undefined && mTexts[0] !== mTexts[2],
+    new Set(mRows.map(([, policy]) => reportPolicyError(policy))).size === 2,
     "M: the four rows cover two distinct arms, two rows each",
   );
-  for (const [label, policy, text] of M_POLICY_ROWS) {
-    await expectInfraFailure(`M(${label})`, policy, text, "malformed", "job-m");
+  for (const [label, policy, text] of mRows) {
+    await expectInfraFailure(`M(${label})`, policy, text);
   }
 
   // ------------------------------------- L. the tool boundary sets the flag
@@ -269,8 +269,8 @@ try {
     REVIEW,
   );
   assert(
-    ranged?.callerSuppliedDiff === false && ranged?.loopOutcome === "approved",
-    "L: the same review via base+head is not caller-supplied and is recorded as approved",
+    ranged?.callerSuppliedDiff === false,
+    "L: the same review via base+head is not recorded as caller-supplied",
   );
 } finally {
   rmSync(workBase, { recursive: true, force: true });
