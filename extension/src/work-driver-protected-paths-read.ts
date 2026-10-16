@@ -61,11 +61,34 @@ export const PROTECTED_READ_MAX_BUFFER = 64 * 1024 * 1024;
 
 export type ProtectedPathExec = NonNullable<DriverContext["verifyExecFn"]>;
 
+/**
+ * The `-c` pairs both reads carry, ahead of the subcommand.
+ *
+ * `core.quotePath=off` — `-z` stops git C-quoting the names it prints, but the
+ * *range* argument is still echoed C-quoted inside git's own fatal message
+ * (`fatal: bad revision '"w\303\266orkflows.yml"..HEAD'`), and that message is the
+ * reason an operator sees when a read fails closed.
+ *
+ * `core.fsmonitor=false` and `core.hooksPath=/dev/null` — the worktree these reads
+ * run in is **child-writable**: a developer, a lens-fix, or a malicious dependency
+ * can write `git config core.fsmonitor <script>` into it, and an unguarded read
+ * would execute that script as the *driver*. Same guard `runGit` applies in
+ * src/git-state.ts:38, for the same reason. A read is only as safe as the config it
+ * honours, so the two reads share one list rather than restating it.
+ */
+const SAFE_CONFIG = [
+  "-c",
+  "core.quotePath=off",
+  "-c",
+  "core.fsmonitor=false",
+  "-c",
+  "core.hooksPath=/dev/null",
+] as const;
+
 /** argv for the committed read: NUL-separated name-status with rename detection,
  *  and `--end-of-options` so a base that reads like a flag stays a ref. */
 export const PROTECTED_DIFF_ARGV = [
-  "-c",
-  "core.quotePath=off",
+  ...SAFE_CONFIG,
   "diff",
   "-z",
   "--name-status",
@@ -75,8 +98,7 @@ export const PROTECTED_DIFF_ARGV = [
 
 /** argv for the uncommitted read. `-uall` lists an untracked directory file by file. */
 export const PROTECTED_STATUS_ARGV = [
-  "-c",
-  "core.quotePath=off",
+  ...SAFE_CONFIG,
   "status",
   "--porcelain",
   "-z",
@@ -241,10 +263,10 @@ export async function readProtectedStatusPaths(
  * `R100` unless git's similarity heuristic pairs it, so a deleted protected file
  * must halt on the `D` record alone.
  *
- * `core.quotePath=off` is set on both reads. `-z` stops git C-quoting the names it
- * prints, but the *range* argument is still echoed C-quoted inside git's own fatal
- * message (`fatal: bad revision '"w\303\266orkflows.yml"..HEAD'`), and that message
- * is the reason an operator sees when a read fails closed.
+ * Both reads carry the `SAFE_CONFIG` pairs above (`core.quotePath=off`,
+ * `core.fsmonitor=false`, `core.hooksPath=/dev/null`) — see that block for why each
+ * one is load-bearing, including the executable-config hole these reads run beside
+ * in a child-writable worktree.
  */
 export async function readCommittedProtectedPaths(
   exec: ProtectedPathExec,

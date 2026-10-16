@@ -56,17 +56,26 @@ export function nulStatus(...records: string[]): string {
  *   test indistinguishable from a modification test, so a reader that ignored the
  *   status field could still pass "a deleted protected file halts".
  * - `"R\tfrom\tto"` — a rename (git's `R100`, three tokens).
+ * - `"C\tfrom\tto"` / `"C75\tfrom\tto"` — a COPY (git's `C100`). A copy is what a
+ *   developer produces when they duplicate a workflow instead of moving it, and the
+ *   protected gate must see the *source* the same way it sees a rename's; a fake
+ *   that could not spell one left that half of the parser unexercised.
  */
 export function nulNameStatus(...records: string[]): string {
   const out: string[] = [];
   for (const line of records) {
     if (line.trim().length === 0) continue;
     const fields = line.split("\t");
-    if (fields.length >= 3 && /^R/.test(fields[0] ?? "")) {
-      out.push("R100", fields[1] ?? "", fields[2] ?? "");
+    const first = (fields[0] ?? "").trim();
+    if (fields.length >= 3 && /^[RC]\d*$/.test(first)) {
+      // git prints the similarity score attached to the letter (`R100`, `C75`); an
+      // omitted score is git's 100. The letter must be the WHOLE first field apart
+      // from digits — a path spelled `"M\t…"` is a modification with a tab in its
+      // name, and re-kinding a mistyped record would hide the typo.
+      const score = /^[RC]\d+$/.test(first) ? first.slice(1) : "100";
+      out.push(`${first[0]}${score}`, fields[1] ?? "", fields[2] ?? "");
       continue;
     }
-    const first = (fields[0] ?? "").trim();
     const kind = /^[MAD]$/.test(first) ? first : "M";
     const path = fields.length > 1 ? (fields[fields.length - 1] ?? "") : first;
     out.push(kind, path);

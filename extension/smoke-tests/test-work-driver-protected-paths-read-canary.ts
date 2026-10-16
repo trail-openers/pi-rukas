@@ -144,6 +144,18 @@ const protectedFailure = (f: string[]) => f.find((x) => /protected path/.test(x)
       has(argv, "-z"),
       `canary: ${name} carries \`-z\` — without it a C-quoted protected name never matches a grant`,
     );
+    // The worktree these reads run in is child-writable. A `git config
+    // core.fsmonitor <script>` (or a hook path) written there by a developer, a
+    // lens-fix, or a dependency turns a read the DRIVER performs into code executed
+    // as the driver — the same guard src/git-state.ts applies to its own reads.
+    assert(
+      has(argv, "core.fsmonitor=false"),
+      `canary: ${name} carries \`-c core.fsmonitor=false\` — a child-writable worktree config cannot run a monitor script in the driver`,
+    );
+    assert(
+      has(argv, "core.hooksPath=/dev/null"),
+      `canary: ${name} carries \`-c core.hooksPath=/dev/null\` — a child-written hook path cannot run code in the driver`,
+    );
   }
   assert(
     has(PROTECTED_DIFF_ARGV, "--end-of-options"),
