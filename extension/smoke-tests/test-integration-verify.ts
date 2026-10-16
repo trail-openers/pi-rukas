@@ -252,7 +252,7 @@ try {
     "canary: the terminal branch is checked before the ops fallback is reached",
   );
   assert(
-    /cap: "integration-verify-failed"/.test(combined),
+    /cap: (?:mech\.timedOut \? "verify-timeout:commit-pr" : )?"integration-verify-failed"/.test(combined),
     "canary: it halts with a named cap rather than failing silently",
   );
 

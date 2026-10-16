@@ -110,6 +110,8 @@ export async function mechanizedCommitPr(
       ok: false;
       reason: string;
       terminal?: boolean;
+      /** #1324 — the terminal verify failure was a run killed at its bound. */
+      timedOut?: boolean;
       fallbackCause?: CommitPrFallbackCause;
       /**
        * #861 — the structured conflict-patch path preserved by integrate()
@@ -237,6 +239,9 @@ export async function mechanizedCommitPr(
       // would re-pick what the branch already carries.
       workstreamBaseShas: followupBase ? undefined : ps.workstreamBaseShas,
       scratchDir: scratchDir(ctx.repoRoot, ctx.issue),
+      // #1362 — the repoRoot dirty-root preflight and restore claims honour the
+      // project's exemption list; the worktree staging inside does not.
+      dirtyRootExempt: ctx.dirtyRootExempt,
       commitTitle: title,
       commitBody,
       mode: followupBase ? "followup" : "create",
@@ -267,6 +272,7 @@ export async function mechanizedCommitPr(
           reason: res.reason,
           terminal: true,
           fallbackCause,
+          ...(res.timedOut ? { timedOut: true } : {}),
         };
       }
       // #861 — on a non-terminal failure the ops fallback takes over, so

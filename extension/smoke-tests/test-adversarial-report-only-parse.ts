@@ -18,8 +18,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { AdversarialVerdict } from "../src/adversarial-verdict.ts";
 import { adversarialPassed } from "../src/review-ledger.ts";
+import type { AdversarialVerdict } from "../src/types.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -232,7 +232,8 @@ try {
   // non-reportOnly loop (the tool's fix-capable path) whose round 1 is
   // ISSUES_FOUND must NOT record that round as passed: it routes to a fix round
   // and only a later round can approve. Here every round repeats ISSUES_FOUND,
-  // so the loop runs all 3 rounds and rejects.
+  // so the loop runs all 3 rounds and rejects. #1161: it carries no verdict
+  // policy, so `reportVerdict` is not passed here.
   reply = "VERDICT: ISSUES_FOUND\n\n- x.txt:1 — missing test";
   const nonReportOnly = await runAdversarialLoop(
     {
@@ -240,19 +241,18 @@ try {
       context: "ctx",
       workCwd: repoDir,
       branch: "fix/report-only-parse-nonterminal",
-      reportVerdict: "terminal",
     },
     new AbortController().signal,
     "job-report-only-parse-nonterminal",
   );
   assert(
     nonReportOnly.adversarialRounds?.length === 3,
-    "non-reportOnly loop with reportVerdict terminal set: ISSUES_FOUND round 1 routes to a fix round (3 rounds run)",
+    "non-reportOnly loop: ISSUES_FOUND round 1 routes to a fix round (3 rounds run)",
   );
   assert(
     nonReportOnly.text.includes("PASSED WITH FINDINGS after round 3") &&
       !nonReportOnly.text.includes("after round 1"),
-    "non-reportOnly loop with reportVerdict terminal set: round 1 ISSUES_FOUND is not passed (only the final round passes it)",
+    "non-reportOnly loop: round 1 ISSUES_FOUND is not passed (only the final round passes it)",
   );
 } finally {
   try {

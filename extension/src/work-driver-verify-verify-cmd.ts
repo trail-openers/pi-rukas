@@ -13,6 +13,7 @@
  * its dependency's tip (no ancestor replay — the #775 shape).
  */
 import path from "node:path";
+import { withVerifySlot } from "./host-resources.ts";
 import { describeSiblingFenceViolations } from "./work-develop-fence-verdicts.ts";
 import { runConsolidatedVerify } from "./work-driver-consolidated-verify.ts";
 import {
@@ -34,9 +35,14 @@ import {
   pidLimitSnapshot,
 } from "./work-driver-exec-error.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
-import { baselineRedMessage, probeBaselineVerify } from "./work-driver-verify-baseline.ts";
-import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
-import { formatExecError, verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
+import { compareWithBaseline } from "./work-driver-verify-baseline.ts";
+import {
+  formatExecError,
+  isVerifyTimeoutFailure,
+  verifyTimeoutFailure,
+  verifyTimeoutMs,
+} from "./work-driver-verify-develop-helpers.ts";
+import { failedVerifyCmd } from "./work-driver-verify-fast.ts";
 import { rawOutputClause } from "./work-driver-verify-flake.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
@@ -89,6 +95,8 @@ export async function runVerifyCommandGate(opts: {
    * sibling) and the "incoherent" claim is not asserted.
    */
   fenceViolations?: FenceViolationRecord[];
+  /** #1349 — the base run demonstrably fails the way the change's run does. */
+  onBaselineAttributed?: () => void;
 }): Promise<void> {
   const {
     execFn,
@@ -115,21 +123,21 @@ export async function runVerifyCommandGate(opts: {
       continue;
     }
     try {
-      await execFn(cmd, { cwd, timeout: verifyTimeoutMs(), maxBuffer: 4 * 1024 * 1024 });
+      await withVerifySlot(() =>
+        execFn(cmd, { cwd, timeout: verifyTimeoutMs(), maxBuffer: 4 * 1024 * 1024 }),
+      );
     } catch (err) {
       const e = err as Error & { stdout?: string; stderr?: string; killed?: boolean };
-      // A verify failure for want of `node_modules` looks like a real defect;
-      // in a fresh worktree it is the likelier cause when it matches — say so.
-      // #1005 — per-worktree failures are kept as failures unconditionally
-      // (no pre-#1005 downgrade to evidence on a consolidated pass); the
-      // consolidated run below adds its own verdict on top.
+      // A missing `node_modules` looks like a real defect; in a fresh worktree say so.
+      // #1005 — per-worktree failures stay failures; the consolidated run adds its own.
       const output = `${e.stdout ?? ""}\n${e.stderr ?? ""}\n${e.message ?? ""}`;
       const depsHint = looksLikeMissingDeps(output) ? provisionDepsHint(state, cwd) : "";
+      const ran = failedVerifyCmd(e, cmd); // #1324 — the fast tier, when it is the one that failed
       perWorktreeVerifyFailures.push(
         formatExecError(
           e,
-          `verify command \`${cmd}\` exceeded its ${Math.round(verifyTimeoutMs() / 60000)}-min timeout in ${cwd}`,
-          `verify command \`${cmd}\` failed in ${cwd}${depsHint}`,
+          verifyTimeoutFailure(ran, `in ${cwd}`, verifyTimeoutMs()),
+          `verify command \`${ran}\` failed in ${cwd}${depsHint}`,
         ),
       );
     }
@@ -227,6 +235,9 @@ export async function runVerifyCommandGate(opts: {
     scratchDir,
     verifyCmd: cmd,
     timeoutMs: verifyTimeoutMs(),
+    // #1362 — the repoRoot dirty-root preflight inside honours the project's
+    // exemption list, so a tool's local file no longer refuses the batch.
+    dirtyRootExempt: ctx.dirtyRootExempt,
     retry: {
       canRetry: flakeRetryPrecondition,
       onFirstFailure: (raw) => {
@@ -379,7 +390,7 @@ export async function runVerifyCommandGate(opts: {
     // failure further down.
     failures.push(
       (cons.timedOut === true
-        ? `verify command \`${cmd}\` exceeded its ${Math.round(verifyTimeoutMs() / 60000)}-min timeout on the CONSOLIDATED tree at ${ctx.repoRoot} — the run was killed at the bound (PI_ENSEMBLE_VERIFY_TIMEOUT_MS), so it reached no verdict about the code.`
+        ? `${verifyTimeoutFailure(cmd, `on the CONSOLIDATED tree at ${ctx.repoRoot}`, verifyTimeoutMs())}.`
         : isHostForkExhaustion(classifierInput)
           ? hostExhaustionFailure(
               `verify command \`${cmd}\` on the CONSOLIDATED tree`,
@@ -457,44 +468,29 @@ export async function runVerifyCommandGate(opts: {
     }
   }
   // Baseline comparison — ONLY once the verify command has already failed
-  // (never on the happy path: it costs a full gate run). A command that
-  // also fails on a clean checkout of the base commit was red before the
-  // change existed; the cycle still parks, but the evidence leads with that
-  // instead of blaming the diff. See work-driver-verify-baseline.ts. Not
-  // when the host could not fork: the probe cannot run there either, and its
-  // "red at base" would be the same environment failure read as a verdict.
+  // (never on the happy path: it costs a full gate run). Not when the host
+  // could not fork: the probe cannot run there either, and its "red at base"
+  // would be the same environment failure read as a verdict. See
+  // work-driver-verify-baseline.ts.
   if (
     (cons.status === "failed" || perWorktreeVerifyFailures.length > 0) &&
     !failures.some(isHostExhaustionFailure)
   ) {
-    const base = baseSha as string;
-    const timeoutMs = verifyTimeoutMs();
-    const verdict = await probeBaselineVerify(execFn, {
+    const attributed = await compareWithBaseline(execFn, {
       repoRoot: ctx.repoRoot,
-      baseSha: base,
+      baseSha: baseSha as string,
       issue: ctx.issue,
       cmd,
-      timeoutMs,
+      timeoutMs: verifyTimeoutMs(),
+      changeFailures: [
+        ...(cons.status === "failed"
+          ? [{ text: cons.rawFailure ?? "", timedOut: cons.timedOut === true }]
+          : []),
+        ...perWorktreeVerifyFailures.map((f) => ({ text: f, timedOut: isVerifyTimeoutFailure(f) })),
+      ],
+      failures,
+      notes,
     });
-    if (verdict.status === "red") {
-      const changeFailure = [
-        cons.status === "failed" ? (cons.rawFailure ?? "") : "",
-        ...perWorktreeVerifyFailures,
-      ].join("\n");
-      failures.unshift(
-        baselineRedMessage(verdict, { cmd, baseSha: base, timeoutMs, changeFailure }),
-      );
-    } else {
-      notes.push(
-        verdict.status === "green"
-          ? `baseline verify passed — \`${cmd}\` exits 0 on a clean checkout of the base commit ${base.slice(0, 12)}, so the gate was green before this change`
-          : `baseline verify not established — ${verdict.reason}`,
-      );
-    }
+    if (attributed) opts.onBaselineAttributed?.();
   }
 }
-
-// `verifyCmdFor` re-exported so the caller keeps its pre-#794 import
-// surface (it already imports the symbol from work-driver-verify-cmd.ts;
-// this re-export is a no-op safety net, kept for import-graph symmetry).
-export { verifyCmdFor };

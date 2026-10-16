@@ -22,6 +22,7 @@ on:
       - 'extension/**'
       - 'bin/pi-rukas'
       - 'install.sh'
+      - 'install-retry-defaults.sh'
       - 'agents-base/**'
       - 'modules/**'
       - 'manifests/**'
@@ -75,5 +76,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.tags.outputs.tags }}
+          # #1326 — baked into .pi/pi-rukas-commit (see the Dockerfile).
+          build-args: |
+            GITHUB_SHA=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

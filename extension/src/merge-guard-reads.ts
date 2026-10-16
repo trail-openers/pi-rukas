@@ -20,8 +20,8 @@
 
 import { prCommentsCmd } from "./forge-commands.ts";
 import { extractCommentRows } from "./forge-comments.ts";
+import { isValidRepoValue } from "./merge-allowlist.ts";
 import type { MergeExecFn, MergeTarget } from "./merge-target.ts";
-import { isValidRepoValue } from "./merge-tokens.ts";
 import { identityBase } from "./review-ledger-path.ts";
 import type { LedgerEntry } from "./review-ledger.ts";
 import { committedPatchIdentity } from "./review-patch-identity.ts";

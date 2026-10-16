@@ -194,9 +194,21 @@ export function humanActionFor(reason: string, primary: number): string {
   if (/round-cap|adversarial-loop|wall-clock/.test(reason)) {
     return `review the findings on #${primary}'s PR — the fix loop did not converge`;
   }
-  if (reason.includes(HOST_EXHAUSTION_SUFFIX)) {
+  if (/\bdeadline\b/.test(reason)) {
+    return `the caller's cycle deadline was reached — raise or clear PI_ENSEMBLE_CYCLE_DEADLINE/PI_ENSEMBLE_CYCLE_BUDGET_MS and re-run \`/work ${primary} --restart\` (the handoff names the branch, PR and round the work reached)`;
+  }
+  if (reason.includes(HOST_EXHAUSTION_SUFFIX) || /verify-env:/.test(reason)) {
     return `free processes on the host (it could not fork — the gate never ran on #${primary}), then re-run \`/work ${primary} --restart\``;
   }
+  if (/verify-timeout/.test(reason))
+    return `the verify command timed out on #${primary} — raise PI_ENSEMBLE_VERIFY_TIMEOUT_MS or reduce concurrency, then re-run \`/work ${primary} --restart\``;
+  // #1349 — parks the gate raised without judging the change.
+  if (/verify-baseline-red/.test(reason))
+    return `the verify command already fails at #${primary}'s base commit — fix the gate on the mainline, then re-run \`/work ${primary} --restart\``;
+  if (/pr-not-open/.test(reason))
+    return `#${primary}'s PR is no longer open — decide whether the work belongs in a new PR`;
+  if (/fix-pass-park/.test(reason))
+    return `read the fix pass's reason in #${primary}'s handoff — the adversarial fix pass parked on its own check`;
   if (/verify-failed/.test(reason))
     return `inspect #${primary}'s diff — the outcome gate rejected it`;
   return `inspect .pi/work-state/${primary}.json and re-run \`/work ${primary} --restart\``;

@@ -31,9 +31,11 @@ export type HandoffEmittedEvent = {
   /**
    * #775 — how the recorded comment/label state was established. Absent on
    * events written before #775 (readers must treat absent as "unknown —
-   * trust the fields, don't trust the provenance").
+   * trust the fields, don't trust the provenance"). #1327 — `host`: the
+   * handoff channel was the host's (`PI_ENSEMBLE_HANDOFF_CHANNEL=host`), so
+   * nothing was posted and no label applied by design, not by failure.
    */
-  delivery?: "dispatch" | "fallback";
+  delivery?: "dispatch" | "fallback" | "host";
   /**
    * Set when a freshly re-resolved intent park matched the one a previous
    * cycle already reported (same park reason, issue text and commit): no new
@@ -43,6 +45,12 @@ export type HandoffEmittedEvent = {
   repeatOf?: { at: number; commentUrl: string };
   /** Path to the handoff markdown body (PR5; back-compat with PR4 events). */
   handoffBodyPath?: string;
+  /**
+   * #1327 — the handoff body itself (marker line first), so the headless
+   * result never depends on the file at `handoffBodyPath`, which a failed
+   * write leaves missing and a later cycle overwrites. Absent on older events.
+   */
+  body?: string;
   /**
    * #798 — the explicit target object type of the handoff artefacts (where
    * the comment was posted). A reader must not have to infer this from the

@@ -10,7 +10,7 @@
 
 import { createHash } from "node:crypto";
 import { execp } from "./exec.ts";
-import { countPrCommits, prRange } from "./git-range.ts";
+import { aheadOfBase, execGit, prRange } from "./git-range.ts";
 import { trace } from "./trace.ts";
 import { resolveMainline } from "./work-driver-git.ts";
 import type { WorkState, WorkStep } from "./workflow-state.ts";
@@ -64,8 +64,7 @@ export async function fetchDiff(cwd: string | undefined, baseSha?: string): Prom
   // which `git diff HEAD` misses once the working tree is clean.
   if (baseSha && VALID_BASEDIFF_SHA_RE.test(baseSha)) {
     try {
-      const { stdout } = await execp(`git diff ${baseSha}..HEAD`, {
-        cwd,
+      const stdout = await execGit(execp, cwd, ["diff", "--end-of-options", `${baseSha}..HEAD`], {
         maxBuffer: 1024 * 1024,
       });
       if (stdout.trim()) return stdout;
@@ -82,12 +81,13 @@ export async function fetchDiff(cwd: string | undefined, baseSha?: string): Prom
     // Prefer `git diff <baseSha>..HEAD` when baseSha is available — this
     // captures committed work. Without baseSha, fall back to `git diff HEAD`
     // (uncommitted changes only), which is correct for pre-commit scenarios.
-    const diffRange = baseSha ? `${JSON.stringify(baseSha)}..HEAD` : "HEAD";
-    const { stdout } = await execp(`git diff ${diffRange}`, {
-      cwd,
+    // #1153 — the SHA gate applies here too: the primary branch above already
+    // refuses an invalid baseSha, and interpolating one into the fallback
+    // would just move the unsanitised value to the other call site.
+    const diffRange = baseSha && VALID_BASEDIFF_SHA_RE.test(baseSha) ? `${baseSha}..HEAD` : "HEAD";
+    return await execGit(execp, cwd, ["diff", "--end-of-options", diffRange], {
       maxBuffer: 1024 * 1024, // 1 MiB cap
     });
-    return stdout;
   } catch (err) {
     trace(`work-driver: fetchDiff(${cwd}) failed: ${(err as Error).message?.slice(0, 200)}`);
     return "";
@@ -202,56 +202,57 @@ export async function readIntegratedDiff(
   repoRoot: string,
   branchName: string,
 ): Promise<IntegratedDiff> {
-  // The mainline is unknowable, so the diff below would be meaningless.
   // The mainline, resolved by resolveMainline (#1134) — the same call verify-pr17
   // makes, so both read one base. Unresolved means there is no base to diff
   // against: unreadable, not a guessed "main". A throw or unexpected shape is
   // the same unresolved outcome, never an escaping exception.
   const mainline = await resolveMainline(repoRoot, execp);
-  if (!("branch" in mainline)) return { ok: false, reason: mainline.reason };
+  // The mainline is unknowable, so the diff below would be meaningless.
+  if (!mainline.ok) return { ok: false, reason: mainline.reason };
   const base = mainline.branch;
+  let diffOut: string;
   try {
     // Three-dot: the diff is taken from the MERGE BASE, so a base that moved
     // after the branch was cut contributes nothing. Two-dot would diff the
     // branch tip against the base tip and report the base's new commits as
     // reversed (phantom CRITICAL findings, #1134).
-    const { stdout } = await execp("git", {
-      argv: ["diff", "--end-of-options", prRange(`origin/${base}`, `origin/${branchName}`)],
-      cwd: repoRoot,
-      maxBuffer: 1024 * 1024,
-    });
-    if (stdout.trim()) return { ok: true, diff: stdout, empty: false };
+    diffOut = await execGit(execp, repoRoot, [
+      "diff",
+      "--end-of-options",
+      prRange(`origin/${base}`, `origin/${branchName}`),
+    ]);
   } catch (err) {
     return {
       ok: false,
       reason: `git diff origin/${base}...origin/${branchName} failed: ${errText(err)}`,
     };
   }
+  if (diffOut.trim()) return { ok: true, diff: diffOut, empty: false };
   // Empty output. Confirm it means "no commits ahead" rather than "the read
   // silently produced nothing" — those are the two cases this whole type
   // exists to separate.
-  try {
-    // The PR's own commits, whatever the base has done since (#1134).
-    const ahead = await countPrCommits(execp, repoRoot, `origin/${base}`, `origin/${branchName}`);
-    if (Number.isNaN(ahead)) {
+  // The PR's own commits, whatever the base has done since (#1134).
+  const ahead = await aheadOfBase(execp, repoRoot, `origin/${base}`, `origin/${branchName}`);
+  switch (ahead.kind) {
+    case "empty":
+      return { ok: true, diff: "", empty: true };
+    case "ahead":
+      // Commits exist but the diff is empty. Possible legitimately (an empty
+      // commit, or changes that cancel out), but it is not something to approve
+      // on silently.
       return {
         ok: false,
-        reason: `could not count commits ahead of origin/${base}`,
+        reason: `branch is ${ahead.n} commit(s) ahead of origin/${base} but the diff came back empty`,
       };
-    }
-    if (ahead === 0) return { ok: true, diff: "", empty: true };
-    // Commits exist but the diff is empty. Possible legitimately (an empty
-    // commit, or changes that cancel out), but it is not something to approve
-    // on silently.
-    return {
-      ok: false,
-      reason: `branch is ${ahead} commit(s) ahead of origin/${base} but the diff came back empty`,
-    };
-  } catch (err) {
-    return {
-      ok: false,
-      reason: `could not count commits ahead: ${errText(err)}`,
-    };
+    case "unpushed":
+      return {
+        ok: false,
+        reason: `origin/${branchName} not found in this clone — the branch was not pushed from here`,
+      };
+    case "unresolved":
+      return { ok: false, reason: ahead.reason };
+    case "unknown":
+      return { ok: false, reason: ahead.error };
   }
 }
 
@@ -289,11 +290,9 @@ export async function readFileAtBranch(
 ): Promise<string | undefined> {
   if (!SAFE_PATH.test(filePath) || !SAFE_PATH.test(branchName)) return undefined;
   try {
-    const { stdout } = await execp(`git show origin/${branchName}:${filePath}`, {
-      cwd: repoRoot,
+    return await execGit(execp, repoRoot, ["show", `origin/${branchName}:${filePath}`], {
       maxBuffer: 4 * 1024 * 1024,
     });
-    return stdout;
   } catch {
     return undefined;
   }

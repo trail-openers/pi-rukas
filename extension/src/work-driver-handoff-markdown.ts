@@ -24,7 +24,7 @@ import {
   commitPrRootFacts,
 } from "./work-driver-handoff-commitpr.ts";
 import { fanoutVerdictLines } from "./work-driver-handoff-fanout.ts";
-import { securityOpenPointsMarkdown } from "./work-driver-handoff-open-points.ts";
+import { openPointsMarkdown } from "./work-driver-handoff-open-points.ts";
 import { recoveryCommandsMarkdown } from "./work-driver-handoff-recovery.md.ts";
 import { unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
 import { describeBranchState } from "./work-driver-handoff-view.ts";
@@ -127,6 +127,7 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
     ...commitPrFallbackPlumbSection(state, capForExplain),
     ...adversarialOutcomeSection(state),
     ...plumbReportSection(state),
+    ...consolidationNotesSection(state),
     "### What was attempted",
     ...dispatchRows,
     "",
@@ -277,7 +278,7 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
   // cap-shaped recovery commands rather than the wrong "git push what's
   // there" / "longer cap" set. The cap → commands mapping lives in
   // work-driver-handoff-recovery.md.ts (split for module-size hygiene).
-  lines.push(...securityOpenPointsMarkdown(ps.normalisedSpec));
+  lines.push(...openPointsMarkdown(ps.normalisedSpec, state.issue));
   lines.push(...recoveryCommandsMarkdown(state, forge));
 
   if (transcripts.length > 0) {
@@ -294,6 +295,78 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
   );
 
   return lines.join("\n");
+}
+
+/**
+ * How many consolidation bullets the handoff prints. A cycle whose git reads
+ * all fail can accumulate one note per skipped check per commit-pr attempt;
+ * the first twenty say what broke and the tail is a count, so the operator
+ * sees the bound rather than scrolling past it. The state file keeps its own
+ * bound, `MAX_PERSISTED_NOTES` in work-driver-commit-pr-events.ts — this one
+ * is about the comment, not the record.
+ */
+const MAX_RENDERED_NOTES = 20;
+
+/**
+ * #1153 — consolidation checks that did not run. A skipped check is recorded
+ * as a note (never a silent pass), and the operator must see it here.
+ *
+ * The note is UNTRUSTED data on its way to a forge comment: it is composed
+ * from a git error's stderr, an operator-supplied branch name, or a path. It
+ * is rendered in a code span whose fence is longer than the note's longest
+ * backtick run, so a note containing `` ` `` or a fence cannot break out of
+ * the span and have the remainder read as markdown by `gh pr comment`.
+ *
+ * The list is bounded by MAX_RENDERED_NOTES above.
+ */
+function consolidationNotesSection(state: WorkState): string[] {
+  const notes = state.pipelineState.consolidationNotes ?? [];
+  if (notes.length === 0) return [];
+  const shown = notes.slice(0, MAX_RENDERED_NOTES).map(renderNoteBullet);
+  const hidden = notes.length - shown.length;
+  return [
+    "### Consolidation checks that did not run",
+    "",
+    ...shown,
+    // The ellipsis names the count so "and 3 more" is visibly a truncation of
+    // a record that exists, not the whole of it.
+    ...(hidden > 0 ? [`- \`…and ${hidden} more\``] : []),
+    "",
+  ];
+}
+
+/** Longest run of consecutive backticks in `s` (0 when it has none). */
+function longestBacktickRun(s: string): number {
+  let longest = 0;
+  const runs = s.match(/`+/g);
+  if (runs) {
+    for (const run of runs) longest = Math.max(longest, run.length);
+  }
+  return longest;
+}
+
+/**
+ * One consolidation note as a bullet: coerced to a string (a state file that
+ * predates the validator can carry a number or a nested object), collapsed to
+ * one line, bounded to 500 chars, and fenced in a code span with more
+ * backticks than the note contains. Markdown code spans ignore leading and
+ * trailing whitespace, so the padding spaces keep a note that begins or ends
+ * with a backtick from merging with its own fence.
+ *
+ * `<` and `>` need no escaping: the note is the *content* of a code span, and
+ * CommonMark parses span content as literal text — only the closing backtick
+ * run ends it. That is the opposite of `inlineCodeSafe`
+ * (`work-driver-conflict-evidence.ts`), which strips backticks outright
+ * because its caller hard-codes a single-backtick span it cannot lengthen and
+ * so must remove the delimiters rather than fence around them; here the fence
+ * is computed per note, so nothing is deleted.
+ */
+export function renderNoteBullet(note: unknown): string {
+  const text = String(note)
+    .replace(/[\r\n]+/g, " ")
+    .slice(0, 500);
+  const fence = "`".repeat(longestBacktickRun(text) + 1);
+  return `- ${fence} ${text} ${fence}`;
 }
 
 /**

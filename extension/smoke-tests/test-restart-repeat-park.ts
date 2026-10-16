@@ -24,6 +24,7 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { projectIssue } from "../src/headless/result.ts";
 import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
@@ -337,6 +338,36 @@ async function parkedWorld(label: string): Promise<World> {
     );
     assert(!existsSync(recordFile(w)), "…and the intent-park record is dropped");
   } finally {
+    rmSync(w.dir, { recursive: true, force: true });
+  }
+}
+
+// #1327 — host channel + a repeat park: no ops dispatch, the earlier comment is
+// named, and the body still reaches the result (from memory, marker first).
+{
+  const w = await parkedWorld("host-repeat");
+  process.env.PI_ENSEMBLE_HANDOFF_CHANNEL = "host";
+  try {
+    const s = await cycle(w);
+    const emitted = emittedOf(s);
+    assert(w.opsPosts === 0, "host + repeat: no ops dispatch");
+    assert(
+      emitted?.delivery === "host" && emitted.repeatOf?.commentUrl === URL,
+      "host + repeat: delivery host, the earlier park named",
+    );
+    const r = projectIssue(s, "state.json");
+    assert(
+      r.handoff?.channel === "host" &&
+        r.handoff.commentUrl === URL &&
+        r.handoff.body?.startsWith("<!-- pi-rukas:handoff issue=85 cap=intent-park -->") === true,
+      "host + repeat: the result carries the body and the earlier comment",
+    );
+    assert(
+      r.parkReason === "contradicted-by-code",
+      "host + repeat: the park reason is in the result",
+    );
+  } finally {
+    delete process.env.PI_ENSEMBLE_HANDOFF_CHANNEL;
     rmSync(w.dir, { recursive: true, force: true });
   }
 }

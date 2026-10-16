@@ -11,9 +11,21 @@
  * kind must still load (a parked cycle's history has to stay observable).
  */
 
-import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
-import { WORK_STATE_SCHEMA_VERSION, WORK_STEPS } from "./workflow-state-schema.ts";
-import { CAP_HIT_FIXED_LITERALS } from "./workflow-state-validate-caps.ts";
+import { WORK_STEPS, type WorkEvent, type WorkStep } from "./workflow-state-events.ts";
+import { WORK_STATE_SCHEMA_VERSION } from "./workflow-state-schema.ts";
+import {
+  CAP_EVIDENCE_KINDS,
+  CAP_HIT_NEXT_STEPS,
+  KNOWN_CAPPED_PARTIAL_ROLES,
+  KNOWN_CAPPED_PARTIAL_TREES,
+  KNOWN_CONSOLIDATION_STATUSES,
+  KNOWN_STATUSES,
+  isKnownCap,
+} from "./workflow-state-validate-caps.ts";
+export { KNOWN_STATUSES } from "./workflow-state-validate-caps.ts";
+// #1362 — the cycle-start exempt-untracked baseline (#533 rule: type-check the
+// untyped cast; predicate + rationale in workflow-state-dirty-root.ts).
+import { dirtyRootExemptBaselineFindings } from "./workflow-state-dirty-root.ts";
 
 /**
  * Known event kinds — a literal `as const` tuple (narrower than the
@@ -120,57 +132,6 @@ type MissingEventKinds = Exclude<WorkEvent["kind"], (typeof KNOWN_EVENT_KINDS)[n
 const _eventKindExhaustive: [MissingEventKinds] extends [never] ? true : MissingEventKinds = true;
 void _eventKindExhaustive;
 
-/** `pipelineState.status` vocabulary. */
-export const KNOWN_STATUSES: readonly unknown[] = [
-  "running",
-  "merged",
-  "handoff",
-  "aborted",
-  // S4a (#1162) — resumable; re-entry treats it as running.
-  "interrupted",
-];
-
-/**
- * #540 — `pipelineState.incompleteConsolidation.verdicts[].status`
- * vocabulary. Legacy PR14 entries carry no `status` field at all (they
- * identify themselves by `paths`); the validator tolerates the absent-
- * status + `paths` shape and refuses everything else it does not
- * recognize — the same "extend the union, don't smuggle a field" rule
- * this module applies to event kinds and steps.
- *
- * #778 — `moved` joins the vocabulary: a covered workstream whose declared
- * path was renamed during develop/consolidation, with the move recorded in
- * `movedPaths` (the same "extend the union" move that added `unverifiable`
- * for #540).
- */
-export const KNOWN_CONSOLIDATION_STATUSES: readonly unknown[] = [
-  "complete",
-  "uncovered",
-  "moved",
-  "unverifiable",
-];
-
-/** `cap-hit.nextStep` vocabulary. */
-const CAP_HIT_NEXT_STEPS: readonly unknown[] = ["handoff", "step-back", "ci"];
-
-/** `pipelineState.capEvidence.kind` vocabulary (#543). */
-const CAP_EVIDENCE_KINDS: readonly unknown[] = ["loop", "token-budget"];
-
-/** #543 F5 — `pipelineState.capedPartialState.tree` vocabulary. */
-const KNOWN_CAPPED_PARTIAL_TREES: readonly unknown[] = ["committed", "dirty-uncommitted", "clean"];
-
-/** #543 F5 — `pipelineState.capedPartialState.role` vocabulary. The
- * dispatch-cap kill is attributed to a role the driver can name, so a
- * fabricated `cap-hit.role` is rejected with the same rule. */
-const KNOWN_CAPPED_PARTIAL_ROLES: readonly unknown[] = [
-  "project-manager",
-  "developer",
-  "ops",
-  "explore",
-  "adversarial-developer",
-  "code-review-specialist",
-];
-
 /**
  * Human-readable findings; empty when every discriminant is a known value.
  * Each finding names the field AND the offending value — the driver halts
@@ -229,6 +190,10 @@ export function validateDiscriminants(state: unknown): string[] {
         }
       }
     }
+    // #1362 — the cycle-start exempt-untracked baseline: which `??` files under
+    // an exempt prefix a restore claim spares. Checked in its own module; the
+    // same #533 rule as `commitPrRoot` above (the untyped cast is the gate).
+    out.push(...dirtyRootExemptBaselineFindings(ps.dirtyRootExemptBaseline));
     if (ps.incompleteConsolidation !== undefined) {
       const ic = ps.incompleteConsolidation;
       if (Array.isArray(ic)) {
@@ -398,6 +363,19 @@ export function validateDiscriminants(state: unknown): string[] {
         }
       }
     }
+    // #1153 — `pipelineState.consolidationNotes`, when present, must be an
+    // array of strings: the handoff renders each entry verbatim into a
+    // "checks that did not run" bullet, so a non-string (an object, a number)
+    // would render `[object Object]` where the operator expected a reason, and
+    // a non-array would crash the renderer.
+    if (ps.consolidationNotes !== undefined) {
+      const cn = ps.consolidationNotes;
+      if (!Array.isArray(cn)) {
+        out.push("pipelineState.consolidationNotes is not an array");
+      } else if (cn.some((v) => typeof v !== "string")) {
+        out.push("pipelineState.consolidationNotes contains a non-string entry");
+      }
+    }
     // #543 F5 — `pipelineState.capedPartialState` (the driver-owned
     // checkpoint record) must carry a known role/tree and, when the tree is
     // "committed", the commit it claims: the handoff renders
@@ -472,27 +450,11 @@ export function validateDiscriminants(state: unknown): string[] {
           `eventLog[${i}].role has unknown value ${JSON.stringify(e.role)} (cap ${String(e.cap)} names a killed child)`,
         );
       }
-      // #543 — a cap-hit's `cap` must be a known fixed literal, a
-      // `verify-failed:` / `step-failed:` template value, or nothing else. A
-      // fabricated `loop-detected:<anything>` / `token-budget:<anything>`
-      // suffix is REJECTED: those caps are fixed literals, and a suffix would
-      // smuggle a role the canary does not know (the role travels in the
-      // separate `role` field instead).
-      if (e.kind === "cap-hit" && typeof e.cap === "string") {
-        const cap = e.cap as string;
-        // #844 — `branch-ahead:` is a TEMPLATE (the ahead count rides in the
-        // suffix), like `verify-failed:` / `step-failed:`; the other two #844
-        // caps are fixed literals in CAP_HIT_FIXED_LITERALS. #1263 —
-        // `driver-crash:` is likewise a TEMPLATE; without it, a file left
-        // `running` with the cap would fail re-entry validation (#753/#973).
-        const isTemplate =
-          cap.startsWith("verify-failed:") ||
-          cap.startsWith("step-failed:") ||
-          cap.startsWith("branch-ahead:") ||
-          cap.startsWith("driver-crash:");
-        if (!CAP_HIT_FIXED_LITERALS.includes(cap) && !isTemplate) {
-          out.push(`eventLog[${i}].cap has unknown value ${JSON.stringify(cap)}`);
-        }
+      // #543/#1338 — a cap-hit's `cap` must be a cap the driver can emit
+      // (isKnownCap: the fixed literals, checked against WorkCapLiteral, or
+      // a template value). #1263/#753/#973: an unknown cap fails re-entry.
+      if (e.kind === "cap-hit" && typeof e.cap === "string" && !isKnownCap(e.cap)) {
+        out.push(`eventLog[${i}].cap has unknown value ${JSON.stringify(e.cap)}`);
       }
     });
   }

@@ -71,7 +71,7 @@ void (execp satisfies VerifyExecFn);
 export async function detectMainline(
   repoRoot: string,
   execFn: VerifyExecFn,
-): Promise<{ branch: string } | { ok: false; reason: string }> {
+): Promise<{ ok: true; branch: string } | { ok: false; reason: string }> {
   // 1. git symbolic-ref — no network, instant.
   try {
     const { stdout } = await execFn("git symbolic-ref --short refs/remotes/origin/HEAD", {
@@ -82,7 +82,7 @@ export async function detectMainline(
     if (ref) {
       // Returns "origin/main" — strip the leading origin/.
       const branch = ref.startsWith("origin/") ? ref.slice(7) : ref;
-      if (branch) return { branch };
+      if (branch) return { ok: true, branch };
     }
   } catch {
     // refs/remotes/origin/HEAD may be absent; fall through.
@@ -100,7 +100,7 @@ export async function detectMainline(
       { cwd: repoRoot, maxBuffer: 64 * 1024 },
     );
     const branch = stdout.trim();
-    if (branch) return { branch };
+    if (branch) return { ok: true, branch };
   } catch {
     // Both methods failed.
   }
@@ -114,16 +114,16 @@ export async function detectMainline(
 /**
  * #1134 follow-up — detectMainline as a total function for its callers.
  *
- * A caller that reads `"branch" in mainline` on a value that is undefined, or
- * on an unexpected shape, gets a TypeError rather than a verdict, and a throw
- * from the detector escapes the gate that asked. Both become the same
- * unresolved result a failed detection produces, carrying the reason.
+ * A caller that reads `.branch` off a value that is undefined, or off an
+ * unexpected shape, gets a TypeError rather than a verdict, and a throw from
+ * the detector escapes the gate that asked. Both become the same unresolved
+ * result a failed detection produces, carrying the reason.
  */
 export async function resolveMainline(
   repoRoot: string,
   execFn: VerifyExecFn,
   detect: typeof detectMainline = detectMainline,
-): Promise<{ branch: string } | { ok: false; reason: string }> {
+): Promise<{ ok: true; branch: string } | { ok: false; reason: string }> {
   let m: unknown;
   try {
     m = await detect(repoRoot, execFn);
@@ -131,12 +131,17 @@ export async function resolveMainline(
     const msg = ((err as Error)?.message ?? String(err)).slice(0, 200);
     return { ok: false, reason: `mainline detection threw: ${msg}` };
   }
+  // #1153 — read the discriminated result by its DISCRIMINANT. A `"branch" in m`
+  // test passes for any object carrying a `branch` key, including a failure
+  // record that happens to have one; `ok` is the only field whose presence is
+  // load-bearing for the verdict.
   if (m && typeof m === "object") {
-    if ("branch" in m && typeof m.branch === "string" && m.branch.length > 0) {
-      return { branch: m.branch };
+    const mo = m as { ok?: unknown; branch?: unknown; reason?: unknown };
+    if (mo.ok === true && typeof mo.branch === "string" && mo.branch.length > 0) {
+      return { ok: true, branch: mo.branch };
     }
-    if ("reason" in m && typeof m.reason === "string" && m.reason.length > 0) {
-      return { ok: false, reason: m.reason };
+    if (mo.ok === false && typeof mo.reason === "string" && mo.reason.length > 0) {
+      return { ok: false, reason: mo.reason };
     }
   }
   return {
@@ -189,8 +194,23 @@ export async function restoreCheckout(opts: {
   execFn: VerifyExecFn;
   /** The cycle-start ref (#1093); absent for pre-#1093 state. */
   startRef?: string;
+  /**
+   * #1362 — the cycle's `.pi/dirty-root-exempt` list and its cycle-start
+   * baseline. Together they decide which untracked files the restore claim
+   * names; the built-in scaffolding exclusions are unchanged.
+   */
+  dirtyRootExempt?: readonly string[];
+  dirtyRootExemptBaseline?: readonly string[];
 }): Promise<string[]> {
-  const { repoRoot, mainline, mergedBranch, execFn, startRef } = opts;
+  const {
+    repoRoot,
+    mainline,
+    mergedBranch,
+    execFn,
+    startRef,
+    dirtyRootExempt,
+    dirtyRootExemptBaseline,
+  } = opts;
   const notes: string[] = [];
 
   // 1. Fetch origin --prune. Every git command here is argv-form (#1093): a
@@ -228,6 +248,8 @@ export async function restoreCheckout(opts: {
     repoRoot,
     ref: target,
     label: "merged",
+    dirtyRootExempt,
+    dirtyRootExemptBaseline,
   });
   if (!restore.checkedOut) {
     notes.push(`repoRoot was NOT restored to ${target}: ${restore.detail ?? "unknown error"}`);
@@ -442,5 +464,5 @@ export async function resolvedTheMainline(
 ): Promise<boolean> {
   if (!branch) return false;
   const mainline = await detectMainline(repoRoot, execFn);
-  return "branch" in mainline && mainline.branch === branch;
+  return mainline.ok && mainline.branch === branch;
 }

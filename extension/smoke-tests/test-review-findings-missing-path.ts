@@ -9,22 +9,21 @@
  *   1. the run records: no memoryNote, both rows exist, the real-file row keeps
  *      its normal identity (anchor + cited line + snippet), and the missing-path
  *      row is a no-line row (anchor `file`, no line);
- *   2. both findings are reported and the verdict is ISSUES_FOUND;
+ *   2. the finding on the file the PR does change is reported and the verdict is
+ *      ISSUES_FOUND; the one on `src/gone.ts` is ADVISORY (#1125 — its cited
+ *      line is outside the PR's changed lines, so it neither blocks nor counts)
+ *      and is still recorded as a row, which is the point: advisory is a
+ *      verdict-side discount, not a reason to forget the finding;
  *   3. the operator accepts the missing-path row by id — a later full review
  *      suppresses it by title (suppressed-accepted), so an accepted wrong
  *      citation can be cleared; the real-file finding is still reported.
  */
 
-import { execSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { acceptRow } from "../scripts/review-accept-row.ts";
-import type { LensRunResult } from "../src/lens-review-types.ts";
+import { execFileSync } from "node:child_process";
 import { runLensReview } from "../src/lens-review.ts";
-import { LENS_ROSTER } from "../src/lens-roster.ts";
 import { snippetHashAt } from "../src/review-findings-match.ts";
-import { readBranchRows } from "../src/review-findings-store.ts";
+import { acceptFinding, readBranchRows } from "../src/review-findings-store.ts";
+import { FULL_DIFF, setupReviewFixture } from "./lib/review-findings-fixtures.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -35,29 +34,6 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const root = mkdtempSync(path.join(os.tmpdir(), "findings-missing-"));
-const repo = path.join(root, "repo");
-const skills = path.join(root, "skills");
-const ledgerDir = path.join(root, "ledger");
-mkdirSync(repo);
-mkdirSync(ledgerDir);
-let prec = 10;
-for (const l of LENS_ROSTER) {
-  mkdirSync(path.join(skills, l.skill), { recursive: true });
-  writeFileSync(
-    path.join(skills, l.skill, "SKILL.md"),
-    `---\nname: ${l.skill}\nprecedence: ${prec}\n---\n`,
-  );
-  prec += 10;
-}
-process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = path.join(ledgerDir, "review-ledger.json");
-process.env.PI_ENSEMBLE_SKILLS_DIR = skills;
-
-const sh = (cmd: string) =>
-  execSync(cmd, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-sh("git init -q -b feat/x");
-sh("git config user.email dev@example.com");
-sh("git config user.name dev");
 const SRC = [
   "// header",
   "export function alpha(x: number) {",
@@ -67,56 +43,53 @@ const SRC = [
 ];
 // The lines the store reads at head: git shows the file with its trailing newline.
 const HEAD = `${SRC.join("\n")}\n`.split("\n");
-mkdirSync(path.join(repo, "src"));
-writeFileSync(path.join(repo, "src", "a.ts"), HEAD.join("\n"));
-sh("git add -A");
-sh("git commit -qm one");
-const c1 = sh("git rev-parse HEAD");
-
 // The first lens reports a finding on a path that does not exist at head, and
 // one on the real file. Every lens answers with evidence, so the round is complete.
-const stubLens = async (args: { lens: { name: string } }): Promise<LensRunResult> => {
-  const first = args.lens.name === LENS_ROSTER[0]?.name;
-  return {
-    lens: args.lens.name,
-    ok: true,
-    ms: 1,
-    startMs: Date.now(),
-    attempts: 1,
-    blocked: false,
-    summary: "reviewed the diff",
-    findings: first
-      ? [
-          {
-            lens: args.lens.name,
-            severity: "MEDIUM",
-            path: "src/gone.ts",
-            line: 3,
-            title: "Missing null check",
-          },
-          {
-            lens: args.lens.name,
-            severity: "MEDIUM",
-            path: "src/a.ts",
-            line: 4,
-            title: "Division by zero possible",
-          },
-        ]
-      : [],
-  } as unknown as LensRunResult;
-};
+const fixture = setupReviewFixture({
+  prefix: "findings-missing",
+  branch: "feat/x",
+  files: { "src/a.ts": HEAD.join("\n") },
+  report: () => [
+    { severity: "MEDIUM", path: "src/gone.ts", line: 3, title: "Missing null check" },
+    { severity: "MEDIUM", path: "src/a.ts", line: 4, title: "Division by zero possible" },
+  ],
+});
+const repo = fixture.repo;
+const sh = fixture.sh;
+const c1 = sh("git rev-parse HEAD");
+// The PR's range, named explicitly: this clone has no mainline for the split to
+// resolve on its own (the advisory read fails closed rather than guessing), and
+// the base commit is the tree `src/a.ts` is absent from, so the whole file is
+// inside `c1~1...c1`. Resolved with argv rather than `sh`, whose shell would eat
+// `^` and `~` as history/word-expansion operators.
+const c0 = execFileSync("git", ["-C", repo, "rev-parse", "HEAD~1"], { encoding: "utf8" }).trim();
 
-const common = { cwd: repo, branch: "feat/x", lensChildFn: stubLens as never };
-const FULL_DIFF =
-  "diff --git a/src/a.ts b/src/a.ts\n+++ b/src/a.ts\n+export function alpha(x: number) {";
+const common = {
+  cwd: repo,
+  branch: "feat/x",
+  lensChildFn: fixture.stubLens,
+  // #1125 — the advisory split reads `git diff <base>...<head>`, and this clone
+  // has no mainline to resolve, so the base is stated: the first commit, before
+  // src/a.ts existed. So `src/a.ts` is wholly in range (its finding blocks) and
+  // `src/gone.ts` is outside it (its finding is advisory) — the wrong-citation
+  // row this test is about is exactly the row #1125 discounts, which is why
+  // round 1 asserts it is recorded AND advisory.
+  base: c0,
+};
 
 try {
   // Round 1 — the run records despite the missing path.
   const r1 = await runLensReview({ ...common, diff: FULL_DIFF, head: c1 });
   assert(r1.memoryNote === undefined, "round 1: the run records (memoryNote is unset)");
   assert(
-    r1.findings.length === 2 && r1.verdict === "ISSUES_FOUND",
-    `round 1: both findings are reported (verdict ${r1.verdict})`,
+    r1.findings.length === 1 && r1.verdict === "ISSUES_FOUND",
+    `round 1: the in-range finding is reported (verdict ${r1.verdict}, ${r1.findings.length})`,
+  );
+  // The missing-path finding is discounted by #1125 — out of the verdict, still
+  // recorded as a row, and visible in the summary as advisory.
+  assert(
+    r1.advisory?.length === 1 && r1.advisory[0]?.path === "src/gone.ts",
+    "round 1: the missing-path finding is advisory, not dropped",
   );
   const rows = await readBranchRows(repo, "feat/x");
   const real = rows.find((r) => r.path === "src/a.ts");
@@ -133,12 +106,9 @@ try {
 
   // Round 2 — the operator accepts the missing-path row; a full review then
   // suppresses it by title, and the real-file finding is still reported.
-  const acc = await acceptRow({
-    cwd: repo,
-    branch: "feat/x",
-    rowId: gone?.id ?? "",
-    reason: "wrong path cited; tracked elsewhere",
+  const acc = await acceptFinding(repo, "feat/x", gone?.id ?? "", {
     by: "op@example.com",
+    reason: "wrong path cited; tracked elsewhere",
   });
   assert(acc.ok, "round 2: the operator accepts the missing-path row by id");
   const r2 = await runLensReview({ ...common, diff: FULL_DIFF, full: true, head: c1 });
@@ -155,7 +125,7 @@ try {
   );
   assert(r2.memoryNote === undefined, "round 2: the run still records (memoryNote is unset)");
 } finally {
-  rmSync(root, { recursive: true, force: true });
+  fixture.cleanup();
 }
 
 process.exit(exit);

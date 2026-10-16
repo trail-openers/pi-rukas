@@ -290,14 +290,14 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
     );
     const tail = out.eventLog[out.eventLog.length - 1];
     assert(
-      tail?.kind === "cap-hit" && tail.cap === "verify-failed:develop",
+      tail?.kind === "cap-hit" && tail.cap === "fix-pass-park",
       `G: a fix pass that removes an origin/main comment parks (tail: ${tail?.kind})`,
     );
     assert(
       out.pipelineState.plumbReports.some((r) => r.body.includes("origin/main comment")),
       "G: the handoff names the removed comment",
     );
-    const cap = explainCap("verify-failed:develop", out);
+    const cap = explainCap("fix-pass-park", out);
     assert(
       cap.includes("origin/main comment") && !cap.includes("evidence detail missing"),
       `G: the cap text names the comment check (got ${cap.slice(0, 200)})`,
@@ -404,8 +404,8 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
 
 // J — #1137: a no-change fix pass whose developer replied with a plumb
 // question (scope-ambiguity) routes to a handoff that NAMES the question, not
-// the generic "byte-identical — nothing was fixed". The cap is still
-// verify-failed:develop (so nextStep routes to handoff) but the evidence
+// the generic "byte-identical — nothing was fixed". The cap is
+// fix-pass-park (#1349; it routes to handoff) but the evidence
 // carries the plumb question so the operator answers it.
 {
   const dir = repoWithFile("fix-plumb");
@@ -432,8 +432,8 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
     const out = await runAdversarialFixPass(ctx, st, pending, Date.now());
     const tail = out.eventLog[out.eventLog.length - 1];
     assert(
-      tail?.kind === "cap-hit" && tail.cap === "verify-failed:develop",
-      `J: a plumb-with-no-change parks as verify-failed:develop (tail: ${tail?.kind})`,
+      tail?.kind === "cap-hit" && tail.cap === "fix-pass-park",
+      `J: a plumb-with-no-change parks as fix-pass-park (tail: ${tail?.kind})`,
     );
     // The evidence names the plumb question, not just "byte-identical".
     const evidence = tail?.kind === "cap-hit" ? (tail.evidence ?? "") : "";

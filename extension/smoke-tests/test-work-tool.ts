@@ -189,7 +189,7 @@ registerWorkTools(fakePi);
     "the accurate post-grouping format (K=<actual group count> group(s)) is emitted",
   );
   assert(
-    /Math\.min\(resolvedParallelGroups\(\),\s*groupList\.length\)/.test(src),
+    /Math\.min\(effectiveParallelGroups\(\),\s*groupList\.length\)/.test(src),
     "concurrency is derived from the actual group count, not the raw issue count",
   );
 }
