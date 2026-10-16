@@ -14,6 +14,7 @@ import { type LedgerBinding, captureBinding } from "./adversarial-ledger-binding
 import { writeAdversarialLedgerEntry } from "./adversarial-ledger.ts";
 import { execp } from "./exec.ts";
 import type { DispatchResult } from "./types.ts";
+import type { VerifyExecFn } from "./work-driver-git.ts";
 
 /** The loop's ledger-binding state: the last capture, and the head it was taken for. */
 export interface BindingState {
@@ -40,9 +41,10 @@ export async function captureRound(
   cwd: string,
   baseRef: string | undefined,
   headRef: string | undefined,
+  execFn: VerifyExecFn = execp,
 ): Promise<void> {
   try {
-    state.binding = await captureBinding(cwd, baseRef, headRef, execp);
+    state.binding = await captureBinding(cwd, baseRef, headRef, execFn);
     state.capturedHeadRef = headRef;
   } catch (err) {
     state.binding = {
@@ -92,6 +94,9 @@ export function makeLedgerWrite(opts: {
   /** #1360 — the tool path's provenance marker. Never inferred. */
   toolPath?: boolean;
   baseRef?: string;
+  /** #1360 — the git executor threaded to BOTH the per-round capture and this
+   * write (one seam, matching `commentExecFn`). */
+  execFn?: VerifyExecFn;
   decorate: (raw: DispatchResult) => DispatchResult;
   note: (result: DispatchResult) => DispatchResult;
 }): (raw: DispatchResult) => DispatchResult {
@@ -107,6 +112,7 @@ export function makeLedgerWrite(opts: {
       base: opts.baseRef,
       toolPath: opts.toolPath === true,
       binding: opts.state.binding,
+      execFn: opts.execFn,
     });
     return opts.note(result);
   };

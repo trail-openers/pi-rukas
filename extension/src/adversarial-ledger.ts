@@ -27,11 +27,13 @@
 import {
   type LedgerBinding,
   decideToolPathRow,
+  namedHeadIsTip,
   toolPathFields,
 } from "./adversarial-ledger-binding.ts";
 import { execp } from "./exec.ts";
 import { resolveReviewBranch } from "./review-branch.ts";
 import { resolveHeadSha } from "./review-head-sha.ts";
+import { identityBase } from "./review-ledger-path.ts";
 import {
   type LedgerEntry,
   adversarialPassed,
@@ -40,6 +42,7 @@ import {
 } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
+import type { VerifyExecFn } from "./work-driver-git.ts";
 
 /**
  * Write an adversarial-review entry to the review ledger. Fire-and-forget:
@@ -74,10 +77,16 @@ export function writeAdversarialLedgerEntry(
      * identity at the time its diff was read). Absent = nothing was captured,
      * which a tool-path row reads as unverifiable, never as a pass. */
     binding?: LedgerBinding;
+    /** #1360 — the git executor shared by the capture and this write. The loop
+     * threads the SAME function into `captureRound`, so a test (or a caller
+     * with its own exec policy) sees one seam for the whole binding, matching
+     * `commentExecFn` on the comment check. Defaults to the real executor. */
+    execFn?: VerifyExecFn;
   },
 ): Promise<void> {
   const write = async () => {
     const c = params.workCwd ?? process.cwd();
+    const execFn = params.execFn ?? execp;
     // #980 — the branch comes from the SHARED resolver (review-branch.ts:
     // explicit `branch` → branch-named `head` → rev-parse) — the same one
     // the lens review and the residual poster use — so all three key on the
@@ -89,7 +98,7 @@ export function writeAdversarialLedgerEntry(
     // the fallback for direct callers that did not resolve.
     const branch =
       params.resolvedBranch ??
-      (await resolveReviewBranch({ branch: params.branch, head: params.head, cwd: c }, execp))
+      (await resolveReviewBranch({ branch: params.branch, head: params.head, cwd: c }, execFn))
         .branch;
     if (!branch) {
       trace("adversarial: ledger write skipped — no branch (detached head, no caller branch)");
@@ -98,7 +107,7 @@ export function writeAdversarialLedgerEntry(
     // The shared working-tree patch id (review-ledger.ts). When untracked
     // files exist the entry is still written for the tracked content, but the
     // gap is traced — see the warning's wording in workingTreePatchId.
-    const computed = await workingTreePatchId(execp, c);
+    const computed = await workingTreePatchId(execFn, c);
     if (computed.warning) trace(`adversarial: ${computed.warning}`);
     if (!computed.patchId) return;
     // #1039 — resolve the head to a full 40-char SHA via the shared
@@ -109,16 +118,47 @@ export function writeAdversarialLedgerEntry(
     // the write succeeds without the field, matching the lens writer's
     // behaviour.
     const headRef = params.head ?? "HEAD";
-    const headSha = await resolveHeadSha(c, headRef, execp);
+    const headSha = await resolveHeadSha(c, headRef, execFn);
+    // #1360 — what the BINDING compares the round's capture against is always
+    // workCwd's own TIP, never whatever ref the caller named, and what the
+    // refusal is called depends on whether those two agree. `workingTreePatchId`
+    // took this row's identity from the worktree's HEAD and `captureBinding` took
+    // the round's from the same place, so they are comparable only against the
+    // tip. A caller who named the mainline (`head: "main"`, `origin/main`, or a
+    // `trunk` repo's `trunk`) would otherwise have its HEAD compared against the
+    // MAINLINE commit and refused `head-moved` for a review of the very checkout
+    // it was in. So: resolve the caller's ref too, and let agreement decide the
+    // vocabulary — the ref resolving TO the tip means the caller meant the tip
+    // and HEAD has since moved (`head-moved`); a ref resolving elsewhere is the
+    // review of some older commit (`head-not-current`), which is a refusal the
+    // caller's own argument caused and must not be softened.
+    const tipSha = await resolveHeadSha(c, "HEAD", execFn);
+    const namedRefResolvesToTip = headSha === undefined || headSha === tipSha;
     const callerSupplied = params.callerSuppliedDiff === true;
     const outcome = result.loopOutcome ?? "completed";
     const verdictPassed = adversarialPassed(result);
     const toolPath = params.toolPath === true;
-    // #1360 — the tool path's bindings. A row that was never going to pass
-    // keeps its own verdict detail: a rejection is not relabelled as a binding
-    // failure, and the guard's refusal for it is the ordinary one.
+    // #1360 — the binding fields the row stores come from the VERIFIED
+    // decision, never from the raw capture: a capture is what a round recorded,
+    // a decision is what the module confirmed. Writing a capture whose range
+    // check was never run (or that failed) would decorate a row with SHAs the
+    // gate did not vouch for — so a refused row carries none.
+    //
+    // The tool-path bindings themselves are gated on `toolPath` alone, NOT on
+    // `adversarialPassed`: a rejection under `reportVerdict: "terminal"` maps
+    // to ok:true/loopOutcome "approved" downstream but records `passed: false`,
+    // and it still earns an honest range check — it just keeps its own verdict
+    // detail rather than a binding one.
+    //
+    // The identity base is resolved ONCE here and threaded into the decision:
+    // `computed.patchId` above was taken against exactly this `{remote,
+    // mainline}`, and the range check must compare against the same ref — two
+    // resolutions could disagree on a `trunk`/`develop` repo, and the row's
+    // pass would then rest on a range nobody computed. Same executor as the
+    // capture, same shared helpers, one seam.
+    const mainline = await identityBase(execFn, c);
     const binding =
-      toolPath && verdictPassed && !callerSupplied
+      toolPath && !callerSupplied
         ? await decideToolPathRow({
             workCwd: c,
             baseRef: params.base,
@@ -127,13 +167,23 @@ export function writeAdversarialLedgerEntry(
               bindingUnavailable: "no round capture reached the writer",
             },
             currentTreePatchId: computed.patchId,
-            currentHeadSha: headSha ?? "",
+            currentHeadSha: tipSha ?? "",
+            // #1360 — the caller named a ref that is NOT the checkout's tip and
+            // is not one of its spellings, so the head check keeps its teeth: a
+            // review of an older commit is refused `head-not-current`, never
+            // forgiven as "the HEAD simply moved".
+            ...(namedHeadIsTip(headRef, mainline.ok ? mainline : undefined) || namedRefResolvesToTip
+              ? {}
+              : { namedHeadSha: headSha, namedHeadRef: headRef }),
+            ...(mainline.ok ? { mainline } : {}),
+            execFn,
           })
         : undefined;
     const refusedByBinding = binding !== undefined && !binding.ok;
+    const bound = binding?.ok ? binding : undefined;
     const detail = callerSupplied
       ? `${outcome} (caller-supplied diff)`
-      : refusedByBinding
+      : refusedByBinding && verdictPassed
         ? (binding.detail ?? `${outcome} (review range unverifiable)`)
         : outcome;
     const entry: LedgerEntry = {
@@ -144,9 +194,9 @@ export function writeAdversarialLedgerEntry(
       at: Date.now(),
       detail,
       ...(headSha ? { headSha } : {}),
-      ...toolPathFields(params.binding ?? {}, toolPath),
+      ...toolPathFields(bound ?? {}, toolPath),
     };
-    await appendLedgerEntry(entry, execp, c);
+    await appendLedgerEntry(entry, execFn, c);
   };
   return write().catch((err) =>
     trace(`adversarial: ledger write failed: ${(err as Error).message}`),

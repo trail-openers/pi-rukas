@@ -17,6 +17,27 @@ import type { OnSlowCallback } from "./slow-notice.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
+ * The provenance type behind `AdversarialLoopParams.toolPath`.
+ *
+ * `string` rather than `true` is the point: a literal `true` widens to `boolean`
+ * through an untyped spread, so a caller passing `toolPath: false` in its raw
+ * args could clear the marker and take the row off the bindings. A string the
+ * runtime never produces anywhere else cannot be forged by a caller that has
+ * not read this source — which is what makes the marker a provenance claim
+ * rather than a suggestion.
+ *
+ * The value is minted by `TOOL_PATH_PROVENANCE` in `adversarial-tool.ts` and
+ * nothing else; `isToolPathProvenance` is the only reader.
+ */
+export type ToolPathProvenance = "adversarial-loop-tool";
+
+/** Narrow an unknown provenance marker. The ONLY way to satisfy `toolPath` for
+ * a caller that cannot import the mint site. */
+export function isToolPathProvenance(value: unknown): value is ToolPathProvenance {
+  return value === ("adversarial-loop-tool" as const satisfies ToolPathProvenance);
+}
+
+/**
  * The loop's parameters. `ReportPolicy` is a discriminated union (the reportOnly
  * shape must be mutually exclusive with the routed-round shape), so it is
  * intersected rather than extended.
@@ -83,6 +104,11 @@ export type AdversarialLoopParams = ReportPolicy & {
    * refused by them, so the /work driver's `diff` + `getDiff` reviews keep
    * their identity and keep recording passing rows. Provenance is never
    * inferred from the presence of a `diff` string.
+   *
+   * Branded (see `ToolPathProvenance`): the mint site is
+   * `TOOL_PATH_PROVENANCE` in `adversarial-tool.ts`, so a raw arg carrying
+   * `toolPath: false` cannot widen into this field and clear the marker.
+   * The driver path never sets it and runs no capture at all.
    */
-  toolPath?: boolean;
+  toolPath?: ToolPathProvenance;
 };
