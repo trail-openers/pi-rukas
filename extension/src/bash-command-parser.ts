@@ -6,14 +6,12 @@
  * string/token parsing with no Pi API and no filesystem I/O.
  */
 
-import { mergesPr } from "./bash-merges-pr.ts";
 import {
   hasMidWildcard,
   isDestructiveMemoryWrite,
   midWildcardPattern,
 } from "./bash-pattern-wildcard.ts";
 import { trace } from "./trace.js";
-export { mergesPr };
 
 // Chars that indicate command injection / chaining in a bash *command*. If a
 // command contains any of these OUTSIDE quoted segments, we refuse to extract

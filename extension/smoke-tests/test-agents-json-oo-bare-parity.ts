@@ -325,9 +325,12 @@ for (const cmd of [
 
 for (const role of ROLES) {
 	const bash = agents.agent[role]?.permission?.bash ?? {};
+	// ops is granted the plain merge form the merge guard accepts (#962); every
+	// other role keeps the prompt. The oo-wrapped forms are refused by the guard
+	// and are never granted — see docs/troubleshooting.md, "Which commands the guard checks (#962)".
 	assert(
-		matchBashSubcommand("gh pr merge 1", bash) === "ask",
-		`${role}: bare gh pr merge stays ask`,
+		matchBashSubcommand("gh pr merge 1", bash) === (role === "ops" ? "allow" : "ask"),
+		`${role}: bare gh pr merge ${role === "ops" ? "allow" : "stays ask"}`,
 	);
 	assert(
 		matchBashSubcommand("glab mr merge 1", bash) === "ask",

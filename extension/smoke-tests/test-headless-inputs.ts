@@ -17,7 +17,10 @@
  *                       key fails, because the scan cannot see what it reads.
  *
  * A family entry (`PI_ENSEMBLE_MODEL_<ROLE>`) covers a literal name only when
- * the name is its prefix plus an upper-case role or seam id. Comment lines
+ * the name is its prefix plus one of its `members` (or, for an entry without
+ * members, any upper-case id). An entry read only by the sandbox wrapper
+ * (lib/wrapper-env-reads.ts) is not stale; test-headless-inputs-wrapper.ts
+ * checks that side. Comment lines
  * are skipped. Every rule is also run against a planted fixture, so each is
  * observed to fail (a gate never observed to fail is worthless). Numeric,
  * list and boolean defaults of the inputs named in LIVE are checked against
@@ -77,6 +80,7 @@ import { resumeEnabled, sessionReattachEnabled } from "../src/work-driver-resume
 import { stepNoticeThresholdMs } from "../src/work-driver-step-notice.ts";
 import { testDeleteTolerance, verifyTimeoutMs } from "../src/work-driver-verify-develop-helpers.ts";
 import { queueHaltOnFailure } from "../src/work-queue.ts";
+import { wrapperEnvReads } from "./lib/wrapper-env-reads.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -163,11 +167,13 @@ function scan(root: string): Scan {
   return out;
 }
 
-/** Whether `name` is the entry, or a member of its family (prefix + upper-case id). */
+/** Whether `name` is the entry, or a member of its family (prefix + a listed id). */
 function covers(entry: HostInput, name: string): boolean {
   const i = entry.name.indexOf("<");
   if (i < 0) return entry.name === name;
-  return new RegExp(`^${entry.name.slice(0, i)}[A-Z][A-Z0-9_]*$`).test(name);
+  const prefix = entry.name.slice(0, i);
+  if (entry.members) return entry.members.some((m) => name === prefix + m);
+  return new RegExp(`^${prefix}[A-Z][A-Z0-9_]*$`).test(name);
 }
 
 /** The problems a scan shows against an inventory: unlisted reads and unapproved dynamic keys. */
@@ -204,14 +210,16 @@ assert(
 
 // ── Every entry, and every approved dynamic key, is still used.
 {
+  const wrapper = wrapperEnvReads();
   const stale = HEADLESS_INPUTS.filter(
     (e) =>
+      !wrapper.has(e.name) &&
       ![...found.exact.keys()].some((n) => covers(e, n)) &&
       ![...found.dynamic.keys()].some((k) => DYNAMIC_KEYS[k] === e.name),
   );
   assert(
     stale.length === 0,
-    `every HEADLESS_INPUTS entry is read in src/${stale.length ? ` — stale: ${stale.map((e) => e.name).join(", ")}` : ""}`,
+    `every HEADLESS_INPUTS entry is read in src/ or by the wrapper${stale.length ? ` — stale: ${stale.map((e) => e.name).join(", ")}` : ""}`,
   );
   const unused = Object.keys(DYNAMIC_KEYS).filter((k) => !found.dynamic.has(k));
   assert(unused.length === 0, `every approved dynamic key is used (${unused.join(", ")})`);
@@ -258,6 +266,8 @@ assert(
       'const g = process.env["PI_ENSEMBLE_MODEL_"];',
       "const h = process.env.PI_ENSEMBLE_MODEL_DEVELOPER;",
       "const i = process.env.PI_ENSEMBLE_MODEL_developer;",
+      // Not a role: a typo the family's members refuse.
+      "const j = process.env.PI_ENSEMBLE_MODEL_REVIEWER;",
     ].join("\n"),
     "planted.ts",
     planted,
@@ -266,6 +276,7 @@ assert(
   const want = [
     "unapproved dynamic key PI_ENSEMBLE_ (planted.ts)",
     "unapproved dynamic key PI_ENSEMBLE_PLANTED_ (planted.ts)",
+    "unlisted PI_ENSEMBLE_MODEL_REVIEWER (planted.ts)",
     "unlisted PI_ENSEMBLE_MODEL_developer (planted.ts)",
     "unlisted PI_ENSEMBLE_PLANTED_DESTRUCTURED (planted.ts)",
     "unlisted PI_ENSEMBLE_PLANTED_INDEXED (planted.ts)",
