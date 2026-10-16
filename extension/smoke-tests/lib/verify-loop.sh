@@ -392,10 +392,17 @@ chmod 700 "$RUN_DIR" 2>/dev/null || true
 # operator-supplied override was honoured).
 # #1365: the per-test capture is now the whole $RUN_DIR, removed as one unit.
 _extra_captures=()
+# #1365 — each statement ends in `|| :`, and that is the load-bearing part.
+# bash takes the EXIT trap's final status as the shell's when the trap does not
+# call `exit` itself, so one non-zero command in the cleanup turns `exit 1` into
+# exit 0: the suite reports a FAILURE and the gate passes. `rm -f` is close to
+# unconditional, but ${_extra_captures[*]} is UNQUOTED (word-splitting is
+# wanted), so an unreadable RUN_DIR or a root-owned ledger temp can reach the
+# tail and decide the verdict.
 _extra_cleanup() {
-  rm -f ${_extra_captures[*]:-}
-  if [ -n "$RUN_DIR" ]; then rm -rf "$RUN_DIR"; fi
-  if [ -n "${_ledger_tmp_dir:-}" ]; then rm -rf "${_ledger_tmp_dir}"; fi
+  rm -f ${_extra_captures[*]:-} || :
+  if [ -n "$RUN_DIR" ]; then rm -rf "$RUN_DIR" || :; fi
+  if [ -n "${_ledger_tmp_dir:-}" ]; then rm -rf "${_ledger_tmp_dir}" || :; fi
 }
 trap '_extra_cleanup' EXIT
 
@@ -478,15 +485,12 @@ fi
 # contract and the 800-char tail-window rationale.
 report_results "$total"
 
-# #1365 — `names` and `_extra_captures` are index-aligned: both are pushed once
-# per failing test, in the same order, and the digest reads them by shared index
-# (verify-report.sh). The pairing is a load-bearing invariant, not an
-# implementation nicety — an unpushed `cp` failure would silently attach one
-# test's ✗ lines to another's marker, which reads as a genuine assertion failure
-# for a test that never made it. Asserted here rather than trusted: a mismatch
-# is a bug in this file, and the suite's verdict is the wrong place to discover
-# it. (An entry may be the EMPTY placeholder a cp failure pushes — that is
-# paired; it is a length mismatch that fails.)
+# #1365 — `names` and `_extra_captures` are index-aligned (both pushed once per
+# failing test, in order; the digest reads them by shared index in
+# verify-report.sh). A mismatch would attach one test's ✗ lines to another's
+# marker and read as a real assertion failure, so it fails loudly rather than
+# reporting. (An EMPTY placeholder from a cp failure is still paired; a LENGTH
+# mismatch is the bug.)
 if [ "${#names[@]}" -ne "${#_extra_captures[@]}" ]; then
   echo "error: verify-loop: internal error — ${#names[@]} failure names against ${#_extra_captures[@]} captured outputs; the summary tail is unreliable" >&2
   exit 1

@@ -364,7 +364,7 @@ run_pool() {
         JOB_STATE[$i]=2
         POOL_RUNNING=$((POOL_RUNNING - 1))
         [ "$POOL_RUNNING" -ge 0 ] || POOL_RUNNING=0
-        wait "${JOB_PID[$i]}" 2>/dev/null
+        wait "${JOB_PID[$i]}" 2>/dev/null || :
         JOB_EXIT[$i]="$(cat "${JOB_RC[$i]}" 2>/dev/null)"
         # A dead job with an empty rc file is a race, not yet a verdict: the
         # subshell's last act is the write, and the pid can be observed gone a
@@ -442,6 +442,22 @@ run_pool() {
     # for a slot that is already free; the ceiling turns that drift into a
     # slower run rather than a stall.
     if [ "$POOL_RUNNING" -gt "$max_jobs" ]; then POOL_RUNNING="$max_jobs"; fi
-    if [ "$done_n" -lt "$total" ]; then sleep 0.1; fi
+    if [ "$done_n" -lt "$total" ]; then
+      # The tick is a foreground `sleep 0.1`, unchanged from before #1365's
+      # interrupt work. It is worth knowing why the interrupt path only works
+      # for SIGTERM: bash defers a trapped signal until the foreground command
+      # returns, and in a NON-interactive shell a SIGINT that arrives while the
+      # shell is blocked in a foreground `sleep` (or `wait`) is not delivered to
+      # the trap at all — measured on bash 5.3.9 for `sleep 30`, for
+      # `sleep 30 & wait $!`, and for the pool's own tick+wait loop; none ran
+      # the handler within 6s. So `interrupt_now` cannot be reached by Ctrl-C
+      # mid-tick no matter what it contains, and the trees leak. SIGTERM is
+      # delivered and case 5 of test-verify-loop-parallel.ts pins that path.
+      # Closing the SIGINT gap needs job control (`set -m`) or a SIGINT-to-
+      # SIGTERM shim, which changes how every child in the pool is signalled —
+      # that is a spec decision, not a fold-in. See
+      # /tmp/pi-dev-1365/interrupt-min.sh for the reproducer.
+      sleep 0.1
+    fi
   done
 }

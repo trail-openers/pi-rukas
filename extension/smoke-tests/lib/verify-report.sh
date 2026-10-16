@@ -145,5 +145,13 @@ report_results() {
       echo "$line"
     done < <(grep -F -- "✗" "$capfile" || true)
   done
-  exit 1
+  # #1365 — the verdict is the count, not the status that happens to be
+  # current. report_results is the only intended exit path and it `exit 1`s on
+  # failure, but a half that returned instead of exiting would let the caller
+  # fall through at exit 0 with `FAILED: N test(s)` as the last line the operator
+  # read (observed on a full-suite run: two failures named, process exited 0).
+  # Deriving the status from `names` — the array the summary is built from —
+  # makes the marker and the exit code one fact that cannot disagree.
+  [ "${#names[@]}" -eq 0 ] || exit 1
+  exit 0
 }
