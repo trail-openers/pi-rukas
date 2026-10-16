@@ -12,10 +12,10 @@
  * indented code — produces no unit at all.
  */
 
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { citationPresent, citationUnits } from "../src/decision-evidence.ts";
+import { citationPresent, citationUnits, verifyEvidence } from "../src/decision-evidence.ts";
 import { resolveMergeAuthority } from "../src/work-driver-merge-authority.ts";
 import { citationUnits as reExportedUnits } from "../src/work-driver-policy.ts";
 import {
@@ -172,28 +172,54 @@ assert(
 // -------------------------------------- item 2: numbered items are list items
 
 {
-  const NUMBERED = [
-    "1. Agents may merge after the gates pass",
-    "   and only on a green build",
+  // `contentColumn` is where an indented line may sit and still be the item's own
+  // continuation, so these three fixtures differ only in that column: two spaces
+  // is at `1. `'s content column and belongs to the item above it; three is one
+  // past it and is a nested block, which markdown shows rather than asserts.
+  const CONTINUATION = [
+    "1. Agents may merge after the gates pass.",
+    "  and only on a green build",
+  ].join("\n");
+  const units = citationUnits(CONTINUATION);
+  assert(
+    units.includes("agents may merge after the gates pass. and only on a green build"),
+    `the enumerator is stripped and a continuation at the item's content column belongs to the same unit (got ${JSON.stringify(units)})`,
+  );
+  const TWO_ITEMS = [
+    "1. Agents may file an issue before starting work.",
     "2) Agents may revert their own merge.",
   ].join("\n");
-  const units = citationUnits(NUMBERED);
+  const twoItems = citationUnits(TWO_ITEMS);
   assert(
-    units.includes("agents may merge after the gates pass and only on a green build"),
-    "the enumerator is stripped and the indented continuation belongs to the same unit",
+    twoItems.includes("agents may revert their own merge."),
+    `\`2)\` enumerators strip too, and an item under a finished one is its own unit (got ${JSON.stringify(twoItems)})`,
   );
-  assert(units.includes("agents may revert their own merge."), "`2)` enumerators strip too");
   assert(
-    !units.some((u) => /^\d+[.)]$/.test(u) || u.includes("1.")),
-    `no bare "1." unit is ever emitted (got ${JSON.stringify(units)})`,
+    !twoItems.some((u) => /^\d+[.)]$/.test(u) || u.includes("1.")),
+    `no bare "1." unit is ever emitted (got ${JSON.stringify(twoItems)})`,
   );
   assert(
     !citationUnits("Rules:\n1.\n2.\n3)\n").some((u) => /^\d/.test(u)),
     "a lone enumerator on its own line produces no unit at all",
   );
   assert(
-    !citationPresent("Agents may merge after the gates pass", NUMBERED),
+    !citationPresent("Agents may merge after the gates pass", CONTINUATION),
     "...so the head of an item cannot be quoted without its continuation",
+  );
+  assert(
+    citationUnits("1. Agents may file an issue before starting work.\n    nested under it").join(
+      "|",
+    ) === "agents may file an issue before starting work.",
+    "MUST-PASS: a line indented past the item's content column is a nested block and never joined",
+  );
+  // The other shape, which the reviewer asked for: leave the first item
+  // unterminated and the item below it is its consequence, not a rule of its own.
+  assert(
+    !citationPresent(
+      "Agents may revert their own merge.",
+      "1. Agents may file an issue before starting work\n2) Agents may revert their own merge.",
+    ),
+    "MUST-FAIL: under an unterminated first item, the second item does not verify alone",
   );
 }
 

@@ -25,6 +25,15 @@
  * content), or a 4-space indented code line — markdown's other code block, the
  * one with no fence marker to track.
  *
+ * **Inline code spans are removed before a unit is built**, and this is the one
+ * exclusion that has to be absolute. `normaliseUnit` deletes the backticks that
+ * delimit a span, so under plain flattening the words inside it sit in the unit
+ * as though the document had written them in its own voice: a rule reading
+ * "the policy never says `agents may merge anything at any time`" would offer
+ * its own contents back as a quotable grant. A span is an example or a
+ * quotation whatever surrounds it, so the region goes and the rest of the line
+ * stays prose.
+ *
  * ## Which line breaks split a paragraph
  *
  * A paragraph is delimited by a blank line, and within it a line break is
@@ -56,10 +65,18 @@
  * structural — answerable from the text alone.
  *
  * Consequence, which is the point: a conditioned rule cannot be quoted without
- * its condition. The §9 conditional closes `…type checks etc)`, with no
- * terminator at all, so its two lines join and the grant quotes whole as
- * written; a permission clause carries no terminator of its own, so it is never
- * a unit on its own.
+ * its condition — and "its condition" is read across block types. A condition
+ * that does not close a unit is joined to what follows whether that is a wrapped
+ * line, a bullet under it, or the next item in a list, so the condition can never
+ * be quoted away by restructuring the rule as a list.
+ *
+ * ## The limit this splitter does not try to cross
+ *
+ * A heading, table row or blockquote is never a unit, so it can never *carry* a
+ * condition either: a rule written "`## Only on green CI`" above a permissive
+ * sentence reads as unconditional here. Whether a structural heading conditions
+ * the prose under it is a question of relevance, and relevance is the judge's
+ * job, not the splitter's — the splitter only ever decides what a unit is.
  */
 
 /**
@@ -72,6 +89,70 @@ const SENTENCE_ABBREVIATIONS = new Set(["e.g.", "i.e.", "etc.", "vs.", "cf."]);
 const CLOSERS = /["')\]}”’»]/;
 
 /**
+ * A run of closers at the end of a string, as one regex.
+ *
+ * Three call sites below strip "the quote/bracket run sitting after (or before)
+ * the terminator", each spelling the class out again. One alphabet in one place
+ * — a character added to `CLOSERS` has to be a closer here too, or the three
+ * disagree about where a sentence ends.
+ */
+const TRAILING_CLOSERS = /["')\]}”’»]+$/;
+
+/**
+ * Inline code spans (`like this`), matched as a pair of backtick runs.
+ *
+ * The whole matched region is dropped whichever way the runs parse: an unclosed
+ * span is read as code rather than as prose the document asserts, which is the
+ * conservative direction for a grant source. `normaliseUnit` deletes backticks,
+ * so without this the words inside a span would sit in a unit as though the
+ * document had written them in its own voice.
+ *
+ * Built fresh per use (no /g state shared between readers).
+ */
+const codeSpans = () => /`+[^`]*`+/g;
+
+/** An ATX heading: 1-6 `#`, then a space or nothing. Six is the markdown ceiling. */
+const HEADING = /^\s*#{1,6}(\s|$)/;
+
+/**
+ * The fence marker of a line that really is a fence delimiter, else undefined.
+ *
+ * Three things have to be true, and a single regex over the raw line gets all
+ * three wrong.
+ *
+ *   - **The marker is the line's text, not words beside it.** A line is a
+ *     delimiter only if nothing but ≤3 spaces precede the marker and nothing but
+ *     the info string follows it — which is also how CommonMark defines it. A
+ *     line of backticks followed by prose is a sentence about a fence, and
+ *     treating it as a delimiter would hide the document's own rules below it.
+ *   - **The marker is not itself quoted inside a code span.** A document that
+ *     talks about fences writes the marker inline (`` ``` ``), so that line
+ *     carries the marker *plus* the wrapping span: an EVEN number of backtick
+ *     runs. A real delimiter is one ODD run. Parity settles it without reading
+ *     the span structure — and stripping spans first, which is the tempting
+ *     order, would blank the line and silently un-fence the example under it,
+ *     the exact hole #1381 closes.
+ *   - **Three spaces of indentation, no more.** Past that a line of backticks is
+ *     markdown's indented code block — an example being shown, not a block to
+ *     hide — and must not flip the document in or out of code mode.
+ *
+ * Tildes follow the same shape. The info string (`` ```json ``) is allowed and is
+ * fenced metadata, never a unit, so it needs no special handling here.
+ */
+function fenceMarker(raw: string): string | undefined {
+  const open = raw.match(/^[ \t]{0,3}(`{3,}|~{3,})[^\r\n]*$/);
+  if (!open?.[1]) return undefined;
+  // Even number of marker-character runs => the marker is quoted inside a code
+  // span (`` ``` ``) => the line is prose describing a fence, not a delimiter.
+  // Only the marker's OWN character counts: a backtick fence whose info string
+  // quotes a tilde (`~~~ closes a block`) is still one backtick run, and calling
+  // that even would silently un-fence the example below it.
+  const runs = open[1][0] === "`" ? "`" : "~";
+  if ((raw.match(new RegExp(`${runs}+`, "g"))?.length ?? 0) % 2 === 0) return undefined;
+  return open[1][0];
+}
+
+/**
  * The whole-sentence units of a document — the strings a quote may equal.
  *
  * Returns normalised units in source order. Nothing depends on the order: the
@@ -80,10 +161,12 @@ const CLOSERS = /["')\]}”’»]/;
 export function citationUnits(text: string): string[] {
   const lines = text.split(/\r?\n/);
   // An unclosed fence is a typo, not a veto. ` ``` ` opened with no matching
-  // close before EOF would otherwise mark the whole tail of the file as code
-  // and silently delete every rule after it — including a grant the operator
-  // wrote on purpose. A fence is only a fence if it closes; otherwise the
-  // region is read as the prose it is.
+  // close before EOF would otherwise mark the whole tail of the file as code and
+  // silently delete every rule after it — including a grant the operator wrote
+  // on purpose. Only a TERMINAL orphan — a marker with no later marker of its
+  // kind anywhere in the file — is treated as never opened. Every marker that
+  // does have a partner stays a delimiter, so one stray ``` can never re-pair
+  // the blocks around it and turn a genuine example into quotable prose.
   const fences = fenceRanges(lines);
   const units: string[] = [];
   let inFence = false;
@@ -102,38 +185,97 @@ export function citationUnits(text: string): string[] {
     paragraph = [];
     openItem = undefined;
   };
-  const startItem = (content: string, contentAt: number) => {
+  const startItem = (content: string, markerEnd: number) => {
+    // Read the pending text BEFORE `flush()`, which clears the paragraph and the
+    // open item — asking afterwards always answered "nothing is pending" and
+    // every condition carried into a list stayed orphaned above it.
+    const carried = pendingCondition();
     flush();
     if (!content.trim()) return;
+    // A list item is a new block in markdown's eyes, and a new block is how a
+    // writer ends a condition — but a rule written as "condition line, then the
+    // permission as the bullet under it" is one assertion wearing two block
+    // types. If what came immediately before does not close a unit (no
+    // terminator, no colon lead-in), the item is that condition's consequence and
+    // joins it rather than standing alone, exactly as a wrapped line under a
+    // paragraph does. Applies item-to-item too: an unterminated numbered item is
+    // not a finished rule, so the item after it belongs to it.
+    //
+    // A FINISHED line above still ends the unit — that is what `pendingCondition`
+    // asks — and the item then starts its own. It never inherits the finished
+    // line's text, which would hand back a string no human read as one sentence.
+    if (carried !== undefined) {
+      openItem = `${carried} ${content}`;
+      units[units.length - 1] = openItem;
+      contentColumn = markerEnd;
+      return;
+    }
     openItem = content;
-    contentColumn = contentAt;
     units.push(content);
+    contentColumn = markerEnd;
   };
-  for (const [i, line] of lines.entries()) {
-    if (/^\s*(```|~~~)/.test(line)) {
+  /**
+   * The text a new list item would continue, if the block above it is still
+   * unfinished: the last pending paragraph line, or the open item's content.
+   * `undefined` when nothing is pending OR when that text closes a unit — in
+   * which case the condition was stated and finished, and the item is its own
+   * assertion.
+   *
+   * The last shape is the §9 grant split across two blocks — condition as a
+   * paragraph line with no terminator, permission as the bullet under it — and
+   * joining it is the point: without the join the permission verifies alone, with
+   * its condition left behind, which is this whole rule in list clothing.
+   */
+  const pendingCondition = (): string | undefined => {
+    const last = paragraph.length > 0 ? (paragraph[paragraph.length - 1] ?? "") : (openItem ?? "");
+    if (!last.trim() || closesUnit(last) || isHardBreak(last)) return undefined;
+    return last;
+  };
+  for (const [i, rawLine] of lines.entries()) {
+    // Fence delimiters are decided on the RAW line (see {@link fenceMarker}): a
+    // span-strip run first would blank a line that merely *writes about* a fence
+    // and un-fence the example below it. The info string is then stripped like
+    // any other inline code, since it is not prose the document asserts.
+    const marker = fenceMarker(rawLine);
+    if (marker) {
       flush();
       if (fences.has(i)) inFence = !inFence;
       continue;
     }
+    // Inline code next. A span sits inside prose, inside a heading, or inside a
+    // table row, and none of those decisions change — it is not asserted text
+    // wherever it sits. A line that is nothing but a span becomes blank, which is
+    // what the document actually said there.
+    const line = rawLine.replace(codeSpans(), "");
     if (inFence) continue;
     if (line.trim() === "") {
       flush();
       continue;
     }
-    // An indented line continues the list item above it while it sits at the
-    // item's content column; past that it is a nested block, not a sentence the
-    // document is still writing.
+    // An indented line continues the block above it. Under an open list item it
+    // joins that item while it sits at the item's content column (past that it
+    // is a nested block — a code block or a sub-list — which the document shows
+    // rather than asserts). Under a plain paragraph it is the same thing markdown
+    // does with any soft-wrapped line: a continuation of the sentence, joined and
+    // then split like any other. Only an indented line with no open block above it
+    // is markdown's indented code block, and only that one is dropped.
     const indent = line.match(/^(\s*)\S/)?.[1]?.length ?? -1;
     if (indent >= 2) {
       if (openItem !== undefined && indent <= contentColumn) {
         openItem = `${openItem} ${line.trim()}`;
         units[units.length - 1] = openItem;
+        continue;
+      }
+      if (paragraph.length > 0) {
+        if (isHardBreak(paragraph[paragraph.length - 1] ?? "")) flush();
+        paragraph.push(line.trim());
+        continue;
       }
       continue;
     }
     // An ATX heading — up to six `#`, then a space or nothing. Six is the
     // markdown ceiling, and `#######` is literal text, not a title.
-    if (/^\s*#{1,6}(\s|$)/.test(line)) {
+    if (HEADING.test(line)) {
       flush();
       continue;
     }
@@ -150,6 +292,10 @@ export function citationUnits(text: string): string[] {
     }
     const bullet = line.match(/^\s*([-+*])\s+(.*)$/);
     if (bullet?.[1] && bullet[2] !== undefined) {
+      // The column the marker ENDS at, which is where a continuation line has to
+      // sit (CommonMark: indented at least as far as the item's content). Passing
+      // the marker's *start* instead made every continuation look too deep, so
+      // nothing ever joined and a wrapped item lost its tail.
       startItem(bullet[2], line.indexOf(bullet[1]) + bullet[1].length + 1);
       continue;
     }
@@ -175,24 +321,42 @@ export function citationUnits(text: string): string[] {
 /**
  * Indices of the lines that really are fence delimiters, paired open→close.
  *
- * A delimiter is only a delimiter when something closes it. Each ` ``` `/`~~~ `
- * line is matched against the next one of the same marker; an unmatched opener
- * is left out, so the prose below it is read as prose.
+ * Pairing is **sequential and stack-like**: the first marker opens, the next
+ * marker of the same character closes it, the one after that opens again, and so
+ * on. Pairing each marker with "the next one anywhere" instead — the shape this
+ * function used to have — lets one stray marker re-pair everything around it:
+ * the stray swallows a real opener, and the real closer then pairs forward onto
+ * the NEXT block's opener, so the block a fabricated grant was written inside
+ * stops being code and becomes quotable prose. Sequential pairing cannot do
+ * that; blocks pair with their own neighbours.
+ *
+ * The one thing that stays a no-op is the terminal orphan: a final marker with
+ * no later marker of its kind is a typo at the end of the file, and the prose
+ * below it is read as the prose it is. An orphan anywhere else — a stray marker
+ * in the middle of a document — pairs with what follows it, because treating it
+ * as "just a typo" is what let a fenced example become a grant.
  */
 function fenceRanges(lines: readonly string[]): Set<number> {
   const accepted = new Set<number>();
-  const markerAt = (line: string) => line.trimStart().match(/^(`{3,}|~{3,})/)?.[1]?.[0];
+  const markerAt = (line: string) => fenceMarker(line);
+  let open: { at: number; marker: string } | undefined;
   for (let i = 0; i < lines.length; i++) {
-    if (accepted.has(i)) continue;
     const marker = markerAt(lines[i] ?? "");
     if (!marker) continue;
-    for (let j = i + 1; j < lines.length; j++) {
-      if (markerAt(lines[j] ?? "") !== marker) continue;
-      accepted.add(i);
-      accepted.add(j);
-      break;
+    if (!open) {
+      open = { at: i, marker };
+      continue;
     }
+    // A marker of the other character sits inside an open block as content —
+    // `~~~` inside a ``` example does not close it — so it is not a closer and
+    // the open block keeps running.
+    if (marker !== open.marker) continue;
+    accepted.add(open.at);
+    accepted.add(i);
+    open = undefined;
   }
+  // `open` is set only for a marker with no partner of its kind after it: the
+  // terminal orphan. It, and it alone, is left out of the delimiter set.
   return accepted;
 }
 
@@ -207,20 +371,10 @@ function isHardBreak(previous: string): boolean {
   const t = previous.trimEnd();
   if (!t) return false;
   if (/:$/.test(t.replace(/["'”’]+$/, ""))) return true;
-  return closesUnit(t) && endsSealed(t);
-}
-
-/**
- * Does this line end in a terminator sealed by a closer (`…stop."`, `…met.)`)?
- *
- * `closesUnit` strips the closer run to read the token behind it; this asks
- * whether anything was stripped at all. A line written to finish an assertion
- * seals it (`"…"`, `(...)`); a line that merely ran out of room stops at the
- * bare `.` — that one is a wrap, and its sentence continues on the next line.
- */
-function endsSealed(line: string): boolean {
-  const t = line.trimEnd();
-  return t.length > 1 && t !== t.replace(/["')\]}”’»]+$/, "");
+  // Sealed = something was stripped. A line written to finish an assertion seals
+  // it (`"…"`, `(...)`); a line that merely ran out of room stops at the bare `.`
+  // — that one is a wrap, and its sentence continues on the next line.
+  return closesUnit(t) && t !== t.replace(TRAILING_CLOSERS, "");
 }
 
 /**
@@ -233,10 +387,10 @@ function endsSealed(line: string): boolean {
 function closesUnit(line: string): boolean {
   const t = line.trimEnd();
   if (!t) return false;
-  const before = t.replace(/[\"')\]}”’»]+$/, "");
+  const before = t.replace(TRAILING_CLOSERS, "");
   const last = before[before.length - 1];
   if (!".!?".includes(last ?? "")) return false;
-  return !SENTENCE_ABBREVIATIONS.has(before.slice(before.lastIndexOf(" ") + 1));
+  return !isAbbreviation(before.slice(before.lastIndexOf(" ") + 1));
 }
 
 /**
@@ -253,7 +407,18 @@ function endsSentenceAt(text: string, terminatorAt: number): boolean {
   const next = text[after];
   if (next !== undefined && !/\s/.test(next)) return false;
   const before = text.slice(0, terminatorAt + 1).replace(/[)\]]+$/, "");
-  return !SENTENCE_ABBREVIATIONS.has(before.slice(before.lastIndexOf(" ") + 1));
+  return !isAbbreviation(before.slice(before.lastIndexOf(" ") + 1));
+}
+
+/**
+ * Is this trailing token one of the closed abbreviations?
+ *
+ * Lowercased on the way in: the set is declared in lower case, and a sentence
+ * routinely opens with `E.g.` or `Vs.` — where a case-sensitive lookup would
+ * read that period as a boundary and split a real sentence in two.
+ */
+function isAbbreviation(token: string): boolean {
+  return SENTENCE_ABBREVIATIONS.has(token.toLowerCase());
 }
 
 /** Split a joined paragraph into sentences, honouring the abbreviation set. */
@@ -280,6 +445,21 @@ function splitParagraph(paragraph: string): string[] {
 function isThematicBreak(line: string): boolean {
   const t = line.trim().replace(/\s+/g, "");
   return /^([-*_])\1{2,}$/.test(t);
+}
+
+/**
+ * Remove inline code spans without flattening what remains.
+ *
+ * The exported twin of what `citationUnits` does to every line before it reads
+ * it. `normaliseUnit` deliberately still deletes single backticks (a judge that
+ * drops the `**` around a bolded word is quoting honestly), so a caller that
+ * asks "does this string appear in this document?" must remove the *spans*
+ * first or the words inside one — an example, a quotation, a description of the
+ * very rule — become grantable text. That is the shape `verifyEvidence` compares
+ * in, which is why it is exported rather than kept private to the splitter.
+ */
+export function codeSpanFree(s: string): string {
+  return s.replace(codeSpans(), "");
 }
 
 /**

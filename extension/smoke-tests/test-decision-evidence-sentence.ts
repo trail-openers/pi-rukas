@@ -24,8 +24,7 @@
  * content of a list item. Nothing else verifies.
  */
 
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { existsSync } from "node:fs";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -36,39 +35,28 @@ import {
   verifyEvidence,
 } from "../src/decision-evidence.ts";
 import { resolveMergeAuthority } from "../src/work-driver-merge-authority.ts";
-import { citationUnits as reExportedUnits } from "../src/work-driver-policy.ts";
 import {
   type DoctrineDoc,
   MERGE_POLICY_QUESTION,
   type PolicyAnswer,
   askPolicy,
-  policyPrompt,
 } from "../src/work-driver-policy.ts";
+import { AGENTS, createRunner, grantLineFrom } from "./citation-units-harness.ts";
 
-let exit = 0;
-function assert(cond: boolean, msg: string) {
-  if (cond) console.log(`✓ ${msg}`);
-  else {
-    console.error(`✗ ${msg}`);
-    exit = 1;
-  }
-}
+const runner = createRunner();
+const { assert } = runner;
 
-const REPO_ROOT = path.resolve(import.meta.dirname, "../..");
-const AGENTS = readFileSync(path.join(REPO_ROOT, "AGENTS.md"), "utf8");
-
-/** Read from disk, not duplicated: a fixture copied from the file can drift. */
-const GRANT_LINE = AGENTS.split("\n").find((l) =>
-  l.startsWith("If all project quality gates have been met"),
-);
-// Item 6: every §9 assertion below dereferences this with `as string`. If the
-// line ever moves or is reworded, that is a broken fixture, not a passing test
-// over `undefined` — so locate it before anything depends on it.
+/**
+ * Read from disk via the shared harness, never duplicated: a fixture copied from
+ * the file can drift, and every §9 assertion below dereferences this, so a line
+ * that moves or is reworded must fail loudly here rather than pass over
+ * `undefined`.
+ */
+const REAL_GRANT_LINE = grantLineFrom(AGENTS);
 assert(
-  typeof GRANT_LINE === "string" && GRANT_LINE.length > 40,
+  typeof REAL_GRANT_LINE === "string" && REAL_GRANT_LINE.length > 40,
   "MUST-PASS canary: the AGENTS.md §9 grant line was located as its own assert before use",
 );
-const REAL_GRANT_LINE = GRANT_LINE;
 
 const judgeSaying =
   (...answers: Partial<PolicyAnswer>[]) =>
@@ -79,7 +67,7 @@ const docs = (text: string, file = "AGENTS.md"): DoctrineDoc[] => [{ file, text 
 
 {
   assert(
-    GRANT_LINE !== undefined && citationPresent(GRANT_LINE as string, AGENTS),
+    REAL_GRANT_LINE !== undefined && citationPresent(REAL_GRANT_LINE as string, AGENTS),
     "the §9 grant read verbatim from the real AGENTS.md verifies — the rule does not break the grant it guards",
   );
   assert(
@@ -141,8 +129,8 @@ const docs = (text: string, file = "AGENTS.md"): DoctrineDoc[] => [{ file, text 
     undefined,
   );
   assert(
-    !half.passed && /real text of any supplied text but not one whole sentence/.test(half.reason),
-    `MUST-PASS: a clause of a vouched text is called a partial quote, not an invention (${half.reason})`,
+    !half.passed && /not one whole sentence of any supplied text/.test(half.reason),
+    `MUST-PASS: a clause of a vouched text is refused as not a whole sentence (${half.reason})`,
   );
   const fiction = await verifyEvidence(
     vouched,
@@ -160,7 +148,7 @@ const docs = (text: string, file = "AGENTS.md"): DoctrineDoc[] => [{ file, text 
   );
   assert(
     !nameMatched.passed &&
-      /real text of AGENTS.md but not one whole sentence/.test(nameMatched.reason),
+      /not one whole sentence of AGENTS.md/.test(nameMatched.reason),
     `the name-matched branch words it the same way (${nameMatched.reason})`,
   );
   assert(
@@ -222,7 +210,7 @@ const docs = (text: string, file = "AGENTS.md"): DoctrineDoc[] => [{ file, text 
   // granularity, named as such.
   const partial = await verifyEvidence(fileCheck, "Agents may merge once CI is green", "POLICY.md");
   assert(
-    !partial.passed && /real text of POLICY.md but not one whole sentence/.test(partial.reason),
+    !partial.passed && /not one whole sentence of POLICY.md/.test(partial.reason),
     `a real-but-partial quote is called what it is (${partial.reason})`,
   );
   const invented = await verifyEvidence(
@@ -340,6 +328,7 @@ const docs = (text: string, file = "AGENTS.md"): DoctrineDoc[] => [{ file, text 
   );
 }
 
+
 // ------------------------------- the grant path: a partial quote is citation-failed
 
 {
@@ -364,9 +353,17 @@ const docs = (text: string, file = "AGENTS.md"): DoctrineDoc[] => [{ file, text 
     !partial.granted && partial.source === "citation-failed",
     "the same document quoted partially yields source 'citation-failed', never a silent 'none'",
   );
+  // `MergeAuthority` carries the rejected quote on `quote` — it never had an
+  // `authorityQuote` field, so an assertion spelled that way read `undefined`
+  // and its `=== undefined ||` branch made the whole assertion true no matter
+  // what the code did. Assert the field that exists, and that it is the quote.
   assert(
-    partial.authorityQuote === undefined || partial.authorityQuote.length > 0,
-    "the rejected quote is still recorded for the operator to read",
+    typeof partial.quote === "string" && partial.quote.length > 0,
+    `the rejected quote is still recorded for the operator to read (got ${JSON.stringify(partial.quote)})`,
+  );
+  assert(
+    (partial.quote ?? "").includes("squash merge PRs"),
+    "...and it is the quote the judge actually supplied, not a placeholder",
   );
   const decision = await askPolicy(
     judgeSaying({
@@ -382,8 +379,8 @@ const docs = (text: string, file = "AGENTS.md"): DoctrineDoc[] => [{ file, text 
     "askPolicy flags a partial quote as a citation failure, same as a fabricated one",
   );
   assert(
-    /real text of AGENTS.md but not one whole sentence/.test(decision.reason),
-    "...with a reason that says the quote is real but partial, which is not the wording a fabricated quote gets",
+    /not one whole sentence of AGENTS.md/.test(decision.reason),
+    "...with a reason that says the quote is not a whole sentence, which is not the wording a fabricated quote gets",
   );
   // The same thing on a synthetic document, so the assertion does not depend on
   // this repo's wording staying as it is (which is out of scope to change).
@@ -402,5 +399,5 @@ const docs = (text: string, file = "AGENTS.md"): DoctrineDoc[] => [{ file, text 
   );
 }
 
-console.log(`\nexit ${exit}`);
-process.exit(exit);
+console.log(`\nexit ${runner.exit}`);
+process.exit(runner.exit);
