@@ -11,10 +11,12 @@
  * `nextStep()` transition.
  */
 
+import { execp } from "./exec.ts";
 import * as lifecycle from "./lifecycle-events.ts";
 import type { RoleName } from "./roles.ts";
 import { drainSlowEvents, foldSlowEvents } from "./slow-events.ts";
 import { trace } from "./trace.ts";
+import type { ExecFn } from "./work-develop-git.ts";
 import { capKilledString } from "./work-driver-cap-killed.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { dispatchTokens } from "./work-driver-cycle-total.ts";
@@ -30,10 +32,15 @@ import {
   transientRetryEnabled,
 } from "./work-driver-failure-taxonomy.ts";
 import { lostAttemptLine } from "./work-driver-retry-context.ts";
+import { prepareWorktreesForRetry } from "./work-driver-retry-tree.ts";
 import { refusedWorkstreams } from "./work-driver-step-refusal.ts";
 import type { CapEvidence } from "./workflow-state-cap.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
 import { type WorkState, type WorkStep, appendEvent, persistCycle } from "./workflow-state.ts";
+
+/** The router's git transport for the #1391 retry clean: the production
+ *  executor unless a test injects `ctx.verifyExecFn` (the driver's own seam). */
+const defaultExecFn: ExecFn = execp;
 
 /**
  * #366 — injectable sleep. Real waits are the point in production (a burst
@@ -267,9 +274,34 @@ export async function routeStepOutcome(
               transientRetryAttempts: { ...attempts, [step]: used + 1 },
             },
           };
+          // #1391 — before a NEW child is dispatched into the SAME worktree,
+          // preserve what the dead one left there and clear the tree. For
+          // lens-fix this is the difference between a retry and a park: the
+          // #981 gate refuses to dispatch a fixer onto a dirty base, so an
+          // uncleared tree makes the retry a guaranteed one-second no-op
+          // (tehas cycle 109-261015-212759). No-op for steps that own no
+          // worktree, and `develop` keeps its leftover as the retried
+          // developer's starting point.
+          const prepared = await prepareWorktreesForRetry({
+            execFn: ctx.verifyExecFn ?? defaultExecFn,
+            state,
+            repoRoot: ctx.repoRoot,
+            issue: ctx.issue,
+            issues: ctx.issues,
+            step,
+            attempt: used + 1,
+          });
+          state = prepared.state;
           await persistCycle(ctx, state);
-          // The retry is a fresh child: say what the failed one took with it.
-          const lost = lostAttemptLine(step, used + 1, tail);
+          // The retry is a fresh child: say what the failed one took with it
+          // — and, when the tree was cleared, where its work went.
+          const lost = lostAttemptLine(
+            step,
+            used + 1,
+            tail,
+            state,
+            prepared.clean?.kind === "cleaned" ? prepared.clean.files : undefined,
+          );
           const reason = `${failureCauseReason(tail)} · ${lost}`;
           lifecycle.emitStepRetry(step, stepOrd.num, stepOrd.total, used + 2, reason, ctx.issue);
           trace(

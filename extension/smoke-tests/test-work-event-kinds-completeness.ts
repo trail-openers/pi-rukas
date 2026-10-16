@@ -286,6 +286,20 @@ const everyKindEvent: WorkEvent[] = [
     issueFallback: "posted",
     detail: "https://example.invalid/issues/1#issuecomment-1",
   },
+  // #1391 — the retry save: the severed lens-fix attempt's dirt was preserved
+  // (commit + ref + patch) before the tree was cleared for the re-dispatch.
+  {
+    kind: "lens-fix-attempt-preserved",
+    at: 1,
+    step: "lens-fix",
+    workstreamId: "default",
+    attempt: 1,
+    commitSha: "0123456789abcdef0123456789abcdef01234567",
+    preservedRef: "refs/pi-rukas/retry-preserved/issue-1391-default/lens-fix-1",
+    worktreePath: "/r/.worktrees/issue-1391-default",
+    files: ["DESIGN.md", "host/game-view.js"],
+    patchPath: "/r/tmp/issue-1391/retry-lens-fix-1.patch",
+  },
 ];
 
 // The union-derived kind set: the source of truth both directions check

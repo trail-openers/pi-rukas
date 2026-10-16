@@ -20,6 +20,7 @@ import type { WorktreeLeftoverHandledEvent } from "./workflow-state-events-lefto
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
 import type { LensResidualsPostFailedEvent } from "./workflow-state-events-residuals.ts";
+import type { LensFixAttemptPreservedEvent } from "./workflow-state-events-retry-preserve.ts";
 import type { SafetyNetCommitEvent } from "./workflow-state-events-safety-net.ts";
 import type { DispatchSlowEvent } from "./workflow-state-events-slow.ts";
 import type {
@@ -410,6 +411,8 @@ export type WorkEvent =
   | FenceRecoveryStartedEvent
   | CycleInterruptedEvent
   | LensResidualsPostFailedEvent
+  /** #1391 — a lost step attempt's uncommitted work was preserved + cleared for the retry. */
+  | LensFixAttemptPreservedEvent
   /**
    * S4a (#1162) — the cycle was interrupted (SIGTERM / SIGINT, via
    * `markInterrupted`). `reason` is the operator-facing why; renderers read

@@ -37,13 +37,69 @@ function spent(e: FailureEvent): string {
  * The operator-facing account of what a retry discards. `attempt` is the
  * attempt that FAILED (1-based). `develop` differs from every other step: its
  * worktree outlives the child, so only the conversation is lost.
+ *
+ * #1391 — `leftBehind` is the dirt the lost attempt left in a worktree the
+ * retry is about to clear (the names the preserve-then-clean seam accounted
+ * for, from `cleanWorktreeForRetry`). It is only ever passed for a step whose
+ * work survives in a worktree the driver owns; an empty list, an absent step
+ * context, or a step with no worktree of its own all render the sentence
+ * exactly as it read before, so an account never overstates what was saved.
  */
-export function lostAttemptLine(step: WorkStep, attempt: number, e: FailureEvent): string {
+export function lostAttemptLine(
+  step: WorkStep,
+  attempt: number,
+  e: FailureEvent,
+  state?: WorkState,
+  leftBehind?: readonly string[],
+): string {
   const kept =
     step === "develop"
       ? "its conversation is gone, files it left in the worktree are kept"
       : "the step restarts from the beginning";
-  return `${step} attempt ${attempt} lost: ${spent(e)} — ${kept}`;
+  const saved = leftBehindLine(state, leftBehind);
+  return `${step} attempt ${attempt} lost: ${spent(e)} — ${saved ? `${saved}, ${kept}` : kept}`;
+}
+
+/** How many preserved paths one scrollback line names before it says "more". */
+const MAX_NAMED_FILES = 3;
+
+/**
+ * "2 file(s) it left uncommitted are preserved at refs/pi-rukas/… (DESIGN.md,
+ * feature.txt, +1 more)", or the empty string when there is nothing to say.
+ *
+ * The ref is named because a preserved thing the operator cannot locate is a
+ * preserved thing they will not find; the file list is bounded because this
+ * line is scrollback, not the handoff body.
+ */
+function leftBehindLine(
+  state: WorkState | undefined,
+  files: readonly string[] | undefined,
+): string {
+  if (files === undefined || files.length === 0 || state === undefined) return "";
+  const ref = lastPreservedRef(state);
+  const named = files.slice(0, MAX_NAMED_FILES).join(", ");
+  const more = files.length > MAX_NAMED_FILES ? ` +${files.length - MAX_NAMED_FILES} more` : "";
+  const verb = files.length === 1 ? "is" : "are";
+  // No recorded preservation → say where the files are, and claim nothing more
+  // than that. A ref named without a save behind it would send the operator
+  // looking for something that does not exist.
+  if (ref === undefined) {
+    return `${files.length} file(s) it left uncommitted ${verb} still in the worktree (${named}${more})`;
+  }
+  return `${files.length} file(s) it left uncommitted ${verb} preserved at ${ref} (${named}${more})`;
+}
+
+/**
+ * The most recent preservation this cycle recorded, or undefined. Read from
+ * the event log rather than threaded through the router: the save is recorded
+ * where it happens, and the account reads what was recorded.
+ */
+function lastPreservedRef(state: WorkState): string | undefined {
+  for (let i = state.eventLog.length - 1; i >= 0; i--) {
+    const e = state.eventLog[i];
+    if (e?.kind === "lens-fix-attempt-preserved") return e.preservedRef;
+  }
+  return undefined;
 }
 
 /**

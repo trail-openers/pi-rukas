@@ -12,110 +12,26 @@
  */
 
 import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
+import { KNOWN_EVENT_KINDS } from "./workflow-state-event-kinds.ts";
+
+// Re-exported for the readers that had this vocabulary from the validator
+// since #986 (`src/headless/ndjson.ts`, the kinds-completeness smoke test).
+// The tuple itself moved to `workflow-state-event-kinds.ts` for the
+// AGENTS.md §12 line cap; it stays reachable both ways so the split is
+// invisible to callers.
+export { KNOWN_EVENT_KINDS };
 import { WORK_STATE_SCHEMA_VERSION, WORK_STEPS } from "./workflow-state-schema.ts";
 import { isKnownCap } from "./workflow-state-validate-caps.ts";
 
 /**
- * Known event kinds — a literal `as const` tuple (narrower than the
- * pre-#986 `readonly WorkEventKind[]`, which proved each entry was a valid
- * kind but not that the list was complete — the silent-resume-refusal bug
- * this issue fixes). Consumed at runtime by `validateDiscriminants` for
- * `eventLog[].kind` membership. Value-level consumers that need the wider
- * `readonly unknown[]` shape (e.g. for `.includes`) should cast:
- * `(KNOWN_EVENT_KINDS as readonly unknown[])` — the literal tuple type is
- * intentionally not widened here.
- *
- * The compile-time exhaustiveness assertion below (`[MissingEventKinds]
- * extends [never]`) makes tsc fail, naming the missing kind, if any
- * `WorkEvent` union member is added without also being listed here — the
- * src-side half of the guard; the smoke test in
- * smoke-tests/test-work-event-kinds-completeness.ts is the offline runtime
- * half (it is not type-checked by extension/tsconfig.json, so the
- * src-side assertion is the authoritative guard).
+ * The compile-time half of the #986 guard: `[MissingEventKinds] extends
+ * [never]` makes tsc fail, naming the kind, if any `WorkEvent` union member
+ * is absent from `KNOWN_EVENT_KINDS` (the tuple lives in
+ * `workflow-state-event-kinds.ts`; see that module for the three edits adding
+ * a kind requires). The offline runtime half is
+ * smoke-tests/test-work-event-kinds-completeness.ts, which is NOT type-checked
+ * by extension/tsconfig.json — which is exactly why this assertion lives here.
  */
-export const KNOWN_EVENT_KINDS = [
-  "step-started",
-  "dispatch-started",
-  "dispatch-completed",
-  "dispatch-failed-provider",
-  "dispatch-failed",
-  "adversarial-approved",
-  "adversarial-rejected",
-  "adversarial-round",
-  "adversarial-workstream-outcome",
-  "adversarial-skipped-empty-diff",
-  // #1114 — the adversarial→develop routing record and the fix pass's applied marker.
-  "adversarial-fix-requested",
-  "adversarial-fix-applied",
-  "lens-approved",
-  "lens-issues-found",
-  "lens-skipped-empty-diff",
-  // #1094 — explore re-dispatched once after a completed reply had no `## Spec`.
-  "explore-retried",
-  // #654 — the empty-diff re-dispatch marker; no step field (it names the
-  // review round + worktree instead), so the validator's step check skips it.
-  "lens-fix-empty-resend",
-  "cap-hit",
-  "plumb-report",
-  "step-back-triggered",
-  "step-back-completed",
-  "handoff-emitted",
-  "ci-status",
-  "merged",
-  "branches-fanned-out",
-  "branch-completed",
-  "branches-converged",
-  "verify-full-status",
-  // #782 — the consolidated-verify gate's single-retry recovery marker.
-  "verify-flake-recovered",
-  // #558 — the branch step's worktree provisioning record (the driver writes
-  // it when it symlinks dependencies into a fresh worktree). Absent from the
-  // tuple, a cycle that crashed after provisioning refused to resume.
-  "worktree-provisioned",
-  "widening-scan",
-  "memory-write",
-  "memory-inject",
-  // #741 — the converge gate's one-shot corrective dispatch marker.
-  "converge-redispatch",
-  // #625 — the develop step's safety-net commit record (the driver writes it
-  // when it commits a workstream's in-scope work on a cap/failure exit).
-  "safety-net-commit",
-  // #674 — the handoff consolidation record (the driver writes it when it
-  // consolidates parallel workstreams into a single handoff).
-  "handoff-consolidated",
-  // #735 — the branch step's leftover-worktree handling record (the driver
-  // writes it when it adopts or removes a stale .worktrees/ entry).
-  "worktree-leftover-handled",
-  // #849 — the develop fence recovery marker (discarded SHA + owners).
-  "fence-recovery-started",
-  // #844 — the branch step's stale-local-branch reset record (old + new tip).
-  // Absent from the tuple, EVERY restarted cycle that resets a stale branch
-  // halts on its own re-entry (the fix manufactures the corruption it
-  // exists to prevent).
-  "branch-reset",
-  // #799 — the slow-run crossing record (one per threshold crossing of a
-  // driver dispatch, written between dispatch-started and
-  // dispatch-completed). A state file written by a newer driver must
-  // resume on an older one's reader without halting on an unknown kind.
-  "dispatch-slow",
-  // S4a (#1162) — the interrupt record (SIGTERM / SIGINT via markInterrupted).
-  "interrupted",
-  // The session-shutdown record. Absent from the tuple, the one cycle this
-  // event promises is resumable would refuse to resume.
-  "cycle-interrupted",
-  // A residual-findings disclosure that did not reach the PR (and whether the
-  // issue got it instead).
-  "lens-residuals-post-failed",
-] as const;
-
-// #986 — compile-time exhaustiveness. If the `WorkEvent` union gains a kind
-// not listed above, `MissingEventKinds` becomes that literal and the
-// `[MissingEventKinds] extends [never]` constraint fails with a tsc error
-// naming the kind (e.g. `Type '"lens-issues-found"' is not assignable to
-// type 'never'`). A plain `extends` would not fire: the conditional is
-// evaluated against a naked `never`, and `never extends [never]` is true,
-// so wrapping both sides in tuples is what makes an empty missing-set and a
-// non-empty one diverge.
 type MissingEventKinds = Exclude<WorkEvent["kind"], (typeof KNOWN_EVENT_KINDS)[number]>;
 const _eventKindExhaustive: [MissingEventKinds] extends [never] ? true : MissingEventKinds = true;
 void _eventKindExhaustive;
