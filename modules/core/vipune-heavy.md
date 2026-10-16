@@ -135,7 +135,7 @@ candidate <id> — promote
 candidate <id> — prune
 ```
 
-The age and retrieval evidence is the `/audit` memory panel (`extension/src/memory-stats.ts` reads `retrieval_count` and `last_retrieved_at` read-only from SQLite) — the list command returns neither column. "Untouched" means `last_retrieved_at` older than ~90 days. Candidates that survived ≥5 sessions go up for promotion; untouched ones go up for operator removal.
+`vipune list --json` returns `retrieval_count`, `last_retrieved_at`, `created_at`, `memory_type`, `status` and `importance` per row — that is the evidence for both calls, read it from the same listing you are scanning for duplicates. The `/audit` memory panel (`extension/src/memory-panel.ts` / `memory-stats.ts`) gives the aggregate picture (rows by status and type, total/max retrievals, never-retrieved count) plus the candidate ids and types; it does not print per-row age. Candidates that survived ≥5 sessions go up for promotion. Report a candidate for pruning when it matches what `vipune prune` itself keys on: `status = 'candidate' AND retrieval_count < N AND age(created_at) > T` (defaults configurable via `prune_count` / `prune_age_days`). Never propose pruning a `guard` or a row with `importance` high/critical — `vipune prune` hard-excludes both, so such a row is not a prune candidate no matter how stale it looks.
 
 ## Quick reference
 

@@ -264,7 +264,7 @@ Look for:
 - **Stale facts** (still `active` but contradicted by current code) → supersede
 - **Drift** (multiple `observation`-type memories on the same theme) → consolidate into one `fact` or `procedure`, then supersede the originals
 - **Candidates** that have survived 5+ sessions → report for promotion
-- **Candidates** untouched for months → report for pruning
+- **Candidates** never (or barely) retrieved and old → report for pruning
 
 The two "report" lines go in **your final report**, one line per row, with the id verbatim:
 
@@ -273,7 +273,9 @@ candidate <id> — promote
 candidate <id> — prune
 ```
 
-Where the age and retrieval evidence comes from: the `/audit` memory panel (`extension/src/memory-stats.ts` reads `retrieval_count` and `last_retrieved_at` read-only from SQLite). `vipune list --json` returns neither column, so it is not the evidence for either call. "Untouched" means `last_retrieved_at` older than ~90 days. `vipune prune` is an operator command.
+Where the age and retrieval evidence comes from: `vipune list --json` — each row carries `retrieval_count`, `last_retrieved_at`, `created_at`, `memory_type`, `status` and `importance`. That listing is the evidence for both calls. The `/audit` memory panel (`extension/src/memory-panel.ts` / `memory-stats.ts`) is the aggregate view (rows by status/type, total/max retrievals, never-retrieved count, candidate ids + types) — it has no per-row age column.
+
+Report a candidate for pruning when it matches what `vipune prune` actually demotes: `status = 'candidate' AND retrieval_count < N AND age(created_at) > T`. `vipune prune` is an operator command, and it **hard-excludes** `guard`-type rows and rows with `importance` high/critical — never propose pruning one of those, since the operator's own tool would refuse it.
 
 This is the reflection pattern from the agentic memory literature (Park et al. 2023, A-MEM 2025, MemoryBank). It prevents the bloat-driven degradation that hits unbounded memory stores around 50+ sessions.
 
