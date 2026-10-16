@@ -447,6 +447,8 @@ export interface PipelineState {
    * restore paths then fall back to their previous targets.
    */
   startRef?: string;
+  /** #1362 — cycle-start exempt untracked paths; the claim's provenance. */
+  dirtyRootExemptBaseline?: string[];
   /**
    * #453 — per-workstream applied SHAs for crash-safe resume. Maps
    * workstream id → SHA cherry-picked onto the integration branch; updated as

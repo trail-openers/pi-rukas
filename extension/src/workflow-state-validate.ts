@@ -229,6 +229,20 @@ export function validateDiscriminants(state: unknown): string[] {
         }
       }
     }
+    // #1362 — `pipelineState.dirtyRootExemptBaseline`, when present, must be an
+    // array of repo-relative path strings. It is the provenance record the
+    // restore claim reads to decide whether a post-reset `??` file under an
+    // exempt prefix is the cycle's or a pre-existing tool file's, so a corrupt
+    // or hand-edited value would silently decide which files a claim names.
+    // The same #533 rule as `commitPrRoot`: type-check the untyped cast.
+    if (ps.dirtyRootExemptBaseline !== undefined) {
+      const br = ps.dirtyRootExemptBaseline;
+      if (!Array.isArray(br)) {
+        out.push("pipelineState.dirtyRootExemptBaseline is not an array");
+      } else if (br.some((v) => typeof v !== "string")) {
+        out.push("pipelineState.dirtyRootExemptBaseline contains a non-string entry");
+      }
+    }
     if (ps.incompleteConsolidation !== undefined) {
       const ic = ps.incompleteConsolidation;
       if (Array.isArray(ic)) {

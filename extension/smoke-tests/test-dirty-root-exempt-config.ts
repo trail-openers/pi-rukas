@@ -213,14 +213,95 @@ try {
     );
     // #1362 fix round — the one code that MUST stay unexempted: a staged NEW
     // file the cycle wrote under an exempt prefix. Its code is `A`, not `??`, so
-    // the dirt gates and the restore's claim both keep treating it as the
-    // cycle's work rather than as a tool's stray. `restore-entry.ts`'s
-    // `markExemptCandidates` deliberately skips it for the same reason; were it
-    // to match on `code === "??"` alone, this line's shape is exactly what the
-    // stash would swallow and the claim would omit.
+    // the dirt gates keep treating it as the cycle's work rather than as a
+    // tool's stray. (The restore claim does not ask this question at all — it
+    // decides by the cycle-start baseline; see the real-git claim tests in
+    // test-work-driver-1093-untracked-claim.ts.) Were the gates to match on the
+    // path alone, this line's shape is exactly what the stash would swallow and
+    // the claim would omit.
     assert(
       isConfiguredExemptDirtLine("A  .claude/generated-by-the-cycle.json", list) === false,
       "a STAGED NEW file under an exempt prefix is not exempt (its `A` code is what marks it the cycle's own)",
+    );
+    // #1362 round 3 — a path that still traverses after normalisation is not
+    // exempt: `docs` must not bless a path that leaves `docs` and comes back.
+    // normaliseRepoPath keeps `..` (dropping it would rewrite `docs/../.github/x`
+    // into a path that does not exist), so the matcher refuses rather than
+    // comparing a silently-rewritten path.
+    assert(
+      matchesConfiguredExempt("docs/../.github/x", ["docs"]) === false,
+      "`docs` does not exempt `docs/../.github/x` (a `..` segment after normalisation never matches)",
+    );
+    assert(
+      matchesConfiguredExempt("docs/../notes/x", ["docs"]) === false,
+      "a `..` traversal that lands back inside the prefix is still refused (it is not the prefix's own subtree)",
+    );
+    assert(
+      isConfiguredExemptDirtLine("?? docs/../.github/x", ["docs"]) === false,
+      "the dirt-line reader refuses the same traversal (both sides of the matcher agree)",
+    );
+  }
+
+  // ---- 3b. the protected set, exhaustively -------------------------------
+  // #1362 round 3 canary. `isProtectedPath`'s vocabulary (`.github`, `.pi`,
+  // CODEOWNERS, agents.json) is the reason the exemption cannot disarms the
+  // cycle's own judgement, so every member is refused here BOTH bare and nested
+  // — a future addition to PROTECTED_DIRS/PROTECTED_FILES that the parser's
+  // `isProtectedPath(norm) || isProtectedPath(norm + "/x")` pair somehow missed
+  // in one of the two positions shows up as a failing line here rather than as
+  // a project that exempted its own workflow directory.
+  {
+    const protectedSet = [
+      ".github",
+      ".github/workflows/ci.yml",
+      ".pi",
+      ".pi/verify-cmd",
+      ".pi/nested/deeper/decisions.json",
+      "CODEOWNERS",
+      "pkg/CODEOWNERS",
+      "agents.json",
+      "sub/agents.json",
+      ".github/workflows/deep/nested/action.yml",
+    ];
+    for (const line of protectedSet) {
+      const r = parseDirtyRootExempt(line);
+      assert(
+        r.entries.length === 0 && r.rejected[0]?.reason === "protected",
+        `protected-set canary: ${JSON.stringify(line)} is rejected (protected), bare or nested (got ${JSON.stringify(r)})`,
+      );
+    }
+  }
+  for (const line of [
+    "~/.claude",
+    "~",
+    "~\\claude",
+    "C:/Users/dev/.claude",
+    "c:\\Users\\dev\\.claude",
+    "$HOME/.claude",
+    "%USERPROFILE%\\.claude",
+    "notes/$HOME",
+    "notes/%TEMP%",
+  ]) {
+    const r = parseDirtyRootExempt(line);
+    assert(
+      r.entries.length === 0 && r.rejected[0]?.reason === "not-repo-relative",
+      `entry ${JSON.stringify(line)} is rejected (not-repo-relative) — a prefix no path can literally begin with`,
+    );
+  }
+  // The refusal is about the expansion syntax, not about `~` or `%` being
+  // legal characters in a repo-relative name.
+  assert(
+    parseDirtyRootExempt("notes/a~b").entries.join(",") === "notes/a~b",
+    "a `~` inside a name is still an ordinary entry (only the expansion form is refused)",
+  );
+  // `./..` and `..\..` normalise to a bare `..`, which is not a prefix; both
+  // are refused rather than entering the list as a traversing prefix.
+  for (const line of ["./..", "../..", "..\\.."]) {
+    const r = parseDirtyRootExempt(line);
+    assert(
+      r.entries.length === 0 &&
+        (r.rejected[0]?.reason === "parent-dir" || r.rejected[0]?.reason === "empty"),
+      `entry ${JSON.stringify(line)} is refused as a traversal, not stored as a prefix`,
     );
   }
 

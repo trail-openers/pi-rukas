@@ -383,6 +383,9 @@ export async function runMerged(
             execFn,
             startRef,
             dirtyRootExempt: ctx.dirtyRootExempt,
+            // #1362 — the claim this restore builds names only files the cycle
+            // wrote; the cycle-start baseline is what makes that true.
+            dirtyRootExemptBaseline: state.pipelineState.dirtyRootExemptBaseline,
           }),
         );
         for (const note of restorationNotes) {

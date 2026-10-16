@@ -24,10 +24,7 @@ import {
   noticeDirtyRootExemptReadFailure,
   withDirtyRootExemptReadFailure,
 } from "./work-driver-dirty-root-exempt-notice.ts";
-import {
-  DIRTY_ROOT_EXEMPT_FILE,
-  readDirtyRootExemptForCycle,
-} from "./work-driver-dirty-root-exempt.ts";
+import { DIRTY_ROOT_EXEMPT_FILE, readDirtyRootExempt } from "./work-driver-dirty-root-exempt.ts";
 import { reportFinalState } from "./work-driver-final-state.ts";
 import { recordHostHandoffOnCrash } from "./work-driver-handoff-channel.ts";
 import { interruptIfRequested, recordStepCrash } from "./work-driver-interrupt.ts";
@@ -104,7 +101,7 @@ export async function runWorkDriver(ctx: DriverContext): Promise<DriverOutcome> 
     // throws. Set only when absent: a resumed state or a test harness carrying
     // its own list keeps it, so there is exactly one read point.
     if (cycleCtx.dirtyRootExempt === undefined) {
-      const exempt = await readDirtyRootExemptForCycle(cycleCtx);
+      const exempt = await readDirtyRootExempt(cycleCtx.repoRoot);
       cycleCtx.dirtyRootExempt = exempt.entries;
       // #1362 — a read that FAILED (not an absent file) is recorded, not just
       // traced: `traceWarn` reaches the cycle log, the operator reads the

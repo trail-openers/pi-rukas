@@ -168,6 +168,7 @@ try {
       blocked: boolean;
       dispatched: number;
       worktrees: Record<string, string>;
+      baseline: string[] | undefined;
     }> {
       let dispatched = 0;
       const out = await runBranch(
@@ -190,6 +191,9 @@ try {
         blocked: out?.eventLog.some((e) => e.kind === "cap-hit") === true,
         dispatched,
         worktrees: out?.pipelineState.worktrees ?? {},
+        // #1362 round 3 — what the branch step recorded as the cycle-start
+        // provenance snapshot, read back off the state it returned.
+        baseline: out?.pipelineState.dirtyRootExemptBaseline,
       };
     }
 
@@ -228,6 +232,51 @@ try {
       assert(
         !staged.some((f) => f.trim() === TOOL_LOCAL),
         `#1362: the exempt file is never staged (index: ${JSON.stringify(staged)})`,
+      );
+    }
+
+    // 5b-bis. #1362 round 3 — the branch step RECORDS the provenance baseline
+    // at the point where it first reads repoRoot's dirt, so the restore claim
+    // can later tell the cycle's own `??` output from a tool file that was
+    // already here. Read back off the state the real step returned.
+    {
+      const repoPath = path.join(root, "exempt-baseline");
+      await makeRepo(repoPath);
+      await plantStray(repoPath, TOOL_LOCAL, false);
+      // A second stray outside the exempt prefix must NOT land in the baseline:
+      // the field records what is exempt, and the claim's fail-closed direction
+      // depends on it not silently widening.
+      // A stray outside the exempt prefix, so the reader's own prefix filter is
+      // what keeps it out — the baseline records only exempt paths. (This also
+      // blocks the cycle, which is the point of the gate; the baseline is
+      // written at that same read, so the field is still on the returned state.)
+      await plantStray(repoPath, path.join("notes", "mine.md"), false);
+      writeExempt(repoPath, ".claude/\n");
+      const { blocked, baseline } = await branchBlocked(repoPath, [".claude"]);
+      assert(
+        blocked,
+        "#1362 baseline: a stray outside the exempt prefix still blocks (the baseline is not an exemption)",
+      );
+      assert(
+        Array.isArray(baseline) &&
+          baseline.length === 1 &&
+          baseline[0] === ".claude/settings.local.json",
+        `#1362 baseline: the branch step records the exempt paths that ALREADY existed, and nothing else (got ${JSON.stringify(baseline)})`,
+      );
+    }
+
+    // 5b-ter. No exemption list → no baseline field at all. Absent is what
+    // `isClaimCountedEntry` reads as "name everything", so a cycle with no
+    // config must not write an empty array that a later reader could be tempted
+    // to reinterpret as "everything is exempt".
+    {
+      const repoPath = path.join(root, "exempt-baseline-none");
+      await makeRepo(repoPath);
+      await plantStray(repoPath, TOOL_LOCAL, false);
+      const { baseline } = await branchBlocked(repoPath);
+      assert(
+        baseline === undefined,
+        `#1362 baseline: with no exemption list nothing is recorded — absent stays the fail-closed answer (got ${JSON.stringify(baseline)})`,
       );
     }
 

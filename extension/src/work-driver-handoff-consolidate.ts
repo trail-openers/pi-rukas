@@ -110,6 +110,13 @@ export async function consolidateWorktreesToBranch(
      * by the restore claims. Absent behaves exactly as before the file existed.
      */
     dirtyRootExempt?: readonly string[];
+    /**
+     * #1362 — the paths that were already untracked under those prefixes when the
+     * cycle started (`pipelineState.dirtyRootExemptBaseline`). A post-reset `??`
+     * file under an exempt prefix is spared by a claim only when it appears here;
+     * anything else is this consolidation's own output and the claim names it.
+     */
+    dirtyRootExemptBaseline?: readonly string[];
   },
   state: WorkState,
   execFn: ExecFn = defaultExecFn,
@@ -244,6 +251,7 @@ export async function consolidateWorktreesToBranch(
               scratchDir: ctx.scratchDir,
               label: "handoff consolidation",
               dirtyRootExempt: ctx.dirtyRootExempt,
+              dirtyRootExemptBaseline: ctx.dirtyRootExemptBaseline,
             })
           : undefined;
         // A conflict means the worktrees still hold their commits verbatim —
@@ -267,6 +275,7 @@ export async function consolidateWorktreesToBranch(
               scratchDir: ctx.scratchDir,
               label: "handoff consolidation",
               dirtyRootExempt: ctx.dirtyRootExempt,
+              dirtyRootExemptBaseline: ctx.dirtyRootExemptBaseline,
             })
           : undefined;
         const claim = restoreClaim(restore === undefined ? undefined : restore);
@@ -350,6 +359,7 @@ export async function consolidateWorktreesToBranch(
             ref: originalRef,
             label: "handoff consolidation",
             dirtyRootExempt: ctx.dirtyRootExempt,
+            dirtyRootExemptBaseline: ctx.dirtyRootExemptBaseline,
           })
         : {
             restored: false,
@@ -388,6 +398,7 @@ export async function consolidateWorktreesToBranch(
         scratchDir: ctx.scratchDir,
         label: "handoff consolidation",
         dirtyRootExempt: ctx.dirtyRootExempt,
+        dirtyRootExemptBaseline: ctx.dirtyRootExemptBaseline,
       });
       const claim = restoreClaim(restore, { trailing: "run git status at the repo root" });
       return {
