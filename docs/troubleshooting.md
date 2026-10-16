@@ -1038,6 +1038,68 @@ The park has its own cap, `fix-pass-park` (it reused `verify-failed:develop` bef
 
 **Fix:** the error in the message names the git command that failed and its stderr; fix that first. Then recover the change at the named path by hand (`git status`, `git diff`, `git diff --cached`, and `git cherry-pick --abort` if one is in progress), and clear the root before re-running.
 
+### `/work` refuses on a dirty repo root caused by a tool's own local files (#1362)
+
+**Symptom:** `/work N` halts at step 3 (branch) with cap `repo-root-residue` and a plumb report naming a file you never wrote — `.claude/settings.local.json`, an editor's workspace file, an agent's local config. The same file also trips the consolidated-verify and integrate dirty-root gates, so clearing it once by hand only moves the refusal to the next cycle.
+
+**Why:** a repo-root read of `git status --porcelain` cannot tell "the operator's in-progress work, which is a correctness hazard for integration" from "some tool's local settings". Both are dirt, and the branch step hard-blocks on any of it before paying for a develop dispatch. The built-in exemptions are the driver's own scaffolding (`.worktrees/`, `.pi/`, `tmp/`) and no more; nothing about a third-party tool's files is assumed.
+
+**Fix:** opt in, per project, by committing a list of repo-relative prefixes the dirty-root checks and repo-root staging should ignore:
+
+```
+# .pi/dirty-root-exempt — one repo-relative prefix per line
+.claude/
+.vscode/
+```
+
+Rules, and **who enforces each** — the exemption has two different answers depending on the question, and reading one where the other belongs is the trap:
+
+| Question | Who answers | Decided by |
+| --- | --- | --- |
+| Is this dirt? | The four dirty-root gates: the branch step, the preflight, consolidated verify, integrate | **Prefix** — an untracked path under a listed prefix is not dirt, whatever wrote it |
+| Is this the cycle's work? | The restore **claim** | **Provenance** — was the path already untracked at cycle start? |
+| Should it be stashed? | The abort path's stash pathspec | Nothing — it is unfiltered, because an unstashed path is one the checkout can lose |
+
+- **Untracked paths only.** A modified, staged or deleted *tracked* file under an exempt prefix is still dirt, and a rename always is — so the list cannot hide real uncommitted source.
+- **Prefix + `/` boundary.** `.claude` exempts `.claude/settings.local.json`, never `.claudefoo/x`. A path that still contains a `..` segment after normalisation is never exempt, so `docs` does not bless `docs/../.github/x`.
+- **Protected paths cannot be exempted.** An entry naming `.github/`, `.pi/`, `CODEOWNERS` or `agents.json` is rejected with a trace and contributes nothing, at any depth; you cannot list away the files that define how your own cycle is judged.
+- **Repo root only.** A workstream worktree stages its output exactly as before, so a deliverable inside an exempt prefix is still committed.
+- **Rejected with a trace:** absolute paths, any `..` segment, glob characters, anything that normalises to empty, `~`-, drive-letter- (`C:\`) and `$VAR`/`%VAR%`-prefixed entries (none of which this matcher would ever expand), and protected paths. A rejected line is skipped — the good lines beside it still apply.
+- **The file is read once per cycle**, before the branch step, from the working tree; `.pi/` is a protected path, so a develop patch cannot widen the exemption mid-cycle. An absent file is an empty list (behaviour unchanged); an unreadable file is an empty list **plus a trace and a handoff record** — a broken config never blocks a cycle that is otherwise clean, and never fails silently. If the cycle then blocks on repo-root residue, the handoff says `the exemption file could not be read: EACCES …` beside the paths: every one of them was judged against an empty list, so a file you legitimately exempted reads exactly like residue.
+
+```bash
+cat .pi/dirty-root-exempt            # what this project exempts
+# rejected entries and read failures are traced as:
+# [pi-rukas] WARN work-driver: .pi/dirty-root-exempt (<repoRoot>) — entry "…" rejected (glob)
+```
+
+**A file the cycle itself wrote under an exempt prefix is still yours to see.**
+The list decides what counts as *dirt*; it does not decide what counts as *the
+cycle's work*, because by the time the restore builds its claim it is too late to
+ask git — the abort path's mixed reset has already turned the cycle's staged-new
+files into `??`, the same code a tool's stray carries. So the branch step records
+the exempt paths that were **already untracked when the cycle started**, as
+`dirtyRootExemptBaseline` in the cycle's state file, and the claim spares an
+untracked file under an exempt prefix only when it appears there. A file the cycle
+wrote under that same prefix — a deliverable in a directory you exempted, a
+regenerated cache — is named, and is still moved into a recoverable `git stash`
+entry rather than left behind for the next cycle to trip over. Your pre-existing
+`settings.local.json` is named by neither: not stashed, not saved, not restored.
+Two things follow from the field being a snapshot. It is written once, in the
+branch step, and never recomputed — a snapshot taken later would bless the cycle's
+own output as pre-existing. And if the state file has no baseline (a cycle started
+before this existed, or one whose exempt tree was too large to record — over 500
+paths), then **nothing is claim-exempt** and the claim names every untracked path
+it finds. That is deliberate: a claim that over-names is a false alarm you can
+dismiss, and a claim that says "verified restored" over the cycle's own work is
+the failure the field exists to prevent.
+
+```bash
+jq .pipelineState.dirtyRootExemptBaseline .pi/work-state/<issue>.json   # what the claim will spare
+```
+
+**Do not** use this to work around a genuinely dirty root. If the named file is source you or another workstream wrote, commit or move it — that is what the gate is for.
+
 ### `worktree-dirty-preremove` — the branch step refuses a worktree that holds uncommitted work (#475)
 
 **Symptom:** `/work N --restart` (or a fresh `/work N` over a surviving worktree directory) halts at step 3 (branch) with cap `step-failed:branch` and a plumb report reading *“refusing to force-remove existing worktree <path> — it holds unrecoverable work: …”*. No subagent ran; nothing was pushed.
@@ -2094,9 +2156,9 @@ bun extension/scripts/review-accept.ts <branch> <row-id> --reason "<at least 20 
 The acceptance boundary is layered:
 
 1. The script refuses to run when `PI_ENSEMBLE_ROLE` is set, or when `PI_ENSEMBLE_SUBAGENT_MODE=1` or `PI_ENSEMBLE_TRUST_MODE=1` is in its environment.
-2. The write path (`extension/scripts/review-accept-row.ts`) is imported by nothing under `src/`. It also enforces the reason rule and refuses CRITICAL rows.
-3. `review-accept-guard.ts` refuses agent bash that names the script, the findings file, the store module or the write module, and agent `edit`/`write`/`multiedit` of `review-findings.json`.
+2. The acceptance write itself (`acceptFinding` in `extension/src/review-findings-store.ts`) is called by no other `src/` module and registered by no Pi tool, and `src/` imports nothing from `scripts/` — the operator script is the only caller in the tree, and smoke tests assert both. The reason rule and the CRITICAL refusal live with it in the store.
+3. `review-accept-guard.ts` refuses agent bash that names the operator script `extension/scripts/review-accept.ts`, the findings file `review-findings.json`, or the store module `review-findings-store.ts`, and agent `edit`/`write`/`multiedit` of `review-findings.json`.
 
 Layers 1 and 3 are **advisory in trust mode**. They are environment and string checks, so an agent with a shell can still bypass them. They stop an agent that is not trying to bypass them; the operator's terminal is the real boundary.
 
-A corrupt `review-findings.json` is never overwritten. The writer copies it to `review-findings.json.corrupt-<ms>`, the review reads it as no memory, and the summary shows `findings memory unavailable: …`. Fix or remove the file, then re-run the review.
+A corrupt `review-findings.json` is never overwritten. The reader and the writer both copy it to `review-findings.json.corrupt-<hash>` — the hash is of the bytes that were copied, so a repeat of the same fault names the same file and never duplicates it — and the round then REFUSES: it does not read the corrupt file as "no memory", because a round recorded on no memory would resolve open rows the unreadable file may still hold. The refusal names the copy and the cause and says `repair or remove <file>, or set PI_ENSEMBLE_REVIEW_LEDGER_FILE to a healthy ledger`; the summary carries it as `findings memory unavailable: …`, and every finding is still reported. Fix or remove the file, then re-run the review. A single malformed row is handled the same way on its own (`<file>.corrupt-<hash of the row>`) while the valid rows carry on.

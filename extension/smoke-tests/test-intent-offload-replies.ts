@@ -39,7 +39,10 @@ import {
   reconcileVerdict,
   specIsActionable,
 } from "../src/work-driver-intent.ts";
-import { parseNormalisedSpecArtifact } from "../src/work-driver-intent-artifact.ts";
+import {
+  SPEC_ARTIFACT_GATE_VERSION,
+  parseNormalisedSpecArtifact,
+} from "../src/work-driver-intent-artifact.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPLY = path.join(__dirname, "fixtures", "explore-replies", "674.txt");
@@ -233,7 +236,9 @@ assert(
       },
     ],
   };
-  const rtWithMarker = parseNormalisedSpecArtifact(JSON.stringify(withMarker, null, 2));
+  const rtWithMarker = parseNormalisedSpecArtifact(
+    JSON.stringify({ ...withMarker, gateVersion: SPEC_ARTIFACT_GATE_VERSION }, null, 2),
+  );
   assert(
     rtWithMarker !== undefined,
     "round-trip: a spec with a valid no-diff marker (noDiff:true + evidence) survives parseNormalisedSpecArtifact",
@@ -258,7 +263,9 @@ assert(
 
   // (2) A deliverable with the marker fields ABSENT (pre-#792 shape) —
   // the strict validator must still accept it (optional fields).
-  const rtNoMarker = parseNormalisedSpecArtifact(JSON.stringify(baseSpec, null, 2));
+  const rtNoMarker = parseNormalisedSpecArtifact(
+    JSON.stringify({ ...baseSpec, gateVersion: SPEC_ARTIFACT_GATE_VERSION }, null, 2),
+  );
   assert(
     rtNoMarker !== undefined,
     "round-trip: a pre-#792 spec (no noDiff/noDiffEvidence fields) still validates",

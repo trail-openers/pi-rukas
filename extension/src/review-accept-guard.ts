@@ -6,9 +6,9 @@
  * it must stay a human act: the operator runs `extension/scripts/review-accept.ts`
  * in a terminal. This hook refuses, in every mode and for every role:
  *   - a bash command that runs that script (JS runner or `/review-accept` path);
- *   - a bash command that mentions the findings file (`review-findings.json`),
- *     the store module (`review-findings-store`) or the write module
- *     (`review-accept-row`) — the eval and heredoc routes around the script;
+ *   - a bash command that mentions the findings file (`review-findings.json`)
+ *     or the store module (`review-findings-store`) — the eval and heredoc
+ *     routes around the script;
  *   - an edit / write / multiedit whose target is the findings file (or one of
  *     its `.tmp` / `.corrupt` siblings).
  *
@@ -32,11 +32,11 @@ import { trace } from "./trace.ts";
 /** A JS runtime, then anything, then a protected name. */
 const RUNTIME = String.raw`\b(?:bun|bunx|node|npx|tsx|ts-node|deno)\b[^\n]*?`;
 /**
- * The operator script, the write module, the store module or the findings
- * file, by name. A name that is only the tail of a longer one (`test-review-
- * accept.ts`, `test-review-findings-store.ts`) does not count.
+ * The operator script, the store module or the findings file, by name. A name
+ * that is only the tail of a longer one (`test-review-accept.ts`,
+ * `test-review-findings-store.ts`) does not count.
  */
-const NAMES = String.raw`(?<![\w-])(?:review-accept-row|review-accept|review-findings-store|review-findings\.json)(?:\.ts)?(?![\w.-])`;
+const NAMES = String.raw`(?<![\w-])(?:review-accept|review-findings-store|review-findings\.json)(?:\.ts)?(?![\w.-])`;
 const RUNTIME_NAME = new RegExp(`${RUNTIME}${NAMES}`);
 /** The findings data file, named in any command (cat, cp, sed, a heredoc). */
 const DATA_FILE = /(?<![\w-])review-findings\.json/;
@@ -55,8 +55,8 @@ const TEST_RUN = /^\s*(?:bun\s+test|bash\s+\S*verify-loop\.sh)\s[^;&|`$<>\n\r]*$
  * run, so it is the same route round the guard and is treated the same way.
  */
 const EVAL = /(?:^|\s)(?:-e|--eval|-r|--require|--preload)(?=\s|=|$)/;
-/** The operator script or its write module, named in a command. */
-const SCRIPT = /(?<![\w-])review-accept(?:-row)?(?:\.ts)?(?![\w.-])/;
+/** The operator script, named in a command. */
+const SCRIPT = /(?<![\w-])review-accept(?:\.ts)?(?![\w.-])/;
 /** Edit tools whose `path` argument is checked against the findings file. */
 const FILE_TOOLS = new Set(["edit", "write", "multiedit"]);
 /** The findings file and its tmp / corrupt-copy siblings, by basename. */

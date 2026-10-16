@@ -13,10 +13,15 @@
  * Human-only, in layers:
  *   1. This script refuses to run in agent context: PI_ENSEMBLE_ROLE set, or the
  *      child env PI_ENSEMBLE_SUBAGENT_MODE=1 / PI_ENSEMBLE_TRUST_MODE=1.
- *   2. The write path (acceptRow) lives in scripts/review-accept-row.ts, which
- *      no src/ module imports (a smoke test asserts it).
+ *   2. The acceptance write itself (src/review-findings-store.ts `acceptFinding`)
+ *      is called by no src/ module and registered by no Pi tool — this script is
+ *      the only caller in the tree (smoke tests assert both), and src/ never
+ *      imports this scripts/ directory. What used to be a separate
+ *      scripts/review-accept-row.ts adapter held one call and nothing else; it
+ *      was deleted rather than kept as a shim the boundary tests had to know
+ *      about (#1125 cleanup).
  *   3. review-accept-guard.ts refuses agent bash that names this script, the
- *      findings file or the write module, and agent edit/write of the file.
+ *      findings file or the store module, and agent edit/write of the file.
  * Layers 1 and 3 are advisory in trust mode: they are environment and string
  * checks, so an agent with a shell can still bypass them. The guard is a
  * tripwire, not a security boundary.
@@ -27,9 +32,10 @@
 import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
-import { acceptRow, reasonProblem } from "./review-accept-row.ts";
+import { reasonProblem } from "../src/review-findings-file.ts";
+import { acceptFinding } from "../src/review-findings-store.ts";
 
-export { MIN_REASON_CHARS, reasonProblem } from "./review-accept-row.ts";
+export { MIN_REASON_CHARS, reasonProblem } from "../src/review-findings-file.ts";
 
 const execFileP = promisify(execFile);
 
@@ -110,14 +116,11 @@ export async function runReviewAccept(
       message: "git config user.email is not set — the acceptance needs an operator identity",
     };
   }
-  let out: Awaited<ReturnType<typeof acceptRow>>;
+  let out: Awaited<ReturnType<typeof acceptFinding>>;
   try {
-    out = await acceptRow({
-      cwd,
-      branch: args.branch,
-      rowId: args.rowId,
-      reason: args.reason.trim(),
+    out = await acceptFinding(cwd, args.branch, args.rowId, {
       by,
+      reason: args.reason.trim(),
     });
   } catch (err) {
     return { code: 1, message: `not accepted: ${(err as Error).message}` };
