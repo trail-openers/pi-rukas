@@ -53,16 +53,17 @@ function pipelineEnv(
 }
 
 // Shared env for the two timeout cases: PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S=2
-// (the poll loop is 1s-resolution, the kill has a 2s grace → each ~4-5s, not
-// the 300s default) plus a run-unique FIXTURE_HANG_TOKEN — the fixture bakes
-// it into a `sleep` child's command line so the no-orphan check can find the
-// descendant by pattern after the kill (the pid is not reliable: ps output
-// can elide args, and the watchdog does not expose the child's pid).
+// (the poll loop is 1s-resolution, the kill's grace is a bounded poll with a
+// 20 × 0.1s = 2s ceiling → each ~2-3s, not the 300s default) plus a run-unique
+// FIXTURE_HANG_TOKEN — the fixture bakes it into a `sleep` child's command line
+// so the no-orphan check can find the descendant by pattern after the kill (the
+// pid is not reliable: ps output can elide args, and the watchdog does not
+// expose the child's pid).
 //
-// The grace figure above is the fixed `sleep 2` this PR replaced: the kill now
-// polls to the same bound the interrupt handler uses, so a tree that dies
-// immediately returns in well under a second and a case measures ~2-3s rather
-// than 4-5s. The 2s is retained as the ceiling, not the typical cost.
+// The 2s above is the CEILING of that poll, not its cost: the kill now polls
+// for liveness to clear (same shape as the interrupt handler) instead of
+// sleeping a fixed `sleep 2`, so a tree that dies immediately returns in well
+// under a second and a case measures ~2-3s rather than 4-5s.
 //
 // The bound is pinned here rather than left to the default because the hang
 // fixture sizes its child's sleep from PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S: the
@@ -146,7 +147,8 @@ function hangTestEnv(caseId: string): { env: Record<string, string>; token: stri
 
     // (d) no orphan — the fixture spawned a `sleep` child with the token in
     // its args. Bounded poll (≤5s, 10 × 500ms) for the token's absence in
-    // `ps` output: the watchdog's kill (TERM → 2s grace → KILL) can race
+    // `ps` output: the watchdog's kill (TERM → bounded grace poll, 2s ceiling →
+    // KILL) can race
     // with the process table on a loaded machine, so a single fixed sleep(1)
     // before the check could observe the still-dying child.
     let survivors: string[] = [];

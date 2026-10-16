@@ -12,6 +12,7 @@
 #   JOB_RC[i]     file the job writes its exit code to when it finishes
 #   JOB_PID[i]    pid of the job's subshell
 #   JOB_STATE[i]  0 queued, 1 running, 2 finished
+#   JOB_STARTED_AT[i] the $SECONDS value at start_job — run_pool's per-job bound
 #   JOB_EXIT[i]   the test's exit code (214 = the watchdog fired)
 # verify-loop.sh replays the captures in index order, so printed output and the
 # digest do not depend on which job finished first.
@@ -56,6 +57,9 @@ JOB_RC=()
 JOB_PID=()
 JOB_STATE=()
 JOB_EXIT=()
+# The $SECONDS value each job was started at, for run_pool's per-job wall-clock
+# bound. Written by start_job next to JOB_PID, reset by pool_collect.
+JOB_STARTED_AT=()
 # Jobs currently in state 1. run_pool reads it; start_job and the completion
 # branch are the only two places that move it.
 POOL_RUNNING=0
@@ -79,6 +83,7 @@ pool_collect() {
   JOB_PID=()
   JOB_STATE=()
   JOB_EXIT=()
+  JOB_STARTED_AT=()
   POOL_STARTED=()
   POOL_RUNNING=0
   for t in "$@"; do
@@ -89,6 +94,7 @@ pool_collect() {
     JOB_STATE+=(0)
     JOB_PID+=(0)
     JOB_EXIT+=(0)
+    JOB_STARTED_AT+=(0)
     n=$((n + 1))
   done
   # Clamp to what can actually run: 16 concurrent jobs for 3 tests would be a
@@ -125,6 +131,7 @@ start_job() {
     fi
   ) &
   JOB_PID[$i]=$!
+  JOB_STARTED_AT[$i]=$SECONDS
   JOB_STATE[$i]=1
   # run_pool's admission test is the counter rather than a scan over every job,
   # so the increment belongs with the state change that made the job running —
@@ -158,6 +165,21 @@ start_job() {
 # jobs of one interrupt pass cannot clobber each other's visited set.
 collect_tree() {
   local _ct_out="$1" _ct_root="$2"
+  if [ -z "$_ct_out" ]; then
+    echo "warn: verify-loop: collect_tree: no target variable given; refusing to walk" >&2
+    return 1
+  fi
+  # The last statement is `eval`, and the ONLY thing eval expands is the
+  # caller-supplied target NAME plus whatever collect_tree itself built — the
+  # pid strings never reach it. That holds only while <var> is a plain
+  # identifier: `collect_tree 'x=$(rm -rf /)' 1` would run the substitution at
+  # assignment time. Nothing in-tree passes a non-identifier, so a violation is
+  # a caller bug and is named rather than silently tolerated (an empty result
+  # here would read as "this job has no descendants" and orphan its tree).
+  if ! [[ "$_ct_out" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    echo "warn: verify-loop: collect_tree: invalid target variable name; refusing to walk" >&2
+    return 1
+  fi
   if [ -z "$_ct_out" ]; then return 0; fi
   # `wait` owns the liveness of a tree this shell still owns, so this only
   # refuses values that could never be a pid.
@@ -198,11 +220,12 @@ collect_tree() {
 # leave them running with no parent.
 #
 # The previous shape walked each live job's tree twice — once before reaping
-# and once after — through kill_process_tree, which SIGTERMs, sleeps 2s and
-# then SIGKILLs. Two walks meant two 2s graces and up to ~14s before the loop
-# returned, and the second walk was defensive rather than load-bearing: the
-# first pass already collected the whole descendant set, so a "survivor" was
-# simply a pid that had not been scheduled yet, not one the walk had missed.
+# and once after — through kill_process_tree, which SIGTERMs, polls up to 2s for
+# liveness to clear and then SIGKILLs. Two walks meant two 2s grace polls and up
+# to ~14s before the loop returned, and the second walk was defensive rather than
+# load-bearing: the first pass already collected the whole descendant set, so a
+# "survivor" was simply a pid that had not been scheduled yet, not one the walk
+# had missed.
 #
 # One pass instead: block INT/TERM first (the trap itself is the re-entry
 # guard — a second Ctrl-C must not restart a half-finished kill), collect every
@@ -217,7 +240,7 @@ collect_tree() {
 # this path does not reach — and the shell exits with the shell convention
 # 128 + signal (130 = SIGINT, 143 = SIGTERM).
 #
-# Two corrections since that shape shipped, both about the tail of the pass:
+# Three corrections since that shape shipped:
 #
 #  * The tree walk covers jobs in state 1 AND state 2, taken from POOL_STARTED
 #    rather than the state array alone. State 2 excludes a job from being
@@ -226,6 +249,15 @@ collect_tree() {
 #    collect_tree on a dead root is best effort (it finds only what is still a
 #    child of that pid), which is why it is attempted for both states rather
 #    than asserted for one.
+#  * `_extra_cleanup` is no longer probed with `type -t`. The probe made an
+#    absent or misnamed hook (verify-loop.sh renamed it once already) look like
+#    a clean interrupt while the private RUN_DIR, the failure captures and the
+#    ledger temp dir stayed on disk: the EXIT trap it duplicates never runs on
+#    this path. It is under the same hard name check verify-loop.sh applies to
+#    every other hook it depends on, so a gap is a loud exit 2 at startup
+#    instead of a silent leak per Ctrl-C. It is not optional: the EXIT trap
+#    already calls it unconditionally, so a run with no cleanup routine is
+#    already broken before the pool is reached.
 #  * `_extra_cleanup` runs BEFORE the reap, and the reap is limited to pids
 #    `kill -0` reports gone. `wait` on a running pid blocks until it exits, so
 #    waiting on every non-zero JOB_PID made the bound above a fiction: one
@@ -237,16 +269,14 @@ interrupt_now() {
   # Re-entry guard AND the reason the walk below is not interrupted itself: a
   # second Ctrl-C during the kill must not restart a half-finished pass.
   trap '' INT TERM
-  # State 1 AND state 2. A finished job's subshell is reaped, but a descendant
-  # it spawned can still be alive and has been re-parented away from a pid that
-  # no longer exists — collect_tree on a dead root walks whatever is still
-  # attached to it, so it is best effort in both states, not a guarantee.
-  # Skipping state 2 was the bug: the one job that managed to finish was the
-  # only job whose grandchildren went uncollected. POOL_STARTED is the record of
-  # every job that ever ran, so the handler does not depend on the state array
-  # still holding the entries.
+  # A job in state 2 has ALREADY been walked: run_pool's completion branch calls
+  # kill_process_tree on it (a job only reaches state 2 once its rc file is
+  # written or its pid is gone), so re-walking every finished job on every
+  # Ctrl-C repeats a walk whose descendants were already collected and
+  # signalled. Only the jobs that never completed — the ones actually running
+  # when the signal landed — still need taking down here.
   for i in "${POOL_STARTED[@]}"; do
-    [ "${JOB_STATE[$i]:-0}" -le 2 ] || continue
+    [ "${JOB_STATE[$i]:-0}" -eq 1 ] || continue
     [ "${JOB_PID[$i]:-0}" -ne 0 ] || continue
     # No $(...) around the walk: see collect_tree's rule 1.
     tree=""
@@ -280,7 +310,7 @@ interrupt_now() {
   # the reap below is the only step that can still block: removing files does
   # not depend on the jobs being reaped, so a reap that stalls on a pid this
   # shell does not own cannot strand the temp state.
-  if [ "$(type -t _extra_cleanup)" = function ]; then _extra_cleanup; fi
+  _extra_cleanup
   # Reap only what is actually gone. `wait` on a pid that is still running
   # BLOCKS until it exits, so waiting on every non-zero JOB_PID made the
   # handler's bound a fiction — one descendant that ignores both signals would
@@ -304,14 +334,30 @@ interrupt_now() {
 # completion branch below decrements it, so the admission test is O(1). It was
 # a full pass over every job on every 0.1s tick, which is the one thing in the
 # loop that grows with the suite rather than staying constant.
+#
+# Every job also carries a wall-clock bound of its own (below, in the completion
+# branch) reusing VERIFY_TEST_TIMEOUT_S — the same number run_test_with_timeout
+# is already handed. It is not redundant with that watchdog: the watchdog bounds
+# the TEST, and this bounds the JOB, i.e. the subshell that runs the watchdog
+# and then writes the rc file. A job stuck in that tail — a `wait` on a
+# descendant that ignores both signals, an rc write that never lands — is
+# invisible to the inner watchdog, and without this bound the pool waits on it
+# forever. Elapsed time is read from SECONDS (whole seconds) rather than a
+# nanosecond clock, which is also what keeps this portable to bash 3.2.
 run_pool() {
-  local max_jobs="$1" next=0 done_n=0 i total="${#JOB_TESTS[@]}" retries
+  local max_jobs="$1" next=0 done_n=0 i total="${#JOB_TESTS[@]}" retries started elapsed outer_bound rc
   if [ "$max_jobs" -lt 1 ]; then max_jobs=1; fi
   POOL_RUNNING=0
   while [ "$done_n" -lt "$total" ]; do
     for ((i = 0; i < total; i++)); do
       [ "${JOB_STATE[$i]}" -eq 1 ] || continue
-      if [ -s "${JOB_RC[$i]}" ] || ! kill -0 "${JOB_PID[$i]}" 2>/dev/null; then
+      # Complete = the rc file has been written AND the job's pid is gone. The
+      # old rule accepted either alone, so a job that had written its status but
+      # was still being reaped counted as done and the pool moved on while its
+      # subshell was alive. Both conditions are cheap, and the pid check is the
+      # same `kill -0` already used here; a slow exit is handled by the bound in
+      # the else branch rather than by guessing at a grace.
+      if [ -s "${JOB_RC[$i]}" ] && ! kill -0 "${JOB_PID[$i]}" 2>/dev/null; then
         # The transition out of state 1 IS the completion, so the counter is
         # decremented here and nowhere else — one decrement per job, guaranteed
         # by the state change the branch itself makes.
@@ -325,11 +371,19 @@ run_pool() {
         # moment before that write lands. Back off 0.1s, 0.2s, 0.4s — 0.7s
         # total, and each retry lands later than the last, so a write that is
         # merely slow is caught on the first or second pass rather than after
-        # a fixed second of waiting for every job that finishes clean.
+        # a fixed second of waiting for every job that finishes clean. The
+        # three values are literal rather than `sleep "0.$((1 << retries))"`:
+        # the arithmetic builds a string that is handed to an external command,
+        # so a change to the base or the exponent produces `sleep 0.x`-shaped
+        # garbage that fails at run time instead of a bound anyone can read.
         if [ -z "${JOB_EXIT[$i]}" ]; then
           retries=0
           while [ -z "${JOB_EXIT[$i]}" ] && [ "$retries" -lt 3 ]; do
-            sleep "0.$((1 << retries))"
+            case "$retries" in
+              0) sleep 0.1 ;;
+              1) sleep 0.2 ;;
+              *) sleep 0.4 ;;
+            esac
             JOB_EXIT[$i]="$(cat "${JOB_RC[$i]}" 2>/dev/null)"
             retries=$((retries + 1))
           done
@@ -342,6 +396,42 @@ run_pool() {
           JOB_EXIT[$i]=1
         fi
         done_n=$((done_n + 1))
+      else
+        # Not complete: bound it by wall-clock since the job started (whole
+        # seconds, SECONDS). This is the OUTER bound — it bounds the JOB, not
+        # the test — and it deliberately does not fire while the inner watchdog
+        # is still working. `run_test_with_timeout` is handed the same
+        # VERIFY_TEST_TIMEOUT_S and needs up to ~7s past the bound to take the
+        # tree down (2s grace poll + ≤5s reap) and write the rc file; killing
+        # the subshell at exactly the bound would preempt it and the capture
+        # would lose the `✗ timed out after <N>s` line the #827 echo and
+        # extractSpecificAssertion name as the specific assertion (measured:
+        # case 9/10 of test-verify-loop-timeout.ts fail that way). So the outer
+        # bound waits the inner watchdog's own worst case plus a slack before
+        # intervening, and by then the inner one has either reported or is
+        # provably stuck in the tail the inner watchdog cannot reach. Each
+        # kill/wait is followed by `|| rc=1` so a non-zero status there cannot
+        # become the tick's status: under `set -e` a predicate that has just
+        # said "not done" would otherwise end the whole pass.
+        started="${JOB_STARTED_AT[$i]:-0}"
+        elapsed=$((SECONDS - started))
+        # The inner watchdog's worst case past its own bound: kill_process_tree
+        # is a 20 × 0.1s grace poll plus a ≤50 × 0.1s reap, so ≤7s, plus 1s of
+        # slack for the SECONDS rounding this comparison is built on. Literal
+        # for the same reason the retry sleeps are: it is a number a reader has
+        # to be able to check against kill_process_tree, not one derived at run
+        # time from constants that live in another file.
+        outer_bound=$((VERIFY_TEST_TIMEOUT_S + 8))
+        if [ "$elapsed" -ge "$outer_bound" ]; then
+          echo "warn: verify-loop: job for ${JOB_TESTS[$i]} exceeded the ${outer_bound}s per-job bound without reporting; killing its tree" >&2
+          kill_process_tree "${JOB_PID[$i]}" || rc=1
+          wait "${JOB_PID[$i]}" 2>/dev/null || rc=1
+          JOB_STATE[$i]=2
+          POOL_RUNNING=$((POOL_RUNNING - 1))
+          [ "$POOL_RUNNING" -ge 0 ] || POOL_RUNNING=0
+          JOB_EXIT[$i]=214
+          done_n=$((done_n + 1))
+        fi
       fi
     done
     while [ "$POOL_RUNNING" -lt "$max_jobs" ] && [ "$next" -lt "$total" ]; do

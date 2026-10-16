@@ -87,12 +87,15 @@
 set -u
 
 # Fixed locale for the whole file. Every digit and range test in this script
-# and in verify-pool.sh is written `[0-9]`, and under some locales that class
-# is not ASCII digits alone — a collating sequence can pull other codepoints in
-# and let a value like `٢` through a `^[0-9]+$` check. LC_ALL=C makes those
-# classes mean what they look like. Set here rather than at each test because
-# this file is both sourced (by the pool's callers through the smoke harness) and
-# run directly, and a script cannot set a variable its caller will not inherit.
+# and in verify-pool.sh is written `[0-9]`, and bash's `=~` matches that class
+# through the C library under the active collation — so under a UTF-8 locale
+# `[0-9]` is not ASCII digits alone. Verified on this host under
+# `LC_ALL=en_US.UTF-8`: `[[ "٢" =~ ^[0-9]+$ ]]` (an Arabic-Indic digit) MATCHES,
+# and under `LC_ALL=C` the same test does not. So the two `^[0-9]+$` gates here
+# — the timeout bound and the pool's job count — would have accepted a non-ASCII
+# digit and passed it straight into arithmetic. Set here rather than at each
+# test because this file is both run directly and sourced by the smoke harness,
+# and a script cannot set a variable its caller will not inherit.
 export LC_ALL=C
 
 # The tests build throwaway repositories (`git init --bare <tmp>/origin.git`,
@@ -154,8 +157,10 @@ export PI_ENSEMBLE_PLAN_CACHE=0
 #     would orphan bun's children (`bun run` forks a child for the script,
 #     and a test can spawn grandchildren, e.g. a `sleep`). The tree is found
 #     by a BFS `pgrep -P` walk.
-#   * SIGTERM first, SIGKILL only for survivors, after a 2s grace: a test
-#     with cleanup handlers gets a chance to exit cleanly.
+#   * SIGTERM first, SIGKILL only for survivors: a test with cleanup handlers
+#     gets a chance to exit cleanly. The grace is a BOUNDED POLL — up to
+#     20 × 0.1s = 2s ceiling, so a tree that dies in 50ms costs 50ms, not the
+#     2s a fixed `sleep 2` charged every timeout. See kill_process_tree below.
 #   * The watchdog fires at the bound and returns its OWN sentinel (214),
 #     deliberately distinct from 124 — the conventional "timed out" code that
 #     a test can exit on its own. Because the sentinel is 214, the per-test
@@ -177,8 +182,10 @@ else
   VERIFY_TEST_TIMEOUT_S=300
 fi
 
-# Descendant-tree kill: SIGTERM, 2s grace, SIGKILL survivors. Without pgrep
-# only the top-level test process can be killed (descendants are orphaned).
+# Descendant-tree kill: SIGTERM, then a bounded grace (poll up to 20 × 0.1s =
+# 2s for liveness to clear — the ceiling, not the typical cost), then SIGKILL
+# survivors. Without pgrep only the top-level test process can be killed
+# (descendants are orphaned).
 # The BFS tracks visited PIDs so each is walked once (a pid re-appearing in
 # two parents' child lists would otherwise be re-added).
 # After the grace, SIGKILL goes to EVERY collected pid unconditionally — the
@@ -201,11 +208,12 @@ kill_process_tree() {
   collect_tree pids_to_kill "$root_pid"
   if [ -z "$pids_to_kill" ]; then pids_to_kill="$root_pid"; fi
   for current_pid in $pids_to_kill; do kill -TERM "$current_pid" 2>/dev/null; done
-  # Grace: poll for liveness to clear rather than sleeping a fixed 2s. The
-  # fixed sleep cost every timeout two seconds even when the tree died in
-  # 50ms, and still could not tell a clean exit from a process that ignored
-  # SIGTERM for the whole 2s. Same shape as interrupt_now's poll: bounded
-  # (20 × 0.1s), exits the moment nothing answers `kill -0`, and falls through
+  # Grace: poll for liveness to clear rather than sleeping a fixed 2s, so the
+  # cost is the time the tree actually takes to die and not a flat 2s charged
+  # even when it died in 50ms — and so a clean exit is distinguishable from a
+  # process that ignored SIGTERM for the whole window. Same shape as
+  # interrupt_now's poll: bounded (20 × 0.1s, i.e. a 2s ceiling), exits the
+  # moment nothing answers `kill -0`, and falls through
   # to the SIGKILL round when something does not.
   polls_to_kill=0
   while [ "$polls_to_kill" -lt 20 ]; do
@@ -248,19 +256,28 @@ prepend_timeout_line() {
   # predictable path outside the 0700 directory and the whole run's temp state
   # is removed as one unit. A missing cap argument is a bug in the caller, not
   # a reason to write a file named `.tmp` in the CWD.
-  local bound="$1" cap="$2" tmp
+  local bound="$1" cap="${2:-}" tmp
   if [ -z "$cap" ]; then
     echo "warn: verify-loop: no capture file for this test; the timeout line was not prepended" >&2
-    return 0
+    return 1
   fi
-  tmp="$(dirname "$cap")/$$.$RANDOM.tmp"
+  # mktemp, not a name built from $$ and $RANDOM: two jobs of one run share
+  # this shell's pid, so the derived name collided between them and one
+  # `mv` silently replaced the other's capture. 0600 and O_EXCL are the
+  # defaults mktemp gives, which the derived name did not have.
+  tmp="$(mktemp "$(dirname "$cap")/timeout.XXXXXX")" || {
+    echo "warn: verify-loop: could not create the scratch file for the timeout line of this test" >&2
+    return 1
+  }
   {
     echo "✗ timed out after ${bound}s"
     cat "$cap" 2>/dev/null
   } >"$tmp" 2>/dev/null && mv "$tmp" "$cap" 2>/dev/null || {
     rm -f "$tmp"
     echo "warn: verify-loop: could not prepend the timeout line to the capture of this test" >&2
+    return 1
   }
+  return 0
 }
 
 # Run one test under the watchdog. Returns the test's exit code, or 214 (the
@@ -382,6 +399,21 @@ _extra_cleanup() {
 }
 trap '_extra_cleanup' EXIT
 
+# #1365 — the interrupt path in verify-pool.sh calls `_extra_cleanup` for the
+# same reason the EXIT trap just did: RUN_DIR, the #827/#1028 failure captures
+# and the #1069 ledger temp dir have to go. The pool used to reach it through a
+# silent `type -t` probe, so a rename made Ctrl-C look clean while every one of
+# those stayed on disk — the EXIT trap it duplicates never runs on that path. It
+# is now under the same hard name check the pool's own functions get. Checked
+# here rather than with them because a `type -t` test before the definition
+# would fail for the wrong reason. It is not optional, so there is no declared
+# flag and nothing to trace when absent: the pool calls it unconditionally and
+# so does the trap above, so a run without it is broken before the pool starts.
+if [ "$(type -t _extra_cleanup)" != function ]; then
+  echo "error: verify-loop: _extra_cleanup is missing — the interrupt path cannot clean the run's temp state; refusing to run" >&2
+  exit 2
+fi
+
 names=()
 # #1365: collect the tests, run them through the pool, then replay each job's
 # result in argument order. RUN_DIR is passed explicitly so the pool never
@@ -445,3 +477,17 @@ fi
 # verify-report.sh (sourced above) — see that file for the digest/echo
 # contract and the 800-char tail-window rationale.
 report_results "$total"
+
+# #1365 — `names` and `_extra_captures` are index-aligned: both are pushed once
+# per failing test, in the same order, and the digest reads them by shared index
+# (verify-report.sh). The pairing is a load-bearing invariant, not an
+# implementation nicety — an unpushed `cp` failure would silently attach one
+# test's ✗ lines to another's marker, which reads as a genuine assertion failure
+# for a test that never made it. Asserted here rather than trusted: a mismatch
+# is a bug in this file, and the suite's verdict is the wrong place to discover
+# it. (An entry may be the EMPTY placeholder a cp failure pushes — that is
+# paired; it is a length mismatch that fails.)
+if [ "${#names[@]}" -ne "${#_extra_captures[@]}" ]; then
+  echo "error: verify-loop: internal error — ${#names[@]} failure names against ${#_extra_captures[@]} captured outputs; the summary tail is unreliable" >&2
+  exit 1
+fi
