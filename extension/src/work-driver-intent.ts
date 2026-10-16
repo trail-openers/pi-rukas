@@ -27,7 +27,6 @@
  */
 
 import { readMarker } from "./reply-markers.ts";
-import { SECURITY_CLASS_LABELS } from "./security-class.ts";
 import { trace } from "./trace.ts";
 import {
   contradictionAssumptions,
@@ -45,7 +44,8 @@ export type ParkReason =
   | "already-implemented"
   | "too-large"
   | "premise-unsound"
-  | "security-open-point";
+  | "unresolved-critical-open-point"
+  | "blank-issue-body";
 
 export type IntentVerdict = "proceed" | "proceed-with-assumptions" | "park";
 
@@ -88,8 +88,8 @@ export interface NormalisedSpec {
   outOfScope: string[];
   assumptions: SpecAssumption[];
   openQuestions: string[];
-  /** Security-class CRITICAL open points, quoted; absent = none. Not resolver questions. */
-  securityOpenPoints?: string[];
+  /** Blocking Open points lines (flattenIssueText output, unclipped); absent = none. Not resolver questions. */
+  openPoints?: string[];
   evidence: SpecEvidence[];
   verdict: IntentVerdict;
   parkReason?: ParkReason;
@@ -124,8 +124,11 @@ export const PARK_REASONS: readonly ParkReason[] = [
   "already-implemented",
   "too-large",
   "premise-unsound",
-  "security-open-point",
+  "unresolved-critical-open-point",
+  "blank-issue-body",
 ];
+
+export { explainPark, parkAction } from "./work-driver-intent-park-text.ts";
 
 /**
  * Slice a `### <name>` subsection (or a bare bold-label line) out of the `Spec`
@@ -443,42 +446,6 @@ export function reconcileVerdict(spec: NormalisedSpec): NormalisedSpec {
     return { ...spec, verdict: "proceed-with-assumptions" };
   }
   return spec;
-}
-
-/** Operator-facing sentence for a park. */
-export function explainPark(reason: ParkReason, issue: number): string {
-  switch (reason) {
-    case "underspecified":
-      return `#${issue} does not say enough to build from — the driver could not resolve a concrete intent, and writing code from a guess is how the wrong thing gets shipped confidently. Add acceptance criteria or a concrete description and re-run.`;
-    case "contradicted-by-code":
-      return `#${issue}'s central claim is contradicted by the code as it actually is. The issue may be stale, or describe a bug that was already fixed. Check the evidence below before re-running.`;
-    case "already-implemented":
-      return `#${issue} appears to be already implemented. Close it if you agree, or say what is still missing and re-run.`;
-    case "too-large":
-      return `#${issue} is too large to execute as one cycle. Split it into separate issues; each should be a diff a reviewer can hold in their head.`;
-    case "security-open-point":
-      return `#${issue} has an unresolved CRITICAL security-relevant open point (${SECURITY_CLASS_LABELS.join(", ")}). The driver will not choose that policy for you. Answer it in the issue body, mark it [RESOLVED], and re-run.`;
-    case "premise-unsound":
-      return `#${issue} rests on a premise the driver could not substantiate — typically an API or behaviour that does not exist as described. Confirm the premise and re-run.`;
-  }
-}
-
-/** The human action for a park, for the queue summary. */
-export function parkAction(reason: ParkReason, issue: number): string {
-  switch (reason) {
-    case "underspecified":
-      return `add acceptance criteria or a concrete description to #${issue}`;
-    case "contradicted-by-code":
-      return `check #${issue} against the current code — it may be stale or already fixed`;
-    case "already-implemented":
-      return `confirm and close #${issue}`;
-    case "too-large":
-      return `split #${issue} into separate issues`;
-    case "security-open-point":
-      return `answer the security open point in #${issue}'s body (mark it [RESOLVED]) and run /work ${issue} --restart`;
-    case "premise-unsound":
-      return `confirm the premise of #${issue} — the driver could not substantiate it`;
-  }
 }
 
 /**

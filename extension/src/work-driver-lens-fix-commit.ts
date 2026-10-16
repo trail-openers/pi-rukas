@@ -123,7 +123,12 @@ export async function diffAgainstBranch(
  */
 export async function landCommittedFix(
   execFn: ExecFn,
-  ctx: { repoRoot: string; issue: number },
+  ctx: {
+    repoRoot: string;
+    issue: number;
+    /** #1362 — forwarded to the verified restores' repoRoot reads (see there). */
+    dirtyRootExempt?: readonly string[];
+  },
   ps: PipelineState,
   tree: string,
 ): Promise<{ ok: true; sha: string } | { ok: false; error: string }> {
@@ -198,6 +203,7 @@ export async function landCommittedFix(
           originalRef,
           scratchDir: scratch,
           label: "lens-fix-integration",
+          dirtyRootExempt: ctx.dirtyRootExempt,
         });
         // #981 — the restore claim leads the error (the same order the
         // patch-apply branch of integrate() uses), and the operator-facing
@@ -247,6 +253,7 @@ export async function landCommittedFix(
           originalRef,
           scratchDir: scratch,
           label: "lens-fix-integration",
+          dirtyRootExempt: ctx.dirtyRootExempt,
         });
         throw new Error(
           `nothing landed on the branch. ${restoreClaim(restore, { trailing: MANUAL_REPAIR_HINT })}`,
@@ -267,6 +274,7 @@ export async function landCommittedFix(
         originalRef,
         scratchDir: scratchDir(ctx.repoRoot, ctx.issue),
         label: "lens-fix-integration",
+        dirtyRootExempt: ctx.dirtyRootExempt,
       });
       return {
         ok: false,

@@ -121,29 +121,6 @@ export const SEAMS = {
     timeoutMs: 30_000,
     tokenBudget: 4_000,
   },
-  // S4 (#1187) — whether an unresolved CRITICAL open point is a security
-  // decision. may-add-only once S5's promotion bar is met: the model may add
-  // a park, never remove one.
-  "security-open-point": {
-    id: "security-open-point",
-    kind: "bool",
-    instructions:
-      "An issue lists an unresolved CRITICAL open point. Is it a security decision (authentication, authorization, credentials, secrets, encryption, input validation, sandboxing, data deletion, privacy) that an automated driver must not settle on its own?",
-    labels: {
-      true: "the point is a security decision",
-      false: "the point is ordinary engineering, not a security decision",
-    },
-    // A point the rule cannot read is treated as security: a missed security
-    // point is worse than an ordinary one that parks (security-class.ts).
-    ruleDefault: "true",
-    passing: ["false"],
-    composition: "may-add-only",
-    defaultMode: "shadow",
-    evidence: "none",
-    owner: "work-driver-intent-finalise.ts",
-    timeoutMs: 30_000,
-    tokenBudget: 4_000,
-  },
 } as const satisfies Record<string, SeamSpec>;
 
 export type SeamId = keyof typeof SEAMS;

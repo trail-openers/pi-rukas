@@ -5,8 +5,8 @@
  * canary that would fail if the behaviour regressed.
  */
 
-import { flattenAndClip, flattenIssueText } from "../src/text-flatten.ts";
-import { readOpenPoints } from "../src/work-driver-intent-criticality.ts";
+import { readOpenPoints } from "../src/open-points-reader.ts";
+import { flattenAndClip, flattenIssueText, redactThenBound } from "../src/text-flatten.ts";
 import { finaliseSpecVerdict } from "../src/work-driver-intent-finalise.ts";
 import type { NormalisedSpec } from "../src/work-driver-intent.ts";
 
@@ -67,8 +67,8 @@ const blankProceed = finaliseSpecVerdict(
   undefined,
 );
 assert(
-  blankProceed.verdict === "park" && blankProceed.parkReason === "underspecified",
-  "blank body on a proceed spec: parked as underspecified (#1171)",
+  blankProceed.verdict === "park" && blankProceed.parkReason === "blank-issue-body",
+  "blank body on a proceed spec: parked as blank-issue-body, not underspecified (#1171, #1187)",
 );
 
 // Non-critical prose is not a malformed CRITICAL line; a real malformed one still is.
@@ -85,5 +85,45 @@ assert(
   readOpenPoints(`${HEADING}\n\n- critical: the retry ceiling\n`).unparsed.length === 1,
   "non-critical canary: a lowercase 'critical' bullet is still malformed",
 );
+
+// --- redactThenBound: the one redact-then-clip normaliser (#1187 fix round 4) -------------
+//
+// Every text the open-point gate stores or renders goes through this function, so its two
+// properties are asserted here at the source rather than only where a caller uses them:
+// redaction happens BEFORE the bound (clipping first can leave a token fragment no pattern
+// recognises), and the bound counts code points (so a surrogate pair is never halved).
+{
+  const token = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123";
+  const short = redactThenBound(`rotate the ${token} key`, 2000);
+  assert(
+    short.text.includes("sk-ant-api03") === false &&
+      short.text.includes("[REDACTED]") &&
+      short.clipped === false,
+    "redactThenBound: redacts a credential inside the bound and reports no clip",
+  );
+  // A token straddling the bound is still gone: redaction ran on the whole string first.
+  const straddling = redactThenBound(`${"y".repeat(1970)} ${token}`, 2000);
+  assert(
+    straddling.text.includes("sk-ant-api03") === false &&
+      Array.from(straddling.text).length <= 2000,
+    "redactThenBound: redacts before bounding, so a token crossing the cut leaves no fragment",
+  );
+  const over = redactThenBound("z".repeat(5000), 2000);
+  assert(
+    over.clipped === true && Array.from(over.text).length === 2000,
+    "redactThenBound: reports `clipped` so a caller appends a marker without re-measuring",
+  );
+  const under = redactThenBound("z".repeat(2000), 2000);
+  assert(
+    under.clipped === false && Array.from(under.text).length === 2000,
+    "redactThenBound canary: a string exactly at the bound is NOT reported as clipped",
+  );
+  const astral = redactThenBound("\u{1F600}".repeat(1500), 1000);
+  assert(
+    Array.from(astral.text).length === 1000 &&
+      Array.from(astral.text).every((c) => c.codePointAt(0) === 0x1f600),
+    "redactThenBound: bounds by code point, so no lone surrogate half survives",
+  );
+}
 
 process.exit(exit);

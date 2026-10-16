@@ -31,12 +31,12 @@ import type { DriverContext } from "../src/work-driver-context.ts";
 import { integrateWorktreePath } from "../src/work-driver-integrate-worktree.ts";
 import {
   addLocalRemote,
+  auditCtx,
+  auditStateFor,
   fixture,
   git,
   mkResult,
   runCycle,
-  auditStateFor,
-  auditCtx,
 } from "./helpers-integrate-pin-realgit.ts";
 import { realExec } from "./lib/exec-fake.ts";
 
@@ -355,9 +355,10 @@ try {
     await addLocalRemote(root, repo);
     const branch1 = "feature/issue-1-detach";
     await git(repo, ["checkout", "-q", "-B", branch1]);
-    const before = await (
-      await import("../src/work-driver-integrate-worktree.ts")
-    ).repoRootHoldsBranch(repo, branch1);
+    const before = await (await import("../src/work-driver-branch-holder.ts")).repoRootHoldsBranch(
+      repo,
+      branch1,
+    );
     assert(before, "detach: repoRoot STARTS on the branch (the fixture precondition)");
     const { ensureIntegrateWorktree } = await import("../src/work-driver-integrate-worktree.ts");
     const created = await ensureIntegrateWorktree(realExec, {

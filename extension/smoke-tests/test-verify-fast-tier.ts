@@ -21,8 +21,8 @@ import { explainCap } from "../src/work-driver-explain.ts";
 import { runCommitPrConsolidatedVerify } from "../src/work-driver-integrate-verify.ts";
 import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
 import {
-  boundText,
   VERIFY_TIMEOUT_LABEL,
+  boundText,
   verifyCapFor,
 } from "../src/work-driver-verify-develop-helpers.ts";
 import { FAST_TIER_LABEL, fastVerifyCmdFor, withFastTier } from "../src/work-driver-verify-fast.ts";
@@ -49,7 +49,8 @@ const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 const sh = (cwd: string, cmd: string) => execFileP("/bin/sh", ["-c", cmd], { cwd });
 
 const FULL = "bash scripts/verify.sh";
-const FAST = "bunx tsc --noEmit";
+// Mirrors the real .pi/verify-cmd-fast first line: string identity only; the executor is stubbed.
+const FAST = "bun x tsc --noEmit && bun run check";
 const TSC = "src/a.ts(3,1): error TS2304: Cannot find name 'nope'.\n";
 const root = mkdtempSync(path.join(tmpdir(), "pi-fast-tier-"));
 // Case 5 asserts the DEFAULT bound's text ("10-min"). Its bound comes from
@@ -68,8 +69,8 @@ type Calls = Array<{ cmd: string; timeout?: number }>;
 
 /** A stub executor: git runs for real, verify commands get a chosen outcome. */
 function stubExec(calls: Calls, outcomeFor: (cmd: string) => Outcome) {
-  const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
-    cmd = commandOf(cmd, o);
+  const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmdArg, o) => {
+    const cmd = commandOf(cmdArg, o);
     if (cmd.startsWith("git ")) return { stdout: (await sh(o?.cwd ?? "", cmd)).stdout };
     calls.push({ cmd, timeout: o?.timeout });
     const r = outcomeFor(cmd);

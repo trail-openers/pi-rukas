@@ -14,7 +14,10 @@ import {
   parseWorktreesBlock,
   runBranchViaOpsDispatch,
 } from "./work-driver-branch-ops.ts";
-import { runBranchResiduePass } from "./work-driver-branch-residue.ts";
+import {
+  recordDirtyRootExemptBaseline,
+  runBranchResiduePass,
+} from "./work-driver-branch-residue.ts";
 // #1093 — cycle-start-ref stamping runs under the single integration lock.
 import { hasCaptureFailure, recordCycleStartRef } from "./work-driver-git.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
@@ -142,6 +145,10 @@ export async function runBranch(
   // #475/#545 refusal is unchanged and still fires for residue this pass
   // could not resolve; salvageScratch is also the #545 refusal's home.
   state = await runBranchResiduePass(ctx, state, execFnPre, salvageScratch);
+  // #1362 — the exempt baseline, recorded here and nowhere else: this is the
+  // first read of repoRoot's dirt in the cycle and the last moment before the
+  // mechanized setup can write to it. Persisted with the step's other writes.
+  state = await recordDirtyRootExemptBaseline(ctx, state, execFnPre);
   // #287 — mechanized, always-worktree branch setup. Development never
   // happens at repoRoot: every workstream gets a detached worktree. The LLM
   // ops dispatch below remains as the fallback for env variance (recovery,

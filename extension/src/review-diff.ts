@@ -28,9 +28,16 @@ import { resolveHeadSha } from "./review-head-sha.ts";
 
 const execFileP = promisify(execFile);
 
-const DIFF_MAX_BUFFER = 1024 * 1024;
+export const DIFF_MAX_BUFFER = 1024 * 1024;
 
 export type RangeDiff = { ok: true; diff: string } | { ok: false; reason: string };
+
+/**
+ * Per-file changed line ranges of a diff, in head-file line numbers: what
+ * `changedLineRanges` returns. Named so the findings memory (and its fate rule)
+ * can state the type without restating the tuple (#1125 decision 5).
+ */
+export type ChangedRanges = Map<string, Array<[number, number]>>;
 
 /** True when a diff was produced beyond the cap (the tail was cut). */
 export function diffOverflow(stderr: string): boolean {
@@ -177,7 +184,7 @@ export async function computeDeltaDiff(
  * deletion lands, so a finding citing that spot counts as touched. A deleted
  * file (`+++ /dev/null`) contributes no ranges.
  */
-export function changedLineRanges(diff: string): Map<string, Array<[number, number]>> {
+export function changedLineRanges(diff: string): ChangedRanges {
   const out = new Map<string, Array<[number, number]>>();
   const lines = diff.split("\n");
   let file: string | undefined;

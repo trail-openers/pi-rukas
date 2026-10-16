@@ -77,7 +77,7 @@ export function skillsDirUsable(dir: string): string | undefined {
  * REVIEW_INCOMPLETE (the install message is the operator-visible signal).
  *
  * Called from the empty-roster guard in `runLensReview`; the deck
- * bookkeeping lives in `blockedReviewSummary` (lens-review-diff.ts), which
+ * bookkeeping lives in `blockedReviewSummary` (lens-review-diff-blocked.ts), which
  * the guard also invokes.
  */
 export function installBlockRowsForRoster(problem: string): LensRunResult[] {

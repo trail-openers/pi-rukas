@@ -21,7 +21,9 @@
  */
 
 import type { Finding } from "../src/lens-review-format.ts";
-import { type LensRunResult, computeVerdict, lensProducedEvidence } from "../src/lens-review.ts";
+import { lensProducedEvidence } from "../src/lens-review-incomplete.ts";
+import { type LensRunResult } from "../src/lens-review.ts";
+import { computeVerdict } from "../src/lens-review-format.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
