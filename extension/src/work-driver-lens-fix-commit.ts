@@ -33,7 +33,12 @@
 
 import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
-import { collectConflictEvidence } from "./work-driver-conflict-evidence.ts";
+import {
+  CAUSE_BUDGET,
+  MANUAL_REPAIR_HINT,
+  collectConflictEvidence,
+  lensFixConflictCause,
+} from "./work-driver-conflict-evidence.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
@@ -194,14 +199,34 @@ export async function landCommittedFix(
           scratchDir: scratch,
           label: "lens-fix-integration",
         });
-        // #981 — the conflict paths lead the error so a downstream 200-char
-        // truncation (the caller's msg.slice(0, 200)) keeps the operator-
-        // actionable part: WHICH files conflict, not the restore claim.
-        const causeMsg =
-          orch._conflict === "conflict"
-            ? `cherry-pick conflict — the batch was aborted. ${evidence.note} ${restoreClaim(restore, { trailing: MANUAL_REPAIR_HINT })} The fix's commits remain in the worktree ${tree}.`
-            : `patch-apply failed for the lens-fix worktree: ${orch._applyConflict?.reason ?? "unknown"}. ${restoreClaim(restore, { trailing: MANUAL_REPAIR_HINT })} The fix's commits remain in the worktree ${tree}.${evidence.note}`;
-        throw new Error(causeMsg);
+        // #981 — the restore claim leads the error (the same order the
+        // patch-apply branch of integrate() uses), and the operator-facing
+        // text is built to SURVIVE the `msg.slice(0, CAUSE_BUDGET)` in the
+        // catch. That slice IS reached for these throws: they carry a restore
+        // claim, so the catch takes the single-slice return rather than
+        // re-restoring. The message is composed by `lensFixConflictCause`, so
+        // the clause ORDER is fixed there (conflicting paths before the long
+        // tail in both arms) and every clause is length-bounded at its own
+        // renderer — which is what makes CAUSE_BUDGET derivable instead of a
+        // number sized for one fixture. The `git -C … status` boilerplate
+        // stays out of the returned message (it rides the trace line, and
+        // MANUAL_REPAIR_HINT already tells the operator to run git status).
+        // `test-work-driver-lens-fix-cause-budget.ts` calls that builder with
+        // each restore shape the real producers emit.
+        trace(
+          `work-driver: lens-fix integration failed — ${orch._conflict === "conflict" ? "cherry-pick conflict" : "patch-apply failure"}; ${evidence.note}`,
+        );
+        throw new Error(
+          lensFixConflictCause({
+            kind: orch._conflict === "conflict" ? "conflict" : "apply",
+            restore,
+            evidence,
+            tree,
+            applyReason: orch._applyConflict?.reason,
+            fixParent: evidence.fixParent,
+            branchTip: evidence.branchTip,
+          }),
+        );
       }
       const { stdout: stagedOut } = await execFn("git diff --cached --name-only", {
         cwd: ctx.repoRoot,
@@ -248,20 +273,9 @@ export async function landCommittedFix(
         error: `${msg.slice(0, 200)}. ${restoreClaim(restore, { trailing: MANUAL_REPAIR_HINT })} The fix's commits remain in the worktree ${tree}.`,
       };
     }
-    return { ok: false, error: msg.slice(0, 300) };
+    return { ok: false, error: msg.slice(0, CAUSE_BUDGET) };
   }
 }
-
-/**
- * #797 — the trailing text appended to every lens-fix integration failure
- * claim. The verified-restore claim alone ("repoRoot was restored …") leaves
- * an operator with no next step, and the not-restored variant must carry the
- * repair commands the issue's acceptance criteria require: a failed restore
- * is a more serious condition than the integration failure and names the
- * exact commands that return repoRoot to a usable state.
- */
-const MANUAL_REPAIR_HINT =
-  "If repoRoot is not usable, repair it with: git reset --hard && git checkout --force <the ref the cycle started from> (run `git status` and `git branch --show-current` to see the current state)";
 
 /**
  * #797 — the ref a lens-fix integration cycle started from at repoRoot

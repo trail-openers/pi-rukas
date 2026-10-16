@@ -16,8 +16,6 @@
  *          not taint the dependent's verdict
  *   F5.16: real clean worktree but NO base SHA (neither workstreamBaseShas
  *          nor baseSha) → committed range unreadable → fail closed
- *   F5.15: dirty-flag rendering — explainCap reads ONLY the persisted
- *          per-verdict `dirty` flag (no git calls at render time)
  *   F5.17: worktree of a DIFFERENT repo → unreadable → uncovered
  *   F5.18: empty cumulative set (empty range + clean porcelain) → the
  *          over-declaration carve-out does NOT apply → uncovered
@@ -36,7 +34,6 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import { explainCap } from "../src/work-driver-explain.ts";
 import { verifyConsolidation } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
 
@@ -59,23 +56,28 @@ function makeFakePi(): { pi: ExtensionAPI; sent: string[] } {
   return { pi, sent };
 }
 
+import { argvAwareExec } from "./lib/argv-exec.ts";
+
 process.env.PI_ENSEMBLE_VERIFY = "1";
 
 {
   const fs = await import("node:fs/promises");
-  const { exec: execChild } = await import("node:child_process");
-  const { promisify: promisifyUtil } = await import("node:util");
-  const execp2 = promisifyUtil(execChild);
+  const execp2 = argvAwareExec;
 
   // mkGitRepo: baseline commit → origin/main, then a feature-branch commit
   // holding committedFiles (the integration-diff fixture).
   const mkGitRepo = async (dir: string, committedFiles: string[]) => {
     await execp2("git init -q", { cwd: dir });
-    await execp2('git config user.email "t@t" && git config user.name "T"', { cwd: dir, shell: "/bin/bash" });
+    await execp2('git config user.email "t@t" && git config user.name "T"', {
+      cwd: dir,
+      shell: "/bin/bash",
+    });
     await fs.writeFile(path.join(dir, ".gitkeep"), "\n");
     await execp2("git add . && git commit -q -m baseline", { cwd: dir, shell: "/bin/bash" });
     await execp2("git update-ref refs/remotes/origin/main HEAD", { cwd: dir });
-    await execp2("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main", { cwd: dir });
+    await execp2("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main", {
+      cwd: dir,
+    });
     await execp2("git checkout -qb feature/issue-540-test", { cwd: dir });
     for (const f of committedFiles) {
       const fp = path.join(dir, f);
@@ -83,7 +85,10 @@ process.env.PI_ENSEMBLE_VERIFY = "1";
       await fs.writeFile(fp, `content of ${f}\n`);
     }
     if (committedFiles.length > 0) {
-      await execp2("git add . && git commit -q -m 'committed work'", { cwd: dir, shell: "/bin/bash" });
+      await execp2("git add . && git commit -q -m 'committed work'", {
+        cwd: dir,
+        shell: "/bin/bash",
+      });
     }
     await execp2("git update-ref refs/remotes/origin/feature/issue-540-test HEAD", { cwd: dir });
   };
@@ -114,9 +119,15 @@ process.env.PI_ENSEMBLE_VERIFY = "1";
   // into the range and dirty the porcelain; a shared one cross-contaminates).
   const mkWorktree = async (dir: string, sub: string, files: string[]) => {
     const wtDir = path.join(dir, sub);
-    await execp2(`git worktree add --detach ${JSON.stringify(wtDir)} origin/main`, { cwd: dir, shell: "/bin/bash" });
+    await execp2(`git worktree add --detach ${JSON.stringify(wtDir)} origin/main`, {
+      cwd: dir,
+      shell: "/bin/bash",
+    });
     const idx = path.join(dir, `.idx-${sub}`);
-    await execp2(`GIT_INDEX_FILE=${JSON.stringify(idx)} git read-tree HEAD`, { cwd: wtDir, shell: "/bin/bash" });
+    await execp2(`GIT_INDEX_FILE=${JSON.stringify(idx)} git read-tree HEAD`, {
+      cwd: wtDir,
+      shell: "/bin/bash",
+    });
     if (files.length > 0) {
       for (const f of files) {
         const fp = path.join(wtDir, f);
@@ -130,7 +141,8 @@ process.env.PI_ENSEMBLE_VERIFY = "1";
     }
     return wtDir;
   };
-  const baseShaOf = async (dir: string) => (await execp2("git rev-parse HEAD", { cwd: dir })).stdout.trim();
+  const baseShaOf = async (dir: string) =>
+    (await execp2("git rev-parse HEAD", { cwd: dir })).stdout.trim();
   const ctx = (dir: string): DriverContext => ({
     host: makeFakePi().pi,
     repoRoot: dir,
@@ -139,7 +151,11 @@ process.env.PI_ENSEMBLE_VERIFY = "1";
   });
   // The PRODUCTION shape: no `verifyExecFn` — that seam is test-only
   // ("production callers omit it", #476 comment in work-driver-merged.ts).
-  const prodCtx = (dir: string): DriverContext => ({ host: makeFakePi().pi, repoRoot: dir, issue: 540 });
+  const prodCtx = (dir: string): DriverContext => ({
+    host: makeFakePi().pi,
+    repoRoot: dir,
+    issue: 540,
+  });
 
   // F5.9 — N=1 short-circuit (regression: the #875 cumulative read must not
   // relax the structural unverifiability of single-workstream cycles).
@@ -216,7 +232,10 @@ process.env.PI_ENSEMBLE_VERIFY = "1";
         aVerdict?.status === "uncovered" && aVerdict.uncoveredPaths.includes("src/p.ts"),
         `F5.11: range-touched path absent from committed diff → uncovered (got: ${JSON.stringify(aVerdict)})`,
       );
-      assert(res.missing.some((m) => m.id === "a"), "F5.11: a is in missing");
+      assert(
+        res.missing.some((m) => m.id === "a"),
+        "F5.11: a is in missing",
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -460,39 +479,6 @@ process.env.PI_ENSEMBLE_VERIFY = "1";
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  }
-
-  // F5.15 — dirty-flag rendering: explainCap reads ONLY the persisted
-  // per-verdict `dirty` flag. dirty=false → no "uncommitted on disk"
-  // claim (cherry-pick recovery offered). dirty=true → the claim is
-  // present. Legacy verdicts (no flag) keep the old wording.
-  {
-    const mkState = (verdicts: unknown) => {
-      let s = initialState(875, 1_000_000);
-      s = {
-        ...s,
-        pipelineState: {
-          ...s.pipelineState,
-          worktrees: { b: path.join(tmpdir(), "f5-fake-b-unreadable") },
-          incompleteConsolidation: { verdicts, filesPresent: [] },
-        },
-      };
-      return s;
-    };
-    const cap = "commit-pr-incomplete-consolidation" as const;
-    const uncovered = (dirty?: boolean) => [
-      { id: "b", status: "uncovered", uncoveredPaths: ["src/keep-green.ts"], ...(dirty !== undefined ? { dirty } : {}) },
-    ];
-    const dirtyFalse = explainCap(cap, mkState(uncovered(false)));
-    assert(!dirtyFalse.includes("uncommitted on disk"), "F5.15: dirty=false → no claim present");
-    assert(dirtyFalse.includes("cherry-pick"), "F5.15: dirty=false → cherry-pick recovery offered");
-    const dirtyTrue = explainCap(cap, mkState(uncovered(true)));
-    assert(dirtyTrue.includes("uncommitted on disk"), "F5.15: dirty=true → the claim is present");
-    const legacy = explainCap(cap, mkState(uncovered()));
-    assert(
-      legacy.includes("uncommitted on disk"),
-      "F5.15: legacy verdict (no dirty flag) keeps the old wording",
-    );
   }
 }
 

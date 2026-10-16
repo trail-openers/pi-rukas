@@ -34,7 +34,7 @@ import { promisify } from "node:util";
 import { buildEvidence } from "../src/lens-evidence.ts";
 import { buildLensRoster } from "../src/lens-roster.ts";
 import { lensPromptFor } from "../src/lens-review-format.ts";
-import { DEFAULT_REVIEW_THRESHOLD, computeVerdict } from "../src/lens-review.ts";
+import { DEFAULT_REVIEW_THRESHOLD, computeVerdict } from "../src/lens-review-format.ts";
 import type { Finding } from "../src/lens-review.ts";
 import { resolveReviewThreshold } from "../src/review-threshold.ts";
 import { pathsInDiff, readFileAtBranch } from "../src/work-driver-diff.ts";

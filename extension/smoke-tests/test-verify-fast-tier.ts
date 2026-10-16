@@ -18,14 +18,23 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
-import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
 import { runCommitPrConsolidatedVerify } from "../src/work-driver-integrate-verify.ts";
-import { VERIFY_TIMEOUT_LABEL, verifyCapFor } from "../src/work-driver-verify-develop-helpers.ts";
+import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
+import {
+  VERIFY_TIMEOUT_LABEL,
+  boundText,
+  verifyCapFor,
+} from "../src/work-driver-verify-develop-helpers.ts";
 import { FAST_TIER_LABEL, fastVerifyCmdFor, withFastTier } from "../src/work-driver-verify-fast.ts";
 import { runVerifyCommandGate } from "../src/work-driver-verify-verify-cmd.ts";
 import { validateDiscriminants } from "../src/workflow-state-validate.ts";
 import { appendEvent, initialState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
+import {
+  assertDefaultVerifyBound,
+  defaultBoundText,
+  pinDefaultVerifyTimeout,
+} from "./lib/verify-timeout-pin.ts";
 
 const execFileP = promisify(execFile);
 let exit = 0;
@@ -40,16 +49,28 @@ const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 const sh = (cwd: string, cmd: string) => execFileP("/bin/sh", ["-c", cmd], { cwd });
 
 const FULL = "bash scripts/verify.sh";
-const FAST = "bunx tsc --noEmit";
+// Mirrors the real .pi/verify-cmd-fast first line: string identity only; the executor is stubbed.
+const FAST = "bun x tsc --noEmit && bun run check";
 const TSC = "src/a.ts(3,1): error TS2304: Cannot find name 'nope'.\n";
 const root = mkdtempSync(path.join(tmpdir(), "pi-fast-tier-"));
+// Case 5 asserts the DEFAULT bound's text ("10-min"). Its bound comes from
+// PI_ENSEMBLE_VERIFY_TIMEOUT_MS, which the gate reads from the environment —
+// an operator who raised it (a 45-min laptop setting) would fail the case for
+// the wrong reason, so the block runs with the knob absent and the asserted
+// text is derived from the production helper. Case 6 passes its bound
+// explicitly (timeoutMs:) and never reads that env var, so it needs no pin.
+const BOUND = await defaultBoundText();
+await assertDefaultVerifyBound(assert);
+// The commit-pr tier's own bound (a different knob from the develop gate's),
+// spelled the same way the production helper spells it.
+const INTEGRATION_BOUND = boundText(900_000);
 type Outcome = { ok: true } | { ok: false; stdout: string; killed?: boolean };
 type Calls = Array<{ cmd: string; timeout?: number }>;
 
 /** A stub executor: git runs for real, verify commands get a chosen outcome. */
 function stubExec(calls: Calls, outcomeFor: (cmd: string) => Outcome) {
-  const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
-    cmd = commandOf(cmd, o);
+  const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmdArg, o) => {
+    const cmd = commandOf(cmdArg, o);
     if (cmd.startsWith("git ")) return { stdout: (await sh(o?.cwd ?? "", cmd)).stdout };
     calls.push({ cmd, timeout: o?.timeout });
     const r = outcomeFor(cmd);
@@ -221,7 +242,7 @@ async function developGate(
 }
 
 // 5 — killed at the bound: its own cap, its own text, a valid state file.
-{
+await pinDefaultVerifyTimeout(async () => {
   const r = await developGate("timeout", FAST, (c) =>
     c === FULL ? { ok: false, stdout: "ok   1 passing\n", killed: true } : { ok: true },
   );
@@ -245,7 +266,7 @@ async function developGate(
   st = appendEvent(st, { kind: "cap-hit", at: 2, cap, reviewRound: 0, nextStep: "handoff" });
   const text = explainCap(cap, st);
   assert(
-    text.includes("TIMED OUT") && text.includes("10-min"),
+    text.includes("TIMED OUT") && text.includes(BOUND),
     "timeout: the handoff says it timed out, with the bound",
   );
   assert(
@@ -264,7 +285,7 @@ async function developGate(
       "verify-failed:develop",
     "mixed: one real failure among timeouts is verify-failed",
   );
-}
+});
 
 // 6 — commit-pr: the fast tier runs first and a kill is a timeout, not a classification.
 {
@@ -298,7 +319,7 @@ async function developGate(
   assert(
     killed.ok === false &&
       killed.timedOut === true &&
-      killed.classifiedMessage.includes("15-min") &&
+      killed.classifiedMessage.includes(INTEGRATION_BOUND) &&
       killed.classifiedMessage.includes("PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS"),
     "commit-pr timeout: flagged, with the bound and the integration knob",
   );
@@ -335,7 +356,7 @@ async function developGate(
   });
   const text = explainCap("verify-timeout:commit-pr", st);
   assert(
-    text.includes("TIMED OUT") && text.includes("15-min"),
+    text.includes("TIMED OUT") && text.includes(INTEGRATION_BOUND),
     "commit-pr timeout: the handoff names the bound",
   );
 }

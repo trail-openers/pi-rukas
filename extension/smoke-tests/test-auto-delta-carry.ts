@@ -36,7 +36,7 @@ function assert(cond: boolean, msg: string) {
 }
 
 const { runLensReview } = await import("../src/lens-review.ts");
-const { renderSummary } = await import("../src/lens-review-format.ts");
+const { renderSummary } = await import("../src/lens-review-render.ts");
 const { decideEmptyDelta } = await import("../src/lens-review-auto-delta.ts");
 import type { LedgerEntry } from "../src/review-ledger.ts";
 
@@ -350,7 +350,16 @@ async function reviewAndAwaitLedger(
   const r = await mergeMainFixture();
   await addOrigin(r.dir);
   await execp(`git checkout -q ${r.c2}`, { cwd: r.dir });
-  const recorded = await writeLensLedgerEntry("APPROVED", "MEDIUM", r.dir, branch, false, r.c2, undefined, branch);
+  const recorded = await writeLensLedgerEntry(
+    "APPROVED",
+    "MEDIUM",
+    r.dir,
+    branch,
+    false,
+    r.c2,
+    undefined,
+    branch,
+  );
   await execp(`git checkout -q ${branch}`, { cwd: r.dir });
   try {
     assert(recorded.recorded === true, "the real writer records the reviewed head c2");
