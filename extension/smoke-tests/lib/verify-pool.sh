@@ -13,7 +13,10 @@
 #   JOB_PID[i]    pid of the job's subshell
 #   JOB_STATE[i]  0 queued, 1 running, 2 finished
 #   JOB_STARTED_AT[i] the $SECONDS value at start_job — run_pool's per-job bound
-#   JOB_EXIT[i]   the test's exit code (214 = the watchdog fired)
+#   JOB_EXIT[i]   the test's exit code (its REAL code; a timeout is recorded by
+#                 $RUN_DIR/<i>.timeout, written by mark_timeout, never by 214)
+#   JOB_KILLED[i] 1 once the outer per-job bound has fired for this job, so the
+#                 kill and the bookkeeping happen exactly once (see run_pool)
 # verify-loop.sh replays the captures in index order, so printed output and the
 # digest do not depend on which job finished first.
 #
@@ -57,6 +60,16 @@ JOB_RC=()
 JOB_PID=()
 JOB_STATE=()
 JOB_EXIT=()
+# One-shot latch for the outer per-job bound: 1 once run_pool has taken that job
+# down. Without it every later tick re-entered the bound branch for a job that
+# was already dead and re-walked/re-killed its tree, because the only thing
+# distinguishing "stuck" from "already taken down" was the elapsed comparison,
+# which stays true forever once it has become true.
+JOB_KILLED=()
+# The run's private directory, remembered from pool_collect so the outer bound
+# can write the same $RUN_DIR/<n>.timeout marker the watchdog writes. Without it
+# the two timeout paths would disagree about how they are reported.
+POOL_RUN_DIR=""
 # The $SECONDS value each job was started at, for run_pool's per-job wall-clock
 # bound. Written by start_job next to JOB_PID, reset by pool_collect.
 JOB_STARTED_AT=()
@@ -69,12 +82,15 @@ POOL_RUNNING=0
 # descendants can outlive the job.
 POOL_STARTED=()
 
-# pool_collect <run-dir> <file> ... — register each non-live test as a job, in
-# argument order, with its capture and exit-code file inside <run-dir> (the
-# private per-run directory verify-loop.sh created and will remove).
+# pool_collect <run-dir> -- <file> ... — register each non-live test as a job,
+# in argument order, with its capture, exit-code and timeout-marker file inside
+# <run-dir> (the private per-run directory verify-loop.sh created and will
+# remove). The `--` separates the directory from the file list: a test path
+# beginning with a dash would otherwise read as an option to the parser.
 pool_collect() {
   local run_dir="$1" t n=0
   shift
+  [ "${1:-}" = "--" ] && shift
   # Reset at entry: pool_collect's job arrays are globals, so anything left
   # from a previous collection would be replayed as jobs nobody asked for.
   JOB_TESTS=()
@@ -83,9 +99,11 @@ pool_collect() {
   JOB_PID=()
   JOB_STATE=()
   JOB_EXIT=()
+  JOB_KILLED=()
   JOB_STARTED_AT=()
   POOL_STARTED=()
   POOL_RUNNING=0
+  POOL_RUN_DIR="$run_dir"
   for t in "$@"; do
     case "$t" in *-live.ts) continue;; esac
     JOB_TESTS+=("$t")
@@ -94,6 +112,7 @@ pool_collect() {
     JOB_STATE+=(0)
     JOB_PID+=(0)
     JOB_EXIT+=(0)
+    JOB_KILLED+=(0)
     JOB_STARTED_AT+=(0)
     n=$((n + 1))
   done
@@ -120,7 +139,7 @@ start_job() {
   local i="$1"
   (
     rc=0
-    run_test_with_timeout "$VERIFY_TEST_TIMEOUT_S" "${JOB_TESTS[$i]}" "${JOB_CAP[$i]}"
+    run_test_with_timeout "$VERIFY_TEST_TIMEOUT_S" "${JOB_TESTS[$i]}" "${JOB_CAP[$i]}" "$i" "$POOL_RUN_DIR"
     rc=$?
     # The rc file is the ONLY way the poll loop learns this job finished. If
     # the write fails the job is indistinguishable from one still running
@@ -140,191 +159,21 @@ start_job() {
   POOL_RUNNING=$((POOL_RUNNING + 1))
 }
 
-# collect_tree <var> <root-pid> — put the space-separated pid set of the tree
-# rooted at <root-pid> (the root included) into the caller's variable <var>.
-# Each pid is walked once: a pid that appears in two parents' child lists would
-# otherwise re-enter the queue and be re-walked for each parent. Shared by
-# kill_process_tree and the interrupt handler so both agree on what "the job's
-# tree" means.
-#
-# Two rules this function exists to satisfy, both learned the hard way:
-#
-#  1. Callers must NOT wrap it in $(...). Command substitution runs the body in
-#     a SUBSHELL, and `pgrep -P` reports children of the process that called
-#     it — so from inside a substitution the job subshell appears childless and
-#     its `bun`/`sh -c` grandchildren are never collected. That is precisely the
-#     orphan the old second tree-walk used to paper over. The caller therefore
-#     declares the variable and calls this for its side effect.
-#  2. The result is written with one eval at the end, from a local accumulator.
-#     Writing it incrementally (`printf -v "$_ct_out" '%s' "$_ct_out" ...`)
-#     expands the name in the ARGUMENT against the CALLER's binding while the
-#     -v target resolves to the local, so the caller's variable came back
-#     holding its own name.
-#
-# Re-entrant by construction: nothing is shared through a global, so the two
-# jobs of one interrupt pass cannot clobber each other's visited set.
-collect_tree() {
-  local _ct_out="$1" _ct_root="$2"
-  if [ -z "$_ct_out" ]; then
-    echo "warn: verify-loop: collect_tree: no target variable given; refusing to walk" >&2
-    return 1
+# #1365 — the process-tree half (collect_tree + interrupt_now) lives in
+# verify-tree.sh so each file stays under the §12 500-line cap. Sourced here —
+# after start_job, which is the last thing either half's callers need defined —
+# and checked the same way verify-loop.sh checks the watchdog and the reporter:
+# a missing name here would surface as command-not-found inside the interrupt
+# handler, which is exactly the path where a silent failure leaks every running
+# job's process tree instead of taking it down.
+. "$(dirname "${BASH_SOURCE[0]}")/verify-tree.sh"
+for _tree_fn in collect_tree interrupt_now; do
+  if [ "$(type -t "$_tree_fn")" != function ]; then
+    echo "error: verify-loop: lib/verify-tree.sh did not define $_tree_fn — the process-tree teardown is broken; refusing to run" >&2
+    exit 2
   fi
-  # The last statement is `eval`, and the ONLY thing eval expands is the
-  # caller-supplied target NAME plus whatever collect_tree itself built — the
-  # pid strings never reach it. That holds only while <var> is a plain
-  # identifier: `collect_tree 'x=$(rm -rf /)' 1` would run the substitution at
-  # assignment time. Nothing in-tree passes a non-identifier, so a violation is
-  # a caller bug and is named rather than silently tolerated (an empty result
-  # here would read as "this job has no descendants" and orphan its tree).
-  if ! [[ "$_ct_out" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-    echo "warn: verify-loop: collect_tree: invalid target variable name; refusing to walk" >&2
-    return 1
-  fi
-  if [ -z "$_ct_out" ]; then return 0; fi
-  # `wait` owns the liveness of a tree this shell still owns, so this only
-  # refuses values that could never be a pid.
-  if [[ ! "$_ct_root" =~ ^[0-9]+$ ]]; then
-    eval "$_ct_out=''"
-    return 0
-  fi
-  local _ct_all="$_ct_root" _ct_vis=" $_ct_root " _ct_queue="$_ct_root" _ct_cur _ct_cids _ct_fresh _ct_child
-  while [ -n "$_ct_queue" ]; do
-    _ct_cids=""
-    for _ct_cur in $_ct_queue; do
-      _ct_cids="$_ct_cids $(pgrep -P "$_ct_cur" 2>/dev/null)"
-    done
-    _ct_fresh=""
-    for _ct_child in $_ct_cids; do
-      case "$_ct_vis" in
-        *" $_ct_child "*) : ;;
-        *) _ct_fresh="$_ct_fresh $_ct_child" ;;
-      esac
-    done
-    _ct_fresh="${_ct_fresh# }"
-    if [ -n "$_ct_fresh" ]; then
-      _ct_vis="$_ct_vis$_ct_fresh "
-      _ct_all="$_ct_all $_ct_fresh"
-      _ct_queue="$_ct_fresh"
-    else
-      _ct_queue=""
-    fi
-  done
-  eval "$_ct_out=\"$_ct_all\""
-}
-
-# interrupt_now <exit-code> — the INT/TERM handler, ONE bounded pass.
-#
-# Bash defers a trapped signal until the foreground command returns, so by the
-# time this runs the decision to interrupt is already made and the hung tests
-# are still alive; the handler must take them down itself rather than exit and
-# leave them running with no parent.
-#
-# The previous shape walked each live job's tree twice — once before reaping
-# and once after — through kill_process_tree, which SIGTERMs, polls up to 2s for
-# liveness to clear and then SIGKILLs. Two walks meant two 2s grace polls and up
-# to ~14s before the loop returned, and the second walk was defensive rather than
-# load-bearing: the first pass already collected the whole descendant set, so a
-# "survivor" was simply a pid that had not been scheduled yet, not one the walk
-# had missed.
-#
-# One pass instead: block INT/TERM first (the trap itself is the re-entry
-# guard — a second Ctrl-C must not restart a half-finished kill), collect every
-# running job's tree INCLUDING the job subshell pids themselves (the signal
-# reaches the subshell, not its grandchild, so the subshell has to be in the
-# set explicitly), SIGTERM the whole set once, poll up to 20 × 0.1s for
-# liveness to clear, SIGKILL whatever still answers `kill -0`, then `wait` on
-# the job pids so they are reaped rather than left as zombies of this shell.
-# SIGKILL to a dead or already-reaped pid is a harmless no-op, which is what
-# makes the unconditional second round safe. Finally the run's temp state is
-# dropped through _extra_cleanup — the same routine the EXIT trap runs, which
-# this path does not reach — and the shell exits with the shell convention
-# 128 + signal (130 = SIGINT, 143 = SIGTERM).
-#
-# Three corrections since that shape shipped:
-#
-#  * The tree walk covers jobs in state 1 AND state 2, taken from POOL_STARTED
-#    rather than the state array alone. State 2 excludes a job from being
-#    treated as running, not from having left descendants behind — and a job
-#    that finished is precisely the one whose grandchildren were never looked at.
-#    collect_tree on a dead root is best effort (it finds only what is still a
-#    child of that pid), which is why it is attempted for both states rather
-#    than asserted for one.
-#  * `_extra_cleanup` is no longer probed with `type -t`. The probe made an
-#    absent or misnamed hook (verify-loop.sh renamed it once already) look like
-#    a clean interrupt while the private RUN_DIR, the failure captures and the
-#    ledger temp dir stayed on disk: the EXIT trap it duplicates never runs on
-#    this path. It is under the same hard name check verify-loop.sh applies to
-#    every other hook it depends on, so a gap is a loud exit 2 at startup
-#    instead of a silent leak per Ctrl-C. It is not optional: the EXIT trap
-#    already calls it unconditionally, so a run with no cleanup routine is
-#    already broken before the pool is reached.
-#  * `_extra_cleanup` runs BEFORE the reap, and the reap is limited to pids
-#    `kill -0` reports gone. `wait` on a running pid blocks until it exits, so
-#    waiting on every non-zero JOB_PID made the bound above a fiction: one
-#    descendant that ignores both signals held the handler open for as long as
-#    it liked. Nothing in the cleanup depends on the reap, so the step that can
-#    block now happens last.
-interrupt_now() {
-  local code="$1" i pid pids="" alive polls tree
-  # Re-entry guard AND the reason the walk below is not interrupted itself: a
-  # second Ctrl-C during the kill must not restart a half-finished pass.
-  trap '' INT TERM
-  # A job in state 2 has ALREADY been walked: run_pool's completion branch calls
-  # kill_process_tree on it (a job only reaches state 2 once its rc file is
-  # written or its pid is gone), so re-walking every finished job on every
-  # Ctrl-C repeats a walk whose descendants were already collected and
-  # signalled. Only the jobs that never completed — the ones actually running
-  # when the signal landed — still need taking down here.
-  for i in "${POOL_STARTED[@]}"; do
-    [ "${JOB_STATE[$i]:-0}" -eq 1 ] || continue
-    [ "${JOB_PID[$i]:-0}" -ne 0 ] || continue
-    # No $(...) around the walk: see collect_tree's rule 1.
-    tree=""
-    collect_tree tree "${JOB_PID[$i]}"
-    pids="$pids $tree"
-  done
-  pids="${pids# }"
-  if [ -n "$pids" ]; then
-    for pid in $pids; do kill -TERM "$pid" 2>/dev/null; done
-  fi
-  # Bounded wait (20 × 0.1s) for the set to stop answering kill -0. Bounded
-  # rather than unconditional: one subshell that ignores SIGTERM must not block
-  # the handler past the caller's patience.
-  polls=0
-  while [ "$polls" -lt 20 ]; do
-    alive=0
-    for pid in $pids; do
-      if kill -0 "$pid" 2>/dev/null; then alive=1; fi
-    done
-    [ "$alive" -eq 0 ] && break
-    sleep 0.1
-    polls=$((polls + 1))
-  done
-  if [ -n "$pids" ]; then
-    for pid in $pids; do kill -KILL "$pid" 2>/dev/null; done
-  fi
-  # Cleanup BEFORE the reap. _extra_cleanup removes the #827/#1028 failure
-  # captures and the #1069 ledger temp dir, and is the single owner of
-  # `rm -rf "$RUN_DIR"` — duplicating it here would only add a second place
-  # where the private directory's lifetime is decided. It runs first because
-  # the reap below is the only step that can still block: removing files does
-  # not depend on the jobs being reaped, so a reap that stalls on a pid this
-  # shell does not own cannot strand the temp state.
-  _extra_cleanup
-  # Reap only what is actually gone. `wait` on a pid that is still running
-  # BLOCKS until it exits, so waiting on every non-zero JOB_PID made the
-  # handler's bound a fiction — one descendant that ignores both signals would
-  # hold the handler open for as long as it liked. `kill -0` reports gone for
-  # a reaped-or-exited job, which is exactly the set `wait` can return from
-  # immediately; anything still alive is left as a zombie of this shell, and
-  # this shell is exiting anyway.
-  for i in "${!JOB_PID[@]}"; do
-    if [ "${JOB_PID[$i]}" -ne 0 ] && ! kill -0 "${JOB_PID[$i]}" 2>/dev/null; then
-      wait "${JOB_PID[$i]}" 2>/dev/null
-    fi
-  done
-  exit "$code"
-}
+done
+unset _tree_fn
 
 # run_pool <jobs> — keep up to <jobs> jobs running; return when all are done.
 # The test list is pool_collect's alone; taking it again here only offered a
@@ -358,6 +207,10 @@ run_pool() {
       # same `kill -0` already used here; a slow exit is handled by the bound in
       # the else branch rather than by guessing at a grace.
       if [ -s "${JOB_RC[$i]}" ] && ! kill -0 "${JOB_PID[$i]}" 2>/dev/null; then
+        # A job the outer bound already took down is finished whether or not
+        # its subshell managed to write an rc file on the way out: the bound
+        # already counted it, and re-entering here would decrement
+        # POOL_RUNNING a second time for the same job.
         # The transition out of state 1 IS the completion, so the counter is
         # decremented here and nowhere else — one decrement per job, guaranteed
         # by the state change the branch itself makes.
@@ -422,14 +275,31 @@ run_pool() {
         # to be able to check against kill_process_tree, not one derived at run
         # time from constants that live in another file.
         outer_bound=$((VERIFY_TEST_TIMEOUT_S + 8))
-        if [ "$elapsed" -ge "$outer_bound" ]; then
+        if [ "$elapsed" -ge "$outer_bound" ] && [ "${JOB_KILLED[$i]:-0}" -ne 1 ]; then
+          # ONE-SHOT. The latch is set before anything that can take time, and
+          # the completion branch above refuses a job whose latch is set, so
+          # this branch is entered once per job: no later tick re-walks or
+          # re-kills a tree it already took down (and no `done_n` double count,
+          # which would end the pool early with jobs still running). Leaving
+          # the state at 1 for a tick to retry was the bug — the elapsed test
+          # stays true forever, so "retry" meant "kill it again, forever".
+          JOB_KILLED[$i]=1
           echo "warn: verify-loop: job for ${JOB_TESTS[$i]} exceeded the ${outer_bound}s per-job bound without reporting; killing its tree" >&2
           kill_process_tree "${JOB_PID[$i]}" || rc=1
           wait "${JOB_PID[$i]}" 2>/dev/null || rc=1
           JOB_STATE[$i]=2
           POOL_RUNNING=$((POOL_RUNNING - 1))
           [ "$POOL_RUNNING" -ge 0 ] || POOL_RUNNING=0
-          JOB_EXIT[$i]=214
+          # The timeout is the MARKER, not a code: 214 used to go here and the
+          # caller read it as "timed out", which is exactly the collision a
+          # test that exits 214 itself would hit. mark_timeout is the same
+          # routine the inner watchdog calls, so both timeout paths report
+          # identically. The job's rc file never lands (the subshell was
+          # killed), so JOB_EXIT stays at the non-zero placeholder below.
+          mark_timeout "$POOL_RUN_DIR" "$i"
+          if ! [[ "${JOB_EXIT[$i]}" =~ ^[1-9][0-9]*$ ]]; then
+            JOB_EXIT[$i]=1
+          fi
           done_n=$((done_n + 1))
         fi
       fi
@@ -455,8 +325,10 @@ run_pool() {
       # delivered and case 5 of test-verify-loop-parallel.ts pins that path.
       # Closing the SIGINT gap needs job control (`set -m`) or a SIGINT-to-
       # SIGTERM shim, which changes how every child in the pool is signalled —
-      # that is a spec decision, not a fold-in. See
-      # /tmp/pi-dev-1365/interrupt-min.sh for the reproducer.
+      # that is a spec decision, not a fold-in. The reproducer is committed at
+      # smoke-tests/fixtures/verify-loop/interrupt-min.sh (one trap, one sleep:
+      # SIGINT leaves it alive, SIGTERM does not), so the claim is re-runnable
+      # rather than a note about a scratch file that no longer exists.
       sleep 0.1
     fi
   done
