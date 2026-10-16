@@ -6,12 +6,21 @@
  *
  * Stderr is safe in both Pi's TUI (mirrored to a side panel) and `-p` mode
  * (stdout-only for the JSON stream); doesn't pollute either.
+ *
+ * The switch is read on every call, not latched at module load: an earlier `const`
+ * made "set `PI_ENSEMBLE_DEBUG` before importing" an invisible precondition of every
+ * trace assertion, and `test-adversarial-reread-failure.ts` carried a `bun:test`
+ * `mock.module` workaround purely to satisfy it. Reading it live costs one env lookup on
+ * a path that already writes to stderr, and removes a class of test that silently passes
+ * on an empty capture.
  */
 
-const DEBUG_ENABLED = process.env.PI_ENSEMBLE_DEBUG === "1";
+function debugEnabled(): boolean {
+  return process.env.PI_ENSEMBLE_DEBUG === "1";
+}
 
 export function trace(msg: string): void {
-  if (!DEBUG_ENABLED) return;
+  if (!debugEnabled()) return;
   process.stderr.write(`[pi-rukas] ${msg}\n`);
 }
 
@@ -24,5 +33,5 @@ export function traceWarn(msg: string): void {
 }
 
 export function isTraceEnabled(): boolean {
-  return DEBUG_ENABLED;
+  return debugEnabled();
 }

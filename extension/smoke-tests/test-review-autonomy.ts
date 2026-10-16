@@ -275,9 +275,9 @@ try {
       answered.assumptions.some(
         (a) =>
           a.text ===
-          "[CRITICAL][RESOLVED] Who may change the retry timeout \u2014 maintainers only",
+          "resolved open point: [CRITICAL][RESOLVED] Who may change the retry timeout \u2014 maintainers only",
       ),
-    "autonomy: the same point marked [RESOLVED] proceeds, recorded as an assumption",
+    "autonomy: the same point marked [RESOLVED] proceeds, recorded as a prefixed assumption",
   );
   const spacedResolved = finaliseSpecVerdict(
     buildable,

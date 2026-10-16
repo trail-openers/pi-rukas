@@ -29,8 +29,8 @@ import {
   OPEN_POINTS_HEADING,
   OPEN_POINTS_INTRO,
 } from "./open-points-contract.ts";
-import { trace } from "./trace.ts";
 import { flattenIssueText } from "./text-flatten.ts";
+import { trace } from "./trace.ts";
 import type { NormalisedSpec, SpecAssumption, SpecEvidence } from "./work-driver-intent.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 
@@ -241,9 +241,25 @@ function boundEntry(text: string): string {
 }
 
 /**
- * The blocking lines of a reading, bounded, redacted and traced.
+ * The one normaliser for every text a reading stores (#1187 fix round 2).
  *
- * One call site (the gate), so the bound lives here rather than in every entry.
+ * Redaction and the clip belong here rather than at the `openPoints` write site: the
+ * resolved texts become assumptions the PR body renders, and an assumption is public text
+ * too. Redacting before clipping matters — clipping first can cut a token into a fragment
+ * no pattern recognises (the same reasoning as `redactClip`).
+ *
+ * Every stored text in `readOpenPoints` goes through this one function, including a list
+ * item's own text: `classifyItem` reads the *raw* flatten (a tag the redactor rewrote would
+ * misclassify), and only the stored form is sanitised.
+ */
+function storedText(flat: string): string {
+  return boundEntry(flat);
+}
+
+/**
+ * The blocking lines of a reading, capped and traced.
+ *
+ * One call site (the gate), so the entry cap lives here rather than in every entry.
  */
 function boundedBlockingTexts(values: string[], what: string): string[] {
   const kept = values.slice(0, MAX_OPEN_POINT_ENTRIES).map(boundEntry);
@@ -316,15 +332,23 @@ export interface OpenPointReading {
 }
 
 /**
+ * The exact heading, tolerant of leading spaces, `#` count and trailing hashes — nothing else.
+ *
+ * The `(` and `)` of "(unresolved at the gap-gate cap)" are literal, so a near-miss heading
+ * ("Open points (unresolved at the gap-gate", a reworded tail, a trailing word) does not
+ * match and opens no section: the settlement's "no cross-section scan" holds exactly.
+ */
+const OPEN_POINTS_ATX =
+  /^ {0,3}#{1,6}[ \t]+Open points \(unresolved at the gap-gate cap\)[ \t]*#*[ \t]*$/;
+
+/**
  * Whether `raw` is the exact OPEN_POINTS_HEADING, read independently of fence state.
  *
- * `normaliseDeclaredPath` strips a single balanced trailing parenthetical — the whole
- * shape of this heading — leaving `Open points`. A near-miss heading ("Open points
- * (unresolved at the gap-gate", no close) and any other heading keep their text, so they
- * do not match and the settlement's "no cross-section scan" still holds.
+ * Deliberately not `flattenIssueText`: an invisible character inside the heading would make
+ * a mangled heading match, and a mangled heading is precisely what must NOT open a section.
  */
 function isOpenPointsHeading(raw: string): boolean {
-  return normaliseDeclaredPath(raw.replace(/^ {0,3}#{1,6}[ \t]+/, "")) === "Open points";
+  return OPEN_POINTS_ATX.test(raw);
 }
 
 /**
@@ -347,11 +371,17 @@ function isOpenPointsHeading(raw: string): boolean {
  */
 export function readOpenPoints(issueBody: string): OpenPointReading {
   const entries: Entry[] = [];
-  const add = (kind: Entry["kind"], raw: string): Entry => {
-    const entry: Entry = { kind, text: "", pieces: [raw] };
+  const add = (kind: Entry["kind"], flat: string): Entry => {
+    const entry: Entry = { kind, text: "", pieces: [flat] };
     entries.push(entry);
     return entry;
   };
+  /** Open a list item: its text is normalised now, and stays unless a continuation joins it. */
+  const openItem = (flat: string): Entry => ({
+    kind: classifyItem(flat),
+    text: storedText(flat),
+    pieces: [flat],
+  });
   let level = 0; // heading level of the open section; 0 = outside it
   let fence: string | undefined; // opener of the fence we are inside — INSIDE the section only
   let fenceEntry: Entry | undefined; // the one entry a fenced block inside the section becomes
@@ -369,7 +399,9 @@ export function readOpenPoints(issueBody: string): OpenPointReading {
     }
     if (level === 0) continue;
     if (fence !== undefined) {
-      if (fenceEntry !== undefined && raw.trim() !== "") fenceEntry.pieces.push(raw);
+      // Fence bodies are quoted verbatim, so they are flattened here rather than at close.
+      const flat = raw.trim() === "" ? "" : flattenIssueText(raw);
+      if (fenceEntry !== undefined && flat !== "") fenceEntry.pieces.push(flat);
       if (closesFence(raw, fence)) fence = undefined;
       continue;
     }
@@ -377,7 +409,7 @@ export function readOpenPoints(issueBody: string): OpenPointReading {
     if (opener !== undefined) {
       fence = opener;
       cur = undefined;
-      fenceEntry = add("parked", raw);
+      fenceEntry = add("parked", flattenIssueText(raw));
       continue;
     }
     if (heading !== null) {
@@ -385,7 +417,7 @@ export function readOpenPoints(issueBody: string): OpenPointReading {
       cur = undefined;
       // A deeper heading inside the section is a sub-heading, and it parks.
       if (depth > level) {
-        add("parked", raw);
+        add("parked", flattenIssueText(raw));
         continue;
       }
       level = 0;
@@ -401,18 +433,20 @@ export function readOpenPoints(issueBody: string): OpenPointReading {
       continue;
     }
     if (SETEXT_UNDERLINE.test(raw)) {
-      add("parked", raw);
+      add("parked", flattenIssueText(raw));
       cur = undefined;
       continue;
     }
     const item = raw.match(LIST_ITEM)?.[1];
     if (item !== undefined) {
-      // An indented list item is an item (#1187 fix round 2): folding it into the bullet
-      // above lost a nested CRITICAL point that `classifyItem` reads perfectly well.
-      const text = flattenIssueText(item)
+      // An indented list item is its own entry (#1187 fix round 2): folding it into the
+      // bullet above lost a nested CRITICAL point that `classifyItem` reads perfectly well.
+      const flat = flattenIssueText(item)
         .replace(/^\[[ xX]\](?: |$)/, "")
         .trim();
-      cur = { kind: classifyItem(text), text, pieces: [] };
+      // Classified on the raw flatten; stored through the one normaliser, so the credential
+      // never reaches the assumption or the handoff.
+      cur = openItem(flat);
       entries.push(cur);
       continue;
     }
@@ -420,16 +454,17 @@ export function readOpenPoints(issueBody: string): OpenPointReading {
     // is not prose to fold in and parks on its own instead.
     const piece = flattenIssueText(raw);
     if (/^[ \t]/.test(raw) && cur !== undefined && !piece.startsWith("[")) {
-      cur.pieces.push(raw);
+      cur.pieces.push(piece);
       continue;
     }
-    cur = add("parked", raw);
+    cur = add("parked", piece);
   }
   const reading: OpenPointReading = { points: [], resolved: [], unparsed: [] };
   for (const entry of entries) {
-    // Flatten once, when the entry closes. `pieces` is empty for an item whose text was
-    // already flattened and normalised at open (the checkbox strip), so it is left alone.
-    if (entry.pieces.length > 0) entry.text = flattenIssueText(entry.pieces.join(" "));
+    // Flatten-once happens at open (one `flattenIssueText` per line, never per line of a
+    // growing entry); a multi-piece entry — one that took a continuation — joins its pieces
+    // and re-normalises here, once, in place of the old per-line rebuild.
+    if (entry.pieces.length > 1) entry.text = storedText(entry.pieces.join(" "));
     if (entry.kind === "point") reading.points.push(entry.text);
     else if (entry.kind === "resolved") reading.resolved.push(entry.text);
     else if (entry.kind === "parked") reading.unparsed.push(entry.text);
@@ -448,5 +483,5 @@ export function readOpenPoints(issueBody: string): OpenPointReading {
 export function openPointTexts(reading: OpenPointReading, kind: keyof OpenPointReading): string[] {
   return kind === "points" || kind === "unparsed"
     ? boundedBlockingTexts(reading[kind], kind)
-    : reading.resolved.map(boundEntry);
+    : reading[kind];
 }
