@@ -1,788 +1,835 @@
 /**
- * review-accept-guard — the mode-independent refusal of agent-run review
- * acceptance and of agent writes to the review findings store (#1105).
+ * review-accept-guard — deny-by-default refusal of agent bash that could reach the
+ * review findings store (#1105, #1125).
  *
- * Accepting a recorded review finding suppresses it from every later round, so
- * it must stay a human act: the operator runs `extension/scripts/review-accept.ts`
- * in a terminal. This hook refuses, in every mode and for every role, a bash
- * command that runs that script, that names the findings data file, or that
- * reaches the store through a JS runtime; and an edit / write / multiedit whose
- * target is the findings file, one of its `.tmp` / `.corrupt` siblings, or the
- * store module's own source.
+ * Accepting a recorded review finding suppresses it from every later round, so it
+ * must stay a human act: the operator runs `extension/scripts/review-accept.ts` in a
+ * terminal. This hook refuses, in every mode and for every role, agent bash that
+ * could reach that store, and agent edit / write / multiedit of the findings file,
+ * one of its `.tmp` / `.corrupt` siblings, or the store module's own source.
  *
- * ADVISORY, not a security boundary. The OPERATOR'S TERMINAL is the boundary:
- * every rule here is a string match on the command text or the target path, and
- * a string match is not a fence. The threat model is the honest-but-forgetful
- * agent, not an adversary; keep the rules few and legible.
+ * ADVISORY, not a security boundary: every rule is a string match on the command
+ * text or the target path. The threat model is the honest-but-forgetful agent, and
+ * the operator's terminal is the real boundary.
  *
- * THE VIEWS, and which route uses which — this is the whole design:
+ * ── THE ADJUDICATION RULE (the spec of #1125; operator decision 2026-10-16) ──────
  *
- *   - `removeQuoted(raw)` drops balanced quoted segments ENTIRELY. Text inside
- *     balanced quotes is prose (a commit message, a doc comment, a table cell), so
- *     it neither runs a runtime nor writes a file. Runtime position and write-flag
- *     tests are judged here, and the name is taken from the RAW command: a
- *     `grep -rn bun <store>` has `bun` in argument position, so it is a pattern and
- *     not a route, while `bun -e 'import("./src/<store>.ts")'` has the runtime in
- *     position and its name inside a quoted body — exactly the half the guard
- *     cannot read, so the name is not asked of the removed view (#1125);
- *   - `quotedOff(raw, false)` BLANKS balanced segments to same-width spaces and
- *     answers "does an ARGUMENT name the data file as a path operand?" — the data
- *     file dominates the plain-git exemption, and `git add <data>` is not prose
- *     while `git commit -m "…<data>…"` is;
- *   - Only BALANCED quotes count as prose. A quote character occurring an odd
- *     number of times makes the text unparseable, so every route falls back to the
- *     RAW command: guessing the benign reading of text we cannot parse is how a
- *     guard fails open (#1125).
+ *   (a) ORDERING. An EXACT allowlist of read-only command forms is authoritative.
+ *       Every OTHER bash command that names the findings store — the data file, the
+ *       store module, their stems, or a `.tmp` / `.corrupt` sibling — is refused. A
+ *       command that cannot be parsed (unbalanced quotes, an unreadable heredoc
+ *       body, a throw inside this module) is refused too.
+ *   (b) POLARITY. Fail closed. Over-refusing a harmless read is an ACCEPTED COST
+ *       (see KNOWN OVER-REFUSALS below), and the refusal names the flag to drop or
+ *       the accept CLI to use instead.
+ *   (c) EVOLUTION. A newly discovered bypass spelling is closed by REMOVING AN
+ *       ALLOWANCE or ADDING A REFUSAL — never by adding a new command scanner.
+ *       There is deliberately no "plain git" exemption, no per-route scanner and no
+ *       positional runtime test in this file: there is one allowlist, and the only
+ *       way in is to match one of its arms.
  *
- * `nameOf` is the one rule for what "names the file" means, shared by every route,
- * so a name cannot be protected on one route and missed on another.
+ * ── THE DECISION, in order ───────────────────────────────────────────────────────
  *
- * THE ROUTES, each asserted in test-review-accept-guard-hardened.ts:
- *   - the findings DATA file named as a path operand is refused wherever the shell
- *     sees it: cat, cp, sed, a heredoc, a redirect, or a plain git operand (`git
- *     add`, `git mv`, `git rm`, `git commit <file>`, …) (#1125);
- *   - a git/gh/glab argument that makes the tool write a file or run a shell:
- *     `--output` / `-o` in any spacing or attached form, and `-c`; plus `gh alias
- *     set`, `gh config set alias` and `git config alias.`, which install a command
- *     the next plain invocation runs;
- *   - a JS runtime (bun/bunx/node/npx/tsx/ts-node/deno) in INVOCATION POSITION —
- *     the first or second word of the command, or of a segment after `|`, `;`, `&`,
- *     `(` or a newline — in a command naming the store, wherever the name sits,
- *     including on a later line (a here-doc) or inside a quoted body;
- *   - `bun -` / `node -` reading a program from stdin, and the `-e` / `-p` /
- *     `--print` / `--eval` / preload eval forms: the body never appears in the
- *     command string, so the runtime alone is the route;
- *   - the operator script or its write module run directly by path;
- *   - an edit / write / multiedit whose target basename is the findings file, one
- *     of its `.tmp` / `.corrupt` siblings, or the store module's source (#1125).
+ *   1. normalise(): ONE pass — lowercase, whitespace and newlines collapsed,
+ *      balanced `'…'` / `"…"` spans removed (their contents are prose, so a commit
+ *      message may name the store), heredoc bodies removed. An odd count of `'` or
+ *      `"`, or a heredoc whose delimiter never returns, is PARSE_FAIL and clause (a)
+ *      refuses it: the caller never sees a partial normalisation.
+ *   2. namesAnythingProtected(): TOKEN-wise match against the protected names, their
+ *      stems and the `.tmp` / `.corrupt` siblings, asked of BOTH the raw and the
+ *      normalised text — the flag-dropping bug that made `matchAll` read one token is
+ *      closed by the explicit `g` flag in tokensOf().
+ *   3. THE FAST PATH: nothing protected is named, and no runtime word, no git/gh/
+ *      glab, no edit-capable word and no redirect appears → allow, before the
+ *      allowlist is consulted. This is why deny-by-default costs nothing ordinary.
+ *   4. THE ALLOWLIST: every segment (split on `|`, `;`, `&`, `&&`, `||`, newline)
+ *      must EXACTLY match one arm — A1 git read, A2/A3 gh/glab read, A4 bun test,
+ *      A5 verify-loop, A6 read tools, the exact build forms, and `git commit -m`
+ *      with quoted prose. A segment that matches no arm is refused.
  *
- * A TEST RUN (`bun test …` / `bash …/verify-loop.sh …`) is exempt as a read-only
- * suite, but the exemption is CONDITIONAL and judged on the RAW command (#1125):
- * an operator character or a line break anywhere in it — even inside quotes —
- * revokes it; every argument must be a `--digest`-style switch or a test path
- * (`smoke-tests/test-*.ts`-shaped), so a bare word (`verify-loop.sh bun <store>.ts`)
- * revokes it too; and it may not carry an eval flag or name the operator's script.
+ * ── KNOWN OVER-REFUSALS — 8, clause (b)'s accepted costs, each asserted ──────────
  *
- * WHAT IT DOES NOT COVER — everything not one of the shapes listed above:
- *   - a WRITE to the store module's source through BASH — `sed -i`, `cp`, `mv`,
- *     `tee` or a redirect naming `review-findings-store.ts`. The `edit` / `write` /
- *     `multiedit` tools are blocked on it, `bash` is not; only the findings DATA
- *     file and its siblings are refused as bash path operands;
- *   - any route that does not spell the name in the command text: a variable
- *     expanded later, a shell redirect, an obfuscated or composed path, a wildcard,
- *     `find -exec`, or any of the ways a shell reaches a file it never names;
- *   - a name the tokeniser cannot align to a protected one, e.g. a path built by
- *     concatenation (`"review-findings-"$SUFFIX`).
- *
- * In trust mode an agent with a shell can always reach the file. It exists to stop
- * an agent that is not trying to bypass it.
- *
- * KNOWN OVER-REFUSALS — 8, deliberate, each asserted in
- * test-review-accept-guard-hardened.ts. A string match cannot tell these from a
- * command, so the guard refuses rather than guesses:
- *   1. a fenced `bun run build` line followed by prose naming the store;
- *   2. a quoted markdown table whose cells hold `|` and name the store, since a `|`
- *      inside quotes still opens a segment;
- *   3. a regex literal `/bun|node|deno/` beside a store path, for the same reason;
- *   4. any command whose quoted text carries an odd number of quotes, judged on the
- *      raw command — `git commit -m 'it''s about <data>'`;
- *   5. a git/gh/glab argument that merely LOOKS like a write flag and names a
- *      protected file (`git commit --all -o <data>`);
- *   6. a test run carrying a flag the guard does not recognise (`bun test --reporter
- *      junit <store>`), because an unknown argument is not test-shaped;
- *   7. a verify-loop run taking a flag whose VALUE is a separate word;
- *   8. a runtime reached through a prefix word beyond the second (`env BUN_X=1 bun
- *      -e …`): it is not in invocation position, so the guard cannot prove it is not
- *      a runtime, and refuses.
+ *   1. `git show HEAD:README.md --output=/tmp/x` — any -o/--output is refused
+ *      whether or not it names a protected path;
+ *   2. `git -c core.pager=cat log` — any -c is refused; the remedy names the flag to
+ *      drop (`git --no-pager log`) or the allowlisted `bun test` arm to use instead;
+ *   3. `bun test smoke-tests/review-findings-store*` — a glob on the store's STEM is
+ *      refused: name the real test file (`smoke-tests/test-review-*.ts`) so the run
+ *      says which suite it executes;
+ *   4. `cp -r review-findings-store /tmp` — a command that names a protected path
+ *      outside quotes has no arm, whatever the verb;
+ *   5. `printf x | bun -` — a runtime reading a program from stdin is refused: the
+ *      body is the part this guard cannot read;
+ *   6. `bun -y` — an installer run is refused for the same reason;
+ *   7. a quoted `|` or `;` still opens a segment, so a markdown table whose cells
+ *      hold `|` beside a store path is refused — write the prose to a file instead;
+ *   8. `bash smoke-tests/lib/verify-loop.sh --digest-mode on …` — a flag whose VALUE
+ *      is a separate word is refused: the arm admits switches and paths only, never a
+ *      switch-and-argument pair, so a spelling it cannot read is not vouched for.
  */
 
-/* build 1792158174211 */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { trace, traceWarn } from "./trace.ts";
 
-/**
- * The names the guard protects: the operator script, its write module, the store
- * module and the findings data file. Every route below is built from this list, so
- * a name cannot be protected on one route and missed on another.
- */
-const PROTECTED_NAMES = {
-  script: "review-accept",
-  writeModule: "review-accept-row",
-  store: "review-findings-store",
-  data: "review-findings.json",
-};
-const PROTECTED_LIST = Object.values(PROTECTED_NAMES);
-/** The JS runtimes whose invocation executes a program. */
-const RUNTIME_WORDS = ["bun", "bunx", "node", "npx", "tsx", "ts-node", "deno"];
-
-/** RegExp-escape a literal from {@link PROTECTED_LIST}. */
-function escapeRe(literal: string): string {
-  return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/**
- * Fast exit for a command that names nothing protected — the overwhelmingly common
- * case, and this runs on every bash call in the session. A substring test answers
- * "could any route fire" without tokenising; the token walk answers it exactly.
- */
-const NAMES_PRESENT = new RegExp(PROTECTED_LIST.map(escapeRe).join("|"));
-/** A runtime word as a whole word — the invocation-position test. */
-const RUNTIME_WORD = new RegExp(`^(?:${RUNTIME_WORDS.join("|")})$`);
-/**
- * A runtime reading its program from standard input: the runtime followed by a
- * STANDALONE `-` token — not `-y`, not `--yes`. The body arrives from somewhere the
- * command never shows, so this route is decided by the runtime alone, whatever the
- * pipe carries. A here-doc is the same shape one word further along: `bun <<EOF` is
- * also a body the command never shows, and the name it imports is only visible in the
- * raw text (#1125).
- */
-const RUNTIME_STDIN = new RegExp(
-  String.raw`(?:^|[;&|\n(]|\s)(?:${RUNTIME_WORDS.join("|")})\b(?![-\w])\s+(?:-(?=\s|$)|<<\w*)`,
+/** The names whose stem marks a protected path, whatever suffix follows. */
+const PROTECTED_STEMS = ["review-accept", "review-accept-row", "review-findings-store"];
+/** A basename that names the findings store: the data file, its siblings, the modules. */
+const PROTECTED_BASENAME = new RegExp(
+  String.raw`^review-(?:findings\.json(?:\.(?:tmp|corrupt-[a-z0-9]+))?|findings-store|accept(?:-row)?)(?:\.ts)?$`,
 );
-/** The operator script and its write module — names that are never a test file. */
-const SCRIPT_NAMES = [PROTECTED_NAMES.script, PROTECTED_NAMES.writeModule];
-/** The script run directly by path as the first word, e.g. `./review-accept.ts`. */
-const DIRECT_RUN = new RegExp(
-  String.raw`^\s*(?:\S*\/)?(?:${PROTECTED_NAMES.script}|${PROTECTED_NAMES.writeModule})(?:\.ts)?(?=\s|$)`,
-);
-/**
- * Plain git/gh/glab: no shell operator and no line break, so the whole command is
- * one invocation whose arguments are text (a commit message may name the store, and
- * `glab` reads the same way as its two siblings) (#1125).
- */
-const PLAIN_VCS = /^\s*(?:git|gh|glab)\s[^;&|`$<>\n\r]*$/;
-/**
- * A git/gh/glab argument that makes the tool itself write a file, or run arbitrary
- * code. `--output` / `-o` redirect what it prints to disk
- * (`git show HEAD:x --output=review-findings.json`) and `-c` sets a config value,
- * including `alias.x='!…'`, which executes a shell command. Each takes its value as
- * the next word or glued to the flag, so BOTH spellings are one token shape —
- * `--output=x`, `--output x`, `-oreview-findings.json` and `-cfoo`. A trailing `(?!=)`
- * keeps `--config` out; the `` an earlier revision put after the letter never matched
- * the letter that followed it, so every ATTACHED form slipped through (#1125).
- */
-const VCS_WRITE_TOKEN = /^(?:--output(?:=\S*)?|-o\S*(?![-=])|-c\S*(?![-=]))$/i;
-/** An alias installed for the next invocation to run. */
-const VCS_ALIAS = /(?:^|\s)(?:gh\s+alias\s+set|gh\s+config\s+set\s+alias|git\s+config\s+alias\.)/;
-/**
- * A test run (bun test / verify-loop): no shell operator, no operator character and
- * no line break — judged on the RAW command, so an operator or newline inside a
- * quoted argument revokes the exemption rather than hiding in prose.
- */
-const TEST_RUN = /^(?:bun\s+test|bash\s+\S*verify-loop\.sh)\s[^;&|`$<>\n\r]*$/;
-/**
- * A flag the test-run exemption may carry: a `--digest`-style switch, never a value.
- * Two leading dashes are required so a single-dash word is never waved through as a
- * switch; the eval test before this one is what refuses `-r` / `-e` (#1125).
- */
-const TEST_RUN_FLAG = /^--[a-z0-9]+(?:-[a-z0-9]+)*$/;
-/**
- * A test path or glob: something with a `test`/`spec` segment and a `.ts` suffix, so
- * `smoke-tests/test-*.ts`, `./test-x.ts` and `review-findings-store.test.ts` pass and
- * a bare word (`bun`), a module path or a flag-with-value does not. `*` and `?` are
- * allowed because a suite is named by glob.
- */
-/**
- * A test path or glob, and ONE argument: a `test`/`spec` segment plus a `.ts` suffix,
- * built only from path and glob characters. `\S`-style classes would let a single
- * "argument" swallow `bun ./src/<store>.ts` and hide a runtime in the gaps, which is
- * precisely the shape the exemption has to refuse.
- */
-const TEST_PATH = /^[\w./-]*(?:test|spec)[\w./-]*\.tsx?[*?]*$/;
-/**
- * A source file the store module is reachable from by MODULE RESOLUTION rather than
- * as an argv file: a bare stem (`review-findings-store`, no `.ts`) or the operator's
- * acceptance row (`review-accept-row`, which imports it). Neither is a test path, so
- * neither the exemption nor the read-tool allowances may swallow one (#1125).
- */
-const REACHES_STORE = /^review-(?:findings-store|accept-row)$/;
-/**
- * The words the test-run exemption is allowed to begin with: the runner itself, or ONE
- * launcher immediately before it. `sudo bash …verify-loop.sh …` has TWO leading non-test
- * words and is refused — a prefix word in front of the runner is what turns a read-only
- * suite into a launch, and this is the same fail-closed reasoning as KNOWN OVER-REFUSAL 8
- * (#1125).
- */
-const TEST_RUN_HEAD =
-  /^(?:bun\s+test|bash\s+\S*verify-loop\.sh|[a-z]+\s+bash\s+\S*verify-loop\.sh)$/;
-/**
- * An eval flag: the runtime then executes code named on the command line, which is
- * why a test run carrying one is not exempt. bun documents `-e` as an alias of
- * `--print` and also accepts `-p`, so both spellings are one route; a preload
- * (`--preload`, `-r`, `--require`) runs a named module before the run.
- *
- * NOT a route on its own: `-e`, `-p` and `-r` are also the pattern, print and recursive
- * flags of `grep` / `ls` / `cp`, so this only ever qualifies a body as executable when a
- * RUNTIME is in invocation position to run it (see `scanCommand`, #1125).
- */
-const EVAL = /(?:^|\s)(?:-e|-p|--eval|--print|-r|--require|--preload)(?=\s|=|$)/;
-/** Edit tools whose `path` argument is checked against the protected files. */
-const FILE_TOOLS = new Set(["edit", "write", "multiedit"]);
-/**
- * The findings file and its tmp / corrupt-copy siblings (`review-findings.json.tmp`,
- * `review-findings.json.corrupt-123`), by basename. The store writes these, so an
- * agent edit of one is an edit of the store's contents.
- */
-const FINDINGS_BASENAME = new RegExp(
-  String.raw`^${escapeRe(PROTECTED_NAMES.data)}\.(?:tmp|corrupt-[a-z0-9]+)$`,
-);
-/** The store module's own source, by basename — the edit tools do not write it either. */
-const STORE_BASENAME = new RegExp(String.raw`^${escapeRe(PROTECTED_NAMES.store)}\.ts$`);
 
-/**
- * One compiled residual test per protected name, longest name first so the write
- * module (`review-accept-row`) is never reported as the operator script
- * (`review-accept`) with a stem glued on. Clause (c) allows whole hyphen-separated
- * segments only.
- */
-const NAME_RESIDUALS: ReadonlyArray<readonly [string, RegExp]> = [...PROTECTED_LIST]
-  .sort((a, b) => b.length - a.length)
-  .map(
-    (name) =>
-      [
-        name,
-        new RegExp(String.raw`^${escapeRe(name)}(?:\.ts|-(?:[a-z0-9]+-)*[a-z0-9]+\.ts)?$`),
-      ] as const,
-  );
+/** A JS runtime: its invocation executes a program, so it is never a read tool. */
+const RUNTIME = /^(?:bun|bunx|node|npx|tsx|ts-node|deno)$/;
+/** The forge CLIs, whose read arms are exact. */
+const VCS = /^(?:git|gh|glab)$/;
+/** A word that edits a file rather than reading one — never on the allowlist. */
+const EDIT_CAPABLE = new Set([
+  "sed",
+  "awk",
+  "perl",
+  "python",
+  "python3",
+  "ruby",
+  "tee",
+  "cp",
+  "mv",
+  "rm",
+  "mkdir",
+  "touch",
+  "truncate",
+  "dd",
+  "install",
+  "chmod",
+  "chown",
+  "ln",
+  "tar",
+  "unzip",
+  "patch",
+]);
+/** Read-only file tools: arm A6 admits them only for arguments naming nothing protected. */
+const READ_TOOLS = new Set([
+  "ls",
+  "cat",
+  "head",
+  "tail",
+  "wc",
+  "grep",
+  "rg",
+  "file",
+  "stat",
+  "which",
+  "basename",
+  "dirname",
+  // `sed` and `awk` are edit-capable wherever they sit in argv, so they are read
+  // tools ONLY in invocation position — armRead's own head test enforces that, and
+  // they stay out of this set so the fast path still treats them as dangerous.
+]);
+/** The one source of truth for the CLI the refusal tells the operator to use. */
+const ACCEPT_CLI = "extension/scripts/review-accept.ts";
+/** An eval or preload flag: the runner then executes text, so the run is not read-only. */
+const NO_EVAL_FLAGS = ["-e", "-p", "--print", "--eval", "-r", "--require", "--preload"];
+/** The write-capable arguments clause (b) refuses, and the refusal names. */
+const WRITE_FLAGS = [
+  "-o",
+  "--output",
+  "-c",
+  "--ext-diff",
+  "--git-dir",
+  "--work-tree",
+  "-f",
+  "--file",
+  "-t",
+  "--template",
+];
+/** The verbs arm A1 admits: reads that print to stdout and take no output argument. */
+const GIT_READ_VERBS = ["status", "log", "diff", "show", "blame"];
 
-/**
- * A path token: a maximal run of word characters, dots and hyphens. Hyphens are INCLUDED
- * so an attached `-oreview-findings.json` arrives as ONE token and the option prefix can
- * be recognised and stripped (see `namesOperand`).
- *
- * The pattern is COMPILED AFRESH for every walk, with the `g` flag passed EXPLICITLY to
- * the constructor. `new RegExp(otherRegExp)` copies the SOURCE ONLY — it silently DROPS
- * the flags — so the earlier `new RegExp(TOKEN_RE)` shape ran non-global and
- * `String.prototype.match` returned just the FIRST token. `scanCommand` then saw a
- * one-word command: every route that asks a name of a token list (`nameIn`, `nameIn
- * (argTokens)`, `namesOperand`, the write-flag scan) was reading a single word, and the
- * guard silently let through `git show HEAD:blob -o<data>` and friends. `matchAll` throws
- * without `g`, which is what makes the flag impossible to lose quietly (#1125).
- */
-const TOKEN_RE = /[\w.-]+/;
-
-/** The path tokens of a command, in order — see TOKEN_RE. */
-function tokenise(text: string): string[] {
-  return Array.from(text.matchAll(new RegExp(TOKEN_RE, "g")), (m) => m[0] as string);
+/** Tokenise into maximal runs of word / dot / hyphen / slash characters. */
+function tokensOf(text: string): string[] {
+  return Array.from(text.matchAll(/[\w./-]+/g), (m) => m[0] as string);
 }
 
-/** The basename of a path token, on either separator. */
-function basenameOf(token: string): string {
-  return token.slice(Math.max(token.lastIndexOf("/"), token.lastIndexOf("\\")) + 1);
+/** The basename of a token, on either separator. */
+function baseName(token: string): string {
+  const i = Math.max(token.lastIndexOf("/"), token.lastIndexOf("\\"));
+  return i < 0 ? token : token.slice(i + 1);
 }
 
+/** Does a token name the findings store — as path, module, bare stem or sibling? */
+function isProtectedToken(token: string): boolean {
+  const base = baseName(token);
+  if (PROTECTED_BASENAME.test(base)) return true;
+  return PROTECTED_STEMS.includes(base.replace(/\.tsx?$/, ""));
+}
+
+/** Does the text name the findings store anywhere, token-wise? */
+function namesAnythingProtected(text: string): boolean {
+  return tokensOf(text).some(isProtectedToken);
+}
+
+/** Collapse whitespace. */
+function squeeze(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/** Drop `NAME=value` prefixes: an env assignment is inert for the guard's purposes. */
 /**
- * THE ONE NAME RULE — the only place this module decides whether a command names a
- * protected file. Every route asks through `nameIn` / `namedIn`; if a route wants a
- * different answer, that is the bug, not the fix.
- *
- * A protected name is recognised inside a path token (see TOKEN_RE) when the token,
- * after its leading directory segments and its leading option characters are dropped,
- * is one of:
- *
- *   (a) exactly the name — `review-findings.json`;
- *   (b) the name plus `.ts` — the module's own file, `review-findings-store.ts`;
- *   (c) the name plus a hyphenated stem plus `.ts` — `test-review-findings-store.ts`.
- *       These NAME the store: they are how a command reaches the module by its real
- *       path, and a guard blind to them cannot see the route it exists to close. The
- *       stem must be whole hyphen-separated segments, so a name abutted by letters
- *       (`review-findings-storeX.ts`) is not the module.
- *
- * Nothing else may follow the name: `.json`, `.md` or any other tail is a different
- * file. Names are tried longest-first, so `review-accept-row` is not reported as
- * `review-accept` plus a stem. The prefix is stripped in code rather than expressed as
- * a lookbehind, and that is the fix: `-o` glued to the data file and `./src/` glued to
- * the module are the same shape once the prefix is gone, whereas a lookbehind that
- * accepts the `o` of `-o` must accept the `t` of `test-` too.
+ * The `arms` view, built in ONE pass over the command: balanced quote spans are
+ * replaced by a single space (so a quoted `|` or `;` never opens a segment) and the
+ * environment prefixes are cut (so `FOO=1 bun test …` keeps its runner in first
+ * position). The operand text each span carried is returned alongside, in position
+ * order: an arm still has to see `'test-x.ts'` as the one argument it is, so the loop
+ * hands back the spans whose placeholder fell inside its own segment. A placeholder
+ * is one character, so a segment of length N is followed by the spans whose
+ * placeholders were the N+1-th character onward.
  */
-function nameOf(token: string): string | undefined {
-  const base = basenameOf(token);
-  // THREE candidates, not two. `tokenise` keeps hyphens inside a token, so an attached
-  // `-oreview-findings.json` arrives whole: dropping the leading dashes alone leaves
-  // `oreview-findings.json`, which is not the name, so the ATTACHED write-flag shapes were
-  // invisible to the one name rule every route shares. The third candidate also drops the
-  // glued flag letters, and only ever for a token that BEGAN with option punctuation —
-  // prose is untouched, and clause (c)'s whole-segment rule still stops `storeX.ts` (#1125).
-  const stripped = base.replace(/^[-=]+/, "");
-  const detached = base.replace(/^[-=]+[a-z]*/i, "");
-  for (const candidate of [base, stripped, detached]) {
-    for (const [name, re] of NAME_RESIDUALS) if (re.test(candidate)) return name;
-  }
-  return undefined;
-}
-
-/** The protected name a token list spells, restricted to `wanted` when given. */
-function nameIn(tokens: string[], wanted?: string[]): string | undefined {
-  for (const token of tokens) {
-    const name = nameOf(token);
-    if (name && (!wanted || wanted.includes(name))) return name;
-  }
-  return undefined;
-}
-
-/** The protected name a command spells out, restricted to `wanted` when given. */
-function namedIn(command: string, wanted?: string[]): string | undefined {
-  return nameIn(tokenise(command), wanted);
-}
-
-/**
- * True when a token list names `name` as a bare path operand — the basename, or the
- * basename with option punctuation glued on, and nothing else. Stricter than `nameOf`:
- * `review-findings.json.bak` is a DIFFERENT file and the data route must not refuse it
- * as if it were the store.
- */
-function namesOperand(tokens: string[], name: string): boolean {
-  return tokens.some((token) => {
-    const base = basenameOf(token);
-    // Leading option punctuation is an option, not part of the name. `tokenise` splits
-    // on `-`, so the ATTACHED forms reach here with their flag LETTERS still glued to the
-    // name and the leading dashes already gone: `-oreview-findings.json` tokenises to
-    // `oreview-findings.json` and `-c<name>` to `c<name>`. So three shapes must be asked,
-    // in this order — the basename whole (prose `review-findings.json` in a message is
-    // still the name, and `--output=<data>` gives `=` as its own separator), the basename
-    // with leading punctuation stripped, and that with the glued flag letters stripped.
-    // The third strip is anchored to a run of dashes/equals, so a name that merely begins
-    // with a letter is never mangled: nothing legitimate is called `-data` (#1125).
-    // Nothing AFTER the name is stripped: `<data>.bak` and `<data>.tmp` remain different
-    // files (#1125).
-    return (
-      base === name ||
-      base.replace(/^[-=]+/, "") === name ||
-      // The ATTACHED form: `-oreview-findings.json` and `-creview-findings.json`, where
-      // the flag letter is glued to the name behind its dashes. `tokenise` does NOT split
-      // on hyphens (see TOKEN_RE), so the whole `-o<name>` arrives as ONE token — strip 2
-      // above cannot reach it, and there is no bare `x<name>` token to worry about, which
-      // is what makes stripping the flag letters safe. Only an option-looking token
-      // (leading `[-=]+`) is ever stripped, so prose is never mangled (#1125).
-      base.replace(/^[-=]+[a-z]*/i, "") === name
-    );
-  });
-}
-
-/**
- * The command with single- and double-quoted segments BLANKED to same-width spaces
- * (answers "does an ARGUMENT name the data file?"), or REMOVED outright
- * (`removeQuoted`, answers "does a word the shell parsed RUN something?").
- *
- * Only BALANCED segments are touched. A quote character occurring an ODD number of
- * times makes the rest of the command ambiguous, so such a segment is left as typed
- * and every route judges the RAW command — failing closed on text we cannot parse
- * (#1125). Written as a loop rather than a `replace` callback: the segment regex has
- * two capture groups, so a callback's `offset`/`whole` would be those groups.
- */
-function quotedOff(command: string, remove: boolean): string {
-  const out: string[] = [];
-  let i = 0;
-  while (i < command.length) {
-    const ch = command[i] as string;
-    if (ch !== "'" && ch !== '"') {
-      out.push(ch);
-      i++;
+function armView(text: string): { view: string; raw: string; quoted: string[]; at: number[] } {
+  let out = "";
+  const quoted: string[] = [];
+  const at: number[] = [];
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i] as string;
+    if (ch === "'" || ch === '"') {
+      const end = text.indexOf(ch, i + 1);
+      if (end < 0) break;
+      quoted.push(text.slice(i, end + 1));
+      at.push(out.length);
+      out += " ";
+      i = end;
       continue;
     }
-    const end = command.indexOf(ch, i + 1);
-    if (end < 0 || (command.split(ch).length - 1) % 2 !== 0) {
-      out.push(ch);
-      i++;
-      continue;
-    }
-    out.push(remove ? "" : " ".repeat(end - i + 1));
-    i = end + 1;
+    out += ch;
   }
-  return out.join("");
+  // The placeholder offsets are counted on the UNSQUEEZED text, which is also what
+  // the segment walk below splits — squeezing would shift every later placeholder.
+  const raw = stripEnvPrefixes(out.toLowerCase());
+  const kept: string[] = [];
+  const keptAt: number[] = [];
+  for (let n = 0; n < quoted.length; n++)
+    if (at[n]! < raw.length) {
+      kept.push(quoted[n]!);
+      keptAt.push(at[n]!);
+    }
+  return { view: squeeze(raw), raw, quoted: kept, at: keptAt };
+}
+
+function stripEnvPrefixes(text: string): string {
+  return text.replace(/(?:^|\s)[a-z_][a-z0-9_]*=\S+(?=\s|$)/g, " ");
 }
 
 /**
- * Are the quotes of this character balanced across the command? Parity alone is not
- * enough when the other quote type is present: 'echo 'it\'s' 'bun run 'review-findings-store.ts''
- * has an even number of single quotes and an unbalanced pair of doubles. A quote
- * character whose total count is odd is unbalanced, and both views then fall back to
- * the RAW command (#1125, fail closed).
+ * Skip a heredoc body starting at `start`, and return the index just past it;
+ * PARSE_FAIL when the terminating delimiter never appears — an unreadable body is
+ * refused, never guessed at (clause (a)). Handles `<<TAG`, `<<-TAG` and a quoted
+ * delimiter.
  */
-function balanced(command: string, quote: string): boolean {
-  return (command.split(quote).length - 1) % 2 === 0;
-}
-
-/** Balanced quoted segments removed entirely, so prose leaves no words behind. */
-function removeQuoted(command: string): string {
-  return quotedOff(command, true);
+function skipHeredoc(command: string, start: number): number | "PARSE_FAIL" {
+  let i = start + 2;
+  if (command[i] === "-") i++;
+  const from = i;
+  while (i < command.length && /\w/.test(command[i] as string)) i++;
+  if (i === from) return "PARSE_FAIL";
+  const tag = command.slice(from, i).replace(/^['"]|['"]$/g, "");
+  const lineEnd = command.indexOf("\n", i);
+  if (lineEnd < 0) return "PARSE_FAIL";
+  let cursor = lineEnd + 1;
+  for (;;) {
+    const at = command.indexOf("\n", cursor);
+    const line = command.slice(cursor, at < 0 ? undefined : at).trim();
+    if (line === tag) return at < 0 ? command.length : at + 1;
+    if (at < 0) return "PARSE_FAIL";
+    cursor = at + 1;
+  }
 }
 
 /**
- * Balanced quoted segments BLANKED to same-width spaces, except that SEPARATORS
- * inside them are preserved. A quoted body is prose for the purpose of FLAGS — a
- * `|` in a commit message is not a pipeline — but it is not prose for the purpose of
- * RUNTIME POSITION: an `echo '…; bun -e …'` and a markdown table whose cells hold `|`
- * beside a store path are refused rather than trusted, because a string match cannot
- * tell them from a command (see KNOWN OVER-REFUSALS). An unbalanced quote leaves the
- * text as typed, which is the other fail-closed direction (#1125).
+ * ONE normalisation pass. PARSE_FAIL (clause (a): refuse) on an unbalanced quote or
+ * an unterminated heredoc, so nothing downstream has to reason about text it cannot
+ * read as prose. Balanced quoted spans become a single space: their contents are
+ * prose, and a `|` inside them must not open a segment.
  */
-function positionView(command: string): string {
-  const out: string[] = [];
+function normalise(command: string): string | "PARSE_FAIL" {
+  let out = "";
   let i = 0;
   while (i < command.length) {
     const ch = command[i] as string;
     if (ch === "'" || ch === '"') {
       const end = command.indexOf(ch, i + 1);
-      if (end >= 0 && balanced(command, ch)) {
-        for (const inner of command.slice(i, end + 1))
-          out.push(SEPARATOR_CHARS.has(inner) ? inner : " ");
-        i = end + 1;
-        continue;
-      }
+      if (end < 0) return "PARSE_FAIL";
+      out += " ";
+      i = end + 1;
+      continue;
     }
-    out.push(ch);
+    if (command.startsWith("<<", i)) {
+      const past = skipHeredoc(command, i);
+      if (past === "PARSE_FAIL") return "PARSE_FAIL";
+      out += " ";
+      i = past;
+      continue;
+    }
+    out += ch;
     i++;
   }
-  return out.join("");
+  for (const quote of ["'", '"'])
+    if (((out.match(new RegExp(quote, "g")) ?? []).length) % 2 !== 0) return "PARSE_FAIL";
+  return squeeze(out.toLowerCase());
 }
 
 /**
- * A runtime in invocation position: the first or second word of the command, or of a
- * segment after `|`, `;`, `&`, `(` or a newline. The first word covers `bun -e …` and
- * `bash …/verify-loop.sh …`; the second also covers `sudo bash …` and `env bun …`, so a
- * prefix word cannot put a runtime out of position. A word deeper is an argument, so
- * `grep -rn bun <store>` — `bun` as a grep PATTERN — is not a route (#1125). Judge it
- * through `positionView`, which keeps quoted words out and quoted separators in.
+ * Split a normalised command into shell segments. `&&` and `||` precede the
+ * single-character operators in the alternation, so no operator survives inside a
+ * segment for an arm to misread as an argument.
  */
+function splitSegments(text: string): string[] {
+  return text
+    .split(/\|\||&&|[|;&\n]/)
+    .map((s) => s.trim())
+    .filter((s) => s !== "");
+}
+
 /**
- * The command's arguments as the SHELL would group them: whitespace-separated, with a
- * balanced quoted run kept as ONE argument and its quotes removed. The test-run
- * exemption needs this shape — a plain whitespace split turns `'bun ./src/x.ts'` into
- * two innocent-looking words and lets a runtime through the exemption (#1125).
+ * One shell word: adjacent quoted and unquoted runs GLUE into one word as the shell
+ * glues `a"b c"d`, and a balanced quoted run keeps its quotes so `armCommit` can
+ * still see that a name was quoted. A quote with no partner is left as an ordinary
+ * character — `normalise` has already refused the unparseable command.
  */
-function shellWords(command: string): string[] {
+function shellWords(text: string): string[] {
   const words: string[] = [];
-  let current = "";
-  let glue = false;
   let i = 0;
-  const push = () => {
-    if (current !== "") words.push(current);
-    current = "";
-  };
-  while (i < command.length) {
-    const ch = command[i] as string;
-    if (ch === "'" || ch === '"') {
-      const end = command.indexOf(ch, i + 1);
-      if (end >= 0 && (command.split(ch).length - 1) % 2 === 0) {
-        current += command.slice(i + 1, end);
-        i = end + 1;
-        glue = true;
-        continue;
-      }
-    }
-    if (!glue && /\s/.test(ch)) {
-      push();
+  while (i < text.length) {
+    if (/\s/.test(text[i] as string)) {
       i++;
       continue;
     }
-    current += ch;
-    glue = false;
-    i++;
+    let word = "";
+    while (i < text.length && !/\s/.test(text[i] as string)) {
+      const c = text[i] as string;
+      if (c === "'" || c === '"') {
+        const end = text.indexOf(c, i + 1);
+        if (end >= 0) {
+          word += text.slice(i, end + 1);
+          i = end + 1;
+          continue;
+        }
+      }
+      word += c;
+      i++;
+    }
+    words.push(word);
   }
-  push();
   return words;
 }
 
-/** The characters that open a new segment. A Set, not a string: `"".includes("")` is
- * true, so a string test would call every character a separator. */
-const SEPARATOR_CHARS = new Set(["|", ";", "&", "(", "\n"]);
-
 /**
- * Words that run what follows them, so a runtime after one is still executing: `bash
- * …/verify-loop.sh …` and `sudo bash …` and `env bun …` all reach a program. They are
- * only skipped as the FIRST word of a segment, which is what keeps `grep -rn bun
- * <store>` — `grep` first, `bun` third — out of invocation position (#1125).
+ * A word with its quote characters gone — the text the tool actually receives. A
+ * word may be several quoted and unquoted runs glued together (`a"b c"d`), so every
+ * balanced span is removed, not just a pair at the ends.
  */
-const LAUNCHER_WORDS = new Set([
-  "bash",
-  "sh",
-  "zsh",
-  "dash",
-  "env",
-  "sudo",
-  "time",
-  "nohup",
-  "exec",
-  "command",
-  "nice",
-  "stdbuf",
-  "ionice",
-  "chrt",
-  "setsid",
-]);
-/**
- * Words that sit in front of a runtime without consuming the command position, beyond
- * the launchers: `command`, the git/gh verbs whose own argument follows them, and the
- * scheduling wrappers. A word that is neither is an argument, which is what puts
- * `grep -rn bun <store>` (bun as a grep PATTERN) out of the route (#1125).
- */
-const COMMAND_SHIELD = new Set([
-  ...LAUNCHER_WORDS,
-  "command",
-  "git",
-  "gh",
-  "glab",
-  "nice",
-  "stdbuf",
-  "ionice",
-  "chrt",
-  "setsid",
-  "xargs",
-]);
-/**
- * Words allowed to sit BEFORE a runtime in command position: the launchers, `command`,
- * and the git/gh/glab verbs that take a following word as their own argument — which
- * is why `git grep -e bun <path>` has `bun` in argument position, not command
- * position, and is allowed.
- */
-
-/**
- * A runtime in invocation position: the first or second word of the command, or of a
- * segment after `|`, `;`, `&`, `(` or a newline; the word after a LAUNCHER word counts
- * too, however many launchers are stacked, because they all still execute their
- * argument. A word deeper is an argument, so `grep -rn bun <store>` — `bun` as a grep
- * PATTERN — is not a route (#1125). Judge it through `positionView`, which keeps
- * quoted words out and quoted separators in.
- */
-function runtimeInvoked(command: string): boolean {
-  // A runtime in COMMAND position. The command itself counts in word 1 (a launcher may
-  // sit before it: `sudo bun …`, `nice bun …`, `bash verify-loop.sh bun …`); a segment
-  // after `|`, `;`, `&`, `(` or a newline counts only in word 0, so a `|` inside a
-  // quoted message cannot lift a later word into command position. Word 0 of the whole
-  // command is a runtime too. Quoted words are blanked and quoted separators kept, so
-  // `echo '…; bun -e …'` and a table row naming bun beside a store path are still
-  // refused (KNOWN OVER-REFUSALS) while `grep -rn bun <store>` — bun as a pattern — is
-  // not, because `-rn` is neither a runtime nor a launcher (#1125).
-  const view = positionView(command);
-  const parts = view.split(/[|;&(\n]/);
-  if (invokedAt(wordsOf(parts[0] ?? ""), 2)) return true;
-  return parts.slice(1).some((segment) => invokedAt(wordsOf(segment), 1));
-}
-
-/** The non-empty whitespace words of a segment. */
-function wordsOf(segment: string): string[] {
-  return segment
-    .trimStart()
-    .split(/\s+/)
-    .filter((w) => w !== "");
-}
-
-/**
- * Is a runtime reachable within `budget` leading words, stepping over launchers? A
- * leading word that is neither a launcher nor a runtime is an argument (or prose) and
- * ends the scan.
- */
-function invokedAt(words: string[], budget: number): boolean {
+function unquote(word: string): string {
+  let out = "";
   let i = 0;
-  while (i < budget - 1 && COMMAND_SHIELD.has(words[i] as string)) i++;
-  return i < budget && i < words.length && RUNTIME_WORD.test(words[i] as string);
-}
-
-/** True when a git/gh/glab segment of the command carries an argument that can write a
- * file or install an alias. Alias and write-flag tests both run PER SEGMENT, so a write
- * flag belonging to some other program in a chain is not blamed on git.
- *
- * The caller passes the RAW command, NOT `removeQuoted`: `-oreview-findings.json` has the
- * protected name GLUED to the flag, so quote removal takes the flag away with it and the
- * attached form — the one shape that hides a write inside what looks like an innocent
- * word — would read as a clean read (#1125). A quoted `-o` is prose precisely when the
- * name is not glued to it, which is the case the data-operand route already decides.
- */
-function vcsSegmentCarriesWrite(text: string): boolean {
-  if (VCS_ALIAS.test(text)) return true;
-  for (const segment of text.split(/[|;&\n]/)) {
-    if (!/^\s*(?:git|gh|glab)\s/.test(segment)) continue;
-    if (tokenise(segment).some((t) => VCS_WRITE_TOKEN.test(t))) return true;
+  while (i < word.length) {
+    const c = word[i] as string;
+    if (c === "'" || c === '"') {
+      const end = word.indexOf(c, i + 1);
+      if (end >= 0) {
+        out += word.slice(i + 1, end);
+        i = end + 1;
+        continue;
+      }
+    }
+    out += c;
+    i++;
   }
-  return false;
+  return out;
 }
 
-/** The route that decided a refusal — the reason text is written per route. */
-type Route = "data" | "vcs-write" | "runtime" | "script";
+/** A shell word that begins with `-`, quotes stepped over. */
+const isOptionWord = (word: string): boolean => unquote(word).startsWith("-");
+/** The end-of-options marker: everything after it is an operand, not a flag. */
+const isEndOfOptions = (word: string): boolean => unquote(word) === "--";
+/** A whole switch (`-n`, `--no-pager`) or a switch with an attached `=value`. */
+function isWholeSwitch(word: string): boolean {
+  return /^--?[a-z][a-z0-9-]*(?:=[^\s]*)?$/.test(unquote(word));
+}
 
 /**
- * The scan. Every route needs a protected name, so a command that names none is out
- * immediately.
+ * A word that opens a SUBSHELL or an expansion rather than naming an argument: a `(`,
+ * which groups a whole command (`$(…`, `x=$(…`), or a `$` / backquote, whose value the
+ * guard cannot read. `(` is a WORD character in `tokensOf`, so the fast path's token
+ * scan never sees it — this is the only place that catches it, and it is why
+ * `echo $(cat <store>)` cannot slip through the read arm.
+ */
+/** A word the fast path treats as inert: an option, an assignment, a digit, or
+ * punctuation. Only a word that could NAME a program decides the fast path. */
+const INERT_WORD = /^(?:-{1,2}[a-z0-9][\w.-]*|\d+|[^\w]+)$/;
+/** The shell quoting and redirection punctuation the guard does not read as program
+ * text. An apostrophe inside prose and the `$`/backquote of an expansion both live
+ * here, so the fast path defers to the arms whenever they appear — clause (a). */
+const SHELL_PUNCT = /[|&;()<>$'"`]/;
+/** Words that are never the program being run: an option, an assignment, a number,
+ * punctuation, or the two prefixes the guard accepts ahead of a runtime. */
+/** Words that are never the program being run: an option, an assignment, a number,
+ * punctuation, or the two prefixes the guard accepts ahead of a runtime. A word that
+ * merely CONTAINS punctuation (`;`, `rm`) is not inert — only a word made of it is. */
+const NOT_A_PROGRAM = /^(?:-{1,2}[a-z0-9][\w.-]*|\d+|[^\w]+|sudo|env)$/;
+const isPotentialProgram = (token: string): boolean =>
+  !NOT_A_PROGRAM.test(token) && !token.includes("=");
+
+/**
+ * A dangerous word only counts where the shell would RUN it: the first or second word
+ * of a segment, outside quotes. `grep -rn bun <path>` has `bun` as a pattern and
+ * `cp -r <store> /tmp` has `-r` as a flag; `sudo bun -e …` and `env bun -e …` still
+ * run the interpreter, while a THIRD word (`command bun …`) is a prefix the guard does
+ * not recognise and therefore does not vouch for.
+ */
+function invocationPositionNames(word: string, index: number): boolean {
+  if (index > 1 || /["']/.test(word)) return false;
+  const head = unquote(word);
+  if (!isPotentialProgram(head)) return false;
+  const b = baseName(head);
+  return RUNTIME.test(b) || VCS.test(b) || EDIT_CAPABLE.has(b) || isProtectedToken(head);
+}
+
+/** Does any segment run, or open, something dangerous? Judged on the RAW text. */
+function dangerousInvocation(raw: string): boolean {
+  return splitSegments(raw).some((s) => shellWords(s).some((w, i) => invocationPositionNames(w, i)));
+}
+
+function containsExpansion(text: string): boolean {
+  return /[$`]/.test(text);
+}
+
+/**
+ * Clause (a), stated once for every arm: a word that begins with `-` and is neither a
+ * whole switch nor `--switch=value` is an ATTACHED option (`-odata`, `-cfoo`, `-j4`)
+ * or a bare `-`, and no arm takes a value glued to a flag letter. Such a segment
+ * matches nothing. The test is on the WORD, quotes and all — a token test would see
+ * the `/` of `--jq .name` as path punctuation and call the switch an attached option.
+ */
+function armHasUnknownOption(words: string[]): boolean {
+  return words
+    .filter((w) => !/["']/.test(w))
+    .some((w) => isOptionWord(w) && !isWholeSwitch(w) && !isEndOfOptions(w));
+}
+
+/**
+ * Is any of `flags` present? EVERY spelling is a shell word of its own, so a flag is
+ * matched whole: `--output=x` is the `=` form, and `-o <path>` / `-c k=v` are the
+ * flag word followed by its value. An ATTACHED spelling (`-odata`, `-cfoo`) is
+ * refused by `armHasUnknownOption` — a matcher that half-stripped the prefix silently
+ * admitted the attached forms, which is the #1125 flag-dropping bug.
+ */
+function hasFlag(words: string[], ...flags: string[]): boolean {
+  return words.some((w) => flags.includes(unquote(w)) || flags.some((f) => w.startsWith(`${f}=`)));
+}
+
+/**
+ * A file-writing or config argument on a forge command — clause (b)'s named flag.
  *
- * @param command the raw command text
- * @returns the offending name and the route that fired, else undefined
+ * The bare `key=value` shape is a git config argument (`git -c core.pager=cat log`,
+ * `git config alias.x=…`), and it is asked ONLY of words after the verb: an env
+ * prefix (`PI_ENSEMBLE_VIPUNE_REQUIRED=1 bun …`) is the same shape, and is stripped
+ * and inert, so testing it would refuse the repo's own verify command.
  */
 /**
- * The test-run exemption's argument judgement: everything handed to the runner must
- * be a `--switch` or a test path. A bare word is a flag VALUE passed on to the
- * runner (`--reporter junit`) and a launcher word makes the runner execute something
- * else (`verify-loop.sh bun <store>.ts`); either revokes the exemption, which exists
- * for a read-only suite and nothing more. Judged on the shell's own grouping, so
- * `'bun ./src/<store>.ts'` stays ONE argument (#1125).
+ * A file-writing or config argument on a forge or git command — clause (b)'s named
+ * flag. An option's VALUE is not an option, so `--output /tmp/x`, `--output=/tmp/x`,
+ * `-o /tmp/x` and `-c k=v` are all recognised; `--jq .name` carries no such flag.
  */
-function testArgvIsReadOnly(command: string): boolean {
-  const words = shellWords(command);
-  // The head must be the runner itself, or one launcher immediately before it.
-  if (!TEST_RUN_HEAD.test(words.slice(0, 3).join(" ").trim())) return false;
-  // Every word the runner is handed must be a `--switch` or a test path, and NOTHING on
-  // the command line may name the store module by its bare stem (`review-findings-store`,
-  // no `.ts`) or name the operator's acceptance row. There is deliberately NO positional
-  // budget here: `bash …/verify-loop.sh …` legitimately begins with a launcher, so any
-  // "drop the interpreter and the script" offset is either too small for the `bun test`
-  // form or wrong for the verify-loop form, and a bare word that slips past the offset
-  // (`--reporter junit`, `--digest-mode on`, `bun <store>.ts`) reads as a harmless
-  // argument. Judging every word instead makes the shape of the command irrelevant: a
-  // launcher word, a runner, a flag VALUE or a bare store name anywhere revokes the
-  // exemption, which exists for a read-only suite and nothing more (#1125).
+function carriesWriteFlag(words: string[]): boolean {
+  for (let i = 0; i < words.length; i++) {
+    const w = unquote(words[i]!);
+    const eq = w.indexOf("=");
+    const head = eq < 0 ? w : w.slice(0, eq);
+    if (WRITE_FLAGS.includes(head)) return true;
+    // `-o data` / `-c k=v`: the flag word itself, or the value it was handed.
+    if (WRITE_FLAGS.includes(w)) return true;
+    if (i > 0 && WRITE_FLAGS.includes(unquote(words[i - 1]!))) return true;
+  }
+  return words.some((w) => /^[a-z][a-z0-9_.]*=[^=]/.test(unquote(w)));
+}
+
+/** The findings DATA file and its `.tmp` / `.corrupt` siblings — the store itself, as
+ * opposed to the module source, which a `git log -- <module>` legitimately reads. */
+const FINDINGS_FILE = /^review-findings\.json(?:\.(?:tmp|corrupt-[a-z0-9]+))?$/;
+function namesFindingsFileOperand(words: string[]): boolean {
+  return words.some((w) => FINDINGS_FILE.test(baseName(unquote(w))));
+}
+
+/** The read arms may not see an argument that IS the findings store: `git log -- <data>`
+ * opens the data file and `gh api <data>` names it as a path, and neither is a read the
+ * guard may vouch for. */
+function namesProtectedOperand(words: string[]): boolean {
+  return words.some((w) => isProtectedToken(unquote(w)));
+}
+
+/** A1: `git status|log|diff|show|blame`, optional `--no-pager`, no write-capable flag. */
+function armGitRead(words: string[], rawWords: string[]): boolean {
+  let i = unquote(words[0] ?? "") === "git" ? 1 : 0;
+  if (unquote(words[i] ?? "") === "--no-pager") i++;
+  if (!GIT_READ_VERBS.includes(unquote(words[i] ?? ""))) return false;
+  const rest = words.slice(i + 1);
+  // The read may name the store MODULE (a diff of source is a read); it may not open
+  // the findings FILE itself, which is what `-- <data>` or `show <data>` would do.
+  // A write flag (`-c k=v`, `-o <path>`) is refused wherever it sits, quoted or not —
+  // over-refusals 1 and 2, and the only git read the guard vouches for is a pure read.
+  if (carriesWriteFlag(rawWords) || namesFindingsFileOperand(rest)) return false;
+  return !rest.some((w) => /^(?:alias|filter|credential|remote)\./.test(unquote(w)));
+}
+
+/** A2/A3: `gh|glab pr|mr view|diff`, `gh repo view`, `gh api <path>` — no write flag. */
+function armForgeRead(words: string[], rawWords: string[]): boolean {
+  const tool = unquote(words[0] ?? "");
+  if (tool !== "gh" && tool !== "glab") return false;
+  // Clause (a): the allowlist is authoritative, so a forge subcommand no arm spells
+  // (`pr create`, `alias set`, `config set`) is refused whatever its arguments say.
+  const spoken = squeeze(rawWords.map(unquote).join(" "));
+  if (/(?:^|\s)(?:create|edit|merge|close|reopen|set|delete|comment|review|ready|rebase|squash)(?:\s|$)/.test(spoken))
+    return false;
+  const area = unquote(words[1] ?? "");
+  const verb = unquote(words[2] ?? "");
+  if (area === "api") {
+    // `gh api <path> [--flag value]*` — the path is the single non-option operand and
+    // every LATER word is an option or the value it was handed, so `--jq .name` is
+    // admitted while `api /a /b` (two positionals) is not.
+    const rest = words.slice(3);
+    let positionals = verb === "" || isOptionWord(words[2] ?? "") ? 0 : 1;
+    let lastWasOption = false;
+    for (const w of rest) {
+      if (isOptionWord(w)) {
+        lastWasOption = true;
+        continue;
+      }
+      if (!lastWasOption && ++positionals > 1) return false;
+      lastWasOption = false;
+    }
+    // A write flag is refused wherever it sits, value included: `--output=<data>`
+    // would have its path swallowed by quote removal, so the RAW command is asked.
+    return (
+      positionals <= 1 &&
+      !carriesWriteFlag(rawWords) &&
+      !namesProtectedOperand(rest) &&
+      !rest.some((w) => unquote(w) === "set")
+    );
+  }
+  const shape =
+    ((area === "pr" || area === "mr") && (verb === "view" || verb === "diff")) ||
+    (area === "repo" && verb === "view");
+  if (!shape) return false;
+  const rest = words.slice(3);
   return (
-    words.length > 0 &&
-    words.every((w) => (TEST_RUN_FLAG.test(w) || TEST_PATH.test(w)) && !REACHES_STORE.test(w))
+    !carriesWriteFlag(rawWords) &&
+    !namesProtectedOperand(rest) &&
+    !rest.some((w) => unquote(w) === "set")
   );
 }
 
-function scanCommand(command: string): { name: string; route: Route } | undefined {
-  if (!NAMES_PRESENT.test(command)) return undefined;
-  // Tokenise ONCE; every name test reuses this list (read from the RAW command —
-  // a commit message does name the store, and the exemptions make that harmless).
-  const tokens = tokenise(command);
-  const named = nameIn(tokens);
-  if (!named) return undefined;
-  // The two views (see the header). An unbalanced quote leaves both equal to raw.
-  const unquoted = removeQuoted(command);
-  const argTokens = tokenise(quotedOff(command, false));
-  const dataOperand = namesOperand(argTokens, PROTECTED_NAMES.data);
+/** A4: `bun|bunx test <test paths>` — every argument test-shaped, no eval flag. */
+function armTest(words: string[]): boolean {
+  if (!RUNTIME.test(unquote(words[0] ?? "")) || unquote(words[1] ?? "") !== "test") return false;
+  return testArgv(words.slice(2), false);
+}
 
-  // A test run may name the store's files by glob (a read-only suite). Judged on the
-  // RAW command, so an operator or newline inside a quoted argument revokes it. It may
-  // not carry an eval flag, name the operator's script, or be handed anything that is
-  // not a `--flag` switch or a test path — a bare word means the runner is running
-  // more than tests.
-  if (TEST_RUN.test(unquoted) && !EVAL.test(command) && !namedIn(command, SCRIPT_NAMES)) {
-    if (testArgvIsReadOnly(command)) return undefined;
+/**
+ * The argv rule arms A4 and A5 share: no eval or preload flag before `--`, and every
+ * argument test-shaped, a switch, or `--` itself. A GLOB may end the path but may not
+ * sit inside it — `test-review-*.ts` is a suite, `review-findings-store*` is a stem
+ * the guard cannot resolve, and the second is clause (b)'s accepted cost.
+ */
+function testArgv(args: string[], digestAllowed: boolean): boolean {
+  const cut = args.findIndex(isEndOfOptions);
+  const head = cut < 0 ? args : args.slice(0, cut);
+  // The runner's own switches come before the first operand; after it, only test paths
+  // are operands and a bare word — or an eval flag — has no arm.
+  const operands = args.filter((w) => !isOptionWord(w) && unquote(w) !== "");
+  if (hasFlag(head, ...NO_EVAL_FLAGS)) return false;
+  if (operands.some((w) => hasFlag([w], ...NO_EVAL_FLAGS))) return false;
+  return args.every((raw) => {
+    const a = unquote(raw);
+    // The MODULE source is a legitimate subject of a suite name (`test-review-accept
+    // .ts`); the findings DATA file and its siblings are the store itself.
+    if (FINDINGS_FILE.test(baseName(a))) return false;
+    if (a === "--") return true;
+    if (digestAllowed && a === "--digest") return true;
+    // A switch, or nothing else: `--digest-mode on` puts a VALUE in operand position,
+    // and an argument the arm cannot read is not a suite path (over-refusal 8).
+    if (/^-{1,2}[a-z][a-z0-9-]*$/.test(a)) return false;
+    // A suite path: a `test`/`spec` segment and a `.ts`/`.tsx` suffix, built from path,
+    // glob and option characters. `*` and `?` are inside the class as well as after the
+    // suffix, so `smoke-tests/test-*.ts` passes as well as `smoke-tests/test-a.ts`;
+    // a bare word, a flag value, or the store's stem does not.
+    return /^[\w./?*()-]*(?:test|spec)[\w./?*()-]*\.tsx?[*?]*$/.test(a);
+  });
+}
+
+/** A5: `bash …/verify-loop.sh <test paths>`, with `--digest` allowed. */
+function armVerifyLoop(words: string[]): boolean {
+  // The exemption is for `bash …/verify-loop.sh` in INVOCATION position: a prefix word
+  // (`sudo bash …`) is not the arm, whatever follows it.
+  if (unquote(words[0] ?? "") !== "bash") return false;
+  if (!/(?:^|\/)verify-loop\.sh$/.test(unquote(words[1] ?? ""))) return false;
+  return testArgv(words.slice(2), true);
+}
+
+/**
+ * A7: `bun <suite.ts>` — the develop gate's capability arm, which runs one file whose
+ * name says it is a suite. The name must end `.ts`/`.tsx` and carry a `test`/`spec`
+ * segment; anything else (`bun ./src/x.ts`, a stem glob, a flag) is a program the
+ * guard cannot vouch for.
+ */
+function armScript(words: string[]): boolean {
+  if (!RUNTIME.test(unquote(words[0] ?? ""))) return false;
+  const args = words.slice(1);
+  if (args.length === 0) return false;
+  return args.every((raw) => {
+    const a = unquote(raw);
+    if (isProtectedToken(a)) return false;
+    if (/^-{1,2}[a-z][a-z0-9-]*$/.test(a)) return true;
+    return /^[\w./?*()-]*(?:test|spec)[\w./?*()-]*\.tsx?[*?]*$/.test(a);
+  });
+}
+
+/** A6: the read tools, whose arguments must name nothing protected. */
+function armRead(words: string[]): boolean {
+  const head = unquote(words[0] ?? "");
+  if (head === "") return false;
+  if (VCS.test(head) || RUNTIME.test(head)) return false;
+  // `sed` and `awk` are edit-capable wherever they sit in argv, so they are read tools
+  // only in invocation position (here, at the head) and only for a print.
+  if (!READ_TOOLS.has(head) && head !== "sed" && head !== "awk") return false;
+  if (head === "sed" && unquote(words[1] ?? "") !== "-n") return false;
+  if (head === "awk" && !/["']/.test(words[1] ?? "")) return false;
+  // A write-capable flag on ANY command is refused, not just on git and the forge
+  // CLIs: `-o`/`--output` redirects output to a file and `-c` changes the tool's
+  // configuration, so a segment carrying one is not the read this arm vouches for.
+  if (carriesWriteFlag(words)) return false;
+  // Only words OUTSIDE the quotes are arguments the shell hands the tool: a quoted word
+  // is prose. The store may not be among the opened arguments, and no word may expand
+  // something the guard cannot read.
+  const opened = words.slice(1).filter((w) => !/["']/.test(w));
+  return !opened.some((w) => isProtectedToken(unquote(w)) || /[$(`]/.test(w));
+}
+
+/** The exact build and type-check forms, spelled precisely. */
+function armBuild(words: string[]): boolean {
+  const joined = words.map(unquote).join(" ");
+  return (
+    joined === "bun run build" ||
+    joined === "bun run check" ||
+    joined === "bunx tsc --noemit" ||
+    joined === "bun x tsc --noemit"
+  );
+}
+
+/**
+ * `git commit -m "<prose>"`. The prose view dropped the quoted spans, so a protected
+ * name that appears in the raw view and not in the prose view was inside the message:
+ * prose, and harmless. A name that survives quote removal is a path operand and has
+ * no arm. The message itself must be QUOTED — `-m` beside a bare word is an operand,
+ * not prose — and no `-F/--file` may name a protected path.
+ */
+function armCommit(words: string[], raw: string): boolean {
+  let i = unquote(words[0] ?? "") === "git" ? 1 : 0;
+  if (unquote(words[i] ?? "") === "--no-pager") i++;
+  if (unquote(words[i] ?? "") !== "commit") return false;
+  const rest = words.slice(i + 1);
+  // The message is the quoted word `-m` was handed. A quoted word immediately followed
+  // by another quoted word is an odd spelling (`'it''s'`) whose message cannot be
+  // located, so the arm declines it — over-refusal 4.
+  const at = rest.findIndex((w) => /["']/.test(w));
+  if (at < 0 || /["']/.test(rest[at + 1] ?? "")) return false;
+  if (!["-m", "-message", "--message"].includes(unquote(rest[at - 1] ?? ""))) return false;
+  const others = rest.filter((_, n) => n !== at);
+  if (hasFlag(others, "-f", "--file", "-t", "--template") || carriesWriteFlag(others)) return false;
+  // The name must live in the message and nowhere else: the arm's words for a `commit`
+  // are its operands, so a protected name among them was a path, not prose.
+  if (namesAnythingProtected(squeeze(others.map(unquote).join(" ")))) return false;
+  // The arm is `git commit -m "<prose>"` ITSELF, whether or not the prose names the
+  // store: clause (a)'s exact allowlist. It used to END in `return namesAnythingProtected(raw)`,
+  // which FAILED OPEN on the very form the issue names as must-stay-allowed — a commit
+  // message that names nothing at all, and any plain `-m` commit, was refused.
+  return true;
+}
+
+/** The refusal reasons (clause (b)): one base, plus the sentence for the route that fired. */
+function refusalReason(
+  opts: { vcsWrite?: boolean; dataOperand?: boolean; target?: string } = {},
+): string {
+  if (opts.target)
+    return `The review findings file (${opts.target}) is written only by ${ACCEPT_CLI}. Agents may not edit it.`;
+  const base =
+    `Accepting a review finding is an operator act: agents may not reach the review findings ` +
+    `store. Run ${ACCEPT_CLI} from a terminal for an acceptance. Allowed reads: git ` +
+    `status/log/diff/show/blame (no -o/--output/-c), gh|glab pr|mr view|diff, gh repo view, ` +
+    `gh api <path>, bun test <test-path.ts>, bash smoke-tests/lib/verify-loop.sh <test-path.ts>, ` +
+    `bun run build, bun run check, bunx tsc --noEmit, or a read tool (cat, grep, rg, sed -n, …) ` +
+    `on a path that is not the findings store.`;
+  const vcs = opts.vcsWrite
+    ? " This command carries a file-writing or config argument: drop -o/--output/-c — e.g. `git --no-pager log` instead of `git -c core.pager=cat log`."
+    : "";
+  // The data route names the OPERAND to drop; a write flag is a different mistake and
+  // the two sentences must not be confused for the agent's remedy.
+  const data =
+    opts.dataOperand === true
+      ? " The store was named as a path operand: drop the path — it is not an argument any command may take."
+      : "";
+  trace(`review-accept-guard: refused${opts.vcsWrite ? " (vcs-write)" : ""}`);
+  return base + vcs + data;
+}
+
+/**
+ * THE DECISION — clause (a) in code: parse first (a failure refuses), then the fast
+ * path, then the allowlist, and a segment with no matching arm refuses.
+ *
+ * THREE views, each with one job: `norm` (quotes and heredoc bodies gone) decides what
+ * the shell PARSES and splits into segments, so prose leaves no words behind; `raw`
+ * (the command, quotes KEPT) is what `armCommit` compares against `norm` to tell a
+ * name inside a message from a path operand; `arms` (quotes kept, env prefixes cut,
+ * lowercased) is what every arm matches, so a quoted operator cannot lift a word into
+ * command position and an env prefix never pushes a runner out of first position.
+ */
+function scanCommand(command: string): string | undefined {
+  if (squeeze(command) === "") return undefined;
+  const norm = normalise(command);
+  if (norm === "PARSE_FAIL") return refusalReason({ dataOperand: true });
+  const raw = squeeze(command.toLowerCase());
+
+  // The fast path, and the second half of clause (a): a command that names nothing
+  // protected — in either view — is allowed only when nothing on it can execute a
+  // program, write a file, or reach a forge CLI. A quoted word still counts here, so
+  // `echo '…; bun -e …'` beside the store is refused rather than trusted, and `$`, a
+  // backquote or a `(` is text the guard cannot read at all.
+  const protectedAnywhere = namesAnythingProtected(raw) || namesAnythingProtected(norm);
+  if (!protectedAnywhere) {
+    const canReach =
+      containsExpansion(command) ||
+      SHELL_PUNCT.test(command) ||
+      dangerousInvocation(raw);
+    if (!canReach) return undefined;
   }
 
-  // The data file named as a path operand is refused wherever the shell sees it, and
-  // before the runtime route so `bun <data>` reports the data route — both refuse, and
-  // the reason text differs.
-  if (dataOperand) return { name: PROTECTED_NAMES.data, route: "data" };
-  // A runtime reading its program from stdin: the body is the part the guard cannot
-  // read, so the runtime alone is the route.
-  if (RUNTIME_STDIN.test(unquoted)) return { name: PROTECTED_NAMES.store, route: "runtime" };
-  // The runtime must EXECUTE the store, not merely share the command line with it:
-  // `ls -p <store>` and `grep -r accept <store>` name it as an argument and are
-  // allowed; `bun <store>` is the route. Asked of the QUOTED-OFF tokens, so the
-  // `bun` in `grep -rn bun <store>` (argument position) and the store in
-  // `echo '/** Run with bun; … <store>.ts */'` (balanced prose) both drop out (#1125).
-  if (runtimeInvoked(command) && nameIn(argTokens, [PROTECTED_NAMES.store]))
-    return { name: PROTECTED_NAMES.store, route: "runtime" };
-  // An eval flag makes a quoted body EXECUTABLE, so that body is not prose: the half
-  // quotes remove is exactly the executable text, and it is visible only in the RAW
-  // tokens. `bun -e 'import("./src/<store>.ts")'` and `node -e 'fs("<data>")'` land
-  // here, where the argument-position test above cannot see them (#1125).
-  //
-  // `EVAL` alone is NOT the route: `-e`, `-p` and `-r` are also the print, recursive and
-  // edit flags of ordinary read tools, so `ls -p <store>`, `cp -r <store> /tmp`,
-  // `grep -r accept <store>` and `git grep -e bun -- <path>` all spell an "eval flag"
-  // while nothing is evaluated. The flag only makes a body executable when a RUNTIME is
-  // in invocation position to run it, so both must hold — this is what keeps those four
-  // allowances allowed while `bun -e '…<store>…'` is refused (#1125).
-  const evalutes = EVAL.test(command) && runtimeInvoked(command);
-  if (evalutes && nameIn(tokens, [PROTECTED_NAMES.store]))
-    return { name: PROTECTED_NAMES.store, route: "runtime" };
-  if (evalutes && namesOperand(tokens, PROTECTED_NAMES.data))
-    return { name: PROTECTED_NAMES.data, route: "data" };
-  // A word the shell did not parse as an argument, but which reaches the store by
-  // MODULE RESOLUTION rather than as an argv file: the bare stem `review-findings-store`
-  // (no `.ts`, so no route above matches it) or the operator's `review-accept-row`.
-  // `bun x "./src/<store>.ts"` resolves the quoted path, so the quote-removed view is
-  // blind to it and the raw view is the only one that can see what gets executed.
-  if (evalutes) {
-    const reaches = nameIn(tokens, [...SCRIPT_NAMES, PROTECTED_NAMES.store]);
-    if (reaches) return { name: reaches, route: "runtime" };
+  const segments = splitSegments(norm);
+  if (segments.length === 0) {
+    // Nothing the shell would run, and nothing dangerous named anywhere: prose.
+    return dangerousInvocation(raw) ? refusalReason() : undefined;
   }
-  // The plain-git/gh exemption covers prose arguments only, and is revoked by an
-  // argument that makes the tool write a file or run an alias.
-  // The plain-git/gh exemption covers prose arguments only, and is revoked by an
-  // argument that makes the tool write a file or run an alias. Judged on the RAW command
-  // so an attached `-o<name>` survives quote removal (see `vcsSegmentCarriesWrite`).
-  if (PLAIN_VCS.test(command) && !vcsSegmentCarriesWrite(command)) return undefined;
-  // The operator script or its write module, run directly by path.
-  const direct = DIRECT_RUN.exec(command);
-  if (direct) return { name: direct[0].trim(), route: "script" };
-  // A git/gh segment inside a chain is not plain, so it lands here; its write-capable
-  // argument is what makes naming the store a route.
-  // The operator script or its write module, named anywhere, is a route: unlike the
-  // data file, no legitimate argument ever names them, so no exemption shields them.
-  // It sits AFTER the plain-git exemption, which is the one place a mention is prose.
-  const scriptNamed = nameIn(tokens, SCRIPT_NAMES);
-  if (scriptNamed) return { name: scriptNamed, route: "script" };
-  if (vcsSegmentCarriesWrite(command)) return { name: named, route: "vcs-write" };
+  // The remedy sentence is decided on the RAW segments: quote removal would take a
+  // quoted `-o` away with the prose, and the flag is named whenever it is on a
+  // forge command at all.
+  const vcsWrite = splitSegments(raw).some((s) => {
+    const w = shellWords(s);
+    return VCS.test(baseName(unquote(w[0] ?? ""))) && carriesWriteFlag(w);
+  });
+
+  const seen = armView(command.toLowerCase());
+  // The SEGMENTS come from the un-squeezed view, so segment i of `arms` is the i-th
+  // piece of `seen.raw` and placeholder offsets line up with both. Squeezing here would
+  // shift every later placeholder and attribute a quoted word to the wrong segment.
+  const arms = seen.raw.split(/\|\||&&|[|;&\n]/).map((s) => s.trim()).filter((s) => s !== "");
+  // Offsets count on the SAME text the placeholders were counted on — `armView` strips
+  // env prefixes BEFORE it squeezes — so the raw arm segments are split on that same
+  // text and segment i and raw segment i are the same piece of the command.
+  const rawArms = stripEnvPrefixes(command.toLowerCase());
+  const rawArmsAll = rawArms.split(/\|\||&&|[|;&\n]/).map((s) => s.trim()).filter((s) => s !== "");
+  let rawSpan = 0;
+  // The view is built by REPLACING each quote span with a single placeholder character
+  // — never by moving text — so arm segment i is made from the i-th piece of the
+  // unsqueezed view, and the quoted words that fell out of it are exactly the spans
+  // whose placeholder sat inside that piece. The walk is monotonic, so two identical
+  // segments still get their own quoted words.
+  const viewPieces = seen.raw.split(/\|\||&&|[|;&\n]/);
+  let span = 0;
+  let offset = 0;
+  let rawOffset = 0;
+  for (let i = 0; i < segments.length; i++) {
+    const segment = arms[i] ?? "";
+    const words = shellWords(segment);
+    const piece = viewPieces[i] ?? "";
+    while (span < seen.at.length && seen.at[span]! < offset) span++;
+    const pieceEnd = offset + piece.length;
+    let next = span;
+    while (next < seen.at.length && seen.at[next]! < pieceEnd) next++;
+    const tail = shellWords(seen.quoted.slice(span, next).join(" "));
+    span = next;
+    offset = pieceEnd;
+    const argv = [...words, ...tail];
+    // The same segment with its quoted words at their own offsets — what the shell
+    // actually received, and what a write flag is judged on.
+    const rawPiece = rawArmsAll[i] ?? "";
+    while (rawSpan < seen.at.length && seen.at[rawSpan]! < rawOffset) rawSpan++;
+    const rawPieceEnd = rawOffset + rawPiece.length;
+    let rawNext = rawSpan;
+    while (rawNext < seen.at.length && seen.at[rawNext]! < rawPieceEnd) rawNext++;
+    const rawArgv = shellWords(seen.quoted.slice(rawSpan, rawNext).join(" "));
+    rawSpan = rawNext;
+    rawOffset = rawPieceEnd;
+    const rawWords = [...shellWords(rawPiece), ...rawArgv];
+    // No arm admits a segment that expands something it cannot read, carries an
+    // attached option, or is empty.
+    if (words.length === 0 || containsExpansion(segment) || armHasUnknownOption(argv))
+      return refusalReason({ vcsWrite });
+    const admitted =
+      armGitRead(argv, rawWords) ||
+      armForgeRead(argv, rawWords) ||
+      armTest(argv) ||
+      armVerifyLoop(argv) ||
+      armScript(argv) ||
+      armRead(argv) ||
+      armBuild(argv) ||
+      armCommit(argv, raw);
+    if (!admitted) return refusalReason({ vcsWrite });
+  }
   return undefined;
 }
 
-/** The matched invocation when a command runs review-accept or names the store, else undefined. */
+/** The refusal text when a bash command could reach the findings store, else undefined. */
 export function runsReviewAccept(command: string): string | undefined {
-  return scanCommand(command)?.name;
+  return scanCommand(command);
 }
+
+/** Edit tools whose `path` argument is checked against the protected files. */
+const FILE_TOOLS = new Set(["edit", "write", "multiedit"]);
+/** The findings file and its tmp / corrupt-copy siblings — the store writes these. */
+const FINDINGS_SIBLING = /^review-findings\.json\.(?:tmp|corrupt-[a-z0-9]+)$/;
 
 /** The target path when an edit-style call would write a protected file, else undefined. */
 export function editsFindingsFile(toolName: string, input: unknown): string | undefined {
   if (!FILE_TOOLS.has(toolName)) return undefined;
   const target = (input as { path?: unknown } | null)?.path;
   if (typeof target !== "string") return undefined;
-  // The basename goes through the same `nameOf` walk every bash route uses, so the edit
-  // route cannot recognise names differently. `nameOf` clause (c) covers a hyphenated
-  // stem before `.ts`; `FINDINGS_BASENAME` adds the `.tmp` / `.corrupt` tails, which
-  // clause (c) cannot express (#1125).
   const base = target.split(/[\\/]/).pop() ?? "";
-  return nameIn([base]) === PROTECTED_NAMES.data ||
-    FINDINGS_BASENAME.test(base) ||
-    STORE_BASENAME.test(base)
+  return PROTECTED_BASENAME.test(base) ||
+    FINDINGS_SIBLING.test(base) ||
+    PROTECTED_STEMS.includes(base.replace(/\.tsx?$/, ""))
     ? target
     : undefined;
-}
-
-/** The refusal text for the route that fired: only the vcs-write route can name a
- * write-capable argument as the thing to drop. */
-function refusalReason(route: Route, target?: string): string {
-  if (target)
-    return `The review findings file (${target}) is written only by the operator's review-accept.ts. Agents may not edit it.`;
-  const remedy =
-    route === "vcs-write"
-      ? " If this is an ordinary git/gh read, drop the write-capable argument (--output, -o or an alias) and it is allowed again — e.g. `git --no-pager log`."
-      : route === "runtime"
-        ? " The store module is run only as a test: `bun test <path>.ts` or a verify-loop run is allowed; executing it is not."
-        : " Naming the review findings data file as a path operand is refused; name it only inside a quoted message.";
-  const base =
-    "Accepting a review finding is an operator act. Agents may not run" +
-    " extension/scripts/review-accept.ts or touch the review findings store; the" +
-    " operator runs review-accept.ts in a terminal with " +
-    "`--reason`.";
-  const reason = base + remedy;
-  trace(`review-accept-guard: refused route ${route}`);
-  return reason;
 }
 
 export function registerReviewAcceptGuard(pi: ExtensionAPI): void {
   pi.on("tool_call", async (event, _ctx) => {
     if (event.toolName === "bash") {
       const command = (event.input as { command?: string })?.command ?? "";
-      // A scan that throws must not read as "nothing to block": a guard that fails open
-      // on its own bug stops being a guard.
-      let hit: ReturnType<typeof scanCommand>;
+      // A scan that throws must not read as "nothing to block": a guard that fails
+      // open on its own bug stops being a guard (clause (a) again).
+      let reason: string | undefined;
       try {
-        hit = scanCommand(command);
+        reason = scanCommand(command);
       } catch (err) {
         traceWarn(
           `review-accept-guard: scan threw, refusing fail-open (${
             err instanceof Error ? err.message : String(err)
           })`,
         );
-        return { block: true, reason: refusalReason("data") };
+        reason = refusalReason();
       }
-      if (!hit) return;
+      if (!reason) return;
       trace("review-accept-guard: BLOCKED agent-run finding acceptance (mode-independent)");
-      return { block: true, reason: refusalReason(hit.route) };
+      return { block: true, reason };
     }
     const target = editsFindingsFile(event.toolName, event.input);
     if (!target) return;
     trace(`review-accept-guard: BLOCKED ${event.toolName} of the review findings file`);
-    return { block: true, reason: refusalReason("data", target) };
+    return { block: true, reason: refusalReason({ target }) };
   });
 }
