@@ -254,7 +254,16 @@ function singleWorkstreamState(staleNotes?: string[]): WorkState {
     // an artefact of the in-memory object — and the validator still accepts
     // the field's absence afterwards (an absent field is legitimate: a cycle
     // that never skipped a check has no notes to record).
+    // #1153 round 3 — the key is DELETED, not assigned `undefined`. The JSON
+    // round trip below would pass either way (`stringify` drops an
+    // undefined-valued key), so the in-memory shape is what pins the
+    // difference: a present-and-undefined key still reports `in`, which is what
+    // the tolerant readers look at.
     const restored: WorkState = JSON.parse(JSON.stringify(cleared));
+    assert(
+      !("consolidationNotes" in cleared.pipelineState),
+      "clean: the cleared key is deleted from the in-memory state, not undefined-valued",
+    );
     assert(
       !("consolidationNotes" in restored.pipelineState),
       "round-trip: the cleared field is ABSENT after JSON persist/restore, not undefined-valued",
@@ -274,6 +283,52 @@ function singleWorkstreamState(staleNotes?: string[]): WorkState {
       Array.isArray(stillNoted.pipelineState.consolidationNotes) &&
         stillNoted.pipelineState.consolidationNotes?.length === 2,
       `control: JSON round-trip preserves notes that were set (got ${JSON.stringify(stillNoted.pipelineState.consolidationNotes)})`,
+    );
+
+    // #1153 round 3 — a LEGACY non-array on the field is cleared too. The
+    // predicate used to be `priorNotes?.length`, which is falsy for a string,
+    // so a state file written before the validator guarded this field kept its
+    // junk note on the field of a cycle the gate had just called clean — the
+    // exact stale-note shape the clear exists to remove.
+    const legacy = singleWorkstreamState("not an array" as unknown as string[]);
+    assert(
+      legacy.pipelineState.consolidationNotes !== undefined,
+      "control: the legacy non-array note is on the field before the clean run",
+    );
+    const clearedLegacy = await runCommitPrPostDispatchGates(ctx, undefined as never, legacy);
+    assert(
+      !("consolidationNotes" in clearedLegacy.pipelineState),
+      `clean: a legacy non-array value is CLEARED, not left behind (got ${JSON.stringify(clearedLegacy.pipelineState.consolidationNotes)})`,
+    );
+
+    // #1153 round 3 — the PERSISTED list is bounded, newest kept. The renderer
+    // has always bounded the comment; the state file had no bound, so a cycle
+    // that re-entered commit-pr against a broken git grew without limit.
+    const flooded = consolidationState(
+      Array.from({ length: 45 }, (_, i) => `${SKIPPED_PREFIX}stale note ${i}`),
+    );
+    const capped = await runCommitPrPostDispatchGates(ctx, undefined as never, flooded);
+    const kept = capped.pipelineState.consolidationNotes ?? [];
+    // Newest kept, oldest dropped: the 45 stale notes plus this fixture's one
+    // fresh note are 46 distinct strings, so the surviving window is the last
+    // 19 stale ones (notes 26…44) followed by the fresh note.
+    assert(
+      kept.length === 20,
+      `writer: the persisted list is bounded to 20 (got ${kept.length})`,
+    );
+    assert(
+      kept[0] === `${SKIPPED_PREFIX}stale note 26` &&
+        kept[18] === `${SKIPPED_PREFIX}stale note 44` &&
+        kept[19] === notes[1],
+      `writer: the NEWEST 20 survive, oldest dropped (got ${JSON.stringify([kept[0], kept[18], kept[19]])})`,
+    );
+    assert(
+      !kept.some((n) => n === `${SKIPPED_PREFIX}stale note 0`),
+      "writer: the oldest note is the one that went",
+    );
+    assert(
+      validateDiscriminants(capped).length === 0,
+      `writer: the bounded list still validates clean (got ${JSON.stringify(validateDiscriminants(capped))})`,
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
