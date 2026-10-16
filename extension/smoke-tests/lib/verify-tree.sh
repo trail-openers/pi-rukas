@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Issue #1365 — the process-tree half of the offline verify loop: the BFS
 # descendant walk (`collect_tree`) and the INT/TERM handler (`interrupt_now`).
-# Split out of verify-pool.sh so each file stays under the AGENTS.md §12
-# 500-line cap the `test-file-size-limit.ts` gate enforces. The seam is the
+# Sourced by verify-pool.sh, which keeps each file under the §12 500-line cap
+# the `test-file-size-limit.ts` gate enforces. The seam is the
 # one the code already had: verify-pool.sh decides WHICH job runs and when a
 # job is done; everything here walks and tears down a set of pids. Nothing
 # here reads the job arrays' meaning beyond the liveness of a pid.
@@ -16,7 +16,6 @@
 # Sourced, never executed: no `set -u` here (verify-loop.sh sets it). The pool
 # file hard-checks these names the way verify-loop.sh checks the other halves.
 
-# collect_tree <var> <root-pid> — put the space-separated pid set of the tree
 # collect_tree <var> <root-pid> — put the space-separated pid set of the tree
 # rooted at <root-pid> (the root included) into the caller's variable <var>.
 # Each pid is walked once: a pid that appears in two parents' child lists would

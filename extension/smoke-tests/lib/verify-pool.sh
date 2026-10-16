@@ -78,8 +78,10 @@ JOB_STARTED_AT=()
 POOL_RUNNING=0
 
 # Every started job, whether or not it has since finished. The interrupt
-# handler walks the tree of anything listed here, because a finished job's
-# descendants can outlive the job.
+# handler walks the tree of the entries still in state 1 — the jobs actually
+# running when the signal landed (see interrupt_now in verify-tree.sh, which
+# filters `JOB_STATE[$i] -eq 1`); a finished job's tree was already taken down
+# by run_pool's completion branch.
 POOL_STARTED=()
 
 # pool_collect <run-dir> -- <file> ... — register each non-live test as a job,
@@ -175,14 +177,47 @@ for _tree_fn in collect_tree interrupt_now; do
 done
 unset _tree_fn
 
+# read_job_rc <i> — the ONE reader of a job's recorded exit code, used by both
+# branches of run_pool (the completion branch and the outer-bound branch). It
+# echoes a canonical base-10 number when the job's rc file has one, and nothing
+# otherwise. `head -n1` because a truncated write can leave junk on a later
+# line, which a numeric test over the whole file would not catch; the numeric
+# rule is `^[0-9]+$` — the single rule both branches now share, where the
+# completion branch used to accept `^[0-9]+$` and the outer bound `^[1-9][0-9]*$`
+# (which rejects "0"), so a job whose rc landed late as "0" was reported as a
+# timeout by one path and as a pass by the other. Callers own the fallback:
+# nothing printed — absent, empty, or non-numeric — becomes 1 there.
+read_job_rc() {
+  local rc
+  rc="$(head -n1 "${JOB_RC[$1]}" 2>/dev/null)"
+  if [[ "$rc" =~ ^[0-9]+$ ]]; then
+    echo "$rc"
+  fi
+}
+
+# finish_job <i> <exit> — the single transition of a job out of state 1, shared
+# by both branches of run_pool: the state change, the POOL_RUNNING decrement
+# (with its clamp), and done_n — the three pieces of bookkeeping that used to be
+# written twice, once per branch, where any future change had to land in both.
+# The transition out of state 1 IS the completion, which is what makes one
+# decrement per job the invariant rather than something the branches each
+# maintain.
+finish_job() {
+  JOB_STATE[$1]=2
+  POOL_RUNNING=$((POOL_RUNNING - 1))
+  [ "$POOL_RUNNING" -ge 0 ] || POOL_RUNNING=0
+  done_n=$((done_n + 1))
+}
+
 # run_pool <jobs> — keep up to <jobs> jobs running; return when all are done.
 # The test list is pool_collect's alone; taking it again here only offered a
 # way for the caller to state a different list than the one that was collected.
 #
-# `POOL_RUNNING` is a counter, not a scan: start_job increments it and the
-# completion branch below decrements it, so the admission test is O(1). It was
-# a full pass over every job on every 0.1s tick, which is the one thing in the
-# loop that grows with the suite rather than staying constant.
+# `POOL_RUNNING` is a counter, not a scan: start_job increments it and
+# finish_job — called by both branches below — decrements it, so the admission
+# test is O(1). It was a full pass over every job on every 0.1s tick, which is
+# the one thing in the loop that grows with the suite rather than staying
+# constant.
 #
 # Every job also carries a wall-clock bound of its own (below, in the completion
 # branch) reusing VERIFY_TEST_TIMEOUT_S — the same number run_test_with_timeout
@@ -194,7 +229,7 @@ unset _tree_fn
 # forever. Elapsed time is read from SECONDS (whole seconds) rather than a
 # nanosecond clock, which is also what keeps this portable to bash 3.2.
 run_pool() {
-  local max_jobs="$1" next=0 done_n=0 i total="${#JOB_TESTS[@]}" retries started elapsed outer_bound rc landed
+  local max_jobs="$1" next=0 done_n=0 i total="${#JOB_TESTS[@]}" retries started elapsed outer_bound landed
   if [ "$max_jobs" -lt 1 ]; then max_jobs=1; fi
   POOL_RUNNING=0
   while [ "$done_n" -lt "$total" ]; do
@@ -211,14 +246,9 @@ run_pool() {
         # its subshell managed to write an rc file on the way out: the bound
         # already counted it, and re-entering here would decrement
         # POOL_RUNNING a second time for the same job.
-        # The transition out of state 1 IS the completion, so the counter is
-        # decremented here and nowhere else — one decrement per job, guaranteed
-        # by the state change the branch itself makes.
-        JOB_STATE[$i]=2
-        POOL_RUNNING=$((POOL_RUNNING - 1))
-        [ "$POOL_RUNNING" -ge 0 ] || POOL_RUNNING=0
+        finish_job "$i" 1
         wait "${JOB_PID[$i]}" 2>/dev/null || :
-        JOB_EXIT[$i]="$(cat "${JOB_RC[$i]}" 2>/dev/null)"
+        JOB_EXIT[$i]="$(read_job_rc "$i")"
         # A dead job with an empty rc file is a race, not yet a verdict: the
         # subshell's last act is the write, and the pid can be observed gone a
         # moment before that write lands. Back off 0.1s, 0.2s, 0.4s — 0.7s
@@ -237,18 +267,17 @@ run_pool() {
               1) sleep 0.2 ;;
               *) sleep 0.4 ;;
             esac
-            JOB_EXIT[$i]="$(cat "${JOB_RC[$i]}" 2>/dev/null)"
+            JOB_EXIT[$i]="$(read_job_rc "$i")"
             retries=$((retries + 1))
           done
         fi
-        # Numeric, not merely non-empty: a truncated or corrupt write is as
-        # unusable as none, and replaying it as a bogus exit code would
-        # mislabel the test's outcome downstream.
-        if ! [[ "${JOB_EXIT[$i]}" =~ ^[0-9]+$ ]]; then
+        # Numeric, not merely non-empty: read_job_rc prints nothing for a
+        # truncated or corrupt write, and replaying it as a bogus exit code
+        # would mislabel the test's outcome downstream.
+        if [ -z "${JOB_EXIT[$i]}" ]; then
           echo "warn: verify-loop: job for ${JOB_TESTS[$i]} ended without a usable exit status; counted as failed" >&2
           JOB_EXIT[$i]=1
         fi
-        done_n=$((done_n + 1))
       else
         # Not complete: bound it by wall-clock since the job started (whole
         # seconds, SECONDS). This is the OUTER bound — it bounds the JOB, not
@@ -263,9 +292,11 @@ run_pool() {
         # bound waits the inner watchdog's own worst case plus a slack before
         # intervening, and by then the inner one has either reported or is
         # provably stuck in the tail the inner watchdog cannot reach. Each
-        # kill/wait is followed by `|| rc=1` so a non-zero status there cannot
-        # become the tick's status: under `set -e` a predicate that has just
-        # said "not done" would otherwise end the whole pass.
+        # kill/wait is followed by `|| :` so a non-zero status there cannot
+        # become the tick's status: it is the same guard the completion branch
+        # already puts on its `wait`, kept here because this branch is entered
+        # from an `if` whose condition just said "not done", and a stray status
+        # leaving this body would be read as the tick's own result.
         started="${JOB_STARTED_AT[$i]:-0}"
         elapsed=$((SECONDS - started))
         # The inner watchdog's worst case past its own bound: kill_process_tree
@@ -285,34 +316,29 @@ run_pool() {
           # stays true forever, so "retry" meant "kill it again, forever".
           JOB_KILLED[$i]=1
           echo "warn: verify-loop: job for ${JOB_TESTS[$i]} exceeded the ${outer_bound}s per-job bound without reporting; killing its tree" >&2
-          kill_process_tree "${JOB_PID[$i]}" || rc=1
-          wait "${JOB_PID[$i]}" 2>/dev/null || rc=1
-          JOB_STATE[$i]=2
-          POOL_RUNNING=$((POOL_RUNNING - 1))
-          [ "$POOL_RUNNING" -ge 0 ] || POOL_RUNNING=0
+          kill_process_tree "${JOB_PID[$i]}" || :
+          wait "${JOB_PID[$i]}" 2>/dev/null || :
+          finish_job "$i" 1
           # The timeout is the MARKER, not a code: 214 used to go here and the
           # caller read it as "timed out", which is exactly the collision a
           # test that exits 214 itself would hit. mark_timeout is the same
           # routine the inner watchdog calls, so both timeout paths report
           # identically. Normally the job's rc file never lands (the subshell
-          # was killed) and JOB_EXIT stays at the placeholder below. The latch
+          # was killed) and JOB_EXIT is set to 1 below. The latch
           # is set BEFORE the kill, so it also skips the completion branch for a
           # job that finished in its final moment and left a real rc behind —
           # and a pass must not be reported as a timeout. So the rc wins when it
           # is there and numeric, and only an absent or non-numeric rc is a
-          # timeout. `head -n1` because a truncated write can leave junk on a
-          # later line, which the numeric test alone would not catch.
-          landed="$(head -n1 "${JOB_RC[$i]}" 2>/dev/null)"
-          if [[ "$landed" =~ ^[0-9]+$ ]]; then
+          # timeout. read_job_rc is the same single reader the completion branch
+          # uses, so both agree on what a usable rc is.
+          landed="$(read_job_rc "$i")"
+          if [ -n "$landed" ]; then
             JOB_EXIT[$i]="$landed"
             echo "note: verify-loop: job for ${JOB_TESTS[$i]} wrote its exit code (${landed}) past the ${outer_bound}s bound; reporting it rather than a timeout" >&2
           else
             mark_timeout "$POOL_RUN_DIR" "$i"
-            if ! [[ "${JOB_EXIT[$i]}" =~ ^[1-9][0-9]*$ ]]; then
-              JOB_EXIT[$i]=1
-            fi
+            JOB_EXIT[$i]=1
           fi
-          done_n=$((done_n + 1))
         fi
       fi
     done
