@@ -24,27 +24,81 @@ import type { vipuneSearch } from "../src/vipune.ts";
 export const gatePrompts: string[] = [];
 
 export interface ForgeStubState {
-  created: { title: string; body: string }[];
+  created: { title: string; body: string; labels?: string[] }[];
   mode: "ok" | "throw" | "empty-url";
   error?: string;
+  /**
+   * #1377: the labels this repo "has". `null` means the stub does not implement
+   * the read at all (the pre-#1377 shape every plan test stub had) — the driver
+   * must treat that as "could not read", never as "these labels do not exist".
+   */
+  existing: string[] | null;
+  /**
+   * #1377: whether the read reports a page-full (possibly truncated) result.
+   * A truncated read is the OTHER non-answer: the driver must halt with
+   * "could not read the full label set", never answer "that label is missing".
+   */
+  truncated: boolean;
+  /** #1377: how many times the label list was read (0 when no labels were asked for). */
+  labelListCalls: number;
+  /** #1377: how many times the forge was resolved in one filing (one, post-#1377). */
+  resolveCalls: number;
 }
 
-export const forgeStub: ForgeStubState = { created: [], mode: "ok" };
+export const forgeStub: ForgeStubState = {
+  created: [],
+  mode: "ok",
+  existing: null,
+  truncated: false,
+  labelListCalls: 0,
+  resolveCalls: 0,
+};
 
+/**
+ * Install the filing stub. #1377: the create call records the labels it was
+ * handed as its third argument (a stub that ignored them would pass a test for
+ * a filing that silently dropped them), and `labelList` answers from
+ * `forgeStub.existing` — `null` leaves the method off entirely, which is how a
+ * read failure is exercised, and `truncated: true` answers with the
+ * page-full-with-no-more-rows shape no CLI can distinguish from a longer list.
+ */
 export function installForgeStub(): void {
-  const stub = {
-    issueCreate: (title: string, body: string) => {
-      forgeStub.created.push({ title, body });
+  forgeStub.labelListCalls = 0;
+  forgeStub.resolveCalls = 0;
+  const stub: Record<string, unknown> = {
+    issueCreate: (title: string, body: string, opts?: { labels?: string[] }) => {
+      forgeStub.created.push({ title, body, labels: opts?.labels });
       if (forgeStub.mode === "throw") {
         return Promise.reject(new Error(forgeStub.error ?? "gh: HTTP 403 (rate limit exceeded)"));
       }
       if (forgeStub.mode === "empty-url") {
         return Promise.resolve({ url: "" });
       }
-      return Promise.resolve({ url: "https://github.com/test/test/issues/1" });
+      // Always the same URL: tests pin `issueUrl === .../issues/1` after a
+      // single filing, and a per-call counter would break the second filing in
+      // a file that files twice. The NUMBER is what #1377 reports separately,
+      // and it comes from the forge's own parse of this URL.
+      return Promise.resolve({
+        url: "https://github.com/test/test/issues/1",
+        number: 1,
+      });
     },
-  } as unknown as Forge;
-  setPlanForge(() => Promise.resolve(stub));
+  };
+  if (forgeStub.existing !== null) {
+    const existing = forgeStub.existing;
+    const truncated = forgeStub.truncated;
+    stub.labelList = () => {
+      forgeStub.labelListCalls++;
+      return Promise.resolve({ names: existing, truncated });
+    };
+  }
+  // #1377: ONE resolve per filing — the gate and the create call are handed the
+  // same object, so a second call is a second `detectForge` read (or, with a
+  // stub, a second chance for the two halves to disagree).
+  setPlanForge(() => {
+    forgeStub.resolveCalls++;
+    return Promise.resolve(stub as unknown as Forge);
+  });
 }
 
 /**
@@ -224,6 +278,57 @@ export function installCountingDispatch(gateReply: string | string[], dupReply =
   }) as never);
 }
 
+/**
+ * A dispatch stub whose angles emit `perKind` oversized items per kind — the
+ * shape that overflows stage 0's render budget and fits stage 1's (the
+ * compaction case, same fixture as test-plan-body-budget).
+ */
+export function installOverflowDispatch(itemText: string, perKind = 20): void {
+  const kinds = [
+    "acceptance-criterion",
+    "test-surface-item",
+    "edge-case",
+    "reference",
+    "out-of-scope",
+  ];
+  const toolUses = kinds.flatMap((kind) =>
+    Array.from({ length: perKind }, (_, i) => ({
+      name: "report_plan_item",
+      arguments: { kind, text: `${kind}-${i}: ${itemText}`, angle: "x" },
+    })),
+  );
+  setPlanDispatch(((_pi: unknown, spec: { role: string; prompt: string }) => {
+    if (spec.role === "adversarial-developer") {
+      return Promise.resolve({
+        role: spec.role,
+        ok: true,
+        text: "VERDICT: READY",
+        toolUses: [],
+        ms: 1,
+        exitCode: 0,
+      });
+    }
+    if (spec.prompt.includes("DUPLICATE RISK CHECK")) {
+      return Promise.resolve({
+        role: "explore",
+        ok: true,
+        text: DUP_NONE,
+        toolUses: [],
+        ms: 1,
+        exitCode: 0,
+      });
+    }
+    return Promise.resolve({
+      role: "explore",
+      ok: true,
+      text: "prose summary",
+      toolUses,
+      ms: 1,
+      exitCode: 0,
+    });
+  }) as never);
+}
+
 export function pipeline(input: Partial<PlanDriverInput> = {}): Promise<PlanResult> {
   return runPlanPipeline({} as never, { descriptor: DESC, ...input }, REPO);
 }
@@ -240,6 +345,11 @@ export async function newPlanCache(prefix = "plan-cache-"): Promise<void> {
   setPlanGitStateFn(async () => ({ keySha: cacheState.keySha, cacheDir: cacheState.dir }));
   forgeStub.created.length = 0;
   forgeStub.mode = "ok";
+  // #1377: reset to the pre-#1377 stub shape so a test that does not pass
+  // labels never sees a label read, and one that does must opt in explicitly.
+  forgeStub.existing = null;
+  forgeStub.truncated = false;
+  forgeStub.labelListCalls = 0;
 }
 
 /** Reset the seams and remove every cache directory a test created. */

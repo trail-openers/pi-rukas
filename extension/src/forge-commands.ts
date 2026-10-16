@@ -25,6 +25,21 @@ export function issueViewCmd(forge: ForgeType, number: number): string {
 }
 
 /**
+ * One label flag per label, each through `shq` — the same quoting the title
+ * gets. A label name may contain a space and a `:` (`auto-filed`, `kind: bug`),
+ * and this seam is a shell string, so an unquoted label would split into extra
+ * argv elements (`--label kind :` `bug`) or worse. GitHub takes one `--label`
+ * per label; GitLab's `glab issue create --label` takes a comma-separated list
+ * (`--label a,b`), so a label containing a comma cannot be expressed there and
+ * never reaches this builder: `normalizeLabels`' pattern excludes `,`.
+ */
+export function labelFlags(forge: ForgeType, labels: string[]): string {
+  if (labels.length === 0) return "";
+  if (forge === "github") return labels.map((l) => ` --label ${shq(l)}`).join("");
+  return ` --label ${labels.map((l) => shq(l)).join(",")}`;
+}
+
+/**
  * `gh issue create` does NOT support `--json` (verified: `gh issue create
  * --help` — the flag list has no `--json`). On success gh prints the created
  * issue's URL as a single plain-text line to stdout. The mapper in `forge.ts`
@@ -32,14 +47,23 @@ export function issueViewCmd(forge: ForgeType, number: number): string {
  * `parsePrNumberFromResponse` (which handles both `/issues/N` and
  * `/-/merge_requests/N` URL shapes, and also tolerates a JSON payload for
  * forward-compat with a `gh` release that adds `--json` to create).
+ *
+ * #1377: `labels` is optional and renders NOTHING when empty, so an existing
+ * caller's argv is byte-for-byte the command it always ran.
  */
-export function issueCreateCmd(forge: ForgeType, title: string, bodyFile: string): string {
+export function issueCreateCmd(
+  forge: ForgeType,
+  title: string,
+  bodyFile: string,
+  labels: string[] = [],
+): string {
+  const labelFlags_ = labelFlags(forge, labels);
   if (forge === "github")
-    return `gh issue create --title ${shq(title)} --body-file ${shq(bodyFile)}`;
+    return `gh issue create --title ${shq(title)} --body-file ${shq(bodyFile)}${labelFlags_}`;
   // glab issue create takes the description as a literal string. The file
   // content is expanded by the caller (the forge object reads the file and
   // passes the content); the `-d` value here is the *expanded* content.
-  return `glab issue create -t ${shq(title)} -d ${shq(`@${bodyFile}`)}`;
+  return `glab issue create -t ${shq(title)} -d ${shq(`@${bodyFile}`)}${labelFlags_}`;
 }
 
 export function issueCommentCmd(forge: ForgeType, number: number, bodyFile: string): string {
@@ -249,6 +273,44 @@ export function pipelineListCmd(limit = 1): string {
 }
 
 // ── Labels ────────────────────────────────────────────────────────────────
+
+/**
+ * #1377 — list the repo's label NAMES, the read behind `Forge.labelList`.
+ *
+ * `gh label list --limit 1000 --json name`. `--limit` is the only page knob gh
+ * gives this subcommand (no `--all`, no `--page` — verified against
+ * `gh label list --help` on 2.102.0), so the read asks for the largest page the
+ * CLI will carry. The caller caps a filing at 5 labels, so a page this size is
+ * comfortably the whole set for any real repo — but "comfortably" is not a
+ * guarantee, so `GH_LABEL_LIST_LIMIT` is exported and `labelListPageLimit()`
+ * answers the number the plan layer compares the row count against: a read that
+ * lands EXACTLY on the page size is treated as possibly truncated and halts the
+ * filing rather than reporting a label missing. A misread here is not cosmetic —
+ * "that label does not exist" refuses legitimate work, and the driver never
+ * creates the label to fix it.
+ *
+ * GitLab: `glab label list --page 1 --per-page 1000 --output json`. glab has no
+ * `--all` (verified against the `glab-label-list(1)` man page: the flag list is
+ * `-g/--group`, `-F/--output`, `-p/--page`, `-P/--per-page`), so the same
+ * largest-page + completeness-signal shape applies. `--page 1` is explicit
+ * rather than left to the default so the read is visibly one page of a known
+ * size, and `GL_LABEL_LIST_PER_PAGE` is the GitLab page number.
+ *
+ * Both are single unchained reads (#408 recovery-command rule) so the
+ * pre-filing check never re-prompts the permission matcher.
+ */
+export const GH_LABEL_LIST_LIMIT = 1000;
+export const GL_LABEL_LIST_PER_PAGE = 1000;
+
+/** The page size a `labelListCmd` read asks for, on this forge. */
+export function labelListPageLimit(forge: ForgeType): number {
+  return forge === "github" ? GH_LABEL_LIST_LIMIT : GL_LABEL_LIST_PER_PAGE;
+}
+
+export function labelListCmd(forge: ForgeType): string {
+  if (forge === "github") return `gh label list --limit ${GH_LABEL_LIST_LIMIT} --json name`;
+  return `glab label list --page 1 --per-page ${GL_LABEL_LIST_PER_PAGE} --output json`;
+}
 
 /** Create a label (GitLab auto-creates missing labels on add, but explicit create is the normalized path). */
 export function labelCreateCmd(forge: ForgeType, name: string, color: string): string {
