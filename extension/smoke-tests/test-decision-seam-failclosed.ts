@@ -15,6 +15,7 @@
  */
 
 import { compose } from "../src/decision-compose.ts";
+import { citationPresent } from "../src/decision-evidence.ts";
 import {
   type Composition,
   type DecisionMode,
@@ -99,7 +100,11 @@ const valid = (s: SeamSpec) => seamContractViolations({ ...s, defaultMode: "shad
 
 // 2 — decide(), for every registered seam under every valid composition.
 {
+  // Not a substring of QUOTE: `citationPresent` (#1381) requires a whole
+  // sentence, so a quote that merely occurs inside the evidence text is now a
+  // third evidence outcome — present-but-not-a-sentence — and must not loosen.
   const QUOTE = "the quoted sentence that the stub relies on";
+  const PARTIAL = "the quoted sentence that the stub";
   let cases = 0;
   const breaches: string[] = [];
   for (const [id, real] of Object.entries(SEAMS as Record<string, SeamSpec>)) {
@@ -117,21 +122,22 @@ const valid = (s: SeamSpec) => seamContractViolations({ ...s, defaultMode: "shad
       const labels = Object.keys(clone.labels);
       for (const rule of labels) {
         for (const answer of labels) {
-          for (const quoted of [true, false]) {
+          for (const quoted of [true, false, "partial"] as const) {
             cases++;
+            const text = quoted === "partial" ? PARTIAL : quoted ? QUOTE : "not this sentence";
             const b = stubBackend({ ok: true, answer, ...(quoted ? { quote: QUOTE } : {}) });
             const d = await decide(
               seam,
               {
-                state: { text: QUOTE },
+                state: { text },
                 question: "q",
                 rule,
-                evidence: { texts: [{ name: "doc", text: QUOTE }] },
+                evidence: { texts: [{ name: "doc", text }] },
               },
               { backends: [b] },
             );
             const loosened = !isPassing(clone, rule) && isPassing(clone, d.answer);
-            if (loosened && !(composition === "replace" && quoted)) {
+            if (loosened && !(composition === "replace" && quoted === true)) {
               breaches.push(`${clone.id} rule=${rule} model=${answer} quoted=${quoted}`);
             }
           }
@@ -140,6 +146,10 @@ const valid = (s: SeamSpec) => seamContractViolations({ ...s, defaultMode: "shad
     }
   }
   assert(cases > 0, `decide() checked over ${cases} cases across the registered seams`);
+  assert(
+    citationPresent(QUOTE, QUOTE) && !citationPresent(PARTIAL, QUOTE),
+    "the third evidence outcome is real: the partial quote occurs in the text but is not a whole sentence of it",
+  );
   assert(
     breaches.length === 0,
     `decide() never loosens a fail outside replace-with-evidence${breaches.length ? `: ${breaches.slice(0, 5).join(" | ")}` : ""}`,

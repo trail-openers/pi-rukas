@@ -34,7 +34,10 @@
  *     should be allowed — otherwise it can be talked into a yes.
  *   - **Citation-verified.** The judge must quote the sentence that grants the
  *     permission, and the decision seam's evidence check (decision-evidence.ts)
- *     confirms that sentence actually appears in the file the judge named. A fabricated quote is not just ignored, it is
+ *     confirms that quote equals one whole sentence of the file the judge
+ *     named — not merely a substring of it (#1381). A quote of a permission
+ *     clause with its own leading conditional dropped is a partial quote and
+ *     does not grant. A fabricated quote is not just ignored, it is
  *     surfaced: a hallucinating judge is a thing the operator should know
  *     about, not something to paper over with a silent fallback.
  *
@@ -64,7 +67,11 @@ import { reporterPathFromArgs, statReporterPath } from "./reporter-preflight.ts"
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import { trace } from "./trace.ts";
 
-export { citationPresent, normaliseForCitation } from "./decision-evidence.ts";
+export {
+  citationPresent,
+  citationUnits,
+  normaliseForCitation,
+} from "./decision-evidence.ts";
 
 export type PolicyVerdict = "permitted" | "forbidden" | "unstated";
 

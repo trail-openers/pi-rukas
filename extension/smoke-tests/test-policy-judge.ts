@@ -153,8 +153,11 @@ const docs = (text: string, file = "AGENTS.md"): DoctrineDoc[] => [{ file, text 
   );
 }
 
-// A judge quoting honestly across formatting must still pass, or the gate is
-// unusable on real markdown.
+// #1381 — the whole-sentence rule has its own file, test-decision-evidence-
+// sentence.ts. This one stays the #407 suite: what the regexes got wrong, the
+// judge's own behaviour, and the fail-closed paths.
+
+// ------------------------------------------------------------- fails closed
 {
   const FILE = "## 9. Git workflow\n\nLLMs / agents are **allowed** to squash\nmerge PRs.\n";
   assert(
@@ -166,6 +169,28 @@ const docs = (text: string, file = "AGENTS.md"): DoctrineDoc[] => [{ file, text 
     "...but an invented sentence does not",
   );
   assert(!citationPresent("merge", FILE), "a trivially short 'quote' is not evidence");
+}
+
+{
+  // #1381: a permission quoted without the qualifier that conditions it, and a
+  // heading quoted verbatim. Both verify under a substring check; neither does
+  // as a whole sentence.
+  const QUALIFIED =
+    "Agents may squash-merge a PR to main unless a maintainer objects in the review thread.";
+  assert(citationPresent(QUALIFIED, QUALIFIED), "the whole conditioned sentence verifies");
+  assert(
+    !citationPresent("Agents may squash-merge a PR to main", QUALIFIED),
+    "...but the permission clause on its own does not — dropping the qualifier is the exploit",
+  );
+  const HEADINGS = "## Merge policy\n\nAgents may merge once CI is green.\n";
+  assert(
+    citationPresent("Agents may merge once CI is green.", HEADINGS),
+    "a sentence under a heading still verifies",
+  );
+  assert(
+    !citationPresent("## Merge policy", HEADINGS),
+    "...and the heading line itself never does, even quoted verbatim",
+  );
 }
 
 // ------------------------------------------------------------- fails closed
