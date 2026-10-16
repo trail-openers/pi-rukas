@@ -143,183 +143,21 @@ export PI_ENSEMBLE_PLAN_CACHE=0
 # repos and their writer must write to the temp repo's git dir, not a shared
 # env-var path.
 
-# --- #1014 — per-test timeout watchdog.
-#
-# Each test is bounded at ${PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S:-300} seconds.
-#
-# Design (portability-first, no GNU tools):
-#   * No `timeout` (GNU coreutils), no `wait -n` (bash 4.3+), no
-#     process-group kill (no setsid on macOS): the test runs in the
-#     background, a 0.1s poll loop counts wall-clock (bash SECONDS,
-#     second resolution) until the bound, identical on bash 3.2 (macOS)
-#     and 5.x (Linux).
-#   * On timeout the whole descendant tree is killed — a bare `kill <pid>`
-#     would orphan bun's children (`bun run` forks a child for the script,
-#     and a test can spawn grandchildren, e.g. a `sleep`). The tree is found
-#     by a BFS `pgrep -P` walk.
-#   * SIGTERM first, SIGKILL only for survivors: a test with cleanup handlers
-#     gets a chance to exit cleanly. The grace is a BOUNDED POLL — up to
-#     20 × 0.1s = 2s ceiling, so a tree that dies in 50ms costs 50ms, not the
-#     2s a fixed `sleep 2` charged every timeout. See kill_process_tree below.
-#   * The watchdog fires at the bound and returns its OWN sentinel (214),
-#     deliberately distinct from 124 — the conventional "timed out" code that
-#     a test can exit on its own. Because the sentinel is 214, the per-test
-#     "(timed out after <N>s)" suffix is emitted only for a true watchdog
-#     kill, never for a coincidental self-exit-124 test (the round-1
-#     finding: the old code keying the suffix on `rc -eq 124` misattributed
-#     those). The `✗ timed out after <N>s` line the watchdog prepends to the
-#     capture is what the #827 echo and extractSpecificAssertion name as the
-#     specific assertion; a self-exit-124 test gets neither.
-#   * The bound must be a positive integer; anything else falls back to 300
-#     with a warning so the silent default is visible.
 
-if [[ "${PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S:-}" =~ ^[1-9][0-9]*$ ]]; then
-  VERIFY_TEST_TIMEOUT_S="$PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S"
-else
-  if [ -n "${PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S:-}" ]; then
-    echo "warn: verify-loop: PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S must be a positive integer; got '${PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S}', falling back to 300" >&2
+# #1365 — the watchdog half (#1014: the per-test bound, the descendant-tree
+# kill, and the timeout marker) lives in verify-kill.sh so each file stays under
+# the §12 500-line cap. Sourced FIRST: verify-pool.sh calls run_test_with_timeout
+# and kill_process_tree, and the watchdog calls collect_tree back out of the pool
+# file, so the two halves are mutually dependent and the hard name checks below
+# run only once both are loaded.
+. "$(dirname "${BASH_SOURCE[0]}")/verify-kill.sh"
+for _kill_fn in run_test_with_timeout kill_process_tree mark_timeout prepend_timeout_line; do
+  if [ "$(type -t "$_kill_fn")" != function ]; then
+    echo "error: verify-loop: lib/verify-kill.sh did not define $_kill_fn — the watchdog is broken; refusing to run" >&2
+    exit 2
   fi
-  VERIFY_TEST_TIMEOUT_S=300
-fi
-
-# Descendant-tree kill: SIGTERM, then a bounded grace (poll up to 20 × 0.1s =
-# 2s for liveness to clear — the ceiling, not the typical cost), then SIGKILL
-# survivors. Without pgrep only the top-level test process can be killed
-# (descendants are orphaned).
-# The BFS tracks visited PIDs so each is walked once (a pid re-appearing in
-# two parents' child lists would otherwise be re-added).
-# After the grace, SIGKILL goes to EVERY collected pid unconditionally — the
-# kill -0 pre-check is a trap: a zombie satisfies kill -0, but so would a
-# pid that died between the check and the kill, and a pid recycled into an
-# unrelated process would make the check say "no, it's alive" for the wrong
-# reason. SIGKILL to a dead or zombie pid is a harmless no-op.
-# Then wait (bounded ≤5s) until no collected pid is alive; a pid whose exit
-# we cannot reap ourselves is still visible in `ps` as a zombie to its new
-# parent, so polling on liveness here is the right check — and survivors are
-# named so a leak is diagnosable, not silently dropped.
-kill_process_tree() {
-  local root_pid="$1" current_pid pids_to_kill alive_count waited polls_to_kill
-  # #1365: the BFS now lives in collect_tree (verify-pool.sh), shared with the
-  # interrupt handler so the two cannot disagree about what a job's tree
-  # contains. Called for its side effect, NOT through $(...) — a substitution
-  # would run the walk in a subshell, where `pgrep -P` sees the substitution's
-  # pid instead of this shell's and reports the job subshell as childless.
-  pids_to_kill=""
-  collect_tree pids_to_kill "$root_pid"
-  if [ -z "$pids_to_kill" ]; then pids_to_kill="$root_pid"; fi
-  for current_pid in $pids_to_kill; do kill -TERM "$current_pid" 2>/dev/null; done
-  # Grace: poll for liveness to clear rather than sleeping a fixed 2s, so the
-  # cost is the time the tree actually takes to die and not a flat 2s charged
-  # even when it died in 50ms — and so a clean exit is distinguishable from a
-  # process that ignored SIGTERM for the whole window. Same shape as
-  # interrupt_now's poll: bounded (20 × 0.1s, i.e. a 2s ceiling), exits the
-  # moment nothing answers `kill -0`, and falls through
-  # to the SIGKILL round when something does not.
-  polls_to_kill=0
-  while [ "$polls_to_kill" -lt 20 ]; do
-    alive_count=0
-    for current_pid in $pids_to_kill; do
-      if kill -0 "$current_pid" 2>/dev/null; then alive_count=$((alive_count + 1)); fi
-    done
-    if [ "$alive_count" -eq 0 ]; then break; fi
-    sleep 0.1
-    polls_to_kill=$((polls_to_kill + 1))
-  done
-  for current_pid in $pids_to_kill; do kill -KILL "$current_pid" 2>/dev/null; done
-  # Bounded wait (≤5s, 0.1s polls) for the whole tree to actually die; name
-  # survivors so a leaked descendant is visible in the output.
-  waited=0
-  while [ "$waited" -lt 50 ]; do
-    alive_count=0
-    for current_pid in $pids_to_kill; do
-      if kill -0 "$current_pid" 2>/dev/null; then alive_count=$((alive_count + 1)); fi
-    done
-    if [ "$alive_count" -eq 0 ]; then return 0; fi
-    sleep 0.1
-    waited=$((waited + 1))
-  done
-  local survivors=""
-  for current_pid in $pids_to_kill; do
-    if kill -0 "$current_pid" 2>/dev/null; then survivors="$survivors $current_pid"; fi
-  done
-  if [ -n "$survivors" ]; then
-    echo "warn: verify-loop: still alive after SIGKILL: ${survivors# }" >&2
-  fi
-}
-
-# Prepend the `✗ timed out after <N>s` line to the capture (front, so
-# extractSpecificAssertion names it; partial output stays after it).
-prepend_timeout_line() {
-  # #1365: the capture is the job's own file, passed as $2. The scratch file
-  # goes inside the caller's per-run private directory (the capture's own
-  # dirname) rather than beside the capture by name, so nothing writes to a
-  # predictable path outside the 0700 directory and the whole run's temp state
-  # is removed as one unit. A missing cap argument is a bug in the caller, not
-  # a reason to write a file named `.tmp` in the CWD.
-  local bound="$1" cap="${2:-}" tmp
-  if [ -z "$cap" ]; then
-    echo "warn: verify-loop: no capture file for this test; the timeout line was not prepended" >&2
-    return 1
-  fi
-  # mktemp, not a name built from $$ and $RANDOM: two jobs of one run share
-  # this shell's pid, so the derived name collided between them and one
-  # `mv` silently replaced the other's capture. 0600 and O_EXCL are the
-  # defaults mktemp gives, which the derived name did not have.
-  tmp="$(mktemp "$(dirname "$cap")/timeout.XXXXXX")" || {
-    echo "warn: verify-loop: could not create the scratch file for the timeout line of this test" >&2
-    return 1
-  }
-  {
-    echo "✗ timed out after ${bound}s"
-    cat "$cap" 2>/dev/null
-  } >"$tmp" 2>/dev/null && mv "$tmp" "$cap" 2>/dev/null || {
-    rm -f "$tmp"
-    echo "warn: verify-loop: could not prepend the timeout line to the capture of this test" >&2
-    return 1
-  }
-  return 0
-}
-
-# Run one test under the watchdog. Returns the test's exit code, or 214 (the
-# watchdog's own sentinel, distinct from a test that exits 124 itself) if the
-# bound fired. #1365: the third argument is this job's capture file.
-run_test_with_timeout() {
-  local bound="$1" t="$2" cap="$3" pid=0 start rc=0
-  start=$SECONDS
-  bun run "$t" >"$cap" 2>&1 &
-  pid=$!
-  # Poll every 0.1s (sleep 0.1 works on macOS and GNU coreutils), comparing
-  # elapsed wall-clock via SECONDS (second resolution — the bound is still
-  # honoured to the second, the fast poll only removes the 1s latency that
-  # previously added ~1s to every fast test). bash 3.2 safe: no associative
-  # arrays, no wait -n, fractional sleep only.
-  while :; do
-    if kill -0 "$pid" 2>/dev/null; then
-      if [ "$((SECONDS - start))" -ge "$bound" ]; then
-        kill_process_tree "$pid"
-        wait "$pid" 2>/dev/null
-        # NB: the timeout path returns 214 on purpose (not 124) — the test's
-        # own wait status (whatever the SIGTERM/SIGKILL left behind) is
-        # intentionally replaced by the sentinel, and 214 is chosen BECAUSE
-        # it is distinct from 124: a test that itself exits 124 (the
-        # conventional "timed out" code) returns through the normal path
-        # below and gets no timeout marker, so the cosmetic "(timed out)"
-        # suffix is emitted only for a true watchdog kill, never for a
-        # coincidental self-exit-124. The `✗ timed out after <N>s` line
-        # prepended to the capture is what the #827 echo /
-        # extractSpecificAssertion surface as the specific assertion.
-        prepend_timeout_line "$bound" "$cap"
-        return 214
-      fi
-    else
-      break
-    fi
-    sleep 0.1
-  done
-  wait "$pid" 2>/dev/null
-  rc=$?
-  return "$rc"
-}
+done
+unset _kill_fn
 
 # #1365 — the bounded job pool (verify-pool.sh) runs the tests collected below.
 # It calls run_test_with_timeout and kill_process_tree, so it is sourced here,
@@ -349,7 +187,7 @@ unset _verify_fn
 # descendant walk both the watchdog and the interrupt handler depend on, so a
 # pool that loads without it can kill a hung test's top process and orphan the
 # rest of its tree while still reporting the timeout correctly.
-for _pool_fn in pool_collect run_pool interrupt_now collect_tree; do
+for _pool_fn in pool_collect run_pool interrupt_now collect_tree start_job; do
   if [ "$(type -t "$_pool_fn")" != function ]; then
     echo "error: verify-loop: lib/verify-pool.sh did not define $_pool_fn — the test pool is broken; refusing to run" >&2
     exit 2
@@ -406,16 +244,18 @@ _extra_cleanup() {
 }
 trap '_extra_cleanup' EXIT
 
-# #1365 — the interrupt path in verify-pool.sh calls `_extra_cleanup` for the
-# same reason the EXIT trap just did: RUN_DIR, the #827/#1028 failure captures
-# and the #1069 ledger temp dir have to go. The pool used to reach it through a
-# silent `type -t` probe, so a rename made Ctrl-C look clean while every one of
-# those stayed on disk — the EXIT trap it duplicates never runs on that path. It
-# is now under the same hard name check the pool's own functions get. Checked
-# here rather than with them because a `type -t` test before the definition
-# would fail for the wrong reason. It is not optional, so there is no declared
-# flag and nothing to trace when absent: the pool calls it unconditionally and
-# so does the trap above, so a run without it is broken before the pool starts.
+# #1365 — the interrupt path (interrupt_now, now in lib/verify-tree.sh, reached
+# through lib/verify-pool.sh) calls `_extra_cleanup` for the same reason the EXIT
+# trap just did: RUN_DIR, the #827/#1028 failure captures and the #1069 ledger
+# temp dir have to go. The pool used to reach it through a silent `type -t`
+# probe, so a rename made Ctrl-C look clean while every one of those stayed on
+# disk — the EXIT trap it duplicates never runs on that path. It is now under the
+# same hard name check the pool's own functions get. Checked here rather than
+# with them because a `type -t` test before the definition would fail for the
+# wrong reason. It is not optional, so there is no declared flag and nothing to
+# trace when absent: the pool calls it unconditionally and so does the trap
+# above, so a run without it is broken before the pool starts. The call site
+# names this as the declared hook rather than re-deriving the cleanup.
 if [ "$(type -t _extra_cleanup)" != function ]; then
   echo "error: verify-loop: _extra_cleanup is missing — the interrupt path cannot clean the run's temp state; refusing to run" >&2
   exit 2
@@ -425,7 +265,7 @@ names=()
 # #1365: collect the tests, run them through the pool, then replay each job's
 # result in argument order. RUN_DIR is passed explicitly so the pool never
 # depends on an ambient temp name.
-pool_collect "$RUN_DIR" "$@"
+pool_collect "$RUN_DIR" -- "$@"
 total=${#JOB_TESTS[@]}
 # Interrupt: every running job's process tree is killed, and the loop does not
 # return until each tree is reaped (see interrupt_now).
@@ -442,8 +282,12 @@ for ((i = 0; i < total; i++)); do
     fi
   else
     names+=("$t")
+    # The timeout is the MARKER, not the exit code: rc==214 is an ordinary exit
+    # code a test may return, and only this file says the watchdog fired.
+    timed_out=0
+    if [ -f "$RUN_DIR/$i.timeout" ]; then timed_out=1; fi
     if [ "$DIGEST" -eq 0 ]; then
-      if [ "$rc" -eq 214 ]; then
+      if [ "$timed_out" -eq 1 ]; then
         echo "FAILED: $t (timed out after ${VERIFY_TEST_TIMEOUT_S}s)"
       else
         echo "FAILED: $t"
@@ -451,17 +295,24 @@ for ((i = 0; i < total; i++)); do
       cat "$cap"
     fi
     # #827 — keep this test's capture so its `✗` lines can be repeated
-    # after the summary (below); removed on exit like $CAPTURE. Also used
+    # after the summary (below); removed on exit with $RUN_DIR. Also used
     # by #1028 digest mode to emit ✗ lines + indented detail.
     # #1365: the source of this copy is the job's own capture, not $CAPTURE.
-    capfile="$(mktemp "${TMPDIR:-/tmp}/verify-loop.XXXXXX")" || exit 2
-    if ! cp "$cap" "$capfile"; then
-      # Capture failed — degrade gracefully: the test has already failed and
-      # its per-test output was printed above, so a missing echo is a
+    #
+    # #1365 fix round: the copy lives INSIDE $RUN_DIR (this run's private 0700
+    # directory) and a mktemp failure degrades to the empty-placeholder path
+    # instead of `exit 2`. The old shape allocated in ${TMPDIR:-/tmp} with
+    # `|| exit 2`, after every test had already run and been printed — so one
+    # failure of a scratch-file allocation threw away a finished run's verdict
+    # and reported the usage error (2) where the caller expected 0 or 1.
+    capfile="$(mktemp "$RUN_DIR/keep-$i.out.XXXXXX" 2>/dev/null)"
+    if [ -z "$capfile" ] || ! cp "$cap" "$capfile"; then
+      # Could not keep a copy — degrade gracefully: the test has already failed
+      # and its per-test output was printed above, so a missing echo is a
       # cosmetic gap in the tail, not a new failure. Do NOT register the
       # capfile, so the echo loop below skips it.
       echo "warn: verify-loop: could not capture output of $t for the tail echo; its ✗ lines will be absent from the summary tail" >&2
-      rm -f "$capfile"
+      [ -n "$capfile" ] && rm -f "$capfile"
       # Push a placeholder so the digest loop's names/_extra_captures index
       # pairing stays aligned; the digest emits the FAILED: marker with no
       # detail for this test. An empty entry makes the #827 echo loop's

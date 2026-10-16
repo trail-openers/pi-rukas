@@ -17,6 +17,11 @@
  *       full consumer path (loop → tail → assertion) yields attributed:
  *       true and the `✗ timed out after <N>s` line as the specific
  *       assertion.
+ *   11. #1014 exit-124 disambiguation: a test that exits 124 itself is a plain
+ *       failure, not a timeout.
+ *   12. #1365 exit-214 disambiguation: the watchdog's old return code is now an
+ *       ordinary exit code a test may use, and a test that returns it is still
+ *       not a timeout.
  */
 
 import { spawnSync } from "node:child_process";
@@ -212,6 +217,42 @@ function hangTestEnv(caseId: string): { env: Record<string, string>; token: stri
   assert(
     !stdout.includes("✗ timed out after"),
     "case 11: the ✗ timed out line is absent (the watchdog did not fire)",
+  );
+}
+
+// --- Case 12: exit-214 disambiguation (#1365 fix round). The companion to
+// case 11, one code along: the watchdog used to RETURN 214 when the bound
+// fired and the caller keyed the timeout reporting on `rc -eq 214`, so a test
+// that exits 214 itself — its own tooling's convention — was reported as
+// "timed out" though nothing ever timed out. Timeout reporting is now keyed on
+// the marker file the watchdog (and the pool's outer bound) writes, so this
+// fixture gets a plain FAILED marker, keeps its real exit code as a failure,
+// and no timeout text appears anywhere in the run.
+{
+  const { status, stdout } = runLoopEnv([path.join(FIXTURES, "fixture-exit214.ts")], {});
+  assert(status !== 0, "case 12: exit non-zero when a test exits 214 of its own accord");
+  const failedLines = stdout.split("\n").filter((l) => l.startsWith("FAILED: "));
+  const perTest = failedLines.find((l) => l.includes("fixture-exit214.ts"));
+  assert(
+    perTest !== undefined,
+    `case 12: the per-test FAILED marker names the file (got: ${JSON.stringify(perTest)})`,
+  );
+  assert(
+    perTest !== undefined && !perTest.includes("(timed out"),
+    `case 12: the exit-214 test is NOT misattributed as a timeout (got: ${JSON.stringify(perTest)})`,
+  );
+  assert(
+    !stdout.includes("timed out"),
+    "case 12: no timeout text at all in the run (the watchdog never fired)",
+  );
+  assert(
+    stdout.includes("fixture-exit214: intentional self-exit-214"),
+    "case 12: the test's own output is reported, so the real failure is visible",
+  );
+  const summaryLine = failedLines.filter((l) => l.includes("test(s)")).pop();
+  assert(
+    (summaryLine ?? "").includes("fixture-exit214.ts"),
+    `case 12: the summary counts it as a failure (got: ${JSON.stringify(summaryLine)})`,
   );
 }
 
