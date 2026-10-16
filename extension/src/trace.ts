@@ -31,7 +31,3 @@ export function trace(msg: string): void {
 export function traceWarn(msg: string): void {
   process.stderr.write(`[pi-rukas] WARN ${msg}\n`);
 }
-
-export function isTraceEnabled(): boolean {
-  return debugEnabled();
-}

@@ -12,10 +12,10 @@ import {
   openPointsMarkdown,
 } from "../src/work-driver-handoff-open-points.ts";
 import {
-  type NormalisedSpec,
+  SPEC_ARTIFACT_GATE_VERSION,
   parseNormalisedSpecArtifact,
 } from "../src/work-driver-intent-artifact.ts";
-import { finaliseSpecVerdict } from "../src/work-driver-intent-finalise.ts";
+import { type NormalisedSpec, finaliseSpecVerdict } from "../src/work-driver-intent-finalise.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -127,15 +127,27 @@ assert(
 
 // The persisted artifact keeps the field and drops the retired one.
 {
-  const kept = JSON.stringify(spec({ openPoints: ["[CRITICAL] x"] }));
+  const kept = JSON.stringify({
+    ...spec({ openPoints: ["[CRITICAL] x"] }),
+    gateVersion: SPEC_ARTIFACT_GATE_VERSION,
+  });
   assert(
     parseNormalisedSpecArtifact(kept)?.openPoints?.[0] === "[CRITICAL] x",
     "artifact: openPoints round-trips",
   );
   assert(
-    parseNormalisedSpecArtifact(JSON.stringify({ ...spec(), securityOpenPoints: ["`x`"] })) ===
-      undefined,
+    parseNormalisedSpecArtifact(
+      JSON.stringify({
+        ...spec(),
+        gateVersion: SPEC_ARTIFACT_GATE_VERSION,
+        securityOpenPoints: ["`x`"],
+      }),
+    ) === undefined,
     "artifact: the retired securityOpenPoints field is refused",
+  );
+  assert(
+    parseNormalisedSpecArtifact(JSON.stringify(spec())) === undefined,
+    "artifact: an artifact without the current gateVersion is refused, so an old-gate proceed cannot come back",
   );
 }
 

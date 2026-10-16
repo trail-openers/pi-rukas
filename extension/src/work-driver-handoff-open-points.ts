@@ -4,7 +4,7 @@
  *
  * The open-point gate records each blocking line of the filed issue's Open points
  * section in `openPoints` (flattenIssueText output; bounded and redacted when written —
- * see `openPointTexts` in work-driver-intent-criticality.ts). Both handoff surfaces,
+ * see `blockingOpenPointTexts` in open-points-reader.ts). Both handoff surfaces,
  * the GitHub body and the in-chat message, render that list from here, so they show
  * the same points under the same heading, each in a code span that the issue text
  * cannot break out of, followed by the way out. Empty when the spec has none.
@@ -14,7 +14,7 @@
  * the one surface here that is public: redaction is cheap, a leaked token is not.
  */
 
-import { redactSecrets } from "./decision-log.ts";
+import { redactSecrets } from "./secret-patterns.ts";
 
 /** The one field the renderers read; the persisted spec type satisfies it. */
 type OpenPointsSource = { openPoints?: string[] } | undefined;

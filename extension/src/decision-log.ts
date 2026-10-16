@@ -22,39 +22,23 @@
  *
  * ## Redaction
  *
- * `redactSecrets` replaces every span matching vipune.ts's `SECRET_PATTERNS`
- * — the same shape-with-context rules `looksLikeSecret` refuses on — with a
- * fixed marker, and the record carries the count. The patterns are imported,
- * not copied, so the two cannot drift.
+ * `redactSecrets` (defined in secret-patterns.ts and re-exported here) replaces every
+ * span matching vipune.ts's `SECRET_PATTERNS` — the same shape-with-context rules
+ * `looksLikeSecret` refuses on — with a fixed marker, and the record carries the count.
+ * The patterns are imported, not copied, so the two cannot drift.
  */
 
 import { readFileSync, statSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { SECRET_PATTERNS } from "./secret-patterns.ts";
+import { REDACTED, SECRET_PATTERNS, redactSecrets } from "./secret-patterns.ts";
 import { trace } from "./trace.ts";
 import { ensureGitExclude } from "./work-driver-git-exclude.ts";
 
-export const REDACTED = "[REDACTED]";
+export { REDACTED, redactSecrets } from "./secret-patterns.ts";
 
 /** Every string in a record — the state included — is bounded to this, after redaction. */
 const LOG_STRING_CHARS = 4000;
-
-const GLOBAL_PATTERNS = SECRET_PATTERNS.map(
-  (re) => new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`),
-);
-
-export function redactSecrets(text: string): { text: string; count: number } {
-  let count = 0;
-  let out = text;
-  for (const re of GLOBAL_PATTERNS) {
-    out = out.replace(re, () => {
-      count++;
-      return REDACTED;
-    });
-  }
-  return { text: out, count };
-}
 
 /**
  * Redact the WHOLE text, then keep a window of it (`from` = which end). Clipping

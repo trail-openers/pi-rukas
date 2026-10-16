@@ -1,9 +1,9 @@
 /**
  * work-driver-intent-finalise — the spec's final verdict at the explore step (#1151, #1187).
  *
- * Kept apart from work-driver-intent-criticality.ts: work-driver-intent.ts imports
- * the criticality module, so calling reconcileVerdict from there made a runtime
- * import cycle. This module imports both sides; nothing imports it back.
+ * Kept apart from work-driver-intent-criticality.ts and open-points-reader.ts:
+ * work-driver-intent.ts imports the criticality module, so calling reconcileVerdict from
+ * there made a runtime import cycle. This module imports both sides; nothing imports it back.
  *
  * The order is the contract: reconcile the resolver's verdict first, then apply
  * the filed issue's open points. Reconciliation can lift an `underspecified`
@@ -13,13 +13,14 @@
  */
 
 import { redactClip } from "./decision-log.ts";
-import { flattenIssueText } from "./text-flatten.ts";
-import { trace } from "./trace.ts";
 import {
   type OpenPointReading,
-  openPointTexts,
+  blockingOpenPointTexts,
   readOpenPoints,
-} from "./work-driver-intent-criticality.ts";
+  resolvedOpenPointTexts,
+} from "./open-points-reader.ts";
+import { flattenIssueText } from "./text-flatten.ts";
+import { trace } from "./trace.ts";
 import {
   type NormalisedSpec,
   type SpecAssumption,
@@ -41,10 +42,15 @@ export function finaliseSpecVerdict(
   const reconciled = reconcileVerdict(spec);
   if (primaryBody === undefined || flattenIssueText(primaryBody) === "") {
     // Distinguishes "nobody wrote an issue" from "the fetch returned nothing": a raw body
-    // with characters in it that flattenIssueText reduced to nothing is invisible/control text.
+    // with characters in it that flattenIssueText reduced to nothing is invisible/control
+    // text. The RAW LENGTH is the diagnostic — a boolean would say "non-empty" for a body
+    // of one zero-width character and for a megabyte of them, which is the case this trace
+    // exists to tell apart (#1187 fix round 2).
     trace(
       `open-point-gate-unchecked: the filed issue body was blank (raw body ${
-        primaryBody === undefined ? "unread (undefined)" : `non-empty: ${primaryBody.length > 0}`
+        primaryBody === undefined
+          ? "unread (undefined)"
+          : `raw length ${primaryBody.length}, flattened empty`
       }); its open points were not checked`,
     );
     // Recorded even when the spec is already parked: an unchecked body is a fact the PR body must carry.
@@ -112,7 +118,7 @@ function applyOpenPointGate(spec: NormalisedSpec, reading: OpenPointReading): No
           ...spec,
           assumptions: [
             ...spec.assumptions,
-            ...openPointTexts(reading, "resolved").map(resolvedAssumption),
+            ...resolvedOpenPointTexts(reading).map(resolvedAssumption),
           ],
         };
   if (reading.unparsed.length > 0) {
@@ -121,8 +127,9 @@ function applyOpenPointGate(spec: NormalisedSpec, reading: OpenPointReading): No
     );
   }
   // Bounded and redacted at the one place `openPoints` is written: these lines are copied
-  // verbatim into the handoff and posted to a public PR comment (#1187 fix round 2).
-  const blocking = [...openPointTexts(reading, "points"), ...openPointTexts(reading, "unparsed")];
+  // verbatim into the handoff and posted to a public PR comment (#1187 fix round 2). One
+  // combined cap covers points and unparsed lines together.
+  const blocking = blockingOpenPointTexts(reading);
   if (blocking.length === 0) return base;
   if (base.verdict === "park") {
     trace(

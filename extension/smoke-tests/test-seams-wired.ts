@@ -189,6 +189,10 @@ const SEAMS: Seam[] = [
         "#594 — strict JSON spec artifact validator; called by test-work-driver-pr12.ts",
       exploreSpecArtifactPath:
         "#594 — artifact path helper; called by test-work-driver-pr12.ts and internally by readSpecArtifact/deleteSpecArtifact",
+      // #1187 — the version the writer stamps and the reader requires. Read by the tests
+      // that build an artifact's bytes; production reaches it only through persistSpecArtifact.
+      SPEC_ARTIFACT_GATE_VERSION:
+        "#1187 — gate-version constant; written by persistSpecArtifact, asserted by test-work-driver-pr12.ts and the open-point gate tests",
     },
     canary: {
       symbol: "resolveIntentVerdict",

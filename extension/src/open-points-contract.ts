@@ -3,7 +3,7 @@
  *
  * The /plan gap gate writes this section (plan-gap-disclosure.ts) when a CRITICAL
  * gap is still unresolved at its iteration cap. The /work intent gate reads it
- * back (work-driver-intent-criticality.ts) and decides whether the issue is
+ * back (open-points-reader.ts) and decides whether the issue is
  * buildable. Both sides take the heading and severity from here, so a rename on
  * one side cannot silently stop the other from reading what it wrote.
  *
@@ -16,7 +16,7 @@
  *     `- [CRITICAL] [RESOLVED] …`). `**[RESOLVED]**` does not count and parks.
  *     Answer the point in the issue body, then re-run with `/work N --restart`.
  *   - any other line in the section that is not a plain bullet, checkbox or link
- *     bullet parks as unparsed, rather than being ignored (work-driver-intent-criticality.ts).
+ *     bullet parks as unparsed, rather than being ignored (open-points-reader.ts).
  *   - the one intro sentence below is prose the WRITER emits, so the READER skips it
  *     verbatim (#1187 fix round 1): without that exemption a gap-gate-filed issue can
  *     never be cleared by `[RESOLVED]`, because the intro parks after every point is answered.
@@ -37,3 +37,37 @@ export const OPEN_POINTS_INTRO =
 
 /** The severity tag of a bullet that gates the intent resolver. */
 export const CRITICAL_SEVERITY = "CRITICAL";
+
+/**
+ * Every severity word a bullet may lead with. Only {@link CRITICAL_SEVERITY} gates;
+ * the others are read and set aside (#1187). Declared next to the tag that gates so
+ * the reader's near-miss rule and the writer's vocabulary cannot drift apart.
+ */
+export const SEVERITY_WORDS: readonly string[] = [CRITICAL_SEVERITY, "HIGH", "MEDIUM", "LOW"];
+
+/**
+ * Escape a literal for embedding in a RegExp source.
+ *
+ * The heading is a piece of author-visible prose the writer owns; the reader must match
+ * it *as text*, so every regex metacharacter in it — the parentheses of "(unresolved at
+ * the gap-gate cap)" — is escaped rather than interpreted. Kept here rather than in a
+ * reader module so the derivation in {@link openPointsHeadingPattern} is the only place
+ * the heading and its matcher meet.
+ */
+export function escapeRegExpLiteral(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * The source of the ATX matcher for the exact {@link OPEN_POINTS_HEADING}.
+ *
+ * Derived from the constant, never a copy of it: a rename on the writer's side changes
+ * the matcher the reader uses, so the two cannot silently disagree (a copied literal
+ * is how the reader kept matching a heading the contract no longer wrote). Leading
+ * spaces, any `#` count and trailing hashes are tolerated; nothing else is, so the
+ * settlement's "no cross-section scan" holds exactly — a near-miss heading opens no
+ * section.
+ */
+export function openPointsHeadingPattern(): string {
+  return `^ {0,3}#{1,6}[ \t]+${escapeRegExpLiteral(OPEN_POINTS_HEADING)}[ \t]*#*[ \t]*$`;
+}

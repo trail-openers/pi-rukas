@@ -13,6 +13,7 @@ import { openPointsSection } from "../src/plan-gap-disclosure.ts";
 import { GAP_RESOLUTION_PLACEHOLDER } from "../src/plan-gap-parse.ts";
 import type { PlanGap } from "../src/plan-types.ts";
 import {
+  SPEC_ARTIFACT_GATE_VERSION,
   parseNormalisedSpecArtifact,
   resolveIntentVerdict,
 } from "../src/work-driver-intent-artifact.ts";
@@ -63,6 +64,10 @@ async function withTrace<T>(fn: () => Promise<T> | T): Promise<{ result: T; trac
 }
 const HEADING = "## Open points (unresolved at the gap-gate cap)";
 const body = (...lines: string[]) => [HEADING, "", ...lines, ""].join("\n");
+
+/** What `persistSpecArtifact` writes, so artifact assertions read the real bytes. */
+const artifactJson = (spec: NormalisedSpec): string =>
+  JSON.stringify({ ...spec, gateVersion: SPEC_ARTIFACT_GATE_VERSION });
 
 const complete = (over: Partial<NormalisedSpec> = {}): NormalisedSpec => ({
   intent: "Keep the retry timeout configurable.",
@@ -268,6 +273,7 @@ for (const reason of ["unresolved-critical-open-point", "blank-issue-body"] as c
     ...complete(),
     verdict: "park",
     parkReason: "underspecified",
+    gateVersion: SPEC_ARTIFACT_GATE_VERSION,
     securityOpenPoints: ["`x`"],
   });
   assert(
@@ -278,6 +284,7 @@ for (const reason of ["unresolved-critical-open-point", "blank-issue-body"] as c
     ...complete(),
     verdict: "park",
     parkReason: "security-open-point",
+    gateVersion: SPEC_ARTIFACT_GATE_VERSION,
   });
   assert(
     parseNormalisedSpecArtifact(legacyReason) === undefined,
@@ -299,7 +306,11 @@ for (const reason of ["unresolved-critical-open-point", "blank-issue-body"] as c
 // The rejections are TRACED with the reason, so "refused artifact" and "no artifact" are
 // distinguishable downstream (#1187 fix round 2).
 {
-  const legacy = JSON.stringify({ ...complete(), securityOpenPoints: ["x"] });
+  const legacy = JSON.stringify({
+    ...complete(),
+    gateVersion: SPEC_ARTIFACT_GATE_VERSION,
+    securityOpenPoints: ["x"],
+  });
   const { result, traced } = await withTrace(() => parseNormalisedSpecArtifact(legacy));
   assert(
     result === undefined && traced.includes("securityOpenPoints") && traced.includes("refused"),
@@ -307,6 +318,7 @@ for (const reason of ["unresolved-critical-open-point", "blank-issue-body"] as c
   );
   const legacyReason = JSON.stringify({
     ...complete(),
+    gateVersion: SPEC_ARTIFACT_GATE_VERSION,
     verdict: "park",
     parkReason: "security-open-point",
   });
@@ -319,18 +331,54 @@ for (const reason of ["unresolved-critical-open-point", "blank-issue-body"] as c
   );
 }
 
-// The blank-body trace says whether the raw body was non-empty BEFORE flattening, which is
-// how an operator tells "no issue body" from "a body of invisible characters" (#1187 fix round 2).
+// The blank-body trace reports the RAW LENGTH of a body that flattened to nothing, which is
+// how an operator tells "no issue body" from "a body of invisible characters" (#1187 fix
+// round 2): a boolean would report the same `true` for one zero-width character and for a
+// megabyte of them, which is exactly the case this trace exists to separate.
 {
   const { traced } = await withTrace(() => finaliseSpecVerdict(complete(), "\u200B\u200B"));
   assert(
-    traced.includes("open-point-gate-unchecked") && traced.includes("non-empty: true"),
-    "the blank-body trace reports a non-empty raw body that flattened to nothing",
+    traced.includes("open-point-gate-unchecked") &&
+      traced.includes("raw length 2, flattened empty"),
+    "the blank-body trace prints the raw length of a body that flattened to nothing",
   );
   const undef = await withTrace(() => finaliseSpecVerdict(complete(), undefined));
   assert(
     undef.traced.includes("unread (undefined)"),
     "the blank-body trace says an unread body is undefined rather than blank",
+  );
+}
+
+// A heading the reader cannot read is a gate that silently did not run. The settlement says
+// a mangled heading opens no section and does NOT park — behaviour unchanged — but the
+// operator is told, because "clean" and "never scanned" look identical downstream (#1187
+// fix round 2).
+{
+  // The heading text appears in the body but NOT as an ATX heading — here as a fence info
+  // string. No section opens, so the gate does not park (settlement: no cross-section scan)
+  // and the trace says the section was not read.
+  const fenceInfo = "``` Open points (unresolved at the gap-gate cap)\ncode\n```\n";
+  const { result, traced } = await withTrace(() => finaliseSpecVerdict(complete(), fenceInfo));
+  assert(
+    result.verdict === "proceed",
+    "a heading text that is not an ATX heading opens no section and does not park (settled behaviour)",
+  );
+  assert(
+    traced.includes("no Open points section was read") &&
+      traced.includes("Open points (unresolved at the gap-gate cap)"),
+    "the trace says no Open points section was read while naming the heading the body mentioned",
+  );
+  const clean = await withTrace(() =>
+    finaliseSpecVerdict(complete(), "## Open questions\n\n- plain\n"),
+  );
+  assert(
+    !clean.traced.includes("no Open points section was read"),
+    "a body that never mentions the heading produces no misleading trace",
+  );
+  const read = await withTrace(() => finaliseSpecVerdict(complete(), body("- [HIGH] fine")));
+  assert(
+    !read.traced.includes("no Open points section was read"),
+    "a body with an EXACT heading produces no not-read trace, even when nothing parks",
   );
 }
 
@@ -341,11 +389,50 @@ for (const reason of ["unresolved-critical-open-point", "blank-issue-body"] as c
     parkReason: "unresolved-critical-open-point",
     openPoints: ["[CRITICAL] x"],
   });
-  const back = parseNormalisedSpecArtifact(JSON.stringify(kept));
+  const back = parseNormalisedSpecArtifact(artifactJson(kept));
   assert(back?.openPoints?.[0] === "[CRITICAL] x", "openPoints round-trips through the artifact");
   assert(
-    parseNormalisedSpecArtifact(JSON.stringify({ ...kept, openPoints: [1] })) === undefined,
+    parseNormalisedSpecArtifact(artifactJson({ ...kept, openPoints: [1] })) === undefined,
     "a non-string openPoints is refused",
+  );
+  // The write-side bound is a READ-side check too (#1187 fix round 2): the reader used to
+  // validate elements and not length, so a list the gate could never have written was
+  // restored verbatim into the handoff.
+  const tooMany = Array.from({ length: 22 }, (_, i) => `[CRITICAL] point ${i}`);
+  const { result: over, traced: overTrace } = await withTrace(() =>
+    parseNormalisedSpecArtifact(artifactJson({ ...kept, openPoints: tooMany })),
+  );
+  assert(
+    over === undefined && overTrace.includes("openPoints") && overTrace.includes("refused"),
+    "an openPoints list longer than the write-side cap plus its note is refused, with a trace",
+  );
+  assert(
+    parseNormalisedSpecArtifact(
+      artifactJson({ ...kept, openPoints: Array.from({ length: 21 }, (_, i) => `p${i}`) }),
+    )?.openPoints?.length === 21,
+    "the cap plus one '…and N more' note is exactly what the reader accepts",
+  );
+  // Assumption text reaches the PR body, so both fields are bounded and redacted on READ,
+  // not only on the gate's write path (#1187 fix round 2).
+  const token = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123";
+  const leaky = complete({
+    assumptions: [{ text: `rotate the ${token} key`, basis: `via ${token}` }],
+  });
+  const scrubbed = parseNormalisedSpecArtifact(artifactJson(leaky));
+  assert(
+    scrubbed?.assumptions[0]?.text.includes("sk-ant-api03") === false &&
+      scrubbed?.assumptions[0]?.basis.includes("sk-ant-api03") === false &&
+      scrubbed?.assumptions[0]?.text.includes("[REDACTED]") === true,
+    "artifact assumptions have their credential redacted on read, in text and in basis",
+  );
+  const longAssumption = complete({
+    assumptions: [{ text: "z".repeat(6000), basis: "b".repeat(6000) }],
+  });
+  const bounded = parseNormalisedSpecArtifact(artifactJson(longAssumption));
+  assert(
+    (bounded?.assumptions[0]?.text.length ?? 0) <= 2000 &&
+      (bounded?.assumptions[0]?.basis.length ?? 0) <= 2000,
+    "artifact assumption text and basis are both bounded on read",
   );
 }
 
