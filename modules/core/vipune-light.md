@@ -24,7 +24,7 @@ For project meta-questions (conventions, decisions, gotchas) → vipune. For cod
 - `guard` — things to NEVER do
 - `observation` — ephemeral, in-session
 
-Use `--memory-type` when writing. Default to `--status candidate` when uncertain — promotes only after a second confirmation.
+Use `--memory-type` when writing. Default to `--status candidate` when uncertain — an operator promotes it only after the fact gets a second confirmation.
 
 ## When to write (sparingly)
 
@@ -47,6 +47,6 @@ vipune add "finding $(whoami)"   # ❌ DANGEROUS — shell expansion
 
 ## Freshness check before acting
 
-Memories are snapshots. Verify against current state (`ls`, `grep`, `--help`) before using as the basis for action. If stale, correct it with `vipune add '<new>' --supersedes <old-id> --memory-type <type>` — `vipune delete` and `vipune update` are denied to every role.
+Memories are snapshots. Verify against current state before using a memory as the basis for action: list the path, search for the symbol, check the CLI help. If stale, correct it with `vipune add '<new>' --supersedes <old-id> --memory-type <type>`; that is the only correction available to you. No agent role promotes, deletes, prunes, or rewrites memory content: those are operator actions, so never run the update, delete or prune verbs (see the Quick reference in `skill/vipune/SKILL.md` for why the grant is doctrine, not a runtime gate).
 
 For the full doctrine load the bundled skill via `--skill <skills-dir>/vipune`. Run `vipune --help` for options.
