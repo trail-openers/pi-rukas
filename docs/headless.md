@@ -37,6 +37,8 @@ The headless runner's contract with its caller is four independent surfaces, eac
 
 A grouped run exits 21 if any issue was interrupted, otherwise the highest per-issue code. The `--json` result carries every issue regardless.
 
+A signal outranks the failure of the step it lands in. The step that was running when the signal fired is not routed: no cap, no handoff, exit 21, `resumable: true`, and its `interrupted` event names it (`step`). A cap that step recorded on its way out (an aborted child, an issue-body fetch cut short) is the abort's doing, so the result does not report it as `cap`; running `work <issue>` again re-runs the step. The one exception is the `handoff` step itself: a signal that lands there arrives after the cycle has already stopped on its cap, so the handoff finishes and the run exits with the handoff's code.
+
 ### `--json` result schema (v3)
 
 With `--json`, stdout carries exactly one JSON document:
@@ -53,10 +55,22 @@ With `--json`, stdout carries exactly one JSON document:
       "status": "handoff",
       "cap": "verify-failed:develop",
       "failedStep": "develop",
+      "failure": {
+        "kind": "verify",
+        "step": "develop",
+        "message": "verify command exited 1: 2 tests failed",
+        "evidence": "verify command exited 1: 2 tests failed\n…"
+      },
       "branch": "feature/issue-42-foo",
       "prNumber": 99,
       "prUrl": "https://github.com/owner/repo/pull/99",
-      "usage": { "input": 812000, "output": 41000, "cacheRead": 2900000, "cacheWrite": 0, "cost": 3.12, "turns": 214, "dispatches": 9 },
+      "usage": {
+        "input": 812000, "output": 41000, "cacheRead": 2900000, "cacheWrite": 0, "cost": 3.12, "turns": 214, "dispatches": 9,
+        "byRole": {
+          "developer": { "input": 640000, "output": 33000, "cacheRead": 2400000, "cacheWrite": 0, "cost": 2.5, "turns": 170, "dispatches": 4 },
+          "…": { }
+        }
+      },
       "resumable": false,
       "stateFile": "/path/to/.pi/work-state/42.json",
       "durationMs": 42000,
@@ -85,12 +99,13 @@ With `--json`, stdout carries exactly one JSON document:
 | `buildCommit` | always | The full 40-hex commit the running build was made from (the image's baked `.pi/pi-rukas-commit`, else the HEAD of the pi-rukas checkout), or `null` when nothing records it. Never anything else, so a host can safely run `git merge-base --is-ancestor <fix> <buildCommit>` when it is non-null. |
 | `buildVersion` | always | The release version of the running build (`extension/package.json`). |
 | `issues[].status` | always | `merged`, `handoff`, `aborted`, `interrupted`, `running` (the driver returned without a terminal state) or `not-started`. |
-| `issues[].cap` | when a cap was hit | The last cap the cycle hit, from the published vocabulary (below). It can be set on a `merged` result too (a cap the cycle recovered from), so a host reads `status` and `exitCode` for the outcome and `cap` for the reason. |
+| `issues[].cap` | when a cap was hit | The last cap the cycle hit, from the published vocabulary (below). It can be set on a `merged` result too (a cap the cycle recovered from), so a host reads `status` and `exitCode` for the outcome and `cap` for the reason. A cap recorded by a step that a signal then cut off is not reported (see [Exit codes](#exit-codes)). |
 | `issues[].parkReason` | when `cap` is `intent-park` | Why the cycle parked: `underspecified`, `contradicted-by-code`, `already-implemented`, `too-large`, `premise-unsound`, `unresolved-critical-open-point` or `blank-issue-body`. |
 | `issues[].handoff` | once the cycle emitted a handoff | `channel` (`forge` or `host`, see [Handoff channel](#handoff-channel)); `marker`, the machine marker that is the first line of the body; `body`, the full handoff markdown, taken from the driver's record of this cycle (never re-read from the file); `bodyError` (`not-recorded`) in place of `body` when the cycle recorded none; `bodyFile`, a path for a person; `commentUrl`, the comment pi-rukas posted (forge channel); `labelApplied`, whether `needs-human-attention` was verified on the issue (and PR). |
+| `issues[].failure` | when `cap` is set and the cycle did not merge | Why the cycle stopped on `cap`, as stable fields (#1367, added in this release). See [The `failure` object](#the-failure-object). |
 | `issues[].failedStep` | when the cycle did not merge and started a step | The step it stopped in: the step a `<template>:<step>` cap names (`verify-failed:`, `verify-timeout:`, `verify-env:`, `verify-baseline-red:`, `pr-not-open:`, `step-failed:`, `driver-crash:`), else the last step started before the cap, else the last step started. It names where the cycle stopped, not necessarily a failure: for `awaiting-human-merge` it is the last step the cycle ran (e.g. `ci`). |
 | `issues[].branch`, `prNumber`, `prUrl` | when known | `prUrl` is present only when unambiguous: the PR URL the driver recorded (its handoff comment on the PR), else one built from the project's git remote when there is exactly one remote, the forge is GitHub or GitLab, and the web address is certain (an `http(s)` remote, or ssh to github.com / gitlab.com; GitLab subgroups and explicit https ports are kept). Otherwise only `prNumber` is set. |
-| `issues[].usage` | when a state existed | Tokens, cost and turns summed over every dispatch the cycle recorded (`dispatch-completed`, `dispatch-failed` and `dispatch-failed-provider` events), and the dispatch count. It covers the current cycle only: `--restart` discards the state, so earlier cycles' cost is not included. |
+| `issues[].usage` | when a state existed | Tokens, cost and turns summed over every dispatch the cycle recorded (`dispatch-completed`, `dispatch-failed` and `dispatch-failed-provider` events), and the dispatch count. It covers the current cycle only: `--restart` discards the state, so earlier cycles' cost is not included. `usage.byRole` (#1368, added in this release) holds the same seven numbers per dispatch `role` (the `role` on the `dispatch-*` events, e.g. `developer`, `adversarial`), summed over the same dispatches, failed ones included, so its rows add up to the total. |
 | `issues[].resumable` | always | `true` when running `work <issue>` again **without** `--restart` continues this cycle (it was interrupted, or stopped while running). Always `false` on a refusal (exit 40: another live process owns the cycle, so a re-run is refused again until it ends) and when `PI_ENSEMBLE_RESUME=0`. A terminal cycle needs `--restart` for a fresh one. |
 | `issues[].stateFile` | always | A path for a person to inspect. Not a host contract: see below. |
 | `issues[].questions` | exit 11 only | The clarification questions, numbered `q1`, `q2`, … |
@@ -99,7 +114,41 @@ With `--json`, stdout carries exactly one JSON document:
 
 An optional top-level `error` (`{ code, message }`) is present when the runner detected a divergence (e.g. `state-diverged`) or another runner-level failure.
 
-`resources` (#1325, added in this release; an additive field, so no schema bump) is the host budget and the parallelism limits the run chose — see [Resource report](#resource-report).
+`resources` (#1325, added in this release; an additive field, so no schema bump) is the host budget and the parallelism limits the run chose — see [Resource report](#resource-report). `failure` (#1367) and `usage.byRole` (#1368) are additive fields too, so the schema stays at 3; a host detects them with `features.failureReason` and `features.usageByRole` in `--capabilities`.
+
+### The `failure` object
+
+`issues[].failure` is the reason behind the result's `cap`, so a host never reads the unstable `dispatch-failed` / `dispatch-failed-provider` lines or the cap's prose to tell a provider outage from a real failure. It is present when the cycle hit a cap and did not merge.
+
+| Field | Present | Meaning |
+|---|---|---|
+| `kind` | always | A coarse class, from `contracts.resultSchema.failureKinds` in `--capabilities` (below). |
+| `step` | when known | The step it belongs to, the same as `failedStep`. |
+| `role` | when a dispatch failed, or a guard cap names one | The failed dispatch's role (or the role a `loop-detected` / `token-budget` cap killed). |
+| `cause` | when a dispatch failed | The driver's root-cause reading of the failed dispatch, the one its retry router acts on: `provider-severed`, `rate-limited:429`, `rate-limited:burst`, `rate-limited:quota-window`, `rate-limited:quota-terminal`, `provider-model-unavailable`, `self-killed:<timeout\|inactivity\|tool-inactivity\|abort\|loop\|token-budget\|plan-timeout>`, `crashed` or `crashed-unknown`. Additive: show an unknown one to a person. |
+| `message` | always | One plain-text sentence, at most 500 characters: the failed dispatch's cause in words, else the first line of the cap's evidence, else the cap. |
+| `providerMessage` | provider failures | The provider's own error message, at most 1000 characters. |
+| `errorTail` | process failures | The end of the failed child's output, at most 2000 characters. |
+| `killCause` | when pi-rukas ended the child | `timeout`, `inactivity`, `tool-inactivity`, `abort`, `loop`, `token-budget` or `plan-timeout`. |
+| `exitCode` | when the failed child exited | Its exit code (`null` when killed by a signal). |
+| `evidence` | when the cap recorded some | The cap's evidence, at most 2000 characters. Plain text for a person; do not parse it. |
+
+Every text field has secrets redacted before it is cut to its bound.
+
+A failed dispatch is read only for the caps a failed dispatch causes (`step-failed:<step>`, `adversarial-infra-failure`, `developer-timeout`, `review-incomplete`, `loop-detected`, `token-budget`, `plan-timeout`): the last `dispatch-failed*` event between the start of the stopped step's last run and the cap. Its kind wins over the cap's:
+
+| `kind` | Meaning |
+|---|---|
+| `provider` | A dispatch stopped on a provider error: an outage, a 429, a spend cap, an unknown model (`cause` says which). The case a host may retry later on its own. |
+| `timeout` | A time bound ended it: a child killed for time or silence, `verify-timeout:<step>`, `developer-timeout`, `plan-timeout`, `wall-clock`, `deadline`. |
+| `guard` | pi-rukas ended the child on a guard: a loop, the token budget, an abort. |
+| `process` | The child process failed with no structured cause (a dispatch cap with no failed dispatch recorded is `process` too). |
+| `verify` | The verify gate ran and judged the code red: `verify-failed:<step>`, `verify-baseline-red:<step>`, `integration-verify-failed`, `consolidated-verify-consolidation-created`. |
+| `environment` | `verify-env:<step>`: the system refused to start a process, so the gate never ran. |
+| `driver` | `driver-crash:<step>`: a driver step handler threw. |
+| `cap` | Nothing failed: the cap's own rule stopped the cycle (a round cap, an intent park, awaiting merge, a fence violation, …). `evidence` says why. |
+
+A new kind is additive and does not bump the schema: a host treats an unknown kind like `cap`.
 
 ### Resource report
 
@@ -140,6 +189,7 @@ Additions do not bump a version: a new cap, a new input or file, a new stable ND
 
 - An unknown `cap` is a generic handoff: act on `status` and `exitCode`, and show the cap to a person.
 - Unknown fields are ignored.
+- An unknown input `scope` is not `cycle`: the name is read, but not by a cycle's runner.
 - An unknown NDJSON kind is treated as unstable.
 
 ### The state file is not a host contract
@@ -160,8 +210,21 @@ One JSON object per line on stderr. Fields:
 | `key` | `string` | on driver event lines | Idempotency key `<issue>:<index>:<at>` — a resumed cycle re-emits its prior event log, so a consumer dedupes on `key` |
 | `event` | `object` | on driver event lines | The WorkEvent itself (its own `kind` would collide with the envelope's) |
 | `message` | `string` | on `log` lines | The log message |
+| `level` | `"warn"` | on `log` lines that carry a warning | Set on a diagnostic the runner rerouted from a warning (see below); absent on every other line |
 
 The full set of valid `kind` values is exported as `NDJSON_KINDS` (= `KNOWN_EVENT_KINDS` + `log` + `pi-resolved`).
+
+#### Every line pi-rukas writes is JSON
+
+pi-rukas's own plain-text diagnostics, such as the `PI_ENSEMBLE_DEBUG` trace, `[pi-rukas] WARN …` lines and the `pi-binary-resolve` PATH warning, would otherwise reach stderr as plain text. The runner reroutes them: each line becomes a `log` line with no `issue`, and with `level: "warn"` when it is a warning. Its `message` is the original text, e.g.:
+
+```json
+{"v":1,"kind":"log","at":"2026-10-15T09:00:00.000Z","message":"[pi-rukas] pi-binary-resolve: WARNING — pi resolved from PATH, no integrity check performed","level":"warn"}
+```
+
+`console.log` output is rerouted the same way, so stdout carries only the summary line or the `--json` document.
+
+Lines written by something other than pi-rukas can still reach stderr. Examples are an init or wrapper that shares the file descriptor, the runtime (bun) itself, or a launcher script. **A consumer must skip a stderr line that does not parse as JSON**, and must not treat it as a broken stream. The published image's `tini` runs with `-s`, so `docker run --init` no longer adds its "not running as PID 1" warning. A usage error printed before `work` starts (an unknown verb) is plain text and exits 40.
 
 #### The stable subset
 
@@ -176,8 +239,8 @@ Only these kinds are a host contract, versioned by `NDJSON_STABLE_VERSION` (1) a
 | `handoff-emitted` | `at`, `commentUrl`, `labelApplied` |
 | `ci-status` | `at`, `status`, `runUrl` |
 | `merged` | `at`, `prNumber`, `mergeCommit` |
-| `interrupted` | `at`, `reason` |
-| `log` | `message` (on the line, not under `event`) |
+| `interrupted` | `at`, `reason`, `step` (only when the signal fired mid-step) |
+| `log` | `message`, and `level` when set (on the line, not under `event`) |
 
 Every other line carries `unstable: true`. A host may display it, but must not branch on it. The field lists are typed against the driver's event union, so renaming a stable field fails the build.
 
@@ -245,7 +308,8 @@ Use `--restart` only when a person, or the host acting on a person's answer, has
     },
     "resultSchema": {
       "version": 3,
-      "caps": { "fixed": ["adversarial-infra-failure", …], "templates": [{ "prefix": "verify-failed:", "parameter": "step", "values": ["explore", …] }, …] }
+      "caps": { "fixed": ["adversarial-infra-failure", …], "templates": [{ "prefix": "verify-failed:", "parameter": "step", "values": ["explore", …] }, …] },
+      "failureKinds": ["provider", "timeout", "guard", "process", "verify", "environment", "driver", "cap"]
     },
     "ndjson": {
       "version": 1,
@@ -255,10 +319,12 @@ Use `--restart` only when a person, or the host acting on a person's answer, has
   "verbs": {
     "work": { "flags": ["--restart", "--json", "--timeout"] }
   },
-  "inputs": [                  // every PI_ENSEMBLE_* input this build reads
+  "inputs": [                  // every PI_ENSEMBLE_* input this build or its wrapper reads
     { "name": "PI_ENSEMBLE_MAX_WORKSTREAMS", "type": "integer", "default": 6, "scope": "cycle" },
     { "name": "PI_ENSEMBLE_VERIFY_TIMEOUT_MS", "type": "duration-ms", "default": 600000, "scope": "cycle" },
-    { "name": "PI_ENSEMBLE_MODEL_<ROLE>", "type": "string", "default": null, "scope": "cycle" },
+    { "name": "PI_ENSEMBLE_MODEL_<ROLE>", "type": "string", "default": null, "scope": "cycle",
+      "members": ["DEVELOPER", "OPS", "EXPLORE", "ADVERSARIAL_DEVELOPER", "CODE_REVIEW_SPECIALIST"] },
+    { "name": "PI_ENSEMBLE_NO_SSH", "type": "boolean", "default": false, "scope": "wrapper" },
     { "name": "PI_ENSEMBLE_ISSUE_IMAGES", "type": "boolean", "default": true, "scope": "cycle", "manifestVersion": 1 },
     …
   ],
@@ -270,7 +336,9 @@ Use `--restart` only when a person, or the host acting on a person's answer, has
     "resultFromMemory": true,   // #1189 — result from in-memory state, not the state file
     "cycleDeadline": true,      // #1238 — a cycle deadline that parks with a handoff
     "handoffChannel": true,     // #1327 — PI_ENSEMBLE_HANDOFF_CHANNEL=host
-    "restartClearsAttention": true // #1327 — --restart clears needs-human-attention
+    "restartClearsAttention": true, // #1327 — --restart clears needs-human-attention
+    "failureReason": true,      // #1367 — issues[].failure in the result
+    "usageByRole": true         // #1368 — issues[].usage.byRole in the result
   },
   "resources": { … }            // #1325 — the host budget and limits; see Resource report
 }
@@ -287,19 +355,23 @@ Use `--restart` only when a person, or the host acting on a person's answer, has
 | `contracts.exitCodes.values` | The `EXIT` object | The complete mapping of exit-code names to values. A caller can check for the presence of a named code. |
 | `contracts.resultSchema.version` | Named constant in `result.ts` | Version of the `--json` result schema. |
 | `contracts.resultSchema.caps` | `caps.ts` | Every value the result's `cap` can take (see "The `cap` vocabulary"). |
+| `contracts.resultSchema.failureKinds` | `FAILURE_KINDS` (`failure.ts`) | Every value the result's `failure.kind` can take (see "The `failure` object"). |
 | `contracts.ndjson.version` | `NDJSON_VERSION` | Version of the NDJSON progress schema. |
 | `contracts.ndjson.stable` | `NDJSON_STABLE_VERSION`, `NDJSON_STABLE_FIELDS` | The stable kinds and their guaranteed `event` fields (see "The stable subset"). |
 | `verbs.work.flags` | `WORK_FLAGS` array | The flags the `work` verb accepts, in the order the parser accepts them. An unknown flag in a caller's argv means "not supported" and is refused with exit 40. |
-| `inputs[].name` | `HEADLESS_INPUTS` (`inputs.ts`) | An environment variable the build reads. A name with `<ROLE>` or `<SEAM>` is a family: `<ROLE>` is a role name and `<SEAM>` a decision-seam id, upper-cased with `-` → `_` (e.g. `PI_ENSEMBLE_MODEL_DEVELOPER`). |
+| `inputs[].name` | `HEADLESS_INPUTS` (`inputs.ts`) | An environment variable the build reads. A name with `<ROLE>`, `<SEAM>` or `<LENS>` is a family: `<ROLE>` is a role name, `<SEAM>` a decision-seam id and `<LENS>` a code-review lens name, upper-cased with `-` → `_` (e.g. `PI_ENSEMBLE_MODEL_DEVELOPER`). |
+| `inputs[].members` | The role list (`roles.ts`), the seam registry (`decision-seam-registry.ts`) and the bundled lens roster (`lens-roster.ts`) | Present on every family: the ids its placeholder takes in this build. A name with any other id, such as the typo `PI_ENSEMBLE_MODEL_REVIEWER`, is read by nothing and leaves the default in place. `<ROLE>` lists the spawned roles (the parent session has no per-role variable). `<SEAM>` lists the seams that read env config; the grandfathered policy judge does not. `<LENS>` lists the lenses shipped with the build; a lens added to the installed skills dir is not listed. Independent of `values`: `PI_ENSEMBLE_DECISION_MODE_<SEAM>` has both. |
 | `inputs[].type` | Hardcoded | `boolean` (`1` on, `0` off), `integer`, `number` (see `unit`), `duration-ms`, `string`, `path`, `list` (joined by `separator`) or `enum` (one of `values`). |
 | `inputs[].default` | Hardcoded; about 50 of them are checked against their live reader functions | The behaviour when the variable is unset. `null` means unset by default, with the fallback described in [configuration.md](configuration.md#environment-variables). |
-| `inputs[].scope` | Hardcoded | Who sets it: `cycle` (changes what a cycle does), `sandbox` (the sandbox wrapper), `interactive` (the Pi UI only), `install` (path overrides), `internal` (pi-rukas sets it on its own children; a host must not), `test` (smoke tests only). |
+| `inputs[].scope` | Hardcoded | Who sets it: `cycle` (changes what a cycle does), `sandbox` (the sandbox wrapper), `interactive` (the Pi UI only), `install` (path overrides), `wrapper` (read only by the `bin/pi-rukas` sandbox wrapper on the host, before the container starts; it has no effect on a cycle started without the wrapper, including `pi-rukas-headless` run directly), `internal` (pi-rukas sets it on its own children, or the wrapper on its container; a host must not), `test` (smoke tests only). |
 | `inputs[].manifestVersion` | Hardcoded | Present on the two issue-image inputs: the manifest format version the build understands. |
 | `files[]` | `HEADLESS_FILES` (`inputs.ts`) | The `.pi/*` files a cycle reads from the project (`path`, `kind`: `command` / `hook` / `config`, and what happens `whenAbsent`). Files the driver writes, such as `.pi/work-state/`, are state, not input, and are not listed. |
 | `features.resultFromMemory` | Constant `true` | `true` when the result is taken from the driver's in-memory state rather than re-reading the state file (#1189). |
 | `features.cycleDeadline` | Constant `true` | `true` when a cycle that hits its deadline parks with a handoff rather than being killed (#1238). |
 | `features.handoffChannel` | Constant `true` | `true` when the build honours `PI_ENSEMBLE_HANDOFF_CHANNEL` and carries the handoff in the result (#1327). |
 | `features.restartClearsAttention` | Constant `true` | `true` when `--restart` overrides the attention gate and clears `needs-human-attention` (#1327). See [`--restart` for hosts](#--restart-for-hosts). |
+| `features.failureReason` | Constant `true` | `true` when the result carries `issues[].failure`, the reason behind its `cap` (#1367). |
+| `features.usageByRole` | Constant `true` | `true` when the result's `usage` carries `byRole`, failed dispatches included (#1368). |
 | `resources` | `resourceReport()` (`resource-budget.ts`) | The host budget and the limits a cycle started now would run with, read when the answer is built. See [Resource report](#resource-report). |
 
 ### How a caller uses this
@@ -313,6 +385,10 @@ for name in PI_ENSEMBLE_MAX_WORKSTREAMS PI_ENSEMBLE_VERIFY_TIMEOUT_MS; do
 done
 echo "$caps" | jq -e '.features.cycleDeadline == true' \
   || { echo "This build has no cycle deadline"; exit 1; }
+# A family member: refuse a role the build does not have.
+echo "$caps" | jq -e --arg m "REVIEWER" \
+  'any(.inputs[]; .name == "PI_ENSEMBLE_MODEL_<ROLE>" and (.members | index($m)))' >/dev/null \
+  || { echo "PI_ENSEMBLE_MODEL_REVIEWER is not a role"; exit 1; }
 ```
 
 An unknown name (no matching key in `features`, `inputs`, `files`, or `verbs.work.flags`) means the build does not support it. The caller fails closed — it does not guess or fall back.
@@ -323,6 +399,6 @@ The image publish workflow passes `GITHUB_SHA` as a build arg, and the Dockerfil
 
 ## Relationship to `docs/configuration.md`
 
-`inputs` is the machine-readable list of every `PI_ENSEMBLE_*` variable read under `extension/src/`; [configuration.md](configuration.md#environment-variables) is the human-readable description. `test-headless-inputs.ts` scans `src/` for env reads (property, index, destructuring and name-literal forms) and fails when a read is missing from `inputs` or an entry is no longer read. A key built at runtime (`` `PI_ENSEMBLE_MODEL_${role}` ``) must be on the test's explicit allowlist, which maps it to its family entry. The test also checks about 50 listed defaults (numeric, list and boolean) against their live reader functions; the others are checked only in review. A new input therefore has to be listed in `inputs.ts` and described in configuration.md in the same change.
+`inputs` is the machine-readable list of every `PI_ENSEMBLE_*` variable read under `extension/src/` or by the sandbox wrapper; [configuration.md](configuration.md#environment-variables) is the human-readable description. `test-headless-inputs.ts` scans `src/` for env reads (property, index, destructuring and name-literal forms) and fails when a read is missing from `inputs` or an entry is no longer read. A key built at runtime (`` `PI_ENSEMBLE_MODEL_${role}` ``) must be on the test's explicit allowlist, which maps it to its family entry. The test also checks about 50 listed defaults (numeric, list and boolean) against their live reader functions; the others are checked only in review. A new input therefore has to be listed in `inputs.ts` and described in configuration.md in the same change.
 
-Variables read only by the shell wrappers in `bin/` (e.g. `PI_ENSEMBLE_HOST_ALIASES`, `PI_ENSEMBLE_IMAGE_DIRS`) configure the sandbox launch, not the runner, and are not listed.
+Variables read only by the sandbox wrapper (`bin/pi-rukas` and the image entrypoint, e.g. `PI_ENSEMBLE_NO_DOCKER_SOCKET`, `PI_ENSEMBLE_NO_SSH`, `PI_ENSEMBLE_IMAGE_DIRS`) configure the sandbox launch, not the runner. They are listed with scope `wrapper`, so a host that fails closed can tell "the wrapper reads this" from "nothing reads this". `test-headless-inputs-wrapper.ts` scans those scripts for expansions (`$PI_ENSEMBLE_X`, `${PI_ENSEMBLE_X…}`) and fails when one is unlisted, when a `wrapper` entry is not read there or is also read in `src/`, or when a family's `members` drift from the list they are derived from.

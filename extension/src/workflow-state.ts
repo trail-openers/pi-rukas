@@ -74,7 +74,7 @@ import { renameSync, rmSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { type EmitSink, emitPersisted } from "./work-state-emit.ts";
-import type { InterruptReason } from "./workflow-state-events.ts";
+import type { InterruptReason, WorkStep } from "./workflow-state-events.ts";
 import { WORK_STATE_SCHEMA_VERSION, type WorkState } from "./workflow-state-schema.ts";
 import { appendEvent, detectInconsistencies, initialState } from "./workflow-state-update.ts";
 
@@ -251,7 +251,12 @@ export function interruptReasonOf(signal: AbortSignal): InterruptReason {
  * interrupted again before doing anything else). Every interrupt path goes
  * through here: the driver checkpoint, persistCycle and markInterrupted.
  */
-export function applyInterrupt(state: WorkState, reason: InterruptReason, at: number): WorkState {
+export function applyInterrupt(
+  state: WorkState,
+  reason: InterruptReason,
+  at: number,
+  step?: WorkStep,
+): WorkState {
   if (state.pipelineState.status !== "running") return state;
   const interrupted = {
     ...state,
@@ -259,7 +264,7 @@ export function applyInterrupt(state: WorkState, reason: InterruptReason, at: nu
   };
   const last = state.eventLog[state.eventLog.length - 1];
   if (last?.kind === "interrupted" && last.reason === reason) return interrupted;
-  return appendEvent(interrupted, { kind: "interrupted", at, reason });
+  return appendEvent(interrupted, { kind: "interrupted", at, reason, ...(step ? { step } : {}) });
 }
 
 /**

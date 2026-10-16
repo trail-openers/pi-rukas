@@ -159,11 +159,12 @@ Per-child transcripts are saved to `~/.pi/agent/ensemble-runs/<date>/<runId>-<ro
 
 You probably want a smarter model for the PM and a faster one for the specialists. The main agent (the `pi` you launch) is configured via Pi's own `--model` flag or settings. Subagent model choice is **user-authority-only** — the orchestrating agent cannot route a dispatch to a different provider on its own (jurisdiction routing is a data-residency / compliance decision, not an agent concern; [#92](https://github.com/trail-openers/pi-rukas/issues/92)). Resolution order:
 
-1. `/ensemble-model` per-role choice (saved to `~/.pi/agent/ensemble-models.json`)
-2. `/ensemble-model` all-subagents default (same file)
-3. `PI_ENSEMBLE_MODEL_<ROLE>` env var, optionally paired with `PI_ENSEMBLE_PROVIDER_<ROLE>` for custom OpenAI-compatible providers
-4. `PI_ENSEMBLE_SUBAGENT_MODEL` env var (global fallback), optionally paired with `PI_ENSEMBLE_SUBAGENT_PROVIDER`
-5. Pi default (lowest)
+1. For a code-review lens child only: `PI_ENSEMBLE_MODEL_LENS_<LENS>` env var, optionally paired with `PI_ENSEMBLE_PROVIDER_LENS_<LENS>` (the six lenses all run as `code-review-specialist`, so this is how they get different models)
+2. `/ensemble-model` per-role choice (saved to `~/.pi/agent/ensemble-models.json`)
+3. `/ensemble-model` all-subagents default (same file)
+4. `PI_ENSEMBLE_MODEL_<ROLE>` env var, optionally paired with `PI_ENSEMBLE_PROVIDER_<ROLE>` for custom OpenAI-compatible providers
+5. `PI_ENSEMBLE_SUBAGENT_MODEL` env var (global fallback), optionally paired with `PI_ENSEMBLE_SUBAGENT_PROVIDER`
+6. Pi default (lowest)
 
 Run `/ensemble-model` inside Pi to pick interactively from your authenticated provider catalog; add new built-in providers via Pi's `/login` and `pi-rukas` picks them up automatically. A custom OpenAI-compatible provider (self-hosted vLLM, an internal endpoint, any OpenAI Chat-Completions-compatible API) is a one-time registration in `~/.pi/agent/models.json` — see [docs/custom-providers.md](docs/custom-providers.md).
 

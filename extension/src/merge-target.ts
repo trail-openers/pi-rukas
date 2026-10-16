@@ -24,7 +24,7 @@
  */
 
 import { type DetectForgeOpts, FORGE_EXEC_TIMEOUT_MS, detectForge } from "./forge-detect.ts";
-import { isValidRepoValue } from "./merge-tokens.ts";
+import { isValidRepoValue } from "./merge-allowlist.ts";
 import { trace } from "./trace.ts";
 
 /** Timeout for the guard's gh/glab exec calls (a network-stalled `gh pr view` must not hang the tool_call hook). */
@@ -133,10 +133,10 @@ async function readGhTarget(
   repo?: string,
 ): Promise<MergeTargetResult> {
   // #955 lens fix 1 (HIGH): the repo value is parsed from the agent's
-  // -R/--repo flag or a PR URL and was previously interpolated directly
+  // -R/--repo flag and was previously interpolated directly
   // into this exec string. An invalid value (e.g. `o/r; touch /tmp/x`)
   // would execute arbitrary commands. The guard already validates at the
-  // extraction site (merge-parse.ts); this is the defensive second check
+  // extraction site (merge-allowlist.ts); this is the defensive second check
   // before use. A valid repo is `owner/repo` (GitLab: `group/sub/repo`).
   if (repo !== undefined && !isValidRepoValue(repo)) {
     return {

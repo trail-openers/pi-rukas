@@ -289,7 +289,7 @@ export function registerCommands(pi: ExtensionAPI) {
               ? "/ensemble-model (role)"
               : choice.source === "config-default"
                 ? "/ensemble-model (all)"
-                : choice.source === "role-env"
+                : choice.source === "role-env" || choice.source === "lens-env"
                   ? `${choice.envVar}`
                   : choice.source === "subagent-env"
                     ? `${choice.envVar}`
